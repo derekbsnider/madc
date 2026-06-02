@@ -87,6 +87,17 @@ std::string itanium_mangle_operator_sub(const std::string &qualified_class,
                                          const std::vector<std::string> &param_types,
                                          bool const_method);
 
+// Mangle a non-member std:: function template (operator or named), e.g.
+//   std::operator<< <char_traits<char>>(basic_ostream<char,_Traits>&, const char*)
+// Form: _ZSt <op-or-source-name> I<targs>E <ret> <params...>. Function templates
+// encode the return type. Template parameters in `ret`/`params` are written as
+// "$T0","$T1",… (=> T_,T0_,…). `name` is an operator spelling ("<<") or a source
+// name ("getline","endl").
+std::string itanium_mangle_std_free_template(const std::string &name,
+        const std::vector<std::string> &targs,
+        const std::string &ret,
+        const std::vector<std::string> &params);
+
 // Canonical std:: type spellings (full default template args), so callers
 // don't hand-write them. Each returns the C++ type string accepted by the
 // _sub helpers above.

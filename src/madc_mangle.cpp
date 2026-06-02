@@ -230,6 +230,7 @@ struct TypeNode {
 	std::vector<std::string> decos;    // e.g. {"R","K"} for "const X&"
 	bool is_builtin = false;
 	std::string builtin;               // Itanium code if builtin (e.g. "c")
+	int tparam = -1;                   // >=0 if this type is template-param #N ($Tn)
 	std::vector<NameComponent> name;   // qualified name chain (if !is_builtin)
 };
 
@@ -351,6 +352,12 @@ TypeNode parse_type(const std::string &raw)
 		break;
 	}
 
+	// Template-param placeholder: "$T0" → template-param #0, etc.
+	if (s.size() >= 3 && s[0] == '$' && s[1] == 'T') {
+		t.tparam = std::stoi(s.substr(2));
+		return t;
+	}
+
 	std::string code = builtin_code(s);
 	if (!code.empty()) {
 		t.is_builtin = true;
@@ -379,12 +386,21 @@ public:
 	{
 		// Build innermost core first, then wrap decorations outward. Each
 		// decorated layer is itself a substitution candidate (checked first).
-		std::string enc = encode_core(t);
+		std::string canon = canon_type_core(t);
+		std::string enc;
+		if (t.tparam >= 0) {
+			// A <template-param> is a substitution candidate: the first use
+			// emits T_/T0_/… and registers it; later uses are back-refs.
+			std::string ref = find_sub(canon);
+			if (!ref.empty()) enc = ref;
+			else { enc = tparam_ref(t.tparam); add_sub(canon); }
+		} else {
+			enc = encode_core(t);
+		}
 
 		// Decorations are listed outermost→innermost; apply innermost first.
 		// Track the canonical key alongside, so identical decorated types
 		// (e.g. two "const string&" params) share one slot.
-		std::string canon = canon_type_core(t);
 		for (auto it = t.decos.rbegin(); it != t.decos.rend(); ++it) {
 			canon = *it + canon;          // e.g. "R" + "K" + "<string>"
 			std::string ref = find_sub(canon);
@@ -427,6 +443,29 @@ public:
 		return out;
 	}
 
+	// Mangle a non-member std:: function template:
+	//   _ZSt <opOrName> I<targs>E <ret> <params...>   (one substitution table)
+	// Function templates encode the return type. opOrName is already the
+	// operator code (e.g. "ls") or a length-prefixed source name (e.g. "7getline").
+	std::string mangle_std_free_template(const std::string &opOrName,
+	        const std::vector<std::string> &targs,
+	        const std::string &ret,
+	        const std::vector<std::string> &params)
+	{
+		reset();
+		// The function-template NAME is itself substitution candidate #0 (per the
+		// Itanium ABI: "<template-prefix>" of a function template is substitutable;
+		// e.g. the spec's `first<Duo>` example registers `first` as S_). It is
+		// rarely back-referenced but it shifts every later slot by one.
+		add_sub("@fn:" + opOrName);
+		std::string out = "_ZSt" + opOrName + "I";
+		for (const auto &a : targs) out += encode_type(parse_type(a));
+		out += "E";
+		out += encode_type(parse_type(ret));
+		for (const auto &p : params) out += encode_type(parse_type(p));
+		return out;
+	}
+
 private:
 	std::vector<std::string> keys_;   // canonical keys, in candidate order
 
@@ -441,6 +480,18 @@ private:
 		if (v == 0) digits = "0";
 		while (v > 0) { digits = std::string(1, D[v % 36]) + digits; v /= 36; }
 		return "S" + digits + "_";
+	}
+
+	// Template-param reference: index 0 → "T_", 1 → "T0_", 2 → "T1_", …
+	static std::string tparam_ref(int n)
+	{
+		if (n == 0) return "T_";
+		int v = n - 1;
+		std::string d;
+		const char *D = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+		if (v == 0) d = "0";
+		while (v > 0) { d = std::string(1, D[v % 36]) + d; v /= 36; }
+		return "T" + d + "_";
 	}
 
 	std::string find_sub(const std::string &canonKey)
@@ -482,6 +533,7 @@ private:
 
 	static std::string canon_type_core(const TypeNode &t)
 	{
+		if (t.tparam >= 0) return "$T" + std::to_string(t.tparam);
 		if (t.is_builtin) return "#" + t.builtin;
 		return canon_name_prefix(t.name, t.name.size() - 1);
 	}
@@ -504,9 +556,9 @@ private:
 		if (scopedNoArgs == "std::allocator")      return "Sa";
 		if (scopedNoArgs == "std::basic_string")   return "Sb";
 		// Ss (pre-cxx11 std::string) intentionally NOT used for __cxx11.
-		if (scopedNoArgs == "std::basic_istream")  return "Si";
-		if (scopedNoArgs == "std::basic_ostream")  return "So";
-		if (scopedNoArgs == "std::basic_iostream") return "Sd";
+		// NOTE: Si/So/Sd are NOT prefix abbreviations — they denote the COMPLETE
+		// specialization only (see std_complete_abbrev). A basic_ostream with a
+		// non-canonical arg (e.g. a template param) must spell out St13basic_ostream.
 		return "";
 	}
 
@@ -631,6 +683,7 @@ public:
 	// Encode a (possibly decorated, possibly template-id) type standalone.
 	std::string encode_core(const TypeNode &t)
 	{
+		if (t.tparam >= 0) return tparam_ref(t.tparam);
 		if (t.is_builtin) return t.builtin;
 		return encode_name(t.name, /*standalone=*/true);
 	}
@@ -687,6 +740,17 @@ std::string itanium_mangle_operator_sub(const std::string &qualified_class,
 	ItaniumMangler m;
 	return m.mangle_member(qualified_class, "", code,
 	                       param_types, const_method);
+}
+
+std::string itanium_mangle_std_free_template(const std::string &name,
+        const std::vector<std::string> &targs,
+        const std::string &ret,
+        const std::vector<std::string> &params)
+{
+	std::string code = op_special(name);
+	std::string opOrName = code.empty() ? source_name(name) : code;
+	ItaniumMangler m;
+	return m.mangle_std_free_template(opOrName, targs, ret, params);
 }
 
 // ---- canonical std:: type spellings -----------------------------------------

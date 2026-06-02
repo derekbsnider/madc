@@ -308,6 +308,51 @@ TEST_SUITE("Itanium substitution: complete-spec abbreviations (So/Si/Sd)") {
 	}
 }
 
+TEST_SUITE("Itanium substitution: non-member std template operators") {
+	static const std::string TR = "std::char_traits<char>";
+	static const std::string AL = "std::allocator<char>";
+	// In the function-template SIGNATURE the string is expressed in the function's
+	// own template params (_CharT=$T0, _Traits=$T1, _Alloc=$T2), NOT concrete types.
+	static const std::string STRT =
+		"std::__cxx11::basic_string<$T0,$T1,$T2>";
+
+	TEST_CASE("operator<< (ostream&, const char*) / (ostream&, char)") {
+		CHECK(itanium_mangle_std_free_template("<<", {TR},
+		        "std::basic_ostream<char,$T0>&",
+		        {"std::basic_ostream<char,$T0>&", "const char*"})
+		      == "_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_PKc");
+		CHECK(itanium_mangle_std_free_template("<<", {TR},
+		        "std::basic_ostream<char,$T0>&",
+		        {"std::basic_ostream<char,$T0>&", "char"})
+		      == "_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_c");
+	}
+
+	TEST_CASE("operator<< (ostream&, const string&)") {
+		CHECK(itanium_mangle_std_free_template("<<", {"char", TR, AL},
+		        "std::basic_ostream<$T0,$T1>&",
+		        {"std::basic_ostream<$T0,$T1>&", "const " + STRT + "&"})
+		      == "_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE");
+	}
+
+	TEST_CASE("endl") {
+		CHECK(itanium_mangle_std_free_template("endl", {"char", TR},
+		        "std::basic_ostream<$T0,$T1>&",
+		        {"std::basic_ostream<$T0,$T1>&"})
+		      == "_ZSt4endlIcSt11char_traitsIcEERSt13basic_ostreamIT_T0_ES6_");
+	}
+
+	TEST_CASE("operator>> (istream&, string&) and getline") {
+		CHECK(itanium_mangle_std_free_template(">>", {"char", TR, AL},
+		        "std::basic_istream<$T0,$T1>&",
+		        {"std::basic_istream<$T0,$T1>&", STRT + "&"})
+		      == "_ZStrsIcSt11char_traitsIcESaIcEERSt13basic_istreamIT_T0_ES7_RNSt7__cxx1112basic_stringIS4_S5_T1_EE");
+		CHECK(itanium_mangle_std_free_template("getline", {"char", TR, AL},
+		        "std::basic_istream<$T0,$T1>&",
+		        {"std::basic_istream<$T0,$T1>&", STRT + "&"})
+		      == "_ZSt7getlineIcSt11char_traitsIcESaIcEERSt13basic_istreamIT_T0_ES7_RNSt7__cxx1112basic_stringIS4_S5_T1_EE");
+	}
+}
+
 TEST_SUITE("Itanium substitution: type encoder sanity") {
 
 	TEST_CASE("Standalone std types wrap N..E only when nested") {
