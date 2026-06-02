@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed — c2mir: statement-expression ending in post-increment/decrement (2026-06-02, MIR fork `74adb6a`)
+
+Second "bugs before features" c2mir fix. **gcc.c-torture 1550 → 1551 (92.0%)**, zero
+regressions, SMAUG boots, fulltest 450.
+
+A statement-expression's value is its block's last expression, but c2mir gens
+expression-statements value-discarded (`top_gen` passes `val_p=FALSE`). Most expressions
+materialize their result regardless, but post-`++`/`--` only do so when used — so a
+stmt-expr ending in `x++`/`x--` (`({ x--; })` as a value, `return`, or `while`/`if`
+condition) left an `undef` operand and crashed MIR codegen. Fix (madc MIR fork `74adb6a`):
+gen the marked last expression in value context (`val_p=TRUE`). Confirmed a **c2mir** bug
+via stock `c2m`; recovers `gcc.c-torture/execute/950906-1.c`. `MIR_COMMIT` `caa6ff9` →
+`74adb6a`.
+
 ### Fixed — c2mir: struct-valued statement-expression miscompile (2026-06-02, MIR fork `caa6ff9`)
 
 First of the "bugs before features" c2mir fixes. **gcc.c-torture 1549 → 1550 (92.0%)**,

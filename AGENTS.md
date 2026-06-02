@@ -140,7 +140,7 @@ Source lives in `src/`, headers in `include/`, output in `bin/` and
 Build requires `clang++` (or `g++`) with C++11 support and the **madc MIR
 fork** (libmir + c2mir) at `/workspace/mir` —
 [github.com/derekbsnider/mir](https://github.com/derekbsnider/mir), branch
-**`develop`** (pinned at commit `caa6ff9` — see `MIR_COMMIT`), **not** upstream
+**`develop`** (pinned at commit `74adb6a` — see `MIR_COMMIT`), **not** upstream
 MIR (it carries native C99 `_Complex`, `__attribute__((cleanup))`, the
 scope-depth auto-local layout fix, the struct/union statement-expression
 copy-out fix, and the SysV-varargs / `_Complex` / `_Alignas`

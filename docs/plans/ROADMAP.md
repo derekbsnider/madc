@@ -41,7 +41,7 @@ high-level" — the answer is both.**
   The project's north-star goal — running a real C89 codebase end-to-end —
   is now demonstrated on CIR.
 - **CIR baseline (2026-06-01):** **450 integration pass / 13 fail / 55 skip**;
-  **gcc.c-torture 1550/1685 (92.0%)** vs the old asmjit backend's 1645 (97.6%) — gap 95.
+  **gcc.c-torture 1551/1685 (92.0%)** vs the old asmjit backend's 1645 (97.6%) — gap 94.
   The failures are the active CIR coverage worklist — see Track 1.3 — and the
   gate for promotion to master.
 - **C++ model — proven on the old backend, being re-established on CIR:**
@@ -70,7 +70,7 @@ high-level" — the answer is both.**
 |-------|------|--------|--------|------|
 | 1.1 | C foundation (GCC parity) | — | **DONE** (97.9% on the old backend; the CIR target) | — |
 | 1.2 | Code cleanup Phase A — dispatch table, AST visitor, file split | 2-3 wk | **DONE** (v0.20.1) | [code-cleanup.md](code-cleanup.md) |
-| 1.3 | **CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity** | ongoing | **Active — the parity-to-master gate** (450 pass / 13 fail / 55 skip; gcc-torture 1550/1685 = 92.0% vs asmjit 97.6%) | — |
+| 1.3 | **CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity** | ongoing | **Active — the parity-to-master gate** (450 pass / 13 fail / 55 skip; gcc-torture 1551/1685 = 92.0% vs asmjit 97.6%) | — |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **Planned (raise the floor)** — design for **upstream** to vnmakarov/mir | — |
