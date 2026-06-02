@@ -1624,12 +1624,17 @@ CirBuilder::StreamKind CirBuilder::stream_ident_kind(TokenBase *tb)
 
 const char *CirBuilder::stream_object_symbol(StreamKind k)
 {
+	// Mangler-generated (never hardcoded): std::cout → _ZSt4cout, etc.
+	static const std::string cout_s = itanium_mangle_std_var("cout");
+	static const std::string cerr_s = itanium_mangle_std_var("cerr");
+	static const std::string clog_s = itanium_mangle_std_var("clog");
+	static const std::string cin_s  = itanium_mangle_std_var("cin");
 	switch (k) {
-	case SK_COUT: return "_ZSt4cout";
-	case SK_CERR: return "_ZSt4cerr";
-	case SK_CLOG: return "_ZSt4clog";
-	case SK_CIN:  return "_ZSt3cin";
-	default:      return "_ZSt4cout";
+	case SK_COUT: return cout_s.c_str();
+	case SK_CERR: return cerr_s.c_str();
+	case SK_CLOG: return clog_s.c_str();
+	case SK_CIN:  return cin_s.c_str();
+	default:      return cout_s.c_str();
 	}
 }
 
@@ -1653,27 +1658,44 @@ void CirBuilder::need_stream_object(StreamKind k)
 // Pick the mangled libstdc++ operator<< overload for a value's type.
 const char *CirBuilder::ostream_insert_symbol(DataDef *dd, ExternParam &p_out)
 {
+	// All symbols mangler-generated (never hardcoded). OSTREAM = the concrete
+	// libstdc++ char ostream specialization. The const char*/char overloads are
+	// non-member std function templates (signature in the function's template
+	// params); the rest are member operators on the complete ostream.
+	static const std::string OSTREAM = "std::basic_ostream<char,std::char_traits<char>>";
+	static const std::string sym_pkc = itanium_mangle_std_free_template("<<",
+		{"std::char_traits<char>"}, "std::basic_ostream<char,$T0>&",
+		{"std::basic_ostream<char,$T0>&", "const char*"});
+	static const std::string sym_c = itanium_mangle_std_free_template("<<",
+		{"std::char_traits<char>"}, "std::basic_ostream<char,$T0>&",
+		{"std::basic_ostream<char,$T0>&", "char"});
+	static const std::string sym_pkv = itanium_mangle_operator_sub(OSTREAM, "<<", {"const void*"}, false);
+	static const std::string sym_d   = itanium_mangle_operator_sub(OSTREAM, "<<", {"double"}, false);
+	static const std::string sym_i   = itanium_mangle_operator_sub(OSTREAM, "<<", {"int"}, false);
+	static const std::string sym_j   = itanium_mangle_operator_sub(OSTREAM, "<<", {"unsigned int"}, false);
+	static const std::string sym_l   = itanium_mangle_operator_sub(OSTREAM, "<<", {"long"}, false);
+
 	bool is_ptr = dd && dd->is_pointer();
 	DataType dt = dd ? dd->rawtype() : DataType::dtINT64;
 	// NOTE: a string OBJECT value (operator<<(ostream&, const string&)) is
 	// handled directly in translate_stream_chain, which has the token to tell
 	// an object apart from a literal. Here `is_string()` means a const char*
 	// (string literal / char* value).
-	if (dd && dd->is_string()) { p_out = {{N_CHAR}, true}; return "_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_PKc"; }
-	if (is_ptr && dt == DataType::dtCHAR) { p_out = {{N_CHAR}, true}; return "_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_PKc"; }
-	if (is_ptr) { p_out = {{N_VOID}, true}; return "_ZNSolsEPKv"; }
+	if (dd && dd->is_string()) { p_out = {{N_CHAR}, true}; return sym_pkc.c_str(); }
+	if (is_ptr && dt == DataType::dtCHAR) { p_out = {{N_CHAR}, true}; return sym_pkc.c_str(); }
+	if (is_ptr) { p_out = {{N_VOID}, true}; return sym_pkv.c_str(); }
 	switch (dt) {
-	case DataType::dtCHAR:   p_out = {{N_CHAR}, false};  return "_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_c";
+	case DataType::dtCHAR:   p_out = {{N_CHAR}, false};  return sym_c.c_str();
 	case DataType::dtFLOAT:
-	case DataType::dtDOUBLE: p_out = {{N_DOUBLE}, false}; return "_ZNSolsEd";
+	case DataType::dtDOUBLE: p_out = {{N_DOUBLE}, false}; return sym_d.c_str();
 	case DataType::dtINT16:
-	case DataType::dtINT32:  p_out = {{N_INT}, false};    return "_ZNSolsEi";
+	case DataType::dtINT32:  p_out = {{N_INT}, false};    return sym_i.c_str();
 	case DataType::dtUINT8:
 	case DataType::dtUINT16:
-	case DataType::dtUINT32: p_out = {{N_UNSIGNED, N_INT}, false}; return "_ZNSolsEj";
+	case DataType::dtUINT32: p_out = {{N_UNSIGNED, N_INT}, false}; return sym_j.c_str();
 	case DataType::dtINT64:
 	case DataType::dtUINT64:
-	default:                 p_out = {{N_LONG}, false};   return "_ZNSolsEl";
+	default:                 p_out = {{N_LONG}, false};   return sym_l.c_str();
 	}
 }
 
@@ -1703,8 +1725,16 @@ node_t CirBuilder::translate_stream_chain(TokenOperator *top, StreamKind k, bool
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(vals[i])) vn = tv->var.name;
 		else if (TokenIdent *ti = dynamic_cast<TokenIdent *>(vals[i])) vn = ti->str;
 		if (vn == "endl" || vn == "__std_endl") {
-			const char *MANIP = "_ZNSolsEPFRSoS_E";
-			const char *ENDLF = "_ZSt4endlIcSt11char_traitsIcEERSt13basic_ostreamIT_T0_ES6_";
+			// Mangler-generated (never hardcoded): the member manipulator
+			// operator<<(ostream& (*)(ostream&)) and the std::endl<char,traits> fn.
+			static const std::string OSTREAM = "std::basic_ostream<char,std::char_traits<char>>";
+			static const std::string manip_s = itanium_mangle_operator_sub(
+				OSTREAM, "<<", { OSTREAM + "& (*)(" + OSTREAM + "&)" }, false);
+			static const std::string endlf_s = itanium_mangle_std_free_template("endl",
+				{ "char", "std::char_traits<char>" }, "std::basic_ostream<$T0,$T1>&",
+				{ "std::basic_ostream<$T0,$T1>&" });
+			const char *MANIP = manip_s.c_str();
+			const char *ENDLF = endlf_s.c_str();
 			need_output_extern(MANIP, true, { { {N_VOID}, true }, { {N_VOID}, true } });
 			need_output_extern(ENDLF, true, { { {N_VOID}, true } }); // fn; address taken
 			node_t args = list();
@@ -1722,7 +1752,14 @@ node_t CirBuilder::translate_stream_chain(TokenOperator *top, StreamKind k, bool
 			// string-RETURNING call (direct `make()` or a fn-ptr/lambda `f()`)
 			// is a string-object rvalue: string_obj_arg materializes it into a
 			// __retbuf temp and yields the temp's address.
-			const char *SSYM = "_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE";
+			// Mangler-generated (never hardcoded): non-member std::operator<<
+			// (ostream&, const string&), the cxx11 template form.
+			static const std::string ssym_s = itanium_mangle_std_free_template("<<",
+				{ "char", "std::char_traits<char>", "std::allocator<char>" },
+				"std::basic_ostream<$T0,$T1>&",
+				{ "std::basic_ostream<$T0,$T1>&",
+				  "const std::__cxx11::basic_string<$T0,$T1,$T2>&" });
+			const char *SSYM = ssym_s.c_str();
 			need_output_extern(SSYM, true, { { {N_VOID}, true }, { {N_VOID}, true } });
 			// string_obj_arg yields the object's (void*) address for both a
 			// plain string variable (&v) and a string MEMBER (&obj.member).
