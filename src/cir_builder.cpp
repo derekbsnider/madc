@@ -4710,6 +4710,29 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	{
 		TokenTypeQuery *ttq = dynamic_cast<TokenTypeQuery *>(tb);
 		if (ttq && ttq->query_type) {
+			// sizeof a VLA type (`typedef int c[i+2]; sizeof(c)`) is a
+			// RUNTIME value -- C11 6.5.3.4p2 evaluates the operand. c2mir has
+			// no VLA types, so compute it explicitly as
+			// (dim0 * dim1 * ... ) * sizeof(scalar element). alignof stays the
+			// element's compile-time alignment (constant), so only sizeof is
+			// lowered this way.
+			DataDefCArray *vca = dynamic_cast<DataDefCArray *>(ttq->query_type);
+			if (vca && vca->has_runtime_size() && !ttq->want_alignof) {
+				node_t total = translate_expr(vca->count_expr);
+				DataDef *elem = vca->element_type;
+				while (DataDefCArray *inner =
+					       dynamic_cast<DataDefCArray *>(elem)) {
+					node_t d = inner->has_runtime_size()
+						   ? translate_expr(inner->count_expr)
+						   : integer((int64_t)inner->count);
+					total = node2(N_MUL, total, d, tb);
+					elem = inner->element_type;
+				}
+				node_t elem_szof = node1(N_SIZEOF,
+					node2(N_TYPE, type_list(elem),
+					      node2(N_DECL, ignore(), list())), tb);
+				return node2(N_MUL, total, elem_szof, tb);
+			}
 			node_t tl = type_list(ttq->query_type);
 			node_t type_decl = node2(N_DECL, ignore(), list());
 			node_t type_node = node2(N_TYPE, tl, type_decl);
@@ -6651,6 +6674,32 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 
 	node_t decl = node2(N_DECL, func_id, decl_list);
 	node_t body = translate_block((TokenCpnd *)tf);
+
+	// C99 VLA-parameter bound side effects: a parameter array bound such as
+	// `int a[i++]` must have its bound expression evaluated on function entry
+	// (C11 6.9.1p10) — the `i++` actually runs. The parser recorded each such
+	// expr in Variable::param_vla_side_effect_expr; emit them at the top of the
+	// body in parameter order, before any user statement.
+	{
+		// The param Variables (carrying param_vla_side_effect_expr) live in
+		// tf->method->parameters (the parser pushes them there).
+		std::vector<node_t> vla_side_fx;
+		if (tf->method) {
+			for (Variable *pv : tf->method->parameters) {
+				if (pv && pv->param_vla_side_effect_expr)
+					vla_side_fx.push_back(
+						node2(N_EXPR, list(),
+						      translate_expr(pv->param_vla_side_effect_expr),
+						      tf));
+			}
+		}
+		if (!vla_side_fx.empty()) {
+			node_t outer = list();
+			for (node_t s : vla_side_fx) append(outer, s);
+			append(outer, body);
+			body = node2(N_BLOCK, list(), outer, tf);
+		}
+	}
 
 	// Capture lowering (post-body): the body translation recorded which
 	// enclosing variables this nested fn/[&]-lambda actually uses
