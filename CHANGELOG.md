@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added — VLAs complete: multidim, runtime `sizeof`, param-bound side effects (2026-06-02, madc-only)
+
+VLA support is now complete — **all 6 VLA integration tests pass**. **gcc.c-torture 1559 → 1564
+(92.8%)** across the VLA work, +5 integration, zero regressions, SMAUG boots.
+
+- **Param-bound side effects** (`int a[i++]`): the bound expression is evaluated on function entry
+  (C11 6.9.1p10). Recovers `testparamvlaruntimeexpr`, torture `pr77767`.
+- **Runtime `sizeof(vla)`** (`typedef int c[i+2]; sizeof(c)`): computed as
+  `(dim0*…*dimk)*sizeof(element)` (C11 6.5.3.4p2) rather than a constant. Recovers
+  `testtypedefvlasizeof`, torture `970217-1`, `20040411-1`.
+- **Multidim** (`int M1[m][n]`): the flat malloc'd pointer's nested subscript chain is linearized
+  to a single row-major index `M1[i*n + j]` (c2mir has no VLA types). Recovers `testmultidimvla`.
+
+VLA is therefore confirmed **not** a c2mir/MIR floor gap — it is entirely a madc front-end lowering.
+
 ### Added — function-local variable-length arrays (VLAs) (2026-06-02, madc-only)
 
 **gcc.c-torture 1559 → 1561 (92.6%)**, +1 integration (`testvla`), zero regressions, SMAUG boots.

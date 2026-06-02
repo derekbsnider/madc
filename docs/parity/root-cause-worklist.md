@@ -308,3 +308,15 @@ Everything else is FLOOR/feature-level (likely fork work): SIMD
 vector_size (~35, dominant), inline asm, aligned>16, wchar/L"...", VLA,
 __builtin_setjmp/longjmp+alloca, scalar_storage_order, float->int saturate,
 reduced-precision bitfield arithmetic (bitfld-3/5).
+
+## 2026-06-02 VLA COMPLETE 100% (madc-only) — torture 1559->1564, integration 451->455
+
+VLA was MIS-CLASSIFIED as a c2mir/MIR floor gap; it is entirely a madc front-end lowering.
+All 6 VLA integration tests pass. Pieces (cir_builder + va_helpers):
+- 1D function-local: `T a[n]` -> `a=(T*)malloc(n*sizeof(T))` + cleanup-attr __madc_vla_free
+  (malloc+free at scope exit, NOT __builtin_alloca which c2mir never reclaims -> the goto-loop
+  torture 20040811-1 would stack-overflow; c2mir has MIR BSTART/BEND but never emits them).
+- param-bound side effects `int a[i++]`: emit Variable::param_vla_side_effect_expr at body entry.
+- runtime sizeof(vla): (d0*..*dk)*sizeof(elem) from the DataDefCArray chain.
+- multidim `int M[m][n]`: malloc whole block + linearize nested TokenSubscriptExpr M[i][j]->M[i*n+j].
+Recovered torture: 920929-1, pr43220, 20040411-1, 970217-1, pr77767. gap-to-asmjit 81.
