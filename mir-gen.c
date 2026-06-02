@@ -6665,6 +6665,17 @@ static void jump_opt (gen_ctx_t gen_ctx) {
     for (i = start_nop; i < bound_nop; i++)
       bitmap_set_bit_p (temp_bitmap, bb_insn->insn->ops[i].u.label->ops[0].u.u);
   }
+  /* Also protect labels referenced only by lref data (`&&label` address-of-label
+     / computed goto): such a label has no branch edge, so without this it could
+     be deleted as an "empty bb with the only removable label" and its lref would
+     point at the wrong code.  Matters for computed goto (madc emits N_LABEL_ADDR).
+     ADOPTED-FROM: github.com/theMackabu/mir @ dbfc84fe0
+     ("backport community fixes for codegen correctness"). */
+  for (MIR_lref_data_t lref = curr_func_item->u.func->first_lref; lref != NULL;
+       lref = lref->next) {
+    bitmap_set_bit_p (temp_bitmap, lref->label->ops[0].u.u);
+    if (lref->label2 != NULL) bitmap_set_bit_p (temp_bitmap, lref->label2->ops[0].u.u);
+  }
   for (bb = DLIST_EL (bb_t, curr_cfg->bbs, 2); bb != NULL; bb = next_bb) {
     edge_t e, out_e;
     bb_insn_t label_bb_insn, last_label_bb_insn, bb_insn = DLIST_TAIL (bb_insn_t, bb->bb_insns);
@@ -7951,7 +7962,12 @@ struct rewrite_data {
   bitmap_t live, regs_to_save;
 };
 
-#define MAX_INSN_RELOAD_MEM_OPS 2
+/* A spilled var can occur up to 4 times in one insn (e.g. `r = r OP r` plus a
+   base/index reuse); the per-insn op_nums[] must hold them all or it overflows
+   (gen_assert is compiled out in release).  Was 2.
+   ADOPTED-FROM: github.com/theMackabu/mir @ dbfc84fe0
+   ("backport community fixes for codegen correctness"). */
+#define MAX_INSN_RELOAD_MEM_OPS 4
 static int try_spilled_reg_mem (gen_ctx_t gen_ctx, MIR_insn_t insn, int nop, MIR_reg_t loc,
                                 MIR_reg_t base_reg) {
   MIR_context_t ctx = gen_ctx->ctx;
@@ -9442,6 +9458,31 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
   }
   consider_all_live_vars (gen_ctx);
   calculate_func_cfg_live_info (gen_ctx, TRUE);
+  /* Rebuild addr_regs with current variable numbers.  transform_addrs computes
+     addr_regs (the address-taken vars that must be stack-homed), but the
+     subsequent build_ssa / ssa_combine / undo_build_ssa passes renumber vars,
+     so addr_regs is stale by the time reg_alloc consumes it -> an address-taken
+     local can be kept in a register and `&local` is wrong.  Recompute from the
+     surviving addr insns (the non-eliminable set, by construction) using the
+     current var numbers.  Only fires at optimize_level >= 2 (where the
+     renumbering passes run); madc ships O1 so this is foundation-correctness for
+     future O2/external-tree codegen, not a current-gate fix.
+     ADOPTED-FROM: github.com/theMackabu/mir @ dbfc84fe0 AND
+     github.com/vladich/mir-patched @ 717efbd19 (both carry it independently).
+     MUST be optimize_level >= 2: only there do transform_addrs + the renumbering
+     SSA passes run.  At O1 the addr insn operands are still in MIR_OP_REG mode
+     (not MIR_OP_VAR), so re-scanning would clear addr_regs and add nothing ->
+     an address-taken local (e.g. madc's __retbuf multi-return buffer) would not
+     be stack-homed -> garbage `&local`.  (Those forks default to O2 and never
+     hit the O1 path; madc ships O1.) */
+  if (optimize_level >= 2 && addr_insn_p) {
+    bitmap_clear (addr_regs);
+    for (bb_t bb = DLIST_HEAD (bb_t, curr_cfg->bbs); bb != NULL; bb = DLIST_NEXT (bb_t, bb))
+      for (bb_insn_t bi = DLIST_HEAD (bb_insn_t, bb->bb_insns); bi != NULL;
+           bi = DLIST_NEXT (bb_insn_t, bi))
+        if (MIR_addr_code_p (bi->insn->code) && bi->insn->ops[1].mode == MIR_OP_VAR)
+          bitmap_set_bit_p (addr_regs, bi->insn->ops[1].u.var);
+  }
   print_live_info (gen_ctx, "Live info before RA", optimize_level > 0, TRUE);
   reg_alloc (gen_ctx);
   DEBUG (2, {

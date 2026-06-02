@@ -818,9 +818,14 @@ static void remove_item (MIR_context_t ctx, MIR_item_t item) {
   case MIR_func_item:
     remove_func_insns (ctx, item, &item->u.func->insns);
     remove_func_insns (ctx, item, &item->u.func->original_insns);
-    VARR_DESTROY (MIR_var_t, item->u.func->vars);
+    /* Guard NULL vars/internal: a func removed before being fully built (e.g.
+       teardown of a partially-created module) has NULL vars/internal -> the
+       unguarded VARR_DESTROY / func_regs_finish deref NULL.
+       ADOPTED-FROM: github.com/theMackabu/mir @ fab2727c0
+       ("fix: guard against NULL vars/internal during module teardown"). */
+    if (item->u.func->vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->vars);
     if (item->u.func->global_vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->global_vars);
-    func_regs_finish (ctx, item->u.func);
+    if (item->u.func->internal != NULL) func_regs_finish (ctx, item->u.func);
     MIR_free (ctx->alloc, item->u.func);
     break;
   case MIR_proto_item:
@@ -1591,12 +1596,17 @@ void MIR_finish_func (MIR_context_t ctx) {
       MIR_get_error_func (ctx) (MIR_vararg_func_error, "func %s: mix of RET and JRET insns",
                                 func_name);
     } else if (code == MIR_RET && actual_nops != curr_func->nres) {
+      /* Save nres before nulling curr_func: the error message below read
+         curr_func->nres AFTER curr_func was set NULL -> use-after-NULL deref.
+         ADOPTED-FROM: github.com/theMackabu/mir @ 23fd2678f
+         ("backport MIR_NO_GEN_DEBUG guards and vararg RET null-deref fix"). */
+      uint32_t cf_nres = curr_func->nres;
       curr_func = NULL;
       MIR_get_error_func (
         ctx) (MIR_vararg_func_error,
               "func %s: in instruction '%s': number of operands in return does not "
               "correspond number of function returns. Expected %d, got %d",
-              func_name, insn_descs[code].name, curr_func->nres, actual_nops);
+              func_name, insn_descs[code].name, cf_nres, actual_nops);
     } else if (MIR_call_code_p (code)) {
       expr_p = FALSE;
     } else if (code == MIR_BO || code == MIR_UBO || code == MIR_BNO || code == MIR_UBNO) {
