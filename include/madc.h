@@ -70,6 +70,13 @@ public:
     std::vector<bool> ref_params;
     // const parameter tracking: const_params[i] == true when parameter i is const T&
     std::vector<bool> const_params;
+    // Canonical C++ spelling of each parameter, captured from the SOURCE TOKENS
+    // at parse time (where top-level pointee-const / `&` / template spelling are
+    // all visible — the DataDef alone loses pointee-const, e.g. it stores
+    // "char*" for a `const char*` param). Index-aligned with `parameters`; the
+    // hidden `__this` slot (param 0 of a method) holds an empty string. Fed to
+    // the Itanium mangler so a std:: method binds to the real libstdc++ symbol.
+    std::vector<std::string> param_cpp_spellings;
     // reference return: true when the function returns T& (e.g. T& operator[]).
     // `returns` stays the base type T; the value is returned BY ADDRESS (a T*),
     // so the call site is an lvalue (assign stores through it; read derefs it),
@@ -101,7 +108,7 @@ public:
     // returns, explicit_alignment, has_captures, returns_ref, emit_symbol,
     // class_emit_name, ctor_trailing_self (declared above), then is_varargs..
     // has_large_struct_retbuf (declared below).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), emit_symbol(), class_emit_name(), ctor_trailing_self(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), emit_symbol(), class_emit_name(), ctor_trailing_self(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -114,6 +121,11 @@ public:
     // (libstdc++) so TokenCLASS::parse binds emit_symbol to the mangled symbol.
     // Stays false for any madc-compiled (bodied) function.
     bool declaration_only;
+    // True when the method was declared with a trailing `const` (e.g.
+    // `bool good() const;`). The const-qualified `this` mangles with the Itanium
+    // 'K' (e.g. _ZNKSt9basic_ios...4goodEv). Set by TokenCLASS::parse / parseFunction
+    // when a trailing const follows the parameter list. Default false.
+    bool is_const_method;
     bool is_multi_return() const { return return_types.size() > 1; }
 };
 

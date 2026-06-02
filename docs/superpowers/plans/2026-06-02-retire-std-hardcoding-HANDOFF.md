@@ -147,6 +147,21 @@ string&`, `std::_Ios_Openmode`, etc. — it reads the declaration, exactly like 
 NOTE only `open` among the stream methods has params; ctor/dtor/close/is_open/good/eof are
 nullary, so the hook can be proven on those first. is_const = the method had a trailing `const`.
 
+⚠️ STREAM LAYOUT FACTS (g++ probe tmp/streamprobe.cpp, this libstdc++ — ground truth for inc 4/5):
+sizeof: ofstream 512, ifstream 520, fstream 528, ostream 272, istream 280, basic_ios<char> 264,
+ios_base 216, filebuf 240. Base-subobject offsets WITHIN the derived object:
+  ofstream→ostream = 0 ; ofstream→basic_ios = ofstream→ios_base = **248**
+  ifstream→istream = 0 ; ifstream→basic_ios = **256**
+`basic_ios` is a VIRTUAL BASE of basic_ostream/basic_istream → its subobject sits at the END
+(248/256), NOT at offset 0, and the offset DIFFERS per stream class. madc has NO virtual-base
+support today (single base assumed @0, datadef.h:717). So inc 5 = add a per-class base-subobject
+byte offset (DERIVED from the header-declared layout, doctest-checked) + offset-aware `this`
+adjust for an inherited method whose owning base is at non-zero offset. <</>>/open/close/is_open
+(ostream/istream @0 or most-derived) need NO adjust; only good()/eof() (basic_ios methods) do.
+NEVER hardcode 248/256 — derive from layout; STOP+escalate if not cleanly derivable. The header
+(inc 4) must declare a layout that makes madc compute these same sizes/offsets (ofstream =
+ostream 272 + filebuf 240 = 512; basic_ios as a virtual base).
+
 ## 2. LIVE STATE (verify on resume)
 
 - Branch **`feature/retire-std-hardcoding-claude`**, **pushed** (== origin), **8 commits ahead of
