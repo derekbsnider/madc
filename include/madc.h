@@ -989,6 +989,7 @@ public:
 	std::vector<std::string> typeparams;   // e.g. ["T"]
 	std::string class_name;                // e.g. "Box"
 	std::vector<TokenBase *> body;         // cloned tokens: `class Name { ... }`
+	std::string defining_namespace;        // current_namespace at capture (e.g. "std")
     };
     std::map<std::string, TemplateDef> template_map;       // name -> definition
     std::set<std::string> template_instantiated;           // mangled names done
@@ -998,6 +999,11 @@ public:
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
     namespace_datatype_map_t namespace_datatype_map; // namespace-owned type names
     std::string current_namespace;	// active namespace for resolution (set by ns:: prefix)
+    // Canonical C++ spelling of the std:: template-id being instantiated right now
+    // (e.g. "std::basic_ofstream<char,std::char_traits<char>>"), stashed by
+    // instantiate_template_use around the class re-parse so TokenCLASS::parse can
+    // record it on the new DataDefCLASS (used to mangle bodyless std:: methods).
+    std::string instantiating_canonical_spelling;
     std::vector<std::string> namespace_preference; // ordered namespace lookup; "c" means normal lexical/global resolution
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
     // function-like macro definitions: #define NAME(params) body

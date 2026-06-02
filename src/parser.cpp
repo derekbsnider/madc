@@ -1640,11 +1640,30 @@ static TokenDataType *instantiate_template_use(Program &pgm, const std::string &
     std::string saved_func = pgm.cur_func_name;
     pgm.cur_func_name.clear();
 
+    // Canonical C++ spelling for Itanium mangling, built from the defining
+    // namespace + template name + each arg's canonical spelling (the args were
+    // instantiated first during the loop above, so they already carry theirs).
+    // Stashed around the re-parse; TokenCLASS::parse records it on the DataDefCLASS
+    // so a bodyless std:: method binds to the real libstdc++ symbol — no literal.
+    std::string canon = td.defining_namespace.empty() ? std::string()
+		      : (td.defining_namespace + "::");
+    canon += tname + "<";
+    for ( size_t i = 0; i < args.size(); ++i )
+    {
+	if ( i ) canon += ",";
+	const std::string &cs = args[i]->definition.canonical_cpp_spelling;
+	canon += cs.empty() ? args[i]->definition.name : cs;
+    }
+    canon += ">";
+    std::string saved_canon = pgm.instantiating_canonical_spelling;
+    pgm.instantiating_canonical_spelling = canon;
+
     TokenBase *class_kw = pgm.nextToken();   // the injected `class` keyword
     pgm.parseKeyword((TokenKeyword *)class_kw); // TokenCLASS::parse → registers DataDefCLASS
 
     std::swap(pgm.compounds, saved_compounds);
     pgm.cur_func_name = saved_func;
+    pgm.instantiating_canonical_spelling = saved_canon;
 
     datatype_map_iter now = pgm.datatype_map.find(mangled);
     if ( now == pgm.datatype_map.end() )
@@ -11457,6 +11476,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	pgm.Throw(tag) << "Class '" << tag->str << "' already defined" << flush;
 
     DataDefCLASS *ddc = new DataDefCLASS(tag->str, 0, DataType::dtRESERVED);
+    // If we are instantiating a std:: template (e.g. basic_ofstream<char,...>),
+    // record its canonical C++ spelling so a bodyless method in this class can be
+    // mangled to the real libstdc++ symbol with no hardcoded literal.
+    if ( !pgm.instantiating_canonical_spelling.empty() )
+	ddc->canonical_cpp_spelling = pgm.instantiating_canonical_spelling;
     DBG(cout << "TokenCLASS::parse() defining class " << tag->str << endl);
 
     // Register the class type EARLY — before the member/method body loop — so a
@@ -13682,6 +13706,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     td.typeparams = typeparams;
     td.class_name = class_name;
     td.body = body;
+    td.defining_namespace = pgm.current_namespace;  // e.g. "std" — for canonical_cpp_spelling
     pgm.template_map[class_name] = td;
     DBG(std::cout << "TokenTEMPLATE::parse() captured template '" << class_name
 	<< "' (" << typeparams.size() << " param(s), " << body.size()

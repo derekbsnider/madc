@@ -96,6 +96,13 @@ protected:
 public:
     std::string	 name;
     size_t	 size;
+    // Canonical C++ type spelling for Itanium mangling, e.g.
+    // "std::basic_ofstream<char,std::char_traits<char>>". Empty = use `name`
+    // (or a builtin spelling). Set on a std:: template INSTANTIATION (see
+    // instantiate_template_use) so a bodyless std:: method binds to the real
+    // libstdc++ mangled symbol with NO hardcoded literal. (std::string default-
+    // constructs empty, so the assignment-style ctors below need no change.)
+    std::string	 canonical_cpp_spelling;
     DataDef() { size = 0; _type = 0; }
     DataDef(std::string n, size_t s, DataType d) { name = n; size = s; _type = (uint32_t)d; }
     virtual ~DataDef() {}
