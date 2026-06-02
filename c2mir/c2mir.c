@@ -14069,8 +14069,27 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     break;
   }
   case N_STMTEXPR: {
+    struct type *stmtexpr_type = ((struct expr *) r->attr)->type;
+
     gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
     res = top_gen_last_op;
+    /* A statement expression whose value is a struct/union yields the lvalue
+       of an in-block local, but that local's stack storage can be reused by a
+       sibling scope -- e.g. `({..A..}).x - ({..B..}).x`, where c2mir assigns
+       the A and B block-locals the same fp slot.  Because the member loads are
+       deferred to the enclosing operator, both would read whichever block ran
+       last (B), giving 0.  Copy the aggregate out into a fresh temporary so
+       each statement-expression value has independent storage, matching GCC. */
+    if (stmtexpr_type->mode == TM_STRUCT || stmtexpr_type->mode == TM_UNION) {
+      mir_size_t size = type_size (c2m_ctx, stmtexpr_type);
+      op_t addr = get_new_temp (c2m_ctx, MIR_T_I64);
+      op_t tmp;
+
+      emit2 (c2m_ctx, MIR_ALLOCA, addr.mir_op, MIR_new_int_op (ctx, size));
+      tmp = new_op (NULL, MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, addr.mir_op.u.reg, 0, 1));
+      block_move (c2m_ctx, tmp, res, size);
+      res = tmp;
+    }
     break;
   }
   case N_BLOCK:
