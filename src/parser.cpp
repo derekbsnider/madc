@@ -3365,8 +3365,19 @@ static bool bracket_dim_uses_runtime_value(Program &pgm,
 	if ( runtime_names && runtime_names->count(name) )
 	    return true;
 	Variable *v = pgm.findVariable(name);
-	if ( !v || v->is_constant() )
+	if ( !v )
 	    continue;
+	if ( v->is_constant() )
+	{
+	    // A const-qualified var folds to a constant dimension ONLY if its
+	    // value is known at compile time. A const with a runtime initializer
+	    // (e.g. `const int len = atoi(argv[1]);`) carries no folded value
+	    // (`var->data` is NULL) and is therefore still a VLA bound.
+	    int64_t cval;
+	    if ( read_constant_integer(v, cval) )
+		continue;
+	    return true;
+	}
 	return true;
     }
     return false;
