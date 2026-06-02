@@ -1,4 +1,4 @@
-# gcc.c-torture CIR failset as of develop (MIR fork 838b116), 1557/1685 pass. FAIL+TIMEOUT basenames; diff next run for regressions.
+# gcc.c-torture CIR failset as of develop (MIR fork 838b116), 1558/1685 pass. FAIL+TIMEOUT basenames; diff next run for regressions.
 20010325-1.c
 20010904-1.c
 20010904-2.c
@@ -73,7 +73,6 @@ pr71626-1.c
 pr71626-2.c
 pr77767.c
 pr82210.c
-pr85095.c
 pr85169.c
 pr85331.c
 pr88904.c

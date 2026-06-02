@@ -4061,7 +4061,8 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 // c2mir's NATIVE overflow builtins are not usable here: they reject any
 // destination narrower than int, which these GCC-torture tests exercise.
 static std::string overflow_helper_name(const std::string &generic,
-					 TokenBase *third_arg)
+					 TokenBase *third_arg,
+					 bool operands_all_unsigned)
 {
 	// generic is one of __madc_{add,sub,mul}_overflow[_p].
 	bool is_p = generic.size() > 2 && generic.compare(generic.size() - 2, 2, "_p") == 0;
@@ -4094,6 +4095,19 @@ static std::string overflow_helper_name(const std::string &generic,
 	// only for _p, where no _p_*8 helper exists).
 	if (is_p && bits == 8)
 		bits = 16;
+
+	// 64-bit op with BOTH operands unsigned: the operands reach the helper as
+	// `long long`, which sign-extends a large unsigned value (2^64-18 -> -18).
+	// The generic `_u64` helper signed-widens those -> wrong overflow flag and
+	// result (pr85095). The `_uu64` helper reinterprets the inputs as unsigned
+	// first. Key on the OPERANDS' signedness, NOT the destination: with a
+	// uint64 destination but SIGNED operands (`__builtin_mul_overflow(int,int,
+	// &u64)`), the signed widening is correct and `_uu64` would be wrong
+	// (pr91450-1). u8/u16/u32 unsigned operands fit positively in long long, so
+	// only the 64-bit width needs this. (No `_p_uu64`: the _p form takes a
+	// typed-zero, not the operands, so it isn't affected.)
+	if (operands_all_unsigned && bits == 64 && !is_p)
+		return generic + "_uu64";
 
 	char suffix[16];
 	snprintf(suffix, sizeof(suffix), "_%c%d", uns ? 'u' : 's', bits);
@@ -4978,8 +4992,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (tcf->var.name.compare(0, 7, "__madc_") == 0
 			    && tcf->var.name.find("_overflow") != std::string::npos
 			    && tcf->parameters.size() == 3) {
+				// Both operands unsigned? (selects the _uu64 helper
+				// for 64-bit unsigned overflow — see overflow_helper_name).
+				DataDef *o0 = tcf->parameters[0] ? tcf->parameters[0]->datadef() : NULL;
+				DataDef *o1 = tcf->parameters[1] ? tcf->parameters[1]->datadef() : NULL;
+				bool ops_unsigned = o0 && o1
+					&& o0->is_unsigned() && o1->is_unsigned();
 				std::string sel = overflow_helper_name(
-					tcf->var.name, tcf->parameters[2]);
+					tcf->var.name, tcf->parameters[2], ops_unsigned);
 				if (sel != tcf->var.name) {
 					referenced_funcs.insert(sel);
 					node_t args = list();
