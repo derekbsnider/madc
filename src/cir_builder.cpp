@@ -4987,6 +4987,20 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					return node2(N_CALL, id(sel.c_str(), tb), args, tb);
 				}
 			}
+			// __builtin_conj{,f,l}(z): complex conjugate. c2mir lowers `~z`
+			// (N_BITWISE_NOT on a complex operand) to (re, -im) and that is the
+			// builtin's entire meaning. Lower here (Tier-1 — madc owns the front
+			// end; lowering-vs-raising.md) rather than raising the fork: stock
+			// c2mir has no __builtin_conj* and would fall through to a nonexistent
+			// dlsym symbol ("can not load symbol __builtin_conjf"). The operand is
+			// a complex value by the builtin's contract, so c2mir conjugates it.
+			if ((tcf->var.name == "__builtin_conjf"
+			     || tcf->var.name == "__builtin_conj"
+			     || tcf->var.name == "__builtin_conjl")
+			    && tcf->parameters.size() == 1) {
+				return node1(N_BITWISE_NOT,
+					     translate_expr(tcf->parameters[0]), tb);
+			}
 			// __destroy(ptr): compiler intrinsic — destruct the pointed-to
 			// object element. Lowers to the ELEMENT TYPE's class destructor
 			// (mangled ~basic_string for std::string, Cls___dtor for a user
