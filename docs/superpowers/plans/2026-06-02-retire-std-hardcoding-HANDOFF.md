@@ -127,9 +127,26 @@ Stream mangler doctests already added + green (Task 1, commit 9582beb): test_man
 INCREMENTS: (1✅ 9ad1c35) FuncDef::declaration_only. (2✅ 6740f67) canonical_cpp_spelling on
 DataDef + TemplateDef::defining_namespace + computed in instantiate_template_use + stashed via
 Program::instantiating_canonical_spelling + copied onto ddc in TokenCLASS::parse.
-(3 next) PARAM SPELLINGS + the hook. (4) author headers. (5) basic_ios base-offset. (6) switch
-registration + DELETE Layer-3 builtins/callbacks/wrappers/tags + rewire &ddSTRING. (7) gate→0
-+ fulltest + SMAUG.
+(3✅ 8776a5e) PARAM SPELLINGS + THE HOOK — PROVEN. FuncDef::param_cpp_spellings (captured at
+parse time, index-aligned w/ parameters incl. hidden __this=''), FuncDef::is_const_method,
+file-scope helper bind_std_libstdcpp_symbol() (gated current_namespace=="std" + declaration_only
++ known ddc->canonical_cpp_spelling; calls itanium_mangle_{member,ctor,dtor,operator}_sub), wired
+into the dtor/ctor/method blocks of TokenCLASS::parse. VERIFIED tmp/hooktest.mad -v: a bodyless
+std::basic_ofstream<char,int> binds ctor/dtor/close/is_open to _ZNSt14basic_ofstreamIciE{C1Ev,
+D1Ev,5closeEv,7is_openEv} == independent mangler output (canonical spelling reconstructed thru
+the template machinery, ZERO literals); build clean; integration 457 (zero regr); SMAUG boots.
+(4) author headers. (5) basic_ios base-offset. (6) switch registration + DELETE Layer-3
+builtins/callbacks/wrappers/tags + rewire &ddSTRING. (7) gate→0 + fulltest + SMAUG.
+
+⚠️ TWO PARSER GAPS found during inc 3 (NOT shortcutted — prerequisites for inc 4's real headers):
+(G1) madc's template-arg loop (instantiate_template_use ~1557, resolve_declared_type_token) can't
+parse a NESTED std::-qualified template-id as a template ARGUMENT — `basic_ofstream<char,
+std::char_traits<char>>` errors "Expecting a type argument". Real stream/string args ARE nested
+templates (char_traits<char>, allocator<char>), so this must be fixed. (G2) TokenCLASS::parse's
+data-member loop can't parse an ARRAY member (`long _buf[64];` → "Expecting ';' after class
+member" at parser.cpp:11843; it added _buf as a scalar then choked on `[`). Needed to size the
+stream classes (ofstream=512B). TokenSTRUCT::parse handles arrays (~11128) — port that handling
+to TokenCLASS::parse's member loop. Both are ordinary parser features, not std::-specific.
 
 ⚠️ PARAM-SPELLING SUB-PROBLEM (found inc 3, RESOLVED by design — NO shortcut). For an
 `rtPointer` param like `const char*`, parseFunction pushes `const_params=false` and the pointer
