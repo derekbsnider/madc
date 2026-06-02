@@ -5,6 +5,14 @@ independent fixes/features. We surveyed four against madc's MIR fork (`/workspac
 branch `develop`, pin `MIR_COMMIT`). Decision (user, 2026-06-02): **adopt genuine bug
 fixes freely — upstream divergence is no longer a concern** (we are the maintained line).
 
+> **OUTCOME (fork `8864a73`, pin bumped from `4aa628b`): 5 proven bug fixes ADOPTED**
+> — `MAX_INSN_RELOAD_MEM_OPS` 2→4 (op_nums overflow), `addr_regs` rebuild after SSA
+> (O2-gated), `jump_opt` lref-label preservation, vararg RET use-after-NULL, NULL
+> teardown guards. Each carries an `ADOPTED-FROM: <fork> @ <sha>` comment in the
+> source. The GVN-`≥O3` gate was NOT adopted (a shim, not a fix). The O2-viability
+> experiment below is what established which are inert at our O1 gate vs genuine —
+> all 5 are O1-safe (full torture 1565, zero regressions); SMAUG boots.
+
 ## The two structural filters (why most fork content does NOT apply to madc)
 
 1. **madc bypasses c2mir's text parser AND preprocessor.** `cir_builder` builds the

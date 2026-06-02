@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Fixed — multi-return (`return a, b` / `x, y := f()`) reimplemented on the CIR backend (2026-06-02)
+
+Integration **455 → 456** (`testmultiret` recovered), full O1 gcc.c-torture **1565** with
+zero regressions, SMAUG boots. Go-style multi-return was an asmjit-era feature; its
+compile-side was removed with asmjit in `64f44b3` and **never reimplemented on CIR**, so it
+had been silently broken since the backend switch (`return q, r` → `return 0`; `q, r := f()`
+→ `q = f(); r` uninitialized). Ported the `__retbuf` ABI to `cir_builder`: a multi-return
+function gets a `void` C return + a hidden `long *__retbuf` first param (`func_def`/`func_proto`
+in lock-step), `return a, b` → `__retbuf[i] = …; return;`, and the call site `a, b := f(args)`
+allocates `long __mret[N]`, calls `f(__mret, args)`, then `a = __mret[0]; b = __mret[1]`.
+Integer multi-return (matching the parser's `int64` typing).
+
+### Adopted — 5 proven bug fixes from community MIR forks (2026-06-02, fork `8864a73`)
+
+Upstream MIR is frozen ~2 years; adopted genuine fixes from maintained community forks
+(each attributed inline as `ADOPTED-FROM: <fork> @ <sha>`): a spill-reload `op_nums[]`
+buffer overflow (`MAX_INSN_RELOAD_MEM_OPS` 2→4), `addr_regs`-stale-after-SSA (O2-gated),
+`jump_opt` deleting `lref`/computed-goto labels, a vararg-RET error-path use-after-NULL,
+and NULL teardown guards. O1-safe (torture 1565, zero regressions). `MIR_COMMIT` →
+`8864a73`. A 4-fork survey + an O2-viability experiment are recorded in
+`docs/parity/mir-fork-community-patches.md` (the GVN-`≥O3` shim was deliberately *not* adopted).
+
 ### Fixed — `const`-bound VLA: a `const` var with a runtime initializer is a VLA bound (2026-06-02, madc-only)
 
 **gcc.c-torture 1564 → 1565 (92.9%)**, recovers `20221006-1`, zero regressions, SMAUG boots.
