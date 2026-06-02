@@ -1,5 +1,39 @@
 # CIR-vs-asmjit parity recovery — root-cause worklist (2026-06-01)
 
+## 2026-06-02 FULL FAILING-SET TRIAGE (attribution: front-end vs fork). User directive: MIR/fork work LAST.
+
+Triaged all 106 current fails (develop @ 195c9b9). After the aggregate-init cluster, the
+**non-fork (front-end / Tier-1) vein is essentially dry** — remaining gap 96 is overwhelmingly
+fork/floor. Attribution evidence (so the next session doesn't re-triage):
+
+- **7 compile failures** = VLA-in-struct (`20040423-1`, `align-nest` — `int c[i+2]`/`int i[n]`,
+  the `TokenStructDef`-unhandled error sits ON TOP of a VLA member → floor), varargs+struct ABI
+  (`20041214-1`, `pr38151` — `__builtin_va_start`/`va_arg(struct)` arity, the "Too many
+  parameters" check), const-expr-in-VLA (`20221006-1`), VLA (`pr22061-3/4`, `N` undeclared). All
+  floor/fork.
+- **31 "runtime diagnostic"** = the test's own `abort()` on a wrong value (miscompile), NOT madc
+  throwing. Confirmed-fork samples: `bitfld-3/5` (reduced-precision bitfield ARITH, clang fails
+  too), `built-in-setjmp`/`frame-address` (fork builtins), `pr32244-1`/`pr34971` (40-bit
+  precision), `991014-1` (align>16), `20230630-2/-4` (SSO **with bitfields** — reversed bit
+  allocation, hard, 2 tests), `strlen-4` (ptr-to-array arith SIGSEGV).
+- **float→int saturate** (`(int)1e20` etc.): madc float→int64 already matches x86 `cvttsd2si`
+  indefinite, but float→int32 narrows through 64-bit and loses it → **MIR/c2mir CAST codegen
+  (fork)**, and it's UB territory. NOT front-end.
+- **struct-valued statement-expression** (`20020320-1`, PR c/5354: `({struct s; ..; s;}).x - (..).x`):
+  **CONFIRMED a c2mir bug** — stock `c2m -ei` AND `-eg` both return 0 (gcc=1) on the reduced
+  `tmp/r_sx3.c`. madc emits a faithful cir_node tree (verified `--dump-cir`); the miscompile is
+  downstream in c2mir/MIR. → fork.
+- **Only arguably-pure-front-end scrap left:** `pr77767` (PR c/77767) — side effects in parameter
+  array-bound declarators (`int b[a++]`): the size expr must be evaluated for side effects. ~1
+  test, obscure, low value. `scalar_storage_order` non-bitfield path is unlowered too but its 2
+  failing torture tests are the SSO+bitfield variant (hard).
+
+CONCLUSION: with MIR/fork deferred, there is **no meaty non-fork cluster remaining**. Next real
+parity progress requires fork work (in the user's preferred order, smallest first: the c2mir
+struct-stmt-expr bug and float→int CAST width are the most self-contained; SIMD raise-MIR is the
+big one). The "last" in "save MIR for last" is now.
+
+
 Measured with `scripts/run_gcc_testsuite.py --root /workspace/gcc/gcc/testsuite`
 (1685 gcc.c-torture/execute tests, same runner for both backends):
 
