@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed — a `struct` with an object member is promoted to a class (`teststruct2`) (2026-06-02)
+
+A `std::string` **member of a `struct`** was never constructed, so `bob.name = "…"`
+ran `basic_string::operator=` on an unconstructed string → crash. In C++ a `struct`
+*is* a class (same record; they differ only in default access), and the **contents**
+decide whether it needs object semantics — not the keyword. So a `struct` now stays a
+plain `DataDefSTRUCT` and is **promoted to a `DataDefCLASS`** (which is-a `DataDefSTRUCT`)
+at the closing `}` when it contains an **object member by value** (`is_object()` — a
+`std::string` is an object). It then flows through the existing class machinery (member
+ctors at declaration, RAII dtor at scope exit) exactly like a user class with such a
+member. A struct with no object members is unchanged. Because only object-having structs
+promote, trivial C structs (the whole gcc.c-torture suite + SMAUG) are untouched.
+Integration **456 → 457** (`teststruct2`), full gcc.c-torture **1565** with **zero
+regressions**, SMAUG boots clean. ~28 lines in the parser; no `cir_builder`/fork change.
+
 ### Fixed — multi-return (`return a, b` / `x, y := f()`) reimplemented on the CIR backend (2026-06-02)
 
 Integration **455 → 456** (`testmultiret` recovered), full O1 gcc.c-torture **1565** with
