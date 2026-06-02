@@ -14,9 +14,20 @@ GCC-ism not a bug). `bitfld-5` = inline-asm floor.
 c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
 (tractable, upstreamable); MIR = the IR machine (libmir gen/interp/regalloc).
 
-**FIXED so far (2 of the 32):**
+**FIXED so far (2 of the 32 flipped; a 3rd c2mir fix pushed, awaiting its madc half):**
 - statement-expression struct/union value copy-out (`20020320-1`) — fork `caa6ff9`.
 - statement-expression ending in post-`++`/`--` value context (`950906-1`) — fork `74adb6a`.
+- **`zerolen-1` — TWO-PART, only the c2mir half done.** c2mir skipped zero-size members
+  in `set_type_layout` (`continue`), leaving a GNU zero-length array (`char a[0];`) at
+  offset 0 instead of its running offset → aliased the first member. Fixed in fork
+  **`772efeb`** (pushed; **MIR pin NOT yet bumped** — stays `74adb6a`). Stock `c2m` now
+  passes `zerolen-1` + `offsetof` probe; normal structs unaffected; C99 FAM `[]` unchanged.
+  **REMAINING (madc side):** madc's parser DROPS the `[0]` — it emits `name` as a scalar
+  `char` (no `ARR` node; verified via `--dump-cir`), so madc never feeds c2mir a zero-length
+  array and `zerolen-1` still fails through madc. Need a madc struct-member-definition parser
+  fix to emit `[0]` as a zero-length array member; THEN bump `MIR_COMMIT`→`772efeb` and the
+  test flips. The struct-member-DEFINITION array-dim parse (not the 3043 offset-folding path)
+  is where `[0]` is dropped — locate + fix there.
 
 **Remaining 30 c2mir/MIR bugs — rough clusters (next targets, c2mir-front-end first):**
 - _Complex arithmetic/ABI: `20020411-1` (`__builtin_conjf`), `20050121-1` (`_Complex long double`),
