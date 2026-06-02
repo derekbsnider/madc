@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed — `__builtin_conjf` + `_Complex` width conversion (`20020411-1`, two-part) (2026-06-02, MIR fork `838b116`)
+
+Fifth c2mir-grind fix (two-part). **gcc.c-torture 1556 → 1557 (92.4%)**, zero regressions,
+SMAUG boots, fulltest 451.
+
+- **madc (`cir_builder`):** lower `__builtin_conj{,f,l}(z)` → `~z` (a `~` on a complex operand is
+  the conjugate in c2mir). Tier-1 (madc owns the front end) — stock c2mir has no `__builtin_conj*`
+  and fell through to a nonexistent dlsym symbol.
+- **c2mir (fork `838b116`):** convert `_Complex` values component-wise on a width change. A
+  `_Complex float` ↔ `_Complex double` conversion was mishandled at three sites — `N_CAST`
+  (scalar-cast of the aggregate), `N_ASSIGN` (block-move of LHS-size bytes from the narrower
+  source), and the local initializer (same block-move flaw) — all producing garbage. Added
+  `complex_to_complex()` (load each component at source width, cast to the destination component
+  type, store into a fresh temp), called from all three. `MIR_COMMIT` `8f97e4f` → `838b116`.
+
 ### Fixed — static-local initializers (`pr53084`, two-part) (2026-06-02, MIR fork `8f97e4f`)
 
 Fourth c2mir-bug-grind fix (two-part). **gcc.c-torture 1552 → 1556 (92.3%)** — `+4`

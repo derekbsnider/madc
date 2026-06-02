@@ -14,7 +14,9 @@ GCC-ism not a bug). `bitfld-5` = inline-asm floor.
 c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
 (tractable, upstreamable); MIR = the IR machine (libmir gen/interp/regalloc).
 
-**FIXED so far (4 of the 32 flipped):**
+**FIXED so far (5 of the 32 flipped):**
+- **`20020411-1` — `__builtin_conjf` + `_Complex` width conversion — DONE (two-part, fork `838b116` + madc).**
+  See the _Complex-arith cluster note below for the full breakdown.
 - statement-expression struct/union value copy-out (`20020320-1`) — fork `caa6ff9`.
 - statement-expression ending in post-`++`/`--` value context (`950906-1`) — fork `74adb6a`.
 - **`pr53084` — static-local string-literal-address init — DONE (two-part, fork `8f97e4f` + madc parser).**
@@ -42,9 +44,14 @@ c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
 - _Complex arithmetic/ABI: `20020411-1` (`__builtin_conjf`), `20050121-1` (`_Complex long double`),
   `complex-6` (SIGSEGV), `pr38151` (`_Complex`+`va_arg`). Fork owns `_Complex`; these are corners.
   **ATTRIBUTED 2026-06-02 (all gcc✓ clang✓ c2m✗ — genuine c2mir/MIR, each distinct, all need fork
-  surgery):** `20020411-1` → `can not load symbol __builtin_conjf` (c2mir doesn't know
-  `__builtin_conjf` at all — no lowering, falls through to a nonexistent dlsym symbol; fix =
-  lower in c2mir to negate-imaginary, OR register the builtin). `20050121-1` → `lvalue required as
+  surgery):** `20020411-1` — **DONE (two-part, fork `838b116` + madc).** It needed BOTH: (a)
+  **madc** lowers `__builtin_conj{,f,l}(z)` → `~z` (N_BITWISE_NOT = conjugate in c2mir; Tier-1,
+  cir_builder.cpp); (b) **c2mir (`838b116`)** the real bug — `_Complex float`↔`_Complex double`
+  conversion was mishandled at THREE sites (N_CAST scalar-cast-of-aggregate, N_ASSIGN block-move of
+  LHS-size from narrower source, local-init same) → garbage; added `complex_to_complex()` (load each
+  component at source width, cast to dest component type, store into a fresh temp) called from all
+  three. Stock c2m miscompiled all three forms (1 -1 now). `MIR_COMMIT` `8f97e4f`→`838b116`.
+  `20050121-1` → `lvalue required as
   left operand of assignment` in the `_Complex long double` instantiation of its `T(type,name)`
   macro (front-end lvalue/codegen for long-double-complex). `complex-6` → c2m itself **SIGSEGVs**
   (rc 139) during compile/interp (a c2mir/MIR crash, hardest). `pr38151` → emits `warning -- empty
