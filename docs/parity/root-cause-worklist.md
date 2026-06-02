@@ -14,20 +14,16 @@ GCC-ism not a bug). `bitfld-5` = inline-asm floor.
 c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
 (tractable, upstreamable); MIR = the IR machine (libmir gen/interp/regalloc).
 
-**FIXED so far (2 of the 32 flipped; a 3rd c2mir fix pushed, awaiting its madc half):**
+**FIXED so far (3 of the 32 flipped):**
 - statement-expression struct/union value copy-out (`20020320-1`) — fork `caa6ff9`.
 - statement-expression ending in post-`++`/`--` value context (`950906-1`) — fork `74adb6a`.
-- **`zerolen-1` — TWO-PART, only the c2mir half done.** c2mir skipped zero-size members
-  in `set_type_layout` (`continue`), leaving a GNU zero-length array (`char a[0];`) at
-  offset 0 instead of its running offset → aliased the first member. Fixed in fork
-  **`772efeb`** (pushed; **MIR pin NOT yet bumped** — stays `74adb6a`). Stock `c2m` now
-  passes `zerolen-1` + `offsetof` probe; normal structs unaffected; C99 FAM `[]` unchanged.
-  **REMAINING (madc side):** madc's parser DROPS the `[0]` — it emits `name` as a scalar
-  `char` (no `ARR` node; verified via `--dump-cir`), so madc never feeds c2mir a zero-length
-  array and `zerolen-1` still fails through madc. Need a madc struct-member-definition parser
-  fix to emit `[0]` as a zero-length array member; THEN bump `MIR_COMMIT`→`772efeb` and the
-  test flips. The struct-member-DEFINITION array-dim parse (not the 3043 offset-folding path)
-  is where `[0]` is dropped — locate + fix there.
+- **`zerolen-1` — zero-length array member `T x[0]` — DONE (two-part, fork `772efeb` + madc parser).**
+  (a) madc parser: the nested/anonymous-struct member path didn't record per-dim shape and
+  dropped a trailing `[0]`/`[]` member to a SCALAR (`char name[0]`→`char name`); now records
+  `inner_dims` + passes to `addMember` like the top-level path. (b) c2mir (`772efeb`):
+  `set_type_layout` skipped zero-size members (`continue`), leaving a GNU zero-length array at
+  offset 0; now gets the current aligned offset without growing the type. C99 FAM `[]`
+  unchanged. `MIR_COMMIT` bumped `74adb6a`→`772efeb`.
 
 **Remaining 30 c2mir/MIR bugs — rough clusters (next targets, c2mir-front-end first):**
 - _Complex arithmetic/ABI: `20020411-1` (`__builtin_conjf`), `20050121-1` (`_Complex long double`),
