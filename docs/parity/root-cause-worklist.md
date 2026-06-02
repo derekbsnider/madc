@@ -320,3 +320,45 @@ All 6 VLA integration tests pass. Pieces (cir_builder + va_helpers):
 - runtime sizeof(vla): (d0*..*dk)*sizeof(elem) from the DataDefCArray chain.
 - multidim `int M[m][n]`: malloc whole block + linearize nested TokenSubscriptExpr M[i][j]->M[i*n+j].
 Recovered torture: 920929-1, pr43220, 20040411-1, 970217-1, pr77767. gap-to-asmjit 81.
+
+## 2026-06-02 OTHER-38 TRIAGE (recon for post-compaction) — the failset's uncategorized bucket
+
+Failset = 91 (CIR 1564/1685, gap-to-asmjit 81). After bucketing by source markers, 38 were
+"OTHER". Attributed by MADC BEHAVIOR (gcc column was harness-broken: bare `gcc -O0` fails to link
+abort/link_error → false CF; use `scripts/run_gcc_testsuite.py` for real gcc/asmjit results, and the
+sweep method `/workspace/mir/c2m FILE -ei` for c2mir attribution). Categories:
+
+### A. VLA FOLLOW-ONS (~8) — "VLA 100%" was only the 6 named integration tests; these torture VLA forms still FAIL. Direct extension of the 2026-06-02 VLA work (cir_builder var_decl VLA branch + the TokenSubscriptExpr linearizer + sizeof). DO THESE FIRST.
+- `20040423-1`, `align-nest` — **VLA member inside a struct** (`struct { int c[i+2]; }`). madc: "unhandled
+  expression: TokenStructDef". The struct-def path doesn't handle a runtime-sized member. Likely needs
+  the struct member lowered like a VLA (pointer + runtime offset) OR the struct itself VLA-sized.
+- `20221006-1` — VLA bound is a `const int len = atoi(...)` (runtime const). madc: "Expecting integer
+  constant expr" — bracket_dim_needs_runtime_value treats a `const` var as compile-time-constant, so it
+  is NOT detected as a VLA. Fix: a const-qualified var with a non-constant initializer is still runtime.
+- `pr22061-1` (SIGABRT), `pr22061-3`, `pr22061-4` — VLA bound is identifier `N`; madc "use of undeclared
+  identifier 'N'" (3/4) — the bound references something not in scope at the right time (param/global
+  ordering), and pr22061-1 miscompiles at runtime.
+- `vla-dealloc-1` — VLA reached by a backward `goto` (dealloc variant of the fixed 20040811-1); madc:
+  "undefined label lab" — a label/goto-scope issue distinct from the cleanup-free (which worked there).
+- `pr82210`, `pr71626-2` — "subscripted value is neither array nor pointer": a multidim-VLA-via-POINTER
+  form the TokenSubscriptExpr linearizer doesn't catch (root isn't a plain DataDefPTR->CArray var, or
+  the chain shape differs). Re-inspect the parse shape like the M1[i][j] probe.
+
+### B. GENUINE VALUE-MISCOMPILES (~12) — the real "bugs before features". Each needs reduce + gcc+clang+stock-c2m attribution (the 32-sweep method) to confirm genuine-c2mir-bug vs UB/gcc-specific before fixing.
+- SIGABRT (test's own abort on wrong value): `20031003-1` (float->int saturation, likely MIR CAST
+  width — was noted as MIR/UB earlier), `20041218-2`, `991014-1` (also align>16 — may be floor),
+  `pr32244-1` (40-bit precision noted earlier), `pr34099-2`, `pr34971`, `pr45034`.
+- silent value-mismatch (no diagnostic): `20070919-1`, `pr41935`, `pr46309`, `pr47237`, `pr117432`.
+
+### C. SCOPED FEATURES (~6) — defer (already scoped above): `960416-1` cast-to-union, `20041214-1`
+varargs+struct ABI ("Too many parameters"), `20050121-1`+`complex-6` integer-complex (~132-site
+feature), `20021127-1` llabs builtin-recognition, `va-arg-pack-1` __builtin_va_arg_pack.
+
+### D. GENUINE FLOOR (~5, MIR-machine, last): `20010904-1/2` + `991014-1` aligned>16 (MIR allocator
+16-byte cap), `20020227-1` "undeclared reg ... of func" (unaligned-member codegen, MIR), `bitfld-3`
+(parse: "Expecting ; after anonymous struct" — maybe fixable) / `bitfld-5` (reduced-precision bitfield
+arith, clang-also-fails = gcc-specific). Also parse-rejects to look at: `20020412-1` "function return
+type is incomplete", `20050607-1` "Expecting identifier in function", `pr17078-1` "undefined label".
+
+### RECOMMENDED ORDER (bugs before features): A (VLA follow-ons, clear wins) -> B (attribute+fix the
+genuine value-miscompiles) -> C (features) -> D (MIR-floor, last, with SIMD).
