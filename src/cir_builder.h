@@ -89,12 +89,29 @@ class CirBuilder {
 	// (gnu89/c11 warn but accept it; the returned value is indeterminate, so a
 	// zero of the right type is a conformant lowering c2mir will compile).
 	DataDef *m_cur_func_scalar_ret = NULL;
+	// True while translating the body of a multi-return function (`return a, b;`,
+	// Go-style). Such a function uses the multi-return __retbuf ABI: C return type
+	// `void`, a hidden `long *__retbuf` first parameter, and `return a, b;` becomes
+	// "__retbuf[0]=a; __retbuf[1]=b; return;". The call site `x, y := f()` allocates
+	// a `long __mret[N]` buffer, passes it as __retbuf, then reads x=__mret[0] etc.
+	// (Ported to cir_builder 2026-06-02; it was an asmjit-only feature dropped when
+	// that backend was removed in 64f44b3 and never reimplemented on CIR.)
+	bool m_cur_func_multi_return = false;
+	// Per-translation counter for unique multi-return buffer names (__mret_K).
+	int m_mret_counter = 0;
 	// Name of the hidden return-slot pointer parameter for a by-value class return.
 	static const char *RETBUF_NAME;
 	// Build the `struct <Cls> *__retbuf` named parameter node (N_SPEC_DECL), the
 	// hidden first parameter of a by-value object-returning function. `retdd` is
 	// the returned class/struct type (ddSTRING for a string-returning fn).
 	node_t retbuf_param(DataDef *retdd, TokenBase *origin);
+
+	// Lower a multi-return call-site `a, b, ... := f(args)` (a TokenAssign whose
+	// multi_vars holds the N target variables). Pushes the `long __mret_K[N]`
+	// buffer decl, the `f(__mret_K, args)` call, and the assigns for multi_vars[1..]
+	// to m_pending_stmts (flushed before this decl statement); returns __mret_K[0]
+	// as multi_vars[0]'s initializer. See m_cur_func_multi_return.
+	node_t multi_return_unpack(class TokenAssign *as, TokenBase *origin);
 
 	// Statements that must be emitted in the enclosing block immediately
 	// BEFORE the statement currently being translated — used to materialize

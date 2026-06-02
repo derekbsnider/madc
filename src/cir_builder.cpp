@@ -1361,6 +1361,56 @@ node_t CirBuilder::retbuf_param(DataDef *retdd, TokenBase *origin)
 	return sd;
 }
 
+node_t CirBuilder::multi_return_unpack(TokenAssign *as, TokenBase *origin)
+{
+	// `a, b, ... := f(args)` — f uses the multi-return __retbuf ABI (void return +
+	// leading `long *__retbuf`; values written to __retbuf[0..N-1]). Emit a caller
+	// buffer `long __mret_K[N]`, the call `f(__mret_K, args)` (the array decays to
+	// the long* __retbuf), and `multi_vars[i] = __mret_K[i]` for i>=1 — all into
+	// m_pending_stmts (the block loop flushes them BEFORE this decl statement; the
+	// i>=1 targets are scope vars auto-declared at block top, so assigning them
+	// before this decl is well-formed). Return __mret_K[0] as multi_vars[0]'s init.
+	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(as->right);
+	if (!tcf)
+		return as->right ? translate_expr(as->right) : ignore();
+	size_t n = as->multi_vars.size();
+	char nm[32];
+	snprintf(nm, sizeof nm, "__mret_%d", m_mret_counter++);
+
+	// long __mret_K[n];
+	node_t decl_list = list();
+	append(decl_list, node3(N_ARR, ignore(), list(), integer((int64_t)n, origin)));
+	node_t bufdecl = simple(N_SPEC_DECL, origin);
+	append(bufdecl, type_list(&ddINT64));
+	append(bufdecl, node2(N_DECL, id(nm, origin), decl_list));
+	append(bufdecl, ignore());
+	append(bufdecl, ignore());
+	append(bufdecl, ignore());
+	m_pending_stmts.push_back(bufdecl);
+
+	// f(__mret_K, args...);  — __retbuf passed first. build_call_args may queue
+	// arg temps to m_pending_stmts; they land after bufdecl and before the call.
+	referenced_funcs.insert(tcf->var.name);
+	node_t cargs = list();
+	append(cargs, id(nm, origin));
+	build_call_args(tcf, cargs);
+	node_t call = node2(N_CALL, id(tcf->var.name.c_str(), origin), cargs, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	m_pending_stmts.push_back(node2(N_EXPR, list(), call, origin));
+
+	// multi_vars[i] = __mret_K[i];  for i >= 1
+	for (size_t i = 1; i < n; i++) {
+		node_t lhs = id(as->multi_vars[i]->name.c_str(), origin);
+		node_t rhs = node2(N_IND, id(nm, origin),
+				   integer((int64_t)i, origin), origin);
+		m_pending_stmts.push_back(node2(N_EXPR, list(),
+					  node2(N_ASSIGN, lhs, rhs, origin), origin));
+	}
+
+	// multi_vars[0]'s initializer = __mret_K[0]
+	return node2(N_IND, id(nm, origin), integer((int64_t)0, origin), origin);
+}
+
 node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			      const std::string &typedef_alias)
 {
@@ -2257,6 +2307,12 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// to the RHS so the 5th operand matches c2m (e.g. `I 7`).
 		TokenBase *init_expr = tdecl->initialize;
 		TokenAssign *as = dynamic_cast<TokenAssign *>(init_expr);
+		if (as && as->multi_vars.size() > 1) {
+			// Multi-return unpack `a, b, ... := f(args)`: this decl is for
+			// multi_vars[0]; its initializer becomes __mret[0]. The buffer,
+			// the call, and the assigns for multi_vars[1..] go to m_pending_stmts.
+			init_node = multi_return_unpack(as, origin);
+		} else {
 		if (as && as->right)
 			init_expr = as->right;
 		init_node = translate_expr(init_expr);
@@ -2266,6 +2322,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// unchanged.
 		init_node = upcast_class_ptr(init_node, v->type,
 					     init_expr, origin);
+		}
 	}
 
 	node_t spec_decl = simple(N_SPEC_DECL);
@@ -4037,8 +4094,10 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 				? class_return_via_retbuf(ret_dd) : NULL;
 	bool ret_via_retbuf = ret_is_string || ret_obj;
 	DataDef *retbuf_dd = ret_obj ? (DataDef *)ret_obj : (DataDef *)&ddSTRING;
+	bool ret_is_multi = fd->is_multi_return();   // void ret + `long *__retbuf` first param
 
-	node_t ret_type = ret_via_retbuf ? type_list(&ddVOID) : type_list(ret_dd);
+	node_t ret_type = (ret_via_retbuf || ret_is_multi) ? type_list(&ddVOID)
+							   : type_list(ret_dd);
 	node_t share = node1(N_SHARE, ret_type);
 
 	// Parameters. A variadic function carries a trailing synthetic param
@@ -4047,6 +4106,8 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	node_t param_list = list();
 	if (ret_via_retbuf)
 		append(param_list, retbuf_param(retbuf_dd, tf));
+	else if (ret_is_multi)
+		append(param_list, retbuf_param(&ddINT64, tf));   // long *__retbuf
 	size_t nparam = fd->parameters.size();
 	if (fd->is_varargs && nparam > 0) nparam--;
 	// A capturing nested fn / [&] lambda gains hidden `T *name` capture params
@@ -4059,7 +4120,8 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	// (is_void_params). A bare K&R `()` is unprototyped: leave the param list
 	// empty so c2mir imposes no arg-count check at call sites, matching gcc's
 	// gnu89 behavior. Kept in lock-step with func_def and fnptr_func_node.
-	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf && !has_capture_params) {
+	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf && !ret_is_multi
+	    && !has_capture_params) {
 		if (fd->is_void_params) {
 			node_t void_spec = node1(N_LIST, simple(N_VOID));
 			node_t void_decl = node2(N_DECL, ignore(), list());
@@ -5360,6 +5422,24 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 			return node2(N_BLOCK, list(), items);
 		}
 	}
+	// Multi-return (`return a, b, ...;`): store each value into __retbuf[i]
+	// (the hidden `long *__retbuf` first param), then `return;` (void). The
+	// function was lowered to the multi-return __retbuf ABI by func_def/func_proto.
+	if (m_cur_func_multi_return && !tr->return_exprs.empty()) {
+		node_t items = list();
+		for (size_t i = 0; i < tr->return_exprs.size(); i++) {
+			node_t val = translate_expr(tr->return_exprs[i]);
+			// flush any temps a value expression materialized
+			for (node_t p : m_pending_stmts) append(items, p);
+			m_pending_stmts.clear();
+			node_t slot = node2(N_IND, id(RETBUF_NAME, tr),
+					    integer((int64_t)i, tr), tr);
+			append(items, node2(N_EXPR, list(),
+					    node2(N_ASSIGN, slot, val, tr), tr));
+		}
+		append(items, node2(N_RETURN, list(), ignore(), tr));
+		return node2(N_BLOCK, list(), items, tr);
+	}
 	// A by-value std::string return uses the __retbuf ABI: copy-construct the
 	// returned object into *__retbuf, then `return;`. The returned local keeps
 	// its own cleanup dtor (its lifetime ends at scope exit as usual); because we
@@ -6639,6 +6719,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	m_cur_func_returns_object = ret_obj;
 	bool ret_via_retbuf = ret_is_string || ret_obj;
 	DataDef *retbuf_dd = ret_obj ? (DataDef *)ret_obj : (DataDef *)&ddSTRING;
+	// Multi-return (`return a, b;`): C return type void + a hidden `long *__retbuf`
+	// first param; translate_return stores each value to __retbuf[i].
+	bool ret_is_multi = fd->is_multi_return();
+	m_cur_func_multi_return = ret_is_multi;
 
 	// Track whether this function returns void, so translate_return can lower
 	// a gcc-accepted `return <expr>;` (void function) to `<expr>; return;`.
@@ -6656,11 +6740,13 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// non-void function gets a typed zero (the returned value is indeterminate
 	// per gnu89/c11, so zero is a conformant lowering). Skip ref (returns by
 	// address) — a bare return there is already nonsensical and rare.
-	m_cur_func_scalar_ret = (!ret_via_retbuf && !ret_is_ref && !m_cur_func_returns_void)
+	m_cur_func_scalar_ret = (!ret_via_retbuf && !ret_is_ref && !m_cur_func_returns_void
+				 && !ret_is_multi)
 				? &fd->returns : NULL;
 
-	// Retbuf-returning fn: C return type is `void`.
-	node_t ret_type = ret_via_retbuf ? type_list(&ddVOID) : type_list(ret_dd);
+	// Retbuf-returning OR multi-return fn: C return type is `void`.
+	node_t ret_type = (ret_via_retbuf || ret_is_multi) ? type_list(&ddVOID)
+							   : type_list(ret_dd);
 
 	// GNU nested-function / [&]-lambda capture context. A capturing function
 	// (has_captures) implicitly captures by reference whatever enclosing
@@ -6691,18 +6777,21 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// param_decl's wrap() for a named pointer parameter.
 	if (ret_via_retbuf)
 		append(param_list, retbuf_param(retbuf_dd, tf));
+	else if (ret_is_multi)
+		append(param_list, retbuf_param(&ddINT64, tf));   // long *__retbuf
 	size_t nparam = fd->parameters.size();
 	if (fd->is_varargs && nparam > 0) nparam--;
 	// A capturing function with zero user params must NOT emit `(void)`: its
 	// capture params (appended after the body translates) make it non-void.
 	// Defer the empty-param `(void)` to after body translation in that case.
 	bool defer_void_params = (nparam == 0 && !fd->is_varargs && !ret_via_retbuf
-				  && fd->has_captures);
+				  && !ret_is_multi && fd->has_captures);
 	// `(void)` ONLY for an explicit `(void)` declaration (is_void_params); a
 	// bare K&R `()` stays unprototyped (empty param list) so c2mir accepts any
 	// call-site arg count, matching gcc's gnu89 behavior. Kept in lock-step
 	// with func_proto and fnptr_func_node.
-	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf && !defer_void_params) {
+	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf && !ret_is_multi
+	    && !defer_void_params) {
 		if (fd->is_void_params) {
 			node_t void_spec = node1(N_LIST, simple(N_VOID));
 			node_t void_decl = node2(N_DECL, ignore(), list());
