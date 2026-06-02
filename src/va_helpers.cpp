@@ -10,6 +10,7 @@
 ///////////////////////////////////////////////////////////////////////////
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
 #include <cstdarg>
@@ -313,6 +314,15 @@ extern "C" int __madc_sub_overflow_uu64(long long a, long long b, uint64_t *res)
 { return madc_overflow_store_uu64(a, b, res, [](unsigned __int128 x, unsigned __int128 y) { return x - y; }); }
 extern "C" int __madc_mul_overflow_uu64(long long a, long long b, uint64_t *res)
 { return madc_overflow_store_uu64(a, b, res, [](unsigned __int128 x, unsigned __int128 y) { return x * y; }); }
+
+// VLA scope-exit cleanup: a C99 variable-length-array local is lowered to a
+// `T *` backed by malloc; the cir_builder attaches __attribute__((cleanup(
+// __madc_vla_free))) to it, so c2mir calls this with &a (a `T **`) on scope
+// exit. Free the pointed-to storage. NULL-safe (free(NULL) is a no-op).
+extern "C" void __madc_vla_free(void *pp)
+{
+    if (pp) free(*(void **)pp);
+}
 
 // __builtin_bswap*: byte-swap fixed-width integer values.
 extern "C" uint16_t __madc_bswap16(uint16_t x)

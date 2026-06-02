@@ -2137,6 +2137,44 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	node_t var_decl_node = node2(N_DECL, var_id, decl_list);
 	node_t init_node = ignore();
 	TokenDecl *tdecl = dynamic_cast<TokenDecl *>(origin);
+
+	// C99 variable-length array local (`int a[n]`, runtime `n`). The parser
+	// recorded the bound in v->vla_size_expr and emitted `a` as a plain
+	// pointer (above). Back that pointer with heap storage:
+	//   a = (T *) malloc(n * sizeof(T))
+	// freed by a cleanup attribute at scope exit (see attr_node below), the
+	// same RAII mechanism the class destructors use -- so a VLA in a loop /
+	// reached by a backward goto is reclaimed, not leaked onto the stack
+	// (__builtin_alloca would grow the frame per iteration -> the goto-loop
+	// torture test 20040811-1 stack-overflows). c2mir never sees an array of
+	// runtime size, so VLA is a Tier-1 lowering, NOT a c2mir/MIR floor gap.
+	// Static/extern VLAs are not valid C; VLA *parameters* are plain pointers
+	// (no init needed).
+	bool is_vla_local = v->is_vla() && v->vla_size_expr && is_ptr
+			    && (v->flags & vfLOCAL)
+			    && !(v->flags & (vfSTATIC | vfEXTERN));
+	node_t vla_init = NULL;
+	if (is_vla_local) {
+		referenced_funcs.insert("malloc");
+		// Declare `void *malloc(unsigned long)` — without a prototype c2mir
+		// assumes an `int` return and TRUNCATES the 64-bit pointer -> SIGSEGV.
+		need_output_extern("malloc", true, { { {N_UNSIGNED, N_LONG}, false } });
+		node_t szof = node1(N_SIZEOF,
+				    node2(N_TYPE, type_list(base_dd),
+					  node2(N_DECL, ignore(), list())),
+				    origin);
+		node_t nbytes = node2(N_MUL, translate_expr(v->vla_size_expr),
+				      szof, origin);
+		node_t aargs = list();
+		append(aargs, nbytes);
+		node_t acall = node2(N_CALL, id("malloc", origin),
+				     aargs, origin);
+		node_t cast_decl_list = list();
+		append(cast_decl_list, pointer());
+		node_t cast_type = node2(N_TYPE, type_list(base_dd),
+					 node2(N_DECL, ignore(), cast_decl_list));
+		vla_init = node2(N_CAST, cast_type, acall, origin);
+	}
 	// A class instance (user class or std::string) is initialized by a
 	// constructor call emitted separately (translate_block), never by a C
 	// initializer on the declaration — `struct string s = "x"` would be an
@@ -2165,7 +2203,9 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 				  && v->is_fixed_array()
 				  && v->data && tdecl->init_list.empty()
 				  && v->type && v->type->is_integer();
-	if (class_instance) {
+	if (is_vla_local) {
+		init_node = vla_init;
+	} else if (class_instance) {
 		// fall through with init_node = ignore()
 	} else if (tdecl && (tdecl->has_brace_init || !tdecl->init_list.empty()
 			     || baked_static_array)) {
@@ -2227,6 +2267,19 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			referenced_funcs.insert(dtor_sym);
 			node_t attr_args = list();
 			append(attr_args, id(dtor_sym.c_str(), origin));
+			node_t attrs = list();
+			append(attrs, node2(N_ATTR, id("cleanup", origin),
+					    attr_args, origin));
+			attr_node = attrs;
+		} else if (is_vla_local) {
+			// Free the VLA's malloc'd storage at scope exit. The
+			// cleanup fn receives &a (a `T **`); __madc_vla_free does
+			// free(*pp). Same mechanism as the class-dtor cleanup above.
+			referenced_funcs.insert("__madc_vla_free");
+			need_output_extern("__madc_vla_free", false,
+					   { { {N_VOID}, true } });
+			node_t attr_args = list();
+			append(attr_args, id("__madc_vla_free", origin));
 			node_t attrs = list();
 			append(attrs, node2(N_ATTR, id("cleanup", origin),
 					    attr_args, origin));
