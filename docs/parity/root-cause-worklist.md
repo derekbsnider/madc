@@ -81,6 +81,14 @@ c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
   no inline asm; the "syntax error on volatile" from stock c2m was a red herring — the real token is
   `asm`). `pr43220`/`970217-1`/`920929-1` = **VLA** → FLOOR. Genuine madc-path miscompiles worth a
   reduce: **`pr85095`** (`__builtin_add_overflow`, madc SIGABRTs = wrong overflow value) and
+  **Bucket tail ATTRIBUTED + CLOSED 2026-06-02 (the rest are floor/feature, NOT contained fixes):**
+  `20021127-1` = builtin-recognition feature — the test *redefines* `llabs` to `abort()` and relies
+  on gcc/clang treating `llabs` as a builtin (inline `a<0?-a:a`, ignoring the user def); madc calls
+  the user's aborting def → SIGABRT. A builtin-folding feature (pathological, low-value) → defer.
+  `20221006-1` = `int M1[len][len]` runtime `len` → VLA floor. `pr71626-2` = multi-file test
+  (companion `pr71626-1.c`; inconclusive via manual reduce — verify under the runner). **Net: the
+  cheap contained-fix grind is EXHAUSTED (7 of 32 fixed); the rest are floor (SIMD/VLA/inline-asm/
+  aligned>16) or large features (integer-complex, cast-to-union, builtin-recognition).**
   **`20050929-1`** — **DONE (fork `4aa628b`, MIR_COMMIT bumped 838b116→4aa628b; torture 1558→1559).**
   Fix: `gen_initializer`'s global (file-scope) branch now PRE-computes all element values before
   emitting the object's own data items, so out-of-line compound-literal storage lands before the
