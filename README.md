@@ -196,7 +196,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.25.0, develop): 451 integration tests pass (12 failing — the CIR coverage worklist, 55 skipped); gcc.c-torture parity 1559/1685 (92.5%) vs the old asmjit backend's 1645 (97.6%). `std::string` is a real C++ class and `std::vector`/`map`/`set` are real `#include`-defined `std::` templates (the legacy `dtSTRING`/`tkSTRING`/`tkVECTOR`/`ns_stl` shortcuts are retired). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.25.0, develop): 452 integration tests pass (11 failing — the CIR coverage worklist, 55 skipped); gcc.c-torture parity 1561/1685 (92.6%) vs the old asmjit backend's 1645 (97.6%). `std::string` is a real C++ class and `std::vector`/`map`/`set` are real `#include`-defined `std::` templates (the legacy `dtSTRING`/`tkSTRING`/`tkVECTOR`/`ns_stl` shortcuts are retired). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -248,8 +248,8 @@ against the [madc MIR fork](https://github.com/derekbsnider/mir). See
 [`docs/release-notes/v0.25.0.md`](docs/release-notes/v0.25.0.md).
 
 Honest CIR baseline (2026-06-01, branch `feature/cir-stdstring-claude`):
-**451 integration pass / 12 fail / 55 skip**, unit suites green, and
-**gcc.c-torture 1559/1685 (92.5%)** vs the old asmjit backend's **1645 (97.6%)**
+**452 integration pass / 11 fail / 55 skip**, unit suites green, and
+**gcc.c-torture 1561/1685 (92.6%)** vs the old asmjit backend's **1645 (97.6%)**
 on the same runner — the develop→master parity gate. The torture gap (89) is
 the remaining c2mir-front-end bugs plus floor/feature work (SIMD,
 VLA, inline asm, `scalar_storage_order`, …). In-process `eval`/exec + the REPL,

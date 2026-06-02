@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added — function-local variable-length arrays (VLAs) (2026-06-02, madc-only)
+
+**gcc.c-torture 1559 → 1561 (92.6%)**, +1 integration (`testvla`), zero regressions, SMAUG boots.
+
+VLA was mis-documented as a c2mir/MIR floor gap. In fact the parser already records the runtime
+bound (`Variable::vla_size_expr`) and emits the VLA as a pointer — but `cir_builder` never consumed
+it, so a local `int a[n]` became an **uninitialized** `int *a` → SIGSEGV. (VLA *parameters* are
+plain pointers and already worked; only local *definitions* were broken — this worked on the old
+asmjit backend and was never ported to CIR.) Now a function-local VLA lowers to
+`a = (T *)malloc(n * sizeof(T))` with `__attribute__((cleanup(__madc_vla_free)))` freeing it at
+scope exit — the same RAII mechanism class destructors use. `malloc`+cleanup (not
+`__builtin_alloca`) is required so a VLA reached by a backward `goto`/loop is reclaimed rather than
+growing the stack frame (the goto-loop torture `20040811-1`). Recovers torture `920929-1`, `pr43220`.
+Follow-ups: multidim with 2+ runtime dims, runtime `sizeof(vla)`, param-VLA side-effecting bound.
+
 ### Fixed — static-initializer compound-literal ordering (`20050929-1`) (2026-06-02, MIR fork `4aa628b`)
 
 Seventh c2mir-grind fix. **gcc.c-torture 1558 → 1559 (92.5%)**, zero regressions, SMAUG boots,
