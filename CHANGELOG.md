@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Fixed — aggregate-init cluster: array compound literals + array-of-pointer declarators (2026-06-02, develop @ ec97689)
+
+The last cheap front-end parity cluster. **gcc.c-torture 1547 → 1549 (91.9%)**, zero
+regressions, SMAUG boots, and **all compiler warnings cleaned to zero**.
+
+- **Array compound literal with a struct element** (`(S[]){{.b=3,…}}`, `pr98366`): the
+  array path rendered the element type via `append_type_specs`, which emits `N_INT` for any
+  struct, so c2mir saw `int[]` and rejected the brace-init as "excess elements in scalar
+  initializer". Extracted the scalar path's struct/typedef/anonymous spec-builder into
+  `CirBuilder::append_lit_type_spec()` and reuse it for the array path; the parser now
+  propagates the element's typedef alias to the literal.
+- **Array of pointer-to-typedef'd-array** (`A3_28 *paa[]`, `strlen-4` family): `var_decl`'s
+  `skip_tail` correction (which compensates for the parser flattening a typedef's dims into
+  `v->dims`) only applies in the non-pointer path. With a pointer prefix the parser leaves
+  those dims in the pointee, so `v->dims` holds only the variable's own dims — gated
+  `skip_tail` on `!is_ptr` so the trailing `[]` is no longer dropped. (`strlen-4` itself
+  still hits a deeper runtime bug; the declarator family is now correct.)
+- The other two tests the worklist had grouped here (`pr109938`/`pr109986`) are **SIMD floor
+  gaps** (`v4si` vector initializers), not aggregate-init — re-classified.
+
+### Changed — zero compiler warnings (2026-06-02)
+
+- `FuncDef` constructor initializer order matched to member declaration order (`-Wreorder`);
+  explicit `(T)` casts in the `MADC_COMPLEX_OPS` macro for `unsigned short` complex arithmetic
+  (`-Wnarrowing` ×11 — no-op for wide types, makes the defined modular truncation explicit);
+  removed two unused locals in `parser.cpp`; enlarged the `"p%zu"` `snprintf` buffer in
+  `translate_module` (`-Wformat-truncation`).
+
 ### Fixed — CIR↔asmjit gcc-torture parity campaign 82.0%→91.8% (2026-06-01, branch feature/cir-stdstring-claude)
 
 Recovered the regression the CIR backend carried vs the old asmjit backend on the

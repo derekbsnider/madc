@@ -129,12 +129,32 @@ SMAUG-soaked, pushed):
 - nested statement-expression last-value `({ ({...}); })` +3 [069fb8b]
 - top-level function used as a VALUE (address-of / fn-ptr decay) +3 [9ac7a1b]
 
-REMAINING cheap front-end (the one left, more involved — good fresh-session item):
-- aggregate-init / array compound-literal `(T[]){...}` sizing + designated/bitfield
-  init: pr98366, pr109938, pr109986, strlen-4 (~4-7). Needs declarator/initializer
-  work (multidim typedef'd array-of-ptr; compound-literal array sizing from init).
+## Aggregate-init cluster DONE 2026-06-02 (develop @ ec97689) — 1547 -> 1549
 
-Everything else is FLOOR/feature-level (fresh session, likely fork work): SIMD
+The last cheap front-end cluster. +2, zero regressions, SMAUG boots, zero warnings.
+- **pr98366** `(S[]){{.b=3,..}}` array compound-literal with a STRUCT element: the array
+  path rendered the element via `append_type_specs` (emits `N_INT` for any struct) -> c2mir
+  saw `int[]` -> "excess elements in scalar initializer". Extracted the scalar path's
+  struct/typedef/anon spec-builder into `CirBuilder::append_lit_type_spec()` + reuse it for
+  the array path; parser propagates the element's typedef alias.
+- **strlen-4 family** `A3_28 *paa[]` (array of pointer-to-typedef'd-array): `var_decl`'s
+  `skip_tail` (compensates for the parser flattening a typedef's dims into `v->dims`) only
+  applies in the NON-pointer path; with a pointer prefix the dims live in the pointee
+  (peeled into `ptr_array_dims`), so gated `skip_tail` on `!is_ptr` — the outer `[]` was
+  being dropped. **strlen-4 itself still fails at RUNTIME** (pointer-to-array arithmetic
+  SIGSEGV) — declarator family fixed regardless.
+- **RECLASSIFIED:** `pr109938`/`pr109986` are NOT aggregate-init — they are **SIMD floor
+  gaps** (`v4si` vector initializers). The cheap aggregate-init cluster was really just
+  pr98366 + the strlen-4 declarator family.
+
+**The cheap front-end clusters are now EXHAUSTED.** Everything remaining is FLOOR/feature.
+
+NEXT TRACK (user-chosen 2026-06-02): **small floor clusters** — float->int saturating
+conversion, `__builtin_setjmp`+alloca, `scalar_storage_order` (smaller per-fix, less fork
+divergence than the ~35-test SIMD raise-MIR track). SIMD remains the largest single bucket
+(roadmapped Track 1.6, raise MIR, design-for-upstream) but is deferred behind the small ones.
+
+Everything else is FLOOR/feature-level (likely fork work): SIMD
 vector_size (~35, dominant), inline asm, aligned>16, wchar/L"...", VLA,
 __builtin_setjmp/longjmp+alloca, scalar_storage_order, float->int saturate,
 reduced-precision bitfield arithmetic (bitfld-3/5).
