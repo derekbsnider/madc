@@ -2163,8 +2163,25 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 				    node2(N_TYPE, type_list(base_dd),
 					  node2(N_DECL, ignore(), list())),
 				    origin);
-		node_t nbytes = node2(N_MUL, translate_expr(v->vla_size_expr),
-				      szof, origin);
+		// Element count = product of ALL VLA dims. The outer dim is
+		// vla_size_expr; the inner dims (multidim `int a[m][n]`) live in
+		// v->type's pointee DataDefCArray chain (peel_carray_dims already
+		// flattened base_dd to the scalar, so multiply each inner dim in here
+		// to malloc the whole block, not just the first row).
+		node_t count = translate_expr(v->vla_size_expr);
+		{
+			DataDef *w = v->type;
+			if (DataDefPTR *wp = dynamic_cast<DataDefPTR *>(w))
+				w = wp->base_type;
+			for (DataDefCArray *c = dynamic_cast<DataDefCArray *>(w);
+			     c; c = dynamic_cast<DataDefCArray *>(c->element_type)) {
+				node_t d = c->has_runtime_size()
+					   ? translate_expr(c->count_expr)
+					   : integer((int64_t)c->count);
+				count = node2(N_MUL, count, d, origin);
+			}
+		}
+		node_t nbytes = node2(N_MUL, count, szof, origin);
 		node_t aargs = list();
 		append(aargs, nbytes);
 		node_t acall = node2(N_CALL, id("malloc", origin),
@@ -4621,10 +4638,56 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// Array subscript on a sub-expression: expr[i] == IND(expr, i)
 	{
 		TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tb);
-		if (tse)
+		if (tse) {
+			// Multi-dim VLA `M1[i0][i1]...[ik]` parses as a NESTED
+			// TokenSubscriptExpr(...(TokenSubscript(M1,i0))...,ik) because M1 is
+			// a flat malloc'd pointer (c2mir has no VLA types), so the nested
+			// IND(IND(M1,i0),i1) fails (M1[i0] is a scalar). Unwind the chain to
+			// (root M1, [i0..ik]) and emit ONE linearized subscript
+			// M1[i0*d1*..*dk + i1*d2*..*dk + ... + ik] (row-major), with the
+			// inner dim sizes d1..dk from M1's pointee DataDefCArray chain.
+			std::vector<TokenBase *> idxs; // outermost-first: [ik .. i1]
+			TokenBase *cur = tse;
+			Variable *root = NULL;
+			while (TokenSubscriptExpr *e =
+				       dynamic_cast<TokenSubscriptExpr *>(cur)) {
+				idxs.push_back(e->index);
+				cur = e->base_expr;
+			}
+			if (TokenSubscript *ts0 = dynamic_cast<TokenSubscript *>(cur)) {
+				if (ts0->extra_indices.empty()) {
+					idxs.push_back(ts0->index); // i0 (innermost root index)
+					root = &ts0->object;
+				}
+			}
+			DataDefPTR *rp = root ? dynamic_cast<DataDefPTR *>(root->type) : NULL;
+			DataDefCArray *rc = rp ? dynamic_cast<DataDefCArray *>(rp->base_type)
+					       : NULL;
+			if (root && rc && rc->has_runtime_size()) {
+				std::vector<node_t> dims; // d1..dk (inner dims)
+				for (DataDefCArray *c = rc; c;
+				     c = dynamic_cast<DataDefCArray *>(c->element_type))
+					dims.push_back(c->has_runtime_size()
+						       ? translate_expr(c->count_expr)
+						       : integer((int64_t)c->count));
+				size_t ni = idxs.size();
+				// Only flatten a FULL access (one index per dimension =
+				// 1 outer + k inner). idxs is outermost-first, so idxs[ni-1]
+				// is the root index i0.
+				if (ni == dims.size() + 1) {
+					node_t flat = translate_expr(idxs[ni - 1]); // i0
+					for (size_t m = 1; m < ni; m++)
+						flat = node2(N_ADD,
+							     node2(N_MUL, flat, dims[m - 1], tb),
+							     translate_expr(idxs[ni - 1 - m]), tb);
+					node_t rbase = id(var_emit_name(*root).c_str(), tb);
+					return node2(N_IND, rbase, flat, tb);
+				}
+			}
 			return node2(N_IND,
 				translate_expr(tse->base_expr),
 				translate_expr(tse->index), tb);
+		}
 	}
 
 	// Method call on a class-object receiver. A TokenCallMethod IS-A
