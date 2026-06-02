@@ -11670,6 +11670,8 @@ static void MIR_UNUSED simple_init_arg_vars (c2m_ctx_t c2m_ctx MIR_UNUSED,
 static op_t complex_load (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offset);
 static void complex_store (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offset, op_t val);
 static op_t complex_temp (c2m_ctx_t c2m_ctx, enum basic_type bt);
+static op_t complex_to_complex (c2m_ctx_t c2m_ctx, op_t op, enum basic_type from_bt,
+                                enum basic_type to_bt);
 
 static int simple_return_by_addr_p (c2m_ctx_t c2m_ctx MIR_UNUSED, struct type *ret_type) {
   return ret_type->mode == TM_STRUCT || ret_type->mode == TM_UNION;
@@ -12480,6 +12482,23 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         rel_offset = init_el.offset + raw_type_size (c2m_ctx, init_el.el_type);
         continue;
       }
+      /* Complex local initialized from a complex of DIFFERENT component width
+         (`_Complex double d = cfloat_val;`): convert each component first, else
+         the memcpy below copies the wrong byte count from the narrower source
+         and skips the float/double component conversion. */
+      if (complex_type_p (init_el.el_type)
+          && complex_type_p (((struct expr *) init_el.init->attr)->type)
+          && init_el.el_type->u.basic_type
+               != ((struct expr *) init_el.init->attr)->type->u.basic_type) {
+        struct type *src_type = ((struct expr *) init_el.init->attr)->type;
+        val = gen (c2m_ctx, init_el.init, NULL, NULL, TRUE, NULL, NULL);
+        val = complex_to_complex (c2m_ctx, val, src_type->u.basic_type,
+                                  init_el.el_type->u.basic_type);
+        gen_memcpy (c2m_ctx, offset + rel_offset, base, val,
+                    raw_type_size (c2m_ctx, init_el.el_type));
+        rel_offset = init_el.offset + raw_type_size (c2m_ctx, init_el.el_type);
+        continue;
+      }
       if (t == MIR_T_UNDEF)
         val = new_op (NULL, MIR_new_mem_op (ctx, t, offset + rel_offset, base, 0, 1));
       val = gen (c2m_ctx, init_el.init, NULL, NULL, t != MIR_T_UNDEF,
@@ -12734,6 +12753,36 @@ static op_t scalar_to_complex (c2m_ctx_t c2m_ctx, op_t scalar, MIR_type_t scalar
                           : MIR_new_ldouble_op (ctx, 0.0L));
   complex_store (c2m_ctx, tmp, ct, 0, re_val);
   complex_store (c2m_ctx, tmp, ct, imag_off, zero_val);
+  return tmp;
+}
+
+/* Convert a complex value `op` (a MEM operand) of complex basic type from_bt to
+   complex basic type to_bt, converting the real and imaginary components
+   separately (C99 6.3.1.6/8 — convert each part to the new component type).
+   Returns a fresh complex temp of to_bt; if the component widths already match,
+   returns `op` unchanged.  Used by complex-to-complex casts and assignments,
+   where a raw block-move would (a) copy the wrong number of bytes and (b) skip
+   the float/double/long-double component conversion. */
+static op_t complex_to_complex (c2m_ctx_t c2m_ctx, op_t op, enum basic_type from_bt,
+                                enum basic_type to_bt) {
+  MIR_type_t fct, tct;
+  int f_imag_off, t_imag_off;
+  op_t tmp, re, im;
+
+  if (from_bt == to_bt) return op;
+  fct = from_bt == TP_CFLOAT ? MIR_T_F : from_bt == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+  tct = to_bt == TP_CFLOAT ? MIR_T_F : to_bt == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+  f_imag_off = from_bt == TP_CFLOAT ? sizeof (mir_float)
+               : from_bt == TP_CDOUBLE ? sizeof (mir_double) : sizeof (mir_ldouble);
+  t_imag_off = to_bt == TP_CFLOAT ? sizeof (mir_float)
+               : to_bt == TP_CDOUBLE ? sizeof (mir_double) : sizeof (mir_ldouble);
+  tmp = complex_temp (c2m_ctx, to_bt);
+  re = complex_load (c2m_ctx, op, fct, 0);
+  im = complex_load (c2m_ctx, op, fct, f_imag_off);
+  re = cast (c2m_ctx, re, tct, FALSE);
+  im = cast (c2m_ctx, im, tct, FALSE);
+  complex_store (c2m_ctx, tmp, tct, 0, re);
+  complex_store (c2m_ctx, tmp, tct, t_imag_off, im);
   return tmp;
 }
 
@@ -13309,9 +13358,18 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       val = scalar_to_complex (c2m_ctx, val, rhs_t, ctype->u.basic_type);
       block_move (c2m_ctx, var, val, type_size (c2m_ctx, ctype));
     } else { /* block move */
-      mir_size_t size = type_size (c2m_ctx, ((struct expr *) r->attr)->type);
+      struct type *ltype = ((struct expr *) r->attr)->type;
+      struct type *rtype = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
+      mir_size_t size = type_size (c2m_ctx, ltype);
 
       assert (r->code == N_ASSIGN);
+      /* Complex assignment with differing component width (_Complex float ->
+         _Complex double): convert each component first.  A raw block-move would
+         copy the wrong byte count from the narrower source and skip the
+         float/double conversion. */
+      if (complex_type_p (ltype) && complex_type_p (rtype)
+          && ltype->u.basic_type != rtype->u.basic_type)
+        val = complex_to_complex (c2m_ctx, val, rtype->u.basic_type, ltype->u.basic_type);
       block_move (c2m_ctx, var, val, size);
     }
     break;
@@ -13581,6 +13639,11 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     } else if (!complex_type_p (from_type) && complex_type_p (type)) {
       /* Scalar-to-complex cast: {scalar, 0} */
       res = scalar_to_complex (c2m_ctx, op1, get_mir_type (c2m_ctx, from_type), type->u.basic_type);
+    } else if (complex_type_p (from_type) && complex_type_p (type)) {
+      /* Complex-to-complex cast of differing component width (e.g. _Complex
+         float -> _Complex double): convert each component.  A scalar cast on
+         the aggregate (the old fall-through) produced garbage. */
+      res = complex_to_complex (c2m_ctx, op1, from_type->u.basic_type, type->u.basic_type);
     } else {
       t = get_mir_type (c2m_ctx, type);
       res = cast (c2m_ctx, op1, t, TRUE);
