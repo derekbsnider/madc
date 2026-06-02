@@ -55,6 +55,60 @@ Authoritative spec: **`docs/superpowers/specs/2026-06-02-retire-std-hardcoding-d
 - **Gate every change:** `make -C src test` (capped `( ulimit -t N; timeout M … )`) + integration
   `bash scripts/run_tests.sh` + (for codegen changes) coordinator re-runs SMAUG soak. Commit, push.
 
+## ⭐ 2026-06-02 (cont.) — LAYER-3 TRUTH · THE GATE · THE KEYSTONE MAP (READ BEFORE §2)
+
+**THE RECURRENCE EXPLAINED (why it "kept sneaking back" for a week).** There are THREE
+layers of std:: hardcoding; sessions kept declaring "done" at Layers 1–2 while Layer 3 —
+the *builtins* — was NEVER removed. Git-verified: `DataDefSTRING`/`add_string_methods`
+have NO removal commit, are ancient, and are present on `master` too.
+- **Layer 1 — dtSTRING/tk*/ns_stl TAGS → RETIRED** (P2.14; grep 0). Real.
+- **Layer 2 — `_ZSt` literals → SWEPT** (mangler complete + cir_builder sweep). Real.
+- **Layer 3 — builtin `ddSTRING`/`DataDefSTRING(sizeof(std::string))`, `add_string_methods`,
+  stream `dt*STREAM`/`dd*STREAM`/`DataDef*STREAM`, `add_fstream_methods`,
+  `ifstream_*`/`ofstream_*` wrappers, every `sizeof(std::…)` → NOT DONE.** THIS is the work.
+
+**THE CONTRACT (user-enforced, hard).** "DONE" = `scripts/check-no-std-hardcoding.sh` prints
+GREEN **and** `make -C src fulltest` passes **and** SMAUG soaks clean. NEVER a behavioral
+"it works." The gate is committed + **wired into `make fulltest` (suite is RED until 0)** +
+fails on tombstone comments too ("gone without a trace — git is the record"). Baseline 473;
+**currently 469** (tombstones removed). Report the live count every step. No faked
+intermediate drops — the next drop is the streams migration (no safe drop exists before the
+keystone lands).
+
+**THE KEYSTONE (what unlocks deleting the builtins — does NOT exist yet).** The generic
+mechanism: *a bodyless method in a `std::` header class → a `DataDefCLASS` (layout from
+declared members — already works for vector) whose method auto-binds `emit_symbol` to the
+mangled libstdc++ symbol.* Precise map (subagent-verified, all src/parser.cpp unless noted):
+- Classes parse via **`TokenCLASS::parse`** (NOT TokenSTRUCT::parse). Member-fn recognized by
+  peek-`(` (~11682); `FuncDef` built by `parseFunction(...)` (~11737), pushed to
+  `ddc->methods`/`method_map` (~11740-11752). ctor ~11581-11611, dtor ~11554-11578,
+  operator ~11642-11676 (falls through the method branch).
+- **Bodyless methods ALREADY parse** (parseFunction bodyless branches 14586-14625 & 14639-14646
+  → create `Method`, no body, `return`). ✅ DONE increment 1: added `FuncDef::declaration_only`
+  (include/madc.h, ctor-initialized false), set true in both branches → exposes "bodyless".
+- **HOOK (next):** in `TokenCLASS::parse` ~11745 (after `mfd->returns_ref=…`), if
+  `pgm.current_namespace=="std"` AND `mfd->declaration_only`, set
+  `mfd->emit_symbol = <mangler call from the parsed signature>`. Mangler entry points:
+  `itanium_mangle_{member,ctor,dtor,operator}_sub` (src/madc_mangle.cpp); `emit_symbol`
+  consumed by `CirBuilder::emit_symbol_method_call` (src/cir_builder.cpp:2911/2977).
+  `current_namespace` set in `TokenNAMESPACE::parse` ~10043.
+- **THE HARD CORE (no shortcut):** the symbol needs the FULL canonical template-id
+  (`std::__cxx11::basic_string<char,std::char_traits<char>>`,
+  `std::basic_ofstream<char,std::char_traits<char>>`). RECONSTRUCT it from
+  `current_namespace` + template name + concrete args — the headers MUST mirror libstdc++
+  structure (template params + the inline `__cxx11` namespace). NEVER hardcode a symbol. The
+  template-instantiation path (`instantiate_template_use` ~1541) has never produced a
+  libstdc++ mangled symbol (vector has bodies), so this reconstruction is new code.
+- **THE NEW CLASS-MODEL PIECE:** `DataDefCLASS` has NO base-offset field — single base assumed
+  at offset 0 (datadef.h:699/717; base-member copy 11478-11510). `basic_ios` vbase needs a
+  real non-zero base-subobject offset (+248) field + offset-aware dispatch, header-derived +
+  doctest-checked, **NEVER hardcode 248** (STOP+escalate if not cleanly derivable).
+
+**SEQUENCING:** streams FIRST (isolated, 28 gate-lines) to build+prove the keystone where
+blast radius is smallest; THEN std::string (239 `&ddSTRING` sites) rides the SAME mechanism;
+delete builtins/callbacks/wrappers/tags as each generic path covers it; gate→0.
+Stream mangler doctests already added + green (Task 1, commit 9582beb): test_mangle 44/143.
+
 ## 2. LIVE STATE (verify on resume)
 
 - Branch **`feature/retire-std-hardcoding-claude`**, **pushed** (== origin), **8 commits ahead of

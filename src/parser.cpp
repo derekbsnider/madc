@@ -14594,6 +14594,7 @@ paramdecl:
 	    var->storage_alias_name = func_alias_name;
 	if ( owner_class )
 	    method->owner_class = owner_class;
+	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	DBG(std::cout << "parseFunction() forward declaration of function " << id << std::endl);
 	if ( nt->id() == TokenID::tkComma )
 	{
@@ -14642,6 +14643,7 @@ paramdecl:
 	var->data = (void *)method;
 	if ( owner_class )
 	    method->owner_class = owner_class;
+	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	return;
     }
 

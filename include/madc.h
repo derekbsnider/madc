@@ -101,7 +101,7 @@ public:
     // returns, explicit_alignment, has_captures, returns_ref, emit_symbol,
     // class_emit_name, ctor_trailing_self (declared above), then is_varargs..
     // has_large_struct_retbuf (declared below).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), emit_symbol(), class_emit_name(), ctor_trailing_self(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), emit_symbol(), class_emit_name(), ctor_trailing_self(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -109,6 +109,11 @@ public:
     bool is_void_params; // f(void) — explicitly zero params (vs f() which is K&R unspecified)
     bool no_instrument_function;
     bool has_large_struct_retbuf; // __retbuf was injected for struct return > 16 bytes
+    // True when DECLARED with no body (prototype ended in ';' / ',' not '{').
+    // For a std::-namespace class method this marks it as externally implemented
+    // (libstdc++) so TokenCLASS::parse binds emit_symbol to the mangled symbol.
+    // Stays false for any madc-compiled (bodied) function.
+    bool declaration_only;
     bool is_multi_return() const { return return_types.size() > 1; }
 };
 
