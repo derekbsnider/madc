@@ -104,10 +104,32 @@ mangled libstdc++ symbol.* Precise map (subagent-verified, all src/parser.cpp un
   real non-zero base-subobject offset (+248) field + offset-aware dispatch, header-derived +
   doctest-checked, **NEVER hardcode 248** (STOP+escalate if not cleanly derivable).
 
+**THE FOUNDATIONAL PIECE (the crux of "no hardcoded symbols").** The mangler needs the FULL
+canonical Itanium spelling (`std::basic_ofstream<char,std::char_traits<char>>`), but
+`instantiate_template_use` (~1541) names an instantiated class with a SANITIZED tag
+(`vector_int`, `basic_ofstream_char_char_traits_char`; arg names joined with `_`, `*`→`p`,
+lines 1577-1579) — the canonical structure is LOST. Reconstructing it later is lossy
+(args are themselves template-ids). SOLUTION (clean, general, recursive): give each type a
+**`canonical_cpp_spelling`** (on TokenDataType or the DataDefCLASS) SET AT INSTANTIATION:
+builtins carry the obvious spelling ("char","const char*"); an instantiation sets it to
+`"<ns>::<tname><" + join(args' canonical spellings, ",") + ">"`. Since args are instantiated
+first, the parent is just string concatenation. Then the hook reads the class spelling +
+maps each `mfd->parameters[i]` (DataDef* + ref_params/const_params) to its canonical spelling
+(streams need only: void, `const char*`, the openmode enum `std::_Ios_Openmode` → a non-template
+std type "std::_Ios_Openmode"); feed `itanium_mangle_{member,ctor,dtor,operator}_sub`. NEVER
+hardcode a symbol. (add_string_methods sidesteps this by passing literal spellings — that is the
+Layer-3 shortcut being replaced.) Need a `DataDef -> canonical C++ spelling` helper too.
+
 **SEQUENCING:** streams FIRST (isolated, 28 gate-lines) to build+prove the keystone where
 blast radius is smallest; THEN std::string (239 `&ddSTRING` sites) rides the SAME mechanism;
 delete builtins/callbacks/wrappers/tags as each generic path covers it; gate→0.
 Stream mangler doctests already added + green (Task 1, commit 9582beb): test_mangle 44/143.
+INCREMENTS: (1✅ 9ad1c35) FuncDef::declaration_only. (2 next) canonical_cpp_spelling on
+types + set in instantiate_template_use + DataDef->spelling helper. (3) the hook at
+parser.cpp:11744 (+ ctor/dtor/operator blocks). (4) author headers (string, ios/ostream/
+istream bases, fstream) mirroring libstdc++ template/namespace structure incl. inline __cxx11.
+(5) DataDefCLASS base-subobject offset (basic_ios +248). (6) switch registration + DELETE
+Layer-3 builtins/callbacks/wrappers/tags + rewire &ddSTRING sites. (7) gate→0 + fulltest + SMAUG.
 
 ## 2. LIVE STATE (verify on resume)
 
