@@ -446,7 +446,16 @@ This is a **fork of [vnmakarov/mir](https://github.com/vnmakarov/mir)** maintain
 **[madc](https://github.com/derekbsnider/madc)** compiler ("My Advanced Dialect of C"), whose sole
 backend is `madc parser -> cir_node (an enhanced c2mir node_t tree) -> c2mir -> MIR -> JIT`. madc
 builds and feeds c2mir a **pre-constructed `node_t` AST** via `c2mir_compile_tree` (no source text),
-so this fork carries fixes and features upstream MIR/c2mir does not. Branch correspondence:
+so this fork carries fixes and features upstream MIR/c2mir does not.
+
+madc originally JIT-compiled directly to x86-64 machine code with
+[asmjit](https://github.com/asmjit/asmjit). It was **ported to c2mir → MIR specifically for
+portability**: MIR is a retargetable IR with backends for x86-64, aarch64, ppc64le, s390x, and
+riscv64, so routing codegen through MIR lets madc target every one of those architectures (and use
+MIR's interpreter and `-> C` output) instead of being locked to a single hand-written x86-64
+emitter. The asmjit backend has since been removed; MIR is madc's sole backend.
+
+Branch correspondence:
 **`develop` tracks madc's `develop`**, and **`master` tracks madc's `master`** once madc reaches
 feature parity; madc pins the exact verified commit in its repo-root `MIR_COMMIT` file.
 
