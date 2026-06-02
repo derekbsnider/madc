@@ -124,12 +124,28 @@ Layer-3 shortcut being replaced.) Need a `DataDef -> canonical C++ spelling` hel
 blast radius is smallest; THEN std::string (239 `&ddSTRING` sites) rides the SAME mechanism;
 delete builtins/callbacks/wrappers/tags as each generic path covers it; gate→0.
 Stream mangler doctests already added + green (Task 1, commit 9582beb): test_mangle 44/143.
-INCREMENTS: (1✅ 9ad1c35) FuncDef::declaration_only. (2 next) canonical_cpp_spelling on
-types + set in instantiate_template_use + DataDef->spelling helper. (3) the hook at
-parser.cpp:11744 (+ ctor/dtor/operator blocks). (4) author headers (string, ios/ostream/
-istream bases, fstream) mirroring libstdc++ template/namespace structure incl. inline __cxx11.
-(5) DataDefCLASS base-subobject offset (basic_ios +248). (6) switch registration + DELETE
-Layer-3 builtins/callbacks/wrappers/tags + rewire &ddSTRING sites. (7) gate→0 + fulltest + SMAUG.
+INCREMENTS: (1✅ 9ad1c35) FuncDef::declaration_only. (2✅ 6740f67) canonical_cpp_spelling on
+DataDef + TemplateDef::defining_namespace + computed in instantiate_template_use + stashed via
+Program::instantiating_canonical_spelling + copied onto ddc in TokenCLASS::parse.
+(3 next) PARAM SPELLINGS + the hook. (4) author headers. (5) basic_ios base-offset. (6) switch
+registration + DELETE Layer-3 builtins/callbacks/wrappers/tags + rewire &ddSTRING. (7) gate→0
++ fulltest + SMAUG.
+
+⚠️ PARAM-SPELLING SUB-PROBLEM (found inc 3, RESOLVED by design — NO shortcut). For an
+`rtPointer` param like `const char*`, parseFunction pushes `const_params=false` and the pointer
+DataDef's name does NOT carry `const` (parser.cpp ~14513-14519) → a DataDef-derived spelling
+would mangle `open(const char*)` as `Pc` not `PKc` → the symbol does NOT exist in libstdc++ →
+LINK FAILURE. (Top-level pointee-const is simply not tracked in the type system.) FIX = do NOT
+reverse-engineer the DataDef. Instead CAPTURE each param's canonical C++ spelling AT PARSE TIME
+in parseFunction's param loop (the `const`/type/`*`/`&` tokens are right there) into a new
+`FuncDef::param_cpp_spellings` (index-aligned with `parameters`, incl. or excl. the hidden
+__this — pick one and be consistent). The type portion uses the resolved param type's
+`canonical_cpp_spelling` if set, else its name. The hook then feeds those exact strings (sans
+__this) to `itanium_mangle_member_sub(ddc->canonical_cpp_spelling, mname, param_spellings,
+is_const)` (ctor/dtor/operator use the matching _sub fn). This also Just Works for `const
+string&`, `std::_Ios_Openmode`, etc. — it reads the declaration, exactly like g++.
+NOTE only `open` among the stream methods has params; ctor/dtor/close/is_open/good/eof are
+nullary, so the hook can be proven on those first. is_const = the method had a trailing `const`.
 
 ## 2. LIVE STATE (verify on resume)
 
