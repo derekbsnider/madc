@@ -275,6 +275,56 @@ TEST_SUITE("Itanium substitution: std::stringstream") {
 	}
 }
 
+TEST_SUITE("Itanium substitution: file streams (ofstream/ifstream/basic_ios)") {
+
+	// Plain std:: (NOT __cxx11) — basic_ofstream/ifstream/ios are not in the
+	// __cxx11 inline namespace. Every expected symbol below was confirmed on
+	// this machine via c++filt AND `nm -D libstdc++` (the open/close/is_open
+	// symbols are real exports; good/eof are exported as weak vague-linkage
+	// symbols), so an exact match means madc can dlsym them.
+	static const std::string OFS =
+		"std::basic_ofstream<char,std::char_traits<char>>";
+	static const std::string IFS =
+		"std::basic_ifstream<char,std::char_traits<char>>";
+	static const std::string BIOS =
+		"std::basic_ios<char,std::char_traits<char>>";
+
+	TEST_CASE("ofstream ctor / dtor") {
+		CHECK(itanium_mangle_ctor_sub(OFS, {})
+		      == "_ZNSt14basic_ofstreamIcSt11char_traitsIcEEC1Ev");
+		CHECK(itanium_mangle_dtor_sub(OFS)
+		      == "_ZNSt14basic_ofstreamIcSt11char_traitsIcEED1Ev");
+	}
+
+	TEST_CASE("ofstream open / close / is_open") {
+		// open(const char*, ios_base::openmode) — the defaulted 2nd arg is
+		// std::_Ios_Openmode, encoded St13_Ios_Openmode (a non-template std type).
+		CHECK(itanium_mangle_member_sub(OFS, "open",
+		                                {"const char*", "std::_Ios_Openmode"}, false)
+		      == "_ZNSt14basic_ofstreamIcSt11char_traitsIcEE4openEPKcSt13_Ios_Openmode");
+		CHECK(itanium_mangle_member_sub(OFS, "close", {}, false)
+		      == "_ZNSt14basic_ofstreamIcSt11char_traitsIcEE5closeEv");
+		// is_open() is non-const on basic_ofstream (it forwards to the filebuf)
+		CHECK(itanium_mangle_member_sub(OFS, "is_open", {}, false)
+		      == "_ZNSt14basic_ofstreamIcSt11char_traitsIcEE7is_openEv");
+	}
+
+	TEST_CASE("ifstream ctor / open") {
+		CHECK(itanium_mangle_ctor_sub(IFS, {})
+		      == "_ZNSt14basic_ifstreamIcSt11char_traitsIcEEC1Ev");
+		CHECK(itanium_mangle_member_sub(IFS, "open",
+		                                {"const char*", "std::_Ios_Openmode"}, false)
+		      == "_ZNSt14basic_ifstreamIcSt11char_traitsIcEE4openEPKcSt13_Ios_Openmode");
+	}
+
+	TEST_CASE("basic_ios good / eof (const members)") {
+		CHECK(itanium_mangle_member_sub(BIOS, "good", {}, true)
+		      == "_ZNKSt9basic_iosIcSt11char_traitsIcEE4goodEv");
+		CHECK(itanium_mangle_member_sub(BIOS, "eof", {}, true)
+		      == "_ZNKSt9basic_iosIcSt11char_traitsIcEE3eofEv");
+	}
+}
+
 TEST_SUITE("Itanium substitution: complete-spec abbreviations (So/Si/Sd)") {
 
 	static const std::string OS =
