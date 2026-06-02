@@ -11183,6 +11183,34 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     dds->is_complete = true; // a `{ ... }` body was parsed (even if it had no members)
     dds->finalize(); // round up size to struct alignment
 
+    // A struct that contains an OBJECT member by value (a std::string or another
+    // object) is — per C++ — a NON-TRIVIAL class: those members must be
+    // constructed/destructed. The keyword does not decide struct-vs-class; the
+    // CONTENTS do (a struct IS a class; it earns class-hood from an object
+    // feature). Promote the parsed DataDefSTRUCT to a DataDefCLASS (which IS-A
+    // DataDefSTRUCT) so it flows through the existing class machinery (member
+    // ctors/dtors) exactly like a user class with such a member. A struct with NO
+    // object members stays a plain DataDefSTRUCT — unchanged, zero cost.
+    {
+	bool has_object_member = false;
+	for ( auto &m : dds->members )
+	    if ( m.second && !m.second->is_pointer() && m.second->is_object() ) {
+		has_object_member = true;	// std::string is an object too (is_object())
+		break;
+	    }
+	if ( has_object_member && !dynamic_cast<DataDefCLASS *>(dds) ) {
+	    DataDefCLASS *ddc = new DataDefCLASS(dds->name, dds->size, dds->rawtype());
+	    static_cast<DataDefSTRUCT &>(*ddc) = *dds; // copy the parsed struct state
+	    if ( was_pre_registered && tag )
+		pgm.struct_map[tag_store_key] = ddc;   // repoint the self-ref pre-registration
+	    // The old DataDefSTRUCT is left alive (not deleted): a self-reference
+	    // member pointer (`struct s *next`) made during body-parsing points at it,
+	    // and emission is by tag name, so both denote the same `struct s`. dds now
+	    // refers to the class for the rest of this function (registration/typedef/return).
+	    dds = ddc;
+	}
+    }
+
     // register the struct type
     if ( tag )
     {
