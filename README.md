@@ -444,16 +444,21 @@ The executable is "configurable" with environment variables:
 
 This is a **fork of [vnmakarov/mir](https://github.com/vnmakarov/mir)** maintained for the
 **[madc](https://github.com/derekbsnider/madc)** compiler ("My Advanced Dialect of C"), whose sole
-backend is `madc parser -> cir_node (an enhanced c2mir node_t tree) -> c2mir -> MIR -> JIT`. madc
+backend is `madc parser -> cir_node (an enhanced c2mir node_t tree) -> C2MIR -> MIR -> JIT`. madc
 builds and feeds c2mir a **pre-constructed `node_t` AST** via `c2mir_compile_tree` (no source text),
-so this fork carries fixes and features upstream MIR/c2mir does not.
+so this fork carries fixes and features upstream MIR/C2MIR does not.
 
 madc originally JIT-compiled directly to x86-64 machine code with
-[asmjit](https://github.com/asmjit/asmjit). It was **ported to c2mir → MIR specifically for
+[asmjit](https://github.com/asmjit/asmjit). It was **ported to C2MIR → MIR specifically for
 portability**: MIR is a retargetable IR with backends for x86-64, aarch64, ppc64le, s390x, and
 riscv64, so routing codegen through MIR lets madc target every one of those architectures (and use
 MIR's interpreter and `-> C` output) instead of being locked to a single hand-written x86-64
-emitter. The asmjit backend has since been removed; MIR is madc's sole backend.
+emitter. The asmjit backend has since been removed; C2MIR is madc's sole backend.
+
+A side effect of this is that now rather than madc being a direct-to-x86 language, it actually
+transpiles from madc (which also supports C++) down to the C11 dialect which C2MIR requires,
+which means that madc can also be made to emit C11 code. (Of note, MIR can also emit C code, but
+it is not portable).
 
 Branch correspondence:
 **`develop` tracks madc's `develop`**, and **`master` tracks madc's `master`** once madc reaches
