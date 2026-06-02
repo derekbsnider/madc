@@ -97,7 +97,11 @@ public:
     // behaviour. The allocator is default-constructed/empty, so &this is a
     // harmless throwaway pointer the ctor never reads as an allocator.
     bool ctor_trailing_self;
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), returns_ref(false), emit_symbol(), class_emit_name(), ctor_trailing_self(false) {}
+    // Initializer order matches member declaration order (avoids -Wreorder):
+    // returns, explicit_alignment, has_captures, returns_ref, emit_symbol,
+    // class_emit_name, ctor_trailing_self (declared above), then is_varargs..
+    // has_large_struct_retbuf (declared below).
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), emit_symbol(), class_emit_name(), ctor_trailing_self(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }

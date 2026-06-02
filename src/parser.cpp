@@ -7817,7 +7817,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					if ( !array_elem_dd )
 					    slit->typedef_name = cast_typedef_name;
 					else
+					{
 					    slit->array_elem_dd = array_elem_dd;
+					    // The element type's typedef alias (e.g. `(S[]){...}`
+					    // where `typedef struct S {...} S`) so the CIR array
+					    // path can emit ID("S") instead of mis-rendering the
+					    // struct as a scalar int (pr98366).
+					    slit->typedef_name = cast_typedef_name;
+					}
 					TokenBase *lit_expr = slit;
 					// Array compound literals decay to pointer.
 					// Wrap in a cast so the expression type is
@@ -12901,7 +12908,6 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 TokenBase *TokenCONST::parse(Program &pgm)
 {
     DBG(std::cout << "TokenCONST::parse() — consuming const" << std::endl);
-    bool prev_const = pgm.parsing_const_decl;
     pgm.parsing_const_decl = true;
     TokenBase *tn = pgm.peekToken();
     if ( !tn )
@@ -14712,7 +14718,6 @@ paramdecl:
 	tf->line = source.line();
 	tf->column = 0;
     }
-    int decl_line = tf->line;
     DBG(cout << "parseFunction() calling parseCompound()" << endl);
     TokenCpnd *tc = dynamic_cast<TokenCpnd *>(parseCompound());
 

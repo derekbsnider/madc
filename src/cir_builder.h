@@ -359,6 +359,12 @@ public:
 	// Build type specifier LIST. If typedef_alias is non-empty, emit
 	// ID("alias") — c2mir's checker resolves it from the typedef SPEC_DECL.
 	void append_type_specs(node_t list, DataDef *dd);
+	// Build the type-specifier list for a compound-literal element/object type:
+	// emits ID(alias) for a typedef, N_STRUCT/N_UNION for a tagged aggregate,
+	// inlined members for an anonymous aggregate, else falls back to
+	// append_type_specs. Shared by translate_struct_lit's scalar and array paths.
+	void append_lit_type_spec(node_t spec, DataDef *dd,
+				  const std::string &typedef_name);
 	node_t type_list(DataDef *dd, const std::string &typedef_alias = "");
 	node_t pointer();
 

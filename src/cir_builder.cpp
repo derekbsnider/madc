@@ -1845,6 +1845,36 @@ node_t CirBuilder::init_value(TokenBase *elem, bool target_is_aggregate)
 // exactly the cast's type-name node plus the brace initializer (see c2mir.c
 // unary_expr / N_COMPOUND_LITERAL). The element list reuses init_value, the
 // same lowering an ordinary `T x = {...}` declaration uses.
+// Build the type-specifier list for a compound-literal element/object type.
+// Mirrors a cast / var_decl spec: a typedef alias becomes ID("alias"); a tagged
+// struct/union becomes `struct Tag`/`union Tag`; an anonymous aggregate inlines
+// its members; anything else (scalar/builtin) defers to append_type_specs.
+void CirBuilder::append_lit_type_spec(node_t spec, DataDef *dd,
+				      const std::string &typedef_name)
+{
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+	if (!typedef_name.empty()) {
+		// Named via a typedef: emit ID("alias") so c2mir resolves the
+		// (possibly anonymous struct/union) layout from the typedef.
+		append(spec, id(typedef_name.c_str()));
+	} else if (sdd && !dd->is_complex() && !sdd->is_anonymous) {
+		// A tagged struct/union: `struct Tag` / `union Tag`.
+		append(spec, node2(sdd->union_layout ? N_UNION : N_STRUCT,
+				   id(sdd->name.c_str()), ignore()));
+	} else if (sdd && !dd->is_complex()) {
+		// Anonymous struct/union with no typedef alias: inline the full
+		// member definition, matching var_decl's anon_sdd path.
+		node_t ml = list();
+		for (size_t i = 0; i < sdd->members.size(); i++)
+			append(ml, member_node(sdd->members[i], sdd));
+		append(spec, node2(sdd->union_layout ? N_UNION : N_STRUCT,
+				   ignore(), ml));
+	} else {
+		// Scalar / builtin element type.
+		append_type_specs(spec, dd);
+	}
+}
+
 node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 {
 	DataDef *dd = slit->datadef();
@@ -1863,7 +1893,12 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 	// the same INIT(LIST(), value) lowering as any aggregate.
 	if (slit->array_elem_dd) {
 		node_t aspec = list();
-		append_type_specs(aspec, slit->array_elem_dd);
+		// The element type may be a struct/union/typedef (e.g.
+		// `(S[]){{.b=3}}`, pr98366), not just a scalar — build the spec
+		// the same way the object path below does. slit->typedef_name
+		// carries the element's typedef alias for the array case.
+		append_lit_type_spec(aspec, slit->array_elem_dd,
+				     slit->typedef_name);
 		node_t adecl_list = list();
 		append(adecl_list, node3(N_ARR, ignore(), list(), ignore()));
 		node_t atype = node2(N_TYPE, aspec,
@@ -1877,29 +1912,7 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 
 	// ---- Build the N_TYPE type-name node (mirrors a cast / var_decl spec). ----
 	node_t spec = list();
-	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
-	if (!slit->typedef_name.empty()) {
-		// Named via a typedef: emit ID("alias") so c2mir resolves the
-		// (possibly anonymous struct/union) layout from the typedef.
-		append(spec, id(slit->typedef_name.c_str()));
-	} else if (sdd && !dd->is_complex() && !sdd->is_anonymous) {
-		// A tagged struct/union: `struct Tag` / `union Tag`.
-		append(spec, node2(sdd->union_layout ? N_UNION : N_STRUCT,
-				   id(sdd->name.c_str()), ignore()));
-	} else if (sdd && !dd->is_complex()) {
-		// Anonymous struct/union with no typedef alias: inline the full
-		// member definition, matching var_decl's anon_sdd path.
-		node_t ml = list();
-		for (size_t i = 0; i < sdd->members.size(); i++)
-			append(ml, member_node(sdd->members[i], sdd));
-		append(spec, node2(sdd->union_layout ? N_UNION : N_STRUCT,
-				   ignore(), ml));
-	} else {
-		// Scalar / builtin element type (array compound literals reach
-		// here via their synthetic element struct, but the common case is
-		// covered above).
-		append_type_specs(spec, dd);
-	}
+	append_lit_type_spec(spec, dd, slit->typedef_name);
 	node_t type_node = node2(N_TYPE, spec, node2(N_DECL, ignore(), list()));
 
 	// ---- Build the initializer list: LIST( INIT(LIST(), value), ... ). ----
@@ -2074,8 +2087,15 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// alias spec (ID("HARD_REG_SET")) already implies the typedef's dims,
 		// so emit only the variable's OWN leading dims here — skip the trailing
 		// dims contributed by the alias.
+		// NOTE: this flattening happens ONLY in the parser's non-pointer path.
+		// When the declarator has a pointer prefix (`A3_28 *paa[]`, is_ptr), the
+		// parser leaves the typedef's array dims in the pointee type (already
+		// peeled into ptr_array_dims above and emitted as pointer-to-array
+		// suffixes), so v->dims holds only the variable's OWN dims and nothing
+		// must be skipped. Gating on !is_ptr keeps the outer `[]` of an
+		// array-of-pointer-to-typedef'd-array (pr98366/strlen-4 family).
 		size_t skip_tail = 0;
-		if (!v->typedef_name.empty() && m_prog) {
+		if (!is_ptr && !v->typedef_name.empty() && m_prog) {
 			datatype_map_iter it = m_prog->datatype_map.find(v->typedef_name);
 			if (it != m_prog->datatype_map.end() && it->second) {
 				std::vector<uint32_t> tdims;
@@ -6994,7 +7014,8 @@ node_t CirBuilder::translate_module(Program *prog)
 			size_t nparam = fd->parameters.size();
 			if (fd->is_varargs && nparam > 0) nparam--;
 			for (size_t i = 0; i < nparam; i++) {
-				char pname[16];
+				// 'p' + up to 20 digits (size_t max) + NUL.
+				char pname[24];
 				snprintf(pname, sizeof(pname), "p%zu", i);
 				append(param_list, param_decl(fd->parameters[i], pname));
 			}

@@ -633,19 +633,19 @@ typedef struct { unsigned long re; unsigned long im; } __madc_culong;
 // T = scalar type, N = name suffix (e.g. cdouble, cfloat)
 #define MADC_COMPLEX_OPS(T, N) \
 extern "C" __madc_##N __madc_##N##_add(__madc_##N a, __madc_##N b) \
-    { return (__madc_##N){a.re+b.re, a.im+b.im}; } \
+    { return (__madc_##N){(T)(a.re+b.re), (T)(a.im+b.im)}; } \
 extern "C" __madc_##N __madc_##N##_sub(__madc_##N a, __madc_##N b) \
-    { return (__madc_##N){a.re-b.re, a.im-b.im}; } \
+    { return (__madc_##N){(T)(a.re-b.re), (T)(a.im-b.im)}; } \
 extern "C" __madc_##N __madc_##N##_mul(__madc_##N a, __madc_##N b) \
-    { return (__madc_##N){a.re*b.re - a.im*b.im, a.re*b.im + a.im*b.re}; } \
+    { return (__madc_##N){(T)(a.re*b.re - a.im*b.im), (T)(a.re*b.im + a.im*b.re)}; } \
 extern "C" __madc_##N __madc_##N##_div(__madc_##N a, __madc_##N b) \
     { T denom = b.re*b.re + b.im*b.im; \
-      return (__madc_##N){(a.re*b.re + a.im*b.im)/denom, \
-                          (a.im*b.re - a.re*b.im)/denom}; } \
+      return (__madc_##N){(T)((a.re*b.re + a.im*b.im)/denom), \
+                          (T)((a.im*b.re - a.re*b.im)/denom)}; } \
 extern "C" __madc_##N __madc_##N##_conj(__madc_##N a) \
-    { return (__madc_##N){a.re, -a.im}; } \
+    { return (__madc_##N){a.re, (T)(-a.im)}; } \
 extern "C" __madc_##N __madc_##N##_neg(__madc_##N a) \
-    { return (__madc_##N){-a.re, -a.im}; } \
+    { return (__madc_##N){(T)(-a.re), (T)(-a.im)}; } \
 extern "C" int __madc_##N##_eq(__madc_##N a, __madc_##N b) \
     { return a.re == b.re && a.im == b.im; } \
 extern "C" int __madc_##N##_ne(__madc_##N a, __madc_##N b) \
