@@ -51,13 +51,22 @@ c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
   LHS-size from narrower source, local-init same) → garbage; added `complex_to_complex()` (load each
   component at source width, cast to dest component type, store into a fresh temp) called from all
   three. Stock c2m miscompiled all three forms (1 -1 now). `MIR_COMMIT` `8f97e4f`→`838b116`.
-  `20050121-1` → `lvalue required as
-  left operand of assignment` in the `_Complex long double` instantiation of its `T(type,name)`
-  macro (front-end lvalue/codegen for long-double-complex). `complex-6` → c2m itself **SIGSEGVs**
-  (rc 139) during compile/interp (a c2mir/MIR crash, hardest). `pr38151` → emits `warning -- empty
-  struct/union` then rc 1 (needs a deeper look — empty-aggregate + `_Complex`/`va_arg` path). Most
-  tractable first: `20020411-1` (missing builtin) then `20050121-1` (front-end lvalue).
+  **The remaining three are ALL gated on one FEATURE: integer-complex types** (`_Complex int`/
+  `char`/`short`/`long`/`long long`), which c2mir lacks by design (only TP_CFLOAT/CDOUBLE/CLDOUBLE;
+  c2mir.c:5916 "promote integer operands to double component"). NOT a grind-fix — a substantial
+  feature (new basic types + sizing + ABI + arithmetic + real/imag lvalues + conversions). DEFERRED
+  under "bugs before features". Evidence: `20050121-1` fails only at the `T(char/short/int/long)`
+  expansions (`__real r = …` lvalue on `_Complex int`), float/double/ldouble pass. `complex-6` has
+  `TEST(int)`/`TEST(long int)`. `pr38151` has a `_Complex int b;` struct member. All three flip
+  together once integer-complex lands; until then, scoped/deferred.
 - union / type-punning: `960416-1`, `pr23324` (union+bitfields), `zerolen-1` (union+zero-len-array).
+  **ATTRIBUTED 2026-06-02 (gcc✓ clang✓ c2m✗):** `960416-1` = **cast-to-union** `(union_t)x` (GNU
+  ext; c2m "conversion to non-scalar type requested"). Tier-1 lowerable to a compound literal
+  `(union U){ .matching_member = x }` (c2mir supports N_COMPOUND_LITERAL) — but must find the union
+  member whose type matches the operand (not assume the first); fiddly, and it's the ONLY
+  cast-to-union test (low leverage). `pr23324` = c2m ABORTS (miscompile) on an **empty-union-by-value
+  return** (`union at6 {}`) + a big mixed struct (bitfields + nested struct + unions) passed by value
+  — a deep ABI/passing bug, DEFER (gnarly, not contained).
 - varargs+struct: `20041214-1` (`va_arg`/`va_start`), `pr38151`.
 - value-mismatch optimizer PRs (need per-test reduce): `pr40657 pr43220 pr46309 pr71626-2
   pr85095 (__builtin_add_overflow) pr88904 20050929-1 20221006-1 970217-1 20021127-1
