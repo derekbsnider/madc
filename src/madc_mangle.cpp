@@ -231,6 +231,9 @@ struct TypeNode {
 	bool is_builtin = false;
 	std::string builtin;               // Itanium code if builtin (e.g. "c")
 	int tparam = -1;                   // >=0 if this type is template-param #N ($Tn)
+	bool is_funcptr = false;           // pointer-to-function "R (*)(P,…)" → PF…E
+	std::vector<TypeNode> fp_ret;      // [0] = return type (if is_funcptr)
+	std::vector<TypeNode> fp_params;   // parameter types (if is_funcptr)
 	std::vector<NameComponent> name;   // qualified name chain (if !is_builtin)
 };
 
@@ -358,6 +361,19 @@ TypeNode parse_type(const std::string &raw)
 		return t;
 	}
 
+	// Function-pointer type "<ret> (*)(<params>)" → PF<ret><params>E.
+	size_t fp = s.find("(*)(");
+	if (fp != std::string::npos) {
+		t.is_funcptr = true;
+		t.decos.push_back("P");                 // pointer to the function type
+		t.fp_ret.push_back(parse_type(mstrip(s.substr(0, fp))));
+		size_t pend = s.rfind(')');
+		std::string ps = s.substr(fp + 4, pend - (fp + 4));
+		for (const auto &a : split_targs(ps))
+			if (!a.empty() && a != "void") t.fp_params.push_back(parse_type(a));
+		return t;
+	}
+
 	std::string code = builtin_code(s);
 	if (!code.empty()) {
 		t.is_builtin = true;
@@ -394,6 +410,19 @@ public:
 			std::string ref = find_sub(canon);
 			if (!ref.empty()) enc = ref;
 			else { enc = tparam_ref(t.tparam); add_sub(canon); }
+		} else if (t.is_funcptr) {
+			// Function type F<ret><params>E (a substitution candidate). The
+			// pointer "P" deco is applied by the loop below → PF…E.
+			std::string ref = find_sub(canon);
+			if (!ref.empty()) enc = ref;
+			else {
+				std::string r = encode_type(t.fp_ret[0]);
+				std::string ps;
+				if (t.fp_params.empty()) ps = "v";
+				else for (const auto &p : t.fp_params) ps += encode_type(p);
+				enc = "F" + r + ps + "E";
+				add_sub(canon);
+			}
 		} else {
 			enc = encode_core(t);
 		}
@@ -534,6 +563,11 @@ private:
 	static std::string canon_type_core(const TypeNode &t)
 	{
 		if (t.tparam >= 0) return "$T" + std::to_string(t.tparam);
+		if (t.is_funcptr) {
+			std::string c = "F" + canon_type(t.fp_ret[0]);
+			for (const auto &p : t.fp_params) c += canon_type(p);
+			return c + "E";
+		}
 		if (t.is_builtin) return "#" + t.builtin;
 		return canon_name_prefix(t.name, t.name.size() - 1);
 	}
@@ -751,6 +785,12 @@ std::string itanium_mangle_std_free_template(const std::string &name,
 	std::string opOrName = code.empty() ? source_name(name) : code;
 	ItaniumMangler m;
 	return m.mangle_std_free_template(opOrName, targs, ret, params);
+}
+
+std::string itanium_mangle_std_var(const std::string &name)
+{
+	// A namespace-scope variable under std: _ZSt <length-prefixed-name>.
+	return "_ZSt" + source_name(name);
 }
 
 // ---- canonical std:: type spellings -----------------------------------------

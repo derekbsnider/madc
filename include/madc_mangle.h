@@ -98,6 +98,14 @@ std::string itanium_mangle_std_free_template(const std::string &name,
         const std::string &ret,
         const std::vector<std::string> &params);
 
+// Mangle a namespace-scope std:: variable, e.g. std::cout → "_ZSt4cout".
+std::string itanium_mangle_std_var(const std::string &name);
+
+// Function-pointer types are supported in the _sub encoders via the spelling
+//   "<ret> (*)(<param>, …)"   e.g. "X& (*)(X&)" → "PF<ret><params>E".
+// (Used for the ostream manipulator operator<< — itanium_mangle_operator_sub
+// with a function-pointer parameter.)
+
 // Canonical std:: type spellings (full default template args), so callers
 // don't hand-write them. Each returns the C++ type string accepted by the
 // _sub helpers above.

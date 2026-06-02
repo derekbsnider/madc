@@ -353,6 +353,23 @@ TEST_SUITE("Itanium substitution: non-member std template operators") {
 	}
 }
 
+TEST_SUITE("Itanium: std globals + manipulator operator (function-pointer param)") {
+	static const std::string OS =
+		"std::basic_ostream<char,std::char_traits<char>>";
+
+	TEST_CASE("std namespace-scope variables") {
+		CHECK(itanium_mangle_std_var("cout") == "_ZSt4cout");
+		CHECK(itanium_mangle_std_var("cin")  == "_ZSt3cin");
+		CHECK(itanium_mangle_std_var("cerr") == "_ZSt4cerr");
+		CHECK(itanium_mangle_std_var("clog") == "_ZSt4clog");
+	}
+
+	TEST_CASE("ostream manipulator operator<<(ostream& (*)(ostream&))") {
+		CHECK(itanium_mangle_operator_sub(OS, "<<", {OS + "& (*)(" + OS + "&)"}, false)
+		      == "_ZNSolsEPFRSoS_E");
+	}
+}
+
 TEST_SUITE("Itanium substitution: type encoder sanity") {
 
 	TEST_CASE("Standalone std types wrap N..E only when nested") {
