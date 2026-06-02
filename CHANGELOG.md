@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Fixed — static-local initializers (`pr53084`, two-part) (2026-06-02, MIR fork `8f97e4f`)
+
+Fourth c2mir-bug-grind fix (two-part). **gcc.c-torture 1552 → 1556 (92.3%)** — `+4`
+(`pr53084`, `20071029-1`, `pr124358`, `string-opt-17`), zero regressions, SMAUG boots,
+fulltest 451 (`+1` `teststaticlocalinit`).
+
+- **madc parser (the real prize):** a dead asmjit-era hoist. For a `static` local with an
+  initializer, the parser pushed the initializer into the file-scope statement stream
+  (`tkProgram->statements`) and cleared it from the declaration, relying on the removed
+  JIT's `TokenDecl::compile()` to run it once at startup. The CIR/c2mir pipeline never
+  emits those hoisted statements, so it silently dropped **every scalar static-local
+  initializer**: `static int x=7` read 0, `static double d=2.5` read 0, `static const char
+  *p="foo"` was left null → SIGSEGV on `p[0]`. (Masked because madc doesn't propagate
+  `main`'s return to the exit code — rc-based tests read green; only printing exposed it.)
+  Fix: keep the initializer on the declaration so it emits as the `SPEC_DECL`'s constant
+  initializer — c2mir initializes a `static` once at load (gcc semantics).
+- **c2mir (fork `8f97e4f`):** `check_const_addr_p` gated an `N_STR` base on
+  `curr_scope == top_scope`, rejecting a *computed* string-literal address (`"foo"+1`) for a
+  block-scope `static`. A string literal has static storage at any scope (C11 6.4.5p6) →
+  `return TRUE`. `MIR_COMMIT` `772efeb` → `8f97e4f`.
+
 ### Fixed — zero-length array members (`T x[0]`) (2026-06-02, MIR fork `772efeb`)
 
 Third c2mir bug, a two-part fix. **gcc.c-torture 1551 → 1552 (92.1%)**, zero regressions,

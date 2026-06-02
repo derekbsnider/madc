@@ -14,9 +14,22 @@ GCC-ism not a bug). `bitfld-5` = inline-asm floor.
 c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
 (tractable, upstreamable); MIR = the IR machine (libmir gen/interp/regalloc).
 
-**FIXED so far (3 of the 32 flipped):**
+**FIXED so far (4 of the 32 flipped):**
 - statement-expression struct/union value copy-out (`20020320-1`) — fork `caa6ff9`.
 - statement-expression ending in post-`++`/`--` value context (`950906-1`) — fork `74adb6a`.
+- **`pr53084` — static-local string-literal-address init — DONE (two-part, fork `8f97e4f` + madc parser).**
+  Recovered **+4** (`pr53084`, `20071029-1`, `pr124358`, `string-opt-17`), 1552→1556.
+  (a) c2mir (`8f97e4f`): `check_const_addr_p` gated an `N_STR` base on `curr_scope == top_scope`,
+  rejecting a *computed* string-literal address (`"foo"+1`) in a block-scope `static` init; a string
+  literal has static storage at ANY scope (C11 6.4.5p6) → `return TRUE` (the data emitter already
+  handles N_STR at any scope via `get_string_data`). (b) madc PARSER (the real prize): a dead
+  asmjit-era hoist — for a `static` local the parser pushed `td->initialize` into
+  `tkProgram->statements` and cleared it, relying on the removed JIT's `TokenDecl::compile()`. The
+  CIR pipeline never emits those hoisted file-scope statements, so it silently dropped EVERY scalar
+  static-local init (`static int x=7` read 0, `static double d=2.5` read 0, `static const char
+  *p="foo"` null→SIGSEGV; hidden because madc doesn't propagate `main`'s return to the exit code).
+  Fix: keep `td->initialize` on the decl so `var_decl` emits it as the `SPEC_DECL`'s constant
+  initializer — c2mir inits a static once at load (gcc semantics). `MIR_COMMIT` bumped `772efeb`→`8f97e4f`.
 - **`zerolen-1` — zero-length array member `T x[0]` — DONE (two-part, fork `772efeb` + madc parser).**
   (a) madc parser: the nested/anonymous-struct member path didn't record per-dim shape and
   dropped a trailing `[0]`/`[]` member to a SCALAR (`char name[0]`→`char name`); now records
@@ -25,27 +38,13 @@ c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
   offset 0; now gets the current aligned offset without growing the type. C99 FAM `[]`
   unchanged. `MIR_COMMIT` bumped `74adb6a`→`772efeb`.
 
-**SCOPED, NOT YET FIXED — `pr53084` (static-local init with a string-literal address) is TWO-PART:**
-- minimal repro `int main(){ static const char *p = "foo" + 1; ... }` (file scope works; block scope fails).
-- **c2mir half:** `check_const_addr_p` (c2mir.c ~7821) returns `curr_scope == top_scope` for an
-  N_STR base, so a *computed* string-literal address (`"foo"+1`, an N_ADD) is rejected as a
-  non-constant initializer for a block-scope static. A string literal has static storage at any
-  scope → likely `return TRUE;` (plain `static char*p="x"` already works via the explicit N_STR
-  path at 8020-8021, so only computed addresses hit this).
-- **madc half (needs real investigation):** madc mis-initializes a block-scope `static const char
-  *p = "x"` to a WRONG (non-null, invalid) address → `p[0]` SIGSEGVs (p9 `p==0`→false confirms
-  non-null; gcc/stock-c2m pass). NOTE `--emit=c11` drops the initializer entirely (`static char
-  *p;`) but that's the SEPARATE emit-c renderer, not the JIT/c2mir feed — diagnose via `--dump-cir`,
-  not emit-c. This is a madc static-local-init codegen bug (string-literal address not materialized
-  for block-scope statics). Both halves needed before the test flips; don't ship either alone.
-
 **Remaining c2mir/MIR bugs — rough clusters (next targets, c2mir-front-end first):**
 - _Complex arithmetic/ABI: `20020411-1` (`__builtin_conjf`), `20050121-1` (`_Complex long double`),
   `complex-6` (SIGSEGV), `pr38151` (`_Complex`+`va_arg`). Fork owns `_Complex`; these are corners.
 - union / type-punning: `960416-1`, `pr23324` (union+bitfields), `zerolen-1` (union+zero-len-array).
 - varargs+struct: `20041214-1` (`va_arg`/`va_start`), `pr38151`.
-- value-mismatch optimizer PRs (need per-test reduce): `pr40657 pr43220 pr46309 pr53084 pr71626-2
-  pr85095 (__builtin_add_overflow) pr88904 pr124358 20050929-1 20221006-1 970217-1 20021127-1
+- value-mismatch optimizer PRs (need per-test reduce): `pr40657 pr43220 pr46309 pr71626-2
+  pr85095 (__builtin_add_overflow) pr88904 20050929-1 20221006-1 970217-1 20021127-1
   (builtin llabs fold) 920929-1 pr77767/970217-1 (param array-bound side effects = VM-type, VLA-adjacent)`.
 - FLOOR (defer, not c2mir-front-end): `20010904-1/2` (`aligned(32)`>16), `vla-dealloc-1` (VLA),
   `frame-address` (`__builtin_frame_address`), `20020227-1` (unaligned), `strlen-4` (ptr-to-array
