@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed — `const`-bound VLA: a `const` var with a runtime initializer is a VLA bound (2026-06-02, madc-only)
+
+**gcc.c-torture 1564 → 1565 (92.9%)**, recovers `20221006-1`, zero regressions, SMAUG boots.
+OTHER-38 group A (VLA follow-ons).
+
+`int M1[len][len]` where `const int len = atoi(argv[1]);` was rejected with "Expecting integer
+constant expression": the array-dimension classifier (`bracket_dim_uses_runtime_value`) treated
+*any* `const`-qualified variable as a compile-time-constant dimension. A `const` qualifier does
+not make a value a compile-time constant (C11 6.7.6.2) — `const int len = atoi(...)` has no folded
+value. Fix: a `const` var folds to a constant dimension **only** when `read_constant_integer`
+succeeds (the compile-time-known-scalar oracle already used by `resolve_integer_constant`);
+otherwise it is a runtime VLA bound and lowers through the existing multidim VLA machinery. Enum
+constants and folded `const` globals still fold; local `const`s with a runtime initializer that
+previously *threw* now compile.
+
 ### Added — VLAs (core): multidim, runtime `sizeof`, param-bound side effects (2026-06-02, madc-only)
 
 Core VLA support — **all 6 VLA integration tests pass** (advanced torture forms — VLA-in-struct, `const`-bound, goto-dealloc, multidim-via-pointer — still remain). **gcc.c-torture 1559 → 1564

@@ -332,9 +332,14 @@ sweep method `/workspace/mir/c2m FILE -ei` for c2mir attribution). Categories:
 - `20040423-1`, `align-nest` — **VLA member inside a struct** (`struct { int c[i+2]; }`). madc: "unhandled
   expression: TokenStructDef". The struct-def path doesn't handle a runtime-sized member. Likely needs
   the struct member lowered like a VLA (pointer + runtime offset) OR the struct itself VLA-sized.
-- `20221006-1` — VLA bound is a `const int len = atoi(...)` (runtime const). madc: "Expecting integer
-  constant expr" — bracket_dim_needs_runtime_value treats a `const` var as compile-time-constant, so it
-  is NOT detected as a VLA. Fix: a const-qualified var with a non-constant initializer is still runtime.
+- ✅ **DONE (develop `fcaea2d`, torture 1564→1565):** `20221006-1` — VLA bound is `const int len = atoi(...)`
+  (runtime const). Was "Expecting integer constant expr": `bracket_dim_uses_runtime_value` treated ANY
+  `const` var as compile-time-constant. Fix: a const var folds ONLY when `read_constant_integer` succeeds
+  (the compile-time-known oracle); a const with a runtime initializer (`var->data` NULL) is a runtime VLA
+  bound and lowers through the existing multidim machinery. Enum/folded-const-global dims still fold.
+  madc-only, zero regressions, SMAUG clean. NOTE pre-existing (separate) gaps surfaced: 1D-VLA `sizeof`
+  returns pointer size (affects plain runtime `int a[n]` too, NOT this test); global `const G=lit` array
+  dim reads 0 (var->data calloc'd-to-0 but not folded at parse time).
 - `pr22061-1` (SIGABRT), `pr22061-3`, `pr22061-4` — VLA bound is identifier `N`; madc "use of undeclared
   identifier 'N'" (3/4) — the bound references something not in scope at the right time (param/global
   ordering), and pr22061-1 miscompiles at runtime.
