@@ -20,9 +20,15 @@ fork/floor. Attribution evidence (so the next session doesn't re-triage):
   indefinite, but float→int32 narrows through 64-bit and loses it → **MIR/c2mir CAST codegen
   (fork)**, and it's UB territory. NOT front-end.
 - **struct-valued statement-expression** (`20020320-1`, PR c/5354: `({struct s; ..; s;}).x - (..).x`):
-  **CONFIRMED a c2mir bug** — stock `c2m -ei` AND `-eg` both return 0 (gcc=1) on the reduced
-  `tmp/r_sx3.c`. madc emits a faithful cir_node tree (verified `--dump-cir`); the miscompile is
-  downstream in c2mir/MIR. → fork.
+  **FIXED 2026-06-02 (MIR fork caa6ff9, MIR_COMMIT bumped; gcc-torture 1549->1550).** Was a
+  **c2mir bug** (NOT the MIR machine, NOT madc) — stock `c2m -ei` AND `-eg` both returned 0
+  (gcc=1) on the reduced `tmp/r_sx3.c`; madc emitted a faithful cir_node tree. c2mir's N_STMTEXPR
+  gen returned the in-block local's lvalue, and c2mir reuses that slot across non-overlapping
+  sibling scopes, so two stmt-exprs in one expr aliased one slot. Fix: copy a TM_STRUCT/TM_UNION
+  stmt-expr value into a fresh ALLOCA temp. Pre-existing upstream (blame c8e3c4f) -> clean
+  upstream candidate. c2mir-vs-MIR: c2mir = C->MIR front-end (IR gen, where this lived); MIR = the
+  IR machine (libmir gen/interp/regalloc). Lined-up bugs are mostly c2mir front-end
+  (tractable+upstreamable); genuine MIR-machine work (SIMD, __builtin_setjmp) stays last.
 - **Only arguably-pure-front-end scrap left:** `pr77767` (PR c/77767) — side effects in parameter
   array-bound declarators (`int b[a++]`): the size expr must be evaluated for side effects. ~1
   test, obscure, low value. `scalar_storage_order` non-bitfield path is unlowered too but its 2
