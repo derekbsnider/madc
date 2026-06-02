@@ -68,8 +68,14 @@ c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
   return** (`union at6 {}`) + a big mixed struct (bitfields + nested struct + unions) passed by value
   — a deep ABI/passing bug, DEFER (gnarly, not contained).
 - varargs+struct: `20041214-1` (`va_arg`/`va_start`), `pr38151`.
-- value-mismatch optimizer PRs (need per-test reduce): `pr40657 pr43220 pr46309 pr71626-2
-  pr85095 (__builtin_add_overflow) pr88904 20050929-1 20221006-1 970217-1 20021127-1
+- value-mismatch optimizer PRs — **ATTRIBUTED THROUGH MADC 2026-06-02 (the "value-mismatch" label
+  was wrong for most; method note: attribute via `bin/madc` NOT stock `c2m` — stock c2m's TEXT
+  PARSER chokes on `volatile`/VLA/`asm` that madc parses itself and never feeds to c2mir):**
+  `pr40657`/`pr46309`/`pr88904` = **inline `asm`** (`asm volatile(...)`) → FLOOR gap (c2mir/MIR have
+  no inline asm; the "syntax error on volatile" from stock c2m was a red herring — the real token is
+  `asm`). `pr43220`/`970217-1`/`920929-1` = **VLA** → FLOOR. Genuine madc-path miscompiles worth a
+  reduce: **`pr85095`** (`__builtin_add_overflow`, madc SIGABRTs = wrong overflow value) and
+  **`20050929-1`** (madc SIGABRT). Remaining unverified: `pr71626-2 20221006-1 20021127-1
   (builtin llabs fold) 920929-1 pr77767/970217-1 (param array-bound side effects = VM-type, VLA-adjacent)`.
 - FLOOR (defer, not c2mir-front-end): `20010904-1/2` (`aligned(32)`>16), `vla-dealloc-1` (VLA),
   `frame-address` (`__builtin_frame_address`), `20020227-1` (unaligned), `strlen-4` (ptr-to-array
