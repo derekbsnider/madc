@@ -56,19 +56,21 @@ g++/`c++filt` as canon; `.mad` integration tests.
 
 ---
 
-## Task 1: Mangler doctests for the ofstream/ifstream/basic_ios member symbols
+## Task 1: Mangler doctests for the ofstream/ifstream/basic_ios member symbols ✅ DONE (9582beb)
 
 **Files:** Modify `tests/unit/test_mangle.cpp`
 
-- [ ] **Step 1: Confirm each symbol vs the real toolchain**
-  `for s in _ZNSt14basic_ofstreamIcSt11char_traitsIcEEC1Ev _ZNSt14basic_ofstreamIcSt11char_traitsIcEE5closeEv _ZNKSt9basic_iosIcSt11char_traitsIcEE4goodEv …; do c++filt "$s"; done`
-- [ ] **Step 2: Add a doctest** asserting `itanium_mangle_ctor_sub`/`_dtor_sub`/`_member_sub` on
+- [x] **Step 1: Confirm each symbol vs the real toolchain** — all symbols demangle via `c++filt`
+  AND are exported by `nm -D libstdc++` (open/close/is_open real exports; good/eof weak
+  vague-linkage `W` exports → the +248 calls will link).
+- [x] **Step 2: Add a doctest** asserting `itanium_mangle_ctor_sub`/`_dtor_sub`/`_member_sub` on
   `"std::basic_ofstream<char,std::char_traits<char>>"`, `"std::basic_ifstream<…>"`, and
-  `"std::basic_ios<char,std::char_traits<char>>"` produce those exact symbols. (The `_sub` encoder
-  already handles these shapes — this task PROVES it before any codegen depends on it. The
-  `_Ios_Openmode` param type encodes as `St13_Ios_Openmode`; verify.)
-- [ ] **Step 3: Build + run** `tmp/test_mangle` — green. If any symbol mismatches, fix the mangler
-  generally (never hardcode), as in W1a/b.
+  `"std::basic_ios<char,std::char_traits<char>>"` produce those exact symbols. CONFIRMED: the
+  `_sub` encoder already handles these shapes with NO mangler change — including
+  `std::_Ios_Openmode`→`St13_Ios_Openmode` (a non-template std type) and the plain-std
+  (non-`__cxx11`) `basic_ofstream`/`ifstream`/`ios` spellings.
+- [x] **Step 3: Build + run** `tmp/test_mangle` — green: 40→44 cases / 134→143 assertions, zero
+  regression. No mangler fix was needed (the hypothesis held).
 
 ## Task 2: Author the header(s) — declare the real stream classes (layout + inheritance)
 
