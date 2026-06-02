@@ -25,7 +25,21 @@ c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
   offset 0; now gets the current aligned offset without growing the type. C99 FAM `[]`
   unchanged. `MIR_COMMIT` bumped `74adb6a`→`772efeb`.
 
-**Remaining 30 c2mir/MIR bugs — rough clusters (next targets, c2mir-front-end first):**
+**SCOPED, NOT YET FIXED — `pr53084` (static-local init with a string-literal address) is TWO-PART:**
+- minimal repro `int main(){ static const char *p = "foo" + 1; ... }` (file scope works; block scope fails).
+- **c2mir half:** `check_const_addr_p` (c2mir.c ~7821) returns `curr_scope == top_scope` for an
+  N_STR base, so a *computed* string-literal address (`"foo"+1`, an N_ADD) is rejected as a
+  non-constant initializer for a block-scope static. A string literal has static storage at any
+  scope → likely `return TRUE;` (plain `static char*p="x"` already works via the explicit N_STR
+  path at 8020-8021, so only computed addresses hit this).
+- **madc half (needs real investigation):** madc mis-initializes a block-scope `static const char
+  *p = "x"` to a WRONG (non-null, invalid) address → `p[0]` SIGSEGVs (p9 `p==0`→false confirms
+  non-null; gcc/stock-c2m pass). NOTE `--emit=c11` drops the initializer entirely (`static char
+  *p;`) but that's the SEPARATE emit-c renderer, not the JIT/c2mir feed — diagnose via `--dump-cir`,
+  not emit-c. This is a madc static-local-init codegen bug (string-literal address not materialized
+  for block-scope statics). Both halves needed before the test flips; don't ship either alone.
+
+**Remaining c2mir/MIR bugs — rough clusters (next targets, c2mir-front-end first):**
 - _Complex arithmetic/ABI: `20020411-1` (`__builtin_conjf`), `20050121-1` (`_Complex long double`),
   `complex-6` (SIGSEGV), `pr38151` (`_Complex`+`va_arg`). Fork owns `_Complex`; these are corners.
 - union / type-punning: `960416-1`, `pr23324` (union+bitfields), `zerolen-1` (union+zero-len-array).
