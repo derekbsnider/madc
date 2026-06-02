@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fixed — c2mir: struct-valued statement-expression miscompile (2026-06-02, MIR fork `caa6ff9`)
+
+First of the "bugs before features" c2mir fixes. **gcc.c-torture 1549 → 1550 (92.0%)**,
+zero regressions, SMAUG boots, fulltest 450.
+
+A GNU statement-expression whose value is a struct/union (`({ …; obj; })`) returns the
+lvalue of an in-block local, but c2mir reuses that local's stack slot across
+non-overlapping sibling scopes. With two in one expression — `({..A..}).x - ({..B..}).x`
+— both member loads are deferred to the enclosing operator and read whichever block ran
+last, yielding a wrong result (`20020320-1`). Confirmed a **c2mir** bug (not the MIR
+machine, not madc): stock `c2m -ei`/`-eg` both miscompile a minimal reducer. Fix (in the
+[madc MIR fork](https://github.com/derekbsnider/mir), `caa6ff9`): copy a struct/union
+stmt-expr value into a fresh `ALLOCA` temporary so each has independent storage, matching
+GCC. Pre-existing upstream since statement-expression support landed (`c8e3c4f`) — a clean
+upstream candidate. `MIR_COMMIT` bumped `1fdf44d` → `caa6ff9`.
+
 ### Fixed — aggregate-init cluster: array compound literals + array-of-pointer declarators (2026-06-02, develop @ ec97689)
 
 The last cheap front-end parity cluster. **gcc.c-torture 1547 → 1549 (91.9%)**, zero

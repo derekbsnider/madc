@@ -1,9 +1,8 @@
-# gcc.c-torture CIR failset as of develop @ ec97689 (1549/1685 pass, 106 fail, 30 skip). Basenames; diff next run against this for regressions.
+# gcc.c-torture CIR failset as of develop (MIR fork caa6ff9), 1550/1685 pass. FAIL+TIMEOUT basenames; diff next run for regressions.
 20010325-1.c
 20010904-1.c
 20010904-2.c
 20020227-1.c
-20020320-1.c
 20020411-1.c
 20020412-1.c
 20021127-1.c
