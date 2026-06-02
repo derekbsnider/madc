@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed — `__builtin_*_overflow` u64 helper selection (`pr85095`) (2026-06-02, madc-only)
+
+Sixth c2mir-grind fix (madc-only, no fork change). **gcc.c-torture 1557 → 1558 (92.5%)**, zero
+regressions, SMAUG boots, fulltest 451.
+
+`__builtin_add/sub/mul_overflow` with **both operands unsigned 64-bit** miscompiled: the operands
+reach the runtime helper as `long long`, which sign-extends a large unsigned value (`2^64-18 → -18`),
+and `overflow_helper_name` selected the generic `_u64` helper that signed-widens them → wrong
+overflow flag and result (`pr85095`: `f1(16,-16)` gave 0, want 1). The correct `_uu64` helper (which
+reinterprets the inputs as unsigned) already existed but was never selected. Fix: key the `_uu64`
+selection on the **operands'** signedness, not the destination — so `pr85095` (unsigned operands →
+`_uu64`) and `pr91450-1` (`__builtin_mul_overflow(int,int,&u64)`: signed operands → signed-widening
+`_u64`) both pass.
+
 ### Fixed — `__builtin_conjf` + `_Complex` width conversion (`20020411-1`, two-part) (2026-06-02, MIR fork `838b116`)
 
 Fifth c2mir-grind fix (two-part). **gcc.c-torture 1556 → 1557 (92.4%)**, zero regressions,
