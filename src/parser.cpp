@@ -16487,20 +16487,19 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		wrap->right = td->initialize;
 		td->initialize = wrap;
 	    }
-	    // Function-scope static: hoist the initializer to program-startup
-	    // so it runs once, before main() — C semantics. Without this the
-	    // existing skip in TokenDecl::compile (vfSTATIC + tkFunction !=
-	    // tkProgram) drops the initializer entirely; emitting it inline
-	    // in the function body instead would re-init on every call,
-	    // breaking patterns like `static int counter = 5; counter++;`.
-	    // The Variable's storage is already heap-allocated (vfALLOC set
-	    // by addVariable for static), so the assign at program scope
-	    // writes the constant directly into that storage.
-	    if ( gotstatic && code && td->initialize && tkProgram )
-	    {
-		tkProgram->statements.push_back((TokenStmt *)td->initialize);
-		td->initialize = NULL;
-	    }
+	    // Function-scope static: KEEP the initializer on the TokenDecl so the
+	    // CIR backend emits it as the SPEC_DECL's constant initializer. c2mir
+	    // (like gcc) initializes a `static` object ONCE at load time from that
+	    // constant initializer — correct C semantics for `static int c = 5;
+	    // c++;` (init once, increment across calls) with no re-init per entry.
+	    //   The OLD asmjit-era path instead hoisted the initializer into
+	    // tkProgram->statements and cleared td->initialize, relying on
+	    // TokenDecl::compile()'s vfSTATIC skip. That backend is gone; in the
+	    // CIR pipeline those hoisted file-scope statements are never emitted,
+	    // so clearing the initializer silently dropped EVERY scalar static
+	    // local init (`static int x=7` read 0; `static const char *p="x"`
+	    // SIGSEGV'd on null). Leaving td->initialize set lets var_decl emit it
+	    // inline, which is the deepest-layer correct fix (PR-style: pr53084).
 	}
 	update_pointer_object_size_hints(td->initialize);
 
