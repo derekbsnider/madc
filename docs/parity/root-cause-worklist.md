@@ -75,7 +75,18 @@ c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
   no inline asm; the "syntax error on volatile" from stock c2m was a red herring — the real token is
   `asm`). `pr43220`/`970217-1`/`920929-1` = **VLA** → FLOOR. Genuine madc-path miscompiles worth a
   reduce: **`pr85095`** (`__builtin_add_overflow`, madc SIGABRTs = wrong overflow value) and
-  **`20050929-1`** (madc SIGABRT). Remaining unverified: `pr71626-2 20221006-1 20021127-1
+  **`20050929-1`** — **ATTRIBUTED + SCOPED (deep c2mir static-data ordering bug, regression-risky,
+  DEFERRED).** Repro: `struct B e = { &(struct A){1,2}, &(struct A){3,4} };` (sibling compound
+  literals by address in a file-scope initializer). gcc✓, stock c2m SIGSEGVs. Smoking gun (`c2m -S`):
+  the SECOND compound literal's data is emitted **inline mid-stream inside `e`'s data** (`e: ref
+  .lc1` / `.lc2: i32 3; i32 4` / `ref .lc2`), so `e.b` (offset 8) reads the `{3,4}` bytes as a
+  pointer instead of a `ref`. Single CL works, two separate globals work — only multiple CLs in ONE
+  static initializer fail. Root cause: c2mir emits a referenced compound literal's storage lazily
+  (during the parent's `gen_initializer`) rather than as a fully out-of-line item emitted BEFORE the
+  parent's data; consecutive anonymous MIR data items get absorbed into the parent object. Fix =
+  pre-emit referenced CL items before the parent's data — a core static-data-emission ordering change
+  that touches ALL static aggregate init (regression-risky); not a contained grind-fix. PR
+  middle-end/24109. Remaining unverified: `pr71626-2 20221006-1 20021127-1
   (builtin llabs fold) 920929-1 pr77767/970217-1 (param array-bound side effects = VM-type, VLA-adjacent)`.
 - FLOOR (defer, not c2mir-front-end): `20010904-1/2` (`aligned(32)`>16), `vla-dealloc-1` (VLA),
   `frame-address` (`__builtin_frame_address`), `20020227-1` (unaligned), `strlen-4` (ptr-to-array
