@@ -81,8 +81,12 @@ c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
   no inline asm; the "syntax error on volatile" from stock c2m was a red herring — the real token is
   `asm`). `pr43220`/`970217-1`/`920929-1` = **VLA** → FLOOR. Genuine madc-path miscompiles worth a
   reduce: **`pr85095`** (`__builtin_add_overflow`, madc SIGABRTs = wrong overflow value) and
-  **`20050929-1`** — **ATTRIBUTED + SCOPED (deep c2mir static-data ordering bug, regression-risky,
-  DEFERRED).** Repro: `struct B e = { &(struct A){1,2}, &(struct A){3,4} };` (sibling compound
+  **`20050929-1`** — **DONE (fork `4aa628b`, MIR_COMMIT bumped 838b116→4aa628b; torture 1558→1559).**
+  Fix: `gen_initializer`'s global (file-scope) branch now PRE-computes all element values before
+  emitting the object's own data items, so out-of-line compound-literal storage lands before the
+  parent (not spliced mid-stream). Constants gen position-independently → non-CL static inits
+  byte-identical; bit-field members stay inline. Zero regressions, SMAUG boots, fulltest 451.
+  Pre-existing upstream → clean upstream candidate. Repro: `struct B e = { &(struct A){1,2}, &(struct A){3,4} };` (sibling compound
   literals by address in a file-scope initializer). gcc✓, stock c2m SIGSEGVs. Smoking gun (`c2m -S`):
   the SECOND compound literal's data is emitted **inline mid-stream inside `e`'s data** (`e: ref
   .lc1` / `.lc2: i32 3; i32 4` / `ref .lc2`), so `e.b` (offset 8) reads the `{3,4}` bytes as a

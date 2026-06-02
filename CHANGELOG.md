@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Fixed — static-initializer compound-literal ordering (`20050929-1`) (2026-06-02, MIR fork `4aa628b`)
+
+Seventh c2mir-grind fix. **gcc.c-torture 1558 → 1559 (92.5%)**, zero regressions, SMAUG boots,
+fulltest 451.
+
+A file-scope object initialized with **multiple compound-literal addresses**
+(`struct B e = { &(struct A){1,2}, &(struct A){3,4} }`) was miscompiled: each element's value is
+produced by `val_gen`, which emits a compound literal's storage data into the module. The first
+element's data happened to land before the object's own data items (clean), but the 2nd+ element's
+storage was spliced into the **middle** of the object's data stream, and the element's trailing
+`ref` became an anonymous data item attached to the sub-object — truncating the object (`e` ended up
+8 bytes; `e.b` read into the spliced `{3,4}` data → SIGSEGV). gcc passes; stock c2m crashed. Fix
+(fork `4aa628b`): `gen_initializer`'s file-scope branch pre-computes all element values **before**
+emitting the object's own data items, so out-of-line compound-literal storage lands before the
+parent. Constants gen position-independently → non-compound-literal static inits are byte-identical.
+`MIR_COMMIT` `838b116` → `4aa628b`. PR middle-end/24109.
+
 ### Fixed — `__builtin_*_overflow` u64 helper selection (`pr85095`) (2026-06-02, madc-only)
 
 Sixth c2mir-grind fix (madc-only, no fork change). **gcc.c-torture 1557 → 1558 (92.5%)**, zero
