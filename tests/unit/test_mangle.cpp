@@ -275,6 +275,39 @@ TEST_SUITE("Itanium substitution: std::stringstream") {
 	}
 }
 
+TEST_SUITE("Itanium substitution: complete-spec abbreviations (So/Si/Sd)") {
+
+	static const std::string OS =
+		"std::basic_ostream<char,std::char_traits<char>>";
+	static const std::string IS =
+		"std::basic_istream<char,std::char_traits<char>>";
+
+	TEST_CASE("ostream member operator<< overloads") {
+		CHECK(itanium_mangle_operator_sub(OS, "<<", {"double"}, false)       == "_ZNSolsEd");
+		CHECK(itanium_mangle_operator_sub(OS, "<<", {"int"}, false)          == "_ZNSolsEi");
+		CHECK(itanium_mangle_operator_sub(OS, "<<", {"long"}, false)         == "_ZNSolsEl");
+		CHECK(itanium_mangle_operator_sub(OS, "<<", {"unsigned int"}, false) == "_ZNSolsEj");
+		CHECK(itanium_mangle_operator_sub(OS, "<<", {"const void*"}, false)  == "_ZNSolsEPKv");
+	}
+
+	TEST_CASE("istream member operator>>") {
+		CHECK(itanium_mangle_operator_sub(IS, ">>", {"int&"}, false) == "_ZNSirsERi");
+	}
+
+	TEST_CASE("complete-spec abbreviation as a standalone type / reference") {
+		CHECK(itanium_encode_type_sub(OS)        == "So");
+		CHECK(itanium_encode_type_sub(OS + "&")  == "RSo");
+		CHECK(itanium_encode_type_sub(IS)        == "Si");
+	}
+
+	TEST_CASE("regression: Sa/Sb still take template args (NOT complete)") {
+		CHECK(itanium_encode_type_sub("std::allocator<char>") == "SaIcE");
+		// __cxx11 string still spelled out (uses Sb-family, not Ss)
+		CHECK(itanium_encode_type_sub(std_string_type())
+		      == "NSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE");
+	}
+}
+
 TEST_SUITE("Itanium substitution: type encoder sanity") {
 
 	TEST_CASE("Standalone std types wrap N..E only when nested") {

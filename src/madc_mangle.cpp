@@ -510,6 +510,30 @@ private:
 		return "";
 	}
 
+	// Complete-specialization std abbreviations (Ss/Si/So/Sd): the abbreviation
+	// stands for the ENTIRE specialization (template name + its canonical
+	// char/char_traits[/allocator] args), so it is emitted standalone with NO
+	// I..E expansion and consumes no slot. (St/Sa/Sb are prefix/template
+	// abbreviations that DO take further args — handled by std_abbrev.)
+	// Ss is the pre-C++11 std::basic_string ONLY (NOT std::__cxx11::basic_string).
+	static std::string std_complete_abbrev(const std::vector<NameComponent> &chain,
+	                                        size_t i)
+	{
+		const NameComponent &nc = chain[i];
+		if (!nc.is_template) return "";
+		std::string scope = scoped_prefix_noargs(chain, i);
+		const std::vector<TypeNode> &a = nc.targs;
+		bool ct = a.size() >= 2
+		          && canon_type(a[0]) == "#c"
+		          && canon_type(a[1]) == "std::char_traits<#c>";
+		if (scope == "std::basic_istream"  && a.size() == 2 && ct) return "Si";
+		if (scope == "std::basic_ostream"  && a.size() == 2 && ct) return "So";
+		if (scope == "std::basic_iostream" && a.size() == 2 && ct) return "Sd";
+		if (scope == "std::basic_string"   && a.size() == 3 && ct
+		    && canon_type(a[2]) == "std::allocator<#c>")           return "Ss";
+		return "";
+	}
+
 	// ---- name encoding -------------------------------------------------------
 	//
 	// Encodes a qualified-name chain, registering a substitution candidate for
@@ -540,6 +564,14 @@ private:
 					srcNameCount++;
 				}
 			} else {
+				// Complete-specialization std abbreviation (Ss/Si/So/Sd): emit
+				// the abbreviation standalone — it already includes the template
+				// args, so do NOT expand I..E and do NOT add a slot.
+				std::string whole = std_complete_abbrev(chain, i);
+				if (!whole.empty()) {
+					encoded = whole;
+					continue;
+				}
 				// Template-prefix (name up to this ident, WITHOUT args).
 				std::string prefixKey = scopedNoArgs;
 				std::string pref = find_sub(prefixKey);
