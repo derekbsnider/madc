@@ -41,6 +41,15 @@ c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
 **Remaining c2mir/MIR bugs — rough clusters (next targets, c2mir-front-end first):**
 - _Complex arithmetic/ABI: `20020411-1` (`__builtin_conjf`), `20050121-1` (`_Complex long double`),
   `complex-6` (SIGSEGV), `pr38151` (`_Complex`+`va_arg`). Fork owns `_Complex`; these are corners.
+  **ATTRIBUTED 2026-06-02 (all gcc✓ clang✓ c2m✗ — genuine c2mir/MIR, each distinct, all need fork
+  surgery):** `20020411-1` → `can not load symbol __builtin_conjf` (c2mir doesn't know
+  `__builtin_conjf` at all — no lowering, falls through to a nonexistent dlsym symbol; fix =
+  lower in c2mir to negate-imaginary, OR register the builtin). `20050121-1` → `lvalue required as
+  left operand of assignment` in the `_Complex long double` instantiation of its `T(type,name)`
+  macro (front-end lvalue/codegen for long-double-complex). `complex-6` → c2m itself **SIGSEGVs**
+  (rc 139) during compile/interp (a c2mir/MIR crash, hardest). `pr38151` → emits `warning -- empty
+  struct/union` then rc 1 (needs a deeper look — empty-aggregate + `_Complex`/`va_arg` path). Most
+  tractable first: `20020411-1` (missing builtin) then `20050121-1` (front-end lvalue).
 - union / type-punning: `960416-1`, `pr23324` (union+bitfields), `zerolen-1` (union+zero-len-array).
 - varargs+struct: `20041214-1` (`va_arg`/`va_start`), `pr38151`.
 - value-mismatch optimizer PRs (need per-test reduce): `pr40657 pr43220 pr46309 pr71626-2
