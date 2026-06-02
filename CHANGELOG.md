@@ -5,7 +5,7 @@
 ### Added — VLAs complete: multidim, runtime `sizeof`, param-bound side effects (2026-06-02, madc-only)
 
 VLA support is now complete — **all 6 VLA integration tests pass**. **gcc.c-torture 1559 → 1564
-(92.8%)** across the VLA work, +5 integration, zero regressions, SMAUG boots.
+(92.8%)** across the VLA work, +4 integration (+5 torture), zero regressions, SMAUG boots.
 
 - **Param-bound side effects** (`int a[i++]`): the bound expression is evaluated on function entry
   (C11 6.9.1p10). Recovers `testparamvlaruntimeexpr`, torture `pr77767`.
