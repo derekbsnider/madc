@@ -297,6 +297,39 @@ started (it is the coordinated ripple above — do not rush it; a regression to 
 functionality is the failure mode). `tmp/userops.mad`/`userplus*.mad` are the user-class reducers;
 `tests/testuserops.mad` is the committed guard.
 
+### 6.0-KEYSTONE VALIDATION (2026-06-03 — recommended-path investigation; APPROACH PROVEN, prereqs mapped)
+Chose the recommended path: header-defined `std::string` whose NON-exported operators become
+**composed method bodies** over EXPORTED libstdc++ primitives (`operator+` = copy + `append`;
+`operator==` = `compare()==0`; `operator!=` = `!(==)`), so `string_concat`/`string_equals` + their
+special branches DELETE rather than migrate. Probed `include/madc/string` directly (`tmp/hdrstr.mad`).
+FINDINGS:
+- **Keystone binding WORKS for the header string**: `typedef std::__cxx11::basic_string<char,
+  std::char_traits<char>, std::allocator<char>> mystr;` binds every method to the exact libstdc++
+  Itanium symbol (`-v` trace: length→`_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6lengthEv`,
+  etc.). The approach is validated at the binding layer.
+- **PREREQ-1 (statement-decl ns resolution):** bare `std::__cxx11::basic_string<...> a;` still errors
+  "Unknown namespace __cxx11" — multi-level resolution exists for the typedef + type-resolver paths
+  (467cd13) but NOT the bare statement-declaration site. Use the typedef path, or finish this site.
+- **PREREQ-2 (default template args):** `basic_string<char>` errors "expects 3 type arguments, got 1"
+  — madc does not apply default template args (Traits=char_traits<char>, Alloc=allocator<char>).
+  Needed so `string`==`basic_string<char>`. Must supply all 3 explicitly until implemented.
+- **PREREQ-3 (ctor allocator-ABI):** RUN fails "import of undefined item ...C1EPKc". `nm -D
+  libstdc++` confirms it does NOT export `basic_string(const char*)` (`C1EPKc`) — it exports
+  `basic_string(const char*, const allocator&)` (`C1EPKcRKS3_`). The builtin handles this with a
+  PRE-MANGLED symbol + `ctor_trailing_self` (passes `&this` as the throwaway allocator). The keystone
+  mangles FROM declared params, so the header ctor must either declare the trailing `const
+  allocator<char>&` (then needs DEFAULT FUNCTION ARGS so `string s("x")` supplies it) or the bind path
+  must append the allocator for ctors. Default function args is the clean general fix.
+- Exported (so composed bodies/keystone CAN call them): `length/size/c_str/append/compare/...` (W weak,
+  `nm -D` confirmed). NON-exported (need composed bodies): `operator+`/`==`/relationals, AND the public
+  1-arg ctors (allocator-ABI above).
+SEQUENCE to finish (each its own verified step): PREREQ-2 default template args → PREREQ-3 default
+function args (or ctor allocator-ABI in the bind path) → add header copy-ctor + composed-body
+operators (verify template METHOD BODIES instantiate) → prove header string standalone (operators via
+the generic machinery) → THE FLIP (`string` typedef → header type, `is_string_class` identity onto the
+header class) → migrate the ~775 sites cluster-by-cluster → delete `DataDefSTRING`/`ddSTRING`/`dt*`/
+`add_string_methods`/`string_*` wrappers → gate 0. Probe: `tmp/hdrstr.mad`.
+
 ### 6.0 THE REAL BLOCKER (2026-06-03) — generic object machinery is INCOMPLETE; string special-casing hid it (SUPERSEDED by 6.0-DONE above; kept for the diagnosis)
 **Removing the `is_std_string` sites is NOT a find-and-replace to `is_object()` — the generic
 object path has HOLES that string's special-casing was papering over.** Proven this session
