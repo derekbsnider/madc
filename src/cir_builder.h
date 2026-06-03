@@ -465,6 +465,10 @@ public:
 	// (findMethod walks class -> base). Returns NULL when the class has no
 	// vtable. Must be emitted after the method prototypes it references.
 	node_t class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thunks);
+	void vbase_ctor_stmts(const std::string &objname, bool addr_of,
+			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
+	void vbase_dtor_stmts(const std::string &objname, bool addr_of,
+			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
 	// Lower a user-defined class method call on a class OBJECT (or pointer)
 	// receiver to a free-function call on the mangled method symbol with the
 	// receiver address threaded as the hidden first `__this` argument:
@@ -551,6 +555,8 @@ public:
 	// The destructor symbol used as the cleanup function for a class
 	// instance (ClassName___dtor) — whether user-written or synthesized.
 	std::string class_dtor_symbol(DataDefCLASS *cdd);
+	std::string class_complete_dtor_symbol(DataDefCLASS *cdd);
+	node_t synth_complete_dtor_def(DataDefCLASS *cdd);
 	// Emit a synthesized destructor function for a class that needs a dtor
 	// (object members and/or a base dtor) but has no user-written one:
 	//   void Class___dtor(struct Class *__this) {

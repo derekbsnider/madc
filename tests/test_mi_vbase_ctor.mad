@@ -1,0 +1,8 @@
+#!/../bin/madc
+// Shared virtual base Top must be constructed ONCE (most-derived, first) and
+// destroyed ONCE (last) — not once per diamond path.
+class Top { public: Top(){printf("T+");} ~Top(){printf("T-");} };
+class L : virtual public Top { public: L(){printf("L+");} ~L(){printf("L-");} };
+class R : virtual public Top { public: R(){printf("R+");} ~R(){printf("R-");} };
+class Diamond : public L, public R { public: Diamond(){printf("D+");} ~Diamond(){printf("D-");} };
+int main() { { Diamond d; } printf("\n"); return 0; }

@@ -2386,7 +2386,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	{
 		DataDefCLASS *cdd = (!is_ptr) ? as_class_instance(base_dd) : NULL;
 		if (cdd && class_needs_dtor(cdd)) {
-			std::string dtor_sym = class_dtor_symbol(cdd);
+			std::string dtor_sym = class_complete_dtor_symbol(cdd);
 			referenced_funcs.insert(dtor_sym);
 			node_t attr_args = list();
 			append(attr_args, id(dtor_sym.c_str(), origin));
@@ -3447,6 +3447,84 @@ std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
 	return cdd->name + "___dtor";
 }
 
+// The COMPLETE-object dtor symbol: a class with virtual bases gets a synthesized
+// `Cls___dtor_complete` (base dtor + vbase dtors, once); otherwise the plain dtor IS
+// the complete dtor. Complete-object destruction sites (stack-var cleanup, delete,
+// exception unwind) use this; base-subobject dtor calls use class_dtor_symbol.
+std::string CirBuilder::class_complete_dtor_symbol(DataDefCLASS *cdd)
+{
+	if (!cdd) return std::string();
+	std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
+	cdd->collect_vbases(vbs, seen);
+	if (vbs.empty()) return class_dtor_symbol(cdd);
+	return cdd->name + "___dtor_complete";
+}
+
+// Append a dtor call for each transitive, deduped virtual base of `cdd`, in REVERSE
+// (most-base last), offset-adjusted to vbase_offset[vb]. Mirror of vbase_ctor_stmts.
+void CirBuilder::vbase_dtor_stmts(const std::string &objname, bool addr_of,
+				  DataDefCLASS *cdd,
+				  std::vector<node_t> &out, TokenBase *o)
+{
+	std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
+	cdd->collect_vbases(vbs, seen);
+	for (size_t i = vbs.size(); i-- > 0; ) {
+		DataDefCLASS *vb = vbs[i];
+		if (!class_needs_dtor(vb)) continue;
+		size_t off = cdd->vbase_offset.count(vb) ? cdd->vbase_offset[vb] : 0;
+		node_t obj_addr = addr_of
+			? node1(N_ADDR, id(objname.c_str(), o), o)
+			: id(objname.c_str(), o);
+		node_t adj = obj_addr;
+		if (off != 0) {
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				obj_addr, o);
+			adj = node2(N_ADD, charp, integer((long)off, o), o);
+		}
+		node_t vt = node2(N_TYPE,
+			node1(N_LIST, node2(N_STRUCT, id(vb->name.c_str()), ignore())),
+			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		std::string dsym = class_dtor_symbol(vb);
+		referenced_funcs.insert(dsym);
+		node_t a = list();
+		append(a, node2(N_CAST, vt, adj, o));
+		out.push_back(node2(N_EXPR, list(),
+			node2(N_CALL, id(dsym.c_str(), o), a, o), o));
+	}
+}
+
+// void Cls___dtor_complete(struct Cls *__this) { Cls___dtor(__this); <vbase dtors>; }
+node_t CirBuilder::synth_complete_dtor_def(DataDefCLASS *cdd)
+{
+	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	node_t pspec = node1(N_LIST, node2(N_STRUCT, id(cdd->name.c_str()), ignore()));
+	node_t param = simple(N_SPEC_DECL);
+	append(param, pspec);
+	append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
+	append(param, ignore());
+	append(param, ignore());
+	append(param, ignore());
+	node_t param_list = list();
+	append(param_list, param);
+	node_t decl = node2(N_DECL, id((cdd->name + "___dtor_complete").c_str()),
+			    node1(N_LIST, node1(N_FUNC, param_list)));
+	std::vector<node_t> stmts;
+	// base-object dtor (members + non-virtual bases)
+	std::string bsym = class_dtor_symbol(cdd);
+	referenced_funcs.insert(bsym);
+	node_t ba = list();
+	append(ba, id("__this"));
+	stmts.push_back(node2(N_EXPR, list(), node2(N_CALL, id(bsym.c_str()), ba)));
+	// then the virtual bases, once, in reverse
+	vbase_dtor_stmts("__this", /*addr_of=*/false, cdd, stmts, NULL);
+	node_t items = list();
+	for (node_t s : stmts) append(items, s);
+	node_t body = node2(N_BLOCK, list(), items);
+	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
+}
+
 void CirBuilder::class_instance_member_ctors(const char *inst,
 					     DataDefCLASS *cdd, node_t items,
 					     TokenBase *origin)
@@ -3494,6 +3572,7 @@ node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 	std::vector<node_t> stmts;
 	class_member_destruct(cdd, stmts, NULL);
 	for (size_t bi = cdd->bases.size(); bi-- > 0; ) {
+		if (cdd->bases[bi].is_virtual) continue; // vbases: complete-object dtor
 		DataDefCLASS *b = cdd->bases[bi].base;
 		if (!class_needs_dtor(b)) continue;
 		std::string bsym = class_dtor_symbol(b);
@@ -3649,7 +3728,59 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		append(args, node1(N_ADDR, id(v->name.c_str(), origin), origin));
 	referenced_funcs.insert(sym);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
-	return node2(N_EXPR, list(), call, origin);
+	node_t ctor_stmt = node2(N_EXPR, list(), call, origin);
+
+	// Complete-object construction: build the (transitive, deduped) virtual bases
+	// FIRST (base-most order), then run the ctor. The ctor itself constructs only
+	// non-virtual bases (it skips vbases), so this is the single place each shared
+	// vbase is constructed. No vbases -> just the ctor call (byte-identical).
+	std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> vseen;
+	cdd->collect_vbases(vbs, vseen);
+	if (vbs.empty())
+		return ctor_stmt;
+	std::vector<node_t> stmts;
+	vbase_ctor_stmts(v->name, /*addr_of=*/true, cdd, stmts, origin);
+	node_t blk = list();
+	for (node_t s : stmts) append(blk, s);
+	append(blk, ctor_stmt);
+	return node2(N_BLOCK, list(), blk, origin);
+}
+
+// Append a ctor call for each transitive, deduped virtual base of `cdd`, base-most
+// first, with `this` adjusted to vbase_offset[vb]. The object is named `objname`;
+// `addr_of` true means take its address (a stack var), false means it is already a
+// pointer (a `new`'d temp). A fresh address node is built per vbase (no node reuse).
+// Trivial (ctorless) vbases contribute nothing.
+void CirBuilder::vbase_ctor_stmts(const std::string &objname, bool addr_of,
+				  DataDefCLASS *cdd,
+				  std::vector<node_t> &out, TokenBase *o)
+{
+	std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
+	cdd->collect_vbases(vbs, seen);
+	for (DataDefCLASS *vb : vbs) {
+		if (!vb->has_user_ctor) continue;
+		size_t off = cdd->vbase_offset.count(vb) ? cdd->vbase_offset[vb] : 0;
+		node_t obj_addr = addr_of
+			? node1(N_ADDR, id(objname.c_str(), o), o)
+			: id(objname.c_str(), o);
+		node_t adj = obj_addr;
+		if (off != 0) {
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				obj_addr, o);
+			adj = node2(N_ADD, charp, integer((long)off, o), o);
+		}
+		node_t vt = node2(N_TYPE,
+			node1(N_LIST, node2(N_STRUCT, id(vb->name.c_str()), ignore())),
+			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		std::string vsym = vb->name + "__" + vb->name;
+		referenced_funcs.insert(vsym);
+		node_t a = list();
+		append(a, node2(N_CAST, vt, adj, o));
+		out.push_back(node2(N_EXPR, list(),
+			node2(N_CALL, id(vsym.c_str(), o), a, o), o));
+	}
 }
 
 // Map a binary TokenID to its C++ operator spelling (the method-name suffix
@@ -4707,7 +4838,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		node_t items = list();
 		DataDefCLASS *cdd = tdl->del_class;
 		if (cdd && cdd->has_user_dtor) {
-			std::string dsym = class_dtor_symbol(cdd);
+			std::string dsym = class_complete_dtor_symbol(cdd);
 			referenced_funcs.insert(dsym);
 			node_t dargs = list();
 			append(dargs, ptr);
@@ -5461,7 +5592,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					return integer(0, tb);
 				// dtor_sym((void*)(ptr)) — the dtor takes only `this`,
 				// matching its `void (*)(T*)` shape (delete uses the same).
-				std::string dsym = class_dtor_symbol(ecls);
+				std::string dsym = class_complete_dtor_symbol(ecls);
 				referenced_funcs.insert(dsym);
 				need_output_extern(dsym.c_str(), false,
 						   { { {N_VOID}, true } });
@@ -5851,7 +5982,7 @@ void CirBuilder::emit_try_body_cleanup_push(const char *varname,
 {
 	if (m_try_body_depth <= 0 || !cdd || !class_needs_dtor(cdd))
 		return;
-	std::string dtor_sym = class_dtor_symbol(cdd);
+	std::string dtor_sym = class_complete_dtor_symbol(cdd);
 	// A user-class dtor is a madc-EMITTED function `void Cls___dtor(struct Cls*)`;
 	// referencing it (referenced_funcs) drives its emission and declaration with
 	// the real signature — re-declaring it here as `void f(void*)` would conflict.
@@ -7135,6 +7266,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		// base's subobject (MI). Single inheritance = one base @ offset 0.
 		if (is_ctor)
 			for (size_t bi = 0; bi < ocls->bases.size(); bi++) {
+				if (ocls->bases[bi].is_virtual) continue; // vbases: complete-object site
 				DataDefCLASS *b = ocls->bases[bi].base;
 				if (b->has_user_ctor)
 					prologue.push_back(base_call_at(b, ocls->base_offset_of(b),
@@ -7169,9 +7301,11 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					node2(N_ASSIGN, vptr_lhs, vtab, tf), tf));
 			}
 		}
-		// Destroy bases in REVERSE declaration order (MI), offset-adjusted.
+		// Destroy NON-VIRTUAL bases in REVERSE declaration order (MI), offset-adjusted.
+		// Virtual bases are destroyed once by the complete-object dtor (_dtor_complete).
 		if (is_dtor)
 			for (size_t bi = ocls->bases.size(); bi-- > 0; ) {
+				if (ocls->bases[bi].is_virtual) continue;
 				DataDefCLASS *b = ocls->bases[bi].base;
 				if (b->has_user_dtor)
 					epilogue.push_back(base_call_at(b, ocls->base_offset_of(b),
@@ -7678,6 +7812,24 @@ node_t CirBuilder::translate_module(Program *prog)
 		emitted_synth_dtors.insert(cdd);
 		node_t dd = synth_dtor_def(cdd);
 		if (dd) append(top_list, dd);
+	}
+
+	// Pass 1.7: complete-object destructors for classes with virtual bases. The
+	// complete dtor (Cls___dtor_complete) calls the base dtor (Cls___dtor — user or
+	// synth, prototyped in Pass 1 / emitted above) then destroys the shared virtual
+	// bases once. Complete-object destruction sites (cleanup attribute, delete,
+	// unwind) target it via class_complete_dtor_symbol. Deduped.
+	std::set<DataDefCLASS *> emitted_complete_dtors;
+	for (auto &kv : prog->struct_map) {
+		DataDefCLASS *cdd = as_user_class(kv.second);
+		if (!cdd || !class_needs_dtor(cdd)) continue;
+		std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
+		cdd->collect_vbases(vbs, seen);
+		if (vbs.empty()) continue;
+		if (emitted_complete_dtors.count(cdd)) continue;
+		emitted_complete_dtors.insert(cdd);
+		node_t cd = synth_complete_dtor_def(cdd);
+		if (cd) append(top_list, cd);
 	}
 
 	// Pass 2: Function definitions (translated above).
