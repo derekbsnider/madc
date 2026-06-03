@@ -3616,18 +3616,6 @@ DataDefPTR ddVOIDptr(ddVOID), ddCHARptr(ddCHAR), ddINTptr(ddINT), ddINT32ptr(ddI
 DataDefAUTO ddAUTO;
 DataDefTEST ddTESTSTRUCT;
 
-
-const char *c_str2(std::string *str)
-{
-    std::cout << "c_str2() on " << *str << '[' << (uint64_t)str << ']' << std::endl;
-    std::cout << "c_str2() returning " << (uint64_t)str->c_str() << std::endl;
-    uint64_t ui64 = (uint64_t)str->c_str();
-    uint32_t ui32 = ui64;
-    std::cout << "c_str2() uint32 " << ui32 << std::endl;
-    return str->c_str();
-}
-
-
 void printuint32(uint32_t &i)
 {
     std::cout << "i: " << i << std::endl << std::flush;
@@ -4266,9 +4254,6 @@ void Program::add_string_methods()
     scmc.c_str = (const char *(string::*)(void))&string::c_str;
     var = addFunction("c_str", datatype_vec_t{rtPtr(DataType::dtCHAR), ptr_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGcstr)scmc.void_pointer[0], true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_cstr;
-    ddSTRING.methods.push_back(var);
-
-    var = addFunction("c_str2", datatype_vec_t{rtPtr(DataType::dtCHAR), ptr_of(ddSTRING)}, (fVOIDFUNC)c_str2, true);
     ddSTRING.methods.push_back(var);
 
     scmc.method_str = (string &(string::*)(const string &))&string::assign;

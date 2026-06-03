@@ -6,7 +6,30 @@
 > been merged to develop. Reading this doc + the spec + the memories below = full
 > situational awareness; you should not need anything else to continue.
 
-## ⏩⏩⏩ RESTART 2026-06-03 (Codex continuation — current worktree, supersedes the block below)
+## ⏩⏩⏩⏩ RESTART 2026-06-03 (Codex cleanup slice — current, supersedes the block below)
+Branch `feature/retire-std-hardcoding-claude`; this cleanup slice follows **`ce8c1c2`**.
+
+**FIRST OFFENDING-LINE REMOVAL SLICE LANDED, BUT IT IS INTENTIONALLY SMALL.**
+Removed the dedicated CIR `string_obj_words()` helper and routed string storage through the generic
+`object_class_words(&ddSTRING)` path. Also deleted the private `c_str2` debug-only legacy method
+registration. This is real dependency cleanup (`sizeof(std::string)` is no longer directly queried by
+the CIR string storage helper), but the user correctly called out that a 5-line gate reduction is too
+small for the next migration slice.
+
+Validation snapshot for this slice: focused string/operator regressions pass; `make -C src fulltest`
+produced **480 passed, 6 failed, 1 timed out, 55 skipped** (same known red set plus flaky
+`testfortypedcomma`). The finish-line gate moved **775 -> 770 offending lines**.
+
+**NEXT SLICE TARGET SHOULD BE ~50+ LINES.** Best candidate identified but NOT edited yet:
+fold string-returning calls into the generic object-returning-call path. Concretely, make
+`class_return_via_retbuf`/`object_returning_call_class` own by-value string returns too, then remove the
+dedicated `is_string_returning_call` / `string_call_temp_addr` branch family if the reducers pass. The
+risky detail is reference/address shaping: generic copy construction must pass the object address for
+pointer-stored params and `string&` receivers, not `&translate_expr(...)`.
+
+---
+
+## ⏩⏩⏩ RESTART 2026-06-03 (Codex continuation — superseded by the block above; kept for history)
 Branch `feature/retire-std-hardcoding-claude`, HEAD **`387d0e4`** plus uncommitted worktree changes.
 
 **COMPOSED-BODY STRING OPERATORS ARE PROVEN WITHOUT STRING-SPECIFIC COMPILER SUPPORT.**

@@ -250,7 +250,6 @@ class CirBuilder {
 	// applying string-object / numeric-reference parameter coercion. Shared by
 	// the normal call path and the string-return-temp materialization.
 	void build_call_args(class TokenCallFunc *tcf, node_t args);
-	size_t string_obj_words() const;             // ceil(sizeof(std::string)/sizeof(long))
 	// Words of opaque storage for a runtime-object class (std::string) that has
 	// a concrete ABI size but no madc data members. 0 for an ordinary user class.
 	size_t object_class_words(DataDefCLASS *cdd) const;

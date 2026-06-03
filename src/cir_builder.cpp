@@ -581,15 +581,6 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 	return cdd;
 }
 
-size_t CirBuilder::string_obj_words() const
-{
-	// cir_builder is itself C++, so it knows the real ABI size/alignment of
-	// std::string. A long[] buffer is naturally 8-aligned and >= the object
-	// size, so placement-new of std::string into it is well-aligned without an
-	// explicit alignment attribute.
-	return (sizeof(std::string) + sizeof(long) - 1) / sizeof(long);
-}
-
 // Words of opaque storage for a runtime-object class — one with a concrete ABI
 // size (cdd->size) but no madc data members (std::string). cir_builder is itself
 // C++, so cdd->size already holds the real sizeof(std::string). Returns 0 for an
@@ -813,7 +804,7 @@ const char *CirBuilder::RETBUF_NAME = "__retbuf";
 // so c2mir destructs the object via the genuine std::string destructor.
 node_t CirBuilder::string_storage_decl(const char *name, TokenBase *origin)
 {
-	return obj_storage_decl(name, string_obj_words(), STR_DTOR, origin);
+	return obj_storage_decl(name, object_class_words(&ddSTRING), STR_DTOR, origin);
 }
 
 // ---- MadArray (`array`) object lowering ----
