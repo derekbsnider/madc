@@ -15077,6 +15077,16 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		    if ( user_typedef_names.count(tname) )
 			param_alias = tname;
 		}
+		else if ( TokenDataType *inst = instantiate_template_use(*this, tname, nt) )
+		{
+		    // A template-id parameter type, e.g. `const allocator<_CharT>&`
+		    // after the enclosing template substitutes _CharT -> char.
+		    // Mirrors the var/member type path (resolve_declared_type_token):
+		    // instantiate (or reuse) the concrete class and use its type.
+		    // Without this a bare template-id in a parameter list threw
+		    // "Failed to find type".
+		    pb = inst;
+		}
 		else if ( TokenDataType *ns_type = resolve_namespaced_type_token(*this, nt, true) )
 		{
 		    pb = ns_type;
@@ -15131,6 +15141,18 @@ grabnt:
 	if ( nt->id() == TokenID::tkComma || nt->id() == TokenID::tkClBrk )
 	{
 	    pid = "__anon_param_" + std::to_string(anon_param_index++);
+	    goto paramdecl;
+	}
+	if ( nt->id() == TokenID::tkAssign )
+	{
+	    // Unnamed parameter carrying a default value, e.g.
+	    // `const allocator<_CharT>& = allocator<_CharT>()`. The named-param
+	    // path parses the default just before paramdecl:; an anonymous param
+	    // never reaches it, so parse the default here (same stop-token rule)
+	    // then fall into paramdecl with nt at the ',' / ')'.
+	    pid = "__anon_param_" + std::to_string(anon_param_index++);
+	    param_default = parseExpression(nextToken(), true);
+	    nt = nextToken();   // the ',' or ')' that ends this parameter
 	    goto paramdecl;
 	}
 	if ( nt->id() == TokenID::tkOpBrk )
