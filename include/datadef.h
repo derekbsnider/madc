@@ -686,6 +686,19 @@ public:
     }
 };
 
+class DataDefCLASS;
+// A direct base of a class: the base type, its subobject offset within the
+// derived object (Itanium-computed by compute_layout), whether it is a virtual
+// base, its access (existing vf* flags), and whether it is the primary base
+// (shares the most-derived vptr at offset 0).
+struct BaseSpec {
+    DataDefCLASS *base;
+    size_t        offset;
+    bool          is_virtual;
+    uint32_t      access;
+    bool          is_primary;
+};
+
 class DataDefCLASS: public DataDefSTRUCT
 {
 public:
@@ -704,6 +717,17 @@ public:
     void *extern_dtor;   // C function pointer for extern class destructor (NULL if none)
     void *_dtor_ptr;     // copy of extern_dtor; &_dtor_ptr is fn_indirect for cleanup stack
     DataDefCLASS *base_class; // single inheritance: parent class (NULL if none)
+    // Multiple/virtual inheritance (Itanium layout). `bases` lists direct bases;
+    // compute_layout() fills each BaseSpec.offset/is_primary, vbase_offset (each
+    // shared virtual base -> its offset, appended once at the end),
+    // secondary_vptr_owners (non-primary polymorphic direct bases), and nvsize
+    // (size of the non-virtual portion, where virtual bases begin).
+    std::vector<BaseSpec> bases;
+    std::map<DataDefCLASS *, size_t> vbase_offset;
+    std::vector<DataDefCLASS *> secondary_vptr_owners;
+    size_t nvsize;
+    bool is_polymorphic() const { return has_vtable; }
+    void compute_layout(); // Itanium layout engine (defined in parser.cpp)
     // Virtual function table
     std::vector<std::string> vtable_slots; // method names in vtable slot order
     std::map<std::string, bool> virtual_methods;  // names of methods declared virtual
@@ -731,7 +755,7 @@ public:
     DataDefCLASS(std::string n, size_t s, DataType d)
 	: DataDefSTRUCT(n, s, d), has_user_ctor(false), has_user_dtor(false),
 	  extern_ctor(NULL), extern_dtor(NULL), _dtor_ptr(NULL),
-	  base_class(NULL), vtable(NULL), has_vtable(false) {}
+	  base_class(NULL), nvsize(0), vtable(NULL), has_vtable(false) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
     Variable *findMethod(std::string &s);
     void register_extern_ctor_dtor(void *ctor, void *dtor) {
