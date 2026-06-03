@@ -5131,9 +5131,54 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// class has a user destructor; free always. Evaluated for effect, no
 	// value (delete is a void expression).
 	if (TokenDELETE *tdl = dynamic_cast<TokenDELETE *>(tb)) {
+		DataDefCLASS *cdd = tdl->del_class;
+		// Virtual destructor: dispatch through the vtable D0 (deleting) slot,
+		// which runs the most-derived complete destructor AND frees. No
+		// separate free() — the D0 dtor owns the free.
+		if (cdd && cdd->vtable_slot("~$deleting") >= 0) {
+			size_t grp; int slot;
+			cdd->find_vslot("~$deleting", grp, slot);
+			const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[grp];
+			std::string vfld = (G.this_offset == 0)
+				? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
+			// ptr->__vptr — load the owning group's vptr field by name from
+			// the static-type pointer (already `struct Cls *`, no recast).
+			node_t vptr = node2(N_DEREF_FIELD, translate_expr(tdl->expr),
+					    id(vfld.c_str(), tb));
+			// (void**)vptr[slot]
+			node_t vpp_dl = list();
+			append(vpp_dl, pointer());
+			append(vpp_dl, pointer());
+			node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+						node2(N_DECL, ignore(), vpp_dl));
+			node_t vtab = node2(N_CAST, vpp_type, vptr, tb);
+			node_t slotref = node2(N_IND, vtab, integer(slot, tb), tb);
+			// Cast the slot to void(*)(void*) — the deleting-dtor signature.
+			// Suffix order matches fnptr_decl_pieces: POINTER first (the
+			// `(*)`), then FUNC (the `(void*)` params) — i.e. pointer-to-
+			// function, not function-returning-pointer.
+			node_t fp_dl = list();
+			append(fp_dl, pointer());
+			append(fp_dl, node1(N_FUNC,
+				node1(N_LIST,
+				      node2(N_TYPE,
+					    node1(N_LIST, simple(N_VOID)),
+					    node2(N_DECL, ignore(),
+						  node1(N_LIST, pointer()))))));
+			node_t fp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+					       node2(N_DECL, ignore(), fp_dl));
+			node_t fn = node2(N_CAST, fp_type, slotref, tb);
+			node_t darg = list();
+			append(darg, translate_expr(tdl->expr));
+			node_t dcall = node2(N_CALL, fn, darg, tb);
+			node_t items = list();
+			append(items, node2(N_EXPR, list(), dcall, tb));
+			append(items, node2(N_EXPR, list(), integer(0, tb), tb));
+			node_t block = node2(N_BLOCK, list(), items, tb);
+			return node1(N_STMTEXPR, block, tb);
+		}
 		node_t ptr = translate_expr(tdl->expr);
 		node_t items = list();
-		DataDefCLASS *cdd = tdl->del_class;
 		if (cdd && cdd->has_user_dtor) {
 			std::string dsym = class_complete_dtor_symbol(cdd);
 			referenced_funcs.insert(dsym);
