@@ -259,6 +259,44 @@ string's operator CODEGEN (it still uses the `string_concat` emit_symbol branch 
 are already unified). **NEXT for the campaign:** migrate string onto this generic path and DELETE
 the string special-cases — only now does the gate count drop.
 
+### 6.0-MIGRATION SCOPING (2026-06-03, precise — verified by reading the code)
+Root insight: **the string class DOES report `is_object()` true** (it is a `DDClass` →
+`basetype()==btClass`; datadef.h ~189). So the `is_std_string` checks in `src/` are NOT "is this an
+object" — they gate **string-SPECIFIC wrappers** (`string_obj_arg`/`string_construct`/`string_cstr`/
+`string_concat`/`string_equals`) and a **return-representation contract**. THAT is why they cannot be
+blindly flipped to `is_object()`: the generic object path and the string path disagree on how an
+object rvalue is represented.
+
+The specific blocker for operator-codegen unification (`class_operator_call`):
+- **string operators take the `emit_symbol` branch** (cir_builder.cpp ~4284): comparison →
+  `int string_XX(void* a, void* b)`; `+` → `string_concat(void* out, void* a, void* b)` (out-slot);
+  `=`/`+=` → `string_XX(void* this, rhs)`. They return a **`void*` ADDRESS**.
+- **user operators take the generic branch** (~4372) which (with Part B) returns an **OBJECT LVALUE**
+  (`id(objtmp)`), not a void*.
+- **Consumers of a string operator+ result assume the void* contract**: `string_obj_arg` (line ~972,
+  `(void*)translate_expr(arg)` — NO `&`) and `translate_stream_chain` (~1761, cout<<). Routing string
+  operator+ through the generic branch (object-lvalue return) WITHOUT updating these consumers
+  produces `(void*)<struct value>` = garbage (this is exactly the `teststringplus` line-2 regression
+  seen when the generic ctor selector was enabled before operator typing existed).
+
+So unifying is a COORDINATED multi-consumer change, do it per-operator with full verification:
+1. Make the generic branch use `emit_symbol` as the call symbol when set (so a routed string op uses
+   `string_concat`/`string_equals`).
+2. Decide ONE object-rvalue representation. Recommended: object LVALUE (the generic Part-B form);
+   then update `string_obj_arg` (take `&` of the operator-result lvalue) and `translate_stream_chain`
+   to address-of. Comparison operators are the SAFE first target (scalar `int` result — NO
+   materialization/representation ripple; only the `!=`-negation needs carrying over).
+3. Remove the corresponding block from the `emit_symbol` operator branch; verify `teststringplus` +
+   full suite + SMAUG after EACH operator family; revert on any regression.
+4. Then the bigger count items: replace the `is_std_string`→`string_*`-wrapper sites with generic
+   object handling (`object_var_addr`, `class_member_construct/destruct`, generic conversion), delete
+   `DataDefSTRING`/`ddSTRING`/`dt*` tags + `add_string_methods`, and the gate finally drops.
+
+STATE 2026-06-03 turn end: generic foundation DONE+verified+pushed (HEAD `2afdbd4`); migration NOT
+started (it is the coordinated ripple above — do not rush it; a regression to working string
+functionality is the failure mode). `tmp/userops.mad`/`userplus*.mad` are the user-class reducers;
+`tests/testuserops.mad` is the committed guard.
+
 ### 6.0 THE REAL BLOCKER (2026-06-03) — generic object machinery is INCOMPLETE; string special-casing hid it (SUPERSEDED by 6.0-DONE above; kept for the diagnosis)
 **Removing the `is_std_string` sites is NOT a find-and-replace to `is_object()` — the generic
 object path has HOLES that string's special-casing was papering over.** Proven this session
