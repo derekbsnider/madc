@@ -192,12 +192,12 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `src/cir_builder.cpp` (`TokenDELETE` lowering ~5052–5079; mirrors method-call dispatch ~3315–3340; `find_vslot` is `include/datadef.h:776`)
 - Test: `tests/test_vdtor_delete.mad` (+ `.expect`)
 
-- [ ] **Step 1: Write the failing test.** Create `tests/test_vdtor_delete.mad`:
+- [ ] **Step 1: Write the failing test.** Create `tests/test_vdtor_delete.mad`. NOTE: use `class` + explicit `public:`/`public Base`, NOT `struct` — Task 1 established that `TokenSTRUCT::parse` does not handle `virtual`, the `~` destructor, or struct inheritance, so all virtual-dtor tests must use the `class` keyword (g++-equivalent: struct/class differ only in default access).
 ```cpp
 #include <iostream>
 using namespace std;
-struct Base { virtual ~Base() { cout << "~Base" << endl; } };
-struct Derived : Base { ~Derived() { cout << "~Derived" << endl; } };
+class Base { public: virtual ~Base() { cout << "~Base" << endl; } };
+class Derived : public Base { public: ~Derived() { cout << "~Derived" << endl; } };
 int main() {
     Base *b = new Derived();
     delete b;                 // must print ~Derived then ~Base
@@ -287,13 +287,13 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `src/cir_builder.cpp` (the destructor-marker branch from Task 1 Step 3e, ~2944; add a destructor thunk parallel to `make_thunk` ~2879)
 - Test: `tests/test_vdtor_mi.mad` (+ `.expect`)
 
-- [ ] **Step 1: Write the failing test.** Create `tests/test_vdtor_mi.mad`:
+- [ ] **Step 1: Write the failing test.** Create `tests/test_vdtor_mi.mad` (use `class`, not `struct` — see Task 2 note):
 ```cpp
 #include <iostream>
 using namespace std;
-struct A { virtual void fa() {} virtual ~A() { cout << "~A" << endl; } };
-struct B { virtual void fb() {} virtual ~B() { cout << "~B" << endl; } };
-struct C : A, B { ~C() { cout << "~C" << endl; } };   // B is the secondary base
+class A { public: virtual void fa() {} virtual ~A() { cout << "~A" << endl; } };
+class B { public: virtual void fb() {} virtual ~B() { cout << "~B" << endl; } };
+class C : public A, public B { public: ~C() { cout << "~C" << endl; } };   // B = secondary base
 int main() {
     B *b = new C();           // points at the B subobject
     delete b;                 // most-derived first
@@ -416,14 +416,14 @@ TEST_CASE("dtor D1/D0 markers keep declaration order and group layout") {
 Run: `( ulimit -t 200; timeout 200 make -C src test 2>&1 | tail -20 )`
 Expected: the new TEST_CASE passes (Tasks 1–3 already make `build_vtable_groups` group these correctly); all other doctest cases still SUCCESS. If `addr_point` differs, reconcile with `build_vtable_groups` (parser.cpp:3856, `PROLOGUE = 2`).
 
-- [ ] **Step 3: Write the override-chain integration test.** Create `tests/test_vdtor_chain.mad`:
+- [ ] **Step 3: Write the override-chain integration test.** Create `tests/test_vdtor_chain.mad` (use `class`, not `struct` — see Task 2 note):
 ```cpp
 #include <iostream>
 using namespace std;
-struct A { virtual ~A() { cout << "~A" << endl; } };
-struct B : A { ~B() { cout << "~B" << endl; } };
-struct C : B { ~C() { cout << "~C" << endl; } };
-struct Plain { ~Plain() { cout << "~Plain" << endl; } };   // non-virtual dtor
+class A { public: virtual ~A() { cout << "~A" << endl; } };
+class B : public A { public: ~B() { cout << "~B" << endl; } };
+class C : public B { public: ~C() { cout << "~C" << endl; } };
+class Plain { public: ~Plain() { cout << "~Plain" << endl; } };   // non-virtual dtor
 int main() {
     A *a = new C();
     delete a;                 // ~C ~B ~A
