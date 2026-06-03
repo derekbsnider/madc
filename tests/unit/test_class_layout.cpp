@@ -196,4 +196,44 @@ TEST_SUITE("class layout — vtable groups") {
         // secondary group follows: prev = 2+1(slot) = 3, +2 prologue = 5
         CHECK(mi->vtable_groups[1].addr_point == 5);
     }
+
+    TEST_CASE("S5b: type_info flavor selection") {
+        DataDefCLASS *a = mkclass("S5b_A", 0, true);
+        a->compute_layout();
+        CHECK(a->typeinfo_flavor() == DataDefCLASS::TI_CLASS);     // no bases
+
+        DataDefCLASS *b = mkclass("S5b_B", 0, true);
+        b->compute_layout();
+
+        DataDefCLASS *c = mkclass("S5b_C", 0, true);
+        c->bases.push_back(BaseSpec{a, 0, false, 0u, true});
+        c->compute_layout();
+        CHECK(c->typeinfo_flavor() == DataDefCLASS::TI_SI);        // single public non-virtual base
+
+        DataDefCLASS *d = mkclass("S5b_D", 0, true);
+        d->bases.push_back(BaseSpec{a, 0, false, 0u, true});
+        d->bases.push_back(BaseSpec{b, 16, false, 0u, false});
+        d->compute_layout();
+        CHECK(d->typeinfo_flavor() == DataDefCLASS::TI_VMI);       // multiple bases
+
+        DataDefCLASS *e = mkclass("S5b_E", 0, true);
+        e->bases.push_back(BaseSpec{a, 0, true, 0u, false});       // virtual base
+        e->compute_layout();
+        CHECK(e->typeinfo_flavor() == DataDefCLASS::TI_VMI);       // virtual base -> vmi
+
+        // unique public non-virtual base predicate
+        size_t off = 999;
+        CHECK(c->is_unique_public_nonvirtual_base(a, &off));
+        CHECK(off == 0);
+        // transitive: F : C (: A) -> A is a unique public non-virtual base of F
+        DataDefCLASS *f = mkclass("S5b_F", 0, true);
+        f->bases.push_back(BaseSpec{c, 0, false, 0u, true});
+        f->compute_layout();
+        off = 999;
+        CHECK(f->is_unique_public_nonvirtual_base(a, &off));
+        CHECK(off == 0);
+        // d derives from a AND b; a is unique, but a non-base is not found
+        DataDefCLASS *g = mkclass("S5b_G", 0, false);
+        CHECK_FALSE(d->is_unique_public_nonvirtual_base(g, &off));
+    }
 }

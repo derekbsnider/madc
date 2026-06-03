@@ -3878,6 +3878,46 @@ size_t DataDefCLASS::base_offset_of(const DataDefCLASS *target) const
     return (size_t)-1;
 }
 
+DataDefCLASS::TypeInfoFlavor DataDefCLASS::typeinfo_flavor() const
+{
+    if ( bases.empty() )
+	return TI_CLASS;
+    // __si only when there is exactly one base, public (access 0), non-virtual.
+    if ( bases.size() == 1 && !bases[0].is_virtual && bases[0].access == 0 )
+	return TI_SI;
+    return TI_VMI;
+}
+
+bool DataDefCLASS::is_unique_public_nonvirtual_base(DataDefCLASS *b, size_t *off) const
+{
+    size_t found_off = 0;
+    int count = 0;
+    for ( const BaseSpec &bs : bases )
+    {
+	if ( bs.is_virtual || bs.access != 0 ) continue; // public, non-virtual only
+	if ( bs.base == b )
+	{
+	    found_off = bs.offset;
+	    count++;
+	}
+	else
+	{
+	    size_t sub = 0;
+	    if ( bs.base->is_unique_public_nonvirtual_base(b, &sub) )
+	    {
+		found_off = bs.offset + sub;
+		count++;
+	    }
+	}
+    }
+    if ( count == 1 )
+    {
+	if ( off ) *off = found_off;
+	return true;
+    }
+    return false;
+}
+
 void DataDefCLASS::collect_vbases(std::vector<DataDefCLASS *> &out,
 				  std::set<DataDefCLASS *> &seen) const
 {

@@ -737,6 +737,15 @@ public:
     // Subobject offset of `target` within this class (direct/transitive base), or
     // (size_t)-1 if not a base. Used to adjust `this` on base-method calls.
     size_t base_offset_of(const DataDefCLASS *target) const;
+    // RTTI (S5b): which Itanium type_info flavor this class needs.
+    //   TI_CLASS = no bases; TI_SI = exactly one public non-virtual base;
+    //   TI_VMI = multiple bases, or any virtual / non-public base.
+    enum TypeInfoFlavor { TI_CLASS, TI_SI, TI_VMI };
+    TypeInfoFlavor typeinfo_flavor() const;
+    // True iff `b` is reachable as a UNIQUE public non-virtual base; if so writes
+    // its subobject offset to *off. Drives the __si flavor choice and the
+    // dynamic_cast src2dst hint.
+    bool is_unique_public_nonvirtual_base(DataDefCLASS *b, size_t *off) const;
     // Collect all (transitive) virtual bases, deduped, in canonical order.
     void collect_vbases(std::vector<DataDefCLASS *> &out,
 			std::set<DataDefCLASS *> &seen) const;
