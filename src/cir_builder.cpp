@@ -4022,6 +4022,22 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// to the single ctor keyed under the class name.
 	FuncDef *ctor = select_ctor_overload(cdd, ctor_args);
 	if (!ctor) {
+		// IMPLICIT COPY CONSTRUCTOR: `T c = <T value>` with no matching ctor.
+		// C++ synthesizes a copy ctor when the class declares none; for a TRIVIAL
+		// class (no user dtor / object members / non-trivial base) that is a
+		// member-wise bit copy, expressed here as a struct assignment from the
+		// source object. So a user class without an explicit copy ctor still
+		// copy-initializes (e.g. from an operator+ result) instead of mis-binding
+		// an unrelated ctor. (Non-trivial classes need member-wise
+		// copy-construction; deferred — they typically declare a copy ctor.)
+		if (ctor_args.size() == 1 && ctor_args[0]
+		    && as_class_instance(ctor_args[0]->datadef()) == cdd
+		    && !class_needs_dtor(cdd)) {
+			node_t src = translate_expr(ctor_args[0]);
+			node_t asgn = node2(N_ASSIGN, id(v->name.c_str(), origin),
+					    src, origin);
+			return node2(N_EXPR, list(), asgn, origin);
+		}
 		auto it = cdd->method_map.find(cdd->name);
 		if (it != cdd->method_map.end() && it->second)
 			ctor = dynamic_cast<FuncDef *>(it->second->type);
