@@ -3702,6 +3702,71 @@ Variable *DataDefCLASS::findMethod(std::string &s)
     return NULL;
 }
 
+// Round `sz` up to alignment `a` (a is a power of two).
+static inline size_t mi_align_up(size_t sz, size_t a) { return (sz + a - 1) & ~(a - 1); }
+
+// Itanium-faithful record layout. See
+// docs/superpowers/specs/2026-06-03-multiple-inheritance-design.md §2.
+// Precondition: `members`/`member_offsets` hold OWN data members from offset 0
+// (as addMember produced them); `size`/`max_align` are their packed size and
+// strongest own-member alignment; `has_vtable` set iff polymorphic; `bases`
+// populated (base, is_virtual). Postcondition: each BaseSpec.offset/is_primary,
+// vbase_offset, secondary_vptr_owners, nvsize and size are final; own member
+// offsets are shifted to sit after the vptr+non-virtual-bases block.
+void DataDefCLASS::compute_layout()
+{
+    size_t cur = 0;
+    size_t maxalign = 8; // class alignment accumulator (>= pointer align)
+
+    // 1. vptr: a polymorphic class introduces a vptr at offset 0 unless a primary
+    //    (polymorphic, non-virtual) base already provides one.
+    bool have_primary = false;
+    for ( auto &bs : bases )
+    {
+	if ( !bs.is_virtual && bs.base->is_polymorphic() )
+	{
+	    bs.is_primary = true; have_primary = true; break;
+	}
+    }
+    bool own_vptr = is_polymorphic() && !have_primary;
+    if ( own_vptr ) cur += 8;   // __vptr at 0
+
+    // 2. non-virtual bases in declaration order (primary first, at 0). A base
+    //    contributes its NON-VIRTUAL size (nvsize); its vbases are hoisted.
+    for ( auto &bs : bases )
+    {
+	if ( bs.is_virtual ) continue;
+	size_t balign = 8;
+	cur = mi_align_up(cur, balign);
+	bs.offset = bs.is_primary ? 0 : cur;
+	if ( bs.is_primary )
+	    cur = bs.base->nvsize;             // shares vptr@0; advance past its nvsize
+	else
+	{
+	    if ( bs.base->is_polymorphic() ) secondary_vptr_owners.push_back(bs.base);
+	    cur += bs.base->nvsize;
+	}
+	if ( balign > maxalign ) maxalign = balign;
+    }
+
+    // 3. own data members after the non-virtual bases. addMember already set
+    //    member_offsets (own, from 0), the packed own `size`, and max_align.
+    if ( max_align > maxalign ) maxalign = max_align;
+    size_t own_block = mi_align_up(cur, max_align ? max_align : 1);
+    for ( size_t i = 0; i < member_offsets.size(); i++ )
+	member_offsets[i] = own_block + member_offsets[i];
+    if ( !member_offsets.empty() )
+	cur = own_block + size;   // `size` held the packed own-members size on entry
+    else
+	cur = own_block;
+
+    // 4. nvsize = end of the non-virtual portion.
+    nvsize = mi_align_up(cur, maxalign);
+
+    // 5. (virtual bases appended in Task 4)
+    size = mi_align_up(nvsize, maxalign);
+}
+
 DataDef *FuncDef::findParameter(std::string &s)
 {
     DBG(cout << "FuncDef[" << name << "]::findParameter(" << s << ')' << endl);

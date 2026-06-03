@@ -49,3 +49,21 @@ TEST_SUITE("class layout — data structures") {
         CHECK(b->bases[0].is_virtual == false);
     }
 }
+
+TEST_SUITE("class layout — single non-virtual base") {
+    TEST_CASE("B : A  -> A@0, size 16") {
+        DataDefCLASS *a = mkclass("A", 1, false);   // {long a} size 8
+        a->compute_layout();
+        CHECK(a->size == 8);
+        CHECK(a->nvsize == 8);
+
+        DataDefCLASS *b = mkclass("B", 1, false);   // own {long b}
+        b->bases.push_back(BaseSpec{a, 0, false, 0u, false});
+        b->compute_layout();
+        CHECK(b->bases[0].offset == 0);
+        CHECK(b->size == 16);
+        CHECK(b->nvsize == 16);
+        // own member b shifted to sit after base A (offset 8)
+        CHECK(b->member_offsets[0] == 8);
+    }
+}
