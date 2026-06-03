@@ -10,7 +10,7 @@
 ```
 bash scripts/resume.sh                              # live git/reflog/fork/build state
 git -C /workspace/madc branch --show-current        # expect: feature/retire-std-hardcoding-claude
-git -C /workspace/madc log --oneline develop..HEAD  # the campaign commits (26 as of c773ac5)
+git -C /workspace/madc log --oneline develop..HEAD  # the campaign commits (live HEAD + count: resume.sh)
 bash scripts/check-no-std-hardcoding.sh             # THE FINISH LINE — currently 469, target 0
 ```
 Re-prove the keystone any time (fast, no full build needed if bin/madc is current):
@@ -90,10 +90,12 @@ Sessions kept declaring "done" at Layers 1–2 while Layer 3 — the *builtins* 
 
 ## 3. LIVE STATE (verify with STEP 0)
 
-- Branch **`feature/retire-std-hardcoding-claude`**, **HEAD `c773ac5`**, PUSHED (== origin),
-  tracked tree clean. **26 commits ahead of `develop`** (develop = origin/develop = merge-base =
-  **`110e026`**, UNTOUCHED → zero drift to develop; git-confirmed). MIR fork pin **`8864a73`**
-  unchanged (this campaign needs NO fork work — it's pure madc front-end).
+- Branch **`feature/retire-std-hardcoding-claude`**, PUSHED (== origin), tracked tree clean. HEAD
+  SHA and the commit-count are VOLATILE — every handoff commit bumps them, so they are NOT pinned
+  here; read them live from `resume.sh` / STEP 0 and never trust a SHA written in this prose. Stable
+  facts: develop = origin/develop = merge-base = **`110e026`**, UNTOUCHED → zero drift to develop
+  (git-confirmed); MIR fork pin **`8864a73`** unchanged (this campaign needs NO fork work — it's
+  pure madc front-end).
 - **Finish-line gate: 469** (was 473; -4 = ns_stl tombstone comments deleted at 6f850ac).
 - **`make -C src` builds clean, 0 warnings.** Integration `bash scripts/run_tests.sh` = **457
   passed**, 6 known feature-gap fails (testcin, testdefer, testforeach2, testfstream,
@@ -294,7 +296,7 @@ Scratch lives in `tmp/` (gitignored): `hooktest.mad` (inline keystone proof), `f
 ---
 
 ## 10. NO-DRIFT CHECKLIST (state was left consistent)
-- All work committed + pushed on the feature branch; tracked tree clean; HEAD `c773ac5`.
+- All work committed + pushed on the feature branch; tracked tree clean (live HEAD via `resume.sh`).
 - develop UNTOUCHED at `110e026` (git-confirmed `HEAD..develop` = 0); develop mirrors are correct
   for the parity track — do NOT edit them for this campaign until it merges.
 - Memory corrected: `project_string_as_class` (Layer 1+2 done, Layer 3 NOT) + MEMORY.md line +
