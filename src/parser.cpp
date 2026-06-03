@@ -9401,6 +9401,60 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    exStack.push(dc);
 		    break;
 		}
+		// typeid ( EXPR | TYPE )   (S5d)
+		if ( ident_tb->str == "typeid" )
+		{
+		    skip_expression_whitespace(*this);
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after typeid" << flush;
+		    nextToken(); // consume '('
+		    skip_expression_whitespace(*this);
+		    TokenBase *first = nextToken();
+		    TokenTypeid *ttd = new TokenTypeid();
+		    // Type form iff the operand resolves to a type AND is immediately
+		    // followed by ')'. resolve_declared_type_token returns NULL for a
+		    // variable/expression (it checks findVariable), so typeid(obj) and
+		    // typeid(*p) fall to the expression form.
+		    TokenDataType *tdt = resolve_declared_type_token(*this, first, false, true);
+		    skip_expression_whitespace(*this);
+		    if ( tdt && peekToken() && peekToken()->id() == TokenID::tkClBrk )
+		    {
+			ttd->static_type = &tdt->definition;
+			nextToken(); // consume ')'
+		    }
+		    else
+		    {
+			ttd->operand = parseExpression(first, false, false, false, 0, true);
+			skip_expression_whitespace(*this);
+			TokenBase *close_tb = nextToken();
+			if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
+			    Throw(close_tb ? close_tb : tb) << "Expecting ')' after typeid(...)" << flush;
+		    }
+		    // Result type: const std::type_info& — modeled as std::type_info*.
+		    // The <typeinfo> header registers `class type_info` in the global
+		    // datatype_map under its bare name (header-defined classes are not
+		    // namespace-keyed); fall back to the std namespace map.
+		    DataDef *tinfo = NULL;
+		    datatype_map_iter gdti = datatype_map.find("type_info");
+		    if ( gdti != datatype_map.end() )
+			tinfo = &gdti->second->definition;
+		    if ( !tinfo )
+		    {
+			namespace_datatype_map_t::iterator nti = namespace_datatype_map.find("std");
+			if ( nti != namespace_datatype_map.end() )
+			{
+			    datatype_map_iter dti = nti->second.find("type_info");
+			    if ( dti != nti->second.end() )
+				tinfo = &dti->second->definition;
+			}
+		    }
+		    if ( !tinfo )
+			Throw(tb) << "typeid requires #include <typeinfo>" << flush;
+		    ttd->setDataType(getPointerType(tinfo));
+		    ttd->file = tb->file; ttd->line = tb->line; ttd->column = tb->column;
+		    exStack.push(ttd);
+		    break;
+		}
 		if ( is_nullptr_identifier(ident_tb->str) )
 		{
 		    TokenNullptr *tnp = new TokenNullptr();
