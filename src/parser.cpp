@@ -11838,6 +11838,28 @@ static void bind_std_libstdcpp_symbol(Program &pgm, DataDefCLASS *ddc, Variable 
 	<< " -> " << fd->emit_symbol << std::endl);
 }
 
+// Make an overload-unique internal symbol for a member/ctor: the canonical
+// `base` if it is still free, else base + "__oN" for the first free N >= 2.
+// Member methods and constructors that share a name AND arity but differ only by
+// parameter TYPE (`find(char)` vs `find(const char*)`, two ctors, `operator=(char)`
+// vs `operator=(const char*)`) otherwise collide on `base` — the second overload
+// would re-use the first's already-declared FuncDef, losing its own parameters and
+// re-binding the first's emit_symbol. A unique key forces a fresh FuncDef so each
+// overload mangles to its own symbol; the caller records the key in
+// FuncDef::class_emit_name so CIR call sites reference the right body. (Call-site
+// selection among same-arity overloads by argument TYPE is separate, later work.)
+static std::string unique_overload_symbol(Program &pgm, std::string base)
+{
+    if ( !pgm.findVariable(base) )
+	return base;
+    for ( int n = 2; ; ++n )
+    {
+	std::string cand = base + "__o" + std::to_string(n);
+	if ( !pgm.findVariable(cand) )
+	    return cand;
+    }
+}
+
 // forms:
 // class Name { type member; rettype method() { ... } };
 // class Name variable;
@@ -12114,15 +12136,26 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    {
 		pgm.nextToken(); // consume '('
 		std::string mangled = tag->str + "__" + tag->str;
+		// A second (or later) constructor overload collides on Class__Class;
+		// give it a unique key so it registers its own FuncDef + parameters.
+		bool ctor_disambiguated = (pgm.findVariable(mangled) != NULL);
+		if ( ctor_disambiguated )
+		    mangled = unique_overload_symbol(pgm, mangled);
 		DBG(cout << "TokenCLASS::parse() parsing constructor " << mangled << endl);
 		pgm.parseFunction(ddVOID, mangled, ddc);
 		Variable *mvar;
 		if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
 		{
+		    if ( ctor_disambiguated )
+			if ( FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type) )
+			    cfd->class_emit_name = mangled;
 		    if ( access_flags )
 			mvar->flags |= access_flags;
 		    ddc->methods.push_back(mvar);
-		    ddc->method_map[tag->str] = mvar;
+		    // Keep method_map[Class] pointing at the FIRST ctor (all ctors live
+		    // in ddc->ctors); preserves existing single-ctor name resolution.
+		    if ( ddc->method_map.find(tag->str) == ddc->method_map.end() )
+			ddc->method_map[tag->str] = mvar;
 		    ddc->ctors.push_back(mvar);
 		    ddc->has_user_ctor = true;
 		    bind_std_libstdcpp_symbol(pgm, ddc, mvar, StdSymKind::Ctor, tag->str, false);
@@ -12270,6 +12303,16 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    name_disambiguated = true;
 		}
 	    }
+	    // Same-name, same-arity, different-TYPE overload (`find(char)` vs
+	    // `find(const char*)`): not separable by the nullary `_un` rule above, so
+	    // it still collides on Class__mname. Give it a unique key so it registers
+	    // its own FuncDef + parameters and mangles to its own symbol.
+	    bool type_overload_disambiguated = false;
+	    if ( !name_disambiguated && pgm.findVariable(mangled) )
+	    {
+		mangled = unique_overload_symbol(pgm, mangled);
+		type_overload_disambiguated = true;
+	    }
 	    pgm.parseFunction(*cmember_dd, mangled, ddc);
 	    // find the variable that parseFunction created and add to class methods
 	    Variable *mvar;
@@ -12278,7 +12321,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		if ( FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type) )
 		{
 		    mfd->returns_ref = ret_is_ref;
-		    if ( name_disambiguated && this_is_nullary )
+		    if ( (name_disambiguated && this_is_nullary) || type_overload_disambiguated )
 			mfd->class_emit_name = mangled;
 		}
 		if ( access_flags )

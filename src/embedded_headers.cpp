@@ -1278,6 +1278,8 @@ namespace std {
 	    char          _M_local_buf[16];   // SSO buffer / capacity union (16 bytes)
 	public:
 	    basic_string();                          // C1  ...C1Ev
+	    basic_string(const char *);              // C1  ...C1EPKc
+	    basic_string(unsigned long, char);       // C1  ...C1Emc
 	    ~basic_string();                         // D1  ...D1Ev
 	    unsigned long length() const;            // ...6lengthEv
 	    unsigned long size() const;              // ...4sizeEv
@@ -1289,16 +1291,20 @@ namespace std {
 	    const char   *data() const;              // ...4dataEv
 	    unsigned long capacity() const;          // ...8capacityEv
 	    unsigned long find(const char *, unsigned long) const;  // ...4findEPKcm
+	    unsigned long find(char, unsigned long) const;          // ...4findEcm
 	    unsigned long rfind(const char *, unsigned long) const; // ...5rfindEPKcm
 	    unsigned long compare(const char *) const;              // ...7compareEPKc
 	    basic_string  substr(unsigned long, unsigned long) const;  // ...6substrEmm
 	    void          resize(unsigned long);     // ...6resizeEm
+	    void          resize(unsigned long, char); // ...6resizeEmc
 	    void          reserve(unsigned long);    // ...7reserveEm
 	    void          push_back(char);           // ...9push_backEc
 	    void          pop_back();                // ...8pop_backEv
 	    char         &operator[](unsigned long) const;  // ...ixEm
 	    basic_string &operator=(const char *);   // ...aSEPKc
+	    basic_string &operator=(char);           // ...aSEc
 	    basic_string &operator+=(const char *);  // ...pLEPKc
+	    basic_string &operator+=(char);          // ...pLEc
 	};
     }
 }
