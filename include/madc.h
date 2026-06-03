@@ -97,6 +97,12 @@ public:
     // emit_symbol: this still takes the normal madc-emitted-body path, NOT the
     // extern-binding path that emit_symbol triggers.
     std::string class_emit_name;
+    // The UNMANGLED display name of a class method (`take`, `find`, `operator=`),
+    // independent of the mangled call symbol stored as the Variable's name
+    // (`Box__take`, `Box__take__o2`). Lets overload resolution enumerate the
+    // same-named overloads in DataDefCLASS::methods (whose entries are keyed by
+    // their mangled names). Empty for non-method FuncDefs.
+    std::string method_display_name;
     // For an externally-bound ctor (emit_symbol set) whose real ABI takes a
     // trailing reference argument that madc has no value for — e.g. libstdc++'s
     // basic_string(const char*, const allocator<char>&) — pass the object's own
@@ -108,7 +114,7 @@ public:
     // returns, explicit_alignment, has_captures, returns_ref, emit_symbol,
     // class_emit_name, ctor_trailing_self (declared above), then is_varargs..
     // has_large_struct_retbuf (declared below).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), emit_symbol(), class_emit_name(), ctor_trailing_self(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), emit_symbol(), class_emit_name(), method_display_name(), ctor_trailing_self(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -128,6 +134,20 @@ public:
     bool is_const_method;
     bool is_multi_return() const { return return_types.size() > 1; }
 };
+
+// Generic overload-resolution ranking — NO type is special-cased. Ranks binding
+// an argument of type `adc` to a parameter of type `pdc`: higher is a better
+// match; -1 means it cannot bind. Scalars, pointers, and ANY class object all
+// go through the same category logic; a class parameter additionally accepts an
+// argument through ONE user-defined conversion (a single-argument converting
+// constructor of that class). That converting-ctor path is what lets, say, a
+// `const char*` bind a class parameter that has a `(const char*)` constructor
+// WITHOUT the resolver knowing or caring which class it is. `allow_udc` is
+// cleared on the recursive converting-ctor check so an implicit conversion
+// sequence uses at most one user-defined conversion (the C++ rule), which also
+// bounds the recursion to depth 1. Defined in cir_builder.cpp.
+int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
+		       bool allow_udc = true);
 
 class DataStruct: public DataDef
 {
@@ -1348,6 +1368,17 @@ public:
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCallMethod(TokenCallMethod *);
+    // After a method call's arguments are parsed, re-bind `tc` to the overload
+    // of `cls`'s method `id` that best matches the argument types (the initial
+    // findMethod() bound the first by-name match). Returns `tc` unchanged when
+    // it already names the best overload, or a fresh TokenCallMethod on `recv`
+    // bound to the winning overload (same parameters / parent_expr / position).
+    class TokenCallMethod *reselect_method_overload(class TokenCallMethod *tc,
+		Variable &recv, class DataDefCLASS *cls, const std::string &id);
+    // Type an operator expression on a class-object operand with the operator's
+    // return type (Part A of generic operator-overload support). No-op unless the
+    // left operand is a class object declaring the matching binary operator.
+    void resolve_object_operator_type(class TokenOperator *to);
     TokenBase *parseCompound();
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);

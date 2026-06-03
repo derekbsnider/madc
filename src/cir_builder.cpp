@@ -3874,6 +3874,64 @@ node_t CirBuilder::method_fnptr_type(FuncDef *callee, DataDefCLASS *owner)
 	return node2(N_TYPE, spec_list, node2(N_DECL, ignore(), decl_list));
 }
 
+// Generic overload-resolution ranking (declared in madc.h). No type is
+// special-cased; std::string falls out of the class-object + converting-ctor
+// rules like any other class.
+int score_arg_to_param(const DataDef *adc, const DataDef *pdc, bool allow_udc)
+{
+	if (!pdc || !adc)
+		return 0;   // unknown shape: neutral, don't reject
+	// A class-object parameter binds: an argument of the SAME class (identity
+	// / copy), or — via one user-defined conversion — an argument that one of
+	// the class's single-argument constructors accepts.
+	if (pdc->is_object()) {
+		if (adc->is_object() && adc->rawtype() == pdc->rawtype())
+			return 5;   // exact class match (copy / same object)
+		if (!allow_udc)
+			return -1;  // no further user-defined conversion permitted
+		const DataDefCLASS *pc = dynamic_cast<const DataDefCLASS *>(pdc);
+		if (!pc)
+			return -1;
+		int best = -1;
+		for (Variable *cv : pc->ctors) {
+			FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+			if (!fd || fd->parameters.size() != 2)   // __this + exactly one
+				continue;
+			int s = score_arg_to_param(adc, fd->parameters[1], false);
+			if (s > best)
+				best = s;
+		}
+		return best >= 0 ? 2 : -1;   // a viable converting ctor => conversion
+	}
+	// A class-object ARGUMENT only binds the same-class parameter (handled
+	// above); there is no implicit object->scalar/pointer conversion here.
+	if (adc->is_object())
+		return -1;
+	bool p_ptr = pdc->is_pointer(), a_ptr = adc->is_pointer();
+	bool p_num = pdc->is_numeric(), a_num = adc->is_numeric();
+	if (p_ptr && a_ptr)
+		return adc->rawtype() == pdc->rawtype() ? 5 : 4;
+	if (p_num && a_num)
+		return adc->rawtype() == pdc->rawtype() ? 5 : 4;
+	if ((p_ptr && a_num) || (p_num && a_ptr))
+		return -1;   // cross-category (numeric <-> pointer): cannot bind
+	return 0;            // unrecognized pairing: neutral
+}
+
+// The call symbol for a constructor of `cdd`. Precedence: an external ABI
+// symbol (emit_symbol — e.g. a libstdc++-bound std::string ctor) > a
+// disambiguated-overload symbol (class_emit_name — the 2nd+ same-arity ctor,
+// which mangles to its own ClassName__ClassName__oN) > the default
+// ClassName__ClassName scheme (the first / only ctor).
+static std::string ctor_call_symbol(DataDefCLASS *cdd, FuncDef *ctor)
+{
+	if (ctor && !ctor->emit_symbol.empty())
+		return ctor->emit_symbol;
+	if (ctor && !ctor->class_emit_name.empty())
+		return ctor->class_emit_name;
+	return cdd->name + "__" + cdd->name;
+}
+
 // Select the constructor overload of `cdd` that matches the initializer
 // arguments. Mirrors string_ctor_call's logic but on the class path:
 //   - no args            -> the receiver-only (default) ctor.
@@ -3882,6 +3940,15 @@ node_t CirBuilder::method_fnptr_type(FuncDef *callee, DataDefCLASS *owner)
 //                           preferring a non-string-typed first param.
 // `cdd->ctors` lists the overloads (one entry for a user class). Returns NULL
 // when no overload set is recorded (caller falls back to the single ctor).
+//
+// KNOWN LIMITATION (tracked): this still uses a std::string-specific copy-vs-
+// convert disambiguation rather than the generic score_arg_to_param ranking.
+// Lifting it requires operator-result initializers to be correctly TYPED first
+// (the arithmetic operators' datadef() currently reports a pointer/arithmetic
+// type for `obj + x`, not the operator's class return type — see
+// Program::resolve_object_operator_type and binary_operator_return_type, the
+// groundwork for that fix). The generic resolver already drives METHOD overload
+// selection (findMethodOverload). Tracked as the generic-operator-support work.
 FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 					  const std::vector<TokenBase *> &ctor_args)
 {
@@ -3960,10 +4027,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 			ctor = dynamic_cast<FuncDef *>(it->second->type);
 	}
 
-	// A class-bound external ctor (e.g. std::string) names its real symbol via
-	// emit_symbol; otherwise use the default ClassName__ClassName scheme.
-	std::string sym = (ctor && !ctor->emit_symbol.empty())
-			  ? ctor->emit_symbol : (cdd->name + "__" + cdd->name);
+	std::string sym = ctor_call_symbol(cdd, ctor);
 
 	node_t args = list();
 	append(args, node1(N_ADDR, id(v->name.c_str(), origin), origin)); // &v
@@ -5023,9 +5087,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						if (it != pc->method_map.end() && it->second)
 							ctor = dynamic_cast<FuncDef *>(it->second->type);
 					}
-					std::string csym = (ctor && !ctor->emit_symbol.empty())
-							   ? ctor->emit_symbol
-							   : (pc->name + "__" + pc->name);
+					std::string csym = ctor_call_symbol(pc, ctor);
 					referenced_funcs.insert(csym);
 					node_t a = list();
 					append(a, addr());   // __this (already Class*)
@@ -5108,9 +5170,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (it != cdd->method_map.end() && it->second)
 					ctor = dynamic_cast<FuncDef *>(it->second->type);
 			}
-			std::string csym = (ctor && !ctor->emit_symbol.empty())
-					   ? ctor->emit_symbol
-					   : (cdd->name + "__" + cdd->name);
+			std::string csym = ctor_call_symbol(cdd, ctor);
 			referenced_funcs.insert(csym);
 			node_t cargs = list();
 			append(cargs, id(tmp, tb));

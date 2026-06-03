@@ -802,6 +802,19 @@ public:
 	  vtable(NULL), has_vtable(false) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
     Variable *findMethod(std::string &s);
+    // Among the same-name method overloads (this class + base chain), pick the
+    // one whose parameter types best match `argtypes` (overload resolution by
+    // argument type). Returns NULL when no same-name method exists; falls back
+    // to the first by-name match when none scores strictly better (e.g. a
+    // single, non-overloaded method — same result as findMethod).
+    Variable *findMethodOverload(const std::string &name,
+				 const std::vector<const DataDef *> &argtypes);
+    // Return type of the BINARY operator method `opname` (e.g. "operator+") this
+    // class declares — used to TYPE an operator expression on class objects with
+    // its real result type (generic; identical for std::string and user classes).
+    // Prefers a parameterized (binary) overload; searches the unmangled name then
+    // the mangled ClassName__operatorX family, then the base chain. NULL if none.
+    DataDef *binary_operator_return_type(const std::string &opname);
     void register_extern_ctor_dtor(void *ctor, void *dtor) {
 	extern_ctor = ctor; extern_dtor = dtor; _dtor_ptr = dtor;
     }

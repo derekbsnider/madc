@@ -3742,6 +3742,138 @@ Variable *DataDefCLASS::findMethod(std::string &s)
     return NULL;
 }
 
+Variable *DataDefCLASS::findMethodOverload(const std::string &name,
+					  const std::vector<const DataDef *> &argtypes)
+{
+    Variable *best = NULL;
+    int best_score = -1;
+    bool any_named = false;
+    // Scan ALL same-name overloads (the registration pushes each type-differing
+    // overload into `methods` under the same display name); rank by arg type.
+    for ( variable_vec_iter vvi = methods.begin(); vvi != methods.end(); ++vvi )
+    {
+	Variable *mv = *vvi;
+	if ( !mv )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	if ( !fd )
+	    continue;
+	// Methods are keyed by their MANGLED name (`Box__take`, `Box__take__o2`);
+	// match on the unmangled display name when the FuncDef records one, else
+	// fall back to the raw name (methods registered without it, e.g. ddSTRING).
+	const std::string &disp = fd->method_display_name.empty()
+				? mv->name : fd->method_display_name;
+	if ( name.compare(disp) != 0 )
+	    continue;
+	any_named = true;
+	// Parameter count excluding the hidden __this (param 0).
+	size_t pn = fd->parameters.empty() ? 0 : fd->parameters.size() - 1;
+	if ( pn != argtypes.size() )
+	    continue;
+	int total = 0;
+	bool ok = true;
+	for ( size_t i = 0; i < argtypes.size(); i++ )
+	{
+	    size_t pi = i + 1;   // skip __this
+	    DataDef *pt = pi < fd->parameters.size() ? fd->parameters[pi] : NULL;
+	    int s = score_arg_to_param(argtypes[i], pt);
+	    if ( s < 0 ) { ok = false; break; }
+	    total += s;
+	}
+	if ( ok && total > best_score )
+	{
+	    best_score = total;
+	    best = mv;
+	}
+    }
+    if ( best )
+	return best;
+    // C++ name hiding: a same-name method declared in THIS class hides base
+    // overloads. Only descend to the base when this class declares none.
+    if ( any_named )
+    {
+	std::string n(name);
+	return findMethod(n);   // no arity/type match: first by-name (>= findMethod)
+    }
+    if ( base_class )
+	return base_class->findMethodOverload(name, argtypes);
+    return NULL;
+}
+
+DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
+{
+    // Prefer a binary (params > 1 incl. __this) overload. Search the unmangled
+    // name first (std::string registers operators under "operator+"), then the
+    // mangled ClassName__operatorX family (user classes), then the base chain.
+    FuncDef *any = NULL;
+    for ( variable_vec_iter vvi = methods.begin(); vvi != methods.end(); ++vvi )
+    {
+	Variable *mv = *vvi;
+	if ( !mv || opname.compare(mv->name) != 0 ) continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	if ( !fd ) continue;
+	if ( !any ) any = fd;
+	if ( fd->parameters.size() > 1 ) return &fd->returns;
+    }
+    std::string mangled = name + "__" + opname;
+    for ( variable_vec_iter vvi = methods.begin(); vvi != methods.end(); ++vvi )
+    {
+	Variable *mv = *vvi;
+	if ( !mv || mangled.compare(mv->name) != 0 ) continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	if ( !fd ) continue;
+	if ( !any ) any = fd;
+	if ( fd->parameters.size() > 1 ) return &fd->returns;
+    }
+    if ( any ) return &any->returns;
+    if ( base_class ) return base_class->binary_operator_return_type(opname);
+    return NULL;
+}
+
+// Part A — type an operator expression whose LEFT operand is a class OBJECT that
+// declares the matching operator, using that operator's RETURN type. Generic: it
+// treats std::string and every user class identically (no per-type rule). Without
+// it `a + b` on objects reports the default arithmetic datadef, so copy-init ctor
+// selection, chained operator expressions, and `auto` all mis-resolve.
+void Program::resolve_object_operator_type(TokenOperator *to)
+{
+    if ( !to || !to->left ) return;
+    DataDefCLASS *lc = dynamic_cast<DataDefCLASS *>(to->left->datadef());
+    if ( !lc ) return;   // left operand is not a class object
+    const char *opsym;
+    switch ( to->id() )
+    {
+	case TokenID::tkAdd: opsym = "+"; break;
+	case TokenID::tkSub: opsym = "-"; break;
+	case TokenID::tkMul: opsym = "*"; break;
+	case TokenID::tkDiv: opsym = "/"; break;
+	case TokenID::tkMod: opsym = "%"; break;
+	default: return;     // comparison/bitwise results are already typed correctly
+    }
+    DataDef *rt = lc->binary_operator_return_type(std::string("operator") + opsym);
+    if ( rt ) to->setDataType(rt);
+}
+
+TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
+		Variable &recv, DataDefCLASS *cls, const std::string &id)
+{
+    if ( !tc || !cls )
+	return tc;
+    std::vector<const DataDef *> at;
+    for ( TokenBase *p : tc->parameters )
+	at.push_back(p ? p->datadef() : NULL);
+    Variable *ov = cls->findMethodOverload(id, at);
+    if ( !ov || ov == &tc->var )
+	return tc;   // already the best (or single) overload — no change
+    TokenCallMethod *tc2 = new TokenCallMethod(recv, *ov);
+    tc2->parameters = tc->parameters;
+    tc2->parent_expr = tc->parent_expr;
+    tc2->file = tc->file;
+    tc2->line = tc->line;
+    tc2->column = tc->column;
+    return tc2;
+}
+
 // Round `sz` up to alignment `a` (a is a power of two).
 static inline size_t mi_align_up(size_t sz, size_t a) { return (sz + a - 1) & ~(a - 1); }
 
@@ -6712,6 +6844,10 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 		    }
 		}
 	    }
+	    // NOTE: generic object-operator result typing (resolve_object_operator_type)
+	    // is groundwork for generic operator-overload support; it is NOT wired in
+	    // here yet because the arithmetic operators' datadef() short-circuits on a
+	    // pointer operand (`obj + "lit"`), which must be reworked first.
 	    DBG(cout << "Popping " << (char)to->get() << "[" << (to->left ? to->left->ival() : 0) << ", " << (to->right ? to->right->ival() : 0) << "] from opStack and onto exStack" << endl);
 	    opStack.pop();
 	    exStack.push(to);
@@ -9839,6 +9975,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    tb = parseCallMethod(tc);
 			    DBG(cout << "parseCallMethod returned with token " << (char)tb->get() << endl);
 			}
+			// Now that the argument types are known, re-bind to the
+			// overload they actually select (findMethod above took the
+			// first by-name match).
+			tc = reselect_method_overload(tc, *tv_var,
+				(DataDefCLASS *)struct_type, id);
+			var = &tc->var;
 			// remove object TokenVar from exStack
 			exStack.pop();
 			// remove TokenDot from opStack
@@ -10057,6 +10199,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    tc->column = tb->column;
 			    if ( tb->id() == TokenID::tkOpBrk )
 				tb = parseCallMethod(tc);
+			    // Re-bind to the overload the argument types select.
+			    tc = reselect_method_overload(tc, *obj_var,
+				    (DataDefCLASS *)base, id);
+			    var = &tc->var;
 			    exStack.pop();
 			    // remove TokenDeRef from opStack
 			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
@@ -12321,6 +12467,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		if ( FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type) )
 		{
 		    mfd->returns_ref = ret_is_ref;
+		    mfd->method_display_name = mname;
 		    if ( (name_disambiguated && this_is_nullary) || type_overload_disambiguated )
 			mfd->class_emit_name = mangled;
 		}
