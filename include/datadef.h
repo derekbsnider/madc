@@ -319,6 +319,7 @@ public:
     std::vector<std::vector<uint32_t>> member_dims;
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
     std::vector<uint32_t> member_access;	// per-member access flags (0=public, vfPRIVATE, vfPROTECTED)
+    std::vector<int> member_origin;	// per-member: base index it came from, or -1 = own (MI flatten)
     std::map<size_t,size_t> member_explicit_align; // member index -> __attribute__((aligned(N))); absent = natural
     TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
@@ -728,8 +729,10 @@ public:
     std::map<DataDefCLASS *, size_t> vbase_offset;
     std::vector<DataDefCLASS *> secondary_vptr_owners;
     size_t nvsize;
+    size_t own_block_off; // offset where this class's own data members begin
     bool is_polymorphic() const { return has_vtable; }
     void compute_layout(); // Itanium layout engine (defined in parser.cpp)
+    void apply_member_layout(); // rewrite member_offsets from member_origin + computed layout
     // Collect all (transitive) virtual bases, deduped, in canonical order.
     void collect_vbases(std::vector<DataDefCLASS *> &out,
 			std::set<DataDefCLASS *> &seen) const;
@@ -760,7 +763,7 @@ public:
     DataDefCLASS(std::string n, size_t s, DataType d)
 	: DataDefSTRUCT(n, s, d), has_user_ctor(false), has_user_dtor(false),
 	  extern_ctor(NULL), extern_dtor(NULL), _dtor_ptr(NULL),
-	  base_class(NULL), nvsize(0), vtable(NULL), has_vtable(false) {}
+	  base_class(NULL), nvsize(0), own_block_off(0), vtable(NULL), has_vtable(false) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
     Variable *findMethod(std::string &s);
     void register_extern_ctor_dtor(void *ctor, void *dtor) {

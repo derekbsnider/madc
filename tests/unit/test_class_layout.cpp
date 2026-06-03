@@ -60,6 +60,8 @@ TEST_SUITE("class layout — single non-virtual base") {
         DataDefCLASS *b = mkclass("B", 1, false);   // own {long b}
         b->bases.push_back(BaseSpec{a, 0, false, 0u, false});
         b->compute_layout();
+        b->member_origin.assign(b->members.size(), -1); // all own (no flatten in unit test)
+        b->apply_member_layout();
         CHECK(b->bases[0].offset == 0);
         CHECK(b->size == 16);
         CHECK(b->nvsize == 16);
@@ -72,6 +74,8 @@ TEST_SUITE("class layout — polymorphic vptr") {
     TEST_CASE("polymorphic leaf reserves vptr at 0") {
         DataDefCLASS *v = mkclass("Vbase", 1, true); // {vptr; long v}
         v->compute_layout();
+        v->member_origin.assign(v->members.size(), -1);
+        v->apply_member_layout();
         CHECK(v->size == 16);
         CHECK(v->nvsize == 16);
         CHECK(v->member_offsets[0] == 8); // long v after vptr
@@ -112,6 +116,8 @@ TEST_SUITE("class layout — MI non-virtual") {
         mic->bases.push_back(BaseSpec{p1, 0, false, 0u, false});
         mic->bases.push_back(BaseSpec{p2, 0, false, 0u, false});
         mic->compute_layout();
+        mic->member_origin.assign(mic->members.size(), -1);
+        mic->apply_member_layout();
         CHECK(mic->bases[0].is_primary == true);
         CHECK(mic->bases[0].offset == 0);
         CHECK(mic->bases[1].offset == 16);            // P2 with its own vptr
@@ -133,6 +139,8 @@ TEST_SUITE("class layout — diamond") {
         dia->bases.push_back(BaseSpec{l, 0, false, 0u, false});
         dia->bases.push_back(BaseSpec{r, 0, false, 0u, false});
         dia->compute_layout();
+        dia->member_origin.assign(dia->members.size(), -1);
+        dia->apply_member_layout();
         CHECK(dia->bases[0].offset == 0);
         CHECK(dia->bases[1].offset == 16);
         CHECK(dia->member_offsets[0] == 32);          // d

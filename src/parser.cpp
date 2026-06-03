@@ -3749,16 +3749,14 @@ void DataDefCLASS::compute_layout()
 	if ( balign > maxalign ) maxalign = balign;
     }
 
-    // 3. own data members after the non-virtual bases. addMember already set
-    //    member_offsets (own, from 0), the packed own `size`, and max_align.
+    // 3. own data members begin after the non-virtual bases. Record the boundary
+    //    only; apply_member_layout() does the member_offsets rewrite (it knows each
+    //    member's origin). addMember left `size` = the packed own-members size
+    //    (the live flatten resets size to 0 before adding own members; the unit
+    //    tests add only own members) and `max_align` = strongest own alignment.
     if ( max_align > maxalign ) maxalign = max_align;
-    size_t own_block = mi_align_up(cur, max_align ? max_align : 1);
-    for ( size_t i = 0; i < member_offsets.size(); i++ )
-	member_offsets[i] = own_block + member_offsets[i];
-    if ( !member_offsets.empty() )
-	cur = own_block + size;   // `size` held the packed own-members size on entry
-    else
-	cur = own_block;
+    own_block_off = mi_align_up(cur, max_align ? max_align : 1);
+    cur = own_block_off + size;   // size = own packed size on entry
 
     // 4. nvsize = end of the non-virtual portion.
     nvsize = mi_align_up(cur, maxalign);
@@ -3776,6 +3774,29 @@ void DataDefCLASS::compute_layout()
 	if ( 8 > maxalign ) maxalign = 8;
     }
     size = mi_align_up(end, maxalign);
+}
+
+// Rewrite each member's final offset from its origin: own members (origin -1, or
+// no origin recorded) sit at own_block_off + their own-local offset; an inherited
+// member sits at its base subobject offset (vbase_offset for a virtual base, else
+// bases[origin].offset) + its offset-within-that-base. Run AFTER compute_layout().
+void DataDefCLASS::apply_member_layout()
+{
+    for ( size_t i = 0; i < member_offsets.size(); i++ )
+    {
+	int origin = (i < member_origin.size()) ? member_origin[i] : -1;
+	if ( origin < 0 )
+	    member_offsets[i] = own_block_off + member_offsets[i];
+	else
+	{
+	    size_t boff = 0;
+	    if ( origin < (int)bases.size() )
+		boff = bases[origin].is_virtual
+			 ? vbase_offset[bases[origin].base]
+			 : bases[origin].offset;
+	    member_offsets[i] = boff + member_offsets[i];
+	}
+    }
 }
 
 void DataDefCLASS::collect_vbases(std::vector<DataDefCLASS *> &out,
