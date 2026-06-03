@@ -151,8 +151,32 @@ ctor/dtor/close/is_open to the REAL libstdc++ symbols
 `_ZNSt14basic_ofstreamIcSt11char_traitsIcEE{C1Ev,D1Ev,5closeEv,7is_openEv}` — canonical spelling
 reconstructed RECURSIVELY (char_traits<char>→"std::char_traits<char>"→nested), ZERO literals.
 Build clean; integration 457 (baseline; teststruct2 passes, the 6 fails + flaky testfortypedcomma
-are pre-existing); SMAUG boots to ready. NEXT = inc 4 (author the real headers), 5 (basic_ios
-vbase offset), 6 (switch registration + DELETE builtins → gate count finally drops), 7 (gate→0).
+are pre-existing); SMAUG boots to ready.
+
+✅ INC 4 STEP 1 (06adc04) — include/madc/fstream authored: basic_ofstream/basic_ifstream std::
+templates (+ char_traits) with bodyless ctor/dtor/close/is_open. Via `#include <fstream>` the
+keystone binds each to the REAL libstdc++ symbol (verified tmp/fstreamtest.mad: ofstream+ifstream
+{C1Ev,D1Ev,5closeEv,7is_openEv}). Safe wedge: the always-on builtins own the ofstream/ifstream
+TYPEDEFs; this header defines the basic_* templates (no overlap) → coexists. src/embedded_headers.cpp
+regenerated to bake it in. Build clean; 457 (no new fail); SMAUG boots.
+INC 4 STEP 1 currently a NEW EMBEDDED HEADER, NOT yet wired to replace the builtins.
+NEXT (the substantial remaining streams work):
+- inc 4 step 2 / inc 5: add the real base hierarchy in the header (ios_base ← basic_ios ←
+  basic_ostream ← basic_ofstream; basic_ios is a VIRTUAL base @ +248 ofstream / +256 ifstream —
+  see STREAM LAYOUT FACTS above). Add a per-class base-subobject offset to DataDefCLASS (derived
+  from the header layout, doctest-checked, NEVER hardcode 248/256) + offset-aware `this`-adjust in
+  class_method_call for an inherited method whose base subobject is non-zero. Then good()/eof()
+  (basic_ios, need +offset) and `<<` (basic_ostream @0) resolve. Add open(const char*, openmode)
+  (the openmode enum → "std::_Ios_Openmode"; the param-spelling path already handles it). Make the
+  header layout compute the real sizes (ofstream 512 = ostream 272 + filebuf 240).
+- inc 6: add the `ofstream`/`ifstream`/`fstream` TYPEDEFs in the header + DELETE the builtins
+  (DataDef*STREAM, dt*STREAM tags, ddOFSTREAM/IFSTREAM, add_fstream_methods, the std_types[...]=
+  make_namespace_type_token(...,ddOFSTREAM) at parser.cpp ~5407-5408, the ifstream_*/ofstream_*
+  wrappers in madc_mir_backend.cpp + madc_stream_runtime.cpp, sizeof(std::ofstream) etc.) — the
+  GATE COUNT FINALLY DROPS here; generalize translate_stream_chain to any ostream-derived object
+  for file-stream `<<`. testfstream/testloop must pass via the header path.
+- inc 7: cin>>, string (the big 239-site one), stringstream/conversions (to_string/stoi), gate→0.
+Verification cmd for the header path: bin/madc -v tmp/fstreamtest.mad | grep bind_std_libstdcpp.
 
 ⚠️ PARAM-SPELLING SUB-PROBLEM (found inc 3, RESOLVED by design — NO shortcut). For an
 `rtPointer` param like `const char*`, parseFunction pushes `const_params=false` and the pointer
