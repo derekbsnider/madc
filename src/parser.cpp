@@ -1705,6 +1705,26 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
     if ( TokenDataType *inst = instantiate_template_use(pgm, tname, tb) )
 	return inst;
 
+    // `ns::Name<Args>` where Name is a captured template. Templates live in
+    // template_map by BARE name (namespace_datatype_map holds only concrete
+    // types), so strip the namespace qualifier, then instantiate. Needed for
+    // nested template args like `basic_ofstream<char, std::char_traits<char>>`.
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS
+      && pgm.tokens.size() >= 3 )
+    {
+	TokenBase *member_tb = pgm.tokens[1];
+	if ( member_tb && is_contextual_identifier_token(member_tb)
+	  && pgm.template_map.count(contextual_identifier_name(member_tb))
+	  && pgm.tokens[2] && pgm.tokens[2]->id() == TokenID::tkLT )
+	{
+	    std::string member_name = contextual_identifier_name(member_tb);
+	    pgm.nextToken();                       // consume '::'
+	    TokenBase *name_tok = pgm.nextToken(); // consume the template name
+	    if ( TokenDataType *inst = instantiate_template_use(pgm, member_name, name_tok) )
+		return inst;
+	}
+    }
+
     if ( TokenDataType *ns_type = resolve_namespaced_type_token(pgm, tb, consume_ns_tokens) )
 	return ns_type;
 
