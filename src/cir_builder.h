@@ -45,6 +45,7 @@ class CirBuilder {
 	// via addGlobal but absent from top_decls) so the emitted C compiles.
 	std::map<std::string, Variable *> referenced_globals;
 	std::map<std::string, node_t> m_output_externs; // symbol -> proto SPEC_DECL (dedup)
+	std::set<std::string> m_rtti_data_externs;    // dedup extern data decls for RTTI (S5b)
 	std::set<std::string> m_stream_objects;       // dedup stream object externs
 	std::vector<node_t>   m_stream_object_protos;  // extern object decls to emit
 	// Set during translate_module. Used to resolve a typedef alias to its
@@ -465,6 +466,7 @@ public:
 	// (findMethod walks class -> base). Returns NULL when the class has no
 	// vtable. Must be emitted after the method prototypes it references.
 	node_t class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thunks);
+	node_t class_typeinfo_def(DataDefCLASS *cdd); // _ZTI/_ZTS objects; NULL if non-polymorphic (S5b)
 	void vbase_ctor_stmts(const std::string &objname, bool addr_of,
 			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
 	void vbase_dtor_stmts(const std::string &objname, bool addr_of,

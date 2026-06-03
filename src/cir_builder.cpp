@@ -2735,6 +2735,136 @@ node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
 
 static DataDefCLASS *class_behind(DataDef *dd); // defined below; used by the thunk path
 
+// Emit the Itanium type_info object(s) for a polymorphic user class (S5b):
+//   _ZTS<cls> : the bare mangled name as a char[] (explicit byte list — the
+//               c2mir-friendly form; see .claude/rules/c11-transpiler.md)
+//   _ZTI<cls> : a void*[] whose [0] is the real libsupc++ type_info-class vtable
+//               (+16 address point) so libstdc++'s __dynamic_cast/typeid accept it.
+// std:: classes are NOT emitted here (they reference libstdc++'s own _ZTI*).
+// Returns an N_LIST of file-scope definitions (extern decls + _ZTS + _ZTI), or
+// NULL for a non-polymorphic class.
+node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd)
+{
+	if (!cdd || !cdd->has_vtable)
+		return NULL;
+
+	std::string ti = itanium_typeinfo_sym(cdd->name);          // _ZTI<cls>
+	std::string ts = itanium_typeinfo_name_sym(cdd->name);     // _ZTS<cls>
+	std::string nm = itanium_typeinfo_name_string(cdd->name);  // "<len><name>"
+
+	auto vptr_t = [&]() {                            // void* type node
+		return node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+			     node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+	};
+	auto void_ptr_to = [&](node_t e) { return node2(N_CAST, vptr_t(), e); };
+	auto void_ptr_int = [&](long v) { return node2(N_CAST, vptr_t(), integer(v)); };
+
+	node_t out = list();
+
+	// extern <ckind> SYM[];  (data extern, deduped globally). ckind: N_CHAR for the
+	// libsupc++ vtable bytes (never defined here, indexed +16), N_VOID* for a base
+	// _ZTI object (matches its void*[] definition type to avoid a type clash).
+	auto emit_data_extern = [&](const std::string &sym, bool void_ptr_elem) {
+		if (m_rtti_data_externs.count(sym)) return;
+		m_rtti_data_externs.insert(sym);
+		node_t spec = list();
+		append(spec, simple(N_EXTERN));
+		append(spec, simple(void_ptr_elem ? N_VOID : N_CHAR));
+		node_t dl = list();
+		append(dl, node3(N_ARR, ignore(), list(), ignore())); // []
+		if (void_ptr_elem) append(dl, pointer());             // void* element
+		node_t decl = node2(N_DECL, id(sym.c_str()), dl);
+		node_t sd = simple(N_SPEC_DECL);
+		append(sd, node1(N_SHARE, spec));
+		append(sd, decl);
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, ignore());
+		append(out, sd);
+	};
+
+	// --- _ZTS<cls>: static char _ZTS...[] = { bytes... };  (explicit byte list) ---
+	{
+		node_t spec = list();
+		append(spec, simple(N_CHAR));
+		node_t dl = list();
+		append(dl, node3(N_ARR, ignore(), list(), ignore())); // [] (sized by init)
+		node_t decl = node2(N_DECL, id(ts.c_str()), dl);
+		node_t bytes = list();
+		for (size_t i = 0; i < nm.size(); i++)
+			append(bytes, node2(N_INIT, list(), integer((long)(unsigned char)nm[i])));
+		append(bytes, node2(N_INIT, list(), integer(0))); // NUL terminator
+		node_t sd = simple(N_SPEC_DECL);
+		append(sd, node1(N_SHARE, spec));
+		append(sd, decl);
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, bytes);
+		append(out, sd);
+	}
+
+	// --- which libsupc++ type_info-class vtable symbol backs this flavor ---
+	const char *abi_vt;
+	switch (cdd->typeinfo_flavor()) {
+	case DataDefCLASS::TI_CLASS: abi_vt = "_ZTVN10__cxxabiv117__class_type_infoE"; break;
+	case DataDefCLASS::TI_SI:    abi_vt = "_ZTVN10__cxxabiv120__si_class_type_infoE"; break;
+	default:                     abi_vt = "_ZTVN10__cxxabiv121__vmi_class_type_infoE"; break;
+	}
+	emit_data_extern(abi_vt, /*void_ptr_elem=*/false); // extern char abi_vt[];
+	referenced_funcs.insert(abi_vt);
+
+	// --- _ZTI<cls>: void *_ZTI...[] = { ... }; ---
+	node_t inits = list();
+	// [0] = (void*)(abi_vt + 16)  -- the type_info-class vtable address point
+	append(inits, node2(N_INIT, list(),
+		void_ptr_to(node2(N_ADD, id(abi_vt), integer(16)))));
+	// [1] = (void*)_ZTS<cls>  -- the name string
+	append(inits, node2(N_INIT, list(), void_ptr_to(id(ts.c_str()))));
+
+	auto base_ti_ref = [&](DataDefCLASS *b) -> node_t {
+		std::string bti = itanium_typeinfo_sym(b->name);
+		emit_data_extern(bti, /*void_ptr_elem=*/true); // extern void* _ZTI<base>[];
+		referenced_funcs.insert(bti);
+		return void_ptr_to(id(bti.c_str()));            // (void*)_ZTI<base> (array decays)
+	};
+
+	if (cdd->typeinfo_flavor() == DataDefCLASS::TI_SI) {
+		// [2] = (void*)_ZTI<base>
+		append(inits, node2(N_INIT, list(), base_ti_ref(cdd->bases[0].base)));
+	} else if (cdd->typeinfo_flavor() == DataDefCLASS::TI_VMI) {
+		// [2] = (void*)( flags | (base_count << 32) )  (.long flags; .long count;)
+		unsigned long flags = 0;   // 0 is always runtime-safe
+		unsigned long count = cdd->bases.size();
+		append(inits, node2(N_INIT, list(),
+			void_ptr_int((long)(flags | (count << 32)))));
+		for (const BaseSpec &bs : cdd->bases) {
+			append(inits, node2(N_INIT, list(), base_ti_ref(bs.base)));
+			long offflags = ((long)bs.offset << 8)
+				| (bs.access == 0 ? 0x2L : 0L)   // __public_mask
+				| (bs.is_virtual ? 0x1L : 0L);   // __virtual_mask
+			append(inits, node2(N_INIT, list(), void_ptr_int(offflags)));
+		}
+	}
+
+	{
+		node_t spec = list();
+		append(spec, simple(N_VOID));
+		node_t dl = list();
+		append(dl, node3(N_ARR, ignore(), list(), ignore())); // []
+		append(dl, pointer());                                 // void* element
+		node_t decl = node2(N_DECL, id(ti.c_str()), dl);
+		node_t sd = simple(N_SPEC_DECL);
+		append(sd, node1(N_SHARE, spec));
+		append(sd, decl);
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, inits);
+		append(out, sd);
+	}
+
+	return out;
+}
+
 node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thunks)
 {
 	if (!cdd || !cdd->has_vtable || cdd->vtable_slots.empty())
@@ -2803,10 +2933,13 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 				     node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 		node_t otop = node2(N_CAST, vtype, integer(-(long)G.this_offset));
 		append(inits, node2(N_INIT, list(), otop));
-		// RTTI slot: &_ZTI<cls> — placeholder NULL until S5b emits the object.
+		// RTTI slot: &_ZTI<cls> — the most-derived class's type_info (the SAME
+		// object for every group; offset_to_top tells the runtime how far back). (S5b)
+		std::string ti_sym = itanium_typeinfo_sym(cdd->name);
+		referenced_funcs.insert(ti_sym);
 		node_t vtype2 = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-		node_t rtti = node2(N_CAST, vtype2, integer(0));
+		node_t rtti = node2(N_CAST, vtype2, id(ti_sym.c_str()));
 		append(inits, node2(N_INIT, list(), rtti));
 		for (const std::string &slot : G.slots) {
 			std::string sname = slot;
@@ -7806,6 +7939,9 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (!cdd || !cdd->has_vtable) continue;
 		if (emitted_vtables.count(cdd)) continue;
 		emitted_vtables.insert(cdd);
+		// type_info first — the vtable's RTTI slot references _ZTI<cls>. (S5b)
+		node_t ti = class_typeinfo_def(cdd);
+		if (ti) append(top_list, ti);
 		std::vector<node_t> thunks;
 		node_t vt = class_vtable_def(cdd, thunks);
 		// Thunks first — the vtable initializer references their symbols.
