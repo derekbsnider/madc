@@ -3847,11 +3847,20 @@ void DataDefCLASS::build_vtable_groups()
 	vtable_groups.push_back(VtableGroup{o, off, o->vtable_slots, 0});
     }
 
-    // Address point of each group = its starting index in the flat Cls__vtable[]
-    // array (sub-tables emitted back-to-back). Computed here so emission/dispatch/
-    // vptr-init agree regardless of pass order.
+    // Address point of each group = the index in the flat Cls__vtable[] array
+    // (sub-tables emitted back-to-back) of the group's first FUNCTION slot. Each
+    // address point is preceded by the Itanium 2-word prologue
+    // [offset_to_top, &_ZTI<cls>] (emitted in class_vtable_def), so the running
+    // index advances by PROLOGUE before each group. Computed here so emission /
+    // dispatch / vptr-init agree regardless of pass order. (S5a)
+    const size_t PROLOGUE = 2;
     size_t ap = 0;
-    for ( auto &g : vtable_groups ) { g.addr_point = ap; ap += g.slots.size(); }
+    for ( auto &g : vtable_groups )
+    {
+	ap += PROLOGUE;          // this group's prologue precedes its address point
+	g.addr_point = ap;
+	ap += g.slots.size();
+    }
 }
 
 size_t DataDefCLASS::base_offset_of(const DataDefCLASS *target) const

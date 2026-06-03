@@ -169,4 +169,31 @@ TEST_SUITE("class layout — vtable groups") {
         CHECK(mic->find_vslot("f2", g, s)); CHECK(g == 1); CHECK(s == 0);
         CHECK(mic->find_vslot("f1", g, s)); CHECK(g == 0);
     }
+
+    TEST_CASE("S5a: vtable group address points include the 2-word RTTI prologue") {
+        DataDefCLASS *s = mkclass("S5a_S", 0, /*poly=*/true);   // 1 virtual method -> 1 slot
+        s->vtable_slots.push_back("f"); s->virtual_methods["f"] = true;
+        s->compute_layout();
+        s->build_vtable_groups();
+        REQUIRE(s->vtable_groups.size() == 1);
+        CHECK(s->vtable_groups[0].addr_point == 2);   // prologue = offset_to_top, &_ZTI
+
+        // MI: each group's address point sits past its own 2-word prologue.
+        DataDefCLASS *p1 = mkclass("S5a_P1", 1, true);
+        p1->vtable_slots.push_back("a"); p1->virtual_methods["a"] = true;
+        p1->compute_layout(); p1->build_vtable_groups();
+        DataDefCLASS *p2 = mkclass("S5a_P2", 1, true);
+        p2->vtable_slots.push_back("b"); p2->virtual_methods["b"] = true;
+        p2->compute_layout(); p2->build_vtable_groups();
+        DataDefCLASS *mi = mkclass("S5a_MI", 1, true);
+        mi->vtable_slots.push_back("a"); mi->vtable_slots.push_back("b");
+        mi->bases.push_back(BaseSpec{p1,0,false,0u,true});
+        mi->bases.push_back(BaseSpec{p2,16,false,0u,false});
+        mi->compute_layout(); mi->build_vtable_groups();
+        REQUIRE(mi->vtable_groups.size() == 2);
+        // primary group: [otop,&TI, a]  -> addr_point 2
+        CHECK(mi->vtable_groups[0].addr_point == 2);
+        // secondary group follows: prev = 2+1(slot) = 3, +2 prologue = 5
+        CHECK(mi->vtable_groups[1].addr_point == 5);
+    }
 }
