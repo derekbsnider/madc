@@ -11577,31 +11577,48 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.Throw << "Unexpected end of input after class name" << flush;
     }
 
-    // --- inheritance: class Derived : public Base { ... } ---
+    // --- inheritance: class Derived : [virtual] [access] Base, ... { ... } ---
+    // Multiple + virtual bases: collect a BaseSpec per base into base_specs (ddc
+    // does not exist yet — assigned to ddc->bases at flatten time). inherit_base
+    // keeps the first base for the legacy single-base code paths.
     DataDefCLASS *inherit_base = NULL;
+    std::vector<BaseSpec> base_specs;
     if ( tn->id() == TokenID::tkColon )
     {
 	pgm.nextToken(); // consume ':'
-	// optional access specifier (public/protected/private) — accept and ignore
+	do {
+	    bool bvirtual = false;
+	    uint32_t baccess = 0;
+	    // `virtual` and the access specifier may appear in either order
+	    for (;;)
+	    {
+		TokenBase *kw = pgm.peekToken();
+		if ( kw && kw->type() == TokenType::ttIdentifier )
+		{
+		    std::string &s = ((TokenIdent *)kw)->str;
+		    if ( s == "virtual" )   { bvirtual = true;       pgm.nextToken(); continue; }
+		    if ( s == "public" )    { baccess = 0;           pgm.nextToken(); continue; }
+		    if ( s == "protected" ) { baccess = vfPROTECTED; pgm.nextToken(); continue; }
+		    if ( s == "private" )   { baccess = vfPRIVATE;   pgm.nextToken(); continue; }
+		}
+		break;
+	    }
+	    TokenBase *bn = pgm.nextToken();
+	    if ( !bn || bn->type() != TokenType::ttIdentifier )
+		pgm.Throw(bn ? bn : this) << "Expected base class name" << flush;
+	    std::string base_name = ((TokenIdent *)bn)->str;
+	    datadef_map_iter bdmi = pgm.struct_map.find(base_name);
+	    DataDefCLASS *bcls = (bdmi != pgm.struct_map.end())
+		? dynamic_cast<DataDefCLASS *>(bdmi->second) : NULL;
+	    if ( !bcls )
+		pgm.Throw(bn) << "Unknown base class '" << base_name << "'" << flush;
+	    base_specs.push_back(BaseSpec{bcls, 0, bvirtual, baccess, false});
+	    if ( !inherit_base ) inherit_base = bcls;
+	    DBG(cout << "TokenCLASS::parse() inherits from " << base_name
+		<< (bvirtual ? " (virtual)" : "") << endl);
+	} while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma
+		  && (pgm.nextToken(), true) );
 	tn = pgm.peekToken();
-	if ( tn && tn->type() == TokenType::ttIdentifier )
-	{
-	    std::string spec = ((TokenIdent *)tn)->str;
-	    if ( spec == "public" || spec == "protected" || spec == "private" )
-		pgm.nextToken(); // consume access specifier
-	}
-	tn = pgm.nextToken();
-	if ( !tn || tn->type() != TokenType::ttIdentifier )
-	    pgm.Throw(tn ? tn : this) << "Expected base class name after ':'" << flush;
-	std::string base_name = ((TokenIdent *)tn)->str;
-	dmi = pgm.struct_map.find(base_name);
-	if ( dmi == pgm.struct_map.end() )
-	    pgm.Throw(tn) << "Unknown base class '" << base_name << "'" << flush;
-	inherit_base = dynamic_cast<DataDefCLASS *>(dmi->second);
-	if ( !inherit_base )
-	    pgm.Throw(tn) << "'" << base_name << "' is not a class" << flush;
-	tn = pgm.peekToken();
-	DBG(cout << "TokenCLASS::parse() inherits from " << base_name << endl);
     }
 
     // if no brace, class type must already be defined
