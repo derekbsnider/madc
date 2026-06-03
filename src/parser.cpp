@@ -11682,42 +11682,49 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     tdt = new TokenDataType(tag->str.c_str(), *ddc);
     pgm.datatype_map[tag->str] = tdt;
 
-    // Copy base class members (at offset 0) and methods for inheritance
-    if ( inherit_base )
+    // Flatten EACH base's data members into the derived class so method bodies can
+    // resolve inherited members during the body loop. Tag each with its origin base
+    // index; final offsets are assigned by compute_layout()+apply_member_layout()
+    // after the body loop (member_offsets here hold the member's offset WITHIN its
+    // base). Own members (added below via addMember) are origin -1 (normalized at
+    // the compute_layout call site). size is reset to 0: own members start at 0,
+    // and compute_layout assigns the real total.
+    if ( !base_specs.empty() )
     {
-	ddc->base_class = inherit_base;
-	// Start derived class at base class's full size (includes vptr if any)
-	// so that new members are placed after the base layout.
-	ddc->size = inherit_base->size;
-	// Copy all data members from base class (preserving their offsets)
-	for ( size_t i = 0; i < inherit_base->members.size(); ++i )
+	ddc->bases = base_specs;
+	ddc->base_class = inherit_base; // first base, for legacy single-base paths
+	for ( size_t bi = 0; bi < ddc->bases.size(); bi++ )
 	{
-	    auto &m = inherit_base->members[i];
-	    ddc->members.push_back(m);
-	    ddc->member_offsets.push_back(inherit_base->member_offsets[i]);
-	    ddc->member_array_flags.push_back(
-		i < inherit_base->member_array_flags.size()
-		? inherit_base->member_array_flags[i] : false);
+	    DataDefCLASS *b = ddc->bases[bi].base;
+	    for ( size_t i = 0; i < b->members.size(); ++i )
+	    {
+		ddc->members.push_back(b->members[i]);
+		ddc->member_offsets.push_back(b->member_offsets[i]);
+		ddc->member_counts.push_back(i < b->member_counts.size() ? b->member_counts[i] : 1);
+		ddc->member_array_flags.push_back(i < b->member_array_flags.size() ? b->member_array_flags[i] : false);
+		ddc->member_bitfields.push_back(i < b->member_bitfields.size() ? b->member_bitfields[i] : DataDefSTRUCT::BitFieldInfo());
+		ddc->member_dims.push_back(i < b->member_dims.size() ? b->member_dims[i] : std::vector<uint32_t>());
+		ddc->member_count_exprs.push_back(i < b->member_count_exprs.size() ? b->member_count_exprs[i] : NULL);
+		ddc->member_access.push_back(i < b->member_access.size() ? b->member_access[i] : 0);
+		ddc->member_origin.push_back((int)bi);
+	    }
+	    // Inherit methods (derived can override via method_map shadowing)
+	    for ( auto &mp : b->method_map )
+		if ( ddc->method_map.find(mp.first) == ddc->method_map.end() )
+		    ddc->method_map[mp.first] = mp.second;
+	    if ( b->has_user_dtor )
+		ddc->has_user_dtor = true;
+	    if ( b->has_vtable )
+	    {
+		ddc->has_vtable = true;
+		for ( auto &vs : b->vtable_slots )
+		    if ( ddc->vtable_slot(vs) < 0 ) ddc->vtable_slots.push_back(vs);
+		for ( auto &vm : b->virtual_methods ) ddc->virtual_methods[vm.first] = true;
+	    }
+	    DBG(cout << "TokenCLASS::parse() flattened " << b->members.size()
+		<< " members from base " << b->name << " (origin " << bi << ')' << endl);
 	}
-	// Inherit methods (derived can override via method_map shadowing)
-	for ( auto &mp : inherit_base->method_map )
-	{
-	    if ( ddc->method_map.find(mp.first) == ddc->method_map.end() )
-		ddc->method_map[mp.first] = mp.second;
-	}
-	// Inherit ctor/dtor flags for cleanup
-	if ( inherit_base->has_user_dtor )
-	    ddc->has_user_dtor = true;
-	// Inherit vtable slots and virtual method set
-	if ( inherit_base->has_vtable )
-	{
-	    ddc->has_vtable = true;
-	    ddc->vtable_slots = inherit_base->vtable_slots;
-	    ddc->virtual_methods = inherit_base->virtual_methods;
-	}
-	DBG(cout << "TokenCLASS::parse() inherited " << inherit_base->members.size()
-	    << " members, " << inherit_base->method_map.size() << " methods from "
-	    << inherit_base->name << ", size now " << ddc->size << endl);
+	ddc->size = 0; // own members start at 0; compute_layout assigns the real total
     }
 
     // C++ defaults: `class` members are PRIVATE until a public:/protected:
@@ -12021,15 +12028,16 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	pgm.Throw << "Unexpected end of input in class definition" << flush;
     pgm.nextToken(); // consume '}'
 
-    // If this class has virtual methods but no inherited vptr, prepend __vptr
-    if ( ddc->has_vtable && !(inherit_base && inherit_base->has_vtable) )
-    {
-	// Shift all existing member offsets by 8 to make room for __vptr at offset 0
-	ddc->size += 8;
-	for ( size_t i = 0; i < ddc->member_offsets.size(); ++i )
-	    ddc->member_offsets[i] += 8;
-	DBG(cout << "TokenCLASS::parse() added __vptr, size now " << ddc->size << endl);
-    }
+    // Finalize layout. compute_layout assigns base/vbase offsets, vptr placement,
+    // nvsize/size and own_block_off; apply_member_layout rewrites every member's
+    // final offset from its origin. This REPLACES the old +8 vptr fix-up and gives
+    // correct non-zero offsets for multiple/virtual bases. For a base-less or
+    // single-inheritance class it reproduces the previous layout byte-for-byte
+    // (vptr@0, base@0, own members after).
+    ddc->member_origin.resize(ddc->members.size(), -1); // own members (addMember) -> -1
+    ddc->compute_layout();
+    ddc->apply_member_layout();
+    DBG(cout << "TokenCLASS::parse() finalized layout, size now " << ddc->size << endl);
 
     // Allocate vtable if needed
     if ( ddc->has_vtable )
