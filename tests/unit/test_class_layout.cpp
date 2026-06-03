@@ -121,3 +121,22 @@ TEST_SUITE("class layout — MI non-virtual") {
         CHECK(mic->size == 40);
     }
 }
+
+TEST_SUITE("class layout — diamond") {
+    TEST_CASE("Diamond : L,R (both : virtual Top) -> L@0,R@16,Top@40 shared, size 56") {
+        DataDefCLASS *top = mkclass("Top", 1, true); top->compute_layout(); // nvsize 16
+        DataDefCLASS *l = mkclass("L", 1, true);
+        l->bases.push_back(BaseSpec{top, 0, true, 0u, false}); l->compute_layout(); // nvsize 16, size 32
+        DataDefCLASS *r = mkclass("R", 1, true);
+        r->bases.push_back(BaseSpec{top, 0, true, 0u, false}); r->compute_layout();
+        DataDefCLASS *dia = mkclass("Diamond", 1, true); // own {long d}
+        dia->bases.push_back(BaseSpec{l, 0, false, 0u, false});
+        dia->bases.push_back(BaseSpec{r, 0, false, 0u, false});
+        dia->compute_layout();
+        CHECK(dia->bases[0].offset == 0);
+        CHECK(dia->bases[1].offset == 16);
+        CHECK(dia->member_offsets[0] == 32);          // d
+        CHECK(dia->vbase_offset[top] == 40);          // Top appears ONCE, at the end
+        CHECK(dia->size == 56);
+    }
+}
