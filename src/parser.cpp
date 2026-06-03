@@ -7028,6 +7028,21 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	{
 	    FuncDef *fd = (FuncDef *)tc->var.type;
 	    Method *md = (Method *)tc->var.data;
+	    // C++ default arguments: fill omitted TRAILING args from the parameter
+	    // defaults (param_defaults is index-aligned with parameters, hidden
+	    // __this/__retbuf/__va_args slots hold NULL). Stop at the first param
+	    // without a default so the arity check still reports a genuine shortfall.
+	    if ( !fd->is_varargs && !fd->param_defaults.empty() )
+	    {
+		size_t hidden = (md && md->owner_class) ? 1 : 0;   // __this
+		for ( size_t i = hidden + tc->argc(); i < fd->parameters.size(); ++i )
+		{
+		    if ( i < fd->param_defaults.size() && fd->param_defaults[i] )
+			tc->parameters.push_back(fd->param_defaults[i]);
+		    else
+			break;
+		}
+	    }
 	    // In C, f() with no params accepts any number of arguments (K&R style).
 	    // Only f(void) means exactly zero. Skip the check for empty-param functions.
 	    if ( !(fd->parameters.empty() && !fd->is_void_params) )
@@ -14883,6 +14898,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	{
 	    func->parameters.push_back(&ddINT64); // void* as int64
 	    func->param_cpp_spellings.push_back(""); // hidden — excluded from mangling
+	    func->param_defaults.push_back(NULL);    // keep aligned with parameters
 	}
 	ids.push_back("__retbuf");
 	param_aliases.push_back("");
@@ -14908,6 +14924,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    func->ref_params.push_back(false);
 	    func->const_params.push_back(false);
 	    func->param_cpp_spellings.push_back(""); // hidden __this — excluded from mangling
+	    func->param_defaults.push_back(NULL);    // keep aligned with parameters
 	}
 	ids.push_back("__this");
 	param_aliases.push_back("");
@@ -14951,6 +14968,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	// tolerate C qualifiers/storage hints in parameter lists such as
 	// `const char *s` and `register char *s`
 	param_alias.clear();  // reset per-parameter typedef alias
+	// Default ARGUMENT expression (`T x = expr`) for this parameter, or NULL.
+	// Declared at loop top so the gotos into `paramdecl:` do not cross its
+	// initialization; the `= expr` is parsed just before `paramdecl:` below.
+	TokenBase *param_default = NULL;
 	bool param_has_const = false;
 	// Pointee/top-level const that PRECEDES the base type — `const char *` /
 	// `const std::string &`. This is the const Itanium mangles (PKc, RK...),
@@ -14994,6 +15015,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    {
 		func->parameters.push_back(&ddINT64);
 		func->param_cpp_spellings.push_back(""); // hidden — excluded
+		func->param_defaults.push_back(NULL);    // keep aligned with parameters
 	    }
 	    ids.push_back("__va_args");
 	    param_aliases.push_back("");
@@ -15261,6 +15283,16 @@ grabnt:
 	    rtype = RefType::rtPointer;
 	}
 
+	// Default argument: `T name = expr`. Parse the default expression — it stops
+	// at the parameter-list ',' or ')' — and record it (stored index-aligned with
+	// parameters in the push block below). A call that omits this argument fills
+	// it; arity matching uses FuncDef::required_param_count().
+	if ( nt && nt->id() == TokenID::tkAssign )
+	{
+	    param_default = parseExpression(nextToken(), true);
+	    nt = nextToken();   // the ',' or ')' that ends this parameter
+	}
+
 paramdecl:
 	// parameter declaration
 	if ( nt->id() == TokenID::tkComma || nt->id() == TokenID::tkClBrk )
@@ -15333,6 +15365,9 @@ paramdecl:
 		    func->const_params.push_back(false);
 		    scope_param_type = &pb->definition;
 		}
+		// Record this parameter's default-argument expression (NULL = none),
+		// index-aligned with the parameter just pushed above.
+		func->param_defaults.push_back(param_default);
 		DBG(std::cout << "Added new parameter declaration type: " << dd.name << " size: "
 		    << dd.size << " name: " << pid << " ptr: " << &dd << std::endl);
 	    }

@@ -77,6 +77,26 @@ public:
     // hidden `__this` slot (param 0 of a method) holds an empty string. Fed to
     // the Itanium mangler so a std:: method binds to the real libstdc++ symbol.
     std::vector<std::string> param_cpp_spellings;
+    // Default ARGUMENT expression for each parameter (C++ `T x = expr`), captured
+    // at parse time, index-aligned with `parameters`; NULL when the parameter has
+    // no default. A call that omits a trailing argument fills it from here, and
+    // arity matching treats the function as callable with [required..total] args
+    // (required = count of params with no default).
+    std::vector<class TokenBase *> param_defaults;
+    // Number of leading parameters that have NO default — the minimum arg count a
+    // call must supply. Equals parameters.size() when no parameter has a default.
+    size_t required_param_count() const
+    {
+	size_t req = parameters.size();
+	for ( size_t i = parameters.size(); i-- > 0; )
+	{
+	    if ( i < param_defaults.size() && param_defaults[i] )
+		req = i;
+	    else
+		break;
+	}
+	return req;
+    }
     // reference return: true when the function returns T& (e.g. T& operator[]).
     // `returns` stays the base type T; the value is returned BY ADDRESS (a T*),
     // so the call site is an lvalue (assign stores through it; read derefs it),
