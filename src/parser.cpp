@@ -9221,6 +9221,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		// shape, so we keep the global behavior and only
 		// force a left-associative pop here for the four
 		// arithmetic precedences (3 = * / %, 4 = + -).
+		// NOTE: the shifts << >> (precedence 5) are ALSO
+		// left-associative in C (`1<<4>>1` == `(1<<4)>>1` == 8;
+		// madc currently yields 4), but forcing their left-assoc
+		// pop here breaks the stream `<<` lowering (which depends
+		// on this right-leaning shape) — both must be fixed
+		// together when the stream chain is generalized. Tracked:
+		// KG gap shift_operator_associativity.
 		while ( !opStack.empty() && opStack.top()->id() != TokenID::tkOpBrk
 		&&      (opStack.top()->type() == TokenType::ttCallFunc || opStack.top()->type() == TokenType::ttCallMethod
 		||      (opStack.top()->is_operator() && (*((TokenOperator *)opStack.top()) > *to))
