@@ -3776,7 +3776,8 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	{
 	    size_t pi = i + 1;   // skip __this
 	    DataDef *pt = pi < fd->parameters.size() ? fd->parameters[pi] : NULL;
-	    int s = score_arg_to_param(argtypes[i], pt);
+	    bool refp = pi < fd->ref_params.size() && fd->ref_params[pi];
+	    int s = score_arg_to_param(argtypes[i], pt, refp);
 	    if ( s < 0 ) { ok = false; break; }
 	    total += s;
 	}
@@ -3851,7 +3852,7 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 	default: return;     // comparison/bitwise results are already typed correctly
     }
     DataDef *rt = lc->binary_operator_return_type(std::string("operator") + opsym);
-    if ( rt ) to->setDataType(rt);
+    if ( rt ) to->set_resolved_type(rt);
 }
 
 TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
@@ -6844,10 +6845,11 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 		    }
 		}
 	    }
-	    // NOTE: generic object-operator result typing (resolve_object_operator_type)
-	    // is groundwork for generic operator-overload support; it is NOT wired in
-	    // here yet because the arithmetic operators' datadef() short-circuits on a
-	    // pointer operand (`obj + "lit"`), which must be reworked first.
+	    // Type a class-object operator expression with the operator's RETURN type
+	    // (generic operator-overload support — applies to every class identically).
+	    // Authoritative over the built-in pointer/arithmetic heuristics via
+	    // TokenOperator::resolved_type.
+	    resolve_object_operator_type(to);
 	    DBG(cout << "Popping " << (char)to->get() << "[" << (to->left ? to->left->ival() : 0) << ", " << (to->right ? to->right->ival() : 0) << "] from opStack and onto exStack" << endl);
 	    opStack.pop();
 	    exStack.push(to);

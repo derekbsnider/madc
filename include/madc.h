@@ -147,7 +147,7 @@ public:
 // sequence uses at most one user-defined conversion (the C++ rule), which also
 // bounds the recursion to depth 1. Defined in cir_builder.cpp.
 int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
-		       bool allow_udc = true);
+		       bool param_is_ref = false, bool allow_udc = true);
 
 class DataStruct: public DataDef
 {

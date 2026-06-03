@@ -3877,10 +3877,19 @@ node_t CirBuilder::method_fnptr_type(FuncDef *callee, DataDefCLASS *owner)
 // Generic overload-resolution ranking (declared in madc.h). No type is
 // special-cased; std::string falls out of the class-object + converting-ctor
 // rules like any other class.
-int score_arg_to_param(const DataDef *adc, const DataDef *pdc, bool allow_udc)
+int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
+		       bool param_is_ref, bool allow_udc)
 {
 	if (!pdc || !adc)
 		return 0;   // unknown shape: neutral, don't reject
+	// A reference parameter (`T&`) is represented as a pointer-to-T; bind it as
+	// the referenced type T (object/value semantics), NOT as a raw pointer — so a
+	// `T` argument binds a `const T&` parameter (e.g. the copy ctor) like C++.
+	if (param_is_ref && pdc->is_pointer()) {
+		const DataDefPTR *pp = dynamic_cast<const DataDefPTR *>(pdc);
+		if (pp && pp->base_type)
+			pdc = pp->base_type;
+	}
 	// A class-object parameter binds: an argument of the SAME class (identity
 	// / copy), or — via one user-defined conversion — an argument that one of
 	// the class's single-argument constructors accepts.
@@ -3897,7 +3906,8 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc, bool allow_udc)
 			FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
 			if (!fd || fd->parameters.size() != 2)   // __this + exactly one
 				continue;
-			int s = score_arg_to_param(adc, fd->parameters[1], false);
+			bool cref = fd->ref_params.size() > 1 && fd->ref_params[1];
+			int s = score_arg_to_param(adc, fd->parameters[1], cref, false);
 			if (s > best)
 				best = s;
 		}
@@ -3932,52 +3942,42 @@ static std::string ctor_call_symbol(DataDefCLASS *cdd, FuncDef *ctor)
 	return cdd->name + "__" + cdd->name;
 }
 
-// Select the constructor overload of `cdd` that matches the initializer
-// arguments. Mirrors string_ctor_call's logic but on the class path:
-//   - no args            -> the receiver-only (default) ctor.
-//   - one string-OBJECT  -> the copy ctor (param is std::string / std::string&).
-//   - any other args     -> the ctor whose (non-__this) param count matches,
-//                           preferring a non-string-typed first param.
-// `cdd->ctors` lists the overloads (one entry for a user class). Returns NULL
-// when no overload set is recorded (caller falls back to the single ctor).
-//
-// KNOWN LIMITATION (tracked): this still uses a std::string-specific copy-vs-
-// convert disambiguation rather than the generic score_arg_to_param ranking.
-// Lifting it requires operator-result initializers to be correctly TYPED first
-// (the arithmetic operators' datadef() currently reports a pointer/arithmetic
-// type for `obj + x`, not the operator's class return type — see
-// Program::resolve_object_operator_type and binary_operator_return_type, the
-// groundwork for that fix). The generic resolver already drives METHOD overload
-// selection (findMethodOverload). Tracked as the generic-operator-support work.
+// Select the constructor overload of `cdd` matching the initializer arguments by
+// ARGUMENT TYPE (general overload resolution, not arity alone), via the shared
+// generic score_arg_to_param ranking. The candidate whose parameter types best
+// match the argument types wins; a candidate that cannot bind any argument is
+// rejected. No type is special-cased — a same-class argument selects the copy
+// ctor, a convertible argument selects a converting ctor, for std::string and
+// every user class identically. Relies on operator-result initializers being
+// correctly TYPED (Program::resolve_object_operator_type), so a `T c = a + b`
+// copy-init sees the operator's class return type, not a pointer/arithmetic type.
+// `cdd->ctors` lists the overloads. Returns NULL when no overload set is recorded
+// (caller falls back to the single ctor keyed under the class name).
 FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 					  const std::vector<TokenBase *> &ctor_args)
 {
 	if (!cdd || cdd->ctors.empty()) return NULL;
-
-	// A single string-OBJECT argument (a declared string, a string& param, a
-	// string container element, OR a string-returning CALL rvalue) selects the
-	// copy ctor (const string&); a const char* value selects the char* ctor.
-	bool copy_init = ctor_args.size() == 1
-			 && (is_string_object_value(ctor_args[0])
-			     || is_string_returning_call(ctor_args[0]));
 	FuncDef *best = NULL;
+	int best_score = -1;
 	for (Variable *cv : cdd->ctors) {
 		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
 		if (!fd) continue;
 		// Parameter count excluding the hidden __this (param 0).
 		size_t pn = fd->parameters.empty() ? 0 : fd->parameters.size() - 1;
 		if (pn != ctor_args.size()) continue;
-		DataDef *p1dd = (fd->parameters.size() > 1)
-			      ? fd->parameters[1] : NULL;
-		bool p1_is_string = is_std_string(p1dd);
-		if (ctor_args.size() == 1) {
-			// Disambiguate string-object copy vs const char* by the arg.
-			if (copy_init && p1_is_string) return fd;
-			if (!copy_init && !p1_is_string) return fd;
-			if (!best) best = fd;   // arity match, keep as fallback
-			continue;
+		int total = 0;
+		bool ok = true;
+		for (size_t i = 0; i < ctor_args.size(); i++) {
+			size_t pi = i + 1;   // skip __this
+			DataDef *pt = (pi < fd->parameters.size())
+				    ? fd->parameters[pi] : NULL;
+			bool refp = pi < fd->ref_params.size() && fd->ref_params[pi];
+			DataDef *adc = ctor_args[i] ? ctor_args[i]->datadef() : NULL;
+			int s = score_arg_to_param(adc, pt, refp);
+			if (s < 0) { ok = false; break; }
+			total += s;
 		}
-		return fd;   // arity uniquely selects for 0 or >1 args
+		if (ok && total > best_score) { best_score = total; best = fd; }
 	}
 	return best;
 }
@@ -4392,7 +4392,31 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	// overload (P2.1b gaps 3 & 4) carries its real symbol in class_emit_name.
 	std::string sym = !callee->class_emit_name.empty()
 			  ? callee->class_emit_name : (lcls->name + "__" + mname);
+
+	// Part B: an operator returning a class object BY VALUE (e.g. V operator+(V&))
+	// yields an rvalue; materialize it into an addressable cleanup temp so the
+	// result can be copy-constructed from, passed by reference, or have members
+	// called — generic for any class (the std::string operator+ path above does
+	// the same with its own wrapper). A NON-TRIVIAL return was compiled with the
+	// __retbuf ABI (hidden return-slot first param) -> pass &__t as that slot and
+	// the void call writes *__retbuf; a TRIVIAL (native struct) return is assigned
+	// into __t. The expression value is then the temp's object lvalue.
+	DataDefCLASS *retc = as_class_instance(&callee->returns);
+	bool by_value_object = retc && !callee->returns_ref
+			       && !callee->returns.is_pointer();
+	bool via_retbuf = by_value_object
+			  && class_return_via_retbuf(&callee->returns) != NULL;
+	char objtmp[40] = { 0 };
+	if (by_value_object) {
+		snprintf(objtmp, sizeof(objtmp), "__madc_objtmp_%d", m_strtmp_counter++);
+		Variable *tmp = new Variable(objtmp, *retc, 1, NULL, false);
+		tmp->flags |= vfLOCAL;
+		m_pending_stmts.push_back(var_decl(tmp, origin));
+	}
+
 	node_t args = list();
+	if (via_retbuf)
+		append(args, node1(N_ADDR, id(objtmp, origin), origin));   // __retbuf slot
 	append(args, this_arg);
 	// Single explicit RHS argument (operator parameter 1; param 0 = __this).
 	{
@@ -4408,6 +4432,15 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	}
 	referenced_funcs.insert(sym);
 	node_t ocall = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+
+	if (by_value_object) {
+		if (via_retbuf)
+			m_pending_stmts.push_back(node2(N_EXPR, list(), ocall, origin));
+		else
+			m_pending_stmts.push_back(node2(N_EXPR, list(),
+				node2(N_ASSIGN, id(objtmp, origin), ocall, origin), origin));
+		return id(objtmp, origin);   // materialized object lvalue
+	}
 	// T&-returning operator returns an address; deref to the lvalue.
 	if (callee && callee->returns_ref)
 		return node1(N_DEREF, ocall, origin);

@@ -156,9 +156,18 @@ class TokenOperator: public TokenBase
 public:
     TokenBase *left;
     TokenBase *right;
-    TokenOperator() : TokenBase() { left = NULL; right = NULL; _datatype = &ddINT; }
-    TokenOperator(int t) : TokenBase(t) { left = NULL; right = NULL; _datatype = &ddINT; }
-    virtual TokenBase *clone() { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; return to; }
+    // When this operator is an OVERLOADED operator on a class object, the result
+    // type is the operator method's return type — set by the parser at reduce
+    // time (Program::resolve_object_operator_type). It takes precedence over the
+    // built-in pointer/arithmetic heuristics so `obj + x` reports the class type,
+    // not pointer/int. NULL for ordinary scalar/pointer operators.
+    DataDef *resolved_type;
+    TokenOperator() : TokenBase() { left = NULL; right = NULL; resolved_type = NULL; _datatype = &ddINT; }
+    TokenOperator(int t) : TokenBase(t) { left = NULL; right = NULL; resolved_type = NULL; _datatype = &ddINT; }
+    void set_resolved_type(DataDef *d) { resolved_type = d; }
+    virtual DataDef *datadef() const override
+    { return resolved_type ? resolved_type : (_datatype ? _datatype : &ddVOID); }
+    virtual TokenBase *clone() { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual int64_t ival() const { /*if (left && right) return operate();*/ return 0; }
     virtual size_t argc() const { return 2; }
     virtual bool is_operator() const override { return true; }
@@ -203,6 +212,7 @@ public:
     virtual TokenID id() const { return TokenID::tkAdd; }
     virtual DataDef *datadef() const override
     {
+	if ( resolved_type ) return resolved_type;   // overloaded operator+ on a class object
 	if ( left  && left->datadef()  && left->datadef()->is_pointer()  ) return left->datadef();
 	if ( right && right->datadef() && right->datadef()->is_pointer() ) return right->datadef();
 	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
@@ -233,6 +243,7 @@ public:
     virtual inline int precedence() const { return 4; }
     virtual DataDef *datadef() const override
     {
+	if ( resolved_type ) return resolved_type;   // overloaded operator- on a class object
 	// `p - n` is a pointer; `p - q` (both pointers) is ptrdiff_t.
 	if ( left && left->datadef() && left->datadef()->is_pointer() )
 	{
@@ -284,6 +295,7 @@ public:
     virtual inline int precedence() const { return 3; }
     virtual DataDef *datadef() const override
     {
+	if ( resolved_type ) return resolved_type;   // overloaded operator* on a class object
 	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
 	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
 	return TokenOperator::datadef();
@@ -302,6 +314,7 @@ public:
     virtual inline int precedence() const { return 3; }
     virtual DataDef *datadef() const override
     {
+	if ( resolved_type ) return resolved_type;   // overloaded operator/ on a class object
 	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
 	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
 	return TokenOperator::datadef();
