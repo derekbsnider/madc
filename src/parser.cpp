@@ -3806,6 +3806,24 @@ void DataDefCLASS::apply_member_layout()
     }
 }
 
+// Subobject offset of `target` within this class. A (transitive) virtual base
+// lives at this class's hoisted vbase_offset; a non-virtual base at its bs.offset
+// (plus the offset within it, transitively). Returns (size_t)-1 if not a base.
+size_t DataDefCLASS::base_offset_of(const DataDefCLASS *target) const
+{
+    if ( target == this ) return 0;
+    for ( const auto &vb : vbase_offset )
+	if ( vb.first == target ) return vb.second;
+    for ( const auto &bs : bases )
+    {
+	if ( bs.is_virtual ) continue; // virtual bases handled via vbase_offset above
+	if ( bs.base == target ) return bs.offset;
+	size_t inner = bs.base->base_offset_of(target);
+	if ( inner != (size_t)-1 ) return bs.offset + inner;
+    }
+    return (size_t)-1;
+}
+
 void DataDefCLASS::collect_vbases(std::vector<DataDefCLASS *> &out,
 				  std::set<DataDefCLASS *> &seen) const
 {

@@ -734,6 +734,9 @@ public:
     bool is_polymorphic() const { return has_vtable; }
     void compute_layout(); // Itanium layout engine (defined in parser.cpp)
     void apply_member_layout(); // rewrite member_offsets from member_origin + computed layout
+    // Subobject offset of `target` within this class (direct/transitive base), or
+    // (size_t)-1 if not a base. Used to adjust `this` on base-method calls.
+    size_t base_offset_of(const DataDefCLASS *target) const;
     // Collect all (transitive) virtual bases, deduped, in canonical order.
     void collect_vbases(std::vector<DataDefCLASS *> &out,
 			std::set<DataDefCLASS *> &seen) const;

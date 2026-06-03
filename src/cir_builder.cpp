@@ -3035,18 +3035,30 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 		return emit_symbol_method_call(tm, callee, sym, this_arg, origin);
 
 	// An inherited method's __this is typed `Base *`, but the receiver is a
-	// `Derived *`. Since base members are flattened at offset 0 (single
-	// inheritance), the address is identical — cast the __this pointer to the
-	// method's declared owner-class type so c2mir doesn't warn/mistype.
+	// `Derived *`. The base subobject sits at base_offset_of(owner) within the
+	// derived object (0 for a primary/single-inheritance base, non-zero for a
+	// secondary or virtual base). Adjust the byte address before casting to the
+	// owner-class pointer type, so the method reads/writes its own subobject.
 	DataDefCLASS *owner = (callee && !callee->parameters.empty())
 				? class_behind(callee->parameters[0]) : NULL;
-	if (owner && owner != recv_class)
+	if (owner && owner != recv_class) {
+		node_t adj = this_arg;
+		size_t boff = recv_class ? recv_class->base_offset_of(owner) : 0;
+		if (boff != 0 && boff != (size_t)-1) {
+			// (char*)this_arg + boff
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				this_arg, origin);
+			adj = node2(N_ADD, charp, integer((long)boff), origin);
+		}
 		this_arg = node2(N_CAST,
 			node2(N_TYPE,
 			      node1(N_LIST, node2(N_STRUCT, id(owner->name.c_str()),
 						  ignore())),
 			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-			this_arg, origin);
+			adj, origin);
+	}
 
 	// Build the argument list: hidden __this first, then the explicit args.
 	// Coerce each explicit arg to its declared parameter shape (string object
