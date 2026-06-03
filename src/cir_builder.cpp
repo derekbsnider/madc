@@ -4801,6 +4801,46 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		return node2(N_CAST, tgt_t, call, tb);
 	}
 
+	// typeid(T) / typeid(e)  (S5d) -> a std::type_info* (the result is modeled as
+	// a pointer; type_info::name()/== operate on it). The TYPE form and a
+	// non-polymorphic expression yield the static &_ZTI<class>; a POLYMORPHIC
+	// expression reads the runtime type from the object's vptr[-1] (the RTTI slot
+	// wired in S5b), so typeid(*base_ptr) reports the most-derived type.
+	if (TokenTypeid *ti = dynamic_cast<TokenTypeid *>(tb)) {
+		DataDefCLASS *tinfo = class_behind(tb->datadef()); // std::type_info
+		auto tinfo_ptr = [&]() -> node_t {
+			return node2(N_TYPE,
+				node1(N_LIST, node2(N_STRUCT,
+					id(tinfo ? tinfo->name.c_str() : "type_info"), ignore())),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		};
+		if (ti->static_type) {
+			DataDefCLASS *c = class_behind(ti->static_type);
+			if (!c) return error_node("typeid type operand is not a class type", tb);
+			std::string sym = itanium_typeinfo_sym(c->name);
+			referenced_funcs.insert(sym);
+			return node2(N_CAST, tinfo_ptr(), id(sym.c_str()), tb);
+		}
+		DataDefCLASS *ec = class_behind(ti->operand ? ti->operand->datadef() : NULL);
+		if (ec && ec->is_polymorphic()) {
+			// (type_info*)( ((void**)(&obj)->__vptr)[-1] )
+			node_t objptr = node1(N_ADDR, translate_expr(ti->operand), tb);
+			node_t vptr = node2(N_DEREF_FIELD, objptr, id("__vptr", tb));
+			node_t vpp_dl = list();
+			append(vpp_dl, pointer());
+			append(vpp_dl, pointer());
+			node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+						node2(N_DECL, ignore(), vpp_dl));
+			node_t vtab = node2(N_CAST, vpp_type, vptr, tb);
+			node_t rtti = node2(N_IND, vtab, integer(-1, tb), tb);
+			return node2(N_CAST, tinfo_ptr(), rtti, tb);
+		}
+		if (!ec) return error_node("typeid operand has no RTTI class type", tb);
+		std::string sym = itanium_typeinfo_sym(ec->name);
+		referenced_funcs.insert(sym);
+		return node2(N_CAST, tinfo_ptr(), id(sym.c_str()), tb);
+	}
+
 	// GNU statement expression `({ stmt...; expr; })` used as a VALUE. c2mir
 	// models it natively as N_STMTEXPR(compound_stmt); the block's last item
 	// must be an expression-statement (c2mir enforces this). A bare TokenCpnd
