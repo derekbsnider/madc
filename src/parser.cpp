@@ -9359,6 +9359,48 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    }
 		    break;
 		}
+		// dynamic_cast < TYPE * > ( EXPR )   (S5c)
+		if ( ident_tb->str == "dynamic_cast" )
+		{
+		    skip_expression_whitespace(*this);
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
+			Throw(tb) << "Expecting '<' after dynamic_cast" << flush;
+		    nextToken(); // consume '<'
+		    skip_expression_whitespace(*this);
+		    TokenBase *type_tb = nextToken();
+		    TokenDataType *tdt = resolve_declared_type_token(*this, type_tb, true, true);
+		    if ( !tdt )
+			Throw(type_tb ? type_tb : tb) << "dynamic_cast target is not a type" << flush;
+		    DataDef *tgt = &tdt->definition;
+		    skip_expression_whitespace(*this);
+		    bool is_ptr = false;
+		    if ( peekToken() && peekToken()->id() == TokenID::tkMul )
+		    { nextToken(); is_ptr = true; }
+		    else if ( peekToken() && peekToken()->id() == TokenID::tkBand )
+			Throw(tb) << "dynamic_cast to a reference type is not yet supported (use the pointer form)" << flush;
+		    skip_expression_whitespace(*this);
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
+			Throw(tb) << "Expecting '>' to close dynamic_cast<...>" << flush;
+		    nextToken(); // consume '>'
+		    skip_expression_whitespace(*this);
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after dynamic_cast<...>" << flush;
+		    nextToken(); // consume '('
+		    TokenBase *inner_first = nextToken();
+		    TokenBase *inner = parseExpression(inner_first, false, false, false, 0, true);
+		    skip_expression_whitespace(*this);
+		    TokenBase *close_tb = nextToken();
+		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
+			Throw(close_tb ? close_tb : tb) << "Expecting ')' to close dynamic_cast" << flush;
+		    TokenDynamicCast *dc = new TokenDynamicCast();
+		    dc->target_type = tgt;
+		    dc->target_is_ptr = is_ptr;
+		    dc->operand = inner;
+		    dc->setDataType(is_ptr ? (DataDef *)getPointerType(tgt) : tgt);
+		    dc->file = tb->file; dc->line = tb->line; dc->column = tb->column;
+		    exStack.push(dc);
+		    break;
+		}
 		if ( is_nullptr_identifier(ident_tb->str) )
 		{
 		    TokenNullptr *tnp = new TokenNullptr();

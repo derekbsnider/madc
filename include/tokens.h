@@ -49,7 +49,8 @@ enum class TokenID {
   tkUSING, tkNAMESPACE, tkPREFER, tkDEFER, tkSTATIC, tkCONST, tkEXTERN, tkENUM, tkRESTRICT, tkVOLATILE,
   tkTEMPLATE,
   tkFatArrow, tkMATCH,    // => (rust::match arm) and the match statement itself
-  tkUNION, tkNEW, tkDELETE
+  tkUNION, tkNEW, tkDELETE,
+  tkDynamicCast, tkTypeid    // RTTI (S5): dynamic_cast<T*>(e), typeid(e|T)
 };
 
 enum class TokenAssoc {
@@ -908,6 +909,33 @@ public:
 	if ( d && d->is_pointer() )
 	    _datatype = d;
     }
+};
+
+// dynamic_cast<T*>(e) — RTTI down/cross-cast (S5). target_type is the pointee
+// class T; operand is the source expression. Lowered to libstdc++ __dynamic_cast
+// in cir_builder. _datatype is set to T* at parse time.
+class TokenDynamicCast: public TokenBase
+{
+public:
+    DataDef   *target_type;   // pointee class T
+    bool       target_is_ptr; // T* form (the only supported form)
+    TokenBase *operand;       // the (e) sub-expression
+    TokenDynamicCast() : TokenBase(), target_type(NULL), target_is_ptr(false), operand(NULL) {}
+    virtual TokenID id() const { return TokenID::tkDynamicCast; }
+    virtual TokenBase *clone() { return new TokenDynamicCast(*this); }
+};
+
+// typeid(e) / typeid(T) — RTTI query (S5). static_type set for the type form;
+// operand set for the expression form. Yields const std::type_info& (modeled as
+// a std::type_info* in cir_builder).
+class TokenTypeid: public TokenBase
+{
+public:
+    DataDef   *static_type; // non-NULL for typeid(Type)
+    TokenBase *operand;     // non-NULL for typeid(expr)
+    TokenTypeid() : TokenBase(), static_type(NULL), operand(NULL) {}
+    virtual TokenID id() const { return TokenID::tkTypeid; }
+    virtual TokenBase *clone() { return new TokenTypeid(*this); }
 };
 
 class TokenTypeQuery: public TokenBase
