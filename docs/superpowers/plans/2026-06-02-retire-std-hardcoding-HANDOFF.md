@@ -6,6 +6,48 @@
 > been merged to develop. Reading this doc + the spec + the memories below = full
 > situational awareness; you should not need anything else to continue.
 
+## ⏩⏩ RESTART 2026-06-03 (read this first — most recent state)
+Branch `feature/retire-std-hardcoding-claude`, HEAD **`36e3156`** (pushed). Run `bash scripts/resume.sh`.
+
+**THIS SESSION's arc (all gated: build 0-warn + integration suite; SMAUG only when a shared-C path
+changed):** built the GENERIC operator/object machinery the campaign needs, then started the
+header-keystone string migration. Commits in order:
+- `9db1eb0` gate loophole CLOSED (counts is_std_string/is_string_class/string_*/STR_*; honest 468→**775**).
+- `1aeaa38`+`88f69cd`+`2afdbd4` GENERIC operator support for ALL classes: operator-expr typing
+  (`TokenOperator::resolved_type`+`resolve_object_operator_type`+`binary_operator_return_type`),
+  generic `select_ctor_overload` (`score_arg_to_param`, ref-param peeling), object-rvalue temp
+  materialization, implicit copy ctor, member-on-operator-rvalue. Guard: `tests/testuserops.mad`.
+- `a192e36` DEFAULT FUNCTION ARGUMENTS direct-call path (`FuncDef::param_defaults` +
+  `required_param_count()`; parsed in parseFunction; filled in parseCallFunc). `tests/testdefarg.mad`.
+- `74303d9` DEFAULT ARGS for CONSTRUCTORS (`select_ctor_overload` arity [required..total] +
+  `class_ctor_call` fill). `tests/testctordefarg.mad` (Box(10)=15).
+- `36e3156` **WIP/UNTESTED**: `include/madc/string` ctor now `basic_string(const char*, const
+  allocator<_CharT>& = allocator<_CharT>())` so it mangles the EXPORTED `C1EPKcRKS3_` (libstdc++ does
+  NOT export the 1-arg `C1EPKc`). Builds clean; construct/run NOT verified.
+
+**IMMEDIATE NEXT (resume here):**
+1. `( ulimit -t 60; timeout 90 bin/madc -v tmp/hdrstr.mad 2>&1 | grep C1EPKc )` — expect the ctor binds
+   to `...C1EPKcRKS3_`. Then `bin/madc tmp/hdrstr.mad` — expect `len=5` / `cstr=hello`. (`tmp/hdrstr.mad`
+   uses `typedef std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char>> mystr;`
+   — the typedef path; the bare statement-decl form is the logged ns-resolution gap.) If it constructs,
+   PREREQ-3 is DONE and the header string is usable end-to-end.
+2. If the default `allocator<_CharT>()` in the template-method default arg doesn't instantiate/mangle
+   right, that's the thing to debug (template-param-typed default expr through instantiation).
+3. Then: add header copy-ctor + composed-body operators (`operator+`=copy+`append`, `==`=`compare()==0`,
+   `!=`=`!(==)`) — verify template METHOD BODIES instantiate — prove header string operators via the
+   generic machinery — THE FLIP (`string` typedef + `is_string_class` identity → header type) — migrate
+   the ~775 sites — delete builtins/wrappers — gate 0. Full plan in §6.0-MIGRATION SCOPING + 6.0-KEYSTONE
+   VALIDATION below.
+
+**EFFICIENCY (user-enforced this session):** SMAUG is C89 — do NOT soak it on C++-only changes; batch
+edits before rebuilding (header edits cascade to slow full rebuilds of parser.cpp/cir_builder.cpp). See
+memory `feedback_build_test_efficiency`.
+
+**Generic-operator follow-ups still open:** implicit copy ctor for NON-trivial classes (member-wise);
+unify string operator CODEGEN onto the generic branch (the `void*`-return-contract ripple in §6.0).
+
+---
+
 ## ⏩ STEP 0 — ORIENT
 ```
 bash scripts/resume.sh                              # live git/reflog/fork/build state
