@@ -1,14 +1,17 @@
 # Test Status
 
-> **Current (2026-05-30, CIR sole backend):** integration **325 passed,
-> ~95 failed, 1 flaky-timeout, 56 skipped**. The 419/0 figures below are the
+> **Current (2026-06-03, retire-std-hardcoding branch):** integration
+> **480 passed, 6 failed, 1 flaky-timeout, 55 skipped** after adding
+> `testheaderstringops.mad` and `testclasscopyretbuf.mad`. The known red tests
+> are `testcin.mad`, `testdefer.mad`, `testforeach2.mad`, `testfstream.mad`,
+> `testlargesizeofquery.mad`, and `testloop.mad`; `testfortypedcomma.mad`
+> remains the flaky timeout. The 419/0 figures below are the
 > *removed* asmjit/MIR-transpiler backend and are retained only as the C89
 > coverage target the CIR path is climbing back to. ★ Milestone: SMAUG 1.8
 > boots, runs as a live server, and is playable (character creation, world
 > navigation, the Newgate serpent fight) through `cir_node → c2mir → MIR → JIT`.
-> Canonical live state: `claude_status.json`. The lone timeout
-> (`tests/testfortypedcomma.mad`) is a pre-existing flaky failure (uninitialized
-> 2nd declarator in a multi-declarator for-init).
+> Canonical live state: this branch's live git and fulltest output; the older
+> parity snapshots below are retained as historical context.
 
 Test results as of May 28, 2026 (v0.24.0, GCC parity 1649/1685 = 97.9%, 475 integration tests, 294 unit tests).
 

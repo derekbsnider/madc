@@ -3490,6 +3490,8 @@ bool CirBuilder::class_has_own_user_dtor(DataDefCLASS *cdd)
 	return cdd->method_map.find("~" + cdd->name) != cdd->method_map.end();
 }
 
+static std::string ctor_call_symbol(DataDefCLASS *cdd, FuncDef *ctor);
+
 // The user class that `dd` denotes IF returning it by value must use the
 // struct-return (__retbuf) ABI — i.e. a NON-TRIVIAL class: one that needs a
 // destructor (object members / user dtor / non-trivial base). A bit-copy return
@@ -3506,17 +3508,51 @@ DataDefCLASS *CirBuilder::class_return_via_retbuf(DataDef *dd)
 	return class_needs_dtor(cdd) ? cdd : NULL;
 }
 
-// Member-wise copy-construct each object member of `cdd` from `src` into the
-// __retbuf return slot, and bit-copy the whole object first for the scalar
-// members. Emits into `out`. `src` is a TokenBase whose translate_expr yields
-// the source object lvalue (the `return obj;` operand). Mirrors g++'s implicit
-// copy-ctor for a class with object members: copy each member, deep-copying the
-// object ones (string -> string_construct_copy) so no buffer is shared.
+// Copy-construct `cdd` from `src` into the __retbuf return slot. Prefer an
+// available copy constructor; otherwise use the legacy bit-copy plus member
+// reconstruction fallback. `src` is a TokenBase whose translate_expr yields the
+// source object lvalue (the `return obj;` operand).
 void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 						  TokenBase *src,
 						  std::vector<node_t> &out,
 						  TokenBase *origin)
 {
+	std::vector<TokenBase *> copy_args;
+	if (src) copy_args.push_back(src);
+	FuncDef *copy_ctor = select_ctor_overload(cdd, copy_args);
+	if (copy_ctor && src) {
+		std::string sym = ctor_call_symbol(cdd, copy_ctor);
+		node_t args = list();
+		append(args, id(RETBUF_NAME, origin));   // __retbuf is already T*
+		bool refp = copy_ctor->ref_params.size() > 1
+			    && copy_ctor->ref_params[1];
+		if (refp)
+			append(args, node1(N_ADDR, translate_expr(src), src));
+		else
+			append(args, translate_expr(src));
+		if (!copy_ctor->emit_symbol.empty()) {
+			std::vector<ExternParam> eparams;
+			eparams.push_back({ {N_VOID}, true });   // this
+			for (size_t pi = 1; pi < copy_ctor->parameters.size(); pi++) {
+				DataDef *cpt = copy_ctor->parameters[pi];
+				bool crefp = pi < copy_ctor->ref_params.size()
+					     && copy_ctor->ref_params[pi];
+				if (crefp)
+					eparams.push_back({ {N_VOID}, true });
+				else if (cpt && cpt->is_pointer())
+					eparams.push_back({ {N_CHAR}, true });
+				else
+					eparams.push_back({ {N_LONG}, false });
+			}
+			need_output_extern(sym.c_str(), false, eparams);
+		}
+		referenced_funcs.insert(sym);
+		node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+		CIR_NODE(call)->synth_from_origin = true;
+		out.push_back(node2(N_EXPR, list(), call, origin));
+		return;
+	}
+
 	// 1) Bit-copy the source object into *__retbuf (covers scalar members and
 	//    establishes the layout). `*__retbuf = src;` — c2mir struct assignment.
 	node_t retderef = node1(N_DEREF, id(RETBUF_NAME, origin), origin);

@@ -6,7 +6,35 @@
 > been merged to develop. Reading this doc + the spec + the memories below = full
 > situational awareness; you should not need anything else to continue.
 
-## ⏩⏩ RESTART 2026-06-03 (later — read this first, supersedes the block below)
+## ⏩⏩⏩ RESTART 2026-06-03 (Codex continuation — current worktree, supersedes the block below)
+Branch `feature/retire-std-hardcoding-claude`, HEAD **`387d0e4`** plus uncommitted worktree changes.
+
+**COMPOSED-BODY STRING OPERATORS ARE PROVEN WITHOUT STRING-SPECIFIC COMPILER SUPPORT.**
+`include/madc/string` now declares the missing ordinary header surface (`append(const basic_string&)`,
+`compare(const basic_string&)`, corrected `compare(const char*) -> int`) and defines inline
+`operator==`, `operator!=`, and `operator+` as normal class method bodies over `c_str()`/`append()`/
+`compare()`. `operator+` exposed a generic return-by-value bug for non-trivial classes: raw
+`*__retbuf = local` bit-copy leaves owned pointers aliased to a callee stack object. The compiler fix is
+generic: `class_copy_construct_into_retbuf` now selects and calls an available copy constructor for any
+class before falling back to the existing copy path. There are no new `std::string`/`basic_string`
+special cases.
+
+New tracked regressions in the current worktree:
+- `tests/testheaderstringops.mad` proves header-defined `basic_string` `==`, `!=`, and `+`.
+- `tests/testclasscopyretbuf.mad` proves the retbuf copy-constructor path on a user class.
+
+Validation snapshot: focused tests pass; `make -C src fulltest` produced **480 passed, 6 failed,
+1 timed out, 55 skipped** (same known red set plus flaky `testfortypedcomma`). The
+`scripts/check-no-std-hardcoding.sh` gate is at **775 offending lines** (current live baseline,
+target 0).
+
+**IMMEDIATE NEXT:** with header string operators done, continue to the flip/migration stage:
+`string` typedef -> header type, repoint `std_types["string"]` / `is_string_class` identity onto the
+header class, then remove the remaining hardcoded string machinery under the no-std-hardcoding gate.
+
+---
+
+## ⏩⏩ RESTART 2026-06-03 (later — superseded by the block above; kept for history)
 Branch `feature/retire-std-hardcoding-claude`, HEAD **`627c88f`** (pushed). Run `bash scripts/resume.sh`.
 
 **THE KEYSTONE IS PROVEN — header `std::string` constructs + runs end-to-end** (`tmp/hdrstr.mad`

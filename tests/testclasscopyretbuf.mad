@@ -1,0 +1,25 @@
+#include <stdio.h>
+
+int copies = 0;
+
+class V {
+public:
+	int n;
+
+	V(int x) { this.n = x; }
+	V(const V &o) { this.n = o.n; copies = copies + 1; }
+	~V() { }
+
+	V operator+(V &o) {
+		V r(this.n + o.n);
+		return r;
+	}
+};
+
+int main() {
+	V a(3);
+	V b(4);
+	V c = a + b;
+	printf("c=%d copies=%d\n", c.n, copies);
+	return 0;
+}

@@ -1293,12 +1293,14 @@ namespace std {
 	    void          clear();                   // ...5clearEv
 	    const char   &at(unsigned long) const;   // ...2atEm
 	    basic_string &append(const char *);      // ...6appendEPKc
+	    basic_string &append(const basic_string &); // ...6appendERKS4_
 	    const char   *data() const;              // ...4dataEv
 	    unsigned long capacity() const;          // ...8capacityEv
 	    unsigned long find(const char *, unsigned long) const;  // ...4findEPKcm
 	    unsigned long find(char, unsigned long) const;          // ...4findEcm
 	    unsigned long rfind(const char *, unsigned long) const; // ...5rfindEPKcm
-	    unsigned long compare(const char *) const;              // ...7compareEPKc
+	    int           compare(const char *) const;              // ...7compareEPKc
+	    int           compare(const basic_string &) const;      // ...7compareERKS4_
 	    basic_string  substr(unsigned long, unsigned long) const;  // ...6substrEmm
 	    void          resize(unsigned long);     // ...6resizeEm
 	    void          resize(unsigned long, char); // ...6resizeEmc
@@ -1310,6 +1312,13 @@ namespace std {
 	    basic_string &operator=(char);           // ...aSEc
 	    basic_string &operator+=(const char *);  // ...pLEPKc
 	    basic_string &operator+=(char);          // ...pLEc
+	    bool operator==(const basic_string &rhs) const { return this->compare(rhs.c_str()) == 0; }
+	    bool operator!=(const basic_string &rhs) const { return this->compare(rhs.c_str()) != 0; }
+	    basic_string operator+(const basic_string &rhs) const {
+		basic_string r(this->c_str());
+		r.append(rhs.c_str());
+		return r;
+	    }
 	};
     }
 }
