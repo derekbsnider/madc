@@ -1,0 +1,16 @@
+#include <iostream>
+using namespace std;
+class I1 { public: virtual int a() { return 1; } };
+class I2 { public: virtual int b() { return 2; } };
+class Impl : public I1, public I2 { public: int a() { return 10; } int b() { return 20; } };
+int main() {
+    Impl im;
+    I1 *p1 = &im;
+    // cross-cast I1* -> I2* via the most-derived Impl:
+    I2 *p2 = dynamic_cast<I2*>(p1);
+    cout << (p2 != 0) << endl;     // 1
+    cout << p2->b() << endl;       // 20
+    Impl *back = dynamic_cast<Impl*>(p1);
+    cout << back->a() << endl;     // 10
+    return 0;
+}
