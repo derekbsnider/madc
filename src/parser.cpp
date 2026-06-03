@@ -3809,6 +3809,45 @@ void DataDefCLASS::apply_member_layout()
 // Subobject offset of `target` within this class. A (transitive) virtual base
 // lives at this class's hoisted vbase_offset; a non-virtual base at its bs.offset
 // (plus the offset within it, transitively). Returns (size_t)-1 if not a base.
+// Build the grouped vtable: group 0 = primary (this class's flat vtable_slots,
+// already inheritance-merged), then one group per secondary polymorphic base
+// (its own slots, at its subobject offset). Run after compute_layout (so
+// secondary_vptr_owners + base offsets are known).
+void DataDefCLASS::build_vtable_groups()
+{
+    vtable_groups.clear();
+    if ( !has_vtable && !has_vptr_slot ) return;
+
+    // The primary group holds the PRIMARY-chain slots: the primary base's slots
+    // (overrides resolved by name at emit time) plus this class's own newly
+    // introduced virtuals. Secondary bases' slots live in their own groups, so
+    // exclude them from the primary group.
+    DataDefCLASS *prim = NULL;
+    for ( auto &b : bases ) if ( b.is_primary ) { prim = b.base; break; }
+    std::set<std::string> secondary_slots;
+    for ( DataDefCLASS *o : secondary_vptr_owners )
+	for ( auto &s : o->vtable_slots ) secondary_slots.insert(s);
+
+    VtableGroup primary{this, 0, std::vector<std::string>(), 0};
+    if ( prim ) primary.slots = prim->vtable_slots;
+    for ( auto &s : vtable_slots )
+    {
+	bool in_prim = false;
+	if ( prim )
+	    for ( auto &ps : prim->vtable_slots ) if ( ps == s ) { in_prim = true; break; }
+	if ( !in_prim && !secondary_slots.count(s) )
+	    primary.slots.push_back(s);
+    }
+    vtable_groups.push_back(primary);
+
+    for ( DataDefCLASS *o : secondary_vptr_owners )
+    {
+	size_t off = 0;
+	for ( auto &b : bases ) if ( b.base == o ) { off = b.offset; break; }
+	vtable_groups.push_back(VtableGroup{o, off, o->vtable_slots, 0});
+    }
+}
+
 size_t DataDefCLASS::base_offset_of(const DataDefCLASS *target) const
 {
     if ( target == this ) return 0;
@@ -12062,6 +12101,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     ddc->member_origin.resize(ddc->members.size(), -1); // own members (addMember) -> -1
     ddc->compute_layout();
     ddc->apply_member_layout();
+    ddc->build_vtable_groups(); // grouped vtable (primary + secondary polymorphic bases)
     DBG(cout << "TokenCLASS::parse() finalized layout, size now " << ddc->size << endl);
 
     // Allocate vtable if needed

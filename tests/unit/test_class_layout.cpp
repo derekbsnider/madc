@@ -148,3 +148,25 @@ TEST_SUITE("class layout — diamond") {
         CHECK(dia->size == 56);
     }
 }
+
+TEST_SUITE("class layout — vtable groups") {
+    TEST_CASE("MI: primary group + one secondary group") {
+        DataDefCLASS *p1 = mkclass("P1", 1, true);  // 1 virtual slot
+        p1->vtable_slots.push_back("f1"); p1->virtual_methods["f1"] = true;
+        p1->compute_layout(); p1->build_vtable_groups();
+        DataDefCLASS *p2 = mkclass("P2", 1, true);
+        p2->vtable_slots.push_back("f2"); p2->virtual_methods["f2"] = true;
+        p2->compute_layout(); p2->build_vtable_groups();
+        DataDefCLASS *mic = mkclass("MIc", 1, true);
+        mic->vtable_slots.push_back("f1"); mic->vtable_slots.push_back("f2");
+        mic->bases.push_back(BaseSpec{p1,0,false,0u,false});
+        mic->bases.push_back(BaseSpec{p2,0,false,0u,false});
+        mic->compute_layout(); mic->build_vtable_groups();
+        CHECK(mic->vtable_groups.size() == 2);          // primary(P1) + secondary(P2)
+        CHECK(mic->vtable_groups[0].this_offset == 0);
+        CHECK(mic->vtable_groups[1].this_offset == 16); // P2 subobject
+        size_t g; int s;
+        CHECK(mic->find_vslot("f2", g, s)); CHECK(g == 1); CHECK(s == 0);
+        CHECK(mic->find_vslot("f1", g, s)); CHECK(g == 0);
+    }
+}

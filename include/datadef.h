@@ -750,6 +750,26 @@ public:
 	    if ( vtable_slots[i] == name ) return (int)i;
 	return -1;
     }
+    // Grouped vtable (Itanium MI): one sub-table per polymorphic subobject. Group 0
+    // is the primary (this_offset 0, shares the offset-0 vptr); each subsequent group
+    // is a secondary polymorphic base at its subobject offset (its own __vptr_<off>).
+    // addr_point = the slot's starting index in the emitted flat Cls__vtable[] array.
+    struct VtableGroup {
+	DataDefCLASS *owner;
+	size_t this_offset;
+	std::vector<std::string> slots;
+	size_t addr_point;
+    };
+    std::vector<VtableGroup> vtable_groups;
+    void build_vtable_groups(); // defined in parser.cpp; run after compute_layout
+    // Resolve a virtual method name to its (group, in-group slot). Returns false if
+    // not a virtual method of any group.
+    bool find_vslot(const std::string &m, size_t &group, int &slot) const {
+	for ( size_t g = 0; g < vtable_groups.size(); g++ )
+	    for ( size_t i = 0; i < vtable_groups[g].slots.size(); i++ )
+		if ( vtable_groups[g].slots[i] == m ) { group = g; slot = (int)i; return true; }
+	return false;
+    }
     bool is_virtual_method(const std::string &name) const {
 	if ( virtual_methods.find(name) != virtual_methods.end() ) return true;
 	if ( base_class ) return base_class->is_virtual_method(name);
