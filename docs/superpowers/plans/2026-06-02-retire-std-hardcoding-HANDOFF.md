@@ -1,301 +1,304 @@
-# RETIRE-STD-HARDCODING CAMPAIGN — HANDOFF (2026-06-02) — READ FIRST
+# RETIRE-STD-HARDCODING CAMPAIGN — FULL HANDOFF (rewritten 2026-06-03) — READ FIRST
 
-> Self-contained resume doc for the "retire ALL std:: hardcoding" campaign. Read this +
-> the spec + the plans, then continue. This is a SEPARATE track from the gcc-torture parity
-> campaign (that lives on `develop`; see `2026-06-01-HANDOFF.md`). This campaign lives on its
-> own feature branch and has NOT been merged to develop.
+> Self-contained resume doc for the "retire ALL std:: hardcoding" campaign. This is a
+> SEPARATE track from the gcc-torture parity campaign (that lives on `develop`; see
+> `2026-06-01-HANDOFF.md`). This campaign lives on its own feature branch and has NOT
+> been merged to develop. Reading this doc + the spec + the memories below = full
+> situational awareness; you should not need anything else to continue.
 
-## ⏩ STEP 0 — orient
+## ⏩ STEP 0 — ORIENT
 ```
-bash scripts/resume.sh                     # live git/reflog/fork/build state
-git -C /workspace/madc branch --show-current   # expect: feature/retire-std-hardcoding-claude
-git -C /workspace/madc log --oneline develop..HEAD
+bash scripts/resume.sh                              # live git/reflog/fork/build state
+git -C /workspace/madc branch --show-current        # expect: feature/retire-std-hardcoding-claude
+git -C /workspace/madc log --oneline develop..HEAD  # the campaign commits (26 as of c773ac5)
+bash scripts/check-no-std-hardcoding.sh             # THE FINISH LINE — currently 469, target 0
 ```
-The mangler unit tests are the campaign's safety net — run them anytime:
+Re-prove the keystone any time (fast, no full build needed if bin/madc is current):
 ```
-make -C src obj/madc_mangle.o 2>/dev/null; make -C src   # (rebuilds madc_mangle.o)
-( ulimit -t 60; g++ -std=c++11 -Iinclude tests/unit/test_mangle.cpp obj/madc_mangle.o -o tmp/test_mangle ) && ./tmp/test_mangle
+bin/madc -v tmp/hooktest.mad   2>&1 | grep bind_std_libstdcpp   # inline std:: class → real symbols
+bin/madc -v tmp/fstreamtest.mad 2>&1 | grep bind_std_libstdcpp  # #include <fstream> → real symbols
 ```
+
+Authoritative spec: **`docs/superpowers/specs/2026-06-02-retire-std-hardcoding-design.md`** (read it).
+Key memories: `project_string_as_class` (the Layer-1/2/3 truth), `feedback_correct_over_shortcuts`
+(shortcuts categorically unacceptable), `project_cpp_mangled_direct`, MEMORY.md campaign line.
+
+---
 
 ## 0. THE PRINCIPLE (never drift from this — the user enforced it HARD)
 
-**madc hardcodes ONLY the C/C++ primitive basis; every other type is COMPOSED from it.** This is
-the whole point of C/C++: a tiny set of primitives (`void`/`char`/`int`/`long`/`float`/`double`/
-`bool` + the composition mechanisms: pointer/array/struct/union/enum/function), and **everything
-else — `std::string`, every stream, every container, every user type — is an ordinary composed
-`DataDefCLASS`/`DataDefSTRUCT` built by parsing a declaration**, NOT a privileged builtin.
+**madc hardcodes ONLY the C/C++ primitive basis; every other type is COMPOSED from it.** The
+language hardcodes a tiny set of fundamentals — `void`/`char`/`short`/`int`/`long`/`float`/
+`double`/`bool` + the composition mechanisms (pointer/array/struct/union/enum/function) — and
+**everything else — `std::string`, every stream, every container, every user type — is an
+ordinary composed `DataDefCLASS`/`DataDefSTRUCT` built by parsing a declaration**, NOT a builtin.
 
-Consequences (the end state):
-- **No per-type code** — no "string handling", no "stream handling". A use site (`cout << x`,
-  `s.length()`, `outf.open(f)`, `a + b`) is resolved by ONE generic path: overload resolution
-  (incl. non-member operators) → **mangle the chosen declaration** → ABI from the declaration
-  (size, base offsets, sret) → emit the call → linker resolves against libstdc++ (madc is a C++
-  front-end against real libstdc++, exactly like g++/clang++ + the linker).
-- **No per-type DataType tag or builtin DataDef** for any non-primitive (kill `dt*STREAM`,
-  `dd*STREAM`, the `sizeof(std::…)` builtins). std:: types live in `#include <…>` headers (data).
-- **No hardcoded mangled-symbol literals** — `madc_mangle` is the single source of every symbol.
-- **No wrappers/shims** (`string_concat`/`streamout_*`/`ifstream_open`/`sstream_*`/`__std_*`).
-- **The ONLY hardcoded std:: data is the auto-include symbol→header trigger map** (config, not logic).
-- **madc itself contains NO reference to a real std:: type** (no `#include <string>`, no
-  `sizeof(std::string)`); layout is derived from the parsed header and cross-checked **in a
-  DOCTEST only** (the test `#include`s the real headers; madc does not).
+**madc is a C++ front-end against real libstdc++, exactly like g++/clang++ + the linker.** A
+symbol declared in a `#include` header *exists*; a use site is resolved at compile time to that
+declaration, the symbol is **mangled from the declaration**, and the linker resolves it against
+libstdc++. There is **no per-type code** — no "string handling," no "stream handling"; one
+generic path: overload resolution → mangle the declaration → ABI from the declaration → emit call.
 
-Authoritative spec: **`docs/superpowers/specs/2026-06-02-retire-std-hardcoding-design.md`** (read it).
+End state (all enforced by the finish-line gate):
+- **No builtin DataDef instance / no `DataType` enum tag** for any non-primitive (`ddSTRING`,
+  `DataDefSTRING`, `dt*STREAM`, `dd*STREAM`, `DataDef*STREAM` all GONE).
+- **No hardcoded mangled `_Z…` literals** — `src/madc_mangle.cpp` is the single symbol source.
+- **No wrappers/shims** (`string_*`, `streamout_*`, `streamin_*`, `*fstream_open/good/…`,
+  `sstream_*`, `__std_*`).
+- **No per-type lowering / registration callback** (`add_string_methods`, `add_fstream_methods`,
+  the `SK_*`, `ostream_insert_symbol`, `STR_*` statics).
+- **madc contains NO reference to a real std:: type** — no `#include <string>`, no
+  `sizeof(std::string)`. Layout is DERIVED from the parsed header; correctness is cross-checked
+  **in a DOCTEST only** (the test `#include`s the real headers; madc does not).
+- **The ONLY hardcoded std:: data is the auto-include symbol→header trigger map** (config table).
 
-## 1. RULES OF ENGAGEMENT (the user re-enforced these repeatedly; memory `feedback_correct_over_shortcuts`)
+---
 
-- **SHORTCUTS ARE CATEGORICALLY UNACCEPTABLE.** The hardcoded `_ZSt` stream literals were a
-  shortcut (dodging a 1-line `madc_mangle` bug) that caused DAYS of drift. RED-FLAG TELLS = about
-  to hardcode a literal / add a wrapper-shim / special-case higher up / think "good enough for now"
-  → STOP and fix the deepest layer.
-- **RULE #1: GCC/G++/CLANG IS CANON.** Every mangled symbol/layout is verified against the real
-  toolchain (`c++filt`, `nm -D libstdc++`, `g++ -S`, `sizeof`/offset probes) BEFORE it is asserted.
-- **"WAIT" MEANS PAUSE AND TALK — NEVER revert.** No `git checkout` over uncommitted work.
-- **KISS** — no invented jargon; use struct/class/object. Fix at the deepest layer; no shims.
-- **Gate every change:** `make -C src test` (capped `( ulimit -t N; timeout M … )`) + integration
-  `bash scripts/run_tests.sh` + (for codegen changes) coordinator re-runs SMAUG soak. Commit, push.
+## 1. THE CONTRACT + THE GATE (done is machine-defined, never claimed)
 
-## ⭐ 2026-06-02 (cont.) — LAYER-3 TRUTH · THE GATE · THE KEYSTONE MAP (READ BEFORE §2)
+`scripts/check-no-std-hardcoding.sh` greps `src/` + `include/` for every builtin DataDef / wrapper
+/ tag / hardcoded literal / **tombstone comment** that names dead machinery ("gone without a trace
+— we have git for a reason"). It is **wired into `make -C src fulltest`**, so the suite is RED
+until the count is 0. The only permitted homes for std:: symbol knowledge are the mangler and the
+auto-include map.
 
-**THE RECURRENCE EXPLAINED (why it "kept sneaking back" for a week).** There are THREE
-layers of std:: hardcoding; sessions kept declaring "done" at Layers 1–2 while Layer 3 —
-the *builtins* — was NEVER removed. Git-verified: `DataDefSTRING`/`add_string_methods`
-have NO removal commit, are ancient, and are present on `master` too.
-- **Layer 1 — dtSTRING/tk*/ns_stl TAGS → RETIRED** (P2.14; grep 0). Real.
-- **Layer 2 — `_ZSt` literals → SWEPT** (mangler complete + cir_builder sweep). Real.
-- **Layer 3 — builtin `ddSTRING`/`DataDefSTRING(sizeof(std::string))`, `add_string_methods`,
-  stream `dt*STREAM`/`dd*STREAM`/`DataDef*STREAM`, `add_fstream_methods`,
-  `ifstream_*`/`ofstream_*` wrappers, every `sizeof(std::…)` → NOT DONE.** THIS is the work.
+- **"DONE" = `check-no-std-hardcoding.sh` GREEN _and_ `make -C src fulltest` passes _and_ SMAUG
+  soaks clean.** NEVER "it behaviorally works."
+- **The count must only DROP, never rise** (even a WIP comment naming dead machinery trips it —
+  that already happened once at 06adc04→reverted; reword generic, the specifics live in git).
+- **Baseline today: 469.** It stays 469 through the keystone increments (they ADD the mechanism)
+  and only drops at inc 6, when the builtins are deleted. No faked intermediate drops.
 
-**THE CONTRACT (user-enforced, hard).** "DONE" = `scripts/check-no-std-hardcoding.sh` prints
-GREEN **and** `make -C src fulltest` passes **and** SMAUG soaks clean. NEVER a behavioral
-"it works." The gate is committed + **wired into `make fulltest` (suite is RED until 0)** +
-fails on tombstone comments too ("gone without a trace — git is the record"). Baseline 473;
-**currently 469** (tombstones removed). Report the live count every step. No faked
-intermediate drops — the next drop is the streams migration (no safe drop exists before the
-keystone lands).
+WHY this is the only durable anti-drift design: any type-specific code OR type-tag can rot. The
+gate makes "done" unfakeable; a future session cannot declare victory while the rug exists.
 
-**THE KEYSTONE (what unlocks deleting the builtins — does NOT exist yet).** The generic
-mechanism: *a bodyless method in a `std::` header class → a `DataDefCLASS` (layout from
-declared members — already works for vector) whose method auto-binds `emit_symbol` to the
-mangled libstdc++ symbol.* Precise map (subagent-verified, all src/parser.cpp unless noted):
-- Classes parse via **`TokenCLASS::parse`** (NOT TokenSTRUCT::parse). Member-fn recognized by
-  peek-`(` (~11682); `FuncDef` built by `parseFunction(...)` (~11737), pushed to
-  `ddc->methods`/`method_map` (~11740-11752). ctor ~11581-11611, dtor ~11554-11578,
-  operator ~11642-11676 (falls through the method branch).
-- **Bodyless methods ALREADY parse** (parseFunction bodyless branches 14586-14625 & 14639-14646
-  → create `Method`, no body, `return`). ✅ DONE increment 1: added `FuncDef::declaration_only`
-  (include/madc.h, ctor-initialized false), set true in both branches → exposes "bodyless".
-- **HOOK (next):** in `TokenCLASS::parse` ~11745 (after `mfd->returns_ref=…`), if
-  `pgm.current_namespace=="std"` AND `mfd->declaration_only`, set
-  `mfd->emit_symbol = <mangler call from the parsed signature>`. Mangler entry points:
-  `itanium_mangle_{member,ctor,dtor,operator}_sub` (src/madc_mangle.cpp); `emit_symbol`
-  consumed by `CirBuilder::emit_symbol_method_call` (src/cir_builder.cpp:2911/2977).
-  `current_namespace` set in `TokenNAMESPACE::parse` ~10043.
-- **THE HARD CORE (no shortcut):** the symbol needs the FULL canonical template-id
-  (`std::__cxx11::basic_string<char,std::char_traits<char>>`,
-  `std::basic_ofstream<char,std::char_traits<char>>`). RECONSTRUCT it from
-  `current_namespace` + template name + concrete args — the headers MUST mirror libstdc++
-  structure (template params + the inline `__cxx11` namespace). NEVER hardcode a symbol. The
-  template-instantiation path (`instantiate_template_use` ~1541) has never produced a
-  libstdc++ mangled symbol (vector has bodies), so this reconstruction is new code.
-- **THE NEW CLASS-MODEL PIECE:** `DataDefCLASS` has NO base-offset field — single base assumed
-  at offset 0 (datadef.h:699/717; base-member copy 11478-11510). `basic_ios` vbase needs a
-  real non-zero base-subobject offset (+248) field + offset-aware dispatch, header-derived +
-  doctest-checked, **NEVER hardcode 248** (STOP+escalate if not cleanly derivable).
+---
 
-**THE FOUNDATIONAL PIECE (the crux of "no hardcoded symbols").** The mangler needs the FULL
-canonical Itanium spelling (`std::basic_ofstream<char,std::char_traits<char>>`), but
-`instantiate_template_use` (~1541) names an instantiated class with a SANITIZED tag
-(`vector_int`, `basic_ofstream_char_char_traits_char`; arg names joined with `_`, `*`→`p`,
-lines 1577-1579) — the canonical structure is LOST. Reconstructing it later is lossy
-(args are themselves template-ids). SOLUTION (clean, general, recursive): give each type a
-**`canonical_cpp_spelling`** (on TokenDataType or the DataDefCLASS) SET AT INSTANTIATION:
-builtins carry the obvious spelling ("char","const char*"); an instantiation sets it to
-`"<ns>::<tname><" + join(args' canonical spellings, ",") + ">"`. Since args are instantiated
-first, the parent is just string concatenation. Then the hook reads the class spelling +
-maps each `mfd->parameters[i]` (DataDef* + ref_params/const_params) to its canonical spelling
-(streams need only: void, `const char*`, the openmode enum `std::_Ios_Openmode` → a non-template
-std type "std::_Ios_Openmode"); feed `itanium_mangle_{member,ctor,dtor,operator}_sub`. NEVER
-hardcode a symbol. (add_string_methods sidesteps this by passing literal spellings — that is the
-Layer-3 shortcut being replaced.) Need a `DataDef -> canonical C++ spelling` helper too.
+## 2. THE THREE LAYERS (why this "kept sneaking back" for a week)
 
-**SEQUENCING:** streams FIRST (isolated, 28 gate-lines) to build+prove the keystone where
-blast radius is smallest; THEN std::string (239 `&ddSTRING` sites) rides the SAME mechanism;
-delete builtins/callbacks/wrappers/tags as each generic path covers it; gate→0.
-Stream mangler doctests already added + green (Task 1, commit 9582beb): test_mangle 44/143.
-INCREMENTS: (1✅ 9ad1c35) FuncDef::declaration_only. (2✅ 6740f67) canonical_cpp_spelling on
-DataDef + TemplateDef::defining_namespace + computed in instantiate_template_use + stashed via
-Program::instantiating_canonical_spelling + copied onto ddc in TokenCLASS::parse.
-(3✅ 8776a5e) PARAM SPELLINGS + THE HOOK — PROVEN. FuncDef::param_cpp_spellings (captured at
-parse time, index-aligned w/ parameters incl. hidden __this=''), FuncDef::is_const_method,
-file-scope helper bind_std_libstdcpp_symbol() (gated current_namespace=="std" + declaration_only
-+ known ddc->canonical_cpp_spelling; calls itanium_mangle_{member,ctor,dtor,operator}_sub), wired
-into the dtor/ctor/method blocks of TokenCLASS::parse. VERIFIED tmp/hooktest.mad -v: a bodyless
-std::basic_ofstream<char,int> binds ctor/dtor/close/is_open to _ZNSt14basic_ofstreamIciE{C1Ev,
-D1Ev,5closeEv,7is_openEv} == independent mangler output (canonical spelling reconstructed thru
-the template machinery, ZERO literals); build clean; integration 457 (zero regr); SMAUG boots.
-(4) author headers. (5) basic_ios base-offset. (6) switch registration + DELETE Layer-3
-builtins/callbacks/wrappers/tags + rewire &ddSTRING. (7) gate→0 + fulltest + SMAUG.
+Sessions kept declaring "done" at Layers 1–2 while Layer 3 — the *builtins* — was NEVER removed
+(git-verified: `DataDefSTRING`/`add_string_methods` have no removal commit; ancient, on master too).
+- **Layer 1 — the `dtSTRING`/`dtSTRINGref` TAGS + `tkSTRING`/`tkVECTOR`/`ns_stl.cpp` → RETIRED**
+  (P2.14 on develop; grep 0). std::string recognized by class identity. REAL, done.
+- **Layer 2 — hardcoded `_ZSt…` literals → SWEPT** (this campaign: mangler completed + the
+  cir_builder sweep, `grep '"_Z' src/cir_builder.cpp` empty). REAL, done.
+- **Layer 3 — builtin DataDef + callback registration + `sizeof(std::…)` + wrappers → THE
+  REMAINING WORK** (this campaign). "std::string is a real class" meant Layers 1–2 (dispatch /
+  identity), NOT header-defined. The memory `project_string_as_class` was corrected to say so.
 
-✅ TWO PARSER GAPS (found during inc 3) — BOTH FIXED + verified:
-(G1✅ c45a822) resolve_declared_type_token now parses a namespaced template-id as a template arg:
-when an identifier is followed by `:: TemplateName <`, strip the ns qualifier and instantiate by
-bare name (templates live in template_map by bare name; defining_namespace carries the ns). Fires
-only on the `ns::Name<` pattern (previously errored) → additive.
-(G2✅ ed97b24) TokenCLASS::parse's data-member loop now parses fixed-size array members (`long
-_buf[64]` → count 64 / total 512), ported from TokenSTRUCT::parse; no-op for scalar members.
-FULL KEYSTONE NOW PROVEN end-to-end (tmp/hooktest.mad, -v): a bodyless
-`std::basic_ofstream<char, std::char_traits<char>>` (nested template arg + array member) binds
-ctor/dtor/close/is_open to the REAL libstdc++ symbols
-`_ZNSt14basic_ofstreamIcSt11char_traitsIcEE{C1Ev,D1Ev,5closeEv,7is_openEv}` — canonical spelling
-reconstructed RECURSIVELY (char_traits<char>→"std::char_traits<char>"→nested), ZERO literals.
-Build clean; integration 457 (baseline; teststruct2 passes, the 6 fails + flaky testfortypedcomma
-are pre-existing); SMAUG boots to ready.
+---
 
-✅ INC 4 STEP 1 (06adc04) — include/madc/fstream authored: basic_ofstream/basic_ifstream std::
-templates (+ char_traits) with bodyless ctor/dtor/close/is_open. Via `#include <fstream>` the
-keystone binds each to the REAL libstdc++ symbol (verified tmp/fstreamtest.mad: ofstream+ifstream
-{C1Ev,D1Ev,5closeEv,7is_openEv}). Safe wedge: the always-on builtins own the ofstream/ifstream
-TYPEDEFs; this header defines the basic_* templates (no overlap) → coexists. src/embedded_headers.cpp
-regenerated to bake it in. Build clean; 457 (no new fail); SMAUG boots.
-INC 4 STEP 1 currently a NEW EMBEDDED HEADER, NOT yet wired to replace the builtins.
-NEXT (the substantial remaining streams work):
-- inc 4 step 2 / inc 5: add the real base hierarchy in the header (ios_base ← basic_ios ←
-  basic_ostream ← basic_ofstream; basic_ios is a VIRTUAL base @ +248 ofstream / +256 ifstream —
-  see STREAM LAYOUT FACTS above). Add a per-class base-subobject offset to DataDefCLASS (derived
-  from the header layout, doctest-checked, NEVER hardcode 248/256) + offset-aware `this`-adjust in
-  class_method_call for an inherited method whose base subobject is non-zero. Then good()/eof()
-  (basic_ios, need +offset) and `<<` (basic_ostream @0) resolve. Add open(const char*, openmode)
-  (the openmode enum → "std::_Ios_Openmode"; the param-spelling path already handles it). Make the
-  header layout compute the real sizes (ofstream 512 = ostream 272 + filebuf 240).
-- inc 6: add the `ofstream`/`ifstream`/`fstream` TYPEDEFs in the header + DELETE the builtins
-  (DataDef*STREAM, dt*STREAM tags, ddOFSTREAM/IFSTREAM, add_fstream_methods, the std_types[...]=
-  make_namespace_type_token(...,ddOFSTREAM) at parser.cpp ~5407-5408, the ifstream_*/ofstream_*
-  wrappers in madc_mir_backend.cpp + madc_stream_runtime.cpp, sizeof(std::ofstream) etc.) — the
-  GATE COUNT FINALLY DROPS here; generalize translate_stream_chain to any ostream-derived object
-  for file-stream `<<`. testfstream/testloop must pass via the header path.
-- inc 7: cin>>, string (the big 239-site one), stringstream/conversions (to_string/stoi), gate→0.
-Verification cmd for the header path: bin/madc -v tmp/fstreamtest.mad | grep bind_std_libstdcpp.
+## 3. LIVE STATE (verify with STEP 0)
 
-⚠️ PARAM-SPELLING SUB-PROBLEM (found inc 3, RESOLVED by design — NO shortcut). For an
-`rtPointer` param like `const char*`, parseFunction pushes `const_params=false` and the pointer
-DataDef's name does NOT carry `const` (parser.cpp ~14513-14519) → a DataDef-derived spelling
-would mangle `open(const char*)` as `Pc` not `PKc` → the symbol does NOT exist in libstdc++ →
-LINK FAILURE. (Top-level pointee-const is simply not tracked in the type system.) FIX = do NOT
-reverse-engineer the DataDef. Instead CAPTURE each param's canonical C++ spelling AT PARSE TIME
-in parseFunction's param loop (the `const`/type/`*`/`&` tokens are right there) into a new
-`FuncDef::param_cpp_spellings` (index-aligned with `parameters`, incl. or excl. the hidden
-__this — pick one and be consistent). The type portion uses the resolved param type's
-`canonical_cpp_spelling` if set, else its name. The hook then feeds those exact strings (sans
-__this) to `itanium_mangle_member_sub(ddc->canonical_cpp_spelling, mname, param_spellings,
-is_const)` (ctor/dtor/operator use the matching _sub fn). This also Just Works for `const
-string&`, `std::_Ios_Openmode`, etc. — it reads the declaration, exactly like g++.
-NOTE only `open` among the stream methods has params; ctor/dtor/close/is_open/good/eof are
-nullary, so the hook can be proven on those first. is_const = the method had a trailing `const`.
+- Branch **`feature/retire-std-hardcoding-claude`**, **HEAD `c773ac5`**, PUSHED (== origin),
+  tracked tree clean. **26 commits ahead of `develop`** (develop = origin/develop = merge-base =
+  **`110e026`**, UNTOUCHED → zero drift to develop; git-confirmed). MIR fork pin **`8864a73`**
+  unchanged (this campaign needs NO fork work — it's pure madc front-end).
+- **Finish-line gate: 469** (was 473; -4 = ns_stl tombstone comments deleted at 6f850ac).
+- **`make -C src` builds clean, 0 warnings.** Integration `bash scripts/run_tests.sh` = **457
+  passed**, 6 known feature-gap fails (testcin, testdefer, testforeach2, testfstream,
+  testlargesizeofquery, testloop) + flaky `testfortypedcomma` (flips fail↔timeout — IGNORE).
+  `teststruct2` PASSES (struct-earns-class-hood is in develop's history → in this branch).
+- **`tmp/test_mangle` 44 cases / 143 assertions green** (every generated symbol vs `c++filt`).
+- **SMAUG boots to ready** through the latest HEAD (pure C — never touches the hook; the param-
+  spelling capture runs for its functions but only fills a vector, no behavior change).
+- develop's mirrors (`claude_status.json`, `2026-06-01-HANDOFF.md`) reflect the PARITY track and
+  remain correct for it — **do NOT edit them for this campaign until it merges to develop.**
 
-⚠️ STREAM LAYOUT FACTS (g++ probe tmp/streamprobe.cpp, this libstdc++ — ground truth for inc 4/5):
-sizeof: ofstream 512, ifstream 520, fstream 528, ostream 272, istream 280, basic_ios<char> 264,
-ios_base 216, filebuf 240. Base-subobject offsets WITHIN the derived object:
-  ofstream→ostream = 0 ; ofstream→basic_ios = ofstream→ios_base = **248**
-  ifstream→istream = 0 ; ifstream→basic_ios = **256**
-`basic_ios` is a VIRTUAL BASE of basic_ostream/basic_istream → its subobject sits at the END
-(248/256), NOT at offset 0, and the offset DIFFERS per stream class. madc has NO virtual-base
-support today (single base assumed @0, datadef.h:717). So inc 5 = add a per-class base-subobject
-byte offset (DERIVED from the header-declared layout, doctest-checked) + offset-aware `this`
-adjust for an inherited method whose owning base is at non-zero offset. <</>>/open/close/is_open
-(ostream/istream @0 or most-derived) need NO adjust; only good()/eof() (basic_ios methods) do.
-NEVER hardcode 248/256 — derive from layout; STOP+escalate if not cleanly derivable. The header
-(inc 4) must declare a layout that makes madc compute these same sizes/offsets (ofstream =
-ostream 272 + filebuf 240 = 512; basic_ios as a virtual base).
-
-## 2. LIVE STATE (verify on resume)
-
-- Branch **`feature/retire-std-hardcoding-claude`**, **pushed** (== origin), **8 commits ahead of
-  develop**, tracked tree CLEAN. **develop is UNTOUCHED at `110e026`** (no drift; this campaign is
-  isolated; `claude_status.json`/`2026-06-01-HANDOFF.md` reflect develop and remain accurate for it).
-- MIR fork pin unchanged (`MIR_COMMIT=8864a73`) — this campaign needed NO fork change.
-- Gate: integration **457 pass / 7 fail (6 known feature-gaps + flaky testfortypedcomma) / 55 skip**
-  — UNCHANGED throughout (all campaign work so far is mangler-only + a behavior-preserving symbol
-  sweep). Unit **7/7 binaries**; `test_mangle` **40 cases / 134 assertions** green. gcc-torture
-  UNAFFECTED (pure C, never invokes the mangler). SMAUG boots clean (pure C, never touches streams).
-
-### Commit trail (develop..HEAD)
+### Commit trail (develop..HEAD, oldest→newest)
 ```
-d1e6ace spec: retire ALL std:: hardcoding — primitive-basis design
-97e7eb4 plan: mangler part 1 (So/Si/Sd/Ss complete-spec abbreviations)
-d03e38d fix(mangle): So/Si/Sd/Ss are complete-specialization abbreviations (no template args)
-4d57001 plan: mangler part 2 (non-member std template operators)
-71a2f48 feat(mangle): non-member std template operators (getline/endl/operator<</>>)
-d9ad564 feat(mangle): std namespace vars + function-pointer types (complete stream symbol coverage)
-5ec3072 refactor(cir): generate ALL stream symbols via the mangler — delete every _ZSt literal
-6996cb5 plan: file streams as header-defined classes (vbase investigation + offsets)
+spec (d1e6ace) → mangler completeness W1: So/Si/Sd/Ss complete-spec (d03e38d), non-member std
+  template ops + $Tn (71a2f48), std-vars + fn-ptr types (d9ad564) → THE SWEEP delete every _ZSt
+  literal from cir_builder (5ec3072) → stream mangler doctests (9582beb) → THE GATE (529eea7) +
+  wired into fulltest (1ead143) → delete ns_stl tombstones 473→469 (6f850ac) → INC 1
+  FuncDef::declaration_only (9ad1c35) → INC 2 canonical_cpp_spelling facility (6740f67) → INC 3
+  the keystone hook (8776a5e) → G2 array members in classes (ed97b24) → G1 namespaced template-arg
+  (c45a822) → INC 4 STEP 1 include/madc/fstream (06adc04) → gate-fix reword comment (c773ac5)
+  [+ docs(handoff) commits interleaved]
 ```
 
-## 3. WHAT'S DONE — W1 (mangler completeness) + the cout/ostream literal sweep
+---
 
-The mangler `src/madc_mangle.cpp` is now COMPLETE — it generates EVERY std:: symbol, each pinned to
-the real libstdc++ symbol by `tests/unit/test_mangle.cpp` (verified vs `c++filt`):
-- **W1a** (`d03e38d`): `So`/`Si`/`Sd`/`Ss` are **complete-specialization** abbreviations — emit
-  standalone, NO appended template args. Root-cause of the hardcoded stream literals: the mangler
-  was treating them like `Sa`/`Sb` (template prefixes) → `_ZNSoIc…lsEd` instead of `_ZNSolsEd`.
-  Fix: `std_complete_abbrev()` + removed Si/So/Sd from the prefix `std_abbrev()`.
-- **W1b** (`71a2f48`): non-member std function templates (`std::operator<<`/`>>`/`getline`/`endl`)
-  via `itanium_mangle_std_free_template(name,targs,ret,params)` + `$Tn` template-param placeholders
-  (`$T0`→`T_`…). THREE discoveries (all in the commit msg): `$Tn` are substitution candidates (so
-  repeat uses become back-refs S4_/S5_); the function-template NAME is substitution candidate #0
-  (the +1 slot shift — Itanium `<template-prefix>`; cf. the spec's `first<Duo>` example); function
-  templates encode the return type.
-- **W1c/d** (`d9ad564`): `itanium_mangle_std_var("cout")`→`_ZSt4cout`; function-pointer types
-  (`"R (*)(P)"`→`PF…E`) so the endl manipulator op `_ZNSolsEPFRSoS_E` is generatable.
-- **THE SWEEP** (`5ec3072`): `cir_builder.cpp` `stream_object_symbol`/`ostream_insert_symbol`/
-  `translate_stream_chain` now generate every symbol via the mangler (function-local `static
-  std::string` caches). **`grep '"_Z' src/cir_builder.cpp` is EMPTY.** Byte-identical symbols
-  (doctest-proven) → zero behavior change.
+## 4. HOW THE KEYSTONE WORKS (the heart — the mechanism that lets the builtins be DELETED)
 
-## 4. WHAT'S NEXT — the codegen migration (each its own gated step)
+The generic path: **a bodyless method/ctor/dtor/operator of a `std::` class auto-binds
+`FuncDef::emit_symbol` to its real libstdc++ Itanium symbol, generated by the mangler from the
+parsed declaration (zero literals).** `emit_symbol` is already consumed by
+`CirBuilder::class_method_call` → `emit_symbol_method_call` (src/cir_builder.cpp:2911/2977): madc
+emits no body, the linker resolves the symbol against libstdc++. Pieces (all in src/parser.cpp
+unless noted):
 
-**IMMEDIATE NEXT: file streams.** Full plan: **`docs/superpowers/plans/2026-06-02-file-streams-header-defined.md`**.
-Key facts already established (g++ probe `tmp/voff.cpp`):
-- madc's class model = single-inheritance, base subobject at **offset 0** (`datadef.h:699-722`).
-- `ofstream→ostream` offset **0** (so `<<`/`open`/`close`/`is_open` work with the offset-0 model);
-  `ofstream→basic_ios` offset **248** (so `good()`/`eof()` need a non-zero base offset — the one new
-  class-model piece, derived from the header layout + doctest-checked, **NEVER hardcode 248 in madc**;
-  if it can't be cleanly header-derived, STOP and escalate).
-- Plan tasks: (1) mangler doctests for ofstream/basic_ios symbols [SAFE first step]; (2) author
-  `include/madc/fstream` + ios/ostream/istream bases (layout-faithful); (3) route offset-0 ops
-  through generic resolution + mangler + generalize `translate_stream_chain` to any ostream-derived
-  object; (4) the `basic_ios` +248 base-offset; (5) DELETE `add_fstream_methods` +
-  `madc_stream_runtime.cpp` + `dt*STREAM`/`dd*STREAM` + the `sizeof(std::…)` builtins. Fixes
-  `testfstream`/`testloop` → integration 457→459.
+1. **`FuncDef::declaration_only`** (include/madc.h) — set true in `parseFunction`'s two bodyless
+   return branches (search `declaration_only = true`, ~14597/14645). Marks "prototype, no body".
+2. **`FuncDef::is_const_method`** (include/madc.h) — for a trailing-`const` method (`good() const`
+   → Itanium `K`). Field exists, ctor-initialized false; the PARSER CAPTURE is not wired yet
+   (see inc 5 — needed for good()/eof()).
+3. **`canonical_cpp_spelling`** (the no-literals foundation):
+   - `DataDef::canonical_cpp_spelling` (include/datadef.h) — a type's full Itanium-canonical
+     spelling, e.g. `std::basic_ofstream<char,std::char_traits<char>>`. Empty = use `name`.
+   - `TemplateDef::defining_namespace` (include/madc.h) — captured = `current_namespace` (e.g.
+     "std") at TokenTEMPLATE::parse (~13684).
+   - `instantiate_template_use` (~1541) builds `"<ns>::<tname><arg-spellings…>"` from each arg's
+     OWN `canonical_cpp_spelling` (args are instantiated first, so they carry theirs — RECURSIVE:
+     `char_traits<char>` → "std::char_traits<char>" → nested into the parent) and stashes it in
+     `Program::instantiating_canonical_spelling` around the class re-parse (~1658).
+   - `TokenCLASS::parse` copies the stash onto the new `DataDefCLASS` right after `new
+     DataDefCLASS(...)` (search `instantiating_canonical_spelling`).
+4. **`FuncDef::param_cpp_spellings`** (include/madc.h) — each param's canonical C++ spelling
+   CAPTURED AT PARSE TIME in `parseFunction`'s param loop (leading-`const` + base spelling + `*`
+   depth + `&`), index-aligned with `parameters` (hidden `__this`/`__retbuf`/`__va_args` = ""). WHY
+   parse-time: madc drops top-level pointee-const on pointer params, so a DataDef-derived spelling
+   would mangle `const char*` as `Pc` not `PKc` → wrong symbol. Reading the source tokens keeps it
+   exact.
+5. **`bind_std_libstdcpp_symbol(pgm, ddc, mvar, kind, mname, is_operator)`** (static helper just
+   above `TokenCLASS::parse`, ~11386) — gated on `pgm.current_namespace=="std"` &&
+   `fd->declaration_only` && `!ddc->canonical_cpp_spelling.empty()`. Collects param spellings (sans
+   `__this`) and calls `itanium_mangle_{member,ctor,dtor,operator}_sub(...)`, sets `fd->emit_symbol`.
+   Wired into the **dtor**, **ctor**, and **method** blocks of `TokenCLASS::parse` (search
+   `bind_std_libstdcpp_symbol(`).
+6. **G1** (c45a822, `resolve_declared_type_token` ~1705): parse a namespaced template-id as a
+   template ARGUMENT — when an identifier is followed by `:: Name <` and `Name` is in
+   `template_map`, strip the ns qualifier and instantiate by bare name. (Templates live in
+   `template_map` by bare name; `namespace_datatype_map` holds only concrete types.) Needed for
+   nested args like `basic_ofstream<char, std::char_traits<char>>`.
+7. **G2** (ed97b24, `TokenCLASS::parse` data-member branch ~11843): parse fixed-size array members
+   (`long _buf[64]`), ported from `TokenSTRUCT::parse`; no-op for scalar members.
 
-**THEN (later sub-projects, spec §):** cin `>>` (`testcin`); string residual wrappers
-(`string_concat`/`equals`/`assign` in `madc_mir_backend.cpp`); stringstream + `stoi`/`to_string`
-conversions; final grep-gate (`grep -rn "_ZSt\|dt.*STREAM\|dd.*STREAM\|streamout_\|streamin_\|string_concat\|__std_\|sizeof(std::" src/ include/` → 0 outside the mangler + auto-include map);
-**codify a `.claude/rules/` rule:** std:: symbols are mangler-generated, never hardcoded literals.
+PROVEN (tmp/hooktest.mad inline + tmp/fstreamtest.mad via `#include <fstream>`): a bodyless
+`std::basic_ofstream<char,std::char_traits<char>>` binds ctor/dtor/close/is_open to the REAL
+symbols `_ZNSt14basic_ofstreamIcSt11char_traitsIcEE{C1Ev,D1Ev,5closeEv,7is_openEv}`, byte-matching
+the independent mangler output — zero literals.
 
-## 5. MANGLER MECHANICS (for whoever extends it next — `src/madc_mangle.cpp`)
+---
 
-- `ItaniumMangler` keeps an ordered candidate table (`keys_`); `subref(n)` → `S_`,`S0_`,…;
-  `tparam_ref(n)` → `T_`,`T0_`,…. `encode_type` registers candidates per the Itanium rules; decos
-  ("P"/"R"/"K"/"O") wrap the core, each a candidate. `std_abbrev` = St/Sa/Sb prefix abbreviations;
-  `std_complete_abbrev` = Ss/Si/So/Sd complete specializations (no args). `canon_type*` produce the
-  substitution-independent keys.
-- Public API (`include/madc_mangle.h`): `itanium_mangle_{member,ctor,dtor,operator}_sub` (members of
-  a template-id class), `itanium_mangle_std_free_template` (non-member std template fns),
-  `itanium_mangle_std_var`, the `std_{string,vector,map,set,stringstream}_type()` spellings.
-- To add a symbol form: write the failing doctest (the exact g++ symbol via `c++filt`), implement,
-  iterate against the oracle (the `MANGLE_DEBUG` candidate-dump technique was used to find the +1
-  slot bug — re-add a temporary getenv-gated dump in `mangle_*` if needed). NEVER hardcode a literal.
+## 5. WHAT'S DONE (each gated: build clean + 457 integration + SMAUG boots)
 
-## 6. NO-DRIFT CHECKLIST (state was left consistent)
+- **W1 — mangler complete** (`madc_mangle.cpp`, doctests `tests/unit/test_mangle.cpp` 44/143):
+  So/Si/Sd/Ss complete-spec abbreviations, non-member std template ops (`operator<<`/`>>`/`getline`
+  /`endl`) + `$Tn` params, std-vars (`_ZSt4cout`), function-pointer types (endl manipulator).
+- **THE SWEEP** (5ec3072): every `_ZSt` literal removed from `cir_builder.cpp` (grep clean).
+- **THE GATE** (529eea7 + 1ead143): committed, wired into `make fulltest`.
+- **Tombstones** (6f850ac): `ns_stl` dead-name comments deleted; 473→469.
+- **Inc 1** (9ad1c35) declaration_only · **Inc 2** (6740f67) canonical_cpp_spelling facility ·
+  **Inc 3** (8776a5e) the hook — proven.
+- **G2** (ed97b24) array members in classes · **G1** (c45a822) namespaced template-arg.
+- **Inc 4 step 1** (06adc04): `include/madc/fstream` — `basic_ofstream`/`basic_ifstream` templates
+  (+ `char_traits`) with bodyless ctor/dtor/close/is_open; binds via `#include <fstream>`. It is a
+  NEW embedded header that COEXISTS with the builtins (builtins own the `ofstream`/`ifstream`
+  typedefs; header owns the `basic_*` templates — no overlap). NOT yet wired to replace builtins.
 
-- All work committed + pushed on the feature branch; tracked tree clean.
-- develop untouched (110e026); the mirrors (`claude_status.json`, `2026-06-01-HANDOFF.md`,
-  README/CHANGELOG) reflect develop and are correct for it — do NOT edit them for this campaign until
-  it merges to develop.
-- Memory `project_cpp_mangled_direct` UPDATED 2026-06-02 with the campaign state (the old "mangler
-  can't do substitutions → hardcode the symbols" guidance is marked OBSOLETE — it was the drift
-  source). `feedback_correct_over_shortcuts` strengthened (shortcuts categorically unacceptable).
-- No half-done code: every commit builds + passes the gate; the sweep is behavior-preserving;
-  file-streams is PLANNED but NOT started.
+---
+
+## 6. WHAT'S NEXT (the substantial remaining work — count drops at inc 6)
+
+### Inc 5 — the virtual-base ABI (the one genuinely-new class-model feature; highest risk)
+The header needs the real hierarchy so `<<` (basic_ostream) and `good()`/`eof()` (basic_ios)
+resolve; `basic_ios` is a VIRTUAL base whose subobject is NOT at offset 0:
+- **Author the bases** in `include/madc/fstream` (or a `bits/` header it includes): `ios_base`,
+  `basic_ios<CharT,Traits> : ios_base`, `basic_ostream<…> : virtual basic_ios`, `basic_istream<…>
+  : virtual basic_ios`, then `basic_ofstream : basic_ostream` (+ filebuf member), `basic_ifstream :
+  basic_istream`. Layout must make madc compute the real sizes (ofstream 512 = ostream 272 +
+  filebuf 240; see §7).
+- **Add a per-class base-subobject byte offset to `DataDefCLASS`** (datadef.h:699/717 — today single
+  base assumed @ offset 0; the base-member copy is `TokenCLASS::parse` ~11540-11571). DERIVE the
+  offset from the header-declared layout (NEVER hardcode 248/256; if not cleanly derivable, STOP +
+  escalate). Cross-check the computed offset in a DOCTEST that `#include`s the real `<fstream>`.
+- **Offset-aware `this`-adjust** in `class_method_call`: when the resolved method belongs to a base
+  whose subobject offset is non-zero, emit `sym((char*)&obj + offset, …)`. Offset 0 → byte-identical
+  to today (`<<`/open/close/is_open unaffected).
+- **Wire `is_const_method` capture** in parseFunction/TokenCLASS::parse (consume a trailing `const`
+  after the param `)` — today it would error; see §4 item 2) so `good()/eof()` mangle with `K`
+  (`_ZNKSt9basic_iosIcSt11char_traitsIcEE{4goodEv,3eofEv}`).
+- **Add `open(const char*, openmode)`**: declare the `_Ios_Openmode` enum in the header so the
+  param spelling is `std::_Ios_Openmode` → `…4openEPKcSt13_Ios_Openmode` (the param-spelling path
+  already produces this; verified target in `tests/unit/test_mangle.cpp`).
+
+### Inc 6 — switch registration + DELETE the builtins (THE GATE COUNT DROPS HERE)
+- Add the `ofstream`/`ifstream`/`fstream` typedefs in the header (now they can replace the builtins).
+- DELETE: `DataDefIFSTREAM/OFSTREAM/FSTREAM/ISTREAM/OSTREAM/SSTREAM` + the `dt*STREAM`/`dd*STREAM`
+  enum tags + their parser/cir_builder branches; `add_fstream_methods` (parser.cpp ~5124) + its call
+  (~5613); the `std_types["ofstream"]=make_namespace_type_token(...,ddOFSTREAM)` etc. (~5407-5408);
+  the `ifstream_*`/`ofstream_*`/`fstream_*` externs + wrappers (madc_mir_backend.cpp + delete
+  `madc_stream_runtime.cpp`, drop it from src/Makefile); `sizeof(std::ofstream)` etc. in datadef.h.
+- Generalize `translate_stream_chain`/`stream_ident_kind` (cir_builder.cpp ~1609/1702) from
+  "named cout/cin/cerr/clog" to "any object whose type is (derived from) ostream/istream", so
+  `outf << x` routes through the mangled operators. `getline(inf,line)` → the mangled `std::getline`
+  (already in the W1 mangler). Build with `-Wall`; `-Wunused-function` confirms the cut is complete.
+- `testfstream`/`testloop` must PASS via the header path. Gate count drops by the stream block.
+
+### Inc 7 — the rest, to gate=0
+- cin `>>` (`testcin`). Then **std::string** (the big one — `ddSTRING` is woven through ~239 sites;
+  migrate test-by-test keeping 457 green; delete `add_string_methods` + `ddSTRING` + the `STR_*`
+  statics + `string_*` wrappers). Then `stringstream` + conversions (`to_string`/`stoi`, the
+  `__std_*` wrappers). Final grep-gate → 0. Codify a `.claude/rules/` rule: std:: symbols are
+  mangler-generated, never hardcoded; only the auto-include map is hardcoded std:: data.
+
+---
+
+## 7. STREAM LAYOUT FACTS (g++ probe `tmp/streamprobe.cpp`, this libstdc++ — ground truth)
+```
+sizeof: ofstream 512, ifstream 520, fstream 528, ostream 272, istream 280,
+        basic_ios<char> 264, ios_base 216, filebuf 240
+base-subobject offsets WITHIN the derived object:
+  ofstream→ostream = 0 ; ofstream→basic_ios = ofstream→ios_base = 248
+  ifstream→istream = 0 ; ifstream→basic_ios = 256
+```
+`basic_ios` is a VIRTUAL base of basic_ostream/basic_istream → its subobject sits at the END
+(248/256), NOT offset 0, and DIFFERS per stream class. `<<`/`>>`/open/close/is_open use the
+most-derived / ostream@0 `this`; only good()/eof() (basic_ios) need the +offset. Symbols exported
+by libstdc++ (confirmed `nm -DC`): open/close/is_open are real exports; good/eof are weak
+vague-linkage exports — so the +offset calls WILL link.
+
+---
+
+## 8. RULES OF ENGAGEMENT / METHODOLOGY (the user enforces these)
+- **SHORTCUTS ARE CATEGORICALLY UNACCEPTABLE.** RED-FLAG TELLS = about to hardcode a literal / add
+  a wrapper-shim / special-case higher up / think "good enough for now" → STOP, fix the deepest
+  layer. The hardcoded `_ZSt` literals were exactly this and cost DAYS. ([[feedback_correct_over_shortcuts]])
+- **gcc/g++/clang IS canon** — verify every symbol/layout vs `c++filt` / `nm -D libstdc++` / a g++
+  probe BEFORE asserting.
+- **"WAIT" MEANS PAUSE AND TALK — never revert / `git checkout` over uncommitted work.**
+- **The USER prefers doing the delicate keystone work inline (not delegated).** A subagent was used
+  once for inc-3 groundwork and the user pulled it back ("I thought you were doing it"); the agent's
+  param-capture was reviewed/kept, the rest done by hand. Default: drive it yourself; verify
+  objectively (the gate + doctest symbols + SMAUG make verification mechanical).
+- **GATE EVERY CHANGE:** build clean (0 warnings) → `bash scripts/run_tests.sh` stays 457 (diff the
+  FAIL list; only the known 6 + flaky) → COORDINATOR re-runs the SMAUG soak himself for any
+  parser/codegen change → commit → push → keep the count monotonically ↓. NEVER relay a claimed
+  result; verify it.
+- **Commit messages: avoid embedded `"..."` quotes** (one commit silently failed from that —
+  use plain prose). Keep them factual + the verification evidence.
+
+---
+
+## 9. VERIFICATION COMMANDS (cap heavy runs; ONE heavy job at a time)
+```
+( ulimit -t 400; timeout 500 make -C src 2>&1 | grep -icE "warning:|error:" )   # 0 = clean
+bash scripts/check-no-std-hardcoding.sh                                          # the finish line
+( ulimit -t 600; timeout 700 bash scripts/run_tests.sh > tmp/gate.log 2>&1 ); grep "passed" tmp/gate.log
+# mangler doctests:
+( ulimit -t 60; g++ -std=c++11 -Iinclude tests/unit/test_mangle.cpp obj/madc_mangle.o -o tmp/test_mangle ) && ./tmp/test_mangle
+# keystone proof:
+bin/madc -v tmp/hooktest.mad 2>&1 | grep bind_std_libstdcpp
+bin/madc -v tmp/fstreamtest.mad 2>&1 | grep bind_std_libstdcpp
+# SMAUG soak (parser/codegen changes) — exit 124 = survived = good, grep the literal ready line:
+cd /workspace/MadSMAUG/runtime/area; timeout 50 /workspace/madc/bin/madc /workspace/MadSMAUG/src/SMAUG.mad 40NN > /workspace/madc/tmp/smaug.log 2>&1; echo $?
+grep -c "Realms of Despair ready at" /workspace/madc/tmp/smaug.log ; pkill -9 -f 'bin/madc'
+```
+(`sleep` is blocked in the harness; `pkill` returns 1 when nothing matches — harmless. `setrlimit
+RLIMIT_CPU: Operation not permitted` from a madc child under `ulimit -t` is harmless.)
+
+Scratch lives in `tmp/` (gitignored): `hooktest.mad` (inline keystone proof), `fstreamtest.mad`
+(header path proof), `streamprobe.cpp` (layout probe), `test_mangle`/`expect` (mangler oracle).
+
+---
+
+## 10. NO-DRIFT CHECKLIST (state was left consistent)
+- All work committed + pushed on the feature branch; tracked tree clean; HEAD `c773ac5`.
+- develop UNTOUCHED at `110e026` (git-confirmed `HEAD..develop` = 0); develop mirrors are correct
+  for the parity track — do NOT edit them for this campaign until it merges.
+- Memory corrected: `project_string_as_class` (Layer 1+2 done, Layer 3 NOT) + MEMORY.md line +
+  `project_cpp_mangled_direct`. `feedback_correct_over_shortcuts` strengthened.
+- The gate is committed + wired into fulltest → "done" is unfakeable + the count can't silently rise.
+- No half-done code: every commit builds + passes the gate + SMAUG; inc 4 step 1's header coexists
+  with the builtins (no conflict); inc 5 (the vbase) is PLANNED but NOT started.
