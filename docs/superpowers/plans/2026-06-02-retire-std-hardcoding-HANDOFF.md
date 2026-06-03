@@ -27,6 +27,31 @@ Key memories: `project_string_as_class` (the Layer-1/2/3 truth), `feedback_corre
 
 ## 0. THE PRINCIPLE (never drift from this — the user enforced it HARD)
 
+### 0.0 THE DEFINITIVE SPEC (user, 2026-06-03 — supersedes any softer wording below)
+This is **architectural dependency removal, not a rename/refactor.** The goal is to make
+**core madc independent of `std::string` as a required representation.** Any solution that
+preserves `std::string` through an alias, typedef, wrapper, `std::basic_string<char>`,
+implicit conversion, helper, adapter, template default, compatibility shim, or renamed
+internal type is a **FAILED solution.** Hiding it from grep is not the goal.
+
+The madc language/type system must NOT treat `std::string` as built-in, intrinsic, privileged,
+or hardcoded. Any madc-level string-like type resolves through the **ordinary object/type
+system, exactly like a user-defined class.** **These rules apply to ALL objects, not just
+string** — any object can have operator overloads, copy-construction, etc.; the danger of
+string special-casing is that it makes a feature look implemented when it is implemented ONLY
+for string (PROVEN: `operator+` copy-init works for `std::string`, fails for a user class — see §6.0).
+
+- **Allowed:** `std::string` in the COMPILER's own C++ (source text, diagnostics, file paths,
+  maps, parser tokens, C++ codegen, temp buffers, host-language interop); and in tests for
+  source snippets / expected diagnostics.
+- **NOT allowed (core madc — lexer/parser/typechecker/codegen):** `BuiltinType::StdString` /
+  `TypeKind::StdString`; hardcoded recognition of the madc type name `"std::string"`; special
+  semantic rules that fire only because a type is std::string; parser/typechecker/codegen
+  branches that privilege std::string as a madc language type; aliases/renamed constants that
+  preserve it as a recognized intrinsic (this is what `is_std_string`/`is_string_class`/
+  `DataDefSTRING` ARE — they must leave `src/`); fallback that maps unknown/unresolved
+  string-like types to std::string.
+
 **madc hardcodes ONLY the C/C++ primitive basis; every other type is COMPOSED from it.** The
 language hardcodes a tiny set of fundamentals — `void`/`char`/`short`/`int`/`long`/`float`/
 `double`/`bool` + the composition mechanisms (pointer/array/struct/union/enum/function) — and
@@ -47,6 +72,10 @@ End state (all enforced by the finish-line gate):
   `sstream_*`, `__std_*`).
 - **No per-type lowering / registration callback** (`add_string_methods`, `add_fstream_methods`,
   the `SK_*`, `ostream_insert_symbol`, `STR_*` statics).
+- **No type-identity PREDICATE in `src/`** — `is_std_string`, `is_std_string_ref`,
+  `is_std_string_value`, `is_string_class` are renamed intrinsics; production code asks generic
+  questions (`is_object()`, `class_needs_dtor()`, overload resolution) instead. (Permitted only
+  under `tests/unit/`.) The gate counts these as of 2026-06-03.
 - **madc contains NO reference to a real std:: type** — no `#include <string>`, no
   `sizeof(std::string)`. Layout is DERIVED from the parsed header; correctness is cross-checked
   **in a DOCTEST only** (the test `#include`s the real headers; madc does not).
@@ -66,9 +95,14 @@ auto-include map.
   soaks clean.** NEVER "it behaviorally works."
 - **The count must only DROP, never rise** (even a WIP comment naming dead machinery trips it —
   that already happened once at 06adc04→reverted; reword generic, the specifics live in git).
-- **Baseline: 468** (was 469 at campaign start; one line dropped early). It stays 468 through the
-  keystone/string-surface increments (they ADD the mechanism) and only DROPS at the migration's
-  deletion step (worklist cluster G/A), when the builtins are removed. No faked intermediate drops.
+- **LOOPHOLE CLOSED 2026-06-03 (`9db1eb0`): the gate previously counted only the builtin
+  TAGS/wrappers, so the same dependence survived under ALTERNATIVE names (`is_std_string`,
+  `is_string_class`, the `string_*` / `STR_*` families). The gate now counts those too
+  (tests/unit/ exempt). The honest count JUMPED 468 → ~775 — that is not a regression, it is the
+  truth the loophole hid. The 468 was a false floor; ~775 is the real worklist size.**
+- **New baseline: ~775** (was a false 468). It only DROPS as the string/stream machinery is
+  actually removed and each `is_std_string` site is generalized to `is_object()` /
+  `class_needs_dtor()` / overload resolution. No faked intermediate drops.
 
 WHY this is the only durable anti-drift design: any type-specific code OR type-tag can rot. The
 gate makes "done" unfakeable; a future session cannot declare victory while the rug exists.
@@ -207,7 +241,51 @@ the independent mangler output — zero literals.
 
 ## 6. WHAT'S NEXT (the substantial remaining work — count drops at inc 6)
 
-### STRING-FIRST REORDER (2026-06-03) — supersedes the inc-5/6/7 ordering below
+### 6.0 THE REAL BLOCKER (2026-06-03) — generic object machinery is INCOMPLETE; string special-casing hid it
+**Removing the `is_std_string` sites is NOT a find-and-replace to `is_object()` — the generic
+object path has HOLES that string's special-casing was papering over.** Proven this session
+with minimal reducers (kept in `tmp/`: `overload_sel.mad`, `userplus*.mad`):
+
+- `c = a + b` (assignment) on a user class V with `V operator+(V&)` **WORKS**.
+- `V c = a + b` (copy-init) **FAILS** (`incompatible argument type for arithmetic type parameter`),
+  **even with an explicit copy ctor.** The identical construct works for `std::string` — ONLY
+  because string has `is_string_operator_plus` + `string_temp_decl` special cases.
+
+Root causes (both generic, both must be fixed for ALL classes):
+1. **Operator expressions on objects are not TYPED.** `TokenAdd::datadef()` (include/tokens.h:204)
+   returns the pointer/arithmetic type — for two objects it falls to the default `int`, and for
+   `obj + "lit"` it returns the RHS `const char*`. Operator-overload resolution only runs at
+   CODEGEN (`class_operator_call`), never at the type level. So copy-init ctor selection sees the
+   wrong arg type. **Groundwork landed (`9db1eb0`), NOT wired:**
+   `DataDefCLASS::binary_operator_return_type()` + `Program::resolve_object_operator_type()`. To
+   wire it, the arithmetic operators' `datadef()` must prefer the object-operator result type OVER
+   the pointer-arithmetic short-circuit (add a `resolved_type` member to `TokenOperator`, returned
+   first by `TokenAdd`/`Sub`/`Mul`/`Div`/`Mod::datadef()`), then call
+   `resolve_object_operator_type` in `popOperator` (parser.cpp ~6790). A first attempt that only
+   set `_datatype` regressed `teststringplus` because `TokenAdd::datadef()` ignores `_datatype`
+   when an operand is a pointer — hence the `resolved_type`-first rework.
+2. **No generic object-rvalue temp materialization for user operators.** `class_operator_call`'s
+   user-class branch (cir_builder.cpp ~4372-4401) returns the raw call; a by-value object result is
+   not materialized into an addressable cleanup temp, so it can't be copy-constructed from / have
+   members called. The generic materializer already exists (`object_call_temp_addr`, ~1102) — wire
+   the operator path through it (handle both the trivial native-struct return and the non-trivial
+   `__retbuf` return ABIs).
+3. **Implicit copy constructor** for classes with no user-declared one (trivial bit-copy /
+   member-wise) so `T c = <T rvalue>` works without an explicit copy ctor.
+
+**SEQUENCING CONSEQUENCE:** the generic `select_ctor_overload` (generic `score_arg_to_param`
+ranking) CANNOT be deployed until (1) lands — without correct operand typing it mis-selects the
+ctor for `T c = a + b` (verified: regressed `teststringplus`). So `select_ctor_overload` is
+currently REVERTED to its string-aware form (cir_builder.cpp), with the limitation documented
+inline. Order: **(1) operator typing → re-enable generic `select_ctor_overload` → (2) temp
+materialization → (3) implicit copy ctor → then convert string's operators to ride the SAME
+generic path and DELETE `is_string_operator_plus`/`string_concat`/etc.** Build the machinery for
+ALL classes FIRST; string is then just a consumer with no privileged branch. DONE this session
+(generic, regression-free, `9db1eb0`): generic `score_arg_to_param`, generic METHOD overload
+resolution (`findMethodOverload`/`reselect_method_overload`/`method_display_name`),
+`ctor_call_symbol`.
+
+### STRING-FIRST REORDER (2026-06-03) — superseded by 6.0; the string surface below still applies once 6.0's machinery exists
 The MI/virtual-base + virtual-destructor features are now DONE on develop-track branches and
 merged into this campaign branch (HEAD has full MI S1-S5 + virtual dtors + parser-correctness
 A/B/C). std::string is NOT a virtual-inheritance type, so it does NOT need the inc-5 vbase ABI —
