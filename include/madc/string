@@ -45,6 +45,7 @@ namespace std {
 	    // mangles correctly (no special-casing — ordinary default-argument fill).
 	    basic_string(const char *, const allocator<_CharT> & = allocator<_CharT>()); // C1EPKcRKS3_
 	    basic_string(unsigned long, char);       // C1  ...C1Emc
+	    basic_string(const basic_string &);      // C1  ...C1ERKS4_ (copy ctor)
 	    ~basic_string();                         // D1  ...D1Ev
 	    unsigned long length() const;            // ...6lengthEv
 	    unsigned long size() const;              // ...4sizeEv
