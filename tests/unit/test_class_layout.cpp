@@ -236,4 +236,28 @@ TEST_SUITE("class layout — vtable groups") {
         DataDefCLASS *g = mkclass("S5b_G", 0, false);
         CHECK_FALSE(d->is_unique_public_nonvirtual_base(g, &off));
     }
+
+    TEST_CASE("dtor D1/D0 markers keep declaration order and group layout") {
+        // mirror `class A { virtual void f(); virtual ~A(); virtual void g(); }`:
+        // declaration order f, ~ (D1), ~$deleting (D0), g.
+        DataDefCLASS *a = mkclass("A", 0, true);   // poly=true -> has_vtable
+        a->vtable_slots.push_back("f");
+        a->vtable_slots.push_back("~");
+        a->vtable_slots.push_back("~$deleting");
+        a->vtable_slots.push_back("g");
+        a->compute_layout();
+        a->build_vtable_groups();
+        REQUIRE(a->vtable_groups.size() == 1);     // single class -> one (primary) group
+        const auto &g0 = a->vtable_groups[0];
+        REQUIRE(g0.slots.size() == 4);
+        CHECK(g0.slots[0] == "f");
+        CHECK(g0.slots[1] == "~");                 // D1 right after f
+        CHECK(g0.slots[2] == "~$deleting");        // D0 right after D1
+        CHECK(g0.slots[3] == "g");                 // g after the dtor pair
+        CHECK(g0.addr_point == 2);                 // 2-slot Itanium prologue precedes slot 0
+        size_t grp; int s1 = -1, s0 = -1;
+        CHECK(a->find_vslot("~", grp, s1));
+        CHECK(a->find_vslot("~$deleting", grp, s0));
+        CHECK(s0 == s1 + 1);
+    }
 }
