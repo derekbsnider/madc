@@ -241,7 +241,25 @@ the independent mangler output — zero literals.
 
 ## 6. WHAT'S NEXT (the substantial remaining work — count drops at inc 6)
 
-### 6.0 THE REAL BLOCKER (2026-06-03) — generic object machinery is INCOMPLETE; string special-casing hid it
+### 6.0-DONE (2026-06-03 later) — GENERIC OPERATOR COPY-INIT now works for ALL classes
+The generic machinery described in 6.0 below is now BUILT and verified (commits `1aeaa38`
+operator typing + temp materialization + ref-param scoring; `88f69cd` implicit copy ctor).
+`V c = a + b` for a user class works WITH a copy ctor (`tmp/userplus3.mad` → 7) and WITHOUT one
+(`tmp/userplus.mad` → 7, trivial implicit copy); `teststringplus` stays green THROUGH the shared
+generic typing + ctor selection (no string branch in the selector). Integration 475, SMAUG boots.
+Pieces landed: (1) `TokenOperator::resolved_type` + `Program::resolve_object_operator_type` +
+`DataDefCLASS::binary_operator_return_type` (operator expr typed by the operator's return type,
+authoritative over the pointer/arith heuristics); (2) generic `select_ctor_overload` via
+`score_arg_to_param` re-enabled; (3) `score_arg_to_param` ref-param peeling (`const T&` stored as
+`T*` now binds a `T` object); (4) `class_operator_call` materializes a by-value object result into
+a cleanup temp (trivial native-return / non-trivial `__retbuf`); (5) implicit copy ctor (trivial
+struct copy) in `class_ctor_call`. **Still generic-incomplete:** implicit copy ctor for NON-trivial
+classes (object members → member-wise copy-construct; they usually declare a copy ctor); unifying
+string's operator CODEGEN (it still uses the `string_concat` emit_symbol branch — typing/selection
+are already unified). **NEXT for the campaign:** migrate string onto this generic path and DELETE
+the string special-cases — only now does the gate count drop.
+
+### 6.0 THE REAL BLOCKER (2026-06-03) — generic object machinery is INCOMPLETE; string special-casing hid it (SUPERSEDED by 6.0-DONE above; kept for the diagnosis)
 **Removing the `is_std_string` sites is NOT a find-and-replace to `is_object()` — the generic
 object path has HOLES that string's special-casing was papering over.** Proven this session
 with minimal reducers (kept in `tmp/`: `overload_sel.mad`, `userplus*.mad`):
