@@ -4768,6 +4768,39 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttChar)
 		return ch(tb->ival(), tb);
 
+	// dynamic_cast<Tgt*>(e)  (S5c) ->
+	//   (struct Tgt*)__dynamic_cast((void*)e, (void*)_ZTI<src>, (void*)_ZTI<dst>, hint)
+	// libstdc++'s __dynamic_cast reads e's vptr[-1] (the RTTI slot wired in S5b) to
+	// recover the most-derived type, then walks the type_info base graph. The _ZTI
+	// objects are emitted file-scope in Pass 1.5 (before this body), so referencing
+	// them by name resolves. hint = offset of src within dst when src is a unique
+	// public non-virtual base of dst (g++'s optimization), else -1 (general search).
+	if (TokenDynamicCast *dc = dynamic_cast<TokenDynamicCast *>(tb)) {
+		DataDefCLASS *dstC = class_behind(dc->target_type);
+		DataDefCLASS *srcC = class_behind(dc->operand ? dc->operand->datadef() : NULL);
+		if (!dstC || !srcC || !dstC->has_vtable || !srcC->has_vtable)
+			return error_node("dynamic_cast requires polymorphic class pointers", tb);
+		std::string src_ti = itanium_typeinfo_sym(srcC->name);
+		std::string dst_ti = itanium_typeinfo_sym(dstC->name);
+		referenced_funcs.insert(src_ti);
+		referenced_funcs.insert(dst_ti);
+		long hint = -1; size_t off = 0;
+		if (dstC->is_unique_public_nonvirtual_base(srcC, &off)) hint = (long)off;
+		need_output_extern("__dynamic_cast", /*ret_ptr=*/true,
+			{ { {N_VOID}, true }, { {N_VOID}, true },
+			  { {N_VOID}, true }, { {N_LONG}, false } });
+		node_t args = list();
+		append(args, node2(N_CAST, void_ptr_type(), translate_expr(dc->operand), tb));
+		append(args, node2(N_CAST, void_ptr_type(), id(src_ti.c_str()), tb));
+		append(args, node2(N_CAST, void_ptr_type(), id(dst_ti.c_str()), tb));
+		append(args, integer(hint, tb));
+		node_t call = node2(N_CALL, id("__dynamic_cast"), args, tb);
+		node_t tgt_t = node2(N_TYPE,
+			node1(N_LIST, node2(N_STRUCT, id(dstC->name.c_str()), ignore())),
+			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		return node2(N_CAST, tgt_t, call, tb);
+	}
+
 	// GNU statement expression `({ stmt...; expr; })` used as a VALUE. c2mir
 	// models it natively as N_STMTEXPR(compound_stmt); the block's last item
 	// must be an expression-statement (c2mir enforces this). A bare TokenCpnd
