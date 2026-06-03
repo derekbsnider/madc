@@ -11833,11 +11833,38 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // data member
 	    if ( ret_is_ref )
 		pgm.Throw(tn) << "Reference data members (T&) are not supported" << flush;
-	    ddc->addMember(mname, *cmember_dd, 1);
+	    // Optional fixed-size array dimensions: `long _buf[64];`, `int m[4][8];`.
+	    // (Constant dims only — a class data member is never a VLA.) Multiply the
+	    // dims into one inline element count (mirrors TokenSTRUCT::parse's member loop).
+	    size_t member_count = 1;
+	    bool member_is_array = false;
+	    std::vector<uint32_t> member_dims;
+	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	    {
+		member_is_array = true;
+		pgm.nextToken(); // consume '['
+		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClSqr )
+		{
+		    pgm.nextToken(); // consume ']' (unsized [])
+		    member_dims.push_back(0);
+		    member_count = 0;
+		    continue;
+		}
+		int64_t adim = parse_constant_integer_expression(pgm);
+		if ( adim < 0 )
+		    pgm.Throw(tn) << "Class member array dimension must be non-negative" << flush;
+		TokenBase *acl = pgm.nextToken();
+		if ( !acl || acl->id() != TokenID::tkClSqr )
+		    pgm.Throw(acl ? acl : tn) << "Expected ']' in class member array declarator" << flush;
+		member_dims.push_back((uint32_t)adim);
+		member_count *= (size_t)adim;
+	    }
+	    ddc->addMember(mname, *cmember_dd, member_count, NULL, member_is_array,
+		member_is_array ? &member_dims : NULL);
 	    if ( access_flags && !ddc->member_access.empty() )
 		ddc->member_access.back() = access_flags;
 	    DBG(cout << "TokenCLASS::parse() added member " << cmember_dd->name << ' ' << mname
-		<< " (size " << cmember_dd->size << ", total " << ddc->size << ')' << endl);
+		<< " (count " << member_count << ", total " << ddc->size << ')' << endl);
 	    tn = pgm.nextToken();
 	    if ( tn->id() != TokenID::tkSemi )
 		pgm.Throw(tn) << "Expecting ';' after class member" << flush;
