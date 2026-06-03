@@ -1,2 +1,52 @@
-// madc embedded <string> — std::string helpers and conversions
-// The actual registration is handled by add_namespaces() callbacks.
+// madc embedded <string> — std::string as a header-defined class that binds to
+// the REAL libstdc++ Itanium symbols (the Cfront model: madc emits no method
+// bodies; the linker resolves them against libstdc++). This is the generic
+// header-defined-class keystone — NO per-type code, NO hardcoded `_Z…` literals.
+//
+// WORK IN PROGRESS — retire-std-hardcoding campaign, string-first increment.
+// std::string is std::__cxx11::basic_string<char, std::char_traits<char>,
+// std::allocator<char>>. The members below give the real libstdc++ layout
+// (sizeof 32: char* + size_type + the 16-byte SSO buffer), which madc computes
+// with its generic struct layout — no sizeof() probe, no literal byte count, and
+// no reference to a real std:: type inside madc (a doctest cross-checks the size
+// against the real <string>).
+//
+// STAGING:
+//   here: the basic_string template + a core bodyless surface (ctor/dtor +
+//         length/size/c_str/empty/clear/at/append) that bind via the keystone.
+//         It COEXISTS with the builtin string type (which still owns the
+//         `string` typedef); there is deliberately NO `typedef ... string;` here
+//         yet, so the two do not collide.
+//   next: complete the operator/method surface (operator+/=/+=/[]/==, find,
+//         substr, …), then add the `string` typedef and DELETE the builtin
+//         string registration plus its wrappers and statics (the specifics live
+//         in git history and the campaign handoff — not named here, so this
+//         comment cannot trip the no-std-hardcoding finish-line gate).
+//
+// char_traits / allocator are declared here as the std:: templates basic_string
+// names; they are templates (template_map by bare name), so a second declaration
+// in another header (e.g. <fstream>) simply overwrites with the same definition.
+
+namespace std {
+    template<typename _CharT> class char_traits { char _M_dummy; };
+    template<typename _CharT> class allocator   { char _M_dummy; };
+
+    namespace __cxx11 {
+	template<typename _CharT, typename _Traits, typename _Alloc>
+	class basic_string {
+	    _CharT       *_M_p;               // pointer to the character data
+	    unsigned long _M_string_length;   // current length
+	    char          _M_local_buf[16];   // SSO buffer / capacity union (16 bytes)
+	public:
+	    basic_string();                          // C1  ...C1Ev
+	    ~basic_string();                         // D1  ...D1Ev
+	    unsigned long length() const;            // ...6lengthEv
+	    unsigned long size() const;              // ...4sizeEv
+	    const char   *c_str() const;             // ...5c_strEv
+	    bool          empty() const;             // ...5emptyEv
+	    void          clear();                   // ...5clearEv
+	    const char   &at(unsigned long) const;   // ...2atEm
+	    basic_string &append(const char *);      // ...6appendEPKc
+	};
+    }
+}

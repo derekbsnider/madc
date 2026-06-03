@@ -11798,10 +11798,20 @@ static void bind_std_libstdcpp_symbol(Program &pgm, DataDefCLASS *ddc, Variable 
 				      StdSymKind kind, const std::string &mname,
 				      bool is_operator)
 {
-    if ( pgm.current_namespace != "std" || !ddc || !mvar )
+    if ( !ddc || !mvar )
 	return;
     FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
     if ( !fd || !fd->declaration_only || ddc->canonical_cpp_spelling.empty() )
+	return;
+    // Bind only std:: library types, identified by the canonical spelling the
+    // template instantiation derived from its DEFINING namespace (e.g.
+    // "std::__cxx11::basic_string<...>") — NOT by the instantiation SITE's
+    // namespace. So a std type binds wherever it is instantiated (a use-site
+    // `std::string s;` at file scope, or a typedef inside `namespace std`),
+    // while a user template `foo::Bar<...>` (spelling "foo::Bar<...>") never
+    // does. Only bodyless methods reach here (declaration_only, checked above),
+    // so body-templates like std::vector are unaffected.
+    if ( ddc->canonical_cpp_spelling.compare(0, 5, "std::") != 0 )
 	return;
     // Parameter spellings, captured at parse time, EXCLUDING the hidden __this
     // (slot 0). These carry pointee-const / `&` / template structure the DataDef
