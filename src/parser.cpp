@@ -3846,6 +3846,12 @@ void DataDefCLASS::build_vtable_groups()
 	for ( auto &b : bases ) if ( b.base == o ) { off = b.offset; break; }
 	vtable_groups.push_back(VtableGroup{o, off, o->vtable_slots, 0});
     }
+
+    // Address point of each group = its starting index in the flat Cls__vtable[]
+    // array (sub-tables emitted back-to-back). Computed here so emission/dispatch/
+    // vptr-init agree regardless of pass order.
+    size_t ap = 0;
+    for ( auto &g : vtable_groups ) { g.addr_point = ap; ap += g.slots.size(); }
 }
 
 size_t DataDefCLASS::base_offset_of(const DataDefCLASS *target) const

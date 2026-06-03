@@ -705,7 +705,19 @@ node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rh
 	DataDefCLASS *derived = expr_pointee_class(rhs);
 	if (!base || !derived || base == derived) return value;
 	if (!derived->is_or_derives_from(base)) return value;
-	return node2(N_CAST, class_ptr_type(base), value, origin);
+	// Adjust the pointer to the base subobject. Single inheritance / primary base
+	// = offset 0 (a plain cast, byte-identical to before); a secondary or virtual
+	// base sits at a non-zero offset, so emit (Base*)((char*)value + offset).
+	size_t off = derived->base_offset_of(base);
+	node_t adj = value;
+	if (off != 0 && off != (size_t)-1) {
+		node_t charp = node2(N_CAST,
+			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			value, origin);
+		adj = node2(N_ADD, charp, integer((long)off), origin);
+	}
+	return node2(N_CAST, class_ptr_type(base), adj, origin);
 }
 
 // `long <name>[words];` — opaque, 8-aligned storage for a C++ runtime object,
@@ -2726,24 +2738,28 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd)
 	if (!cdd || !cdd->has_vtable || cdd->vtable_slots.empty())
 		return NULL;
 
-	// Initializer: { (void*)C__slot0, (void*)C__slot1, ... }
+	// Initializer: grouped sub-tables back-to-back — primary group, then each
+	// secondary polymorphic base's group (address points recorded in
+	// build_vtable_groups). Each slot resolves by NAME to the most-derived
+	// findMethod (so overrides win); a pure/abstract slot emits a null pointer.
+	// (Secondary-group overrides need a this-adjusting thunk — substituted in a
+	// later task; here findMethod gives the base method, correct when not overridden.)
 	node_t inits = list();
-	for (const std::string &slot : cdd->vtable_slots) {
-		std::string sname = slot;
-		Variable *mv = cdd->findMethod(sname);
-		if (!mv) {
-			// No override visible: a pure/abstract slot. Emit a null
-			// pointer (calling it is UB, same as C++ abstract dispatch).
-			append(inits, node2(N_INIT, list(), integer(0)));
-			continue;
+	for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
+		for (const std::string &slot : cdd->vtable_groups[g].slots) {
+			std::string sname = slot;
+			Variable *mv = cdd->findMethod(sname);
+			if (!mv) {
+				append(inits, node2(N_INIT, list(), integer(0)));
+				continue;
+			}
+			referenced_funcs.insert(mv->name);
+			node_t vptr_type = node2(N_TYPE,
+				node1(N_LIST, simple(N_VOID)),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t fnref = node2(N_CAST, vptr_type, id(mv->name.c_str()));
+			append(inits, node2(N_INIT, list(), fnref));
 		}
-		referenced_funcs.insert(mv->name);
-		// (void*)C__slot
-		node_t vptr_type = node2(N_TYPE,
-			node1(N_LIST, simple(N_VOID)),
-			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-		node_t fnref = node2(N_CAST, vptr_type, id(mv->name.c_str()));
-		append(inits, node2(N_INIT, list(), fnref));
 	}
 
 	// void *ClassName__vtable[] = { ... };
@@ -2828,8 +2844,8 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 				append(member_list, pm);
 				cursor = f.off;
 			}
-			if (f.kind == 0) { // vptr (primary keeps the canonical __vptr name)
-				std::string vn = (f.off == 0) ? "__vptr" : ("__vptr" + std::to_string(synth++));
+			if (f.kind == 0) { // vptr (primary keeps __vptr; secondaries __vptr_<offset>)
+				std::string vn = (f.off == 0) ? "__vptr" : ("__vptr_" + std::to_string(f.off));
 				node_t vspec = list(); append(vspec, simple(N_VOID));
 				node_t vdl = list(); append(vdl, pointer());
 				node_t vm = simple(N_MEMBER);
@@ -3090,22 +3106,23 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	// this_arg node above is already consumed as the call's first argument).
 	std::string mname = (sym.size() > recv_class->name.size() + 2)
 				? sym.substr(recv_class->name.size() + 2) : sym;
-	int slot = recv_class->vtable_slot(mname);
-	if (recv_class->is_virtual_method(mname) && slot >= 0 && callee) {
+	// Grouped dispatch: find which vtable group (subobject) owns the method, load
+	// THAT group's vptr field from the most-derived receiver, index by the in-group
+	// slot (the vptr already points at the group's address point). Single
+	// inheritance = group 0 / "__vptr" / flat slot, reproducing the old lowering.
+	size_t grp; int slot;
+	if (recv_class->find_vslot(mname, grp, slot) && callee) {
 		DataDefCLASS *vowner = owner ? owner : recv_class;
-		// Fresh receiver pointer for the vptr load.
+		const DataDefCLASS::VtableGroup &G = recv_class->vtable_groups[grp];
+		std::string vfld = (G.this_offset == 0)
+			? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
 		DataDefCLASS *dummy = NULL;
 		node_t recv_for_vptr = class_this_arg(tm, dummy, origin);
-		if (vowner && vowner != recv_class)
-			recv_for_vptr = node2(N_CAST,
-				node2(N_TYPE,
-				      node1(N_LIST, node2(N_STRUCT,
-					id(vowner->name.c_str()), ignore())),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-				recv_for_vptr, origin);
-		// (void**)recv->__vptr
+		// (void**)recv->__vptr[_<off>] — load the owning group's vptr field by
+		// name from the most-derived receiver (no vowner cast: the field already
+		// lives in recv_class's struct at the right offset).
 		node_t vptr = node2(N_DEREF_FIELD, recv_for_vptr,
-				    id("__vptr", origin));
+				    id(vfld.c_str(), origin));
 		// Build the `void **` cast type explicitly (two pointer levels).
 		node_t vpp_dl = list();
 		append(vpp_dl, pointer());
@@ -4573,15 +4590,23 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// prologue); with no ctor we must set it here so `new B()` yields a
 			// usable polymorphic object. `__newN->__vptr = (void*)B__vtable`.
 			std::string vname = cdd->name + "__vtable";
-			node_t vptr_lhs = node2(N_DEREF_FIELD, id(tmp, tb),
-						id("__vptr", tb));
-			node_t vptr_type = node2(N_TYPE,
-				node1(N_LIST, simple(N_VOID)),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-			node_t vtab = node2(N_CAST, vptr_type, id(vname.c_str(), tb), tb);
-			node_t asn = node2(N_ASSIGN, vptr_lhs, vtab, tb);
-			CIR_NODE(asn)->synth_from_origin = true;
-			append(items, node2(N_EXPR, list(), asn, tb));
+			for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
+				const auto &G = cdd->vtable_groups[g];
+				std::string fld = (G.this_offset == 0)
+					? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
+				node_t vptr_lhs = node2(N_DEREF_FIELD, id(tmp, tb),
+							id(fld.c_str(), tb));
+				node_t vptr_type = node2(N_TYPE,
+					node1(N_LIST, simple(N_VOID)),
+					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				node_t tab = id(vname.c_str(), tb);
+				node_t ap = (G.addr_point == 0) ? tab
+					: node2(N_ADD, tab, integer((long)G.addr_point), tb);
+				node_t vtab = node2(N_CAST, vptr_type, ap, tb);
+				node_t asn = node2(N_ASSIGN, vptr_lhs, vtab, tb);
+				CIR_NODE(asn)->synth_from_origin = true;
+				append(items, node2(N_EXPR, list(), asn, tb));
+			}
 		}
 		// __newN;  (value of the statement expression)
 		append(items, node2(N_EXPR, list(), id(tmp, tb), tb));
@@ -7038,14 +7063,26 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			class_member_destruct(ocls, epilogue, tf);
 		if (is_ctor && ocls->has_vtable) {
 			std::string vname = ocls->name + "__vtable";
-			node_t vptr_lhs = node2(N_DEREF_FIELD, id("__this", tf),
-						id("__vptr", tf));
-			node_t vptr_type = node2(N_TYPE,
-				node1(N_LIST, simple(N_VOID)),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-			node_t vtab = node2(N_CAST, vptr_type, id(vname.c_str(), tf));
-			node_t asn = node2(N_ASSIGN, vptr_lhs, vtab, tf);
-			prologue.push_back(node2(N_EXPR, list(), asn, tf));
+			// Set each subobject's vptr to its group's address point in the flat
+			// table: __this->__vptr[_<off>] = (void*)(Cls__vtable + addr_point).
+			// Primary group (offset 0, addr_point 0) reproduces the old single
+			// assignment byte-for-byte.
+			for (size_t g = 0; g < ocls->vtable_groups.size(); g++) {
+				const auto &G = ocls->vtable_groups[g];
+				std::string fld = (G.this_offset == 0)
+					? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
+				node_t vptr_lhs = node2(N_DEREF_FIELD, id("__this", tf),
+							id(fld.c_str(), tf));
+				node_t vptr_type = node2(N_TYPE,
+					node1(N_LIST, simple(N_VOID)),
+					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				node_t tab = id(vname.c_str(), tf);
+				node_t ap = (G.addr_point == 0) ? tab
+					: node2(N_ADD, tab, integer((long)G.addr_point), tf);
+				node_t vtab = node2(N_CAST, vptr_type, ap, tf);
+				prologue.push_back(node2(N_EXPR, list(),
+					node2(N_ASSIGN, vptr_lhs, vtab, tf), tf));
+			}
 		}
 		// Destroy bases in REVERSE declaration order (MI), offset-adjusted.
 		if (is_dtor)

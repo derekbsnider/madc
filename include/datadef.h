@@ -775,12 +775,14 @@ public:
 	if ( base_class ) return base_class->is_virtual_method(name);
 	return false;
     }
-    // Is this class the same as `target`, or derived (single-inheritance chain)
-    // from it? Used for protected-member access and derived->base pointer
-    // upcasts. Single inheritance only — the base subobject lives at offset 0.
+    // Is this class the same as `target`, or derived (directly or transitively,
+    // through any base) from it? Walks the full multiple/virtual base graph. Used
+    // for protected-member access and derived->base pointer upcasts (the subobject
+    // offset is base_offset_of(target)).
     bool is_or_derives_from(const DataDefCLASS *target) const {
-	for ( const DataDefCLASS *c = this; c; c = c->base_class )
-	    if ( c == target ) return true;
+	if ( this == target ) return true;
+	for ( const auto &b : bases )
+	    if ( b.base == target || b.base->is_or_derives_from(target) ) return true;
 	return false;
     }
 

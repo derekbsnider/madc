@@ -1,0 +1,16 @@
+#!/../bin/madc
+// MI virtual dispatch: a call through a secondary-base pointer must use that
+// base's vtable. (Classes carry a ctor so the stack object's vptrs are set —
+// implicit-ctor vptr-init for ctor-less polymorphic stack objects is a separate
+// pre-existing gap, independent of MI.)
+class P1 { public: virtual int f1() { return 10; } };
+class P2 { public: virtual int f2() { return 20; } };
+class MIc : public P1, public P2 { public: MIc() {} int c; };
+int main()
+{
+    MIc m; m.c = 3;
+    P1 *a = &m;     // primary subobject @0
+    P2 *b = &m;     // secondary subobject @ offset (upcast adjusts +offset)
+    printf("%d %d %d %d\n", m.f1(), m.f2(), a->f1(), b->f2());
+    return 0;
+}
