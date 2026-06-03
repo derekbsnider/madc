@@ -227,9 +227,8 @@ passing work between agents.
 - **Multi-return functions** use a hidden `__retbuf` parameter — a
   pointer to caller-allocated stack memory where return values are
   written.
-- **Ternary operator** uses a stack-slot merge: both branches of
-  `cond ? a : b` write to the same stack location, avoiding phi
-  nodes. See `docs/rules/ternary.md` for why.
+- **Ternary operator** `cond ? a : b` lowers to a C11 conditional in the
+  `cir_node` tree; c2mir/MIR own the branch/merge codegen.
 
 ## Rules
 
@@ -259,6 +258,7 @@ history, or spam agent-permission prompts. Apply them unconditionally.
 | [docs-vs-rules.md](.claude/rules/docs-vs-rules.md) |   20 | Bare rules in `.claude/rules/`, reasoning in `docs/rules/` — never duplicate content |
 | [session-handoff.md](.claude/rules/session-handoff.md) |   19 | KG-first hand-off flow, hypothesis-first execution, concise hand-off note |
 | [knowledge-graph.md](.claude/rules/knowledge-graph.md) |   14 | KG as authoritative project memory, mirrored back into repo files |
+| [scratch-files.md](.claude/rules/scratch-files.md) |     8 | All scratch / temp / reducer files go in `tmp/` (gitignored) — never in `tests/` or repo root |
 
 Shell-command hygiene (single commands, no `&&` chains) is a P1 rule
 too; it's stated in the "Shell command hygiene" section of this file.
@@ -276,6 +276,7 @@ no matter how small.
 | [helper-methods.md](.claude/rules/helper-methods.md) |  12 | Extract ad-hoc checks into named helpers      |
 | [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
 | [code-style.md](.claude/rules/code-style.md)     |     9 | C++11, tabs, header guards, naming             |
+| [enum-over-strings.md](.claude/rules/enum-over-strings.md) | 15 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
 
 ### P3 — Build, test, and validation (gate "done")
 
@@ -296,25 +297,23 @@ editing — don't try to memorize all of them.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
-| [mc11-ir.md](.claude/rules/mc11-ir.md)           |    24 | **SET IN STONE.** `cir_node` = MC11-IR: derives from c2mir `node_t` (c2mir sees lowered) AND carries originating tokens + parse tree + file/line/col (madc sees high-level). It is BOTH; render targets share the `--std=` enum |
+| [mc11-ir.md](.claude/rules/mc11-ir.md)           |    26 | **SET IN STONE.** `cir_node` = MC11-IR: derives from c2mir `node_t` (c2mir sees lowered) AND carries originating tokens + parse tree + file/line/col (madc sees high-level). It is BOTH; render targets share the `--std=` enum |
 | [backend-strategy.md](.claude/rules/backend-strategy.md) | 30 | **Forward trajectory (ADR 0001).** c2mir/C-AST IR is the sole backend; direct-MIR is a scalpel for runtime internals + REPL/debug tier; `--emit=c11` is first-class; CIR coverage parity gates promotion to master |
-| [lowering-vs-raising.md](.claude/rules/lowering-vs-raising.md) | 40 | Where a missing feature gets fixed: Tier 1 lower/resolve in madc (default) · Tier 2 raise c2mir for semantic primitives · Tier 3 raise MIR for floor gaps (SIMD). Verify c2mir's real surface — stmt-exprs/_Generic/_Complex are supported |
-| [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 30 | Compare with `gcc -S` first, fix at deepest layer, operator self-determination |
+| [lowering-vs-raising.md](.claude/rules/lowering-vs-raising.md) | 39 | Where a missing feature gets fixed: Tier 1 lower/resolve in madc (default) · Tier 2 raise c2mir for semantic primitives · Tier 3 raise MIR for floor gaps (SIMD). Verify c2mir's real surface — stmt-exprs/_Generic/_Complex are supported |
+| [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 44 | Compare with `gcc -S -fverbose-asm` first, fix at deepest layer, operator self-determination |
+| [clang-methodology.md](.claude/rules/clang-methodology.md) | 46 | Same methodology against clang, the co-equal canon; cross-check lowering with both gcc and clang |
 | [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
-| [regdp-reset.md](.claude/rules/regdp-reset.md)   |    23 | Reset `regdp` before sub-compiles in loops / conditionals |
-| [struct-compiler.md](.claude/rules/struct-compiler.md) |  40 | `addOffset` vs `setOffset`, string-member lifecycle |
-| [class-methods.md](.claude/rules/class-methods.md) |    26 | Name mangling, `__this`, unqualified member access |
-| [multi-return.md](.claude/rules/multi-return.md) |    33 | `__retbuf` injection, multi-return call sites  |
-| [ternary.md](.claude/rules/ternary.md)           |    30 | Ternary parsing + stack-slot merge pattern     |
-| [embedded-headers.md](.claude/rules/embedded-headers.md) |  65 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns) |
-| [gcc-parity.md](.claude/rules/gcc-parity.md)     |     8 | Use GCC as the reference baseline for JIT vs EXE / AOT parity work |
+| [c11-transpiler.md](.claude/rules/c11-transpiler.md) | 70 | `--emit=c11` lowers every C++ feature to strict C11; c2mir limits, lowering patterns, emission hygiene |
+| [embedded-headers.md](.claude/rules/embedded-headers.md) |  67 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns) |
+| [gcc-parity.md](.claude/rules/gcc-parity.md)     |    15 | GCC as a reference baseline (verbose `-fverbose-asm` disassembly) for codegen / type / runtime parity |
+| [clang-parity.md](.claude/rules/clang-parity.md) |    16 | clang as the co-equal reference baseline (second lowering opinion); both gcc and clang are canon |
 
 ### Total rule footprint
 
-- **27 rules, 690 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~303 lines** — loaded by Claude via
+- **27 rules, 697 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~362 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1056 lines.**
+- **Grand total loaded by Claude Code per turn: ~1067 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the
