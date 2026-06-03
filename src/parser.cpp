@@ -3718,17 +3718,24 @@ void DataDefCLASS::compute_layout()
     size_t cur = 0;
     size_t maxalign = 8; // class alignment accumulator (>= pointer align)
 
-    // 1. vptr: a polymorphic class introduces a vptr at offset 0 unless a primary
-    //    (polymorphic, non-virtual) base already provides one.
+    // 1. vptr: a class carries a vptr if it has virtual methods OR any (transitive)
+    //    virtual base (Itanium: virtual inheritance needs a vptr even with no virtual
+    //    methods). The vptr sits at offset 0 unless a primary base (non-virtual base
+    //    that itself carries a vptr) already provides one.
+    std::vector<DataDefCLASS *> all_vbases;
+    std::set<DataDefCLASS *> vseen;
+    collect_vbases(all_vbases, vseen);
+    bool needs_vptr = is_polymorphic() || !all_vbases.empty();
+    has_vptr_slot = needs_vptr;
     bool have_primary = false;
     for ( auto &bs : bases )
     {
-	if ( !bs.is_virtual && bs.base->is_polymorphic() )
+	if ( !bs.is_virtual && bs.base->has_vptr_slot )
 	{
 	    bs.is_primary = true; have_primary = true; break;
 	}
     }
-    bool own_vptr = is_polymorphic() && !have_primary;
+    bool own_vptr = needs_vptr && !have_primary;
     if ( own_vptr ) cur += 8;   // __vptr at 0
 
     // 2. non-virtual bases in declaration order (primary first, at 0). A base
@@ -3743,7 +3750,7 @@ void DataDefCLASS::compute_layout()
 	    cur = bs.base->nvsize;             // shares vptr@0; advance past its nvsize
 	else
 	{
-	    if ( bs.base->is_polymorphic() ) secondary_vptr_owners.push_back(bs.base);
+	    if ( bs.base->has_vptr_slot ) secondary_vptr_owners.push_back(bs.base);
 	    cur += bs.base->nvsize;
 	}
 	if ( balign > maxalign ) maxalign = balign;

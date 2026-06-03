@@ -730,6 +730,7 @@ public:
     std::vector<DataDefCLASS *> secondary_vptr_owners;
     size_t nvsize;
     size_t own_block_off; // offset where this class's own data members begin
+    bool has_vptr_slot;   // class carries a vptr (virtual methods OR a virtual base); set by compute_layout
     bool is_polymorphic() const { return has_vtable; }
     void compute_layout(); // Itanium layout engine (defined in parser.cpp)
     void apply_member_layout(); // rewrite member_offsets from member_origin + computed layout
@@ -763,7 +764,8 @@ public:
     DataDefCLASS(std::string n, size_t s, DataType d)
 	: DataDefSTRUCT(n, s, d), has_user_ctor(false), has_user_dtor(false),
 	  extern_ctor(NULL), extern_dtor(NULL), _dtor_ptr(NULL),
-	  base_class(NULL), nvsize(0), own_block_off(0), vtable(NULL), has_vtable(false) {}
+	  base_class(NULL), nvsize(0), own_block_off(0), has_vptr_slot(false),
+	  vtable(NULL), has_vtable(false) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
     Variable *findMethod(std::string &s);
     void register_extern_ctor_dtor(void *ctor, void *dtor) {

@@ -2774,30 +2774,17 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 	// members into the derived class but NOT the synthetic __vptr (it is not
 	// a real member entry), so every has_vtable class needs __vptr emitted
 	// here at offset 0 — including derived classes.
-	if (cdd->has_vtable) {
-		node_t vptr_spec = list();
-		append(vptr_spec, simple(N_VOID));
-		node_t vptr_dl = list();
-		append(vptr_dl, pointer());
-		node_t vptr_member = simple(N_MEMBER);
-		append(vptr_member, node1(N_SHARE, vptr_spec));
-		append(vptr_member, node2(N_DECL, id("__vptr"), vptr_dl));
-		append(vptr_member, ignore());
-		append(vptr_member, ignore());
-		append(member_list, vptr_member);
-	}
-
-	for (size_t i = 0; i < cdd->members.size(); i++)
-		append(member_list, member_node(cdd->members[i], cdd));
-
-	// An opaque runtime-object class (std::string and friends) carries no madc
-	// data members but DOES have a concrete ABI size. Emit a `long _w[words];`
-	// filler so `struct string` is a complete type of the right size — the same
-	// 8-aligned storage obj_storage_decl uses, now expressed as a class struct so
-	// the uniform class machinery (decl, ctor/dtor, members, elements) applies.
-	// The size is COMPUTED from sizeof(std::string), never hard-coded.
+	// Emit the struct fields in ASCENDING OFFSET order, inserting explicit char
+	// padding and named vptr fields, so c2mir's natural field layout reproduces the
+	// Itanium offsets computed by DataDefCLASS::compute_layout. Member access is by
+	// NAME (N_DEREF_FIELD), so member nodes keep their real names; pad/vptr names are
+	// synthetic and never referenced by user code. For a single-inheritance or plain
+	// class this yields the same struct as before (vptr@0, ascending members, no pads).
 	size_t objwords = object_class_words(cdd);
-	if (cdd->members.empty() && objwords > 0) {
+	bool opaque = cdd->members.empty() && !cdd->has_vptr_slot;
+	if (opaque && objwords > 0) {
+		// Opaque runtime-object class (std::string and friends): `long _w[words];`
+		// filler, a complete type of the right size — size COMPUTED, never hard-coded.
 		node_t mspec = list();
 		append(mspec, simple(N_LONG));
 		node_t mdecl_list = list();
@@ -2809,6 +2796,64 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 		append(member, ignore());
 		append(member, ignore());
 		append(member_list, member);
+	} else {
+		struct Field { size_t off; size_t sz; int kind; size_t midx; }; // kind 0=vptr,1=member
+		std::vector<Field> fields;
+		if (cdd->has_vptr_slot)
+			fields.push_back(Field{0, 8, 0, 0}); // primary vptr @0
+		for (DataDefCLASS *o : cdd->secondary_vptr_owners)
+			for (size_t b = 0; b < cdd->bases.size(); b++)
+				if (cdd->bases[b].base == o) {
+					fields.push_back(Field{cdd->bases[b].offset, 8, 0, 0});
+					break;
+				}
+		for (size_t i = 0; i < cdd->members.size(); i++) {
+			size_t msz = cdd->members[i].second->size
+				   * (i < cdd->member_counts.size() ? cdd->member_counts[i] : 1);
+			fields.push_back(Field{cdd->member_offsets[i], msz, 1, i});
+		}
+		std::sort(fields.begin(), fields.end(),
+			  [](const Field &a, const Field &b){ return a.off < b.off; });
+		size_t cursor = 0; int synth = 0;
+		for (const Field &f : fields) {
+			if (f.off > cursor) { // fill the gap with a char pad so the next field lands at f.off
+				std::string pn = "__pad" + std::to_string(synth++);
+				node_t pspec = list(); append(pspec, simple(N_CHAR));
+				node_t pdl = list();
+				append(pdl, node3(N_ARR, ignore(), list(), integer((long)(f.off - cursor))));
+				node_t pm = simple(N_MEMBER);
+				append(pm, node1(N_SHARE, pspec));
+				append(pm, node2(N_DECL, id(pn.c_str()), pdl));
+				append(pm, ignore()); append(pm, ignore());
+				append(member_list, pm);
+				cursor = f.off;
+			}
+			if (f.kind == 0) { // vptr (primary keeps the canonical __vptr name)
+				std::string vn = (f.off == 0) ? "__vptr" : ("__vptr" + std::to_string(synth++));
+				node_t vspec = list(); append(vspec, simple(N_VOID));
+				node_t vdl = list(); append(vdl, pointer());
+				node_t vm = simple(N_MEMBER);
+				append(vm, node1(N_SHARE, vspec));
+				append(vm, node2(N_DECL, id(vn.c_str()), vdl));
+				append(vm, ignore()); append(vm, ignore());
+				append(member_list, vm);
+				cursor += 8;
+			} else {
+				append(member_list, member_node(cdd->members[f.midx], cdd));
+				cursor += f.sz;
+			}
+		}
+		if (cdd->size > cursor) { // tail pad to the full computed size
+			std::string pn = "__pad" + std::to_string(synth++);
+			node_t pspec = list(); append(pspec, simple(N_CHAR));
+			node_t pdl = list();
+			append(pdl, node3(N_ARR, ignore(), list(), integer((long)(cdd->size - cursor))));
+			node_t pm = simple(N_MEMBER);
+			append(pm, node1(N_SHARE, pspec));
+			append(pm, node2(N_DECL, id(pn.c_str()), pdl));
+			append(pm, ignore()); append(pm, ignore());
+			append(member_list, pm);
+		}
 	}
 
 	node_t struct_node = node2(N_STRUCT, struct_id, member_list);
