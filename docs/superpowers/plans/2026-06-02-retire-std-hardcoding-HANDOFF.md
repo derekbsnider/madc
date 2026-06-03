@@ -263,11 +263,23 @@ prove the keystone symbol == canon, THEN migrate the 225 sites + delete the buil
   ctors, operator=(char), operator+=(char)). Needed broadly for the migration. FIX = encode
   the param-type signature into the mangled key; INLINE parser work (not delegatable).
 
+- `0314c3d` — **`overload_by_param_type` REGISTRATION fixed** (KG gap done): `unique_overload_symbol`
+  gives a same-name/same-arity/type-differing member or ctor overload a fresh `Class__name__oN`
+  internal key (recorded in `class_emit_name`); first/single overloads unchanged. The 6 deferred
+  string overloads re-added and all bind to exact canon (find char/char\*, two ctors, operator=
+  char/char\*, operator+= char/char\*, resize overloads). 22→28 string methods bind. Gate 468,
+  integration 475 zero-regr, SMAUG clean. **Revealed a companion gap (KG `overload_selection_by_arg_type`,
+  open):** call sites still select overloads by ARITY only, so a same-arity type-differing call
+  picks the wrong one (`Box b("hi")` ran the int ctor vs g++). Registration now produces the
+  distinct FuncDefs; argument-type-based call-site selection is the missing piece.
+
 **NEXT (string-first continues, in order):**
-1. **Fix `overload_by_param_type`** (parser mangled-key) — unblocks the 6 deferred overloads
-   + every overloaded string member the migration needs. INLINE.
+1. **Call-site overload SELECTION by arg type** (KG `overload_selection_by_arg_type`) — rank
+   same-arity candidates in `select_ctor_overload` + method dispatch by param-type match. Needed
+   for real string calls in the migration + correct user-class overloading. INLINE.
 2. **Non-member operators** `operator+` / `==` / `<<` (free functions, `_ZSt…`) — need W2
-   (non-member operator overload resolution) + a non-member bind path. INLINE.
+   (non-member operator overload resolution) + a non-member bind path. INLINE. (1 and 2 are both
+   call-site overload-resolution work and can go together.)
 3. **MIGRATION** — switch the ~225 ddSTRING sites to the header type and DELETE the
    builtins/wrappers/statics (gate count finally DROPS here). Test-by-test, INLINE.
 4. Streams (inc 5/6, which also lands the shift-assoc fix), then cin/sstream/conversions → gate 0.
