@@ -131,6 +131,13 @@ fi
 echo "  (T1+T2+T3 alone is the must-read floor; T4 + key src/ files as the task needs.)"
 
 bar "NEXT"
-echo "Authoritative state + next tasks: docs/superpowers/plans/2026-06-01-HANDOFF.md (READ FIRST)"
-echo "Parity worklist: docs/parity/root-cause-worklist.md   |   canonical: claude_status.json"
+_cur_branch=$(git -C /workspace/madc rev-parse --abbrev-ref HEAD 2>/dev/null)
+if [ "$_cur_branch" = "feature/retire-std-hardcoding-claude" ]; then
+  echo "ACTIVE LINE (this branch): READ FIRST -> docs/superpowers/plans/2026-06-02-retire-std-hardcoding-HANDOFF.md"
+  echo "  (string-first campaign + ff-merged MI / virtual-dtors / parser-correctness; integration 475, gate 468)"
+  echo "  String migration roadmap: docs/superpowers/plans/2026-06-03-string-migration-worklist.md"
+else
+  echo "Authoritative state + next tasks: docs/superpowers/plans/2026-06-01-HANDOFF.md (READ FIRST)"
+  echo "Parity worklist: docs/parity/root-cause-worklist.md   |   canonical: claude_status.json"
+fi
 echo "ALWAYS cap test runs:  ( ulimit -t 120; timeout 180 <cmd> )   — one heavy job at a time."

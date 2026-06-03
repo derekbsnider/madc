@@ -11,7 +11,7 @@
 bash scripts/resume.sh                              # live git/reflog/fork/build state
 git -C /workspace/madc branch --show-current        # expect: feature/retire-std-hardcoding-claude
 git -C /workspace/madc log --oneline develop..HEAD  # the campaign commits (live HEAD + count: resume.sh)
-bash scripts/check-no-std-hardcoding.sh             # THE FINISH LINE — currently 469, target 0
+bash scripts/check-no-std-hardcoding.sh             # THE FINISH LINE — currently 468, target 0
 ```
 Re-prove the keystone any time (fast, no full build needed if bin/madc is current):
 ```
@@ -66,8 +66,9 @@ auto-include map.
   soaks clean.** NEVER "it behaviorally works."
 - **The count must only DROP, never rise** (even a WIP comment naming dead machinery trips it —
   that already happened once at 06adc04→reverted; reword generic, the specifics live in git).
-- **Baseline today: 469.** It stays 469 through the keystone increments (they ADD the mechanism)
-  and only drops at inc 6, when the builtins are deleted. No faked intermediate drops.
+- **Baseline: 468** (was 469 at campaign start; one line dropped early). It stays 468 through the
+  keystone/string-surface increments (they ADD the mechanism) and only DROPS at the migration's
+  deletion step (worklist cluster G/A), when the builtins are removed. No faked intermediate drops.
 
 WHY this is the only durable anti-drift design: any type-specific code OR type-tag can rot. The
 gate makes "done" unfakeable; a future session cannot declare victory while the rug exists.
@@ -96,11 +97,24 @@ Sessions kept declaring "done" at Layers 1–2 while Layer 3 — the *builtins* 
   facts: develop = origin/develop = merge-base = **`110e026`**, UNTOUCHED → zero drift to develop
   (git-confirmed); MIR fork pin **`8864a73`** unchanged (this campaign needs NO fork work — it's
   pure madc front-end).
-- **Finish-line gate: 469** (was 473; -4 = ns_stl tombstone comments deleted at 6f850ac).
-- **`make -C src` builds clean, 0 warnings.** Integration `bash scripts/run_tests.sh` = **457
+- **Finish-line gate: 468** (target 0; held flat all of 2026-06-03 — the string work ADDS the
+  header-class mechanism, the count only drops at the migration's deletion step).
+- **THIS BRANCH NOW CONTAINS MERGED FEATURE WORK** (all ff-merged in during 2026-06-03, which is
+  why integration is 475 not the old 457): the full **Multiple/Virtual Inheritance** feature
+  (S1–S5, see `project_multiple_inheritance`), **Virtual Destructors** (see
+  `project_cpp_parser_correctness` + `2026-06-03-virtual-destructors-*`), and **C++ parser-correctness
+  A/B/C** (const members/methods, &reference). These are proper-C++ features the campaign builds on;
+  they are NOT std:: hardcoding.
+- **`make -C src` builds clean, 0 warnings.** Integration `bash scripts/run_tests.sh` = **475
   passed**, 6 known feature-gap fails (testcin, testdefer, testforeach2, testfstream,
   testlargesizeofquery, testloop) + flaky `testfortypedcomma` (flips fail↔timeout — IGNORE).
-  `teststruct2` PASSES (struct-earns-class-hood is in develop's history → in this branch).
+  Baseline failset captured in `tmp/baseline_failset.txt` (regenerate after a clean build).
+  `teststruct2` PASSES.
+- **MIGRATION WORKLIST (read for the full string roadmap):**
+  `docs/superpowers/plans/2026-06-03-string-migration-worklist.md` — the builtin std::string
+  machinery inventoried into 8 role-clusters (A–H), 231 `ddSTRING` refs reconciled, a
+  dependency-ordered migration sequence, and the precise mechanism-blocks. The detailed
+  STRING-FIRST PROGRESS + NEXT are in §6 below (authoritative over this §3 commit trail).
 - **`tmp/test_mangle` 44 cases / 143 assertions green** (every generated symbol vs `c++filt`).
 - **SMAUG boots to ready** through the latest HEAD (pure C — never touches the hook; the param-
   spelling capture runs for its functions but only fills a vector, no behavior change).
