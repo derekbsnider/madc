@@ -138,15 +138,21 @@ the template machinery, ZERO literals); build clean; integration 457 (zero regr)
 (4) author headers. (5) basic_ios base-offset. (6) switch registration + DELETE Layer-3
 builtins/callbacks/wrappers/tags + rewire &ddSTRING. (7) gate→0 + fulltest + SMAUG.
 
-⚠️ TWO PARSER GAPS found during inc 3 (NOT shortcutted — prerequisites for inc 4's real headers):
-(G1) madc's template-arg loop (instantiate_template_use ~1557, resolve_declared_type_token) can't
-parse a NESTED std::-qualified template-id as a template ARGUMENT — `basic_ofstream<char,
-std::char_traits<char>>` errors "Expecting a type argument". Real stream/string args ARE nested
-templates (char_traits<char>, allocator<char>), so this must be fixed. (G2) TokenCLASS::parse's
-data-member loop can't parse an ARRAY member (`long _buf[64];` → "Expecting ';' after class
-member" at parser.cpp:11843; it added _buf as a scalar then choked on `[`). Needed to size the
-stream classes (ofstream=512B). TokenSTRUCT::parse handles arrays (~11128) — port that handling
-to TokenCLASS::parse's member loop. Both are ordinary parser features, not std::-specific.
+✅ TWO PARSER GAPS (found during inc 3) — BOTH FIXED + verified:
+(G1✅ c45a822) resolve_declared_type_token now parses a namespaced template-id as a template arg:
+when an identifier is followed by `:: TemplateName <`, strip the ns qualifier and instantiate by
+bare name (templates live in template_map by bare name; defining_namespace carries the ns). Fires
+only on the `ns::Name<` pattern (previously errored) → additive.
+(G2✅ ed97b24) TokenCLASS::parse's data-member loop now parses fixed-size array members (`long
+_buf[64]` → count 64 / total 512), ported from TokenSTRUCT::parse; no-op for scalar members.
+FULL KEYSTONE NOW PROVEN end-to-end (tmp/hooktest.mad, -v): a bodyless
+`std::basic_ofstream<char, std::char_traits<char>>` (nested template arg + array member) binds
+ctor/dtor/close/is_open to the REAL libstdc++ symbols
+`_ZNSt14basic_ofstreamIcSt11char_traitsIcEE{C1Ev,D1Ev,5closeEv,7is_openEv}` — canonical spelling
+reconstructed RECURSIVELY (char_traits<char>→"std::char_traits<char>"→nested), ZERO literals.
+Build clean; integration 457 (baseline; teststruct2 passes, the 6 fails + flaky testfortypedcomma
+are pre-existing); SMAUG boots to ready. NEXT = inc 4 (author the real headers), 5 (basic_ios
+vbase offset), 6 (switch registration + DELETE builtins → gate count finally drops), 7 (gate→0).
 
 ⚠️ PARAM-SPELLING SUB-PROBLEM (found inc 3, RESOLVED by design — NO shortcut). For an
 `rtPointer` param like `const char*`, parseFunction pushes `const_params=false` and the pointer
