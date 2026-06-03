@@ -1,0 +1,13 @@
+#include <iostream>
+using namespace std;
+class Counter {
+    int n;
+public:
+    Counter() { n = 7; }
+    int get() const { return n; }       // const method
+};
+int main() {
+    Counter c;
+    cout << c.get() << endl;            // 7
+    return 0;
+}

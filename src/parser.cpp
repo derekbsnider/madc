@@ -15116,6 +15116,25 @@ paramdecl:
 	method = NULL;
     }
 
+    // Trailing method cv/ref/exception qualifiers after the parameter list:
+    // `T m() const`, `... volatile`, `... noexcept`, `... override`, `... final`.
+    // Record const — it drives Itanium mangling (a const method is _ZNK…;
+    // FuncDef::is_const_method is consumed by the keystone mangler at
+    // parser.cpp:11774/11777). The rest are consumed (not yet modelled).
+    // Must run before the forward-decl checks (tkSemi/tkComma) and the brace
+    // check so both `T m() const;` and `T m() const {}` parse.
+    for (;;) {
+	TokenBase *q = nt;
+	if ( !q ) break;
+	if ( q->id() == TokenID::tkCONST ) { func->is_const_method = true; nt = nextToken(); continue; }
+	if ( q->id() == TokenID::tkVOLATILE || q->id() == TokenID::tkRESTRICT ) { nt = nextToken(); continue; }
+	if ( q->type() == TokenType::ttIdentifier ) {
+	    const std::string &qs = ((TokenIdent *)q)->str;
+	    if ( qs == "noexcept" || qs == "override" || qs == "final" ) { nt = nextToken(); continue; }
+	}
+	break;
+    }
+
     std::string func_alias_name;
     nt = consume_gnu_asm_label(*this, nt, &func_alias_name);
 
