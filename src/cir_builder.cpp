@@ -5183,6 +5183,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// `&capturedvar` inside a nested fn IS the capture pointer param.
 			if (note_capture(&ta->var))
 				return id(ta->var.name.c_str(), tb);
+			// `&ref` where ref is a T& parameter (lowered to a T* with
+			// vfREFERENCE): the variable's stored VALUE is already the
+			// referent's address, so &ref is just that value — NOT
+			// N_ADDR(slot) (which would yield a T**). (C++ reference semantics.)
+			if (ta->var.flags & vfREFERENCE)
+				return id(var_emit_name(ta->var).c_str(), tb);
 			return node1(N_ADDR, id(var_emit_name(ta->var).c_str(), tb), tb);
 		}
 	}
