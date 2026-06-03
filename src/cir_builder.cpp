@@ -7497,7 +7497,20 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				// destructed once; the callee placement-copy-constructs z's
 				// object members — no default member ctors here, no bit-copy
 				// double-free.
+				// Copy elision: `T b = T(args)` — the initializer is a
+				// functional-construction temporary (TokenObjTemp) of the same
+				// class. Construct b directly with the temp's ctor args
+				// (guaranteed copy elision), instead of materializing a temp and
+				// copy-constructing. Also keeps a TokenObjTemp out of the
+				// call-NRVO path below, which dynamic_casts to TokenCallFunc.
+				if (ctor_args.size() == 1) {
+					if (TokenObjTemp *iot =
+					    dynamic_cast<TokenObjTemp *>(ctor_args[0]))
+						if (as_class_instance(iot->obj_class) == cdcl)
+							ctor_args = iot->ctor_args;
+				}
 				if (ctor_args.size() == 1
+				    && dynamic_cast<TokenCallFunc *>(ctor_args[0])
 				    && object_returning_call_class(ctor_args[0]) == cdcl) {
 					TokenCallFunc *itcf =
 						dynamic_cast<TokenCallFunc *>(ctor_args[0]);

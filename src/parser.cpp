@@ -9871,6 +9871,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		      && lhs_dot->type() != TokenType::ttStructLit
 		      && lhs_dot->type() != TokenType::ttCallFunc
 		      && lhs_dot->type() != TokenType::ttOperator   // (a + b).member — operator result object
+		      && lhs_dot->id() != TokenID::tkObjTemp        // T(args).member — functional-ctor temp
 		      && lhs_dot->id() != TokenID::tkTypeid )   // typeid(x).name() (S5d)
 			Throw(tb) << "member reference is not a structure or union" << flush;
 		    Variable *tv_var;
@@ -9980,12 +9981,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    struct_type = ret_type;
 			    tv_var = new Variable("__call_expr", *struct_type, 1, NULL, false);
 			}
-			else if ( lhs_dot->type() == TokenType::ttOperator )
+			else if ( lhs_dot->type() == TokenType::ttOperator
+			       || lhs_dot->id() == TokenID::tkObjTemp )
 			{
-			    // (a + b).member — an overloaded-operator result that is a
-			    // class object (typed by resolve_object_operator_type). The
-			    // rvalue is materialized at codegen via parent_expr
-			    // (class_this_arg -> translate_expr -> the operator temp).
+			    // (a + b).member or T(args).member — a class-object rvalue
+			    // (an overloaded-operator result typed by
+			    // resolve_object_operator_type, or a functional-construction
+			    // temp TokenObjTemp). The rvalue is materialized at codegen via
+			    // parent_expr (class_this_arg -> translate_expr -> the temp).
 			    DataDef *op_type = lhs_dot->datadef();
 			    if ( !op_type || !op_type->is_object() )
 				Throw(tb) << "member reference is not a structure or union" << flush;
@@ -10041,7 +10044,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    recv_parent = lhs_dot;
 			else if ( lhs_dot->id() == TokenID::tkTypeid )
 			    recv_parent = lhs_dot;   // typeid(x).name() (S5d)
-			else if ( lhs_dot->type() == TokenType::ttOperator )
+			else if ( lhs_dot->type() == TokenType::ttOperator
+			       || lhs_dot->id() == TokenID::tkObjTemp )
 			    recv_parent = lhs_dot;   // (a + b).method() — operator result object
 			else if ( lhs_dot->type() != TokenType::ttVariable )
 			    Throw(tb) << "chained method call not yet supported" << flush;
