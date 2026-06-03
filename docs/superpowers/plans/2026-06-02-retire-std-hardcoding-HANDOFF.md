@@ -224,6 +224,40 @@ component) + resolve `std::__cxx11::Name<...>` at a use site. THEN author `inclu
 (basic_string<char> binding mangled-direct, coexisting with the builtin like the fstream header),
 prove the keystone symbol == canon, THEN migrate the 225 sites + delete the builtins.
 
+**PROGRESS 2026-06-03 (string-first, all gated + pushed):**
+- `467cd13` — three general parser prerequisites: (1) multi-level qualified-template
+  resolution (`std::__cxx11::Name<...>` — skip the ident:: qualifier chain to the
+  bare-name template); (2) typedef of a qualified/templated base type
+  (`typedef __cxx11::basic_string<...> string;` resolves via the unified resolver);
+  (3) `consume_template_close` — match `<`/`>` as a balanced delimiter pair so the
+  lexer's single `>>` (TokenBSR) splits into this level's `>` + a pushed-back `>` for
+  the enclosing one. Isolated to template-arg parsing; expression `>>` unaffected.
+- `9eda32c` — **`include/madc/string` authored**: `std::__cxx11::basic_string<char,...>`
+  with the real layout (char* + size_type + 16-byte SSO buffer = 32) + a core bodyless
+  surface (ctor/dtor, length/size/c_str/empty const, clear, at, append). All NINE bind
+  via the keystone to the EXACT libstdc++ symbols (verified vs `nm -D`: const→`_ZNK`,
+  size_type param→`m`, `const char*`→`PKc`). NO `string` typedef → coexists with the
+  builtin. **Bind gate GENERALIZED**: now keyed on the instantiation
+  `canonical_cpp_spelling` starting with `std::` (the template's defining namespace),
+  NOT the instantiation-SITE namespace — so a std type binds wherever instantiated;
+  bodyless-only (declaration_only), so vector/map/set bodies untouched.
+- **Found + tracked (KG `shift_operator_associativity`, deferred):** `1<<4>>1` yields 4
+  not 8 — the shunting-yard forces left-assoc same-precedence pop only for prec 3/4,
+  not 5 (shifts). Adding 5 fixes it BUT breaks `cout<<` chains (stream lowering depends
+  on the right-leaning shape) — verified. MUST be fixed together with the stream-chain
+  generalization (inc 5/6), not alone. Pre-existing (confirmed on clean HEAD).
+- **Known limitation (not yet needed):** a fully-qualified STATEMENT declaration
+  `std::__cxx11::basic_string<...> s;` still uses single-level resolution at
+  `parseStatement` ~17570 (only the typedef + type-resolver paths got multi-level). Real
+  usage goes through the `string` typedef, so this is unblocking only if a use site
+  writes the fully-qualified template directly.
+
+**NEXT (string-first continues):** complete the string method/operator surface
+(operator+ / = / += / [] / == , find, substr, …) on the header, each verified to bind to
+canon; then the MIGRATION — switch the ~225 ddSTRING sites to the header type and DELETE
+the builtins/wrappers/statics (gate drops here). Then streams (inc 5/6, which also lands
+the shift-assoc fix), then cin/sstream/conversions → gate 0.
+
 ### (original ordering, retained for reference)
 
 ### Inc 5 — the virtual-base ABI (the one genuinely-new class-model feature; highest risk)
