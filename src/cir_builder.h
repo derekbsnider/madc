@@ -554,11 +554,18 @@ public:
 	// True when a class needs an (implicit) destructor: it has a user dtor,
 	// embedded object members, or a base class that needs one.
 	bool class_needs_dtor(DataDefCLASS *cdd);
+	// True only when THIS class wrote its own ~Cls() (method_map["~Cls"]).
+	// has_user_dtor is inherited (a derived class with a non-trivial base also
+	// sets it), so it cannot gate synthesis: a class with a non-trivial base but
+	// no OWN dtor still needs a synthesized Cls___dtor chaining to the base.
+	bool class_has_own_user_dtor(DataDefCLASS *cdd);
 	// The destructor symbol used as the cleanup function for a class
 	// instance (ClassName___dtor) — whether user-written or synthesized.
 	std::string class_dtor_symbol(DataDefCLASS *cdd);
 	std::string class_complete_dtor_symbol(DataDefCLASS *cdd);
 	node_t synth_complete_dtor_def(DataDefCLASS *cdd);
+	node_t synth_deleting_dtor_def(DataDefCLASS *cdd);
+	node_t synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd);
 	// Emit a synthesized destructor function for a class that needs a dtor
 	// (object members and/or a base dtor) but has no user-written one:
 	//   void Class___dtor(struct Class *__this) {

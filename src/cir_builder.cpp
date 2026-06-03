@@ -2943,6 +2943,18 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		append(inits, node2(N_INIT, list(), rtti));
 		for (const std::string &slot : G.slots) {
 			std::string sname = slot;
+			if (sname == "~" || sname == "~$deleting") {
+				std::string dsym = (sname == "~")
+					? class_complete_dtor_symbol(cdd)
+					: (cdd->name + "___dtor_deleting");
+				referenced_funcs.insert(dsym);
+				node_t vptr_type = node2(N_TYPE,
+					node1(N_LIST, simple(N_VOID)),
+					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				node_t fnref = node2(N_CAST, vptr_type, id(dsym.c_str()));
+				append(inits, node2(N_INIT, list(), fnref));
+				continue;
+			}
 			Variable *mv = cdd->findMethod(sname);
 			if (!mv) {
 				append(inits, node2(N_INIT, list(), integer(0)));
@@ -3416,6 +3428,12 @@ bool CirBuilder::class_needs_dtor(DataDefCLASS *cdd)
 	return false;
 }
 
+bool CirBuilder::class_has_own_user_dtor(DataDefCLASS *cdd)
+{
+	if (!cdd) return false;
+	return cdd->method_map.find("~" + cdd->name) != cdd->method_map.end();
+}
+
 // The user class that `dd` denotes IF returning it by value must use the
 // struct-return (__retbuf) ABI — i.e. a NON-TRIVIAL class: one that needs a
 // destructor (object members / user dtor / non-trivial base). A bit-copy return
@@ -3671,6 +3689,66 @@ node_t CirBuilder::synth_complete_dtor_def(DataDefCLASS *cdd)
 	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
 }
 
+// void Cls___dtor_deleting(struct Cls *__this) { <complete-dtor>(__this); free(__this); }
+// Itanium D0 (deleting) destructor: complete-object destruction, then operator
+// delete (free, for user classes). Referenced from the D0 vtable slot.
+node_t CirBuilder::synth_deleting_dtor_def(DataDefCLASS *cdd)
+{
+	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	node_t pspec = node1(N_LIST, node2(N_STRUCT, id(cdd->name.c_str()), ignore()));
+	node_t param = simple(N_SPEC_DECL);
+	append(param, pspec);
+	append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
+	append(param, ignore());
+	append(param, ignore());
+	append(param, ignore());
+	node_t param_list = list();
+	append(param_list, param);
+	node_t decl = node2(N_DECL, id((cdd->name + "___dtor_deleting").c_str()),
+			    node1(N_LIST, node1(N_FUNC, param_list)));
+	std::vector<node_t> stmts;
+	std::string csym = class_complete_dtor_symbol(cdd);
+	referenced_funcs.insert(csym);
+	node_t ca = list();
+	append(ca, id("__this"));
+	stmts.push_back(node2(N_EXPR, list(), node2(N_CALL, id(csym.c_str()), ca)));
+	need_output_extern("free", false, { { {N_VOID}, true } });
+	node_t fa = list();
+	append(fa, id("__this"));
+	stmts.push_back(node2(N_EXPR, list(), node2(N_CALL, id("free"), fa)));
+	node_t items = list();
+	for (node_t s : stmts) append(items, s);
+	node_t body = node2(N_BLOCK, list(), items);
+	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
+}
+
+// Forward prototype `void <sym>(struct Cls *__this);` for a synthesized dtor
+// symbol (base / complete / deleting). The vtable initializer (Pass 1.5) takes
+// these function addresses as global-init constants, which c2mir requires to be
+// declared first; the bodies are emitted later (Passes 1.6/1.7/1.8).
+node_t CirBuilder::synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd)
+{
+	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	node_t pspec = node1(N_LIST, node2(N_STRUCT, id(cdd->name.c_str()), ignore()));
+	node_t param = simple(N_SPEC_DECL);
+	append(param, pspec);
+	append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
+	append(param, ignore());
+	append(param, ignore());
+	append(param, ignore());
+	node_t param_list = list();
+	append(param_list, param);
+	node_t decl = node2(N_DECL, id(sym.c_str()),
+			    node1(N_LIST, node1(N_FUNC, param_list)));
+	node_t proto = simple(N_SPEC_DECL);
+	append(proto, node1(N_SHARE, ret_type));
+	append(proto, decl);
+	append(proto, ignore());
+	append(proto, ignore());
+	append(proto, ignore());
+	return proto;
+}
+
 void CirBuilder::class_instance_member_ctors(const char *inst,
 					     DataDefCLASS *cdd, node_t items,
 					     TokenBase *origin)
@@ -3693,7 +3771,7 @@ void CirBuilder::class_instance_member_ctors(const char *inst,
 
 node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 {
-	if (!cdd || cdd->has_user_dtor || !class_needs_dtor(cdd))
+	if (!cdd || class_has_own_user_dtor(cdd) || !class_needs_dtor(cdd))
 		return NULL;
 
 	// void Class___dtor(struct Class *__this)
@@ -8008,6 +8086,28 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (node_t gd : deferred_globals)
 		append(top_list, gd);
 
+	// Pass 1.45: forward prototypes for synthesized destructor symbols a vtable
+	// will reference (the "~"/"~$deleting" slots resolve to class_complete_dtor_symbol
+	// and Cls___dtor_deleting — both defined later in Passes 1.6/1.7/1.8). c2mir
+	// requires a function used as a global-init address constant to be declared
+	// first, so prototype them before Pass 1.5. A user dtor's base symbol is already
+	// prototyped in Pass 1; only the synthesized base (no user dtor), the complete
+	// dtor, and the deleting dtor need protos here. Deduped by class pointer.
+	std::set<DataDefCLASS *> emitted_dtor_protos;
+	for (auto &kv : prog->struct_map) {
+		DataDefCLASS *cdd = as_user_class(kv.second);
+		if (!cdd || cdd->vtable_slot("~$deleting") < 0) continue;
+		if (emitted_dtor_protos.count(cdd)) continue;
+		emitted_dtor_protos.insert(cdd);
+		std::string csym = class_complete_dtor_symbol(cdd);
+		if (csym != cdd->name + "___dtor" || !class_has_own_user_dtor(cdd)) {
+			node_t cp = synth_dtor_proto(csym, cdd);
+			if (cp) append(top_list, cp);
+		}
+		node_t dp = synth_dtor_proto(cdd->name + "___dtor_deleting", cdd);
+		if (dp) append(top_list, dp);
+	}
+
 	// Pass 1.5: per-class virtual dispatch tables. Emitted after the method
 	// prototypes they reference (Pass 1) and before the function definitions
 	// (Pass 2) that initialize __vptr from them. Iterate struct_map once more,
@@ -8035,7 +8135,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	std::set<DataDefCLASS *> emitted_synth_dtors;
 	for (auto &kv : prog->struct_map) {
 		DataDefCLASS *cdd = as_user_class(kv.second);
-		if (!cdd || cdd->has_user_dtor || !class_needs_dtor(cdd)) continue;
+		if (!cdd || class_has_own_user_dtor(cdd) || !class_needs_dtor(cdd)) continue;
 		if (emitted_synth_dtors.count(cdd)) continue;
 		emitted_synth_dtors.insert(cdd);
 		node_t dd = synth_dtor_def(cdd);
@@ -8058,6 +8158,19 @@ node_t CirBuilder::translate_module(Program *prog)
 		emitted_complete_dtors.insert(cdd);
 		node_t cd = synth_complete_dtor_def(cdd);
 		if (cd) append(top_list, cd);
+	}
+
+	// Pass 1.8: deleting (D0) destructors for every polymorphic class with a
+	// virtual destructor (a "~$deleting" vtable slot). NOT gated on virtual bases
+	// (unlike Pass 1.7) — most virtual-dtor classes have none. Deduped.
+	std::set<DataDefCLASS *> emitted_deleting_dtors;
+	for (auto &kv : prog->struct_map) {
+		DataDefCLASS *cdd = as_user_class(kv.second);
+		if (!cdd || cdd->vtable_slot("~$deleting") < 0) continue;
+		if (emitted_deleting_dtors.count(cdd)) continue;
+		emitted_deleting_dtors.insert(cdd);
+		node_t dd0 = synth_deleting_dtor_def(cdd);
+		if (dd0) append(top_list, dd0);
 	}
 
 	// Pass 2: Function definitions (translated above).

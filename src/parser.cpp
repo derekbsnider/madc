@@ -12026,6 +12026,22 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		ddc->has_user_dtor = true;
 		bind_std_libstdcpp_symbol(pgm, ddc, mvar, StdSymKind::Dtor, "~" + tag->str, false);
 	    }
+	    // Virtual destructor: register the Itanium D1/D0 slot pair at the
+	    // destructor's declaration position. Markers are class-name-INDEPENDENT
+	    // ("~" = D1 complete, "~$deleting" = D0 deleting) so base + overriding
+	    // derived SHARE the slot (derived inherits them via the base-merge loop
+	    // at ~11952; class_vtable_def re-resolves to the current class's symbols).
+	    // The guard is also true (inherited virtuality) when the markers are
+	    // already present from a virtual base dtor.
+	    if ( is_virtual || ddc->vtable_slot("~") >= 0 )
+	    {
+		ddc->virtual_methods["~" + tag->str] = true;
+		if ( ddc->vtable_slot("~") < 0 )
+		    ddc->vtable_slots.push_back("~");
+		if ( ddc->vtable_slot("~$deleting") < 0 )
+		    ddc->vtable_slots.push_back("~$deleting");
+		ddc->has_vtable = true;
+	    }
 	    continue;
 	}
 
