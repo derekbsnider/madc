@@ -2914,6 +2914,38 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		return tname;
 	};
 
+	// This-adjusting thunk for a destructor slot reached through a secondary-base
+	// vptr: void Cls__dthunk_<off>_<tag>(char *__self){ target((struct Cls*)(__self - off)); }
+	// target = the most-derived complete (D1) or deleting (D0) dtor; for D0 it then
+	// frees the adjusted COMPLETE-object pointer. Mirrors make_thunk's adjustment.
+	auto make_dtor_thunk = [&](const std::string &target_sym, size_t off,
+				   const char *tag) -> std::string {
+		std::string tname = cdd->name + "__dthunk_" + std::to_string(off) + "_" + tag;
+		node_t ret_spec = node1(N_LIST, simple(N_VOID));
+		node_t pspec = simple(N_SPEC_DECL);
+		append(pspec, node1(N_LIST, simple(N_CHAR)));
+		append(pspec, node2(N_DECL, id("__self"), node1(N_LIST, pointer())));
+		append(pspec, ignore()); append(pspec, ignore()); append(pspec, ignore());
+		node_t plist = list();
+		append(plist, pspec);
+		node_t tdecl = node2(N_DECL, id(tname.c_str()),
+				     node1(N_LIST, node1(N_FUNC, plist)));
+		// (struct Cls *)(__self - off)
+		node_t adj = node2(N_SUB, id("__self"), integer((long)off));
+		node_t cls_spec = node2(N_TYPE,
+			node1(N_LIST, node2(N_STRUCT, id(cdd->name.c_str()), ignore())),
+			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t adj_cast = node2(N_CAST, cls_spec, adj);
+		node_t a = list();
+		append(a, adj_cast);
+		node_t call = node2(N_CALL, id(target_sym.c_str()), a);
+		referenced_funcs.insert(target_sym);
+		node_t body = node2(N_BLOCK, list(),
+				    node1(N_LIST, node2(N_EXPR, list(), call)));
+		thunks.push_back(node4(N_FUNC_DEF, ret_spec, tdecl, list(), body));
+		return tname;
+	};
+
 	// Initializer: grouped sub-tables back-to-back — primary group, then each
 	// secondary polymorphic base's group (address points recorded in
 	// build_vtable_groups). Each slot resolves by NAME to the most-derived
@@ -2947,7 +2979,11 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 				std::string dsym = (sname == "~")
 					? class_complete_dtor_symbol(cdd)
 					: (cdd->name + "___dtor_deleting");
-				referenced_funcs.insert(dsym);
+				if (G.this_offset != 0)
+					dsym = make_dtor_thunk(dsym, G.this_offset,
+						(sname == "~") ? "D1" : "D0");
+				else
+					referenced_funcs.insert(dsym);
 				node_t vptr_type = node2(N_TYPE,
 					node1(N_LIST, simple(N_VOID)),
 					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
