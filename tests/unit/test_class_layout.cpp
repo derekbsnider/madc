@@ -103,3 +103,21 @@ TEST_SUITE("class layout — single virtual base") {
         CHECK(leaf->size == 40);
     }
 }
+
+TEST_SUITE("class layout — MI non-virtual") {
+    TEST_CASE("MIc : P1, P2 -> P1@0, P2@16, size 40") {
+        DataDefCLASS *p1 = mkclass("P1", 1, true); p1->compute_layout(); // nvsize 16
+        DataDefCLASS *p2 = mkclass("P2", 1, true); p2->compute_layout(); // nvsize 16
+        DataDefCLASS *mic = mkclass("MIc", 1, true); // own {long c}
+        mic->bases.push_back(BaseSpec{p1, 0, false, 0u, false});
+        mic->bases.push_back(BaseSpec{p2, 0, false, 0u, false});
+        mic->compute_layout();
+        CHECK(mic->bases[0].is_primary == true);
+        CHECK(mic->bases[0].offset == 0);
+        CHECK(mic->bases[1].offset == 16);            // P2 with its own vptr
+        CHECK(mic->secondary_vptr_owners.size() == 1);
+        CHECK(mic->secondary_vptr_owners[0] == p2);
+        CHECK(mic->member_offsets[0] == 32);          // c after both bases
+        CHECK(mic->size == 40);
+    }
+}
