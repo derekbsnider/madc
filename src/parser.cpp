@@ -9804,6 +9804,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		      && lhs_dot->type() != TokenType::ttCompound
 		      && lhs_dot->type() != TokenType::ttStructLit
 		      && lhs_dot->type() != TokenType::ttCallFunc
+		      && lhs_dot->type() != TokenType::ttOperator   // (a + b).member — operator result object
 		      && lhs_dot->id() != TokenID::tkTypeid )   // typeid(x).name() (S5d)
 			Throw(tb) << "member reference is not a structure or union" << flush;
 		    Variable *tv_var;
@@ -9913,6 +9914,18 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    struct_type = ret_type;
 			    tv_var = new Variable("__call_expr", *struct_type, 1, NULL, false);
 			}
+			else if ( lhs_dot->type() == TokenType::ttOperator )
+			{
+			    // (a + b).member — an overloaded-operator result that is a
+			    // class object (typed by resolve_object_operator_type). The
+			    // rvalue is materialized at codegen via parent_expr
+			    // (class_this_arg -> translate_expr -> the operator temp).
+			    DataDef *op_type = lhs_dot->datadef();
+			    if ( !op_type || !op_type->is_object() )
+				Throw(tb) << "member reference is not a structure or union" << flush;
+			    struct_type = op_type;
+			    tv_var = new Variable("__op_expr", *struct_type, 1, NULL, false);
+			}
 			else if ( lhs_dot->id() == TokenID::tkTypeid )
 			{
 			    // typeid(x).name() — the typeid result is std::type_info*
@@ -9962,6 +9975,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    recv_parent = lhs_dot;
 			else if ( lhs_dot->id() == TokenID::tkTypeid )
 			    recv_parent = lhs_dot;   // typeid(x).name() (S5d)
+			else if ( lhs_dot->type() == TokenType::ttOperator )
+			    recv_parent = lhs_dot;   // (a + b).method() — operator result object
 			else if ( lhs_dot->type() != TokenType::ttVariable )
 			    Throw(tb) << "chained method call not yet supported" << flush;
 			TokenCallMethod *tc = new TokenCallMethod(*tv_var, *var);

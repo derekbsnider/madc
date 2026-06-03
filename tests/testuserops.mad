@@ -1,0 +1,30 @@
+// Generic operator overloading for a USER class (no std::string involvement):
+// operator+ returning by value, copy-init from the result, chained operators,
+// operator==, the implicit copy ctor (V has none of its own here for the chain
+// temporaries), and a member call on an operator-result rvalue. These exercise
+// the generic object machinery (operator-expression typing, generic ctor
+// overload selection, object-rvalue temp materialization) — the same path
+// std::string rides, with no per-type special-casing.
+#include <stdio.h>
+
+class V {
+public:
+	int n;
+	V(int x)      { n = x; }
+	V(const V &o) { n = o.n; }
+	V operator+(V &o) { V r(n + o.n); return r; }
+	bool operator==(V &o) { return n == o.n; }
+	int get() { return n; }
+};
+
+int main() {
+	V a(3); V b(4);
+	V c = a + b;                  // copy-init from operator+ result
+	printf("c=%d\n", c.n);        // 7
+	V d = a + b + c;              // chained operator+
+	printf("d=%d\n", d.n);        // 14
+	printf("eq=%d\n", a == b);    // 0
+	printf("eq2=%d\n", a == a);   // 1
+	printf("member=%d\n", (a + b).get());   // member call on operator+ rvalue
+	return 0;
+}
