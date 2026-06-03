@@ -252,11 +252,25 @@ prove the keystone symbol == canon, THEN migrate the 225 sites + delete the buil
   usage goes through the `string` typedef, so this is unblocking only if a use site
   writes the fully-qualified template directly.
 
-**NEXT (string-first continues):** complete the string method/operator surface
-(operator+ / = / += / [] / == , find, substr, …) on the header, each verified to bind to
-canon; then the MIGRATION — switch the ~225 ddSTRING sites to the header type and DELETE
-the builtins/wrappers/statics (gate drops here). Then streams (inc 5/6, which also lands
-the shift-assoc fix), then cin/sstream/conversions → gate 0.
+- `98daf8b` — **string member surface extended** (subagent, coordinator-verified + pushed):
+  +13 member methods, all binding to canon (data, capacity, find(char*), rfind, compare,
+  substr, resize(ulong), reserve, push_back, pop_back, operator[], operator=(char*),
+  operator+=(char*)). 22 bodyless methods now bind. Gate 468, integration 475, SMAUG clean.
+- **Found + tracked (KG `overload_by_param_type`, the NEXT inline step):** member/ctor
+  overloads that share name+arity but differ by param TYPE collide on the mangled key
+  (`Class__find`, `Class__Class`) — the 2nd overload re-binds the 1st's params → wrong
+  symbol. Blocked 6 string overloads (find(char), resize(ulong,char), the char*/{ulong,char}
+  ctors, operator=(char), operator+=(char)). Needed broadly for the migration. FIX = encode
+  the param-type signature into the mangled key; INLINE parser work (not delegatable).
+
+**NEXT (string-first continues, in order):**
+1. **Fix `overload_by_param_type`** (parser mangled-key) — unblocks the 6 deferred overloads
+   + every overloaded string member the migration needs. INLINE.
+2. **Non-member operators** `operator+` / `==` / `<<` (free functions, `_ZSt…`) — need W2
+   (non-member operator overload resolution) + a non-member bind path. INLINE.
+3. **MIGRATION** — switch the ~225 ddSTRING sites to the header type and DELETE the
+   builtins/wrappers/statics (gate count finally DROPS here). Test-by-test, INLINE.
+4. Streams (inc 5/6, which also lands the shift-assoc fix), then cin/sstream/conversions → gate 0.
 
 ### (original ordering, retained for reference)
 
