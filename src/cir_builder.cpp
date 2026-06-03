@@ -3962,9 +3962,13 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 	for (Variable *cv : cdd->ctors) {
 		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
 		if (!fd) continue;
-		// Parameter count excluding the hidden __this (param 0).
+		// Parameter count excluding the hidden __this (param 0). With default
+		// arguments a ctor is callable with [required..total] user args; the
+		// omitted trailing ones are filled from param_defaults by class_ctor_call.
 		size_t pn = fd->parameters.empty() ? 0 : fd->parameters.size() - 1;
-		if (pn != ctor_args.size()) continue;
+		size_t req = fd->required_param_count();
+		size_t req_user = req > 0 ? req - 1 : 0;   // exclude hidden __this
+		if (ctor_args.size() < req_user || ctor_args.size() > pn) continue;
 		int total = 0;
 		bool ok = true;
 		for (size_t i = 0; i < ctor_args.size(); i++) {
@@ -4060,6 +4064,22 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 			append(args, node1(N_ADDR, translate_expr(arg), arg));
 		else
 			append(args, translate_expr(arg));
+	}
+	// C++ default arguments: fill omitted trailing parameters from their default
+	// expressions (param_defaults is index-aligned with parameters). Same arg
+	// shaping as the user args above.
+	for (size_t pi = ctor_args.size() + 1;
+	     ctor && pi < ctor->parameters.size() && pi < ctor->param_defaults.size()
+	     && ctor->param_defaults[pi]; pi++) {
+		TokenBase *darg = ctor->param_defaults[pi];
+		DataDef *pt = ctor->parameters[pi];
+		bool is_ref_param = pi < ctor->ref_params.size() && ctor->ref_params[pi];
+		if (is_std_string(pt))
+			append(args, string_obj_arg(darg));
+		else if (is_ref_param)
+			append(args, node1(N_ADDR, translate_expr(darg), darg));
+		else
+			append(args, translate_expr(darg));
 	}
 	// libstdc++ basic_string(const char*, const allocator&): the real ABI takes
 	// a trailing allocator& madc has no value for — pass &this (a throwaway
