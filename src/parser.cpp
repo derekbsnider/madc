@@ -1538,6 +1538,30 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
 						  bool allow_lazy_types);
 static TokenDataType *use_site_type_token(TokenDataType *proto, TokenBase *at);
 
+// Match `<`...`>` as a balanced delimiter pair, like `(`...`)` and `{`...`}`:
+// each `<` opens one template level and is closed by exactly ONE `>`. The lexer,
+// having no template context, emits `>>` as a single TokenBSR (right-shift), so a
+// `>>` at a nested template-id close supplies the `>` for THIS level and leaves a
+// `>` for the enclosing one (the C++11 rule). `tok` is the already-consumed
+// candidate close token; on a `>`-class token this consumes the close (pushing
+// back the leftover `>` for `>>`) and returns true, else returns false and
+// consumes nothing extra. Applied at every template-angle close site.
+// (The open side never needs splitting — `<<` cannot appear as two template
+// opens in a well-formed template-id, since each level is introduced by a name.)
+static bool consume_template_close(Program &pgm, TokenBase *tok)
+{
+    if ( !tok )
+	return false;
+    if ( tok->id() == TokenID::tkGT )
+	return true;                          // single '>'
+    if ( tok->id() == TokenID::tkBSR )    // '>>' = this level's '>' + the outer one
+    {
+	pgm.pushToken(new TokenGT());
+	return true;
+    }
+    return false;
+}
+
 static TokenDataType *instantiate_template_use(Program &pgm, const std::string &tname,
 					       TokenBase *tb)
 {
@@ -1579,7 +1603,7 @@ static TokenDataType *instantiate_template_use(Program &pgm, const std::string &
 	    mangled += (c == '*') ? 'p' : c;
 	TokenBase *sep = pgm.nextToken();
 	if ( sep->id() == TokenID::tkComma ) continue;
-	if ( sep->id() == TokenID::tkGT ) break;
+	if ( consume_template_close(pgm, sep) ) break;
 	pgm.Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
     }
     if ( args.size() != td.typeparams.size() )
@@ -1705,23 +1729,39 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
     if ( TokenDataType *inst = instantiate_template_use(pgm, tname, tb) )
 	return inst;
 
-    // `ns::Name<Args>` where Name is a captured template. Templates live in
-    // template_map by BARE name (namespace_datatype_map holds only concrete
-    // types), so strip the namespace qualifier, then instantiate. Needed for
-    // nested template args like `basic_ofstream<char, std::char_traits<char>>`.
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS
-      && pgm.tokens.size() >= 3 )
+    // `Q1::Q2::...::Name<Args>` where Name is a captured template. Templates live
+    // in template_map by BARE name (namespace_datatype_map holds only concrete
+    // types), so skip the leading `ident ::` qualifier chain — including NESTED
+    // namespaces such as std::__cxx11 — to the final `Name <`, then instantiate by
+    // bare name. The template's defining_namespace (captured at template-parse
+    // time) supplies the correct Itanium canonical spelling regardless of how the
+    // use site qualified it, so e.g. std::__cxx11::basic_string<char,...> mangles
+    // with the __cxx11 component. (A single qualifier — `std::char_traits<char>`,
+    // or the relative `__cxx11::basic_string<...>` in a typedef — is the j==1 case.)
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
     {
-	TokenBase *member_tb = pgm.tokens[1];
-	if ( member_tb && is_contextual_identifier_token(member_tb)
-	  && pgm.template_map.count(contextual_identifier_name(member_tb))
-	  && pgm.tokens[2] && pgm.tokens[2]->id() == TokenID::tkLT )
+	// pgm.tokens[0] is the '::' after tb; a qualifier ident sits at index 1,
+	// each followed by '::', until the template name (an ident) is followed
+	// by '<'.
+	size_t j = 1;
+	while ( j + 1 < pgm.tokens.size()
+	     && pgm.tokens[j] && is_contextual_identifier_token(pgm.tokens[j]) )
 	{
-	    std::string member_name = contextual_identifier_name(member_tb);
-	    pgm.nextToken();                       // consume '::'
-	    TokenBase *name_tok = pgm.nextToken(); // consume the template name
-	    if ( TokenDataType *inst = instantiate_template_use(pgm, member_name, name_tok) )
-		return inst;
+	    if ( pgm.tokens[j+1]->id() == TokenID::tkLT
+	      && pgm.template_map.count(contextual_identifier_name(pgm.tokens[j])) )
+	    {
+		std::string member_name = contextual_identifier_name(pgm.tokens[j]);
+		for ( size_t k = 0; k < j; k++ )
+		    pgm.nextToken();               // consume '::' + each (qualifier '::')
+		TokenBase *name_tok = pgm.nextToken(); // consume the template name
+		if ( TokenDataType *inst = instantiate_template_use(pgm, member_name, name_tok) )
+		    return inst;
+		break;
+	    }
+	    if ( pgm.tokens[j+1]->id() == TokenID::tkNS )
+		j += 2;                            // skip a namespace qualifier
+	    else
+		break;
 	}
     }
 
@@ -13016,6 +13056,19 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	{
 	    pgm.nextToken();
 	    base_dd = &tdmi->second->definition;
+	}
+	else
+	{
+	    // A qualified and/or templated base type — `typedef
+	    // __cxx11::basic_string<char,...> string;`, `typedef ns::T<X> alias;`.
+	    // `tn` here is a PEEK (still at the deque front, like the datatype-map
+	    // branch above which consumes it explicitly), so consume it first, then
+	    // let the unified resolver skip the namespace-qualifier chain and
+	    // instantiate the template (consuming `<...>`). This lets a typedef
+	    // alias any composed type, not just a bare datatype_map name.
+	    pgm.nextToken(); // consume the first type token (tn), aligning the deque
+	    if ( TokenDataType *rt = resolve_declared_type_token(pgm, tn, true, true) )
+		base_dd = &rt->definition;
 	}
     }
     if ( !base_dd )
