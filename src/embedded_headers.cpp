@@ -344,7 +344,7 @@ struct dirent {
 // madc emits no method bodies; the linker resolves them against libstdc++).
 //
 // WORK IN PROGRESS — retire-std-hardcoding campaign, replacing the builtin
-// DataDef*STREAM + add_fstream_methods + ifstream_*/ofstream_* wrappers. Staged:
+// stream registration and its extern-C wrappers with header-defined classes. Staged:
 //   inc 4 (here): the basic_* templates + their offset-0 nullary methods
 //                 (ctor/dtor/close/is_open) — these match libstdc++ exactly and
 //                 bind via the generic header-defined-class keystone.
