@@ -67,3 +67,13 @@ TEST_SUITE("class layout — single non-virtual base") {
         CHECK(b->member_offsets[0] == 8);
     }
 }
+
+TEST_SUITE("class layout — polymorphic vptr") {
+    TEST_CASE("polymorphic leaf reserves vptr at 0") {
+        DataDefCLASS *v = mkclass("Vbase", 1, true); // {vptr; long v}
+        v->compute_layout();
+        CHECK(v->size == 16);
+        CHECK(v->nvsize == 16);
+        CHECK(v->member_offsets[0] == 8); // long v after vptr
+    }
+}
