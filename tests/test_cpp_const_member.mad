@@ -1,0 +1,14 @@
+#include <iostream>
+using namespace std;
+class Box {
+    const char *label;   // const data member
+public:
+    void set(const char *s) { label = s; }
+    const char *get() { return label; }
+};
+int main() {
+    Box b;
+    b.set("hi");
+    cout << b.get() << endl;   // hi
+    return 0;
+}

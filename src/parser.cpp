@@ -12063,6 +12063,17 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	}
 
 	// --- normal member or method: type name ... ---
+	// Optional leading cv-qualifiers on a data member / method return type:
+	// `const char *m;`, `volatile int v;`. madc does not enforce member
+	// const-correctness, so consume them (a const data member is an ordinary
+	// member). const/volatile/restrict are dedicated token ids, not identifiers
+	// (see the same idiom at parser.cpp:15942).
+	while ( pgm.peekToken()
+	     && ( pgm.peekToken()->id() == TokenID::tkCONST
+	       || pgm.peekToken()->id() == TokenID::tkVOLATILE
+	       || pgm.peekToken()->id() == TokenID::tkRESTRICT ) )
+	    pgm.nextToken();
+
 	// expect a data type token
 	TokenDataType *mtype = resolve_declared_type_token(pgm, pgm.peekToken(), true, true);
 	if ( !mtype )
