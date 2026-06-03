@@ -33,7 +33,23 @@ ONE model — the Itanium scheme REPLACES madc's old simplified single-vptr sche
 - When MI is done it **merges back into the campaign branch**; the stack promotes to
   develop together later.
 
-## STATE: S1–S4 DONE (+ a crash fix), S5 is the last stage
+## STATE: S1–S5 ALL DONE — MI FEATURE COMPLETE
+
+S5 (RTTI / dynamic_cast / typeid) landed inline per
+`docs/superpowers/plans/2026-06-03-multiple-inheritance-S5-rtti.md` (13 tasks, all gated:
+build 0-warn, unit 55/55, integration 468, SMAUG boots, no-std gate 468; 6 `tests/test_rtti_*`
+match g++). Summary: S5a vtable gains the Itanium 2-word prologue `[offset_to_top, &_ZTI]` per
+address point; S5b `class_typeinfo_def` emits ABI-faithful `_ZTS`/`_ZTI` (__class/__si/__vmi)
+referencing the real libsupc++ type_info vtables; S5c `dynamic_cast<T*>` → `__dynamic_cast`;
+S5d `<typeinfo>` header + `typeid` (polymorphic reads `vptr[-1]`) + `typeid(x).name()`.
+**NEXT: merge `feature/multiple-inheritance-claude` → `feature/retire-std-hardcoding-claude`;
+then the std:: campaign resumes string-first.** Orthogonal gaps found (logged, NOT fixed):
+virtual-dtor-only doesn't set has_vtable; const members / trailing-const methods unparsed;
+`&reference-param` yields address-of-the-pointer. See memory `project_multiple_inheritance`.
+
+---
+
+## (historical) STATE: S1–S4 DONE (+ a crash fix), S5 is the last stage
 Verified each stage: build 0-warn, unit `test_class_layout` (41 assertions), integration
 **463 passed** (6 MI tests, each matched to g++; same known-6 fails + flaky
 `testfortypedcomma`), **SMAUG boots** (port 4000), std-hardcoding gate **468** (MI added
