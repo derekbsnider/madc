@@ -464,7 +464,7 @@ public:
 	// Each slot resolves to the most-derived override visible to this class
 	// (findMethod walks class -> base). Returns NULL when the class has no
 	// vtable. Must be emitted after the method prototypes it references.
-	node_t class_vtable_def(DataDefCLASS *cdd);
+	node_t class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thunks);
 	// Lower a user-defined class method call on a class OBJECT (or pointer)
 	// receiver to a free-function call on the mangled method symbol with the
 	// receiver address threaded as the hidden first `__this` argument:

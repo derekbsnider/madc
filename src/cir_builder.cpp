@@ -2733,31 +2733,87 @@ node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
 	return spec_decl;
 }
 
-node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd)
+static DataDefCLASS *class_behind(DataDef *dd); // defined below; used by the thunk path
+
+node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thunks)
 {
 	if (!cdd || !cdd->has_vtable || cdd->vtable_slots.empty())
 		return NULL;
+
+	// Build a this-adjusting thunk: a function with the override's signature whose
+	// body re-adjusts `this` from the secondary-base subobject back to the override's
+	// class, then tail-calls the override. Returns the thunk's symbol name.
+	//   RET Cls__thunk_<off>_<m>(__self, p1...) {
+	//       return Override((MOwner*)((char*)__self - off), p1...);
+	//   }
+	auto make_thunk = [&](FuncDef *ov, const std::string &target_sym,
+			      DataDefCLASS *mowner, size_t off,
+			      const std::string &mname) -> std::string {
+		std::string tname = cdd->name + "__thunk_" + std::to_string(off) + "_" + mname;
+		node_t ret_spec = list();
+		node_t throwaway = list();
+		fnptr_decl_pieces(ov, true, ret_spec, throwaway, std::vector<uint32_t>());
+		node_t plist = list();
+		for (size_t i = 0; i < ov->parameters.size(); i++) {
+			std::string pn = (i == 0) ? "__self" : ("p" + std::to_string(i));
+			append(plist, param_decl(ov->parameters[i], pn.c_str(), std::string()));
+		}
+		node_t tdecl = node2(N_DECL, id(tname.c_str()),
+				     node1(N_LIST, node1(N_FUNC, plist)));
+		// (char*)__self - off
+		node_t charp = node2(N_CAST,
+			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			id("__self"));
+		node_t adj = node2(N_SUB, charp, integer((long)off));
+		// (MOwner*)adj
+		node_t ownerp = node2(N_CAST,
+			node2(N_TYPE, node1(N_LIST, node2(N_STRUCT,
+				id(mowner->name.c_str()), ignore())),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			adj);
+		node_t a = list();
+		append(a, ownerp);
+		for (size_t i = 1; i < ov->parameters.size(); i++)
+			append(a, id(("p" + std::to_string(i)).c_str()));
+		node_t call = node2(N_CALL, id(target_sym.c_str()), a);
+		referenced_funcs.insert(target_sym);
+		node_t body = node2(N_BLOCK, list(),
+				    node1(N_LIST, node2(N_RETURN, list(), call)));
+		thunks.push_back(node4(N_FUNC_DEF, ret_spec, tdecl, list(), body));
+		return tname;
+	};
 
 	// Initializer: grouped sub-tables back-to-back — primary group, then each
 	// secondary polymorphic base's group (address points recorded in
 	// build_vtable_groups). Each slot resolves by NAME to the most-derived
 	// findMethod (so overrides win); a pure/abstract slot emits a null pointer.
-	// (Secondary-group overrides need a this-adjusting thunk — substituted in a
-	// later task; here findMethod gives the base method, correct when not overridden.)
+	// A slot in a SECONDARY group whose resolved method is an OVERRIDE (its __this
+	// owner != the group's base) gets a this-adjusting thunk: the slot is reached
+	// via the secondary-base vptr with a base-subobject `this`, so the thunk
+	// re-adjusts before entering the override.
 	node_t inits = list();
 	for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
-		for (const std::string &slot : cdd->vtable_groups[g].slots) {
+		const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
+		for (const std::string &slot : G.slots) {
 			std::string sname = slot;
 			Variable *mv = cdd->findMethod(sname);
 			if (!mv) {
 				append(inits, node2(N_INIT, list(), integer(0)));
 				continue;
 			}
-			referenced_funcs.insert(mv->name);
+			FuncDef *mfd = dynamic_cast<FuncDef *>(mv->type);
+			DataDefCLASS *mowner = (mfd && !mfd->parameters.empty())
+				? class_behind(mfd->parameters[0]) : NULL;
+			std::string symname = mv->name;
+			if (G.this_offset != 0 && mowner && mowner != G.owner && mfd)
+				symname = make_thunk(mfd, mv->name, mowner, G.this_offset, sname);
+			else
+				referenced_funcs.insert(mv->name);
 			node_t vptr_type = node2(N_TYPE,
 				node1(N_LIST, simple(N_VOID)),
 				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-			node_t fnref = node2(N_CAST, vptr_type, id(mv->name.c_str()));
+			node_t fnref = node2(N_CAST, vptr_type, id(symname.c_str()));
 			append(inits, node2(N_INIT, list(), fnref));
 		}
 	}
@@ -7574,7 +7630,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (!cdd || !cdd->has_vtable) continue;
 		if (emitted_vtables.count(cdd)) continue;
 		emitted_vtables.insert(cdd);
-		node_t vt = class_vtable_def(cdd);
+		std::vector<node_t> thunks;
+		node_t vt = class_vtable_def(cdd, thunks);
+		// Thunks first — the vtable initializer references their symbols.
+		for (node_t th : thunks) append(top_list, th);
 		if (vt) append(top_list, vt);
 	}
 
