@@ -3763,8 +3763,31 @@ void DataDefCLASS::compute_layout()
     // 4. nvsize = end of the non-virtual portion.
     nvsize = mi_align_up(cur, maxalign);
 
-    // 5. (virtual bases appended in Task 4)
-    size = mi_align_up(nvsize, maxalign);
+    // 5. virtual bases: appended once at the end, in canonical (collected) order.
+    std::vector<DataDefCLASS *> vbs;
+    std::set<DataDefCLASS *> seen;
+    collect_vbases(vbs, seen);
+    size_t end = nvsize;
+    for ( DataDefCLASS *vb : vbs )
+    {
+	end = mi_align_up(end, 8);
+	vbase_offset[vb] = end;
+	end += vb->nvsize;        // vbase contributes its non-virtual size
+	if ( 8 > maxalign ) maxalign = 8;
+    }
+    size = mi_align_up(end, maxalign);
+}
+
+void DataDefCLASS::collect_vbases(std::vector<DataDefCLASS *> &out,
+				  std::set<DataDefCLASS *> &seen) const
+{
+    for ( const auto &bs : bases )
+    {
+	// a base's own (transitive) virtual bases come first, then the base if virtual
+	bs.base->collect_vbases(out, seen);
+	if ( bs.is_virtual && seen.insert(bs.base).second )
+	    out.push_back(bs.base);
+    }
 }
 
 DataDef *FuncDef::findParameter(std::string &s)

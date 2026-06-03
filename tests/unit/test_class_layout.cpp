@@ -77,3 +77,29 @@ TEST_SUITE("class layout — polymorphic vptr") {
         CHECK(v->member_offsets[0] == 8); // long v after vptr
     }
 }
+
+TEST_SUITE("class layout — single virtual base") {
+    TEST_CASE("Mid : virtual Vbase -> Vbase@16, size 32, nvsize 16") {
+        DataDefCLASS *v = mkclass("Vbase", 1, true);
+        v->compute_layout();                 // size 16, nvsize 16
+        DataDefCLASS *mid = mkclass("Mid", 1, true); // own {long m}
+        mid->bases.push_back(BaseSpec{v, 0, /*virtual*/true, 0u, false});
+        mid->compute_layout();
+        CHECK(mid->nvsize == 16);            // vptr + m
+        CHECK(mid->size == 32);              // + Vbase(16) at end
+        CHECK(mid->vbase_offset[v] == 16);
+    }
+    TEST_CASE("Leaf : Mid (primary) -> Mid@0, Vbase@24, size 40, nvsize 24") {
+        DataDefCLASS *v = mkclass("Vbase", 1, true); v->compute_layout();
+        DataDefCLASS *mid = mkclass("Mid", 1, true);
+        mid->bases.push_back(BaseSpec{v, 0, true, 0u, false}); mid->compute_layout();
+        DataDefCLASS *leaf = mkclass("Leaf", 1, true); // own {long l}
+        leaf->bases.push_back(BaseSpec{mid, 0, false, 0u, false}); // non-virtual primary
+        leaf->compute_layout();
+        CHECK(leaf->bases[0].is_primary == true);
+        CHECK(leaf->bases[0].offset == 0);
+        CHECK(leaf->nvsize == 24);          // shares Mid vptr@0, m@8, l@16
+        CHECK(leaf->vbase_offset[v] == 24); // Vbase hoisted once to the end
+        CHECK(leaf->size == 40);
+    }
+}

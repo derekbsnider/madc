@@ -8,6 +8,8 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
+#include <vector>
 
 extern thread_local bool madc_verbose;
 // JIT/codegen optimization level (0-3), set by the `-O<n>` CLI flag. Drives
@@ -728,6 +730,9 @@ public:
     size_t nvsize;
     bool is_polymorphic() const { return has_vtable; }
     void compute_layout(); // Itanium layout engine (defined in parser.cpp)
+    // Collect all (transitive) virtual bases, deduped, in canonical order.
+    void collect_vbases(std::vector<DataDefCLASS *> &out,
+			std::set<DataDefCLASS *> &seen) const;
     // Virtual function table
     std::vector<std::string> vtable_slots; // method names in vtable slot order
     std::map<std::string, bool> virtual_methods;  // names of methods declared virtual
