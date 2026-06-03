@@ -6,7 +6,56 @@
 > been merged to develop. Reading this doc + the spec + the memories below = full
 > situational awareness; you should not need anything else to continue.
 
-## ⏩⏩ RESTART 2026-06-03 (read this first — most recent state)
+## ⏩⏩ RESTART 2026-06-03 (later — read this first, supersedes the block below)
+Branch `feature/retire-std-hardcoding-claude`, HEAD **`627c88f`** (pushed). Run `bash scripts/resume.sh`.
+
+**THE KEYSTONE IS PROVEN — header `std::string` constructs + runs end-to-end** (`tmp/hdrstr.mad`
+→ `len=5` / `cstr=hello` via the JIT). PREREQ-3 DONE. Built as GENERAL machinery, zero per-class
+special-casing (user directive: nothing specific to a single class). Integration **478 passed**,
+zero regressions (same known 6 feature-gap fails + flaky `testfortypedcomma`). Commits in order:
+- `3237cc4` params: template-id PARAMETER types (`instantiate_template_use` in parseFunction's param
+  loop) + unnamed-param DEFAULT values (`= expr` on an anon param). General parser-correctness.
+- `e789f2b` **FUNCTIONAL CONSTRUCTION `T(args)`** (new general C++ feature madc lacked entirely) +
+  the 4 keystone fixes: (1) `TokenObjTemp` — `T(args)` in expr position → scope-local cleanup temp +
+  `class_ctor_call`, yielded as an object LVALUE (one uniform rvalue rep: `&temp` by-ref, `temp.member`,
+  struct-copy by-value); parsed in parseExpression only when an unresolved ident names a class/template-id
+  followed by `(`. (2) `emit_symbol_ret_specs` — unsigned-int returns (`length()`/`size()` are
+  `unsigned long`) were emitted as `void` (matched only signed dtINT32/64) → value lost; now real
+  width+signedness. (3) `class_ctor_call` now emits a typed extern PROTOTYPE for an external (emit_symbol)
+  ctor like `emit_symbol_method_call` does — without it c2mir marshaled the call as implicit + shifted
+  args (this←first arg) → SIGSEGV. (4) `typedef_decl` — a typedef of a CLASS (DataDefCLASS reports
+  `is_struct()` false) emitted `typedef int NAME` → 4-byte var, ctor overflow → stack-smash; now uses
+  `as_class_instance` like `type_list`. **Found via the emit-C-vs-g++ oracle** (see below).
+- `7143fe5` functional-construction follow-ups: member-on-temp `T(args).m()` (fold TokenObjTemp into the
+  ttOperator object-rvalue member-access paths) + copy-init `T b = T(args)` copy-elision (construct b
+  directly with the temp's args; also fixed a NULL deref where the call-NRVO path dynamic_cast a
+  TokenObjTemp to TokenCallFunc). Guard reducers in `tmp/funcctor*.mad` (b=7 / n=9).
+- `627c88f` header `std::string` **copy ctor** `basic_string(const basic_string&)` binds `C1ERKS4_`
+  end-to-end (`tmp/hs_copy.mad` → b.len=5/b.cstr=hello).
+
+**METHODOLOGY THAT WORKED (user-enforced, now memory):** the **emit-C-vs-g++ parity oracle**
+([[feedback_emitc_gcc_parity_oracle]]) — `bin/madc --emit=c11 x.mad | gcc -x c -lstdc++` must match
+`g++ x.cpp`; divergence localized the typedef→int bug with no gdb. **Don't ignore warnings**
+([[feedback_dont_ignore_warnings]]) — a g++ "warning" lump hid a real `length()`-returns-`void` error.
+
+**IMMEDIATE NEXT (resume here) — COMPOSED-BODY OPERATORS (de-risked):**
+Template METHOD BODIES **do** instantiate (probed: `tmp/tmplbody.mad` `Wrap<int>::twice()` → 10), so the
+composed operators are feasible NOW with no prerequisite. libstdc++ does NOT export `operator+`/`==`/`!=`
+(inline templates), so add them to `include/madc/string` as **composed method bodies** over the EXPORTED
+primitives:
+- `operator==(const basic_string&)` → `return compare(rhs) == 0;` (needs a `compare(const basic_string&)`
+  overload — currently only `compare(const char*)`).
+- `operator!=` → `return !(*this == rhs);`
+- `operator+(const basic_string&)` → `basic_string r(*this); r.append(rhs); return r;` (needs
+  `append(const basic_string&)` + returns BY VALUE → __retbuf ABI; verify the return-temp path).
+Then: prove header string operators standalone → **THE FLIP** (`string` typedef → header type, repoint
+`std_types["string"]`, `is_string_class` identity onto the header class) → migrate the ~775 gate sites →
+delete builtins/wrappers/`ddSTRING`/`STR_*`/`add_string_methods` → gate 0. Plan: §6.0-MIGRATION SCOPING +
+6.0-KEYSTONE VALIDATION below, and the worklist `docs/superpowers/plans/2026-06-03-string-migration-worklist.md`.
+
+---
+
+## ⏩ RESTART 2026-06-03 (earlier — superseded by the block above; kept for the generic-machinery history)
 Branch `feature/retire-std-hardcoding-claude`, HEAD **`36e3156`** (pushed). Run `bash scripts/resume.sh`.
 
 **THIS SESSION's arc (all gated: build 0-warn + integration suite; SMAUG only when a shared-C path
@@ -21,23 +70,9 @@ header-keystone string migration. Commits in order:
   `required_param_count()`; parsed in parseFunction; filled in parseCallFunc). `tests/testdefarg.mad`.
 - `74303d9` DEFAULT ARGS for CONSTRUCTORS (`select_ctor_overload` arity [required..total] +
   `class_ctor_call` fill). `tests/testctordefarg.mad` (Box(10)=15).
-- `36e3156` **WIP/UNTESTED**: `include/madc/string` ctor now `basic_string(const char*, const
+- `36e3156` `include/madc/string` ctor now `basic_string(const char*, const
   allocator<_CharT>& = allocator<_CharT>())` so it mangles the EXPORTED `C1EPKcRKS3_` (libstdc++ does
-  NOT export the 1-arg `C1EPKc`). Builds clean; construct/run NOT verified.
-
-**IMMEDIATE NEXT (resume here):**
-1. `( ulimit -t 60; timeout 90 bin/madc -v tmp/hdrstr.mad 2>&1 | grep C1EPKc )` — expect the ctor binds
-   to `...C1EPKcRKS3_`. Then `bin/madc tmp/hdrstr.mad` — expect `len=5` / `cstr=hello`. (`tmp/hdrstr.mad`
-   uses `typedef std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char>> mystr;`
-   — the typedef path; the bare statement-decl form is the logged ns-resolution gap.) If it constructs,
-   PREREQ-3 is DONE and the header string is usable end-to-end.
-2. If the default `allocator<_CharT>()` in the template-method default arg doesn't instantiate/mangle
-   right, that's the thing to debug (template-param-typed default expr through instantiation).
-3. Then: add header copy-ctor + composed-body operators (`operator+`=copy+`append`, `==`=`compare()==0`,
-   `!=`=`!(==)`) — verify template METHOD BODIES instantiate — prove header string operators via the
-   generic machinery — THE FLIP (`string` typedef + `is_string_class` identity → header type) — migrate
-   the ~775 sites — delete builtins/wrappers — gate 0. Full plan in §6.0-MIGRATION SCOPING + 6.0-KEYSTONE
-   VALIDATION below.
+  NOT export the 1-arg `C1EPKc`). [NOW VERIFIED + completed by the later session above.]
 
 **EFFICIENCY (user-enforced this session):** SMAUG is C89 — do NOT soak it on C++-only changes; batch
 edits before rebuilding (header edits cascade to slow full rebuilds of parser.cpp/cir_builder.cpp). See
