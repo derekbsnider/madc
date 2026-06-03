@@ -39,7 +39,11 @@ namespace std {
 	    char          _M_local_buf[16];   // SSO buffer / capacity union (16 bytes)
 	public:
 	    basic_string();                          // C1  ...C1Ev
-	    basic_string(const char *);              // C1  ...C1EPKc
+	    // libstdc++ does NOT export basic_string(const char*) — the public ctor's
+	    // allocator is part of the ABI symbol (...C1EPKcRKS3_). Declare it with a
+	    // DEFAULT allocator argument so `string s("x")` supplies it and the symbol
+	    // mangles correctly (no special-casing — ordinary default-argument fill).
+	    basic_string(const char *, const allocator<_CharT> & = allocator<_CharT>()); // C1EPKcRKS3_
 	    basic_string(unsigned long, char);       // C1  ...C1Emc
 	    ~basic_string();                         // D1  ...D1Ev
 	    unsigned long length() const;            // ...6lengthEv
