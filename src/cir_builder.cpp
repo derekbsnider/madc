@@ -3416,19 +3416,30 @@ node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 	node_t decl = node2(N_DECL, id(class_dtor_symbol(cdd).c_str()),
 			    node1(N_LIST, func_inner));
 
-	// Body: destruct object members (reverse order), then base dtor.
+	// Body: destruct object members (reverse order), then base dtors in REVERSE
+	// declaration order (MI), each with `this` adjusted to that base's subobject.
 	std::vector<node_t> stmts;
 	class_member_destruct(cdd, stmts, NULL);
-	if (cdd->base_class && class_needs_dtor(cdd->base_class)) {
-		std::string bsym = class_dtor_symbol(cdd->base_class);
+	for (size_t bi = cdd->bases.size(); bi-- > 0; ) {
+		DataDefCLASS *b = cdd->bases[bi].base;
+		if (!class_needs_dtor(b)) continue;
+		std::string bsym = class_dtor_symbol(b);
 		referenced_funcs.insert(bsym);
+		size_t off = cdd->base_offset_of(b);
+		node_t self = id("__this");
+		node_t adj = self;
+		if (off != 0) {
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				self);
+			adj = node2(N_ADD, charp, integer((long)off));
+		}
 		node_t bt = node2(N_TYPE,
-			node1(N_LIST, node2(N_STRUCT,
-				id(cdd->base_class->name.c_str()), ignore())),
+			node1(N_LIST, node2(N_STRUCT, id(b->name.c_str()), ignore())),
 			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-		node_t bcast = node2(N_CAST, bt, id("__this"));
 		node_t a = list();
-		append(a, bcast);
+		append(a, node2(N_CAST, bt, adj));
 		node_t call = node2(N_CALL, id(bsym.c_str()), a);
 		stmts.push_back(node2(N_EXPR, list(), call));
 	}
@@ -6982,19 +6993,25 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		const std::string &fname = tf->var.name;
 		bool is_ctor = (fname == ocls->name + "__" + ocls->name);
 		bool is_dtor = (fname == ocls->name + "___dtor");
-		DataDefCLASS *base = ocls->base_class;
-		// Cast __this to `Base *` for a chained base ctor/dtor call.
-		auto base_this = [&]() -> node_t {
-			node_t t = node2(N_TYPE,
-				node1(N_LIST, node2(N_STRUCT,
-					id(base->name.c_str()), ignore())),
-				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-			return node2(N_CAST, t, id("__this", tf), tf);
-		};
-		auto base_call = [&](const std::string &bsym) -> node_t {
+		// Cast __this to `Base *` (offset-adjusted to the base subobject) for a
+		// chained base ctor/dtor call. Offset 0 (primary/single base) = a plain
+		// cast, byte-identical to the previous single-base path.
+		auto base_call_at = [&](DataDefCLASS *b, size_t off, const std::string &bsym) -> node_t {
 			referenced_funcs.insert(bsym);
+			node_t self = id("__this", tf);
+			node_t adj = self;
+			if (off != 0) {
+				node_t charp = node2(N_CAST,
+					node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+					      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+					self, tf);
+				adj = node2(N_ADD, charp, integer((long)off), tf);
+			}
+			node_t t = node2(N_TYPE,
+				node1(N_LIST, node2(N_STRUCT, id(b->name.c_str()), ignore())),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 			node_t a = list();
-			append(a, base_this());
+			append(a, node2(N_CAST, t, adj, tf));
 			node_t call = node2(N_CALL, id(bsym.c_str(), tf), a, tf);
 			return node2(N_EXPR, list(), call, tf);
 		};
@@ -7004,8 +7021,15 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		//      class) — set after base construction, matching C++.
 		// Epilogue (after the body): base dtor call (dtor with a base dtor).
 		std::vector<node_t> prologue, epilogue;
-		if (is_ctor && base && base->has_user_ctor)
-			prologue.push_back(base_call(base->name + "__" + base->name));
+		// Construct each base in declaration order, with `this` adjusted to that
+		// base's subobject (MI). Single inheritance = one base @ offset 0.
+		if (is_ctor)
+			for (size_t bi = 0; bi < ocls->bases.size(); bi++) {
+				DataDefCLASS *b = ocls->bases[bi].base;
+				if (b->has_user_ctor)
+					prologue.push_back(base_call_at(b, ocls->base_offset_of(b),
+						b->name + "__" + b->name));
+			}
 		// Construct embedded object members at ctor entry (after base ctor),
 		// destruct them at dtor exit (before base dtor) — C++ member lifetime.
 		if (is_ctor)
@@ -7023,8 +7047,14 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			node_t asn = node2(N_ASSIGN, vptr_lhs, vtab, tf);
 			prologue.push_back(node2(N_EXPR, list(), asn, tf));
 		}
-		if (is_dtor && base && base->has_user_dtor)
-			epilogue.push_back(base_call(base->name + "___dtor"));
+		// Destroy bases in REVERSE declaration order (MI), offset-adjusted.
+		if (is_dtor)
+			for (size_t bi = ocls->bases.size(); bi-- > 0; ) {
+				DataDefCLASS *b = ocls->bases[bi].base;
+				if (b->has_user_dtor)
+					epilogue.push_back(base_call_at(b, ocls->base_offset_of(b),
+						b->name + "___dtor"));
+			}
 
 		if (!prologue.empty() || !epilogue.empty()) {
 			node_t outer = list();
