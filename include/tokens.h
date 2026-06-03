@@ -50,7 +50,8 @@ enum class TokenID {
   tkTEMPLATE,
   tkFatArrow, tkMATCH,    // => (rust::match arm) and the match statement itself
   tkUNION, tkNEW, tkDELETE,
-  tkDynamicCast, tkTypeid    // RTTI (S5): dynamic_cast<T*>(e), typeid(e|T)
+  tkDynamicCast, tkTypeid,    // RTTI (S5): dynamic_cast<T*>(e), typeid(e|T)
+  tkObjTemp                   // functional construction temporary: T(args)
 };
 
 enum class TokenAssoc {
@@ -1265,6 +1266,23 @@ public:
     virtual TokenID id() const { return TokenID::tkDELETE; }
     virtual TokenBase *clone() { return new TokenDELETE(); }
     virtual TokenBase *parse(Program &);
+};
+
+// Functional-construction temporary: `T(args)` in expression position constructs
+// an anonymous object of class T. CirBuilder lowers it (object_call_temp_addr) to a
+// scope-local cleanup-tagged temp + class_ctor_call, yielding the temp as a class
+// rvalue (same materialization path as a by-value-returning call). The general C++
+// feature — no per-class machinery; works for any class, including header-defined
+// std:: classes resolved through the keystone.
+class TokenObjTemp: public TokenBase
+{
+public:
+    DataDefCLASS *obj_class;
+    std::vector<TokenBase *> ctor_args;
+    TokenObjTemp(DataDefCLASS *c) : TokenBase() { obj_class = c; _datatype = (DataDef *)c; }
+    virtual TokenID id() const { return TokenID::tkObjTemp; }
+    virtual DataDef *datadef() const { return (DataDef *)obj_class; }
+    virtual TokenBase *clone() { return new TokenObjTemp(*this); }
 };
 
 class TokenSTRUCT: public TokenKeyword

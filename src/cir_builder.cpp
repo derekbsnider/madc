@@ -563,6 +563,9 @@ bool CirBuilder::is_string_returning_call(TokenBase *arg)
 // string and trivial structs are excluded by class_return_via_retbuf.
 DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 {
+	// Functional-construction temporary T(args) is a class rvalue too.
+	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(arg))
+		return ot->obj_class;
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
 	if (!tcf) return NULL;
 	FuncDef *fd = call_target_funcdef(tcf);
@@ -1120,6 +1123,11 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 		node_t call = node2(N_CALL, id(tcf->var.name.c_str(), origin), cargs, origin);
 		CIR_NODE(call)->synth_from_origin = true;
 		m_pending_stmts.push_back(node2(N_EXPR, list(), call, origin));
+	} else if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(call_tok)) {
+		// Functional construction T(args): construct directly into the temp
+		// (class_ctor_call emits the ctor on &__t with the parsed args).
+		node_t cc = class_ctor_call(tmp, cdd, ot->ctor_args, origin);
+		if (cc) m_pending_stmts.push_back(cc);
 	}
 
 	// The temp's (void*) address — the call's object-lvalue result.
@@ -3201,18 +3209,30 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 }
 
 // The extern return-spec for an emit_symbol-bound method/operator: a pointer
-// return (c_str()) is declared via ret_ptr; a `long` return (size()/length())
-// needs an explicit {N_LONG} base so the value reads correctly in arithmetic;
-// everything else (void / string& treated as void) defaults to a void base.
-// `ret_ptr` is set out-param.
+// return (c_str()) is declared via ret_ptr; an integer return (size()/length()
+// are unsigned long, the comparison family is int) needs a real integer base of
+// the right width/signedness so the value reads correctly; everything else
+// (void / string& treated as void) defaults to a void base. `ret_ptr` is out-param.
 static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &ret_ptr)
 {
 	ret_ptr = fd && fd->returns.is_pointer();
 	if (ret_ptr) return {};   // void* / char* — base is void, ret_ptr carries the star
-	DataType rt = fd ? fd->returns.rawtype() : DataType::dtVOID;
-	if (rt == DataType::dtINT64 || rt == DataType::dtINT32)
-		return { N_LONG };
-	return {};   // void (clear, assign/append return string& we ignore)
+	if (fd && fd->returns.is_integer()) {
+		// An integer return MUST declare a real integer base — a void base drops
+		// the value. length()/size() are `unsigned long` (was wrongly emitted as
+		// void because the old check matched only signed dtINT32/dtINT64); the
+		// comparison family is `int`. Match width + signedness (mirrors
+		// append_type_specs) so the result reads correctly. (embedded-headers:
+		// declare real return types — never let the fallback turn it into void.)
+		switch (fd->returns.rawtype()) {
+		case DataType::dtUINT64: return { N_UNSIGNED, N_LONG };
+		case DataType::dtUINT32: return { N_UNSIGNED, N_INT };
+		case DataType::dtINT64:  return { N_LONG };
+		case DataType::dtINT32:  return { N_INT };
+		default:                 return { N_LONG };
+		}
+	}
+	return {};   // void (clear; assign/append return string& we treat as void)
 }
 
 // Lower a call to a class method bound to an external symbol (emit_symbol — a
@@ -4086,6 +4106,32 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// pointer the ctor treats as an empty allocator). See FuncDef::ctor_trailing_self.
 	if (ctor && ctor->ctor_trailing_self)
 		append(args, node1(N_ADDR, id(v->name.c_str(), origin), origin));
+	// A ctor bound to an EXTERNAL symbol (a declaration-only std:: ctor whose
+	// emit_symbol is a real libstdc++ mangled symbol) MUST be declared with a typed
+	// prototype, exactly like emit_symbol_method_call does for methods. Without it
+	// c2mir/MIR marshals the call as an implicit function and shifts the arguments
+	// (this <- the first real arg) -> SIGSEGV writing through the string literal.
+	// User-class ctors are defined in-module (emit_symbol empty) -> no extern. Build
+	// the param shapes in lockstep with the args appended above: this(void*) + each
+	// ctor param (string&/ref -> void*, pointer -> char*, scalar -> long) + the
+	// trailing allocator pointer for ctor_trailing_self.
+	if (ctor && !ctor->emit_symbol.empty()) {
+		std::vector<ExternParam> eparams;
+		eparams.push_back({ {N_VOID}, true });   // this
+		for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
+			DataDef *pt = ctor->parameters[pi];
+			bool refp = pi < ctor->ref_params.size() && ctor->ref_params[pi];
+			if (is_std_string(pt) || refp)
+				eparams.push_back({ {N_VOID}, true });
+			else if (pt && pt->is_pointer())
+				eparams.push_back({ {N_CHAR}, true });
+			else
+				eparams.push_back({ {N_LONG}, false });
+		}
+		if (ctor->ctor_trailing_self)
+			eparams.push_back({ {N_VOID}, true });
+		need_output_extern(sym.c_str(), false, eparams);
+	}
 	referenced_funcs.insert(sym);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 	node_t ctor_stmt = node2(N_EXPR, list(), call, origin);
@@ -4759,8 +4805,13 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	if (ptr_dd && ptr_dd->base_type)
 		base_dd = ptr_dd->base_type;
 
-	// Type specifier
-	if (base_dd->is_struct() && !base_dd->is_complex()) {
+	// Type specifier. A user/std:: CLASS instance is a DataDefCLASS (is-a
+	// DataDefSTRUCT) but reports is_struct() false (basetype btClass), so it must
+	// be recognized via as_class_instance too — matching type_list. Without this a
+	// `typedef <class> NAME` fell through to append_type_specs and emitted
+	// `typedef int NAME`, sizing the variable as a 4-byte int; the ctor then wrote
+	// the full object through it -> stack smash / SIGSEGV. (emit-c-vs-g++ oracle.)
+	if ((base_dd->is_struct() || as_class_instance(base_dd)) && !base_dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 		if (sdd) {
 			// Tag kind must match the aggregate's real kind (union vs
@@ -5102,6 +5153,23 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	//      C__C(__newN, args); __newN; })
 	// (No ctor call when the class has no user constructor — calloc already
 	// zero-initializes, matching value-init of a POD.)
+	// Functional construction `T(args)` -> materialize a scope-local cleanup temp,
+	// construct into it, and yield the temp as an object LVALUE (id(name)). One
+	// uniform object-rvalue representation: &temp for a by-reference argument
+	// (the std::string allocator-ABI keystone), temp.member for member access,
+	// and a plain struct copy for by-value passing / copy-initialization. (Same
+	// temp + RAII-cleanup machinery as object_call_temp_addr, minus the address-of.)
+	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(tb)) {
+		DataDefCLASS *ocdd = ot->obj_class;
+		char otname[40];
+		snprintf(otname, sizeof(otname), "__madc_objtmp_%d", m_strtmp_counter++);
+		Variable *otmp = new Variable(otname, *ocdd, 1, NULL, false);
+		otmp->flags |= vfLOCAL;
+		m_pending_stmts.push_back(var_decl(otmp, tb));
+		node_t occ = class_ctor_call(otmp, ocdd, ot->ctor_args, tb);
+		if (occ) m_pending_stmts.push_back(occ);
+		return id(otname, tb);
+	}
 	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb)) {
 		// -------- Placement new: `new (addr) T(args)` --------
 		// Construct at the given address, no allocation. The placement

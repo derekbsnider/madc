@@ -1777,6 +1777,57 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
     return new TokenDataType(dd->name.c_str(), *dd);
 }
 
+// Functional construction `T(args)` / `Template<...>(args)` in expression position:
+// build a TokenObjTemp constructing an anonymous temporary of class T. Recognized
+// ONLY when the identifier names a CLASS type (a captured template-id we can
+// instantiate, or a known class) IMMEDIATELY followed by '(' -- so ordinary
+// function/variable references (resolved earlier in parseExpression) are untouched.
+// Returns NULL when it is not a functional construction. General C++ feature; no
+// per-class machinery (works for any class, incl. header-defined std:: classes).
+static TokenObjTemp *try_parse_functional_ctor(Program &pgm, TokenBase *name_tb)
+{
+	std::string name = contextual_identifier_name(name_tb);
+	if ( name.empty() )
+		return NULL;
+	DataDefCLASS *cdd = NULL;
+	if ( pgm.template_map.count(name)
+	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+	{
+		// Template-id: instantiate (consumes `<...>`), then require '('.
+		if ( TokenDataType *inst = instantiate_template_use(pgm, name, name_tb) )
+			cdd = dynamic_cast<DataDefCLASS *>(&inst->definition);
+	}
+	else
+	{
+		datatype_map_iter dmi = pgm.datatype_map.find(name);
+		if ( dmi != pgm.datatype_map.end() )
+			cdd = dynamic_cast<DataDefCLASS *>(&dmi->second->definition);
+		if ( !cdd )
+		{
+			datadef_map_iter sdmi = pgm.struct_map.find(name);
+			if ( sdmi != pgm.struct_map.end() )
+				cdd = dynamic_cast<DataDefCLASS *>(sdmi->second);
+		}
+	}
+	if ( !cdd )
+		return NULL;
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+		return NULL;   // a bare type-id, not a construction
+	pgm.nextToken(); // consume '('
+	TokenObjTemp *ot = new TokenObjTemp(cdd);
+	ot->file = name_tb->file; ot->line = name_tb->line; ot->column = name_tb->column;
+	while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkClBrk )
+	{
+		ot->ctor_args.push_back(pgm.parseExpression(pgm.nextToken(), true));
+		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
+			pgm.nextToken();
+	}
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
+		pgm.Throw(name_tb) << "Expected ')' after constructor arguments" << flush;
+	pgm.nextToken(); // consume ')'
+	return ot;
+}
+
 // A type-name usage must carry its own source position, not the position of
 // the shared prototype TokenDataType held in datatype_map (which is stamped at
 // the typedef's definition site). Return a clone of `proto` positioned at the
@@ -10425,6 +10476,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		}
 		if ( !var )
 		{
+		    // Functional construction `T(args)`: only when the unresolved
+		    // identifier names a class type followed by '(' (ordinary calls
+		    // resolved to `var` above). General; no per-class machinery.
+		    if ( TokenObjTemp *ot = try_parse_functional_ctor(*this, tb) )
+		    {
+			exStack.push(ot);
+			break;
+		    }
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ident_tb->str << endl);
 		    Throw(tb) << "use of undeclared identifier '" << ident_tb->str << '\'' << flush;
 		}
