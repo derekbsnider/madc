@@ -130,18 +130,20 @@ node_t CirBuilder::synth_deleting_dtor_def(DataDefCLASS *cdd)
 }
 ```
 
-- [ ] **Step 3d: cir_builder — emit the deleting dtor for classes that carry a D0 slot.** Find the module emission loop that emits complete dtors (the `emitted_complete_dtors` set ~8050, where `synth_complete_dtor_def(cdd)` is appended). READ the surrounding ~12 lines to learn the exact append-target variable (e.g. `top_list`) and the iteration variable. Add a sibling dedupe set near where `emitted_complete_dtors` is declared:
+- [ ] **Step 3d: cir_builder — emit the deleting dtor as its OWN pass.** The existing complete-dtor pass ("Pass 1.7", `emitted_complete_dtors`, ~8050–8061) is GATED on virtual bases (`if (vbs.empty()) continue;`), so it skips most virtual-dtor classes — do NOT reuse it. Add a NEW pass immediately AFTER Pass 1.7 (after line ~8061, before "Pass 2"), appending to `top_list` (the same target Pass 1.7 uses), iterating `prog->struct_map` and using `as_user_class` exactly as Pass 1.7 does:
 ```cpp
+	// Pass 1.8: deleting (D0) destructors for every polymorphic class with a
+	// virtual destructor (a "~$deleting" vtable slot). NOT gated on virtual bases
+	// (unlike Pass 1.7) — most virtual-dtor classes have none. Deduped.
 	std::set<DataDefCLASS *> emitted_deleting_dtors;
-```
-and inside the same loop body (right after the complete-dtor emission), using the SAME append target:
-```cpp
-		if (cdd->vtable_slot("~$deleting") >= 0
-		    && !emitted_deleting_dtors.count(cdd)) {
-			emitted_deleting_dtors.insert(cdd);
-			node_t dd0 = synth_deleting_dtor_def(cdd);
-			if (dd0) append(top_list, dd0);   // MATCH the complete-dtor append target name
-		}
+	for (auto &kv : prog->struct_map) {
+		DataDefCLASS *cdd = as_user_class(kv.second);
+		if (!cdd || cdd->vtable_slot("~$deleting") < 0) continue;
+		if (emitted_deleting_dtors.count(cdd)) continue;
+		emitted_deleting_dtors.insert(cdd);
+		node_t dd0 = synth_deleting_dtor_def(cdd);
+		if (dd0) append(top_list, dd0);
+	}
 ```
 
 - [ ] **Step 3e: cir_builder — resolve the D1/D0 markers in the vtable.** In `class_vtable_def`'s slot loop (`for (const std::string &slot : G.slots)` ~2944), BEFORE `Variable *mv = cdd->findMethod(sname);`, special-case the markers (single-inheritance / primary group only here — secondary-group thunks are Task 3):
