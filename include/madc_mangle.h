@@ -42,6 +42,14 @@ std::string itanium_mangle_operator(const std::string &class_name,
                                      const std::string &op,
                                      const std::vector<std::string> &param_types);
 
+// RTTI symbols for an un-namespaced user class. source_name = <len><name>.
+//   itanium_typeinfo_sym("C")         → "_ZTI1C"   (typeinfo for C)
+//   itanium_typeinfo_name_sym("C")    → "_ZTS1C"   (typeinfo name for C)
+//   itanium_typeinfo_name_string("C") → "1C"       (the bare mangled name string)
+std::string itanium_typeinfo_sym(const std::string &class_name);
+std::string itanium_typeinfo_name_sym(const std::string &class_name);
+std::string itanium_typeinfo_name_string(const std::string &class_name);
+
 // ---------------------------------------------------------------------------
 // Substitution-aware (template-id capable) mangling.
 //

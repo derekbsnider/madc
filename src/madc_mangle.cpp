@@ -194,6 +194,22 @@ std::string itanium_mangle_nested(const std::vector<std::string> &qualifiers,
 	return result;
 }
 
+// RTTI symbols for an un-namespaced user class (S5b.1).
+std::string itanium_typeinfo_sym(const std::string &class_name)
+{
+	return "_ZTI" + source_name(class_name);
+}
+
+std::string itanium_typeinfo_name_sym(const std::string &class_name)
+{
+	return "_ZTS" + source_name(class_name);
+}
+
+std::string itanium_typeinfo_name_string(const std::string &class_name)
+{
+	return source_name(class_name);
+}
+
 // ===========================================================================
 // Substitution-aware (template-id capable) mangling.
 //
