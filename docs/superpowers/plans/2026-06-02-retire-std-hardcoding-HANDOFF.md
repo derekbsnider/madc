@@ -193,6 +193,39 @@ the independent mangler output — zero literals.
 
 ## 6. WHAT'S NEXT (the substantial remaining work — count drops at inc 6)
 
+### STRING-FIRST REORDER (2026-06-03) — supersedes the inc-5/6/7 ordering below
+The MI/virtual-base + virtual-destructor features are now DONE on develop-track branches and
+merged into this campaign branch (HEAD has full MI S1-S5 + virtual dtors + parser-correctness
+A/B/C). std::string is NOT a virtual-inheritance type, so it does NOT need the inc-5 vbase ABI —
+it is the cleaner next target, and doing it first de-entangles the stream tests from string.
+**So the order is now: std::string FIRST, then streams (inc 5/6), then cin/sstream/conversions.**
+
+**std::string footprint (measured 2026-06-03):** 225 `ddSTRING` refs, 100 `string_*` wrappers, 53
+`STR_*` statics, 11 `DataDefSTRING`, 8 `sizeof(std::string)`/`string_obj_words`. Multi-session;
+migrate test-by-test keeping the suite green; gate drops only when the builtins are deleted.
+
+**Canon (verified 2026-06-03):** `std::string` = `std::__cxx11::basic_string<char,
+std::char_traits<char>, std::allocator<char>>`, sizeof 32 / align 8; methods are EXPORTED by
+libstdc++ (weak/vague-linkage, e.g. `length()/c_str()/size()/append()/substr()` — `nm -DC`
+confirmed), so string follows the mangled-direct keystone (unlike vector/map/set). Canon length
+symbol: `_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6lengthEv`. Stage A2 (trailing-const
+method, merged) already wires `is_const_method` → the `_ZNK` prefix works now.
+
+**PREREQUISITE discovered (the FIRST string sub-task):** a header-defined `std::string` must be
+declared as `std::__cxx11::basic_string<...>` because the real symbol REQUIRES the `__cxx11`
+component (`St7__cxx1112basic_string`) — it cannot be shortcut. But madc today:
+- does NOT parse `inline namespace` (`grep -c "inline namespace" = 0`), and
+- FAILS to resolve a doubly-qualified use site `std::__cxx11::basic_string<...>` →
+  "Unknown namespace '__cxx11'" (parser.cpp ~10494/10528).
+The mangler ALREADY has `__cxx11`/`basic_string` handling (9 refs in madc_mangle.cpp), so the gap
+is PARSER nested/inline-namespace resolution, not the mangler. So sub-task 1 of string-first =
+parse `inline namespace __cxx11` (members visible as `std::Name` AND mangled with the `__cxx11`
+component) + resolve `std::__cxx11::Name<...>` at a use site. THEN author `include/madc/string`
+(basic_string<char> binding mangled-direct, coexisting with the builtin like the fstream header),
+prove the keystone symbol == canon, THEN migrate the 225 sites + delete the builtins.
+
+### (original ordering, retained for reference)
+
 ### Inc 5 — the virtual-base ABI (the one genuinely-new class-model feature; highest risk)
 The header needs the real hierarchy so `<<` (basic_ostream) and `good()`/`eof()` (basic_ios)
 resolve; `basic_ios` is a VIRTUAL base whose subobject is NOT at offset 0:
