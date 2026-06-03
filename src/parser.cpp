@@ -9618,7 +9618,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		      && lhs_dot->type() != TokenType::ttSubscript
 		      && lhs_dot->type() != TokenType::ttCompound
 		      && lhs_dot->type() != TokenType::ttStructLit
-		      && lhs_dot->type() != TokenType::ttCallFunc )
+		      && lhs_dot->type() != TokenType::ttCallFunc
+		      && lhs_dot->id() != TokenID::tkTypeid )   // typeid(x).name() (S5d)
 			Throw(tb) << "member reference is not a structure or union" << flush;
 		    Variable *tv_var;
 		    DataDef  *struct_type;
@@ -9727,6 +9728,20 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    struct_type = ret_type;
 			    tv_var = new Variable("__call_expr", *struct_type, 1, NULL, false);
 			}
+			else if ( lhs_dot->id() == TokenID::tkTypeid )
+			{
+			    // typeid(x).name() — the typeid result is std::type_info*
+			    // (a reference modeled as a pointer); resolve member lookup
+			    // against the pointed-to type_info class and route codegen
+			    // through the typeid as parent_expr (class_this_arg passes
+			    // the pointer straight through as `this`).
+			    DataDef *rt = lhs_dot->datadef();
+			    DataDefPTR *rp = dynamic_cast<DataDefPTR *>(rt);
+			    struct_type = rp ? rp->base_type : rt;
+			    if ( !struct_type )
+				Throw(tb) << "typeid result has no type for member access" << flush;
+			    tv_var = new Variable("__typeid_expr", *struct_type, 1, NULL, false);
+			}
 			else
 			    Throw(tb) << "member reference '.' on unsupported subscript form" << flush;
 		    }
@@ -9760,6 +9775,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			TokenBase *recv_parent = NULL;
 			if ( lhs_dot->type() == TokenType::ttSubscript )
 			    recv_parent = lhs_dot;
+			else if ( lhs_dot->id() == TokenID::tkTypeid )
+			    recv_parent = lhs_dot;   // typeid(x).name() (S5d)
 			else if ( lhs_dot->type() != TokenType::ttVariable )
 			    Throw(tb) << "chained method call not yet supported" << flush;
 			TokenCallMethod *tc = new TokenCallMethod(*tv_var, *var);

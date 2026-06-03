@@ -1,0 +1,13 @@
+#include <iostream>
+#include <typeinfo>
+using namespace std;
+// A polymorphic class (has a virtual method). NOTE: a virtual-destructor-ONLY
+// class does not yet establish a vtable in madc (orthogonal pre-existing gap),
+// so a virtual method is used to make Widget polymorphic.
+class Widget { public: virtual int id() { return 0; } };
+int main() {
+    Widget w;
+    // type_info::name() returns the mangled name; for Widget that is "6Widget".
+    cout << typeid(w).name() << endl;     // 6Widget
+    return 0;
+}
