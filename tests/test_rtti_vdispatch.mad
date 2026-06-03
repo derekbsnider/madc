@@ -1,0 +1,10 @@
+#include <iostream>
+using namespace std;
+class Animal { public: virtual int speak() { return 1; } };
+class Dog : public Animal { public: int speak() { return 2; } };
+int main() {
+    Dog d;
+    Animal *a = &d;
+    cout << a->speak() << endl;   // 2 (virtual dispatch through base ptr)
+    return 0;
+}

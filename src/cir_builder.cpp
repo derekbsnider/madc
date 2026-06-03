@@ -2795,6 +2795,19 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	node_t inits = list();
 	for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
 		const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
+		// Itanium prologue for this address point: [offset_to_top, &type_info].
+		// offset_to_top = -(this_offset): how far back to the most-derived object
+		// (so __dynamic_cast / typeid can recover the complete object from any
+		// subobject vptr). build_vtable_groups reserved 2 slots per group. (S5a)
+		node_t vtype = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+				     node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t otop = node2(N_CAST, vtype, integer(-(long)G.this_offset));
+		append(inits, node2(N_INIT, list(), otop));
+		// RTTI slot: &_ZTI<cls> — placeholder NULL until S5b emits the object.
+		node_t vtype2 = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t rtti = node2(N_CAST, vtype2, integer(0));
+		append(inits, node2(N_INIT, list(), rtti));
 		for (const std::string &slot : G.slots) {
 			std::string sname = slot;
 			Variable *mv = cdd->findMethod(sname);
