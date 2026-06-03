@@ -1,13 +1,13 @@
 #!/../bin/madc
-// MI virtual dispatch: a call through a secondary-base pointer must use that
-// base's vtable; an OVERRIDE reached via the secondary base goes through a
-// this-adjusting thunk. (Ctors set the stack object's vptrs — implicit-ctor
-// vptr-init for ctor-less polymorphic stack objects is a separate pre-existing gap.)
+// MI virtual dispatch: a call through a secondary-base pointer must use that base's
+// vtable; an OVERRIDE reached via the secondary base goes through a this-adjusting
+// thunk. No explicit ctors: a polymorphic stack object's vptr(s) are initialized by
+// the implicit-default-ctor path (class_ctor_call).
 class P1 { public: virtual int f1() { return 10; } };
 class P2 { public: virtual int f2() { return 20; } };
-class MIc : public P1, public P2 { public: MIc() {} int c; };
+class MIc : public P1, public P2 { public: int c; };
 class Q2 : public P1, public P2 {
-public: Q2() {} long q;
+public: long q;
     int f2() { return (int)(q + 5); }   // overrides P2::f2 (most-derived)
 };
 int main()

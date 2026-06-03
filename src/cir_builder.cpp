@@ -3580,7 +3580,36 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 				   const std::vector<TokenBase *> &ctor_args,
 				   TokenBase *origin)
 {
-	if (!v || !cdd || !cdd->has_user_ctor) return NULL;
+	if (!v || !cdd) return NULL;
+
+	// No user ctor, but a polymorphic class still needs its vptr(s) initialized so
+	// a virtual call through a base pointer to this (stack) object works — C++'s
+	// implicit default ctor sets the vptr. Emit the grouped vptr-init (same as the
+	// `new` path / user-ctor prologue). Non-polymorphic ctorless classes need
+	// nothing. (A vbase-only class with no virtual methods has no emitted vtable —
+	// its vbase-offset table is S4 — so gate on has_vtable, not has_vptr_slot.)
+	if (!cdd->has_user_ctor) {
+		if (!cdd->has_vtable) return NULL;
+		std::string vname = cdd->name + "__vtable";
+		node_t blk = list();
+		for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
+			const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
+			std::string fld = (G.this_offset == 0)
+				? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
+			node_t lhs = node2(N_DEREF_FIELD,
+				node1(N_ADDR, id(v->name.c_str(), origin), origin),
+				id(fld.c_str(), origin));
+			node_t vptr_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t tab = id(vname.c_str(), origin);
+			node_t ap = (G.addr_point == 0) ? tab
+				: node2(N_ADD, tab, integer((long)G.addr_point, origin), origin);
+			node_t vtab = node2(N_CAST, vptr_type, ap, origin);
+			append(blk, node2(N_EXPR, list(),
+				node2(N_ASSIGN, lhs, vtab, origin), origin));
+		}
+		return node2(N_BLOCK, list(), blk, origin);
+	}
 
 	// Resolve the ctor: prefer the overload matching the initializer (the
 	// general path; a user class has one ctor so this is a no-op). Fall back
