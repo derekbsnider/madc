@@ -71,6 +71,14 @@ wrapper bodies over that boundary. `testlang.mad`, `testrubycharsshadow.mad`,
 and `--emit=c11 testlang.mad` cover the generated `__ns_python_*`,
 `__ns_ruby_*`, and `__ns_js_*` surfaces.
 
+### Changed — embedded `<ns_rust>` uses ordinary namespace wrappers (2026-06-04)
+
+Embedded `<ns_rust>` now declares `__rust_*` runtime symbols as explicit
+`extern "C"` ABI functions and defines ordinary `rust::` wrapper bodies over
+that boundary. `rust::match` remains parser syntax and is unaffected.
+`testrust.mad`, `testrustmatch.mad`, `testprefer.mad`, and
+`--emit=c11 testrust.mad` cover the split.
+
 ### Changed — C++ library objects now stay on the generic object path (2026-06-04)
 
 The retire-std-hardcoding branch now reaches the finish-line gate:

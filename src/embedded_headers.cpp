@@ -1519,25 +1519,46 @@ inline void flatten(MadArray &values, const char *text) { __rb_flatten(&values, 
 
 #endif
 )EMBED"},
-    {"ns_rust", R"EMBED(namespace rust {
-    long contains(const char *text, const char *needle) asm("__rust_contains");
-    long starts_with(const char *text, const char *prefix) asm("__rust_starts_with");
-    long ends_with(const char *text, const char *suffix) asm("__rust_ends_with");
-    std::string &trim(std::string &s) asm("__rust_trim");
-    std::string &trim_start(std::string &s) asm("__rust_trim_start");
-    std::string &trim_end(std::string &s) asm("__rust_trim_end");
-    std::string &replace(std::string &s, const char *from, const char *to) asm("__rust_replace");
-    std::string &repeat(std::string &s, long count) asm("__rust_repeat");
-    long len(const char *text) asm("__rust_len");
-    long is_empty(const char *text) asm("__rust_is_empty");
-    void split(array out, const char *text, const char *delim) asm("__rust_split");
-    void split_whitespace(array out, const char *text) asm("__rust_split_whitespace");
-    std::string &join(std::string &result, array values, const char *sep) asm("__rust_join");
-    std::string &first(std::string &result, array values) asm("__rust_first");
-    std::string &last(std::string &result, array values) asm("__rust_last");
-    std::string &get(std::string &result, array values, long idx) asm("__rust_get");
-    void push(array values, const char *value) asm("__rust_push");
-    std::string &pop(std::string &result, array values) asm("__rust_pop");
+    {"ns_rust", R"EMBED(extern "C" {
+    long __rust_contains(const char *, const char *);
+    long __rust_starts_with(const char *, const char *);
+    long __rust_ends_with(const char *, const char *);
+    std::string *__rust_trim(std::string *);
+    std::string *__rust_trim_start(std::string *);
+    std::string *__rust_trim_end(std::string *);
+    std::string *__rust_replace(std::string *, const char *, const char *);
+    std::string *__rust_repeat(std::string *, long);
+    long __rust_len(const char *);
+    long __rust_is_empty(const char *);
+    void __rust_split(array *, const char *, const char *);
+    void __rust_split_whitespace(array *, const char *);
+    std::string *__rust_join(std::string *, array *, const char *);
+    std::string *__rust_first(std::string *, array *);
+    std::string *__rust_last(std::string *, array *);
+    std::string *__rust_get(std::string *, array *, long);
+    void __rust_push(array *, const char *);
+    std::string *__rust_pop(std::string *, array *);
+}
+
+namespace rust {
+    long contains(const char *text, const char *needle) { return __rust_contains(text, needle); }
+    long starts_with(const char *text, const char *prefix) { return __rust_starts_with(text, prefix); }
+    long ends_with(const char *text, const char *suffix) { return __rust_ends_with(text, suffix); }
+    std::string &trim(std::string &s) { return *__rust_trim(&s); }
+    std::string &trim_start(std::string &s) { return *__rust_trim_start(&s); }
+    std::string &trim_end(std::string &s) { return *__rust_trim_end(&s); }
+    std::string &replace(std::string &s, const char *from, const char *to) { return *__rust_replace(&s, from, to); }
+    std::string &repeat(std::string &s, long count) { return *__rust_repeat(&s, count); }
+    long len(const char *text) { return __rust_len(text); }
+    long is_empty(const char *text) { return __rust_is_empty(text); }
+    void split(array &out, const char *text, const char *delim) { __rust_split(&out, text, delim); }
+    void split_whitespace(array &out, const char *text) { __rust_split_whitespace(&out, text); }
+    std::string &join(std::string &result, array &values, const char *sep) { return *__rust_join(&result, &values, sep); }
+    std::string &first(std::string &result, array &values) { return *__rust_first(&result, &values); }
+    std::string &last(std::string &result, array &values) { return *__rust_last(&result, &values); }
+    std::string &get(std::string &result, array &values, long idx) { return *__rust_get(&result, &values, idx); }
+    void push(array &values, const char *value) { __rust_push(&values, value); }
+    std::string &pop(std::string &result, array &values) { return *__rust_pop(&result, &values); }
 }
 )EMBED"},
     {"ns_rust.h", R"EMBED(#ifndef MADC_NS_RUST_H

@@ -78,6 +78,9 @@ Current Codex slice after that cleanup:
   explicit runtime ABI declarations plus ordinary namespace wrapper bodies.
   Emitted C now contains generated `__ns_python_*`, `__ns_ruby_*`, and
   `__ns_js_*` wrappers over those ABI boundaries.
+- Embedded `<ns_rust>` now follows the same model for runtime helpers:
+  explicit `extern "C"` `__rust_*` ABI declarations plus ordinary `rust::`
+  wrapper bodies. `rust::match` remains parser syntax and is unaffected.
 
 Previous-session fixes already present in the dirty worktree before this slice:
 
@@ -108,12 +111,16 @@ Validation snapshot:
 - `bin/madc tests/testrubycharsshadow.mad` passes.
 - `bin/madc --emit=c11 tests/testlang.mad` shows `extern __py_*`, `__rb_*`,
   and `__js_*` ABI prototypes plus generated namespace wrappers.
+- `bin/madc tests/testrust.mad` passes.
+- `bin/madc tests/testrustmatch.mad` passes.
+- `bin/madc --emit=c11 tests/testrust.mad` shows `extern __rust_*` ABI
+  prototypes plus generated `__ns_rust_*` namespace wrappers.
 - `bash scripts/check-no-std-hardcoding.sh` reports 0 offending lines.
 - `make -C src` passes.
 - `make -C src test` passes.
-- `make -C src fulltest` produced **485 passed, 6 failed, 0 timed out,
+- `make -C src fulltest` produced **485 passed, 5 failed, 1 timed out,
   55 skipped**. Known failures/timeouts: `testcin`, `testdefer`,
-  `testfortypedcomma` (failed this run; historically flaky fail/timeout),
+  `testfortypedcomma` (timed out this run; historically flaky fail/timeout),
   `testfstream`, `testlargesizeofquery`, `testloop`.
 - `test_cir` includes the auto-include mode boundary and generic external-bool
   return probes.
@@ -129,13 +136,12 @@ Open follow-ups before/while merging this branch to `develop`:
 
 - Keep unrelated untracked `.claude/`, KG dumps, temp files, and scratch
   artifacts out of the branch cleanup/merge.
-- Revisit the remaining embedded polyglot namespace surfaces: `<ns_php>`,
-  `<ns_perl>`, `<ns_python>`, `<ns_ruby>`, and `<ns_js>` are now split into
-  ordinary namespace wrappers over explicit `extern "C"` ABI declarations, but
-  `<ns_rust>` and helper aliases such as the array-cstr bridge still need the
-  same drift pass. The target model is ordinary C++ namespace
-  declarations/mangling for C++ surfaces, with C-friendly symbols only at the
-  explicit `extern "C"` wrapper boundary.
+- Revisit the remaining embedded helper aliases: all embedded polyglot
+  namespace headers are now split into ordinary namespace wrappers over
+  explicit `extern "C"` ABI declarations, but helper aliases such as the
+  array-cstr bridge still need the same drift pass. The target model is
+  ordinary C++ namespace declarations/mangling for C++ surfaces, with
+  C-friendly symbols only at the explicit `extern "C"` wrapper boundary.
 - Consider broadening the gate or adding a companion check for semantic drift
   patterns: runtime layout copies, `_M_*` outside headers/tests, and per-class
   branches outside the mangler/auto-include table.

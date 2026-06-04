@@ -1,16 +1,15 @@
 # Test Status
 
 > **Current (2026-06-04, retire-std-hardcoding branch):** integration
-> **485 passed, 6 failed, 0 timed out, 55 skipped** after adding
+> **485 passed, 5 failed, 1 timed out, 55 skipped** after adding
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
 > `teststdcppinclude.mad`, plus `testforeachheaderbody.mad` for range-for
 > locals in included/header function bodies, `testexternclinkage.mad` for
 > `extern "C"` linkage specs, and `testexterncstringptr.mad` for
-> typedef-preserved string-pointer extern C prototypes. Embedded `<ns_php>`,
-> `<ns_perl>`, `<ns_python>`, `<ns_ruby>`, and `<ns_js>` now route namespace
-> calls through generated wrappers over explicit `extern "C"` ABI declarations.
-> The known red tests are
-> `testcin.mad`, `testdefer.mad`, `testfortypedcomma.mad` (failed this run;
+> typedef-preserved string-pointer extern C prototypes. Embedded polyglot
+> namespace headers now route namespace calls through generated wrappers over
+> explicit `extern "C"` ABI declarations. The known red tests are
+> `testcin.mad`, `testdefer.mad`, `testfortypedcomma.mad` (timed out this run;
 > historically flaky fail/timeout), `testfstream.mad`,
 > `testlargesizeofquery.mad`, and `testloop.mad`.
 > The 419/0 figures below are the
