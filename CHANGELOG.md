@@ -27,6 +27,16 @@ parameters, leaving header/helper function bodies to emit uses of an undeclared
 loop variable. `tests/testforeachheaderbody.mad` covers a range-for over `array`
 inside an included helper body.
 
+### Added — `extern "C"` / `extern "C++"` linkage specs parse (2026-06-04)
+
+The parser now accepts C++ linkage specifications for single declarations and
+declaration blocks while preserving existing `extern` declaration semantics.
+This is a prerequisite for moving embedded polyglot namespace headers toward
+ordinary C++ namespace wrappers over explicit C ABI symbols. The same slice also
+keeps reference-returning class functions out of the non-trivial object retbuf
+call path, avoiding a bogus hidden return-slot argument. `testexternclinkage.mad`
+covers both paths.
+
 ### Changed — C++ library objects now stay on the generic object path (2026-06-04)
 
 The retire-std-hardcoding branch now reaches the finish-line gate:

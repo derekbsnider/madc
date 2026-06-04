@@ -1,0 +1,22 @@
+#!/../bin/madc
+
+extern "C" {
+	int puts(const char *);
+}
+
+class LinkBox {
+	int n;
+public:
+	LinkBox(int v) { n = v; }
+};
+
+LinkBox &same_link_box(LinkBox &b) {
+	return b;
+}
+
+int main() {
+	LinkBox b(17);
+	same_link_box(b);
+	puts("extern C linkage");
+	return 0;
+}

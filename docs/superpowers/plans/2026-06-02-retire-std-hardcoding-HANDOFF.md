@@ -52,6 +52,12 @@ Current Codex slice after that cleanup:
   instead of by parameter-count position. That restores compiler-generated
   range-for element locals in functions with parameters, including included
   header/helper bodies. `tests/testforeachheaderbody.mad` covers the regression.
+- `extern "C"` / `extern "C++"` linkage specifications now parse for single
+  declarations and declaration blocks, preserving existing extern semantics.
+  Generic object-return call classification also excludes reference-returning
+  functions from the retbuf path, so class-reference returning calls do not get
+  a bogus hidden return-slot argument. `tests/testexternclinkage.mad` covers the
+  parser path and the reference-return call shape.
 
 Previous-session fixes already present in the dirty worktree before this slice:
 
@@ -68,11 +74,12 @@ Validation snapshot:
 - `bin/madc tests/testforeach.mad` passes.
 - `bin/madc tests/testforeach2.mad` passes.
 - `bin/madc tests/testforeachheaderbody.mad` passes.
+- `bin/madc tests/testexternclinkage.mad` passes.
 - `bash scripts/check-no-std-hardcoding.sh` reports 0 offending lines.
 - `make -C src` passes.
-- `make -C src fulltest` produced **483 passed, 6 failed, 0 timed out,
+- `make -C src fulltest` produced **484 passed, 5 failed, 1 timed out,
   55 skipped**. Known failures/timeouts: `testcin`, `testdefer`,
-  `testfortypedcomma` (failed this run; historically flaky fail/timeout),
+  `testfortypedcomma` (timed out this run; historically flaky fail/timeout),
   `testfstream`, `testlargesizeofquery`, `testloop`.
 - `make -C src test` passes; `test_cir` includes the auto-include mode boundary
   and generic external-bool return probes.
@@ -93,6 +100,9 @@ Open follow-ups before/while merging this branch to `develop`:
   expose inline namespace wrappers over `extern "C"` symbols. The target model
   is ordinary C++ namespace declarations/mangling for C++ surfaces, with
   C-friendly symbols only at the explicit `extern "C"` wrapper boundary.
+  `extern "C"` parsing and reference-return call shaping are now in place; the
+  next blocker is madc-side string-pointer prototype rendering before broadly
+  converting the string-returning wrappers.
 - Consider broadening the gate or adding a companion check for semantic drift
   patterns: runtime layout copies, `_M_*` outside headers/tests, and per-class
   branches outside the mangler/auto-include table.

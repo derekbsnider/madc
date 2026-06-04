@@ -13255,7 +13255,34 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
     bool handled = false;
     try
     {
-	if ( tn->type() == TokenType::ttKeyword )
+	if ( tn->type() == TokenType::ttString )
+	{
+	    TokenStr *linkage = static_cast<TokenStr *>(pgm.nextToken());
+	    if ( linkage->str != "C" && linkage->str != "C++" )
+		pgm.Throw(linkage) << "Unsupported extern linkage '" << linkage->str << "'" << flush;
+	    TokenBase *after = pgm.nextToken();
+	    if ( !after )
+		pgm.Throw(linkage) << "Unexpected end of input after extern linkage" << flush;
+	    handled = true;
+	    if ( after->id() == TokenID::tkOpBrc )
+	    {
+		while ( (tn = pgm.nextToken()) )
+		{
+		    if ( tn->id() == TokenID::tkClBrc )
+			break;
+		    if ( tn->id() == TokenID::tkSemi )
+			continue;
+		    TokenBase *stmt = pgm.parseStatement(tn);
+		    if ( stmt && pgm.tkProgram )
+			pgm.tkProgram->statements.push_back((TokenStmt *)stmt);
+		}
+		if ( !tn )
+		    pgm.Throw(linkage) << "Missing '}' after extern linkage block" << flush;
+	    }
+	    else
+		result = pgm.parseStatement(after);
+	}
+	else if ( tn->type() == TokenType::ttKeyword )
 	{
 	    handled = true;
 	    result = pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));

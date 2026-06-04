@@ -60,7 +60,9 @@ high-level" — the answer is both.**
   modes require the appropriate headers. Range-for element locals are now
   declared by explicit parameter flags rather than parameter-count position,
   so included/header function bodies can use range-for without losing the loop
-  variable declaration.
+  variable declaration. `extern "C"` / `extern "C++"` linkage specs now parse,
+  which is the prerequisite for splitting embedded polyglot namespace headers
+  into ordinary C++ namespace wrappers over explicit C ABI declarations.
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
   engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
   pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped

@@ -523,6 +523,7 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 	if (!tcf) return NULL;
 	FuncDef *fd = call_target_funcdef(tcf);
 	if (!fd) return NULL;
+	if (fd->returns_ref) return NULL;
 	DataDefCLASS *cdd = class_return_via_retbuf(&fd->returns);
 	if (!cdd) return NULL;
 	// A fn-ptr call inherits the retbuf ABI from its rendered target type; a
