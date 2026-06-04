@@ -66,10 +66,10 @@ high-level" — the answer is both.**
   Function signatures now preserve source typedef aliases for returns and
   parameters, so referenced extern C prototypes can render header spelling such
   as `string *` without concrete-class handling. Embedded `<ns_php>`,
-  `<ns_perl>`, `<ns_python>`, `<ns_ruby>`, `<ns_js>`, and `<ns_rust>` now use
-  ordinary namespace wrapper bodies over explicit `extern "C"` ABI
-  declarations; remaining work is to apply the same split to helper aliases
-  that still use direct `asm` names.
+  `<ns_perl>`, `<ns_python>`, `<ns_ruby>`, `<ns_js>`, `<ns_rust>`, and
+  `<algorithm>` helper aliases now use ordinary wrapper bodies over explicit
+  `extern "C"` ABI declarations; a direct embedded-header `asm("__...")` scan
+  is clean.
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
   engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
   pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped

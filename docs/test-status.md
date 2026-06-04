@@ -7,8 +7,8 @@
 > locals in included/header function bodies, `testexternclinkage.mad` for
 > `extern "C"` linkage specs, and `testexterncstringptr.mad` for
 > typedef-preserved string-pointer extern C prototypes. Embedded polyglot
-> namespace headers now route namespace calls through generated wrappers over
-> explicit `extern "C"` ABI declarations. The known red tests are
+> namespace headers and `<algorithm>` helpers now route calls through generated
+> wrappers over explicit `extern "C"` ABI declarations. The known red tests are
 > `testcin.mad`, `testdefer.mad`, `testfortypedcomma.mad` (timed out this run;
 > historically flaky fail/timeout), `testfstream.mad`,
 > `testlargesizeofquery.mad`, and `testloop.mad`.

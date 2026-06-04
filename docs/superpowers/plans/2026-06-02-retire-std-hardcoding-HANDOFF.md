@@ -81,6 +81,8 @@ Current Codex slice after that cleanup:
 - Embedded `<ns_rust>` now follows the same model for runtime helpers:
   explicit `extern "C"` `__rust_*` ABI declarations plus ordinary `rust::`
   wrapper bodies. `rust::match` remains parser syntax and is unaffected.
+- Embedded `<algorithm>` now declares its array helper ABI functions explicitly
+  and uses ordinary helper bodies instead of direct `asm` aliases.
 
 Previous-session fixes already present in the dirty worktree before this slice:
 
@@ -115,7 +117,14 @@ Validation snapshot:
 - `bin/madc tests/testrustmatch.mad` passes.
 - `bin/madc --emit=c11 tests/testrust.mad` shows `extern __rust_*` ABI
   prototypes plus generated `__ns_rust_*` namespace wrappers.
+- `bin/madc tests/testforeach.mad` passes.
+- `bin/madc tests/testforeach2.mad` passes.
+- `bin/madc tests/testforeachheaderbody.mad` passes.
+- `bin/madc --emit=c11 tests/testforeach2.mad` shows explicit helper ABI
+  prototypes plus ordinary `__madc_array_*` helper bodies.
 - `bash scripts/check-no-std-hardcoding.sh` reports 0 offending lines.
+- `rg -n 'asm\\(\"__|asm\\(\"madarray_size' include/madc src/embedded_headers.cpp`
+  finds no direct embedded-header ABI aliases.
 - `make -C src` passes.
 - `make -C src test` passes.
 - `make -C src fulltest` produced **485 passed, 5 failed, 1 timed out,
@@ -136,12 +145,11 @@ Open follow-ups before/while merging this branch to `develop`:
 
 - Keep unrelated untracked `.claude/`, KG dumps, temp files, and scratch
   artifacts out of the branch cleanup/merge.
-- Revisit the remaining embedded helper aliases: all embedded polyglot
-  namespace headers are now split into ordinary namespace wrappers over
-  explicit `extern "C"` ABI declarations, but helper aliases such as the
-  array-cstr bridge still need the same drift pass. The target model is
-  ordinary C++ namespace declarations/mangling for C++ surfaces, with
-  C-friendly symbols only at the explicit `extern "C"` wrapper boundary.
+- Consider broadening the drift gate: all embedded polyglot namespace headers
+  and the `<algorithm>` helper aliases are now split into ordinary wrappers
+  over explicit `extern "C"` ABI declarations, but a companion check could
+  prevent direct embedded-header `asm("__...")` aliases or runtime layout-copy
+  shortcuts from creeping back in.
 - Consider broadening the gate or adding a companion check for semantic drift
   patterns: runtime layout copies, `_M_*` outside headers/tests, and per-class
   branches outside the mangler/auto-include table.

@@ -79,6 +79,14 @@ that boundary. `rust::match` remains parser syntax and is unaffected.
 `testrust.mad`, `testrustmatch.mad`, `testprefer.mad`, and
 `--emit=c11 testrust.mad` cover the split.
 
+### Changed — embedded `<algorithm>` helpers use explicit ABI wrappers (2026-06-04)
+
+Embedded `<algorithm>` no longer maps its array helpers with direct `asm`
+aliases. It now declares `madarray_size` and `__php_array_get_cstr` as explicit
+`extern "C"` ABI functions, then uses ordinary helper bodies inside the header.
+`testforeach.mad`, `testforeach2.mad`, `testforeachheaderbody.mad`, and
+`--emit=c11 testforeach2.mad` cover the path.
+
 ### Changed — C++ library objects now stay on the generic object path (2026-06-04)
 
 The retire-std-hardcoding branch now reaches the finish-line gate:
