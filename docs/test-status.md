@@ -1,11 +1,12 @@
 # Test Status
 
-> **Current (2026-06-03, retire-std-hardcoding branch):** integration
-> **480 passed, 6 failed, 1 flaky-timeout, 55 skipped** after adding
-> `testheaderstringops.mad` and `testclasscopyretbuf.mad`. The known red tests
-> are `testcin.mad`, `testdefer.mad`, `testforeach2.mad`, `testfstream.mad`,
-> `testlargesizeofquery.mad`, and `testloop.mad`; `testfortypedcomma.mad`
-> remains the flaky timeout. The 419/0 figures below are the
+> **Current (2026-06-04, retire-std-hardcoding branch):** integration
+> **482 passed, 6 failed, 0 timed out, 55 skipped** after adding
+> `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
+> `teststdcppinclude.mad`. The known red tests are `testcin.mad`,
+> `testdefer.mad`, `testfortypedcomma.mad` (historically flaky fail/timeout),
+> `testfstream.mad`, `testlargesizeofquery.mad`, and `testloop.mad`.
+> The 419/0 figures below are the
 > *removed* asmjit/MIR-transpiler backend and are retained only as the C89
 > coverage target the CIR path is climbing back to. ★ Milestone: SMAUG 1.8
 > boots, runs as a live server, and is playable (character creation, world

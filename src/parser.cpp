@@ -4364,6 +4364,61 @@ Program::Program(MadcEngine *eng)
     attach_engine(eng);
 }
 
+bool Program::set_language_standard(const std::string &standard)
+{
+    if ( standard == "madc" )
+	language_std = STD_MADC;
+    else if ( standard == "c78" )
+	language_std = STD_C78;
+    else if ( standard == "c86" )
+	language_std = STD_C86;
+    else if ( standard == "c88" )
+	language_std = STD_C88;
+    else if ( standard == "c89" || standard == "c90" )
+	language_std = STD_C89;
+    else if ( standard == "c94" )
+	language_std = STD_C94;
+    else if ( standard == "c95" )
+	language_std = STD_C95;
+    else if ( standard == "c99" )
+	language_std = STD_C99;
+    else if ( standard == "c" || standard == "c11" )
+	language_std = STD_C11;
+    else if ( standard == "c17" )
+	language_std = STD_C17;
+    else if ( standard == "c23" )
+	language_std = STD_C23;
+    else if ( standard == "c++98" || standard == "cpp98" )
+	language_std = STD_CPP98;
+    else if ( standard == "c++03" || standard == "cpp03" )
+	language_std = STD_CPP03;
+    else if ( standard == "c++" || standard == "cpp"
+	   || standard == "c++11" || standard == "cpp11" )
+	language_std = STD_CPP11;
+    else if ( standard == "c++14" || standard == "cpp14" )
+	language_std = STD_CPP14;
+    else if ( standard == "c++17" || standard == "cpp17" )
+	language_std = STD_CPP17;
+    else if ( standard == "c++20" || standard == "cpp20" )
+	language_std = STD_CPP20;
+    else if ( standard == "c++23" || standard == "cpp23" )
+	language_std = STD_CPP23;
+    else if ( standard == "c++26" || standard == "cpp26" )
+	language_std = STD_CPP26;
+    else
+	return false;
+
+    return true;
+}
+
+bool Program::set_language_standard_option(const std::string &arg)
+{
+    const std::string prefix("--std=");
+    if ( arg.compare(0, prefix.size(), prefix) != 0 )
+	return false;
+    return set_language_standard(arg.substr(prefix.size()));
+}
+
 void Program::attach_engine(MadcEngine *eng)
 {
     engine = eng;

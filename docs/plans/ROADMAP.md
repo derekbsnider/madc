@@ -55,7 +55,9 @@ high-level" — the answer is both.**
   classes are declared in headers and compiled through the same object,
   overload, mangling, ctor/dtor, and retbuf machinery as user classes. Keep
   concrete class knowledge out of compiler/runtime code except the mangler,
-  header text, tests, and the auto-include trigger map.
+  header text, tests, and the auto-include trigger map. Auto-includes are now
+  a default `--std=madc` convenience only; explicit `--std=c` and `--std=c++`
+  modes require the appropriate headers.
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
   engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
   pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped

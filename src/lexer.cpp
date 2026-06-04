@@ -529,6 +529,8 @@ bool Program::auto_include_standard_identifier(const std::string &word)
 {
     if ( skip_includes )
 	return false;
+    if ( !auto_includes_enabled() )
+	return false;
     if ( suppress_auto_include_scan )
 	return false;
 
@@ -645,6 +647,12 @@ void Program::inject_pending_auto_includes()
 {
     if ( skip_includes )
 	return;
+    if ( !auto_includes_enabled() )
+    {
+	pending_auto_include_headers.clear();
+	pending_auto_include_identifiers.clear();
+	return;
+    }
     if ( pending_auto_include_headers.empty() )
 	return;
 
@@ -1679,14 +1687,11 @@ TokenBase *Program::_getToken()
 		    if ( base == "madc" && sp != std::string::npos )
 		    {
 			std::string args = word.substr(sp + 1);
-			if ( args.find("--std=c89") != std::string::npos )
-			    language_std = STD_C89;
-			else if ( args.find("--std=c99") != std::string::npos )
-			    language_std = STD_C99;
-			else if ( args.find("--std=c11") != std::string::npos )
-			    language_std = STD_C11;
-			else if ( args.find("--std=c") != std::string::npos )
-			    language_std = STD_C11;
+			std::istringstream as(args);
+			std::string arg;
+			while ( as >> arg )
+			    if ( set_language_standard_option(arg) )
+				break;
 			// Remove C++ keywords retroactively if shebang set C mode
 			if ( is_c_mode() )
 			{

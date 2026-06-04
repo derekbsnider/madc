@@ -53,10 +53,13 @@ extern "C" {
 	void madc_putf(float);
 	void madc_puts(const char *);
 	void madc_printstr(const char *);
+	bool cir_test_bool_true(void);
+	bool cir_test_bool_false(void);
 }
 static void *const cir_runtime_anchor[] = {
 	(void *)madc_puti, (void *)madc_putu, (void *)madc_putd,
 	(void *)madc_putf, (void *)madc_puts, (void *)madc_printstr,
+	(void *)cir_test_bool_true, (void *)cir_test_bool_false,
 };
 
 // Import resolver for MIR_link: external symbols (madc_* runtime, libc) are
@@ -65,6 +68,14 @@ static void *const cir_runtime_anchor[] = {
 // symbol (e.g. the puti/printstr builtins -> madc_puti/madc_printstr).
 static void *cir_test_import_resolver(const char *name) {
 	return dlsym(RTLD_DEFAULT, name);
+}
+
+extern "C" bool cir_test_bool_true(void) {
+	return true;
+}
+
+extern "C" bool cir_test_bool_false(void) {
+	return false;
 }
 
 // Helper: tokenize+parse source, translate to CIR, compile+run, return result
@@ -122,6 +133,42 @@ static int64_t cir_run(const char *source) {
     return result;
 }
 
+static bool parse_accepts_with_std(Program::LanguageStd language_std,
+				   const char *source) {
+    auto prog = std::make_shared<Program>();
+    std::ostringstream err;
+    prog->error_stream = &err;
+    prog->language_std = language_std;
+    TokenProgram *tp = prog->tokenize_buffer(source, "<std-mode-test>");
+    if (!tp)
+	return false;
+    return prog->parse(tp);
+}
+
+TEST_CASE("auto-includes are limited to madc mode") {
+    const char *source =
+	"int main() { intptr_t n; n = 7; return (int)n; }";
+
+    CHECK(parse_accepts_with_std(Program::STD_MADC, source));
+    CHECK_FALSE(parse_accepts_with_std(Program::STD_C11, source));
+    CHECK_FALSE(parse_accepts_with_std(Program::STD_CPP11, source));
+}
+
+TEST_CASE("explicit includes work in standard C and C++ modes") {
+    const char *source =
+	"#include <stdint.h>\n"
+	"int main() { intptr_t n; n = 7; return (int)n; }";
+
+    CHECK(parse_accepts_with_std(Program::STD_C11, source));
+    CHECK(parse_accepts_with_std(Program::STD_CPP11, source));
+}
+
+TEST_CASE("shebang std option disables madc auto-includes") {
+    CHECK_FALSE(parse_accepts_with_std(Program::STD_MADC,
+	"#!/usr/bin/madc --std=c++\n"
+	"int main() { intptr_t n; n = 7; return (int)n; }"));
+}
+
 TEST_CASE("CIR: return literal") {
     CHECK(cir_run("int main() { return 42; }") == 42);
     CHECK(cir_run("int main() { return 0; }") == 0);
@@ -148,6 +195,14 @@ TEST_CASE("CIR: function with parameters") {
 	"int add(int a, int b) { return a + b; }\n"
 	"int main() { return add(3, 4); }"
     ) == 7);
+}
+
+TEST_CASE("CIR: external bool returns") {
+    CHECK(cir_run(
+	"bool cir_test_bool_true();\n"
+	"bool cir_test_bool_false();\n"
+	"int main() { return cir_test_bool_true() && !cir_test_bool_false(); }"
+    ) == 1);
 }
 
 TEST_CASE("CIR: if/else") {

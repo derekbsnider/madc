@@ -26,8 +26,9 @@ The active architectural guardrail is broader than the grep gate:
   `include/madc/` headers. Compiler/runtime code must not infer behavior from
   a concrete class name or manufacture a concrete class layout.
 - The only intended semantic difference for madc mode is convenience
-  auto-inclusion of headers. That auto-include behavior still needs to be gated
-  to `--std=madc`; it should be disabled for `--std=c*` and `--std=c++*`.
+  auto-inclusion of headers. That auto-include behavior is now gated to
+  `language_std == STD_MADC`; `--std=c*` and `--std=c++*` require explicit
+  includes.
 
 This rehydrate/cleanup slice removed one post-gate drift point: `<algorithm>`
 now defines `std::for_each(array, void (*)(string))` as an ordinary header
@@ -36,6 +37,17 @@ fill a normal local `string value`, then calls `fn(value)`. The old C++ runtime
 shim in `src/ns_php.cpp` copied a fake libstdc++ `basic_string` layout
 (`_M_p`/`_M_len`/SSO bytes) before calling a script callback; that layout-copy
 shim is gone, and `src/embedded_headers.cpp` was regenerated.
+
+Current Codex slice after that cleanup:
+
+- Shared `Program::set_language_standard_option()` handles CLI and shebang
+  `--std=` parsing, including C++ modes.
+- `Program::auto_includes_enabled()` gates embedded auto-include collection and
+  injection to `STD_MADC`. Default madc mode still auto-includes; `--std=c` and
+  `--std=c++` require explicit headers.
+- CIR external prototypes now emit `N_BOOL` for `dtBOOL` scalar/return specs.
+  This fixed a drift failure where bool-returning external methods read garbage
+  upper bits (`teststringmethods.mad`).
 
 Previous-session fixes already present in the dirty worktree before this slice:
 
@@ -53,10 +65,15 @@ Validation snapshot:
 - `bin/madc tests/testforeach2.mad` passes.
 - `bash scripts/check-no-std-hardcoding.sh` reports 0 offending lines.
 - `make -C src` passes.
-- `make -C src fulltest` produced **481 passed, 5 failed, 1 timed out,
+- `make -C src fulltest` produced **482 passed, 6 failed, 0 timed out,
   55 skipped**. Known failures/timeouts: `testcin`, `testdefer`,
-  `testfortypedcomma` (timeout this run; historically flaky fail/timeout),
+  `testfortypedcomma` (failed this run; historically flaky fail/timeout),
   `testfstream`, `testlargesizeofquery`, `testloop`.
+- `make -C src test` passes; `test_cir` includes the auto-include mode boundary
+  and generic external-bool return probes.
+- Targeted standard-mode checks passed: default `testautoincludestdheaders`,
+  explicit `--std=c++ tests/teststdcppinclude.mad`, and expected rejection of
+  `testautoincludestdheaders` under `--std=c` / `--std=c++`.
 - Previous session targeted tests passed for
   `testautoincludestdheaders`, `testrustmatch`, `testsstream`, `testforeach2`,
   `testprefer`, `testphp`, `testlang`, string/class regressions, and
@@ -66,7 +83,6 @@ Open follow-ups before/while merging this branch to `develop`:
 
 - Keep unrelated untracked `.claude/`, KG dumps, temp files, and scratch
   artifacts out of the branch cleanup/merge.
-- Gate auto-includes on `language_std == STD_MADC`.
 - Embedded header function bodies that use range-for over `array` exposed a
   lowering gap where the loop variable was not declared in emitted C. This
   slice avoided that path in `<algorithm>` with an explicit helper loop; fix the

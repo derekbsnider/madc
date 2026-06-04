@@ -372,6 +372,7 @@ static std::vector<c2mir_node_code_t> native_scalar_specs(DataDef *dd)
 	if (!dd) return {N_LONG};
 	switch (dd->rawtype()) {
 	case DataType::dtVOID:   return {};
+	case DataType::dtBOOL:   return {N_BOOL};
 	case DataType::dtFLOAT:  return {N_FLOAT};
 	case DataType::dtDOUBLE: return {N_DOUBLE};
 	case DataType::dtUINT8:
@@ -437,6 +438,7 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	DataType dt = dd->rawtype();
 	switch (dt) {
 	case DataType::dtVOID:   append(lst, simple(N_VOID)); break;
+	case DataType::dtBOOL:   append(lst, simple(N_BOOL)); break;
 	case DataType::dtCHAR:   append(lst, simple(N_CHAR)); break;
 	case DataType::dtINT16:  append(lst, simple(N_SHORT)); break;
 	case DataType::dtINT32:  append(lst, simple(N_INT)); break;
@@ -2848,6 +2850,7 @@ static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &r
 		// append_type_specs) so the result reads correctly. (embedded-headers:
 		// declare real return types — never let the fallback turn it into void.)
 		switch (fd->returns.rawtype()) {
+		case DataType::dtBOOL:   return { N_BOOL };
 		case DataType::dtUINT64: return { N_UNSIGNED, N_LONG };
 		case DataType::dtUINT32: return { N_UNSIGNED, N_INT };
 		case DataType::dtINT64:  return { N_LONG };

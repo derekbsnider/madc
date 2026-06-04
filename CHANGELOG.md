@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Changed — auto-includes are madc-mode only (2026-06-04)
+
+`Program::set_language_standard_option()` now centralizes `--std=` parsing for
+the CLI and madc shebangs, including C++ modes. Embedded standard-header
+auto-includes are gated to `STD_MADC`, so `--std=c` and `--std=c++` require
+explicit includes like a standard compiler. Added `teststdcppinclude.mad` and
+unit coverage for the standard-mode boundary.
+
+### Fixed — external bool returns use `_Bool` in CIR prototypes (2026-06-04)
+
+CIR external prototypes now emit `N_BOOL` for `dtBOOL` scalar and return specs
+instead of reading bool-returning external symbols as `long`/`int`. This fixes
+generic bool-returning functions and methods without class-specific handling;
+`teststringmethods.mad` again reads `empty()` correctly, and `test_cir` covers
+an `extern "C"` bool-returning host symbol.
+
 ### Changed — C++ library objects now stay on the generic object path (2026-06-04)
 
 The retire-std-hardcoding branch now reaches the finish-line gate:

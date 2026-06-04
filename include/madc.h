@@ -1143,6 +1143,10 @@ public:
 	STD_CPP98, STD_CPP03, STD_CPP11, STD_CPP14, STD_CPP17, STD_CPP20, STD_CPP23, STD_CPP26
     } language_std;
     bool is_c_mode() const { return language_std >= STD_C89 && language_std <= STD_C23; }
+    bool is_cpp_mode() const { return language_std >= STD_CPP98 && language_std <= STD_CPP26; }
+    bool auto_includes_enabled() const { return language_std == STD_MADC; }
+    bool set_language_standard(const std::string &standard);
+    bool set_language_standard_option(const std::string &arg);
     bool aot_tracking;
     bool instrument_functions;
     bool skip_includes;		// --emit-function: lex without processing #include
