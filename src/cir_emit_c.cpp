@@ -290,6 +290,12 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 			{N_RSH_ASSIGN,">>="},{N_COMMA,","},{0,0}};
 		const char *o = "?";
 		for (int k = 0; M[k].o; k++) if (M[k].code == (int)n->code) o = M[k].o;
+		if (n->code == N_SUB && !op(n, 1)) {
+			fputs("(-", f);
+			emit(f, op(n, 0), lang);
+			fputc(')', f);
+			break;
+		}
 		fputc('(', f);
 		emit(f, op(n, 0), lang);
 		fprintf(f, " %s ", o);

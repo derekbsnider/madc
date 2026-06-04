@@ -1,5 +1,8 @@
 #!/usr/bin/env madc
 #include <iostream>
+#include <string>
+#include <ns_php>
+#include <ns_ruby>
 using namespace std;
 
 int main()

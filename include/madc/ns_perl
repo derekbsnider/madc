@@ -1,0 +1,22 @@
+namespace perl {
+    long chop(std::string &s) asm("__perl_chop");
+    long chomp(std::string &s) asm("__perl_chomp");
+    void grep(array dest, const char *needle, array src) asm("__perl_grep");
+    void glob(array out, const char *pattern) asm("__perl_glob");
+    long scalar(array values) asm("__perl_scalar");
+    void push(array values, const char *text) asm("__perl_push");
+    std::string &pop(std::string &result, array values) asm("__perl_pop");
+    std::string &shift(std::string &result, array values) asm("__perl_shift");
+    void unshift(array values, const char *text) asm("__perl_unshift");
+    std::string &join(std::string &result, const char *separator, array values) asm("__perl_join");
+    void split(array out, const char *pattern, const char *text) asm("__perl_split");
+    std::string &reverse(std::string &s) asm("__perl_reverse");
+    std::string &lc(std::string &s) asm("__perl_lc");
+    std::string &uc(std::string &s) asm("__perl_uc");
+    std::string &ucfirst(std::string &s) asm("__perl_ucfirst");
+    std::string &lcfirst(std::string &s) asm("__perl_lcfirst");
+    long index(const char *haystack, const char *needle) asm("__perl_index");
+    long rindex(const char *haystack, const char *needle) asm("__perl_rindex");
+    long length(const char *text) asm("__perl_length");
+    std::string &substr(std::string &result, const char *text, long offset, long length) asm("__perl_substr");
+}

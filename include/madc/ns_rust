@@ -1,0 +1,20 @@
+namespace rust {
+    long contains(const char *text, const char *needle) asm("__rust_contains");
+    long starts_with(const char *text, const char *prefix) asm("__rust_starts_with");
+    long ends_with(const char *text, const char *suffix) asm("__rust_ends_with");
+    std::string &trim(std::string &s) asm("__rust_trim");
+    std::string &trim_start(std::string &s) asm("__rust_trim_start");
+    std::string &trim_end(std::string &s) asm("__rust_trim_end");
+    std::string &replace(std::string &s, const char *from, const char *to) asm("__rust_replace");
+    std::string &repeat(std::string &s, long count) asm("__rust_repeat");
+    long len(const char *text) asm("__rust_len");
+    long is_empty(const char *text) asm("__rust_is_empty");
+    void split(array out, const char *text, const char *delim) asm("__rust_split");
+    void split_whitespace(array out, const char *text) asm("__rust_split_whitespace");
+    std::string &join(std::string &result, array values, const char *sep) asm("__rust_join");
+    std::string &first(std::string &result, array values) asm("__rust_first");
+    std::string &last(std::string &result, array values) asm("__rust_last");
+    std::string &get(std::string &result, array values, long idx) asm("__rust_get");
+    void push(array values, const char *value) asm("__rust_push");
+    std::string &pop(std::string &result, array values) asm("__rust_pop");
+}

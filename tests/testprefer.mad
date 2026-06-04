@@ -1,5 +1,9 @@
 #!/usr/bin/env madc
 #include <iostream>
+#include <string>
+#include <ns_php>
+#include <ns_perl>
+#include <ns_rust>
 using namespace std;
 
 // Prefer-directive coverage: this lives at file scope and must

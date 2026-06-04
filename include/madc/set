@@ -6,14 +6,12 @@
 // defined here and compiled through the class model.
 //
 // Implementation: a flat array with linear search (madc's own simple set, not
-// a balanced tree). insert() dedups. String elements compare via std::string
-// operator== (bound to the extern-C runtime wrapper string_equals, since
-// libstdc++'s std::operator== for strings is an inlined weak template symbol
-// that is not dlsym-exportable). The search loop is inlined into each method
-// rather than factored into a private __find(): madc does not yet support an
-// unqualified sibling-method call from inside a class method. An operator on a
-// subscript element (`data[i] == v`) IS now a supported parse form, so the
-// search compares the element directly (no copy-to-local).
+// a balanced tree). insert() dedups. Elements compare through operator==. The
+// search loop is inlined into each method rather than factored into a private
+// __find(): madc does not yet support an unqualified sibling-method call from
+// inside a class method. An operator on a subscript element (`data[i] == v`) IS
+// now a supported parse form, so the search compares the element directly (no
+// copy-to-local).
 #include <stdlib.h>
 #include <string.h>
 namespace std {

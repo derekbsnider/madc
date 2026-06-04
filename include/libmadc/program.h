@@ -25,8 +25,7 @@ public:
 	boolean,
 	integer,
 	real,
-	c_string,
-	string_object
+	c_string
     };
 
     struct native_signature
@@ -217,32 +216,6 @@ struct callback_type_map<const char *>
     static program::native_type native() { return program::native_type::c_string; }
     static const char *from_low(const char *v) { return v; }
     static const char *to_low(const char *v) { return v; }
-};
-
-template <>
-struct callback_type_map<std::string>
-{
-    typedef std::string *low_type;
-    static program::native_type native() { return program::native_type::string_object; }
-    static std::string from_low(std::string *v) { return v ? *v : std::string(); }
-    static std::string *to_low(const std::string &v)
-    {
-	static thread_local std::string storage;
-	storage = v;
-	return &storage;
-    }
-};
-
-template <>
-struct callback_type_map<const std::string &>
-{
-    typedef std::string *low_type;
-    static program::native_type native() { return program::native_type::string_object; }
-    static const std::string &from_low(std::string *v)
-    {
-	static const std::string empty;
-	return v ? *v : empty;
-    }
 };
 
 template <typename Ret, typename... Args>

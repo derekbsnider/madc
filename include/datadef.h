@@ -7,11 +7,15 @@
 #define __DATADEF_H 1
 
 #include <cstdint>
+#include <iostream>
 #include <map>
 #include <set>
 #include <vector>
 
 extern thread_local bool madc_verbose;
+#ifndef DBG
+#define DBG(x) do { if (madc_verbose) { x; } } while (0)
+#endif
 // JIT/codegen optimization level (0-3), set by the `-O<n>` CLI flag. Drives
 // both MIR_gen_set_optimize_level and c2mir's compile optimize_level. Default 1.
 extern thread_local int madc_opt_level;
@@ -27,15 +31,7 @@ enum class DataType : uint16_t {
 	dtUINT32, dtINT32, dtUINT64, dtINT64, dtINT=dtINT32,
 	dtFLOAT=12, dtFLOAT32=dtFLOAT, dtDOUBLE, dtDOUBLE64=dtDOUBLE,
 	dtLDOUBLE, dtDOUBLE80 = dtLDOUBLE, dtSIMD, dtRESERVED = 255,
-	// complex and valarray
-	// some Standard C++ classes
-	// std::string is no longer here — it is a generic class tagged dtRESERVED,
-	// recognized by class identity (P2.14). dtISTREAM is now the first value
-	// after dtRESERVED; the ptr/ref lists below shift in lockstep, preserving
-	// the rtPtr(+10000)/rtRef(+20000) relationship.
-	dtISTREAM = 256, dtOSTREAM, dtISSTREAM, dtOSSTREAM, dtSSTREAM,
-	dtIFSTREAM, dtOFSTREAM, dtFSTREAM, dtTCPSTREAM,
-	dtMUTEX, dtTHREAD, dtTHISTHREAD,
+	dtMUTEX = 256, dtTHREAD, dtTHISTHREAD,
 	dtARRAY,
 
 	// rtPointer variants
@@ -44,9 +40,7 @@ enum class DataType : uint16_t {
 	dtUINT32ptr, dtINT32ptr, dtUINT64ptr, dtINT64ptr, dtINTptr=dtINT32ptr,
 	dtFLOATptr, dtFLOAT32ptr=dtFLOATptr, dtDOUBLEptr, dtDOUBLE64ptr=dtDOUBLEptr,
 	dtLDOUBLEptr, dtDOUBLE80ptr=dtLDOUBLEptr, dtRESERVEDptr = 10255,
-	dtISTREAMptr = 10256, dtOSTREAMptr, dtISSTREAMptr, dtOSSTREAMptr, dtSSTREAMptr,
-	dtIFSTREAMptr, dtOFSTREAMptr, dtFSTREAMptr, dtTCPSTREAMptr,
-	dtMUTEXptr, dtTHREADptr, dtTHISTHREADptr,
+	dtMUTEXptr = 10256, dtTHREADptr, dtTHISTHREADptr,
 	dtARRAYptr,
 
 	// rtReference variants
@@ -55,9 +49,7 @@ enum class DataType : uint16_t {
 	dtUINT32ref, dtINT32ref, dtUINT64ref, dtINT64ref, dtINTref=dtINT32ref,
 	dtFLOATref, dtFLOAT32ref=dtFLOATref, dtDOUBLEref, dtDOUBLE64ref=dtDOUBLEref,
 	dtLDOUBLEref, dtDOUBLE80ref=dtLDOUBLEref, dtRESERVEDref = 20255,
-	dtISTREAMref = 20256, dtOSTREAMref, dtISSTREAMref, dtOSSTREAMref, dtSSTREAMref,
-	dtIFSTREAMref, dtOFSTREAMref, dtFSTREAMref, dtTCPSTREAMref,
-	dtMUTEXref, dtTHREADref, dtTHISTHREADref,
+	dtMUTEXref = 20256, dtTHREADref, dtTHISTHREADref,
 	dtARRAYref,
 };
 
@@ -117,18 +109,6 @@ public:
 
 	return false;
     }
-    // Class-identity marker for std::string. Recognizing std::string by a
-    // dedicated raw type-code was the residual special-casing P2.14 removed — a
-    // std::string is a real C++ class (like vector/map/set) and should be
-    // recognized by its CLASS IDENTITY, not a reserved enum tag. The two
-    // std::string DataDef classes (DataDefSTRING / DataDefSTRINGref) override
-    // this to return true; everything else inherits false. The std::string tag is
-    // now gone — DataDefSTRING carries the generic dtRESERVED class tag — so this
-    // identity marker is the ONLY way string is recognized. Use the
-    // is_std_string()/is_std_string_ref() free recognizers
-    // (below) at call sites — they layer reftype() on top of this marker.
-    virtual bool is_string_class() const { return false; }
-    virtual bool is_string() const { return is_string_class(); }
     virtual bool is_complex() const { return false; }
     virtual bool is_numeric() const
     {
@@ -186,20 +166,12 @@ public:
 	    return true;
 	return false;
     }
-    virtual bool is_object() const
-    {
+	virtual bool is_object() const
+	{
 	if ( basetype() == BaseType::btClass )
 	    return true;
     	switch(rawtype())
     	{
-	    case DataType::dtOSTREAM:
-	    case DataType::dtSSTREAM:
-	    case DataType::dtOSSTREAM:
-	    case DataType::dtFSTREAM:
-	    case DataType::dtOFSTREAM:
-	    case DataType::dtIFSTREAM:
-	    case DataType::dtISTREAM:
-	    case DataType::dtTCPSTREAM:
 	    case DataType::dtARRAY:
 		return true;
 	    default:
@@ -209,33 +181,10 @@ public:
     }
     virtual bool has_ostream()
     {
-    	switch(rawtype())
-    	{
-	    case DataType::dtOSTREAM:
-	    case DataType::dtSSTREAM:
-	    case DataType::dtOSSTREAM:
-	    case DataType::dtFSTREAM:
-	    case DataType::dtOFSTREAM:
-	    case DataType::dtTCPSTREAM:
-		return true;
-	    default:
-		return false;
-    	}
 	return false;
     }
     virtual bool has_istream()
     {
-    	switch(rawtype())
-    	{
-	    case DataType::dtISTREAM:
-	    case DataType::dtSSTREAM:
-	    case DataType::dtISSTREAM:
-	    case DataType::dtFSTREAM:
-	    case DataType::dtIFSTREAM:
-		return true;
-	    default:
-		return false;
-    	}
 	return false;
     }
     virtual size_t alignment() const
@@ -815,6 +764,10 @@ public:
     // Prefers a parameterized (binary) overload; searches the unmangled name then
     // the mangled ClassName__operatorX family, then the base chain. NULL if none.
     DataDef *binary_operator_return_type(const std::string &opname);
+    // Return type of a unary operator method (`operator-`, `operator!`,
+    // `operator++`, etc.). `postfix` selects the parameterized postfix form for
+    // ++/-- and the nullary form otherwise.
+    DataDef *unary_operator_return_type(const std::string &opname, bool postfix);
     void register_extern_ctor_dtor(void *ctor, void *dtor) {
 	extern_ctor = ctor; extern_dtor = dtor; _dtor_ptr = dtor;
     }
@@ -840,22 +793,6 @@ class DataDefUINT32:    public DataDef { public: DataDefUINT32():  DataDef("uint
 class DataDefUINT64:    public DataDef { public: DataDefUINT64():  DataDef("uint64_t", 8, DataType::dtUINT64) {} };
 class DataDefFLOAT:     public DataDef { public: DataDefFLOAT() :  DataDef("float", 4,    DataType::dtFLOAT) {} };
 class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("double", 8,   DataType::dtDOUBLE) {} };
-// std::string is a GENERIC class (P2.14 complete): its DataDef carries the same
-// generic class tag as vector/map/set and user classes — dtRESERVED for the
-// value `string`, dtRESERVEDref for `string&` (so reftype()==rtReference still
-// holds). There is NO dedicated std::string tag any more. std::string is recognized
-// purely by CLASS IDENTITY via the is_string_class() virtual / the is_std_string*
-// free recognizers, exactly like any other class. as_user_class excludes it (by
-// identity) so it routes through as_object_class to its opaque-buffer + mangled
-// libstdc++ ctor/dtor/method lowering rather than the plain-C-struct path.
-class DataDefSTRING:    public DDClass { public: DataDefSTRING():  DDClass("string", sizeof(std::string), DataType::dtRESERVED) {} virtual bool is_string_class() const { return true; } };
-class DataDefSTRINGref: public DDClass { public: DataDefSTRINGref(): DDClass("string&", sizeof(std::string &), DataType::dtRESERVEDref) {} virtual bool is_string_class() const { return true; } };
-class DataDefISTREAM:   public DDClass { public: DataDefISTREAM(): DDClass("istream", sizeof(std::istream), DataType::dtISTREAM) {} };
-class DataDefOSTREAM:   public DDClass { public: DataDefOSTREAM(): DDClass("ostream", sizeof(std::ostream), DataType::dtOSTREAM) {} };
-class DataDefSSTREAM:   public DDClass { public: DataDefSSTREAM(): DDClass("stringstream", sizeof(std::stringstream), DataType::dtSSTREAM) {} };
-class DataDefIFSTREAM:  public DDClass { public: DataDefIFSTREAM():DDClass("ifstream", sizeof(std::ifstream), DataType::dtIFSTREAM) {} };
-class DataDefOFSTREAM:  public DDClass { public: DataDefOFSTREAM():DDClass("ofstream", sizeof(std::ofstream), DataType::dtOFSTREAM) {} };
-class DataDefFSTREAM:   public DDClass { public: DataDefFSTREAM(): DDClass("fstream", sizeof(std::fstream), DataType::dtFSTREAM) {} };
 class DataDefLPSTR:     public DataDef { public: DataDefLPSTR():   DataDef("LPSTR", sizeof(char *), rtPtr(DataType::dtCHAR)) {} };
 
 // generic pointer-to-type — tracks what the pointer points to
@@ -869,12 +806,6 @@ public:
     virtual bool is_pointer() const { return true; }
     virtual bool is_numeric() const { return true; }
     virtual bool is_integer() const { return true; }
-    // A pointer/ref to a std::string (`string*`, and the `string&` loop-var
-    // model getPointerType(ddSTRING)+vfREFERENCE) carries the string identity
-    // through its base_type. Mirrors the legacy is_string() which decoded the
-    // std::string* rawtype to std::string. The value-vs-pointer distinction stays
-    // via is_pointer() / the vfREFERENCE Variable flag, exactly as before P2.14.
-    virtual bool is_string_class() const { return base_type && base_type->is_string_class(); }
 };
 
 class DataDefCArray : public DataDef
@@ -1113,60 +1044,16 @@ extern DataDefUINT32 ddUINT32;
 extern DataDefUINT64 ddUINT64;
 extern DataDefFLOAT ddFLOAT;
 extern DataDefDOUBLE ddDOUBLE;
-extern DataDefSTRING ddSTRING;
-extern DataDefSTRINGref ddSTRINGref;
 extern DataDefLPSTR ddLPSTR;
 
-// ---- std::string class-identity recognizers (P2.14) -------------------------
-// Recognize a std::string by CLASS IDENTITY (the is_string_class() virtual)
-// rather than the raw std::string / std::string& type-code, so the recognition is
-// principled and survives retiring those enum tags. These are the canonical
-// replacements for the scattered `rawtype()==std::string` / `==std::string&`
-// checks. A std::string DataDef may appear by value, by reference (T&), or by
-// pointer (T*) — these helpers distinguish those forms via reftype().
-
-// True for ANY std::string DataDef regardless of ref/pointer form (value,
-// string&, string*). The broad "is this a string at all?" predicate.
-static inline bool is_std_string(const DataDef *dd)
-{
-	return dd && dd->is_string_class();
-}
-
-// True only for a std::string REFERENCE (string& — DataDefSTRINGref, or a
-// string DataDef whose reftype() is rtReference). Replaces the old
-// `rawtype()==std::string&` checks. Note that the dedicated DataDefSTRINGref
-// singleton answers rtReference via its tag today; after Phase 4 it carries
-// the same identity marker, so this stays correct.
-static inline bool is_std_string_ref(const DataDef *dd)
-{
-	return dd && dd->is_string_class()
-	    && dd->reftype() == RefType::rtReference;
-}
-
-// True for a std::string VALUE object (not a reference, not a pointer) — the
-// receiver that owns the operators/methods. Replaces `rawtype()==std::string`
-// where the intent was specifically "a string value/object" (e.g. copy-ctor
-// param matching, by-value receiver dispatch).
-static inline bool is_std_string_value(const DataDef *dd)
-{
-	return dd && dd->is_string_class()
-	    && dd->reftype() == RefType::rtValue;
-}
-
 extern DataDefPTR ddVOIDptr, ddCHARptr, ddINTptr, ddINT32ptr;
-extern DataDefISTREAM ddISTREAM;
-extern DataDefOSTREAM ddOSTREAM;
-extern DataDefSSTREAM ddSSTREAM;
-extern DataDefIFSTREAM ddIFSTREAM;
-extern DataDefOFSTREAM ddOFSTREAM;
-extern DataDefFSTREAM ddFSTREAM;
 extern DataDefARRAY ddARRAY;
 
 #if 1
 class DataDefTEST:      public DataDefSTRUCT { public: DataDefTEST():
 	DataDefSTRUCT("teststruct",
 	{
-		{"name", &ddSTRING},
+		{"name", &ddCHARptr},
 		{"id",   &ddINT},
 		{"age",  &ddUINT8},
 		{"sex",  &ddUINT8}

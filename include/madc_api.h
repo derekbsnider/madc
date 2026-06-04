@@ -33,8 +33,8 @@ typedef struct madc_value
     int boolean_value;
     int64_t integer_value;
     double real_value;
-    char *string_value;
-    size_t string_length;
+    char *text_value;
+    size_t text_length;
 } madc_value;
 
 typedef enum madc_authority_mode
@@ -73,8 +73,7 @@ typedef enum madc_native_type
     MADC_NATIVE_BOOLEAN = 1,
     MADC_NATIVE_INTEGER = 2,
     MADC_NATIVE_REAL = 3,
-    MADC_NATIVE_C_STRING = 4,
-    MADC_NATIVE_STRING_OBJECT = 5
+    MADC_NATIVE_C_STRING = 4
 } madc_native_type;
 
 /* ------------------------------------------------------------------ */
@@ -347,10 +346,10 @@ int madc_value_set_null(madc_value *value);
 int madc_value_set_bool(madc_value *value, int boolean_value);
 int madc_value_set_integer(madc_value *value, int64_t integer_value);
 int madc_value_set_real(madc_value *value, double real_value);
-int madc_value_set_string(madc_value *value, const char *string_value);
+int madc_value_set_string(madc_value *value, const char *text_value);
 int madc_value_set_string_n(madc_value *value,
-			    const char *string_value,
-			    size_t string_length);
+			    const char *text_value,
+			    size_t text_length);
 
 const char *madc_value_kind_name(madc_value_kind kind);
 const char *madc_error_severity_name(madc_error_severity severity);

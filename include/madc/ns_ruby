@@ -1,0 +1,14 @@
+namespace ruby {
+    std::string &squeeze(std::string &s) asm("__rb_squeeze");
+    std::string &tr(std::string &s, const char *from, const char *to) asm("__rb_tr");
+    void chars(array out, const char *text) asm("__rb_chars");
+    std::string &capitalize(std::string &s) asm("__rb_capitalize");
+    std::string &delete(std::string &s, const char *chars) asm("__rb_delete");
+    long count(const char *text, const char *chars) asm("__rb_count");
+    long include(const char *text, const char *substr) asm("__rb_include");
+    std::string &gsub(std::string &s, const char *pattern, const char *replacement) asm("__rb_gsub");
+    std::string &sub(std::string &s, const char *pattern, const char *replacement) asm("__rb_sub");
+    void rotate(array values, long n) asm("__rb_rotate");
+    void compact(array values) asm("__rb_compact");
+    void flatten(array values, const char *text) asm("__rb_flatten");
+}

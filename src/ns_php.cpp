@@ -32,65 +32,64 @@ using namespace std;
 // ---- C++ wrapper functions called by JIT ----
 
 // php::trim — trim whitespace from both ends (no C/C++ equivalent)
-void *php_trim(void *ptr)
+std::string *php_trim(std::string *ptr)
 {
-	ns_common::trim(*(std::string *)ptr, true, true);
+	ns_common::trim(*ptr, true, true);
 	return ptr;
 }
 
 // php::ltrim — trim whitespace from left
-void *php_ltrim(void *ptr)
+std::string *php_ltrim(std::string *ptr)
 {
-	ns_common::trim(*(std::string *)ptr, true, false);
+	ns_common::trim(*ptr, true, false);
 	return ptr;
 }
 
 // php::rtrim — trim whitespace from right
-void *php_rtrim(void *ptr)
+std::string *php_rtrim(std::string *ptr)
 {
-	ns_common::trim(*(std::string *)ptr, false, true);
+	ns_common::trim(*ptr, false, true);
 	return ptr;
 }
 
 // php::ucfirst — capitalize first character
-void *php_ucfirst(void *ptr)
+std::string *php_ucfirst(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	if ( !s.empty() )
 		s[0] = toupper(s[0]);
 	return ptr;
 }
 
 // php::lcfirst — lowercase first character
-void *php_lcfirst(void *ptr)
+std::string *php_lcfirst(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	if ( !s.empty() )
 		s[0] = tolower(s[0]);
 	return ptr;
 }
 
 // php::str_repeat — repeat string n times
-void *php_str_repeat(void *ptr, int64_t count)
+std::string *php_str_repeat(std::string *ptr, int64_t count)
 {
-	ns_common::repeat(*(std::string *)ptr, count);
+	ns_common::repeat(*ptr, count);
 	return ptr;
 }
 
 // php::str_replace — replace all occurrences of search with replace in subject
-void *php_str_replace(void *search, void *replace, void *subject)
+std::string *php_str_replace(std::string *search, std::string *replace,
+			     std::string *subject)
 {
-	ns_common::replace_all(*(std::string *)subject,
-			       *(std::string *)search,
-			       *(std::string *)replace);
+	ns_common::replace_all(*subject, *search, *replace);
 	return subject;
 }
 
 // php::str_pad — pad string to a given length (default right-pad with spaces)
-void *php_str_pad(void *ptr, int64_t length, void *pad_str)
+std::string *php_str_pad(std::string *ptr, int64_t length, std::string *pad_str)
 {
-	std::string &s = *(std::string *)ptr;
-	std::string &pad = *(std::string *)pad_str;
+	std::string &s = *ptr;
+	std::string &pad = *pad_str;
 	if ( pad.empty() || (int64_t)s.length() >= length )
 		return ptr;
 	while ( (int64_t)s.length() < length )
@@ -102,9 +101,9 @@ void *php_str_pad(void *ptr, int64_t length, void *pad_str)
 }
 
 // php::str_word_count — count words in string
-int64_t php_str_word_count(void *ptr)
+int64_t php_str_word_count(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	int64_t count = 0;
 	bool in_word = false;
 	for ( size_t i = 0; i < s.length(); ++i )
@@ -121,9 +120,9 @@ int64_t php_str_word_count(void *ptr)
 }
 
 // php::nl2br — convert newlines to "<br>\n"
-void *php_nl2br(void *ptr)
+std::string *php_nl2br(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	std::string result;
 	result.reserve(s.length() * 2);
 	for ( size_t i = 0; i < s.length(); ++i )
@@ -144,9 +143,9 @@ void *php_nl2br(void *ptr)
 }
 
 // php::str_rot13 — ROT13 encoding
-void *php_str_rot13(void *ptr)
+std::string *php_str_rot13(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	for ( size_t i = 0; i < s.length(); ++i )
 	{
 		char c = s[i];
@@ -159,10 +158,11 @@ void *php_str_rot13(void *ptr)
 }
 
 // php::chunk_split — insert separator every chunklen characters
-void *php_chunk_split(void *ptr, int64_t chunklen, void *separator)
+std::string *php_chunk_split(std::string *ptr, int64_t chunklen,
+			     std::string *separator)
 {
-	std::string &s = *(std::string *)ptr;
-	std::string &sep = *(std::string *)separator;
+	std::string &s = *ptr;
+	std::string &sep = *separator;
 	if ( chunklen <= 0 || s.empty() ) return ptr;
 	std::string result;
 	result.reserve(s.length() + (s.length() / chunklen + 1) * sep.length());
@@ -176,10 +176,11 @@ void *php_chunk_split(void *ptr, int64_t chunklen, void *separator)
 }
 
 // php::number_format — format number with thousands separator
-void *php_number_format(void *result, int64_t number, void *thousands_sep)
+std::string *php_number_format(std::string *result, int64_t number,
+			       std::string *thousands_sep)
 {
-	std::string &sep = *(std::string *)thousands_sep;
-	std::string &res = *(std::string *)result;
+	std::string &sep = *thousands_sep;
+	std::string &res = *result;
 	bool negative = number < 0;
 	if ( negative ) number = -number;
 	std::string digits = std::to_string(number);
@@ -197,10 +198,10 @@ void *php_number_format(void *result, int64_t number, void *thousands_sep)
 }
 
 // php::wordwrap — wrap text at specified width
-void *php_wordwrap(void *ptr, int64_t width, void *brk)
+std::string *php_wordwrap(std::string *ptr, int64_t width, std::string *brk)
 {
-	std::string &s = *(std::string *)ptr;
-	std::string &br = *(std::string *)brk;
+	std::string &s = *ptr;
+	std::string &br = *brk;
 	if ( width <= 0 ) return ptr;
 	std::string result;
 	int64_t col = 0;
@@ -226,55 +227,52 @@ void *php_wordwrap(void *ptr, int64_t width, void *brk)
 // ---- MadArray-based functions ----
 
 // php::explode — split string by delimiter into array
-void *php_explode(void *arr, void *delim, void *str)
+void php_explode(MadArray *arr, const char *delim, const char *str)
 {
-	ns_common::split_by_delim(*(MadArray *)arr,
-				  *(std::string *)str,
-				  *(std::string *)delim);
-	return arr;
+	const char *s = (const char *)str;
+	const char *d = (const char *)delim;
+	ns_common::split_by_delim(*arr,
+				  std::string(s ? s : ""),
+				  std::string(d ? d : ""));
 }
 
 // php::implode — join array elements with glue string
-void *php_implode(void *result, void *glue, void *arr)
+std::string *php_implode(std::string *result, const char *glue, MadArray *arr)
 {
-	ns_common::join_with_sep(*(std::string *)result,
-				 *(MadArray *)arr,
-				 *(std::string *)glue);
+	ns_common::join_with_sep(*result, *arr, std::string(glue ? glue : ""));
 	return result;
 }
 
 // php::count — return number of elements
-int64_t php_count(void *arr)
+int64_t php_count(MadArray *arr)
 {
-	return (int64_t)((MadArray *)arr)->count();
+	return (int64_t)arr->count();
 }
 
 // php::array_push — append value (string) to array
-void *php_array_push_str(void *arr, void *str)
+void php_array_push_str(MadArray *arr, const char *str)
 {
-	((MadArray *)arr)->push(MadValue(*(std::string *)str));
-	return arr;
+	const char *s = (const char *)str;
+	arr->push(MadValue(std::string(s ? s : "")));
 }
 
 // php::array_push_int — append integer to array
-void *php_array_push_int(void *arr, int64_t val)
+void php_array_push_int(MadArray *arr, int64_t val)
 {
-	((MadArray *)arr)->push(MadValue(val));
-	return arr;
+	arr->push(MadValue(val));
 }
 
 // php::array_push_array — append nested array by deep copy
-void *php_array_push_array(void *arr, void *value)
+void php_array_push_array(MadArray *arr, MadArray *value)
 {
-	((MadArray *)arr)->push(MadValue(*(MadArray *)value));
-	return arr;
+	arr->push(MadValue(*value));
 }
 
 // php::array_pop — remove and return last element as string
-void *php_array_pop(void *result, void *arr)
+std::string *php_array_pop(std::string *result, MadArray *arr)
 {
-	MadValue v = ((MadArray *)arr)->pop();
-	std::string &res = *(std::string *)result;
+	MadValue v = arr->pop();
+	std::string &res = *result;
 	if ( v.is_string() )
 		res = v.as_string();
 	else if ( v.is_int() )
@@ -285,10 +283,10 @@ void *php_array_pop(void *result, void *arr)
 }
 
 // php::array_get — get element at integer index as string
-void *php_array_get(void *result, void *arr, int64_t index)
+std::string *php_array_get(std::string *result, MadArray *arr, int64_t index)
 {
-	MadArray &a = *(MadArray *)arr;
-	std::string &res = *(std::string *)result;
+	MadArray &a = *arr;
+	std::string &res = *result;
 	if ( index < 0 || (size_t)index >= a.data.size() )
 	{
 		res.clear();
@@ -307,9 +305,9 @@ void *php_array_get(void *result, void *arr, int64_t index)
 }
 
 // php::array_get_int — get element at integer index as int
-int64_t php_array_get_int(void *arr, int64_t index)
+int64_t php_array_get_int(MadArray *arr, int64_t index)
 {
-	MadArray &a = *(MadArray *)arr;
+	MadArray &a = *arr;
 	if ( index < 0 || (size_t)index >= a.data.size() )
 		return 0;
 	MadValue &v = a.data[(size_t)index];
@@ -319,19 +317,39 @@ int64_t php_array_get_int(void *arr, int64_t index)
 	return 0;
 }
 
-// php::array_reverse — reverse array in place
-void *php_array_reverse(void *arr)
+const char *php_array_get_cstr(MadArray *arr, int64_t index)
 {
-	MadArray &a = *(MadArray *)arr;
+	thread_local std::string res;
+	MadArray &a = *arr;
+	if ( index < 0 || (size_t)index >= a.data.size() )
+	{
+		res.clear();
+		return res.c_str();
+	}
+	MadValue &v = a.data[(size_t)index];
+	if ( v.is_string() )
+		res = v.as_string();
+	else if ( v.is_int() )
+		res = std::to_string(v.as_int());
+	else if ( v.is_double() )
+		res = std::to_string(v.as_double());
+	else
+		res.clear();
+	return res.c_str();
+}
+
+// php::array_reverse — reverse array in place
+void php_array_reverse(MadArray *arr)
+{
+	MadArray &a = *arr;
 	std::reverse(a.data.begin(), a.data.end());
-	return arr;
 }
 
 // php::in_array — check if value exists in array (string comparison)
-int64_t php_in_array(void *needle, void *arr)
+int64_t php_in_array(const char *needle, MadArray *arr)
 {
-	std::string &n = *(std::string *)needle;
-	MadArray &a = *(MadArray *)arr;
+	std::string n(needle ? needle : "");
+	MadArray &a = *arr;
 	for ( auto &v : a.data )
 		if ( v.is_string() && v.as_string() == n )
 			return 1;
@@ -339,10 +357,10 @@ int64_t php_in_array(void *needle, void *arr)
 }
 
 // php::array_search — find index of value in array, returns -1 if not found
-int64_t php_array_search(void *needle, void *arr)
+int64_t php_array_search(const char *needle, MadArray *arr)
 {
-	std::string &n = *(std::string *)needle;
-	MadArray &a = *(MadArray *)arr;
+	std::string n(needle ? needle : "");
+	MadArray &a = *arr;
 	for ( size_t i = 0; i < a.data.size(); ++i )
 		if ( a.data[i].is_string() && a.data[i].as_string() == n )
 			return (int64_t)i;
@@ -350,9 +368,9 @@ int64_t php_array_search(void *needle, void *arr)
 }
 
 // php::array_unique — remove duplicate string values
-void *php_array_unique(void *arr)
+void php_array_unique(MadArray *arr)
 {
-	MadArray &a = *(MadArray *)arr;
+	MadArray &a = *arr;
 	std::vector<MadValue> unique;
 	for ( auto &v : a.data )
 	{
@@ -366,14 +384,13 @@ void *php_array_unique(void *arr)
 		if ( !found ) unique.push_back(v);
 	}
 	a.data = unique;
-	return arr;
 }
 
 // php::array_shift — remove first element, shift rest down
-void *php_array_shift(void *result, void *arr)
+std::string *php_array_shift(std::string *result, MadArray *arr)
 {
-	MadArray &a = *(MadArray *)arr;
-	std::string &res = *(std::string *)result;
+	MadArray &a = *arr;
+	std::string &res = *result;
 	if ( a.data.empty() ) { res.clear(); return result; }
 	MadValue v = a.data.front();
 	a.data.erase(a.data.begin());
@@ -384,17 +401,16 @@ void *php_array_shift(void *result, void *arr)
 }
 
 // php::array_unshift — prepend value to beginning
-void *php_array_unshift(void *arr, void *str)
+void php_array_unshift(MadArray *arr, const char *str)
 {
-	MadArray &a = *(MadArray *)arr;
-	a.data.insert(a.data.begin(), MadValue(*(std::string *)str));
-	return arr;
+	const char *s = (const char *)str;
+	arr->data.insert(arr->data.begin(), MadValue(std::string(s ? s : "")));
 }
 
 // php::sort — sort array (string comparison)
-void *php_sort(void *arr)
+void php_sort(MadArray *arr)
 {
-	MadArray &a = *(MadArray *)arr;
+	MadArray &a = *arr;
 	std::sort(a.data.begin(), a.data.end(), [](const MadValue &a, const MadValue &b) {
 		if ( a.is_string() && b.is_string() )
 			return a.as_string() < b.as_string();
@@ -402,22 +418,20 @@ void *php_sort(void *arr)
 			return a.as_int() < b.as_int();
 		return false;
 	});
-	return arr;
 }
 
 // php::rsort — sort array in reverse
-void *php_rsort(void *arr)
+void php_rsort(MadArray *arr)
 {
 	php_sort(arr);
 	php_array_reverse(arr);
-	return arr;
 }
 
 // php::array_slice — extract a slice of the array
-void *php_array_slice(void *dest, void *src, int64_t offset, int64_t length)
+void php_array_slice(MadArray *dest, MadArray *src, int64_t offset, int64_t length)
 {
-	MadArray &d = *(MadArray *)dest;
-	MadArray &s = *(MadArray *)src;
+	MadArray &d = *dest;
+	MadArray &s = *src;
 	d.data.clear();
 	d.assoc.clear();
 	if ( offset < 0 ) offset = (int64_t)s.data.size() + offset;
@@ -426,29 +440,27 @@ void *php_array_slice(void *dest, void *src, int64_t offset, int64_t length)
 	if ( length < 0 ) length = 0;
 	for ( int64_t i = offset; i < offset + length && (size_t)i < s.data.size(); ++i )
 		d.data.push_back(s.data[(size_t)i]);
-	return dest;
 }
 
 // php::array_merge — merge two arrays
-void *php_array_merge(void *dest, void *src)
+void php_array_merge(MadArray *dest, MadArray *src)
 {
-	MadArray &d = *(MadArray *)dest;
-	MadArray &s = *(MadArray *)src;
+	MadArray &d = *dest;
+	MadArray &s = *src;
 	for ( auto &v : s.data )
 		d.data.push_back(v);
-	return dest;
 }
 
 
 // php::array_column — extract one integer-indexed column from nested arrays
-void *php_array_column(void *dest, void *src, int64_t column_index)
+void php_array_column(MadArray *dest, MadArray *src, int64_t column_index)
 {
-	MadArray &d = *(MadArray *)dest;
-	MadArray &s = *(MadArray *)src;
+	MadArray &d = *dest;
+	MadArray &s = *src;
 	d.data.clear();
 	d.assoc.clear();
 	if ( column_index < 0 )
-		return dest;
+		return;
 	for ( auto &row : s.data )
 	{
 		if ( !row.is_array() )
@@ -461,214 +473,45 @@ void *php_array_column(void *dest, void *src, int64_t column_index)
 		if ( ns_common::value_to_string(row_arr.data[idx], value) )
 			d.push(MadValue(value));
 	}
-	return dest;
-}
-
-// ---- Namespace registration ----
-
-// std::for_each — iterate array, call function pointer per element (string version)
-void std_for_each(void *arr, int64_t fn_ptr)
-{
-    MadArray &a = *(MadArray *)arr;
-    typedef void (*fn_str_t)(void *);
-    fn_str_t fn = (fn_str_t)fn_ptr;
-
-    for ( size_t i = 0; i < a.data.size(); ++i )
-    {
-	MadValue &v = a.data[i];
-	if ( v.is_string() )
-	{
-	    std::string s = v.as_string();
-	    fn(&s);
-	}
-	else if ( v.is_int() )
-	{
-	    // convert int to string for the callback
-	    std::string s = std::to_string(v.as_int());
-	    fn(&s);
-	}
-	else if ( v.is_double() )
-	{
-	    std::string s = std::to_string(v.as_double());
-	    fn(&s);
-	}
-    }
-}
-
-void Program::add_php_namespace()
-{
-	variable_map_t &php_ns = namespace_map["php"];
-	Variable *var;
-
-	// trim family — no C/C++ equivalent
-	var = addFunction("__php_trim",           datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_trim);
-	if (var) php_ns["trim"] = var;
-
-	var = addFunction("__php_ltrim",          datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_ltrim);
-	if (var) php_ns["ltrim"] = var;
-
-	var = addFunction("__php_rtrim",          datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_rtrim);
-	if (var) { php_ns["rtrim"] = var; php_ns["chop"] = var; } // chop is alias for rtrim in PHP
-
-	// case manipulation — ucfirst/lcfirst are PHP-unique
-	var = addFunction("__php_ucfirst",        datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_ucfirst);
-	if (var) php_ns["ucfirst"] = var;
-
-	var = addFunction("__php_lcfirst",        datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_lcfirst);
-	if (var) php_ns["lcfirst"] = var;
-
-	// string building
-	var = addFunction("__php_str_repeat",     datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64}, (fVOIDFUNC)php_str_repeat);
-	if (var) php_ns["str_repeat"] = var;
-
-	var = addFunction("__php_str_replace",    datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)php_str_replace);
-	if (var) php_ns["str_replace"] = var;
-
-	var = addFunction("__php_str_pad",        datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)php_str_pad);
-	if (var) php_ns["str_pad"] = var;
-
-	// text analysis
-	var = addFunction("__php_str_word_count", datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)php_str_word_count);
-	if (var) php_ns["str_word_count"] = var;
-
-	// text transformation
-	var = addFunction("__php_nl2br",          datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_nl2br);
-	if (var) php_ns["nl2br"] = var;
-
-	var = addFunction("__php_str_rot13",      datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_str_rot13);
-	if (var) php_ns["str_rot13"] = var;
-
-	var = addFunction("__php_chunk_split",    datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)php_chunk_split);
-	if (var) php_ns["chunk_split"] = var;
-
-	// formatting
-	var = addFunction("__php_number_format",  datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)php_number_format);
-	if (var) php_ns["number_format"] = var;
-
-	var = addFunction("__php_wordwrap",       datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)php_wordwrap);
-	if (var) php_ns["wordwrap"] = var;
-
-	// ---- MadArray functions ----
-
-	// explode(arr, delim, str) — split string into array
-	var = addFunction("__php_explode",        datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING, &ddSTRING}, (fVOIDFUNC)php_explode);
-	if (var) php_ns["explode"] = var;
-
-	// implode(result, glue, arr) — join array into string
-	var = addFunction("__php_implode",        datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_implode);
-	if (var) php_ns["implode"] = var;
-
-	// count(arr) — number of elements
-	var = addFunction("__php_count",          datatype_vec_t{DataType::dtINT64, DataType::dtARRAY}, (fVOIDFUNC)php_count);
-	if (var) php_ns["count"] = var;
-
-	// array_push(arr, str) — append string
-	var = addFunction("__php_array_push",     datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)php_array_push_str);
-	if (var) php_ns["array_push"] = var;
-
-	// array_push_int(arr, int) — append int
-	var = addFunction("__php_array_push_int", datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_push_int);
-	if (var) php_ns["array_push_int"] = var;
-
-	// array_push_array(arr, value) — append nested array
-	var = addFunction("__php_array_push_array", datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_array_push_array);
-	if (var) php_ns["array_push_array"] = var;
-
-	// array_pop(result, arr) — remove last, return as string
-	var = addFunction("__php_array_pop",      datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_pop);
-	if (var) php_ns["array_pop"] = var;
-
-	// array_get(result, arr, index) — get element as string
-	var = addFunction("__php_array_get",      datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_get);
-	if (var) php_ns["array_get"] = var;
-
-	// array_get_int(arr, index) — get element as int
-	var = addFunction("__php_array_get_int",  datatype_vec_t{DataType::dtINT64, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_get_int);
-	if (var) php_ns["array_get_int"] = var;
-
-	// array_reverse(arr)
-	var = addFunction("__php_array_reverse",  datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_array_reverse);
-	if (var) php_ns["array_reverse"] = var;
-
-	// in_array(needle, arr) — check if string exists in array
-	var = addFunction("__php_in_array",       datatype_vec_t{DataType::dtINT64, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_in_array);
-	if (var) php_ns["in_array"] = var;
-
-	// array_search(needle, arr) — find index of string, -1 if not found
-	var = addFunction("__php_array_search",   datatype_vec_t{DataType::dtINT64, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_search);
-	if (var) php_ns["array_search"] = var;
-
-	// array_unique(arr) — remove duplicates
-	var = addFunction("__php_array_unique",   datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_array_unique);
-	if (var) php_ns["array_unique"] = var;
-
-	// array_shift(result, arr) — remove first element
-	var = addFunction("__php_array_shift",    datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_shift);
-	if (var) php_ns["array_shift"] = var;
-
-	// array_unshift(arr, str) — prepend value
-	var = addFunction("__php_array_unshift",  datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)php_array_unshift);
-	if (var) php_ns["array_unshift"] = var;
-
-	// sort(arr) — sort ascending
-	var = addFunction("__php_sort",           datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_sort);
-	if (var) php_ns["sort"] = var;
-
-	// rsort(arr) — sort descending
-	var = addFunction("__php_rsort",          datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_rsort);
-	if (var) php_ns["rsort"] = var;
-
-	// array_slice(dest, src, offset, length)
-	var = addFunction("__php_array_slice",    datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtARRAY, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)php_array_slice);
-	if (var) php_ns["array_slice"] = var;
-
-	// array_merge(dest, src) — append src elements to dest
-	var = addFunction("__php_array_merge",    datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_array_merge);
-	if (var) php_ns["array_merge"] = var;
-
-	// array_column(dest, src, index) — extract one integer-indexed column
-	var = addFunction("__php_array_column",   datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_column);
-	if (var) php_ns["array_column"] = var;
-
-	DBG(std::cout << "add_php_namespace() registered php:: with " << php_ns.size() << " members" << std::endl);
 }
 
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
-void *__php_trim(void *a) { return php_trim(a); }
-void *__php_ltrim(void *a) { return php_ltrim(a); }
-void *__php_rtrim(void *a) { return php_rtrim(a); }
-void *__php_ucfirst(void *a) { return php_ucfirst(a); }
-void *__php_lcfirst(void *a) { return php_lcfirst(a); }
-void *__php_str_repeat(void *a, int64_t b) { return php_str_repeat(a, b); }
-void *__php_str_replace(void *a, void *b, void *c) { return php_str_replace(a, b, c); }
-void *__php_str_pad(void *a, int64_t b, void *c) { return php_str_pad(a, b, c); }
-int64_t __php_str_word_count(void *a) { return php_str_word_count(a); }
-void *__php_nl2br(void *a) { return php_nl2br(a); }
-void *__php_str_rot13(void *a) { return php_str_rot13(a); }
-void *__php_chunk_split(void *a, int64_t b, void *c) { return php_chunk_split(a, b, c); }
-void *__php_number_format(void *a, int64_t b, void *c) { return php_number_format(a, b, c); }
-void *__php_wordwrap(void *a, int64_t b, void *c) { return php_wordwrap(a, b, c); }
-void *__php_explode(void *a, void *b, void *c) { return php_explode(a, b, c); }
-void *__php_implode(void *a, void *b, void *c) { return php_implode(a, b, c); }
-int64_t __php_count(void *a) { return php_count(a); }
-void *__php_array_push(void *a, void *b) { return php_array_push_str(a, b); }
-void *__php_array_push_int(void *a, int64_t b) { return php_array_push_int(a, b); }
-void *__php_array_push_array(void *a, void *b) { return php_array_push_array(a, b); }
-void *__php_array_pop(void *a, void *b) { return php_array_pop(a, b); }
-void *__php_array_get(void *a, void *b, int64_t c) { return php_array_get(a, b, c); }
-int64_t __php_array_get_int(void *a, int64_t b) { return php_array_get_int(a, b); }
-void *__php_array_reverse(void *a) { return php_array_reverse(a); }
-int64_t __php_in_array(void *a, void *b) { return php_in_array(a, b); }
-int64_t __php_array_search(void *a, void *b) { return php_array_search(a, b); }
-void *__php_array_unique(void *a) { return php_array_unique(a); }
-void *__php_array_shift(void *a, void *b) { return php_array_shift(a, b); }
-void *__php_array_unshift(void *a, void *b) { return php_array_unshift(a, b); }
-void *__php_sort(void *a) { return php_sort(a); }
-void *__php_rsort(void *a) { return php_rsort(a); }
-void *__php_array_slice(void *a, void *b, int64_t c, int64_t d) { return php_array_slice(a, b, c, d); }
-void *__php_array_merge(void *a, void *b) { return php_array_merge(a, b); }
-void *__php_array_column(void *a, void *b, int64_t c) { return php_array_column(a, b, c); }
+std::string *__php_trim(std::string *a) { return php_trim(a); }
+std::string *__php_ltrim(std::string *a) { return php_ltrim(a); }
+std::string *__php_rtrim(std::string *a) { return php_rtrim(a); }
+std::string *__php_ucfirst(std::string *a) { return php_ucfirst(a); }
+std::string *__php_lcfirst(std::string *a) { return php_lcfirst(a); }
+std::string *__php_str_repeat(std::string *a, int64_t b) { return php_str_repeat(a, b); }
+std::string *__php_str_replace(std::string *a, std::string *b, std::string *c) { return php_str_replace(a, b, c); }
+std::string *__php_str_pad(std::string *a, int64_t b, std::string *c) { return php_str_pad(a, b, c); }
+int64_t __php_str_word_count(std::string *a) { return php_str_word_count(a); }
+std::string *__php_nl2br(std::string *a) { return php_nl2br(a); }
+std::string *__php_str_rot13(std::string *a) { return php_str_rot13(a); }
+std::string *__php_chunk_split(std::string *a, int64_t b, std::string *c) { return php_chunk_split(a, b, c); }
+std::string *__php_number_format(std::string *a, int64_t b, std::string *c) { return php_number_format(a, b, c); }
+std::string *__php_wordwrap(std::string *a, int64_t b, std::string *c) { return php_wordwrap(a, b, c); }
+void __php_explode(MadArray *a, const char *b, const char *c) { php_explode(a, b, c); }
+std::string *__php_implode(std::string *a, const char *b, MadArray *c) { return php_implode(a, b, c); }
+int64_t __php_count(MadArray *a) { return php_count(a); }
+void __php_array_push(MadArray *a, const char *b) { php_array_push_str(a, b); }
+void __php_array_push_int(MadArray *a, int64_t b) { php_array_push_int(a, b); }
+void __php_array_push_array(MadArray *a, MadArray *b) { php_array_push_array(a, b); }
+std::string *__php_array_pop(std::string *a, MadArray *b) { return php_array_pop(a, b); }
+std::string *__php_array_get(std::string *a, MadArray *b, int64_t c) { return php_array_get(a, b, c); }
+int64_t __php_array_get_int(MadArray *a, int64_t b) { return php_array_get_int(a, b); }
+const char *__php_array_get_cstr(MadArray *a, int64_t b) { return php_array_get_cstr(a, b); }
+void __php_array_reverse(MadArray *a) { php_array_reverse(a); }
+int64_t __php_in_array(const char *a, MadArray *b) { return php_in_array(a, b); }
+int64_t __php_array_search(const char *a, MadArray *b) { return php_array_search(a, b); }
+void __php_array_unique(MadArray *a) { php_array_unique(a); }
+std::string *__php_array_shift(std::string *a, MadArray *b) { return php_array_shift(a, b); }
+void __php_array_unshift(MadArray *a, const char *b) { php_array_unshift(a, b); }
+void __php_sort(MadArray *a) { php_sort(a); }
+void __php_rsort(MadArray *a) { php_rsort(a); }
+void __php_array_slice(MadArray *a, MadArray *b, int64_t c, int64_t d) { php_array_slice(a, b, c, d); }
+void __php_array_merge(MadArray *a, MadArray *b) { php_array_merge(a, b); }
+void __php_array_column(MadArray *a, MadArray *b, int64_t c) { php_array_column(a, b, c); }
 // Aliases
-void *__php_chop(void *a) { return php_rtrim(a); }  // chop = rtrim in PHP
+std::string *__php_chop(std::string *a) { return php_rtrim(a); }  // chop = rtrim in PHP
 }

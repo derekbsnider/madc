@@ -1,0 +1,8 @@
+namespace js {
+    std::string &btoa(std::string &result, const char *input) asm("__js_btoa");
+    std::string &atob(std::string &result, const char *input) asm("__js_atob");
+    std::string &encodeURIComponent(std::string &result, const char *input) asm("__js_encodeURIComponent");
+    std::string &decodeURIComponent(std::string &result, const char *input) asm("__js_decodeURIComponent");
+    long parseInt(const char *text, long radix) asm("__js_parseInt");
+    std::string &stringify(std::string &result, array values) asm("__js_stringify");
+}

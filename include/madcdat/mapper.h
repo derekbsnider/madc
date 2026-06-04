@@ -60,7 +60,7 @@ public:
 	truncate
     };
 
-    struct string_limit
+    struct text_limit
     {
 	std::size_t max_bytes = 0;
 	overflow_policy policy = overflow_policy::truncate;
@@ -132,14 +132,14 @@ public:
 	    _layout_mode = layout_mode::logical;
 	return *this;
     }
-    MappingSpec &string_field_limit(const std::string &field_name,
-				    std::size_t max_bytes,
-				    overflow_policy policy = overflow_policy::truncate)
+    MappingSpec &text_field_limit(const std::string &field_name,
+				  std::size_t max_bytes,
+				  overflow_policy policy = overflow_policy::truncate)
     {
-	string_limit lim;
+	text_limit lim;
 	lim.max_bytes = max_bytes;
 	lim.policy = policy;
-	_string_limits[field_name] = lim;
+	_text_limits[field_name] = lim;
 	return *this;
     }
     MappingSpec &tombstone_file(const std::string &path)
@@ -156,7 +156,7 @@ public:
     const std::vector<std::string> &keys() const { return _keys; }
     const std::vector<std::string> &excluded_fields() const { return _excluded_fields; }
     const std::map<std::string, std::string> &field_names() const { return _field_names; }
-    const std::map<std::string, string_limit> &string_limits() const { return _string_limits; }
+    const std::map<std::string, text_limit> &text_limits() const { return _text_limits; }
     bool packed_binary_enabled() const { return _packed_binary; }
     bool document_mode_enabled() const { return _document_mode; }
     SchemaInfo::role dataset_role() const { return _dataset_role; }
@@ -175,7 +175,7 @@ private:
     std::vector<std::string> _keys;
     std::vector<std::string> _excluded_fields;
     std::map<std::string, std::string> _field_names;
-    std::map<std::string, string_limit> _string_limits;
+    std::map<std::string, text_limit> _text_limits;
     bool _packed_binary;
     bool _document_mode;
     SchemaInfo::role _dataset_role;
@@ -255,6 +255,12 @@ public:
     explicit MapperBuilder(const std::string &type_name)
 	: _type_name(type_name)
     {}
+
+    template <typename M>
+    static std::size_t member_storage_size(M T::*)
+    {
+	return sizeof(M);
+    }
 
     template <typename M>
     typename std::enable_if<std::is_integral<M>::value
@@ -393,7 +399,7 @@ public:
 	codec.schema = make_scalar_schema(name,
 					  "string",
 					  SchemaField::kind::text,
-					  sizeof(std::string),
+					  member_storage_size(member),
 					  false,
 					  key,
 					  byte_offset);

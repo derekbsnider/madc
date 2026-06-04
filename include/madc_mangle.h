@@ -72,8 +72,7 @@ std::string itanium_typeinfo_name_string(const std::string &class_name);
 std::string itanium_encode_type_sub(const std::string &cpp_type);
 
 // Mangle a member function on a (possibly template-id) class.
-//   itanium_mangle_member_sub(string_type, "c_str", {}, true)
-//     → "_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE5c_strEv"
+//   itanium_mangle_member_sub(class_type, "size", {}, true)
 std::string itanium_mangle_member_sub(const std::string &qualified_class,
                                        const std::string &member,
                                        const std::vector<std::string> &param_types,
@@ -88,8 +87,7 @@ std::string itanium_mangle_dtor_sub(const std::string &qualified_class);
 
 // Mangle an operator (operator=, operator[], operator+=, …) on a
 // (possibly template-id) class.
-//   itanium_mangle_operator_sub(string_type, "+=", {"const char*"}, false)
-//     → "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEpLEPKc"
+//   itanium_mangle_operator_sub(class_type, "+=", {"const char*"}, false)
 std::string itanium_mangle_operator_sub(const std::string &qualified_class,
                                          const std::string &op,
                                          const std::vector<std::string> &param_types,

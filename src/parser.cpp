@@ -12,6 +12,7 @@
 #include <string.h>
 #include <errno.h>
 #include <math.h>
+#include <ctype.h>
 #include <sys/stat.h>
 #include <syslog.h>
 #include <time.h>
@@ -38,6 +39,12 @@
 #include "madc_mangle.h"
 
 using namespace std;
+
+extern "C" {
+int64_t __madc_regex_match(void *, void *);
+int64_t __madc_regex_search(void *, void *);
+void *__madc_regex_replace(void *, void *, void *, void *);
+}
 
 // Static parse position — inherited by all new tokens automatically
 const char *TokenBase::_parse_file = NULL;
@@ -1385,6 +1392,11 @@ static DataDef *effective_pointer_type_for_member_access(Program &pgm, TokenBase
     return NULL;
 }
 
+static uint32_t member_proxy_flags(uint32_t owner_flags)
+{
+    return owner_flags & ~vfFIXEDARRAY;
+}
+
 static DataDef *deref_type_for_variable(Variable *var)
 {
     if ( !var || !var->type )
@@ -1435,6 +1447,24 @@ static std::string make_nested_function_name(TokenCpnd *scope,
     if ( scope && scope->method )
 	owner = scope->method->returns.name;
     return owner + "__" + local_name + "__" + std::to_string(++nested_counter);
+}
+
+static std::string namespace_function_symbol(const std::string &ns_name,
+					     const std::string &member_name)
+{
+    std::string sym = "__ns_";
+    for ( size_t i = 0; i < ns_name.size(); ++i )
+    {
+	char c = ns_name[i];
+	sym += (isalnum((unsigned char)c) || c == '_') ? c : '_';
+    }
+    sym += "_";
+    for ( size_t i = 0; i < member_name.size(); ++i )
+    {
+	char c = member_name[i];
+	sym += (isalnum((unsigned char)c) || c == '_') ? c : '_';
+    }
+    return sym;
 }
 
 static DataDef *unwrap_subscript_element_type(DataDef *base_type)
@@ -3602,15 +3632,7 @@ DataDefUINT32 ddUINT32;
 DataDefUINT64 ddUINT64;
 DataDefFLOAT ddFLOAT;
 DataDefDOUBLE ddDOUBLE;
-DataDefSTRING ddSTRING;
-DataDefSTRINGref ddSTRINGref;
-DataDefISTREAM ddISTREAM;
-DataDefOSTREAM ddOSTREAM;
-DataDefSSTREAM ddSSTREAM;
 DataDefARRAY ddARRAY;
-DataDefIFSTREAM ddIFSTREAM;
-DataDefOFSTREAM ddOFSTREAM;
-DataDefFSTREAM ddFSTREAM;
 DataDefLPSTR ddLPSTR;
 DataDefPTR ddVOIDptr(ddVOID), ddCHARptr(ddCHAR), ddINTptr(ddINT), ddINT32ptr(ddINT32);
 DataDefAUTO ddAUTO;
@@ -3625,12 +3647,6 @@ void printuint32(uint32_t i)
 {
     std::cout << "i: " << i << std::endl << std::flush;
 }
-
-template<typename T> void streamout_type(std::ostream &os, T t)
-{
-    os << t;
-}
-
 
 void EatSpaces(istream &is)
 {
@@ -3667,77 +3683,17 @@ Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc
     param_vla_side_effect_expr = nullptr;
     if ( init ) { alloc = true; }
     if ( !alloc ) { flags |= vfSTACK; }
-    // std::string backing store: recognized by class IDENTITY (is_std_string),
-    // not the raw type-code, so it allocates a real std::string object (never a
-    // calloc'd raw buffer that string ops/`delete` would crash on) regardless of
-    // the DataDef's tag (P2.14). Handled before the type() switch.
-    if ( is_std_string(type) && !type->is_pointer() )
+    // Size 0 (e.g. FuncDef, void) has no storage. Function-pointer types
+    // (DataDefFPTR, size 8) are a pointer slot and DO need allocation.
+    if ( alloc && count == 1
+      && ((type->basetype() != BaseType::btFunct && type->size > 0)
+	|| dynamic_cast<DataDefFPTR *>(type) != NULL) )
     {
-	if ( init )
-	{
-	    data = new std::string((const char *)init);
-	    flags |= vfALLOC;
-	    DBG(std::cout << "Variable::Variable data = new string for " << n << " (" << *(std::string *)data << ')' << std::endl);
-	}
-	else
-	if ( alloc )
-	{
-	    data = new std::string;
-	    flags |= vfALLOC;
-	}
-	DBG(std::cout << "Variable " << n << " Data address: " << (uint64_t)data << std::endl);
-	return;
+	data = calloc(count, d.size);
+	flags |= vfALLOC;
+	DBG(std::cout << "Variable::Variable data = calloc(" << count << ", " << d.size << ") for " << n << std::endl);
+	DBG(std::cout << "Data address: " << (uint64_t)data << std::endl);
     }
-    switch(type->type())
-    {
-	case DataType::dtSSTREAM:
-	    if ( init )
-	    {
-		data = new std::stringstream((const std::string &)init);
-		flags |= vfALLOC;
-		DBG(std::cout << "Variable::Variable data = new stringstream for " << n << " (" << *(std::string *)init << ')' << std::endl);
-	    }
-	    else
-	    if ( alloc )
-	    {
-		data = new std::stringstream;
-		flags |= vfALLOC;
-		DBG(std::cout << "Variable::Variable data = new stringstream for " << n << std::endl);
-	    }
-	    DBG(std::cout << "Data address: " << (uint64_t)data << std::endl);
-	    break;
-	case DataType::dtISTREAM:
-	    if ( init )
-	    {
-		data = new std::istream((streambuf *)init);
-		flags |= vfALLOC;
-		DBG(std::cout << "Variable::Variable data = new istream for " << n << std::endl);
-		DBG(std::cout << "Data address: " << (uint64_t)data << std::endl);
-	    }
-	    break;
-	case DataType::dtOSTREAM:
-	    if ( init )
-	    {
-		data = new std::ostream((streambuf *)init);
-		flags |= vfALLOC;
-		DBG(std::cout << "Variable::Variable data = new ostream for " << n << std::endl);
-		DBG(std::cout << "Data address: " << (uint64_t)data << std::endl);
-	    }
-	    break;
-	default:
-	    // Size 0 (e.g. FuncDef, void) has no storage. Function-pointer types
-	    // (DataDefFPTR, size 8) are a pointer slot and DO need allocation.
-	    if ( alloc && count == 1
-	      && ((type->basetype() != BaseType::btFunct && type->size > 0)
-	        || dynamic_cast<DataDefFPTR *>(type) != NULL) )
-	    {
-		data = calloc(count, d.size);
-		flags |= vfALLOC;
-		DBG(std::cout << "Variable::Variable data = calloc(" << count << ", " << d.size << ") for " << n << std::endl);
-		DBG(std::cout << "Data address: " << (uint64_t)data << std::endl);
-	    }
-	    break;
-    } // switch
 }
 
 Variable::~Variable()
@@ -3747,19 +3703,7 @@ Variable::~Variable()
 
     DBG(std::cout << "Variable::~Variable(" << name << ") freeing data" << std::endl);
 
-    // Mirror the ctor: a std::string backing store (recognized by identity,
-    // P2.14) is `delete`d as a std::string, not free()d as raw memory.
-    if ( is_std_string(type) && !type->is_pointer() )
-    {
-	delete (std::string *)data;
-	return;
-    }
-    switch(type->type())
-    {
-	case DataType::dtSSTREAM: delete (std::stringstream *)data;	break;
-	case DataType::dtOSTREAM: delete (std::ostream *)data;		break;
-	default:		  free(data);				break;
-    } // switch
+    free(data);
 }
 
 Variable *DataDefCLASS::findMethod(std::string &s)
@@ -3799,7 +3743,7 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	    continue;
 	// Methods are keyed by their MANGLED name (`Box__take`, `Box__take__o2`);
 	// match on the unmangled display name when the FuncDef records one, else
-	// fall back to the raw name (methods registered without it, e.g. ddSTRING).
+	// fall back to the raw name.
 	const std::string &disp = fd->method_display_name.empty()
 				? mv->name : fd->method_display_name;
 	if ( name.compare(disp) != 0 )
@@ -3856,10 +3800,13 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 	if ( fd->parameters.size() > 1 ) return &fd->returns;
     }
     std::string mangled = name + "__" + opname;
+    std::string mangled_overload_prefix = mangled + "__o";
     for ( variable_vec_iter vvi = methods.begin(); vvi != methods.end(); ++vvi )
     {
 	Variable *mv = *vvi;
-	if ( !mv || mangled.compare(mv->name) != 0 ) continue;
+	if ( !mv || (mangled.compare(mv->name) != 0
+	  && mv->name.compare(0, mangled_overload_prefix.size(),
+			      mangled_overload_prefix) != 0) ) continue;
 	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 	if ( !fd ) continue;
 	if ( !any ) any = fd;
@@ -3870,6 +3817,40 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
     return NULL;
 }
 
+DataDef *DataDefCLASS::unary_operator_return_type(const std::string &opname,
+						  bool postfix)
+{
+    FuncDef *fallback = NULL;
+    std::string mangled = name + "__" + opname;
+    std::string mangled_un = mangled + "_un";
+    std::string mangled_overload_prefix = mangled + "__o";
+    for ( variable_vec_iter vvi = methods.begin(); vvi != methods.end(); ++vvi )
+    {
+	Variable *mv = *vvi;
+	if ( !mv ) continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	if ( !fd ) continue;
+	const std::string &disp = fd->method_display_name.empty()
+				? mv->name : fd->method_display_name;
+	if ( opname.compare(disp) != 0
+	  && mangled.compare(mv->name) != 0
+	  && mangled_un.compare(mv->name) != 0
+	  && mv->name.compare(0, mangled_overload_prefix.size(),
+			      mangled_overload_prefix) != 0 )
+	    continue;
+	bool parameterized = fd->parameters.size() > 1;
+	if ( postfix == parameterized )
+	    return &fd->returns;
+	if ( !fallback )
+	    fallback = fd;
+    }
+    if ( fallback )
+	return &fallback->returns;
+    if ( base_class )
+	return base_class->unary_operator_return_type(opname, postfix);
+    return NULL;
+}
+
 // Part A — type an operator expression whose LEFT operand is a class OBJECT that
 // declares the matching operator, using that operator's RETURN type. Generic: it
 // treats std::string and every user class identically (no per-type rule). Without
@@ -3877,20 +3858,33 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 // selection, chained operator expressions, and `auto` all mis-resolve.
 void Program::resolve_object_operator_type(TokenOperator *to)
 {
-    if ( !to || !to->left ) return;
-    DataDefCLASS *lc = dynamic_cast<DataDefCLASS *>(to->left->datadef());
-    if ( !lc ) return;   // left operand is not a class object
+    if ( !to ) return;
+    bool unary = to->argc() == 1;
+    bool postfix = unary && to->left != NULL;
+    TokenBase *operand = unary ? (postfix ? to->left : to->right) : to->left;
+    if ( !operand ) return;
+    DataDefCLASS *lc = dynamic_cast<DataDefCLASS *>(operand->datadef());
+    if ( !lc ) return;   // operand is not a class object
     const char *opsym;
     switch ( to->id() )
     {
 	case TokenID::tkAdd: opsym = "+"; break;
 	case TokenID::tkSub: opsym = "-"; break;
+	case TokenID::tkNeg: opsym = "-"; break;
 	case TokenID::tkMul: opsym = "*"; break;
 	case TokenID::tkDiv: opsym = "/"; break;
 	case TokenID::tkMod: opsym = "%"; break;
+	case TokenID::tkLnot: opsym = "!"; break;
+	case TokenID::tkBnot: opsym = "~"; break;
+	case TokenID::tkInc: opsym = "++"; break;
+	case TokenID::tkDec: opsym = "--"; break;
+	case TokenID::tkBSL: opsym = "<<"; break;
+	case TokenID::tkBSR: opsym = ">>"; break;
 	default: return;     // comparison/bitwise results are already typed correctly
     }
-    DataDef *rt = lc->binary_operator_return_type(std::string("operator") + opsym);
+    std::string opname = std::string("operator") + opsym;
+    DataDef *rt = unary ? lc->unary_operator_return_type(opname, postfix)
+			: lc->binary_operator_return_type(opname);
     if ( rt ) to->set_resolved_type(rt);
 }
 
@@ -4195,285 +4189,6 @@ Variable *Method::findParameter(std::string &s)
     return NULL;
 }
 
-typedef const char * (*fnSTRINGcstr)(void *);		// string::c_str()
-typedef string & (*fnSTRINGmethodSTR)(const string &);	// string::append(string &)
-typedef string & (*fnSTRINGmethodCSTR)(const char *);	// string::append(const char *)
-
-union string_member_cast {
-    const char * (string::*c_str)(void);
-    string & (string::*method_str)(const string &);
-    string & (string::*method_cstr)(const char *);
-    void * void_pointer[1];
-};
-
-typedef string (*fnSSTREAMstr)(void *);		// stringstream::str()
-union sstream_member_cast {
-    string (stringstream::*str)(void) const;
-    void * void_pointer[1];
-};
-
-
-
-
-// forward decl — body defined below next to other madc_string_* helpers
-int64_t madc_string_length(void *str);
-
-// add methods to ddSTRING
-void Program::add_string_methods()
-{
-    string_member_cast scmc;
-    Variable *var;
-
-    // Mangled libstdc++ std::string member symbols. The CIR class-method path
-    // (CirBuilder::class_method_call) calls a method through FuncDef::emit_symbol
-    // when set, so `s.length()` etc. dispatch directly to real libstdc++. These
-    // MUST match the exact exported symbols (substitution-compressed template-id
-    // for string& params — `RKS4_`, not `RKSt6string`); demangle-verified with
-    // c++filt and checked against libstdc++.so. They mirror the STR_* statics in
-    // src/cir_builder.cpp.
-    const std::string T = std_string_type();
-    const std::string sym_cstr   = itanium_mangle_member_sub(T, "c_str",  {}, true);
-    const std::string sym_length = itanium_mangle_member_sub(T, "length", {}, true);
-    const std::string sym_size   = itanium_mangle_member_sub(T, "size",   {}, true);
-    const std::string sym_empty  = itanium_mangle_member_sub(T, "empty",  {}, true);
-    const std::string sym_clear  = itanium_mangle_member_sub(T, "clear",  {}, false);
-    const std::string sym_assign_str  = itanium_mangle_member_sub(T, "assign", {"const " + T + "&"}, false);
-    const std::string sym_assign_cstr = itanium_mangle_member_sub(T, "assign", {"const char*"}, false);
-    const std::string sym_append_str  = itanium_mangle_member_sub(T, "append", {"const " + T + "&"}, false);
-    const std::string sym_append_cstr = itanium_mangle_member_sub(T, "append", {"const char*"}, false);
-    const std::string sym_op_asgn_str  = itanium_mangle_operator_sub(T, "=",  {"const " + T + "&"}, false);
-    const std::string sym_op_asgn_cstr = itanium_mangle_operator_sub(T, "=",  {"const char*"}, false);
-    const std::string sym_op_app_str   = itanium_mangle_operator_sub(T, "+=", {"const " + T + "&"}, false);
-    const std::string sym_op_app_cstr  = itanium_mangle_operator_sub(T, "+=", {"const char*"}, false);
-    // Non-const char& basic_string::operator[](size_t) — the assignable overload
-    // (`_ZNSt...ixEm`, no `K`); returns char& so `s[i] = c` writes. Mangler-
-    // generated (the `false` = non-const); demangle-verifies to
-    // basic_string::operator[](unsigned long).
-    const std::string sym_op_idx       = itanium_mangle_operator_sub(T, "[]", {"size_t"}, false);
-
-    scmc.c_str = (const char *(string::*)(void))&string::c_str;
-    var = addFunction("c_str", datatype_vec_t{rtPtr(DataType::dtCHAR), ptr_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGcstr)scmc.void_pointer[0], true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_cstr;
-    ddSTRING.methods.push_back(var);
-
-    scmc.method_str = (string &(string::*)(const string &))&string::assign;
-    var = addFunction("assign", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_assign_str;
-    ddSTRING.methods.push_back(var);
-
-    scmc.method_cstr = (string &(string::*)(const char *))&string::assign;
-    var = addFunction("assign", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_assign_cstr;
-    ddSTRING.methods.push_back(var);
-
-    scmc.method_str = (string &(string::*)(const string &))&string::append;
-    var = addFunction("append", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_append_str;
-    ddSTRING.methods.push_back(var);
-
-    scmc.method_cstr = (string &(string::*)(const char *))&string::append;
-    var = addFunction("append", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_append_cstr;
-    ddSTRING.methods.push_back(var);
-
-    // operator=/operator+= as class operators bound to the mangled libstdc++
-    // basic_string::operator=/operator+= members. Two overloads each (const
-    // string& / const char*); CirBuilder::class_operator_call selects by the
-    // RHS type. `s = "x"`/`s = t`/`s += "x"`/`s += t` route through the class
-    // operator path (no legacy special-cased assign interception). Param 1 marks
-    // the string& overload as a ref param so the address is passed.
-    scmc.method_str = (string &(string::*)(const string &))&string::operator=;
-    var = addFunction("operator=", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
-	fd->emit_symbol = sym_op_asgn_str;
-	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
-	fd->ref_params[1] = true;
-    }
-    ddSTRING.methods.push_back(var);
-
-    scmc.method_cstr = (string &(string::*)(const char *))&string::operator=;
-    var = addFunction("operator=", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_op_asgn_cstr;
-    ddSTRING.methods.push_back(var);
-
-    scmc.method_str = (string &(string::*)(const string &))&string::operator+=;
-    var = addFunction("operator+=", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
-	fd->emit_symbol = sym_op_app_str;
-	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
-	fd->ref_params[1] = true;
-    }
-    ddSTRING.methods.push_back(var);
-
-    scmc.method_cstr = (string &(string::*)(const char *))&string::operator+=;
-    var = addFunction("operator+=", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_op_app_cstr;
-    ddSTRING.methods.push_back(var);
-
-    // operator+ as a class operator bound to the extern-C runtime wrapper
-    // string_concat (NOT a mangled libstdc++ symbol: std::operator+ for strings
-    // is an inlined weak template, not dlsym-exportable — like operator==).
-    // It RETURNS A NEW string BY VALUE; CirBuilder::class_operator_call allocates
-    // a cleanup-tagged temp, emits `string_concat(&tmp, &lhs, &rhs)`, and yields
-    // the temp as the expression's string object. Two overloads (const string& /
-    // const char*) so `a + b` and `a + "lit"` both resolve. The string& overload
-    // marks param 1 as a ref param so its address is passed. Returns std::string
-    // (by value, via the temp — NOT returns_ref). The registered fn pointer is a
-    // legacy-backend placeholder only.
-    var = addFunction("operator+", datatype_vec_t{&ddSTRING, ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
-	fd->emit_symbol = "string_concat";
-	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
-	fd->ref_params[1] = true;
-    }
-    ddSTRING.methods.push_back(var);
-
-    var = addFunction("operator+", datatype_vec_t{&ddSTRING, ptr_of(ddSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_string_length, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = "string_concat";
-    ddSTRING.methods.push_back(var);
-
-    // operator[] bound to the non-const char& basic_string::operator[](size_t).
-    // Returns char& (a char* in C terms -> an lvalue), so `s[i]` reads and
-    // `s[i] = c` writes. returns_ref makes the subscript-dispatch path deref the
-    // returned address to the char lvalue (CirBuilder::class_subscript_call).
-    // The fn pointer is a legacy-backend placeholder only; emit_symbol is what
-    // the CIR backend dispatches through. Param 1 = size_t index.
-    var = addFunction("operator[]", datatype_vec_t{DataType::dtCHAR, ptr_of(ddSTRING), DataType::dtUINT64}, (fVOIDFUNC)madc_string_length, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
-	fd->emit_symbol = sym_op_idx;
-	fd->returns_ref = true;
-    }
-    ddSTRING.methods.push_back(var);
-
-    // operator==/operator!= as class operators bound to the extern-C runtime
-    // wrapper string_equals (NOT a mangled libstdc++ symbol: std::operator==
-    // for strings is an inlined weak template symbol that is not dlsym-
-    // exportable). Both operands are string objects (param 1 is a string& ref
-    // param so its address is passed). CirBuilder::class_operator_call emits
-    // `string_equals(&lhs, &rhs)` and negates the int result for operator!=.
-    // The registered fn pointer is a legacy-backend placeholder only.
-    var = addFunction("operator==", datatype_vec_t{DataType::dtINT32, ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
-	fd->emit_symbol = "string_equals";
-	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
-	fd->ref_params[1] = true;
-    }
-    ddSTRING.methods.push_back(var);
-
-    var = addFunction("operator!=", datatype_vec_t{DataType::dtINT32, ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
-	fd->emit_symbol = "string_equals";
-	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
-	fd->ref_params[1] = true;
-    }
-    ddSTRING.methods.push_back(var);
-
-    // operator< / > / <= / >= as class operators bound to the extern-C runtime
-    // wrappers string_lt/gt/le/ge (NOT mangled libstdc++ symbols: the relational
-    // operators for strings are inlined weak templates, not dlsym-exportable —
-    // like operator==). Same int-returning, both-operands-by-address shape as
-    // operator==; CirBuilder::class_operator_call emits `string_XX(&lhs, &rhs)`
-    // with no negation (each wrapper computes its own comparison). Param 1 is a
-    // string& ref param so its address is passed. The fn pointer is a
-    // legacy-backend placeholder only.
-    struct { const char *name; const char *sym; } rel_ops[] = {
-	{ "operator<",  "string_lt" }, { "operator>",  "string_gt" },
-	{ "operator<=", "string_le" }, { "operator>=", "string_ge" },
-    };
-    for ( auto &ro : rel_ops ) {
-	var = addFunction(ro.name, datatype_vec_t{DataType::dtINT32, ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
-	if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
-	    fd->emit_symbol = ro.sym;
-	    if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
-	    fd->ref_params[1] = true;
-	}
-	ddSTRING.methods.push_back(var);
-    }
-
-    // length() and size() — wrap std::string::length via a free helper.
-    // Signature: (int64_t, string*) matches madc method calling convention
-    // where the object pointer is the hidden first argument.
-    var = addFunction("length", datatype_vec_t{DataType::dtINT64, ptr_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_length;
-    ddSTRING.methods.push_back(var);
-    var = addFunction("size",   datatype_vec_t{DataType::dtINT64, ptr_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_size;
-    ddSTRING.methods.push_back(var);
-
-    // empty() -> int (0/1); clear() -> void. These are recognized by the
-    // parser here so `s.empty()`/`s.clear()` parse as method calls; the CIR
-    // backend lowers them to runtime wrappers (string_length==0 / string_clear),
-    // so the registered function pointer is only a legacy-backend placeholder.
-    var = addFunction("empty", datatype_vec_t{DataType::dtINT64, ptr_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_empty;
-    ddSTRING.methods.push_back(var);
-    var = addFunction("clear", datatype_vec_t{DataType::dtVOID, ptr_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_clear;
-    ddSTRING.methods.push_back(var);
-
-    // std::string is a real C++ class: register its constructors and destructor
-    // bound to the mangled libstdc++ symbols, so a `string s;` declaration can be
-    // constructed/destructed through the same class ctor/dtor machinery a user
-    // class uses (CirBuilder::class_ctor_call selects the ctor overload by
-    // initializer; the cleanup attribute names the dtor's emit_symbol). These
-    // mirror the STR_CTOR0/_S/_CP/_DTOR statics in src/cir_builder.cpp; the
-    // symbols are demangle-verified with c++filt against libstdc++.so.
-    const std::string sym_ctor0  = itanium_mangle_ctor_sub(T, {});
-    const std::string sym_ctor_s = itanium_mangle_ctor_sub(T, {"const char*", "const std::allocator<char>&"});
-    const std::string sym_ctor_cp= itanium_mangle_ctor_sub(T, {"const " + T + "&"});
-    const std::string sym_dtor   = itanium_mangle_dtor_sub(T);
-
-    // default ctor: string(). Receiver only (param 0 == hidden string*).
-    var = addFunction("string", datatype_vec_t{DataType::dtVOID, ptr_of(ddSTRING)}, NULL, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_ctor0;
-    ddSTRING.methods.push_back(var);
-    ddSTRING.ctors.push_back(var);
-    ddSTRING.method_map["string"] = var;   // keyed under class name, like a user ctor
-
-    // (const char*) ctor: string(const char*). Receiver + char*. (libstdc++ also
-    // takes a trailing allocator&; class_ctor_call passes &this for it.)
-    var = addFunction("string", datatype_vec_t{DataType::dtVOID, ptr_of(ddSTRING), rtPtr(DataType::dtCHAR)}, NULL, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
-	fd->emit_symbol = sym_ctor_s;
-	fd->ctor_trailing_self = true;   // trailing const allocator<char>& == &this
-    }
-    ddSTRING.methods.push_back(var);
-    ddSTRING.ctors.push_back(var);
-
-    // copy ctor: string(const string&). Receiver + string (ref param).
-    var = addFunction("string", datatype_vec_t{DataType::dtVOID, ptr_of(ddSTRING), ref_of(ddSTRING)}, NULL, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
-	fd->emit_symbol = sym_ctor_cp;
-	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
-	fd->ref_params[1] = true;
-    }
-    ddSTRING.methods.push_back(var);
-    ddSTRING.ctors.push_back(var);
-    ddSTRING.has_user_ctor = true;
-
-    // dtor: ~string(). Receiver only; bound to the libstdc++ ~basic_string().
-    var = addFunction("~string", datatype_vec_t{DataType::dtVOID, ptr_of(ddSTRING)}, NULL, true);
-    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_dtor;
-    ddSTRING.methods.push_back(var);
-    ddSTRING.method_map["~string"] = var;
-    ddSTRING.has_user_dtor = true;
-
-    DBG(std::cout << "add_string_methods() ddSTRING.methods.size() = " << ddSTRING.methods.size() << std::endl);
-}
-
-// add methods to ddSSTREAM
-void Program::add_sstream_methods()
-{
-    sstream_member_cast ssmc;
-    Variable *var;
-
-    ssmc.str = (string (stringstream::*)(void) const)&stringstream::str;
-    var = addFunction("str", datatype_vec_t{ptr_of(ddSTRING), rtPtr(DataType::dtSSTREAM)}, (fVOIDFUNC)(fnSSTREAMstr)ssmc.void_pointer[0], true);
-    ddSSTREAM.methods.push_back(var);
-}
-
-
-// some debugging functions
 void printinteger(int i)
 {
     std::cout << i << std::endl;
@@ -4496,45 +4211,9 @@ void printfloat(float f)
     std::cout << std::setprecision(8) << f << std::endl;
 }
 
-void printstarred(std::string &s)
-{
-    std::cout << "*** " << s << " ***" << std::endl;
-}
-
-void printstring(std::string *str)
-{
-    if ( !str ) { std::cerr << "ERROR: printstr: NULL!" << std::endl; return; }
-    DBG(std::cout << "printstr(" << (uint64_t)str << "): " << *str << std::endl);
-    cout << *str << endl;
-}
-
-void printstream(std::stringstream *os)
-{
-    if ( !os ) { std::cerr << "ERROR: printstream: NULL!" << std::endl; return; }
-    DBG(std::cout << "printstream: " << os->str() << std::endl);
-    cout << os->str() << endl;
-}
-
-// forward declarations for functions defined in compiler.cpp
-extern void ifstream_open(void *, void *);
-extern void ifstream_close(void *);
-extern void ofstream_open(void *, void *);
-extern void ofstream_close(void *);
-extern void fstream_open(void *, void *);
-extern void fstream_close(void *);
-extern int64_t ifstream_eof(void *);
-extern int64_t ifstream_good(void *);
-extern int64_t ifstream_is_open(void *);
-extern int64_t ofstream_good(void *);
-extern int64_t ofstream_is_open(void *);
-extern int64_t fstream_eof(void *);
-extern int64_t fstream_good(void *);
-extern int64_t fstream_is_open(void *);
-
-// dlopen/dlsym wrappers that accept std::string* (madc strings)
 int64_t madc_dlopen(void *filename)
 {
-    const char *fn = ((std::string *)filename)->c_str();
+    const char *fn = (const char *)filename;
     void *handle = dlopen(fn, RTLD_LAZY);
     if ( !handle )
 	std::cerr << "dlopen: " << dlerror() << std::endl;
@@ -4543,7 +4222,7 @@ int64_t madc_dlopen(void *filename)
 
 int64_t madc_dlsym(int64_t handle, void *name)
 {
-    const char *n = ((std::string *)name)->c_str();
+    const char *n = (const char *)name;
     void *sym = dlsym((void *)handle, n);
     if ( !sym )
 	std::cerr << "dlsym: " << dlerror() << std::endl;
@@ -4556,42 +4235,17 @@ void madc_dlclose(int64_t handle)
 	dlclose((void *)handle);
 }
 
-// type conversion wrappers
-void madc_to_string(void *result, int64_t val)
-{
-    *(std::string *)result = std::to_string(val);
-}
-void madc_to_string_d(void *result, double val)
-{
-    *(std::string *)result = std::to_string(val);
-}
-int64_t madc_stoi(void *str)
-{
-    try { return (int64_t)std::stoll(((std::string *)str)->c_str()); }
-    catch (...) { return 0; }
-}
-double madc_stod(void *str)
-{
-    try { return std::stod(((std::string *)str)->c_str()); }
-    catch (...) { return 0.0; }
-}
-int64_t madc_string_length(void *str)
-{
-    return (int64_t)((std::string *)str)->length();
-}
-
-// C library wrappers that accept madc strings
 int64_t madc_system(void *cmd)
 {
-    return (int64_t)system(((std::string *)cmd)->c_str());
+    return (int64_t)system((const char *)cmd);
 }
 
-int64_t madc_getenv(void *result, void *name)
+void *madc_getenv(void *result, void *name)
 {
-    const char *val = getenv(((std::string *)name)->c_str());
-    std::string &res = *(std::string *)result;
-    res = val ? val : "";
-    return val ? 1 : 0;
+    std::string &out = *(std::string *)result;
+    const char *value = getenv((const char *)name);
+    out = value ? value : "";
+    return result;
 }
 
 const char *madc_get_argv(int64_t argv_ptr, int64_t index)
@@ -4606,20 +4260,20 @@ extern "C" const char *get_argv(int64_t argv_ptr, int64_t index)
     return madc_get_argv(argv_ptr, index);
 }
 
+extern "C" void *__madc_getenv(void *result, void *name)
+{
+    return madc_getenv(result, name);
+}
+
 void madc_setenv(void *name, void *value)
 {
-    setenv(((std::string *)name)->c_str(), ((std::string *)value)->c_str(), 1);
+    setenv((const char *)name, (const char *)value, 1);
 }
 
 void madc_unsetenv(void *name)
 {
-    unsetenv(((std::string *)name)->c_str());
+    unsetenv((const char *)name);
 }
-
-// needed to add getline
-typedef istream& (*fnGETLINE)(istream&, string&);
-// needed to add endl
-typedef ostream& (*fnENDL)(ostream&);
 
 static void register_std_namespace_spec(Program &pgm)
 {
@@ -4629,49 +4283,6 @@ static void register_std_namespace_spec(Program &pgm)
 static void register_madc_namespace_spec(Program &pgm)
 {
     pgm.add_madc_namespace();
-}
-
-static void register_php_namespace_spec(Program &pgm)
-{
-    pgm.add_php_namespace();
-}
-
-static void register_perl_namespace_spec(Program &pgm)
-{
-    pgm.add_perl_namespace();
-}
-
-static void register_python_namespace_spec(Program &pgm)
-{
-    pgm.add_python_namespace();
-}
-
-static void register_ruby_namespace_spec(Program &pgm)
-{
-    pgm.add_ruby_namespace();
-}
-
-static void register_js_namespace_spec(Program &pgm)
-{
-    pgm.add_js_namespace();
-}
-
-static void register_rust_namespace_spec(Program &pgm)
-{
-    pgm.add_rust_namespace();
-}
-
-static Variable *make_hidden_std_global(Program &pgm,
-					DataDef &dd,
-					const std::string &hidden_name,
-					void *init)
-{
-    return pgm.addGlobal(dd, hidden_name, 1, init);
-}
-
-static TokenDataType *make_namespace_type_token(const char *name, DataDef &dd)
-{
-    return new TokenDataType(name, dd);
 }
 
 int MadcTeeBuf::overflow(int ch)
@@ -5557,51 +5168,13 @@ void Program::NamespaceRegistry::add_namespace(const std::string &name, namespac
     specs.push_back({name, init});
 }
 
-// add file stream methods
-void Program::add_fstream_methods()
-{
-    Variable *var;
-
-    // ifstream methods — must use typed wrappers (ios is virtual base, pointer offset differs)
-    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtIFSTREAM), &ddSTRING}, (fVOIDFUNC)ifstream_open, true);
-    ddIFSTREAM.methods.push_back(var);
-    var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_close, true);
-    ddIFSTREAM.methods.push_back(var);
-    var = addFunction("eof", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_eof, true);
-    ddIFSTREAM.methods.push_back(var);
-    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_good, true);
-    ddIFSTREAM.methods.push_back(var);
-    var = addFunction("is_open", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_is_open, true);
-    ddIFSTREAM.methods.push_back(var);
-
-    // ofstream methods
-    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtOFSTREAM), &ddSTRING}, (fVOIDFUNC)ofstream_open, true);
-    ddOFSTREAM.methods.push_back(var);
-    var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtOFSTREAM)}, (fVOIDFUNC)ofstream_close, true);
-    ddOFSTREAM.methods.push_back(var);
-    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtOFSTREAM)}, (fVOIDFUNC)ofstream_good, true);
-    ddOFSTREAM.methods.push_back(var);
-
-    // fstream methods
-    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtFSTREAM), &ddSTRING}, (fVOIDFUNC)fstream_open, true);
-    ddFSTREAM.methods.push_back(var);
-    var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)fstream_close, true);
-    ddFSTREAM.methods.push_back(var);
-    var = addFunction("eof", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)fstream_eof, true);
-    ddFSTREAM.methods.push_back(var);
-    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)fstream_good, true);
-    ddFSTREAM.methods.push_back(var);
-}
-
 void Program::populate_builtin_registry()
 {
     if ( builtin_registry.defaults_loaded )
 	return;
 
-    builtin_registry.add_core_function("printstarred", datatype_vec_t{DataType::dtVOID, &ddSTRING}, (fVOIDFUNC)printstarred);
-    builtin_registry.add_core_function("printstr",     datatype_vec_t{DataType::dtVOID, &ddSTRING}, (fVOIDFUNC)printstring);
-    builtin_registry.add_core_function("printstream",  datatype_vec_t{DataType::dtVOID, DataType::dtSSTREAM}, (fVOIDFUNC)printstream);
     builtin_registry.add_core_function("puts",	 datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)puts);
+    builtin_registry.add_core_function("printstr", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)NULL);
     builtin_registry.add_core_function("puti",	 datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)printinteger);
     builtin_registry.add_core_function("putu",	 datatype_vec_t{DataType::dtVOID, DataType::dtUINT64}, (fVOIDFUNC)printuinteger);
     builtin_registry.add_core_function("putd",	 datatype_vec_t{DataType::dtVOID, DataType::dtDOUBLE}, (fVOIDFUNC)printdouble);
@@ -5637,30 +5210,15 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("copysign",  datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double,double))copysign);
     builtin_registry.add_core_function("copysignf", datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float,float))copysignf);
     builtin_registry.add_core_function("copysignl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double,long double))copysignl);
-    // istream `getline(istream&, string&)` lives in std:: — moved out of
-    // the global symbol table so user code defining its own `getline`
-    // (e.g. SMAUG IMC's `static const char *getline(char *buffer)`)
-    // doesn't collide. `using namespace std;` exposes it unqualified;
-    // bare `getline` falls back to the user-defined function or libc
-    // dlsym. Registered under `__std_getline` and aliased into
-    // namespace_map["std"]["getline"] in add_namespaces().
-    builtin_registry.add_core_function("__std_getline", datatype_vec_t{rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtISTREAM),ptr_of(ddSTRING)}, (fVOIDFUNC)(fnGETLINE)std::getline);
-    builtin_registry.add_core_function("__std_endl", datatype_vec_t{rtPtr(DataType::dtOSTREAM),rtPtr(DataType::dtOSTREAM)}, (fVOIDFUNC)(fnENDL)std::endl);
-    builtin_registry.add_core_function("__std_to_string", datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64}, (fVOIDFUNC)madc_to_string);
-    builtin_registry.add_core_function("__std_stoi", datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)madc_stoi);
-    builtin_registry.add_core_function("__std_stod", datatype_vec_t{DataType::dtDOUBLE, &ddSTRING}, (fVOIDFUNC)madc_stod);
-    // strlen is NOT pre-registered: it resolves via dlsym fallback to libc's
-    // strlen(const char *). For std::string, use str.length() or str.size().
-
-    builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)madc_system);
-    builtin_registry.add_process_function("getenv", datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)madc_getenv);
+    builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_system);
+    builtin_registry.add_process_function("getenv", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)__madc_getenv);
     builtin_registry.add_process_function("get_argv", datatype_vec_t{DataType::dtCHARptr, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
-    builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtVOID, &ddSTRING, &ddSTRING}, (fVOIDFUNC)madc_setenv);
-    builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtVOID, &ddSTRING}, (fVOIDFUNC)madc_unsetenv);
+    builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_setenv);
+    builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_unsetenv);
     builtin_registry.add_process_function("__errno_location", datatype_vec_t{rtPtr(DataType::dtINT32)}, (fVOIDFUNC)__errno_location);
 
-    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)madc_dlopen);
-    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{DataType::dtINT64, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)madc_dlsym);
+    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_dlopen);
+    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{DataType::dtINT64, DataType::dtINT64, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_dlsym);
     builtin_registry.add_dlfcn_function("dlclose", datatype_vec_t{DataType::dtVOID, DataType::dtINT64}, (fVOIDFUNC)madc_dlclose);
     builtin_registry.add_dlfcn_function("dlcall", datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)NULL);
 
@@ -5674,12 +5232,6 @@ void Program::populate_namespace_registry()
 
     namespace_registry.add_namespace("std", register_std_namespace_spec);
     namespace_registry.add_namespace("madc", register_madc_namespace_spec);
-    namespace_registry.add_namespace("php", register_php_namespace_spec);
-    namespace_registry.add_namespace("perl", register_perl_namespace_spec);
-    namespace_registry.add_namespace("python", register_python_namespace_spec);
-    namespace_registry.add_namespace("ruby", register_ruby_namespace_spec);
-    namespace_registry.add_namespace("js", register_js_namespace_spec);
-    namespace_registry.add_namespace("rust", register_rust_namespace_spec);
     namespace_registry.defaults_loaded = true;
 }
 
@@ -5698,7 +5250,20 @@ void Program::add_process_functions()
 {
     // glibc's errno is a 4-byte int. Registering this as int*-to-int64 made
     // madc's `*p` deref read 8 bytes and silently broke errno comparisons.
-    register_function_specs(builtin_registry.process_functions);
+    for ( std::vector<FunctionRegistrationSpec>::const_iterator it = builtin_registry.process_functions.begin();
+	  it != builtin_registry.process_functions.end(); ++it )
+    {
+	Variable *var = addFunction(it->id, it->params, it->extfunc, it->is_method);
+	if ( var && it->id == "getenv" )
+	{
+	    FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	    if ( fd )
+	    {
+		fd->nested_emit_name = "__madc_getenv";
+		funcdef_map[fd->nested_emit_name] = fd;
+	    }
+	}
+    }
 }
 
 void Program::add_dlfcn_functions()
@@ -5822,75 +5387,15 @@ DataDef *Program::lazy_resolve_type(const std::string &name)
 
 void Program::add_namespaces()
 {
-    Variable *var;
-    std::string id;
-
-    // std:: namespace — map to existing global variables and functions
-    variable_map_t &std_ns = namespace_map["std"];
-    datatype_map_t &std_types = namespace_datatype_map["std"];
-
-    if ( _include_iostream )
-    {
-	var = make_hidden_std_global(*this, ddOSTREAM, "__std_cout", output().rdbuf());
-	if (var) std_ns["cout"] = var;
-
-	var = make_hidden_std_global(*this, ddISTREAM, "__std_cin", input().rdbuf());
-	if (var) std_ns["cin"] = var;
-
-	var = make_hidden_std_global(*this, ddOSTREAM, "__std_cerr", error().rdbuf());
-	if (var) std_ns["cerr"] = var;
-
-	std_types["stringstream"] = make_namespace_type_token("stringstream", ddSSTREAM);
-	std_types["ifstream"] = make_namespace_type_token("ifstream", ddIFSTREAM);
-	std_types["ofstream"] = make_namespace_type_token("ofstream", ddOFSTREAM);
-	std_types["fstream"] = make_namespace_type_token("fstream", ddFSTREAM);
-    }
-
-    if ( _include_string )
-	std_types["string"] = make_namespace_type_token("string", ddSTRING);
-
-    // std::for_each(array, func_ptr) — iterate array calling function per element
-    extern void std_for_each(void *, int64_t);
-    var = addFunction("__std_for_each",
-	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtINT64},
-	(fVOIDFUNC)std_for_each);
-    if (var) std_ns["for_each"] = var;
-
-    // std::getline(istream&, string&) — registered as __std_getline at
-    // the top of _parser_init(); alias into the std namespace here.
-    if ( _include_iostream )
-    {
-	std::string gl_name = "__std_getline";
-	var = findVariable(gl_name);
-	if (var) std_ns["getline"] = var;
-
-	std::string endl_name = "__std_endl";
-	var = findVariable(endl_name);
-	if (var) std_ns["endl"] = var;
-    }
-
-    if ( _include_string )
-    {
-	std::string to_string_name = "__std_to_string";
-	var = findVariable(to_string_name);
-	if (var) std_ns["to_string"] = var;
-
-	std::string stoi_name = "__std_stoi";
-	var = findVariable(stoi_name);
-	if (var) std_ns["stoi"] = var;
-
-	std::string stod_name = "__std_stod";
-	var = findVariable(stod_name);
-	if (var) std_ns["stod"] = var;
-    }
-
-    DBG(std::cout << "add_namespaces() registered std:: with " << std_ns.size() << " members" << std::endl);
+    namespace_map["std"];
 }
 
 void Program::add_madc_namespace()
 {
     variable_map_t &madc_ns = namespace_map["madc"];
     Variable *var;
+    DataType objp = rtPtr(DataType::dtVOID);
+    DataType cstr = rtPtr(DataType::dtCHAR);
 
     // register array type as madc::array
     std::string id = "__madc_array";
@@ -5898,145 +5403,14 @@ void Program::add_madc_namespace()
     var->flags |= vfSTATIC;
     madc_ns["array"] = var;
 
-    // regex functions
-    extern int64_t madc_regex_match(void *, void *);
-    extern int64_t madc_regex_search(void *, void *);
-    extern void *madc_regex_replace(void *, void *, void *, void *);
-
-    var = addFunction("__madc_regex_match",
-	datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING},
-	(fVOIDFUNC)madc_regex_match);
+    var = addFunction("__madc_regex_match", datatype_vec_t{DataType::dtINT64, cstr, cstr}, (fVOIDFUNC)__madc_regex_match);
     if (var) madc_ns["regex_match"] = var;
 
-    var = addFunction("__madc_regex_search",
-	datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING},
-	(fVOIDFUNC)madc_regex_search);
+    var = addFunction("__madc_regex_search", datatype_vec_t{DataType::dtINT64, cstr, cstr}, (fVOIDFUNC)__madc_regex_search);
     if (var) madc_ns["regex_search"] = var;
 
-    var = addFunction("__madc_regex_replace",
-	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, &ddSTRING, &ddSTRING},
-	(fVOIDFUNC)madc_regex_replace);
+    var = addFunction("__madc_regex_replace", datatype_vec_t{objp, objp, cstr, cstr, cstr}, (fVOIDFUNC)__madc_regex_replace);
     if (var) madc_ns["regex_replace"] = var;
-
-    Variable *scope_var = NULL;
-
-    var = addFunction("__madc_eval_runtime",
-	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING},
-	(fVOIDFUNC)madc_runtime_eval);
-    scope_var = addFunction("__madc_eval_ctx_runtime",
-	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY},
-	(fVOIDFUNC)madc_runtime_eval_ctx);
-    if (var) madc_ns["eval"] =
-	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
-    if (var) madc_ns["eval_unit"] =
-	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
-
-    var = addFunction("__madc_eval_bool_runtime",
-	datatype_vec_t{DataType::dtBOOL, &ddSTRING},
-	(fVOIDFUNC)madc_runtime_eval_bool);
-    scope_var = addFunction("__madc_eval_bool_ctx_runtime",
-	datatype_vec_t{DataType::dtBOOL, &ddSTRING, DataType::dtARRAY},
-	(fVOIDFUNC)madc_runtime_eval_bool_ctx);
-    if (var) madc_ns["eval_bool"] =
-	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
-
-    var = addFunction("__madc_eval_int_runtime",
-	datatype_vec_t{DataType::dtINT64, &ddSTRING},
-	(fVOIDFUNC)madc_runtime_eval_int);
-    scope_var = addFunction("__madc_eval_int_ctx_runtime",
-	datatype_vec_t{DataType::dtINT64, &ddSTRING, DataType::dtARRAY},
-	(fVOIDFUNC)madc_runtime_eval_int_ctx);
-    if (var) madc_ns["eval_int"] =
-	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
-
-    var = addFunction("__madc_eval_double_runtime",
-	datatype_vec_t{DataType::dtDOUBLE, &ddSTRING},
-	(fVOIDFUNC)madc_runtime_eval_double);
-    scope_var = addFunction("__madc_eval_double_ctx_runtime",
-	datatype_vec_t{DataType::dtDOUBLE, &ddSTRING, DataType::dtARRAY},
-	(fVOIDFUNC)madc_runtime_eval_double_ctx);
-    if (var) madc_ns["eval_double"] =
-	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
-
-    var = addFunction("__madc_eval_string_runtime",
-	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING},
-	(fVOIDFUNC)madc_runtime_eval_string);
-    scope_var = addFunction("__madc_eval_string_ctx_runtime",
-	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY},
-	(fVOIDFUNC)madc_runtime_eval_string_ctx);
-    if (var) madc_ns["eval_string"] =
-	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
-
-    var = addFunction("__madc_eval_expression_runtime",
-	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING},
-	(fVOIDFUNC)madc_runtime_eval_expression);
-    scope_var = addFunction("__madc_eval_expression_ctx_runtime",
-	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY},
-	(fVOIDFUNC)madc_runtime_eval_expression_ctx);
-    if (var) madc_ns["eval_expression"] =
-	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
-
-    if (scope_var) madc_ns["eval_expression_ctx"] = scope_var;
-
-    var = addFunction("__madc_eval_expression_bool_runtime",
-	datatype_vec_t{DataType::dtBOOL, &ddSTRING},
-	(fVOIDFUNC)madc_runtime_eval_expression_bool);
-    scope_var = addFunction("__madc_eval_expression_bool_ctx_runtime",
-	datatype_vec_t{DataType::dtBOOL, &ddSTRING, DataType::dtARRAY},
-	(fVOIDFUNC)madc_runtime_eval_expression_bool_ctx);
-    if (var) madc_ns["eval_expression_bool"] =
-	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
-    if (scope_var) madc_ns["eval_expression_bool_ctx"] = scope_var;
-
-    var = addFunction("__madc_eval_expression_int_runtime",
-	datatype_vec_t{DataType::dtINT64, &ddSTRING},
-	(fVOIDFUNC)madc_runtime_eval_expression_int);
-    scope_var = addFunction("__madc_eval_expression_int_ctx_runtime",
-	datatype_vec_t{DataType::dtINT64, &ddSTRING, DataType::dtARRAY},
-	(fVOIDFUNC)madc_runtime_eval_expression_int_ctx);
-    if (var) madc_ns["eval_expression_int"] =
-	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
-    if (scope_var) madc_ns["eval_expression_int_ctx"] = scope_var;
-
-    var = addFunction("__madc_eval_expression_double_runtime",
-	datatype_vec_t{DataType::dtDOUBLE, &ddSTRING},
-	(fVOIDFUNC)madc_runtime_eval_expression_double);
-    scope_var = addFunction("__madc_eval_expression_double_ctx_runtime",
-	datatype_vec_t{DataType::dtDOUBLE, &ddSTRING, DataType::dtARRAY},
-	(fVOIDFUNC)madc_runtime_eval_expression_double_ctx);
-    if (var) madc_ns["eval_expression_double"] =
-	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
-    if (scope_var) madc_ns["eval_expression_double_ctx"] = scope_var;
-
-    var = addFunction("__madc_eval_expression_string_runtime",
-	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING},
-	(fVOIDFUNC)madc_runtime_eval_expression_string);
-    scope_var = addFunction("__madc_eval_expression_string_ctx_runtime",
-	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY},
-	(fVOIDFUNC)madc_runtime_eval_expression_string_ctx);
-    if (var) madc_ns["eval_expression_string"] =
-	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
-    if (scope_var) madc_ns["eval_expression_string_ctx"] = scope_var;
-
-    var = addFunction("__madc_context_set_int_runtime",
-	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, &ddSTRING, DataType::dtINT64},
-	(fVOIDFUNC)madc_context_set_int);
-    if (var) madc_ns["context_set_int"] = var;
-
-    var = addFunction("__madc_context_set_real_runtime",
-	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, &ddSTRING, DataType::dtDOUBLE},
-	(fVOIDFUNC)madc_context_set_real);
-    if (var) madc_ns["context_set_real"] = var;
-
-    var = addFunction("__madc_context_set_string_runtime",
-	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, &ddSTRING, DataType::dtCHARptr},
-	(fVOIDFUNC)madc_context_set_string);
-    if (var) madc_ns["context_set_string"] = var;
-
-    var = addFunction("__madc_context_set_array_runtime",
-	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, &ddSTRING, DataType::dtARRAY},
-	(fVOIDFUNC)madc_context_set_array);
-    if (var) madc_ns["context_set_array"] = var;
 
     DBG(std::cout << "add_madc_namespace() registered madc:: with " << madc_ns.size() << " members" << std::endl);
 }
@@ -6045,9 +5419,6 @@ void Program::_parser_init()
 {
     ensure_registration_config();
     add_functions();
-    add_string_methods();
-    add_sstream_methods();
-    add_fstream_methods();
     add_globals();
     // populate lazy_map for included headers (actual registration deferred to first use)
     if ( _include_iostream ) add_iostream();
@@ -6208,7 +5579,6 @@ bool is_runtime_eval_scope_supported_variable(Variable *var)
     return raw == DataType::dtBOOL
 	|| var->type->is_integer()
 	|| var->type->is_real()
-	|| is_std_string(var->type)
 	|| raw == DataType::dtARRAY;
 }
 
@@ -6603,6 +5973,8 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 	    if ( !parsing_extern_decl )
 		var->flags &= ~vfEXTERN;
 	}
+	if ( !current_namespace.empty() )
+	    namespace_map[current_namespace][id] = var;
 	return var;
     }
     var = new Variable(id, dd, c, init, alloc);
@@ -6612,6 +5984,8 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
     if ( parsing_extern_decl )
 	var->flags |= vfEXTERN;
     tkProgram->variables.push_back(var);
+    if ( !current_namespace.empty() )
+	namespace_map[current_namespace][id] = var;
 
     DBG(std::cout << "Added new global variable type: " << dd.name << " size: "
 		<< dd.size << " name: " << id << " ptr: " << var << " flags: " << var->flags << std::endl);
@@ -6671,8 +6045,8 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 
     auto resolve_data_type = [this](const typespec_t &spec) -> DataDef *
     {
-	// A type named directly by DataDef* (e.g. std::string as &ddSTRING) wins —
-	// no enum word involved (P2.14 chunk 1). A T* / T& form (ptr_of/ref_of)
+	// A type named directly by DataDef* wins; no enum word is involved. A
+	// T* / T& form (ptr_of/ref_of)
 	// is resolved the same way the DataType-offset path resolves a pointer /
 	// reference: getPointerType for a pointer; the base DataDef for a ref.
 	if ( spec.dd )
@@ -6684,9 +6058,6 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	DataType dt = spec.dt;
 	if ( DataDef::rawtype(dt) != dt )
 	{
-	    if ( dt == rtPtr(DataType::dtCHAR) )
-		return &ddLPSTR;
-
 	    DataType raw = DataDef::rawtype(dt);
 	    DataDef *base = NULL;
 	    switch(raw)
@@ -6703,12 +6074,6 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 		case DataType::dtINT64:  base = &ddINT64;	break;
 		case DataType::dtUINT64: base = &ddUINT64;	break;
 		case DataType::dtARRAY:  base = &ddARRAY;	break;
-		case DataType::dtOSTREAM: base = &ddOSTREAM; break;
-		case DataType::dtISTREAM: base = &ddISTREAM; break;
-		case DataType::dtSSTREAM: base = &ddSSTREAM; break;
-		case DataType::dtIFSTREAM: base = &ddIFSTREAM; break;
-		case DataType::dtOFSTREAM: base = &ddOFSTREAM; break;
-		case DataType::dtFSTREAM:  base = &ddFSTREAM;  break;
 		case DataType::dtFLOAT:  base = &ddFLOAT;	break;
 		case DataType::dtDOUBLE: base = &ddDOUBLE;	break;
 	    }
@@ -6732,12 +6097,6 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	    case DataType::dtINT64:	  return &ddINT64;
 	    case DataType::dtUINT64:  return &ddUINT64;
 	    case DataType::dtARRAY:   return &ddARRAY;
-	    case DataType::dtOSTREAM: return &ddOSTREAM;
-	    case DataType::dtISTREAM: return &ddISTREAM;
-	    case DataType::dtSSTREAM: return &ddSSTREAM;
-	    case DataType::dtIFSTREAM:return &ddIFSTREAM;
-	    case DataType::dtOFSTREAM:return &ddOFSTREAM;
-	    case DataType::dtFSTREAM: return &ddFSTREAM;
 	    case DataType::dtFLOAT:   return &ddFLOAT;
 	    case DataType::dtDOUBLE:  return &ddDOUBLE;
 	}
@@ -7254,7 +6613,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		Throw(mtb) << "no member named '" << mname << "'" << flush;
 	    DataDef *mtype = sdd->m_type(mname);
 	    Variable *mvar = new Variable(mname, *mtype, 1, NULL, false);
-	    mvar->flags = var->flags;
+	    mvar->flags = member_proxy_flags(var->flags);
 
 	    TokenMember *tm;
 	    if ( result->type() == TokenType::ttVariable )
@@ -7976,7 +7335,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			bool comma_returns_fixed_array = comma_fixed_array
 			    && comma_fixed_array->var.is_fixed_array()
 			    && comma_fixed_array->var.type;
-			if ( dd && (dd->is_pointer() || dd->is_string()
+			if ( dd && (dd->is_pointer()
 			  || dd->type() == DataType::dtCHARptr
 			  || comma_returns_fixed_array) )
 			{
@@ -8825,10 +8184,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // a string literal (std::string) and the other is a real
 		    // char*-yielding expression (pointer type), prefer the
 		    // pointer type. The merge needs both branches to land as
-		    // raw char* in the merge slot — labeling the result
-		    // std::string would force downstream `string_cstr` over the
-		    // function's char* return, dereferencing it as if it were
-		    // a std::string and crashing. Closes SMAUG boards.c:1615
+		    // raw char* in the merge slot; labeling the result as an
+		    // object would make downstream coercion dereference the
+		    // function's char* return incorrectly. Closes SMAUG boards.c:1615
 		    // `feof(fp) ? "End" : fread_word(fp)`.
 		    DataDef *tdd = ternary->true_expr  ? ternary->true_expr->datadef()  : NULL;
 		    DataDef *fdd = ternary->false_expr ? ternary->false_expr->datadef() : NULL;
@@ -8857,7 +8215,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    auto charptr_like = [](TokenBase *expr, DataDef *dd) {
 			if ( !dd )
 			    return false;
-			if ( dd->is_pointer() || dd->is_string() )
+			if ( dd->is_pointer() )
 			    return true;
 			if ( dynamic_cast<DataDefCArray *>(dd) )
 			    return true;
@@ -9043,6 +8401,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				{
 				    std::string dname = ((TokenIdent *)deref_tb)->str;
 				    Variable *dvar = findVariable(dname);
+				    if ( !dvar && dname == "this"
+				      && code && code->method && code->method->owner_class )
+				    {
+					std::string thisid = "__this";
+					dvar = code->method->findParameter(thisid);
+				    }
 				    if ( !dvar )
 					Throw(deref_tb) << "undeclared identifier '" << dname << "'" << flush;
 				    // C function-to-pointer decay reverses through `*`:
@@ -9384,6 +8748,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( isPostfixPosition() && !exStack.empty() )
 		    {
 			to->left = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->left->ival() << endl);
+			resolve_object_operator_type(to);
 			exStack.push(to);
 		    }
 		    else
@@ -9399,30 +8764,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		// or (the operator at the top of the operator stack has equal precedence and is left associative))
 		// and (the operator at the top of the operator stack is not a left parenthesis):
 		// (Note: we don't put functions in the stack right now)
-		// Arithmetic chain at same precedence: + - * / % are
-		// left-associative, so `a - b + c` must build as
-		// `(a - b) + c`. The general operator> below uses a
-		// strict-greater comparison; when both ops have the
-		// same precedence it returns false, leaving the stack
-		// top in place — which then resolves newest-first
-		// (i.e. as if right-associative). Stream `<<` chains
-		// and other compile paths depended on that historical
-		// shape, so we keep the global behavior and only
-		// force a left-associative pop here for the four
-		// arithmetic precedences (3 = * / %, 4 = + -).
-		// NOTE: the shifts << >> (precedence 5) are ALSO
-		// left-associative in C (`1<<4>>1` == `(1<<4)>>1` == 8;
-		// madc currently yields 4), but forcing their left-assoc
-		// pop here breaks the stream `<<` lowering (which depends
-		// on this right-leaning shape) — both must be fixed
-		// together when the stream chain is generalized. Tracked:
-		// KG gap shift_operator_associativity.
+		// Same-precedence left-associative chains must reduce the stack
+		// top before pushing the new operator. The general operator>
+		// comparison is strict for equal precedence, so spell out the
+		// left-associative arithmetic/shift levels here.
 		while ( !opStack.empty() && opStack.top()->id() != TokenID::tkOpBrk
 		&&      (opStack.top()->type() == TokenType::ttCallFunc || opStack.top()->type() == TokenType::ttCallMethod
 		||      (opStack.top()->is_operator() && (*((TokenOperator *)opStack.top()) > *to))
 		||      (opStack.top()->is_operator()
 			 && ((TokenOperator *)opStack.top())->precedence() == to->precedence()
-			 && (to->precedence() == 3 || to->precedence() == 4))) )
+			 && (to->precedence() == 3 || to->precedence() == 4
+			  || to->precedence() == 5))) )
 		{
 		    DBG(cout << "Operator(" << (char)opStack.top()->get() << ") has precedence over operator(" << (char)to->get() << ')' << endl);
 		    popOperator(opStack, exStack);
@@ -10086,7 +9438,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    DataDef *mtype = ((DataDefSTRUCT *)struct_type)->m_type(id);
 		    // create new variable
 		    var = new Variable(id, *mtype, 1, NULL, false);
-		    var->flags = tv_var->flags;
+		    var->flags = member_proxy_flags(tv_var->flags);
 		    if ( tv_var->data )
 			var->data = (void *)((char *)tv_var->data + ofs);
 		    // remove LHS from exStack
@@ -10299,7 +9651,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 
 		    // create variable for the member
 		    var = new Variable(id, *mtype, 1, NULL, false);
-		    var->flags = obj_var->flags;
+		    var->flags = member_proxy_flags(obj_var->flags);
 
 		    // remove LHS from exStack
 		    exStack.pop();
@@ -10741,6 +10093,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    alias->data = src->data;
 	    alias->count = src->count;
 	    alias->flags = src->flags;
+	    alias->storage_alias_name = src->storage_alias_name.empty()
+				      ? src->name : src->storage_alias_name;
 	    pgm.tkProgram->variables.push_back(alias);
 	    return;
 	}
@@ -10932,6 +10286,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     auto record_typedef = [&](const std::string &alias, DataDef *dd, TokenDataType *tdt_, TokenBase *otok = nullptr, bool defines_body = false)
     {
 	pgm.user_typedef_names.insert(alias);
+	if ( tdt_ && !pgm.current_namespace.empty() )
+	    pgm.namespace_datatype_map[pgm.current_namespace][alias] = tdt_;
 	// A typedef inside a function body is block-scoped: the CIR builder emits
 	// it in-place from the TokenTypedefDecl in the statement stream (the only
 	// correct scope for a VLA typedef whose bound references locals). Only
@@ -12029,6 +11385,8 @@ static void bind_std_libstdcpp_symbol(Program &pgm, DataDefCLASS *ddc, Variable 
     FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
     if ( !fd || !fd->declaration_only || ddc->canonical_cpp_spelling.empty() )
 	return;
+    if ( !fd->emit_symbol.empty() )
+	return;
     // Bind only std:: library types, identified by the canonical spelling the
     // template instantiation derived from its DEFINING namespace (e.g.
     // "std::__cxx11::basic_string<...>") — NOT by the instantiation SITE's
@@ -12218,6 +11576,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     pgm.struct_map[tag->str] = ddc;
     tdt = new TokenDataType(tag->str.c_str(), *ddc);
     pgm.datatype_map[tag->str] = tdt;
+    if ( !pgm.current_namespace.empty() )
+	pgm.namespace_datatype_map[pgm.current_namespace][tag->str] = tdt;
 
     // Flatten EACH base's data members into the derived class so method bodies can
     // resolve inherited members during the body loop. Tag each with its origin base
@@ -12548,6 +11908,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		{
 		    mfd->returns_ref = ret_is_ref;
 		    mfd->method_display_name = mname;
+		    if ( mfd->declaration_only && !mvar->storage_alias_name.empty() )
+			mfd->emit_symbol = mvar->storage_alias_name;
 		    if ( (name_disambiguated && this_is_nullary) || type_overload_disambiguated )
 			mfd->class_emit_name = mangled;
 		}
@@ -13177,8 +12539,7 @@ static bool is_contextual_identifier_token(TokenBase *tb)
     if ( tb->type() == TokenType::ttDataType )
     {
 	TokenDataType *td = static_cast<TokenDataType *>(tb);
-	if ( &td->definition == &ddSTRING
-	  || &td->definition == &ddARRAY )
+	if ( &td->definition == &ddARRAY )
 	    return true;
     }
     if ( tb->type() != TokenType::ttKeyword )
@@ -13213,13 +12574,7 @@ static std::string contextual_identifier_name(TokenBase *tb)
     if ( tb->type() == TokenType::ttDataType )
     {
 	TokenDataType *td = static_cast<TokenDataType *>(tb);
-	// Mirror is_contextual_identifier_token: the madc-dialect builtin type
-	// keywords `string` and `array` are valid C identifiers (e.g. a parameter
-	// or variable named `array`). Return the spelled name so it is captured
-	// as the declarator name, not dropped (which yields an unnamed/abstract
-	// parameter that c2mir rejects: "parameter type without a name").
-	if ( &td->definition == &ddSTRING
-	  || &td->definition == &ddARRAY )
+	if ( &td->definition == &ddARRAY )
 	    return td->str;
     }
     if ( tb->id() == TokenID::tkCLASS
@@ -13251,6 +12606,8 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     auto record_typedef = [&](const std::string &alias, DataDef *dd,
 			      TokenDataType *tdt, TokenBase *otok = nullptr) -> TokenBase * {
 	pgm.user_typedef_names.insert(alias);
+	if ( tdt && !pgm.current_namespace.empty() )
+	    pgm.namespace_datatype_map[pgm.current_namespace][alias] = tdt;
 	// A typedef inside a function body is block-scoped: the CIR builder emits
 	// it in-place from the returned TokenTypedefDecl in the statement stream
 	// (the only correct scope for a VLA typedef whose bound references locals).
@@ -14854,7 +14211,7 @@ static bool scan_old_style_definition_suffix(Program &pgm,
 
 // parse a function definition, can be a forward declaration, or function definition
 void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class,
-			    std::vector<DataDef *> *multi_ret)
+			    std::vector<DataDef *> *multi_ret, bool return_ref)
 {
     variable_map_iter vmi;
     funcdef_map_iter fmi;
@@ -14937,6 +14294,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	funcdef_map[id] = func;
 	DBG(std::cout << "parseFunction() Added new function declaration type: " << dd.name << " size: " << dd.size << " name: " << id << std::endl);
     }
+    func->returns_ref = return_ref;
 
     // for multi-return functions, inject hidden __retbuf parameter as first arg
     if ( multi_ret && multi_ret->size() > 1 )
@@ -15374,8 +14732,7 @@ paramdecl:
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
-		scope_param_type = rtype == RefType::rtReference && is_std_string(&pb->definition)
-		    ? &ddSTRINGref : param_dd;
+		scope_param_type = param_dd;
 	    }
 	    else if ( !func->findParameter(pid) )
 	    {
@@ -15398,16 +14755,8 @@ paramdecl:
 		if ( rtype == RefType::rtReference )
 		    param_spelling += "&";
 		func->param_cpp_spellings.push_back(param_spelling);
-		if ( rtype == RefType::rtReference && is_std_string(&pb->definition) )
+		if ( rtype == RefType::rtReference )
 		{
-		    func->parameters.push_back(&ddSTRINGref);
-		    func->ref_params.push_back(true);
-		    func->const_params.push_back(param_has_const);
-		    scope_param_type = &ddSTRINGref;
-		}
-		else if ( rtype == RefType::rtReference )
-		{
-		    // Numeric reference: pass as pointer, mark vfREFERENCE for auto-deref
 		    DataDef *ref_ptr = getPointerType(&pb->definition);
 		    func->parameters.push_back(ref_ptr);
 		    func->ref_params.push_back(true);
@@ -15450,8 +14799,7 @@ paramdecl:
 	    {
 		Variable *scope_param = new Variable(pid, *scope_param_type, 1, NULL, false);
 		scope_param->flags |= vfPARAM | vfLOCAL;
-		if ( rtype == RefType::rtReference
-		  && !is_std_string(&pb->definition) )
+		if ( rtype == RefType::rtReference )
 		    scope_param->flags |= vfREFERENCE;
 		if ( param_has_const && rtype == RefType::rtReference )
 		    scope_param->flags |= vfCONSTANT;
@@ -16187,7 +15535,7 @@ static bool is_char_array_element_type(DataDef *dd)
 	       || dd->rawtype() == DataType::dtUINT8);
 }
 
-static TokenStructLit *string_literal_to_char_init(TokenStr *strtok, bool include_null)
+static TokenStructLit *char_init_from_literal(TokenStr *strtok, bool include_null)
 {
     TokenStructLit *slit = new TokenStructLit();
     const std::string &s = strtok->str;
@@ -16336,6 +15684,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     DataDef *decl_type = base_type;
     bool saw_pointer_decl = false;
     bool saw_const_after_star = false; // `int * const p` — top-level const on a pointer
+    bool ret_is_ref = false;
     // If this declaration names a user typedef alias (not a builtin, where
     // tb->str == definition.name, nor a "struct tag" type, which isn't in
     // datatype_map), record the alias so the CIR backend emits ID("alias")
@@ -16380,6 +15729,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    (void)alias_array;
 	    decl_type = peel_carray_dimensions(base_type, arr_dims, vla_size_expr);
 	}
+    }
+
+    if ( peekToken() && peekToken()->id() == TokenID::tkBand )
+    {
+	nextToken();
+	ret_is_ref = true;
     }
 
     if ( !peekToken() )
@@ -16738,7 +16093,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
     // Constructor call syntax: ClassName var(arg1, arg2, ...);
     // Only for user-defined classes with a constructor.
-    if ( nt->id() == TokenID::tkOpBrk && arr_dims.empty()
+    if ( !ret_is_ref
+      && nt->id() == TokenID::tkOpBrk && arr_dims.empty()
       && decl_type->basetype() == BaseType::btClass
       && !paren_group_is_function_def(*this) )
     {
@@ -16776,6 +16132,9 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign
       || nt->id() == TokenID::tkComma )
     {
+	if ( ret_is_ref )
+	    Throw(tb) << "Reference variables are not supported" << flush;
+
 	// parse brace-enclosed initializer list for fixed-size arrays and structs
 	std::vector<TokenBase *> init_list;
 	bool saw_brace_init = false;
@@ -16898,7 +16257,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // be a brace-list (for array-of-structs or nested struct members).
 	    auto padded_char_string_literal = [&](TokenStr *strtok,
 						  size_t target_count) -> TokenStructLit * {
-		TokenStructLit *slit = string_literal_to_char_init(strtok, false);
+		TokenStructLit *slit = char_init_from_literal(strtok, false);
 		while ( peekToken() && peekToken()->type() == TokenType::ttString )
 		    append_string_literal_chars(slit, (TokenStr *)nextToken());
 		if ( target_count == 0 )
@@ -17140,7 +16499,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			  && sdd->member_counts[field_index] != 1
 			  && is_char_array_element_type(sdd->members[field_index].second) )
 			{
-			    TokenStructLit *slit = string_literal_to_char_init((TokenStr *)next_init, false);
+			    TokenStructLit *slit = char_init_from_literal((TokenStr *)next_init, false);
 			    while ( peekToken() && peekToken()->type() == TokenType::ttString )
 				append_string_literal_chars(slit, (TokenStr *)nextToken());
 			    size_t member_count = sdd->member_counts[field_index];
@@ -17165,7 +16524,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		      && next_init->type() == TokenType::ttString
 		      && is_char_array_element_type(decl_type) )
 		    {
-			TokenStructLit *slit = string_literal_to_char_init((TokenStr *)next_init, false);
+			TokenStructLit *slit = char_init_from_literal((TokenStr *)next_init, false);
 			while ( peekToken() && peekToken()->type() == TokenType::ttString )
 			    append_string_literal_chars(slit, (TokenStr *)nextToken());
 			size_t inner_count = arr_dims[1];
@@ -17547,7 +16906,24 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
     DBG(std::cout << "parseDeclaration() returning" << std::endl);
 
-    parseFunction(*decl_type, id);
+    std::string source_id = id;
+    std::string parse_id = id;
+    bool namespace_function = !current_namespace.empty();
+    if ( namespace_function )
+	parse_id = namespace_function_symbol(current_namespace, source_id);
+
+    parseFunction(*decl_type, parse_id, NULL, NULL, ret_is_ref);
+
+    if ( namespace_function )
+    {
+	Variable *ns_var = tkProgram ? tkProgram->findVariable(parse_id) : NULL;
+	if ( ns_var )
+	{
+	    variable_map_t &ns = namespace_map[current_namespace];
+	    ns[source_id] = ns_var;
+	    ns.erase(parse_id);
+	}
+    }
 
     return NULL;
 }
@@ -17956,30 +17332,23 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	    {
 		std::string ns_name = ((TokenIdent *)tb)->str;
+		if ( ns_name == "rust"
+		  && tokens.size() >= 2
+		  && tokens[1]->type() == TokenType::ttIdentifier
+		  && ((TokenIdent *)tokens[1])->str == "match" )
+		{
+		    nextToken(); // consume ::
+		    nextToken(); // consume "match"
+		    TokenMatch *tm = new TokenMatch();
+		    tm->file = tb->file;
+		    tm->line = tb->line;
+		    tm->column = tb->column;
+		    return tm->parse(*this);
+		}
 		namespace_map_t::iterator nsi = namespace_map.find(ns_name);
 		if ( nsi != namespace_map.end() )
 		{
 		    nextToken(); // consume ::
-		    // rust::match — namespaced statement form, dispatched
-		    // here because `match` must remain a usable identifier
-		    // outside this context. The `::` has been consumed; if
-		    // the next token isn't `match`, fall through to the
-		    // normal namespace re-entry path below.
-		    if ( ns_name == "rust" )
-		    {
-			TokenBase *peeked = peekToken();
-			if ( peeked
-			  && peeked->type() == TokenType::ttIdentifier
-			  && ((TokenIdent *)peeked)->str == "match" )
-			{
-			    nextToken(); // consume "match"
-			    TokenMatch *tm = new TokenMatch();
-			    tm->file = tb->file;
-			    tm->line = tb->line;
-			    tm->column = tb->column;
-			    return tm->parse(*this);
-			}
-		    }
 		    current_namespace = ns_name;
 		    TokenBase *result = parseStatement(nextToken());
 		    current_namespace.clear();
@@ -18271,6 +17640,7 @@ bool Program::parse(TokenProgram *tp)
 	return false;
     }
 
+    inject_pending_auto_includes();
     _parser_init();
 
     DBG(cout << endl << "Program::parse() calling ast.push for TokenProgram" << endl);

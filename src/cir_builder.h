@@ -46,8 +46,6 @@ class CirBuilder {
 	std::map<std::string, Variable *> referenced_globals;
 	std::map<std::string, node_t> m_output_externs; // symbol -> proto SPEC_DECL (dedup)
 	std::set<std::string> m_rtti_data_externs;    // dedup extern data decls for RTTI (S5b)
-	std::set<std::string> m_stream_objects;       // dedup stream object externs
-	std::vector<node_t>   m_stream_object_protos;  // extern object decls to emit
 	// Set during translate_module. Used to resolve a typedef alias to its
 	// base DataDef so we can tell the typedef's own pointer depth apart from
 	// the explicit stars written at the usage site.
@@ -62,18 +60,10 @@ class CirBuilder {
 	// the call site derefs it). Matches g++: a reference IS a pointer.
 	bool m_cur_func_returns_ref = false;
 
-	// True while translating the body of a function that returns std::string BY
-	// VALUE. Such a function is lowered to the struct-return (__retbuf) ABI: its
-	// C return type is `void`, a hidden `struct string *__retbuf` is its first
-	// parameter, and `return s;` becomes "copy-construct *__retbuf from s; return;".
-	// This avoids the double-free that a bitwise `return s;` would cause (the
-	// local's cleanup dtor would free a buffer already shallow-copied into the
-	// caller's return slot). Matches g++'s by-value class-return ABI.
-	bool m_cur_func_returns_string = false;
 	// Non-NULL while translating the body of a function that returns a
-	// NON-TRIVIAL user class (one with object members / a dtor) BY VALUE. Such a
-	// class uses the SAME struct-return (__retbuf) ABI as std::string: C return
-	// type `void`, a hidden `struct Cls *__retbuf` first param, and `return obj;`
+	// non-trivial class (one with object members / a dtor) BY VALUE. Such a
+	// class uses the struct-return (__retbuf) ABI: C return type `void`, a
+	// hidden `struct Cls *__retbuf` first param, and `return obj;`
 	// becomes "copy-construct *__retbuf from obj (member-wise); return;" — so the
 	// returned object is deep-copied instead of bit-copied (which would
 	// double-free the shared string buffer at both scope exits). A TRIVIAL struct
@@ -104,7 +94,7 @@ class CirBuilder {
 	static const char *RETBUF_NAME;
 	// Build the `struct <Cls> *__retbuf` named parameter node (N_SPEC_DECL), the
 	// hidden first parameter of a by-value object-returning function. `retdd` is
-	// the returned class/struct type (ddSTRING for a string-returning fn).
+	// the returned class/struct type.
 	node_t retbuf_param(DataDef *retdd, TokenBase *origin);
 
 	// Lower a multi-return call-site `a, b, ... := f(args)` (a TokenAssign whose
@@ -130,9 +120,8 @@ class CirBuilder {
 	std::vector<node_t> m_global_ctor_stmts;
 	// Names of the functions whose bodies madc COMPILES this module (the user's
 	// TokenFuncs). Set in translate_module while bodies are translated; NULL
-	// otherwise. Gates the by-value string-return (__retbuf) ABI to madc-compiled
-	// functions only — an external / native function with a std::string return
-	// type (e.g. __std_to_string) keeps its own ABI and must NOT be rewritten.
+	// otherwise. Gates the by-value non-trivial-class return (__retbuf) ABI to
+	// madc-compiled functions only; external/native functions keep their own ABI.
 	const std::set<std::string> *m_user_func_names = nullptr;
 
 	// GNU nested-function capture lowering. A nested function (`T inner(args){...}`
@@ -186,28 +175,17 @@ class CirBuilder {
 	node_t obj_default_ctor_call(const char *name, const char *ctor_sym,
 				     TokenBase *origin);
 
-	// ---- std::string object lowering ----
-	static bool is_string_object(DataDef *dd);   // std::string value type, not a pointer
-	// True only for a genuine string OBJECT value (declared string variable /
-	// string-returning expression) — EXCLUDES string literals (ttString tokens
-	// and lifted `__literal__` vars), which are already const char* values.
-	static bool is_string_object_value(TokenBase *arg);
-	// True for a std::string `operator+` expression (`a + b`, `a + "lit"`,
-	// chained `a+b+c`): a tkAdd whose LHS is a string object. Such an expression
-	// is a by-value string object materialized by class_operator_call.
-	static bool is_string_operator_plus(TokenBase *arg);
-	// A CALL to a madc-COMPILED function whose callee returns a std::string
-	// OBJECT by value (non-pointer) — i.e. one lowered through the
-	// __retbuf ABI by func_def. Excludes external / native functions with a
-	// std::string return (they keep their own ABI). Such a call is a string-object
-	// rvalue that must be materialized into a scope temp before use.
-	bool is_string_returning_call(TokenBase *arg);
-	// A CALL to a madc-COMPILED function returning a NON-TRIVIAL user class by
-	// value (one routed through the __retbuf ABI). Returns the class, or NULL.
+	// ---- Generic class-object lowering ----
+	static bool is_class_object(DataDef *dd);   // class value type, not a pointer
+	// True only for a genuine class OBJECT value (declared class variable,
+	// class member, class-array element, or reference/value parameter).
+	static bool is_class_object_value(TokenBase *arg);
+	// A CALL to a madc-COMPILED function returning a non-trivial class by value
+	// (one routed through the __retbuf ABI). Returns the class, or NULL.
 	DataDefCLASS *object_returning_call_class(TokenBase *arg);
-	// The user class that, returned by value, must use the __retbuf ABI (a
-	// non-trivial class needing a dtor). NULL for std::string (its own path) and
-	// trivial structs (native struct return). See cir_builder.cpp.
+	// The class that, returned by value, must use the __retbuf ABI (a
+	// non-trivial class needing a dtor). NULL for trivial structs (native
+	// struct return). See cir_builder.cpp.
 	DataDefCLASS *class_return_via_retbuf(DataDef *dd);
 	// Member-wise copy-construct `cdd`'s object members from `src` into *__retbuf
 	// (after a bit-copy for scalars), so the return slot owns its own buffers.
@@ -215,9 +193,10 @@ class CirBuilder {
 					      std::vector<node_t> &out,
 					      TokenBase *origin);
 	// Member-wise copy-ASSIGNMENT of a non-trivial class into an existing object
-	// (`lhs = rhs`): each member is copy-assigned (string -> string_assign,
-	// scalar -> plain =), NOT bit-copied — avoids aliasing object members' heap
-	// buffers (double-free). Self-assignment-safe. The implicit g++ operator=.
+	// (`lhs = rhs`): each class member uses its registered assignment operator
+	// when available; scalar members use plain assignment. This avoids aliasing
+	// object members' owned resources. Self-assignment-safe. The implicit g++
+	// operator=.
 	// `class_copy_assign` takes an lvalue rhs; `class_copy_assign_from_addr`
 	// takes a pre-materialized (void*) rhs address (a call temp evaluated once).
 	void class_copy_assign(DataDefCLASS *cdd, TokenBase *lhs, TokenBase *rhs,
@@ -232,26 +211,19 @@ class CirBuilder {
 			      TokenBase *origin);
 	// Materialize an object-returning CALL (non-trivial class) into a
 	// cleanup-tagged temp of that class via the __retbuf ABI, and return the
-	// temp's (void*) address. Mirrors string_call_temp_addr for user classes.
+	// temp's (void*) address.
 	node_t object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 				     TokenBase *origin);
-	// Materialize a string-returning CALL into a cleanup-tagged `struct string`
-	// temp initialized directly by the call (the struct-return slot IS the temp,
-	// matching g++ NRVO), and return the temp's (void*) address. Pushes the temp
-	// decl to m_pending_stmts. `call` is the already-translated N_CALL node.
-	node_t string_call_temp_addr(TokenBase *call_tok, TokenBase *origin);
-	// Allocate a cleanup-tagged `struct string` temp (raw storage, no ctor — the
-	// caller fills it via a return-slot/placement write) and push its decl to
-	// m_pending_stmts. Returns the temp's name (into name_buf, size buf_sz).
-	// Shared by string_call_temp_addr (__retbuf ABI) and the by-value operator+
-	// path (string_concat out-slot).
-	void string_temp_decl(char *name_buf, size_t buf_sz, TokenBase *origin);
+	// Allocate a cleanup-tagged object temp (raw storage, no ctor) and push its
+	// decl to m_pending_stmts. Returns the temp's name through name_buf.
+	void object_temp_decl(DataDefCLASS *cdd, char *name_buf, size_t buf_sz,
+			      TokenBase *origin);
 	// Translate a TokenCallFunc's explicit arguments into `args` (a LIST node),
-	// applying string-object / numeric-reference parameter coercion. Shared by
-	// the normal call path and the string-return-temp materialization.
+	// applying object / numeric-reference parameter coercion. Shared by the
+	// normal call path and by-value object-return temp materialization.
 	void build_call_args(class TokenCallFunc *tcf, node_t args);
-	// Words of opaque storage for a runtime-object class (std::string) that has
-	// a concrete ABI size but no madc data members. 0 for an ordinary user class.
+	// Words of opaque storage for a runtime-object class that has a concrete ABI
+	// size but no madc data members. 0 for an ordinary user class.
 	size_t object_class_words(DataDefCLASS *cdd) const;
 	node_t void_ptr_type();                      // N_TYPE node for a (void*) cast
 	node_t char_ptr_type();                      // N_TYPE node for a (char*) cast
@@ -265,23 +237,23 @@ class CirBuilder {
 	// only — offset 0.
 	node_t upcast_class_ptr(node_t value, DataDef *lhs_dd, class TokenBase *rhs,
 				class TokenBase *origin);
-	node_t string_storage_decl(const char *name, TokenBase *origin); // long name[W];
-	node_t string_obj_addr(const char *name, TokenBase *origin);     // (void*)&name (struct local)
-	node_t string_var_addr(const Variable &v, TokenBase *origin);    // honours pointer-stored params
+	node_t object_addr(const char *name, TokenBase *origin); // (void*)&name
+	node_t object_var_void_addr(const Variable &v, TokenBase *origin);
 	// Raw object-instance address of a NAMED variable (not void*-cast): the
-	// pointer itself when pointer-stored (by-value/by-ref param, `T*`), else
+	// pointer itself when pointer-stored (reference param, `T*`), else
 	// `&name`. Shared addressing rule for every object-class receiver.
 	node_t object_var_addr(const class Variable &v, TokenBase *origin);
-	node_t string_ctor_call(const char *name, TokenBase *initexpr, TokenBase *origin);
-	// string_cstr((void*)obj) — coerce a std::string object argument to a
-	// const char* (the std::string->const char* coercion) for a char*-expecting call.
-	node_t string_cstr_arg(TokenBase *arg);
-	// Coerce an argument to a `std::string` OBJECT pointer for a call whose
-	// parameter is a std::string object (value or reference). A genuine string
-	// object is passed by address directly; any const char* value (literal,
-	// char* var) is materialized into a scope-lived temporary std::string
-	// (storage + ctor pushed to m_pending_stmts, destructed via cleanup attr).
-	node_t string_obj_arg(TokenBase *arg);
+	// Coerce an object with a c_str() method to const char* for a char*-expecting
+	// call.
+	node_t object_cstr_arg(TokenBase *arg);
+	// Coerce an argument to an object pointer for a call whose parameter is a
+	// class object (value or reference). A genuine object is passed by address;
+	// any value accepted by a converting ctor is materialized into a temp.
+	node_t object_arg_addr(TokenBase *arg, DataDefCLASS *target);
+	// Coerce an argument to a class value for a by-value object parameter. A
+	// matching object value is passed as-is; a convertible scalar/pointer is
+	// materialized into a scope-local temporary first.
+	node_t object_arg_value(TokenBase *arg, DataDefCLASS *target);
 
 	// ---- MadArray (`array`) object lowering ----
 	// Same opaque-object model as std::string, but an array argument needs no
@@ -292,20 +264,6 @@ class CirBuilder {
 	node_t array_storage_decl(const char *name, TokenBase *origin);
 	node_t array_ctor_call(const char *name, TokenBase *origin);
 
-	// ---- std::stringstream object lowering ----
-	// Same opaque-object model. A `ss << a << b` chain lowers to a sequence of
-	// streamout_*(sstream_ostream((void*)&ss), value) calls (the streamout_*
-	// runtime wrappers take an ostream*; sstream_ostream applies the
-	// multiple-inheritance base-offset adjustment). printstream(ss) takes the
-	// object pointer directly (dtSSTREAM param -> void*).
-	static bool is_sstream_object(DataDef *dd); // dtSSTREAM value type, not a pointer
-	size_t sstream_obj_words() const;           // ceil(sizeof(std::stringstream)/sizeof(long))
-	node_t sstream_storage_decl(const char *name, TokenBase *origin);
-	node_t sstream_ctor_call(const char *name, TokenBase *origin);
-	// `ss << a << b ...` on a stringstream OBJECT -> a comma-sequence of
-	// streamout_*(sstream_ostream((void*)&ss), value) calls.
-	node_t translate_sstream_chain(class TokenOperator *top, const char *ssname);
-
 	// ---- STL container (vector/map/set) object lowering ----
 	// `obj[i]` on a user class defining `operator[]` -> the method call,
 	// deref'd (operator[] returns T& == a T*), so it is a read/write lvalue.
@@ -313,15 +271,12 @@ class CirBuilder {
 	// The BARE operator[] call (no deref) — for a T&-returning operator[] this
 	// is the element ADDRESS (a T*). Used to take a string element's address.
 	node_t class_subscript_addr(class TokenSubscript *tsub, TokenBase *origin);
-	// True when `arg` is `obj[i]` on a class whose operator[] yields a string
-	// OBJECT element (so the element is a real std::string reached by address).
-	static bool is_string_subscript(TokenBase *arg);
-	// True when `arg` is `base[i]` where base is a raw `string*` pointer or a
-	// `string[]` fixed array — i.e. a string OBJECT element of a plain array,
-	// not an operator[] container. The element is a real std::string reached by
-	// the address `&base[i]`. (Distinct from is_string_subscript, which is the
-	// operator[]-container case.)
-	static bool is_string_array_subscript(TokenBase *arg);
+	// True when `arg` is `obj[i]` on a class whose operator[] yields a class
+	// object element reached through the returned address.
+	static bool class_subscript_is_object(TokenBase *arg);
+	// True when `arg` is `base[i]` where base is a raw class pointer or fixed
+	// class array. The element is reached by the address `&base[i]`.
+	static bool class_array_subscript_is_object(TokenBase *arg);
 
 	// Internal: set position on a node in c2mir's node_positions VARR
 	void set_pos(cir_node *cn, const char *file, int line, int col);
@@ -340,9 +295,11 @@ public:
 	// __attribute__((alias("target"))), this resolves the alias chain to the
 	// target's name so every reference, and an &-of, names the real defined
 	// symbol — the C-level `#define b a` identity (c2mir/MIR has no symbol-alias
-	// primitive, so the alias is resolved here at the cir layer). Non-aliased
-	// variables return their own name.
+	// primitive, so the alias is resolved here at the cir layer). A function
+	// asm-label emits the labeled symbol directly. Non-aliased variables return
+	// their own name.
 	std::string var_emit_name(const class Variable &v) const;
+	std::string func_emit_name(const class Variable &v, class FuncDef *fd) const;
 	node_t integer(long val, TokenBase *origin = NULL);
 	// Type-aware integer literal: pick the c2mir literal node code
 	// (N_I/N_U/N_L/N_UL) from the literal's own DataDef so a suffixed
@@ -436,18 +393,6 @@ public:
 	// Map a builtin print-fn name to its madc_* runtime symbol ("" if not one).
 	static const char *builtin_output_runtime(const std::string &name);
 
-	// ---- Stream chains (cout << x) ----
-	// PoC: lower a C++ stream chain to direct calls on the mangled
-	// libstdc++ stream object via the mangled operator<< symbol.
-	enum StreamKind { SK_NONE, SK_COUT, SK_CERR, SK_CLOG, SK_CIN };
-	StreamKind stream_ident_kind(TokenBase *tb);
-	static const char *stream_object_symbol(StreamKind k);
-	void need_stream_object(StreamKind k);
-	node_t translate_stream_chain(TokenOperator *top, StreamKind k, bool is_out);
-	// Pick the mangled operator<< overload for a value's type; fill p_out with
-	// the value param's spec/ptr shape for the extern proto.
-	const char *ostream_insert_symbol(DataDef *dd, ExternParam &p_out);
-
 	node_t typedef_decl(const std::string &alias, DataDef *dd,
 			    const std::set<std::string> &emitted_structs,
 			    bool force_incomplete_struct = false);
@@ -458,6 +403,14 @@ public:
 	// *__vptr;` slot is prepended when the class (or a base) has virtual
 	// methods, matching the parser's layout (which reserves offset 0).
 	node_t class_struct_def(DataDefCLASS *cdd);
+	void emit_class_member_deps(DataDefSTRUCT *sdd, node_t top_list,
+				    std::set<std::string> &emitted_structs,
+				    std::set<DataDefCLASS *> &emitted_classes,
+				    std::set<DataDefCLASS *> &emitting_classes);
+	void emit_class_struct_with_deps(DataDefCLASS *cdd, node_t top_list,
+					 std::set<std::string> &emitted_structs,
+					 std::set<DataDefCLASS *> &emitted_classes,
+					 std::set<DataDefCLASS *> &emitting_classes);
 	// Emit a class's virtual-method dispatch table as a file-scope array of
 	// type-erased function pointers in vtable_slot order:
 	//   void *ClassName__vtable[] = { (void*)C__slot0, (void*)C__slot1, ... };
@@ -530,10 +483,9 @@ public:
 	// callee's parameter 0 is already the (owner *) __this, so its full
 	// parameter list is emitted as-is.
 	node_t method_fnptr_type(class FuncDef *callee, DataDefCLASS *owner);
-	// Append placement-new construct / destruct calls for every embedded
-	// OBJECT member (std::string today) of `cdd` to `out`, addressing each
-	// member through the in-scope `__this` pointer:
-	//   string_construct((void*)&__this->member)  /  string_destruct(...)
+	// Append construct / destruct calls for every embedded OBJECT member of
+	// `cdd` to `out`, addressing each member through the in-scope `__this`
+	// pointer. The called symbols come from the member class registration.
 	// Used to give a class with object members proper member lifetime inside
 	// its (possibly synthesized) ctor/dtor. Returns true if it emitted any.
 	bool class_member_construct(DataDefCLASS *cdd, std::vector<node_t> &out,
@@ -544,8 +496,8 @@ public:
 	// construction/destruction (so it requires a ctor/dtor even if the user
 	// wrote none).
 	bool class_has_object_members(DataDefCLASS *cdd);
-	// Append `string_construct((void*)&inst.member)` statements (one per
-	// embedded object member) to the c2mir list node `items`. Used at a
+	// Append constructor statements (one per embedded object member) to the
+	// c2mir list node `items`. Used at a
 	// value class-instance declaration that has object members but no user
 	// constructor (the member access is `inst.member`, not `__this->member`).
 	void class_instance_member_ctors(const char *inst, DataDefCLASS *cdd,
@@ -566,10 +518,7 @@ public:
 	node_t synth_deleting_dtor_def(DataDefCLASS *cdd);
 	node_t synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd);
 	// Emit a synthesized destructor function for a class that needs a dtor
-	// (object members and/or a base dtor) but has no user-written one:
-	//   void Class___dtor(struct Class *__this) {
-	//       string_destruct(&__this->member); ...; Base___dtor((Base*)__this);
-	//   }
+	// (object members and/or a base dtor) but has no user-written one.
 	// Returns NULL when the class has a user dtor (its own def handles this)
 	// or needs no dtor.
 	node_t synth_dtor_def(DataDefCLASS *cdd);

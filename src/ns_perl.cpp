@@ -28,13 +28,18 @@
 
 using namespace std;
 
+static std::string perl_text_arg(const char *ptr)
+{
+	return std::string(ptr ? ptr : "");
+}
+
 // ---- C++ wrapper functions called by JIT ----
 
 // perl::chop — remove last character from string, return it
 // Perl: $removed = chop($str);
-int64_t perl_chop(void *ptr)
+int64_t perl_chop(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	if ( s.empty() ) return 0;
 	char ch = s.back();
 	s.pop_back();
@@ -43,9 +48,9 @@ int64_t perl_chop(void *ptr)
 
 // perl::chomp — remove trailing newline(s), return count removed
 // Perl: $count = chomp($str);
-int64_t perl_chomp(void *ptr)
+int64_t perl_chomp(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	int64_t count = 0;
 	while ( !s.empty() && (s.back() == '\n' || s.back() == '\r') )
 	{
@@ -57,11 +62,11 @@ int64_t perl_chomp(void *ptr)
 
 // perl::grep — filter array, keeping elements that match regex pattern
 // Perl: @matches = grep { /pattern/ } @array;
-void *perl_grep(void *dest, void *needle, void *src)
+void perl_grep(MadArray *dest, const char *needle, MadArray *src)
 {
-	MadArray &d = *(MadArray *)dest;
-	std::string &n = *(std::string *)needle;
-	MadArray &s = *(MadArray *)src;
+	MadArray &d = *dest;
+	std::string n = perl_text_arg(needle);
+	MadArray &s = *src;
 	d.data.clear();
 	d.assoc.clear();
 	try {
@@ -79,15 +84,14 @@ void *perl_grep(void *dest, void *needle, void *src)
 				d.data.push_back(v);
 		}
 	}
-	return dest;
 }
 
 // perl::glob — file globbing, returns array of matching filenames
 // Perl: @files = glob("*.txt");
-void *perl_glob(void *arr, void *pattern)
+void perl_glob(MadArray *arr, const char *pattern)
 {
-	MadArray &a = *(MadArray *)arr;
-	std::string &p = *(std::string *)pattern;
+	MadArray &a = *arr;
+	std::string p = perl_text_arg(pattern);
 	a.data.clear();
 	a.assoc.clear();
 
@@ -99,27 +103,25 @@ void *perl_glob(void *arr, void *pattern)
 			a.push(MadValue(std::string(globbuf.gl_pathv[i])));
 		globfree(&globbuf);
 	}
-	return arr;
 }
 
 // perl::scalar — return count of elements in array (Perl's scalar @array)
-int64_t perl_scalar(void *arr)
+int64_t perl_scalar(MadArray *arr)
 {
-	return (int64_t)((MadArray *)arr)->count();
+	return (int64_t)arr->count();
 }
 
 // perl::push — append value to array (Perl: push @arr, $val)
-void *perl_push(void *arr, void *str)
+void perl_push(MadArray *arr, const char *str)
 {
-	((MadArray *)arr)->push(MadValue(*(std::string *)str));
-	return arr;
+	arr->push(MadValue(perl_text_arg(str)));
 }
 
 // perl::pop — remove last element (Perl: $val = pop @arr)
-void *perl_pop(void *result, void *arr)
+std::string *perl_pop(std::string *result, MadArray *arr)
 {
-	MadValue v = ((MadArray *)arr)->pop();
-	std::string &res = *(std::string *)result;
+	MadValue v = arr->pop();
+	std::string &res = *result;
 	if ( v.is_string() ) res = v.as_string();
 	else if ( v.is_int() ) res = std::to_string(v.as_int());
 	else res.clear();
@@ -127,10 +129,10 @@ void *perl_pop(void *result, void *arr)
 }
 
 // perl::shift — remove first element (Perl: $val = shift @arr)
-void *perl_shift(void *result, void *arr)
+std::string *perl_shift(std::string *result, MadArray *arr)
 {
-	MadArray &a = *(MadArray *)arr;
-	std::string &res = *(std::string *)result;
+	MadArray &a = *arr;
+	std::string &res = *result;
 	if ( a.data.empty() ) { res.clear(); return result; }
 	MadValue v = a.data.front();
 	a.data.erase(a.data.begin());
@@ -141,19 +143,17 @@ void *perl_shift(void *result, void *arr)
 }
 
 // perl::unshift — prepend value (Perl: unshift @arr, $val)
-void *perl_unshift(void *arr, void *str)
+void perl_unshift(MadArray *arr, const char *str)
 {
-	MadArray &a = *(MadArray *)arr;
-	a.data.insert(a.data.begin(), MadValue(*(std::string *)str));
-	return arr;
+	arr->data.insert(arr->data.begin(), MadValue(perl_text_arg(str)));
 }
 
 // perl::join — join array with separator (Perl: join(",", @arr))
-void *perl_join(void *result, void *sep, void *arr)
+std::string *perl_join(std::string *result, const char *sep, MadArray *arr)
 {
-	std::string &res = *(std::string *)result;
-	std::string &s = *(std::string *)sep;
-	MadArray &a = *(MadArray *)arr;
+	std::string &res = *result;
+	std::string s = perl_text_arg(sep);
+	MadArray &a = *arr;
 	res.clear();
 	for ( size_t i = 0; i < a.data.size(); ++i )
 	{
@@ -165,14 +165,14 @@ void *perl_join(void *result, void *sep, void *arr)
 }
 
 // perl::split — split string by regex pattern into array (Perl: split(/pattern/, $str))
-void *perl_split(void *arr, void *delim, void *str)
+void perl_split(MadArray *arr, const char *delim, const char *str)
 {
-	MadArray &a = *(MadArray *)arr;
-	std::string &d = *(std::string *)delim;
-	std::string &s = *(std::string *)str;
+	MadArray &a = *arr;
+	std::string d = perl_text_arg(delim);
+	std::string s = perl_text_arg(str);
 	a.data.clear();
 	a.assoc.clear();
-	if ( d.empty() ) { a.push(MadValue(s)); return arr; }
+	if ( d.empty() ) { a.push(MadValue(s)); return; }
 	try {
 		std::regex re(d);
 		std::sregex_token_iterator it(s.begin(), s.end(), re, -1);
@@ -189,78 +189,77 @@ void *perl_split(void *arr, void *delim, void *str)
 		}
 		a.push(MadValue(s.substr(start)));
 	}
-	return arr;
 }
 
 // perl::reverse — reverse string in place (Perl: reverse $str)
-void *perl_reverse(void *ptr)
+std::string *perl_reverse(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	std::reverse(s.begin(), s.end());
 	return ptr;
 }
 
 // perl::lc — lowercase (Perl: lc $str)
-void *perl_lc(void *ptr)
+std::string *perl_lc(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	std::transform(s.begin(), s.end(), s.begin(), ::tolower);
 	return ptr;
 }
 
 // perl::uc — uppercase (Perl: uc $str)
-void *perl_uc(void *ptr)
+std::string *perl_uc(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	std::transform(s.begin(), s.end(), s.begin(), ::toupper);
 	return ptr;
 }
 
 // perl::ucfirst — capitalize first character (Perl: ucfirst $str)
-void *perl_ucfirst(void *ptr)
+std::string *perl_ucfirst(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	if ( !s.empty() ) s[0] = toupper(s[0]);
 	return ptr;
 }
 
 // perl::lcfirst — lowercase first character (Perl: lcfirst $str)
-void *perl_lcfirst(void *ptr)
+std::string *perl_lcfirst(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	if ( !s.empty() ) s[0] = tolower(s[0]);
 	return ptr;
 }
 
 // perl::index — find position of needle in haystack (Perl: index($str, $substr))
-int64_t perl_index(void *haystack, void *needle)
+int64_t perl_index(const char *haystack, const char *needle)
 {
-	std::string &h = *(std::string *)haystack;
-	std::string &n = *(std::string *)needle;
+	std::string h = perl_text_arg(haystack);
+	std::string n = perl_text_arg(needle);
 	size_t pos = h.find(n);
 	return pos == std::string::npos ? -1 : (int64_t)pos;
 }
 
 // perl::rindex — find last position (Perl: rindex($str, $substr))
-int64_t perl_rindex(void *haystack, void *needle)
+int64_t perl_rindex(const char *haystack, const char *needle)
 {
-	std::string &h = *(std::string *)haystack;
-	std::string &n = *(std::string *)needle;
+	std::string h = perl_text_arg(haystack);
+	std::string n = perl_text_arg(needle);
 	size_t pos = h.rfind(n);
 	return pos == std::string::npos ? -1 : (int64_t)pos;
 }
 
 // perl::length — string length (Perl: length $str)
-int64_t perl_length(void *ptr)
+int64_t perl_length(const char *ptr)
 {
-	return (int64_t)((std::string *)ptr)->length();
+	return ptr ? (int64_t)strlen(ptr) : 0;
 }
 
 // perl::substr — extract/replace substring (Perl: substr($str, $offset, $length))
-void *perl_substr(void *result, void *str, int64_t offset, int64_t length)
+std::string *perl_substr(std::string *result, const char *str, int64_t offset, int64_t length)
 {
-	std::string &s = *(std::string *)str;
-	std::string &res = *(std::string *)result;
+	std::string s = perl_text_arg(str);
+	std::string &res = *result;
 	if ( offset < 0 ) offset = (int64_t)s.length() + offset;
 	if ( offset < 0 ) offset = 0;
 	if ( length < 0 ) length = (int64_t)s.length() + length - offset;
@@ -275,130 +274,60 @@ void *perl_substr(void *result, void *str, int64_t offset, int64_t length)
 // madc::regex_match(string, pattern) — returns 1 if entire string matches pattern
 int64_t madc_regex_match(void *str, void *pattern)
 {
+	std::string s = perl_text_arg((const char *)str);
+	std::string p = perl_text_arg((const char *)pattern);
 	try {
-		return std::regex_match(*(std::string *)str, std::regex(*(std::string *)pattern)) ? 1 : 0;
+		return std::regex_match(s, std::regex(p)) ? 1 : 0;
 	} catch (std::regex_error &) { return 0; }
 }
 
 // madc::regex_search(string, pattern) — returns 1 if pattern found anywhere in string
 int64_t madc_regex_search(void *str, void *pattern)
 {
+	std::string s = perl_text_arg((const char *)str);
+	std::string p = perl_text_arg((const char *)pattern);
 	try {
-		return std::regex_search(*(std::string *)str, std::regex(*(std::string *)pattern)) ? 1 : 0;
+		return std::regex_search(s, std::regex(p)) ? 1 : 0;
 	} catch (std::regex_error &) { return 0; }
 }
 
 // madc::regex_replace(result, string, pattern, replacement) — regex replace, result = modified string
 void *madc_regex_replace(void *result, void *str, void *pattern, void *replacement)
 {
+	std::string s = perl_text_arg((const char *)str);
+	std::string p = perl_text_arg((const char *)pattern);
+	std::string r = perl_text_arg((const char *)replacement);
 	try {
-		*(std::string *)result = std::regex_replace(*(std::string *)str,
-			std::regex(*(std::string *)pattern), *(std::string *)replacement);
+		*(std::string *)result = std::regex_replace(s, std::regex(p), r);
 	} catch (std::regex_error &) {
-		*(std::string *)result = *(std::string *)str;
+		*(std::string *)result = s;
 	}
 	return result;
 }
 
 
-// ---- Namespace registration ----
-
-void Program::add_perl_namespace()
-{
-	variable_map_t &perl_ns = namespace_map["perl"];
-	Variable *var;
-
-	// chop/chomp — Perl-unique
-	var = addFunction("__perl_chop",      datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)perl_chop);
-	if (var) perl_ns["chop"] = var;
-
-	var = addFunction("__perl_chomp",     datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)perl_chomp);
-	if (var) perl_ns["chomp"] = var;
-
-	// grep — filter array by pattern
-	var = addFunction("__perl_grep",      datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)perl_grep);
-	if (var) perl_ns["grep"] = var;
-
-	// glob — file globbing
-	var = addFunction("__perl_glob",      datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)perl_glob);
-	if (var) perl_ns["glob"] = var;
-
-	// array operations
-	var = addFunction("__perl_scalar",    datatype_vec_t{DataType::dtINT64, DataType::dtARRAY}, (fVOIDFUNC)perl_scalar);
-	if (var) perl_ns["scalar"] = var;
-
-	var = addFunction("__perl_push",      datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)perl_push);
-	if (var) perl_ns["push"] = var;
-
-	var = addFunction("__perl_pop",       datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)perl_pop);
-	if (var) perl_ns["pop"] = var;
-
-	var = addFunction("__perl_shift",     datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)perl_shift);
-	if (var) perl_ns["shift"] = var;
-
-	var = addFunction("__perl_unshift",   datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)perl_unshift);
-	if (var) perl_ns["unshift"] = var;
-
-	// join/split
-	var = addFunction("__perl_join",      datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)perl_join);
-	if (var) perl_ns["join"] = var;
-
-	var = addFunction("__perl_split",     datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_split);
-	if (var) perl_ns["split"] = var;
-
-	// string functions
-	var = addFunction("__perl_reverse",   datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_reverse);
-	if (var) perl_ns["reverse"] = var;
-
-	var = addFunction("__perl_lc",        datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_lc);
-	if (var) perl_ns["lc"] = var;
-
-	var = addFunction("__perl_uc",        datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_uc);
-	if (var) perl_ns["uc"] = var;
-
-	var = addFunction("__perl_ucfirst",   datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_ucfirst);
-	if (var) perl_ns["ucfirst"] = var;
-
-	var = addFunction("__perl_lcfirst",   datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_lcfirst);
-	if (var) perl_ns["lcfirst"] = var;
-
-	var = addFunction("__perl_index",     datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_index);
-	if (var) perl_ns["index"] = var;
-
-	var = addFunction("__perl_rindex",    datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_rindex);
-	if (var) perl_ns["rindex"] = var;
-
-	var = addFunction("__perl_length",    datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)perl_length);
-	if (var) perl_ns["length"] = var;
-
-	var = addFunction("__perl_substr",    datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)perl_substr);
-	if (var) perl_ns["substr"] = var;
-
-	DBG(std::cout << "add_perl_namespace() registered perl:: with " << perl_ns.size() << " members" << std::endl);
-}
-
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
-int64_t __perl_chop(void *a) { return perl_chop(a); }
-int64_t __perl_chomp(void *a) { return perl_chomp(a); }
-void *__perl_grep(void *a, void *b, void *c) { return perl_grep(a, b, c); }
-void *__perl_glob(void *a, void *b) { return perl_glob(a, b); }
-int64_t __perl_scalar(void *a) { return perl_scalar(a); }
-void *__perl_push(void *a, void *b) { return perl_push(a, b); }
-void *__perl_pop(void *a, void *b) { return perl_pop(a, b); }
-void *__perl_shift(void *a, void *b) { return perl_shift(a, b); }
-void *__perl_unshift(void *a, void *b) { return perl_unshift(a, b); }
-void *__perl_join(void *a, void *b, void *c) { return perl_join(a, b, c); }
-void *__perl_split(void *a, void *b, void *c) { return perl_split(a, b, c); }
-void *__perl_reverse(void *a) { return perl_reverse(a); }
-void *__perl_lc(void *a) { return perl_lc(a); }
-void *__perl_uc(void *a) { return perl_uc(a); }
-void *__perl_ucfirst(void *a) { return perl_ucfirst(a); }
-void *__perl_lcfirst(void *a) { return perl_lcfirst(a); }
-int64_t __perl_index(void *a, void *b) { return perl_index(a, b); }
-int64_t __perl_rindex(void *a, void *b) { return perl_rindex(a, b); }
-int64_t __perl_length(void *a) { return perl_length(a); }
-void *__perl_substr(void *a, void *b, int64_t c, int64_t d) { return perl_substr(a, b, c, d); }
+int64_t __perl_chop(std::string *a) { return perl_chop(a); }
+int64_t __perl_chomp(std::string *a) { return perl_chomp(a); }
+void __perl_grep(MadArray *a, const char *b, MadArray *c) { perl_grep(a, b, c); }
+void __perl_glob(MadArray *a, const char *b) { perl_glob(a, b); }
+int64_t __perl_scalar(MadArray *a) { return perl_scalar(a); }
+void __perl_push(MadArray *a, const char *b) { perl_push(a, b); }
+std::string *__perl_pop(std::string *a, MadArray *b) { return perl_pop(a, b); }
+std::string *__perl_shift(std::string *a, MadArray *b) { return perl_shift(a, b); }
+void __perl_unshift(MadArray *a, const char *b) { perl_unshift(a, b); }
+std::string *__perl_join(std::string *a, const char *b, MadArray *c) { return perl_join(a, b, c); }
+void __perl_split(MadArray *a, const char *b, const char *c) { perl_split(a, b, c); }
+std::string *__perl_reverse(std::string *a) { return perl_reverse(a); }
+std::string *__perl_lc(std::string *a) { return perl_lc(a); }
+std::string *__perl_uc(std::string *a) { return perl_uc(a); }
+std::string *__perl_ucfirst(std::string *a) { return perl_ucfirst(a); }
+std::string *__perl_lcfirst(std::string *a) { return perl_lcfirst(a); }
+int64_t __perl_index(const char *a, const char *b) { return perl_index(a, b); }
+int64_t __perl_rindex(const char *a, const char *b) { return perl_rindex(a, b); }
+int64_t __perl_length(const char *a) { return perl_length(a); }
+std::string *__perl_substr(std::string *a, const char *b, int64_t c, int64_t d) { return perl_substr(a, b, c, d); }
 }
 // madc:: namespace regex functions
 MADC_EXTERN_C2(int64_t, madc_regex_match, void *, void *)

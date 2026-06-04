@@ -6,6 +6,8 @@
 //////////////////////////////////////////////////////////////////////////
 #define __TOKENDATA_H 1
 
+#include <cstring>
+
 class TokenDataType: public TokenIdent
 {
 public:
@@ -44,9 +46,6 @@ class TokenLPSTR:     public TokenDataType { public: TokenLPSTR():  TokenDataTyp
 // `std::string` or via `using namespace std;`. It is NOT a global builtin
 // type token, exactly like C++. (Phase A5, stdtypes-as-real-classes.)
 class TokenARRAY:     public TokenDataType { public: TokenARRAY():  TokenDataType("array", ddARRAY) {} };
-class TokenIFSTREAM:  public TokenDataType { public: TokenIFSTREAM(): TokenDataType("ifstream", ddIFSTREAM) {} };
-class TokenOFSTREAM:  public TokenDataType { public: TokenOFSTREAM(): TokenDataType("ofstream", ddOFSTREAM) {} };
-class TokenFSTREAM:   public TokenDataType { public: TokenFSTREAM():  TokenDataType("fstream", ddFSTREAM) {} };
 
 class TokenAUTO:      public TokenDataType { public: TokenAUTO():  TokenDataType("auto", ddAUTO) {} };
 
@@ -139,7 +138,11 @@ public:
     }
     int cmp(std::string &s)
     {
-	if (type == &ddSTRING) return ((std::string *)data)->compare(s);
+	if (type == &ddCHARptr && data)
+	{
+	    const char *p = *(const char **)data;
+	    return p ? std::strcmp(p, s.c_str()) : -1;
+	}
 	return 0;
     }
     bool dec()

@@ -6,11 +6,9 @@
 // container, defined here and compiled through the class model.
 //
 // Implementation: parallel arrays of keys/values with linear search (madc's
-// own simple map, not a balanced tree). String keys compare via std::string
-// operator== (bound to the extern-C runtime wrapper string_equals, since
-// libstdc++'s std::operator== for strings is an inlined weak template symbol
-// that is not dlsym-exportable). The header instantiates per K, so only the
-// matching code is compiled; no scalar-key test exists.
+// own simple map, not a balanced tree). Keys compare through operator==. The
+// header instantiates per K, so only the matching code is compiled; no
+// scalar-key test exists.
 //
 // The search loop is inlined into each method rather than factored into a
 // private __find(): madc does not yet support an unqualified sibling-method

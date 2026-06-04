@@ -124,11 +124,8 @@ public:
     // their mangled names). Empty for non-method FuncDefs.
     std::string method_display_name;
     // For an externally-bound ctor (emit_symbol set) whose real ABI takes a
-    // trailing reference argument that madc has no value for — e.g. libstdc++'s
-    // basic_string(const char*, const allocator<char>&) — pass the object's own
-    // address (&this) as that trailing arg. Mirrors the legacy string_ctor_call
-    // behaviour. The allocator is default-constructed/empty, so &this is a
-    // harmless throwaway pointer the ctor never reads as an allocator.
+    // trailing reference argument that madc has no value for, pass the object's
+    // own address (&this) as that trailing arg.
     bool ctor_trailing_self;
     // Initializer order matches member declaration order (avoids -Wreorder):
     // returns, explicit_alignment, has_captures, returns_ref, emit_symbol,
@@ -556,8 +553,6 @@ public:
             DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(o.type);
             _datatype = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
         }
-	else if ( o.type->is_string() )
-	    _datatype = &ddCHAR;
         else if ( o.type->type() == DataType::dtSIMD )
             _datatype = static_cast<DataDefSIMD *>(o.type)->element_type;
         else if ( DataDef *e = subscript_operator_element_type(o.type) )
@@ -583,8 +578,10 @@ public:
         Variable *mv = cls->findMethod(opname);
         if ( !mv )
             return NULL;
-        FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
-        return fd ? &fd->returns : NULL;
+	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	if ( !fd )
+	    return NULL;
+	return &fd->returns;
     }
     virtual TokenType type() const { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }
@@ -651,13 +648,11 @@ typedef std::map<std::string, FuncDef *>::iterator funcdef_map_iter;
 typedef std::map<std::string, Variable *>::iterator variable_map_iter;
 
 // A builtin-registration type selector: names a parameter/return type for
-// addFunction() either by a DataType enum word OR directly by a DataDef* (P2.14
-// chunk 1). Both constructors are implicit so existing `datatype_vec_t{dtX,...}`
-// call sites are unchanged, while a class type that should NOT be named by an
-// enum word — std::string (&ddSTRING / &ddSTRINGref) — can be named by its real
-// DataDef. When `dd` is set it wins; otherwise `dt` is resolved by the existing
-// DataType_to_dd switch. This lets the registration ABI stop using std::string as
-// a type-vocabulary word (the prerequisite to deleting the enum value).
+// addFunction() either by a DataType enum word or directly by a DataDef*. Both
+// constructors are implicit so existing `datatype_vec_t{dtX,...}` call sites are
+// unchanged, while class types can be named by their actual DataDef. When `dd`
+// is set it wins; otherwise `dt` is resolved by the existing DataType_to_dd
+// switch.
 struct typespec_t
 {
     DataType  dt;
@@ -669,10 +664,6 @@ struct typespec_t
     typespec_t(DataDef *d, RefType r) : dt(DataType::dtVOID), dd(d), ref(r) {}
 };
 
-// Name a `T*` / `T&` parameter or return type by DataDef* in a datatype_vec_t,
-// e.g. ptr_of(ddSTRING) == the old rtPtr(DataType::std::string). addFunction's
-// resolve_data_type applies getPointerType() / passes the ref through, matching
-// the old DataType-offset resolution exactly.
 inline typespec_t ptr_of(DataDef &d) { return typespec_t(&d, RefType::rtPointer); }
 inline typespec_t ref_of(DataDef &d) { return typespec_t(&d, RefType::rtReference); }
 
@@ -1155,6 +1146,9 @@ public:
     bool aot_tracking;
     bool instrument_functions;
     bool skip_includes;		// --emit-function: lex without processing #include
+    std::set<std::string> pending_auto_include_headers;
+    std::set<std::string> pending_auto_include_identifiers;
+    bool suppress_auto_include_scan;
     struct AotDataRef {
 	uint32_t label_id;
 	uintptr_t address;
@@ -1214,9 +1208,6 @@ public:
     bool can_show_diagnostic_source(const Diagnostic &diag) const;
     void print_diagnostic(std::ostream &os, const Diagnostic &diag, const char *suffix=NULL);
     void print_last_diagnostic(std::ostream &os, const char *suffix=NULL);
-    void add_string_methods();
-    void add_sstream_methods();
-    void add_fstream_methods();
     void populate_builtin_registry();
     bool is_builtin_disabled(const std::string &name) const;
     void populate_namespace_registry();
@@ -1233,12 +1224,6 @@ public:
     DataDef  *lazy_resolve_type(const std::string &name);	// on-demand type/struct registration
     void add_namespaces();
     void add_madc_namespace();
-    void add_php_namespace();
-    void add_perl_namespace();
-    void add_python_namespace();
-    void add_ruby_namespace();
-    void add_js_namespace();
-    void add_rust_namespace();
     bool is_namespace_registration_enabled(const std::string &name) const;
     bool is_dynamic_library_loading_enabled() const;
     bool is_dynamic_symbol_fallback_enabled() const;
@@ -1263,6 +1248,10 @@ public:
     std::string expandIfMacros(const std::string &raw);
     bool should_tokenize_include(const std::string &path);
     bool auto_include_standard_identifier(const std::string &word);
+    void inject_pending_auto_includes();
+    void expand_pending_auto_include_macros(size_t original_start);
+    std::vector<TokenBase *> tokenize_auto_include_define(const std::string &value,
+							  const TokenBase *origin);
     void mark_embedded_include_flag(const std::string &incfile);
     void push_runtime_scope();
     void pop_runtime_scope();
@@ -1298,7 +1287,7 @@ public:
     // included `SYSTEM_DIR "file.dat"` (= `"../system/" "file.dat"`)
     // ends up as one merged literal, not two adjacent tokens whose
     // first one gets dropped by parser exStack semantics.
-    void push_token_with_string_concat(TokenBase *tb);
+    void push_token_with_literal_concat(TokenBase *tb);
 
     // for debugging
     void printt(TokenBase *);
@@ -1384,7 +1373,8 @@ public:
     TokenBase *parse_expression_unit(TokenProgram *);
     void parseIdentifier(TokenIdent *);
     void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL,
-		       std::vector<DataDef *> *multi_ret = NULL);
+		       std::vector<DataDef *> *multi_ret = NULL,
+		       bool return_ref = false);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCallMethod(TokenCallMethod *);

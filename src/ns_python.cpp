@@ -28,12 +28,17 @@
 
 using namespace std;
 
+static std::string python_text_arg(const char *ptr)
+{
+	return std::string(ptr ? ptr : "");
+}
+
 // ---- C++ wrapper functions ----
 
 // python::title — title case ("hello world" -> "Hello World")
-void *python_title(void *ptr)
+std::string *python_title(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	bool cap_next = true;
 	for ( size_t i = 0; i < s.length(); ++i )
 	{
@@ -51,9 +56,9 @@ void *python_title(void *ptr)
 }
 
 // python::swapcase — swap upper/lower ("Hello" -> "hELLO")
-void *python_swapcase(void *ptr)
+std::string *python_swapcase(std::string *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	for ( size_t i = 0; i < s.length(); ++i )
 	{
 		if ( isupper(s[i]) ) s[i] = tolower(s[i]);
@@ -63,10 +68,10 @@ void *python_swapcase(void *ptr)
 }
 
 // python::center — center string with fill char ("hi", 10, "-") -> "----hi----"
-void *python_center(void *ptr, int64_t width, void *fillchar)
+std::string *python_center(std::string *ptr, int64_t width, const char *fillchar)
 {
-	std::string &s = *(std::string *)ptr;
-	std::string &fill = *(std::string *)fillchar;
+	std::string &s = *ptr;
+	std::string fill = python_text_arg(fillchar);
 	char fc = fill.empty() ? ' ' : fill[0];
 	if ( (int64_t)s.length() >= width ) return ptr;
 	int64_t pad = width - (int64_t)s.length();
@@ -77,10 +82,10 @@ void *python_center(void *ptr, int64_t width, void *fillchar)
 }
 
 // python::ljust — left-justify, pad right ("hi", 10, ".") -> "hi........"
-void *python_ljust(void *ptr, int64_t width, void *fillchar)
+std::string *python_ljust(std::string *ptr, int64_t width, const char *fillchar)
 {
-	std::string &s = *(std::string *)ptr;
-	std::string &fill = *(std::string *)fillchar;
+	std::string &s = *ptr;
+	std::string fill = python_text_arg(fillchar);
 	char fc = fill.empty() ? ' ' : fill[0];
 	if ( (int64_t)s.length() >= width ) return ptr;
 	s += std::string((size_t)(width - (int64_t)s.length()), fc);
@@ -88,10 +93,10 @@ void *python_ljust(void *ptr, int64_t width, void *fillchar)
 }
 
 // python::rjust — right-justify, pad left ("hi", 10, ".") -> "........hi"
-void *python_rjust(void *ptr, int64_t width, void *fillchar)
+std::string *python_rjust(std::string *ptr, int64_t width, const char *fillchar)
 {
-	std::string &s = *(std::string *)ptr;
-	std::string &fill = *(std::string *)fillchar;
+	std::string &s = *ptr;
+	std::string fill = python_text_arg(fillchar);
 	char fc = fill.empty() ? ' ' : fill[0];
 	if ( (int64_t)s.length() >= width ) return ptr;
 	s = std::string((size_t)(width - (int64_t)s.length()), fc) + s;
@@ -99,9 +104,9 @@ void *python_rjust(void *ptr, int64_t width, void *fillchar)
 }
 
 // python::zfill — zero-pad numeric string ("42", 8) -> "00000042"
-void *python_zfill(void *ptr, int64_t width)
+std::string *python_zfill(std::string *ptr, int64_t width)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string &s = *ptr;
 	if ( (int64_t)s.length() >= width ) return ptr;
 	bool negative = !s.empty() && s[0] == '-';
 	std::string digits = negative ? s.substr(1) : s;
@@ -111,10 +116,10 @@ void *python_zfill(void *ptr, int64_t width)
 }
 
 // python::count — count non-overlapping occurrences of substring
-int64_t python_count(void *haystack, void *needle)
+int64_t python_count(const char *haystack, const char *needle)
 {
-	std::string &h = *(std::string *)haystack;
-	std::string &n = *(std::string *)needle;
+	std::string h = python_text_arg(haystack);
+	std::string n = python_text_arg(needle);
 	if ( n.empty() ) return (int64_t)h.length() + 1;
 	int64_t count = 0;
 	size_t pos = 0;
@@ -127,23 +132,25 @@ int64_t python_count(void *haystack, void *needle)
 }
 
 // python::startswith
-int64_t python_startswith(void *str, void *prefix)
+int64_t python_startswith(const char *str, const char *prefix)
 {
-	return ns_common::starts_with(*(std::string *)str,
-				      *(std::string *)prefix) ? 1 : 0;
+	std::string s = python_text_arg(str);
+	std::string p = python_text_arg(prefix);
+	return ns_common::starts_with(s, p) ? 1 : 0;
 }
 
 // python::endswith
-int64_t python_endswith(void *str, void *suffix)
+int64_t python_endswith(const char *str, const char *suffix)
 {
-	return ns_common::ends_with(*(std::string *)str,
-				    *(std::string *)suffix) ? 1 : 0;
+	std::string s = python_text_arg(str);
+	std::string p = python_text_arg(suffix);
+	return ns_common::ends_with(s, p) ? 1 : 0;
 }
 
 // python::isdigit — check if all characters are digits
-int64_t python_isdigit(void *ptr)
+int64_t python_isdigit(const char *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string s = python_text_arg(ptr);
 	if ( s.empty() ) return 0;
 	for ( char c : s )
 		if ( !isdigit(c) ) return 0;
@@ -151,9 +158,9 @@ int64_t python_isdigit(void *ptr)
 }
 
 // python::isalpha — check if all characters are alphabetic
-int64_t python_isalpha(void *ptr)
+int64_t python_isalpha(const char *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string s = python_text_arg(ptr);
 	if ( s.empty() ) return 0;
 	for ( char c : s )
 		if ( !isalpha(c) ) return 0;
@@ -161,9 +168,9 @@ int64_t python_isalpha(void *ptr)
 }
 
 // python::isalnum — check if all characters are alphanumeric
-int64_t python_isalnum(void *ptr)
+int64_t python_isalnum(const char *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string s = python_text_arg(ptr);
 	if ( s.empty() ) return 0;
 	for ( char c : s )
 		if ( !isalnum(c) ) return 0;
@@ -171,9 +178,9 @@ int64_t python_isalnum(void *ptr)
 }
 
 // python::isspace — check if all characters are whitespace
-int64_t python_isspace(void *ptr)
+int64_t python_isspace(const char *ptr)
 {
-	std::string &s = *(std::string *)ptr;
+	std::string s = python_text_arg(ptr);
 	if ( s.empty() ) return 0;
 	for ( char c : s )
 		if ( !isspace(c) ) return 0;
@@ -181,21 +188,21 @@ int64_t python_isspace(void *ptr)
 }
 
 // python::replace — like str_replace but Python naming (returns modified string)
-void *python_replace(void *ptr, void *old_str, void *new_str)
+std::string *python_replace(std::string *ptr, const char *old_str, const char *new_str)
 {
-	ns_common::replace_all(*(std::string *)ptr,
-			       *(std::string *)old_str,
-			       *(std::string *)new_str);
+	std::string old_text = python_text_arg(old_str);
+	std::string new_text = python_text_arg(new_str);
+	ns_common::replace_all(*ptr, old_text, new_text);
 	return ptr;
 }
 
 // python::format — simple Python-style string formatting
 // "Hello {}, you are {}" with positional args from array
-void *python_format(void *result, void *fmt, void *args)
+std::string *python_format(std::string *result, const char *fmt, MadArray *args)
 {
-	std::string &res = *(std::string *)result;
-	std::string &f = *(std::string *)fmt;
-	MadArray &a = *(MadArray *)args;
+	std::string &res = *result;
+	std::string f = python_text_arg(fmt);
+	MadArray &a = *args;
 	res = f;
 	size_t arg_idx = 0;
 	size_t pos = 0;
@@ -216,82 +223,21 @@ void *python_format(void *result, void *fmt, void *args)
 }
 
 
-// ---- Namespace registration ----
-
-void Program::add_python_namespace()
-{
-	variable_map_t &py_ns = namespace_map["python"];
-	Variable *var;
-
-	// case transforms
-	var = addFunction("__py_title",       datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)python_title);
-	if (var) py_ns["title"] = var;
-
-	var = addFunction("__py_swapcase",    datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)python_swapcase);
-	if (var) py_ns["swapcase"] = var;
-
-	// alignment
-	var = addFunction("__py_center",      datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_center);
-	if (var) py_ns["center"] = var;
-
-	var = addFunction("__py_ljust",       datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_ljust);
-	if (var) py_ns["ljust"] = var;
-
-	var = addFunction("__py_rjust",       datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_rjust);
-	if (var) py_ns["rjust"] = var;
-
-	var = addFunction("__py_zfill",       datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64}, (fVOIDFUNC)python_zfill);
-	if (var) py_ns["zfill"] = var;
-
-	// counting / searching
-	var = addFunction("__py_count",       datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)python_count);
-	if (var) py_ns["count"] = var;
-
-	var = addFunction("__py_startswith",  datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)python_startswith);
-	if (var) py_ns["startswith"] = var;
-
-	var = addFunction("__py_endswith",    datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)python_endswith);
-	if (var) py_ns["endswith"] = var;
-
-	// character class tests
-	var = addFunction("__py_isdigit",     datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_isdigit);
-	if (var) py_ns["isdigit"] = var;
-
-	var = addFunction("__py_isalpha",     datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_isalpha);
-	if (var) py_ns["isalpha"] = var;
-
-	var = addFunction("__py_isalnum",     datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_isalnum);
-	if (var) py_ns["isalnum"] = var;
-
-	var = addFunction("__py_isspace",     datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_isspace);
-	if (var) py_ns["isspace"] = var;
-
-	// string manipulation
-	var = addFunction("__py_replace",     datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)python_replace);
-	if (var) py_ns["replace"] = var;
-
-	// formatting
-	var = addFunction("__py_format",      datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)python_format);
-	if (var) py_ns["format"] = var;
-
-	DBG(std::cout << "add_python_namespace() registered python:: with " << py_ns.size() << " members" << std::endl);
-}
-
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
-void *__py_title(void *a) { return python_title(a); }
-void *__py_swapcase(void *a) { return python_swapcase(a); }
-void *__py_center(void *a, int64_t b, void *c) { return python_center(a, b, c); }
-void *__py_ljust(void *a, int64_t b, void *c) { return python_ljust(a, b, c); }
-void *__py_rjust(void *a, int64_t b, void *c) { return python_rjust(a, b, c); }
-void *__py_zfill(void *a, int64_t b) { return python_zfill(a, b); }
-int64_t __py_count(void *a, void *b) { return python_count(a, b); }
-int64_t __py_startswith(void *a, void *b) { return python_startswith(a, b); }
-int64_t __py_endswith(void *a, void *b) { return python_endswith(a, b); }
-int64_t __py_isdigit(void *a) { return python_isdigit(a); }
-int64_t __py_isalpha(void *a) { return python_isalpha(a); }
-int64_t __py_isalnum(void *a) { return python_isalnum(a); }
-int64_t __py_isspace(void *a) { return python_isspace(a); }
-void *__py_replace(void *a, void *b, void *c) { return python_replace(a, b, c); }
-void *__py_format(void *a, void *b, void *c) { return python_format(a, b, c); }
+std::string *__py_title(std::string *a) { return python_title(a); }
+std::string *__py_swapcase(std::string *a) { return python_swapcase(a); }
+std::string *__py_center(std::string *a, int64_t b, const char *c) { return python_center(a, b, c); }
+std::string *__py_ljust(std::string *a, int64_t b, const char *c) { return python_ljust(a, b, c); }
+std::string *__py_rjust(std::string *a, int64_t b, const char *c) { return python_rjust(a, b, c); }
+std::string *__py_zfill(std::string *a, int64_t b) { return python_zfill(a, b); }
+int64_t __py_count(const char *a, const char *b) { return python_count(a, b); }
+int64_t __py_startswith(const char *a, const char *b) { return python_startswith(a, b); }
+int64_t __py_endswith(const char *a, const char *b) { return python_endswith(a, b); }
+int64_t __py_isdigit(const char *a) { return python_isdigit(a); }
+int64_t __py_isalpha(const char *a) { return python_isalpha(a); }
+int64_t __py_isalnum(const char *a) { return python_isalnum(a); }
+int64_t __py_isspace(const char *a) { return python_isspace(a); }
+std::string *__py_replace(std::string *a, const char *b, const char *c) { return python_replace(a, b, c); }
+std::string *__py_format(std::string *a, const char *b, MadArray *c) { return python_format(a, b, c); }
 }

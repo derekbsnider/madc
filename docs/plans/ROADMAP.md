@@ -49,6 +49,13 @@ high-level" — the answer is both.**
   inheritance, vtables, SJLJ exceptions + unwinding, access control, const
   enforcement. These all worked on the asmjit backend; CIR parity is the
   current push.
+- **C++ library object model cleanup (feature branch, 2026-06-04):**
+  `feature/retire-std-hardcoding-claude` has the retire-std-hardcoding gate at
+  **0 offending lines**. The intended model is the g++/clang++ one: library
+  classes are declared in headers and compiled through the same object,
+  overload, mangling, ctor/dtor, and retbuf machinery as user classes. Keep
+  concrete class knowledge out of compiler/runtime code except the mangler,
+  header text, tests, and the auto-include trigger map.
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
   engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
   pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped

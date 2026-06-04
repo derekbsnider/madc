@@ -38,15 +38,12 @@ TEST_SUITE("DataType enum") {
 
     TEST_CASE("pointer variants are base + 10000") {
         CHECK((uint32_t)DataType::dtINTptr == (uint32_t)DataType::dtINT + 10000);
-        // dtSTRING/dtSTRINGptr were retired in P2.14 — std::string is a generic
-        // dtRESERVED class recognized by identity. dtISTREAM is now the first
-        // class value after dtRESERVED; verify the +10000 relationship on it.
-        CHECK((uint32_t)DataType::dtISTREAMptr == (uint32_t)DataType::dtISTREAM + 10000);
+        CHECK((uint32_t)DataType::dtARRAYptr == (uint32_t)DataType::dtARRAY + 10000);
     }
 
     TEST_CASE("reference variants are base + 20000") {
         CHECK((uint32_t)DataType::dtINTref == (uint32_t)DataType::dtINT + 20000);
-        CHECK((uint32_t)DataType::dtISTREAMref == (uint32_t)DataType::dtISTREAM + 20000);
+        CHECK((uint32_t)DataType::dtARRAYref == (uint32_t)DataType::dtARRAY + 20000);
     }
 
     TEST_CASE("rtPtr/rtDePtr macros are inverses") {
@@ -88,7 +85,6 @@ TEST_SUITE("DataDef type queries") {
         CHECK(ddINT.is_numeric());
         CHECK(ddINT.is_integer());
         CHECK(!ddINT.is_real());
-        CHECK(!ddINT.is_string());
         CHECK(!ddINT.is_object());
     }
 
@@ -98,11 +94,11 @@ TEST_SUITE("DataDef type queries") {
         CHECK(!ddDOUBLE.is_integer());
     }
 
-    TEST_CASE("ddSTRING is string and object, not numeric") {
-        CHECK(ddSTRING.is_string());
-        CHECK(ddSTRING.is_object());
-        CHECK(!ddSTRING.is_numeric());
-        CHECK(!ddSTRING.is_integer());
+    TEST_CASE("DataDefCLASS is object, not numeric") {
+        DataDefCLASS cls("Probe", 0, DataType::dtRESERVED);
+        CHECK(cls.is_object());
+        CHECK(!cls.is_numeric());
+        CHECK(!cls.is_integer());
     }
 
     TEST_CASE("unsigned types are detected correctly") {
@@ -153,8 +149,8 @@ TEST_SUITE("DataDefSTRUCT") {
     TEST_CASE("member offsets are sequential") {
         std::string name_s = "name", id_s = "id", age_s = "age";
         CHECK(ddTESTSTRUCT.m_offset(name_s) == 0);
-        CHECK(ddTESTSTRUCT.m_offset(id_s) == (ssize_t)sizeof(std::string));
-        CHECK(ddTESTSTRUCT.m_offset(age_s) == (ssize_t)(sizeof(std::string) + 4));
+        CHECK(ddTESTSTRUCT.m_offset(id_s) == (ssize_t)sizeof(char *));
+        CHECK(ddTESTSTRUCT.m_offset(age_s) == (ssize_t)(sizeof(char *) + 4));
     }
 
     TEST_CASE("m_type returns correct DataDef pointer") {
@@ -460,19 +456,13 @@ TEST_SUITE("Program isolation") {
 	engine.reset_standard_streams();
     }
 
-    TEST_CASE("Program std iostream namespace honors engine streams without bare globals") {
+    TEST_CASE("Program does not inject std iostream globals") {
 	std::string path = write_temp_mad_source(
-	    "madc_prog_iostream_streams",
-	    "#include <iostream>\nint main() { return 0; }\n");
+	    "madc_prog_no_iostream_globals",
+	    "int main() { return 0; }\n");
 	REQUIRE(!path.empty());
 
-	std::istringstream inbuf("hello");
-	std::ostringstream outbuf;
-	std::ostringstream errbuf;
 	MadcEngine engine;
-	engine.bind_input_stream(inbuf);
-	engine.bind_output_stream(outbuf);
-	engine.bind_error_stream(errbuf);
 	std::unique_ptr<Program> prog = engine.create_program();
 
 	TokenProgram *tp = prog->tokenize(path.c_str());
@@ -487,21 +477,13 @@ TEST_SUITE("Program isolation") {
 	CHECK(cout_var == NULL);
 	CHECK(cin_var == NULL);
 	CHECK(cerr_var == NULL);
-	variable_map_t &std_ns = prog->namespace_map["std"];
-	cout_var = std_ns["cout"];
-	cin_var = std_ns["cin"];
-	cerr_var = std_ns["cerr"];
-	REQUIRE(cout_var != NULL);
-	REQUIRE(cin_var != NULL);
-	REQUIRE(cerr_var != NULL);
-	REQUIRE(cout_var->data != NULL);
-	REQUIRE(cin_var->data != NULL);
-	REQUIRE(cerr_var->data != NULL);
-	CHECK(((std::ostream *)cout_var->data)->rdbuf() == outbuf.rdbuf());
-	CHECK(((std::istream *)cin_var->data)->rdbuf() == inbuf.rdbuf());
-	CHECK(((std::ostream *)cerr_var->data)->rdbuf() == errbuf.rdbuf());
+	std::map<std::string, variable_map_t>::iterator std_it =
+	    prog->namespace_map.find("std");
+	REQUIRE(std_it != prog->namespace_map.end());
+	CHECK(std_it->second.find("cout") == std_it->second.end());
+	CHECK(std_it->second.find("cin") == std_it->second.end());
+	CHECK(std_it->second.find("cerr") == std_it->second.end());
 
-	engine.reset_standard_streams();
 	unlink(path.c_str());
     }
 

@@ -138,7 +138,7 @@ TEST_SUITE("libmadc flr backend") {
 	madc::MappingSpec<StorageProbe> spec;
 	spec.key("id")
 	    .fixed_record_size(64)
-	    .string_field_limit("title", 20,
+	    .text_field_limit("title", 20,
 				madc::MappingSpec<StorageProbe>::overflow_policy::truncate);
 
 	madc::DataSet<StorageProbe> ds("flr://" + path);

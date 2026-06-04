@@ -197,7 +197,7 @@ public:
     TokenMultiOp() : TokenOperator() {}
     TokenMultiOp(const char *s)  : TokenOperator() { str = s; }
     TokenMultiOp(std::string &s) : TokenOperator() { str = s; }
-    virtual TokenBase *clone() { TokenMultiOp *to = new TokenMultiOp(); to->left = left; to->right = right; return to; }
+    virtual TokenBase *clone() { TokenMultiOp *to = new TokenMultiOp(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual TokenType type() const { return TokenType::ttMultiOp; }
     virtual TokenID   id()   const { return TokenID::tkMultiOp; }
     virtual inline int precedence() const { return 16; }
@@ -265,7 +265,7 @@ class TokenNeg: public TokenOperator
 {
 public:
     TokenNeg() : TokenOperator('-') {}
-    virtual TokenBase *clone() { TokenNeg *to = new TokenNeg(); to->left = left; to->right = right; return to; }
+    virtual TokenBase *clone() { TokenNeg *to = new TokenNeg(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual TokenID id() const { return TokenID::tkNeg; }
     virtual inline int precedence() const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
@@ -280,6 +280,7 @@ public:
     inline double foperate() const { return - right->dval(); }
     // Propagate unsigned operand type so -1U is uint32, not ddINT
     virtual DataDef *datadef() const override {
+	if ( resolved_type ) return resolved_type;
 	if ( right && right->datadef() && right->datadef()->is_unsigned() )
 	    return right->datadef();
 	return TokenOperator::datadef();
@@ -341,10 +342,11 @@ class TokenInc: public TokenMultiOp
 {
 public:
     TokenInc() : TokenMultiOp("++") {}
-    virtual TokenBase *clone() { TokenInc *to = new TokenInc(); to->left = left; to->right = right; return to; }
+    virtual TokenBase *clone() { TokenInc *to = new TokenInc(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual TokenID id() const { return TokenID::tkInc; }
     virtual DataDef *datadef() const override
     {
+	if ( resolved_type ) return resolved_type;
 	if ( left )  return left->datadef();
 	if ( right ) return right->datadef();
 	return TokenBase::datadef();
@@ -371,10 +373,11 @@ class TokenDec: public TokenMultiOp
 {
 public:
     TokenDec() : TokenMultiOp("--") {}
-    virtual TokenBase *clone() { TokenDec *to = new TokenDec(); to->left = left; to->right = right; return to; }
+    virtual TokenBase *clone() { TokenDec *to = new TokenDec(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual TokenID id() const { return TokenID::tkDec; }
     virtual DataDef *datadef() const override
     {
+	if ( resolved_type ) return resolved_type;
 	if ( left )  return left->datadef();
 	if ( right ) return right->datadef();
 	return TokenBase::datadef();
@@ -553,9 +556,10 @@ class TokenBnot: public TokenOperator
 public:
     TokenBnot() : TokenOperator('~') {}
     virtual TokenID id() const { return TokenID::tkBnot; }
-    virtual TokenBase *clone() { return new TokenBnot(); }
+    virtual TokenBase *clone() { TokenBnot *to = new TokenBnot(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     // Propagate operand type so ~0U is uint32, not the default ddINT.
     virtual DataDef *datadef() const override {
+	if ( resolved_type ) return resolved_type;
 	if ( right && right->datadef() && right->datadef()->is_integer() && right->datadef() != &ddINT )
 	    return right->datadef();
 	return TokenOperator::datadef();
@@ -579,7 +583,7 @@ class TokenLnot: public TokenOperator
 public:
     TokenLnot() : TokenOperator('!') {}
     virtual TokenID id() const { return TokenID::tkLnot; }
-    virtual TokenBase *clone() { return new TokenLnot(); }
+    virtual TokenBase *clone() { TokenLnot *to = new TokenLnot(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
@@ -995,13 +999,13 @@ class TokenIdent: public TokenBase
 {
 public:
     std::string str;
-    TokenIdent() { _datatype = &ddSTRING; }
-    TokenIdent(std::string &s) { str = s; _datatype = &ddSTRING; }
-    TokenIdent(const char *s)  { str = s; _datatype = &ddSTRING; }
+    TokenIdent() { _datatype = &ddCHARptr; }
+    TokenIdent(std::string &s) { str = s; _datatype = &ddCHARptr; }
+    TokenIdent(const char *s)  { str = s; _datatype = &ddCHARptr; }
     virtual TokenType type() const { return TokenType::ttIdentifier; }
     virtual TokenID   id()   const { return TokenID::tkIdent; }
     virtual TokenBase *clone()     { return new TokenIdent(str); }
-    virtual void setDataType(DataDef *d) { if (d && d->is_string()) _datatype = d; }
+    virtual void setDataType(DataDef *d) { if (d) _datatype = d; }
 };
 
 // quoted string

@@ -29,14 +29,14 @@ void clear_c_value(madc_value *value)
 {
     if ( value == NULL )
 	return;
-    if ( value->string_value != NULL )
-	std::free(value->string_value);
+    if ( value->text_value != NULL )
+	std::free(value->text_value);
     value->kind = MADC_VALUE_NULL;
     value->boolean_value = 0;
     value->integer_value = 0;
     value->real_value = 0.0;
-    value->string_value = NULL;
-    value->string_length = 0;
+    value->text_value = NULL;
+    value->text_length = 0;
 }
 
 bool set_c_string(madc_value *value, const char *data, size_t length)
@@ -51,8 +51,8 @@ bool set_c_string(madc_value *value, const char *data, size_t length)
 	std::memcpy(copy, data, length);
     copy[length] = '\0';
     value->kind = MADC_VALUE_STRING;
-    value->string_value = copy;
-    value->string_length = length;
+    value->text_value = copy;
+    value->text_length = length;
     return true;
 }
 
@@ -126,8 +126,8 @@ bool to_cpp_value(const madc_value &src, madc::value &dst)
 	    return true;
 	case MADC_VALUE_STRING:
 	{
-	    const char *data = src.string_value ? src.string_value : "";
-	    dst = madc::value(std::string(data, src.string_length));
+	    const char *data = src.text_value ? src.text_value : "";
+	    dst = madc::value(std::string(data, src.text_length));
 	    return true;
 	}
 	default:
@@ -415,7 +415,6 @@ madc::program::native_type to_cpp_native_type(madc_native_type t)
 	case MADC_NATIVE_INTEGER:       return madc::program::native_type::integer;
 	case MADC_NATIVE_REAL:          return madc::program::native_type::real;
 	case MADC_NATIVE_C_STRING:      return madc::program::native_type::c_string;
-	case MADC_NATIVE_STRING_OBJECT: return madc::program::native_type::string_object;
 	default:                        return madc::program::native_type::void_type;
     }
 }
@@ -1123,8 +1122,8 @@ void madc_value_init(madc_value *value)
     value->boolean_value = 0;
     value->integer_value = 0;
     value->real_value = 0.0;
-    value->string_value = NULL;
-    value->string_length = 0;
+    value->text_value = NULL;
+    value->text_length = 0;
 }
 
 void madc_value_clear(madc_value *value)
@@ -1195,20 +1194,20 @@ int madc_value_set_real(madc_value *value, double real_value)
     return MADC_OK;
 }
 
-int madc_value_set_string(madc_value *value, const char *string_value)
+int madc_value_set_string(madc_value *value, const char *text_value)
 {
-    if ( string_value == NULL )
+    if ( text_value == NULL )
 	return madc_value_set_string_n(value, "", 0);
-    return madc_value_set_string_n(value, string_value, std::strlen(string_value));
+    return madc_value_set_string_n(value, text_value, std::strlen(text_value));
 }
 
 int madc_value_set_string_n(madc_value *value,
-			    const char *string_value,
-			    size_t string_length)
+			    const char *text_value,
+			    size_t text_length)
 {
     if ( value == NULL )
 	return MADC_ERROR;
-    return set_c_string(value, string_value, string_length) ? MADC_OK : MADC_ERROR;
+    return set_c_string(value, text_value, text_length) ? MADC_OK : MADC_ERROR;
 }
 
 void madc_expression_policy_init(madc_expression_policy *policy)

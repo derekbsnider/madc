@@ -1,0 +1,13 @@
+long __madc_array_size(array values) asm("madarray_size");
+const char *__madc_array_get_cstr(array values, long index) asm("__php_array_get_cstr");
+
+namespace std {
+    void for_each(array values, void (*fn)(string)) {
+	string value;
+	long n = __madc_array_size(values);
+	for (long i = 0; i < n; i = i + 1) {
+	    value = __madc_array_get_cstr(values, i);
+	    fn(value);
+	}
+    }
+}

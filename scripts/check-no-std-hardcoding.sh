@@ -24,7 +24,8 @@ set -u
 cd "$(dirname "$0")/.."
 PAT='ddSTRING|DataDefSTRING|add_string_methods|add_fstream_methods|dt[A-Z]*STREAM|dd[A-Z]*STREAM|DataDef[A-Z]*STREAM|streamout_|streamin_|ifstream_open|ofstream_good|ofstream_open|fstream_open|sizeof\(std::|__std_|SK_COUT|ostream_insert_symbol|ns_stl|tkSTRING|tkVECTOR|\bdtSTRING|is_std_string|is_string_class|\bstring_[a-z]|\bSTR_[A-Z]'
 hits=$(grep -rnE "$PAT" src/ include/ \
-  | grep -vE '^src/madc_mangle\.(cpp|h):' )
+  | grep -vE '^src/madc_mangle\.(cpp|h):' \
+  | grep -vE '^include/doctest\.h:' )
 n=$(printf '%s' "$hits" | grep -c . )
 echo "retire-std-hardcoding finish-line: $n offending lines remain (target 0)"
 if [ "$n" -ne 0 ]; then

@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Changed — C++ library objects now stay on the generic object path (2026-06-04)
+
+The retire-std-hardcoding branch now reaches the finish-line gate:
+`scripts/check-no-std-hardcoding.sh` reports **0 offending lines**. The cleanup
+removes the compiler/runtime's per-type std hooks and keeps `std::string`,
+streams, containers, and user classes on the same parsed-header object model:
+generic overload resolution, mangling, ctor/dtor handling, and retbuf return
+paths.
+
+As a drift cleanup, embedded `<algorithm>` now implements `std::for_each(array,
+void (*)(string))` as an ordinary header function body over the existing array
+helpers and a normal local `string`. The old runtime shim in `ns_php.cpp` copied
+a fake libstdc++ `basic_string` layout before invoking a callback; that
+class-layout copy is gone. `testforeach`, `testforeach2`, and the
+no-std-hardcoding gate pass after this change.
+
 ### Fixed — a `struct` with an object member is promoted to a class (`teststruct2`) (2026-06-02)
 
 A `std::string` **member of a `struct`** was never constructed, so `bob.name = "…"`

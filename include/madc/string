@@ -11,21 +11,17 @@
 // no reference to a real std:: type inside madc (a doctest cross-checks the size
 // against the real <string>).
 //
-// STAGING:
-//   here: the basic_string template + a core bodyless surface (ctor/dtor +
-//         length/size/c_str/empty/clear/at/append) that bind via the keystone.
-//         It COEXISTS with the builtin string type (which still owns the
-//         `string` typedef); there is deliberately NO `typedef ... string;` here
-//         yet, so the two do not collide.
-//   next: complete the operator/method surface (operator+/=/+=/[]/==, find,
-//         substr, …), then add the `string` typedef and DELETE the builtin
-//         string registration plus its wrappers and statics (the specifics live
-//         in git history and the campaign handoff — not named here, so this
-//         comment cannot trip the no-std-hardcoding finish-line gate).
+// The basic_string template below is parsed as an ordinary std class. Methods
+// without bodies bind to libstdc++ symbols through the generic class-method
+// mangler; small inline operators compile as normal madc class methods.
 //
 // char_traits / allocator are declared here as the std:: templates basic_string
 // names; they are templates (template_map by bare name), so a second declaration
 // in another header (e.g. <fstream>) simply overwrites with the same definition.
+
+int sprintf(char *, const char *, ...);
+int atoi(const char *);
+double atof(const char *);
 
 namespace std {
     template<typename _CharT> class char_traits { char _M_dummy; };
@@ -35,7 +31,7 @@ namespace std {
 	template<typename _CharT, typename _Traits, typename _Alloc>
 	class basic_string {
 	    _CharT       *_M_p;               // pointer to the character data
-	    unsigned long _M_string_length;   // current length
+	    unsigned long _M_len;             // current length
 	    char          _M_local_buf[16];   // SSO buffer / capacity union (16 bytes)
 	public:
 	    basic_string();                          // C1  ...C1Ev
@@ -69,12 +65,18 @@ namespace std {
 	    void          push_back(char);           // ...9push_backEc
 	    void          pop_back();                // ...8pop_backEv
 	    char         &operator[](unsigned long) const;  // ...ixEm
+	    basic_string &operator=(const basic_string &);  // ...aSERKS4_
 	    basic_string &operator=(const char *);   // ...aSEPKc
 	    basic_string &operator=(char);           // ...aSEc
+	    basic_string &operator+=(const basic_string &); // ...pLERKS4_
 	    basic_string &operator+=(const char *);  // ...pLEPKc
 	    basic_string &operator+=(char);          // ...pLEc
 	    bool operator==(const basic_string &rhs) const { return this->compare(rhs.c_str()) == 0; }
 	    bool operator!=(const basic_string &rhs) const { return this->compare(rhs.c_str()) != 0; }
+	    bool operator<(const basic_string &rhs) const { return this->compare(rhs.c_str()) < 0; }
+	    bool operator>(const basic_string &rhs) const { return this->compare(rhs.c_str()) > 0; }
+	    bool operator<=(const basic_string &rhs) const { return this->compare(rhs.c_str()) <= 0; }
+	    bool operator>=(const basic_string &rhs) const { return this->compare(rhs.c_str()) >= 0; }
 	    basic_string operator+(const basic_string &rhs) const {
 		basic_string r(this->c_str());
 		r.append(rhs.c_str());
@@ -82,4 +84,20 @@ namespace std {
 	    }
 	};
     }
-}
+
+	    typedef std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char>> string;
+
+	    void to_string(string &out, long v) {
+		char buf[64];
+		sprintf(buf, "%ld", v);
+		out = buf;
+	    }
+
+	    int stoi(const string &s) {
+		return atoi(s.c_str());
+	    }
+
+	    double stod(const string &s) {
+		return atof(s.c_str());
+	    }
+	}

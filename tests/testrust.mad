@@ -1,5 +1,7 @@
 #!/usr/bin/env madc
 #include <iostream>
+#include <string>
+#include <ns_rust>
 using namespace std;
 
 int main()

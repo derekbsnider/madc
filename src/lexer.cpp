@@ -393,6 +393,9 @@ static bool expansion_is_compound_type_specifiers(const std::string &text, int &
 static const char *auto_include_embedded_header_for_identifier(const std::string &word)
 {
     static const std::map<std::string, std::string> identifier_headers = {
+	{"string", "string"},
+	{"stringstream", "sstream"},
+
 	{"size_t", "stddef.h"},
 	{"ptrdiff_t", "stddef.h"},
 	{"wchar_t", "stddef.h"},
@@ -458,6 +461,57 @@ static const char *auto_include_embedded_header_for_identifier(const std::string
     return it->second.c_str();
 }
 
+static std::vector<std::string> ordered_auto_include_headers(const std::set<std::string> &headers)
+{
+    static const char *preferred_order[] = {
+	"stddef.h",
+	"stdint.h",
+	"float.h",
+	"stdlib.h",
+	"string.h",
+	"stdio.h",
+	"string",
+	"sstream",
+	"iostream",
+	"vector",
+	"map",
+	"set",
+	NULL
+    };
+
+    std::vector<std::string> ordered;
+    std::set<std::string> emitted;
+    for ( int i = 0; preferred_order[i]; ++i )
+    {
+	std::string h(preferred_order[i]);
+	if ( headers.count(h) )
+	{
+	    ordered.push_back(h);
+	    emitted.insert(h);
+	}
+    }
+    for ( std::set<std::string>::const_iterator it = headers.begin();
+	  it != headers.end(); ++it )
+	if ( !emitted.count(*it) )
+	    ordered.push_back(*it);
+    return ordered;
+}
+
+static size_t auto_include_insertion_index(const std::deque<TokenBase *> &tokens,
+					   size_t limit,
+					   const char *source_name)
+{
+    if ( !source_name || !*source_name )
+	return 0;
+    for ( size_t i = 0; i < limit; ++i )
+    {
+	TokenBase *tb = tokens[i];
+	if ( tb && tb->file && strcmp(tb->file, source_name) == 0 )
+	    return i;
+    }
+    return limit;
+}
+
 void Program::mark_embedded_include_flag(const std::string &incfile)
 {
     if ( incfile == "iostream" )
@@ -473,6 +527,11 @@ void Program::mark_embedded_include_flag(const std::string &incfile)
 
 bool Program::auto_include_standard_identifier(const std::string &word)
 {
+    if ( skip_includes )
+	return false;
+    if ( suppress_auto_include_scan )
+	return false;
+
     // `typedef unsigned long size_t;` and similar declaration heads are
     // defining the identifier, not using the standard header surface.
     // Auto-including here injects the embedded header in the middle of
@@ -503,33 +562,145 @@ bool Program::auto_include_standard_identifier(const std::string &word)
     if ( !header )
 	return false;
 
-    std::string include_key = std::string("<") + header + ">";
-    if ( !should_tokenize_include(include_key) )
-	return false;
+    pending_auto_include_headers.insert(header);
+    pending_auto_include_identifiers.insert(word);
+    return false;
+}
 
-    const std::string *embedded = find_embedded_header(header);
-    if ( !embedded )
-	return false;
-    if ( !is_embedded_header_allowed(header) )
-	Throw << "embedded header '" << header
-	      << "' is not allowed by registration policy" << flush;
-
-    source.pushback(word);
+std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string &value,
+							       const TokenBase *origin)
+{
+    std::vector<TokenBase *> replacement;
+    if ( value.empty() )
+	return replacement;
 
     Source saved = std::move(source);
+    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+    suppress_auto_include_scan = true;
     source = Source();
-    source.fname(header);
-    source.str(*embedded);
-    TokenBase *itb;
-    const char *interned = intern_file(header);
-    while ( (itb = getRealToken()) )
+    source.fname(origin && origin->file ? origin->file : "<auto-include>");
+    source.str(value);
+
+    try
     {
-	itb->file = interned;
-	push_token_with_string_concat(itb);
+	TokenBase *rt;
+	while ( (rt = getRealToken()) )
+	{
+	    if ( origin )
+	    {
+		rt->file = origin->file;
+		rt->line = origin->line;
+		rt->column = origin->column;
+	    }
+	    replacement.push_back(rt);
+	}
     }
+    catch(...)
+    {
+	source = std::move(saved);
+	suppress_auto_include_scan = saved_suppress_auto_include_scan;
+	throw;
+    }
+
     source = std::move(saved);
-    mark_embedded_include_flag(header);
-    return true;
+    suppress_auto_include_scan = saved_suppress_auto_include_scan;
+    return replacement;
+}
+
+void Program::expand_pending_auto_include_macros(size_t original_start)
+{
+    if ( pending_auto_include_identifiers.empty() )
+	return;
+
+    std::deque<TokenBase *> rewritten;
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	TokenBase *tb = tokens[i];
+	if ( i >= original_start
+	  && tb
+	  && tb->type() == TokenType::ttIdentifier )
+	{
+	    TokenIdent *ident = (TokenIdent *)tb;
+	    if ( pending_auto_include_identifiers.count(ident->str) )
+	    {
+		std::map<std::string, std::string>::iterator di =
+		    define_map.find(ident->str);
+		if ( di != define_map.end() )
+		{
+		    std::vector<TokenBase *> repl =
+			tokenize_auto_include_define(di->second, tb);
+		    rewritten.insert(rewritten.end(), repl.begin(), repl.end());
+		    continue;
+		}
+	    }
+	}
+	rewritten.push_back(tb);
+    }
+
+    tokens.swap(rewritten);
+    pending_auto_include_identifiers.clear();
+}
+
+void Program::inject_pending_auto_includes()
+{
+    if ( skip_includes )
+	return;
+    if ( pending_auto_include_headers.empty() )
+	return;
+
+    size_t include_start = tokens.size();
+    size_t insert_at = auto_include_insertion_index(tokens, include_start,
+						    source.fname());
+
+    while ( !pending_auto_include_headers.empty() )
+    {
+	std::set<std::string> batch;
+	batch.swap(pending_auto_include_headers);
+	std::vector<std::string> ordered = ordered_auto_include_headers(batch);
+	for ( std::vector<std::string>::const_iterator hi = ordered.begin();
+	      hi != ordered.end(); ++hi )
+	{
+	    const std::string &header = *hi;
+	    std::string include_key = std::string("<") + header + ">";
+	    if ( !should_tokenize_include(include_key) )
+		continue;
+
+	    const std::string *embedded = find_embedded_header(header);
+	    if ( !embedded )
+		continue;
+	    if ( !is_embedded_header_allowed(header) )
+		Throw << "embedded header '" << header
+		      << "' is not allowed by registration policy" << flush;
+
+	    Source saved = std::move(source);
+	    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+	    suppress_auto_include_scan = true;
+	    source = Source();
+	    source.fname(header.c_str());
+	    source.str(*embedded);
+	    TokenBase *itb;
+	    const char *interned = intern_file(header);
+	    while ( (itb = getRealToken()) )
+	    {
+		itb->file = interned;
+		push_token_with_literal_concat(itb);
+	    }
+	    source = std::move(saved);
+	    suppress_auto_include_scan = saved_suppress_auto_include_scan;
+	    mark_embedded_include_flag(header);
+	}
+    }
+
+    if ( tokens.size() > include_start )
+    {
+	std::vector<TokenBase *> included(tokens.begin() + include_start,
+					 tokens.end());
+	tokens.erase(tokens.begin() + include_start, tokens.end());
+	tokens.insert(tokens.begin() + insert_at, included.begin(), included.end());
+	expand_pending_auto_include_macros(insert_at + included.size());
+    }
+    else
+	expand_pending_auto_include_macros(insert_at);
 }
 
 // Walk back through recently emitted tokens to decide whether the
@@ -712,14 +883,11 @@ TokenUINT64	tkUINT64;
 TokenFLOAT	tkFLOAT;
 TokenDOUBLE	tkDOUBLE;
 TokenARRAY	tkARRAY;
-TokenIFSTREAM	tkIFSTREAM;
-TokenOFSTREAM	tkOFSTREAM;
-TokenFSTREAM	tkFSTREAM;
 TokenLPSTR	tkLPSTR;
 TokenAUTO	tkAUTO;
 
 
-void Program::push_token_with_string_concat(TokenBase *tb)
+void Program::push_token_with_literal_concat(TokenBase *tb)
 {
     if ( tb->type() == TokenType::ttString
       && !tokens.empty()
@@ -759,6 +927,9 @@ void Program::_tokenizer_init()
     _include_stdio = false;
     _include_string = false;
     included_files.clear();
+    pending_auto_include_headers.clear();
+    pending_auto_include_identifiers.clear();
+    suppress_auto_include_scan = false;
     add_keywords();
     add_datatypes();
     struct_map["teststruct"] = &ddTESTSTRUCT;
@@ -1570,6 +1741,12 @@ TokenBase *Program::_getToken()
 		    // angle-bracket includes: check embedded headers first
 		    if ( is_system )
 		    {
+			if ( pending_auto_include_headers.count(incfile) )
+			{
+			    DBG(std::cout << "#include <" << incfile
+				<< "> deferred to auto-include prelude" << std::endl);
+			    return getToken();
+			}
 			std::string include_key = "<" + incfile + ">";
 			if ( !should_tokenize_include(include_key) )
 			{
@@ -1587,6 +1764,8 @@ TokenBase *Program::_getToken()
 				      << "' is not allowed by registration policy" << flush;
 			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
 			    Source saved = std::move(source);
+			    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+			    suppress_auto_include_scan = true;
 			    source = Source();
 			    source.fname(incfile.c_str());
 			    source.str(*embedded);
@@ -1595,9 +1774,10 @@ TokenBase *Program::_getToken()
 			    while ( (itb = getRealToken()) )
 			    {
 				itb->file = _interned1;
-				push_token_with_string_concat(itb);
+				push_token_with_literal_concat(itb);
 			    }
 			    source = std::move(saved);
+			    suppress_auto_include_scan = saved_suppress_auto_include_scan;
 			    // flag headers for deferred registration during parse init
 			    mark_embedded_include_flag(incfile);
 			    return getToken();
@@ -1615,7 +1795,7 @@ TokenBase *Program::_getToken()
 				for ( TokenBase *itb : pch_tokens )
 				{
 				    itb->file = _interned_pch;
-				    push_token_with_string_concat(itb);
+				    push_token_with_literal_concat(itb);
 				}
 				mark_embedded_include_flag(incfile);
 				return getToken();
@@ -1651,7 +1831,7 @@ TokenBase *Program::_getToken()
 		    while ( (itb = getRealToken()) )
 		    {
 			itb->file = _interned2;
-			push_token_with_string_concat(itb);
+			push_token_with_literal_concat(itb);
 		    }
 		    source = std::move(saved);
 		    return getToken(); // continue with current file
@@ -4268,7 +4448,7 @@ TokenProgram *Program::tokenize(const char *fname)
 	    tb->file = fname;
 //	    tb->line = source.line();
 //	    tb->column = source.column();
-	    push_token_with_string_concat(tb);
+	    push_token_with_literal_concat(tb);
         }
     }
     catch(const char *err_msg)
@@ -4333,7 +4513,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 	while ( (tb=getRealToken()) )
 	{
 	    tb->file = fname;
-	    push_token_with_string_concat(tb);
+	    push_token_with_literal_concat(tb);
 	}
     }
     catch(const char *err_msg)

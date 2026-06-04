@@ -27,6 +27,11 @@
 
 using namespace std;
 
+static std::string js_text_arg(const char *ptr)
+{
+	return std::string(ptr ? ptr : "");
+}
+
 // ---- Base64 tables ----
 
 static const char b64_encode_table[] =
@@ -45,10 +50,10 @@ static int b64_decode_char(char c)
 // ---- C++ wrapper functions ----
 
 // js::btoa — base64 encode
-void *js_btoa(void *result, void *input)
+std::string *js_btoa(std::string *result, const char *input)
 {
-	std::string &in = *(std::string *)input;
-	std::string &out = *(std::string *)result;
+	std::string in = js_text_arg(input);
+	std::string &out = *result;
 	out.clear();
 	for ( size_t i = 0; i < in.length(); i += 3 )
 	{
@@ -66,10 +71,10 @@ void *js_btoa(void *result, void *input)
 }
 
 // js::atob — base64 decode
-void *js_atob(void *result, void *input)
+std::string *js_atob(std::string *result, const char *input)
 {
-	std::string &in = *(std::string *)input;
-	std::string &out = *(std::string *)result;
+	std::string in = js_text_arg(input);
+	std::string &out = *result;
 	out.clear();
 	size_t i = 0;
 	while ( i < in.length() )
@@ -93,10 +98,10 @@ void *js_atob(void *result, void *input)
 }
 
 // js::encodeURIComponent — URL-encode a string
-void *js_encodeURIComponent(void *result, void *input)
+std::string *js_encodeURIComponent(std::string *result, const char *input)
 {
-	std::string &in = *(std::string *)input;
-	std::string &out = *(std::string *)result;
+	std::string in = js_text_arg(input);
+	std::string &out = *result;
 	out.clear();
 	out.reserve(in.length() * 3);
 	for ( size_t i = 0; i < in.length(); ++i )
@@ -115,10 +120,10 @@ void *js_encodeURIComponent(void *result, void *input)
 }
 
 // js::decodeURIComponent — URL-decode a string
-void *js_decodeURIComponent(void *result, void *input)
+std::string *js_decodeURIComponent(std::string *result, const char *input)
 {
-	std::string &in = *(std::string *)input;
-	std::string &out = *(std::string *)result;
+	std::string in = js_text_arg(input);
+	std::string &out = *result;
 	out.clear();
 	for ( size_t i = 0; i < in.length(); ++i )
 	{
@@ -144,19 +149,19 @@ void *js_decodeURIComponent(void *result, void *input)
 }
 
 // js::parseInt — parse integer with radix support
-int64_t js_parseInt(void *str, int64_t radix)
+int64_t js_parseInt(const char *str, int64_t radix)
 {
-	std::string &s = *(std::string *)str;
+	std::string s = js_text_arg(str);
 	if ( radix < 2 || radix > 36 ) radix = 10;
 	try { return std::stoll(s, nullptr, (int)radix); }
 	catch (...) { return 0; }
 }
 
 // js::stringify — simple JSON-like serialization of a MadArray
-void *js_stringify(void *result, void *arr)
+std::string *js_stringify(std::string *result, MadArray *arr)
 {
-	MadArray &a = *(MadArray *)arr;
-	std::string &out = *(std::string *)result;
+	MadArray &a = *arr;
+	std::string &out = *result;
 	out = "[";
 	for ( size_t i = 0; i < a.data.size(); ++i )
 	{
@@ -187,61 +192,29 @@ void *js_stringify(void *result, void *arr)
 }
 
 // js::typeof — return type name as string
-void *js_typeof(void *result, void *val)
+std::string *js_typeof(std::string *result, const char *val)
 {
 	// For now, works with strings — returns "string"
-	std::string &res = *(std::string *)result;
+	std::string &res = *result;
 	res = "string";
 	return result;
 }
 
 // js::typeof_int — type check for integers
-void *js_typeof_int(void *result, int64_t val)
+std::string *js_typeof_int(std::string *result, int64_t val)
 {
-	std::string &res = *(std::string *)result;
+	std::string &res = *result;
 	res = "number";
 	return result;
 }
 
 
-// ---- Namespace registration ----
-
-void Program::add_js_namespace()
-{
-	variable_map_t &js_ns = namespace_map["js"];
-	Variable *var;
-
-	// base64
-	var = addFunction("__js_btoa",               datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)js_btoa);
-	if (var) js_ns["btoa"] = var;
-
-	var = addFunction("__js_atob",               datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)js_atob);
-	if (var) js_ns["atob"] = var;
-
-	// URL encoding
-	var = addFunction("__js_encodeURIComponent", datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)js_encodeURIComponent);
-	if (var) js_ns["encodeURIComponent"] = var;
-
-	var = addFunction("__js_decodeURIComponent", datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)js_decodeURIComponent);
-	if (var) js_ns["decodeURIComponent"] = var;
-
-	// parsing
-	var = addFunction("__js_parseInt",           datatype_vec_t{DataType::dtINT64, &ddSTRING, DataType::dtINT64}, (fVOIDFUNC)js_parseInt);
-	if (var) js_ns["parseInt"] = var;
-
-	// JSON
-	var = addFunction("__js_stringify",          datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)js_stringify);
-	if (var) js_ns["stringify"] = var;
-
-	DBG(std::cout << "add_js_namespace() registered js:: with " << js_ns.size() << " members" << std::endl);
-}
-
 extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
-void *__js_btoa(void *a, void *b) { return js_btoa(a, b); }
-void *__js_atob(void *a, void *b) { return js_atob(a, b); }
-void *__js_encodeURIComponent(void *a, void *b) { return js_encodeURIComponent(a, b); }
-void *__js_decodeURIComponent(void *a, void *b) { return js_decodeURIComponent(a, b); }
-int64_t __js_parseInt(void *a, int64_t b) { return js_parseInt(a, b); }
-void *__js_stringify(void *a, void *b) { return js_stringify(a, b); }
+std::string *__js_btoa(std::string *a, const char *b) { return js_btoa(a, b); }
+std::string *__js_atob(std::string *a, const char *b) { return js_atob(a, b); }
+std::string *__js_encodeURIComponent(std::string *a, const char *b) { return js_encodeURIComponent(a, b); }
+std::string *__js_decodeURIComponent(std::string *a, const char *b) { return js_decodeURIComponent(a, b); }
+int64_t __js_parseInt(const char *a, int64_t b) { return js_parseInt(a, b); }
+std::string *__js_stringify(std::string *a, MadArray *b) { return js_stringify(a, b); }
 }

@@ -1,0 +1,17 @@
+namespace python {
+    std::string &title(std::string &s) asm("__py_title");
+    std::string &swapcase(std::string &s) asm("__py_swapcase");
+    std::string &center(std::string &s, long width, const char *fill) asm("__py_center");
+    std::string &ljust(std::string &s, long width, const char *fill) asm("__py_ljust");
+    std::string &rjust(std::string &s, long width, const char *fill) asm("__py_rjust");
+    std::string &zfill(std::string &s, long width) asm("__py_zfill");
+    long count(const char *haystack, const char *needle) asm("__py_count");
+    long startswith(const char *text, const char *prefix) asm("__py_startswith");
+    long endswith(const char *text, const char *suffix) asm("__py_endswith");
+    long isdigit(const char *text) asm("__py_isdigit");
+    long isalpha(const char *text) asm("__py_isalpha");
+    long isalnum(const char *text) asm("__py_isalnum");
+    long isspace(const char *text) asm("__py_isspace");
+    std::string &replace(std::string &s, const char *old_text, const char *new_text) asm("__py_replace");
+    std::string &format(std::string &result, const char *fmt, array args) asm("__py_format");
+}

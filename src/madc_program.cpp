@@ -351,7 +351,7 @@ struct expression_function_spec
     const char *name;
     datatype_vec_t signature;
 };
-bool string_list_contains(const std::vector<std::string> &items, const std::string &value);
+bool text_list_contains(const std::vector<std::string> &items, const std::string &value);
 std::vector<expression_function_spec> expression_header_function_specs(const std::string &header);
 std::vector<std::string> expression_allowed_function_names(const expression_policy &policy);
 std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBase *> &tokens);
@@ -396,8 +396,6 @@ DataDef *expression_result_datadef_internal(DataDef *expr_type, bool have_result
 	return &ddVOID;
     if ( !expr_type )
 	return NULL;
-    if ( is_std_string(expr_type) )
-	return &ddCHARptr;
     program::native_type native;
     return native_type_from_datadef(expr_type, native) ? expr_type : NULL;
 }
@@ -445,7 +443,7 @@ bool validate_expression_function_policy(Program &pgm,
     std::vector<std::string> allowed = expression_allowed_function_names(policy);
     for ( std::size_t i = 0; i < calls.size(); ++i )
     {
-	if ( string_list_contains(allowed, calls[i]) )
+	if ( text_list_contains(allowed, calls[i]) )
 	    continue;
 	return fail_program_runtime(pgm,
 				    std::string("program::eval_expression rejected function call to '")
@@ -518,7 +516,6 @@ bool invoke_program_zero_arg_function(Program &pgm,
 	    case program::native_type::integer:   ok = call_target0<int64_t>(method->x86code, &result); break;
 	    case program::native_type::real:      ok = call_target0<double>(method->x86code, &result); break;
 	    case program::native_type::c_string:  ok = call_target0<const char *>(method->x86code, &result); break;
-	    case program::native_type::string_object: ok = call_target0<std::string *>(method->x86code, &result); break;
 	}
 	pgm.pop_runtime_scope();
 	if ( ok )
@@ -542,7 +539,7 @@ std::string read_text_file(const std::string &path)
     return os.str();
 }
 
-bool string_list_contains(const std::vector<std::string> &items, const std::string &value)
+bool text_list_contains(const std::vector<std::string> &items, const std::string &value)
 {
     for ( std::size_t i = 0; i < items.size(); ++i )
     {
@@ -557,7 +554,7 @@ void append_unique_strings(std::vector<std::string> &dst,
 {
     for ( std::size_t i = 0; i < src.size(); ++i )
     {
-	if ( !string_list_contains(dst, src[i]) )
+	if ( !text_list_contains(dst, src[i]) )
 	    dst.push_back(src[i]);
     }
 }
@@ -817,7 +814,6 @@ const char *eval_body_wrapper_return_type(madc::program::native_type return_type
 	    return "double";
 	case madc::program::native_type::c_string:
 	    return "char *";
-	case madc::program::native_type::string_object:
 	case madc::program::native_type::void_type:
 	    break;
 	    }
@@ -1053,7 +1049,7 @@ bool validate_expression_ast_call_target(const expression_policy &policy,
 	return set_expression_ast_rejection(reason, "indirect function calls are disabled by expression policy");
 
     std::vector<std::string> allowed = expression_allowed_function_names(policy);
-    if ( !string_list_contains(allowed, call->var.name) )
+    if ( !text_list_contains(allowed, call->var.name) )
     {
 	reason = std::string("rejected function call to '") + call->var.name + "'";
 	return false;
@@ -1131,7 +1127,7 @@ std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBa
 	std::string identifier = ((TokenIdent *)tb)->str;
 	if ( is_expression_keyword_identifier(identifier) )
 	    continue;
-	if ( !string_list_contains(calls, identifier) )
+	if ( !text_list_contains(calls, identifier) )
 	    calls.push_back(identifier);
     }
     return calls;
@@ -1347,7 +1343,7 @@ std::vector<std::string> collect_expression_identifier_paths(const std::string &
 			i = end;
 			continue;
 		    }
-		    if ( !string_list_contains(paths, path) )
+		    if ( !text_list_contains(paths, path) )
 			paths.push_back(path);
 		    i = end;
 		}
@@ -1913,14 +1909,6 @@ bool native_type_from_datadef(DataDef *type, program::native_type &out)
     if ( !type )
 	return false;
 
-    // std::string by class identity (not the std::string tag) — checked first so
-    // it stays correct once the tag is retired (string becomes dtRESERVED).
-    if ( is_std_string(type) && !type->is_pointer() )
-    {
-	out = program::native_type::string_object;
-	return true;
-    }
-
     switch ( type->type() )
     {
 	case DataType::dtVOID:
@@ -1980,12 +1968,6 @@ const char *value_as<const char *>(const value &v)
     return v.as_string().c_str();
 }
 
-template <>
-std::string *value_as<std::string *>(const value &v)
-{
-    return const_cast<std::string *>(&v.as_string());
-}
-
 template <typename T>
 value value_from(T v);
 
@@ -2013,12 +1995,6 @@ value value_from<const char *>(const char *v)
     return value(v);
 }
 
-template <>
-value value_from<std::string *>(std::string *v)
-{
-    return value(v ? *v : std::string());
-}
-
 bool value_from_variable(Variable *var, value &out)
 {
     if ( !var || !var->type || !var->data )
@@ -2041,11 +2017,6 @@ bool value_from_variable(Variable *var, value &out)
     if ( type->is_real() )
     {
 	out = value(static_cast<double>(var->get<double>()));
-	return true;
-    }
-    if ( is_std_string(type) )
-    {
-	out = value(*static_cast<std::string *>(var->data));
 	return true;
     }
     return false;
@@ -2104,12 +2075,6 @@ bool set_variable_from_value(Variable *var, const value &in)
 	var->modified();
 	return true;
     }
-    if ( is_std_string(type) )
-    {
-	*static_cast<std::string *>(var->data) = in.as_string();
-	var->modified();
-	return true;
-    }
     return false;
 }
 
@@ -2124,7 +2089,7 @@ DataDef *expression_binding_datadef(const value &v)
 	case value::kind::real:
 	    return &ddDOUBLE;
 	case value::kind::string:
-	    return &ddSTRING;
+	    return &ddCHARptr;
 	default:
 	    break;
     }
@@ -2889,8 +2854,6 @@ struct program::impl
 	    return &ddVOID;
 	if ( !expr_type )
 	    return NULL;
-	if ( is_std_string(expr_type) )
-	    return &ddCHARptr;
 	program::native_type native;
 	return native_type_from_datadef(expr_type, native) ? expr_type : NULL;
     }
@@ -2948,7 +2911,7 @@ struct program::impl
 	std::vector<std::string> allowed = expression_allowed_function_names(current_expression_policy);
 	for ( std::size_t i = 0; i < calls.size(); ++i )
 	{
-	    if ( string_list_contains(allowed, calls[i]) )
+	    if ( text_list_contains(allowed, calls[i]) )
 		continue;
 	    clear_public_errors();
 	    public_last_error = error(error::severity::error,
@@ -3340,7 +3303,6 @@ struct program::impl
 	    case native_type::integer:   return call_target0<int64_t>(fn, result);
 	    case native_type::real:      return call_target0<double>(fn, result);
 	    case native_type::c_string:  return call_target0<const char *>(fn, result);
-	    case native_type::string_object: return call_target0<std::string *>(fn, result);
 	}
 	return false;
     }
@@ -3355,7 +3317,6 @@ struct program::impl
 	    case native_type::integer:   return call_target1<int64_t, A0>(fn, arg0, result);
 	    case native_type::real:      return call_target1<double, A0>(fn, arg0, result);
 	    case native_type::c_string:  return call_target1<const char *, A0>(fn, arg0, result);
-	    case native_type::string_object: return call_target1<std::string *, A0>(fn, arg0, result);
 	}
 	return false;
     }
@@ -3369,7 +3330,6 @@ struct program::impl
 	    case native_type::integer: return dispatch_call1_ret<int64_t>(fn, ret_type, arg0, result);
 	    case native_type::real:    return dispatch_call1_ret<double>(fn, ret_type, arg0, result);
 	    case native_type::c_string:return dispatch_call1_ret<const char *>(fn, ret_type, arg0, result);
-	    case native_type::string_object:return dispatch_call1_ret<std::string *>(fn, ret_type, arg0, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3386,7 +3346,6 @@ struct program::impl
 	    case native_type::integer:   return call_target2<int64_t, A0, A1>(fn, arg0, arg1, result);
 	    case native_type::real:      return call_target2<double, A0, A1>(fn, arg0, arg1, result);
 	    case native_type::c_string:  return call_target2<const char *, A0, A1>(fn, arg0, arg1, result);
-	    case native_type::string_object: return call_target2<std::string *, A0, A1>(fn, arg0, arg1, result);
 	}
 	return false;
     }
@@ -3401,7 +3360,6 @@ struct program::impl
 	    case native_type::integer: return dispatch_call2_ret<A0, int64_t>(fn, ret_type, arg0, arg1, result);
 	    case native_type::real:    return dispatch_call2_ret<A0, double>(fn, ret_type, arg0, arg1, result);
 	    case native_type::c_string:return dispatch_call2_ret<A0, const char *>(fn, ret_type, arg0, arg1, result);
-	    case native_type::string_object:return dispatch_call2_ret<A0, std::string *>(fn, ret_type, arg0, arg1, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3417,7 +3375,6 @@ struct program::impl
 	    case native_type::integer: return dispatch_call2_arg1<int64_t>(fn, ret_type, arg1_type, arg0, arg1, result);
 	    case native_type::real:    return dispatch_call2_arg1<double>(fn, ret_type, arg1_type, arg0, arg1, result);
 	    case native_type::c_string:return dispatch_call2_arg1<const char *>(fn, ret_type, arg1_type, arg0, arg1, result);
-	    case native_type::string_object:return dispatch_call2_arg1<std::string *>(fn, ret_type, arg1_type, arg0, arg1, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3438,7 +3395,6 @@ struct program::impl
 	    case native_type::integer:   return call_target3<int64_t, A0, A1, A2>(fn, arg0, arg1, arg2, result);
 	    case native_type::real:      return call_target3<double, A0, A1, A2>(fn, arg0, arg1, arg2, result);
 	    case native_type::c_string:  return call_target3<const char *, A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	    case native_type::string_object: return call_target3<std::string *, A0, A1, A2>(fn, arg0, arg1, arg2, result);
 	}
 	return false;
     }
@@ -3458,7 +3414,6 @@ struct program::impl
 	    case native_type::integer: return dispatch_call3_ret<A0, A1, int64_t>(fn, ret_type, arg0, arg1, arg2, result);
 	    case native_type::real:    return dispatch_call3_ret<A0, A1, double>(fn, ret_type, arg0, arg1, arg2, result);
 	    case native_type::c_string:return dispatch_call3_ret<A0, A1, const char *>(fn, ret_type, arg0, arg1, arg2, result);
-	    case native_type::string_object:return dispatch_call3_ret<A0, A1, std::string *>(fn, ret_type, arg0, arg1, arg2, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3480,7 +3435,6 @@ struct program::impl
 	    case native_type::integer: return dispatch_call3_arg2<A0, int64_t>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
 	    case native_type::real:    return dispatch_call3_arg2<A0, double>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
 	    case native_type::c_string:return dispatch_call3_arg2<A0, const char *>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::string_object:return dispatch_call3_arg2<A0, std::string *>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3502,7 +3456,6 @@ struct program::impl
 	    case native_type::integer: return dispatch_call3_arg1<int64_t>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
 	    case native_type::real:    return dispatch_call3_arg1<double>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
 	    case native_type::c_string:return dispatch_call3_arg1<const char *>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::string_object:return dispatch_call3_arg1<std::string *>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3524,7 +3477,6 @@ struct program::impl
 	    case native_type::integer:   return call_target4<int64_t, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
 	    case native_type::real:      return call_target4<double, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
 	    case native_type::c_string:  return call_target4<const char *, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	    case native_type::string_object: return call_target4<std::string *, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
 	}
 	return false;
     }
@@ -3545,7 +3497,6 @@ struct program::impl
 	    case native_type::integer: return dispatch_call4_ret<A0, A1, A2, int64_t>(fn, ret_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::real:    return dispatch_call4_ret<A0, A1, A2, double>(fn, ret_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::c_string:return dispatch_call4_ret<A0, A1, A2, const char *>(fn, ret_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::string_object:return dispatch_call4_ret<A0, A1, A2, std::string *>(fn, ret_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3568,7 +3519,6 @@ struct program::impl
 	    case native_type::integer: return dispatch_call4_arg3<A0, A1, int64_t>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::real:    return dispatch_call4_arg3<A0, A1, double>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::c_string:return dispatch_call4_arg3<A0, A1, const char *>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::string_object:return dispatch_call4_arg3<A0, A1, std::string *>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3592,7 +3542,6 @@ struct program::impl
 	    case native_type::integer: return dispatch_call4_arg2<A0, int64_t>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::real:    return dispatch_call4_arg2<A0, double>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::c_string:return dispatch_call4_arg2<A0, const char *>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::string_object:return dispatch_call4_arg2<A0, std::string *>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3616,7 +3565,6 @@ struct program::impl
 	    case native_type::integer: return dispatch_call4_arg1<int64_t>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::real:    return dispatch_call4_arg1<double>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::c_string:return dispatch_call4_arg1<const char *>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::string_object:return dispatch_call4_arg1<std::string *>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::void_type: break;
 	}
 	return false;

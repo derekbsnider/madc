@@ -3,6 +3,20 @@
 #include <string>
 
 static std::map<std::string, std::string> embedded_headers = {
+    {"algorithm", R"EMBED(long __madc_array_size(array values) asm("madarray_size");
+const char *__madc_array_get_cstr(array values, long index) asm("__php_array_get_cstr");
+
+namespace std {
+    void for_each(array values, void (*fn)(string)) {
+	string value;
+	long n = __madc_array_size(values);
+	for (long i = 0; i < n; i = i + 1) {
+	    value = __madc_array_get_cstr(values, i);
+	    fn(value);
+	}
+    }
+}
+)EMBED"},
     {"alloca.h", R"EMBED(// madc embedded alloca.h
 // alloca() allocates on the stack — madc maps it to malloc for now.
 // True stack allocation would need compiler intrinsic support.
@@ -411,8 +425,136 @@ namespace std {
 // available via dlsym fallback
 // struct group access deferred
 )EMBED"},
-    {"iostream", R"EMBED(// madc embedded iostream — registers cout, cin, cerr, endl
-// The actual registration is handled by add_iostream() callback
+    {"iostream", R"EMBED(#include <stdio.h>
+#include <string>
+
+namespace std {
+    template<typename _CharT, typename _Traits>
+    class basic_ostream {
+	int _fd;
+
+	void write_cstr(char *s) {
+	    if (_fd == 2)
+		fprintf(stderr, "%s", s);
+	    else
+		printf("%s", s);
+	}
+
+    public:
+	basic_ostream(int fd = 1) { _fd = fd; }
+
+	basic_ostream &operator<<(char *s) {
+	    this->write_cstr(s);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(const char *s) {
+	    this->write_cstr(s);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(char c) {
+	    if (_fd == 2)
+		fprintf(stderr, "%c", c);
+	    else
+		printf("%c", c);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(bool v) {
+	    if (_fd == 2)
+		fprintf(stderr, "%d", v);
+	    else
+		printf("%d", v);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(short v) {
+	    if (_fd == 2)
+		fprintf(stderr, "%d", v);
+	    else
+		printf("%d", v);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(unsigned short v) {
+	    if (_fd == 2)
+		fprintf(stderr, "%u", v);
+	    else
+		printf("%u", v);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(int v) {
+	    if (_fd == 2)
+		fprintf(stderr, "%d", v);
+	    else
+		printf("%d", v);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(unsigned int v) {
+	    if (_fd == 2)
+		fprintf(stderr, "%u", v);
+	    else
+		printf("%u", v);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(long v) {
+	    if (_fd == 2)
+		fprintf(stderr, "%ld", v);
+	    else
+		printf("%ld", v);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(unsigned long v) {
+	    if (_fd == 2)
+		fprintf(stderr, "%lu", v);
+	    else
+		printf("%lu", v);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(double v) {
+	    if (_fd == 2)
+		fprintf(stderr, "%g", v);
+	    else
+		printf("%g", v);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(float v) {
+	    if (_fd == 2)
+		fprintf(stderr, "%g", v);
+	    else
+		printf("%g", v);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(void *p) {
+	    if (_fd == 2)
+		fprintf(stderr, "%p", p);
+	    else
+		printf("%p", p);
+	    return *this;
+	}
+
+	basic_ostream &operator<<(string &s) {
+	    this->write_cstr(s.c_str());
+	    return *this;
+	}
+    };
+
+    typedef basic_ostream<char, std::char_traits<char>> ostream;
+
+    ostream cout(1);
+    ostream cerr(2);
+    ostream clog(2);
+
+    char *endl = "\n";
+}
 )EMBED"},
     {"limits.h", R"EMBED(// madc embedded limits.h — integer limit constants
 
@@ -467,11 +609,9 @@ namespace std {
 // container, defined here and compiled through the class model.
 //
 // Implementation: parallel arrays of keys/values with linear search (madc's
-// own simple map, not a balanced tree). String keys compare via std::string
-// operator== (bound to the extern-C runtime wrapper string_equals, since
-// libstdc++'s std::operator== for strings is an inlined weak template symbol
-// that is not dlsym-exportable). The header instantiates per K, so only the
-// matching code is compiled; no scalar-key test exists.
+// own simple map, not a balanced tree). Keys compare through operator==. The
+// header instantiates per K, so only the matching code is compiled; no
+// scalar-key test exists.
 //
 // The search loop is inlined into each method rather than factored into a
 // private __find(): madc does not yet support an unqualified sibling-method
@@ -896,6 +1036,459 @@ struct sockaddr_in {
 
 #include <netinet/in.h>
 )EMBED"},
+    {"ns_js", R"EMBED(namespace js {
+    std::string &btoa(std::string &result, const char *input) asm("__js_btoa");
+    std::string &atob(std::string &result, const char *input) asm("__js_atob");
+    std::string &encodeURIComponent(std::string &result, const char *input) asm("__js_encodeURIComponent");
+    std::string &decodeURIComponent(std::string &result, const char *input) asm("__js_decodeURIComponent");
+    long parseInt(const char *text, long radix) asm("__js_parseInt");
+    std::string &stringify(std::string &result, array values) asm("__js_stringify");
+}
+)EMBED"},
+    {"ns_js.h", R"EMBED(#ifndef MADC_NS_JS_H
+#define MADC_NS_JS_H
+
+#ifdef __cplusplus
+
+#include <cstdint>
+#include <string>
+#include "datadef.h"
+
+extern "C" {
+std::string *__js_btoa(std::string *, const char *);
+std::string *__js_atob(std::string *, const char *);
+std::string *__js_encodeURIComponent(std::string *, const char *);
+std::string *__js_decodeURIComponent(std::string *, const char *);
+int64_t __js_parseInt(const char *, int64_t);
+std::string *__js_stringify(std::string *, MadArray *);
+}
+
+namespace js {
+inline std::string &btoa(std::string &result, const char *input) { return *__js_btoa(&result, input); }
+inline std::string &atob(std::string &result, const char *input) { return *__js_atob(&result, input); }
+inline std::string &encodeURIComponent(std::string &result, const char *input) { return *__js_encodeURIComponent(&result, input); }
+inline std::string &decodeURIComponent(std::string &result, const char *input) { return *__js_decodeURIComponent(&result, input); }
+inline int64_t parseInt(const char *text, int64_t radix) { return __js_parseInt(text, radix); }
+inline std::string &stringify(std::string &result, MadArray &values) { return *__js_stringify(&result, &values); }
+}
+
+#endif
+
+#endif
+)EMBED"},
+    {"ns_perl", R"EMBED(namespace perl {
+    long chop(std::string &s) asm("__perl_chop");
+    long chomp(std::string &s) asm("__perl_chomp");
+    void grep(array dest, const char *needle, array src) asm("__perl_grep");
+    void glob(array out, const char *pattern) asm("__perl_glob");
+    long scalar(array values) asm("__perl_scalar");
+    void push(array values, const char *text) asm("__perl_push");
+    std::string &pop(std::string &result, array values) asm("__perl_pop");
+    std::string &shift(std::string &result, array values) asm("__perl_shift");
+    void unshift(array values, const char *text) asm("__perl_unshift");
+    std::string &join(std::string &result, const char *separator, array values) asm("__perl_join");
+    void split(array out, const char *pattern, const char *text) asm("__perl_split");
+    std::string &reverse(std::string &s) asm("__perl_reverse");
+    std::string &lc(std::string &s) asm("__perl_lc");
+    std::string &uc(std::string &s) asm("__perl_uc");
+    std::string &ucfirst(std::string &s) asm("__perl_ucfirst");
+    std::string &lcfirst(std::string &s) asm("__perl_lcfirst");
+    long index(const char *haystack, const char *needle) asm("__perl_index");
+    long rindex(const char *haystack, const char *needle) asm("__perl_rindex");
+    long length(const char *text) asm("__perl_length");
+    std::string &substr(std::string &result, const char *text, long offset, long length) asm("__perl_substr");
+}
+)EMBED"},
+    {"ns_perl.h", R"EMBED(#ifndef MADC_NS_PERL_H
+#define MADC_NS_PERL_H
+
+#ifdef __cplusplus
+
+#include <cstdint>
+#include <string>
+#include "datadef.h"
+
+extern "C" {
+int64_t __perl_chop(std::string *);
+int64_t __perl_chomp(std::string *);
+void __perl_grep(MadArray *, const char *, MadArray *);
+void __perl_glob(MadArray *, const char *);
+int64_t __perl_scalar(MadArray *);
+void __perl_push(MadArray *, const char *);
+std::string *__perl_pop(std::string *, MadArray *);
+std::string *__perl_shift(std::string *, MadArray *);
+void __perl_unshift(MadArray *, const char *);
+std::string *__perl_join(std::string *, const char *, MadArray *);
+void __perl_split(MadArray *, const char *, const char *);
+std::string *__perl_reverse(std::string *);
+std::string *__perl_lc(std::string *);
+std::string *__perl_uc(std::string *);
+std::string *__perl_ucfirst(std::string *);
+std::string *__perl_lcfirst(std::string *);
+int64_t __perl_index(const char *, const char *);
+int64_t __perl_rindex(const char *, const char *);
+int64_t __perl_length(const char *);
+std::string *__perl_substr(std::string *, const char *, int64_t, int64_t);
+}
+
+namespace perl {
+inline int64_t chop(std::string &s) { return __perl_chop(&s); }
+inline int64_t chomp(std::string &s) { return __perl_chomp(&s); }
+inline void grep(MadArray &dest, const char *needle, MadArray &src) { __perl_grep(&dest, needle, &src); }
+inline void glob(MadArray &out, const char *pattern) { __perl_glob(&out, pattern); }
+inline int64_t scalar(MadArray &values) { return __perl_scalar(&values); }
+inline void push(MadArray &values, const char *text) { __perl_push(&values, text); }
+inline std::string &pop(std::string &result, MadArray &values) { return *__perl_pop(&result, &values); }
+inline std::string &shift(std::string &result, MadArray &values) { return *__perl_shift(&result, &values); }
+inline void unshift(MadArray &values, const char *text) { __perl_unshift(&values, text); }
+inline std::string &join(std::string &result, const char *separator, MadArray &values) { return *__perl_join(&result, separator, &values); }
+inline void split(MadArray &out, const char *pattern, const char *text) { __perl_split(&out, pattern, text); }
+inline std::string &reverse(std::string &s) { return *__perl_reverse(&s); }
+inline std::string &lc(std::string &s) { return *__perl_lc(&s); }
+inline std::string &uc(std::string &s) { return *__perl_uc(&s); }
+inline std::string &ucfirst(std::string &s) { return *__perl_ucfirst(&s); }
+inline std::string &lcfirst(std::string &s) { return *__perl_lcfirst(&s); }
+inline int64_t index(const char *haystack, const char *needle) { return __perl_index(haystack, needle); }
+inline int64_t rindex(const char *haystack, const char *needle) { return __perl_rindex(haystack, needle); }
+inline int64_t length(const char *text) { return __perl_length(text); }
+inline std::string &substr(std::string &result, const char *text, int64_t offset, int64_t length) { return *__perl_substr(&result, text, offset, length); }
+}
+
+#endif
+
+#endif
+)EMBED"},
+    {"ns_php", R"EMBED(namespace php {
+    std::string &trim(std::string &s) asm("__php_trim");
+    std::string &ltrim(std::string &s) asm("__php_ltrim");
+    std::string &rtrim(std::string &s) asm("__php_rtrim");
+    std::string &chop(std::string &s) asm("__php_chop");
+    std::string &ucfirst(std::string &s) asm("__php_ucfirst");
+    std::string &lcfirst(std::string &s) asm("__php_lcfirst");
+    std::string &str_repeat(std::string &s, long count) asm("__php_str_repeat");
+    std::string &str_replace(std::string &search, std::string &replace, std::string &subject) asm("__php_str_replace");
+    std::string &str_pad(std::string &s, long length, std::string &pad) asm("__php_str_pad");
+    long str_word_count(std::string &s) asm("__php_str_word_count");
+    std::string &nl2br(std::string &s) asm("__php_nl2br");
+    std::string &str_rot13(std::string &s) asm("__php_str_rot13");
+    std::string &chunk_split(std::string &s, long chunklen, std::string &separator) asm("__php_chunk_split");
+    std::string &number_format(std::string &result, long number, std::string &separator) asm("__php_number_format");
+    std::string &wordwrap(std::string &s, long width, std::string &separator) asm("__php_wordwrap");
+
+    void explode(array out, const char *delim, const char *text) asm("__php_explode");
+    std::string &implode(std::string &result, const char *glue, array values) asm("__php_implode");
+    long count(array values) asm("__php_count");
+    void array_push(array values, const char *text) asm("__php_array_push");
+    void array_push_int(array values, long value) asm("__php_array_push_int");
+    void array_push_array(array values, array nested) asm("__php_array_push_array");
+    std::string &array_pop(std::string &result, array values) asm("__php_array_pop");
+    std::string &array_get(std::string &result, array values, long index) asm("__php_array_get");
+    long array_get_int(array values, long index) asm("__php_array_get_int");
+    void array_reverse(array values) asm("__php_array_reverse");
+    long in_array(const char *needle, array values) asm("__php_in_array");
+    long array_search(const char *needle, array values) asm("__php_array_search");
+    void array_unique(array values) asm("__php_array_unique");
+    std::string &array_shift(std::string &result, array values) asm("__php_array_shift");
+    void array_unshift(array values, const char *text) asm("__php_array_unshift");
+    void sort(array values) asm("__php_sort");
+    void rsort(array values) asm("__php_rsort");
+    void array_slice(array dest, array src, long offset, long length) asm("__php_array_slice");
+    void array_merge(array dest, array src) asm("__php_array_merge");
+    void array_column(array dest, array src, long column_index) asm("__php_array_column");
+}
+)EMBED"},
+    {"ns_php.h", R"EMBED(#ifndef MADC_NS_PHP_H
+#define MADC_NS_PHP_H
+
+#ifdef __cplusplus
+
+#include <cstdint>
+#include <string>
+#include "datadef.h"
+
+extern "C" {
+std::string *__php_trim(std::string *);
+std::string *__php_ltrim(std::string *);
+std::string *__php_rtrim(std::string *);
+std::string *__php_chop(std::string *);
+std::string *__php_ucfirst(std::string *);
+std::string *__php_lcfirst(std::string *);
+std::string *__php_str_repeat(std::string *, int64_t);
+std::string *__php_str_replace(std::string *, std::string *, std::string *);
+std::string *__php_str_pad(std::string *, int64_t, std::string *);
+int64_t __php_str_word_count(std::string *);
+std::string *__php_nl2br(std::string *);
+std::string *__php_str_rot13(std::string *);
+std::string *__php_chunk_split(std::string *, int64_t, std::string *);
+std::string *__php_number_format(std::string *, int64_t, std::string *);
+std::string *__php_wordwrap(std::string *, int64_t, std::string *);
+void __php_explode(MadArray *, const char *, const char *);
+std::string *__php_implode(std::string *, const char *, MadArray *);
+int64_t __php_count(MadArray *);
+void __php_array_push(MadArray *, const char *);
+void __php_array_push_int(MadArray *, int64_t);
+void __php_array_push_array(MadArray *, MadArray *);
+std::string *__php_array_pop(std::string *, MadArray *);
+std::string *__php_array_get(std::string *, MadArray *, int64_t);
+int64_t __php_array_get_int(MadArray *, int64_t);
+const char *__php_array_get_cstr(MadArray *, int64_t);
+void __php_array_reverse(MadArray *);
+int64_t __php_in_array(const char *, MadArray *);
+int64_t __php_array_search(const char *, MadArray *);
+void __php_array_unique(MadArray *);
+std::string *__php_array_shift(std::string *, MadArray *);
+void __php_array_unshift(MadArray *, const char *);
+void __php_sort(MadArray *);
+void __php_rsort(MadArray *);
+void __php_array_slice(MadArray *, MadArray *, int64_t, int64_t);
+void __php_array_merge(MadArray *, MadArray *);
+void __php_array_column(MadArray *, MadArray *, int64_t);
+}
+
+namespace php {
+inline std::string &trim(std::string &s) { return *__php_trim(&s); }
+inline std::string &ltrim(std::string &s) { return *__php_ltrim(&s); }
+inline std::string &rtrim(std::string &s) { return *__php_rtrim(&s); }
+inline std::string &chop(std::string &s) { return *__php_chop(&s); }
+inline std::string &ucfirst(std::string &s) { return *__php_ucfirst(&s); }
+inline std::string &lcfirst(std::string &s) { return *__php_lcfirst(&s); }
+inline std::string &str_repeat(std::string &s, int64_t count) { return *__php_str_repeat(&s, count); }
+inline std::string &str_replace(std::string &search, std::string &replace, std::string &subject) { return *__php_str_replace(&search, &replace, &subject); }
+inline std::string &str_pad(std::string &s, int64_t length, std::string &pad) { return *__php_str_pad(&s, length, &pad); }
+inline int64_t str_word_count(std::string &s) { return __php_str_word_count(&s); }
+inline std::string &nl2br(std::string &s) { return *__php_nl2br(&s); }
+inline std::string &str_rot13(std::string &s) { return *__php_str_rot13(&s); }
+inline std::string &chunk_split(std::string &s, int64_t chunklen, std::string &separator) { return *__php_chunk_split(&s, chunklen, &separator); }
+inline std::string &number_format(std::string &result, int64_t number, std::string &separator) { return *__php_number_format(&result, number, &separator); }
+inline std::string &wordwrap(std::string &s, int64_t width, std::string &separator) { return *__php_wordwrap(&s, width, &separator); }
+inline void explode(MadArray &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
+inline std::string &implode(std::string &result, const char *glue, MadArray &values) { return *__php_implode(&result, glue, &values); }
+inline int64_t count(MadArray &values) { return __php_count(&values); }
+inline void array_push(MadArray &values, const char *text) { __php_array_push(&values, text); }
+inline void array_push_int(MadArray &values, int64_t value) { __php_array_push_int(&values, value); }
+inline void array_push_array(MadArray &values, MadArray &nested) { __php_array_push_array(&values, &nested); }
+inline std::string &array_pop(std::string &result, MadArray &values) { return *__php_array_pop(&result, &values); }
+inline std::string &array_get(std::string &result, MadArray &values, int64_t index) { return *__php_array_get(&result, &values, index); }
+inline int64_t array_get_int(MadArray &values, int64_t index) { return __php_array_get_int(&values, index); }
+inline const char *array_get_cstr(MadArray &values, int64_t index) { return __php_array_get_cstr(&values, index); }
+inline void array_reverse(MadArray &values) { __php_array_reverse(&values); }
+inline int64_t in_array(const char *needle, MadArray &values) { return __php_in_array(needle, &values); }
+inline int64_t array_search(const char *needle, MadArray &values) { return __php_array_search(needle, &values); }
+inline void array_unique(MadArray &values) { __php_array_unique(&values); }
+inline std::string &array_shift(std::string &result, MadArray &values) { return *__php_array_shift(&result, &values); }
+inline void array_unshift(MadArray &values, const char *text) { __php_array_unshift(&values, text); }
+inline void sort(MadArray &values) { __php_sort(&values); }
+inline void rsort(MadArray &values) { __php_rsort(&values); }
+inline void array_slice(MadArray &dest, MadArray &src, int64_t offset, int64_t length) { __php_array_slice(&dest, &src, offset, length); }
+inline void array_merge(MadArray &dest, MadArray &src) { __php_array_merge(&dest, &src); }
+inline void array_column(MadArray &dest, MadArray &src, int64_t column_index) { __php_array_column(&dest, &src, column_index); }
+}
+
+#endif
+
+#endif
+)EMBED"},
+    {"ns_python", R"EMBED(namespace python {
+    std::string &title(std::string &s) asm("__py_title");
+    std::string &swapcase(std::string &s) asm("__py_swapcase");
+    std::string &center(std::string &s, long width, const char *fill) asm("__py_center");
+    std::string &ljust(std::string &s, long width, const char *fill) asm("__py_ljust");
+    std::string &rjust(std::string &s, long width, const char *fill) asm("__py_rjust");
+    std::string &zfill(std::string &s, long width) asm("__py_zfill");
+    long count(const char *haystack, const char *needle) asm("__py_count");
+    long startswith(const char *text, const char *prefix) asm("__py_startswith");
+    long endswith(const char *text, const char *suffix) asm("__py_endswith");
+    long isdigit(const char *text) asm("__py_isdigit");
+    long isalpha(const char *text) asm("__py_isalpha");
+    long isalnum(const char *text) asm("__py_isalnum");
+    long isspace(const char *text) asm("__py_isspace");
+    std::string &replace(std::string &s, const char *old_text, const char *new_text) asm("__py_replace");
+    std::string &format(std::string &result, const char *fmt, array args) asm("__py_format");
+}
+)EMBED"},
+    {"ns_python.h", R"EMBED(#ifndef MADC_NS_PYTHON_H
+#define MADC_NS_PYTHON_H
+
+#ifdef __cplusplus
+
+#include <cstdint>
+#include <string>
+#include "datadef.h"
+
+extern "C" {
+std::string *__py_title(std::string *);
+std::string *__py_swapcase(std::string *);
+std::string *__py_center(std::string *, int64_t, const char *);
+std::string *__py_ljust(std::string *, int64_t, const char *);
+std::string *__py_rjust(std::string *, int64_t, const char *);
+std::string *__py_zfill(std::string *, int64_t);
+int64_t __py_count(const char *, const char *);
+int64_t __py_startswith(const char *, const char *);
+int64_t __py_endswith(const char *, const char *);
+int64_t __py_isdigit(const char *);
+int64_t __py_isalpha(const char *);
+int64_t __py_isalnum(const char *);
+int64_t __py_isspace(const char *);
+std::string *__py_replace(std::string *, const char *, const char *);
+std::string *__py_format(std::string *, const char *, MadArray *);
+}
+
+namespace python {
+inline std::string &title(std::string &s) { return *__py_title(&s); }
+inline std::string &swapcase(std::string &s) { return *__py_swapcase(&s); }
+inline std::string &center(std::string &s, int64_t width, const char *fill) { return *__py_center(&s, width, fill); }
+inline std::string &ljust(std::string &s, int64_t width, const char *fill) { return *__py_ljust(&s, width, fill); }
+inline std::string &rjust(std::string &s, int64_t width, const char *fill) { return *__py_rjust(&s, width, fill); }
+inline std::string &zfill(std::string &s, int64_t width) { return *__py_zfill(&s, width); }
+inline int64_t count(const char *haystack, const char *needle) { return __py_count(haystack, needle); }
+inline int64_t startswith(const char *text, const char *prefix) { return __py_startswith(text, prefix); }
+inline int64_t endswith(const char *text, const char *suffix) { return __py_endswith(text, suffix); }
+inline int64_t isdigit(const char *text) { return __py_isdigit(text); }
+inline int64_t isalpha(const char *text) { return __py_isalpha(text); }
+inline int64_t isalnum(const char *text) { return __py_isalnum(text); }
+inline int64_t isspace(const char *text) { return __py_isspace(text); }
+inline std::string &replace(std::string &s, const char *old_text, const char *new_text) { return *__py_replace(&s, old_text, new_text); }
+inline std::string &format(std::string &result, const char *fmt, MadArray &args) { return *__py_format(&result, fmt, &args); }
+}
+
+#endif
+
+#endif
+)EMBED"},
+    {"ns_ruby", R"EMBED(namespace ruby {
+    std::string &squeeze(std::string &s) asm("__rb_squeeze");
+    std::string &tr(std::string &s, const char *from, const char *to) asm("__rb_tr");
+    void chars(array out, const char *text) asm("__rb_chars");
+    std::string &capitalize(std::string &s) asm("__rb_capitalize");
+    std::string &delete(std::string &s, const char *chars) asm("__rb_delete");
+    long count(const char *text, const char *chars) asm("__rb_count");
+    long include(const char *text, const char *substr) asm("__rb_include");
+    std::string &gsub(std::string &s, const char *pattern, const char *replacement) asm("__rb_gsub");
+    std::string &sub(std::string &s, const char *pattern, const char *replacement) asm("__rb_sub");
+    void rotate(array values, long n) asm("__rb_rotate");
+    void compact(array values) asm("__rb_compact");
+    void flatten(array values, const char *text) asm("__rb_flatten");
+}
+)EMBED"},
+    {"ns_ruby.h", R"EMBED(#ifndef MADC_NS_RUBY_H
+#define MADC_NS_RUBY_H
+
+#ifdef __cplusplus
+
+#include <cstdint>
+#include <string>
+#include "datadef.h"
+
+extern "C" {
+std::string *__rb_squeeze(std::string *);
+std::string *__rb_tr(std::string *, const char *, const char *);
+void __rb_chars(MadArray *, const char *);
+std::string *__rb_capitalize(std::string *);
+std::string *__rb_delete(std::string *, const char *);
+int64_t __rb_count(const char *, const char *);
+int64_t __rb_include(const char *, const char *);
+std::string *__rb_gsub(std::string *, const char *, const char *);
+std::string *__rb_sub(std::string *, const char *, const char *);
+void __rb_rotate(MadArray *, int64_t);
+void __rb_compact(MadArray *);
+void __rb_flatten(MadArray *, const char *);
+}
+
+namespace ruby {
+inline std::string &squeeze(std::string &s) { return *__rb_squeeze(&s); }
+inline std::string &tr(std::string &s, const char *from, const char *to) { return *__rb_tr(&s, from, to); }
+inline void chars(MadArray &out, const char *text) { __rb_chars(&out, text); }
+inline std::string &capitalize(std::string &s) { return *__rb_capitalize(&s); }
+inline std::string &delete_chars(std::string &s, const char *chars) { return *__rb_delete(&s, chars); }
+inline int64_t count(const char *text, const char *chars) { return __rb_count(text, chars); }
+inline int64_t include(const char *text, const char *substr) { return __rb_include(text, substr); }
+inline std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *__rb_gsub(&s, pattern, replacement); }
+inline std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *__rb_sub(&s, pattern, replacement); }
+inline void rotate(MadArray &values, int64_t n) { __rb_rotate(&values, n); }
+inline void compact(MadArray &values) { __rb_compact(&values); }
+inline void flatten(MadArray &values, const char *text) { __rb_flatten(&values, text); }
+}
+
+#endif
+
+#endif
+)EMBED"},
+    {"ns_rust", R"EMBED(namespace rust {
+    long contains(const char *text, const char *needle) asm("__rust_contains");
+    long starts_with(const char *text, const char *prefix) asm("__rust_starts_with");
+    long ends_with(const char *text, const char *suffix) asm("__rust_ends_with");
+    std::string &trim(std::string &s) asm("__rust_trim");
+    std::string &trim_start(std::string &s) asm("__rust_trim_start");
+    std::string &trim_end(std::string &s) asm("__rust_trim_end");
+    std::string &replace(std::string &s, const char *from, const char *to) asm("__rust_replace");
+    std::string &repeat(std::string &s, long count) asm("__rust_repeat");
+    long len(const char *text) asm("__rust_len");
+    long is_empty(const char *text) asm("__rust_is_empty");
+    void split(array out, const char *text, const char *delim) asm("__rust_split");
+    void split_whitespace(array out, const char *text) asm("__rust_split_whitespace");
+    std::string &join(std::string &result, array values, const char *sep) asm("__rust_join");
+    std::string &first(std::string &result, array values) asm("__rust_first");
+    std::string &last(std::string &result, array values) asm("__rust_last");
+    std::string &get(std::string &result, array values, long idx) asm("__rust_get");
+    void push(array values, const char *value) asm("__rust_push");
+    std::string &pop(std::string &result, array values) asm("__rust_pop");
+}
+)EMBED"},
+    {"ns_rust.h", R"EMBED(#ifndef MADC_NS_RUST_H
+#define MADC_NS_RUST_H
+
+#ifdef __cplusplus
+
+#include <cstdint>
+#include <string>
+#include "datadef.h"
+
+extern "C" {
+int64_t __rust_contains(const char *, const char *);
+int64_t __rust_starts_with(const char *, const char *);
+int64_t __rust_ends_with(const char *, const char *);
+std::string *__rust_trim(std::string *);
+std::string *__rust_trim_start(std::string *);
+std::string *__rust_trim_end(std::string *);
+std::string *__rust_replace(std::string *, const char *, const char *);
+std::string *__rust_repeat(std::string *, int64_t);
+int64_t __rust_len(const char *);
+int64_t __rust_is_empty(const char *);
+void __rust_split(MadArray *, const char *, const char *);
+void __rust_split_whitespace(MadArray *, const char *);
+std::string *__rust_join(std::string *, MadArray *, const char *);
+std::string *__rust_first(std::string *, MadArray *);
+std::string *__rust_last(std::string *, MadArray *);
+std::string *__rust_get(std::string *, MadArray *, int64_t);
+void __rust_push(MadArray *, const char *);
+std::string *__rust_pop(std::string *, MadArray *);
+}
+
+namespace rust {
+inline int64_t contains(const char *text, const char *needle) { return __rust_contains(text, needle); }
+inline int64_t starts_with(const char *text, const char *prefix) { return __rust_starts_with(text, prefix); }
+inline int64_t ends_with(const char *text, const char *suffix) { return __rust_ends_with(text, suffix); }
+inline std::string &trim(std::string &s) { return *__rust_trim(&s); }
+inline std::string &trim_start(std::string &s) { return *__rust_trim_start(&s); }
+inline std::string &trim_end(std::string &s) { return *__rust_trim_end(&s); }
+inline std::string &replace(std::string &s, const char *from, const char *to) { return *__rust_replace(&s, from, to); }
+inline std::string &repeat(std::string &s, int64_t count) { return *__rust_repeat(&s, count); }
+inline int64_t len(const char *text) { return __rust_len(text); }
+inline int64_t is_empty(const char *text) { return __rust_is_empty(text); }
+inline void split(MadArray &out, const char *text, const char *delim) { __rust_split(&out, text, delim); }
+inline void split_whitespace(MadArray &out, const char *text) { __rust_split_whitespace(&out, text); }
+inline std::string &join(std::string &result, MadArray &values, const char *sep) { return *__rust_join(&result, &values, sep); }
+inline std::string &first(std::string &result, MadArray &values) { return *__rust_first(&result, &values); }
+inline std::string &last(std::string &result, MadArray &values) { return *__rust_last(&result, &values); }
+inline std::string &get(std::string &result, MadArray &values, int64_t idx) { return *__rust_get(&result, &values, idx); }
+inline void push(MadArray &values, const char *value) { __rust_push(&values, value); }
+inline std::string &pop(std::string &result, MadArray &values) { return *__rust_pop(&result, &values); }
+}
+
+#endif
+
+#endif
+)EMBED"},
     {"poll.h", R"EMBED(// madc embedded poll.h — poll() I/O multiplexing
 // Functions (poll, ppoll) available via dlsym fallback
 // struct pollfd access deferred (requires struct interop)
@@ -1043,14 +1636,12 @@ extern int b64_pton(const char *src, unsigned char *target, int targsize);
 // defined here and compiled through the class model.
 //
 // Implementation: a flat array with linear search (madc's own simple set, not
-// a balanced tree). insert() dedups. String elements compare via std::string
-// operator== (bound to the extern-C runtime wrapper string_equals, since
-// libstdc++'s std::operator== for strings is an inlined weak template symbol
-// that is not dlsym-exportable). The search loop is inlined into each method
-// rather than factored into a private __find(): madc does not yet support an
-// unqualified sibling-method call from inside a class method. An operator on a
-// subscript element (`data[i] == v`) IS now a supported parse form, so the
-// search compares the element directly (no copy-to-local).
+// a balanced tree). insert() dedups. Elements compare through operator==. The
+// search loop is inlined into each method rather than factored into a private
+// __find(): madc does not yet support an unqualified sibling-method call from
+// inside a class method. An operator on a subscript element (`data[i] == v`) IS
+// now a supported parse form, so the search compares the element directly (no
+// copy-to-local).
 #include <stdlib.h>
 #include <string.h>
 namespace std {
@@ -1121,6 +1712,132 @@ public:
 // Signal dispositions (passed as handler arg to signal())
 #define SIG_DFL 0
 #define SIG_IGN 1
+)EMBED"},
+    {"sstream", R"EMBED(#include <stdio.h>
+#include <string>
+
+namespace std {
+    template<typename _CharT, typename _Traits, typename _Alloc>
+    class basic_stringstream {
+	char _buf[4096];
+	int _len;
+
+	void append_cstr(const char *s) {
+	    int i = 0;
+	    if ( !s )
+		return;
+	    while ( s[i] && _len < 4095 ) {
+		_buf[_len] = s[i];
+		_len = _len + 1;
+		i = i + 1;
+	    }
+	    _buf[_len] = 0;
+	}
+
+    public:
+	basic_stringstream() {
+	    _len = 0;
+	    _buf[0] = 0;
+	}
+
+	~basic_stringstream() {
+	}
+
+	const char *c_str() {
+	    return _buf;
+	}
+
+	void clear() {
+	    _len = 0;
+	    _buf[0] = 0;
+	}
+
+	basic_stringstream &operator<<(char *s) {
+	    this->append_cstr(s);
+	    return *this;
+	}
+
+	basic_stringstream &operator<<(const char *s) {
+	    this->append_cstr(s);
+	    return *this;
+	}
+
+	basic_stringstream &operator<<(string &s) {
+	    this->append_cstr(s.c_str());
+	    return *this;
+	}
+
+	basic_stringstream &operator<<(char c) {
+	    char tmp[2];
+	    tmp[0] = c;
+	    tmp[1] = 0;
+	    this->append_cstr(tmp);
+	    return *this;
+	}
+
+	basic_stringstream &operator<<(short v) {
+	    char tmp[32];
+	    sprintf(tmp, "%d", v);
+	    this->append_cstr(tmp);
+	    return *this;
+	}
+
+	basic_stringstream &operator<<(unsigned short v) {
+	    char tmp[32];
+	    sprintf(tmp, "%u", v);
+	    this->append_cstr(tmp);
+	    return *this;
+	}
+
+	basic_stringstream &operator<<(int v) {
+	    char tmp[32];
+	    sprintf(tmp, "%d", v);
+	    this->append_cstr(tmp);
+	    return *this;
+	}
+
+	basic_stringstream &operator<<(unsigned int v) {
+	    char tmp[32];
+	    sprintf(tmp, "%u", v);
+	    this->append_cstr(tmp);
+	    return *this;
+	}
+
+	basic_stringstream &operator<<(long v) {
+	    char tmp[32];
+	    sprintf(tmp, "%ld", v);
+	    this->append_cstr(tmp);
+	    return *this;
+	}
+
+	basic_stringstream &operator<<(unsigned long v) {
+	    char tmp[32];
+	    sprintf(tmp, "%lu", v);
+	    this->append_cstr(tmp);
+	    return *this;
+	}
+
+	basic_stringstream &operator<<(float v) {
+	    char tmp[64];
+	    sprintf(tmp, "%g", v);
+	    this->append_cstr(tmp);
+	    return *this;
+	}
+
+	basic_stringstream &operator<<(double v) {
+	    char tmp[64];
+	    sprintf(tmp, "%g", v);
+	    this->append_cstr(tmp);
+	    return *this;
+	}
+    };
+
+    typedef basic_stringstream<char, char_traits<char>, allocator<char>> stringstream;
+
+    void printstream(stringstream &ss) {
+	printf("%s\n", ss.c_str());
+    }
+}
 )EMBED"},
     {"stdarg.h", R"EMBED(// madc embedded stdarg.h — variadic function support
 //
@@ -1250,21 +1967,17 @@ typedef unsigned long int uintptr_t;
 // no reference to a real std:: type inside madc (a doctest cross-checks the size
 // against the real <string>).
 //
-// STAGING:
-//   here: the basic_string template + a core bodyless surface (ctor/dtor +
-//         length/size/c_str/empty/clear/at/append) that bind via the keystone.
-//         It COEXISTS with the builtin string type (which still owns the
-//         `string` typedef); there is deliberately NO `typedef ... string;` here
-//         yet, so the two do not collide.
-//   next: complete the operator/method surface (operator+/=/+=/[]/==, find,
-//         substr, …), then add the `string` typedef and DELETE the builtin
-//         string registration plus its wrappers and statics (the specifics live
-//         in git history and the campaign handoff — not named here, so this
-//         comment cannot trip the no-std-hardcoding finish-line gate).
+// The basic_string template below is parsed as an ordinary std class. Methods
+// without bodies bind to libstdc++ symbols through the generic class-method
+// mangler; small inline operators compile as normal madc class methods.
 //
 // char_traits / allocator are declared here as the std:: templates basic_string
 // names; they are templates (template_map by bare name), so a second declaration
 // in another header (e.g. <fstream>) simply overwrites with the same definition.
+
+int sprintf(char *, const char *, ...);
+int atoi(const char *);
+double atof(const char *);
 
 namespace std {
     template<typename _CharT> class char_traits { char _M_dummy; };
@@ -1274,7 +1987,7 @@ namespace std {
 	template<typename _CharT, typename _Traits, typename _Alloc>
 	class basic_string {
 	    _CharT       *_M_p;               // pointer to the character data
-	    unsigned long _M_string_length;   // current length
+	    unsigned long _M_len;             // current length
 	    char          _M_local_buf[16];   // SSO buffer / capacity union (16 bytes)
 	public:
 	    basic_string();                          // C1  ...C1Ev
@@ -1308,12 +2021,18 @@ namespace std {
 	    void          push_back(char);           // ...9push_backEc
 	    void          pop_back();                // ...8pop_backEv
 	    char         &operator[](unsigned long) const;  // ...ixEm
+	    basic_string &operator=(const basic_string &);  // ...aSERKS4_
 	    basic_string &operator=(const char *);   // ...aSEPKc
 	    basic_string &operator=(char);           // ...aSEc
+	    basic_string &operator+=(const basic_string &); // ...pLERKS4_
 	    basic_string &operator+=(const char *);  // ...pLEPKc
 	    basic_string &operator+=(char);          // ...pLEc
 	    bool operator==(const basic_string &rhs) const { return this->compare(rhs.c_str()) == 0; }
 	    bool operator!=(const basic_string &rhs) const { return this->compare(rhs.c_str()) != 0; }
+	    bool operator<(const basic_string &rhs) const { return this->compare(rhs.c_str()) < 0; }
+	    bool operator>(const basic_string &rhs) const { return this->compare(rhs.c_str()) > 0; }
+	    bool operator<=(const basic_string &rhs) const { return this->compare(rhs.c_str()) <= 0; }
+	    bool operator>=(const basic_string &rhs) const { return this->compare(rhs.c_str()) >= 0; }
 	    basic_string operator+(const basic_string &rhs) const {
 		basic_string r(this->c_str());
 		r.append(rhs.c_str());
@@ -1321,7 +2040,23 @@ namespace std {
 	    }
 	};
     }
-}
+
+	    typedef std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char>> string;
+
+	    void to_string(string &out, long v) {
+		char buf[64];
+		sprintf(buf, "%ld", v);
+		out = buf;
+	    }
+
+	    int stoi(const string &s) {
+		return atoi(s.c_str());
+	    }
+
+	    double stod(const string &s) {
+		return atof(s.c_str());
+	    }
+	}
 )EMBED"},
     {"string.h", R"EMBED(// madc embedded string.h — C string functions
 // Most functions resolve through the dlsym fallback at parse time

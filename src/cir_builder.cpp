@@ -135,20 +135,24 @@ std::string CirBuilder::var_emit_name(const Variable &v) const
 	if (v.storage_alias_name.empty() || !m_prog)
 		return v.name;
 	// storage_alias_name is overloaded: an __attribute__((alias("data")))
-	// DATA alias names another DEFINED file-scope variable, while an asm-label
-	// on a function (`void f() asm("g")`) also lands here. Only the data-alias
-	// case is resolved at the cir layer (the symbol IS the target's storage);
-	// a function/asm-label keeps its own emitted name (its existing call/ptr
-	// path already handles the label), so rewrite ONLY when the alias resolves
-	// to a real, distinct, non-function Variable.
+	// DATA alias names another DEFINED file-scope variable, while a function
+	// asm-label (`void f() asm("g")`) also lands here. Data aliases resolve to
+	// their backing storage; function labels are the emitted symbol contract.
 	if (v.type && v.type->is_function())
-		return v.name;
+		return v.storage_alias_name;
 	Variable *target =
 		m_prog->resolve_global_storage_variable(const_cast<Variable *>(&v));
 	if (target && target != &v && !target->name.empty()
 	    && !(target->type && target->type->is_function()))
 		return target->name;
-	return v.name;
+	return v.storage_alias_name;
+}
+
+std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
+{
+	if (fd && !fd->nested_emit_name.empty())
+		return fd->nested_emit_name;
+	return var_emit_name(v);
 }
 
 node_t CirBuilder::integer(long val, TokenBase *origin)
@@ -328,57 +332,86 @@ node_t CirBuilder::node5(c2mir_node_code_t code, node_t op1, node_t op2, node_t 
 // Type builders
 // -----------------------------------------------------------------------
 
-// A user-defined class (`class Foo { ... };`) lowers to a plain C struct
-// `struct Foo`, matching the Cfront C++->C model. It is btClass with the
-// generic dtRESERVED rawtype — distinct from the builtin opaque-object
-// "classes" (std::string, the streams) which carry their own dt* rawtype
-// and are lowered as runtime buffers, not C structs. Returns the class
-// DataDef when `dd` is such a user class, else NULL.
+// A class instance (`class Foo { ... };`, including header-defined std classes)
+// lowers to a plain C struct, matching the Cfront C++->C model. Returns the
+// class DataDef when `dd` denotes a non-pointer value class, else NULL.
 static DataDefCLASS *as_user_class(DataDef *dd)
 {
 	if (!dd) return NULL;
 	if (dd->basetype() != BaseType::btClass) return NULL;
+	if (dd->reftype() == RefType::rtReference) return NULL;
 	if (dd->rawtype() != DataType::dtRESERVED) return NULL;
-	// std::string now ALSO carries the generic dtRESERVED class tag (P2.14), but
-	// it is NOT a plain user class: it lowers to an opaque runtime buffer with
-	// mangled libstdc++ ctor/dtor/method symbols, not a C struct. Route it via
-	// as_object_class instead. Recognized by identity, not by a special tag.
-	if (is_std_string(dd)) return NULL;
 	return dynamic_cast<DataDefCLASS *>(dd);
 }
 
-// A runtime-object class that flows through the class model but is NOT a
-// dtRESERVED user class: std::string (std::string). It IS-A DataDefCLASS (opaque
-// storage sized by object_class_words, ctor/dtor/methods bound to mangled
-// libstdc++ symbols via emit_symbol). Used to route std::string declarations,
-// construction and destruction through the uniform class path, replacing the
-// legacy std::string `long[]`+wrapper lowering.
-//
-// There is exactly ONE populated std::string class object: ddSTRING (it owns the
-// ctors, dtor, methods and operators, all bound to mangled libstdc++ symbols).
-// A `string&` parameter is typed by the separate ddSTRINGref singleton, which
-// carries NO methods — so for ANY std::string identity (value OR reference) this
-// canonicalizes to ddSTRING. That gives every caller (method/operator dispatch,
-// sizing, ctor/dtor) the one class that actually has the members; a string&
-// receiver dispatches std::string's operators exactly like a string value
-// (P2.8b). The value-vs-reference storage distinction is carried by is_pointer()
-// / the vfREFERENCE Variable flag, not by which class object is returned. This
-// folds in the former canonical_string_class shim — no separate canonicalize step.
-static DataDefCLASS *as_object_class(DataDef *dd)
-{
-	if (!dd) return NULL;
-	if (dd->basetype() != BaseType::btClass) return NULL;
-	if (dd->is_pointer()) return NULL;
-	if (!is_std_string(dd)) return NULL;
-	return &ddSTRING;
-}
-
-// Either an ordinary user class or a runtime-object class (std::string) — both
-// lower to a real C struct and use the class ctor/dtor/cleanup machinery.
+// A non-pointer class value lowers to a real C struct and uses the class
+// ctor/dtor/cleanup machinery.
 static DataDefCLASS *as_class_instance(DataDef *dd)
 {
-	if (DataDefCLASS *c = as_user_class(dd)) return c;
-	return as_object_class(dd);
+	return as_user_class(dd);
+}
+
+static DataDefCLASS *class_behind(DataDef *dd);
+
+static DataDefCLASS *param_object_class(DataDef *dd, bool refp)
+{
+	if (refp) return class_behind(dd);
+	return NULL;
+}
+
+static bool same_object_class(const DataDef *a, const DataDef *b)
+{
+	if (!a || !b) return false;
+	const DataDefCLASS *ac = dynamic_cast<const DataDefCLASS *>(a);
+	const DataDefCLASS *bc = dynamic_cast<const DataDefCLASS *>(b);
+	return ac && bc && ac == bc;
+}
+
+static std::vector<c2mir_node_code_t> native_scalar_specs(DataDef *dd)
+{
+	if (!dd) return {N_LONG};
+	switch (dd->rawtype()) {
+	case DataType::dtVOID:   return {};
+	case DataType::dtFLOAT:  return {N_FLOAT};
+	case DataType::dtDOUBLE: return {N_DOUBLE};
+	case DataType::dtUINT8:
+	case DataType::dtUINT16:
+	case DataType::dtUINT32: return {N_UNSIGNED, N_INT};
+	case DataType::dtUINT64: return {N_UNSIGNED, N_LONG};
+	case DataType::dtINT8:
+	case DataType::dtINT16:
+	case DataType::dtINT32:  return {N_INT};
+	case DataType::dtINT64:  return {N_LONG};
+	default:                 return {N_LONG};
+	}
+}
+
+static CirBuilder::ExternParam native_param_shape(DataDef *dd, bool refp)
+{
+	if (param_object_class(dd, refp))
+		return { {N_VOID}, true };
+	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) {
+		if (p->base_type && p->base_type->rawtype() == DataType::dtCHAR)
+			return { {N_CHAR}, true };
+		return { {N_VOID}, true };
+	}
+	return { native_scalar_specs(dd), false };
+}
+
+static void native_func_shape(FuncDef *fd, bool &ret_ptr,
+			      std::vector<c2mir_node_code_t> &ret_specs,
+			      std::vector<CirBuilder::ExternParam> &params)
+{
+	ret_ptr = fd && fd->returns.is_pointer();
+	ret_specs = ret_ptr ? std::vector<c2mir_node_code_t>{N_VOID}
+			    : native_scalar_specs(fd ? &fd->returns : NULL);
+	if (ret_specs.empty())
+		ret_ptr = false;
+	if (!fd) return;
+	for (size_t i = 0; i < fd->parameters.size(); i++) {
+		bool refp = i < fd->ref_params.size() && fd->ref_params[i];
+		params.push_back(native_param_shape(fd->parameters[i], refp));
+	}
 }
 
 node_t CirBuilder::pointer()
@@ -432,97 +465,35 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 }
 
 // ---------------------------------------------------------------------------
-// std::string object lowering
+// Generic class-object lowering
 // ---------------------------------------------------------------------------
-// A madc `string` is a real std::string object, matching g++/clang++ (Rule #1):
-// an 8-aligned opaque buffer + ctor/dtor calls to the runtime wrappers in
-// madc_mir_backend.cpp (string_construct*/string_destruct/string_cstr). Only a
-// declared string OBJECT becomes an object; a bare string literal stays a
-// const char* (it never reaches here — TokenString emits str()).
 
-bool CirBuilder::is_string_object(DataDef *dd)
+bool CirBuilder::is_class_object(DataDef *dd)
 {
-	// std::string is the value type `string`; std::string& (`string&`) and
-	// std::string* are separate and handled on the param/pointer paths.
-	return dd && dd->is_string() && !dd->is_pointer();
+	return as_class_instance(dd) != NULL;
 }
 
-bool CirBuilder::is_string_object_value(TokenBase *arg)
+bool CirBuilder::is_class_object_value(TokenBase *arg)
 {
-	// A string OBJECT value is a DECLARED `string` variable — an lvalue with
-	// constructed storage. Many other expressions are typed std::string but are
-	// const char* values, NOT objects: string literals, lifted `__literal__`
-	// vars, and char*-valued expressions like a ternary of literals
-	// (`cond ? "a" : "b"`). So require a genuine variable token; everything
-	// else flows through the const char* path (str()/char* operator<<).
-	// A string-OBJECT element of a container (`v[i]` where v's operator[]
-	// returns a string&) is a real string object reached by address. A string
-	// element of a raw `string*`/`string[]` array (`keys[i]`) is likewise a
-	// real string object.
-	if (is_string_subscript(arg) || is_string_array_subscript(arg))
+	if (class_subscript_is_object(arg) || class_array_subscript_is_object(arg))
 		return true;
-	// A string `operator+` expression (`a + b`, `a + "lit"`, chained `a+b+c`)
-	// is a by-value std::string RVALUE — a real object materialized into a
-	// cleanup-tagged temp by class_operator_call. It reads as a string object so
-	// `string c = a + b` copy-constructs and `cout << (a+b)` prints it.
-	if (is_string_operator_plus(arg))
-		return true;
-	TokenVar *tv = dynamic_cast<TokenVar *>(arg);
-	if (!tv)
-		return false;
-	// A declared `string` object (std::string) OR a `string&` reference parameter
-	// (std::string&) — both denote a std::string object the front end can take
-	// the address of. (A by-value `string` param is also std::string.)
-	if (!is_std_string(tv->var.type))
-		return false;
-	if (tv->var.name.compare(0, 11, "__literal__") == 0)
-		return false;
-	// A const-qualified compile-time char* constant (`const char* x = "lit"`,
-	// std::string-typed) is a const char* VALUE, not an object — skip it. But a
-	// `const string&` reference parameter (std::string&, OR vfREFERENCE) is a real
-	// std::string object passed by address; the const qualifies the binding, not
-	// the storage, so it stays an object (P2.8b). Only exclude a NON-reference
-	// constant.
-	bool is_ref = is_std_string_ref(tv->var.type)
-		      || (tv->var.flags & vfREFERENCE);
-	if (tv->var.is_constant() && !is_ref)
-		return false;
-	return true;
+	if (TokenMember *tm = dynamic_cast<TokenMember *>(arg))
+		return as_class_instance(tm->datadef()) != NULL;
+	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
+		if (tv->var.name.compare(0, 11, "__literal__") == 0)
+			return false;
+		if ((tv->var.flags & vfREFERENCE) && class_behind(tv->var.type))
+			return true;
+		return as_class_instance(tv->var.type) != NULL;
+	}
+	return false;
 }
 
-// Is `arg` a std::string `operator+` expression (`a + b`, `a + "lit"`, or a
-// chained `a + b + c`)? Recognized when it is a tkAdd whose LHS is a genuine
-// string OBJECT (not a literal/char*) AND whose RHS is string-like (a string
-// object or a const char* / std::string value). Such an expression binds the
-// std::string operator+ and yields a by-value string object. A chained
-// `(a+b)+c` recurses through the LHS (itself a string operator+). EXCLUDED:
-// `"lit" + n` / `label + i` (char* pointer arithmetic — LHS is not an object),
-// and `s + n` (string + numeric — RHS not string-like; no such operator+).
-// This MUST mirror the tkAdd guard in class_operator_call so the two agree.
-bool CirBuilder::is_string_operator_plus(TokenBase *arg)
-{
-	TokenOperator *top = dynamic_cast<TokenOperator *>(arg);
-	if (!top || top->id() != TokenID::tkAdd) return false;
-	if (!top->left || !top->right) return false;
-	bool lhs_obj = is_string_object_value(top->left);
-	DataDef *rdd = top->right->datadef();
-	// RHS char* test uses type() (unstripped), NOT rawtype(): rawtype() strips
-	// the pointer offset (dtCHARptr -= 10000 -> dtINT8), so `rawtype()==dtCHARptr`
-	// is always false. A bare string literal is now const char* (dtCHARptr), so
-	// `s + "lit"` reaches here as RHS char* and must bind string_concat.
-	bool rhs_strlike = is_string_object_value(top->right)
-			   || (rdd && (rdd->is_string()
-				       || (rdd->is_pointer()
-					   && rdd->type() == DataType::dtCHARptr)));
-	return lhs_obj && rhs_strlike;
-}
-
-// A CALL to a madc-COMPILED function returning a std::string by value (std::string,
-// non-pointer). func_def lowers such a function through the __retbuf ABI, so the
-// call site must materialize the result into a temp it owns. Gated on
-// m_user_func_names: an external / native function with a std::string return (e.g.
-// __std_to_string, php::/perl:: helpers) keeps its own ABI and is NOT rewritten —
-// matching it here would inject a bogus __retbuf arg ("too many arguments").
+// A CALL to a madc-COMPILED function returning a non-trivial class by value
+// (non-pointer). func_def lowers such a function through the __retbuf ABI, so
+// the call site must materialize the result into a temp it owns. External /
+// native class-returning functions keep their own ABI and are NOT rewritten;
+// matching them here would inject a bogus __retbuf arg.
 // The FuncDef behind a CALL token: either the called function directly, or the
 // TARGET signature of a function-pointer variable being called indirectly
 // (`auto f = [...]; f()`). Both use the same __retbuf ABI for object returns.
@@ -536,31 +507,11 @@ static FuncDef *call_target_funcdef(TokenCallFunc *tcf)
 	return NULL;
 }
 
-bool CirBuilder::is_string_returning_call(TokenBase *arg)
-{
-	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
-	if (!tcf) return false;
-	FuncDef *fd = call_target_funcdef(tcf);
-	if (!fd) return false;
-	if (!is_std_string(&fd->returns) || fd->returns.is_pointer())
-		return false;
-	// A direct call is gated on m_user_func_names (only madc-emitted bodies use
-	// the __retbuf ABI; external string-returning fns keep their own). A call
-	// THROUGH a fn-ptr whose target is itself a madc-emitted retbuf function
-	// (e.g. a hoisted lambda) carries that ABI in its rendered type, so the
-	// indirect call must materialize the temp regardless of the variable name.
-	if (dynamic_cast<DataDefFPTR *>(tcf->var.type))
-		return true;
-	return m_user_func_names && m_user_func_names->count(tcf->var.name) > 0;
-}
-
-// A CALL to a madc-COMPILED function returning a NON-TRIVIAL user class by value.
-// Such a call is lowered (func_def/func_proto) through the SAME __retbuf ABI as a
-// string return, so the call site must materialize the result into a caller temp
-// it owns (object_call_temp_addr). Gated on m_user_func_names like the string
-// predicate: an external/native class-returning fn keeps its own ABI and must
-// NOT be rewritten (a bogus __retbuf arg would be "too many arguments"). std::
-// string and trivial structs are excluded by class_return_via_retbuf.
+// A CALL to a madc-COMPILED function returning a non-trivial class by value.
+// Such a call is lowered (func_def/func_proto) through the __retbuf ABI, so the
+// call site must materialize the result into a caller temp it owns. Gated on
+// m_user_func_names: an external/native class-returning fn keeps its own ABI and
+// must NOT be rewritten (a bogus __retbuf arg would be "too many arguments").
 DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 {
 	// Functional-construction temporary T(args) is a class rvalue too.
@@ -572,8 +523,8 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 	if (!fd) return NULL;
 	DataDefCLASS *cdd = class_return_via_retbuf(&fd->returns);
 	if (!cdd) return NULL;
-	// As in is_string_returning_call: a fn-ptr call inherits the retbuf ABI
-	// from its rendered target type; a direct call is gated on m_user_func_names.
+	// A fn-ptr call inherits the retbuf ABI from its rendered target type; a
+	// direct call is gated on m_user_func_names.
 	if (dynamic_cast<DataDefFPTR *>(tcf->var.type))
 		return cdd;
 	if (!(m_user_func_names && m_user_func_names->count(tcf->var.name) > 0))
@@ -581,10 +532,9 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 	return cdd;
 }
 
-// Words of opaque storage for a runtime-object class — one with a concrete ABI
-// size (cdd->size) but no madc data members (std::string). cir_builder is itself
-// C++, so cdd->size already holds the real sizeof(std::string). Returns 0 for an
-// ordinary user class (its struct is built from its declared members).
+// Words of opaque storage for a runtime-object class: one with a concrete ABI
+// size but no parsed data members. Ordinary user classes return 0 because their
+// structs are built from declared members.
 size_t CirBuilder::object_class_words(DataDefCLASS *cdd) const
 {
 	if (!cdd || !cdd->members.empty()) return 0;
@@ -659,6 +609,14 @@ static bool is_size1_pointer(DataDef *dd)
 	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
 	if (!p || !p->base_type) return false;
 	return p->base_type->rawtype() == DataType::dtVOID;
+}
+
+static bool is_char_pointer(DataDef *dd)
+{
+	if (!dd || !dd->is_pointer()) return false;
+	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	if (!p || !p->base_type) return false;
+	return p->base_type->rawtype() == DataType::dtCHAR;
 }
 
 // The single-level pointee user-class of `dd` when `dd` is a `Cls *` pointing
@@ -754,7 +712,7 @@ node_t CirBuilder::obj_default_ctor_call(const char *name, const char *ctor_sym,
 {
 	need_output_extern(ctor_sym, true, { { {N_VOID}, true } });
 	node_t args = list();
-	append(args, string_obj_addr(name, origin));
+	append(args, object_addr(name, origin));
 	node_t call = node2(N_CALL, id(ctor_sym, origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
 	node_t stmt = node2(N_EXPR, list(), call, origin);
@@ -762,50 +720,8 @@ node_t CirBuilder::obj_default_ctor_call(const char *name, const char *ctor_sym,
 	return stmt;
 }
 
-// libstdc++ std::string (__cxx11) member symbols, GENERATED by the Itanium
-// mangler (madc_mangle, substitution-aware) from the canonical libstdc++ type —
-// NOT hand-written. madc is Cfront: std::string operations lower to DIRECT calls
-// on these real libstdc++ members (the object is a real libstdc++ std::string),
-// resolved against libstdc++ by the dlsym(_Z…) import resolver — same model as
-// the cout `<<` path. Computed once at static init; the const char* aliases
-// point into the cached std::strings (which live for the program). Adding a new
-// std::string method here is one mangler call, not a hand-written wrapper.
-static const std::string STR_TYPE     = std_string_type();
-static const std::string STR_CTOR0_s  = itanium_mangle_ctor_sub(STR_TYPE, {});
-static const std::string STR_CTOR_S_s = itanium_mangle_ctor_sub(STR_TYPE, {"const char*", "const std::allocator<char>&"});
-static const std::string STR_CTOR_CP_s= itanium_mangle_ctor_sub(STR_TYPE, {"const " + STR_TYPE + "&"});
-static const std::string STR_DTOR_s   = itanium_mangle_dtor_sub(STR_TYPE);
-static const std::string STR_CSTR_s   = itanium_mangle_member_sub(STR_TYPE, "c_str", {}, true);
-static const std::string STR_SIZE_s   = itanium_mangle_member_sub(STR_TYPE, "size", {}, true);
-static const std::string STR_LENGTH_s = itanium_mangle_member_sub(STR_TYPE, "length", {}, true);
-static const std::string STR_CLEAR_s  = itanium_mangle_member_sub(STR_TYPE, "clear", {}, false);
-static const std::string STR_ASGN_S_s = itanium_mangle_operator_sub(STR_TYPE, "=", {"const char*"}, false);
-static const std::string STR_ASGN_C_s = itanium_mangle_operator_sub(STR_TYPE, "=", {"const " + STR_TYPE + "&"}, false);
-static const std::string STR_APP_S_s  = itanium_mangle_operator_sub(STR_TYPE, "+=", {"const char*"}, false);
-static const std::string STR_APP_C_s  = itanium_mangle_operator_sub(STR_TYPE, "+=", {"const " + STR_TYPE + "&"}, false);
-static const char *const STR_CTOR0  = STR_CTOR0_s.c_str();
-static const char *const STR_CTOR_S = STR_CTOR_S_s.c_str();
-static const char *const STR_CTOR_CP= STR_CTOR_CP_s.c_str();
-static const char *const STR_DTOR   = STR_DTOR_s.c_str();
-static const char *const STR_CSTR   = STR_CSTR_s.c_str();
-static const char *const STR_SIZE   = STR_SIZE_s.c_str();
-static const char *const STR_LENGTH = STR_LENGTH_s.c_str();
-static const char *const STR_CLEAR  = STR_CLEAR_s.c_str();
-static const char *const STR_ASGN_S = STR_ASGN_S_s.c_str();
-static const char *const STR_ASGN_C = STR_ASGN_C_s.c_str();
-static const char *const STR_APP_S  = STR_APP_S_s.c_str();
-static const char *const STR_APP_C  = STR_APP_C_s.c_str();
-
-// Hidden return-slot pointer parameter for a by-value string-returning function.
+// Hidden return-slot pointer parameter for by-value object returns.
 const char *CirBuilder::RETBUF_NAME = "__retbuf";
-
-// `long <name>[NWORDS];` — the opaque, 8-aligned storage for a string object.
-// The cleanup attribute names the REAL libstdc++ dtor (it takes only `this`),
-// so c2mir destructs the object via the genuine std::string destructor.
-node_t CirBuilder::string_storage_decl(const char *name, TokenBase *origin)
-{
-	return obj_storage_decl(name, object_class_words(&ddSTRING), STR_DTOR, origin);
-}
 
 // ---- MadArray (`array`) object lowering ----
 // A madc `array` is a real MadArray C++ object — same model as std::string:
@@ -833,33 +749,25 @@ node_t CirBuilder::array_ctor_call(const char *name, TokenBase *origin)
 	return obj_default_ctor_call(name, "madarray_construct", origin);
 }
 
-// ---- std::stringstream object lowering ----
-bool CirBuilder::is_sstream_object(DataDef *dd)
+static FuncDef *class_method_def(DataDefCLASS *cdd, const char *name)
 {
-	return dd && dd->rawtype() == DataType::dtSSTREAM && !dd->is_pointer();
+	if (!cdd || !name) return NULL;
+	std::string key(name);
+	Variable *mv = cdd->findMethod(key);
+	return mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
 }
 
-size_t CirBuilder::sstream_obj_words() const
+static std::string class_method_symbol(DataDefCLASS *cdd, const char *name)
 {
-	return (sizeof(std::stringstream) + sizeof(long) - 1) / sizeof(long);
+	FuncDef *fd = class_method_def(cdd, name);
+	if (fd && !fd->emit_symbol.empty()) return fd->emit_symbol;
+	return std::string(name ? name : "");
 }
 
-node_t CirBuilder::sstream_storage_decl(const char *name, TokenBase *origin)
-{
-	return obj_storage_decl(name, sstream_obj_words(), "sstream_destruct", origin);
-}
-
-node_t CirBuilder::sstream_ctor_call(const char *name, TokenBase *origin)
-{
-	return obj_default_ctor_call(name, "sstream_construct", origin);
-}
-
-// `(void*)&<name>` — the string object's address as void*, so the mangled
-// libstdc++ members / runtime wrappers see a pointer to the object. A string
-// local/global is a `struct string` instance, so its address is `&name` (NOT
-// array decay). Used for synthetic temporaries (struct locals) — for a named
-// program variable use string_var_addr, which honours pointer-stored params.
-node_t CirBuilder::string_obj_addr(const char *name, TokenBase *origin)
+// `(void*)&<name>` — an object instance address as void*. Used for synthetic
+// temporaries; named program variables use object_var_void_addr so parameters
+// lowered as pointers keep their stored address.
+node_t CirBuilder::object_addr(const char *name, TokenBase *origin)
 {
 	node_t cast = node2(N_CAST, void_ptr_type(),
 			    node1(N_ADDR, id(name, origin), origin), origin);
@@ -867,123 +775,123 @@ node_t CirBuilder::string_obj_addr(const char *name, TokenBase *origin)
 	return cast;
 }
 
-// The object address of a NAMED string variable as void*. A by-value `string`
-// parameter and a `string&` reference are lowered to a `void*` holding the
-// object's address (param_decl), so the variable's value IS the address —
-// `(void*)name`. A string local/global is a `struct string` instance whose
-// address is `(void*)&name`. (Mirrors the param vs instance storage split.)
-node_t CirBuilder::string_var_addr(const Variable &v, TokenBase *origin)
+// The object address of a NAMED variable as void*. A by-value object parameter
+// or reference lowered to a pointer uses the variable value; a local/global
+// value instance uses `&name`.
+node_t CirBuilder::object_var_void_addr(const Variable &v, TokenBase *origin)
 {
 	node_t cast = node2(N_CAST, void_ptr_type(), object_var_addr(v, origin), origin);
 	CIR_NODE(cast)->synth_from_origin = true;
 	return cast;
 }
 
-// Construct the std::string object via the real libstdc++ ctor:
-//   no init        -> basic_string()              C1Ev
-//   string init    -> basic_string(const string&) C1ERKS4_  (copy ctor)
-//   const char*    -> basic_string(const char*, const allocator&) C1EPKcRKS3_
-// std::allocator<char> is empty/stateless, so the allocator& arg is a harmless
-// dummy — we reuse the object's own address.
-node_t CirBuilder::string_ctor_call(const char *name, TokenBase *initexpr,
-				    TokenBase *origin)
+// Coerce an object argument with a c_str() method to const char*.
+node_t CirBuilder::object_cstr_arg(TokenBase *arg)
 {
-	node_t args = list();
-	append(args, string_obj_addr(name, origin));   // this
-	const char *sym;
-	if (initexpr && is_string_object_value(initexpr)) {
-		append(args, string_obj_arg(initexpr));    // const string&
-		sym = STR_CTOR_CP;
-		need_output_extern(sym, false, { { {N_VOID}, true }, { {N_VOID}, true } });
-	} else if (initexpr) {
-		append(args, translate_expr(initexpr));        // const char*
-		append(args, string_obj_addr(name, origin));   // dummy const allocator&
-		sym = STR_CTOR_S;
-		need_output_extern(sym, false,
-				   { { {N_VOID}, true }, { {N_CHAR}, true }, { {N_VOID}, true } });
-	} else {
-		sym = STR_CTOR0;
-		need_output_extern(sym, false, { { {N_VOID}, true } });
-	}
-	node_t call = node2(N_CALL, id(sym, origin), args, origin);
-	CIR_NODE(call)->synth_from_origin = true;
-	// Wrap as an expression-statement (a block item), matching translate_stmt.
-	node_t stmt = node2(N_EXPR, list(), call, origin);
-	CIR_NODE(stmt)->synth_from_origin = true;
-	return stmt;
-}
-
-// Coerce a std::string OBJECT argument to const char*: string_cstr((void*)obj).
-// For a plain string variable the object address is string_obj_addr(name); for
-// any other string-object expression, cast its translated value to void*. This
-// is the std::string->dtCHARptr coercion applied at char*-expecting call sites.
-node_t CirBuilder::string_cstr_arg(TokenBase *arg)
-{
-	need_output_extern(STR_CSTR, true, { { {N_VOID}, true } });
-	node_t addr;
-	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
-		addr = string_obj_addr(tv->var.name.c_str(), arg);
-	else
-		addr = node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
+	DataDefCLASS *cdd = as_class_instance(arg ? arg->datadef() : NULL);
+	if (!cdd)
+		cdd = class_behind(arg ? arg->datadef() : NULL);
+	if (!cdd)
+		return translate_expr(arg);
+	std::string sym = class_method_symbol(cdd, "c_str");
+	if (sym.empty() || sym == "c_str")
+		return translate_expr(arg);
+	need_output_extern(sym.c_str(), true, { { {N_VOID}, true } });
 	node_t a = list();
-	append(a, addr);
-	node_t call = node2(N_CALL, id(STR_CSTR, arg), a, arg);
+	append(a, object_arg_addr(arg, cdd));
+	node_t call = node2(N_CALL, id(sym.c_str(), arg), a, arg);
 	CIR_NODE(call)->synth_from_origin = true;
 	return call;
 }
 
-// Coerce an argument to a std::string OBJECT pointer for a string-object
-// parameter. A real string object (declared variable / string& param) is passed
-// by address. A const char* value (string literal, char* variable, char*-valued
-// expression) is materialized into a scope-lived temporary std::string: the
-// storage decl (cleanup-tagged) + ctor are pushed to m_pending_stmts so
-// translate_block emits them just before the current statement; the temp's
-// address becomes the argument. Mirrors the old transpiler's emit_ns_arg.
-node_t CirBuilder::string_obj_arg(TokenBase *arg)
+// Coerce an argument to a class-object pointer for an object/reference
+// parameter. Existing object lvalues pass by address; a value accepted by a
+// converting ctor is materialized into a scope-lived temp.
+node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 {
-	if (is_string_object_value(arg)) {
-		// A string-OBJECT element (`v[i]`): the bare operator[] call IS the
-		// element's address (a string*); cast to void*. Must use the bare call,
-		// not translate_expr (which derefs to the 32-byte object lvalue).
+	if (!target) target = as_class_instance(arg ? arg->datadef() : NULL);
+	if (!target) target = class_behind(arg ? arg->datadef() : NULL);
+	if (!target)
+		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
+
+	if (is_class_object_value(arg)) {
+		// A class-object element (`v[i]`): the bare operator[] call is the
+		// element address. Cast it to void* instead of dereferencing it.
 		if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(arg))
-			if (is_string_subscript(arg))
+			if (class_subscript_is_object(arg))
 				return node2(N_CAST, void_ptr_type(),
 					class_subscript_addr(tsub, arg), arg);
-		// A raw string-array element (`keys[i]`, keys is a string*/string[]
-		// local, param, or member array): translate_expr yields the element
-		// lvalue; its address is the string object pointer.
-		if (is_string_array_subscript(arg))
+		// A raw class-array element: translate_expr yields the element lvalue;
+		// its address is the object pointer.
+		if (class_array_subscript_is_object(arg))
 			return node2(N_CAST, void_ptr_type(),
 				node1(N_ADDR, translate_expr(arg), arg), arg);
-		// A string-object MEMBER (`obj.name`) is an embedded `long[W]` buffer
-		// in the struct; its address is `(void*)&(obj.name)`. Translate the
-		// member access (yields the FIELD lvalue), take its address, cast.
+		// An object member is embedded in the enclosing struct. Translate the
+		// member access, take its address, and cast.
 		if (dynamic_cast<TokenMember *>(arg))
 			return node2(N_CAST, void_ptr_type(),
-				node1(N_ADDR, translate_expr(arg), arg), arg);
+			    node1(N_ADDR, translate_expr(arg), arg), arg);
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
-			return string_var_addr(tv->var, arg);
+			return object_var_void_addr(tv->var, arg);
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
 	}
-	// A string-returning CALL is a string-object rvalue: materialize it into a
-	// scope temp (the callee copy-constructs the result into the temp via the
-	// __retbuf ABI) and pass the temp's address. Must precede the const char*
-	// path: the call result is a `struct string`, not a const char*.
-	if (is_string_returning_call(arg))
-		return string_call_temp_addr(arg, arg);
 
-	// const char* value -> temp std::string object.
+	if (object_returning_call_class(arg) == target)
+		return object_call_temp_addr(arg, target, arg);
+	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(arg))
+		if (as_class_instance(ot->obj_class) == target)
+			return object_call_temp_addr(arg, target, arg);
+	if (as_class_instance(arg ? arg->datadef() : NULL) == target)
+		return node2(N_CAST, void_ptr_type(),
+			     node1(N_ADDR, translate_expr(arg), arg), arg);
+
 	char name[32];
-	snprintf(name, sizeof(name), "__madc_strtmp_%d", m_strtmp_counter++);
-	m_pending_stmts.push_back(string_storage_decl(name, arg));
-	m_pending_stmts.push_back(string_ctor_call(name, arg, arg));
-	return string_obj_addr(name, arg);
+	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
+	Variable *tmp = new Variable(name, *target, 1, NULL, false);
+	tmp->flags |= vfLOCAL;
+	m_pending_stmts.push_back(var_decl(tmp, arg));
+	std::vector<TokenBase *> ctor_args;
+	if (arg) ctor_args.push_back(arg);
+	node_t cc = class_ctor_call(tmp, target, ctor_args, arg);
+	if (cc) m_pending_stmts.push_back(cc);
+	return object_addr(name, arg);
 }
 
-// Translate a call's explicit arguments into `args`, coercing string-object
-// parameters (passed by address, literals materialized to temps) and numeric
-// reference parameters (passed by address). Shared by the normal call path and
-// string_call_temp_addr. Does NOT inject hidden params (__this / __retbuf).
+// Coerce an argument to a class-object VALUE for a by-value parameter.
+// Matching object values pass as values. Non-object values accepted by a
+// converting constructor are materialized into a scope-lived temp and that temp
+// is passed by value.
+node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
+{
+	if (!target)
+		return translate_expr(arg);
+	DataDefCLASS *arg_class = as_class_instance(arg ? arg->datadef() : NULL);
+	if (arg_class == target)
+		return translate_expr(arg);
+	if (object_returning_call_class(arg) == target)
+		return translate_expr(arg);
+	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(arg))
+		if (as_class_instance(ot->obj_class) == target)
+			return translate_expr(arg);
+	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
+		if ((tv->var.flags & vfREFERENCE) && class_behind(tv->var.type) == target)
+			return translate_expr(arg);
+
+	char name[32];
+	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
+	Variable *tmp = new Variable(name, *target, 1, NULL, false);
+	tmp->flags |= vfLOCAL;
+	m_pending_stmts.push_back(var_decl(tmp, arg));
+	std::vector<TokenBase *> ctor_args;
+	if (arg) ctor_args.push_back(arg);
+	node_t cc = class_ctor_call(tmp, target, ctor_args, arg);
+	if (cc) m_pending_stmts.push_back(cc);
+	return id(name, arg);
+}
+
+// Translate a call's explicit arguments into `args`, coercing object
+// parameters and numeric reference parameters. Does NOT inject hidden params
+// (__this / __retbuf).
 void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
 {
 	// Resolve the callee signature for both direct calls (FuncDef) AND indirect
@@ -998,14 +906,20 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
 				? callee->parameters[i] : NULL;
 		bool is_ref_param = callee && i < callee->ref_params.size()
 				    && callee->ref_params[i];
-		if (is_std_string(pt))
-			append(args, string_obj_arg(arg));
+		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
+			append(args, object_arg_addr(arg, pc));
+		else if (DataDefCLASS *vc = as_class_instance(pt))
+			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
 			// Numeric reference parameter (`int &x`): the callee takes a
 			// pointer, so pass the argument's address. The argument lvalue
 			// translates normally (a vfREFERENCE arg re-derefs to its own
 			// pointer, and &(*p) folds to p).
 			append(args, node1(N_ADDR, translate_expr(arg), arg));
+		else if (is_char_pointer(pt) && is_class_object_value(arg))
+			append(args, object_cstr_arg(arg));
+		else if (is_size1_pointer(pt) && is_class_object_value(arg))
+			append(args, object_arg_addr(arg, NULL));
 		else
 			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
 			// make the implicit upcast explicit so c2mir does not warn.
@@ -1031,64 +945,18 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
 	}
 }
 
-// Materialize a by-value string-returning CALL into a cleanup-tagged temp via
-// the __retbuf ABI: declare `struct string __t;` (raw storage, cleanup-tagged),
-// emit the call as a VOID call `f((struct string*)&__t, <args>)` whose callee
-// copy-constructs the result into *__retbuf, and return the temp's (void*)
-// address. Pushes both the storage decl and the call to m_pending_stmts.
-// `call_tok` is the TokenCallFunc (so args can be retranslated with __retbuf).
-// `struct string <name> __attribute__((cleanup(STR_DTOR)));` — raw storage for a
-// string object filled by a return-slot/placement write (no ctor / initializer),
-// destructed via the cleanup attribute. Pushes the decl to m_pending_stmts and
-// returns the generated temp name. Shared by string_call_temp_addr (__retbuf ABI)
-// and the by-value operator+ path (string_concat out-slot).
-void CirBuilder::string_temp_decl(char *name_buf, size_t buf_sz, TokenBase *origin)
+void CirBuilder::object_temp_decl(DataDefCLASS *cdd, char *name_buf,
+				  size_t buf_sz, TokenBase *origin)
 {
-	snprintf(name_buf, buf_sz, "__madc_strtmp_%d", m_strtmp_counter++);
-
-	node_t share = node1(N_SHARE, type_list(&ddSTRING));   // struct string
-	node_t decl = node2(N_DECL, id(name_buf, origin), list());
-	need_output_extern(STR_DTOR, false, { { {N_VOID}, true } });
-	node_t attr_args = list();
-	append(attr_args, id(STR_DTOR, origin));
-	node_t attrs = list();
-	append(attrs, node2(N_ATTR, id("cleanup", origin), attr_args, origin));
-	node_t sd = simple(N_SPEC_DECL, origin);
-	append(sd, share);
-	append(sd, decl);
-	append(sd, attrs);   // __attribute__((cleanup(STR_DTOR)))
-	append(sd, ignore()); // asm
-	append(sd, ignore()); // initializer — none; filled by the return-slot write
-	CIR_NODE(sd)->synth_from_origin = true;
-	m_pending_stmts.push_back(sd);
-}
-
-node_t CirBuilder::string_call_temp_addr(TokenBase *call_tok, TokenBase *origin)
-{
-	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(call_tok);
-	char name[32];
-	// `struct string __t __attribute__((cleanup(STR_DTOR)));` — raw storage; the
-	// callee copy-constructs into it, so no default ctor / initializer.
-	string_temp_decl(name, sizeof(name), origin);
-
-	// Void call: f((struct string*)&__t, <args>). The first arg is the return
-	// slot (__retbuf). string_obj_addr yields (void*)&__t — the param is a
-	// `struct string *`, and a void* converts implicitly.
-	if (tcf) {
-		referenced_funcs.insert(tcf->var.name);
-		node_t cargs = list();
-		append(cargs, string_obj_addr(name, origin));   // __retbuf = &__t
-		build_call_args(tcf, cargs);
-		node_t call = node2(N_CALL, id(tcf->var.name.c_str(), origin), cargs, origin);
-		CIR_NODE(call)->synth_from_origin = true;
-		m_pending_stmts.push_back(node2(N_EXPR, list(), call, origin));
-	}
-
-	return string_obj_addr(name, origin);   // (void*)&__t
+	if (!cdd) return;
+	snprintf(name_buf, buf_sz, "__madc_objtmp_%d", m_strtmp_counter++);
+	Variable *tmp = new Variable(name_buf, *cdd, 1, NULL, false);
+	tmp->flags |= vfLOCAL;
+	m_pending_stmts.push_back(var_decl(tmp, origin));
 }
 
 // Materialize a NON-TRIVIAL class-returning CALL into a cleanup-tagged temp of
-// that class, via the __retbuf ABI (mirrors string_call_temp_addr). Declares
+// that class, via the __retbuf ABI. Declares
 // `struct Cls __t __attribute__((cleanup(Cls___dtor)));` (var_decl attaches the
 // cleanup), emits the void call `f(&__t, <args>)` whose callee copy-constructs
 // the result into *__retbuf, and returns the temp's (void*) address. Pushes the
@@ -1098,26 +966,24 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 {
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(call_tok);
 	char name[40];
-	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
-
-	// Temp object variable of the class type; var_decl emits the storage with a
-	// cleanup(Cls___dtor) attribute (RAII scope-exit destruction).
-	Variable *tmp = new Variable(name, *cdd, 1, NULL, false);
-	tmp->flags |= vfLOCAL;
-	m_pending_stmts.push_back(var_decl(tmp, origin));
+	object_temp_decl(cdd, name, sizeof(name), origin);
 
 	if (tcf) {
-		referenced_funcs.insert(tcf->var.name);
+		FuncDef *cdf = call_target_funcdef(tcf);
+		std::string sym = func_emit_name(tcf->var, cdf);
+		referenced_funcs.insert(sym);
 		node_t cargs = list();
 		append(cargs, node1(N_ADDR, id(name, origin), origin));   // __retbuf = &__t
 		build_call_args(tcf, cargs);
-		node_t call = node2(N_CALL, id(tcf->var.name.c_str(), origin), cargs, origin);
+		node_t call = node2(N_CALL, id(sym.c_str(), origin), cargs, origin);
 		CIR_NODE(call)->synth_from_origin = true;
 		m_pending_stmts.push_back(node2(N_EXPR, list(), call, origin));
 	} else if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(call_tok)) {
 		// Functional construction T(args): construct directly into the temp
 		// (class_ctor_call emits the ctor on &__t with the parsed args).
-		node_t cc = class_ctor_call(tmp, cdd, ot->ctor_args, origin);
+		Variable tmpv(name, *cdd, 1, NULL, false);
+		tmpv.flags |= vfLOCAL;
+		node_t cc = class_ctor_call(&tmpv, cdd, ot->ctor_args, origin);
 		if (cc) m_pending_stmts.push_back(cc);
 	}
 
@@ -1127,12 +993,6 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 	CIR_NODE(addr)->synth_from_origin = true;
 	return addr;
 }
-
-// (std::string method calls — s.c_str()/.length()/.size()/.empty()/.clear() —
-// now route through the uniform class path: CirBuilder::class_method_call ->
-// emit_symbol_method_call, which calls the mangled libstdc++ member bound via
-// FuncDef::emit_symbol. The legacy string_method_call interception was deleted
-// in A4b Surface 2; empty() is still lowered to size()==0 there.)
 
 // Build a type specifier LIST. If typedef_alias is set, emit ID("alias")
 // instead of raw type nodes — c2mir's checker resolves the typedef.
@@ -1173,17 +1033,15 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 // `(void)` only for is_void_params, leaves a bare `()` for K&R-unspecified,
 // and reuses param_decl per parameter.
 // Mirror func_proto's __retbuf decision for a fn-ptr TARGET signature: a
-// by-value std::string OR non-trivial class return (not pointer/ref/multi)
-// uses the __retbuf ABI. Returns the returned object type (ddSTRING or the
-// class) so the fn-ptr renders `void (*)(T*, params)`; NULL otherwise.
+// by-value non-trivial class return (not pointer/ref/multi) uses the __retbuf
+// ABI. Returns the returned object type so the fn-ptr renders
+// `void (*)(T*, params)`; NULL otherwise.
 DataDef *CirBuilder::fnptr_retbuf_type(FuncDef *fd)
 {
 	if (!fd) return NULL;
 	DataDef *ret_dd = &fd->returns;
 	if (ret_dd->is_pointer() || fd->returns_ref || fd->is_multi_return())
 		return NULL;
-	if (is_std_string(ret_dd))
-		return &ddSTRING;
 	if (DataDefCLASS *obj = class_return_via_retbuf(ret_dd))
 		return (DataDef *)obj;
 	return NULL;
@@ -1357,10 +1215,10 @@ static bool read_static_int_array_elem(Variable *var, size_t index, int64_t &out
 // object-returning function. A named pointer parameter: N_SPEC_DECL with the
 // returned class/struct spec (bare LIST, like param_decl's pspec) and a DECL
 // carrying the name plus one pointer suffix. `retdd` is the returned type
-// (ddSTRING for a string-returning fn, the user class for a class-returning fn).
+// The retbuf type is the returned class/struct type.
 node_t CirBuilder::retbuf_param(DataDef *retdd, TokenBase *origin)
 {
-	node_t pspec = type_list(retdd ? retdd : &ddSTRING);   // LIST(STRUCT(ID(name), IGNORE))
+	node_t pspec = type_list(retdd ? retdd : &ddVOID);
 	node_t pdecl_list = list();
 	append(pdecl_list, pointer());
 	node_t sd = simple(N_SPEC_DECL, origin);
@@ -1401,11 +1259,13 @@ node_t CirBuilder::multi_return_unpack(TokenAssign *as, TokenBase *origin)
 
 	// f(__mret_K, args...);  — __retbuf passed first. build_call_args may queue
 	// arg temps to m_pending_stmts; they land after bufdecl and before the call.
-	referenced_funcs.insert(tcf->var.name);
+	FuncDef *cdf = call_target_funcdef(tcf);
+	std::string sym = func_emit_name(tcf->var, cdf);
+	referenced_funcs.insert(sym);
 	node_t cargs = list();
 	append(cargs, id(nm, origin));
 	build_call_args(tcf, cargs);
-	node_t call = node2(N_CALL, id(tcf->var.name.c_str(), origin), cargs, origin);
+	node_t call = node2(N_CALL, id(sym.c_str(), origin), cargs, origin);
 	CIR_NODE(call)->synth_from_origin = true;
 	m_pending_stmts.push_back(node2(N_EXPR, list(), call, origin));
 
@@ -1445,17 +1305,13 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		return sd;
 	};
 
-	// std::string / MadArray parameter: a runtime-object value (`string`,
-	// `string&`, `array`, `array&`) or its pointer form lowers to `void *` — a
-	// pointer to the object. The caller passes the object's address; uses inside
-	// the function treat the param as that object. NOTE: a by-value param
-	// currently aliases the caller's object (no copy); a copy-temp at the call
-	// site is a refinement.
+	// Array parameters are lowered to `void *`: a pointer to the first element.
+	// Class value parameters keep their concrete `struct T` type so member
+	// access inside the callee remains typed; references are already pointer
+	// DataDefs by the time they reach this emitter.
 	if (ptype) {
 		DataType pdt = ptype->rawtype();
-		if (is_std_string(ptype)
-		    || pdt == DataType::dtARRAY || pdt == DataType::dtARRAYref
-		    || pdt == DataType::dtSSTREAM || pdt == DataType::dtSSTREAMref) {
+		if (pdt == DataType::dtARRAY || pdt == DataType::dtARRAYref) {
 			node_t pspec = list();
 			append(pspec, simple(N_VOID));
 			node_t pdecl_list = list();
@@ -1613,262 +1469,6 @@ void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 	append(proto, ignore());
 	append(proto, ignore());
 	m_output_externs[symbol] = proto;
-}
-
-// ---- Stream chains (cout << x) ----
-
-CirBuilder::StreamKind CirBuilder::stream_ident_kind(TokenBase *tb)
-{
-	std::string name;
-	if (TokenVar *tv = dynamic_cast<TokenVar *>(tb)) name = tv->var.name;
-	else if (TokenIdent *ti = dynamic_cast<TokenIdent *>(tb)) name = ti->str;
-	else return SK_NONE;
-	// Unqualified `cout` keeps its source name; qualified `std::cout`
-	// resolves to the hidden std global `__std_cout` (see add_namespaces()).
-	// Recognize both so a qualified stream chain isn't mistaken for a shift.
-	if (name == "cout" || name == "__std_cout") return SK_COUT;
-	if (name == "cerr" || name == "__std_cerr") return SK_CERR;
-	if (name == "clog" || name == "__std_clog") return SK_CLOG;
-	if (name == "cin"  || name == "__std_cin")  return SK_CIN;
-	return SK_NONE;
-}
-
-const char *CirBuilder::stream_object_symbol(StreamKind k)
-{
-	// Mangler-generated (never hardcoded): std::cout → _ZSt4cout, etc.
-	static const std::string cout_s = itanium_mangle_std_var("cout");
-	static const std::string cerr_s = itanium_mangle_std_var("cerr");
-	static const std::string clog_s = itanium_mangle_std_var("clog");
-	static const std::string cin_s  = itanium_mangle_std_var("cin");
-	switch (k) {
-	case SK_COUT: return cout_s.c_str();
-	case SK_CERR: return cerr_s.c_str();
-	case SK_CLOG: return clog_s.c_str();
-	case SK_CIN:  return cin_s.c_str();
-	default:      return cout_s.c_str();
-	}
-}
-
-// extern char SYM;  (an opaque object whose address we take)
-void CirBuilder::need_stream_object(StreamKind k)
-{
-	const char *sym = stream_object_symbol(k);
-	if (m_stream_objects.count(sym)) return;
-	m_stream_objects.insert(sym);
-	node_t spec = list();
-	append(spec, simple(N_EXTERN));
-	append(spec, simple(N_CHAR));
-	node_t share = node1(N_SHARE, spec);
-	node_t decl = node2(N_DECL, id(sym), list());
-	node_t sd = simple(N_SPEC_DECL);
-	append(sd, share); append(sd, decl);
-	append(sd, ignore()); append(sd, ignore()); append(sd, ignore());
-	m_stream_object_protos.push_back(sd);
-}
-
-// Pick the mangled libstdc++ operator<< overload for a value's type.
-const char *CirBuilder::ostream_insert_symbol(DataDef *dd, ExternParam &p_out)
-{
-	// All symbols mangler-generated (never hardcoded). OSTREAM = the concrete
-	// libstdc++ char ostream specialization. The const char*/char overloads are
-	// non-member std function templates (signature in the function's template
-	// params); the rest are member operators on the complete ostream.
-	static const std::string OSTREAM = "std::basic_ostream<char,std::char_traits<char>>";
-	static const std::string sym_pkc = itanium_mangle_std_free_template("<<",
-		{"std::char_traits<char>"}, "std::basic_ostream<char,$T0>&",
-		{"std::basic_ostream<char,$T0>&", "const char*"});
-	static const std::string sym_c = itanium_mangle_std_free_template("<<",
-		{"std::char_traits<char>"}, "std::basic_ostream<char,$T0>&",
-		{"std::basic_ostream<char,$T0>&", "char"});
-	static const std::string sym_pkv = itanium_mangle_operator_sub(OSTREAM, "<<", {"const void*"}, false);
-	static const std::string sym_d   = itanium_mangle_operator_sub(OSTREAM, "<<", {"double"}, false);
-	static const std::string sym_i   = itanium_mangle_operator_sub(OSTREAM, "<<", {"int"}, false);
-	static const std::string sym_j   = itanium_mangle_operator_sub(OSTREAM, "<<", {"unsigned int"}, false);
-	static const std::string sym_l   = itanium_mangle_operator_sub(OSTREAM, "<<", {"long"}, false);
-
-	bool is_ptr = dd && dd->is_pointer();
-	DataType dt = dd ? dd->rawtype() : DataType::dtINT64;
-	// NOTE: a string OBJECT value (operator<<(ostream&, const string&)) is
-	// handled directly in translate_stream_chain, which has the token to tell
-	// an object apart from a literal. Here `is_string()` means a const char*
-	// (string literal / char* value).
-	if (dd && dd->is_string()) { p_out = {{N_CHAR}, true}; return sym_pkc.c_str(); }
-	if (is_ptr && dt == DataType::dtCHAR) { p_out = {{N_CHAR}, true}; return sym_pkc.c_str(); }
-	if (is_ptr) { p_out = {{N_VOID}, true}; return sym_pkv.c_str(); }
-	switch (dt) {
-	case DataType::dtCHAR:   p_out = {{N_CHAR}, false};  return sym_c.c_str();
-	case DataType::dtFLOAT:
-	case DataType::dtDOUBLE: p_out = {{N_DOUBLE}, false}; return sym_d.c_str();
-	case DataType::dtINT16:
-	case DataType::dtINT32:  p_out = {{N_INT}, false};    return sym_i.c_str();
-	case DataType::dtUINT8:
-	case DataType::dtUINT16:
-	case DataType::dtUINT32: p_out = {{N_UNSIGNED, N_INT}, false}; return sym_j.c_str();
-	case DataType::dtINT64:
-	case DataType::dtUINT64:
-	default:                 p_out = {{N_LONG}, false};   return sym_l.c_str();
-	}
-}
-
-// Lower a C++ ostream chain to direct mangled operator<< calls, one per value.
-node_t CirBuilder::translate_stream_chain(TokenOperator *top, StreamKind k, bool is_out)
-{
-	need_stream_object(k);
-	// madc parses `cout << a << b << c` right-associatively as
-	// `cout << (a << (b << c))`: the stream object is top->left and the
-	// values hang off the right spine (each `<<` node's left is one value,
-	// its right is the next value or `<<` node). Collect values in C++
-	// (left-to-right) order by walking that right spine.
-	std::vector<TokenBase *> vals;
-	TokenBase *n = top->right;
-	while (TokenOperator *o = dynamic_cast<TokenOperator *>(n)) {
-		// A parenthesized `<<`/`>>` is a single value, not a chain link.
-		if (o->id() != top->id() || o->is_bracketed()) break;
-		vals.push_back(o->left);
-		n = o->right;
-	}
-	if (n) vals.push_back(n);
-
-	node_t result = node1(N_ADDR, id(stream_object_symbol(k)));
-	for (size_t i = 0; i < vals.size(); i++) {
-		// endl manipulator: _ZNSolsEPFRSoS_E(os, &endl)
-		std::string vn;
-		if (TokenVar *tv = dynamic_cast<TokenVar *>(vals[i])) vn = tv->var.name;
-		else if (TokenIdent *ti = dynamic_cast<TokenIdent *>(vals[i])) vn = ti->str;
-		if (vn == "endl" || vn == "__std_endl") {
-			// Mangler-generated (never hardcoded): the member manipulator
-			// operator<<(ostream& (*)(ostream&)) and the std::endl<char,traits> fn.
-			static const std::string OSTREAM = "std::basic_ostream<char,std::char_traits<char>>";
-			static const std::string manip_s = itanium_mangle_operator_sub(
-				OSTREAM, "<<", { OSTREAM + "& (*)(" + OSTREAM + "&)" }, false);
-			static const std::string endlf_s = itanium_mangle_std_free_template("endl",
-				{ "char", "std::char_traits<char>" }, "std::basic_ostream<$T0,$T1>&",
-				{ "std::basic_ostream<$T0,$T1>&" });
-			const char *MANIP = manip_s.c_str();
-			const char *ENDLF = endlf_s.c_str();
-			need_output_extern(MANIP, true, { { {N_VOID}, true }, { {N_VOID}, true } });
-			need_output_extern(ENDLF, true, { { {N_VOID}, true } }); // fn; address taken
-			node_t args = list();
-			append(args, result);
-			append(args, node1(N_ADDR, id(ENDLF)));
-			result = node2(N_CALL, id(MANIP), args, top);
-			continue;
-		}
-		node_t args = list();
-		append(args, result);
-		if (is_string_object_value(vals[i]) || is_string_returning_call(vals[i])) {
-			// operator<<(ostream&, const std::string&) — takes the object
-			// pointer, returns ostream& (chains). Literals are NOT objects and
-			// fall through to the char* overload below. A by-value
-			// string-RETURNING call (direct `make()` or a fn-ptr/lambda `f()`)
-			// is a string-object rvalue: string_obj_arg materializes it into a
-			// __retbuf temp and yields the temp's address.
-			// Mangler-generated (never hardcoded): non-member std::operator<<
-			// (ostream&, const string&), the cxx11 template form.
-			static const std::string ssym_s = itanium_mangle_std_free_template("<<",
-				{ "char", "std::char_traits<char>", "std::allocator<char>" },
-				"std::basic_ostream<$T0,$T1>&",
-				{ "std::basic_ostream<$T0,$T1>&",
-				  "const std::__cxx11::basic_string<$T0,$T1,$T2>&" });
-			const char *SSYM = ssym_s.c_str();
-			need_output_extern(SSYM, true, { { {N_VOID}, true }, { {N_VOID}, true } });
-			// string_obj_arg yields the object's (void*) address for both a
-			// plain string variable (&v) and a string MEMBER (&obj.member).
-			append(args, string_obj_arg(vals[i]));
-			result = node2(N_CALL, id(SSYM), args, top);
-			continue;
-		}
-		DataDef *vdd = vals[i]->datadef();
-		ExternParam vp;
-		const char *sym = ostream_insert_symbol(vdd, vp);
-		need_output_extern(sym, true, { { {N_VOID}, true }, vp });
-		append(args, translate_expr(vals[i]));
-		result = node2(N_CALL, id(sym), args, top);
-	}
-	return result;
-}
-
-// `ss << a << b ...` on a std::stringstream OBJECT. Unlike cout (a global
-// std::ostream addressed directly), a stringstream's ostream base is at a
-// non-zero offset, so we route through the generic streamout_* wrappers on
-// sstream_ostream((void*)&ss) (which applies the base adjustment). Each `<< v`
-// becomes one streamout_TYPE(os, v) call; the calls are chained with N_COMMA so
-// the whole chain is a single expression (its value is unused as a statement).
-node_t CirBuilder::translate_sstream_chain(TokenOperator *top, const char *ssname)
-{
-	need_output_extern("sstream_ostream", true, { { {N_VOID}, true } });
-
-	// Collect chained values along the right spine (left-to-right), exactly
-	// as translate_stream_chain does.
-	std::vector<TokenBase *> vals;
-	TokenBase *n = top->right;
-	while (TokenOperator *o = dynamic_cast<TokenOperator *>(n)) {
-		if (o->id() != top->id() || o->is_bracketed()) break;
-		vals.push_back(o->left);
-		n = o->right;
-	}
-	if (n) vals.push_back(n);
-
-	// A fresh `sstream_ostream((void*)ss)` ostream* for each value.
-	auto os_arg = [&]() -> node_t {
-		node_t a = list();
-		append(a, string_obj_addr(ssname, top));
-		node_t call = node2(N_CALL, id("sstream_ostream", top), a, top);
-		CIR_NODE(call)->synth_from_origin = true;
-		return call;
-	};
-
-	node_t result = NULL;
-	for (size_t i = 0; i < vals.size(); i++) {
-		std::string vn;
-		if (TokenVar *tv = dynamic_cast<TokenVar *>(vals[i])) vn = tv->var.name;
-		else if (TokenIdent *ti = dynamic_cast<TokenIdent *>(vals[i])) vn = ti->str;
-
-		node_t call;
-		if (vn == "endl" || vn == "__std_endl") {
-			need_output_extern("streamout_endl", false, { { {N_VOID}, true } });
-			node_t a = list();
-			append(a, os_arg());
-			call = node2(N_CALL, id("streamout_endl", top), a, top);
-		} else if (is_string_object_value(vals[i])) {
-			// streamout_string(os, (void*)&strobj)
-			need_output_extern("streamout_string", false,
-					   { { {N_VOID}, true }, { {N_VOID}, true } });
-			node_t a = list();
-			append(a, os_arg());
-			append(a, string_obj_arg(vals[i]));
-			call = node2(N_CALL, id("streamout_string", top), a, top);
-		} else {
-			// Pick the streamout_* wrapper by value type (mirrors
-			// ostream_insert_symbol's classification).
-			DataDef *vdd = vals[i]->datadef();
-			bool is_ptr = vdd && vdd->is_pointer();
-			DataType dt = vdd ? vdd->rawtype() : DataType::dtINT64;
-			const char *sym;
-			ExternParam vp;
-			if ((vdd && vdd->is_string()) || (is_ptr && dt == DataType::dtCHAR)) {
-				sym = "streamout_cstr"; vp = { {N_CHAR}, true };
-			} else if (dt == DataType::dtCHAR) {
-				sym = "streamout_char"; vp = { {N_INT}, false };
-			} else if (dt == DataType::dtFLOAT || dt == DataType::dtDOUBLE) {
-				sym = "streamout_double"; vp = { {N_DOUBLE}, false };
-			} else if (dt == DataType::dtUINT8 || dt == DataType::dtUINT16
-				   || dt == DataType::dtUINT32 || dt == DataType::dtUINT64) {
-				sym = "streamout_uint64"; vp = { {N_UNSIGNED, N_LONG}, false };
-			} else {
-				sym = "streamout_int64"; vp = { {N_LONG}, false };
-			}
-			need_output_extern(sym, false, { { {N_VOID}, true }, vp });
-			node_t a = list();
-			append(a, os_arg());
-			append(a, translate_expr(vals[i]));
-			call = node2(N_CALL, id(sym, top), a, top);
-		}
-		CIR_NODE(call)->synth_from_origin = true;
-		result = result ? node2(N_COMMA, result, call, top) : call;
-	}
-	// Empty chain (no values) is a no-op; emit a harmless 0.
-	return result ? result : integer(0, top);
 }
 
 bool CirBuilder::init_slot_is_aggregate(DataDef *dd, size_t idx)
@@ -2036,10 +1636,6 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	if (is_array_object(v->type))
 		return array_storage_decl(v->name.c_str(), origin);
 
-	// std::stringstream object: opaque storage + cleanup(sstream_destruct).
-	if (is_sstream_object(v->type))
-		return sstream_storage_decl(v->name.c_str(), origin);
-
 	DataDef *base_dd = v->type;
 	bool is_ptr = base_dd && base_dd->is_pointer();
 	// Peel ALL pointer levels to the innermost base type (struct node ** -> the
@@ -2167,7 +1763,8 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	}
 
 	node_t share = node1(N_SHARE, tl);
-	node_t var_id = id(v->name.c_str(), origin);
+	std::string emitted_var_name = var_emit_name(*v);
+	node_t var_id = id(emitted_var_name.c_str(), origin);
 	node_t decl_list = fnptr ? fnptr_decl_list : list();
 
 	// c2m declarator order: in `T *arr[N]` the `[]` binds tighter than `*`
@@ -2535,18 +2132,10 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		return mmember;
 	}
 
-	// A std::string OBJECT member (not a pointer) embeds the std::string object
-	// in the struct as a real `struct string` (the same class-struct tag that
-	// class_struct_def / type_list emit — sized by object_class_words from
-	// sizeof(std::string), never hard-coded). Routing through the class layout
-	// (rather than the legacy `long name[W];`) keeps members, pointers, and
-	// elements all at the correct ABI stride — needed for vector<string> etc.
-	// Construction / destruction of an embedded string member is driven by the
-	// enclosing class's ctor/dtor, not the cleanup attribute (members have no
-	// independent scope); those operate on &obj.name and are unaffected by the
-	// member's emitted type. String member access reads through
-	// string_cstr((void*)&obj.name) — handled at the use site.
-	if (is_string_object(mtype)) {
+	// A class object member embeds the lowered class struct directly. Its
+	// construction and destruction are driven by the enclosing class ctor/dtor;
+	// members have no independent cleanup attribute.
+	if (is_class_object(mtype)) {
 		node_t mspec = type_list(mtype);   // -> struct string
 		node_t mmember = simple(N_MEMBER, m.origin);
 		append(mmember, node1(N_SHARE, mspec));
@@ -3133,6 +2722,51 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 	return spec_decl;
 }
 
+void CirBuilder::emit_class_member_deps(
+	DataDefSTRUCT *sdd, node_t top_list,
+	std::set<std::string> &emitted_structs,
+	std::set<DataDefCLASS *> &emitted_classes,
+	std::set<DataDefCLASS *> &emitting_classes)
+{
+	if (!sdd) return;
+	DataDefCLASS *owner_class = dynamic_cast<DataDefCLASS *>(sdd);
+	for (const memberpair_t &m : sdd->members) {
+		DataDef *dd = m.second;
+		if (!dd || dd->is_pointer())
+			continue;
+		std::vector<uint32_t> dims;
+		DataDef *base = peel_carray_dims(dd, dims);
+		DataDefCLASS *dep = as_user_class(base);
+		if (!dep || dep == owner_class)
+			continue;
+		emit_class_struct_with_deps(dep, top_list, emitted_structs,
+					    emitted_classes, emitting_classes);
+	}
+}
+
+void CirBuilder::emit_class_struct_with_deps(
+	DataDefCLASS *cdd, node_t top_list,
+	std::set<std::string> &emitted_structs,
+	std::set<DataDefCLASS *> &emitted_classes,
+	std::set<DataDefCLASS *> &emitting_classes)
+{
+	if (!cdd) return;
+	if (emitted_classes.count(cdd) || emitted_structs.count(cdd->name))
+		return;
+	if (emitting_classes.count(cdd))
+		return;
+	emitting_classes.insert(cdd);
+	emit_class_member_deps(cdd, top_list, emitted_structs,
+			       emitted_classes, emitting_classes);
+	emitting_classes.erase(cdd);
+	if (emitted_classes.count(cdd) || emitted_structs.count(cdd->name))
+		return;
+	emitted_classes.insert(cdd);
+	emitted_structs.insert(cdd->name);
+	node_t cd = class_struct_def(cdd);
+	if (cd) append(top_list, cd);
+}
+
 // Resolve the class behind a (possibly pointer-wrapped) DataDef. Recognizes
 // ordinary user classes AND runtime-object classes (std::string) so a method
 // call on a `string` receiver routes through the class path.
@@ -3145,22 +2779,20 @@ static DataDefCLASS *class_behind(DataDef *dd)
 	return NULL;
 }
 
-// True when a NAMED variable holds the OBJECT'S ADDRESS rather than the object
-// itself — a by-value `string` parameter and a `string&` reference are lowered
-// to a `void*` (param_decl), and an explicit pointer type (`string*`) is a
-// pointer. For these the object address is the variable's value (`name`); for a
+// True when a NAMED variable holds the object's address rather than the object
+// itself. For these the object address is the variable's value (`name`); for a
 // value object lvalue it is `&name`. This is the single addressing rule shared
-// by every object-class receiver (methods, operators, stream, args).
+// by every object-class receiver.
 static bool var_is_pointer_stored(const Variable &v)
 {
 	if (v.type && v.type->is_pointer()) return true;
-	if ((v.flags & vfPARAM) || (v.flags & vfREFERENCE)) return true;
-	return is_std_string_ref(v.type);
+	if (v.flags & vfREFERENCE) return true;
+	return false;
 }
 
 // The raw object address of a NAMED variable (NOT cast to void*): the pointer
 // itself when pointer-stored, else `&name`. The single source of truth for
-// object-instance addressing; string_var_addr wraps this in a void* cast.
+// object-instance addressing; object_var_void_addr wraps this in a void* cast.
 node_t CirBuilder::object_var_addr(const Variable &v, TokenBase *origin)
 {
 	node_t base = id(v.name.c_str(), origin);
@@ -3229,7 +2861,7 @@ static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &r
 // Lower a call to a class method bound to an external symbol (emit_symbol — a
 // mangled libstdc++ std::string member). Declares the extern from the FuncDef's
 // real signature, passes the receiver address as void*, and coerces explicit
-// args (string params -> string_obj_arg). `empty()` is lowered to `size()==0`.
+// args (object params -> object_arg_addr). `empty()` is lowered to `size()==0`.
 node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 					   const std::string &sym, node_t this_arg,
 					   TokenBase *origin)
@@ -3240,10 +2872,16 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	// the bool-returning empty() returns a 1-byte value (garbage upper bits as
 	// a 64-bit int). Same observable result, robust read. (g++ canon.)
 	if (method == "empty") {
-		need_output_extern(STR_SIZE, false, { { {N_VOID}, true } }, { N_LONG });
+		DataDefCLASS *owner = (!callee->parameters.empty())
+				    ? class_behind(callee->parameters[0]) : NULL;
+		std::string size_sym = class_method_symbol(owner, "size");
+		if (size_sym.empty() || size_sym == "size")
+			return NULL;
+		need_output_extern(size_sym.c_str(), false,
+				   { { {N_VOID}, true } }, { N_UNSIGNED, N_LONG });
 		node_t a = list();
 		append(a, node2(N_CAST, void_ptr_type(), this_arg, origin));
-		node_t call = node2(N_CALL, id(STR_SIZE, origin), a, origin);
+		node_t call = node2(N_CALL, id(size_sym.c_str(), origin), a, origin);
 		CIR_NODE(call)->synth_from_origin = true;
 		node_t eq = node2(N_EQ, call, integer(0, origin), origin);
 		CIR_NODE(eq)->synth_from_origin = true;
@@ -3262,10 +2900,13 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 		size_t pi = i + 1;   // +1 to skip __this
 		DataDef *pt = (pi < callee->parameters.size())
 				? callee->parameters[pi] : NULL;
-		if (is_std_string(pt)) {
-			// const string& -> object pointer (void*).
+		bool refp = pi < callee->ref_params.size() && callee->ref_params[pi];
+		if (DataDefCLASS *pc = param_object_class(pt, refp)) {
 			eparams.push_back({ {N_VOID}, true });
-			append(args, string_obj_arg(arg));
+			append(args, object_arg_addr(arg, pc));
+		} else if (DataDefCLASS *vc = as_class_instance(pt)) {
+			eparams.push_back(native_param_shape(pt, false));
+			append(args, object_arg_value(arg, vc));
 		} else if (pt && pt->is_pointer()) {
 			// const char* etc.
 			eparams.push_back({ {N_CHAR}, true });
@@ -3350,8 +2991,10 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 				? callee->parameters[pi] : NULL;
 		bool is_ref_param = callee && pi < callee->ref_params.size()
 				    && callee->ref_params[pi];
-		if (is_std_string(pt))
-			append(args, string_obj_arg(arg));
+		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
+			append(args, object_arg_addr(arg, pc));
+		else if (DataDefCLASS *vc = as_class_instance(pt))
+			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
 			append(args, node1(N_ADDR, translate_expr(arg), arg));
 		else
@@ -3412,15 +3055,91 @@ bool CirBuilder::class_has_object_members(DataDefCLASS *cdd)
 {
 	if (!cdd) return false;
 	for (const auto &m : cdd->members)
-		if (is_string_object(m.second)) return true;
+		if (as_class_instance(m.second)) return true;
 	return false;
 }
 
-// Shared body for member construct/destruct: emit `sym((void*)&__this->m)`
-// expression-statements for each embedded string-object member.
-static const char *MEMBER_CTOR_SYM = "string_construct";
-static const char *MEMBER_DTOR_SYM = "string_destruct";
-static const char *MEMBER_COPY_SYM = "string_construct_copy";
+static std::string ctor_call_symbol(DataDefCLASS *cdd, FuncDef *ctor);
+
+static FuncDef *class_default_ctor_def(DataDefCLASS *cdd)
+{
+	if (!cdd) return NULL;
+	for (Variable *cv : cdd->ctors) {
+		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+		if (!fd) continue;
+		size_t req = fd->required_param_count();
+		if (req <= 1) return fd;   // only hidden __this is required
+	}
+	return NULL;
+}
+
+static FuncDef *class_copy_ctor_def(DataDefCLASS *cdd)
+{
+	if (!cdd) return NULL;
+	for (Variable *cv : cdd->ctors) {
+		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+		if (!fd || fd->parameters.size() < 2) continue;
+		bool refp = fd->ref_params.size() > 1 && fd->ref_params[1];
+		DataDef *p1 = fd->parameters[1];
+		DataDef *bind = p1;
+		if (refp && p1 && p1->is_pointer()) {
+			DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p1);
+			if (pp && pp->base_type) bind = pp->base_type;
+		}
+		if (same_object_class(cdd, bind)) return fd;
+	}
+	return NULL;
+}
+
+static FuncDef *class_assign_operator_def(DataDefCLASS *cdd)
+{
+	if (!cdd) return NULL;
+	const std::string opname = "operator=";
+	const std::string mangled = cdd->name + "__" + opname;
+	for (Variable *mv : cdd->methods) {
+		if (!mv) continue;
+		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+		if (!fd || fd->parameters.size() < 2) continue;
+		if (mv->name != opname && mv->name != mangled
+		    && fd->method_display_name != opname)
+			continue;
+		bool refp = fd->ref_params.size() > 1 && fd->ref_params[1];
+		DataDef *p1 = fd->parameters[1];
+		DataDef *bind = p1;
+		if (refp && p1 && p1->is_pointer()) {
+			DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p1);
+			if (pp && pp->base_type) bind = pp->base_type;
+		}
+		if (same_object_class(cdd, bind)) return fd;
+	}
+	return NULL;
+}
+
+static FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
+{
+	if (!cdd) return NULL;
+	const std::string opname = "operator=";
+	const std::string mangled = cdd->name + "__" + opname;
+	for (Variable *mv : cdd->methods) {
+		if (!mv) continue;
+		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+		if (!fd || fd->parameters.size() < 2) continue;
+		if (mv->name != opname && mv->name != mangled
+		    && fd->method_display_name != opname)
+			continue;
+		if (is_char_pointer(fd->parameters[1]))
+			return fd;
+	}
+	return NULL;
+}
+
+static std::string class_method_call_symbol(DataDefCLASS *cdd, FuncDef *fd,
+					    const std::string &name)
+{
+	if (fd && !fd->emit_symbol.empty()) return fd->emit_symbol;
+	if (fd && !fd->class_emit_name.empty()) return fd->class_emit_name;
+	return cdd ? cdd->name + "__" + name : name;
+}
 
 bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
 					std::vector<node_t> &out, TokenBase *origin)
@@ -3428,15 +3147,24 @@ bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
 	if (!cdd) return false;
 	bool any = false;
 	for (const auto &m : cdd->members) {
-		if (!is_string_object(m.second)) continue;
-		need_output_extern(MEMBER_CTOR_SYM, true, { { {N_VOID}, true } });
+		DataDefCLASS *mc = as_class_instance(m.second);
+		if (!mc) continue;
+		FuncDef *ctor = class_default_ctor_def(mc);
+		if (!ctor) continue;
+		std::string sym = ctor_call_symbol(mc, ctor);
+		bool external = !ctor->emit_symbol.empty();
+		if (external)
+			need_output_extern(sym.c_str(), false, { { {N_VOID}, true } });
+		else
+			referenced_funcs.insert(sym);
 		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
 				   id(m.first.c_str(), origin));
-		node_t addr = node2(N_CAST, void_ptr_type(),
-				    node1(N_ADDR, fld, origin), origin);
+		node_t addr = node1(N_ADDR, fld, origin);
+		if (external)
+			addr = node2(N_CAST, void_ptr_type(), addr, origin);
 		node_t a = list();
 		append(a, addr);
-		node_t call = node2(N_CALL, id(MEMBER_CTOR_SYM, origin), a, origin);
+		node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
 		out.push_back(node2(N_EXPR, list(), call, origin));
 		any = true;
 	}
@@ -3451,15 +3179,27 @@ bool CirBuilder::class_member_destruct(DataDefCLASS *cdd,
 	// Destruct in reverse declaration order (mirrors C++ member teardown).
 	for (size_t i = cdd->members.size(); i-- > 0; ) {
 		const auto &m = cdd->members[i];
-		if (!is_string_object(m.second)) continue;
-		need_output_extern(MEMBER_DTOR_SYM, false, { { {N_VOID}, true } });
+		DataDefCLASS *mc = as_class_instance(m.second);
+		if (!mc || !class_needs_dtor(mc)) continue;
+		std::string sym = class_dtor_symbol(mc);
+		bool external = false;
+		auto it = mc->method_map.find("~" + mc->name);
+		if (it != mc->method_map.end() && it->second) {
+			FuncDef *dt = dynamic_cast<FuncDef *>(it->second->type);
+			external = dt && !dt->emit_symbol.empty();
+		}
+		if (external)
+			need_output_extern(sym.c_str(), false, { { {N_VOID}, true } });
+		else
+			referenced_funcs.insert(sym);
 		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
 				   id(m.first.c_str(), origin));
-		node_t addr = node2(N_CAST, void_ptr_type(),
-				    node1(N_ADDR, fld, origin), origin);
+		node_t addr = node1(N_ADDR, fld, origin);
+		if (external)
+			addr = node2(N_CAST, void_ptr_type(), addr, origin);
 		node_t a = list();
 		append(a, addr);
-		node_t call = node2(N_CALL, id(MEMBER_DTOR_SYM, origin), a, origin);
+		node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
 		out.push_back(node2(N_EXPR, list(), call, origin));
 		any = true;
 	}
@@ -3483,17 +3223,15 @@ bool CirBuilder::class_has_own_user_dtor(DataDefCLASS *cdd)
 
 static std::string ctor_call_symbol(DataDefCLASS *cdd, FuncDef *ctor);
 
-// The user class that `dd` denotes IF returning it by value must use the
-// struct-return (__retbuf) ABI — i.e. a NON-TRIVIAL class: one that needs a
+// The class that `dd` denotes IF returning it by value must use the
+// struct-return (__retbuf) ABI — i.e. a non-trivial class: one that needs a
 // destructor (object members / user dtor / non-trivial base). A bit-copy return
 // of such a class would double-free its members' resources at the two scope
-// exits, so the callee must deep-copy (member copy-construct) into *__retbuf.
-// std::string is handled by its own (mangled copy-ctor) string path, NOT here;
-// a TRIVIAL struct keeps c2mir's native struct return. Returns NULL otherwise.
+// exits, so the callee must deep-copy into *__retbuf. A trivial struct keeps
+// c2mir's native struct return. Returns NULL otherwise.
 DataDefCLASS *CirBuilder::class_return_via_retbuf(DataDef *dd)
 {
 	if (!dd || dd->is_pointer()) return NULL;
-	if (is_std_string(dd)) return NULL;   // string path owns it
 	DataDefCLASS *cdd = as_class_instance(dd);
 	if (!cdd) return NULL;
 	return class_needs_dtor(cdd) ? cdd : NULL;
@@ -3515,12 +3253,29 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		std::string sym = ctor_call_symbol(cdd, copy_ctor);
 		node_t args = list();
 		append(args, id(RETBUF_NAME, origin));   // __retbuf is already T*
-		bool refp = copy_ctor->ref_params.size() > 1
-			    && copy_ctor->ref_params[1];
-		if (refp)
-			append(args, node1(N_ADDR, translate_expr(src), src));
-		else
-			append(args, translate_expr(src));
+		auto append_ctor_arg = [&](TokenBase *arg, size_t pi) {
+			DataDef *pt = (pi < copy_ctor->parameters.size())
+					? copy_ctor->parameters[pi] : NULL;
+			bool refp = pi < copy_ctor->ref_params.size()
+				    && copy_ctor->ref_params[pi];
+			if (DataDefCLASS *pc = param_object_class(pt, refp))
+				append(args, object_arg_addr(arg, pc));
+			else if (DataDefCLASS *vc = as_class_instance(pt))
+				append(args, object_arg_value(arg, vc));
+			else if (refp)
+				append(args, node1(N_ADDR, translate_expr(arg), arg));
+			else
+				append(args, translate_expr(arg));
+		};
+		for (size_t i = 0; i < copy_args.size(); i++)
+			append_ctor_arg(copy_args[i], i + 1);
+		for (size_t pi = copy_args.size() + 1;
+		     pi < copy_ctor->parameters.size()
+		     && pi < copy_ctor->param_defaults.size()
+		     && copy_ctor->param_defaults[pi]; pi++)
+			append_ctor_arg(copy_ctor->param_defaults[pi], pi);
+		if (copy_ctor->ctor_trailing_self)
+			append(args, id(RETBUF_NAME, origin));
 		if (!copy_ctor->emit_symbol.empty()) {
 			std::vector<ExternParam> eparams;
 			eparams.push_back({ {N_VOID}, true });   // this
@@ -3528,13 +3283,15 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 				DataDef *cpt = copy_ctor->parameters[pi];
 				bool crefp = pi < copy_ctor->ref_params.size()
 					     && copy_ctor->ref_params[pi];
-				if (crefp)
+				if (param_object_class(cpt, crefp) || crefp)
 					eparams.push_back({ {N_VOID}, true });
 				else if (cpt && cpt->is_pointer())
 					eparams.push_back({ {N_CHAR}, true });
 				else
 					eparams.push_back({ {N_LONG}, false });
 			}
+			if (copy_ctor->ctor_trailing_self)
+				eparams.push_back({ {N_VOID}, true });
 			need_output_extern(sym.c_str(), false, eparams);
 		}
 		referenced_funcs.insert(sym);
@@ -3550,24 +3307,33 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 	node_t bitcopy = node2(N_ASSIGN, retderef, translate_expr(src), origin);
 	out.push_back(node2(N_EXPR, list(), bitcopy, origin));
 	// 2) Re-construct each object member from the source's member, so the slot
-	//    owns its own buffers (the bit-copy aliased them). string member:
-	//    string_construct_copy((void*)&__retbuf->m, (void*)&src.m).
+	//    owns its own resources (the bit-copy aliased them).
 	for (const auto &m : cdd->members) {
-		if (!is_string_object(m.second)) continue;
-		need_output_extern(MEMBER_COPY_SYM, false,
-				   { { {N_VOID}, true }, { {N_VOID}, true } });
+		DataDefCLASS *mc = as_class_instance(m.second);
+		if (!mc) continue;
+		FuncDef *copy_ctor = class_copy_ctor_def(mc);
+		if (!copy_ctor) continue;
+		std::string sym = ctor_call_symbol(mc, copy_ctor);
+		bool external = !copy_ctor->emit_symbol.empty();
+		if (external)
+			need_output_extern(sym.c_str(), false,
+					   { { {N_VOID}, true }, { {N_VOID}, true } });
+		else
+			referenced_funcs.insert(sym);
 		node_t dstfld = node2(N_DEREF_FIELD, id(RETBUF_NAME, origin),
 				      id(m.first.c_str(), origin));
-		node_t dst = node2(N_CAST, void_ptr_type(),
-				   node1(N_ADDR, dstfld, origin), origin);
+		node_t dst = node1(N_ADDR, dstfld, origin);
+		if (external)
+			dst = node2(N_CAST, void_ptr_type(), dst, origin);
 		node_t srcfld = node2(N_FIELD, translate_expr(src),
 				      id(m.first.c_str(), origin));
-		node_t srcp = node2(N_CAST, void_ptr_type(),
-				    node1(N_ADDR, srcfld, origin), origin);
+		node_t srcp = node1(N_ADDR, srcfld, origin);
+		if (external)
+			srcp = node2(N_CAST, void_ptr_type(), srcp, origin);
 		node_t a = list();
 		append(a, dst);
 		append(a, srcp);
-		node_t call = node2(N_CALL, id(MEMBER_COPY_SYM, origin), a, origin);
+		node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
 		CIR_NODE(call)->synth_from_origin = true;
 		out.push_back(node2(N_EXPR, list(), call, origin));
 	}
@@ -3579,14 +3345,12 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 // deep-copy), NOT placement-copy-constructed — matching g++'s implicit
 // operator=. A bit-copy `*lhs = *rhs` would alias the object members' heap
 // buffers and double-free at cleanup; per-member assignment avoids that and is
-// self-assignment-safe (std::string::operator= / string_assign handle x=x). The
-// scalar members are assigned individually (NO whole-struct bit-copy).
-//   string member: string_assign((void*)&lhs.m, (void*)&rhs.m)  (frees old, copies)
-//   scalar member: lhs.m = rhs.m
+// self-assignment-safe. The scalar members are assigned individually (NO
+// whole-struct bit-copy).
 // `lhs`/`rhs` are object lvalues; the builder re-translates them per member.
 // Per-member copy-assignment core: given two already-bound `struct Cls *` local
 // names (`lname` = &lhs, `rname` = &rhs), emit `lname->m`-from-`rname->m` for
-// each member (string -> string_assign free-old+copy, scalar -> plain =).
+// each member (class object -> operator= when available, scalar -> plain =).
 void CirBuilder::class_copy_assign_members(DataDefCLASS *cdd, const char *lname,
 					   const char *rname,
 					   std::vector<node_t> &out,
@@ -3597,19 +3361,32 @@ void CirBuilder::class_copy_assign_members(DataDefCLASS *cdd, const char *lname,
 				    id(m.first.c_str(), origin));
 		node_t rfld = node2(N_DEREF_FIELD, id(rname, origin),
 				    id(m.first.c_str(), origin));
-		if (is_string_object(m.second)) {
-			// string_assign(&lhs.m, &rhs.m) — frees the old buffer and
-			// deep-copies; self-assignment-safe.
-			need_output_extern("string_assign", false,
-					   { { {N_VOID}, true }, { {N_VOID}, true } });
-			node_t ld = node2(N_CAST, void_ptr_type(),
-					  node1(N_ADDR, lfld, origin), origin);
-			node_t rd = node2(N_CAST, void_ptr_type(),
-					  node1(N_ADDR, rfld, origin), origin);
+		DataDefCLASS *mc = as_class_instance(m.second);
+		if (mc) {
+			FuncDef *op = class_assign_operator_def(mc);
+			if (!op) {
+				node_t asn = node2(N_ASSIGN, lfld, rfld, origin);
+				CIR_NODE(asn)->synth_from_origin = true;
+				out.push_back(node2(N_EXPR, list(), asn, origin));
+				continue;
+			}
+			std::string sym = class_method_call_symbol(mc, op, "operator=");
+			bool external = !op->emit_symbol.empty();
+			if (external)
+				need_output_extern(sym.c_str(), true,
+						   { { {N_VOID}, true }, { {N_VOID}, true } });
+			else
+				referenced_funcs.insert(sym);
+			node_t ld = node1(N_ADDR, lfld, origin);
+			node_t rd = node1(N_ADDR, rfld, origin);
+			if (external) {
+				ld = node2(N_CAST, void_ptr_type(), ld, origin);
+				rd = node2(N_CAST, void_ptr_type(), rd, origin);
+			}
 			node_t a = list();
 			append(a, ld);
 			append(a, rd);
-			node_t call = node2(N_CALL, id("string_assign", origin), a, origin);
+			node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
 			CIR_NODE(call)->synth_from_origin = true;
 			out.push_back(node2(N_EXPR, list(), call, origin));
 		} else {
@@ -3838,16 +3615,24 @@ void CirBuilder::class_instance_member_ctors(const char *inst,
 {
 	if (!cdd) return;
 	for (const auto &m : cdd->members) {
-		if (!is_string_object(m.second)) continue;
-		need_output_extern(MEMBER_CTOR_SYM, true, { { {N_VOID}, true } });
-		// string_construct((void*)&inst.member)
+		DataDefCLASS *mc = as_class_instance(m.second);
+		if (!mc) continue;
+		FuncDef *ctor = class_default_ctor_def(mc);
+		if (!ctor) continue;
+		std::string sym = ctor_call_symbol(mc, ctor);
+		bool external = !ctor->emit_symbol.empty();
+		if (external)
+			need_output_extern(sym.c_str(), false, { { {N_VOID}, true } });
+		else
+			referenced_funcs.insert(sym);
 		node_t fld = node2(N_FIELD, id(inst, origin),
 				   id(m.first.c_str(), origin));
-		node_t addr = node2(N_CAST, void_ptr_type(),
-				    node1(N_ADDR, fld, origin), origin);
+		node_t addr = node1(N_ADDR, fld, origin);
+		if (external)
+			addr = node2(N_CAST, void_ptr_type(), addr, origin);
 		node_t a = list();
 		append(a, addr);
-		node_t call = node2(N_CALL, id(MEMBER_CTOR_SYM, origin), a, origin);
+		node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
 		append(items, node2(N_EXPR, list(), call, origin));
 	}
 }
@@ -3941,7 +3726,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	// / copy), or — via one user-defined conversion — an argument that one of
 	// the class's single-argument constructors accepts.
 	if (pdc->is_object()) {
-		if (adc->is_object() && adc->rawtype() == pdc->rawtype())
+		if (adc->is_object() && same_object_class(adc, pdc))
 			return 5;   // exact class match (copy / same object)
 		if (!allow_udc)
 			return -1;  // no further user-defined conversion permitted
@@ -3966,12 +3751,12 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		return -1;
 	bool p_ptr = pdc->is_pointer(), a_ptr = adc->is_pointer();
 	bool p_num = pdc->is_numeric(), a_num = adc->is_numeric();
-	if (p_ptr && a_ptr)
-		return adc->rawtype() == pdc->rawtype() ? 5 : 4;
+	if (p_ptr || a_ptr)
+		return (p_ptr && a_ptr)
+		     ? (adc->rawtype() == pdc->rawtype() ? 5 : 4)
+		     : -1;
 	if (p_num && a_num)
 		return adc->rawtype() == pdc->rawtype() ? 5 : 4;
-	if ((p_ptr && a_num) || (p_num && a_ptr))
-		return -1;   // cross-category (numeric <-> pointer): cannot bind
 	return 0;            // unrecognized pairing: neutral
 }
 
@@ -4004,6 +3789,22 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 					  const std::vector<TokenBase *> &ctor_args)
 {
 	if (!cdd || cdd->ctors.empty()) return NULL;
+	auto ctor_arg_datadef = [this](TokenBase *arg) -> DataDef * {
+		if (!arg) return NULL;
+		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
+			if (tv->var.is_fixed_array() && tv->var.type && m_prog)
+				return m_prog->getPointerType(tv->var.type);
+		}
+		if (TokenMember *tm = dynamic_cast<TokenMember *>(arg)) {
+			if (tm->is_fixed_array_member() && tm->var.type && m_prog)
+				return m_prog->getPointerType(tm->var.type);
+		}
+		if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(arg->datadef())) {
+			if (ca->element_type && m_prog)
+				return m_prog->getPointerType(ca->element_type);
+		}
+		return arg->datadef();
+	};
 	FuncDef *best = NULL;
 	int best_score = -1;
 	for (Variable *cv : cdd->ctors) {
@@ -4023,7 +3824,7 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			DataDef *pt = (pi < fd->parameters.size())
 				    ? fd->parameters[pi] : NULL;
 			bool refp = pi < fd->ref_params.size() && fd->ref_params[pi];
-			DataDef *adc = ctor_args[i] ? ctor_args[i]->datadef() : NULL;
+			DataDef *adc = ctor_arg_datadef(ctor_args[i]);
 			int s = score_arg_to_param(adc, pt, refp);
 			if (s < 0) { ok = false; break; }
 			total += s;
@@ -4089,10 +3890,14 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 					    src, origin);
 			return node2(N_EXPR, list(), asgn, origin);
 		}
-		auto it = cdd->method_map.find(cdd->name);
-		if (it != cdd->method_map.end() && it->second)
-			ctor = dynamic_cast<FuncDef *>(it->second->type);
+		if (cdd->ctors.empty() || ctor_args.empty()) {
+			auto it = cdd->method_map.find(cdd->name);
+			if (it != cdd->method_map.end() && it->second)
+				ctor = dynamic_cast<FuncDef *>(it->second->type);
+		}
 	}
+	if (!ctor)
+		return NULL;
 
 	std::string sym = ctor_call_symbol(cdd, ctor);
 
@@ -4105,8 +3910,10 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 				? ctor->parameters[pi] : NULL;
 		bool is_ref_param = ctor && pi < ctor->ref_params.size()
 				    && ctor->ref_params[pi];
-		if (is_std_string(pt))
-			append(args, string_obj_arg(arg));
+		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
+			append(args, object_arg_addr(arg, pc));
+		else if (DataDefCLASS *vc = as_class_instance(pt))
+			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
 			append(args, node1(N_ADDR, translate_expr(arg), arg));
 		else
@@ -4121,8 +3928,10 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		TokenBase *darg = ctor->param_defaults[pi];
 		DataDef *pt = ctor->parameters[pi];
 		bool is_ref_param = pi < ctor->ref_params.size() && ctor->ref_params[pi];
-		if (is_std_string(pt))
-			append(args, string_obj_arg(darg));
+		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
+			append(args, object_arg_addr(darg, pc));
+		else if (DataDefCLASS *vc = as_class_instance(pt))
+			append(args, object_arg_value(darg, vc));
 		else if (is_ref_param)
 			append(args, node1(N_ADDR, translate_expr(darg), darg));
 		else
@@ -4148,7 +3957,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
 			DataDef *pt = ctor->parameters[pi];
 			bool refp = pi < ctor->ref_params.size() && ctor->ref_params[pi];
-			if (is_std_string(pt) || refp)
+			if (param_object_class(pt, refp) || refp)
 				eparams.push_back({ {N_VOID}, true });
 			else if (pt && pt->is_pointer())
 				eparams.push_back({ {N_CHAR}, true });
@@ -4280,29 +4089,78 @@ static bool is_assign_op(TokenID id)
 }
 
 // Among a class's operator overloads of name `mname`, select the one whose
-// single explicit parameter (param 1; param 0 = __this) matches the RHS: a
-// string-OBJECT RHS picks the (const string&) overload, a const char* value
-// picks the (const char*) overload. Falls back to the first by-name match for
-// a class with a single (non-overloaded) operator. NULL when none is found.
+// single explicit parameter (param 1; param 0 = __this) best matches the RHS
+// using the shared argument-to-parameter scorer. Falls back to the first by-name
+// match only when the argument shape is unknown. NULL when none is found.
 FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 					      const std::string &mname,
 					      TokenBase *rhs)
 {
-	bool rhs_is_string = CirBuilder::is_string_object_value(rhs);
-	// Scan the methods vector for same-name overloads (std::string registers
-	// operator=/operator+= here under the unmangled name, two overloads each).
+	auto overload_arg_datadef = [this](TokenBase *arg) -> DataDef * {
+		if (!arg) return NULL;
+		if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(arg)) {
+			DataDefCLASS *ccls = class_behind(tsub->object.type);
+			std::string opname = "operator[]";
+			Variable *omv = ccls ? ccls->findMethod(opname) : NULL;
+			FuncDef *ofd = omv ? dynamic_cast<FuncDef *>(omv->type) : NULL;
+			if (ofd && ofd->returns_ref) {
+				DataDef *rd = &ofd->returns;
+				if (rd && rd->is_pointer()) {
+					DataDefPTR *rp = dynamic_cast<DataDefPTR *>(rd);
+					if (rp && rp->base_type)
+						return rp->base_type;
+				}
+				return rd;
+			}
+		}
+		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
+			if ((tv->var.flags & vfREFERENCE) && tv->var.type) {
+				if (DataDefCLASS *rc = class_behind(tv->var.type))
+					return rc;
+			}
+			if (tv->var.is_fixed_array() && tv->var.type && m_prog)
+				return m_prog->getPointerType(tv->var.type);
+		}
+		if (TokenMember *tm = dynamic_cast<TokenMember *>(arg)) {
+			if (tm->is_fixed_array_member() && tm->var.type && m_prog)
+				return m_prog->getPointerType(tm->var.type);
+		}
+		if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(arg->datadef())) {
+			if (ca->element_type && m_prog)
+				return m_prog->getPointerType(ca->element_type);
+		}
+		return arg->datadef();
+	};
+	DataDef *rhs_dd = overload_arg_datadef(rhs);
+
+	// Scan the methods vector for same-name overloads.
 	FuncDef *first = NULL;
+	FuncDef *best = NULL;
+	Variable *best_var = NULL;
+	int best_score = -1;
 	for (Variable *mv : cls->methods) {
 		if (!mv || mv->name != mname) continue;
 		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 		if (!fd) continue;
 		if (!first) first = fd;
+		if (fd->parameters.size() <= 1) continue;
 		DataDef *p1dd = (fd->parameters.size() > 1)
 			      ? fd->parameters[1] : NULL;
-		bool p1_is_string = is_std_string(p1dd);
-		if (rhs_is_string == p1_is_string) return fd;
+		bool refp = fd->ref_params.size() > 1 && fd->ref_params[1];
+		int score = score_arg_to_param(rhs_dd, p1dd, refp);
+		if (score >= 0 && score > best_score) {
+			best_score = score;
+			best = fd;
+			best_var = mv;
+		}
 	}
-	if (first) return first;
+	if (best) {
+		if (best_var && best->class_emit_name.empty()
+		    && best_var->name != mname)
+			best->class_emit_name = best_var->name;
+		return best;
+	}
+	if (first && !rhs_dd) return first;
 	// User-class operators carry the MANGLED name (ClassName__operatorX) in the
 	// methods vector, so the unmangled-name scan above misses them. Scan the
 	// mangled family and prefer the BINARY (parameterized, params > 1) overload
@@ -4311,16 +4169,37 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 	// owns it. (P2.1b gaps 3 & 4.)
 	std::string mangled_canon = cls->name + "__" + mname;
 	std::string mangled_un = mangled_canon + "_un";
+	std::string mangled_overload_prefix = mangled_canon + "__o";
 	FuncDef *any = NULL;
+	best = NULL;
+	best_var = NULL;
+	best_score = -1;
 	for (Variable *mv : cls->methods) {
-		if (!mv || (mv->name != mangled_canon && mv->name != mangled_un))
+		if (!mv || (mv->name != mangled_canon
+		    && mv->name != mangled_un
+		    && mv->name.compare(0, mangled_overload_prefix.size(),
+					mangled_overload_prefix) != 0))
 			continue;
 		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 		if (!fd) continue;
 		if (!any) any = fd;
-		if (fd->parameters.size() > 1) return fd;   // binary
+		if (fd->parameters.size() <= 1) continue;   // unary
+		DataDef *p1dd = fd->parameters[1];
+		bool refp = fd->ref_params.size() > 1 && fd->ref_params[1];
+		int score = score_arg_to_param(rhs_dd, p1dd, refp);
+		if (score >= 0 && score > best_score) {
+			best_score = score;
+			best = fd;
+			best_var = mv;
+		}
 	}
-	if (any) return any;
+	if (best) {
+		if (best_var && best->class_emit_name.empty()
+		    && best_var->name != mname)
+			best->class_emit_name = best_var->name;
+		return best;
+	}
+	if (any && !rhs_dd) return any;
 	// Fall back to the keyed lookup (method_map under the unmangled name).
 	std::string key = mname;
 	Variable *mv = cls->findMethod(key);
@@ -4330,23 +4209,14 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 {
 	if (!top || !top->left || !top->right) return NULL;
-	// The lhs is either an ordinary user class or a runtime-object class
-	// (std::string, via the object-class bridge), both of which use the class
-	// operator path. NULL lhs class -> not an overloadable operator here.
-	// A string-OBJECT subscript element (`v[i]` whose operator[] returns a
-	// string&) is itself a std::string object; its class is ddSTRING even
-	// though TokenSubscript::datadef() reports the element as a scalar. Resolve
-	// the element's class from the operator[] result so `v[i] = rhs` /
-	// `v[i] += rhs` route through std::string's operator=/operator+=.
-	//
-	// The operator LHS must be a class OBJECT lvalue, not a pointer to one:
-	// `string s; s = "x"` is operator=, but `string *p; p = malloc(...)` (a
-	// `T* data` member of a Vec<string>) is a plain pointer assignment.
+	// The operator LHS must be a class object lvalue, not a pointer to one:
+	// `T s; s = x` is operator=, but `T *p; p = ...` is a plain pointer
+	// assignment.
 	// as_class_instance resolves an object class without unwrapping pointers;
-	// class_behind would treat `string*` as a string object and mis-route the
-	// pointer assignment through operator=.
+	// class_behind would treat `T*` as an object and mis-route pointer
+	// assignment through operator=.
 	DataDefCLASS *lcls = as_class_instance(top->left->datadef());
-	if (!lcls && is_string_subscript(top->left)) {
+	if (!lcls && class_subscript_is_object(top->left)) {
 		TokenSubscript *lsub = dynamic_cast<TokenSubscript *>(top->left);
 		DataDefCLASS *ccls = lsub ? class_behind(lsub->object.type) : NULL;
 		std::string opname = "operator[]";
@@ -4354,134 +4224,53 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 		FuncDef *ofd = omv ? dynamic_cast<FuncDef *>(omv->type) : NULL;
 		if (ofd) lcls = class_behind(&ofd->returns);
 	}
-	// A chained `(a + b) + c`: the LHS is itself a string operator+ RVALUE whose
-	// datadef() is the default scalar (TokenOperator carries no string type), so
-	// as_class_instance misses it. It is a std::string object — resolve its class
-	// directly so the outer + binds to std::string's operator+.
-	if (!lcls && is_string_operator_plus(top->left))
-		lcls = class_behind(&ddSTRING);
-	// A std::string REFERENCE lhs that as_class_instance missed: a `for (string&
-	// s : c)` loop var is a `string*`+vfREFERENCE pointer-to-object (P2.7), so its
-	// datadef() is pointer-typed and as_class_instance never unwraps it. Match
-	// ONLY a vfREFERENCE var whose pointee is a std::string — NOT a plain `string*`
-	// member/local (e.g. a vector<string>'s `data` member, where `data = malloc()`
-	// must stay a pointer assignment, never std::string::operator=). string_obj_arg
-	// addresses the ref via its pointer value, so the operator dispatches like a
-	// string value (P2.8b).
 	if (!lcls) {
 		TokenVar *rtv = dynamic_cast<TokenVar *>(top->left);
-		if (rtv && (rtv->var.flags & vfREFERENCE) && is_std_string(rtv->var.type))
-			lcls = class_behind(&ddSTRING);
+		if (rtv && (rtv->var.flags & vfREFERENCE))
+			lcls = class_behind(rtv->var.type);
 	}
 	if (!lcls) return NULL;
-	// A `string&` receiver is already canonicalized to the one populated ddSTRING
-	// by as_object_class (it returns ddSTRING for any std::string identity), so
-	// lcls owns std::string's operators here — no separate canonicalize step.
 	const char *opsym = binop_overload_symbol(top->id());
 	if (!opsym[0]) return NULL;
 
-	// operator+ on std::string is CONCATENATION, which differs from =/+=/==:
-	// its LHS may be a const char* used in POINTER ARITHMETIC (`"lit" + n`,
-	// `label + i`) — every char* literal/expr is std::string-typed, so the
-	// as_class_instance(datadef) trigger above matches it spuriously. Defer to
-	// is_string_operator_plus (genuine string-OBJECT LHS + string-like RHS); a
-	// spurious match falls through to ordinary pointer/arithmetic +.
-	// This char*-arithmetic ambiguity is SPECIFIC to the string class; a real
-	// user class `operator+` (`Counter + Counter`) is an unambiguous object
-	// operand and proceeds to overload selection (which returns NULL — and thus
-	// falls through to generic + — when the class declares no operator+).
-	if (top->id() == TokenID::tkAdd && is_string_object(lcls)
-	    && !is_string_operator_plus(top))
-		return NULL;
-
 	std::string mname = std::string("operator") + opsym;
-	// Pick the overload matching the RHS (string& vs const char*). A class
-	// without this operator yields NULL -> fall through to generic handling.
+	// Pick the overload matching the RHS. A class without this operator yields
+	// NULL -> fall through to generic handling.
 	FuncDef *callee = select_operator_overload(lcls, mname, top->right);
 	if (!callee) return NULL;
 
-	// A class-bound external operator (std::string) names its real symbol via
-	// emit_symbol and is declared from its signature; otherwise the default
+	// A class-bound external operator names its real symbol via emit_symbol and
+	// is declared from its parsed signature; otherwise the default
 	// ClassName__operator<op> scheme + the referenced-funcs prototype pass.
 	if (!callee->emit_symbol.empty()) {
-		// Int-returning comparison operators (== != < > <= >=) bind to an
-		// extern-C runtime wrapper (string_equals / string_lt/gt/le/ge) that
-		// RETURNS INT and takes BOTH operands as string-object addresses (two
-		// void*). This differs from =/+= (which return basic_string& / void* and
-		// take one rhs) and from + (by-value string return). Each wrapper
-		// computes its own comparison, so NO negation — EXCEPT !=, which reuses
-		// string_equals and negates the int result (no separate wrapper needed).
-		TokenID oid = top->id();
-		if (oid == TokenID::tkEquals || oid == TokenID::tkNotEq
-		    || oid == TokenID::tkLT || oid == TokenID::tkGT
-		    || oid == TokenID::tkLE || oid == TokenID::tkGE) {
-			node_t cmpargs = list();
-			append(cmpargs, string_obj_arg(top->left));
-			append(cmpargs, string_obj_arg(top->right));
-			// int string_XX(void*, void*)
-			need_output_extern(callee->emit_symbol.c_str(), false,
-					   { { {N_VOID}, true }, { {N_VOID}, true } },
-					   { N_INT });
-			node_t cmpcall = node2(N_CALL,
-					       id(callee->emit_symbol.c_str(), origin),
-					       cmpargs, origin);
-			CIR_NODE(cmpcall)->synth_from_origin = true;
-			if (oid == TokenID::tkNotEq) {
-				node_t neg = node1(N_NOT, cmpcall, origin);
-				CIR_NODE(neg)->synth_from_origin = true;
-				return neg;
-			}
-			return cmpcall;
-		}
-
-		// operator+ binds to the extern-C wrapper string_concat, which RETURNS
-		// A NEW string BY VALUE. Like a by-value string-returning call, allocate
-		// a cleanup-tagged `struct string` temp and have the wrapper construct
-		// the result into it: `string_concat((void*)&__t, &lhs, &rhs)` (three
-		// void* args — out-slot + both operand object addresses). The expression
-		// VALUE is the temp's (void*) address — a string-OBJECT lvalue, so
-		// `string c = a + b` copy-constructs from it and `cout << (a + b)` prints
-		// it. The const char* RHS overload still passes a string object (string_obj_arg
-		// materializes a literal into a temp), matching string_concat's `void*` b.
-		if (oid == TokenID::tkAdd) {
-			char name[32];
-			string_temp_decl(name, sizeof(name), origin);
-			node_t cargs = list();
-			append(cargs, string_obj_addr(name, origin));   // out-slot = &__t
-			append(cargs, string_obj_arg(top->left));        // const string& a
-			append(cargs, string_obj_arg(top->right));       // const string& b
-			// void string_concat(void*, void*, void*)
-			need_output_extern(callee->emit_symbol.c_str(), false,
-					   { { {N_VOID}, true }, { {N_VOID}, true },
-					     { {N_VOID}, true } });
-			node_t ccall = node2(N_CALL,
-					     id(callee->emit_symbol.c_str(), origin),
-					     cargs, origin);
-			CIR_NODE(ccall)->synth_from_origin = true;
-			m_pending_stmts.push_back(node2(N_EXPR, list(), ccall, origin));
-			return string_obj_addr(name, origin);   // (void*)&__t
-		}
-
 		DataDef *pt = (callee->parameters.size() > 1)
 				? callee->parameters[1] : NULL;
 		std::vector<ExternParam> eparams = { { {N_VOID}, true } };
 		node_t args = list();
-		// The lhs `this` is a std::string OBJECT — string_obj_arg yields its
-		// (void*) address whether it is a named variable (honouring pointer-
-		// stored params via string_var_addr), a string MEMBER (`&obj.field`),
-		// or a string-object subscript element.
-		append(args, string_obj_arg(top->left));
-		if (is_std_string(pt)) {
+		append(args, object_arg_addr(top->left, lcls));
+		bool refp = callee->ref_params.size() > 1 && callee->ref_params[1];
+		if (DataDefCLASS *pc = param_object_class(pt, refp)) {
 			eparams.push_back({ {N_VOID}, true });
-			append(args, string_obj_arg(top->right));   // const string& -> object ptr
+			append(args, object_arg_addr(top->right, pc));
+		} else if (DataDefCLASS *vc = as_class_instance(pt)) {
+			eparams.push_back(native_param_shape(pt, false));
+			append(args, object_arg_value(top->right, vc));
+		} else if (refp) {
+			eparams.push_back(native_param_shape(pt, true));
+			append(args, node1(N_ADDR, translate_expr(top->right), top->right));
 		} else {
-			eparams.push_back({ {N_CHAR}, true });
-			append(args, translate_expr(top->right));   // const char*
+			eparams.push_back(native_param_shape(pt, false));
+			append(args, translate_expr(top->right));
 		}
-		// The libstdc++ operators return basic_string& (a void* we ignore
-		// when the result is unused). Declared returning void* so a chained
-		// use still type-checks; the common statement use discards it.
-		need_output_extern(callee->emit_symbol.c_str(), true, eparams);
+		bool ret_ptr = false;
+		std::vector<c2mir_node_code_t> ret_specs =
+			emit_symbol_ret_specs(callee, ret_ptr);
+		if (callee->returns_ref) {
+			ret_ptr = true;
+			ret_specs = { N_VOID };
+		}
+		need_output_extern(callee->emit_symbol.c_str(), ret_ptr,
+				   eparams, ret_specs);
 		node_t ocall = node2(N_CALL, id(callee->emit_symbol.c_str(), origin),
 				     args, origin);
 		CIR_NODE(ocall)->synth_from_origin = true;
@@ -4532,8 +4321,10 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 		DataDef *pt = (callee->parameters.size() > 1)
 				? callee->parameters[1] : NULL;
 		bool refp = callee->ref_params.size() > 1 && callee->ref_params[1];
-		if (is_std_string(pt))
-			append(args, string_obj_arg(top->right));
+		if (DataDefCLASS *pc = param_object_class(pt, refp))
+			append(args, object_arg_addr(top->right, pc));
+		else if (DataDefCLASS *vc = as_class_instance(pt))
+			append(args, object_arg_value(top->right, vc));
 		else if (refp)
 			append(args, node1(N_ADDR, translate_expr(top->right), top->right));
 		else
@@ -4668,10 +4459,7 @@ node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 	// (a char* pointer return); class_subscript_call derefs it (returns_ref) so
 	// `s[i]` is a proper char lvalue.
 	if (callee && !callee->emit_symbol.empty()) {
-		// __this: the std::string object's (void*) address. string_var_addr
-		// honours the unified pointer-stored-param rule (a string& param holds
-		// the address; a value var is addressed by &var).
-		node_t this_arg = string_var_addr(tsub->object, origin);
+		node_t this_arg = object_var_void_addr(tsub->object, origin);
 		// Param 0 = this (void*); param 1 = size_t index (a 64-bit scalar).
 		std::vector<ExternParam> eparams = { { {N_VOID}, true },
 						     { {N_LONG}, false } };
@@ -4698,12 +4486,12 @@ node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 	append(args, this_arg);
 	// Index argument (operator[] parameter 1; parameter 0 = __this).
 	DataDef *idx_pt = (callee && callee->parameters.size() > 1)
-			  ? callee->parameters[1] : NULL;
+			? callee->parameters[1] : NULL;
 	bool refp = callee && callee->ref_params.size() > 1 && callee->ref_params[1];
-	if (is_std_string(idx_pt))
-		// A string-keyed operator[] (`map<string,V>`): the key parameter is a
-		// std::string object, passed by address (matching build_call_args).
-		append(args, string_obj_arg(tsub->index));
+	if (DataDefCLASS *pc = param_object_class(idx_pt, refp))
+		append(args, object_arg_addr(tsub->index, pc));
+	else if (DataDefCLASS *vc = as_class_instance(idx_pt))
+		append(args, object_arg_value(tsub->index, vc));
 	else if (refp)
 		append(args, node1(N_ADDR, translate_expr(tsub->index), tsub->index));
 	else
@@ -4728,10 +4516,7 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 	return call;
 }
 
-// Is `tsub` a subscript yielding a std::string-OBJECT element — i.e. an
-// operator[] on a class whose element type is a string object? Such an element
-// is a real string object reached by address (the bare operator[] call).
-/*static*/ bool CirBuilder::is_string_subscript(TokenBase *arg)
+/*static*/ bool CirBuilder::class_subscript_is_object(TokenBase *arg)
 {
 	TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(arg);
 	if (!tsub) return false;
@@ -4741,39 +4526,30 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 	Variable *mv = cls->findMethod(opname);
 	if (!mv) return false;
 	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
-	return callee && is_string_object(&callee->returns);
+	return callee && class_behind(&callee->returns) != NULL;
 }
 
-// A raw string-array element `base[i]` where base is a `string*` pointer or a
-// `string[]` fixed array. Unlike is_string_subscript (an operator[] container),
-// here the subscript is a plain pointer/array index; its element datadef is a
-// string object reached by `&base[i]`. Used so `string cur = keys[i]` (copy
-// from a string element of a member array inside a template class) selects the
-// std::string copy ctor, not the const char* ctor.
-/*static*/ bool CirBuilder::is_string_array_subscript(TokenBase *arg)
+/*static*/ bool CirBuilder::class_array_subscript_is_object(TokenBase *arg)
 {
-	// Exclude the operator[]-container case (handled by is_string_subscript):
+	// Exclude the operator[]-container case:
 	// there the base CLASS itself owns an operator[] returning string&.
-	if (is_string_subscript(arg)) return false;
-	// Form 1 — `var[i]` where var is a `string*`/`string[]` local/param.
+	if (class_subscript_is_object(arg)) return false;
 	if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(arg)) {
-		if (!is_string_object(tsub->datadef())) return false;
+		if (!is_class_object(tsub->datadef())) return false;
 		DataDef *bt = tsub->object.type;
 		if (!bt) return false;
 		if (tsub->object.is_fixed_array())
-			return bt->is_string();
+			return as_class_instance(bt) != NULL;
 		DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(bt);
-		return pdd && pdd->base_type && pdd->base_type->is_string();
+		return pdd && pdd->base_type
+		    && as_class_instance(pdd->base_type) != NULL;
 	}
-	// Form 2 — `expr[i]` where expr is a `string*`-valued expression (e.g. a
-	// member array `__this->keys` inside a class method). The element type the
-	// subscript computes must be a string object, and the base expression's
-	// type must be a pointer-to-string.
 	if (TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(arg)) {
-		if (!is_string_object(tse->datadef())) return false;
+		if (!is_class_object(tse->datadef())) return false;
 		DataDef *bt = tse->base_expr ? tse->base_expr->datadef() : NULL;
 		DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(bt);
-		return pdd && pdd->base_type && pdd->base_type->is_string();
+		return pdd && pdd->base_type
+		    && as_class_instance(pdd->base_type) != NULL;
 	}
 	return false;
 }
@@ -4893,16 +4669,14 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
 	if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
 
-	// A by-value std::string OR non-trivial class return uses the __retbuf ABI
-	// (void return + hidden `struct <T> *__retbuf` first param); keep the
-	// prototype in lock-step with func_def's lowering. A trivial struct keeps
-	// c2mir's native struct return.
-	bool ret_is_string = !ret_is_ptr && !ret_is_ref && is_std_string(ret_dd)
-			     && !fd->is_multi_return();
+	// A by-value non-trivial class return uses the __retbuf ABI (void return +
+	// hidden `struct <T> *__retbuf` first param); keep the prototype in
+	// lock-step with func_def's lowering. A trivial struct keeps c2mir's native
+	// struct return.
 	DataDefCLASS *ret_obj = (!ret_is_ptr && !ret_is_ref && !fd->is_multi_return())
 				? class_return_via_retbuf(ret_dd) : NULL;
-	bool ret_via_retbuf = ret_is_string || ret_obj;
-	DataDef *retbuf_dd = ret_obj ? (DataDef *)ret_obj : (DataDef *)&ddSTRING;
+	bool ret_via_retbuf = ret_obj != NULL;
+	DataDef *retbuf_dd = (DataDef *)ret_obj;
 	bool ret_is_multi = fd->is_multi_return();   // void ret + `long *__retbuf` first param
 
 	node_t ret_type = (ret_via_retbuf || ret_is_multi) ? type_list(&ddVOID)
@@ -5208,41 +4982,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// address is a pure expression, so re-translate per use.
 			auto addr = [&]() -> node_t { return translate_expr(tn->placement); };
 			node_t construct = NULL;
-			// std::string element: `new (slot) string(v)` in a
-			// template-instantiated container (T == string). T resolves to
-			// the std::string object class, so it lands in `alloc_class`
-			// (DataDefSTRING IS-A DataDefCLASS) rather than `alloc_type`.
-			// Route both through the string ctor path so the placement
-			// copy/cstr/default ctor is the mangled libstdc++ symbol with a
-			// declared extern — the alloc_class path below would emit the
-			// copy ctor via referenced_funcs (no extern -> implicit decl ->
-			// "incompatible argument type" check error).
-			bool placement_string =
-				(tn->alloc_type && tn->alloc_type->is_string())
-				|| (tn->alloc_class && is_string_object(tn->alloc_class));
-			if (placement_string) {
-				// Reuse the string ctor selection: copy / cstr / default.
-				node_t a = list();
-				append(a, node2(N_CAST, void_ptr_type(), addr(), tb));
-				const char *sym;
-				if (!tn->ctor_args.empty()
-				    && is_string_object_value(tn->ctor_args[0])) {
-					append(a, string_obj_arg(tn->ctor_args[0]));
-					sym = STR_CTOR_CP;
-					need_output_extern(sym, false,
-						{ { {N_VOID}, true }, { {N_VOID}, true } });
-				} else if (!tn->ctor_args.empty()) {
-					append(a, translate_expr(tn->ctor_args[0]));
-					append(a, node2(N_CAST, void_ptr_type(), addr(), tb)); // dummy alloc&
-					sym = STR_CTOR_S;
-					need_output_extern(sym, false,
-						{ { {N_VOID}, true }, { {N_CHAR}, true }, { {N_VOID}, true } });
-				} else {
-					sym = STR_CTOR0;
-					need_output_extern(sym, false, { { {N_VOID}, true } });
-				}
-				construct = node2(N_CALL, id(sym, tb), a, tb);
-			} else if (tn->alloc_class) {
+			if (tn->alloc_class) {
 				DataDefCLASS *pc = tn->alloc_class;
 				if (pc->has_user_ctor) {
 					FuncDef *ctor = select_ctor_overload(pc, tn->ctor_args);
@@ -5262,8 +5002,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 								? ctor->parameters[pi] : NULL;
 						bool refp = ctor && pi < ctor->ref_params.size()
 							    && ctor->ref_params[pi];
-						if (is_std_string(pt))
-							append(a, string_obj_arg(arg));
+						if (DataDefCLASS *pc = param_object_class(pt, refp))
+							append(a, object_arg_addr(arg, pc));
+						else if (DataDefCLASS *vc = as_class_instance(pt))
+							append(a, object_arg_value(arg, vc));
 						else if (refp)
 							append(a, node1(N_ADDR, translate_expr(arg), arg));
 						else
@@ -5271,6 +5013,24 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					}
 					if (ctor && ctor->ctor_trailing_self)
 						append(a, addr());   // trailing allocator& == &this
+					if (ctor && !ctor->emit_symbol.empty()) {
+						std::vector<ExternParam> eparams;
+						eparams.push_back({ {N_VOID}, true });
+						for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
+							DataDef *pt = ctor->parameters[pi];
+							bool refp = pi < ctor->ref_params.size()
+								    && ctor->ref_params[pi];
+							if (param_object_class(pt, refp) || refp)
+								eparams.push_back({ {N_VOID}, true });
+							else if (pt && pt->is_pointer())
+								eparams.push_back({ {N_CHAR}, true });
+							else
+								eparams.push_back({ {N_LONG}, false });
+						}
+						if (ctor->ctor_trailing_self)
+							eparams.push_back({ {N_VOID}, true });
+						need_output_extern(csym.c_str(), false, eparams);
+					}
 					construct = node2(N_CALL, id(csym.c_str(), tb), a, tb);
 				}
 			} else {
@@ -5345,8 +5105,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						? ctor->parameters[pi] : NULL;
 				bool refp = ctor && pi < ctor->ref_params.size()
 					    && ctor->ref_params[pi];
-				if (is_std_string(pt))
-					append(cargs, string_obj_arg(arg));
+				if (DataDefCLASS *pc = param_object_class(pt, refp))
+					append(cargs, object_arg_addr(arg, pc));
+				else if (DataDefCLASS *vc = as_class_instance(pt))
+					append(cargs, object_arg_value(arg, vc));
 				else if (refp)
 					append(cargs, node1(N_ADDR, translate_expr(arg), arg));
 				else
@@ -5354,6 +5116,24 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			}
 			if (ctor && ctor->ctor_trailing_self)
 				append(cargs, id(tmp, tb));   // trailing allocator& == this
+			if (ctor && !ctor->emit_symbol.empty()) {
+				std::vector<ExternParam> eparams;
+				eparams.push_back({ {N_VOID}, true });
+				for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
+					DataDef *pt = ctor->parameters[pi];
+					bool refp = pi < ctor->ref_params.size()
+						    && ctor->ref_params[pi];
+					if (param_object_class(pt, refp) || refp)
+						eparams.push_back({ {N_VOID}, true });
+					else if (pt && pt->is_pointer())
+						eparams.push_back({ {N_CHAR}, true });
+					else
+						eparams.push_back({ {N_LONG}, false });
+				}
+				if (ctor->ctor_trailing_self)
+					eparams.push_back({ {N_VOID}, true });
+				need_output_extern(csym.c_str(), false, eparams);
+			}
 			node_t ccall = node2(N_CALL, id(csym.c_str(), tb), cargs, tb);
 			append(items, node2(N_EXPR, list(), ccall, tb));
 		} else if (cdd->has_vtable) {
@@ -5974,29 +5754,6 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				}
 			}
 
-			// Stream chain: cout << x [<< y ...] -> direct calls on the
-			// mangled libstdc++ stream object. Intercept BEFORE the
-			// tkBSL->N_LSH (shift) translation below.
-			if (tb->id() == TokenID::tkBSL || tb->id() == TokenID::tkBSR) {
-				bool is_out = (tb->id() == TokenID::tkBSL);
-				TokenBase *leaf = top->left;
-				while (TokenOperator *o = dynamic_cast<TokenOperator *>(leaf)) {
-					if (o->id() != tb->id()) break;
-					leaf = o->left;
-				}
-				StreamKind k = stream_ident_kind(leaf);
-				bool ok = (is_out && (k==SK_COUT||k==SK_CERR||k==SK_CLOG)) || (!is_out && k==SK_CIN);
-				if (ok) return translate_stream_chain(top, k, is_out);
-				// `ss << a << b` on a stringstream OBJECT: lower to streamout_*
-				// calls on the adjusted ostream*. (cin/>> into a stringstream is
-				// not yet handled — falls through.)
-				if (is_out) {
-					TokenVar *sv = dynamic_cast<TokenVar *>(leaf);
-					if (sv && is_sstream_object(sv->var.type))
-						return translate_sstream_chain(top, sv->var.name.c_str());
-				}
-			}
-
 			// Operator overloading on a class lvalue (user class OR
 			// std::string via the object-class bridge): `c <op> rhs` where
 			// c's class defines `operator<op>` lowers to the operator call.
@@ -6015,10 +5772,9 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// (`lhs = rhs`, both the same class needing a dtor, declaring no
 			// user operator= — class_operator_call returned NULL above, so a
 			// user-declared operator= still wins). A bit-copy N_ASSIGN would
-			// alias the object members' heap buffers and double-free at
-			// cleanup; assign each member instead (string -> string_assign
-			// free-old+copy, scalar -> plain =). Trivial classes fall through
-			// to the native bit-copy. The statement-expr yields the lhs object.
+			// alias object-member resources and double-free at cleanup;
+			// assign each member instead. Trivial classes fall through to the
+			// native bit-copy. The statement-expr yields the lhs object.
 			if (tb->id() == TokenID::tkAssign) {
 				DataDefCLASS *lc = as_class_instance(top->left->datadef());
 				DataDefCLASS *rc = as_class_instance(top->right->datadef());
@@ -6223,11 +5979,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				node_t a = list();
 				for (size_t i = 0; i < tcf->parameters.size(); i++) {
 					TokenBase *p = tcf->parameters[i];
-					// printstr/puts take char*: a std::string object
-					// argument must be coerced via string_cstr. String
-					// literals are already const char* — pass directly.
-					if (is_string_object_value(p))
-						append(a, string_cstr_arg(p));
+					// printstr/puts take char*: object values need a
+					// character-pointer view; literals are already const char*.
+					if (is_class_object_value(p))
+						append(a, object_cstr_arg(p));
 					else
 						append(a, translate_expr(p));
 				}
@@ -6252,9 +6007,23 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// top-level symbol — emit that hoisted name (FuncDef::
 				// nested_emit_name), not the source name.
 				FuncDef *cdf = call_target_funcdef(tcf);
-				const char *callee_name = (cdf && !cdf->nested_emit_name.empty())
-					? cdf->nested_emit_name.c_str()
-					: tcf->var.name.c_str();
+				std::string callee_name = func_emit_name(tcf->var, cdf);
+				Method *native_method = (Method *)tcf->var.data;
+				if (tcf->var.name == "system" && cdf
+				    && native_method && native_method->x86code && m_prog) {
+					auto sit = m_prog->external_symbol_map.find(
+						reinterpret_cast<uintptr_t>(native_method->x86code));
+					if (sit != m_prog->external_symbol_map.end()
+					    && !sit->second.empty()) {
+						callee_name = sit->second;
+						bool ret_ptr = false;
+						std::vector<c2mir_node_code_t> ret_specs;
+						std::vector<ExternParam> eparams;
+						native_func_shape(cdf, ret_ptr, ret_specs, eparams);
+						need_output_extern(callee_name.c_str(), ret_ptr,
+								   eparams, ret_specs);
+					}
+				}
 				// c2mir intrinsics (e.g. __builtin_va_start) are
 				// recognized by name and lowered in-place; emitting an
 				// extern prototype for one shadows the intrinsic and
@@ -6263,23 +6032,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// own translation path above.)
 				if (tcf->var.name.compare(0, 13, "__builtin_va_") != 0)
 					referenced_funcs.insert(callee_name);
-				func_id = id(callee_name, tb);
-			}
-			// A by-value string-returning call uses the __retbuf ABI: it is
-			// lowered to a void call writing into a caller temp, NOT an N_CALL
-			// expression. Materialize the temp here and yield its dereffed
-			// object value (`*(struct string*)&temp`) as the call's result.
-			if (is_string_returning_call(tcf)) {
-				node_t addr = string_call_temp_addr(tcf, tb);
-				// The temp's value as a `struct string` lvalue: cast (void*)addr
-				// back to `struct string *` and deref. (Most contexts then take
-				// its address again — string_obj_arg etc. — but a few read the
-				// object value directly.)
-				node_t sp_type = node2(N_TYPE,
-					node1(N_LIST, node2(N_STRUCT, id("string", tb), ignore())),
-					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-				node_t as_sp = node2(N_CAST, sp_type, addr, tb);
-				return node1(N_DEREF, as_sp, tb);
+				func_id = id(callee_name.c_str(), tb);
 			}
 			// A by-value NON-TRIVIAL class-returning call uses the same __retbuf
 			// ABI: materialize a cleanup-tagged temp of the class, emit the void
@@ -6296,7 +6049,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			}
 			node_t args = list();
 			build_call_args(tcf, args);
-			return node2(N_CALL, func_id, args, tb);
+			node_t call = node2(N_CALL, func_id, args, tb);
+			FuncDef *cdf = call_target_funcdef(tcf);
+			if (cdf && cdf->returns_ref)
+				return node1(N_DEREF, call, tb);
+			return call;
 		}
 	}
 
@@ -6371,7 +6128,11 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		DataDef *edd = tr->returns->datadef();
 		if (edd && !edd->is_pointer() && edd->rawtype() == DataType::dtVOID) {
 			node_t items = list();
-			append(items, node2(N_EXPR, list(), translate_expr(tr->returns)));
+			node_t expr = translate_expr(tr->returns);
+			for (node_t p : m_pending_stmts)
+				append(items, p);
+			m_pending_stmts.clear();
+			append(items, node2(N_EXPR, list(), expr));
 			append(items, node2(N_RETURN, list(), ignore(), tr));
 			return node2(N_BLOCK, list(), items);
 		}
@@ -6394,31 +6155,7 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		append(items, node2(N_RETURN, list(), ignore(), tr));
 		return node2(N_BLOCK, list(), items, tr);
 	}
-	// A by-value std::string return uses the __retbuf ABI: copy-construct the
-	// returned object into *__retbuf, then `return;`. The returned local keeps
-	// its own cleanup dtor (its lifetime ends at scope exit as usual); because we
-	// COPY into __retbuf rather than bit-copying, destructing the local is safe
-	// (no double-free of a shared heap buffer). Matches g++'s class-return ABI.
-	if (m_cur_func_returns_string && tr->returns) {
-		node_t items = list();
-		// basic_string(const string&): C1ERKS4_(__retbuf, &returned)
-		need_output_extern(STR_CTOR_CP, false,
-				   { { {N_VOID}, true }, { {N_VOID}, true } });
-		node_t args = list();
-		append(args, id(RETBUF_NAME, tr));            // struct string *__retbuf
-		append(args, string_obj_arg(tr->returns));    // const string& (by address)
-		node_t cc = node2(N_CALL, id(STR_CTOR_CP, tr), args, tr);
-		CIR_NODE(cc)->synth_from_origin = true;
-		// A ctor arg may have materialized a temp (string-returning sub-call):
-		// emit those before the copy-construct that references them.
-		for (node_t p : m_pending_stmts)
-			append(items, p);
-		m_pending_stmts.clear();
-		append(items, node2(N_EXPR, list(), cc, tr));
-		append(items, node2(N_RETURN, list(), ignore(), tr));
-		return node2(N_BLOCK, list(), items, tr);
-	}
-	// A by-value NON-TRIVIAL class return uses the same __retbuf ABI: deep-copy
+	// A by-value NON-TRIVIAL class return uses the __retbuf ABI: deep-copy
 	// the returned object into *__retbuf (bit-copy scalars + member copy-construct
 	// object members), then `return;`. The returned local keeps its own cleanup
 	// dtor; because object members are copy-constructed (not bit-aliased), the
@@ -6467,6 +6204,14 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		if (base && derived && base != derived
 		    && derived->is_or_derives_from(base))
 			expr = node2(N_CAST, class_ptr_type(base), expr, tr);
+	}
+	if (!m_pending_stmts.empty()) {
+		node_t items = list();
+		for (node_t p : m_pending_stmts)
+			append(items, p);
+		m_pending_stmts.clear();
+		append(items, node2(N_RETURN, list(), expr, tr));
+		return node2(N_BLOCK, list(), items, tr);
 	}
 	return node2(N_RETURN, list(), expr, tr);
 }
@@ -6549,14 +6294,12 @@ node_t CirBuilder::translate_throw(TokenTHROW *th)
 	DataType dt = edd ? edd->rawtype() : DataType::dtINT64;
 	const char *sym;
 	ExternParam ep;
+	bool throw_object_cstr = is_class_object_value(th->throw_expr)
+			      || object_returning_call_class(th->throw_expr);
 	if (dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT) {
 		sym = "__madc_throw_double";
 		ep = { {N_DOUBLE}, false };
-	} else if ((edd && edd->is_pointer()) || is_std_string(edd)) {
-		// const char* / string literal -> cstr throw. A std::string object
-		// throws its c_str() (string_obj_arg materializes literals; a real
-		// string object would need string_cstr — left as a follow-up, scalar/
-		// literal cstr is the common case).
+	} else if ((edd && edd->is_pointer()) || throw_object_cstr) {
 		sym = "__madc_throw_cstr";
 		ep = { {N_CHAR}, true };
 	} else {
@@ -6565,7 +6308,8 @@ node_t CirBuilder::translate_throw(TokenTHROW *th)
 	}
 	need_output_extern(sym, false, { ep });
 	node_t args = list();
-	append(args, translate_expr(th->throw_expr));
+	append(args, throw_object_cstr ? object_cstr_arg(th->throw_expr)
+				       : translate_expr(th->throw_expr));
 	node_t call = node2(N_CALL, id(sym, th), args, th);
 	CIR_NODE(call)->synth_from_origin = true;
 	return node2(N_EXPR, list(), call, th);
@@ -6900,16 +6644,32 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 
 	// Body: element fill + user statement.
 	node_t body_items = list();
-	if (is_std_string(fe->elemtype)) {
-		// php_array_get((void*)x, (void*)container, __fe_i)
-		need_output_extern("__php_array_get", true,
-				   { { {N_VOID}, true }, { {N_VOID}, true }, { {N_LONG}, false } });
-		referenced_funcs.insert("__php_array_get");
+	if (DataDefCLASS *ec = as_class_instance(fe->elemtype)) {
+		FuncDef *op = class_assign_cstr_operator_def(ec);
+		if (!op)
+			return error_node("range-for class elements over MadArray require "
+					  "operator=(char*) on the element type", fe);
+		need_output_extern("__php_array_get_cstr", true,
+				   { { {N_VOID}, true }, { {N_LONG}, false } });
+		node_t ga = list();
+		append(ga, container_addr());
+		append(ga, id(idx, fe));
+		node_t getcall = node2(N_CALL, id("__php_array_get_cstr", fe), ga, fe);
+
+		std::string sym = class_method_call_symbol(ec, op, "operator=");
+		bool external = !op->emit_symbol.empty();
+		if (external)
+			need_output_extern(sym.c_str(), true,
+					   { { {N_VOID}, true }, { {N_CHAR}, true } });
+		else
+			referenced_funcs.insert(sym);
 		node_t a = list();
-		append(a, string_obj_addr(fe->elemname.c_str(), fe));
-		append(a, container_addr());
-		append(a, id(idx, fe));
-		node_t fill = node2(N_CALL, id("__php_array_get", fe), a, fe);
+		node_t dst = node1(N_ADDR, id(fe->elemname.c_str(), fe), fe);
+		if (external)
+			dst = node2(N_CAST, void_ptr_type(), dst, fe);
+		append(a, dst);
+		append(a, getcall);
+		node_t fill = node2(N_CALL, id(sym.c_str(), fe), a, fe);
 		append(body_items, node2(N_EXPR, list(), fill, fe));
 	} else {
 		// x = (T)__php_array_get_int((void*)container, __fe_i)
@@ -6989,17 +6749,34 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
 				      op_addr(), fe);
 		append(body_items, node2(N_EXPR, list(), assign, fe));
-	} else if (is_std_string(fe->elemtype)) {
-		// String element: copy-assign the loop var (an enclosing-scope string
-		// object, already constructed) from the element reference:
-		// string_assign((void*)&x, (void*)&c[__fe_i]).
-		need_output_extern("string_assign", false,
-				   { { {N_VOID}, true }, { {N_VOID}, true } });
+	} else if (DataDefCLASS *ec = as_class_instance(fe->elemtype)) {
+		FuncDef *op = class_assign_operator_def(ec);
 		node_t a = list();
-		append(a, string_obj_addr(fe->elemname.c_str(), fe));
-		append(a, node2(N_CAST, void_ptr_type(), op_addr(), fe));
-		node_t fill = node2(N_CALL, id("string_assign", fe), a, fe);
-		append(body_items, node2(N_EXPR, list(), fill, fe));
+		if (op) {
+			std::string sym = class_method_call_symbol(ec, op, "operator=");
+			bool external = !op->emit_symbol.empty();
+			if (external)
+				need_output_extern(sym.c_str(), true,
+						   { { {N_VOID}, true }, { {N_VOID}, true } });
+			else
+				referenced_funcs.insert(sym);
+			node_t dst = node1(N_ADDR, id(fe->elemname.c_str(), fe), fe);
+			node_t src = op_addr();
+			if (external) {
+				dst = node2(N_CAST, void_ptr_type(), dst, fe);
+				src = node2(N_CAST, void_ptr_type(), src, fe);
+			}
+			append(a, dst);
+			append(a, src);
+			node_t fill = node2(N_CALL, id(sym.c_str(), fe), a, fe);
+			append(body_items, node2(N_EXPR, list(), fill, fe));
+		} else {
+			node_t elem = opfd && opfd->returns_ref
+					? node1(N_DEREF, op_addr(), fe) : op_addr();
+			node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
+					      elem, fe);
+			append(body_items, node2(N_EXPR, list(), assign, fe));
+		}
 	} else {
 		// Scalar element: x = *(c[__fe_i])  (load through the reference).
 		node_t elem = opfd && opfd->returns_ref
@@ -7057,17 +6834,32 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv)
 		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
 				      node1(N_ADDR, elem_lvalue(), fe), fe);
 		append(body_items, node2(N_EXPR, list(), assign, fe));
-	} else if (is_std_string(fe->elemtype)) {
-		// String element: copy-assign the loop var (an enclosing-scope string
-		// object) from the element: string_assign((void*)&x, (void*)&a[i]).
-		need_output_extern("string_assign", false,
-				   { { {N_VOID}, true }, { {N_VOID}, true } });
+	} else if (DataDefCLASS *ec = as_class_instance(fe->elemtype)) {
+		FuncDef *op = class_assign_operator_def(ec);
 		node_t a = list();
-		append(a, string_obj_addr(fe->elemname.c_str(), fe));
-		append(a, node2(N_CAST, void_ptr_type(),
-				node1(N_ADDR, elem_lvalue(), fe), fe));
-		node_t fill = node2(N_CALL, id("string_assign", fe), a, fe);
-		append(body_items, node2(N_EXPR, list(), fill, fe));
+		if (op) {
+			std::string sym = class_method_call_symbol(ec, op, "operator=");
+			bool external = !op->emit_symbol.empty();
+			if (external)
+				need_output_extern(sym.c_str(), true,
+						   { { {N_VOID}, true }, { {N_VOID}, true } });
+			else
+				referenced_funcs.insert(sym);
+			node_t dst = node1(N_ADDR, id(fe->elemname.c_str(), fe), fe);
+			node_t src = node1(N_ADDR, elem_lvalue(), fe);
+			if (external) {
+				dst = node2(N_CAST, void_ptr_type(), dst, fe);
+				src = node2(N_CAST, void_ptr_type(), src, fe);
+			}
+			append(a, dst);
+			append(a, src);
+			node_t fill = node2(N_CALL, id(sym.c_str(), fe), a, fe);
+			append(body_items, node2(N_EXPR, list(), fill, fe));
+		} else {
+			node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
+					      elem_lvalue(), fe);
+			append(body_items, node2(N_EXPR, list(), assign, fe));
+		}
 	} else {
 		// Scalar element: x = a[__fe_i].
 		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
@@ -7405,9 +7197,6 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			// `array a;` — default-construct the MadArray object. Scope-exit
 			// destruction is handled by the cleanup attribute (array_storage_decl).
 			append(items, array_ctor_call(v->name.c_str(), tc));
-		} else if (is_sstream_object(v->type)) {
-			// `stringstream ss;` — default-construct; cleanup attribute destructs.
-			append(items, sstream_ctor_call(v->name.c_str(), tc));
 		} else if (DataDefCLASS *cdd = as_class_instance(v->type)) {
 			// `Foo f;` / `string s;` — a class instance declared without an
 			// explicit constructor-call (no ctor args). Default-construct it;
@@ -7417,7 +7206,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 						    std::vector<TokenBase *>(), tc);
 			if (cc) append(items, cc);
 			// A class with embedded object members but NO user ctor still
-			// needs each member constructed (string_construct(&f.member)).
+			// needs each member constructed.
 			// (Member destruction is via the synthesized dtor referenced by
 			// the cleanup attribute — see class_struct_def / var_decl.)
 			else if (class_has_object_members(cdd))
@@ -7476,19 +7265,6 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				append(items, array_ctor_call(sdcl->var.name.c_str(), sdcl));
 				continue;
 			}
-			// std::stringstream object declaration.
-			if (sdcl && is_sstream_object(sdcl->var.type) && !file_global) {
-				if (!pending_labels.empty()) {
-					node_t ll = list();
-					for (auto &ln : pending_labels)
-						append(ll, node1(N_LABEL, id(ln.c_str())));
-					pending_labels.clear();
-					append(items, node2(N_EXPR, ll, integer(0)));
-				}
-				append(items, var_decl(&sdcl->var, sdcl));
-				append(items, sstream_ctor_call(sdcl->var.name.c_str(), sdcl));
-				continue;
-			}
 			// Class instance declared with constructor args `Foo f(a,b)` or an
 			// initializer `string s = "x"`: emit the struct storage (+ cleanup
 			// attr) then the ctor call. The no-arg form `Foo f;` / `string s;` is
@@ -7541,13 +7317,15 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				    && object_returning_call_class(ctor_args[0]) == cdcl) {
 					TokenCallFunc *itcf =
 						dynamic_cast<TokenCallFunc *>(ctor_args[0]);
-					referenced_funcs.insert(itcf->var.name);
+					FuncDef *ifd = call_target_funcdef(itcf);
+					std::string isym = func_emit_name(itcf->var, ifd);
+					referenced_funcs.insert(isym);
 					node_t cargs = list();
 					append(cargs, node1(N_ADDR,
 						id(sdcl->var.name.c_str(), sdcl), sdcl));
 					build_call_args(itcf, cargs);
 					node_t icall = node2(N_CALL,
-						id(itcf->var.name.c_str(), sdcl), cargs, sdcl);
+						id(isym.c_str(), sdcl), cargs, sdcl);
 					CIR_NODE(icall)->synth_from_origin = true;
 					for (node_t p : m_pending_stmts)
 						append(items, p);
@@ -7567,7 +7345,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				m_pending_stmts.clear();
 				if (cc) append(items, cc);
 				// No user ctor but embedded object members: construct each
-				// member in place (string_construct(&inst.member)). With a
+				// member in place. With a
 				// user ctor, the ctor body's prologue constructs them.
 				else if (class_has_object_members(cdcl))
 					class_instance_member_ctors(sdcl->var.name.c_str(),
@@ -7618,7 +7396,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		// Materialized temporaries (e.g. a std::string built from a literal
 		// passed to a string-object parameter) are emitted just before the
 		// statement that uses them; their cleanup attribute destructs them at
-		// scope exit. See string_obj_arg / m_pending_stmts.
+		// scope exit. See object_arg_addr / m_pending_stmts.
 		for (node_t p : m_pending_stmts)
 			append(items, p);
 		m_pending_stmts.clear();
@@ -7635,10 +7413,10 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 	}
 
 	// No manual scope-exit destruction: each std::string object's storage decl
-	// carries __attribute__((cleanup(string_destruct))), so the c2mir fork emits
+	// carries a cleanup attribute, so the c2mir fork emits
 	// the destructor call on EVERY exit path (fall-through, return, break,
 	// continue, goto) — correct RAII including early exits, with no front-end
-	// dtor injection. See string_storage_decl.
+	// dtor injection. See the object storage declaration path.
 	return node2(N_BLOCK, empty_list, items, tc);
 }
 
@@ -7674,18 +7452,15 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
 	if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
 
-	// A by-value std::string OR non-trivial class return uses the struct-return
-	// (__retbuf) ABI: the C return type is `void`, a hidden `struct <T> *__retbuf`
-	// is the first parameter, and `return obj;` copy-constructs *__retbuf (see
+	// A by-value non-trivial class return uses the struct-return (__retbuf) ABI:
+	// the C return type is `void`, a hidden `struct <T> *__retbuf` is the first
+	// parameter, and `return obj;` copy-constructs *__retbuf (see
 	// translate_return). A trivial struct keeps c2mir's native struct return.
-	bool ret_is_string = !ret_is_ptr && !ret_is_ref && is_std_string(ret_dd)
-			     && !fd->is_multi_return();
-	m_cur_func_returns_string = ret_is_string;
 	DataDefCLASS *ret_obj = (!ret_is_ptr && !ret_is_ref && !fd->is_multi_return())
 				? class_return_via_retbuf(ret_dd) : NULL;
 	m_cur_func_returns_object = ret_obj;
-	bool ret_via_retbuf = ret_is_string || ret_obj;
-	DataDef *retbuf_dd = ret_obj ? (DataDef *)ret_obj : (DataDef *)&ddSTRING;
+	bool ret_via_retbuf = ret_obj != NULL;
+	DataDef *retbuf_dd = (DataDef *)ret_obj;
 	// Multi-return (`return a, b;`): C return type void + a hidden `long *__retbuf`
 	// first param; translate_return stores each value to __retbuf[i].
 	bool ret_is_multi = fd->is_multi_return();
@@ -7995,12 +7770,17 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 		return class_ctor_call(v, cdd, ctor_args, decl);
 	}
 
-	// No source TokenDecl (built-in global): the initializer value lives in the
-	// runtime backing object. For a std::string that is `*(std::string*)v->data`;
-	// construct via the const-char* ctor with a literal synthesized from it. A
-	// class without a const-char* initializer falls back to the default ctor.
-	if (!is_std_string(v->type)) {
-		// Other built-in object classes: default-construct (no stored literal).
+	// No source TokenDecl (built-in global): if the runtime backing object has
+	// a stored string payload and the class declares a char* converting ctor,
+	// construct from that literal; otherwise fall back to the default ctor.
+	FuncDef *cstr_ctor = NULL;
+	for (Variable *cv : cdd->ctors) {
+		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+		if (!fd || fd->parameters.size() < 2) continue;
+		DataDef *p1 = fd->parameters[1];
+		if (p1 && p1->is_pointer()) { cstr_ctor = fd; break; }
+	}
+	if (!v->data || !cstr_ctor) {
 		std::vector<TokenBase *> none;
 		return class_ctor_call(v, cdd, none, NULL);
 	}
@@ -8008,11 +7788,17 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 	node_t args = list();
 	append(args, node1(N_ADDR, id(v->name.c_str(), NULL), NULL)); // &v (this)
 	append(args, str(init.c_str(), init.size() + 1, NULL));       // const char*
-	append(args, node1(N_ADDR, id(v->name.c_str(), NULL), NULL)); // dummy alloc&
-	need_output_extern(STR_CTOR_S, false,
-			   { { {N_VOID}, true }, { {N_CHAR}, true }, { {N_VOID}, true } });
-	referenced_funcs.insert(STR_CTOR_S);
-	node_t call = node2(N_CALL, id(STR_CTOR_S, NULL), args, NULL);
+	if (cstr_ctor->ctor_trailing_self)
+		append(args, node1(N_ADDR, id(v->name.c_str(), NULL), NULL));
+	std::string sym = ctor_call_symbol(cdd, cstr_ctor);
+	std::vector<ExternParam> eparams;
+	eparams.push_back({ {N_VOID}, true });
+	eparams.push_back({ {N_CHAR}, true });
+	if (cstr_ctor->ctor_trailing_self)
+		eparams.push_back({ {N_VOID}, true });
+	need_output_extern(sym.c_str(), false, eparams);
+	referenced_funcs.insert(sym);
+	node_t call = node2(N_CALL, id(sym.c_str(), NULL), args, NULL);
 	CIR_NODE(call)->synth_from_origin = true;
 	return node2(N_EXPR, list(), call, NULL);
 }
@@ -8055,6 +7841,9 @@ void CirBuilder::collect_global_ctors(Program *prog,
 				    && td.var == v) { decl = td.decl; break; }
 		}
 		node_t cc = global_ctor_call(v, cdd, decl);
+		for (node_t p : m_pending_stmts)
+			m_global_ctor_stmts.push_back(p);
+		m_pending_stmts.clear();
 		if (cc) m_global_ctor_stmts.push_back(cc);
 	}
 }
@@ -8070,15 +7859,6 @@ node_t CirBuilder::translate_module(Program *prog)
 
 	node_t module = simple(N_MODULE);
 	node_t top_list = list();
-
-	// std::string lowers to a real `struct string` (opaque object class). Emit
-	// its definition once, ahead of every use, whenever the string machinery is
-	// active (ddSTRING populated by add_string_methods). A program that never
-	// declares a string carries one harmless complete `struct string` type.
-	if (!ddSTRING.methods.empty()) {
-		node_t sd = class_struct_def(&ddSTRING);
-		if (sd) append(top_list, sd);
-	}
 
 	// Collect all TokenFunc entries
 	std::vector<TokenFunc *> funcs;
@@ -8147,6 +7927,8 @@ node_t CirBuilder::translate_module(Program *prog)
 	};
 	std::set<std::string> emitted_structs;
 	std::set<std::string> emitted_globals;
+	std::set<DataDefCLASS *> emitted_classes;
+	std::set<DataDefCLASS *> emitting_classes;
 
 	// Global variable declarations are DEFERRED out of the Pass 0 loop into
 	// this list (kept in source order) and emitted after the function
@@ -8176,6 +7958,9 @@ node_t CirBuilder::translate_module(Program *prog)
 			bool forward = sdd && struct_def_points.count(sdd->name)
 					   && !emitted_structs.count(sdd->name)
 					   && !is_def_point;
+			if (sdd && sdd->is_complete)
+				emit_class_member_deps(sdd, top_list, emitted_structs,
+						       emitted_classes, emitting_classes);
 			node_t n = typedef_decl(td.name, td.dd, emitted_structs, forward);
 			if (n) { stamp(n, td); append(top_list, n); }
 			// Mark the tag emitted once its body actually went out here: either
@@ -8191,6 +7976,8 @@ node_t CirBuilder::translate_module(Program *prog)
 		case Program::DeclKind::dkUnion: {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(td.dd);
 			if (sdd && sdd->is_complete && !emitted_structs.count(sdd->name)) {
+				emit_class_member_deps(sdd, top_list, emitted_structs,
+						       emitted_classes, emitting_classes);
 				emitted_structs.insert(sdd->name);
 				node_t sd = struct_def(sdd);
 				if (sd) { stamp(sd, td); append(top_list, sd); }
@@ -8202,8 +7989,13 @@ node_t CirBuilder::translate_module(Program *prog)
 			// declaration of its own — references to it name the target symbol
 			// (var_emit_name). Emitting `extern int b` here would re-introduce
 			// the undefined import at MIR-link.
-			if (td.var && var_emit_name(*td.var) != td.var->name)
-				break;
+			if (td.var && m_prog) {
+				Variable *target =
+					m_prog->resolve_global_storage_variable(td.var);
+				if (target && target != td.var
+				    && !(target->type && target->type->is_function()))
+					break;
+			}
 			if (td.var && !dynamic_cast<FuncDef *>(td.var->type)) {
 				// Pass the linked TokenDecl as origin so var_decl's
 				// existing initializer logic (scalar + brace) emits the
@@ -8224,19 +8016,14 @@ node_t CirBuilder::translate_module(Program *prog)
 	// Pass 0.5: user-defined class struct definitions. Classes are not in
 	// top_decls; they live in struct_map (also keyed under any typedef
 	// alias, so dedup by the DataDefCLASS pointer / tag name). Each lowers
-	// to `struct ClassName { ... }` — base members are already flattened
-	// into the derived class by the parser, so no base-before-derived
-	// ordering is required.
-	std::set<DataDefCLASS *> emitted_classes;
+	// to `struct ClassName { ... }`. By-value class members require the
+	// member class's struct to be complete first, so emission walks those
+	// dependencies before appending the owner.
 	for (auto &kv : prog->struct_map) {
 		DataDefCLASS *cdd = as_user_class(kv.second);
 		if (!cdd) continue;
-		if (emitted_classes.count(cdd)) continue;
-		if (emitted_structs.count(cdd->name)) continue;
-		emitted_classes.insert(cdd);
-		emitted_structs.insert(cdd->name);
-		node_t cd = class_struct_def(cdd);
-		if (cd) append(top_list, cd);
+		emit_class_struct_with_deps(cdd, top_list, emitted_structs,
+					    emitted_classes, emitting_classes);
 	}
 
 	// Collect user function names. Stored as a member too, so the body
@@ -8272,10 +8059,15 @@ node_t CirBuilder::translate_module(Program *prog)
 		const std::string &fname = kv.first;
 		FuncDef *fd = kv.second;
 		if (!fd || user_func_names.count(fname)) continue;
-		if (!referenced_funcs.count(fname)) continue;
+		std::string lookup_name = fname;
+		Variable *fvar = prog->tkProgram ? prog->tkProgram->findVariable(lookup_name) : NULL;
+		std::string symbol = fvar ? func_emit_name(*fvar, fd) : fname;
+		if (!referenced_funcs.count(symbol) && !referenced_funcs.count(fname))
+			continue;
 
 		DataDef *ret_dd = &fd->returns;
 		bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
+		bool ret_is_ref = fd->returns_ref;
 		DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
 		if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
 
@@ -8313,10 +8105,12 @@ node_t CirBuilder::translate_module(Program *prog)
 			append(param_list, simple(N_DOTS));
 
 		node_t func_inner = node1(N_FUNC, param_list);
-		node_t func_id_node = id(fname.c_str());
+		node_t func_id_node = id(symbol.c_str());
 		node_t decl_list = list();
 		append(decl_list, func_inner);
 		if (ret_is_ptr)
+			append(decl_list, pointer());
+		if (ret_is_ref)
 			append(decl_list, pointer());
 
 		node_t decl = node2(N_DECL, func_id_node, decl_list);
@@ -8381,11 +8175,9 @@ node_t CirBuilder::translate_module(Program *prog)
 		emitted_globals.insert(gname);
 	}
 
-	// Pass 0.8: output externs (madc_* builtins; libstdc++ stream symbols later)
+	// Pass 0.8: output externs for runtime and external symbols referenced by lowering.
 	for (auto &kv : m_output_externs)
 		append(top_list, kv.second);
-	for (node_t p : m_stream_object_protos)
-		append(top_list, p);
 
 	// Pass 1: forward prototypes for every user function. Emitted AFTER the
 	// struct/class definitions (Pass 0 / 0.5) — so a by-value struct param or

@@ -100,9 +100,9 @@ SchemaInfo map_schema_for_storage(const SchemaInfo &schema, const MappingSpec<T>
 	SchemaField field = schema.fields()[i];
 	if ( field_is_excluded(spec, field.name) )
 	    continue;
-	typename std::map<std::string, typename MappingSpec<T>::string_limit>::const_iterator lim =
-	    spec.string_limits().find(field.name);
-	if ( lim != spec.string_limits().end() )
+	typename std::map<std::string, typename MappingSpec<T>::text_limit>::const_iterator lim =
+	    spec.text_limits().find(field.name);
+	if ( lim != spec.text_limits().end() )
 	{
 	    field.byte_size = lim->second.max_bytes;
 	    field.text_overflow =

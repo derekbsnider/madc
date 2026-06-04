@@ -6,6 +6,82 @@
 > been merged to develop. Reading this doc + the spec + the memories below = full
 > situational awareness; you should not need anything else to continue.
 
+## RESTART 2026-06-04 (Codex rehydrate/cleanup — CURRENT)
+Branch `feature/retire-std-hardcoding-claude`.
+
+**THE OFFENDING-LINE REMOVAL GOAL IS COMPLETE. DO NOT RESUME THE 775/770-LINE
+WORKLIST.** Live `bash scripts/check-no-std-hardcoding.sh` reports **0 offending
+lines**. The large cleanup from the previous 2-3 sessions moved the std and
+polyglot surfaces toward header/library declarations and removed the compiler's
+per-type std hooks. Treat live git/worktree state as newer than the 2026-06-03
+restart blocks below.
+
+The active architectural guardrail is broader than the grep gate:
+
+- Core madc must not hardcode special handling for specific C++ library classes
+  or objects: `std::string`, streams, containers, `std::sstream`,
+  user-defined classes, etc. They all flow through the same object/type,
+  overload, mangling, ctor/dtor, and retbuf machinery.
+- Header files may model a library ABI surface, including the embedded
+  `include/madc/` headers. Compiler/runtime code must not infer behavior from
+  a concrete class name or manufacture a concrete class layout.
+- The only intended semantic difference for madc mode is convenience
+  auto-inclusion of headers. That auto-include behavior still needs to be gated
+  to `--std=madc`; it should be disabled for `--std=c*` and `--std=c++*`.
+
+This rehydrate/cleanup slice removed one post-gate drift point: `<algorithm>`
+now defines `std::for_each(array, void (*)(string))` as an ordinary header
+function body. It uses `madarray_size` plus the existing array-to-cstr helper to
+fill a normal local `string value`, then calls `fn(value)`. The old C++ runtime
+shim in `src/ns_php.cpp` copied a fake libstdc++ `basic_string` layout
+(`_M_p`/`_M_len`/SSO bytes) before calling a script callback; that layout-copy
+shim is gone, and `src/embedded_headers.cpp` was regenerated.
+
+Previous-session fixes already present in the dirty worktree before this slice:
+
+- Auto-includes collect trigger identifiers, inject headers before source
+  parsing while preserving explicit header preludes, and retokenize only trigger
+  identifiers that become object-like macros.
+- `rust::match` parses as syntax before runtime namespace lookup.
+- `using namespace` aliases preserve internal emitted symbols for namespace
+  functions, fixing `printstream` after auto-included `<sstream>`.
+- `<sstream>` typedefs use namespace-local template names.
+
+Validation snapshot:
+
+- `bin/madc tests/testforeach.mad` passes.
+- `bin/madc tests/testforeach2.mad` passes.
+- `bash scripts/check-no-std-hardcoding.sh` reports 0 offending lines.
+- `make -C src` passes.
+- `make -C src fulltest` produced **481 passed, 5 failed, 1 timed out,
+  55 skipped**. Known failures/timeouts: `testcin`, `testdefer`,
+  `testfortypedcomma` (timeout this run; historically flaky fail/timeout),
+  `testfstream`, `testlargesizeofquery`, `testloop`.
+- Previous session targeted tests passed for
+  `testautoincludestdheaders`, `testrustmatch`, `testsstream`, `testforeach2`,
+  `testprefer`, `testphp`, `testlang`, string/class regressions, and
+  `--no-includes` still rejects `string` without includes.
+
+Open follow-ups before/while merging this branch to `develop`:
+
+- Keep unrelated untracked `.claude/`, KG dumps, temp files, and scratch
+  artifacts out of the branch cleanup/merge.
+- Gate auto-includes on `language_std == STD_MADC`.
+- Embedded header function bodies that use range-for over `array` exposed a
+  lowering gap where the loop variable was not declared in emitted C. This
+  slice avoided that path in `<algorithm>` with an explicit helper loop; fix the
+  generic range-for lowering before relying on that syntax inside headers.
+- Revisit the embedded polyglot namespace headers: they currently use
+  `asm("__php_*")` / `asm("__perl_*")` declarations, while external C++ headers
+  expose inline namespace wrappers over `extern "C"` symbols. The target model
+  is ordinary C++ namespace declarations/mangling for C++ surfaces, with
+  C-friendly symbols only at the explicit `extern "C"` wrapper boundary.
+- Consider broadening the gate or adding a companion check for semantic drift
+  patterns: runtime layout copies, `_M_*` outside headers/tests, and per-class
+  branches outside the mangler/auto-include table.
+
+---
+
 ## ⏩⏩⏩⏩ RESTART 2026-06-03 (Codex cleanup slice — current, supersedes the block below)
 Branch `feature/retire-std-hardcoding-claude`; this cleanup slice follows **`ce8c1c2`**.
 
