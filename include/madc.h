@@ -77,6 +77,9 @@ public:
     // hidden `__this` slot (param 0 of a method) holds an empty string. Fed to
     // the Itanium mangler so a std:: method binds to the real libstdc++ symbol.
     std::vector<std::string> param_cpp_spellings;
+    // Source typedef alias used for each parameter, when the declaration named
+    // one. Index-aligned with `parameters`; empty means render from DataDef.
+    std::vector<std::string> param_typedef_names;
     // Default ARGUMENT expression for each parameter (C++ `T x = expr`), captured
     // at parse time, index-aligned with `parameters`; NULL when the parameter has
     // no default. A call that omits a trailing argument fills it from here, and
@@ -102,6 +105,7 @@ public:
     // so the call site is an lvalue (assign stores through it; read derefs it),
     // matching g++. See cir_builder ref-return lowering.
     bool returns_ref;
+    std::string return_typedef_name;
     // When non-empty, the C symbol this function is CALLED as / DEFINED as,
     // instead of the default ClassName__method scheme. Used to bind a class
     // method directly to an externally-provided symbol (e.g. a mangled
@@ -127,11 +131,8 @@ public:
     // trailing reference argument that madc has no value for, pass the object's
     // own address (&this) as that trailing arg.
     bool ctor_trailing_self;
-    // Initializer order matches member declaration order (avoids -Wreorder):
-    // returns, explicit_alignment, has_captures, returns_ref, emit_symbol,
-    // class_emit_name, ctor_trailing_self (declared above), then is_varargs..
-    // has_large_struct_retbuf (declared below).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), emit_symbol(), class_emit_name(), method_display_name(), ctor_trailing_self(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false), is_const_method(false) {}
+    // Initializer order matches member declaration order (avoids -Wreorder).
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), return_typedef_name(), emit_symbol(), class_emit_name(), method_display_name(), ctor_trailing_self(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -1378,7 +1379,8 @@ public:
     void parseIdentifier(TokenIdent *);
     void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL,
 		       std::vector<DataDef *> *multi_ret = NULL,
-		       bool return_ref = false);
+		       bool return_ref = false,
+		       std::string return_typedef_alias = std::string());
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCallMethod(TokenCallMethod *);

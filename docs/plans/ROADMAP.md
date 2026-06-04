@@ -1,6 +1,6 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-05-30 (v0.25.0).
+Master plan linking all workstreams. Updated 2026-06-04 (v0.25.0).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -63,6 +63,10 @@ high-level" — the answer is both.**
   variable declaration. `extern "C"` / `extern "C++"` linkage specs now parse,
   which is the prerequisite for splitting embedded polyglot namespace headers
   into ordinary C++ namespace wrappers over explicit C ABI declarations.
+  Function signatures now preserve source typedef aliases for returns and
+  parameters, so referenced extern C prototypes can render header spelling such
+  as `string *` without concrete-class handling; the remaining work is the
+  actual embedded polyglot header split away from direct asm aliases.
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
   engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
   pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped

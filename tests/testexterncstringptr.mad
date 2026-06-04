@@ -1,0 +1,19 @@
+#!/../bin/madc
+#include <string>
+
+extern "C" {
+	string *__php_trim(string *);
+}
+
+namespace phpwrap {
+	string &trim(string &s) {
+		return *__php_trim(&s);
+	}
+}
+
+int main() {
+	string s = "  wrapped  ";
+	phpwrap::trim(s);
+	printf("%s\n", s.c_str());
+	return 0;
+}

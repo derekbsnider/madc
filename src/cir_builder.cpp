@@ -1076,8 +1076,13 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 		}
 		// else: bare () — unspecified parameter list (K&R), or retbuf-only
 	} else {
-		for (size_t i = 0; i < nparam; i++)
-			append(param_list, param_decl(fd->parameters[i], "", std::string()));
+		for (size_t i = 0; i < nparam; i++) {
+			std::string ptypedef;
+			if (i < fd->param_typedef_names.size())
+				ptypedef = fd->param_typedef_names[i];
+			append(param_list, param_decl(fd->parameters[i], "",
+						      ptypedef));
+		}
 	}
 	if (fd->is_varargs)
 		append(param_list, simple(N_DOTS));
@@ -4683,8 +4688,18 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	DataDef *retbuf_dd = (DataDef *)ret_obj;
 	bool ret_is_multi = fd->is_multi_return();   // void ret + `long *__retbuf` first param
 
-	node_t ret_type = (ret_via_retbuf || ret_is_multi) ? type_list(&ddVOID)
-							   : type_list(ret_dd);
+	int ret_decl_stars = ret_is_ptr ? 1 : 0;
+	node_t ret_type = NULL;
+	if (ret_via_retbuf || ret_is_multi) {
+		ret_type = type_list(&ddVOID);
+		ret_decl_stars = 0;
+	} else if (!fd->return_typedef_name.empty()) {
+		ret_type = type_list(&fd->returns, fd->return_typedef_name);
+		ret_decl_stars = explicit_star_count(&fd->returns,
+						     fd->return_typedef_name);
+	} else {
+		ret_type = type_list(ret_dd);
+	}
 	node_t share = node1(N_SHARE, ret_type);
 
 	// Parameters. A variadic function carries a trailing synthetic param
@@ -4725,6 +4740,8 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 				pname = tf->method->parameters[i]->name.c_str();
 				ptypedef = tf->method->parameters[i]->typedef_name;
 			}
+			if (ptypedef.empty() && i < fd->param_typedef_names.size())
+				ptypedef = fd->param_typedef_names[i];
 			append(param_list, param_decl(ptype, pname, ptypedef));
 		}
 	}
@@ -4743,7 +4760,7 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	node_t func_id = id(tf->var.name.c_str(), tf);
 	node_t decl_list = list();
 	append(decl_list, func_inner);
-	if (ret_is_ptr)
+	for (int rs = 0; rs < ret_decl_stars; rs++)
 		append(decl_list, pointer());
 	// T&-returning method: returned by address (one extra pointer level), so
 	// the prototype matches the definition and call sites can deref.
@@ -7485,8 +7502,18 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				? &fd->returns : NULL;
 
 	// Retbuf-returning OR multi-return fn: C return type is `void`.
-	node_t ret_type = (ret_via_retbuf || ret_is_multi) ? type_list(&ddVOID)
-							   : type_list(ret_dd);
+	int ret_decl_stars = ret_is_ptr ? 1 : 0;
+	node_t ret_type = NULL;
+	if (ret_via_retbuf || ret_is_multi) {
+		ret_type = type_list(&ddVOID);
+		ret_decl_stars = 0;
+	} else if (!fd->return_typedef_name.empty()) {
+		ret_type = type_list(&fd->returns, fd->return_typedef_name);
+		ret_decl_stars = explicit_star_count(&fd->returns,
+						     fd->return_typedef_name);
+	} else {
+		ret_type = type_list(ret_dd);
+	}
 
 	// GNU nested-function / [&]-lambda capture context. A capturing function
 	// (has_captures) implicitly captures by reference whatever enclosing
@@ -7546,6 +7573,8 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				pname = tf->method->parameters[i]->name.c_str();
 				ptypedef = tf->method->parameters[i]->typedef_name;
 			}
+			if (ptypedef.empty() && i < fd->param_typedef_names.size())
+				ptypedef = fd->param_typedef_names[i];
 			append(param_list, param_decl(fd->parameters[i], pname, ptypedef));
 		}
 	}
@@ -7557,7 +7586,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	node_t func_id = id(tf->var.name.c_str(), tf);
 	node_t decl_list = list();
 	append(decl_list, func_inner);
-	if (ret_is_ptr)
+	for (int rs = 0; rs < ret_decl_stars; rs++)
 		append(decl_list, pointer());
 	// A T&-returning method returns by address: one extra pointer level (so
 	// `int&`->`int*`, `char*&`->`char**`). Matches g++'s reference ABI.
@@ -8068,11 +8097,16 @@ node_t CirBuilder::translate_module(Program *prog)
 		bool ret_is_ref = fd->returns_ref;
 		DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
 		if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
+		int ret_decl_stars = ret_is_ptr ? 1 : 0;
 
 		// Build: EXTERN + type spec
 		node_t ext_list = list();
 		append(ext_list, simple(N_EXTERN));
-		if (ret_dd && ret_dd->is_struct() && !ret_dd->is_complex()) {
+		if (!fd->return_typedef_name.empty()) {
+			append(ext_list, id(fd->return_typedef_name.c_str()));
+			ret_decl_stars = explicit_star_count(&fd->returns,
+							     fd->return_typedef_name);
+		} else if (ret_dd && ret_dd->is_struct() && !ret_dd->is_complex()) {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(ret_dd);
 			if (sdd)
 				append(ext_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));
@@ -8092,11 +8126,20 @@ node_t CirBuilder::translate_module(Program *prog)
 		} else {
 			size_t nparam = fd->parameters.size();
 			if (fd->is_varargs && nparam > 0) nparam--;
+			Method *fmethod = fvar ? (Method *)fvar->data : NULL;
 			for (size_t i = 0; i < nparam; i++) {
 				// 'p' + up to 20 digits (size_t max) + NUL.
 				char pname[24];
 				snprintf(pname, sizeof(pname), "p%zu", i);
-				append(param_list, param_decl(fd->parameters[i], pname));
+				std::string ptypedef;
+				if (i < fd->param_typedef_names.size())
+					ptypedef = fd->param_typedef_names[i];
+				if (ptypedef.empty()
+				    && fmethod && i < fmethod->parameters.size()
+				    && fmethod->parameters[i])
+					ptypedef = fmethod->parameters[i]->typedef_name;
+				append(param_list, param_decl(fd->parameters[i], pname,
+							      ptypedef));
 			}
 		}
 		if (fd->is_varargs)
@@ -8106,7 +8149,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		node_t func_id_node = id(symbol.c_str());
 		node_t decl_list = list();
 		append(decl_list, func_inner);
-		if (ret_is_ptr)
+		for (int rs = 0; rs < ret_decl_stars; rs++)
 			append(decl_list, pointer());
 		if (ret_is_ref)
 			append(decl_list, pointer());

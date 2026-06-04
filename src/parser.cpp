@@ -116,6 +116,7 @@ FuncDef *make_implicit_complex_builtin_func(const std::string &fname)
     // variadic ABI, which mismatches the SysV register classification for a
     // complex value and corrupted the call (wrong conjugate / return value).
     func->parameters.push_back(arg_type);
+    func->param_typedef_names.push_back("");
     return func;
 }
 
@@ -6180,6 +6181,7 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	DBG(std::cout << dd->name);
 	DBG(if (i < params.size()-1) std::cout << ", ");
 	func->parameters.push_back(dd);
+	func->param_typedef_names.push_back("");
     }
     DBG(std::cout << endl);
 
@@ -9864,6 +9866,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			// TokenCallFunc compiles calls to this variable.
 			implicit_func->is_varargs = true;
 			implicit_func->parameters.push_back(&ddINT64);
+			implicit_func->param_typedef_names.push_back("");
 			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
 			Method *implicit_method = new Method(*var);
 			var->data = (void *)implicit_method;
@@ -12927,6 +12930,7 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 
     while ( nt )
     {
+	std::string param_alias;
 	while ( nt && nt->id() == TokenID::tkCONST )
 	    nt = nextToken();
 
@@ -12939,6 +12943,7 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 		Throw(nt) << "Expecting '...' for variadic parameter" << flush;
 	    func->is_varargs = true;
 	    func->parameters.push_back(&ddINT64);
+	    func->param_typedef_names.push_back("");
 	    nt = nextToken();
 	    if ( !nt || nt->id() != TokenID::tkClBrk )
 		Throw(nt) << "Expecting ')' after '...'" << flush;
@@ -12965,6 +12970,8 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	else if ( nt->type() == TokenType::ttDataType )
 	{
 	    param_dd = &((TokenDataType *)nt)->definition;
+	    if ( user_typedef_names.count(((TokenDataType *)nt)->str) )
+		param_alias = ((TokenDataType *)nt)->str;
 	}
 	else if ( nt->type() == TokenType::ttIdentifier )
 	{
@@ -12973,6 +12980,8 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    if ( tdmi == datatype_map.end() )
 		Throw(nt) << "Unknown type '" << tname << "' in function pointer typedef" << flush;
 	    param_dd = &tdmi->second->definition;
+	    if ( user_typedef_names.count(tname) )
+		param_alias = tname;
 	}
 	else
 	{
@@ -12994,6 +13003,7 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    nextToken();
 
 	func->parameters.push_back(param_dd);
+	func->param_typedef_names.push_back(param_alias);
 
 	// Next: ',' or ')'
 	nt = nextToken();
@@ -14293,7 +14303,8 @@ static bool scan_old_style_definition_suffix(Program &pgm,
 
 // parse a function definition, can be a forward declaration, or function definition
 void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class,
-			    std::vector<DataDef *> *multi_ret, bool return_ref)
+			    std::vector<DataDef *> *multi_ret, bool return_ref,
+			    std::string return_typedef_alias)
 {
     variable_map_iter vmi;
     funcdef_map_iter fmi;
@@ -14346,6 +14357,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	{
 	    FuncDef *fresh = new FuncDef(dd);
 	    fresh->return_types = func->return_types;
+	    fresh->return_typedef_name = func->return_typedef_name;
+	    fresh->param_typedef_names = func->param_typedef_names;
 	    fresh->no_instrument_function = func->no_instrument_function;
 	    fresh->explicit_alignment = func->explicit_alignment;
 	    funcdef_map[id] = fresh;
@@ -14364,6 +14377,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->is_varargs   = func->is_varargs;
 	    fresh->is_void_params = func->is_void_params;
 	    fresh->return_types = func->return_types;
+	    fresh->return_typedef_name = func->return_typedef_name;
+	    fresh->param_typedef_names = func->param_typedef_names;
 	    fresh->no_instrument_function = func->no_instrument_function;
 	    fresh->explicit_alignment = func->explicit_alignment;
 	    funcdef_map[id] = fresh;
@@ -14377,6 +14392,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	DBG(std::cout << "parseFunction() Added new function declaration type: " << dd.name << " size: " << dd.size << " name: " << id << std::endl);
     }
     func->returns_ref = return_ref;
+    if ( !return_typedef_alias.empty() )
+	func->return_typedef_name = return_typedef_alias;
 
     // for multi-return functions, inject hidden __retbuf parameter as first arg
     if ( multi_ret && multi_ret->size() > 1 )
@@ -14386,6 +14403,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	{
 	    func->parameters.push_back(&ddINT64); // void* as int64
 	    func->param_cpp_spellings.push_back(""); // hidden — excluded from mangling
+	    func->param_typedef_names.push_back("");
 	    func->param_defaults.push_back(NULL);    // keep aligned with parameters
 	}
 	ids.push_back("__retbuf");
@@ -14412,6 +14430,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    func->ref_params.push_back(false);
 	    func->const_params.push_back(false);
 	    func->param_cpp_spellings.push_back(""); // hidden __this — excluded from mangling
+	    func->param_typedef_names.push_back("");
 	    func->param_defaults.push_back(NULL);    // keep aligned with parameters
 	}
 	ids.push_back("__this");
@@ -14503,6 +14522,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    {
 		func->parameters.push_back(&ddINT64);
 		func->param_cpp_spellings.push_back(""); // hidden — excluded
+		func->param_typedef_names.push_back("");
 		func->param_defaults.push_back(NULL);    // keep aligned with parameters
 	    }
 	    ids.push_back("__va_args");
@@ -14837,6 +14857,7 @@ paramdecl:
 		if ( rtype == RefType::rtReference )
 		    param_spelling += "&";
 		func->param_cpp_spellings.push_back(param_spelling);
+		func->param_typedef_names.push_back(param_alias);
 		if ( rtype == RefType::rtReference )
 		{
 		    DataDef *ref_ptr = getPointerType(&pb->definition);
@@ -14927,6 +14948,7 @@ paramdecl:
 		// Keep param_cpp_spellings index-aligned (K&R is C-only — never a
 		// std:: method, so this best-effort name is never mangled).
 		func->param_cpp_spellings.push_back(kr_dd->name);
+		func->param_typedef_names.push_back("");
 	    }
 	}
     }
@@ -15006,7 +15028,8 @@ paramdecl:
 		parseDeclaration(&tdt);
 		return;
 	    }
-	    parseFunction(*next_return, next_id, owner_class, multi_ret);
+	    parseFunction(*next_return, next_id, owner_class, multi_ret,
+			  false, return_typedef_alias);
 	}
 	return;
     }
@@ -15367,6 +15390,7 @@ TokenBase *Program::parseLambda()
 	std::string pid = contextual_identifier_name(tn);
 	param_ids.push_back(pid);
 	func->parameters.push_back(&pb->definition);
+	func->param_typedef_names.push_back("");
 
 	DBG(cout << "parseLambda() param: " << pb->definition.name << ' ' << pid << endl);
 
@@ -16994,7 +17018,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( namespace_function )
 	parse_id = namespace_function_symbol(current_namespace, source_id);
 
-    parseFunction(*decl_type, parse_id, NULL, NULL, ret_is_ref);
+    parseFunction(*decl_type, parse_id, NULL, NULL, ret_is_ref,
+		  decl_typedef_alias);
 
     if ( namespace_function )
     {

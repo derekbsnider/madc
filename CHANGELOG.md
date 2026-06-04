@@ -37,6 +37,16 @@ keeps reference-returning class functions out of the non-trivial object retbuf
 call path, avoiding a bogus hidden return-slot argument. `testexternclinkage.mad`
 covers both paths.
 
+### Fixed — typedef-preserved function signatures in CIR (2026-06-04)
+
+Function signatures now retain source typedef aliases on `FuncDef` for returns
+and parameters, so CIR prototypes and definitions can render declaration-only
+extern functions with header spelling instead of falling back through raw
+`DataDef` type specs. This fixes `extern "C"` string-pointer declarations such
+as `string *__php_trim(string *)` without adding class-specific handling, and
+keeps ordinary namespace wrappers compatible with the C ABI boundary.
+`testexterncstringptr.mad` covers the path.
+
 ### Changed — C++ library objects now stay on the generic object path (2026-06-04)
 
 The retire-std-hardcoding branch now reaches the finish-line gate:

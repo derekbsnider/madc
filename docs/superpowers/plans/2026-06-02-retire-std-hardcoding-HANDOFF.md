@@ -58,6 +58,13 @@ Current Codex slice after that cleanup:
   functions from the retbuf path, so class-reference returning calls do not get
   a bogus hidden return-slot argument. `tests/testexternclinkage.mad` covers the
   parser path and the reference-return call shape.
+- Function signatures now preserve source typedef aliases on the shared
+  `FuncDef` signature object for both returns and parameters. CIR user
+  prototypes, definitions, function-pointer signatures, and referenced external
+  prototypes can render declaration-only extern C functions with header spelling
+  such as `string *` instead of falling back through raw `DataDef` rendering.
+  `tests/testexterncstringptr.mad` covers a C ABI string-pointer function used
+  by an ordinary namespace wrapper.
 
 Previous-session fixes already present in the dirty worktree before this slice:
 
@@ -75,9 +82,10 @@ Validation snapshot:
 - `bin/madc tests/testforeach2.mad` passes.
 - `bin/madc tests/testforeachheaderbody.mad` passes.
 - `bin/madc tests/testexternclinkage.mad` passes.
+- `bin/madc tests/testexterncstringptr.mad` passes.
 - `bash scripts/check-no-std-hardcoding.sh` reports 0 offending lines.
 - `make -C src` passes.
-- `make -C src fulltest` produced **484 passed, 5 failed, 1 timed out,
+- `make -C src fulltest` produced **485 passed, 5 failed, 1 timed out,
   55 skipped**. Known failures/timeouts: `testcin`, `testdefer`,
   `testfortypedcomma` (timed out this run; historically flaky fail/timeout),
   `testfstream`, `testlargesizeofquery`, `testloop`.
@@ -100,9 +108,9 @@ Open follow-ups before/while merging this branch to `develop`:
   expose inline namespace wrappers over `extern "C"` symbols. The target model
   is ordinary C++ namespace declarations/mangling for C++ surfaces, with
   C-friendly symbols only at the explicit `extern "C"` wrapper boundary.
-  `extern "C"` parsing and reference-return call shaping are now in place; the
-  next blocker is madc-side string-pointer prototype rendering before broadly
-  converting the string-returning wrappers.
+  `extern "C"` parsing, reference-return call shaping, and typedef-preserved
+  string-pointer prototype rendering are now in place; the remaining work is
+  the actual embedded-header split away from direct asm aliases.
 - Consider broadening the gate or adding a companion check for semantic drift
   patterns: runtime layout copies, `_M_*` outside headers/tests, and per-class
   branches outside the mangler/auto-include table.
