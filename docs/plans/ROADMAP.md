@@ -65,8 +65,10 @@ high-level" — the answer is both.**
   into ordinary C++ namespace wrappers over explicit C ABI declarations.
   Function signatures now preserve source typedef aliases for returns and
   parameters, so referenced extern C prototypes can render header spelling such
-  as `string *` without concrete-class handling; the remaining work is the
-  actual embedded polyglot header split away from direct asm aliases.
+  as `string *` without concrete-class handling. Embedded `<ns_php>` now uses
+  ordinary `php::` wrapper bodies over explicit `extern "C"` `__php_*` ABI
+  declarations; remaining work is to apply the same split to the other embedded
+  polyglot headers and helper aliases that still use direct `asm` names.
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
   engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
   pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped

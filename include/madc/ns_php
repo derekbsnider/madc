@@ -1,38 +1,79 @@
-namespace php {
-    std::string &trim(std::string &s) asm("__php_trim");
-    std::string &ltrim(std::string &s) asm("__php_ltrim");
-    std::string &rtrim(std::string &s) asm("__php_rtrim");
-    std::string &chop(std::string &s) asm("__php_chop");
-    std::string &ucfirst(std::string &s) asm("__php_ucfirst");
-    std::string &lcfirst(std::string &s) asm("__php_lcfirst");
-    std::string &str_repeat(std::string &s, long count) asm("__php_str_repeat");
-    std::string &str_replace(std::string &search, std::string &replace, std::string &subject) asm("__php_str_replace");
-    std::string &str_pad(std::string &s, long length, std::string &pad) asm("__php_str_pad");
-    long str_word_count(std::string &s) asm("__php_str_word_count");
-    std::string &nl2br(std::string &s) asm("__php_nl2br");
-    std::string &str_rot13(std::string &s) asm("__php_str_rot13");
-    std::string &chunk_split(std::string &s, long chunklen, std::string &separator) asm("__php_chunk_split");
-    std::string &number_format(std::string &result, long number, std::string &separator) asm("__php_number_format");
-    std::string &wordwrap(std::string &s, long width, std::string &separator) asm("__php_wordwrap");
+extern "C" {
+    std::string *__php_trim(std::string *);
+    std::string *__php_ltrim(std::string *);
+    std::string *__php_rtrim(std::string *);
+    std::string *__php_chop(std::string *);
+    std::string *__php_ucfirst(std::string *);
+    std::string *__php_lcfirst(std::string *);
+    std::string *__php_str_repeat(std::string *, long);
+    std::string *__php_str_replace(std::string *, std::string *, std::string *);
+    std::string *__php_str_pad(std::string *, long, std::string *);
+    long __php_str_word_count(std::string *);
+    std::string *__php_nl2br(std::string *);
+    std::string *__php_str_rot13(std::string *);
+    std::string *__php_chunk_split(std::string *, long, std::string *);
+    std::string *__php_number_format(std::string *, long, std::string *);
+    std::string *__php_wordwrap(std::string *, long, std::string *);
 
-    void explode(array out, const char *delim, const char *text) asm("__php_explode");
-    std::string &implode(std::string &result, const char *glue, array values) asm("__php_implode");
-    long count(array values) asm("__php_count");
-    void array_push(array values, const char *text) asm("__php_array_push");
-    void array_push_int(array values, long value) asm("__php_array_push_int");
-    void array_push_array(array values, array nested) asm("__php_array_push_array");
-    std::string &array_pop(std::string &result, array values) asm("__php_array_pop");
-    std::string &array_get(std::string &result, array values, long index) asm("__php_array_get");
-    long array_get_int(array values, long index) asm("__php_array_get_int");
-    void array_reverse(array values) asm("__php_array_reverse");
-    long in_array(const char *needle, array values) asm("__php_in_array");
-    long array_search(const char *needle, array values) asm("__php_array_search");
-    void array_unique(array values) asm("__php_array_unique");
-    std::string &array_shift(std::string &result, array values) asm("__php_array_shift");
-    void array_unshift(array values, const char *text) asm("__php_array_unshift");
-    void sort(array values) asm("__php_sort");
-    void rsort(array values) asm("__php_rsort");
-    void array_slice(array dest, array src, long offset, long length) asm("__php_array_slice");
-    void array_merge(array dest, array src) asm("__php_array_merge");
-    void array_column(array dest, array src, long column_index) asm("__php_array_column");
+    void __php_explode(array *, const char *, const char *);
+    std::string *__php_implode(std::string *, const char *, array *);
+    long __php_count(array *);
+    void __php_array_push(array *, const char *);
+    void __php_array_push_int(array *, long);
+    void __php_array_push_array(array *, array *);
+    std::string *__php_array_pop(std::string *, array *);
+    std::string *__php_array_get(std::string *, array *, long);
+    long __php_array_get_int(array *, long);
+    const char *__php_array_get_cstr(array *, long);
+    void __php_array_reverse(array *);
+    long __php_in_array(const char *, array *);
+    long __php_array_search(const char *, array *);
+    void __php_array_unique(array *);
+    std::string *__php_array_shift(std::string *, array *);
+    void __php_array_unshift(array *, const char *);
+    void __php_sort(array *);
+    void __php_rsort(array *);
+    void __php_array_slice(array *, array *, long, long);
+    void __php_array_merge(array *, array *);
+    void __php_array_column(array *, array *, long);
+}
+
+namespace php {
+    std::string &trim(std::string &s) { return *__php_trim(&s); }
+    std::string &ltrim(std::string &s) { return *__php_ltrim(&s); }
+    std::string &rtrim(std::string &s) { return *__php_rtrim(&s); }
+    std::string &chop(std::string &s) { return *__php_chop(&s); }
+    std::string &ucfirst(std::string &s) { return *__php_ucfirst(&s); }
+    std::string &lcfirst(std::string &s) { return *__php_lcfirst(&s); }
+    std::string &str_repeat(std::string &s, long count) { return *__php_str_repeat(&s, count); }
+    std::string &str_replace(std::string &search, std::string &replace, std::string &subject) { return *__php_str_replace(&search, &replace, &subject); }
+    std::string &str_pad(std::string &s, long length, std::string &pad) { return *__php_str_pad(&s, length, &pad); }
+    long str_word_count(std::string &s) { return __php_str_word_count(&s); }
+    std::string &nl2br(std::string &s) { return *__php_nl2br(&s); }
+    std::string &str_rot13(std::string &s) { return *__php_str_rot13(&s); }
+    std::string &chunk_split(std::string &s, long chunklen, std::string &separator) { return *__php_chunk_split(&s, chunklen, &separator); }
+    std::string &number_format(std::string &result, long number, std::string &separator) { return *__php_number_format(&result, number, &separator); }
+    std::string &wordwrap(std::string &s, long width, std::string &separator) { return *__php_wordwrap(&s, width, &separator); }
+
+    void explode(array &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
+    std::string &implode(std::string &result, const char *glue, array &values) { return *__php_implode(&result, glue, &values); }
+    long count(array &values) { return __php_count(&values); }
+    void array_push(array &values, const char *text) { __php_array_push(&values, text); }
+    void array_push_int(array &values, long value) { __php_array_push_int(&values, value); }
+    void array_push_array(array &values, array &nested) { __php_array_push_array(&values, &nested); }
+    std::string &array_pop(std::string &result, array &values) { return *__php_array_pop(&result, &values); }
+    std::string &array_get(std::string &result, array &values, long index) { return *__php_array_get(&result, &values, index); }
+    long array_get_int(array &values, long index) { return __php_array_get_int(&values, index); }
+    const char *array_get_cstr(array &values, long index) { return __php_array_get_cstr(&values, index); }
+    void array_reverse(array &values) { __php_array_reverse(&values); }
+    long in_array(const char *needle, array &values) { return __php_in_array(needle, &values); }
+    long array_search(const char *needle, array &values) { return __php_array_search(needle, &values); }
+    void array_unique(array &values) { __php_array_unique(&values); }
+    std::string &array_shift(std::string &result, array &values) { return *__php_array_shift(&result, &values); }
+    void array_unshift(array &values, const char *text) { __php_array_unshift(&values, text); }
+    void sort(array &values) { __php_sort(&values); }
+    void rsort(array &values) { __php_rsort(&values); }
+    void array_slice(array &dest, array &src, long offset, long length) { __php_array_slice(&dest, &src, offset, length); }
+    void array_merge(array &dest, array &src) { __php_array_merge(&dest, &src); }
+    void array_column(array &dest, array &src, long column_index) { __php_array_column(&dest, &src, column_index); }
 }

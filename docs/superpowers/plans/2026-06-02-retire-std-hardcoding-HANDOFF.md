@@ -65,6 +65,11 @@ Current Codex slice after that cleanup:
   such as `string *` instead of falling back through raw `DataDef` rendering.
   `tests/testexterncstringptr.mad` covers a C ABI string-pointer function used
   by an ordinary namespace wrapper.
+- Embedded `<ns_php>` now declares `__php_*` runtime symbols as explicit
+  `extern "C"` ABI functions and implements `php::` calls as ordinary namespace
+  wrapper bodies. Emitted C now contains generated `__ns_php_*` wrappers over
+  the ABI boundary instead of direct `asm("__php_*")` aliases on the C++
+  namespace surface.
 
 Previous-session fixes already present in the dirty worktree before this slice:
 
@@ -83,14 +88,18 @@ Validation snapshot:
 - `bin/madc tests/testforeachheaderbody.mad` passes.
 - `bin/madc tests/testexternclinkage.mad` passes.
 - `bin/madc tests/testexterncstringptr.mad` passes.
+- `bin/madc tests/testphp.mad` passes.
+- `bin/madc --emit=c11 tests/testphp.mad` shows `extern __php_*` ABI
+  prototypes plus generated `__ns_php_*` namespace wrappers.
 - `bash scripts/check-no-std-hardcoding.sh` reports 0 offending lines.
 - `make -C src` passes.
-- `make -C src fulltest` produced **485 passed, 5 failed, 1 timed out,
+- `make -C src test` passes.
+- `make -C src fulltest` produced **485 passed, 6 failed, 0 timed out,
   55 skipped**. Known failures/timeouts: `testcin`, `testdefer`,
-  `testfortypedcomma` (timed out this run; historically flaky fail/timeout),
+  `testfortypedcomma` (failed this run; historically flaky fail/timeout),
   `testfstream`, `testlargesizeofquery`, `testloop`.
-- `make -C src test` passes; `test_cir` includes the auto-include mode boundary
-  and generic external-bool return probes.
+- `test_cir` includes the auto-include mode boundary and generic external-bool
+  return probes.
 - Targeted standard-mode checks passed: default `testautoincludestdheaders`,
   explicit `--std=c++ tests/teststdcppinclude.mad`, and expected rejection of
   `testautoincludestdheaders` under `--std=c` / `--std=c++`.
@@ -103,14 +112,13 @@ Open follow-ups before/while merging this branch to `develop`:
 
 - Keep unrelated untracked `.claude/`, KG dumps, temp files, and scratch
   artifacts out of the branch cleanup/merge.
-- Revisit the embedded polyglot namespace headers: they currently use
-  `asm("__php_*")` / `asm("__perl_*")` declarations, while external C++ headers
-  expose inline namespace wrappers over `extern "C"` symbols. The target model
-  is ordinary C++ namespace declarations/mangling for C++ surfaces, with
-  C-friendly symbols only at the explicit `extern "C"` wrapper boundary.
-  `extern "C"` parsing, reference-return call shaping, and typedef-preserved
-  string-pointer prototype rendering are now in place; the remaining work is
-  the actual embedded-header split away from direct asm aliases.
+- Revisit the remaining embedded polyglot namespace headers: `<ns_php>` is now
+  split into ordinary namespace wrappers over explicit `extern "C"` ABI
+  declarations, but `ns_perl`, `ns_python`, `ns_ruby`, `ns_js`, `ns_rust`, and
+  helper aliases such as the array-cstr bridge still need the same drift pass.
+  The target model is ordinary C++ namespace declarations/mangling for C++
+  surfaces, with C-friendly symbols only at the explicit `extern "C"` wrapper
+  boundary.
 - Consider broadening the gate or adding a companion check for semantic drift
   patterns: runtime layout copies, `_M_*` outside headers/tests, and per-class
   branches outside the mangler/auto-include table.

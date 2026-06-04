@@ -47,6 +47,14 @@ as `string *__php_trim(string *)` without adding class-specific handling, and
 keeps ordinary namespace wrappers compatible with the C ABI boundary.
 `testexterncstringptr.mad` covers the path.
 
+### Changed — embedded `<ns_php>` uses ordinary namespace wrappers (2026-06-04)
+
+Embedded `<ns_php>` now declares the `__php_*` runtime symbols as explicit
+`extern "C"` ABI functions and implements `php::` calls as normal namespace
+function bodies over that boundary. Emitted C now contains generated
+`__ns_php_*` namespace wrappers instead of direct `asm("__php_*")` aliases for
+the C++ surface. `testphp.mad` and its `--emit=c11` path cover the split.
+
 ### Changed — C++ library objects now stay on the generic object path (2026-06-04)
 
 The retire-std-hardcoding branch now reaches the finish-line gate:
