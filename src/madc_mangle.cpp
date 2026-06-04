@@ -511,6 +511,26 @@ public:
 		return out;
 	}
 
+	std::string mangle_nested_function(const std::vector<std::string> &qualifiers,
+	                                   const std::string &name,
+	                                   const std::vector<std::string> &params)
+	{
+		reset();
+		std::vector<NameComponent> chain;
+		for (const auto &q : qualifiers)
+			chain.push_back(parse_component(q));
+		std::string out = "_ZN";
+		out += encode_name(chain, /*standalone=*/false);
+		out += source_name(name);
+		out += "E";
+		if (params.empty())
+			out += "v";
+		else
+			for (const auto &p : params)
+				out += encode_type(parse_type(p));
+		return out;
+	}
+
 private:
 	std::vector<std::string> keys_;   // canonical keys, in candidate order
 
@@ -801,6 +821,14 @@ std::string itanium_mangle_std_free_template(const std::string &name,
 	std::string opOrName = code.empty() ? source_name(name) : code;
 	ItaniumMangler m;
 	return m.mangle_std_free_template(opOrName, targs, ret, params);
+}
+
+std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers,
+                                      const std::string &name,
+                                      const std::vector<std::string> &param_types)
+{
+	ItaniumMangler m;
+	return m.mangle_nested_function(qualifiers, name, param_types);
 }
 
 std::string itanium_mangle_std_var(const std::string &name)

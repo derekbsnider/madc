@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed — PHP string helpers prefer real C++ namespace linkage (2026-06-04)
+
+Declaration-only namespace functions now keep C++ linkage by default and mangle
+to their real namespace symbols, while `extern "C"` declarations stay on the C
+ABI path. The PHP string helpers now make `php::trim(...)`,
+`php::number_format(...)`, and the related string functions the foundational
+C++ definitions; the `__php_*` symbols are convenience wrappers that call those
+namespace functions. `test_mangle` now covers GCC-backed nested namespace
+symbols, and `testphp.mad` plus `--emit=c11 testphp.mad` validate that emitted C
+imports `_ZN3php...` symbols for string helpers. PHP array helpers remain on the
+generated wrapper path pending the `MadArray` / `MadValue` C++ API naming slice.
+
 ### Changed — auto-includes are madc-mode only (2026-06-04)
 
 `Program::set_language_standard_option()` now centralizes `--std=` parsing for

@@ -104,6 +104,12 @@ std::string itanium_mangle_std_free_template(const std::string &name,
         const std::string &ret,
         const std::vector<std::string> &params);
 
+// Mangle a non-template namespace-scope function using the substitution-aware
+// type encoder for parameter spellings.
+std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers,
+                                      const std::string &name,
+                                      const std::vector<std::string> &param_types);
+
 // Mangle a namespace-scope std:: variable, e.g. std::cout → "_ZSt4cout".
 std::string itanium_mangle_std_var(const std::string &name);
 

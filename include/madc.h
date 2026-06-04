@@ -1129,6 +1129,8 @@ public:
 	return included_files.emplace(s, true).first->first.c_str();
     }
 
+    enum class LinkageSpec { Cpp, C };
+    LinkageSpec current_linkage = LinkageSpec::Cpp;
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
     bool parsing_const_decl = false;	// current declaration originated from `const` — set vfCONSTANT on the variable

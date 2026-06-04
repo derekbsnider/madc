@@ -65,7 +65,13 @@ high-level" — the answer is both.**
   into ordinary C++ namespace wrappers over explicit C ABI declarations.
   Function signatures now preserve source typedef aliases for returns and
   parameters, so referenced extern C prototypes can render header spelling such
-  as `string *` without concrete-class handling. Embedded `<ns_php>`,
+  as `string *` without concrete-class handling. Declaration-only namespace
+  functions now keep default C++ linkage and resolve to their real Itanium
+  namespace symbols; `extern "C"` declarations stay on the C ABI path. PHP
+  string helpers use real `php::` symbols with `__php_*` as C-developer
+  convenience wrappers; PHP array helpers remain a separate API/ABI slice while
+  the project decides whether `MadArray` / `MadValue` should become
+  `madc::array` / `madc::value`. Embedded `<ns_php>`,
   `<ns_perl>`, `<ns_python>`, `<ns_ruby>`, `<ns_js>`, `<ns_rust>`, and
   `<algorithm>` helper aliases now use ordinary wrapper bodies over explicit
   `extern "C"` ABI declarations; a direct embedded-header `asm("__...")` scan

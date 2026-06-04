@@ -83,6 +83,15 @@ Current Codex slice after that cleanup:
   wrapper bodies. `rust::match` remains parser syntax and is unaffected.
 - Embedded `<algorithm>` now declares its array helper ABI functions explicitly
   and uses ordinary helper bodies instead of direct `asm` aliases.
+- Declaration-only namespace functions now keep default C++ linkage and alias
+  to their real Itanium namespace symbols unless they are inside an
+  `extern "C"` linkage specification. The PHP string helpers now make
+  `php::trim(...)`, `php::number_format(...)`, and the related string helpers
+  the foundational C++ definitions; the `__php_*` C ABI functions call those
+  namespace functions as convenience wrappers. `test_mangle` includes
+  GCC-backed nested namespace symbol coverage. PHP array helpers remain a
+  separate ABI slice because their script `array` surface still maps to the
+  host `MadArray`/`MadValue` runtime types.
 
 Previous-session fixes already present in the dirty worktree before this slice:
 
@@ -102,8 +111,9 @@ Validation snapshot:
 - `bin/madc tests/testexternclinkage.mad` passes.
 - `bin/madc tests/testexterncstringptr.mad` passes.
 - `bin/madc tests/testphp.mad` passes.
-- `bin/madc --emit=c11 tests/testphp.mad` shows `extern __php_*` ABI
-  prototypes plus generated `__ns_php_*` namespace wrappers.
+- `bin/madc --emit=c11 tests/testphp.mad` shows `_ZN3php...` C++ namespace
+  imports for string helpers; array helpers still show generated `__ns_php_*`
+  wrappers over explicit `__php_*` ABI declarations.
 - `bin/madc tests/testperl.mad` passes.
 - `bin/madc tests/testregex.mad` passes.
 - `bin/madc tests/testprefer.mad` passes.
@@ -127,10 +137,10 @@ Validation snapshot:
   finds no direct embedded-header ABI aliases.
 - `make -C src` passes.
 - `make -C src test` passes.
-- `make -C src fulltest` produced **485 passed, 5 failed, 1 timed out,
-  55 skipped**. Known failures/timeouts: `testcin`, `testdefer`,
-  `testfortypedcomma` (timed out this run; historically flaky fail/timeout),
-  `testfstream`, `testlargesizeofquery`, `testloop`.
+- `make -C src fulltest` produced **485 passed, 6 failed, 0 timed out,
+  55 skipped**. Known failures: `testcin`, `testdefer`, `testfortypedcomma`
+  (failed this run; historically flaky fail/timeout), `testfstream`,
+  `testlargesizeofquery`, `testloop`.
 - `test_cir` includes the auto-include mode boundary and generic external-bool
   return probes.
 - Targeted standard-mode checks passed: default `testautoincludestdheaders`,
@@ -153,6 +163,11 @@ Open follow-ups before/while merging this branch to `develop`:
 - Consider broadening the gate or adding a companion check for semantic drift
   patterns: runtime layout copies, `_M_*` outside headers/tests, and per-class
   branches outside the mangler/auto-include table.
+- Consider moving `MadArray` / `MadValue` to real namespaced C++ API objects
+  (`madc::array` / `madc::value`) with compatibility aliases or wrapper
+  symbols. That would give PHP array helpers a normal C++ namespace type
+  surface before flipping them away from generated `__ns_php_*` wrappers; type
+  aliases alone do not preserve old C++ mangled names.
 
 ---
 

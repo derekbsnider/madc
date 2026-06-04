@@ -1468,6 +1468,66 @@ static std::string namespace_function_symbol(const std::string &ns_name,
     return sym;
 }
 
+static std::vector<std::string> namespace_qualifiers(const std::string &ns_name)
+{
+    std::vector<std::string> out;
+    size_t start = 0;
+    while ( start < ns_name.size() )
+    {
+	size_t sep = ns_name.find("::", start);
+	std::string part = sep == std::string::npos
+			 ? ns_name.substr(start)
+			 : ns_name.substr(start, sep - start);
+	if ( !part.empty() )
+	    out.push_back(part);
+	if ( sep == std::string::npos )
+	    break;
+	start = sep + 2;
+    }
+    return out;
+}
+
+static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
+{
+    if ( !dd )
+	return "";
+    if ( as_ref )
+    {
+	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd);
+	DataDef *base = ptr && ptr->base_type ? ptr->base_type : dd;
+	std::string s = base->canonical_cpp_spelling.empty()
+		      ? base->name : base->canonical_cpp_spelling;
+	return s + "&";
+    }
+    return dd->canonical_cpp_spelling.empty() ? dd->name : dd->canonical_cpp_spelling;
+}
+
+static std::string namespace_cpp_function_symbol(const std::string &ns_name,
+						 const std::string &member_name,
+						 FuncDef *fd)
+{
+    std::vector<std::string> params;
+    if ( fd )
+    {
+	for ( size_t i = 0; i < fd->parameters.size(); ++i )
+	{
+	    if ( fd->is_varargs && i + 1 == fd->parameters.size() )
+		break;
+	    std::string spelling;
+	    if ( i < fd->param_cpp_spellings.size() )
+		spelling = fd->param_cpp_spellings[i];
+	    if ( spelling.empty() )
+	    {
+		bool refp = i < fd->ref_params.size() && fd->ref_params[i];
+		spelling = cpp_spelling_for_mangle(fd->parameters[i], refp);
+	    }
+	    params.push_back(spelling);
+	}
+    }
+    return itanium_mangle_nested_sub(namespace_qualifiers(ns_name),
+				     member_name, params);
+}
+
 static DataDef *unwrap_subscript_element_type(DataDef *base_type)
 {
     if ( !base_type )
@@ -13260,6 +13320,7 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'extern'" << flush;
     bool prev_extern = pgm.parsing_extern_decl;
+    Program::LinkageSpec prev_linkage = pgm.current_linkage;
     pgm.parsing_extern_decl = true;
     TokenBase *result = NULL;
     bool handled = false;
@@ -13270,6 +13331,9 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	    TokenStr *linkage = static_cast<TokenStr *>(pgm.nextToken());
 	    if ( linkage->str != "C" && linkage->str != "C++" )
 		pgm.Throw(linkage) << "Unsupported extern linkage '" << linkage->str << "'" << flush;
+	    pgm.current_linkage = linkage->str == "C"
+				? Program::LinkageSpec::C
+				: Program::LinkageSpec::Cpp;
 	    TokenBase *after = pgm.nextToken();
 	    if ( !after )
 		pgm.Throw(linkage) << "Unexpected end of input after extern linkage" << flush;
@@ -13329,9 +13393,11 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
     catch ( ... )
     {
 	pgm.parsing_extern_decl = prev_extern;
+	pgm.current_linkage = prev_linkage;
 	throw;
     }
     pgm.parsing_extern_decl = prev_extern;
+    pgm.current_linkage = prev_linkage;
     return result;
 }
 
@@ -17026,6 +17092,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	Variable *ns_var = tkProgram ? tkProgram->findVariable(parse_id) : NULL;
 	if ( ns_var )
 	{
+	    FuncDef *fd = dynamic_cast<FuncDef *>(ns_var->type);
+	    if ( fd && fd->declaration_only
+	      && current_linkage == LinkageSpec::Cpp )
+		ns_var->storage_alias_name =
+		    namespace_cpp_function_symbol(current_namespace, source_id, fd);
 	    variable_map_t &ns = namespace_map[current_namespace];
 	    ns[source_id] = ns_var;
 	    ns.erase(parse_id);

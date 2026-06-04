@@ -475,22 +475,47 @@ void php_array_column(MadArray *dest, MadArray *src, int64_t column_index)
 	}
 }
 
+namespace php {
+
+std::string &trim(std::string &s) { return *php_trim(&s); }
+std::string &ltrim(std::string &s) { return *php_ltrim(&s); }
+std::string &rtrim(std::string &s) { return *php_rtrim(&s); }
+std::string &chop(std::string &s) { return rtrim(s); }
+std::string &ucfirst(std::string &s) { return *php_ucfirst(&s); }
+std::string &lcfirst(std::string &s) { return *php_lcfirst(&s); }
+std::string &str_repeat(std::string &s, int64_t count) { return *php_str_repeat(&s, count); }
+std::string &str_replace(std::string &search, std::string &replace, std::string &subject)
+	{ return *php_str_replace(&search, &replace, &subject); }
+std::string &str_pad(std::string &s, int64_t length, std::string &pad)
+	{ return *php_str_pad(&s, length, &pad); }
+int64_t str_word_count(std::string &s) { return php_str_word_count(&s); }
+std::string &nl2br(std::string &s) { return *php_nl2br(&s); }
+std::string &str_rot13(std::string &s) { return *php_str_rot13(&s); }
+std::string &chunk_split(std::string &s, int64_t chunklen, std::string &separator)
+	{ return *php_chunk_split(&s, chunklen, &separator); }
+std::string &number_format(std::string &result, int64_t number, std::string &separator)
+	{ return *php_number_format(&result, number, &separator); }
+std::string &wordwrap(std::string &s, int64_t width, std::string &separator)
+	{ return *php_wordwrap(&s, width, &separator); }
+
+}
+
 extern "C" {
-// Thin C-linkage wrappers for transpiler import resolution
-std::string *__php_trim(std::string *a) { return php_trim(a); }
-std::string *__php_ltrim(std::string *a) { return php_ltrim(a); }
-std::string *__php_rtrim(std::string *a) { return php_rtrim(a); }
-std::string *__php_ucfirst(std::string *a) { return php_ucfirst(a); }
-std::string *__php_lcfirst(std::string *a) { return php_lcfirst(a); }
-std::string *__php_str_repeat(std::string *a, int64_t b) { return php_str_repeat(a, b); }
-std::string *__php_str_replace(std::string *a, std::string *b, std::string *c) { return php_str_replace(a, b, c); }
-std::string *__php_str_pad(std::string *a, int64_t b, std::string *c) { return php_str_pad(a, b, c); }
-int64_t __php_str_word_count(std::string *a) { return php_str_word_count(a); }
-std::string *__php_nl2br(std::string *a) { return php_nl2br(a); }
-std::string *__php_str_rot13(std::string *a) { return php_str_rot13(a); }
-std::string *__php_chunk_split(std::string *a, int64_t b, std::string *c) { return php_chunk_split(a, b, c); }
-std::string *__php_number_format(std::string *a, int64_t b, std::string *c) { return php_number_format(a, b, c); }
-std::string *__php_wordwrap(std::string *a, int64_t b, std::string *c) { return php_wordwrap(a, b, c); }
+// Thin C-linkage convenience wrappers over the C++ namespace surface.
+std::string *__php_trim(std::string *a) { return &php::trim(*a); }
+std::string *__php_ltrim(std::string *a) { return &php::ltrim(*a); }
+std::string *__php_rtrim(std::string *a) { return &php::rtrim(*a); }
+std::string *__php_ucfirst(std::string *a) { return &php::ucfirst(*a); }
+std::string *__php_lcfirst(std::string *a) { return &php::lcfirst(*a); }
+std::string *__php_str_repeat(std::string *a, int64_t b) { return &php::str_repeat(*a, b); }
+std::string *__php_str_replace(std::string *a, std::string *b, std::string *c) { return &php::str_replace(*a, *b, *c); }
+std::string *__php_str_pad(std::string *a, int64_t b, std::string *c) { return &php::str_pad(*a, b, *c); }
+int64_t __php_str_word_count(std::string *a) { return php::str_word_count(*a); }
+std::string *__php_nl2br(std::string *a) { return &php::nl2br(*a); }
+std::string *__php_str_rot13(std::string *a) { return &php::str_rot13(*a); }
+std::string *__php_chunk_split(std::string *a, int64_t b, std::string *c) { return &php::chunk_split(*a, b, *c); }
+std::string *__php_number_format(std::string *a, int64_t b, std::string *c) { return &php::number_format(*a, b, *c); }
+std::string *__php_wordwrap(std::string *a, int64_t b, std::string *c) { return &php::wordwrap(*a, b, *c); }
 void __php_explode(MadArray *a, const char *b, const char *c) { php_explode(a, b, c); }
 std::string *__php_implode(std::string *a, const char *b, MadArray *c) { return php_implode(a, b, c); }
 int64_t __php_count(MadArray *a) { return php_count(a); }
@@ -513,5 +538,5 @@ void __php_array_slice(MadArray *a, MadArray *b, int64_t c, int64_t d) { php_arr
 void __php_array_merge(MadArray *a, MadArray *b) { php_array_merge(a, b); }
 void __php_array_column(MadArray *a, MadArray *b, int64_t c) { php_array_column(a, b, c); }
 // Aliases
-std::string *__php_chop(std::string *a) { return php_rtrim(a); }  // chop = rtrim in PHP
+std::string *__php_chop(std::string *a) { return &php::chop(*a); }  // chop = rtrim in PHP
 }

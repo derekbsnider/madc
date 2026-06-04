@@ -1236,21 +1236,21 @@ inline std::string &substr(std::string &result, const char *text, int64_t offset
 }
 
 namespace php {
-    std::string &trim(std::string &s) { return *__php_trim(&s); }
-    std::string &ltrim(std::string &s) { return *__php_ltrim(&s); }
-    std::string &rtrim(std::string &s) { return *__php_rtrim(&s); }
-    std::string &chop(std::string &s) { return *__php_chop(&s); }
-    std::string &ucfirst(std::string &s) { return *__php_ucfirst(&s); }
-    std::string &lcfirst(std::string &s) { return *__php_lcfirst(&s); }
-    std::string &str_repeat(std::string &s, long count) { return *__php_str_repeat(&s, count); }
-    std::string &str_replace(std::string &search, std::string &replace, std::string &subject) { return *__php_str_replace(&search, &replace, &subject); }
-    std::string &str_pad(std::string &s, long length, std::string &pad) { return *__php_str_pad(&s, length, &pad); }
-    long str_word_count(std::string &s) { return __php_str_word_count(&s); }
-    std::string &nl2br(std::string &s) { return *__php_nl2br(&s); }
-    std::string &str_rot13(std::string &s) { return *__php_str_rot13(&s); }
-    std::string &chunk_split(std::string &s, long chunklen, std::string &separator) { return *__php_chunk_split(&s, chunklen, &separator); }
-    std::string &number_format(std::string &result, long number, std::string &separator) { return *__php_number_format(&result, number, &separator); }
-    std::string &wordwrap(std::string &s, long width, std::string &separator) { return *__php_wordwrap(&s, width, &separator); }
+    std::string &trim(std::string &s);
+    std::string &ltrim(std::string &s);
+    std::string &rtrim(std::string &s);
+    std::string &chop(std::string &s);
+    std::string &ucfirst(std::string &s);
+    std::string &lcfirst(std::string &s);
+    std::string &str_repeat(std::string &s, long count);
+    std::string &str_replace(std::string &search, std::string &replace, std::string &subject);
+    std::string &str_pad(std::string &s, long length, std::string &pad);
+    long str_word_count(std::string &s);
+    std::string &nl2br(std::string &s);
+    std::string &str_rot13(std::string &s);
+    std::string &chunk_split(std::string &s, long chunklen, std::string &separator);
+    std::string &number_format(std::string &result, long number, std::string &separator);
+    std::string &wordwrap(std::string &s, long width, std::string &separator);
 
     void explode(array &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
     std::string &implode(std::string &result, const char *glue, array &values) { return *__php_implode(&result, glue, &values); }

@@ -188,6 +188,14 @@ TEST_SUITE("Itanium substitution: std::string") {
 	TEST_CASE("std_string_type() helper matches") {
 		CHECK(std_string_type() == S);
 	}
+
+	TEST_CASE("namespace function with string reference parameter") {
+		CHECK(itanium_mangle_nested_sub({"php"}, "trim", {S + "&"})
+		      == "_ZN3php4trimERNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE");
+		CHECK(itanium_mangle_nested_sub({"php"}, "number_format",
+		                                {S + "&", "long", S + "&"})
+		      == "_ZN3php13number_formatERNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEElS6_");
+	}
 }
 
 TEST_SUITE("Itanium substitution: std::vector") {
