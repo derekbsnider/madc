@@ -74,6 +74,10 @@ Current Codex slice after that cleanup:
   `__perl_*` ABI declarations plus ordinary `perl::` wrapper bodies in the
   embedded header. Emitted C now contains generated `__ns_perl_*` wrappers over
   that ABI boundary.
+- Embedded `<ns_python>`, `<ns_ruby>`, and `<ns_js>` now follow the same model:
+  explicit runtime ABI declarations plus ordinary namespace wrapper bodies.
+  Emitted C now contains generated `__ns_python_*`, `__ns_ruby_*`, and
+  `__ns_js_*` wrappers over those ABI boundaries.
 
 Previous-session fixes already present in the dirty worktree before this slice:
 
@@ -100,6 +104,10 @@ Validation snapshot:
 - `bin/madc tests/testprefer.mad` passes.
 - `bin/madc --emit=c11 tests/testperl.mad` shows `extern __perl_*` ABI
   prototypes plus generated `__ns_perl_*` namespace wrappers.
+- `bin/madc tests/testlang.mad` passes.
+- `bin/madc tests/testrubycharsshadow.mad` passes.
+- `bin/madc --emit=c11 tests/testlang.mad` shows `extern __py_*`, `__rb_*`,
+  and `__js_*` ABI prototypes plus generated namespace wrappers.
 - `bash scripts/check-no-std-hardcoding.sh` reports 0 offending lines.
 - `make -C src` passes.
 - `make -C src test` passes.
@@ -121,10 +129,10 @@ Open follow-ups before/while merging this branch to `develop`:
 
 - Keep unrelated untracked `.claude/`, KG dumps, temp files, and scratch
   artifacts out of the branch cleanup/merge.
-- Revisit the remaining embedded polyglot namespace headers: `<ns_php>` and
-  `<ns_perl>` are now split into ordinary namespace wrappers over explicit
-  `extern "C"` ABI declarations, but `ns_python`, `ns_ruby`, `ns_js`,
-  `ns_rust`, and helper aliases such as the array-cstr bridge still need the
+- Revisit the remaining embedded polyglot namespace surfaces: `<ns_php>`,
+  `<ns_perl>`, `<ns_python>`, `<ns_ruby>`, and `<ns_js>` are now split into
+  ordinary namespace wrappers over explicit `extern "C"` ABI declarations, but
+  `<ns_rust>` and helper aliases such as the array-cstr bridge still need the
   same drift pass. The target model is ordinary C++ namespace
   declarations/mangling for C++ surfaces, with C-friendly symbols only at the
   explicit `extern "C"` wrapper boundary.

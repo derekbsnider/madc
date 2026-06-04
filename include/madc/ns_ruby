@@ -1,14 +1,29 @@
+extern "C" {
+    std::string *__rb_squeeze(std::string *);
+    std::string *__rb_tr(std::string *, const char *, const char *);
+    void __rb_chars(array *, const char *);
+    std::string *__rb_capitalize(std::string *);
+    std::string *__rb_delete(std::string *, const char *);
+    long __rb_count(const char *, const char *);
+    long __rb_include(const char *, const char *);
+    std::string *__rb_gsub(std::string *, const char *, const char *);
+    std::string *__rb_sub(std::string *, const char *, const char *);
+    void __rb_rotate(array *, long);
+    void __rb_compact(array *);
+    void __rb_flatten(array *, const char *);
+}
+
 namespace ruby {
-    std::string &squeeze(std::string &s) asm("__rb_squeeze");
-    std::string &tr(std::string &s, const char *from, const char *to) asm("__rb_tr");
-    void chars(array out, const char *text) asm("__rb_chars");
-    std::string &capitalize(std::string &s) asm("__rb_capitalize");
-    std::string &delete(std::string &s, const char *chars) asm("__rb_delete");
-    long count(const char *text, const char *chars) asm("__rb_count");
-    long include(const char *text, const char *substr) asm("__rb_include");
-    std::string &gsub(std::string &s, const char *pattern, const char *replacement) asm("__rb_gsub");
-    std::string &sub(std::string &s, const char *pattern, const char *replacement) asm("__rb_sub");
-    void rotate(array values, long n) asm("__rb_rotate");
-    void compact(array values) asm("__rb_compact");
-    void flatten(array values, const char *text) asm("__rb_flatten");
+    std::string &squeeze(std::string &s) { return *__rb_squeeze(&s); }
+    std::string &tr(std::string &s, const char *from, const char *to) { return *__rb_tr(&s, from, to); }
+    void chars(array &out, const char *text) { __rb_chars(&out, text); }
+    std::string &capitalize(std::string &s) { return *__rb_capitalize(&s); }
+    std::string &delete(std::string &s, const char *chars) { return *__rb_delete(&s, chars); }
+    long count(const char *text, const char *chars) { return __rb_count(text, chars); }
+    long include(const char *text, const char *substr) { return __rb_include(text, substr); }
+    std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *__rb_gsub(&s, pattern, replacement); }
+    std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *__rb_sub(&s, pattern, replacement); }
+    void rotate(array &values, long n) { __rb_rotate(&values, n); }
+    void compact(array &values) { __rb_compact(&values); }
+    void flatten(array &values, const char *text) { __rb_flatten(&values, text); }
 }

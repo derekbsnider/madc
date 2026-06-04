@@ -1,17 +1,35 @@
+extern "C" {
+    std::string *__py_title(std::string *);
+    std::string *__py_swapcase(std::string *);
+    std::string *__py_center(std::string *, long, const char *);
+    std::string *__py_ljust(std::string *, long, const char *);
+    std::string *__py_rjust(std::string *, long, const char *);
+    std::string *__py_zfill(std::string *, long);
+    long __py_count(const char *, const char *);
+    long __py_startswith(const char *, const char *);
+    long __py_endswith(const char *, const char *);
+    long __py_isdigit(const char *);
+    long __py_isalpha(const char *);
+    long __py_isalnum(const char *);
+    long __py_isspace(const char *);
+    std::string *__py_replace(std::string *, const char *, const char *);
+    std::string *__py_format(std::string *, const char *, array *);
+}
+
 namespace python {
-    std::string &title(std::string &s) asm("__py_title");
-    std::string &swapcase(std::string &s) asm("__py_swapcase");
-    std::string &center(std::string &s, long width, const char *fill) asm("__py_center");
-    std::string &ljust(std::string &s, long width, const char *fill) asm("__py_ljust");
-    std::string &rjust(std::string &s, long width, const char *fill) asm("__py_rjust");
-    std::string &zfill(std::string &s, long width) asm("__py_zfill");
-    long count(const char *haystack, const char *needle) asm("__py_count");
-    long startswith(const char *text, const char *prefix) asm("__py_startswith");
-    long endswith(const char *text, const char *suffix) asm("__py_endswith");
-    long isdigit(const char *text) asm("__py_isdigit");
-    long isalpha(const char *text) asm("__py_isalpha");
-    long isalnum(const char *text) asm("__py_isalnum");
-    long isspace(const char *text) asm("__py_isspace");
-    std::string &replace(std::string &s, const char *old_text, const char *new_text) asm("__py_replace");
-    std::string &format(std::string &result, const char *fmt, array args) asm("__py_format");
+    std::string &title(std::string &s) { return *__py_title(&s); }
+    std::string &swapcase(std::string &s) { return *__py_swapcase(&s); }
+    std::string &center(std::string &s, long width, const char *fill) { return *__py_center(&s, width, fill); }
+    std::string &ljust(std::string &s, long width, const char *fill) { return *__py_ljust(&s, width, fill); }
+    std::string &rjust(std::string &s, long width, const char *fill) { return *__py_rjust(&s, width, fill); }
+    std::string &zfill(std::string &s, long width) { return *__py_zfill(&s, width); }
+    long count(const char *haystack, const char *needle) { return __py_count(haystack, needle); }
+    long startswith(const char *text, const char *prefix) { return __py_startswith(text, prefix); }
+    long endswith(const char *text, const char *suffix) { return __py_endswith(text, suffix); }
+    long isdigit(const char *text) { return __py_isdigit(text); }
+    long isalpha(const char *text) { return __py_isalpha(text); }
+    long isalnum(const char *text) { return __py_isalnum(text); }
+    long isspace(const char *text) { return __py_isspace(text); }
+    std::string &replace(std::string &s, const char *old_text, const char *new_text) { return *__py_replace(&s, old_text, new_text); }
+    std::string &format(std::string &result, const char *fmt, array &args) { return *__py_format(&result, fmt, &args); }
 }

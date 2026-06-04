@@ -1036,13 +1036,22 @@ struct sockaddr_in {
 
 #include <netinet/in.h>
 )EMBED"},
-    {"ns_js", R"EMBED(namespace js {
-    std::string &btoa(std::string &result, const char *input) asm("__js_btoa");
-    std::string &atob(std::string &result, const char *input) asm("__js_atob");
-    std::string &encodeURIComponent(std::string &result, const char *input) asm("__js_encodeURIComponent");
-    std::string &decodeURIComponent(std::string &result, const char *input) asm("__js_decodeURIComponent");
-    long parseInt(const char *text, long radix) asm("__js_parseInt");
-    std::string &stringify(std::string &result, array values) asm("__js_stringify");
+    {"ns_js", R"EMBED(extern "C" {
+    std::string *__js_btoa(std::string *, const char *);
+    std::string *__js_atob(std::string *, const char *);
+    std::string *__js_encodeURIComponent(std::string *, const char *);
+    std::string *__js_decodeURIComponent(std::string *, const char *);
+    long __js_parseInt(const char *, long);
+    std::string *__js_stringify(std::string *, array *);
+}
+
+namespace js {
+    std::string &btoa(std::string &result, const char *input) { return *__js_btoa(&result, input); }
+    std::string &atob(std::string &result, const char *input) { return *__js_atob(&result, input); }
+    std::string &encodeURIComponent(std::string &result, const char *input) { return *__js_encodeURIComponent(&result, input); }
+    std::string &decodeURIComponent(std::string &result, const char *input) { return *__js_decodeURIComponent(&result, input); }
+    long parseInt(const char *text, long radix) { return __js_parseInt(text, radix); }
+    std::string &stringify(std::string &result, array &values) { return *__js_stringify(&result, &values); }
 }
 )EMBED"},
     {"ns_js.h", R"EMBED(#ifndef MADC_NS_JS_H
@@ -1352,22 +1361,40 @@ inline void array_column(MadArray &dest, MadArray &src, int64_t column_index) { 
 
 #endif
 )EMBED"},
-    {"ns_python", R"EMBED(namespace python {
-    std::string &title(std::string &s) asm("__py_title");
-    std::string &swapcase(std::string &s) asm("__py_swapcase");
-    std::string &center(std::string &s, long width, const char *fill) asm("__py_center");
-    std::string &ljust(std::string &s, long width, const char *fill) asm("__py_ljust");
-    std::string &rjust(std::string &s, long width, const char *fill) asm("__py_rjust");
-    std::string &zfill(std::string &s, long width) asm("__py_zfill");
-    long count(const char *haystack, const char *needle) asm("__py_count");
-    long startswith(const char *text, const char *prefix) asm("__py_startswith");
-    long endswith(const char *text, const char *suffix) asm("__py_endswith");
-    long isdigit(const char *text) asm("__py_isdigit");
-    long isalpha(const char *text) asm("__py_isalpha");
-    long isalnum(const char *text) asm("__py_isalnum");
-    long isspace(const char *text) asm("__py_isspace");
-    std::string &replace(std::string &s, const char *old_text, const char *new_text) asm("__py_replace");
-    std::string &format(std::string &result, const char *fmt, array args) asm("__py_format");
+    {"ns_python", R"EMBED(extern "C" {
+    std::string *__py_title(std::string *);
+    std::string *__py_swapcase(std::string *);
+    std::string *__py_center(std::string *, long, const char *);
+    std::string *__py_ljust(std::string *, long, const char *);
+    std::string *__py_rjust(std::string *, long, const char *);
+    std::string *__py_zfill(std::string *, long);
+    long __py_count(const char *, const char *);
+    long __py_startswith(const char *, const char *);
+    long __py_endswith(const char *, const char *);
+    long __py_isdigit(const char *);
+    long __py_isalpha(const char *);
+    long __py_isalnum(const char *);
+    long __py_isspace(const char *);
+    std::string *__py_replace(std::string *, const char *, const char *);
+    std::string *__py_format(std::string *, const char *, array *);
+}
+
+namespace python {
+    std::string &title(std::string &s) { return *__py_title(&s); }
+    std::string &swapcase(std::string &s) { return *__py_swapcase(&s); }
+    std::string &center(std::string &s, long width, const char *fill) { return *__py_center(&s, width, fill); }
+    std::string &ljust(std::string &s, long width, const char *fill) { return *__py_ljust(&s, width, fill); }
+    std::string &rjust(std::string &s, long width, const char *fill) { return *__py_rjust(&s, width, fill); }
+    std::string &zfill(std::string &s, long width) { return *__py_zfill(&s, width); }
+    long count(const char *haystack, const char *needle) { return __py_count(haystack, needle); }
+    long startswith(const char *text, const char *prefix) { return __py_startswith(text, prefix); }
+    long endswith(const char *text, const char *suffix) { return __py_endswith(text, suffix); }
+    long isdigit(const char *text) { return __py_isdigit(text); }
+    long isalpha(const char *text) { return __py_isalpha(text); }
+    long isalnum(const char *text) { return __py_isalnum(text); }
+    long isspace(const char *text) { return __py_isspace(text); }
+    std::string &replace(std::string &s, const char *old_text, const char *new_text) { return *__py_replace(&s, old_text, new_text); }
+    std::string &format(std::string &result, const char *fmt, array &args) { return *__py_format(&result, fmt, &args); }
 }
 )EMBED"},
     {"ns_python.h", R"EMBED(#ifndef MADC_NS_PYTHON_H
@@ -1419,19 +1446,34 @@ inline std::string &format(std::string &result, const char *fmt, MadArray &args)
 
 #endif
 )EMBED"},
-    {"ns_ruby", R"EMBED(namespace ruby {
-    std::string &squeeze(std::string &s) asm("__rb_squeeze");
-    std::string &tr(std::string &s, const char *from, const char *to) asm("__rb_tr");
-    void chars(array out, const char *text) asm("__rb_chars");
-    std::string &capitalize(std::string &s) asm("__rb_capitalize");
-    std::string &delete(std::string &s, const char *chars) asm("__rb_delete");
-    long count(const char *text, const char *chars) asm("__rb_count");
-    long include(const char *text, const char *substr) asm("__rb_include");
-    std::string &gsub(std::string &s, const char *pattern, const char *replacement) asm("__rb_gsub");
-    std::string &sub(std::string &s, const char *pattern, const char *replacement) asm("__rb_sub");
-    void rotate(array values, long n) asm("__rb_rotate");
-    void compact(array values) asm("__rb_compact");
-    void flatten(array values, const char *text) asm("__rb_flatten");
+    {"ns_ruby", R"EMBED(extern "C" {
+    std::string *__rb_squeeze(std::string *);
+    std::string *__rb_tr(std::string *, const char *, const char *);
+    void __rb_chars(array *, const char *);
+    std::string *__rb_capitalize(std::string *);
+    std::string *__rb_delete(std::string *, const char *);
+    long __rb_count(const char *, const char *);
+    long __rb_include(const char *, const char *);
+    std::string *__rb_gsub(std::string *, const char *, const char *);
+    std::string *__rb_sub(std::string *, const char *, const char *);
+    void __rb_rotate(array *, long);
+    void __rb_compact(array *);
+    void __rb_flatten(array *, const char *);
+}
+
+namespace ruby {
+    std::string &squeeze(std::string &s) { return *__rb_squeeze(&s); }
+    std::string &tr(std::string &s, const char *from, const char *to) { return *__rb_tr(&s, from, to); }
+    void chars(array &out, const char *text) { __rb_chars(&out, text); }
+    std::string &capitalize(std::string &s) { return *__rb_capitalize(&s); }
+    std::string &delete(std::string &s, const char *chars) { return *__rb_delete(&s, chars); }
+    long count(const char *text, const char *chars) { return __rb_count(text, chars); }
+    long include(const char *text, const char *substr) { return __rb_include(text, substr); }
+    std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *__rb_gsub(&s, pattern, replacement); }
+    std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *__rb_sub(&s, pattern, replacement); }
+    void rotate(array &values, long n) { __rb_rotate(&values, n); }
+    void compact(array &values) { __rb_compact(&values); }
+    void flatten(array &values, const char *text) { __rb_flatten(&values, text); }
 }
 )EMBED"},
     {"ns_ruby.h", R"EMBED(#ifndef MADC_NS_RUBY_H

@@ -63,6 +63,14 @@ functions are ordinary namespace wrapper bodies. `testperl.mad`,
 `testregex.mad`, `testprefer.mad`, and `--emit=c11 testperl.mad` cover the
 split.
 
+### Changed — embedded Python/Ruby/JS namespaces use ordinary wrappers (2026-06-04)
+
+Embedded `<ns_python>`, `<ns_ruby>`, and `<ns_js>` now declare their runtime
+symbols as explicit `extern "C"` ABI functions and define normal namespace
+wrapper bodies over that boundary. `testlang.mad`, `testrubycharsshadow.mad`,
+and `--emit=c11 testlang.mad` cover the generated `__ns_python_*`,
+`__ns_ruby_*`, and `__ns_js_*` surfaces.
+
 ### Changed — C++ library objects now stay on the generic object path (2026-06-04)
 
 The retire-std-hardcoding branch now reaches the finish-line gate:
