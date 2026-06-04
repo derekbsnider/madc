@@ -110,6 +110,10 @@ std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers
                                       const std::string &name,
                                       const std::vector<std::string> &param_types);
 
+// Mangle a namespace-scope variable, e.g. std::cin -> "_ZSt3cin".
+std::string itanium_mangle_nested_var(const std::vector<std::string> &qualifiers,
+                                      const std::string &name);
+
 // Mangle a namespace-scope std:: variable, e.g. std::cout → "_ZSt4cout".
 std::string itanium_mangle_std_var(const std::string &name);
 

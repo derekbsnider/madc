@@ -433,6 +433,10 @@ namespace std {
     {"iostream", R"EMBED(#include <stdio.h>
 #include <string>
 
+extern "C" {
+    void *__madc_istream_extract(void *stream, void *value);
+}
+
 namespace std {
     template<typename _CharT, typename _Traits>
     class basic_ostream {
@@ -552,11 +556,25 @@ namespace std {
 	}
     };
 
+    template<typename _CharT, typename _Traits>
+    class basic_istream {
+	long _M_storage[1];
+    public:
+	basic_istream &operator>>(int &v);
+	basic_istream &operator>>(long &v);
+	basic_istream &operator>>(string &s) {
+	    __madc_istream_extract(this, &s);
+	    return *this;
+	}
+    };
+
     typedef basic_ostream<char, std::char_traits<char>> ostream;
+    typedef basic_istream<char, std::char_traits<char>> istream;
 
     ostream cout(1);
     ostream cerr(2);
     ostream clog(2);
+    extern istream cin;
 
     char *endl = "\n";
 }

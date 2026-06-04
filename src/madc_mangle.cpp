@@ -531,6 +531,19 @@ public:
 		return out;
 	}
 
+	std::string mangle_nested_variable(const std::vector<std::string> &qualifiers,
+	                                   const std::string &name)
+	{
+		reset();
+		std::vector<NameComponent> chain;
+		for (const auto &q : qualifiers)
+			chain.push_back(parse_component(q));
+		chain.push_back(parse_component(name));
+		std::string out = "_Z";
+		out += encode_name(chain, /*standalone=*/true);
+		return out;
+	}
+
 private:
 	std::vector<std::string> keys_;   // canonical keys, in candidate order
 
@@ -829,6 +842,13 @@ std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers
 {
 	ItaniumMangler m;
 	return m.mangle_nested_function(qualifiers, name, param_types);
+}
+
+std::string itanium_mangle_nested_var(const std::vector<std::string> &qualifiers,
+                                      const std::string &name)
+{
+	ItaniumMangler m;
+	return m.mangle_nested_variable(qualifiers, name);
 }
 
 std::string itanium_mangle_std_var(const std::string &name)

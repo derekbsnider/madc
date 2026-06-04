@@ -2803,7 +2803,8 @@ static bool var_is_pointer_stored(const Variable &v)
 // object-instance addressing; object_var_void_addr wraps this in a void* cast.
 node_t CirBuilder::object_var_addr(const Variable &v, TokenBase *origin)
 {
-	node_t base = id(v.name.c_str(), origin);
+	std::string emitted = var_emit_name(v);
+	node_t base = id(emitted.c_str(), origin);
 	return var_is_pointer_stored(v) ? base : node1(N_ADDR, base, origin);
 }
 
@@ -4283,6 +4284,8 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 		node_t ocall = node2(N_CALL, id(callee->emit_symbol.c_str(), origin),
 				     args, origin);
 		CIR_NODE(ocall)->synth_from_origin = true;
+		if (callee->returns_ref)
+			return node1(N_DEREF, ocall, origin);
 		return ocall;
 	}
 

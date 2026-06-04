@@ -92,6 +92,13 @@ Current Codex slice after that cleanup:
   GCC-backed nested namespace symbol coverage. PHP array helpers remain a
   separate ABI slice because their script `array` surface still maps to the
   host `MadArray`/`MadValue` runtime types.
+- Namespace-scope C++ variables can now alias to real Itanium globals such as
+  `_ZSt3cin`. Embedded `<iostream>` declares `std::istream` and `extern
+  std::cin`; numeric `operator>>` binds to the real libstdc++ member and string
+  extraction delegates through `__madc_istream_extract`, which calls the real
+  C++ iostream extraction on `std::istream` / `std::string`. External class
+  operators returning references now dereference the returned address, so
+  chained `cin >> a >> b` keeps the stream lvalue shape.
 
 Previous-session fixes already present in the dirty worktree before this slice:
 
@@ -114,6 +121,11 @@ Validation snapshot:
 - `bin/madc --emit=c11 tests/testphp.mad` shows `_ZN3php...` C++ namespace
   imports for string helpers; array helpers still show generated `__ns_php_*`
   wrappers over explicit `__php_*` ABI declarations.
+- `bin/madc tests/testcin.mad < tests/testcin.input` passes and prints the
+  expected `name: Alice`, `age: 42`, `hello world` output.
+- `bin/madc --emit=c11 tests/testcin.mad` shows `extern istream _ZSt3cin`,
+  real `_ZNSirsERi` numeric extraction, and the `__madc_istream_extract` bridge
+  for string extraction.
 - `bin/madc tests/testperl.mad` passes.
 - `bin/madc tests/testregex.mad` passes.
 - `bin/madc tests/testprefer.mad` passes.
@@ -137,9 +149,9 @@ Validation snapshot:
   finds no direct embedded-header ABI aliases.
 - `make -C src` passes.
 - `make -C src test` passes.
-- `make -C src fulltest` produced **485 passed, 6 failed, 0 timed out,
-  55 skipped**. Known failures: `testcin`, `testdefer`, `testfortypedcomma`
-  (failed this run; historically flaky fail/timeout), `testfstream`,
+- `make -C src fulltest` produced **486 passed, 4 failed, 1 timed out,
+  55 skipped**. Known failures/timeouts: `testdefer`, `testfortypedcomma`
+  (timed out this run; historically flaky fail/timeout), `testfstream`,
   `testlargesizeofquery`, `testloop`.
 - `test_cir` includes the auto-include mode boundary and generic external-bool
   return probes.
@@ -168,6 +180,9 @@ Open follow-ups before/while merging this branch to `develop`:
   symbols. That would give PHP array helpers a normal C++ namespace type
   surface before flipping them away from generated `__ns_php_*` wrappers; type
   aliases alone do not preserve old C++ mangled names.
+- Replace the remaining stdio-backed `cout`/`cerr`/`clog` bodies in embedded
+  `<iostream>` with real libstdc++ output declarations/operators where
+  possible, matching the `std::cin` direction.
 
 ---
 

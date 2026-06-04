@@ -75,7 +75,12 @@ high-level" — the answer is both.**
   `<ns_perl>`, `<ns_python>`, `<ns_ruby>`, `<ns_js>`, `<ns_rust>`, and
   `<algorithm>` helper aliases now use ordinary wrapper bodies over explicit
   `extern "C"` ABI declarations; a direct embedded-header `asm("__...")` scan
-  is clean.
+  is clean. `std::cin >>` is recovered on CIR by declaring `std::cin` as the
+  real `_ZSt3cin` libstdc++ global, binding numeric extraction to real
+  `basic_istream::operator>>`, and delegating string extraction to a small
+  runtime bridge over real C++ iostreams. The remaining `<iostream>` follow-up
+  is replacing the stdio-backed `cout`/`cerr`/`clog` header bodies with real
+  libstdc++ output declarations/operators.
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
   engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
   pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped
@@ -144,7 +149,8 @@ master and unblocks Tracks 3, 5, 6, and AOT.**
 | 2.9 | Generic extern class ctor/dtor | — | **DONE** (v0.21.0) — replaces per-type switch boilerplate | — |
 
 **2.3 remaining:** pointer-to-const enforcement (`*p` writes), const methods.
-**2.8 remaining:** enum class, auto type deduction, `cin>>`, scope-level destruction.
+**2.8 remaining:** enum class, auto type deduction, broader real-iostream
+output replacement, scope-level destruction.
 
 **Dependencies:** All met. 2.1-2.7 complete.
 

@@ -17,6 +17,8 @@
 #include <csetjmp>
 #include <type_traits>
 #include <map>
+#include <iostream>
+#include <string>
 
 struct madc_timeval
 {
@@ -37,6 +39,14 @@ static std::map<void *, madc_jmp_slot *> &madc_jmp_slots()
 {
     static std::map<void *, madc_jmp_slot *> slots;
     return slots;
+}
+
+extern "C" void *__madc_istream_extract(void *stream, void *value)
+{
+    std::istream *in = static_cast<std::istream *>(stream);
+    std::string *out = static_cast<std::string *>(value);
+    (*in) >> (*out);
+    return stream;
 }
 
 static madc_jmp_slot *madc_jmp_slot_for(void *user_buf)

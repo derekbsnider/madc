@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed — `std::cin >>` works on the CIR path (2026-06-04)
+
+Embedded `<iostream>` now declares `std::istream` and `extern std::cin`, and
+namespace-scope C++ variables can mangle to their real Itanium symbols such as
+`_ZSt3cin`. Numeric extraction binds to the real libstdc++
+`basic_istream::operator>>` member, while string extraction uses a small runtime
+bridge that calls the real C++ iostream extraction on `std::istream` /
+`std::string`. External class operators returning references now dereference the
+returned address before participating in chained expressions, so
+`cin >> a >> b` keeps the stream lvalue shape. `testcin.mad` passes and fulltest
+is now **486 passed, 4 failed, 1 timed out, 55 skipped**.
+
 ### Changed — PHP string helpers prefer real C++ namespace linkage (2026-06-04)
 
 Declaration-only namespace functions now keep C++ linkage by default and mangle

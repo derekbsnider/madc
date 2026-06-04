@@ -416,6 +416,9 @@ TEST_SUITE("Itanium: std globals + manipulator operator (function-pointer param)
 		"std::basic_ostream<char,std::char_traits<char>>";
 
 	TEST_CASE("std namespace-scope variables") {
+		CHECK(itanium_mangle_nested_var({"std"}, "cout") == "_ZSt4cout");
+		CHECK(itanium_mangle_nested_var({"std"}, "cin")  == "_ZSt3cin");
+		CHECK(itanium_mangle_nested_var({"php"}, "value") == "_ZN3php5valueE");
 		CHECK(itanium_mangle_std_var("cout") == "_ZSt4cout");
 		CHECK(itanium_mangle_std_var("cin")  == "_ZSt3cin");
 		CHECK(itanium_mangle_std_var("cerr") == "_ZSt4cerr");

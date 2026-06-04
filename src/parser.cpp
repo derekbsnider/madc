@@ -1528,6 +1528,13 @@ static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 				     member_name, params);
 }
 
+static std::string namespace_cpp_variable_symbol(const std::string &ns_name,
+						 const std::string &member_name)
+{
+    return itanium_mangle_nested_var(namespace_qualifiers(ns_name),
+				    member_name);
+}
+
 static DataDef *unwrap_subscript_element_type(DataDef *base_type)
 {
     if ( !base_type )
@@ -6089,6 +6096,10 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 	    if ( !parsing_extern_decl )
 		var->flags &= ~vfEXTERN;
 	}
+	if ( !current_namespace.empty() && parsing_extern_decl
+	  && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
+	    var->storage_alias_name =
+		namespace_cpp_variable_symbol(current_namespace, id);
 	if ( !current_namespace.empty() )
 	    namespace_map[current_namespace][id] = var;
 	return var;
@@ -6099,6 +6110,10 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
     // above and leaves its storage class untouched.
     if ( parsing_extern_decl )
 	var->flags |= vfEXTERN;
+    if ( !current_namespace.empty() && parsing_extern_decl
+      && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
+	var->storage_alias_name =
+	    namespace_cpp_variable_symbol(current_namespace, id);
     tkProgram->variables.push_back(var);
     if ( !current_namespace.empty() )
 	namespace_map[current_namespace][id] = var;
