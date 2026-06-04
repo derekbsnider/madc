@@ -57,7 +57,10 @@ high-level" — the answer is both.**
   concrete class knowledge out of compiler/runtime code except the mangler,
   header text, tests, and the auto-include trigger map. Auto-includes are now
   a default `--std=madc` convenience only; explicit `--std=c` and `--std=c++`
-  modes require the appropriate headers.
+  modes require the appropriate headers. Range-for element locals are now
+  declared by explicit parameter flags rather than parameter-count position,
+  so included/header function bodies can use range-for without losing the loop
+  variable declaration.
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
   engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
   pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped

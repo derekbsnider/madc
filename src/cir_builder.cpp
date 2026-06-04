@@ -7172,13 +7172,6 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 	node_t empty_list = list();
 	node_t items = list();
 
-	TokenFunc *parent_func = dynamic_cast<TokenFunc *>(tc);
-	size_t skip = 0;
-	if (parent_func) {
-		FuncDef *fd = dynamic_cast<FuncDef *>(parent_func->var.type);
-		if (fd) skip = fd->parameters.size();
-	}
-
 	std::set<std::string> decl_vars;
 	for (auto *ts : tc->statements) {
 		TokenDecl *td = dynamic_cast<TokenDecl *>((TokenBase *)ts);
@@ -7186,8 +7179,9 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			decl_vars.insert(td->var.name);
 	}
 
-	for (size_t vi = skip; vi < tc->variables.size(); vi++) {
+	for (size_t vi = 0; vi < tc->variables.size(); vi++) {
 		Variable *v = tc->variables[vi];
+		if (v->flags & vfPARAM) continue;
 		if (decl_vars.count(v->name)) continue;
 		// A GNU nested function's in-scope alias is a Variable whose type is a
 		// FuncDef — it names the hoisted function, it is not storage. Emit no

@@ -1,0 +1,6 @@
+#include <string>
+
+void header_for_each(array values, void (*fn)(string)) {
+	for (string value : values)
+		fn(value);
+}

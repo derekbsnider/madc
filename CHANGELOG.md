@@ -18,6 +18,15 @@ generic bool-returning functions and methods without class-specific handling;
 `teststringmethods.mad` again reads `empty()` correctly, and `test_cir` covers
 an `extern "C"` bool-returning host symbol.
 
+### Fixed — range-for locals in included/header function bodies (2026-06-04)
+
+`translate_block` now skips parameters by explicit `vfPARAM` flags instead of
+skipping the first `N` variables by function parameter count. That positional
+assumption dropped compiler-generated range-for element locals in functions with
+parameters, leaving header/helper function bodies to emit uses of an undeclared
+loop variable. `tests/testforeachheaderbody.mad` covers a range-for over `array`
+inside an included helper body.
+
 ### Changed — C++ library objects now stay on the generic object path (2026-06-04)
 
 The retire-std-hardcoding branch now reaches the finish-line gate:

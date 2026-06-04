@@ -48,6 +48,10 @@ Current Codex slice after that cleanup:
 - CIR external prototypes now emit `N_BOOL` for `dtBOOL` scalar/return specs.
   This fixed a drift failure where bool-returning external methods read garbage
   upper bits (`teststringmethods.mad`).
+- Generic CIR block lowering now skips parameters by explicit `vfPARAM` flags
+  instead of by parameter-count position. That restores compiler-generated
+  range-for element locals in functions with parameters, including included
+  header/helper bodies. `tests/testforeachheaderbody.mad` covers the regression.
 
 Previous-session fixes already present in the dirty worktree before this slice:
 
@@ -63,9 +67,10 @@ Validation snapshot:
 
 - `bin/madc tests/testforeach.mad` passes.
 - `bin/madc tests/testforeach2.mad` passes.
+- `bin/madc tests/testforeachheaderbody.mad` passes.
 - `bash scripts/check-no-std-hardcoding.sh` reports 0 offending lines.
 - `make -C src` passes.
-- `make -C src fulltest` produced **482 passed, 6 failed, 0 timed out,
+- `make -C src fulltest` produced **483 passed, 6 failed, 0 timed out,
   55 skipped**. Known failures/timeouts: `testcin`, `testdefer`,
   `testfortypedcomma` (failed this run; historically flaky fail/timeout),
   `testfstream`, `testlargesizeofquery`, `testloop`.
@@ -83,10 +88,6 @@ Open follow-ups before/while merging this branch to `develop`:
 
 - Keep unrelated untracked `.claude/`, KG dumps, temp files, and scratch
   artifacts out of the branch cleanup/merge.
-- Embedded header function bodies that use range-for over `array` exposed a
-  lowering gap where the loop variable was not declared in emitted C. This
-  slice avoided that path in `<algorithm>` with an explicit helper loop; fix the
-  generic range-for lowering before relying on that syntax inside headers.
 - Revisit the embedded polyglot namespace headers: they currently use
   `asm("__php_*")` / `asm("__perl_*")` declarations, while external C++ headers
   expose inline namespace wrappers over `extern "C"` symbols. The target model
