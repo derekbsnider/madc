@@ -6,9 +6,9 @@
 > `teststdcppinclude.mad`, plus `testforeachheaderbody.mad` for range-for
 > locals in included/header function bodies, `testexternclinkage.mad` for
 > `extern "C"` linkage specs, and `testexterncstringptr.mad` for
-> typedef-preserved string-pointer extern C prototypes. Embedded `<ns_php>` now
-> routes `php::` calls through generated namespace wrappers over explicit
-> `extern "C"` `__php_*` ABI declarations. The known red tests are
+> typedef-preserved string-pointer extern C prototypes. Embedded `<ns_php>` and
+> `<ns_perl>` now route namespace calls through generated wrappers over
+> explicit `extern "C"` ABI declarations. The known red tests are
 > `testcin.mad`, `testdefer.mad`, `testfortypedcomma.mad` (failed this run;
 > historically flaky fail/timeout), `testfstream.mad`,
 > `testlargesizeofquery.mad`, and `testloop.mad`.

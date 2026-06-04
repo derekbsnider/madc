@@ -55,6 +55,14 @@ function bodies over that boundary. Emitted C now contains generated
 `__ns_php_*` namespace wrappers instead of direct `asm("__php_*")` aliases for
 the C++ surface. `testphp.mad` and its `--emit=c11` path cover the split.
 
+### Changed — embedded `<ns_perl>` uses ordinary namespace wrappers (2026-06-04)
+
+Embedded `<ns_perl>` now follows the same model as the public C++ header:
+`__perl_*` functions are explicit `extern "C"` ABI declarations, and `perl::`
+functions are ordinary namespace wrapper bodies. `testperl.mad`,
+`testregex.mad`, `testprefer.mad`, and `--emit=c11 testperl.mad` cover the
+split.
+
 ### Changed — C++ library objects now stay on the generic object path (2026-06-04)
 
 The retire-std-hardcoding branch now reaches the finish-line gate:

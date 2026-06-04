@@ -1076,27 +1076,50 @@ inline std::string &stringify(std::string &result, MadArray &values) { return *_
 
 #endif
 )EMBED"},
-    {"ns_perl", R"EMBED(namespace perl {
-    long chop(std::string &s) asm("__perl_chop");
-    long chomp(std::string &s) asm("__perl_chomp");
-    void grep(array dest, const char *needle, array src) asm("__perl_grep");
-    void glob(array out, const char *pattern) asm("__perl_glob");
-    long scalar(array values) asm("__perl_scalar");
-    void push(array values, const char *text) asm("__perl_push");
-    std::string &pop(std::string &result, array values) asm("__perl_pop");
-    std::string &shift(std::string &result, array values) asm("__perl_shift");
-    void unshift(array values, const char *text) asm("__perl_unshift");
-    std::string &join(std::string &result, const char *separator, array values) asm("__perl_join");
-    void split(array out, const char *pattern, const char *text) asm("__perl_split");
-    std::string &reverse(std::string &s) asm("__perl_reverse");
-    std::string &lc(std::string &s) asm("__perl_lc");
-    std::string &uc(std::string &s) asm("__perl_uc");
-    std::string &ucfirst(std::string &s) asm("__perl_ucfirst");
-    std::string &lcfirst(std::string &s) asm("__perl_lcfirst");
-    long index(const char *haystack, const char *needle) asm("__perl_index");
-    long rindex(const char *haystack, const char *needle) asm("__perl_rindex");
-    long length(const char *text) asm("__perl_length");
-    std::string &substr(std::string &result, const char *text, long offset, long length) asm("__perl_substr");
+    {"ns_perl", R"EMBED(extern "C" {
+    long __perl_chop(std::string *);
+    long __perl_chomp(std::string *);
+    void __perl_grep(array *, const char *, array *);
+    void __perl_glob(array *, const char *);
+    long __perl_scalar(array *);
+    void __perl_push(array *, const char *);
+    std::string *__perl_pop(std::string *, array *);
+    std::string *__perl_shift(std::string *, array *);
+    void __perl_unshift(array *, const char *);
+    std::string *__perl_join(std::string *, const char *, array *);
+    void __perl_split(array *, const char *, const char *);
+    std::string *__perl_reverse(std::string *);
+    std::string *__perl_lc(std::string *);
+    std::string *__perl_uc(std::string *);
+    std::string *__perl_ucfirst(std::string *);
+    std::string *__perl_lcfirst(std::string *);
+    long __perl_index(const char *, const char *);
+    long __perl_rindex(const char *, const char *);
+    long __perl_length(const char *);
+    std::string *__perl_substr(std::string *, const char *, long, long);
+}
+
+namespace perl {
+    long chop(std::string &s) { return __perl_chop(&s); }
+    long chomp(std::string &s) { return __perl_chomp(&s); }
+    void grep(array &dest, const char *needle, array &src) { __perl_grep(&dest, needle, &src); }
+    void glob(array &out, const char *pattern) { __perl_glob(&out, pattern); }
+    long scalar(array &values) { return __perl_scalar(&values); }
+    void push(array &values, const char *text) { __perl_push(&values, text); }
+    std::string &pop(std::string &result, array &values) { return *__perl_pop(&result, &values); }
+    std::string &shift(std::string &result, array &values) { return *__perl_shift(&result, &values); }
+    void unshift(array &values, const char *text) { __perl_unshift(&values, text); }
+    std::string &join(std::string &result, const char *separator, array &values) { return *__perl_join(&result, separator, &values); }
+    void split(array &out, const char *pattern, const char *text) { __perl_split(&out, pattern, text); }
+    std::string &reverse(std::string &s) { return *__perl_reverse(&s); }
+    std::string &lc(std::string &s) { return *__perl_lc(&s); }
+    std::string &uc(std::string &s) { return *__perl_uc(&s); }
+    std::string &ucfirst(std::string &s) { return *__perl_ucfirst(&s); }
+    std::string &lcfirst(std::string &s) { return *__perl_lcfirst(&s); }
+    long index(const char *haystack, const char *needle) { return __perl_index(haystack, needle); }
+    long rindex(const char *haystack, const char *needle) { return __perl_rindex(haystack, needle); }
+    long length(const char *text) { return __perl_length(text); }
+    std::string &substr(std::string &result, const char *text, long offset, long length) { return *__perl_substr(&result, text, offset, length); }
 }
 )EMBED"},
     {"ns_perl.h", R"EMBED(#ifndef MADC_NS_PERL_H
