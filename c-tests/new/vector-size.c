@@ -477,6 +477,8 @@ int main (void) {
   if (c[0] != 11 || c[1] != 33 || c[2] != 22 || c[3] != 44) return 101;
   c = __builtin_shufflevector (a8, b8, 0, 8, 7, 15);
   if (c[0] != 1 || c[1] != 9 || c[2] != 8 || c[3] != 16) return 102;
+  c = __builtin_shufflevector (a2, b, 0, 2, 5, 1);
+  if (c[0] != 11 || c[1] != 9 || c[2] != 4 || c[3] != 22) return 202;
   small = __builtin_shuffle (a2, b2, m2);
   if (small[0] != 11 || small[1] != 44) return 103;
   wide = __builtin_shuffle (a8, b8, m8);
