@@ -6211,6 +6211,14 @@ static struct type *signed_v128_i32_cmp_vector_type (c2m_ctx_t c2m_ctx, struct t
   return NULL;
 }
 
+static struct type *v128_i32_cmp_vector_type (c2m_ctx_t c2m_ctx, node_code_t code,
+                                              struct type *type1, struct type *type2,
+                                              struct expr *expr1, struct expr *expr2) {
+  if (code == N_EQ || code == N_NE)
+    return v128_i32_bin_op_vector_type (c2m_ctx, type1, type2, expr1, expr2);
+  return signed_v128_i32_cmp_vector_type (c2m_ctx, type1, type2, expr1, expr2);
+}
+
 static struct type composite_type (c2m_ctx_t c2m_ctx, struct type *tp1, struct type *tp2) {
   struct type t = *tp1;
 
@@ -9314,7 +9322,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     e->type->mode = TM_BASIC;
     e->type->u.basic_type = TP_INT;
     {
-      struct type *cmp_type = signed_v128_i32_cmp_vector_type (c2m_ctx, t1, t2, e1, e2);
+      struct type *cmp_type = v128_i32_cmp_vector_type (c2m_ctx, r->code, t1, t2, e1, e2);
 
       if (cmp_type != NULL) {
         *e->type = *cmp_type;
@@ -13672,7 +13680,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     struct type *type2 = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
     struct type type_s, ptr_type_s = get_ptr_int_type (FALSE);
 
-    if (signed_v128_i32_vector_type_p (c2m_ctx, ((struct expr *) r->attr)->type)) {
+    if (v128_i32_vector_type_p (c2m_ctx, ((struct expr *) r->attr)->type)) {
       res = gen_v128_i32_cmp_op (c2m_ctx, r, desirable_dest);
       break;
     }

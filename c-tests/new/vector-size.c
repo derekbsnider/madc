@@ -1,4 +1,5 @@
 typedef int v4si __attribute__ ((vector_size (16)));
+typedef unsigned int v4ui __attribute__ ((vector_size (16)));
 typedef double v2df __attribute__ ((__vector_size__ (16)));
 
 static v4si g = {5, 6};
@@ -11,6 +12,9 @@ int main (void) {
   v4si n = {0x33, 0x55, 0x0f, 0xf0};
   v4si neg = {-1, 0, 1, 2};
   v4si zero = {0, 0, 0, 0};
+  v4ui ua = {1u, 2u, 3u, 4u};
+  v4ui ub = {1u, 7u, 3u, 9u};
+  v4ui uc;
   v2df d = {1.25, 2.5};
   int s = 7;
   unsigned int u = 0xff;
@@ -84,5 +88,13 @@ int main (void) {
   if (c[0] != 0 || c[1] != 0 || c[2] != 0 || c[3] != -1) return 32;
   c = neg < zero;
   if (c[0] != -1 || c[1] != 0 || c[2] != 0 || c[3] != 0) return 33;
+  uc = ua == ub;
+  if (uc[0] != ~0u || uc[1] != 0u || uc[2] != ~0u || uc[3] != 0u) return 34;
+  uc = ua != ub;
+  if (uc[0] != 0u || uc[1] != ~0u || uc[2] != 0u || uc[3] != ~0u) return 35;
+  uc = ua == 3u;
+  if (uc[0] != 0u || uc[1] != 0u || uc[2] != ~0u || uc[3] != 0u) return 36;
+  uc = 2u != ua;
+  if (uc[0] != ~0u || uc[1] != 0u || uc[2] != ~0u || uc[3] != ~0u) return 37;
   return 0;
 }
