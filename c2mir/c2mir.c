@@ -5918,8 +5918,11 @@ static int v128_i32_packed_add_sub_vector_type_p (c2m_ctx_t c2m_ctx, struct type
 }
 
 static int v128_i32_packed_mul_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  mir_size_t lane_size;
+
   if (!v128_i32_vector_type_p (c2m_ctx, type)) return FALSE;
-  return vector_lane_size (c2m_ctx, type) == 2;
+  lane_size = vector_lane_size (c2m_ctx, type);
+  return lane_size == 2 || lane_size == 4;
 }
 
 static int v128_i32_packed_scalar_shift_type_p (c2m_ctx_t c2m_ctx, struct type *vector_type,
@@ -12358,6 +12361,14 @@ static MIR_insn_code_t get_v128_i32_packed_add_sub_insn_code (c2m_ctx_t c2m_ctx,
   }
 }
 
+static MIR_insn_code_t get_v128_i32_packed_mul_insn_code (c2m_ctx_t c2m_ctx,
+                                                          struct type *vector_type) {
+  mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
+
+  assert (v128_i32_packed_mul_vector_type_p (c2m_ctx, vector_type));
+  return lane_size == 2 ? MIR_VMULI16 : MIR_VMULI32;
+}
+
 static void store_v128 (c2m_ctx_t c2m_ctx, op_t dest, op_t val) {
   assert (dest.mir_op.mode == MIR_OP_MEM);
   dest.mir_op.u.mem.type = MIR_T_V128;
@@ -12779,9 +12790,11 @@ static op_t emit_v128_i32_arith_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op
                                     struct type *vector_type, op_t dest) {
   MIR_insn_code_t insn_code = get_v128_i32_arith_insn_code (c2m_ctx, code, vector_type);
 
-  if ((code == N_MUL || code == N_MUL_ASSIGN) && v128_i32_packed_mul_vector_type_p (c2m_ctx, vector_type))
-    return emit_v128_i32_bin_op (c2m_ctx, MIR_VMULI16, op1, type1, op2, type2, vector_type,
-                                 dest);
+  if ((code == N_MUL || code == N_MUL_ASSIGN)
+      && v128_i32_packed_mul_vector_type_p (c2m_ctx, vector_type))
+    return emit_v128_i32_bin_op (c2m_ctx,
+                                 get_v128_i32_packed_mul_insn_code (c2m_ctx, vector_type),
+                                 op1, type1, op2, type2, vector_type, dest);
   return emit_v128_i32_lane_bin_op (c2m_ctx, insn_code, op1, type1, op2, type2, vector_type,
                                     dest);
 }

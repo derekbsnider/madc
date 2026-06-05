@@ -56,6 +56,8 @@ static inline int mir_assert (int cond) { return 0 && cond; }
 #define REP6(M, a1, a2, a3, a4, a5, a6) REP5 (M, a1, a2, a3, a4, a5) REP_SEP M (a6)
 #define REP7(M, a1, a2, a3, a4, a5, a6, a7) REP6 (M, a1, a2, a3, a4, a5, a6) REP_SEP M (a7)
 #define REP8(M, a1, a2, a3, a4, a5, a6, a7, a8) REP7 (M, a1, a2, a3, a4, a5, a6, a7) REP_SEP M (a8)
+#define REP9(M, a1, a2, a3, a4, a5, a6, a7, a8, a9) \
+  REP8 (M, a1, a2, a3, a4, a5, a6, a7, a8) REP_SEP M (a9)
 
 #define REP_SEP ,
 
@@ -105,7 +107,7 @@ typedef enum {
   REP2 (INSN_EL, VADDF32, VADDF64), /* Addition */
   REP8 (INSN_EL, SUB, SUBS, FSUB, DSUB, LDSUB, VSUBI8, VSUBI16, VSUBI32),
   REP2 (INSN_EL, VSUBF32, VSUBF64), /* Subtraction */
-  REP8 (INSN_EL, MUL, MULS, FMUL, DMUL, LDMUL, VMULI16, VMULF32, VMULF64), /* Multiplication */
+  REP9 (INSN_EL, MUL, MULS, FMUL, DMUL, LDMUL, VMULI16, VMULI32, VMULF32, VMULF64), /* Multiplication */
   REP8 (INSN_EL, DIV, DIVS, UDIV, UDIVS, FDIV, DDIV, LDDIV, VDIVF32), /* Division */
   INSN_EL (VDIVF64),
   REP4 (INSN_EL, MOD, MODS, UMOD, UMODS),                    /* Modulo */

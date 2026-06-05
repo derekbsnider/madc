@@ -35,6 +35,19 @@ main:	func i64
 	add p, pr, 12
 	mov x, i32:(p)
 	bne fail, x, 36
+	vmuli32 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 10
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 40
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 90
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 160
 	vand vc, va, vb
 	vmov v128:(pr), vc
 	mov x, i32:(pr)
