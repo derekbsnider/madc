@@ -8814,7 +8814,9 @@ static struct expr *check_assign_op (c2m_ctx_t c2m_ctx, node_t r, struct expr *e
     e = create_expr (c2m_ctx, r);
     e->type->mode = TM_BASIC;
     e->type->u.basic_type = TP_INT;
-    if (r->code == N_MOD && (!integer_type_p (t1) || !integer_type_p (t2))) {
+    if ((tt = v128_i32_bin_op_vector_type (c2m_ctx, t1, t2, e1, e2)) != NULL) {
+      *e->type = *tt;
+    } else if (r->code == N_MOD && (!integer_type_p (t1) || !integer_type_p (t2))) {
       error (c2m_ctx, POS (r), "invalid operand types of %%");
     } else if (r->code != N_MOD && (!arith_or_complex_type_p (t1) || !arith_or_complex_type_p (t2))) {
       error (c2m_ctx, POS (r), "invalid operand types of %s", r->code == N_MUL ? "*" : "/");
@@ -12087,12 +12089,27 @@ static MIR_insn_code_t get_v128_i32_shift_insn_code (c2m_ctx_t c2m_ctx, node_cod
   return lane_type == MIR_T_I32 ? MIR_RSHS : MIR_URSHS;
 }
 
-static op_t emit_v128_i32_shift_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op1,
-                                    struct type *type1, op_t op2, struct type *type2,
-                                    struct type *vector_type, op_t dest) {
+static MIR_insn_code_t get_v128_i32_arith_insn_code (c2m_ctx_t c2m_ctx, node_code_t code,
+                                                     struct type *vector_type) {
+  MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
+
+  assert (lane_type == MIR_T_I32 || lane_type == MIR_T_U32);
+  switch (code) {
+  case N_MUL:
+  case N_MUL_ASSIGN: return MIR_MULS;
+  case N_DIV:
+  case N_DIV_ASSIGN: return lane_type == MIR_T_I32 ? MIR_DIVS : MIR_UDIVS;
+  case N_MOD:
+  case N_MOD_ASSIGN: return lane_type == MIR_T_I32 ? MIR_MODS : MIR_UMODS;
+  default: assert (FALSE); return MIR_INSN_BOUND;
+  }
+}
+
+static op_t emit_v128_i32_lane_bin_op (c2m_ctx_t c2m_ctx, MIR_insn_code_t insn_code, op_t op1,
+                                       struct type *type1, op_t op2, struct type *type2,
+                                       struct type *vector_type, op_t dest) {
   MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
   mir_size_t lane_size = raw_type_size (c2m_ctx, vector_type->u.vector_type->el_type);
-  MIR_insn_code_t insn_code = get_v128_i32_shift_insn_code (c2m_ctx, code, vector_type);
 
   assert (lane_size == 4);
   op1 = materialize_v128_i32_operand (c2m_ctx, op1, type1, vector_type);
@@ -12113,6 +12130,15 @@ static op_t emit_v128_i32_shift_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op
   return dest;
 }
 
+static op_t emit_v128_i32_shift_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op1,
+                                    struct type *type1, op_t op2, struct type *type2,
+                                    struct type *vector_type, op_t dest) {
+  MIR_insn_code_t insn_code = get_v128_i32_shift_insn_code (c2m_ctx, code, vector_type);
+
+  return emit_v128_i32_lane_bin_op (c2m_ctx, insn_code, op1, type1, op2, type2, vector_type,
+                                    dest);
+}
+
 static op_t gen_v128_i32_shift_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest) {
   op_t op1 = val_gen (c2m_ctx, NL_HEAD (r->u.ops));
   op_t op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
@@ -12122,6 +12148,26 @@ static op_t gen_v128_i32_shift_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_
   op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
 
   return emit_v128_i32_shift_op (c2m_ctx, r->code, op1, type1, op2, type2, type, dest);
+}
+
+static op_t emit_v128_i32_arith_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op1,
+                                    struct type *type1, op_t op2, struct type *type2,
+                                    struct type *vector_type, op_t dest) {
+  MIR_insn_code_t insn_code = get_v128_i32_arith_insn_code (c2m_ctx, code, vector_type);
+
+  return emit_v128_i32_lane_bin_op (c2m_ctx, insn_code, op1, type1, op2, type2, vector_type,
+                                    dest);
+}
+
+static op_t gen_v128_i32_arith_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest) {
+  op_t op1 = val_gen (c2m_ctx, NL_HEAD (r->u.ops));
+  op_t op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
+  struct type *type = ((struct expr *) r->attr)->type;
+  struct type *type1 = ((struct expr *) NL_HEAD (r->u.ops)->attr)->type;
+  struct type *type2 = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
+  op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
+
+  return emit_v128_i32_arith_op (c2m_ctx, r->code, op1, type1, op2, type2, type, dest);
 }
 
 static const char *get_reg_var_name (c2m_ctx_t c2m_ctx, MIR_type_t promoted_type,
@@ -13727,6 +13773,11 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       res = gen_v128_i32_shift_op (c2m_ctx, r, desirable_dest);
       break;
     }
+    if ((r->code == N_MUL || r->code == N_DIV || r->code == N_MOD)
+        && v128_i32_vector_type_p (c2m_ctx, ((struct expr *) r->attr)->type)) {
+      res = gen_v128_i32_arith_op (c2m_ctx, r, desirable_dest);
+      break;
+    }
     insn_code = get_v128_i32_bin_insn_code (r->code);
     if (insn_code != MIR_INSN_BOUND
         && v128_i32_vector_type_p (c2m_ctx, ((struct expr *) r->attr)->type)) {
@@ -13876,6 +13927,17 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       val = force_val (c2m_ctx, var, FALSE);
       op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
       res = emit_v128_i32_shift_op (c2m_ctx, r->code, val, lhs_type, op2, rhs_type, lhs_type, var);
+      break;
+    }
+    if ((r->code == N_MUL_ASSIGN || r->code == N_DIV_ASSIGN || r->code == N_MOD_ASSIGN)
+        && v128_i32_vector_type_p (c2m_ctx, ((struct expr *) r->attr)->type2)) {
+      struct type *lhs_type = ((struct expr *) r->attr)->type2;
+      struct type *rhs_type = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
+
+      var = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
+      val = force_val (c2m_ctx, var, FALSE);
+      op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
+      res = emit_v128_i32_arith_op (c2m_ctx, r->code, val, lhs_type, op2, rhs_type, lhs_type, var);
       break;
     }
     insn_code = get_v128_i32_bin_insn_code (r->code);
