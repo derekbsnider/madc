@@ -5850,10 +5850,14 @@ static int complex_type_p (const struct type *type) {
 
 static int vector_type_p (const struct type *type) { return type->mode == TM_VECTOR; }
 
+static int v128_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  return type->mode == TM_VECTOR && raw_type_size (c2m_ctx, type) == 16;
+}
+
 static int v128_i32_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   struct type *el_type;
 
-  if (type->mode != TM_VECTOR || raw_type_size (c2m_ctx, type) != 16) return FALSE;
+  if (!v128_vector_type_p (c2m_ctx, type)) return FALSE;
   el_type = type->u.vector_type->el_type;
   return integer_type_p (el_type) && raw_type_size (c2m_ctx, el_type) == 4;
 }
@@ -6217,6 +6221,12 @@ static struct type *v128_i32_cmp_vector_type (c2m_ctx_t c2m_ctx, node_code_t cod
   if (code == N_EQ || code == N_NE)
     return v128_i32_bin_op_vector_type (c2m_ctx, type1, type2, expr1, expr2);
   return signed_v128_i32_cmp_vector_type (c2m_ctx, type1, type2, expr1, expr2);
+}
+
+static int same_size_v128_vector_cast_p (c2m_ctx_t c2m_ctx, struct type *to_type,
+                                         struct type *from_type) {
+  return v128_vector_type_p (c2m_ctx, to_type) && v128_vector_type_p (c2m_ctx, from_type)
+         && raw_type_size (c2m_ctx, to_type) == raw_type_size (c2m_ctx, from_type);
 }
 
 static struct type composite_type (c2m_ctx_t c2m_ctx, struct type *tp1, struct type *tp2) {
@@ -9844,7 +9854,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     break;
   case N_CAST: {
     struct decl_spec *decl_spec;
-    int void_p;
+    int void_p, vector_cast_p;
 
     process_type_bin_ops (c2m_ctx, r, &op1, &op2, &e2, &t2, r);
     e = create_expr (c2m_ctx, r);
@@ -9852,9 +9862,12 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     decl_spec = op1->attr;
     *e->type = *decl_spec->type;
     void_p = void_type_p (decl_spec->type);
-    if (!void_p && !scalar_type_p (decl_spec->type) && !complex_type_p (decl_spec->type)) {
+    vector_cast_p = same_size_v128_vector_cast_p (c2m_ctx, decl_spec->type, t2);
+    if (!void_p && !vector_cast_p && !scalar_type_p (decl_spec->type)
+        && !complex_type_p (decl_spec->type)) {
       error (c2m_ctx, POS (r), "conversion to non-scalar type requested");
-    } else if (!void_p && !scalar_type_p (t2) && !complex_type_p (t2) && !void_type_p (t2)) {
+    } else if (!void_p && !vector_cast_p && !scalar_type_p (t2) && !complex_type_p (t2)
+               && !void_type_p (t2)) {
       error (c2m_ctx, POS (r), "conversion of non-scalar value requested");
     } else if (t2->mode == TM_PTR && floating_type_p (decl_spec->type)) {
       error (c2m_ctx, POS (r), "conversion of a pointer to floating value requested");
@@ -14116,6 +14129,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       res = op1;
       res.decl = NULL;
       res.mir_op.mode = MIR_OP_UNDEF;
+    } else if (same_size_v128_vector_cast_p (c2m_ctx, type, from_type)) {
+      res = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
+      op1 = force_v128_reg (c2m_ctx, op1);
+      store_v128 (c2m_ctx, res, op1);
     } else if (complex_type_p (from_type) && !complex_type_p (type)) {
       /* Complex-to-scalar cast: extract real part (C99 6.3.1.7) */
       enum basic_type cbt = complex_component_type (from_type->u.basic_type);

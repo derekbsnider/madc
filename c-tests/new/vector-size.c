@@ -96,5 +96,9 @@ int main (void) {
   if (uc[0] != 0u || uc[1] != 0u || uc[2] != ~0u || uc[3] != 0u) return 36;
   uc = 2u != ua;
   if (uc[0] != ~0u || uc[1] != 0u || uc[2] != ~0u || uc[3] != ~0u) return 37;
+  uc = (v4ui) neg;
+  if (uc[0] != ~0u || uc[1] != 0u || uc[2] != 1u || uc[3] != 2u) return 38;
+  c = (v4si) uc;
+  if (c[0] != -1 || c[1] != 0 || c[2] != 1 || c[3] != 2) return 39;
   return 0;
 }
