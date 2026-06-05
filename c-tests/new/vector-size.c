@@ -1,5 +1,7 @@
 typedef int v4si __attribute__ ((vector_size (16)));
 typedef unsigned int v4ui __attribute__ ((vector_size (16)));
+typedef float v4sf __attribute__ ((vector_size (16)));
+typedef long long v2di __attribute__ ((vector_size (16)));
 typedef double v2df __attribute__ ((__vector_size__ (16)));
 
 static v4si g = {5, 6};
@@ -26,6 +28,9 @@ int main (void) {
   v4ui umd_a = {20u, 21u, 0xfffffff0u, 9u};
   v4ui umd_b = {3u, 4u, 8u, 2u};
   v4ui uc;
+  v4sf vf;
+  v2di li = {-3, 4};
+  v2di li2;
   v2df d = {1.25, 2.5};
   int s = 7;
   unsigned int u = 0xff;
@@ -166,5 +171,19 @@ int main (void) {
   if (uc[0] != ~0u || uc[1] != 0u || uc[2] != 1u || uc[3] != 2u) return 61;
   c = (v4si) uc;
   if (c[0] != -1 || c[1] != 0 || c[2] != 1 || c[3] != 2) return 62;
+  uc = __builtin_convertvector (neg, v4ui);
+  if (uc[0] != ~0u || uc[1] != 0u || uc[2] != 1u || uc[3] != 2u) return 63;
+  vf = __builtin_convertvector (neg, v4sf);
+  if (vf[0] != -1.0f || vf[1] != 0.0f || vf[2] != 1.0f || vf[3] != 2.0f) return 64;
+  c = __builtin_convertvector (vf, v4si);
+  if (c[0] != -1 || c[1] != 0 || c[2] != 1 || c[3] != 2) return 65;
+  c = __builtin_shufflevector (md_a, md_b, 0, 5, 2, 7);
+  if (c[0] != 6 || c[1] != 3 || c[2] != 20 || c[3] != -4) return 66;
+  d = __builtin_convertvector (li, v2df);
+  if (d[0] != -3.0 || d[1] != 4.0) return 67;
+  li2 = __builtin_convertvector (d, v2di);
+  if (li2[0] != -3 || li2[1] != 4) return 68;
+  d = __builtin_shufflevector (d, d, 1, 0);
+  if (d[0] != 4.0 || d[1] != -3.0) return 69;
   return 0;
 }
