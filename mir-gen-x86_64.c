@@ -76,8 +76,8 @@ static const MIR_insn_code_t target_io_dup_op_insn_codes[] = {
   MIR_XORS,    MIR_VDIVF32, MIR_VDIVF64, MIR_VAND,    MIR_VOR,     MIR_VXOR,    MIR_VLSHI16,
   MIR_VRSHI16, MIR_VURSHI16, MIR_VLSHI32, MIR_VRSHI32, MIR_VURSHI32, MIR_VLSHI64, MIR_VURSHI64,
   MIR_VEQI8,   MIR_VEQI16,  MIR_VEQI32,  MIR_VEQI64,  MIR_VGTI8,   MIR_VGTI16,  MIR_VGTI32,
-  MIR_VEQF32,  MIR_VNEF32,  MIR_VLTF32,  MIR_VLEF32,  MIR_VEQF64,  MIR_VNEF64,  MIR_VLTF64,
-  MIR_VLEF64,
+  MIR_VGTI64,  MIR_VEQF32,  MIR_VNEF32,  MIR_VLTF32,  MIR_VLEF32,  MIR_VEQF64,  MIR_VNEF64,
+  MIR_VLTF64,  MIR_VLEF64,
   MIR_LSH,   MIR_LSHS,  MIR_RSH,    MIR_RSHS,       MIR_URSH,  MIR_URSHS, MIR_NEG,   MIR_NEGS,
   MIR_FNEG,  MIR_DNEG,  MIR_LDNEG,  MIR_ADDO,       MIR_ADDOS, MIR_SUBO,  MIR_SUBOS, MIR_MULO,
   MIR_MULOS, MIR_UMULO, MIR_UMULOS, MIR_INSN_BOUND,
@@ -1840,6 +1840,8 @@ static struct pattern patterns[] = {
   {MIR_VGTI16, "r 0 mv", "66 Y 0F 65 r0 m2", 0}, /* pcmpgtw r0,m128 */
   {MIR_VGTI32, "r 0 r", "66 Y 0F 66 r0 R2", 0},  /* pcmpgtd r0,r2 */
   {MIR_VGTI32, "r 0 mv", "66 Y 0F 66 r0 m2", 0}, /* pcmpgtd r0,m128 */
+  {MIR_VGTI64, "r 0 r", "66 Y 0F 38 37 r0 R2", 0},  /* pcmpgtq r0,r2 */
+  {MIR_VGTI64, "r 0 mv", "66 Y 0F 38 37 r0 m2", 0}, /* pcmpgtq r0,m128 */
   {MIR_VEQF32, "r 0 r", "Y 0F C2 r0 R2 v0", 0},  /* cmpeqps r0,r2 */
   {MIR_VEQF32, "r 0 mv", "Y 0F C2 r0 m2 v0", 0}, /* cmpeqps r0,m128 */
   {MIR_VNEF32, "r 0 r", "Y 0F C2 r0 R2 v4", 0},  /* cmpneqps r0,r2 */

@@ -90,6 +90,13 @@ main:	func i64
 	add p, pr, 8
 	mov x, i64:(p)
 	bne fail, x, 0
+	vgti64 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i64:(pr)
+	bne fail, x, 0
+	add p, pr, 8
+	mov x, i64:(p)
+	bne fail, x, -1
 	mov pa, a
 	mov pb, b
 	vmov va, v128:(pa)

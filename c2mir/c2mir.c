@@ -5953,7 +5953,7 @@ static int v128_i32_packed_cmp_vector_type_p (c2m_ctx_t c2m_ctx, struct type *ty
 
   if (!v128_i32_vector_type_p (c2m_ctx, type)) return FALSE;
   lane_size = vector_lane_size (c2m_ctx, type);
-  return lane_size == 1 || lane_size == 2 || lane_size == 4;
+  return lane_size == 1 || lane_size == 2 || lane_size == 4 || lane_size == 8;
 }
 
 static int v128_i32_packed_eq_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
@@ -12467,6 +12467,15 @@ static op_t const_integer_vector (c2m_ctx_t c2m_ctx, struct type *vector_type, m
                                    vector_type);
 }
 
+static op_t const_unsigned_integer_vector (c2m_ctx_t c2m_ctx, struct type *vector_type,
+                                           uint64_t val) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  op_t scalar = new_op (NULL, MIR_new_uint_op (ctx, val));
+
+  return scalar_to_integer_vector (c2m_ctx, scalar, vector_type->u.vector_type->el_type,
+                                   vector_type);
+}
+
 static op_t scalar_to_v128_i32_shift_count (c2m_ctx_t c2m_ctx, op_t scalar,
                                             struct type *scalar_type, struct type *vector_type) {
   op_t res = const_integer_vector (c2m_ctx, vector_type, 0);
@@ -12520,14 +12529,19 @@ static MIR_insn_code_t get_v128_i32_packed_gt_insn_code (c2m_ctx_t c2m_ctx,
   mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
 
   assert (v128_i32_packed_cmp_vector_type_p (c2m_ctx, vector_type));
-  return lane_size == 1 ? MIR_VGTI8 : lane_size == 2 ? MIR_VGTI16 : MIR_VGTI32;
+  return lane_size == 1 ? MIR_VGTI8
+                        : lane_size == 2 ? MIR_VGTI16
+                                         : lane_size == 4 ? MIR_VGTI32 : MIR_VGTI64;
 }
 
-static mir_int v128_i32_lane_sign_bit (c2m_ctx_t c2m_ctx, struct type *vector_type) {
+static uint64_t v128_i32_lane_sign_bit (c2m_ctx_t c2m_ctx, struct type *vector_type) {
   mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
 
   assert (v128_i32_packed_cmp_vector_type_p (c2m_ctx, vector_type));
-  return lane_size == 1 ? 0x80 : lane_size == 2 ? 0x8000 : (mir_int) 0x80000000u;
+  return lane_size == 1 ? UINT64_C (0x80)
+                        : lane_size == 2 ? UINT64_C (0x8000)
+                                         : lane_size == 4 ? UINT64_C (0x80000000)
+                                                          : (UINT64_C (1) << 63);
 }
 
 static op_t emit_v128_i32_gt_op (c2m_ctx_t c2m_ctx, op_t op1, struct type *type1, op_t op2,
@@ -12537,8 +12551,8 @@ static op_t emit_v128_i32_gt_op (c2m_ctx_t c2m_ctx, op_t op1, struct type *type1
 
   if (signed_integer_type_p (vector_type->u.vector_type->el_type))
     return emit_v128_i32_bin_op (c2m_ctx, gt_code, op1, type1, op2, type2, vector_type, dest);
-  sign_bit
-    = const_integer_vector (c2m_ctx, vector_type, v128_i32_lane_sign_bit (c2m_ctx, vector_type));
+  sign_bit = const_unsigned_integer_vector (c2m_ctx, vector_type,
+                                            v128_i32_lane_sign_bit (c2m_ctx, vector_type));
   biased_op1 = vector_temp (c2m_ctx, vector_type);
   biased_op2 = vector_temp (c2m_ctx, vector_type);
   emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, op1, type1, sign_bit, vector_type, vector_type,

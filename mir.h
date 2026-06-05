@@ -58,6 +58,8 @@ static inline int mir_assert (int cond) { return 0 && cond; }
 #define REP8(M, a1, a2, a3, a4, a5, a6, a7, a8) REP7 (M, a1, a2, a3, a4, a5, a6, a7) REP_SEP M (a8)
 #define REP9(M, a1, a2, a3, a4, a5, a6, a7, a8, a9) \
   REP8 (M, a1, a2, a3, a4, a5, a6, a7, a8) REP_SEP M (a9)
+#define REP10(M, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) \
+  REP9 (M, a1, a2, a3, a4, a5, a6, a7, a8, a9) REP_SEP M (a10)
 
 #define REP_SEP ,
 
@@ -116,7 +118,8 @@ typedef enum {
   REP6 (INSN_EL, LSH, LSHS, RSH, RSHS, URSH, URSHS),         /* Right signed/unsigned shift */
   REP8 (INSN_EL, VLSHI16, VRSHI16, VURSHI16, VLSHI32, VRSHI32, VURSHI32, VLSHI64,
         VURSHI64), /* Vector shifts */
-  REP9 (INSN_EL, VEQI8, VEQI16, VEQI32, VEQI64, VGTI8, VGTI16, VGTI32, VEQF32, VNEF32),
+  REP10 (INSN_EL, VEQI8, VEQI16, VEQI32, VEQI64, VGTI8, VGTI16, VGTI32, VGTI64,
+         VEQF32, VNEF32),
   REP6 (INSN_EL, VLTF32, VLEF32, VEQF64, VNEF64, VLTF64, VLEF64), /* Vector comparison */
   REP5 (INSN_EL, EQ, EQS, FEQ, DEQ, LDEQ),                   /* Equality */
   REP5 (INSN_EL, NE, NES, FNE, DNE, LDNE),                   /* Inequality */
