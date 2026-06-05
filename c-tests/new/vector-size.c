@@ -754,6 +754,8 @@ int main (void) {
   li_shift_c = li_shift_neg;
   li_shift_c >>= 1;
   if (li_shift_c[0] != -4 || li_shift_c[1] != 0x80000000LL) return 218;
+  li_shift_c = li_shift_neg >> 0;
+  if (li_shift_c[0] != -8 || li_shift_c[1] != 0x100000000LL) return 225;
   li_cmp_c = li_cmp_a == li_cmp_b;
   if (li_cmp_c[0] != -1 || li_cmp_c[1] != 0) return 219;
   li_cmp_c = li_cmp_a != li_cmp_b;
