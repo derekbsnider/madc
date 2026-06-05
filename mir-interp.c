@@ -62,11 +62,11 @@ static MIR_reg_t get_reg (MIR_op_t op, MIR_reg_t *max_nreg) {
 typedef enum {
   IC_LDI8 = MIR_INSN_BOUND,
   REP6 (IC_EL, LDU8, LDI16, LDU16, LDI32, LDU32, LDI64),
-  REP3 (IC_EL, LDF, LDD, LDLD),
+  REP4 (IC_EL, LDF, LDD, LDLD, LDV128),
   REP7 (IC_EL, STI8, STU8, STI16, STU16, STI32, STU32, STI64),
-  REP8 (IC_EL, STF, STD, STLD, MOVI, MOVP, MOVF, MOVD, MOVLD),
-  REP6 (IC_EL, IMM_CALL, IMM_JCALL, MOVFG, FMOVFG, DMOVFG, LDMOVFG),
-  REP5 (IC_EL, MOVTG, FMOVTG, DMOVTG, LDMOVTG, INSN_BOUND),
+  REP8 (IC_EL, STF, STD, STLD, STV128, MOVI, MOVP, MOVF, MOVD),
+  REP8 (IC_EL, MOVLD, MOVV, IMM_CALL, IMM_JCALL, MOVFG, FMOVFG, DMOVFG, LDMOVFG),
+  REP7 (IC_EL, VMOVFG, MOVTG, FMOVTG, DMOVTG, LDMOVTG, VMOVTG, INSN_BOUND),
 } MIR_full_insn_code_t;
 #undef REP_SEP
 
@@ -236,6 +236,7 @@ static void generate_icode (MIR_context_t ctx, MIR_item_t func_item) {
                            type == MIR_T_F    ? IC_FMOVTG
                            : type == MIR_T_D  ? IC_DMOVTG
                            : type == MIR_T_LD ? IC_LDMOVTG
+                           : type == MIR_T_V128 ? IC_VMOVTG
                                               : IC_MOVTG,
                            insn);
           v.i = _MIR_get_hard_reg (ctx, hard_reg_name);
@@ -249,6 +250,7 @@ static void generate_icode (MIR_context_t ctx, MIR_item_t func_item) {
                            type == MIR_T_F    ? IC_FMOVFG
                            : type == MIR_T_D  ? IC_DMOVFG
                            : type == MIR_T_LD ? IC_LDMOVFG
+                           : type == MIR_T_V128 ? IC_VMOVFG
                                               : IC_MOVFG,
                            insn);
           v.i = get_reg (ops[0], &max_nreg);
@@ -324,6 +326,21 @@ static void generate_icode (MIR_context_t ctx, MIR_item_t func_item) {
         VARR_PUSH (MIR_val_t, code_varr, v);
         v.ld = ops[1].u.ld;
         VARR_PUSH (MIR_val_t, code_varr, v);
+      } else {
+        goto regreg;
+      }
+      break;
+    case MIR_VMOV:
+      if (ops[0].mode == MIR_OP_MEM) {
+        push_insn_start (interp_ctx, IC_STV128, insn);
+        v.i = get_reg (ops[1], &max_nreg);
+        VARR_PUSH (MIR_val_t, code_varr, v);
+        push_mem (interp_ctx, ops[0]);
+      } else if (ops[1].mode == MIR_OP_MEM) {
+        push_insn_start (interp_ctx, IC_LDV128, insn);
+        v.i = get_reg (ops[0], &max_nreg);
+        VARR_PUSH (MIR_val_t, code_varr, v);
+        push_mem (interp_ctx, ops[1]);
       } else {
         goto regreg;
       }
@@ -544,6 +561,22 @@ static ALWAYS_INLINE uint64_t *get_uop (MIR_val_t *bp, code_t c) { return &bp[ge
 static ALWAYS_INLINE float *get_fop (MIR_val_t *bp, code_t c) { return &bp[get_i (c)].f; }
 static ALWAYS_INLINE double *get_dop (MIR_val_t *bp, code_t c) { return &bp[get_i (c)].d; }
 static ALWAYS_INLINE long double *get_ldop (MIR_val_t *bp, code_t c) { return &bp[get_i (c)].ld; }
+static ALWAYS_INLINE uint8_t *get_vop (MIR_val_t *bp, code_t c) { return bp[get_i (c)].v128; }
+
+static ALWAYS_INLINE void copy_v128 (uint8_t *to, const uint8_t *from) {
+  for (size_t i = 0; i < 16; i++) to[i] = from[i];
+}
+
+static ALWAYS_INLINE uint32_t get_v128_u32 (const uint8_t *v, size_t ind) {
+  uint32_t val;
+
+  memcpy (&val, v + ind * sizeof (uint32_t), sizeof (val));
+  return val;
+}
+
+static ALWAYS_INLINE void set_v128_u32 (uint8_t *v, size_t ind, uint32_t val) {
+  memcpy (v + ind * sizeof (uint32_t), &val, sizeof (val));
+}
 
 static ALWAYS_INLINE int64_t *get_2iops (MIR_val_t *bp, code_t c, int64_t *p) {
   *p = *get_iop (bp, c + 1);
@@ -893,6 +926,12 @@ static void finish_insn_trace (MIR_context_t ctx, MIR_full_insn_code_t code, cod
     /* falls through */
   case IC_LDMOVFG:
   case IC_MOVLD: op_mode = MIR_OP_LDOUBLE; break;
+  case IC_LDV128:
+  case IC_VMOVTG:
+    res = global_regs;
+    /* falls through */
+  case IC_VMOVFG:
+  case IC_MOVV: op_mode = MIR_OP_VECTOR; break;
   case IC_STI8:
   case IC_STU8:
   case IC_STI16:
@@ -902,7 +941,8 @@ static void finish_insn_trace (MIR_context_t ctx, MIR_full_insn_code_t code, cod
   case IC_STI64:
   case IC_STF:
   case IC_STD:;
-  case IC_STLD: break;
+  case IC_STLD:
+  case IC_STV128: break;
   case IC_IMM_CALL: break;
   case IC_IMM_JCALL: break;
   default:
@@ -923,6 +963,11 @@ static void finish_insn_trace (MIR_context_t ctx, MIR_full_insn_code_t code, cod
     break;
 #endif
   case MIR_OP_DOUBLE: fprintf (stderr, "\t# res = %.*e", DBL_DECIMAL_DIG, res[ops[0].i].d); break;
+  case MIR_OP_VECTOR:
+    fprintf (stderr, "\t# res = {%u,%u,%u,%u}", get_v128_u32 (res[ops[0].i].v128, 0),
+             get_v128_u32 (res[ops[0].i].v128, 1), get_v128_u32 (res[ops[0].i].v128, 2),
+             get_v128_u32 (res[ops[0].i].v128, 3));
+    break;
   default: assert (op_mode == MIR_OP_UNDEF);
   }
   fprintf (stderr, "\n");
@@ -989,16 +1034,20 @@ static void OPTIMIZE eval (MIR_context_t ctx, func_desc_t func_desc, MIR_val_t *
 #define LAB_EL(i) ltab[i] = &&L_##i
 #define REP_SEP ;
   if (bp == NULL) {
-    REP4 (LAB_EL, MIR_MOV, MIR_FMOV, MIR_DMOV, MIR_LDMOV);
+    REP5 (LAB_EL, MIR_MOV, MIR_FMOV, MIR_DMOV, MIR_LDMOV, MIR_VMOV);
     REP6 (LAB_EL, MIR_EXT8, MIR_EXT16, MIR_EXT32, MIR_UEXT8, MIR_UEXT16, MIR_UEXT32);
     REP6 (LAB_EL, MIR_I2F, MIR_I2D, MIR_I2LD, MIR_UI2F, MIR_UI2D, MIR_UI2LD);
     REP8 (LAB_EL, MIR_F2I, MIR_D2I, MIR_LD2I, MIR_F2D, MIR_F2LD, MIR_D2F, MIR_D2LD, MIR_LD2F);
     REP6 (LAB_EL, MIR_LD2D, MIR_NEG, MIR_NEGS, MIR_FNEG, MIR_DNEG, MIR_LDNEG);
     REP6 (LAB_EL, MIR_ADDR, MIR_ADDR8, MIR_ADDR16, MIR_ADDR32, MIR_ADD, MIR_ADDS);
     REP8 (LAB_EL, MIR_FADD, MIR_DADD, MIR_LDADD, MIR_SUB, MIR_SUBS, MIR_FSUB, MIR_DSUB, MIR_LDSUB);
+    LAB_EL (MIR_VSUBI32);
     REP8 (LAB_EL, MIR_MUL, MIR_MULS, MIR_FMUL, MIR_DMUL, MIR_LDMUL, MIR_DIV, MIR_DIVS, MIR_UDIV);
     REP8 (LAB_EL, MIR_UDIVS, MIR_FDIV, MIR_DDIV, MIR_LDDIV, MIR_MOD, MIR_MODS, MIR_UMOD, MIR_UMODS);
+    LAB_EL (MIR_VADDI32);
+    REP3 (LAB_EL, MIR_VAND, MIR_VOR, MIR_VXOR);
     REP8 (LAB_EL, MIR_AND, MIR_ANDS, MIR_OR, MIR_ORS, MIR_XOR, MIR_XORS, MIR_LSH, MIR_LSHS);
+    REP2 (LAB_EL, MIR_VEQI32, MIR_VGTI32);
     REP8 (LAB_EL, MIR_RSH, MIR_RSHS, MIR_URSH, MIR_URSHS, MIR_EQ, MIR_EQS, MIR_FEQ, MIR_DEQ);
     REP8 (LAB_EL, MIR_LDEQ, MIR_NE, MIR_NES, MIR_FNE, MIR_DNE, MIR_LDNE, MIR_LT, MIR_LTS);
     REP8 (LAB_EL, MIR_ULT, MIR_ULTS, MIR_FLT, MIR_DLT, MIR_LDLT, MIR_LE, MIR_LES, MIR_ULE);
@@ -1017,11 +1066,12 @@ static void OPTIMIZE eval (MIR_context_t ctx, func_desc_t func_desc, MIR_val_t *
     REP3 (LAB_EL, MIR_ALLOCA, MIR_BSTART, MIR_BEND);
     REP4 (LAB_EL, MIR_VA_ARG, MIR_VA_BLOCK_ARG, MIR_VA_START, MIR_VA_END);
     REP8 (LAB_EL, IC_LDI8, IC_LDU8, IC_LDI16, IC_LDU16, IC_LDI32, IC_LDU32, IC_LDI64, IC_LDF);
-    REP8 (LAB_EL, IC_LDD, IC_LDLD, IC_STI8, IC_STU8, IC_STI16, IC_STU16, IC_STI32, IC_STU32);
-    REP8 (LAB_EL, IC_STI64, IC_STF, IC_STD, IC_STLD, IC_MOVI, IC_MOVP, IC_MOVF, IC_MOVD);
-    REP3 (LAB_EL, IC_MOVLD, IC_IMM_CALL, IC_IMM_JCALL);
-    REP4 (LAB_EL, IC_MOVFG, IC_FMOVFG, IC_DMOVFG, IC_LDMOVFG);
-    REP4 (LAB_EL, IC_MOVTG, IC_FMOVTG, IC_DMOVTG, IC_LDMOVTG);
+    REP8 (LAB_EL, IC_LDD, IC_LDLD, IC_LDV128, IC_STI8, IC_STU8, IC_STI16, IC_STU16, IC_STI32);
+    REP8 (LAB_EL, IC_STU32, IC_STI64, IC_STF, IC_STD, IC_STLD, IC_STV128, IC_MOVI, IC_MOVP);
+    REP8 (LAB_EL, IC_MOVF, IC_MOVD, IC_MOVLD, IC_MOVV, IC_IMM_CALL, IC_IMM_JCALL, IC_MOVFG,
+          IC_FMOVFG);
+    REP8 (LAB_EL, IC_DMOVFG, IC_LDMOVFG, IC_VMOVFG, IC_MOVTG, IC_FMOVTG, IC_DMOVTG, IC_LDMOVTG,
+          IC_VMOVTG);
     return;
   }
 #undef REP_SEP
@@ -1096,6 +1146,10 @@ static void OPTIMIZE eval (MIR_context_t ctx, func_desc_t func_desc, MIR_val_t *
     *r = p;
     END_INSN;
   }
+  CASE (MIR_VMOV, 2) {
+    copy_v128 (get_vop (bp, ops), get_vop (bp, ops + 1));
+    END_INSN;
+  }
 
   CASE (IC_MOVFG, 2) {
     int64_t l = get_i (ops), r = get_i (ops + 1);
@@ -1117,6 +1171,11 @@ static void OPTIMIZE eval (MIR_context_t ctx, func_desc_t func_desc, MIR_val_t *
     bp[l].ld = globals[r].ld;
     END_INSN;
   }
+  CASE (IC_VMOVFG, 2) {
+    int64_t l = get_i (ops), r = get_i (ops + 1);
+    copy_v128 (bp[l].v128, globals[r].v128);
+    END_INSN;
+  }
 
   CASE (IC_MOVTG, 2) {
     int64_t l = get_i (ops), r = get_i (ops + 1);
@@ -1136,6 +1195,11 @@ static void OPTIMIZE eval (MIR_context_t ctx, func_desc_t func_desc, MIR_val_t *
   CASE (IC_LDMOVTG, 2) {
     int64_t l = get_i (ops), r = get_i (ops + 1);
     globals[l].ld = bp[r].ld;
+    END_INSN;
+  }
+  CASE (IC_VMOVTG, 2) {
+    int64_t l = get_i (ops), r = get_i (ops + 1);
+    copy_v128 (globals[l].v128, bp[r].v128);
     END_INSN;
   }
 
@@ -1288,6 +1352,67 @@ common_addr:;
   SCASE (MIR_FADD, 3, FOP3 (+));
   SCASE (MIR_DADD, 3, DOP3 (+));
   SCASE (MIR_LDADD, 3, LDOP3 (+));
+  CASE (MIR_VADDI32, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 4; i++) set_v128_u32 (r, i, get_v128_u32 (op1, i) + get_v128_u32 (op2, i));
+    END_INSN;
+  }
+  CASE (MIR_VSUBI32, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 4; i++) set_v128_u32 (r, i, get_v128_u32 (op1, i) - get_v128_u32 (op2, i));
+    END_INSN;
+  }
+  CASE (MIR_VAND, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 4; i++) set_v128_u32 (r, i, get_v128_u32 (op1, i) & get_v128_u32 (op2, i));
+    END_INSN;
+  }
+  CASE (MIR_VOR, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 4; i++) set_v128_u32 (r, i, get_v128_u32 (op1, i) | get_v128_u32 (op2, i));
+    END_INSN;
+  }
+  CASE (MIR_VXOR, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 4; i++) set_v128_u32 (r, i, get_v128_u32 (op1, i) ^ get_v128_u32 (op2, i));
+    END_INSN;
+  }
+  CASE (MIR_VEQI32, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 4; i++)
+      set_v128_u32 (r, i, get_v128_u32 (op1, i) == get_v128_u32 (op2, i) ? UINT32_MAX : 0);
+    END_INSN;
+  }
+  CASE (MIR_VGTI32, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 4; i++)
+      set_v128_u32 (r, i,
+                    (int32_t) get_v128_u32 (op1, i) > (int32_t) get_v128_u32 (op2, i)
+                      ? UINT32_MAX
+                      : 0);
+    END_INSN;
+  }
 
   SCASE (MIR_SUB, 3, IOP3 (-));
   SCASE (MIR_SUBS, 3, IOP3S (-));
@@ -1661,6 +1786,13 @@ common_addr:;
   SCASE (IC_LDF, 2, LD (fop, float, float));
   SCASE (IC_LDD, 2, LD (dop, double, double));
   SCASE (IC_LDLD, 2, LD (ldop, long double, long double));
+  CASE (IC_LDV128, 2) {
+    uint8_t *r = get_vop (bp, ops);
+    int64_t a = get_mem_addr (bp, ops + 1);
+
+    copy_v128 (r, (uint8_t *) a);
+    END_INSN;
+  }
   CASE (IC_MOVP, 2) {
     void **r = get_aop (bp, ops), *a = get_a (ops + 1);
     *r = a;
@@ -1676,6 +1808,13 @@ common_addr:;
   SCASE (IC_STF, 2, ST (fop, float, float));
   SCASE (IC_STD, 2, ST (dop, double, double));
   SCASE (IC_STLD, 2, ST (ldop, long double, long double));
+  CASE (IC_STV128, 2) {
+    uint8_t *v = get_vop (bp, ops);
+    int64_t a = get_mem_addr (bp, ops + 1);
+
+    copy_v128 ((uint8_t *) a, v);
+    END_INSN;
+  }
   CASE (IC_MOVI, 2) {
     int64_t *r = get_iop (bp, ops), imm = get_i (ops + 1);
     *r = imm;
@@ -1694,6 +1833,10 @@ common_addr:;
   CASE (IC_MOVLD, 2) {
     long double *r = get_ldop (bp, ops), imm = get_ld (ops + 1);
     *r = imm;
+    END_INSN;
+  }
+  CASE (IC_MOVV, 2) {
+    copy_v128 (get_vop (bp, ops), get_vop (bp, ops + 1));
     END_INSN;
   }
 #if !DIRECT_THREADED_DISPATCH

@@ -68,7 +68,7 @@ int main(int argc, char **argv)
   // MIR_output(ctx, stderr);
   MIR_load_module(ctx, mir_module);
   // MIR_output(ctx, stderr);
-  MIR_gen_init(ctx, 1);
+  MIR_gen_init(ctx);
   typedef int (*Callback)(const char*);
   int (*boo) (const char *, Callback, unsigned) = NULL;
   if (interp_p) {
@@ -76,7 +76,7 @@ int main(int argc, char **argv)
     boo = func->addr;
   } else if (gen_p) {
     MIR_link(ctx, MIR_set_gen_interface, NULL);
-    boo = MIR_gen(ctx, 0, func);
+    boo = MIR_gen(ctx, func);
   } else {
     MIR_output(ctx, stderr);
     goto cleanup;

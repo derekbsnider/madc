@@ -42,6 +42,7 @@ static inline int target_hard_reg_type_ok_p (MIR_reg_t hard_reg, MIR_type_t type
   /* For LD we need x87 stack regs and it is too complicated so no
      hard register allocation for LD: */
   if (type == MIR_T_LD) return FALSE;
+  if (MIR_vector_type_p (type)) return hard_reg >= XMM0_HARD_REG && hard_reg <= XMM15_HARD_REG;
   return MIR_int_type_p (type) ? hard_reg < XMM0_HARD_REG : hard_reg >= XMM0_HARD_REG;
 }
 
@@ -55,5 +56,5 @@ static inline int target_fixed_hard_reg_p (MIR_reg_t hard_reg) {
 }
 
 static inline int target_locs_num (MIR_reg_t loc, MIR_type_t type) {
-  return loc > MAX_HARD_REG && type == MIR_T_LD ? 2 : 1;
+  return loc > MAX_HARD_REG && (type == MIR_T_LD || MIR_vector_type_p (type)) ? 2 : 1;
 }

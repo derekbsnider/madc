@@ -5850,6 +5850,18 @@ static int complex_type_p (const struct type *type) {
 
 static int vector_type_p (const struct type *type) { return type->mode == TM_VECTOR; }
 
+static int v128_i32_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  struct type *el_type;
+
+  if (type->mode != TM_VECTOR || raw_type_size (c2m_ctx, type) != 16) return FALSE;
+  el_type = type->u.vector_type->el_type;
+  return integer_type_p (el_type) && raw_type_size (c2m_ctx, el_type) == 4;
+}
+
+static int signed_v128_i32_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  return v128_i32_vector_type_p (c2m_ctx, type) && signed_integer_type_p (type->u.vector_type->el_type);
+}
+
 static int aggregate_type_p (const struct type *type) {
   return type->mode == TM_STRUCT || type->mode == TM_UNION || vector_type_p (type);
 }
@@ -6147,6 +6159,56 @@ static int compatible_types_p (struct type *type1, struct type *type2, int ignor
             && (ignore_quals_p || type_qual_eq_p (&type1->type_qual, &type2->type_qual)));
   }
   return TRUE;
+}
+
+static int compatible_v128_i32_vector_types_p (c2m_ctx_t c2m_ctx, struct type *type1,
+                                               struct type *type2) {
+  return v128_i32_vector_type_p (c2m_ctx, type1)
+         && compatible_types_p (type1, type2, TRUE);
+}
+
+static int scalar_fits_v128_i32_lane_p (c2m_ctx_t c2m_ctx, struct type *vector_type,
+                                        struct type *scalar_type, struct expr *scalar_expr) {
+  struct type *el_type;
+  mir_size_t el_size, scalar_size;
+
+  if (!v128_i32_vector_type_p (c2m_ctx, vector_type) || !integer_type_p (scalar_type))
+    return FALSE;
+  el_type = vector_type->u.vector_type->el_type;
+  el_size = raw_type_size (c2m_ctx, el_type);
+  scalar_size = raw_type_size (c2m_ctx, scalar_type);
+  if (scalar_size <= el_size) return TRUE;
+  if (!scalar_expr->const_p || el_size != 4) return FALSE;
+  if (signed_integer_type_p (scalar_type))
+    return scalar_expr->c.i_val >= MIR_INT_MIN && scalar_expr->c.i_val <= MIR_INT_MAX;
+  return scalar_expr->c.u_val <= MIR_UINT_MAX;
+}
+
+static struct type *v128_i32_bin_op_vector_type (c2m_ctx_t c2m_ctx, struct type *type1,
+                                                 struct type *type2, struct expr *expr1,
+                                                 struct expr *expr2) {
+  if (compatible_v128_i32_vector_types_p (c2m_ctx, type1, type2)) return type1;
+  if (v128_i32_vector_type_p (c2m_ctx, type1)
+      && scalar_fits_v128_i32_lane_p (c2m_ctx, type1, type2, expr2))
+    return type1;
+  if (v128_i32_vector_type_p (c2m_ctx, type2)
+      && scalar_fits_v128_i32_lane_p (c2m_ctx, type2, type1, expr1))
+    return type2;
+  return NULL;
+}
+
+static struct type *signed_v128_i32_cmp_vector_type (c2m_ctx_t c2m_ctx, struct type *type1,
+                                                     struct type *type2, struct expr *expr1,
+                                                     struct expr *expr2) {
+  if (signed_v128_i32_vector_type_p (c2m_ctx, type1) && compatible_types_p (type1, type2, TRUE))
+    return type1;
+  if (signed_v128_i32_vector_type_p (c2m_ctx, type1)
+      && scalar_fits_v128_i32_lane_p (c2m_ctx, type1, type2, expr2))
+    return type1;
+  if (signed_v128_i32_vector_type_p (c2m_ctx, type2)
+      && scalar_fits_v128_i32_lane_p (c2m_ctx, type2, type1, expr1))
+    return type2;
+  return NULL;
 }
 
 static struct type composite_type (c2m_ctx_t c2m_ctx, struct type *tp1, struct type *tp2) {
@@ -8587,7 +8649,9 @@ static struct expr *check_assign_op (c2m_ctx_t c2m_ctx, node_t r, struct expr *e
     e = create_expr (c2m_ctx, r);
     e->type->mode = TM_BASIC;
     e->type->u.basic_type = TP_INT;
-    if (!integer_type_p (t1) || !integer_type_p (t2)) {
+    if ((tt = v128_i32_bin_op_vector_type (c2m_ctx, t1, t2, e1, e2)) != NULL) {
+      *e->type = *tt;
+    } else if (!integer_type_p (t1) || !integer_type_p (t2)) {
       error (c2m_ctx, POS (r), "bitwise operation operands should be of an integer type");
     } else {
       t = arithmetic_conversion (t1, t2);
@@ -8683,6 +8747,10 @@ static struct expr *check_assign_op (c2m_ctx_t c2m_ctx, node_t r, struct expr *e
             e->c.u_val = (add_p ? e1->c.u_val + e2->c.u_val : e1->c.u_val - e2->c.u_val);
         }
       }
+    } else if ((r->code == N_ADD || r->code == N_SUB || r->code == N_ADD_ASSIGN
+                || r->code == N_SUB_ASSIGN)
+               && (tt = v128_i32_bin_op_vector_type (c2m_ctx, t1, t2, e1, e2)) != NULL) {
+      *e->type = *tt;
     } else if (add_p) {
       if (t2->mode == TM_PTR) {
         SWAP (t1, t2, tt);
@@ -9245,6 +9313,14 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     e = create_expr (c2m_ctx, r);
     e->type->mode = TM_BASIC;
     e->type->u.basic_type = TP_INT;
+    {
+      struct type *cmp_type = signed_v128_i32_cmp_vector_type (c2m_ctx, t1, t2, e1, e2);
+
+      if (cmp_type != NULL) {
+        *e->type = *cmp_type;
+        break;
+      }
+    }
     if ((r->code == N_EQ || r->code == N_NE)
         && ((t1->mode == TM_PTR && null_const_p (e2, t2))
             || (t2->mode == TM_PTR && null_const_p (e1, t1))))
@@ -9311,7 +9387,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     e = create_expr (c2m_ctx, r);
     e->type->mode = TM_BASIC;
     e->type->u.basic_type = TP_INT;
-    if (r->code == N_BITWISE_NOT && !integer_type_p (t1) && !complex_type_p (t1)) {
+    if (r->code == N_BITWISE_NOT && v128_i32_vector_type_p (c2m_ctx, t1)) {
+      *e->type = *t1;
+    } else if (r->code == N_BITWISE_NOT && !integer_type_p (t1) && !complex_type_p (t1)) {
       error (c2m_ctx, POS (r), "bitwise-not operand should be of an integer or complex type");
     } else if (r->code == N_NOT && !scalar_type_p (t1)) {
       error (c2m_ctx, POS (r), "not operand should be of a scalar type");
@@ -9383,7 +9461,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       e = create_expr (c2m_ctx, r);
       e->type->mode = TM_BASIC;
       e->type->u.basic_type = TP_INT;
-      if (!arith_or_complex_type_p (t1)) {
+      if (v128_i32_vector_type_p (c2m_ctx, t1)) {
+        *e->type = *t1;
+      } else if (!arith_or_complex_type_p (t1)) {
         error (c2m_ctx, POS (r), "unary + or - operand should be of an arithmentic type");
       } else if (complex_type_p (t1)) {
         e->type->u.basic_type = t1->u.basic_type;
@@ -10971,6 +11051,7 @@ static MIR_type_t reg_type (c2m_ctx_t c2m_ctx, MIR_reg_t reg) {
          : n[0] == 'f' ? MIR_T_F
          : n[0] == 'd' ? MIR_T_D
          : n[0] == 'D' ? MIR_T_LD
+         : n[0] == 'V' ? MIR_T_V128
                        : MIR_T_BOUND);
   assert (res != MIR_T_BOUND);
   return res;
@@ -10983,7 +11064,7 @@ static op_t get_new_temp (c2m_ctx_t c2m_ctx, MIR_type_t t) {
   MIR_reg_t reg;
 
   assert (t == MIR_T_I64 || t == MIR_T_U64 || t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_F
-          || t == MIR_T_D || t == MIR_T_LD);
+          || t == MIR_T_D || t == MIR_T_LD || t == MIR_T_V128);
   sprintf (reg_name,
            t == MIR_T_I64   ? "I_%u"
            : t == MIR_T_U64 ? "U_%u"
@@ -10991,6 +11072,7 @@ static op_t get_new_temp (c2m_ctx_t c2m_ctx, MIR_type_t t) {
            : t == MIR_T_U32 ? "u_%u"
            : t == MIR_T_F   ? "f_%u"
            : t == MIR_T_D   ? "d_%u"
+           : t == MIR_T_V128 ? "V_%u"
                             : "D_%u",
            reg_free_mark++);
   reg = get_reg_var (c2m_ctx, t, reg_name, NULL).reg;
@@ -11012,6 +11094,7 @@ static MIR_type_t get_mir_type (c2m_ctx_t c2m_ctx, struct type *type) {
   size_t size = raw_type_size (c2m_ctx, type);
   int int_p = !floating_type_p (type), signed_p = signed_integer_type_p (type);
 
+  if (type->mode == TM_VECTOR && size == 16) return MIR_T_V128;
   if (!scalar_type_p (type)) return MIR_T_UNDEF;
   assert (type->mode == TM_BASIC || type->mode == TM_PTR || type->mode == TM_ENUM);
   if (!int_p) {
@@ -11194,7 +11277,11 @@ static int push_const_val (c2m_ctx_t c2m_ctx, node_t r, op_t *res) {
 }
 
 static MIR_insn_code_t tp_mov (MIR_type_t t) {
-  return t == MIR_T_F ? MIR_FMOV : t == MIR_T_D ? MIR_DMOV : t == MIR_T_LD ? MIR_LDMOV : MIR_MOV;
+  return (t == MIR_T_F    ? MIR_FMOV
+          : t == MIR_T_D  ? MIR_DMOV
+          : t == MIR_T_LD ? MIR_LDMOV
+          : t == MIR_T_V128 ? MIR_VMOV
+                            : MIR_MOV);
 }
 
 static void emit_insn (c2m_ctx_t c2m_ctx, MIR_insn_t insn) {
@@ -11235,7 +11322,7 @@ static void emit_insn_opt (c2m_ctx_t c2m_ctx, MIR_insn_t insn) {
   int out_p;
 
   if ((insn->code == MIR_MOV || insn->code == MIR_FMOV || insn->code == MIR_DMOV
-       || insn->code == MIR_LDMOV)
+       || insn->code == MIR_LDMOV || insn->code == MIR_VMOV)
       && (tail = DLIST_TAIL (MIR_insn_t, curr_func->u.func->insns)) != NULL
       && MIR_insn_nops (ctx, tail) > 0 && temp_reg_p (c2m_ctx, insn->ops[1])
       && !temp_reg_p (c2m_ctx, insn->ops[0]) && temp_reg_p (c2m_ctx, tail->ops[0])
@@ -11273,7 +11360,7 @@ static op_t cast (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t t, int new_op_p) {
 
   assert (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16 || t == MIR_T_I32
           || t == MIR_T_U32 || t == MIR_T_I64 || t == MIR_T_U64 || t == MIR_T_F || t == MIR_T_D
-          || t == MIR_T_LD);
+          || t == MIR_T_LD || t == MIR_T_V128);
   switch (op.mir_op.mode) {
   case MIR_OP_MEM:
     op_type = op.mir_op.u.mem.type;
@@ -11444,7 +11531,7 @@ static op_t cast (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t t, int new_op_p) {
 
 static op_t promote (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t t, int new_op_p) {
   assert (t == MIR_T_I64 || t == MIR_T_U64 || t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_F
-          || t == MIR_T_D || t == MIR_T_LD);
+          || t == MIR_T_D || t == MIR_T_LD || t == MIR_T_V128);
   return cast (c2m_ctx, op, t, new_op_p);
 }
 
@@ -11771,6 +11858,8 @@ static void gen_memcpy (c2m_ctx_t c2m_ctx, MIR_disp_t disp, MIR_reg_t base, op_t
                         mir_size_t len);
 static op_t scalar_to_complex (c2m_ctx_t c2m_ctx, op_t scalar, MIR_type_t scalar_t,
                                enum basic_type complex_bt);
+static void emit_scalar_assign (c2m_ctx_t c2m_ctx, op_t var, op_t *val, MIR_type_t t,
+                                int ignore_others_p);
 
 static void block_move (c2m_ctx_t c2m_ctx, op_t var, op_t val, mir_size_t size) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
@@ -11798,6 +11887,154 @@ static void block_move (c2m_ctx_t c2m_ctx, op_t var, op_t val, mir_size_t size) 
   }
 }
 
+static op_t force_v128_reg (c2m_ctx_t c2m_ctx, op_t op) {
+  op_t res;
+
+  if (op.mir_op.mode == MIR_OP_REG) return op;
+  assert (op.mir_op.mode == MIR_OP_MEM);
+  op.mir_op.u.mem.type = MIR_T_V128;
+  res = get_new_temp (c2m_ctx, MIR_T_V128);
+  emit2 (c2m_ctx, MIR_VMOV, res.mir_op, op.mir_op);
+  return res;
+}
+
+static op_t vector_temp (c2m_ctx_t c2m_ctx, struct type *type) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  op_t addr = get_new_temp (c2m_ctx, MIR_T_I64);
+
+  emit2 (c2m_ctx, MIR_ALLOCA, addr.mir_op, MIR_new_int_op (ctx, raw_type_size (c2m_ctx, type)));
+  return new_op (NULL, MIR_new_mem_op (ctx, MIR_T_V128, 0, addr.mir_op.u.reg, 0, 1));
+}
+
+static op_t scalar_to_v128_i32 (c2m_ctx_t c2m_ctx, op_t scalar, struct type *scalar_type,
+                                struct type *vector_type) {
+  MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
+  mir_size_t lane_size = raw_type_size (c2m_ctx, vector_type->u.vector_type->el_type);
+  op_t res = vector_temp (c2m_ctx, vector_type);
+  op_t lane_val = cast (c2m_ctx, scalar, lane_type, TRUE);
+
+  assert (lane_size == 4 && integer_type_p (scalar_type));
+  for (mir_size_t offset = 0; offset < raw_type_size (c2m_ctx, vector_type); offset += lane_size) {
+    op_t lane = res, val = lane_val;
+
+    lane.mir_op.u.mem.type = lane_type;
+    lane.mir_op.u.mem.disp += offset;
+    emit_scalar_assign (c2m_ctx, lane, &val, lane_type, FALSE);
+  }
+  return res;
+}
+
+static op_t prepare_v128_i32_operand (c2m_ctx_t c2m_ctx, op_t op, struct type *op_type,
+                                      struct type *vector_type) {
+  if (!v128_i32_vector_type_p (c2m_ctx, op_type))
+    op = scalar_to_v128_i32 (c2m_ctx, op, op_type, vector_type);
+  return force_v128_reg (c2m_ctx, op);
+}
+
+static MIR_insn_code_t get_v128_i32_bin_insn_code (node_code_t code) {
+  switch (code) {
+  case N_ADD:
+  case N_ADD_ASSIGN: return MIR_VADDI32;
+  case N_SUB:
+  case N_SUB_ASSIGN: return MIR_VSUBI32;
+  case N_AND:
+  case N_AND_ASSIGN: return MIR_VAND;
+  case N_OR:
+  case N_OR_ASSIGN: return MIR_VOR;
+  case N_XOR:
+  case N_XOR_ASSIGN: return MIR_VXOR;
+  default: return MIR_INSN_BOUND;
+  }
+}
+
+static void store_v128 (c2m_ctx_t c2m_ctx, op_t dest, op_t val) {
+  assert (dest.mir_op.mode == MIR_OP_MEM);
+  dest.mir_op.u.mem.type = MIR_T_V128;
+  emit2 (c2m_ctx, MIR_VMOV, dest.mir_op, val.mir_op);
+}
+
+static op_t const_v128_i32 (c2m_ctx_t c2m_ctx, struct type *vector_type, mir_int val) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  op_t scalar = new_op (NULL, MIR_new_int_op (ctx, val));
+
+  return scalar_to_v128_i32 (c2m_ctx, scalar, vector_type->u.vector_type->el_type, vector_type);
+}
+
+static op_t emit_v128_i32_bin_op (c2m_ctx_t c2m_ctx, MIR_insn_code_t code, op_t op1,
+                                  struct type *type1, op_t op2, struct type *type2,
+                                  struct type *vector_type, op_t dest) {
+  op_t reg = get_new_temp (c2m_ctx, MIR_T_V128);
+
+  op1 = prepare_v128_i32_operand (c2m_ctx, op1, type1, vector_type);
+  op2 = prepare_v128_i32_operand (c2m_ctx, op2, type2, vector_type);
+  emit3 (c2m_ctx, code, reg.mir_op, op1.mir_op, op2.mir_op);
+  store_v128 (c2m_ctx, dest, reg);
+  return dest;
+}
+
+static op_t gen_v128_i32_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest) {
+  node_code_t code = r->code;
+  struct type *type = ((struct expr *) r->attr)->type;
+  struct type *type1 = ((struct expr *) NL_HEAD (r->u.ops)->attr)->type;
+  struct type *type2 = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
+  op_t op1 = val_gen (c2m_ctx, NL_HEAD (r->u.ops));
+  op_t op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
+  op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
+  op_t cmp_dest, all_ones;
+
+  if (code == N_EQ)
+    return emit_v128_i32_bin_op (c2m_ctx, MIR_VEQI32, op1, type1, op2, type2, type, dest);
+  if (code == N_GT)
+    return emit_v128_i32_bin_op (c2m_ctx, MIR_VGTI32, op1, type1, op2, type2, type, dest);
+  if (code == N_LT)
+    return emit_v128_i32_bin_op (c2m_ctx, MIR_VGTI32, op2, type2, op1, type1, type, dest);
+
+  cmp_dest = vector_temp (c2m_ctx, type);
+  if (code == N_NE) {
+    emit_v128_i32_bin_op (c2m_ctx, MIR_VEQI32, op1, type1, op2, type2, type, cmp_dest);
+  } else if (code == N_LE) {
+    emit_v128_i32_bin_op (c2m_ctx, MIR_VGTI32, op1, type1, op2, type2, type, cmp_dest);
+  } else {
+    assert (code == N_GE);
+    emit_v128_i32_bin_op (c2m_ctx, MIR_VGTI32, op2, type2, op1, type1, type, cmp_dest);
+  }
+  all_ones = const_v128_i32 (c2m_ctx, type, -1);
+  return emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, cmp_dest, type, all_ones, type, type, dest);
+}
+
+static op_t gen_v128_i32_unary_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest) {
+  struct type *type = ((struct expr *) r->attr)->type;
+  op_t op = val_gen (c2m_ctx, NL_HEAD (r->u.ops));
+  op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
+
+  if (r->code == N_ADD) {
+    op = force_v128_reg (c2m_ctx, op);
+    store_v128 (c2m_ctx, dest, op);
+    return dest;
+  } else if (r->code == N_SUB) {
+    op_t zero = const_v128_i32 (c2m_ctx, type, 0);
+
+    return emit_v128_i32_bin_op (c2m_ctx, MIR_VSUBI32, zero, type, op, type, type, dest);
+  } else {
+    op_t all_ones = const_v128_i32 (c2m_ctx, type, -1);
+
+    assert (r->code == N_BITWISE_NOT);
+    return emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, op, type, all_ones, type, type, dest);
+  }
+}
+
+static op_t gen_v128_i32_bin_op (c2m_ctx_t c2m_ctx, node_t r, MIR_insn_code_t code,
+                                 op_t *desirable_dest) {
+  op_t op1 = val_gen (c2m_ctx, NL_HEAD (r->u.ops));
+  op_t op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
+  struct type *type = ((struct expr *) r->attr)->type;
+  struct type *type1 = ((struct expr *) NL_HEAD (r->u.ops)->attr)->type;
+  struct type *type2 = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
+  op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
+
+  return emit_v128_i32_bin_op (c2m_ctx, code, op1, type1, op2, type2, type, dest);
+}
+
 static const char *get_reg_var_name (c2m_ctx_t c2m_ctx, MIR_type_t promoted_type,
                                      const char *suffix, unsigned func_scope_num) {
   char prefix[50];
@@ -11809,6 +12046,7 @@ static const char *get_reg_var_name (c2m_ctx_t c2m_ctx, MIR_type_t promoted_type
            : promoted_type == MIR_T_U32 ? "u%u_"
            : promoted_type == MIR_T_F   ? "f%u_"
            : promoted_type == MIR_T_D   ? "d%u_"
+           : promoted_type == MIR_T_V128 ? "V%u_"
                                         : "D%u_",
            func_scope_num);
   VARR_TRUNC (char, temp_string, 0);
@@ -13259,6 +13497,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     }
     break;
   case N_BITWISE_NOT:
+    if (v128_i32_vector_type_p (c2m_ctx, ((struct expr *) r->attr)->type)) {
+      res = gen_v128_i32_unary_op (c2m_ctx, r, desirable_dest);
+      break;
+    }
     if (complex_type_p (((struct expr *) r->attr)->type)) {
       /* Complex conjugate: ~z = (re, -im) */
       struct type *ctype = ((struct expr *) r->attr)->type;
@@ -13336,6 +13578,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_ADD:
   case N_SUB:
     if (NL_NEXT (NL_HEAD (r->u.ops)) == NULL) { /* unary */
+      if (v128_i32_vector_type_p (c2m_ctx, ((struct expr *) r->attr)->type)) {
+        res = gen_v128_i32_unary_op (c2m_ctx, r, desirable_dest);
+        break;
+      }
       if (complex_type_p (((struct expr *) r->attr)->type)) {
         struct type *utype = ((struct expr *) r->attr)->type;
         enum basic_type ubt = utype->u.basic_type;
@@ -13387,6 +13633,12 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_MUL:
   case N_DIV:
   case N_MOD:
+    insn_code = get_v128_i32_bin_insn_code (r->code);
+    if (insn_code != MIR_INSN_BOUND
+        && v128_i32_vector_type_p (c2m_ctx, ((struct expr *) r->attr)->type)) {
+      res = gen_v128_i32_bin_op (c2m_ctx, r, insn_code, desirable_dest);
+      break;
+    }
     if (complex_type_p (((struct expr *) r->attr)->type)) {
       struct type *ltype = ((struct expr *) NL_HEAD (r->u.ops)->attr)->type;
       struct type *rtype = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
@@ -13420,6 +13672,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     struct type *type2 = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
     struct type type_s, ptr_type_s = get_ptr_int_type (FALSE);
 
+    if (signed_v128_i32_vector_type_p (c2m_ctx, ((struct expr *) r->attr)->type)) {
+      res = gen_v128_i32_cmp_op (c2m_ctx, r, desirable_dest);
+      break;
+    }
     if (complex_type_p (type1) || complex_type_p (type2)) {
       /* Complex equality: (a.re == b.re) && (a.im == b.im) */
       struct type conv = arithmetic_conversion (type1, type2);
@@ -13517,6 +13773,18 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_MUL_ASSIGN:
   case N_DIV_ASSIGN:
   case N_MOD_ASSIGN:
+    insn_code = get_v128_i32_bin_insn_code (r->code);
+    if (insn_code != MIR_INSN_BOUND
+        && v128_i32_vector_type_p (c2m_ctx, ((struct expr *) r->attr)->type2)) {
+      struct type *lhs_type = ((struct expr *) r->attr)->type2;
+      struct type *rhs_type = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
+
+      var = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
+      val = force_val (c2m_ctx, var, FALSE);
+      op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
+      res = emit_v128_i32_bin_op (c2m_ctx, insn_code, val, lhs_type, op2, rhs_type, lhs_type, var);
+      break;
+    }
     if (complex_type_p (((struct expr *) r->attr)->type)) {
       /* Complex compound assignment: x += y → x = x op y */
       struct type *rtype = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
@@ -13542,7 +13810,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     t = get_op_type (c2m_ctx, var);
     op2 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, t != MIR_T_UNDEF,
                t != MIR_T_UNDEF ? NULL : &var, NULL);
-    if ((!val_p && true_label == NULL) || t == MIR_T_UNDEF) {
+    if ((!val_p && true_label == NULL) || t == MIR_T_UNDEF
+        || aggregate_type_p (((struct expr *) r->attr)->type)) {
       res = var;
       val = op2;
     } else {

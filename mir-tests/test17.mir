@@ -1,0 +1,121 @@
+M0:	module
+a:	u64 8589934593, 17179869187
+b:	u64 85899345930, 171798691870
+r:	u64 0, 0
+main:	func i64
+	local i64:pa, i64:pb, i64:pr, i64:p, i64:x, v128:va, v128:vb, v128:vc
+	mov pa, a
+	mov pb, b
+	mov pr, r
+	vmov va, v128:(pa)
+	vmov vb, v128:(pb)
+	vaddi32 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 11
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 22
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 33
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 44
+	vsubi32 vc, vb, va
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 9
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 18
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 27
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 36
+	vand vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 0
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 0
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 2
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 0
+	vor vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 11
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 22
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 31
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 44
+	vxor vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 11
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 22
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 29
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 44
+	veqi32 vc, va, va
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, -1
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, -1
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, -1
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, -1
+	vgti32 vc, vb, va
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, -1
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, -1
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, -1
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, -1
+	vgti32 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i32:(pr)
+	bne fail, x, 0
+	add p, pr, 4
+	mov x, i32:(p)
+	bne fail, x, 0
+	add p, pr, 8
+	mov x, i32:(p)
+	bne fail, x, 0
+	add p, pr, 12
+	mov x, i32:(p)
+	bne fail, x, 0
+	ret 0
+fail:
+	ret 1
+	endfunc
+	export main
+	endmodule

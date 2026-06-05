@@ -800,6 +800,7 @@ static void setup_used_hard_regs (gen_ctx_t gen_ctx, MIR_type_t type, MIR_reg_t 
 static MIR_reg_t get_temp_hard_reg (MIR_type_t type, int first_p) {
   if (type == MIR_T_F) return first_p ? TEMP_FLOAT_HARD_REG1 : TEMP_FLOAT_HARD_REG2;
   if (type == MIR_T_D) return first_p ? TEMP_DOUBLE_HARD_REG1 : TEMP_DOUBLE_HARD_REG2;
+  if (MIR_vector_type_p (type)) return first_p ? TEMP_DOUBLE_HARD_REG1 : TEMP_DOUBLE_HARD_REG2;
   if (type == MIR_T_LD) return first_p ? TEMP_LDOUBLE_HARD_REG1 : TEMP_LDOUBLE_HARD_REG2;
   return first_p ? TEMP_INT_HARD_REG1 : TEMP_INT_HARD_REG2;
 }
@@ -1218,7 +1219,8 @@ static MIR_reg_t gen_new_temp_reg (gen_ctx_t gen_ctx, MIR_type_t type, MIR_func_
 static MIR_reg_t get_max_var (gen_ctx_t gen_ctx) { return curr_cfg->max_var; }
 
 static int move_code_p (MIR_insn_code_t code) {
-  return code == MIR_MOV || code == MIR_FMOV || code == MIR_DMOV || code == MIR_LDMOV;
+  return code == MIR_MOV || code == MIR_FMOV || code == MIR_DMOV || code == MIR_LDMOV
+         || code == MIR_VMOV;
 }
 
 static int move_p (MIR_insn_t insn) {
@@ -2207,6 +2209,7 @@ static MIR_insn_code_t get_move_code (MIR_type_t type) {
   return (type == MIR_T_F    ? MIR_FMOV
           : type == MIR_T_D  ? MIR_DMOV
           : type == MIR_T_LD ? MIR_LDMOV
+          : type == MIR_T_V128 ? MIR_VMOV
                              : MIR_MOV);
 }
 
@@ -3776,6 +3779,7 @@ static MIR_type_t mode2type (MIR_op_mode_t mode) {
   return (mode == MIR_OP_FLOAT     ? MIR_T_F
           : mode == MIR_OP_DOUBLE  ? MIR_T_D
           : mode == MIR_OP_LDOUBLE ? MIR_T_LD
+          : mode == MIR_OP_VECTOR  ? MIR_T_V128
                                    : MIR_T_I64);
 }
 
@@ -3783,6 +3787,7 @@ static MIR_op_mode_t type2mode (MIR_type_t type) {
   return (type == MIR_T_F    ? MIR_OP_FLOAT
           : type == MIR_T_D  ? MIR_OP_DOUBLE
           : type == MIR_T_LD ? MIR_OP_LDOUBLE
+          : type == MIR_T_V128 ? MIR_OP_VECTOR
                              : MIR_OP_INT);
 }
 
@@ -4614,6 +4619,7 @@ static void gvn_modify (gen_ctx_t gen_ctx) {
       case MIR_FMOV:
       case MIR_DMOV:
       case MIR_LDMOV:
+      case MIR_VMOV:
         if (insn->ops[0].mode == MIR_OP_VAR_MEM) { /* store */
           if ((se = insn->ops[1].data) != NULL && se->def->alloca_flag) full_escape_p = TRUE;
           se = insn->ops[0].data; /* address def actually */
@@ -7758,6 +7764,7 @@ static MIR_reg_t add_ld_st (gen_ctx_t gen_ctx, MIR_op_t *mem_op, MIR_reg_t loc, 
   code = (type == MIR_T_I64 ? MIR_MOV
           : type == MIR_T_F ? MIR_FMOV
           : type == MIR_T_D ? MIR_DMOV
+          : type == MIR_T_V128 ? MIR_VMOV
                             : MIR_LDMOV);
   if (hard_reg != MIR_NON_VAR) setup_used_hard_regs (gen_ctx, type, hard_reg);
   offset = target_get_stack_slot_offset (gen_ctx, type, loc - MAX_HARD_REG - 1);
@@ -8179,6 +8186,7 @@ static int rewrite_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, MIR_reg_t base_reg,
         data_mode = type == MIR_T_F    ? MIR_OP_FLOAT
                     : type == MIR_T_D  ? MIR_OP_DOUBLE
                     : type == MIR_T_LD ? MIR_OP_LDOUBLE
+                    : type == MIR_T_V128 ? MIR_OP_VECTOR
                                        : MIR_OP_INT;
       }
       MIR_reg_t loc = VARR_GET (MIR_reg_t, reg_renumber, op->u.var);
@@ -9939,6 +9947,7 @@ static void generate_bb_version_machine_code (gen_ctx_t gen_ctx, bb_version_t bb
     case MIR_FMOV:
     case MIR_DMOV:
     case MIR_LDMOV:
+    case MIR_VMOV:
       dest_spot = op2spot (&curr_insn->ops[0]);
       src_spot = op2spot (&curr_insn->ops[1]);
       if (src_spot == 0) {

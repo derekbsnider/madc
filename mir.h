@@ -91,7 +91,7 @@ typedef enum {
   /* Abbreviations:
      I - 64-bit int, S - short (32-bit), U - unsigned, F -float, D - double, LD - long double.  */
   /* 2 operand insns: */
-  REP4 (INSN_EL, MOV, FMOV, DMOV, LDMOV), /* Moves */
+  REP5 (INSN_EL, MOV, FMOV, DMOV, LDMOV, VMOV), /* Moves */
   /* Extensions.  Truncation is not necessary because we can use an extension to use a part. */
   REP6 (INSN_EL, EXT8, EXT16, EXT32, UEXT8, UEXT16, UEXT32),
   REP3 (INSN_EL, I2F, I2D, I2LD),    /* Integer to float or (long) double conversion */
@@ -101,13 +101,15 @@ typedef enum {
   REP5 (INSN_EL, NEG, NEGS, FNEG, DNEG, LDNEG),     /* Changing sign */
   REP4 (INSN_EL, ADDR, ADDR8, ADDR16, ADDR32), /* reg addr in natural mode or given integer mode */
   /* 3 operand insn: */
-  REP5 (INSN_EL, ADD, ADDS, FADD, DADD, LDADD),              /* Addition */
-  REP5 (INSN_EL, SUB, SUBS, FSUB, DSUB, LDSUB),              /* Subtraction */
+  REP6 (INSN_EL, ADD, ADDS, FADD, DADD, LDADD, VADDI32),     /* Addition */
+  REP6 (INSN_EL, SUB, SUBS, FSUB, DSUB, LDSUB, VSUBI32),     /* Subtraction */
   REP5 (INSN_EL, MUL, MULS, FMUL, DMUL, LDMUL),              /* Multiplication */
   REP7 (INSN_EL, DIV, DIVS, UDIV, UDIVS, FDIV, DDIV, LDDIV), /* Division */
   REP4 (INSN_EL, MOD, MODS, UMOD, UMODS),                    /* Modulo */
   REP6 (INSN_EL, AND, ANDS, OR, ORS, XOR, XORS),             /* Logical */
+  REP3 (INSN_EL, VAND, VOR, VXOR),                           /* Vector logical */
   REP6 (INSN_EL, LSH, LSHS, RSH, RSHS, URSH, URSHS),         /* Right signed/unsigned shift */
+  REP2 (INSN_EL, VEQI32, VGTI32),                             /* Vector comparison */
   REP5 (INSN_EL, EQ, EQS, FEQ, DEQ, LDEQ),                   /* Equality */
   REP5 (INSN_EL, NE, NES, FNE, DNE, LDNE),                   /* Inequality */
   REP7 (INSN_EL, LT, LTS, ULT, ULTS, FLT, DLT, LDLT),        /* Less then */
@@ -167,6 +169,7 @@ typedef enum {
   REP3 (TYPE_EL, F, D, LD),                             /* Float or (long) double type */
   REP2 (TYPE_EL, P, BLK),                               /* Pointer, memory blocks */
   TYPE_EL (RBLK) = TYPE_EL (BLK) + MIR_BLK_NUM,         /* return block */
+  TYPE_EL (V128),                                       /* 128-bit vector */
   REP2 (TYPE_EL, UNDEF, BOUND),
 } MIR_type_t;
 
@@ -175,6 +178,12 @@ static inline int MIR_int_type_p (MIR_type_t t) {
 }
 
 static inline int MIR_fp_type_p (MIR_type_t t) { return MIR_T_F <= t && t <= MIR_T_LD; }
+
+static inline int MIR_vector_type_p (MIR_type_t t) { return t == MIR_T_V128; }
+
+static inline int MIR_reg_type_p (MIR_type_t t) {
+  return t == MIR_T_I64 || MIR_fp_type_p (t) || MIR_vector_type_p (t);
+}
 
 static inline int MIR_blk_type_p (MIR_type_t t) { return MIR_T_BLK <= t && t < MIR_T_RBLK; }
 static inline int MIR_all_blk_type_p (MIR_type_t t) { return MIR_T_BLK <= t && t <= MIR_T_RBLK; }
@@ -238,7 +247,7 @@ typedef const char *MIR_name_t;
 /* Operand mode */
 typedef enum {
   REP8 (OP_EL, UNDEF, REG, VAR, INT, UINT, FLOAT, DOUBLE, LDOUBLE),
-  REP6 (OP_EL, REF, STR, MEM, VAR_MEM, LABEL, BOUND),
+  REP7 (OP_EL, REF, STR, MEM, VAR_MEM, LABEL, VECTOR, BOUND),
 } MIR_op_mode_t;
 
 typedef struct MIR_item *MIR_item_t;
@@ -634,6 +643,7 @@ typedef union {
   float f;
   double d;
   long double ld;
+  uint8_t v128[16];
 } MIR_val_t;
 
 extern void MIR_interp (MIR_context_t ctx, MIR_item_t func_item, MIR_val_t *results, size_t nargs,

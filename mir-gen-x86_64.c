@@ -67,9 +67,11 @@ static const int spill_space_size = 32;
 
 static const MIR_insn_code_t target_io_dup_op_insn_codes[] = {
   /* see possible patterns */
-  MIR_ADD,   MIR_ADDS,  MIR_FADD,   MIR_DADD,       MIR_LDADD, MIR_SUB,   MIR_SUBS,  MIR_FSUB,
-  MIR_DSUB,  MIR_LDSUB, MIR_MUL,    MIR_MULS,       MIR_FMUL,  MIR_DMUL,  MIR_LDMUL, MIR_FDIV,
+  MIR_ADD,   MIR_ADDS,  MIR_FADD,   MIR_DADD,       MIR_LDADD, MIR_VADDI32, MIR_SUB,   MIR_SUBS,
+  MIR_FSUB,  MIR_DSUB,  MIR_LDSUB,  MIR_VSUBI32,    MIR_MUL,   MIR_MULS,    MIR_FMUL,  MIR_DMUL,
+  MIR_LDMUL, MIR_FDIV,
   MIR_DDIV,  MIR_LDDIV, MIR_AND,    MIR_ANDS,       MIR_OR,    MIR_ORS,   MIR_XOR,   MIR_XORS,
+  MIR_VAND,  MIR_VOR,   MIR_VXOR,   MIR_VEQI32,     MIR_VGTI32,
   MIR_LSH,   MIR_LSHS,  MIR_RSH,    MIR_RSHS,       MIR_URSH,  MIR_URSHS, MIR_NEG,   MIR_NEGS,
   MIR_FNEG,  MIR_DNEG,  MIR_LDNEG,  MIR_ADDO,       MIR_ADDOS, MIR_SUBO,  MIR_SUBOS, MIR_MULO,
   MIR_MULOS, MIR_UMULO, MIR_UMULOS, MIR_INSN_BOUND,
@@ -666,7 +668,7 @@ static MIR_disp_t target_get_stack_slot_offset (gen_ctx_t gen_ctx, MIR_type_t ty
                                                 MIR_reg_t slot) {
   /* slot is 0, 1, ... */
   if (keep_fp_p)
-    return -((MIR_disp_t) (slot + (type == MIR_T_LD ? 2 : 1)) * 8
+    return -((MIR_disp_t) (slot + (type == MIR_T_LD || MIR_vector_type_p (type) ? 2 : 1)) * 8
              + (curr_func_item->u.func->vararg_p ? reg_save_area_size : 0));
   return (MIR_disp_t) slot * 8;
 }
@@ -1624,6 +1626,10 @@ static struct pattern patterns[] = {
   {MIR_LDMOV, "h33 mld", "DB /5 m1; D9 C9", 0}, /*only for ret and calls: fld m1; fxch */
   {MIR_LDMOV, "mld mld", "DB /5 m1; DB /7 m0", 0}, /* fld m1; fstp m0 */
 
+  {MIR_VMOV, "r r", "66 Y 0F 6F r0 R1", 0},  /* movdqa r0,r1 */
+  {MIR_VMOV, "r mv", "66 Y 0F 6F r0 m1", 0}, /* movdqa r0,m128 */
+  {MIR_VMOV, "mv r", "66 Y 0F 7F r1 m0", 0}, /* movdqa m128,r0 */
+
 #define STR(c) #c
 #define STR_VAL(c) STR (c)
 
@@ -1690,12 +1696,18 @@ static struct pattern patterns[] = {
 
   IOP (MIR_ADD, "03", "01", "83 /0", "81 /0") /* x86_64 int additions */
 
+  {MIR_VADDI32, "r 0 r", "66 Y 0F FE r0 R2", 0},  /* paddd r0,r2 */
+  {MIR_VADDI32, "r 0 mv", "66 Y 0F FE r0 m2", 0}, /* paddd r0,m128 */
+
   {MIR_ADD, "r r r", "X 8D r0 ap", 0},   /* lea r0,(r1,r2)*/
   {MIR_ADD, "r r i2", "X 8D r0 ap", 0},  /* lea r0,i2(r1)*/
   {MIR_ADDS, "r r r", "Y 8D r0 ap", 0},  /* lea r0,(r1,r2)*/
   {MIR_ADDS, "r r i2", "Y 8D r0 ap", 0}, /* lea r0,i2(r1)*/
 
   IOP (MIR_SUB, "2B", "29", "83 /5", "81 /5") /* x86_64 int subtractions */
+
+  {MIR_VSUBI32, "r 0 r", "66 Y 0F FA r0 R2", 0},  /* psubd r0,r2 */
+  {MIR_VSUBI32, "r 0 mv", "66 Y 0F FA r0 m2", 0}, /* psubd r0,m128 */
 
   IOP (MIR_ADDO, "03", "01", "83 /0", "81 /0") /* x86_64 int additions with ovfl flag */
   IOP (MIR_SUBO, "2B", "29", "83 /5", "81 /5") /* x86_64 int subtractions with ovfl flag */
@@ -1744,6 +1756,17 @@ static struct pattern patterns[] = {
 
   IOP (MIR_AND, "23", "21", "83 /4", "81 /4")                                            /*ands*/
   IOP (MIR_OR, "0B", "09", "83 /1", "81 /1") IOP (MIR_XOR, "33", "31", "83 /6", "81 /6") /*(x)ors*/
+
+  {MIR_VAND, "r 0 r", "66 Y 0F DB r0 R2", 0},  /* pand r0,r2 */
+  {MIR_VAND, "r 0 mv", "66 Y 0F DB r0 m2", 0}, /* pand r0,m128 */
+  {MIR_VOR, "r 0 r", "66 Y 0F EB r0 R2", 0},   /* por r0,r2 */
+  {MIR_VOR, "r 0 mv", "66 Y 0F EB r0 m2", 0},  /* por r0,m128 */
+  {MIR_VXOR, "r 0 r", "66 Y 0F EF r0 R2", 0},  /* pxor r0,r2 */
+  {MIR_VXOR, "r 0 mv", "66 Y 0F EF r0 m2", 0}, /* pxor r0,m128 */
+  {MIR_VEQI32, "r 0 r", "66 Y 0F 76 r0 R2", 0},  /* pcmpeqd r0,r2 */
+  {MIR_VEQI32, "r 0 mv", "66 Y 0F 76 r0 m2", 0}, /* pcmpeqd r0,m128 */
+  {MIR_VGTI32, "r 0 r", "66 Y 0F 66 r0 R2", 0},  /* pcmpgtd r0,r2 */
+  {MIR_VGTI32, "r 0 mv", "66 Y 0F 66 r0 m2", 0}, /* pcmpgtd r0,m128 */
 
   FOP (MIR_FADD, "F3 Y 0F 58") DOP (MIR_DADD, "F2 Y 0F 58") FOP (MIR_FSUB, "F3 Y 0F 5C") /**/
   DOP (MIR_DSUB, "F2 Y 0F 5C") FOP (MIR_FMUL, "F3 Y 0F 59") DOP (MIR_DMUL, "F2 Y 0F 59") /**/
@@ -2033,6 +2056,10 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
         break;
       case 'd':
         type = MIR_T_D;
+        type2 = MIR_T_BOUND;
+        break;
+      case 'v':
+        type = MIR_T_V128;
         type2 = MIR_T_BOUND;
         break;
       case 'l':
