@@ -6297,19 +6297,17 @@ static int shufflevector_type_p (c2m_ctx_t c2m_ctx, struct type *res_type, struc
          && supported_vector_lane_type_p (c2m_ctx, type1->u.vector_type->el_type);
 }
 
-static int v128_shuffle_type_p (c2m_ctx_t c2m_ctx, struct type *type1, struct type *type2,
-                                struct type *mask_type) {
+static int shuffle_type_p (c2m_ctx_t c2m_ctx, struct type *type1, struct type *type2,
+                           struct type *mask_type) {
   struct type *mask_el_type;
   mir_size_t mask_lane_size;
 
-  if (!v128_vector_type_p (c2m_ctx, type1) || !v128_vector_type_p (c2m_ctx, mask_type))
-    return FALSE;
-  if (type2 != NULL && (!v128_vector_type_p (c2m_ctx, type2)
-                        || !compatible_types_p (type1, type2, TRUE)))
+  if (type1->mode != TM_VECTOR || mask_type->mode != TM_VECTOR) return FALSE;
+  if (type2 != NULL && (type2->mode != TM_VECTOR || !compatible_types_p (type1, type2, TRUE)))
     return FALSE;
   mask_el_type = mask_type->u.vector_type->el_type;
   mask_lane_size = raw_type_size (c2m_ctx, mask_el_type);
-  return v128_supported_lane_type_p (c2m_ctx, type1->u.vector_type->el_type)
+  return supported_vector_lane_type_p (c2m_ctx, type1->u.vector_type->el_type)
          && integer_type_p (mask_el_type) && supported_integer_vector_lane_size_p (mask_lane_size)
          && vector_el_count (c2m_ctx, type1) == vector_el_count (c2m_ctx, mask_type);
 }
@@ -10174,7 +10172,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
           if (t1->mode != TM_VECTOR || (t2 != NULL && t2->mode != TM_VECTOR)
               || mask_type->mode != TM_VECTOR) {
             error (c2m_ctx, POS (r), "arguments of %s should be vectors", SHUFFLE);
-          } else if (!v128_shuffle_type_p (c2m_ctx, t1, t2, mask_type)) {
+          } else if (!shuffle_type_p (c2m_ctx, t1, t2, mask_type)) {
             error (c2m_ctx, POS (r), "unsupported vector types in %s", SHUFFLE);
           }
         } else if (shufflevector_p) {
@@ -12600,8 +12598,8 @@ static op_t gen_shufflevector (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest
   return emit_shufflevector (c2m_ctx, op1, type1, op2, type2, type, NL_NEXT (arg2), dest);
 }
 
-static op_t v128_indexed_lane_op (op_t vector, MIR_type_t lane_type, mir_size_t lane_size,
-                                  op_t index) {
+static op_t vector_indexed_lane_op (op_t vector, MIR_type_t lane_type, mir_size_t lane_size,
+                                    op_t index) {
   op_t lane = vector;
 
   assert (lane.mir_op.mode == MIR_OP_MEM && index.mir_op.mode == MIR_OP_REG);
@@ -12613,15 +12611,15 @@ static op_t v128_indexed_lane_op (op_t vector, MIR_type_t lane_type, mir_size_t 
   return lane;
 }
 
-static op_t gen_v128_shuffle_index (c2m_ctx_t c2m_ctx, op_t mask, struct type *mask_type,
-                                    mir_size_t lane_index, mir_size_t modulus) {
+static op_t gen_shuffle_index (c2m_ctx_t c2m_ctx, op_t mask, struct type *mask_type,
+                               mir_size_t lane_index, mir_size_t modulus) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_context_t ctx = c2m_ctx->ctx;
   struct type *mask_el_type = mask_type->u.vector_type->el_type;
   MIR_type_t mask_lane_type = get_mir_type (c2m_ctx, mask_el_type);
   MIR_type_t mask_lane_reg_type = promoted_v128_lane_reg_type (mask_lane_type);
   mir_size_t mask_lane_size = vector_lane_size (c2m_ctx, mask_type);
-  op_t mask_lane = v128_i32_lane_op (mask, mask_lane_type, lane_index * mask_lane_size);
+  op_t mask_lane = vector_lane_op (mask, mask_lane_type, lane_index * mask_lane_size);
   op_t raw_index = get_new_temp (c2m_ctx, mask_lane_reg_type);
   int signed_p = signed_integer_type_p (mask_el_type);
   op_t index, modulus_op;
@@ -12643,9 +12641,9 @@ static op_t gen_v128_shuffle_index (c2m_ctx_t c2m_ctx, op_t mask, struct type *m
   return index;
 }
 
-static void emit_v128_shuffle_load_lane (c2m_ctx_t c2m_ctx, op_t src, MIR_type_t lane_type,
-                                         mir_size_t lane_size, op_t index, op_t dest_lane) {
-  op_t src_lane = v128_indexed_lane_op (src, lane_type, lane_size, index);
+static void emit_shuffle_load_lane (c2m_ctx_t c2m_ctx, op_t src, MIR_type_t lane_type,
+                                    mir_size_t lane_size, op_t index, op_t dest_lane) {
+  op_t src_lane = vector_indexed_lane_op (src, lane_type, lane_size, index);
   MIR_type_t lane_reg_type = promoted_v128_lane_reg_type (lane_type);
   op_t lane_val = get_new_temp (c2m_ctx, lane_reg_type);
 
@@ -12653,9 +12651,8 @@ static void emit_v128_shuffle_load_lane (c2m_ctx_t c2m_ctx, op_t src, MIR_type_t
   emit_scalar_assign (c2m_ctx, dest_lane, &lane_val, lane_type, FALSE);
 }
 
-static op_t emit_v128_shuffle (c2m_ctx_t c2m_ctx, op_t op1, struct type *type1, op_t op2,
-                               struct type *type2, op_t mask, struct type *mask_type,
-                               op_t dest) {
+static op_t emit_shuffle (c2m_ctx_t c2m_ctx, op_t op1, struct type *type1, op_t op2,
+                          struct type *type2, op_t mask, struct type *mask_type, op_t dest) {
   MIR_context_t ctx = c2m_ctx->ctx;
   MIR_type_t lane_type = get_mir_type (c2m_ctx, type1->u.vector_type->el_type);
   mir_size_t lane_size = vector_lane_size (c2m_ctx, type1);
@@ -12663,17 +12660,17 @@ static op_t emit_v128_shuffle (c2m_ctx_t c2m_ctx, op_t op1, struct type *type1, 
   int two_source_p = type2 != NULL;
   int unsigned_mask_p = !signed_integer_type_p (mask_type->u.vector_type->el_type);
 
-  assert (v128_shuffle_type_p (c2m_ctx, type1, type2, mask_type));
-  op1 = materialize_v128_operand (c2m_ctx, op1, type1);
-  if (two_source_p) op2 = materialize_v128_operand (c2m_ctx, op2, type2);
-  mask = materialize_v128_operand (c2m_ctx, mask, mask_type);
+  assert (shuffle_type_p (c2m_ctx, type1, type2, mask_type));
+  op1 = materialize_vector_operand (c2m_ctx, op1, type1);
+  if (two_source_p) op2 = materialize_vector_operand (c2m_ctx, op2, type2);
+  mask = materialize_vector_operand (c2m_ctx, mask, mask_type);
   for (mir_size_t dest_i = 0; dest_i < n_el; dest_i++) {
-    op_t index = gen_v128_shuffle_index (c2m_ctx, mask, mask_type, dest_i,
-                                         two_source_p ? 2 * n_el : n_el);
-    op_t dest_lane = v128_i32_lane_op (dest, lane_type, dest_i * lane_size);
+    op_t index = gen_shuffle_index (c2m_ctx, mask, mask_type, dest_i,
+                                    two_source_p ? 2 * n_el : n_el);
+    op_t dest_lane = vector_lane_op (dest, lane_type, dest_i * lane_size);
 
     if (!two_source_p) {
-      emit_v128_shuffle_load_lane (c2m_ctx, op1, lane_type, lane_size, index, dest_lane);
+      emit_shuffle_load_lane (c2m_ctx, op1, lane_type, lane_size, index, dest_lane);
     } else {
       MIR_label_t second_label = MIR_new_label (ctx), end_label = MIR_new_label (ctx);
       op_t n_el_op = new_op (NULL, unsigned_mask_p ? MIR_new_uint_op (ctx, n_el)
@@ -12681,18 +12678,18 @@ static op_t emit_v128_shuffle (c2m_ctx_t c2m_ctx, op_t op1, struct type *type1, 
 
       emit3 (c2m_ctx, unsigned_mask_p ? MIR_UBGE : MIR_BGE, MIR_new_label_op (ctx, second_label),
              index.mir_op, n_el_op.mir_op);
-      emit_v128_shuffle_load_lane (c2m_ctx, op1, lane_type, lane_size, index, dest_lane);
+      emit_shuffle_load_lane (c2m_ctx, op1, lane_type, lane_size, index, dest_lane);
       emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, end_label));
       emit_label_insn_opt (c2m_ctx, second_label);
       emit3 (c2m_ctx, MIR_SUB, index.mir_op, index.mir_op, n_el_op.mir_op);
-      emit_v128_shuffle_load_lane (c2m_ctx, op2, lane_type, lane_size, index, dest_lane);
+      emit_shuffle_load_lane (c2m_ctx, op2, lane_type, lane_size, index, dest_lane);
       emit_label_insn_opt (c2m_ctx, end_label);
     }
   }
   return dest;
 }
 
-static op_t gen_v128_shuffle (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest) {
+static op_t gen_shuffle (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest) {
   node_t args = NL_EL (r->u.ops, 1);
   node_t arg1 = NL_HEAD (args->u.ops);
   node_t arg2 = NL_NEXT (arg1);
@@ -12708,7 +12705,7 @@ static op_t gen_v128_shuffle (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest)
 
   if (type2 != NULL) op2 = gen (c2m_ctx, arg2, NULL, NULL, FALSE, NULL, NULL);
   mask = gen (c2m_ctx, mask_arg, NULL, NULL, FALSE, NULL, NULL);
-  return emit_v128_shuffle (c2m_ctx, op1, type1, op2, type2, mask, mask_type, dest);
+  return emit_shuffle (c2m_ctx, op1, type1, op2, type2, mask, mask_type, dest);
 }
 
 static const char *get_reg_var_name (c2m_ctx_t c2m_ctx, MIR_type_t promoted_type,
@@ -14930,7 +14927,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       break;
     }
     if (shuffle_p) {
-      res = gen_v128_shuffle (c2m_ctx, r, desirable_dest);
+      res = gen_shuffle (c2m_ctx, r, desirable_dest);
       break;
     }
     if (shufflevector_p) {

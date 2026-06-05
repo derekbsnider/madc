@@ -51,8 +51,10 @@ int main (void) {
   v8si wide;
   v2si a2 = {11, 22};
   v2si b2 = {33, 44};
+  v2si m2 = {0, 3};
   v8si a8 = {1, 2, 3, 4, 5, 6, 7, 8};
   v8si b8 = {9, 10, 11, 12, 13, 14, 15, 16};
+  v8si m8 = {0, 9, 7, 15, 3, 11, 4, 12};
   v4hi hsmall;
   v8hi hc;
   uint16x8_t uha = {1, 2, 65000, 65535, 128, 256, 1024, 32768};
@@ -289,5 +291,11 @@ int main (void) {
   if (c[0] != 11 || c[1] != 33 || c[2] != 22 || c[3] != 44) return 101;
   c = __builtin_shufflevector (a8, b8, 0, 8, 7, 15);
   if (c[0] != 1 || c[1] != 9 || c[2] != 8 || c[3] != 16) return 102;
+  small = __builtin_shuffle (a2, b2, m2);
+  if (small[0] != 11 || small[1] != 44) return 103;
+  wide = __builtin_shuffle (a8, b8, m8);
+  if (wide[0] != 1 || wide[1] != 10 || wide[2] != 8 || wide[3] != 16
+      || wide[4] != 4 || wide[5] != 12 || wide[6] != 5 || wide[7] != 13)
+    return 104;
   return 0;
 }
