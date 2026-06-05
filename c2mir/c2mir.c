@@ -12660,6 +12660,23 @@ static MIR_insn_code_t get_v128_float_cmp_insn_code (c2m_ctx_t c2m_ctx, node_cod
   }
 }
 
+static MIR_insn_code_t get_v128_f32_cmp_insn_code (node_code_t code, int *swap_operands_p) {
+  *swap_operands_p = FALSE;
+  switch (code) {
+  case N_EQ: return MIR_VEQF32;
+  case N_NE: return MIR_VNEF32;
+  case N_LT: return MIR_VLTF32;
+  case N_LE: return MIR_VLEF32;
+  case N_GT:
+    *swap_operands_p = TRUE;
+    return MIR_VLTF32;
+  case N_GE:
+    *swap_operands_p = TRUE;
+    return MIR_VLEF32;
+  default: assert (FALSE); return MIR_INSN_BOUND;
+  }
+}
+
 static op_t emit_v128_float_arith_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op1,
                                       struct type *type1, op_t op2, struct type *type2,
                                       struct type *vector_type, op_t dest) {
@@ -12738,6 +12755,20 @@ static op_t emit_v128_float_cmp_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op
   MIR_type_t mask_lane_type = get_mir_type (c2m_ctx, mask_type->u.vector_type->el_type);
   mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
   MIR_insn_code_t insn_code = get_v128_float_cmp_insn_code (c2m_ctx, code, vector_type);
+
+  if (v128_f32_packed_vector_type_p (c2m_ctx, vector_type)
+      && v128_i32_packed_vector_type_p (c2m_ctx, mask_type)) {
+    int swap_operands_p;
+    op_t reg = get_new_temp (c2m_ctx, MIR_T_V128);
+    MIR_insn_code_t cmp_code = get_v128_f32_cmp_insn_code (code, &swap_operands_p);
+
+    op1 = prepare_v128_float_operand (c2m_ctx, op1, type1, vector_type);
+    op2 = prepare_v128_float_operand (c2m_ctx, op2, type2, vector_type);
+    emit3 (c2m_ctx, cmp_code, reg.mir_op, swap_operands_p ? op2.mir_op : op1.mir_op,
+           swap_operands_p ? op1.mir_op : op2.mir_op);
+    store_v128 (c2m_ctx, dest, reg);
+    return dest;
+  }
 
   op1 = materialize_v128_float_operand (c2m_ctx, op1, type1, vector_type);
   op2 = materialize_v128_float_operand (c2m_ctx, op2, type2, vector_type);

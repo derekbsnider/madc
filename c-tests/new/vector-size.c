@@ -524,5 +524,15 @@ int main (void) {
   if (abi_sum_v32_i8 (abi_v32_cr) != 110) return 137;
   vf = fa - fb;
   if (vf[0] != 1.0f || vf[1] != -6.0f || vf[2] != 4.0f || vf[3] != -3.0f) return 138;
+  c = fa == fa;
+  if (c[0] != -1 || c[1] != -1 || c[2] != -1 || c[3] != -1) return 139;
+  c = fa != fb;
+  if (c[0] != -1 || c[1] != -1 || c[2] != -1 || c[3] != -1) return 140;
+  c = fa <= fb;
+  if (c[0] != 0 || c[1] != -1 || c[2] != 0 || c[3] != -1) return 141;
+  c = fa > fb;
+  if (c[0] != -1 || c[1] != 0 || c[2] != -1 || c[3] != 0) return 142;
+  c = fa >= fb;
+  if (c[0] != -1 || c[1] != 0 || c[2] != -1 || c[3] != 0) return 143;
   return 0;
 }

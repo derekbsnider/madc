@@ -109,7 +109,7 @@ typedef enum {
   REP6 (INSN_EL, AND, ANDS, OR, ORS, XOR, XORS),             /* Logical */
   REP3 (INSN_EL, VAND, VOR, VXOR),                           /* Vector logical */
   REP6 (INSN_EL, LSH, LSHS, RSH, RSHS, URSH, URSHS),         /* Right signed/unsigned shift */
-  REP2 (INSN_EL, VEQI32, VGTI32),                             /* Vector comparison */
+  REP6 (INSN_EL, VEQI32, VGTI32, VEQF32, VNEF32, VLTF32, VLEF32), /* Vector comparison */
   REP5 (INSN_EL, EQ, EQS, FEQ, DEQ, LDEQ),                   /* Equality */
   REP5 (INSN_EL, NE, NES, FNE, DNE, LDNE),                   /* Inequality */
   REP7 (INSN_EL, LT, LTS, ULT, ULTS, FLT, DLT, LDLT),        /* Less then */
