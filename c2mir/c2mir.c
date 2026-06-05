@@ -22,6 +22,7 @@
 #include <setjmp.h>
 #include <math.h>
 #include <wchar.h>
+#include <limits.h>
 #include "mir-alloc.h"
 #include "mir.h"
 #include "time.h"
@@ -278,6 +279,11 @@ struct arr_type {
   node_t size;
 };
 
+struct vector_type {
+  struct type *el_type;
+  mir_size_t size;
+};
+
 struct func_type {
   unsigned int dots_p : 1;
   struct type *ret_type;
@@ -293,6 +299,7 @@ enum type_mode {
   TM_STRUCT,
   TM_UNION,
   TM_ARR,
+  TM_VECTOR,
   TM_FUNC,
 };
 
@@ -313,6 +320,7 @@ struct type {
     node_t tag_type;            /* struct/union/enum */
     struct type *ptr_type;
     struct arr_type *arr_type;
+    struct vector_type *vector_type;
     struct func_type *func_type;
   } u;
 };
@@ -5840,6 +5848,16 @@ static int complex_type_p (const struct type *type) {
              || type->u.basic_type == TP_CLDOUBLE);
 }
 
+static int vector_type_p (const struct type *type) { return type->mode == TM_VECTOR; }
+
+static int aggregate_type_p (const struct type *type) {
+  return type->mode == TM_STRUCT || type->mode == TM_UNION || vector_type_p (type);
+}
+
+static int memory_value_type_p (const struct type *type) {
+  return aggregate_type_p (type) || complex_type_p (type);
+}
+
 static enum basic_type complex_component_type (enum basic_type bt) {
   return bt == TP_CFLOAT ? TP_FLOAT : bt == TP_CDOUBLE ? TP_DOUBLE : TP_LDOUBLE;
 }
@@ -6064,6 +6082,9 @@ static int type_eq_p (struct type *type1, struct type *type2) {
             && integer_type_p (cexpr2->type) && integer_type_p (cexpr2->type)
             && cexpr1->c.i_val == cexpr2->c.i_val);
   }
+  case TM_VECTOR:
+    return (type1->u.vector_type->size == type2->u.vector_type->size
+            && type_eq_p (type1->u.vector_type->el_type, type2->u.vector_type->el_type));
   case TM_FUNC: {
     struct func_type *ft1 = type1->u.func_type, *ft2 = type2->u.func_type;
     struct decl_spec *ds1, *ds2;
@@ -6109,6 +6130,10 @@ static int compatible_types_p (struct type *type1, struct type *type2, int ignor
         && integer_type_p (cexpr2->type) && integer_type_p (cexpr2->type))
       return cexpr1->c.i_val == cexpr2->c.i_val;
     return TRUE;
+  } else if (type1->mode == TM_VECTOR) {
+    return (type1->u.vector_type->size == type2->u.vector_type->size
+            && compatible_types_p (type1->u.vector_type->el_type, type2->u.vector_type->el_type,
+                                   ignore_quals_p));
   } else if (type1->mode == TM_FUNC) {
     struct func_type *ft1 = type1->u.func_type, *ft2 = type2->u.func_type;
 
@@ -6224,6 +6249,8 @@ static void aux_set_type_align (c2m_ctx_t c2m_ctx, struct type *type) {
     align = sizeof (mir_size_t);
   } else if (type->mode == TM_ARR) {
     align = type_align (type->u.arr_type->el_type);
+  } else if (type->mode == TM_VECTOR) {
+    align = (int) type->raw_size;
   } else if (type->mode == TM_UNDEF) {
     align = 0; /* error type */
   } else {
@@ -6364,6 +6391,9 @@ static void set_type_layout (c2m_ctx_t c2m_ctx, struct type *type) {
 
     set_type_layout (c2m_ctx, arr_type->el_type);
     overall_size = type_size (c2m_ctx, arr_type->el_type) * nel;
+  } else if (type->mode == TM_VECTOR) {
+    set_type_layout (c2m_ctx, type->u.vector_type->el_type);
+    overall_size = type->u.vector_type->size;
   } else if (type->mode == TM_UNDEF) {
     overall_size = sizeof (int); /* error type */
   } else {
@@ -6466,6 +6496,7 @@ static int incomplete_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
     return scope == n;
   }
   case TM_PTR: return FALSE;
+  case TM_VECTOR: return FALSE;
   case TM_ARR: {
     struct arr_type *arr_type = type->u.arr_type;
 
@@ -7527,6 +7558,17 @@ static void check_type (c2m_ctx_t c2m_ctx, struct type *type, int level, int fun
     }
     break;
   }
+  case TM_VECTOR: {
+    struct type *el_type = type->u.vector_type->el_type;
+
+    check_type (c2m_ctx, el_type, level + 1, FALSE);
+    if (el_type->mode == TM_FUNC) {
+      error (c2m_ctx, POS (type->pos_node), "vector of functions");
+    } else if (incomplete_type_p (c2m_ctx, el_type)) {
+      error (c2m_ctx, POS (type->pos_node), "incomplete vector element type");
+    }
+    break;
+  }
   case TM_FUNC: {
     struct decl_spec decl_spec;
     struct func_type *func_type = type->u.func_type;
@@ -7606,6 +7648,13 @@ static void check_assignment_types (c2m_ctx_t c2m_ctx, struct type *left, struct
                : "incompatible return-expr type in function returning a struct/union");
       error (c2m_ctx, POS (assign_node), "%s", msg);
     }
+  } else if (left->mode == TM_VECTOR) {
+    if (right->mode != TM_VECTOR || !compatible_types_p (left, right, TRUE)) {
+      msg = (code == N_CALL ? "incompatible argument type for vector type parameter"
+             : code != N_RETURN ? "incompatible types in assignment to vector"
+                                : "incompatible return-expr type in function returning a vector");
+      error (c2m_ctx, POS (assign_node), "%s", msg);
+    }
   } else if (left->mode == TM_PTR) {
     if (null_const_p (expr, right)) {
     } else if (right->mode != TM_PTR
@@ -7670,25 +7719,45 @@ static node_t get_adjacent_member (node_t member, int next_p) {
   return member;
 }
 
+static int indexed_initializer_type_p (struct type *type) {
+  return type->mode == TM_ARR || type->mode == TM_VECTOR;
+}
+
+static struct type *indexed_initializer_el_type (struct type *type) {
+  assert (indexed_initializer_type_p (type));
+  return type->mode == TM_ARR ? type->u.arr_type->el_type : type->u.vector_type->el_type;
+}
+
+static mir_llong get_indexed_initializer_type_size (c2m_ctx_t c2m_ctx, struct type *type) {
+  node_t size_node;
+  struct expr *sexpr;
+  mir_size_t el_size;
+
+  assert (indexed_initializer_type_p (type));
+  if (type->mode == TM_VECTOR) {
+    el_size = type_size (c2m_ctx, type->u.vector_type->el_type);
+    return (mir_llong) (type->u.vector_type->size / el_size);
+  }
+  size_node = type->u.arr_type->size;
+  sexpr = size_node->attr;
+  return (size_node->code != N_IGNORE && sexpr->const_p && integer_type_p (sexpr->type)
+            ? sexpr->c.i_val
+            : -1);
+}
+
 static int update_init_object_path (c2m_ctx_t c2m_ctx, size_t mark, struct type *value_type,
                                     int list_p) {
   init_object_t init_object;
   struct type *el_type;
-  node_t size_node;
   mir_llong size_val;
-  struct expr *sexpr;
 
   for (;;) {
     for (;;) {
       if (mark == VARR_LENGTH (init_object_t, init_object_path)) return FALSE;
       init_object = VARR_LAST (init_object_t, init_object_path);
-      if (init_object.container_type->mode == TM_ARR) {
-        el_type = init_object.container_type->u.arr_type->el_type;
-        size_node = init_object.container_type->u.arr_type->size;
-        sexpr = size_node->attr;
-        size_val = (size_node->code != N_IGNORE && sexpr->const_p && integer_type_p (sexpr->type)
-                      ? sexpr->c.i_val
-                      : -1);
+      if (indexed_initializer_type_p (init_object.container_type)) {
+        el_type = indexed_initializer_el_type (init_object.container_type);
+        size_val = get_indexed_initializer_type_size (c2m_ctx, init_object.container_type);
         init_object.u.curr_index++;
         if (size_val < 0 || init_object.u.curr_index < size_val) break;
         VARR_POP (init_object_t, init_object_path);
@@ -7723,13 +7792,14 @@ static int update_init_object_path (c2m_ctx_t c2m_ctx, size_t mark, struct type 
     VARR_SET (init_object_t, init_object_path, VARR_LENGTH (init_object_t, init_object_path) - 1,
               init_object);
     if (list_p || scalar_type_p (el_type) || void_type_p (el_type)) return TRUE;
-    assert (el_type->mode == TM_ARR || el_type->mode == TM_STRUCT || el_type->mode == TM_UNION);
-    if (el_type->mode != TM_ARR && value_type != NULL
+    assert (el_type->mode == TM_ARR || el_type->mode == TM_VECTOR || el_type->mode == TM_STRUCT
+            || el_type->mode == TM_UNION);
+    if ((el_type->mode == TM_STRUCT || el_type->mode == TM_UNION) && value_type != NULL
         && el_type->u.tag_type == value_type->u.tag_type)
       return TRUE;
     init_object.container_type = el_type;
     init_object.field_designator_p = FALSE;
-    if (el_type->mode == TM_ARR) {
+    if (indexed_initializer_type_p (el_type)) {
       init_object.u.curr_index = -1;
     } else {
       init_object.u.curr_member = NULL;
@@ -7773,12 +7843,14 @@ static int update_path_and_do (c2m_ctx_t c2m_ctx, int go_inside_p,
   }
   if (!go_inside_p) return TRUE;
   init_object = VARR_LAST (init_object_t, init_object_path);
-  if (init_object.container_type->mode == TM_ARR) {
-    el_type = init_object.container_type->u.arr_type->el_type;
+  if (indexed_initializer_type_p (init_object.container_type)) {
+    el_type = indexed_initializer_el_type (init_object.container_type);
     action (c2m_ctx, NULL,
-            (init_compatible_string_p (value, el_type)
+            (init_object.container_type->mode == TM_ARR && init_compatible_string_p (value, el_type)
                ? &init_object.container_type
-               : &init_object.container_type->u.arr_type->el_type),
+               : init_object.container_type->mode == TM_ARR
+                   ? &init_object.container_type->u.arr_type->el_type
+                   : &init_object.container_type->u.vector_type->el_type),
             value, const_only_p, FALSE);
   } else if (init_object.container_type->mode == TM_STRUCT
              || init_object.container_type->mode == TM_UNION) {
@@ -7788,7 +7860,7 @@ static int update_path_and_do (c2m_ctx_t c2m_ctx, int go_inside_p,
   }
   if (max_index != NULL) {
     init_object = VARR_GET (init_object_t, init_object_path, mark);
-    if (init_object.container_type->mode == TM_ARR
+    if (indexed_initializer_type_p (init_object.container_type)
         && *max_index < (index = init_object.u.curr_index))
       *max_index = index;
   }
@@ -7797,7 +7869,6 @@ static int update_path_and_do (c2m_ctx_t c2m_ctx, int go_inside_p,
 
 static int check_const_addr_p (c2m_ctx_t c2m_ctx, node_t r, node_t *base, mir_llong *offset,
                                int *deref) {
-  check_ctx_t check_ctx = c2m_ctx->check_ctx;
   struct expr *e = r->attr;
   struct type *type;
   node_t op1, op2, temp;
@@ -8062,7 +8133,7 @@ check_one_value:
   assert (init->code == N_INIT);
   des_list = NL_HEAD (init->u.ops);
   assert (des_list->code == N_LIST);
-  if (type->mode != TM_ARR && type->mode != TM_STRUCT && type->mode != TM_UNION) {
+  if (!indexed_initializer_type_p (type) && type->mode != TM_STRUCT && type->mode != TM_UNION) {
     if ((temp = NL_NEXT (init)) != NULL) {
       error (c2m_ctx, POS (temp), "excess elements in scalar initializer");
       return;
@@ -8082,8 +8153,8 @@ check_one_value:
   mark = VARR_LENGTH (init_object_t, init_object_path);
   init_object.container_type = type;
   init_object.field_designator_p = FALSE;
-  if (type->mode == TM_ARR) {
-    size_val = get_arr_type_size (type);
+  if (indexed_initializer_type_p (type)) {
+    size_val = get_indexed_initializer_type_size (c2m_ctx, type);
     init_object.u.curr_index = -1;
   } else {
     init_object.u.curr_member = NULL;
@@ -8094,8 +8165,9 @@ check_one_value:
     assert (init->code == N_INIT);
     des_list = NL_HEAD (init->u.ops);
     value = NL_NEXT (des_list);
-    if ((value->code == N_LIST || value->code == N_COMPOUND_LITERAL) && type->mode != TM_ARR
-        && type->mode != TM_STRUCT && type->mode != TM_UNION) {
+    if ((value->code == N_LIST || value->code == N_COMPOUND_LITERAL)
+        && !indexed_initializer_type_p (type) && type->mode != TM_STRUCT
+        && type->mode != TM_UNION) {
       error (c2m_ctx, POS (init),
              value->code == N_LIST ? "braces around scalar initializer"
                                    : "compound literal for scalar initializer");
@@ -8116,8 +8188,8 @@ check_one_value:
         if (first_p) {
           VARR_POP (init_object_t, init_object_path);
         } else {
-          if (init_object.container_type->mode == TM_ARR) {
-            curr_type = init_object.container_type->u.arr_type->el_type;
+          if (indexed_initializer_type_p (init_object.container_type)) {
+            curr_type = indexed_initializer_el_type (init_object.container_type);
           } else {
             assert (init_object.container_type->mode == TM_STRUCT
                     || init_object.container_type->mode == TM_UNION);
@@ -8195,6 +8267,103 @@ static void check_decl_align (c2m_ctx_t c2m_ctx, struct decl_spec *decl_spec) {
            "requested alignment is less than minimum alignment for the type");
 }
 
+static int attr_name_eq_p (const char *attr_name, const char *canonical_name) {
+  size_t attr_len = strlen (attr_name), canonical_len = strlen (canonical_name);
+
+  if (strcmp (attr_name, canonical_name) == 0) return TRUE;
+  return (attr_len == canonical_len + 4 && attr_name[0] == '_' && attr_name[1] == '_'
+          && attr_name[attr_len - 2] == '_' && attr_name[attr_len - 1] == '_'
+          && strncmp (attr_name + 2, canonical_name, canonical_len) == 0);
+}
+
+static int unsigned_int_node_value (node_t n, mir_ullong *value) {
+  switch (n->code) {
+  case N_I:
+    if (n->u.l < 0) return FALSE;
+    *value = (mir_ullong) n->u.l;
+    return TRUE;
+  case N_L:
+    if (n->u.l < 0) return FALSE;
+    *value = (mir_ullong) n->u.l;
+    return TRUE;
+  case N_LL:
+    if (n->u.ll < 0) return FALSE;
+    *value = (mir_ullong) n->u.ll;
+    return TRUE;
+  case N_U: *value = (mir_ullong) n->u.ul; return TRUE;
+  case N_UL: *value = (mir_ullong) n->u.ul; return TRUE;
+  case N_ULL: *value = (mir_ullong) n->u.ull; return TRUE;
+  default: return FALSE;
+  }
+}
+
+static int power_of_two_p (mir_ullong value) {
+  return value != 0 && (value & (value - 1)) == 0;
+}
+
+static int vector_element_type_p (struct type *type) {
+  return ((integer_type_p (type) || floating_type_p (type))
+          && (type->mode != TM_BASIC || type->u.basic_type != TP_BOOL));
+}
+
+static void apply_vector_size_attrs (c2m_ctx_t c2m_ctx, node_t decl_node,
+                                     struct type **type_ptr) {
+  node_t attrs, attr, id, list, arg;
+
+  attrs = NL_EL (decl_node->u.ops, 2);
+  if (attrs == NULL || attrs->code == N_IGNORE) return;
+  assert (attrs->code == N_LIST);
+  for (attr = NL_HEAD (attrs->u.ops); attr != NULL; attr = NL_NEXT (attr)) {
+    struct vector_type *vector_type;
+    struct type *type, *new_type;
+    mir_ullong vector_size, nel;
+    mir_size_t el_size;
+
+    assert (attr->code == N_ATTR);
+    id = NL_HEAD (attr->u.ops);
+    assert (id->code == N_ID);
+    if (!attr_name_eq_p (id->u.s.s, "vector_size")) continue;
+    list = NL_NEXT (id);
+    assert (list->code == N_LIST);
+    arg = NL_HEAD (list->u.ops);
+    if (arg == NULL || NL_NEXT (arg) != NULL) {
+      error (c2m_ctx, POS (attr), "vector_size attribute requires one argument");
+      continue;
+    }
+    if (!unsigned_int_node_value (arg, &vector_size) || vector_size == 0
+        || vector_size > (mir_ullong) INT_MAX) {
+      error (c2m_ctx, POS (arg), "invalid vector_size attribute argument");
+      continue;
+    }
+    type = *type_ptr;
+    if (!vector_element_type_p (type)) {
+      error (c2m_ctx, POS (attr), "invalid vector type for attribute 'vector_size'");
+      continue;
+    }
+    set_type_layout (c2m_ctx, type);
+    el_size = type_size (c2m_ctx, type);
+    if (el_size == 0 || vector_size % el_size != 0) {
+      error (c2m_ctx, POS (attr), "vector size is not an integral multiple of component size");
+      continue;
+    }
+    nel = vector_size / el_size;
+    if (!power_of_two_p (nel)) {
+      error (c2m_ctx, POS (attr), "number of vector components %llu not a power of two",
+             (unsigned long long) nel);
+      continue;
+    }
+    vector_type = reg_malloc (c2m_ctx, sizeof (struct vector_type));
+    vector_type->el_type = create_type (c2m_ctx, type);
+    vector_type->size = (mir_size_t) vector_size;
+    new_type = create_type (c2m_ctx, NULL);
+    new_type->pos_node = type->pos_node;
+    new_type->type_qual = type->type_qual;
+    new_type->mode = TM_VECTOR;
+    new_type->u.vector_type = vector_type;
+    *type_ptr = new_type;
+  }
+}
+
 static void init_decl (c2m_ctx_t c2m_ctx, decl_t decl) {
   check_ctx_t check_ctx = c2m_ctx->check_ctx;
 
@@ -8234,6 +8403,8 @@ static void create_decl (c2m_ctx_t c2m_ctx, node_t scope, node_t decl_node,
     type = check_declarator (c2m_ctx, declarator, func_def_p);
     decl->decl_spec.type = append_type (type, decl->decl_spec.type);
   }
+  if (decl_node->code == N_SPEC_DECL || decl_node->code == N_MEMBER)
+    apply_vector_size_attrs (c2m_ctx, decl_node, &decl->decl_spec.type);
   check_type (c2m_ctx, decl->decl_spec.type, 0, func_def_p);
   if (declarator->code == N_DECL) {
     id = NL_HEAD (declarator->u.ops);
@@ -9287,7 +9458,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     break;
   case N_IND:
     process_bin_ops (c2m_ctx, r, &op1, &op2, &e1, &e2, &t1, &t2, r);
-    if (t1->mode != TM_PTR && t1->mode != TM_ARR && (t2->mode == TM_PTR || t2->mode == TM_ARR)) {
+    int valid_subscript_p = TRUE;
+    if (t1->mode != TM_PTR && t1->mode != TM_ARR && t1->mode != TM_VECTOR
+        && (t2->mode == TM_PTR || t2->mode == TM_ARR)) {
       struct type *temp;
       node_t op;
 
@@ -9301,13 +9474,16 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     e->u.lvalue_node = r;
     e->type->mode = TM_BASIC;
     e->type->u.basic_type = TP_INT;
-    if (t1->mode != TM_PTR && t1->mode != TM_ARR) {
-      error (c2m_ctx, POS (r), "subscripted value is neither array nor pointer");
+    if (t1->mode != TM_PTR && t1->mode != TM_ARR && t1->mode != TM_VECTOR) {
+      error (c2m_ctx, POS (r), "subscripted value is neither array nor pointer nor vector");
+      valid_subscript_p = FALSE;
     } else if (t1->mode == TM_PTR) {
       *e->type = *t1->u.ptr_type;
       if (incomplete_type_p (c2m_ctx, t1->u.ptr_type)) {
         error (c2m_ctx, POS (r), "pointer to incomplete type in array subscription");
       }
+    } else if (t1->mode == TM_VECTOR) {
+      *e->type = *t1->u.vector_type->el_type;
     } else {
       *e->type = *t1->u.arr_type->el_type;
       e->type->type_qual = t1->u.arr_type->ind_type_qual;
@@ -9315,7 +9491,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
         error (c2m_ctx, POS (r), "array type has incomplete element type");
       }
     }
-    if (!integer_type_p (t2)) {
+    if (valid_subscript_p && !integer_type_p (t2)) {
       error (c2m_ctx, POS (r), "array subscript is not an integer");
     }
     break;
@@ -9812,13 +9988,12 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
         && incomplete_type_p (c2m_ctx, ret_type)) {
       error (c2m_ctx, POS (r), "function return type is incomplete");
     }
-    if (ret_type->mode == TM_STRUCT || ret_type->mode == TM_UNION
-        || complex_type_p (ret_type)) {
-      /* A struct/union OR _Complex call result that comes back in registers is
+    if (memory_value_type_p (ret_type)) {
+      /* A memory-shaped call result that comes back in registers is
          reconstructed into an fp-relative slot in the caller's call-arg area
          (see the register-return path in gen N_CALL). Reserve that area here so
-         the function gets a frame (fp); without including _Complex, a function
-         whose only frame need was a complex call return left fp undeclared
+         the function gets a frame (fp); before _Complex was included here, a
+         function whose only frame need was a complex call return left fp undeclared
          ("undeclared func reg fp"). */
       set_type_layout (c2m_ctx, ret_type);
       if (!builtin_call_p && curr_scope != top_scope)
@@ -10947,6 +11122,12 @@ static void get_type_alias_name (c2m_ctx_t c2m_ctx, struct type *type, VARR (cha
     VARR_PUSH (char, name, 'A');
     get_type_alias_name (c2m_ctx, type->u.arr_type->el_type, name);
     break;
+  case TM_VECTOR:
+    VARR_PUSH (char, name, 'V');
+    push_val (name, (mir_long) type->u.vector_type->size);
+    get_type_alias_name (c2m_ctx, type->u.vector_type->el_type, name);
+    VARR_PUSH (char, name, 'e');
+    break;
   case TM_FUNC:
     VARR_PUSH (char, name, 'F');
     get_type_alias_name (c2m_ctx, type->u.func_type->ret_type, name);
@@ -10973,6 +11154,7 @@ static MIR_alias_t get_type_alias (c2m_ctx_t c2m_ctx, struct type *type) {
   case TM_UNDEF:
   case TM_STRUCT:
   case TM_ARR:
+  case TM_VECTOR:
   case TM_FUNC: return 0;
   default: break;
   }
@@ -11656,8 +11838,7 @@ static const char *get_func_static_var_name (c2m_ctx_t c2m_ctx, const char *suff
 }
 
 static const char *get_param_name (c2m_ctx_t c2m_ctx, struct type *param_type, const char *name) {
-  MIR_type_t type = (param_type->mode == TM_STRUCT || param_type->mode == TM_UNION
-                     || complex_type_p (param_type)
+  MIR_type_t type = (memory_value_type_p (param_type)
                        ? MIR_POINTER_TYPE
                        : get_mir_type (c2m_ctx, param_type));
   return get_reg_var_name (c2m_ctx, promote_mir_int_type (type), name, 0);
@@ -11674,7 +11855,7 @@ static op_t complex_to_complex (c2m_ctx_t c2m_ctx, op_t op, enum basic_type from
                                 enum basic_type to_bt);
 
 static int simple_return_by_addr_p (c2m_ctx_t c2m_ctx MIR_UNUSED, struct type *ret_type) {
-  return ret_type->mode == TM_STRUCT || ret_type->mode == TM_UNION;
+  return aggregate_type_p (ret_type);
 }
 
 static void MIR_UNUSED simple_add_res_proto (c2m_ctx_t c2m_ctx, struct type *ret_type,
@@ -11737,10 +11918,9 @@ static int MIR_UNUSED simple_add_call_res_op (c2m_ctx_t c2m_ctx, struct type *re
 
 static op_t MIR_UNUSED simple_gen_post_call_res_code (c2m_ctx_t c2m_ctx,
                                                       struct type *ret_type, op_t res,
-                                                      MIR_insn_t call,
+                                                      MIR_insn_t call MIR_UNUSED,
                                                       size_t call_ops_start) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
-  MIR_context_t ctx = c2m_ctx->ctx;
 
   if (complex_type_p (ret_type)) {
     /* Store returned (re, im) register pair into complex memory */
@@ -11796,9 +11976,7 @@ static void MIR_UNUSED simple_add_arg_proto (c2m_ctx_t c2m_ctx, const char *name
   MIR_var_t var;
   MIR_type_t type;
 
-  type = (arg_type->mode == TM_STRUCT || arg_type->mode == TM_UNION || complex_type_p (arg_type)
-            ? MIR_T_BLK
-            : get_mir_type (c2m_ctx, arg_type));
+  type = memory_value_type_p (arg_type) ? MIR_T_BLK : get_mir_type (c2m_ctx, arg_type);
   var.name = name;
   var.type = type;
   if (type == MIR_T_BLK) var.size = type_size (c2m_ctx, arg_type);
@@ -11810,9 +11988,7 @@ static void MIR_UNUSED simple_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *a
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_type_t type;
 
-  type = (arg_type->mode == TM_STRUCT || arg_type->mode == TM_UNION || complex_type_p (arg_type)
-            ? MIR_T_BLK
-            : get_mir_type (c2m_ctx, arg_type));
+  type = memory_value_type_p (arg_type) ? MIR_T_BLK : get_mir_type (c2m_ctx, arg_type);
   if (type != MIR_T_BLK) {
     VARR_PUSH (MIR_op_t, call_ops, arg.mir_op);
   } else {
@@ -12032,9 +12208,10 @@ static mir_size_t get_object_path_offset (c2m_ctx_t c2m_ctx) {
 
   for (size_t i = 0; i < VARR_LENGTH (init_object_t, init_object_path); i++) {
     init_object = VARR_GET (init_object_t, init_object_path, i);
-    if (init_object.container_type->mode == TM_ARR) {  // ??? index < 0
+    if (indexed_initializer_type_p (init_object.container_type)) {  // ??? index < 0
       offset += (init_object.u.curr_index
-                 * type_size (c2m_ctx, init_object.container_type->u.arr_type->el_type));
+                 * type_size (c2m_ctx,
+                              indexed_initializer_el_type (init_object.container_type)));
     } else {
       assert (init_object.container_type->mode == TM_STRUCT
               || init_object.container_type->mode == TM_UNION);
@@ -12112,7 +12289,7 @@ check_one_value:
   assert (init->code == N_INIT);
   des_list = NL_HEAD (init->u.ops);
   assert (des_list->code == N_LIST);
-  if (type->mode != TM_ARR && type->mode != TM_STRUCT && type->mode != TM_UNION) {
+  if (!indexed_initializer_type_p (type) && type->mode != TM_STRUCT && type->mode != TM_UNION) {
     assert (NL_NEXT (init) == NULL && NL_HEAD (des_list->u.ops) == NULL);
     initializer = NL_NEXT (des_list);
     assert (top_p);
@@ -12122,8 +12299,8 @@ check_one_value:
   mark = VARR_LENGTH (init_object_t, init_object_path);
   init_object.container_type = type;
   init_object.field_designator_p = FALSE;
-  if (type->mode == TM_ARR) {
-    size_val = get_arr_type_size (type);
+  if (indexed_initializer_type_p (type)) {
+    size_val = get_indexed_initializer_type_size (c2m_ctx, type);
     /* we already figured out the array size during check: */
     assert (size_val >= 0);
     init_object.u.curr_index = -1;
@@ -12135,8 +12312,9 @@ check_one_value:
     assert (init->code == N_INIT);
     des_list = NL_HEAD (init->u.ops);
     value = NL_NEXT (des_list);
-    assert ((value->code != N_LIST && value->code != N_COMPOUND_LITERAL) || type->mode == TM_ARR
-            || type->mode == TM_STRUCT || type->mode == TM_UNION);
+    assert ((value->code != N_LIST && value->code != N_COMPOUND_LITERAL)
+            || indexed_initializer_type_p (type) || type->mode == TM_STRUCT
+            || type->mode == TM_UNION);
     if ((curr_des = NL_HEAD (des_list->u.ops)) == NULL) {
       ok_p = update_path_and_do (c2m_ctx, TRUE, collect_init_els, mark, value, const_only_p, NULL,
                                  POS (init), "");
@@ -12152,8 +12330,8 @@ check_one_value:
         if (first_p) {
           VARR_POP (init_object_t, init_object_path);
         } else {
-          if (init_object.container_type->mode == TM_ARR) {
-            curr_type = init_object.container_type->u.arr_type->el_type;
+          if (indexed_initializer_type_p (init_object.container_type)) {
+            curr_type = indexed_initializer_el_type (init_object.container_type);
           } else {
             assert (init_object.container_type->mode == TM_STRUCT
                     || init_object.container_type->mode == TM_UNION);
@@ -12763,7 +12941,7 @@ static void complex_store (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offse
 }
 
 /* Promote a scalar operand to a complex temp: {value, 0}. */
-static op_t scalar_to_complex (c2m_ctx_t c2m_ctx, op_t scalar, MIR_type_t scalar_t,
+static op_t scalar_to_complex (c2m_ctx_t c2m_ctx, op_t scalar, MIR_type_t scalar_t MIR_UNUSED,
                                enum basic_type complex_bt) {
   MIR_context_t ctx = c2m_ctx->ctx;
   MIR_type_t ct = complex_bt == TP_CFLOAT ? MIR_T_F : complex_bt == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
@@ -13457,7 +13635,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     if (el_type->mode == TM_PTR && el_type->arr_type != NULL) { /* elem is an array */
       size = type_size (c2m_ctx, el_type->arr_type);
     }
-    if (arr_type->mode == TM_PTR && arr_type->arr_type != NULL) { /* indexing an array */
+    if (arr_type->mode == TM_VECTOR) {
+      op1 = force_reg_or_mem (c2m_ctx, op1, MIR_T_I64);
+      assert (op1.mir_op.mode == MIR_OP_REG || op1.mir_op.mode == MIR_OP_MEM); /*???*/
+    } else if (arr_type->mode == TM_PTR && arr_type->arr_type != NULL) { /* indexing an array */
       op1 = force_reg_or_mem (c2m_ctx, op1, MIR_T_I64);
       assert (op1.mir_op.mode == MIR_OP_REG || op1.mir_op.mode == MIR_OP_MEM); /*???*/
     } else {
@@ -13744,7 +13925,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     node_t block = NL_EL (curr_func_def->u.ops, 3);
     struct node_scope *ns = block->attr;
     target_arg_info_t arg_info;
-    int n, struct_p;
+    int n, memory_arg_p;
 
     type = call_expr->type;
     if (add_overflow_p || sub_overflow_p || mul_overflow_p) {
@@ -13857,8 +14038,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       assert (res.mir_op.mode == MIR_OP_MEM && res.mir_op.u.mem.type == MIR_T_RBLK);
       res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.mem.base, 0, 1);
       t = MIR_T_I64;
-    } else if (type->mode == TM_STRUCT || type->mode == TM_UNION
-               || complex_type_p (type)) { /* passed in regs */
+    } else if (memory_value_type_p (type)) { /* passed in regs */
       if (!va_arg_p) {
         res = get_new_temp (c2m_ctx, MIR_T_I64);
         emit3 (c2m_ctx, MIR_ADD, res.mir_op,
@@ -13883,7 +14063,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
 #endif
           op2 = mem_to_address (c2m_ctx, op2, FALSE);
       }
-      if (type->mode == TM_STRUCT || type->mode == TM_UNION) {
+      if (aggregate_type_p (type)) {
         if (desirable_dest == NULL) {
           res = get_new_temp (c2m_ctx, MIR_T_I64);
           MIR_append_insn (ctx, curr_func,
@@ -13933,16 +14113,18 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       for (node_t arg = first_arg; arg != NULL; arg = NL_NEXT (arg)) {
         struct type *arg_type;
         e = arg->attr;
-        struct_p = e->type->mode == TM_STRUCT || e->type->mode == TM_UNION;
-        op2 = gen (c2m_ctx, arg, NULL, NULL, !struct_p, NULL, NULL);
+        arg_type = e->type;
         assert (param != NULL || NL_HEAD (param_list->u.ops) == NULL
                 || func_type->u.func_type->dots_p);
-        arg_type = e->type;
-        if (struct_p) {
-        } else if (param != NULL) {
+        if (param != NULL) {
           assert (param->code == N_SPEC_DECL || param->code == N_TYPE);
           decl_spec = get_param_decl_spec (param);
           arg_type = decl_spec->type;
+        }
+        memory_arg_p = memory_value_type_p (arg_type);
+        op2 = gen (c2m_ctx, arg, NULL, NULL, !memory_arg_p, NULL, NULL);
+        if (memory_arg_p) {
+        } else if (param != NULL) {
           t = get_mir_type (c2m_ctx, arg_type);
           t = promote_mir_int_type (t);
           op2 = promote (c2m_ctx, op2, t, FALSE);
@@ -14127,14 +14309,11 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         param_decl = param->attr;
         param_id = NL_HEAD (param_declarator->u.ops);
         param_type = param_decl->decl_spec.type;
-        assert (!param_decl->reg_p
-                || (param_type->mode != TM_STRUCT && param_type->mode != TM_UNION));
+        assert (!param_decl->reg_p || !aggregate_type_p (param_type));
         name = get_param_name (c2m_ctx, param_type, param_id->u.s.s);
         if (target_gen_gather_arg (c2m_ctx, name, param_type, param_decl, &arg_info)) continue;
         if (param_decl->reg_p) continue;
-        if (param_type->mode == TM_STRUCT
-            || param_type->mode == TM_UNION
-            || complex_type_p (param_type)) { /* block pass for aggregates and complex */
+        if (memory_value_type_p (param_type)) { /* block pass for aggregates and complex */
           param_reg = get_reg_var (c2m_ctx, MIR_POINTER_TYPE, name, NULL).reg;
           val = new_op (NULL, MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, param_reg, 0, 1));
           var
@@ -14203,14 +14382,14 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     gen (c2m_ctx, block, NULL, NULL, FALSE, NULL, NULL);
     stmtexpr_last_expr = saved_last_expr;
     res = top_gen_last_op;
-    /* A statement expression whose value is a struct/union yields the lvalue
+    /* A statement expression whose value is an aggregate yields the lvalue
        of an in-block local, but that local's stack storage can be reused by a
        sibling scope -- e.g. `({..A..}).x - ({..B..}).x`, where c2mir assigns
        the A and B block-locals the same fp slot.  Because the member loads are
        deferred to the enclosing operator, both would read whichever block ran
        last (B), giving 0.  Copy the aggregate out into a fresh temporary so
        each statement-expression value has independent storage, matching GCC. */
-    if (stmtexpr_type->mode == TM_STRUCT || stmtexpr_type->mode == TM_UNION) {
+    if (aggregate_type_p (stmtexpr_type)) {
       mir_size_t size = type_size (c2m_ctx, stmtexpr_type);
       op_t addr = get_new_temp (c2m_ctx, MIR_T_I64);
       op_t tmp;
@@ -14492,8 +14671,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     decl_t func_decl = curr_func_def->attr;
     struct type *func_type = func_decl->decl_spec.type;
     struct type *ret_type = func_type->u.func_type->ret_type;
-    int scalar_p = ret_type->mode != TM_STRUCT && ret_type->mode != TM_UNION
-                   && !complex_type_p (ret_type);
+    int scalar_p = !memory_value_type_p (ret_type);
     int ret_by_addr_p = target_return_by_addr_p (c2m_ctx, ret_type);
 
     assert (false_label == NULL && true_label == NULL);
@@ -14528,16 +14706,16 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     break;
   }
   case N_EXPR: {
-    node_t e = NL_EL (r->u.ops, 1);
+    node_t expr_node = NL_EL (r->u.ops, 1);
 
     assert (false_label == NULL && true_label == NULL);
     emit_label (c2m_ctx, r);
-    if (e == stmtexpr_last_expr)
+    if (expr_node == stmtexpr_last_expr)
       /* Value-producing last expression of a statement expression: evaluate in
          value context so post ++/-- materialize their result (see N_STMTEXPR). */
-      top_gen_last_op = gen (c2m_ctx, e, NULL, NULL, TRUE, NULL, NULL);
+      top_gen_last_op = gen (c2m_ctx, expr_node, NULL, NULL, TRUE, NULL, NULL);
     else
-      top_gen (c2m_ctx, e, NULL, NULL, NULL);
+      top_gen (c2m_ctx, expr_node, NULL, NULL, NULL);
     break;
   }
   default: abort ();
@@ -14826,6 +15004,11 @@ static void print_type (c2m_ctx_t c2m_ctx, FILE *f, struct type *type) {
     print_qual (f, type->u.arr_type->ind_type_qual);
     fprintf (f, "size node %u] (", type->u.arr_type->size->uid);
     print_type (c2m_ctx, f, type->u.arr_type->el_type);
+    fprintf (f, ")");
+    break;
+  case TM_VECTOR:
+    fprintf (f, "vector [%llu] (", (unsigned long long) type->u.vector_type->size);
+    print_type (c2m_ctx, f, type->u.vector_type->el_type);
     fprintf (f, ")");
     break;
   case TM_FUNC:
@@ -15457,7 +15640,6 @@ void c2mir_set_node_pos (c2m_ctx_t c2m_ctx, node_t n, c2mir_pos_t pos) {
 /* ---- External tree support ---- */
 
 unsigned c2mir_next_uid (c2m_ctx_t c2m_ctx) {
-  parse_ctx_t parse_ctx = c2m_ctx->parse_ctx;
   unsigned uid = curr_uid++;
   while (uid >= VARR_LENGTH (pos_t, node_positions))
     VARR_PUSH (pos_t, node_positions, no_pos);
@@ -15505,7 +15687,7 @@ void c2mir_init_node_ops (node_t n) {
 
 int c2mir_compile_tree (MIR_context_t ctx, c2m_ctx_t c2m_ctx,
                         node_t tree, const char *module_name) {
-  MIR_module_t m;
+  MIR_module_t m MIR_UNUSED;
   unsigned n_error_before;
 
   if (c2m_ctx == NULL || tree == NULL) return 0;

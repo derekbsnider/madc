@@ -39,7 +39,8 @@ static int classify_arg (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t types[
   size_t size = type_size (c2m_ctx, type), n_qwords = (size + 7) / 8;
   MIR_type_t mir_type;
 
-  if (type->mode == TM_STRUCT || type->mode == TM_UNION || type->mode == TM_ARR) {
+  if (type->mode == TM_VECTOR) return 0;
+  if (aggregate_type_p (type) || type->mode == TM_ARR) {
     if (n_qwords > MAX_QWORDS) return 0; /* too big aggregate */
 
 #ifndef _WIN32
@@ -165,8 +166,7 @@ static int process_ret_type (c2m_ctx_t c2m_ctx, struct type *ret_type,
   int n, n_iregs, n_fregs, n_stregs, curr;
   int n_qwords = classify_arg (c2m_ctx, ret_type, qword_types, FALSE);
 
-  if (ret_type->mode != TM_STRUCT && ret_type->mode != TM_UNION && !complex_type_p (ret_type))
-    return 0;
+  if (!memory_value_type_p (ret_type)) return 0;
   if (n_qwords != 0) {
     update_last_qword_type (c2m_ctx, ret_type, qword_types, n_qwords);
     n_iregs = n_fregs = n_stregs = curr = 0;
@@ -199,8 +199,7 @@ static int target_return_by_addr_p (c2m_ctx_t c2m_ctx, struct type *ret_type) {
 
   if (void_type_p (ret_type)) return FALSE;
   n_qwords = process_ret_type (c2m_ctx, ret_type, qword_types);
-  return n_qwords == 0
-         && (ret_type->mode == TM_STRUCT || ret_type->mode == TM_UNION || complex_type_p (ret_type));
+  return n_qwords == 0 && memory_value_type_p (ret_type);
 }
 
 static void target_add_res_proto (c2m_ctx_t c2m_ctx, struct type *ret_type,
@@ -216,8 +215,7 @@ static void target_add_res_proto (c2m_ctx_t c2m_ctx, struct type *ret_type,
   if (n_qwords != 0) {
     for (n = 0; n < n_qwords; n++)
       VARR_PUSH (MIR_type_t, res_types, promote_mir_int_type (qword_types[n]));
-  } else if (ret_type->mode != TM_STRUCT && ret_type->mode != TM_UNION
-             && !complex_type_p (ret_type)) {
+  } else if (!memory_value_type_p (ret_type)) {
     type = get_mir_type (c2m_ctx, ret_type);
     VARR_PUSH (MIR_type_t, res_types, type);
   } else { /* return by reference */
@@ -246,7 +244,7 @@ static int target_add_call_res_op (c2m_ctx_t c2m_ctx, struct type *ret_type,
       VARR_PUSH (MIR_op_t, call_ops, temp.mir_op);
     }
     return n_qwords;
-  } else if (ret_type->mode == TM_STRUCT || ret_type->mode == TM_UNION) { /* return by reference */
+  } else if (memory_value_type_p (ret_type)) { /* return by reference */
     arg_info->n_iregs++;
     temp = get_new_temp (c2m_ctx, MIR_T_I64);
     emit3 (c2m_ctx, MIR_ADD, temp.mir_op,
@@ -314,7 +312,7 @@ static void target_add_ret_ops (c2m_ctx_t c2m_ctx, struct type *ret_type, op_t r
       MIR_append_insn (ctx, curr_func, insn);
       VARR_PUSH (MIR_op_t, ret_ops, temp.mir_op);
     }
-  } else if (ret_type->mode != TM_STRUCT && ret_type->mode != TM_UNION) {
+  } else if (!memory_value_type_p (ret_type)) {
     VARR_PUSH (MIR_op_t, ret_ops, res.mir_op);
   } else {
     ret_addr_reg = MIR_reg (ctx, RET_ADDR_NAME, curr_func->u.func);
@@ -329,8 +327,7 @@ static int process_aggregate_arg (c2m_ctx_t c2m_ctx, struct type *arg_type,
   int n, n_iregs, n_fregs, n_qwords = classify_arg (c2m_ctx, arg_type, qword_types, FALSE);
 
   if (n_qwords == 0) return 0;
-  if (arg_type->mode != TM_STRUCT && arg_type->mode != TM_UNION && !complex_type_p (arg_type))
-    return 0;
+  if (!memory_value_type_p (arg_type)) return 0;
   update_last_qword_type (c2m_ctx, arg_type, qword_types, n_qwords);
   n_iregs = n_fregs = 0;
   for (n = 0; n < n_qwords; n++) { /* start from the last qword */
@@ -380,7 +377,7 @@ static MIR_type_t get_blk_type (int n_qwords, MIR_type_t *qword_types) {
 static MIR_type_t target_get_blk_type (c2m_ctx_t c2m_ctx, struct type *arg_type) {
   MIR_type_t qword_types[MAX_QWORDS];
   int n_qwords = classify_arg (c2m_ctx, arg_type, qword_types, FALSE);
-  assert (arg_type->mode == TM_STRUCT || arg_type->mode == TM_UNION);
+  assert (aggregate_type_p (arg_type));
   return get_blk_type (n_qwords, qword_types);
 }
 
@@ -396,7 +393,7 @@ static void target_add_arg_proto (c2m_ctx_t c2m_ctx, const char *name, struct ty
   if (complex_type_p (arg_type)) {
     var.type = get_blk_type (n_qwords, qword_types);
     var.size = type_size (c2m_ctx, arg_type);
-  } else if (arg_type->mode != TM_STRUCT && arg_type->mode != TM_UNION) {
+  } else if (!aggregate_type_p (arg_type)) {
     type = get_mir_type (c2m_ctx, arg_type);
     var.type = type;
     if (type == MIR_T_F || type == MIR_T_D)
@@ -419,7 +416,7 @@ static void target_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *arg_type,
   int n_qwords = process_aggregate_arg (c2m_ctx, arg_type, arg_info, qword_types);
 
   /* pass aggregates on the stack and pass by value for others: */
-  if (arg_type->mode != TM_STRUCT && arg_type->mode != TM_UNION && !complex_type_p (arg_type)) {
+  if (!memory_value_type_p (arg_type)) {
     type = get_mir_type (c2m_ctx, arg_type);
     VARR_PUSH (MIR_op_t, call_ops, arg.mir_op);
     if (type == MIR_T_F || type == MIR_T_D)
