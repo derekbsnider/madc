@@ -5915,6 +5915,11 @@ static int v128_float_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   return floating_type_p (el_type) && (lane_size == 4 || lane_size == 8);
 }
 
+static int v128_f32_packed_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  return v128_float_vector_type_p (c2m_ctx, type) && raw_type_size (c2m_ctx, type) == 16
+         && vector_lane_size (c2m_ctx, type) == 4;
+}
+
 static int aggregate_type_p (const struct type *type) {
   return type->mode == TM_STRUCT || type->mode == TM_UNION || vector_type_p (type);
 }
@@ -12298,6 +12303,13 @@ static op_t materialize_v128_i32_operand (c2m_ctx_t c2m_ctx, op_t op, struct typ
   return materialize_v128_operand (c2m_ctx, op, vector_type);
 }
 
+static op_t prepare_v128_float_operand (c2m_ctx_t c2m_ctx, op_t op, struct type *op_type,
+                                        struct type *vector_type) {
+  if (!v128_float_vector_type_p (c2m_ctx, op_type))
+    op = scalar_to_v128_lane (c2m_ctx, op, op_type, vector_type);
+  return force_v128_reg (c2m_ctx, op);
+}
+
 static op_t vector_lane_op (op_t vector, MIR_type_t lane_type, mir_size_t offset) {
   op_t lane = vector;
 
@@ -12618,6 +12630,20 @@ static MIR_insn_code_t get_v128_float_arith_insn_code (c2m_ctx_t c2m_ctx, node_c
   }
 }
 
+static MIR_insn_code_t get_v128_f32_arith_insn_code (node_code_t code) {
+  switch (code) {
+  case N_ADD:
+  case N_ADD_ASSIGN: return MIR_VADDF32;
+  case N_SUB:
+  case N_SUB_ASSIGN: return MIR_VSUBF32;
+  case N_MUL:
+  case N_MUL_ASSIGN: return MIR_VMULF32;
+  case N_DIV:
+  case N_DIV_ASSIGN: return MIR_VDIVF32;
+  default: assert (FALSE); return MIR_INSN_BOUND;
+  }
+}
+
 static MIR_insn_code_t get_v128_float_cmp_insn_code (c2m_ctx_t c2m_ctx, node_code_t code,
                                                      struct type *vector_type) {
   MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
@@ -12640,6 +12666,16 @@ static op_t emit_v128_float_arith_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t 
   MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
   mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
   MIR_insn_code_t insn_code = get_v128_float_arith_insn_code (c2m_ctx, code, vector_type);
+
+  if (v128_f32_packed_vector_type_p (c2m_ctx, vector_type)) {
+    op_t reg = get_new_temp (c2m_ctx, MIR_T_V128);
+
+    op1 = prepare_v128_float_operand (c2m_ctx, op1, type1, vector_type);
+    op2 = prepare_v128_float_operand (c2m_ctx, op2, type2, vector_type);
+    emit3 (c2m_ctx, get_v128_f32_arith_insn_code (code), reg.mir_op, op1.mir_op, op2.mir_op);
+    store_v128 (c2m_ctx, dest, reg);
+    return dest;
+  }
 
   op1 = materialize_v128_float_operand (c2m_ctx, op1, type1, vector_type);
   op2 = materialize_v128_float_operand (c2m_ctx, op2, type2, vector_type);

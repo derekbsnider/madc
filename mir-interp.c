@@ -578,6 +578,17 @@ static ALWAYS_INLINE void set_v128_u32 (uint8_t *v, size_t ind, uint32_t val) {
   memcpy (v + ind * sizeof (uint32_t), &val, sizeof (val));
 }
 
+static ALWAYS_INLINE float get_v128_f32 (const uint8_t *v, size_t ind) {
+  float val;
+
+  memcpy (&val, v + ind * sizeof (float), sizeof (val));
+  return val;
+}
+
+static ALWAYS_INLINE void set_v128_f32 (uint8_t *v, size_t ind, float val) {
+  memcpy (v + ind * sizeof (float), &val, sizeof (val));
+}
+
 static ALWAYS_INLINE int64_t *get_2iops (MIR_val_t *bp, code_t c, int64_t *p) {
   *p = *get_iop (bp, c + 1);
   return get_iop (bp, c);
@@ -1041,10 +1052,11 @@ static void OPTIMIZE eval (MIR_context_t ctx, func_desc_t func_desc, MIR_val_t *
     REP6 (LAB_EL, MIR_LD2D, MIR_NEG, MIR_NEGS, MIR_FNEG, MIR_DNEG, MIR_LDNEG);
     REP6 (LAB_EL, MIR_ADDR, MIR_ADDR8, MIR_ADDR16, MIR_ADDR32, MIR_ADD, MIR_ADDS);
     REP8 (LAB_EL, MIR_FADD, MIR_DADD, MIR_LDADD, MIR_SUB, MIR_SUBS, MIR_FSUB, MIR_DSUB, MIR_LDSUB);
-    LAB_EL (MIR_VSUBI32);
+    REP3 (LAB_EL, MIR_VADDI32, MIR_VADDF32, MIR_VSUBI32);
+    LAB_EL (MIR_VSUBF32);
     REP8 (LAB_EL, MIR_MUL, MIR_MULS, MIR_FMUL, MIR_DMUL, MIR_LDMUL, MIR_DIV, MIR_DIVS, MIR_UDIV);
     REP8 (LAB_EL, MIR_UDIVS, MIR_FDIV, MIR_DDIV, MIR_LDDIV, MIR_MOD, MIR_MODS, MIR_UMOD, MIR_UMODS);
-    LAB_EL (MIR_VADDI32);
+    REP2 (LAB_EL, MIR_VMULF32, MIR_VDIVF32);
     REP3 (LAB_EL, MIR_VAND, MIR_VOR, MIR_VXOR);
     REP8 (LAB_EL, MIR_AND, MIR_ANDS, MIR_OR, MIR_ORS, MIR_XOR, MIR_XORS, MIR_LSH, MIR_LSHS);
     REP2 (LAB_EL, MIR_VEQI32, MIR_VGTI32);
@@ -1360,12 +1372,44 @@ common_addr:;
     for (size_t i = 0; i < 4; i++) set_v128_u32 (r, i, get_v128_u32 (op1, i) + get_v128_u32 (op2, i));
     END_INSN;
   }
+  CASE (MIR_VADDF32, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 4; i++) set_v128_f32 (r, i, get_v128_f32 (op1, i) + get_v128_f32 (op2, i));
+    END_INSN;
+  }
   CASE (MIR_VSUBI32, 3) {
     uint8_t *r = get_vop (bp, ops);
     uint8_t *op1 = get_vop (bp, ops + 1);
     uint8_t *op2 = get_vop (bp, ops + 2);
 
     for (size_t i = 0; i < 4; i++) set_v128_u32 (r, i, get_v128_u32 (op1, i) - get_v128_u32 (op2, i));
+    END_INSN;
+  }
+  CASE (MIR_VSUBF32, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 4; i++) set_v128_f32 (r, i, get_v128_f32 (op1, i) - get_v128_f32 (op2, i));
+    END_INSN;
+  }
+  CASE (MIR_VMULF32, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 4; i++) set_v128_f32 (r, i, get_v128_f32 (op1, i) * get_v128_f32 (op2, i));
+    END_INSN;
+  }
+  CASE (MIR_VDIVF32, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 4; i++) set_v128_f32 (r, i, get_v128_f32 (op1, i) / get_v128_f32 (op2, i));
     END_INSN;
   }
   CASE (MIR_VAND, 3) {

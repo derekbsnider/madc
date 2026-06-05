@@ -522,5 +522,7 @@ int main (void) {
       || abi_v32_cr[3] != 44)
     return 136;
   if (abi_sum_v32_i8 (abi_v32_cr) != 110) return 137;
+  vf = fa - fb;
+  if (vf[0] != 1.0f || vf[1] != -6.0f || vf[2] != 4.0f || vf[3] != -3.0f) return 138;
   return 0;
 }
