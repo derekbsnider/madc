@@ -5956,6 +5956,14 @@ static int v128_i32_packed_cmp_vector_type_p (c2m_ctx_t c2m_ctx, struct type *ty
   return lane_size == 1 || lane_size == 2 || lane_size == 4;
 }
 
+static int v128_i32_packed_eq_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  mir_size_t lane_size;
+
+  if (!v128_i32_vector_type_p (c2m_ctx, type)) return FALSE;
+  lane_size = vector_lane_size (c2m_ctx, type);
+  return lane_size == 1 || lane_size == 2 || lane_size == 4 || lane_size == 8;
+}
+
 static int v128_i64_packed_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   return v128_i32_vector_type_p (c2m_ctx, type) && vector_lane_size (c2m_ctx, type) == 8;
 }
@@ -12501,8 +12509,10 @@ static MIR_insn_code_t get_v128_i32_packed_eq_insn_code (c2m_ctx_t c2m_ctx,
                                                          struct type *vector_type) {
   mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
 
-  assert (v128_i32_packed_cmp_vector_type_p (c2m_ctx, vector_type));
-  return lane_size == 1 ? MIR_VEQI8 : lane_size == 2 ? MIR_VEQI16 : MIR_VEQI32;
+  assert (v128_i32_packed_eq_vector_type_p (c2m_ctx, vector_type));
+  return lane_size == 1 ? MIR_VEQI8
+                        : lane_size == 2 ? MIR_VEQI16
+                                         : lane_size == 4 ? MIR_VEQI32 : MIR_VEQI64;
 }
 
 static MIR_insn_code_t get_v128_i32_packed_gt_insn_code (c2m_ctx_t c2m_ctx,
@@ -12608,22 +12618,31 @@ static op_t gen_v128_i32_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_de
   op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
   op_t cmp_dest, all_ones;
 
+  if (code == N_EQ || code == N_NE) {
+    if (v128_i32_packed_eq_vector_type_p (c2m_ctx, type)) {
+      if (code == N_EQ)
+        return emit_v128_i32_bin_op (c2m_ctx, get_v128_i32_packed_eq_insn_code (c2m_ctx, type),
+                                     op1, type1, op2, type2, type, dest);
+      cmp_dest = vector_temp (c2m_ctx, type);
+      emit_v128_i32_bin_op (c2m_ctx, get_v128_i32_packed_eq_insn_code (c2m_ctx, type), op1,
+                            type1, op2, type2, type, cmp_dest);
+      all_ones = const_integer_vector (c2m_ctx, type, -1);
+      return emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, cmp_dest, type, all_ones, type, type,
+                                   dest);
+    }
+    return emit_v128_i32_lane_cmp_op (c2m_ctx, code, op1, type1, op2, type2, type, dest);
+  }
+
   if (!v128_i32_packed_cmp_vector_type_p (c2m_ctx, type))
     return emit_v128_i32_lane_cmp_op (c2m_ctx, code, op1, type1, op2, type2, type, dest);
 
-  if (code == N_EQ)
-    return emit_v128_i32_bin_op (c2m_ctx, get_v128_i32_packed_eq_insn_code (c2m_ctx, type), op1,
-                                 type1, op2, type2, type, dest);
   if (code == N_GT)
     return emit_v128_i32_gt_op (c2m_ctx, op1, type1, op2, type2, type, dest);
   if (code == N_LT)
     return emit_v128_i32_gt_op (c2m_ctx, op2, type2, op1, type1, type, dest);
 
   cmp_dest = vector_temp (c2m_ctx, type);
-  if (code == N_NE) {
-    emit_v128_i32_bin_op (c2m_ctx, get_v128_i32_packed_eq_insn_code (c2m_ctx, type), op1, type1,
-                          op2, type2, type, cmp_dest);
-  } else if (code == N_LE) {
+  if (code == N_LE) {
     emit_v128_i32_gt_op (c2m_ctx, op1, type1, op2, type2, type, cmp_dest);
   } else {
     assert (code == N_GE);
