@@ -5869,6 +5869,11 @@ static int complex_type_p (const struct type *type) {
 
 static int vector_type_p (const struct type *type) { return type->mode == TM_VECTOR; }
 
+static int v32_integer_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  return type->mode == TM_VECTOR && raw_type_size (c2m_ctx, type) == 4
+         && integer_type_p (type->u.vector_type->el_type);
+}
+
 static int v64_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   return type->mode == TM_VECTOR && raw_type_size (c2m_ctx, type) == 8;
 }
