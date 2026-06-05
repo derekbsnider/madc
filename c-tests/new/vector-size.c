@@ -4,6 +4,7 @@ typedef int v8si __attribute__ ((vector_size (32)));
 typedef unsigned int v4ui __attribute__ ((vector_size (16)));
 typedef float v4sf __attribute__ ((vector_size (16)));
 typedef long long v2di __attribute__ ((vector_size (16)));
+typedef long v2l __attribute__ ((vector_size (16)));
 typedef double v2df __attribute__ ((__vector_size__ (16)));
 typedef signed char v16qi __attribute__ ((vector_size (16)));
 typedef unsigned char v16uqi __attribute__ ((vector_size (16)));
@@ -39,10 +40,16 @@ int main (void) {
   v4ui umd_b = {3u, 4u, 8u, 2u};
   v4ui uc;
   v4sf vf;
+  v4sf fa = {1.5f, -2.0f, 3.0f, -4.5f};
+  v4sf fb = {0.5f, 4.0f, -1.0f, -1.5f};
   v2di li = {-3, 4};
   v2di li2;
   v2df d = {1.25, 2.5};
   v2df e = {3.5, 4.5};
+  v2df df_a = {1.25, -2.5};
+  v2df df_b = {3.5, -0.5};
+  v2df df_c;
+  v2l dm;
   v2di dshuffle = {-1, 0};
   v8hi hia = {1, -2, 300, -400, 5000, -6000, 32760, -32768};
   v8hi hib = {2, -3, -200, 100, -20, 30, 10, -1};
@@ -297,5 +304,23 @@ int main (void) {
   if (wide[0] != 1 || wide[1] != 10 || wide[2] != 8 || wide[3] != 16
       || wide[4] != 4 || wide[5] != 12 || wide[6] != 5 || wide[7] != 13)
     return 104;
+  vf = fa + fb;
+  if (vf[0] != 2.0f || vf[1] != 2.0f || vf[2] != 2.0f || vf[3] != -6.0f) return 105;
+  vf = fa * fb;
+  if (vf[0] != 0.75f || vf[1] != -8.0f || vf[2] != -3.0f || vf[3] != 6.75f) return 106;
+  vf = -fa;
+  if (vf[0] != -1.5f || vf[1] != 2.0f || vf[2] != -3.0f || vf[3] != 4.5f) return 107;
+  vf = 2.0f + fa;
+  if (vf[0] != 3.5f || vf[1] != 0.0f || vf[2] != 5.0f || vf[3] != -2.5f) return 108;
+  c = fa < fb;
+  if (c[0] != 0 || c[1] != -1 || c[2] != 0 || c[3] != -1) return 109;
+  vf = fa;
+  vf += fb;
+  vf /= 2.0f;
+  if (vf[0] != 1.0f || vf[1] != 1.0f || vf[2] != 1.0f || vf[3] != -3.0f) return 110;
+  df_c = df_a / df_b;
+  if (df_c[0] != 1.25 / 3.5 || df_c[1] != 5.0) return 111;
+  dm = df_a >= df_b;
+  if (dm[0] != 0 || dm[1] != 0) return 112;
   return 0;
 }
