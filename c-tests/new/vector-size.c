@@ -554,5 +554,12 @@ int main (void) {
   if (dm[0] != -1 || dm[1] != -1) return 152;
   dm = df_b >= df_a;
   if (dm[0] != -1 || dm[1] != -1) return 153;
+  i8c = i8a - i8b;
+  if (i8c[0] != 0 || i8c[1] != -4 || i8c[2] != 6 || i8c[3] != 0) return 154;
+  hc = hia;
+  hc += hib;
+  if (hc[0] != 3 || hc[1] != -5 || hc[2] != 100 || hc[3] != -300) return 155;
+  hc -= hib;
+  if (hc[0] != 1 || hc[1] != -2 || hc[2] != 300 || hc[3] != -400) return 156;
   return 0;
 }

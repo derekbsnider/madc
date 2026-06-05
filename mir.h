@@ -101,8 +101,10 @@ typedef enum {
   REP5 (INSN_EL, NEG, NEGS, FNEG, DNEG, LDNEG),     /* Changing sign */
   REP4 (INSN_EL, ADDR, ADDR8, ADDR16, ADDR32), /* reg addr in natural mode or given integer mode */
   /* 3 operand insn: */
-  REP8 (INSN_EL, ADD, ADDS, FADD, DADD, LDADD, VADDI32, VADDF32, VADDF64), /* Addition */
-  REP8 (INSN_EL, SUB, SUBS, FSUB, DSUB, LDSUB, VSUBI32, VSUBF32, VSUBF64), /* Subtraction */
+  REP8 (INSN_EL, ADD, ADDS, FADD, DADD, LDADD, VADDI8, VADDI16, VADDI32),
+  REP2 (INSN_EL, VADDF32, VADDF64), /* Addition */
+  REP8 (INSN_EL, SUB, SUBS, FSUB, DSUB, LDSUB, VSUBI8, VSUBI16, VSUBI32),
+  REP2 (INSN_EL, VSUBF32, VSUBF64), /* Subtraction */
   REP7 (INSN_EL, MUL, MULS, FMUL, DMUL, LDMUL, VMULF32, VMULF64), /* Multiplication */
   REP8 (INSN_EL, DIV, DIVS, UDIV, UDIVS, FDIV, DDIV, LDDIV, VDIVF32), /* Division */
   INSN_EL (VDIVF64),

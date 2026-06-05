@@ -5905,6 +5905,14 @@ static int v128_i32_packed_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) 
   return v128_i32_vector_type_p (c2m_ctx, type) && vector_lane_size (c2m_ctx, type) == 4;
 }
 
+static int v128_i32_packed_add_sub_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  mir_size_t lane_size;
+
+  if (!v128_i32_vector_type_p (c2m_ctx, type)) return FALSE;
+  lane_size = vector_lane_size (c2m_ctx, type);
+  return lane_size == 1 || lane_size == 2 || lane_size == 4;
+}
+
 static int v128_i64_packed_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   return v128_i32_vector_type_p (c2m_ctx, type) && vector_lane_size (c2m_ctx, type) == 8;
 }
@@ -12275,6 +12283,23 @@ static MIR_insn_code_t get_v128_i32_bin_insn_code (node_code_t code) {
   }
 }
 
+static MIR_insn_code_t get_v128_i32_packed_add_sub_insn_code (c2m_ctx_t c2m_ctx,
+                                                              node_code_t code,
+                                                              struct type *vector_type) {
+  mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
+
+  assert (v128_i32_packed_add_sub_vector_type_p (c2m_ctx, vector_type));
+  switch (code) {
+  case N_ADD:
+  case N_ADD_ASSIGN:
+    return lane_size == 1 ? MIR_VADDI8 : lane_size == 2 ? MIR_VADDI16 : MIR_VADDI32;
+  case N_SUB:
+  case N_SUB_ASSIGN:
+    return lane_size == 1 ? MIR_VSUBI8 : lane_size == 2 ? MIR_VSUBI16 : MIR_VSUBI32;
+  default: assert (FALSE); return MIR_INSN_BOUND;
+  }
+}
+
 static void store_v128 (c2m_ctx_t c2m_ctx, op_t dest, op_t val) {
   assert (dest.mir_op.mode == MIR_OP_MEM);
   dest.mir_op.u.mem.type = MIR_T_V128;
@@ -12481,8 +12506,10 @@ static op_t gen_v128_i32_unary_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_
   } else if (r->code == N_SUB) {
     op_t zero = const_v128_i32 (c2m_ctx, type, 0);
 
-    if (v128_i32_packed_vector_type_p (c2m_ctx, type))
-      return emit_v128_i32_bin_op (c2m_ctx, MIR_VSUBI32, zero, type, op, type, type, dest);
+    if (v128_i32_packed_add_sub_vector_type_p (c2m_ctx, type))
+      return emit_v128_i32_bin_op (c2m_ctx,
+                                   get_v128_i32_packed_add_sub_insn_code (c2m_ctx, N_SUB, type),
+                                   zero, type, op, type, type, dest);
     return emit_v128_i32_arith_op (c2m_ctx, N_SUB, zero, type, op, type, type, dest);
   } else {
     op_t all_ones = const_v128_i32 (c2m_ctx, type, -1);
@@ -12501,8 +12528,13 @@ static op_t gen_v128_i32_bin_op (c2m_ctx_t c2m_ctx, node_t r, MIR_insn_code_t co
   struct type *type2 = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
   op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
 
-  if ((r->code == N_ADD || r->code == N_SUB) && !v128_i32_packed_vector_type_p (c2m_ctx, type))
-    return emit_v128_i32_arith_op (c2m_ctx, r->code, op1, type1, op2, type2, type, dest);
+  if (r->code == N_ADD || r->code == N_SUB) {
+    if (v128_i32_packed_add_sub_vector_type_p (c2m_ctx, type)) {
+      code = get_v128_i32_packed_add_sub_insn_code (c2m_ctx, r->code, type);
+    } else {
+      return emit_v128_i32_arith_op (c2m_ctx, r->code, op1, type1, op2, type2, type, dest);
+    }
+  }
   return emit_v128_i32_bin_op (c2m_ctx, code, op1, type1, op2, type2, type, dest);
 }
 
@@ -14866,13 +14898,20 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       var = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
       val = force_val (c2m_ctx, var, FALSE);
       op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
-      if ((r->code == N_ADD_ASSIGN || r->code == N_SUB_ASSIGN)
-          && !v128_i32_packed_vector_type_p (c2m_ctx, lhs_type))
-        res = emit_v128_i32_arith_op (c2m_ctx, r->code, val, lhs_type, op2, rhs_type, lhs_type,
-                                      var);
-      else
+      if (r->code == N_ADD_ASSIGN || r->code == N_SUB_ASSIGN) {
+        if (v128_i32_packed_add_sub_vector_type_p (c2m_ctx, lhs_type)) {
+          insn_code = get_v128_i32_packed_add_sub_insn_code (c2m_ctx, r->code, lhs_type);
+          res
+            = emit_v128_i32_bin_op (c2m_ctx, insn_code, val, lhs_type, op2, rhs_type, lhs_type,
+                                    var);
+        } else {
+          res = emit_v128_i32_arith_op (c2m_ctx, r->code, val, lhs_type, op2, rhs_type,
+                                        lhs_type, var);
+        }
+      } else {
         res
           = emit_v128_i32_bin_op (c2m_ctx, insn_code, val, lhs_type, op2, rhs_type, lhs_type, var);
+      }
       break;
     }
     if (complex_type_p (((struct expr *) r->attr)->type)) {

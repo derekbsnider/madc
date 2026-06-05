@@ -67,13 +67,14 @@ static const int spill_space_size = 32;
 
 static const MIR_insn_code_t target_io_dup_op_insn_codes[] = {
   /* see possible patterns */
-  MIR_ADD,     MIR_ADDS,    MIR_FADD,   MIR_DADD,    MIR_LDADD,   MIR_VADDI32, MIR_VADDF32,
-  MIR_VADDF64, MIR_SUB,     MIR_SUBS,   MIR_FSUB,    MIR_DSUB,    MIR_LDSUB,   MIR_VSUBI32,
-  MIR_VSUBF32, MIR_VSUBF64, MIR_MUL,    MIR_MULS,    MIR_FMUL,    MIR_DMUL,    MIR_LDMUL,
-  MIR_VMULF32, MIR_VMULF64, MIR_FDIV,   MIR_DDIV,    MIR_LDDIV,   MIR_AND,     MIR_ANDS,
-  MIR_OR,      MIR_ORS,     MIR_XOR,    MIR_XORS,    MIR_VDIVF32, MIR_VDIVF64, MIR_VAND,
-  MIR_VOR,     MIR_VXOR,    MIR_VEQI32, MIR_VGTI32,  MIR_VEQF32,  MIR_VNEF32,  MIR_VLTF32,
-  MIR_VLEF32,  MIR_VEQF64,  MIR_VNEF64, MIR_VLTF64,  MIR_VLEF64,
+  MIR_ADD,     MIR_ADDS,    MIR_FADD,    MIR_DADD,   MIR_LDADD,   MIR_VADDI8, MIR_VADDI16,
+  MIR_VADDI32, MIR_VADDF32, MIR_VADDF64, MIR_SUB,    MIR_SUBS,    MIR_FSUB,   MIR_DSUB,
+  MIR_LDSUB,   MIR_VSUBI8,  MIR_VSUBI16, MIR_VSUBI32, MIR_VSUBF32, MIR_VSUBF64, MIR_MUL,
+  MIR_MULS,    MIR_FMUL,    MIR_DMUL,    MIR_LDMUL,  MIR_VMULF32, MIR_VMULF64, MIR_FDIV,
+  MIR_DDIV,    MIR_LDDIV,   MIR_AND,     MIR_ANDS,   MIR_OR,      MIR_ORS,    MIR_XOR,
+  MIR_XORS,    MIR_VDIVF32, MIR_VDIVF64, MIR_VAND,   MIR_VOR,     MIR_VXOR,   MIR_VEQI32,
+  MIR_VGTI32,  MIR_VEQF32,  MIR_VNEF32,  MIR_VLTF32, MIR_VLEF32,  MIR_VEQF64, MIR_VNEF64,
+  MIR_VLTF64,  MIR_VLEF64,
   MIR_LSH,   MIR_LSHS,  MIR_RSH,    MIR_RSHS,       MIR_URSH,  MIR_URSHS, MIR_NEG,   MIR_NEGS,
   MIR_FNEG,  MIR_DNEG,  MIR_LDNEG,  MIR_ADDO,       MIR_ADDOS, MIR_SUBO,  MIR_SUBOS, MIR_MULO,
   MIR_MULOS, MIR_UMULO, MIR_UMULOS, MIR_INSN_BOUND,
@@ -1707,6 +1708,10 @@ static struct pattern patterns[] = {
 
   IOP (MIR_ADD, "03", "01", "83 /0", "81 /0") /* x86_64 int additions */
 
+  {MIR_VADDI8, "r 0 r", "66 Y 0F FC r0 R2", 0},   /* paddb r0,r2 */
+  {MIR_VADDI8, "r 0 mv", "66 Y 0F FC r0 m2", 0},  /* paddb r0,m128 */
+  {MIR_VADDI16, "r 0 r", "66 Y 0F FD r0 R2", 0},  /* paddw r0,r2 */
+  {MIR_VADDI16, "r 0 mv", "66 Y 0F FD r0 m2", 0}, /* paddw r0,m128 */
   {MIR_VADDI32, "r 0 r", "66 Y 0F FE r0 R2", 0},  /* paddd r0,r2 */
   {MIR_VADDI32, "r 0 mv", "66 Y 0F FE r0 m2", 0}, /* paddd r0,m128 */
   {MIR_VADDF32, "r 0 r", "Y 0F 58 r0 R2", 0},     /* addps r0,r2 */
@@ -1721,6 +1726,10 @@ static struct pattern patterns[] = {
 
   IOP (MIR_SUB, "2B", "29", "83 /5", "81 /5") /* x86_64 int subtractions */
 
+  {MIR_VSUBI8, "r 0 r", "66 Y 0F F8 r0 R2", 0},   /* psubb r0,r2 */
+  {MIR_VSUBI8, "r 0 mv", "66 Y 0F F8 r0 m2", 0},  /* psubb r0,m128 */
+  {MIR_VSUBI16, "r 0 r", "66 Y 0F F9 r0 R2", 0},  /* psubw r0,r2 */
+  {MIR_VSUBI16, "r 0 mv", "66 Y 0F F9 r0 m2", 0}, /* psubw r0,m128 */
   {MIR_VSUBI32, "r 0 r", "66 Y 0F FA r0 R2", 0},  /* psubd r0,r2 */
   {MIR_VSUBI32, "r 0 mv", "66 Y 0F FA r0 m2", 0}, /* psubd r0,m128 */
   {MIR_VSUBF32, "r 0 r", "Y 0F 5C r0 R2", 0},     /* subps r0,r2 */
