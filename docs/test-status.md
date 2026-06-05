@@ -1,7 +1,8 @@
 # Test Status
 
-> **Current (2026-06-05, retire-std-hardcoding branch):** integration
-> **486 passed, 4 failed, 1 timed out, 55 skipped** after adding
+> **Current (2026-06-05, `develop` after retire-std-hardcoding merge):** integration
+> **486 passed, 4 failed, 1 timed out, 55 skipped** on a fresh
+> `make -C src fulltest` after adding
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
 > `teststdcppinclude.mad`, plus `testforeachheaderbody.mad` for range-for
 > locals in included/header function bodies, `testexternclinkage.mad` for
@@ -25,8 +26,10 @@
 > coverage target the CIR path is climbing back to. ★ Milestone: SMAUG 1.8
 > boots, runs as a live server, and is playable (character creation, world
 > navigation, the Newgate serpent fight) through `cir_node → c2mir → MIR → JIT`.
-> Canonical live state: this branch's live git and fulltest output; the older
-> parity snapshots below are retained as historical context.
+> Canonical live state: `develop` live git and fulltest output; compiler
+> warnings are release-prep blockers and should be cleaned rather than ignored.
+> The clean `make -C src` rebuild on 2026-06-05 emitted no compiler warnings.
+> The older parity snapshots below are retained as historical context.
 
 Test results as of May 28, 2026 (v0.24.0, GCC parity 1649/1685 = 97.9%, 475 integration tests, 294 unit tests).
 

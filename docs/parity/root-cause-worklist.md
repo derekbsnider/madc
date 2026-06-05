@@ -1,5 +1,15 @@
 # CIR-vs-asmjit parity recovery — root-cause worklist (2026-06-01)
 
+## Current release-prep note (2026-06-05)
+
+The retire-std-hardcoding cleanup is merged to `develop`; std-class behavior
+should come from headers, generic object machinery, and libstdc++, not
+per-class compiler/runtime branches. Immediate release prep is warning-clean
+validation followed by clearing the remaining integration reds/timeouts. Beyond
+that, the largest parity bucket remains the SIMD/vector_size floor gap: it
+belongs in the c2mir + MIR framework and the `/workspace/mir` fork, as described
+below and in ADR 0001.
+
 ## 2026-06-02 c2mir-BUG SWEEP (method: gcc + clang + stock c2m on every fail). User directive: BUGS before features; MIR-machine work last.
 
 For each failing torture test, ran gcc, clang, and stock `c2m -eg`. The clean

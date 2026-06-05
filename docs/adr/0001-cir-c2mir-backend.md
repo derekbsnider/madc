@@ -139,9 +139,10 @@ User-visible language features stay on the c2mir path so they also flow through
 ## Consequences (accepted trade-offs)
 
 - **We maintain a c2mir fork** (`github.com/derekbsnider/mir`, branch
-  `feature/complex-support`) — native `_Complex`, the bounds-safe
-  `c2mir_node_op` fix, etc. Accepted: it is C, and it is the backend we depend
-  on (see ADR-adjacent KG `Decision{madc_mir_fork_dependency}`).
+  `develop`, pinned by `MIR_COMMIT`) — native `_Complex`, cleanup attributes,
+  and the ABI/codegen fixes the CIR backend depends on. Accepted: it is C, and
+  it is the backend we depend on (see ADR-adjacent KG
+  `Decision{madc_mir_fork_dependency}`).
 - **We drive c2mir's `node_t` the way its own parser would** — a fragile seam
   that has surfaced internal-convention bugs (abstract-param `N_TYPE`, fn-ptr
   node ordering). Accepted; mitigated by treating c2mir as canon and reducing
@@ -165,7 +166,8 @@ User-visible language features stay on the c2mir path so they also flow through
 - **~2× compile latency** vs direct-MIR. Accepted for batch/JIT; the
   interactive tier is addressed by the hybrid interpreter seam.
 - **Coverage regression during the transition** (master 419 pass → develop's
-  CIR baseline, climbing back; 325 at v0.25.0). The *destination* is right; the
+  CIR baseline, climbing back; 486 integration pass / 4 fail / 1 timeout after
+  the 2026-06-05 retire-std-hardcoding merge). The *destination* is right; the
   cost was the rebuild. **develop is not promoted to master until the CIR path
   reaches feature parity** (KG `Decision{promote_parity_gate}`).
 - **Everything must be expressible as C11 (+ c2mir extensions).** Accepted —

@@ -20,7 +20,7 @@ Do not re-litigate it; follow the trajectory below.
   three outputs of one IR). Keep emitted C portable (see
   `.claude/rules/c11-transpiler.md` hygiene).
 - The MIR dependency is the **madc fork** (`github.com/derekbsnider/mir`,
-  branch `feature/complex-support`), not upstream — push fork changes there
+  branch `develop`, pinned by `MIR_COMMIT`), not upstream — push fork changes there
   before a madc release relies on them (see `.claude/rules/build.md`).
 - Near-term goal is **CIR coverage parity with master** — it gates promotion to
   master (see `.claude/rules/branching.md`). Drive the integration worklist

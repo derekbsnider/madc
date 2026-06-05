@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Changed — retire-std-hardcoding cleanup merged to `develop` (2026-06-05)
+
+The intended std-class hardcoding retirement is now on `develop`.
+`scripts/check-no-std-hardcoding.sh` reports **0 offending lines**. Core madc
+should rely on standard/embedded C++ headers, generic object/overload/mangling
+machinery, and real libstdc++ declarations/operators for classes such as
+`std::string`, iostream/istream/ostream, sstream, containers, and user classes,
+instead of compiler/runtime per-class branches.
+
+Release prep now treats compiler warnings as blockers. A clean `make -C src`
+rebuild on `develop` emitted no compiler warnings, `make -C src test` passed,
+and a fresh `make -C src fulltest` reproduced **486 passed, 4 failed, 1 timed
+out, 55 skipped**. The next validation goal is driving the remaining fulltest
+reds/timeouts to green; the largest longer-running parity bucket remains the
+documented SIMD/vector_size work in c2mir and the `/workspace/mir` fork.
+
 ### Fixed — generic real-header parser/PCH checkpoint (2026-06-05)
 
 Real-header parsing now handles class-scope aliases/static member types,

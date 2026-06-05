@@ -1,13 +1,11 @@
 # RETIRE-STD-HARDCODING CAMPAIGN — FULL HANDOFF (rewritten 2026-06-03) — READ FIRST
 
-> Self-contained resume doc for the "retire ALL std:: hardcoding" campaign. This is a
-> SEPARATE track from the gcc-torture parity campaign (that lives on `develop`; see
-> `2026-06-01-HANDOFF.md`). This campaign lives on its own feature branch and has NOT
-> been merged to develop. Reading this doc + the spec + the memories below = full
-> situational awareness; you should not need anything else to continue.
+> Self-contained historical/resume doc for the "retire ALL std:: hardcoding"
+> campaign. The campaign was fast-forwarded into `develop` on 2026-06-05 at
+> `e7b06f3`; do not resume the older branch-local worklists below.
 
-## RESTART 2026-06-04 (Codex rehydrate/cleanup — CURRENT)
-Branch `feature/retire-std-hardcoding-claude`.
+## MERGED 2026-06-05 — intended work complete on `develop`
+Branch `develop`.
 
 **THE OFFENDING-LINE REMOVAL GOAL IS COMPLETE. DO NOT RESUME THE 775/770-LINE
 WORKLIST.** Live `bash scripts/check-no-std-hardcoding.sh` reports **0 offending
@@ -15,6 +13,13 @@ lines**. The large cleanup from the previous 2-3 sessions moved the std and
 polyglot surfaces toward header/library declarations and removed the compiler's
 per-type std hooks. Treat live git/worktree state as newer than the 2026-06-03
 restart blocks below.
+
+The intended architectural endpoint for this campaign is now the develop-line
+invariant: core madc must rely on standard/embedded C++ headers, generic
+object/type/overload/mangling/ctor/dtor/retbuf machinery, and real libstdc++
+declarations/operators for C++ library classes. Do not reintroduce per-class
+compiler/runtime handling for `std::string`, iostream/istream/ostream, sstream,
+containers, or user classes.
 
 The active architectural guardrail is broader than the grep gate:
 
@@ -147,10 +152,10 @@ Validation snapshot:
 - `bash scripts/check-no-std-hardcoding.sh` reports 0 offending lines.
 - `rg -n 'asm\\(\"__|asm\\(\"madarray_size' include/madc src/embedded_headers.cpp`
   finds no direct embedded-header ABI aliases.
-- `make -C src` passes.
+- A clean `make -C src` rebuild on `develop` passes with no compiler warnings.
 - `make -C src test` passes.
 - `make -C src fulltest` produced **486 passed, 4 failed, 1 timed out,
-  55 skipped**. Known failures/timeouts: `testdefer`, `testfortypedcomma`
+  55 skipped** after the merge. Known failures/timeouts: `testdefer`, `testfortypedcomma`
   (timed out this run; historically flaky fail/timeout), `testfstream`,
   `testlargesizeofquery`, `testloop`.
 - `test_cir` includes the auto-include mode boundary and generic external-bool
@@ -163,10 +168,10 @@ Validation snapshot:
   `testprefer`, `testphp`, `testlang`, string/class regressions, and
   `--no-includes` still rejects `string` without includes.
 
-Open follow-ups before/while merging this branch to `develop`:
+Open follow-ups after the merge:
 
-- Keep unrelated untracked `.claude/`, KG dumps, temp files, and scratch
-  artifacts out of the branch cleanup/merge.
+- Keep release-prep builds warning-clean. Compiler warnings are blockers, not
+  ignorable noise.
 - Consider broadening the drift gate: all embedded polyglot namespace headers
   and the `<algorithm>` helper aliases are now split into ordinary wrappers
   over explicit `extern "C"` ABI declarations, but a companion check could
@@ -183,6 +188,9 @@ Open follow-ups before/while merging this branch to `develop`:
 - Replace the remaining stdio-backed `cout`/`cerr`/`clog` bodies in embedded
   `<iostream>` with real libstdc++ output declarations/operators where
   possible, matching the `std::cin` direction.
+- Drive the remaining fulltest reds/timeouts to green. The next large parity
+  bucket after local cleanup is the documented SIMD/vector_size raise through
+  c2mir and MIR (`/workspace/mir`).
 
 ---
 

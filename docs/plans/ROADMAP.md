@@ -34,7 +34,7 @@ high-level" — the answer is both.**
   backend. The asmjit JIT and the Gecko parser/MIR-transpiler were both removed
   (commits `42e9b6e`, `64f44b3`). There is no `--backend=jit`; `--backend=mir`
   aliases to cir. Builds against the **madc MIR fork**
-  (github.com/derekbsnider/mir, branch `feature/complex-support`).
+  (github.com/derekbsnider/mir, branch `develop`, pinned by `MIR_COMMIT`).
 - **★ SMAUG 1.8 boots, runs, and is playable** through the CIR path: it boots to
   a live server (`Realms of Despair ready … port 4000`) and a client can create
   a character, navigate the world, and fight (the Newgate serpent fight runs).
@@ -42,55 +42,34 @@ high-level" — the answer is both.**
   is now demonstrated on CIR.
 - **CIR baseline (2026-06-05):** **486 integration pass / 4 fail / 1 timeout / 55 skip**;
   **gcc.c-torture 1565/1685 (92.9%)** vs the old asmjit backend's 1645 (97.6%) — gap 80.
-  The failures are the active CIR coverage worklist — see Track 1.3 — and the
-  gate for promotion to master.
+  The clean `develop` rebuild emits no compiler warnings. The failures are the
+  active CIR coverage worklist — see Track 1.3 — and the gate for promotion to
+  master.
 - **C++ model — proven on the old backend, being re-established on CIR:**
   ctors/dtors, operator overloading, references, `new`/`delete`, single
   inheritance, vtables, SJLJ exceptions + unwinding, access control, const
   enforcement. These all worked on the asmjit backend; CIR parity is the
   current push.
-- **C++ library object model cleanup (feature branch, 2026-06-04):**
-  `feature/retire-std-hardcoding-claude` has the retire-std-hardcoding gate at
-  **0 offending lines**. The intended model is the g++/clang++ one: library
-  classes are declared in headers and compiled through the same object,
-  overload, mangling, ctor/dtor, and retbuf machinery as user classes. Keep
-  concrete class knowledge out of compiler/runtime code except the mangler,
-  header text, tests, and the auto-include trigger map. Auto-includes are now
-  a default `--std=madc` convenience only; explicit `--std=c` and `--std=c++`
-  modes require the appropriate headers. Range-for element locals are now
-  declared by explicit parameter flags rather than parameter-count position,
-  so included/header function bodies can use range-for without losing the loop
-  variable declaration. `extern "C"` / `extern "C++"` linkage specs now parse,
-  which is the prerequisite for splitting embedded polyglot namespace headers
-  into ordinary C++ namespace wrappers over explicit C ABI declarations.
-  Function signatures now preserve source typedef aliases for returns and
-  parameters, so referenced extern C prototypes can render header spelling such
-  as `string *` without concrete-class handling. Declaration-only namespace
-  functions now keep default C++ linkage and resolve to their real Itanium
-  namespace symbols; `extern "C"` declarations stay on the C ABI path. PHP
-  string helpers use real `php::` symbols with `__php_*` as C-developer
-  convenience wrappers; PHP array helpers remain a separate API/ABI slice while
-  the project decides whether `MadArray` / `MadValue` should become
-  `madc::array` / `madc::value`. Embedded `<ns_php>`,
-  `<ns_perl>`, `<ns_python>`, `<ns_ruby>`, `<ns_js>`, `<ns_rust>`, and
-  `<algorithm>` helper aliases now use ordinary wrapper bodies over explicit
-  `extern "C"` ABI declarations; a direct embedded-header `asm("__...")` scan
-  is clean. `std::cin >>` is recovered on CIR by declaring `std::cin` as the
-  real `_ZSt3cin` libstdc++ global, binding numeric extraction to real
-  `basic_istream::operator>>`, and delegating string extraction to a small
-  runtime bridge over real C++ iostreams. The remaining `<iostream>` follow-up
-  is replacing the stdio-backed `cout`/`cerr`/`clog` header bodies with real
-  libstdc++ output declarations/operators, not adding `stdio.h`/`FILE*` stream
-  bridges. The latest parser/PCH checkpoint rejects stale generated PCH blobs,
-  reconstructs deserialized keyword/datatype tokens, and expands generic
-  real-header parsing for class-scope aliases/static member types,
-  nested/template aliases, explicit specializations, class-qualified
-  expressions, method-result receiver chains, base-qualified calls on `this`,
-  and arity-aware member lookup. Broad real system-header PCH regeneration
-  remains blocked on preserving include-guard/macro state; explicit `--std=c++`
-  real iostream preprocessing reaches c2mir but still needs generic
-  class/member alias resolution (`char_type`, `iter_type`, `iostate`,
-  `__streambuf_type`, and friends).
+- **C++ library object model cleanup (merged to `develop`, 2026-06-05):**
+  the retire-std-hardcoding gate is at **0 offending lines** on `develop`. The
+  intended model is the g++/clang++ one: library classes are declared in
+  standard/embedded headers and compiled through the same object, overload,
+  mangling, ctor/dtor, and retbuf machinery as user classes. Core compiler and
+  runtime code must not special-case concrete C++ library classes or objects
+  such as `std::string`, iostream/istream/ostream, sstream, containers, or user
+  classes; the exceptions are the mangler, header text, tests, and the
+  auto-include trigger map. Auto-includes are now a default `--std=madc`
+  convenience only; explicit `--std=c` and `--std=c++` modes require the
+  appropriate headers. The cleanup also recovered `std::cin >>` via real
+  libstdc++ declarations/operators and advanced generic real-header parsing far
+  enough to handle the iostream/istream/ostream class machinery. The remaining
+  release-prep work is warning-clean validation and driving the final fulltest
+  reds/timeouts to green. Follow-ups stay generic: preserve include-guard/macro
+  state before broad real system-header PCH regeneration, finish class/member
+  alias resolution for real iostream aliases (`char_type`, `iter_type`,
+  `iostate`, `__streambuf_type`, `__ostream_type`, `__ios_type`, and friends),
+  and replace the remaining `cout`/`cerr`/`clog` output surface with real
+  libstdc++ declarations/operators, not `stdio.h`/`FILE*` bridges.
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
   engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
   pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped

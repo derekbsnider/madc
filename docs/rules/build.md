@@ -33,5 +33,6 @@ The build used to link the manually installed asmjit v1.14 at
 Makefile to avoid the older apt-packaged copy. asmjit (the original
 x86-64 JIT) was removed: madc now lowers its AST to a `cir_node` C11 IR
 that c2mir compiles to MIR. The backend dependency is therefore the MIR
-library (libmir + c2mir) at `/workspace/mir`, and the old asmjit link
-flags no longer exist.
+library (libmir + c2mir) at `/workspace/mir`, on the madc fork's `develop`
+branch and pinned by the repo-root `MIR_COMMIT` file. The old asmjit link flags
+no longer exist.
