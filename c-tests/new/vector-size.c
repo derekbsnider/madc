@@ -2,10 +2,14 @@ typedef int v4si __attribute__ ((vector_size (16)));
 typedef int v2si __attribute__ ((vector_size (8)));
 typedef int v8si __attribute__ ((vector_size (32)));
 typedef unsigned int v4ui __attribute__ ((vector_size (16)));
+typedef float v2sf __attribute__ ((vector_size (8)));
 typedef float v4sf __attribute__ ((vector_size (16)));
+typedef float v8sf __attribute__ ((vector_size (32)));
 typedef long long v2di __attribute__ ((vector_size (16)));
 typedef long v2l __attribute__ ((vector_size (16)));
+typedef long v4l __attribute__ ((vector_size (32)));
 typedef double v2df __attribute__ ((__vector_size__ (16)));
+typedef double v4df __attribute__ ((__vector_size__ (32)));
 typedef signed char v16qi __attribute__ ((vector_size (16)));
 typedef unsigned char v16uqi __attribute__ ((vector_size (16)));
 typedef short v4hi __attribute__ ((vector_size (8)));
@@ -39,9 +43,15 @@ int main (void) {
   v4ui umd_a = {20u, 21u, 0xfffffff0u, 9u};
   v4ui umd_b = {3u, 4u, 8u, 2u};
   v4ui uc;
+  v2sf sf;
+  v2sf nfa = {1.0f, -2.0f};
+  v2sf nfb = {2.5f, 1.0f};
   v4sf vf;
   v4sf fa = {1.5f, -2.0f, 3.0f, -4.5f};
   v4sf fb = {0.5f, 4.0f, -1.0f, -1.5f};
+  v8sf wfa = {1.0f, 2.0f, -3.0f, 4.0f, 5.0f, -6.0f, 7.0f, 8.0f};
+  v8sf wfb = {0.5f, -1.0f, -3.0f, 2.0f, 10.0f, -12.0f, 1.0f, 16.0f};
+  v8sf wvf;
   v2di li = {-3, 4};
   v2di li2;
   v2df d = {1.25, 2.5};
@@ -50,6 +60,10 @@ int main (void) {
   v2df df_b = {3.5, -0.5};
   v2df df_c;
   v2l dm;
+  v4df wdf_a = {1.0, -2.0, 3.5, -4.5};
+  v4df wdf_b = {0.5, -1.0, 7.0, -1.5};
+  v4df wdf_c;
+  v4l wdm;
   v2di dshuffle = {-1, 0};
   v8hi hia = {1, -2, 300, -400, 5000, -6000, 32760, -32768};
   v8hi hib = {2, -3, -200, 100, -20, 30, 10, -1};
@@ -322,5 +336,33 @@ int main (void) {
   if (df_c[0] != 1.25 / 3.5 || df_c[1] != 5.0) return 111;
   dm = df_a >= df_b;
   if (dm[0] != 0 || dm[1] != 0) return 112;
+  sf = nfa + nfb;
+  if (sf[0] != 3.5f || sf[1] != -1.0f) return 113;
+  sf = nfa * 2.0f;
+  if (sf[0] != 2.0f || sf[1] != -4.0f) return 114;
+  sf = -nfa;
+  if (sf[0] != -1.0f || sf[1] != 2.0f) return 115;
+  small = nfa < nfb;
+  if (small[0] != -1 || small[1] != -1) return 116;
+  wvf = wfa - wfb;
+  if (wvf[0] != 0.5f || wvf[1] != 3.0f || wvf[2] != 0.0f || wvf[3] != 2.0f
+      || wvf[4] != -5.0f || wvf[5] != 6.0f || wvf[6] != 6.0f || wvf[7] != -8.0f)
+    return 117;
+  wvf = wfa / 2.0f;
+  if (wvf[0] != 0.5f || wvf[1] != 1.0f || wvf[2] != -1.5f || wvf[3] != 2.0f
+      || wvf[4] != 2.5f || wvf[5] != -3.0f || wvf[6] != 3.5f || wvf[7] != 4.0f)
+    return 118;
+  wide = wfa >= wfb;
+  if (wide[0] != -1 || wide[1] != -1 || wide[2] != -1 || wide[3] != -1
+      || wide[4] != 0 || wide[5] != -1 || wide[6] != -1 || wide[7] != 0)
+    return 119;
+  wdf_c = wdf_a + wdf_b;
+  if (wdf_c[0] != 1.5 || wdf_c[1] != -3.0 || wdf_c[2] != 10.5 || wdf_c[3] != -6.0)
+    return 120;
+  wdf_c = wdf_a / wdf_b;
+  if (wdf_c[0] != 2.0 || wdf_c[1] != 2.0 || wdf_c[2] != 0.5 || wdf_c[3] != 3.0)
+    return 121;
+  wdm = wdf_a != wdf_b;
+  if (wdm[0] != -1 || wdm[1] != -1 || wdm[2] != -1 || wdm[3] != -1) return 122;
   return 0;
 }

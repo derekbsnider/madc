@@ -5900,7 +5900,7 @@ static int v128_float_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   struct type *el_type;
   mir_size_t lane_size;
 
-  if (!v128_vector_type_p (c2m_ctx, type)) return FALSE;
+  if (!vector_type_p (type)) return FALSE;
   el_type = type->u.vector_type->el_type;
   lane_size = vector_lane_size (c2m_ctx, type);
   return floating_type_p (el_type) && (lane_size == 4 || lane_size == 8);
@@ -12588,7 +12588,7 @@ static op_t materialize_v128_float_operand (c2m_ctx_t c2m_ctx, op_t op, struct t
                                             struct type *vector_type) {
   if (!v128_float_vector_type_p (c2m_ctx, op_type))
     return scalar_to_v128_lane (c2m_ctx, op, op_type, vector_type);
-  return materialize_v128_operand (c2m_ctx, op, vector_type);
+  return materialize_vector_operand (c2m_ctx, op, vector_type);
 }
 
 static MIR_insn_code_t get_v128_float_arith_insn_code (c2m_ctx_t c2m_ctx, node_code_t code,
@@ -12666,7 +12666,7 @@ static op_t gen_v128_float_unary_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirabl
   MIR_type_t lane_type = get_mir_type (c2m_ctx, type->u.vector_type->el_type);
   mir_size_t lane_size = vector_lane_size (c2m_ctx, type);
   op_t op = val_gen (c2m_ctx, NL_HEAD (r->u.ops));
-  op_t src = materialize_v128_operand (c2m_ctx, op, type);
+  op_t src = materialize_vector_operand (c2m_ctx, op, type);
   op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
   MIR_insn_code_t neg_code = lane_type == MIR_T_F ? MIR_FNEG : MIR_DNEG;
 
