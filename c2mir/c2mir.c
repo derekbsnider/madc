@@ -6376,17 +6376,12 @@ static int supported_vector_lane_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   return arithmetic_type_p (type) && (size == 1 || size == 2 || size == 4 || size == 8);
 }
 
-static int v128_supported_lane_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
-  return supported_vector_lane_type_p (c2m_ctx, type);
-}
-
-static int v128_convertvector_type_p (c2m_ctx_t c2m_ctx, struct type *to_type,
-                                      struct type *from_type) {
-  if (!v128_vector_type_p (c2m_ctx, to_type) || !v128_vector_type_p (c2m_ctx, from_type))
-    return FALSE;
+static int convertvector_type_p (c2m_ctx_t c2m_ctx, struct type *to_type,
+                                 struct type *from_type) {
+  if (to_type->mode != TM_VECTOR || from_type->mode != TM_VECTOR) return FALSE;
   if (vector_el_count (c2m_ctx, to_type) != vector_el_count (c2m_ctx, from_type)) return FALSE;
-  return v128_supported_lane_type_p (c2m_ctx, to_type->u.vector_type->el_type)
-         && v128_supported_lane_type_p (c2m_ctx, from_type->u.vector_type->el_type);
+  return supported_vector_lane_type_p (c2m_ctx, to_type->u.vector_type->el_type)
+         && supported_vector_lane_type_p (c2m_ctx, from_type->u.vector_type->el_type);
 }
 
 static int shufflevector_type_p (c2m_ctx_t c2m_ctx, struct type *res_type, struct type *type1,
@@ -10260,7 +10255,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
             ret_type = to_decl_spec->type;
             if (ret_type->mode != TM_VECTOR || t2->mode != TM_VECTOR) {
               error (c2m_ctx, POS (r), "%s operands should be vector types", CONVERT_VECTOR);
-            } else if (!v128_convertvector_type_p (c2m_ctx, ret_type, t2)) {
+            } else if (!convertvector_type_p (c2m_ctx, ret_type, t2)) {
               error (c2m_ctx, POS (r), "unsupported vector types in %s", CONVERT_VECTOR);
             }
           }
@@ -13004,8 +12999,8 @@ static op_t gen_v128_float_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_
   return emit_v128_float_cmp_op (c2m_ctx, r->code, op1, type1, op2, type2, vector_type, type, dest);
 }
 
-static op_t emit_v128_convertvector (c2m_ctx_t c2m_ctx, op_t op, struct type *from_type,
-                                     struct type *to_type, op_t dest) {
+static op_t emit_convertvector (c2m_ctx_t c2m_ctx, op_t op, struct type *from_type,
+                                struct type *to_type, op_t dest) {
   MIR_type_t from_lane_type = get_mir_type (c2m_ctx, from_type->u.vector_type->el_type);
   MIR_type_t from_lane_reg_type = promoted_v128_lane_reg_type (from_lane_type);
   MIR_type_t to_lane_type = get_mir_type (c2m_ctx, to_type->u.vector_type->el_type);
@@ -13013,11 +13008,11 @@ static op_t emit_v128_convertvector (c2m_ctx_t c2m_ctx, op_t op, struct type *fr
   mir_size_t to_lane_size = vector_lane_size (c2m_ctx, to_type);
   mir_size_t n_el = vector_el_count (c2m_ctx, from_type);
 
-  assert (v128_convertvector_type_p (c2m_ctx, to_type, from_type));
-  op = materialize_v128_operand (c2m_ctx, op, from_type);
+  assert (convertvector_type_p (c2m_ctx, to_type, from_type));
+  op = materialize_vector_operand (c2m_ctx, op, from_type);
   for (mir_size_t i = 0; i < n_el; i++) {
-    op_t from_lane = v128_i32_lane_op (op, from_lane_type, i * from_lane_size);
-    op_t to_lane = v128_i32_lane_op (dest, to_lane_type, i * to_lane_size);
+    op_t from_lane = vector_lane_op (op, from_lane_type, i * from_lane_size);
+    op_t to_lane = vector_lane_op (dest, to_lane_type, i * to_lane_size);
     op_t lane_val = get_new_temp (c2m_ctx, from_lane_reg_type);
     op_t converted;
 
@@ -13028,7 +13023,7 @@ static op_t emit_v128_convertvector (c2m_ctx_t c2m_ctx, op_t op, struct type *fr
   return dest;
 }
 
-static op_t gen_v128_convertvector (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest) {
+static op_t gen_convertvector (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest) {
   node_t args = NL_EL (r->u.ops, 1);
   node_t value_arg = NL_HEAD (args->u.ops);
   struct type *to_type = ((struct expr *) r->attr)->type;
@@ -13036,7 +13031,7 @@ static op_t gen_v128_convertvector (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable
   op_t op = gen (c2m_ctx, value_arg, NULL, NULL, FALSE, NULL, NULL);
   op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, to_type);
 
-  return emit_v128_convertvector (c2m_ctx, op, from_type, to_type, dest);
+  return emit_convertvector (c2m_ctx, op, from_type, to_type, dest);
 }
 
 static op_t emit_shufflevector (c2m_ctx_t c2m_ctx, op_t op1, struct type *type1, op_t op2,
@@ -15458,7 +15453,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       break;
     }
     if (convertvector_p) {
-      res = gen_v128_convertvector (c2m_ctx, r, desirable_dest);
+      res = gen_convertvector (c2m_ctx, r, desirable_dest);
       break;
     }
     if (shuffle_p) {

@@ -2,6 +2,7 @@ typedef int v4si __attribute__ ((vector_size (16)));
 typedef int v1si __attribute__ ((vector_size (4)));
 typedef int v2si __attribute__ ((vector_size (8)));
 typedef int v8si __attribute__ ((vector_size (32)));
+typedef unsigned int v2ui __attribute__ ((vector_size (8)));
 typedef unsigned int v4ui __attribute__ ((vector_size (16)));
 typedef float v1sf __attribute__ ((vector_size (4)));
 typedef float v2sf __attribute__ ((vector_size (8)));
@@ -161,6 +162,12 @@ int main (void) {
   v2di li2;
   v2df d = {1.25, 2.5};
   v2df e = {3.5, 4.5};
+  v2si cv_i = {-1, 3};
+  v2ui cv_u;
+  v2sf cv_f;
+  v2si cv_back;
+  v4si cv_wi = {-1, 0, 1, 2};
+  v4df cv_wd;
   v2df df_a = {1.25, -2.5};
   v2df df_b = {3.5, -0.5};
   v2df df_c;
@@ -599,5 +606,13 @@ int main (void) {
   c = s < 0 ? a : b;
   if (c[0] != 9 || c[1] != 2 || c[2] != 3 || c[3] != 4) return 172;
   if ((s > 0 ? a : b)[2] != 3) return 173;
+  cv_u = __builtin_convertvector (cv_i, v2ui);
+  if (cv_u[0] != ~0u || cv_u[1] != 3u) return 174;
+  cv_f = __builtin_convertvector (cv_i, v2sf);
+  if (cv_f[0] != -1.0f || cv_f[1] != 3.0f) return 175;
+  cv_back = __builtin_convertvector (cv_f, v2si);
+  if (cv_back[0] != -1 || cv_back[1] != 3) return 176;
+  cv_wd = __builtin_convertvector (cv_wi, v4df);
+  if (cv_wd[0] != -1.0 || cv_wd[1] != 0.0 || cv_wd[2] != 1.0 || cv_wd[3] != 2.0) return 177;
   return 0;
 }
