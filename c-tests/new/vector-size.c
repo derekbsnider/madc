@@ -49,6 +49,10 @@ int main (void) {
   v8hi himask = {0, 9, 2, 11, 4, 13, 6, 15};
   v2si small;
   v8si wide;
+  v2si a2 = {11, 22};
+  v2si b2 = {33, 44};
+  v8si a8 = {1, 2, 3, 4, 5, 6, 7, 8};
+  v8si b8 = {9, 10, 11, 12, 13, 14, 15, 16};
   v4hi hsmall;
   v8hi hc;
   uint16x8_t uha = {1, 2, 65000, 65535, 128, 256, 1024, 32768};
@@ -281,5 +285,9 @@ int main (void) {
   if (sizeof (hsmall) != 8 || hsmall[0] != 1 || hsmall[1] != -3 || hsmall[2] != 300
       || hsmall[3] != 100)
     return 100;
+  c = __builtin_shufflevector (a2, b2, 0, 2, 1, 3);
+  if (c[0] != 11 || c[1] != 33 || c[2] != 22 || c[3] != 44) return 101;
+  c = __builtin_shufflevector (a8, b8, 0, 8, 7, 15);
+  if (c[0] != 1 || c[1] != 9 || c[2] != 8 || c[3] != 16) return 102;
   return 0;
 }
