@@ -40,9 +40,15 @@ static int classify_arg_1 (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t type
   MIR_type_t mir_type;
 
   if (type->mode == TM_VECTOR) {
-    if (top_level_p && v128_vector_type_p (c2m_ctx, type)) {
-      types[0] = MIR_T_V128;
-      return 1;
+    if (top_level_p) {
+      if (v64_vector_type_p (c2m_ctx, type)) {
+        types[0] = MIR_T_D; /* one SysV SSE eightbyte */
+        return 1;
+      }
+      if (v128_vector_type_p (c2m_ctx, type)) {
+        types[0] = MIR_T_V128;
+        return 1;
+      }
     }
     return 0;
   }

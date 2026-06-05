@@ -48,6 +48,35 @@ static int abi_check_f64 (v2df v) {
   return 0;
 }
 
+static v2si abi_add_v64_i32 (v2si a, v2si b) {
+  v2si r = {a[0] + b[0], a[1] + b[1]};
+  return r;
+}
+
+static int abi_sum_v64_i32 (v2si v) {
+  return v[0] * 10 + v[1];
+}
+
+static v2sf abi_add_v64_f32 (v2sf a, v2sf b) {
+  v2sf r = {a[0] + b[0], a[1] + b[1]};
+  return r;
+}
+
+static int abi_check_v64_f32 (v2sf v) {
+  if (v[0] != 4.5f) return 1;
+  if (v[1] != 6.5f) return 2;
+  return 0;
+}
+
+static v4hi abi_add_v64_i16 (v4hi a, v4hi b) {
+  v4hi r = {a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]};
+  return r;
+}
+
+static int abi_sum_v64_i16 (v4hi v) {
+  return v[0] * 1000 + v[1] * 100 + v[2] * 10 + v[3];
+}
+
 int main (void) {
   v4si a = {1, 2, 3, 4};
   v4si b = a;
@@ -98,6 +127,15 @@ int main (void) {
   v2df abi_da = {1.25, -2.5};
   v2df abi_db = {3.5, 0.5};
   v2df abi_dr;
+  v2si abi_v64_ia = {3, 4};
+  v2si abi_v64_ib = {5, 6};
+  v2si abi_v64_ir;
+  v2sf abi_v64_fa = {1.5f, 2.5f};
+  v2sf abi_v64_fb = {3.0f, 4.0f};
+  v2sf abi_v64_fr;
+  v4hi abi_v64_ha = {1, 2, 3, 4};
+  v4hi abi_v64_hb = {5, 6, 7, 8};
+  v4hi abi_v64_hr;
   v2l dm;
   v4df wdf_a = {1.0, -2.0, 3.5, -4.5};
   v4df wdf_b = {0.5, -1.0, 7.0, -1.5};
@@ -410,5 +448,15 @@ int main (void) {
   if (abi_check_f32 (abi_fr) != 0) return 125;
   abi_dr = abi_add_f64 (abi_da, abi_db);
   if (abi_check_f64 (abi_dr) != 0) return 126;
+  abi_v64_ir = abi_add_v64_i32 (abi_v64_ia, abi_v64_ib);
+  if (abi_v64_ir[0] != 8 || abi_v64_ir[1] != 10) return 127;
+  if (abi_sum_v64_i32 (abi_v64_ir) != 90) return 128;
+  abi_v64_fr = abi_add_v64_f32 (abi_v64_fa, abi_v64_fb);
+  if (abi_check_v64_f32 (abi_v64_fr) != 0) return 129;
+  abi_v64_hr = abi_add_v64_i16 (abi_v64_ha, abi_v64_hb);
+  if (abi_v64_hr[0] != 6 || abi_v64_hr[1] != 8 || abi_v64_hr[2] != 10
+      || abi_v64_hr[3] != 12)
+    return 130;
+  if (abi_sum_v64_i16 (abi_v64_hr) != 6912) return 131;
   return 0;
 }
