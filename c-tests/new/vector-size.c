@@ -173,6 +173,12 @@ int main (void) {
   v2di li_shift_c;
   v2udi uli_shift_a = {0x1000000000000000ULL, 16ULL};
   v2udi uli_shift_c;
+  v2di li_cmp_a = {0x100000000LL, -7};
+  v2di li_cmp_b = {0x100000000LL, 9};
+  v2di li_cmp_c;
+  v2udi uli_cmp_a = {0xfffffffffffffff0ULL, 20ULL};
+  v2udi uli_cmp_b = {0xfffffffffffffff0ULL, 7ULL};
+  v2udi uli_cmp_c;
   v2df d = {1.25, 2.5};
   v2df e = {3.5, 4.5};
   v2si cv_i = {-1, 3};
@@ -748,5 +754,17 @@ int main (void) {
   li_shift_c = li_shift_neg;
   li_shift_c >>= 1;
   if (li_shift_c[0] != -4 || li_shift_c[1] != 0x80000000LL) return 218;
+  li_cmp_c = li_cmp_a == li_cmp_b;
+  if (li_cmp_c[0] != -1 || li_cmp_c[1] != 0) return 219;
+  li_cmp_c = li_cmp_a != li_cmp_b;
+  if (li_cmp_c[0] != 0 || li_cmp_c[1] != -1) return 220;
+  uli_cmp_c = uli_cmp_a == uli_cmp_b;
+  if (uli_cmp_c[0] != 0xffffffffffffffffULL || uli_cmp_c[1] != 0) return 221;
+  uli_cmp_c = uli_cmp_a != uli_cmp_b;
+  if (uli_cmp_c[0] != 0 || uli_cmp_c[1] != 0xffffffffffffffffULL) return 222;
+  li_cmp_c = li_cmp_a < li_cmp_b;
+  if (li_cmp_c[0] != 0 || li_cmp_c[1] != -1) return 223;
+  uli_cmp_c = uli_cmp_a > uli_cmp_b;
+  if (uli_cmp_c[0] != 0 || uli_cmp_c[1] != 0xffffffffffffffffULL) return 224;
   return 0;
 }

@@ -12574,6 +12574,8 @@ static op_t emit_v128_i32_lane_cmp_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t
   MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
   MIR_type_t lane_reg_type = promoted_v128_lane_reg_type (lane_type);
   mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
+  MIR_type_t cmp_type = lane_size == 8 ? MIR_T_I64 : MIR_T_I32;
+  MIR_insn_code_t mask_insn_code = lane_size == 8 ? MIR_SUB : MIR_SUBS;
 
   assert (supported_integer_vector_lane_size_p (lane_size));
   op1 = materialize_integer_vector_operand (c2m_ctx, op1, type1, vector_type);
@@ -12585,12 +12587,12 @@ static op_t emit_v128_i32_lane_cmp_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t
     op_t dest_lane = v128_i32_lane_op (dest, lane_type, offset);
     op_t lane_val1 = get_new_temp (c2m_ctx, lane_reg_type);
     op_t lane_val2 = get_new_temp (c2m_ctx, lane_reg_type);
-    op_t cmp = get_new_temp (c2m_ctx, MIR_T_I32);
+    op_t cmp = get_new_temp (c2m_ctx, cmp_type);
 
     emit2 (c2m_ctx, tp_mov (lane_reg_type), lane_val1.mir_op, lane1.mir_op);
     emit2 (c2m_ctx, tp_mov (lane_reg_type), lane_val2.mir_op, lane2.mir_op);
     emit3 (c2m_ctx, insn_code, cmp.mir_op, lane_val1.mir_op, lane_val2.mir_op);
-    emit3 (c2m_ctx, MIR_SUBS, cmp.mir_op, MIR_new_int_op (ctx, 0), cmp.mir_op);
+    emit3 (c2m_ctx, mask_insn_code, cmp.mir_op, MIR_new_int_op (ctx, 0), cmp.mir_op);
     emit_scalar_assign (c2m_ctx, dest_lane, &cmp, lane_type, FALSE);
   }
   return dest;
