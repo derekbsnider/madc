@@ -101,15 +101,17 @@ typedef enum {
   REP5 (INSN_EL, NEG, NEGS, FNEG, DNEG, LDNEG),     /* Changing sign */
   REP4 (INSN_EL, ADDR, ADDR8, ADDR16, ADDR32), /* reg addr in natural mode or given integer mode */
   /* 3 operand insn: */
-  REP7 (INSN_EL, ADD, ADDS, FADD, DADD, LDADD, VADDI32, VADDF32), /* Addition */
-  REP7 (INSN_EL, SUB, SUBS, FSUB, DSUB, LDSUB, VSUBI32, VSUBF32), /* Subtraction */
-  REP6 (INSN_EL, MUL, MULS, FMUL, DMUL, LDMUL, VMULF32),          /* Multiplication */
+  REP8 (INSN_EL, ADD, ADDS, FADD, DADD, LDADD, VADDI32, VADDF32, VADDF64), /* Addition */
+  REP8 (INSN_EL, SUB, SUBS, FSUB, DSUB, LDSUB, VSUBI32, VSUBF32, VSUBF64), /* Subtraction */
+  REP7 (INSN_EL, MUL, MULS, FMUL, DMUL, LDMUL, VMULF32, VMULF64), /* Multiplication */
   REP8 (INSN_EL, DIV, DIVS, UDIV, UDIVS, FDIV, DDIV, LDDIV, VDIVF32), /* Division */
+  INSN_EL (VDIVF64),
   REP4 (INSN_EL, MOD, MODS, UMOD, UMODS),                    /* Modulo */
   REP6 (INSN_EL, AND, ANDS, OR, ORS, XOR, XORS),             /* Logical */
   REP3 (INSN_EL, VAND, VOR, VXOR),                           /* Vector logical */
   REP6 (INSN_EL, LSH, LSHS, RSH, RSHS, URSH, URSHS),         /* Right signed/unsigned shift */
-  REP6 (INSN_EL, VEQI32, VGTI32, VEQF32, VNEF32, VLTF32, VLEF32), /* Vector comparison */
+  REP8 (INSN_EL, VEQI32, VGTI32, VEQF32, VNEF32, VLTF32, VLEF32, VEQF64, VNEF64),
+  REP2 (INSN_EL, VLTF64, VLEF64), /* Vector comparison */
   REP5 (INSN_EL, EQ, EQS, FEQ, DEQ, LDEQ),                   /* Equality */
   REP5 (INSN_EL, NE, NES, FNE, DNE, LDNE),                   /* Inequality */
   REP7 (INSN_EL, LT, LTS, ULT, ULTS, FLT, DLT, LDLT),        /* Less then */

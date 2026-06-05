@@ -534,5 +534,25 @@ int main (void) {
   if (c[0] != -1 || c[1] != 0 || c[2] != -1 || c[3] != 0) return 142;
   c = fa >= fb;
   if (c[0] != -1 || c[1] != 0 || c[2] != -1 || c[3] != 0) return 143;
+  df_c = df_a + df_b;
+  if (df_c[0] != 4.75 || df_c[1] != -3.0) return 144;
+  df_c = df_a - df_b;
+  if (df_c[0] != -2.25 || df_c[1] != -2.0) return 145;
+  df_c = df_a * df_b;
+  if (df_c[0] != 4.375 || df_c[1] != 1.25) return 146;
+  df_c = df_a / df_b;
+  if (df_c[0] != 1.25 / 3.5 || df_c[1] != 5.0) return 147;
+  dm = df_a == df_a;
+  if (dm[0] != -1 || dm[1] != -1) return 148;
+  dm = df_a != df_b;
+  if (dm[0] != -1 || dm[1] != -1) return 149;
+  dm = df_a < df_b;
+  if (dm[0] != -1 || dm[1] != -1) return 150;
+  dm = df_a <= df_b;
+  if (dm[0] != -1 || dm[1] != -1) return 151;
+  dm = df_b > df_a;
+  if (dm[0] != -1 || dm[1] != -1) return 152;
+  dm = df_b >= df_a;
+  if (dm[0] != -1 || dm[1] != -1) return 153;
   return 0;
 }
