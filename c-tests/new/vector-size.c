@@ -13,6 +13,8 @@ int main (void) {
   v4si m = {0x0f, 0xf0, 0x33, 0x55};
   v4si n = {0x33, 0x55, 0x0f, 0xf0};
   v4si sh = {1, 2, 1, 3};
+  v4si shuffle1 = {-1, -2, 1, 0};
+  v4si shuffle2 = {0, 5, -2, 7};
   v4si pos = {1, 8, 16, 7};
   v4si neg = {-1, 0, 1, 2};
   v4si negsh = {-8, -16, 8, -1};
@@ -22,6 +24,7 @@ int main (void) {
   v4ui ua = {1u, 2u, 3u, 4u};
   v4ui ub = {1u, 7u, 3u, 9u};
   v4ui ush = {1u, 1u, 4u, 2u};
+  v4ui ushuffle = {8u, 9u, 0xffffffffu, 3u};
   v4ui usrc = {1u, 0x80000000u, 0xffffffffu, 16u};
   v4ui ux = {0u, 1u, 0x80000000u, 0xffffffffu};
   v4ui uy = {1u, 1u, 0x7fffffffu, 0xffffffffu};
@@ -32,6 +35,8 @@ int main (void) {
   v2di li = {-3, 4};
   v2di li2;
   v2df d = {1.25, 2.5};
+  v2df e = {3.5, 4.5};
+  v2di dshuffle = {-1, 0};
   int s = 7;
   unsigned int u = 0xff;
 
@@ -185,5 +190,13 @@ int main (void) {
   if (li2[0] != -3 || li2[1] != 4) return 68;
   d = __builtin_shufflevector (d, d, 1, 0);
   if (d[0] != 4.0 || d[1] != -3.0) return 69;
+  c = __builtin_shuffle (a, shuffle1);
+  if (c[0] != 4 || c[1] != 3 || c[2] != 2 || c[3] != 1) return 70;
+  c = __builtin_shuffle (md_a, md_b, shuffle2);
+  if (c[0] != 6 || c[1] != 3 || c[2] != -5 || c[3] != -4) return 71;
+  uc = __builtin_shuffle (ua, ub, ushuffle);
+  if (uc[0] != 1u || uc[1] != 2u || uc[2] != 9u || uc[3] != 4u) return 72;
+  d = __builtin_shuffle (d, e, dshuffle);
+  if (d[0] != 4.5 || d[1] != 4.0) return 73;
   return 0;
 }
