@@ -163,6 +163,10 @@ User-visible language features stay on the c2mir path so they also flow through
   (+ per-target codegen) and a c2mir `vector_size` front-end — **designed for
   upstream** (it enables MIR's own WASM→MIR goal, since WASM has SIMD).
   Interim: scalarize for the JIT, emit-C → gcc/clang for real SIMD (AOT).
+  2026-06-05 checkpoint: `/workspace/mir` branch
+  `feature/simd-vector-support-codex` commit `6257780` adds the first
+  memory-backed c2mir `vector_size` type slice, but the actual MIR vector
+  type/opcode/register/interpreter/codegen/ABI core remains open.
 - **~2× compile latency** vs direct-MIR. Accepted for batch/JIT; the
   interactive tier is addressed by the hybrid interpreter seam.
 - **Coverage regression during the transition** (master 419 pass → develop's

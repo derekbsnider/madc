@@ -94,7 +94,7 @@ high-level" — the answer is both.**
 | 1.3 | **CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity** | ongoing | **Active — the parity-to-master gate** (486 pass / 4 fail / 1 timeout / 55 skip; gcc-torture 1565/1685 = 92.9% vs asmjit 97.6%) | — |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
-| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **Planned (raise the floor)** — design for **upstream** to vnmakarov/mir | — |
+| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **In progress (raise the floor)** — first memory-backed c2mir `vector_size` slice is on MIR branch `feature/simd-vector-support-codex` at `6257780`; real MIR vectors still open; design for **upstream** to vnmakarov/mir | — |
 
 **Track 1.6 (SIMD) raises the *floor*, not just c2mir.** MIR today has no vector
 type/insns (locals are `i64/f/d/ld` only), so real SIMD-in-JIT requires adding
@@ -107,6 +107,14 @@ torture tests). Keep it a **minimal generic-vector core** to fit MIR's
 lightweight ethos. Interim until it lands: madc **scalarizes** for the JIT and
 **emit-C → gcc/clang** for real SIMD (AOT). Feeds Track 6.2 (macOS NEON). See
 the lowering-vs-raising rule (`.claude/rules/`) and ADR 0001.
+
+2026-06-05 checkpoint: `/workspace/mir` branch
+`feature/simd-vector-support-codex` commit `6257780` adds a first c2mir
+front-end slice with distinct memory-backed GNU `vector_size` types, brace
+initialization, scalar indexing/lvalue writes, block copy, and memory-shaped
+param/return plumbing. That checkpoint is validated in the MIR fork but is not
+yet pinned by madc's `MIR_COMMIT`; remaining work is the actual MIR vector
+type/opcode/register/interpreter/codegen/ABI core.
 
 **Track 1.3 is the central workstream.** It is the sole backend, so its
 coverage *is* the bar for promoting `develop → master`. SMAUG 1.8 now boots,

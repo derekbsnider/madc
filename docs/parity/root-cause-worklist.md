@@ -8,7 +8,13 @@ per-class compiler/runtime branches. Immediate release prep is warning-clean
 validation followed by clearing the remaining integration reds/timeouts. Beyond
 that, the largest parity bucket remains the SIMD/vector_size floor gap: it
 belongs in the c2mir + MIR framework and the `/workspace/mir` fork, as described
-below and in ADR 0001.
+below and in ADR 0001. First checkpoint: MIR fork branch
+`feature/simd-vector-support-codex` commit `6257780` now has a memory-backed
+c2mir `vector_size` front-end slice (type identity, size/alignment, brace init,
+scalar indexing/lvalue writes, block copy, and memory-shaped call plumbing).
+That does not close the SIMD bucket; real MIR vector types/opcodes/registers,
+interpreter/codegen lane operations, and ABI-accurate vector passing/returns
+remain open.
 
 ## 2026-06-02 c2mir-BUG SWEEP (method: gcc + clang + stock c2m on every fail). User directive: BUGS before features; MIR-machine work last.
 

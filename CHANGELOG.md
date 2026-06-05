@@ -18,6 +18,26 @@ out, 55 skipped**. The next validation goal is driving the remaining fulltest
 reds/timeouts to green; the largest longer-running parity bucket remains the
 documented SIMD/vector_size work in c2mir and the `/workspace/mir` fork.
 
+### Added — MIR fork `vector_size` front-end checkpoint (2026-06-05)
+
+The `/workspace/mir` branch `feature/simd-vector-support-codex` now has
+checkpoint `6257780`, adding a first c2mir GNU `vector_size` slice with a
+distinct memory-backed vector type. It covers vector type identity,
+size/alignment, brace initialization, scalar subscript reads/writes, block
+copy/assignment, and memory-shaped parameter/return plumbing, with
+`c-tests/new/vector-size.c` covering the path.
+
+This is intentionally **not** the completed Track 1.6 SIMD raise. MIR still
+needs real vector types/opcodes/register allocation, interpreter/codegen lane
+operations, and ABI-accurate SIMD argument/return handling before the
+SIMD/vector_size parity bucket can be called closed. madc's `MIR_COMMIT`
+remains pinned to fork `develop` at `8864a73` until the MIR branch is ready to
+merge and consume from madc.
+
+Validation in `/workspace/mir`: `make`, strict `c2mir/c2mir.c` warning compile,
+targeted interp/gen/gcc vector regression runs, `make c2mir-interp-test`,
+`make c2mir-gen-test`, and top-level `make test` all passed.
+
 ### Fixed — generic real-header parser/PCH checkpoint (2026-06-05)
 
 Real-header parsing now handles class-scope aliases/static member types,
