@@ -3655,6 +3655,7 @@ static macro_call_t try_param_macro_call (c2m_ctx_t c2m_ctx, macro_t m, token_t 
 #define CONVERT_VECTOR "__builtin_convertvector"
 #define SHUFFLE "__builtin_shuffle"
 #define SHUFFLE_VECTOR "__builtin_shufflevector"
+#define VECTOR_ELEMENTS "__builtin_vectorelements"
 #define JCALL "__builtin_jcall"
 #define JRET "__builtin_jret"
 #define PROP_SET "__builtin_prop_set"
@@ -4264,6 +4265,11 @@ DA (post_expr_part) {
           op_append (c2m_ctx, list, r);
           PT (',');
           P (type_name);
+          op_append (c2m_ctx, list, r);
+        }
+      } else if (op->code == N_ID && strcmp (op->u.s.s, VECTOR_ELEMENTS) == 0) {
+        if (!C (')')) {
+          if ((r = TRY (type_name)) == err_node) P (assign_expr);
           op_append (c2m_ctx, list, r);
         }
       } else if (!C (')')) {
@@ -5867,12 +5873,27 @@ static int v128_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   return type->mode == TM_VECTOR && raw_type_size (c2m_ctx, type) == 16;
 }
 
+static mir_size_t vector_lane_size (c2m_ctx_t c2m_ctx, struct type *type) {
+  assert (type->mode == TM_VECTOR);
+  return raw_type_size (c2m_ctx, type->u.vector_type->el_type);
+}
+
+static int supported_integer_vector_lane_size_p (mir_size_t lane_size) {
+  return lane_size == 1 || lane_size == 2 || lane_size == 4 || lane_size == 8;
+}
+
 static int v128_i32_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   struct type *el_type;
+  mir_size_t lane_size;
 
   if (!v128_vector_type_p (c2m_ctx, type)) return FALSE;
   el_type = type->u.vector_type->el_type;
-  return integer_type_p (el_type) && raw_type_size (c2m_ctx, el_type) == 4;
+  lane_size = vector_lane_size (c2m_ctx, type);
+  return integer_type_p (el_type) && supported_integer_vector_lane_size_p (lane_size);
+}
+
+static int v128_i32_packed_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  return v128_i32_vector_type_p (c2m_ctx, type) && vector_lane_size (c2m_ctx, type) == 4;
 }
 
 static int aggregate_type_p (const struct type *type) {
@@ -6188,13 +6209,25 @@ static int scalar_fits_v128_i32_lane_p (c2m_ctx_t c2m_ctx, struct type *vector_t
   if (!v128_i32_vector_type_p (c2m_ctx, vector_type) || !integer_type_p (scalar_type))
     return FALSE;
   el_type = vector_type->u.vector_type->el_type;
-  el_size = raw_type_size (c2m_ctx, el_type);
+  el_size = vector_lane_size (c2m_ctx, vector_type);
   scalar_size = raw_type_size (c2m_ctx, scalar_type);
   if (scalar_size <= el_size) return TRUE;
-  if (!scalar_expr->const_p || el_size != 4) return FALSE;
-  if (signed_integer_type_p (scalar_type))
-    return scalar_expr->c.i_val >= MIR_INT_MIN && scalar_expr->c.i_val <= MIR_INT_MAX;
-  return scalar_expr->c.u_val <= MIR_UINT_MAX;
+  if (!scalar_expr->const_p) return FALSE;
+  if (signed_integer_type_p (el_type)) {
+    mir_llong min = (el_size == 8 ? MIR_LLONG_MIN : -((mir_llong) 1 << (el_size * 8 - 1)));
+    mir_llong max = (el_size == 8 ? MIR_LLONG_MAX : ((mir_llong) 1 << (el_size * 8 - 1)) - 1);
+    mir_ullong umax = (el_size == 8 ? MIR_ULLONG_MAX : ((mir_ullong) 1 << (el_size * 8)) - 1);
+
+    return signed_integer_type_p (scalar_type)
+             ? scalar_expr->c.i_val >= min && scalar_expr->c.i_val <= max
+             : scalar_expr->c.u_val <= umax;
+  } else {
+    mir_ullong max = (el_size == 8 ? MIR_ULLONG_MAX : ((mir_ullong) 1 << (el_size * 8)) - 1);
+
+    return signed_integer_type_p (scalar_type)
+             ? scalar_expr->c.i_val >= 0 && (mir_ullong) scalar_expr->c.i_val <= max
+             : scalar_expr->c.u_val <= max;
+  }
 }
 
 static struct type *v128_i32_bin_op_vector_type (c2m_ctx_t c2m_ctx, struct type *type1,
@@ -6235,7 +6268,7 @@ static mir_size_t vector_el_count (c2m_ctx_t c2m_ctx, struct type *type) {
 static int v128_supported_lane_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   mir_size_t size = raw_type_size (c2m_ctx, type);
 
-  return arithmetic_type_p (type) && (size == 4 || size == 8);
+  return arithmetic_type_p (type) && (size == 1 || size == 2 || size == 4 || size == 8);
 }
 
 static int v128_convertvector_type_p (c2m_ctx_t c2m_ctx, struct type *to_type,
@@ -6270,7 +6303,7 @@ static int v128_shuffle_type_p (c2m_ctx_t c2m_ctx, struct type *type1, struct ty
   mask_el_type = mask_type->u.vector_type->el_type;
   mask_lane_size = raw_type_size (c2m_ctx, mask_el_type);
   return v128_supported_lane_type_p (c2m_ctx, type1->u.vector_type->el_type)
-         && integer_type_p (mask_el_type) && (mask_lane_size == 4 || mask_lane_size == 8)
+         && integer_type_p (mask_el_type) && supported_integer_vector_lane_size_p (mask_lane_size)
          && vector_el_count (c2m_ctx, type1) == vector_el_count (c2m_ctx, mask_type);
 }
 
@@ -9979,6 +10012,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     int add_overflow_p = FALSE, sub_overflow_p = FALSE, mul_overflow_p = FALSE, expect_p = FALSE;
     int convertvector_p = FALSE, shuffle_p = FALSE, shufflevector_p = FALSE;
     int jcall_p = FALSE, jret_p = FALSE, prop_set_p = FALSE, prop_eq_p = FALSE, prop_ne_p = FALSE;
+    int vectorelements_p = FALSE;
+    mir_size_t vectorelements_count = 0;
 
     op1 = NL_HEAD (r->u.ops);
     if (op1->code == N_ID) {
@@ -9990,6 +10025,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       convertvector_p = strcmp (op1->u.s.s, CONVERT_VECTOR) == 0;
       shuffle_p = strcmp (op1->u.s.s, SHUFFLE) == 0;
       shufflevector_p = strcmp (op1->u.s.s, SHUFFLE_VECTOR) == 0;
+      vectorelements_p = strcmp (op1->u.s.s, VECTOR_ELEMENTS) == 0;
       jcall_p = strcmp (op1->u.s.s, JCALL) == 0;
       jret_p = strcmp (op1->u.s.s, JRET) == 0;
       prop_set_p = strcmp (op1->u.s.s, PROP_SET) == 0;
@@ -10000,7 +10036,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       va_arg_p = str_eq_p (op1->u.s.s, BUILTIN_VA_ARG);
       va_start_p = str_eq_p (op1->u.s.s, BUILTIN_VA_START);
       if (!va_arg_p && !va_start_p && !alloca_p && !convertvector_p && !shuffle_p
-          && !shufflevector_p) {
+          && !shufflevector_p && !vectorelements_p) {
         /* N_SPEC_DECL (N_SHARE (N_LIST (N_INT)), N_DECL (N_ID, N_FUNC (N_LIST)), N_IGNORE,
            N_IGNORE, N_IGNORE) */
         spec_list = new_node (c2m_ctx, N_LIST);
@@ -10023,8 +10059,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     }
     builtin_call_p = alloca_p || va_arg_p || va_start_p || add_overflow_p || sub_overflow_p
                      || mul_overflow_p || expect_p || convertvector_p || shuffle_p
-                     || shufflevector_p || jcall_p || jret_p || prop_set_p || prop_eq_p
-                     || prop_ne_p;
+                     || shufflevector_p || vectorelements_p || jcall_p || jret_p || prop_set_p
+                     || prop_eq_p || prop_ne_p;
     if (!builtin_call_p || jcall_p) VARR_PUSH (node_t, call_nodes, r);
     arg_list = NL_NEXT (op1);
     if (builtin_call_p) {
@@ -10055,6 +10091,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
               || (shuffle_p && NL_LENGTH (arg_list->u.ops) != 2
                   && NL_LENGTH (arg_list->u.ops) != 3)
               || (shufflevector_p && NL_LENGTH (arg_list->u.ops) < 3)
+              || (vectorelements_p && NL_LENGTH (arg_list->u.ops) != 1)
               || (jret_p && NL_LENGTH (arg_list->u.ops) != 1)
               || (va_arg_p && NL_LENGTH (arg_list->u.ops) != 2)
               || (prop_set_p && NL_LENGTH (arg_list->u.ops) != 2)
@@ -10062,7 +10099,26 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
         error (c2m_ctx, POS (op1), "wrong number of arguments in %s call", op1->u.s.s);
       } else {
         /* first argument type ??? */
-        if (convertvector_p) {
+        if (vectorelements_p) {
+          struct type *vector_type;
+
+          arg = NL_HEAD (arg_list->u.ops);
+          if (arg->code == N_TYPE) {
+            decl_spec = arg->attr;
+            vector_type = decl_spec->type;
+          } else {
+            e1 = arg->attr;
+            vector_type = e1->type;
+          }
+          res_type.u.basic_type = TP_INT;
+          ret_type = &res_type;
+          if (vector_type->mode != TM_VECTOR) {
+            error (c2m_ctx, POS (arg), "argument of %s should be a vector type",
+                   VECTOR_ELEMENTS);
+          } else {
+            vectorelements_count = vector_el_count (c2m_ctx, vector_type);
+          }
+        } else if (convertvector_p) {
           node_t type_arg = NL_EL (arg_list->u.ops, 1);
           struct decl_spec *to_decl_spec;
 
@@ -10223,6 +10279,10 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     e = create_expr (c2m_ctx, r);
     *e->type = *ret_type;
     e->builtin_call_p = builtin_call_p;
+    if (vectorelements_p && vectorelements_count != 0) {
+      e->const_p = TRUE;
+      e->c.i_val = (mir_llong) vectorelements_count;
+    }
     if ((ret_type->mode != TM_BASIC || ret_type->u.basic_type != TP_VOID)
         && incomplete_type_p (c2m_ctx, ret_type)) {
       error (c2m_ctx, POS (r), "function return type is incomplete");
@@ -12068,11 +12128,11 @@ static op_t vector_temp (c2m_ctx_t c2m_ctx, struct type *type) {
 static op_t scalar_to_v128_i32 (c2m_ctx_t c2m_ctx, op_t scalar, struct type *scalar_type,
                                 struct type *vector_type) {
   MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
-  mir_size_t lane_size = raw_type_size (c2m_ctx, vector_type->u.vector_type->el_type);
+  mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
   op_t res = vector_temp (c2m_ctx, vector_type);
   op_t lane_val = cast (c2m_ctx, scalar, lane_type, TRUE);
 
-  assert (lane_size == 4 && integer_type_p (scalar_type));
+  assert (supported_integer_vector_lane_size_p (lane_size) && integer_type_p (scalar_type));
   for (mir_size_t offset = 0; offset < raw_type_size (c2m_ctx, vector_type); offset += lane_size) {
     op_t lane = res, val = lane_val;
 
@@ -12138,6 +12198,13 @@ static op_t v128_i32_lane_op (op_t vector, MIR_type_t lane_type, mir_size_t offs
   return lane;
 }
 
+static MIR_type_t promoted_v128_lane_reg_type (MIR_type_t lane_type) {
+  return (lane_type == MIR_T_I8 || lane_type == MIR_T_U8 || lane_type == MIR_T_I16
+          || lane_type == MIR_T_U16
+            ? promote_mir_int_type (lane_type)
+            : lane_type);
+}
+
 static op_t const_v128_i32 (c2m_ctx_t c2m_ctx, struct type *vector_type, mir_int val) {
   MIR_context_t ctx = c2m_ctx->ctx;
   op_t scalar = new_op (NULL, MIR_new_int_op (ctx, val));
@@ -12174,6 +12241,63 @@ static op_t emit_v128_i32_gt_op (c2m_ctx_t c2m_ctx, op_t op1, struct type *type1
                                vector_type, vector_type, dest);
 }
 
+static MIR_insn_code_t get_v128_i32_cmp_insn_code (c2m_ctx_t c2m_ctx, node_code_t code,
+                                                   struct type *vector_type) {
+  MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
+  MIR_type_t op_type = promote_mir_int_type (lane_type);
+  int signed_p = signed_integer_type_p (vector_type->u.vector_type->el_type);
+
+  assert (op_type == MIR_T_I32 || op_type == MIR_T_U32 || op_type == MIR_T_I64
+          || op_type == MIR_T_U64);
+  switch (code) {
+  case N_EQ: return op_type == MIR_T_I64 || op_type == MIR_T_U64 ? MIR_EQ : MIR_EQS;
+  case N_NE: return op_type == MIR_T_I64 || op_type == MIR_T_U64 ? MIR_NE : MIR_NES;
+  case N_LT:
+    return op_type == MIR_T_I64 || op_type == MIR_T_U64 ? (signed_p ? MIR_LT : MIR_ULT)
+                                                        : (signed_p ? MIR_LTS : MIR_ULTS);
+  case N_LE:
+    return op_type == MIR_T_I64 || op_type == MIR_T_U64 ? (signed_p ? MIR_LE : MIR_ULE)
+                                                        : (signed_p ? MIR_LES : MIR_ULES);
+  case N_GT:
+    return op_type == MIR_T_I64 || op_type == MIR_T_U64 ? (signed_p ? MIR_GT : MIR_UGT)
+                                                        : (signed_p ? MIR_GTS : MIR_UGTS);
+  case N_GE:
+    return op_type == MIR_T_I64 || op_type == MIR_T_U64 ? (signed_p ? MIR_GE : MIR_UGE)
+                                                        : (signed_p ? MIR_GES : MIR_UGES);
+  default: assert (FALSE); return MIR_INSN_BOUND;
+  }
+}
+
+static op_t emit_v128_i32_lane_cmp_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op1,
+                                       struct type *type1, op_t op2, struct type *type2,
+                                       struct type *vector_type, op_t dest) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  MIR_insn_code_t insn_code = get_v128_i32_cmp_insn_code (c2m_ctx, code, vector_type);
+  MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
+  MIR_type_t lane_reg_type = promoted_v128_lane_reg_type (lane_type);
+  mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
+
+  assert (supported_integer_vector_lane_size_p (lane_size));
+  op1 = materialize_v128_i32_operand (c2m_ctx, op1, type1, vector_type);
+  op2 = materialize_v128_i32_operand (c2m_ctx, op2, type2, vector_type);
+  for (mir_size_t offset = 0; offset < raw_type_size (c2m_ctx, vector_type);
+       offset += lane_size) {
+    op_t lane1 = v128_i32_lane_op (op1, lane_type, offset);
+    op_t lane2 = v128_i32_lane_op (op2, lane_type, offset);
+    op_t dest_lane = v128_i32_lane_op (dest, lane_type, offset);
+    op_t lane_val1 = get_new_temp (c2m_ctx, lane_reg_type);
+    op_t lane_val2 = get_new_temp (c2m_ctx, lane_reg_type);
+    op_t cmp = get_new_temp (c2m_ctx, MIR_T_I32);
+
+    emit2 (c2m_ctx, tp_mov (lane_reg_type), lane_val1.mir_op, lane1.mir_op);
+    emit2 (c2m_ctx, tp_mov (lane_reg_type), lane_val2.mir_op, lane2.mir_op);
+    emit3 (c2m_ctx, insn_code, cmp.mir_op, lane_val1.mir_op, lane_val2.mir_op);
+    emit3 (c2m_ctx, MIR_SUBS, cmp.mir_op, MIR_new_int_op (ctx, 0), cmp.mir_op);
+    emit_scalar_assign (c2m_ctx, dest_lane, &cmp, lane_type, FALSE);
+  }
+  return dest;
+}
+
 static op_t gen_v128_i32_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest) {
   node_code_t code = r->code;
   struct type *type = ((struct expr *) r->attr)->type;
@@ -12183,6 +12307,9 @@ static op_t gen_v128_i32_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_de
   op_t op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
   op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
   op_t cmp_dest, all_ones;
+
+  if (!v128_i32_packed_vector_type_p (c2m_ctx, type))
+    return emit_v128_i32_lane_cmp_op (c2m_ctx, code, op1, type1, op2, type2, type, dest);
 
   if (code == N_EQ)
     return emit_v128_i32_bin_op (c2m_ctx, MIR_VEQI32, op1, type1, op2, type2, type, dest);
@@ -12204,6 +12331,10 @@ static op_t gen_v128_i32_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_de
   return emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, cmp_dest, type, all_ones, type, type, dest);
 }
 
+static op_t emit_v128_i32_arith_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op1,
+                                    struct type *type1, op_t op2, struct type *type2,
+                                    struct type *vector_type, op_t dest);
+
 static op_t gen_v128_i32_unary_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest) {
   struct type *type = ((struct expr *) r->attr)->type;
   op_t op = val_gen (c2m_ctx, NL_HEAD (r->u.ops));
@@ -12216,7 +12347,9 @@ static op_t gen_v128_i32_unary_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_
   } else if (r->code == N_SUB) {
     op_t zero = const_v128_i32 (c2m_ctx, type, 0);
 
-    return emit_v128_i32_bin_op (c2m_ctx, MIR_VSUBI32, zero, type, op, type, type, dest);
+    if (v128_i32_packed_vector_type_p (c2m_ctx, type))
+      return emit_v128_i32_bin_op (c2m_ctx, MIR_VSUBI32, zero, type, op, type, type, dest);
+    return emit_v128_i32_arith_op (c2m_ctx, N_SUB, zero, type, op, type, type, dest);
   } else {
     op_t all_ones = const_v128_i32 (c2m_ctx, type, -1);
 
@@ -12234,31 +12367,49 @@ static op_t gen_v128_i32_bin_op (c2m_ctx_t c2m_ctx, node_t r, MIR_insn_code_t co
   struct type *type2 = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
   op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
 
+  if ((r->code == N_ADD || r->code == N_SUB) && !v128_i32_packed_vector_type_p (c2m_ctx, type))
+    return emit_v128_i32_arith_op (c2m_ctx, r->code, op1, type1, op2, type2, type, dest);
   return emit_v128_i32_bin_op (c2m_ctx, code, op1, type1, op2, type2, type, dest);
 }
 
 static MIR_insn_code_t get_v128_i32_shift_insn_code (c2m_ctx_t c2m_ctx, node_code_t code,
                                                      struct type *vector_type) {
   MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
+  MIR_type_t op_type = promote_mir_int_type (lane_type);
+  int signed_p = signed_integer_type_p (vector_type->u.vector_type->el_type);
 
-  assert (lane_type == MIR_T_I32 || lane_type == MIR_T_U32);
-  if (code == N_LSH || code == N_LSH_ASSIGN) return MIR_LSHS;
+  assert (op_type == MIR_T_I32 || op_type == MIR_T_U32 || op_type == MIR_T_I64
+          || op_type == MIR_T_U64);
+  if (code == N_LSH || code == N_LSH_ASSIGN)
+    return op_type == MIR_T_I64 || op_type == MIR_T_U64 ? MIR_LSH : MIR_LSHS;
   assert (code == N_RSH || code == N_RSH_ASSIGN);
-  return lane_type == MIR_T_I32 ? MIR_RSHS : MIR_URSHS;
+  if (op_type == MIR_T_I64 || op_type == MIR_T_U64) return signed_p ? MIR_RSH : MIR_URSH;
+  return signed_p ? MIR_RSHS : MIR_URSHS;
 }
 
 static MIR_insn_code_t get_v128_i32_arith_insn_code (c2m_ctx_t c2m_ctx, node_code_t code,
                                                      struct type *vector_type) {
   MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
+  MIR_type_t op_type = promote_mir_int_type (lane_type);
+  int signed_p = signed_integer_type_p (vector_type->u.vector_type->el_type);
 
-  assert (lane_type == MIR_T_I32 || lane_type == MIR_T_U32);
+  assert (op_type == MIR_T_I32 || op_type == MIR_T_U32 || op_type == MIR_T_I64
+          || op_type == MIR_T_U64);
   switch (code) {
+  case N_ADD:
+  case N_ADD_ASSIGN: return op_type == MIR_T_I64 || op_type == MIR_T_U64 ? MIR_ADD : MIR_ADDS;
+  case N_SUB:
+  case N_SUB_ASSIGN: return op_type == MIR_T_I64 || op_type == MIR_T_U64 ? MIR_SUB : MIR_SUBS;
   case N_MUL:
-  case N_MUL_ASSIGN: return MIR_MULS;
+  case N_MUL_ASSIGN: return op_type == MIR_T_I64 || op_type == MIR_T_U64 ? MIR_MUL : MIR_MULS;
   case N_DIV:
-  case N_DIV_ASSIGN: return lane_type == MIR_T_I32 ? MIR_DIVS : MIR_UDIVS;
+  case N_DIV_ASSIGN:
+    return op_type == MIR_T_I64 || op_type == MIR_T_U64 ? (signed_p ? MIR_DIV : MIR_UDIV)
+                                                        : (signed_p ? MIR_DIVS : MIR_UDIVS);
   case N_MOD:
-  case N_MOD_ASSIGN: return lane_type == MIR_T_I32 ? MIR_MODS : MIR_UMODS;
+  case N_MOD_ASSIGN:
+    return op_type == MIR_T_I64 || op_type == MIR_T_U64 ? (signed_p ? MIR_MOD : MIR_UMOD)
+                                                        : (signed_p ? MIR_MODS : MIR_UMODS);
   default: assert (FALSE); return MIR_INSN_BOUND;
   }
 }
@@ -12267,9 +12418,10 @@ static op_t emit_v128_i32_lane_bin_op (c2m_ctx_t c2m_ctx, MIR_insn_code_t insn_c
                                        struct type *type1, op_t op2, struct type *type2,
                                        struct type *vector_type, op_t dest) {
   MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
-  mir_size_t lane_size = raw_type_size (c2m_ctx, vector_type->u.vector_type->el_type);
+  MIR_type_t lane_reg_type = promoted_v128_lane_reg_type (lane_type);
+  mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
 
-  assert (lane_size == 4);
+  assert (supported_integer_vector_lane_size_p (lane_size));
   op1 = materialize_v128_i32_operand (c2m_ctx, op1, type1, vector_type);
   op2 = materialize_v128_i32_operand (c2m_ctx, op2, type2, vector_type);
   for (mir_size_t offset = 0; offset < raw_type_size (c2m_ctx, vector_type);
@@ -12277,11 +12429,11 @@ static op_t emit_v128_i32_lane_bin_op (c2m_ctx_t c2m_ctx, MIR_insn_code_t insn_c
     op_t lane1 = v128_i32_lane_op (op1, lane_type, offset);
     op_t lane2 = v128_i32_lane_op (op2, lane_type, offset);
     op_t dest_lane = v128_i32_lane_op (dest, lane_type, offset);
-    op_t lane_res = get_new_temp (c2m_ctx, lane_type);
-    op_t lane_count = get_new_temp (c2m_ctx, lane_type);
+    op_t lane_res = get_new_temp (c2m_ctx, lane_reg_type);
+    op_t lane_count = get_new_temp (c2m_ctx, lane_reg_type);
 
-    emit2 (c2m_ctx, MIR_MOV, lane_res.mir_op, lane1.mir_op);
-    emit2 (c2m_ctx, MIR_MOV, lane_count.mir_op, lane2.mir_op);
+    emit2 (c2m_ctx, tp_mov (lane_reg_type), lane_res.mir_op, lane1.mir_op);
+    emit2 (c2m_ctx, tp_mov (lane_reg_type), lane_count.mir_op, lane2.mir_op);
     emit3 (c2m_ctx, insn_code, lane_res.mir_op, lane_res.mir_op, lane_count.mir_op);
     emit_scalar_assign (c2m_ctx, dest_lane, &lane_res, lane_type, FALSE);
   }
@@ -12331,9 +12483,10 @@ static op_t gen_v128_i32_arith_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_
 static op_t emit_v128_convertvector (c2m_ctx_t c2m_ctx, op_t op, struct type *from_type,
                                      struct type *to_type, op_t dest) {
   MIR_type_t from_lane_type = get_mir_type (c2m_ctx, from_type->u.vector_type->el_type);
+  MIR_type_t from_lane_reg_type = promoted_v128_lane_reg_type (from_lane_type);
   MIR_type_t to_lane_type = get_mir_type (c2m_ctx, to_type->u.vector_type->el_type);
-  mir_size_t from_lane_size = raw_type_size (c2m_ctx, from_type->u.vector_type->el_type);
-  mir_size_t to_lane_size = raw_type_size (c2m_ctx, to_type->u.vector_type->el_type);
+  mir_size_t from_lane_size = vector_lane_size (c2m_ctx, from_type);
+  mir_size_t to_lane_size = vector_lane_size (c2m_ctx, to_type);
   mir_size_t n_el = vector_el_count (c2m_ctx, from_type);
 
   assert (v128_convertvector_type_p (c2m_ctx, to_type, from_type));
@@ -12341,10 +12494,10 @@ static op_t emit_v128_convertvector (c2m_ctx_t c2m_ctx, op_t op, struct type *fr
   for (mir_size_t i = 0; i < n_el; i++) {
     op_t from_lane = v128_i32_lane_op (op, from_lane_type, i * from_lane_size);
     op_t to_lane = v128_i32_lane_op (dest, to_lane_type, i * to_lane_size);
-    op_t lane_val = get_new_temp (c2m_ctx, from_lane_type);
+    op_t lane_val = get_new_temp (c2m_ctx, from_lane_reg_type);
     op_t converted;
 
-    emit2 (c2m_ctx, tp_mov (from_lane_type), lane_val.mir_op, from_lane.mir_op);
+    emit2 (c2m_ctx, tp_mov (from_lane_reg_type), lane_val.mir_op, from_lane.mir_op);
     converted = cast (c2m_ctx, lane_val, to_lane_type, TRUE);
     emit_scalar_assign (c2m_ctx, to_lane, &converted, to_lane_type, FALSE);
   }
@@ -12365,7 +12518,8 @@ static op_t gen_v128_convertvector (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable
 static op_t emit_v128_shufflevector (c2m_ctx_t c2m_ctx, op_t op1, struct type *type1, op_t op2,
                                      struct type *type2, node_t first_index, op_t dest) {
   MIR_type_t lane_type = get_mir_type (c2m_ctx, type1->u.vector_type->el_type);
-  mir_size_t lane_size = raw_type_size (c2m_ctx, type1->u.vector_type->el_type);
+  MIR_type_t lane_reg_type = promoted_v128_lane_reg_type (lane_type);
+  mir_size_t lane_size = vector_lane_size (c2m_ctx, type1);
   mir_size_t n_el = vector_el_count (c2m_ctx, type1);
   mir_size_t dest_i = 0;
 
@@ -12382,8 +12536,8 @@ static op_t emit_v128_shufflevector (c2m_ctx_t c2m_ctx, op_t op1, struct type *t
     src_lane = v128_i32_lane_op (index < (mir_llong) n_el ? op1 : op2, lane_type,
                                  ((mir_size_t) index % n_el) * lane_size);
     dest_lane = v128_i32_lane_op (dest, lane_type, dest_i * lane_size);
-    lane_val = get_new_temp (c2m_ctx, lane_type);
-    emit2 (c2m_ctx, tp_mov (lane_type), lane_val.mir_op, src_lane.mir_op);
+    lane_val = get_new_temp (c2m_ctx, lane_reg_type);
+    emit2 (c2m_ctx, tp_mov (lane_reg_type), lane_val.mir_op, src_lane.mir_op);
     emit_scalar_assign (c2m_ctx, dest_lane, &lane_val, lane_type, FALSE);
     dest_i++;
   }
@@ -12409,7 +12563,7 @@ static op_t v128_indexed_lane_op (op_t vector, MIR_type_t lane_type, mir_size_t 
   op_t lane = vector;
 
   assert (lane.mir_op.mode == MIR_OP_MEM && index.mir_op.mode == MIR_OP_REG);
-  assert (lane.mir_op.u.mem.index == 0 && (lane_size == 4 || lane_size == 8));
+  assert (lane.mir_op.u.mem.index == 0 && supported_integer_vector_lane_size_p (lane_size));
   lane.mir_op.u.mem.type = lane_type;
   lane.mir_op.u.mem.index = index.mir_op.u.reg;
   lane.mir_op.u.mem.scale = (MIR_scale_t) lane_size;
@@ -12423,13 +12577,14 @@ static op_t gen_v128_shuffle_index (c2m_ctx_t c2m_ctx, op_t mask, struct type *m
   MIR_context_t ctx = c2m_ctx->ctx;
   struct type *mask_el_type = mask_type->u.vector_type->el_type;
   MIR_type_t mask_lane_type = get_mir_type (c2m_ctx, mask_el_type);
-  mir_size_t mask_lane_size = raw_type_size (c2m_ctx, mask_el_type);
+  MIR_type_t mask_lane_reg_type = promoted_v128_lane_reg_type (mask_lane_type);
+  mir_size_t mask_lane_size = vector_lane_size (c2m_ctx, mask_type);
   op_t mask_lane = v128_i32_lane_op (mask, mask_lane_type, lane_index * mask_lane_size);
-  op_t raw_index = get_new_temp (c2m_ctx, mask_lane_type);
+  op_t raw_index = get_new_temp (c2m_ctx, mask_lane_reg_type);
   int signed_p = signed_integer_type_p (mask_el_type);
   op_t index, modulus_op;
 
-  emit2 (c2m_ctx, tp_mov (mask_lane_type), raw_index.mir_op, mask_lane.mir_op);
+  emit2 (c2m_ctx, tp_mov (mask_lane_reg_type), raw_index.mir_op, mask_lane.mir_op);
   index = cast (c2m_ctx, raw_index, signed_p ? MIR_T_I64 : MIR_T_U64, TRUE);
   modulus_op = new_op (NULL, signed_p ? MIR_new_int_op (ctx, modulus)
                                       : MIR_new_uint_op (ctx, modulus));
@@ -12449,9 +12604,10 @@ static op_t gen_v128_shuffle_index (c2m_ctx_t c2m_ctx, op_t mask, struct type *m
 static void emit_v128_shuffle_load_lane (c2m_ctx_t c2m_ctx, op_t src, MIR_type_t lane_type,
                                          mir_size_t lane_size, op_t index, op_t dest_lane) {
   op_t src_lane = v128_indexed_lane_op (src, lane_type, lane_size, index);
-  op_t lane_val = get_new_temp (c2m_ctx, lane_type);
+  MIR_type_t lane_reg_type = promoted_v128_lane_reg_type (lane_type);
+  op_t lane_val = get_new_temp (c2m_ctx, lane_reg_type);
 
-  emit2 (c2m_ctx, tp_mov (lane_type), lane_val.mir_op, src_lane.mir_op);
+  emit2 (c2m_ctx, tp_mov (lane_reg_type), lane_val.mir_op, src_lane.mir_op);
   emit_scalar_assign (c2m_ctx, dest_lane, &lane_val, lane_type, FALSE);
 }
 
@@ -12460,7 +12616,7 @@ static op_t emit_v128_shuffle (c2m_ctx_t c2m_ctx, op_t op1, struct type *type1, 
                                op_t dest) {
   MIR_context_t ctx = c2m_ctx->ctx;
   MIR_type_t lane_type = get_mir_type (c2m_ctx, type1->u.vector_type->el_type);
-  mir_size_t lane_size = raw_type_size (c2m_ctx, type1->u.vector_type->el_type);
+  mir_size_t lane_size = vector_lane_size (c2m_ctx, type1);
   mir_size_t n_el = vector_el_count (c2m_ctx, type1);
   int two_source_p = type2 != NULL;
   int unsigned_mask_p = !signed_integer_type_p (mask_type->u.vector_type->el_type);
@@ -14292,7 +14448,13 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       var = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
       val = force_val (c2m_ctx, var, FALSE);
       op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
-      res = emit_v128_i32_bin_op (c2m_ctx, insn_code, val, lhs_type, op2, rhs_type, lhs_type, var);
+      if ((r->code == N_ADD_ASSIGN || r->code == N_SUB_ASSIGN)
+          && !v128_i32_packed_vector_type_p (c2m_ctx, lhs_type))
+        res = emit_v128_i32_arith_op (c2m_ctx, r->code, val, lhs_type, op2, rhs_type, lhs_type,
+                                      var);
+      else
+        res
+          = emit_v128_i32_bin_op (c2m_ctx, insn_code, val, lhs_type, op2, rhs_type, lhs_type, var);
       break;
     }
     if (complex_type_p (((struct expr *) r->attr)->type)) {
@@ -14702,6 +14864,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     int convertvector_p = call_expr->builtin_call_p && strcmp (func->u.s.s, CONVERT_VECTOR) == 0;
     int shuffle_p = call_expr->builtin_call_p && strcmp (func->u.s.s, SHUFFLE) == 0;
     int shufflevector_p = call_expr->builtin_call_p && strcmp (func->u.s.s, SHUFFLE_VECTOR) == 0;
+    int vectorelements_p = call_expr->builtin_call_p && strcmp (func->u.s.s, VECTOR_ELEMENTS) == 0;
     int jcall_p = call_expr->builtin_call_p && strcmp (func->u.s.s, JCALL) == 0;
     int jret_p = call_expr->builtin_call_p && strcmp (func->u.s.s, JRET) == 0;
     int prop_set_p = call_expr->builtin_call_p && strcmp (func->u.s.s, PROP_SET) == 0;
@@ -14714,6 +14877,12 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     int n, memory_arg_p;
 
     type = call_expr->type;
+    if (vectorelements_p) {
+      int ok = push_const_val (c2m_ctx, r, &res);
+
+      assert (ok);
+      break;
+    }
     if (convertvector_p) {
       res = gen_v128_convertvector (c2m_ctx, r, desirable_dest);
       break;

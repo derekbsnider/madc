@@ -3,6 +3,10 @@ typedef unsigned int v4ui __attribute__ ((vector_size (16)));
 typedef float v4sf __attribute__ ((vector_size (16)));
 typedef long long v2di __attribute__ ((vector_size (16)));
 typedef double v2df __attribute__ ((__vector_size__ (16)));
+typedef signed char v16qi __attribute__ ((vector_size (16)));
+typedef unsigned char v16uqi __attribute__ ((vector_size (16)));
+typedef short v8hi __attribute__ ((vector_size (16)));
+typedef unsigned short uint16x8_t __attribute__ ((vector_size (16)));
 
 static v4si g = {5, 6};
 
@@ -37,6 +41,20 @@ int main (void) {
   v2df d = {1.25, 2.5};
   v2df e = {3.5, 4.5};
   v2di dshuffle = {-1, 0};
+  v8hi hia = {1, -2, 300, -400, 5000, -6000, 32760, -32768};
+  v8hi hib = {2, -3, -200, 100, -20, 30, 10, -1};
+  v8hi himask = {0, 9, 2, 11, 4, 13, 6, 15};
+  v8hi hc;
+  uint16x8_t uha = {1, 2, 65000, 65535, 128, 256, 1024, 32768};
+  uint16x8_t uhb = {3, 2, 8, 5, 2, 4, 8, 16};
+  uint16x8_t uhmask = {7, 6, 5, 4, 3, 2, 1, 0};
+  uint16x8_t uhc;
+  v16qi i8a = {1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16};
+  v16qi i8b = {1, 2, -3, -4, 5, 6, -7, -8, 9, 10, -11, -12, 13, 14, -15, -16};
+  v16qi i8c;
+  v16uqi u8a = {1, 2, 250, 255, 16, 32, 64, 128, 3, 4, 5, 6, 7, 8, 9, 10};
+  v16uqi u8b = {2, 2, 6, 4, 1, 2, 4, 8, 3, 5, 7, 9, 11, 13, 15, 17};
+  v16uqi u8c;
   int s = 7;
   unsigned int u = 0xff;
 
@@ -198,5 +216,55 @@ int main (void) {
   if (uc[0] != 1u || uc[1] != 2u || uc[2] != 9u || uc[3] != 4u) return 72;
   d = __builtin_shuffle (d, e, dshuffle);
   if (d[0] != 4.5 || d[1] != 4.0) return 73;
+#ifdef __MIRC__
+  if (__builtin_vectorelements (uint16x8_t) != 8) return 74;
+  if (__builtin_vectorelements (uha) != 8) return 75;
+#endif
+  hc = hia + hib;
+  if (hc[0] != 3 || hc[1] != -5 || hc[2] != 100 || hc[3] != -300) return 76;
+  hc = hia - hib;
+  if (hc[0] != -1 || hc[1] != 1 || hc[2] != 500 || hc[3] != -500) return 77;
+  hc = hia + 5;
+  if (hc[0] != 6 || hc[1] != 3 || hc[2] != 305 || hc[3] != -395) return 78;
+  hc = 7 - hia;
+  if (hc[0] != 6 || hc[1] != 9 || hc[2] != -293 || hc[3] != 407) return 79;
+  hc = hia & hib;
+  if (hc[0] != 0 || hc[1] != -4 || hc[2] != 296 || hc[3] != 96) return 80;
+  hc = hia | hib;
+  if (hc[0] != 3 || hc[1] != -1 || hc[2] != -196 || hc[3] != -396) return 81;
+  hc = hia ^ hib;
+  if (hc[0] != 3 || hc[1] != 3 || hc[2] != -492 || hc[3] != -492) return 82;
+  hc = -hia;
+  if (hc[0] != -1 || hc[1] != 2 || hc[2] != -300 || hc[3] != 400) return 83;
+  hc = ~hia;
+  if (hc[0] != -2 || hc[1] != 1 || hc[2] != -301 || hc[3] != 399) return 84;
+  hc = hia < hib;
+  if (hc[0] != -1 || hc[1] != 0 || hc[2] != 0 || hc[3] != -1 || hc[7] != -1) return 85;
+  hc = __builtin_shufflevector (hia, hib, 0, 9, 2, 11, 4, 13, 6, 15);
+  if (hc[0] != 1 || hc[1] != -3 || hc[2] != 300 || hc[3] != 100) return 86;
+  hc = __builtin_shuffle (hia, hib, himask);
+  if (hc[0] != 1 || hc[1] != -3 || hc[2] != 300 || hc[3] != 100) return 87;
+  hc = hia;
+  hc += 2;
+  hc ^= 0xff;
+  if (hc[0] != 252 || hc[1] != 255 || hc[2] != 465 || hc[3] != -371) return 88;
+  uhc = uha + uhb;
+  if (uhc[0] != 4 || uhc[1] != 4 || uhc[2] != 65008 || uhc[3] != 4) return 89;
+  uhc = uha >> 2;
+  if (uhc[0] != 0 || uhc[1] != 0 || uhc[2] != 16250 || uhc[3] != 16383) return 90;
+  uhc = uha < uhb;
+  if (uhc[0] != 65535 || uhc[1] != 0 || uhc[2] != 0 || uhc[3] != 0) return 91;
+  uhc = __builtin_shufflevector (uha, uhb, 0, 9, 2, 11, 4, 13, 6, 15);
+  if (uhc[0] != 1 || uhc[1] != 2 || uhc[2] != 65000 || uhc[3] != 5) return 92;
+  uhc = __builtin_shuffle (uha, uhb, uhmask);
+  if (uhc[0] != 32768 || uhc[1] != 1024 || uhc[2] != 256 || uhc[3] != 128) return 93;
+  i8c = i8a + i8b;
+  if (i8c[0] != 2 || i8c[1] != 0 || i8c[2] != 0 || i8c[3] != -8) return 94;
+  i8c = i8a < i8b;
+  if (i8c[0] != 0 || i8c[1] != -1 || i8c[2] != 0 || i8c[3] != 0) return 95;
+  u8c = u8a + u8b;
+  if (u8c[0] != 3 || u8c[1] != 4 || u8c[2] != 0 || u8c[3] != 3) return 96;
+  u8c = u8a > u8b;
+  if (u8c[0] != 0 || u8c[1] != 0 || u8c[2] != 255 || u8c[3] != 255) return 97;
   return 0;
 }
