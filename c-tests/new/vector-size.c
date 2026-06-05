@@ -168,6 +168,21 @@ int main (void) {
   v2si cv_back;
   v4si cv_wi = {-1, 0, 1, 2};
   v4df cv_wd;
+  v2si ni2a = {1, -4};
+  v2si ni2b = {7, -2};
+  v2si ni2c;
+  v2ui nu2a = {0u, 0xffffffffu};
+  v2ui nu2b = {1u, 0x7fffffffu};
+  v2ui nu2c;
+  v4hi nh4a = {1000, -2000, 7, -8};
+  v4hi nh4b = {24, 3, -9, -8};
+  v4hi nh4c;
+  v4qi nq4a = {1, -2, 3, -4};
+  v4qi nq4b = {1, 5, -3, -4};
+  v4qi nq4c;
+  v8si nw8a = {1, 2, 3, 4, 5, 6, 7, 8};
+  v8si nw8b = {9, 10, 11, 12, 13, 14, 15, 16};
+  v8si nw8c;
   v2df df_a = {1.25, -2.5};
   v2df df_b = {3.5, -0.5};
   v2df df_c;
@@ -614,5 +629,28 @@ int main (void) {
   if (cv_back[0] != -1 || cv_back[1] != 3) return 176;
   cv_wd = __builtin_convertvector (cv_wi, v4df);
   if (cv_wd[0] != -1.0 || cv_wd[1] != 0.0 || cv_wd[2] != 1.0 || cv_wd[3] != 2.0) return 177;
+  ni2c = ni2a + ni2b;
+  if (ni2c[0] != 8 || ni2c[1] != -6) return 178;
+  ni2c = ni2b - ni2a;
+  if (ni2c[0] != 6 || ni2c[1] != 2) return 179;
+  ni2c = ~ni2a;
+  if (ni2c[0] != -2 || ni2c[1] != 3) return 180;
+  ni2c = ni2a | ni2b;
+  if (ni2c[0] != 7 || ni2c[1] != -2) return 181;
+  ni2c = ni2a < ni2b;
+  if (ni2c[0] != -1 || ni2c[1] != -1) return 182;
+  nu2c = nu2a > nu2b;
+  if (nu2c[0] != 0u || nu2c[1] != ~0u) return 183;
+  nu2c = nu2b << 1u;
+  if (nu2c[0] != 2u || nu2c[1] != 0xfffffffeu) return 184;
+  nh4c = nh4a + nh4b;
+  if (nh4c[0] != 1024 || nh4c[1] != -1997 || nh4c[2] != -2 || nh4c[3] != -16)
+    return 185;
+  nq4c = nq4a == nq4b;
+  if (nq4c[0] != -1 || nq4c[1] != 0 || nq4c[2] != 0 || nq4c[3] != -1) return 186;
+  nw8c = nw8a + nw8b;
+  if (nw8c[0] != 10 || nw8c[1] != 12 || nw8c[2] != 14 || nw8c[3] != 16
+      || nw8c[4] != 18 || nw8c[5] != 20 || nw8c[6] != 22 || nw8c[7] != 24)
+    return 187;
   return 0;
 }
