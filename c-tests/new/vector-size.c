@@ -191,6 +191,12 @@ int main (void) {
   v8ui cast_wu;
   v8si cast_wi;
   v8sf cast_wf;
+  v2si scalar_cast_i64;
+  v2sf scalar_cast_f64;
+  v1si scalar_cast_i32;
+  v4qi scalar_cast_i8x4;
+  long long scalar_bits64;
+  int scalar_bits32;
   v2df df_a = {1.25, -2.5};
   v2df df_b = {3.5, -0.5};
   v2df df_c;
@@ -672,5 +678,23 @@ int main (void) {
   if (nw8c[0] != 10 || nw8c[1] != 12 || nw8c[2] != 14 || nw8c[3] != 16
       || nw8c[4] != 18 || nw8c[5] != 20 || nw8c[6] != 22 || nw8c[7] != 24)
     return 193;
+  scalar_cast_i64 = (v2si) 0x0000000200000001LL;
+  if (scalar_cast_i64[0] != 1 || scalar_cast_i64[1] != 2) return 194;
+  scalar_bits64 = (long long) scalar_cast_i64;
+  if (scalar_bits64 != 0x0000000200000001LL) return 195;
+  scalar_cast_f64 = (v2sf) 0x400000003f800000LL;
+  if (scalar_cast_f64[0] != 1.0f || scalar_cast_f64[1] != 2.0f) return 196;
+  scalar_bits64 = (long long) scalar_cast_f64;
+  if (scalar_bits64 != 0x400000003f800000LL) return 197;
+  scalar_cast_i32 = (v1si) 42;
+  if (scalar_cast_i32[0] != 42) return 198;
+  scalar_bits32 = (int) scalar_cast_i32;
+  if (scalar_bits32 != 42) return 199;
+  scalar_cast_i8x4 = (v4qi) 0x04030201;
+  if (scalar_cast_i8x4[0] != 1 || scalar_cast_i8x4[1] != 2 || scalar_cast_i8x4[2] != 3
+      || scalar_cast_i8x4[3] != 4)
+    return 200;
+  scalar_bits32 = (int) scalar_cast_i8x4;
+  if (scalar_bits32 != 0x04030201) return 201;
   return 0;
 }
