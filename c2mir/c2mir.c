@@ -5913,6 +5913,11 @@ static int v128_i32_packed_add_sub_vector_type_p (c2m_ctx_t c2m_ctx, struct type
   return lane_size == 1 || lane_size == 2 || lane_size == 4;
 }
 
+static int v128_i32_packed_mul_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  if (!v128_i32_vector_type_p (c2m_ctx, type)) return FALSE;
+  return vector_lane_size (c2m_ctx, type) == 2;
+}
+
 static int v128_i32_packed_cmp_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   mir_size_t lane_size;
 
@@ -12665,6 +12670,9 @@ static op_t emit_v128_i32_arith_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op
                                     struct type *vector_type, op_t dest) {
   MIR_insn_code_t insn_code = get_v128_i32_arith_insn_code (c2m_ctx, code, vector_type);
 
+  if ((code == N_MUL || code == N_MUL_ASSIGN) && v128_i32_packed_mul_vector_type_p (c2m_ctx, vector_type))
+    return emit_v128_i32_bin_op (c2m_ctx, MIR_VMULI16, op1, type1, op2, type2, vector_type,
+                                 dest);
   return emit_v128_i32_lane_bin_op (c2m_ctx, insn_code, op1, type1, op2, type2, vector_type,
                                     dest);
 }

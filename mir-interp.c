@@ -1092,8 +1092,9 @@ static void OPTIMIZE eval (MIR_context_t ctx, func_desc_t func_desc, MIR_val_t *
     REP8 (LAB_EL, MIR_VADDI8, MIR_VADDI16, MIR_VADDI32, MIR_VADDF32, MIR_VADDF64,
           MIR_VSUBI8, MIR_VSUBI16, MIR_VSUBI32);
     REP2 (LAB_EL, MIR_VSUBF32, MIR_VSUBF64);
-    REP8 (LAB_EL, MIR_MUL, MIR_MULS, MIR_FMUL, MIR_DMUL, MIR_LDMUL, MIR_VMULF32, MIR_VMULF64,
-          MIR_DIV);
+    REP8 (LAB_EL, MIR_MUL, MIR_MULS, MIR_FMUL, MIR_DMUL, MIR_LDMUL, MIR_VMULI16, MIR_VMULF32,
+          MIR_VMULF64);
+    LAB_EL (MIR_DIV);
     REP2 (LAB_EL, MIR_DIVS, MIR_UDIV);
     REP8 (LAB_EL, MIR_UDIVS, MIR_FDIV, MIR_DDIV, MIR_LDDIV, MIR_MOD, MIR_MODS, MIR_UMOD, MIR_UMODS);
     REP2 (LAB_EL, MIR_VDIVF32, MIR_VDIVF64);
@@ -1484,6 +1485,14 @@ common_addr:;
     uint8_t *op2 = get_vop (bp, ops + 2);
 
     for (size_t i = 0; i < 2; i++) set_v128_f64 (r, i, get_v128_f64 (op1, i) - get_v128_f64 (op2, i));
+    END_INSN;
+  }
+  CASE (MIR_VMULI16, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 8; i++) set_v128_u16 (r, i, get_v128_u16 (op1, i) * get_v128_u16 (op2, i));
     END_INSN;
   }
   CASE (MIR_VMULF32, 3) {

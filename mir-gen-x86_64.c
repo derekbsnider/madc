@@ -70,7 +70,7 @@ static const MIR_insn_code_t target_io_dup_op_insn_codes[] = {
   MIR_ADD,     MIR_ADDS,    MIR_FADD,    MIR_DADD,   MIR_LDADD,   MIR_VADDI8, MIR_VADDI16,
   MIR_VADDI32, MIR_VADDF32, MIR_VADDF64, MIR_SUB,    MIR_SUBS,    MIR_FSUB,   MIR_DSUB,
   MIR_LDSUB,   MIR_VSUBI8,  MIR_VSUBI16, MIR_VSUBI32, MIR_VSUBF32, MIR_VSUBF64, MIR_MUL,
-  MIR_MULS,    MIR_FMUL,    MIR_DMUL,    MIR_LDMUL,  MIR_VMULF32, MIR_VMULF64, MIR_FDIV,
+  MIR_MULS,    MIR_FMUL,    MIR_DMUL,    MIR_LDMUL,  MIR_VMULI16, MIR_VMULF32, MIR_VMULF64, MIR_FDIV,
   MIR_DDIV,    MIR_LDDIV,   MIR_AND,     MIR_ANDS,   MIR_OR,      MIR_ORS,    MIR_XOR,
   MIR_XORS,    MIR_VDIVF32, MIR_VDIVF64, MIR_VAND,   MIR_VOR,     MIR_VXOR,   MIR_VEQI8,
   MIR_VEQI16,  MIR_VEQI32,  MIR_VGTI8,   MIR_VGTI16, MIR_VGTI32,  MIR_VEQF32, MIR_VNEF32,
@@ -1752,8 +1752,10 @@ static struct pattern patterns[] = {
 
   IMULL (MIR_MUL, MIR_MULS)
 
-    {MIR_MUL, "r r s", "X 8D r0 ap", 0}, /* lea r0,(,r1,s2)*/
+  {MIR_MUL, "r r s", "X 8D r0 ap", 0}, /* lea r0,(,r1,s2)*/
   {MIR_MULS, "r r s", "Y 8D r0 ap", 0},  /* lea r0,(,r1,s2)*/
+  {MIR_VMULI16, "r 0 r", "66 Y 0F D5 r0 R2", 0},  /* pmullw r0,r2 */
+  {MIR_VMULI16, "r 0 mv", "66 Y 0F D5 r0 m2", 0}, /* pmullw r0,m128 */
   {MIR_VMULF32, "r 0 r", "Y 0F 59 r0 R2", 0},   /* mulps r0,r2 */
   {MIR_VMULF32, "r 0 mv", "Y 0F 59 r0 m2", 0},  /* mulps r0,m128 */
   {MIR_VMULF64, "r 0 r", "66 Y 0F 59 r0 R2", 0},  /* mulpd r0,r2 */

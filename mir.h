@@ -105,7 +105,7 @@ typedef enum {
   REP2 (INSN_EL, VADDF32, VADDF64), /* Addition */
   REP8 (INSN_EL, SUB, SUBS, FSUB, DSUB, LDSUB, VSUBI8, VSUBI16, VSUBI32),
   REP2 (INSN_EL, VSUBF32, VSUBF64), /* Subtraction */
-  REP7 (INSN_EL, MUL, MULS, FMUL, DMUL, LDMUL, VMULF32, VMULF64), /* Multiplication */
+  REP8 (INSN_EL, MUL, MULS, FMUL, DMUL, LDMUL, VMULI16, VMULF32, VMULF64), /* Multiplication */
   REP8 (INSN_EL, DIV, DIVS, UDIV, UDIVS, FDIV, DDIV, LDDIV, VDIVF32), /* Division */
   INSN_EL (VDIVF64),
   REP4 (INSN_EL, MOD, MODS, UMOD, UMODS),                    /* Modulo */

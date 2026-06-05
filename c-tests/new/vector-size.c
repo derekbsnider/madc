@@ -565,5 +565,12 @@ int main (void) {
   if (i8c[0] != -1 || i8c[1] != 0 || i8c[2] != 0 || i8c[3] != -1) return 157;
   uhc = uha != uhb;
   if (uhc[0] != 65535 || uhc[1] != 0 || uhc[2] != 65535 || uhc[3] != 65535) return 158;
+  hc = hia * hib;
+  if (hc[0] != 2 || hc[1] != 6 || hc[2] != 5536 || hc[3] != 25536) return 159;
+  hc = hia;
+  hc *= hib;
+  if (hc[0] != 2 || hc[1] != 6 || hc[2] != 5536 || hc[3] != 25536) return 160;
+  uhc = uha * uhb;
+  if (uhc[0] != 3 || uhc[1] != 4 || uhc[2] != 61248 || uhc[3] != 65531) return 161;
   return 0;
 }
