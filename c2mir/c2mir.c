@@ -6359,9 +6359,9 @@ static struct type *v128_float_cmp_vector_type (c2m_ctx_t c2m_ctx, struct type *
   return signed_integer_vector_type_for_vector (c2m_ctx, vector_type);
 }
 
-static int same_size_v128_vector_cast_p (c2m_ctx_t c2m_ctx, struct type *to_type,
-                                         struct type *from_type) {
-  return v128_vector_type_p (c2m_ctx, to_type) && v128_vector_type_p (c2m_ctx, from_type)
+static int same_size_vector_cast_p (c2m_ctx_t c2m_ctx, struct type *to_type,
+                                    struct type *from_type) {
+  return vector_type_p (to_type) && vector_type_p (from_type)
          && raw_type_size (c2m_ctx, to_type) == raw_type_size (c2m_ctx, from_type);
 }
 
@@ -10070,7 +10070,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     decl_spec = op1->attr;
     *e->type = *decl_spec->type;
     void_p = void_type_p (decl_spec->type);
-    vector_cast_p = same_size_v128_vector_cast_p (c2m_ctx, decl_spec->type, t2);
+    vector_cast_p = same_size_vector_cast_p (c2m_ctx, decl_spec->type, t2);
     if (!void_p && !vector_cast_p && !scalar_type_p (decl_spec->type)
         && !complex_type_p (decl_spec->type)) {
       error (c2m_ctx, POS (r), "conversion to non-scalar type requested");
@@ -15393,10 +15393,15 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       res = op1;
       res.decl = NULL;
       res.mir_op.mode = MIR_OP_UNDEF;
-    } else if (same_size_v128_vector_cast_p (c2m_ctx, type, from_type)) {
+    } else if (same_size_vector_cast_p (c2m_ctx, type, from_type)) {
       res = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
-      op1 = force_v128_reg (c2m_ctx, op1);
-      store_v128 (c2m_ctx, res, op1);
+      if (v128_vector_type_p (c2m_ctx, type)) {
+        op1 = force_v128_reg (c2m_ctx, op1);
+        store_v128 (c2m_ctx, res, op1);
+      } else {
+        op1 = materialize_vector_operand (c2m_ctx, op1, from_type);
+        block_move (c2m_ctx, res, op1, raw_type_size (c2m_ctx, type));
+      }
     } else if (complex_type_p (from_type) && !complex_type_p (type)) {
       /* Complex-to-scalar cast: extract real part (C99 6.3.1.7) */
       enum basic_type cbt = complex_component_type (from_type->u.basic_type);
