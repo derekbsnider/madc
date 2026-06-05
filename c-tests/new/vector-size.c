@@ -14,6 +14,8 @@ int main (void) {
   v4si zero = {0, 0, 0, 0};
   v4ui ua = {1u, 2u, 3u, 4u};
   v4ui ub = {1u, 7u, 3u, 9u};
+  v4ui ux = {0u, 1u, 0x80000000u, 0xffffffffu};
+  v4ui uy = {1u, 1u, 0x7fffffffu, 0xffffffffu};
   v4ui uc;
   v2df d = {1.25, 2.5};
   int s = 7;
@@ -96,9 +98,21 @@ int main (void) {
   if (uc[0] != 0u || uc[1] != 0u || uc[2] != ~0u || uc[3] != 0u) return 36;
   uc = 2u != ua;
   if (uc[0] != ~0u || uc[1] != 0u || uc[2] != ~0u || uc[3] != ~0u) return 37;
+  uc = ux < uy;
+  if (uc[0] != ~0u || uc[1] != 0u || uc[2] != 0u || uc[3] != 0u) return 38;
+  uc = ux > uy;
+  if (uc[0] != 0u || uc[1] != 0u || uc[2] != ~0u || uc[3] != 0u) return 39;
+  uc = ux <= uy;
+  if (uc[0] != ~0u || uc[1] != ~0u || uc[2] != 0u || uc[3] != ~0u) return 40;
+  uc = ux >= uy;
+  if (uc[0] != 0u || uc[1] != ~0u || uc[2] != ~0u || uc[3] != ~0u) return 41;
+  uc = ux > 0x7fffffffu;
+  if (uc[0] != 0u || uc[1] != 0u || uc[2] != ~0u || uc[3] != ~0u) return 42;
+  uc = 1u < ux;
+  if (uc[0] != 0u || uc[1] != 0u || uc[2] != ~0u || uc[3] != ~0u) return 43;
   uc = (v4ui) neg;
-  if (uc[0] != ~0u || uc[1] != 0u || uc[2] != 1u || uc[3] != 2u) return 38;
+  if (uc[0] != ~0u || uc[1] != 0u || uc[2] != 1u || uc[3] != 2u) return 44;
   c = (v4si) uc;
-  if (c[0] != -1 || c[1] != 0 || c[2] != 1 || c[3] != 2) return 39;
+  if (c[0] != -1 || c[1] != 0 || c[2] != 1 || c[3] != 2) return 45;
   return 0;
 }
