@@ -1,6 +1,8 @@
 M0:	module
 a:	u64 8589934593, 17179869187
 b:	u64 85899345930, 171798691870
+qa:	u64 4294967296, 9
+qb:	u64 5, 4
 r:	u64 0, 0
 main:	func i64
 	local i64:pa, i64:pb, i64:pr, i64:p, i64:x, v128:va, v128:vb, v128:vc
@@ -35,6 +37,28 @@ main:	func i64
 	add p, pr, 12
 	mov x, i32:(p)
 	bne fail, x, 36
+	mov pa, qa
+	mov pb, qb
+	vmov va, v128:(pa)
+	vmov vb, v128:(pb)
+	vaddi64 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i64:(pr)
+	bne fail, x, 4294967301
+	add p, pr, 8
+	mov x, i64:(p)
+	bne fail, x, 13
+	vsubi64 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i64:(pr)
+	bne fail, x, 4294967291
+	add p, pr, 8
+	mov x, i64:(p)
+	bne fail, x, 5
+	mov pa, a
+	mov pb, b
+	vmov va, v128:(pa)
+	vmov vb, v128:(pb)
 	vmuli32 vc, va, vb
 	vmov v128:(pr), vc
 	mov x, i32:(pr)

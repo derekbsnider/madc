@@ -5914,7 +5914,7 @@ static int v128_i32_packed_add_sub_vector_type_p (c2m_ctx_t c2m_ctx, struct type
 
   if (!v128_i32_vector_type_p (c2m_ctx, type)) return FALSE;
   lane_size = vector_lane_size (c2m_ctx, type);
-  return lane_size == 1 || lane_size == 2 || lane_size == 4;
+  return lane_size == 1 || lane_size == 2 || lane_size == 4 || lane_size == 8;
 }
 
 static int v128_i32_packed_mul_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
@@ -12353,10 +12353,14 @@ static MIR_insn_code_t get_v128_i32_packed_add_sub_insn_code (c2m_ctx_t c2m_ctx,
   switch (code) {
   case N_ADD:
   case N_ADD_ASSIGN:
-    return lane_size == 1 ? MIR_VADDI8 : lane_size == 2 ? MIR_VADDI16 : MIR_VADDI32;
+    return (lane_size == 1 ? MIR_VADDI8
+                           : lane_size == 2 ? MIR_VADDI16
+                                            : lane_size == 4 ? MIR_VADDI32 : MIR_VADDI64);
   case N_SUB:
   case N_SUB_ASSIGN:
-    return lane_size == 1 ? MIR_VSUBI8 : lane_size == 2 ? MIR_VSUBI16 : MIR_VSUBI32;
+    return (lane_size == 1 ? MIR_VSUBI8
+                           : lane_size == 2 ? MIR_VSUBI16
+                                            : lane_size == 4 ? MIR_VSUBI32 : MIR_VSUBI64);
   default: assert (FALSE); return MIR_INSN_BOUND;
   }
 }
