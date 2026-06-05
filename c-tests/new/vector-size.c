@@ -584,5 +584,15 @@ int main (void) {
   uhc = uha;
   uhc >>= 1;
   if (uhc[0] != 0 || uhc[1] != 1 || uhc[2] != 32500 || uhc[3] != 32767) return 166;
+  c = negsh >> 2;
+  if (c[0] != -2 || c[1] != -4 || c[2] != 2 || c[3] != -1) return 167;
+  uc = usrc >> 2u;
+  if (uc[0] != 0u || uc[1] != 0x20000000u || uc[2] != 0x3fffffffu || uc[3] != 4u) return 168;
+  c = pos;
+  c <<= 1;
+  if (c[0] != 2 || c[1] != 16 || c[2] != 32 || c[3] != 14) return 169;
+  uc = usrc;
+  uc >>= 1u;
+  if (uc[0] != 0u || uc[1] != 0x40000000u || uc[2] != 0x7fffffffu || uc[3] != 8u) return 170;
   return 0;
 }

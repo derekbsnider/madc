@@ -72,10 +72,10 @@ static const MIR_insn_code_t target_io_dup_op_insn_codes[] = {
   MIR_LDSUB,   MIR_VSUBI8,  MIR_VSUBI16, MIR_VSUBI32, MIR_VSUBF32, MIR_VSUBF64, MIR_MUL,
   MIR_MULS,    MIR_FMUL,    MIR_DMUL,    MIR_LDMUL,  MIR_VMULI16, MIR_VMULF32, MIR_VMULF64, MIR_FDIV,
   MIR_DDIV,    MIR_LDDIV,   MIR_AND,     MIR_ANDS,   MIR_OR,      MIR_ORS,    MIR_XOR,
-  MIR_XORS,    MIR_VDIVF32, MIR_VDIVF64, MIR_VAND,   MIR_VOR,     MIR_VXOR,   MIR_VLSHI16,
-  MIR_VRSHI16, MIR_VURSHI16, MIR_VEQI8,  MIR_VEQI16, MIR_VEQI32,  MIR_VGTI8,  MIR_VGTI16,
-  MIR_VGTI32,  MIR_VEQF32,  MIR_VNEF32,  MIR_VLTF32, MIR_VLEF32,  MIR_VEQF64, MIR_VNEF64,
-  MIR_VLTF64,  MIR_VLEF64,
+  MIR_XORS,    MIR_VDIVF32, MIR_VDIVF64, MIR_VAND,    MIR_VOR,     MIR_VXOR,    MIR_VLSHI16,
+  MIR_VRSHI16, MIR_VURSHI16, MIR_VLSHI32, MIR_VRSHI32, MIR_VURSHI32, MIR_VEQI8,  MIR_VEQI16,
+  MIR_VEQI32,  MIR_VGTI8,   MIR_VGTI16,  MIR_VGTI32,  MIR_VEQF32,  MIR_VNEF32,  MIR_VLTF32,
+  MIR_VLEF32,  MIR_VEQF64,  MIR_VNEF64,  MIR_VLTF64,  MIR_VLEF64,
   MIR_LSH,   MIR_LSHS,  MIR_RSH,    MIR_RSHS,       MIR_URSH,  MIR_URSHS, MIR_NEG,   MIR_NEGS,
   MIR_FNEG,  MIR_DNEG,  MIR_LDNEG,  MIR_ADDO,       MIR_ADDOS, MIR_SUBO,  MIR_SUBOS, MIR_MULO,
   MIR_MULOS, MIR_UMULO, MIR_UMULOS, MIR_INSN_BOUND,
@@ -1808,6 +1808,12 @@ static struct pattern patterns[] = {
   {MIR_VRSHI16, "r 0 mv", "66 Y 0F E1 r0 m2", 0},  /* psraw r0,m128 */
   {MIR_VURSHI16, "r 0 r", "66 Y 0F D1 r0 R2", 0},  /* psrlw r0,r2 */
   {MIR_VURSHI16, "r 0 mv", "66 Y 0F D1 r0 m2", 0}, /* psrlw r0,m128 */
+  {MIR_VLSHI32, "r 0 r", "66 Y 0F F2 r0 R2", 0},   /* pslld r0,r2 */
+  {MIR_VLSHI32, "r 0 mv", "66 Y 0F F2 r0 m2", 0},  /* pslld r0,m128 */
+  {MIR_VRSHI32, "r 0 r", "66 Y 0F E2 r0 R2", 0},   /* psrad r0,r2 */
+  {MIR_VRSHI32, "r 0 mv", "66 Y 0F E2 r0 m2", 0},  /* psrad r0,m128 */
+  {MIR_VURSHI32, "r 0 r", "66 Y 0F D2 r0 R2", 0},  /* psrld r0,r2 */
+  {MIR_VURSHI32, "r 0 mv", "66 Y 0F D2 r0 m2", 0}, /* psrld r0,m128 */
   {MIR_VEQI8, "r 0 r", "66 Y 0F 74 r0 R2", 0},   /* pcmpeqb r0,r2 */
   {MIR_VEQI8, "r 0 mv", "66 Y 0F 74 r0 m2", 0},  /* pcmpeqb r0,m128 */
   {MIR_VEQI16, "r 0 r", "66 Y 0F 75 r0 R2", 0},  /* pcmpeqw r0,r2 */
