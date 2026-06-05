@@ -5931,8 +5931,21 @@ static int v128_i32_packed_scalar_shift_type_p (c2m_ctx_t c2m_ctx, struct type *
 
   if (!v128_i32_vector_type_p (c2m_ctx, vector_type)) return FALSE;
   lane_size = vector_lane_size (c2m_ctx, vector_type);
-  if (lane_size != 2 && lane_size != 4) return FALSE;
+  if (lane_size != 2 && lane_size != 4 && lane_size != 8) return FALSE;
   return integer_type_p (count_type) && !vector_type_p (count_type);
+}
+
+static int v128_i32_packed_scalar_shift_op_p (c2m_ctx_t c2m_ctx, node_code_t code,
+                                              struct type *vector_type,
+                                              struct type *count_type) {
+  mir_size_t lane_size;
+
+  if (!v128_i32_packed_scalar_shift_type_p (c2m_ctx, vector_type, count_type)) return FALSE;
+  lane_size = vector_lane_size (c2m_ctx, vector_type);
+  if (lane_size != 8) return TRUE;
+  if (code == N_LSH || code == N_LSH_ASSIGN) return TRUE;
+  assert (code == N_RSH || code == N_RSH_ASSIGN);
+  return !signed_integer_type_p (vector_type->u.vector_type->el_type);
 }
 
 static int v128_i32_packed_cmp_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
@@ -12701,12 +12714,15 @@ static MIR_insn_code_t get_v128_i32_packed_scalar_shift_insn_code (c2m_ctx_t c2m
   int signed_p = signed_integer_type_p (vector_type->u.vector_type->el_type);
 
   assert (v128_i32_vector_type_p (c2m_ctx, vector_type));
-  assert (lane_size == 2 || lane_size == 4);
+  assert (lane_size == 2 || lane_size == 4 || lane_size == 8);
   if (code == N_LSH || code == N_LSH_ASSIGN)
-    return lane_size == 2 ? MIR_VLSHI16 : MIR_VLSHI32;
+    return lane_size == 2 ? MIR_VLSHI16 : lane_size == 4 ? MIR_VLSHI32 : MIR_VLSHI64;
   assert (code == N_RSH || code == N_RSH_ASSIGN);
-  if (signed_p) return lane_size == 2 ? MIR_VRSHI16 : MIR_VRSHI32;
-  return lane_size == 2 ? MIR_VURSHI16 : MIR_VURSHI32;
+  if (signed_p) {
+    assert (lane_size == 2 || lane_size == 4);
+    return lane_size == 2 ? MIR_VRSHI16 : MIR_VRSHI32;
+  }
+  return lane_size == 2 ? MIR_VURSHI16 : lane_size == 4 ? MIR_VURSHI32 : MIR_VURSHI64;
 }
 
 static MIR_insn_code_t get_v128_i32_arith_insn_code (c2m_ctx_t c2m_ctx, node_code_t code,
@@ -12767,7 +12783,7 @@ static op_t emit_v128_i32_shift_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op
                                     struct type *vector_type, op_t dest) {
   MIR_insn_code_t insn_code = get_v128_i32_shift_insn_code (c2m_ctx, code, vector_type);
 
-  if (v128_i32_packed_scalar_shift_type_p (c2m_ctx, vector_type, type2)) {
+  if (v128_i32_packed_scalar_shift_op_p (c2m_ctx, code, vector_type, type2)) {
     MIR_insn_code_t packed_code
       = get_v128_i32_packed_scalar_shift_insn_code (c2m_ctx, code, vector_type);
 

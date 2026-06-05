@@ -3,6 +3,9 @@ a:	u64 8589934593, 17179869187
 b:	u64 85899345930, 171798691870
 qa:	u64 4294967296, 9
 qb:	u64 5, 4
+qsh:	u64 4294967296, 7
+qshu:	u64 1152921504606846976, 16
+qcnt:	u64 2, 0
 r:	u64 0, 0
 main:	func i64
 	local i64:pa, i64:pb, i64:pr, i64:p, i64:x, v128:va, v128:vb, v128:vc
@@ -55,6 +58,26 @@ main:	func i64
 	add p, pr, 8
 	mov x, i64:(p)
 	bne fail, x, 5
+	mov pa, qsh
+	mov pb, qcnt
+	vmov va, v128:(pa)
+	vmov vb, v128:(pb)
+	vlshi64 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i64:(pr)
+	bne fail, x, 17179869184
+	add p, pr, 8
+	mov x, i64:(p)
+	bne fail, x, 28
+	mov pa, qshu
+	vmov va, v128:(pa)
+	vurshi64 vc, va, vb
+	vmov v128:(pr), vc
+	mov x, i64:(pr)
+	bne fail, x, 288230376151711744
+	add p, pr, 8
+	mov x, i64:(p)
+	bne fail, x, 4
 	mov pa, a
 	mov pb, b
 	vmov va, v128:(pa)

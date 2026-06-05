@@ -1101,8 +1101,8 @@ static void OPTIMIZE eval (MIR_context_t ctx, func_desc_t func_desc, MIR_val_t *
     REP2 (LAB_EL, MIR_VDIVF32, MIR_VDIVF64);
     REP3 (LAB_EL, MIR_VAND, MIR_VOR, MIR_VXOR);
     REP8 (LAB_EL, MIR_AND, MIR_ANDS, MIR_OR, MIR_ORS, MIR_XOR, MIR_XORS, MIR_LSH, MIR_LSHS);
-    REP6 (LAB_EL, MIR_VLSHI16, MIR_VRSHI16, MIR_VURSHI16, MIR_VLSHI32, MIR_VRSHI32,
-          MIR_VURSHI32);
+    REP8 (LAB_EL, MIR_VLSHI16, MIR_VRSHI16, MIR_VURSHI16, MIR_VLSHI32, MIR_VRSHI32,
+          MIR_VURSHI32, MIR_VLSHI64, MIR_VURSHI64);
     REP8 (LAB_EL, MIR_VEQI8, MIR_VEQI16, MIR_VEQI32, MIR_VGTI8, MIR_VGTI16, MIR_VGTI32,
           MIR_VEQF32, MIR_VNEF32);
     REP6 (LAB_EL, MIR_VLTF32, MIR_VLEF32, MIR_VEQF64, MIR_VNEF64, MIR_VLTF64, MIR_VLEF64);
@@ -1630,6 +1630,24 @@ common_addr:;
     unsigned count = get_v128_u64 (op2, 0);
 
     for (size_t i = 0; i < 4; i++) set_v128_u32 (r, i, get_v128_u32 (op1, i) >> count);
+    END_INSN;
+  }
+  CASE (MIR_VLSHI64, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+    unsigned count = get_v128_u64 (op2, 0);
+
+    for (size_t i = 0; i < 2; i++) set_v128_u64 (r, i, get_v128_u64 (op1, i) << count);
+    END_INSN;
+  }
+  CASE (MIR_VURSHI64, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+    unsigned count = get_v128_u64 (op2, 0);
+
+    for (size_t i = 0; i < 2; i++) set_v128_u64 (r, i, get_v128_u64 (op1, i) >> count);
     END_INSN;
   }
   CASE (MIR_VEQI8, 3) {

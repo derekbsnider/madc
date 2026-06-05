@@ -168,6 +168,11 @@ int main (void) {
   v2udi uli_add_a = {0xfffffffffffffff0ULL, 20ULL};
   v2udi uli_add_b = {0x20ULL, 7ULL};
   v2udi uli_add_c;
+  v2di li_shift_a = {0x100000000LL, 7};
+  v2di li_shift_neg = {-8, 0x100000000LL};
+  v2di li_shift_c;
+  v2udi uli_shift_a = {0x1000000000000000ULL, 16ULL};
+  v2udi uli_shift_c;
   v2df d = {1.25, 2.5};
   v2df e = {3.5, 4.5};
   v2si cv_i = {-1, 3};
@@ -723,5 +728,25 @@ int main (void) {
   if (uli_add_c[0] != 0x10ULL || uli_add_c[1] != 27ULL) return 209;
   uli_add_c -= uli_add_b;
   if (uli_add_c[0] != 0xfffffffffffffff0ULL || uli_add_c[1] != 20ULL) return 210;
+  li_shift_c = li_shift_a << 2;
+  if (li_shift_c[0] != 0x400000000LL || li_shift_c[1] != 28) return 211;
+  li_shift_c = li_shift_a;
+  li_shift_c <<= 3;
+  if (li_shift_c[0] != 0x800000000LL || li_shift_c[1] != 56) return 212;
+  uli_shift_c = uli_shift_a << 1;
+  if (uli_shift_c[0] != 0x2000000000000000ULL || uli_shift_c[1] != 32ULL) return 213;
+  uli_shift_c = uli_shift_a;
+  uli_shift_c <<= 2;
+  if (uli_shift_c[0] != 0x4000000000000000ULL || uli_shift_c[1] != 64ULL) return 214;
+  uli_shift_c = uli_shift_a >> 4;
+  if (uli_shift_c[0] != 0x0100000000000000ULL || uli_shift_c[1] != 1ULL) return 215;
+  uli_shift_c = uli_shift_a;
+  uli_shift_c >>= 1;
+  if (uli_shift_c[0] != 0x0800000000000000ULL || uli_shift_c[1] != 8ULL) return 216;
+  li_shift_c = li_shift_neg >> 2;
+  if (li_shift_c[0] != -2 || li_shift_c[1] != 0x40000000LL) return 217;
+  li_shift_c = li_shift_neg;
+  li_shift_c >>= 1;
+  if (li_shift_c[0] != -4 || li_shift_c[1] != 0x80000000LL) return 218;
   return 0;
 }
