@@ -1,10 +1,13 @@
 typedef int v4si __attribute__ ((vector_size (16)));
+typedef int v2si __attribute__ ((vector_size (8)));
+typedef int v8si __attribute__ ((vector_size (32)));
 typedef unsigned int v4ui __attribute__ ((vector_size (16)));
 typedef float v4sf __attribute__ ((vector_size (16)));
 typedef long long v2di __attribute__ ((vector_size (16)));
 typedef double v2df __attribute__ ((__vector_size__ (16)));
 typedef signed char v16qi __attribute__ ((vector_size (16)));
 typedef unsigned char v16uqi __attribute__ ((vector_size (16)));
+typedef short v4hi __attribute__ ((vector_size (8)));
 typedef short v8hi __attribute__ ((vector_size (16)));
 typedef unsigned short uint16x8_t __attribute__ ((vector_size (16)));
 
@@ -44,6 +47,9 @@ int main (void) {
   v8hi hia = {1, -2, 300, -400, 5000, -6000, 32760, -32768};
   v8hi hib = {2, -3, -200, 100, -20, 30, 10, -1};
   v8hi himask = {0, 9, 2, 11, 4, 13, 6, 15};
+  v2si small;
+  v8si wide;
+  v4hi hsmall;
   v8hi hc;
   uint16x8_t uha = {1, 2, 65000, 65535, 128, 256, 1024, 32768};
   uint16x8_t uhb = {3, 2, 8, 5, 2, 4, 8, 16};
@@ -266,5 +272,14 @@ int main (void) {
   if (u8c[0] != 3 || u8c[1] != 4 || u8c[2] != 0 || u8c[3] != 3) return 96;
   u8c = u8a > u8b;
   if (u8c[0] != 0 || u8c[1] != 0 || u8c[2] != 255 || u8c[3] != 255) return 97;
+  small = __builtin_shufflevector (a, b, 0, 5);
+  if (sizeof (small) != 8 || small[0] != 1 || small[1] != 2) return 98;
+  wide = __builtin_shufflevector (a, b, 0, 4, 1, 5, 2, 6, 3, 7);
+  if (sizeof (wide) != 32 || wide[0] != 1 || wide[1] != 9 || wide[6] != 4 || wide[7] != 4)
+    return 99;
+  hsmall = __builtin_shufflevector (hia, hib, 0, 9, 2, 11);
+  if (sizeof (hsmall) != 8 || hsmall[0] != 1 || hsmall[1] != -3 || hsmall[2] != 300
+      || hsmall[3] != 100)
+    return 100;
   return 0;
 }
