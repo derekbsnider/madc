@@ -9961,6 +9961,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
                && (t3->mode == TM_STRUCT || t3->mode == TM_UNION)
                && t2->u.tag_type == t3->u.tag_type) {
       *e->type = *t2;
+    } else if (t2->mode == TM_VECTOR && t3->mode == TM_VECTOR
+               && compatible_types_p (t2, t3, TRUE)) {
+      *e->type = *t2;
     } else if ((t2->mode == TM_PTR && null_const_p (e3, t3))
                || (t3->mode == TM_PTR && null_const_p (e2, t2))) {
       e->type = null_const_p (e2, t2) ? t3 : t2;
@@ -15285,10 +15288,16 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     MIR_label_t end_label = MIR_new_label (ctx);
     struct type *cond_res_type = ((struct expr *) r->attr)->type;
     op_t addr;
-    int void_p = void_type_p (cond_res_type), cond_expect_res;
+    int void_p = void_type_p (cond_res_type), vector_p = vector_type_p (cond_res_type);
+    int cond_expect_res;
     mir_size_t size = type_size (c2m_ctx, cond_res_type);
 
-    if (!void_p) t = get_mir_type (c2m_ctx, cond_res_type);
+    if (!void_p) {
+      t = get_mir_type (c2m_ctx, cond_res_type);
+      if (vector_p) t = MIR_T_UNDEF;
+    }
+    if (!void_p && t == MIR_T_UNDEF && desirable_dest == NULL && vector_p)
+      res = vector_temp (c2m_ctx, cond_res_type);
     gen (c2m_ctx, cond, cond_true_label, cond_false_label, FALSE, NULL, &cond_expect_res);
     emit_label_insn_opt (c2m_ctx, cond_true_label);
     op1 = gen (c2m_ctx, true_expr, NULL, NULL, !void_p && t != MIR_T_UNDEF, NULL, NULL);
@@ -15298,9 +15307,13 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         op1 = cast (c2m_ctx, op1, t, FALSE);
         emit2 (c2m_ctx, tp_mov (t), res.mir_op, op1.mir_op);
       } else if (desirable_dest == NULL) {
-        res = get_new_temp (c2m_ctx, MIR_T_I64);
-        addr = mem_to_address (c2m_ctx, op1, FALSE);
-        emit2 (c2m_ctx, MIR_MOV, res.mir_op, addr.mir_op);
+        if (vector_p) {
+          block_move (c2m_ctx, res, op1, size);
+        } else {
+          res = get_new_temp (c2m_ctx, MIR_T_I64);
+          addr = mem_to_address (c2m_ctx, op1, FALSE);
+          emit2 (c2m_ctx, MIR_MOV, res.mir_op, addr.mir_op);
+        }
       } else {
         block_move (c2m_ctx, *desirable_dest, op1, size);
         res = *desirable_dest;
@@ -15314,9 +15327,13 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         op1 = cast (c2m_ctx, op1, t, FALSE);
         emit2 (c2m_ctx, tp_mov (t), res.mir_op, op1.mir_op);
       } else if (desirable_dest == NULL) {
-        addr = mem_to_address (c2m_ctx, op1, FALSE);
-        emit2 (c2m_ctx, MIR_MOV, res.mir_op, addr.mir_op);
-        res = new_op (NULL, MIR_new_mem_op (ctx, MIR_T_I8, 0, res.mir_op.u.reg, 0, 1));
+        if (vector_p) {
+          block_move (c2m_ctx, res, op1, size);
+        } else {
+          addr = mem_to_address (c2m_ctx, op1, FALSE);
+          emit2 (c2m_ctx, MIR_MOV, res.mir_op, addr.mir_op);
+          res = new_op (NULL, MIR_new_mem_op (ctx, MIR_T_I8, 0, res.mir_op.u.reg, 0, 1));
+        }
       } else {
         block_move (c2m_ctx, res, op1, size);
       }

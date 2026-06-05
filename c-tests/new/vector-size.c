@@ -594,5 +594,10 @@ int main (void) {
   uc = usrc;
   uc >>= 1u;
   if (uc[0] != 0u || uc[1] != 0x40000000u || uc[2] != 0x7fffffffu || uc[3] != 8u) return 170;
+  c = s > 0 ? a : b;
+  if (c[0] != 1 || c[1] != 2 || c[2] != 3 || c[3] != 4) return 171;
+  c = s < 0 ? a : b;
+  if (c[0] != 9 || c[1] != 2 || c[2] != 3 || c[3] != 4) return 172;
+  if ((s > 0 ? a : b)[2] != 3) return 173;
   return 0;
 }
