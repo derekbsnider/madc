@@ -1324,6 +1324,9 @@ static bool reverse_scalar_storage_requested(const std::string &order_name)
 
 static bool is_contextual_identifier_token(TokenBase *tb);
 static std::string contextual_identifier_name(TokenBase *tb);
+static void skip_template_id_suffix(Program &pgm);
+static void apply_template_call_return_inference(Program &pgm,
+						 TokenCallFunc *tc);
 
 static bool token_origin_allows_c89_implicit_function(TokenBase *tb)
 {
@@ -1335,7 +1338,13 @@ static bool token_origin_allows_c89_implicit_function(TokenBase *tb)
 
 static bool is_typeof_identifier(const std::string &name)
 {
-    return name == "typeof" || name == "typeof_unqual";
+    return name == "typeof" || name == "typeof_unqual"
+	|| name == "__typeof" || name == "__typeof__";
+}
+
+static bool is_decltype_identifier(const std::string &name)
+{
+    return name == "decltype";
 }
 
 static bool is_alignof_identifier(const std::string &name)
@@ -1351,6 +1360,21 @@ static bool is_static_assert_identifier(const std::string &name)
 static bool is_nullptr_identifier(const std::string &name)
 {
     return name == "nullptr";
+}
+
+static bool is_bool_literal_identifier(const std::string &name, bool &value)
+{
+    if ( name == "true" )
+    {
+	value = true;
+	return true;
+    }
+    if ( name == "false" )
+    {
+	value = false;
+	return true;
+    }
+    return false;
 }
 
 static DataDef *effective_pointer_type_for_member_access(Program &pgm, TokenBase *tb)
@@ -1460,10 +1484,42 @@ static std::string namespace_function_symbol(const std::string &ns_name,
 	sym += (isalnum((unsigned char)c) || c == '_') ? c : '_';
     }
     sym += "_";
-    for ( size_t i = 0; i < member_name.size(); ++i )
+    if ( member_name.compare(0, 8, "operator") == 0 )
     {
-	char c = member_name[i];
-	sym += (isalnum((unsigned char)c) || c == '_') ? c : '_';
+	sym += "operator";
+	std::string op = member_name.substr(8);
+	for ( size_t i = 0; i < op.size(); ++i )
+	{
+	    char c = op[i];
+	    switch ( c )
+	    {
+	    case '<': sym += "_lt"; break;
+	    case '>': sym += "_gt"; break;
+	    case '+': sym += "_pl"; break;
+	    case '-': sym += "_mi"; break;
+	    case '*': sym += "_ml"; break;
+	    case '/': sym += "_dv"; break;
+	    case '%': sym += "_rm"; break;
+	    case '=': sym += "_as"; break;
+	    case '&': sym += "_ad"; break;
+	    case '|': sym += "_or"; break;
+	    case '^': sym += "_eo"; break;
+	    case '!': sym += "_nt"; break;
+	    case '[': sym += "_ix"; break;
+	    case ']': break;
+	    case '(': sym += "_cl"; break;
+	    case ')': break;
+	    default:  sym += (isalnum((unsigned char)c) || c == '_') ? c : '_'; break;
+	    }
+	}
+    }
+    else
+    {
+	for ( size_t i = 0; i < member_name.size(); ++i )
+	{
+	    char c = member_name[i];
+	    sym += (isalnum((unsigned char)c) || c == '_') ? c : '_';
+	}
     }
     return sym;
 }
@@ -1593,6 +1649,109 @@ static DataDef *resolve_named_datadef(Program &pgm, const std::string &name)
     return pgm.lazy_resolve_type(name);
 }
 
+static DataDef *resolve_class_type_alias(DataDefCLASS *cls, const std::string &name)
+{
+    if ( !cls )
+	return NULL;
+    std::map<std::string, DataDef *>::iterator ai = cls->type_aliases.find(name);
+    if ( ai != cls->type_aliases.end() )
+	return ai->second;
+    for ( size_t i = 0; i < cls->bases.size(); ++i )
+	if ( DataDef *bd = resolve_class_type_alias(cls->bases[i].base, name) )
+	    return bd;
+    if ( cls->base_class )
+	return resolve_class_type_alias(cls->base_class, name);
+    if ( cls->enclosing_class )
+	return resolve_class_type_alias(cls->enclosing_class, name);
+    return NULL;
+}
+
+static DataDef *resolve_class_static_member_type(DataDefCLASS *cls, const std::string &name)
+{
+    if ( !cls )
+	return NULL;
+    std::map<std::string, DataDef *>::iterator si = cls->static_member_types.find(name);
+    if ( si != cls->static_member_types.end() )
+	return si->second;
+    for ( size_t i = 0; i < cls->bases.size(); ++i )
+	if ( DataDef *bd = resolve_class_static_member_type(cls->bases[i].base, name) )
+	    return bd;
+    if ( cls->base_class )
+	return resolve_class_static_member_type(cls->base_class, name);
+    return NULL;
+}
+
+static DataDef *resolve_current_class_type_alias(Program &pgm,
+						  const std::string &name)
+{
+    for ( std::vector<DataDefCLASS *>::reverse_iterator it =
+	      pgm.class_scope_stack.rbegin();
+	  it != pgm.class_scope_stack.rend(); ++it )
+	if ( DataDef *dd = resolve_class_type_alias(*it, name) )
+	    return dd;
+    if ( !pgm.compounds.empty() && pgm.compounds.top()
+      && pgm.compounds.top()->method
+      && pgm.compounds.top()->method->owner_class )
+	if ( DataDef *dd =
+		resolve_class_type_alias(pgm.compounds.top()->method->owner_class,
+					 name) )
+	    return dd;
+    return NULL;
+}
+
+static Variable *find_variable_for_contextual_type_name(Program &pgm,
+							const std::string &name)
+{
+    std::string lookup = name;
+    Variable *var = pgm.findVariable(lookup);
+    if ( var )
+	return var;
+    size_t sp = name.rfind(' ');
+    if ( sp == std::string::npos || sp + 1 >= name.size() )
+	return NULL;
+    lookup = name.substr(sp + 1);
+    return pgm.findVariable(lookup);
+}
+
+static DataDefCLASS *resolve_expression_class_scope(Program &pgm,
+						    const std::string &name)
+{
+    DataDef *dd = resolve_current_class_type_alias(pgm, name);
+    if ( !dd && !pgm.compounds.empty() && pgm.compounds.top()
+      && pgm.compounds.top()->method && pgm.compounds.top()->method->owner_class )
+	dd = resolve_class_type_alias(pgm.compounds.top()->method->owner_class, name);
+    if ( !dd )
+    {
+	datatype_map_iter dti = pgm.datatype_map.find(name);
+	if ( dti != pgm.datatype_map.end() )
+	    dd = &dti->second->definition;
+    }
+    if ( !dd )
+    {
+	datadef_map_iter dmi = pgm.struct_map.find(name);
+	if ( dmi != pgm.struct_map.end() )
+	    dd = dmi->second;
+    }
+    if ( !dd )
+	dd = pgm.lazy_resolve_type(name);
+    return dynamic_cast<DataDefCLASS *>(dd);
+}
+
+static TokenDataType *make_alias_type_token(const std::string &name,
+					    DataDef *dd, TokenBase *at)
+{
+    if ( !dd )
+	return NULL;
+    TokenDataType *tdt = new TokenDataType(name.c_str(), *dd);
+    if ( at )
+    {
+	tdt->file = at->file;
+	tdt->line = at->line;
+	tdt->column = at->column;
+    }
+    return tdt;
+}
+
 static TokenDataType *resolve_namespaced_type_token(Program &pgm, TokenBase *tb, bool consume_tokens)
 {
     if ( !tb || tb->type() != TokenType::ttIdentifier || !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
@@ -1606,10 +1765,17 @@ static TokenDataType *resolve_namespaced_type_token(Program &pgm, TokenBase *tb,
     if ( pgm.tokens.size() < 2 )
 	return NULL;
     TokenBase *member_tb = pgm.tokens[1];
-    if ( !member_tb || member_tb->type() != TokenType::ttIdentifier )
+    if ( !member_tb )
 	return NULL;
-
-    std::string member_name = ((TokenIdent *)member_tb)->str;
+    std::string member_name;
+    if ( member_tb->type() == TokenType::ttIdentifier )
+	member_name = ((TokenIdent *)member_tb)->str;
+    else if ( member_tb->type() == TokenType::ttDataType )
+	member_name = ((TokenDataType *)member_tb)->str;
+    else if ( is_contextual_identifier_token(member_tb) )
+	member_name = contextual_identifier_name(member_tb);
+    else
+	return NULL;
     datatype_map_iter dti = nti->second.find(member_name);
     if ( dti == nti->second.end() )
 	return NULL;
@@ -1633,8 +1799,12 @@ static TokenDataType *resolve_namespaced_type_token(Program &pgm, TokenBase *tb,
 // must be '<'. See docs/plans/2026-05-30-template-instantiation.md.
 static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
 						  bool consume_ns_tokens,
-						  bool allow_lazy_types);
+						  bool allow_lazy_types,
+						  bool consume_class_member_chain = true);
 static TokenDataType *use_site_type_token(TokenDataType *proto, TokenBase *at);
+static TokenDataType *instantiate_template_alias_use(Program &pgm,
+						     const std::string &tname,
+						     TokenBase *tb);
 
 // Match `<`...`>` as a balanced delimiter pair, like `(`...`)` and `{`...`}`:
 // each `<` opens one template level and is closed by exactly ONE `>`. The lexer,
@@ -1660,6 +1830,373 @@ static bool consume_template_close(Program &pgm, TokenBase *tok)
     return false;
 }
 
+static std::string template_token_fragment(TokenBase *tb)
+{
+    if ( !tb )
+	return "";
+    if ( tb->type() == TokenType::ttIdentifier )
+	return ((TokenIdent *)tb)->str;
+    if ( tb->type() == TokenType::ttKeyword )
+	return ((TokenKeyword *)tb)->str;
+    if ( tb->type() == TokenType::ttDataType )
+	return ((TokenDataType *)tb)->str;
+    if ( tb->type() == TokenType::ttInteger )
+    {
+	TokenInt *ti = static_cast<TokenInt *>(tb);
+	if ( !ti->source_text.empty() )
+	    return ti->source_text;
+	return std::to_string(ti->ival());
+    }
+    if ( tb->type() == TokenType::ttString )
+	return ((TokenStr *)tb)->str;
+    if ( TokenMultiOp *mo = dynamic_cast<TokenMultiOp *>(tb) )
+	return mo->str;
+    char c = (char)tb->get();
+    return c ? std::string(1, c) : std::string("_");
+}
+
+static std::string sanitize_template_fragment(const std::string &s)
+{
+    std::string out;
+    for ( size_t i = 0; i < s.size(); ++i )
+    {
+	unsigned char c = (unsigned char)s[i];
+	out += (isalnum(c) || c == '_') ? (char)c : '_';
+    }
+    return out.empty() ? std::string("_") : out;
+}
+
+static TokenBase *collect_template_argument_spelling(Program &pgm,
+						     TokenBase *first,
+						     std::string &spelling,
+						     std::vector<TokenBase *> *tokens_out = NULL)
+{
+    int angle_depth = 0;
+    int paren_depth = 0;
+    int square_depth = 0;
+    TokenBase *t = first;
+    while ( t )
+    {
+	if ( angle_depth == 0 && paren_depth == 0 && square_depth == 0
+	  && (t->id() == TokenID::tkComma || t->id() == TokenID::tkGT
+	   || t->id() == TokenID::tkBSR) )
+	    return t;
+	if ( t->id() == TokenID::tkBSR && angle_depth == 1 )
+	{
+	    spelling += ">";
+	    if ( tokens_out )
+		tokens_out->push_back(new TokenGT());
+	    return new TokenGT();
+	}
+	spelling += template_token_fragment(t);
+	if ( tokens_out )
+	    tokens_out->push_back(t->clone());
+	if ( t->id() == TokenID::tkLT )
+	    ++angle_depth;
+	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
+	    --angle_depth;
+	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
+	    angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
+	else if ( t->id() == TokenID::tkOpBrk )
+	    ++paren_depth;
+	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
+	    --paren_depth;
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square_depth;
+	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
+	    --square_depth;
+	t = pgm.nextToken();
+    }
+    pgm.Throw(first) << "Unexpected end of input in template argument list" << flush;
+    return NULL;
+}
+
+static bool template_param_expects_type(const std::vector<bool> &kinds,
+					size_t index)
+{
+    return index >= kinds.size() || kinds[index];
+}
+
+static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
+	const std::vector<TokenBase *> &src,
+	const std::map<std::string, TokenDataType *> &subst)
+{
+    std::vector<TokenBase *> out;
+    for ( TokenBase *bt : src )
+    {
+	if ( bt && bt->type() == TokenType::ttIdentifier )
+	{
+	    const std::string &s = ((TokenIdent *)bt)->str;
+	    std::map<std::string, TokenDataType *>::const_iterator si =
+		subst.find(s);
+	    if ( si != subst.end() )
+	    {
+		out.push_back(si->second->clone());
+		continue;
+	    }
+	}
+	out.push_back(bt ? bt->clone() : NULL);
+    }
+    return out;
+}
+
+static std::string template_tokens_spelling(
+	const std::vector<TokenBase *> &tokens)
+{
+    std::string spelling;
+    for ( TokenBase *t : tokens )
+	spelling += template_token_fragment(t);
+    return spelling;
+}
+
+static size_t template_id_suffix_end(
+	const std::vector<TokenBase *> &tokens, size_t lt_index)
+{
+    int depth = 0;
+    for ( size_t i = lt_index; i < tokens.size(); ++i )
+    {
+	if ( tokens[i]->id() == TokenID::tkLT )
+	    ++depth;
+	else if ( tokens[i]->id() == TokenID::tkGT )
+	{
+	    --depth;
+	    if ( depth <= 0 )
+		return i;
+	}
+	else if ( tokens[i]->id() == TokenID::tkBSR )
+	{
+	    if ( depth > 1 )
+		depth -= 2;
+	    else
+		depth = 0;
+	    if ( depth <= 0 )
+		return i;
+	}
+    }
+    return lt_index;
+}
+
+static TokenBase *consume_template_type_arg_qualifiers(Program &pgm,
+						       TokenBase *tb,
+						       std::string &spelling)
+{
+    while ( is_type_qualifier_token(tb) )
+    {
+	if ( tb->id() == TokenID::tkCONST )
+	    spelling += "const ";
+	else if ( tb->id() == TokenID::tkVOLATILE )
+	    spelling += "volatile ";
+	else if ( tb->id() == TokenID::tkRESTRICT )
+	    spelling += "restrict ";
+	tb = pgm.nextToken();
+    }
+    return tb;
+}
+
+static TokenDataType *instantiate_opaque_template_use(Program &pgm,
+						      Program::TemplateDef &td,
+						      const std::string &tname,
+						      TokenBase *tb)
+{
+    pgm.nextToken(); // consume '<'
+    std::vector<std::string> args;
+    for (;;)
+    {
+	TokenBase *at = pgm.nextToken();
+	std::string spelling;
+	TokenBase *sep = collect_template_argument_spelling(pgm, at, spelling);
+	args.push_back(spelling);
+	if ( sep->id() == TokenID::tkComma )
+	    continue;
+	if ( consume_template_close(pgm, sep) )
+	    break;
+	pgm.Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
+    }
+    if ( args.size() > td.typeparams.size() )
+	pgm.Throw(tb) << tname << "<> expects " << td.typeparams.size()
+		      << " argument(s), got " << args.size() << flush;
+    while ( args.size() < td.typeparams.size() )
+    {
+	size_t ai = args.size();
+	if ( ai >= td.typeparam_defaults.size()
+	  || td.typeparam_defaults[ai].empty() )
+	    pgm.Throw(tb) << tname << "<> expects " << td.typeparams.size()
+			  << " argument(s), got " << args.size() << flush;
+	std::string spelling;
+	for ( TokenBase *dt : td.typeparam_defaults[ai] )
+	    spelling += template_token_fragment(dt);
+	args.push_back(spelling);
+    }
+
+    std::string mangled = tname;
+    std::string canon;
+    if ( td.owner_class )
+    {
+	canon = td.owner_class->canonical_cpp_spelling.empty()
+	      ? td.owner_class->name : td.owner_class->canonical_cpp_spelling;
+	canon += "::";
+    }
+    else if ( !td.defining_namespace.empty() )
+	canon = td.defining_namespace + "::";
+    canon += tname + "<";
+    for ( size_t i = 0; i < args.size(); ++i )
+    {
+	mangled += "_" + sanitize_template_fragment(args[i]);
+	if ( i )
+	    canon += ",";
+	canon += args[i];
+    }
+    canon += ">";
+
+    datatype_map_iter have = pgm.datatype_map.find(mangled);
+    if ( have != pgm.datatype_map.end() )
+	return use_site_type_token((TokenDataType *)have->second, tb);
+
+    DataDefCLASS *fwd = new DataDefCLASS(mangled, 0, DataType::dtRESERVED);
+    fwd->is_dependent_placeholder = true;
+    fwd->canonical_cpp_spelling = canon;
+    pgm.struct_map[mangled] = fwd;
+    TokenDataType *tdt = new TokenDataType(mangled.c_str(), *fwd);
+    pgm.datatype_map[mangled] = tdt;
+    if ( !td.defining_namespace.empty() )
+	pgm.namespace_datatype_map[td.defining_namespace][mangled] = tdt;
+    return use_site_type_token(tdt, tb);
+}
+
+static bool is_incomplete_class_datadef(DataDef *dd)
+{
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+    return cls && (cls->is_dependent_placeholder
+	|| (cls->size == 0 && cls->members.empty()
+	&& cls->methods.empty() && cls->ctors.empty()
+	&& cls->bases.empty()));
+}
+
+static bool is_incomplete_template_class_type(TokenDataType *tdt)
+{
+    return tdt && is_incomplete_class_datadef(&tdt->definition);
+}
+
+static bool datadef_has_unresolved_dependent_surface(DataDef *dd);
+
+static bool class_has_dependent_base(DataDefCLASS *cls,
+				     std::set<DataDefCLASS *> *seen = NULL)
+{
+    if ( !cls )
+	return false;
+    std::set<DataDefCLASS *> local_seen;
+    if ( !seen )
+	seen = &local_seen;
+    if ( seen->find(cls) != seen->end() )
+	return false;
+    seen->insert(cls);
+    for ( size_t i = 0; i < cls->bases.size(); ++i )
+    {
+	DataDefCLASS *base = cls->bases[i].base;
+	if ( !base )
+	    continue;
+	if ( base->is_dependent_placeholder || base->has_dependent_surface
+	  || class_has_dependent_base(base, seen) )
+	    return true;
+    }
+    if ( cls->base_class
+      && (cls->base_class->is_dependent_placeholder
+       || cls->base_class->has_dependent_surface
+       || class_has_dependent_base(cls->base_class, seen)) )
+	return true;
+    return false;
+}
+
+static bool class_has_unresolved_dependent_surface(DataDefCLASS *cls)
+{
+    return cls && (cls->is_dependent_placeholder || cls->has_dependent_surface
+	|| class_has_dependent_base(cls));
+}
+
+static bool datadef_has_unresolved_dependent_surface(DataDef *dd)
+{
+    if ( !dd )
+	return false;
+    if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd) )
+	return class_has_unresolved_dependent_surface(cls);
+    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+	return datadef_has_unresolved_dependent_surface(ptr->base_type);
+    if ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(dd) )
+	return datadef_has_unresolved_dependent_surface(arr->element_type);
+    return false;
+}
+
+static DataDefCLASS *materialize_dependent_member_type(Program &pgm,
+						       DataDefCLASS *owner,
+						       const std::string &member_name)
+{
+    if ( !owner || member_name.empty() )
+	return NULL;
+    std::string dep_name = owner->name + "__" + sanitize_template_fragment(member_name);
+    datatype_map_iter have = pgm.datatype_map.find(dep_name);
+    if ( have != pgm.datatype_map.end() )
+	return dynamic_cast<DataDefCLASS *>(&have->second->definition);
+
+    DataDefCLASS *dep = new DataDefCLASS(dep_name, 0, DataType::dtRESERVED);
+    dep->is_dependent_placeholder = true;
+    std::string owner_spelling = owner->canonical_cpp_spelling.empty()
+			       ? owner->name : owner->canonical_cpp_spelling;
+    dep->canonical_cpp_spelling = owner_spelling + "::" + member_name;
+    pgm.struct_map[dep_name] = dep;
+    pgm.datatype_map[dep_name] = new TokenDataType(dep_name.c_str(), *dep);
+    return dep;
+}
+
+static DataDefCLASS *materialize_opaque_class_type(Program &pgm,
+						   const std::string &name,
+						   const std::string &canonical)
+{
+    if ( name.empty() )
+	return NULL;
+    datatype_map_iter have = pgm.datatype_map.find(name);
+    if ( have != pgm.datatype_map.end() )
+	return dynamic_cast<DataDefCLASS *>(&have->second->definition);
+
+    DataDefCLASS *dep = new DataDefCLASS(name, 0, DataType::dtRESERVED);
+    dep->is_dependent_placeholder = true;
+    dep->canonical_cpp_spelling = canonical.empty() ? name : canonical;
+    pgm.struct_map[name] = dep;
+    pgm.datatype_map[name] = new TokenDataType(name.c_str(), *dep);
+    return dep;
+}
+
+static DataDef *dependent_deref_result_type(Program &pgm, DataDef *dd)
+{
+    if ( !dd )
+	return NULL;
+    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+	return ptr->base_type ? ptr->base_type : &ddINT64;
+    if ( !datadef_has_unresolved_dependent_surface(dd) )
+	return NULL;
+    std::string spelling = dd->canonical_cpp_spelling.empty()
+			 ? dd->name : dd->canonical_cpp_spelling;
+    return materialize_opaque_class_type(pgm,
+	sanitize_template_fragment(dd->name + "__deref"), "*" + spelling);
+}
+
+static void record_pending_template_instantiation(
+	Program &pgm, const std::string &tname, const std::string &mangled,
+	const std::string &canon, const std::vector<TokenDataType *> &args)
+{
+    std::vector<Program::PendingTemplateInstantiation> &pending =
+	pgm.pending_template_instantiations[tname];
+    for ( size_t i = 0; i < pending.size(); ++i )
+	if ( pending[i].mangled_name == mangled )
+	    return;
+
+    Program::PendingTemplateInstantiation pti;
+    pti.mangled_name = mangled;
+    pti.canonical_spelling = canon;
+    for ( size_t i = 0; i < args.size(); ++i )
+	pti.args.push_back((TokenDataType *)args[i]->clone());
+    pending.push_back(pti);
+}
+
 static TokenDataType *instantiate_template_use(Program &pgm, const std::string &tname,
 					       TokenBase *tb)
 {
@@ -1669,71 +2206,197 @@ static TokenDataType *instantiate_template_use(Program &pgm, const std::string &
     if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
 	return NULL;
     Program::TemplateDef &td = tmi->second;
+    if ( td.has_non_type_params && td.body.empty() )
+	return instantiate_opaque_template_use(pgm, td, tname, tb);
 
-    // Parse `< Arg [, Arg ...] >` — resolve each argument to a concrete type.
+    // Parse `< Arg [, Arg ...] >`, resolving type parameters as DataDefs and
+    // preserving non-type parameters as token sequences for later substitution.
     pgm.nextToken(); // consume '<'
-    std::vector<TokenDataType *> args;
+    std::vector<TokenDataType *> type_args;
+    std::vector<std::string> arg_spellings;
     std::string mangled = tname;
-    for (;;)
+    std::map<std::string, TokenDataType *> subst;
+    std::map<std::string, std::vector<TokenBase *> > token_subst;
+    size_t pi = 0;
+    if ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkGT
+	  || pgm.peekToken()->id() == TokenID::tkBSR) )
     {
-	TokenBase *at = pgm.nextToken();
-	TokenDataType *adt = resolve_declared_type_token(pgm, at, true, true);
-	if ( !adt )
-	    pgm.Throw(at) << "Expecting a type argument to " << tname << "<>" << flush;
-	// Fold trailing pointer stars into the argument's type, mirroring a
-	// pointer typedef (`Box<char*>`, `Vec<T**>`). A single pointer-typed
-	// TokenDataType substitutes cleanly into the body — the same shape the
-	// parser produces for `typedef char *charptr; charptr m;`.
-	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
-	{
-	    pgm.nextToken();
-	    DataDefPTR *ptr = pgm.getPointerType(&adt->definition);
-	    TokenDataType *padt = new TokenDataType(ptr->name.c_str(), *ptr);
-	    padt->file = at->file; padt->line = at->line; padt->column = at->column;
-	    adt = padt;
-	}
-	args.push_back(adt);
-	// Sanitize the type-name fragment into a valid C identifier piece — a
-	// pointer type's name carries '*' (e.g. "char*"), which is illegal in
-	// the generated struct tag / method symbols.
-	mangled += "_";
-	for ( char c : adt->definition.name )
-	    mangled += (c == '*') ? 'p' : c;
-	TokenBase *sep = pgm.nextToken();
-	if ( sep->id() == TokenID::tkComma ) continue;
-	if ( consume_template_close(pgm, sep) ) break;
-	pgm.Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
+	TokenBase *close = pgm.nextToken();
+	if ( !consume_template_close(pgm, close) )
+	    pgm.Throw(close) << "Expecting '>' in " << tname << "<...>" << flush;
     }
-    if ( args.size() != td.typeparams.size() )
-	pgm.Throw(tb) << tname << "<> expects " << td.typeparams.size()
-		      << " type argument(s), got " << args.size() << flush;
+    else
+    {
+	for (;;)
+	{
+	    if ( pi >= td.typeparams.size() )
+		pgm.Throw(tb) << tname << "<> expects " << td.typeparams.size()
+			      << " argument(s)" << flush;
+	    TokenBase *at = pgm.nextToken();
+	    TokenBase *sep = NULL;
+	    if ( template_param_expects_type(td.typeparam_is_type, pi) )
+	    {
+		std::string cv_spelling;
+		at = consume_template_type_arg_qualifiers(pgm, at, cv_spelling);
+		TokenDataType *adt = resolve_declared_type_token(pgm, at, true, true);
+		if ( !adt )
+		    pgm.Throw(at) << "Expecting a type argument to "
+				  << tname << "<>" << flush;
+		// Fold trailing pointer stars into the argument's type, mirroring a
+		// pointer typedef (`Box<char*>`, `Vec<T**>`). A single pointer-typed
+		// TokenDataType substitutes cleanly into the body — the same shape the
+		// parser produces for `typedef char *charptr; charptr m;`.
+		while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+		{
+		    pgm.nextToken();
+		    DataDefPTR *ptr = pgm.getPointerType(&adt->definition);
+		    TokenDataType *padt = new TokenDataType(ptr->name.c_str(), *ptr);
+		    padt->file = at->file;
+		    padt->line = at->line;
+		    padt->column = at->column;
+		    adt = padt;
+		}
+		type_args.push_back(adt);
+		subst[td.typeparams[pi]] = adt;
+		const std::string &cs = adt->definition.canonical_cpp_spelling;
+		arg_spellings.push_back(cv_spelling
+		    + (cs.empty() ? adt->definition.name : cs));
+		sep = pgm.nextToken();
+	    }
+	    else
+	    {
+		std::string spelling;
+		std::vector<TokenBase *> arg_tokens;
+		sep = collect_template_argument_spelling(pgm, at, spelling,
+							 &arg_tokens);
+		token_subst[td.typeparams[pi]] = arg_tokens;
+		arg_spellings.push_back(spelling);
+	    }
+	    ++pi;
+	    if ( sep->id() == TokenID::tkComma )
+		continue;
+	    if ( consume_template_close(pgm, sep) )
+		break;
+	    pgm.Throw(sep) << "Expecting ',' or '>' in "
+			   << tname << "<...>" << flush;
+	}
+    }
+
+    while ( pi < td.typeparams.size() )
+    {
+	if ( pi >= td.typeparam_defaults.size()
+	  || td.typeparam_defaults[pi].empty() )
+	    pgm.Throw(tb) << tname << "<> expects " << td.typeparams.size()
+			  << " argument(s), got " << pi << flush;
+	std::vector<TokenBase *> default_tokens =
+	    clone_template_tokens_with_type_subst(td.typeparam_defaults[pi],
+						 subst);
+	if ( template_param_expects_type(td.typeparam_is_type, pi) )
+	{
+	    std::vector<TokenBase *> inj = default_tokens;
+	    inj.push_back(new TokenSemi());
+	    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
+		  it != inj.rend(); ++it )
+		pgm.pushToken(*it);
+	    TokenBase *dtok = pgm.nextToken();
+	    std::string cv_spelling;
+	    dtok = consume_template_type_arg_qualifiers(pgm, dtok, cv_spelling);
+	    TokenDataType *adt = resolve_declared_type_token(pgm, dtok, true, true);
+	    if ( !adt )
+		pgm.Throw(dtok ? dtok : tb)
+		    << "Could not resolve default template argument for "
+		    << td.typeparams[pi] << " in " << tname << "<>" << flush;
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+		pgm.nextToken();
+	    type_args.push_back(adt);
+	    subst[td.typeparams[pi]] = adt;
+	    const std::string &cs = adt->definition.canonical_cpp_spelling;
+	    arg_spellings.push_back(cv_spelling
+		+ (cs.empty() ? adt->definition.name : cs));
+	}
+	else
+	{
+	    token_subst[td.typeparams[pi]] = default_tokens;
+	    arg_spellings.push_back(template_tokens_spelling(default_tokens));
+	}
+	++pi;
+    }
+
+    for ( size_t i = 0; i < arg_spellings.size(); ++i )
+	mangled += "_" + sanitize_template_fragment(arg_spellings[i]);
+
+    // Canonical C++ spelling for Itanium mangling, built from the defining
+    // namespace + template name + each arg's canonical spelling (the args were
+    // instantiated first during the loop above, so they already carry theirs).
+    std::string canon = td.defining_namespace.empty() ? std::string()
+		      : (td.defining_namespace + "::");
+    canon += tname + "<";
+    for ( size_t i = 0; i < arg_spellings.size(); ++i )
+    {
+	if ( i ) canon += ",";
+	canon += arg_spellings[i];
+    }
+    canon += ">";
+
+    bool dependent_surface = false;
+    for ( size_t i = 0; i < type_args.size(); ++i )
+	if ( datadef_has_unresolved_dependent_surface(&type_args[i]->definition) )
+	    dependent_surface = true;
+
+    std::string registered_mangled = td.owner_class
+	? td.owner_class->name + "__" + mangled : mangled;
 
     // Already instantiated? Return a use-site clone of the cached type.
-    datatype_map_iter have = pgm.datatype_map.find(mangled);
+    datatype_map_iter have = pgm.datatype_map.find(registered_mangled);
     if ( have != pgm.datatype_map.end() )
-	return use_site_type_token((TokenDataType *)have->second, tb);
+    {
+	TokenDataType *cached = (TokenDataType *)have->second;
+	if ( td.body.empty() || !is_incomplete_template_class_type(cached) )
+	    return use_site_type_token(cached, tb);
+    }
 
-    // Map each type-parameter name -> its concrete type token.
-    std::map<std::string, TokenDataType *> subst;
-    for ( size_t i = 0; i < td.typeparams.size(); ++i )
-	subst[td.typeparams[i]] = args[i];
+    if ( td.body.empty() )
+    {
+	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
+	fwd->canonical_cpp_spelling = canon;
+	fwd->has_dependent_surface = dependent_surface;
+	pgm.struct_map[registered_mangled] = fwd;
+	TokenDataType *tdt = new TokenDataType(registered_mangled.c_str(), *fwd);
+	pgm.datatype_map[registered_mangled] = tdt;
+	if ( !td.defining_namespace.empty() )
+	    pgm.namespace_datatype_map[td.defining_namespace][registered_mangled] = tdt;
+	record_pending_template_instantiation(pgm, tname, registered_mangled, canon, type_args);
+	return use_site_type_token(tdt, tb);
+    }
 
     // Build the substituted, renamed class-definition token sequence:
     // clone each body token; rename the class tag (TokenIdent == class_name) to
     // `mangled`; replace each type-parameter ident with its concrete type token.
     std::vector<TokenBase *> inj;
-    for ( TokenBase *bt : td.body )
+    for ( size_t bi = 0; bi < td.body.size(); ++bi )
     {
+	TokenBase *bt = td.body[bi];
 	if ( bt->type() == TokenType::ttIdentifier )
 	{
 	    const std::string &s = ((TokenIdent *)bt)->str;
 	    std::map<std::string, TokenDataType *>::iterator si = subst.find(s);
 	    if ( si != subst.end() ) { inj.push_back(si->second->clone()); continue; }
+	    std::map<std::string, std::vector<TokenBase *> >::iterator nti =
+		token_subst.find(s);
+	    if ( nti != token_subst.end() )
+	    {
+		for ( size_t ni = 0; ni < nti->second.size(); ++ni )
+		    inj.push_back(nti->second[ni]->clone());
+		continue;
+	    }
 	    if ( s == td.class_name )
 	    {
 		TokenIdent *ni = (TokenIdent *)bt->clone();
 		ni->str = mangled;
 		inj.push_back(ni);
+		if ( bi + 1 < td.body.size()
+		  && td.body[bi + 1]->id() == TokenID::tkLT )
+		    bi = template_id_suffix_end(td.body, bi + 1);
 		continue;
 	    }
 	}
@@ -1759,53 +2422,513 @@ static TokenDataType *instantiate_template_use(Program &pgm, const std::string &
     // clear the function context, instantiate, then restore.
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(pgm.compounds, saved_compounds);
+    std::vector<DataDefCLASS *> saved_class_scope_stack;
+    std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     std::string saved_func = pgm.cur_func_name;
     pgm.cur_func_name.clear();
 
-    // Canonical C++ spelling for Itanium mangling, built from the defining
-    // namespace + template name + each arg's canonical spelling (the args were
-    // instantiated first during the loop above, so they already carry theirs).
     // Stashed around the re-parse; TokenCLASS::parse records it on the DataDefCLASS
-    // so a bodyless std:: method binds to the real libstdc++ symbol — no literal.
-    std::string canon = td.defining_namespace.empty() ? std::string()
-		      : (td.defining_namespace + "::");
-    canon += tname + "<";
-    for ( size_t i = 0; i < args.size(); ++i )
-    {
-	if ( i ) canon += ",";
-	const std::string &cs = args[i]->definition.canonical_cpp_spelling;
-	canon += cs.empty() ? args[i]->definition.name : cs;
-    }
-    canon += ">";
+    // so a bodyless method binds to the real C++ symbol without class-name tests.
     std::string saved_canon = pgm.instantiating_canonical_spelling;
+    bool saved_dependent_surface = pgm.instantiating_dependent_surface;
+    std::string saved_namespace = pgm.current_namespace;
     pgm.instantiating_canonical_spelling = canon;
+    pgm.instantiating_dependent_surface = dependent_surface;
+    pgm.current_namespace = td.defining_namespace;
+
+    bool pushed_owner_scope = false;
+    if ( td.owner_class )
+    {
+	pgm.class_scope_stack.push_back(td.owner_class);
+	pushed_owner_scope = true;
+    }
 
     TokenBase *class_kw = pgm.nextToken();   // the injected `class` keyword
     pgm.parseKeyword((TokenKeyword *)class_kw); // TokenCLASS::parse → registers DataDefCLASS
 
+    if ( pushed_owner_scope
+      && !pgm.class_scope_stack.empty()
+      && pgm.class_scope_stack.back() == td.owner_class )
+	pgm.class_scope_stack.pop_back();
+
+    std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     std::swap(pgm.compounds, saved_compounds);
     pgm.cur_func_name = saved_func;
     pgm.instantiating_canonical_spelling = saved_canon;
+    pgm.instantiating_dependent_surface = saved_dependent_surface;
+    pgm.current_namespace = saved_namespace;
 
-    datatype_map_iter now = pgm.datatype_map.find(mangled);
+    datatype_map_iter now = pgm.datatype_map.find(registered_mangled);
     if ( now == pgm.datatype_map.end() )
-	pgm.Throw(tb) << "internal: template instantiation " << mangled << " did not register" << flush;
-    DBG(std::cout << "instantiate_template_use(): instantiated " << mangled << std::endl);
+	pgm.Throw(tb) << "internal: template instantiation " << registered_mangled << " did not register" << flush;
+    DBG(std::cout << "instantiate_template_use(): instantiated " << registered_mangled << std::endl);
     return use_site_type_token((TokenDataType *)now->second, tb);
+}
+
+static TokenDataType *instantiate_template_alias_use(Program &pgm,
+						     const std::string &tname,
+						     TokenBase *tb)
+{
+    std::map<std::string, Program::TemplateAliasDef>::iterator tmi =
+	pgm.template_alias_map.find(tname);
+    if ( tmi == pgm.template_alias_map.end() )
+	return NULL;
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
+	return NULL;
+    Program::TemplateAliasDef &td = tmi->second;
+    if ( td.has_non_type_params )
+    {
+	pgm.nextToken(); // consume '<'
+	std::vector<std::string> args;
+	for (;;)
+	{
+	    TokenBase *at = pgm.nextToken();
+	    std::string spelling;
+	    TokenBase *sep = collect_template_argument_spelling(pgm, at, spelling);
+	    args.push_back(spelling);
+	    if ( sep->id() == TokenID::tkComma )
+		continue;
+	    if ( consume_template_close(pgm, sep) )
+		break;
+	    pgm.Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
+	}
+	while ( args.size() < td.typeparams.size() )
+	{
+	    size_t ai = args.size();
+	    if ( ai >= td.typeparam_defaults.size()
+	      || td.typeparam_defaults[ai].empty() )
+		break;
+	    std::string spelling;
+	    for ( TokenBase *dt : td.typeparam_defaults[ai] )
+		spelling += template_token_fragment(dt);
+	    args.push_back(spelling);
+	}
+
+	std::string mangled = tname;
+	std::string canon = td.defining_namespace.empty() ? std::string()
+			  : (td.defining_namespace + "::");
+	canon += tname + "<";
+	for ( size_t i = 0; i < args.size(); ++i )
+	{
+	    mangled += "_" + sanitize_template_fragment(args[i]);
+	    if ( i )
+		canon += ",";
+	    canon += args[i];
+	}
+	canon += ">";
+
+	datatype_map_iter have = pgm.datatype_map.find(mangled);
+	if ( have != pgm.datatype_map.end() )
+	    return use_site_type_token((TokenDataType *)have->second, tb);
+
+	DataDefCLASS *fwd = new DataDefCLASS(mangled, 0, DataType::dtRESERVED);
+	fwd->is_dependent_placeholder = true;
+	fwd->has_dependent_surface = true;
+	fwd->canonical_cpp_spelling = canon;
+	pgm.struct_map[mangled] = fwd;
+	TokenDataType *tdt = new TokenDataType(mangled.c_str(), *fwd);
+	pgm.datatype_map[mangled] = tdt;
+	if ( !td.defining_namespace.empty() )
+	    pgm.namespace_datatype_map[td.defining_namespace][mangled] = tdt;
+	return use_site_type_token(tdt, tb);
+    }
+
+    pgm.nextToken(); // consume '<'
+    std::vector<TokenDataType *> args;
+    std::map<std::string, TokenDataType *> subst;
+	for (;;)
+	{
+	    TokenBase *at = pgm.nextToken();
+	    std::string cv_spelling;
+	    at = consume_template_type_arg_qualifiers(pgm, at, cv_spelling);
+	    (void)cv_spelling;
+	    TokenDataType *adt = resolve_declared_type_token(pgm, at, true, true);
+	    if ( !adt )
+		pgm.Throw(at) << "Expecting a type argument to " << tname << "<>" << flush;
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	{
+	    pgm.nextToken();
+	    DataDefPTR *ptr = pgm.getPointerType(&adt->definition);
+	    TokenDataType *padt = new TokenDataType(ptr->name.c_str(), *ptr);
+	    padt->file = at->file; padt->line = at->line; padt->column = at->column;
+	    adt = padt;
+	}
+	args.push_back(adt);
+	TokenBase *sep = pgm.nextToken();
+	if ( sep->id() == TokenID::tkComma )
+	    continue;
+	if ( consume_template_close(pgm, sep) )
+	    break;
+	pgm.Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
+    }
+    if ( args.size() > td.typeparams.size() )
+	pgm.Throw(tb) << tname << "<> expects " << td.typeparams.size()
+		      << " type argument(s), got " << args.size() << flush;
+    for ( size_t i = 0; i < args.size(); ++i )
+	subst[td.typeparams[i]] = args[i];
+    while ( args.size() < td.typeparams.size() )
+    {
+	size_t ai = args.size();
+	if ( ai >= td.typeparam_defaults.size()
+	  || td.typeparam_defaults[ai].empty() )
+	    pgm.Throw(tb) << tname << "<> expects " << td.typeparams.size()
+			  << " type argument(s), got " << args.size() << flush;
+	std::vector<TokenBase *> inj;
+	for ( TokenBase *bt : td.typeparam_defaults[ai] )
+	{
+	    if ( bt->type() == TokenType::ttIdentifier )
+	    {
+		const std::string &s = ((TokenIdent *)bt)->str;
+		std::map<std::string, TokenDataType *>::iterator si = subst.find(s);
+		if ( si != subst.end() )
+		{
+		    inj.push_back(si->second->clone());
+		    continue;
+		}
+	    }
+	    inj.push_back(bt->clone());
+	}
+	inj.push_back(new TokenSemi());
+	for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
+	      it != inj.rend(); ++it )
+	    pgm.pushToken(*it);
+	TokenBase *dtok = pgm.nextToken();
+	std::string cv_spelling;
+	dtok = consume_template_type_arg_qualifiers(pgm, dtok, cv_spelling);
+	(void)cv_spelling;
+	TokenDataType *adt = resolve_declared_type_token(pgm, dtok, true, true);
+	if ( !adt )
+	    pgm.Throw(dtok ? dtok : tb) << "Could not resolve default template argument for "
+					<< td.typeparams[ai] << " in "
+					<< tname << "<>" << flush;
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	    pgm.nextToken();
+	args.push_back(adt);
+	subst[td.typeparams[ai]] = adt;
+    }
+
+    std::vector<TokenBase *> inj;
+    for ( TokenBase *bt : td.target )
+    {
+	if ( bt->type() == TokenType::ttIdentifier )
+	{
+	    const std::string &s = ((TokenIdent *)bt)->str;
+	    std::map<std::string, TokenDataType *>::iterator si = subst.find(s);
+	    if ( si != subst.end() )
+	    {
+		inj.push_back(si->second->clone());
+		continue;
+	    }
+	}
+	inj.push_back(bt->clone());
+    }
+    inj.push_back(new TokenSemi());
+    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
+	  it != inj.rend(); ++it )
+	pgm.pushToken(*it);
+
+    bool pushed_owner_scope = false;
+    if ( td.owner_class )
+    {
+	pgm.class_scope_stack.push_back(td.owner_class);
+	pushed_owner_scope = true;
+    }
+
+    TokenBase *head = pgm.nextToken();
+    TokenDataType *resolved = resolve_declared_type_token(pgm, head, true, true);
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	pgm.nextToken();
+
+    if ( pushed_owner_scope
+      && !pgm.class_scope_stack.empty()
+      && pgm.class_scope_stack.back() == td.owner_class )
+	pgm.class_scope_stack.pop_back();
+
+    return resolved ? use_site_type_token(resolved, tb) : NULL;
+}
+
+static void complete_pending_template_instantiations(Program &pgm,
+						    const std::string &class_name)
+{
+    std::map<std::string, std::vector<Program::PendingTemplateInstantiation>>::iterator pi =
+	pgm.pending_template_instantiations.find(class_name);
+    if ( pi == pgm.pending_template_instantiations.end() )
+	return;
+    std::map<std::string, Program::TemplateDef>::iterator ti =
+	pgm.template_map.find(class_name);
+    if ( ti == pgm.template_map.end() || ti->second.body.empty() )
+	return;
+
+    std::vector<Program::PendingTemplateInstantiation> pending = pi->second;
+    for ( size_t i = 0; i < pending.size(); ++i )
+    {
+	datatype_map_iter have = pgm.datatype_map.find(pending[i].mangled_name);
+	if ( have == pgm.datatype_map.end()
+	  || !is_incomplete_template_class_type((TokenDataType *)have->second) )
+	    continue;
+	if ( pgm.template_completion_requested.find(pending[i].mangled_name)
+	  == pgm.template_completion_requested.end() )
+	    continue;
+
+	std::vector<TokenBase *> toks;
+	toks.push_back(new TokenLT());
+	for ( size_t ai = 0; ai < pending[i].args.size(); ++ai )
+	{
+	    if ( ai )
+		toks.push_back(new TokenComma());
+	    toks.push_back(pending[i].args[ai]->clone());
+	}
+	toks.push_back(new TokenGT());
+	for ( std::vector<TokenBase *>::reverse_iterator it = toks.rbegin();
+	      it != toks.rend(); ++it )
+	    pgm.pushToken(*it);
+
+	TokenIdent fake_name(class_name.c_str());
+	instantiate_template_use(pgm, class_name, &fake_name);
+    }
+}
+
+static bool request_template_instantiation_completion(Program &pgm,
+						      const std::string &mangled_name)
+{
+    pgm.template_completion_requested.insert(mangled_name);
+    for ( std::map<std::string, std::vector<Program::PendingTemplateInstantiation>>::iterator pi =
+	      pgm.pending_template_instantiations.begin();
+	  pi != pgm.pending_template_instantiations.end(); ++pi )
+    {
+	for ( size_t i = 0; i < pi->second.size(); ++i )
+	{
+	    if ( pi->second[i].mangled_name != mangled_name )
+		continue;
+	    complete_pending_template_instantiations(pgm, pi->first);
+	    return true;
+	}
+    }
+    return false;
+}
+
+static TokenDataType *resolve_typename_type_token(Program &pgm, TokenBase *first,
+						  bool allow_lazy_types,
+						  TokenBase *typename_tb)
+{
+    if ( !first )
+	pgm.Throw(typename_tb) << "Expecting qualified type after 'typename'" << flush;
+
+    TokenDataType *owner_type =
+	resolve_declared_type_token(pgm, first, true, allow_lazy_types, false);
+    if ( !owner_type )
+	return NULL;
+    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(&owner_type->definition);
+    if ( !owner )
+	return NULL;
+    if ( is_incomplete_class_datadef(owner) )
+    {
+	request_template_instantiation_completion(pgm, owner->name);
+	datatype_map_iter refreshed = pgm.datatype_map.find(owner->name);
+	if ( refreshed != pgm.datatype_map.end() )
+	    owner = dynamic_cast<DataDefCLASS *>(&refreshed->second->definition);
+	if ( !owner )
+	    return NULL;
+    }
+
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+    {
+	if ( is_incomplete_class_datadef(owner) )
+	{
+	    request_template_instantiation_completion(pgm, owner->name);
+	    datatype_map_iter refreshed = pgm.datatype_map.find(owner->name);
+	    if ( refreshed != pgm.datatype_map.end() )
+		owner = dynamic_cast<DataDefCLASS *>(&refreshed->second->definition);
+	    if ( !owner )
+		return NULL;
+	}
+	pgm.nextToken(); // consume ::
+	TokenBase *member_tb = pgm.nextToken();
+	if ( member_tb && member_tb->id() == TokenID::tkTEMPLATE )
+	    member_tb = pgm.nextToken();
+	if ( !member_tb || !is_contextual_identifier_token(member_tb) )
+	    pgm.Throw(member_tb ? member_tb : typename_tb)
+		<< "Expecting member type after '::' in typename" << flush;
+	std::string member_name = contextual_identifier_name(member_tb);
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+	{
+	    if ( TokenDataType *alias_inst =
+		    instantiate_template_alias_use(pgm, member_name, member_tb) )
+	    {
+		owner = dynamic_cast<DataDefCLASS *>(&alias_inst->definition);
+		if ( !owner )
+		    return alias_inst;
+		continue;
+	    }
+	    if ( TokenDataType *inst =
+		    instantiate_template_use(pgm, member_name, member_tb) )
+	    {
+		owner = dynamic_cast<DataDefCLASS *>(&inst->definition);
+		if ( !owner )
+		    return inst;
+		continue;
+	    }
+	    skip_template_id_suffix(pgm);
+	}
+
+	DataDef *alias_dd = resolve_class_type_alias(owner, member_name);
+	if ( !alias_dd && class_has_unresolved_dependent_surface(owner) )
+	    alias_dd = materialize_dependent_member_type(pgm, owner, member_name);
+	if ( !alias_dd )
+	    return NULL;
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+	    return make_alias_type_token(member_name, alias_dd, member_tb);
+	owner = dynamic_cast<DataDefCLASS *>(alias_dd);
+	if ( !owner )
+	    return NULL;
+    }
+
+    return owner_type;
+}
+
+static TokenDataType *resolve_class_member_type_chain(Program &pgm,
+						      DataDefCLASS *owner,
+						      TokenBase *owner_tb)
+{
+    if ( !owner || !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+	return NULL;
+
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+    {
+	if ( is_incomplete_class_datadef(owner) )
+	{
+	    request_template_instantiation_completion(pgm, owner->name);
+	    datatype_map_iter refreshed = pgm.datatype_map.find(owner->name);
+	    if ( refreshed != pgm.datatype_map.end() )
+		owner = dynamic_cast<DataDefCLASS *>(&refreshed->second->definition);
+	    if ( !owner )
+		return NULL;
+	}
+	pgm.nextToken(); // consume ::
+	TokenBase *member_tb = pgm.nextToken();
+	if ( member_tb && member_tb->id() == TokenID::tkTEMPLATE )
+	    member_tb = pgm.nextToken();
+	if ( !member_tb || !is_contextual_identifier_token(member_tb) )
+	    pgm.Throw(member_tb ? member_tb : owner_tb)
+		<< "Expecting member type after '::'" << flush;
+	std::string member_name = contextual_identifier_name(member_tb);
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+	{
+	    if ( TokenDataType *alias_inst =
+		    instantiate_template_alias_use(pgm, member_name, member_tb) )
+	    {
+		owner = dynamic_cast<DataDefCLASS *>(&alias_inst->definition);
+		if ( !owner )
+		    return alias_inst;
+		continue;
+	    }
+	    if ( TokenDataType *inst =
+		    instantiate_template_use(pgm, member_name, member_tb) )
+	    {
+		owner = dynamic_cast<DataDefCLASS *>(&inst->definition);
+		if ( !owner )
+		    return inst;
+		continue;
+	    }
+	    skip_template_id_suffix(pgm);
+	}
+
+	DataDef *alias_dd = resolve_class_type_alias(owner, member_name);
+	if ( !alias_dd && class_has_unresolved_dependent_surface(owner) )
+	    alias_dd = materialize_dependent_member_type(pgm, owner, member_name);
+	if ( !alias_dd )
+	    pgm.Throw(member_tb) << "'" << member_name
+				 << "' is not a type member" << flush;
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+	    return make_alias_type_token(member_name, alias_dd, member_tb);
+	owner = dynamic_cast<DataDefCLASS *>(alias_dd);
+	if ( !owner )
+	    return NULL;
+    }
+
+    return NULL;
 }
 
 static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
 						  bool consume_ns_tokens,
-						  bool allow_lazy_types)
+						  bool allow_lazy_types,
+						  bool consume_class_member_chain)
 {
     if ( !tb )
 	return NULL;
     if ( tb->type() == TokenType::ttDataType )
+    {
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+	{
+	    std::string tname = ((TokenDataType *)tb)->str;
+	    if ( TokenDataType *alias_inst =
+		    instantiate_template_alias_use(pgm, tname, tb) )
+		return alias_inst;
+	    if ( TokenDataType *inst = instantiate_template_use(pgm, tname, tb) )
+		return inst;
+	}
+	if ( consume_class_member_chain
+	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	    if ( DataDefCLASS *owner =
+		    dynamic_cast<DataDefCLASS *>(
+			&static_cast<TokenDataType *>(tb)->definition) )
+		if ( TokenDataType *member =
+			resolve_class_member_type_chain(pgm, owner, tb) )
+		    return member;
 	return (TokenDataType *)tb;
+    }
+    if ( tb->id() == TokenID::tkCLASS
+      || tb->id() == TokenID::tkSTRUCT
+      || tb->id() == TokenID::tkUNION )
+    {
+	TokenBase *name_tb = pgm.nextToken();
+	if ( !name_tb || !is_contextual_identifier_token(name_tb) )
+	{
+	    pgm.Throw(name_tb ? name_tb : tb)
+		<< "Expecting type name after elaborated type specifier" << flush;
+	}
+	if ( TokenDataType *tdt = resolve_declared_type_token(pgm, name_tb,
+		consume_ns_tokens, allow_lazy_types) )
+	    return tdt;
+	return NULL;
+    }
     if ( !is_contextual_identifier_token(tb) )
 	return NULL;
 
     std::string tname = contextual_identifier_name(tb);
+    if ( tname == "typename" )
+	return resolve_typename_type_token(pgm, pgm.nextToken(),
+					   allow_lazy_types, tb);
+    if ( is_decltype_identifier(tname) )
+    {
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	    return NULL;
+	pgm.nextToken(); // consume '('
+	TokenBase *expr_head = pgm.nextToken();
+	if ( !expr_head )
+	    pgm.Throw(tb) << "Expecting expression in decltype(...)" << flush;
+	TokenBase *expr = pgm.parseExpression(expr_head, true);
+	TokenBase *close = pgm.nextToken();
+	if ( !close || close->id() != TokenID::tkClBrk )
+	    pgm.Throw(close ? close : tb) << "Expecting ')' after decltype(...)" << flush;
+	DataDef *dd = expr ? expr->datadef() : NULL;
+	if ( !dd )
+	    pgm.Throw(tb) << "Could not resolve decltype(...) operand type" << flush;
+	TokenDataType *tdt = new TokenDataType(dd->name.c_str(), *dd);
+	tdt->file = tb->file;
+	tdt->line = tb->line;
+	tdt->column = tb->column;
+	return tdt;
+    }
+
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+    {
+	if ( TokenDataType *alias_inst = instantiate_template_alias_use(pgm, tname, tb) )
+	    return alias_inst;
+	if ( TokenDataType *inst = instantiate_template_use(pgm, tname, tb) )
+	    return inst;
+    }
+
     datatype_map_iter dmi = pgm.datatype_map.find(tname);
     if ( dmi != pgm.datatype_map.end() )
     {
@@ -1818,8 +2941,30 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
 	use->file   = tb->file;
 	use->line   = tb->line;
 	use->column = tb->column;
+	if ( consume_class_member_chain
+	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	    if ( DataDefCLASS *owner =
+		    dynamic_cast<DataDefCLASS *>(&use->definition) )
+		if ( TokenDataType *member =
+			resolve_class_member_type_chain(pgm, owner, tb) )
+		    return member;
 	return use;
     }
+
+    if ( DataDef *class_alias = resolve_current_class_type_alias(pgm, tname) )
+    {
+	TokenDataType *alias_tok = make_alias_type_token(tname, class_alias, tb);
+	if ( consume_class_member_chain
+	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	    if ( DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(class_alias) )
+		if ( TokenDataType *member =
+			resolve_class_member_type_chain(pgm, owner, tb) )
+		    return member;
+	return alias_tok;
+    }
+
+    if ( TokenDataType *alias_inst = instantiate_template_alias_use(pgm, tname, tb) )
+	return alias_inst;
 
     // `Name<ConcreteType>` where Name is a captured template: instantiate (or
     // reuse) the concrete class and return its type. Guarded on template_map +
@@ -1829,13 +2974,11 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
 
     // `Q1::Q2::...::Name<Args>` where Name is a captured template. Templates live
     // in template_map by BARE name (namespace_datatype_map holds only concrete
-    // types), so skip the leading `ident ::` qualifier chain — including NESTED
-    // namespaces such as std::__cxx11 — to the final `Name <`, then instantiate by
-    // bare name. The template's defining_namespace (captured at template-parse
-    // time) supplies the correct Itanium canonical spelling regardless of how the
-    // use site qualified it, so e.g. std::__cxx11::basic_string<char,...> mangles
-    // with the __cxx11 component. (A single qualifier — `std::char_traits<char>`,
-    // or the relative `__cxx11::basic_string<...>` in a typedef — is the j==1 case.)
+    // types), so skip the leading `ident ::` qualifier chain to the final
+    // `Name <`, then instantiate by bare name. The template's defining_namespace
+    // (captured at template-parse time) supplies the correct Itanium canonical
+    // spelling regardless of how the use site qualified it, so ABI-significant
+    // intermediate namespace components are preserved.
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
     {
 	// pgm.tokens[0] is the '::' after tb; a qualifier ident sits at index 1,
@@ -1846,12 +2989,16 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
 	     && pgm.tokens[j] && is_contextual_identifier_token(pgm.tokens[j]) )
 	{
 	    if ( pgm.tokens[j+1]->id() == TokenID::tkLT
-	      && pgm.template_map.count(contextual_identifier_name(pgm.tokens[j])) )
+	      && (pgm.template_map.count(contextual_identifier_name(pgm.tokens[j]))
+	       || pgm.template_alias_map.count(contextual_identifier_name(pgm.tokens[j]))) )
 	    {
 		std::string member_name = contextual_identifier_name(pgm.tokens[j]);
 		for ( size_t k = 0; k < j; k++ )
 		    pgm.nextToken();               // consume '::' + each (qualifier '::')
 		TokenBase *name_tok = pgm.nextToken(); // consume the template name
+		if ( TokenDataType *alias_inst =
+			instantiate_template_alias_use(pgm, member_name, name_tok) )
+		    return alias_inst;
 		if ( TokenDataType *inst = instantiate_template_use(pgm, member_name, name_tok) )
 		    return inst;
 		break;
@@ -1864,7 +3011,16 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
     }
 
     if ( TokenDataType *ns_type = resolve_namespaced_type_token(pgm, tb, consume_ns_tokens) )
+    {
+	if ( consume_class_member_chain
+	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	    if ( DataDefCLASS *owner =
+		    dynamic_cast<DataDefCLASS *>(&ns_type->definition) )
+		if ( TokenDataType *member =
+			resolve_class_member_type_chain(pgm, owner, tb) )
+		    return member;
 	return ns_type;
+    }
 
     if ( !allow_lazy_types || pgm.findVariable(tname) )
 	return NULL;
@@ -1924,6 +3080,75 @@ static TokenObjTemp *try_parse_functional_ctor(Program &pgm, TokenBase *name_tb)
 		pgm.Throw(name_tb) << "Expected ')' after constructor arguments" << flush;
 	pgm.nextToken(); // consume ')'
 	return ot;
+}
+
+static TokenBase *parse_functional_type_expression(Program &pgm,
+						   TokenBase *type_tb,
+						   DataDef *type_dd)
+{
+    if ( !type_tb || !type_dd )
+	return NULL;
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	return NULL;
+
+    pgm.nextToken(); // consume '('
+    if ( DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(type_dd) )
+    {
+	TokenObjTemp *ot = new TokenObjTemp(cdd);
+	ot->file = type_tb->file;
+	ot->line = type_tb->line;
+	ot->column = type_tb->column;
+	while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkClBrk )
+	{
+	    ot->ctor_args.push_back(pgm.parseExpression(pgm.nextToken(), true));
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
+		pgm.nextToken();
+	}
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
+	    pgm.Throw(type_tb) << "Expected ')' after constructor arguments" << flush;
+	pgm.nextToken(); // consume ')'
+	return ot;
+    }
+
+    TokenBase *expr = NULL;
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
+    {
+	pgm.nextToken(); // value-initialization: T()
+	if ( type_dd->is_pointer() )
+	{
+	    TokenNullptr *np = new TokenNullptr();
+	    np->setDataType(type_dd);
+	    np->file = type_tb->file;
+	    np->line = type_tb->line;
+	    np->column = type_tb->column;
+	    expr = np;
+	}
+	else
+	{
+	    TokenInt *zero = new TokenInt(0);
+	    zero->setDataType(type_dd);
+	    zero->file = type_tb->file;
+	    zero->line = type_tb->line;
+	    zero->column = type_tb->column;
+	    expr = zero;
+	}
+    }
+    else
+    {
+	TokenBase *expr_head = pgm.nextToken();
+	if ( !expr_head )
+	    pgm.Throw(type_tb) << "Expecting expression in functional cast" << flush;
+	expr = pgm.parseExpression(expr_head, true, false, false, 0, true);
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
+	    pgm.Throw(type_tb) << "Expected ')' after functional cast expression" << flush;
+	pgm.nextToken(); // consume ')'
+    }
+
+    TokenCast *tc = new TokenCast(type_dd, expr);
+    tc->file = type_tb->file;
+    tc->line = type_tb->line;
+    tc->column = type_tb->column;
+    return tc;
 }
 
 // A type-name usage must carry its own source position, not the position of
@@ -2314,6 +3539,80 @@ static bool resolve_integer_constant(Program &pgm, TokenBase *tb, int64_t &out)
     return read_constant_integer(var, out);
 }
 
+static bool is_named_cpp_cast(const std::string &name);
+
+static int64_t apply_integer_cast_value(DataDef *cast_dd, int64_t val,
+					bool force_unsigned = false)
+{
+    if ( !cast_dd )
+	return val;
+    bool is_unsigned = force_unsigned || cast_dd->is_unsigned();
+    int sz = cast_dd->size;
+    if ( sz == 1 )
+	return is_unsigned ? (int64_t)(uint8_t)val : (int64_t)(int8_t)val;
+    if ( sz == 2 )
+	return is_unsigned ? (int64_t)(uint16_t)val : (int64_t)(int16_t)val;
+    if ( sz == 4 )
+	return is_unsigned ? (int64_t)(uint32_t)val : (int64_t)(int32_t)val;
+    return val;
+}
+
+static int64_t parse_constant_named_cpp_cast(Program &pgm, TokenBase *cast_tb,
+					     const std::string &cast_name)
+{
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
+	pgm.Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
+    pgm.nextToken();
+
+    TokenBase *type_tb = pgm.nextToken();
+    bool force_unsigned = false;
+    while ( type_tb && (type_tb->id() == TokenID::tkCONST
+	   || type_tb->id() == TokenID::tkVOLATILE
+	   || type_tb->id() == TokenID::tkRESTRICT) )
+	type_tb = pgm.nextToken();
+    if ( type_tb && type_tb->type() == TokenType::ttIdentifier
+      && ((TokenIdent *)type_tb)->str == "unsigned" )
+	force_unsigned = true;
+
+    TokenDataType *tdt = resolve_declared_type_token(pgm, type_tb, true, true);
+    if ( !tdt )
+	pgm.Throw(type_tb ? type_tb : cast_tb)
+	    << cast_name << " target is not a type" << flush;
+    DataDef *cast_dd = &tdt->definition;
+    while ( pgm.peekToken()
+	 && (pgm.peekToken()->id() == TokenID::tkMul
+	  || pgm.peekToken()->id() == TokenID::tkCONST
+	  || pgm.peekToken()->id() == TokenID::tkVOLATILE
+	  || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
+    {
+	TokenBase *pt = pgm.nextToken();
+	if ( pt->id() == TokenID::tkMul )
+	    cast_dd = pgm.getPointerType(cast_dd);
+    }
+    if ( pgm.peekToken()
+      && (pgm.peekToken()->id() == TokenID::tkBand
+       || pgm.peekToken()->id() == TokenID::tkLand) )
+    {
+	pgm.nextToken();
+	cast_dd = pgm.getPointerType(cast_dd);
+    }
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkGT )
+	pgm.Throw(cast_tb) << "Expecting '>' to close "
+			   << cast_name << "<...>" << flush;
+    pgm.nextToken();
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	pgm.Throw(cast_tb) << "Expecting '(' after "
+			   << cast_name << "<...>" << flush;
+    pgm.nextToken();
+
+    int64_t val = parse_constant_integer_expression(pgm);
+    TokenBase *close = pgm.nextToken();
+    if ( !close || close->id() != TokenID::tkClBrk )
+	pgm.Throw(close ? close : cast_tb)
+	    << "Expecting ')' after " << cast_name << "<...>(...)" << flush;
+    return apply_integer_cast_value(cast_dd, val, force_unsigned);
+}
+
 static bool is_shared_global_extern_reference(Program &pgm, TokenCpnd *code, Variable *var)
 {
     return pgm.parsing_extern_decl
@@ -2392,6 +3691,9 @@ static DataDef *resolve_type_query_datadef(Program &pgm, TokenBase *type_tb,
 	    have_value = true;
 	    return NULL;
 	}
+	dd = resolve_current_class_type_alias(pgm, tname);
+	if ( dd )
+	    return dd;
     }
 
     if ( type_tb->type() == TokenType::ttDataType )
@@ -2438,7 +3740,11 @@ static DataDef *resolve_type_query_datadef(Program &pgm, TokenBase *type_tb,
 	    have_value = true;
 	}
 	else
-	    dd = resolve_named_datadef(pgm, tname);
+	{
+	    dd = resolve_current_class_type_alias(pgm, tname);
+	    if ( !dd )
+		dd = resolve_named_datadef(pgm, tname);
+	}
     }
     else if ( type_tb->type() == TokenType::ttKeyword
 	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
@@ -2563,9 +3869,8 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
     bool expr_fallback_consumed_paren = false;
     if ( !have_value && !dd )
     {
-	// sizeof("literal") — C string literals are char arrays, not
-	// std::string objects. Check type_tb before parseExpression
-	// transforms it.
+	// sizeof("literal") — C string literals are char arrays. Check type_tb
+	// before parseExpression transforms it.
 	if ( type_tb && type_tb->type() == TokenType::ttString )
 	{
 	    TokenStr *ts = static_cast<TokenStr *>(type_tb);
@@ -3162,10 +4467,47 @@ static TokenDataType *parse_typeof_datatype(Program &pgm, TokenBase *op_tb)
     return new TokenDataType(dd->name.c_str(), *dd);
 }
 
+static bool parsing_template_instantiated_member_body(Program &pgm)
+{
+    if ( pgm.instantiating_canonical_spelling.empty()
+      || pgm.compounds.empty() || !pgm.compounds.top()
+      || !pgm.compounds.top()->method )
+	return false;
+    return pgm.compounds.top()->method->owner_class != NULL;
+}
+
+static void consume_deferred_static_assert_statement(Program &pgm, TokenBase *tb)
+{
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	pgm.Throw(tb) << "Expecting '(' after " << ((TokenIdent *)tb)->str << flush;
+    pgm.nextToken();
+
+    int depth = 1;
+    while ( depth > 0 )
+    {
+	TokenBase *t = pgm.nextToken();
+	if ( !t )
+	    pgm.Throw(tb) << "Unexpected end of input in static assertion" << flush;
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++depth;
+	else if ( t->id() == TokenID::tkClBrk )
+	    --depth;
+    }
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	pgm.nextToken();
+}
+
 static TokenBase *parse_static_assert_statement(Program &pgm, TokenBase *tb)
 {
     if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
 	pgm.Throw(tb) << "Expecting '(' after " << ((TokenIdent *)tb)->str << flush;
+
+    if ( parsing_template_instantiated_member_body(pgm) )
+    {
+	consume_deferred_static_assert_statement(pgm, tb);
+	return NULL;
+    }
+
     pgm.nextToken();
 
     int64_t cond = parse_constant_integer_expression(pgm);
@@ -3188,6 +4530,65 @@ static TokenBase *parse_static_assert_statement(Program &pgm, TokenBase *tb)
     if ( !cond )
 	pgm.Throw(tb) << message << flush;
     return NULL;
+}
+
+static void consume_class_static_assert_declaration(Program &pgm, TokenBase *tb)
+{
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	pgm.Throw(tb) << "Expecting '(' after " << contextual_identifier_name(tb) << flush;
+    pgm.nextToken(); // consume '('
+
+    TokenBase *first_expr = NULL;
+    size_t top_expr_tokens = 0;
+    bool before_message = true;
+    std::string message = "static assertion failed";
+    int depth = 1;
+    while ( depth > 0 )
+    {
+	TokenBase *t = pgm.nextToken();
+	if ( !t )
+	    pgm.Throw(tb) << "Unexpected end of input in static assertion" << flush;
+
+	if ( depth == 1 && before_message )
+	{
+	    if ( t->id() == TokenID::tkComma )
+	    {
+		before_message = false;
+		continue;
+	    }
+	    if ( t->id() != TokenID::tkClBrk )
+	    {
+		if ( !first_expr )
+		    first_expr = t;
+		++top_expr_tokens;
+	    }
+	}
+	else if ( depth == 1 && !before_message && t->type() == TokenType::ttString )
+	    message = ((TokenStr *)t)->str;
+
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++depth;
+	else if ( t->id() == TokenID::tkClBrk )
+	    --depth;
+    }
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	pgm.nextToken();
+
+    bool simple_false = false;
+    if ( top_expr_tokens == 1 && first_expr )
+    {
+	if ( first_expr->type() == TokenType::ttInteger )
+	    simple_false = static_cast<TokenInt *>(first_expr)->ival() == 0;
+	else if ( is_contextual_identifier_token(first_expr) )
+	{
+	    bool value = true;
+	    if ( is_bool_literal_identifier(contextual_identifier_name(first_expr),
+		    value) )
+		simple_false = !value;
+	}
+    }
+    if ( simple_false )
+	pgm.Throw(tb) << message << flush;
 }
 
 static bool try_parse_constant_offsetof_address(Program &pgm, int64_t &out)
@@ -3302,10 +4703,15 @@ static int64_t parse_constant_primary(Program &pgm)
     if ( tb && tb->type() == TokenType::ttIdentifier )
     {
 	std::string name = ((TokenIdent *)tb)->str;
+	bool bool_value = false;
+	if ( is_bool_literal_identifier(name, bool_value) )
+	    return bool_value ? 1 : 0;
 	if ( name == "sizeof" || is_alignof_identifier(name) )
 	    return (int64_t)evaluate_type_query(pgm, tb, name);
 	if ( is_nullptr_identifier(name) )
 	    return 0;
+	if ( is_named_cpp_cast(name) )
+	    return parse_constant_named_cpp_cast(pgm, tb, name);
     }
     if ( tb && tb->id() == TokenID::tkNeg )
 	return -parse_constant_primary(pgm);
@@ -3313,6 +4719,8 @@ static int64_t parse_constant_primary(Program &pgm)
 	return parse_constant_primary(pgm);
     if ( tb && tb->id() == TokenID::tkLnot )
 	return !parse_constant_primary(pgm);
+    if ( tb && tb->id() == TokenID::tkBnot )
+	return ~parse_constant_primary(pgm);
     if ( tb && tb->id() == TokenID::tkBand )
     {
 	if ( try_parse_constant_offsetof_address(pgm, out) )
@@ -3345,18 +4753,7 @@ static int64_t parse_constant_primary(Program &pgm)
 	    if ( pgm.peekToken() )
 		pgm.nextToken(); // consume ')'
 	    int64_t val = parse_constant_primary(pgm);
-	    // Apply truncation for the cast type
-	    if ( cast_dd )
-	    {
-		int sz = cast_dd->size;
-		if ( sz == 1 )
-		    val = is_unsigned ? (int64_t)(uint8_t)val : (int64_t)(int8_t)val;
-		else if ( sz == 2 )
-		    val = is_unsigned ? (int64_t)(uint16_t)val : (int64_t)(int16_t)val;
-		else if ( sz == 4 )
-		    val = is_unsigned ? (int64_t)(uint32_t)val : (int64_t)(int32_t)val;
-	    }
-	    return val;
+	    return apply_integer_cast_value(cast_dd, val, is_unsigned);
 	}
 	out = parse_constant_integer_expression(pgm);
 	tb = pgm.nextToken();
@@ -3793,6 +5190,83 @@ Variable *DataDefCLASS::findMethod(std::string &s)
     return NULL;
 }
 
+static bool method_callable_with_arg_count(Variable *mv, size_t argc,
+					   size_t *total_out = NULL)
+{
+    if ( !mv )
+	return false;
+    FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+    if ( !fd )
+	return false;
+    Method *md = (Method *)mv->data;
+    size_t hidden = (md && md->owner_class && !(mv->flags & vfSTATIC)) ? 1 : 0;
+    size_t total = fd->parameters.size() >= hidden
+		 ? fd->parameters.size() - hidden : 0;
+    size_t required = fd->required_param_count();
+    required = required >= hidden ? required - hidden : 0;
+    if ( fd->is_varargs )
+    {
+	if ( total > 0 )
+	    --total;
+	if ( total_out )
+	    *total_out = total;
+	return argc >= required;
+    }
+    if ( total_out )
+	*total_out = total;
+    return argc >= required && argc <= total;
+}
+
+static Variable *find_method_by_callable_arity(DataDefCLASS *cls,
+					       const std::string &name,
+					       size_t argc,
+					       bool require_static)
+{
+    if ( !cls )
+	return NULL;
+    Variable *best = NULL;
+    int best_score = -1;
+    bool any_named = false;
+    for ( variable_vec_iter vvi = cls->methods.begin(); vvi != cls->methods.end(); ++vvi )
+    {
+	Variable *mv = *vvi;
+	if ( !mv )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	if ( !fd )
+	    continue;
+	const std::string &disp = fd->method_display_name.empty()
+				? mv->name : fd->method_display_name;
+	if ( name.compare(disp) != 0 )
+	    continue;
+	any_named = true;
+	if ( require_static && !(mv->flags & vfSTATIC) )
+	    continue;
+	size_t total = 0;
+	if ( !method_callable_with_arg_count(mv, argc, &total) )
+	    continue;
+	int score = (argc == total) ? 2 : 1;
+	if ( score > best_score )
+	{
+	    best_score = score;
+	    best = mv;
+	}
+    }
+    if ( best )
+	return best;
+    if ( any_named )
+	return NULL;
+    for ( size_t i = 0; i < cls->bases.size(); ++i )
+	if ( Variable *bv =
+		find_method_by_callable_arity(cls->bases[i].base, name, argc,
+					      require_static) )
+	    return bv;
+    if ( cls->base_class )
+	return find_method_by_callable_arity(cls->base_class, name, argc,
+					     require_static);
+    return NULL;
+}
+
 Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 					  const std::vector<const DataDef *> &argtypes)
 {
@@ -3817,15 +5291,17 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	if ( name.compare(disp) != 0 )
 	    continue;
 	any_named = true;
-	// Parameter count excluding the hidden __this (param 0).
-	size_t pn = fd->parameters.empty() ? 0 : fd->parameters.size() - 1;
+	Method *md = (Method *)mv->data;
+	size_t hidden = (md && md->owner_class && !(mv->flags & vfSTATIC)) ? 1 : 0;
+	size_t pn = fd->parameters.size() >= hidden
+		  ? fd->parameters.size() - hidden : 0;
 	if ( pn != argtypes.size() )
 	    continue;
 	int total = 0;
 	bool ok = true;
 	for ( size_t i = 0; i < argtypes.size(); i++ )
 	{
-	    size_t pi = i + 1;   // skip __this
+	    size_t pi = i + hidden;
 	    DataDef *pt = pi < fd->parameters.size() ? fd->parameters[pi] : NULL;
 	    bool refp = pi < fd->ref_params.size() && fd->ref_params[pi];
 	    int s = score_arg_to_param(argtypes[i], pt, refp);
@@ -3854,9 +5330,9 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 
 DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 {
-    // Prefer a binary (params > 1 incl. __this) overload. Search the unmangled
-    // name first (std::string registers operators under "operator+"), then the
-    // mangled ClassName__operatorX family (user classes), then the base chain.
+    // Prefer a binary (params > 1 incl. __this) overload. Search the source
+    // operator name first, then the mangled ClassName__operatorX family, then
+    // the base chain.
     FuncDef *any = NULL;
     for ( variable_vec_iter vvi = methods.begin(); vvi != methods.end(); ++vvi )
     {
@@ -3919,10 +5395,9 @@ DataDef *DataDefCLASS::unary_operator_return_type(const std::string &opname,
     return NULL;
 }
 
-// Part A — type an operator expression whose LEFT operand is a class OBJECT that
-// declares the matching operator, using that operator's RETURN type. Generic: it
-// treats std::string and every user class identically (no per-type rule). Without
-// it `a + b` on objects reports the default arithmetic datadef, so copy-init ctor
+// Type an operator expression whose left operand is a class object that declares
+// the matching operator, using that operator's return type. Without this,
+// object operators report the default arithmetic datadef, so copy-init ctor
 // selection, chained operator expressions, and `auto` all mis-resolve.
 void Program::resolve_object_operator_type(TokenOperator *to)
 {
@@ -3932,7 +5407,8 @@ void Program::resolve_object_operator_type(TokenOperator *to)
     TokenBase *operand = unary ? (postfix ? to->left : to->right) : to->left;
     if ( !operand ) return;
     DataDefCLASS *lc = dynamic_cast<DataDefCLASS *>(operand->datadef());
-    if ( !lc ) return;   // operand is not a class object
+    if ( !lc )
+	return;
     const char *opsym;
     switch ( to->id() )
     {
@@ -4389,6 +5865,9 @@ Program::Program()
       output_stream(&std::cout),
       error_stream(&std::cerr),
       expression_context_root(NULL),
+      instantiating_dependent_surface(false),
+      deferred_function_body_sink(NULL),
+      parsing_cpp_struct_class(false),
       tkProgram(NULL),
       tkFunction(NULL),
       script_argc(0),
@@ -4415,6 +5894,9 @@ Program::Program(MadcEngine *eng)
       output_stream(&std::cout),
       error_stream(&std::cerr),
       expression_context_root(NULL),
+      instantiating_dependent_surface(false),
+      deferred_function_body_sink(NULL),
+      parsing_cpp_struct_class(false),
       tkProgram(NULL),
       tkFunction(NULL),
       script_argc(0),
@@ -5305,6 +6787,7 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("putchar", datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
     builtin_registry.add_core_function("__builtin_memcpy", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), DataType::dtUINT64}, (fVOIDFUNC)memcpy);
     builtin_registry.add_core_function("__builtin_frame_address", datatype_vec_t{rtPtr(DataType::dtCHAR), DataType::dtINT}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__atomic_fetch_add", datatype_vec_t{DataType::dtINT, rtPtr(DataType::dtVOID), DataType::dtINT, DataType::dtINT}, (fVOIDFUNC)NULL);
     // __builtin_va_start(ap): c2mir intrinsic (lowered to MIR_VA_START), no real
     // symbol — register with a NULL pointer like __builtin_frame_address so the
     // call parses; cir_builder emits N_CALL(__builtin_va_start, ap) and c2mir
@@ -5313,11 +6796,10 @@ void Program::populate_builtin_registry()
     // __destroy(ptr): compiler intrinsic that destructs the pointed-to object.
     // No real symbol (NULL pointer, like __builtin_va_start) — the parser
     // accepts the call and cir_builder lowers it to the element type's class
-    // destructor (mangled ~basic_string for std::string, Cls___dtor for a
-    // user class), or to nothing for a scalar/pointer element type. Used by
-    // the std:: container headers (<vector>/<map>/<set>) to destruct live
-    // elements before free(); generic, element-type-driven, never string-
-    // special-cased. See CirBuilder::translate_expr's __destroy handling.
+    // destructor (external C++ symbol or madc-emitted user-class dtor), or to
+    // nothing for a scalar/pointer element type. Used by header templates to
+    // destruct live elements before free(); generic and element-type-driven.
+    // See CirBuilder::translate_expr's __destroy handling.
     builtin_registry.add_core_function("__destroy", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVOID)}, (fVOIDFUNC)NULL);
     // alloca() is a compiler intrinsic, not a real libc function.
     // Map to malloc for now (true stack alloca needs JIT intrinsic support).
@@ -5366,7 +6848,23 @@ void Program::register_function_specs(const std::vector<FunctionRegistrationSpec
 
 void Program::add_core_functions()
 {
-    register_function_specs(builtin_registry.core_functions);
+    for ( std::vector<FunctionRegistrationSpec>::const_iterator it = builtin_registry.core_functions.begin();
+	  it != builtin_registry.core_functions.end(); ++it )
+    {
+	Variable *var = addFunction(it->id, it->params, it->extfunc, it->is_method);
+	if ( var && it->id == "__builtin_va_start" )
+	{
+	    FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	    if ( fd )
+	    {
+		fd->is_varargs = true;
+		fd->parameters.push_back(&ddINT64);
+		fd->param_typedef_names.push_back("");
+		fd->param_cpp_spellings.push_back("");
+		fd->param_defaults.push_back(NULL);
+	    }
+	}
+    }
 }
 
 void Program::add_process_functions()
@@ -5436,7 +6934,7 @@ void Program::add_globals()
 {
     // The release version is exposed as the built-in MADC_VERSION macro (a
     // const char* string literal substituted by the lexer's define_map), not a
-    // std::string global — see lexer.cpp. Nothing to register here yet.
+    // class-instance global. Nothing to register here yet.
 }
 
 enum { LAZY_STDIO = 2, LAZY_MATHH = 3 };
@@ -5829,14 +7327,123 @@ Variable *Program::find_namespace_member(const std::string &ns_name, const std::
     return vmi == nsi->second.end() ? NULL : vmi->second;
 }
 
+static std::string namespace_scope_from_cpp_spelling(const std::string &spelling)
+{
+    int angle_depth = 0;
+    size_t last_ns = std::string::npos;
+    for ( size_t i = 0; i + 1 < spelling.size(); ++i )
+    {
+	char c = spelling[i];
+	if ( c == '<' )
+	    ++angle_depth;
+	else if ( c == '>' && angle_depth > 0 )
+	    --angle_depth;
+	else if ( c == ':' && spelling[i + 1] == ':' && angle_depth == 0 )
+	{
+	    last_ns = i;
+	    ++i;
+	}
+    }
+    return last_ns == std::string::npos ? std::string()
+					: spelling.substr(0, last_ns);
+}
+
+static std::string primary_name_from_cpp_spelling(const std::string &spelling)
+{
+    int angle_depth = 0;
+    size_t name_start = 0;
+    size_t name_end = spelling.size();
+    for ( size_t i = 0; i < spelling.size(); ++i )
+    {
+	char c = spelling[i];
+	if ( c == '<' )
+	{
+	    if ( angle_depth == 0 )
+		name_end = i;
+	    ++angle_depth;
+	}
+	else if ( c == '>' && angle_depth > 0 )
+	    --angle_depth;
+	else if ( c == ':' && i + 1 < spelling.size()
+	       && spelling[i + 1] == ':' && angle_depth == 0 )
+	{
+	    name_start = i + 2;
+	    ++i;
+	}
+    }
+    if ( name_end < name_start )
+	name_end = spelling.size();
+    return spelling.substr(name_start, name_end - name_start);
+}
+
+static Variable *find_namespace_member_in_scope_chain(Program &pgm,
+						      const std::string &ns_name,
+						      const std::string &member_name)
+{
+    std::string cur = ns_name;
+    while ( !cur.empty() )
+    {
+	if ( Variable *var = pgm.find_namespace_member(cur, member_name) )
+	    return var;
+	size_t pos = cur.rfind("::");
+	if ( pos == std::string::npos )
+	    break;
+	cur.erase(pos);
+    }
+    return NULL;
+}
+
+static std::string resolve_namespace_name_in_scope(Program &pgm,
+						   const std::string &name)
+{
+    if ( name.empty() )
+	return std::string();
+    if ( !pgm.current_namespace.empty() )
+    {
+	std::string cur = pgm.current_namespace;
+	for (;;)
+	{
+	    std::string candidate = cur + "::" + name;
+	    if ( pgm.namespace_map.find(candidate) != pgm.namespace_map.end()
+	      || pgm.namespace_datatype_map.find(candidate) != pgm.namespace_datatype_map.end() )
+		return candidate;
+	    size_t pos = cur.rfind("::");
+	    if ( pos == std::string::npos )
+		break;
+	    cur = cur.substr(0, pos);
+	}
+    }
+    if ( pgm.namespace_map.find(name) != pgm.namespace_map.end()
+      || pgm.namespace_datatype_map.find(name) != pgm.namespace_datatype_map.end() )
+	return name;
+    return std::string();
+}
+
+static std::string active_cpp_lookup_namespace(Program &pgm)
+{
+    if ( !pgm.current_namespace.empty() )
+	return pgm.current_namespace;
+    if ( pgm.compounds.empty() || !pgm.compounds.top()
+      || !pgm.compounds.top()->method
+      || !pgm.compounds.top()->method->owner_class )
+	return std::string();
+    DataDefCLASS *owner = pgm.compounds.top()->method->owner_class;
+    return namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling);
+}
+
 Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expression_head)
 {
     if ( !ident_tb ) return NULL;
 
-    if ( expression_head && !current_namespace.empty() )
+    if ( expression_head )
     {
-	Variable *var = find_namespace_member(current_namespace, ident_tb->str);
-	if ( var ) return var;
+	std::string lookup_ns = active_cpp_lookup_namespace(*this);
+	if ( !lookup_ns.empty() )
+	{
+	    Variable *var =
+		find_namespace_member_in_scope_chain(*this, lookup_ns, ident_tb->str);
+	    if ( var ) return var;
+	}
     }
 
     if ( namespace_preference.empty() )
@@ -5977,10 +7584,9 @@ Variable *Program::addLiteral(std::string &s)
 	return var;
 
     // A bare string literal has type `const char *` (C/C++ canon: a `char[]`
-    // decaying to a pointer), NOT std::string. The std::string CLASS ingests a
-    // literal via its const-char* constructor / `operator=` where a `string`
-    // object is required (`string s = "x"` == `string("x")` == `s.assign("x")`)
-    // — that lowering lives in the class path, not in the literal's own type.
+    // decaying to a pointer), not a class object. Header-declared classes ingest
+    // literals through their constructors/operators where an object is required;
+    // that lowering lives in the class path, not in the literal's own type.
     // The literal bytes live in the variable name suffix (`__literal__<text>`);
     // the CIR builder emits them via str(). `data` holds a stable char* for any
     // parse-time / AOT reader.
@@ -6455,6 +8061,118 @@ static bool call_accepts_extra_args(TokenCallFunc *tc)
     return false;
 }
 
+static bool function_uses_hidden_this(const Variable &var)
+{
+    Method *md = (Method *)var.data;
+    return md && md->owner_class && !(var.flags & vfSTATIC);
+}
+
+static size_t count_queued_call_arguments(Program &pgm)
+{
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	return 0;
+    if ( pgm.tokens.size() > 1 && pgm.tokens[1]
+      && pgm.tokens[1]->id() == TokenID::tkClBrk )
+	return 0;
+    size_t argc = 1;
+    int paren_depth = 0;
+    int square_depth = 0;
+    int brace_depth = 0;
+    int angle_depth = 0;
+    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    {
+	TokenBase *t = pgm.tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++paren_depth;
+	else if ( t->id() == TokenID::tkClBrk )
+	{
+	    --paren_depth;
+	    if ( paren_depth == 0 )
+		break;
+	}
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square_depth;
+	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
+	    --square_depth;
+	else if ( t->id() == TokenID::tkOpBrc )
+	    ++brace_depth;
+	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
+	    --brace_depth;
+	else if ( t->id() == TokenID::tkLT )
+	    ++angle_depth;
+	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
+	    --angle_depth;
+	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
+	    angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
+	else if ( t->id() == TokenID::tkComma
+	       && paren_depth == 1 && square_depth == 0
+	       && brace_depth == 0 && angle_depth == 0 )
+	    ++argc;
+    }
+    return argc;
+}
+
+static TokenCallMethod *make_unary_object_operator_call(Variable *recv,
+							TokenBase *parent_expr,
+							const std::string &opname)
+{
+    if ( !recv && !parent_expr )
+	return NULL;
+    DataDef *recv_dd = parent_expr ? parent_expr->datadef() : recv->type;
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(recv_dd);
+    if ( !cls )
+	return NULL;
+    std::vector<const DataDef *> no_args;
+    Variable *mvar = cls->findMethodOverload(opname, no_args);
+    if ( !mvar )
+	return NULL;
+    if ( !recv )
+	recv = new Variable("__op_expr", *cls, 1, NULL, false);
+    TokenCallMethod *tc = new TokenCallMethod(*recv, *mvar);
+    tc->parent_expr = parent_expr;
+    return tc;
+}
+
+static TokenBase *consume_unresolved_dependent_call(Program &pgm, TokenBase *open)
+{
+    TokenBase *t = open;
+    int paren_depth = 1;
+    int square_depth = 0;
+    int brace_depth = 0;
+    while ( paren_depth > 0 && pgm.peekToken() )
+    {
+	t = pgm.nextToken();
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++paren_depth;
+	else if ( t->id() == TokenID::tkClBrk )
+	    --paren_depth;
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square_depth;
+	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
+	    --square_depth;
+	else if ( t->id() == TokenID::tkOpBrc )
+	    ++brace_depth;
+	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
+	    --brace_depth;
+    }
+    return t;
+}
+
+static TokenInt *make_dependent_call_placeholder(TokenBase *at)
+{
+    TokenInt *ti = new TokenInt(0);
+    ti->setDataType(&ddINT64);
+    if ( at )
+    {
+	ti->file = at->file;
+	ti->line = at->line;
+	ti->column = at->column;
+    }
+    return ti;
+}
+
 // parse a function call and it's parameters
 // parameters are individually parsed by parseExpression
 // returns ending token
@@ -6486,7 +8204,9 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    if ( !_fd->parameters.empty()
 	    &&   !call_accepts_extra_args(tc)
 	    &&   ++paramcnt >= _fd->parameters.size() )
+	    {
 		Throw(tb) << "Too many parameters" << flush;
+	    }
 	    continue;
 	}
 	if ( tb->id() == TokenID::tkSemi ) { break; }
@@ -6513,7 +8233,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    // capture params (nested fn / [&] lambda) are NOT in fd->parameters —
 	    // the CIR builder appends them; the user-visible arity is the full count.
 	    size_t expected = fd->parameters.size()
-		- (md && md->owner_class ? 1 : 0);
+		- (function_uses_hidden_this(tc->var) ? 1 : 0);
 	    needs_runtime_scope_context = (tc->argc() + 1 == expected);
 	}
     }
@@ -6531,6 +8251,8 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	collect_runtime_eval_scope_variables(ctx_token->scope_vars);
 	tc->parameters.push_back(ctx_token);
     }
+
+    apply_template_call_return_inference(*this, tc);
 
     // (need check for optional parameters)
     // skip arg count check for dlopen functions (0 declared params = variadic-like)
@@ -6554,14 +8276,13 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	else
 	{
 	    FuncDef *fd = (FuncDef *)tc->var.type;
-	    Method *md = (Method *)tc->var.data;
 	    // C++ default arguments: fill omitted TRAILING args from the parameter
 	    // defaults (param_defaults is index-aligned with parameters, hidden
 	    // __this/__retbuf/__va_args slots hold NULL). Stop at the first param
 	    // without a default so the arity check still reports a genuine shortfall.
 	    if ( !fd->is_varargs && !fd->param_defaults.empty() )
 	    {
-		size_t hidden = (md && md->owner_class) ? 1 : 0;   // __this
+		size_t hidden = function_uses_hidden_this(tc->var) ? 1 : 0;
 		for ( size_t i = hidden + tc->argc(); i < fd->parameters.size(); ++i )
 		{
 		    if ( i < fd->param_defaults.size() && fd->param_defaults[i] )
@@ -6575,7 +8296,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    if ( !(fd->parameters.empty() && !fd->is_void_params) )
 	    {
 		size_t expected = fd->parameters.size()
-			- (md && md->owner_class ? 1 : 0)
+			- (function_uses_hidden_this(tc->var) ? 1 : 0)
 			- (fd->is_varargs ? 1 : 0);
 		// varargs functions accept expected or more args; fixed functions require exact match
 		if ( fd->is_varargs ? (tc->argc() < expected) : (tc->argc() != expected) )
@@ -6591,6 +8312,119 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     return tb;
 }
 #endif
+
+static std::string parse_operator_name_after_keyword(Program &pgm,
+						     TokenBase *operator_tb)
+{
+    TokenBase *op_tok = pgm.nextToken();
+    if ( !op_tok )
+	pgm.Throw(operator_tb) << "Expected operator symbol after 'operator'" << flush;
+    if ( op_tok->id() == TokenID::tkNEW || op_tok->id() == TokenID::tkDELETE )
+    {
+	std::string name = op_tok->id() == TokenID::tkNEW ? "operatornew" : "operatordelete";
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	{
+	    TokenBase *sq = pgm.nextToken();
+	    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClSqr )
+		pgm.Throw(sq) << "Expected ']' in " << name << "[]" << flush;
+	    pgm.nextToken();
+	    name += "[]";
+	}
+	return name;
+    }
+    if ( dynamic_cast<TokenMultiOp *>(op_tok) )
+	return "operator" + ((TokenMultiOp *)op_tok)->str;
+    if ( op_tok->id() == TokenID::tkOpBrk )
+    {
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
+	    pgm.Throw(op_tok) << "Expected ')' in operator()" << flush;
+	pgm.nextToken();
+	return "operator()";
+    }
+    if ( op_tok->id() == TokenID::tkOpSqr )
+    {
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClSqr )
+	    pgm.Throw(op_tok) << "Expected ']' in operator[]" << flush;
+	pgm.nextToken();
+	return "operator[]";
+    }
+    char sym = (char)op_tok->get();
+    if ( !sym )
+	pgm.Throw(op_tok) << "Unrecognized operator symbol" << flush;
+    return std::string("operator") + sym;
+}
+
+static bool is_named_cpp_cast(const std::string &name)
+{
+    return name == "static_cast"
+	|| name == "reinterpret_cast"
+	|| name == "const_cast";
+}
+
+static TokenBase *parse_named_cpp_cast(Program &pgm, TokenBase *cast_tb,
+				       const std::string &cast_name)
+{
+    skip_expression_whitespace(pgm);
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
+	pgm.Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
+    pgm.nextToken();
+    skip_expression_whitespace(pgm);
+
+    TokenBase *type_tb = pgm.nextToken();
+    while ( type_tb && (type_tb->id() == TokenID::tkCONST
+	   || type_tb->id() == TokenID::tkVOLATILE
+	   || type_tb->id() == TokenID::tkRESTRICT) )
+	type_tb = pgm.nextToken();
+
+    TokenDataType *tdt = resolve_declared_type_token(pgm, type_tb, true, true);
+    if ( !tdt )
+	pgm.Throw(type_tb ? type_tb : cast_tb) << cast_name << " target is not a type" << flush;
+    DataDef *cast_dd = &tdt->definition;
+    while ( pgm.peekToken()
+	 && (pgm.peekToken()->id() == TokenID::tkMul
+	  || pgm.peekToken()->id() == TokenID::tkCONST
+	  || pgm.peekToken()->id() == TokenID::tkVOLATILE
+	  || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
+    {
+	TokenBase *pt = pgm.nextToken();
+	if ( pt->id() == TokenID::tkMul )
+	    cast_dd = pgm.getPointerType(cast_dd);
+    }
+    if ( pgm.peekToken()
+      && (pgm.peekToken()->id() == TokenID::tkBand
+       || pgm.peekToken()->id() == TokenID::tkLand) )
+    {
+	pgm.nextToken();
+	cast_dd = pgm.getPointerType(cast_dd);
+    }
+    skip_expression_whitespace(pgm);
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkGT )
+	pgm.Throw(cast_tb) << "Expecting '>' to close " << cast_name << "<...>" << flush;
+    pgm.nextToken();
+    skip_expression_whitespace(pgm);
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	pgm.Throw(cast_tb) << "Expecting '(' after " << cast_name << "<...>" << flush;
+    pgm.nextToken();
+
+    TokenBase *expr_head = pgm.nextToken();
+    TokenBase *expr = pgm.parseExpression(expr_head, true, false, true, 1);
+    skip_expression_whitespace(pgm);
+    TokenBase *close_tb = NULL;
+    if ( (pgm.curToken() && pgm.curToken()->id() == TokenID::tkClBrk)
+      || (pgm.prevToken() && pgm.prevToken()->id() == TokenID::tkClBrk) )
+	close_tb = pgm.curToken() && pgm.curToken()->id() == TokenID::tkClBrk
+	    ? pgm.curToken() : pgm.prevToken();
+    else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
+	close_tb = pgm.nextToken();
+    if ( !close_tb )
+	pgm.Throw(cast_tb) << "Expecting ')' after "
+	    << cast_name << "<...>(...)" << flush;
+    TokenCast *tc = new TokenCast(cast_dd, expr);
+    tc->file = cast_tb->file;
+    tc->line = cast_tb->line;
+    tc->column = cast_tb->column;
+    return tc;
+}
 
 // parse a method call and it's parameters
 // parameters are individually parsed by parseExpression
@@ -6613,7 +8447,9 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	{
 	    if ( !((FuncDef *)tc->var.type)->is_varargs
 	    &&   ++paramcnt >= ((FuncDef *)tc->var.type)->parameters.size() )
+	    {
 		Throw(tb) << "Too many parameters" << flush;
+	    }
 	    continue;
 	}
 	if ( tb->id() == TokenID::tkSemi ) { break; }
@@ -6629,6 +8465,18 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	tc->parameters.push_back(tb);
     }
     // (need check for optional parameters)
+    FuncDef *fd = (FuncDef *)tc->var.type;
+    if ( !fd->is_varargs && !fd->param_defaults.empty() )
+    {
+	size_t hidden = function_uses_hidden_this(tc->var) ? 1 : 0;
+	for ( size_t i = hidden + tc->argc(); i < fd->parameters.size(); ++i )
+	{
+	    if ( i < fd->param_defaults.size() && fd->param_defaults[i] )
+		tc->parameters.push_back(fd->param_defaults[i]);
+	    else
+		break;
+	}
+    }
     if ( ((FuncDef *)tc->var.type)->is_varargs
       ? (tc->argc()+1 < ((FuncDef *)tc->var.type)->parameters.size()-1)
       : (tc->argc()+1 != ((FuncDef *)tc->var.type)->parameters.size()) )
@@ -6680,6 +8528,15 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	}
     }
     Variable *var = findVariable(name);
+    if ( !var && name == "this" )
+    {
+	TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+	if ( code && code->method && code->method->owner_class )
+	{
+	    std::string thisid = "__this";
+	    var = code->method->findParameter(thisid);
+	}
+    }
     TokenBase *result = NULL;
     if ( var )
     {
@@ -6690,7 +8547,39 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
     }
     else
     {
-	result = resolve_expression_context_identifier((TokenIdent *)head);
+	TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+	if ( code && code->method && code->method->owner_class )
+	{
+	    DataDefCLASS *cls = code->method->owner_class;
+	    if ( DataDef *static_dd = resolve_class_static_member_type(cls, name) )
+	    {
+		TokenInt *ti = new TokenInt(0);
+		ti->setDataType(static_dd);
+		copy_token_location(ti, head);
+		result = ti;
+	    }
+	    else
+	    {
+		ssize_t ofs = cls->m_offset(name);
+		if ( ofs >= 0 )
+		{
+		    std::string thisid = "__this";
+		    Variable *thisvar = code->method->findParameter(thisid);
+		    DataDef *mtype = cls->m_type(name);
+		    if ( thisvar && mtype )
+		    {
+			Variable *member =
+			    new Variable(name, *mtype, 1, NULL, false);
+			result = new TokenMember(*thisvar, *member, ofs);
+			copy_token_location(result, head);
+		    }
+		}
+	    }
+	}
+	TokenIdent ident(name);
+	copy_token_location(&ident, head);
+	if ( !result )
+	    result = resolve_expression_context_identifier(&ident);
 	if ( !result )
 	    Throw(head) << "undeclared identifier '" << name << "'" << flush;
     }
@@ -6719,10 +8608,23 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		}
 	    }
 
-	    DataDef *obj_type = result->datadef();
-	    bool fixed_array_arrow = false;
-	    if ( is_arrow )
-	    {
+		    DataDef *obj_type = result->datadef();
+		    bool fixed_array_arrow = false;
+		    if ( !is_arrow )
+		    {
+			if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
+			    if ( ((tv->var.flags & vfREFERENCE) || tv->var.name == "__this")
+			      && obj_type && obj_type->is_pointer() )
+			    {
+				DataDefPTR *rp = dynamic_cast<DataDefPTR *>(obj_type);
+				if ( rp && rp->base_type
+				  && (rp->base_type->is_struct()
+				   || rp->base_type->is_object()) )
+				    obj_type = rp->base_type;
+			    }
+		    }
+		    if ( is_arrow )
+		    {
 		if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
 		    fixed_array_arrow = tv->var.is_fixed_array();
 		if ( !fixed_array_arrow )
@@ -6736,10 +8638,50 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 			Throw(mtb) << "expression before '->' is not a typed pointer" << flush;
 		    obj_type = pt->base_type;
 		}
-	    }
-	    if ( !obj_type || (!obj_type->is_struct() && !obj_type->is_object()) )
-		Throw(mtb) << "member reference type is not a structure or union" << flush;
-	    DataDefSTRUCT *sdd = static_cast<DataDefSTRUCT *>(obj_type);
+		    }
+		    if ( !obj_type || (!obj_type->is_struct() && !obj_type->is_object()) )
+			Throw(mtb) << "member reference type is not a structure or union" << flush;
+		    if ( obj_type->is_object()
+		      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		    {
+			DataDefCLASS *method_cls = (DataDefCLASS *)obj_type;
+			Variable *mvar =
+			    find_method_by_callable_arity(method_cls, mname,
+				count_queued_call_arguments(*this), false);
+			if ( !mvar )
+			    mvar = method_cls->findMethod(mname);
+			if ( mvar )
+			{
+			    Variable *recv_var = NULL;
+			    TokenBase *recv_parent = NULL;
+			    if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
+				recv_var = &tv->var;
+			    else if ( TokenMember *tm = dynamic_cast<TokenMember *>(result) )
+			    {
+				recv_var = &tm->var;
+				recv_parent = result;
+			    }
+			    else
+			    {
+				recv_var = new Variable("__postfix_expr", *obj_type, 1,
+							NULL, false);
+				recv_parent = result;
+			    }
+			    TokenCallMethod *tc = new TokenCallMethod(*recv_var, *mvar);
+			    if ( recv_parent )
+				tc->parent_expr = recv_parent;
+			    TokenBase *open = nextToken();
+			    tc->file = open->file;
+			    tc->line = open->line;
+			    tc->column = open->column;
+			    parseCallMethod(tc);
+			    tc = reselect_method_overload(tc, *recv_var, method_cls, mname);
+			    result = tc;
+			    var = &tc->var;
+			    continue;
+			}
+		    }
+		    DataDefSTRUCT *sdd = static_cast<DataDefSTRUCT *>(obj_type);
 	    ssize_t ofs = sdd->m_offset(mname);
 	    if ( ofs == -1 )
 		Throw(mtb) << "no member named '" << mname << "'" << flush;
@@ -7024,6 +8966,12 @@ static bool is_addressable_expression(TokenBase *expr)
 {
     if ( TokenComplexPart *tcp = dynamic_cast<TokenComplexPart *>(expr) )
 	return tcp->expr && tcp->expr->datadef() && tcp->expr->datadef()->is_complex();
+    if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr) )
+    {
+	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
+	if ( fd && fd->returns_ref )
+	    return true;
+    }
     return dynamic_cast<TokenMember *>(expr)
 	|| dynamic_cast<TokenDeref *>(expr)
 	|| dynamic_cast<TokenSubscript *>(expr)
@@ -7111,7 +9059,74 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
     if ( !is_contextual_identifier_token(addr_tb) )
 	Throw(addr_tb) << "expecting variable name after '&'" << flush;
     std::string aname = contextual_identifier_name(addr_tb);
+    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+    {
+	namespace_map_t::iterator nsi = namespace_map.find(aname);
+	if ( nsi == namespace_map.end() )
+	    Throw(addr_tb) << "Unknown namespace '" << aname << "'" << flush;
+	nextToken(); // consume ::
+	TokenBase *member_tb = nextToken();
+	if ( !member_tb || !is_contextual_identifier_token(member_tb) )
+	    Throw(member_tb ? member_tb : addr_tb)
+		<< "Expecting identifier after '" << aname << "::'" << flush;
+	std::string member_name = contextual_identifier_name(member_tb);
+	Variable *ns_var = NULL;
+	variable_map_iter vmi = nsi->second.find(member_name);
+	if ( vmi != nsi->second.end() )
+	    ns_var = vmi->second;
+	else
+	{
+	    std::map<std::string, void *>::iterator dli = dlopen_map.find(aname);
+	    if ( dli != dlopen_map.end() )
+	    {
+		if ( !is_dynamic_symbol_fallback_enabled() )
+		    Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
+		if ( !is_dynamic_symbol_allowed(member_name) )
+		    Throw(member_tb) << "dynamic symbol '" << member_name
+				     << "' is not allowed by registration policy" << flush;
+		void *sym = dlsym(dli->second, member_name.c_str());
+		if ( sym )
+		{
+		    std::string func_id = "__dl_" + aname + "_" + member_name;
+		    ns_var = addFunction(func_id,
+			datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)sym);
+		    nsi->second[member_name] = ns_var;
+		}
+	    }
+	}
+	if ( !ns_var )
+	    Throw(member_tb) << "'" << member_name
+			     << "' is not a member of namespace '"
+			     << aname << "'" << flush;
+	if ( ns_var->type && ns_var->type->is_function()
+	  && peekToken() && peekToken()->id() == TokenID::tkLT )
+	    skip_template_id_suffix(*this);
+	if ( ns_var->type && ns_var->type->is_function() )
+	    return new TokenVar(*ns_var);
+	ns_var->flags |= vfADDRTAKEN;
+	DataDefPTR *aptr = getPointerType(ns_var->type);
+	return new TokenAddrOf(*ns_var, aptr);
+    }
     Variable *avar = findVariable(aname);
+    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+    if ( !avar && code && code->method && code->method->owner_class )
+    {
+	DataDefCLASS *cls = code->method->owner_class;
+	ssize_t ofs = cls->m_offset(aname);
+	if ( ofs >= 0 )
+	{
+	    std::string thisid = "__this";
+	    Variable *thisvar = code->method->findParameter(thisid);
+	    DataDef *mtype = cls->m_type(aname);
+	    if ( thisvar && mtype )
+	    {
+		Variable *member = new Variable(aname, *mtype, 1, NULL, false);
+		TokenMember *tm = new TokenMember(*thisvar, *member, ofs);
+		DataDefPTR *aptr = getPointerType(mtype);
+		return new TokenAddrExpr(tm, aptr);
+	    }
+	}
+    }
     if ( !avar && is_dynamic_symbol_fallback_enabled()
       && is_dynamic_symbol_allowed(aname) )
     {
@@ -7199,6 +9214,172 @@ static std::string method_access_violation(DataDef *owner_type,
 				 display_name, cur_class);
 }
 
+enum class QualifiedClassExprAction {
+    PushedExpression,
+    ResolvedFunction
+};
+
+static QualifiedClassExprAction resolve_class_qualified_expression(
+	Program &pgm, DataDefCLASS *scope, const std::string &scope_name,
+	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	Variable **var_out, TokenBase **tb_out)
+{
+    TokenBase *member_tb = NULL;
+    std::string member_name;
+    for (;;)
+    {
+	pgm.nextToken(); // consume '::'
+	member_tb = pgm.nextToken();
+	if ( member_tb && member_tb->id() == TokenID::tkTEMPLATE )
+	    member_tb = pgm.nextToken();
+	if ( !member_tb )
+	    pgm.Throw(anchor_tb) << "Expecting identifier after '"
+				 << scope_name << "::'" << flush;
+	if ( member_tb->type() == TokenType::ttDataType )
+	    member_name = ((TokenDataType *)member_tb)->str;
+	else if ( is_contextual_identifier_token(member_tb) )
+	    member_name = contextual_identifier_name(member_tb);
+	else
+	    pgm.Throw(anchor_tb) << "Expecting identifier after '"
+				 << scope_name << "::'" << flush;
+
+	DataDef *member_dd = NULL;
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+	{
+	    if ( TokenDataType *alias_inst =
+		    instantiate_template_alias_use(pgm, member_name, member_tb) )
+		member_dd = &alias_inst->definition;
+	    else if ( TokenDataType *inst =
+		    instantiate_template_use(pgm, member_name, member_tb) )
+		member_dd = &inst->definition;
+	    else
+		skip_template_id_suffix(pgm);
+	}
+	if ( !member_dd )
+	    member_dd = resolve_class_type_alias(scope, member_name);
+
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	{
+	    if ( !member_dd && class_has_unresolved_dependent_surface(scope) )
+		member_dd =
+		    materialize_dependent_member_type(pgm, scope, member_name);
+	    DataDefCLASS *next_scope = dynamic_cast<DataDefCLASS *>(member_dd);
+	    if ( !next_scope )
+		pgm.Throw(member_tb) << "'" << member_name
+				     << "' is not a class type in '"
+				     << scope->name << "'" << flush;
+	    scope = next_scope;
+	    continue;
+	}
+
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    Variable *mvar = scope->findMethod(member_name);
+	    if ( Variable *arity_mvar =
+		    find_method_by_callable_arity(scope, member_name,
+			count_queued_call_arguments(pgm), true) )
+		mvar = arity_mvar;
+	    if ( !mvar )
+	    {
+		if ( class_has_unresolved_dependent_surface(scope) )
+		{
+		    TokenBase *open = pgm.nextToken();
+		    TokenBase *end = consume_unresolved_dependent_call(pgm, open);
+		    exStack.push(make_dependent_call_placeholder(end));
+		    *tb_out = end;
+		    return QualifiedClassExprAction::PushedExpression;
+		}
+		pgm.Throw(member_tb) << "'" << member_name
+				     << "' is not a member function of '"
+				     << scope->name << "'" << flush;
+	    }
+	    if ( !(mvar->flags & vfSTATIC) )
+	    {
+		TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+		DataDefCLASS *cur_class =
+		    (code && code->method) ? code->method->owner_class : NULL;
+		if ( cur_class && cur_class->is_or_derives_from(scope) )
+		{
+		    std::string thisid = "__this";
+		    Variable *thisvar = code->method->findParameter(thisid);
+		    if ( !thisvar )
+			pgm.Throw(member_tb) << "qualified member call has no this object" << flush;
+		    TokenCallMethod *tc = new TokenCallMethod(*thisvar, *mvar);
+		    TokenBase *open = pgm.nextToken();
+		    tc->file = open->file;
+		    tc->line = open->line;
+		    tc->column = open->column;
+		    TokenBase *end = pgm.parseCallMethod(tc);
+		    exStack.push(tc);
+		    *tb_out = end;
+		    return QualifiedClassExprAction::PushedExpression;
+		}
+		pgm.Throw(member_tb) << "cannot call non-static member '"
+				     << member_name << "' without an object" << flush;
+	    }
+	    *var_out = mvar;
+	    *tb_out = member_tb;
+	    return QualifiedClassExprAction::ResolvedFunction;
+	}
+
+	if ( DataDef *static_dd = resolve_class_static_member_type(scope, member_name) )
+	{
+	    TokenInt *ti = new TokenInt(0);
+	    ti->setDataType(static_dd);
+	    ti->file = member_tb->file;
+	    ti->line = member_tb->line;
+	    ti->column = member_tb->column;
+	    exStack.push(ti);
+	    *tb_out = member_tb;
+	    return QualifiedClassExprAction::PushedExpression;
+	}
+
+	ssize_t member_ofs = scope->m_offset(member_name);
+	if ( member_ofs >= 0 )
+	{
+	    TokenInt *ti = new TokenInt(0);
+	    ti->setDataType(scope->m_type(member_name));
+	    ti->file = member_tb->file;
+	    ti->line = member_tb->line;
+	    ti->column = member_tb->column;
+	    exStack.push(ti);
+	    *tb_out = member_tb;
+	    return QualifiedClassExprAction::PushedExpression;
+	}
+
+	if ( class_has_unresolved_dependent_surface(scope) )
+	{
+	    TokenInt *ti = new TokenInt(0);
+	    ti->setDataType(&ddINT64);
+	    ti->file = member_tb->file;
+	    ti->line = member_tb->line;
+	    ti->column = member_tb->column;
+	    exStack.push(ti);
+	    *tb_out = member_tb;
+	    return QualifiedClassExprAction::PushedExpression;
+	}
+
+	pgm.Throw(member_tb) << "'" << member_name
+			     << "' is not a static member of '"
+			     << scope->name << "'" << flush;
+    }
+}
+
+static bool template_declared_in_namespace(Program &pgm,
+					   const std::string &name,
+					   const std::string &ns_name)
+{
+    std::map<std::string, Program::TemplateDef>::iterator tmi =
+	pgm.template_map.find(name);
+    if ( tmi != pgm.template_map.end()
+      && tmi->second.defining_namespace == ns_name )
+	return true;
+    std::map<std::string, Program::TemplateAliasDef>::iterator tai =
+	pgm.template_alias_map.find(name);
+    return tai != pgm.template_alias_map.end()
+	&& tai->second.defining_namespace == ns_name;
+}
+
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
 				    bool stop_on_closing_paren, int initial_brackets,
 				    bool push_back_comma)
@@ -7235,12 +9416,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		exStack.push(tb);
 		break;
 	    case TokenType::ttSymbol:
-	    	if ( tb->id() == TokenID::tkSemi )
+		if ( tb->id() == TokenID::tkSemi )
 		{
 		    DBG(cout << "parseExpression: found semicolon" << endl);
 		    done = true;
 		}
-	    	if ( tb->id() == TokenID::tkComma )
+		if ( tb->id() == TokenID::tkComma )
 		{
 		    // C comma operator inside parenthesized expression:
 		    // build a real comma-expression node so left-side side
@@ -7268,7 +9449,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		break;
 	    case TokenType::ttMultiOp:
 	    case TokenType::ttOperator:
-	    	if ( tb->id() == TokenID::tkComma )
+		if ( tb->id() == TokenID::tkComma )
 		{
 		    // C comma operator inside parenthesized expression
 		    if ( brackets > 0 )
@@ -7290,6 +9471,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		// subscript: var[index] or lambda: [](params) { body }
 		if ( tb->id() == TokenID::tkOpSqr )
 		{
+		    if ( !opStack.empty()
+		      && (opStack.top()->type() == TokenType::ttCallFunc
+		       || opStack.top()->type() == TokenType::ttCallMethod) )
+		    {
+			exStack.push(opStack.top());
+			opStack.pop();
+		    }
 		    // Chained subscript on a multi-dim C fixed-size array: arr[i][j]
 		    // Append to the existing TokenSubscript's extra_indices vector.
 		    if ( !exStack.empty() && exStack.top()->type() == TokenType::ttSubscript )
@@ -7485,6 +9673,18 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
 			    }
 			    DBG(cout << "parseExpression: subscript on generic expression" << endl);
+			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
+			    break;
+			}
+			if ( DataDef *elem_type = dependent_deref_result_type(*this, dd) )
+			{
+			    TokenBase *base_expr = exStack.top();
+			    exStack.pop();
+			    TokenBase *idx = parseExpression(nextToken());
+			    TokenBase *clsqr = nextToken();
+			    if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
+				Throw(tb) << "Expected ] in subscript expression" << flush;
+			    DBG(cout << "parseExpression: subscript on dependent expression" << endl);
 			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
 			    break;
 			}
@@ -8307,15 +10507,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    TokenBase *fexpr = nextToken();
 		    ternary->false_expr = parseExpression(fexpr, conditional);
 		    // Propagate branch datadef up to the ternary so downstream
-		    // type-directed paths (e.g. TokenAssign's std::string → char*
-		    // coercion) can see a meaningful datadef(). Prefer the true
+		    // type-directed paths can see a meaningful datadef(). Prefer the true
 		    // branch's type; fall back to the false branch if that's
 		    // richer (non-NULL / non-int).
 		    //
 		    // Mixed string-literal/pointer ternary: when one branch is
-		    // a string literal (std::string) and the other is a real
-		    // char*-yielding expression (pointer type), prefer the
-		    // pointer type. The merge needs both branches to land as
+		    // a string literal and the other is a real char*-yielding
+		    // expression (pointer type), prefer the pointer type. The
+		    // merge needs both branches to land as
 		    // raw char* in the merge slot; labeling the result as an
 		    // object would make downstream coercion dereference the
 		    // function's char* return incorrectly. Closes SMAUG boards.c:1615
@@ -8329,15 +10528,15 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // C ternary type unification for pointer-flavored
 		    // branches. Each branch has an *effective* type:
 		    //   - real pointer types stay as-is
-		    //   - std::string (string literals) → char* equivalent
+		    //   - string literals → char* equivalent
 		    //   - fixed-array variables / members → char* equivalent
 		    //     (their datadef reports the element type, but
 		    //     the value decays to pointer-to-element)
 		    // When both branches are pointer-flavored and their
 		    // raw datadefs disagree, unify on a real pointer if
 		    // available, else on `char *` (ddLPSTR). Without this,
-		    // the merge slot inherits a single-byte / std::string /
-		    // mixed type and the IR coerce step rejects the other
+		    // the merge slot inherits a single-byte / object / mixed type
+		    // and the IR coerce step rejects the other
 		    // branch. Closes SMAUG boards.c:1615
 		    // `feof(fp) ? "End" : fread_word(fp)`, fight.c:4298
 		    // `IS_NPC(victim) ? buf2 : ""`, player.c:1883
@@ -8499,6 +10698,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				exStack.push(new TokenDerefExpr(deref_expr, dtype));
 				break;
 			    }
+			    if ( TokenCallMethod *opcall =
+				    make_unary_object_operator_call(NULL,
+					deref_expr, "operator*") )
+			    {
+				exStack.push(opcall);
+				break;
+			    }
+			    if ( DataDef *dep_base =
+				    dependent_deref_result_type(*this, dtype) )
+			    {
+				exStack.push(new TokenDerefExpr(deref_expr, dep_base));
+				break;
+			    }
 			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 			}
 			DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
@@ -8539,6 +10751,44 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					std::string thisid = "__this";
 					dvar = code->method->findParameter(thisid);
 				    }
+				    if ( !dvar && code && code->method
+				      && code->method->owner_class )
+				    {
+					DataDefCLASS *cls = code->method->owner_class;
+					ssize_t ofs = cls->m_offset(dname);
+					if ( ofs >= 0 )
+					{
+					    std::string thisid = "__this";
+					    Variable *thisvar = code->method->findParameter(thisid);
+					    DataDef *mtype = cls->m_type(dname);
+					    if ( thisvar && mtype )
+					    {
+						Variable *member =
+						    new Variable(dname, *mtype, 1, NULL, false);
+						TokenMember *tm =
+						    new TokenMember(*thisvar, *member, ofs);
+						DataDef *base = NULL;
+						if ( tm->is_fixed_array_member() )
+						{
+						    DataDefSTRUCT *sdd =
+							tm->owner_struct_type();
+						    const std::vector<uint32_t> *dims =
+							sdd ? sdd->m_dims(tm->var.name) : NULL;
+						    base = (dims && !dims->empty())
+							? build_fixed_array_query_type(tm->var.type,
+							    *dims, 1)
+							: tm->var.type;
+						}
+						if ( !base )
+						    base =
+							dependent_deref_result_type(*this, mtype);
+						if ( !base )
+						    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+						exStack.push(new TokenDerefExpr(tm, base));
+						break;
+					    }
+					}
+				    }
 				    if ( !dvar )
 					Throw(deref_tb) << "undeclared identifier '" << dname << "'" << flush;
 				    // C function-to-pointer decay reverses through `*`:
@@ -8556,7 +10806,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					exStack.push(new TokenVar(*dvar));
 					break;
 				    }
+				    if ( TokenCallMethod *opcall =
+					    make_unary_object_operator_call(dvar, NULL,
+						"operator*") )
+				    {
+					exStack.push(opcall);
+					break;
+				    }
 				    DataDef *base = deref_type_for_variable(dvar);
+				    if ( !base )
+					base = dependent_deref_result_type(*this, dvar->type);
 				    if ( !base )
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 				    if ( peekToken() && (peekToken()->id() == TokenID::tkInc || peekToken()->id() == TokenID::tkDec) )
@@ -8767,6 +11026,21 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    if ( !id_var )
 					Throw(id_tb) << "undeclared identifier '" << id_name << "'" << flush;
 				    if ( !id_var->type->is_pointer() )
+				    {
+					std::string step_op = deref_tb->id() == TokenID::tkInc
+							    ? "operator++" : "operator--";
+					TokenCallMethod *step_call =
+					    make_unary_object_operator_call(id_var, NULL, step_op);
+					TokenCallMethod *deref_call = step_call
+					    ? make_unary_object_operator_call(id_var, step_call,
+						"operator*") : NULL;
+					if ( deref_call )
+					{
+					    exStack.push(deref_call);
+					    break;
+					}
+				    }
+				    if ( !id_var->type->is_pointer() )
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 				    DataDefPTR *idptr = dynamic_cast<DataDefPTR *>(id_var->type);
 				    DataDef *base = (idptr && idptr->base_type) ? idptr->base_type : &ddINT64;
@@ -8797,7 +11071,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    if ( !inner_dtype )
 					inner_dtype = inner_expr->datadef();
 				    if ( !inner_dtype || !inner_dtype->is_pointer() )
+				    {
+					if ( TokenCallMethod *opcall =
+						make_unary_object_operator_call(NULL,
+						    inner_expr, "operator*") )
+					{
+					    exStack.push(opcall);
+					    break;
+					}
+					if ( DataDef *dep_base =
+						dependent_deref_result_type(*this, inner_dtype) )
+					{
+					    exStack.push(new TokenDerefExpr(inner_expr, dep_base));
+					    break;
+					}
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+				    }
 				    DataDefPTR *inner_dptr = dynamic_cast<DataDefPTR *>(inner_dtype);
 				    DataDef *inner_base = inner_dptr ? inner_dptr->base_type : &ddINT64;
 				    if ( peekToken()
@@ -8862,6 +11151,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					    break;
 					}
 				    }
+				    if ( TokenCallMethod *opcall =
+					    make_unary_object_operator_call(NULL,
+						deref_expr, "operator*") )
+				    {
+					exStack.push(opcall);
+					break;
+				    }
+				    if ( DataDef *dep_base =
+					    dependent_deref_result_type(*this, dtype) )
+				    {
+					exStack.push(new TokenDerefExpr(deref_expr, dep_base));
+					break;
+				    }
 				    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 				}
 				DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
@@ -8871,6 +11173,75 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    }
 			    break;
 			}
+		if ( tb->id() == TokenID::tkNS )
+		{
+		    TokenBase *name_tb = nextToken();
+		    if ( !name_tb )
+			Throw(name_tb ? name_tb : tb) << "Expecting identifier after '::'" << flush;
+		    std::string gname;
+		    if ( name_tb->id() == TokenID::tkOPEROVER )
+			gname = parse_operator_name_after_keyword(*this, name_tb);
+		    else if ( is_contextual_identifier_token(name_tb) )
+			gname = contextual_identifier_name(name_tb);
+		    else
+			Throw(name_tb) << "Expecting identifier after '::'" << flush;
+		    var = NULL;
+		    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+		    {
+			namespace_map_t::iterator nsi = namespace_map.find(gname);
+			if ( nsi == namespace_map.end() )
+			    Throw(name_tb) << "Unknown namespace '" << gname << "'" << flush;
+			nextToken(); // consume ::
+			TokenBase *member_tb = nextToken();
+			if ( !is_contextual_identifier_token(member_tb) )
+			    Throw(member_tb ? member_tb : name_tb)
+				<< "Expecting identifier after namespace '::'" << flush;
+			std::string member_name = contextual_identifier_name(member_tb);
+			variable_map_iter vmi = nsi->second.find(member_name);
+			if ( vmi == nsi->second.end() )
+			    Throw(member_tb) << "'" << member_name
+					     << "' is not a member of namespace '"
+					     << gname << "'" << flush;
+			var = vmi->second;
+			tb = member_tb;
+		    }
+		    else
+		    {
+			var = tkProgram ? tkProgram->findVariable(gname) : NULL;
+			if ( !var )
+			    var = lazy_resolve(gname);
+			if ( !var && is_dynamic_symbol_fallback_enabled()
+			  && is_dynamic_symbol_allowed(gname) )
+			{
+			    void *sym = dlsym(RTLD_DEFAULT, gname.c_str());
+			    if ( sym )
+				var = addFunction(gname,
+				    datatype_vec_t{dynamic_symbol_fallback_return_type(gname)},
+				    (fVOIDFUNC)sym);
+			}
+			if ( !var )
+			    Throw(name_tb) << "use of undeclared identifier '" << gname << '\'' << flush;
+			tb = name_tb;
+		    }
+		    if ( var->type->is_function()
+		      && peekToken() && peekToken()->id() == TokenID::tkLT )
+			skip_template_id_suffix(*this);
+		    if ( var->type->is_function() && peekToken()
+		      && peekToken()->id() == TokenID::tkOpBrk )
+		    {
+			TokenCallFunc *tc = new TokenCallFunc(*var);
+			tb = nextToken();
+			tc->line = tb->line;
+			tc->column = tb->column;
+			tb = parseCallFunc(tc);
+			opStack.push(tc);
+			if ( tb->id() == TokenID::tkSemi )
+			    done = true;
+		    }
+		    else
+			exStack.push(new TokenVar(*var));
+		    break;
+		}
 		if ( tb->id() == TokenID::tkDec || tb->id() == TokenID::tkInc )
 		{
 		    DBG(cout << "parseExpression: Got operator: " << (char)tb->get() << (char)tb->get() << endl);
@@ -8930,15 +11301,54 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    tb->column = bt->column;
 		    goto redo_expression_token;
 		}
-		// If the next token isn't an identifier, the user probably
-		// meant the data type *name* as a contextual identifier — a
-		// parameter or local variable named e.g. `string`. Look it up
-		// as a variable first; only treat as inline declaration if we
-		// don't find one and the next token is an identifier.
+		if ( peekToken()
+		  && (peekToken()->id() == TokenID::tkDot
+		   || peekToken()->id() == TokenID::tkDeRef) )
+		{
+		    std::string ctx_name = bt->str;
+		    size_t sp = ctx_name.rfind(' ');
+		    if ( sp != std::string::npos && sp + 1 < ctx_name.size() )
+			ctx_name = ctx_name.substr(sp + 1);
+		    tb = new TokenIdent(ctx_name);
+		    tb->line = bt->line;
+		    tb->column = bt->column;
+		    goto redo_expression_token;
+		}
 		if ( is_contextual_identifier_token(bt) )
 		{
 		    std::string ctx_name = contextual_identifier_name(bt);
-		    Variable *ctx_var = findVariable(ctx_name);
+		    Variable *ctx_var =
+			find_variable_for_contextual_type_name(*this, ctx_name);
+		    if ( !ctx_var && peekToken()
+		      && peekToken()->id() == TokenID::tkOpBrk )
+		    {
+			std::string dyn_name = ctx_name;
+			size_t sp = dyn_name.rfind(' ');
+			if ( sp != std::string::npos && sp + 1 < dyn_name.size() )
+			    dyn_name = dyn_name.substr(sp + 1);
+			if ( is_dynamic_symbol_fallback_enabled()
+			  && is_dynamic_symbol_allowed(dyn_name) )
+			{
+			    void *sym = dlsym(RTLD_DEFAULT, dyn_name.c_str());
+			    if ( sym )
+				ctx_var = addFunction(dyn_name,
+				    datatype_vec_t{dynamic_symbol_fallback_return_type(dyn_name)},
+				    (fVOIDFUNC)sym);
+			}
+		    }
+		    if ( ctx_var && peekToken() && peekToken()->id() == TokenID::tkOpBrk
+		      && ctx_var->type && ctx_var->type->is_function() )
+		    {
+			TokenCallFunc *tc = new TokenCallFunc(*ctx_var);
+			tb = nextToken();
+			tc->line = tb->line;
+			tc->column = tb->column;
+			tb = parseCallFunc(tc);
+			opStack.push(tc);
+			if ( tb->id() == TokenID::tkSemi )
+			    done = true;
+			break;
+		    }
 		    if ( ctx_var
 			 && (!peekToken() || peekToken()->type() != TokenType::ttIdentifier) )
 		    {
@@ -8947,8 +11357,56 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			break;
 		    }
 		}
+		if ( TokenBase *type_expr = parse_functional_type_expression(
+			*this, tb, &bt->definition) )
+		{
+		    exStack.push(type_expr);
+		    break;
+		}
+		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+		{
+		    var = NULL;
+		    DataDefCLASS *class_scope =
+			dynamic_cast<DataDefCLASS *>(&bt->definition);
+		    if ( !class_scope )
+			class_scope = resolve_expression_class_scope(*this, bt->str);
+		    if ( class_scope )
+		    {
+			QualifiedClassExprAction action =
+			    resolve_class_qualified_expression(*this, class_scope,
+				bt->str, tb, exStack, &var, &tb);
+			if ( action == QualifiedClassExprAction::ResolvedFunction )
+			{
+			    if ( var && var->type && var->type->is_function()
+			      && peekToken() && peekToken()->id() == TokenID::tkLT )
+				skip_template_id_suffix(*this);
+			    if ( var && var->type && var->type->is_function()
+			      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+			    {
+				TokenCallFunc *tc = new TokenCallFunc(*var);
+				tb = nextToken();
+				tc->line = tb->line;
+				tc->column = tb->column;
+				tb = parseCallFunc(tc);
+				opStack.push(tc);
+				if ( tb->id() == TokenID::tkSemi )
+				    done = true;
+			    }
+			    else if ( var )
+				exStack.push(new TokenVar(*var));
+			    break;
+			}
+			break;
+		    }
+		}
+		// If the next token isn't an identifier, the user probably
+		// meant the data type *name* as a contextual identifier — a
+		// parameter or local variable named e.g. `string`. Look it up
+		// as a variable first; only treat as inline declaration if we
+		// don't find one and the next token is an identifier.
 		tb = nextToken();
-		if ( tb->type() != TokenType::ttIdentifier ) { Throw(tb) << "Expecting identifier" << flush; }
+		if ( tb->type() != TokenType::ttIdentifier )
+		    Throw(tb) << "Expecting identifier" << flush;
 		var = addVariable(code, bt->definition, ((TokenIdent *)tb)->str);
 		DBG(cout << "Pushing newly declared variable: " << var->name << " onto exStack" << endl);
 		exStack.push(new TokenVar(*var));
@@ -9002,12 +11460,60 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    ? (TokenIdent *)tb
 		    : &contextual_ident;
 		bool expression_head = exStack.empty() && opStack.empty();
+		bool parsed_operator_name = false;
+		std::string member_lookup_name = ident_tb->str;
+		if ( ident_tb->str == "operator"
+		  && code && code->method && code->method->owner_class )
+		{
+		    member_lookup_name = parse_operator_name_after_keyword(*this, tb);
+		    parsed_operator_name = true;
+		}
 		if ( ident_tb->str == "__FUNCTION__" || ident_tb->str == "__func__"
 		  || ident_tb->str == "__PRETTY_FUNCTION__" )
 		{
 		    var = addLiteral(cur_func_name);
 		    exStack.push(new TokenVar(*var));
 		    break;
+		}
+		bool bool_value = false;
+		if ( is_bool_literal_identifier(ident_tb->str, bool_value) )
+		{
+		    TokenInt *ti = new TokenInt(bool_value ? 1 : 0);
+		    ti->setDataType(&ddBOOL);
+		    ti->file = tb->file;
+		    ti->line = tb->line;
+		    ti->column = tb->column;
+		    exStack.push(ti);
+		    break;
+		}
+		bool ordinary_call_name =
+		    find_variable_for_contextual_type_name(*this,
+			ident_tb->str) != NULL;
+		if ( !ordinary_call_name
+		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk
+		  && is_dynamic_symbol_fallback_enabled()
+		  && is_dynamic_symbol_allowed(ident_tb->str)
+		  && dlsym(RTLD_DEFAULT, ident_tb->str.c_str()) )
+		    ordinary_call_name = true;
+		if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
+		  && !ordinary_call_name )
+		{
+		    if ( TokenDataType *resolved_type =
+			    resolve_declared_type_token(*this, tb, false, true) )
+		    {
+			if ( TokenBase *type_expr =
+				parse_functional_type_expression(*this, tb,
+				    &resolved_type->definition) )
+			{
+			    exStack.push(type_expr);
+			    break;
+			}
+		    }
+		    if ( TokenObjTemp *ot = try_parse_functional_ctor(*this, tb) )
+		    {
+			exStack.push(ot);
+			break;
+		    }
 		}
 		if ( is_realpart_identifier(ident_tb->str)
 		  || is_imagpart_identifier(ident_tb->str) )
@@ -9079,6 +11585,11 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    }
 		    break;
 		}
+		if ( is_named_cpp_cast(ident_tb->str) )
+		{
+		    exStack.push(parse_named_cpp_cast(*this, tb, ident_tb->str));
+		    break;
+		}
 		// dynamic_cast < TYPE * > ( EXPR )   (S5c)
 		if ( ident_tb->str == "dynamic_cast" )
 		{
@@ -9096,7 +11607,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    bool is_ptr = false;
 		    if ( peekToken() && peekToken()->id() == TokenID::tkMul )
 		    { nextToken(); is_ptr = true; }
-		    else if ( peekToken() && peekToken()->id() == TokenID::tkBand )
+		    else if ( peekToken()
+			   && (peekToken()->id() == TokenID::tkBand
+			    || peekToken()->id() == TokenID::tkLand) )
 			Throw(tb) << "dynamic_cast to a reference type is not yet supported (use the pointer form)" << flush;
 		    skip_expression_whitespace(*this);
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
@@ -9313,7 +11826,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    exStack.push(new TokenVaArg(ap_var, ap_expr, target_dd));
 		    break;
 		}
-	    	if ( prevToken() && prevToken()->id() == TokenID::tkDot )
+		if ( prevToken() && prevToken()->id() == TokenID::tkDot )
 		{
 #if 0
 		    DBG(cout << "parseExpression() prevToken is tkDot, pushing TokenIdent " << ((TokenIdent *)tb)->str << endl);
@@ -9333,16 +11846,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    opStack.pop();
 			break;
 		    }
-		    if ( lhs_dot->type() != TokenType::ttVariable
-		      && lhs_dot->type() != TokenType::ttMember
-		      && lhs_dot->type() != TokenType::ttSubscript
-		      && lhs_dot->type() != TokenType::ttCompound
-		      && lhs_dot->type() != TokenType::ttStructLit
-		      && lhs_dot->type() != TokenType::ttCallFunc
-		      && lhs_dot->type() != TokenType::ttOperator   // (a + b).member — operator result object
-		      && lhs_dot->id() != TokenID::tkObjTemp        // T(args).member — functional-ctor temp
-		      && lhs_dot->id() != TokenID::tkTypeid )   // typeid(x).name() (S5d)
-			Throw(tb) << "member reference is not a structure or union" << flush;
+			    if ( lhs_dot->type() != TokenType::ttVariable
+			      && lhs_dot->type() != TokenType::ttMember
+			      && lhs_dot->type() != TokenType::ttSubscript
+			      && lhs_dot->type() != TokenType::ttCompound
+			      && lhs_dot->type() != TokenType::ttStructLit
+				    && lhs_dot->type() != TokenType::ttCallFunc
+				    && lhs_dot->type() != TokenType::ttCallMethod
+				    && lhs_dot->type() != TokenType::ttOperator   // (a + b).member — operator result object
+				    && lhs_dot->id() != TokenID::tkObjTemp        // T(args).member — functional-ctor temp
+				    && lhs_dot->id() != TokenID::tkTypeid )   // typeid(x).name() (S5d)
+				    Throw(tb) << "member reference is not a structure or union" << flush;
 		    Variable *tv_var;
 		    DataDef  *struct_type;
 		    if ( lhs_dot->type() == TokenType::ttVariable )
@@ -9439,17 +11953,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    struct_type = stmt_type;
 			    tv_var = new Variable("__stmt_expr", *struct_type, 1, NULL, false);
 			}
-			else if ( lhs_dot->type() == TokenType::ttCallFunc )
-			{
-			    // f().member — function returning a struct, immediate member access.
-			    // The function call's return type is the struct type.
-			    TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(lhs_dot);
-			    DataDef *ret_type = tcf ? tcf->returns() : NULL;
-			    if ( !ret_type )
-				Throw(tb) << "function call has no return type for member access" << flush;
-			    struct_type = ret_type;
-			    tv_var = new Variable("__call_expr", *struct_type, 1, NULL, false);
-			}
+				else if ( lhs_dot->type() == TokenType::ttCallFunc
+				       || lhs_dot->type() == TokenType::ttCallMethod )
+				{
+				    // f().member / obj.method().member — call result
+				    // member access. The callee's declared return type is
+				    // the receiver type for the next lookup.
+				    TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(lhs_dot);
+				    DataDef *ret_type = tcf ? tcf->returns() : NULL;
+				    if ( !ret_type )
+					Throw(tb) << "call has no return type for member access" << flush;
+				    struct_type = ret_type;
+				    tv_var = new Variable("__call_expr", *struct_type, 1, NULL, false);
+				}
 			else if ( lhs_dot->type() == TokenType::ttOperator
 			       || lhs_dot->id() == TokenID::tkObjTemp )
 			{
@@ -9458,9 +11974,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    // resolve_object_operator_type, or a functional-construction
 			    // temp TokenObjTemp). The rvalue is materialized at codegen via
 			    // parent_expr (class_this_arg -> translate_expr -> the temp).
-			    DataDef *op_type = lhs_dot->datadef();
-			    if ( !op_type || !op_type->is_object() )
+			    DataDef *op_type = NULL;
+			    if ( TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(lhs_dot) )
+				op_type = ot->obj_class;
+			    else
+				op_type = lhs_dot->datadef();
+			    if ( !op_type || (!op_type->is_object() && !op_type->is_struct()) )
+			    {
+				DBG(std::cerr << "dot rvalue member reject: lhs type="
+				    << (int)lhs_dot->type() << " id=" << (int)lhs_dot->id()
+				    << " dd=" << (op_type ? op_type->name : std::string("<null>"))
+				    << std::endl);
 				Throw(tb) << "member reference is not a structure or union" << flush;
+			    }
 			    struct_type = op_type;
 			    tv_var = new Variable("__op_expr", *struct_type, 1, NULL, false);
 			}
@@ -9485,7 +12011,20 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			Throw(tb) << "member reference is not a structure or union" << flush;
 		    var = NULL;
 		    string id = ident_tb->str;
-		    if ( struct_type->is_object() && (var=((DataDefCLASS *)struct_type)->findMethod(id)) )
+		    DataDefCLASS *method_cls =
+			struct_type->is_object() ? (DataDefCLASS *)struct_type : NULL;
+		    if ( method_cls )
+		    {
+			bool call_follows = peekToken()
+			    && peekToken()->id() == TokenID::tkOpBrk;
+			var = call_follows
+			    ? find_method_by_callable_arity(method_cls, id,
+				count_queued_call_arguments(*this), false)
+			    : method_cls->findMethod(id);
+			if ( !var && call_follows )
+			    var = method_cls->findMethod(id);
+		    }
+		    if ( var )
 		    {
 			// Access control (P2.5c): reject a private/protected METHOD
 			// call from outside the (derived) class. Same context + rule
@@ -9498,26 +12037,60 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    if ( !av.empty() )
 				Throw(tb) << av << flush;
 			}
+			if ( var->flags & vfSTATIC )
+			{
+			    TokenCallFunc *tc = new TokenCallFunc(*var);
+			    tb = nextToken();
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    if ( tb->id() == TokenID::tkOpBrk )
+				tb = parseCallFunc(tc);
+			    std::vector<const DataDef *> at;
+			    for ( TokenBase *p : tc->parameters )
+				at.push_back(p ? p->datadef() : NULL);
+			    if ( Variable *ov = method_cls->findMethodOverload(id, at) )
+				if ( ov != &tc->var && (ov->flags & vfSTATIC) )
+				{
+				    TokenCallFunc *tc2 = new TokenCallFunc(*ov);
+				    tc2->parameters = tc->parameters;
+				    tc2->file = tc->file;
+				    tc2->line = tc->line;
+				    tc2->column = tc->column;
+				    tc = tc2;
+				}
+			    var = &tc->var;
+			    exStack.pop();
+			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+				opStack.pop();
+			    opStack.push(tc);
+			    if ( tb->id() == TokenID::tkSemi )
+				done = true;
+			    break;
+			}
 			// Method call on a class-object receiver. The common case is a
 			// bare object variable (`s.length()`). A subscript element
 			// (`v[i].length()` where v's operator[] returns a class element)
 			// is also a valid receiver: build the TokenCallMethod with the
-			// subscript as parent_expr so the CIR side (class_this_arg)
-			// addresses the element via class_subscript_addr. Other chained
-			// receivers (member-of-member returning an object, etc.) are not
-			// yet supported.
+				// subscript as parent_expr so the CIR side (class_this_arg)
+				// addresses the element via class_subscript_addr. A prior
+				// method call returning an object/reference is likewise a
+				// valid chained receiver.
 			// (Both TokenSubscript and TokenSubscriptExpr report
 			// ttSubscript.)
 			TokenBase *recv_parent = NULL;
-			if ( lhs_dot->type() == TokenType::ttSubscript )
-			    recv_parent = lhs_dot;
-			else if ( lhs_dot->id() == TokenID::tkTypeid )
-			    recv_parent = lhs_dot;   // typeid(x).name() (S5d)
-			else if ( lhs_dot->type() == TokenType::ttOperator
-			       || lhs_dot->id() == TokenID::tkObjTemp )
-			    recv_parent = lhs_dot;   // (a + b).method() — operator result object
-			else if ( lhs_dot->type() != TokenType::ttVariable )
-			    Throw(tb) << "chained method call not yet supported" << flush;
+				if ( lhs_dot->type() == TokenType::ttSubscript )
+				    recv_parent = lhs_dot;
+				else if ( lhs_dot->id() == TokenID::tkTypeid )
+				    recv_parent = lhs_dot;   // typeid(x).name() (S5d)
+				else if ( lhs_dot->type() == TokenType::ttOperator
+				       || lhs_dot->id() == TokenID::tkObjTemp )
+				    recv_parent = lhs_dot;   // (a + b).method() — operator result object
+				else if ( lhs_dot->type() == TokenType::ttCallFunc )
+				    recv_parent = lhs_dot;   // f().method()
+				else if ( lhs_dot->type() == TokenType::ttCallMethod )
+				    recv_parent = lhs_dot;   // obj.method().next()
+				else if ( lhs_dot->type() != TokenType::ttVariable )
+				    Throw(tb) << "chained method call not yet supported" << flush;
 			TokenCallMethod *tc = new TokenCallMethod(*tv_var, *var);
 			if ( recv_parent )
 			    tc->parent_expr = recv_parent;
@@ -9534,8 +12107,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			// Now that the argument types are known, re-bind to the
 			// overload they actually select (findMethod above took the
 			// first by-name match).
-			tc = reselect_method_overload(tc, *tv_var,
-				(DataDefCLASS *)struct_type, id);
+			tc = reselect_method_overload(tc, *tv_var, method_cls, id);
 			var = &tc->var;
 			// remove object TokenVar from exStack
 			exStack.pop();
@@ -9549,6 +12121,20 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			opStack.push(tc);
 			// I'm not sure why I need to do this TODO: figure this out
 			if ( tb->id() == TokenID::tkSemi )
+			    done = true;
+			break;
+		    }
+		    if ( struct_type->is_object()
+		      && class_has_unresolved_dependent_surface((DataDefCLASS *)struct_type)
+		      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		    {
+			TokenBase *open = nextToken();
+			tb = consume_unresolved_dependent_call(*this, open);
+			exStack.pop();
+			if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+			    opStack.pop();
+			exStack.push(make_dependent_call_placeholder(tb));
+			if ( tb && tb->id() == TokenID::tkSemi )
 			    done = true;
 			break;
 		    }
@@ -9594,7 +12180,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    bool is_derefexpr_lhs = (dynamic_cast<TokenDerefExpr *>(lhs_dot) != NULL);
 		    bool is_compound_lit_lhs = (dynamic_cast<TokenStructLit *>(lhs_dot) != NULL);
 		    bool is_stmt_expr_lhs = (lhs_dot->type() == TokenType::ttCompound);
-		    bool is_callfunc_lhs = (lhs_dot->type() == TokenType::ttCallFunc);
+			    bool is_callfunc_lhs = (lhs_dot->type() == TokenType::ttCallFunc
+				|| lhs_dot->type() == TokenType::ttCallMethod);
 		    if ( is_derefexpr_lhs || is_compound_lit_lhs || is_stmt_expr_lhs || is_callfunc_lhs )
 			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
 		    else if ( !is_deref_lhs
@@ -9715,7 +12302,15 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( ofs == -1 && base->is_object() )
 		    {
 			// Check if it's a method call on a class pointer
-			var = ((DataDefCLASS *)base)->findMethod(id);
+			DataDefCLASS *method_cls = (DataDefCLASS *)base;
+			bool call_follows = peekToken()
+			    && peekToken()->id() == TokenID::tkOpBrk;
+			var = call_follows
+			    ? find_method_by_callable_arity(method_cls, id,
+				count_queued_call_arguments(*this), false)
+			    : method_cls->findMethod(id);
+			if ( !var && call_follows )
+			    var = method_cls->findMethod(id);
 			if ( var )
 			{
 			    // Access control (P2.5c): reject a private/protected
@@ -9727,6 +12322,36 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    method_access_violation(base, var, id, cur_class);
 				if ( !av.empty() )
 				    Throw(tb) << av << flush;
+			    }
+			    if ( var->flags & vfSTATIC )
+			    {
+				TokenCallFunc *tc = new TokenCallFunc(*var);
+				tb = nextToken();
+				tc->line = tb->line;
+				tc->column = tb->column;
+				if ( tb->id() == TokenID::tkOpBrk )
+				    tb = parseCallFunc(tc);
+				std::vector<const DataDef *> at;
+				for ( TokenBase *p : tc->parameters )
+				    at.push_back(p ? p->datadef() : NULL);
+				if ( Variable *ov = method_cls->findMethodOverload(id, at) )
+				    if ( ov != &tc->var && (ov->flags & vfSTATIC) )
+				    {
+					TokenCallFunc *tc2 = new TokenCallFunc(*ov);
+					tc2->parameters = tc->parameters;
+					tc2->file = tc->file;
+					tc2->line = tc->line;
+					tc2->column = tc->column;
+					tc = tc2;
+				    }
+				var = &tc->var;
+				exStack.pop();
+				if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
+				    opStack.pop();
+				opStack.push(tc);
+				if ( tb->id() == TokenID::tkSemi )
+				    done = true;
+				break;
 			    }
 			    // arrow method call: ptr->method(args). The common LHS is a
 			    // pointer variable / member. A SUBSCRIPT element that is a
@@ -9757,13 +12382,24 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				tb = parseCallMethod(tc);
 			    // Re-bind to the overload the argument types select.
 			    tc = reselect_method_overload(tc, *obj_var,
-				    (DataDefCLASS *)base, id);
+				    method_cls, id);
 			    var = &tc->var;
 			    exStack.pop();
 			    // remove TokenDeRef from opStack
 			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
 				opStack.pop();
 			    opStack.push(tc);
+			    break;
+			}
+			if ( class_has_unresolved_dependent_surface((DataDefCLASS *)base)
+			  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+			{
+			    TokenBase *open = nextToken();
+			    tb = consume_unresolved_dependent_call(*this, open);
+			    exStack.pop();
+			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
+				opStack.pop();
+			    exStack.push(make_dependent_call_placeholder(tb));
 			    break;
 			}
 		    }
@@ -9802,14 +12438,99 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		{
 		    std::string ns_name = ident_tb->str;
+		    if ( DataDefCLASS *class_scope =
+			    resolve_expression_class_scope(*this, ns_name) )
+		    {
+			QualifiedClassExprAction action =
+			    resolve_class_qualified_expression(*this, class_scope,
+				ns_name, tb, exStack, &var, &tb);
+			if ( action == QualifiedClassExprAction::ResolvedFunction )
+			    goto ns_resolved;
+			break;
+		    }
+		    std::string resolved_ns_name =
+			resolve_namespace_name_in_scope(*this, ns_name);
+		    if ( !resolved_ns_name.empty() )
+			ns_name = resolved_ns_name;
 		    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
 		    if ( nsi == namespace_map.end() )
 			Throw(tb) << "Unknown namespace '" << ns_name << "'" << flush;
 		    nextToken(); // consume '::'
 		    TokenBase *member_tb = nextToken(); // consume member identifier
-		    if ( !member_tb || member_tb->type() != TokenType::ttIdentifier )
+		    if ( !member_tb )
 			Throw(tb) << "Expecting identifier after '" << ns_name << "::'" << flush;
-		    std::string member_name = ((TokenIdent *)member_tb)->str;
+		    std::string member_name;
+		    if ( member_tb->type() == TokenType::ttDataType )
+			member_name = ((TokenDataType *)member_tb)->str;
+		    else if ( is_contextual_identifier_token(member_tb) )
+			member_name = contextual_identifier_name(member_tb);
+		    else
+			Throw(tb) << "Expecting identifier after '" << ns_name << "::'" << flush;
+
+		    DataDef *member_dd = NULL;
+		    if ( peekToken() && peekToken()->id() == TokenID::tkLT
+		      && template_declared_in_namespace(*this, member_name, ns_name) )
+		    {
+			if ( TokenDataType *alias_inst =
+				instantiate_template_alias_use(*this, member_name, member_tb) )
+			    member_dd = &alias_inst->definition;
+			else if ( TokenDataType *inst =
+				instantiate_template_use(*this, member_name, member_tb) )
+			    member_dd = &inst->definition;
+		    }
+		    if ( DataDefCLASS *member_scope =
+			    dynamic_cast<DataDefCLASS *>(member_dd) )
+		    {
+			if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+			{
+			    QualifiedClassExprAction action =
+				resolve_class_qualified_expression(*this,
+				    member_scope, member_name, member_tb,
+				    exStack, &var, &tb);
+			    if ( action == QualifiedClassExprAction::ResolvedFunction )
+				goto ns_resolved;
+			    break;
+			}
+			if ( TokenBase *type_expr =
+				parse_functional_type_expression(*this, member_tb,
+				    member_dd) )
+			{
+			    exStack.push(type_expr);
+			    tb = member_tb;
+			    break;
+			}
+		    }
+
+		    namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
+		    if ( nti != namespace_datatype_map.end() )
+		    {
+			datatype_map_iter dti = nti->second.find(member_name);
+			if ( dti != nti->second.end() )
+			{
+			    DataDef *ns_member_dd = &dti->second->definition;
+			    if ( DataDefCLASS *member_scope =
+				    dynamic_cast<DataDefCLASS *>(ns_member_dd) )
+			    {
+				if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+				{
+				    QualifiedClassExprAction action =
+					resolve_class_qualified_expression(*this,
+					    member_scope, member_name, member_tb,
+					    exStack, &var, &tb);
+				    if ( action == QualifiedClassExprAction::ResolvedFunction )
+					goto ns_resolved;
+				    break;
+				}
+			    }
+			    if ( TokenBase *type_expr = parse_functional_type_expression(
+				    *this, member_tb, ns_member_dd) )
+			    {
+				exStack.push(type_expr);
+				tb = member_tb;
+				break;
+			    }
+			}
+		    }
 		    variable_map_iter vmi = nsi->second.find(member_name);
 		    if ( vmi == nsi->second.end() )
 		    {
@@ -9846,7 +12567,48 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		// the active namespace first, but once we're inside that call's
 		// arguments / subexpressions, lexical scope should win so locals
 		// can shadow same-named namespace members (`ruby::chars(chars, s)`).
-		var = resolve_preferred_identifier(ident_tb, expression_head);
+		if ( !parsed_operator_name
+		  && code && code->method && code->method->owner_class
+		  && (!prevToken() || prevToken()->id() != TokenID::tkNS)
+		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    DataDefCLASS *cls = code->method->owner_class;
+		    std::string mname = member_lookup_name;
+		    Variable *mvar =
+			find_method_by_callable_arity(cls, mname,
+			    count_queued_call_arguments(*this), false);
+		    if ( mvar )
+		    {
+			if ( mvar->flags & vfSTATIC )
+			{
+			    tb = nextToken();
+			    TokenCallFunc *tc = new TokenCallFunc(*mvar);
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    tb = parseCallFunc(tc);
+			    opStack.push(tc);
+			    if ( tb->id() == TokenID::tkSemi )
+				done = true;
+			    break;
+			}
+			std::string thisid = "__this";
+			Variable *thisvar = code->method->findParameter(thisid);
+			if ( thisvar )
+			{
+			    TokenCallMethod *tc = new TokenCallMethod(*thisvar, *mvar);
+			    tb = nextToken();
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    tb = parseCallMethod(tc);
+			    tc = reselect_method_overload(tc, *thisvar, cls, mname);
+			    opStack.push(tc);
+			    if ( tb->id() == TokenID::tkSemi )
+				done = true;
+			    break;
+			}
+		    }
+		}
+		var = parsed_operator_name ? NULL : resolve_preferred_identifier(ident_tb, expression_head);
 		// `this` keyword: inside a class method body it names the hidden
 		// __this parameter (a `ClassName*`). Resolving it here lets
 		// `this->member` / `this.member` / `this->method()` flow through the
@@ -9860,10 +12622,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    var = code->method->findParameter(thisid);
 		}
 		// class method: resolve unqualified member name through __this
-		if ( !var && code && code->method && code->method->owner_class )
+		if ( !var
+		  && (!prevToken() || prevToken()->id() != TokenID::tkNS)
+		  && code && code->method && code->method->owner_class )
 		{
 		    DataDefCLASS *cls = code->method->owner_class;
-		    std::string mname = ident_tb->str;
+		    std::string mname = member_lookup_name;
+		    if ( DataDef *static_dd = resolve_class_static_member_type(cls, mname) )
+		    {
+			TokenInt *ti = new TokenInt(0);
+			ti->setDataType(static_dd);
+			ti->file = tb->file;
+			ti->line = tb->line;
+			ti->column = tb->column;
+			exStack.push(ti);
+			break;
+		    }
 		    ssize_t ofs = cls->m_offset(mname);
 		    if ( ofs >= 0 )
 		    {
@@ -9878,7 +12652,46 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    break;
 			}
 		    }
+		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		    {
+			Variable *mvar =
+			    find_method_by_callable_arity(cls, mname,
+				count_queued_call_arguments(*this), false);
+			if ( mvar )
+			{
+			    if ( mvar->flags & vfSTATIC )
+			    {
+				tb = nextToken();
+				TokenCallFunc *tc = new TokenCallFunc(*mvar);
+				tc->line = tb->line;
+				tc->column = tb->column;
+				opStack.push(tc);
+				if ( tb->id() == TokenID::tkOpBrk )
+				    tb = parseCallFunc(tc);
+				if ( tb->id() == TokenID::tkSemi )
+				    done = true;
+				break;
+			    }
+			    std::string thisid = "__this";
+			    Variable *thisvar = code->method->findParameter(thisid);
+			    if ( thisvar )
+			    {
+				TokenCallMethod *tc = new TokenCallMethod(*thisvar, *mvar);
+				tb = nextToken();
+				tc->line = tb->line;
+				tc->column = tb->column;
+				tb = parseCallMethod(tc);
+				tc = reselect_method_overload(tc, *thisvar, cls, mname);
+				opStack.push(tc);
+				if ( tb->id() == TokenID::tkSemi )
+				    done = true;
+				break;
+			    }
+			}
+		    }
 		}
+		if ( parsed_operator_name )
+		    Throw(tb) << "use of undeclared member '" << member_lookup_name << '\'' << flush;
 		// lazy-load check: symbol registered by #include but not yet created
 		if ( !var )
 		    var = lazy_resolve(ident_tb->str);
@@ -9964,6 +12777,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		ns_resolved:
 		if ( var->type->is_function() )
 		{
+		    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+			skip_template_id_suffix(*this);
 		    // function pointer variable (DataDefFPTR) — different from regular functions
 		    if ( var->type->is_numeric() )
 		    {
@@ -10157,13 +12972,70 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 // typedef struct tag alias;
 // typedef struct tag { type member; } alias;
 // typedef struct { type member; } alias;
-// parse a `namespace NAME { ... }` definition block.
-//   namespace std { template<typename T> class vector { ... }; }
-// Sets pgm.current_namespace for the duration of the body so definitions
-// declared inside (templates, classes, functions) register under the
-// namespace, then restores the previous namespace. Body statements that
-// yield a node (e.g. a global initializer) are appended to the program.
-TokenBase *TokenNAMESPACE::parse(Program &pgm)
+static void mirror_inline_namespace_into_parent(Program &pgm,
+						const std::string &parent_ns,
+						const std::string &inline_ns)
+{
+    namespace_map_t::iterator child_vars = pgm.namespace_map.find(inline_ns);
+    if ( child_vars != pgm.namespace_map.end() )
+    {
+	if ( !parent_ns.empty() )
+	{
+	    variable_map_t &parent_vars = pgm.namespace_map[parent_ns];
+	    for ( variable_map_iter it = child_vars->second.begin();
+		  it != child_vars->second.end(); ++it )
+		if ( parent_vars.find(it->first) == parent_vars.end() )
+		    parent_vars[it->first] = it->second;
+	}
+	else if ( pgm.tkProgram )
+	{
+	    for ( variable_map_iter it = child_vars->second.begin();
+		  it != child_vars->second.end(); ++it )
+	    {
+		std::string name = it->first;
+		if ( pgm.findVariable(name) )
+		    continue;
+		Variable *src = it->second;
+		if ( src->name == name )
+		    pgm.tkProgram->variables.push_back(src);
+		else
+		{
+		    Variable *alias = new Variable();
+		    alias->name = name;
+		    alias->type = src->type;
+		    alias->data = src->data;
+		    alias->count = src->count;
+		    alias->flags = src->flags;
+		    alias->storage_alias_name = src->storage_alias_name.empty()
+					      ? src->name : src->storage_alias_name;
+		    pgm.tkProgram->variables.push_back(alias);
+		}
+	    }
+	}
+    }
+
+    namespace_datatype_map_t::iterator child_types =
+	pgm.namespace_datatype_map.find(inline_ns);
+    if ( child_types == pgm.namespace_datatype_map.end() )
+	return;
+    if ( !parent_ns.empty() )
+    {
+	datatype_map_t &parent_types = pgm.namespace_datatype_map[parent_ns];
+	for ( datatype_map_iter it = child_types->second.begin();
+	      it != child_types->second.end(); ++it )
+	    if ( parent_types.find(it->first) == parent_types.end() )
+		parent_types[it->first] = it->second;
+    }
+    else
+    {
+	for ( datatype_map_iter it = child_types->second.begin();
+	      it != child_types->second.end(); ++it )
+	    if ( pgm.datatype_map.find(it->first) == pgm.datatype_map.end() )
+		pgm.datatype_map[it->first] = it->second;
+    }
+}
+
+static TokenBase *parse_namespace_block(Program &pgm, bool inline_namespace)
 {
     DBG(std::cout << "TokenNAMESPACE::parse() top" << std::endl);
 
@@ -10181,6 +13053,7 @@ TokenBase *TokenNAMESPACE::parse(Program &pgm)
     std::string saved_namespace = pgm.current_namespace;
     pgm.current_namespace = saved_namespace.empty()
 			  ? ns_name : (saved_namespace + "::" + ns_name);
+    pgm.namespace_map[pgm.current_namespace];
 
     while ( (tn = pgm.nextToken()) )
     {
@@ -10193,10 +13066,22 @@ TokenBase *TokenNAMESPACE::parse(Program &pgm)
 	    pgm.tkProgram->statements.push_back((TokenStmt *)stmt);
     }
 
+    if ( inline_namespace )
+	mirror_inline_namespace_into_parent(pgm, saved_namespace,
+					    pgm.current_namespace);
     pgm.current_namespace = saved_namespace;
-    DBG(std::cout << "TokenNAMESPACE::parse() end of namespace '" << ns_name
-	<< "'" << std::endl);
+    DBG(std::cout << "TokenNAMESPACE::parse() end of namespace '" << ns_name << "'" << std::endl);
     return NULL;
+}
+
+// parse a `namespace NAME { ... }` definition block.
+// Sets pgm.current_namespace for the duration of the body so definitions
+// declared inside (templates, classes, functions) register under the
+// namespace, then restores the previous namespace. Body statements that
+// yield a node (e.g. a global initializer) are appended to the program.
+TokenBase *TokenNAMESPACE::parse(Program &pgm)
+{
+    return parse_namespace_block(pgm, false);
 }
 
 // parse 'using' statement
@@ -10241,18 +13126,45 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    return;
 	pgm.datatype_map[name] = src;
     };
+    auto namespace_exists = [&](const std::string &name) -> bool
+    {
+	return pgm.namespace_map.find(name) != pgm.namespace_map.end()
+	    || pgm.namespace_datatype_map.find(name) != pgm.namespace_datatype_map.end();
+    };
+    auto resolve_source_namespace = [&](const std::string &name) -> std::string
+    {
+	if ( namespace_exists(name) )
+	    return name;
+	if ( !pgm.current_namespace.empty() )
+	{
+	    std::string nested = pgm.current_namespace + "::" + name;
+	    if ( namespace_exists(nested) )
+		return nested;
+	}
+	return "";
+    };
 
     // using namespace std;
     if ( tn->id() == TokenID::tkNAMESPACE )
     {
 	tn = pgm.nextToken(); // namespace name
-	if ( !tn || tn->type() != TokenType::ttIdentifier )
+	if ( !tn || !is_contextual_identifier_token(tn) )
 	    pgm.Throw(tn) << "Expecting namespace name after 'using namespace'" << flush;
-	std::string ns_name = ((TokenIdent *)tn)->str;
+	std::string raw_ns_name = contextual_identifier_name(tn);
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	{
+	    pgm.nextToken();
+	    TokenBase *part = pgm.nextToken();
+	    if ( !part || !is_contextual_identifier_token(part) )
+		pgm.Throw(part ? part : tn) << "Expecting namespace name after '::'" << flush;
+	    raw_ns_name += "::" + contextual_identifier_name(part);
+	}
+	std::string ns_name = resolve_source_namespace(raw_ns_name);
+	if ( ns_name.empty() )
+	    pgm.Throw(tn) << "Unknown namespace '" << raw_ns_name << "'" << flush;
 	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
-	if ( nsi == pgm.namespace_map.end() )
-	    pgm.Throw(tn) << "Unknown namespace '" << ns_name << "'" << flush;
 	// import all members into global scope
+	if ( nsi != pgm.namespace_map.end() )
 	for ( variable_map_iter vmi = nsi->second.begin(); vmi != nsi->second.end(); ++vmi )
 	{
 	    std::string name = vmi->first;
@@ -10272,10 +13184,131 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	return NULL;
     }
 
+    // using ::name;  (import a global declaration into the current namespace)
+    if ( tn->id() == TokenID::tkNS )
+    {
+	std::vector<std::string> parts;
+	TokenBase *member = pgm.nextToken();
+	if ( !member || !is_contextual_identifier_token(member) )
+	    pgm.Throw(member ? member : tn) << "Expecting member name in using declaration" << flush;
+	parts.push_back(contextual_identifier_name(member));
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	{
+	    pgm.nextToken();
+	    member = pgm.nextToken();
+	    if ( !member || !is_contextual_identifier_token(member) )
+		pgm.Throw(member ? member : tn) << "Expecting member name in using declaration" << flush;
+	    parts.push_back(contextual_identifier_name(member));
+	}
+	std::string name = parts.back();
+	std::string source_ns;
+	for ( size_t i = 0; i + 1 < parts.size(); ++i )
+	{
+	    if ( i )
+		source_ns += "::";
+	    source_ns += parts[i];
+	}
+	Variable *v = NULL;
+	datatype_map_iter dti = pgm.datatype_map.end();
+	datatype_map_t::iterator ns_dti;
+	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.end();
+	if ( source_ns.empty() )
+	{
+	    v = pgm.findVariable(name);
+	    dti = pgm.datatype_map.find(name);
+	}
+	else
+	{
+	    namespace_map_t::iterator nsi = pgm.namespace_map.find(source_ns);
+	    if ( nsi != pgm.namespace_map.end() )
+	    {
+		variable_map_iter vmi = nsi->second.find(name);
+		if ( vmi != nsi->second.end() )
+		    v = vmi->second;
+	    }
+	    nti = pgm.namespace_datatype_map.find(source_ns);
+	    if ( nti != pgm.namespace_datatype_map.end() )
+		ns_dti = nti->second.find(name);
+	}
+	bool have_type = source_ns.empty()
+		       ? (dti != pgm.datatype_map.end())
+		       : (nti != pgm.namespace_datatype_map.end()
+			  && ns_dti != nti->second.end());
+	if ( !v && !have_type )
+	    pgm.Throw(member) << "'" << name << "' is not a declaration in '"
+			      << (source_ns.empty() ? std::string("::") : source_ns)
+			      << "'" << flush;
+	if ( !pgm.current_namespace.empty() )
+	{
+	    if ( v )
+		pgm.namespace_map[pgm.current_namespace][name] = v;
+	    if ( source_ns.empty() && dti != pgm.datatype_map.end() )
+		pgm.namespace_datatype_map[pgm.current_namespace][name] = dti->second;
+	    else if ( !source_ns.empty()
+		   && nti != pgm.namespace_datatype_map.end()
+		   && ns_dti != nti->second.end() )
+		pgm.namespace_datatype_map[pgm.current_namespace][name] = ns_dti->second;
+	}
+	else
+	{
+	    if ( v && !pgm.findVariable(name) )
+		import_namespace_member(name, v);
+	    if ( source_ns.empty() && dti != pgm.datatype_map.end() )
+		import_namespace_type(name, dti->second);
+	    else if ( !source_ns.empty()
+		   && nti != pgm.namespace_datatype_map.end()
+		   && ns_dti != nti->second.end() )
+		import_namespace_type(name, ns_dti->second);
+	}
+	tn = pgm.nextToken();
+	if ( !tn || tn->id() != TokenID::tkSemi )
+	    pgm.Throw(tn) << "Expecting ';' after using declaration" << flush;
+	return NULL;
+    }
+
     // using std::cout;
     if ( tn->type() == TokenType::ttIdentifier )
     {
-	std::string ns_name = ((TokenIdent *)tn)->str;
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
+	{
+	    std::string alias_name = ((TokenIdent *)tn)->str;
+	    pgm.nextToken(); // consume '='
+	    TokenBase *type_tb = pgm.nextToken();
+	    while ( type_tb && (type_tb->id() == TokenID::tkCONST
+		   || type_tb->id() == TokenID::tkVOLATILE
+		   || type_tb->id() == TokenID::tkRESTRICT) )
+		type_tb = pgm.nextToken();
+	    TokenDataType *target = resolve_declared_type_token(pgm, type_tb, true, true);
+	    if ( !target )
+		pgm.Throw(type_tb ? type_tb : tn) << "Expecting type in using alias" << flush;
+	    DataDef *alias_dd = &target->definition;
+	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	    {
+		pgm.nextToken();
+		alias_dd = pgm.getPointerType(alias_dd);
+	    }
+	    if ( pgm.peekToken()
+	      && (pgm.peekToken()->id() == TokenID::tkBand
+	       || pgm.peekToken()->id() == TokenID::tkLand) )
+	    {
+		pgm.nextToken();
+		alias_dd = pgm.getPointerType(alias_dd);
+	    }
+	    TokenBase *semi = pgm.nextToken();
+	    if ( !semi || semi->id() != TokenID::tkSemi )
+		pgm.Throw(semi ? semi : tn) << "Expecting ';' after using alias" << flush;
+	    TokenDataType *alias_tdt = new TokenDataType(alias_name.c_str(), *alias_dd);
+	    pgm.user_typedef_names.insert(alias_name);
+	    if ( !pgm.class_scope_stack.empty() )
+		pgm.class_scope_stack.back()->type_aliases[alias_name] = alias_dd;
+	    else
+		pgm.datatype_map[alias_name] = alias_tdt;
+	    if ( pgm.class_scope_stack.empty() && !pgm.current_namespace.empty() )
+		pgm.namespace_datatype_map[pgm.current_namespace][alias_name] = alias_tdt;
+	    return new TokenTypedefDecl(alias_name, alias_dd);
+	}
+	std::string requested_ns_name = ((TokenIdent *)tn)->str;
+	std::string ns_name = resolve_source_namespace(requested_ns_name);
 	tn = pgm.nextToken(); // should be ::
 	if ( !tn || tn->id() != TokenID::tkNS )
 	    pgm.Throw(tn) << "Expecting '::' in using declaration" << flush;
@@ -10283,23 +13316,42 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	if ( !tn || tn->type() != TokenType::ttIdentifier )
 	    pgm.Throw(tn) << "Expecting member name in using declaration" << flush;
 	std::string member_name = ((TokenIdent *)tn)->str;
+	if ( ns_name.empty() )
+	    pgm.Throw(tn) << "Unknown namespace '" << requested_ns_name << "'" << flush;
 	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
-	if ( nsi == pgm.namespace_map.end() )
-	    pgm.Throw(tn) << "Unknown namespace '" << ns_name << "'" << flush;
-	variable_map_iter vmi = nsi->second.find(member_name);
+	variable_map_iter vmi;
+	bool have_var = false;
+	if ( nsi != pgm.namespace_map.end() )
+	{
+	    vmi = nsi->second.find(member_name);
+	    have_var = vmi != nsi->second.end();
+	}
 	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns_name);
-	datatype_map_iter dti = nti == pgm.namespace_datatype_map.end()
-	    ? datatype_map_t::iterator()
-	    : nti->second.find(member_name);
-	if ( vmi == nsi->second.end()
-	  && (nti == pgm.namespace_datatype_map.end() || dti == nti->second.end()) )
+	datatype_map_iter dti;
+	bool have_type = false;
+	if ( nti != pgm.namespace_datatype_map.end() )
+	{
+	    dti = nti->second.find(member_name);
+	    have_type = dti != nti->second.end();
+	}
+	if ( !have_var && !have_type )
 	    pgm.Throw(tn) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
-	// import into global scope / datatype map
+	// import into the current namespace, or global scope outside a namespace
 	std::string name = member_name;
-	if ( vmi != nsi->second.end() && !pgm.findVariable(name) )
-	    import_namespace_member(name, vmi->second);
-	if ( nti != pgm.namespace_datatype_map.end() && dti != nti->second.end() )
-	    import_namespace_type(name, dti->second);
+	if ( !pgm.current_namespace.empty() )
+	{
+	    if ( have_var )
+		pgm.namespace_map[pgm.current_namespace][name] = vmi->second;
+	    if ( have_type )
+		pgm.namespace_datatype_map[pgm.current_namespace][name] = dti->second;
+	}
+	else
+	{
+	    if ( have_var && !pgm.findVariable(name) )
+		import_namespace_member(name, vmi->second);
+	    if ( have_type )
+		import_namespace_type(name, dti->second);
+	}
 	// expect semicolon
 	tn = pgm.nextToken();
 	if ( !tn || tn->id() != TokenID::tkSemi )
@@ -10362,6 +13414,87 @@ static DataDefSTRUCT *new_anon_struct(size_t size = 0)
 	std::string("__anon_") + std::to_string(++anon_tag_counter), size);
     dds->is_anonymous = true;
     return dds;
+}
+
+static TokenBase *next_significant_token(const std::deque<TokenBase *> &tokens,
+					 size_t start)
+{
+    for ( size_t i = start; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    continue;
+	TokenType tt = t->type();
+	if ( tt == TokenType::ttSpace || tt == TokenType::ttTab
+	  || tt == TokenType::ttEOL || tt == TokenType::ttComment )
+	    continue;
+	return t;
+    }
+    return NULL;
+}
+
+static bool cpp_struct_body_needs_class_parser(Program &pgm,
+					       const std::string &tag_name,
+					       TokenBase *after_tag)
+{
+    if ( pgm.is_c_mode() || !after_tag )
+	return false;
+    if ( after_tag->id() == TokenID::tkColon )
+	return true;
+    if ( after_tag->id() != TokenID::tkOpBrc )
+	return false;
+
+    int depth = 0;
+    bool member_start = false;
+    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    {
+	TokenBase *t = pgm.tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkOpBrc )
+	{
+	    ++depth;
+	    if ( depth == 1 )
+		member_start = true;
+	    continue;
+	}
+	if ( t->id() == TokenID::tkClBrc )
+	{
+	    if ( depth == 1 )
+		return false;
+	    if ( depth > 0 )
+		--depth;
+	    continue;
+	}
+	if ( depth != 1 )
+	    continue;
+	if ( t->id() == TokenID::tkSemi )
+	{
+	    member_start = true;
+	    continue;
+	}
+	if ( !member_start )
+	    continue;
+	if ( t->id() == TokenID::tkBnot || t->id() == TokenID::tkOPEROVER
+	  || t->id() == TokenID::tkSTATIC || t->id() == TokenID::tkTEMPLATE
+	  || t->id() == TokenID::tkTYPEDEF || t->id() == TokenID::tkUSING )
+	    return true;
+	if ( is_contextual_identifier_token(t) )
+	{
+	    std::string name = contextual_identifier_name(t);
+	    if ( name == "explicit" || name == "virtual" || name == "friend"
+	      || name == "public" || name == "private" || name == "protected" )
+		return true;
+	    if ( name == tag_name )
+	    {
+		TokenBase *next = next_significant_token(pgm.tokens, i + 1);
+		if ( next && next->id() == TokenID::tkOpBrk )
+		    return true;
+	    }
+	}
+	member_start = false;
+    }
+    return false;
 }
 
 TokenBase *TokenSTRUCT::parse(Program &pgm)
@@ -10437,6 +13570,27 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	td.origin = otok;
 	td.struct_body = defines_body;
 	pgm.top_decls.push_back(td);
+    };
+    auto register_cpp_aggregate_name = [&](const std::string &name,
+					   DataDefSTRUCT *sdd) -> TokenDataType *
+    {
+	if ( !sdd || pgm.is_c_mode() )
+	    return NULL;
+	if ( sdd->canonical_cpp_spelling.empty() && !pgm.current_namespace.empty() )
+	    sdd->canonical_cpp_spelling = pgm.current_namespace + "::" + name;
+	TokenDataType *tdt_ = NULL;
+	datatype_map_iter existing = pgm.datatype_map.find(name);
+	if ( existing != pgm.datatype_map.end()
+	  && &existing->second->definition == sdd )
+	    tdt_ = existing->second;
+	else
+	{
+	    tdt_ = new TokenDataType(name.c_str(), *sdd);
+	    pgm.datatype_map[name] = tdt_;
+	}
+	if ( !pgm.current_namespace.empty() )
+	    pgm.namespace_datatype_map[pgm.current_namespace][name] = tdt_;
+	return tdt_;
     };
 
     // check for __attribute__((packed)) before or after tag
@@ -10538,6 +13692,30 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // __attribute__ can also appear after the tag name
     consume_attribute();
 
+    if ( !is_union && tag && cpp_struct_body_needs_class_parser(pgm, tag->str, tn) )
+    {
+	TokenIdent *class_tag = new TokenIdent(tag->str);
+	class_tag->file = tag->file;
+	class_tag->line = tag->line;
+	class_tag->column = tag->column;
+	pgm.pushToken(class_tag);
+	bool saved_cpp_struct_class = pgm.parsing_cpp_struct_class;
+	pgm.parsing_cpp_struct_class = true;
+	TokenCLASS class_parser;
+	TokenBase *result = NULL;
+	try
+	{
+	    result = class_parser.parse(pgm);
+	}
+	catch(...)
+	{
+	    pgm.parsing_cpp_struct_class = saved_cpp_struct_class;
+	    throw;
+	}
+	pgm.parsing_cpp_struct_class = saved_cpp_struct_class;
+	return result;
+    }
+
     // if no brace, then this structure type must already be defined
     // and we are either doing a typedef, or a variable declaration
     if ( tn->id() != TokenID::tkOpBrc )
@@ -10558,6 +13736,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    }
 	    else
 		fwd = static_cast<DataDefSTRUCT *>(dmi->second);
+	    register_cpp_aggregate_name(tag->str, fwd);
 	    pgm.nextToken(); // consume ';'
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->str << endl);
 	    // Do NOT record a pure forward declaration into top_decls: an
@@ -10579,6 +13758,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    DataDefSTRUCT *fwd = new DataDefSTRUCT(tag->str, 0);
 	    fwd->union_layout = is_union;
 	    pgm.struct_map[scoped_struct_tag(tag->str)] = fwd;
+	    register_cpp_aggregate_name(tag->str, fwd);
 	    dmi = find_visible_struct_tag(tag->str);
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->str << endl);
 	}
@@ -11320,8 +14500,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     dds->is_complete = true; // a `{ ... }` body was parsed (even if it had no members)
     dds->finalize(); // round up size to struct alignment
 
-    // A struct that contains an OBJECT member by value (a std::string or another
-    // object) is — per C++ — a NON-TRIVIAL class: those members must be
+    // A struct that contains an OBJECT member by value is — per C++ — a
+    // NON-TRIVIAL class: those members must be
     // constructed/destructed. The keyword does not decide struct-vs-class; the
     // CONTENTS do (a struct IS a class; it earns class-hood from an object
     // feature). Promote the parsed DataDefSTRUCT to a DataDefCLASS (which IS-A
@@ -11332,7 +14512,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	bool has_object_member = false;
 	for ( auto &m : dds->members )
 	    if ( m.second && !m.second->is_pointer() && m.second->is_object() ) {
-		has_object_member = true;	// std::string is an object too (is_object())
+		has_object_member = true;
 		break;
 	    }
 	if ( has_object_member && !dynamic_cast<DataDefCLASS *>(dds) ) {
@@ -11397,6 +14577,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    pgm.struct_map[tag_store_key] = dds;
 	    DBG(cout << "TokenSTRUCT::parse() registered struct " << tag_store_key << " size=" << dds->size << endl);
 	}
+	register_cpp_aggregate_name(tag->str, dds);
     }
 
     // NOTE: the struct/union definition is recorded in top_decls only for
@@ -11425,8 +14606,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
 		TokenIdent *alias = (TokenIdent *)tn;
 		alias_dd = parse_typedef_array_suffix(pgm, alias_dd, alias->str, tn);
+		consume_typedef_gnu_attributes(pgm);
 		bmi = pgm.datatype_map.find(alias->str);
-	    if ( bmi != pgm.datatype_map.end() && pgm.compounds.empty() )
+	    if ( bmi != pgm.datatype_map.end() && pgm.compounds.empty()
+	      && &bmi->second->definition != alias_dd )
 		pgm.Throw(tn) << "Identifier '" << alias->str << "' already defined" << flush;
 	    tdt = new TokenDataType(alias->str.c_str(), *alias_dd);
 	    pgm.datatype_map[alias->str] = tdt;
@@ -11501,47 +14684,242 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     return NULL;
 }
 
+static bool consume_anonymous_aggregate_open(Program &pgm, bool &packed)
+{
+    std::vector<TokenBase *> consumed;
+    while ( is_attribute_identifier_token(pgm.peekToken()) )
+    {
+	TokenBase *attr = pgm.nextToken();
+	consumed.push_back(attr);
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    int depth = 0;
+	    do {
+		TokenBase *at = pgm.nextToken();
+		if ( !at )
+		    break;
+		consumed.push_back(at);
+		if ( at->id() == TokenID::tkOpBrk )
+		    ++depth;
+		else if ( at->id() == TokenID::tkClBrk )
+		    --depth;
+		else if ( at->type() == TokenType::ttIdentifier
+		       && ((TokenIdent *)at)->str == "packed" )
+		    packed = true;
+	    } while ( depth > 0 );
+	}
+    }
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
+    {
+	pgm.nextToken();
+	return true;
+    }
+    for ( std::vector<TokenBase *>::reverse_iterator it = consumed.rbegin();
+	  it != consumed.rend(); ++it )
+	pgm.pushToken(*it);
+    return false;
+}
+
+static DataDefSTRUCT *parse_class_anonymous_aggregate(Program &pgm,
+						      TokenBase *kw);
+
+static void parse_class_anonymous_aggregate_members(Program &pgm,
+						    DataDefSTRUCT *agg,
+						    TokenBase *loc)
+{
+    TokenBase *tn;
+    while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
+    {
+	while ( is_attribute_identifier_token(tn) )
+	{
+	    tn = consume_gnu_attributes(pgm, pgm.nextToken());
+	    if ( tn )
+		pgm.pushToken(tn);
+	    tn = pgm.peekToken();
+	}
+	while ( tn && (tn->id() == TokenID::tkCONST
+	            || tn->id() == TokenID::tkVOLATILE
+	            || tn->id() == TokenID::tkRESTRICT) )
+	{
+	    pgm.nextToken();
+	    tn = pgm.peekToken();
+	}
+	if ( !tn )
+	    pgm.Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
+
+	TokenBase *type_tb = pgm.nextToken();
+	DataDef *base_member_dd = NULL;
+	if ( type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION )
+	{
+	    if ( DataDefSTRUCT *nested =
+		    parse_class_anonymous_aggregate(pgm, type_tb) )
+		base_member_dd = nested;
+	    else
+	    {
+		TokenDataType *mtype =
+		    resolve_declared_type_token(pgm, type_tb, true, true);
+		if ( mtype )
+		    base_member_dd = &mtype->definition;
+	    }
+	}
+	else if ( TokenDataType *mtype =
+		    resolve_declared_type_token(pgm, type_tb, true, true) )
+	    base_member_dd = &mtype->definition;
+	else if ( type_tb->id() == TokenID::tkENUM )
+	    base_member_dd = &ddINT;
+	if ( !base_member_dd )
+	    pgm.Throw(type_tb) << "Expecting type in anonymous class aggregate" << flush;
+
+	while ( pgm.peekToken()
+	     && (pgm.peekToken()->id() == TokenID::tkCONST
+	      || pgm.peekToken()->id() == TokenID::tkVOLATILE
+	      || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
+	    pgm.nextToken();
+
+	bool done_members = false;
+	while ( !done_members )
+	{
+	    DataDef *member_dd = base_member_dd;
+	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	    {
+		pgm.nextToken();
+		member_dd = pgm.getPointerType(member_dd);
+	    }
+	    while ( pgm.peekToken()
+		 && (pgm.peekToken()->id() == TokenID::tkCONST
+		  || pgm.peekToken()->id() == TokenID::tkVOLATILE
+		  || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
+		pgm.nextToken();
+
+	    tn = pgm.nextToken();
+	    if ( tn && tn->id() == TokenID::tkSemi )
+	    {
+		if ( DataDefSTRUCT *anon = dynamic_cast<DataDefSTRUCT *>(member_dd) )
+		{
+		    agg->addAnonymousAggregate(*anon);
+		    done_members = true;
+		    continue;
+		}
+		pgm.Throw(tn) << "Expecting member name in anonymous class aggregate" << flush;
+	    }
+	    if ( !tn || !is_contextual_identifier_token(tn) )
+		pgm.Throw(tn ? tn : loc)
+		    << "Expecting member name in anonymous class aggregate" << flush;
+	    std::string member_name = contextual_identifier_name(tn);
+	    size_t member_count = 1;
+	    bool member_is_array = false;
+	    std::vector<uint32_t> member_dims;
+	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	    {
+		member_is_array = true;
+		pgm.nextToken();
+		TokenBase *cl = pgm.nextToken();
+		if ( cl && cl->id() == TokenID::tkClSqr )
+		{
+		    member_dims.push_back(0);
+		    member_count = 0;
+		    break;
+		}
+		pgm.pushToken(cl);
+		int64_t n = parse_constant_integer_expression(pgm);
+		if ( n < 0 )
+		    pgm.Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
+		cl = pgm.nextToken();
+		if ( !cl || cl->id() != TokenID::tkClSqr )
+		    pgm.Throw(cl ? cl : tn)
+			<< "Expected ']' in anonymous class aggregate member" << flush;
+		member_dims.push_back((uint32_t)n);
+		if ( n == 0 )
+		{
+		    member_count = 0;
+		    break;
+		}
+		member_count *= (size_t)n;
+	    }
+	    agg->addMember(member_name, *member_dd, member_count, NULL,
+		member_is_array, member_is_array ? &member_dims : NULL);
+
+	    tn = pgm.nextToken();
+	    if ( !tn )
+		pgm.Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
+	    if ( tn->id() == TokenID::tkComma )
+		continue;
+	    if ( tn->id() != TokenID::tkSemi )
+		pgm.Throw(tn) << "Expecting ';' after anonymous class aggregate member" << flush;
+	    done_members = true;
+	}
+    }
+    if ( !tn )
+	pgm.Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
+}
+
+static DataDefSTRUCT *parse_class_anonymous_aggregate(Program &pgm,
+						      TokenBase *kw)
+{
+    bool packed = false;
+    if ( !consume_anonymous_aggregate_open(pgm, packed) )
+	return NULL;
+    DataDefSTRUCT *agg = new_anon_struct();
+    agg->union_layout = kw && kw->id() == TokenID::tkUNION;
+    if ( packed )
+	agg->pack = 1;
+    parse_class_anonymous_aggregate_members(pgm, agg, kw);
+    TokenBase *close = pgm.nextToken();
+    if ( !close || close->id() != TokenID::tkClBrc )
+	pgm.Throw(close ? close : kw) << "Expected '}' after anonymous class aggregate" << flush;
+    agg->is_complete = true;
+    agg->finalize();
+    return agg;
+}
+
+static bool class_body_enum_definition_follows(Program &pgm)
+{
+    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    {
+	TokenBase *t = pgm.tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkOpBrc )
+	    return true;
+	if ( t->id() == TokenID::tkSemi )
+	    return false;
+    }
+    return false;
+}
+
 // parse a class definition
-// Bind a bodyless method / ctor / dtor / operator of a std:: class to its real
-// libstdc++ Itanium symbol (set FuncDef::emit_symbol — madc emits no body, the
-// linker resolves it against libstdc++). No-op unless: we are inside `namespace
-// std`, the class's canonical template-id spelling is known (set on instantiation),
-// and the method is a bodyless prototype (externally implemented). The symbol is
-// GENERATED by the mangler from the parsed declaration — NEVER a hardcoded literal.
-enum class StdSymKind { Method, Ctor, Dtor };
-static void bind_std_libstdcpp_symbol(Program &pgm, DataDefCLASS *ddc, Variable *mvar,
-				      StdSymKind kind, const std::string &mname,
-				      bool is_operator)
+// Bind a bodyless C++ method / ctor / dtor / operator to its real Itanium symbol
+// (set FuncDef::emit_symbol — madc emits no body, the linker resolves it).
+// No-op unless the class has canonical C++ spelling and the parsed declaration is
+// a plain prototype. The symbol is generated from the parsed declaration.
+enum class CppSymKind { Method, Ctor, Dtor };
+static void bind_declared_cpp_symbol(Program &pgm, DataDefCLASS *ddc, Variable *mvar,
+				     CppSymKind kind, const std::string &mname,
+				     bool is_operator)
 {
     if ( !ddc || !mvar )
 	return;
     FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
     if ( !fd || !fd->declaration_only || ddc->canonical_cpp_spelling.empty() )
 	return;
-    if ( !fd->emit_symbol.empty() )
+    if ( fd->defaulted_or_deleted )
 	return;
-    // Bind only std:: library types, identified by the canonical spelling the
-    // template instantiation derived from its DEFINING namespace (e.g.
-    // "std::__cxx11::basic_string<...>") — NOT by the instantiation SITE's
-    // namespace. So a std type binds wherever it is instantiated (a use-site
-    // `std::string s;` at file scope, or a typedef inside `namespace std`),
-    // while a user template `foo::Bar<...>` (spelling "foo::Bar<...>") never
-    // does. Only bodyless methods reach here (declaration_only, checked above),
-    // so body-templates like std::vector are unaffected.
-    if ( ddc->canonical_cpp_spelling.compare(0, 5, "std::") != 0 )
+    if ( fd->pure_virtual )
+	return;
+    if ( !fd->emit_symbol.empty() )
 	return;
     // Parameter spellings, captured at parse time, EXCLUDING the hidden __this
     // (slot 0). These carry pointee-const / `&` / template structure the DataDef
-    // alone loses, so the symbol matches libstdc++ exactly (PKc, not Pc).
+    // alone loses, so the symbol matches the C++ ABI exactly (PKc, not Pc).
     std::vector<std::string> psp;
     for ( size_t i = 1; i < fd->param_cpp_spellings.size(); ++i )
 	psp.push_back(fd->param_cpp_spellings[i]);
     const std::string &cls = ddc->canonical_cpp_spelling;
     switch ( kind )
     {
-    case StdSymKind::Ctor: fd->emit_symbol = itanium_mangle_ctor_sub(cls, psp); break;
-    case StdSymKind::Dtor: fd->emit_symbol = itanium_mangle_dtor_sub(cls);      break;
-    case StdSymKind::Method:
+    case CppSymKind::Ctor: fd->emit_symbol = itanium_mangle_ctor_sub(cls, psp); break;
+    case CppSymKind::Dtor: fd->emit_symbol = itanium_mangle_dtor_sub(cls);      break;
+    case CppSymKind::Method:
 	if ( is_operator )
 	{
 	    std::string op = (mname.compare(0, 8, "operator") == 0) ? mname.substr(8) : mname;
@@ -11551,7 +14929,7 @@ static void bind_std_libstdcpp_symbol(Program &pgm, DataDefCLASS *ddc, Variable 
 	    fd->emit_symbol = itanium_mangle_member_sub(cls, mname, psp, fd->is_const_method);
 	break;
     }
-    DBG(std::cout << "bind_std_libstdcpp_symbol(): " << cls << "::" << mname
+    DBG(std::cout << "bind_declared_cpp_symbol(): " << cls << "::" << mname
 	<< " -> " << fd->emit_symbol << std::endl);
 }
 
@@ -11577,6 +14955,132 @@ static std::string unique_overload_symbol(Program &pgm, std::string base)
     }
 }
 
+static std::vector<TokenBase *> collect_compound_body_tokens(Program &pgm,
+							     TokenBase *open)
+{
+    std::vector<TokenBase *> body;
+    int depth = 1;
+    while ( depth > 0 )
+    {
+	TokenBase *t = pgm.nextToken();
+	if ( !t )
+	    pgm.Throw(open) << "Unexpected end of input in function body" << flush;
+	body.push_back(t);
+	if ( t->id() == TokenID::tkOpBrc )
+	    ++depth;
+	else if ( t->id() == TokenID::tkClBrc )
+	    --depth;
+    }
+    return body;
+}
+
+static void enqueue_deferred_function_body(Program &pgm, Variable *var,
+					   Method *method, TokenBase *open)
+{
+    if ( !pgm.deferred_function_body_sink )
+	return;
+    Program::DeferredFunctionBody body;
+    body.var = var;
+    body.method = method;
+    body.file = open ? open->file : NULL;
+    body.line = open ? open->line : 0;
+    body.column = open ? open->column : 0;
+    body.body_tokens = collect_compound_body_tokens(pgm, open);
+    pgm.deferred_function_body_sink->push_back(body);
+}
+
+static void parse_deferred_function_body(Program &pgm,
+					 Program::DeferredFunctionBody &body)
+{
+    if ( !body.var || !body.method )
+	return;
+
+    std::string saved_func = pgm.cur_func_name;
+    std::string saved_namespace = pgm.current_namespace;
+    pgm.cur_func_name = body.var->name;
+    if ( body.method->owner_class )
+    {
+	std::string method_namespace =
+	    namespace_scope_from_cpp_spelling(
+		body.method->owner_class->canonical_cpp_spelling);
+	if ( !method_namespace.empty() )
+	    pgm.current_namespace = method_namespace;
+    }
+    try
+    {
+	for ( std::vector<TokenBase *>::reverse_iterator it = body.body_tokens.rbegin();
+	      it != body.body_tokens.rend(); ++it )
+	    pgm.pushToken(*it);
+
+	pgm.pushCompound();
+	TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+	if ( code )
+	    code->method = body.method;
+
+	TokenFunc *tf = new TokenFunc(*body.var);
+	tf->file = body.file;
+	tf->line = body.line;
+	tf->column = body.column;
+
+	TokenCpnd *tc = dynamic_cast<TokenCpnd *>(pgm.parseCompound());
+	if ( !tc )
+	    pgm.Throw(body.body_tokens.empty() ? NULL : body.body_tokens.front())
+		<< "Failed to parse deferred function body" << flush;
+
+	tf->method = body.method;
+	tf->parent = tc->parent;
+	tf->variables = tc->variables;
+	tf->statements = tc->statements;
+	tf->deferred = tc->deferred;
+	tf->end_line = tc->end_line;
+	if ( !tf->file || tf->line <= 0 )
+	{
+	    for ( auto *st : tf->statements )
+	    {
+		if ( st && st->file && st->line > 0 )
+		{
+		    tf->file = st->file;
+		    tf->line = st->line;
+		    tf->column = st->column;
+		    break;
+		}
+	    }
+	}
+	pgm.ast.push(tf);
+	pgm.pending_funcs.push_back(tf);
+    }
+    catch(...)
+    {
+	pgm.cur_func_name = saved_func;
+	pgm.current_namespace = saved_namespace;
+	throw;
+    }
+    pgm.cur_func_name = saved_func;
+    pgm.current_namespace = saved_namespace;
+}
+
+static void parse_deferred_function_bodies(Program &pgm,
+					   std::vector<Program::DeferredFunctionBody> &bodies)
+{
+    for ( size_t i = 0; i < bodies.size(); ++i )
+	parse_deferred_function_body(pgm, bodies[i]);
+}
+
+static DataDefCLASS *promote_struct_base_to_class(Program &pgm,
+						  const std::string &name,
+						  DataDef *dd);
+static std::string join_scope_parts(const std::vector<std::string> &parts,
+				    size_t count);
+static DataDefCLASS *resolve_qualified_class_owner(
+	Program &pgm, const std::vector<std::string> &scope_parts);
+static void skip_template_nonclass_declaration(Program &pgm, TokenBase *first,
+					       std::vector<TokenBase *> *seen = NULL);
+static bool skipped_template_decl_is_friend_type(
+	const std::vector<TokenBase *> &tokens);
+static void register_skipped_class_template_function(
+	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
+	uint32_t access_flags);
+
 // forms:
 // class Name { type member; rettype method() { ... } };
 // class Name variable;
@@ -11586,6 +15090,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     TokenIdent *tag = NULL;
     TokenBase *tn;
     TokenDataType *tdt;
+    std::string class_source_name;
+    DataDefCLASS *nested_owner_class = NULL;
     bool do_typedef = pgm.parsing_typedef_decl
 	|| (pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false);
     datatype_map_iter bmi;
@@ -11599,10 +15105,53 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     if ( tn->type() == TokenType::ttIdentifier )
     {
 	tag = (TokenIdent *)pgm.nextToken();
+	class_source_name = tag->str;
 	DBG(cout << "TokenCLASS::parse() got name " << tag->str << endl);
 	tn = pgm.peekToken();
 	if ( !tn )
 	    pgm.Throw << "Unexpected end of input after class name" << flush;
+	if ( tn->id() == TokenID::tkLT )
+	{
+	    skip_template_id_suffix(pgm);
+	    tn = pgm.peekToken();
+	    if ( !tn )
+		pgm.Throw << "Unexpected end of input after class template-id" << flush;
+	}
+	bool qualified_class_name = false;
+	if ( tn->id() == TokenID::tkNS )
+	{
+	    std::vector<std::string> qparts;
+	    qparts.push_back(class_source_name);
+	    while ( tn && tn->id() == TokenID::tkNS )
+	    {
+		pgm.nextToken(); // consume '::'
+		TokenBase *part_tb = pgm.nextToken();
+		if ( !part_tb || !is_contextual_identifier_token(part_tb) )
+		    pgm.Throw(part_tb ? part_tb : tn)
+			<< "Expected name after '::' in class declaration" << flush;
+		qparts.push_back(contextual_identifier_name(part_tb));
+		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+		    skip_template_id_suffix(pgm);
+		tn = pgm.peekToken();
+	    }
+	    if ( qparts.size() > 1 )
+	    {
+		std::vector<std::string> owner_parts(qparts.begin(), qparts.end() - 1);
+		nested_owner_class = resolve_qualified_class_owner(pgm, owner_parts);
+		if ( !nested_owner_class )
+		    pgm.Throw(tag) << "Unknown class scope '"
+				   << join_scope_parts(owner_parts, owner_parts.size())
+				   << "'" << flush;
+		class_source_name = qparts.back();
+		tag->str = nested_owner_class->name + "__" + class_source_name;
+		qualified_class_name = true;
+	    }
+	}
+	if ( !qualified_class_name && !pgm.class_scope_stack.empty() )
+	{
+	    nested_owner_class = pgm.class_scope_stack.back();
+	    tag->str = nested_owner_class->name + "__" + class_source_name;
+	}
     }
 
     // --- inheritance: class Derived : [virtual] [access] Base, ... { ... } ---
@@ -11632,12 +15181,83 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		break;
 	    }
 	    TokenBase *bn = pgm.nextToken();
-	    if ( !bn || bn->type() != TokenType::ttIdentifier )
+	    if ( !bn || !is_contextual_identifier_token(bn) )
 		pgm.Throw(bn ? bn : this) << "Expected base class name" << flush;
-	    std::string base_name = ((TokenIdent *)bn)->str;
-	    datadef_map_iter bdmi = pgm.struct_map.find(base_name);
-	    DataDefCLASS *bcls = (bdmi != pgm.struct_map.end())
-		? dynamic_cast<DataDefCLASS *>(bdmi->second) : NULL;
+	    std::string base_name = contextual_identifier_name(bn);
+	    std::string source_base_name = base_name;
+	    bool template_base_syntax =
+		pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT;
+	    DataDefCLASS *bcls = NULL;
+	    if ( TokenDataType *bdt = resolve_declared_type_token(pgm, bn, true, true) )
+	    {
+		bcls = dynamic_cast<DataDefCLASS *>(&bdt->definition);
+		if ( !bcls && !pgm.is_c_mode() )
+		    bcls = promote_struct_base_to_class(pgm, base_name, &bdt->definition);
+		base_name = bdt->definition.name;
+	    }
+	    else
+	    {
+		datadef_map_iter bdmi = pgm.struct_map.find(base_name);
+		bcls = (bdmi != pgm.struct_map.end())
+		    ? dynamic_cast<DataDefCLASS *>(bdmi->second) : NULL;
+		if ( !bcls && !pgm.is_c_mode() && bdmi != pgm.struct_map.end() )
+		    bcls = promote_struct_base_to_class(pgm, base_name, bdmi->second);
+	    }
+	    if ( !bcls && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	    {
+		std::vector<std::string> qparts;
+		qparts.push_back(source_base_name);
+		while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+		{
+		    pgm.nextToken(); // consume '::'
+		    TokenBase *part_tb = pgm.nextToken();
+		    if ( !part_tb || !is_contextual_identifier_token(part_tb) )
+			pgm.Throw(part_tb ? part_tb : bn)
+			    << "Expected qualified base class name after '::'" << flush;
+		    qparts.push_back(contextual_identifier_name(part_tb));
+		}
+		std::string canonical;
+		for ( size_t qi = 0; qi < qparts.size(); ++qi )
+		{
+		    if ( qi )
+			canonical += "::";
+		    canonical += qparts[qi];
+		}
+		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+		{
+		    pgm.nextToken(); // consume '<'
+		    canonical += "<";
+		    bool first_arg = true;
+		    for (;;)
+		    {
+			TokenBase *at = pgm.nextToken();
+			std::string spelling;
+			TokenBase *sep =
+			    collect_template_argument_spelling(pgm, at, spelling);
+			if ( !first_arg )
+			    canonical += ",";
+			canonical += spelling;
+			first_arg = false;
+			if ( sep->id() == TokenID::tkComma )
+			    continue;
+			if ( consume_template_close(pgm, sep) )
+			    break;
+			pgm.Throw(sep) << "Expecting ',' or '>' in qualified base template-id" << flush;
+		    }
+		    canonical += ">";
+		}
+		base_name = sanitize_template_fragment(canonical);
+		bcls = materialize_opaque_class_type(pgm, base_name, canonical);
+	    }
+	    if ( !bcls && template_base_syntax
+	      && !pgm.instantiating_canonical_spelling.empty() )
+	    {
+		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+		    skip_template_id_suffix(pgm);
+		std::string dep_name = source_base_name + "__dependent_base";
+		bcls = materialize_opaque_class_type(pgm, dep_name, source_base_name);
+		base_name = dep_name;
+	    }
 	    if ( !bcls )
 		pgm.Throw(bn) << "Unknown base class '" << base_name << "'" << flush;
 	    base_specs.push_back(BaseSpec{bcls, 0, bvirtual, baccess, false});
@@ -11655,7 +15275,55 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	if ( !tag )
 	    pgm.Throw(tn) << "Expecting class name" << flush;
 	if ( (dmi=pgm.struct_map.find(tag->str)) == pgm.struct_map.end() )
+	{
+	    datatype_map_iter existing_type = pgm.datatype_map.find(tag->str);
+	    if ( existing_type != pgm.datatype_map.end()
+	      && dynamic_cast<DataDefCLASS *>(&existing_type->second->definition) )
+	    {
+		pgm.struct_map[tag->str] = &existing_type->second->definition;
+		dmi = pgm.struct_map.find(tag->str);
+	    }
+	}
+	if ( dmi == pgm.struct_map.end() )
+	{
+	    if ( !pgm.instantiating_canonical_spelling.empty() )
+	    {
+		materialize_opaque_class_type(pgm, tag->str, tag->str);
+		dmi = pgm.struct_map.find(tag->str);
+	    }
+	}
+	if ( dmi == pgm.struct_map.end() )
+	{
+	    if ( tn->id() == TokenID::tkSemi )
+	    {
+		DataDefCLASS *fwd = new DataDefCLASS(tag->str, 0, DataType::dtRESERVED);
+		if ( nested_owner_class )
+		{
+		    std::string owner_spelling =
+			nested_owner_class->canonical_cpp_spelling.empty()
+			? nested_owner_class->name
+			: nested_owner_class->canonical_cpp_spelling;
+		    fwd->canonical_cpp_spelling = owner_spelling + "::" + class_source_name;
+		    fwd->enclosing_class = nested_owner_class;
+		    nested_owner_class->type_aliases[class_source_name] = fwd;
+		}
+		else if ( !pgm.current_namespace.empty() )
+		    fwd->canonical_cpp_spelling = pgm.current_namespace + "::" + tag->str;
+		pgm.struct_map[tag->str] = fwd;
+		tdt = new TokenDataType(tag->str.c_str(), *fwd);
+		pgm.datatype_map[tag->str] = tdt;
+		if ( !pgm.current_namespace.empty() )
+		    pgm.namespace_datatype_map[pgm.current_namespace][tag->str] = tdt;
+		pgm.nextToken();
+		return NULL;
+	    }
 	    pgm.Throw(tn) << "Unknown class type '" << tag->str << "'" << flush;
+	}
+	if ( tn->id() == TokenID::tkSemi )
+	{
+	    pgm.nextToken();
+	    return NULL;
+	}
 	if ( do_typedef )
 	{
 	    tn = pgm.nextToken();
@@ -11684,18 +15352,61 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
     pgm.nextToken(); // consume '{'
 
-    // Redefinition guard: reject a second definition of an already-defined
-    // class before we create anything (was checked at registration time, now
-    // hoisted so the early self-registration below can't false-trip it).
-    if ( pgm.struct_map.find(tag->str) != pgm.struct_map.end() )
-	pgm.Throw(tag) << "Class '" << tag->str << "' already defined" << flush;
-
-    DataDefCLASS *ddc = new DataDefCLASS(tag->str, 0, DataType::dtRESERVED);
-    // If we are instantiating a std:: template (e.g. basic_ofstream<char,...>),
-    // record its canonical C++ spelling so a bodyless method in this class can be
-    // mangled to the real libstdc++ symbol with no hardcoded literal.
-    if ( !pgm.instantiating_canonical_spelling.empty() )
+    // Redefinition guard: reject a second definition unless the existing entry
+    // is the incomplete class created for `class Name;`.
+    bool completing_forward_decl = false;
+    DataDefCLASS *ddc = NULL;
+    dmi = pgm.struct_map.find(tag->str);
+    if ( dmi != pgm.struct_map.end() )
+    {
+	DataDefCLASS *fwd = dynamic_cast<DataDefCLASS *>(dmi->second);
+	DataDefSTRUCT *sfwd = dynamic_cast<DataDefSTRUCT *>(dmi->second);
+	if ( fwd && !fwd->is_complete && fwd->size == 0 && fwd->members.empty()
+	  && fwd->methods.empty() && fwd->ctors.empty()
+	  && fwd->bases.empty() )
+	{
+	    ddc = fwd;
+	    completing_forward_decl = true;
+	}
+	else if ( !fwd && sfwd && !sfwd->is_complete
+	       && sfwd->size == 0 && sfwd->members.empty() )
+	{
+	    ddc = new DataDefCLASS(tag->str, 0, sfwd->rawtype());
+	    static_cast<DataDefSTRUCT &>(*ddc) = *sfwd;
+	    pgm.struct_map[tag->str] = ddc;
+	    completing_forward_decl = true;
+	}
+	else
+	    pgm.Throw(tag) << "Class '" << tag->str << "' already defined" << flush;
+    }
+    if ( !ddc )
+	ddc = new DataDefCLASS(tag->str, 0, DataType::dtRESERVED);
+    // If we are instantiating a template, record its canonical C++ spelling so a
+    // bodyless method in this class can be mangled to the real C++ symbol with
+    // no class-name test. Non-template namespace classes get the same treatment.
+    if ( nested_owner_class )
+    {
+	std::string owner_spelling =
+	    nested_owner_class->canonical_cpp_spelling.empty()
+	    ? nested_owner_class->name
+	    : nested_owner_class->canonical_cpp_spelling;
+	ddc->canonical_cpp_spelling = owner_spelling + "::" + class_source_name;
+	ddc->enclosing_class = nested_owner_class;
+    }
+    else if ( !pgm.instantiating_canonical_spelling.empty() )
 	ddc->canonical_cpp_spelling = pgm.instantiating_canonical_spelling;
+    else if ( ddc->canonical_cpp_spelling.empty() && !pgm.current_namespace.empty() )
+	ddc->canonical_cpp_spelling = pgm.current_namespace + "::" + tag->str;
+    std::string constructor_source_name = class_source_name;
+    if ( !ddc->canonical_cpp_spelling.empty() )
+    {
+	std::string primary =
+	    primary_name_from_cpp_spelling(ddc->canonical_cpp_spelling);
+	if ( !primary.empty() )
+	    constructor_source_name = primary;
+    }
+    ddc->is_dependent_placeholder = false;
+    ddc->has_dependent_surface = pgm.instantiating_dependent_surface;
     DBG(cout << "TokenCLASS::parse() defining class " << tag->str << endl);
 
     // Register the class type EARLY — before the member/method body loop — so a
@@ -11706,11 +15417,33 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // by which point ddc is complete, so by-value self params/returns pick up the
     // final size. This is the standard incomplete-self-reference pattern, and is
     // consistent with the inherited-base members being copied in early below.
-    pgm.struct_map[tag->str] = ddc;
-    tdt = new TokenDataType(tag->str.c_str(), *ddc);
-    pgm.datatype_map[tag->str] = tdt;
-    if ( !pgm.current_namespace.empty() )
-	pgm.namespace_datatype_map[pgm.current_namespace][tag->str] = tdt;
+    if ( !completing_forward_decl )
+    {
+	pgm.struct_map[tag->str] = ddc;
+	tdt = new TokenDataType(tag->str.c_str(), *ddc);
+	pgm.datatype_map[tag->str] = tdt;
+	if ( nested_owner_class )
+	    nested_owner_class->type_aliases[class_source_name] = ddc;
+	if ( !pgm.current_namespace.empty() )
+	    pgm.namespace_datatype_map[pgm.current_namespace][tag->str] = tdt;
+    }
+    else
+    {
+	datatype_map_iter existing_type = pgm.datatype_map.find(tag->str);
+	if ( existing_type == pgm.datatype_map.end()
+	  || &existing_type->second->definition != ddc )
+	{
+	    tdt = new TokenDataType(tag->str.c_str(), *ddc);
+	    pgm.datatype_map[tag->str] = tdt;
+	}
+	else
+	    tdt = existing_type->second;
+	if ( nested_owner_class )
+	    nested_owner_class->type_aliases[class_source_name] = ddc;
+	if ( !pgm.current_namespace.empty() )
+	    pgm.namespace_datatype_map[pgm.current_namespace][tag->str] = tdt;
+    }
+    ddc->type_aliases[class_source_name] = ddc;
 
     // Flatten EACH base's data members into the derived class so method bodies can
     // resolve inherited members during the body loop. Tag each with its origin base
@@ -11757,16 +15490,54 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	ddc->size = 0; // own members start at 0; compute_layout assigns the real total
     }
 
-    // C++ defaults: `class` members are PRIVATE until a public:/protected:
-    // label, `struct` members are public. This is TokenCLASS::parse (the
-    // `class` keyword only — `struct`/`union` go through TokenSTRUCT::parse,
-    // which never marks members and so leaves them public), so the correct
-    // default here is private. (P2.5b: corrected from the legacy
-    // default-to-public artifact now that P2.5 enforces access.)
-    uint32_t access_flags = vfPRIVATE; // 0=public, vfPRIVATE, vfPROTECTED
+    // C++ defaults: `class` members are private until a public:/protected:
+    // label; `struct` members are public. Named C++ structs with class-only
+    // syntax are delegated here from TokenSTRUCT::parse with
+    // parsing_cpp_struct_class set so they keep the C++ default-public rule.
+    uint32_t access_flags = pgm.parsing_cpp_struct_class ? 0 : vfPRIVATE;
+    std::vector<Program::DeferredFunctionBody> deferred_method_bodies;
+    std::vector<Program::DeferredFunctionBody> *saved_deferred_sink =
+	pgm.deferred_function_body_sink;
+    pgm.deferred_function_body_sink = &deferred_method_bodies;
+    pgm.class_scope_stack.push_back(ddc);
 
-    while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
-    {
+	while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
+	{
+	// --- class-scope type aliases: typedef T name; / using name = T; ---
+	if ( tn->id() == TokenID::tkTYPEDEF )
+	{
+	    pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+	    continue;
+	}
+	if ( tn->id() == TokenID::tkUSING )
+	{
+	    bool alias_decl = pgm.tokens.size() > 2
+		&& pgm.tokens[2] && pgm.tokens[2]->id() == TokenID::tkAssign;
+	    if ( alias_decl )
+		pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+	    else
+		skip_template_nonclass_declaration(pgm, pgm.nextToken());
+	    continue;
+	}
+
+	// --- member template declaration: template<...> ...; ---
+	if ( tn->id() == TokenID::tkTEMPLATE )
+	{
+	    size_t method_count_before = ddc->methods.size();
+	    std::vector<TokenBase *> skipped_decl;
+	    pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+	    if ( ddc->methods.size() == method_count_before
+	      && !pgm.last_skipped_template_decl.empty() )
+	    {
+		skipped_decl = pgm.last_skipped_template_decl;
+		if ( !skipped_template_decl_is_friend_type(skipped_decl) )
+		    register_skipped_class_template_function(
+			pgm, ddc, skipped_decl, access_flags);
+		pgm.last_skipped_template_decl.clear();
+	    }
+	    continue;
+	}
+
 	// --- access specifier labels: public: / private: / protected: ---
 	if ( tn->type() == TokenType::ttIdentifier )
 	{
@@ -11787,16 +15558,63 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    }
 	}
 
-	// --- virtual keyword ---
-	bool is_virtual = false;
 	if ( tn->type() == TokenType::ttIdentifier
-	  && ((TokenIdent *)tn)->str == "virtual" )
+	  && ((TokenIdent *)tn)->str == "friend" )
 	{
-	    pgm.nextToken(); // consume 'virtual'
-	    is_virtual = true;
+	    pgm.nextToken();
+	    TokenBase *first = pgm.nextToken();
+	    if ( !first )
+		pgm.Throw(tn) << "Unexpected end of input after friend" << flush;
+	    skip_template_nonclass_declaration(pgm, first);
+	    continue;
+	}
+
+	// --- C++ member declaration specifiers ---
+	bool is_virtual = false;
+	bool is_static_member = false;
+	for (;;)
+	{
+	    if ( tn->id() == TokenID::tkSTATIC )
+	    {
+		pgm.nextToken();
+		is_static_member = true;
+		tn = pgm.peekToken();
+		if ( !tn )
+		    pgm.Throw(this) << "Unexpected end of input after member specifier" << flush;
+		continue;
+	    }
+	    if ( tn->type() != TokenType::ttIdentifier )
+		break;
+	    std::string spec = ((TokenIdent *)tn)->str;
+	    if ( spec == "virtual" )
+	    {
+		pgm.nextToken();
+		is_virtual = true;
+	    }
+	    else if ( spec == "mutable" )
+	    {
+		pgm.nextToken();
+	    }
+	    else if ( spec == "explicit" )
+	    {
+		pgm.nextToken();
+		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    int depth = 0;
+		    do {
+			TokenBase *pt = pgm.nextToken();
+			if ( pt->id() == TokenID::tkOpBrk )
+			    ++depth;
+			else if ( pt->id() == TokenID::tkClBrk )
+			    --depth;
+		    } while ( depth > 0 && pgm.peekToken() );
+		}
+	    }
+	    else
+		break;
 	    tn = pgm.peekToken();
 	    if ( !tn )
-		pgm.Throw(this) << "Unexpected end of input after 'virtual'" << flush;
+		pgm.Throw(this) << "Unexpected end of input after member specifier" << flush;
 	}
 
 	// --- destructor: ~ClassName() { ... } ---
@@ -11804,12 +15622,16 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	{
 	    pgm.nextToken(); // consume '~'
 	    tn = pgm.nextToken();
+	    std::string dtor_source_name =
+		(tn && tn->type() == TokenType::ttIdentifier)
+		? ((TokenIdent *)tn)->str : std::string();
 	    if ( !tn || tn->type() != TokenType::ttIdentifier
-	      || ((TokenIdent *)tn)->str != tag->str )
-		pgm.Throw(tn) << "Expected ~" << tag->str << "() destructor" << flush;
+	      || (dtor_source_name != class_source_name
+	       && dtor_source_name != constructor_source_name) )
+		pgm.Throw(tn) << "Expected ~" << constructor_source_name << "() destructor" << flush;
 	    tn = pgm.peekToken();
 	    if ( !tn || tn->id() != TokenID::tkOpBrk )
-		pgm.Throw(tn) << "Expected '(' after ~" << tag->str << flush;
+		pgm.Throw(tn) << "Expected '(' after ~" << constructor_source_name << flush;
 	    pgm.nextToken(); // consume '('
 	    std::string mangled = tag->str + "___dtor";
 	    DBG(cout << "TokenCLASS::parse() parsing destructor " << mangled << endl);
@@ -11817,12 +15639,16 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    Variable *mvar;
 	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
 	    {
-		if ( access_flags )
-		    mvar->flags |= access_flags;
-		ddc->methods.push_back(mvar);
-		ddc->method_map["~" + tag->str] = mvar;
-		ddc->has_user_dtor = true;
-		bind_std_libstdcpp_symbol(pgm, ddc, mvar, StdSymKind::Dtor, "~" + tag->str, false);
+		FuncDef *dfd = dynamic_cast<FuncDef *>(mvar->type);
+		if ( !dfd || !dfd->defaulted_or_deleted )
+		{
+		    if ( access_flags )
+			mvar->flags |= access_flags;
+		    ddc->methods.push_back(mvar);
+		    ddc->method_map["~" + dtor_source_name] = mvar;
+		    ddc->has_user_dtor = true;
+		    bind_declared_cpp_symbol(pgm, ddc, mvar, CppSymKind::Dtor, "~" + dtor_source_name, false);
+		}
 	    }
 	    // Virtual destructor: register the Itanium D1/D0 slot pair at the
 	    // destructor's declaration position. Markers are class-name-INDEPENDENT
@@ -11833,7 +15659,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // already present from a virtual base dtor.
 	    if ( is_virtual || ddc->vtable_slot("~") >= 0 )
 	    {
-		ddc->virtual_methods["~" + tag->str] = true;
+		ddc->virtual_methods["~" + dtor_source_name] = true;
 		if ( ddc->vtable_slot("~") < 0 )
 		    ddc->vtable_slots.push_back("~");
 		if ( ddc->vtable_slot("~$deleting") < 0 )
@@ -11845,16 +15671,18 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
 	// --- constructor: ClassName() { ... } (no return type) ---
 	if ( tn->type() == TokenType::ttIdentifier
-	  && ((TokenIdent *)tn)->str == tag->str )
+	  && (((TokenIdent *)tn)->str == class_source_name
+	   || ((TokenIdent *)tn)->str == constructor_source_name) )
 	{
 	    // peek ahead: if ClassName is followed by '(' it's a constructor
 	    // (not a member of type ClassName)
 	    TokenBase *name_tok = pgm.nextToken(); // consume class name
+	    std::string ctor_source_name = ((TokenIdent *)name_tok)->str;
 	    tn = pgm.peekToken();
 	    if ( tn && tn->id() == TokenID::tkOpBrk )
 	    {
 		pgm.nextToken(); // consume '('
-		std::string mangled = tag->str + "__" + tag->str;
+		std::string mangled = tag->str + "__" + ctor_source_name;
 		// A second (or later) constructor overload collides on Class__Class;
 		// give it a unique key so it registers its own FuncDef + parameters.
 		bool ctor_disambiguated = (pgm.findVariable(mangled) != NULL);
@@ -11865,19 +15693,22 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		Variable *mvar;
 		if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
 		{
-		    if ( ctor_disambiguated )
-			if ( FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type) )
+		    FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type);
+		    if ( !cfd || !cfd->defaulted_or_deleted )
+		    {
+			if ( ctor_disambiguated && cfd )
 			    cfd->class_emit_name = mangled;
-		    if ( access_flags )
-			mvar->flags |= access_flags;
-		    ddc->methods.push_back(mvar);
-		    // Keep method_map[Class] pointing at the FIRST ctor (all ctors live
-		    // in ddc->ctors); preserves existing single-ctor name resolution.
-		    if ( ddc->method_map.find(tag->str) == ddc->method_map.end() )
-			ddc->method_map[tag->str] = mvar;
-		    ddc->ctors.push_back(mvar);
-		    ddc->has_user_ctor = true;
-		    bind_std_libstdcpp_symbol(pgm, ddc, mvar, StdSymKind::Ctor, tag->str, false);
+			if ( access_flags )
+			    mvar->flags |= access_flags;
+			ddc->methods.push_back(mvar);
+			// Keep method_map[Class] pointing at the FIRST ctor (all ctors live
+			// in ddc->ctors); preserves existing single-ctor name resolution.
+			if ( ddc->method_map.find(ctor_source_name) == ddc->method_map.end() )
+			    ddc->method_map[ctor_source_name] = mvar;
+			ddc->ctors.push_back(mvar);
+			ddc->has_user_ctor = true;
+			bind_declared_cpp_symbol(pgm, ddc, mvar, CppSymKind::Ctor, ctor_source_name, false);
+		    }
 		}
 		continue;
 	    }
@@ -11885,6 +15716,50 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // The class name is also a valid type for a member (self-referencing
 	    // pointer etc.), so treat it as a type token.
 	    pgm.pushToken(name_tok);
+	    tn = pgm.peekToken();
+	}
+
+	// --- conversion operator: operator T() [cv] { ... } ---
+	if ( tn->id() == TokenID::tkOPEROVER )
+	{
+	    pgm.nextToken(); // consume operator
+	    TokenBase *conv_tb = pgm.nextToken();
+	    TokenDataType *conv_type = resolve_declared_type_token(pgm, conv_tb, true, true);
+	    if ( !conv_type )
+		pgm.Throw(conv_tb ? conv_tb : tn) << "Expecting conversion type after operator" << flush;
+	    DataDef *conv_ret = &conv_type->definition;
+	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	    {
+		pgm.nextToken();
+		conv_ret = pgm.getPointerType(conv_ret);
+	    }
+	    if ( pgm.peekToken()
+	      && (pgm.peekToken()->id() == TokenID::tkBand
+	       || pgm.peekToken()->id() == TokenID::tkLand) )
+	    {
+		pgm.nextToken();
+		conv_ret = pgm.getPointerType(conv_ret);
+	    }
+	    TokenBase *open = pgm.peekToken();
+	    if ( !open || open->id() != TokenID::tkOpBrk )
+		pgm.Throw(open ? open : conv_tb) << "Expected '(' after conversion operator type" << flush;
+	    pgm.nextToken();
+	    std::string mname = "operator " + conv_type->str;
+	    std::string mangled = unique_overload_symbol(pgm, tag->str + "__operator_conv");
+	    pgm.parseFunction(*conv_ret, mangled, ddc);
+	    Variable *mvar;
+	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
+	    {
+		FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type);
+		if ( !cfd || !cfd->defaulted_or_deleted )
+		{
+		    if ( access_flags )
+			mvar->flags |= access_flags;
+		    ddc->methods.push_back(mvar);
+		    ddc->method_map[mname] = mvar;
+		}
+	    }
+	    continue;
 	}
 
 	// --- normal member or method: type name ... ---
@@ -11899,11 +15774,153 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	       || pgm.peekToken()->id() == TokenID::tkRESTRICT ) )
 	    pgm.nextToken();
 
-	// expect a data type token
-	TokenDataType *mtype = resolve_declared_type_token(pgm, pgm.peekToken(), true, true);
-	if ( !mtype )
-	    pgm.Throw(pgm.peekToken()) << "Expecting type in class definition" << flush;
-	pgm.nextToken();
+	if ( pgm.peekToken()
+	  && pgm.peekToken()->id() == TokenID::tkENUM
+	  && class_body_enum_definition_follows(pgm) )
+	{
+	    TokenBase *enum_kw = pgm.nextToken();
+	    if ( TokenKeyword *kw = dynamic_cast<TokenKeyword *>(enum_kw) )
+		pgm.parseKeyword(kw);
+	    else
+		pgm.Throw(enum_kw) << "Expected enum keyword" << flush;
+	    continue;
+	}
+
+	if ( pgm.peekToken()
+	  && (pgm.peekToken()->id() == TokenID::tkCLASS
+	   || pgm.peekToken()->id() == TokenID::tkSTRUCT
+	   || pgm.peekToken()->id() == TokenID::tkUNION) )
+	{
+	    TokenBase *agg_kw = pgm.nextToken();
+	    bool handled_nested_type = false;
+	    if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
+	    {
+		TokenBase *tag_tb = pgm.nextToken();
+		TokenBase *after_tag = pgm.peekToken();
+		if ( after_tag
+		  && (after_tag->id() == TokenID::tkColon
+		   || after_tag->id() == TokenID::tkOpBrc
+		   || after_tag->id() == TokenID::tkSemi) )
+		{
+		    pgm.pushToken(tag_tb);
+		    if ( TokenKeyword *kw = dynamic_cast<TokenKeyword *>(agg_kw) )
+			pgm.parseKeyword(kw);
+		    else
+			pgm.Throw(agg_kw) << "Expected nested type keyword" << flush;
+		    handled_nested_type = true;
+		}
+		else
+		    pgm.pushToken(tag_tb);
+	    }
+	    if ( handled_nested_type )
+		continue;
+	    if ( agg_kw->id() == TokenID::tkCLASS )
+	    {
+		pgm.pushToken(agg_kw);
+	    }
+	    else
+	    {
+	    if ( DataDefSTRUCT *anon =
+		    parse_class_anonymous_aggregate(pgm, agg_kw) )
+	    {
+		size_t first_member = ddc->members.size();
+		bool done_aggregate_members = false;
+		while ( !done_aggregate_members )
+		{
+		    DataDef *member_dd = anon;
+		    while ( pgm.peekToken()
+			 && pgm.peekToken()->id() == TokenID::tkMul )
+		    {
+			pgm.nextToken();
+			member_dd = pgm.getPointerType(member_dd);
+		    }
+		    tn = pgm.nextToken();
+		    if ( tn && tn->id() == TokenID::tkSemi )
+		    {
+			if ( DataDefSTRUCT *flat =
+				dynamic_cast<DataDefSTRUCT *>(member_dd) )
+			{
+			    ddc->addAnonymousAggregate(*flat);
+			    done_aggregate_members = true;
+			    continue;
+			}
+			pgm.Throw(tn)
+			    << "Expecting member name after anonymous class aggregate" << flush;
+		    }
+		    if ( !tn || !is_contextual_identifier_token(tn) )
+			pgm.Throw(tn ? tn : agg_kw)
+			    << "Expecting member name after anonymous class aggregate" << flush;
+		    std::string member_name = contextual_identifier_name(tn);
+		    size_t member_count = 1;
+		    bool member_is_array = false;
+		    std::vector<uint32_t> member_dims;
+		    while ( pgm.peekToken()
+			 && pgm.peekToken()->id() == TokenID::tkOpSqr )
+		    {
+			member_is_array = true;
+			pgm.nextToken();
+			TokenBase *cl = pgm.nextToken();
+			if ( cl && cl->id() == TokenID::tkClSqr )
+			{
+			    member_dims.push_back(0);
+			    member_count = 0;
+			    break;
+			}
+			pgm.pushToken(cl);
+			int64_t adim = parse_constant_integer_expression(pgm);
+			if ( adim < 0 )
+			    pgm.Throw(tn)
+				<< "Class member array dimension must be non-negative" << flush;
+			cl = pgm.nextToken();
+			if ( !cl || cl->id() != TokenID::tkClSqr )
+			    pgm.Throw(cl ? cl : tn)
+				<< "Expected ']' in class member array declarator" << flush;
+			member_dims.push_back((uint32_t)adim);
+			if ( adim == 0 )
+			{
+			    member_count = 0;
+			    break;
+			}
+			member_count *= (size_t)adim;
+		    }
+		    ddc->addMember(member_name, *member_dd, member_count, NULL,
+			member_is_array, member_is_array ? &member_dims : NULL);
+		    tn = pgm.nextToken();
+		    if ( !tn )
+			pgm.Throw(agg_kw)
+			    << "Unexpected end of input after anonymous class aggregate" << flush;
+		    if ( tn->id() == TokenID::tkComma )
+			continue;
+		    if ( tn->id() != TokenID::tkSemi )
+			pgm.Throw(tn)
+			    << "Expecting ';' after anonymous class aggregate member" << flush;
+		    done_aggregate_members = true;
+		}
+		if ( ddc->member_access.size() < ddc->members.size() )
+		    ddc->member_access.resize(ddc->members.size(), 0);
+		if ( access_flags )
+		    for ( size_t i = first_member; i < ddc->members.size(); ++i )
+			ddc->member_access[i] = access_flags;
+		continue;
+	    }
+	    pgm.pushToken(agg_kw);
+	    }
+	}
+
+		// expect a data type token
+		if ( pgm.peekToken()
+		  && is_contextual_identifier_token(pgm.peekToken())
+		  && is_static_assert_identifier(
+			contextual_identifier_name(pgm.peekToken())) )
+		{
+		    TokenBase *assert_tb = pgm.nextToken();
+		    consume_class_static_assert_declaration(pgm, assert_tb);
+		    continue;
+		}
+		TokenBase *type_head = pgm.nextToken();
+		TokenDataType *mtype = resolve_declared_type_token(pgm, type_head, true, true);
+		if ( !mtype )
+		    pgm.Throw(type_head) << "Expecting type in class definition" << flush;
 
 	// check for pointer declarator(s): type * [*...] member_name
 	DataDef *cmember_dd = &mtype->definition;
@@ -11911,6 +15928,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	{
 	    pgm.nextToken(); // consume '*'
 	    cmember_dd = pgm.getPointerType(cmember_dd);
+	    while ( pgm.peekToken()
+		 && (pgm.peekToken()->id() == TokenID::tkCONST
+		  || pgm.peekToken()->id() == TokenID::tkVOLATILE
+		  || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
+		pgm.nextToken();
 	}
 
 	// Reference return type on a method: `T& method()` / `T& operator[]()`.
@@ -11918,10 +15940,48 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// so the call site is an lvalue. Only valid before a method, not a data
 	// member (a `T&` data member is not supported — caught at member parse).
 	bool ret_is_ref = false;
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkBand )
+	if ( pgm.peekToken()
+	  && (pgm.peekToken()->id() == TokenID::tkBand
+	   || pgm.peekToken()->id() == TokenID::tkLand) )
 	{
-	    pgm.nextToken(); // consume '&'
+	    pgm.nextToken(); // consume '&' or '&&'
 	    ret_is_ref = true;
+	}
+
+	if ( !ret_is_ref && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    TokenBase *open = pgm.nextToken();
+	    TokenBase *inner = pgm.nextToken();
+	    if ( inner && inner->id() == TokenID::tkStar )
+	    {
+		tn = pgm.nextToken();
+		if ( !is_contextual_identifier_token(tn) )
+		    pgm.Throw(tn) << "Expecting member name in function pointer class declarator" << flush;
+		std::string mname = contextual_identifier_name(tn);
+		tn = pgm.nextToken();
+		if ( !tn || tn->id() != TokenID::tkClBrk )
+		    pgm.Throw(tn ? tn : inner) << "Expected ')' after function pointer member name" << flush;
+		tn = pgm.nextToken();
+		if ( !tn || tn->id() != TokenID::tkOpBrk )
+		    pgm.Throw(tn ? tn : inner) << "Expected '(' after function pointer member name" << flush;
+		FuncDef *func = pgm.parseFnPtrParams(*cmember_dd);
+		cmember_dd = new DataDefFPTR(func);
+
+		ddc->addMember(mname, *cmember_dd, 1);
+		if ( access_flags && !ddc->member_access.empty() )
+		    ddc->member_access.back() = access_flags;
+		DBG(cout << "TokenCLASS::parse() added function pointer member " << mname
+		    << " (size " << cmember_dd->size << ", total " << ddc->size << ')' << endl);
+
+		tn = pgm.nextToken();
+		if ( !tn )
+		    pgm.Throw(inner) << "Unexpected end of input after function pointer class member" << flush;
+		if ( tn->id() != TokenID::tkSemi )
+		    pgm.Throw(tn) << "Expecting ';' after function pointer class member" << flush;
+		continue;
+	    }
+	    pgm.Throw(inner ? inner : open)
+		<< "Unsupported parenthesized member declarator in class definition" << flush;
 	}
 
 	// expect member name — may be an identifier or 'operator' keyword
@@ -11929,39 +15989,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	std::string mname;
 	bool is_operator_method = (tn->id() == TokenID::tkOPEROVER);
 	if ( tn->id() == TokenID::tkOPEROVER )
-	{
-	    // operator overload: consume the operator symbol(s) to form the name
-	    TokenBase *op_tok = pgm.nextToken();
-	    if ( !op_tok )
-		pgm.Throw(tn) << "Expected operator symbol after 'operator'" << flush;
-	    // Multi-character operators: ==, !=, <=, >=, <<, >>
-	    if ( dynamic_cast<TokenMultiOp *>(op_tok) )
-		mname = "operator" + ((TokenMultiOp *)op_tok)->str;
-	    else if ( op_tok->id() == TokenID::tkOpBrk )
-	    {
-		// operator()
-		if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
-		    pgm.Throw(op_tok) << "Expected ')' in operator()" << flush;
-		pgm.nextToken(); // consume ')'
-		mname = "operator()";
-	    }
-	    else if ( op_tok->id() == TokenID::tkOpSqr )
-	    {
-		// operator[]
-		if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClSqr )
-		    pgm.Throw(op_tok) << "Expected ']' in operator[]" << flush;
-		pgm.nextToken(); // consume ']'
-		mname = "operator[]";
-	    }
-	    else
-	    {
-		// Single-character operators: +, -, *, /, %, <, >, =, etc.
-		char sym = (char)op_tok->get();
-		if ( !sym )
-		    pgm.Throw(op_tok) << "Unrecognized operator symbol" << flush;
-		mname = std::string("operator") + sym;
-	    }
-	}
+	    mname = parse_operator_name_after_keyword(pgm, tn);
 	else if ( tn->type() != TokenType::ttIdentifier )
 	    pgm.Throw(tn) << "Expecting member name in class definition" << flush;
 	else
@@ -12032,11 +16060,15 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		mangled = unique_overload_symbol(pgm, mangled);
 		type_overload_disambiguated = true;
 	    }
-	    pgm.parseFunction(*cmember_dd, mangled, ddc);
+	    pgm.parseFunction(*cmember_dd, mangled, ddc, NULL, false,
+			      std::string(), is_static_member);
 	    // find the variable that parseFunction created and add to class methods
 	    Variable *mvar;
 	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
 	    {
+		FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type);
+		if ( mfd && mfd->defaulted_or_deleted )
+		    continue;
 		if ( FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type) )
 		{
 		    mfd->returns_ref = ret_is_ref;
@@ -12048,10 +16080,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		}
 		if ( access_flags )
 		    mvar->flags |= access_flags;
+		if ( is_static_member )
+		    mvar->flags |= vfSTATIC;
 		ddc->methods.push_back(mvar);
 		// also register under the unmangled name for method lookup
 		ddc->method_map[mname] = mvar;
-		bind_std_libstdcpp_symbol(pgm, ddc, mvar, StdSymKind::Method, mname, is_operator_method);
+		bind_declared_cpp_symbol(pgm, ddc, mvar, CppSymKind::Method, mname, is_operator_method);
 		// Track virtual methods and assign vtable slots
 		if ( is_virtual || ddc->is_virtual_method(mname) )
 		{
@@ -12093,6 +16127,47 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		member_dims.push_back((uint32_t)adim);
 		member_count *= (size_t)adim;
 	    }
+	    if ( is_static_member )
+	    {
+		ddc->static_member_types[mname] = cmember_dd;
+		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
+		{
+		    pgm.nextToken(); // consume '='
+			    int paren_depth = 0;
+			    int square_depth = 0;
+			    int brace_depth = 0;
+			    while ( (tn = pgm.nextToken()) )
+			    {
+				if ( tn->id() == TokenID::tkSemi
+				  && paren_depth == 0 && square_depth == 0
+				  && brace_depth == 0 )
+				    break;
+				if ( tn->id() == TokenID::tkOpBrk )
+				    ++paren_depth;
+				else if ( tn->id() == TokenID::tkClBrk && paren_depth > 0 )
+				    --paren_depth;
+			else if ( tn->id() == TokenID::tkOpSqr )
+			    ++square_depth;
+			else if ( tn->id() == TokenID::tkClSqr && square_depth > 0 )
+			    --square_depth;
+			else if ( tn->id() == TokenID::tkOpBrc )
+				    ++brace_depth;
+				else if ( tn->id() == TokenID::tkClBrc && brace_depth > 0 )
+				    --brace_depth;
+			    }
+		    if ( !tn )
+			pgm.Throw(this) << "Unexpected end of input in static member initializer" << flush;
+		}
+		else
+		{
+		    tn = pgm.nextToken();
+		    if ( !tn || tn->id() != TokenID::tkSemi )
+			pgm.Throw(tn ? tn : this) << "Expecting ';' after static class member" << flush;
+		}
+		DBG(cout << "TokenCLASS::parse() recorded static member "
+		    << cmember_dd->name << ' ' << mname << endl);
+		continue;
+	    }
 	    ddc->addMember(mname, *cmember_dd, member_count, NULL, member_is_array,
 		member_is_array ? &member_dims : NULL);
 	    if ( access_flags && !ddc->member_access.empty() )
@@ -12108,6 +16183,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unexpected end of input in class definition" << flush;
     pgm.nextToken(); // consume '}'
+    if ( !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() == ddc )
+	pgm.class_scope_stack.pop_back();
+    pgm.deferred_function_body_sink = saved_deferred_sink;
 
     // Finalize layout. compute_layout assigns base/vbase offsets, vptr placement,
     // nvsize/size and own_block_off; apply_member_layout rewrites every member's
@@ -12120,6 +16198,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     ddc->apply_member_layout();
     ddc->build_vtable_groups(); // grouped vtable (primary + secondary polymorphic bases)
     DBG(cout << "TokenCLASS::parse() finalized layout, size now " << ddc->size << endl);
+
+    parse_deferred_function_bodies(pgm, deferred_method_bodies);
 
     // Allocate vtable if needed
     if ( ddc->has_vtable )
@@ -12328,16 +16408,19 @@ TokenBase *TokenFOR::parse(Program &pgm)
     bool typed_for_init = false;
     if ( TokenDataType *dt = resolve_declared_type_token(pgm, tn, true, true) )
     {
-	// Optional `&` between the element type and the name: `for (T& v : c)`
-	// is a REFERENCE loop var that aliases (and may mutate) the source
-	// element. Consume the `&` here so the identifier follows; record it on
-	// the TokenFOREACH so the CIR lowering binds `v` to the element ADDRESS
-	// (vfREFERENCE pointer model) instead of copying the value.
+	// Optional `&` / `&&` between the element type and the name:
+	// `for (T& v : c)` / `for (T&& v : c)` is a REFERENCE loop var that
+	// aliases (and may mutate) the source element. Consume the reference token
+	// here so the identifier follows; record it on the TokenFOREACH so the CIR
+	// lowering binds `v` to the element ADDRESS (vfREFERENCE pointer model)
+	// instead of copying the value.
 	bool range_elem_ref = false;
 	TokenBase *amp_tok = NULL;
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkBand )
+	if ( pgm.peekToken()
+	  && (pgm.peekToken()->id() == TokenID::tkBand
+	   || pgm.peekToken()->id() == TokenID::tkLand) )
 	{
-	    amp_tok = pgm.nextToken(); // consume '&' (kept for push-back below)
+	    amp_tok = pgm.nextToken(); // consume '&' / '&&' (kept for push-back below)
 	    range_elem_ref = true;
 	}
 	TokenBase *tn2 = pgm.nextToken();
@@ -12573,6 +16656,20 @@ TokenBase *TokenOPEROVER::parse(Program &pgm)
     // overloading operator
     switch(tn->id())
     {
+	case TokenID::tkNEW:
+	case TokenID::tkDELETE:
+	    str = tn->id() == TokenID::tkNEW ? "new" : "delete";
+	    delete tn;
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	    {
+		TokenBase *sq = pgm.nextToken();
+		if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClSqr )
+		    pgm.Throw(sq) << "Expecting ]" << flush;
+		delete sq;
+		delete pgm.nextToken();
+		str += "[]";
+	    }
+	    return this;
 	// multi-token
 	case TokenID::tkOpBrk:
 	    if ( pgm.peekToken()->id() != TokenID::tkClBrk )
@@ -12591,6 +16688,22 @@ TokenBase *TokenOPEROVER::parse(Program &pgm)
 	// MultiOp
 	case TokenID::tkInc:
 	case TokenID::tkDec:
+	case TokenID::tkEquals:
+	case TokenID::tkNotEq:
+	case TokenID::tkGE:
+	case TokenID::tkLE:
+	case TokenID::tkBSL:
+	case TokenID::tkBSR:
+	case TokenID::tkLand:
+	case TokenID::tkLor:
+	case TokenID::tkAddEq:
+	case TokenID::tkSubEq:
+	case TokenID::tkMulEq:
+	case TokenID::tkDivEq:
+	case TokenID::tkModEq:
+	case TokenID::tkBandEq:
+	case TokenID::tkBorEq:
+	case TokenID::tkXorEq:
 	    str = ((TokenMultiOp *)tn)->str;
 	    delete tn;
 	    return this;
@@ -12739,6 +16852,11 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     auto record_typedef = [&](const std::string &alias, DataDef *dd,
 			      TokenDataType *tdt, TokenBase *otok = nullptr) -> TokenBase * {
 	pgm.user_typedef_names.insert(alias);
+	if ( !pgm.class_scope_stack.empty() )
+	{
+	    pgm.class_scope_stack.back()->type_aliases[alias] = dd;
+	    return new TokenTypedefDecl(alias, dd);
+	}
 	if ( tdt && !pgm.current_namespace.empty() )
 	    pgm.namespace_datatype_map[pgm.current_namespace][alias] = tdt;
 	// A typedef inside a function body is block-scoped: the CIR builder emits
@@ -12810,8 +16928,12 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    pgm.Throw(tn) << "Expecting alias name in typedef enum" << flush;
 
 	DataDef *enum_alias_dd = new DataDefENUM(alias);
+	if ( !pgm.current_namespace.empty() )
+	    enum_alias_dd->canonical_cpp_spelling =
+		pgm.current_namespace + "::" + alias;
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *enum_alias_dd);
-	pgm.datatype_map[alias] = tdt;
+	if ( pgm.class_scope_stack.empty() )
+	    pgm.datatype_map[alias] = tdt;
 	DBG(std::cout << "TokenTYPEDEF::parse() enum alias " << alias << " = int" << std::endl);
 
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
@@ -12836,8 +16958,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	}
 	else
 	{
-	    // A qualified and/or templated base type — `typedef
-	    // __cxx11::basic_string<char,...> string;`, `typedef ns::T<X> alias;`.
+	    // A qualified and/or templated base type such as `typedef ns::T<X> alias;`.
 	    // `tn` here is a PEEK (still at the deque front, like the datatype-map
 	    // branch above which consumes it explicitly), so consume it first, then
 	    // let the unified resolver skip the namespace-qualifier chain and
@@ -12853,6 +16974,13 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 
     // handle pointer: typedef int *intptr;
     while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+    {
+	pgm.nextToken();
+	base_dd = pgm.getPointerType(base_dd);
+    }
+    if ( pgm.peekToken()
+      && (pgm.peekToken()->id() == TokenID::tkBand
+       || pgm.peekToken()->id() == TokenID::tkLand) )
     {
 	pgm.nextToken();
 	base_dd = pgm.getPointerType(base_dd);
@@ -12888,7 +17016,8 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	DataDefFPTR *fptr = new DataDefFPTR(func);
 	fptr->ptr_syntax = true;   // Form 2: explicit `(*NAME)` — pointer typedef
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
-	pgm.datatype_map[alias] = tdt;
+	if ( pgm.class_scope_stack.empty() )
+	    pgm.datatype_map[alias] = tdt;
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 2): " << alias << std::endl);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
@@ -12920,7 +17049,8 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	DataDefFPTR *fptr = new DataDefFPTR(func);
 	fptr->ptr_syntax = false;  // Form 1: `typedef RET NAME(params)` — function typedef
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
-	pgm.datatype_map[alias] = tdt;
+	if ( pgm.class_scope_stack.empty() )
+	    pgm.datatype_map[alias] = tdt;
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 1): " << alias << std::endl);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
@@ -12968,8 +17098,20 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // register in datatype_map
     if ( gnu_vector_bytes > 0 )
 	base_dd = new DataDefSIMD(base_dd, alias, gnu_vector_bytes);
+    else if ( pgm.class_scope_stack.empty()
+	   && !pgm.current_namespace.empty()
+	   && base_dd && !base_dd->is_pointer()
+	   && base_dd->basetype() == BaseType::btSimple )
+    {
+	DataDef *alias_dd = new DataDef(alias, base_dd->size, base_dd->type());
+	alias_dd->canonical_cpp_spelling = pgm.current_namespace + "::" + alias;
+	base_dd = alias_dd;
+    }
+    if ( base_dd && is_incomplete_class_datadef(base_dd) )
+	pgm.template_completion_requested.insert(base_dd->name);
     TokenDataType *tdt = new TokenDataType(alias.c_str(), *base_dd);
-    pgm.datatype_map[alias] = tdt;
+    if ( pgm.class_scope_stack.empty() )
+	pgm.datatype_map[alias] = tdt;
     DBG(std::cout << "TokenTYPEDEF::parse() " << alias << " = " << base_dd->name << std::endl);
 
     // consume semicolon
@@ -13006,8 +17148,12 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
     while ( nt )
     {
 	std::string param_alias;
+	bool param_leading_const = false;
 	while ( nt && nt->id() == TokenID::tkCONST )
+	{
+	    param_leading_const = true;
 	    nt = nextToken();
+	}
 
 	// variadic
 	if ( nt->id() == TokenID::tkDot )
@@ -13018,6 +17164,9 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 		Throw(nt) << "Expecting '...' for variadic parameter" << flush;
 	    func->is_varargs = true;
 	    func->parameters.push_back(&ddINT64);
+	    func->ref_params.push_back(false);
+	    func->const_params.push_back(false);
+	    func->param_cpp_spellings.push_back("");
 	    func->param_typedef_names.push_back("");
 	    nt = nextToken();
 	    if ( !nt || nt->id() != TokenID::tkClBrk )
@@ -13044,17 +17193,21 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	}
 	else if ( nt->type() == TokenType::ttDataType )
 	{
-	    param_dd = &((TokenDataType *)nt)->definition;
+	    TokenDataType *resolved =
+		resolve_declared_type_token(*this, nt, true, true);
+	    param_dd = resolved ? &resolved->definition
+				: &((TokenDataType *)nt)->definition;
 	    if ( user_typedef_names.count(((TokenDataType *)nt)->str) )
 		param_alias = ((TokenDataType *)nt)->str;
 	}
 	else if ( nt->type() == TokenType::ttIdentifier )
 	{
 	    std::string tname = ((TokenIdent *)nt)->str;
-	    datatype_map_iter tdmi = datatype_map.find(tname);
-	    if ( tdmi == datatype_map.end() )
+	    TokenDataType *resolved =
+		resolve_declared_type_token(*this, nt, true, true);
+	    if ( !resolved )
 		Throw(nt) << "Unknown type '" << tname << "' in function pointer typedef" << flush;
-	    param_dd = &tdmi->second->definition;
+	    param_dd = &resolved->definition;
 	    if ( user_typedef_names.count(tname) )
 		param_alias = tname;
 	}
@@ -13063,21 +17216,50 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    Throw(nt) << "Expecting parameter type in function pointer typedef" << flush;
 	}
 
+	DataDef *base_param_dd = param_dd;
+	int param_ptr_depth = 0;
+	bool param_is_ref = false;
+	bool param_rvalue_ref = false;
+
 	// Pointer decorators
 	while ( peekToken() && peekToken()->id() == TokenID::tkMul )
 	{
 	    nextToken();
 	    param_dd = getPointerType(param_dd);
+	    ++param_ptr_depth;
 	}
 
 	while ( peekToken() && peekToken()->id() == TokenID::tkCONST )
 	    nextToken();
+
+	if ( peekToken()
+	  && (peekToken()->id() == TokenID::tkBand
+	   || peekToken()->id() == TokenID::tkLand) )
+	{
+	    TokenBase *ref_tok = nextToken();
+	    param_is_ref = true;
+	    param_rvalue_ref = ref_tok->id() == TokenID::tkLand;
+	    param_dd = getPointerType(param_dd);
+	}
 
 	// Optional parameter name (discard)
 	if ( peekToken() && is_contextual_identifier_token(peekToken()) )
 	    nextToken();
 
 	func->parameters.push_back(param_dd);
+	func->ref_params.push_back(param_is_ref);
+	func->const_params.push_back(param_leading_const);
+	std::string param_spelling;
+	if ( param_leading_const )
+	    param_spelling = "const ";
+	if ( base_param_dd )
+	    param_spelling += base_param_dd->canonical_cpp_spelling.empty()
+		? base_param_dd->name : base_param_dd->canonical_cpp_spelling;
+	for ( int sd = 0; sd < param_ptr_depth; ++sd )
+	    param_spelling += "*";
+	if ( param_is_ref )
+	    param_spelling += param_rvalue_ref ? "&&" : "&";
+	func->param_cpp_spellings.push_back(param_spelling);
 	func->param_typedef_names.push_back(param_alias);
 
 	// Next: ',' or ')'
@@ -13164,13 +17346,20 @@ TokenBase *TokenENUM::parse(Program &pgm)
     }
     pgm.nextToken(); // consume '{'
 
-    // A scoped enum's tag is itself a usable type name (no typedef needed):
-    // register `datatype_map[Tag]` as a DataDefENUM (int-backed, I2).
-    if ( scoped && !enum_tag.empty() )
+    // In C++/madc mode, an enum tag is injected as a type name in the current
+    // scope. C keeps the `enum Tag` spelling and does not get a bare `Tag`
+    // typedef here.
+    if ( !enum_tag.empty() && (scoped || !pgm.is_c_mode()) )
     {
 	DataDef *enum_dd = new DataDefENUM(enum_tag);
-	pgm.datatype_map[enum_tag] = new TokenDataType(enum_tag.c_str(), *enum_dd);
-	DBG(std::cout << "TokenENUM::parse() scoped enum type " << enum_tag << std::endl);
+	if ( !pgm.current_namespace.empty() )
+	    enum_dd->canonical_cpp_spelling =
+		pgm.current_namespace + "::" + enum_tag;
+	TokenDataType *tdt = new TokenDataType(enum_tag.c_str(), *enum_dd);
+	pgm.datatype_map[enum_tag] = tdt;
+	if ( !pgm.current_namespace.empty() )
+	    pgm.namespace_datatype_map[pgm.current_namespace][enum_tag] = tdt;
+	DBG(std::cout << "TokenENUM::parse() enum type " << enum_tag << std::endl);
     }
 
     // Scoped enumerators are registered under a pseudo-namespace keyed by the
@@ -13307,24 +17496,22 @@ TokenBase *TokenCONST::parse(Program &pgm)
 	tn = pgm.nextToken();
 	return pgm.parseDeclaration(static_cast<TokenDataType *>(tn));
     }
-    // might be typedef'd name
-    if ( tn->type() == TokenType::ttIdentifier )
-    {
-	std::string tname = ((TokenIdent *)tn)->str;
-	if ( is_typeof_identifier(tname) )
+	// might be typedef'd name
+	if ( tn->type() == TokenType::ttIdentifier )
 	{
-	    pgm.nextToken();
-	    return pgm.parseDeclaration(parse_typeof_datatype(pgm, tn));
+	    std::string tname = ((TokenIdent *)tn)->str;
+	    if ( is_typeof_identifier(tname) )
+	    {
+		pgm.nextToken();
+		return pgm.parseDeclaration(parse_typeof_datatype(pgm, tn));
+	    }
+	    TokenBase *type_tb = pgm.nextToken();
+	    if ( TokenDataType *resolved =
+		    resolve_declared_type_token(pgm, type_tb, true, true) )
+		return pgm.parseDeclaration(resolved);
 	}
-	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
-	if ( tdmi != pgm.datatype_map.end() )
-	{
-	    pgm.nextToken();
-	    return pgm.parseDeclaration(tdmi->second);
-	}
-    }
-    pgm.Throw(tn) << "Expecting type after 'const'" << flush;
-    return NULL;
+	pgm.Throw(tn) << "Expecting type after 'const'" << flush;
+	return NULL;
 }
 
 // extern — consume and pass through to the declaration that follows
@@ -13370,6 +17557,11 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	    }
 	    else
 		result = pgm.parseStatement(after);
+	}
+	else if ( tn->id() == TokenID::tkTEMPLATE )
+	{
+	    handled = true;
+	    skip_template_nonclass_declaration(pgm, pgm.nextToken());
 	}
 	else if ( tn->type() == TokenType::ttKeyword )
 	{
@@ -13993,6 +18185,1262 @@ TokenBase *TokenMatch::parse(Program &pgm)
 }
 
 
+static bool is_template_type_param_intro(TokenBase *tb)
+{
+    return tb && (tb->id() == TokenID::tkCLASS
+	|| (tb->type() == TokenType::ttIdentifier
+	    && ((TokenIdent *)tb)->str == "typename"));
+}
+
+static bool is_template_param_separator(TokenBase *tb)
+{
+    return tb && (tb->id() == TokenID::tkComma
+	|| tb->id() == TokenID::tkGT
+	|| tb->id() == TokenID::tkBSR);
+}
+
+static bool consume_ellipsis(Program &pgm)
+{
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkDot )
+	return false;
+    if ( pgm.tokens.size() < 3
+      || !pgm.tokens[1] || !pgm.tokens[2]
+      || pgm.tokens[1]->id() != TokenID::tkDot
+      || pgm.tokens[2]->id() != TokenID::tkDot )
+	return false;
+    pgm.nextToken();
+    pgm.nextToken();
+    pgm.nextToken();
+    return true;
+}
+
+static std::vector<TokenBase *> collect_template_default_argument(Program &pgm)
+{
+    std::vector<TokenBase *> out;
+    int angle_depth = 0;
+    int paren_depth = 0;
+    int square_depth = 0;
+    while ( pgm.peekToken() )
+    {
+	TokenBase *pt = pgm.peekToken();
+	if ( angle_depth == 0 && paren_depth == 0 && square_depth == 0
+	  && is_template_param_separator(pt) )
+	    return out;
+	TokenBase *t = pgm.nextToken();
+	if ( t->id() == TokenID::tkLT )
+	{
+	    out.push_back(t->clone());
+	    ++angle_depth;
+	}
+	else if ( t->id() == TokenID::tkGT )
+	{
+	    out.push_back(t->clone());
+	    if ( angle_depth > 0 )
+		--angle_depth;
+	}
+	else if ( t->id() == TokenID::tkBSR )
+	{
+	    if ( angle_depth > 1 )
+	    {
+		out.push_back(new TokenGT());
+		out.push_back(new TokenGT());
+		angle_depth -= 2;
+	    }
+	    else if ( angle_depth > 0 )
+	    {
+		out.push_back(new TokenGT());
+		angle_depth = 0;
+		pgm.pushToken(new TokenGT());
+	    }
+	    else
+		out.push_back(t->clone());
+	}
+	else if ( t->id() == TokenID::tkOpBrk )
+	{
+	    out.push_back(t->clone());
+	    ++paren_depth;
+	}
+	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
+	{
+	    out.push_back(t->clone());
+	    --paren_depth;
+	}
+	else if ( t->id() == TokenID::tkOpSqr )
+	{
+	    out.push_back(t->clone());
+	    ++square_depth;
+	}
+	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
+	{
+	    out.push_back(t->clone());
+	    --square_depth;
+	}
+	else
+	    out.push_back(t->clone());
+    }
+    return out;
+}
+
+static void skip_template_id_suffix(Program &pgm)
+{
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
+	return;
+    pgm.nextToken(); // consume '<'
+    int depth = 1;
+    while ( depth > 0 && pgm.peekToken() )
+    {
+	TokenBase *t = pgm.nextToken();
+	if ( t->id() == TokenID::tkLT )
+	    ++depth;
+	else if ( t->id() == TokenID::tkGT )
+	    --depth;
+	else if ( t->id() == TokenID::tkBSR )
+	{
+	    if ( depth > 1 )
+		depth -= 2;
+	    else
+		depth = 0;
+	}
+    }
+}
+
+static bool is_template_parameter_type_name(TokenBase *tb)
+{
+    return tb && (tb->type() == TokenType::ttIdentifier
+	|| tb->type() == TokenType::ttDataType
+	|| is_contextual_identifier_token(tb));
+}
+
+static bool is_template_parameter_decl_name(TokenBase *tb)
+{
+    return tb && (tb->type() == TokenType::ttIdentifier
+	|| tb->type() == TokenType::ttDataType
+	|| is_contextual_identifier_token(tb));
+}
+
+static std::string template_parameter_decl_name(TokenBase *tb)
+{
+    if ( !tb )
+	return "";
+    if ( tb->type() == TokenType::ttIdentifier )
+	return static_cast<TokenIdent *>(tb)->str;
+    if ( tb->type() == TokenType::ttDataType )
+	return static_cast<TokenDataType *>(tb)->str;
+    return contextual_identifier_name(tb);
+}
+
+static bool consume_template_parameter_type_suffix(Program &pgm)
+{
+    bool consumed = false;
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+    {
+	skip_template_id_suffix(pgm);
+	consumed = true;
+    }
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+    {
+	pgm.nextToken();
+	TokenBase *member = pgm.nextToken();
+	if ( !is_template_parameter_type_name(member) )
+	    pgm.Throw(member) << "Expecting name after '::' in template parameter type" << flush;
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+	    skip_template_id_suffix(pgm);
+	consumed = true;
+    }
+    return consumed;
+}
+
+static void skip_template_nonclass_declaration(Program &pgm, TokenBase *first,
+					       std::vector<TokenBase *> *seen)
+{
+    int angle_depth = 0;
+    int paren_depth = 0;
+    int square_depth = 0;
+    int brace_depth = 0;
+    bool consume_operator_spelling = false;
+    int operator_paren_depth = 0;
+    int operator_square_depth = 0;
+    TokenBase *t = first;
+    while ( t )
+    {
+	if ( seen )
+	    seen->push_back(t);
+	if ( operator_paren_depth > 0 )
+	{
+	    if ( t->id() == TokenID::tkOpBrk )
+		++operator_paren_depth;
+	    else if ( t->id() == TokenID::tkClBrk )
+		--operator_paren_depth;
+	    t = pgm.nextToken();
+	    continue;
+	}
+	if ( operator_square_depth > 0 )
+	{
+	    if ( t->id() == TokenID::tkOpSqr )
+		++operator_square_depth;
+	    else if ( t->id() == TokenID::tkClSqr )
+		--operator_square_depth;
+	    t = pgm.nextToken();
+	    continue;
+	}
+	if ( consume_operator_spelling )
+	{
+	    consume_operator_spelling = false;
+	    if ( t->id() == TokenID::tkOpBrk )
+		operator_paren_depth = 1;
+	    else if ( t->id() == TokenID::tkOpSqr )
+		operator_square_depth = 1;
+	    t = pgm.nextToken();
+	    continue;
+	}
+	if ( t->id() == TokenID::tkOPEROVER )
+	    consume_operator_spelling = true;
+	else if ( t->id() == TokenID::tkLT )
+	    ++angle_depth;
+	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
+	    --angle_depth;
+	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
+	{
+	    if ( angle_depth > 1 )
+		angle_depth -= 2;
+	    else
+		angle_depth = 0;
+	}
+	else if ( t->id() == TokenID::tkOpBrk )
+	    ++paren_depth;
+	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
+	    --paren_depth;
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square_depth;
+	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
+	    --square_depth;
+	else if ( t->id() == TokenID::tkOpBrc )
+	{
+	    if ( paren_depth != 0 || square_depth != 0 || angle_depth != 0
+	      || brace_depth != 0 )
+	    {
+		++brace_depth;
+		t = pgm.nextToken();
+		continue;
+	    }
+	    int body_depth = 1;
+	    while ( body_depth > 0 && (t = pgm.nextToken()) )
+	    {
+		if ( t->id() == TokenID::tkOpBrc )
+		    ++body_depth;
+		else if ( t->id() == TokenID::tkClBrc )
+		    --body_depth;
+	    }
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+		pgm.nextToken();
+	    return;
+	}
+	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
+	    --brace_depth;
+	else if ( t->id() == TokenID::tkSemi
+	       && angle_depth == 0 && paren_depth == 0 && square_depth == 0
+	       && brace_depth == 0 )
+	    return;
+	t = pgm.nextToken();
+    }
+}
+
+static bool skipped_template_decl_is_friend_type(
+	const std::vector<TokenBase *> &tokens)
+{
+    bool saw_friend = false;
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->type() == TokenType::ttIdentifier
+	  && static_cast<TokenIdent *>(t)->str == "friend" )
+	{
+	    saw_friend = true;
+	    continue;
+	}
+	if ( !saw_friend )
+	    continue;
+	if ( t->id() == TokenID::tkCLASS
+	  || t->id() == TokenID::tkSTRUCT
+	  || t->id() == TokenID::tkUNION )
+	    return true;
+	if ( t->type() == TokenType::ttIdentifier )
+	{
+	    const std::string &s = static_cast<TokenIdent *>(t)->str;
+	    if ( s == "class" || s == "struct" || s == "union" )
+		return true;
+	}
+    }
+    return false;
+}
+
+static bool is_skipped_template_function_name(TokenBase *tb)
+{
+    return tb && (tb->type() == TokenType::ttIdentifier
+	|| tb->type() == TokenType::ttDataType
+	|| is_contextual_identifier_token(tb));
+}
+
+static std::string skipped_template_function_name(TokenBase *tb)
+{
+    if ( !tb )
+	return "";
+    if ( tb->type() == TokenType::ttIdentifier )
+	return static_cast<TokenIdent *>(tb)->str;
+    if ( tb->type() == TokenType::ttDataType )
+	return static_cast<TokenDataType *>(tb)->str;
+    return contextual_identifier_name(tb);
+}
+
+static bool ignored_template_declarator_call_name(const std::string &name)
+{
+    return name == "decltype" || name == "noexcept" || name == "sizeof"
+	|| name == "alignof" || name == "typeid" || name == "__attribute__"
+	|| name == "__attribute";
+}
+
+static DataDef *skipped_template_function_return_type(
+	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
+	const std::string &name);
+
+static size_t skipped_template_function_declarator_name_index(
+	const std::vector<TokenBase *> &tokens, std::string *name_out)
+{
+    int angle_depth = 0;
+    int paren_depth = 0;
+    int square_depth = 0;
+    int brace_depth = 0;
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkLT )
+	    ++angle_depth;
+	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
+	    --angle_depth;
+	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
+	{
+	    if ( angle_depth > 1 )
+		angle_depth -= 2;
+	    else
+		angle_depth = 0;
+	}
+	else if ( t->id() == TokenID::tkOpBrk )
+	{
+	    if ( angle_depth == 0 && paren_depth == 0
+	      && square_depth == 0 && brace_depth == 0 && i > 0 )
+	    {
+		TokenBase *name_tb = tokens[i - 1];
+		if ( is_skipped_template_function_name(name_tb) )
+		{
+		    std::string name = skipped_template_function_name(name_tb);
+		    if ( !ignored_template_declarator_call_name(name) )
+		    {
+			if ( name_out )
+			    *name_out = name;
+			return i - 1;
+		    }
+		}
+	    }
+	    ++paren_depth;
+	}
+	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
+	    --paren_depth;
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square_depth;
+	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
+	    --square_depth;
+	else if ( t->id() == TokenID::tkOpBrc )
+	    ++brace_depth;
+	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
+	    --brace_depth;
+    }
+    return tokens.size();
+}
+
+static std::string skipped_template_function_declarator_name(
+	const std::vector<TokenBase *> &tokens)
+{
+    std::string name;
+    skipped_template_function_declarator_name_index(tokens, &name);
+    return name;
+}
+
+static bool is_template_type_parameter_name(
+	const std::vector<std::string> &typeparams, const std::string &name)
+{
+    for ( size_t i = 0; i < typeparams.size(); ++i )
+	if ( typeparams[i] == name )
+	    return true;
+    return false;
+}
+
+static void record_skipped_template_return_pattern(
+	FuncDef *fd, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams, const std::string &name)
+{
+    if ( !fd || typeparams.empty() )
+	return;
+    std::string found_name;
+    size_t name_index =
+	skipped_template_function_declarator_name_index(tokens, &found_name);
+    if ( name_index >= tokens.size() || found_name != name )
+	return;
+
+    static const std::set<std::string> specifiers = {
+	"static", "constexpr", "inline", "virtual", "friend", "extern",
+	"typename", "const", "volatile", "auto"
+    };
+
+    std::string return_param;
+    bool return_ref = false;
+    for ( size_t i = name_index; i-- > 0; )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkBand || t->id() == TokenID::tkLand )
+	{
+	    return_ref = true;
+	    continue;
+	}
+	if ( !is_contextual_identifier_token(t) )
+	    continue;
+	std::string tname = contextual_identifier_name(t);
+	if ( specifiers.count(tname) )
+	    continue;
+	if ( is_template_type_parameter_name(typeparams, tname) )
+	{
+	    return_param = tname;
+	    break;
+	}
+    }
+    if ( return_param.empty() )
+	return;
+
+    if ( name_index + 1 >= tokens.size()
+      || !tokens[name_index + 1]
+      || tokens[name_index + 1]->id() != TokenID::tkOpBrk )
+	return;
+
+    int depth = 0;
+    size_t param_start = name_index + 2;
+    int arg_index = 0;
+    for ( size_t i = name_index + 2; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++depth;
+	else if ( t->id() == TokenID::tkClBrk )
+	{
+	    if ( depth == 0 )
+	    {
+		size_t param_end = i;
+		bool saw_param = false;
+		bool saw_pointer = false;
+		for ( size_t pi = param_start; pi < param_end; ++pi )
+		{
+		    TokenBase *pt = tokens[pi];
+		    if ( !pt )
+			continue;
+		    if ( pt->id() == TokenID::tkMul )
+			saw_pointer = true;
+		    if ( is_contextual_identifier_token(pt)
+		      && contextual_identifier_name(pt) == return_param )
+			saw_param = true;
+		}
+		if ( saw_param )
+		{
+		    fd->template_return_param_name = return_param;
+		    fd->template_return_deduce_arg_index = arg_index;
+		    fd->template_return_deduce_from_pointer = saw_pointer;
+		    fd->template_return_ref = return_ref;
+		}
+		return;
+	    }
+	    --depth;
+	}
+	else if ( t->id() == TokenID::tkComma && depth == 0 )
+	{
+	    size_t param_end = i;
+	    bool saw_param = false;
+	    bool saw_pointer = false;
+	    for ( size_t pi = param_start; pi < param_end; ++pi )
+	    {
+		TokenBase *pt = tokens[pi];
+		if ( !pt )
+		    continue;
+		if ( pt->id() == TokenID::tkMul )
+		    saw_pointer = true;
+		if ( is_contextual_identifier_token(pt)
+		  && contextual_identifier_name(pt) == return_param )
+		    saw_param = true;
+	    }
+	    if ( saw_param )
+	    {
+		fd->template_return_param_name = return_param;
+		fd->template_return_deduce_arg_index = arg_index;
+		fd->template_return_deduce_from_pointer = saw_pointer;
+		fd->template_return_ref = return_ref;
+		return;
+	    }
+	    param_start = i + 1;
+	    ++arg_index;
+	}
+    }
+}
+
+static void apply_template_call_return_inference(Program &pgm,
+						 TokenCallFunc *tc)
+{
+    (void)pgm;
+    if ( !tc || !tc->var.type || !tc->var.type->is_function() )
+	return;
+    FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+    if ( !fd || fd->template_return_param_name.empty()
+      || fd->template_return_deduce_arg_index < 0 )
+	return;
+    size_t arg_index = (size_t)fd->template_return_deduce_arg_index;
+    if ( arg_index >= tc->parameters.size() || !tc->parameters[arg_index] )
+	return;
+    DataDef *deduced = tc->parameters[arg_index]->datadef();
+    if ( fd->template_return_deduce_from_pointer )
+    {
+	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(deduced);
+	deduced = ptr ? ptr->base_type : NULL;
+    }
+    if ( !deduced )
+	return;
+    tc->return_override = deduced;
+    tc->returns_ref_override = fd->template_return_ref;
+    tc->setDataType(deduced);
+}
+
+static void register_skipped_namespace_template_function(
+	Program &pgm, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams)
+{
+    if ( pgm.current_namespace.empty() )
+	return;
+    std::string name = skipped_template_function_declarator_name(tokens);
+    if ( name.empty() )
+	return;
+    variable_map_t &ns = pgm.namespace_map[pgm.current_namespace];
+    if ( ns.find(name) != ns.end() )
+	return;
+    std::string parse_id = namespace_function_symbol(pgm.current_namespace, name);
+    Variable *var = pgm.tkProgram ? pgm.tkProgram->findVariable(parse_id) : NULL;
+    if ( !var )
+    {
+	DataDef *ret = skipped_template_function_return_type(pgm, NULL, tokens,
+							     name);
+	var = pgm.addFunction(parse_id,
+	    datatype_vec_t{ret ? ret : &ddINT64}, NULL);
+    }
+    if ( !var )
+	return;
+    if ( FuncDef *fd = dynamic_cast<FuncDef *>(var->type) )
+    {
+	fd->declaration_only = true;
+	fd->function_display_name = name;
+	fd->namespace_name = pgm.current_namespace;
+	record_skipped_template_return_pattern(fd, tokens, typeparams, name);
+    }
+    ns[name] = var;
+    ns.erase(parse_id);
+}
+
+static bool skipped_template_function_is_static(
+	const std::vector<TokenBase *> &tokens)
+{
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkSTATIC )
+	    return true;
+	if ( t->type() == TokenType::ttIdentifier
+	  && static_cast<TokenIdent *>(t)->str == "static" )
+	    return true;
+    }
+    return false;
+}
+
+static DataDef *skipped_template_function_return_type(
+	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
+	const std::string &name)
+{
+    size_t name_index = tokens.size();
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	if ( !tokens[i] || !is_skipped_template_function_name(tokens[i]) )
+	    continue;
+	if ( skipped_template_function_name(tokens[i]) == name
+	  && i + 1 < tokens.size() && tokens[i + 1]
+	  && tokens[i + 1]->id() == TokenID::tkOpBrk )
+	{
+	    name_index = i;
+	    break;
+	}
+    }
+
+    static const std::set<std::string> specifiers = {
+	"static", "constexpr", "inline", "virtual", "friend", "extern",
+	"typename", "const", "volatile", "auto"
+    };
+    for ( size_t i = name_index; i-- > 0; )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->type() == TokenType::ttDataType )
+	    return &static_cast<TokenDataType *>(t)->definition;
+	if ( !is_contextual_identifier_token(t) )
+	    continue;
+	std::string tname = contextual_identifier_name(t);
+	if ( specifiers.count(tname) )
+	    continue;
+	if ( owner )
+	    if ( DataDef *alias = resolve_class_type_alias(owner, tname) )
+		return alias;
+	datatype_map_iter dmi = pgm.datatype_map.find(tname);
+	if ( dmi != pgm.datatype_map.end() )
+	    return &dmi->second->definition;
+    }
+    return &ddINT64;
+}
+
+static void register_skipped_class_template_function(
+	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
+	uint32_t access_flags)
+{
+    if ( !owner )
+	return;
+    std::string name = skipped_template_function_declarator_name(tokens);
+    if ( name.empty() )
+	return;
+
+    bool is_static = skipped_template_function_is_static(tokens);
+    DataDef *ret = skipped_template_function_return_type(pgm, owner, tokens, name);
+    datatype_vec_t params;
+    params.push_back(ret ? ret : &ddINT64);
+    if ( !is_static )
+	params.push_back(pgm.getPointerType(owner));
+    params.push_back(&ddINT64); // varargs marker
+
+    std::string parse_id = owner->name + "__" + name;
+    if ( pgm.findVariable(parse_id) )
+	parse_id = unique_overload_symbol(pgm, parse_id);
+    Variable *var = pgm.addFunction(parse_id, params, NULL);
+    if ( !var )
+	return;
+    FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+    if ( fd )
+    {
+	fd->is_varargs = true;
+	fd->declaration_only = true;
+	fd->method_display_name = name;
+    }
+    Method *md = static_cast<Method *>(var->data);
+    if ( md && !is_static )
+	md->owner_class = owner;
+    if ( is_static )
+	var->flags |= vfSTATIC;
+    if ( access_flags )
+	var->flags |= access_flags;
+    owner->methods.push_back(var);
+    owner->method_map[name] = var;
+}
+
+static std::vector<TokenBase *> collect_template_class_prefix(Program &pgm)
+{
+    std::vector<TokenBase *> prefix;
+    int angle_depth = 0;
+    int paren_depth = 0;
+    int square_depth = 0;
+    int brace_depth = 0;
+    while ( pgm.peekToken() )
+    {
+	TokenBase *pt = pgm.peekToken();
+	if ( angle_depth == 0 && paren_depth == 0 && square_depth == 0
+	  && brace_depth == 0
+	  && (pt->id() == TokenID::tkOpBrc || pt->id() == TokenID::tkSemi) )
+	    break;
+	TokenBase *t = pgm.nextToken();
+	prefix.push_back(t->clone());
+	if ( t->id() == TokenID::tkLT )
+	    ++angle_depth;
+	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
+	    --angle_depth;
+	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
+	{
+	    if ( angle_depth > 1 )
+		angle_depth -= 2;
+	    else
+		angle_depth = 0;
+	}
+	else if ( t->id() == TokenID::tkOpBrk )
+	    ++paren_depth;
+	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
+	    --paren_depth;
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square_depth;
+	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
+	    --square_depth;
+	else if ( t->id() == TokenID::tkOpBrc )
+	    ++brace_depth;
+	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
+	    --brace_depth;
+    }
+    return prefix;
+}
+
+static std::string join_scope_parts(const std::vector<std::string> &parts,
+				    size_t count)
+{
+    std::string out;
+    for ( size_t i = 0; i < count && i < parts.size(); ++i )
+    {
+	if ( i )
+	    out += "::";
+	out += parts[i];
+    }
+    return out;
+}
+
+static DataDefCLASS *resolve_qualified_class_owner(Program &pgm,
+						   const std::vector<std::string> &scope_parts)
+{
+    if ( scope_parts.empty() )
+	return NULL;
+
+    const std::string &class_name = scope_parts.back();
+    if ( scope_parts.size() > 1 )
+    {
+	std::string ns_name = join_scope_parts(scope_parts, scope_parts.size() - 1);
+	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns_name);
+	if ( nti != pgm.namespace_datatype_map.end() )
+	{
+	    datatype_map_iter dti = nti->second.find(class_name);
+	    if ( dti != nti->second.end() )
+		return dynamic_cast<DataDefCLASS *>(&dti->second->definition);
+	}
+    }
+
+    if ( !pgm.current_namespace.empty() )
+    {
+	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(pgm.current_namespace);
+	if ( nti != pgm.namespace_datatype_map.end() )
+	{
+	    datatype_map_iter dti = nti->second.find(class_name);
+	    if ( dti != nti->second.end() )
+		return dynamic_cast<DataDefCLASS *>(&dti->second->definition);
+	}
+    }
+
+    return dynamic_cast<DataDefCLASS *>(resolve_named_datadef(pgm, class_name));
+}
+
+static DataDefCLASS *promote_struct_base_to_class(Program &pgm,
+						  const std::string &name,
+						  DataDef *dd)
+{
+    if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd) )
+	return cls;
+    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+    if ( !sdd || sdd->union_layout )
+	return NULL;
+
+    DataDefCLASS *cls = new DataDefCLASS(sdd->name, sdd->size, sdd->rawtype());
+    static_cast<DataDefSTRUCT &>(*cls) = *sdd;
+    cls->canonical_cpp_spelling = sdd->canonical_cpp_spelling;
+
+    pgm.struct_map[name] = cls;
+    pgm.struct_map[sdd->name] = cls;
+    TokenDataType *tdt = new TokenDataType(name.c_str(), *cls);
+    pgm.datatype_map[name] = tdt;
+    if ( sdd->name != name )
+	pgm.datatype_map[sdd->name] = new TokenDataType(sdd->name.c_str(), *cls);
+    if ( !pgm.current_namespace.empty() )
+    {
+	pgm.namespace_datatype_map[pgm.current_namespace][name] = tdt;
+	if ( sdd->name != name )
+	    pgm.namespace_datatype_map[pgm.current_namespace][sdd->name] =
+		pgm.datatype_map[sdd->name];
+    }
+    return cls;
+}
+
+static std::string parse_qualified_declarator_part(Program &pgm,
+						   TokenBase *part_tb)
+{
+    if ( !part_tb )
+	pgm.Throw << "Unexpected end of input in qualified declarator" << flush;
+    if ( part_tb->id() == TokenID::tkOPEROVER )
+	return parse_operator_name_after_keyword(pgm, part_tb);
+    if ( part_tb->id() == TokenID::tkBnot )
+    {
+	TokenBase *dtor_tb = pgm.nextToken();
+	if ( !dtor_tb || !is_contextual_identifier_token(dtor_tb) )
+	    pgm.Throw(dtor_tb ? dtor_tb : part_tb)
+		<< "Expected destructor name after '~'" << flush;
+	return "~" + contextual_identifier_name(dtor_tb);
+    }
+    if ( !is_contextual_identifier_token(part_tb) )
+	pgm.Throw(part_tb) << "Expecting name in qualified declarator" << flush;
+    return contextual_identifier_name(part_tb);
+}
+
+struct ParsedParamSig
+{
+    DataDef *base;
+    bool is_ref;
+    bool is_const;
+    int pointer_depth;
+    ParsedParamSig() : base(NULL), is_ref(false), is_const(false), pointer_depth(0) {}
+};
+
+static bool token_is_param_qualifier(TokenBase *t)
+{
+    return t && (t->id() == TokenID::tkCONST
+	      || t->id() == TokenID::tkVOLATILE
+	      || t->id() == TokenID::tkRESTRICT
+	      || t->id() == TokenID::tkREGISTER);
+}
+
+static bool datadef_equivalent(DataDef *a, DataDef *b)
+{
+    if ( a == b )
+	return true;
+    if ( !a || !b )
+	return false;
+    if ( !a->canonical_cpp_spelling.empty()
+      && !b->canonical_cpp_spelling.empty()
+      && a->canonical_cpp_spelling == b->canonical_cpp_spelling )
+	return true;
+    return a->name == b->name && a->type() == b->type();
+}
+
+static DataDef *unwrap_pointer_depth(DataDef *dd, int depth)
+{
+    DataDef *cur = dd;
+    for ( int i = 0; i < depth; ++i )
+    {
+	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(cur);
+	if ( !ptr )
+	    return NULL;
+	cur = ptr->base_type;
+    }
+    return cur;
+}
+
+static bool split_upcoming_function_params(Program &pgm,
+					   std::vector<std::vector<TokenBase *> > &params)
+{
+    std::vector<TokenBase *> current;
+    int paren_depth = 0;
+    int square_depth = 0;
+    int angle_depth = 0;
+    int brace_depth = 0;
+    bool saw_any = false;
+
+    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    {
+	TokenBase *t = pgm.tokens[i];
+	if ( !t )
+	    continue;
+	if ( paren_depth == 0 && square_depth == 0
+	  && angle_depth == 0 && brace_depth == 0 )
+	{
+	    if ( t->id() == TokenID::tkClBrk )
+	    {
+		if ( saw_any || !current.empty() )
+		    params.push_back(current);
+		return true;
+	    }
+	    if ( t->id() == TokenID::tkComma )
+	    {
+		params.push_back(current);
+		current.clear();
+		saw_any = false;
+		continue;
+	    }
+	}
+
+	current.push_back(t);
+	saw_any = true;
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++paren_depth;
+	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
+	    --paren_depth;
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square_depth;
+	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
+	    --square_depth;
+	else if ( t->id() == TokenID::tkOpBrc )
+	    ++brace_depth;
+	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
+	    --brace_depth;
+	else if ( t->id() == TokenID::tkLT )
+	    ++angle_depth;
+	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
+	    --angle_depth;
+	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
+	    angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
+    }
+    return false;
+}
+
+static void trim_param_default(std::vector<TokenBase *> &param)
+{
+    int paren_depth = 0;
+    int square_depth = 0;
+    int angle_depth = 0;
+    int brace_depth = 0;
+    for ( size_t i = 0; i < param.size(); ++i )
+    {
+	TokenBase *t = param[i];
+	if ( !t )
+	    continue;
+	if ( paren_depth == 0 && square_depth == 0
+	  && angle_depth == 0 && brace_depth == 0
+	  && t->id() == TokenID::tkAssign )
+	{
+	    param.resize(i);
+	    return;
+	}
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++paren_depth;
+	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
+	    --paren_depth;
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square_depth;
+	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
+	    --square_depth;
+	else if ( t->id() == TokenID::tkOpBrc )
+	    ++brace_depth;
+	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
+	    --brace_depth;
+	else if ( t->id() == TokenID::tkLT )
+	    ++angle_depth;
+	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
+	    --angle_depth;
+	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
+	    angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
+    }
+}
+
+static void skip_template_suffix_tokens(const std::vector<TokenBase *> &param,
+					size_t &idx)
+{
+    if ( idx >= param.size() || param[idx]->id() != TokenID::tkLT )
+	return;
+    int angle_depth = 0;
+    while ( idx < param.size() )
+    {
+	TokenBase *t = param[idx++];
+	if ( t->id() == TokenID::tkLT )
+	    ++angle_depth;
+	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
+	{
+	    --angle_depth;
+	    if ( angle_depth == 0 )
+		break;
+	}
+	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
+	{
+	    if ( angle_depth > 1 )
+		angle_depth -= 2;
+	    else
+		angle_depth = 0;
+	    if ( angle_depth == 0 )
+		break;
+	}
+    }
+}
+
+static DataDef *resolve_param_type_from_tokens(Program &pgm,
+					       const std::vector<TokenBase *> &param,
+					       size_t &idx)
+{
+    if ( idx >= param.size() )
+	return NULL;
+
+    TokenBase *t = param[idx];
+    if ( !t )
+	return NULL;
+    if ( t->type() == TokenType::ttKeyword
+      && (t->id() == TokenID::tkCLASS
+       || t->id() == TokenID::tkSTRUCT
+       || t->id() == TokenID::tkUNION) )
+    {
+	++idx;
+	if ( idx >= param.size() )
+	    return NULL;
+	t = param[idx];
+    }
+
+    if ( t->type() == TokenType::ttDataType )
+    {
+	++idx;
+	skip_template_suffix_tokens(param, idx);
+	return &static_cast<TokenDataType *>(t)->definition;
+    }
+
+    if ( !is_contextual_identifier_token(t) )
+	return NULL;
+
+    std::vector<std::string> parts;
+    parts.push_back(contextual_identifier_name(t));
+    ++idx;
+    while ( idx + 1 < param.size() && param[idx]->id() == TokenID::tkNS )
+    {
+	++idx;
+	if ( idx >= param.size() || !is_contextual_identifier_token(param[idx]) )
+	    return NULL;
+	parts.push_back(contextual_identifier_name(param[idx]));
+	++idx;
+    }
+    skip_template_suffix_tokens(param, idx);
+
+    if ( parts.size() > 1 )
+    {
+	std::string ns_name = join_scope_parts(parts, parts.size() - 1);
+	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns_name);
+	if ( nti != pgm.namespace_datatype_map.end() )
+	{
+	    datatype_map_iter dti = nti->second.find(parts.back());
+	    if ( dti != nti->second.end() )
+		return &dti->second->definition;
+	}
+    }
+
+    return resolve_named_datadef(pgm, parts.back());
+}
+
+static bool parse_param_sig_from_tokens(Program &pgm,
+					std::vector<TokenBase *> param,
+					ParsedParamSig &sig)
+{
+    trim_param_default(param);
+    size_t idx = 0;
+    while ( idx < param.size() && token_is_param_qualifier(param[idx]) )
+    {
+	if ( param[idx]->id() == TokenID::tkCONST )
+	    sig.is_const = true;
+	++idx;
+    }
+    if ( idx >= param.size() )
+	return false;
+    if ( param[idx]->type() == TokenType::ttDataType
+      && &static_cast<TokenDataType *>(param[idx])->definition == &ddVOID
+      && idx + 1 == param.size() )
+	return false;
+
+    sig.base = resolve_param_type_from_tokens(pgm, param, idx);
+    if ( !sig.base )
+	return false;
+
+    while ( idx < param.size() )
+    {
+	TokenBase *t = param[idx++];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkMul || t->id() == TokenID::tkStar )
+	    ++sig.pointer_depth;
+	else if ( t->id() == TokenID::tkBand || t->id() == TokenID::tkLand )
+	    sig.is_ref = true;
+	else if ( t->id() == TokenID::tkCONST )
+	    sig.is_const = true;
+    }
+    return true;
+}
+
+static bool upcoming_param_signatures(Program &pgm,
+				      std::vector<ParsedParamSig> &sigs)
+{
+    std::vector<std::vector<TokenBase *> > params;
+    if ( !split_upcoming_function_params(pgm, params) )
+	return false;
+    if ( params.empty() )
+	return true;
+    if ( params.size() == 1 )
+    {
+	std::vector<TokenBase *> only = params[0];
+	trim_param_default(only);
+	size_t i = 0;
+	while ( i < only.size() && token_is_param_qualifier(only[i]) )
+	    ++i;
+	if ( i < only.size()
+	  && only[i]->type() == TokenType::ttDataType
+	  && &static_cast<TokenDataType *>(only[i])->definition == &ddVOID
+	  && i + 1 == only.size() )
+	    return true;
+    }
+    for ( size_t i = 0; i < params.size(); ++i )
+    {
+	ParsedParamSig sig;
+	if ( !parse_param_sig_from_tokens(pgm, params[i], sig) )
+	    return false;
+	sigs.push_back(sig);
+    }
+    return true;
+}
+
+static bool function_explicit_params_match(FuncDef *fd,
+					   const std::vector<ParsedParamSig> &sigs)
+{
+    if ( !fd )
+	return false;
+    if ( fd->parameters.size() != sigs.size() + 1 )
+	return false;
+    for ( size_t i = 0; i < sigs.size(); ++i )
+    {
+	size_t pi = i + 1;
+	bool expected_ref = pi < fd->ref_params.size() && fd->ref_params[pi];
+	bool expected_const = pi < fd->const_params.size() && fd->const_params[pi];
+	if ( expected_ref != sigs[i].is_ref )
+	    return false;
+	if ( expected_ref && expected_const != sigs[i].is_const )
+	    return false;
+
+	DataDef *expected = fd->parameters[pi];
+	if ( expected_ref )
+	{
+	    DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(expected);
+	    expected = ptr ? ptr->base_type : NULL;
+	}
+	else if ( sigs[i].pointer_depth > 0 )
+	    expected = unwrap_pointer_depth(expected, sigs[i].pointer_depth);
+	if ( !datadef_equivalent(expected, sigs[i].base) )
+	    return false;
+    }
+    return true;
+}
+
+static Variable *find_constructor_for_upcoming_params(Program &pgm,
+						      DataDefCLASS *owner)
+{
+    if ( !owner )
+	return NULL;
+    std::vector<ParsedParamSig> sigs;
+    bool have_sigs = upcoming_param_signatures(pgm, sigs);
+    Variable *arity_match = NULL;
+    for ( size_t i = 0; i < owner->ctors.size(); ++i )
+    {
+	Variable *ctor = owner->ctors[i];
+	FuncDef *fd = ctor ? dynamic_cast<FuncDef *>(ctor->type) : NULL;
+	if ( !fd )
+	    continue;
+	if ( fd->parameters.size() != sigs.size() + 1 )
+	    continue;
+	if ( have_sigs && function_explicit_params_match(fd, sigs) )
+	    return ctor;
+	if ( !arity_match )
+	    arity_match = ctor;
+    }
+    return arity_match;
+}
+
+static bool vector_contains_variable(const std::vector<Variable *> &vars,
+				     Variable *needle)
+{
+    for ( size_t i = 0; i < vars.size(); ++i )
+	if ( vars[i] == needle )
+	    return true;
+    return false;
+}
+
+static bool parse_qualified_special_member_definition(Program &pgm,
+						      TokenBase *first_tb)
+{
+    if ( pgm.is_c_mode() || !first_tb || !is_contextual_identifier_token(first_tb) )
+	return false;
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+	return false;
+
+    std::vector<std::string> scope_parts;
+    scope_parts.push_back(contextual_identifier_name(first_tb));
+    std::string member_name;
+
+    for (;;)
+    {
+	pgm.nextToken(); // consume ::
+	TokenBase *part_tb = pgm.nextToken();
+	member_name = parse_qualified_declarator_part(pgm, part_tb);
+	if ( part_tb->id() != TokenID::tkOPEROVER
+	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+	    skip_template_id_suffix(pgm);
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	{
+	    scope_parts.push_back(member_name);
+	    continue;
+	}
+	break;
+    }
+
+    DataDefCLASS *owner = resolve_qualified_class_owner(pgm, scope_parts);
+    if ( !owner )
+	pgm.Throw(first_tb) << "Unknown C++ declarator scope '"
+			    << join_scope_parts(scope_parts, scope_parts.size())
+			    << "'" << flush;
+
+    bool is_ctor = member_name == owner->name;
+    bool is_dtor = member_name == "~" + owner->name;
+    if ( !is_ctor && !is_dtor )
+	pgm.Throw(first_tb) << "Qualified member definition requires a return type" << flush;
+
+    TokenBase *open = pgm.peekToken();
+    if ( !open || open->id() != TokenID::tkOpBrk )
+	pgm.Throw(open ? open : first_tb) << "Expecting '(' after qualified member name" << flush;
+    pgm.nextToken(); // consume '('
+
+    Variable *mvar = NULL;
+    std::string parse_id;
+    if ( is_ctor )
+    {
+	mvar = find_constructor_for_upcoming_params(pgm, owner);
+	parse_id = mvar ? mvar->name : unique_overload_symbol(pgm, owner->name + "__" + owner->name);
+    }
+    else
+    {
+	std::map<std::string, Variable *>::iterator mi = owner->method_map.find(member_name);
+	mvar = mi != owner->method_map.end() ? mi->second : NULL;
+	parse_id = mvar ? mvar->name : owner->name + "___dtor";
+    }
+
+    pgm.parseFunction(ddVOID, parse_id, owner);
+    mvar = pgm.tkProgram ? pgm.tkProgram->findVariable(parse_id) : NULL;
+    if ( mvar )
+    {
+	FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
+	if ( fd )
+	    fd->method_display_name = member_name;
+	if ( !vector_contains_variable(owner->methods, mvar) )
+	    owner->methods.push_back(mvar);
+	if ( is_ctor )
+	{
+	    if ( owner->method_map.find(owner->name) == owner->method_map.end() )
+		owner->method_map[owner->name] = mvar;
+	    if ( !vector_contains_variable(owner->ctors, mvar) )
+		owner->ctors.push_back(mvar);
+	    owner->has_user_ctor = true;
+	}
+	else
+	{
+	    owner->method_map[member_name] = mvar;
+	    owner->has_user_dtor = true;
+	}
+    }
+    return true;
+}
+
 // template<typename T[, ...]> class Name { ... }
 // Capture the definition for Borland-model instantiation (substitute the type
 // parameter(s) into a clone of the body and re-parse it as a concrete class when
@@ -14001,6 +19449,7 @@ TokenBase *TokenMatch::parse(Program &pgm)
 TokenBase *TokenTEMPLATE::parse(Program &pgm)
 {
     DBG(std::cout << "TokenTEMPLATE::parse()" << std::endl);
+    pgm.last_skipped_template_decl.clear();
 
     TokenBase *tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkLT )
@@ -14008,31 +19457,249 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 
     // <typename T [, typename U ...]> — 'typename' lexes as an identifier,
     // 'class' as the tkCLASS keyword; both are optional before each param name.
+    // Real C++ headers also use unnamed type parameters (`template<typename>`)
+    // and explicit specializations (`template<>`).
     std::vector<std::string> typeparams;
+    std::vector<std::vector<TokenBase *>> typeparam_defaults;
+    std::vector<bool> typeparam_is_type;
+    auto add_template_parameter = [&](const std::string &name, bool is_type)
+    {
+	typeparams.push_back(name);
+	typeparam_is_type.push_back(is_type);
+    };
+    size_t anon_param_index = 0;
+    bool has_non_type_params = false;
     for (;;)
     {
 	tn = pgm.nextToken();
-	if ( tn->id() == TokenID::tkCLASS
-	  || (tn->type() == TokenType::ttIdentifier
-	      && ((TokenIdent *)tn)->str == "typename") )
-	    tn = pgm.nextToken();   // consume 'class'/'typename', take the name next
-	if ( tn->type() != TokenType::ttIdentifier )
+	if ( consume_template_close(pgm, tn) )
+	    break;
+	if ( tn->id() == TokenID::tkTEMPLATE )
+	{
+	    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
+		pgm.Throw(tn) << "Expecting '<' after template parameter template" << flush;
+	    skip_template_id_suffix(pgm);
+	    TokenBase *intro = pgm.nextToken();
+	    if ( !is_template_type_param_intro(intro) )
+		pgm.Throw(intro) << "Expecting class or typename in template template parameter" << flush;
+	    if ( consume_ellipsis(pgm) )
+	    {
+		if ( pgm.peekToken() && is_template_parameter_decl_name(pgm.peekToken()) )
+		    add_template_parameter(template_parameter_decl_name(pgm.nextToken()), false);
+		else
+		    add_template_parameter("__anon_ttpack" + std::to_string(anon_param_index++), false);
+	    }
+	    else if ( pgm.peekToken()
+		   && (is_template_param_separator(pgm.peekToken())
+		    || pgm.peekToken()->id() == TokenID::tkAssign) )
+		add_template_parameter("__anon_ttparam" + std::to_string(anon_param_index++), false);
+	    else
+	    {
+		tn = pgm.nextToken();
+		if ( !is_template_parameter_decl_name(tn) )
+		    pgm.Throw(tn) << "Expecting template-template parameter name" << flush;
+		add_template_parameter(template_parameter_decl_name(tn), false);
+	    }
+	    has_non_type_params = true;
+	}
+	else if ( is_template_type_param_intro(tn) )
+	{
+	    if ( consume_ellipsis(pgm) )
+	    {
+		if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
+		    add_template_parameter(contextual_identifier_name(pgm.nextToken()), true);
+		else
+		    add_template_parameter("__anon_tpack" + std::to_string(anon_param_index++), true);
+		has_non_type_params = true;
+	    }
+	    else if ( pgm.peekToken() && is_template_param_separator(pgm.peekToken()) )
+		add_template_parameter("__anon_tparam" + std::to_string(anon_param_index++), true);
+	    else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
+		add_template_parameter("__anon_tparam" + std::to_string(anon_param_index++), true);
+	    else
+	    {
+		tn = pgm.nextToken();
+		if ( !is_template_parameter_decl_name(tn) )
+		    pgm.Throw(tn) << "Expecting type-parameter name in template<>" << flush;
+		add_template_parameter(template_parameter_decl_name(tn), true);
+	    }
+	}
+	else if ( tn->type() == TokenType::ttIdentifier
+	       || tn->type() == TokenType::ttDataType )
+	{
+	    bool qualified_type = consume_template_parameter_type_suffix(pgm);
+	    TokenBase *param_name = pgm.peekToken();
+	    if ( consume_ellipsis(pgm) )
+	    {
+		if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
+		    add_template_parameter(contextual_identifier_name(pgm.nextToken()), false);
+		else
+		    add_template_parameter("__anon_ntpack" + std::to_string(anon_param_index++), false);
+		has_non_type_params = true;
+	    }
+	    else if ( param_name && is_contextual_identifier_token(param_name) )
+	    {
+		pgm.nextToken();
+		add_template_parameter(contextual_identifier_name(param_name), false);
+		has_non_type_params = true;
+	    }
+	    else if ( qualified_type )
+	    {
+		add_template_parameter("__anon_ntparam" + std::to_string(anon_param_index++), false);
+		has_non_type_params = true;
+	    }
+	    else if ( tn->type() == TokenType::ttIdentifier )
+		add_template_parameter(((TokenIdent *)tn)->str, true);
+	    else
+	    {
+		add_template_parameter("__anon_ntparam" + std::to_string(anon_param_index++), false);
+		has_non_type_params = true;
+	    }
+	}
+	else
 	    pgm.Throw(tn) << "Expecting type-parameter name in template<>" << flush;
-	typeparams.push_back(((TokenIdent *)tn)->str);
+	typeparam_defaults.push_back(std::vector<TokenBase *>());
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
+	{
+	    pgm.nextToken();
+	    typeparam_defaults.back() = collect_template_default_argument(pgm);
+	}
 	tn = pgm.nextToken();
 	if ( tn->id() == TokenID::tkComma ) continue;
-	if ( tn->id() == TokenID::tkGT ) break;
+	if ( consume_template_close(pgm, tn) ) break;
 	pgm.Throw(tn) << "Expecting ',' or '>' in template parameter list" << flush;
     }
 
     // Expect `class|struct Name` then capture through the matching '}'.
     TokenBase *class_kw = pgm.nextToken();
+    if ( class_kw->id() == TokenID::tkUSING )
+    {
+	TokenBase *alias_tb = pgm.nextToken();
+	if ( !alias_tb || !is_contextual_identifier_token(alias_tb) )
+	    pgm.Throw(alias_tb ? alias_tb : class_kw)
+		<< "Expecting alias name in template using declaration" << flush;
+	std::string alias_name = contextual_identifier_name(alias_tb);
+	TokenBase *eq = pgm.nextToken();
+	if ( !eq || eq->id() != TokenID::tkAssign )
+	    pgm.Throw(eq ? eq : alias_tb)
+		<< "Expecting '=' in template using declaration" << flush;
+
+	std::vector<TokenBase *> target;
+	int angle_depth = 0;
+	int paren_depth = 0;
+	int square_depth = 0;
+	while ( pgm.peekToken() )
+	{
+	    TokenBase *at = pgm.nextToken();
+	    if ( at->id() == TokenID::tkSemi
+	      && angle_depth == 0 && paren_depth == 0 && square_depth == 0 )
+		break;
+	    target.push_back(at->clone());
+	    if ( at->id() == TokenID::tkLT )
+		++angle_depth;
+	    else if ( at->id() == TokenID::tkGT && angle_depth > 0 )
+		--angle_depth;
+	    else if ( at->id() == TokenID::tkBSR && angle_depth > 0 )
+	    {
+		if ( angle_depth > 1 )
+		    angle_depth -= 2;
+		else
+		    angle_depth = 0;
+	    }
+	    else if ( at->id() == TokenID::tkOpBrk )
+		++paren_depth;
+	    else if ( at->id() == TokenID::tkClBrk && paren_depth > 0 )
+		--paren_depth;
+	    else if ( at->id() == TokenID::tkOpSqr )
+		++square_depth;
+	    else if ( at->id() == TokenID::tkClSqr && square_depth > 0 )
+		--square_depth;
+	}
+	if ( target.empty() )
+	    pgm.Throw(alias_tb) << "Expecting target type in template using declaration" << flush;
+
+	Program::TemplateAliasDef ad;
+	ad.typeparams = typeparams;
+	ad.typeparam_defaults = typeparam_defaults;
+	ad.typeparam_is_type = typeparam_is_type;
+	ad.has_non_type_params = has_non_type_params;
+	ad.alias_name = alias_name;
+	ad.target = target;
+	ad.defining_namespace = pgm.current_namespace;
+	ad.owner_class = pgm.class_scope_stack.empty() ? NULL : pgm.class_scope_stack.back();
+	pgm.template_alias_map[alias_name] = ad;
+	return NULL;
+    }
     if ( class_kw->id() != TokenID::tkCLASS && class_kw->id() != TokenID::tkSTRUCT )
-	pgm.Throw(class_kw) << "template must be followed by a class/struct definition" << flush;
+    {
+	std::vector<TokenBase *> skipped_decl;
+	skip_template_nonclass_declaration(pgm, class_kw, &skipped_decl);
+	pgm.last_skipped_template_decl = skipped_decl;
+	if ( !pgm.deferred_function_body_sink )
+	    register_skipped_namespace_template_function(pgm, skipped_decl,
+							typeparams);
+	return NULL;
+    }
     TokenBase *name_tb = pgm.nextToken();
     if ( name_tb->type() != TokenType::ttIdentifier )
 	pgm.Throw(name_tb) << "Expecting template class name" << flush;
     std::string class_name = ((TokenIdent *)name_tb)->str;
+
+    bool specialized_template_id = false;
+    std::vector<std::string> specialization_arg_spellings;
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+    {
+	specialized_template_id = true;
+	pgm.nextToken(); // consume '<'
+	if ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkGT
+	  || pgm.peekToken()->id() == TokenID::tkBSR) )
+	{
+	    TokenBase *close = pgm.nextToken();
+	    if ( !consume_template_close(pgm, close) )
+		pgm.Throw(close) << "Expecting '>' in explicit specialization" << flush;
+	}
+	else
+	{
+	    for (;;)
+	    {
+		TokenBase *at = pgm.nextToken();
+		std::string spelling;
+		TokenBase *sep = collect_template_argument_spelling(pgm, at, spelling);
+		specialization_arg_spellings.push_back(spelling);
+		if ( sep->id() == TokenID::tkComma )
+		    continue;
+		if ( consume_template_close(pgm, sep) )
+		    break;
+		pgm.Throw(sep) << "Expecting ',' or '>' in explicit specialization" << flush;
+	    }
+	}
+    }
+
+    std::vector<TokenBase *> prefix = collect_template_class_prefix(pgm);
+
+    // Forward declarations and explicit specialization declarations carry no
+    // template body to instantiate. Registering a bodyless template here would
+    // create a broken instantiation later, so consume and leave the eventual
+    // full definition (if any) to populate template_map.
+    if ( !pgm.peekToken() || pgm.peekToken()->id() == TokenID::tkSemi )
+    {
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	    pgm.nextToken();
+	if ( !typeparams.empty() )
+	{
+	    Program::TemplateDef td;
+	    td.typeparams = typeparams;
+	    td.typeparam_defaults = typeparam_defaults;
+	    td.typeparam_is_type = typeparam_is_type;
+	    td.has_non_type_params = has_non_type_params;
+	    td.class_name = class_name;
+	    td.defining_namespace = pgm.current_namespace;
+	    td.owner_class = pgm.class_scope_stack.empty() ? NULL : pgm.class_scope_stack.back();
+	    if ( !specialized_template_id && pgm.template_map.find(class_name) == pgm.template_map.end() )
+		pgm.template_map[class_name] = td;
+	}
+	return NULL;
+    }
 
     // Capture the full `class Name ... { ... }` token range (incl. any base list
     // before the brace). Brace-match on tkOpBrc/tkClBrc.
@@ -14041,6 +19708,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     std::vector<TokenBase *> body;
     body.push_back(class_kw->clone());
     body.push_back(name_tb->clone());
+    for ( size_t i = 0; i < prefix.size(); ++i )
+	body.push_back(prefix[i]);
     int depth = 0;
     bool seen_brace = false;
     for (;;)
@@ -14059,10 +19728,118 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 
     Program::TemplateDef td;
     td.typeparams = typeparams;
+    td.typeparam_defaults = typeparam_defaults;
+    td.typeparam_is_type = typeparam_is_type;
+    td.has_non_type_params = has_non_type_params;
     td.class_name = class_name;
     td.body = body;
     td.defining_namespace = pgm.current_namespace;  // e.g. "std" — for canonical_cpp_spelling
-    pgm.template_map[class_name] = td;
+    td.owner_class = pgm.class_scope_stack.empty() ? NULL : pgm.class_scope_stack.back();
+    if ( specialized_template_id && typeparams.empty() )
+    {
+	std::string mangled = class_name;
+	std::string canon;
+	if ( td.owner_class )
+	{
+	    canon = td.owner_class->canonical_cpp_spelling.empty()
+		  ? td.owner_class->name : td.owner_class->canonical_cpp_spelling;
+	    canon += "::";
+	}
+	else if ( !td.defining_namespace.empty() )
+	    canon = td.defining_namespace + "::";
+	canon += class_name + "<";
+	for ( size_t i = 0; i < specialization_arg_spellings.size(); ++i )
+	{
+	    mangled += "_" + sanitize_template_fragment(specialization_arg_spellings[i]);
+	    if ( i )
+		canon += ",";
+	    canon += specialization_arg_spellings[i];
+	}
+	canon += ">";
+	std::string registered_mangled = td.owner_class
+	    ? td.owner_class->name + "__" + mangled : mangled;
+
+	std::vector<TokenBase *> inj;
+	for ( size_t bi = 0; bi < body.size(); ++bi )
+	{
+	    TokenBase *bt = body[bi];
+	    if ( bi == 1 && bt && bt->type() == TokenType::ttIdentifier )
+	    {
+		TokenIdent *ni = (TokenIdent *)bt->clone();
+		ni->str = mangled;
+		inj.push_back(ni);
+		continue;
+	    }
+	    inj.push_back(bt ? bt->clone() : NULL);
+	}
+	inj.push_back(new TokenSemi());
+	for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
+	      it != inj.rend(); ++it )
+	    pgm.pushToken(*it);
+
+	std::stack<TokenCpnd *> saved_compounds;
+	std::swap(pgm.compounds, saved_compounds);
+	std::vector<DataDefCLASS *> saved_class_scope_stack;
+	std::swap(pgm.class_scope_stack, saved_class_scope_stack);
+	std::string saved_func = pgm.cur_func_name;
+	pgm.cur_func_name.clear();
+	std::string saved_canon = pgm.instantiating_canonical_spelling;
+	bool saved_dependent_surface = pgm.instantiating_dependent_surface;
+	std::string saved_namespace = pgm.current_namespace;
+	pgm.instantiating_canonical_spelling = canon;
+	pgm.instantiating_dependent_surface = false;
+	pgm.current_namespace = td.defining_namespace;
+
+	bool pushed_owner_scope = false;
+	if ( td.owner_class )
+	{
+	    pgm.class_scope_stack.push_back(td.owner_class);
+	    pushed_owner_scope = true;
+	}
+
+	TokenBase *spec_kw = pgm.nextToken();
+	pgm.parseKeyword((TokenKeyword *)spec_kw);
+
+	if ( pushed_owner_scope
+	  && !pgm.class_scope_stack.empty()
+	  && pgm.class_scope_stack.back() == td.owner_class )
+	    pgm.class_scope_stack.pop_back();
+
+	std::swap(pgm.class_scope_stack, saved_class_scope_stack);
+	std::swap(pgm.compounds, saved_compounds);
+	pgm.cur_func_name = saved_func;
+	pgm.instantiating_canonical_spelling = saved_canon;
+	pgm.instantiating_dependent_surface = saved_dependent_surface;
+	pgm.current_namespace = saved_namespace;
+
+	if ( pgm.datatype_map.find(registered_mangled) == pgm.datatype_map.end() )
+	    pgm.Throw(name_tb) << "internal: explicit specialization "
+			       << registered_mangled << " did not register" << flush;
+	return NULL;
+    }
+    if ( !specialized_template_id )
+    {
+	std::map<std::string, Program::TemplateDef>::iterator existing =
+	    pgm.template_map.find(class_name);
+	if ( existing != pgm.template_map.end() )
+	{
+	    if ( td.typeparam_defaults.size()
+	      < existing->second.typeparam_defaults.size() )
+		td.typeparam_defaults.resize(
+		    existing->second.typeparam_defaults.size());
+	    for ( size_t i = 0; i < existing->second.typeparam_defaults.size(); ++i )
+	    {
+		if ( i >= td.typeparam_defaults.size() )
+		    break;
+		if ( td.typeparam_defaults[i].empty()
+		  && !existing->second.typeparam_defaults[i].empty() )
+		    td.typeparam_defaults[i] =
+			existing->second.typeparam_defaults[i];
+	    }
+	}
+	pgm.template_map[class_name] = td;
+	complete_pending_template_instantiations(pgm, class_name);
+    }
     DBG(std::cout << "TokenTEMPLATE::parse() captured template '" << class_name
 	<< "' (" << typeparams.size() << " param(s), " << body.size()
 	<< " body tokens)" << std::endl);
@@ -14124,8 +19901,42 @@ static bool old_style_param_name_exists(const std::vector<std::string> &ids,
     return false;
 }
 
+static bool is_old_style_parameter_declaration_start(Program &pgm,
+						     TokenBase *tb);
+
+static bool old_style_parameter_head_has_declaration_suffix(Program &pgm)
+{
+    int paren_depth = 0;
+    int square_depth = 0;
+    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    {
+	TokenBase *t = pgm.tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++paren_depth;
+	else if ( t->id() == TokenID::tkClBrk )
+	{
+	    if ( paren_depth == 0 )
+	    {
+		TokenBase *after = (i + 1 < pgm.tokens.size())
+		    ? pgm.tokens[i + 1] : NULL;
+		return is_old_style_parameter_declaration_start(pgm, after);
+	    }
+	    --paren_depth;
+	}
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square_depth;
+	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
+	    --square_depth;
+    }
+    return false;
+}
+
 static bool is_old_style_parameter_head(Program &pgm, TokenBase *tb)
 {
+    if ( pgm.is_cpp_mode() )
+	return false;
     if ( !is_contextual_identifier_token(tb) )
 	return false;
 
@@ -14134,7 +19945,8 @@ static bool is_old_style_parameter_head(Program &pgm, TokenBase *tb)
 	return false;
 
     TokenBase *peek = pgm.peekToken();
-    return peek && (peek->id() == TokenID::tkComma || peek->id() == TokenID::tkClBrk);
+    return peek && (peek->id() == TokenID::tkComma || peek->id() == TokenID::tkClBrk)
+	&& old_style_parameter_head_has_declaration_suffix(pgm);
 }
 
 static bool parse_array_designator_initializer(Program &pgm, TokenBase *&next_init,
@@ -14382,10 +20194,30 @@ static bool scan_old_style_definition_suffix(Program &pgm,
     return false;
 }
 
+static TokenBase *consume_balanced_parenthesized_suffix(Program &pgm,
+						       TokenBase *open)
+{
+    if ( !open || open->id() != TokenID::tkOpBrk )
+	return open;
+    int depth = 1;
+    while ( depth > 0 )
+    {
+	TokenBase *t = pgm.nextToken();
+	if ( !t )
+	    pgm.Throw(open) << "Unexpected end of input in parenthesized suffix" << flush;
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++depth;
+	else if ( t->id() == TokenID::tkClBrk )
+	    --depth;
+    }
+    return pgm.nextToken();
+}
+
 // parse a function definition, can be a forward declaration, or function definition
 void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class,
 			    std::vector<DataDef *> *multi_ret, bool return_ref,
-			    std::string return_typedef_alias)
+			    std::string return_typedef_alias,
+			    bool static_class_method)
 {
     variable_map_iter vmi;
     funcdef_map_iter fmi;
@@ -14411,6 +20243,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // C++ type spelling captured from the source tokens, where top-level
     // pointee-const survives — the DataDef loses it).
     int param_ptr_depth = 0;
+    bool param_rvalue_ref = false;
     int anon_param_index = 0;
     bool old_style_params = false;
     std::vector<std::string> old_style_ids;
@@ -14418,6 +20251,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     bool is_nested_function = !compounds.empty() && compounds.top() && compounds.top()->method;
     std::string nested_local_name = id;
     TokenCpnd *nested_owner_scope = is_nested_function ? compounds.top() : NULL;
+    bool has_hidden_this = owner_class && !static_class_method;
     if ( is_nested_function )
 	id = make_nested_function_name(nested_owner_scope, id);
 
@@ -14442,6 +20276,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->param_typedef_names = func->param_typedef_names;
 	    fresh->no_instrument_function = func->no_instrument_function;
 	    fresh->explicit_alignment = func->explicit_alignment;
+	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
+	    fresh->pure_virtual = func->pure_virtual;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	    func_already_declared = false;
@@ -14462,6 +20298,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->param_typedef_names = func->param_typedef_names;
 	    fresh->no_instrument_function = func->no_instrument_function;
 	    fresh->explicit_alignment = func->explicit_alignment;
+	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
+	    fresh->pure_virtual = func->pure_virtual;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	}
@@ -14496,15 +20334,15 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // Type it as a pointer to the owning class (`ClassName *`) — not a bare
     // `void *` — so the CIR backend can resolve `__this->member` against the
     // class's lowered C struct (a void* would leave member access untyped).
-    if ( owner_class )
+    if ( has_hidden_this )
     {
 	if ( !func_already_declared )
 	{
 	    func->parameters.push_back(getPointerType(owner_class));
 	    // Keep ref_params / const_params index-aligned with parameters:
 	    // __this occupies slot 0, so the first USER parameter's reference /
-	    // const flag lands at index 1 (matching every consumer — e.g. the
-	    // std::string operator registrations use ref_params[1] for the RHS).
+	    // const flag lands at index 1 (matching every consumer of user
+	    // parameter metadata).
 	    // Without this, a method with a `T&` param mis-flagged __this as the
 	    // reference and left the real param without vfREFERENCE, breaking
 	    // `a.member` member access on a class-reference param.
@@ -14521,6 +20359,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 
     Variable temp_param_fn(id, *func, 1, NULL, false);
     Method temp_param_method(temp_param_fn);
+    if ( owner_class )
+	temp_param_method.owner_class = owner_class;
     pushCompound();
     TokenCpnd *param_scope = compounds.empty() ? NULL : compounds.top();
     if ( param_scope )
@@ -14561,9 +20401,9 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	// initialization; the `= expr` is parsed just before `paramdecl:` below.
 	TokenBase *param_default = NULL;
 	bool param_has_const = false;
-	// Pointee/top-level const that PRECEDES the base type — `const char *` /
-	// `const std::string &`. This is the const Itanium mangles (PKc, RK...),
-	// as opposed to a trailing `char * const` (top-level, dropped by the ABI).
+	// Pointee/top-level const that PRECEDES the base type. This is the const
+	// Itanium mangles (PKc, RK...), as opposed to a trailing `char * const`
+	// (top-level, dropped by the ABI).
 	// Tracked separately from param_has_const so the spelling stays accurate.
 	bool param_leading_const = false;
 	while ( nt && (nt->id() == TokenID::tkCONST
@@ -14652,33 +20492,21 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	else
 	if ( nt->type() != TokenType::ttDataType )
 	{
-	    // also check datatype_map for typedef'd names (e.g. CHAR_DATA)
+	    // Use the shared declared-type resolver so parameter types see the same
+	    // typedef, class-scope alias, alias-template, and namespace/template-id
+	    // surface as variables and members.
 	    if ( nt->type() == TokenType::ttIdentifier )
 	    {
 		std::string tname = ((TokenIdent *)nt)->str;
-		datatype_map_iter tdmi = datatype_map.find(tname);
-		if ( tdmi != datatype_map.end() )
+		if ( TokenDataType *resolved =
+			resolve_declared_type_token(*this, nt, true, true) )
 		{
-		    pb = tdmi->second;
+		    pb = resolved;
 		    // Record the typedef alias for this parameter (matches the
 		    // var/member paths' user_typedef_names check) so the CIR
 		    // builder keeps `Alias` as the type spec.
 		    if ( user_typedef_names.count(tname) )
 			param_alias = tname;
-		}
-		else if ( TokenDataType *inst = instantiate_template_use(*this, tname, nt) )
-		{
-		    // A template-id parameter type, e.g. `const allocator<_CharT>&`
-		    // after the enclosing template substitutes _CharT -> char.
-		    // Mirrors the var/member type path (resolve_declared_type_token):
-		    // instantiate (or reuse) the concrete class and use its type.
-		    // Without this a bare template-id in a parameter list threw
-		    // "Failed to find type".
-		    pb = inst;
-		}
-		else if ( TokenDataType *ns_type = resolve_namespaced_type_token(*this, nt, true) )
-		{
-		    pb = ns_type;
 		}
 		else
 		{
@@ -14696,6 +20524,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    pb = (TokenDataType *)nt;
 	rtype = RefType::rtValue;
 	param_ptr_depth = 0;
+	param_rvalue_ref = false;
 	DataDef *param_dd = &pb->definition;
 grabnt:
 	// grab the next token
@@ -14707,8 +20536,16 @@ grabnt:
 	if ( nt->id() == TokenID::tkBand )
 	{
 	    rtype = RefType::rtReference;
+	    param_rvalue_ref = false;
 	    DBG(std::cout << "parseFunction() setting reference token " << std::endl);
 //	    pb->definition.setRef(RefType::rtReference);
+	    goto grabnt;
+	}
+	if ( nt->id() == TokenID::tkLand )
+	{
+	    rtype = RefType::rtReference;
+	    param_rvalue_ref = true;
+	    DBG(std::cout << "parseFunction() setting rvalue reference token " << std::endl);
 	    goto grabnt;
 	}
 	if ( nt->id() == TokenID::tkStar )
@@ -14743,6 +20580,42 @@ grabnt:
 	    param_default = parseExpression(nextToken(), true);
 	    nt = nextToken();   // the ',' or ')' that ends this parameter
 	    goto paramdecl;
+	}
+	if ( nt->id() == TokenID::tkOpSqr )
+	{
+	    pid = "__anon_param_" + std::to_string(anon_param_index++);
+	    while ( nt && nt->id() == TokenID::tkOpSqr )
+	    {
+		TokenBase *peek_dim = peekToken();
+		if ( peek_dim && peek_dim->id() == TokenID::tkClSqr )
+		{
+		    nextToken(); // consume ']'
+		    param_array_dims.push_back(0);
+		    param_array_dim_exprs.push_back(NULL);
+		}
+		else
+		{
+		    TokenBase *dim_expr = NULL;
+		    if ( bracket_dim_needs_runtime_value(*this, NULL) )
+		    {
+			dim_expr = parseExpression(nextToken(), true);
+			param_array_dims.push_back(0);
+		    }
+		    else
+		    {
+			int64_t n = parse_constant_integer_expression(*this);
+			if ( n < 0 )
+			    Throw(nt) << "Parameter array dimension must be non-negative" << flush;
+			param_array_dims.push_back((uint32_t)n);
+		    }
+		    param_array_dim_exprs.push_back(dim_expr);
+		    TokenBase *cl = nextToken();
+		    if ( !cl || cl->id() != TokenID::tkClSqr )
+			Throw(cl ? cl : nt) << "Expected ']' in parameter array declarator" << flush;
+		}
+		nt = nextToken();
+	    }
+	    goto finish_param_declarator;
 	}
 	if ( nt->id() == TokenID::tkOpBrk )
 	{
@@ -14864,6 +20737,7 @@ grabnt:
 	    }
 	    nt = nextToken();
 	}
+finish_param_declarator:
 	if ( !param_array_dims.empty() )
 	{
 	    TokenBase *param_vla_sidefx = NULL;
@@ -14926,7 +20800,8 @@ paramdecl:
 		// index-aligned with func->parameters. The DataDef alone loses
 		// top-level pointee-const, so a DataDef-derived spelling would
 		// mangle `const char*` as Pc not PKc; building from tokens keeps
-		// it correct. Fed to the Itanium mangler for std:: header methods.
+		// it correct. Fed to the Itanium mangler for header-declared external
+		// C++ methods.
 		std::string param_spelling;
 		if ( param_leading_const )
 		    param_spelling = "const ";
@@ -14936,7 +20811,7 @@ paramdecl:
 		for ( int sd = 0; sd < param_ptr_depth; ++sd )
 		    param_spelling += "*";
 		if ( rtype == RefType::rtReference )
-		    param_spelling += "&";
+		    param_spelling += param_rvalue_ref ? "&&" : "&";
 		func->param_cpp_spellings.push_back(param_spelling);
 		func->param_typedef_names.push_back(param_alias);
 		if ( rtype == RefType::rtReference )
@@ -15026,8 +20901,8 @@ paramdecl:
 		    ? &ddINT32
 		    : pti->second;
 		func->parameters.push_back(kr_dd);
-		// Keep param_cpp_spellings index-aligned (K&R is C-only — never a
-		// std:: method, so this best-effort name is never mangled).
+		// Keep param_cpp_spellings index-aligned (K&R is C-only, so this
+		// best-effort name is never used for C++ ABI binding).
 		func->param_cpp_spellings.push_back(kr_dd->name);
 		func->param_typedef_names.push_back("");
 	    }
@@ -15046,6 +20921,8 @@ paramdecl:
 	var = addVariable(NULL, *func, id);
 	method = NULL;
     }
+    if ( static_class_method )
+	var->flags |= vfSTATIC;
 
     // Trailing method cv/ref/exception qualifiers after the parameter list:
     // `T m() const`, `... volatile`, `... noexcept`, `... override`, `... final`.
@@ -15059,9 +20936,23 @@ paramdecl:
 	if ( !q ) break;
 	if ( q->id() == TokenID::tkCONST ) { func->is_const_method = true; nt = nextToken(); continue; }
 	if ( q->id() == TokenID::tkVOLATILE || q->id() == TokenID::tkRESTRICT ) { nt = nextToken(); continue; }
+	if ( q->id() == TokenID::tkTHROW )
+	{
+	    TokenBase *open = nextToken();
+	    if ( !open || open->id() != TokenID::tkOpBrk )
+		Throw(q) << "Expecting '(' after throw in exception specification" << flush;
+	    nt = consume_balanced_parenthesized_suffix(*this, open);
+	    continue;
+	}
 	if ( q->type() == TokenType::ttIdentifier ) {
 	    const std::string &qs = ((TokenIdent *)q)->str;
-	    if ( qs == "noexcept" || qs == "override" || qs == "final" ) { nt = nextToken(); continue; }
+	    if ( qs == "noexcept" ) {
+		nt = nextToken();
+		if ( nt && nt->id() == TokenID::tkOpBrk )
+		    nt = consume_balanced_parenthesized_suffix(*this, nt);
+		continue;
+	    }
+	    if ( qs == "override" || qs == "final" ) { nt = nextToken(); continue; }
 	}
 	break;
     }
@@ -15110,7 +21001,7 @@ paramdecl:
 		return;
 	    }
 	    parseFunction(*next_return, next_id, owner_class, multi_ret,
-			  false, return_typedef_alias);
+			  false, return_typedef_alias, static_class_method);
 	}
 	return;
     }
@@ -15136,6 +21027,61 @@ paramdecl:
 	return;
     }
 
+    if ( nt->id() == TokenID::tkAssign )
+    {
+	TokenBase *assigned = nextToken();
+	bool pure_virtual = assigned && assigned->type() == TokenType::ttInteger
+	    && assigned->ival() == 0;
+	nt = assigned;
+	while ( nt && nt->id() != TokenID::tkSemi )
+	    nt = nextToken();
+	if ( !nt )
+	    Throw << "Unexpected end of input after defaulted/deleted function declaration" << flush;
+	if ( !method )
+	{
+	    method = new Method(*var);
+	    var->data = (void *)method;
+	}
+	if ( owner_class )
+	    method->owner_class = owner_class;
+	func->declaration_only = pure_virtual;
+	func->defaulted_or_deleted = !pure_virtual;
+	func->pure_virtual = pure_virtual;
+	return;
+    }
+
+    if ( nt->id() == TokenID::tkColon )
+    {
+	int paren_depth = 0;
+	int square_depth = 0;
+	int angle_depth = 0;
+	while ( (nt = nextToken()) )
+	{
+	    if ( nt->id() == TokenID::tkOpBrk )
+		++paren_depth;
+	    else if ( nt->id() == TokenID::tkClBrk && paren_depth > 0 )
+		--paren_depth;
+	    else if ( nt->id() == TokenID::tkOpSqr )
+		++square_depth;
+	    else if ( nt->id() == TokenID::tkClSqr && square_depth > 0 )
+		--square_depth;
+	    else if ( nt->id() == TokenID::tkLT )
+		++angle_depth;
+	    else if ( nt->id() == TokenID::tkGT && angle_depth > 0 )
+		--angle_depth;
+	    else if ( nt->id() == TokenID::tkBSR && angle_depth > 0 )
+		angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
+	    else if ( nt->id() == TokenID::tkOpBrc
+		   && paren_depth == 0 && square_depth == 0 && angle_depth == 0 )
+		break;
+	}
+	if ( !nt )
+	    Throw << "Unexpected end of input in constructor initializer list" << flush;
+    }
+
+    func->declaration_only = false;
+    func->emit_symbol.clear();
+
     // Definitions must own a fresh Method instance. Some prior declaration
     // paths (notably SMAUG macro expansions) leave a non-null var->data that
     // is not a valid Method object, so reusing it corrupts method->parameters.
@@ -15150,6 +21096,8 @@ paramdecl:
 
     method = new Method(*var);
     var->data = (void *)method;
+    if ( owner_class )
+	method->owner_class = owner_class;
     if ( is_nested_function && nested_owner_scope )
     {
 	Variable *local_alias =
@@ -15181,8 +21129,7 @@ paramdecl:
     DBG(cout << "parseFunction() param loop: func->parameters.size()=" << func->parameters.size()
 	<< " ids.size()=" << ids.size() << " method=" << (void*)method << endl);
     // If a forward declaration registered N parameters and the definition
-    // produced a mismatching count, ids[i] dereffed past size() crashes
-    // through the std::string copy ctor (NULL+8 read). Bound the loop by
+    // produced a mismatching count, ids[i] dereffed past size(). Bound the loop by
     // the smaller of the two — when ids is short, fill remaining slots
     // with synthetic names. (Pre-existing param-parse bugs in dlsym/
     // typedef'd-pointer paths can produce ids.size() < parameters.size();
@@ -15216,6 +21163,12 @@ paramdecl:
 	++user_param_index;
     }
     (void)n;
+
+    if ( deferred_function_body_sink )
+    {
+	enqueue_deferred_function_body(*this, var, method, nt);
+	return;
+    }
 
     pushCompound();
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
@@ -15813,7 +21766,7 @@ static DataDef *peel_carray_dimensions(DataDef *base_type,
 // immediately followed by `{` — i.e. this is a function DEFINITION, not a
 // ctor-call variable declaration. Disambiguates `string greet(int n) { ... }`
 // (a function returning a class) from `string s(args);` (ctor call) now that
-// class types (std::string, user classes with ctors) reach the ctor-call
+// class types with constructors reach the ctor-call
 // branch in parseDeclaration. tokens.front() is expected to be the `(`; it is
 // NOT consumed here. (A function PROTOTYPE `string f(int);` ends in `;`, which
 // is the most-vexing-parse case C++ also resolves as a declaration — out of
@@ -15841,6 +21794,42 @@ static bool paren_group_is_function_def(Program &pgm)
     return false;
 }
 
+static TokenBase *reference_bind_address_expr(Program &pgm, TokenBase *expr,
+					      DataDef *referent_type)
+{
+    if ( !expr )
+	return NULL;
+    DataDefPTR *ptr_type = pgm.getPointerType(referent_type
+					      ? referent_type : expr->datadef());
+    if ( TokenTerQ *tt = dynamic_cast<TokenTerQ *>(expr) )
+    {
+	TokenTerQ *bound = new TokenTerQ();
+	copy_token_location(bound, tt);
+	bound->condition = tt->condition;
+	bound->true_expr = reference_bind_address_expr(pgm, tt->true_expr,
+						       referent_type);
+	bound->false_expr = reference_bind_address_expr(pgm, tt->false_expr,
+							referent_type);
+	bound->setDataType(ptr_type);
+	return bound;
+    }
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+    {
+	tv->var.flags |= vfADDRTAKEN;
+	TokenAddrOf *addr = new TokenAddrOf(tv->var, ptr_type);
+	copy_token_location(addr, expr);
+	return addr;
+    }
+    if ( is_addressable_expression(expr) )
+    {
+	TokenAddrExpr *addr = new TokenAddrExpr(expr, ptr_type);
+	copy_token_location(addr, expr);
+	return addr;
+    }
+    pgm.Throw(expr) << "Reference initializer must be an lvalue" << flush;
+    return NULL;
+}
+
 // parse either a variable declaration, or a function declaration
 TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 {
@@ -15848,6 +21837,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     TokenBase *nt; // next token;
     Variable *var;
     string id;
+    DataDefCLASS *qualified_owner_class = NULL;
+    std::string qualified_member_name;
     std::vector<uint32_t> arr_dims;
     std::vector<TokenBase *> arr_dim_exprs;
     TokenBase *vla_size_expr = NULL;
@@ -15918,7 +21909,9 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
     }
 
-    if ( peekToken() && peekToken()->id() == TokenID::tkBand )
+    if ( peekToken()
+      && (peekToken()->id() == TokenID::tkBand
+       || peekToken()->id() == TokenID::tkLand) )
     {
 	nextToken();
 	ret_is_ref = true;
@@ -16060,6 +22053,59 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // grab identifier string
     if ( !have_decl_id )
 	id = contextual_identifier_name(nt);
+    if ( !have_decl_id && nt && nt->id() == TokenID::tkOPEROVER )
+	id = parse_operator_name_after_keyword(*this, nt);
+    if ( !have_decl_id )
+    {
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+	{
+	    TokenDataType *inst = instantiate_template_alias_use(*this, id, nt);
+	    if ( !inst )
+		inst = instantiate_template_use(*this, id, nt);
+	    if ( inst )
+		id = inst->definition.name;
+	    else
+		skip_template_id_suffix(*this);
+	}
+	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+	{
+	    std::vector<std::string> scope_parts;
+	    scope_parts.push_back(id);
+	    for (;;)
+	    {
+		nextToken(); // consume ::
+		TokenBase *part_tb = nextToken();
+		std::string part_name = parse_qualified_declarator_part(*this, part_tb);
+		if ( part_tb->id() != TokenID::tkOPEROVER
+		  && peekToken() && peekToken()->id() == TokenID::tkLT )
+		{
+		    TokenDataType *inst =
+			instantiate_template_alias_use(*this, part_name, part_tb);
+		    if ( !inst )
+			inst = instantiate_template_use(*this, part_name, part_tb);
+		    if ( inst )
+			part_name = inst->definition.name;
+		    else
+			skip_template_id_suffix(*this);
+		}
+		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+		{
+		    scope_parts.push_back(part_name);
+		    continue;
+		}
+		qualified_member_name = part_name;
+		break;
+	    }
+	    qualified_owner_class = resolve_qualified_class_owner(*this, scope_parts);
+	    if ( !qualified_owner_class )
+		Throw(nt) << "Unknown C++ declarator scope '"
+			  << join_scope_parts(scope_parts, scope_parts.size())
+			  << "'" << flush;
+	    Variable *mvar = qualified_owner_class->findMethod(qualified_member_name);
+	    id = mvar ? mvar->name
+		      : qualified_owner_class->name + "__" + qualified_member_name;
+	}
+    }
     DBG(std::cout << "parseDeclaration() identifier: " << id << std::endl);
 
     if ( !(nt=peekToken()) )
@@ -16315,19 +22361,24 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
     }
 
+    DataDef *reference_value_type = ret_is_ref ? decl_type : NULL;
+
     // variable declaration
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign
       || nt->id() == TokenID::tkComma )
     {
 	if ( ret_is_ref )
-	    Throw(tb) << "Reference variables are not supported" << flush;
-
+	{
+	    if ( nt->id() != TokenID::tkAssign )
+		Throw(tb) << "Reference variables must be initialized" << flush;
+	    decl_type = getPointerType(decl_type);
+	}
 	// parse brace-enclosed initializer list for fixed-size arrays and structs
 	std::vector<TokenBase *> init_list;
 	bool saw_brace_init = false;
 	// Only real user-defined structs/classes accept brace init.
-	// Built-in class types (std::string, ostream, etc.) use DataDefCLASS
-	// but have a concrete DataType; user-defined structs/classes use
+	// Runtime-library class types use DataDefCLASS but have a concrete DataType;
+	// user-defined structs/classes use
 	// dtRESERVED. Discriminate on that.
     bool is_struct_init = arr_dims.empty()
 	    && dynamic_cast<DataDefSTRUCT *>(decl_type) != NULL
@@ -16814,6 +22865,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    is_shared_global_extern_reference(*this, code, var);
 	if ( gotstatic )
 	    var->flags |= vfSTATIC;
+	if ( ret_is_ref )
+	    var->flags |= vfREFERENCE;
 	// Mark a SCALAR `const`-declared variable so the CIR backend can enforce
 	// read-only-ness (reject assignment to it — P2.4). The variable itself is
 	// const only when const qualifies the VALUE (`const int x`) or is the
@@ -17000,7 +23053,22 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    }
 	}
 
-	if ( nt->id() == TokenID::tkAssign && arr_dims.empty() && init_list.empty() )
+	if ( ret_is_ref && nt->id() == TokenID::tkAssign
+	  && arr_dims.empty() && init_list.empty() )
+	{
+	    nextToken(); // consume '='
+	    TokenBase *rhs_head = nextToken();
+	    if ( !rhs_head )
+		Throw(nt) << "Expected initializer after '='" << flush;
+	    TokenBase *rhs = parseExpression(rhs_head, true);
+	    TokenAssign *assign = new TokenAssign();
+	    copy_token_location(assign, tb);
+	    assign->left = new TokenVar(*var);
+	    assign->right = reference_bind_address_expr(*this, rhs,
+							reference_value_type);
+	    td->initialize = assign;
+	}
+	else if ( nt->id() == TokenID::tkAssign && arr_dims.empty() && init_list.empty() )
 	{
 	    DBG(std::cout << "parseDeclaration() calling td->initialize = parseExpression" << std::endl);
 	    // conditional=true so `;` stops without being consumed, which lets
@@ -17095,12 +23163,41 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
     std::string source_id = id;
     std::string parse_id = id;
-    bool namespace_function = !current_namespace.empty();
+    bool namespace_function = !qualified_owner_class && !current_namespace.empty();
     if ( namespace_function )
 	parse_id = namespace_function_symbol(current_namespace, source_id);
+    else if ( !qualified_owner_class && !is_c_mode()
+	   && parse_id.compare(0, 8, "operator") == 0
+	   && findVariable(parse_id) )
+	parse_id = unique_overload_symbol(*this, parse_id);
 
-    parseFunction(*decl_type, parse_id, NULL, NULL, ret_is_ref,
-		  decl_typedef_alias);
+    bool qualified_static_member = false;
+    if ( qualified_owner_class && !qualified_member_name.empty() )
+    {
+	Variable *existing_member =
+	    qualified_owner_class->findMethod(qualified_member_name);
+	qualified_static_member =
+	    existing_member && (existing_member->flags & vfSTATIC);
+    }
+    parseFunction(*decl_type, parse_id, qualified_owner_class, NULL, ret_is_ref,
+		  decl_typedef_alias, qualified_static_member);
+
+    if ( qualified_owner_class && !qualified_member_name.empty() )
+    {
+	Variable *mvar = tkProgram ? tkProgram->findVariable(parse_id) : NULL;
+	if ( mvar )
+	{
+	    FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
+	    if ( fd )
+		fd->method_display_name = qualified_member_name;
+	    if ( qualified_owner_class->method_map.find(qualified_member_name)
+	      == qualified_owner_class->method_map.end() )
+	    {
+		qualified_owner_class->methods.push_back(mvar);
+		qualified_owner_class->method_map[qualified_member_name] = mvar;
+	    }
+	}
+    }
 
     if ( namespace_function )
     {
@@ -17162,6 +23259,75 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
     return expr;
 }
 
+static bool datatype_statement_starts_functional_expr(Program &pgm)
+{
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	return false;
+    int depth = 0;
+    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    {
+	TokenBase *t = pgm.tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++depth;
+	else if ( t->id() == TokenID::tkClBrk )
+	{
+	    --depth;
+	    if ( depth == 0 )
+	    {
+		TokenBase *next = (i + 1 < pgm.tokens.size()) ? pgm.tokens[i + 1] : NULL;
+		return next && (next->id() == TokenID::tkDot
+			     || next->id() == TokenID::tkDeRef);
+	    }
+	}
+    }
+    return false;
+}
+
+static bool datatype_statement_starts_qualified_expr(Program &pgm)
+{
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+	return false;
+    size_t i = 0;
+    while ( i < pgm.tokens.size() && pgm.tokens[i]
+	 && pgm.tokens[i]->id() == TokenID::tkNS )
+    {
+	i++;
+	if ( i < pgm.tokens.size() && pgm.tokens[i]
+	  && pgm.tokens[i]->id() == TokenID::tkTEMPLATE )
+	    i++;
+	if ( i >= pgm.tokens.size() || !pgm.tokens[i]
+	  || !is_contextual_identifier_token(pgm.tokens[i]) )
+	    return false;
+	i++;
+	if ( i < pgm.tokens.size() && pgm.tokens[i]
+	  && pgm.tokens[i]->id() == TokenID::tkLT )
+	{
+	    int depth = 1;
+	    i++;
+	    while ( i < pgm.tokens.size() && depth > 0 )
+	    {
+		TokenBase *t = pgm.tokens[i++];
+		if ( !t )
+		    continue;
+		if ( t->id() == TokenID::tkLT )
+		    ++depth;
+		else if ( t->id() == TokenID::tkGT && depth > 0 )
+		    --depth;
+		else if ( t->id() == TokenID::tkBSR && depth > 0 )
+		    depth = depth > 1 ? depth - 2 : 0;
+	    }
+	}
+    }
+    if ( i >= pgm.tokens.size() || !pgm.tokens[i] )
+	return false;
+    TokenID id = pgm.tokens[i]->id();
+    return id == TokenID::tkOpBrk || id == TokenID::tkAssign
+	|| id == TokenID::tkSemi || id == TokenID::tkInc
+	|| id == TokenID::tkDec;
+}
+
 TokenBase *Program::parseStatement(TokenBase *tb)
 {
     DBG(cout << "parseStatement() start" << endl);
@@ -17195,12 +23361,23 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	// if we start with a type (i.e. int), then this could
 	// either be a function or a variable declaration
 	case TokenType::ttDataType:
+	    if ( datatype_statement_starts_qualified_expr(*this) )
+	    {
+		resetPrevToken();
+		return parseExprStmt(tb);
+	    }
+	    if ( datatype_statement_starts_functional_expr(*this) )
+	    {
+		resetPrevToken();
+		return parseExprStmt(tb);
+	    }
 	    // Contextual type names (array, string) that shadow a variable in
 	    // scope: treat as expression when followed by an operator or [.
 	    if ( is_contextual_identifier_token(tb) )
 	    {
 		std::string ctx = contextual_identifier_name(tb);
-		Variable *ctx_var = findVariable(ctx);
+		Variable *ctx_var =
+		    find_variable_for_contextual_type_name(*this, ctx);
 		if ( ctx_var && peekToken()
 		  && peekToken()->id() != TokenID::tkMul  // not a pointer decl
 		  && peekToken()->type() != TokenType::ttIdentifier ) // not a decl
@@ -17242,6 +23419,12 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	// assignment or a function call
 	case TokenType::ttIdentifier:
 	    DBG(std::cout << "parseStatement() got identifier " << ((TokenIdent *)tb)->str << std::endl);
+	    if ( ((TokenIdent *)tb)->str == "inline"
+	      && peekToken() && peekToken()->id() == TokenID::tkNAMESPACE )
+	    {
+		nextToken();
+		return parse_namespace_block(*this, true);
+	    }
 	    // Label definition: `name:` at statement position. `:` alone is
 	    // tkTerC (it shares the id with the ternary-`:`), while `::` is
 	    // the separate tkNS token emitted by the lexer, so a peek of
@@ -17492,9 +23675,46 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    // check if identifier is a user-defined type (class/struct registered in datatype_map)
 	    {
 		std::string tname = ((TokenIdent *)tb)->str;
+		Variable *stmt_var = findVariable(tname);
+		if ( stmt_var && peekToken()
+		  && (peekToken()->id() == TokenID::tkDot
+		   || peekToken()->id() == TokenID::tkDeRef
+		   || peekToken()->id() == TokenID::tkOpSqr
+		   || peekToken()->id() == TokenID::tkOpBrk
+		   || peekToken()->id() == TokenID::tkAssign
+		   || peekToken()->id() == TokenID::tkInc
+		   || peekToken()->id() == TokenID::tkDec) )
+		{
+		    resetPrevToken();
+		    return parseExprStmt(tb);
+		}
 		datatype_map_iter dmi = datatype_map.find(tname);
 		if ( dmi == datatype_map.end() )
 		{
+			    if ( TokenDataType *resolved =
+				    resolve_declared_type_token(*this, tb, true,
+								true, false) )
+			    {
+				if ( peekToken() && peekToken()->id() == TokenID::tkNS
+				  && !compounds.empty()
+				  && datatype_statement_starts_qualified_expr(*this) )
+				{
+				    resetPrevToken();
+				    return parseExprStmt(tb);
+				}
+				if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+				{
+				    if ( DataDefCLASS *owner =
+					    dynamic_cast<DataDefCLASS *>(
+						&resolved->definition) )
+					if ( TokenDataType *member =
+						resolve_class_member_type_chain(
+						    *this, owner, tb) )
+					    return parseDeclaration(member);
+				}
+				DBG(std::cout << "parseStatement() identifier resolves as declared type, calling parseDeclaration" << std::endl);
+				return parseDeclaration(resolved);
+			    }
 		    // `Name<ConcreteType>` where Name is a captured template:
 		    // instantiate the concrete class and declare a variable of it.
 		    if ( TokenDataType *inst = instantiate_template_use(*this, tname, tb) )
@@ -17515,8 +23735,23 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 			// TODO: create a TokenDataType wrapper for the resolved type
 		    }
 		}
-		else
-		{
+			else
+			{
+			    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+			    {
+				if ( !compounds.empty() )
+				{
+				    resetPrevToken();
+				    return parseExprStmt(tb);
+				}
+				if ( parse_qualified_special_member_definition(*this, tb) )
+				    return NULL;
+			    }
+			    if ( datatype_statement_starts_functional_expr(*this) )
+			    {
+				resetPrevToken();
+			return parseExprStmt(tb);
+		    }
 		    DBG(std::cout << "parseStatement() identifier is a registered type, calling parseDeclaration" << std::endl);
 		    return parseDeclaration(use_site_type_token(dmi->second, tb));
 		}

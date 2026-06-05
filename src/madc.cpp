@@ -374,6 +374,7 @@ int main(int argc, char **argv)
     int filearg = 1;
     const char *emit_object_path = NULL;
     const char *emit_executable_path = NULL;
+    const char *generic_output_path = NULL;
     const char *emit_function_name = NULL;
     bool emit_pch = false;
     bool dump_cir = false;        // --dump-cir: dump CIR tree before checking
@@ -399,7 +400,7 @@ int main(int argc, char **argv)
             emit_executable_path = argv[++i];
             filearg = i + 1;
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
-            emit_executable_path = argv[++i];
+            generic_output_path = argv[++i];
             filearg = i + 1;
         } else if (strncmp(argv[i], "-I", 2) == 0) {
             // -Ipath or -I path
@@ -465,6 +466,9 @@ int main(int argc, char **argv)
         }
     }
 
+    if ( generic_output_path && !emit_pch )
+	emit_executable_path = generic_output_path;
+
     if ( emit_object_path || emit_executable_path )
 	prog->aot_tracking = true;
 
@@ -500,8 +504,8 @@ int main(int argc, char **argv)
 
 	// Determine output path (-o flag or default from input name)
 	std::string outpath;
-	if ( emit_executable_path )
-	    outpath = emit_executable_path;
+	if ( generic_output_path )
+	    outpath = generic_output_path;
 	else
 	{
 	    outpath = input;

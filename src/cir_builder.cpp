@@ -623,8 +623,8 @@ static bool is_char_pointer(DataDef *dd)
 }
 
 // The single-level pointee user-class of `dd` when `dd` is a `Cls *` pointing
-// at a real (dtRESERVED) user class; NULL otherwise. std::string and the stream
-// classes are deliberately excluded (they never participate in inheritance).
+// at a real (dtRESERVED) user class; NULL otherwise. Runtime-library classes
+// without user-class layout metadata are deliberately excluded.
 static DataDefCLASS *pointee_user_class(DataDef *dd)
 {
 	if (!dd || !dd->is_pointer()) return NULL;
@@ -678,9 +678,9 @@ node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rh
 // `long <name>[words];` — opaque, 8-aligned storage for a C++ runtime object,
 // tagged with __attribute__((cleanup(dtor_sym))). This is the shared mechanism
 // behind every monomorphic runtime object madc lowers to a buffer + ctor/dtor
-// (std::string, MadArray, …): the madc c2mir fork calls dtor_sym(&name)
-// automatically at EVERY scope exit (fall-through, return, break, continue,
-// goto) — proper RAII without per-exit dtor injection in the front end. We
+// The madc c2mir fork calls dtor_sym(&name) automatically at EVERY scope exit
+// (fall-through, return, break, continue, goto) — proper RAII without per-exit
+// dtor injection in the front end. We
 // build the N_ATTR node directly (no source preprocessing, so the glibc
 // `__attribute__`-emptying issue doesn't apply).
 node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
@@ -727,7 +727,7 @@ node_t CirBuilder::obj_default_ctor_call(const char *name, const char *ctor_sym,
 const char *CirBuilder::RETBUF_NAME = "__retbuf";
 
 // ---- MadArray (`array`) object lowering ----
-// A madc `array` is a real MadArray C++ object — same model as std::string:
+// A madc `array` is a real MadArray C++ object using the runtime-object model:
 // an 8-aligned opaque buffer + madarray_construct/madarray_destruct (the
 // wrappers in madc_mir_backend.cpp). Unlike a string it needs no const char*
 // coercion: an array argument is always passed by pointer, and the buffer's
@@ -899,11 +899,14 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
 {
 	// Resolve the callee signature for both direct calls (FuncDef) AND indirect
 	// calls through a function pointer / lambda variable (DataDefFPTR -> target).
-	// Without the fptr fallback, a `string`-by-value parameter of a lambda is
-	// invisible here, so a const char* literal argument is passed raw instead of
-	// being materialized into a temp std::string -> the callee reads garbage.
+		// Without the fptr fallback, a by-value object parameter of a lambda is
+		// invisible here, so a convertible literal/scalar argument is passed raw
+		// instead of being materialized into a class temporary.
 	FuncDef *callee = call_target_funcdef(tcf);
-	for (size_t i = 0; i < tcf->parameters.size(); i++) {
+	size_t nargs = tcf->parameters.size();
+	if (tcf->var.name == "__builtin_va_start" && nargs > 1)
+		nargs = 1;
+	for (size_t i = 0; i < nargs; i++) {
 		TokenBase *arg = tcf->parameters[i];
 		DataDef *pt = (callee && i < callee->parameters.size())
 				? callee->parameters[i] : NULL;
@@ -1011,7 +1014,7 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 
 	// Struct types: LIST(STRUCT(ID("name"), IGNORE))
 	// A user-defined class lowers to `struct ClassName` too (same shape), as does
-	// a runtime-object class (std::string -> `struct string`).
+	// any runtime-object class with opaque storage.
 	// _Complex is a DataDefSTRUCT subclass but must use the native spec path.
 	if (dd && (dd->is_struct() || as_class_instance(dd)) && !dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
@@ -1632,13 +1635,13 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 
 node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 {
-	// std::string object: a runtime-object class. It flows through the general
-	// class-instance path below — emitted as `struct string name` (opaque storage
-	// via class_struct_def) with a cleanup attribute naming the mangled libstdc++
-	// dtor. Construction is injected as a separate class_ctor_call by
-	// translate_block (the 1->N C++ lowering).
+	// Runtime-object classes flow through the general class-instance path below:
+	// opaque storage via class_struct_def plus cleanup naming the parsed external
+	// destructor when one exists. Construction is injected as a separate
+	// class_ctor_call by translate_block (the 1->N C++ lowering).
 
-	// MadArray object (`array a;`): same opaque-storage model as std::string.
+	// MadArray object (`array a;`): same opaque-storage model as runtime-object
+	// classes.
 	// madarray_construct is emitted as a separate statement by translate_block;
 	// the cleanup attribute on the storage handles scope-exit destruction.
 	if (is_array_object(v->type))
@@ -1895,10 +1898,9 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 					 node2(N_DECL, ignore(), cast_decl_list));
 		vla_init = node2(N_CAST, cast_type, acall, origin);
 	}
-	// A class instance (user class or std::string) is initialized by a
-	// constructor call emitted separately (translate_block), never by a C
-	// initializer on the declaration — `struct string s = "x"` would be an
-	// incompatible aggregate init. Leave init_node empty for such instances.
+		// A class instance is initialized by a constructor call emitted separately
+		// (translate_block), never by a C initializer on the storage declaration.
+		// Leave init_node empty for such instances.
 	bool class_instance = (!is_ptr) && as_class_instance(base_dd) != NULL;
 	// A static/global fixed array whose constant initializer the parser baked
 	// into v->data and then cleared init_list (initialize_static_fixed_array_data
@@ -2336,7 +2338,7 @@ static DataDefCLASS *class_behind(DataDef *dd); // defined below; used by the th
 //               c2mir-friendly form; see .claude/rules/c11-transpiler.md)
 //   _ZTI<cls> : a void*[] whose [0] is the real libsupc++ type_info-class vtable
 //               (+16 address point) so libstdc++'s __dynamic_cast/typeid accept it.
-// std:: classes are NOT emitted here (they reference libstdc++'s own _ZTI*).
+// Externally-owned classes are NOT emitted here (their ABI owns the _ZTI*).
 // Returns an N_LIST of file-scope definitions (extern decls + _ZTS + _ZTI), or
 // NULL for a non-polymorphic class.
 node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd)
@@ -2645,7 +2647,7 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 	size_t objwords = object_class_words(cdd);
 	bool opaque = cdd->members.empty() && !cdd->has_vptr_slot;
 	if (opaque && objwords > 0) {
-		// Opaque runtime-object class (std::string and friends): `long _w[words];`
+		// Opaque runtime-object class: `long _w[words];`
 		// filler, a complete type of the right size — size COMPUTED, never hard-coded.
 		node_t mspec = list();
 		append(mspec, simple(N_LONG));
@@ -2776,8 +2778,8 @@ void CirBuilder::emit_class_struct_with_deps(
 }
 
 // Resolve the class behind a (possibly pointer-wrapped) DataDef. Recognizes
-// ordinary user classes AND runtime-object classes (std::string) so a method
-// call on a `string` receiver routes through the class path.
+// ordinary user classes AND runtime-object classes so method calls route through
+// the class path.
 static DataDefCLASS *class_behind(DataDef *dd)
 {
 	if (!dd) return NULL;
@@ -2868,10 +2870,10 @@ static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &r
 	return {};   // void (clear; assign/append return string& we treat as void)
 }
 
-// Lower a call to a class method bound to an external symbol (emit_symbol — a
-// mangled libstdc++ std::string member). Declares the extern from the FuncDef's
-// real signature, passes the receiver address as void*, and coerces explicit
-// args (object params -> object_arg_addr). `empty()` is lowered to `size()==0`.
+// Lower a call to a class method bound to an external symbol (emit_symbol).
+// Declares the extern from the FuncDef's real signature, passes the receiver
+// address as void*, and coerces explicit args (object params -> object_arg_addr).
+// `empty()` is lowered to `size()==0`.
 node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 					   const std::string &sym, node_t this_arg,
 					   TokenBase *origin)
@@ -2932,7 +2934,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
-	// A T&-returning method (assign/append return string&) — we declared the
+	// A T&-returning method whose value is ignored — we declared the
 	// return as void and ignore the result, so no deref.
 	return call;
 }
@@ -2944,15 +2946,15 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	if (!recv_class) return NULL;
 
 	// The method's call symbol (`ClassName__method`) and signature. When the
-	// FuncDef carries an explicit emit_symbol (e.g. a mangled libstdc++
-	// std::string member), call through that instead of the default scheme.
+	// FuncDef carries an explicit emit_symbol, call through that instead of
+	// the default scheme.
 	FuncDef *callee = dynamic_cast<FuncDef *>(tm->var.type);
 	const std::string sym = (callee && !callee->emit_symbol.empty())
 				? callee->emit_symbol : tm->var.name;
 
-	// A method bound to an external symbol (emit_symbol — e.g. a mangled
-	// libstdc++ std::string member) has no madc-emitted body and is not in
-	// funcdef_map under its mangled name, so the referenced-funcs prototype
+	// A method bound to an external symbol (emit_symbol) has no madc-emitted
+	// body and is not in funcdef_map under its mangled name, so the
+	// referenced-funcs prototype
 	// pass won't declare it. Declare it here from its real signature (return
 	// type matters: length()/size() return `long`, c_str() returns char* —
 	// an implicit/void return would misread the value), and route the call
@@ -3467,11 +3469,11 @@ void CirBuilder::class_copy_assign_from_addr(DataDefCLASS *cdd, TokenBase *lhs,
 std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
 {
 	if (!cdd) return std::string();
-	// A class whose destructor is bound to an external symbol (emit_symbol set
-	// — e.g. std::string's libstdc++ ~basic_string()) uses that symbol directly
-	// as the cleanup function; madc synthesizes no Cls___dtor body for it
-	// (synth_dtor_def early-returns on has_user_dtor). The libstdc++ dtor takes
-	// only `this`, matching the cleanup attribute's `void (*)(T*)` shape.
+		// A class whose destructor is bound to an external symbol (emit_symbol set)
+		// uses that symbol directly as the cleanup function; madc synthesizes no
+		// Cls___dtor body for it (synth_dtor_def early-returns on has_user_dtor).
+		// The external dtor takes only `this`, matching the cleanup attribute's
+		// `void (*)(T*)` shape.
 	auto it = cdd->method_map.find("~" + cdd->name);
 	if (it != cdd->method_map.end() && it->second) {
 		FuncDef *dt = dynamic_cast<FuncDef *>(it->second->type);
@@ -3717,8 +3719,8 @@ node_t CirBuilder::method_fnptr_type(FuncDef *callee, DataDefCLASS *owner)
 }
 
 // Generic overload-resolution ranking (declared in madc.h). No type is
-// special-cased; std::string falls out of the class-object + converting-ctor
-// rules like any other class.
+// special-cased; runtime/library classes fall out of the class-object +
+// converting-ctor rules like any other class.
 int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		       bool param_is_ref, bool allow_udc)
 {
@@ -3771,7 +3773,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 }
 
 // The call symbol for a constructor of `cdd`. Precedence: an external ABI
-// symbol (emit_symbol — e.g. a libstdc++-bound std::string ctor) > a
+// symbol (emit_symbol) > a
 // disambiguated-overload symbol (class_emit_name — the 2nd+ same-arity ctor,
 // which mangles to its own ClassName__ClassName__oN) > the default
 // ClassName__ClassName scheme (the first / only ctor).
@@ -3789,8 +3791,8 @@ static std::string ctor_call_symbol(DataDefCLASS *cdd, FuncDef *ctor)
 // generic score_arg_to_param ranking. The candidate whose parameter types best
 // match the argument types wins; a candidate that cannot bind any argument is
 // rejected. No type is special-cased — a same-class argument selects the copy
-// ctor, a convertible argument selects a converting ctor, for std::string and
-// every user class identically. Relies on operator-result initializers being
+// ctor, and a convertible argument selects a converting ctor. Relies on
+// operator-result initializers being
 // correctly TYPED (Program::resolve_object_operator_type), so a `T c = a + b`
 // copy-init sees the operator's class return type, not a pointer/arithmetic type.
 // `cdd->ctors` lists the overloads. Returns NULL when no overload set is recorded
@@ -3947,20 +3949,17 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		else
 			append(args, translate_expr(darg));
 	}
-	// libstdc++ basic_string(const char*, const allocator&): the real ABI takes
-	// a trailing allocator& madc has no value for — pass &this (a throwaway
-	// pointer the ctor treats as an empty allocator). See FuncDef::ctor_trailing_self.
+		// Some external constructors have a trailing reference parameter for which
+		// the parsed declaration supplied no call-site value. See
+		// FuncDef::ctor_trailing_self.
 	if (ctor && ctor->ctor_trailing_self)
 		append(args, node1(N_ADDR, id(v->name.c_str(), origin), origin));
-	// A ctor bound to an EXTERNAL symbol (a declaration-only std:: ctor whose
-	// emit_symbol is a real libstdc++ mangled symbol) MUST be declared with a typed
-	// prototype, exactly like emit_symbol_method_call does for methods. Without it
-	// c2mir/MIR marshals the call as an implicit function and shifts the arguments
-	// (this <- the first real arg) -> SIGSEGV writing through the string literal.
-	// User-class ctors are defined in-module (emit_symbol empty) -> no extern. Build
-	// the param shapes in lockstep with the args appended above: this(void*) + each
-	// ctor param (string&/ref -> void*, pointer -> char*, scalar -> long) + the
-	// trailing allocator pointer for ctor_trailing_self.
+		// A ctor bound to an EXTERNAL symbol MUST be declared with a typed
+		// prototype, exactly like emit_symbol_method_call does for methods. Without
+		// it c2mir/MIR marshals the call as an implicit function and shifts the
+		// arguments. User-class ctors are defined in-module (emit_symbol empty) ->
+		// no extern. Build the param shapes in lockstep with the args appended
+		// above: this(void*) + each ctor param + the optional trailing self pointer.
 	if (ctor && !ctor->emit_symbol.empty()) {
 		std::vector<ExternParam> eparams;
 		eparams.push_back({ {N_VOID}, true });   // this
@@ -4306,8 +4305,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	// Part B: an operator returning a class object BY VALUE (e.g. V operator+(V&))
 	// yields an rvalue; materialize it into an addressable cleanup temp so the
 	// result can be copy-constructed from, passed by reference, or have members
-	// called — generic for any class (the std::string operator+ path above does
-	// the same with its own wrapper). A NON-TRIVIAL return was compiled with the
+		// called. A NON-TRIVIAL return was compiled with the
 	// __retbuf ABI (hidden return-slot first param) -> pass &__t as that slot and
 	// the void call writes *__retbuf; a TRIVIAL (native struct) return is assigned
 	// into __t. The expression value is then the temp's object lvalue.
@@ -4462,14 +4460,12 @@ node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 	if (!mv) return NULL;
 	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
 
-	// A class-bound external operator[] (std::string's char& operator[](size_t))
-	// names its real libstdc++ symbol via emit_symbol and has no madc-emitted
-	// body. Emit the mangled symbol and declare it as an extern from its
-	// signature — mirroring class_operator_call's emit_symbol branch — instead
-	// of the default ClassName__operator[] + referenced-funcs scheme (which only
-	// works for a user-class method body). The libstdc++ operator returns char&
-	// (a char* pointer return); class_subscript_call derefs it (returns_ref) so
-	// `s[i]` is a proper char lvalue.
+	// A class-bound external operator[] names its real C++ symbol via
+	// emit_symbol and has no madc-emitted body. Emit that symbol and declare it
+	// as an extern from its signature, mirroring class_operator_call's
+	// emit_symbol branch, instead of the default ClassName__operator[] +
+	// referenced-funcs scheme for user-class method bodies. T& returns arrive as
+	// pointers; class_subscript_call derefs them so obj[i] is an lvalue.
 	if (callee && !callee->emit_symbol.empty()) {
 		node_t this_arg = object_var_void_addr(tsub->object, origin);
 		// Param 0 = this (void*); param 1 = size_t index (a 64-bit scalar).
@@ -4478,8 +4474,8 @@ node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 		node_t args = list();
 		append(args, this_arg);
 		append(args, translate_expr(tsub->index));
-		// char& -> a char* pointer return; class_subscript_call derefs it to
-		// the char lvalue (so `s[i]` reads and `s[i] = c` writes).
+		// T& -> pointer return; class_subscript_call derefs it to the element
+		// lvalue so obj[i] reads and obj[i] = x writes.
 		need_output_extern(callee->emit_symbol.c_str(), true, eparams,
 				   { N_CHAR });
 		node_t call = node2(N_CALL, id(callee->emit_symbol.c_str(), origin),
@@ -4980,10 +4976,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// zero-initializes, matching value-init of a POD.)
 	// Functional construction `T(args)` -> materialize a scope-local cleanup temp,
 	// construct into it, and yield the temp as an object LVALUE (id(name)). One
-	// uniform object-rvalue representation: &temp for a by-reference argument
-	// (the std::string allocator-ABI keystone), temp.member for member access,
-	// and a plain struct copy for by-value passing / copy-initialization. (Same
-	// temp + RAII-cleanup machinery as object_call_temp_addr, minus the address-of.)
+	// uniform object-rvalue representation: &temp for a by-reference argument,
+	// temp.member for member access, and a plain struct copy for by-value
+	// passing / copy-initialization. (Same temp + RAII-cleanup machinery as
+	// object_call_temp_addr, minus the address-of.)
 	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(tb)) {
 		DataDefCLASS *ocdd = ot->obj_class;
 		char otname[40];
@@ -4999,8 +4995,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		// -------- Placement new: `new (addr) T(args)` --------
 		// Construct at the given address, no allocation. The placement
 		// address is already T* (e.g. &data[len] where data is T*), so the
-		// element lvalue is *addr and the class __this / string-this is addr
-		// directly. Yields the address (a statement expression), like g++.
+		// element lvalue is *addr and the class __this is addr directly.
+		// Yields the address (a statement expression), like g++.
 		if (tn->placement) {
 			// A node must not appear twice in the tree; the placement
 			// address is a pure expression, so re-translate per use.
@@ -5512,17 +5508,16 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// Method call on a class-object receiver. A TokenCallMethod IS-A
 	// TokenMember, so this must run before the generic member-access handler
-	// below — otherwise `s.c_str()` mis-lowers to a bare field access
-	// `s.c_str`. std::string methods route through class_method_call (their
-	// FuncDef carries the mangled libstdc++ emit_symbol); each lowering helper
-	// returns NULL for an unrecognized receiver so the others fall through.
+	// below — otherwise `obj.method()` can mis-lower to a bare field access.
+	// Header-declared external methods route through class_method_call via the
+	// FuncDef's C++ emit_symbol; each lowering helper returns NULL for an
+	// unrecognized receiver so the others fall through.
 	if (tb->type() == TokenType::ttCallMethod) {
 		TokenMember *tcm = dynamic_cast<TokenMember *>(tb);
 		if (tcm) {
-			// Class method call (user class OR std::string via the
-			// object-class bridge): c.method(args) -> the emit_symbol /
-			// ClassName__method call. Returns NULL when the receiver is
-			// not a class instance.
+			// Class method call: c.method(args) -> the emit_symbol /
+			// ClassName__method call. Returns NULL when the receiver is not a
+			// class instance.
 			node_t lowered = class_method_call(tcm, tb);
 			if (lowered) return lowered;
 		}
@@ -5778,15 +5773,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				}
 			}
 
-			// Operator overloading on a class lvalue (user class OR
-			// std::string via the object-class bridge): `c <op> rhs` where
-			// c's class defines `operator<op>` lowers to the operator call.
-			// For std::string this covers `s = "x"`/`s = t`/`s += ...` ->
-			// the mangled libstdc++ basic_string::operator=/operator+=
-			// (c2mir cannot assign through the long[] buffer, and g++ emits
-			// these operator calls). The overload is selected by RHS type.
-			// The legacy std::string assign interception was deleted in A4b
-			// Surface 3 — class_operator_call now owns it.
+			// Operator overloading on a class lvalue: `c <op> rhs` where c's
+			// class defines `operator<op>` lowers to the operator call. For
+			// header-declared external classes this uses the mangled C++ symbol
+			// carried by the FuncDef; user classes use the emitted method body.
+			// The overload is selected by RHS type.
 			{
 				node_t ov = class_operator_call(top, tb);
 				if (ov) return ov;
@@ -5958,12 +5949,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			}
 			// __destroy(ptr): compiler intrinsic — destruct the pointed-to
 			// object element. Lowers to the ELEMENT TYPE's class destructor
-			// (mangled ~basic_string for std::string, Cls___dtor for a user
-			// class with a dtor), or to NOTHING for a scalar/pointer element
-			// type (no dtor). Generic and element-type-driven — never string-
-			// special-cased — so the std:: container headers (<vector>/<map>/
-			// <set>) can destruct live elements before free() for ANY T while
-			// the same template body is a no-op for vector<int>. The argument
+			// (external C++ symbol or madc-emitted user-class dtor), or to
+			// NOTHING for a scalar/pointer element type (no dtor). Generic and
+			// element-type-driven so header templates can destruct live elements
+			// before free() for any T while the same body is a no-op for scalar
+			// elements. The argument
 			// keeps its original (uncoerced) type, so `data + i` reports the
 			// real `T*`; the pointed-to T is base_type of that DataDefPTR.
 			if (tcf->var.name == "__destroy" && tcf->parameters.size() == 1) {
@@ -6362,9 +6352,9 @@ void CirBuilder::emit_try_body_cleanup_push(const char *varname,
 	// A user-class dtor is a madc-EMITTED function `void Cls___dtor(struct Cls*)`;
 	// referencing it (referenced_funcs) drives its emission and declaration with
 	// the real signature — re-declaring it here as `void f(void*)` would conflict.
-	// An externally-bound dtor (std::string's mangled libstdc++ ~basic_string,
-	// emit_symbol set) has NO madc body, so it must be declared extern here so
-	// `(void*)dtor_sym` is a well-typed function address (not "undeclared").
+	// An externally-bound C++ dtor (emit_symbol set) has NO madc body, so it
+	// must be declared extern here so `(void*)dtor_sym` is a well-typed function
+	// address (not "undeclared").
 	bool dtor_is_external = (dtor_sym != cdd->name + "___dtor");
 	if (dtor_is_external)
 		need_output_extern(dtor_sym.c_str(), false, { { {N_VOID}, true } });
@@ -6591,8 +6581,8 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 //   for (long __fe_i = 0; __fe_i < madarray_size((void*)arr); __fe_i += 1) {
 //       <fill x from arr[__fe_i]>;   <body>
 //   }
-// String element -> php_array_get((void*)x, (void*)arr, __fe_i) (assigns into
-// the pre-constructed std::string). Numeric element -> x = php_array_get_int().
+// Class element -> php_array_get((void*)x, (void*)arr, __fe_i) (assigns into
+// the pre-constructed object). Numeric element -> x = php_array_get_int().
 node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 {
 	if (!fe->container || !fe->elemtype)
@@ -7262,8 +7252,8 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			continue;
 		}
 
-		// std::string object declaration WITH initializer (`string s = "x"`,
-		// `string b = a`) is handled by the generic class-instance path below:
+		// Class-object declaration WITH initializer is handled by the generic
+		// class-instance path below:
 		// the initializer becomes the single ctor argument and select_ctor_overload
 		// picks the const-char*/copy/default ctor by its type.
 		{
@@ -7411,10 +7401,10 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			pending_labels.clear();
 			append(items, node2(N_EXPR, label_list, integer(0)));
 		}
-		// Materialized temporaries (e.g. a std::string built from a literal
-		// passed to a string-object parameter) are emitted just before the
-		// statement that uses them; their cleanup attribute destructs them at
-		// scope exit. See object_arg_addr / m_pending_stmts.
+		// Materialized temporaries (e.g. a class object built for an argument)
+		// are emitted just before the statement that uses them; their cleanup
+		// attribute destructs them at scope exit. See object_arg_addr /
+		// m_pending_stmts.
 		for (node_t p : m_pending_stmts)
 			append(items, p);
 		m_pending_stmts.clear();
@@ -7430,8 +7420,8 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		append(items, node2(N_EXPR, label_list, integer(0)));
 	}
 
-	// No manual scope-exit destruction: each std::string object's storage decl
-	// carries a cleanup attribute, so the c2mir fork emits
+	// No manual scope-exit destruction: each eligible class object's storage
+	// decl carries a cleanup attribute, so the c2mir fork emits
 	// the destructor call on EVERY exit path (fall-through, return, break,
 	// continue, goto) — correct RAII including early exits, with no front-end
 	// dtor injection. See the object storage declaration path.
@@ -7755,8 +7745,8 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// va_list struct copy mis-set reg_save_area in large frames (e.g. SMAUG's
 	// bug() with char buf[MAX_STRING_LENGTH]), corrupting the list.
 
-	// File-scope class globals (std::string etc.) construct before any user
-	// code runs (C++ static init). madc realizes this by prepending their ctor
+	// File-scope class globals construct before any user code runs (C++ static
+	// init). madc realizes this by prepending their ctor
 	// calls — collected in source/declaration order — to main's body. (Their
 	// scope-exit destruction is deferred: the cleanup attribute on a file-scope
 	// object never fires; program teardown reclaims the memory.)
@@ -7776,9 +7766,9 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 // Build the constructor-call statement for a file-scope class global `v` of
 // class `cdd`. The initializer comes from the linked TokenDecl (user source:
 // `string g = "hi";`) when present, else from the runtime backing object
-// (built-ins like `version`, registered via addGlobal with a const char*
-// initializer that Variable's ctor stored as a host std::string). A class with
-// no constructor (no has_user_ctor) yields NULL — nothing to run.
+// (built-ins like `version`, registered via addGlobal with a host-side string
+// initializer). A class with no constructor (no has_user_ctor) yields NULL —
+// nothing to run.
 node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *decl)
 {
 	if (!v || !cdd) return NULL;
@@ -7834,7 +7824,7 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 }
 
 // Emit storage for, and queue construction of, every file-scope class-instance
-// global (std::string and friends). Source-declared globals already had their
+// global. Source-declared globals already had their
 // struct storage emitted by the dkGlobalVar pass (recorded in emitted_globals);
 // built-ins registered via addGlobal (e.g. `version`) are NOT in top_decls, so
 // emit their storage here. Either way, queue the ctor into m_global_ctor_stmts
@@ -8057,16 +8047,16 @@ node_t CirBuilder::translate_module(Program *prog)
 	}
 
 	// Collect user function names. Stored as a member too, so the body
-	// translation (below) can tell a madc-COMPILED function (whose by-value
-	// string return madc lowers via the __retbuf ABI) from an external / native
-	// function that merely has a std::string return type but its own ABI.
+	// translation (below) can tell a madc-compiled function (whose by-value
+	// non-trivial object return madc lowers via the __retbuf ABI) from an
+	// external / native function with its own ABI.
 	std::set<std::string> user_func_names;
 	for (TokenFunc *tf : funcs)
 		user_func_names.insert(tf->var.name);
 	m_user_func_names = &user_func_names;
 
-	// File-scope class-instance globals (std::string and friends): emit storage
-	// for any not already covered by the dkGlobalVar pass (built-ins like
+	// File-scope class-instance globals: emit storage for any not already
+	// covered by the dkGlobalVar pass (built-ins like
 	// `version`) and queue their ctor calls for main's prologue. Done before the
 	// body loop so func_def(main) sees m_global_ctor_stmts; the storage rides in
 	// deferred_globals (emitted after the prototypes, Pass 1a). referenced_funcs

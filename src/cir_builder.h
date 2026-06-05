@@ -106,13 +106,13 @@ class CirBuilder {
 
 	// Statements that must be emitted in the enclosing block immediately
 	// BEFORE the statement currently being translated — used to materialize
-	// temporary runtime objects (e.g. a std::string built from a literal that
-	// is passed to a function expecting a string object). translate_block
+	// temporary runtime objects (e.g. a literal converted through a class
+	// constructor for an object parameter). translate_block
 	// flushes this buffer ahead of each statement. Mirrors the old transpiler's
 	// emit_ns_arg statement-level temp construction.
 	std::vector<node_t> m_pending_stmts;
 	int m_strtmp_counter = 0;
-	// File-scope class-instance globals (std::string etc.) lower to opaque
+	// File-scope class-instance globals lower to opaque
 	// struct storage at file scope plus a constructor call that must run before
 	// any user code. C++ does this via static-init; madc injects these ctor
 	// calls as the first statements of main's body (declaration order). Populated
@@ -164,7 +164,7 @@ class CirBuilder {
 	node_t anon_inline_spec(DataDefSTRUCT *anon);
 
 	// ---- Opaque C++ runtime-object lowering (shared mechanism) ----
-	// A monomorphic C++ object (std::string, MadArray, …) lowers to an 8-aligned
+	// A monomorphic C++ object lowers to an 8-aligned
 	// `long name[words]` buffer tagged with __attribute__((cleanup(dtor))) plus a
 	// constructor call to a runtime wrapper in madc_mir_backend.cpp. One C++ decl
 	// fans out (1->N) into these lowered nodes; all share the originating
@@ -256,9 +256,9 @@ class CirBuilder {
 	node_t object_arg_value(TokenBase *arg, DataDefCLASS *target);
 
 	// ---- MadArray (`array`) object lowering ----
-	// Same opaque-object model as std::string, but an array argument needs no
-	// const char* coercion — it is always passed by pointer and the long[]
-	// buffer name decays to that pointer at the call site.
+	// Same opaque-object model as other runtime objects; array arguments are
+	// always passed by pointer and the long[] buffer name decays to that pointer
+	// at the call site.
 	static bool is_array_object(DataDef *dd);    // dtARRAY value type, not a pointer
 	size_t array_obj_words() const;              // ceil(sizeof(MadArray)/sizeof(long))
 	node_t array_storage_decl(const char *name, TokenBase *origin);
@@ -354,8 +354,8 @@ public:
 			       node_t spec_list, node_t decl_list,
 			       const std::vector<uint32_t> &lead_dims);
 	// When `fd` returns an object BY VALUE through the __retbuf ABI (void
-	// return + hidden `T* __retbuf` first param — std::string or a non-trivial
-	// class), report that returned type so the fn-ptr type renders the same
+	// return + hidden `T* __retbuf` first param), report that returned type so
+	// the fn-ptr type renders the same
 	// ABI (`void (*)(T*, params)`) and indirect calls pass a retbuf temp.
 	// Returns NULL for the ordinary (scalar/pointer/trivial) return shape.
 	DataDef *fnptr_retbuf_type(class FuncDef *fd);
@@ -433,9 +433,9 @@ public:
 	// user-defined class (caller falls through to generic member access).
 	node_t class_method_call(class TokenMember *tm, TokenBase *origin);
 	// Lower a class method bound to an external symbol (FuncDef::emit_symbol —
-	// a mangled libstdc++ std::string member): declares the extern from the
-	// method's real signature and routes the call directly. `empty()` lowers
-	// to `size()==0`. `this_arg` is the receiver address (object_var_addr).
+	// a parsed C++ ABI symbol): declares the extern from the method's real
+	// signature and routes the call directly. `this_arg` is the receiver address
+	// (object_var_addr).
 	node_t emit_symbol_method_call(class TokenMember *tm, class FuncDef *callee,
 				       const std::string &sym, node_t this_arg,
 				       TokenBase *origin);
@@ -450,15 +450,13 @@ public:
 	node_t class_ctor_call(class Variable *v, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
-	// Select the ctor overload of `cdd` matching the initializer arguments
-	// (default / const char* / copy for std::string; the single ctor for a
-	// user class). NULL when no overload set is recorded.
+	// Select the ctor overload of `cdd` matching the initializer arguments by
+	// generic overload scoring. NULL when no overload set is recorded.
 	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args);
-	// Select the operator overload (operator= / operator+=) matching the RHS:
-	// a string-object RHS picks the (const string&) overload, a const char*
-	// value picks the (const char*) overload. Falls back to the first by-name
-	// match. NULL when the class has no such operator.
+	// Select the operator overload (operator= / operator+=) matching the RHS by
+	// generic argument scoring. Falls back to the first by-name match. NULL when
+	// the class has no such operator.
 	class FuncDef *select_operator_overload(DataDefCLASS *cls,
 				const std::string &mname, TokenBase *rhs);
 	// Lower an overloaded binary operator on a user-defined class lvalue:
@@ -524,8 +522,8 @@ public:
 	node_t synth_dtor_def(DataDefCLASS *cdd);
 	node_t func_proto(TokenFunc *tf);
 	node_t func_def(TokenFunc *tf);
-	// Scan file-scope class-instance globals (std::string and friends) that are
-	// not source-declared via top_decls (built-ins like `version`, registered
+	// Scan file-scope class-instance globals that are not source-declared via
+	// top_decls (built-ins like `version`, registered
 	// programmatically), emit their opaque struct storage into `top_list`, and
 	// queue each one's constructor call into m_global_ctor_stmts so func_def can
 	// run them before main's body. Also queues ctor calls for source-declared

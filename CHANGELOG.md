@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Fixed — generic real-header parser/PCH checkpoint (2026-06-05)
+
+Real-header parsing now handles class-scope aliases/static member types,
+nested/template aliases, explicit specialization constructor/destructor source
+names, class-qualified expressions, method-result receiver chains,
+base-qualified calls on `this`, arity-aware unqualified member lookup, and
+ordinary variable/function shadowing of contextual type names. C K&R recovery
+now requires a real old-style declaration suffix, so unresolved C++ unnamed
+parameter types do not get misread as K&R parameter names.
+
+PCH deserialization reconstructs keywords and builtin datatype tokens, and the
+compiler hash rejects stale generated `.madh` blobs so text embedded headers are
+used until real system-header PCH can preserve include-guard/macro state.
+
+Validation: `make -C src`, `make -C src test`, focused parser regressions,
+`scripts/check-no-std-hardcoding.sh`, the inline-asm scan, and fulltest
+**486 passed, 4 failed, 1 timed out, 55 skipped**. Remaining real-`iostream`
+work must be solved through generic class/member alias resolution from the real
+headers and real libstdc++ declarations/operators, not through `stdio.h` /
+`FILE*` stream bridges or per-`std` compiler shims.
+
 ### Fixed — `std::cin >>` works on the CIR path (2026-06-04)
 
 Embedded `<iostream>` now declares `std::istream` and `extern std::cin`, and

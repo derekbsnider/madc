@@ -75,7 +75,8 @@ public:
     // all visible — the DataDef alone loses pointee-const, e.g. it stores
     // "char*" for a `const char*` param). Index-aligned with `parameters`; the
     // hidden `__this` slot (param 0 of a method) holds an empty string. Fed to
-    // the Itanium mangler so a std:: method binds to the real libstdc++ symbol.
+    // the Itanium mangler so a header-declared C++ method binds to its real
+    // external symbol.
     std::vector<std::string> param_cpp_spellings;
     // Source typedef alias used for each parameter, when the declaration named
     // one. Index-aligned with `parameters`; empty means render from DataDef.
@@ -105,11 +106,15 @@ public:
     // so the call site is an lvalue (assign stores through it; read derefs it),
     // matching g++. See cir_builder ref-return lowering.
     bool returns_ref;
+    std::string template_return_param_name;
+    int template_return_deduce_arg_index;
+    bool template_return_deduce_from_pointer;
+    bool template_return_ref;
     std::string return_typedef_name;
     // When non-empty, the C symbol this function is CALLED as / DEFINED as,
     // instead of the default ClassName__method scheme. Used to bind a class
-    // method directly to an externally-provided symbol (e.g. a mangled
-    // libstdc++ std::string member). madc emits no body for such methods.
+    // method directly to an externally-provided C++ ABI symbol. madc emits no
+    // body for such methods.
     std::string emit_symbol;
     // For a madc-emitted class operator that shares its name with another
     // overload of DIFFERENT arity (e.g. unary `operator-()` AND binary
@@ -127,12 +132,17 @@ public:
     // same-named overloads in DataDefCLASS::methods (whose entries are keyed by
     // their mangled names). Empty for non-method FuncDefs.
     std::string method_display_name;
+    // Namespace/free-function source identity for overloaded C++ functions.
+    // These let call-site resolution enumerate overloads registered under unique
+    // internal symbols while preserving the source name.
+    std::string function_display_name;
+    std::string namespace_name;
     // For an externally-bound ctor (emit_symbol set) whose real ABI takes a
     // trailing reference argument that madc has no value for, pass the object's
     // own address (&this) as that trailing arg.
     bool ctor_trailing_self;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), return_typedef_name(), emit_symbol(), class_emit_name(), method_display_name(), ctor_trailing_self(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), class_emit_name(), method_display_name(), function_display_name(), namespace_name(), ctor_trailing_self(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), pure_virtual(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -141,10 +151,17 @@ public:
     bool no_instrument_function;
     bool has_large_struct_retbuf; // __retbuf was injected for struct return > 16 bytes
     // True when DECLARED with no body (prototype ended in ';' / ',' not '{').
-    // For a std::-namespace class method this marks it as externally implemented
-    // (libstdc++) so TokenCLASS::parse binds emit_symbol to the mangled symbol.
-    // Stays false for any madc-compiled (bodied) function.
+    // For a C++ class method whose class carries canonical C++ spelling, this
+    // can bind emit_symbol to the mangled external symbol. Stays false for any
+    // madc-compiled (bodied) function.
     bool declaration_only;
+    // True for C++ special declarations like `= default` or `= delete`.
+    // These are not bodyless shared-library declarations and must not be bound
+    // as external symbols just because the class has canonical C++ spelling.
+    bool defaulted_or_deleted;
+    // True for C++ pure virtual declarations (`= 0`). They have no body but
+    // still participate in method lookup and vtable layout.
+    bool pure_virtual;
     // True when the method was declared with a trailing `const` (e.g.
     // `bool good() const;`). The const-qualified `this` mangles with the Itanium
     // 'K' (e.g. _ZNKSt9basic_ios...4goodEv). Set by TokenCLASS::parse / parseFunction
@@ -334,6 +351,8 @@ class TokenCallFunc: public TokenVar
 {
 public:
     std::vector<TokenBase *> parameters;
+    DataDef *return_override = nullptr;
+    bool returns_ref_override = false;
     // Non-null when the function-pointer value comes from a sub-expression
     // (e.g. a struct member access c.fn or arr[i].fn) rather than a variable.
     // When set, TokenCallFunc::compile loads the fn-ptr by compiling src_node
@@ -342,6 +361,8 @@ public:
     bool auto_scope_context = false;
     TokenCallFunc(Variable &v) : TokenVar(v) { if (v.type->is_function()) _datatype = returns(); }
     virtual DataDef *returns()  const {
+	if ( return_override )
+	    return return_override;
 	if ( DataDefFPTR *fptr = dynamic_cast<DataDefFPTR *>(var.type) )
 	    return (fptr->target != NULL) ? &fptr->target->returns : &ddVOID;
 	return &((FuncDef *)var.type)->returns;
@@ -1029,25 +1050,52 @@ public:
     // Borland-model instantiation: name -> {type params, the class-body token
     // range}. `Name<ConcreteT>` clones+substitutes+re-parses it as a concrete
     // class. See docs/plans/2026-05-30-template-instantiation.md.
-    struct TemplateDef {
-	std::vector<std::string> typeparams;   // e.g. ["T"]
-	std::string class_name;                // e.g. "Box"
-	std::vector<TokenBase *> body;         // cloned tokens: `class Name { ... }`
+	struct TemplateDef {
+	    std::vector<std::string> typeparams;   // e.g. ["T"]
+	    std::vector<std::vector<TokenBase *>> typeparam_defaults;
+	    std::vector<bool> typeparam_is_type;
+	    bool has_non_type_params;
+	    std::string class_name;                // e.g. "Box"
+	    std::vector<TokenBase *> body;         // cloned tokens: `class Name { ... }`
 	std::string defining_namespace;        // current_namespace at capture (e.g. "std")
+	DataDefCLASS *owner_class;             // enclosing class for member templates
+	TemplateDef() : has_non_type_params(false), owner_class(nullptr) {}
     };
     std::map<std::string, TemplateDef> template_map;       // name -> definition
+	struct TemplateAliasDef {
+	    std::vector<std::string> typeparams;
+	    std::vector<std::vector<TokenBase *>> typeparam_defaults;
+	    std::vector<bool> typeparam_is_type;
+	    bool has_non_type_params;
+	    std::string alias_name;
+	std::vector<TokenBase *> target;
+	std::string defining_namespace;
+	DataDefCLASS *owner_class;
+	TemplateAliasDef() : has_non_type_params(false), owner_class(nullptr) {}
+    };
+    std::map<std::string, TemplateAliasDef> template_alias_map;
+    std::vector<TokenBase *> last_skipped_template_decl;
+    struct PendingTemplateInstantiation {
+	std::string mangled_name;
+	std::string canonical_spelling;
+	std::vector<TokenDataType *> args;
+    };
+    std::map<std::string, std::vector<PendingTemplateInstantiation>> pending_template_instantiations;
+    std::set<std::string> template_completion_requested;    // mangled template aliases that should be completed when body appears
     std::set<std::string> template_instantiated;           // mangled names done
+    std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup
     std::map<DataDef*, DataDefPTR*> ptr_type_cache; // cached pointer-to-T DataDefs
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
     namespace_datatype_map_t namespace_datatype_map; // namespace-owned type names
     std::string current_namespace;	// active namespace for resolution (set by ns:: prefix)
-    // Canonical C++ spelling of the std:: template-id being instantiated right now
-    // (e.g. "std::basic_ofstream<char,std::char_traits<char>>"), stashed by
-    // instantiate_template_use around the class re-parse so TokenCLASS::parse can
-    // record it on the new DataDefCLASS (used to mangle bodyless std:: methods).
+    // Canonical C++ spelling of the template-id being instantiated right now,
+    // stashed by instantiate_template_use around the class re-parse so
+    // TokenCLASS::parse can record it on the new DataDefCLASS for bodyless C++
+    // method binding.
     std::string instantiating_canonical_spelling;
+    bool instantiating_dependent_surface;
     std::vector<std::string> namespace_preference; // ordered namespace lookup; "c" means normal lexical/global resolution
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
     // function-like macro definitions: #define NAME(params) body
@@ -1076,6 +1124,17 @@ public:
     // Program::compile in a pre-pass to create funcnodes (labels) before
     // globals compile, so global fn-pointer inits can LEA the target label.
     std::vector<TokenBase *> pending_funcs;
+    struct DeferredFunctionBody {
+	Variable *var;
+	Method *method;
+	std::vector<TokenBase *> body_tokens;
+	const char *file;
+	int line;
+	int column;
+	DeferredFunctionBody() : var(NULL), method(NULL), file(NULL), line(0), column(0) {}
+    };
+    std::vector<DeferredFunctionBody> *deferred_function_body_sink;
+    bool parsing_cpp_struct_class;
     // Source-ordered top-level declarations for CIR tree generation.
     // Each entry records what was declared and in what order, matching
     // the order c2m's parser produces in its MODULE LIST. The legacy
@@ -1382,7 +1441,8 @@ public:
     void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL,
 		       std::vector<DataDef *> *multi_ret = NULL,
 		       bool return_ref = false,
-		       std::string return_typedef_alias = std::string());
+		       std::string return_typedef_alias = std::string(),
+		       bool static_class_method = false);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCallMethod(TokenCallMethod *);

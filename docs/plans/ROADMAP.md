@@ -1,6 +1,6 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-06-04 (v0.25.0).
+Master plan linking all workstreams. Updated 2026-06-05 (v0.25.0).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -40,7 +40,7 @@ high-level" — the answer is both.**
   a character, navigate the world, and fight (the Newgate serpent fight runs).
   The project's north-star goal — running a real C89 codebase end-to-end —
   is now demonstrated on CIR.
-- **CIR baseline (2026-06-02):** **456 integration pass / 7 fail / 55 skip**;
+- **CIR baseline (2026-06-05):** **486 integration pass / 4 fail / 1 timeout / 55 skip**;
   **gcc.c-torture 1565/1685 (92.9%)** vs the old asmjit backend's 1645 (97.6%) — gap 80.
   The failures are the active CIR coverage worklist — see Track 1.3 — and the
   gate for promotion to master.
@@ -80,7 +80,17 @@ high-level" — the answer is both.**
   `basic_istream::operator>>`, and delegating string extraction to a small
   runtime bridge over real C++ iostreams. The remaining `<iostream>` follow-up
   is replacing the stdio-backed `cout`/`cerr`/`clog` header bodies with real
-  libstdc++ output declarations/operators.
+  libstdc++ output declarations/operators, not adding `stdio.h`/`FILE*` stream
+  bridges. The latest parser/PCH checkpoint rejects stale generated PCH blobs,
+  reconstructs deserialized keyword/datatype tokens, and expands generic
+  real-header parsing for class-scope aliases/static member types,
+  nested/template aliases, explicit specializations, class-qualified
+  expressions, method-result receiver chains, base-qualified calls on `this`,
+  and arity-aware member lookup. Broad real system-header PCH regeneration
+  remains blocked on preserving include-guard/macro state; explicit `--std=c++`
+  real iostream preprocessing reaches c2mir but still needs generic
+  class/member alias resolution (`char_type`, `iter_type`, `iostate`,
+  `__streambuf_type`, and friends).
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
   engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
   pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped
@@ -102,7 +112,7 @@ high-level" — the answer is both.**
 |-------|------|--------|--------|------|
 | 1.1 | C foundation (GCC parity) | — | **DONE** (97.9% on the old backend; the CIR target) | — |
 | 1.2 | Code cleanup Phase A — dispatch table, AST visitor, file split | 2-3 wk | **DONE** (v0.20.1) | [code-cleanup.md](code-cleanup.md) |
-| 1.3 | **CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity** | ongoing | **Active — the parity-to-master gate** (456 pass / 7 fail / 55 skip; gcc-torture 1565/1685 = 92.9% vs asmjit 97.6%) | — |
+| 1.3 | **CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity** | ongoing | **Active — the parity-to-master gate** (486 pass / 4 fail / 1 timeout / 55 skip; gcc-torture 1565/1685 = 92.9% vs asmjit 97.6%) | — |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **Planned (raise the floor)** — design for **upstream** to vnmakarov/mir | — |

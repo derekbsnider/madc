@@ -20,6 +20,7 @@
 #include <map>
 #include <list>
 #include <vector>
+#include <deque>
 #include <queue>
 #include <stack>
 #include <functional>
@@ -35,6 +36,16 @@ struct PrecompiledHeader { const uint8_t *data; size_t size; };
 extern const PrecompiledHeader *find_precompiled_header(const std::string &name);
 
 using namespace std;
+
+static bool find_filesystem_precompiled_header(Program &pgm,
+					       const std::string &incfile,
+					       bool is_system,
+					       std::string &outpath);
+static bool load_precompiled_header_file(const std::string &path,
+					 std::deque<TokenBase *> &tokens);
+static bool push_precompiled_header_tokens(Program &pgm,
+					   const std::string &display_name,
+					   std::deque<TokenBase *> &pch_tokens);
 
 static DataDef *get_complex_compat_type(DataDef *base_type)
 {
@@ -293,6 +304,34 @@ static bool is_identifier_spelling(const std::string &s)
 	if ( s[i] != '_' && !isalnum((unsigned char)s[i]) )
 	    return false;
     return true;
+}
+
+static bool next_source_word_is(Source &source, const char *match)
+{
+    std::string consumed;
+    while ( source.good() )
+    {
+	int c = source.peek();
+	if ( c == ' ' || c == '\t' || c == '\n' || c == '\r' )
+	    consumed += (char)source.get();
+	else
+	    break;
+    }
+    std::string word;
+    while ( source.good() )
+    {
+	int c = source.peek();
+	if ( isalnum((unsigned char)c) || c == '_' )
+	{
+	    word += (char)source.get();
+	    consumed += word.back();
+	}
+	else
+	    break;
+    }
+    if ( !consumed.empty() )
+	source.pushback_reread(consumed);
+    return word == match;
 }
 
 static bool identifier_matches_gnu_attribute_name(const std::string &id,
@@ -673,6 +712,27 @@ void Program::inject_pending_auto_includes()
 	    if ( !should_tokenize_include(include_key) )
 		continue;
 
+	    std::string pch_path;
+	    if ( find_filesystem_precompiled_header(*this, header, true, pch_path) )
+	    {
+		std::deque<TokenBase *> pch_tokens;
+		if ( load_precompiled_header_file(pch_path, pch_tokens) )
+		{
+		    push_precompiled_header_tokens(*this, pch_path, pch_tokens);
+		    continue;
+		}
+	    }
+	    const PrecompiledHeader *pch = find_precompiled_header(header);
+	    if ( pch )
+	    {
+		std::deque<TokenBase *> pch_tokens;
+		if ( madc_pch::read_madh(pch->data, pch->size, pch_tokens) )
+		{
+		    push_precompiled_header_tokens(*this, header, pch_tokens);
+		    continue;
+		}
+	    }
+
 	    const std::string *embedded = find_embedded_header(header);
 	    if ( !embedded )
 		continue;
@@ -931,6 +991,8 @@ void Program::_tokenizer_init()
     try_depth = 0;
     _cur_token = NULL;
     _prv_token = NULL;
+    deferred_function_body_sink = NULL;
+    parsing_cpp_struct_class = false;
     _include_iostream = false;
     _include_stdio = false;
     _include_string = false;
@@ -947,6 +1009,10 @@ void Program::_tokenizer_init()
     define_map["inline"] = "";
     define_map["__inline__"] = "";
     define_map["__inline"] = "";
+    define_map["constexpr"] = "";
+    define_map["consteval"] = "";
+    define_map["constinit"] = "";
+    define_map["noexcept"] = "";
     define_map["__extension__"] = "";
     // _Alignas(N) is a C11 keyword — consume like __attribute__
     // The lexer handles it by stripping the specifier and its parens.
@@ -958,6 +1024,12 @@ void Program::_tokenizer_init()
     define_map["__signed"] = "signed";
     define_map["__signed__"] = "signed";
     define_map["__const__"] = "const";
+    {
+	MacroDef m;
+	m.params = {"__expr"};
+	m.body = "";
+	macro_map["noexcept"] = m;
+    }
     // GCC floating-point limit macros
     define_map["__FLT_MAX__"] = "3.40282347e+38F";
     define_map["__FLT_MIN__"] = "1.17549435e-38F";
@@ -1038,6 +1110,7 @@ void Program::_tokenizer_init()
     define_map["__UINT_FAST64_TYPE__"] = "unsigned long";
     define_map["__builtin_va_list"] = "long";
     define_map["__builtin_va_arg"] = "va_arg";
+    define_map["__null"] = "0";
     // __builtin_va_start passes through to the CIR as a real c2mir intrinsic
     // call (cir_builder emits N_CALL(__builtin_va_start, ap); c2mir lowers it to
     // MIR_VA_START on the user's own va_list). It is intentionally NOT a macro:
@@ -1106,6 +1179,10 @@ void Program::_tokenizer_init()
     define_map["__builtin_strpbrk"] = "strpbrk";
     define_map["__builtin_strspn"] = "strspn";
     define_map["__builtin_snprintf"] = "snprintf";
+    define_map["__builtin_vsprintf"] = "vsprintf";
+    define_map["__builtin_vsnprintf"] = "vsnprintf";
+    define_map["__builtin_vprintf"] = "vprintf";
+    define_map["__builtin_vfprintf"] = "vfprintf";
     define_map["__builtin_fprintf"] = "fprintf";
     define_map["__builtin_fprintf_unlocked"] = "fprintf_unlocked";
     define_map["__builtin_fputc"] = "fputc";
@@ -1376,6 +1453,11 @@ void Program::_tokenizer_init()
 	m.body = "0";
 	macro_map["__builtin_classify_type"] = m;
     }
+    {
+	MacroDef m;
+	m.body = "0";
+	macro_map["__builtin_is_constant_evaluated"] = m;
+    }
 }
 
 bool Program::include_already_seen(const std::string &path)
@@ -1480,6 +1562,105 @@ bool Program::should_tokenize_include(const std::string &path)
     return true;
 }
 
+static bool file_exists(const std::string &path)
+{
+    std::ifstream probe(path.c_str(), std::ios::binary);
+    return probe.good();
+}
+
+static void add_pch_candidate(std::vector<std::string> &candidates,
+			      const std::string &dir,
+			      const std::string &incfile)
+{
+    std::string path = dir;
+    if ( !path.empty() && path.back() != '/' )
+	path += '/';
+    path += incfile;
+    path += ".madh";
+    candidates.push_back(path);
+}
+
+static bool find_filesystem_precompiled_header(Program &pgm,
+					       const std::string &incfile,
+					       bool is_system,
+					       std::string &outpath)
+{
+    std::vector<std::string> candidates;
+    if ( !incfile.empty() && incfile[0] == '/' )
+	candidates.push_back(incfile + ".madh");
+    else
+    {
+	std::string cur_dir = pgm.current_source_directory();
+	if ( !is_system && !cur_dir.empty() )
+	    add_pch_candidate(candidates, cur_dir, incfile);
+	for ( size_t i = 0; i < pgm.include_paths.size(); ++i )
+	    add_pch_candidate(candidates, pgm.include_paths[i], incfile);
+	if ( is_system && !cur_dir.empty() )
+	    add_pch_candidate(candidates, cur_dir, incfile);
+    }
+
+    for ( size_t i = 0; i < candidates.size(); ++i )
+    {
+	if ( file_exists(candidates[i]) )
+	{
+	    outpath = candidates[i];
+	    return true;
+	}
+    }
+    return false;
+}
+
+static bool load_precompiled_header_file(const std::string &path,
+					 std::deque<TokenBase *> &tokens)
+{
+    std::ifstream in(path.c_str(), std::ios::binary | std::ios::ate);
+    if ( !in )
+	return false;
+    std::streampos end = in.tellg();
+    if ( end <= 0 )
+	return false;
+    size_t size = (size_t)end;
+    in.seekg(0);
+    std::vector<uint8_t> bytes(size);
+    in.read((char *)bytes.data(), size);
+    if ( !in )
+	return false;
+    return madc_pch::read_madh(bytes.data(), bytes.size(), tokens);
+}
+
+static bool push_precompiled_header_tokens(Program &pgm,
+					   const std::string &display_name,
+					   std::deque<TokenBase *> &pch_tokens)
+{
+    const char *interned = pgm.intern_file(display_name);
+    for ( TokenBase *itb : pch_tokens )
+    {
+	if ( TokenIdent *ident = dynamic_cast<TokenIdent *>(itb) )
+	{
+	    TokenBase *replacement = NULL;
+	    keyword_map_iter ki = pgm.keyword_map.find(ident->str);
+	    if ( ki != pgm.keyword_map.end() )
+		replacement = ki->second->clone();
+	    else
+	    {
+		datatype_map_iter di = pgm.datatype_map.find(ident->str);
+		if ( di != pgm.datatype_map.end() )
+		    replacement = di->second->clone();
+	    }
+	    if ( replacement )
+	    {
+		replacement->line = itb->line;
+		replacement->column = itb->column;
+		delete itb;
+		itb = replacement;
+	    }
+	}
+	itb->file = interned;
+	pgm.push_token_with_literal_concat(itb);
+    }
+    return true;
+}
+
 // add static tokens for language keywords
 void Program::add_keywords()
 {
@@ -1532,6 +1713,13 @@ void Program::add_datatypes()
     static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
     static TokenDataType tkSIZE_T("size_t", ddUINT64);
     static TokenDataType tkWCHAR_T("wchar_t", ddINT32);
+    static TokenDataType tkCHAR16_T("char16_t", ddUINT16);
+    static TokenDataType tkCHAR32_T("char32_t", ddUINT32);
+    static TokenDataType tkFLOAT32("_Float32", ddFLOAT);
+    static TokenDataType tkFLOAT64("_Float64", ddDOUBLE);
+    static TokenDataType tkFLOAT128("_Float128", ddDOUBLE);
+    static TokenDataType tkFLOAT32X("_Float32x", ddDOUBLE);
+    static TokenDataType tkFLOAT64X("_Float64x", ddDOUBLE);
     static TokenDataType tkDECIMAL32("_Decimal32", ddFLOAT);
     static TokenDataType tkDECIMAL64("_Decimal64", ddDOUBLE);
     static TokenDataType tkDECIMAL128("_Decimal128", ddDOUBLE);
@@ -1559,6 +1747,13 @@ void Program::add_datatypes()
     datatype_map[tkPTRDIFF.str] = &tkPTRDIFF;
     datatype_map[tkSIZE_T.str] = &tkSIZE_T;
     datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
+    datatype_map[tkCHAR16_T.str] = &tkCHAR16_T;
+    datatype_map[tkCHAR32_T.str] = &tkCHAR32_T;
+    datatype_map[tkFLOAT32.str] = &tkFLOAT32;
+    datatype_map[tkFLOAT64.str] = &tkFLOAT64;
+    datatype_map[tkFLOAT128.str] = &tkFLOAT128;
+    datatype_map[tkFLOAT32X.str] = &tkFLOAT32X;
+    datatype_map[tkFLOAT64X.str] = &tkFLOAT64X;
     datatype_map[tkDECIMAL32.str] = &tkDECIMAL32;
     datatype_map[tkDECIMAL64.str] = &tkDECIMAL64;
     datatype_map[tkDECIMAL128.str] = &tkDECIMAL128;
@@ -1743,10 +1938,12 @@ TokenBase *Program::_getToken()
 			incfile += source.get();
 		    if ( source.peek() == end_delim )
 			source.get(); // consume closing delimiter
-		    // angle-bracket includes: check embedded headers first
+		    // angle-bracket includes: prefer real precompiled headers, then
+		    // text-embedded compatibility headers, then filesystem source.
 		    if ( is_system )
 		    {
-			if ( pending_auto_include_headers.count(incfile) )
+			if ( !suppress_auto_include_scan
+			  && pending_auto_include_headers.count(incfile) )
 			{
 			    DBG(std::cout << "#include <" << incfile
 				<< "> deferred to auto-include prelude" << std::endl);
@@ -1758,9 +1955,32 @@ TokenBase *Program::_getToken()
 			    DBG(std::cout << "#include <" << incfile << "> skipped (already included)" << std::endl);
 			    return getToken();
 			}
-			// Text-embedded headers (hand-written stubs) take priority
-			// because they're tailored for madc's parser. Pre-compiled
-			// system headers are used only when no text stub exists.
+			std::string pch_path;
+			if ( find_filesystem_precompiled_header(*this, incfile, true, pch_path) )
+			{
+			    DBG(std::cout << "#include <" << incfile << "> (precompiled file "
+				<< pch_path << ")" << std::endl);
+			    std::deque<TokenBase *> pch_tokens;
+			    if ( load_precompiled_header_file(pch_path, pch_tokens) )
+			    {
+				push_precompiled_header_tokens(*this, pch_path, pch_tokens);
+				return getToken();
+			    }
+			    DBG(std::cout << "#include <" << incfile
+				<< "> filesystem PCH failed, trying embedded PCH" << std::endl);
+			}
+			const PrecompiledHeader *pch = find_precompiled_header(incfile);
+			if ( pch )
+			{
+			    DBG(std::cout << "#include <" << incfile << "> (precompiled)" << std::endl);
+			    std::deque<TokenBase *> pch_tokens;
+			    if ( madc_pch::read_madh(pch->data, pch->size, pch_tokens) )
+			    {
+				push_precompiled_header_tokens(*this, incfile, pch_tokens);
+				return getToken();
+			    }
+			    DBG(std::cout << "#include <" << incfile << "> PCH failed, trying embedded text" << std::endl);
+			}
 			const std::string *embedded = find_embedded_header(incfile);
 			if ( embedded )
 			{
@@ -1787,26 +2007,6 @@ TokenBase *Program::_getToken()
 			    mark_embedded_include_flag(incfile);
 			    return getToken();
 			}
-			// Check pre-compiled headers (post-lexer token stream
-			// from real system headers, used when no text stub exists)
-			const PrecompiledHeader *pch = find_precompiled_header(incfile);
-			if ( pch )
-			{
-			    DBG(std::cout << "#include <" << incfile << "> (precompiled)" << std::endl);
-			    std::deque<TokenBase *> pch_tokens;
-			    if ( madc_pch::read_madh(pch->data, pch->size, pch_tokens) )
-			    {
-				const char *_interned_pch = intern_file(incfile);
-				for ( TokenBase *itb : pch_tokens )
-				{
-				    itb->file = _interned_pch;
-				    push_token_with_literal_concat(itb);
-				}
-				mark_embedded_include_flag(incfile);
-				return getToken();
-			    }
-			    DBG(std::cout << "#include <" << incfile << "> PCH failed, trying filesystem" << std::endl);
-			}
 		    }
 		    std::string full_path = resolve_include_path(incfile, is_system);
 		    if ( !should_tokenize_include(full_path) )
@@ -1822,10 +2022,13 @@ TokenBase *Program::_getToken()
 			<< (is_system ? ">" : "\"") << std::endl);
 		    // save current source, tokenize included file
 		    Source saved = std::move(source);
+		    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+		    suppress_auto_include_scan = true;
 		    source = Source();
 		    std::ifstream incf(full_path.c_str());
 		    if ( !incf )
 		    {
+			suppress_auto_include_scan = saved_suppress_auto_include_scan;
 			source = std::move(saved); // restore before throwing
 			Throw << "Failed to open include file: " << full_path.c_str() << flush;
 		    }
@@ -1839,6 +2042,7 @@ TokenBase *Program::_getToken()
 			push_token_with_literal_concat(itb);
 		    }
 		    source = std::move(saved);
+		    suppress_auto_include_scan = saved_suppress_auto_include_scan;
 		    return getToken(); // continue with current file
 		}
 		if ( directive == "load" )
@@ -3237,12 +3441,15 @@ TokenBase *Program::_getToken()
 		    source.pushback_macro(expanded, word);
 		    return getToken();
 		}
-		// #define substitution: inject the define value into the source stream
-		if ( define_map.count(word) && !source.macro_disabled(word) )
-		{
-		    std::string &val = define_map[word];
-		    if ( !val.empty() )
-		    {
+			// #define substitution: inject the define value into the source stream
+			if ( define_map.count(word) && !source.macro_disabled(word) )
+			{
+			    if ( word == "inline"
+			      && next_source_word_is(source, "namespace") )
+				return new TokenIdent(word);
+			    std::string &val = define_map[word];
+			    if ( !val.empty() )
+			    {
 			// Builtin libc aliases such as __builtin_strcmp -> strcmp
 			// should resolve to the target identifier directly instead
 			// of re-entering the macro rescanner. Otherwise user macros

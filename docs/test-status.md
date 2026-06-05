@@ -1,6 +1,6 @@
 # Test Status
 
-> **Current (2026-06-04, retire-std-hardcoding branch):** integration
+> **Current (2026-06-05, retire-std-hardcoding branch):** integration
 > **486 passed, 4 failed, 1 timed out, 55 skipped** after adding
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
 > `teststdcppinclude.mad`, plus `testforeachheaderbody.mad` for range-for
@@ -13,9 +13,12 @@
 > ABI convenience wrappers. `test_mangle` covers the GCC-backed nested namespace
 > symbol shape plus namespace variable symbols such as `_ZSt3cin`. `testcin.mad`
 > is recovered on CIR: `std::cin` binds to the real libstdc++ global and string
-> extraction delegates to real C++ iostreams. The known red tests are
-> `testdefer.mad`, `testfortypedcomma.mad` (timed out this run; historically
-> flaky fail/timeout), `testfstream.mad`, `testlargesizeofquery.mad`, and
+> extraction delegates to real C++ iostreams. The parser/PCH checkpoint also
+> rejects stale embedded PCH blobs and keeps real-header parsing on generic
+> type/alias/member machinery. The known red tests are
+> `testdefer.mad`, `testfortypedcomma.mad` (historically flaky fail/timeout;
+> timed out on the latest run),
+> `testfstream.mad`, `testlargesizeofquery.mad`, and
 > `testloop.mad`.
 > The 419/0 figures below are the
 > *removed* asmjit/MIR-transpiler backend and are retained only as the C89

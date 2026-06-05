@@ -91,11 +91,9 @@ public:
     std::string	 name;
     size_t	 size;
     // Canonical C++ type spelling for Itanium mangling, e.g.
-    // "std::basic_ofstream<char,std::char_traits<char>>". Empty = use `name`
-    // (or a builtin spelling). Set on a std:: template INSTANTIATION (see
-    // instantiate_template_use) so a bodyless std:: method binds to the real
-    // libstdc++ mangled symbol with NO hardcoded literal. (std::string default-
-    // constructs empty, so the assignment-style ctors below need no change.)
+    // "ns::Box<T>". Empty = use `name` (or a builtin spelling). Set from parsed
+    // namespace/template declarations so a bodyless C++ method can bind to its
+    // external mangled symbol without class-name tests.
     std::string	 canonical_cpp_spelling;
     DataDef() { size = 0; _type = 0; }
     DataDef(std::string n, size_t s, DataType d) { name = n; size = s; _type = (uint32_t)d; }
@@ -488,6 +486,10 @@ public:
 	    member_bitfields.push_back(info);
 	    member_dims.push_back(i < agg.member_dims.size() ? agg.member_dims[i] : std::vector<uint32_t>());
 	    member_count_exprs.push_back(i < agg.member_count_exprs.size() ? agg.member_count_exprs[i] : NULL);
+	    member_access.push_back(i < agg.member_access.size() ? agg.member_access[i] : 0);
+	    member_origin.push_back(i < agg.member_origin.size() ? agg.member_origin[i] : -1);
+	    if ( agg.member_explicit_align.find(i) != agg.member_explicit_align.end() )
+		member_explicit_align[members.size() - 1] = agg.member_explicit_align.at(i);
 	}
 	size_t end = base_offset + agg.size;
 	if ( union_layout )
@@ -657,17 +659,19 @@ public:
     std::vector<Variable *> methods;
     std::vector<Variable *> staticconst;
     std::map<std::string, Variable *> method_map; // unmangled name -> method variable
+    std::map<std::string, DataDef *> type_aliases; // class-scope typedef/using aliases
+    std::map<std::string, DataDef *> static_member_types; // class-scope static data members
     // Constructor overload set (each entry's FuncDef carries the param signature
-    // and, for class-bound externals like std::string, an emit_symbol naming the
-    // real ctor). A user class with one ClassName() ctor has a single entry; a
-    // class with overloaded ctors (std::string: default / const char* / copy)
-    // has several. Empty when the class has no recorded ctor.
+    // and, for class-bound externals, an emit_symbol naming the real ctor).
+    // A class with one ClassName() ctor has a single entry; a class with
+    // overloaded ctors has several. Empty when the class has no recorded ctor.
     std::vector<Variable *> ctors;
     bool has_user_ctor;  // true if user defined ClassName() constructor
     bool has_user_dtor;  // true if user defined ~ClassName() destructor
     void *extern_ctor;   // C function pointer for extern class default constructor (NULL if none)
     void *extern_dtor;   // C function pointer for extern class destructor (NULL if none)
     void *_dtor_ptr;     // copy of extern_dtor; &_dtor_ptr is fn_indirect for cleanup stack
+    DataDefCLASS *enclosing_class; // non-null for classes declared inside another class
     DataDefCLASS *base_class; // single inheritance: parent class (NULL if none)
     // Multiple/virtual inheritance (Itanium layout). `bases` lists direct bases;
     // compute_layout() fills each BaseSpec.offset/is_primary, vbase_offset (each
@@ -680,6 +684,8 @@ public:
     size_t nvsize;
     size_t own_block_off; // offset where this class's own data members begin
     bool has_vptr_slot;   // class carries a vptr (virtual methods OR a virtual base); set by compute_layout
+    bool is_dependent_placeholder; // synthesized unresolved/dependent C++ type
+    bool has_dependent_surface; // parsed class whose template args/bases still carry dependent lookup
     bool is_polymorphic() const { return has_vtable; }
     void compute_layout(); // Itanium layout engine (defined in parser.cpp)
     void apply_member_layout(); // rewrite member_offsets from member_origin + computed layout
@@ -747,8 +753,9 @@ public:
     DataDefCLASS(std::string n, size_t s, DataType d)
 	: DataDefSTRUCT(n, s, d), has_user_ctor(false), has_user_dtor(false),
 	  extern_ctor(NULL), extern_dtor(NULL), _dtor_ptr(NULL),
-	  base_class(NULL), nvsize(0), own_block_off(0), has_vptr_slot(false),
-	  vtable(NULL), has_vtable(false) {}
+	  enclosing_class(NULL), base_class(NULL), nvsize(0), own_block_off(0),
+	  has_vptr_slot(false), is_dependent_placeholder(false),
+	  has_dependent_surface(false), vtable(NULL), has_vtable(false) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
     Variable *findMethod(std::string &s);
     // Among the same-name method overloads (this class + base chain), pick the
@@ -759,8 +766,8 @@ public:
     Variable *findMethodOverload(const std::string &name,
 				 const std::vector<const DataDef *> &argtypes);
     // Return type of the BINARY operator method `opname` (e.g. "operator+") this
-    // class declares — used to TYPE an operator expression on class objects with
-    // its real result type (generic; identical for std::string and user classes).
+    // class declares; used to type a class-object operator expression with the
+    // operator's declared result type.
     // Prefers a parameterized (binary) overload; searches the unmangled name then
     // the mangled ClassName__operatorX family, then the base chain. NULL if none.
     DataDef *binary_operator_return_type(const std::string &opname);
