@@ -5913,6 +5913,14 @@ static int v128_i32_packed_add_sub_vector_type_p (c2m_ctx_t c2m_ctx, struct type
   return lane_size == 1 || lane_size == 2 || lane_size == 4;
 }
 
+static int v128_i32_packed_cmp_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  mir_size_t lane_size;
+
+  if (!v128_i32_vector_type_p (c2m_ctx, type)) return FALSE;
+  lane_size = vector_lane_size (c2m_ctx, type);
+  return lane_size == 1 || lane_size == 2 || lane_size == 4;
+}
+
 static int v128_i64_packed_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   return v128_i32_vector_type_p (c2m_ctx, type) && vector_lane_size (c2m_ctx, type) == 8;
 }
@@ -12383,21 +12391,45 @@ static op_t emit_v128_i32_bin_op (c2m_ctx_t c2m_ctx, MIR_insn_code_t code, op_t 
   return dest;
 }
 
+static MIR_insn_code_t get_v128_i32_packed_eq_insn_code (c2m_ctx_t c2m_ctx,
+                                                         struct type *vector_type) {
+  mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
+
+  assert (v128_i32_packed_cmp_vector_type_p (c2m_ctx, vector_type));
+  return lane_size == 1 ? MIR_VEQI8 : lane_size == 2 ? MIR_VEQI16 : MIR_VEQI32;
+}
+
+static MIR_insn_code_t get_v128_i32_packed_gt_insn_code (c2m_ctx_t c2m_ctx,
+                                                         struct type *vector_type) {
+  mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
+
+  assert (v128_i32_packed_cmp_vector_type_p (c2m_ctx, vector_type));
+  return lane_size == 1 ? MIR_VGTI8 : lane_size == 2 ? MIR_VGTI16 : MIR_VGTI32;
+}
+
+static mir_int v128_i32_lane_sign_bit (c2m_ctx_t c2m_ctx, struct type *vector_type) {
+  mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
+
+  assert (v128_i32_packed_cmp_vector_type_p (c2m_ctx, vector_type));
+  return lane_size == 1 ? 0x80 : lane_size == 2 ? 0x8000 : (mir_int) 0x80000000u;
+}
+
 static op_t emit_v128_i32_gt_op (c2m_ctx_t c2m_ctx, op_t op1, struct type *type1, op_t op2,
                                  struct type *type2, struct type *vector_type, op_t dest) {
+  MIR_insn_code_t gt_code = get_v128_i32_packed_gt_insn_code (c2m_ctx, vector_type);
   op_t sign_bit, biased_op1, biased_op2;
 
   if (signed_integer_type_p (vector_type->u.vector_type->el_type))
-    return emit_v128_i32_bin_op (c2m_ctx, MIR_VGTI32, op1, type1, op2, type2, vector_type, dest);
-  sign_bit = const_v128_i32 (c2m_ctx, vector_type, (mir_int) 0x80000000u);
+    return emit_v128_i32_bin_op (c2m_ctx, gt_code, op1, type1, op2, type2, vector_type, dest);
+  sign_bit = const_v128_i32 (c2m_ctx, vector_type, v128_i32_lane_sign_bit (c2m_ctx, vector_type));
   biased_op1 = vector_temp (c2m_ctx, vector_type);
   biased_op2 = vector_temp (c2m_ctx, vector_type);
   emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, op1, type1, sign_bit, vector_type, vector_type,
                         biased_op1);
   emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, op2, type2, sign_bit, vector_type, vector_type,
                         biased_op2);
-  return emit_v128_i32_bin_op (c2m_ctx, MIR_VGTI32, biased_op1, vector_type, biased_op2,
-                               vector_type, vector_type, dest);
+  return emit_v128_i32_bin_op (c2m_ctx, gt_code, biased_op1, vector_type, biased_op2, vector_type,
+                               vector_type, dest);
 }
 
 static MIR_insn_code_t get_v128_i32_cmp_insn_code (c2m_ctx_t c2m_ctx, node_code_t code,
@@ -12467,11 +12499,12 @@ static op_t gen_v128_i32_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_de
   op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
   op_t cmp_dest, all_ones;
 
-  if (!v128_i32_packed_vector_type_p (c2m_ctx, type))
+  if (!v128_i32_packed_cmp_vector_type_p (c2m_ctx, type))
     return emit_v128_i32_lane_cmp_op (c2m_ctx, code, op1, type1, op2, type2, type, dest);
 
   if (code == N_EQ)
-    return emit_v128_i32_bin_op (c2m_ctx, MIR_VEQI32, op1, type1, op2, type2, type, dest);
+    return emit_v128_i32_bin_op (c2m_ctx, get_v128_i32_packed_eq_insn_code (c2m_ctx, type), op1,
+                                 type1, op2, type2, type, dest);
   if (code == N_GT)
     return emit_v128_i32_gt_op (c2m_ctx, op1, type1, op2, type2, type, dest);
   if (code == N_LT)
@@ -12479,7 +12512,8 @@ static op_t gen_v128_i32_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_de
 
   cmp_dest = vector_temp (c2m_ctx, type);
   if (code == N_NE) {
-    emit_v128_i32_bin_op (c2m_ctx, MIR_VEQI32, op1, type1, op2, type2, type, cmp_dest);
+    emit_v128_i32_bin_op (c2m_ctx, get_v128_i32_packed_eq_insn_code (c2m_ctx, type), op1, type1,
+                          op2, type2, type, cmp_dest);
   } else if (code == N_LE) {
     emit_v128_i32_gt_op (c2m_ctx, op1, type1, op2, type2, type, cmp_dest);
   } else {

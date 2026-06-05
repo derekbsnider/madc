@@ -72,9 +72,9 @@ static const MIR_insn_code_t target_io_dup_op_insn_codes[] = {
   MIR_LDSUB,   MIR_VSUBI8,  MIR_VSUBI16, MIR_VSUBI32, MIR_VSUBF32, MIR_VSUBF64, MIR_MUL,
   MIR_MULS,    MIR_FMUL,    MIR_DMUL,    MIR_LDMUL,  MIR_VMULF32, MIR_VMULF64, MIR_FDIV,
   MIR_DDIV,    MIR_LDDIV,   MIR_AND,     MIR_ANDS,   MIR_OR,      MIR_ORS,    MIR_XOR,
-  MIR_XORS,    MIR_VDIVF32, MIR_VDIVF64, MIR_VAND,   MIR_VOR,     MIR_VXOR,   MIR_VEQI32,
-  MIR_VGTI32,  MIR_VEQF32,  MIR_VNEF32,  MIR_VLTF32, MIR_VLEF32,  MIR_VEQF64, MIR_VNEF64,
-  MIR_VLTF64,  MIR_VLEF64,
+  MIR_XORS,    MIR_VDIVF32, MIR_VDIVF64, MIR_VAND,   MIR_VOR,     MIR_VXOR,   MIR_VEQI8,
+  MIR_VEQI16,  MIR_VEQI32,  MIR_VGTI8,   MIR_VGTI16, MIR_VGTI32,  MIR_VEQF32, MIR_VNEF32,
+  MIR_VLTF32,  MIR_VLEF32,  MIR_VEQF64,  MIR_VNEF64, MIR_VLTF64,  MIR_VLEF64,
   MIR_LSH,   MIR_LSHS,  MIR_RSH,    MIR_RSHS,       MIR_URSH,  MIR_URSHS, MIR_NEG,   MIR_NEGS,
   MIR_FNEG,  MIR_DNEG,  MIR_LDNEG,  MIR_ADDO,       MIR_ADDOS, MIR_SUBO,  MIR_SUBOS, MIR_MULO,
   MIR_MULOS, MIR_UMULO, MIR_UMULOS, MIR_INSN_BOUND,
@@ -1799,8 +1799,16 @@ static struct pattern patterns[] = {
   {MIR_VOR, "r 0 mv", "66 Y 0F EB r0 m2", 0},  /* por r0,m128 */
   {MIR_VXOR, "r 0 r", "66 Y 0F EF r0 R2", 0},  /* pxor r0,r2 */
   {MIR_VXOR, "r 0 mv", "66 Y 0F EF r0 m2", 0}, /* pxor r0,m128 */
+  {MIR_VEQI8, "r 0 r", "66 Y 0F 74 r0 R2", 0},   /* pcmpeqb r0,r2 */
+  {MIR_VEQI8, "r 0 mv", "66 Y 0F 74 r0 m2", 0},  /* pcmpeqb r0,m128 */
+  {MIR_VEQI16, "r 0 r", "66 Y 0F 75 r0 R2", 0},  /* pcmpeqw r0,r2 */
+  {MIR_VEQI16, "r 0 mv", "66 Y 0F 75 r0 m2", 0}, /* pcmpeqw r0,m128 */
   {MIR_VEQI32, "r 0 r", "66 Y 0F 76 r0 R2", 0},  /* pcmpeqd r0,r2 */
   {MIR_VEQI32, "r 0 mv", "66 Y 0F 76 r0 m2", 0}, /* pcmpeqd r0,m128 */
+  {MIR_VGTI8, "r 0 r", "66 Y 0F 64 r0 R2", 0},   /* pcmpgtb r0,r2 */
+  {MIR_VGTI8, "r 0 mv", "66 Y 0F 64 r0 m2", 0},  /* pcmpgtb r0,m128 */
+  {MIR_VGTI16, "r 0 r", "66 Y 0F 65 r0 R2", 0},  /* pcmpgtw r0,r2 */
+  {MIR_VGTI16, "r 0 mv", "66 Y 0F 65 r0 m2", 0}, /* pcmpgtw r0,m128 */
   {MIR_VGTI32, "r 0 r", "66 Y 0F 66 r0 R2", 0},  /* pcmpgtd r0,r2 */
   {MIR_VGTI32, "r 0 mv", "66 Y 0F 66 r0 m2", 0}, /* pcmpgtd r0,m128 */
   {MIR_VEQF32, "r 0 r", "Y 0F C2 r0 R2 v0", 0},  /* cmpeqps r0,r2 */

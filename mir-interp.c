@@ -1099,9 +1099,9 @@ static void OPTIMIZE eval (MIR_context_t ctx, func_desc_t func_desc, MIR_val_t *
     REP2 (LAB_EL, MIR_VDIVF32, MIR_VDIVF64);
     REP3 (LAB_EL, MIR_VAND, MIR_VOR, MIR_VXOR);
     REP8 (LAB_EL, MIR_AND, MIR_ANDS, MIR_OR, MIR_ORS, MIR_XOR, MIR_XORS, MIR_LSH, MIR_LSHS);
-    REP8 (LAB_EL, MIR_VEQI32, MIR_VGTI32, MIR_VEQF32, MIR_VNEF32, MIR_VLTF32, MIR_VLEF32,
-          MIR_VEQF64, MIR_VNEF64);
-    REP2 (LAB_EL, MIR_VLTF64, MIR_VLEF64);
+    REP8 (LAB_EL, MIR_VEQI8, MIR_VEQI16, MIR_VEQI32, MIR_VGTI8, MIR_VGTI16, MIR_VGTI32,
+          MIR_VEQF32, MIR_VNEF32);
+    REP6 (LAB_EL, MIR_VLTF32, MIR_VLEF32, MIR_VEQF64, MIR_VNEF64, MIR_VLTF64, MIR_VLEF64);
     REP8 (LAB_EL, MIR_RSH, MIR_RSHS, MIR_URSH, MIR_URSHS, MIR_EQ, MIR_EQS, MIR_FEQ, MIR_DEQ);
     REP8 (LAB_EL, MIR_LDEQ, MIR_NE, MIR_NES, MIR_FNE, MIR_DNE, MIR_LDNE, MIR_LT, MIR_LTS);
     REP8 (LAB_EL, MIR_ULT, MIR_ULTS, MIR_FLT, MIR_DLT, MIR_LDLT, MIR_LE, MIR_LES, MIR_ULE);
@@ -1542,6 +1542,24 @@ common_addr:;
     for (size_t i = 0; i < 4; i++) set_v128_u32 (r, i, get_v128_u32 (op1, i) ^ get_v128_u32 (op2, i));
     END_INSN;
   }
+  CASE (MIR_VEQI8, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 16; i++)
+      set_v128_u8 (r, i, get_v128_u8 (op1, i) == get_v128_u8 (op2, i) ? UINT8_MAX : 0);
+    END_INSN;
+  }
+  CASE (MIR_VEQI16, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 8; i++)
+      set_v128_u16 (r, i, get_v128_u16 (op1, i) == get_v128_u16 (op2, i) ? UINT16_MAX : 0);
+    END_INSN;
+  }
   CASE (MIR_VEQI32, 3) {
     uint8_t *r = get_vop (bp, ops);
     uint8_t *op1 = get_vop (bp, ops + 1);
@@ -1549,6 +1567,29 @@ common_addr:;
 
     for (size_t i = 0; i < 4; i++)
       set_v128_u32 (r, i, get_v128_u32 (op1, i) == get_v128_u32 (op2, i) ? UINT32_MAX : 0);
+    END_INSN;
+  }
+  CASE (MIR_VGTI8, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 16; i++)
+      set_v128_u8 (r, i,
+                   (int8_t) get_v128_u8 (op1, i) > (int8_t) get_v128_u8 (op2, i) ? UINT8_MAX
+                                                                                  : 0);
+    END_INSN;
+  }
+  CASE (MIR_VGTI16, 3) {
+    uint8_t *r = get_vop (bp, ops);
+    uint8_t *op1 = get_vop (bp, ops + 1);
+    uint8_t *op2 = get_vop (bp, ops + 2);
+
+    for (size_t i = 0; i < 8; i++)
+      set_v128_u16 (r, i,
+                    (int16_t) get_v128_u16 (op1, i) > (int16_t) get_v128_u16 (op2, i)
+                      ? UINT16_MAX
+                      : 0);
     END_INSN;
   }
   CASE (MIR_VGTI32, 3) {
