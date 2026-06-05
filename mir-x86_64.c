@@ -310,6 +310,20 @@ static void gen_movxmm (VARR (uint8_t) * insn_varr, uint32_t offset, uint32_t re
   if (b32_p) addr[0] |= 1;
 }
 
+static void gen_movv128 (VARR (uint8_t) * insn_varr, uint32_t offset, uint32_t reg, int ld_p) {
+  static const uint8_t ld_xmm_reg_pat[] = {
+    0xf3, 0x0f, 0x6f, 0x83, 0, 0, 0, 0 /* movdqu <offset>(%rbx),%xmm */
+  };
+  static const uint8_t st_xmm_reg_pat[] = {
+    0xf3, 0x0f, 0x7f, 0x83, 0, 0, 0, 0 /* movdqu %xmm, <offset>(%rbx) */
+  };
+  uint8_t *addr = push_insns (insn_varr, ld_p ? ld_xmm_reg_pat : st_xmm_reg_pat,
+                              ld_p ? sizeof (ld_xmm_reg_pat) : sizeof (st_xmm_reg_pat));
+  memcpy (addr + 4, &offset, sizeof (uint32_t));
+  assert (reg <= 7);
+  addr[3] |= reg << 3;
+}
+
 static void gen_movxmm2 (VARR (uint8_t) * insn_varr, uint32_t offset, uint32_t reg, int ld_p) {
   static const uint8_t ld_xmm_reg_pat[] = {
     0xf2, 0x41, 0x0f, 0x10, 0x44, 0x24, 0 /* movsd <offset>(%r12),%xmm */
@@ -460,6 +474,16 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
         gen_ldst (code, sp_offset, (uint32_t) ((i + nres) * sizeof (long double)), type == MIR_T_D);
         sp_offset += 8;
       }
+    } else if (type == MIR_T_V128) {
+      if (n_xregs < max_xregs) {
+        gen_movv128 (code, (uint32_t) ((i + nres) * sizeof (long double)), n_xregs++, TRUE);
+      } else {
+        uint32_t offset = (uint32_t) ((i + nres) * sizeof (long double));
+
+        gen_ldst (code, sp_offset, offset, TRUE);
+        gen_ldst (code, sp_offset + 8, offset + 8, TRUE);
+        sp_offset += 16;
+      }
     } else if (type == MIR_T_LD) {
       gen_ldst80 (code, sp_offset, (uint32_t) ((i + nres) * sizeof (long double)));
       sp_offset += 16;
@@ -562,6 +586,8 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
     } else if ((res_types[i] == MIR_T_F || res_types[i] == MIR_T_D) && n_xregs < 2) {
       gen_movxmm (code, (uint32_t) (i * sizeof (long double)), n_xregs++, res_types[i] == MIR_T_F,
                   FALSE);
+    } else if (res_types[i] == MIR_T_V128 && n_xregs < 2) {
+      gen_movv128 (code, (uint32_t) (i * sizeof (long double)), n_xregs++, FALSE);
     } else if (res_types[i] == MIR_T_LD && n_fregs < 2) {
       gen_st80 (code, (uint32_t) (i * sizeof (long double)));
     } else {
@@ -637,6 +663,8 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
     = {0xf3, 0x0f, 0x10, 0x83, 0, 0, 0, 0}; /* movss <offset>(%rbx), %xmm[01] */
   static const uint8_t movsd_pat[]
     = {0xf2, 0x0f, 0x10, 0x83, 0, 0, 0, 0};                   /* movsd <offset>(%rbx), %xmm[01] */
+  static const uint8_t movv128_pat[]
+    = {0xf3, 0x0f, 0x6f, 0x83, 0, 0, 0, 0};                   /* movdqu <offset>(%rbx), %xmm[01] */
   static const uint8_t fldt_pat[] = {0xdb, 0xab, 0, 0, 0, 0}; /* fldt <offset>(%rbx) */
   static const uint8_t fxch_pat[] = {0xd9, 0xc9};             /* fxch */
   uint8_t *addr;
@@ -675,6 +703,11 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
       n_xregs++;
     } else if (results[i] == MIR_T_D && n_xregs < 2) {
       addr = push_insns (code, movsd_pat, sizeof (movsd_pat));
+      addr[3] |= n_xregs << 3;
+      memcpy (addr + 4, &offset, sizeof (uint32_t));
+      n_xregs++;
+    } else if (results[i] == MIR_T_V128 && n_xregs < 2) {
+      addr = push_insns (code, movv128_pat, sizeof (movv128_pat));
       addr[3] |= n_xregs << 3;
       memcpy (addr + 4, &offset, sizeof (uint32_t));
       n_xregs++;

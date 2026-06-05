@@ -1985,6 +1985,9 @@ static void call (MIR_context_t ctx, MIR_val_t *bp, MIR_op_t *insn_arg_ops, code
     case MIR_T_F: call_res_args[i + nres].f = arg_vals[i].f; break;
     case MIR_T_D: call_res_args[i + nres].d = arg_vals[i].d; break;
     case MIR_T_LD: call_res_args[i + nres].ld = arg_vals[i].ld; break;
+    case MIR_T_V128:
+      memcpy (call_res_args[i + nres].v128, arg_vals[i].v128, sizeof (arg_vals[i].v128));
+      break;
     case MIR_T_P: call_res_args[i + nres].u = (uint64_t) arg_vals[i].a; break;
     default:
       mir_assert (MIR_all_blk_type_p (type));
@@ -2007,6 +2010,7 @@ static void call (MIR_context_t ctx, MIR_val_t *bp, MIR_op_t *insn_arg_ops, code
     case MIR_T_F: res->f = call_res_args[i].f; break;
     case MIR_T_D: res->d = call_res_args[i].d; break;
     case MIR_T_LD: res->ld = call_res_args[i].ld; break;
+    case MIR_T_V128: memcpy (res->v128, call_res_args[i].v128, sizeof (res->v128)); break;
     case MIR_T_P: res->a = call_res_args[i].a; break;
     default: mir_assert (FALSE);
     }
@@ -2168,6 +2172,13 @@ static void interp (MIR_context_t ctx, MIR_item_t func_item, va_list va, MIR_val
     }
     case MIR_T_D: arg_vals[i].d = va_arg (va, double); break;
     case MIR_T_LD: arg_vals[i].ld = va_arg (va, long double); break;
+    case MIR_T_V128: {
+      typedef uint8_t mir_v128_arg_t __attribute__ ((vector_size (16)));
+      mir_v128_arg_t v = va_arg (va, mir_v128_arg_t);
+
+      memcpy (arg_vals[i].v128, &v, sizeof (arg_vals[i].v128));
+      break;
+    }
     case MIR_T_P:
     case MIR_T_RBLK: arg_vals[i].a = va_arg (va, void *); break;
     default: mir_assert (MIR_blk_type_p (type)); arg_vals[i].a = alloca (arg_vars[i].size);

@@ -18,6 +18,36 @@ typedef unsigned short uint16x8_t __attribute__ ((vector_size (16)));
 
 static v4si g = {5, 6};
 
+static v4si abi_add_i32 (v4si a, v4si b) {
+  return a + b;
+}
+
+static int abi_sum_i32 (v4si v) {
+  return v[0] + v[1] + v[2] + v[3];
+}
+
+static v4sf abi_mul_f32 (v4sf a, v4sf b) {
+  return a * b;
+}
+
+static int abi_check_f32 (v4sf v) {
+  if (v[0] != 3.0f) return 1;
+  if (v[1] != -6.0f) return 2;
+  if (v[2] != -3.0f) return 3;
+  if (v[3] != 9.0f) return 4;
+  return 0;
+}
+
+static v2df abi_add_f64 (v2df a, v2df b) {
+  return a + b;
+}
+
+static int abi_check_f64 (v2df v) {
+  if (v[0] != 4.75) return 1;
+  if (v[1] != -2.0) return 2;
+  return 0;
+}
+
 int main (void) {
   v4si a = {1, 2, 3, 4};
   v4si b = a;
@@ -43,12 +73,18 @@ int main (void) {
   v4ui umd_a = {20u, 21u, 0xfffffff0u, 9u};
   v4ui umd_b = {3u, 4u, 8u, 2u};
   v4ui uc;
+  v4si abi_ia = {1, 2, 3, 4};
+  v4si abi_ib = {10, 20, 30, 40};
+  v4si abi_ir;
   v2sf sf;
   v2sf nfa = {1.0f, -2.0f};
   v2sf nfb = {2.5f, 1.0f};
   v4sf vf;
   v4sf fa = {1.5f, -2.0f, 3.0f, -4.5f};
   v4sf fb = {0.5f, 4.0f, -1.0f, -1.5f};
+  v4sf abi_fa = {1.5f, -2.0f, 3.0f, -4.5f};
+  v4sf abi_fb = {2.0f, 3.0f, -1.0f, -2.0f};
+  v4sf abi_fr;
   v8sf wfa = {1.0f, 2.0f, -3.0f, 4.0f, 5.0f, -6.0f, 7.0f, 8.0f};
   v8sf wfb = {0.5f, -1.0f, -3.0f, 2.0f, 10.0f, -12.0f, 1.0f, 16.0f};
   v8sf wvf;
@@ -59,6 +95,9 @@ int main (void) {
   v2df df_a = {1.25, -2.5};
   v2df df_b = {3.5, -0.5};
   v2df df_c;
+  v2df abi_da = {1.25, -2.5};
+  v2df abi_db = {3.5, 0.5};
+  v2df abi_dr;
   v2l dm;
   v4df wdf_a = {1.0, -2.0, 3.5, -4.5};
   v4df wdf_b = {0.5, -1.0, 7.0, -1.5};
@@ -364,5 +403,12 @@ int main (void) {
     return 121;
   wdm = wdf_a != wdf_b;
   if (wdm[0] != -1 || wdm[1] != -1 || wdm[2] != -1 || wdm[3] != -1) return 122;
+  abi_ir = abi_add_i32 (abi_ia, abi_ib);
+  if (abi_ir[0] != 11 || abi_ir[1] != 22 || abi_ir[2] != 33 || abi_ir[3] != 44) return 123;
+  if (abi_sum_i32 (abi_ir) != 110) return 124;
+  abi_fr = abi_mul_f32 (abi_fa, abi_fb);
+  if (abi_check_f32 (abi_fr) != 0) return 125;
+  abi_dr = abi_add_f64 (abi_da, abi_db);
+  if (abi_check_f64 (abi_dr) != 0) return 126;
   return 0;
 }

@@ -34,12 +34,18 @@ static MIR_type_t get_result_type (MIR_type_t arg_type1, MIR_type_t arg_type2) {
   return MIR_T_D;
 }
 
-static int classify_arg (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t types[MAX_QWORDS],
-                         int bit_field_p MIR_UNUSED) {
+static int classify_arg_1 (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t types[MAX_QWORDS],
+                           int bit_field_p MIR_UNUSED, int top_level_p) {
   size_t size = type_size (c2m_ctx, type), n_qwords = (size + 7) / 8;
   MIR_type_t mir_type;
 
-  if (type->mode == TM_VECTOR) return 0;
+  if (type->mode == TM_VECTOR) {
+    if (top_level_p && v128_vector_type_p (c2m_ctx, type)) {
+      types[0] = MIR_T_V128;
+      return 1;
+    }
+    return 0;
+  }
   if (aggregate_type_p (type) || type->mode == TM_ARR) {
     if (n_qwords > MAX_QWORDS) return 0; /* too big aggregate */
 
@@ -50,7 +56,7 @@ static int classify_arg (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t types[
 
     switch (type->mode) {
     case TM_ARR: { /* Arrays are handled as small records.  */
-      n_el_qwords = classify_arg (c2m_ctx, type->u.arr_type->el_type, subtypes, FALSE);
+      n_el_qwords = classify_arg_1 (c2m_ctx, type->u.arr_type->el_type, subtypes, FALSE, FALSE);
       if (n_el_qwords == 0) return 0;
       /* make full types: */
       for (i = 0; (size_t) i < n_qwords; i++)
@@ -78,8 +84,8 @@ static int classify_arg (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t types[
           if (decl->bit_offset >= 0) {
             types[start_qword] = get_result_type (MIR_T_I64, types[start_qword]);
           } else {
-            n_el_qwords
-              = classify_arg (c2m_ctx, decl->decl_spec.type, subtypes, decl->bit_offset >= 0);
+            n_el_qwords = classify_arg_1 (c2m_ctx, decl->decl_spec.type, subtypes,
+                                          decl->bit_offset >= 0, FALSE);
             if (n_el_qwords == 0) return 0;
             for (i = 0; i < n_el_qwords && (size_t) (i + start_qword) < n_qwords; i++) {
               types[i + start_qword] = get_result_type (subtypes[i], types[i + start_qword]);
@@ -139,6 +145,11 @@ static int classify_arg (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t types[
   }
 }
 
+static int classify_arg (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t types[MAX_QWORDS],
+                         int bit_field_p) {
+  return classify_arg_1 (c2m_ctx, type, types, bit_field_p, TRUE);
+}
+
 typedef struct target_arg_info {
   int n_iregs, n_fregs;
 } target_arg_info_t;
@@ -180,6 +191,7 @@ static int process_ret_type (c2m_ctx_t c2m_ctx, struct type *ret_type,
       case MIR_T_I64: n_iregs++; break;
       case MIR_T_F:
       case MIR_T_D: n_fregs++; break;
+      case MIR_T_V128: n_fregs++; break;
       case MIR_T_LD: n_stregs++; break;
       case X87UP_CLASS:
         n_qwords--;
@@ -338,6 +350,7 @@ static int process_aggregate_arg (c2m_ctx_t c2m_ctx, struct type *arg_type,
     case MIR_T_I64: n_iregs++; break;
     case MIR_T_F:
     case MIR_T_D: n_fregs++; break;
+    case MIR_T_V128: n_fregs++; break;
     case X87UP_CLASS:
     case MIR_T_LD: return 0;
     default: assert (FALSE);
@@ -363,6 +376,7 @@ static MIR_type_t get_blk_type (int n_qwords, MIR_type_t *qword_types) {
     case MIR_T_I64: n_iregs++; break;
     case MIR_T_F:
     case MIR_T_D: n_fregs++; break;
+    case MIR_T_V128: n_fregs++; break;
     case X87UP_CLASS:
     case MIR_T_LD: return MIR_T_BLK;
     default: assert (FALSE);
@@ -390,7 +404,9 @@ static void target_add_arg_proto (c2m_ctx_t c2m_ctx, const char *name, struct ty
 
   /* pass aggregates on the stack and pass by value for others: */
   var.name = name;
-  if (complex_type_p (arg_type)) {
+  if (n_qwords == 1 && qword_types[0] == MIR_T_V128) {
+    var.type = MIR_T_V128;
+  } else if (complex_type_p (arg_type)) {
     var.type = get_blk_type (n_qwords, qword_types);
     var.size = type_size (c2m_ctx, arg_type);
   } else if (!aggregate_type_p (arg_type)) {
@@ -425,6 +441,11 @@ static void target_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *arg_type,
       arg_info->n_iregs++;
   } else {
     assert (arg.mir_op.mode == MIR_OP_MEM);
+    if (n_qwords == 1 && qword_types[0] == MIR_T_V128) {
+      arg = force_v128_reg (c2m_ctx, arg);
+      VARR_PUSH (MIR_op_t, call_ops, arg.mir_op);
+      return;
+    }
     arg = mem_to_address (c2m_ctx, arg, TRUE);
     type = get_blk_type (n_qwords, qword_types);
     VARR_PUSH (MIR_op_t, call_ops,
@@ -432,8 +453,17 @@ static void target_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *arg_type,
   }
 }
 
-static int target_gen_gather_arg (c2m_ctx_t c2m_ctx MIR_UNUSED, const char *name MIR_UNUSED,
-                                  struct type *arg_type MIR_UNUSED, decl_t param_decl MIR_UNUSED,
-                                  target_arg_info_t *arg_info MIR_UNUSED) {
-  return FALSE;
+static int target_gen_gather_arg (c2m_ctx_t c2m_ctx, const char *name, struct type *arg_type,
+                                  decl_t param_decl, target_arg_info_t *arg_info MIR_UNUSED) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  MIR_context_t ctx = c2m_ctx->ctx;
+  op_t var;
+
+  if (!v128_vector_type_p (c2m_ctx, arg_type)) return FALSE;
+  var = new_op (param_decl, MIR_new_alias_mem_op (ctx, MIR_T_V128, param_decl->offset,
+                                                  MIR_reg (ctx, FP_NAME, curr_func->u.func), 0, 1,
+                                                  get_type_alias (c2m_ctx, arg_type), 0));
+  emit2 (c2m_ctx, MIR_VMOV, var.mir_op,
+         MIR_new_reg_op (ctx, get_reg_var (c2m_ctx, MIR_T_UNDEF, name, NULL).reg));
+  return TRUE;
 }

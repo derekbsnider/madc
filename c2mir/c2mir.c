@@ -12961,9 +12961,10 @@ static const char *get_func_static_var_name (c2m_ctx_t c2m_ctx, const char *suff
 }
 
 static const char *get_param_name (c2m_ctx_t c2m_ctx, struct type *param_type, const char *name) {
-  MIR_type_t type = (memory_value_type_p (param_type)
-                       ? MIR_POINTER_TYPE
-                       : get_mir_type (c2m_ctx, param_type));
+  MIR_type_t type = (v128_vector_type_p (c2m_ctx, param_type)
+                       ? MIR_T_V128
+                       : memory_value_type_p (param_type) ? MIR_POINTER_TYPE
+                                                          : get_mir_type (c2m_ctx, param_type));
   return get_reg_var_name (c2m_ctx, promote_mir_int_type (type), name, 0);
 }
 
