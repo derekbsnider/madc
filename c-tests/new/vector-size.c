@@ -572,5 +572,17 @@ int main (void) {
   if (hc[0] != 2 || hc[1] != 6 || hc[2] != 5536 || hc[3] != 25536) return 160;
   uhc = uha * uhb;
   if (uhc[0] != 3 || uhc[1] != 4 || uhc[2] != 61248 || uhc[3] != 65531) return 161;
+  hc = hia << 2;
+  if (hc[0] != 4 || hc[1] != -8 || hc[2] != 1200 || hc[3] != -1600) return 162;
+  hc = hia >> 2;
+  if (hc[0] != 0 || hc[1] != -1 || hc[2] != 75 || hc[3] != -100) return 163;
+  uhc = uha << 1;
+  if (uhc[0] != 2 || uhc[1] != 4 || uhc[2] != 64464 || uhc[3] != 65534) return 164;
+  hc = hia;
+  hc <<= 1;
+  if (hc[0] != 2 || hc[1] != -4 || hc[2] != 600 || hc[3] != -800) return 165;
+  uhc = uha;
+  uhc >>= 1;
+  if (uhc[0] != 0 || uhc[1] != 1 || uhc[2] != 32500 || uhc[3] != 32767) return 166;
   return 0;
 }
