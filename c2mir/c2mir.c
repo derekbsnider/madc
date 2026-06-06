@@ -13624,6 +13624,37 @@ static MIR_insn_code_t get_v128_i32_packed_scalar_shift_insn_code (c2m_ctx_t c2m
   return lane_size == 2 ? MIR_VURSHI16 : lane_size == 4 ? MIR_VURSHI32 : MIR_VURSHI64;
 }
 
+static int v128_i32_packed_vector_shift_op_p (c2m_ctx_t c2m_ctx, node_code_t code,
+                                              struct type *vector_type,
+                                              struct type *count_type) {
+  if ((code != N_LSH && code != N_LSH_ASSIGN && code != N_RSH && code != N_RSH_ASSIGN)
+      || !v128_i32_vector_type_p (c2m_ctx, vector_type))
+    return FALSE;
+  return compatible_integer_shift_count_vector_types_p (c2m_ctx, vector_type, count_type);
+}
+
+static MIR_insn_code_t get_v128_i32_packed_vector_shift_insn_code (c2m_ctx_t c2m_ctx,
+                                                                   node_code_t code,
+                                                                   struct type *vector_type) {
+  mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
+  int signed_p = signed_integer_type_p (vector_type->u.vector_type->el_type);
+
+  assert (v128_i32_vector_type_p (c2m_ctx, vector_type));
+  if (code == N_LSH || code == N_LSH_ASSIGN) {
+    return (lane_size == 1 ? MIR_VLSHVI8
+                           : lane_size == 2 ? MIR_VLSHVI16
+                                            : lane_size == 4 ? MIR_VLSHVI32 : MIR_VLSHVI64);
+  }
+  assert (code == N_RSH || code == N_RSH_ASSIGN);
+  if (signed_p)
+    return (lane_size == 1 ? MIR_VRSHVI8
+                           : lane_size == 2 ? MIR_VRSHVI16
+                                            : lane_size == 4 ? MIR_VRSHVI32 : MIR_VRSHVI64);
+  return (lane_size == 1 ? MIR_VURSHVI8
+                         : lane_size == 2 ? MIR_VURSHVI16
+                                          : lane_size == 4 ? MIR_VURSHVI32 : MIR_VURSHVI64);
+}
+
 static MIR_insn_code_t get_v128_i32_arith_insn_code (c2m_ctx_t c2m_ctx, node_code_t code,
                                                      struct type *vector_type) {
   MIR_type_t lane_type = get_mir_type (c2m_ctx, vector_type->u.vector_type->el_type);
@@ -13682,6 +13713,13 @@ static op_t emit_v128_i32_shift_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op
                                     struct type *vector_type, op_t dest) {
   MIR_insn_code_t insn_code = get_v128_i32_shift_insn_code (c2m_ctx, code, vector_type);
 
+  if (v128_i32_packed_vector_shift_op_p (c2m_ctx, code, vector_type, type2)) {
+    MIR_insn_code_t packed_code
+      = get_v128_i32_packed_vector_shift_insn_code (c2m_ctx, code, vector_type);
+
+    return emit_v128_i32_bin_op (c2m_ctx, packed_code, op1, type1, op2, type2, vector_type,
+                                 dest);
+  }
   if (v128_i64_signed_scalar_rshift_op_p (c2m_ctx, code, vector_type, type2))
     return emit_v128_i64_signed_scalar_rshift_op (c2m_ctx, op1, type1, op2, type2, vector_type,
                                                   dest);

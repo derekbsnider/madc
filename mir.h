@@ -117,7 +117,10 @@ typedef enum {
   REP3 (INSN_EL, VAND, VOR, VXOR),                           /* Vector logical */
   REP6 (INSN_EL, LSH, LSHS, RSH, RSHS, URSH, URSHS),         /* Right signed/unsigned shift */
   REP8 (INSN_EL, VLSHI16, VRSHI16, VURSHI16, VLSHI32, VRSHI32, VURSHI32, VLSHI64,
-        VURSHI64), /* Vector shifts */
+        VURSHI64), /* Vector scalar-count shifts */
+  REP8 (INSN_EL, VLSHVI8, VRSHVI8, VURSHVI8, VLSHVI16, VRSHVI16, VURSHVI16, VLSHVI32,
+        VRSHVI32),
+  REP4 (INSN_EL, VURSHVI32, VLSHVI64, VRSHVI64, VURSHVI64), /* Vector lane-count shifts */
   REP10 (INSN_EL, VEQI8, VEQI16, VEQI32, VEQI64, VGTI8, VGTI16, VGTI32, VGTI64,
          VEQF32, VNEF32),
   REP6 (INSN_EL, VLTF32, VLEF32, VEQF64, VNEF64, VLTF64, VLEF64), /* Vector comparison */

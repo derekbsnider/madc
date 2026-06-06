@@ -83,6 +83,125 @@ static const MIR_insn_code_t target_io_dup_op_insn_codes[] = {
   MIR_MULOS, MIR_UMULO, MIR_UMULOS, MIR_INSN_BOUND,
 };
 
+static int vshift_count_insn_p (MIR_insn_code_t code) {
+  return code >= MIR_VLSHVI8 && code <= MIR_VURSHVI64;
+}
+
+static size_t vshift_count_lane_size (MIR_insn_code_t code) {
+  switch (code) {
+  case MIR_VLSHVI8:
+  case MIR_VRSHVI8:
+  case MIR_VURSHVI8: return 1;
+  case MIR_VLSHVI16:
+  case MIR_VRSHVI16:
+  case MIR_VURSHVI16: return 2;
+  case MIR_VLSHVI32:
+  case MIR_VRSHVI32:
+  case MIR_VURSHVI32: return 4;
+  case MIR_VLSHVI64:
+  case MIR_VRSHVI64:
+  case MIR_VURSHVI64: return 8;
+  default: assert (FALSE); return 0;
+  }
+}
+
+static MIR_type_t vshift_count_lane_mem_type (MIR_insn_code_t code) {
+  switch (code) {
+  case MIR_VRSHVI8: return MIR_T_I8;
+  case MIR_VRSHVI16: return MIR_T_I16;
+  case MIR_VRSHVI32: return MIR_T_I32;
+  case MIR_VRSHVI64: return MIR_T_I64;
+  case MIR_VLSHVI8:
+  case MIR_VURSHVI8: return MIR_T_U8;
+  case MIR_VLSHVI16:
+  case MIR_VURSHVI16: return MIR_T_U16;
+  case MIR_VLSHVI32:
+  case MIR_VURSHVI32: return MIR_T_U32;
+  case MIR_VLSHVI64:
+  case MIR_VURSHVI64: return MIR_T_U64;
+  default: assert (FALSE); return MIR_T_UNDEF;
+  }
+}
+
+static MIR_type_t vshift_count_lane_reg_type (MIR_insn_code_t code) {
+  assert (vshift_count_insn_p (code));
+  return MIR_T_I64;
+}
+
+static MIR_insn_code_t vshift_count_scalar_insn_code (MIR_insn_code_t code) {
+  switch (code) {
+  case MIR_VLSHVI8:
+  case MIR_VLSHVI16:
+  case MIR_VLSHVI32: return MIR_LSHS;
+  case MIR_VRSHVI8:
+  case MIR_VRSHVI16:
+  case MIR_VRSHVI32: return MIR_RSHS;
+  case MIR_VURSHVI8:
+  case MIR_VURSHVI16:
+  case MIR_VURSHVI32: return MIR_URSHS;
+  case MIR_VLSHVI64: return MIR_LSH;
+  case MIR_VRSHVI64: return MIR_RSH;
+  case MIR_VURSHVI64: return MIR_URSH;
+  default: assert (FALSE); return MIR_INVALID_INSN;
+  }
+}
+
+static void expand_vshift_count_insn (gen_ctx_t gen_ctx, MIR_insn_t insn) {
+  MIR_context_t ctx = gen_ctx->ctx;
+  MIR_func_t func = curr_func_item->u.func;
+  MIR_insn_code_t code = insn->code;
+  MIR_insn_code_t scalar_code = vshift_count_scalar_insn_code (code);
+  MIR_type_t lane_mem_type = vshift_count_lane_mem_type (code);
+  MIR_type_t lane_reg_type = vshift_count_lane_reg_type (code);
+  MIR_type_t count_mem_type = (vshift_count_lane_size (code) == 1 ? MIR_T_U8
+                               : vshift_count_lane_size (code) == 2 ? MIR_T_U16
+                               : vshift_count_lane_size (code) == 4 ? MIR_T_U32
+                                                                    : MIR_T_U64);
+  size_t lane_size = vshift_count_lane_size (code);
+  MIR_reg_t src_addr_reg = gen_new_temp_reg (gen_ctx, MIR_T_I64, func);
+  MIR_reg_t count_addr_reg = gen_new_temp_reg (gen_ctx, MIR_T_I64, func);
+  MIR_reg_t dest_addr_reg = gen_new_temp_reg (gen_ctx, MIR_T_I64, func);
+  MIR_op_t src_addr_op = _MIR_new_var_op (ctx, src_addr_reg);
+  MIR_op_t count_addr_op = _MIR_new_var_op (ctx, count_addr_reg);
+  MIR_op_t dest_addr_op = _MIR_new_var_op (ctx, dest_addr_reg);
+  MIR_op_t src_mem = _MIR_new_var_mem_op (ctx, MIR_T_V128, 0, src_addr_reg, MIR_NON_VAR, 1);
+  MIR_op_t count_mem = _MIR_new_var_mem_op (ctx, MIR_T_V128, 0, count_addr_reg, MIR_NON_VAR, 1);
+  MIR_op_t dest_mem = _MIR_new_var_mem_op (ctx, MIR_T_V128, 0, dest_addr_reg, MIR_NON_VAR, 1);
+  MIR_op_t cx_op = _MIR_new_var_op (ctx, CX_HARD_REG);
+  MIR_insn_t new_insn;
+
+  assert (vshift_count_insn_p (code));
+  gen_add_insn_before (gen_ctx, insn,
+                       MIR_new_insn (ctx, MIR_ALLOCA, src_addr_op, MIR_new_int_op (ctx, 16)));
+  gen_add_insn_before (gen_ctx, insn, MIR_new_insn (ctx, MIR_VMOV, src_mem, insn->ops[1]));
+  gen_add_insn_before (gen_ctx, insn,
+                       MIR_new_insn (ctx, MIR_ALLOCA, count_addr_op, MIR_new_int_op (ctx, 16)));
+  gen_add_insn_before (gen_ctx, insn, MIR_new_insn (ctx, MIR_VMOV, count_mem, insn->ops[2]));
+  gen_add_insn_before (gen_ctx, insn,
+                       MIR_new_insn (ctx, MIR_ALLOCA, dest_addr_op, MIR_new_int_op (ctx, 16)));
+  for (size_t offset = 0; offset < 16; offset += lane_size) {
+    MIR_reg_t lane_reg = gen_new_temp_reg (gen_ctx, lane_reg_type, func);
+    MIR_op_t lane_op = _MIR_new_var_op (ctx, lane_reg);
+    MIR_op_t lane_src_mem
+      = _MIR_new_var_mem_op (ctx, lane_mem_type, (MIR_disp_t) offset, src_addr_reg,
+                             MIR_NON_VAR, 1);
+    MIR_op_t lane_count_mem
+      = _MIR_new_var_mem_op (ctx, count_mem_type, (MIR_disp_t) offset, count_addr_reg,
+                             MIR_NON_VAR, 1);
+    MIR_op_t lane_dest_mem
+      = _MIR_new_var_mem_op (ctx, lane_mem_type, (MIR_disp_t) offset, dest_addr_reg,
+                             MIR_NON_VAR, 1);
+
+    gen_add_insn_before (gen_ctx, insn, MIR_new_insn (ctx, MIR_MOV, lane_op, lane_src_mem));
+    gen_add_insn_before (gen_ctx, insn, MIR_new_insn (ctx, MIR_MOV, cx_op, lane_count_mem));
+    gen_add_insn_before (gen_ctx, insn, MIR_new_insn (ctx, scalar_code, lane_op, lane_op, cx_op));
+    gen_add_insn_before (gen_ctx, insn, MIR_new_insn (ctx, MIR_MOV, lane_dest_mem, lane_op));
+  }
+  new_insn = MIR_new_insn (ctx, MIR_VMOV, insn->ops[0], dest_mem);
+  gen_add_insn_before (gen_ctx, insn, new_insn);
+  gen_delete_insn (gen_ctx, insn);
+}
+
 static MIR_insn_code_t get_ext_code (MIR_type_t type) {
   switch (type) {
   case MIR_T_I8: return MIR_EXT8;
@@ -939,6 +1058,21 @@ static void target_machinize (gen_ctx_t gen_ctx) {
       break;
     }
     case MIR_VA_END: /* do nothing */ gen_delete_insn (gen_ctx, insn); break;
+    case MIR_VLSHVI8:
+    case MIR_VRSHVI8:
+    case MIR_VURSHVI8:
+    case MIR_VLSHVI16:
+    case MIR_VRSHVI16:
+    case MIR_VURSHVI16:
+    case MIR_VLSHVI32:
+    case MIR_VRSHVI32:
+    case MIR_VURSHVI32:
+    case MIR_VLSHVI64:
+    case MIR_VRSHVI64:
+    case MIR_VURSHVI64:
+      keep_fp_p = alloca_p = TRUE;
+      expand_vshift_count_insn (gen_ctx, insn);
+      break;
     case MIR_VA_ARG:
     case MIR_VA_BLOCK_ARG: {
       /* Use a builtin func call:
