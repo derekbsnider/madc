@@ -1,0 +1,1 @@
+-DFOO=42 -DBAR -DBAZ=7

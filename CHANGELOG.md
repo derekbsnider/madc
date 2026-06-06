@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added — `-D` command-line macro defines (2026-06-06)
+
+madc now accepts `-DNAME`, `-DNAME=VALUE`, and `-D NAME` (repeatable, gcc-style: a
+bare name defines to `1`). Object-like; applied after the builtin defines so a
+`-D` can override one. First piece of the preprocessor *environment* needed to
+parse real system headers (which branch on predefined macros). New
+`tests/testdefineflag.mad` (+`.flags`/`.expect`) covers single/multiple/`=value`/
+bare forms; matches gcc. Note: `-D` one-at-a-time won't scale to the ~450
+predefined macros — a configure-captured predefined-macro builtin set is the
+follow-up (see `docs/plans/2026-06-06-real-header-pch-pipeline.md`).
+
 ### Added — `--emit=c11` SIMD rendering (`cir_emit_c.cpp`) (2026-06-06)
 
 The transpile renderer now renders vector types and compound literals, so the

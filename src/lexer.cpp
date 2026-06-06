@@ -1458,6 +1458,12 @@ void Program::_tokenizer_init()
 	m.body = "0";
 	macro_map["__builtin_is_constant_evaluated"] = m;
     }
+
+    // Command-line -D defines, applied AFTER the builtins so a -D overrides one
+    // (matching gcc). Object-like only: -DNAME=VALUE / -DNAME (=> "1"). These
+    // supply the predefined-macro environment that real system headers branch on.
+    for ( const std::pair<std::string,std::string> &d : cli_defines )
+	define_map[d.first] = d.second;
 }
 
 bool Program::include_already_seen(const std::string &path)

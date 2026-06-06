@@ -414,6 +414,24 @@ int main(int argc, char **argv)
                 prog->include_paths.push_back(p);
             }
             filearg = i + 1;
+        } else if (strncmp(argv[i], "-D", 2) == 0) {
+            // -DNAME, -DNAME=VALUE, or -D NAME (repeatable). A bare NAME defines
+            // it as "1" (gcc behavior). Object-like only; applied after the
+            // builtin defines so a -D can override one. (Used to supply the
+            // predefined-macro environment real system headers branch on.)
+            const char *def = argv[i] + 2;
+            if ( *def == '\0' && i + 1 < argc )
+                def = argv[++i];
+            if ( *def )
+            {
+                std::string d = def;
+                std::string::size_type eq = d.find('=');
+                std::string name = (eq == std::string::npos) ? d : d.substr(0, eq);
+                std::string value = (eq == std::string::npos) ? std::string("1") : d.substr(eq + 1);
+                if ( !name.empty() )
+                    prog->cli_defines.push_back(std::make_pair(name, value));
+            }
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-pch") == 0) {
             emit_pch = true;
             filearg = i + 1;
