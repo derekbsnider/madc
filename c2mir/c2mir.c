@@ -281,7 +281,7 @@ struct arr_type {
 
 struct vector_type {
   struct type *el_type;
-  mir_size_t size;
+  mir_size_t size, nel;
 };
 
 struct func_type {
@@ -6245,6 +6245,7 @@ static int type_eq_p (struct type *type1, struct type *type2) {
   }
   case TM_VECTOR:
     return (type1->u.vector_type->size == type2->u.vector_type->size
+            && type1->u.vector_type->nel == type2->u.vector_type->nel
             && type_eq_p (type1->u.vector_type->el_type, type2->u.vector_type->el_type));
   case TM_FUNC: {
     struct func_type *ft1 = type1->u.func_type, *ft2 = type2->u.func_type;
@@ -6293,6 +6294,7 @@ static int compatible_types_p (struct type *type1, struct type *type2, int ignor
     return TRUE;
   } else if (type1->mode == TM_VECTOR) {
     return (type1->u.vector_type->size == type2->u.vector_type->size
+            && type1->u.vector_type->nel == type2->u.vector_type->nel
             && compatible_types_p (type1->u.vector_type->el_type, type2->u.vector_type->el_type,
                                    ignore_quals_p));
   } else if (type1->mode == TM_FUNC) {
@@ -6385,6 +6387,11 @@ static struct type *v128_float_bin_op_vector_type (c2m_ctx_t c2m_ctx, struct typ
 
 static struct type *create_vector_type (c2m_ctx_t c2m_ctx, struct type *el_type,
                                         mir_size_t size, node_t pos_node);
+static struct type *create_vector_type_with_nel (c2m_ctx_t c2m_ctx, struct type *el_type,
+                                                 mir_size_t size, mir_size_t nel,
+                                                 node_t pos_node);
+static mir_size_t vector_el_count (c2m_ctx_t c2m_ctx, struct type *type);
+static mir_ullong round_up_power_of_two (mir_ullong value);
 
 static struct type *signed_integer_vector_type_for_vector (c2m_ctx_t c2m_ctx,
                                                            struct type *vector_type) {
@@ -6394,8 +6401,9 @@ static struct type *signed_integer_vector_type_for_vector (c2m_ctx_t c2m_ctx,
   init_type (&el_type);
   el_type.mode = TM_BASIC;
   el_type.u.basic_type = get_int_basic_type (lane_size);
-  return create_vector_type (c2m_ctx, &el_type, raw_type_size (c2m_ctx, vector_type),
-                             vector_type->pos_node);
+  return create_vector_type_with_nel (c2m_ctx, &el_type, raw_type_size (c2m_ctx, vector_type),
+                                      vector_el_count (c2m_ctx, vector_type),
+                                      vector_type->pos_node);
 }
 
 static struct type *v128_float_cmp_vector_type (c2m_ctx_t c2m_ctx, struct type *type1,
@@ -6426,12 +6434,10 @@ static int same_size_vector_reinterpret_cast_p (c2m_ctx_t c2m_ctx, struct type *
 }
 
 static mir_size_t vector_el_count (c2m_ctx_t c2m_ctx, struct type *type) {
-  mir_size_t el_size;
-
+  (void) c2m_ctx;
   assert (type->mode == TM_VECTOR);
-  el_size = raw_type_size (c2m_ctx, type->u.vector_type->el_type);
-  assert (el_size != 0);
-  return raw_type_size (c2m_ctx, type) / el_size;
+  assert (type->u.vector_type->nel != 0);
+  return type->u.vector_type->nel;
 }
 
 static int supported_vector_lane_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
@@ -6502,17 +6508,28 @@ static struct type *create_type (c2m_ctx_t c2m_ctx, struct type *copy) {
   return res;
 }
 
-static struct type *create_vector_type (c2m_ctx_t c2m_ctx, struct type *el_type,
-                                        mir_size_t size, node_t pos_node) {
+static struct type *create_vector_type_with_nel (c2m_ctx_t c2m_ctx, struct type *el_type,
+                                                 mir_size_t size, mir_size_t nel,
+                                                 node_t pos_node) {
   struct vector_type *vector_type = reg_malloc (c2m_ctx, sizeof (struct vector_type));
   struct type *res = create_type (c2m_ctx, NULL);
 
+  assert (nel != 0);
   vector_type->el_type = create_type (c2m_ctx, el_type);
   vector_type->size = size;
+  vector_type->nel = nel;
   res->pos_node = pos_node;
   res->mode = TM_VECTOR;
   res->u.vector_type = vector_type;
   return res;
+}
+
+static struct type *create_vector_type (c2m_ctx_t c2m_ctx, struct type *el_type,
+                                        mir_size_t size, node_t pos_node) {
+  mir_size_t el_size = raw_type_size (c2m_ctx, el_type);
+
+  assert (el_size != 0 && size % el_size == 0);
+  return create_vector_type_with_nel (c2m_ctx, el_type, size, size / el_size, pos_node);
 }
 
 DEF_DLIST_LINK (case_t);
@@ -8070,12 +8087,10 @@ static struct type *indexed_initializer_el_type (struct type *type) {
 static mir_llong get_indexed_initializer_type_size (c2m_ctx_t c2m_ctx, struct type *type) {
   node_t size_node;
   struct expr *sexpr;
-  mir_size_t el_size;
 
   assert (indexed_initializer_type_p (type));
   if (type->mode == TM_VECTOR) {
-    el_size = type_size (c2m_ctx, type->u.vector_type->el_type);
-    return (mir_llong) (type->u.vector_type->size / el_size);
+    return (mir_llong) vector_el_count (c2m_ctx, type);
   }
   size_node = type->u.arr_type->size;
   sexpr = size_node->attr;
@@ -8641,6 +8656,13 @@ static int power_of_two_p (mir_ullong value) {
   return value != 0 && (value & (value - 1)) == 0;
 }
 
+static mir_ullong round_up_power_of_two (mir_ullong value) {
+  mir_ullong res = 1;
+
+  while (res < value) res <<= 1;
+  return res;
+}
+
 static int vector_element_type_p (struct type *type) {
   return ((integer_type_p (type) || floating_type_p (type))
           && (type->mode != TM_BASIC || type->u.basic_type != TP_BOOL));
@@ -8697,14 +8719,19 @@ static void apply_vector_attrs (c2m_ctx_t c2m_ctx, node_t decl_node, struct type
         error (c2m_ctx, POS (arg), "invalid %s attribute argument", attr_name);
         continue;
       }
-      vector_size = nel * el_size;
+      vector_size = round_up_power_of_two (nel * el_size);
+      if (vector_size > (mir_ullong) INT_MAX) {
+        error (c2m_ctx, POS (arg), "invalid %s attribute argument", attr_name);
+        continue;
+      }
     }
-    if (!power_of_two_p (nel)) {
+    if (vector_size_p && !power_of_two_p (nel)) {
       error (c2m_ctx, POS (attr), "number of vector components %llu not a power of two",
              (unsigned long long) nel);
       continue;
     }
-    new_type = create_vector_type (c2m_ctx, type, (mir_size_t) vector_size, type->pos_node);
+    new_type = create_vector_type_with_nel (c2m_ctx, type, (mir_size_t) vector_size,
+                                            (mir_size_t) nel, type->pos_node);
     new_type->type_qual = type->type_qual;
     *type_ptr = new_type;
   }
@@ -10383,8 +10410,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
                    SHUFFLE_VECTOR);
           } else {
             lane_size = vector_lane_size (c2m_ctx, t1);
-            res_size = lane_size * (mir_size_t) (n_args - 2);
-            ret_type = create_vector_type (c2m_ctx, t1->u.vector_type->el_type, res_size, r);
+            res_size = (mir_size_t) round_up_power_of_two (lane_size * (mir_size_t) (n_args - 2));
+            ret_type = create_vector_type_with_nel (c2m_ctx, t1->u.vector_type->el_type,
+                                                    res_size, n_args - 2, r);
             if (!shufflevector_type_p (c2m_ctx, ret_type, t1, t2, n_args - 2)) {
               error (c2m_ctx, POS (r), "unsupported vector types in %s", SHUFFLE_VECTOR);
             } else {
@@ -11636,6 +11664,8 @@ static void get_type_alias_name (c2m_ctx_t c2m_ctx, struct type *type, VARR (cha
   case TM_VECTOR:
     VARR_PUSH (char, name, 'V');
     push_val (name, (mir_long) type->u.vector_type->size);
+    VARR_PUSH (char, name, 'n');
+    push_val (name, (mir_long) type->u.vector_type->nel);
     get_type_alias_name (c2m_ctx, type->u.vector_type->el_type, name);
     VARR_PUSH (char, name, 'e');
     break;
@@ -16969,7 +16999,8 @@ static void print_type (c2m_ctx_t c2m_ctx, FILE *f, struct type *type) {
     fprintf (f, ")");
     break;
   case TM_VECTOR:
-    fprintf (f, "vector [%llu] (", (unsigned long long) type->u.vector_type->size);
+    fprintf (f, "vector [%llu:%llu] (", (unsigned long long) type->u.vector_type->size,
+             (unsigned long long) type->u.vector_type->nel);
     print_type (c2m_ctx, f, type->u.vector_type->el_type);
     fprintf (f, ")");
     break;

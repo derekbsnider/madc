@@ -29,6 +29,8 @@ typedef unsigned short uint16x8_t __attribute__ ((vector_size (16)));
 
 #if defined(__clang__) || defined(__MIRC__)
 typedef int clang_i4 __attribute__ ((ext_vector_type (4)));
+typedef int clang_i3 __attribute__ ((ext_vector_type (3)));
+typedef unsigned char clang_uc3 __attribute__ ((ext_vector_type (3)));
 typedef unsigned short clang_uh8 __attribute__ ((__ext_vector_type__ (8)));
 typedef float clang_f4 __attribute__ ((ext_vector_type (4)));
 #endif
@@ -343,6 +345,12 @@ int main (void) {
   clang_i4 ext_a = {1, -2, 3, -4};
   clang_i4 ext_b = {5, 6, -7, -8};
   clang_i4 ext_c;
+  clang_i3 ext3_a = {1, -2, 3};
+  clang_i3 ext3_b = {5, 6, -7};
+  clang_i3 ext3_c;
+  clang_uc3 ext3_u = {250, 2, 7};
+  clang_uc3 ext3_v = {6, 4, 9};
+  clang_uc3 ext3_w;
   clang_uh8 ext_u = {1, 2, 65000, 65535, 128, 256, 1024, 32768};
   clang_uh8 ext_v = {3, 2, 8, 5, 2, 4, 8, 16};
   clang_uh8 ext_w;
@@ -366,6 +374,14 @@ int main (void) {
   if (ext_fy[0] != 3.0f || ext_fy[1] != -4.0f || ext_fy[2] != 6.0f
       || ext_fy[3] != -9.0f)
     return 254;
+  if (sizeof (clang_i3) != 16 || _Alignof (clang_i3) != 16) return 255;
+  if (sizeof (clang_uc3) != 4 || _Alignof (clang_uc3) != 4) return 255;
+  if (__builtin_vectorelements (clang_i3) != 3 || __builtin_vectorelements (ext3_u) != 3)
+    return 255;
+  ext3_c = ext3_a + ext3_b;
+  if (ext3_c[0] != 6 || ext3_c[1] != 4 || ext3_c[2] != -4) return 255;
+  ext3_w = ext3_u + ext3_v;
+  if (ext3_w[0] != 0 || ext3_w[1] != 6 || ext3_w[2] != 16) return 255;
 #endif
   if (g[0] != 5 || g[1] != 6 || g[2] != 0 || g[3] != 0) return 3;
   b[0] = 9;
