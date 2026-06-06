@@ -8646,8 +8646,7 @@ static int vector_element_type_p (struct type *type) {
           && (type->mode != TM_BASIC || type->u.basic_type != TP_BOOL));
 }
 
-static void apply_vector_size_attrs (c2m_ctx_t c2m_ctx, node_t decl_node,
-                                     struct type **type_ptr) {
+static void apply_vector_attrs (c2m_ctx_t c2m_ctx, node_t decl_node, struct type **type_ptr) {
   node_t attrs, attr, id, list, arg;
 
   attrs = NL_EL (decl_node->u.ops, 2);
@@ -8655,37 +8654,51 @@ static void apply_vector_size_attrs (c2m_ctx_t c2m_ctx, node_t decl_node,
   assert (attrs->code == N_LIST);
   for (attr = NL_HEAD (attrs->u.ops); attr != NULL; attr = NL_NEXT (attr)) {
     struct type *type, *new_type;
-    mir_ullong vector_size, nel;
+    mir_ullong arg_value, vector_size, nel;
     mir_size_t el_size;
+    int vector_size_p;
+    const char *attr_name;
 
     assert (attr->code == N_ATTR);
     id = NL_HEAD (attr->u.ops);
     assert (id->code == N_ID);
-    if (!attr_name_eq_p (id->u.s.s, "vector_size")) continue;
+    vector_size_p = attr_name_eq_p (id->u.s.s, "vector_size");
+    if (!vector_size_p && !attr_name_eq_p (id->u.s.s, "ext_vector_type")) continue;
+    attr_name = vector_size_p ? "vector_size" : "ext_vector_type";
     list = NL_NEXT (id);
     assert (list->code == N_LIST);
     arg = NL_HEAD (list->u.ops);
     if (arg == NULL || NL_NEXT (arg) != NULL) {
-      error (c2m_ctx, POS (attr), "vector_size attribute requires one argument");
+      error (c2m_ctx, POS (attr), "%s attribute requires one argument", attr_name);
       continue;
     }
-    if (!unsigned_int_node_value (arg, &vector_size) || vector_size == 0
-        || vector_size > (mir_ullong) INT_MAX) {
-      error (c2m_ctx, POS (arg), "invalid vector_size attribute argument");
+    if (!unsigned_int_node_value (arg, &arg_value) || arg_value == 0
+        || arg_value > (mir_ullong) INT_MAX) {
+      error (c2m_ctx, POS (arg), "invalid %s attribute argument", attr_name);
       continue;
     }
     type = *type_ptr;
     if (!vector_element_type_p (type)) {
-      error (c2m_ctx, POS (attr), "invalid vector type for attribute 'vector_size'");
+      error (c2m_ctx, POS (attr), "invalid vector type for attribute '%s'", attr_name);
       continue;
     }
     set_type_layout (c2m_ctx, type);
     el_size = type_size (c2m_ctx, type);
-    if (el_size == 0 || vector_size % el_size != 0) {
-      error (c2m_ctx, POS (attr), "vector size is not an integral multiple of component size");
-      continue;
+    if (vector_size_p) {
+      vector_size = arg_value;
+      if (el_size == 0 || vector_size % el_size != 0) {
+        error (c2m_ctx, POS (attr), "vector size is not an integral multiple of component size");
+        continue;
+      }
+      nel = vector_size / el_size;
+    } else {
+      nel = arg_value;
+      if (el_size != 0 && nel > (mir_ullong) INT_MAX / el_size) {
+        error (c2m_ctx, POS (arg), "invalid %s attribute argument", attr_name);
+        continue;
+      }
+      vector_size = nel * el_size;
     }
-    nel = vector_size / el_size;
     if (!power_of_two_p (nel)) {
       error (c2m_ctx, POS (attr), "number of vector components %llu not a power of two",
              (unsigned long long) nel);
@@ -8737,7 +8750,7 @@ static void create_decl (c2m_ctx_t c2m_ctx, node_t scope, node_t decl_node,
     decl->decl_spec.type = append_type (type, decl->decl_spec.type);
   }
   if (decl_node->code == N_SPEC_DECL || decl_node->code == N_MEMBER)
-    apply_vector_size_attrs (c2m_ctx, decl_node, &decl->decl_spec.type);
+    apply_vector_attrs (c2m_ctx, decl_node, &decl->decl_spec.type);
   check_type (c2m_ctx, decl->decl_spec.type, 0, func_def_p);
   if (declarator->code == N_DECL) {
     id = NL_HEAD (declarator->u.ops);

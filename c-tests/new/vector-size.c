@@ -27,6 +27,12 @@ typedef short v4hi __attribute__ ((vector_size (8)));
 typedef short v8hi __attribute__ ((vector_size (16)));
 typedef unsigned short uint16x8_t __attribute__ ((vector_size (16)));
 
+#if defined(__clang__) || defined(__MIRC__)
+typedef int clang_i4 __attribute__ ((ext_vector_type (4)));
+typedef unsigned short clang_uh8 __attribute__ ((__ext_vector_type__ (8)));
+typedef float clang_f4 __attribute__ ((ext_vector_type (4)));
+#endif
+
 static v4si g = {5, 6};
 
 static v4si abi_add_i32 (v4si a, v4si b) {
@@ -333,11 +339,34 @@ int main (void) {
   v4sf inc_fr;
   v8sf inc_wf = {1.0f, -2.0f, 3.5f, -4.5f, 5.0f, -6.0f, 7.0f, -8.0f};
   v8sf inc_wfr;
+#if defined(__clang__) || defined(__MIRC__)
+  clang_i4 ext_a = {1, -2, 3, -4};
+  clang_i4 ext_b = {5, 6, -7, -8};
+  clang_i4 ext_c;
+  clang_uh8 ext_u = {1, 2, 65000, 65535, 128, 256, 1024, 32768};
+  clang_uh8 ext_v = {3, 2, 8, 5, 2, 4, 8, 16};
+  clang_uh8 ext_w;
+  clang_f4 ext_fx = {1.5f, -2.0f, 3.0f, -4.5f};
+  clang_f4 ext_fy;
+#endif
   int s = 7;
   unsigned int u = 0xff;
 
   if (sizeof (v4si) != 16) return 1;
   if (_Alignof (v4si) != 16) return 2;
+#if defined(__clang__) || defined(__MIRC__)
+  if (sizeof (clang_i4) != 16 || _Alignof (clang_i4) != 16) return 251;
+  ext_c = ext_a + ext_b;
+  if (ext_c[0] != 6 || ext_c[1] != 4 || ext_c[2] != -4 || ext_c[3] != -12)
+    return 252;
+  ext_w = ext_u + ext_v;
+  if (ext_w[0] != 4 || ext_w[1] != 4 || ext_w[2] != 65008 || ext_w[3] != 4)
+    return 253;
+  ext_fy = ext_fx * 2.0f;
+  if (ext_fy[0] != 3.0f || ext_fy[1] != -4.0f || ext_fy[2] != 6.0f
+      || ext_fy[3] != -9.0f)
+    return 254;
+#endif
   if (g[0] != 5 || g[1] != 6 || g[2] != 0 || g[3] != 0) return 3;
   b[0] = 9;
   if (b[0] != 9 || b[1] != 2 || b[3] != 4) return 4;
