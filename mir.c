@@ -3142,6 +3142,14 @@ void _MIR_output_data_item_els (MIR_context_t ctx, FILE *f, MIR_item_t item, int
       break;
       /* only ptr as ref ??? */
     case MIR_T_P: fprintf (f, "0x%" PRIxPTR, ((uintptr_t *) data->u.els)[i]); break;
+    case MIR_T_V128: {
+      uint8_t *bytes = data->u.els + i * _MIR_type_size (ctx, data->el_type);
+      for (size_t j = 0; j < _MIR_type_size (ctx, data->el_type); j++) {
+        if (j != 0) fprintf (f, ", ");
+        fprintf (f, "%" PRIu8, bytes[j]);
+      }
+      break;
+    }
     default: mir_assert (FALSE);
     }
     if (i + 1 < data->nel) fprintf (f, ", ");
@@ -5084,6 +5092,12 @@ static size_t write_item (MIR_context_t ctx, writer_func_t writer, MIR_item_t it
         break;
         /* only ptr as ref ??? */
       case MIR_T_P: len += write_uint (ctx, writer, ((uintptr_t *) data->u.els)[i]); break;
+      case MIR_T_V128: {
+        uint8_t *bytes = data->u.els + i * _MIR_type_size (ctx, data->el_type);
+        for (size_t j = 0; j < _MIR_type_size (ctx, data->el_type); j++)
+          len += write_uint (ctx, writer, bytes[j]);
+        break;
+      }
       default: mir_assert (FALSE);
       }
     len += put_byte (ctx, writer, TAG_EOI);
@@ -5764,6 +5778,13 @@ void MIR_read_with_func (MIR_context_t ctx, int (*const reader) (MIR_context_t))
               v.u64 = attr.u;
               push_data (ctx, (uint8_t *) &v.i64, sizeof (uint64_t));
               break;
+            case MIR_T_V128:
+              if (attr.u > UINT8_MAX)
+                MIR_get_error_func (ctx) (MIR_binary_io_error,
+                                          "v128 data byte value is too big");
+              v.u8 = (uint8_t) attr.u;
+              push_data (ctx, &v.u8, sizeof (uint8_t));
+              break;
             default:
               MIR_get_error_func (ctx) (MIR_binary_io_error,
                                         "data type %s does not correspond value type",
@@ -5826,6 +5847,10 @@ void MIR_read_with_func (MIR_context_t ctx, int (*const reader) (MIR_context_t))
           default: MIR_get_error_func (ctx) (MIR_binary_io_error, "wrong data value tag %d", tag);
           }
         }
+        if (type == MIR_T_V128
+            && VARR_LENGTH (uint8_t, temp_data) % _MIR_type_size (ctx, type) != 0)
+          MIR_get_error_func (ctx) (MIR_binary_io_error,
+                                    "v128 data should have a multiple of 16 byte values");
         MIR_new_data (ctx, name, type,
                       VARR_LENGTH (uint8_t, temp_data) / _MIR_type_size (ctx, type),
                       VARR_ADDR (uint8_t, temp_data));
@@ -6827,6 +6852,14 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
       op_addr = VARR_ADDR (MIR_op_t, scan_insn_ops);
       VARR_TRUNC (uint8_t, temp_data, 0);
       for (i = 0; i < n; i++) {
+        if (data_type == MIR_T_V128) {
+          if (op_addr[i].mode != MIR_OP_INT) scan_error (ctx, "v128 data operand is not a byte");
+          if (op_addr[i].u.i < 0 || op_addr[i].u.i > UINT8_MAX)
+            scan_error (ctx, "v128 data byte value is out of range");
+          v.u8 = (uint8_t) op_addr[i].u.i;
+          push_data (ctx, &v.u8, sizeof (uint8_t));
+          continue;
+        }
         if (op_addr[i].mode != type2mode (data_type))
           scan_error (ctx, "data operand is not of data type");
         switch (data_type) {
@@ -6871,6 +6904,9 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
         default: scan_error (ctx, "wrong data clause");
         }
       }
+      if (data_type == MIR_T_V128
+          && VARR_LENGTH (uint8_t, temp_data) % _MIR_type_size (ctx, data_type) != 0)
+        scan_error (ctx, "v128 data should have a multiple of 16 byte values");
       name
         = (VARR_LENGTH (label_name_t, label_names) == 0 ? NULL
                                                         : VARR_GET (label_name_t, label_names, 0));

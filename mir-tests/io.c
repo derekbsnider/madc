@@ -12,6 +12,12 @@ int main (void) {
   MIR_context_t ctx = MIR_init ();
 
   create_mir_func_sieve (ctx, NULL, NULL);
+  MIR_scan_string (ctx,
+                   "\n\
+m_v128_data: module\n\
+vec_data:    v128   1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16\n\
+             endmodule\n\
+");
   MIR_output (ctx, stderr);
   f = fopen (fname, "wb");
   mir_assert (f != NULL);
