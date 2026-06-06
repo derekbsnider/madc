@@ -5926,6 +5926,10 @@ static int v128_i32_packed_mul_vector_type_p (c2m_ctx_t c2m_ctx, struct type *ty
   return lane_size == 2 || lane_size == 4;
 }
 
+static int v128_i8_packed_mul_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  return v128_i32_vector_type_p (c2m_ctx, type) && vector_lane_size (c2m_ctx, type) == 1;
+}
+
 static int v128_i32_packed_scalar_shift_type_p (c2m_ctx_t c2m_ctx, struct type *vector_type,
                                                 struct type *count_type) {
   mir_size_t lane_size;
@@ -12534,6 +12538,33 @@ static op_t emit_v128_i32_packed_scalar_shift_op (c2m_ctx_t c2m_ctx, MIR_insn_co
   return dest;
 }
 
+static op_t const_v128_i32_shift_count (c2m_ctx_t c2m_ctx, struct type *vector_type,
+                                        uint64_t val) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  op_t res = const_integer_vector (c2m_ctx, vector_type, 0);
+  op_t count = new_op (NULL, MIR_new_uint_op (ctx, val));
+  op_t low_count = res;
+
+  low_count.mir_op.u.mem.type = MIR_T_U64;
+  emit_scalar_assign (c2m_ctx, low_count, &count, MIR_T_U64, FALSE);
+  return res;
+}
+
+static op_t emit_v128_i32_packed_const_shift_op (c2m_ctx_t c2m_ctx, MIR_insn_code_t code,
+                                                 op_t op1, struct type *type1,
+                                                 struct type *vector_type, uint64_t count,
+                                                 op_t dest) {
+  op_t reg = get_new_temp (c2m_ctx, MIR_T_V128);
+  op_t count_op;
+
+  op1 = prepare_v128_i32_operand (c2m_ctx, op1, type1, vector_type);
+  count_op = const_v128_i32_shift_count (c2m_ctx, vector_type, count);
+  count_op = force_v128_reg (c2m_ctx, count_op);
+  emit3 (c2m_ctx, code, reg.mir_op, op1.mir_op, count_op.mir_op);
+  store_v128 (c2m_ctx, dest, reg);
+  return dest;
+}
+
 static op_t const_v128_u16_pattern (c2m_ctx_t c2m_ctx, struct type *vector_type, uint16_t val) {
   MIR_context_t ctx = c2m_ctx->ctx;
   op_t res = vector_temp (c2m_ctx, vector_type);
@@ -12546,6 +12577,51 @@ static op_t const_v128_u16_pattern (c2m_ctx_t c2m_ctx, struct type *vector_type,
     emit_scalar_assign (c2m_ctx, lane, &lane_val, MIR_T_U16, FALSE);
   }
   return res;
+}
+
+static op_t emit_v128_i8_mul_op (c2m_ctx_t c2m_ctx, op_t op1, struct type *type1, op_t op2,
+                                 struct type *type2, struct type *vector_type, op_t dest) {
+  op_t low_mask = const_v128_u16_pattern (c2m_ctx, vector_type, 0x00ff);
+  op_t high_mask = const_v128_u16_pattern (c2m_ctx, vector_type, 0xff00);
+  op_t src1 = materialize_integer_vector_operand (c2m_ctx, op1, type1, vector_type);
+  op_t src2 = materialize_integer_vector_operand (c2m_ctx, op2, type2, vector_type);
+  op_t low1 = vector_temp (c2m_ctx, vector_type);
+  op_t low2 = vector_temp (c2m_ctx, vector_type);
+  op_t high1_masked = vector_temp (c2m_ctx, vector_type);
+  op_t high2_masked = vector_temp (c2m_ctx, vector_type);
+  op_t high1 = vector_temp (c2m_ctx, vector_type);
+  op_t high2 = vector_temp (c2m_ctx, vector_type);
+  op_t low_prod = vector_temp (c2m_ctx, vector_type);
+  op_t high_prod = vector_temp (c2m_ctx, vector_type);
+  op_t low_res = vector_temp (c2m_ctx, vector_type);
+  op_t high_shifted = vector_temp (c2m_ctx, vector_type);
+  op_t high_res = vector_temp (c2m_ctx, vector_type);
+
+  assert (v128_i8_packed_mul_vector_type_p (c2m_ctx, vector_type));
+  emit_v128_i32_bin_op (c2m_ctx, MIR_VAND, src1, vector_type, low_mask, vector_type, vector_type,
+                        low1);
+  emit_v128_i32_bin_op (c2m_ctx, MIR_VAND, src2, vector_type, low_mask, vector_type, vector_type,
+                        low2);
+  emit_v128_i32_bin_op (c2m_ctx, MIR_VAND, src1, vector_type, high_mask, vector_type,
+                        vector_type, high1_masked);
+  emit_v128_i32_bin_op (c2m_ctx, MIR_VAND, src2, vector_type, high_mask, vector_type,
+                        vector_type, high2_masked);
+  emit_v128_i32_packed_const_shift_op (c2m_ctx, MIR_VURSHI16, high1_masked, vector_type,
+                                       vector_type, 8, high1);
+  emit_v128_i32_packed_const_shift_op (c2m_ctx, MIR_VURSHI16, high2_masked, vector_type,
+                                       vector_type, 8, high2);
+  emit_v128_i32_bin_op (c2m_ctx, MIR_VMULI16, low1, vector_type, low2, vector_type, vector_type,
+                        low_prod);
+  emit_v128_i32_bin_op (c2m_ctx, MIR_VMULI16, high1, vector_type, high2, vector_type,
+                        vector_type, high_prod);
+  emit_v128_i32_bin_op (c2m_ctx, MIR_VAND, low_prod, vector_type, low_mask, vector_type,
+                        vector_type, low_res);
+  emit_v128_i32_packed_const_shift_op (c2m_ctx, MIR_VLSHI16, high_prod, vector_type,
+                                       vector_type, 8, high_shifted);
+  emit_v128_i32_bin_op (c2m_ctx, MIR_VAND, high_shifted, vector_type, high_mask, vector_type,
+                        vector_type, high_res);
+  return emit_v128_i32_bin_op (c2m_ctx, MIR_VOR, low_res, vector_type, high_res, vector_type,
+                               vector_type, dest);
 }
 
 static op_t emit_v128_i8_unsigned_scalar_shift_op (c2m_ctx_t c2m_ctx, MIR_insn_code_t code,
@@ -12961,6 +13037,9 @@ static op_t emit_v128_i32_arith_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op
                                     struct type *vector_type, op_t dest) {
   MIR_insn_code_t insn_code = get_v128_i32_arith_insn_code (c2m_ctx, code, vector_type);
 
+  if ((code == N_MUL || code == N_MUL_ASSIGN)
+      && v128_i8_packed_mul_vector_type_p (c2m_ctx, vector_type))
+    return emit_v128_i8_mul_op (c2m_ctx, op1, type1, op2, type2, vector_type, dest);
   if ((code == N_MUL || code == N_MUL_ASSIGN)
       && v128_i32_packed_mul_vector_type_p (c2m_ctx, vector_type))
     return emit_v128_i32_bin_op (c2m_ctx,

@@ -545,6 +545,24 @@ int main (void) {
   if (u8c[0] != 2 || u8c[1] != 4 || u8c[2] != 244 || u8c[3] != 254) return 235;
   u8c = u8a >> 1;
   if (u8c[0] != 0 || u8c[1] != 1 || u8c[2] != 125 || u8c[3] != 127) return 236;
+  i8c = i8a * i8b;
+  if (i8c[0] != 1 || i8c[1] != -4 || i8c[2] != -9 || i8c[3] != 16 || i8c[13] != 60
+      || i8c[14] != 31)
+    return 237;
+  i8c = i8a;
+  i8c *= i8b;
+  if (i8c[0] != 1 || i8c[1] != -4 || i8c[2] != -9 || i8c[3] != 16 || i8c[13] != 60
+      || i8c[14] != 31)
+    return 238;
+  u8c = u8a * u8b;
+  if (u8c[0] != 2 || u8c[1] != 4 || u8c[2] != 220 || u8c[3] != 252 || u8c[6] != 0
+      || u8c[7] != 0 || u8c[15] != 170)
+    return 239;
+  u8c = u8a;
+  u8c *= u8b;
+  if (u8c[0] != 2 || u8c[1] != 4 || u8c[2] != 220 || u8c[3] != 252 || u8c[6] != 0
+      || u8c[7] != 0 || u8c[15] != 170)
+    return 240;
   small = __builtin_shufflevector (a, b, 0, 5);
   if (sizeof (small) != 8 || small[0] != 1 || small[1] != 2) return 98;
   wide = __builtin_shufflevector (a, b, 0, 4, 1, 5, 2, 6, 3, 7);
