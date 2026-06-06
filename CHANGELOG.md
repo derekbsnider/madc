@@ -25,7 +25,7 @@ fork.
 ### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05/06)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`360fdb5`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`2ffebff`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -292,12 +292,15 @@ the path does not require AVX2. Coverage adds direct MIR scan/execute checks in
 lowering for add/sub/mul, bitwise ops, unary ops, equality/ordering
 comparisons, scalar-count and vector-count shifts, compound assignment, and
 GCC vector inc/dec by operating on low/high 64-bit halves. Coverage extends
-`c-tests/new/vector-size.c`. One-lane `__int128` vector div/mod remains open
-because it needs 128-bit helper-call lowering rather than half-only arithmetic.
+`c-tests/new/vector-size.c`.
+`2ffebff` adds C2MIR one-lane signed and unsigned `__int128` vector division
+and modulo through `__divti3`, `__udivti3`, `__modti3`, and `__umodti3`
+helper-call imports. C2MIR and the MIR binary runners now resolve those helpers
+for saved MIR/BMIR execution, and `c-tests/new/vector-size.c` covers exact
+small results plus high-half identity checks.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
-include one-lane `__int128` vector div/mod helper-call lowering for the
-remaining 16-byte-and-smaller slice, AVX/YMM register ABI for
+are now beyond the 16-byte-and-smaller slice: AVX/YMM register ABI for
 32-byte-and-larger external vector boundaries, broader MIR vector
 opcodes/registers/interpreter/codegen, and further optional per-target packed
 lowering.
@@ -306,7 +309,7 @@ coverage because GCC and clang C reject those forms.
 madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
 branch is ready to merge and consume from madc.
 
-Validation in `/workspace/mir`: `timeout 900 make test` passed at `360fdb5`
+Validation in `/workspace/mir`: `timeout 900 make test` passed at `2ffebff`
 with interpreter/O0 `Tests 1121, Success tests 2242`, generated-mode
 `Tests 1125, Success tests 2250`, plus bootstrap checks. Focused
 `make scan-test` and `make io-test` passed for the new `v128` data I/O
@@ -319,6 +322,9 @@ one-lane unsigned `__int128` vector reducers passed GCC/clang native and
 assembly validation plus C2MIR `-ei` / `-eg`. Exact `20050316-2.c` and focused
 union-array alias reducers passed C2MIR `-ei` / `-eg`, and adjusted array
 parameter plus multidimensional array parameter probes stayed green. Focused
+one-lane `__int128` vector div/mod reducers passed GCC/clang native and
+assembly validation, C2MIR `-ei` / `-eg`, saved MIR `-ei` / `-eg`, and saved
+BMIR interp/gen validation. Focused
 prefix vector-attribute cases passed GCC/clang assembly/native validation plus
 C2MIR `-ei` / `-eg`; exact `scal-to-vec1.c`, `scal-to-vec2.c`, and
 `scal-to-vec3.c` passed C2MIR `-ei` and `-eg`. Focused `__builtin_memcmp`

@@ -1,7 +1,7 @@
 # Test Status
 
 > **Current (2026-06-06, `develop` against `/workspace/mir`
-> `feature/simd-vector-support-codex` @ `360fdb5`):** integration
+> `feature/simd-vector-support-codex` @ `2ffebff`):** integration
 > **486 passed, 4 failed, 1 timed out, 55 skipped** on the latest capped
 > `make -C src fulltest` after adding
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
@@ -36,7 +36,11 @@
 > MIR SIMD side checkpoint `360fdb5` extends one-lane `__int128` vector
 > lowering to non-div/mod arithmetic, bitwise, unary, comparison, shift,
 > compound, and GCC inc/dec operators in `c-tests/new/vector-size.c`.
-> `/workspace/mir` `timeout 900 make test` passed at `360fdb5` with
+> MIR SIMD side checkpoint `2ffebff` closes the final known <=16-byte SIMD
+> gap by lowering one-lane signed and unsigned `__int128` vector div/mod
+> through helper-call imports, with saved MIR/BMIR resolver support and
+> additional `c-tests/new/vector-size.c` coverage.
+> `/workspace/mir` `timeout 900 make test` passed at `2ffebff` with
 > interpreter/O0 **Tests 1121, Success tests 2242** and generated-mode
 > **Tests 1125, Success tests 2250** plus bootstrap checks.
 > The 419/0 figures below are the
