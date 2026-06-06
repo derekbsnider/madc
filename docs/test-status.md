@@ -1,8 +1,8 @@
 # Test Status
 
 > **Current (2026-06-06, `develop` against `/workspace/mir`
-> `feature/simd-vector-support-codex` @ `ff01f80`):** integration
-> **486 passed, 4 failed, 1 timed out, 55 skipped** on the latest capped
+> `feature/simd-vector-support-codex` @ `fbe5efb`):** integration
+> **486 passed, 5 failed, 0 timed out, 55 skipped** on the latest capped
 > `make -C src fulltest` after adding
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
 > `teststdcppinclude.mad`, plus `testforeachheaderbody.mad` for range-for
@@ -19,14 +19,14 @@
 > rejects stale embedded PCH blobs and keeps real-header parsing on generic
 > type/alias/member machinery. The known red tests are
 > `testdefer.mad`, `testfortypedcomma.mad` (historically flaky fail/timeout;
-> classified as `TIMEOUT` in the aggregate run),
+> classified as `FAIL` in the aggregate run),
 > `testfstream.mad`, `testlargesizeofquery.mad`, and
 > `testloop.mad`.
-> MIR SIMD side checkpoint `ff01f80` extends narrow address-taken register
-> rvalue handling after the earlier empty GNU asm barrier support;
-> `/workspace/mir` `timeout 900 make test` passed with **Tests 1086, Success
-> tests 2172** plus bootstrap checks. Exact `pr53645.c` / `pr53645-2.c` and
-> `pr109040.c` now pass under C2MIR `-ei` and `-eg`.
+> MIR SIMD side checkpoint `fbe5efb` lowers C2MIR `__builtin_memcmp` to libc
+> `memcmp` after the earlier narrow address-taken register rvalue checkpoint;
+> `/workspace/mir` `timeout 900 make test` passed with **Tests 1090, Success
+> tests 2180** plus bootstrap checks. Exact SIMD GCC `simd-5.c`,
+> `pr65427.c`, and `pr60960.c` now pass under C2MIR `-ei` and `-eg`.
 > The 419/0 figures below are the
 > *removed* asmjit/MIR-transpiler backend and are retained only as the C89
 > coverage target the CIR path is climbing back to. ★ Milestone: SMAUG 1.8

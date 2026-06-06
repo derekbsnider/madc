@@ -15,8 +15,8 @@ Release prep now treats compiler warnings as blockers. A clean `make -C src`
 rebuild on `develop` emitted no compiler warnings, `make -C src test` passed,
 and the latest capped `make -C src fulltest` against the SIMD branch hit the
 known failing set. The aggregate harness reported
-**486 passed, 4 failed, 1 timed out, 55 skipped** with
-`testfortypedcomma` classified as `TIMEOUT`. The next validation goal is
+**486 passed, 5 failed, 0 timed out, 55 skipped** with
+`testfortypedcomma` classified as `FAIL`. The next validation goal is
 driving the remaining fulltest reds/timeouts to green; the largest
 longer-running parity bucket
 remains the documented SIMD/vector_size work in c2mir and the `/workspace/mir`
@@ -25,7 +25,7 @@ fork.
 ### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05/06)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`ff01f80`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`fbe5efb`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -241,6 +241,11 @@ register-backed scalar lvalues. `char` and `short` rvalues are now sign- or
 zero-extended after byte/word pointer writes, fixing exact GCC `pr109040.c`.
 Coverage adds `c-tests/gcc/pr109040.c` and focused
 `c-tests/new/narrow-reg-address.c`.
+`fbe5efb` lowers C2MIR `__builtin_memcmp` to an imported libc `memcmp` call
+returning `int`, validates pointer/pointer/integer argument types, and avoids
+the previous unresolved `__builtin_memcmp` symbol. Coverage adds focused
+`c-tests/new/builtin-memcmp.c` plus exact GCC SIMD cases `c-tests/gcc/simd-5.c`,
+`pr65427.c`, and `pr60960.c`.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
 include 32-byte-and-larger vector ABI support beyond the covered stack-passed
@@ -254,9 +259,13 @@ madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
 branch is ready to merge and consume from madc.
 
 Validation in `/workspace/mir`: `timeout 900 make test` passed with `Tests
-1086, Success tests 2172`; focused empty-asm barrier reducers passed
-GCC/clang native validation and C2MIR `-ei` / `-eg`, and generated MIR for the
-focused fixture contains the input-operand call with no asm marker. Exact GCC
+1090, Success tests 2180`; focused `__builtin_memcmp` reducers passed GCC/clang
+native and assembly validation plus C2MIR `-ei` / `-eg`; exact `simd-5.c`,
+`pr65427.c`, and `pr60960.c` passed GCC/clang native validation plus C2MIR
+`-ei` / `-eg`; generated MIR showed `import memcmp`, `memcmp_p`, and
+`call memcmp_p` calls. Focused empty-asm barrier reducers passed GCC/clang
+native validation and C2MIR `-ei` / `-eg`, and generated MIR for the focused
+fixture contains the input-operand call with no asm marker. Exact GCC
 `pr109040.c` and focused narrow-register reducers passed GCC/clang
 assembly/native validation plus C2MIR `-ei` / `-eg`. Focused
 `interp-test17` and `gen-test17` passed;
@@ -310,8 +319,8 @@ native/assembly validation and C2MIR interp/gen validation. The exact GCC
 validation after C2MIR lowers `__builtin_abort` to libc `abort`. The full
 `vector-size.c` fixture passed GCC native validation and C2MIR interp/gen
 validation with the declaration-spec vector-attribute case. The full MIR
-`timeout 900 make test` passed after the latest checkpoint with `Tests 1086,
-Success tests 2172` plus bootstrap checks.
+`timeout 900 make test` passed after the memcmp checkpoint with `Tests 1090,
+Success tests 2180` plus bootstrap checks.
 Focused expression-valued `vector_size` reducers passed GCC/clang
 native/assembly validation and C2MIR interp/gen validation. The exact GCC
 `pr92618.c` torture source now passes exact runtime validation after
@@ -319,7 +328,7 @@ native/assembly validation and C2MIR interp/gen validation. The exact GCC
 stores for the casted vector-pointer store shape, and the full `vector-size.c`
 fixture passed GCC native validation and C2MIR interp/gen validation with the
 constant-expression attribute case. The full MIR `timeout 900 make test`
-passed after the latest checkpoint with `Tests 1086, Success tests 2172` plus
+passed after the memcmp checkpoint with `Tests 1090, Success tests 2180` plus
 bootstrap checks.
 Focused v2i64/v2u64 comparison reducers passed GCC/clang assembly/native
 validation and C2MIR interp/gen validation; generated MIR now uses 64-bit
@@ -355,8 +364,8 @@ block copies, and direct integer scalar/vector reinterpret stores and loads,
 and `git diff --check` is clean.
 Downstream `/workspace/madc`
 fulltest hit the known failing set; the aggregate harness reported
-**486 passed, 4 failed, 1 timed out, 55 skipped** with `testfortypedcomma`
-classified as `TIMEOUT` in this aggregate run.
+**486 passed, 5 failed, 0 timed out, 55 skipped** with `testfortypedcomma`
+classified as `FAIL` in this aggregate run.
 
 ### Fixed — generic real-header parser/PCH checkpoint (2026-06-05)
 
