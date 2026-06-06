@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added — `--emit=c11` SIMD rendering (`cir_emit_c.cpp`) (2026-06-06)
+
+The transpile renderer now renders vector types and compound literals, so the
+emit-C-vs-g++ oracle holds for vectors:
+
+- `N_SPEC_DECL` now renders its attribute operand (op 2) — a SIMD typedef emits
+  `typedef int v4 __attribute__((vector_size(16)));` instead of `typedef int v4`.
+  (Also un-drops the `cleanup` attribute, previously silently lost.)
+- New `N_ATTR` case → `__attribute__((name(args)))` (renders the vector attr in a
+  cast/type-name spec list).
+- New `N_COMPOUND_LITERAL` case → `(T){ ... }` (was `/*<unhandled COMPOUND_LITERAL>*/`).
+
+10 of 11 SIMD tests are now emit-C-vs-gcc parity-OK; the 11th
+(`testgccwidevectorshift`) renders its 64-byte vector correctly but fails to link
+under plain gcc because `__builtin_sub_overflow` lowers to the madc runtime symbol
+`__madc_sub_overflow_u32` — a pre-existing, SIMD-unrelated emit-c portability gap
+(overflow builtins assume the madc runtime). Full suite unchanged at 515/4/1/26.
+
 ### Added — madc SIMD frontend: lower `DataDefSIMD` to a c2mir vector type (2026-06-06)
 
 madc already parsed `__attribute__((vector_size(N)))` / `__vector_size__` into a
@@ -23,9 +41,8 @@ one-lane `__int128` vector and the 32-byte/64-byte wide vectors (via c2mir's
 scalar-lane fallback). Full suite **515 passed / 4 failed / 1 timed out / 26
 skipped**, zero regressions vs the `504/4/1/37` post-pin-bump baseline.
 
-Follow-up: the `--emit=c11` renderer (`cir_emit_c.cpp`) still drops the attribute
-and `<unhandled COMPOUND_LITERAL>` — the JIT path is correct; the transpile path
-needs the same SIMD rendering for emit-C-vs-g++ parity.
+Follow-up (done, see the entry above): the `--emit=c11` renderer needed matching
+SIMD rendering for emit-C-vs-g++ parity.
 
 ### Changed — consume MIR fork ≤16-byte SIMD; bump `MIR_COMMIT` → `2ffebff` (2026-06-06)
 

@@ -217,10 +217,16 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 	}
 	case N_SPEC_DECL:
 		// [0]=specifiers (often N_SHARE-wrapped) [1]=declarator
-		// [2],[3]=ignore (bit-field width etc.) [4]=initializer
+		// [2]=attribute list (N_LIST of N_ATTR) or N_IGNORE  [3]=asm  [4]=initializer
 		emit(f, op(n, 0), lang);
 		fputc(' ', f);
 		emit_declarator(f, op(n, 1), lang);
+		// Trailing attributes, e.g. __attribute__((vector_size(N))) on a SIMD
+		// typedef; only present (an N_LIST) for attributed declarations.
+		if (op(n, 2) && op(n, 2)->code == N_LIST && op(op(n, 2), 0)) {
+			fputc(' ', f);
+			emit_seq(f, op(n, 2), lang, 0, " ");
+		}
 		if (op(n, 4) && op(n, 4)->code != N_IGNORE) {
 			fputs(" = ", f);
 			emit_initializer(f, op(n, 4), lang);
@@ -473,6 +479,28 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		emit(f, op(n, 1), lang);
 		fputc(')', f);
 		break;
+	case N_COMPOUND_LITERAL:
+		// [0]=N_TYPE(target type) [1]=N_LIST(N_INIT...)  ->  (TYPE){ ... }
+		fputc('(', f);
+		emit(f, op(n, 0), lang);
+		fputc(')', f);
+		emit_initializer(f, op(n, 1), lang);
+		break;
+	case N_ATTR: {
+		// [0]=N_ID(name) [1]=N_LIST(args)  ->  __attribute__((name(args)))
+		// Emitted for vector_size on SIMD types; rendered in a spec list (cast /
+		// type-name) or via the N_SPEC_DECL attrs operand (typedef).
+		fputs("__attribute__((", f);
+		emit(f, op(n, 0), lang);
+		node_t aargs = op(n, 1);
+		if (aargs && op(aargs, 0)) {
+			fputc('(', f);
+			emit_seq(f, aargs, lang, 0, ", ");
+			fputc(')', f);
+		}
+		fputs("))", f);
+		break;
+	}
 	case N_SIZEOF:
 		// [0] = N_TYPE (type-name operand)
 		fputs("sizeof(", f);
