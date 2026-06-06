@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include "mir-alloc-default.c"
 #include "mir-gen.h"  // mir.h gets included as well
+#include "mir-int128-helper.h"
 
 #define MIR_TYPE_INTERP 1
 #define MIR_TYPE_INTERP_NAME "interp"
@@ -217,6 +218,7 @@ static void *import_resolver (const char *name) {
     if (strcmp (name, "_MIR_set_code") == 0) return _MIR_set_code;
 #endif
 #endif
+    if ((sym = MIR_int128_helper_resolver (name)) != NULL) return sym;
     fprintf (stderr, "can not load symbol %s\n", name);
     close_std_libs ();
     exit (1);

@@ -25,6 +25,7 @@
 #include <limits.h>
 #include "mir-alloc.h"
 #include "mir.h"
+#include "mir-int128-helper.h"
 #include "time.h"
 
 #include "c2mir.h"
@@ -3665,6 +3666,10 @@ static macro_call_t try_param_macro_call (c2m_ctx_t c2m_ctx, macro_t m, token_t 
 #define COPYSIGNF "copysignf"
 #define BUILTIN_NAN "__builtin_nan"
 #define LIBM_NAN "nan"
+#define DIVTI3 "__divti3"
+#define UDIVTI3 "__udivti3"
+#define MODTI3 "__modti3"
+#define UMODTI3 "__umodti3"
 #define CONVERT_VECTOR "__builtin_convertvector"
 #define SHUFFLE "__builtin_shuffle"
 #define SHUFFLE_VECTOR "__builtin_shufflevector"
@@ -9485,8 +9490,7 @@ static struct expr *check_assign_op (c2m_ctx_t c2m_ctx, node_t r, struct expr *e
     e->type->u.basic_type = TP_INT;
     if ((tt = integer_bin_op_vector_type (c2m_ctx, t1, t2, e1, e2)) != NULL) {
       *e->type = *tt;
-    } else if ((r->code == N_MUL || r->code == N_MUL_ASSIGN)
-               && (tt = int128_bin_op_vector_type (c2m_ctx, t1, t2)) != NULL) {
+    } else if ((tt = int128_bin_op_vector_type (c2m_ctx, t1, t2)) != NULL) {
       *e->type = *tt;
     } else if (r->code != N_MOD
                && (tt = v128_float_bin_op_vector_type (c2m_ctx, t1, t2)) != NULL) {
@@ -11847,6 +11851,7 @@ struct gen_ctx {
   MIR_item_t memcmp_proto, memcmp_item;
   MIR_item_t copysignf_proto, copysignf_item;
   MIR_item_t nan_proto, nan_item;
+  MIR_item_t int128_divmod_proto, divti3_item, udivti3_item, modti3_item, umodti3_item;
   MIR_item_t memset_proto, memset_item;
   MIR_item_t memcpy_proto, memcpy_item;
   VARR (MIR_op_t) * call_ops, *ret_ops, *switch_ops;
@@ -11877,6 +11882,11 @@ struct gen_ctx {
 #define copysignf_item gen_ctx->copysignf_item
 #define nan_proto gen_ctx->nan_proto
 #define nan_item gen_ctx->nan_item
+#define int128_divmod_proto gen_ctx->int128_divmod_proto
+#define divti3_item gen_ctx->divti3_item
+#define udivti3_item gen_ctx->udivti3_item
+#define modti3_item gen_ctx->modti3_item
+#define umodti3_item gen_ctx->umodti3_item
 #define memset_proto gen_ctx->memset_proto
 #define memset_item gen_ctx->memset_item
 #define memcpy_proto gen_ctx->memcpy_proto
@@ -13194,6 +13204,71 @@ static void emit_u64_mul_128 (c2m_ctx_t c2m_ctx, op_t op1, op_t op2, op_t *low_r
   emit3 (c2m_ctx, MIR_ADD, high_res->mir_op, high_res->mir_op, carry_low.mir_op);
 }
 
+static void move_item_to_module_start (MIR_module_t module, MIR_item_t item);
+
+static MIR_item_t get_int128_divmod_helper_item (c2m_ctx_t c2m_ctx, node_code_t code,
+                                                 struct type *vector_type) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  MIR_context_t ctx = c2m_ctx->ctx;
+  MIR_module_t module = curr_func->module;
+  MIR_type_t res_types[2];
+  MIR_var_t vars[4];
+  MIR_item_t *item_slot;
+  const char *name;
+  int signed_p = signed_integer_type_p (vector_type->u.vector_type->el_type);
+
+  if (code == N_DIV || code == N_DIV_ASSIGN) {
+    name = signed_p ? DIVTI3 : UDIVTI3;
+    item_slot = signed_p ? &divti3_item : &udivti3_item;
+  } else {
+    assert (code == N_MOD || code == N_MOD_ASSIGN);
+    name = signed_p ? MODTI3 : UMODTI3;
+    item_slot = signed_p ? &modti3_item : &umodti3_item;
+  }
+  if (int128_divmod_proto == NULL) {
+    res_types[0] = MIR_T_U64;
+    res_types[1] = MIR_T_U64;
+    vars[0].name = "a_low";
+    vars[0].type = MIR_T_U64;
+    vars[1].name = "a_high";
+    vars[1].type = MIR_T_U64;
+    vars[2].name = "b_low";
+    vars[2].type = MIR_T_U64;
+    vars[3].name = "b_high";
+    vars[3].type = MIR_T_U64;
+    int128_divmod_proto = MIR_new_proto_arr (ctx, "int128_divmod_p", 2, res_types, 4, vars);
+    move_item_to_module_start (module, int128_divmod_proto);
+  }
+  if (*item_slot == NULL) {
+    void *addr = MIR_int128_helper_resolver (name);
+
+    *item_slot = MIR_new_import (ctx, name);
+    if (addr != NULL) MIR_load_external (ctx, name, addr);
+    move_item_to_module_start (module, *item_slot);
+  }
+  return *item_slot;
+}
+
+static void emit_int128_vector_divmod_call (c2m_ctx_t c2m_ctx, node_code_t code,
+                                            struct type *vector_type, op_t low1, op_t high1,
+                                            op_t low2, op_t high2, op_t low_res,
+                                            op_t high_res) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  MIR_context_t ctx = c2m_ctx->ctx;
+  MIR_item_t helper_item = get_int128_divmod_helper_item (c2m_ctx, code, vector_type);
+  MIR_op_t args[8];
+
+  args[0] = MIR_new_ref_op (ctx, int128_divmod_proto);
+  args[1] = MIR_new_ref_op (ctx, helper_item);
+  args[2] = low_res.mir_op;
+  args[3] = high_res.mir_op;
+  args[4] = low1.mir_op;
+  args[5] = high1.mir_op;
+  args[6] = low2.mir_op;
+  args[7] = high2.mir_op;
+  emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_CALL, 8, args));
+}
+
 static op_t emit_int128_vector_bin_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op1,
                                        struct type *type1, op_t op2, struct type *type2,
                                        struct type *vector_type, op_t dest) {
@@ -13254,6 +13329,13 @@ static op_t emit_int128_vector_bin_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t
     emit3 (c2m_ctx, MIR_ADD, high_res.mir_op, high_res.mir_op, cross2.mir_op);
     break;
   }
+  case N_DIV:
+  case N_DIV_ASSIGN:
+  case N_MOD:
+  case N_MOD_ASSIGN:
+    emit_int128_vector_divmod_call (c2m_ctx, code, vector_type, low1, high1, low2, high2,
+                                    low_res, high_res);
+    break;
   default: assert (FALSE); break;
   }
   store_int128_halves (c2m_ctx, dest, low_res, high_res);
@@ -16363,7 +16445,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_DIV:
   case N_MOD:
     if ((r->code == N_ADD || r->code == N_SUB || r->code == N_AND || r->code == N_OR
-         || r->code == N_XOR || r->code == N_MUL)
+         || r->code == N_XOR || r->code == N_MUL || r->code == N_DIV || r->code == N_MOD)
         && int128_vector_type_p (c2m_ctx, ((struct expr *) r->attr)->type)) {
       res = gen_int128_vector_bin_op (c2m_ctx, r, desirable_dest);
       break;
@@ -16554,7 +16636,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_DIV_ASSIGN:
   case N_MOD_ASSIGN:
     if ((r->code == N_ADD_ASSIGN || r->code == N_SUB_ASSIGN || r->code == N_MUL_ASSIGN
-         || r->code == N_AND_ASSIGN || r->code == N_OR_ASSIGN || r->code == N_XOR_ASSIGN)
+         || r->code == N_DIV_ASSIGN || r->code == N_MOD_ASSIGN || r->code == N_AND_ASSIGN
+         || r->code == N_OR_ASSIGN || r->code == N_XOR_ASSIGN)
         && int128_vector_type_p (c2m_ctx, ((struct expr *) r->attr)->type2)) {
       struct type *lhs_type = ((struct expr *) r->attr)->type2;
       struct type *rhs_type = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
@@ -18116,6 +18199,7 @@ static void gen_mir (c2m_ctx_t c2m_ctx, node_t r) {
   VARR_CREATE (node_t, node_stack, alloc, 8);
   abort_proto = abort_item = memcmp_proto = memcmp_item = copysignf_proto = copysignf_item
     = nan_proto = nan_item = memset_proto = memset_item = memcpy_proto = memcpy_item = NULL;
+  int128_divmod_proto = divti3_item = udivti3_item = modti3_item = umodti3_item = NULL;
   top_gen (c2m_ctx, r, NULL, NULL, NULL);
   gen_finish (c2m_ctx);
 }

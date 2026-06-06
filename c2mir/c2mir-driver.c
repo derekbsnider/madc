@@ -53,6 +53,7 @@ typedef pthread_attr_t mir_thread_attr_t;
 
 #include "c2mir.h"
 #include "mir-gen.h"
+#include "mir-int128-helper.h"
 #include "real-time.h"
 
 #include "mir-alloc-default.c"
@@ -455,6 +456,7 @@ static void *import_resolver (const char *name) {
     if (strcmp (name, "_MIR_set_code") == 0) return _MIR_set_code;
 #endif
 #endif
+    if ((sym = MIR_int128_helper_resolver (name)) != NULL) return sym;
     fprintf (stderr, "can not load symbol %s\n", name);
     close_std_libs ();
     exit (1);
