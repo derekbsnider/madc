@@ -1598,6 +1598,63 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
     return cur_dir.empty() ? incfile : cur_dir + incfile;
 }
 
+// #include_next <file>: behave like a system #include, but search the
+// path list starting AFTER the directory the current file was found in.
+// Used by libstdc++ wrapper headers (cstdlib -> stdlib.h, cmath -> math.h …)
+// to reach the "real" header of the same name that sits later in the search
+// order. The embedded/curated layer is consulted first by the caller (so
+// curated libc headers still win while libc stays curated); this resolves the
+// filesystem fallback for the non-curated targets.
+std::string Program::resolve_include_next_path(const std::string &incfile)
+{
+    if ( incfile.empty() || incfile[0] == '/' )
+	return incfile;
+
+    // Ordered system search list — the same dirs <> includes search:
+    // -I paths first, then the compiler-derived system include paths.
+    std::vector<std::string> search;
+    for ( size_t i = 0; i < include_paths.size(); ++i )
+	search.push_back(include_paths[i]);
+    extern const char *madc_sys_include_paths[];
+    static const char *fallback_paths[] = {
+	"/usr/local/include/",
+	"/usr/include/",
+	"/usr/include/x86_64-linux-gnu/",
+	NULL
+    };
+    const char **sys_paths = (madc_sys_include_paths[0] != NULL)
+			     ? madc_sys_include_paths : fallback_paths;
+    for ( int i = 0; sys_paths[i]; ++i )
+	search.push_back(sys_paths[i]);
+
+    // Normalize-with-trailing-slash compare to locate the current file's dir
+    // in the search list; #include_next searches only entries AFTER it.
+    std::string cur = current_source_directory();
+    if ( !cur.empty() && cur.back() != '/' )
+	cur += '/';
+    size_t start = 0;
+    for ( size_t i = 0; i < search.size(); ++i )
+    {
+	std::string d = search[i];
+	if ( !d.empty() && d.back() != '/' )
+	    d += '/';
+	if ( d == cur )
+	{
+	    start = i + 1;
+	    break;
+	}
+    }
+    for ( size_t i = start; i < search.size(); ++i )
+    {
+	std::string &dir = search[i];
+	std::string candidate = dir + (dir.empty() || dir.back() == '/' ? "" : "/") + incfile;
+	std::ifstream probe(candidate.c_str());
+	if ( probe.good() )
+	    return candidate;
+    }
+    return incfile; // not found — will fail at open
+}
+
 bool Program::should_tokenize_include(const std::string &path)
 {
     std::string canonical = path;
@@ -1967,10 +2024,14 @@ TokenBase *Program::_getToken()
 	    if ( isalpha(source.peek()) )
 	    {
 		std::string directive;
-		while ( source.good() && !source.eof() && isalpha(source.peek()) )
+		// '_' is accepted so the compound directive #include_next is
+		// read whole (no standard directive but include_next uses '_').
+		while ( source.good() && !source.eof()
+		     && (isalpha(source.peek()) || source.peek() == '_') )
 		    directive += source.get();
-		if ( directive == "include" )
+		if ( directive == "include" || directive == "include_next" )
 		{
+		    bool is_include_next = (directive == "include_next");
 		    // skip_includes mode: consume rest of line and continue
 		    if ( skip_includes )
 		    {
@@ -2062,7 +2123,9 @@ TokenBase *Program::_getToken()
 			    return getToken();
 			}
 		    }
-		    std::string full_path = resolve_include_path(incfile, is_system);
+		    std::string full_path = is_include_next
+			? resolve_include_next_path(incfile)
+			: resolve_include_path(incfile, is_system);
 		    if ( !should_tokenize_include(full_path) )
 		    {
 			DBG(std::cout << "#include "

@@ -1,0 +1,13 @@
+// #include_next directive: the compound directive must be read whole (not
+// split at '_'), behave like a system #include, and resolve through the
+// curated libc layer (embedded stdlib.h) while libc stays curated.
+#include <stdio.h>
+#include_next <stdlib.h>
+
+int main()
+{
+	int x = atoi("42");
+	int y = abs(-7);
+	printf("%d %d\n", x, y);
+	return 0;
+}
