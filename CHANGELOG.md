@@ -15,8 +15,8 @@ Release prep now treats compiler warnings as blockers. A clean `make -C src`
 rebuild on `develop` emitted no compiler warnings, `make -C src test` passed,
 and the latest capped `make -C src fulltest` against the SIMD branch hit the
 known failing set. The aggregate harness reported
-**486 passed, 4 failed, 1 timed out, 55 skipped** with
-`testfortypedcomma` classified as `TIMEOUT`. The next validation goal is
+**486 passed, 5 failed, 0 timed out, 55 skipped** with
+`testfortypedcomma` classified as `FAIL`. The next validation goal is
 driving the remaining fulltest reds/timeouts to green; the largest
 longer-running parity bucket
 remains the documented SIMD/vector_size work in c2mir and the `/workspace/mir`
@@ -25,7 +25,7 @@ fork.
 ### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`5966c1d`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`3d9b8af`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -205,6 +205,13 @@ same logical lane count is used by `__builtin_vectorelements`,
 `__builtin_convertvector`, and `__builtin_shufflevector` result construction.
 The permanent `vector-size.c` fixture now covers `clang_i3` and `clang_uc3`
 size/alignment, logical element count, and lane arithmetic.
+`3d9b8af` adds GCC/clang parity for mixed-signedness vector shift-count
+operands. C2MIR now accepts vector shift counts whose storage size, logical
+lane count, and lane width match the shifted vector even when signedness
+differs, while preserving the lane-wise scalar lowering required for
+non-uniform vector counts. The permanent `vector-size.c` fixture now covers
+`v4si` by `v4ui`, `v4ui` by `v4si`, `v8hi` by `uint16x8_t`, and compound
+mixed-signedness vector-count left shift cases.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
 include 32-byte-and-larger vector ABI support requiring the broader AVX/YMM or
@@ -256,6 +263,12 @@ and C2MIR interp/gen validation; an odd-lane
 `__builtin_shufflevector` / `__builtin_convertvector` reducer also passed
 Clang native/assembly and C2MIR interp/gen validation. The full MIR
 `timeout 900 make test` passed after the logical-lane change.
+Focused mixed-signedness vector shift-count reducers passed GCC/clang
+native/assembly validation and C2MIR interp/gen validation. Generated MIR for
+the reducer showed lane-wise scalar `lshs` / `urshs` operations for the
+non-uniform vector-count cases, not the low-64-bit scalar-count packed shift
+opcodes. The full `vector-size.c` fixture passed GCC native validation and
+C2MIR interp/gen validation with the mixed-signedness vector-count cases.
 Focused v2i64/v2u64 comparison reducers passed GCC/clang assembly/native
 validation and C2MIR interp/gen validation; generated MIR now uses 64-bit
 `sub` mask formation for qword comparison lanes instead of 32-bit `subs`.
@@ -290,8 +303,8 @@ block copies, and direct integer scalar/vector reinterpret stores and loads,
 and `git diff --check` is clean.
 Downstream `/workspace/madc`
 fulltest hit the known failing set; the aggregate harness reported
-**486 passed, 4 failed, 1 timed out, 55 skipped** with `testfortypedcomma`
-classified as `TIMEOUT` in this aggregate run.
+**486 passed, 5 failed, 0 timed out, 55 skipped** with `testfortypedcomma`
+classified as `FAIL` in this aggregate run.
 
 ### Fixed — generic real-header parser/PCH checkpoint (2026-06-05)
 
