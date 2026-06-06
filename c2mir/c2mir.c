@@ -545,7 +545,7 @@ type_spec: N_VOID|N_CHAR|N_SHORT|N_INT|N_LONG|N_FLOAT|N_DOUBLE|N_SIGNED|N_UNSIGN
          | N_ENUM(N_ID?, N_LIST?: N_ENUM_COST(N_ID, const_expr?)*) | typedef_name
 struct_declaration_list: N_LIST: struct_declaration*
 struct_declaration: st_assert | N_MEMBER(N_SHARE(spec_qual_list), declarator?, attrs?, const_expr?)
-spec_qual_list: N_LIST:(type_qual|type_spec)*
+spec_qual_list: N_LIST:(type_qual|type_spec|attr)*
 declarator: the same as direct declarator
 direct_declarator: N_DECL(N_ID,
                           N_LIST:(N_POINTER(type_qual_list) | N_FUNC(id_list|parameter_list)
@@ -4492,7 +4492,6 @@ D (declaration) {
     if (curr_scope == top_scope && c2m_options->pedantic_p)
       warning (c2m_ctx, pos, "extra ; outside of a function");
   } else {
-    try_attr_spec (c2m_ctx, curr_token->pos, NULL);
     PA (declaration_specs, curr_scope == top_scope ? (node_t) 1 : NULL);
     spec = r;
     last_pos = POS (spec);
@@ -4596,14 +4595,14 @@ DA (declaration_specs) {
     } else if ((r = TRY (sc_spec)) != err_node) {
     } else if ((r = TRY (type_qual)) != err_node) {
     } else if ((r = TRY (func_spec)) != err_node) {
+    } else if ((r = try_attr_spec (c2m_ctx, spec_pos, NULL)) != err_node && r != NULL) {
+      op_flat_append (c2m_ctx, list, r);
+      continue;
     } else if (first_p) {
       PA (type_spec, prev_type_spec);
       prev_type_spec = r;
     } else if ((r = TRY_A (type_spec, prev_type_spec)) != err_node) {
       prev_type_spec = r;
-    } else if ((r = try_attr_spec (c2m_ctx, spec_pos, FALSE)) != err_node && r != NULL) {
-      op_flat_append (c2m_ctx, list, r);
-      continue;
     } else
       break;
     op_append (c2m_ctx, list, r);
@@ -4812,14 +4811,19 @@ D (spec_qual_list) {
   parse_ctx_t parse_ctx = c2m_ctx->parse_ctx;
   node_t list, op, r, arg = NULL;
   int first_p;
+  pos_t spec_pos;
 
   list = new_node (c2m_ctx, N_LIST);
   for (first_p = TRUE;; first_p = FALSE) {
+    spec_pos = curr_token->pos;
     if (C (T_CONST) || C (T_RESTRICT) || C (T_VOLATILE) || C (T_ATOMIC)) {
       P (type_qual);
       op = r;
     } else if ((op = TRY_A (type_spec, arg)) != err_node) {
       arg = op;
+    } else if ((r = try_attr_spec (c2m_ctx, spec_pos, NULL)) != err_node && r != NULL) {
+      op_flat_append (c2m_ctx, list, r);
+      continue;
     } else if (first_p) {
       return err_node;
     } else {
