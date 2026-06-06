@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Changed — consume MIR fork ≤16-byte SIMD; bump `MIR_COMMIT` → `2ffebff` (2026-06-06)
+
+The MIR fork's SIMD/vector work (`feature/simd-vector-support-codex`, 61 commits)
+was fast-forward-merged to the fork's `develop` and pushed. `develop` now carries
+≤16-byte (`v128` and smaller) `vector_size`/`ext_vector_type` support across
+c2mir + MIR (frontend, interpreter, x86-64 codegen, ABI), validated by the fork's
+own `make test` and the 37 GCC c-torture vector files.
+
+`MIR_COMMIT` is bumped `8864a73` → `2ffebff`. Rebuilding madc against it is a
+clean superset: full suite **504 passed / 4 failed / 1 timed out / 37 skipped**,
+zero regressions vs. the prior `486 / 4 / 1 / 55` baseline.
+
+**18 integration tests un-skipped** (deleted `.mir_skip` fixtures): they were
+skipped only because the older pinned MIR lacked the relevant c2mir features, all
+of which `2ffebff` now provides — `_Alignas`/`alignof`, compound literals
+(global-ptr, GNU designators, array), inline-asm decl/output/rw-operand + nested
+asm barriers, `__builtin_strcmp` macro-cycle, `__builtin_abs` (unsigned), global
+aliases (array + scalar), K&R fn-ptr varargs, `_Decimal64` zero, wide strings,
+`prefer`, and `argv` deref.
+
+Note: the madc-side SIMD frontend is **not** yet wired — `DataDefSIMD` is parsed
+but not lowered to a c2mir vector `node_t`, so the 11 `testgccvector*/testsimd*`
+tests stay skipped pending that frontend bridge (separate, now-unblocked work).
+
 ### Changed — retire-std-hardcoding cleanup merged to `develop` (2026-06-05)
 
 The intended std-class hardcoding retirement is now on `develop`.

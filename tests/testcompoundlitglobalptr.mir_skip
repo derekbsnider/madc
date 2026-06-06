@@ -1,1 +1,0 @@
-c2mir does not give compound literals static storage duration at global scope

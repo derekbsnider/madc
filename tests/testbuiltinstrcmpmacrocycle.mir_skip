@@ -1,1 +1,0 @@
-#define strcmp __builtin_strcmp creates circular expansion — lexer resolves __builtin_strcmp back to strcmp

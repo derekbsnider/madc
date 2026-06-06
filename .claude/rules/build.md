@@ -12,8 +12,9 @@
 - The backend is CIR → c2mir → MIR. asmjit was removed.
 - The MIR library (libmir + c2mir) lives at `/workspace/mir` and is the
   **madc MIR fork** (github.com/derekbsnider/mir, branch **`develop`**, pinned at
-  the commit in the repo-root `MIR_COMMIT` file — currently `8864a73`) — NOT
-  upstream MIR. It carries native C99 `_Complex`, `__attribute__((cleanup))`, and
+  the commit in the repo-root `MIR_COMMIT` file — currently `2ffebff`) — NOT
+  upstream MIR. It carries native C99 `_Complex`, `__attribute__((cleanup))`,
+  ≤16-byte SIMD/vector (`vector_size`/`ext_vector_type`) support, and
   ABI/codegen fixes the CIR backend depends on.
 - **Branch correspondence:** the fork's `develop` tracks madc's `develop`; once
   madc reaches master parity, the fork's `master` tracks madc's `master`. A MIR
