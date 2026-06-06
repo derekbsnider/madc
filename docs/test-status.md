@@ -1,7 +1,7 @@
 # Test Status
 
 > **Current (2026-06-06, `develop` against `/workspace/mir`
-> `feature/simd-vector-support-codex` @ `fbe5efb`):** integration
+> `feature/simd-vector-support-codex` @ `033732f`):** integration
 > **486 passed, 5 failed, 0 timed out, 55 skipped** on the latest capped
 > `make -C src fulltest` after adding
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
@@ -22,11 +22,13 @@
 > classified as `FAIL` in the aggregate run),
 > `testfstream.mad`, `testlargesizeofquery.mad`, and
 > `testloop.mad`.
-> MIR SIMD side checkpoint `fbe5efb` lowers C2MIR `__builtin_memcmp` to libc
-> `memcmp` after the earlier narrow address-taken register rvalue checkpoint;
-> `/workspace/mir` `timeout 900 make test` passed with **Tests 1090, Success
-> tests 2180** plus bootstrap checks. Exact SIMD GCC `simd-5.c`,
-> `pr65427.c`, and `pr60960.c` now pass under C2MIR `-ei` and `-eg`.
+> MIR SIMD side checkpoint `033732f` preserves leading GNU vector attributes in
+> declaration specifier and type-name specifier/qualifier lists after the
+> earlier `__builtin_memcmp` and narrow address-taken register rvalue
+> checkpoints; `/workspace/mir` `timeout 900 make test` passed with **Tests
+> 1093, Success tests 2186** plus bootstrap checks. Exact SIMD GCC
+> `scal-to-vec1.c`, `scal-to-vec2.c`, and `scal-to-vec3.c` now pass under
+> C2MIR `-ei` and `-eg`; `simd-5.c`, `pr65427.c`, and `pr60960.c` remain green.
 > The 419/0 figures below are the
 > *removed* asmjit/MIR-transpiler backend and are retained only as the C89
 > coverage target the CIR path is climbing back to. ★ Milestone: SMAUG 1.8
