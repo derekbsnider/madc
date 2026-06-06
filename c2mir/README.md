@@ -17,6 +17,7 @@
 	  to hint `c2mir` about expected value and results in better code generation
 	  by placing code related to the expected condition nearby
         * `__builtin_abort()` is lowered to a call to the C library `abort`
+        * `__builtin_memcmp(a,b,n)` is lowered to a call to the C library `memcmp`
         * overflow builtins can be used for effective code generation in JIT for interpreters
 	  using multi-precision integer numbers like Ruby or Python:
           * `__builtin_add_overflow(v1,v2,&res)` makes `res=v1+v2` and returns non-zero

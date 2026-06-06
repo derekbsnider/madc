@@ -3656,6 +3656,8 @@ static macro_call_t try_param_macro_call (c2m_ctx_t c2m_ctx, macro_t m, token_t 
 #define EXPECT "__builtin_expect"
 #define BUILTIN_ABORT "__builtin_abort"
 #define ABORT "abort"
+#define BUILTIN_MEMCMP "__builtin_memcmp"
+#define MEMCMP "memcmp"
 #define CONVERT_VECTOR "__builtin_convertvector"
 #define SHUFFLE "__builtin_shuffle"
 #define SHUFFLE_VECTOR "__builtin_shufflevector"
@@ -10406,7 +10408,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     struct type res_type;
     int builtin_call_p, alloca_p = FALSE, va_arg_p = FALSE, va_start_p = FALSE;
     int add_overflow_p = FALSE, sub_overflow_p = FALSE, mul_overflow_p = FALSE, expect_p = FALSE;
-    int abort_p = FALSE;
+    int abort_p = FALSE, memcmp_p = FALSE;
     int convertvector_p = FALSE, shuffle_p = FALSE, shufflevector_p = FALSE;
     int jcall_p = FALSE, jret_p = FALSE, prop_set_p = FALSE, prop_eq_p = FALSE, prop_ne_p = FALSE;
     int vectorelements_p = FALSE;
@@ -10420,6 +10422,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       mul_overflow_p = strcmp (op1->u.s.s, MUL_OVERFLOW) == 0;
       expect_p = strcmp (op1->u.s.s, EXPECT) == 0;
       abort_p = strcmp (op1->u.s.s, BUILTIN_ABORT) == 0;
+      memcmp_p = strcmp (op1->u.s.s, BUILTIN_MEMCMP) == 0;
       convertvector_p = strcmp (op1->u.s.s, CONVERT_VECTOR) == 0;
       shuffle_p = strcmp (op1->u.s.s, SHUFFLE) == 0;
       shufflevector_p = strcmp (op1->u.s.s, SHUFFLE_VECTOR) == 0;
@@ -10433,7 +10436,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     if (op1->code == N_ID && find_def (c2m_ctx, S_REGULAR, op1, curr_scope, NULL) == NULL) {
       va_arg_p = str_eq_p (op1->u.s.s, BUILTIN_VA_ARG);
       va_start_p = str_eq_p (op1->u.s.s, BUILTIN_VA_START);
-      if (!va_arg_p && !va_start_p && !alloca_p && !convertvector_p && !shuffle_p
+      if (!va_arg_p && !va_start_p && !alloca_p && !memcmp_p && !convertvector_p && !shuffle_p
           && !shufflevector_p && !vectorelements_p) {
         /* N_SPEC_DECL (N_SHARE (N_LIST (N_INT)), N_DECL (N_ID, N_FUNC (N_LIST)), N_IGNORE,
            N_IGNORE, N_IGNORE) */
@@ -10456,9 +10459,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       }
     }
     builtin_call_p = alloca_p || va_arg_p || va_start_p || add_overflow_p || sub_overflow_p
-                     || mul_overflow_p || expect_p || abort_p || convertvector_p || shuffle_p
-                     || shufflevector_p || vectorelements_p || jcall_p || jret_p || prop_set_p
-                     || prop_eq_p || prop_ne_p;
+                     || mul_overflow_p || expect_p || abort_p || memcmp_p || convertvector_p
+                     || shuffle_p || shufflevector_p || vectorelements_p || jcall_p || jret_p
+                     || prop_set_p || prop_eq_p || prop_ne_p;
     if (!builtin_call_p || jcall_p) VARR_PUSH (node_t, call_nodes, r);
     arg_list = NL_NEXT (op1);
     if (builtin_call_p) {
@@ -10473,9 +10476,10 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       } else {
         res_type.mode = TM_BASIC;
         res_type.u.basic_type
-          = (va_arg_p || add_overflow_p || sub_overflow_p || mul_overflow_p ? TP_INT
-             : expect_p || prop_eq_p || prop_ne_p                           ? TP_LONG
-                                                                            : TP_VOID);
+          = (va_arg_p || add_overflow_p || sub_overflow_p || mul_overflow_p || memcmp_p
+               ? TP_INT
+             : expect_p || prop_eq_p || prop_ne_p ? TP_LONG
+                                                   : TP_VOID);
       }
       ret_type = &res_type;
       if (builtin_call_p
@@ -10486,6 +10490,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
               || (mul_overflow_p && NL_LENGTH (arg_list->u.ops) != 3)
               || (expect_p && NL_LENGTH (arg_list->u.ops) != 2)
               || (abort_p && NL_LENGTH (arg_list->u.ops) != 0)
+              || (memcmp_p && NL_LENGTH (arg_list->u.ops) != 3)
               || (convertvector_p && NL_LENGTH (arg_list->u.ops) != 2)
               || (shuffle_p && NL_LENGTH (arg_list->u.ops) != 2
                   && NL_LENGTH (arg_list->u.ops) != 3)
@@ -10604,6 +10609,19 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
               }
             }
           }
+        } else if (memcmp_p) {
+          for (int i = 0; i < 2; i++) {
+            arg = NL_EL (arg_list->u.ops, i);
+            e2 = arg->attr;
+            if (e2->type->mode != TM_PTR)
+              error (c2m_ctx, POS (arg), "non-pointer type of %d argument of %s call", i + 1,
+                     BUILTIN_MEMCMP);
+          }
+          arg = NL_EL (arg_list->u.ops, 2);
+          e2 = arg->attr;
+          if (!integer_type_p (e2->type))
+            error (c2m_ctx, POS (arg), "non-integer type of 3rd argument of %s call",
+                   BUILTIN_MEMCMP);
         } else if (va_arg_p) {
           arg = NL_EL (arg_list->u.ops, 1);
           e2 = arg->attr;
@@ -10958,7 +10976,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
         || str_eq_p (id->u.s.s, BUILTIN_VA_ARG) || strcmp (id->u.s.s, ADD_OVERFLOW) == 0
         || strcmp (id->u.s.s, SUB_OVERFLOW) == 0 || strcmp (id->u.s.s, MUL_OVERFLOW) == 0
         || strcmp (id->u.s.s, EXPECT) == 0 || strcmp (id->u.s.s, BUILTIN_ABORT) == 0
-        || strcmp (id->u.s.s, JCALL) == 0 || strcmp (id->u.s.s, JRET) == 0) {
+        || strcmp (id->u.s.s, BUILTIN_MEMCMP) == 0 || strcmp (id->u.s.s, JCALL) == 0
+        || strcmp (id->u.s.s, JRET) == 0) {
       error (c2m_ctx, POS (id), "%s is a builtin function", id->u.s.s);
       break;
     }
@@ -11585,6 +11604,7 @@ struct gen_ctx {
   } proto_info;
   VARR (init_el_t) * init_els;
   MIR_item_t abort_proto, abort_item;
+  MIR_item_t memcmp_proto, memcmp_item;
   MIR_item_t memset_proto, memset_item;
   MIR_item_t memcpy_proto, memcpy_item;
   VARR (MIR_op_t) * call_ops, *ret_ops, *switch_ops;
@@ -11609,6 +11629,8 @@ struct gen_ctx {
 #define init_els gen_ctx->init_els
 #define abort_proto gen_ctx->abort_proto
 #define abort_item gen_ctx->abort_item
+#define memcmp_proto gen_ctx->memcmp_proto
+#define memcmp_item gen_ctx->memcmp_item
 #define memset_proto gen_ctx->memset_proto
 #define memset_item gen_ctx->memset_item
 #define memcpy_proto gen_ctx->memcpy_proto
@@ -14452,6 +14474,43 @@ static void gen_builtin_abort (c2m_ctx_t c2m_ctx) {
   emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_CALL, 2, args));
 }
 
+static op_t gen_builtin_memcmp (c2m_ctx_t c2m_ctx, node_t args_node) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  MIR_context_t ctx = c2m_ctx->ctx;
+  MIR_type_t ret_type;
+  MIR_var_t vars[3];
+  MIR_op_t args[6];
+  MIR_module_t module;
+  op_t res, op1, op2, op3;
+
+  ret_type = get_int_mir_type (sizeof (mir_int));
+  if (memcmp_item == NULL) {
+    vars[0].name = "s1";
+    vars[0].type = get_int_mir_type (sizeof (mir_size_t));
+    vars[1].name = "s2";
+    vars[1].type = get_int_mir_type (sizeof (mir_size_t));
+    vars[2].name = "n";
+    vars[2].type = get_int_mir_type (sizeof (mir_size_t));
+    module = curr_func->module;
+    memcmp_proto = MIR_new_proto_arr (ctx, "memcmp_p", 1, &ret_type, 3, vars);
+    memcmp_item = MIR_new_import (ctx, MEMCMP);
+    move_item_to_module_start (module, memcmp_proto);
+    move_item_to_module_start (module, memcmp_item);
+  }
+  op1 = val_gen (c2m_ctx, NL_HEAD (args_node->u.ops));
+  op2 = val_gen (c2m_ctx, NL_EL (args_node->u.ops, 1));
+  op3 = val_gen (c2m_ctx, NL_EL (args_node->u.ops, 2));
+  res = get_new_temp (c2m_ctx, ret_type);
+  args[0] = MIR_new_ref_op (ctx, memcmp_proto);
+  args[1] = MIR_new_ref_op (ctx, memcmp_item);
+  args[2] = res.mir_op;
+  args[3] = op1.mir_op;
+  args[4] = op2.mir_op;
+  args[5] = op3.mir_op;
+  emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_CALL, 6 /* args + proto + func + res */, args));
+  return res;
+}
+
 static void gen_memset (c2m_ctx_t c2m_ctx, MIR_disp_t disp, MIR_reg_t base, mir_size_t len) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_context_t ctx = c2m_ctx->ctx;
@@ -16108,6 +16167,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     int mul_overflow_p = call_expr->builtin_call_p && strcmp (func->u.s.s, MUL_OVERFLOW) == 0;
     int expect_p = call_expr->builtin_call_p && strcmp (func->u.s.s, EXPECT) == 0;
     int abort_p = call_expr->builtin_call_p && strcmp (func->u.s.s, BUILTIN_ABORT) == 0;
+    int memcmp_p = call_expr->builtin_call_p && strcmp (func->u.s.s, BUILTIN_MEMCMP) == 0;
     int convertvector_p = call_expr->builtin_call_p && strcmp (func->u.s.s, CONVERT_VECTOR) == 0;
     int shuffle_p = call_expr->builtin_call_p && strcmp (func->u.s.s, SHUFFLE) == 0;
     int shufflevector_p = call_expr->builtin_call_p && strcmp (func->u.s.s, SHUFFLE_VECTOR) == 0;
@@ -16134,6 +16194,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       gen_builtin_abort (c2m_ctx);
       true_label = false_label = NULL;
       val_p = FALSE;
+      break;
+    }
+    if (memcmp_p) {
+      res = gen_builtin_memcmp (c2m_ctx, args);
       break;
     }
     if (convertvector_p) {
@@ -17115,7 +17179,8 @@ static void gen_mir (c2m_ctx_t c2m_ctx, node_t r) {
   VARR_CREATE (case_t, switch_cases, alloc, 64);
   VARR_CREATE (init_el_t, init_els, alloc, 128);
   VARR_CREATE (node_t, node_stack, alloc, 8);
-  abort_proto = abort_item = memset_proto = memset_item = memcpy_proto = memcpy_item = NULL;
+  abort_proto = abort_item = memcmp_proto = memcmp_item = memset_proto = memset_item = memcpy_proto
+    = memcpy_item = NULL;
   top_gen (c2m_ctx, r, NULL, NULL, NULL);
   gen_finish (c2m_ctx);
 }
