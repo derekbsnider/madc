@@ -25,7 +25,7 @@ fork.
 ### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`0bf8e7c`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`3a63473`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -192,13 +192,20 @@ integer/float vector arithmetic paths with a splatted one, and postfix old
 values are preserved when vector block-move assignments provide the result
 destination. The permanent `vector-size.c` fixture now covers `v4si`,
 `v16uqi`, `v4sf`, `v8si`, and `v8sf` inc/dec cases.
+`3a63473` adds C2MIR recognition for Clang `ext_vector_type` and
+`__ext_vector_type__` attributes for power-of-two element counts. The lowering
+converts the attribute's element count to a byte vector size, preserves
+qualifiers, and reuses the existing vector type and operation paths. The
+permanent `vector-size.c` fixture now covers `clang_i4`, `clang_uh8`, and
+`clang_f4` extended-vector types.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
 include 32-byte-and-larger vector ABI support requiring the broader AVX/YMM or
 generic-vector MIR floor, broader MIR vector opcodes/registers/interpreter/
-codegen/serialization, vector-count packed shift lowering, and further optional
-per-target packed lowering. Vector-condition ternary/logical semantics remain
-outside current C2MIR C coverage because GCC and clang C reject those forms.
+codegen/serialization, non-power-of-two Clang extended vectors, vector-count
+packed shift lowering, and further optional per-target packed lowering.
+Vector-condition ternary/logical semantics remain outside current C2MIR C
+coverage because GCC and clang C reject those forms.
 madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
 branch is ready to merge and consume from madc.
 
@@ -233,6 +240,13 @@ synthesis.
 Focused vector inc/dec reducers passed GCC native validation and C2MIR
 interp/gen validation for integer and float vectors. Clang rejects vector
 inc/dec forms, so this checkpoint is recorded as GCC extension coverage.
+Focused Clang `ext_vector_type` reducers passed Clang native/assembly
+validation and C2MIR interp/gen validation; GCC ignores this Clang-only
+attribute as expected. C2MIR interp/gen validation also passed for the full
+`vector-size.c` fixture after adding the extended-vector cases. Clang
+`ext_vector_type(3)` remains unsupported because Clang preserves a logical
+three-lane vector while rounding storage/alignment up, and C2MIR's current
+vector representation derives lane count from storage size.
 Focused v2i64/v2u64 comparison reducers passed GCC/clang assembly/native
 validation and C2MIR interp/gen validation; generated MIR now uses 64-bit
 `sub` mask formation for qword comparison lanes instead of 32-bit `subs`.
