@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Added — madc SIMD frontend: lower `DataDefSIMD` to a c2mir vector type (2026-06-06)
+
+madc already parsed `__attribute__((vector_size(N)))` / `__vector_size__` into a
+`DataDefSIMD`, but `cir_builder` never lowered it — the vector-ness was dropped and
+c2mir saw a scalar (`typedef int v4hi`), so vector code failed its check pass. With
+the fork now providing ≤16B vectors, the bridge is built (Tier-1 lowering — reuse
+c2mir's own attribute→vector machinery rather than duplicating it):
+
+- `typedef_decl`: a `DataDefSIMD` typedef emits the **element** type's specs and a
+  `vector_size` `N_ATTR` on the `N_SPEC_DECL` attrs operand → c2mir's
+  `apply_vector_attrs` rewrites the typedef into a real vector type, so every use
+  inherits it (subscript, arithmetic, literals handled by c2mir natively).
+- `append_type_specs`: a `DataDefSIMD` emits element specs + a `vector_size`
+  `N_ATTR` **directly in the spec-qual list** → covers alias-less sites uniformly
+  (casts `(V)x`, abstract type-names, params), where c2mir scans the same list.
+
+**All 11 previously-skipped SIMD tests now pass** (un-skipped), including the
+one-lane `__int128` vector and the 32-byte/64-byte wide vectors (via c2mir's
+scalar-lane fallback). Full suite **515 passed / 4 failed / 1 timed out / 26
+skipped**, zero regressions vs the `504/4/1/37` post-pin-bump baseline.
+
+Follow-up: the `--emit=c11` renderer (`cir_emit_c.cpp`) still drops the attribute
+and `<unhandled COMPOUND_LITERAL>` — the JIT path is correct; the transpile path
+needs the same SIMD rendering for emit-C-vs-g++ parity.
+
 ### Changed — consume MIR fork ≤16-byte SIMD; bump `MIR_COMMIT` → `2ffebff` (2026-06-06)
 
 The MIR fork's SIMD/vector work (`feature/simd-vector-support-codex`, 61 commits)
@@ -22,9 +47,9 @@ asm barriers, `__builtin_strcmp` macro-cycle, `__builtin_abs` (unsigned), global
 aliases (array + scalar), K&R fn-ptr varargs, `_Decimal64` zero, wide strings,
 `prefer`, and `argv` deref.
 
-Note: the madc-side SIMD frontend is **not** yet wired — `DataDefSIMD` is parsed
-but not lowered to a c2mir vector `node_t`, so the 11 `testgccvector*/testsimd*`
-tests stay skipped pending that frontend bridge (separate, now-unblocked work).
+Note: at this step the madc-side SIMD frontend was not yet wired, so the 11
+`testgccvector*/testsimd*` tests stayed skipped. That frontend bridge landed in
+the immediately-following change (above), un-skipping all 11.
 
 ### Changed — retire-std-hardcoding cleanup merged to `develop` (2026-06-05)
 

@@ -425,6 +425,22 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 {
 	if (!dd) { append(lst, simple(N_INT)); return; }
 
+	// SIMD/vector type: emit the ELEMENT type's specs followed by a vector_size
+	// N_ATTR placed DIRECTLY in the spec-qual list. c2mir's type-spec checker
+	// skips N_ATTR in the normal spec loop and then runs apply_vector_attr_list
+	// over the same list (c2mir.c), rewriting the result into a real vector type.
+	// This covers every alias-less site that builds a spec list from a
+	// DataDefSIMD — casts `(V)x`, abstract type-names, params — uniformly. (A
+	// typedef alias short-circuits in type_list before reaching here; the typedef
+	// DEFINITION carries the attr on the N_SPEC_DECL attrs operand instead.)
+	if (DataDefSIMD *simd = dynamic_cast<DataDefSIMD *>(dd)) {
+		append_type_specs(lst, simd->element_type);
+		node_t attr_args = list();
+		append(attr_args, integer((long)simd->vector_bytes));
+		append(lst, node2(N_ATTR, id("vector_size"), attr_args));
+		return;
+	}
+
 	// C99 _Complex: emit base-type spec(s) followed by N_COMPLEX.
 	// c2mir natively supports _Complex (spec list e.g. [N_DOUBLE, N_COMPLEX]).
 	// DataDefCOMPLEX IS-A DataDefSTRUCT, so callers must route it here rather
@@ -464,6 +480,19 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	default:
 		append(lst, simple(N_INT));
 	}
+}
+
+// Build the attribute list for a vector type: N_LIST( N_ATTR(N_ID("vector_size"),
+// N_LIST(<bytes>)) ), the shape c2mir's apply_vector_attr_list consumes at the
+// declaration's attrs operand (N_SPEC_DECL op 2 / N_MEMBER op 2). Reused by every
+// site that declares a DataDefSIMD-typed entity (typedef, member, var, cast).
+node_t CirBuilder::simd_vector_attrs(size_t vector_bytes, TokenBase *origin)
+{
+	node_t attr_args = list();
+	append(attr_args, integer((long)vector_bytes, origin));
+	node_t attrs = list();
+	append(attrs, node2(N_ATTR, id("vector_size", origin), attr_args, origin));
+	return attrs;
 }
 
 // ---------------------------------------------------------------------------
@@ -4596,6 +4625,28 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 			append(spec_decl, ignore());
 			return spec_decl;
 		}
+	}
+
+	// A SIMD/vector typedef `typedef ELEM NAME __attribute__((vector_size(N)))`,
+	// parsed by madc into a DataDefSIMD. Emit the ELEMENT type's specs and attach
+	// the vector_size attribute to the declaration; c2mir's apply_vector_attrs
+	// (c2mir.c) then rewrites the typedef's type into a real vector type, so every
+	// later use of NAME inherits it and c2mir handles vector literals / subscript /
+	// arithmetic natively. Tier-1 lowering: reuse c2mir's vector machinery rather
+	// than duplicating it. (Needs the fork's <=16B SIMD support, MIR_COMMIT 2ffebff+.)
+	if (DataDefSIMD *simd = dynamic_cast<DataDefSIMD *>(dd)) {
+		node_t sl = list();
+		append(sl, simple(N_TYPEDEF));
+		append_type_specs(sl, simd->element_type);
+		node_t share = node1(N_SHARE, sl);
+		node_t decl = node2(N_DECL, id(alias.c_str()), list());
+		node_t spec_decl = simple(N_SPEC_DECL);
+		append(spec_decl, share);
+		append(spec_decl, decl);
+		append(spec_decl, simd_vector_attrs(simd->vector_bytes));
+		append(spec_decl, ignore());
+		append(spec_decl, ignore());
+		return spec_decl;
 	}
 
 	node_t tl = list();

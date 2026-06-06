@@ -333,6 +333,7 @@ public:
 	// Build type specifier LIST. If typedef_alias is non-empty, emit
 	// ID("alias") — c2mir's checker resolves it from the typedef SPEC_DECL.
 	void append_type_specs(node_t list, DataDef *dd);
+	node_t simd_vector_attrs(size_t vector_bytes, TokenBase *origin = NULL);
 	// Build the type-specifier list for a compound-literal element/object type:
 	// emits ID(alias) for a typedef, N_STRUCT/N_UNION for a tagged aggregate,
 	// inlined members for an anonymous aggregate, else falls back to
