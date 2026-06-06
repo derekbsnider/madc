@@ -1,7 +1,7 @@
 # Test Status
 
 > **Current (2026-06-06, `develop` against `/workspace/mir`
-> `feature/simd-vector-support-codex` @ `c69f4da`):** integration
+> `feature/simd-vector-support-codex` @ `55c65ee`):** integration
 > **486 passed, 5 failed, 0 timed out, 55 skipped** on the latest capped
 > `make -C src fulltest` after adding
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
@@ -28,9 +28,11 @@
 > and `-eg`. This follows the `59117d8` checked `__builtin_copysignf` /
 > `__builtin_nan` lowering, one-lane unsigned `__int128` vector equality,
 > union-array alias, leading GNU vector-attribute, `__builtin_memcmp`, and
-> narrow address-taken register rvalue checkpoints. `/workspace/mir`
-> `timeout 900 make test` passed with **Tests 1119, Success tests 2238** plus
-> bootstrap checks.
+> narrow address-taken register rvalue checkpoints. MIR SIMD side checkpoint
+> `55c65ee` adds text and binary `MIR_T_V128` data I/O round-trip coverage via
+> `mir-tests/scan-test.c` and `mir-tests/io.c`. `/workspace/mir`
+> `timeout 900 make test` passed at `55c65ee` with **Tests 1119, Success tests
+> 2238** plus bootstrap checks.
 > The 419/0 figures below are the
 > *removed* asmjit/MIR-transpiler backend and are retained only as the C89
 > coverage target the CIR path is climbing back to. ★ Milestone: SMAUG 1.8

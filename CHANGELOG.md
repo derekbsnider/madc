@@ -25,7 +25,7 @@ fork.
 ### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05/06)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`c69f4da`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`55c65ee`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -277,20 +277,25 @@ the vector-construct scan:
 `pr94591.c`, and `simd-{1,2,4,6}.c`. All 37 GCC execute tests found by
 searching for vector constructs are now checked in under `c-tests/gcc` and pass
 C2MIR `-ei` and `-eg`.
+`55c65ee` adds text and binary MIR I/O round-trip support for `MIR_T_V128`
+data items by representing each vector element as 16 byte values. Coverage now
+exercises textual scan/output in `mir-tests/scan-test.c` and binary
+write/read in `mir-tests/io.c`.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
 include AVX/YMM register ABI for 32-byte-and-larger external vector boundaries,
-broader MIR vector opcodes/registers/interpreter/codegen/serialization,
-vector-count packed shift lowering, and further optional per-target packed
-lowering.
+broader MIR vector opcodes/registers/interpreter/codegen, vector-count packed
+shift lowering, and further optional per-target packed lowering.
 Vector-condition ternary/logical semantics remain outside current C2MIR C
 coverage because GCC and clang C reject those forms.
 madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
 branch is ready to merge and consume from madc.
 
-Validation in `/workspace/mir`: `timeout 900 make test` passed at `c69f4da`
-with `Tests 1119, Success tests 2238`; the 21 newly checked-in exact GCC vector
-torture copies passed GCC native and C2MIR `-ei` / `-eg`. Clang native passed
+Validation in `/workspace/mir`: `timeout 900 make test` passed at `55c65ee`
+with `Tests 1119, Success tests 2238` plus bootstrap checks. Focused
+`make scan-test` and `make io-test` passed for the new `v128` data I/O
+coverage; the 21 newly checked-in exact GCC vector torture copies passed GCC
+native and C2MIR `-ei` / `-eg` at `c69f4da`. Clang native passed
 where it accepts the GCC forms; it rejects four GCC-only vector-element address,
 vector increment/decrement, or `__builtin_shuffle` forms. Exact
 `pr72824-2.c`, `fp-cmp-cond-1.c`, `pr105613.c`, and focused builtin-fp /
