@@ -39,7 +39,7 @@ typedef enum {
   /* _Complex support (madc fork) */
   N_COMPLEX, N_REALPART, N_IMAGPART, N_CF, N_CD, N_CLD,      /* 129-134 */
   /* madc extensions */
-  N_DEFER, N_CLASS, N_METHOD,                                  /* 135-137 */
+  N_DEFER, N_CLASS, N_METHOD, N_ASM_OPERAND, N_ASM_STMT,       /* 135-139 */
 } c2mir_node_code_t;
 
 /* Alias so c2mir.c internals still compile */

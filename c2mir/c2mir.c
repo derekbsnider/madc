@@ -525,6 +525,8 @@ stmt: compound_stmt | N_IF(N_LIST:(label)*, expr, stmt, stmt?)
     | N_GOTO(N_LIST:(label)*, N_ID) | N_INDIRECT_GOTO(N_LIST:(label)*, expr)
     | (N_CONTINUE|N_BREAK) (N_LIST:(label)*)
     | N_RETURN(N_LIST:(label)*, expr?) | N_EXPR(N_LIST:(label)*, expr)
+    | N_ASM_STMT(N_LIST:(label)*, N_STR, N_LIST:(N_ASM_OPERAND)*,
+                 N_LIST:(N_ASM_OPERAND)*, N_LIST:(N_STR)*)
 compound_stmt: N_BLOCK(N_LIST:(label)*, N_LIST:(declaration | stmt)*)
 asm: N_ASM(N_STR | N_STR16 | N_STR32)
 attr_arg: const | N_ID
@@ -5273,6 +5275,119 @@ D (label) {
   return r;
 }
 
+static int asm_keyword_name_p (const char *s) {
+  return strcmp (s, "asm") == 0 || strcmp (s, "__asm") == 0 || strcmp (s, "__asm__") == 0;
+}
+
+static int asm_qualifier_name_p (const char *s) {
+  return strcmp (s, "volatile") == 0 || strcmp (s, "__volatile") == 0
+         || strcmp (s, "__volatile__") == 0 || strcmp (s, "inline") == 0
+         || strcmp (s, "__inline") == 0 || strcmp (s, "__inline__") == 0
+         || strcmp (s, "goto") == 0 || strcmp (s, "__goto__") == 0;
+}
+
+static int asm_qualifier_token_p (token_t t) {
+  return t->code == T_VOLATILE || t->code == T_INLINE || t->code == T_GOTO
+         || (t->code == T_ID && asm_qualifier_name_p (t->repr));
+}
+
+D (asm_operand) {
+  parse_ctx_t parse_ctx = c2m_ctx->parse_ctx;
+  node_t name, constraint, operand, r;
+  pos_t pos;
+
+  name = new_node (c2m_ctx, N_IGNORE);
+  if (M ('[')) {
+    PTN (T_ID);
+    name = r;
+    PT (']');
+  }
+  PTN (T_STR);
+  constraint = r;
+  pos = POS (constraint);
+  if (M ('(')) {
+    P (expr);
+    operand = r;
+    PT (')');
+  } else {
+    operand = new_node (c2m_ctx, N_IGNORE);
+  }
+  return new_pos_node3 (c2m_ctx, N_ASM_OPERAND, pos, name, constraint, operand);
+}
+
+D (asm_operand_list) {
+  parse_ctx_t parse_ctx = c2m_ctx->parse_ctx;
+  node_t list, r;
+
+  list = new_node (c2m_ctx, N_LIST);
+  for (;;) {
+    P (asm_operand);
+    op_append (c2m_ctx, list, r);
+    if (!M (',')) break;
+  }
+  return list;
+}
+
+D (asm_clobber_list) {
+  parse_ctx_t parse_ctx = c2m_ctx->parse_ctx;
+  node_t list, r;
+
+  list = new_node (c2m_ctx, N_LIST);
+  for (;;) {
+    PTN (T_STR);
+    op_append (c2m_ctx, list, r);
+    if (!M (',')) break;
+  }
+  return list;
+}
+
+DA (asm_stmt) {
+  parse_ctx_t parse_ctx = c2m_ctx->parse_ctx;
+  node_t id, templ, outputs, inputs, clobbers, r;
+  pos_t pos;
+
+  assert (arg != NULL && arg->code == N_LIST);
+  if (curr_token->code != T_ID || !asm_keyword_name_p (curr_token->repr)) return err_node;
+  MN (T_ID, id);
+  pos = POS (id);
+  while (asm_qualifier_token_p (curr_token)) read_token (c2m_ctx);
+  PT ('(');
+  PTN (T_STR);
+  templ = r;
+  outputs = inputs = clobbers = NULL;
+  if (M (':')) {
+    if (!C (':') && !C (')')) {
+      P (asm_operand_list);
+      outputs = r;
+    }
+    if (M (':')) {
+      if (!C (':') && !C (')')) {
+        P (asm_operand_list);
+        inputs = r;
+      }
+      if (M (':')) {
+        if (!C (':') && !C (')')) {
+          P (asm_clobber_list);
+          clobbers = r;
+        }
+        if (M (':')) {
+          error (c2m_ctx, pos, "asm goto labels are not implemented");
+          while (!C (')')) {
+            PTN (T_ID);
+            if (!M (',')) break;
+          }
+        }
+      }
+    }
+  }
+  if (outputs == NULL) outputs = new_node (c2m_ctx, N_LIST);
+  if (inputs == NULL) inputs = new_node (c2m_ctx, N_LIST);
+  if (clobbers == NULL) clobbers = new_node (c2m_ctx, N_LIST);
+  PT (')');
+  PT (';');
+  return new_pos_node5 (c2m_ctx, N_ASM_STMT, pos, arg, templ, outputs, inputs, clobbers);
+}
+
 D (stmt) {
   parse_ctx_t parse_ctx = c2m_ctx->parse_ctx;
   node_t l, n, op1, op2, op3, r;
@@ -5391,6 +5506,8 @@ D (stmt) {
       PT (';');
     }
     r = new_pos_node2 (c2m_ctx, N_RETURN, pos, l, r);
+  } else if (curr_token->code == T_ID && asm_keyword_name_p (curr_token->repr)) {
+    PA (asm_stmt, l);
   } else { /* expression-statement */
     if (C (';')) {
       r = new_node (c2m_ctx, N_IGNORE);
@@ -11286,6 +11403,29 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     check (c2m_ctx, expr, r);
     break;
   }
+  case N_ASM_STMT: {
+    node_t labels = NL_HEAD (r->u.ops);
+    node_t templ = NL_NEXT (labels);
+    node_t outputs = NL_NEXT (templ);
+    node_t inputs = NL_NEXT (outputs);
+    node_t operand;
+
+    check_labels (c2m_ctx, labels, r);
+    if (c2m_options->pedantic_p) {
+      error (c2m_ctx, POS (r), "asm statement is not a part of C11 standard");
+      break;
+    }
+    if (templ->code != N_STR || templ->u.s.s[0] != '\0')
+      error (c2m_ctx, POS (templ), "non-empty asm statements are not implemented");
+    if (NL_HEAD (outputs->u.ops) != NULL)
+      error (c2m_ctx, POS (outputs), "asm output operands are not implemented");
+    for (operand = NL_HEAD (inputs->u.ops); operand != NULL; operand = NL_NEXT (operand)) {
+      node_t expr = NL_EL (operand->u.ops, 2);
+
+      if (expr->code != N_IGNORE) check (c2m_ctx, expr, r);
+    }
+    break;
+  }
   default: abort ();
   }
   if (e != NULL) {
@@ -16791,6 +16931,21 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       top_gen (c2m_ctx, expr_node, NULL, NULL, NULL);
     break;
   }
+  case N_ASM_STMT: {
+    node_t templ = NL_EL (r->u.ops, 1);
+    node_t inputs = NL_EL (r->u.ops, 3);
+    node_t operand;
+
+    assert (false_label == NULL && true_label == NULL);
+    emit_label (c2m_ctx, r);
+    assert (templ->code == N_STR && templ->u.s.s[0] == '\0');
+    for (operand = NL_HEAD (inputs->u.ops); operand != NULL; operand = NL_NEXT (operand)) {
+      node_t expr_node = NL_EL (operand->u.ops, 2);
+
+      if (expr_node->code != N_IGNORE) top_gen (c2m_ctx, expr_node, NULL, NULL, NULL);
+    }
+    break;
+  }
   default: abort ();
   }
 finish:
@@ -16985,6 +17140,8 @@ static const char *get_node_name (node_code_t code) {
     REP8 (C, RESTRICT, VOLATILE, ATOMIC, INLINE, NO_RETURN, ALIGNAS, FUNC, STAR);
     REP8 (C, POINTER, DOTS, ARR, INIT, FIELD_ID, TYPE, ST_ASSERT, FUNC_DEF);
     REP3 (C, MODULE, ASM, ATTR);
+    REP6 (C, COMPLEX, REALPART, IMAGPART, CF, CD, CLD);
+    REP5 (C, DEFER, CLASS, METHOD, ASM_OPERAND, ASM_STMT);
   default: abort ();
   }
 #undef C
@@ -17258,6 +17415,7 @@ static void print_node (c2m_ctx_t c2m_ctx, FILE *f, node_t n, int indent, int at
   case N_CONTINUE:
   case N_BREAK:
   case N_DEFER:
+  case N_ASM_STMT:
   case N_METHOD:
   case N_RETURN:
   case N_EXPR:
@@ -17304,6 +17462,7 @@ static void print_node (c2m_ctx_t c2m_ctx, FILE *f, node_t n, int indent, int at
   case N_TYPE:
   case N_ST_ASSERT:
   case N_ASM:
+  case N_ASM_OPERAND:
     fprintf (f, "\n");
     print_ops (c2m_ctx, f, n, indent, attr_p);
     break;
