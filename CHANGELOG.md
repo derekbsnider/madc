@@ -25,7 +25,7 @@ fork.
 ### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`07dd396`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`fbb47f3`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -225,6 +225,11 @@ constant-expression checker. This accepts GCC/clang spellings such as
 `__attribute__((__vector_size__(2 * sizeof (long long)), __may_alias__))`.
 The permanent `vector-size.c` fixture now covers that spelling plus
 pr92618-style casted vector-pointer stores that write all 16 bytes.
+`fbb47f3` lowers C2MIR `__builtin_abort` to a void zero-argument call to libc
+`abort`, matching GCC/clang lowering and avoiding the previous unresolved
+`__builtin_abort` import. `c-tests/new/builtin-abort.c` covers the generic
+builtin, and exact GCC torture cases `c-tests/gcc/pr92618.c`,
+`pr94524-1.c`, and `pr94524-2.c` now pass under C2MIR `-ei` and `-eg`.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
 include 32-byte-and-larger vector ABI support requiring the broader AVX/YMM or
@@ -237,7 +242,7 @@ madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
 branch is ready to merge and consume from madc.
 
 Validation in `/workspace/mir`: `timeout 900 make test` passed with `Tests
-1077, Success tests 2154`; focused `interp-test17` and `gen-test17` passed;
+1081, Success tests 2162`; focused `interp-test17` and `gen-test17` passed;
 generated MIR showed `vmuli32` selection for the full vector fixture; focused
 v4i32 multiply reducers passed GCC/clang assembly/native validation and C2MIR
 interp/gen validation; GCC/clang `-msse4.1` assembly showed `pmulld`. Focused
@@ -284,23 +289,21 @@ opcodes. The full `vector-size.c` fixture passed GCC native validation and
 C2MIR interp/gen validation with the mixed-signedness vector-count cases.
 Focused declaration-spec vector-attribute reducers passed GCC/clang
 native/assembly validation and C2MIR interp/gen validation. The exact GCC
-`pr94524-1.c` torture source now compiles to MIR assembly; runtime validation
-uses the equivalent no-`__builtin_abort` reducer because that source still hits
-the existing unresolved `__builtin_abort` runtime dependency. The full
+`pr94524-1.c` and `pr94524-2.c` torture sources now pass exact runtime
+validation after C2MIR lowers `__builtin_abort` to libc `abort`. The full
 `vector-size.c` fixture passed GCC native validation and C2MIR interp/gen
 validation with the declaration-spec vector-attribute case. The full MIR
-`timeout 900 make test` passed after this checkpoint with `Tests 1077, Success
-tests 2154` plus bootstrap checks.
+`timeout 900 make test` passed after the latest checkpoint with `Tests 1081,
+Success tests 2162` plus bootstrap checks.
 Focused expression-valued `vector_size` reducers passed GCC/clang
 native/assembly validation and C2MIR interp/gen validation. The exact GCC
-`pr92618.c` torture source now compiles to MIR assembly; runtime validation
-uses the equivalent no-`__builtin_abort` reducer because that source still hits
-the existing unresolved `__builtin_abort` runtime dependency. GCC and clang
-assembly showed full 128-bit vector stores for the casted vector-pointer store
-shape, and the full `vector-size.c` fixture passed GCC native validation and
-C2MIR interp/gen validation with the constant-expression attribute case. The
-full MIR `timeout 900 make test` passed after this checkpoint with `Tests
-1077, Success tests 2154` plus bootstrap checks.
+`pr92618.c` torture source now passes exact runtime validation after
+`__builtin_abort` lowering. GCC and clang assembly showed full 128-bit vector
+stores for the casted vector-pointer store shape, and the full `vector-size.c`
+fixture passed GCC native validation and C2MIR interp/gen validation with the
+constant-expression attribute case. The full MIR `timeout 900 make test`
+passed after the latest checkpoint with `Tests 1081, Success tests 2162` plus
+bootstrap checks.
 Focused v2i64/v2u64 comparison reducers passed GCC/clang assembly/native
 validation and C2MIR interp/gen validation; generated MIR now uses 64-bit
 `sub` mask formation for qword comparison lanes instead of 32-bit `subs`.
