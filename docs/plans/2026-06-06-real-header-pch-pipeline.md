@@ -15,6 +15,16 @@ Principle: **headers come from the originals.** The only legitimate hand-written
 headers are madc's *own* `ns_*` polyglot headers (below), which have no system
 equivalent.
 
+### Scope & phasing (decided 2026-06-06)
+
+- **This pipeline targets the std:: C++ headers first** (`iostream`, `string`,
+  `vector`, `map`, `set`, `fstream`, `sstream`, `algorithm`, `typeinfo`) — the set
+  we most want from originals and which parses relatively cleanly.
+- **libc/POSIX headers stay curated for now** (small, stable, deliberately tuned;
+  real glibc is parse-gnarly). A **later phase** migrates them to real headers —
+  the special-handling they'd need is catalogued under "Header categories" §2.
+- **`ns_*` madc-own headers stay embedded permanently** (no system original).
+
 ## Current state (facts, 2026-06-06)
 
 - The **parser was hardened** for real-header syntax (`e7b06f3`: class-scope
@@ -41,9 +51,27 @@ equivalent.
 
 1. **std:: stubs** (`iostream`, `string`, `vector`, `map`, `set`, `fstream`,
    `sstream`, `algorithm`, `typeinfo`) → **replace** with real system-header PCH.
-2. **libc/POSIX stubs** (`stdio.h`, `string.h`, `sys/*`, …) → replaceable, but
-   some are **deliberately madc-tuned** (e.g. signed-`int` libc return types per
-   `.claude/rules/embedded-headers.md`). Replace carefully or keep the tuned ones.
+2. **libc/POSIX stubs** (`stdio.h`, `string.h`, `sys/*`, …) → **STAY curated for
+   now** (a later phase migrates them; see "Scope & phasing"). They're small,
+   stable, and deliberately tuned, and real glibc headers are gnarly to parse
+   (`/usr/include/stdio.h` ≈177, `string.h` ≈91 `__THROW`/`__nonnull`/
+   `__attribute__`/`_FORTIFY_SOURCE`/inline tokens). Special handling that a raw
+   real-header swap would lose (the migration checklist for later):
+   - **(A) signed-`int` returns** — `string.h` `strcmp/strncmp/strcasecmp/`
+     `strncasecmp/memcmp` (dlsym fallback returns `long` → the SMAUG
+     `bsearch_skill_exact`/combat bug). `ctype.h` classifiers
+     (`isalpha/toupper/…`) are currently *undeclared* (dlsym→`long`) — same latent
+     bug; **declaring them `int` is a worthwhile near-term fix, independent of the
+     pipeline.**
+   - **(B) `#load`** — `math.h`→libm, `crypt.h`→libcrypt, `assert.h`→libc,
+     `dlfcn.h` first-class. Real headers have no `#load`, so symbols wouldn't
+     resolve.
+   - **(C) struct layouts + lazy registration** — `time.h` (`struct tm`,`time_t`),
+     `sys/stat.h` (`struct stat`), `dirent.h`, `pwd.h`/`grp.h`, `netdb.h`,
+     `sys/time.h`; globals `stdin/stdout/stderr` (`LAZY_STDIO`); types
+     `size_t/pid_t/time_t`.
+   - **(D) deliberate simplifications** — `stdio.h` `FILE`→`void`, `EOF`/`NULL`/
+     `size_t` macros, printf via dlsym; `stddef.h`/`stdint.h` typedefs.
 3. **madc-own `ns_*`** (`ns_php`/`ns_perl`/`ns_python`/`ns_ruby`/`ns_rust`/`ns_js`,
    the no-extension headers `.mad` code does `#include <ns_php>`) → **STAY
    embedded.** No system original exists; they declare `extern "C"` bindings to the
