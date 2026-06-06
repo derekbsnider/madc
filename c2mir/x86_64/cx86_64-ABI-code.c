@@ -41,7 +41,7 @@ static int classify_arg_1 (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t type
 
   if (type->mode == TM_VECTOR) {
     if (top_level_p) {
-      if (v32_integer_vector_type_p (c2m_ctx, type)) {
+      if (small_integer_vector_type_p (c2m_ctx, type)) {
         types[0] = MIR_T_I64; /* one SysV integer eightbyte, narrowed later */
         return 1;
       }

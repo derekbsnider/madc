@@ -15,9 +15,13 @@ typedef long v2l __attribute__ ((vector_size (16)));
 typedef long v4l __attribute__ ((vector_size (32)));
 typedef double v2df __attribute__ ((__vector_size__ (16)));
 typedef double v4df __attribute__ ((__vector_size__ (32)));
+typedef signed char v1qi __attribute__ ((vector_size (1)));
+typedef signed char v2qi __attribute__ ((vector_size (2)));
+typedef unsigned char v2uqi __attribute__ ((vector_size (2)));
 typedef signed char v4qi __attribute__ ((vector_size (4)));
 typedef signed char v16qi __attribute__ ((vector_size (16)));
 typedef unsigned char v16uqi __attribute__ ((vector_size (16)));
+typedef short v1hi __attribute__ ((vector_size (2)));
 typedef short v2hi __attribute__ ((vector_size (4)));
 typedef short v4hi __attribute__ ((vector_size (8)));
 typedef short v8hi __attribute__ ((vector_size (16)));
@@ -53,6 +57,42 @@ static int abi_check_f64 (v2df v) {
   if (v[0] != 4.75) return 1;
   if (v[1] != -2.0) return 2;
   return 0;
+}
+
+static v1qi abi_add_v8_i8 (v1qi a, v1qi b) {
+  v1qi r = {a[0] + b[0]};
+  return r;
+}
+
+static int abi_check_v8_i8 (v1qi v) {
+  return v[0] == 42;
+}
+
+static v2qi abi_add_v16_i8 (v2qi a, v2qi b) {
+  v2qi r = {a[0] + b[0], a[1] + b[1]};
+  return r;
+}
+
+static int abi_sum_v16_i8 (v2qi v) {
+  return v[0] * 10 + v[1];
+}
+
+static v2uqi abi_add_v16_u8 (v2uqi a, v2uqi b) {
+  v2uqi r = {a[0] + b[0], a[1] + b[1]};
+  return r;
+}
+
+static int abi_sum_v16_u8 (v2uqi v) {
+  return v[0] * 10 + v[1];
+}
+
+static v1hi abi_add_v16_i16 (v1hi a, v1hi b) {
+  v1hi r = {a[0] + b[0]};
+  return r;
+}
+
+static int abi_check_v16_i16 (v1hi v) {
+  return v[0] == 1234;
 }
 
 static v1si abi_add_v32_i32 (v1si a, v1si b) {
@@ -221,6 +261,18 @@ int main (void) {
   v2df abi_da = {1.25, -2.5};
   v2df abi_db = {3.5, 0.5};
   v2df abi_dr;
+  v1qi abi_v8_ca = {12};
+  v1qi abi_v8_cb = {30};
+  v1qi abi_v8_cr;
+  v2qi abi_v16_ca = {1, 2};
+  v2qi abi_v16_cb = {10, 20};
+  v2qi abi_v16_cr;
+  v2uqi abi_v16_uca = {3, 4};
+  v2uqi abi_v16_ucb = {5, 6};
+  v2uqi abi_v16_ucr;
+  v1hi abi_v16_ha = {1000};
+  v1hi abi_v16_hb = {234};
+  v1hi abi_v16_hr;
   v1si abi_v32_ia = {12};
   v1si abi_v32_ib = {30};
   v1si abi_v32_ir;
@@ -556,6 +608,16 @@ int main (void) {
   if (abi_check_f32 (abi_fr) != 0) return 125;
   abi_dr = abi_add_f64 (abi_da, abi_db);
   if (abi_check_f64 (abi_dr) != 0) return 126;
+  abi_v8_cr = abi_add_v8_i8 (abi_v8_ca, abi_v8_cb);
+  if (!abi_check_v8_i8 (abi_v8_cr)) return 226;
+  abi_v16_cr = abi_add_v16_i8 (abi_v16_ca, abi_v16_cb);
+  if (abi_v16_cr[0] != 11 || abi_v16_cr[1] != 22) return 227;
+  if (abi_sum_v16_i8 (abi_v16_cr) != 132) return 228;
+  abi_v16_ucr = abi_add_v16_u8 (abi_v16_uca, abi_v16_ucb);
+  if (abi_v16_ucr[0] != 8 || abi_v16_ucr[1] != 10) return 229;
+  if (abi_sum_v16_u8 (abi_v16_ucr) != 90) return 230;
+  abi_v16_hr = abi_add_v16_i16 (abi_v16_ha, abi_v16_hb);
+  if (!abi_check_v16_i16 (abi_v16_hr)) return 231;
   abi_v64_ir = abi_add_v64_i32 (abi_v64_ia, abi_v64_ib);
   if (abi_v64_ir[0] != 8 || abi_v64_ir[1] != 10) return 127;
   if (abi_sum_v64_i32 (abi_v64_ir) != 90) return 128;
