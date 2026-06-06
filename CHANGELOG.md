@@ -25,7 +25,7 @@ fork.
 ### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`3d9b8af`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`fc493fd`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -212,6 +212,13 @@ differs, while preserving the lane-wise scalar lowering required for
 non-uniform vector counts. The permanent `vector-size.c` fixture now covers
 `v4si` by `v4ui`, `v4ui` by `v4si`, `v8hi` by `uint16x8_t`, and compound
 mixed-signedness vector-count left shift cases.
+`fc493fd` preserves GNU declaration-spec attributes and applies
+`vector_size` / `ext_vector_type` after base type resolution. C2MIR now accepts
+GCC/clang spellings such as `typedef signed char
+__attribute__((__vector_size__(16))) V;` instead of dropping the attribute
+before the typedef declarator. The permanent `vector-size.c` fixture now covers
+that typedef spelling with signed-byte scalar compound modulo in the
+pr94524-style shape.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
 include 32-byte-and-larger vector ABI support requiring the broader AVX/YMM or
@@ -269,6 +276,15 @@ the reducer showed lane-wise scalar `lshs` / `urshs` operations for the
 non-uniform vector-count cases, not the low-64-bit scalar-count packed shift
 opcodes. The full `vector-size.c` fixture passed GCC native validation and
 C2MIR interp/gen validation with the mixed-signedness vector-count cases.
+Focused declaration-spec vector-attribute reducers passed GCC/clang
+native/assembly validation and C2MIR interp/gen validation. The exact GCC
+`pr94524-1.c` torture source now compiles to MIR assembly; runtime validation
+uses the equivalent no-`__builtin_abort` reducer because that source still hits
+the existing unresolved `__builtin_abort` runtime dependency. The full
+`vector-size.c` fixture passed GCC native validation and C2MIR interp/gen
+validation with the declaration-spec vector-attribute case. The full MIR
+`timeout 900 make test` passed after this checkpoint with `Tests 1077, Success
+tests 2154` plus bootstrap checks.
 Focused v2i64/v2u64 comparison reducers passed GCC/clang assembly/native
 validation and C2MIR interp/gen validation; generated MIR now uses 64-bit
 `sub` mask formation for qword comparison lanes instead of 32-bit `subs`.
