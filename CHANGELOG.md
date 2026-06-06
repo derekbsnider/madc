@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added — C++ brace-initialization of variables (`T x{...}`) (2026-06-06)
+
+madc parsed `T x = {...}` but not the brace-init form `T x{...}` (failed
+"unexpected token type 7"). Now a post-declarator `{` is handled in
+`parseDeclaration`, reusing the existing balanced brace-list parser: aggregates
+/arrays/structs/classes route through `= {...}`; scalars are unwrapped
+(`int x{7}` -> `= 7`, empty `int x{}` -> value-init `= 0`) to avoid a separate
+scalar `= {N}` defect. First parser gap from the real-header measurement
+(unblocks `in_place_t in_place{}` in <utility>/<memory>). `tests/testbraceinit.mad`
+covers scalar/empty/array/struct/namespace forms; fulltest 519/4/0/26, zero regr.
+
 ### Added — predefined compiler macros from the configured compiler (2026-06-06)
 
 `scripts/gen_predefined_macros.sh` captures the build compiler's predefined macros

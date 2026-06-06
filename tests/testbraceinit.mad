@@ -1,0 +1,22 @@
+#include <stdio.h>
+
+// C++ brace-initialization of variables: scalars (incl. empty value-init),
+// arrays, and aggregates/structs (incl. empty). madc lowers scalar braces by
+// unwrapping (T x{e} -> T x = e, T x{} -> T x = 0) and routes aggregates through
+// the existing = {...} brace-list path.
+struct Pt { int x; int y; };
+
+int g{42};                 // namespace-scope scalar brace-init
+
+int main(void)
+{
+	int a{7};
+	int z{};               // value-init -> 0
+	double d{3.5};
+	int arr[3]{1, 2, 3};
+	Pt p{4, 9};
+	Pt e{};                // aggregate value-init -> {0,0}
+	printf("%d %d %d %.1f %d %d %d %d %d\n",
+	       g, a, z, d, arr[0], arr[2], p.x, p.y, e.x);
+	return 0;
+}

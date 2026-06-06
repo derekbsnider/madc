@@ -22363,6 +22363,56 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
     DataDef *reference_value_type = ret_is_ref ? decl_type : NULL;
 
+    // C++ brace-initialization of a variable: `T x{ ... }` (incl. empty `T x{}`).
+    // Reuse the existing `= { ... }` initializer machinery (which already
+    // balance-matches nested braces via read_struct_lit) by injecting a synthetic
+    // '=' in front of the '{'. Covers scalars, aggregates/arrays, and class
+    // value-init uniformly. The `(` ctor-call syntax is handled above; this is the
+    // brace form. References (`T& x{...}`) keep the explicit-init requirement.
+    if ( nt->id() == TokenID::tkOpBrc && !ret_is_ref )
+    {
+	bool is_aggregate = !arr_dims.empty()
+	    || dynamic_cast<DataDefSTRUCT *>(decl_type) != NULL
+	    || (decl_type && decl_type->is_simd())
+	    || (decl_type && decl_type->basetype() == BaseType::btClass);
+	TokenBase *brc = nextToken();            // consume '{'
+	TokenBase *syn = new TokenAssign();
+	syn->file = brc->file; syn->line = brc->line; syn->column = brc->column;
+	if ( is_aggregate )
+	{
+	    pushToken(brc);                      // restore '{' -> '= { ... }'
+	    pushToken(syn);
+	}
+	else
+	{
+	    // Scalar brace-init: a scalar takes 0 or 1 element, so UNWRAP to
+	    // `= <inner>` (empty `{}` -> value-init `= 0`). The aggregate brace-list
+	    // path is only for arrays/structs/classes; routing a scalar there hits a
+	    // separate scalar `= {N}` defect, so unwrap to plain `= expr` instead.
+	    std::vector<TokenBase *> inner;
+	    int depth = 1;
+	    while ( depth > 0 )
+	    {
+		TokenBase *t = nextToken();
+		if ( !t )
+		    Throw(brc) << "Unterminated '{' in initializer" << flush;
+		if ( t->id() == TokenID::tkOpBrc ) { depth++; }
+		else if ( t->id() == TokenID::tkClBrc ) { if ( --depth == 0 ) break; }
+		inner.push_back(t);
+	    }
+	    if ( inner.empty() )
+	    {
+		TokenBase *zero = new TokenInt(0);
+		zero->file = brc->file; zero->line = brc->line; zero->column = brc->column;
+		inner.push_back(zero);
+	    }
+	    for ( size_t i = inner.size(); i-- > 0; )
+		pushToken(inner[i]);             // re-push inner tokens in order
+	    pushToken(syn);                      // '= <inner...>'
+	}
+	nt = peekToken();                        // nt is the synthetic '='
+    }
+
     // variable declaration
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign
       || nt->id() == TokenID::tkComma )
