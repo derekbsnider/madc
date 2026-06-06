@@ -17324,6 +17324,29 @@ TokenBase *TokenENUM::parse(Program &pgm)
     tn = pgm.peekToken();
     if ( !tn || tn->id() != TokenID::tkOpBrc )
     {
+	// C++11 opaque-enum-declaration: `enum class Tag : T;` / `enum Tag : T;`
+	// (next token is ';', not a variable name). This DECLARES the enum type —
+	// register the tag as a type and finish, rather than treating it as a
+	// variable declaration. A later full definition re-registers with its
+	// enumerators; an existing definition is not clobbered.
+	if ( tn && tn->id() == TokenID::tkSemi && !enum_tag.empty()
+	  && (scoped || !pgm.is_c_mode()) )
+	{
+	    if ( pgm.datatype_map.find(enum_tag) == pgm.datatype_map.end() )
+	    {
+		DataDef *enum_dd = new DataDefENUM(enum_tag);
+		if ( !pgm.current_namespace.empty() )
+		    enum_dd->canonical_cpp_spelling =
+			pgm.current_namespace + "::" + enum_tag;
+		TokenDataType *tdt = new TokenDataType(enum_tag.c_str(), *enum_dd);
+		pgm.datatype_map[enum_tag] = tdt;
+		if ( !pgm.current_namespace.empty() )
+		    pgm.namespace_datatype_map[pgm.current_namespace][enum_tag] = tdt;
+	    }
+	    pgm.nextToken(); // consume ';'
+	    return NULL;
+	}
+
 	// No '{' — this is a forward reference like `enum X var;`
 	// Treat enum as int and let the caller parse the variable declaration
 	if ( !enum_tag.empty() )

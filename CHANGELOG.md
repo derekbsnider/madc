@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added — C++11 opaque-enum declarations (`enum class E : T;`) (2026-06-06)
+
+`enum class E : T { ... }` (with body) parsed, but the forward/opaque declaration
+`enum class E : T;` (and unscoped `enum E : T;`) failed "Expecting identifier after
+type": the no-`{` branch assumed a *variable* declaration and pushed `int`, leaving
+`int ;`. Now a `;` after the (optional) underlying type is recognized as an
+opaque-enum-declaration — the tag is registered as a type and the statement
+finishes; a later full definition re-registers with its enumerators. Second
+real-header parser gap; unblocks `std::byte` (`enum class byte : unsigned char;`)
+in <vector>/<map>/<set>/<memory>. `tests/testopaqueenum.mad` covers scoped/unscoped
+opaque-then-full-def; fulltest 520/4/0/26, zero regressions.
+
 ### Added — C++ brace-initialization of variables (`T x{...}`) (2026-06-06)
 
 madc parsed `T x = {...}` but not the brace-init form `T x{...}` (failed

@@ -1,0 +1,16 @@
+#include <stdio.h>
+
+// C++11 opaque-enum-declaration (forward decl with underlying type, no body),
+// then the full definition. Both scoped and unscoped.
+enum class Color : unsigned char;          // opaque scoped
+enum Status : int;                         // opaque unscoped
+
+enum class Color : unsigned char { Red = 1, Green, Blue };
+enum Status : int { Off = 10, On };
+
+int main(void)
+{
+	printf("%d %d %d %d %d\n",
+	       (int)Color::Red, (int)Color::Green, (int)Color::Blue, Off, On);
+	return 0;
+}
