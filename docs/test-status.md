@@ -1,9 +1,13 @@
 # Test Status
 
-> **Current (2026-06-06, `develop` against `/workspace/mir`
-> `feature/simd-vector-support-codex` @ `2ffebff`):** integration
-> **486 passed, 4 failed, 1 timed out, 55 skipped** on the latest capped
-> `make -C src fulltest` after adding
+> **Current (2026-06-06, `feature/simd-consume-claude` against `/workspace/mir`
+> `develop` @ `2ffebff`, `MIR_COMMIT` bumped `8864a73`→`2ffebff`):** integration
+> **515 passed, 4 failed, 1 timed out, 26 skipped** on the latest capped
+> `make -C src fulltest` — a session arc of 486→515 (+29): +18 from the MIR pin
+> bump (un-skipping tests that needed c2mir features the old pin lacked) and +11
+> from the madc SIMD frontend lowering (`DataDefSIMD` → c2mir vector type; all
+> `testgccvector*`/`testsimd*` now pass, including one-lane `__int128` and the
+> 32B/64B wide vectors via c2mir's scalar-lane fallback). Earlier additions:
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
 > `teststdcppinclude.mad`, plus `testforeachheaderbody.mad` for range-for
 > locals in included/header function bodies, `testexternclinkage.mad` for
