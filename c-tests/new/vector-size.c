@@ -534,6 +534,17 @@ int main (void) {
   if (u8c[0] != 3 || u8c[1] != 4 || u8c[2] != 0 || u8c[3] != 3) return 96;
   u8c = u8a > u8b;
   if (u8c[0] != 0 || u8c[1] != 0 || u8c[2] != 255 || u8c[3] != 255) return 97;
+  i8c = i8a << 1;
+  if (i8c[0] != 2 || i8c[1] != -4 || i8c[2] != 6 || i8c[3] != -8) return 232;
+  i8c = i8a >> 1;
+  if (i8c[0] != 0 || i8c[1] != -1 || i8c[2] != 1 || i8c[3] != -2) return 233;
+  i8c = i8a;
+  i8c >>= 2;
+  if (i8c[0] != 0 || i8c[1] != -1 || i8c[2] != 0 || i8c[3] != -1) return 234;
+  u8c = u8a << 1;
+  if (u8c[0] != 2 || u8c[1] != 4 || u8c[2] != 244 || u8c[3] != 254) return 235;
+  u8c = u8a >> 1;
+  if (u8c[0] != 0 || u8c[1] != 1 || u8c[2] != 125 || u8c[3] != 127) return 236;
   small = __builtin_shufflevector (a, b, 0, 5);
   if (sizeof (small) != 8 || small[0] != 1 || small[1] != 2) return 98;
   wide = __builtin_shufflevector (a, b, 0, 4, 1, 5, 2, 6, 3, 7);
