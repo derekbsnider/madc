@@ -94,7 +94,7 @@ high-level" — the answer is both.**
 | 1.3 | **CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity** | ongoing | **Active — the parity-to-master gate** (486 pass / 4 fail / 1 timeout / 55 skip on latest capped SIMD-branch run; same known failing set, with `testfortypedcomma` currently classified as TIMEOUT but historically flaky fail/timeout; gcc-torture 1565/1685 = 92.9% vs asmjit 97.6%) | — |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
-| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **In progress (raise the floor)** — MIR branch `feature/simd-vector-support-codex` at `3a63473` now has a partial MIR `v128` floor plus c2mir `vector_size` support, Clang `ext_vector_type` support for power-of-two element counts, same-element-count `__builtin_convertvector` across supported vector widths, non-`v128` integer vector operation lowering through scalar lanes, non-`v128` same-size vector casts through memory-backed block copies, same-size integer scalar/vector reinterpret bitcasts, mixed-source-width `__builtin_shufflevector` support, packed `v128` f32/f64 arithmetic/comparison opcodes, packed `v128` i8/i16/i32 add/sub and comparison opcodes, packed `v128` i64 add/sub opcodes, packed `v128` i8/i16/i32 multiply plus i8/i16/i32 and i64 scalar-count shifts, qword vector comparison scalar-fallback masks, packed `v128` i64 equality/order, scalar-condition vector conditionals, GCC vector inc/dec lowering, and x86-64 `v128`/`v64`/`v32`/`v16`/`v8` integer-vector ABI support; still partial; design for **upstream** to vnmakarov/mir | — |
+| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **In progress (raise the floor)** — MIR branch `feature/simd-vector-support-codex` at `5966c1d` now has a partial MIR `v128` floor plus c2mir `vector_size` support, Clang `ext_vector_type` support including non-power-of-two logical lane counts, same-element-count `__builtin_convertvector` across supported vector widths, non-`v128` integer vector operation lowering through scalar lanes, non-`v128` same-size vector casts through memory-backed block copies, same-size integer scalar/vector reinterpret bitcasts, mixed-source-width `__builtin_shufflevector` support, packed `v128` f32/f64 arithmetic/comparison opcodes, packed `v128` i8/i16/i32 add/sub and comparison opcodes, packed `v128` i64 add/sub opcodes, packed `v128` i8/i16/i32 multiply plus i8/i16/i32 and i64 scalar-count shifts, qword vector comparison scalar-fallback masks, packed `v128` i64 equality/order, scalar-condition vector conditionals, GCC vector inc/dec lowering, and x86-64 `v128`/`v64`/`v32`/`v16`/`v8` integer-vector ABI support; still partial; design for **upstream** to vnmakarov/mir | — |
 
 **Track 1.6 (SIMD) raises the *floor*, not just c2mir.** MIR today has no vector
 type/insns (locals are `i64/f/d/ld` only), so real SIMD-in-JIT requires adding
@@ -109,7 +109,7 @@ lightweight ethos. Interim until it lands: madc **scalarizes** for the JIT and
 the lowering-vs-raising rule (`.claude/rules/`) and ADR 0001.
 
 2026-06-05/06 checkpoints: `/workspace/mir` branch
-`feature/simd-vector-support-codex` is at `3a63473`, not yet pinned by madc's
+`feature/simd-vector-support-codex` is at `5966c1d`, not yet pinned by madc's
 `MIR_COMMIT`. `6257780` adds the first c2mir front-end slice with distinct
 memory-backed GNU `vector_size` types, brace initialization, scalar
 indexing/lvalue writes, block copy, and memory-shaped param/return plumbing.
@@ -276,6 +276,13 @@ destination. `vector-size.c` now covers `v4si`, `v16uqi`, `v4sf`, `v8si`, and
 the element count to the existing byte-size vector representation, preserves
 qualifiers, and reuses the current vector lowering paths. `vector-size.c` now
 covers `clang_i4`, `clang_uh8`, and `clang_f4` extended-vector cases.
+`5966c1d` splits C2MIR vector storage size from logical element count, allowing
+Clang non-power-of-two extended vectors such as `ext_vector_type(3)` to keep
+their logical lane count while matching Clang's rounded storage/alignment. The
+same logical lane count feeds `__builtin_vectorelements`,
+`__builtin_convertvector`, and `__builtin_shufflevector` result construction.
+`vector-size.c` now covers `clang_i3` and `clang_uc3` size/alignment, logical
+element count, and lane arithmetic.
 `/workspace/mir` `timeout 900 make test` passed with `Tests 1077, Success
 tests 2154`, focused `interp-test17` and
 `gen-test17` passed, generated MIR showed `vmuli32`, focused v4i32 multiply
@@ -320,10 +327,12 @@ inc/dec forms, so this checkpoint is recorded as GCC extension coverage.
 Focused Clang `ext_vector_type` reducers passed Clang native/assembly
 validation and C2MIR interp/gen validation. GCC ignores this Clang-only
 attribute as expected. C2MIR interp/gen validation also passed for the full
-`vector-size.c` fixture after adding the extended-vector cases. Clang
-`ext_vector_type(3)` remains open because C2MIR's current vector representation
-derives lane count from storage size, while Clang keeps a logical three-lane
-vector and rounds storage/alignment separately.
+`vector-size.c` fixture after adding the extended-vector cases. Focused Clang
+odd-lane reducers for `ext_vector_type(3)` passed native/assembly validation
+and C2MIR interp/gen validation. An odd-lane `__builtin_shufflevector` /
+`__builtin_convertvector` reducer also passed Clang native/assembly and C2MIR
+interp/gen validation. The full MIR `timeout 900 make test` passed after the
+logical-lane change.
 `/workspace/madc` fulltest hit the known failing set. The aggregate harness
 reported 486 passed / 4 failed / 1 timed out / 55 skipped with
 `testfortypedcomma` classified as `TIMEOUT` in this run. GCC/clang

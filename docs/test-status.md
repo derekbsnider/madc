@@ -1,7 +1,7 @@
 # Test Status
 
 > **Current (2026-06-06, `develop` against `/workspace/mir`
-> `feature/simd-vector-support-codex` @ `3a63473`):** integration
+> `feature/simd-vector-support-codex` @ `5966c1d`):** integration
 > **486 passed, 4 failed, 1 timed out, 55 skipped** on the latest capped
 > `make -C src fulltest` after adding
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
