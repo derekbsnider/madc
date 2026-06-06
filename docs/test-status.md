@@ -1,8 +1,8 @@
 # Test Status
 
 > **Current (2026-06-06, `develop` against `/workspace/mir`
-> `feature/simd-vector-support-codex` @ `e4a8945`):** integration
-> **486 passed, 5 failed, 0 timed out, 55 skipped** on the latest capped
+> `feature/simd-vector-support-codex` @ `360fdb5`):** integration
+> **486 passed, 4 failed, 1 timed out, 55 skipped** on the latest capped
 > `make -C src fulltest` after adding
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
 > `teststdcppinclude.mad`, plus `testforeachheaderbody.mad` for range-for
@@ -19,7 +19,7 @@
 > rejects stale embedded PCH blobs and keeps real-header parsing on generic
 > type/alias/member machinery. The known red tests are
 > `testdefer.mad`, `testfortypedcomma.mad` (historically flaky fail/timeout;
-> classified as `FAIL` in the aggregate run),
+> classified as `TIMEOUT` in the aggregate run),
 > `testfstream.mad`, `testlargesizeofquery.mad`, and
 > `testloop.mad`.
 > MIR SIMD side checkpoint `c69f4da` imports the remaining 21 exact GCC vector
@@ -33,8 +33,12 @@
 > `mir-tests/scan-test.c` and `mir-tests/io.c`. MIR SIMD side checkpoint
 > `e4a8945` adds direct MIR and C frontend coverage for v128 lane-count shift
 > opcodes (`vlshvi*`, `vrshvi*`, `vurshvi*`) across i8/i16/i32/i64 lanes.
-> `/workspace/mir` `timeout 900 make test` passed at `e4a8945` with
-> **Tests 1121, Success tests 2242** plus bootstrap checks.
+> MIR SIMD side checkpoint `360fdb5` extends one-lane `__int128` vector
+> lowering to non-div/mod arithmetic, bitwise, unary, comparison, shift,
+> compound, and GCC inc/dec operators in `c-tests/new/vector-size.c`.
+> `/workspace/mir` `timeout 900 make test` passed at `360fdb5` with
+> interpreter/O0 **Tests 1121, Success tests 2242** and generated-mode
+> **Tests 1125, Success tests 2250** plus bootstrap checks.
 > The 419/0 figures below are the
 > *removed* asmjit/MIR-transpiler backend and are retained only as the C89
 > coverage target the CIR path is climbing back to. ★ Milestone: SMAUG 1.8

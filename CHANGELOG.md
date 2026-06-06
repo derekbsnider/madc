@@ -15,8 +15,8 @@ Release prep now treats compiler warnings as blockers. A clean `make -C src`
 rebuild on `develop` emitted no compiler warnings, `make -C src test` passed,
 and the latest capped `make -C src fulltest` against the SIMD branch hit the
 known failing set. The aggregate harness reported
-**486 passed, 5 failed, 0 timed out, 55 skipped** with
-`testfortypedcomma` classified as `FAIL`. The next validation goal is
+**486 passed, 4 failed, 1 timed out, 55 skipped** with
+`testfortypedcomma` classified as `TIMEOUT`. The next validation goal is
 driving the remaining fulltest reds/timeouts to green; the largest
 longer-running parity bucket
 remains the documented SIMD/vector_size work in c2mir and the `/workspace/mir`
@@ -25,7 +25,7 @@ fork.
 ### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05/06)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`e4a8945`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`360fdb5`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -288,18 +288,27 @@ x86-64 generated mode lowers them through scalar lane loads/shifts/stores so
 the path does not require AVX2. Coverage adds direct MIR scan/execute checks in
 `c-tests/mir/vector-shift-count.mir` and C frontend checks in
 `c-tests/new/vector-shift-count.c`.
+`360fdb5` adds C2MIR one-lane `__int128` and `unsigned __int128` vector
+lowering for add/sub/mul, bitwise ops, unary ops, equality/ordering
+comparisons, scalar-count and vector-count shifts, compound assignment, and
+GCC vector inc/dec by operating on low/high 64-bit halves. Coverage extends
+`c-tests/new/vector-size.c`. One-lane `__int128` vector div/mod remains open
+because it needs 128-bit helper-call lowering rather than half-only arithmetic.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
-include AVX/YMM register ABI for 32-byte-and-larger external vector boundaries,
-broader MIR vector opcodes/registers/interpreter/codegen, and further optional
-per-target packed lowering.
+include one-lane `__int128` vector div/mod helper-call lowering for the
+remaining 16-byte-and-smaller slice, AVX/YMM register ABI for
+32-byte-and-larger external vector boundaries, broader MIR vector
+opcodes/registers/interpreter/codegen, and further optional per-target packed
+lowering.
 Vector-condition ternary/logical semantics remain outside current C2MIR C
 coverage because GCC and clang C reject those forms.
 madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
 branch is ready to merge and consume from madc.
 
-Validation in `/workspace/mir`: `timeout 900 make test` passed at `e4a8945`
-with `Tests 1121, Success tests 2242` plus bootstrap checks. Focused
+Validation in `/workspace/mir`: `timeout 900 make test` passed at `360fdb5`
+with interpreter/O0 `Tests 1121, Success tests 2242`, generated-mode
+`Tests 1125, Success tests 2250`, plus bootstrap checks. Focused
 `make scan-test` and `make io-test` passed for the new `v128` data I/O
 coverage; the 21 newly checked-in exact GCC vector torture copies passed GCC
 native and C2MIR `-ei` / `-eg` at `c69f4da`. Clang native passed
