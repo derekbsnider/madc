@@ -22,10 +22,10 @@ longer-running parity bucket
 remains the documented SIMD/vector_size work in c2mir and the `/workspace/mir`
 fork.
 
-### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05)
+### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05/06)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`48cd7be`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`ff01f80`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -236,21 +236,29 @@ clobbers, rejects non-empty templates/output/goto asm, evaluates input
 operands, and emits no MIR instruction for empty templates. The exact GCC
 torture cases `c-tests/gcc/pr53645.c` and `pr53645-2.c`, plus focused
 `c-tests/new/empty-asm.c`, now pass under C2MIR `-ei` and `-eg`.
+`ff01f80` extends C2MIR `force_val` handling for narrow address-taken
+register-backed scalar lvalues. `char` and `short` rvalues are now sign- or
+zero-extended after byte/word pointer writes, fixing exact GCC `pr109040.c`.
+Coverage adds `c-tests/gcc/pr109040.c` and focused
+`c-tests/new/narrow-reg-address.c`.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
-include 32-byte-and-larger vector ABI support requiring the broader AVX/YMM or
-generic-vector MIR floor, broader MIR vector opcodes/registers/interpreter/
-codegen/serialization, vector-count packed shift lowering, and further optional
-per-target packed lowering.
+include 32-byte-and-larger vector ABI support beyond the covered stack-passed
+`pr109040` case requiring the broader AVX/YMM or generic-vector MIR floor,
+broader MIR vector opcodes/registers/interpreter/codegen/serialization,
+vector-count packed shift lowering, and further optional per-target packed
+lowering.
 Vector-condition ternary/logical semantics remain outside current C2MIR C
 coverage because GCC and clang C reject those forms.
 madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
 branch is ready to merge and consume from madc.
 
 Validation in `/workspace/mir`: `timeout 900 make test` passed with `Tests
-1084, Success tests 2168`; focused empty-asm barrier reducers passed
+1086, Success tests 2172`; focused empty-asm barrier reducers passed
 GCC/clang native validation and C2MIR `-ei` / `-eg`, and generated MIR for the
-focused fixture contains the input-operand call with no asm marker. Focused
+focused fixture contains the input-operand call with no asm marker. Exact GCC
+`pr109040.c` and focused narrow-register reducers passed GCC/clang
+assembly/native validation plus C2MIR `-ei` / `-eg`. Focused
 `interp-test17` and `gen-test17` passed;
 generated MIR showed `vmuli32` selection for the full vector fixture; focused
 v4i32 multiply reducers passed GCC/clang assembly/native validation and C2MIR
@@ -302,8 +310,8 @@ native/assembly validation and C2MIR interp/gen validation. The exact GCC
 validation after C2MIR lowers `__builtin_abort` to libc `abort`. The full
 `vector-size.c` fixture passed GCC native validation and C2MIR interp/gen
 validation with the declaration-spec vector-attribute case. The full MIR
-`timeout 900 make test` passed after the latest checkpoint with `Tests 1084,
-Success tests 2168` plus bootstrap checks.
+`timeout 900 make test` passed after the latest checkpoint with `Tests 1086,
+Success tests 2172` plus bootstrap checks.
 Focused expression-valued `vector_size` reducers passed GCC/clang
 native/assembly validation and C2MIR interp/gen validation. The exact GCC
 `pr92618.c` torture source now passes exact runtime validation after
@@ -311,7 +319,7 @@ native/assembly validation and C2MIR interp/gen validation. The exact GCC
 stores for the casted vector-pointer store shape, and the full `vector-size.c`
 fixture passed GCC native validation and C2MIR interp/gen validation with the
 constant-expression attribute case. The full MIR `timeout 900 make test`
-passed after the latest checkpoint with `Tests 1084, Success tests 2168` plus
+passed after the latest checkpoint with `Tests 1086, Success tests 2172` plus
 bootstrap checks.
 Focused v2i64/v2u64 comparison reducers passed GCC/clang assembly/native
 validation and C2MIR interp/gen validation; generated MIR now uses 64-bit
