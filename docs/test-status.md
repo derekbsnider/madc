@@ -1,8 +1,8 @@
 # Test Status
 
 > **Current (2026-06-06, `develop` against `/workspace/mir`
-> `feature/simd-vector-support-codex` @ `fbb47f3`):** integration
-> **486 passed, 5 failed, 0 timed out, 55 skipped** on the latest capped
+> `feature/simd-vector-support-codex` @ `48cd7be`):** integration
+> **486 passed, 4 failed, 1 timed out, 55 skipped** on the latest capped
 > `make -C src fulltest` after adding
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
 > `teststdcppinclude.mad`, plus `testforeachheaderbody.mad` for range-for
@@ -19,9 +19,13 @@
 > rejects stale embedded PCH blobs and keeps real-header parsing on generic
 > type/alias/member machinery. The known red tests are
 > `testdefer.mad`, `testfortypedcomma.mad` (historically flaky fail/timeout;
-> classified as `FAIL` in the aggregate run),
+> classified as `TIMEOUT` in the aggregate run),
 > `testfstream.mad`, `testlargesizeofquery.mad`, and
 > `testloop.mad`.
+> MIR SIMD side checkpoint `48cd7be` adds C2MIR empty GNU asm barrier support;
+> `/workspace/mir` `timeout 900 make test` passed with **Tests 1084, Success
+> tests 2168** plus bootstrap checks, and exact `pr53645.c` / `pr53645-2.c`
+> now pass under C2MIR `-ei` and `-eg`.
 > The 419/0 figures below are the
 > *removed* asmjit/MIR-transpiler backend and are retained only as the C89
 > coverage target the CIR path is climbing back to. ★ Milestone: SMAUG 1.8
