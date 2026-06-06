@@ -1,8 +1,8 @@
 # Test Status
 
 > **Current (2026-06-06, `develop` against `/workspace/mir`
-> `feature/simd-vector-support-codex` @ `033732f`):** integration
-> **486 passed, 5 failed, 0 timed out, 55 skipped** on the latest capped
+> `feature/simd-vector-support-codex` @ `95e52f9`):** integration
+> **486 passed, 4 failed, 1 timed out, 55 skipped** on the latest capped
 > `make -C src fulltest` after adding
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
 > `teststdcppinclude.mad`, plus `testforeachheaderbody.mad` for range-for
@@ -19,16 +19,16 @@
 > rejects stale embedded PCH blobs and keeps real-header parsing on generic
 > type/alias/member machinery. The known red tests are
 > `testdefer.mad`, `testfortypedcomma.mad` (historically flaky fail/timeout;
-> classified as `FAIL` in the aggregate run),
+> classified as `TIMEOUT` in the aggregate run),
 > `testfstream.mad`, `testlargesizeofquery.mad`, and
 > `testloop.mad`.
-> MIR SIMD side checkpoint `033732f` preserves leading GNU vector attributes in
-> declaration specifier and type-name specifier/qualifier lists after the
-> earlier `__builtin_memcmp` and narrow address-taken register rvalue
-> checkpoints; `/workspace/mir` `timeout 900 make test` passed with **Tests
-> 1093, Success tests 2186** plus bootstrap checks. Exact SIMD GCC
-> `scal-to-vec1.c`, `scal-to-vec2.c`, and `scal-to-vec3.c` now pass under
-> C2MIR `-ei` and `-eg`; `simd-5.c`, `pr65427.c`, and `pr60960.c` remain green.
+> MIR SIMD side checkpoint `95e52f9` preserves union aliases through array
+> subscripts after the leading GNU vector-attribute, `__builtin_memcmp`, and
+> narrow address-taken register rvalue checkpoints; `/workspace/mir`
+> `timeout 900 make test` passed with **Tests 1094, Success tests 2188** plus
+> bootstrap checks. Exact SIMD GCC `20050316-2.c`, `scal-to-vec1.c`,
+> `scal-to-vec2.c`, and `scal-to-vec3.c` now pass under C2MIR `-ei` and `-eg`;
+> `simd-5.c`, `pr65427.c`, and `pr60960.c` remain green.
 > The 419/0 figures below are the
 > *removed* asmjit/MIR-transpiler backend and are retained only as the C89
 > coverage target the CIR path is climbing back to. ★ Milestone: SMAUG 1.8

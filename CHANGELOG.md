@@ -15,8 +15,8 @@ Release prep now treats compiler warnings as blockers. A clean `make -C src`
 rebuild on `develop` emitted no compiler warnings, `make -C src test` passed,
 and the latest capped `make -C src fulltest` against the SIMD branch hit the
 known failing set. The aggregate harness reported
-**486 passed, 5 failed, 0 timed out, 55 skipped** with
-`testfortypedcomma` classified as `FAIL`. The next validation goal is
+**486 passed, 4 failed, 1 timed out, 55 skipped** with
+`testfortypedcomma` classified as `TIMEOUT`. The next validation goal is
 driving the remaining fulltest reds/timeouts to green; the largest
 longer-running parity bucket
 remains the documented SIMD/vector_size work in c2mir and the `/workspace/mir`
@@ -25,7 +25,7 @@ fork.
 ### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05/06)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`033732f`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`95e52f9`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -252,6 +252,12 @@ type is known. This accepts macro-expanded forms such as
 `__attribute__((vector_size(N * sizeof(T)))) T` in ordinary declarations and
 compound literal type names. Coverage adds exact GCC SIMD cases
 `c-tests/gcc/scal-to-vec1.c`, `scal-to-vec2.c`, and `scal-to-vec3.c`.
+`95e52f9` preserves union aliases through array subscripts by keeping array
+storage operands in lvalue/storage context when possible and carrying an
+existing union alias onto the indexed memory load/store. This prevents MIR O2
+DSE from deleting union-width stores that are later read through array members,
+fixing the exact GCC SIMD case `c-tests/gcc/20050316-2.c` under C2MIR `-ei`
+and `-eg`.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
 include 32-byte-and-larger vector ABI support beyond the covered stack-passed
@@ -267,11 +273,14 @@ than prefix vector-attribute parsing.
 madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
 branch is ready to merge and consume from madc.
 
-Validation in `/workspace/mir`: `timeout 900 make test` passed with `Tests
-1093, Success tests 2186`; focused prefix vector-attribute cases passed
-GCC/clang assembly/native validation plus C2MIR `-ei` / `-eg`; exact
-`scal-to-vec1.c`, `scal-to-vec2.c`, and `scal-to-vec3.c` passed C2MIR `-ei`
-and `-eg`. Focused `__builtin_memcmp` reducers passed GCC/clang
+Validation in `/workspace/mir`: `timeout 900 make test` passed at `95e52f9`
+with `Tests 1094, Success tests 2188`; exact `20050316-2.c` and focused
+union-array alias reducers passed C2MIR `-ei` / `-eg`, and adjusted array
+parameter plus multidimensional array parameter probes stayed green. Focused
+prefix vector-attribute cases passed GCC/clang assembly/native validation plus
+C2MIR `-ei` / `-eg`; exact `scal-to-vec1.c`, `scal-to-vec2.c`, and
+`scal-to-vec3.c` passed C2MIR `-ei` and `-eg`. Focused `__builtin_memcmp`
+reducers passed GCC/clang
 native and assembly validation plus C2MIR `-ei` / `-eg`; exact `simd-5.c`,
 `pr65427.c`, and `pr60960.c` passed GCC/clang native validation plus C2MIR
 `-ei` / `-eg`; generated MIR showed `import memcmp`, `memcmp_p`, and
@@ -376,8 +385,8 @@ block copies, and direct integer scalar/vector reinterpret stores and loads,
 and `git diff --check` is clean.
 Downstream `/workspace/madc`
 fulltest hit the known failing set; the aggregate harness reported
-**486 passed, 5 failed, 0 timed out, 55 skipped** with `testfortypedcomma`
-classified as `FAIL` in this aggregate run.
+**486 passed, 4 failed, 1 timed out, 55 skipped** with `testfortypedcomma`
+classified as `TIMEOUT` in this aggregate run.
 
 ### Fixed — generic real-header parser/PCH checkpoint (2026-06-05)
 

@@ -91,10 +91,10 @@ high-level" — the answer is both.**
 |-------|------|--------|--------|------|
 | 1.1 | C foundation (GCC parity) | — | **DONE** (97.9% on the old backend; the CIR target) | — |
 | 1.2 | Code cleanup Phase A — dispatch table, AST visitor, file split | 2-3 wk | **DONE** (v0.20.1) | [code-cleanup.md](code-cleanup.md) |
-| 1.3 | **CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity** | ongoing | **Active — the parity-to-master gate** (486 pass / 5 fail / 0 timeout / 55 skip on latest capped SIMD-branch run; same known failing set, with `testfortypedcomma` currently classified as FAIL but historically flaky fail/timeout; gcc-torture 1565/1685 = 92.9% vs asmjit 97.6%) | — |
+| 1.3 | **CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity** | ongoing | **Active — the parity-to-master gate** (486 pass / 4 fail / 1 timeout / 55 skip on latest capped SIMD-branch run; same known failing set, with `testfortypedcomma` currently classified as TIMEOUT but historically flaky fail/timeout; gcc-torture 1565/1685 = 92.9% vs asmjit 97.6%) | — |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
-| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **In progress (raise the floor)** — MIR branch `feature/simd-vector-support-codex` at `033732f` now has a partial MIR `v128` floor plus c2mir `vector_size` support, expression-valued `vector_size` arguments, leading GNU vector attributes in declarations and compound-literal type names, C2MIR `__builtin_abort` and `__builtin_memcmp` lowering to libc calls, exact `pr92618`, `pr94524-{1,2}`, `pr53645`, `pr53645-2`, `pr109040`, `simd-5`, `pr65427`, `pr60960`, and `scal-to-vec{1,2,3}` runtime coverage plus empty GNU asm barrier parsing and narrow address-taken register rvalue extension, Clang `ext_vector_type` support including non-power-of-two logical lane counts, same-element-count `__builtin_convertvector` across supported vector widths, non-`v128` integer vector operation lowering through scalar lanes, non-`v128` same-size vector casts through memory-backed block copies, same-size integer scalar/vector reinterpret bitcasts, GNU declaration-spec vector attributes, mixed-signedness vector shift-count type compatibility, mixed-source-width `__builtin_shufflevector` support, packed `v128` f32/f64 arithmetic/comparison opcodes, packed `v128` i8/i16/i32 add/sub and comparison opcodes, packed `v128` i64 add/sub opcodes, packed `v128` i8/i16/i32 multiply plus i8/i16/i32 and i64 scalar-count shifts, qword vector comparison scalar-fallback masks, packed `v128` i64 equality/order, scalar-condition vector conditionals, GCC vector inc/dec lowering, and x86-64 `v128`/`v64`/`v32`/`v16`/`v8` integer-vector ABI support; still partial; design for **upstream** to vnmakarov/mir | — |
+| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **In progress (raise the floor)** — MIR branch `feature/simd-vector-support-codex` at `95e52f9` now has a partial MIR `v128` floor plus c2mir `vector_size` support, expression-valued `vector_size` arguments, leading GNU vector attributes in declarations and compound-literal type names, C2MIR `__builtin_abort` and `__builtin_memcmp` lowering to libc calls, exact `pr92618`, `pr94524-{1,2}`, `pr53645`, `pr53645-2`, `pr109040`, `simd-5`, `pr65427`, `pr60960`, `scal-to-vec{1,2,3}`, and `20050316-2` runtime coverage plus empty GNU asm barrier parsing, narrow address-taken register rvalue extension, and union-alias preservation through array subscripts, Clang `ext_vector_type` support including non-power-of-two logical lane counts, same-element-count `__builtin_convertvector` across supported vector widths, non-`v128` integer vector operation lowering through scalar lanes, non-`v128` same-size vector casts through memory-backed block copies, same-size integer scalar/vector reinterpret bitcasts, GNU declaration-spec vector attributes, mixed-signedness vector shift-count type compatibility, mixed-source-width `__builtin_shufflevector` support, packed `v128` f32/f64 arithmetic/comparison opcodes, packed `v128` i8/i16/i32 add/sub and comparison opcodes, packed `v128` i64 add/sub opcodes, packed `v128` i8/i16/i32 multiply plus i8/i16/i32 and i64 scalar-count shifts, qword vector comparison scalar-fallback masks, packed `v128` i64 equality/order, scalar-condition vector conditionals, GCC vector inc/dec lowering, and x86-64 `v128`/`v64`/`v32`/`v16`/`v8` integer-vector ABI support; still partial; design for **upstream** to vnmakarov/mir | — |
 
 **Track 1.6 (SIMD) raises the *floor*, not just c2mir.** MIR today has no vector
 type/insns (locals are `i64/f/d/ld` only), so real SIMD-in-JIT requires adding
@@ -109,7 +109,7 @@ lightweight ethos. Interim until it lands: madc **scalarizes** for the JIT and
 the lowering-vs-raising rule (`.claude/rules/`) and ADR 0001.
 
 2026-06-05/06 checkpoints: `/workspace/mir` branch
-`feature/simd-vector-support-codex` is at `033732f`, not yet pinned by madc's
+`feature/simd-vector-support-codex` is at `95e52f9`, not yet pinned by madc's
 `MIR_COMMIT`. `6257780` adds the first c2mir front-end slice with distinct
 memory-backed GNU `vector_size` types, brace initialization, scalar
 indexing/lvalue writes, block copy, and memory-shaped param/return plumbing.
@@ -328,9 +328,14 @@ type-name specifier/qualifier lists, covering macro-expanded vector forms in
 ordinary declarations and compound literal type names. Coverage adds exact GCC
 SIMD cases `c-tests/gcc/scal-to-vec1.c`, `scal-to-vec2.c`, and
 `scal-to-vec3.c`.
-`/workspace/mir` `timeout 900 make test` passed with `Tests 1093, Success
-tests 2186`, focused prefix vector-attribute cases passed GCC/clang assembly
-and native validation plus C2MIR `-ei` / `-eg`, exact `scal-to-vec1.c`,
+`95e52f9` preserves union aliases through array subscripts so MIR O2 DSE keeps
+union-width stores that are later read through array members. Coverage adds
+exact GCC SIMD `c-tests/gcc/20050316-2.c`, which passes C2MIR `-ei` and `-eg`.
+`/workspace/mir` `timeout 900 make test` passed with `Tests 1094, Success
+tests 2188`, focused union-array alias reducers and adjusted array parameter
+probes passed C2MIR validation, focused prefix vector-attribute cases passed
+GCC/clang assembly and native validation plus C2MIR `-ei` / `-eg`, exact
+`scal-to-vec1.c`,
 `scal-to-vec2.c`, and `scal-to-vec3.c` passed C2MIR `-ei` / `-eg`, focused
 `__builtin_memcmp` reducers passed GCC/clang native and
 assembly validation plus C2MIR `-ei` / `-eg`, exact `simd-5.c`, `pr65427.c`,
@@ -413,8 +418,8 @@ constant-expression attribute case. The full MIR `timeout 900 make test`
 passed after the memcmp checkpoint with `Tests 1090, Success tests 2180` plus
 bootstrap checks.
 `/workspace/madc` fulltest hit the known failing set. The aggregate harness
-reported 486 passed / 5 failed / 0 timed out / 55 skipped with
-`testfortypedcomma` classified as `FAIL` in this run. GCC/clang
+reported 486 passed / 4 failed / 1 timed out / 55 skipped with
+`testfortypedcomma` classified as `TIMEOUT` in this run. GCC/clang
 packed-small-integer multiply and scalar-shift reducers matched the packed
 word/dword shapes, and GCC/clang scalar-condition vector ternary reducers plus
 C2MIR interp/gen reducers passed. GCC/clang
