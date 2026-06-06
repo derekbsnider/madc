@@ -13,6 +13,8 @@ typedef long long v2di __attribute__ ((vector_size (16)));
 typedef long long v2di_attr_expr
   __attribute__ ((__vector_size__ (2 * sizeof (long long)), __may_alias__));
 typedef unsigned long long v2udi __attribute__ ((vector_size (16)));
+typedef __int128 v1ti __attribute__ ((vector_size (16)));
+typedef unsigned __int128 v1uti __attribute__ ((vector_size (16)));
 typedef long v2l __attribute__ ((vector_size (16)));
 typedef long v4l __attribute__ ((vector_size (32)));
 typedef double v2df __attribute__ ((__vector_size__ (16)));
@@ -222,6 +224,13 @@ int main (void) {
   v2udi uli_add_a = {0xfffffffffffffff0ULL, 20ULL};
   v2udi uli_add_b = {0x20ULL, 7ULL};
   v2udi uli_add_c;
+  v1uti ti_a = {(unsigned __int128) -1};
+  v1uti ti_b = {5};
+  v1uti ti_c;
+  v1uti ti_zero = {0};
+  v1ti tsi_a = {-8};
+  v1ti tsi_b = {3};
+  v1ti tsi_c;
   v2di li_shift_a = {0x100000000LL, 7};
   v2di li_shift_neg = {-8, 0x100000000LL};
   v2di li_shift_c;
@@ -377,6 +386,65 @@ int main (void) {
   if (alias_words[0] != 2ULL || alias_words[1] != 3ULL || alias_words[2] != 4ULL
       || alias_words[3] != 5ULL)
     return 255;
+  if (sizeof (v1uti) != 16 || _Alignof (v1uti) != 16) return 255;
+  ti_c = ti_a + ti_b;
+  if (ti_c[0] != 4) return 255;
+  ti_c = ti_a - ti_b;
+  if (ti_c[0] != (unsigned __int128) -6) return 255;
+  ti_c = ti_zero - (v1uti) {1};
+  if (ti_c[0] != (unsigned __int128) -1) return 255;
+  ti_c = ti_a & (v1uti) {15};
+  if (ti_c[0] != 15) return 255;
+  ti_c = ti_a | (v1uti) {0};
+  if (ti_c[0] != (unsigned __int128) -1) return 255;
+  ti_c = ti_a ^ (v1uti) {(unsigned __int128) -1};
+  if (ti_c[0] != 0) return 255;
+  ti_c = ti_a << 1;
+  if (ti_c[0] != (unsigned __int128) -2) return 255;
+  ti_c = ti_a >> 1;
+  if ((ti_c + ti_c + (v1uti) {1})[0] != ti_a[0]) return 255;
+  tsi_c = tsi_a >> 1;
+  if (tsi_c[0] != -4) return 255;
+  ti_c = ti_a * ti_b;
+  if (ti_c[0] != (unsigned __int128) -5) return 255;
+  ti_c = +ti_b;
+  if (ti_c[0] != 5) return 255;
+  ti_c = -ti_b;
+  if (ti_c[0] != (unsigned __int128) -5) return 255;
+  ti_c = ~ti_b;
+  if (ti_c[0] != (unsigned __int128) -6) return 255;
+  ti_c = ti_b < ti_a;
+  if (ti_c[0] != (unsigned __int128) -1) return 255;
+  ti_c = ti_b >= ti_a;
+  if (ti_c[0] != 0) return 255;
+  tsi_c = tsi_a < tsi_b;
+  if (tsi_c[0] != -1) return 255;
+  tsi_c = tsi_a >= tsi_b;
+  if (tsi_c[0] != 0) return 255;
+  ti_c = ti_b;
+  ti_c += (v1uti) {2};
+  ti_c *= (v1uti) {3};
+  ti_c -= (v1uti) {1};
+  ti_c &= (v1uti) {31};
+  if (ti_c[0] != 20) return 255;
+  ti_c |= (v1uti) {1};
+  if (ti_c[0] != 21) return 255;
+  ti_c ^= (v1uti) {5};
+  if (ti_c[0] != 16) return 255;
+  ti_c <<= (v1uti) {1};
+  if (ti_c[0] != 32) return 255;
+  ti_c >>= 2;
+  if (ti_c[0] != 8) return 255;
+#if !defined(__clang__) || defined(__MIRC__)
+  ti_c = ti_b++;
+  if (ti_c[0] != 5 || ti_b[0] != 6) return 255;
+  ti_c = ++ti_b;
+  if (ti_c[0] != 7 || ti_b[0] != 7) return 255;
+  ti_c = ti_b--;
+  if (ti_c[0] != 7 || ti_b[0] != 6) return 255;
+  ti_c = --ti_b;
+  if (ti_c[0] != 5 || ti_b[0] != 5) return 255;
+#endif
 #if defined(__clang__) || defined(__MIRC__)
   if (sizeof (clang_i4) != 16 || _Alignof (clang_i4) != 16) return 251;
   ext_c = ext_a + ext_b;
