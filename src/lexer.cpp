@@ -983,6 +983,15 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
     tokens.push_back(tb);
 }
 
+// Predefined compiler macros captured at build time (scripts/gen_predefined_macros.sh
+// -> src/predefined_macros.cpp). The struct shapes match the generated file.
+struct MadcPredefObj  { const char *name; const char *value; };
+struct MadcPredefFunc { const char *name; const char *params; const char *body; };
+// Accessor functions (PLT-resolved) rather than direct extern data refs — keeps
+// the PIE binary free of text relocations (see gen_predefined_macros.sh).
+extern const MadcPredefObj  *madc_predefined_objects();
+extern const MadcPredefFunc *madc_predefined_functions();
+
 void Program::_tokenizer_init()
 {
 
@@ -1459,9 +1468,40 @@ void Program::_tokenizer_init()
 	macro_map["__builtin_is_constant_evaluated"] = m;
     }
 
-    // Command-line -D defines, applied AFTER the builtins so a -D overrides one
-    // (matching gcc). Object-like only: -DNAME=VALUE / -DNAME (=> "1"). These
-    // supply the predefined-macro environment that real system headers branch on.
+    // Predefined compiler macros captured at build time (gen_predefined_macros.sh).
+    // Seeded AFTER the hand-set builtins (so the real toolchain values win) and
+    // BEFORE -D (so -D can override, matching gcc). Real system headers branch on
+    // these. __cplusplus / __GNUG__ are C++-only: seed them ONLY in an explicit
+    // C++ std, never in C mode or the STD_MADC default — so the bulk of tests (and
+    // C code's `#ifdef __cplusplus`) are unaffected.
+    for ( const MadcPredefObj *o = madc_predefined_objects(); o->name; ++o )
+    {
+	if ( !is_cpp_mode()
+	  && (strcmp(o->name, "__cplusplus") == 0 || strcmp(o->name, "__GNUG__") == 0) )
+	    continue;
+	define_map[o->name] = o->value;
+    }
+    for ( const MadcPredefFunc *f = madc_predefined_functions(); f->name; ++f )
+    {
+	MacroDef m;
+	std::string ps = f->params;
+	size_t start = 0;
+	while ( start <= ps.size() )
+	{
+	    size_t comma = ps.find(',', start);
+	    std::string p = ps.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+	    while ( !p.empty() && p.front() == ' ' ) p.erase(p.begin());
+	    while ( !p.empty() && p.back() == ' ' ) p.pop_back();
+	    if ( !p.empty() ) m.params.push_back(p);
+	    if ( comma == std::string::npos ) break;
+	    start = comma + 1;
+	}
+	m.body = f->body;
+	macro_map[f->name] = m;
+    }
+
+    // Command-line -D defines, applied AFTER the builtins/predefined so a -D
+    // overrides one (matching gcc). Object-like only: -DNAME=VALUE / -DNAME (=> "1").
     for ( const std::pair<std::string,std::string> &d : cli_defines )
 	define_map[d.first] = d.second;
 }

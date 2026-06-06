@@ -1,0 +1,19 @@
+#include <stdio.h>
+
+// Predefined compiler macros seeded from the build toolchain (gcc -dM). Uses
+// only x86-64-stable values; __cplusplus is C++-only so must be absent in the
+// default (STD_MADC) mode this test runs in.
+int main(void)
+{
+	printf("int=%d long=%d ptr=%d\n",
+	       __SIZEOF_INT__, __SIZEOF_LONG__, __SIZEOF_POINTER__);
+#ifdef __STDC_HOSTED__
+	printf("hosted\n");
+#endif
+#ifdef __cplusplus
+	printf("cplusplus (unexpected in default mode)\n");
+#else
+	printf("no cplusplus\n");
+#endif
+	return 0;
+}

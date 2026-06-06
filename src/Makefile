@@ -12,7 +12,7 @@ INSTALL_PROGRAM ?= $(INSTALL) -m 755
 INSTALL_DIR ?= $(INSTALL) -d
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o va_helpers.o exception_runtime.o pch.o embedded_headers.o sys_include_paths.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_emit_c.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o va_helpers.o exception_runtime.o pch.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_emit_c.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
@@ -125,6 +125,7 @@ clean:
 	rm -f $(LIBMADC_STATIC)
 	rm -f $(LIBMADC_SHARED)
 	rm -f sys_include_paths.cpp
+	rm -f predefined_macros.cpp
 
 # Each unit binary runs under a CPU cap (ulimit -t, survives even if SIGTERM is
 # ignored) AND a wall-clock timeout. A hung unit test (e.g. an infinite loop in
@@ -197,6 +198,11 @@ embedded_headers.cpp: $(MADHDRS)
 # none); `make clean` removes it to force a refresh when the toolchain changes.
 sys_include_paths.cpp:
 	CXX="$(CXX)" ../scripts/gen_sys_includes.sh
+
+# Host predefined compiler macros, captured from the configured compiler.
+# Same host-specific/gitignored/regenerate-if-missing treatment as above.
+predefined_macros.cpp:
+	CXX="$(CXX)" ../scripts/gen_predefined_macros.sh
 
 $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<

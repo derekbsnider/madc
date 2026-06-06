@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added — predefined compiler macros from the configured compiler (2026-06-06)
+
+`scripts/gen_predefined_macros.sh` captures the build compiler's predefined macros
+(`<CXX> -dM -E -std=c++17`) at build time into `src/predefined_macros.cpp` (460:
+450 object-like + 10 function-like such as `__INT8_C(c)`), exposed via accessor
+functions (PLT-resolved — avoids PIE text relocations). `_tokenizer_init` seeds
+them into `define_map`/`macro_map` AFTER the hand-set builtins and BEFORE `-D`, so
+real-toolchain values win and `-D` can still override. Real system headers branch
+heavily on these (`__STDC_HOSTED__`, `__SIZEOF_*`, `__*_TYPE__`, feature macros).
+
+Mode-gated: `__cplusplus`/`__GNUG__` (C++-only) are seeded **only** in an explicit
+C++ std — never in C mode or the `STD_MADC` default — so the bulk of tests and C
+code's `#ifdef __cplusplus` are unaffected. Host/std-specific → gitignored,
+regenerated each build (`make clean` refreshes). Third preprocessor-environment
+piece for real-header parsing. `tests/testpredefmacros.mad` covers it; fulltest
+518/4/0/26, zero regressions.
+
 ### Added — system include paths from the configured compiler (2026-06-06)
 
 The lexer's `#include <...>` system search list was hardcoded C-only
