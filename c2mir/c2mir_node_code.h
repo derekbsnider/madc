@@ -40,6 +40,7 @@ typedef enum {
   N_COMPLEX, N_REALPART, N_IMAGPART, N_CF, N_CD, N_CLD,      /* 129-134 */
   /* madc extensions */
   N_DEFER, N_CLASS, N_METHOD, N_ASM_OPERAND, N_ASM_STMT,       /* 135-139 */
+  N_INT128,                                                     /* 140 */
 } c2mir_node_code_t;
 
 /* Alias so c2mir.c internals still compile */
