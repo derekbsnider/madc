@@ -323,6 +323,16 @@ int main (void) {
   v16uqi u8a = {1, 2, 250, 255, 16, 32, 64, 128, 3, 4, 5, 6, 7, 8, 9, 10};
   v16uqi u8b = {2, 2, 6, 4, 1, 2, 4, 8, 3, 5, 7, 9, 11, 13, 15, 17};
   v16uqi u8c;
+  v4si inc_i = {1, -2, 3, -4};
+  v4si inc_ir;
+  v8si inc_wi = {1, -2, 3, -4, 5, -6, 7, -8};
+  v8si inc_wir;
+  v16uqi inc_u = {0, 1, 2, 3, 4, 5, 250, 251, 252, 253, 254, 255, 10, 11, 12, 13};
+  v16uqi inc_ur;
+  v4sf inc_f = {1.0f, -2.0f, 3.5f, -4.5f};
+  v4sf inc_fr;
+  v8sf inc_wf = {1.0f, -2.0f, 3.5f, -4.5f, 5.0f, -6.0f, 7.0f, -8.0f};
+  v8sf inc_wfr;
   int s = 7;
   unsigned int u = 0xff;
 
@@ -365,6 +375,34 @@ int main (void) {
   if (c[0] != 0xfe || c[1] != 0xfd || c[2] != 0xfc || c[3] != 0xfb) return 18;
   c = a + s;
   if (c[0] != 8 || c[1] != 9 || c[2] != 10 || c[3] != 11) return 19;
+  inc_ir = inc_i++;
+  if (inc_ir[0] != 1 || inc_ir[1] != -2 || inc_i[0] != 2 || inc_i[1] != -1)
+    return 241;
+  inc_ir = ++inc_i;
+  if (inc_ir[0] != 3 || inc_ir[1] != 0 || inc_i[0] != 3 || inc_i[1] != 0) return 242;
+  inc_ir = inc_i--;
+  if (inc_ir[2] != 5 || inc_ir[3] != -2 || inc_i[2] != 4 || inc_i[3] != -3)
+    return 243;
+  inc_ir = --inc_i;
+  if (inc_ir[2] != 3 || inc_ir[3] != -4 || inc_i[2] != 3 || inc_i[3] != -4)
+    return 244;
+  inc_ur = ++inc_u;
+  if (inc_ur[0] != 1 || inc_ur[6] != 251 || inc_ur[11] != 0) return 245;
+  inc_ur = inc_u--;
+  if (inc_ur[0] != 1 || inc_ur[11] != 0 || inc_u[0] != 0 || inc_u[11] != 255)
+    return 246;
+  inc_fr = ++inc_f;
+  if (inc_fr[0] != 2.0f || inc_fr[1] != -1.0f || inc_fr[2] != 4.5f
+      || inc_fr[3] != -3.5f)
+    return 247;
+  inc_fr = inc_f--;
+  if (inc_fr[0] != 2.0f || inc_fr[1] != -1.0f || inc_f[0] != 1.0f || inc_f[1] != -2.0f)
+    return 248;
+  inc_wir = inc_wi++;
+  if (inc_wir[0] != 1 || inc_wir[7] != -8 || inc_wi[0] != 2 || inc_wi[7] != -7)
+    return 249;
+  inc_wfr = ++inc_wf;
+  if (inc_wfr[0] != 2.0f || inc_wfr[5] != -5.0f || inc_wfr[7] != -7.0f) return 250;
   c = u ^ a;
   if (c[0] != 0xfe || c[1] != 0xfd || c[2] != 0xfc || c[3] != 0xfb) return 20;
   c = a;

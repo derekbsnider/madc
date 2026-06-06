@@ -8986,6 +8986,10 @@ static struct expr *check_assign_op (c2m_ctx_t c2m_ctx, node_t r, struct expr *e
     mir_size_t size;
     int add_p
       = (r->code == N_ADD || r->code == N_ADD_ASSIGN || r->code == N_INC || r->code == N_POST_INC);
+    int add_sub_vector_p
+      = (r->code == N_ADD || r->code == N_SUB || r->code == N_ADD_ASSIGN
+         || r->code == N_SUB_ASSIGN || r->code == N_INC || r->code == N_DEC
+         || r->code == N_POST_INC || r->code == N_POST_DEC);
 
     e = create_expr (c2m_ctx, r);
     e->type->mode = TM_BASIC;
@@ -9020,12 +9024,10 @@ static struct expr *check_assign_op (c2m_ctx_t c2m_ctx, node_t r, struct expr *e
             e->c.u_val = (add_p ? e1->c.u_val + e2->c.u_val : e1->c.u_val - e2->c.u_val);
         }
       }
-    } else if ((r->code == N_ADD || r->code == N_SUB || r->code == N_ADD_ASSIGN
-                || r->code == N_SUB_ASSIGN)
+    } else if (add_sub_vector_p
                && (tt = integer_bin_op_vector_type (c2m_ctx, t1, t2, e1, e2)) != NULL) {
       *e->type = *tt;
-    } else if ((r->code == N_ADD || r->code == N_SUB || r->code == N_ADD_ASSIGN
-                || r->code == N_SUB_ASSIGN)
+    } else if (add_sub_vector_p
                && (tt = v128_float_bin_op_vector_type (c2m_ctx, t1, t2)) != NULL) {
       *e->type = *tt;
     } else if (add_p) {
@@ -13219,6 +13221,57 @@ static op_t gen_v128_float_arith_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirabl
   return emit_v128_float_arith_op (c2m_ctx, r->code, op1, type1, op2, type2, type, dest);
 }
 
+static op_t gen_vector_inc_dec_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest,
+                                   int value_needed_p) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  struct type *type = ((struct expr *) r->attr)->type2;
+  node_code_t arith_code = (r->code == N_INC || r->code == N_POST_INC) ? N_ADD : N_SUB;
+  int post_p = r->code == N_POST_INC || r->code == N_POST_DEC;
+  int preserve_postfix_p = post_p && (value_needed_p || desirable_dest != NULL);
+  mir_size_t size = raw_type_size (c2m_ctx, type);
+  op_t var = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
+  op_t old_val = force_val (c2m_ctx, var, FALSE);
+  op_t res = var;
+
+  if (preserve_postfix_p) {
+    if (supported_integer_vector_type_p (c2m_ctx, type)) {
+      old_val = materialize_integer_vector_operand (c2m_ctx, old_val, type, type);
+    } else {
+      assert (v128_float_vector_type_p (c2m_ctx, type));
+      old_val = materialize_v128_float_operand (c2m_ctx, old_val, type, type);
+    }
+    res = desirable_dest != NULL ? *desirable_dest : old_val;
+    if (desirable_dest != NULL) block_move (c2m_ctx, res, old_val, size);
+  }
+
+  if (supported_integer_vector_type_p (c2m_ctx, type)) {
+    op_t one = const_integer_vector (c2m_ctx, type, 1);
+
+    if (v128_i32_packed_add_sub_vector_type_p (c2m_ctx, type)) {
+      MIR_insn_code_t insn_code
+        = get_v128_i32_packed_add_sub_insn_code (c2m_ctx, arith_code, type);
+
+      emit_v128_i32_bin_op (c2m_ctx, insn_code, old_val, type, one, type, type, var);
+    } else {
+      emit_v128_i32_arith_op (c2m_ctx, arith_code, old_val, type, one, type, type, var);
+    }
+  } else {
+    struct type one_type;
+
+    assert (v128_float_vector_type_p (c2m_ctx, type));
+    init_type (&one_type);
+    one_type.mode = TM_BASIC;
+    one_type.u.basic_type = TP_INT;
+    emit_v128_float_arith_op (c2m_ctx, arith_code, old_val, type, one_op, &one_type, type, var);
+  }
+
+  if (!post_p && value_needed_p && desirable_dest != NULL) {
+    res = *desirable_dest;
+    block_move (c2m_ctx, res, var, size);
+  }
+  return res;
+}
+
 static op_t gen_v128_float_unary_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_dest) {
   struct type *type = ((struct expr *) r->attr)->type;
   MIR_type_t lane_type = get_mir_type (c2m_ctx, type->u.vector_type->el_type);
@@ -15232,6 +15285,11 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_POST_INC:
   case N_POST_DEC: {
     type = ((struct expr *) r->attr)->type2;
+    if (supported_integer_vector_type_p (c2m_ctx, type)
+        || v128_float_vector_type_p (c2m_ctx, type)) {
+      res = gen_vector_inc_dec_op (c2m_ctx, r, desirable_dest, val_p || true_label != NULL);
+      break;
+    }
     t = get_mir_type (c2m_ctx, type);
     var = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
     op1 = force_val (c2m_ctx, var, FALSE);
@@ -15252,6 +15310,11 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_INC:
   case N_DEC: {
     type = ((struct expr *) r->attr)->type2;
+    if (supported_integer_vector_type_p (c2m_ctx, type)
+        || v128_float_vector_type_p (c2m_ctx, type)) {
+      res = gen_vector_inc_dec_op (c2m_ctx, r, desirable_dest, val_p || true_label != NULL);
+      break;
+    }
     t = get_mir_type (c2m_ctx, type);
     var = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
     val = promote (c2m_ctx, force_val (c2m_ctx, var, FALSE), t, TRUE);
