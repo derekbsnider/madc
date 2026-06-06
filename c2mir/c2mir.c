@@ -11655,6 +11655,24 @@ static op_t new_op (decl_t decl, MIR_op_t mir_op) {
   return res;
 }
 
+static int array_storage_expr_p (node_t r) {
+  struct expr *e = r->attr;
+  decl_t decl;
+
+  if (e == NULL || e->type->arr_type == NULL || e->u.lvalue_node == NULL) return FALSE;
+  switch (r->code) {
+  case N_ID:
+  case N_FIELD:
+  case N_DEREF_FIELD:
+    decl = e->u.lvalue_node->attr;
+    return decl != NULL && decl->decl_spec.type->mode == TM_ARR;
+  case N_IND:
+  case N_DEREF:
+  case N_COMPOUND_LITERAL: return TRUE;
+  default: return FALSE;
+  }
+}
+
 static htab_hash_t reg_var_hash (reg_var_t r, void *arg MIR_UNUSED) {
   return (htab_hash_t) mir_hash (r.name, strlen (r.name), 0x42);
 }
@@ -15835,7 +15853,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     mir_size_t size = type_size (c2m_ctx, el_type);
 
     t = get_mir_type (c2m_ctx, el_type);
-    op1 = val_gen (c2m_ctx, arr);
+    op1 = gen (c2m_ctx, arr, NULL, NULL, !array_storage_expr_p (arr), NULL, NULL);
     op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
     ind_t = get_mir_type (c2m_ctx, ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type);
 #if MIR_PTR32
@@ -15879,6 +15897,14 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         emit3 (c2m_ctx, MIR_ADD, temp_op.mir_op, temp_op.mir_op,
                MIR_new_reg_op (ctx, res.mir_op.u.mem.base));
       res.mir_op.u.mem.base = temp_op.mir_op.u.reg;
+    }
+    if (res.mir_op.mode == MIR_OP_MEM) {
+      MIR_alias_t alias = res.mir_op.u.mem.alias;
+
+      if (!(alias != 0 && MIR_alias_name (ctx, alias)[0] == 'U'))
+        alias = get_type_alias (c2m_ctx, el_type);
+      res.mir_op.u.mem.alias = alias;
+      res.mir_op.u.mem.nonalias = arr_type->antialias;
     }
     res.mir_op.u.mem.type = t;
     break;
