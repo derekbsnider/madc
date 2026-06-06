@@ -94,7 +94,7 @@ high-level" — the answer is both.**
 | 1.3 | **CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity** | ongoing | **Active — the parity-to-master gate** (486 pass / 5 fail / 0 timeout / 55 skip on latest capped SIMD-branch run; same known failing set, with `testfortypedcomma` currently classified as FAIL but historically flaky fail/timeout; gcc-torture 1565/1685 = 92.9% vs asmjit 97.6%) | — |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
-| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **In progress (raise the floor)** — MIR branch `feature/simd-vector-support-codex` at `55c65ee` now has a partial MIR `v128` floor plus c2mir `vector_size` support, expression-valued `vector_size` arguments, leading GNU vector attributes in declarations and compound-literal type names, C2MIR `__builtin_abort`, `__builtin_memcmp`, `__builtin_copysignf`, and `__builtin_nan` lowering to libc/libm calls, all 37 GCC c-torture execute vector-construct files checked in and passing under C2MIR `-ei`/`-eg`, including exact `pr92618`, `pr94524-{1,2}`, `pr53645`, `pr53645-2`, `pr109040`, `simd-{1,2,4,5,6}`, `pr65427`, `pr60960`, `pr70903`, `pr85169`, `pr108292`, `scal-to-vec{1,2,3}`, `20050316-{1,2,3}`, `pr105613`, `pr72824-2`, and `fp-cmp-cond-1` runtime coverage plus empty GNU asm barrier parsing, narrow address-taken register rvalue extension, union-alias preservation through array subscripts, and one-lane unsigned `__int128` vector equality, Clang `ext_vector_type` support including non-power-of-two logical lane counts, same-element-count `__builtin_convertvector` across supported vector widths, non-`v128` integer vector operation lowering through scalar lanes, non-`v128` same-size vector casts through memory-backed block copies, same-size integer scalar/vector reinterpret bitcasts, GNU declaration-spec vector attributes, mixed-signedness vector shift-count type compatibility, mixed-source-width `__builtin_shufflevector` support, packed `v128` f32/f64 arithmetic/comparison opcodes, packed `v128` i8/i16/i32 add/sub and comparison opcodes, packed `v128` i64 add/sub opcodes, packed `v128` i8/i16/i32 multiply plus i8/i16/i32 and i64 scalar-count shifts, qword vector comparison scalar-fallback masks, packed `v128` i64 equality/order, scalar-condition vector conditionals, GCC vector inc/dec lowering, and x86-64 `v128`/`v64`/`v32`/`v16`/`v8` integer-vector ABI support, plus `MIR_T_V128` text/binary data I/O support; still partial; design for **upstream** to vnmakarov/mir | — |
+| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **In progress (raise the floor)** — MIR branch `feature/simd-vector-support-codex` at `e4a8945` now has a partial MIR `v128` floor plus c2mir `vector_size` support, expression-valued `vector_size` arguments, leading GNU vector attributes in declarations and compound-literal type names, C2MIR `__builtin_abort`, `__builtin_memcmp`, `__builtin_copysignf`, and `__builtin_nan` lowering to libc/libm calls, all 37 GCC c-torture execute vector-construct files checked in and passing under C2MIR `-ei`/`-eg`, including exact `pr92618`, `pr94524-{1,2}`, `pr53645`, `pr53645-2`, `pr109040`, `simd-{1,2,4,5,6}`, `pr65427`, `pr60960`, `pr70903`, `pr85169`, `pr108292`, `scal-to-vec{1,2,3}`, `20050316-{1,2,3}`, `pr105613`, `pr72824-2`, and `fp-cmp-cond-1` runtime coverage plus empty GNU asm barrier parsing, narrow address-taken register rvalue extension, union-alias preservation through array subscripts, and one-lane unsigned `__int128` vector equality, Clang `ext_vector_type` support including non-power-of-two logical lane counts, same-element-count `__builtin_convertvector` across supported vector widths, non-`v128` integer vector operation lowering through scalar lanes, non-`v128` same-size vector casts through memory-backed block copies, same-size integer scalar/vector reinterpret bitcasts, GNU declaration-spec vector attributes, mixed-signedness vector shift-count type compatibility, mixed-source-width `__builtin_shufflevector` support, packed `v128` f32/f64 arithmetic/comparison opcodes, packed `v128` i8/i16/i32 add/sub and comparison opcodes, packed `v128` i64 add/sub opcodes, packed `v128` i8/i16/i32 multiply plus i8/i16/i32 and i64 scalar-count and lane-count shifts, qword vector comparison scalar-fallback masks, packed `v128` i64 equality/order, scalar-condition vector conditionals, GCC vector inc/dec lowering, and x86-64 `v128`/`v64`/`v32`/`v16`/`v8` integer-vector ABI support, plus `MIR_T_V128` text/binary data I/O support; still partial; design for **upstream** to vnmakarov/mir | — |
 
 **Track 1.6 (SIMD) raises the *floor*, not just c2mir.** MIR today has no vector
 type/insns (locals are `i64/f/d/ld` only), so real SIMD-in-JIT requires adding
@@ -109,7 +109,7 @@ lightweight ethos. Interim until it lands: madc **scalarizes** for the JIT and
 the lowering-vs-raising rule (`.claude/rules/`) and ADR 0001.
 
 2026-06-05/06 checkpoints: `/workspace/mir` branch
-`feature/simd-vector-support-codex` is at `55c65ee`, not yet pinned by madc's
+`feature/simd-vector-support-codex` is at `e4a8945`, not yet pinned by madc's
 `MIR_COMMIT`. `6257780` adds the first c2mir front-end slice with distinct
 memory-backed GNU `vector_size` types, brace initialization, scalar
 indexing/lvalue writes, block copy, and memory-shaped param/return plumbing.
@@ -347,8 +347,14 @@ constructs are now checked in under `c-tests/gcc` and pass C2MIR `-ei` / `-eg`.
 data items by serializing each vector element as 16 byte values. Focused
 coverage now exercises textual scan/output in `mir-tests/scan-test.c` and
 binary write/read in `mir-tests/io.c`.
-`/workspace/mir` `timeout 900 make test` passed with `Tests 1119, Success
-tests 2238` at `55c65ee`, focused `make scan-test` and `make io-test` passed
+`e4a8945` adds MIR `v128` lane-count shift opcodes for i8/i16/i32/i64 lanes:
+`vlshvi*`, `vrshvi*`, and `vurshvi*`. C2MIR selects these opcodes for matching
+vector-count operands, the interpreter executes them directly, and x86-64
+generated mode lowers them through scalar lane loads/shifts/stores. Coverage
+adds direct MIR scan/execute checks in `c-tests/mir/vector-shift-count.mir` and
+C frontend checks in `c-tests/new/vector-shift-count.c`.
+`/workspace/mir` `timeout 900 make test` passed with `Tests 1121, Success
+tests 2242` at `e4a8945`, focused `make scan-test` and `make io-test` passed
 for the new `v128` data I/O coverage, the new checked-in exact vector copies
 passed GCC native plus C2MIR `-ei` / `-eg` at `c69f4da`, and focused
 builtin-fp and one-lane unsigned `__int128`
@@ -457,13 +463,16 @@ rejected, and MIR dumps showed direct integer scalar/vector reinterpret stores
 and loads; focused GCC mixed-source-width shufflevector reducers and C2MIR
 interp/gen reducers passed, and the Clang rejection control still rejects that
 mixed-source form.
+Focused lane-count shift validation passed native GCC, C2MIR `-ei`, C2MIR
+`-eg`, direct MIR `-ei`, direct MIR `-eg`, `make scan-test`, and
+`make io-test`; generated MIR from the C fixture showed all twelve
+`vlshvi*` / `vrshvi*` / `vurshvi*` opcodes.
 `git diff --check` is clean. Vector-condition ternary/logical semantics remain outside current
 C2MIR C coverage because GCC and clang C reject those forms.
 Remaining gaps include 32-byte-and-larger vector ABI support beyond the covered
 stack-passed `pr109040` case requiring the broader AVX/YMM or generic-vector
-MIR floor, broader MIR vector opcodes/registers/interpreter/codegen,
-vector-count packed shift lowering, and further optional per-target packed
-lowering.
+MIR floor, broader MIR vector opcodes/registers/interpreter/codegen, and
+further optional per-target packed lowering.
 
 **Track 1.3 is the central workstream.** It is the sole backend, so its
 coverage *is* the bar for promoting `develop → master`. SMAUG 1.8 now boots,

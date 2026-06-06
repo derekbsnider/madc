@@ -25,7 +25,7 @@ fork.
 ### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05/06)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`55c65ee`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`e4a8945`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -281,18 +281,25 @@ C2MIR `-ei` and `-eg`.
 data items by representing each vector element as 16 byte values. Coverage now
 exercises textual scan/output in `mir-tests/scan-test.c` and binary
 write/read in `mir-tests/io.c`.
+`e4a8945` adds MIR `v128` lane-count shift opcodes for i8/i16/i32/i64 lanes:
+`vlshvi*`, `vrshvi*`, and `vurshvi*`. C2MIR selects these opcodes for
+matching vector-count operands, the interpreter executes them directly, and
+x86-64 generated mode lowers them through scalar lane loads/shifts/stores so
+the path does not require AVX2. Coverage adds direct MIR scan/execute checks in
+`c-tests/mir/vector-shift-count.mir` and C frontend checks in
+`c-tests/new/vector-shift-count.c`.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
 include AVX/YMM register ABI for 32-byte-and-larger external vector boundaries,
-broader MIR vector opcodes/registers/interpreter/codegen, vector-count packed
-shift lowering, and further optional per-target packed lowering.
+broader MIR vector opcodes/registers/interpreter/codegen, and further optional
+per-target packed lowering.
 Vector-condition ternary/logical semantics remain outside current C2MIR C
 coverage because GCC and clang C reject those forms.
 madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
 branch is ready to merge and consume from madc.
 
-Validation in `/workspace/mir`: `timeout 900 make test` passed at `55c65ee`
-with `Tests 1119, Success tests 2238` plus bootstrap checks. Focused
+Validation in `/workspace/mir`: `timeout 900 make test` passed at `e4a8945`
+with `Tests 1121, Success tests 2242` plus bootstrap checks. Focused
 `make scan-test` and `make io-test` passed for the new `v128` data I/O
 coverage; the 21 newly checked-in exact GCC vector torture copies passed GCC
 native and C2MIR `-ei` / `-eg` at `c69f4da`. Clang native passed
@@ -408,7 +415,10 @@ mixed-source-width shufflevector reducers and C2MIR interp/gen reducers passed,
 the Clang rejection control for that mixed-source form still rejects, MIR dumps
 showed scalar lane conversion, integer-operation lowering, non-`v128` cast
 block copies, and direct integer scalar/vector reinterpret stores and loads,
-and `git diff --check` is clean.
+focused lane-count shift validation passed native GCC, C2MIR `-ei`, C2MIR
+`-eg`, direct MIR `-ei`, direct MIR `-eg`, `make scan-test`, and
+`make io-test`, generated MIR from the C fixture showed all twelve `vlshvi*` /
+`vrshvi*` / `vurshvi*` opcodes, and `git diff --check` is clean.
 Downstream `/workspace/madc`
 fulltest hit the known failing set; the aggregate harness reported
 **486 passed, 4 failed, 1 timed out, 55 skipped** with `testfortypedcomma`
