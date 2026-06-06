@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added — system include paths from the configured compiler (2026-06-06)
+
+The lexer's `#include <...>` system search list was hardcoded C-only
+(`/usr/local/include`, `/usr/include`, `/usr/include/x86_64-linux-gnu`) with a
+`// TODO: should come from ./configure`. Now `scripts/gen_sys_includes.sh` runs
+the build compiler's `<CXX> -x c++ -E -v` at build time and emits
+`src/sys_include_paths.cpp` with the real search list — including the **C++ paths**
+(`/usr/include/c++/NN`, …) the old list lacked. The lexer uses it (falling back to
+the hardcoded C list if detection is empty). Host-specific, so gitignored and
+regenerated each build (`make clean` refreshes).
+
+Effect: madc now finds the real C++ header closure without manual `-I`. A real,
+non-embedded system header parses end-to-end — e.g. `#include <cstddef>` emits the
+real `typedef … ptrdiff_t/size_t`. Second piece of the preprocessor environment
+for real-header parsing. fulltest 517/4/0/26, zero regressions.
+
 ### Added — `-D` command-line macro defines (2026-06-06)
 
 madc now accepts `-DNAME`, `-DNAME=VALUE`, and `-D NAME` (repeatable, gcc-style: a

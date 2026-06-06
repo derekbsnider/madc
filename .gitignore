@@ -12,6 +12,7 @@ aclocal.m4
 configure
 include/config.h
 include/config.h.in
+src/sys_include_paths.cpp
 
 tmp/
 

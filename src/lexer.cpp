@@ -1503,13 +1503,21 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	    if ( probe.good() )
 		return candidate;
 	}
-	// TODO: these paths should come from ./configure
-	static const char *sys_paths[] = {
+	// System include paths captured at BUILD time from the configured
+	// compiler's own search list (scripts/gen_sys_includes.sh ->
+	// src/sys_include_paths.cpp) — so madc searches the SAME dirs the toolchain
+	// does, including the C++ paths (/usr/include/c++/NN, …) the old hardcoded
+	// C-only list lacked. Falls back to that minimal C list when detection
+	// produced nothing (no compiler at build time).
+	extern const char *madc_sys_include_paths[];
+	static const char *fallback_paths[] = {
 	    "/usr/local/include/",
 	    "/usr/include/",
 	    "/usr/include/x86_64-linux-gnu/",
 	    NULL
 	};
+	const char **sys_paths = (madc_sys_include_paths[0] != NULL)
+				 ? madc_sys_include_paths : fallback_paths;
 	for ( int i = 0; sys_paths[i]; ++i )
 	{
 	    std::string candidate = std::string(sys_paths[i]) + incfile;
