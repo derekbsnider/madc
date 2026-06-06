@@ -4599,7 +4599,8 @@ DA (declaration_specs) {
     } else if ((r = TRY_A (type_spec, prev_type_spec)) != err_node) {
       prev_type_spec = r;
     } else if ((r = try_attr_spec (c2m_ctx, spec_pos, FALSE)) != err_node && r != NULL) {
-      continue; /* ignore attrs for declaration specs (type attrs) */
+      op_flat_append (c2m_ctx, list, r);
+      continue;
     } else
       break;
     op_append (c2m_ctx, list, r);
@@ -7059,6 +7060,8 @@ static void set_type_qual (c2m_ctx_t c2m_ctx, node_t r, struct type_qual *tq,
     }
 }
 
+static void apply_vector_attr_list (c2m_ctx_t c2m_ctx, node_t attrs, struct type **type_ptr);
+
 static void check_type_duplication (c2m_ctx_t c2m_ctx, struct type *type, node_t n,
                                     const char *name, int size, int sign) {
   if (type->mode != TM_BASIC || type->u.basic_type != TP_UNDEF)
@@ -7633,6 +7636,7 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
       }
       break;
     }
+    case N_ATTR: break;
     default: abort ();
     }
   if (type->mode == TM_BASIC && type->u.basic_type == TP_UNDEF) {
@@ -7653,6 +7657,8 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
     }
   }
   set_type_qual (c2m_ctx, r, &type->type_qual, type->mode);
+  apply_vector_attr_list (c2m_ctx, r, &res->type);
+  type = res->type;
   if (res->align_node) {
     if (res->typedef_p)
       error (c2m_ctx, POS (res->align_node), "_Alignas in typedef");
@@ -8692,10 +8698,9 @@ static int vector_element_type_p (struct type *type) {
           && (type->mode != TM_BASIC || type->u.basic_type != TP_BOOL));
 }
 
-static void apply_vector_attrs (c2m_ctx_t c2m_ctx, node_t decl_node, struct type **type_ptr) {
-  node_t attrs, attr, id, list, arg;
+static void apply_vector_attr_list (c2m_ctx_t c2m_ctx, node_t attrs, struct type **type_ptr) {
+  node_t attr, id, list, arg;
 
-  attrs = NL_EL (decl_node->u.ops, 2);
   if (attrs == NULL || attrs->code == N_IGNORE) return;
   assert (attrs->code == N_LIST);
   for (attr = NL_HEAD (attrs->u.ops); attr != NULL; attr = NL_NEXT (attr)) {
@@ -8705,7 +8710,7 @@ static void apply_vector_attrs (c2m_ctx_t c2m_ctx, node_t decl_node, struct type
     int vector_size_p;
     const char *attr_name;
 
-    assert (attr->code == N_ATTR);
+    if (attr->code != N_ATTR) continue;
     id = NL_HEAD (attr->u.ops);
     assert (id->code == N_ID);
     vector_size_p = attr_name_eq_p (id->u.s.s, "vector_size");
@@ -8759,6 +8764,12 @@ static void apply_vector_attrs (c2m_ctx_t c2m_ctx, node_t decl_node, struct type
     new_type->type_qual = type->type_qual;
     *type_ptr = new_type;
   }
+}
+
+static void apply_vector_attrs (c2m_ctx_t c2m_ctx, node_t decl_node, struct type **type_ptr) {
+  node_t attrs = NL_EL (decl_node->u.ops, 2);
+
+  apply_vector_attr_list (c2m_ctx, attrs, type_ptr);
 }
 
 static void init_decl (c2m_ctx_t c2m_ctx, decl_t decl) {

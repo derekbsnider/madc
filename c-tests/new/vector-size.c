@@ -20,6 +20,7 @@ typedef signed char v2qi __attribute__ ((vector_size (2)));
 typedef unsigned char v2uqi __attribute__ ((vector_size (2)));
 typedef signed char v4qi __attribute__ ((vector_size (4)));
 typedef signed char v16qi __attribute__ ((vector_size (16)));
+typedef signed char __attribute__ ((__vector_size__ (16))) v16qi_attr_pre;
 typedef unsigned char v16uqi __attribute__ ((vector_size (16)));
 typedef short v1hi __attribute__ ((vector_size (2)));
 typedef short v2hi __attribute__ ((vector_size (4)));
@@ -330,6 +331,7 @@ int main (void) {
   v16qi i8a = {1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16};
   v16qi i8b = {1, 2, -3, -4, 5, 6, -7, -8, 9, 10, -11, -12, 13, 14, -15, -16};
   v16qi i8c;
+  v16qi_attr_pre i8_attr_pre;
   v16uqi u8a = {1, 2, 250, 255, 16, 32, 64, 128, 3, 4, 5, 6, 7, 8, 9, 10};
   v16uqi u8b = {2, 2, 6, 4, 1, 2, 4, 8, 3, 5, 7, 9, 11, 13, 15, 17};
   v16uqi u8c;
@@ -642,6 +644,10 @@ int main (void) {
   if (i8c[0] != 1 || i8c[1] != -4 || i8c[2] != -9 || i8c[3] != 16 || i8c[13] != 60
       || i8c[14] != 31)
     return 237;
+  i8_attr_pre = (v16qi_attr_pre) {31};
+  i8_attr_pre %= (signed char) -19;
+  if (i8_attr_pre[0] != 12 || i8_attr_pre[1] != 0 || i8_attr_pre[15] != 0)
+    return 255;
   i8c = i8a;
   i8c *= i8b;
   if (i8c[0] != 1 || i8c[1] != -4 || i8c[2] != -9 || i8c[3] != 16 || i8c[13] != 60
