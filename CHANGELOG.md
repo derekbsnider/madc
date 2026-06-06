@@ -25,7 +25,7 @@ fork.
 ### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05/06)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`626f75e`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`59117d8`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -263,6 +263,12 @@ memory-shaped scalar handling, then lowers one-lane unsigned `__int128` vector
 equality/inequality by comparing and storing the low/high 64-bit halves. This
 closes exact GCC `pr105613.c` under C2MIR `-ei` and `-eg`, with new coverage in
 `c-tests/gcc/pr105613.c`.
+`59117d8` recognizes C2MIR `__builtin_copysignf` and `__builtin_nan` as checked
+builtins and lowers them to imported libm `copysignf` / `nan` calls. This clears
+the remaining IEEE vector-search blockers discovered in GCC torture triage:
+exact GCC `c-tests/gcc/pr72824-2.c` and `c-tests/gcc/fp-cmp-cond-1.c` now pass
+C2MIR `-ei` and `-eg`. Coverage also adds focused
+`c-tests/new/builtin-fp.c`.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
 include 32-byte-and-larger vector ABI support beyond the covered stack-passed
@@ -275,10 +281,11 @@ coverage because GCC and clang C reject those forms.
 madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
 branch is ready to merge and consume from madc.
 
-Validation in `/workspace/mir`: `timeout 900 make test` passed at `626f75e`
-with `Tests 1095, Success tests 2190`; exact `pr105613.c` and focused
-one-lane unsigned `__int128` vector reducers passed GCC/clang native and
-assembly validation plus C2MIR `-ei` / `-eg`. Exact `20050316-2.c` and focused
+Validation in `/workspace/mir`: `timeout 900 make test` passed at `59117d8`
+with `Tests 1098, Success tests 2196`; exact `pr72824-2.c`,
+`fp-cmp-cond-1.c`, `pr105613.c`, and focused builtin-fp / one-lane unsigned
+`__int128` vector reducers passed GCC/clang native and assembly validation plus
+C2MIR `-ei` / `-eg`. Exact `20050316-2.c` and focused
 union-array alias reducers passed C2MIR `-ei` / `-eg`, and adjusted array
 parameter plus multidimensional array parameter probes stayed green. Focused
 prefix vector-attribute cases passed GCC/clang assembly/native validation plus

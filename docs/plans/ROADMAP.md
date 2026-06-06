@@ -94,7 +94,7 @@ high-level" — the answer is both.**
 | 1.3 | **CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity** | ongoing | **Active — the parity-to-master gate** (486 pass / 4 fail / 1 timeout / 55 skip on latest capped SIMD-branch run; same known failing set, with `testfortypedcomma` currently classified as TIMEOUT but historically flaky fail/timeout; gcc-torture 1565/1685 = 92.9% vs asmjit 97.6%) | — |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
-| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **In progress (raise the floor)** — MIR branch `feature/simd-vector-support-codex` at `626f75e` now has a partial MIR `v128` floor plus c2mir `vector_size` support, expression-valued `vector_size` arguments, leading GNU vector attributes in declarations and compound-literal type names, C2MIR `__builtin_abort` and `__builtin_memcmp` lowering to libc calls, exact `pr92618`, `pr94524-{1,2}`, `pr53645`, `pr53645-2`, `pr109040`, `simd-5`, `pr65427`, `pr60960`, `scal-to-vec{1,2,3}`, `20050316-2`, and `pr105613` runtime coverage plus empty GNU asm barrier parsing, narrow address-taken register rvalue extension, union-alias preservation through array subscripts, and one-lane unsigned `__int128` vector equality, Clang `ext_vector_type` support including non-power-of-two logical lane counts, same-element-count `__builtin_convertvector` across supported vector widths, non-`v128` integer vector operation lowering through scalar lanes, non-`v128` same-size vector casts through memory-backed block copies, same-size integer scalar/vector reinterpret bitcasts, GNU declaration-spec vector attributes, mixed-signedness vector shift-count type compatibility, mixed-source-width `__builtin_shufflevector` support, packed `v128` f32/f64 arithmetic/comparison opcodes, packed `v128` i8/i16/i32 add/sub and comparison opcodes, packed `v128` i64 add/sub opcodes, packed `v128` i8/i16/i32 multiply plus i8/i16/i32 and i64 scalar-count shifts, qword vector comparison scalar-fallback masks, packed `v128` i64 equality/order, scalar-condition vector conditionals, GCC vector inc/dec lowering, and x86-64 `v128`/`v64`/`v32`/`v16`/`v8` integer-vector ABI support; still partial; design for **upstream** to vnmakarov/mir | — |
+| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **In progress (raise the floor)** — MIR branch `feature/simd-vector-support-codex` at `59117d8` now has a partial MIR `v128` floor plus c2mir `vector_size` support, expression-valued `vector_size` arguments, leading GNU vector attributes in declarations and compound-literal type names, C2MIR `__builtin_abort`, `__builtin_memcmp`, `__builtin_copysignf`, and `__builtin_nan` lowering to libc/libm calls, exact `pr92618`, `pr94524-{1,2}`, `pr53645`, `pr53645-2`, `pr109040`, `simd-5`, `pr65427`, `pr60960`, `scal-to-vec{1,2,3}`, `20050316-2`, `pr105613`, `pr72824-2`, and `fp-cmp-cond-1` runtime coverage plus empty GNU asm barrier parsing, narrow address-taken register rvalue extension, union-alias preservation through array subscripts, and one-lane unsigned `__int128` vector equality, Clang `ext_vector_type` support including non-power-of-two logical lane counts, same-element-count `__builtin_convertvector` across supported vector widths, non-`v128` integer vector operation lowering through scalar lanes, non-`v128` same-size vector casts through memory-backed block copies, same-size integer scalar/vector reinterpret bitcasts, GNU declaration-spec vector attributes, mixed-signedness vector shift-count type compatibility, mixed-source-width `__builtin_shufflevector` support, packed `v128` f32/f64 arithmetic/comparison opcodes, packed `v128` i8/i16/i32 add/sub and comparison opcodes, packed `v128` i64 add/sub opcodes, packed `v128` i8/i16/i32 multiply plus i8/i16/i32 and i64 scalar-count shifts, qword vector comparison scalar-fallback masks, packed `v128` i64 equality/order, scalar-condition vector conditionals, GCC vector inc/dec lowering, and x86-64 `v128`/`v64`/`v32`/`v16`/`v8` integer-vector ABI support; still partial; design for **upstream** to vnmakarov/mir | — |
 
 **Track 1.6 (SIMD) raises the *floor*, not just c2mir.** MIR today has no vector
 type/insns (locals are `i64/f/d/ld` only), so real SIMD-in-JIT requires adding
@@ -109,7 +109,7 @@ lightweight ethos. Interim until it lands: madc **scalarizes** for the JIT and
 the lowering-vs-raising rule (`.claude/rules/`) and ADR 0001.
 
 2026-06-05/06 checkpoints: `/workspace/mir` branch
-`feature/simd-vector-support-codex` is at `626f75e`, not yet pinned by madc's
+`feature/simd-vector-support-codex` is at `59117d8`, not yet pinned by madc's
 `MIR_COMMIT`. `6257780` adds the first c2mir front-end slice with distinct
 memory-backed GNU `vector_size` types, brace initialization, scalar
 indexing/lvalue writes, block copy, and memory-shaped param/return plumbing.
@@ -336,9 +336,14 @@ memory-shaped scalar handling, then lowers one-lane unsigned `__int128` vector
 equality/inequality by comparing and storing the low/high 64-bit halves.
 Coverage adds exact GCC `c-tests/gcc/pr105613.c`, which passes C2MIR `-ei` and
 `-eg`.
-`/workspace/mir` `timeout 900 make test` passed with `Tests 1095, Success
-tests 2190`, focused one-lane unsigned `__int128` vector reducers passed
-GCC/clang assembly and native validation plus C2MIR `-ei` / `-eg`, focused
+`59117d8` lowers C2MIR `__builtin_copysignf` and `__builtin_nan` to checked
+libm imports, clearing the IEEE vector-search blockers from exact GCC
+`c-tests/gcc/pr72824-2.c` and `c-tests/gcc/fp-cmp-cond-1.c` under C2MIR `-ei`
+and `-eg`; coverage also adds focused `c-tests/new/builtin-fp.c`.
+`/workspace/mir` `timeout 900 make test` passed with `Tests 1098, Success
+tests 2196`, focused builtin-fp and one-lane unsigned `__int128` vector reducers
+passed GCC/clang assembly and native validation plus C2MIR `-ei` / `-eg`,
+focused
 union-array alias reducers and adjusted array parameter probes passed C2MIR
 validation, focused prefix vector-attribute cases passed
 GCC/clang assembly and native validation plus C2MIR `-ei` / `-eg`, exact
