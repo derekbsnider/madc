@@ -15,8 +15,8 @@ Release prep now treats compiler warnings as blockers. A clean `make -C src`
 rebuild on `develop` emitted no compiler warnings, `make -C src test` passed,
 and the latest capped `make -C src fulltest` against the SIMD branch hit the
 known failing set. The aggregate harness reported
-**486 passed, 4 failed, 1 timed out, 55 skipped** with
-`testfortypedcomma` classified as `TIMEOUT`. The next validation goal is
+**486 passed, 5 failed, 0 timed out, 55 skipped** with
+`testfortypedcomma` classified as `FAIL`. The next validation goal is
 driving the remaining fulltest reds/timeouts to green; the largest
 longer-running parity bucket
 remains the documented SIMD/vector_size work in c2mir and the `/workspace/mir`
@@ -25,7 +25,7 @@ fork.
 ### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05/06)
 
 The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
-`59117d8`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`c69f4da`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
 `6257780` added the first c2mir GNU `vector_size` slice with distinct
 memory-backed vector types, size/alignment, brace initialization, scalar
 subscript reads/writes, block copy/assignment, and memory-shaped
@@ -269,10 +269,17 @@ the remaining IEEE vector-search blockers discovered in GCC torture triage:
 exact GCC `c-tests/gcc/pr72824-2.c` and `c-tests/gcc/fp-cmp-cond-1.c` now pass
 C2MIR `-ei` and `-eg`. Coverage also adds focused
 `c-tests/new/builtin-fp.c`.
+`c69f4da` adds the remaining 21 exact GCC c-torture vector fixtures found by
+the vector-construct scan:
+`20050316-{1,3}.c`, `20050604-1.c`, `20050607-1.c`, `20060420-1.c`,
+`pr108292.c`, `pr110817-{1,2,3}.c`, `pr123753.c`, `pr23135.c`,
+`pr70903.c`, `pr71626-1.c`, `pr85169.c`, `pr85331.c`, `pr94412.c`,
+`pr94591.c`, and `simd-{1,2,4,6}.c`. All 37 GCC execute tests found by
+searching for vector constructs are now checked in under `c-tests/gcc` and pass
+C2MIR `-ei` and `-eg`.
 
 This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
-include 32-byte-and-larger vector ABI support beyond the covered stack-passed
-`pr109040` case requiring the broader AVX/YMM or generic-vector MIR floor,
+include AVX/YMM register ABI for 32-byte-and-larger external vector boundaries,
 broader MIR vector opcodes/registers/interpreter/codegen/serialization,
 vector-count packed shift lowering, and further optional per-target packed
 lowering.
@@ -281,11 +288,14 @@ coverage because GCC and clang C reject those forms.
 madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
 branch is ready to merge and consume from madc.
 
-Validation in `/workspace/mir`: `timeout 900 make test` passed at `59117d8`
-with `Tests 1098, Success tests 2196`; exact `pr72824-2.c`,
-`fp-cmp-cond-1.c`, `pr105613.c`, and focused builtin-fp / one-lane unsigned
-`__int128` vector reducers passed GCC/clang native and assembly validation plus
-C2MIR `-ei` / `-eg`. Exact `20050316-2.c` and focused
+Validation in `/workspace/mir`: `timeout 900 make test` passed at `c69f4da`
+with `Tests 1119, Success tests 2238`; the 21 newly checked-in exact GCC vector
+torture copies passed GCC native and C2MIR `-ei` / `-eg`. Clang native passed
+where it accepts the GCC forms; it rejects four GCC-only vector-element address,
+vector increment/decrement, or `__builtin_shuffle` forms. Exact
+`pr72824-2.c`, `fp-cmp-cond-1.c`, `pr105613.c`, and focused builtin-fp /
+one-lane unsigned `__int128` vector reducers passed GCC/clang native and
+assembly validation plus C2MIR `-ei` / `-eg`. Exact `20050316-2.c` and focused
 union-array alias reducers passed C2MIR `-ei` / `-eg`, and adjusted array
 parameter plus multidimensional array parameter probes stayed green. Focused
 prefix vector-attribute cases passed GCC/clang assembly/native validation plus

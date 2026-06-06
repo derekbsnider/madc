@@ -1,8 +1,8 @@
 # Test Status
 
 > **Current (2026-06-06, `develop` against `/workspace/mir`
-> `feature/simd-vector-support-codex` @ `59117d8`):** integration
-> **486 passed, 4 failed, 1 timed out, 55 skipped** on the latest capped
+> `feature/simd-vector-support-codex` @ `c69f4da`):** integration
+> **486 passed, 5 failed, 0 timed out, 55 skipped** on the latest capped
 > `make -C src fulltest` after adding
 > `testheaderstringops.mad`, `testclasscopyretbuf.mad`, and
 > `teststdcppinclude.mad`, plus `testforeachheaderbody.mad` for range-for
@@ -19,19 +19,18 @@
 > rejects stale embedded PCH blobs and keeps real-header parsing on generic
 > type/alias/member machinery. The known red tests are
 > `testdefer.mad`, `testfortypedcomma.mad` (historically flaky fail/timeout;
-> classified as `TIMEOUT` in the aggregate run),
+> classified as `FAIL` in the aggregate run),
 > `testfstream.mad`, `testlargesizeofquery.mad`, and
 > `testloop.mad`.
-> MIR SIMD side checkpoint `59117d8` lowers checked `__builtin_copysignf` and
-> `__builtin_nan` calls to libm imports, clearing exact GCC `pr72824-2.c` and
-> `fp-cmp-cond-1.c` under C2MIR `-ei` and `-eg`, after the one-lane unsigned
-> `__int128` vector equality, union-array alias, leading GNU vector-attribute,
-> `__builtin_memcmp`, and narrow address-taken register rvalue checkpoints;
-> `/workspace/mir` `timeout 900 make test` passed with **Tests 1098, Success
-> tests 2196** plus bootstrap checks. Exact SIMD GCC `pr72824-2.c`,
-> `fp-cmp-cond-1.c`, `pr105613.c`, `20050316-2.c`, `scal-to-vec1.c`,
-> `scal-to-vec2.c`, and `scal-to-vec3.c` now pass under C2MIR `-ei` and `-eg`;
-> `simd-5.c`, `pr65427.c`, and `pr60960.c` remain green.
+> MIR SIMD side checkpoint `c69f4da` imports the remaining 21 exact GCC vector
+> torture fixtures found by the vector-construct scan, so all 37 GCC execute
+> tests mentioning vector constructs are checked in and pass under C2MIR `-ei`
+> and `-eg`. This follows the `59117d8` checked `__builtin_copysignf` /
+> `__builtin_nan` lowering, one-lane unsigned `__int128` vector equality,
+> union-array alias, leading GNU vector-attribute, `__builtin_memcmp`, and
+> narrow address-taken register rvalue checkpoints. `/workspace/mir`
+> `timeout 900 make test` passed with **Tests 1119, Success tests 2238** plus
+> bootstrap checks.
 > The 419/0 figures below are the
 > *removed* asmjit/MIR-transpiler backend and are retained only as the C89
 > coverage target the CIR path is climbing back to. ★ Milestone: SMAUG 1.8
