@@ -321,8 +321,10 @@ int main (void) {
   v8si m8 = {0, 9, 7, 15, 3, 11, 4, 12};
   v4hi hsmall;
   v8hi hc;
+  v8hi hpos = {1, 2, 3, 4, 5, 6, 7, 8};
   uint16x8_t uha = {1, 2, 65000, 65535, 128, 256, 1024, 32768};
   uint16x8_t uhb = {3, 2, 8, 5, 2, 4, 8, 16};
+  uint16x8_t uhsh = {1, 2, 3, 1, 4, 0, 2, 3};
   uint16x8_t uhmask = {7, 6, 5, 4, 3, 2, 1, 0};
   uint16x8_t uhc;
   v16qi i8a = {1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11, -12, 13, -14, 15, -16};
@@ -519,6 +521,14 @@ int main (void) {
   uc = usrc;
   uc >>= ush;
   if (uc[0] != 0u || uc[1] != 0x40000000u || uc[2] != 0x0fffffffu || uc[3] != 4u) return 52;
+  c = pos << ush;
+  if (c[0] != 2 || c[1] != 16 || c[2] != 256 || c[3] != 28) return 255;
+  uc = usrc >> sh;
+  if (uc[0] != 0u || uc[1] != 0x20000000u || uc[2] != 0x7fffffffu || uc[3] != 2u)
+    return 255;
+  c = pos;
+  c <<= ush;
+  if (c[0] != 2 || c[1] != 16 || c[2] != 256 || c[3] != 28) return 255;
   c = md_a * md_b;
   if (c[0] != 12 || c[1] != -27 || c[2] != -100 || c[3] != 84) return 53;
   c = md_a / md_b;
@@ -811,6 +821,12 @@ int main (void) {
   hc = hia;
   hc <<= 1;
   if (hc[0] != 2 || hc[1] != -4 || hc[2] != 600 || hc[3] != -800) return 165;
+  hc = hpos << uhsh;
+  if (hc[0] != 2 || hc[1] != 8 || hc[2] != 24 || hc[3] != 8) return 255;
+  if (hc[4] != 80 || hc[5] != 6 || hc[6] != 28 || hc[7] != 64) return 255;
+  hpos <<= uhsh;
+  if (hpos[0] != 2 || hpos[1] != 8 || hpos[2] != 24 || hpos[3] != 8) return 255;
+  if (hpos[4] != 80 || hpos[5] != 6 || hpos[6] != 28 || hpos[7] != 64) return 255;
   uhc = uha;
   uhc >>= 1;
   if (uhc[0] != 0 || uhc[1] != 1 || uhc[2] != 32500 || uhc[3] != 32767) return 166;

@@ -6318,6 +6318,16 @@ static int compatible_integer_vector_types_p (c2m_ctx_t c2m_ctx, struct type *ty
          && compatible_types_p (type1, type2, TRUE);
 }
 
+static int compatible_integer_shift_count_vector_types_p (c2m_ctx_t c2m_ctx,
+                                                          struct type *value_type,
+                                                          struct type *count_type) {
+  return supported_integer_vector_type_p (c2m_ctx, value_type)
+         && supported_integer_vector_type_p (c2m_ctx, count_type)
+         && value_type->u.vector_type->size == count_type->u.vector_type->size
+         && value_type->u.vector_type->nel == count_type->u.vector_type->nel
+         && vector_lane_size (c2m_ctx, value_type) == vector_lane_size (c2m_ctx, count_type);
+}
+
 static int scalar_fits_integer_vector_lane_p (c2m_ctx_t c2m_ctx, struct type *vector_type,
                                               struct type *scalar_type, struct expr *scalar_expr) {
   struct type *el_type;
@@ -6351,6 +6361,20 @@ static struct type *integer_bin_op_vector_type (c2m_ctx_t c2m_ctx, struct type *
                                                 struct type *type2, struct expr *expr1,
                                                 struct expr *expr2) {
   if (compatible_integer_vector_types_p (c2m_ctx, type1, type2)) return type1;
+  if (supported_integer_vector_type_p (c2m_ctx, type1)
+      && scalar_fits_integer_vector_lane_p (c2m_ctx, type1, type2, expr2))
+    return type1;
+  if (supported_integer_vector_type_p (c2m_ctx, type2)
+      && scalar_fits_integer_vector_lane_p (c2m_ctx, type2, type1, expr1))
+    return type2;
+  return NULL;
+}
+
+static struct type *integer_shift_vector_type (c2m_ctx_t c2m_ctx, struct type *type1,
+                                               struct type *type2, struct expr *expr1,
+                                               struct expr *expr2) {
+  if (compatible_integer_vector_types_p (c2m_ctx, type1, type2)) return type1;
+  if (compatible_integer_shift_count_vector_types_p (c2m_ctx, type1, type2)) return type1;
   if (supported_integer_vector_type_p (c2m_ctx, type1)
       && scalar_fits_integer_vector_lane_p (c2m_ctx, type1, type2, expr2))
     return type1;
@@ -8989,7 +9013,7 @@ static struct expr *check_assign_op (c2m_ctx_t c2m_ctx, node_t r, struct expr *e
     e = create_expr (c2m_ctx, r);
     e->type->mode = TM_BASIC;
     e->type->u.basic_type = TP_INT;
-    if ((tt = integer_bin_op_vector_type (c2m_ctx, t1, t2, e1, e2)) != NULL) {
+    if ((tt = integer_shift_vector_type (c2m_ctx, t1, t2, e1, e2)) != NULL) {
       *e->type = *tt;
     } else if (!integer_type_p (t1) || !integer_type_p (t2)) {
       error (c2m_ctx, POS (r), "shift operands should be of an integer type");
