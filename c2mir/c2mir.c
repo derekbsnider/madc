@@ -4545,10 +4545,7 @@ D (attr) {
   if (C ('(')) {
     PT ('(');
     while (!C (')')) {
-      if (C (T_NUMBER) || C (T_CH) || C (T_STR))
-        PTN (curr_token->code);
-      else
-        PTN (T_ID);
+      P (const_expr);
       op_append (c2m_ctx, list, r);
       if (!C (')')) PT (',');
     }
@@ -8682,6 +8679,22 @@ static int unsigned_int_node_value (node_t n, mir_ullong *value) {
   }
 }
 
+static int unsigned_int_attr_arg_value (c2m_ctx_t c2m_ctx, node_t arg, mir_ullong *value) {
+  struct expr *e;
+
+  if (unsigned_int_node_value (arg, value)) return TRUE;
+  check (c2m_ctx, arg, NULL);
+  e = arg->attr;
+  if (e == NULL || !e->const_p || !integer_type_p (e->type)) return FALSE;
+  if (signed_integer_type_p (e->type)) {
+    if (e->c.i_val < 0) return FALSE;
+    *value = (mir_ullong) e->c.i_val;
+  } else {
+    *value = e->c.u_val;
+  }
+  return TRUE;
+}
+
 static int power_of_two_p (mir_ullong value) {
   return value != 0 && (value & (value - 1)) == 0;
 }
@@ -8723,7 +8736,7 @@ static void apply_vector_attr_list (c2m_ctx_t c2m_ctx, node_t attrs, struct type
       error (c2m_ctx, POS (attr), "%s attribute requires one argument", attr_name);
       continue;
     }
-    if (!unsigned_int_node_value (arg, &arg_value) || arg_value == 0
+    if (!unsigned_int_attr_arg_value (c2m_ctx, arg, &arg_value) || arg_value == 0
         || arg_value > (mir_ullong) INT_MAX) {
       error (c2m_ctx, POS (arg), "invalid %s attribute argument", attr_name);
       continue;

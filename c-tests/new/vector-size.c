@@ -10,6 +10,8 @@ typedef float v2sf __attribute__ ((vector_size (8)));
 typedef float v4sf __attribute__ ((vector_size (16)));
 typedef float v8sf __attribute__ ((vector_size (32)));
 typedef long long v2di __attribute__ ((vector_size (16)));
+typedef long long v2di_attr_expr
+  __attribute__ ((__vector_size__ (2 * sizeof (long long)), __may_alias__));
 typedef unsigned long long v2udi __attribute__ ((vector_size (16)));
 typedef long v2l __attribute__ ((vector_size (16)));
 typedef long v4l __attribute__ ((vector_size (32)));
@@ -211,6 +213,9 @@ int main (void) {
   v8sf wvf;
   v2di li = {-3, 4};
   v2di li2;
+  v2di_attr_expr alias_a = {2, 3};
+  v2di_attr_expr alias_b = {4, 5};
+  unsigned long long alias_words[4] = {0, 0, 0, 0};
   v2di li_add_a = {0x100000000LL, -9};
   v2di li_add_b = {5, -4};
   v2di li_add_c;
@@ -366,6 +371,12 @@ int main (void) {
 
   if (sizeof (v4si) != 16) return 1;
   if (_Alignof (v4si) != 16) return 2;
+  if (sizeof (v2di_attr_expr) != 16 || _Alignof (v2di_attr_expr) != 16) return 255;
+  *(v2di_attr_expr *) &alias_words[0] = alias_a;
+  *(v2di_attr_expr *) &alias_words[2] = alias_b;
+  if (alias_words[0] != 2ULL || alias_words[1] != 3ULL || alias_words[2] != 4ULL
+      || alias_words[3] != 5ULL)
+    return 255;
 #if defined(__clang__) || defined(__MIRC__)
   if (sizeof (clang_i4) != 16 || _Alignof (clang_i4) != 16) return 251;
   ext_c = ext_a + ext_b;
