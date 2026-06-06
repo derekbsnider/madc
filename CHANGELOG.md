@@ -13,30 +13,262 @@ instead of compiler/runtime per-class branches.
 
 Release prep now treats compiler warnings as blockers. A clean `make -C src`
 rebuild on `develop` emitted no compiler warnings, `make -C src test` passed,
-and a fresh `make -C src fulltest` reproduced **486 passed, 4 failed, 1 timed
-out, 55 skipped**. The next validation goal is driving the remaining fulltest
-reds/timeouts to green; the largest longer-running parity bucket remains the
-documented SIMD/vector_size work in c2mir and the `/workspace/mir` fork.
+and the latest capped `make -C src fulltest` against the SIMD branch hit the
+known failing set. The aggregate harness reported
+**486 passed, 4 failed, 1 timed out, 55 skipped** with
+`testfortypedcomma` classified as `TIMEOUT`. The next validation goal is
+driving the remaining fulltest reds/timeouts to green; the largest
+longer-running parity bucket
+remains the documented SIMD/vector_size work in c2mir and the `/workspace/mir`
+fork.
 
-### Added — MIR fork `vector_size` front-end checkpoint (2026-06-05)
+### Added — MIR fork SIMD/vector_size checkpoints (2026-06-05)
 
-The `/workspace/mir` branch `feature/simd-vector-support-codex` now has
-checkpoint `6257780`, adding a first c2mir GNU `vector_size` slice with a
-distinct memory-backed vector type. It covers vector type identity,
-size/alignment, brace initialization, scalar subscript reads/writes, block
-copy/assignment, and memory-shaped parameter/return plumbing, with
-`c-tests/new/vector-size.c` covering the path.
+The `/workspace/mir` branch `feature/simd-vector-support-codex` is now at
+`0bf8e7c`, still intentionally unpinned by madc's `MIR_COMMIT`. Checkpoint
+`6257780` added the first c2mir GNU `vector_size` slice with distinct
+memory-backed vector types, size/alignment, brace initialization, scalar
+subscript reads/writes, block copy/assignment, and memory-shaped
+parameter/return plumbing.
 
-This is intentionally **not** the completed Track 1.6 SIMD raise. MIR still
-needs real vector types/opcodes/register allocation, interpreter/codegen lane
-operations, and ABI-accurate SIMD argument/return handling before the
-SIMD/vector_size parity bucket can be called closed. madc's `MIR_COMMIT`
-remains pinned to fork `develop` at `8864a73` until the MIR branch is ready to
-merge and consume from madc.
+Follow-up checkpoint `2194f8c` adds MIR `v128`, `vmov`, `vaddi32`/`vsubi32`,
+vector bitwise ops, signed `v4i32` comparisons, interpreter/x86-64 codegen,
+`mir-tests/test17.mir`, and C2MIR lowering for signed `v4i32`
+arithmetic/bitwise/unary/scalar splats/comparisons. `eceffd0` adds unsigned
+`v4u32` equality/inequality. `516db72` adds same-size `v128` vector-to-vector
+casts. `3a7bbbd` adds unsigned `v4u32` ordering comparisons by biasing operands
+and reusing the signed compare. `240f838` adds `v4i32`/`v4u32` vector shifts
+via lane-wise scalar MIR lowering for vector/scalar counts and compound shifts.
+`99c19a6` adds `v4i32`/`v4u32` vector multiply, divide, and modulo via
+lane-wise scalar MIR lowering, including compound assignment coverage.
+`52940dd` adds C2MIR builtin recognition and lane-wise lowering for
+`__builtin_convertvector` and `__builtin_shufflevector` on `v128` vectors with
+4- and 8-byte arithmetic lanes. `0305f1d` adds C2MIR builtin recognition and
+lane-wise lowering for GCC `__builtin_shuffle` on same-type `v128` sources
+with signed/unsigned runtime mask modulo handling. `2982f38` extends C2MIR
+lowering to `v128` integer vectors with 1-, 2-, 4-, and 8-byte lanes, covering
+signed/unsigned small-lane arithmetic, bitwise, unary, comparisons, shifts,
+compound assignment, same-type shuffles, `uint16x8_t`, and Clang-style
+`__builtin_vectorelements`. `c-tests/new/vector-size.c` covers the expanded
+and width-changing shuffle C2MIR paths. `40661db` adds C2MIR support for
+`__builtin_shufflevector` result widths determined by the index count, covering
+smaller and larger result vectors from `v128` sources. `62f8f31` adds
+`__builtin_shufflevector` support for non-`v128` source vector widths by
+materializing supported vector sources to memory and copying selected scalar
+lanes. `84377c2` adds generic non-`v128` GCC `__builtin_shuffle` support for
+same-type vectors by materializing supported vector widths to memory and
+copying lanes under runtime mask modulo rules. `665dbbb` adds C2MIR `v128`
+floating-lane arithmetic and comparisons through memory-backed scalar lane
+lowering, covering `v4sf` add/mul/unary/scalar splats/compound ops and `v2df`
+division/comparison masks. `1deb2be` extends that floating-lane lowering to
+non-`v128` float/double vectors, covering `v2sf`, `v8sf`, and `v4df`
+arithmetic/scalar splats/unary/comparison masks. `56e331b` adds x86-64 `v128`
+vector parameter/return ABI support across C2MIR prototypes, MIR generated
+calls/prologues/returns, interpreter FFI, and interpreter shims. `6de64b4`
+adds x86-64 `v64` vector parameter/return ABI support by classifying top-level
+8-byte vectors as one SysV SSE eightbyte through the existing `blk2:8` /
+`MIR_T_D` path, with `v2si`, `v2sf`, and `v4hi` coverage. `8a16ed6` adds
+x86-64 `v32` integer-vector parameter/return ABI support by classifying
+top-level 4-byte integer-element vectors as one SysV integer eightbyte through
+the existing `blk1:4` path; coverage includes `v1si`, `v2hi`, `v4qi`, and the
+GCC-memory-ABI `v1sf` control. `fe49fde` adds MIR packed `v128` f32 arithmetic
+opcodes (`vaddf32`, `vsubf32`, `vmulf32`, `vdivf32`) with interpreter support
+and x86-64 SSE `addps` / `subps` / `mulps` / `divps` codegen. C2MIR now selects
+those opcodes for `vector_size(16)` float arithmetic while keeping the existing
+scalar-lane fallback for other floating vector widths and double lanes.
+`ffa02b6` adds MIR packed `v128` f32 comparison opcodes (`veqf32`, `vnef32`,
+`vltf32`, `vlef32`) with interpreter support and x86-64 SSE `cmpps` codegen.
+C2MIR selects those opcodes for `vector_size(16)` float comparisons and lowers
+`>` / `>=` by swapping operands into ordered `<` / `<=`, preserving C comparison
+semantics. `52a75bb` adds MIR packed `v128` f64 arithmetic opcodes
+(`vaddf64`, `vsubf64`, `vmulf64`, `vdivf64`) and comparison opcodes
+(`veqf64`, `vnef64`, `vltf64`, `vlef64`) with interpreter support and x86-64
+SSE2 `addpd` / `subpd` / `mulpd` / `divpd` / `cmppd` codegen. C2MIR selects
+those opcodes for `vector_size(16)` double arithmetic/comparisons while keeping
+the scalar-lane fallback for non-`v128` double vectors. `798f18d` adds MIR
+packed `v128` i8/i16 add/sub opcodes (`vaddi8`, `vaddi16`, `vsubi8`,
+`vsubi16`) with interpreter support and x86-64 SSE2 `paddb` / `paddw` /
+`psubb` / `psubw` codegen. C2MIR selects those opcodes for `vector_size(16)`
+byte/word add/sub while keeping the scalar-lane fallback for 8-byte integer
+lanes. `3f287d0` adds MIR packed `v128` i8/i16 comparison opcodes (`veqi8`,
+`veqi16`, `vgti8`, `vgti16`) with interpreter support and x86-64 SSE2
+`pcmpeqb` / `pcmpeqw` / `pcmpgtb` / `pcmpgtw` codegen. C2MIR selects those
+opcodes for `vector_size(16)` byte/word equality and ordering comparisons,
+including unsigned ordering through lane sign-bit biasing, while keeping the
+scalar-lane fallback for 8-byte integer lanes.
+`730b50d` adds MIR packed `v128` i16 multiply opcode (`vmuli16`) with
+interpreter support and x86-64 SSE2 `pmullw` codegen. C2MIR selects it for
+`vector_size(16)` signed/unsigned short multiplication and compound
+multiplication while preserving scalar-lane fallback for byte, dword, and qword
+integer multiply/div/mod.
+`9fb836d` adds MIR packed `v128` i16 scalar-count shift opcodes (`vlshi16`,
+`vrshi16`, `vurshi16`) with interpreter support and x86-64 SSE2 `psllw` /
+`psraw` / `psrlw` codegen. C2MIR selects them for `vector_size(16)`
+signed/unsigned short scalar-count shifts and compound shifts while preserving
+scalar-lane fallback for vector-count shifts and other lane widths.
+`2ec7b5d` adds MIR packed `v128` i32 scalar-count shift opcodes (`vlshi32`,
+`vrshi32`, `vurshi32`) with interpreter support and x86-64 SSE2 `pslld` /
+`psrad` / `psrld` codegen. C2MIR selects them for `vector_size(16)`
+signed/unsigned int scalar-count shifts and compound shifts through the
+generalized 16-/32-bit integer-lane shift path while preserving scalar-lane
+fallback for vector-count shifts and unsupported lane widths.
+`4dcf378` adds C2MIR support for scalar-condition vector conditional
+expressions with matching vector true/false arms. Vector conditional results
+now lower through the memory-shaped aggregate path, covering assignment and
+vector-conditional rvalue indexing. GCC and clang C reject vector-condition
+ternary/logical forms; GCC also rejects scalar/vector mixed ternary arms, so
+this checkpoint follows the GCC-compatible matching-vector-arm subset.
+`b84da0d` generalizes C2MIR `__builtin_convertvector` beyond the earlier
+`v128`-only gate. Same-element-count conversions across supported arithmetic
+vector lane widths now lower through generic memory-backed vector lanes,
+covering `v64` conversions and `v128`-to-`v256` same-element-count widening.
+`3146f66` widens C2MIR integer vector operation lowering beyond the `v128`
+gate. Arithmetic, bitwise, shifts, unary operations, and comparisons for
+supported non-`v128` integer vector widths now lower through scalar lanes, with
+`v32`, `v64`, and `v256` coverage in `c-tests/new/vector-size.c`.
+`09b79af` generalizes same-size C2MIR vector reinterpret casts beyond the
+earlier `v128`-only gate. Non-`v128` vector casts now lower through
+memory-backed block copies while `v128` keeps the register move path, with
+`v64` and `v256` bitcast coverage in `c-tests/new/vector-size.c`.
+`9f6132e` adds C2MIR same-size integer scalar/vector reinterpret bitcasts.
+Integer-to-vector casts write the integer representation into vector storage,
+vector-to-integer casts load from materialized vector storage, and same-size
+float/pointer scalar casts remain rejected to match GCC/clang. The checker also
+keeps pointer-sized vector casts out of the constant-address path, avoiding
+bogus scalar-constant lowering for 8-byte vectors. `c-tests/new/vector-size.c`
+now covers `v32` and `v64` scalar integer/vector bitcasts in both directions.
+`3b25f0a` extends C2MIR `__builtin_shufflevector` to same-element-type sources
+with different vector widths. Validation now checks source indexes against the
+combined lane count, and codegen copies lanes from materialized sources using
+independent source element counts. This is GCC extension coverage: GCC accepts
+the mixed-source-width form, while Clang rejects it.
+`9de5b22` adds MIR packed `v128` i32 multiply opcode (`vmuli32`) with
+interpreter support and x86-64 SSE4.1 `pmulld` codegen. C2MIR now selects it
+for `vector_size(16)` signed/unsigned int multiplication and compound
+multiplication while preserving scalar-lane fallback for other integer lane
+widths and div/mod.
+`3bdf0e4` adds MIR packed `v128` i64 add/sub opcodes (`vaddi64`, `vsubi64`)
+with interpreter support and x86-64 SSE2 `paddq` / `psubq` codegen. C2MIR now
+selects them for `vector_size(16)` signed/unsigned long-long add/sub and
+compound add/sub while preserving scalar-lane fallback for other unsupported
+64-bit integer operations.
+`c96ac07` adds MIR packed `v128` i64 scalar-count shift opcodes (`vlshi64`,
+`vurshi64`) with interpreter support and x86-64 SSE2 `psllq` / `psrlq`
+codegen. C2MIR selects them for `vector_size(16)` signed/unsigned long-long
+left shifts and unsigned long-long right shifts while signed long-long right
+shifts remain on the scalar-lane fallback because SSE2 has no arithmetic qword
+right-shift instruction.
+`3f33ff6` fixes the C2MIR scalar-lane fallback for qword vector comparisons:
+8-byte comparison lanes now form all-ones masks in 64-bit temporaries with
+64-bit subtract-from-zero, so `v2i64` / `v2u64` equality, inequality, and
+ordering comparisons produce full-lane masks in generated mode.
+`92accb7` adds MIR packed `v128` i64 equality opcode (`veqi64`) with
+interpreter support and x86-64 SSE4.1 `pcmpeqq` codegen. C2MIR now selects it
+for `vector_size(16)` signed/unsigned long-long equality and inequality, while
+qword ordering comparisons stay on the scalar-lane fallback.
+`7c169e7` adds MIR packed `v128` i64 ordering opcode (`vgti64`) with
+interpreter support and x86-64 SSE4.2 `pcmpgtq` codegen. C2MIR now selects it
+for `vector_size(16)` signed/unsigned long-long ordering comparisons,
+including unsigned ordering through lane sign-bit XOR biasing.
+`dad14bc` synthesizes packed signed `v128` i64 scalar-count right shifts in
+C2MIR with the existing `vurshi64`, `vxor`, and `vsubi64` floor. The permanent
+`vector-size.c` fixture now covers the count-zero edge for `v2i64 >> 0`.
+`2ed2c4a` extends x86-64 ABI classification for top-level v8/v16 integer
+vectors, passing `vector_size(1)` / `vector_size(2)` integer vectors through
+the existing integer-register `blk1` path instead of `blk0` / `rblk` memory
+ABI. The permanent `vector-size.c` fixture now covers `v1qi`, `v2qi` /
+`v2uqi`, and `v1hi` parameter/return cases.
+`e4e096b` synthesizes packed `v128` i8 scalar-count shifts in C2MIR with the
+existing word-shift, mask, XOR, and byte-subtract vector floor. The permanent
+`vector-size.c` fixture now covers signed and unsigned `v16qi` / `v16uqi`
+left/right scalar-count shifts plus compound signed right shift.
+`29775cd` synthesizes packed `v128` i8 multiplication in C2MIR with the
+existing word multiply, byte mask, word shift, and OR vector floor. The
+permanent `vector-size.c` fixture now covers signed and unsigned `v16qi` /
+`v16uqi` multiply and compound multiply.
+`0bf8e7c` adds GCC vector prefix/postfix inc/dec support for integer and
+floating vector types in C2MIR. Prefix/postfix lowering reuses the existing
+integer/float vector arithmetic paths with a splatted one, and postfix old
+values are preserved when vector block-move assignments provide the result
+destination. The permanent `vector-size.c` fixture now covers `v4si`,
+`v16uqi`, `v4sf`, `v8si`, and `v8sf` inc/dec cases.
 
-Validation in `/workspace/mir`: `make`, strict `c2mir/c2mir.c` warning compile,
-targeted interp/gen/gcc vector regression runs, `make c2mir-interp-test`,
-`make c2mir-gen-test`, and top-level `make test` all passed.
+This is still **not** the completed Track 1.6 SIMD raise. Remaining gaps
+include 32-byte-and-larger vector ABI support requiring the broader AVX/YMM or
+generic-vector MIR floor, broader MIR vector opcodes/registers/interpreter/
+codegen/serialization, vector-count packed shift lowering, and further optional
+per-target packed lowering. Vector-condition ternary/logical semantics remain
+outside current C2MIR C coverage because GCC and clang C reject those forms.
+madc's `MIR_COMMIT` remains pinned to fork `develop` at `8864a73` until the MIR
+branch is ready to merge and consume from madc.
+
+Validation in `/workspace/mir`: `timeout 900 make test` passed with `Tests
+1077, Success tests 2154`; focused `interp-test17` and `gen-test17` passed;
+generated MIR showed `vmuli32` selection for the full vector fixture; focused
+v4i32 multiply reducers passed GCC/clang assembly/native validation and C2MIR
+interp/gen validation; GCC/clang `-msse4.1` assembly showed `pmulld`. Focused
+v2i64 add/sub reducers passed GCC/clang assembly/native validation and C2MIR
+interp/gen validation; GCC/clang assembly showed `paddq` / `psubq`; generated
+MIR showed `vaddi64` / `vsubi64` in both the focused reducer and
+`c-tests/new/vector-size.c`. Focused v2i64 scalar-shift reducers passed
+GCC/clang assembly/native validation and C2MIR interp/gen validation;
+GCC/clang assembly showed `psllq` / `psrlq`, generated MIR showed `vlshi64` /
+`vurshi64` for left and unsigned-right shifts. Focused signed v2i64
+scalar-right-shift reducers passed GCC/clang `-msse4.2` assembly/native
+validation and C2MIR interp/gen validation; GCC used a `pcmpgtq` / `psrlq` /
+`psllq` / `por` sign-fill sequence, clang used `psrlq` / `pxor` / `psubq`, and
+generated MIR showed the C2MIR `vurshi64` / `vxor` / `vsubi64` synthesis
+including `v2i64 >> 0`.
+Focused v8/v16 integer-vector ABI reducers passed GCC/clang assembly/native
+validation, C2MIR interp/gen validation against GCC-built and clang-built
+shared libraries, and generated MIR now uses `blk1:1` / `blk1:2` arguments and
+integer return registers instead of `blk0` / `rblk` memory ABI.
+Focused v16qi/v16uqi scalar-shift reducers passed GCC/clang assembly/native
+validation and C2MIR interp/gen validation; generated MIR showed `vlshi16`,
+`vurshi16`, and `vsubi8` selection for byte-shift synthesis.
+Focused v16qi/v16uqi multiply reducers passed GCC/clang assembly/native
+validation and C2MIR interp/gen validation; generated MIR showed `vand`,
+`vurshi16`, `vmuli16`, `vlshi16`, and `vor` selection for byte-multiply
+synthesis.
+Focused vector inc/dec reducers passed GCC native validation and C2MIR
+interp/gen validation for integer and float vectors. Clang rejects vector
+inc/dec forms, so this checkpoint is recorded as GCC extension coverage.
+Focused v2i64/v2u64 comparison reducers passed GCC/clang assembly/native
+validation and C2MIR interp/gen validation; generated MIR now uses 64-bit
+`sub` mask formation for qword comparison lanes instead of 32-bit `subs`.
+Focused v2i64/v2u64 equality reducers passed GCC/clang `-msse4.1`
+assembly/native validation and C2MIR interp/gen validation; GCC/clang assembly
+showed `pcmpeqq`, generated MIR showed `veqi64` for equality plus `vxor` for
+inequality. Focused v2i64/v2u64 ordering reducers passed GCC/clang `-msse4.2`
+assembly/native validation and C2MIR interp/gen validation; GCC/clang assembly
+showed `pcmpgtq`, generated MIR showed `vgti64` for signed ordering and `vxor`
+bias plus `vgti64` for unsigned ordering.
+Focused c2m
+interp/gen reducers passed, GCC/clang packed-f32 arithmetic and comparison
+assembly reducers matched the packed-single shape, GCC/clang packed-f64
+reducers matched the packed-double shape, GCC/clang packed-small-integer
+add/sub reducers matched the packed byte/word shape, GCC/clang
+packed-small-integer comparison reducers matched the packed byte/word compare
+shape, GCC/clang packed-small-integer multiply reducers matched the packed word
+multiply shape, GCC/clang packed-small-integer scalar-shift reducers matched the
+packed word/dword shift shapes, GCC/clang scalar-condition vector ternary
+reducers plus C2MIR interp/gen reducers passed, focused ABI reducers and
+mixed-compiler ABI controls established the v32/v256 compiler-divergence
+boundaries, GCC/clang same-element-count convertvector reducers and C2MIR
+interp/gen reducers passed, focused GCC/clang non-`v128` integer-vector
+reducers and C2MIR interp/gen reducers passed, focused GCC/clang non-`v128`
+vector-cast reducers and C2MIR interp/gen reducers passed, focused GCC/clang
+scalar integer/vector bitcast reducers and C2MIR interp/gen reducers passed,
+negative same-size float/pointer scalar-vector controls rejected, focused GCC
+mixed-source-width shufflevector reducers and C2MIR interp/gen reducers passed,
+the Clang rejection control for that mixed-source form still rejects, MIR dumps
+showed scalar lane conversion, integer-operation lowering, non-`v128` cast
+block copies, and direct integer scalar/vector reinterpret stores and loads,
+and `git diff --check` is clean.
+Downstream `/workspace/madc`
+fulltest hit the known failing set; the aggregate harness reported
+**486 passed, 4 failed, 1 timed out, 55 skipped** with `testfortypedcomma`
+classified as `TIMEOUT` in this aggregate run.
 
 ### Fixed — generic real-header parser/PCH checkpoint (2026-06-05)
 
