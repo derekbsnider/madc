@@ -6321,13 +6321,47 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 	node_t init;
 	if (tf->initialize) {
 		TokenDecl *td = dynamic_cast<TokenDecl *>(tf->initialize);
-		init = td ? var_decl(&td->var, td) : translate_expr(tf->initialize);
-		// Comma-separated init clauses (`for (a=0, b=1; ...)`) keep the first
-		// in `initialize` and the rest in init_extras. Fold them into a single
-		// left-associative N_COMMA so all run, in order, in the init slot.
-		if (!td)
+		if (td && !tf->init_extras.empty()) {
+			// Typed multi-declarator init `for (int x=1, y=2, z=3; ...)`.
+			// Every declarator's variable is hoisted into the enclosing scope
+			// (the single-declarator case hoists too — `int i;` precedes the
+			// loop), so the for-init's job is purely to INITIALIZE. Lower it as
+			// the comma of the declarators' initializing assignments: a bare
+			// var_decl (N_SPEC_DECL) can't be folded into an N_COMMA, and no
+			// multi-declarator N_SPEC_DECL is built here, so the assignments to
+			// the already-hoisted vars are the faithful equivalent. (The old
+			// code dropped init_extras whenever `initialize` was a TokenDecl,
+			// leaving y/z uninitialized -> garbage / infinite loop:
+			// testfortypedcomma.)
+			std::vector<node_t> parts;
+			auto add_clause = [&](TokenBase *clause) {
+				if (TokenDecl *ctd = dynamic_cast<TokenDecl *>(clause)) {
+					if (ctd->initialize)
+						parts.push_back(translate_expr(ctd->initialize));
+					// no initializer: the var is hoisted; nothing to run
+				} else {
+					parts.push_back(translate_expr(clause));
+				}
+			};
+			add_clause(tf->initialize);
 			for (TokenBase *ex : tf->init_extras)
-				init = node2(N_COMMA, init, translate_expr(ex));
+				add_clause(ex);
+			if (parts.empty())
+				init = ignore();
+			else {
+				init = parts[0];
+				for (size_t i = 1; i < parts.size(); i++)
+					init = node2(N_COMMA, init, parts[i]);
+			}
+		} else {
+			init = td ? var_decl(&td->var, td) : translate_expr(tf->initialize);
+			// Comma-separated expression init (`for (a=0, b=1; ...)`) keeps the
+			// first in `initialize` and the rest in init_extras. Fold them into a
+			// left-associative N_COMMA so all run, in order, in the init slot.
+			if (!td)
+				for (TokenBase *ex : tf->init_extras)
+					init = node2(N_COMMA, init, translate_expr(ex));
+		}
 	} else {
 		init = ignore();
 	}
