@@ -48,11 +48,38 @@ dups) in `include/madc/` are the WRONG bucket and the active shadowing blocker.
   in class definition" (a member-decl the class-body parser rejects — bisect via -E
   next). See [[project_template_instantiation]] + the ⚠CORRECTION/RESOLVED section of
   the disambiguation research doc.
-- **#2 HEADER-PARTITION (in progress)** Step 0 add `__madc__`; Step 1 madc-owned
-  freestanding dir from c2mir's `mirc_*` (search-first + `#include_next`), NOT gcc's
-  `$OWN`; Step 2 close `madc -dM` vs `gcc -dM` gaps; Step 3 the `__is_*`/`__has_*`
-  builtin checklist (the `<type_traits>`/`<tuple>` conformance milestone). Master
-  plan = `madc-header-partition-handoff.md`.
+- **#2 HEADER-PARTITION (in progress).** Master plan = `madc-header-partition-handoff.md`.
+  - **Step 0 (`__madc__` identity) — ✅ DONE (commit `7930a81`).** `__madc__`=1,
+    `__MADC__`=1, `__MADC_VERSION__` seeded in every mode (Clang-`__clang__` peer
+    equivalent); madc still impersonates gcc for the real headers. gcc doesn't define
+    it. fulltest 529/4.
+  - **Step 4 (macro gaps) — effectively satisfied by construction.**
+    `src/predefined_macros.cpp` is AUTO-GENERATED from `gcc -dM -E -std=c++17` by
+    `scripts/gen_predefined_macros.sh` and seeded in `lexer.cpp` (~1476), so madc's
+    predefined set IS the host gcc's for c++17. (NB: madc has no `madc -dM` dump flag;
+    adding one would make acceptance-test #3 directly runnable, but generation already
+    guarantees parity. C-mode/other-std parity unverified.)
+  - **Step 5 (`__is_*`/`__has_*` trait BUILTINS) — SCOPED, the next big pass.**
+    Verified madc implements NONE (all MISS, zero source handling). Needed checklist
+    (gcc/clang trait intrinsics libstdc++ `<type_traits>`/`<tuple>`/`<memory>` call):
+    `__is_same __is_class __is_enum __is_union __is_base_of __is_constructible
+    __is_convertible __is_assignable __is_trivially_constructible/copyable/destructible
+    __is_standard_layout __is_abstract __is_aggregate __is_final __is_empty __is_pod
+    __is_polymorphic __underlying_type __has_virtual_destructor
+    __has_unique_object_representations __make_integer_seq __type_pack_element` (+
+    `__builtin_addressof/launder/is_constant_evaluated/bit_cast`). MECHANISM to build:
+    recognize `__trait( type-list )` in constant/type context → fold boolean traits to
+    an int literal via DataDef predicates (most map to existing `is_class()`/`is_enum()`/
+    base-list checks), and the type-producing ones (`__underlying_type`,
+    `__type_pack_element`) to a type token. Build it table-driven (trait→evaluator) so
+    adding intrinsics is incremental; gate fulltest + torture + SMAUG. This is THE
+    `<type_traits>` conformance milestone (most remaining real-header failures are
+    missing macros/builtins, not parser bugs).
+  - **Step 1 (madc-owned freestanding dir from c2mir's `mirc_*`)** + retire the library
+    stubs — larger, do after Step 5 lands enough for `<type_traits>` to parse.
+  - **Parallel parser track (not part of #2):** the new `<string_view>` blocker
+    ("Expecting type in class definition" inside `basic_string_view<char>`) — bisect
+    via -E.
 - **(header-partition, the master plan)** Step 0 add `__madc__`; Step 1 stand up a
   madc-owned freestanding dir from c2mir's `mirc_*` (search-first + `#include_next`
   chaining), NOT gcc's `$OWN` dir; Step 2 close `madc -dM` vs `gcc -dM` gaps;
