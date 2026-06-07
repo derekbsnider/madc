@@ -1,5 +1,80 @@
 # REHYDRATION HANDOFF — real-header track + struct/class unification directive
 
+## ★ FULL HANDOFF (READ FIRST) — 2026-06-07, compaction checkpoint ★
+
+**Branch** `feature/realhdr-parse-gaps2-claude` (off `develop`, **local only, NOT
+pushed**; `develop` untouched). **HEAD `e63e639`**, working tree **clean**.
+**fulltest baseline 528 / 4 / 0 / 26** — the 4 reds are PRE-EXISTING/unrelated
+(`testdefer`, `testfstream`, `testlargesizeofquery`, `testloop`). Do NOT push;
+do NOT promote develop→master (parity gate).
+
+**Mission:** make madc parse REAL system C++/libc headers (toward C23/C++23),
+through the one `cir_node`/MC11-IR → c2mir → MIR backend. Immediate goal: the
+**string / iostream / sstream / fstream** family.
+
+**THE BIG FINDING:** madc's embedded stub headers in `include/madc/`
+(string/vector/map/set/algorithm/streams) **shadow the real system headers** (the
+`#include <...>` path checks embedded before the filesystem) and break their
+include chains — they are an ACTIVE blocker, strongly motivating the
+retire-std-hardcoding campaign. New diagnostic **`--no-embedded-headers`**
+(commit `f71a472`, reuses the existing `registration_policy`/
+`is_embedded_header_allowed()` gate; a disallowed embedded header falls through
+to the real filesystem header) makes madc use real headers so the track can
+proceed.
+
+**This session's commits (all gated: fulltest 528/4/0/26 · gcc.c-torture failset
+IDENTICAL 88, 0 regr · SMAUG boots clean):**
+- `d1f28f4` nested method-bearing struct + trailing declarator (STRUCT body)
+- `97eeeeb` …same (CLASS body)  · `840eb38` restore nested fwd-decl regressed by 97eeeeb
+- `fcca0a3` `-E` char-literal reconstruction (instrument fix)
+- `1f8e3fd` **`madc -E`** (preprocess-only) + `docs/plans/2026-06-07-parser-pp-architecture-research.md`
+- `2e853de` `decltype(<)` in trailing return (was consumed to EOF)
+- `f71a472` `--no-embedded-headers` · `1cc70f0` recursive-macro loop (`#define A A`)
+- `a2f387c` macro-expansion depth-guard backstop
+- `be5a08f` multi-line `/* */` comment on a directive line
+- `de24e23` `#` stringize of an empty macro arg → `""`
+
+**METHODOLOGY (proven this session):** `-E` bisection — `bin/madc --std=c++17
+[--no-embedded-headers] -E probe.mad > pp.cpp` then `bin/madc --std=c++17
+--emit=c11 pp.cpp` gives the REAL derail line (the live-include path reports bogus
+`.mad` coords). Reduce to a one-liner → confirm gcc AND clang accept it → fix the
+DEEPEST layer (reuse existing lexer/parser machinery, don't reimplement) → re-gate
+(fulltest + torture failset-diff + SMAUG soak). USER PRINCIPLES re-affirmed:
+reuse existing mechanisms FIRST; the parser already knows comments/etc. — route
+through it; get the parser working now, optimize later.
+
+**REAL-HEADER FRONTIER (with `--no-embedded-headers`):** `type_traits`/`utility`
+parse fully. The streams + string advanced through six root causes —
+decltype-`<` → stub-shadowing → recursive-macro-loop → multi-line-comment →
+`__need_XXX`/asm-label(empty-arg `#`) → **NOW: template instantiation**.
+
+**NEXT TARGET (deeper area — fresh start):** all 4 streams + `string` derail
+instantiating `basic_string_view<char>` → `parser.cpp:2644` "Expecting a type
+argument to **iterator**<>". `basic_string_view` has `using iterator =
+const_iterator;` (a member TYPE ALIAS, not a template); madc's template-id parser
+(it assumes `identifier <` = template-id and demands type args) misparses a
+bareword `iterator <…>`. Standalone `iterator<tag,char>` and `S<wchar_t>` parse
+fine → specific to the real instantiation = **template-id-vs-type-alias
+disambiguation / template-instantiation fidelity** (needs name-lookup before
+assuming `<` opens a template-id). See [[project_template_instantiation]]. A
+**clang-internals research agent** was launched on exactly this (how clang
+name-lookup-disambiguates `identifier <` and handles member type-aliases vs
+templates + parse-once/substitute instantiation) — fold its report into a
+research doc before coding the fix.
+
+**Verify on resume:** `git rev-parse --short HEAD` (e63e639) · `make -C src` (clean)
+· `make -C src fulltest` (528/4) · `bash scripts/probe_real_headers.sh` (§5 frontier)
+· torture diff vs parent for any parser/cir change · SMAUG soak
+(`cd /workspace/MadSMAUG && MADC=/workspace/madc/bin/madc MADC_CPU_LIMIT=0
+MADC_MEM_LIMIT=0 timeout 600 ./MadSMAUG.sh <port>` → "ready … port", 0 errors).
+Memory index: `project_parser_pp_architecture` (this track) +
+`project_struct_is_class`. Detailed per-fix history is in the UPDATE blocks below
+(NEWEST-4 … NEWEST).
+
+---
+
+# REHYDRATION HANDOFF — real-header track + struct/class unification directive
+
 Date: **2026-06-07** (late session). Branch **`feature/realhdr-parse-gaps2-claude`**
 (off `develop`, **local only, NOT pushed**). HEAD **`bb829ed`**. Working tree
 **clean**. `parser.cpp` = **24,383 lines**. fulltest baseline: **526 passed /
