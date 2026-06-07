@@ -1857,6 +1857,42 @@ static size_t operator_id_token_span(const Seq &toks, size_t i)
     return 2;       // operator + single symbol token (<, <<, <=, >, >>, …)
 }
 
+// Balanced-delimiter depth for token scans: (), [], {}, <>. The hand-rolled
+// "++paren … --angle … >>" if-else chain is copy-pasted across many scanners;
+// this is the single shared bookkeeping (operator-ids consumed opaquely, never
+// counted as a '<'). Callers layer their own logic (comma counts, terminators)
+// on top using `top()` / the individual depths.
+struct DelimDepth {
+    int paren = 0, square = 0, brace = 0, angle = 0;
+    bool top() const { return !paren && !square && !brace && !angle; }
+};
+// Update `d` for the token sequence at toks[i]; returns the number of tokens
+// consumed (1, or an operator-id's span). Index-based; templated for both
+// std::vector and the std::deque token queue.
+template<typename Seq>
+static size_t delim_scan_step(const Seq &toks, size_t i, DelimDepth &d)
+{
+    if ( size_t n = operator_id_token_span(toks, i) )
+	return n;
+    TokenBase *t = toks[i];
+    if ( !t )
+	return 1;
+    switch ( t->id() )
+    {
+	case TokenID::tkOpBrk: ++d.paren; break;
+	case TokenID::tkClBrk: if ( d.paren > 0 )  --d.paren;  break;
+	case TokenID::tkOpSqr: ++d.square; break;
+	case TokenID::tkClSqr: if ( d.square > 0 ) --d.square; break;
+	case TokenID::tkOpBrc: ++d.brace; break;
+	case TokenID::tkClBrc: if ( d.brace > 0 )  --d.brace;  break;
+	case TokenID::tkLT:    ++d.angle; break;
+	case TokenID::tkGT:    if ( d.angle > 0 )  --d.angle;  break;
+	case TokenID::tkBSR:   if ( d.angle > 0 )  d.angle = d.angle > 1 ? d.angle - 2 : 0; break;
+	default: break;
+    }
+    return 1;
+}
+
 static std::string template_token_fragment(TokenBase *tb)
 {
     if ( !tb )
@@ -8127,41 +8163,23 @@ static size_t count_queued_call_arguments(Program &pgm)
       && pgm.tokens[1]->id() == TokenID::tkClBrk )
 	return 0;
     size_t argc = 1;
-    int paren_depth = 0;
-    int square_depth = 0;
-    int brace_depth = 0;
-    int angle_depth = 0;
+    DelimDepth d;
     for ( size_t i = 0; i < pgm.tokens.size(); ++i )
     {
 	TokenBase *t = pgm.tokens[i];
 	if ( !t )
 	    continue;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk )
+	// top-level comma at the call's argument level → next argument
+	if ( t->id() == TokenID::tkComma
+	  && d.paren == 1 && d.square == 0 && d.brace == 0 && d.angle == 0 )
 	{
-	    --paren_depth;
-	    if ( paren_depth == 0 )
-		break;
-	}
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc )
-	    ++brace_depth;
-	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
-	    --brace_depth;
-	else if ( t->id() == TokenID::tkLT )
-	    ++angle_depth;
-	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
-	    --angle_depth;
-	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
-	    angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
-	else if ( t->id() == TokenID::tkComma
-	       && paren_depth == 1 && square_depth == 0
-	       && brace_depth == 0 && angle_depth == 0 )
 	    ++argc;
+	    continue;
+	}
+	bool close_paren = (t->id() == TokenID::tkClBrk);
+	i += delim_scan_step(pgm.tokens, i, d) - 1;
+	if ( close_paren && d.paren == 0 )
+	    break;
     }
     return argc;
 }
@@ -19157,10 +19175,7 @@ static bool split_upcoming_function_params(Program &pgm,
 					   std::vector<std::vector<TokenBase *> > &params)
 {
     std::vector<TokenBase *> current;
-    int paren_depth = 0;
-    int square_depth = 0;
-    int angle_depth = 0;
-    int brace_depth = 0;
+    DelimDepth d;
     bool saw_any = false;
 
     for ( size_t i = 0; i < pgm.tokens.size(); ++i )
@@ -19168,8 +19183,7 @@ static bool split_upcoming_function_params(Program &pgm,
 	TokenBase *t = pgm.tokens[i];
 	if ( !t )
 	    continue;
-	if ( paren_depth == 0 && square_depth == 0
-	  && angle_depth == 0 && brace_depth == 0 )
+	if ( d.top() )
 	{
 	    if ( t->id() == TokenID::tkClBrk )
 	    {
@@ -19186,26 +19200,13 @@ static bool split_upcoming_function_params(Program &pgm,
 	    }
 	}
 
-	current.push_back(t);
+	// collect the token(s) — a full operator-id (operator<, …) counts as one
+	size_t n = delim_scan_step(pgm.tokens, i, d);
+	for ( size_t k = 0; k < n && i + k < pgm.tokens.size(); ++k )
+	    if ( pgm.tokens[i + k] )
+		current.push_back(pgm.tokens[i + k]);
 	saw_any = true;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc )
-	    ++brace_depth;
-	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
-	    --brace_depth;
-	else if ( t->id() == TokenID::tkLT )
-	    ++angle_depth;
-	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
-	    --angle_depth;
-	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
-	    angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
+	i += n - 1;
     }
     return false;
 }
