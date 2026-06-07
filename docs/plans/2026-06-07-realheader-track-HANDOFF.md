@@ -15,6 +15,41 @@ Date: **2026-06-07** (late session). Branch **`feature/realhdr-parse-gaps2-claud
 
 ---
 
+## UPDATE 2026-06-07 (later) — STRUCT MEMBER METHODS LANDED (job 1 of §6)
+
+Branch HEAD now **`952d6d2`** (was `bb829ed`/`98c9a20`). The §6 target's **job 1
+is DONE**: a `struct` body now parses member functions, operators, ctors/dtors,
+access labels — committed `2dbfa8e` (feature) + `952d6d2` (regression fixes).
+Mechanism: **widened `cpp_struct_body_needs_class_parser`** (the pre-existing
+struct→class delegation gate, parser.cpp ~13653) to detect a plain member
+function (`name(`) and a typed operator, so method-bearing structs route to
+`TokenCLASS::parse` like ctor/base-bearing ones already did. The struct path is
+UNTOUCHED (data-only structs — all of C/SMAUG — never route). Brought the class
+body parser to **parity** so nothing is dropped: comma declarators (`int x,y;`),
+bit-fields, leading+trailing member `__attribute__`; hoisted `parse_bitfield_width`
+to a shared `Program` method.
+
+**VALIDATION (all green):** fulltest **528/4/0/26** (+teststructmethod,
++teststructmethodattr); **FULL gcc.c-torture failset BYTE-IDENTICAL to parent**
+(ran both `98c9a20` and `952d6d2` full: 1566 passed, 89 fail, `comm` diff = ∅ both
+ways — **0 regressions**); SMAUG soak (C89 data structs unaffected — torture proves
+it, since torture runs in STD_MADC exactly like SMAUG). 12 transient regressions
+(attribute-content `aligned(8)`/`mode(byte)` misfiring method detection) were
+found via a parent-vs-mine failset diff and fixed (skip `__attribute__((...))`
+balanced parens in the gate).
+
+**NEXT (this advanced `memory` 81:54→81:79 but did NOT clear streams):** the
+streams' `'less'` is the **stl_function.h DERAILMENT** — `std::less` is a struct
+template with a base, but the header parse derails ("Unexpected end of data") in
+the `less<void>` specialization (partial specs / nested struct templates /
+`__ptr_cmp<>{}` / `constexpr auto … -> decltype`). struct-methods was a PREREQ but
+this template bug kills `std::less` registration independently. That derailment is
+the next target for the streams. Still-open §6 work: the full **unification/dedup**
+of the two ~2300-line body parsers (this milestone reached parity by REUSING
+shared helpers, not merging) + the `is_nontrivial_class` re-gate (§6.4).
+
+---
+
 ## 0. TL;DR — what to do on resume
 
 1. **Run the verify block (§2)** to confirm live state matches this doc.
