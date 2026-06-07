@@ -11099,17 +11099,21 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
     return done ? ExprStep::Done : ExprStep::Break;
 }
 
-TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
-				    bool stop_on_closing_paren, int initial_brackets,
-				    bool push_back_comma)
+// ttMultiOp/ttOperator switch-arm of parseExpression (see madc.h for the
+// ExprStep contract). Operator handling: precedence-climbing shunting-yard
+// pushes/pops, unary vs binary disambiguation, parentheses/subscript,
+// ternary, casts, the comma operator, etc. Mutates `brackets` (by ref);
+// arm-level break -> Break, `done = true` -> Done, the one arm-level
+// continue -> Continue.
+Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
+		 std::stack<TokenBase *> &exStack, std::stack<TokenBase *> &opStack,
+		 int &brackets, TokenCpnd *code, bool conditional, bool ternary_branch,
+		 bool stop_on_closing_paren, int initial_brackets, bool push_back_comma,
+		 TokenBase *&result)
 {
-    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
-    TokenOperator *to;
-    stack<TokenBase *> exStack;
-    stack<TokenBase *> opStack;
-    Variable *var;
+    TokenOperator *to = NULL;
+    Variable *var = NULL;
     bool done = false;
-    int brackets = initial_brackets;
     auto awaiting_prefix_step_operand = [&]() -> bool
     {
 	return exStack.empty()
@@ -11117,30 +11121,6 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	    && (opStack.top()->id() == TokenID::tkInc
 	     || opStack.top()->id() == TokenID::tkDec);
     };
-
-    DBG(std::cout << tb->line << ':' << tb->column << ":Program::parseExpression(" << tb->get() << " type: " << (int)tb->type() << ") start" << (conditional ? " conditional" : "") << std::endl);
-
-    while ( !done && tb )
-    {
-	redo_expression_token:
-	switch(tb->type())
-	{
-	    case TokenType::ttInteger:
-	        DBG(cout << "Pushing integer: " << (int)tb->get() << " onto exStack" << endl);
-		exStack.push(tb); // exStack.push(tb->clone());
-		break;
-	    case TokenType::ttReal:
-	        DBG(cout << "Pushing number: " << ((TokenReal *)tb)->dval() << " onto exStack" << endl);
-		exStack.push(tb);
-		break;
-	    case TokenType::ttSymbol:
-		{
-		    ExprStep step = parseExpr_symbolArm(tb, exStack, opStack, brackets, push_back_comma);
-		    if ( step == ExprStep::Done ) done = true;
-		}
-		break;
-	    case TokenType::ttMultiOp:
-	    case TokenType::ttOperator:
 		if ( tb->id() == TokenID::tkComma )
 		{
 		    // C comma operator inside parenthesized expression
@@ -11153,12 +11133,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			comma->left = NULL;
 			comma->right = NULL;
 			opStack.push(comma);
-			break;
+			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    DBG(cout << "parseExpression: found comma" << endl);
 		    if ( push_back_comma ) pushToken(tb);
 		    done = true;
-		    break;
+		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// subscript: var[index] or lambda: [](params) { body }
 		if ( tb->id() == TokenID::tkOpSqr )
@@ -11183,7 +11163,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
 				Throw(tb) << "Expected ] in subscript expression" << flush;
 			    tsub->extra_indices.push_back(idx);
-			    break;
+			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 		    }
 		    // if top of exStack is a variable, treat [ as subscript operator
@@ -11211,11 +11191,11 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    DBG(cout << "parseExpression: swapped subscript "
 				     << tv->var.name << "[ptr]" << endl);
 			    exStack.push(new TokenSubscriptExpr(idx, new TokenVar(tv->var), elem_type));
-			    break;
+			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			DBG(cout << "parseExpression: subscript on " << tv->var.name << endl);
 			exStack.push(new TokenSubscript(tv->var, idx));
-			break;
+			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    // Widened detection: complex value-producing expressions
 		    // whose datadef() reports a pointer (TokenAdd / TokenSub /
@@ -11332,7 +11312,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			}
 			DBG(cout << "parseExpression: subscript on expression base" << endl);
 			exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
-			break;
+			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    // General fallback: any expression with a pointer datadef
 		    // can be subscripted — covers ternary results, function
@@ -11366,7 +11346,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    }
 			    DBG(cout << "parseExpression: subscript on generic expression" << endl);
 			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
-			    break;
+			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			if ( DataDef *elem_type = dependent_deref_result_type(*this, dd) )
 			{
@@ -11378,13 +11358,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				Throw(tb) << "Expected ] in subscript expression" << flush;
 			    DBG(cout << "parseExpression: subscript on dependent expression" << endl);
 			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
-			    break;
+			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 		    }
 		    DBG(cout << "parseExpression: detected [ — parsing lambda" << endl);
 		    TokenBase *lambda = parseLambda();
 		    exStack.push(lambda);
-		    break;
+		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		if ( tb->id() == TokenID::tkOpBrk )
 		{
@@ -11404,8 +11384,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    Throw(close ? close : tb) << "Expected ')' after statement expression" << flush;
 			exStack.push(stmt_expr);
 			if ( stop_on_closing_paren && initial_brackets == 0 )
-			    return stmt_expr;
-			break;
+			    { result = stmt_expr; return ExprStep::Return; }
+			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    // check for cast expression: (TYPE [*...]) expr
 		    TokenBase *peek1 = peekToken();
@@ -11720,7 +11700,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					    lit_expr = new TokenCast(ptr_dd, slit);
 					}
 					exStack.push(lit_expr);
-					break;
+					return done ? ExprStep::Done : ExprStep::Break;
 				    }
 			    TokenBase *cast_expr_tb = nextToken();
 			    // Null out _prv_token so unary operators at the head of
@@ -11834,8 +11814,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    // QUICKMATCH macro expansion regressed when this
 			    // returned early there.
 			    if ( stop_on_closing_paren && opStack.empty() && initial_brackets == 0 )
-				return exStack.top();
-			    break;
+				{ result = exStack.top(); return ExprStep::Return; }
+			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			// not a cast after all — fall through to grouping
 			// (this shouldn't happen in practice for valid C code)
@@ -11931,7 +11911,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    opStack.push(tc);
 			    if ( tb && tb->id() == TokenID::tkSemi )
 				done = true;
-			    break;
+			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 		    }
 		    if ( !exStack.empty()
@@ -11953,7 +11933,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			opStack.push(tc);
 			if ( tb && tb->id() == TokenID::tkSemi )
 			    done = true;
-			break;
+			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    // Direct invocation through a function-pointer value produced by
 		    // subscript syntax, e.g. `funcs[i](...)`, `tab[i].fn(...)`, or
@@ -11983,7 +11963,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			opStack.push(tc);
 			if ( tb && tb->id() == TokenID::tkSemi )
 			    done = true;
-			break;
+			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    // Direct invocation through a function-pointer variable wrapped
 		    // in parens: `(*flfunc)(args)` and `(flfunc)(args)`. After the
@@ -12011,7 +11991,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			opStack.push(tc);
 			if ( tb && tb->id() == TokenID::tkSemi )
 			    done = true;
-			break;
+			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    // Generic expression-as-function-pointer call:
 		    // `(c ? foo : bar)()`, `(expr)(args)` — when the
@@ -12079,20 +12059,20 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    opStack.push(tc);
 			    if ( tb && tb->id() == TokenID::tkSemi )
 				done = true;
-			    break;
+			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 		    }
 		    ++brackets;
 		    DBG(cout << "Got (, pushing onto opStack" << endl);
 		    opStack.push(tb); // opStack.push(tb->clone());
-		    break;
+		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// colon stops expression (ternary false branch, case label, range-for)
 		if ( tb->id() == TokenID::tkTerC && !brackets )
 		{
 		    pushToken(tb); // put : back for caller to consume
 		    done = true;
-		    break;
+		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		if ( tb->id() == TokenID::tkClBrk )
 		{
@@ -12100,7 +12080,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    {
 			DBG(cout << "Hit ), no prior brackets, might be end of function?" << endl);
 			done = true;
-			break;
+			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    --brackets;
 		    DBG(cout << "Got ), clearing opStack until (" << endl);
@@ -12151,10 +12131,11 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    while ( !opStack.empty() )
 				popOperator(opStack, exStack);
 			    DBG(std::cout << "Program::parseExpression() conditional end exStack:" << exStack.size() << std::endl);
-			    return exStack.empty() ? NULL : exStack.top();
+			    result = exStack.empty() ? NULL : exStack.top();
+			    return ExprStep::Return;
 			}
 		    }
-		    break;
+		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// ternary operator: condition ? true_expr : false_expr
 		if ( tb->id() == TokenID::tkTerQ )
@@ -12271,7 +12252,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // to continue to find the closing )
 		    if ( brackets == 0 )
 			done = true;
-		    break;
+		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// see if we need to convert TokenNeg to TokenSub (binary context)
 		if ( tb->id() == TokenID::tkNeg && isPostfixPosition() )
@@ -12297,12 +12278,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		     || _prv_token->id() == TokenID::tkOpBrk
 		     || _prv_token->id() == TokenID::tkOpSqr
 		     || _prv_token->id() == TokenID::tkSemi))) )
-		    break;
+		    return done ? ExprStep::Done : ExprStep::Break;
 		// & address-of in unary position
 		if ( tb->id() == TokenID::tkBand && (isUnaryPosition() || awaiting_prefix_step_operand()) )
 		{
 		    exStack.push(parseAddressOfExpression(tb));
-		    break;
+		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// GNU computed-goto label address: `&&label`
 		if ( tb->id() == TokenID::tkLand && (isUnaryPosition() || awaiting_prefix_step_operand()) )
@@ -12313,7 +12294,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    exStack.push(new TokenLabelAddr(
 			contextual_identifier_name(label_tb),
 			getPointerType(&ddVOID)));
-		    break;
+		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 			// * dereference in unary position
 			if ( tb->id() == TokenID::tkMul && (isUnaryPosition() || awaiting_prefix_step_operand()) )
@@ -12373,12 +12354,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			if ( dynamic_cast<DataDefFPTR *>(dtype) != NULL )
 			{
 			    exStack.push(deref_expr);
-			    break;
+			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			if ( dtype->is_function() && dtype->is_numeric() )
 			{
 			    exStack.push(deref_expr);
-			    break;
+			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			if ( !dtype->is_pointer() )
 			{
@@ -12388,20 +12369,20 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    if ( tm_deref && tm_deref->is_fixed_array_member() )
 			    {
 				exStack.push(new TokenDerefExpr(deref_expr, dtype));
-				break;
+				return done ? ExprStep::Done : ExprStep::Break;
 			    }
 			    if ( TokenCallMethod *opcall =
 				    make_unary_object_operator_call(NULL,
 					deref_expr, "operator*") )
 			    {
 				exStack.push(opcall);
-				break;
+				return done ? ExprStep::Done : ExprStep::Break;
 			    }
 			    if ( DataDef *dep_base =
 				    dependent_deref_result_type(*this, dtype) )
 			    {
 				exStack.push(new TokenDerefExpr(deref_expr, dep_base));
-				break;
+				return done ? ExprStep::Done : ExprStep::Break;
 			    }
 			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 			}
@@ -12422,7 +12403,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    step->left = deref_expr;
 			    step->right = NULL;
 			    exStack.push(new TokenDerefExpr(step, base));
-			    break;
+			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			exStack.push(new TokenDerefExpr(deref_expr, base));
 			    }
@@ -12477,7 +12458,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 						if ( !base )
 						    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 						exStack.push(new TokenDerefExpr(tm, base));
-						break;
+						return done ? ExprStep::Done : ExprStep::Break;
 					    }
 					}
 				    }
@@ -12491,19 +12472,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    if ( dvar->type->is_function() && dvar->type->is_numeric() )
 				    {
 					exStack.push(new TokenVar(*dvar));
-					break;
+					return done ? ExprStep::Done : ExprStep::Break;
 				    }
 				    if ( dynamic_cast<DataDefFPTR *>(dvar->type) != NULL )
 				    {
 					exStack.push(new TokenVar(*dvar));
-					break;
+					return done ? ExprStep::Done : ExprStep::Break;
 				    }
 				    if ( TokenCallMethod *opcall =
 					    make_unary_object_operator_call(dvar, NULL,
 						"operator*") )
 				    {
 					exStack.push(opcall);
-					break;
+					return done ? ExprStep::Done : ExprStep::Break;
 				    }
 				    DataDef *base = deref_type_for_variable(dvar);
 				    if ( !base )
@@ -12729,7 +12710,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					if ( deref_call )
 					{
 					    exStack.push(deref_call);
-					    break;
+					    return done ? ExprStep::Done : ExprStep::Break;
 					}
 				    }
 				    if ( !id_var->type->is_pointer() )
@@ -12748,7 +12729,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    if ( !dtype || !dtype->is_pointer() )
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 				    exStack.push(deref_expr);
-				    break;
+				    return done ? ExprStep::Done : ExprStep::Break;
 				}
 				else if ( deref_tb->id() == TokenID::tkOpBrk )
 				{
@@ -12769,13 +12750,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 						    inner_expr, "operator*") )
 					{
 					    exStack.push(opcall);
-					    break;
+					    return done ? ExprStep::Done : ExprStep::Break;
 					}
 					if ( DataDef *dep_base =
 						dependent_deref_result_type(*this, inner_dtype) )
 					{
 					    exStack.push(new TokenDerefExpr(inner_expr, dep_base));
-					    break;
+					    return done ? ExprStep::Done : ExprStep::Break;
 					}
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 				    }
@@ -12796,7 +12777,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					step->left = inner_expr;
 					step->right = NULL;
 					exStack.push(new TokenDerefExpr(step, inner_base));
-					break;
+					return done ? ExprStep::Done : ExprStep::Break;
 				    }
 				    else
 					deref_expr = new TokenDerefExpr(inner_expr, inner_base);
@@ -12813,7 +12794,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				if ( dtype->is_function() && dtype->is_numeric() )
 				{
 				    exStack.push(deref_expr);
-				    break;
+				    return done ? ExprStep::Done : ExprStep::Break;
 				}
 				if ( !dtype->is_pointer() )
 				{
@@ -12822,7 +12803,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    if ( tm_d && tm_d->is_fixed_array_member() )
 				    {
 					exStack.push(new TokenDerefExpr(deref_expr, dtype));
-					break;
+					return done ? ExprStep::Done : ExprStep::Break;
 				    }
 				    // Multi-dim array subscripts decay to pointers:
 				    // *argv[i] where argv is char[N][M]
@@ -12830,7 +12811,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    if ( ts_d && ts_d->object.is_fixed_array() )
 				    {
 					exStack.push(new TokenDerefExpr(deref_expr, dtype));
-					break;
+					return done ? ExprStep::Done : ExprStep::Break;
 				    }
 				    // Also handle TokenSubscriptExpr from parsePostfixChain
 				    TokenSubscriptExpr *tse_d = dynamic_cast<TokenSubscriptExpr *>(deref_expr);
@@ -12840,7 +12821,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					if ( base_tv && base_tv->var.is_fixed_array() )
 					{
 					    exStack.push(new TokenDerefExpr(deref_expr, dtype));
-					    break;
+					    return done ? ExprStep::Done : ExprStep::Break;
 					}
 				    }
 				    if ( TokenCallMethod *opcall =
@@ -12848,13 +12829,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 						deref_expr, "operator*") )
 				    {
 					exStack.push(opcall);
-					break;
+					return done ? ExprStep::Done : ExprStep::Break;
 				    }
 				    if ( DataDef *dep_base =
 					    dependent_deref_result_type(*this, dtype) )
 				    {
 					exStack.push(new TokenDerefExpr(deref_expr, dep_base));
-					break;
+					return done ? ExprStep::Done : ExprStep::Break;
 				    }
 				    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 				}
@@ -12863,7 +12844,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				exStack.push(new TokenDerefExpr(deref_expr, base));
 				}
 			    }
-			    break;
+			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 		if ( tb->id() == TokenID::tkNS )
 		{
@@ -12932,7 +12913,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    }
 		    else
 			exStack.push(new TokenVar(*var));
-		    break;
+		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		if ( tb->id() == TokenID::tkDec || tb->id() == TokenID::tkInc )
 		{
@@ -12948,7 +12929,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    }
 		    else
 			opStack.push(to);
-		    break;
+		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		DBG(cout << "parseExpression: Got operator: " << (char)tb->get() << " id() " << (int)tb->id() << endl);
 		to = (TokenOperator *)tb; // ->clone();
@@ -12976,6 +12957,53 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		}
 		DBG(cout << "Pushing " << (char)tb->get() << " onto opStack" << endl);
 		opStack.push(to);
+		return done ? ExprStep::Done : ExprStep::Break;
+    return done ? ExprStep::Done : ExprStep::Break;
+}
+
+TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
+				    bool stop_on_closing_paren, int initial_brackets,
+				    bool push_back_comma)
+{
+    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+    stack<TokenBase *> exStack;
+    stack<TokenBase *> opStack;
+    Variable *var;
+    bool done = false;
+    int brackets = initial_brackets;
+
+    DBG(std::cout << tb->line << ':' << tb->column << ":Program::parseExpression(" << tb->get() << " type: " << (int)tb->type() << ") start" << (conditional ? " conditional" : "") << std::endl);
+
+    while ( !done && tb )
+    {
+	redo_expression_token:
+	switch(tb->type())
+	{
+	    case TokenType::ttInteger:
+	        DBG(cout << "Pushing integer: " << (int)tb->get() << " onto exStack" << endl);
+		exStack.push(tb); // exStack.push(tb->clone());
+		break;
+	    case TokenType::ttReal:
+	        DBG(cout << "Pushing number: " << ((TokenReal *)tb)->dval() << " onto exStack" << endl);
+		exStack.push(tb);
+		break;
+	    case TokenType::ttSymbol:
+		{
+		    ExprStep step = parseExpr_symbolArm(tb, exStack, opStack, brackets, push_back_comma);
+		    if ( step == ExprStep::Done ) done = true;
+		}
+		break;
+	    case TokenType::ttMultiOp:
+	    case TokenType::ttOperator:
+		{
+		    TokenBase *arm_result = NULL;
+		    ExprStep step = parseExpr_operatorArm(tb, exStack, opStack, brackets, code,
+				conditional, ternary_branch, stop_on_closing_paren, initial_brackets, push_back_comma,
+				arm_result);
+		    if ( step == ExprStep::Return ) return arm_result;
+		    if ( step == ExprStep::Continue ) continue;
+		    if ( step == ExprStep::Done ) done = true;
+		}
 		break;
             case TokenType::ttDataType:
 		    {

@@ -1530,7 +1530,7 @@ public:
     // redo_expression_token`), Done = terminate the expression (was
     // `done = true`). Lets the giant per-type arms move into named methods
     // while the loop keeps owning the stacks and the goto/continue.
-    enum class ExprStep { Break, Continue, Redo, Done };
+    enum class ExprStep { Break, Continue, Redo, Done, Return };
     // ttDataType switch-arm of parseExpression: a type name appearing in
     // expression context (member name after ./->, contextual identifier /
     // variable, functional-cast, ns-qualified callee, or an inline declaration).
@@ -1556,6 +1556,20 @@ public:
 				     std::stack<TokenBase *> &exStack,
 				     std::stack<TokenBase *> &opStack,
 				     TokenCpnd *code);
+    // ttMultiOp/ttOperator switch-arm of parseExpression: the operator
+    // shunting-yard core (precedence climbing, unary/binary disambiguation,
+    // parentheses/subscript/ternary/cast/comma). Mutates `brackets` (by ref)
+    // as it tracks paren depth.
+    // `result` carries the value for an ExprStep::Return exit (an early
+    // return from parseExpression that bypasses the operator-stack drain).
+    ExprStep parseExpr_operatorArm(TokenBase *&tb,
+				   std::stack<TokenBase *> &exStack,
+				   std::stack<TokenBase *> &opStack,
+				   int &brackets, TokenCpnd *code,
+				   bool conditional, bool ternary_branch,
+				   bool stop_on_closing_paren,
+				   int initial_brackets, bool push_back_comma,
+				   TokenBase *&result);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
