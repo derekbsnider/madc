@@ -55,12 +55,20 @@ const_iterator;` (a member TYPE ALIAS, not a template); madc's template-id parse
 (it assumes `identifier <` = template-id and demands type args) misparses a
 bareword `iterator <…>`. Standalone `iterator<tag,char>` and `S<wchar_t>` parse
 fine → specific to the real instantiation = **template-id-vs-type-alias
-disambiguation / template-instantiation fidelity** (needs name-lookup before
-assuming `<` opens a template-id). See [[project_template_instantiation]]. A
-**clang-internals research agent** was launched on exactly this (how clang
-name-lookup-disambiguates `identifier <` and handles member type-aliases vs
-templates + parse-once/substitute instantiation) — fold its report into a
-research doc before coding the fix.
+disambiguation** (needs name-lookup before assuming `<` opens a template-id).
+**RESEARCH DONE + BUG SITE VERIFIED — see `docs/plans/2026-06-07-template-id-disambiguation-research.md`.**
+Clang does name-lookup FIRST: `identifier <` is a template-id ONLY if the name
+resolves to a TEMPLATE (`isTemplateName`/`getAsTemplateNameDecl` → non-null only
+for `isa<TemplateDecl>`); a typedef/alias → `annot_typename`, never the template
+path. **madc bug (VERIFIED): `parser.cpp:2935–2942`** in
+`resolve_declared_type_token` — an already-resolved type token (`ttDataType`)
+followed by `<` is re-dispatched to `instantiate_template_id(spelling)` →
+`find_template(spelling)` (flat spelling lookup), so a member alias `iterator`
+gets hijacked by the same-spelled `std::iterator` template. **Minimal fix:** don't
+template-instantiate an already-resolved `ttDataType` whose binding is a
+non-template alias; make `find_template` scope/binding-aware (spelling-only
+dispatch belongs only on the unresolved-identifier path ~2999). Reducer +
+fix detail in the research doc. Go test-gated.
 
 **Verify on resume:** `git rev-parse --short HEAD` (e63e639) · `make -C src` (clean)
 · `make -C src fulltest` (528/4) · `bash scripts/probe_real_headers.sh` (§5 frontier)
