@@ -1518,6 +1518,10 @@ public:
     int64_t parse_constant_lor();
     int64_t parse_constant_ternary();
     int64_t parse_constant_integer_expression();
+    // Parse a bit-field width `: N` (the ':' already consumed) for a member of
+    // integer type `member_dd`; `named` rejects a zero width; `target` supplies
+    // the storage-size rule. Shared by the struct and class body parsers.
+    size_t parse_bitfield_width(TokenBase *loc, DataDef *member_dd, bool named, DataDefSTRUCT &target);
     // Array-dimension classification: decide whether the upcoming `[ … ]`
     // dimension is a VLA (needs a runtime value) or a constant fold.
     // `bracket_dim_needs_runtime_value` is the entry; the other three are its

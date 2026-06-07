@@ -13650,6 +13650,22 @@ static TokenBase *next_significant_token(const std::deque<TokenBase *> &tokens,
     return NULL;
 }
 
+size_t Program::parse_bitfield_width(TokenBase *loc, DataDef *member_dd, bool named,
+				     DataDefSTRUCT &target)
+{
+    if ( !member_dd || member_dd->is_pointer() || !member_dd->is_integer() )
+	Throw(loc) << "Bit-field type must be an integer type" << flush;
+    int64_t width = parse_constant_integer_expression();
+    if ( width < 0 )
+	Throw(loc) << "Bit-field width must be non-negative" << flush;
+    if ( named && width == 0 )
+	Throw(loc) << "Named bit-field width must be positive" << flush;
+    size_t storage_bits = target.bitfield_storage_size(*member_dd) * 8;
+    if ( (size_t)width > storage_bits )
+	Throw(loc) << "Bit-field width exceeds storage type width" << flush;
+    return (size_t)width;
+}
+
 bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 					       TokenBase *after_tag)
 {
@@ -13661,7 +13677,9 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 	return false;
 
     int depth = 0;
+    int sqdepth = 0;             // '[' nesting at member level — array dimensions
     bool member_start = false;
+    bool member_seen_eq = false; // inside a default member initializer → ignore '('
     for ( size_t i = 0; i < tokens.size(); ++i )
     {
 	TokenBase *t = tokens[i];
@@ -13671,7 +13689,11 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 	{
 	    ++depth;
 	    if ( depth == 1 )
+	    {
 		member_start = true;
+		member_seen_eq = false;
+		sqdepth = 0;
+	    }
 	    continue;
 	}
 	if ( t->id() == TokenID::tkClBrc )
@@ -13687,11 +13709,54 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 	if ( t->id() == TokenID::tkSemi )
 	{
 	    member_start = true;
+	    member_seen_eq = false;
+	    sqdepth = 0;
 	    continue;
+	}
+	// Track array-dimension nesting so a call inside a dimension
+	// (`char a[sizeof(X) - offsetof(X, m)]`) is not mistaken for a method.
+	if ( t->id() == TokenID::tkOpSqr )
+	{
+	    ++sqdepth;
+	    continue;
+	}
+	if ( t->id() == TokenID::tkClSqr )
+	{
+	    if ( sqdepth > 0 )
+		--sqdepth;
+	    continue;
+	}
+	// A default member initializer (`int x = f();`) — past the '=' any
+	// identifier-then-'(' is a call in the initializer, NOT a method.
+	if ( t->id() == TokenID::tkAssign )
+	{
+	    member_seen_eq = true;
+	    member_start = false;
+	    continue;
+	}
+	// An operator-overload member (`operator()`, `bool operator<(...)`,
+	// `operator T()`) is class-only regardless of any leading return type,
+	// so it is detected anywhere in the member, not only at member start.
+	if ( t->id() == TokenID::tkOPEROVER )
+	    return true;
+	// A member function declaration: at class scope `name (` is always a
+	// function (a non-static data member initializer cannot use the paren
+	// form), so a member name immediately followed by '(' means the
+	// aggregate has methods and must take the class body parser. Detected
+	// regardless of position (the name follows the return type). Skipped
+	// inside an initializer (after '=') or an array dimension (`[...]`, which
+	// may contain `sizeof(...)`/`offsetof(...)`); function-pointer members
+	// `T (*fp)(...)` are safe because there the '(' follows a type then
+	// '*', not a bare name.
+	if ( !member_seen_eq && sqdepth == 0 && is_contextual_identifier_token(t) )
+	{
+	    TokenBase *next = next_significant_token(tokens, i + 1);
+	    if ( next && next->id() == TokenID::tkOpBrk )
+		return true;
 	}
 	if ( !member_start )
 	    continue;
-	if ( t->id() == TokenID::tkBnot || t->id() == TokenID::tkOPEROVER
+	if ( t->id() == TokenID::tkBnot
 	  || t->id() == TokenID::tkSTATIC || t->id() == TokenID::tkTEMPLATE
 	  || t->id() == TokenID::tkTYPEDEF || t->id() == TokenID::tkUSING )
 	    return true;
@@ -13701,12 +13766,6 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 	    if ( name == "explicit" || name == "virtual" || name == "friend"
 	      || name == "public" || name == "private" || name == "protected" )
 		return true;
-	    if ( name == tag_name )
-	    {
-		TokenBase *next = next_significant_token(tokens, i + 1);
-		if ( next && next->id() == TokenID::tkOpBrk )
-		    return true;
-	    }
 	}
 	member_start = false;
     }
@@ -14050,19 +14109,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	dds->tag_explicit_align = explicit_align;	// __attribute__((aligned(N))) on the tag
     DBG(cout << "TokenSTRUCT::parse() defining struct " << dds->name << endl);
 
+    // Thin forwarder to the shared Program::parse_bitfield_width (also used by
+    // the class body parser). Storage size is a pure function of the member
+    // type, so the outer `dds` is a valid `target` for nested members too.
     auto parse_bitfield_width = [&](TokenBase *loc, DataDef *member_dd, bool named) -> size_t
     {
-	if ( !member_dd || member_dd->is_pointer() || !member_dd->is_integer() )
-	    pgm.Throw(loc) << "Bit-field type must be an integer type" << flush;
-	int64_t width = pgm.parse_constant_integer_expression();
-	if ( width < 0 )
-	    pgm.Throw(loc) << "Bit-field width must be non-negative" << flush;
-	if ( named && width == 0 )
-	    pgm.Throw(loc) << "Named bit-field width must be positive" << flush;
-	size_t storage_bits = dds->bitfield_storage_size(*member_dd) * 8;
-	if ( (size_t)width > storage_bits )
-	    pgm.Throw(loc) << "Bit-field width exceeds storage type width" << flush;
-	return (size_t)width;
+	return pgm.parse_bitfield_width(loc, member_dd, named, *dds);
     };
 
     // Pre-register the tag (if any) before parsing the body so fields like
@@ -16312,6 +16364,43 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // data member
 	    if ( ret_is_ref )
 		pgm.Throw(tn) << "Reference data members (T&) are not supported" << flush;
+	    // Bit-field member: `unsigned flags : 3;`, comma-separated
+	    // `unsigned a : 3, b : 5;` (parity with TokenSTRUCT::parse; a
+	    // bit-field is never an array). The shared Program::parse_bitfield_width
+	    // validates the integer type and width.
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
+	    {
+		pgm.nextToken(); // consume ':'
+		size_t bf_width = pgm.parse_bitfield_width(tn, cmember_dd, true, *ddc);
+		ddc->addBitField(mname, *cmember_dd, bf_width);
+		if ( access_flags && !ddc->member_access.empty() )
+		    ddc->member_access.back() = access_flags;
+		tn = pgm.nextToken();
+		while ( tn && tn->id() == TokenID::tkComma )
+		{
+		    DataDef *bf_dd = &mtype->definition;
+		    TokenBase *bnm = pgm.nextToken();
+		    bool bf_unnamed = bnm && bnm->id() == TokenID::tkColon;
+		    std::string bf_name;
+		    if ( !bf_unnamed )
+		    {
+			if ( !bnm || bnm->type() != TokenType::ttIdentifier )
+			    pgm.Throw(bnm ? bnm : tn) << "Expecting member name in class definition" << flush;
+			bf_name = ((TokenIdent *)bnm)->str;
+			TokenBase *colon = pgm.nextToken();
+			if ( !colon || colon->id() != TokenID::tkColon )
+			    pgm.Throw(colon ? colon : bnm) << "Expecting ':' in bit-field declarator" << flush;
+		    }
+		    size_t w = pgm.parse_bitfield_width(tn, bf_dd, !bf_unnamed, *ddc);
+		    ddc->addBitField(bf_name, *bf_dd, w);
+		    if ( access_flags && !ddc->member_access.empty() )
+			ddc->member_access.back() = access_flags;
+		    tn = pgm.nextToken();
+		}
+		if ( !tn || tn->id() != TokenID::tkSemi )
+		    pgm.Throw(tn) << "Expecting ';' after class member" << flush;
+		continue;
+	    }
 	    // Optional fixed-size array dimensions: `long _buf[64];`, `int m[4][8];`.
 	    // (Constant dims only — a class data member is never a VLA.) Multiply the
 	    // dims into one inline element count (mirrors TokenSTRUCT::parse's member loop).
@@ -16386,7 +16475,57 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    DBG(cout << "TokenCLASS::parse() added member " << cmember_dd->name << ' ' << mname
 		<< " (count " << member_count << ", total " << ddc->size << ')' << endl);
 	    tn = pgm.nextToken();
-	    if ( tn->id() != TokenID::tkSemi )
+		// Additional declarators sharing the base type: `int x, y;`,
+		// `int *p, q;`, `char a[4], b;` — each re-derives pointer level
+		// and array dims from the base type `mtype` (mirrors
+		// TokenSTRUCT::parse's comma-separated member loop).
+		while ( tn && tn->id() == TokenID::tkComma )
+		{
+			DataDef *next_dd = &mtype->definition;
+			while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+			{
+				pgm.nextToken(); // consume '*'
+				next_dd = pgm.getPointerType(next_dd);
+				while ( pgm.peekToken()
+				     && (pgm.peekToken()->id() == TokenID::tkCONST
+				      || pgm.peekToken()->id() == TokenID::tkVOLATILE
+				      || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
+					pgm.nextToken();
+			}
+			TokenBase *nm = pgm.nextToken();
+			if ( !nm || nm->type() != TokenType::ttIdentifier )
+				pgm.Throw(nm ? nm : tn) << "Expecting member name in class definition" << flush;
+			std::string nmname = ((TokenIdent *)nm)->str;
+			size_t ncount = 1;
+			bool nis_array = false;
+			std::vector<uint32_t> ndims;
+			while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+			{
+				nis_array = true;
+				pgm.nextToken(); // consume '['
+				if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClSqr )
+				{
+					pgm.nextToken(); // consume ']' (unsized [])
+					ndims.push_back(0);
+					ncount = 0;
+					continue;
+				}
+				int64_t adim = pgm.parse_constant_integer_expression();
+				if ( adim < 0 )
+					pgm.Throw(nm) << "Class member array dimension must be non-negative" << flush;
+				TokenBase *acl = pgm.nextToken();
+				if ( !acl || acl->id() != TokenID::tkClSqr )
+					pgm.Throw(acl ? acl : nm) << "Expected ']' in class member array declarator" << flush;
+				ndims.push_back((uint32_t)adim);
+				ncount *= (size_t)adim;
+			}
+			ddc->addMember(nmname, *next_dd, ncount, NULL, nis_array,
+				nis_array ? &ndims : NULL);
+			if ( access_flags && !ddc->member_access.empty() )
+				ddc->member_access.back() = access_flags;
+			tn = pgm.nextToken();
+		}
+	    if ( !tn || tn->id() != TokenID::tkSemi )
 		pgm.Throw(tn) << "Expecting ';' after class member" << flush;
 	}
     }
