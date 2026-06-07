@@ -18622,60 +18622,29 @@ static DataDef *skipped_template_function_return_type(
 static size_t skipped_template_function_declarator_name_index(
 	const std::vector<TokenBase *> &tokens, std::string *name_out)
 {
-    int angle_depth = 0;
-    int paren_depth = 0;
-    int square_depth = 0;
-    int brace_depth = 0;
+    DelimDepth d;
     for ( size_t i = 0; i < tokens.size(); ++i )
     {
 	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
-	if ( size_t n = operator_id_token_span(tokens, i) )
+	// function declarator: a top-level '(' preceded by a name token marks
+	// the declarator name at i-1.
+	if ( t->id() == TokenID::tkOpBrk && d.top() && i > 0 )
 	{
-	    i += n - 1;
-	    continue;
-	}
-	if ( t->id() == TokenID::tkLT )
-	    ++angle_depth;
-	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
-	    --angle_depth;
-	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
-	{
-	    if ( angle_depth > 1 )
-		angle_depth -= 2;
-	    else
-		angle_depth = 0;
-	}
-	else if ( t->id() == TokenID::tkOpBrk )
-	{
-	    if ( angle_depth == 0 && paren_depth == 0
-	      && square_depth == 0 && brace_depth == 0 && i > 0 )
+	    TokenBase *name_tb = tokens[i - 1];
+	    if ( is_skipped_template_function_name(name_tb) )
 	    {
-		TokenBase *name_tb = tokens[i - 1];
-		if ( is_skipped_template_function_name(name_tb) )
+		std::string name = skipped_template_function_name(name_tb);
+		if ( !ignored_template_declarator_call_name(name) )
 		{
-		    std::string name = skipped_template_function_name(name_tb);
-		    if ( !ignored_template_declarator_call_name(name) )
-		    {
-			if ( name_out )
-			    *name_out = name;
-			return i - 1;
-		    }
+		    if ( name_out )
+			*name_out = name;
+		    return i - 1;
 		}
 	    }
-	    ++paren_depth;
 	}
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc )
-	    ++brace_depth;
-	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
-	    --brace_depth;
+	i += delim_scan_step(tokens, i, d) - 1;
     }
     return tokens.size();
 }
@@ -19213,45 +19182,18 @@ static bool split_upcoming_function_params(Program &pgm,
 
 static void trim_param_default(std::vector<TokenBase *> &param)
 {
-    int paren_depth = 0;
-    int square_depth = 0;
-    int angle_depth = 0;
-    int brace_depth = 0;
+    DelimDepth d;
     for ( size_t i = 0; i < param.size(); ++i )
     {
 	TokenBase *t = param[i];
 	if ( !t )
 	    continue;
-	if ( size_t n = operator_id_token_span(param, i) )
-	{
-	    i += n - 1;
-	    continue;
-	}
-	if ( paren_depth == 0 && square_depth == 0
-	  && angle_depth == 0 && brace_depth == 0
-	  && t->id() == TokenID::tkAssign )
+	if ( d.top() && t->id() == TokenID::tkAssign )
 	{
 	    param.resize(i);
 	    return;
 	}
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc )
-	    ++brace_depth;
-	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
-	    --brace_depth;
-	else if ( t->id() == TokenID::tkLT )
-	    ++angle_depth;
-	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
-	    --angle_depth;
-	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
-	    angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
+	i += delim_scan_step(param, i, d) - 1;
     }
 }
 
