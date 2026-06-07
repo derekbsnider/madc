@@ -1370,7 +1370,7 @@ static bool is_bool_literal_identifier(const std::string &name, bool &value)
     return false;
 }
 
-static DataDef *effective_pointer_type_for_member_access(Program &pgm, TokenBase *tb)
+DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
 {
     if ( !tb )
 	return NULL;
@@ -1381,29 +1381,29 @@ static DataDef *effective_pointer_type_for_member_access(Program &pgm, TokenBase
     if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
     {
 	DataDef *elem = add->element_type ? add->element_type : &ddINT64;
-	return pgm.getPointerType(elem);
+	return getPointerType(elem);
     }
 
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
     {
 	if ( tv->var.is_fixed_array() && tv->var.type )
-	    return pgm.getPointerType(tv->var.type);
+	    return getPointerType(tv->var.type);
     }
 
     if ( TokenMember *tm = dynamic_cast<TokenMember *>(tb) )
     {
 	if ( tm->is_fixed_array_member() && tm->var.type )
-	    return pgm.getPointerType(tm->var.type);
+	    return getPointerType(tm->var.type);
     }
 
     if ( TokenOperator *op = dynamic_cast<TokenOperator *>(tb) )
     {
 	if ( op->id() == TokenID::tkAdd || op->id() == TokenID::tkSub )
 	{
-	    DataDef *lptr = effective_pointer_type_for_member_access(pgm, op->left);
+	    DataDef *lptr = effective_pointer_type_for_member_access(op->left);
 	    if ( lptr )
 		return lptr;
-	    return effective_pointer_type_for_member_access(pgm, op->right);
+	    return effective_pointer_type_for_member_access(op->right);
 	}
     }
 
@@ -1432,14 +1432,14 @@ static DataDef *deref_type_for_variable(Variable *var)
     return NULL;
 }
 
-static TokenBase *skip_expression_whitespace(Program &pgm)
+TokenBase *Program::skip_expression_whitespace()
 {
-    while ( pgm.peekToken()
-	&& (pgm.peekToken()->type() == TokenType::ttSpace
-	  || pgm.peekToken()->type() == TokenType::ttTab
-	  || pgm.peekToken()->type() == TokenType::ttEOL) )
-	pgm.nextToken();
-    return pgm.peekToken();
+    while ( peekToken()
+	&& (peekToken()->type() == TokenType::ttSpace
+	  || peekToken()->type() == TokenType::ttTab
+	  || peekToken()->type() == TokenType::ttEOL) )
+	nextToken();
+    return peekToken();
 }
 
 static bool is_realpart_identifier(const std::string &name)
@@ -3104,82 +3104,81 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 // function/variable references (resolved earlier in parseExpression) are untouched.
 // Returns NULL when it is not a functional construction. General C++ feature; no
 // per-class machinery (works for any class, incl. header-defined std:: classes).
-static TokenObjTemp *try_parse_functional_ctor(Program &pgm, TokenBase *name_tb)
+TokenObjTemp *Program::try_parse_functional_ctor(TokenBase *name_tb)
 {
 	std::string name = contextual_identifier_name(name_tb);
 	if ( name.empty() )
 		return NULL;
 	DataDefCLASS *cdd = NULL;
-	if ( pgm.template_map.count(name)
-	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+	if ( template_map.count(name)
+	  && peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
 		// Template-id: instantiate (consumes `<...>`), then require '('.
-		if ( TokenDataType *inst = pgm.instantiate_template_use(name, name_tb) )
+		if ( TokenDataType *inst = instantiate_template_use(name, name_tb) )
 			cdd = dynamic_cast<DataDefCLASS *>(&inst->definition);
 	}
 	else
 	{
-		datatype_map_iter dmi = pgm.datatype_map.find(name);
-		if ( dmi != pgm.datatype_map.end() )
+		datatype_map_iter dmi = datatype_map.find(name);
+		if ( dmi != datatype_map.end() )
 			cdd = dynamic_cast<DataDefCLASS *>(&dmi->second->definition);
 		if ( !cdd )
 		{
-			datadef_map_iter sdmi = pgm.struct_map.find(name);
-			if ( sdmi != pgm.struct_map.end() )
+			datadef_map_iter sdmi = struct_map.find(name);
+			if ( sdmi != struct_map.end() )
 				cdd = dynamic_cast<DataDefCLASS *>(sdmi->second);
 		}
 	}
 	if ( !cdd )
 		return NULL;
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 		return NULL;   // a bare type-id, not a construction
-	pgm.nextToken(); // consume '('
+	nextToken(); // consume '('
 	TokenObjTemp *ot = new TokenObjTemp(cdd);
 	ot->file = name_tb->file; ot->line = name_tb->line; ot->column = name_tb->column;
-	while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkClBrk )
+	while ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
 	{
-		ot->ctor_args.push_back(pgm.parseExpression(pgm.nextToken(), true));
-		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
-			pgm.nextToken();
+		ot->ctor_args.push_back(parseExpression(nextToken(), true));
+		if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+			nextToken();
 	}
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
-		pgm.Throw(name_tb) << "Expected ')' after constructor arguments" << flush;
-	pgm.nextToken(); // consume ')'
+	if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
+		Throw(name_tb) << "Expected ')' after constructor arguments" << flush;
+	nextToken(); // consume ')'
 	return ot;
 }
 
-static TokenBase *parse_functional_type_expression(Program &pgm,
-						   TokenBase *type_tb,
+TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
 						   DataDef *type_dd)
 {
     if ( !type_tb || !type_dd )
 	return NULL;
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	return NULL;
 
-    pgm.nextToken(); // consume '('
+    nextToken(); // consume '('
     if ( DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(type_dd) )
     {
 	TokenObjTemp *ot = new TokenObjTemp(cdd);
 	ot->file = type_tb->file;
 	ot->line = type_tb->line;
 	ot->column = type_tb->column;
-	while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkClBrk )
+	while ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
 	{
-	    ot->ctor_args.push_back(pgm.parseExpression(pgm.nextToken(), true));
-	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
-		pgm.nextToken();
+	    ot->ctor_args.push_back(parseExpression(nextToken(), true));
+	    if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+		nextToken();
 	}
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
-	    pgm.Throw(type_tb) << "Expected ')' after constructor arguments" << flush;
-	pgm.nextToken(); // consume ')'
+	if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
+	    Throw(type_tb) << "Expected ')' after constructor arguments" << flush;
+	nextToken(); // consume ')'
 	return ot;
     }
 
     TokenBase *expr = NULL;
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
+    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
     {
-	pgm.nextToken(); // value-initialization: T()
+	nextToken(); // value-initialization: T()
 	if ( type_dd->is_pointer() )
 	{
 	    TokenNullptr *np = new TokenNullptr();
@@ -3201,13 +3200,13 @@ static TokenBase *parse_functional_type_expression(Program &pgm,
     }
     else
     {
-	TokenBase *expr_head = pgm.nextToken();
+	TokenBase *expr_head = nextToken();
 	if ( !expr_head )
-	    pgm.Throw(type_tb) << "Expecting expression in functional cast" << flush;
-	expr = pgm.parseExpression(expr_head, true, false, false, 0, true);
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
-	    pgm.Throw(type_tb) << "Expected ')' after functional cast expression" << flush;
-	pgm.nextToken(); // consume ')'
+	    Throw(type_tb) << "Expecting expression in functional cast" << flush;
+	expr = parseExpression(expr_head, true, false, false, 0, true);
+	if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
+	    Throw(type_tb) << "Expected ')' after functional cast expression" << flush;
+	nextToken(); // consume ')'
     }
 
     TokenCast *tc = new TokenCast(type_dd, expr);
@@ -3307,7 +3306,7 @@ static void strip_top_level_type_qualifiers(std::string &sig)
     }
 }
 
-static bool parse_builtin_types_compatible_operand(Program &pgm, TokenBase *type_tb,
+bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
 						   std::string &sig)
 {
     sig.clear();
@@ -3320,7 +3319,7 @@ static bool parse_builtin_types_compatible_operand(Program &pgm, TokenBase *type
 	if ( !leading_qualifiers.empty() )
 	    leading_qualifiers += ' ';
 	leading_qualifiers += ((TokenKeyword *)type_tb)->str;
-	type_tb = pgm.nextToken();
+	type_tb = nextToken();
 	if ( !type_tb )
 	    return false;
     }
@@ -3338,56 +3337,56 @@ static bool parse_builtin_types_compatible_operand(Program &pgm, TokenBase *type
 	std::string tname = ((TokenIdent *)type_tb)->str;
 	if ( is_typeof_identifier(tname) )
 	{
-	    if ( !skip_expression_whitespace(pgm) || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
 		return false;
-	    pgm.nextToken();
-	    TokenBase *inner_tb = pgm.nextToken();
+	    nextToken();
+	    TokenBase *inner_tb = nextToken();
 	    if ( !inner_tb )
 		return false;
 	    DataDef *inner_dd = NULL;
 	    if ( inner_tb->type() == TokenType::ttIdentifier )
 	    {
 		std::string inner_name = ((TokenIdent *)inner_tb)->str;
-		Variable *inner_var = pgm.findVariable(inner_name);
+		Variable *inner_var = findVariable(inner_name);
 		if ( inner_var )
 		    inner_dd = inner_var->type;
 		else
-		    inner_dd = pgm.resolve_named_datadef(inner_name);
+		    inner_dd = resolve_named_datadef(inner_name);
 	    }
 	    else if ( inner_tb->type() == TokenType::ttDataType )
 		inner_dd = &((TokenDataType *)inner_tb)->definition;
 	    else if ( inner_tb->type() == TokenType::ttKeyword
 		   && (inner_tb->id() == TokenID::tkSTRUCT || inner_tb->id() == TokenID::tkUNION) )
 	    {
-		TokenBase *tag_tb = pgm.nextToken();
+		TokenBase *tag_tb = nextToken();
 		if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
 		    return false;
-		inner_dd = pgm.resolve_named_datadef(contextual_identifier_name(tag_tb));
+		inner_dd = resolve_named_datadef(contextual_identifier_name(tag_tb));
 	    }
 	    if ( !inner_dd )
 	    {
-		TokenBase *expr = pgm.parseExpression(inner_tb, true, false, true, 1);
+		TokenBase *expr = parseExpression(inner_tb, true, false, true, 1);
 		inner_dd = expr ? expr->datadef() : NULL;
 	    }
 	    if ( !inner_dd )
 		return false;
-	    if ( skip_expression_whitespace(pgm) && pgm.peekToken()->id() == TokenID::tkClBrk )
-		pgm.nextToken();
-	    else if ( (!pgm.curToken() || pgm.curToken()->id() != TokenID::tkClBrk)
-	       && (!pgm.prevToken() || pgm.prevToken()->id() != TokenID::tkClBrk) )
+	    if ( skip_expression_whitespace() && peekToken()->id() == TokenID::tkClBrk )
+		nextToken();
+	    else if ( (!curToken() || curToken()->id() != TokenID::tkClBrk)
+	       && (!prevToken() || prevToken()->id() != TokenID::tkClBrk) )
 		return false;
 	    sig = canonical_builtin_simple_type_name(inner_dd);
 	}
 	else
 	{
-	    DataDef *dd = pgm.resolve_named_datadef(tname);
+	    DataDef *dd = resolve_named_datadef(tname);
 	    sig = canonical_builtin_simple_type_name(dd);
 	}
     }
     else if ( type_tb->type() == TokenType::ttKeyword
 	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
     {
-	TokenBase *tag_tb = pgm.nextToken();
+	TokenBase *tag_tb = nextToken();
 	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
 	    return false;
 	sig = (type_tb->id() == TokenID::tkSTRUCT ? "struct:" : "union:")
@@ -3395,7 +3394,7 @@ static bool parse_builtin_types_compatible_operand(Program &pgm, TokenBase *type
     }
     else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkENUM )
     {
-	TokenBase *tag_tb = pgm.nextToken();
+	TokenBase *tag_tb = nextToken();
 	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
 	    return false;
 	sig = "enum:" + contextual_identifier_name(tag_tb);
@@ -3409,21 +3408,21 @@ static bool parse_builtin_types_compatible_operand(Program &pgm, TokenBase *type
 	sig = leading_qualifiers + " " + sig;
 
     bool wrapped = false;
-    while ( pgm.peekToken() )
+    while ( peekToken() )
     {
-	skip_expression_whitespace(pgm);
-	if ( !pgm.peekToken() )
+	skip_expression_whitespace();
+	if ( !peekToken() )
 	    break;
-	if ( pgm.peekToken()->id() == TokenID::tkMul )
+	if ( peekToken()->id() == TokenID::tkMul )
 	{
-	    pgm.nextToken();
+	    nextToken();
 	    std::string ptr_qualifiers;
-	    skip_expression_whitespace(pgm);
-	    while ( pgm.peekToken() && is_type_qualifier_token(pgm.peekToken()) )
+	    skip_expression_whitespace();
+	    while ( peekToken() && is_type_qualifier_token(peekToken()) )
 	    {
 		if ( !ptr_qualifiers.empty() )
 		    ptr_qualifiers += ' ';
-		ptr_qualifiers += ((TokenKeyword *)pgm.nextToken())->str;
+		ptr_qualifiers += ((TokenKeyword *)nextToken())->str;
 	    }
 	    sig = ptr_qualifiers.empty()
 		? "ptr(" + sig + ")"
@@ -3431,13 +3430,13 @@ static bool parse_builtin_types_compatible_operand(Program &pgm, TokenBase *type
 	    wrapped = true;
 	    continue;
 	}
-	if ( pgm.peekToken()->id() == TokenID::tkOpSqr )
+	if ( peekToken()->id() == TokenID::tkOpSqr )
 	{
-	    pgm.nextToken();
+	    nextToken();
 	    int depth = 1;
 	    while ( depth > 0 )
 	    {
-		TokenBase *dim_tb = pgm.nextToken();
+		TokenBase *dim_tb = nextToken();
 		if ( !dim_tb )
 		    return false;
 		if ( dim_tb->id() == TokenID::tkOpSqr )
@@ -3457,14 +3456,14 @@ static bool parse_builtin_types_compatible_operand(Program &pgm, TokenBase *type
     return true;
 }
 
-static Variable *resolve_c_identifier(Program &pgm, TokenIdent *ident_tb, bool expression_head)
+Variable *Program::resolve_c_identifier(TokenIdent *ident_tb, bool expression_head)
 {
 	Variable *var = NULL;
 
-	if ( expression_head && !pgm.current_namespace.empty() )
+	if ( expression_head && !current_namespace.empty() )
 	{
-	    namespace_map_t::iterator nsi = pgm.namespace_map.find(pgm.current_namespace);
-	    if ( nsi != pgm.namespace_map.end() )
+	    namespace_map_t::iterator nsi = namespace_map.find(current_namespace);
+	    if ( nsi != namespace_map.end() )
 	    {
 		variable_map_iter vmi = nsi->second.find(ident_tb->str);
 		if ( vmi != nsi->second.end() )
@@ -3472,11 +3471,11 @@ static Variable *resolve_c_identifier(Program &pgm, TokenIdent *ident_tb, bool e
 	    }
 	}
 	if ( !var )
-	    var = pgm.findVariable(ident_tb->str);
-	if ( !var && !expression_head && !pgm.current_namespace.empty() )
+	    var = findVariable(ident_tb->str);
+	if ( !var && !expression_head && !current_namespace.empty() )
 	{
-	    namespace_map_t::iterator nsi = pgm.namespace_map.find(pgm.current_namespace);
-	    if ( nsi != pgm.namespace_map.end() )
+	    namespace_map_t::iterator nsi = namespace_map.find(current_namespace);
+	    if ( nsi != namespace_map.end() )
 	    {
 		variable_map_iter vmi = nsi->second.find(ident_tb->str);
 		if ( vmi != nsi->second.end() )
@@ -3516,8 +3515,7 @@ static void copy_token_location(TokenBase *dst, TokenBase *src)
     dst->column = src->column;
 }
 
-static TokenBase *make_expression_context_literal(Program &pgm,
-						  const madc::value &resolved,
+TokenBase *Program::make_expression_context_literal(const madc::value &resolved,
 						  TokenBase *src)
 {
     TokenBase *tb = NULL;
@@ -3536,7 +3534,7 @@ static TokenBase *make_expression_context_literal(Program &pgm,
 	case madc::value::kind::string:
 	{
 	    std::string literal = resolved.as_string();
-	    Variable *literal_var = pgm.addLiteral(literal);
+	    Variable *literal_var = addLiteral(literal);
 	    if ( !literal_var )
 		return NULL;
 	    tb = new TokenVar(*literal_var);
@@ -3550,7 +3548,7 @@ static TokenBase *make_expression_context_literal(Program &pgm,
     return tb;
 }
 
-static bool resolve_integer_constant(Program &pgm, TokenBase *tb, int64_t &out)
+bool Program::resolve_integer_constant(TokenBase *tb, int64_t &out)
 {
     if ( !tb )
 	return false;
@@ -3577,13 +3575,13 @@ static bool resolve_integer_constant(Program &pgm, TokenBase *tb, int64_t &out)
     // Scoped-enum constant in a constant expression: `Tag::Value` (e.g. a
     // `case Color::Green:` label). The enumerators live in the tag's
     // pseudo-namespace (see TokenENUM::parse), so resolve through it.
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	namespace_map_t::iterator nsi = pgm.namespace_map.find(name);
-	if ( nsi != pgm.namespace_map.end() )
+	namespace_map_t::iterator nsi = namespace_map.find(name);
+	if ( nsi != namespace_map.end() )
 	{
-	    pgm.nextToken(); // consume '::'
-	    TokenBase *member_tb = pgm.nextToken();
+	    nextToken(); // consume '::'
+	    TokenBase *member_tb = nextToken();
 	    if ( !member_tb || !is_contextual_identifier_token(member_tb) )
 		return false;
 	    std::string member = contextual_identifier_name(member_tb);
@@ -3594,7 +3592,7 @@ static bool resolve_integer_constant(Program &pgm, TokenBase *tb, int64_t &out)
 	}
 	return false;
     }
-    Variable *var = pgm.findVariable(name);
+    Variable *var = findVariable(name);
     return read_constant_integer(var, out);
 }
 
@@ -3672,9 +3670,9 @@ int64_t Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
     return apply_integer_cast_value(cast_dd, val, force_unsigned);
 }
 
-static bool is_shared_global_extern_reference(Program &pgm, TokenCpnd *code, Variable *var)
+bool Program::is_shared_global_extern_reference(TokenCpnd *code, Variable *var)
 {
-    return pgm.parsing_extern_decl
+    return parsing_extern_decl
 	&& code
 	&& var
 	&& var->is_global();
@@ -3682,17 +3680,17 @@ static bool is_shared_global_extern_reference(Program &pgm, TokenCpnd *code, Var
 
 static size_t query_fixed_array_sizeof_value(TokenVar *tv, bool want_alignof, bool deref);
 
-static TokenBase *parse_parenthesized_expression(Program &pgm, const char *context,
+TokenBase *Program::parse_parenthesized_expression(const char *context,
 						 bool stop_on_closing_paren)
 {
-    TokenBase *open = pgm.nextToken();
+    TokenBase *open = nextToken();
     if ( !open || open->id() != TokenID::tkOpBrk )
-	pgm.Throw(open) << "expecting ( after " << context << flush;
+	Throw(open) << "expecting ( after " << context << flush;
 
-    TokenBase *first = pgm.nextToken();
-    TokenBase *expr = pgm.parseExpression(first, true, false, stop_on_closing_paren, 1);
+    TokenBase *first = nextToken();
+    TokenBase *expr = parseExpression(first, true, false, stop_on_closing_paren, 1);
     if ( !expr )
-	pgm.Throw(first ? first : open) << "Failed to parse " << context << " expression" << flush;
+	Throw(first ? first : open) << "Failed to parse " << context << " expression" << flush;
 
     return expr;
 }
@@ -4350,7 +4348,7 @@ static void update_pointer_object_size_hints(TokenBase *expr)
     }
 }
 
-static TokenBase *materialize_runtime_struct_size_captures(Program &pgm, TokenCpnd *code,
+TokenBase *Program::materialize_runtime_struct_size_captures(TokenCpnd *code,
 							    DataDefSTRUCT *dds, TokenBase *loc)
 {
     if ( !code || !dds || !dds->has_runtime_size() )
@@ -4358,7 +4356,7 @@ static TokenBase *materialize_runtime_struct_size_captures(Program &pgm, TokenCp
 
     static int runtime_size_capture_counter = 0;
     std::string cap_name = "__vla_type_size_" + std::to_string(runtime_size_capture_counter++);
-    Variable *cap_var = pgm.addVariable(code, ddUINT64, cap_name, 1, NULL, false);
+    Variable *cap_var = addVariable(code, ddUINT64, cap_name, 1, NULL, false);
     TokenDecl *td = new TokenDecl(*cap_var);
     td->file = loc ? loc->file : NULL;
     td->line = loc ? loc->line : 0;
@@ -4375,8 +4373,6 @@ static TokenBase *materialize_runtime_struct_size_captures(Program &pgm, TokenCp
     dds->runtime_size_expr = new TokenVar(*cap_var);
     return td;
 }
-
-static void configure_nested_function_captures(Program &pgm, FuncDef *func);
 
 TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
 					       const std::string &op_name)
@@ -4693,7 +4689,7 @@ bool Program::try_parse_constant_offsetof_address(int64_t &out)
 
     TokenBase *zero_tb = nextToken();
     int64_t zero_value = 0;
-    if ( !resolve_integer_constant(*this, zero_tb, zero_value) || zero_value != 0 )
+    if ( !resolve_integer_constant(zero_tb, zero_value) || zero_value != 0 )
 	return fail();
     TokenBase *close_outer = nextToken();
     if ( !close_outer || close_outer->id() != TokenID::tkClBrk )
@@ -4754,7 +4750,7 @@ int64_t Program::parse_constant_primary()
     TokenBase *tb = nextToken();
     int64_t out = 0;
 
-    if ( resolve_integer_constant(*this, tb, out) )
+    if ( resolve_integer_constant(tb, out) )
 	return out;
     if ( tb && tb->type() == TokenType::ttIdentifier )
     {
@@ -5093,41 +5089,41 @@ bool Program::bracket_dim_needs_runtime_value(
     return !bracket_dim_constant_expression_parses();
 }
 
-static DataDef *parse_typedef_array_suffix(Program &pgm, DataDef *base_dd,
+DataDef *Program::parse_typedef_array_suffix(DataDef *base_dd,
 					   const std::string &alias_name,
 					   TokenBase *err_tok)
 {
     if ( !base_dd )
 	return base_dd;
-    if ( !(pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr) )
+    if ( !(peekToken() && peekToken()->id() == TokenID::tkOpSqr) )
 	return base_dd;
 
     size_t alias_count = 1;
     TokenBase *alias_count_expr = NULL;
-    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+    while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
     {
-	pgm.nextToken(); // consume '['
-	TokenBase *cl = pgm.nextToken();
+	nextToken(); // consume '['
+	TokenBase *cl = nextToken();
 	if ( cl && cl->id() == TokenID::tkClSqr )
 	{
 	    alias_count = 0;
 	    continue;
 	}
-	pgm.pushToken(cl);
-	if ( !alias_count_expr && pgm.bracket_dim_needs_runtime_value() )
+	pushToken(cl);
+	if ( !alias_count_expr && bracket_dim_needs_runtime_value() )
 	{
-	    alias_count_expr = pgm.parseExpression(pgm.nextToken(), true);
-	    cl = pgm.nextToken();
+	    alias_count_expr = parseExpression(nextToken(), true);
+	    cl = nextToken();
 	    if ( !cl || cl->id() != TokenID::tkClSqr )
-		pgm.Throw(cl ? cl : err_tok) << "Expected ] in typedef array declaration" << flush;
+		Throw(cl ? cl : err_tok) << "Expected ] in typedef array declaration" << flush;
 	    continue;
 	}
-	int64_t n = pgm.parse_constant_integer_expression();
+	int64_t n = parse_constant_integer_expression();
 	if ( n < 0 )
-	    pgm.Throw(err_tok) << "Typedef array dimension must be non-negative" << flush;
-	cl = pgm.nextToken();
+	    Throw(err_tok) << "Typedef array dimension must be non-negative" << flush;
+	cl = nextToken();
 	if ( !cl || cl->id() != TokenID::tkClSqr )
-	    pgm.Throw(cl ? cl : err_tok) << "Expected ] in typedef array declaration" << flush;
+	    Throw(cl ? cl : err_tok) << "Expected ] in typedef array declaration" << flush;
 	if ( n == 0 )
 	    alias_count = 0;
 	else
@@ -7503,14 +7499,14 @@ Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expre
     }
 
     if ( namespace_preference.empty() )
-	return resolve_c_identifier(*this, ident_tb, expression_head);
+	return resolve_c_identifier(ident_tb, expression_head);
 
     for ( size_t i = 0; i < namespace_preference.size(); ++i )
     {
 	const std::string &pref = namespace_preference[i];
 	if ( pref == "c" )
 	{
-	    Variable *var = resolve_c_identifier(*this, ident_tb, expression_head);
+	    Variable *var = resolve_c_identifier(ident_tb, expression_head);
 	    if ( var ) return var;
 	    continue;
 	}
@@ -7518,7 +7514,7 @@ Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expre
 	if ( var ) return var;
     }
 
-    return resolve_c_identifier(*this, ident_tb, expression_head);
+    return resolve_c_identifier(ident_tb, expression_head);
 }
 
 void Program::set_expression_context_root(const madc::value *root)
@@ -7592,7 +7588,7 @@ TokenBase *Program::resolve_expression_context_identifier(TokenIdent *ident_tb)
 	return obj;
     }
 
-    return make_expression_context_literal(*this, it->second, ident_tb);
+    return make_expression_context_literal(it->second, ident_tb);
 }
 
 TokenBase *Program::resolve_expression_context_member(TokenBase *lhs, TokenIdent *member_tb)
@@ -7618,7 +7614,7 @@ TokenBase *Program::resolve_expression_context_member(TokenBase *lhs, TokenIdent
 	return next;
     }
 
-    TokenBase *resolved = make_expression_context_literal(*this, it->second, member_tb);
+    TokenBase *resolved = make_expression_context_literal(it->second, member_tb);
     if ( !resolved )
 	Throw(member_tb) << "context path '" << obj->path << "." << member_tb->str
 			 << "' resolves to unsupported value kind '"
@@ -8426,11 +8422,11 @@ static bool is_named_cpp_cast(const std::string &name)
 TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
 				       const std::string &cast_name)
 {
-    skip_expression_whitespace(*this);
+    skip_expression_whitespace();
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 	Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
     nextToken();
-    skip_expression_whitespace(*this);
+    skip_expression_whitespace();
 
     TokenBase *type_tb = nextToken();
     while ( type_tb && (type_tb->id() == TokenID::tkCONST
@@ -8459,18 +8455,18 @@ TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
 	nextToken();
 	cast_dd = getPointerType(cast_dd);
     }
-    skip_expression_whitespace(*this);
+    skip_expression_whitespace();
     if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
 	Throw(cast_tb) << "Expecting '>' to close " << cast_name << "<...>" << flush;
     nextToken();
-    skip_expression_whitespace(*this);
+    skip_expression_whitespace();
     if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	Throw(cast_tb) << "Expecting '(' after " << cast_name << "<...>" << flush;
     nextToken();
 
     TokenBase *expr_head = nextToken();
     TokenBase *expr = parseExpression(expr_head, true, false, true, 1);
-    skip_expression_whitespace(*this);
+    skip_expression_whitespace();
     TokenBase *close_tb = NULL;
     if ( (curToken() && curToken()->id() == TokenID::tkClBrk)
       || (prevToken() && prevToken()->id() == TokenID::tkClBrk) )
@@ -8690,7 +8686,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
 		    fixed_array_arrow = tv->var.is_fixed_array();
 		if ( !fixed_array_arrow )
-		    obj_type = effective_pointer_type_for_member_access(*this, result);
+		    obj_type = effective_pointer_type_for_member_access(result);
 		if ( !fixed_array_arrow && (!obj_type || !obj_type->is_pointer()) )
 		    Throw(mtb) << "expression before '->' must be a pointer" << flush;
 		if ( !fixed_array_arrow )
@@ -8830,7 +8826,7 @@ TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 	TokenBase *inner_expr = parseExpression(inner_tb, true, false, true, 1);
 	if ( !inner_expr )
 	    Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
-	DataDef *dtype = effective_pointer_type_for_member_access(*this, inner_expr);
+	DataDef *dtype = effective_pointer_type_for_member_access(inner_expr);
 	if ( !dtype )
 	    dtype = inner_expr->datadef();
 	if ( !dtype || !dtype->is_pointer() )
@@ -8857,7 +8853,7 @@ TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 	       || peek->id() == TokenID::tkOpSqr) )
     {
 	pointer_expr = parsePostfixChain(deref_tb);
-	DataDef *dtype = effective_pointer_type_for_member_access(*this, pointer_expr);
+	DataDef *dtype = effective_pointer_type_for_member_access(pointer_expr);
 	if ( !dtype )
 	    dtype = pointer_expr ? pointer_expr->datadef() : NULL;
 	if ( !dtype )
@@ -8970,7 +8966,7 @@ TokenFunc *Program::build_expression_function(TokenProgram *tp,
     return tf;
 }
 
-static bool token_starts_type_name(Program &pgm, TokenBase *tb)
+bool Program::token_starts_type_name(TokenBase *tb)
 {
     if ( !tb )
 	return false;
@@ -8980,14 +8976,14 @@ static bool token_starts_type_name(Program &pgm, TokenBase *tb)
       || tb->id() == TokenID::tkENUM || tb->id() == TokenID::tkCONST )
 	return true;
     if ( tb->type() == TokenType::ttIdentifier )
-	return pgm.datatype_map.count(((TokenIdent *)tb)->str) != 0;
+	return datatype_map.count(((TokenIdent *)tb)->str) != 0;
     return false;
 }
 
-static bool next_parenthesized_type_is_compound_literal(Program &pgm)
+bool Program::next_parenthesized_type_is_compound_literal()
 {
     std::vector<TokenBase *> saved;
-    TokenBase *open = pgm.nextToken();
+    TokenBase *open = nextToken();
     if ( !open )
 	return false;
     saved.push_back(open);
@@ -8995,18 +8991,18 @@ static bool next_parenthesized_type_is_compound_literal(Program &pgm)
     {
 	for ( std::vector<TokenBase *>::reverse_iterator it = saved.rbegin();
 	      it != saved.rend(); ++it )
-	    pgm.pushToken(*it);
+	    pushToken(*it);
 	return false;
     }
 
-    TokenBase *head = pgm.nextToken();
+    TokenBase *head = nextToken();
     if ( head )
 	saved.push_back(head);
-    bool type_head = token_starts_type_name(pgm, head);
+    bool type_head = token_starts_type_name(head);
     int depth = 1;
     while ( type_head && depth > 0 )
     {
-	TokenBase *t = pgm.nextToken();
+	TokenBase *t = nextToken();
 	if ( !t )
 	    break;
 	saved.push_back(t);
@@ -9017,10 +9013,10 @@ static bool next_parenthesized_type_is_compound_literal(Program &pgm)
     }
 
     bool is_compound_literal = type_head && depth == 0
-	&& pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc;
+	&& peekToken() && peekToken()->id() == TokenID::tkOpBrc;
     for ( std::vector<TokenBase *>::reverse_iterator it = saved.rbegin();
 	  it != saved.rend(); ++it )
-	pgm.pushToken(*it);
+	pushToken(*it);
     return is_compound_literal;
 }
 
@@ -9045,7 +9041,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 {
     bool paren = false;
     if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
-      && next_parenthesized_type_is_compound_literal(*this) )
+      && next_parenthesized_type_is_compound_literal() )
     {
 	TokenBase *compound = parseExpression(nextToken(), true, false, false);
 	// `&(T){...}` is the address of the unnamed compound-literal object.
@@ -9521,8 +9517,7 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 	    return ExprStep::Break;
 	}
     }
-    if ( TokenBase *type_expr = parse_functional_type_expression(
-	    *this, tb, &bt->definition) )
+    if ( TokenBase *type_expr = parse_functional_type_expression(tb, &bt->definition) )
     {
 	exStack.push(type_expr);
 	return ExprStep::Break;
@@ -9677,14 +9672,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    resolve_declared_type_token(tb, false, true) )
 		    {
 			if ( TokenBase *type_expr =
-				parse_functional_type_expression(*this, tb,
+				parse_functional_type_expression(tb,
 				    &resolved_type->definition) )
 			{
 			    exStack.push(type_expr);
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 		    }
-		    if ( TokenObjTemp *ot = try_parse_functional_ctor(*this, tb) )
+		    if ( TokenObjTemp *ot = try_parse_functional_ctor(tb) )
 		    {
 			exStack.push(ot);
 			return done ? ExprStep::Done : ExprStep::Break;
@@ -9768,17 +9763,17 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// dynamic_cast < TYPE * > ( EXPR )   (S5c)
 		if ( ident_tb->str == "dynamic_cast" )
 		{
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 			Throw(tb) << "Expecting '<' after dynamic_cast" << flush;
 		    nextToken(); // consume '<'
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    TokenBase *type_tb = nextToken();
 		    TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true);
 		    if ( !tdt )
 			Throw(type_tb ? type_tb : tb) << "dynamic_cast target is not a type" << flush;
 		    DataDef *tgt = &tdt->definition;
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    bool is_ptr = false;
 		    if ( peekToken() && peekToken()->id() == TokenID::tkMul )
 		    { nextToken(); is_ptr = true; }
@@ -9786,17 +9781,17 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			   && (peekToken()->id() == TokenID::tkBand
 			    || peekToken()->id() == TokenID::tkLand) )
 			Throw(tb) << "dynamic_cast to a reference type is not yet supported (use the pointer form)" << flush;
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
 			Throw(tb) << "Expecting '>' to close dynamic_cast<...>" << flush;
 		    nextToken(); // consume '>'
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after dynamic_cast<...>" << flush;
 		    nextToken(); // consume '('
 		    TokenBase *inner_first = nextToken();
 		    TokenBase *inner = parseExpression(inner_first, false, false, false, 0, true);
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    TokenBase *close_tb = nextToken();
 		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
 			Throw(close_tb ? close_tb : tb) << "Expecting ')' to close dynamic_cast" << flush;
@@ -9812,11 +9807,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// typeid ( EXPR | TYPE )   (S5d)
 		if ( ident_tb->str == "typeid" )
 		{
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after typeid" << flush;
 		    nextToken(); // consume '('
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    TokenBase *first = nextToken();
 		    TokenTypeid *ttd = new TokenTypeid();
 		    // Type form iff the operand resolves to a type AND is immediately
@@ -9824,7 +9819,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // variable/expression (it checks findVariable), so typeid(obj) and
 		    // typeid(*p) fall to the expression form.
 		    TokenDataType *tdt = resolve_declared_type_token(first, false, true);
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    if ( tdt && peekToken() && peekToken()->id() == TokenID::tkClBrk )
 		    {
 			ttd->static_type = &tdt->definition;
@@ -9833,7 +9828,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    else
 		    {
 			ttd->operand = parseExpression(first, false, false, false, 0, true);
-			skip_expression_whitespace(*this);
+			skip_expression_whitespace();
 			TokenBase *close_tb = nextToken();
 			if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
 			    Throw(close_tb ? close_tb : tb) << "Expecting ')' after typeid(...)" << flush;
@@ -9874,24 +9869,24 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		}
 		if ( ident_tb->str == "__builtin_types_compatible_p" )
 		{
-		    if ( !skip_expression_whitespace(*this) || peekToken()->id() != TokenID::tkOpBrk )
+		    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after __builtin_types_compatible_p" << flush;
 		    nextToken();
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    TokenBase *lhs_tb = nextToken();
 		    std::string lhs_sig;
-		    if ( !parse_builtin_types_compatible_operand(*this, lhs_tb, lhs_sig) )
+		    if ( !parse_builtin_types_compatible_operand(lhs_tb, lhs_sig) )
 			Throw(lhs_tb ? lhs_tb : tb) << "Invalid first type in __builtin_types_compatible_p" << flush;
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    TokenBase *comma_tb = nextToken();
 		    if ( !comma_tb || comma_tb->id() != TokenID::tkComma )
 			Throw(comma_tb ? comma_tb : tb) << "Expecting ',' in __builtin_types_compatible_p" << flush;
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    TokenBase *rhs_tb = nextToken();
 		    std::string rhs_sig;
-		    if ( !parse_builtin_types_compatible_operand(*this, rhs_tb, rhs_sig) )
+		    if ( !parse_builtin_types_compatible_operand(rhs_tb, rhs_sig) )
 			Throw(rhs_tb ? rhs_tb : tb) << "Invalid second type in __builtin_types_compatible_p" << flush;
-		    skip_expression_whitespace(*this);
+		    skip_expression_whitespace();
 		    TokenBase *close_tb = nextToken();
 		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
 			Throw(close_tb ? close_tb : tb) << "Expecting ')' after __builtin_types_compatible_p" << flush;
@@ -10446,9 +10441,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			else
 			    Throw(tb) << "expression before '->' must be a pointer to struct" << flush;
 		    }
-		    else if ( effective_pointer_type_for_member_access(*this, lhs) )
+		    else if ( effective_pointer_type_for_member_access(lhs) )
 		    {
-			obj_type = effective_pointer_type_for_member_access(*this, lhs);
+			obj_type = effective_pointer_type_for_member_access(lhs);
 			obj_var = new Variable("__arrow_expr", *obj_type, 1, NULL, false);
 			expr_backed_lhs = true;
 		    }
@@ -10667,7 +10662,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			if ( TokenBase *type_expr =
-				parse_functional_type_expression(*this, member_tb,
+				parse_functional_type_expression(member_tb,
 				    member_dd) )
 			{
 			    exStack.push(type_expr);
@@ -10697,8 +10692,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    return done ? ExprStep::Done : ExprStep::Break;
 				}
 			    }
-			    if ( TokenBase *type_expr = parse_functional_type_expression(
-				    *this, member_tb, ns_member_dd) )
+			    if ( TokenBase *type_expr = parse_functional_type_expression(member_tb, ns_member_dd) )
 			    {
 				exStack.push(type_expr);
 				tb = member_tb;
@@ -10941,7 +10935,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // Functional construction `T(args)`: only when the unresolved
 		    // identifier names a class type followed by '(' (ordinary calls
 		    // resolved to `var` above). General; no per-class machinery.
-		    if ( TokenObjTemp *ot = try_parse_functional_ctor(*this, tb) )
+		    if ( TokenObjTemp *ot = try_parse_functional_ctor(tb) )
 		    {
 			exStack.push(ot);
 			return done ? ExprStep::Done : ExprStep::Break;
@@ -12312,7 +12306,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    if ( !close || close->id() != TokenID::tkClBrk )
 				Throw(close ? close : deref_tb) << "expected ')' after *(expr)" << flush;
 			}
-			DataDef *dtype = effective_pointer_type_for_member_access(*this, deref_expr);
+			DataDef *dtype = effective_pointer_type_for_member_access(deref_expr);
 			if ( !dtype )
 			    dtype = deref_expr->datadef();
 			if ( !dtype )
@@ -12533,7 +12527,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					// (skip the first star since TokenDeref already derefs once)
 					for ( size_t si = 1; si < stars.size(); ++si )
 					{
-					    DataDef *dtype = effective_pointer_type_for_member_access(*this, deref_expr);
+					    DataDef *dtype = effective_pointer_type_for_member_access(deref_expr);
 					    if ( !dtype )
 						dtype = deref_expr->datadef();
 					    if ( !dtype || !dtype->is_pointer() )
@@ -12550,7 +12544,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					TokenBase *close = nextToken();
 					if ( !close || close->id() != TokenID::tkClBrk )
 					    Throw(close ? close : inner_tb) << "expected ')' after *(expr)" << flush;
-					DataDef *inner_dtype = effective_pointer_type_for_member_access(*this, inner_expr);
+					DataDef *inner_dtype = effective_pointer_type_for_member_access(inner_expr);
 					if ( !inner_dtype )
 					    inner_dtype = inner_expr ? inner_expr->datadef() : NULL;
 					if ( !inner_dtype || !inner_dtype->is_pointer() )
@@ -12706,7 +12700,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					Throw(close ? close : deref_tb) << "expected ')' after *(expr)" << flush;
 				    if ( !inner_expr )
 					Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
-				    DataDef *inner_dtype = effective_pointer_type_for_member_access(*this, inner_expr);
+				    DataDef *inner_dtype = effective_pointer_type_for_member_access(inner_expr);
 				    if ( !inner_dtype )
 					inner_dtype = inner_expr->datadef();
 				    if ( !inner_dtype || !inner_dtype->is_pointer() )
@@ -12752,7 +12746,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    deref_expr = parseExpression(deref_tb, true);
 				if ( !deref_expr )
 				    Throw(deref_tb) << "expecting pointer expression after '*'" << flush;
-				DataDef *dtype = effective_pointer_type_for_member_access(*this, deref_expr);
+				DataDef *dtype = effective_pointer_type_for_member_access(deref_expr);
 				if ( !dtype )
 				    dtype = deref_expr->datadef();
 				if ( !dtype )
@@ -13110,32 +13104,31 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 // typedef struct tag alias;
 // typedef struct tag { type member; } alias;
 // typedef struct { type member; } alias;
-static void mirror_inline_namespace_into_parent(Program &pgm,
-						const std::string &parent_ns,
+void Program::mirror_inline_namespace_into_parent(const std::string &parent_ns,
 						const std::string &inline_ns)
 {
-    namespace_map_t::iterator child_vars = pgm.namespace_map.find(inline_ns);
-    if ( child_vars != pgm.namespace_map.end() )
+    namespace_map_t::iterator child_vars = namespace_map.find(inline_ns);
+    if ( child_vars != namespace_map.end() )
     {
 	if ( !parent_ns.empty() )
 	{
-	    variable_map_t &parent_vars = pgm.namespace_map[parent_ns];
+	    variable_map_t &parent_vars = namespace_map[parent_ns];
 	    for ( variable_map_iter it = child_vars->second.begin();
 		  it != child_vars->second.end(); ++it )
 		if ( parent_vars.find(it->first) == parent_vars.end() )
 		    parent_vars[it->first] = it->second;
 	}
-	else if ( pgm.tkProgram )
+	else if ( tkProgram )
 	{
 	    for ( variable_map_iter it = child_vars->second.begin();
 		  it != child_vars->second.end(); ++it )
 	    {
 		std::string name = it->first;
-		if ( pgm.findVariable(name) )
+		if ( findVariable(name) )
 		    continue;
 		Variable *src = it->second;
 		if ( src->name == name )
-		    pgm.tkProgram->variables.push_back(src);
+		    tkProgram->variables.push_back(src);
 		else
 		{
 		    Variable *alias = new Variable();
@@ -13146,19 +13139,19 @@ static void mirror_inline_namespace_into_parent(Program &pgm,
 		    alias->flags = src->flags;
 		    alias->storage_alias_name = src->storage_alias_name.empty()
 					      ? src->name : src->storage_alias_name;
-		    pgm.tkProgram->variables.push_back(alias);
+		    tkProgram->variables.push_back(alias);
 		}
 	    }
 	}
     }
 
     namespace_datatype_map_t::iterator child_types =
-	pgm.namespace_datatype_map.find(inline_ns);
-    if ( child_types == pgm.namespace_datatype_map.end() )
+	namespace_datatype_map.find(inline_ns);
+    if ( child_types == namespace_datatype_map.end() )
 	return;
     if ( !parent_ns.empty() )
     {
-	datatype_map_t &parent_types = pgm.namespace_datatype_map[parent_ns];
+	datatype_map_t &parent_types = namespace_datatype_map[parent_ns];
 	for ( datatype_map_iter it = child_types->second.begin();
 	      it != child_types->second.end(); ++it )
 	    if ( parent_types.find(it->first) == parent_types.end() )
@@ -13168,46 +13161,46 @@ static void mirror_inline_namespace_into_parent(Program &pgm,
     {
 	for ( datatype_map_iter it = child_types->second.begin();
 	      it != child_types->second.end(); ++it )
-	    if ( pgm.datatype_map.find(it->first) == pgm.datatype_map.end() )
-		pgm.datatype_map[it->first] = it->second;
+	    if ( datatype_map.find(it->first) == datatype_map.end() )
+		datatype_map[it->first] = it->second;
     }
 }
 
-static TokenBase *parse_namespace_block(Program &pgm, bool inline_namespace)
+TokenBase *Program::parse_namespace_block(bool inline_namespace)
 {
     DBG(std::cout << "TokenNAMESPACE::parse() top" << std::endl);
 
-    TokenBase *tn = pgm.nextToken();
+    TokenBase *tn = nextToken();
     if ( !tn || tn->type() != TokenType::ttIdentifier )
-	pgm.Throw(tn) << "Expecting namespace name after 'namespace'" << flush;
+	Throw(tn) << "Expecting namespace name after 'namespace'" << flush;
     std::string ns_name = ((TokenIdent *)tn)->str;
 
-    tn = pgm.nextToken();
+    tn = nextToken();
     if ( !tn || tn->id() != TokenID::tkOpBrc )
-	pgm.Throw(tn) << "Expecting '{' after namespace name" << flush;
+	Throw(tn) << "Expecting '{' after namespace name" << flush;
 
     // Nested namespaces concatenate (`namespace a { namespace b { ... } }`
     // → "a::b"); restore the outer namespace on exit.
-    std::string saved_namespace = pgm.current_namespace;
-    pgm.current_namespace = saved_namespace.empty()
+    std::string saved_namespace = current_namespace;
+    current_namespace = saved_namespace.empty()
 			  ? ns_name : (saved_namespace + "::" + ns_name);
-    pgm.namespace_map[pgm.current_namespace];
+    namespace_map[current_namespace];
 
-    while ( (tn = pgm.nextToken()) )
+    while ( (tn = nextToken()) )
     {
 	if ( tn->id() == TokenID::tkClBrc )
 	    break;
 	if ( tn->id() == TokenID::tkSemi )
 	    continue;
-	TokenBase *stmt = pgm.parseStatement(tn);
-	if ( stmt && pgm.tkProgram )
-	    pgm.tkProgram->statements.push_back((TokenStmt *)stmt);
+	TokenBase *stmt = parseStatement(tn);
+	if ( stmt && tkProgram )
+	    tkProgram->statements.push_back((TokenStmt *)stmt);
     }
 
     if ( inline_namespace )
-	mirror_inline_namespace_into_parent(pgm, saved_namespace,
-					    pgm.current_namespace);
-    pgm.current_namespace = saved_namespace;
+	mirror_inline_namespace_into_parent(saved_namespace,
+					    current_namespace);
+    current_namespace = saved_namespace;
     DBG(std::cout << "TokenNAMESPACE::parse() end of namespace '" << ns_name << "'" << std::endl);
     return NULL;
 }
@@ -13219,7 +13212,7 @@ static TokenBase *parse_namespace_block(Program &pgm, bool inline_namespace)
 // yield a node (e.g. a global initializer) are appended to the program.
 TokenBase *TokenNAMESPACE::parse(Program &pgm)
 {
-    return parse_namespace_block(pgm, false);
+    return pgm.parse_namespace_block(false);
 }
 
 // parse 'using' statement
@@ -13912,7 +13905,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    if ( !is_contextual_identifier_token(tn) )
 		pgm.Throw(tn) << "Expecting identifier after struct tag in typedef" << flush;
 	    std::string alias_name = contextual_identifier_name(tn);
-	    alias_dd = parse_typedef_array_suffix(pgm, alias_dd, alias_name, tn);
+	    alias_dd = pgm.parse_typedef_array_suffix(alias_dd, alias_name, tn);
 	    if ( (bmi=pgm.datatype_map.find(alias_name)) != pgm.datatype_map.end() )
 	    {
 		// C allows identical typedef redeclarations — silently accept
@@ -14742,7 +14735,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		if ( !tn || tn->type() != TokenType::ttIdentifier )
 		    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
 		TokenIdent *alias = (TokenIdent *)tn;
-		alias_dd = parse_typedef_array_suffix(pgm, alias_dd, alias->str, tn);
+		alias_dd = pgm.parse_typedef_array_suffix(alias_dd, alias->str, tn);
 		pgm.consume_typedef_gnu_attributes();
 		bmi = pgm.datatype_map.find(alias->str);
 	    if ( bmi != pgm.datatype_map.end() && pgm.compounds.empty()
@@ -14811,8 +14804,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     {
 	record_struct(dds, tag);
 	TokenBase *capture_stmt =
-	    materialize_runtime_struct_size_captures(pgm,
-		pgm.compounds.empty() ? NULL : pgm.compounds.top(), dds, tag ? (TokenBase *)tag : (TokenBase *)this);
+	    pgm.materialize_runtime_struct_size_captures(pgm.compounds.empty() ? NULL : pgm.compounds.top(), dds, tag ? (TokenBase *)tag : (TokenBase *)this);
 	pgm.nextToken(); // consume ';'
 	return capture_stmt;
     }
@@ -16465,7 +16457,7 @@ TokenBase *TokenIF::parse(Program &pgm)
     DBG(std::cout << std::endl << "TokenIF::parse()" << std::endl);
 
     DBG(cout << "TokenIF::parse() calling parse_parenthesized_expression()" << endl);
-    if ( !(condition = parse_parenthesized_expression(pgm, "if", true)) )
+    if ( !(condition = pgm.parse_parenthesized_expression("if", true)) )
 	pgm.Throw << "Failed to parse if expression" << flush;
 
     tn = pgm.nextToken();
@@ -16734,7 +16726,7 @@ TokenBase *TokenWHILE::parse(Program &pgm)
 
     DBG(std::cout << std::endl << "TokenWHILE::parse()" << std::endl);
     DBG(cout << "TokenWHILE::parse() calling parse_parenthesized_expression()" << endl);
-    condition = parse_parenthesized_expression(pgm, "while", true);
+    condition = pgm.parse_parenthesized_expression("while", true);
 
     tn = pgm.nextToken();
     DBG(cout << "TokenWHILE::parse() calling parseStatement(" << (char)tn->get() << ')' << endl);
@@ -16759,7 +16751,7 @@ TokenBase *TokenDO::parse(Program &pgm)
 	pgm.Throw(tn) << "Expecting while after do" << flush;
     }
     DBG(cout << "TokenDO::parse() calling parse_parenthesized_expression()" << endl);
-    condition = parse_parenthesized_expression(pgm, "do/while", true);
+    condition = pgm.parse_parenthesized_expression("do/while", true);
 
     return this;
 }
@@ -18053,7 +18045,7 @@ TokenBase *TokenDELETE::parse(Program &pgm)
 }
 
 // parse switch(expr) { case val: ...; break; default: ...; }
-static TokenCASE *parse_switch_label(Program &pgm, TokenSWITCH *sw, TokenBase *tn)
+TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn)
 {
     TokenCASE *target = NULL;
 
@@ -18063,8 +18055,8 @@ static TokenCASE *parse_switch_label(Program &pgm, TokenSWITCH *sw, TokenBase *t
 	tc->file = tn->file;
 	tc->line = tn->line;
 	tc->column = tn->column;
-	TokenBase *val_anchor = pgm.peekToken();
-	int64_t case_val = pgm.parse_constant_integer_expression();
+	TokenBase *val_anchor = peekToken();
+	int64_t case_val = parse_constant_integer_expression();
 	TokenInt *val_tok = new TokenInt(case_val);
 	// Widen to 64-bit type when the value exceeds 32-bit range.
 	uint64_t uval = (uint64_t)case_val;
@@ -18077,34 +18069,34 @@ static TokenCASE *parse_switch_label(Program &pgm, TokenSWITCH *sw, TokenBase *t
 	    val_tok->column = val_anchor->column;
 	}
 	tc->value = val_tok;
-	tn = pgm.nextToken();
+	tn = nextToken();
 	// GNU case range extension: case LOW ... HIGH:
 	if ( tn->id() == TokenID::tkDot )
 	{
-	    TokenBase *d2 = pgm.nextToken();
-	    TokenBase *d3 = pgm.nextToken();
+	    TokenBase *d2 = nextToken();
+	    TokenBase *d3 = nextToken();
 	    if ( !d2 || d2->id() != TokenID::tkDot
 	      || !d3 || d3->id() != TokenID::tkDot )
-		pgm.Throw(tn) << "Expecting '...' in case range" << flush;
-	    int64_t high_val = pgm.parse_constant_integer_expression();
+		Throw(tn) << "Expecting '...' in case range" << flush;
+	    int64_t high_val = parse_constant_integer_expression();
 	    tc->range_high = new TokenInt(high_val);
 	    uint64_t uhigh = (uint64_t)high_val;
 	    if ( uhigh > 0x7FFFFFFF )
 		tc->range_high->setDataType(high_val < 0 ? (DataDef *)&ddINT64 : (DataDef *)&ddUINT64);
-	    tn = pgm.nextToken();
+	    tn = nextToken();
 	}
 	if ( tn->id() != TokenID::tkTerC )
-	    pgm.Throw(tn) << "Expecting : after case value" << flush;
+	    Throw(tn) << "Expecting : after case value" << flush;
 	sw->cases.push_back(tc);
 	target = tc;
     }
     else
     {
-	tn = pgm.nextToken();
+	tn = nextToken();
 	if ( tn->id() != TokenID::tkTerC )
-	    pgm.Throw(tn) << "Expecting : after default" << flush;
+	    Throw(tn) << "Expecting : after default" << flush;
 	if ( sw->defaultcase )
-	    pgm.Throw(tn) << "duplicate default label in switch" << flush;
+	    Throw(tn) << "duplicate default label in switch" << flush;
 	sw->defaultcase = new TokenCASE();
 	sw->defaultcase->value = NULL;
 	sw->defaultcase->file = tn->file;
@@ -18114,18 +18106,18 @@ static TokenCASE *parse_switch_label(Program &pgm, TokenSWITCH *sw, TokenBase *t
 	target = sw->defaultcase;
     }
 
-    while ( pgm.peekToken()
-	 && pgm.peekToken()->id() != TokenID::tkCASE
-	 && pgm.peekToken()->id() != TokenID::tkDEFAULT
-	 && pgm.peekToken()->id() != TokenID::tkClBrc )
+    while ( peekToken()
+	 && peekToken()->id() != TokenID::tkCASE
+	 && peekToken()->id() != TokenID::tkDEFAULT
+	 && peekToken()->id() != TokenID::tkClBrc )
     {
-	TokenBase *stmt = pgm.parseStatement(pgm.nextToken());
+	TokenBase *stmt = parseStatement(nextToken());
 	if ( stmt )
 	    target->statements.push_back(stmt);
     }
 
-    if ( !pgm.switch_case_stack.empty() )
-	pgm.switch_case_stack.back() = target;
+    if ( !switch_case_stack.empty() )
+	switch_case_stack.back() = target;
 
     return target;
 }
@@ -18168,12 +18160,12 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 	    break;
 	if ( tn->id() == TokenID::tkCASE )
 	{
-	    parse_switch_label(pgm, this, tn);
+	    pgm.parse_switch_label(this, tn);
 	    continue;
 	}
 	else if ( tn->id() == TokenID::tkDEFAULT )
 	{
-	    parse_switch_label(pgm, this, tn);
+	    pgm.parse_switch_label(this, tn);
 	    continue;
 	}
 
@@ -19906,7 +19898,7 @@ TokenBase *Program::parseCompound()
 	if ( !switch_stack.empty()
 	  && (tb->id() == TokenID::tkCASE || tb->id() == TokenID::tkDEFAULT) )
 	{
-	    parse_switch_label(*this, switch_stack.back(), tb);
+	    parse_switch_label(switch_stack.back(), tb);
 	    continue;
 	}
 
@@ -19977,50 +19969,50 @@ bool Program::is_old_style_parameter_head(TokenBase *tb)
 	&& old_style_parameter_head_has_declaration_suffix();
 }
 
-static bool parse_array_designator_initializer(Program &pgm, TokenBase *&next_init,
+bool Program::parse_array_designator_initializer(TokenBase *&next_init,
 					       size_t &first_index, size_t &last_index)
 {
     if ( !next_init || next_init->id() != TokenID::tkOpSqr )
 	return false;
 
-    TokenBase *first_tok = pgm.nextToken();
+    TokenBase *first_tok = nextToken();
     if ( !first_tok )
-	pgm.Throw(next_init) << "Unexpected end of input in array designator" << flush;
-    pgm.pushToken(first_tok);
+	Throw(next_init) << "Unexpected end of input in array designator" << flush;
+    pushToken(first_tok);
 
-    int64_t first = pgm.parse_constant_integer_expression();
+    int64_t first = parse_constant_integer_expression();
     if ( first < 0 )
-	pgm.Throw(next_init) << "Array designator index must be non-negative" << flush;
+	Throw(next_init) << "Array designator index must be non-negative" << flush;
 
     int64_t last = first;
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkDot )
+    if ( peekToken() && peekToken()->id() == TokenID::tkDot )
     {
-	TokenBase *dot1 = pgm.nextToken();
-	TokenBase *dot2 = pgm.nextToken();
-	TokenBase *dot3 = pgm.nextToken();
+	TokenBase *dot1 = nextToken();
+	TokenBase *dot2 = nextToken();
+	TokenBase *dot3 = nextToken();
 	if ( !dot1 || !dot2 || !dot3
 	  || dot1->id() != TokenID::tkDot
 	  || dot2->id() != TokenID::tkDot
 	  || dot3->id() != TokenID::tkDot )
-	    pgm.Throw(dot1 ? dot1 : next_init) << "Expecting '...' in array designator range" << flush;
-	last = pgm.parse_constant_integer_expression();
+	    Throw(dot1 ? dot1 : next_init) << "Expecting '...' in array designator range" << flush;
+	last = parse_constant_integer_expression();
 	if ( last < first )
-	    pgm.Throw(next_init) << "Array designator range end precedes start" << flush;
+	    Throw(next_init) << "Array designator range end precedes start" << flush;
     }
 
-    TokenBase *close = pgm.nextToken();
+    TokenBase *close = nextToken();
     if ( !close || close->id() != TokenID::tkClSqr )
-	pgm.Throw(close ? close : next_init) << "Expecting ']' after array designator" << flush;
+	Throw(close ? close : next_init) << "Expecting ']' after array designator" << flush;
 
-    TokenBase *eq = pgm.nextToken();
+    TokenBase *eq = nextToken();
     if ( !eq || eq->id() != TokenID::tkAssign )
-	pgm.Throw(eq ? eq : close) << "Expecting '=' after array designator" << flush;
+	Throw(eq ? eq : close) << "Expecting '=' after array designator" << flush;
 
     first_index = (size_t)first;
     last_index = (size_t)last;
-    next_init = pgm.nextToken();
+    next_init = nextToken();
     if ( !next_init )
-	pgm.Throw(eq) << "Expected value after array designator" << flush;
+	Throw(eq) << "Expected value after array designator" << flush;
 
     return true;
 }
@@ -20222,23 +20214,22 @@ bool Program::scan_old_style_definition_suffix(
     return false;
 }
 
-static TokenBase *consume_balanced_parenthesized_suffix(Program &pgm,
-						       TokenBase *open)
+TokenBase *Program::consume_balanced_parenthesized_suffix(TokenBase *open)
 {
     if ( !open || open->id() != TokenID::tkOpBrk )
 	return open;
     int depth = 1;
     while ( depth > 0 )
     {
-	TokenBase *t = pgm.nextToken();
+	TokenBase *t = nextToken();
 	if ( !t )
-	    pgm.Throw(open) << "Unexpected end of input in parenthesized suffix" << flush;
+	    Throw(open) << "Unexpected end of input in parenthesized suffix" << flush;
 	if ( t->id() == TokenID::tkOpBrk )
 	    ++depth;
 	else if ( t->id() == TokenID::tkClBrk )
 	    --depth;
     }
-    return pgm.nextToken();
+    return nextToken();
 }
 
 // parse a function definition, can be a forward declaration, or function definition
@@ -20969,7 +20960,7 @@ paramdecl:
 	    TokenBase *open = nextToken();
 	    if ( !open || open->id() != TokenID::tkOpBrk )
 		Throw(q) << "Expecting '(' after throw in exception specification" << flush;
-	    nt = consume_balanced_parenthesized_suffix(*this, open);
+	    nt = consume_balanced_parenthesized_suffix(open);
 	    continue;
 	}
 	if ( q->type() == TokenType::ttIdentifier ) {
@@ -20977,7 +20968,7 @@ paramdecl:
 	    if ( qs == "noexcept" ) {
 		nt = nextToken();
 		if ( nt && nt->id() == TokenID::tkOpBrk )
-		    nt = consume_balanced_parenthesized_suffix(*this, nt);
+		    nt = consume_balanced_parenthesized_suffix(nt);
 		continue;
 	    }
 	    if ( qs == "override" || qs == "final" ) { nt = nextToken(); continue; }
@@ -21120,7 +21111,7 @@ paramdecl:
     // is not a valid Method object, so reusing it corrupts method->parameters.
     if ( is_nested_function )
     {
-	configure_nested_function_captures(*this, func);
+	configure_nested_function_captures(func);
 	// The nested fn is hoisted to the unique symbol `id`; every call site
 	// (which resolves the in-scope source-named alias below) must emit this
 	// hoisted name. The CIR builder reads it via FuncDef::nested_emit_name.
@@ -21552,7 +21543,7 @@ TokenBase *Program::parseLambda()
     return new TokenVar(*var);
 }
 
-static void configure_nested_function_captures(Program &pgm, FuncDef *func)
+void Program::configure_nested_function_captures(FuncDef *func)
 {
     if ( !func )
 	return;
@@ -21560,7 +21551,7 @@ static void configure_nested_function_captures(Program &pgm, FuncDef *func)
     func->has_captures = true;
     func->potential_captures.clear();
 
-    TokenCpnd *outer = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+    TokenCpnd *outer = compounds.empty() ? NULL : compounds.top();
     while ( outer )
     {
 	for ( auto *v : outer->variables )
@@ -21804,13 +21795,13 @@ static DataDef *peel_carray_dimensions(DataDef *base_type,
 // NOT consumed here. (A function PROTOTYPE `string f(int);` ends in `;`, which
 // is the most-vexing-parse case C++ also resolves as a declaration — out of
 // scope here; only the unambiguous `{`-body definition is detected.)
-static bool paren_group_is_function_def(Program &pgm)
+bool Program::paren_group_is_function_def()
 {
-    auto it = pgm.tokens.begin();
-    if ( it == pgm.tokens.end() || (*it)->id() != TokenID::tkOpBrk )
+    auto it = tokens.begin();
+    if ( it == tokens.end() || (*it)->id() != TokenID::tkOpBrk )
 	return false;
     int depth = 0;
-    for ( ; it != pgm.tokens.end(); ++it )
+    for ( ; it != tokens.end(); ++it )
     {
 	TokenID id = (*it)->id();
 	if ( id == TokenID::tkOpBrk ) { ++depth; continue; }
@@ -21819,7 +21810,7 @@ static bool paren_group_is_function_def(Program &pgm)
 	    if ( --depth == 0 )
 	    {
 		++it; // token after the matching ')'
-		return it != pgm.tokens.end()
+		return it != tokens.end()
 		    && (*it)->id() == TokenID::tkOpBrc;
 	    }
 	}
@@ -21827,21 +21818,21 @@ static bool paren_group_is_function_def(Program &pgm)
     return false;
 }
 
-static TokenBase *reference_bind_address_expr(Program &pgm, TokenBase *expr,
+TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 					      DataDef *referent_type)
 {
     if ( !expr )
 	return NULL;
-    DataDefPTR *ptr_type = pgm.getPointerType(referent_type
+    DataDefPTR *ptr_type = getPointerType(referent_type
 					      ? referent_type : expr->datadef());
     if ( TokenTerQ *tt = dynamic_cast<TokenTerQ *>(expr) )
     {
 	TokenTerQ *bound = new TokenTerQ();
 	copy_token_location(bound, tt);
 	bound->condition = tt->condition;
-	bound->true_expr = reference_bind_address_expr(pgm, tt->true_expr,
+	bound->true_expr = reference_bind_address_expr(tt->true_expr,
 						       referent_type);
-	bound->false_expr = reference_bind_address_expr(pgm, tt->false_expr,
+	bound->false_expr = reference_bind_address_expr(tt->false_expr,
 							referent_type);
 	bound->setDataType(ptr_type);
 	return bound;
@@ -21859,7 +21850,7 @@ static TokenBase *reference_bind_address_expr(Program &pgm, TokenBase *expr,
 	copy_token_location(addr, expr);
 	return addr;
     }
-    pgm.Throw(expr) << "Reference initializer must be an lvalue" << flush;
+    Throw(expr) << "Reference initializer must be an lvalue" << flush;
     return NULL;
 }
 
@@ -22362,7 +22353,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( !ret_is_ref
       && nt->id() == TokenID::tkOpBrk && arr_dims.empty()
       && decl_type->basetype() == BaseType::btClass
-      && !paren_group_is_function_def(*this) )
+      && !paren_group_is_function_def() )
     {
 	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(decl_type);
 	if ( ddc->has_user_ctor )
@@ -22629,7 +22620,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			    ni = nextToken();
 			}
 			else
-			    array_designator = parse_array_designator_initializer(*this, ni,
+			    array_designator = parse_array_designator_initializer(ni,
 				design_first, design_last);
 			if ( ni->id() == TokenID::tkOpBrc )
 			{
@@ -22795,7 +22786,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    {
 			size_t first_index = 0;
 			size_t last_index = 0;
-			parse_array_designator_initializer(*this, next_init,
+			parse_array_designator_initializer(next_init,
 			    first_index, last_index);
 			TokenBase *design_value = NULL;
 			if ( next_init->id() == TokenID::tkOpBrc )
@@ -22945,7 +22936,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    top_decls.push_back(gtd);
 	}
 	bool shared_global_extern_ref =
-	    is_shared_global_extern_reference(*this, code, var);
+	    is_shared_global_extern_reference(code, var);
 	if ( gotstatic )
 	    var->flags |= vfSTATIC;
 	if ( ret_is_ref )
@@ -23147,7 +23138,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    TokenAssign *assign = new TokenAssign();
 	    copy_token_location(assign, tb);
 	    assign->left = new TokenVar(*var);
-	    assign->right = reference_bind_address_expr(*this, rhs,
+	    assign->right = reference_bind_address_expr(rhs,
 							reference_value_type);
 	    td->initialize = assign;
 	}
@@ -23342,14 +23333,14 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
     return expr;
 }
 
-static bool datatype_statement_starts_functional_expr(Program &pgm)
+bool Program::datatype_statement_starts_functional_expr()
 {
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	return false;
     int depth = 0;
-    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    for ( size_t i = 0; i < tokens.size(); ++i )
     {
-	TokenBase *t = pgm.tokens[i];
+	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
 	if ( t->id() == TokenID::tkOpBrk )
@@ -23359,7 +23350,7 @@ static bool datatype_statement_starts_functional_expr(Program &pgm)
 	    --depth;
 	    if ( depth == 0 )
 	    {
-		TokenBase *next = (i + 1 < pgm.tokens.size()) ? pgm.tokens[i + 1] : NULL;
+		TokenBase *next = (i + 1 < tokens.size()) ? tokens[i + 1] : NULL;
 		return next && (next->id() == TokenID::tkDot
 			     || next->id() == TokenID::tkDeRef);
 	    }
@@ -23368,30 +23359,30 @@ static bool datatype_statement_starts_functional_expr(Program &pgm)
     return false;
 }
 
-static bool datatype_statement_starts_qualified_expr(Program &pgm)
+bool Program::datatype_statement_starts_qualified_expr()
 {
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+    if ( !peekToken() || peekToken()->id() != TokenID::tkNS )
 	return false;
     size_t i = 0;
-    while ( i < pgm.tokens.size() && pgm.tokens[i]
-	 && pgm.tokens[i]->id() == TokenID::tkNS )
+    while ( i < tokens.size() && tokens[i]
+	 && tokens[i]->id() == TokenID::tkNS )
     {
 	i++;
-	if ( i < pgm.tokens.size() && pgm.tokens[i]
-	  && pgm.tokens[i]->id() == TokenID::tkTEMPLATE )
+	if ( i < tokens.size() && tokens[i]
+	  && tokens[i]->id() == TokenID::tkTEMPLATE )
 	    i++;
-	if ( i >= pgm.tokens.size() || !pgm.tokens[i]
-	  || !is_contextual_identifier_token(pgm.tokens[i]) )
+	if ( i >= tokens.size() || !tokens[i]
+	  || !is_contextual_identifier_token(tokens[i]) )
 	    return false;
 	i++;
-	if ( i < pgm.tokens.size() && pgm.tokens[i]
-	  && pgm.tokens[i]->id() == TokenID::tkLT )
+	if ( i < tokens.size() && tokens[i]
+	  && tokens[i]->id() == TokenID::tkLT )
 	{
 	    int depth = 1;
 	    i++;
-	    while ( i < pgm.tokens.size() && depth > 0 )
+	    while ( i < tokens.size() && depth > 0 )
 	    {
-		TokenBase *t = pgm.tokens[i++];
+		TokenBase *t = tokens[i++];
 		if ( !t )
 		    continue;
 		if ( t->id() == TokenID::tkLT )
@@ -23403,9 +23394,9 @@ static bool datatype_statement_starts_qualified_expr(Program &pgm)
 	    }
 	}
     }
-    if ( i >= pgm.tokens.size() || !pgm.tokens[i] )
+    if ( i >= tokens.size() || !tokens[i] )
 	return false;
-    TokenID id = pgm.tokens[i]->id();
+    TokenID id = tokens[i]->id();
     return id == TokenID::tkOpBrk || id == TokenID::tkAssign
 	|| id == TokenID::tkSemi || id == TokenID::tkInc
 	|| id == TokenID::tkDec;
@@ -23444,12 +23435,12 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	// if we start with a type (i.e. int), then this could
 	// either be a function or a variable declaration
 	case TokenType::ttDataType:
-	    if ( datatype_statement_starts_qualified_expr(*this) )
+	    if ( datatype_statement_starts_qualified_expr() )
 	    {
 		resetPrevToken();
 		return parseExprStmt(tb);
 	    }
-	    if ( datatype_statement_starts_functional_expr(*this) )
+	    if ( datatype_statement_starts_functional_expr() )
 	    {
 		resetPrevToken();
 		return parseExprStmt(tb);
@@ -23506,7 +23497,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	      && peekToken() && peekToken()->id() == TokenID::tkNAMESPACE )
 	    {
 		nextToken();
-		return parse_namespace_block(*this, true);
+		return parse_namespace_block(true);
 	    }
 	    // Label definition: `name:` at statement position. `:` alone is
 	    // tkTerC (it shares the id with the ternary-`:`), while `::` is
@@ -23780,7 +23771,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 			    {
 				if ( peekToken() && peekToken()->id() == TokenID::tkNS
 				  && !compounds.empty()
-				  && datatype_statement_starts_qualified_expr(*this) )
+				  && datatype_statement_starts_qualified_expr() )
 				{
 				    resetPrevToken();
 				    return parseExprStmt(tb);
@@ -23829,7 +23820,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 				if ( parse_qualified_special_member_definition(tb) )
 				    return NULL;
 			    }
-			    if ( datatype_statement_starts_functional_expr(*this) )
+			    if ( datatype_statement_starts_functional_expr() )
 			    {
 				resetPrevToken();
 			return parseExprStmt(tb);

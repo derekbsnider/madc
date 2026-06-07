@@ -1740,6 +1740,41 @@ public:
     bool upcoming_param_signatures(std::vector<ParsedParamSig> &sigs);
     Variable *find_constructor_for_upcoming_params(DataDefCLASS *owner);
     bool parse_qualified_special_member_definition(TokenBase *first_tb);
+    // Assorted parse helpers (expression/declaration/statement support).
+    DataDef *effective_pointer_type_for_member_access(TokenBase *tb);
+    DataDef *parse_typedef_array_suffix(DataDef *base_dd,
+					const std::string &alias_name,
+					TokenBase *err_tok);
+    TokenBase *consume_balanced_parenthesized_suffix(TokenBase *open);
+    TokenBase *make_expression_context_literal(const madc::value &resolved,
+					       TokenBase *src);
+    TokenBase *materialize_runtime_struct_size_captures(TokenCpnd *code,
+							DataDefSTRUCT *dds, TokenBase *loc);
+    TokenBase *parse_functional_type_expression(TokenBase *type_tb,
+						DataDef *type_dd);
+    TokenBase *parse_namespace_block(bool inline_namespace);
+    TokenBase *parse_parenthesized_expression(const char *context,
+					      bool stop_on_closing_paren);
+    TokenBase *reference_bind_address_expr(TokenBase *expr,
+					   DataDef *referent_type);
+    TokenBase *skip_expression_whitespace();
+    TokenCASE *parse_switch_label(TokenSWITCH *sw, TokenBase *tn);
+    TokenObjTemp *try_parse_functional_ctor(TokenBase *name_tb);
+    Variable *resolve_c_identifier(TokenIdent *ident_tb, bool expression_head);
+    bool datatype_statement_starts_functional_expr();
+    bool datatype_statement_starts_qualified_expr();
+    bool is_shared_global_extern_reference(TokenCpnd *code, Variable *var);
+    bool next_parenthesized_type_is_compound_literal();
+    bool paren_group_is_function_def();
+    bool parse_array_designator_initializer(TokenBase *&next_init,
+					    size_t &first_index, size_t &last_index);
+    bool parse_builtin_types_compatible_operand(TokenBase *type_tb,
+						std::string &sig);
+    bool resolve_integer_constant(TokenBase *tb, int64_t &out);
+    bool token_starts_type_name(TokenBase *tb);
+    void configure_nested_function_captures(FuncDef *func);
+    void mirror_inline_namespace_into_parent(const std::string &parent_ns,
+					     const std::string &inline_ns);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
