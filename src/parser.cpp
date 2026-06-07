@@ -4920,6 +4920,14 @@ int64_t Program::parse_constant_primary()
 	    return bool_value ? 1 : 0;
 	if ( name == "sizeof" || is_alignof_identifier(name) )
 	    return (int64_t)evaluate_type_query(tb, name);
+	// Type-trait builtins in constant context — the std::integral_constant
+	// initializer shape `static const bool value = __is_class(T);` and non-type
+	// template args. Args are concrete (madc monomorphizes); fold to 0/1.
+	if ( is_type_trait_builtin(name) )
+	{
+	    TokenBase *r = evaluate_type_trait(tb, name);
+	    return static_cast<TokenInt *>(r)->ival();
+	}
 	if ( is_nullptr_identifier(name) )
 	    return 0;
 	if ( is_named_cpp_cast(name) )

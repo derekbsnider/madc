@@ -19,5 +19,10 @@ int main()
 	    __is_enum(E), __is_enum(int),
 	    __is_base_of(S, D), __is_base_of(S, D2), __is_base_of(D, S), __is_base_of(S, S),
 	    __is_same(int, int), __is_same(int, char));
+	// Traits also fold in CONSTANT-expression context (array dims / non-type
+	// template args / static-member initializers).
+	int a[__is_class(S) ? 4 : 1];
+	int b[__is_enum(E) ? 7 : 1];
+	printf("%zu %zu\n", sizeof(a) / sizeof(int), sizeof(b) / sizeof(int));
 	return 0;
 }
