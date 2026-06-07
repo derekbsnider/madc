@@ -1042,8 +1042,6 @@ static bool is_attribute_identifier_token(TokenBase *tb)
     return name == "__attribute__" || name == "__attribute";
 }
 
-static int64_t parse_constant_integer_expression(Program &pgm);
-
 static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
 					 std::set<std::string> *attrs = NULL,
 					 std::string *alias_target = NULL,
@@ -1088,7 +1086,7 @@ static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
 		    saw_vector_size = true;
 		else if ( saw_vector_size && at->id() == TokenID::tkOpBrk )
 		{
-		    int64_t n = parse_constant_integer_expression(pgm);
+		    int64_t n = pgm.parse_constant_integer_expression();
 		    if ( vector_bytes && n > 0 )
 			*vector_bytes = (size_t)n;
 		    TokenBase *cl = pgm.nextToken();
@@ -1196,7 +1194,7 @@ static size_t parse_gnu_vector_size_attribute(Program &pgm)
 	if ( !at ) break;
 	if ( saw_vector_size && at->id() == TokenID::tkOpBrk )
 	{
-	    int64_t n = parse_constant_integer_expression(pgm);
+	    int64_t n = pgm.parse_constant_integer_expression();
 	    if ( n > 0 )
 		vector_bytes = (size_t)n;
 	    TokenBase *cl = pgm.nextToken();
@@ -1237,7 +1235,7 @@ static void consume_typedef_gnu_attributes(Program &pgm,
 	    if ( !at ) break;
 	    if ( saw_vector_size && at->id() == TokenID::tkOpBrk )
 	    {
-		int64_t n = parse_constant_integer_expression(pgm);
+		int64_t n = pgm.parse_constant_integer_expression();
 		if ( vector_bytes && n > 0 )
 		    *vector_bytes = (size_t)n;
 		TokenBase *cl = pgm.nextToken();
@@ -3698,7 +3696,7 @@ static int64_t parse_constant_named_cpp_cast(Program &pgm, TokenBase *cast_tb,
 			   << cast_name << "<...>" << flush;
     pgm.nextToken();
 
-    int64_t val = parse_constant_integer_expression(pgm);
+    int64_t val = pgm.parse_constant_integer_expression();
     TokenBase *close = pgm.nextToken();
     if ( !close || close->id() != TokenID::tkClBrk )
 	pgm.Throw(close ? close : cast_tb)
@@ -3714,9 +3712,6 @@ static bool is_shared_global_extern_reference(Program &pgm, TokenCpnd *code, Var
 	&& var->is_global();
 }
 
-static int64_t parse_constant_integer_expression(Program &pgm);
-static int64_t parse_constant_rel(Program &pgm);
-static int64_t parse_constant_eq(Program &pgm);
 static size_t query_fixed_array_sizeof_value(TokenVar *tv, bool want_alignof, bool deref);
 
 static TokenBase *parse_parenthesized_expression(Program &pgm, const char *context,
@@ -4603,7 +4598,7 @@ static TokenBase *parse_static_assert_statement(Program &pgm, TokenBase *tb)
 
     pgm.nextToken();
 
-    int64_t cond = parse_constant_integer_expression(pgm);
+    int64_t cond = pgm.parse_constant_integer_expression();
     std::string message = "static assertion failed";
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
     {
@@ -4765,7 +4760,7 @@ static bool try_parse_constant_offsetof_address(Program &pgm, int64_t &out)
 	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
 	{
 	    pgm.nextToken();
-	    int64_t index = parse_constant_integer_expression(pgm);
+	    int64_t index = pgm.parse_constant_integer_expression();
 	    TokenBase *close_sq = pgm.nextToken();
 	    if ( !close_sq || close_sq->id() != TokenID::tkClSqr )
 		return fail();
@@ -4786,12 +4781,12 @@ static bool try_parse_constant_offsetof_address(Program &pgm, int64_t &out)
     return true;
 }
 
-static int64_t parse_constant_primary(Program &pgm)
+int64_t Program::parse_constant_primary()
 {
-    TokenBase *tb = pgm.nextToken();
+    TokenBase *tb = nextToken();
     int64_t out = 0;
 
-    if ( resolve_integer_constant(pgm, tb, out) )
+    if ( resolve_integer_constant(*this, tb, out) )
 	return out;
     if ( tb && tb->type() == TokenType::ttIdentifier )
     {
@@ -4800,30 +4795,30 @@ static int64_t parse_constant_primary(Program &pgm)
 	if ( is_bool_literal_identifier(name, bool_value) )
 	    return bool_value ? 1 : 0;
 	if ( name == "sizeof" || is_alignof_identifier(name) )
-	    return (int64_t)evaluate_type_query(pgm, tb, name);
+	    return (int64_t)evaluate_type_query(*this, tb, name);
 	if ( is_nullptr_identifier(name) )
 	    return 0;
 	if ( is_named_cpp_cast(name) )
-	    return parse_constant_named_cpp_cast(pgm, tb, name);
+	    return parse_constant_named_cpp_cast(*this, tb, name);
     }
     if ( tb && tb->id() == TokenID::tkNeg )
-	return -parse_constant_primary(pgm);
+	return -parse_constant_primary();
     if ( tb && tb->id() == TokenID::tkAdd )
-	return parse_constant_primary(pgm);
+	return parse_constant_primary();
     if ( tb && tb->id() == TokenID::tkLnot )
-	return !parse_constant_primary(pgm);
+	return !parse_constant_primary();
     if ( tb && tb->id() == TokenID::tkBnot )
-	return ~parse_constant_primary(pgm);
+	return ~parse_constant_primary();
     if ( tb && tb->id() == TokenID::tkBand )
     {
-	if ( try_parse_constant_offsetof_address(pgm, out) )
+	if ( try_parse_constant_offsetof_address(*this, out) )
 	    return out;
-	pgm.Throw(tb) << "Unsupported address expression in constant expression" << flush;
+	Throw(tb) << "Unsupported address expression in constant expression" << flush;
     }
     if ( tb && tb->id() == TokenID::tkOpBrk )
     {
 	// Check for cast: (type)value — e.g. (char)SB, (unsigned char)~0
-	TokenBase *inner = pgm.peekToken();
+	TokenBase *inner = peekToken();
 	if ( inner && (inner->type() == TokenType::ttDataType
 	  || inner->id() == TokenID::tkCONST
 	  || inner->id() == TokenID::tkRESTRICT) )
@@ -4831,10 +4826,10 @@ static int64_t parse_constant_primary(Program &pgm)
 	    // Extract the cast target type for truncation
 	    DataDef *cast_dd = NULL;
 	    bool is_unsigned = false;
-	    while ( pgm.peekToken()
-	         && pgm.peekToken()->id() != TokenID::tkClBrk )
+	    while ( peekToken()
+	         && peekToken()->id() != TokenID::tkClBrk )
 	    {
-		TokenBase *ct = pgm.nextToken();
+		TokenBase *ct = nextToken();
 		if ( ct->type() == TokenType::ttDataType )
 		    cast_dd = &((TokenDataType *)ct)->definition;
 		if ( ct->type() == TokenType::ttIdentifier )
@@ -4843,43 +4838,43 @@ static int64_t parse_constant_primary(Program &pgm)
 		    if ( tname == "unsigned" ) is_unsigned = true;
 		}
 	    }
-	    if ( pgm.peekToken() )
-		pgm.nextToken(); // consume ')'
-	    int64_t val = parse_constant_primary(pgm);
+	    if ( peekToken() )
+		nextToken(); // consume ')'
+	    int64_t val = parse_constant_primary();
 	    return apply_integer_cast_value(cast_dd, val, is_unsigned);
 	}
-	out = parse_constant_integer_expression(pgm);
-	tb = pgm.nextToken();
+	out = parse_constant_integer_expression();
+	tb = nextToken();
 	if ( !tb || tb->id() != TokenID::tkClBrk )
-	    pgm.Throw(tb) << "Expecting ')' in constant expression" << flush;
+	    Throw(tb) << "Expecting ')' in constant expression" << flush;
 	return out;
     }
-    pgm.Throw(tb) << "Expecting integer constant expression" << flush;
+    Throw(tb) << "Expecting integer constant expression" << flush;
     return 0;
 }
 
-static int64_t parse_constant_mul(Program &pgm)
+int64_t Program::parse_constant_mul()
 {
-    int64_t lhs = parse_constant_primary(pgm);
+    int64_t lhs = parse_constant_primary();
 
-    while ( pgm.peekToken() )
+    while ( peekToken() )
     {
-	TokenBase *op = pgm.peekToken();
+	TokenBase *op = peekToken();
 	if ( op->id() != TokenID::tkMul && op->id() != TokenID::tkDiv && op->id() != TokenID::tkMod )
 	    break;
-	pgm.nextToken(); // consume operator
-	int64_t rhs = parse_constant_primary(pgm);
+	nextToken(); // consume operator
+	int64_t rhs = parse_constant_primary();
 	if ( op->id() == TokenID::tkMul ) lhs *= rhs;
 	else if ( op->id() == TokenID::tkDiv )
 	{
 	    if ( rhs == 0 )
-		pgm.Throw(op) << "Division by zero in constant expression" << flush;
+		Throw(op) << "Division by zero in constant expression" << flush;
 	    lhs /= rhs;
 	}
 	else
 	{
 	    if ( rhs == 0 )
-		pgm.Throw(op) << "Modulo by zero in constant expression" << flush;
+		Throw(op) << "Modulo by zero in constant expression" << flush;
 	    lhs %= rhs;
 	}
     }
@@ -4888,17 +4883,17 @@ static int64_t parse_constant_mul(Program &pgm)
 }
 
 // additive: parse_constant_mul ([+-] parse_constant_mul)*
-static int64_t parse_constant_add(Program &pgm)
+int64_t Program::parse_constant_add()
 {
-    int64_t lhs = parse_constant_mul(pgm);
+    int64_t lhs = parse_constant_mul();
 
-    while ( pgm.peekToken() )
+    while ( peekToken() )
     {
-	TokenBase *op = pgm.peekToken();
+	TokenBase *op = peekToken();
 	if ( op->id() != TokenID::tkAdd && op->id() != TokenID::tkSub && op->id() != TokenID::tkNeg )
 	    break;
-	pgm.nextToken(); // consume operator
-	int64_t rhs = parse_constant_mul(pgm);
+	nextToken(); // consume operator
+	int64_t rhs = parse_constant_mul();
 	if ( op->id() == TokenID::tkAdd ) lhs += rhs;
 	else lhs -= rhs;
     }
@@ -4907,17 +4902,17 @@ static int64_t parse_constant_add(Program &pgm)
 }
 
 // shift: parse_constant_add ([<<>>] parse_constant_add)*
-static int64_t parse_constant_shift(Program &pgm)
+int64_t Program::parse_constant_shift()
 {
-    int64_t lhs = parse_constant_add(pgm);
+    int64_t lhs = parse_constant_add();
 
-    while ( pgm.peekToken() )
+    while ( peekToken() )
     {
-	TokenBase *op = pgm.peekToken();
+	TokenBase *op = peekToken();
 	if ( op->id() != TokenID::tkBSL && op->id() != TokenID::tkBSR )
 	    break;
-	pgm.nextToken();
-	int64_t rhs = parse_constant_add(pgm);
+	nextToken();
+	int64_t rhs = parse_constant_add();
 	if ( op->id() == TokenID::tkBSL ) lhs <<= rhs;
 	else                              lhs >>= rhs;
     }
@@ -4926,50 +4921,50 @@ static int64_t parse_constant_shift(Program &pgm)
 }
 
 // bitwise-and / xor / or: same precedence order as C.
-static int64_t parse_constant_band(Program &pgm)
+int64_t Program::parse_constant_band()
 {
-    int64_t lhs = parse_constant_eq(pgm);
-    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkBand )
+    int64_t lhs = parse_constant_eq();
+    while ( peekToken() && peekToken()->id() == TokenID::tkBand )
     {
-	pgm.nextToken();
-	lhs &= parse_constant_eq(pgm);
+	nextToken();
+	lhs &= parse_constant_eq();
     }
     return lhs;
 }
 
-static int64_t parse_constant_bxor(Program &pgm)
+int64_t Program::parse_constant_bxor()
 {
-    int64_t lhs = parse_constant_band(pgm);
-    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkXor )
+    int64_t lhs = parse_constant_band();
+    while ( peekToken() && peekToken()->id() == TokenID::tkXor )
     {
-	pgm.nextToken();
-	lhs ^= parse_constant_band(pgm);
+	nextToken();
+	lhs ^= parse_constant_band();
     }
     return lhs;
 }
 
-static int64_t parse_constant_bor(Program &pgm)
+int64_t Program::parse_constant_bor()
 {
-    int64_t lhs = parse_constant_bxor(pgm);
-    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkBor )
+    int64_t lhs = parse_constant_bxor();
+    while ( peekToken() && peekToken()->id() == TokenID::tkBor )
     {
-	pgm.nextToken();
-	lhs |= parse_constant_bxor(pgm);
+	nextToken();
+	lhs |= parse_constant_bxor();
     }
     return lhs;
 }
 
-static int64_t parse_constant_rel(Program &pgm)
+int64_t Program::parse_constant_rel()
 {
-    int64_t lhs = parse_constant_shift(pgm);
-    while ( pgm.peekToken() )
+    int64_t lhs = parse_constant_shift();
+    while ( peekToken() )
     {
-	TokenBase *op = pgm.peekToken();
+	TokenBase *op = peekToken();
 	if ( op->id() != TokenID::tkLT && op->id() != TokenID::tkGT
 	  && op->id() != TokenID::tkLE && op->id() != TokenID::tkGE )
 	    break;
-	pgm.nextToken();
-	int64_t rhs = parse_constant_shift(pgm);
+	nextToken();
+	int64_t rhs = parse_constant_shift();
 	switch ( op->id() )
 	{
 	    case TokenID::tkLT: lhs = lhs < rhs; break;
@@ -4981,62 +4976,62 @@ static int64_t parse_constant_rel(Program &pgm)
     return lhs;
 }
 
-static int64_t parse_constant_eq(Program &pgm)
+int64_t Program::parse_constant_eq()
 {
-    int64_t lhs = parse_constant_rel(pgm);
-    while ( pgm.peekToken() )
+    int64_t lhs = parse_constant_rel();
+    while ( peekToken() )
     {
-	TokenBase *op = pgm.peekToken();
+	TokenBase *op = peekToken();
 	if ( op->id() != TokenID::tkEquals && op->id() != TokenID::tkNotEq )
 	    break;
-	pgm.nextToken();
-	int64_t rhs = parse_constant_rel(pgm);
+	nextToken();
+	int64_t rhs = parse_constant_rel();
 	lhs = (op->id() == TokenID::tkEquals) ? (lhs == rhs) : (lhs != rhs);
     }
     return lhs;
 }
 
-static int64_t parse_constant_land(Program &pgm)
+int64_t Program::parse_constant_land()
 {
-    int64_t lhs = parse_constant_bor(pgm);
-    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLand )
+    int64_t lhs = parse_constant_bor();
+    while ( peekToken() && peekToken()->id() == TokenID::tkLand )
     {
-	pgm.nextToken();
-	lhs = lhs && parse_constant_bor(pgm);
+	nextToken();
+	lhs = lhs && parse_constant_bor();
     }
     return lhs;
 }
 
-static int64_t parse_constant_lor(Program &pgm)
+int64_t Program::parse_constant_lor()
 {
-    int64_t lhs = parse_constant_land(pgm);
-    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLor )
+    int64_t lhs = parse_constant_land();
+    while ( peekToken() && peekToken()->id() == TokenID::tkLor )
     {
-	pgm.nextToken();
-	lhs = lhs || parse_constant_land(pgm);
+	nextToken();
+	lhs = lhs || parse_constant_land();
     }
     return lhs;
 }
 
-static int64_t parse_constant_ternary(Program &pgm)
+int64_t Program::parse_constant_ternary()
 {
-    int64_t cond = parse_constant_lor(pgm);
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkQmark )
+    int64_t cond = parse_constant_lor();
+    if ( peekToken() && peekToken()->id() == TokenID::tkQmark )
     {
-	pgm.nextToken(); // consume '?'
-	int64_t true_val = parse_constant_integer_expression(pgm);
-	TokenBase *colon = pgm.nextToken();
+	nextToken(); // consume '?'
+	int64_t true_val = parse_constant_integer_expression();
+	TokenBase *colon = nextToken();
 	if ( !colon || colon->id() != TokenID::tkColon )
-	    pgm.Throw(colon) << "Expecting ':' in ternary constant expression" << flush;
-	int64_t false_val = parse_constant_ternary(pgm);
+	    Throw(colon) << "Expecting ':' in ternary constant expression" << flush;
+	int64_t false_val = parse_constant_ternary();
 	return cond ? true_val : false_val;
     }
     return cond;
 }
 
-static int64_t parse_constant_integer_expression(Program &pgm)
+int64_t Program::parse_constant_integer_expression()
 {
-    return parse_constant_ternary(pgm);
+    return parse_constant_ternary();
 }
 
 static bool bracket_dim_constant_expression_parses(Program &pgm)
@@ -5046,7 +5041,7 @@ static bool bracket_dim_constant_expression_parses(Program &pgm)
     Program::ErrorInfo saved_error = pgm.last_error;
     try
     {
-	int64_t n = parse_constant_integer_expression(pgm);
+	int64_t n = pgm.parse_constant_integer_expression();
 	TokenBase *cl = pgm.nextToken();
 	pgm.tokens = saved_tokens;
 	pgm.diagnostics.resize(saved_diag_count);
@@ -5159,7 +5154,7 @@ static DataDef *parse_typedef_array_suffix(Program &pgm, DataDef *base_dd,
 		pgm.Throw(cl ? cl : err_tok) << "Expected ] in typedef array declaration" << flush;
 	    continue;
 	}
-	int64_t n = parse_constant_integer_expression(pgm);
+	int64_t n = pgm.parse_constant_integer_expression();
 	if ( n < 0 )
 	    pgm.Throw(err_tok) << "Typedef array dimension must be non-negative" << flush;
 	cl = pgm.nextToken();
@@ -13724,7 +13719,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				pgm.nextToken();
 				if ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkClBrk )
 				{
-				    int64_t aval = parse_constant_integer_expression(pgm);
+				    int64_t aval = pgm.parse_constant_integer_expression();
 				    if ( aval > 0 )
 					explicit_align = (size_t)aval;
 				}
@@ -13937,7 +13932,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     {
 	if ( !member_dd || member_dd->is_pointer() || !member_dd->is_integer() )
 	    pgm.Throw(loc) << "Bit-field type must be an integer type" << flush;
-	int64_t width = parse_constant_integer_expression(pgm);
+	int64_t width = pgm.parse_constant_integer_expression();
 	if ( width < 0 )
 	    pgm.Throw(loc) << "Bit-field width must be non-negative" << flush;
 	if ( named && width == 0 )
@@ -14183,7 +14178,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				pgm.Throw(cl ? cl : tn) << "Expected ']' in anonymous struct member array declaration" << flush;
 			    continue;
 			}
-			int64_t n = parse_constant_integer_expression(pgm);
+			int64_t n = pgm.parse_constant_integer_expression();
 			if ( n < 0 )
 			    pgm.Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
 			cl = pgm.nextToken();
@@ -14239,7 +14234,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				    pgm.Throw(cl ? cl : tn) << "Expected ']'" << flush;
 				continue;
 			    }
-			    int64_t n = parse_constant_integer_expression(pgm);
+			    int64_t n = pgm.parse_constant_integer_expression();
 			    cl = pgm.nextToken();
 			    if ( !cl || cl->id() != TokenID::tkClSqr )
 				pgm.Throw(cl ? cl : tn) << "Expected ']'" << flush;
@@ -14480,7 +14475,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				pgm.Throw(cl ? cl : tn) << "Expected ']' in struct member array declaration" << flush;
 			    continue;
 			}
-			int64_t n = parse_constant_integer_expression(pgm);
+			int64_t n = pgm.parse_constant_integer_expression();
 			if ( n < 0 )
 			    pgm.Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
 			cl = pgm.nextToken();
@@ -14920,7 +14915,7 @@ static void parse_class_anonymous_aggregate_members(Program &pgm,
 		    break;
 		}
 		pgm.pushToken(cl);
-		int64_t n = parse_constant_integer_expression(pgm);
+		int64_t n = pgm.parse_constant_integer_expression();
 		if ( n < 0 )
 		    pgm.Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
 		cl = pgm.nextToken();
@@ -15966,7 +15961,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			    break;
 			}
 			pgm.pushToken(cl);
-			int64_t adim = parse_constant_integer_expression(pgm);
+			int64_t adim = pgm.parse_constant_integer_expression();
 			if ( adim < 0 )
 			    pgm.Throw(tn)
 				<< "Class member array dimension must be non-negative" << flush;
@@ -16217,7 +16212,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    member_count = 0;
 		    continue;
 		}
-		int64_t adim = parse_constant_integer_expression(pgm);
+		int64_t adim = pgm.parse_constant_integer_expression();
 		if ( adim < 0 )
 		    pgm.Throw(tn) << "Class member array dimension must be non-negative" << flush;
 		TokenBase *acl = pgm.nextToken();
@@ -17180,7 +17175,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 		    pgm.Throw(cl ? cl : tn) << "Expected ] in typedef array declaration" << flush;
 		continue;
 	    }
-	    int64_t n = parse_constant_integer_expression(pgm);
+	    int64_t n = pgm.parse_constant_integer_expression();
 	    if ( n < 0 )
 		pgm.Throw(tn) << "Typedef array dimension must be non-negative" << flush;
 	    cl = pgm.nextToken();
@@ -17502,7 +17497,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
 	{
 	    pgm.nextToken(); // consume '='
-	    val = parse_constant_integer_expression(pgm);
+	    val = pgm.parse_constant_integer_expression();
 	}
 
 	if ( scoped )
@@ -18042,7 +18037,7 @@ static TokenCASE *parse_switch_label(Program &pgm, TokenSWITCH *sw, TokenBase *t
 	tc->line = tn->line;
 	tc->column = tn->column;
 	TokenBase *val_anchor = pgm.peekToken();
-	int64_t case_val = parse_constant_integer_expression(pgm);
+	int64_t case_val = pgm.parse_constant_integer_expression();
 	TokenInt *val_tok = new TokenInt(case_val);
 	// Widen to 64-bit type when the value exceeds 32-bit range.
 	uint64_t uval = (uint64_t)case_val;
@@ -18064,7 +18059,7 @@ static TokenCASE *parse_switch_label(Program &pgm, TokenSWITCH *sw, TokenBase *t
 	    if ( !d2 || d2->id() != TokenID::tkDot
 	      || !d3 || d3->id() != TokenID::tkDot )
 		pgm.Throw(tn) << "Expecting '...' in case range" << flush;
-	    int64_t high_val = parse_constant_integer_expression(pgm);
+	    int64_t high_val = pgm.parse_constant_integer_expression();
 	    tc->range_high = new TokenInt(high_val);
 	    uint64_t uhigh = (uint64_t)high_val;
 	    if ( uhigh > 0x7FFFFFFF )
@@ -18255,7 +18250,7 @@ TokenBase *TokenMatch::parse(Program &pgm)
 		// `^` inside a pattern still work; only `|` is reserved.
 		pgm.pushToken(tn);
 		TokenBase *anchor = pgm.peekToken();
-		int64_t pv = parse_constant_bxor(pgm);
+		int64_t pv = pgm.parse_constant_bxor();
 		TokenInt *ti = new TokenInt(pv);
 		if ( anchor )
 		{
@@ -19988,7 +19983,7 @@ static bool parse_array_designator_initializer(Program &pgm, TokenBase *&next_in
 	pgm.Throw(next_init) << "Unexpected end of input in array designator" << flush;
     pgm.pushToken(first_tok);
 
-    int64_t first = parse_constant_integer_expression(pgm);
+    int64_t first = pgm.parse_constant_integer_expression();
     if ( first < 0 )
 	pgm.Throw(next_init) << "Array designator index must be non-negative" << flush;
 
@@ -20003,7 +19998,7 @@ static bool parse_array_designator_initializer(Program &pgm, TokenBase *&next_in
 	  || dot2->id() != TokenID::tkDot
 	  || dot3->id() != TokenID::tkDot )
 	    pgm.Throw(dot1 ? dot1 : next_init) << "Expecting '...' in array designator range" << flush;
-	last = parse_constant_integer_expression(pgm);
+	last = pgm.parse_constant_integer_expression();
 	if ( last < first )
 	    pgm.Throw(next_init) << "Array designator range end precedes start" << flush;
     }
@@ -20631,7 +20626,7 @@ grabnt:
 		    }
 		    else
 		    {
-			int64_t n = parse_constant_integer_expression(*this);
+			int64_t n = parse_constant_integer_expression();
 			if ( n < 0 )
 			    Throw(nt) << "Parameter array dimension must be non-negative" << flush;
 			param_array_dims.push_back((uint32_t)n);
@@ -20682,7 +20677,7 @@ grabnt:
 			}
 			else
 			{
-			    int64_t n = parse_constant_integer_expression(*this);
+			    int64_t n = parse_constant_integer_expression();
 			    if ( n < 0 )
 				Throw(inner) << "Pointer-to-array parameter dimension must be non-negative" << flush;
 			    pa_dims.push_back((uint32_t)n);
@@ -20753,7 +20748,7 @@ grabnt:
 		}
 		else
 		{
-		    int64_t n = parse_constant_integer_expression(*this);
+		    int64_t n = parse_constant_integer_expression();
 		    if ( n < 0 )
 			Throw(nt) << "Parameter array dimension must be non-negative" << flush;
 		    param_array_dims.push_back((uint32_t)n);
@@ -21975,7 +21970,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		}
 		else
 		{
-		    int64_t n = parse_constant_integer_expression(*this);
+		    int64_t n = parse_constant_integer_expression();
 		    if ( n < 0 )
 			Throw(tb) << "Fixed-size array dimension must be non-negative" << flush;
 		    arr_dims.push_back((uint32_t)n);
@@ -22013,7 +22008,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		}
 		else
 		{
-		    int64_t n = parse_constant_integer_expression(*this);
+		    int64_t n = parse_constant_integer_expression();
 		    if ( n < 0 )
 			Throw(tb) << "Fixed-size array dimension must be non-negative" << flush;
 		    arr_dims.push_back((uint32_t)n);
@@ -22041,7 +22036,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			ptr_array_dims.push_back(0);
 			continue;
 		    }
-		    int64_t dim = parse_constant_integer_expression(*this);
+		    int64_t dim = parse_constant_integer_expression();
 		    if ( dim < 0 )
 			Throw(open) << "Pointer-to-array dimension must be non-negative" << flush;
 		    ptr_array_dims.push_back((uint32_t)dim);
@@ -22325,7 +22320,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    }
 	    else
 	    {
-		int64_t n = parse_constant_integer_expression(*this);
+		int64_t n = parse_constant_integer_expression();
 		if ( n < 0 )
 		    Throw(tb) << "Fixed-size array dimension must be non-negative" << flush;
 		// GCC: int arr[0] has sizeof 0; keep the zero dim.

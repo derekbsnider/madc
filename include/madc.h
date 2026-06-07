@@ -1469,6 +1469,24 @@ public:
     // a token-collecting caller can re-emit the full operator-function-id).
     void delimStepStream(TokenBase *t, DelimDepth &d,
 			 std::vector<TokenBase *> *extra = NULL);
+    // Constant-expression evaluator (recursive descent over the token stream).
+    // Each rung consumes from the stream via nextToken()/peekToken() and folds
+    // an integer-constant-expression — used for array dimensions, bit-field
+    // widths, case labels, static_assert, enum values, etc. The rungs follow
+    // C operator precedence; `parse_constant_integer_expression` is the entry.
+    int64_t parse_constant_primary();
+    int64_t parse_constant_mul();
+    int64_t parse_constant_add();
+    int64_t parse_constant_shift();
+    int64_t parse_constant_rel();
+    int64_t parse_constant_eq();
+    int64_t parse_constant_band();
+    int64_t parse_constant_bxor();
+    int64_t parse_constant_bor();
+    int64_t parse_constant_land();
+    int64_t parse_constant_lor();
+    int64_t parse_constant_ternary();
+    int64_t parse_constant_integer_expression();
     // After a method call's arguments are parsed, re-bind `tc` to the overload
     // of `cls`'s method `id` that best matches the argument types (the initial
     // findMethod() bound the first by-name match). Returns `tc` unchanged when
