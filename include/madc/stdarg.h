@@ -22,6 +22,12 @@ typedef struct __madc_va_list_tag {
 	void *reg_save_area;
 } va_list[1];
 
+// GCC's name for the same underlying va_list ABI type. Real system headers
+// (e.g. glibc <wchar.h> under `#define __need___va_list`) reference it and then
+// do `typedef __gnuc_va_list va_list;`. Defined as a DIRECT typedef of the same
+// tagged struct so va_list above stays the intrinsic's expected struct typedef.
+typedef struct __madc_va_list_tag __gnuc_va_list[1];
+
 #define va_start(ap, last) __builtin_va_start(ap)
 #define va_end(ap) ((void)(ap))
 #define va_copy(dest, src) ((dest)[0] = (src)[0])

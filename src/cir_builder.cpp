@@ -7976,6 +7976,18 @@ node_t CirBuilder::translate_module(Program *prog)
 
 	// Helper: resolve the (possibly pointer-wrapped) struct behind a DataDef.
 	auto struct_behind = [](DataDef *dd) -> DataDefSTRUCT * {
+		// Peel fixed-array layers first: `typedef struct Tag {..} NAME[N];`
+		// carries the struct in DataDefCArray::element_type. Without this, an
+		// array typedef of a tagged struct is not recognized as the tag's
+		// body-definition point, so it never lands in emitted_structs and a
+		// SECOND array typedef of the same tag re-emits the full body —
+		// c2mir then rejects the duplicate ("tag X redeclaration"). This is
+		// what blocked `typedef __gnuc_va_list va_list;` (both va_list and
+		// __gnuc_va_list are `struct __madc_va_list_tag[1]`).
+		while (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd)) {
+			if (!ca->element_type) break;
+			dd = ca->element_type;
+		}
 		DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
 		if (!s) {
 			DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
