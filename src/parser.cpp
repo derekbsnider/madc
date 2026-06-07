@@ -7023,12 +7023,15 @@ Variable *Program::lazy_resolve(const std::string &name)
 	// dlsym the libc symbol and copy the current FILE* value into our
 	// backing slot. Note: dlsym("stderr") returns the address of the
 	// libc `FILE *stderr;` variable — one deref yields the FILE*.
+	// Type them as void* (FILE is `void` in madc), NOT int64 — otherwise
+	// `fp == stdin` warns "comparison of integer with a pointer" and passing
+	// stdin to a FILE* parameter mismatches.
 	void **sym = NULL;
 	if ( name == "stdin" || name == "stdout" || name == "stderr" )
 	    sym = (void **)dlsym(RTLD_DEFAULT, name.c_str());
 	if ( sym )
 	{
-	    var = addGlobal(ddINT64, name, 1, NULL);
+	    var = addGlobal(ddVOIDptr, name, 1, NULL);
 	    if ( var && var->data )
 		*(void **)var->data = *sym;
 	}
