@@ -1830,6 +1830,33 @@ static bool consume_template_close(Program &pgm, TokenBase *tok)
     return false;
 }
 
+// Operator-function-id helpers — shared by every <...> scanner so the operator
+// symbol of `operator<` / `operator>>` / … is treated as part of a NAME, never
+// as an angle-bracket delimiter. Free functions because some scanners walk a
+// captured token vector and have no Program & in hand.
+static bool token_is_operator_id_start(TokenBase *t)
+{
+    return t && is_contextual_identifier_token(t)
+	&& contextual_identifier_name(t) == "operator";
+}
+// Number of tokens the operator-function-id at toks[i] spans (keyword + symbol
+// [+ closing )/] for operator()/operator[]]), or 0 if toks[i] is not an
+// operator-id start. For index-based scanners that walk a captured token
+// sequence (templated so it serves both std::vector and the std::deque queue).
+template<typename Seq>
+static size_t operator_id_token_span(const Seq &toks, size_t i)
+{
+    if ( i >= toks.size() || !token_is_operator_id_start(toks[i]) )
+	return 0;
+    if ( i + 1 >= toks.size() )
+	return 1;
+    TokenBase *sym = toks[i + 1];
+    if ( (sym->id() == TokenID::tkOpBrk || sym->id() == TokenID::tkOpSqr)
+      && i + 2 < toks.size() )
+	return 3;   // operator() / operator[]
+    return 2;       // operator + single symbol token (<, <<, <=, >, >>, …)
+}
+
 static std::string template_token_fragment(TokenBase *tb)
 {
     if ( !tb )
@@ -1973,6 +2000,13 @@ static size_t template_id_suffix_end(
     int depth = 0;
     for ( size_t i = lt_index; i < tokens.size(); ++i )
     {
+	// operator-function-id: skip `operator` + its symbol token(s) so e.g.
+	// `operator<` is not counted as opening a nested template-id.
+	if ( size_t n = operator_id_token_span(tokens, i) )
+	{
+	    i += n - 1;
+	    continue;
+	}
 	if ( tokens[i]->id() == TokenID::tkLT )
 	    ++depth;
 	else if ( tokens[i]->id() == TokenID::tkGT )
@@ -8382,8 +8416,7 @@ std::string Program::parseOperatorId(TokenBase *operator_tok,
 
 bool Program::isOperatorIdStart(TokenBase *t)
 {
-    return t && is_contextual_identifier_token(t)
-	&& contextual_identifier_name(t) == "operator";
+    return token_is_operator_id_start(t);
 }
 
 static bool is_named_cpp_cast(const std::string &name)
@@ -18580,6 +18613,11 @@ static size_t skipped_template_function_declarator_name_index(
 	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
+	if ( size_t n = operator_id_token_span(tokens, i) )
+	{
+	    i += n - 1;
+	    continue;
+	}
 	if ( t->id() == TokenID::tkLT )
 	    ++angle_depth;
 	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
@@ -19183,6 +19221,11 @@ static void trim_param_default(std::vector<TokenBase *> &param)
 	TokenBase *t = param[i];
 	if ( !t )
 	    continue;
+	if ( size_t n = operator_id_token_span(param, i) )
+	{
+	    i += n - 1;
+	    continue;
+	}
 	if ( paren_depth == 0 && square_depth == 0
 	  && angle_depth == 0 && brace_depth == 0
 	  && t->id() == TokenID::tkAssign )
@@ -21143,6 +21186,11 @@ paramdecl:
 	int angle_depth = 0;
 	while ( (nt = nextToken()) )
 	{
+	    if ( isOperatorIdStart(nt) )
+	    {
+		parseOperatorId(nt);
+		continue;
+	    }
 	    if ( nt->id() == TokenID::tkOpBrk )
 		++paren_depth;
 	    else if ( nt->id() == TokenID::tkClBrk && paren_depth > 0 )
