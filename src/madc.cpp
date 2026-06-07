@@ -461,6 +461,15 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--dump-source") == 0) {
             dump_source = true;
             filearg = i + 1;
+        } else if (strcmp(argv[i], "-E") == 0) {
+            // -E: preprocess only — expand #include/#define/macros and print the
+            // resulting token stream as text, then stop (no parse, no codegen).
+            // madc's lexer preprocesses during tokenize(), so the token stream IS
+            // the preprocessed translation unit; this reuses the dump_source path
+            // (reconstruct_source over the post-PP tokens). Content-only (no
+            // `# line` markers) so it diffs cleanly against `gcc -E | grep -v '^#'`.
+            dump_source = true;
+            filearg = i + 1;
         } else if (strncmp(argv[i], "--emit=", 7) == 0) {
             // Render the cir_node tree (MC11-IR) as C source; do not run.
             const char *lang = argv[i] + 7;
@@ -591,7 +600,7 @@ int main(int argc, char **argv)
 	DBG(std::cout << "CIR elapsed time: " << time_diff(before, after) << std::endl);
 	return (result < 0) ? 1 : 0;
     }
-    std::cout << "Usage: madc [-v|--verbose] [--finstrument-functions] [-fno-builtin-name] <file.mad>" << std::endl;
+    std::cout << "Usage: madc [-v|--verbose] [-E] [--finstrument-functions] [-fno-builtin-name] <file.mad>" << std::endl;
 
     return 0;
 }
