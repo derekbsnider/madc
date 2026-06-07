@@ -15,6 +15,49 @@ Date: **2026-06-07** (late session). Branch **`feature/realhdr-parse-gaps2-claud
 
 ---
 
+## UPDATE 2026-06-07 (NEWEST-4) — real-header preprocessor frontier: 5 fixes, streams now reach template instantiation
+
+Continued the `--no-embedded-headers` (real system headers) push. Each blocker
+was a GENERAL lexer/PP/parser bug, found by `-E` bisection + gcc/clang oracle,
+each its own validated commit (fulltest 528/4/0/26 · gcc.c-torture IDENTICAL 88,
+0 regr · SMAUG boots clean). Commit chain this block:
+`2e853de` decltype-`<` · `f71a472` `--no-embedded-headers` · `1cc70f0`
+recursive-macro loop · `a2f387c` depth guard · `be5a08f` multi-line comment ·
+`de24e23` empty-arg stringize.
+
+- **`be5a08f`** — multi-line `/* */` comment opening on a directive line
+  (`#endif /* … \n … */` in real `<stddef.h>`, the `__need_XXX` symptom). The
+  directive handlers char-scanned to the newline, bypassing the lexer's `case
+  '/'` comment handling. Fix: `consume_directive_line_tail()` runs the active
+  directive tail THROUGH the lexer (loop `getToken()` to the EOL token, reusing
+  `case '/'`); `skipConditionalBlock` keeps a char-level skip since inactive
+  branches must NOT be tokenized/expanded. Deduped ~11 hand-rolled loops.
+- **`de24e23`** — `#` (stringize) of an EMPTY macro arg gave a literal `#` not
+  `""`. A function-like macro called with fewer args than params left the
+  missing params unbound. Hit glibc's `__asm__(__ASMNAME("n"))` →
+  `__STRING(__USER_LABEL_PREFIX__)` (prefix empty → inner `#` sees no arg) →
+  `__asm__(# "n")` → "Expecting ')' after asm label". Fix: bind missing params
+  to "" (C semantics).
+
+### NEXT blocker — template instantiation (`iterator<>`), a DEEPER area
+All 4 streams + string now derail parsing **`basic_string_view<char>`**:
+`parser.cpp:2644` "Expecting a type argument to **iterator**<>". `basic_string_view`
+has `using iterator = const_iterator;` (a member TYPE ALIAS, not a template) —
+madc appears to misparse a bareword `iterator <…>` as a template-id during the
+string_view-region instantiation, and the arg fails to resolve. Standalone
+`iterator<tag,char>` and `S<wchar_t>` both parse fine, so it's specific to the
+real instantiation (template-id-vs-type-alias disambiguation / template
+instantiation fidelity — cf. [[project_template_instantiation]]). This is a
+bigger fix than the lexer/PP ones above; start fresh here. Reduce from
+`basic_string_view`'s member-alias + `std::reverse_iterator<const_iterator>`
+usage (lines ~18548-18550 of the real `<string_view>`/`<bits/...>`).
+
+Frontier summary (real headers, `--no-embedded-headers`): decltype-`<` →
+stub-shadowing → macro loop → multi-line comment → `__need_XXX`/asm-label →
+**now `iterator<>` template instantiation**. type_traits/utility parse fully.
+
+---
+
 ## UPDATE 2026-06-07 (NEWEST-3) — decltype-`<` fixed; embedded stubs shadow real headers; recursive-macro loop fixed + depth guard
 
 HEAD progresses `2e853de` → `f71a472` → `1cc70f0` (+ depth-guard commit pending).
