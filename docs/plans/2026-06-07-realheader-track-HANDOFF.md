@@ -59,8 +59,24 @@ dups) in `include/madc/` are the WRONG bucket and the active shadowing blocker.
     predefined set IS the host gcc's for c++17. (NB: madc has no `madc -dM` dump flag;
     adding one would make acceptance-test #3 directly runnable, but generation already
     guarantees parity. C-mode/other-std parity unverified.)
-  - **Step 5 (`__is_*`/`__has_*` trait BUILTINS) — SCOPED, the next big pass.**
-    Verified madc implements NONE (all MISS, zero source handling). Needed checklist
+  - **Step 5 (`__is_*`/`__has_*` trait BUILTINS) — v1 LANDED (commit `45db326`).**
+    Table-driven evaluator in the expression arm (next to the sizeof fold):
+    `__trait(type-list)` → bool constant; args are concrete (madc monomorphizes), no
+    dependent handling. Implemented EXACTLY the gcc-13 builtins madc answers
+    faithfully (correctness-first — a wrong bool corrupts SFINAE): `__is_same`,
+    `__is_class`, `__is_union`, `__is_enum`, `__is_base_of` — verified identical to
+    g++. Gated 530/4 · torture 1566/88 identical · SMAUG ready. NEXT (incremental,
+    each = one table entry + a FAITHFUL predicate): the remaining gcc traits
+    `__is_abstract/_polymorphic/_final/_empty/_pod/_trivial/_standard_layout/
+    _aggregate/_trivially_*`, `__has_virtual_destructor`, `__has_unique_object_repr`,
+    `__underlying_type`/`__type_pack_element` (type-producing), `__is_constructible/
+    _assignable/_convertible` (need member/ctor analysis). Skipped `__is_pointer`/
+    `__is_void` ON PURPOSE — gcc implements those in libstdc++, not the compiler.
+    ⚠ SEPARATE pre-existing gap that blocks full `<type_traits>` end-to-end (NOT a
+    trait bug): template static-data-member access `X<T>::value` fails even without
+    a trait (`template<class T> struct b{static const int value=5;}; b<int>::value`
+    → "b undeclared") — own follow-up, needed before std::is_* templates resolve.
+  - **(scoping kept for the remaining checklist)** Needed checklist
     (gcc/clang trait intrinsics libstdc++ `<type_traits>`/`<tuple>`/`<memory>` call):
     `__is_same __is_class __is_enum __is_union __is_base_of __is_constructible
     __is_convertible __is_assignable __is_trivially_constructible/copyable/destructible
