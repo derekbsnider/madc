@@ -9651,6 +9651,1454 @@ Program::ExprStep Program::parseExpr_symbolArm(TokenBase *tb,
     return done ? ExprStep::Done : ExprStep::Break;
 }
 
+// ttIdentifier switch-arm of parseExpression (see madc.h for the ExprStep
+// contract). Identifier resolution in expression context: variables,
+// function/method calls, member access, template-ids, qualified names,
+// casts, new/sizeof-family, etc. `tb` advances through the stream; arm-level
+// breaks map to Break, `done = true` paths to Done. ttKeyword falls through
+// into the dispatch for keyword tokens that are contextual identifiers.
+Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
+				 std::stack<TokenBase *> &exStack,
+				 std::stack<TokenBase *> &opStack, TokenCpnd *code)
+{
+    Variable *var = NULL;
+    bool done = false;
+		std::string contextual_name = contextual_identifier_name(tb);
+		TokenIdent contextual_ident(contextual_name);
+		TokenIdent *ident_tb = tb->type() == TokenType::ttIdentifier
+		    ? (TokenIdent *)tb
+		    : &contextual_ident;
+		bool expression_head = exStack.empty() && opStack.empty();
+		bool parsed_operator_name = false;
+		std::string member_lookup_name = ident_tb->str;
+		if ( ident_tb->str == "operator"
+		  && code && code->method && code->method->owner_class )
+		{
+		    member_lookup_name = parseOperatorId(tb);
+		    parsed_operator_name = true;
+		}
+		if ( ident_tb->str == "__FUNCTION__" || ident_tb->str == "__func__"
+		  || ident_tb->str == "__PRETTY_FUNCTION__" )
+		{
+		    var = addLiteral(cur_func_name);
+		    exStack.push(new TokenVar(*var));
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		bool bool_value = false;
+		if ( is_bool_literal_identifier(ident_tb->str, bool_value) )
+		{
+		    TokenInt *ti = new TokenInt(bool_value ? 1 : 0);
+		    ti->setDataType(&ddBOOL);
+		    ti->file = tb->file;
+		    ti->line = tb->line;
+		    ti->column = tb->column;
+		    exStack.push(ti);
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		bool ordinary_call_name =
+		    find_variable_for_contextual_type_name(*this,
+			ident_tb->str) != NULL;
+		if ( !ordinary_call_name
+		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk
+		  && is_dynamic_symbol_fallback_enabled()
+		  && is_dynamic_symbol_allowed(ident_tb->str)
+		  && dlsym(RTLD_DEFAULT, ident_tb->str.c_str()) )
+		    ordinary_call_name = true;
+		if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
+		  && !ordinary_call_name )
+		{
+		    if ( TokenDataType *resolved_type =
+			    resolve_declared_type_token(*this, tb, false, true) )
+		    {
+			if ( TokenBase *type_expr =
+				parse_functional_type_expression(*this, tb,
+				    &resolved_type->definition) )
+			{
+			    exStack.push(type_expr);
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+		    }
+		    if ( TokenObjTemp *ot = try_parse_functional_ctor(*this, tb) )
+		    {
+			exStack.push(ot);
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
+		}
+		if ( is_realpart_identifier(ident_tb->str)
+		  || is_imagpart_identifier(ident_tb->str) )
+		{
+		    bool want_imag = is_imagpart_identifier(ident_tb->str);
+		    TokenBase *next_tb = nextToken();
+		    if ( !next_tb )
+			Throw(tb) << "Expecting expression after " << ident_tb->str << flush;
+		    TokenBase *component_expr = NULL;
+		    if ( next_tb->id() == TokenID::tkOpBrk )
+		    {
+			TokenBase *inner_tb = nextToken();
+			component_expr = parseExpression(inner_tb, true, false, true, 1);
+		    }
+		    else if ( is_contextual_identifier_token(next_tb) || next_tb->type() == TokenType::ttIdentifier )
+		    {
+			bool has_postfix_chain = peekToken()
+			    && (peekToken()->id() == TokenID::tkDot
+			     || peekToken()->id() == TokenID::tkDeRef
+			     || peekToken()->id() == TokenID::tkOpSqr);
+			if ( has_postfix_chain )
+			    component_expr = parsePostfixChain(next_tb);
+			else
+			{
+			    std::string name = contextual_identifier_name(next_tb);
+			    TokenIdent component_ident(name);
+			    copy_token_location(&component_ident, next_tb);
+			    Variable *component_var = findVariable(name);
+			    if ( component_var )
+			    {
+				component_expr = new TokenVar(*component_var);
+				copy_token_location(component_expr, next_tb);
+			    }
+			    else
+				component_expr = resolve_expression_context_identifier(&component_ident);
+			}
+			TokenVar *tv = dynamic_cast<TokenVar *>(component_expr);
+			if ( tv && peekToken() && peekToken()->id() == TokenID::tkOpBrk
+			  && tv->var.type && tv->var.type->is_function() )
+			{
+			    Variable *call_var = runtime_eval_scope_target(&tv->var);
+			    TokenCallFunc *tc = new TokenCallFunc(*call_var);
+			    TokenBase *call_tb = nextToken();
+			    tc->line = call_tb->line;
+			    tc->column = call_tb->column;
+			    parseCallFunc(tc);
+			    component_expr = tc;
+			}
+		    }
+		    if ( !component_expr )
+			Throw(next_tb) << "Unsupported operand for " << ident_tb->str << flush;
+		    exStack.push(make_complex_component_token(component_expr, want_imag));
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		// sizeof / alignof — resolve to integer constant at parse time.
+		if ( ident_tb->str == "sizeof" || is_alignof_identifier(ident_tb->str) )
+		{
+		    if ( TokenBase *query_tb = try_parse_dynamic_type_query(*this, tb, ident_tb->str) )
+			exStack.push(query_tb);
+		    else
+		    {
+			size_t query_value = evaluate_type_query(*this, tb, ident_tb->str);
+			TokenInt *ti = new TokenInt((int64_t)query_value);
+			ti->setDataType(&ddUINT64);
+			ti->file = tb->file;
+			ti->line = tb->line;
+			ti->column = tb->column;
+			exStack.push(ti);
+		    }
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		if ( is_named_cpp_cast(ident_tb->str) )
+		{
+		    exStack.push(parse_named_cpp_cast(*this, tb, ident_tb->str));
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		// dynamic_cast < TYPE * > ( EXPR )   (S5c)
+		if ( ident_tb->str == "dynamic_cast" )
+		{
+		    skip_expression_whitespace(*this);
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
+			Throw(tb) << "Expecting '<' after dynamic_cast" << flush;
+		    nextToken(); // consume '<'
+		    skip_expression_whitespace(*this);
+		    TokenBase *type_tb = nextToken();
+		    TokenDataType *tdt = resolve_declared_type_token(*this, type_tb, true, true);
+		    if ( !tdt )
+			Throw(type_tb ? type_tb : tb) << "dynamic_cast target is not a type" << flush;
+		    DataDef *tgt = &tdt->definition;
+		    skip_expression_whitespace(*this);
+		    bool is_ptr = false;
+		    if ( peekToken() && peekToken()->id() == TokenID::tkMul )
+		    { nextToken(); is_ptr = true; }
+		    else if ( peekToken()
+			   && (peekToken()->id() == TokenID::tkBand
+			    || peekToken()->id() == TokenID::tkLand) )
+			Throw(tb) << "dynamic_cast to a reference type is not yet supported (use the pointer form)" << flush;
+		    skip_expression_whitespace(*this);
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
+			Throw(tb) << "Expecting '>' to close dynamic_cast<...>" << flush;
+		    nextToken(); // consume '>'
+		    skip_expression_whitespace(*this);
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after dynamic_cast<...>" << flush;
+		    nextToken(); // consume '('
+		    TokenBase *inner_first = nextToken();
+		    TokenBase *inner = parseExpression(inner_first, false, false, false, 0, true);
+		    skip_expression_whitespace(*this);
+		    TokenBase *close_tb = nextToken();
+		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
+			Throw(close_tb ? close_tb : tb) << "Expecting ')' to close dynamic_cast" << flush;
+		    TokenDynamicCast *dc = new TokenDynamicCast();
+		    dc->target_type = tgt;
+		    dc->target_is_ptr = is_ptr;
+		    dc->operand = inner;
+		    dc->setDataType(is_ptr ? (DataDef *)getPointerType(tgt) : tgt);
+		    dc->file = tb->file; dc->line = tb->line; dc->column = tb->column;
+		    exStack.push(dc);
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		// typeid ( EXPR | TYPE )   (S5d)
+		if ( ident_tb->str == "typeid" )
+		{
+		    skip_expression_whitespace(*this);
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after typeid" << flush;
+		    nextToken(); // consume '('
+		    skip_expression_whitespace(*this);
+		    TokenBase *first = nextToken();
+		    TokenTypeid *ttd = new TokenTypeid();
+		    // Type form iff the operand resolves to a type AND is immediately
+		    // followed by ')'. resolve_declared_type_token returns NULL for a
+		    // variable/expression (it checks findVariable), so typeid(obj) and
+		    // typeid(*p) fall to the expression form.
+		    TokenDataType *tdt = resolve_declared_type_token(*this, first, false, true);
+		    skip_expression_whitespace(*this);
+		    if ( tdt && peekToken() && peekToken()->id() == TokenID::tkClBrk )
+		    {
+			ttd->static_type = &tdt->definition;
+			nextToken(); // consume ')'
+		    }
+		    else
+		    {
+			ttd->operand = parseExpression(first, false, false, false, 0, true);
+			skip_expression_whitespace(*this);
+			TokenBase *close_tb = nextToken();
+			if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
+			    Throw(close_tb ? close_tb : tb) << "Expecting ')' after typeid(...)" << flush;
+		    }
+		    // Result type: const std::type_info& — modeled as std::type_info*.
+		    // The <typeinfo> header registers `class type_info` in the global
+		    // datatype_map under its bare name (header-defined classes are not
+		    // namespace-keyed); fall back to the std namespace map.
+		    DataDef *tinfo = NULL;
+		    datatype_map_iter gdti = datatype_map.find("type_info");
+		    if ( gdti != datatype_map.end() )
+			tinfo = &gdti->second->definition;
+		    if ( !tinfo )
+		    {
+			namespace_datatype_map_t::iterator nti = namespace_datatype_map.find("std");
+			if ( nti != namespace_datatype_map.end() )
+			{
+			    datatype_map_iter dti = nti->second.find("type_info");
+			    if ( dti != nti->second.end() )
+				tinfo = &dti->second->definition;
+			}
+		    }
+		    if ( !tinfo )
+			Throw(tb) << "typeid requires #include <typeinfo>" << flush;
+		    ttd->setDataType(getPointerType(tinfo));
+		    ttd->file = tb->file; ttd->line = tb->line; ttd->column = tb->column;
+		    exStack.push(ttd);
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		if ( is_nullptr_identifier(ident_tb->str) )
+		{
+		    TokenNullptr *tnp = new TokenNullptr();
+		    tnp->file = tb->file;
+		    tnp->line = tb->line;
+		    tnp->column = tb->column;
+		    exStack.push(tnp);
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		if ( ident_tb->str == "__builtin_types_compatible_p" )
+		{
+		    if ( !skip_expression_whitespace(*this) || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after __builtin_types_compatible_p" << flush;
+		    nextToken();
+		    skip_expression_whitespace(*this);
+		    TokenBase *lhs_tb = nextToken();
+		    std::string lhs_sig;
+		    if ( !parse_builtin_types_compatible_operand(*this, lhs_tb, lhs_sig) )
+			Throw(lhs_tb ? lhs_tb : tb) << "Invalid first type in __builtin_types_compatible_p" << flush;
+		    skip_expression_whitespace(*this);
+		    TokenBase *comma_tb = nextToken();
+		    if ( !comma_tb || comma_tb->id() != TokenID::tkComma )
+			Throw(comma_tb ? comma_tb : tb) << "Expecting ',' in __builtin_types_compatible_p" << flush;
+		    skip_expression_whitespace(*this);
+		    TokenBase *rhs_tb = nextToken();
+		    std::string rhs_sig;
+		    if ( !parse_builtin_types_compatible_operand(*this, rhs_tb, rhs_sig) )
+			Throw(rhs_tb ? rhs_tb : tb) << "Invalid second type in __builtin_types_compatible_p" << flush;
+		    skip_expression_whitespace(*this);
+		    TokenBase *close_tb = nextToken();
+		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
+			Throw(close_tb ? close_tb : tb) << "Expecting ')' after __builtin_types_compatible_p" << flush;
+		    TokenInt *ti = new TokenInt(lhs_sig == rhs_sig ? 1 : 0);
+		    ti->setDataType(&ddINT);
+		    ti->file = tb->file;
+		    ti->line = tb->line;
+		    ti->column = tb->column;
+		    exStack.push(ti);
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		// va_arg(ap, type) — compiler intrinsic for reading variadic args
+		if ( ident_tb->str == "va_arg" )
+		{
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after va_arg" << flush;
+		    nextToken(); // consume (
+		    // first arg: the va_list expression — may be a simple
+		    // identifier, *ptr, aps[4], or any expression that yields
+		    // a va_list. Parse as a general expression; comma stops it.
+		    TokenBase *ap_first = nextToken();
+		    TokenBase *ap_expr = parseExpression(ap_first, false, false, false, 0, true);
+		    // For backward compat, extract the Variable* when the
+		    // expression is a simple variable or deref — but NOT for
+		    // struct member (TokenMember) or subscript expressions,
+		    // which need the full expression for proper Mem write-back.
+		    Variable *ap_var = NULL;
+		    if ( dynamic_cast<TokenMember *>(ap_expr)
+		      || dynamic_cast<TokenSubscriptExpr *>(ap_expr) )
+			; // leave ap_var NULL — compiler uses ap_expr->operand()
+		    else if ( TokenVar *tv = dynamic_cast<TokenVar *>(ap_expr) )
+			ap_var = &tv->var;
+		    else if ( TokenDeref *td = dynamic_cast<TokenDeref *>(ap_expr) )
+			ap_var = &td->var;
+		    // consume comma
+		    TokenBase *comma_tb = nextToken();
+		    if ( comma_tb->id() != TokenID::tkComma )
+			Throw(comma_tb) << "Expecting ',' after va_list expression in va_arg" << flush;
+		    // second arg: type name
+		    TokenBase *type_tb = nextToken();
+		    while ( is_type_qualifier_token(type_tb) )
+		    {
+			type_tb = nextToken();
+			if ( !type_tb )
+			    Throw(comma_tb) << "Expecting type after qualifier in va_arg" << flush;
+		    }
+		    DataDef *target_dd = NULL;
+		    if ( type_tb->type() == TokenType::ttDataType )
+			target_dd = &((TokenDataType *)type_tb)->definition;
+		    else if ( type_tb->type() == TokenType::ttIdentifier
+		      && ((TokenIdent *)type_tb)->str == "typeof" )
+		    {
+			TokenDataType *typeof_dt = parse_typeof_datatype(*this, type_tb);
+			target_dd = typeof_dt ? &typeof_dt->definition : NULL;
+		    }
+		    else if ( type_tb->type() == TokenType::ttIdentifier )
+		    {
+			std::string tname = ((TokenIdent *)type_tb)->str;
+			datatype_map_iter tdmi = datatype_map.find(tname);
+			if ( tdmi != datatype_map.end() )
+			    target_dd = &tdmi->second->definition;
+			if ( !target_dd )
+			{
+			    datadef_map_iter sdmi = struct_map.find(tname);
+			    if ( sdmi != struct_map.end() )
+				target_dd = sdmi->second;
+			}
+		    }
+		    // handle 'struct Tag' or 'union Tag' as va_arg type
+		    if ( !target_dd && type_tb->type() == TokenType::ttKeyword
+			&& (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
+		    {
+			TokenBase *tag_tb = nextToken();
+			if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
+			{
+			    std::string sname = ((TokenIdent *)tag_tb)->str;
+			    datadef_map_iter sdmi = struct_map.find(sname);
+			    if ( sdmi != struct_map.end() )
+				target_dd = sdmi->second;
+			}
+		    }
+		    // handle 'enum Tag' — treat as int
+		    if ( !target_dd && type_tb->type() == TokenType::ttKeyword
+			&& type_tb->id() == TokenID::tkENUM )
+		    {
+			nextToken(); // consume tag name
+			target_dd = &ddINT;
+		    }
+		    // handle compound type specifiers: unsigned, long, etc.
+		    if ( !target_dd && type_tb->type() == TokenType::ttDataType )
+			target_dd = &((TokenDataType *)type_tb)->definition;
+		    if ( !target_dd )
+			Throw(type_tb) << "Unknown type in va_arg" << flush;
+		    // handle pointer: va_arg(ap, char *)
+		    while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+		    {
+			nextToken(); // consume '*'
+			target_dd = getPointerType(target_dd);
+		    }
+		    // consume closing ) unless a nested typeof/expression parse
+		    // already balanced the token stream to the outer close-paren
+		    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+			nextToken();
+		    else if ( (!curToken() || curToken()->id() != TokenID::tkClBrk)
+		       && (!prevToken() || prevToken()->id() != TokenID::tkClBrk) )
+			Throw(type_tb) << "Expecting ')' after va_arg type" << flush;
+		    exStack.push(new TokenVaArg(ap_var, ap_expr, target_dd));
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		if ( prevToken() && prevToken()->id() == TokenID::tkDot )
+		{
+#if 0
+		    DBG(cout << "parseExpression() prevToken is tkDot, pushing TokenIdent " << ((TokenIdent *)tb)->str << endl);
+		    exStack.push(tb);
+#else
+		    if ( exStack.empty() )
+			Throw(tb) << "expected expression" << flush;
+		    // Accept TokenVar, TokenMember, TokenSubscript, or a
+		    // compound literal as LHS for dot access. Subscript case:
+		    // tab[i].member for an array of structs.
+		    TokenBase *lhs_dot = exStack.top();
+		    if ( TokenBase *ctx_member = resolve_expression_context_member(lhs_dot, ident_tb) )
+		    {
+			exStack.pop();
+			exStack.push(ctx_member);
+			if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+			    opStack.pop();
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
+			    if ( lhs_dot->type() != TokenType::ttVariable
+			      && lhs_dot->type() != TokenType::ttMember
+			      && lhs_dot->type() != TokenType::ttSubscript
+			      && lhs_dot->type() != TokenType::ttCompound
+			      && lhs_dot->type() != TokenType::ttStructLit
+				    && lhs_dot->type() != TokenType::ttCallFunc
+				    && lhs_dot->type() != TokenType::ttCallMethod
+				    && lhs_dot->type() != TokenType::ttOperator   // (a + b).member — operator result object
+				    && lhs_dot->id() != TokenID::tkObjTemp        // T(args).member — functional-ctor temp
+				    && lhs_dot->id() != TokenID::tkTypeid )   // typeid(x).name() (S5d)
+				    Throw(tb) << "member reference is not a structure or union" << flush;
+		    Variable *tv_var;
+		    DataDef  *struct_type;
+		    if ( lhs_dot->type() == TokenType::ttVariable )
+		    {
+			TokenVar *tv = dynamic_cast<TokenVar *>(lhs_dot);
+			tv_var      = &tv->var;
+			struct_type =  tv->var.type;
+			// A class-REFERENCE parameter (`A &a`) is lowered to a
+			// pointer (vfREFERENCE, type DataDefPTR(A)) — like a numeric
+			// `T&`. Member access `a.member` is therefore `a->member`:
+			// resolve struct_type to the pointed-to class so member /
+			// method lookup works, while tv_var keeps the pointer-typed
+			// reference var so the CIR member codegen emits N_DEREF_FIELD.
+			// The hidden `__this` parameter is the same shape: a
+			// pointer-to-class. `this.member` (madc's dot form) is thus
+			// `this->member` — unwrap to the class for lookup, keep the
+			// pointer var for codegen. (`this->member` already takes the
+			// arrow path; this clause covers only the dot spelling.)
+			if ( ((tv->var.flags & vfREFERENCE) || tv->var.name == "__this")
+			  && struct_type && struct_type->is_pointer() )
+			{
+			    DataDefPTR *rp = dynamic_cast<DataDefPTR *>(struct_type);
+			    if ( rp && rp->base_type
+			      && (rp->base_type->is_struct()
+			       || rp->base_type->is_object()) )
+				struct_type = rp->base_type;
+			}
+		    }
+		    else if ( lhs_dot->type() == TokenType::ttMember )
+		    {
+			TokenMember *tm = dynamic_cast<TokenMember *>(lhs_dot);
+			if ( tm )
+			{
+			    tv_var      = &tm->var;
+			    struct_type =  tm->var.type;
+			}
+			else if ( TokenDeref *tdl = dynamic_cast<TokenDeref *>(lhs_dot) )
+			{
+			    // (*p).member — logically equivalent to p->member.
+			    // Route the dot through the pointer variable so the
+			    // normal TokenMember pointer-in-Gp path compiles it
+			    // as [p + offset] at codegen time.
+			    tv_var      = &tdl->var;
+			    struct_type =  tdl->deref_type;
+			}
+			else if ( TokenDerefExpr *tdxl = dynamic_cast<TokenDerefExpr *>(lhs_dot) )
+			{
+			    // (*expr).member — expr yields a pointer whose target
+			    // is a struct. Resolve member lookup against the
+			    // dereferenced struct type; codegen uses the expr's
+			    // pointer value as base via TokenMember's parent_expr
+			    // path.
+			    tv_var      = new Variable("__deref_expr", *tdxl->deref_type, 1, NULL, false);
+			    struct_type =  tdxl->deref_type;
+			}
+			else
+			    Throw(tb) << "member reference '.' on unsupported deref expression" << flush;
+		    }
+		    else
+		    {
+			TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(lhs_dot);
+			if ( tsub )
+			{
+			    tv_var      = &tsub->object;
+			    struct_type =  tsub->datadef(); // element type
+			}
+			else if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(lhs_dot) )
+			{
+			    // expr[i].member — subscript LHS is an arbitrary
+			    // pointer/array-producing expression (e.g.
+			    // `ch->pcdata->killed[x].vnum`). Synthesize a
+			    // struct-typed object variable and route codegen
+			    // through the TokenSubscriptExpr as parent_expr;
+			    // TokenMember::operand's dot-chain path handles
+			    // [base + idx*shift + offset].
+			    DataDef *elem_type = tse->datadef();
+			    if ( !elem_type )
+				Throw(tb) << "subscript expression has no element type" << flush;
+			    tv_var      = new Variable("__sub_expr", *elem_type, 1, NULL, false);
+			    struct_type =  elem_type;
+			}
+			else if ( TokenStructLit *slit = dynamic_cast<TokenStructLit *>(lhs_dot) )
+			{
+			    struct_type = slit->datadef();
+			    if ( !struct_type )
+				Throw(tb) << "compound literal has no type" << flush;
+			    tv_var = new Variable("__compound_lit", *struct_type, 1, NULL, false);
+			}
+			else if ( lhs_dot->type() == TokenType::ttCompound )
+			{
+			    DataDef *stmt_type = lhs_dot->datadef();
+			    if ( !stmt_type )
+				Throw(tb) << "statement expression has no type for member access" << flush;
+			    struct_type = stmt_type;
+			    tv_var = new Variable("__stmt_expr", *struct_type, 1, NULL, false);
+			}
+				else if ( lhs_dot->type() == TokenType::ttCallFunc
+				       || lhs_dot->type() == TokenType::ttCallMethod )
+				{
+				    // f().member / obj.method().member — call result
+				    // member access. The callee's declared return type is
+				    // the receiver type for the next lookup.
+				    TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(lhs_dot);
+				    DataDef *ret_type = tcf ? tcf->returns() : NULL;
+				    if ( !ret_type )
+					Throw(tb) << "call has no return type for member access" << flush;
+				    struct_type = ret_type;
+				    tv_var = new Variable("__call_expr", *struct_type, 1, NULL, false);
+				}
+			else if ( lhs_dot->type() == TokenType::ttOperator
+			       || lhs_dot->id() == TokenID::tkObjTemp )
+			{
+			    // (a + b).member or T(args).member — a class-object rvalue
+			    // (an overloaded-operator result typed by
+			    // resolve_object_operator_type, or a functional-construction
+			    // temp TokenObjTemp). The rvalue is materialized at codegen via
+			    // parent_expr (class_this_arg -> translate_expr -> the temp).
+			    DataDef *op_type = NULL;
+			    if ( TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(lhs_dot) )
+				op_type = ot->obj_class;
+			    else
+				op_type = lhs_dot->datadef();
+			    if ( !op_type || (!op_type->is_object() && !op_type->is_struct()) )
+			    {
+				DBG(std::cerr << "dot rvalue member reject: lhs type="
+				    << (int)lhs_dot->type() << " id=" << (int)lhs_dot->id()
+				    << " dd=" << (op_type ? op_type->name : std::string("<null>"))
+				    << std::endl);
+				Throw(tb) << "member reference is not a structure or union" << flush;
+			    }
+			    struct_type = op_type;
+			    tv_var = new Variable("__op_expr", *struct_type, 1, NULL, false);
+			}
+			else if ( lhs_dot->id() == TokenID::tkTypeid )
+			{
+			    // typeid(x).name() — the typeid result is std::type_info*
+			    // (a reference modeled as a pointer); resolve member lookup
+			    // against the pointed-to type_info class and route codegen
+			    // through the typeid as parent_expr (class_this_arg passes
+			    // the pointer straight through as `this`).
+			    DataDef *rt = lhs_dot->datadef();
+			    DataDefPTR *rp = dynamic_cast<DataDefPTR *>(rt);
+			    struct_type = rp ? rp->base_type : rt;
+			    if ( !struct_type )
+				Throw(tb) << "typeid result has no type for member access" << flush;
+			    tv_var = new Variable("__typeid_expr", *struct_type, 1, NULL, false);
+			}
+			else
+			    Throw(tb) << "member reference '.' on unsupported subscript form" << flush;
+		    }
+		    if ( !struct_type->is_struct() && !struct_type->is_object() )
+			Throw(tb) << "member reference is not a structure or union" << flush;
+		    var = NULL;
+		    string id = ident_tb->str;
+		    DataDefCLASS *method_cls =
+			struct_type->is_object() ? (DataDefCLASS *)struct_type : NULL;
+		    if ( method_cls )
+		    {
+			bool call_follows = peekToken()
+			    && peekToken()->id() == TokenID::tkOpBrk;
+			var = call_follows
+			    ? find_method_by_callable_arity(method_cls, id,
+				count_queued_call_arguments(*this), false)
+			    : method_cls->findMethod(id);
+			if ( !var && call_follows )
+			    var = method_cls->findMethod(id);
+		    }
+		    if ( var )
+		    {
+			// Access control (P2.5c): reject a private/protected METHOD
+			// call from outside the (derived) class. Same context + rule
+			// as the data-member check.
+			{
+			    DataDefCLASS *cur_class =
+				(code && code->method) ? code->method->owner_class : NULL;
+			    std::string av =
+				method_access_violation(struct_type, var, id, cur_class);
+			    if ( !av.empty() )
+				Throw(tb) << av << flush;
+			}
+			if ( var->flags & vfSTATIC )
+			{
+			    TokenCallFunc *tc = new TokenCallFunc(*var);
+			    tb = nextToken();
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    if ( tb->id() == TokenID::tkOpBrk )
+				tb = parseCallFunc(tc);
+			    std::vector<const DataDef *> at;
+			    for ( TokenBase *p : tc->parameters )
+				at.push_back(p ? p->datadef() : NULL);
+			    if ( Variable *ov = method_cls->findMethodOverload(id, at) )
+				if ( ov != &tc->var && (ov->flags & vfSTATIC) )
+				{
+				    TokenCallFunc *tc2 = new TokenCallFunc(*ov);
+				    tc2->parameters = tc->parameters;
+				    tc2->file = tc->file;
+				    tc2->line = tc->line;
+				    tc2->column = tc->column;
+				    tc = tc2;
+				}
+			    var = &tc->var;
+			    exStack.pop();
+			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+				opStack.pop();
+			    opStack.push(tc);
+			    if ( tb->id() == TokenID::tkSemi )
+				done = true;
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+			// Method call on a class-object receiver. The common case is a
+			// bare object variable (`s.length()`). A subscript element
+			// (`v[i].length()` where v's operator[] returns a class element)
+			// is also a valid receiver: build the TokenCallMethod with the
+				// subscript as parent_expr so the CIR side (class_this_arg)
+				// addresses the element via class_subscript_addr. A prior
+				// method call returning an object/reference is likewise a
+				// valid chained receiver.
+			// (Both TokenSubscript and TokenSubscriptExpr report
+			// ttSubscript.)
+			TokenBase *recv_parent = NULL;
+				if ( lhs_dot->type() == TokenType::ttSubscript )
+				    recv_parent = lhs_dot;
+				else if ( lhs_dot->id() == TokenID::tkTypeid )
+				    recv_parent = lhs_dot;   // typeid(x).name() (S5d)
+				else if ( lhs_dot->type() == TokenType::ttOperator
+				       || lhs_dot->id() == TokenID::tkObjTemp )
+				    recv_parent = lhs_dot;   // (a + b).method() — operator result object
+				else if ( lhs_dot->type() == TokenType::ttCallFunc )
+				    recv_parent = lhs_dot;   // f().method()
+				else if ( lhs_dot->type() == TokenType::ttCallMethod )
+				    recv_parent = lhs_dot;   // obj.method().next()
+				else if ( lhs_dot->type() != TokenType::ttVariable )
+				    Throw(tb) << "chained method call not yet supported" << flush;
+			TokenCallMethod *tc = new TokenCallMethod(*tv_var, *var);
+			if ( recv_parent )
+			    tc->parent_expr = recv_parent;
+			tb = nextToken();
+			tc->line = tb->line;
+			tc->column = tb->column;
+			// if bracket, parse params
+			if ( tb->id() == TokenID::tkOpBrk )
+			{
+			    // delete tb?
+			    tb = parseCallMethod(tc);
+			    DBG(cout << "parseCallMethod returned with token " << (char)tb->get() << endl);
+			}
+			// Now that the argument types are known, re-bind to the
+			// overload they actually select (findMethod above took the
+			// first by-name match).
+			tc = reselect_method_overload(tc, *tv_var, method_cls, id);
+			var = &tc->var;
+			// remove object TokenVar from exStack
+			exStack.pop();
+			// remove TokenDot from opStack
+			if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+			{
+			    DBG(cout << "parseCallMethod, removing tkDot from opStack" << endl);
+			    opStack.pop();
+			}
+			DBG(cout << "Pushing found method call: " << var->name << "() onto opStack" << endl);
+			opStack.push(tc);
+			// I'm not sure why I need to do this TODO: figure this out
+			if ( tb->id() == TokenID::tkSemi )
+			    done = true;
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
+		    if ( struct_type->is_object()
+		      && class_has_unresolved_dependent_surface((DataDefCLASS *)struct_type)
+		      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		    {
+			TokenBase *open = nextToken();
+			tb = consume_unresolved_dependent_call(*this, open);
+			exStack.pop();
+			if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+			    opStack.pop();
+			exStack.push(make_dependent_call_placeholder(tb));
+			if ( tb && tb->id() == TokenID::tkSemi )
+			    done = true;
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
+		    // get offset
+		    ssize_t ofs = ((DataDefSTRUCT *)struct_type)->m_offset(id);
+		    if ( ofs == -1 )
+			Throw(tb) << "Unidentified member" << flush;
+		    // Access control (P2.5): reject private/protected member access
+		    // from outside the (derived) class. cur_class = the class whose
+		    // method body we are parsing (NULL outside any method).
+		    {
+			DataDefCLASS *cur_class =
+			    (code && code->method) ? code->method->owner_class : NULL;
+			std::string av =
+			    member_access_violation(struct_type, id, cur_class);
+			if ( !av.empty() )
+			    Throw(tb) << av << flush;
+		    }
+		    DataDef *mtype = ((DataDefSTRUCT *)struct_type)->m_type(id);
+		    // create new variable
+		    var = new Variable(id, *mtype, 1, NULL, false);
+		    var->flags = member_proxy_flags(tv_var->flags);
+		    if ( tv_var->data )
+			var->data = (void *)((char *)tv_var->data + ofs);
+		    // remove LHS from exStack
+		    exStack.pop();
+		    // When LHS carries its own base-pointer (TokenMember for dot/arrow
+		    // chains, or TokenSubscript for array-of-structs), pass it as
+		    // parent_expr so TokenMember::operand() can resolve the base at
+		    // codegen time.
+		    //
+		    // TokenDeref reports ttMember for LHS-compat reasons but is
+		    // not a real TokenMember — for `(*p).x` we already routed
+		    // tv_var to the pointer `p`, so the normal no-parent_expr path
+		    // compiles it as `p->x` via voperand's pointer-in-Gp branch.
+		    //
+		    // TokenDerefExpr is the opposite: `(*expr).x` where expr is a
+		    // pointer-producing expression. Pass the TokenDerefExpr as
+		    // parent_expr so TokenMember::operand calls expr->compile to
+		    // materialize the pointer value at codegen, then accesses
+		    // [ptr + offset] via the struct-value ("dot chain") branch.
+		    bool is_deref_lhs = (dynamic_cast<TokenDeref *>(lhs_dot) != NULL);
+		    bool is_derefexpr_lhs = (dynamic_cast<TokenDerefExpr *>(lhs_dot) != NULL);
+		    bool is_compound_lit_lhs = (dynamic_cast<TokenStructLit *>(lhs_dot) != NULL);
+		    bool is_stmt_expr_lhs = (lhs_dot->type() == TokenType::ttCompound);
+			    bool is_callfunc_lhs = (lhs_dot->type() == TokenType::ttCallFunc
+				|| lhs_dot->type() == TokenType::ttCallMethod);
+		    if ( is_derefexpr_lhs || is_compound_lit_lhs || is_stmt_expr_lhs || is_callfunc_lhs )
+			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
+		    else if ( !is_deref_lhs
+		      && (lhs_dot->type() == TokenType::ttMember
+		       || lhs_dot->type() == TokenType::ttSubscript) )
+			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
+		    else
+			exStack.push(new TokenMember(*tv_var, *var, ofs));
+		    // remove TokenDot from opStack
+		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+			opStack.pop();
+#endif
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		// -> pointer member access: ptr->member
+		if ( prevToken() && prevToken()->id() == TokenID::tkDeRef )
+		{
+		    if ( exStack.empty() )
+			Throw(tb) << "expected expression before '->'" << flush;
+
+		    // get the pointer-valued LHS — from TokenVar/TokenMember or a
+		    // pointer-returning subscript expression such as tab[i]->field
+		    TokenBase *lhs = exStack.top();
+		    Variable *obj_var = NULL;
+		    DataDef *obj_type = NULL;
+		    bool expr_backed_lhs = false;
+		    bool fixed_array_arrow = false;
+		    bool arrow_via_op = false;
+		    // P2.1b gap 2 — operator->: when the LHS is a class OBJECT (not a
+		    // pointer) whose class declares operator->, C++ canon rewrites
+		    // `obj->m` as `(obj.operator->())->m`: call operator-> (which
+		    // returns a pointer), then apply the real `->` to that result.
+		    // Reuses the class-method dispatch — no parallel codegen (I6).
+		    if ( lhs->type() == TokenType::ttVariable )
+		    {
+			TokenVar *otv = dynamic_cast<TokenVar *>(lhs);
+			DataDefCLASS *ocls = (otv && otv->var.type && otv->var.type->is_object())
+			    ? dynamic_cast<DataDefCLASS *>(otv->var.type) : NULL;
+			std::string arrow_name("operator->");
+			Variable *arrow_m = ocls ? ocls->findMethod(arrow_name) : NULL;
+			if ( arrow_m && !otv->var.type->is_pointer() )
+			{
+			    TokenCallMethod *opcall = new TokenCallMethod(otv->var, *arrow_m);
+			    opcall->file = tb->file;
+			    opcall->line = tb->line;
+			    opcall->column = tb->column;
+			    DataDef *ret = opcall->datadef();
+			    if ( !ret || !ret->is_pointer() )
+				Throw(tb) << "operator-> must return a pointer" << flush;
+			    exStack.pop();
+			    exStack.push(opcall);
+			    lhs = opcall;
+			    obj_type = ret;
+			    obj_var = new Variable("__arrow_op", *obj_type, 1, NULL, false);
+			    expr_backed_lhs = true;
+			    arrow_via_op = true;
+			}
+		    }
+		    if ( arrow_via_op )
+			; // LHS already resolved to operator-> call result above
+		    else if ( lhs->type() == TokenType::ttVariable )
+		    {
+			TokenVar *tv_lhs = dynamic_cast<TokenVar *>(lhs);
+			obj_var = &tv_lhs->var;
+			obj_type = obj_var->type;
+			fixed_array_arrow = obj_var->is_fixed_array();
+		    }
+		    else if ( lhs->type() == TokenType::ttMember )
+		    {
+			// TokenDeref and TokenDerefExpr also report ttMember (reuse
+			// member type for assignment compat) but are not TokenMember
+			// instances. When the cast fails, fall through to the
+			// expression-backed path using the node's reported datadef
+			// instead of throwing.
+			TokenMember *tm = dynamic_cast<TokenMember *>(lhs);
+			if ( tm )
+			{
+			    obj_var = &tm->var;
+			    obj_type = tm->var.type;
+			}
+			else if ( lhs->datadef() && lhs->datadef()->is_pointer() )
+			{
+			    obj_type = lhs->datadef();
+			    obj_var = new Variable("__arrow_expr", *obj_type, 1, NULL, false);
+			    expr_backed_lhs = true;
+			}
+			else
+			    Throw(tb) << "expression before '->' must be a pointer to struct" << flush;
+		    }
+		    else if ( effective_pointer_type_for_member_access(*this, lhs) )
+		    {
+			obj_type = effective_pointer_type_for_member_access(*this, lhs);
+			obj_var = new Variable("__arrow_expr", *obj_type, 1, NULL, false);
+			expr_backed_lhs = true;
+		    }
+		    else
+			Throw(tb) << "expression before '->' must be a pointer" << flush;
+
+		    if ( !fixed_array_arrow && !obj_type->is_pointer() )
+			Throw(tb) << "expression before '->' must be a pointer" << flush;
+
+		    // get the pointed-to type
+		    DataDef *base = obj_type;
+		    if ( !fixed_array_arrow )
+		    {
+			DataDefPTR *ptr_type = dynamic_cast<DataDefPTR *>(obj_type);
+			if ( !ptr_type || !ptr_type->base_type )
+			    Throw(tb) << "expression before '->' is not a typed pointer" << flush;
+			base = ptr_type->base_type;
+		    }
+		    if ( !base->is_struct() && !base->is_object() )
+			Throw(tb) << "member reference type is not a structure or union" << flush;
+
+		    string id = ident_tb->str;
+
+		    // get member offset and type — or method
+		    ssize_t ofs = ((DataDefSTRUCT *)base)->m_offset(id);
+		    if ( ofs == -1 && base->is_object() )
+		    {
+			// Check if it's a method call on a class pointer
+			DataDefCLASS *method_cls = (DataDefCLASS *)base;
+			bool call_follows = peekToken()
+			    && peekToken()->id() == TokenID::tkOpBrk;
+			var = call_follows
+			    ? find_method_by_callable_arity(method_cls, id,
+				count_queued_call_arguments(*this), false)
+			    : method_cls->findMethod(id);
+			if ( !var && call_follows )
+			    var = method_cls->findMethod(id);
+			if ( var )
+			{
+			    // Access control (P2.5c): reject a private/protected
+			    // METHOD call via `->` from outside the (derived) class.
+			    {
+				DataDefCLASS *cur_class =
+				    (code && code->method) ? code->method->owner_class : NULL;
+				std::string av =
+				    method_access_violation(base, var, id, cur_class);
+				if ( !av.empty() )
+				    Throw(tb) << av << flush;
+			    }
+			    if ( var->flags & vfSTATIC )
+			    {
+				TokenCallFunc *tc = new TokenCallFunc(*var);
+				tb = nextToken();
+				tc->line = tb->line;
+				tc->column = tb->column;
+				if ( tb->id() == TokenID::tkOpBrk )
+				    tb = parseCallFunc(tc);
+				std::vector<const DataDef *> at;
+				for ( TokenBase *p : tc->parameters )
+				    at.push_back(p ? p->datadef() : NULL);
+				if ( Variable *ov = method_cls->findMethodOverload(id, at) )
+				    if ( ov != &tc->var && (ov->flags & vfSTATIC) )
+				    {
+					TokenCallFunc *tc2 = new TokenCallFunc(*ov);
+					tc2->parameters = tc->parameters;
+					tc2->file = tc->file;
+					tc2->line = tc->line;
+					tc2->column = tc->column;
+					tc = tc2;
+				    }
+				var = &tc->var;
+				exStack.pop();
+				if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
+				    opStack.pop();
+				opStack.push(tc);
+				if ( tb->id() == TokenID::tkSemi )
+				    done = true;
+				return done ? ExprStep::Done : ExprStep::Break;
+			    }
+			    // arrow method call: ptr->method(args). The common LHS is a
+			    // pointer variable / member. A SUBSCRIPT element that is a
+			    // pointer-to-class (`v[i]` where v is vector<Base*>) is also a
+			    // valid receiver: build the TokenCallMethod with the subscript
+			    // as parent_expr so the CIR side (class_this_arg) passes the
+			    // element POINTER VALUE as __this (recv_is_ptr -> pass the
+			    // pointer directly, NOT its address — unlike the dot case where
+			    // the element is an object and __this = &element). Other chained
+			    // receivers (member-of-call, etc.) are not yet supported.
+			    TokenBase *recv_parent = NULL;
+			    if ( lhs->type() == TokenType::ttSubscript )
+				recv_parent = lhs;
+			    else if ( arrow_via_op )
+				// operator-> result is a pointer VALUE; pass it as
+				// __this directly (recv_is_ptr), like a pointer element.
+				recv_parent = lhs;
+			    else if ( lhs->type() != TokenType::ttVariable
+				   && lhs->type() != TokenType::ttMember )
+				Throw(tb) << "chained arrow method call not yet supported" << flush;
+			    TokenCallMethod *tc = new TokenCallMethod(*obj_var, *var);
+			    if ( recv_parent )
+				tc->parent_expr = recv_parent;
+			    tb = nextToken();
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    if ( tb->id() == TokenID::tkOpBrk )
+				tb = parseCallMethod(tc);
+			    // Re-bind to the overload the argument types select.
+			    tc = reselect_method_overload(tc, *obj_var,
+				    method_cls, id);
+			    var = &tc->var;
+			    exStack.pop();
+			    // remove TokenDeRef from opStack
+			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
+				opStack.pop();
+			    opStack.push(tc);
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+			if ( class_has_unresolved_dependent_surface((DataDefCLASS *)base)
+			  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+			{
+			    TokenBase *open = nextToken();
+			    tb = consume_unresolved_dependent_call(*this, open);
+			    exStack.pop();
+			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
+				opStack.pop();
+			    exStack.push(make_dependent_call_placeholder(tb));
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+		    }
+		    if ( ofs == -1 )
+			Throw(tb) << "no member named '" << id << "'" << flush;
+		    // Access control (P2.5): reject private/protected member access
+		    // via `->` from outside the (derived) class.
+		    {
+			DataDefCLASS *cur_class =
+			    (code && code->method) ? code->method->owner_class : NULL;
+			std::string av =
+			    member_access_violation(base, id, cur_class);
+			if ( !av.empty() )
+			    Throw(tb) << av << flush;
+		    }
+		    DataDef *mtype = ((DataDefSTRUCT *)base)->m_type(id);
+
+		    // create variable for the member
+		    var = new Variable(id, *mtype, 1, NULL, false);
+		    var->flags = member_proxy_flags(obj_var->flags);
+
+		    // remove LHS from exStack
+		    exStack.pop();
+		    // for chained -> (lhs was a TokenMember), pass it as parent_expr so
+		    // operand() can compile the intermediate pointer at codegen time
+		    if ( lhs->type() == TokenType::ttMember || expr_backed_lhs )
+			exStack.push(new TokenMember(*obj_var, *var, ofs, lhs));
+		    else
+			exStack.push(new TokenMember(*obj_var, *var, ofs));
+		    // remove TokenDeRef from opStack
+		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
+			opStack.pop();
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		// namespace resolution: identifier :: member
+		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+		{
+		    std::string ns_name = ident_tb->str;
+		    if ( DataDefCLASS *class_scope =
+			    resolve_expression_class_scope(*this, ns_name) )
+		    {
+			QualifiedClassExprAction action =
+			    resolve_class_qualified_expression(*this, class_scope,
+				ns_name, tb, exStack, &var, &tb);
+			if ( action == QualifiedClassExprAction::ResolvedFunction )
+			    goto ns_resolved;
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
+		    std::string resolved_ns_name =
+			resolve_namespace_name_in_scope(*this, ns_name);
+		    if ( !resolved_ns_name.empty() )
+			ns_name = resolved_ns_name;
+		    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
+		    if ( nsi == namespace_map.end() )
+			Throw(tb) << "Unknown namespace '" << ns_name << "'" << flush;
+		    nextToken(); // consume '::'
+		    TokenBase *member_tb = nextToken(); // consume member identifier
+		    if ( !member_tb )
+			Throw(tb) << "Expecting identifier after '" << ns_name << "::'" << flush;
+		    std::string member_name;
+		    if ( member_tb->type() == TokenType::ttDataType )
+			member_name = ((TokenDataType *)member_tb)->str;
+		    else if ( is_contextual_identifier_token(member_tb) )
+			member_name = contextual_identifier_name(member_tb);
+		    else
+			Throw(tb) << "Expecting identifier after '" << ns_name << "::'" << flush;
+
+		    DataDef *member_dd = NULL;
+		    if ( peekToken() && peekToken()->id() == TokenID::tkLT
+		      && template_declared_in_namespace(*this, member_name, ns_name) )
+		    {
+			if ( TokenDataType *alias_inst =
+				instantiate_template_alias_use(*this, member_name, member_tb) )
+			    member_dd = &alias_inst->definition;
+			else if ( TokenDataType *inst =
+				instantiate_template_use(*this, member_name, member_tb) )
+			    member_dd = &inst->definition;
+		    }
+		    if ( DataDefCLASS *member_scope =
+			    dynamic_cast<DataDefCLASS *>(member_dd) )
+		    {
+			if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+			{
+			    QualifiedClassExprAction action =
+				resolve_class_qualified_expression(*this,
+				    member_scope, member_name, member_tb,
+				    exStack, &var, &tb);
+			    if ( action == QualifiedClassExprAction::ResolvedFunction )
+				goto ns_resolved;
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+			if ( TokenBase *type_expr =
+				parse_functional_type_expression(*this, member_tb,
+				    member_dd) )
+			{
+			    exStack.push(type_expr);
+			    tb = member_tb;
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+		    }
+
+		    namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
+		    if ( nti != namespace_datatype_map.end() )
+		    {
+			datatype_map_iter dti = nti->second.find(member_name);
+			if ( dti != nti->second.end() )
+			{
+			    DataDef *ns_member_dd = &dti->second->definition;
+			    if ( DataDefCLASS *member_scope =
+				    dynamic_cast<DataDefCLASS *>(ns_member_dd) )
+			    {
+				if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+				{
+				    QualifiedClassExprAction action =
+					resolve_class_qualified_expression(*this,
+					    member_scope, member_name, member_tb,
+					    exStack, &var, &tb);
+				    if ( action == QualifiedClassExprAction::ResolvedFunction )
+					goto ns_resolved;
+				    return done ? ExprStep::Done : ExprStep::Break;
+				}
+			    }
+			    if ( TokenBase *type_expr = parse_functional_type_expression(
+				    *this, member_tb, ns_member_dd) )
+			    {
+				exStack.push(type_expr);
+				tb = member_tb;
+				return done ? ExprStep::Done : ExprStep::Break;
+			    }
+			}
+		    }
+		    variable_map_iter vmi = nsi->second.find(member_name);
+		    if ( vmi == nsi->second.end() )
+		    {
+			// try dlsym fallback if this namespace was loaded via #load
+			std::map<std::string, void *>::iterator dli = dlopen_map.find(ns_name);
+			if ( dli == dlopen_map.end() )
+			    Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
+			if ( !is_dynamic_symbol_fallback_enabled() )
+			    Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
+			if ( !is_dynamic_symbol_allowed(member_name) )
+			    Throw(member_tb) << "dynamic symbol '" << member_name
+					     << "' is not allowed by registration policy" << flush;
+			void *sym = dlsym(dli->second, member_name.c_str());
+			if ( !sym )
+			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << dlerror() << flush;
+			// create function with int64 return, no declared params (variadic-like)
+			// actual args are passed through at compile time
+			std::string func_id = "__dl_" + ns_name + "_" + member_name;
+			var = addFunction(func_id,
+			    datatype_vec_t{DataType::dtINT64},
+			    (fVOIDFUNC)sym);
+			if ( !var )
+			    Throw(member_tb) << "Failed to register dlsym function '" << member_name << "'" << flush;
+			nsi->second[member_name] = var; // cache for next call
+			DBG(cout << "parseExpression() dlsym resolved " << ns_name << "::" << member_name << " at " << (uint64_t)sym << endl);
+		    }
+		    else
+			var = vmi->second;
+		    DBG(cout << "parseExpression() resolved " << ns_name << "::" << member_name << endl);
+		    tb = member_tb; // update tb for line/col tracking below
+		    goto ns_resolved;
+		}
+		// Statement-head `ns::member(...)` should resolve the callee from
+		// the active namespace first, but once we're inside that call's
+		// arguments / subexpressions, lexical scope should win so locals
+		// can shadow same-named namespace members (`ruby::chars(chars, s)`).
+		if ( !parsed_operator_name
+		  && code && code->method && code->method->owner_class
+		  && (!prevToken() || prevToken()->id() != TokenID::tkNS)
+		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    DataDefCLASS *cls = code->method->owner_class;
+		    std::string mname = member_lookup_name;
+		    Variable *mvar =
+			find_method_by_callable_arity(cls, mname,
+			    count_queued_call_arguments(*this), false);
+		    if ( mvar )
+		    {
+			if ( mvar->flags & vfSTATIC )
+			{
+			    tb = nextToken();
+			    TokenCallFunc *tc = new TokenCallFunc(*mvar);
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    tb = parseCallFunc(tc);
+			    opStack.push(tc);
+			    if ( tb->id() == TokenID::tkSemi )
+				done = true;
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+			std::string thisid = "__this";
+			Variable *thisvar = code->method->findParameter(thisid);
+			if ( thisvar )
+			{
+			    TokenCallMethod *tc = new TokenCallMethod(*thisvar, *mvar);
+			    tb = nextToken();
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    tb = parseCallMethod(tc);
+			    tc = reselect_method_overload(tc, *thisvar, cls, mname);
+			    opStack.push(tc);
+			    if ( tb->id() == TokenID::tkSemi )
+				done = true;
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+		    }
+		}
+		var = parsed_operator_name ? NULL : resolve_preferred_identifier(ident_tb, expression_head);
+		// `this` keyword: inside a class method body it names the hidden
+		// __this parameter (a `ClassName*`). Resolving it here lets
+		// `this->member` / `this.member` / `this->method()` flow through the
+		// EXISTING pointer-member-access path, and `this` as a value (e.g.
+		// `return this;`) be the pointer itself. Outside a method it stays
+		// unresolved -> the usual "undeclared identifier" error.
+		if ( !var && ident_tb->str == "this"
+		     && code && code->method && code->method->owner_class )
+		{
+		    std::string thisid = "__this";
+		    var = code->method->findParameter(thisid);
+		}
+		// class method: resolve unqualified member name through __this
+		if ( !var
+		  && (!prevToken() || prevToken()->id() != TokenID::tkNS)
+		  && code && code->method && code->method->owner_class )
+		{
+		    DataDefCLASS *cls = code->method->owner_class;
+		    std::string mname = member_lookup_name;
+		    if ( DataDef *static_dd = resolve_class_static_member_type(cls, mname) )
+		    {
+			TokenInt *ti = new TokenInt(0);
+			ti->setDataType(static_dd);
+			ti->file = tb->file;
+			ti->line = tb->line;
+			ti->column = tb->column;
+			exStack.push(ti);
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
+		    ssize_t ofs = cls->m_offset(mname);
+		    if ( ofs >= 0 )
+		    {
+			DataDef *mtype = cls->m_type(mname);
+			// find __this parameter
+			std::string thisid = "__this";
+			Variable *thisvar = code->method->findParameter(thisid);
+			if ( thisvar )
+			{
+			    Variable *member = new Variable(mname, *mtype, 1, NULL, false);
+			    exStack.push(new TokenMember(*thisvar, *member, ofs));
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+		    }
+		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		    {
+			Variable *mvar =
+			    find_method_by_callable_arity(cls, mname,
+				count_queued_call_arguments(*this), false);
+			if ( mvar )
+			{
+			    if ( mvar->flags & vfSTATIC )
+			    {
+				tb = nextToken();
+				TokenCallFunc *tc = new TokenCallFunc(*mvar);
+				tc->line = tb->line;
+				tc->column = tb->column;
+				opStack.push(tc);
+				if ( tb->id() == TokenID::tkOpBrk )
+				    tb = parseCallFunc(tc);
+				if ( tb->id() == TokenID::tkSemi )
+				    done = true;
+				return done ? ExprStep::Done : ExprStep::Break;
+			    }
+			    std::string thisid = "__this";
+			    Variable *thisvar = code->method->findParameter(thisid);
+			    if ( thisvar )
+			    {
+				TokenCallMethod *tc = new TokenCallMethod(*thisvar, *mvar);
+				tb = nextToken();
+				tc->line = tb->line;
+				tc->column = tb->column;
+				tb = parseCallMethod(tc);
+				tc = reselect_method_overload(tc, *thisvar, cls, mname);
+				opStack.push(tc);
+				if ( tb->id() == TokenID::tkSemi )
+				    done = true;
+				return done ? ExprStep::Done : ExprStep::Break;
+			    }
+			}
+		    }
+		}
+		if ( parsed_operator_name )
+		    Throw(tb) << "use of undeclared member '" << member_lookup_name << '\'' << flush;
+		// lazy-load check: symbol registered by #include but not yet created
+		if ( !var )
+		    var = lazy_resolve(ident_tb->str);
+		if ( !var )
+		{
+		    TokenBase *ctx_value = resolve_expression_context_identifier(ident_tb);
+		    if ( ctx_value )
+		    {
+			exStack.push(ctx_value);
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
+		}
+		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    std::string fname = ident_tb->str;
+		    // dlsym fallback: resolve known libc/system functions early.
+		    // If that fails, C89 still permits an implicit `int f()`
+		    // declaration for calls to functions defined later in the file.
+		    if ( !var && is_implicit_complex_builtin_name(fname) )
+		    {
+			FuncDef *implicit_func = make_implicit_complex_builtin_func(fname);
+			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
+			Method *implicit_method = new Method(*var);
+			var->data = (void *)implicit_method;
+			// Register in funcdef_map so the CIR proto pass emits an
+			// extern prototype carrying the real (often _Complex) return
+			// type. Without a prototype c2mir defaults an undeclared call
+			// to `int (...)`, so a _Complex-returning builtin (conjf, …)
+			// returned through the wrong (scalar/variadic) ABI.
+			funcdef_map[fname] = implicit_func;
+			DBG(cout << "parseExpression() created builtin complex helper declaration for " << fname << endl);
+		    }
+		    if ( is_dynamic_symbol_fallback_enabled()
+		      && !is_implicit_complex_builtin_name(fname)
+		      && is_dynamic_symbol_allowed(fname) )
+		    {
+			void *sym = dlsym(RTLD_DEFAULT, fname.c_str());
+			if ( sym )
+			{
+			    var = addFunction(fname,
+				datatype_vec_t{dynamic_symbol_fallback_return_type(fname)},
+				(fVOIDFUNC)sym);
+			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
+			}
+		    }
+		    if ( !var && is_implicit_complex_builtin_name(fname) )
+		    {
+			FuncDef *implicit_func = make_implicit_complex_builtin_func(fname);
+			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
+			Method *implicit_method = new Method(*var);
+			var->data = (void *)implicit_method;
+			funcdef_map[fname] = implicit_func;  /* emit a real prototype (see above) */
+			DBG(cout << "parseExpression() created builtin complex helper declaration for " << fname << endl);
+		    }
+		    if ( !var && token_origin_allows_c89_implicit_function(ident_tb) )
+		    {
+			FuncDef *implicit_func = new FuncDef(ddINT32);
+			// No prototype exists yet, so accept any argument count.
+			// The real later definition replaces var->type before
+			// TokenCallFunc compiles calls to this variable.
+			implicit_func->is_varargs = true;
+			implicit_func->parameters.push_back(&ddINT64);
+			implicit_func->param_typedef_names.push_back("");
+			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
+			Method *implicit_method = new Method(*var);
+			var->data = (void *)implicit_method;
+			DBG(cout << "parseExpression() created implicit function declaration for " << fname << endl);
+		    }
+		}
+		if ( !var )
+		{
+		    // Functional construction `T(args)`: only when the unresolved
+		    // identifier names a class type followed by '(' (ordinary calls
+		    // resolved to `var` above). General; no per-class machinery.
+		    if ( TokenObjTemp *ot = try_parse_functional_ctor(*this, tb) )
+		    {
+			exStack.push(ot);
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
+		    DBG(cerr << "parseExpression() failed to resolve identifier " << ident_tb->str << endl);
+		    Throw(tb) << "use of undeclared identifier '" << ident_tb->str << '\'' << flush;
+		}
+		ns_resolved:
+		if ( var->type->is_function() )
+		{
+		    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+			skip_template_id_suffix(*this);
+		    // function pointer variable (DataDefFPTR) — different from regular functions
+		    if ( var->type->is_numeric() )
+		    {
+			// FPTR variable: if followed by (, call through pointer
+			if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+			{
+			    TokenCallFunc *tc = new TokenCallFunc(*var);
+			    tb = nextToken();
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    tb = parseCallFunc(tc);
+			    opStack.push(tc);
+			    if ( tb->id() == TokenID::tkSemi )
+				done = true;
+			}
+			else
+			{
+			    // FPTR variable as value — push onto exStack
+			    exStack.push(new TokenVar(*var));
+			}
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
+		    // Regular function identifier.
+		    // C function-to-pointer decay: a bare function name used as an
+		    // rvalue (RHS of assignment) becomes its address, so
+		    // `fptr = func_name;` writes the function's address into fptr.
+		    // Other contexts (e.g. `cout << endl;`, where BSL consumes a
+		    // no-arg ostream-taking function) keep the pre-decay behavior.
+		    {
+			TokenBase *peek_after = peekToken();
+			TokenID peek_id = peek_after ? peek_after->id() : TokenID::tkBase;
+			bool followed_by_paren = (peek_id == TokenID::tkOpBrk);
+			// Value-context followers: struct/array-init element end,
+			// call-arg end, ternary branch separator - a bare function
+			// name in these positions is passing/returning its address.
+			bool followed_by_value_end =
+			    peek_id == TokenID::tkComma || peek_id == TokenID::tkClBrk
+			 || peek_id == TokenID::tkClSqr || peek_id == TokenID::tkClBrc
+			 || peek_id == TokenID::tkTerC
+			 // `;` follower with empty opStack: a bare function name
+			 // followed by semicolon at the top of an expression is
+			 // function-to-pointer decay (`return func;`). The
+			 // empty-opStack guard preserves operator-consuming
+			 // patterns like `cout << endl;` where BSL on opStack
+			 // wants the no-arg function call form, not the address.
+			 // Closes the SMAUG `tables.c:skill_function` `return
+			 // do_aassign;` family where TokenCallFunc was being
+			 // built for a void-returning function, yielding an
+			 // empty Operand back into TokenRETURN.
+			 || (peek_id == TokenID::tkSemi && opStack.empty())
+			 // Binary comparison / logical / bitwise operators: a bare
+			 // function name on either side of these is its address
+			 // (function-to-pointer decay), not a call. Closes patterns
+			 // like `t->fn == do_cast && tmp->...` where do_cast was
+			 // previously pushed as a TokenCallFunc, then the operator
+			 // was silently consumed and the next token mis-parsed.
+			 || peek_id == TokenID::tkEquals || peek_id == TokenID::tkNotEq
+			 || peek_id == TokenID::tkLT     || peek_id == TokenID::tkLE
+			 || peek_id == TokenID::tkGT     || peek_id == TokenID::tkGE
+			 || peek_id == TokenID::tkLand   || peek_id == TokenID::tkLor
+			 || peek_id == TokenID::tkBand   || peek_id == TokenID::tkBor
+			 || peek_id == TokenID::tkXor;
+			bool in_assign_context = false;
+			if ( !opStack.empty() )
+			{
+			    TokenID opid = opStack.top()->id();
+			    if ( opid == TokenID::tkAssign
+			      || opid == TokenID::tkAddEq || opid == TokenID::tkSubEq
+			      || opid == TokenID::tkMulEq  || opid == TokenID::tkDivEq
+			      || opid == TokenID::tkModEq  || opid == TokenID::tkXorEq
+			      || opid == TokenID::tkBandEq || opid == TokenID::tkBorEq
+			      || opid == TokenID::tkBSLEq  || opid == TokenID::tkBSREq )
+				in_assign_context = true;
+			}
+			if ( !followed_by_paren && (in_assign_context || followed_by_value_end) )
+			{
+			    DBG(cout << "Pushing function address (decay): " << var->name << " onto exStack" << endl);
+			    exStack.push(new TokenVar(*var));
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+		    }
+		    Variable *call_var = runtime_eval_scope_target(var);
+		    TokenCallFunc *tc = new TokenCallFunc(*call_var);
+		    tc->auto_scope_context = is_runtime_eval_scope_ctx_helper_name(call_var->name)
+			&& is_runtime_eval_scope_public_name(ident_tb->str);
+		    tb = nextToken();
+		    tc->line = tb->line;
+		    tc->column = tb->column;
+		    if ( tb->id() == TokenID::tkOpBrk )
+		    {
+			tb = parseCallFunc(tc);
+			DBG(cout << "parseCallFunc returned with token " << (char)tb->get() << endl);
+		    }
+		    DBG(cout << "Pushing found function call: " << var->name << "() onto opStack" << endl);
+		    opStack.push(tc);
+		    if ( tb->id() == TokenID::tkSemi )
+			done = true;
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		if ( var->type->is_integer() )
+		    DBG(cout << "Pushing found variable: " << var->name << '=' << (int)var->get<int>() << " onto exStack" << endl);
+		else
+		if ( var->type->is_real() )
+		    DBG(cout << "Pushing found variable: " << var->name << '=' << (double)var->get<double>() << " onto exStack" << endl);
+		else
+		    DBG(cout << "Pushing found variable: " << var->name << " onto exStack" << endl);
+		exStack.push(new TokenVar(*var));
+		return done ? ExprStep::Done : ExprStep::Break;
+    return done ? ExprStep::Done : ExprStep::Break;
+}
+
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
 				    bool stop_on_closing_paren, int initial_brackets,
 				    bool push_back_comma)
@@ -11579,1441 +13027,11 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		if ( !is_contextual_identifier_token(tb) )
 		    Throw(tb) << "Unexpected keyword in expression" << flush;
 	    case TokenType::ttIdentifier:
-	    {
-		std::string contextual_name = contextual_identifier_name(tb);
-		TokenIdent contextual_ident(contextual_name);
-		TokenIdent *ident_tb = tb->type() == TokenType::ttIdentifier
-		    ? (TokenIdent *)tb
-		    : &contextual_ident;
-		bool expression_head = exStack.empty() && opStack.empty();
-		bool parsed_operator_name = false;
-		std::string member_lookup_name = ident_tb->str;
-		if ( ident_tb->str == "operator"
-		  && code && code->method && code->method->owner_class )
 		{
-		    member_lookup_name = parseOperatorId(tb);
-		    parsed_operator_name = true;
+		    ExprStep step = parseExpr_identifierArm(tb, exStack, opStack, code);
+		    if ( step == ExprStep::Done ) done = true;
 		}
-		if ( ident_tb->str == "__FUNCTION__" || ident_tb->str == "__func__"
-		  || ident_tb->str == "__PRETTY_FUNCTION__" )
-		{
-		    var = addLiteral(cur_func_name);
-		    exStack.push(new TokenVar(*var));
-		    break;
-		}
-		bool bool_value = false;
-		if ( is_bool_literal_identifier(ident_tb->str, bool_value) )
-		{
-		    TokenInt *ti = new TokenInt(bool_value ? 1 : 0);
-		    ti->setDataType(&ddBOOL);
-		    ti->file = tb->file;
-		    ti->line = tb->line;
-		    ti->column = tb->column;
-		    exStack.push(ti);
-		    break;
-		}
-		bool ordinary_call_name =
-		    find_variable_for_contextual_type_name(*this,
-			ident_tb->str) != NULL;
-		if ( !ordinary_call_name
-		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk
-		  && is_dynamic_symbol_fallback_enabled()
-		  && is_dynamic_symbol_allowed(ident_tb->str)
-		  && dlsym(RTLD_DEFAULT, ident_tb->str.c_str()) )
-		    ordinary_call_name = true;
-		if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
-		  && !ordinary_call_name )
-		{
-		    if ( TokenDataType *resolved_type =
-			    resolve_declared_type_token(*this, tb, false, true) )
-		    {
-			if ( TokenBase *type_expr =
-				parse_functional_type_expression(*this, tb,
-				    &resolved_type->definition) )
-			{
-			    exStack.push(type_expr);
-			    break;
-			}
-		    }
-		    if ( TokenObjTemp *ot = try_parse_functional_ctor(*this, tb) )
-		    {
-			exStack.push(ot);
-			break;
-		    }
-		}
-		if ( is_realpart_identifier(ident_tb->str)
-		  || is_imagpart_identifier(ident_tb->str) )
-		{
-		    bool want_imag = is_imagpart_identifier(ident_tb->str);
-		    TokenBase *next_tb = nextToken();
-		    if ( !next_tb )
-			Throw(tb) << "Expecting expression after " << ident_tb->str << flush;
-		    TokenBase *component_expr = NULL;
-		    if ( next_tb->id() == TokenID::tkOpBrk )
-		    {
-			TokenBase *inner_tb = nextToken();
-			component_expr = parseExpression(inner_tb, true, false, true, 1);
-		    }
-		    else if ( is_contextual_identifier_token(next_tb) || next_tb->type() == TokenType::ttIdentifier )
-		    {
-			bool has_postfix_chain = peekToken()
-			    && (peekToken()->id() == TokenID::tkDot
-			     || peekToken()->id() == TokenID::tkDeRef
-			     || peekToken()->id() == TokenID::tkOpSqr);
-			if ( has_postfix_chain )
-			    component_expr = parsePostfixChain(next_tb);
-			else
-			{
-			    std::string name = contextual_identifier_name(next_tb);
-			    TokenIdent component_ident(name);
-			    copy_token_location(&component_ident, next_tb);
-			    Variable *component_var = findVariable(name);
-			    if ( component_var )
-			    {
-				component_expr = new TokenVar(*component_var);
-				copy_token_location(component_expr, next_tb);
-			    }
-			    else
-				component_expr = resolve_expression_context_identifier(&component_ident);
-			}
-			TokenVar *tv = dynamic_cast<TokenVar *>(component_expr);
-			if ( tv && peekToken() && peekToken()->id() == TokenID::tkOpBrk
-			  && tv->var.type && tv->var.type->is_function() )
-			{
-			    Variable *call_var = runtime_eval_scope_target(&tv->var);
-			    TokenCallFunc *tc = new TokenCallFunc(*call_var);
-			    TokenBase *call_tb = nextToken();
-			    tc->line = call_tb->line;
-			    tc->column = call_tb->column;
-			    parseCallFunc(tc);
-			    component_expr = tc;
-			}
-		    }
-		    if ( !component_expr )
-			Throw(next_tb) << "Unsupported operand for " << ident_tb->str << flush;
-		    exStack.push(make_complex_component_token(component_expr, want_imag));
-		    break;
-		}
-		// sizeof / alignof — resolve to integer constant at parse time.
-		if ( ident_tb->str == "sizeof" || is_alignof_identifier(ident_tb->str) )
-		{
-		    if ( TokenBase *query_tb = try_parse_dynamic_type_query(*this, tb, ident_tb->str) )
-			exStack.push(query_tb);
-		    else
-		    {
-			size_t query_value = evaluate_type_query(*this, tb, ident_tb->str);
-			TokenInt *ti = new TokenInt((int64_t)query_value);
-			ti->setDataType(&ddUINT64);
-			ti->file = tb->file;
-			ti->line = tb->line;
-			ti->column = tb->column;
-			exStack.push(ti);
-		    }
-		    break;
-		}
-		if ( is_named_cpp_cast(ident_tb->str) )
-		{
-		    exStack.push(parse_named_cpp_cast(*this, tb, ident_tb->str));
-		    break;
-		}
-		// dynamic_cast < TYPE * > ( EXPR )   (S5c)
-		if ( ident_tb->str == "dynamic_cast" )
-		{
-		    skip_expression_whitespace(*this);
-		    if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
-			Throw(tb) << "Expecting '<' after dynamic_cast" << flush;
-		    nextToken(); // consume '<'
-		    skip_expression_whitespace(*this);
-		    TokenBase *type_tb = nextToken();
-		    TokenDataType *tdt = resolve_declared_type_token(*this, type_tb, true, true);
-		    if ( !tdt )
-			Throw(type_tb ? type_tb : tb) << "dynamic_cast target is not a type" << flush;
-		    DataDef *tgt = &tdt->definition;
-		    skip_expression_whitespace(*this);
-		    bool is_ptr = false;
-		    if ( peekToken() && peekToken()->id() == TokenID::tkMul )
-		    { nextToken(); is_ptr = true; }
-		    else if ( peekToken()
-			   && (peekToken()->id() == TokenID::tkBand
-			    || peekToken()->id() == TokenID::tkLand) )
-			Throw(tb) << "dynamic_cast to a reference type is not yet supported (use the pointer form)" << flush;
-		    skip_expression_whitespace(*this);
-		    if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
-			Throw(tb) << "Expecting '>' to close dynamic_cast<...>" << flush;
-		    nextToken(); // consume '>'
-		    skip_expression_whitespace(*this);
-		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
-			Throw(tb) << "Expecting '(' after dynamic_cast<...>" << flush;
-		    nextToken(); // consume '('
-		    TokenBase *inner_first = nextToken();
-		    TokenBase *inner = parseExpression(inner_first, false, false, false, 0, true);
-		    skip_expression_whitespace(*this);
-		    TokenBase *close_tb = nextToken();
-		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
-			Throw(close_tb ? close_tb : tb) << "Expecting ')' to close dynamic_cast" << flush;
-		    TokenDynamicCast *dc = new TokenDynamicCast();
-		    dc->target_type = tgt;
-		    dc->target_is_ptr = is_ptr;
-		    dc->operand = inner;
-		    dc->setDataType(is_ptr ? (DataDef *)getPointerType(tgt) : tgt);
-		    dc->file = tb->file; dc->line = tb->line; dc->column = tb->column;
-		    exStack.push(dc);
-		    break;
-		}
-		// typeid ( EXPR | TYPE )   (S5d)
-		if ( ident_tb->str == "typeid" )
-		{
-		    skip_expression_whitespace(*this);
-		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
-			Throw(tb) << "Expecting '(' after typeid" << flush;
-		    nextToken(); // consume '('
-		    skip_expression_whitespace(*this);
-		    TokenBase *first = nextToken();
-		    TokenTypeid *ttd = new TokenTypeid();
-		    // Type form iff the operand resolves to a type AND is immediately
-		    // followed by ')'. resolve_declared_type_token returns NULL for a
-		    // variable/expression (it checks findVariable), so typeid(obj) and
-		    // typeid(*p) fall to the expression form.
-		    TokenDataType *tdt = resolve_declared_type_token(*this, first, false, true);
-		    skip_expression_whitespace(*this);
-		    if ( tdt && peekToken() && peekToken()->id() == TokenID::tkClBrk )
-		    {
-			ttd->static_type = &tdt->definition;
-			nextToken(); // consume ')'
-		    }
-		    else
-		    {
-			ttd->operand = parseExpression(first, false, false, false, 0, true);
-			skip_expression_whitespace(*this);
-			TokenBase *close_tb = nextToken();
-			if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
-			    Throw(close_tb ? close_tb : tb) << "Expecting ')' after typeid(...)" << flush;
-		    }
-		    // Result type: const std::type_info& — modeled as std::type_info*.
-		    // The <typeinfo> header registers `class type_info` in the global
-		    // datatype_map under its bare name (header-defined classes are not
-		    // namespace-keyed); fall back to the std namespace map.
-		    DataDef *tinfo = NULL;
-		    datatype_map_iter gdti = datatype_map.find("type_info");
-		    if ( gdti != datatype_map.end() )
-			tinfo = &gdti->second->definition;
-		    if ( !tinfo )
-		    {
-			namespace_datatype_map_t::iterator nti = namespace_datatype_map.find("std");
-			if ( nti != namespace_datatype_map.end() )
-			{
-			    datatype_map_iter dti = nti->second.find("type_info");
-			    if ( dti != nti->second.end() )
-				tinfo = &dti->second->definition;
-			}
-		    }
-		    if ( !tinfo )
-			Throw(tb) << "typeid requires #include <typeinfo>" << flush;
-		    ttd->setDataType(getPointerType(tinfo));
-		    ttd->file = tb->file; ttd->line = tb->line; ttd->column = tb->column;
-		    exStack.push(ttd);
-		    break;
-		}
-		if ( is_nullptr_identifier(ident_tb->str) )
-		{
-		    TokenNullptr *tnp = new TokenNullptr();
-		    tnp->file = tb->file;
-		    tnp->line = tb->line;
-		    tnp->column = tb->column;
-		    exStack.push(tnp);
-		    break;
-		}
-		if ( ident_tb->str == "__builtin_types_compatible_p" )
-		{
-		    if ( !skip_expression_whitespace(*this) || peekToken()->id() != TokenID::tkOpBrk )
-			Throw(tb) << "Expecting '(' after __builtin_types_compatible_p" << flush;
-		    nextToken();
-		    skip_expression_whitespace(*this);
-		    TokenBase *lhs_tb = nextToken();
-		    std::string lhs_sig;
-		    if ( !parse_builtin_types_compatible_operand(*this, lhs_tb, lhs_sig) )
-			Throw(lhs_tb ? lhs_tb : tb) << "Invalid first type in __builtin_types_compatible_p" << flush;
-		    skip_expression_whitespace(*this);
-		    TokenBase *comma_tb = nextToken();
-		    if ( !comma_tb || comma_tb->id() != TokenID::tkComma )
-			Throw(comma_tb ? comma_tb : tb) << "Expecting ',' in __builtin_types_compatible_p" << flush;
-		    skip_expression_whitespace(*this);
-		    TokenBase *rhs_tb = nextToken();
-		    std::string rhs_sig;
-		    if ( !parse_builtin_types_compatible_operand(*this, rhs_tb, rhs_sig) )
-			Throw(rhs_tb ? rhs_tb : tb) << "Invalid second type in __builtin_types_compatible_p" << flush;
-		    skip_expression_whitespace(*this);
-		    TokenBase *close_tb = nextToken();
-		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
-			Throw(close_tb ? close_tb : tb) << "Expecting ')' after __builtin_types_compatible_p" << flush;
-		    TokenInt *ti = new TokenInt(lhs_sig == rhs_sig ? 1 : 0);
-		    ti->setDataType(&ddINT);
-		    ti->file = tb->file;
-		    ti->line = tb->line;
-		    ti->column = tb->column;
-		    exStack.push(ti);
-		    break;
-		}
-		// va_arg(ap, type) — compiler intrinsic for reading variadic args
-		if ( ident_tb->str == "va_arg" )
-		{
-		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
-			Throw(tb) << "Expecting '(' after va_arg" << flush;
-		    nextToken(); // consume (
-		    // first arg: the va_list expression — may be a simple
-		    // identifier, *ptr, aps[4], or any expression that yields
-		    // a va_list. Parse as a general expression; comma stops it.
-		    TokenBase *ap_first = nextToken();
-		    TokenBase *ap_expr = parseExpression(ap_first, false, false, false, 0, true);
-		    // For backward compat, extract the Variable* when the
-		    // expression is a simple variable or deref — but NOT for
-		    // struct member (TokenMember) or subscript expressions,
-		    // which need the full expression for proper Mem write-back.
-		    Variable *ap_var = NULL;
-		    if ( dynamic_cast<TokenMember *>(ap_expr)
-		      || dynamic_cast<TokenSubscriptExpr *>(ap_expr) )
-			; // leave ap_var NULL — compiler uses ap_expr->operand()
-		    else if ( TokenVar *tv = dynamic_cast<TokenVar *>(ap_expr) )
-			ap_var = &tv->var;
-		    else if ( TokenDeref *td = dynamic_cast<TokenDeref *>(ap_expr) )
-			ap_var = &td->var;
-		    // consume comma
-		    TokenBase *comma_tb = nextToken();
-		    if ( comma_tb->id() != TokenID::tkComma )
-			Throw(comma_tb) << "Expecting ',' after va_list expression in va_arg" << flush;
-		    // second arg: type name
-		    TokenBase *type_tb = nextToken();
-		    while ( is_type_qualifier_token(type_tb) )
-		    {
-			type_tb = nextToken();
-			if ( !type_tb )
-			    Throw(comma_tb) << "Expecting type after qualifier in va_arg" << flush;
-		    }
-		    DataDef *target_dd = NULL;
-		    if ( type_tb->type() == TokenType::ttDataType )
-			target_dd = &((TokenDataType *)type_tb)->definition;
-		    else if ( type_tb->type() == TokenType::ttIdentifier
-		      && ((TokenIdent *)type_tb)->str == "typeof" )
-		    {
-			TokenDataType *typeof_dt = parse_typeof_datatype(*this, type_tb);
-			target_dd = typeof_dt ? &typeof_dt->definition : NULL;
-		    }
-		    else if ( type_tb->type() == TokenType::ttIdentifier )
-		    {
-			std::string tname = ((TokenIdent *)type_tb)->str;
-			datatype_map_iter tdmi = datatype_map.find(tname);
-			if ( tdmi != datatype_map.end() )
-			    target_dd = &tdmi->second->definition;
-			if ( !target_dd )
-			{
-			    datadef_map_iter sdmi = struct_map.find(tname);
-			    if ( sdmi != struct_map.end() )
-				target_dd = sdmi->second;
-			}
-		    }
-		    // handle 'struct Tag' or 'union Tag' as va_arg type
-		    if ( !target_dd && type_tb->type() == TokenType::ttKeyword
-			&& (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
-		    {
-			TokenBase *tag_tb = nextToken();
-			if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
-			{
-			    std::string sname = ((TokenIdent *)tag_tb)->str;
-			    datadef_map_iter sdmi = struct_map.find(sname);
-			    if ( sdmi != struct_map.end() )
-				target_dd = sdmi->second;
-			}
-		    }
-		    // handle 'enum Tag' — treat as int
-		    if ( !target_dd && type_tb->type() == TokenType::ttKeyword
-			&& type_tb->id() == TokenID::tkENUM )
-		    {
-			nextToken(); // consume tag name
-			target_dd = &ddINT;
-		    }
-		    // handle compound type specifiers: unsigned, long, etc.
-		    if ( !target_dd && type_tb->type() == TokenType::ttDataType )
-			target_dd = &((TokenDataType *)type_tb)->definition;
-		    if ( !target_dd )
-			Throw(type_tb) << "Unknown type in va_arg" << flush;
-		    // handle pointer: va_arg(ap, char *)
-		    while ( peekToken() && peekToken()->id() == TokenID::tkMul )
-		    {
-			nextToken(); // consume '*'
-			target_dd = getPointerType(target_dd);
-		    }
-		    // consume closing ) unless a nested typeof/expression parse
-		    // already balanced the token stream to the outer close-paren
-		    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
-			nextToken();
-		    else if ( (!curToken() || curToken()->id() != TokenID::tkClBrk)
-		       && (!prevToken() || prevToken()->id() != TokenID::tkClBrk) )
-			Throw(type_tb) << "Expecting ')' after va_arg type" << flush;
-		    exStack.push(new TokenVaArg(ap_var, ap_expr, target_dd));
-		    break;
-		}
-		if ( prevToken() && prevToken()->id() == TokenID::tkDot )
-		{
-#if 0
-		    DBG(cout << "parseExpression() prevToken is tkDot, pushing TokenIdent " << ((TokenIdent *)tb)->str << endl);
-		    exStack.push(tb);
-#else
-		    if ( exStack.empty() )
-			Throw(tb) << "expected expression" << flush;
-		    // Accept TokenVar, TokenMember, TokenSubscript, or a
-		    // compound literal as LHS for dot access. Subscript case:
-		    // tab[i].member for an array of structs.
-		    TokenBase *lhs_dot = exStack.top();
-		    if ( TokenBase *ctx_member = resolve_expression_context_member(lhs_dot, ident_tb) )
-		    {
-			exStack.pop();
-			exStack.push(ctx_member);
-			if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
-			    opStack.pop();
-			break;
-		    }
-			    if ( lhs_dot->type() != TokenType::ttVariable
-			      && lhs_dot->type() != TokenType::ttMember
-			      && lhs_dot->type() != TokenType::ttSubscript
-			      && lhs_dot->type() != TokenType::ttCompound
-			      && lhs_dot->type() != TokenType::ttStructLit
-				    && lhs_dot->type() != TokenType::ttCallFunc
-				    && lhs_dot->type() != TokenType::ttCallMethod
-				    && lhs_dot->type() != TokenType::ttOperator   // (a + b).member — operator result object
-				    && lhs_dot->id() != TokenID::tkObjTemp        // T(args).member — functional-ctor temp
-				    && lhs_dot->id() != TokenID::tkTypeid )   // typeid(x).name() (S5d)
-				    Throw(tb) << "member reference is not a structure or union" << flush;
-		    Variable *tv_var;
-		    DataDef  *struct_type;
-		    if ( lhs_dot->type() == TokenType::ttVariable )
-		    {
-			TokenVar *tv = dynamic_cast<TokenVar *>(lhs_dot);
-			tv_var      = &tv->var;
-			struct_type =  tv->var.type;
-			// A class-REFERENCE parameter (`A &a`) is lowered to a
-			// pointer (vfREFERENCE, type DataDefPTR(A)) — like a numeric
-			// `T&`. Member access `a.member` is therefore `a->member`:
-			// resolve struct_type to the pointed-to class so member /
-			// method lookup works, while tv_var keeps the pointer-typed
-			// reference var so the CIR member codegen emits N_DEREF_FIELD.
-			// The hidden `__this` parameter is the same shape: a
-			// pointer-to-class. `this.member` (madc's dot form) is thus
-			// `this->member` — unwrap to the class for lookup, keep the
-			// pointer var for codegen. (`this->member` already takes the
-			// arrow path; this clause covers only the dot spelling.)
-			if ( ((tv->var.flags & vfREFERENCE) || tv->var.name == "__this")
-			  && struct_type && struct_type->is_pointer() )
-			{
-			    DataDefPTR *rp = dynamic_cast<DataDefPTR *>(struct_type);
-			    if ( rp && rp->base_type
-			      && (rp->base_type->is_struct()
-			       || rp->base_type->is_object()) )
-				struct_type = rp->base_type;
-			}
-		    }
-		    else if ( lhs_dot->type() == TokenType::ttMember )
-		    {
-			TokenMember *tm = dynamic_cast<TokenMember *>(lhs_dot);
-			if ( tm )
-			{
-			    tv_var      = &tm->var;
-			    struct_type =  tm->var.type;
-			}
-			else if ( TokenDeref *tdl = dynamic_cast<TokenDeref *>(lhs_dot) )
-			{
-			    // (*p).member — logically equivalent to p->member.
-			    // Route the dot through the pointer variable so the
-			    // normal TokenMember pointer-in-Gp path compiles it
-			    // as [p + offset] at codegen time.
-			    tv_var      = &tdl->var;
-			    struct_type =  tdl->deref_type;
-			}
-			else if ( TokenDerefExpr *tdxl = dynamic_cast<TokenDerefExpr *>(lhs_dot) )
-			{
-			    // (*expr).member — expr yields a pointer whose target
-			    // is a struct. Resolve member lookup against the
-			    // dereferenced struct type; codegen uses the expr's
-			    // pointer value as base via TokenMember's parent_expr
-			    // path.
-			    tv_var      = new Variable("__deref_expr", *tdxl->deref_type, 1, NULL, false);
-			    struct_type =  tdxl->deref_type;
-			}
-			else
-			    Throw(tb) << "member reference '.' on unsupported deref expression" << flush;
-		    }
-		    else
-		    {
-			TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(lhs_dot);
-			if ( tsub )
-			{
-			    tv_var      = &tsub->object;
-			    struct_type =  tsub->datadef(); // element type
-			}
-			else if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(lhs_dot) )
-			{
-			    // expr[i].member — subscript LHS is an arbitrary
-			    // pointer/array-producing expression (e.g.
-			    // `ch->pcdata->killed[x].vnum`). Synthesize a
-			    // struct-typed object variable and route codegen
-			    // through the TokenSubscriptExpr as parent_expr;
-			    // TokenMember::operand's dot-chain path handles
-			    // [base + idx*shift + offset].
-			    DataDef *elem_type = tse->datadef();
-			    if ( !elem_type )
-				Throw(tb) << "subscript expression has no element type" << flush;
-			    tv_var      = new Variable("__sub_expr", *elem_type, 1, NULL, false);
-			    struct_type =  elem_type;
-			}
-			else if ( TokenStructLit *slit = dynamic_cast<TokenStructLit *>(lhs_dot) )
-			{
-			    struct_type = slit->datadef();
-			    if ( !struct_type )
-				Throw(tb) << "compound literal has no type" << flush;
-			    tv_var = new Variable("__compound_lit", *struct_type, 1, NULL, false);
-			}
-			else if ( lhs_dot->type() == TokenType::ttCompound )
-			{
-			    DataDef *stmt_type = lhs_dot->datadef();
-			    if ( !stmt_type )
-				Throw(tb) << "statement expression has no type for member access" << flush;
-			    struct_type = stmt_type;
-			    tv_var = new Variable("__stmt_expr", *struct_type, 1, NULL, false);
-			}
-				else if ( lhs_dot->type() == TokenType::ttCallFunc
-				       || lhs_dot->type() == TokenType::ttCallMethod )
-				{
-				    // f().member / obj.method().member — call result
-				    // member access. The callee's declared return type is
-				    // the receiver type for the next lookup.
-				    TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(lhs_dot);
-				    DataDef *ret_type = tcf ? tcf->returns() : NULL;
-				    if ( !ret_type )
-					Throw(tb) << "call has no return type for member access" << flush;
-				    struct_type = ret_type;
-				    tv_var = new Variable("__call_expr", *struct_type, 1, NULL, false);
-				}
-			else if ( lhs_dot->type() == TokenType::ttOperator
-			       || lhs_dot->id() == TokenID::tkObjTemp )
-			{
-			    // (a + b).member or T(args).member — a class-object rvalue
-			    // (an overloaded-operator result typed by
-			    // resolve_object_operator_type, or a functional-construction
-			    // temp TokenObjTemp). The rvalue is materialized at codegen via
-			    // parent_expr (class_this_arg -> translate_expr -> the temp).
-			    DataDef *op_type = NULL;
-			    if ( TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(lhs_dot) )
-				op_type = ot->obj_class;
-			    else
-				op_type = lhs_dot->datadef();
-			    if ( !op_type || (!op_type->is_object() && !op_type->is_struct()) )
-			    {
-				DBG(std::cerr << "dot rvalue member reject: lhs type="
-				    << (int)lhs_dot->type() << " id=" << (int)lhs_dot->id()
-				    << " dd=" << (op_type ? op_type->name : std::string("<null>"))
-				    << std::endl);
-				Throw(tb) << "member reference is not a structure or union" << flush;
-			    }
-			    struct_type = op_type;
-			    tv_var = new Variable("__op_expr", *struct_type, 1, NULL, false);
-			}
-			else if ( lhs_dot->id() == TokenID::tkTypeid )
-			{
-			    // typeid(x).name() — the typeid result is std::type_info*
-			    // (a reference modeled as a pointer); resolve member lookup
-			    // against the pointed-to type_info class and route codegen
-			    // through the typeid as parent_expr (class_this_arg passes
-			    // the pointer straight through as `this`).
-			    DataDef *rt = lhs_dot->datadef();
-			    DataDefPTR *rp = dynamic_cast<DataDefPTR *>(rt);
-			    struct_type = rp ? rp->base_type : rt;
-			    if ( !struct_type )
-				Throw(tb) << "typeid result has no type for member access" << flush;
-			    tv_var = new Variable("__typeid_expr", *struct_type, 1, NULL, false);
-			}
-			else
-			    Throw(tb) << "member reference '.' on unsupported subscript form" << flush;
-		    }
-		    if ( !struct_type->is_struct() && !struct_type->is_object() )
-			Throw(tb) << "member reference is not a structure or union" << flush;
-		    var = NULL;
-		    string id = ident_tb->str;
-		    DataDefCLASS *method_cls =
-			struct_type->is_object() ? (DataDefCLASS *)struct_type : NULL;
-		    if ( method_cls )
-		    {
-			bool call_follows = peekToken()
-			    && peekToken()->id() == TokenID::tkOpBrk;
-			var = call_follows
-			    ? find_method_by_callable_arity(method_cls, id,
-				count_queued_call_arguments(*this), false)
-			    : method_cls->findMethod(id);
-			if ( !var && call_follows )
-			    var = method_cls->findMethod(id);
-		    }
-		    if ( var )
-		    {
-			// Access control (P2.5c): reject a private/protected METHOD
-			// call from outside the (derived) class. Same context + rule
-			// as the data-member check.
-			{
-			    DataDefCLASS *cur_class =
-				(code && code->method) ? code->method->owner_class : NULL;
-			    std::string av =
-				method_access_violation(struct_type, var, id, cur_class);
-			    if ( !av.empty() )
-				Throw(tb) << av << flush;
-			}
-			if ( var->flags & vfSTATIC )
-			{
-			    TokenCallFunc *tc = new TokenCallFunc(*var);
-			    tb = nextToken();
-			    tc->line = tb->line;
-			    tc->column = tb->column;
-			    if ( tb->id() == TokenID::tkOpBrk )
-				tb = parseCallFunc(tc);
-			    std::vector<const DataDef *> at;
-			    for ( TokenBase *p : tc->parameters )
-				at.push_back(p ? p->datadef() : NULL);
-			    if ( Variable *ov = method_cls->findMethodOverload(id, at) )
-				if ( ov != &tc->var && (ov->flags & vfSTATIC) )
-				{
-				    TokenCallFunc *tc2 = new TokenCallFunc(*ov);
-				    tc2->parameters = tc->parameters;
-				    tc2->file = tc->file;
-				    tc2->line = tc->line;
-				    tc2->column = tc->column;
-				    tc = tc2;
-				}
-			    var = &tc->var;
-			    exStack.pop();
-			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
-				opStack.pop();
-			    opStack.push(tc);
-			    if ( tb->id() == TokenID::tkSemi )
-				done = true;
-			    break;
-			}
-			// Method call on a class-object receiver. The common case is a
-			// bare object variable (`s.length()`). A subscript element
-			// (`v[i].length()` where v's operator[] returns a class element)
-			// is also a valid receiver: build the TokenCallMethod with the
-				// subscript as parent_expr so the CIR side (class_this_arg)
-				// addresses the element via class_subscript_addr. A prior
-				// method call returning an object/reference is likewise a
-				// valid chained receiver.
-			// (Both TokenSubscript and TokenSubscriptExpr report
-			// ttSubscript.)
-			TokenBase *recv_parent = NULL;
-				if ( lhs_dot->type() == TokenType::ttSubscript )
-				    recv_parent = lhs_dot;
-				else if ( lhs_dot->id() == TokenID::tkTypeid )
-				    recv_parent = lhs_dot;   // typeid(x).name() (S5d)
-				else if ( lhs_dot->type() == TokenType::ttOperator
-				       || lhs_dot->id() == TokenID::tkObjTemp )
-				    recv_parent = lhs_dot;   // (a + b).method() — operator result object
-				else if ( lhs_dot->type() == TokenType::ttCallFunc )
-				    recv_parent = lhs_dot;   // f().method()
-				else if ( lhs_dot->type() == TokenType::ttCallMethod )
-				    recv_parent = lhs_dot;   // obj.method().next()
-				else if ( lhs_dot->type() != TokenType::ttVariable )
-				    Throw(tb) << "chained method call not yet supported" << flush;
-			TokenCallMethod *tc = new TokenCallMethod(*tv_var, *var);
-			if ( recv_parent )
-			    tc->parent_expr = recv_parent;
-			tb = nextToken();
-			tc->line = tb->line;
-			tc->column = tb->column;
-			// if bracket, parse params
-			if ( tb->id() == TokenID::tkOpBrk )
-			{
-			    // delete tb?
-			    tb = parseCallMethod(tc);
-			    DBG(cout << "parseCallMethod returned with token " << (char)tb->get() << endl);
-			}
-			// Now that the argument types are known, re-bind to the
-			// overload they actually select (findMethod above took the
-			// first by-name match).
-			tc = reselect_method_overload(tc, *tv_var, method_cls, id);
-			var = &tc->var;
-			// remove object TokenVar from exStack
-			exStack.pop();
-			// remove TokenDot from opStack
-			if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
-			{
-			    DBG(cout << "parseCallMethod, removing tkDot from opStack" << endl);
-			    opStack.pop();
-			}
-			DBG(cout << "Pushing found method call: " << var->name << "() onto opStack" << endl);
-			opStack.push(tc);
-			// I'm not sure why I need to do this TODO: figure this out
-			if ( tb->id() == TokenID::tkSemi )
-			    done = true;
-			break;
-		    }
-		    if ( struct_type->is_object()
-		      && class_has_unresolved_dependent_surface((DataDefCLASS *)struct_type)
-		      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-		    {
-			TokenBase *open = nextToken();
-			tb = consume_unresolved_dependent_call(*this, open);
-			exStack.pop();
-			if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
-			    opStack.pop();
-			exStack.push(make_dependent_call_placeholder(tb));
-			if ( tb && tb->id() == TokenID::tkSemi )
-			    done = true;
-			break;
-		    }
-		    // get offset
-		    ssize_t ofs = ((DataDefSTRUCT *)struct_type)->m_offset(id);
-		    if ( ofs == -1 )
-			Throw(tb) << "Unidentified member" << flush;
-		    // Access control (P2.5): reject private/protected member access
-		    // from outside the (derived) class. cur_class = the class whose
-		    // method body we are parsing (NULL outside any method).
-		    {
-			DataDefCLASS *cur_class =
-			    (code && code->method) ? code->method->owner_class : NULL;
-			std::string av =
-			    member_access_violation(struct_type, id, cur_class);
-			if ( !av.empty() )
-			    Throw(tb) << av << flush;
-		    }
-		    DataDef *mtype = ((DataDefSTRUCT *)struct_type)->m_type(id);
-		    // create new variable
-		    var = new Variable(id, *mtype, 1, NULL, false);
-		    var->flags = member_proxy_flags(tv_var->flags);
-		    if ( tv_var->data )
-			var->data = (void *)((char *)tv_var->data + ofs);
-		    // remove LHS from exStack
-		    exStack.pop();
-		    // When LHS carries its own base-pointer (TokenMember for dot/arrow
-		    // chains, or TokenSubscript for array-of-structs), pass it as
-		    // parent_expr so TokenMember::operand() can resolve the base at
-		    // codegen time.
-		    //
-		    // TokenDeref reports ttMember for LHS-compat reasons but is
-		    // not a real TokenMember — for `(*p).x` we already routed
-		    // tv_var to the pointer `p`, so the normal no-parent_expr path
-		    // compiles it as `p->x` via voperand's pointer-in-Gp branch.
-		    //
-		    // TokenDerefExpr is the opposite: `(*expr).x` where expr is a
-		    // pointer-producing expression. Pass the TokenDerefExpr as
-		    // parent_expr so TokenMember::operand calls expr->compile to
-		    // materialize the pointer value at codegen, then accesses
-		    // [ptr + offset] via the struct-value ("dot chain") branch.
-		    bool is_deref_lhs = (dynamic_cast<TokenDeref *>(lhs_dot) != NULL);
-		    bool is_derefexpr_lhs = (dynamic_cast<TokenDerefExpr *>(lhs_dot) != NULL);
-		    bool is_compound_lit_lhs = (dynamic_cast<TokenStructLit *>(lhs_dot) != NULL);
-		    bool is_stmt_expr_lhs = (lhs_dot->type() == TokenType::ttCompound);
-			    bool is_callfunc_lhs = (lhs_dot->type() == TokenType::ttCallFunc
-				|| lhs_dot->type() == TokenType::ttCallMethod);
-		    if ( is_derefexpr_lhs || is_compound_lit_lhs || is_stmt_expr_lhs || is_callfunc_lhs )
-			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
-		    else if ( !is_deref_lhs
-		      && (lhs_dot->type() == TokenType::ttMember
-		       || lhs_dot->type() == TokenType::ttSubscript) )
-			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
-		    else
-			exStack.push(new TokenMember(*tv_var, *var, ofs));
-		    // remove TokenDot from opStack
-		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
-			opStack.pop();
-#endif
-		    break;
-		}
-		// -> pointer member access: ptr->member
-		if ( prevToken() && prevToken()->id() == TokenID::tkDeRef )
-		{
-		    if ( exStack.empty() )
-			Throw(tb) << "expected expression before '->'" << flush;
-
-		    // get the pointer-valued LHS — from TokenVar/TokenMember or a
-		    // pointer-returning subscript expression such as tab[i]->field
-		    TokenBase *lhs = exStack.top();
-		    Variable *obj_var = NULL;
-		    DataDef *obj_type = NULL;
-		    bool expr_backed_lhs = false;
-		    bool fixed_array_arrow = false;
-		    bool arrow_via_op = false;
-		    // P2.1b gap 2 — operator->: when the LHS is a class OBJECT (not a
-		    // pointer) whose class declares operator->, C++ canon rewrites
-		    // `obj->m` as `(obj.operator->())->m`: call operator-> (which
-		    // returns a pointer), then apply the real `->` to that result.
-		    // Reuses the class-method dispatch — no parallel codegen (I6).
-		    if ( lhs->type() == TokenType::ttVariable )
-		    {
-			TokenVar *otv = dynamic_cast<TokenVar *>(lhs);
-			DataDefCLASS *ocls = (otv && otv->var.type && otv->var.type->is_object())
-			    ? dynamic_cast<DataDefCLASS *>(otv->var.type) : NULL;
-			std::string arrow_name("operator->");
-			Variable *arrow_m = ocls ? ocls->findMethod(arrow_name) : NULL;
-			if ( arrow_m && !otv->var.type->is_pointer() )
-			{
-			    TokenCallMethod *opcall = new TokenCallMethod(otv->var, *arrow_m);
-			    opcall->file = tb->file;
-			    opcall->line = tb->line;
-			    opcall->column = tb->column;
-			    DataDef *ret = opcall->datadef();
-			    if ( !ret || !ret->is_pointer() )
-				Throw(tb) << "operator-> must return a pointer" << flush;
-			    exStack.pop();
-			    exStack.push(opcall);
-			    lhs = opcall;
-			    obj_type = ret;
-			    obj_var = new Variable("__arrow_op", *obj_type, 1, NULL, false);
-			    expr_backed_lhs = true;
-			    arrow_via_op = true;
-			}
-		    }
-		    if ( arrow_via_op )
-			; // LHS already resolved to operator-> call result above
-		    else if ( lhs->type() == TokenType::ttVariable )
-		    {
-			TokenVar *tv_lhs = dynamic_cast<TokenVar *>(lhs);
-			obj_var = &tv_lhs->var;
-			obj_type = obj_var->type;
-			fixed_array_arrow = obj_var->is_fixed_array();
-		    }
-		    else if ( lhs->type() == TokenType::ttMember )
-		    {
-			// TokenDeref and TokenDerefExpr also report ttMember (reuse
-			// member type for assignment compat) but are not TokenMember
-			// instances. When the cast fails, fall through to the
-			// expression-backed path using the node's reported datadef
-			// instead of throwing.
-			TokenMember *tm = dynamic_cast<TokenMember *>(lhs);
-			if ( tm )
-			{
-			    obj_var = &tm->var;
-			    obj_type = tm->var.type;
-			}
-			else if ( lhs->datadef() && lhs->datadef()->is_pointer() )
-			{
-			    obj_type = lhs->datadef();
-			    obj_var = new Variable("__arrow_expr", *obj_type, 1, NULL, false);
-			    expr_backed_lhs = true;
-			}
-			else
-			    Throw(tb) << "expression before '->' must be a pointer to struct" << flush;
-		    }
-		    else if ( effective_pointer_type_for_member_access(*this, lhs) )
-		    {
-			obj_type = effective_pointer_type_for_member_access(*this, lhs);
-			obj_var = new Variable("__arrow_expr", *obj_type, 1, NULL, false);
-			expr_backed_lhs = true;
-		    }
-		    else
-			Throw(tb) << "expression before '->' must be a pointer" << flush;
-
-		    if ( !fixed_array_arrow && !obj_type->is_pointer() )
-			Throw(tb) << "expression before '->' must be a pointer" << flush;
-
-		    // get the pointed-to type
-		    DataDef *base = obj_type;
-		    if ( !fixed_array_arrow )
-		    {
-			DataDefPTR *ptr_type = dynamic_cast<DataDefPTR *>(obj_type);
-			if ( !ptr_type || !ptr_type->base_type )
-			    Throw(tb) << "expression before '->' is not a typed pointer" << flush;
-			base = ptr_type->base_type;
-		    }
-		    if ( !base->is_struct() && !base->is_object() )
-			Throw(tb) << "member reference type is not a structure or union" << flush;
-
-		    string id = ident_tb->str;
-
-		    // get member offset and type — or method
-		    ssize_t ofs = ((DataDefSTRUCT *)base)->m_offset(id);
-		    if ( ofs == -1 && base->is_object() )
-		    {
-			// Check if it's a method call on a class pointer
-			DataDefCLASS *method_cls = (DataDefCLASS *)base;
-			bool call_follows = peekToken()
-			    && peekToken()->id() == TokenID::tkOpBrk;
-			var = call_follows
-			    ? find_method_by_callable_arity(method_cls, id,
-				count_queued_call_arguments(*this), false)
-			    : method_cls->findMethod(id);
-			if ( !var && call_follows )
-			    var = method_cls->findMethod(id);
-			if ( var )
-			{
-			    // Access control (P2.5c): reject a private/protected
-			    // METHOD call via `->` from outside the (derived) class.
-			    {
-				DataDefCLASS *cur_class =
-				    (code && code->method) ? code->method->owner_class : NULL;
-				std::string av =
-				    method_access_violation(base, var, id, cur_class);
-				if ( !av.empty() )
-				    Throw(tb) << av << flush;
-			    }
-			    if ( var->flags & vfSTATIC )
-			    {
-				TokenCallFunc *tc = new TokenCallFunc(*var);
-				tb = nextToken();
-				tc->line = tb->line;
-				tc->column = tb->column;
-				if ( tb->id() == TokenID::tkOpBrk )
-				    tb = parseCallFunc(tc);
-				std::vector<const DataDef *> at;
-				for ( TokenBase *p : tc->parameters )
-				    at.push_back(p ? p->datadef() : NULL);
-				if ( Variable *ov = method_cls->findMethodOverload(id, at) )
-				    if ( ov != &tc->var && (ov->flags & vfSTATIC) )
-				    {
-					TokenCallFunc *tc2 = new TokenCallFunc(*ov);
-					tc2->parameters = tc->parameters;
-					tc2->file = tc->file;
-					tc2->line = tc->line;
-					tc2->column = tc->column;
-					tc = tc2;
-				    }
-				var = &tc->var;
-				exStack.pop();
-				if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
-				    opStack.pop();
-				opStack.push(tc);
-				if ( tb->id() == TokenID::tkSemi )
-				    done = true;
-				break;
-			    }
-			    // arrow method call: ptr->method(args). The common LHS is a
-			    // pointer variable / member. A SUBSCRIPT element that is a
-			    // pointer-to-class (`v[i]` where v is vector<Base*>) is also a
-			    // valid receiver: build the TokenCallMethod with the subscript
-			    // as parent_expr so the CIR side (class_this_arg) passes the
-			    // element POINTER VALUE as __this (recv_is_ptr -> pass the
-			    // pointer directly, NOT its address — unlike the dot case where
-			    // the element is an object and __this = &element). Other chained
-			    // receivers (member-of-call, etc.) are not yet supported.
-			    TokenBase *recv_parent = NULL;
-			    if ( lhs->type() == TokenType::ttSubscript )
-				recv_parent = lhs;
-			    else if ( arrow_via_op )
-				// operator-> result is a pointer VALUE; pass it as
-				// __this directly (recv_is_ptr), like a pointer element.
-				recv_parent = lhs;
-			    else if ( lhs->type() != TokenType::ttVariable
-				   && lhs->type() != TokenType::ttMember )
-				Throw(tb) << "chained arrow method call not yet supported" << flush;
-			    TokenCallMethod *tc = new TokenCallMethod(*obj_var, *var);
-			    if ( recv_parent )
-				tc->parent_expr = recv_parent;
-			    tb = nextToken();
-			    tc->line = tb->line;
-			    tc->column = tb->column;
-			    if ( tb->id() == TokenID::tkOpBrk )
-				tb = parseCallMethod(tc);
-			    // Re-bind to the overload the argument types select.
-			    tc = reselect_method_overload(tc, *obj_var,
-				    method_cls, id);
-			    var = &tc->var;
-			    exStack.pop();
-			    // remove TokenDeRef from opStack
-			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
-				opStack.pop();
-			    opStack.push(tc);
-			    break;
-			}
-			if ( class_has_unresolved_dependent_surface((DataDefCLASS *)base)
-			  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-			{
-			    TokenBase *open = nextToken();
-			    tb = consume_unresolved_dependent_call(*this, open);
-			    exStack.pop();
-			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
-				opStack.pop();
-			    exStack.push(make_dependent_call_placeholder(tb));
-			    break;
-			}
-		    }
-		    if ( ofs == -1 )
-			Throw(tb) << "no member named '" << id << "'" << flush;
-		    // Access control (P2.5): reject private/protected member access
-		    // via `->` from outside the (derived) class.
-		    {
-			DataDefCLASS *cur_class =
-			    (code && code->method) ? code->method->owner_class : NULL;
-			std::string av =
-			    member_access_violation(base, id, cur_class);
-			if ( !av.empty() )
-			    Throw(tb) << av << flush;
-		    }
-		    DataDef *mtype = ((DataDefSTRUCT *)base)->m_type(id);
-
-		    // create variable for the member
-		    var = new Variable(id, *mtype, 1, NULL, false);
-		    var->flags = member_proxy_flags(obj_var->flags);
-
-		    // remove LHS from exStack
-		    exStack.pop();
-		    // for chained -> (lhs was a TokenMember), pass it as parent_expr so
-		    // operand() can compile the intermediate pointer at codegen time
-		    if ( lhs->type() == TokenType::ttMember || expr_backed_lhs )
-			exStack.push(new TokenMember(*obj_var, *var, ofs, lhs));
-		    else
-			exStack.push(new TokenMember(*obj_var, *var, ofs));
-		    // remove TokenDeRef from opStack
-		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
-			opStack.pop();
-		    break;
-		}
-		// namespace resolution: identifier :: member
-		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
-		{
-		    std::string ns_name = ident_tb->str;
-		    if ( DataDefCLASS *class_scope =
-			    resolve_expression_class_scope(*this, ns_name) )
-		    {
-			QualifiedClassExprAction action =
-			    resolve_class_qualified_expression(*this, class_scope,
-				ns_name, tb, exStack, &var, &tb);
-			if ( action == QualifiedClassExprAction::ResolvedFunction )
-			    goto ns_resolved;
-			break;
-		    }
-		    std::string resolved_ns_name =
-			resolve_namespace_name_in_scope(*this, ns_name);
-		    if ( !resolved_ns_name.empty() )
-			ns_name = resolved_ns_name;
-		    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
-		    if ( nsi == namespace_map.end() )
-			Throw(tb) << "Unknown namespace '" << ns_name << "'" << flush;
-		    nextToken(); // consume '::'
-		    TokenBase *member_tb = nextToken(); // consume member identifier
-		    if ( !member_tb )
-			Throw(tb) << "Expecting identifier after '" << ns_name << "::'" << flush;
-		    std::string member_name;
-		    if ( member_tb->type() == TokenType::ttDataType )
-			member_name = ((TokenDataType *)member_tb)->str;
-		    else if ( is_contextual_identifier_token(member_tb) )
-			member_name = contextual_identifier_name(member_tb);
-		    else
-			Throw(tb) << "Expecting identifier after '" << ns_name << "::'" << flush;
-
-		    DataDef *member_dd = NULL;
-		    if ( peekToken() && peekToken()->id() == TokenID::tkLT
-		      && template_declared_in_namespace(*this, member_name, ns_name) )
-		    {
-			if ( TokenDataType *alias_inst =
-				instantiate_template_alias_use(*this, member_name, member_tb) )
-			    member_dd = &alias_inst->definition;
-			else if ( TokenDataType *inst =
-				instantiate_template_use(*this, member_name, member_tb) )
-			    member_dd = &inst->definition;
-		    }
-		    if ( DataDefCLASS *member_scope =
-			    dynamic_cast<DataDefCLASS *>(member_dd) )
-		    {
-			if ( peekToken() && peekToken()->id() == TokenID::tkNS )
-			{
-			    QualifiedClassExprAction action =
-				resolve_class_qualified_expression(*this,
-				    member_scope, member_name, member_tb,
-				    exStack, &var, &tb);
-			    if ( action == QualifiedClassExprAction::ResolvedFunction )
-				goto ns_resolved;
-			    break;
-			}
-			if ( TokenBase *type_expr =
-				parse_functional_type_expression(*this, member_tb,
-				    member_dd) )
-			{
-			    exStack.push(type_expr);
-			    tb = member_tb;
-			    break;
-			}
-		    }
-
-		    namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
-		    if ( nti != namespace_datatype_map.end() )
-		    {
-			datatype_map_iter dti = nti->second.find(member_name);
-			if ( dti != nti->second.end() )
-			{
-			    DataDef *ns_member_dd = &dti->second->definition;
-			    if ( DataDefCLASS *member_scope =
-				    dynamic_cast<DataDefCLASS *>(ns_member_dd) )
-			    {
-				if ( peekToken() && peekToken()->id() == TokenID::tkNS )
-				{
-				    QualifiedClassExprAction action =
-					resolve_class_qualified_expression(*this,
-					    member_scope, member_name, member_tb,
-					    exStack, &var, &tb);
-				    if ( action == QualifiedClassExprAction::ResolvedFunction )
-					goto ns_resolved;
-				    break;
-				}
-			    }
-			    if ( TokenBase *type_expr = parse_functional_type_expression(
-				    *this, member_tb, ns_member_dd) )
-			    {
-				exStack.push(type_expr);
-				tb = member_tb;
-				break;
-			    }
-			}
-		    }
-		    variable_map_iter vmi = nsi->second.find(member_name);
-		    if ( vmi == nsi->second.end() )
-		    {
-			// try dlsym fallback if this namespace was loaded via #load
-			std::map<std::string, void *>::iterator dli = dlopen_map.find(ns_name);
-			if ( dli == dlopen_map.end() )
-			    Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
-			if ( !is_dynamic_symbol_fallback_enabled() )
-			    Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
-			if ( !is_dynamic_symbol_allowed(member_name) )
-			    Throw(member_tb) << "dynamic symbol '" << member_name
-					     << "' is not allowed by registration policy" << flush;
-			void *sym = dlsym(dli->second, member_name.c_str());
-			if ( !sym )
-			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << dlerror() << flush;
-			// create function with int64 return, no declared params (variadic-like)
-			// actual args are passed through at compile time
-			std::string func_id = "__dl_" + ns_name + "_" + member_name;
-			var = addFunction(func_id,
-			    datatype_vec_t{DataType::dtINT64},
-			    (fVOIDFUNC)sym);
-			if ( !var )
-			    Throw(member_tb) << "Failed to register dlsym function '" << member_name << "'" << flush;
-			nsi->second[member_name] = var; // cache for next call
-			DBG(cout << "parseExpression() dlsym resolved " << ns_name << "::" << member_name << " at " << (uint64_t)sym << endl);
-		    }
-		    else
-			var = vmi->second;
-		    DBG(cout << "parseExpression() resolved " << ns_name << "::" << member_name << endl);
-		    tb = member_tb; // update tb for line/col tracking below
-		    goto ns_resolved;
-		}
-		// Statement-head `ns::member(...)` should resolve the callee from
-		// the active namespace first, but once we're inside that call's
-		// arguments / subexpressions, lexical scope should win so locals
-		// can shadow same-named namespace members (`ruby::chars(chars, s)`).
-		if ( !parsed_operator_name
-		  && code && code->method && code->method->owner_class
-		  && (!prevToken() || prevToken()->id() != TokenID::tkNS)
-		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-		{
-		    DataDefCLASS *cls = code->method->owner_class;
-		    std::string mname = member_lookup_name;
-		    Variable *mvar =
-			find_method_by_callable_arity(cls, mname,
-			    count_queued_call_arguments(*this), false);
-		    if ( mvar )
-		    {
-			if ( mvar->flags & vfSTATIC )
-			{
-			    tb = nextToken();
-			    TokenCallFunc *tc = new TokenCallFunc(*mvar);
-			    tc->line = tb->line;
-			    tc->column = tb->column;
-			    tb = parseCallFunc(tc);
-			    opStack.push(tc);
-			    if ( tb->id() == TokenID::tkSemi )
-				done = true;
-			    break;
-			}
-			std::string thisid = "__this";
-			Variable *thisvar = code->method->findParameter(thisid);
-			if ( thisvar )
-			{
-			    TokenCallMethod *tc = new TokenCallMethod(*thisvar, *mvar);
-			    tb = nextToken();
-			    tc->line = tb->line;
-			    tc->column = tb->column;
-			    tb = parseCallMethod(tc);
-			    tc = reselect_method_overload(tc, *thisvar, cls, mname);
-			    opStack.push(tc);
-			    if ( tb->id() == TokenID::tkSemi )
-				done = true;
-			    break;
-			}
-		    }
-		}
-		var = parsed_operator_name ? NULL : resolve_preferred_identifier(ident_tb, expression_head);
-		// `this` keyword: inside a class method body it names the hidden
-		// __this parameter (a `ClassName*`). Resolving it here lets
-		// `this->member` / `this.member` / `this->method()` flow through the
-		// EXISTING pointer-member-access path, and `this` as a value (e.g.
-		// `return this;`) be the pointer itself. Outside a method it stays
-		// unresolved -> the usual "undeclared identifier" error.
-		if ( !var && ident_tb->str == "this"
-		     && code && code->method && code->method->owner_class )
-		{
-		    std::string thisid = "__this";
-		    var = code->method->findParameter(thisid);
-		}
-		// class method: resolve unqualified member name through __this
-		if ( !var
-		  && (!prevToken() || prevToken()->id() != TokenID::tkNS)
-		  && code && code->method && code->method->owner_class )
-		{
-		    DataDefCLASS *cls = code->method->owner_class;
-		    std::string mname = member_lookup_name;
-		    if ( DataDef *static_dd = resolve_class_static_member_type(cls, mname) )
-		    {
-			TokenInt *ti = new TokenInt(0);
-			ti->setDataType(static_dd);
-			ti->file = tb->file;
-			ti->line = tb->line;
-			ti->column = tb->column;
-			exStack.push(ti);
-			break;
-		    }
-		    ssize_t ofs = cls->m_offset(mname);
-		    if ( ofs >= 0 )
-		    {
-			DataDef *mtype = cls->m_type(mname);
-			// find __this parameter
-			std::string thisid = "__this";
-			Variable *thisvar = code->method->findParameter(thisid);
-			if ( thisvar )
-			{
-			    Variable *member = new Variable(mname, *mtype, 1, NULL, false);
-			    exStack.push(new TokenMember(*thisvar, *member, ofs));
-			    break;
-			}
-		    }
-		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-		    {
-			Variable *mvar =
-			    find_method_by_callable_arity(cls, mname,
-				count_queued_call_arguments(*this), false);
-			if ( mvar )
-			{
-			    if ( mvar->flags & vfSTATIC )
-			    {
-				tb = nextToken();
-				TokenCallFunc *tc = new TokenCallFunc(*mvar);
-				tc->line = tb->line;
-				tc->column = tb->column;
-				opStack.push(tc);
-				if ( tb->id() == TokenID::tkOpBrk )
-				    tb = parseCallFunc(tc);
-				if ( tb->id() == TokenID::tkSemi )
-				    done = true;
-				break;
-			    }
-			    std::string thisid = "__this";
-			    Variable *thisvar = code->method->findParameter(thisid);
-			    if ( thisvar )
-			    {
-				TokenCallMethod *tc = new TokenCallMethod(*thisvar, *mvar);
-				tb = nextToken();
-				tc->line = tb->line;
-				tc->column = tb->column;
-				tb = parseCallMethod(tc);
-				tc = reselect_method_overload(tc, *thisvar, cls, mname);
-				opStack.push(tc);
-				if ( tb->id() == TokenID::tkSemi )
-				    done = true;
-				break;
-			    }
-			}
-		    }
-		}
-		if ( parsed_operator_name )
-		    Throw(tb) << "use of undeclared member '" << member_lookup_name << '\'' << flush;
-		// lazy-load check: symbol registered by #include but not yet created
-		if ( !var )
-		    var = lazy_resolve(ident_tb->str);
-		if ( !var )
-		{
-		    TokenBase *ctx_value = resolve_expression_context_identifier(ident_tb);
-		    if ( ctx_value )
-		    {
-			exStack.push(ctx_value);
-			break;
-		    }
-		}
-		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-		{
-		    std::string fname = ident_tb->str;
-		    // dlsym fallback: resolve known libc/system functions early.
-		    // If that fails, C89 still permits an implicit `int f()`
-		    // declaration for calls to functions defined later in the file.
-		    if ( !var && is_implicit_complex_builtin_name(fname) )
-		    {
-			FuncDef *implicit_func = make_implicit_complex_builtin_func(fname);
-			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
-			Method *implicit_method = new Method(*var);
-			var->data = (void *)implicit_method;
-			// Register in funcdef_map so the CIR proto pass emits an
-			// extern prototype carrying the real (often _Complex) return
-			// type. Without a prototype c2mir defaults an undeclared call
-			// to `int (...)`, so a _Complex-returning builtin (conjf, …)
-			// returned through the wrong (scalar/variadic) ABI.
-			funcdef_map[fname] = implicit_func;
-			DBG(cout << "parseExpression() created builtin complex helper declaration for " << fname << endl);
-		    }
-		    if ( is_dynamic_symbol_fallback_enabled()
-		      && !is_implicit_complex_builtin_name(fname)
-		      && is_dynamic_symbol_allowed(fname) )
-		    {
-			void *sym = dlsym(RTLD_DEFAULT, fname.c_str());
-			if ( sym )
-			{
-			    var = addFunction(fname,
-				datatype_vec_t{dynamic_symbol_fallback_return_type(fname)},
-				(fVOIDFUNC)sym);
-			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
-			}
-		    }
-		    if ( !var && is_implicit_complex_builtin_name(fname) )
-		    {
-			FuncDef *implicit_func = make_implicit_complex_builtin_func(fname);
-			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
-			Method *implicit_method = new Method(*var);
-			var->data = (void *)implicit_method;
-			funcdef_map[fname] = implicit_func;  /* emit a real prototype (see above) */
-			DBG(cout << "parseExpression() created builtin complex helper declaration for " << fname << endl);
-		    }
-		    if ( !var && token_origin_allows_c89_implicit_function(ident_tb) )
-		    {
-			FuncDef *implicit_func = new FuncDef(ddINT32);
-			// No prototype exists yet, so accept any argument count.
-			// The real later definition replaces var->type before
-			// TokenCallFunc compiles calls to this variable.
-			implicit_func->is_varargs = true;
-			implicit_func->parameters.push_back(&ddINT64);
-			implicit_func->param_typedef_names.push_back("");
-			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
-			Method *implicit_method = new Method(*var);
-			var->data = (void *)implicit_method;
-			DBG(cout << "parseExpression() created implicit function declaration for " << fname << endl);
-		    }
-		}
-		if ( !var )
-		{
-		    // Functional construction `T(args)`: only when the unresolved
-		    // identifier names a class type followed by '(' (ordinary calls
-		    // resolved to `var` above). General; no per-class machinery.
-		    if ( TokenObjTemp *ot = try_parse_functional_ctor(*this, tb) )
-		    {
-			exStack.push(ot);
-			break;
-		    }
-		    DBG(cerr << "parseExpression() failed to resolve identifier " << ident_tb->str << endl);
-		    Throw(tb) << "use of undeclared identifier '" << ident_tb->str << '\'' << flush;
-		}
-		ns_resolved:
-		if ( var->type->is_function() )
-		{
-		    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
-			skip_template_id_suffix(*this);
-		    // function pointer variable (DataDefFPTR) — different from regular functions
-		    if ( var->type->is_numeric() )
-		    {
-			// FPTR variable: if followed by (, call through pointer
-			if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-			{
-			    TokenCallFunc *tc = new TokenCallFunc(*var);
-			    tb = nextToken();
-			    tc->line = tb->line;
-			    tc->column = tb->column;
-			    tb = parseCallFunc(tc);
-			    opStack.push(tc);
-			    if ( tb->id() == TokenID::tkSemi )
-				done = true;
-			}
-			else
-			{
-			    // FPTR variable as value — push onto exStack
-			    exStack.push(new TokenVar(*var));
-			}
-			break;
-		    }
-		    // Regular function identifier.
-		    // C function-to-pointer decay: a bare function name used as an
-		    // rvalue (RHS of assignment) becomes its address, so
-		    // `fptr = func_name;` writes the function's address into fptr.
-		    // Other contexts (e.g. `cout << endl;`, where BSL consumes a
-		    // no-arg ostream-taking function) keep the pre-decay behavior.
-		    {
-			TokenBase *peek_after = peekToken();
-			TokenID peek_id = peek_after ? peek_after->id() : TokenID::tkBase;
-			bool followed_by_paren = (peek_id == TokenID::tkOpBrk);
-			// Value-context followers: struct/array-init element end,
-			// call-arg end, ternary branch separator - a bare function
-			// name in these positions is passing/returning its address.
-			bool followed_by_value_end =
-			    peek_id == TokenID::tkComma || peek_id == TokenID::tkClBrk
-			 || peek_id == TokenID::tkClSqr || peek_id == TokenID::tkClBrc
-			 || peek_id == TokenID::tkTerC
-			 // `;` follower with empty opStack: a bare function name
-			 // followed by semicolon at the top of an expression is
-			 // function-to-pointer decay (`return func;`). The
-			 // empty-opStack guard preserves operator-consuming
-			 // patterns like `cout << endl;` where BSL on opStack
-			 // wants the no-arg function call form, not the address.
-			 // Closes the SMAUG `tables.c:skill_function` `return
-			 // do_aassign;` family where TokenCallFunc was being
-			 // built for a void-returning function, yielding an
-			 // empty Operand back into TokenRETURN.
-			 || (peek_id == TokenID::tkSemi && opStack.empty())
-			 // Binary comparison / logical / bitwise operators: a bare
-			 // function name on either side of these is its address
-			 // (function-to-pointer decay), not a call. Closes patterns
-			 // like `t->fn == do_cast && tmp->...` where do_cast was
-			 // previously pushed as a TokenCallFunc, then the operator
-			 // was silently consumed and the next token mis-parsed.
-			 || peek_id == TokenID::tkEquals || peek_id == TokenID::tkNotEq
-			 || peek_id == TokenID::tkLT     || peek_id == TokenID::tkLE
-			 || peek_id == TokenID::tkGT     || peek_id == TokenID::tkGE
-			 || peek_id == TokenID::tkLand   || peek_id == TokenID::tkLor
-			 || peek_id == TokenID::tkBand   || peek_id == TokenID::tkBor
-			 || peek_id == TokenID::tkXor;
-			bool in_assign_context = false;
-			if ( !opStack.empty() )
-			{
-			    TokenID opid = opStack.top()->id();
-			    if ( opid == TokenID::tkAssign
-			      || opid == TokenID::tkAddEq || opid == TokenID::tkSubEq
-			      || opid == TokenID::tkMulEq  || opid == TokenID::tkDivEq
-			      || opid == TokenID::tkModEq  || opid == TokenID::tkXorEq
-			      || opid == TokenID::tkBandEq || opid == TokenID::tkBorEq
-			      || opid == TokenID::tkBSLEq  || opid == TokenID::tkBSREq )
-				in_assign_context = true;
-			}
-			if ( !followed_by_paren && (in_assign_context || followed_by_value_end) )
-			{
-			    DBG(cout << "Pushing function address (decay): " << var->name << " onto exStack" << endl);
-			    exStack.push(new TokenVar(*var));
-			    break;
-			}
-		    }
-		    Variable *call_var = runtime_eval_scope_target(var);
-		    TokenCallFunc *tc = new TokenCallFunc(*call_var);
-		    tc->auto_scope_context = is_runtime_eval_scope_ctx_helper_name(call_var->name)
-			&& is_runtime_eval_scope_public_name(ident_tb->str);
-		    tb = nextToken();
-		    tc->line = tb->line;
-		    tc->column = tb->column;
-		    if ( tb->id() == TokenID::tkOpBrk )
-		    {
-			tb = parseCallFunc(tc);
-			DBG(cout << "parseCallFunc returned with token " << (char)tb->get() << endl);
-		    }
-		    DBG(cout << "Pushing found function call: " << var->name << "() onto opStack" << endl);
-		    opStack.push(tc);
-		    if ( tb->id() == TokenID::tkSemi )
-			done = true;
-		    break;
-		}
-		if ( var->type->is_integer() )
-		    DBG(cout << "Pushing found variable: " << var->name << '=' << (int)var->get<int>() << " onto exStack" << endl);
-		else
-		if ( var->type->is_real() )
-		    DBG(cout << "Pushing found variable: " << var->name << '=' << (double)var->get<double>() << " onto exStack" << endl);
-		else
-		    DBG(cout << "Pushing found variable: " << var->name << " onto exStack" << endl);
-		exStack.push(new TokenVar(*var));
 		break;
-	    }
 	    case TokenType::ttVariable:
 		var = &dynamic_cast<TokenVar *>(tb)->var;
 		if ( var->type->is_integer() )

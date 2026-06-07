@@ -1546,6 +1546,16 @@ public:
 				 std::stack<TokenBase *> &exStack,
 				 std::stack<TokenBase *> &opStack,
 				 int brackets, bool push_back_comma);
+    // ttIdentifier switch-arm of parseExpression: the largest arm — identifier
+    // resolution in expression context (variables, function/method calls,
+    // member access, template-ids, qualified/namespaced names, casts,
+    // new/sizeof-family, …). `tb` is in/out as it advances through the stream.
+    // ttKeyword falls through into this for keywords that are contextual
+    // identifiers.
+    ExprStep parseExpr_identifierArm(TokenBase *&tb,
+				     std::stack<TokenBase *> &exStack,
+				     std::stack<TokenBase *> &opStack,
+				     TokenCpnd *code);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
