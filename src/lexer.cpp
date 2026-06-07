@@ -1870,6 +1870,51 @@ void Program::add_datatypes()
 }
 
 
+// CHAR-LEVEL directive-line-tail skip, used ONLY while skipping an inactive
+// #if branch (skipConditionalBlock). The active path uses
+// consume_directive_line_tail() to run the tail through the lexer (reusing its
+// comment handling), but inactive content must NOT be tokenized or macro-
+// expanded — so here we scan raw characters, mirroring the lexer's comment rule
+// by hand: a `/* */` block comment counts as whitespace and may span physical
+// newlines, so skip it IN FULL (else its continuation lines leak as directives/
+// code). Stop at the first newline NOT inside a block comment; `//` ends the line.
+static void skip_directive_line_tail(Source &source)
+{
+    while ( source.good() && !source.eof() )
+    {
+	int c = source.peek();
+	if ( c == '\n' || c == '\r' )
+	    break;
+	if ( c == '/' )
+	{
+	    source.get();
+	    int n = source.peek();
+	    if ( n == '*' )
+	    {
+		source.get();
+		int prev = 0;
+		while ( source.good() && !source.eof() )
+		{
+		    int cc = source.get();
+		    if ( prev == '*' && cc == '/' )
+			break;
+		    prev = cc;
+		}
+		continue;
+	    }
+	    if ( n == '/' )
+	    {
+		while ( source.good() && !source.eof()
+		     && source.peek() != '\n' && source.peek() != '\r' )
+		    source.get();
+		break;
+	    }
+	    continue;   // a lone '/', already consumed
+	}
+	source.get();
+    }
+}
+
 // lex and return the next token from the data stream
 // TODO: replace top switch with direct dispatch
 //       also likely better to replace istream stuff
@@ -2316,9 +2361,9 @@ TokenBase *Program::_getToken()
 		    define_map.erase(name);
 		    macro_map.erase(name);
 		    DBG(std::cout << "#undef " << name << std::endl);
-		    // consume rest of line
-		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			source.get();
+		    // discard the directive's trailing tokens via the lexer, so a
+		    // multi-line /* */ comment here is handled by the lexer's case '/'
+		    consume_directive_line_tail();
 		    return getToken();
 		}
 		if ( directive == "line" )
@@ -2339,9 +2384,9 @@ TokenBase *Program::_getToken()
 		    ifdef_stack.push(active);
 		    ifdef_done_stack.push(active);
 		    DBG(std::cout << "#" << directive << " " << name << " -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
-		    // consume rest of line
-		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			source.get();
+		    // discard the directive's trailing tokens via the lexer, so a
+		    // multi-line /* */ comment here is handled by the lexer's case '/'
+		    consume_directive_line_tail();
 		    if ( !active )
 			return skipConditionalBlock();
 		    return getToken();
@@ -2391,9 +2436,9 @@ TokenBase *Program::_getToken()
 		    if ( active )
 			ifdef_done_stack.top() = true;
 		    DBG(std::cout << "#else -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
-		    // consume rest of line
-		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			source.get();
+		    // discard the directive's trailing tokens via the lexer, so a
+		    // multi-line /* */ comment here is handled by the lexer's case '/'
+		    consume_directive_line_tail();
 		    if ( !active )
 			return skipConditionalBlock();
 		    return getToken();
@@ -2405,9 +2450,9 @@ TokenBase *Program::_getToken()
 		    ifdef_stack.pop();
 		    ifdef_done_stack.pop();
 		    DBG(std::cout << "#endif" << std::endl);
-		    // consume rest of line
-		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			source.get();
+		    // discard the directive's trailing tokens via the lexer, so a
+		    // multi-line /* */ comment here is handled by the lexer's case '/'
+		    consume_directive_line_tail();
 		    return getToken();
 		}
 		if ( directive == "error" || directive == "warning" )
@@ -2460,9 +2505,9 @@ TokenBase *Program::_getToken()
 				    _pack_stack.pop();
 				DBG(std::cout << "#pragma pack(pop)" << std::endl);
 			    }
-			    // consume rest of line
-			    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-				source.get();
+			    // discard trailing tokens via the lexer (handles a
+			    // multi-line /* */ comment on this line)
+			    consume_directive_line_tail();
 			}
 		    }
 		    else if ( pragma == "push_macro" || pragma == "pop_macro" )
@@ -2507,9 +2552,9 @@ TokenBase *Program::_getToken()
 				}
 			    }
 			}
-			// consume rest of line
-			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			    source.get();
+			// discard trailing tokens via the lexer (handles a
+			// multi-line /* */ comment on this line)
+			consume_directive_line_tail();
 		    }
 		    else if ( pragma == "prefer" )
 		    {
@@ -2556,9 +2601,9 @@ TokenBase *Program::_getToken()
 		    }
 		    else
 		    {
-			// consume rest of line for unknown pragmas
-			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-			    source.get();
+			// consume the rest of the directive line for unknown
+			// pragmas; discard trailing tokens via the lexer
+			consume_directive_line_tail();
 		    }
 		    return _getToken();
 		}
@@ -3874,15 +3919,13 @@ TokenBase *Program::skipConditionalBlock()
 	if ( dir == "ifdef" || dir == "ifndef" || dir == "if" )
 	{
 	    depth++;
-	    // consume rest of line
-	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		source.get();
+	    // consume the rest of the directive line (comment-aware)
+	    skip_directive_line_tail(source);
 	}
 	else if ( dir == "endif" )
 	{
-	    // consume rest of line
-	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		source.get();
+	    // consume the rest of the directive line (comment-aware)
+	    skip_directive_line_tail(source);
 	    DBG(std::cout << "skipConditionalBlock: #endif depth=" << depth << " stack=" << ifdef_stack.size() << std::endl);
 	    if ( depth == 0 )
 	    {
@@ -3896,9 +3939,8 @@ TokenBase *Program::skipConditionalBlock()
 	}
 	else if ( depth == 0 && dir == "else" )
 	{
-	    // consume rest of line
-	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		source.get();
+	    // consume the rest of the directive line (comment-aware)
+	    skip_directive_line_tail(source);
 	    bool already_done = ifdef_done_stack.top();
 	    ifdef_stack.pop();
 	    bool active = !already_done;
@@ -3917,9 +3959,9 @@ TokenBase *Program::skipConditionalBlock()
 	    if ( already_done )
 	    {
 		ifdef_stack.push(false);
-		// consume rest of line since we won't evaluate
-		while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		    source.get();
+		// consume the rest of the directive line (comment-aware) since
+		// we won't evaluate this #elif
+		skip_directive_line_tail(source);
 		// keep skipping
 	    }
 	    else
@@ -4446,6 +4488,24 @@ TokenBase *Program::getToken()
 
     DBG(if (tb) printt(tb));
     return tb;
+}
+
+// Discard the trailing content of a preprocessor directive line (after
+// #endif/#else/#undef/#pragma/…) by running it THROUGH THE LEXER — the same
+// path normal code takes — and stopping at the end-of-line token. This reuses
+// the lexer's existing comment handling (`case '/'`, which reads a `/* */`
+// block comment across physical newlines into one token), so a comment that
+// opens on the directive line and continues onto the next is consumed in full
+// instead of leaking its body as code (real <stddef.h>:
+// `#endif /* … \n || __need_XXX was not defined before */`). Trailing tokens
+// are dropped, matching GCC's "extra tokens at end of #endif directive". Only
+// for ACTIVE directives — inactive #if branches are skipped at char level
+// (skip_directive_line_tail), since their content must NOT be tokenized/expanded.
+void Program::consume_directive_line_tail()
+{
+    TokenBase *t;
+    while ( (t = getToken()) && t->type() != TokenType::ttEOL )
+	/* discard — same as getRealToken() drops trivia */;
 }
 
 // Exact source text of a trivia token (whitespace via its RLE count, comment

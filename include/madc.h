@@ -1396,6 +1396,7 @@ public:
     // generate tokens
     TokenBase *getToken();
     TokenBase *getRealToken();
+    void consume_directive_line_tail();
 //  TokenProgram *tokenize(std::istream &);
     TokenProgram *tokenize(const char *);
     // Full-fidelity source reconstruction from the token stream (requires
