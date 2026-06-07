@@ -1,5 +1,61 @@
 # REHYDRATION HANDOFF — real-header track + struct/class unification directive
 
+## ⇉ COMPACTION ENTRY POINT — read this first, then the docs in order ⇉
+**2026-06-07. Branch `feature/realhdr-parse-gaps2-claude` (off `develop`, LOCAL /
+NOT pushed; `develop` untouched). HEAD `e56747e` (docs only after the code work).
+Tree clean. fulltest baseline 528/4/0/26** (4 pre-existing reds: testdefer,
+testfstream, testlargesizeofquery, testloop). **Do NOT push; do NOT promote
+develop→master** (parity gate).
+
+**Read order on resume:**
+1. **This block + the FULL HANDOFF block below** (state, the 10 code commits, the
+   `-E` bisection methodology, the embedded-stub-shadowing finding).
+2. **`madc-header-partition-handoff.md` (repo root) = THE MASTER PLAN** — the
+   6-step operational handoff for the strategy now committed (option B): madc owns
+   only the compiler-owned FREESTANDING headers + impersonates gcc; consumes real
+   libstdc++/glibc UNMODIFIED. Don't handroll the library.
+3. **`docs/plans/2026-06-07-freestanding-vs-hosted-headers-strategy.md`** —
+   principle + madc's current-state mapping + 2 refinements (borrow freestanding
+   headers from c2mir's `mirc_*`; add a `__madc__` identity — peer like Clang, not
+   a guest) + the `--no-embedded-headers`-is-only-a-diagnostic reconciliation +
+   Step-5 builtins reframe.
+4. **`docs/plans/2026-06-07-template-id-disambiguation-research.md`** — clang
+   research + the VERIFIED parser fix for the current concrete blocker.
+5. Background: `docs/plans/2026-06-07-parser-pp-architecture-research.md` (gcc/
+   clang/c2mir front-end study). Memory: `project_parser_pp_architecture`,
+   `project_struct_is_class`, `project_string_as_class`, `project_template_instantiation`.
+
+**WHERE THINGS STAND (strategy = option B, committed):** madc's GCC impersonation
+is ✓ strong (`__GNUC__=13.3.0`, `__SIZEOF_*__`/`__*_TYPE__`, `#include_next`,
+`__builtin_va_*`). GAPS: no `__madc__` identity; freestanding set PARTIAL (has
+float/limits/stdarg/stdbool/stddef/stdint; missing stdalign/stdnoreturn/iso646/
+stdatomic/intrinsics; `stddef.h` offsetof not `__builtin_offsetof`); **NO
+type-trait builtins** (`__is_*`/`__has_*`/`__underlying_type`/`__type_pack_element`
+— verified absent); library STUBS (string/vector/map/set/algorithm/streams + glibc
+dups) in `include/madc/` are the WRONG bucket and the active shadowing blocker.
+
+**TWO LIVE WORK ITEMS (next session):**
+- **(parser, ready)** the `iterator<>` blocker = template-id-vs-type-alias: fix at
+  `parser.cpp:2935–2942` (don't `instantiate_template_id` an already-resolved
+  `ttDataType` whose binding is a non-template alias; make `find_template` scope/
+  binding-aware). Reducer + clang-faithful detail in the disambiguation research
+  doc. Test-gated.
+- **(header-partition, the master plan)** Step 0 add `__madc__`; Step 1 stand up a
+  madc-owned freestanding dir from c2mir's `mirc_*` (search-first + `#include_next`
+  chaining), NOT gcc's `$OWN` dir; Step 2 close `madc -dM` vs `gcc -dM` gaps;
+  Step 3 the `__is_*`/`__has_*` builtin checklist (THE `<type_traits>`/`<tuple>`
+  conformance milestone — most remaining "parser" header failures are actually
+  missing macros/builtins, not parser bugs). `--no-embedded-headers` is the
+  DIAGNOSTIC that simulates the end-state.
+
+**Verify on resume:** `git rev-parse --short HEAD` · `make -C src` (clean) ·
+`make -C src fulltest` (528/4) · `bash scripts/probe_real_headers.sh` (frontier) ·
+torture failset-diff vs parent for any parser/cir change · SMAUG soak
+(`cd /workspace/MadSMAUG && MADC=/workspace/madc/bin/madc MADC_CPU_LIMIT=0
+MADC_MEM_LIMIT=0 timeout 600 ./MadSMAUG.sh <port>` → "ready … port", 0 errors).
+
+---
+
 ## ★ FULL HANDOFF (READ FIRST) — 2026-06-07, compaction checkpoint ★
 
 **Branch** `feature/realhdr-parse-gaps2-claude` (off `develop`, **local only, NOT
@@ -31,8 +87,9 @@ parse — like Clang (a PEER, not a guest: also define a `__madc__` identity, wh
 madc lacks today). Oracle = `gcc -print-file-name=include`. madc's impersonation
 is ✓ strong; the library STUBS in `include/madc/` are the WRONG bucket and the
 shadowing blocker — retire them (the retire-std-hardcoding deletion step).
-**OPEN FORK:** option B (consume real libstdc++ — this track) vs option A (keep the
-custom header-defined-class `<string>`); research favors B — confirm with user.
+**FORK RESOLVED → B** (consume real libstdc++/glibc unmodified, retire ALL library
+stubs incl. the header-defined-class `<string>`): the master plan
+`madc-header-partition-handoff.md` (repo root) commits to B.
 
 **This session's commits (all gated: fulltest 528/4/0/26 · gcc.c-torture failset
 IDENTICAL 88, 0 regr · SMAUG boots clean):**
