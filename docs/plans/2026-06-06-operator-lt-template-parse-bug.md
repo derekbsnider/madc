@@ -1,7 +1,47 @@
-# Handoff — `operator<` mis-parsed as a template-id (container-header parser gap)
+# Handoff — `operator<` mis-parse + parser restoration
 
-Date: 2026-06-06. Branch: `feature/realhdr-parse-gaps2-claude` (off `develop`).
-Status: **root-caused + reduced; fix NOT landed (multi-part, multi-scanner).**
+Date: 2026-06-06/07. Branch: `feature/realhdr-parse-gaps2-claude` (off `develop`).
+Status: **restoration underway (steps 1–2 landed); two distinct bugs separated.**
+
+## UPDATE 2026-06-07 — corrected diagnosis + restoration started
+
+The user's architectural point (the parser degraded from the original
+method-based design: `a22343e` = 1,401 lines, **0** free functions taking
+`Program&`; now 24,299 lines, **139** such free functions, ~13 duplicated
+inline `<…>` balancers) is the real fix. Restoration begun, each step
+fulltest-gated (521/4/0/26 throughout):
+
+- **Step 1** (`193b6af`): `parse_operator_name_after_keyword` (free fn) →
+  `Program::parseOperatorId` method. 139→138 free functions.
+- **Step 2** (`14d201f`): add `Program::isOperatorIdStart()` + extend
+  `parseOperatorId(consumed)`; migrate 4 angle scanners onto them
+  (`collect_template_argument_spelling`, `skip_template_id_suffix`, the
+  alias-target collector, `collect_template_class_prefix`). The operator-id
+  over-consumption is now fixed in ONE primitive for those paths.
+
+**TWO DISTINCT BUGS, separated by the trace (the earlier single-bug framing below was wrong):**
+1. **operator< has two parts:** (a) angle-scan over-consumption — fixed in 4
+   scanners (step 2), ~9 inline balancers remain (R19 template-param-default,
+   R21 member-call, etc. — enumerate via `grep "== TokenID::tkLT" src/parser.cpp`);
+   (b) operator-id **resolution** — after the angle fix, a template-arg
+   `decltype(operator<(…))` now yields `use of undeclared identifier 'operator'`
+   (expression parser only treats `operator` as an operator-id inside a class
+   method, `parser.cpp:11465`). Still pending.
+2. **stl_tree.h's actual blocker is NOT operator<.** Trace (TRACE_CM at the
+   `TokenCLASS::parse` member loop) shows `std::less<void>` over-consumes at
+   `bits/stl_function.h:643` — the **`__ptr_cmp` member alias-template**
+   (`template<…> using __ptr_cmp = __and_<__not_overloaded<…>, is_convertible<…>,
+   is_convertible<…>>;`), a `using X = …<…>>` with nested `>>`. The operator<
+   `__not_overloaded` specs (619–637) are BEFORE it and parse fine now. Diagnose
+   this member-alias-template scanner separately (note: a simple R6-style member
+   alias template parses OK — the 3-arg / `const volatile void*` / trailing `>>`
+   form does not; reduce it).
+
+Below is the original (single-bug) writeup, partially superseded.
+
+---
+
+Status (original): **root-caused + reduced; fix NOT landed (multi-part, multi-scanner).**
 
 ## What this blocks
 
