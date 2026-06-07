@@ -15,6 +15,55 @@ Date: **2026-06-07** (late session). Branch **`feature/realhdr-parse-gaps2-claud
 
 ---
 
+## UPDATE 2026-06-07 (NEWEST-2) — streams gate ISOLATED to a one-liner: `<` in a trailing-return `decltype`
+
+HEAD now **`840eb38`**. Two more fixes + the streams gate pinned to a minimal
+reducer. All commits validated (fulltest 528/4/0/26; gcc.c-torture failset
+IDENTICAL = 88, 0 regressions).
+
+- **`fcca0a3` — `-E` char-literal reconstruction.** `token_spelling()` had no
+  `ttChar` case → char literals reconstructed as EMPTY, so `-E`/`--dump-source`
+  dropped `'\0'`/`'\x7f'` etc. This had **contaminated my own bisection** (a
+  phantom failure in glibc's `btowc` inline). Char literals parse fine LIVE
+  (verified vs g++); purely a reconstruction gap. **The `-E` instrument is now
+  faithful** — trust it for reparse bisection.
+- **`840eb38` — restore nested forward declaration** (`class L { class facet; };`),
+  a LATENT REGRESSION from `97eeeeb`: the definition-only+re-feed path wrongly
+  applied to the `;` forward-decl case (TokenCLASS already consumes the `;`, so
+  re-feed mis-fired). Tests/torture didn't cover nested fwd decls. Fixed by
+  splitting the `;` case onto the original simple parse path; definition-only +
+  re-feed now only for `{`/`:`. **Lesson: a green fulltest+torture does NOT cover
+  nested-C++-class edge cases — reduce + check gcc/clang for those by hand.**
+
+### THE STREAMS GATE (precisely isolated — surgical next target)
+All 5 streams fail at `use of undeclared identifier 'less'` because
+`<bits/stl_function.h>` derails with **"Unexpected end of data"**, so `std::less`
+never registers. Reduced to ONE line (gcc/clang accept; madc fails):
+```cpp
+struct X { template<typename A,typename B> auto f(A a,B b) const -> decltype(a<b) { return a<b; } };
+```
+**Root cause:** a `<` inside a `decltype(...)` in a **trailing-return-type**
+position is parsed as a template-argument-list opener → the parser consumes to
+EOF. Proof by bisection: `-> decltype(a+b)` OK, `-> decltype(a>b)` OK, a
+STANDALONE `decltype(a<b);` stmt OK — **only `-> decltype(a< … )` fails.** This is
+research **lesson #5** (the `<` angle-bracket ambiguity; madc lacks a
+`greater_than_is_operator_p`-style guard in trailing-return/type context). FIX
+LOCATION: the trailing-return `->` type parse must parse the `decltype(...)`
+operand as an EXPRESSION (where `<` is less-than), not via a type/template-id
+balancer. The general decltype-as-type resolver is `parser.cpp:2975`
+(`is_decltype_identifier`); find where the method trailing-return (`->`,
+`TokenDeRef`) collects its type and route its `decltype` through the expression
+path. Fixing this unblocks `less` → likely all 5 streams at once.
+
+### Other target-header gates (independent of the above)
+- **`string` 42:9** "Expecting type in class definition" — not yet bisected.
+- **`<memory>` 2019** `template<...> struct array;` — `array` is a hardcoded
+  builtin token (`TokenARRAY`, the lone std-name straggler in `datatokens.h`);
+  retire-std-hardcoding-campaign work. `<memory>` is a transitive include but
+  the streams' direct gate is `less`, so do `decltype(<)` first.
+
+---
+
 ## UPDATE 2026-06-07 (NEWEST) — `madc -E`, PP/parser RESEARCH, NESTED-STRUCT-METHOD fixes; `<memory>` now hits the template/std-hardcoding layer
 
 Branch HEAD now **`97eeeeb`** (`feature/realhdr-parse-gaps2-claude`, local, NOT
