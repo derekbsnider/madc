@@ -1,0 +1,22 @@
+// CV-qualifiers may appear before OR after the base type (and interleaved with
+// pointer stars) in a typedef — C/C++ allow "east const". madc previously read
+// the trailing qualifier as the alias name (`typedef int const X;` registered
+// "const"). Real libstdc++/glibc headers use these forms.
+typedef int const        CI;
+typedef int volatile     VI;
+typedef unsigned int const UIC;
+typedef int const *      CIP;
+typedef int * const      ICP;
+
+int main()
+{
+	CI  a = 7;
+	VI  b = 11;
+	UIC c = 3;
+	int x = 5;
+	CIP p = &x;     // pointer-to-const-int
+	int y = 9;
+	ICP q = &y;     // const pointer-to-int
+	printf("%d %d %d %d %d\n", a, (int)b, (int)c, *p, *q);
+	return 0;
+}

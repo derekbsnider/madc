@@ -17183,11 +17183,20 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     if ( !base_dd )
 	pgm.Throw(tn) << "Expecting type after 'typedef'" << flush;
 
-    // handle pointer: typedef int *intptr;
-    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+    // handle pointer + interleaved CV-qualifiers between the base type and the
+    // alias name: `typedef int *intptr;`, east-const `typedef int const X;`,
+    // `typedef T * const p;`, `typedef T const * X;`. CV-qualifiers are no-ops
+    // for madc's type model (the leading-qualifier case is handled above); skip
+    // them wherever they appear so they aren't mistaken for the alias name (a
+    // bare `typedef int const X;` previously read `const` as the alias). Mirrors
+    // the qualifier/star loop in parseDeclaration.
+    while ( pgm.peekToken()
+	 && (pgm.peekToken()->id() == TokenID::tkMul
+	  || is_post_pointer_qualifier_token(pgm.peekToken())) )
     {
+	if ( pgm.peekToken()->id() == TokenID::tkMul )
+	    base_dd = pgm.getPointerType(base_dd);
 	pgm.nextToken();
-	base_dd = pgm.getPointerType(base_dd);
     }
     if ( pgm.peekToken()
       && (pgm.peekToken()->id() == TokenID::tkBand
