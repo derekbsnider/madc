@@ -18949,11 +18949,21 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
 	}
 	if ( t->id() == TokenID::tkOPEROVER )
 	    consume_operator_spelling = true;
-	else if ( t->id() == TokenID::tkLT )
+	// Track template angle brackets ONLY outside parens/subscripts. Inside
+	// `(...)` or `[...]` a `<`/`>` is a comparison/shift operator, not a
+	// template bracket — e.g. a trailing return `-> decltype(a < b)` or
+	// `decltype(forward<_Tp>(t) < forward<_Up>(u))`. Without this guard a lone
+	// `<` bumped angle_depth with no matching `>`, so the body `{` was treated
+	// as nested (the angle_depth!=0 check below) and the declaration was
+	// consumed to EOF ("Unexpected end of data"). Inside parens the `()`
+	// balancing alone locates the body brace.
+	else if ( t->id() == TokenID::tkLT && paren_depth == 0 && square_depth == 0 )
 	    ++angle_depth;
-	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
+	else if ( t->id() == TokenID::tkGT && angle_depth > 0
+		&& paren_depth == 0 && square_depth == 0 )
 	    --angle_depth;
-	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
+	else if ( t->id() == TokenID::tkBSR && angle_depth > 0
+		&& paren_depth == 0 && square_depth == 0 )
 	{
 	    if ( angle_depth > 1 )
 		angle_depth -= 2;
