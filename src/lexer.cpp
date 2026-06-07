@@ -1021,7 +1021,12 @@ void Program::_tokenizer_init()
     define_map["constexpr"] = "";
     define_map["consteval"] = "";
     define_map["constinit"] = "";
-    define_map["noexcept"] = "";
+    // noexcept is NOT a plain empty define nor a function-like macro: the
+    // macro path splits its argument on top-level commas, and the C
+    // preprocessor does not treat <...> as grouping, so a template-id
+    // condition like noexcept(is_nothrow_constructible<T, Args...>::value)
+    // would split into two macro arguments ("Too many parameters"). It is
+    // stripped by balanced-paren consumption in getToken() instead.
     define_map["__extension__"] = "";
     // _Alignas(N) is a C11 keyword — consume like __attribute__
     // The lexer handles it by stripping the specifier and its parens.
@@ -1033,12 +1038,6 @@ void Program::_tokenizer_init()
     define_map["__signed"] = "signed";
     define_map["__signed__"] = "signed";
     define_map["__const__"] = "const";
-    {
-	MacroDef m;
-	m.params = {"__expr"};
-	m.body = "";
-	macro_map["noexcept"] = m;
-    }
     // GCC floating-point limit macros
     define_map["__FLT_MAX__"] = "3.40282347e+38F";
     define_map["__FLT_MIN__"] = "1.17549435e-38F";
@@ -3606,6 +3605,27 @@ TokenBase *Program::_getToken()
 		if ( word == "__FUNCTION__" || word == "__func__"
 		  || word == "__PRETTY_FUNCTION__" )
 		    return new TokenIdent(word);
+		// noexcept / noexcept(expr): madc ignores exception
+		// specifications. Strip the optional (...) by BALANCED parens
+		// — NOT via a function-like macro, whose comma-splitting breaks
+		// on a template-id condition such as
+		// noexcept(is_nothrow_constructible<T, Args...>::value) (the
+		// preprocessor does not treat <...> as grouping).
+		if ( word == "noexcept" )
+		{
+		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
+			source.get();
+		    if ( source.peek() == '(' )
+		    {
+			int depth = 0;
+			do {
+			    char c = source.get();
+			    if ( c == '(' ) ++depth;
+			    else if ( c == ')' ) --depth;
+			} while ( source.good() && depth > 0 );
+		    }
+		    return getToken();
+		}
 		// Most GCC attributes are no-ops for madc. Preserve the few
 		// layout/type-shaping ones the parser understands and skip
 		// the rest.

@@ -8100,12 +8100,29 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     return tb;
 }
 #else
+// operator new / delete (and the [] forms) have a fixed set of standard
+// overloads of differing arity: `operator new(size)`, the C++17 aligned
+// `operator new(size, align_val_t)`, the `(size, nothrow_t)` form, etc. madc
+// collapses every overload onto the single name "operatornew"/"operatordelete"
+// (parseOperatorId), registering only the first, so it cannot enforce a
+// per-overload parameter count — a 2-arg aligned-new call from libstdc++'s
+// new_allocator would otherwise trip the "Too many parameters" arity check.
+// Treat allocation-operator calls as accepting extra args; the concrete
+// overload is the runtime allocator's concern, not the parser's.
+static bool is_overloaded_allocation_operator(const std::string &name)
+{
+    return name == "operatornew"    || name == "operatornew[]"
+	|| name == "operatordelete" || name == "operatordelete[]";
+}
+
 static bool call_accepts_extra_args(TokenCallFunc *tc)
 {
     FuncDef *fd = (FuncDef *)tc->var.type;
     Method *md = (Method *)tc->var.data;
 
     if ( fd->is_varargs )
+	return true;
+    if ( is_overloaded_allocation_operator(tc->var.name) )
 	return true;
     if ( fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall") )
 	return true;
@@ -8326,7 +8343,10 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    }
 	    // In C, f() with no params accepts any number of arguments (K&R style).
 	    // Only f(void) means exactly zero. Skip the check for empty-param functions.
-	    if ( !(fd->parameters.empty() && !fd->is_void_params) )
+	    // Allocation operators have multiple standard overloads collapsed onto one
+	    // name (see is_overloaded_allocation_operator), so their arity is not fixed.
+	    if ( !(fd->parameters.empty() && !fd->is_void_params)
+	      && !is_overloaded_allocation_operator(tc->var.name) )
 	    {
 		size_t expected = fd->parameters.size()
 			- (function_uses_hidden_this(tc->var) ? 1 : 0)
@@ -8503,6 +8523,7 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	if ( tb->id() == TokenID::tkComma )
 	{
 	    if ( !((FuncDef *)tc->var.type)->is_varargs
+	    &&   !is_overloaded_allocation_operator(tc->var.name)
 	    &&   ++paramcnt >= ((FuncDef *)tc->var.type)->parameters.size() )
 	    {
 		Throw(tb) << "Too many parameters" << flush;

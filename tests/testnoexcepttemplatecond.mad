@@ -1,0 +1,22 @@
+// A noexcept specification whose condition is a template-id containing a comma
+// (e.g. noexcept(is_nothrow_constructible<T, Args...>::value), the shape real
+// libstdc++ <new>/allocator code uses). madc strips noexcept(...) — it must do
+// so by BALANCED-PAREN consumption in the lexer, NOT as a function-like macro:
+// the C preprocessor does not treat <...> as grouping, so the macro path would
+// split the template-arg comma into two macro arguments and reject it.
+template<class T, class U> struct two_args { static const bool value = true; };
+
+int add(int a, int b) noexcept(two_args<int, char>::value) { return a + b; }
+
+class S {
+public:
+	// also exercise the member-function form + a different template-id condition
+	int mul(int a, int b) noexcept(two_args<int, long>::value) { return a * b; }
+};
+
+int main()
+{
+	S s;
+	printf("%d %d\n", add(3, 4), s.mul(3, 4));
+	return 0;
+}
