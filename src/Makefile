@@ -15,6 +15,11 @@ HFILES	= madc.h datadef.h tokens.h datatokens.h
 CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o va_helpers.o exception_runtime.o pch.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_emit_c.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
+# Regenerate embedded_headers.cpp NOW, at Makefile parse time, before any target
+# is evaluated — so an edited/added/DELETED embedded header is reflected in
+# embedded_headers.o within a SINGLE make. The generator is idempotent (rewrites
+# only on real content change), so this does not churn mtimes or force rebuilds.
+EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
 MADDATHDRS = $(wildcard ../include/madcdat/*.h)
 INCDIR	= ../include
@@ -190,13 +195,11 @@ $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 	rm -f $@
 	$(AR) $(ARFLAGS) $@ $^
 
-# Always run the generator (it is idempotent — only rewrites embedded_headers.cpp
-# when the content changes). An mtime-only prereq list cannot detect a DELETED
-# embedded header, which silently left a retired stub baked into the binary.
-.PHONY: gen_embedded_headers
-gen_embedded_headers:
-	../scripts/gen_embedded_headers.sh
-embedded_headers.cpp: gen_embedded_headers
+# embedded_headers.cpp is regenerated at PARSE time (see EMBED_GEN near the top),
+# not by a recipe rule: a recipe-time prereq updates the file too late — make has
+# already stat'd embedded_headers.o against the OLD mtime when evaluating the
+# graph, so a changed/added/deleted embedded header would not rebuild the object
+# until the NEXT make. Parse-time generation makes it correct in one invocation.
 
 # Host system include search paths, captured from the configured compiler.
 # Host-specific + gitignored, so generate it if missing (a fresh checkout has
