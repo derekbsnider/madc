@@ -757,6 +757,10 @@ public:
 		return true;
 	return false;
     }
+    // Active macro-expansion nesting depth (one frame per live expansion).
+    // A runaway recursive macro grows this without bound; the lexer guards on
+    // it to fail with a clean diagnostic instead of crashing the stack.
+    size_t pushback_depth() const { return _pushback_frames.size(); }
     bool good() { return !_pushback.empty() || _ss.good(); }
     bool eof()  { return _pushback.empty() && _ss.eof(); }
     int line()  { if ( _lf > _cr ) return _lf+1; return _cr+1; }

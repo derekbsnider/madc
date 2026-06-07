@@ -1881,6 +1881,17 @@ TokenBase *Program::_getToken()
     string word;
     int ch, cnt, row, col;
 
+    // Runaway-expansion guard. macro_disabled() blue paint stops the ordinary
+    // recursive-macro cases, but a depth bound is a cheap backstop that turns
+    // ANY future runaway (a re-expansion the paint misses, a pathological
+    // include/macro chain) into a clean diagnostic instead of a stack crash.
+    // One pushback frame per live macro expansion; legitimate nesting is tiny
+    // (chains of a few dozen), so a high bound never trips on real code.
+    if ( source.pushback_depth() > 4096 )
+	Throw << "macro/preprocessor expansion nested too deeply ("
+	      << source.pushback_depth()
+	      << ") — likely a recursive macro" << flush;
+
     if ( !injected_tokens.empty() )
     {
 	TokenBase *tb = injected_tokens.front();

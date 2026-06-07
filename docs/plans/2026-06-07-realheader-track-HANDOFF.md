@@ -15,6 +15,49 @@ Date: **2026-06-07** (late session). Branch **`feature/realhdr-parse-gaps2-claud
 
 ---
 
+## UPDATE 2026-06-07 (NEWEST-3) — decltype-`<` fixed; embedded stubs shadow real headers; recursive-macro loop fixed + depth guard
+
+HEAD progresses `2e853de` → `f71a472` → `1cc70f0` (+ depth-guard commit pending).
+Key shift: **the embedded stub headers in `include/madc/` shadow the real system
+headers and break their include chains** — confirmed by a new diagnostic flag.
+
+- **`2e853de`** — the `decltype(<)` streams-gate fix (a `<` in a trailing-return
+  `decltype` was parsed as a template-id open → consumed to EOF in
+  `skip_template_nonclass_declaration`; now only tracks angles at paren/square
+  depth 0). `stl_function.h` parses standalone; `std::less<void>` shape parses.
+- **`f71a472`** — **`--no-embedded-headers`** diagnostic flag. Reuses the EXISTING
+  gate (`registration_policy.restrict_headers_to_allowlist` +
+  `is_embedded_header_allowed()`), NOT a new switch; a disallowed embedded header
+  now FALLS THROUGH to the real filesystem header instead of throwing. (Process
+  lesson: reuse existing mechanisms FIRST — I initially added a parallel bool, reverted.)
+- **`1cc70f0`** — **recursive-macro infinite loop FIXED.** `#define A A` (and
+  mutual `A`<->`B`) recursed forever → SIGSEGV. Root cause: `Source::get()`
+  popped a macro's blue-paint pushback frame the instant its last char was
+  consumed, BEFORE the re-lexed token's `macro_disabled()` check, so a
+  single-token expansion lost its paint. Fix: delayed-pop + clear stale frames
+  when pushback drains. fulltest 528/4/0/26, torture identical, SMAUG boots
+  clean, chained expansion intact (`A->B->42`). Hidden because shallow stubs
+  never exercised it; real headers do.
+- **depth guard (pending)** — `Source::pushback_depth()` + a `>4096` backstop at
+  the top of `_getToken` turns any FUTURE runaway expansion into a clean
+  diagnostic instead of a stack crash (per user suggestion).
+
+### Embedded-stub finding + NEXT blockers
+With `--no-embedded-headers` + the loop fix, the WHOLE target set gets far past
+the old stub blockers. Current real-header frontier:
+- **`__need_XXX`** (all 5 streams + string): `463:16 use of undeclared identifier
+  '__need_XXX'`. ROOT (found): it's inside a **multi-line `/* */` comment** in
+  real `stddef.h` (`#endif /* … \n || __need_XXX was not defined before */`) —
+  madc lexes the comment TEXT as code. **A multi-line block-comment lexer bug.**
+  NEXT TARGET.
+- **`memory`** → `reinterpret_cast target is not a type` (separate).
+- `vector`/`map`/`set`/`algorithm` — secondary.
+
+Retire-std-hardcoding (delete the stubs, use real headers) is now strongly
+indicated: the stubs are an ACTIVE blocker, not just tech debt.
+
+---
+
 ## UPDATE 2026-06-07 (NEWEST-2) — streams gate ISOLATED to a one-liner: `<` in a trailing-return `decltype`
 
 HEAD now **`840eb38`**. Two more fixes + the streams gate pinned to a minimal
