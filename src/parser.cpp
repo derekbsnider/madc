@@ -9610,6 +9610,47 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
     return ExprStep::Break;
 }
 
+// ttSymbol switch-arm of parseExpression (see madc.h for the ExprStep
+// contract). Expression terminators (`;`) and the C comma operator.
+Program::ExprStep Program::parseExpr_symbolArm(TokenBase *tb,
+				 std::stack<TokenBase *> &exStack,
+				 std::stack<TokenBase *> &opStack,
+				 int brackets, bool push_back_comma)
+{
+    bool done = false;
+    if ( tb->id() == TokenID::tkSemi )
+    {
+	DBG(cout << "parseExpression: found semicolon" << endl);
+	done = true;
+    }
+    if ( tb->id() == TokenID::tkComma )
+    {
+	// C comma operator inside parenthesized expression:
+	// build a real comma-expression node so left-side side
+	// effects are preserved and the whole expression returns
+	// the right-side value.
+	if ( brackets > 0 )
+	{
+	    DBG(cout << "parseExpression: comma operator (brackets=" << brackets << ")" << endl);
+	    // Flush pending operators above the last '(' so the
+	    // left-side expression is fully reduced, then push the
+	    // comma operator at the lowest precedence within the
+	    // parenthesized sub-expression.
+	    while ( !opStack.empty() && opStack.top()->get() != '(' )
+		popOperator(opStack, exStack);
+	    TokenOperator *comma = (TokenOperator *)tb;
+	    comma->left = NULL;
+	    comma->right = NULL;
+	    opStack.push(comma);
+	    return ExprStep::Break;
+	}
+	DBG(cout << "parseExpression: found comma" << endl);
+	if ( push_back_comma ) pushToken(tb);
+	done = true;
+    }
+    return done ? ExprStep::Done : ExprStep::Break;
+}
+
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
 				    bool stop_on_closing_paren, int initial_brackets,
 				    bool push_back_comma)
@@ -9645,35 +9686,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		exStack.push(tb);
 		break;
 	    case TokenType::ttSymbol:
-		if ( tb->id() == TokenID::tkSemi )
 		{
-		    DBG(cout << "parseExpression: found semicolon" << endl);
-		    done = true;
-		}
-		if ( tb->id() == TokenID::tkComma )
-		{
-		    // C comma operator inside parenthesized expression:
-		    // build a real comma-expression node so left-side side
-		    // effects are preserved and the whole expression returns
-		    // the right-side value.
-		    if ( brackets > 0 )
-		    {
-			DBG(cout << "parseExpression: comma operator (brackets=" << brackets << ")" << endl);
-			// Flush pending operators above the last '(' so the
-			// left-side expression is fully reduced, then push the
-			// comma operator at the lowest precedence within the
-			// parenthesized sub-expression.
-			while ( !opStack.empty() && opStack.top()->get() != '(' )
-			    popOperator(opStack, exStack);
-			TokenOperator *comma = (TokenOperator *)tb;
-			comma->left = NULL;
-			comma->right = NULL;
-			opStack.push(comma);
-			break;
-		    }
-		    DBG(cout << "parseExpression: found comma" << endl);
-		    if ( push_back_comma ) pushToken(tb);
-		    done = true;
+		    ExprStep step = parseExpr_symbolArm(tb, exStack, opStack, brackets, push_back_comma);
+		    if ( step == ExprStep::Done ) done = true;
 		}
 		break;
 	    case TokenType::ttMultiOp:
