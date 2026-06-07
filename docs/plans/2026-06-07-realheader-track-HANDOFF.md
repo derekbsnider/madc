@@ -1,769 +1,681 @@
-# REHYDRATION HANDOFF — Parser restoration (DONE) + real-header track (in progress)
+# REHYDRATION HANDOFF — real-header track + struct/class unification directive
 
-Date: 2026-06-07. Branch **`feature/realhdr-parse-gaps2-claude`** (off `develop`,
-**local only, NOT pushed**). HEAD **`c2126dc`**. Working tree **clean**.
-fulltest baseline: **522 passed / 4 failed / 0 timed out / 26 skipped**.
+Date: **2026-06-07** (late session). Branch **`feature/realhdr-parse-gaps2-claude`**
+(off `develop`, **local only, NOT pushed**). HEAD **`bb829ed`**. Working tree
+**clean**. `parser.cpp` = **24,383 lines**. fulltest baseline: **526 passed /
+4 failed / 0 timed out / 26 skipped** (the 4 reds are PRE-EXISTING and unrelated —
+`testdefer`, `testfstream`, `testlargesizeofquery`, `testloop`).
 
-> This document supersedes `docs/plans/2026-06-07-parser-restoration-HANDOFF.md`
-> for *current* state. That older doc describes the early restoration sub-thread
-> (the `DelimDepth`/angle-scanner work, steps 1–6); this doc covers the COMPLETED
-> restoration (steps 7–25) and the real-header track that followed. Read this one
-> first; the memory file `project_parser_restoration.md` is the one-screen index.
-
-This is self-contained. After reading it you can continue without re-deriving
-anything. Verify live state with §1 commands before editing.
+> This is a **self-contained** rehydration document. After reading it you can
+> resume without re-deriving anything. It supersedes
+> `docs/plans/2026-06-07-parser-restoration-HANDOFF.md` (that one covers the
+> earlier parser-restoration sub-thread) for *current* state. The one-screen
+> index is the memory file `project_parser_restoration.md`; the struct/class
+> design directive lives in `project_struct_is_class.md`.
 
 ---
 
 ## 0. TL;DR — what to do on resume
 
-Two big things happened this session, both on this branch:
+1. **Run the verify block (§2)** to confirm live state matches this doc.
+2. **The next high-leverage target is STRUCT MEMBER METHODS** — the single
+   root cause behind the remaining streams blocker (`'less'`) and `memory`
+   (`81:54`). The **user's design directive (§6)** is now canonical: *struct and
+   class differ ONLY by default access* (struct public-by-default, class
+   private-by-default); a "simple" struct and "simple" class (no virtual
+   methods/dtors) are **virtually identical**. So the fix is to let a `struct`
+   body parse exactly like a `class` body (methods, ctors, dtors, `operator()`,
+   access labels, bases) — ideally by **unifying `TokenSTRUCT::parse` with
+   `TokenCLASS::parse`** (one path parameterized by default access), keeping
+   trivial structs on the native-struct path so the C torture suite + SMAUG do
+   not regress. Full design, prior-attempt history, and the safety guarantee are
+   in §6 and the memory `project_struct_is_class`.
+3. This is a **core, regression-sensitive** parser change (struct parsing is
+   load-bearing for C). Go **test-gated**: `make -C src fulltest` after each
+   sub-step (must stay 526/4/0/26 — exactly those 4 reds), plus the **full
+   gcc.c-torture failset-diff** and a **SMAUG soak** before declaring done. Prior
+   *blanket* struct=class attempts caused **65–120 torture regressions** (§6).
+4. Lower-risk alternatives if you want a quick win first: `map`/`set` `36:9`
+   (preprocessor), `algorithm` `'abs'` (§5), or `vector` `2119:22` (namespace
+   parse). But struct-methods unblocks the most headers at once.
 
-1. **The parser restoration is COMPLETE.** `parseExpression` went 3,577 → ~172
-   lines (original shunting-yard shape), and free `static f(Program &pgm, …)`
-   functions went **138 → 2** (the 2 left are intentional function-pointer
-   callbacks). Both of the user's headline goals are met. Nothing left to do
-   here except optional polish (§2.6).
-
-2. **The real-header track resumed** (madc parsing real system C++/libc headers).
-   The restored parser made the *parser-only* probe column nearly all-green. I
-   then cleared the entire `<wchar.h>`/`sys/cdefs.h` **preprocessor** wall and
-   fixed a CIR **emitter** bug, landing 3 header-track commits. `<iosfwd>` is now
-   fully green. The string/streams family advanced to ONE remaining blocker.
-
-**UPDATE 2026-06-07 (later same day): bug B is FIXED.** The `template_map`
-namespace-scoping fix landed (`5ea75a2`) + an amalgamation follow-up (`4f4fbd2`).
-`char_traits` now parses; the 8 string/streams headers advanced past it. See
-the **§5 "RESOLVED"** banner and the updated §3.3 table / §13 for the new
-frontier. The text below §5 is the original (pre-fix) plan, kept for the
-mechanism record. **New immediate-next: the `'lconv' is not a declaration in
-'::'` blocker** (string + all 5 streams headers, §6/§13).
-
-**The immediate-next task** (the live thread when this handoff was written): fix
-the **last char_traits blocker**, which is fully root-caused to a 3-line repro —
-**`template_map` is keyed by bare name, not namespace-scoped**, so a same-named
-class template in a second namespace overwrites the first and qualified lookup
-of the shadowed one fails. Full mechanism + fix plan in **§5**. It's invasive
-(template registration/lookup core) so it needs careful, test-gated work.
-
-Each step: small, **`make -C src fulltest` after every change** (must stay
-522/4/0/26 — see §1 for the 4 expected reds), gcc/clang-canon methodology
-(reduce first, fix deepest layer).
+Methodology (NON-NEGOTIABLE, from AGENTS.md): **gcc AND clang are both canon** —
+reduce a failing case to a minimal repro and compare against `gcc -S
+-fverbose-asm -O0` / `clang -S -O0` (or `g++ -E` for preprocessor) BEFORE
+forming a hypothesis. **Fix at the deepest layer**, never shim. **Think twice,
+code once.** **Understand what exists before assuming it doesn't** (search the
+24k-line parser first). The user explicitly said this session: *"don't be afraid
+to fix existing madc functionality to work more correctly"* and *"Rule #2 — fix
+at the deepest layer."*
 
 ---
 
-## 1. Environment, build, test, baseline
+## 1. Environment, build, backend
 
-- Repo: `/workspace/madc`. Branch `feature/realhdr-parse-gaps2-claude` (off
-  `develop`). HEAD `c2126dc`. **Do not push; do not promote to master** (parity
-  gate — see `.claude/rules/branching.md`). `develop` untouched this session.
-- Backend: `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT`. The MIR fork
-  is at `/workspace/mir` (branch `develop`, pinned by `MIR_COMMIT`).
-- Build/test:
+- Repo `/workspace/madc`. Branch `feature/realhdr-parse-gaps2-claude` off
+  `develop`. **Do NOT push; do NOT promote to master** (parity gate — see
+  `.claude/rules/branching.md`). `develop` is untouched by all this work.
+- Backend: `madc parser → cir_node (MC11-IR == c2mir node_t) → c2mir → MIR → JIT`.
+  Sole backend (asmjit removed). The MIR dependency is the **fork** at
+  `/workspace/mir` (branch `develop`, pinned by repo-root `MIR_COMMIT`), NOT
+  upstream — carries native `_Complex`, `__attribute__((cleanup))`, ≤16-byte
+  SIMD, scope-depth decl layout fix, ABI fixes.
+- Build / test:
   ```bash
-  make -C src               # build bin/madc + lib
-  make -C src fulltest      # unit (doctest) + all integration tests
+  make -C src               # build bin/madc + lib (regenerates embedded headers — see §4.7)
+  make -C src fulltest      # unit (doctest) + all integration tests; MUST stay 526/4/0/26
+  bash scripts/check-no-std-hardcoding.sh   # the retire-std-hardcoding gate (wired into fulltest)
   ```
-- **Baseline 522/4/0/26.** The 4 reds are PRE-EXISTING and unrelated to this
-  work: `testdefer`, `testfstream`, `testlargesizeofquery`, `testloop`. (The
-  count was 521 before this session; +1 is the new `testarraytypedefstruct`.)
-  A change is "green" iff it keeps exactly those 4 reds and no others.
-- `parser.cpp` is **24,311 lines**. `--dump-source` dumps madc's preprocessed
-  token stream (useful for preprocessor bugs); `--emit=c11` renders the
-  cir_node tree as C (the "what c2mir sees" view); `--dump-cir` dumps the tree.
-- Scratch files go in `tmp/` (gitignored). Many reducers from this session are
-  there (§7) but `tmp/` is not committed — recreate from §7 if gone.
+- Useful flags: `--std=c++17` (or `--std=c++11`), `--emit=c11` (render the
+  cir_node tree as C = "what c2mir sees"), `--dump-source` (madc's PREPROCESSED
+  token stream — for preprocessor bugs), `--dump-cir` (dump the tree), `-v`
+  (verbose DBG trace — invaluable for "which function threw").
+- Scratch goes in `tmp/` (gitignored). Reducers from this session live there but
+  are not committed — recreate from this doc as needed.
 
 ---
 
-## 2. The parser restoration (COMPLETE — context, not a TODO)
+## 2. Verify-live-state block (run first on resume)
 
-### 2.1 Why (the user's mandate)
-The user said madc's parser had been degraded by Claude+Codex from its original
-**method-based, state-machine** design into a sprawl of free functions that
-thread a `Program &pgm` parameter everywhere, plus a 3,577-line `parseExpression`
-"god function". Original `a22343e`: 1,401 lines, **0** free `f(Program&,…)`
-functions, everything a `Program::` method, `parseExpression` a ~175-line
-shunting-yard with local `stack<TokenBase*> exStack/opStack`. The user's metric
-(stated explicitly mid-session): **NOT line count** — it's (a) the count of
-external non-method `f(Program&,…)` functions (drive to 0 by making them
-`Program` methods that use class fields internally), and (b) breaking up
-`parseExpression`.
-
-### 2.2 Goal 1 result — free functions → Program methods: 138 → 2
-Every `static f(Program &pgm, …)` free function was re-homed onto `Program` as a
-method (so it reaches `tokens`, `compounds`, `class_scope_stack`, etc. as
-members instead of threading `pgm`). The **only 2 remaining** are
-`register_std_namespace_spec` / `register_madc_namespace_spec` (parser.cpp ~5874)
-— they MUST stay free because they're registered as **function-pointer
-callbacks** via `namespace_registry.add_namespace("std", register_std_namespace_spec)`.
-So Goal 1 is effectively 100%.
-
-Families re-homed, in order (commit → step): constant-expression evaluator
-(37eed02, s7), array-dimension classifier `bracket_dim_*` (e618106, s8), K&R
-old-style params (4916e9d, s13), namespace-resolution helpers (f20c63e, s14),
-static_assert trio (6407708, s15), type-query cluster (6a4b037, s16),
-cast-parsing family (cac9492, s17), template-machinery leaves (9485bf5, s18),
-template-machinery core 16 fns (c0a85bc, s19), resolve_*_type_token quartet
-(63c2132, s20), type-name resolution helpers (ce6da8e, s21), class-body/
-deferred-body cluster (d0f94f4, s22), GNU/C23 attribute consumers (b8fdeb8, s23),
-param-signature/qualified-declarator cluster (e42fad6, s24), all remaining
-singletons (e3c078c, s25). Two parser-local types were lifted to `madc.h` so the
-new method signatures resolve: `CppSymKind` enum and `ParsedParamSig` struct
-(both just before `class Program`).
-
-### 2.3 Goal 2 result — parseExpression decomposed: 3,577 → ~172 lines
-`Program::parseExpression` is now at parser.cpp **12924** and ends at **13095**
-(~172 lines): locals → the shunting-yard `while (!done && tb)` loop with the
-`switch(tb->type())` dispatch → `opStack` drain → `return exStack.top()`. The
-four substantial arms became named `Program` methods:
-- `parseExpr_dataTypeArm` (parser.cpp **9443**) — ttDataType (type name in expr).
-- `parseExpr_symbolArm` (**9577**) — ttSymbol (`;` terminator, `,` comma operator).
-- `parseExpr_identifierArm` (**9622**) — ttIdentifier, the ~1,433-line giant.
-- `parseExpr_operatorArm` (**11068**) — ttMultiOp/ttOperator, the ~1,836-line giant.
-(`ttKeyword` falls through into the `ttIdentifier` dispatch.)
-
-### 2.4 The ExprStep protocol (how the arms were extracted) — SET IN STONE
-Defined in `include/madc.h` line **1547**:
-```cpp
-enum class ExprStep { Break, Continue, Redo, Done, Return };
+```bash
+cd /workspace/madc
+git rev-parse --short HEAD            # expect bb829ed (or later if work continued)
+git branch --show-current             # feature/realhdr-parse-gaps2-claude
+git status --short                    # expect clean
+make -C src 2>&1 | grep -iE 'error|warning' | head     # clean build
+make -C src fulltest 2>&1 | tail -3   # 526 passed / 4 failed / ...
+bash scripts/probe_real_headers.sh 2>&1 | sed 's/\x1b\[[0-9;]*m//g'   # §5 table
+# struct-method gap (the next target) still present:
+printf 'struct S { int m(int a){return a;} };\nint main(){ S s; return s.m(5); }\n' > tmp/_sm.mad
+bin/madc --std=c++17 tmp/_sm.mad   # -> "Expecting ';' after struct member"  (the gap)
 ```
-Each extracted arm returns one of these, mapping 1:1 to its original inline
-control flow:
-- `Break`   = fall to the per-token epilogue (peek/advance next token).
-- `Continue`= re-enter the loop; the arm already advanced `tb` (was `continue;`).
-- `Redo`    = re-dispatch the (rewritten) `tb` without advancing (was
-  `goto redo_expression_token;`).
-- `Done`    = terminate the expression (was `done = true;`).
-- `Return`  = early-return a specific `TokenBase*` from parseExpression,
-  bypassing the opStack drain (operator arm only; carried via an out-param
-  `TokenBase *&result`).
-The loop's dispatch does: `if (step==Redo) goto redo_expression_token; if
-(step==Continue) continue; if (step==Return) return arm_result; if (step==Done)
-done = true;` then `break`.
-
-**THE KEY EXTRACTION TECHNIQUE (compiler-as-oracle):** after moving an arm body
-verbatim into a method, the C++ compiler flags every ARM-LEVEL `break;`/`continue;`
-as "break/continue statement not within loop or switch" (illegal at method
-scope) — while INNER loop/switch breaks compile fine. So you convert *exactly*
-the flagged ones to `ExprStep` returns and leave the rest. That's why the
-behavior is **byte-identical**, not merely test-green. The operator arm also had
-3 direct `return <TokenBase*>` statements (early exits) → these needed the new
-`ExprStep::Return` + `result` out-param.
-
-### 2.5 The coordinated-batch conversion recipe (free fn → method) — REUSE THIS
-For the family conversions I used a Python transform. The hardened recipe (after
-two pitfalls, both fixed — see §8):
-1. **Strip forward declarations FIRST** (so `find()` matches the definition, not
-   a fwd decl with an identical first line). Regex:
-   `static[^;{}\n]*\bNAME\b\s*\([^{};]*\)\s*;\s*\n`.
-2. For each def (process **bottom-to-top** so line indices stay valid):
-   - Find the def line (`^static\b.*\bNAME\s*\(\s*Program\s*&\s*pgm`).
-   - Find the matching close brace with a **string/char/comment-aware brace
-     matcher** (NOT naive `{`/`}` per-line counting — that runs away on braces
-     inside string/char literals or comments; this bit me on step 25, §8).
-   - Replace the signature: `\Astatic\s+(?P<ret>.*?)\bNAME\s*\(\s*Program\s*&\s*pgm\s*(?:,\s*)?`
-     → `<ret>Program::NAME(`.
-   - Xform the FULL body (not just the sig line — that was the step-19 pitfall):
-     `pgm.`→`` ; cluster-internal calls `C(\s*pgm\s*,\s*`→`C(` and `C(\s*pgm\s*\)`→`C()`
-     for every C in the batch (multiline-tolerant!); then bare `\bpgm\b`→`*this`
-     (free-helper args). Assert no stray `pgm` remains.
-3. **Strip def-side default args** (move to the in-class declaration; C++ forbids
-   defaults in both). Re-add defaults that lived in a removed fwd decl to the
-   new in-class decl.
-4. External call sites: `NAME(\s*\*this\s*,\s*`→`NAME(` and `NAME(\s*\*this\s*\)`
-   →`NAME()` (method callers); `NAME(\s*pgm\s*,\s*`→`pgm.NAME(` and `NAME(\s*pgm\s*\)`
-   →`pgm.NAME()` (still-free callers).
-5. Add the method decls to `madc.h` (extract authoritative sigs from the
-   transformed defs). Assert NO `Program &*this` anywhere (corruption guard).
-6. `make -C src` (compiler catches stray `pgm`, arity/default mismatches), then
-   `make -C src fulltest`.
-
-### 2.6 Optional restoration polish left (LOW priority, not blocking anything)
-- Dedup `TokenSTRUCT::parse` vs `TokenCLASS::parse` (~2,300 near-identical lines).
-- The `operator<` resolution end-to-end (the method-only gate ~parser.cpp 11465
-  in the OLD handoff — verify current line). Free/template `operator<` scans but
-  doesn't fully resolve.
-- Further decompose other large methods if desired.
 
 ---
 
-## 3. The real-header track (the active work)
+## 3. Project context / north star (why any of this matters)
 
-### 3.1 Goal
-North star: madc parses **real** system C++/libc headers (retiring curated
-stubs), reaching C23/C++23 compliance, all through the one `cir_node`/MC11-IR →
-c2mir → MIR backend. The concrete instrument is `scripts/probe_real_headers.sh`.
+madc ("My Advanced Dialect of C") is a C/C++ dialect that parses source into a
+`cir_node` tree (the MC11-IR, which derives from c2mir's `node_t`) that c2mir
+compiles to MIR. The long arc (see `docs/plans/madc-vision-and-invariants.md`,
+`docs/adr/0001-cir-c2mir-backend.md`) is a **polyglot transpiler** through that
+one IR. The **north star is C23/C++23 compliance** (`project_north_star_c23_cpp23`),
+and **anything off that path is drift** (`feedback_correct_over_shortcuts` —
+shortcuts are *categorically unacceptable*; the user has re-enforced this many
+times; RED-FLAG tells = about to hardcode a literal / add a wrapper-shim /
+special-case higher up / think "good enough for now" → STOP, fix the deepest
+layer).
 
-### 3.2 The probe harness — two columns, what they mean
-`bash scripts/probe_real_headers.sh` parses a default set of std:: headers TWO
-ways and prints the first error of each:
-- **`madc` column** = madc does its OWN preprocessing + parse of the real header.
-- **`pp` column** = feed gcc-PREPROCESSED source (macros expanded, `# line`
-  markers stripped) so madc only PARSES.
-**Interpretation:** if `pp` passes but `madc` fails → the gap is in madc's
-**PREPROCESSOR** (macro/directive handling), NOT the parser. If BOTH fail at the
-same construct → it's the **PARSER**. The script's own header comment documents
-this and the known culprits.
+This branch sits in two converging campaigns:
+- **retire-std-hardcoding** (`project_string_as_class`, `project_cpp_mangled_direct`):
+  madc hardcodes ONLY C/C++ primitives; every other type is a COMPOSED
+  DataDefCLASS from a `#include` header — no per-type code / `dt*` tags /
+  wrappers / `_Z…` literals; the mangler is the single symbol source. Gate:
+  `scripts/check-no-std-hardcoding.sh` (green).
+- **real-header parsing** (this doc): madc parses the REAL system C++/libc
+  headers (retiring curated stubs), so `#include <vector>` etc. resolve to
+  libstdc++/glibc like clang does — no per-class machinery. The instrument is
+  `scripts/probe_real_headers.sh`.
 
-### 3.3d LATEST probe (after pthread types + cv-qualifier typedef, 2026-06-07)
-```
-HEADER         madc (own preprocess)                                pp (parser-only)
-type_traits/utility/char_traits/iosfwd/cctype/clocale   OK          OK
-ostream/istream/iostream/sstream/fstream  172:17 use of undeclared identifier 'less'   OK
-string         42:9 Expecting type in class definition             OK
-map/set        36:9 Expecting type in class definition             OK
-memory         81:54 Expecting ';' after struct member             OK
-vector         2119:22 Expecting '{' after namespace name          OK
-string_view    768:45 Expecting a type argument to iterator<>      OK
-algorithm      52:13 'abs' is not a declaration in '::'            OK
-```
-Cleared this session-segment: the streams' `typedef` blocker — **`7da5b96`**
-defined the opaque pthread types (pthread_mutex_t/cond_t/key_t/… were
-"deferred"=undefined in the embedded stub, so gthr-default.h's typedefs failed).
-Also **`0c9523e`** fixed east-const typedefs (`typedef int const X;` read `const`
-as the alias) — found while writing the pthread types.
+The long-running concrete goal is to compile SMAUG 1.8 (~158k LOC C89; the port
+lives in the separate **MadSMAUG** repo). SMAUG must stay working (C structs
+plain) — it's the canary for any struct/class change.
 
-**HIGH-LEVERAGE ROOT CAUSE IDENTIFIED — `struct` cannot have member methods.**
-The streams' `'less'` (`std::less` is a `struct` with `operator()`), `memory`'s
-`81:54 Expecting ';' after struct member`, and likely many more all trace to the
-SAME gap: madc only allows member functions on `class`, not `struct` (a bare
-`struct S { int m(int){...} };` → "Expecting ';' after struct member"). Real C++
-headers define `std::less`/`std::hash`/traits/etc. as struct-with-methods
-pervasively. Closing this (extend the struct-promotion work
-[[project_struct_is_class]]: a struct gains class-hood when it declares a member
-function, not only an object member) is the single highest-leverage next move —
-it should unblock several headers at once. It is a substantial, regression-
-sensitive parser change (struct parsing is core) → warrants a focused, test-
-gated pass.
+---
 
-### 3.3c probe (after ctype decls + parse-time embed gen, 2026-06-07)
-```
-HEADER         madc (own preprocess)                                pp (parser-only)
-type_traits/utility/char_traits/iosfwd/cctype   OK                 OK
-ostream/istream/iostream/sstream/fstream  48:21 Expecting type after 'typedef'   OK
-string         42:9 Expecting type in class definition             OK
-map/set        36:9 Expecting type in class definition             OK
-memory         81:54 Expecting ';' after struct member             OK
-vector         2119:22 Expecting '{' after namespace name          OK
-string_view    768:45 Expecting a type argument to iterator<>      OK
-algorithm      52:13 'abs' is not a declaration in '::'            OK
-```
-**`a4037f3` cleared `isalnum`** (declared the ctype prototypes in the embedded
-`ctype.h` stub — the comment-only list never declared them) and fixed a build
-one-pass bug (regenerate embedded_headers.cpp at Makefile PARSE time; the
-recipe-time `.PHONY` from `5a27a22` updated the file too late for the same-make
-object rebuild — it masked the ctype edit behind a stale binary). cctype now
-green; string + 5 streams advanced past isalnum.
-**New dominant blocker: `Expecting type after 'typedef'` — all 5 streams** (48:21)
-— the SAME `<bits/types.h>` typedef-in-context parser bug seen when ctype
-retirement was attempted; it parses standalone but fails in the stream-include
-context. Reduce the bits/types include interaction. `string`/`map`/`set` share a
-`class definition` preprocessor blocker (36/42:9); `memory` hits the struct-
-cannot-have-methods gap (81:54); `vector` a namespace-parse issue (2119:22).
+## 4. Everything fixed this session (newest → oldest) — mechanism + anchor + commit
 
-### 3.3b probe (after allocation-operator + noexcept fixes, 2026-06-07)
-```
-HEADER         madc (own preprocess)                                pp (parser-only)
-type_traits/utility/char_traits/iosfwd   OK                        OK
-string         64:17 'isalnum' is not a declaration in '::'        OK   <-- joined streams
-ostream/istream/iostream/sstream/fstream 64:17 'isalnum' …         OK
-memory         81:54 Expecting ';' after struct member             OK   <-- struct-method gap
-vector         2119:22 Expecting '{' after namespace name          OK   <-- deep, new
-string_view    768:45 Expecting a type argument to iterator<>      OK
-map/set        36:9 Expecting type in class definition             OK
-algorithm      52:13 'abs' is not a declaration in '::'            OK
-```
-**`e392a17` cleared the `Too many parameters` blocker** (memory/vector/string):
-(1) operator new/delete overloads are collapsed to one name in madc and the
-C++17 aligned 2-arg `operator new(size, align_val_t)` tripped the arity check —
-fixed via `is_overloaded_allocation_operator()` accepting extra args; (2)
-`noexcept(...)` was a function-like macro that split its template-id condition on
-the `<...>` comma — fixed by balanced-paren stripping in the lexer (test
-`testnoexcepttemplatecond`). vector advanced 690→2119.
-**The dominant blocker is now `'isalnum'` — string + ALL 5 streams (6 headers)** —
-the `<cctype>` `using ::isalnum;`. Fastest win: add the ctype function decls to
-the embedded `include/madc/ctype.h` stub (the struct-lconv approach), since
-RETIRING the ctype stub is blocked on the `bits/types.h` typedef-in-context bug
-(§13 #2). `memory`'s `81:54` is the struct-cannot-have-methods gap; `vector`'s
-`2119` is a new namespace-parse issue.
+All on `feature/realhdr-parse-gaps2-claude`, all fulltest-green at the stated
+count, all with the 4 known reds and no others.
 
-### 3.3 Earlier probe (after bug-B + locale-stub retirement, 2026-06-07)
+### 4.1 `bb829ed` docs — pthread/east-const recorded; struct-methods flagged
+Docs only.
+
+### 4.2 `0c9523e` fix(parser): CV-qualifiers after the base type in a typedef (east-const)
+`typedef int const X;` / `typedef int volatile X;` failed ("use of undeclared
+identifier 'X'"). **Root cause:** `TokenTYPEDEF::parse` (parser.cpp ~17053)
+consumed a LEADING `const`/`volatile` (the skip loop ~17094) and a following
+`*` (the pointer loop), but NOT a CV-qualifier sitting *between the base type and
+the alias name*. So after resolving `base_dd=int`, `nextToken()` read `const` as
+the alias (a keyword → `alias="const"`), leaving `X` dangling. **Fix:** replaced
+the pointer-only loop (was at ~17187) with a star+CV-qualifier loop using the
+existing `is_post_pointer_qualifier_token()` (defined parser.cpp:1019) — mirrors
+the loop in `parseDeclaration` (~21986). Now `int const X`, `unsigned int const
+X`, `int const *X`, `int * const X` all parse. Variable decls already handled it;
+only the typedef path didn't. **Test:** `tests/testtypedefcvqual.mad` (`7 11 3 5
+9`). fulltest 526/4/0/26. Found while writing the pthread types (§4.3).
+
+### 4.3 `7da5b96` fix(headers): define opaque pthread types in embedded pthread.h
+**Root cause:** `include/madc/pthread.h` declared only `pthread_t` (`#define
+pthread_t int64_t`) and left `pthread_mutex_t`/`cond_t`/`key_t`/`once_t`/`attr_t`/
+etc. "deferred" = **undefined**. libstdc++'s `<bits/gthr-default.h>` does
+`typedef pthread_mutex_t __gthread_mutex_t;` (and the rest), which failed with
+"Expecting type after 'typedef'" — the parser is *correct* to reject a typedef of
+an unknown type; the **stub was incomplete**. This gated ALL 5 streams headers
+via the chain `<ostream>` → `ios_base.h` → `bits/locale_classes.h` →
+`ext/atomicity.h` → `bits/gthr.h` → `bits/gthr-default.h`. **Fix:** declared the
+opaque POSIX thread types with glibc x86-64 sizes (`typedef union { char
+__size[N]; <align>; } pthread_X_t;` for the aggregates; `pthread_key_t`=unsigned
+int, `pthread_once_t`=int, `pthread_spinlock_t`=`volatile int`). Contents stay
+opaque (the real pthread ops go through libc via dlsym); only size/alignment +
+type-name matter for parsing. **GOTCHA:** I first wrote `typedef int volatile
+pthread_spinlock_t;` (qualifier AFTER `int`) which failed — that postfix-qualifier
+gap is exactly bug §4.2 (fixed separately); use `volatile int`. fulltest 525→
+(then 526 after the §4.2 test).
+
+### 4.4 `a4037f3` fix(headers,build): declare ctype functions + parse-time embed-gen
+**Two coupled fixes.**
+- **Header:** `include/madc/ctype.h` only *listed* the ctype functions in a
+  comment ("available via dlsym fallback") — never declared them. Real
+  `<cctype>` does `namespace std { using ::isalnum; ... }`, and a
+  using-declaration needs a global-scope declaration to bind to (else "'isalnum'
+  is not a declaration in '::'"). This was the dominant blocker for `<string>` +
+  all 5 streams. **Fix:** declared the 15 prototypes (`int isalnum(int);` …
+  `toascii`) — real return type `int` per the embedded-headers rule.
+- **Build (completes `5a27a22`):** the `.PHONY gen_embedded_headers` recipe (my
+  earlier footgun fix) regenerated `embedded_headers.cpp` at *recipe* time —
+  TOO LATE: make stats `embedded_headers.o` against the file's mtime when it
+  evaluates the dependency graph, BEFORE the recipe-phase regeneration updates
+  it, so a changed/added/deleted embedded header did NOT rebuild the object until
+  the NEXT make. This **masked the ctype edit behind a stale binary** (I chased a
+  ghost for several probes). **Fix:** regenerate at Makefile **PARSE time** —
+  `EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo
+  done)` near `MADHDRS` (src/Makefile ~17), and removed the `.PHONY` rule. The
+  generator is idempotent (writes a temp, `cmp`, only `mv` on real change — see
+  §4.7), so this neither churns mtimes nor forces rebuilds, and a stub edit lands
+  in `embedded_headers.cpp` + the binary in ONE `make` (verified).
+
+### 4.5 `e392a17` fix(parser): allocation-operator arity + noexcept template-id stripping
+Cleared the `Too many parameters` blocker on `<memory>`/`<vector>`/`<string>`.
+**Two fixes:**
+- **operator new/delete overload arity (the real blocker):** libstdc++'s
+  new_allocator calls the C++17 *aligned* `operator new(size, align_val_t)` (2
+  args), but madc collapses EVERY operator-new/delete overload onto the single
+  name `operatornew`/`operatordelete` (`parseOperatorId`, parser.cpp ~8349) and
+  registers only the 1-arg form, so the 2-arg call tripped BOTH the comma-count
+  check (`parseCallMethod` ~8508) and the post-call arity check (`parseCallFunc`
+  ~8352). **Fix:** added `static bool is_overloaded_allocation_operator(const
+  std::string&)` (parser.cpp ~8103, recognizes the 4 allocation-operator names —
+  general to the language, NOT a per-symbol hack) and used it to accept extra
+  args in `call_accepts_extra_args` (covers parseCallFunc), the parseCallFunc
+  post-check, and parseCallMethod. The concrete overload is the runtime
+  allocator's concern, not the parser's.
+- **noexcept(...) with a template-id condition (found en route; a real bug):**
+  `noexcept` was a FUNCTION-LIKE macro (`macro_map["noexcept"]`, params=`{__expr}`,
+  empty body), so `noexcept(is_nothrow_constructible<T, Args...>::value)` split
+  on the comma inside `<...>` — which the C preprocessor does NOT group — into
+  TWO macro args ("Too many parameters" at macro expansion). **Fix:** strip
+  `noexcept` by **balanced-paren consumption** in the lexer's `getToken()` word
+  handler (lexer.cpp ~3609, right before the `__attribute__` branch), like
+  `__attribute__`/`_Alignas`; removed the `define_map["noexcept"]` and
+  `macro_map["noexcept"]` entries (lexer.cpp ~1024). **Test:**
+  `tests/testnoexcepttemplatecond.mad` (`7 12`) — note it uses `class` not
+  `struct` for the member, because struct-methods is the open gap (§6). vector
+  advanced 690→2119.
+
+### 4.6 Locale stub retirement (`6bae117` → `39bd07a` → `05add19`) + footgun (`5a27a22`)
+- `6bae117` added `struct lconv` + `setlocale`/`localeconv` prototypes to the
+  embedded `locale.h` stub (it only had `LC_*` constants). Cleared `'lconv' is
+  not a declaration in '::'`.
+- `39bd07a` then **retired the `locale.h` stub entirely** — the restored parser
+  now parses the REAL system `<locale.h>` end-to-end (madc predefines
+  `_GNU_SOURCE`, predefined_macros.cpp:451), so deleting `include/madc/locale.h`
+  makes `#include <locale.h>` fall through to the system header (embedded headers
+  are tried first, then system — see §4.7 resolution order). One real header
+  covers `struct lconv` + setlocale/localeconv + the FULL `locale_t`/`uselocale`/
+  `newlocale` POSIX-2008 API at once — mapping to real libc like clang instead of
+  chasing symbols into a drifting stub. **This is the first instance of the
+  "retire curated stubs → real headers" arc.** clocale went green; string/streams
+  advanced past the entire locale `using`-chain.
+- `05add19` fixed a **stale-generated-file bug**: `39bd07a` deleted the source
+  but left the regenerated `embedded_headers.cpp` UNSTAGED, so HEAD still baked
+  the locale.h stub into the binary (a clean build would have kept shadowing the
+  real header). Root cause = the `embedded_headers.cpp: $(MADHDRS)` rule only
+  regenerated on a NEWER listed header; a DELETION triggers no regen. Committed
+  the corrected generated file.
+- `5a27a22` was the first attempt to fix that footgun (`.PHONY` always-run gen +
+  idempotent generator). It made deletions/additions reflected but had the
+  one-pass bug fixed properly in `a4037f3` (§4.4).
+
+### 4.7 The embedded-header mechanism (you WILL touch this)
+- Embedded headers live in `include/madc/` (e.g. `ctype.h`, `pthread.h`,
+  `sys/cdefs.h`, `stdarg.h`). `scripts/gen_embedded_headers.sh` bakes them into
+  `src/embedded_headers.cpp` (a `std::map<string,string>` keyed by path relative
+  to `include/madc/`, e.g. `"sys/cdefs.h"`). The generator is now **idempotent**
+  (temp file + `cmp`, only replaces on change) and runs at **Makefile parse
+  time** (§4.4). `src/embedded_headers.cpp` IS committed and shows in `git
+  status` after a stub edit — commit it too.
+- **`#include` resolution order** (lexer.cpp ~2072–2123, for `<...>`): (1)
+  filesystem PCH (`.madh` on disk), (2) embedded PCH
+  (`find_precompiled_header`, baked in `src/precompiled_headers.cpp`), (3)
+  embedded TEXT (`find_embedded_header` → the stub), (4) system path
+  (`resolve_include_path`). So an embedded stub is used in preference to the real
+  header; deleting the stub falls through to the system header. (Embedded PCHs
+  exist for some headers, e.g. `pch_ctype_h` — but they currently "PCH fail" and
+  fall through to embedded text; don't be surprised by the `-v` trace
+  "precompiled … PCH failed, trying embedded text … (embedded)".)
+- **MADHDRS gap (latent):** `MADHDRS = $(wildcard ../include/madc/*)` (Makefile
+  ~17) only globs TOP-LEVEL files — subdir stubs like `sys/cdefs.h` aren't in the
+  list. Not currently biting (parse-time gen runs regardless), but note it.
+
+### 4.8 Earlier this session (the bug-B segment — already on the branch below these)
+- `5ea75a2` fix(parser): **namespace-scope `template_map`** (bug B / char_traits).
+  `template_map` was `map<string, TemplateDef>` keyed by BARE name, so a
+  same-named template in a 2nd namespace OVERWROTE the first (`std::char_traits`
+  clobbered `__gnu_cxx::char_traits`). Now `map<string, vector<TemplateDef>>`
+  (per-namespace variants), all selection through a new `find_template(name,
+  ns_hint)` helper (parser.cpp ~9447), `register_template()` owns insert/merge,
+  `instantiate_template_use()` gained `ns_hint` and COPIES the chosen def
+  (vector-realloc dangling-ref safety), and the mangled key folds in the
+  namespace ONLY on a >1-variant collision (zero churn for std::). Test
+  `tests/testtemplatenamespacescope.mad`.
+- `4f4fbd2` refactor(parser): collapsed 10 hand-rolled `alias_use→use` template-id
+  probe sites onto one `instantiate_template_id(name, tb, ns_hint)` seam
+  (parser.cpp ~2270) so the namespace hint flows uniformly — addressed the user's
+  "competing methods → amalgamate" note.
+
+### 4.9 Even earlier (real-header fixes from the prior session segment, on the branch)
+- `c2126dc` fix(parser): namespace-qualified types as struct members (`a::T *p;`
+  in a struct body) — `TokenSTRUCT::parse` member loop falls through to
+  `resolve_declared_type_token` when the bare lookup misses and `::` follows.
+  Test `tests/testqualifiedmembertype.mad`. (Bug A of the char_traits bisection.)
+- `68dee85` feat(headers): fleshed out embedded `sys/cdefs.h` with glibc
+  no-attribute-fallback macros (`__nonnull`, `__attr_access`, `__wur`,
+  `__attribute_*__` family, the inline family `__extern_inline` etc.). Cleared
+  the `<wchar.h>` K&R-misparse wall.
+- `0665b86` fix(cir+headers): array-typedef emitter bug — `struct_behind()` in
+  `cir_builder.cpp` (the top-level decl emit driver) didn't peel
+  `DataDefCArray`, so a 2nd array typedef of a tagged struct re-emitted the body
+  → c2mir "tag redeclaration"; plus added `__gnuc_va_list` to embedded
+  `stdarg.h`. Test `tests/testarraytypedefstruct.mad`.
+
+---
+
+## 5. Current real-header probe (HEAD bb829ed) — the live frontier
+
+`bash scripts/probe_real_headers.sh` — two columns: **`madc`** = madc's OWN
+preprocess+parse; **`pp`** = gcc-preprocessed (macros expanded, `# line` stripped)
+so madc only PARSES. **`pp` pass + `madc` fail = a madc PREPROCESSOR gap; BOTH
+fail = a PARSER gap.** The `pp` column is essentially ALL-GREEN now (the
+restoration's unified angle-scanner killed the old `<map>`/`<set>` parser
+blocker), so remaining `madc`-column failures are preprocessor or
+near-parser / instantiation issues.
+
 ```
 HEADER         madc (own preprocess)                                pp (parser-only)
 type_traits    OK                                                   OK
 utility        OK                                                   OK
-char_traits    OK   <-- bug B fixed                                 OK
+char_traits    OK                                                   OK
 iosfwd         OK                                                   OK
-clocale        OK   <-- locale.h stub retired → real <locale.h>     OK
-memory         690:6 error: Too many parameters                     OK
-vector         690:6 error: Too many parameters                     OK
-string         149:31 error: Too many parameters                    OK   <-- past lconv
-string_view    768:45 error: Expecting a type argument to iterator<>  OK
-ostream        64:17 error: 'isalnum' is not a declaration in '::'  OK   <-- ctype using-decl
-istream        64:17 …                                              OK
-iostream       64:17 …                                              OK
-sstream        64:17 …                                              OK
-fstream        64:17 …                                              OK
-map            36:9 error: Expecting type in class definition       OK
-set            36:9 error: Expecting type in class definition       OK
-algorithm      52:13 error: 'abs' is not a declaration in '::'      OK
+cctype         OK                                                   OK
+clocale        OK                                                   OK
+ostream        172:17 use of undeclared identifier 'less'           OK   <-- struct-method (std::less)
+istream        172:17 'less'                                        OK
+iostream       172:17 'less'                                        OK
+sstream        172:17 'less'                                        OK
+fstream        172:17 'less'                                        OK
+string         42:9 Expecting type in class definition              OK   <-- preprocessor (class-def)
+map            36:9 Expecting type in class definition              OK   <-- preprocessor
+set            36:9 Expecting type in class definition              OK   <-- preprocessor
+memory         81:54 Expecting ';' after struct member              OK   <-- struct-method
+vector         2119:22 Expecting '{' after namespace name           OK   <-- namespace parse
+string_view    768:45 Expecting a type argument to iterator<>       OK   <-- template-arg resolution
+algorithm      52:13 'abs' is not a declaration in '::'             OK   <-- global using of libc fn
 ```
-Progress this session: char_traits/iosfwd/clocale green. **Retiring the embedded
-`locale.h` stub** (real `<locale.h>` now parses; madc predefines `_GNU_SOURCE`)
-cleared the whole locale `using ::` chain (lconv → uselocale → locale_t API) in
-ONE move — string/streams advanced past it. Now:
-- **`'isalnum' is not a declaration in '::'`** (all 5 streams) — the SAME pattern
-  for `<cctype>`. Retiring the `ctype.h` stub is the obvious mirror, BUT it was
-  TRIED and reverted: the real `<ctype.h>` parses *alone*, yet in the stream
-  chain it surfaces an *earlier* `Expecting type after 'typedef'` parser bug
-  (the `<bits/types.h>` interaction). So ctype is DEFERRED until that typedef
-  bug is fixed — see §13.
-- **`Too many parameters`** now hits memory(690) + vector(690) + string(149):
-  one recurring root cause, likely the highest-value next fix.
-- `algorithm`'s `'abs'` is the twin of the (now-cleared) `lconv` pattern.
-- `string_view` has its own `iterator<>` template-arg step.
 
-**Build footgun fixed (`5a27a22`):** deleting an embedded header didn't
-regenerate `embedded_headers.cpp` (mtime-only prereq can't see a deletion), so a
-retired stub stayed baked in. The generator is now idempotent + run on every
-build. Retiring a stub now Just Works.
-**The restoration's big win:** the `pp` (parser-only) column is now essentially
-all-green — including `map`/`set`/`vector`/`string`/streams. The OLD headline
-blocker for `<map>`/`<set>` (the `__ptr_cmp`/`operator<` `<…>` over-consumption)
-is GONE — the unified angle-scanning machinery from the restoration fixed it.
-So the remaining `madc`-column failures are now a small, sorted set (§5, §6).
+**Blocker analysis / threads, by leverage:**
 
----
+1. **`'less'` (5 streams) + `memory` 81:54 — STRUCT MEMBER METHODS.** `std::less`
+   is a `struct` with `operator()`; `<system_error>`'s `error_category::operator<`
+   body calls `less<const error_category*>()(this,&__other)` (madc-preprocessed
+   line ~10305). madc rejects member functions in a `struct` ("Expecting ';'
+   after struct member"), so `std::less` never registers → "undeclared 'less'".
+   `memory`'s 81:54 is the same gap (a struct member function). **This is the §6
+   target — the highest-leverage move.** Likely unblocks all 5 streams + memory.
 
-## 4. Fixes landed this session (header track)
+2. **`string`/`map`/`set` `36:9`/`42:9 Expecting type in class definition`** —
+   `pp` column is OK, so this is the madc PREPROCESSOR (a `_GLIBCXX_*`/macro gap
+   producing a malformed class body). Use the two-column method: `g++ -E` the
+   failing inner header, diff `bin/madc --dump-source`, find the unexpanded/
+   mis-expanded macro. (These may also partly resolve once struct-methods land —
+   verify after.)
 
-### 4.1 `0665b86` — array-typedef emitter bug + `__gnuc_va_list`
-Two coupled fixes that cleared the FIRST `<wchar.h>` blocker.
-- **Emitter bug (deepest layer):** In `src/cir_builder.cpp`, the top-level
-  declaration emit driver uses a lambda `struct_behind(DataDef*)` to identify the
-  struct behind a typedef (to mark its tag in an `emitted_structs` set so a
-  second typedef of the same tag emits only `struct Tag`, not the full body).
-  `struct_behind` peeled one POINTER level but **not `DataDefCArray`** (array)
-  layers, so for an ARRAY typedef (`typedef struct Tag {..} NAME[N];`) it
-  returned NULL → the tag was never marked emitted → a SECOND array typedef of
-  the same tag re-emitted the full body → **c2mir rejected the duplicate ("tag X
-  redeclaration")**. Fix: peel `DataDefCArray::element_type` first in
-  `struct_behind`. Find it: `grep -n "auto struct_behind = " src/parser.cpp` —
-  WAIT, it's in `cir_builder.cpp` (the lambda inside the emit driver). Reduced to
-  a 2-line, va_list-free repro; test `tests/testarraytypedefstruct.mad`.
-- **`__gnuc_va_list`:** real `<wchar.h>` line 43 does `#define __need___va_list;
-  #include <stdarg.h>; typedef __gnuc_va_list va_list;`. Embedded `stdarg.h`
-  didn't define `__gnuc_va_list`. Added (include/madc/stdarg.h line 29):
-  `typedef struct __madc_va_list_tag __gnuc_va_list[1];` — a DIRECT typedef of
-  the SAME tagged struct, with `va_list` left byte-identical (so the `va_start`
-  intrinsic is unaffected). The prior attempt (per the older handoff's gotcha)
-  added this and regressed 8 va_args tests because the emitter bug above made the
-  duplicate-tag emission fail; fixing the emitter is what let this land. Without
-  the emitter fix, `typedef __gnuc_va_list va_list;` (va_list = struct[1] and
-  __gnuc_va_list = struct[1]) emits the struct body twice → "tag redeclaration".
+3. **`algorithm` `52:13 'abs' is not a declaration in '::'`** — a global
+   `using ::abs;` of a libc function (`<cstdlib>`); `abs` isn't declared at `::`
+   in madc's view. Mirror of the (now-fixed) `lconv`/`isalnum` pattern — either
+   declare `abs`/`labs`/`llabs`/`div` etc. in the embedded `<stdlib.h>` stub (the
+   ctype approach), or retire that stub for the real header if it parses.
 
-### 4.2 `68dee85` — embedded `sys/cdefs.h` glibc macros
-madc reads its OWN embedded `include/madc/sys/cdefs.h` (a stub that hardcodes the
-OUTCOMES of glibc's attribute conditionals — e.g. `#define __THROW` empty — rather
-than replicating `__GNUC_PREREQ`/`__has_attribute`). It was missing the
-`__nonnull` family and inline-family macros, so real prototypes like
-`wchar_t *wcscpy(...) __THROW __nonnull((1,2));` left a dangling macro after the
-param list → madc read it as a K&R definition ("Expecting brace after function
-declaration"); and optimized inline blocks tripped on undeclared `__extern_inline`.
-Added (matching glibc's no-attribute fallback shapes): `__nonnull`,
-`__attribute_nonnull__`, `__attr_access[_none]`, `__attr_dealloc[_free]`, `__wur`,
-the `__attribute_*__` family, `__glibc_macro_warning`, `__attribute_artificial__`,
-and the inline family `__always_inline`/`__extern_inline`/`__extern_always_inline`/
-`__fortify_function`. **Deliberately NOT** adding feature-selection macros
-(`__GNUC_PREREQ`/`__glibc_has_*`) — the stub avoids those by design (hardcode
-outcomes). **Result: real `<wchar.h>` parses end-to-end; `<iosfwd>` fully green;**
-the string/streams family advanced past the entire wchar/cdefs wall.
+4. **`vector` `2119:22 Expecting '{' after namespace name`** — a new, deep
+   namespace-declaration parse issue (vector got this far only after §4.5).
+   Reduce at the failing construct under `--dump-source`.
 
-### 4.3 `c2126dc` — namespace-qualified types as struct members (bug A of the bisection)
-The struct-member type parser (`src/parser.cpp`, in `TokenSTRUCT::parse`'s member
-loop, around the throw at line **14036** "Expecting type in struct definition,
-got '<name>'") only consulted the unqualified `datatype_map` for an identifier
-member type. So a namespace-/class-qualified member type (`a::T`, `ns::Tmpl<...>`,
-`Outer::Inner`) was rejected — at global scope and inside a namespace alike. Fix:
-when the bare lookup misses AND a `::` follows, consume the identifier and fall
-through to the shared `pgm.resolve_declared_type_token(tn, true, true)` (which
-handles `::`-qualified and template-id types via `resolve_namespaced_type_token`
-+ `instantiate_template_use`); only taken when `::` follows so genuine non-types
-still error. Test `tests/testqualifiedmembertype.mad`. (This is ONE of the two
-bugs behind the char_traits failure; see §5.)
+5. **`string_view` `768:45 Expecting a type argument to iterator<>`** — a
+   template-arg resolution gap in a nested `iterator<>` use; its own thread.
 
----
-
-## 5. ~~THE OPEN BLOCKER~~ — `__gnu_cxx::char_traits` (bug B) — **RESOLVED 2026-06-07**
-
-> **RESOLVED in `5ea75a2`** (+ amalgamation `4f4fbd2`). `template_map` is now
-> `map<string, vector<TemplateDef>>` (per-namespace variants keyed by bare name),
-> all selection funnels through a new `find_template(name, ns_hint)` helper,
-> `register_template()` owns insert/merge, and `instantiate_template_use()` takes
-> an `ns_hint` (and COPIES the selected `TemplateDef` to dodge a vector-realloc
-> dangling-reference hazard). The concrete-instantiation mangled key folds in the
-> namespace ONLY when the bare name actually has >1 variant, so every
-> single-namespace template's internal tag is byte-identical (zero churn for
-> std::). The expression-context qualified call passes the resolved namespace as
-> `ns_hint`; the type path was left on bare-name selection because its only
-> collision (`std::char_traits : public __gnu_cxx::char_traits`) resolves before
-> `std::char_traits` registers. Regression test `tests/testtemplatenamespacescope`.
-> Follow-up `4f4fbd2` collapsed 10 hand-rolled `alias_use`→`use` probe sites onto
-> one `instantiate_template_id(name, tb, ns_hint)` seam so the hint flows
-> uniformly. fulltest 524/4/0/26, no-std-hardcoding gate green.
->
-> **Note (qualified template-id as a DECLARATION type):** `ns::Tmpl<int> v;` as a
-> variable declaration still fails ("Expecting ';' after struct member") — but it
-> fails with a SINGLE namespace too, so it is a SEPARATE pre-existing gap (the
-> declaration-type parser doesn't resolve qualified template-ids), NOT part of
-> bug B. Worth a future thread; the expression path (`ns::Tmpl<int>::f()`) works.
->
-> The original (pre-fix) plan follows for the mechanism record.
-
-### (historical) THE OPEN BLOCKER — `__gnu_cxx::char_traits` (bug B)
-
-This blocks 8 headers: string, string_view, char_traits, ostream, istream,
-iostream, sstream, fstream (all `473:4 'char_traits' is not a member of namespace
-'__gnu_cxx'`). It is a GENUINE parser/name-resolution bug (same error in BOTH
-probe columns).
-
-### 5.1 The bisection chain (how I got from the header to the root cause)
-- `char_traits.h:473` = the `};` closing `std::char_traits<char>` (an explicit
-  specialization, lines ~337–473). Its method bodies call
-  `__gnu_cxx::char_traits<char_type>::length(__s)` etc. (lines 397/409/421/…).
-- Local copy for editing: `cp /usr/include/c++/13/bits/char_traits.h tmp/ct_bisect.h`,
-  truncate + close namespaces to bisect. Found: the `std::char_traits` PRIMARY
-  (line 331, `: public __gnu_cxx::char_traits<_CharT>`) resolves `__gnu_cxx::char_traits`
-  fine; it only fails later in the explicit specialization.
-- Reductions (in `tmp/`, recreate from §7):
-  - `_ct3` — `std::char_traits` FORWARD-DECLARED + method ref to
-    `__gnu_cxx::char_traits<char_type>::length` → **OK**.
-  - `_ct5` — `std::char_traits` DEFINED & deriving + same ref → **FAILS** (15:6).
-  - `_ct13` — `std::char_traits` DEFINED, NOT deriving + ref → **FAILS** (so
-    derivation is NOT required; a DEFINED primary is).
-  - `_ct14` — DEFINED `std::char_traits` + ref from a plain function in `std`
-    (no explicit spec) → **FAILS** (4:41). Minimal expression form.
-  - `_tmpl` — char_traits-FREE: `namespace a { template<class C> struct W { static
-    int f(){return 1;} }; } namespace b { template<class C> struct W {…2…}; } int
-    main(){ return a::W<int>::f(); }` → **FAILS** "'W' is not a member of namespace
-    'a'". THE CLEAN ROOT-CAUSE REPRO.
-
-### 5.2 Root cause
-`template_map` (declared **include/madc.h:1079**:
-`std::map<std::string, TemplateDef> template_map;  // name -> definition`) is
-keyed by **BARE NAME**, not namespace-scoped. So when `std::char_traits` (a
-defined template) is registered, it OVERWRITES `__gnu_cxx::char_traits` in
-`template_map` (both key "char_traits"). Subsequent qualified lookup of
-`__gnu_cxx::char_traits` can't find the shadowed `__gnu_cxx` version → "not a
-member of namespace '__gnu_cxx'". A FORWARD-DECLARED `std::char_traits` (`_ct3`)
-doesn't register/overwrite, so it worked.
-
-`TemplateDef` ALREADY carries a `defining_namespace` field (used by
-`template_declared_in_namespace`) — so the disambiguating data exists; the map
-keying and the qualified lookup just don't use it.
-
-### 5.3 The two qualified-resolution PATHS (both need the namespace fix)
-The qualified name `__gnu_cxx::char_traits<...>` is resolved by different code in
-different syntactic contexts:
-- **Struct-member type** (`a::T *p;`) — `TokenSTRUCT::parse` member loop, ~line
-  14036. **FIXED in `c2126dc`** (falls through to `resolve_declared_type_token`).
-- **Expression** (`__gnu_cxx::char_traits<char>::length(0)`) — in
-  `parseExpr_identifierArm`/the namespace-member resolver around parser.cpp
-  **10703–10709** (`vmi = nsi->second.find(member_name); if (== end) Throw "is
-  not a member of namespace"`). This path looks up the member in
-  `namespace_map[ns]` / `namespace_datatype_map[ns]` — and for a TEMPLATE that
-  lives in `template_map` keyed by bare name, the shadowing bites here.
-- Other throw sites with the same string: parser.cpp 9157, 12836 (expr `::`
-  forms), 13469 (the `using`-declaration handler — NOT the char_traits path).
-
-### 5.4 Fix plan (INVASIVE — template registration/lookup core; regression risk)
-The right fix: make template storage/lookup namespace-aware.
-- **Storage:** key `template_map` by QUALIFIED name (e.g. `"__gnu_cxx::char_traits"`)
-  — OR keep bare-name key but make it `map<string, vector<TemplateDef>>` and
-  disambiguate by `defining_namespace`. Qualified key is simpler to reason about.
-- **Registration sites** (audit ALL): parser.cpp ~**19733/19734** (guarded insert
-  — first wins) and ~**19858/19875** (`template_map[class_name] = td;` —
-  unconditional overwrite). Register under the qualified name using
-  `current_namespace` + `class_name`.
-- **Lookup sites** (audit ALL): parser.cpp ~**2273** (`template_map.find(tname)`),
-  ~**2726**, ~**9430**, plus the `template_declared_in_namespace` method (already
-  namespace-aware via `defining_namespace`). For a QUALIFIED use `ns::Tmpl`, look
-  up `ns::Tmpl` (or filter by `defining_namespace==ns`). For an UNQUALIFIED use,
-  search the current namespace scope chain → global (mirror
-  `resolve_namespace_name_in_scope`, now a `Program` method).
-- The namespace-qualified TYPE resolver `resolve_namespaced_type_token`
-  (parser.cpp ~1745, a `Program` method) and `resolve_declared_type_token`
-  (~2918; delegates to the former at ~3079) must consult the namespace-scoped
-  template registry for `ns::Tmpl<args>`. Instantiation goes through
-  `instantiate_template_use` / `instantiate_template_alias_use` (now `Program`
-  methods, restoration step 19).
-- **Validate** against `tests/testtemplate*`, vector/map/set tests, AND the
-  `_tmpl` / `_ct14` reducers AND the real `bits/char_traits.h`, then full probe +
-  `make -C src fulltest`. Risk surface = ALL template usage; go incrementally,
-  fulltest after each sub-step. Add a regression test (a `_tmpl`-style two-
-  namespace same-named-template + qualified call).
-- **Caution:** `std` types interplay with the embedded headers and the
-  retire-std-hardcoding work — confirm you don't shadow/break `std::` template
-  resolution (vector/map/set). Run the `scripts/check-no-std-hardcoding.sh` gate
-  if you touch std registration (it's wired into fulltest).
-
----
-
-## 6. Other remaining header blockers (after char_traits) — lower priority
-
-All `madc`-column only (parser-only `pp` column is OK), i.e. likely PREPROCESSOR
-or near-parser:
-- **`memory`, `vector` — `690:6 Too many parameters`.** Same logical line (690) →
-  one root cause hit by both. Likely a macro mis-expansion producing an
-  over-long parameter list, OR a real parser limit on parameter count. Reduce by
-  finding what's at the relevant header line under madc's `--dump-source`.
-- **`map`, `set` — `36:9 Expecting type in class definition`.** Note: the
-  parser-only `pp` column is OK for map/set, so this is the madc PREPROCESSOR (a
-  `_GLIBCXX_*`/macro gap), not the parser. Use the §3.2 two-column method:
-  `g++ -E` the failing inner header, diff madc `--dump-source`, find the
-  unexpanded/mis-expanded macro.
-- **`algorithm` — `52:13 'abs' is not a declaration in '::'`.** A `using ::abs;`
-  or similar global-namespace using-declaration of a libc function; likely
-  `abs` isn't declared at global scope in madc's view at that point.
-
-Methodology for each: reduce to the smallest failing `#include` (probe inner
-sub-headers individually, like §4.2 did for wchar), then `--dump-source` vs
-`g++ -E` to classify preprocessor-vs-parser, then minimal reducer, then fix the
-deepest layer.
-
----
-
-## 7. Reducer inventory (tmp/, gitignored — recreate as needed)
-
-| file | what it tests | result |
-|---|---|---|
-| `tmp/_w.mad` | `#include <wchar.h>` | now OK (was the 43:22 / 100:22 / 342:15 chain) |
-| `tmp/_cd.mad` | `#include <sys/cdefs.h>` + `__THROW __nonnull` | now OK |
-| `tmp/_va.mad` | `#define __need___va_list; #include <stdarg.h>; typedef __gnuc_va_list va_list;` | now OK |
-| `tmp/_dup2.mad` | `typedef struct S{int x;} A[1]; typedef struct S B[1];` (array re-emit) | now OK (1 body) |
-| `tmp/_ct.mad` | `#include bits/char_traits.h` | FAILS 473:4 (bug B) |
-| `tmp/_ct3.mad` | fwd-decl std::char_traits + method ref | OK |
-| `tmp/_ct5.mad` | DEFINED+deriving std::char_traits + method ref | FAILS (bug B) |
-| `tmp/_ct13.mad` | DEFINED not-deriving + ref | FAILS (bug B) |
-| `tmp/_ct14.mad` | DEFINED std::char_traits + ref from fn in std (no spec) | FAILS (bug B, minimal) |
-| `tmp/_tmpl.mad` | **char_traits-free** two-namespace same-named template + `a::W<int>::f()` | FAILS — THE root-cause repro |
-| `tmp/_min.mad` | `namespace b{ struct S{ a::T*p; }; }` (struct-member qualified type) | now OK (bug A fixed) |
-| `tmp/_glob.mad` | same at global scope | now OK |
-| `tmp/ct_bisect.h` | editable copy of real bits/char_traits.h | for bisection |
-
-Committed regression tests added this session: `tests/testarraytypedefstruct.mad`
-(array typedef of tagged struct, `7 11`) and `tests/testqualifiedmembertype.mad`
-(qualified member type, `7 7`).
-
----
-
-## 8. Gotchas / hard-won learnings (do not relearn)
-
-- **Naive `{`/`}` brace counting RUNS AWAY** on braces inside string/char literals
-  or comments. The step-25 batch corrupted other functions' signatures this way
-  (it ran one function's span to a wrong end and `pgm`→`*this`'d a swath,
-  producing `Program &*this`). FIX = a string/char/comment-aware brace matcher
-  (in the step-25 script). Always assert `"Program &*this" not in text` after a
-  scripted transform, and `git checkout` to revert if it trips (the tree was
-  always committed before each scripted batch — do that).
-- **`find()` matching a forward decl** (identical first line to the def): remove
-  fwd decls FIRST, then find the def.
-- **Sig-replace must come BEFORE body xform** (else `pgm`→`*this` mangles the
-  `Program &pgm` in the signature so the sig regex won't match). The step-19/20
-  scripts got this order right; an early step-19 attempt got it wrong and only
-  transformed the sig line (not the body) → leftover `pgm` → compile errors. Use
-  the compiler as the oracle.
-- **Default args:** C++ forbids them in both decl and def. When you turn a free
-  fn into a method, move the default to the in-class decl and STRIP it from the
-  out-of-class definition. If a default lived in a removed fwd decl, RE-ADD it to
-  the new decl (else callers relying on it break with arity errors).
-- **Parser-local types in method signatures:** if a converted method's signature
-  uses a `parser.cpp`-local type (`CppSymKind`, `ParsedParamSig`), LIFT that type
-  to `madc.h` (before `class Program`) so the in-class decl compiles.
-- **The `__gnuc_va_list` / `va_start` coupling:** `va_list` must remain THE direct
-  `struct __madc_va_list_tag[1]` typedef the intrinsic recognizes — add
-  `__gnuc_va_list` as a SEPARATE direct typedef of the same struct; don't make
-  `va_list` an alias-of-an-alias. And the array-typedef emitter bug (§4.1) must
-  be fixed or the duplicate-tag emission breaks it.
-- **The embedded-cdefs philosophy:** hardcode glibc's conditional OUTCOMES (empty
-  attribute macros, etc.); do NOT replicate `__GNUC_PREREQ`/`__has_attribute`
-  (those drive broad feature selection — adding them risks disabling needed
-  types). The stub at `include/madc/sys/cdefs.h` follows this.
-- **Line attribution across `#include`s is unreliable** — the parser reports the
-  top file with an inner line number (e.g. the char_traits `473:4` was attributed
-  oddly). Bisect/trace rather than trusting `file:line` across includes. But
-  WITHIN a single file the per-token line is reliable.
-- **`make` regenerates `embedded_headers.cpp`** from `include/madc/*` via
-  `scripts/gen_embedded_headers.sh` — so editing `include/madc/sys/cdefs.h` or
-  `include/madc/stdarg.h` then `make -C src` picks it up; the generated
-  `src/embedded_headers.cpp` shows in `git status` and must be committed too.
-
----
-
-## 9. Diagnostic tools & exact commands
-
+**Probe-one-header recipes:**
 ```bash
-# Build + full regression (MUST stay 522/4/0/26):
-make -C src
-make -C src fulltest
-
-# Real-header burn-down (two-column parser-vs-preprocessor):
-bash scripts/probe_real_headers.sh
-bash scripts/probe_real_headers.sh wchar.h   # single (if it accepts args)
-
-# Probe ONE header directly (madc own-preprocess):
-printf '#include "/usr/include/c++/13/bits/char_traits.h"\nint main(){return 0;}\n' > tmp/_x.mad
+# madc own-preprocess:
+printf '#include "/usr/include/c++/13/ostream"\nint main(){return 0;}\n' > tmp/_x.mad
 bin/madc --std=c++17 --emit=c11 tmp/_x.mad 2>&1 >/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -m1 'error:'
-
-# Preprocessor-vs-parser classify (gcc preps, madc only parses):
-g++ -std=c++17 -E HEADER 2>/dev/null | grep -v '^#' > tmp/_pp.cpp
+# preprocessor-vs-parser classify:
+g++ -std=c++17 -E /usr/include/c++/13/ostream 2>/dev/null | grep -v '^#' > tmp/_pp.cpp
 bin/madc --std=c++17 --emit=c11 tmp/_pp.cpp 2>&1 >/dev/null | grep -m1 'error:'
-
-# See madc's PREPROCESSED token stream (find unexpanded macros):
+# which function threw (verbose):
+bin/madc -v --std=c++17 --emit=c11 tmp/_x.mad 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -B6 'error:' | tail
+# what c2mir would see:
 bin/madc --std=c++17 --dump-source tmp/_x.mad 2>/dev/null | sed -n 'START,ENDp'
-
-# See what c2mir gets (the cir_node tree rendered as C):
-bin/madc --std=c++17 --emit=c11 tmp/_x.mad 2>/dev/null | sed -n 'START,ENDp'
-
-# Compare a macro's madc expansion vs gcc:
-printf '__INT64_TYPE__\n' | g++ -std=c++17 -E -x c++ - 2>/dev/null | tail -1
 ```
+**Cross-include line attribution is UNRELIABLE** (the parser reports the top file
+with an inner line number, e.g. `ostream:172` is really a `<system_error>` line).
+Bisect by INCLUDE (probe each `#include` of the failing header individually —
+that's how every blocker this session was localized), not by trusting `file:line`.
 
 ---
 
-## 10. Commit list this session (newest first, branch feature/realhdr-parse-gaps2-claude)
+## 6. THE NEXT TARGET — struct member methods / struct≡class unification
+
+### 6.1 User design directive (canonical — 2026-06-07)
+> *"we want struct vs class to follow the same rules that modern C++ does, where
+> the only real difference between a struct and a class is that a struct is
+> public-by-default and a class is private-by-default … and thus a 'simple' class
+> and a 'simple' struct (ones without virtual methods and destructors) are
+> virtually the same."*
+
+So: a `struct` body must parse exactly like a `class` body — member functions,
+constructors, destructors, `operator()`/operator overloads, access-specifier
+labels (`public:`/`private:`/`protected:`), base-class lists — the ONLY
+differences being **default access** (struct public, class private) and **default
+inheritance access** (struct public, class private). A trivial struct and trivial
+class (no virtual methods/dtors, no bases) are byte-identical and must share the
+native struct code path (layout, by-value param ABI, aggregate/brace init,
+copy) — this is verified true in g++ (a method changes nothing; only
+std::string-member / user ctor/dtor / virtual / base add object ABI).
+
+### 6.1b User refinement (2026-06-07) — the difference is ALREADY mostly implemented
+> *"AFAIK we already implemented that handling difference between class and struct
+> … I just imagine there may be some code that is depending on the datatype /
+> tokentype rather than if it is trivial or not."*
+
+Take this as the working hypothesis: the struct-vs-class *semantics*
+(default-access, and struct→class promotion on object members) are LARGELY DONE
+(§6.2). So this is NOT a big new feature — it is two bounded jobs:
+1. **Let a `struct` body PARSE member functions/ctors/dtors/operators** (today
+   `TokenSTRUCT::parse` only parses data members → "Expecting ';' after struct
+   member"). The cleanest form is unifying the body-parse with `TokenCLASS::parse`
+   (§6.3-A), but it may be as small as routing the struct member loop through the
+   same member-declaration handler the class path uses.
+2. **AUDIT for code that branches on the TYPE/TOKEN kind rather than on
+   TRIVIALITY** — i.e. anything keyed on `DataDefSTRUCT` vs `DataDefCLASS`,
+   `btStruct` vs `btClass`, `TokenType`/keyword `tkSTRUCT` vs `tkCLASS`, or
+   `is_object()`/`as_class_instance()` (true for ANY class) where it SHOULD key on
+   `is_nontrivial_class()` (object members / user ctor-dtor / virtual / base).
+   Those are the spots that make a trivial struct-class diverge from a plain
+   struct (the source of the prior 65–120 torture regressions, §6.4). Grep
+   starting points: `DataDefSTRUCT`, `DataDefCLASS`, `btStruct`, `btClass`,
+   `is_object(`, `as_class_instance(`, `tkSTRUCT`, `tkCLASS`, `basetype()`.
+
+### 6.2 Current state of struct/class in madc (verify before editing)
+- `class` parsing: `TokenCLASS::parse` (parser.cpp ~15295+; `do_typedef`
+  detection ~15306) creates a `DataDefCLASS` (private default), and ALREADY
+  handles member functions, ctors/dtors, access labels, bases, virtual, RTTI,
+  multiple/virtual inheritance (all landed earlier — see
+  `project_cpp_parser_correctness`, `project_multiple_inheritance`).
+- `struct` parsing: `TokenSTRUCT::parse` (the member loop is around parser.cpp
+  ~14036 — that's where bug-A §4.9 and the "Expecting type in/after struct
+  member" throws live). It parses **data members only** — it does NOT parse C++
+  member-function/ctor/dtor/operator constructs in a struct body. That's the gap.
+- **Struct→class PROMOTION already exists** (develop @ `78d1b27`, also on this
+  branch): at `TokenSTRUCT::parse`'s closing-`}` finalize (~parser.cpp 11185 per
+  the old note — VERIFY the current line), if any member `is_object()` by value
+  (e.g. a `std::string` member; pointers excluded), the parsed `DataDefSTRUCT`
+  is promoted to a `DataDefCLASS` (slice-copy `static_cast<DataDefSTRUCT&>(*ddc)
+  = *dds`, repoint `struct_map[tag]=ddc`) so the existing class lifecycle (member
+  ctors at decl + RAII dtor) applies. This is why a `struct` with a std::string
+  member works but a `struct` with a *method* does not — promotion triggers on
+  object MEMBERS, not on member FUNCTIONS (TokenSTRUCT::parse can't even parse a
+  member function to know it's there).
+
+### 6.3 The recommended approach (two options; both must be triviality-safe)
+The directive points at **unifying the two parse paths**. The restoration also
+flagged this as deferred polish: *"dedup TokenSTRUCT::parse vs TokenCLASS::parse
+(~2,300 near-identical lines)."* Two ways to get there:
+
+- **(A) UNIFY (preferred, matches the directive):** make `TokenSTRUCT::parse`
+  and `TokenCLASS::parse` ONE parse path parameterized by `default_access`
+  (struct=public, class=private) and default-inheritance-access. Concretely:
+  extract the class body parser into a shared `Program` method that both
+  keyword-tokens call with the default-access argument. The struct path then
+  gets member functions/ctors/dtors/operators "for free." A `struct` with any
+  C++ object feature becomes a `DataDefCLASS` (public default); a trivial struct
+  stays on the native struct path (see triviality guarantee §6.4).
+- **(B) EXTEND PROMOTION (smaller, incremental):** teach `TokenSTRUCT::parse` to
+  PARSE member functions/ctors/dtors/operators (and access labels) in a struct
+  body, and promote to DataDefCLASS when any C++ object feature is present (a
+  member function, ctor, dtor, virtual, or base) — extending the existing
+  object-member promotion. Less code churn than a full unify but duplicates the
+  member-function parsing logic (the thing the dedup wants to eliminate).
+
+Given the directive ("the only real difference is default access"), **(A) is the
+right end state**; (B) is a stepping stone if (A)'s blast radius feels too large
+in one go. Either way the access-default must be set correctly (madc enforces
+access control — a `struct` member accessed from outside must be public, or you
+get a private-access error).
+
+### 6.4 THE SAFETY GUARANTEE (why this is hard, and how prior attempts failed)
+**Blanket "every struct is a DataDefCLASS in non-C-mode" was tried THREE times
+and reverted — 65 to 120 gcc.c-torture REGRESSIONS each.** Root cause: the
+gcc.c-torture C programs (and SMAUG) run in `STD_MADC` (the default — the runner
+passes no `--std`), so they ALL became classes, and **madc's class path WRONGLY
+DIVERGES from the struct path for TRIVIAL types** at: aggregate/brace init
+(treated as a constructor arg), by-value struct PARAMETER ABI, copy-assign
+synthesis, bitfields/packing/alignment, stdarg/`va_arg`, and type-emission
+(e.g. `__madc_va_list_tag redeclaration` from the class-emission loop). That
+divergence is a **real latent bug**: a trivial public class is byte-identical to
+a struct, so the class path should not diverge for it.
+
+**Therefore the unification is safe ONLY if trivial-class-behaves-identically-to-
+struct.** The mechanism `DataDef::is_object()` returns true for ANY `btClass`
+(datadef.h ~181), so trivial struct-classes hit object-specific handling. The
+CORRECT fix (preferred over object-member-gating): introduce
+`is_nontrivial_class(dd)` = a class with (object members OR user ctor/dtor OR
+vtable/virtual OR base class), and **re-gate the OBJECT-SPECIFIC handling**
+(init-via-ctor, by-value param copy/passing, copy-assign synthesis) on
+`is_nontrivial_class` instead of `is_object()`/`as_class_instance()` — so a
+trivial class falls through to the native struct path at init/param/copy.
+Already-safe sites (gated on triviality, no-op for trivial classes): member
+ctors (`class_has_object_members`), retbuf return (`class_needs_dtor`).
+
+**Validation REQUIRED before declaring done (HIGH blast radius):**
+- `make -C src fulltest` after each sub-step (526/4/0/26).
+- **FULL gcc.c-torture failset-diff = ZERO regressions** (this is what proves
+  trivial-struct-as-class is safe; the prior attempts each added 65–120). The
+  torture harness + how to diff failsets is in `docs/parity/` and
+  `claude_status.json` (the parity campaign — `project_cir_parity_campaign`).
+- **SMAUG soak** — must boot clean (its ~158k LOC of C structs must stay plain).
+  SMAUG should declare a C std (`--std=c99`/`c89`) so its structs stay
+  `DataDefSTRUCT`; verify it does (a directive in SMAUG.mad or the invocation).
+
+### 6.5 Concrete starting reducer
+```bash
+printf 'struct S { int m(int a){return a;} };\nint main(){ S s; return s.m(5); }\n' > tmp/_sm.mad
+bin/madc --std=c++17 tmp/_sm.mad         # currently: "Expecting ';' after struct member"
+# the std::less shape that blocks the streams:
+printf 'struct less { bool operator()(int a,int b) const { return a<b; } };\nint main(){ return less()(1,2)?0:1; }\n' > tmp/_less.mad
+bin/madc --std=c++17 tmp/_less.mad       # currently fails on the struct operator()
+```
+Compare against `g++ -S -fverbose-asm -O0` on the trivial-struct-method case to
+confirm it lowers identically to the equivalent class (Rule #1). Then implement
+(A) or (B), re-gate triviality (§6.4), and run the full validation.
+
+---
+
+## 7. Methodology / rules to honor (condensed from AGENTS.md + memory)
+
+- **GCC and clang are BOTH canon.** Reduce → compare disassembly/`-E` → hypothesis
+  → fix the DEEPEST layer → never shim. (`gcc-methodology.md`,
+  `clang-methodology.md`, `feedback_two_canon_compilers`.)
+- **`make -C src fulltest` after every change.** Never leave the tree red beyond
+  the 4 known reds. The no-std-hardcoding gate is wired in — keep it green.
+- **No hardcoding specifics into general machinery; no special-casing specific
+  C++ classes.** madc must map `#include` details to libc/libstdc++ like clang
+  (the user's explicit, repeated constraint). The struct/class fix must be
+  general (the language's struct/class semantics), not a per-header patch.
+- **Shortcuts are categorically unacceptable** (`feedback_correct_over_shortcuts`)
+  — the RED-FLAG tells are listed in §3. When tempted to hardcode a literal / add
+  a wrapper / special-case higher up / think "good enough", STOP and fix the
+  deepest layer. (Hardcoded stream `_ZSt` literals once caused DAYS of drift.)
+- **Don't ignore warnings** (`feedback_dont_ignore_warnings`) — analyze every
+  madc build warning AND every g++ warning on emitted C; ignored warnings have
+  hidden real bugs (a g++ warning once hid a `length()`-returns-void error).
+- **emit-C vs g++ oracle** (`feedback_emitc_gcc_parity_oracle`): a gcc-compiled
+  `--emit=c11` of a program must match the g++-compiled original C++; divergence
+  = a madc bug.
+- **Commit early, small, self-contained.** Feature branch off `develop`,
+  `-claude`-owned. **Do NOT push; do NOT promote to master** (parity gate).
+  Commit before any scripted bulk transform so revert is clean. Co-author trailer
+  `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+- **The retire-stub pattern (validated this session):** many `include/madc/`
+  stubs now shadow real headers the restored parser CAN handle. Retiring one
+  (delete the file; the build regenerates `embedded_headers.cpp`) maps that
+  include to real libc/libstdc++ and clears whole `using ::name;` chains at once
+  — PROVIDED the real header (and everything it pulls in, in context) parses.
+  Always gate with fulltest + full probe; REVERT if it surfaces an earlier parser
+  bug (as the `ctype.h` retirement did — it surfaced a `bits/types.h`
+  typedef-in-context issue, so fleshing the stub was chosen instead). The
+  alternative — flesh the stub with the missing declarations (like `struct
+  lconv`, the ctype prototypes, the pthread types) — is the bounded fix when the
+  real header doesn't yet parse cleanly in context.
+
+---
+
+## 8. Restoration context (DONE — background, not a TODO)
+
+The parser restoration (the user's prior mandate) is **COMPLETE** on this branch:
+- `parseExpression` went 3,577 → ~172 lines (original shunting-yard shape);
+  `Program::parseExpression` is at parser.cpp ~12924. The four big switch-arms are
+  extracted methods: `parseExpr_dataTypeArm` (~9443), `parseExpr_symbolArm`,
+  `parseExpr_identifierArm`, `parseExpr_operatorArm`, via the **ExprStep
+  protocol** (`enum class ExprStep { Break, Continue, Redo, Done, Return };` in
+  madc.h ~1547 — maps each arm's inline break/continue/goto/done/early-return
+  1:1). The extraction technique was "compiler-as-oracle": after moving an arm
+  body verbatim into a method, the compiler flags arm-level `break;`/`continue;`
+  as illegal → convert exactly those to ExprStep returns → byte-identical.
+- Free `static f(Program &pgm, …)` helper functions went **138 → 2** (the 2 that
+  remain — `register_std_namespace_spec`/`register_madc_namespace_spec`,
+  parser.cpp ~5874 — MUST stay free; they're registered as function-pointer
+  callbacks). NOTE: a grep for `name(Program &pgm` matches ~32 lines, but those
+  are the legit `TokenX::parse(Program &pgm)` framework parse-interface methods,
+  NOT the threading anti-pattern.
+- **Coordinated free-fn→method conversion recipe** (reuse for any future
+  conversion): strip forward decls FIRST; sig-replace BEFORE body xform; use a
+  STRING/CHAR/COMMENT-AWARE brace matcher (naive `{`/`}` counting runs away on
+  braces in literals/comments — it corrupted sigs once); `pgm.`→``, cluster calls
+  `C(pgm,`→`C(`, bare `pgm`→`*this`; strip def-side default args (move to the
+  in-class decl); assert no `Program &*this`; let the compiler catch leftovers.
+- Optional remaining restoration polish: **dedup `TokenSTRUCT::parse` vs
+  `TokenCLASS::parse`** — which is now the SAME work as the §6 struct/class
+  unification (they converge); `operator<` resolution end-to-end.
+
+Full restoration detail: `docs/plans/2026-06-07-parser-restoration-HANDOFF.md`
+and `project_parser_restoration` memory.
+
+---
+
+## 9. Commit list this session (newest first; branch feature/realhdr-parse-gaps2-claude)
 
 ```
-0c9523e fix(parser): accept CV-qualifiers after the base type in a typedef (east-const)
+bb829ed docs(plan): pthread types + east-const typedef fixed; struct-methods identified as root cause
+0c9523e fix(parser): accept CV-qualifiers after the base type in a typedef (east-const)   [test testtypedefcvqual]
 7da5b96 fix(headers): define opaque pthread types in embedded pthread.h (unblocks gthr/streams)
+51b30fb docs(plan): isalnum cleared; 'typedef'-in-context dominant
 a4037f3 fix(headers,build): declare ctype functions (clears 'isalnum') + parse-time embed-gen
-e392a17 fix(parser): allocation-operator arity + noexcept template-id stripping (clears memory/vector/string)
-5a27a22 fix(build): regenerate embedded_headers.cpp on every build (catch deleted stubs)  [footgun]
+fd2675d docs(plan): Too-many-parameters fixed; isalnum now dominant
+e392a17 fix(parser): allocation-operator arity + noexcept template-id stripping   [test testnoexcepttemplatecond]
+46af14f docs(plan): locale stub retired, footgun fixed, ctype deferred
+5a27a22 fix(build): regenerate embedded_headers.cpp on every build (catch deleted stubs)  [footgun v1]
 05add19 fix(headers): regenerate embedded_headers.cpp to actually drop locale.h
 39bd07a feat(headers): retire embedded locale.h stub — map <locale.h> to real libc
 6bae117 feat(headers): declare struct lconv + setlocale/localeconv in embedded locale.h (superseded by 39bd07a)
+fabfdc0 docs(plan): bug B RESOLVED; probe table + next threads
 4f4fbd2 refactor(parser): one instantiate_template_id seam for the alias|class template-id probe
-5ea75a2 fix(parser): namespace-scope template_map so same-named templates don't collide  [bug B]
-e91858f docs(plan): comprehensive rehydration handoff (this doc)
-c2126dc fix(parser): resolve namespace-qualified types as struct members          [bug A]
+5ea75a2 fix(parser): namespace-scope template_map so same-named templates don't collide   [bug B; test testtemplatenamespacescope]
+e91858f docs(plan): comprehensive rehydration handoff (the prior doc)
+c2126dc fix(parser): resolve namespace-qualified types as struct members   [bug A; test testqualifiedmembertype]
 68dee85 feat(headers): flesh out embedded sys/cdefs.h with glibc attribute + inline macros
 0665b86 fix(cir+headers): array typedef of a tagged struct must not re-emit the body; add __gnuc_va_list
-e3c078c refactor(parser): re-home remaining free helpers as Program methods (restoration step 25)
-e42fad6 …param-signature/qualified-declarator cluster (step 24)
-b8fdeb8 …GNU/C23 attribute consumers (step 23)
-d0f94f4 …class-body/deferred-body cluster (step 22)
-ce6da8e …type-name resolution helpers (step 21)
-63c2132 …type-token resolution quartet (step 20)
-c0a85bc …template-machinery core 16 fns (step 19)
-9485bf5 …template-machinery leaf consumers (step 18)
-cac9492 …cast-parsing family (step 17)
-6a4b037 …type-query cluster (step 16)
-6407708 …static_assert trio (step 15)
-f20c63e …namespace-resolution helpers (step 14)
-4916e9d …old-style (K&R) parameter family (step 13)
-b57af67 …extract the giant ttOperator arm from parseExpression (step 12)
-86ee60b …extract the giant ttIdentifier arm (step 11)
-78596fb …extract ttSymbol arm (step 10)
-f43daa9 …extract ttDataType arm + ExprStep protocol (step 9)
-e618106 …array-dimension classifier (step 8)
-37eed02 …constant-expression evaluator (step 7)
 ```
-(Earlier restoration steps 1–6 — the `DelimDepth`/angle-scanner work — and the
-`#include_next` + earlier real-header commits are below these on the branch.)
+(Earlier on the branch: the parser-restoration steps 1–25 and the `#include_next`
+/ wchar work — see the restoration handoff.)
+
+Regression tests added this session: `testtemplatenamespacescope` (`1 2`/`10 20`/
+`21`), `testnoexcepttemplatecond` (`7 12`), `testtypedefcvqual` (`7 11 3 5 9`),
+plus earlier `testqualifiedmembertype` (`7 7`), `testarraytypedefstruct` (`7 11`).
 
 ---
 
-## 11. Methodology / rules to honor (from AGENTS.md)
+## 10. Gotchas / hard-won learnings (do not relearn)
 
-- **GCC and clang are BOTH canon.** Reduce a failing case to a minimal repro and
-  compare madc to `gcc -S -fverbose-asm -O0` / `clang -S -O0` (or `g++ -E` for
-  preprocessor) BEFORE forming a hypothesis. **Fix at the deepest layer**, no
-  shims. **Think twice, code once.** **Understand what exists before assuming it
-  doesn't** (search the 24k-line parser first).
-- **`make -C src fulltest` after every change** — never leave the tree red beyond
-  the 4 known reds. Commit before any scripted bulk transform so revert is clean.
-- **No hard-coding specifics into general machinery**; enums/predicates over
-  string compares. (The char_traits fix must be GENERAL namespace-scoping, not a
-  `char_traits`/`std`/`__gnu_cxx` special-case.)
-- **No special-casing specific C++ classes / no hardcoding what headers provide**
-  — madc must map `#include` details to libc/libstdc++ like clang. (User's
-  explicit constraint.)
-- Commit early; feature branch off `develop`; `-claude`-owned; **do not push, do
-  not promote to master.**
-- Be honest about metrics and mistakes (e.g. the brace-matcher run-away was
-  caught and reverted, not papered over).
-
----
-
-## 12. Broader context / north star
-
-This branch sits in the long-running **retire-std-hardcoding** + **real-header
-parsing** arc toward C23/C++23 compliance, all through the one
-`cir_node`/MC11-IR → c2mir → MIR backend. The parser restoration directly served
-this: a clean, reusable, method-based parser is the foundation, and it already
-paid off (the `<map>`/`<set>` parser blocker vanished). See `AGENTS.md`,
-`docs/plans/madc-vision-and-invariants.md`, `docs/adr/0001-cir-c2mir-backend.md`,
-and the memory index at
-`/home/dev/.claude/projects/-workspace-madc/memory/MEMORY.md` (esp.
-`project_parser_restoration`, `project_north_star_c23_cpp23`,
-`feedback_correct_over_shortcuts`, `feedback_emitc_gcc_parity_oracle`).
-
-`develop` is untouched by this session. The retire-std-hardcoding gate is
-`scripts/check-no-std-hardcoding.sh` (wired into fulltest) — keep it green if you
-touch std registration.
+- **Stale binary after a stub edit** (cost me several confused probes): before
+  the `a4037f3` parse-time-gen fix, editing an embedded header + a single `make`
+  did NOT relink the binary (the recipe-time regen was too late for the same-make
+  object rebuild). Fixed now — but if you ever see a stub edit "not take effect,"
+  do a clean rebuild and check `embedded_headers.cpp` actually changed
+  (`grep -c <symbol> src/embedded_headers.cpp`) and that the `.o`/binary relinked.
+- **`git checkout <file>` reverts to HEAD** — I accidentally clobbered an
+  uncommitted `ctype.h` edit this way trying to drop a one-line probe. Commit or
+  stash before `git checkout`; never `git checkout` over uncommitted work
+  (`feedback_never_lose_code`).
+- **Cross-include `file:line` is unreliable** — bisect by `#include`, not by line.
+- **madc `struct` cannot have member methods** (the §6 gap) — use `class` (with
+  `public:`) in any test that needs a method until §6 lands.
+- **`noexcept`, `__attribute__`, `_Alignas`, `__extension__`, CV-quals, `inline`,
+  `constexpr`** are stripped/ignored by the lexer — `noexcept`/`__attribute__`/
+  `_Alignas` by BALANCED-PAREN consumption (comma-safe), the rest as empty
+  defines. Don't reintroduce a function-like macro for anything whose argument
+  can contain a top-level (template `<...>`) comma.
+- **`<...>` is NOT a preprocessor grouping** — a function-like macro called with a
+  template-id argument splits on the inner comma. This bit `noexcept` (§4.5) and
+  is a general trap for any macro madc defines.
+- **madc predefines `_GNU_SOURCE=1`** (predefined_macros.cpp:451) — real glibc
+  headers expose their GNU extensions (uselocale, etc.) under madc.
+- **The 4 pre-existing fulltest reds** are `testdefer`, `testfstream`,
+  `testlargesizeofquery`, `testloop` — NOT caused by any of this work; "green"
+  means exactly those 4 and no others.
 
 ---
 
-## 13. Next threads, in priority order
+## 11. Pointers
 
-0. ~~`template_map` namespace-scoping (bug B)~~ — **DONE** `5ea75a2`/`4f4fbd2`.
-   ~~`lconv` family~~ — **DONE** by retiring the locale.h stub (`39bd07a`/`05add19`).
-   ~~build footgun~~ — **DONE** `5a27a22`.
-   ~~`Too many parameters` (memory/vector/string)~~ — **DONE** `e392a17`
-   (allocation-operator arity + noexcept template-id stripping).
-0b. ~~`'isalnum'`~~ — **DONE** `a4037f3` (declared ctype prototypes in the stub +
-   parse-time embed-gen build fix).
-0c. ~~streams `typedef` blocker~~ — **DONE** `7da5b96` (defined opaque pthread
-   types — they were undefined in the embedded stub). ~~east-const typedef~~ —
-   **DONE** `0c9523e`.
-1. **`struct` member methods — THE high-leverage target.** `std::less` (struct
-   with `operator()`) → streams' `'less'` (172:17); `memory` `81:54 Expecting ';'
-   after struct member`; and more. madc only allows methods on `class`. Extend
-   the struct→class promotion ([[project_struct_is_class]]: promote on object
-   member) to ALSO promote when a struct declares a member function. Substantial,
-   regression-sensitive (struct parse is core) — focused, test-gated pass; verify
-   against the torture suite + SMAUG (C structs must stay plain). Likely unblocks
-   the 5 streams + memory together.
-3. **`memory` `81:54 Expecting ';' after struct member`** — the struct-cannot-
-   have-methods gap (a `struct` with a member function; madc only allows methods
-   on `class`). Real C++ headers use `struct` with methods pervasively; this is
-   a structural parser gap worth a dedicated pass (promote struct→class method
-   parsing — see [[project_struct_is_class]]).
-4. **`vector` `2119:22 Expecting '{' after namespace name`** — new, deep; a
-   namespace-declaration parse issue. Reduce at that line.
-3. **`algorithm` `52:13 'abs' is not a declaration in '::'`** — twin of the
-   cleared `lconv` pattern (`<cstdlib>` `using ::abs;`). Likely a small stdlib
-   stub gap or another stub-retirement candidate.
-4. **`map`/`set` `36:9 Expecting type in class definition`** — §6 (preprocessor).
-5. **`string_view` `768:45 iterator<>` template-arg resolution** — its own step.
-6. (Optional) restoration polish — §2.6 (dedup STRUCT/CLASS parse, operator<).
-   Also: qualified template-id as a *declaration* type (`ns::Tmpl<int> v;`) —
-   a pre-existing gap surfaced while testing bug B (see §5 note).
-
-**Stub-retirement pattern (validated this session):** many curated stubs in
-`include/madc/` now shadow real headers the restored parser CAN handle. Retiring
-one (delete the file; the build regenerates `embedded_headers.cpp`) maps that
-include to real libc/libstdc++ and clears whole `using ::name;` chains at once —
-PROVIDED the real header (and everything it pulls in, in context) parses. Always
-gate with fulltest AND a full probe; revert if it surfaces an earlier parser bug
-(as ctype did). This is the on-ramp to the "wire real headers, retire stubs" arc.
-
-After the std:: header family is green under madc's own preprocessing, the next
-arc is wiring real headers into the build (retire curated stubs) per
-`docs/plans/` real-header-PCH notes.
+- AGENTS.md / CLAUDE.md (rules index), `.claude/rules/*` (bare rules),
+  `docs/rules/*` (reasoning).
+- `docs/plans/madc-vision-and-invariants.md` (I1–I8 invariants),
+  `docs/adr/0001-cir-c2mir-backend.md` (backend decision).
+- `claude_status.json` (canonical snapshot), `docs/parity/` +
+  `project_cir_parity_campaign` (gcc.c-torture failset-diff harness — needed for
+  §6.4 validation), `docs/test-status.md`.
+- Memory index `/home/dev/.claude/projects/-workspace-madc/memory/MEMORY.md`.
+  Most relevant memories: `project_parser_restoration` (one-screen index +
+  points here), `project_struct_is_class` (THE struct/class design + prior-attempt
+  history — read in full before §6), `project_north_star_c23_cpp23`,
+  `feedback_correct_over_shortcuts`, `feedback_two_canon_compilers`,
+  `feedback_dont_ignore_warnings`, `feedback_emitc_gcc_parity_oracle`,
+  `project_cpp_parser_correctness`, `project_multiple_inheritance` (class machinery
+  that the struct path will inherit on unify), `project_string_as_class`,
+  `project_cpp_mangled_direct`.
 
 ---
 
-END OF HANDOFF. On resume: read this, run §1 + §3 verify commands, then start
-§13 thread #1 (the `template_map` namespace-scoping fix) using the §5 plan.
+## 12. One-paragraph resume script
+
+On resume: read this doc + `project_struct_is_class` (full) +
+`project_parser_restoration`. Run §2 to confirm HEAD `bb829ed`, clean tree,
+fulltest 526/4/0/26, and the §5 probe. Then start §6: implement struct member
+methods via struct≡class unification (one body-parse path parameterized by
+default access — struct public, class private), making it SAFE by ensuring a
+trivial class behaves identically to a struct (re-gate object-specific handling on
+`is_nontrivial_class`, §6.4). Reduce with §6.5, compare to g++ -S (Rule #1), fix
+the deepest layer, and validate with fulltest + the FULL gcc.c-torture
+failset-diff (ZERO regressions) + a SMAUG soak before declaring done. Do not
+push; do not promote to master.
+
+END OF HANDOFF.
