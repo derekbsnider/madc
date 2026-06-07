@@ -1625,6 +1625,36 @@ public:
     bool consume_template_close(TokenBase *tok);
     bool consume_template_parameter_type_suffix();
     std::vector<TokenBase *> collect_template_default_argument();
+    // Template-machinery core: <…> argument scanning, template-id / alias /
+    // opaque instantiation, dependent/opaque member-type materialization,
+    // deferred-instantiation completion, and the template-decl skippers.
+    void skip_template_id_suffix();
+    void skip_template_nonclass_declaration(TokenBase *first,
+					    std::vector<TokenBase *> *seen = NULL);
+    void apply_template_call_return_inference(TokenCallFunc *tc);
+    TokenBase *collect_template_argument_spelling(TokenBase *first,
+						  std::string &spelling,
+						  std::vector<TokenBase *> *tokens_out = NULL);
+    std::vector<TokenBase *> collect_template_class_prefix();
+    TokenBase *consume_template_type_arg_qualifiers(TokenBase *tb,
+						    std::string &spelling);
+    TokenDataType *instantiate_template_use(const std::string &tname,
+					    TokenBase *tb);
+    TokenDataType *instantiate_template_alias_use(const std::string &tname,
+						  TokenBase *tb);
+    TokenDataType *instantiate_opaque_template_use(TemplateDef &td,
+						   const std::string &tname,
+						   TokenBase *tb);
+    DataDefCLASS *materialize_dependent_member_type(DataDefCLASS *owner,
+						    const std::string &member_name);
+    DataDefCLASS *materialize_opaque_class_type(const std::string &name,
+						const std::string &canonical);
+    DataDef *dependent_deref_result_type(DataDef *dd);
+    void complete_pending_template_instantiations(const std::string &class_name);
+    bool request_template_instantiation_completion(const std::string &mangled_name);
+    bool template_declared_in_namespace(const std::string &name,
+					const std::string &ns_name);
+    TokenBase *consume_unresolved_dependent_call(TokenBase *open);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
