@@ -13572,11 +13572,10 @@ static TokenBase *next_significant_token(const std::deque<TokenBase *> &tokens,
     return NULL;
 }
 
-static bool cpp_struct_body_needs_class_parser(Program &pgm,
-					       const std::string &tag_name,
+bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 					       TokenBase *after_tag)
 {
-    if ( pgm.is_c_mode() || !after_tag )
+    if ( is_c_mode() || !after_tag )
 	return false;
     if ( after_tag->id() == TokenID::tkColon )
 	return true;
@@ -13585,9 +13584,9 @@ static bool cpp_struct_body_needs_class_parser(Program &pgm,
 
     int depth = 0;
     bool member_start = false;
-    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    for ( size_t i = 0; i < tokens.size(); ++i )
     {
-	TokenBase *t = pgm.tokens[i];
+	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
 	if ( t->id() == TokenID::tkOpBrc )
@@ -13626,7 +13625,7 @@ static bool cpp_struct_body_needs_class_parser(Program &pgm,
 		return true;
 	    if ( name == tag_name )
 	    {
-		TokenBase *next = next_significant_token(pgm.tokens, i + 1);
+		TokenBase *next = next_significant_token(tokens, i + 1);
 		if ( next && next->id() == TokenID::tkOpBrk )
 		    return true;
 	    }
@@ -13831,7 +13830,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // __attribute__ can also appear after the tag name
     consume_attribute();
 
-    if ( !is_union && tag && cpp_struct_body_needs_class_parser(pgm, tag->str, tn) )
+    if ( !is_union && tag && pgm.cpp_struct_body_needs_class_parser(tag->str, tn) )
     {
 	TokenIdent *class_tag = new TokenIdent(tag->str);
 	class_tag->file = tag->file;
@@ -14823,18 +14822,18 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     return NULL;
 }
 
-static bool consume_anonymous_aggregate_open(Program &pgm, bool &packed)
+bool Program::consume_anonymous_aggregate_open(bool &packed)
 {
     std::vector<TokenBase *> consumed;
-    while ( is_attribute_identifier_token(pgm.peekToken()) )
+    while ( is_attribute_identifier_token(peekToken()) )
     {
-	TokenBase *attr = pgm.nextToken();
+	TokenBase *attr = nextToken();
 	consumed.push_back(attr);
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 	{
 	    int depth = 0;
 	    do {
-		TokenBase *at = pgm.nextToken();
+		TokenBase *at = nextToken();
 		if ( !at )
 		    break;
 		consumed.push_back(at);
@@ -14848,89 +14847,85 @@ static bool consume_anonymous_aggregate_open(Program &pgm, bool &packed)
 	    } while ( depth > 0 );
 	}
     }
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
+    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrc )
     {
-	pgm.nextToken();
+	nextToken();
 	return true;
     }
     for ( std::vector<TokenBase *>::reverse_iterator it = consumed.rbegin();
 	  it != consumed.rend(); ++it )
-	pgm.pushToken(*it);
+	pushToken(*it);
     return false;
 }
 
-static DataDefSTRUCT *parse_class_anonymous_aggregate(Program &pgm,
-						      TokenBase *kw);
-
-static void parse_class_anonymous_aggregate_members(Program &pgm,
-						    DataDefSTRUCT *agg,
+void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 						    TokenBase *loc)
 {
     TokenBase *tn;
-    while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
+    while ( (tn = peekToken()) && tn->id() != TokenID::tkClBrc )
     {
 	while ( is_attribute_identifier_token(tn) )
 	{
-	    tn = consume_gnu_attributes(pgm, pgm.nextToken());
+	    tn = consume_gnu_attributes(*this, nextToken());
 	    if ( tn )
-		pgm.pushToken(tn);
-	    tn = pgm.peekToken();
+		pushToken(tn);
+	    tn = peekToken();
 	}
 	while ( tn && (tn->id() == TokenID::tkCONST
 	            || tn->id() == TokenID::tkVOLATILE
 	            || tn->id() == TokenID::tkRESTRICT) )
 	{
-	    pgm.nextToken();
-	    tn = pgm.peekToken();
+	    nextToken();
+	    tn = peekToken();
 	}
 	if ( !tn )
-	    pgm.Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
+	    Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
 
-	TokenBase *type_tb = pgm.nextToken();
+	TokenBase *type_tb = nextToken();
 	DataDef *base_member_dd = NULL;
 	if ( type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION )
 	{
 	    if ( DataDefSTRUCT *nested =
-		    parse_class_anonymous_aggregate(pgm, type_tb) )
+		    parse_class_anonymous_aggregate(type_tb) )
 		base_member_dd = nested;
 	    else
 	    {
 		TokenDataType *mtype =
-		    pgm.resolve_declared_type_token(type_tb, true, true);
+		    resolve_declared_type_token(type_tb, true, true);
 		if ( mtype )
 		    base_member_dd = &mtype->definition;
 	    }
 	}
 	else if ( TokenDataType *mtype =
-		    pgm.resolve_declared_type_token(type_tb, true, true) )
+		    resolve_declared_type_token(type_tb, true, true) )
 	    base_member_dd = &mtype->definition;
 	else if ( type_tb->id() == TokenID::tkENUM )
 	    base_member_dd = &ddINT;
 	if ( !base_member_dd )
-	    pgm.Throw(type_tb) << "Expecting type in anonymous class aggregate" << flush;
+	    Throw(type_tb) << "Expecting type in anonymous class aggregate" << flush;
 
-	while ( pgm.peekToken()
-	     && (pgm.peekToken()->id() == TokenID::tkCONST
-	      || pgm.peekToken()->id() == TokenID::tkVOLATILE
-	      || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
-	    pgm.nextToken();
+	while ( peekToken()
+	     && (peekToken()->id() == TokenID::tkCONST
+	      || peekToken()->id() == TokenID::tkVOLATILE
+	      || peekToken()->id() == TokenID::tkRESTRICT) )
+	    nextToken();
 
 	bool done_members = false;
 	while ( !done_members )
 	{
 	    DataDef *member_dd = base_member_dd;
-	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	    while ( peekToken() && peekToken()->id() == TokenID::tkMul )
 	    {
-		pgm.nextToken();
-		member_dd = pgm.getPointerType(member_dd);
+		nextToken();
+		member_dd = getPointerType(member_dd);
 	    }
-	    while ( pgm.peekToken()
-		 && (pgm.peekToken()->id() == TokenID::tkCONST
-		  || pgm.peekToken()->id() == TokenID::tkVOLATILE
-		  || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
-		pgm.nextToken();
+	    while ( peekToken()
+		 && (peekToken()->id() == TokenID::tkCONST
+		  || peekToken()->id() == TokenID::tkVOLATILE
+		  || peekToken()->id() == TokenID::tkRESTRICT) )
+		nextToken();
 
-	    tn = pgm.nextToken();
+	    tn = nextToken();
 	    if ( tn && tn->id() == TokenID::tkSemi )
 	    {
 		if ( DataDefSTRUCT *anon = dynamic_cast<DataDefSTRUCT *>(member_dd) )
@@ -14939,33 +14934,33 @@ static void parse_class_anonymous_aggregate_members(Program &pgm,
 		    done_members = true;
 		    continue;
 		}
-		pgm.Throw(tn) << "Expecting member name in anonymous class aggregate" << flush;
+		Throw(tn) << "Expecting member name in anonymous class aggregate" << flush;
 	    }
 	    if ( !tn || !is_contextual_identifier_token(tn) )
-		pgm.Throw(tn ? tn : loc)
+		Throw(tn ? tn : loc)
 		    << "Expecting member name in anonymous class aggregate" << flush;
 	    std::string member_name = contextual_identifier_name(tn);
 	    size_t member_count = 1;
 	    bool member_is_array = false;
 	    std::vector<uint32_t> member_dims;
-	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	    while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
 	    {
 		member_is_array = true;
-		pgm.nextToken();
-		TokenBase *cl = pgm.nextToken();
+		nextToken();
+		TokenBase *cl = nextToken();
 		if ( cl && cl->id() == TokenID::tkClSqr )
 		{
 		    member_dims.push_back(0);
 		    member_count = 0;
 		    break;
 		}
-		pgm.pushToken(cl);
-		int64_t n = pgm.parse_constant_integer_expression();
+		pushToken(cl);
+		int64_t n = parse_constant_integer_expression();
 		if ( n < 0 )
-		    pgm.Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
-		cl = pgm.nextToken();
+		    Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
+		cl = nextToken();
 		if ( !cl || cl->id() != TokenID::tkClSqr )
-		    pgm.Throw(cl ? cl : tn)
+		    Throw(cl ? cl : tn)
 			<< "Expected ']' in anonymous class aggregate member" << flush;
 		member_dims.push_back((uint32_t)n);
 		if ( n == 0 )
@@ -14978,44 +14973,43 @@ static void parse_class_anonymous_aggregate_members(Program &pgm,
 	    agg->addMember(member_name, *member_dd, member_count, NULL,
 		member_is_array, member_is_array ? &member_dims : NULL);
 
-	    tn = pgm.nextToken();
+	    tn = nextToken();
 	    if ( !tn )
-		pgm.Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
+		Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
 	    if ( tn->id() == TokenID::tkComma )
 		continue;
 	    if ( tn->id() != TokenID::tkSemi )
-		pgm.Throw(tn) << "Expecting ';' after anonymous class aggregate member" << flush;
+		Throw(tn) << "Expecting ';' after anonymous class aggregate member" << flush;
 	    done_members = true;
 	}
     }
     if ( !tn )
-	pgm.Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
+	Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
 }
 
-static DataDefSTRUCT *parse_class_anonymous_aggregate(Program &pgm,
-						      TokenBase *kw)
+DataDefSTRUCT *Program::parse_class_anonymous_aggregate(TokenBase *kw)
 {
     bool packed = false;
-    if ( !consume_anonymous_aggregate_open(pgm, packed) )
+    if ( !consume_anonymous_aggregate_open(packed) )
 	return NULL;
     DataDefSTRUCT *agg = new_anon_struct();
     agg->union_layout = kw && kw->id() == TokenID::tkUNION;
     if ( packed )
 	agg->pack = 1;
-    parse_class_anonymous_aggregate_members(pgm, agg, kw);
-    TokenBase *close = pgm.nextToken();
+    parse_class_anonymous_aggregate_members(agg, kw);
+    TokenBase *close = nextToken();
     if ( !close || close->id() != TokenID::tkClBrc )
-	pgm.Throw(close ? close : kw) << "Expected '}' after anonymous class aggregate" << flush;
+	Throw(close ? close : kw) << "Expected '}' after anonymous class aggregate" << flush;
     agg->is_complete = true;
     agg->finalize();
     return agg;
 }
 
-static bool class_body_enum_definition_follows(Program &pgm)
+bool Program::class_body_enum_definition_follows()
 {
-    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    for ( size_t i = 0; i < tokens.size(); ++i )
     {
-	TokenBase *t = pgm.tokens[i];
+	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
 	if ( t->id() == TokenID::tkOpBrc )
@@ -15031,8 +15025,7 @@ static bool class_body_enum_definition_follows(Program &pgm)
 // (set FuncDef::emit_symbol — madc emits no body, the linker resolves it).
 // No-op unless the class has canonical C++ spelling and the parsed declaration is
 // a plain prototype. The symbol is generated from the parsed declaration.
-enum class CppSymKind { Method, Ctor, Dtor };
-static void bind_declared_cpp_symbol(Program &pgm, DataDefCLASS *ddc, Variable *mvar,
+void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 				     CppSymKind kind, const std::string &mname,
 				     bool is_operator)
 {
@@ -15082,28 +15075,27 @@ static void bind_declared_cpp_symbol(Program &pgm, DataDefCLASS *ddc, Variable *
 // overload mangles to its own symbol; the caller records the key in
 // FuncDef::class_emit_name so CIR call sites reference the right body. (Call-site
 // selection among same-arity overloads by argument TYPE is separate, later work.)
-static std::string unique_overload_symbol(Program &pgm, std::string base)
+std::string Program::unique_overload_symbol(std::string base)
 {
-    if ( !pgm.findVariable(base) )
+    if ( !findVariable(base) )
 	return base;
     for ( int n = 2; ; ++n )
     {
 	std::string cand = base + "__o" + std::to_string(n);
-	if ( !pgm.findVariable(cand) )
+	if ( !findVariable(cand) )
 	    return cand;
     }
 }
 
-static std::vector<TokenBase *> collect_compound_body_tokens(Program &pgm,
-							     TokenBase *open)
+std::vector<TokenBase *> Program::collect_compound_body_tokens(TokenBase *open)
 {
     std::vector<TokenBase *> body;
     int depth = 1;
     while ( depth > 0 )
     {
-	TokenBase *t = pgm.nextToken();
+	TokenBase *t = nextToken();
 	if ( !t )
-	    pgm.Throw(open) << "Unexpected end of input in function body" << flush;
+	    Throw(open) << "Unexpected end of input in function body" << flush;
 	body.push_back(t);
 	if ( t->id() == TokenID::tkOpBrc )
 	    ++depth;
@@ -15113,10 +15105,10 @@ static std::vector<TokenBase *> collect_compound_body_tokens(Program &pgm,
     return body;
 }
 
-static void enqueue_deferred_function_body(Program &pgm, Variable *var,
+void Program::enqueue_deferred_function_body(Variable *var,
 					   Method *method, TokenBase *open)
 {
-    if ( !pgm.deferred_function_body_sink )
+    if ( !deferred_function_body_sink )
 	return;
     Program::DeferredFunctionBody body;
     body.var = var;
@@ -15124,35 +15116,34 @@ static void enqueue_deferred_function_body(Program &pgm, Variable *var,
     body.file = open ? open->file : NULL;
     body.line = open ? open->line : 0;
     body.column = open ? open->column : 0;
-    body.body_tokens = collect_compound_body_tokens(pgm, open);
-    pgm.deferred_function_body_sink->push_back(body);
+    body.body_tokens = collect_compound_body_tokens(open);
+    deferred_function_body_sink->push_back(body);
 }
 
-static void parse_deferred_function_body(Program &pgm,
-					 Program::DeferredFunctionBody &body)
+void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 {
     if ( !body.var || !body.method )
 	return;
 
-    std::string saved_func = pgm.cur_func_name;
-    std::string saved_namespace = pgm.current_namespace;
-    pgm.cur_func_name = body.var->name;
+    std::string saved_func = cur_func_name;
+    std::string saved_namespace = current_namespace;
+    cur_func_name = body.var->name;
     if ( body.method->owner_class )
     {
 	std::string method_namespace =
 	    namespace_scope_from_cpp_spelling(
 		body.method->owner_class->canonical_cpp_spelling);
 	if ( !method_namespace.empty() )
-	    pgm.current_namespace = method_namespace;
+	    current_namespace = method_namespace;
     }
     try
     {
 	for ( std::vector<TokenBase *>::reverse_iterator it = body.body_tokens.rbegin();
 	      it != body.body_tokens.rend(); ++it )
-	    pgm.pushToken(*it);
+	    pushToken(*it);
 
-	pgm.pushCompound();
-	TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+	pushCompound();
+	TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
 	if ( code )
 	    code->method = body.method;
 
@@ -15161,9 +15152,9 @@ static void parse_deferred_function_body(Program &pgm,
 	tf->line = body.line;
 	tf->column = body.column;
 
-	TokenCpnd *tc = dynamic_cast<TokenCpnd *>(pgm.parseCompound());
+	TokenCpnd *tc = dynamic_cast<TokenCpnd *>(parseCompound());
 	if ( !tc )
-	    pgm.Throw(body.body_tokens.empty() ? NULL : body.body_tokens.front())
+	    Throw(body.body_tokens.empty() ? NULL : body.body_tokens.front())
 		<< "Failed to parse deferred function body" << flush;
 
 	tf->method = body.method;
@@ -15185,29 +15176,25 @@ static void parse_deferred_function_body(Program &pgm,
 		}
 	    }
 	}
-	pgm.ast.push(tf);
-	pgm.pending_funcs.push_back(tf);
+	ast.push(tf);
+	pending_funcs.push_back(tf);
     }
     catch(...)
     {
-	pgm.cur_func_name = saved_func;
-	pgm.current_namespace = saved_namespace;
+	cur_func_name = saved_func;
+	current_namespace = saved_namespace;
 	throw;
     }
-    pgm.cur_func_name = saved_func;
-    pgm.current_namespace = saved_namespace;
+    cur_func_name = saved_func;
+    current_namespace = saved_namespace;
 }
 
-static void parse_deferred_function_bodies(Program &pgm,
-					   std::vector<Program::DeferredFunctionBody> &bodies)
+void Program::parse_deferred_function_bodies(std::vector<Program::DeferredFunctionBody> &bodies)
 {
     for ( size_t i = 0; i < bodies.size(); ++i )
-	parse_deferred_function_body(pgm, bodies[i]);
+	parse_deferred_function_body(bodies[i]);
 }
 
-static DataDefCLASS *promote_struct_base_to_class(Program &pgm,
-						  const std::string &name,
-						  DataDef *dd);
 static std::string join_scope_parts(const std::vector<std::string> &parts,
 				    size_t count);
 static DataDefCLASS *resolve_qualified_class_owner(
@@ -15329,7 +15316,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    {
 		bcls = dynamic_cast<DataDefCLASS *>(&bdt->definition);
 		if ( !bcls && !pgm.is_c_mode() )
-		    bcls = promote_struct_base_to_class(pgm, base_name, &bdt->definition);
+		    bcls = pgm.promote_struct_base_to_class(base_name, &bdt->definition);
 		base_name = bdt->definition.name;
 	    }
 	    else
@@ -15338,7 +15325,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		bcls = (bdmi != pgm.struct_map.end())
 		    ? dynamic_cast<DataDefCLASS *>(bdmi->second) : NULL;
 		if ( !bcls && !pgm.is_c_mode() && bdmi != pgm.struct_map.end() )
-		    bcls = promote_struct_base_to_class(pgm, base_name, bdmi->second);
+		    bcls = pgm.promote_struct_base_to_class(base_name, bdmi->second);
 	    }
 	    if ( !bcls && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
 	    {
@@ -15784,7 +15771,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    ddc->methods.push_back(mvar);
 		    ddc->method_map["~" + dtor_source_name] = mvar;
 		    ddc->has_user_dtor = true;
-		    bind_declared_cpp_symbol(pgm, ddc, mvar, CppSymKind::Dtor, "~" + dtor_source_name, false);
+		    pgm.bind_declared_cpp_symbol(ddc, mvar, CppSymKind::Dtor, "~" + dtor_source_name, false);
 		}
 	    }
 	    // Virtual destructor: register the Itanium D1/D0 slot pair at the
@@ -15824,7 +15811,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		// give it a unique key so it registers its own FuncDef + parameters.
 		bool ctor_disambiguated = (pgm.findVariable(mangled) != NULL);
 		if ( ctor_disambiguated )
-		    mangled = unique_overload_symbol(pgm, mangled);
+		    mangled = pgm.unique_overload_symbol(mangled);
 		DBG(cout << "TokenCLASS::parse() parsing constructor " << mangled << endl);
 		pgm.parseFunction(ddVOID, mangled, ddc);
 		Variable *mvar;
@@ -15844,7 +15831,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			    ddc->method_map[ctor_source_name] = mvar;
 			ddc->ctors.push_back(mvar);
 			ddc->has_user_ctor = true;
-			bind_declared_cpp_symbol(pgm, ddc, mvar, CppSymKind::Ctor, ctor_source_name, false);
+			pgm.bind_declared_cpp_symbol(ddc, mvar, CppSymKind::Ctor, ctor_source_name, false);
 		    }
 		}
 		continue;
@@ -15882,7 +15869,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.Throw(open ? open : conv_tb) << "Expected '(' after conversion operator type" << flush;
 	    pgm.nextToken();
 	    std::string mname = "operator " + conv_type->str;
-	    std::string mangled = unique_overload_symbol(pgm, tag->str + "__operator_conv");
+	    std::string mangled = pgm.unique_overload_symbol(tag->str + "__operator_conv");
 	    pgm.parseFunction(*conv_ret, mangled, ddc);
 	    Variable *mvar;
 	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
@@ -15913,7 +15900,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
 	if ( pgm.peekToken()
 	  && pgm.peekToken()->id() == TokenID::tkENUM
-	  && class_body_enum_definition_follows(pgm) )
+	  && pgm.class_body_enum_definition_follows() )
 	{
 	    TokenBase *enum_kw = pgm.nextToken();
 	    if ( TokenKeyword *kw = dynamic_cast<TokenKeyword *>(enum_kw) )
@@ -15958,7 +15945,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    else
 	    {
 	    if ( DataDefSTRUCT *anon =
-		    parse_class_anonymous_aggregate(pgm, agg_kw) )
+		    pgm.parse_class_anonymous_aggregate(agg_kw) )
 	    {
 		size_t first_member = ddc->members.size();
 		bool done_aggregate_members = false;
@@ -16194,7 +16181,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    bool type_overload_disambiguated = false;
 	    if ( !name_disambiguated && pgm.findVariable(mangled) )
 	    {
-		mangled = unique_overload_symbol(pgm, mangled);
+		mangled = pgm.unique_overload_symbol(mangled);
 		type_overload_disambiguated = true;
 	    }
 	    pgm.parseFunction(*cmember_dd, mangled, ddc, NULL, false,
@@ -16222,7 +16209,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		ddc->methods.push_back(mvar);
 		// also register under the unmangled name for method lookup
 		ddc->method_map[mname] = mvar;
-		bind_declared_cpp_symbol(pgm, ddc, mvar, CppSymKind::Method, mname, is_operator_method);
+		pgm.bind_declared_cpp_symbol(ddc, mvar, CppSymKind::Method, mname, is_operator_method);
 		// Track virtual methods and assign vtable slots
 		if ( is_virtual || ddc->is_virtual_method(mname) )
 		{
@@ -16336,7 +16323,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     ddc->build_vtable_groups(); // grouped vtable (primary + secondary polymorphic bases)
     DBG(cout << "TokenCLASS::parse() finalized layout, size now " << ddc->size << endl);
 
-    parse_deferred_function_bodies(pgm, deferred_method_bodies);
+    pgm.parse_deferred_function_bodies(deferred_method_bodies);
 
     // Allocate vtable if needed
     if ( ddc->has_vtable )
@@ -18977,7 +18964,7 @@ static void register_skipped_class_template_function(
 
     std::string parse_id = owner->name + "__" + name;
     if ( pgm.findVariable(parse_id) )
-	parse_id = unique_overload_symbol(pgm, parse_id);
+	parse_id = pgm.unique_overload_symbol(parse_id);
     Variable *var = pgm.addFunction(parse_id, params, NULL);
     if ( !var )
 	return;
@@ -19067,8 +19054,7 @@ static DataDefCLASS *resolve_qualified_class_owner(Program &pgm,
     return dynamic_cast<DataDefCLASS *>(pgm.resolve_named_datadef(class_name));
 }
 
-static DataDefCLASS *promote_struct_base_to_class(Program &pgm,
-						  const std::string &name,
+DataDefCLASS *Program::promote_struct_base_to_class(const std::string &name,
 						  DataDef *dd)
 {
     if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd) )
@@ -19081,18 +19067,18 @@ static DataDefCLASS *promote_struct_base_to_class(Program &pgm,
     static_cast<DataDefSTRUCT &>(*cls) = *sdd;
     cls->canonical_cpp_spelling = sdd->canonical_cpp_spelling;
 
-    pgm.struct_map[name] = cls;
-    pgm.struct_map[sdd->name] = cls;
+    struct_map[name] = cls;
+    struct_map[sdd->name] = cls;
     TokenDataType *tdt = new TokenDataType(name.c_str(), *cls);
-    pgm.datatype_map[name] = tdt;
+    datatype_map[name] = tdt;
     if ( sdd->name != name )
-	pgm.datatype_map[sdd->name] = new TokenDataType(sdd->name.c_str(), *cls);
-    if ( !pgm.current_namespace.empty() )
+	datatype_map[sdd->name] = new TokenDataType(sdd->name.c_str(), *cls);
+    if ( !current_namespace.empty() )
     {
-	pgm.namespace_datatype_map[pgm.current_namespace][name] = tdt;
+	namespace_datatype_map[current_namespace][name] = tdt;
 	if ( sdd->name != name )
-	    pgm.namespace_datatype_map[pgm.current_namespace][sdd->name] =
-		pgm.datatype_map[sdd->name];
+	    namespace_datatype_map[current_namespace][sdd->name] =
+		datatype_map[sdd->name];
     }
     return cls;
 }
@@ -19487,7 +19473,7 @@ static bool parse_qualified_special_member_definition(Program &pgm,
     if ( is_ctor )
     {
 	mvar = find_constructor_for_upcoming_params(pgm, owner);
-	parse_id = mvar ? mvar->name : unique_overload_symbol(pgm, owner->name + "__" + owner->name);
+	parse_id = mvar ? mvar->name : pgm.unique_overload_symbol(owner->name + "__" + owner->name);
     }
     else
     {
@@ -21233,7 +21219,7 @@ paramdecl:
 
     if ( deferred_function_body_sink )
     {
-	enqueue_deferred_function_body(*this, var, method, nt);
+	enqueue_deferred_function_body(var, method, nt);
 	return;
     }
 
@@ -23286,7 +23272,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     else if ( !qualified_owner_class && !is_c_mode()
 	   && parse_id.compare(0, 8, "operator") == 0
 	   && findVariable(parse_id) )
-	parse_id = unique_overload_symbol(*this, parse_id);
+	parse_id = unique_overload_symbol(parse_id);
 
     bool qualified_static_member = false;
     if ( qualified_owner_class && !qualified_member_name.empty() )

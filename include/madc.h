@@ -899,6 +899,9 @@ public:
 };
 
 
+// Classification of a declared C++ class member for Itanium symbol emission.
+enum class CppSymKind { Method, Ctor, Dtor };
+
 // program class, keep things somewhat contained
 class Program
 {
@@ -1675,6 +1678,28 @@ public:
     DataDef *resolve_current_class_type_alias(const std::string &name);
     Variable *find_variable_for_contextual_type_name(const std::string &name);
     DataDefCLASS *resolve_expression_class_scope(const std::string &name);
+    // Class-body parsing: detect when a struct body needs the class parser /
+    // an inline enum follows, parse anonymous aggregates, bind a declared C++
+    // member symbol, mint a unique overload symbol, collect a deferred function
+    // body's tokens and parse them later, and promote a struct base to a class.
+    bool cpp_struct_body_needs_class_parser(const std::string &tag_name,
+					    TokenBase *after_tag);
+    bool consume_anonymous_aggregate_open(bool &packed);
+    DataDefSTRUCT *parse_class_anonymous_aggregate(TokenBase *kw);
+    void parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
+						 TokenBase *loc);
+    bool class_body_enum_definition_follows();
+    void bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
+				  CppSymKind kind, const std::string &mname,
+				  bool is_operator);
+    std::string unique_overload_symbol(std::string base);
+    std::vector<TokenBase *> collect_compound_body_tokens(TokenBase *open);
+    void enqueue_deferred_function_body(Variable *var,
+					Method *method, TokenBase *open);
+    void parse_deferred_function_body(DeferredFunctionBody &body);
+    void parse_deferred_function_bodies(std::vector<DeferredFunctionBody> &bodies);
+    DataDefCLASS *promote_struct_base_to_class(const std::string &name,
+					       DataDef *dd);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
