@@ -8123,18 +8123,18 @@ static bool function_uses_hidden_this(const Variable &var)
     return md && md->owner_class && !(var.flags & vfSTATIC);
 }
 
-static size_t count_queued_call_arguments(Program &pgm)
+size_t Program::count_queued_call_arguments()
 {
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	return 0;
-    if ( pgm.tokens.size() > 1 && pgm.tokens[1]
-      && pgm.tokens[1]->id() == TokenID::tkClBrk )
+    if ( tokens.size() > 1 && tokens[1]
+      && tokens[1]->id() == TokenID::tkClBrk )
 	return 0;
     size_t argc = 1;
     DelimDepth d;
-    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    for ( size_t i = 0; i < tokens.size(); ++i )
     {
-	TokenBase *t = pgm.tokens[i];
+	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
 	// top-level comma at the call's argument level → next argument
@@ -8145,7 +8145,7 @@ static size_t count_queued_call_arguments(Program &pgm)
 	    continue;
 	}
 	bool close_paren = (t->id() == TokenID::tkClBrk);
-	i += delim_scan_step(pgm.tokens, i, d) - 1;
+	i += delim_scan_step(tokens, i, d) - 1;
 	if ( close_paren && d.paren == 0 )
 	    break;
     }
@@ -8709,7 +8709,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 			DataDefCLASS *method_cls = (DataDefCLASS *)obj_type;
 			Variable *mvar =
 			    find_method_by_callable_arity(method_cls, mname,
-				count_queued_call_arguments(*this), false);
+				count_queued_call_arguments(), false);
 			if ( !mvar )
 			    mvar = method_cls->findMethod(mname);
 			if ( mvar )
@@ -9339,7 +9339,7 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	    Variable *mvar = scope->findMethod(member_name);
 	    if ( Variable *arity_mvar =
 		    find_method_by_callable_arity(scope, member_name,
-			count_queued_call_arguments(pgm), true) )
+			pgm.count_queued_call_arguments(), true) )
 		mvar = arity_mvar;
 	    if ( !mvar )
 	    {
@@ -10194,7 +10194,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    && peekToken()->id() == TokenID::tkOpBrk;
 			var = call_follows
 			    ? find_method_by_callable_arity(method_cls, id,
-				count_queued_call_arguments(*this), false)
+				count_queued_call_arguments(), false)
 			    : method_cls->findMethod(id);
 			if ( !var && call_follows )
 			    var = method_cls->findMethod(id);
@@ -10482,7 +10482,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    && peekToken()->id() == TokenID::tkOpBrk;
 			var = call_follows
 			    ? find_method_by_callable_arity(method_cls, id,
-				count_queued_call_arguments(*this), false)
+				count_queued_call_arguments(), false)
 			    : method_cls->findMethod(id);
 			if ( !var && call_follows )
 			    var = method_cls->findMethod(id);
@@ -10751,7 +10751,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    std::string mname = member_lookup_name;
 		    Variable *mvar =
 			find_method_by_callable_arity(cls, mname,
-			    count_queued_call_arguments(*this), false);
+			    count_queued_call_arguments(), false);
 		    if ( mvar )
 		    {
 			if ( mvar->flags & vfSTATIC )
@@ -10831,7 +10831,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    {
 			Variable *mvar =
 			    find_method_by_callable_arity(cls, mname,
-				count_queued_call_arguments(*this), false);
+				count_queued_call_arguments(), false);
 			if ( mvar )
 			{
 			    if ( mvar->flags & vfSTATIC )
@@ -15196,8 +15196,6 @@ void Program::parse_deferred_function_bodies(std::vector<Program::DeferredFuncti
 
 static std::string join_scope_parts(const std::vector<std::string> &parts,
 				    size_t count);
-static DataDefCLASS *resolve_qualified_class_owner(
-	Program &pgm, const std::vector<std::string> &scope_parts);
 static bool skipped_template_decl_is_friend_type(
 	const std::vector<TokenBase *> &tokens);
 static void register_skipped_class_template_function(
@@ -15260,7 +15258,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( qparts.size() > 1 )
 	    {
 		std::vector<std::string> owner_parts(qparts.begin(), qparts.end() - 1);
-		nested_owner_class = resolve_qualified_class_owner(pgm, owner_parts);
+		nested_owner_class = pgm.resolve_qualified_class_owner(owner_parts);
 		if ( !nested_owner_class )
 		    pgm.Throw(tag) << "Unknown class scope '"
 				   << join_scope_parts(owner_parts, owner_parts.size())
@@ -19020,8 +19018,7 @@ static std::string join_scope_parts(const std::vector<std::string> &parts,
     return out;
 }
 
-static DataDefCLASS *resolve_qualified_class_owner(Program &pgm,
-						   const std::vector<std::string> &scope_parts)
+DataDefCLASS *Program::resolve_qualified_class_owner(const std::vector<std::string> &scope_parts)
 {
     if ( scope_parts.empty() )
 	return NULL;
@@ -19030,8 +19027,8 @@ static DataDefCLASS *resolve_qualified_class_owner(Program &pgm,
     if ( scope_parts.size() > 1 )
     {
 	std::string ns_name = join_scope_parts(scope_parts, scope_parts.size() - 1);
-	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns_name);
-	if ( nti != pgm.namespace_datatype_map.end() )
+	namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
+	if ( nti != namespace_datatype_map.end() )
 	{
 	    datatype_map_iter dti = nti->second.find(class_name);
 	    if ( dti != nti->second.end() )
@@ -19039,10 +19036,10 @@ static DataDefCLASS *resolve_qualified_class_owner(Program &pgm,
 	}
     }
 
-    if ( !pgm.current_namespace.empty() )
+    if ( !current_namespace.empty() )
     {
-	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(pgm.current_namespace);
-	if ( nti != pgm.namespace_datatype_map.end() )
+	namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(current_namespace);
+	if ( nti != namespace_datatype_map.end() )
 	{
 	    datatype_map_iter dti = nti->second.find(class_name);
 	    if ( dti != nti->second.end() )
@@ -19050,7 +19047,7 @@ static DataDefCLASS *resolve_qualified_class_owner(Program &pgm,
 	}
     }
 
-    return dynamic_cast<DataDefCLASS *>(pgm.resolve_named_datadef(class_name));
+    return dynamic_cast<DataDefCLASS *>(resolve_named_datadef(class_name));
 }
 
 DataDefCLASS *Program::promote_struct_base_to_class(const std::string &name,
@@ -19082,34 +19079,24 @@ DataDefCLASS *Program::promote_struct_base_to_class(const std::string &name,
     return cls;
 }
 
-static std::string parse_qualified_declarator_part(Program &pgm,
-						   TokenBase *part_tb)
+std::string Program::parse_qualified_declarator_part(TokenBase *part_tb)
 {
     if ( !part_tb )
-	pgm.Throw << "Unexpected end of input in qualified declarator" << flush;
+	Throw << "Unexpected end of input in qualified declarator" << flush;
     if ( part_tb->id() == TokenID::tkOPEROVER )
-	return pgm.parseOperatorId(part_tb);
+	return parseOperatorId(part_tb);
     if ( part_tb->id() == TokenID::tkBnot )
     {
-	TokenBase *dtor_tb = pgm.nextToken();
+	TokenBase *dtor_tb = nextToken();
 	if ( !dtor_tb || !is_contextual_identifier_token(dtor_tb) )
-	    pgm.Throw(dtor_tb ? dtor_tb : part_tb)
+	    Throw(dtor_tb ? dtor_tb : part_tb)
 		<< "Expected destructor name after '~'" << flush;
 	return "~" + contextual_identifier_name(dtor_tb);
     }
     if ( !is_contextual_identifier_token(part_tb) )
-	pgm.Throw(part_tb) << "Expecting name in qualified declarator" << flush;
+	Throw(part_tb) << "Expecting name in qualified declarator" << flush;
     return contextual_identifier_name(part_tb);
 }
-
-struct ParsedParamSig
-{
-    DataDef *base;
-    bool is_ref;
-    bool is_const;
-    int pointer_depth;
-    ParsedParamSig() : base(NULL), is_ref(false), is_const(false), pointer_depth(0) {}
-};
 
 static bool token_is_param_qualifier(TokenBase *t)
 {
@@ -19145,16 +19132,15 @@ static DataDef *unwrap_pointer_depth(DataDef *dd, int depth)
     return cur;
 }
 
-static bool split_upcoming_function_params(Program &pgm,
-					   std::vector<std::vector<TokenBase *> > &params)
+bool Program::split_upcoming_function_params(std::vector<std::vector<TokenBase *> > &params)
 {
     std::vector<TokenBase *> current;
     DelimDepth d;
     bool saw_any = false;
 
-    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    for ( size_t i = 0; i < tokens.size(); ++i )
     {
-	TokenBase *t = pgm.tokens[i];
+	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
 	if ( d.top() )
@@ -19175,10 +19161,10 @@ static bool split_upcoming_function_params(Program &pgm,
 	}
 
 	// collect the token(s) — a full operator-id (operator<, …) counts as one
-	size_t n = delim_scan_step(pgm.tokens, i, d);
-	for ( size_t k = 0; k < n && i + k < pgm.tokens.size(); ++k )
-	    if ( pgm.tokens[i + k] )
-		current.push_back(pgm.tokens[i + k]);
+	size_t n = delim_scan_step(tokens, i, d);
+	for ( size_t k = 0; k < n && i + k < tokens.size(); ++k )
+	    if ( tokens[i + k] )
+		current.push_back(tokens[i + k]);
 	saw_any = true;
 	i += n - 1;
     }
@@ -19231,8 +19217,7 @@ static void skip_template_suffix_tokens(const std::vector<TokenBase *> &param,
     }
 }
 
-static DataDef *resolve_param_type_from_tokens(Program &pgm,
-					       const std::vector<TokenBase *> &param,
+DataDef *Program::resolve_param_type_from_tokens(const std::vector<TokenBase *> &param,
 					       size_t &idx)
 {
     if ( idx >= param.size() )
@@ -19278,8 +19263,8 @@ static DataDef *resolve_param_type_from_tokens(Program &pgm,
     if ( parts.size() > 1 )
     {
 	std::string ns_name = join_scope_parts(parts, parts.size() - 1);
-	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns_name);
-	if ( nti != pgm.namespace_datatype_map.end() )
+	namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
+	if ( nti != namespace_datatype_map.end() )
 	{
 	    datatype_map_iter dti = nti->second.find(parts.back());
 	    if ( dti != nti->second.end() )
@@ -19287,11 +19272,10 @@ static DataDef *resolve_param_type_from_tokens(Program &pgm,
 	}
     }
 
-    return pgm.resolve_named_datadef(parts.back());
+    return resolve_named_datadef(parts.back());
 }
 
-static bool parse_param_sig_from_tokens(Program &pgm,
-					std::vector<TokenBase *> param,
+bool Program::parse_param_sig_from_tokens(std::vector<TokenBase *> param,
 					ParsedParamSig &sig)
 {
     trim_param_default(param);
@@ -19309,7 +19293,7 @@ static bool parse_param_sig_from_tokens(Program &pgm,
       && idx + 1 == param.size() )
 	return false;
 
-    sig.base = resolve_param_type_from_tokens(pgm, param, idx);
+    sig.base = resolve_param_type_from_tokens(param, idx);
     if ( !sig.base )
 	return false;
 
@@ -19328,11 +19312,10 @@ static bool parse_param_sig_from_tokens(Program &pgm,
     return true;
 }
 
-static bool upcoming_param_signatures(Program &pgm,
-				      std::vector<ParsedParamSig> &sigs)
+bool Program::upcoming_param_signatures(std::vector<ParsedParamSig> &sigs)
 {
     std::vector<std::vector<TokenBase *> > params;
-    if ( !split_upcoming_function_params(pgm, params) )
+    if ( !split_upcoming_function_params(params) )
 	return false;
     if ( params.empty() )
 	return true;
@@ -19352,7 +19335,7 @@ static bool upcoming_param_signatures(Program &pgm,
     for ( size_t i = 0; i < params.size(); ++i )
     {
 	ParsedParamSig sig;
-	if ( !parse_param_sig_from_tokens(pgm, params[i], sig) )
+	if ( !parse_param_sig_from_tokens(params[i], sig) )
 	    return false;
 	sigs.push_back(sig);
     }
@@ -19390,13 +19373,12 @@ static bool function_explicit_params_match(FuncDef *fd,
     return true;
 }
 
-static Variable *find_constructor_for_upcoming_params(Program &pgm,
-						      DataDefCLASS *owner)
+Variable *Program::find_constructor_for_upcoming_params(DataDefCLASS *owner)
 {
     if ( !owner )
 	return NULL;
     std::vector<ParsedParamSig> sigs;
-    bool have_sigs = upcoming_param_signatures(pgm, sigs);
+    bool have_sigs = upcoming_param_signatures(sigs);
     Variable *arity_match = NULL;
     for ( size_t i = 0; i < owner->ctors.size(); ++i )
     {
@@ -19423,12 +19405,11 @@ static bool vector_contains_variable(const std::vector<Variable *> &vars,
     return false;
 }
 
-static bool parse_qualified_special_member_definition(Program &pgm,
-						      TokenBase *first_tb)
+bool Program::parse_qualified_special_member_definition(TokenBase *first_tb)
 {
-    if ( pgm.is_c_mode() || !first_tb || !is_contextual_identifier_token(first_tb) )
+    if ( is_c_mode() || !first_tb || !is_contextual_identifier_token(first_tb) )
 	return false;
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+    if ( !peekToken() || peekToken()->id() != TokenID::tkNS )
 	return false;
 
     std::vector<std::string> scope_parts;
@@ -19437,13 +19418,13 @@ static bool parse_qualified_special_member_definition(Program &pgm,
 
     for (;;)
     {
-	pgm.nextToken(); // consume ::
-	TokenBase *part_tb = pgm.nextToken();
-	member_name = parse_qualified_declarator_part(pgm, part_tb);
+	nextToken(); // consume ::
+	TokenBase *part_tb = nextToken();
+	member_name = parse_qualified_declarator_part(part_tb);
 	if ( part_tb->id() != TokenID::tkOPEROVER
-	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
-	    pgm.skip_template_id_suffix();
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	  && peekToken() && peekToken()->id() == TokenID::tkLT )
+	    skip_template_id_suffix();
+	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	{
 	    scope_parts.push_back(member_name);
 	    continue;
@@ -19451,28 +19432,28 @@ static bool parse_qualified_special_member_definition(Program &pgm,
 	break;
     }
 
-    DataDefCLASS *owner = resolve_qualified_class_owner(pgm, scope_parts);
+    DataDefCLASS *owner = resolve_qualified_class_owner(scope_parts);
     if ( !owner )
-	pgm.Throw(first_tb) << "Unknown C++ declarator scope '"
+	Throw(first_tb) << "Unknown C++ declarator scope '"
 			    << join_scope_parts(scope_parts, scope_parts.size())
 			    << "'" << flush;
 
     bool is_ctor = member_name == owner->name;
     bool is_dtor = member_name == "~" + owner->name;
     if ( !is_ctor && !is_dtor )
-	pgm.Throw(first_tb) << "Qualified member definition requires a return type" << flush;
+	Throw(first_tb) << "Qualified member definition requires a return type" << flush;
 
-    TokenBase *open = pgm.peekToken();
+    TokenBase *open = peekToken();
     if ( !open || open->id() != TokenID::tkOpBrk )
-	pgm.Throw(open ? open : first_tb) << "Expecting '(' after qualified member name" << flush;
-    pgm.nextToken(); // consume '('
+	Throw(open ? open : first_tb) << "Expecting '(' after qualified member name" << flush;
+    nextToken(); // consume '('
 
     Variable *mvar = NULL;
     std::string parse_id;
     if ( is_ctor )
     {
-	mvar = find_constructor_for_upcoming_params(pgm, owner);
-	parse_id = mvar ? mvar->name : pgm.unique_overload_symbol(owner->name + "__" + owner->name);
+	mvar = find_constructor_for_upcoming_params(owner);
+	parse_id = mvar ? mvar->name : unique_overload_symbol(owner->name + "__" + owner->name);
     }
     else
     {
@@ -19481,8 +19462,8 @@ static bool parse_qualified_special_member_definition(Program &pgm,
 	parse_id = mvar ? mvar->name : owner->name + "___dtor";
     }
 
-    pgm.parseFunction(ddVOID, parse_id, owner);
-    mvar = pgm.tkProgram ? pgm.tkProgram->findVariable(parse_id) : NULL;
+    parseFunction(ddVOID, parse_id, owner);
+    mvar = tkProgram ? tkProgram->findVariable(parse_id) : NULL;
     if ( mvar )
     {
 	FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
@@ -22127,7 +22108,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    {
 		nextToken(); // consume ::
 		TokenBase *part_tb = nextToken();
-		std::string part_name = parse_qualified_declarator_part(*this, part_tb);
+		std::string part_name = parse_qualified_declarator_part(part_tb);
 		if ( part_tb->id() != TokenID::tkOPEROVER
 		  && peekToken() && peekToken()->id() == TokenID::tkLT )
 		{
@@ -22148,7 +22129,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		qualified_member_name = part_name;
 		break;
 	    }
-	    qualified_owner_class = resolve_qualified_class_owner(*this, scope_parts);
+	    qualified_owner_class = resolve_qualified_class_owner(scope_parts);
 	    if ( !qualified_owner_class )
 		Throw(nt) << "Unknown C++ declarator scope '"
 			  << join_scope_parts(scope_parts, scope_parts.size())
@@ -23845,7 +23826,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 				    resetPrevToken();
 				    return parseExprStmt(tb);
 				}
-				if ( parse_qualified_special_member_definition(*this, tb) )
+				if ( parse_qualified_special_member_definition(tb) )
 				    return NULL;
 			    }
 			    if ( datatype_statement_starts_functional_expr(*this) )

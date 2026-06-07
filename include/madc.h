@@ -902,6 +902,17 @@ public:
 // Classification of a declared C++ class member for Itanium symbol emission.
 enum class CppSymKind { Method, Ctor, Dtor };
 
+// A parsed parameter signature (resolved base type + ref/const/pointer-depth),
+// used when matching an upcoming parameter list against candidate overloads.
+struct ParsedParamSig
+{
+    DataDef *base;
+    bool is_ref;
+    bool is_const;
+    int pointer_depth;
+    ParsedParamSig() : base(NULL), is_ref(false), is_const(false), pointer_depth(0) {}
+};
+
 // program class, keep things somewhat contained
 class Program
 {
@@ -1714,6 +1725,21 @@ public:
     void consume_typedef_gnu_attributes(std::string *mode_name = NULL,
 					size_t *vector_bytes = NULL);
     bool consume_ellipsis();
+    // Parameter-signature / qualified-declarator parsing: count queued call args,
+    // resolve a qualified class owner, parse a qualified declarator part, split an
+    // upcoming function parameter list, resolve/parse parameter signatures, find a
+    // matching constructor, and parse a qualified special-member definition.
+    size_t count_queued_call_arguments();
+    DataDefCLASS *resolve_qualified_class_owner(const std::vector<std::string> &scope_parts);
+    std::string parse_qualified_declarator_part(TokenBase *part_tb);
+    bool split_upcoming_function_params(std::vector<std::vector<TokenBase *> > &params);
+    DataDef *resolve_param_type_from_tokens(const std::vector<TokenBase *> &param,
+					    size_t &idx);
+    bool parse_param_sig_from_tokens(std::vector<TokenBase *> param,
+				     ParsedParamSig &sig);
+    bool upcoming_param_signatures(std::vector<ParsedParamSig> &sigs);
+    Variable *find_constructor_for_upcoming_params(DataDefCLASS *owner);
+    bool parse_qualified_special_member_definition(TokenBase *first_tb);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
