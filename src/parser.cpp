@@ -3264,10 +3264,6 @@ static size_t query_datadef_measure(const DataDef *dd, bool want_alignof)
     return want_alignof ? dd->alignment() : dd->size;
 }
 
-static TokenDataType *parse_typeof_datatype(Program &pgm, TokenBase *op_tb);
-static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::string &op_name);
-static TokenBase *try_parse_dynamic_type_query(Program &pgm, TokenBase *op_tb,
-					       const std::string &op_name);
 static TokenDataType *resolve_namespaced_type_token(Program &pgm, TokenBase *tb, bool consume_tokens);
 
 static std::string canonical_builtin_simple_type_name(DataDef *dd)
@@ -3728,7 +3724,7 @@ static TokenBase *parse_parenthesized_expression(Program &pgm, const char *conte
     return expr;
 }
 
-static DataDef *resolve_type_query_datadef(Program &pgm, TokenBase *type_tb,
+DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 					   const std::string &op_name,
 					   bool &have_value, size_t &query_value)
 {
@@ -3739,16 +3735,16 @@ static DataDef *resolve_type_query_datadef(Program &pgm, TokenBase *type_tb,
     if ( is_contextual_identifier_token(type_tb) )
     {
 	std::string tname = contextual_identifier_name(type_tb);
-	var = pgm.findVariable(tname);
-	if ( var && pgm.peekToken()
-	  && (pgm.peekToken()->id() == TokenID::tkOpSqr
-	   || pgm.peekToken()->id() == TokenID::tkDot
-	   || pgm.peekToken()->id() == TokenID::tkDeRef) )
+	var = findVariable(tname);
+	if ( var && peekToken()
+	  && (peekToken()->id() == TokenID::tkOpSqr
+	   || peekToken()->id() == TokenID::tkDot
+	   || peekToken()->id() == TokenID::tkDeRef) )
 	{
-	    TokenBase *chain = pgm.parsePostfixChain(type_tb);
+	    TokenBase *chain = parsePostfixChain(type_tb);
 	    DataDef *cdd = chain ? chain->datadef() : NULL;
 	    if ( !cdd )
-		pgm.Throw(type_tb) << op_name << ": cannot determine type of expression" << flush;
+		Throw(type_tb) << op_name << ": cannot determine type of expression" << flush;
 	    query_value = query_datadef_measure(cdd, want_alignof);
 	    if ( !want_alignof )
 	    {
@@ -3778,7 +3774,7 @@ static DataDef *resolve_type_query_datadef(Program &pgm, TokenBase *type_tb,
 	    have_value = true;
 	    return NULL;
 	}
-	dd = resolve_current_class_type_alias(pgm, tname);
+	dd = resolve_current_class_type_alias(*this, tname);
 	if ( dd )
 	    return dd;
     }
@@ -3788,16 +3784,16 @@ static DataDef *resolve_type_query_datadef(Program &pgm, TokenBase *type_tb,
     else if ( type_tb->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)type_tb)->str;
-	var = pgm.findVariable(tname);
-	if ( var && pgm.peekToken()
-	  && (pgm.peekToken()->id() == TokenID::tkOpSqr
-	   || pgm.peekToken()->id() == TokenID::tkDot
-	   || pgm.peekToken()->id() == TokenID::tkDeRef) )
+	var = findVariable(tname);
+	if ( var && peekToken()
+	  && (peekToken()->id() == TokenID::tkOpSqr
+	   || peekToken()->id() == TokenID::tkDot
+	   || peekToken()->id() == TokenID::tkDeRef) )
 	{
-	    TokenBase *chain = pgm.parsePostfixChain(type_tb);
+	    TokenBase *chain = parsePostfixChain(type_tb);
 	    DataDef *cdd = chain ? chain->datadef() : NULL;
 	    if ( !cdd )
-		pgm.Throw(type_tb) << op_name << ": cannot determine type of expression" << flush;
+		Throw(type_tb) << op_name << ": cannot determine type of expression" << flush;
 	    query_value = query_datadef_measure(cdd, want_alignof);
 	    if ( !want_alignof )
 	    {
@@ -3828,49 +3824,49 @@ static DataDef *resolve_type_query_datadef(Program &pgm, TokenBase *type_tb,
 	}
 	else
 	{
-	    dd = resolve_current_class_type_alias(pgm, tname);
+	    dd = resolve_current_class_type_alias(*this, tname);
 	    if ( !dd )
-		dd = resolve_named_datadef(pgm, tname);
+		dd = resolve_named_datadef(*this, tname);
 	}
     }
     else if ( type_tb->type() == TokenType::ttKeyword
 	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
     {
-	TokenBase *tag_tb = pgm.nextToken();
+	TokenBase *tag_tb = nextToken();
 	if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
-	    dd = resolve_named_datadef(pgm, ((TokenIdent *)tag_tb)->str);
+	    dd = resolve_named_datadef(*this, ((TokenIdent *)tag_tb)->str);
 	if ( !dd )
-	    pgm.Throw(tag_tb) << "Unknown struct/union type in " << op_name << flush;
+	    Throw(tag_tb) << "Unknown struct/union type in " << op_name << flush;
     }
     else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkENUM )
     {
 	// sizeof(enum X) — enums are int-sized
-	if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
-	    pgm.nextToken(); // consume tag
+	if ( peekToken() && is_contextual_identifier_token(peekToken()) )
+	    nextToken(); // consume tag
 	query_value = sizeof(int);
 	have_value = true;
     }
     else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkCONST )
     {
 	// sizeof(const type) — skip const qualifier
-	TokenBase *inner = pgm.nextToken();
-	return resolve_type_query_datadef(pgm, inner, op_name, have_value, query_value);
+	TokenBase *inner = nextToken();
+	return resolve_type_query_datadef(inner, op_name, have_value, query_value);
     }
     else if ( type_tb->id() == TokenID::tkMul )
     {
-	TokenBase *deref_tb = pgm.nextToken();
+	TokenBase *deref_tb = nextToken();
 	if ( !deref_tb || !is_contextual_identifier_token(deref_tb) )
-	    pgm.Throw(type_tb) << "Expecting identifier after '*' in " << op_name << flush;
+	    Throw(type_tb) << "Expecting identifier after '*' in " << op_name << flush;
 	DataDef *deref_base = NULL;
-	if ( pgm.peekToken()
-	  && (pgm.peekToken()->id() == TokenID::tkDot
-	   || pgm.peekToken()->id() == TokenID::tkDeRef
-	   || pgm.peekToken()->id() == TokenID::tkOpSqr) )
+	if ( peekToken()
+	  && (peekToken()->id() == TokenID::tkDot
+	   || peekToken()->id() == TokenID::tkDeRef
+	   || peekToken()->id() == TokenID::tkOpSqr) )
 	{
-	    TokenBase *chain = pgm.parsePostfixChain(deref_tb);
+	    TokenBase *chain = parsePostfixChain(deref_tb);
 	    DataDef *cdd = chain ? chain->datadef() : NULL;
 	    if ( !cdd )
-		pgm.Throw(deref_tb) << op_name << "(*expr): cannot determine type" << flush;
+		Throw(deref_tb) << op_name << "(*expr): cannot determine type" << flush;
 	    if ( cdd->is_pointer() )
 	    {
 		DataDefPTR *cdp = dynamic_cast<DataDefPTR *>(cdd);
@@ -3882,9 +3878,9 @@ static DataDef *resolve_type_query_datadef(Program &pgm, TokenBase *type_tb,
 	else
 	{
 	    std::string dname = contextual_identifier_name(deref_tb);
-	    Variable *dvar = pgm.findVariable(dname);
+	    Variable *dvar = findVariable(dname);
 	    if ( !dvar )
-		pgm.Throw(deref_tb) << "undeclared identifier '" << dname << "' in " << op_name << "(*...)" << flush;
+		Throw(deref_tb) << "undeclared identifier '" << dname << "' in " << op_name << "(*...)" << flush;
 	    if ( dvar->is_fixed_array() )
 		deref_base = dvar->type;
 	    else if ( dvar->type->is_pointer() )
@@ -3893,7 +3889,7 @@ static DataDef *resolve_type_query_datadef(Program &pgm, TokenBase *type_tb,
 		deref_base = (dptr && dptr->base_type) ? dptr->base_type : &ddINT64;
 	    }
 	    else
-		pgm.Throw(deref_tb) << op_name << "(*" << dname << "): not a pointer or array" << flush;
+		Throw(deref_tb) << op_name << "(*" << dname << "): not a pointer or array" << flush;
 	}
 	query_value = query_datadef_measure(deref_base, want_alignof);
 	have_value = true;
@@ -3902,32 +3898,32 @@ static DataDef *resolve_type_query_datadef(Program &pgm, TokenBase *type_tb,
     return dd;
 }
 
-static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::string &op_name)
+size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name)
 {
     bool want_alignof = is_alignof_identifier(op_name);
 
-    if ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkOpBrk )
+    if ( peekToken() && peekToken()->id() != TokenID::tkOpBrk )
     {
-	TokenBase *probe = pgm.peekToken();
+	TokenBase *probe = peekToken();
 	bool deref = (probe->id() == TokenID::tkMul);
 	if ( deref )
 	{
-	    pgm.nextToken();
-	    probe = pgm.peekToken();
+	    nextToken();
+	    probe = peekToken();
 	}
 	// sizeof "literal" — string literal without parens
 	if ( probe && probe->type() == TokenType::ttString )
 	{
-	    TokenStr *ts = static_cast<TokenStr *>(pgm.nextToken());
+	    TokenStr *ts = static_cast<TokenStr *>(nextToken());
 	    return ts->str.size() + 1; // include NUL terminator
 	}
 	if ( !probe || !is_contextual_identifier_token(probe) )
-	    pgm.Throw(op_tb) << "Expecting '(' or identifier after " << op_name << flush;
-	TokenBase *id_tb = pgm.nextToken();
-	TokenBase *chain = pgm.parsePostfixChain(id_tb);
+	    Throw(op_tb) << "Expecting '(' or identifier after " << op_name << flush;
+	TokenBase *id_tb = nextToken();
+	TokenBase *chain = parsePostfixChain(id_tb);
 	DataDef *cdd = type_query_chain_datadef(chain);
 	if ( !cdd )
-	    pgm.Throw(id_tb) << op_name << ": cannot determine type of expression" << flush;
+	    Throw(id_tb) << op_name << ": cannot determine type of expression" << flush;
 	size_t value = query_datadef_measure(cdd, want_alignof);
 	if ( deref && cdd->is_pointer() )
 	{
@@ -3943,15 +3939,15 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
 	return value;
     }
 
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
-	pgm.Throw(op_tb) << "Expecting '(' after " << op_name << flush;
-    pgm.nextToken();
-    TokenBase *type_tb = pgm.nextToken();
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	Throw(op_tb) << "Expecting '(' after " << op_name << flush;
+    nextToken();
+    TokenBase *type_tb = nextToken();
     DataDef *dd = NULL;
     size_t value = 0;
     bool have_value = false;
 
-    dd = resolve_type_query_datadef(pgm, type_tb, op_name, have_value, value);
+    dd = resolve_type_query_datadef(type_tb, op_name, have_value, value);
     // Fallback: sizeof(expression) — parse as expression, use its type
     bool expr_fallback_consumed_paren = false;
     if ( !have_value && !dd )
@@ -3967,7 +3963,7 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
 	}
 	else
 	{
-	    TokenBase *expr = pgm.parseExpression(type_tb, true, false, true, 1);
+	    TokenBase *expr = parseExpression(type_tb, true, false, true, 1);
 	    if ( expr && expr->datadef() )
 	    {
 		dd = expr->datadef();
@@ -3982,37 +3978,37 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
 		expr_fallback_consumed_paren = true;
 	    }
 	    if ( !have_value )
-		pgm.Throw(type_tb) << "Unknown type in " << op_name << flush;
+		Throw(type_tb) << "Unknown type in " << op_name << flush;
 	}
     }
 
-    while ( !have_value && pgm.peekToken() )
+    while ( !have_value && peekToken() )
     {
-	if ( pgm.peekToken()->id() == TokenID::tkMul )
+	if ( peekToken()->id() == TokenID::tkMul )
 	{
-	    pgm.nextToken();
-	    dd = pgm.getPointerType(dd);
+	    nextToken();
+	    dd = getPointerType(dd);
 	    continue;
 	}
-	if ( pgm.peekToken()->id() == TokenID::tkOpBrk )
+	if ( peekToken()->id() == TokenID::tkOpBrk )
 	{
-	    TokenBase *open = pgm.nextToken();
-	    TokenBase *star = pgm.nextToken();
+	    TokenBase *open = nextToken();
+	    TokenBase *star = nextToken();
 	    if ( !star || star->id() != TokenID::tkMul )
-		pgm.Throw(star ? star : open) << "Unsupported parenthesized declarator in " << op_name << flush;
-	    dd = pgm.getPointerType(dd);
-	    TokenBase *close = pgm.nextToken();
+		Throw(star ? star : open) << "Unsupported parenthesized declarator in " << op_name << flush;
+	    dd = getPointerType(dd);
+	    TokenBase *close = nextToken();
 	    if ( !close || close->id() != TokenID::tkClBrk )
-		pgm.Throw(close ? close : open) << "Expecting ')' in " << op_name << " function pointer type" << flush;
-	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+		Throw(close ? close : open) << "Expecting ')' in " << op_name << " function pointer type" << flush;
+	    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 	    {
-		pgm.nextToken();
+		nextToken();
 		int depth = 1;
 		while ( depth > 0 )
 		{
-		    TokenBase *pt = pgm.nextToken();
+		    TokenBase *pt = nextToken();
 		    if ( !pt )
-			pgm.Throw(open) << "Unexpected end of input in " << op_name << " function pointer parameter list" << flush;
+			Throw(open) << "Unexpected end of input in " << op_name << " function pointer parameter list" << flush;
 		    if ( pt->id() == TokenID::tkOpBrk )
 			++depth;
 		    else if ( pt->id() == TokenID::tkClBrk )
@@ -4028,9 +4024,9 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
     // here for the type-name / variable-name path.
     if ( !expr_fallback_consumed_paren )
     {
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
-	    pgm.Throw(type_tb) << "Expecting ')' after " << op_name << " type" << flush;
-	pgm.nextToken();
+	if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
+	    Throw(type_tb) << "Expecting ')' after " << op_name << " type" << flush;
+	nextToken();
     }
 
     if ( !have_value && dd )
@@ -4409,7 +4405,7 @@ static TokenBase *materialize_runtime_struct_size_captures(Program &pgm, TokenCp
 
 static void configure_nested_function_captures(Program &pgm, FuncDef *func);
 
-static TokenBase *try_parse_dynamic_type_query(Program &pgm, TokenBase *op_tb,
+TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
 					       const std::string &op_name)
 {
     bool want_alignof = is_alignof_identifier(op_name);
@@ -4419,19 +4415,19 @@ static TokenBase *try_parse_dynamic_type_query(Program &pgm, TokenBase *op_tb,
     auto consume_simple_named_type = [&](DataDef *dd) -> TokenBase * {
 	if ( !is_runtime_sized_type(dd) )
 	    return NULL;
-	pgm.nextToken();
+	nextToken();
 	return make_type_query_token(op_tb, dd, false);
     };
 
-    if ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkOpBrk )
+    if ( peekToken() && peekToken()->id() != TokenID::tkOpBrk )
     {
-	TokenBase *probe = pgm.peekToken();
+	TokenBase *probe = peekToken();
 	if ( is_contextual_identifier_token(probe) )
 	{
 	    std::string name = contextual_identifier_name(probe);
-	    if ( !pgm.findVariable(name) )
+	    if ( !findVariable(name) )
 	    {
-		DataDef *dd = resolve_named_datadef(pgm, name);
+		DataDef *dd = resolve_named_datadef(*this, name);
 		if ( TokenBase *query = consume_simple_named_type(dd) )
 		    return query;
 	    }
@@ -4439,14 +4435,14 @@ static TokenBase *try_parse_dynamic_type_query(Program &pgm, TokenBase *op_tb,
 	return NULL;
     }
 
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	return NULL;
 
-    auto it = pgm.tokens.begin();
-    if ( it == pgm.tokens.end() || (*it)->id() != TokenID::tkOpBrk )
+    auto it = tokens.begin();
+    if ( it == tokens.end() || (*it)->id() != TokenID::tkOpBrk )
 	return NULL;
     ++it;
-    if ( it == pgm.tokens.end() )
+    if ( it == tokens.end() )
 	return NULL;
 
     DataDef *dd = NULL;
@@ -4456,47 +4452,47 @@ static TokenBase *try_parse_dynamic_type_query(Program &pgm, TokenBase *op_tb,
     else if ( type_tb->type() == TokenType::ttIdentifier )
     {
 	std::string name = ((TokenIdent *)type_tb)->str;
-	if ( !pgm.findVariable(name) )
-	    dd = resolve_named_datadef(pgm, name);
+	if ( !findVariable(name) )
+	    dd = resolve_named_datadef(*this, name);
     }
     else if ( type_tb->type() == TokenType::ttKeyword
 	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
     {
 	++it;
-	if ( it == pgm.tokens.end() || !is_contextual_identifier_token(*it) )
+	if ( it == tokens.end() || !is_contextual_identifier_token(*it) )
 	    return NULL;
-	dd = resolve_named_datadef(pgm, contextual_identifier_name(*it));
+	dd = resolve_named_datadef(*this, contextual_identifier_name(*it));
     }
     if ( !is_runtime_sized_type(dd) )
 	return NULL;
 
-    TokenBase *open = pgm.nextToken();
+    TokenBase *open = nextToken();
     (void)open;
-    TokenBase *consumed = pgm.nextToken();
+    TokenBase *consumed = nextToken();
     if ( !consumed )
 	return NULL;
     if ( consumed->type() == TokenType::ttKeyword
       && (consumed->id() == TokenID::tkSTRUCT || consumed->id() == TokenID::tkUNION) )
     {
-	TokenBase *tag_tb = pgm.nextToken();
+	TokenBase *tag_tb = nextToken();
 	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
-	    pgm.Throw(tag_tb ? tag_tb : consumed) << "Expecting struct/union tag in " << op_name << flush;
+	    Throw(tag_tb ? tag_tb : consumed) << "Expecting struct/union tag in " << op_name << flush;
     }
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
-	pgm.Throw(consumed) << "Expecting ')' after " << op_name << " type" << flush;
-    pgm.nextToken();
+    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
+	Throw(consumed) << "Expecting ')' after " << op_name << " type" << flush;
+    nextToken();
     return make_type_query_token(op_tb, dd, false);
 }
 
-static TokenDataType *parse_typeof_datatype(Program &pgm, TokenBase *op_tb)
+TokenDataType *Program::parse_typeof_datatype(TokenBase *op_tb)
 {
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
-	pgm.Throw(op_tb) << "Expecting '(' after typeof" << flush;
-    pgm.nextToken();
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	Throw(op_tb) << "Expecting '(' after typeof" << flush;
+    nextToken();
 
-    TokenBase *type_tb = pgm.nextToken();
+    TokenBase *type_tb = nextToken();
     if ( !type_tb )
-	pgm.Throw(op_tb) << "Unexpected end of input in typeof" << flush;
+	Throw(op_tb) << "Unexpected end of input in typeof" << flush;
 
     DataDef *dd = NULL;
     bool closed_paren = false;
@@ -4504,52 +4500,52 @@ static TokenDataType *parse_typeof_datatype(Program &pgm, TokenBase *op_tb)
 	dd = &((TokenDataType *)type_tb)->definition;
     else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkSTRUCT )
     {
-	TokenBase *tag_tb = pgm.nextToken();
+	TokenBase *tag_tb = nextToken();
 	if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
-	    dd = resolve_named_datadef(pgm, ((TokenIdent *)tag_tb)->str);
+	    dd = resolve_named_datadef(*this, ((TokenIdent *)tag_tb)->str);
 	if ( !dd )
-	    pgm.Throw(tag_tb) << "Unknown struct type in typeof" << flush;
+	    Throw(tag_tb) << "Unknown struct type in typeof" << flush;
     }
     else if ( type_tb->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)type_tb)->str;
-	dd = resolve_named_datadef(pgm, tname);
+	dd = resolve_named_datadef(*this, tname);
 	if ( !dd )
 	{
-	    TokenBase *expr = pgm.parseExpression(type_tb, true, false, true, 1);
-	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
-		pgm.nextToken();
-	    else if ( (!pgm.curToken() || pgm.curToken()->id() != TokenID::tkClBrk)
-		   && (!pgm.prevToken() || pgm.prevToken()->id() != TokenID::tkClBrk) )
-		pgm.Throw(type_tb) << "Expecting ')' after typeof expression" << flush;
+	    TokenBase *expr = parseExpression(type_tb, true, false, true, 1);
+	    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+		nextToken();
+	    else if ( (!curToken() || curToken()->id() != TokenID::tkClBrk)
+		   && (!prevToken() || prevToken()->id() != TokenID::tkClBrk) )
+		Throw(type_tb) << "Expecting ')' after typeof expression" << flush;
 	    dd = expr ? expr->datadef() : NULL;
 	    closed_paren = true;
 	}
     }
     else
     {
-	TokenBase *expr = pgm.parseExpression(type_tb, true, false, true, 1);
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
-	    pgm.nextToken();
-	else if ( (!pgm.curToken() || pgm.curToken()->id() != TokenID::tkClBrk)
-	       && (!pgm.prevToken() || pgm.prevToken()->id() != TokenID::tkClBrk) )
-	    pgm.Throw(type_tb) << "Expecting ')' after typeof expression" << flush;
+	TokenBase *expr = parseExpression(type_tb, true, false, true, 1);
+	if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+	    nextToken();
+	else if ( (!curToken() || curToken()->id() != TokenID::tkClBrk)
+	       && (!prevToken() || prevToken()->id() != TokenID::tkClBrk) )
+	    Throw(type_tb) << "Expecting ')' after typeof expression" << flush;
 	dd = expr ? expr->datadef() : NULL;
 	closed_paren = true;
     }
 
-    while ( !closed_paren && dd && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+    while ( !closed_paren && dd && peekToken() && peekToken()->id() == TokenID::tkMul )
     {
-	pgm.nextToken();
-	dd = pgm.getPointerType(dd);
+	nextToken();
+	dd = getPointerType(dd);
     }
-    if ( !closed_paren && (!pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk) )
-	pgm.Throw(type_tb) << "Expecting ')' after typeof" << flush;
+    if ( !closed_paren && (!peekToken() || peekToken()->id() != TokenID::tkClBrk) )
+	Throw(type_tb) << "Expecting ')' after typeof" << flush;
     if ( !closed_paren )
-	pgm.nextToken();
+	nextToken();
 
     if ( !dd )
-	pgm.Throw(type_tb) << "typeof: cannot determine operand type" << flush;
+	Throw(type_tb) << "typeof: cannot determine operand type" << flush;
 
     return new TokenDataType(dd->name.c_str(), *dd);
 }
@@ -4678,59 +4674,59 @@ void Program::consume_class_static_assert_declaration(TokenBase *tb)
 	Throw(tb) << message << flush;
 }
 
-static bool try_parse_constant_offsetof_address(Program &pgm, int64_t &out)
+bool Program::try_parse_constant_offsetof_address(int64_t &out)
 {
-    auto saved_tokens = pgm.tokens;
-    size_t saved_diag_count = pgm.diagnostics.size();
-    Program::ErrorInfo saved_error = pgm.last_error;
+    auto saved_tokens = tokens;
+    size_t saved_diag_count = diagnostics.size();
+    Program::ErrorInfo saved_error = last_error;
 
     auto fail = [&]() -> bool {
-	pgm.tokens = saved_tokens;
-	pgm.diagnostics.resize(saved_diag_count);
-	pgm.last_error = saved_error;
+	tokens = saved_tokens;
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
 	return false;
     };
 
-    TokenBase *open_outer = pgm.nextToken();
-    TokenBase *open_cast = pgm.nextToken();
+    TokenBase *open_outer = nextToken();
+    TokenBase *open_cast = nextToken();
     if ( !open_outer || open_outer->id() != TokenID::tkOpBrk
       || !open_cast || open_cast->id() != TokenID::tkOpBrk )
 	return fail();
 
     DataDef *base_dd = NULL;
-    TokenBase *type_tb = pgm.nextToken();
+    TokenBase *type_tb = nextToken();
     if ( !type_tb )
 	return fail();
     if ( type_tb->type() == TokenType::ttKeyword
       && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
     {
-	TokenBase *tag_tb = pgm.nextToken();
+	TokenBase *tag_tb = nextToken();
 	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
 	    return fail();
-	base_dd = resolve_named_datadef(pgm, contextual_identifier_name(tag_tb));
+	base_dd = resolve_named_datadef(*this, contextual_identifier_name(tag_tb));
     }
     else if ( type_tb->type() == TokenType::ttDataType )
 	base_dd = &static_cast<TokenDataType *>(type_tb)->definition;
     else if ( is_contextual_identifier_token(type_tb) )
-	base_dd = resolve_named_datadef(pgm, contextual_identifier_name(type_tb));
+	base_dd = resolve_named_datadef(*this, contextual_identifier_name(type_tb));
     if ( !base_dd )
 	return fail();
 
-    while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkClBrk )
-	pgm.nextToken();
-    TokenBase *close_cast = pgm.nextToken();
+    while ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
+	nextToken();
+    TokenBase *close_cast = nextToken();
     if ( !close_cast || close_cast->id() != TokenID::tkClBrk )
 	return fail();
 
-    TokenBase *zero_tb = pgm.nextToken();
+    TokenBase *zero_tb = nextToken();
     int64_t zero_value = 0;
-    if ( !resolve_integer_constant(pgm, zero_tb, zero_value) || zero_value != 0 )
+    if ( !resolve_integer_constant(*this, zero_tb, zero_value) || zero_value != 0 )
 	return fail();
-    TokenBase *close_outer = pgm.nextToken();
+    TokenBase *close_outer = nextToken();
     if ( !close_outer || close_outer->id() != TokenID::tkClBrk )
 	return fail();
 
-    TokenBase *access = pgm.nextToken();
+    TokenBase *access = nextToken();
     if ( !access || (access->id() != TokenID::tkDeRef && access->id() != TokenID::tkDot) )
 	return fail();
 
@@ -4744,7 +4740,7 @@ static bool try_parse_constant_offsetof_address(Program &pgm, int64_t &out)
 	if ( !sdd )
 	    return fail();
 
-	TokenBase *member_tb = pgm.nextToken();
+	TokenBase *member_tb = nextToken();
 	if ( !member_tb || !is_contextual_identifier_token(member_tb) )
 	    return fail();
 	std::string member_name = contextual_identifier_name(member_tb);
@@ -4756,21 +4752,21 @@ static bool try_parse_constant_offsetof_address(Program &pgm, int64_t &out)
 	if ( !current )
 	    return fail();
 
-	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
 	{
-	    pgm.nextToken();
-	    int64_t index = pgm.parse_constant_integer_expression();
-	    TokenBase *close_sq = pgm.nextToken();
+	    nextToken();
+	    int64_t index = parse_constant_integer_expression();
+	    TokenBase *close_sq = nextToken();
 	    if ( !close_sq || close_sq->id() != TokenID::tkClSqr )
 		return fail();
 	    size_t elem_size = current->size ? current->size : 1;
 	    offset += index * (int64_t)elem_size;
 	}
 
-	if ( pgm.peekToken()
-	  && (pgm.peekToken()->id() == TokenID::tkDeRef || pgm.peekToken()->id() == TokenID::tkDot) )
+	if ( peekToken()
+	  && (peekToken()->id() == TokenID::tkDeRef || peekToken()->id() == TokenID::tkDot) )
 	{
-	    pgm.nextToken();
+	    nextToken();
 	    continue;
 	}
 	break;
@@ -4794,7 +4790,7 @@ int64_t Program::parse_constant_primary()
 	if ( is_bool_literal_identifier(name, bool_value) )
 	    return bool_value ? 1 : 0;
 	if ( name == "sizeof" || is_alignof_identifier(name) )
-	    return (int64_t)evaluate_type_query(*this, tb, name);
+	    return (int64_t)evaluate_type_query(tb, name);
 	if ( is_nullptr_identifier(name) )
 	    return 0;
 	if ( is_named_cpp_cast(name) )
@@ -4810,7 +4806,7 @@ int64_t Program::parse_constant_primary()
 	return ~parse_constant_primary();
     if ( tb && tb->id() == TokenID::tkBand )
     {
-	if ( try_parse_constant_offsetof_address(*this, out) )
+	if ( try_parse_constant_offsetof_address(out) )
 	    return out;
 	Throw(tb) << "Unsupported address expression in constant expression" << flush;
     }
@@ -9779,11 +9775,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// sizeof / alignof — resolve to integer constant at parse time.
 		if ( ident_tb->str == "sizeof" || is_alignof_identifier(ident_tb->str) )
 		{
-		    if ( TokenBase *query_tb = try_parse_dynamic_type_query(*this, tb, ident_tb->str) )
+		    if ( TokenBase *query_tb = try_parse_dynamic_type_query(tb, ident_tb->str) )
 			exStack.push(query_tb);
 		    else
 		    {
-			size_t query_value = evaluate_type_query(*this, tb, ident_tb->str);
+			size_t query_value = evaluate_type_query(tb, ident_tb->str);
 			TokenInt *ti = new TokenInt((int64_t)query_value);
 			ti->setDataType(&ddUINT64);
 			ti->file = tb->file;
@@ -9977,7 +9973,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    else if ( type_tb->type() == TokenType::ttIdentifier
 		      && ((TokenIdent *)type_tb)->str == "typeof" )
 		    {
-			TokenDataType *typeof_dt = parse_typeof_datatype(*this, type_tb);
+			TokenDataType *typeof_dt = parse_typeof_datatype(type_tb);
 			target_dd = typeof_dt ? &typeof_dt->definition : NULL;
 		    }
 		    else if ( type_tb->type() == TokenType::ttIdentifier )
@@ -16923,7 +16919,7 @@ TokenBase *TokenREGISTER::parse(Program &pgm)
 	if ( is_typeof_identifier(tname) )
 	{
 	    pgm.nextToken();
-	    TokenBase *decl = pgm.parseDeclaration(parse_typeof_datatype(pgm, tn));
+	    TokenBase *decl = pgm.parseDeclaration(pgm.parse_typeof_datatype(tn));
 	    if ( decl && decl->type() == TokenType::ttDeclare )
 		dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
 	    return decl;
@@ -17637,7 +17633,7 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 	    if ( is_typeof_identifier(tname) )
 	    {
 		pgm.nextToken();
-		result = pgm.parseDeclaration(parse_typeof_datatype(pgm, tn), true);
+		result = pgm.parseDeclaration(pgm.parse_typeof_datatype(tn), true);
 	    }
 	    else
 	    {
@@ -17697,7 +17693,7 @@ TokenBase *TokenCONST::parse(Program &pgm)
 	    if ( is_typeof_identifier(tname) )
 	    {
 		pgm.nextToken();
-		return pgm.parseDeclaration(parse_typeof_datatype(pgm, tn));
+		return pgm.parseDeclaration(pgm.parse_typeof_datatype(tn));
 	    }
 	    TokenBase *type_tb = pgm.nextToken();
 	    if ( TokenDataType *resolved =
@@ -17775,7 +17771,7 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	    {
 		handled = true;
 		pgm.nextToken();
-		result = pgm.parseDeclaration(parse_typeof_datatype(pgm, tn));
+		result = pgm.parseDeclaration(pgm.parse_typeof_datatype(tn));
 	    }
 	    else
 	    {
@@ -17821,7 +17817,7 @@ TokenBase *TokenRESTRICT::parse(Program &pgm)
 	if ( is_typeof_identifier(tname) )
 	{
 	    pgm.nextToken();
-	    return pgm.parseDeclaration(parse_typeof_datatype(pgm, tn));
+	    return pgm.parseDeclaration(pgm.parse_typeof_datatype(tn));
 	}
 	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	if ( tdmi != pgm.datatype_map.end() )
@@ -17853,7 +17849,7 @@ TokenBase *TokenVOLATILE::parse(Program &pgm)
 	if ( is_typeof_identifier(tname) )
 	{
 	    pgm.nextToken();
-	    return pgm.parseDeclaration(parse_typeof_datatype(pgm, tn));
+	    return pgm.parseDeclaration(pgm.parse_typeof_datatype(tn));
 	}
 	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	if ( tdmi != pgm.datatype_map.end() )
@@ -23603,7 +23599,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    if ( is_static_assert_identifier(((TokenIdent *)tb)->str) )
 		return parse_static_assert_statement(tb);
 	    if ( is_typeof_identifier(((TokenIdent *)tb)->str) )
-		return parseDeclaration(parse_typeof_datatype(*this, tb));
+		return parseDeclaration(parse_typeof_datatype(tb));
 	    if ( ((TokenIdent *)tb)->str == "__label__" )
 	    {
 		TokenBase *tn = nextToken();

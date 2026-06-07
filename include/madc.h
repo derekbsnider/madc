@@ -1594,6 +1594,19 @@ public:
     void consume_deferred_static_assert_statement(TokenBase *tb);
     TokenBase *parse_static_assert_statement(TokenBase *tb);
     void consume_class_static_assert_declaration(TokenBase *tb);
+    // Type queries: sizeof/alignof/typeof and the runtime type-query operators.
+    // resolve_type_query_datadef resolves the operand to a DataDef (+ optional
+    // folded value); evaluate_type_query folds sizeof/alignof; parse_typeof_datatype
+    // yields the typeof()'d type; try_parse_dynamic_type_query handles the runtime
+    // form; try_parse_constant_offsetof_address folds offsetof-style addresses.
+    DataDef *resolve_type_query_datadef(TokenBase *type_tb,
+					const std::string &op_name,
+					bool &have_value, size_t &query_value);
+    size_t evaluate_type_query(TokenBase *op_tb, const std::string &op_name);
+    TokenBase *try_parse_dynamic_type_query(TokenBase *op_tb,
+					    const std::string &op_name);
+    TokenDataType *parse_typeof_datatype(TokenBase *op_tb);
+    bool try_parse_constant_offsetof_address(int64_t &out);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
