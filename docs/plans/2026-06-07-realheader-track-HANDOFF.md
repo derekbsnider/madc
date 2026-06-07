@@ -2,10 +2,22 @@
 
 ## ⇉ COMPACTION ENTRY POINT — read this first, then the docs in order ⇉
 **2026-06-07. Branch `feature/realhdr-parse-gaps2-claude` (off `develop`, LOCAL /
-NOT pushed; `develop` untouched). HEAD `e56747e` (docs only after the code work).
-Tree clean. fulltest baseline 528/4/0/26** (4 pre-existing reds: testdefer,
-testfstream, testlargesizeofquery, testloop). **Do NOT push; do NOT promote
+NOT pushed; `develop` untouched). HEAD `a2d3f98`.
+Tree clean. fulltest 531/4/0/26** (4 pre-existing reds: testdefer, testfstream,
+testlargesizeofquery, testloop; +3 new tests this arc: testpartialspec,
+testtypetraits, teststaticconstmember). **Do NOT push; do NOT promote
 develop→master** (parity gate).
+
+**THIS ARC's landed commits (all gated — fulltest + torture 1566/88 identical +
+SMAUG ready/0-err):** `9c6c6c2` partial specialization · `7930a81` `__madc__`
+identity · `45db326` trait builtins (`__is_class/_union/_enum/_base_of/_same`) ·
+`0950f1e` static-const member value capture (`X::value` reads real value not 0) ·
+`a2d3f98` traits fold in constant-expr context too. **REMAINING for
+`std::is_*<T>::value` end-to-end (own follow-ups, documented in `0950f1e`):**
+(A1) template-id `X<T>::value` scope access in expression context — partial wiring
+exists/reverted, the blocker is the instantiated class's static-member lookup +
+instance-static access `a.value`; (A2-rest) the constant-expr parser still doesn't
+resolve static-member CONSTANTS (`int a[L::m]`) — traits there now DO fold.
 
 **Read order on resume:**
 1. **This block + the FULL HANDOFF block below** (state, the 10 code commits, the
