@@ -441,6 +441,14 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--no-includes") == 0) {
             prog->skip_includes = true;
             filearg = i + 1;
+        } else if (strcmp(argv[i], "--no-embedded-headers") == 0) {
+            // Diagnostic: drive the EXISTING embedded-header gate
+            // (is_embedded_header_allowed / registration_policy) to disallow
+            // every baked-in stub, so system <...> includes fall through to the
+            // real headers on disk. Empty allowlist + restrict = allow nothing.
+            prog->registration_policy.restrict_headers_to_allowlist = true;
+            prog->registration_policy.allowed_headers.clear();
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--finstrument-functions") == 0) {
             prog->instrument_functions = true;
             filearg = i + 1;

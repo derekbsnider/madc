@@ -2096,11 +2096,18 @@ TokenBase *Program::_getToken()
 			    DBG(std::cout << "#include <" << incfile << "> PCH failed, trying embedded text" << std::endl);
 			}
 			const std::string *embedded = find_embedded_header(incfile);
+			// Disallowed by policy (e.g. --no-embedded-headers): skip madc's
+			// baked-in stub and fall through to the real filesystem header
+			// below, rather than erroring. The host's include_paths still
+			// gate what the filesystem search can reach.
+			if ( embedded && !is_embedded_header_allowed(incfile) )
+			{
+			    DBG(std::cout << "#include <" << incfile
+				<< "> embedded stub disallowed by policy; using filesystem" << std::endl);
+			    embedded = NULL;
+			}
 			if ( embedded )
 			{
-			    if ( !is_embedded_header_allowed(incfile) )
-				Throw << "embedded header '" << incfile
-				      << "' is not allowed by registration policy" << flush;
 			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
 			    Source saved = std::move(source);
 			    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
