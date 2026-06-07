@@ -1066,6 +1066,14 @@ void Program::_tokenizer_init()
 #define MADC_VERSION_STR "0.0.0"
 #endif
     define_map["MADC_VERSION"] = "\"" MADC_VERSION_STR "\"";
+    // madc's own compiler-identity macros — the peer-compiler equivalent of Clang's
+    // __clang__. madc still impersonates the host gcc (it seeds the toolchain's whole
+    // predefined set below, incl. __GNUC__) so UNMODIFIED libstdc++/glibc parse; this
+    // ALSO declares madc's own identity so madc-aware code can detect it without
+    // pretending to BE gcc. Defined in EVERY mode (like __clang__), unlike __cplusplus.
+    define_map["__madc__"] = "1";
+    define_map["__MADC__"] = "1";
+    define_map["__MADC_VERSION__"] = "\"" MADC_VERSION_STR "\"";
     define_map["__CHAR_BIT__"] = "8";
     define_map["__SIZEOF_SHORT__"] = "2";
     define_map["__SIZEOF_INT__"] = "4";
