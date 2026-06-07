@@ -1674,6 +1674,30 @@ static DataDef *resolve_class_static_member_type(DataDefCLASS *cls, const std::s
     return NULL;
 }
 
+// Constant value of an integral static-const data member (captured at parse), or
+// false if `name` has no captured constant. Walks the base chain like the type
+// resolver, so an inherited `static const … value` is found.
+static bool resolve_class_static_member_const_value(DataDefCLASS *cls,
+						    const std::string &name,
+						    int64_t &out)
+{
+    if ( !cls )
+	return false;
+    std::map<std::string, int64_t>::iterator vi =
+	cls->static_member_const_values.find(name);
+    if ( vi != cls->static_member_const_values.end() )
+    {
+	out = vi->second;
+	return true;
+    }
+    for ( size_t i = 0; i < cls->bases.size(); ++i )
+	if ( resolve_class_static_member_const_value(cls->bases[i].base, name, out) )
+	    return true;
+    if ( cls->base_class )
+	return resolve_class_static_member_const_value(cls->base_class, name, out);
+    return false;
+}
+
 DataDef *Program::resolve_current_class_type_alias(const std::string &name)
 {
     for ( std::vector<DataDefCLASS *>::reverse_iterator it =
@@ -5132,6 +5156,33 @@ int64_t Program::parse_constant_ternary()
 int64_t Program::parse_constant_integer_expression()
 {
     return parse_constant_ternary();
+}
+
+// Speculatively fold a static-data-member initializer (caller has already consumed
+// the '=') to a constant integer, expecting a terminating ';'. On success the
+// initializer is CONSUMED (stream left at ';') and the value returned via `out`; on
+// any failure the stream/diagnostics are restored and false returned, so the caller
+// falls back to skipping a non-constant initializer. Same save/try/restore idiom as
+// bracket_dim_constant_expression_parses.
+bool Program::capture_constant_initializer_value(int64_t &out)
+{
+    auto saved_tokens = tokens;
+    size_t saved_diag_count = diagnostics.size();
+    Program::ErrorInfo saved_error = last_error;
+    try
+    {
+	int64_t v = parse_constant_integer_expression();
+	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	{
+	    out = v;
+	    return true;            // keep the consumed position (stream at ';')
+	}
+    }
+    catch ( ... ) { }
+    tokens = saved_tokens;
+    diagnostics.resize(saved_diag_count);
+    last_error = saved_error;
+    return false;
 }
 
 bool Program::bracket_dim_constant_expression_parses()
@@ -8773,7 +8824,9 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    DataDefCLASS *cls = code->method->owner_class;
 	    if ( DataDef *static_dd = resolve_class_static_member_type(cls, name) )
 	    {
-		TokenInt *ti = new TokenInt(0);
+		int64_t cv = 0;
+		resolve_class_static_member_const_value(cls, name, cv);
+		TokenInt *ti = new TokenInt(cv);
 		ti->setDataType(static_dd);
 		copy_token_location(ti, head);
 		result = ti;
@@ -9541,7 +9594,9 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 
 	if ( DataDef *static_dd = resolve_class_static_member_type(scope, member_name) )
 	{
-	    TokenInt *ti = new TokenInt(0);
+	    int64_t cv = 0;
+	    resolve_class_static_member_const_value(scope, member_name, cv);
+	    TokenInt *ti = new TokenInt(cv);
 	    ti->setDataType(static_dd);
 	    ti->file = member_tb->file;
 	    ti->line = member_tb->line;
@@ -11157,7 +11212,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    std::string mname = member_lookup_name;
 		    if ( DataDef *static_dd = resolve_class_static_member_type(cls, mname) )
 		    {
-			TokenInt *ti = new TokenInt(0);
+			int64_t cv = 0;
+			resolve_class_static_member_const_value(cls, mname, cv);
+			TokenInt *ti = new TokenInt(cv);
 			ti->setDataType(static_dd);
 			ti->file = tb->file;
 			ti->line = tb->line;
@@ -16854,6 +16911,20 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
 		{
 		    pgm.nextToken(); // consume '='
+		    // Capture an integral constant initializer (std::integral_constant's
+		    // "static const T value = c;") so X::value reads the real value, not
+		    // a 0 placeholder. Non-integral / non-constant initializers fall
+		    // through to the structural skip below (unchanged behavior).
+		    int64_t const_val = 0;
+		    if ( cmember_dd && cmember_dd->is_integer()
+		      && !cmember_dd->is_pointer()
+		      && pgm.capture_constant_initializer_value(const_val) )
+		    {
+			ddc->static_member_const_values[mname] = const_val;
+			pgm.nextToken(); // consume the ';' the capture stopped at
+		    }
+		    else
+		    {
 			    int paren_depth = 0;
 			    int square_depth = 0;
 			    int brace_depth = 0;
@@ -16878,6 +16949,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			    }
 		    if ( !tn )
 			pgm.Throw(this) << "Unexpected end of input in static member initializer" << flush;
+		    }
 		}
 		else
 		{

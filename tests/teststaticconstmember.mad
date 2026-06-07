@@ -1,0 +1,15 @@
+// Static-const data members with a constant in-class initializer now read their
+// real value in expression context (was a 0 placeholder). Covers a plain member,
+// negative value, and an inherited member. Matches g++ -std=c++17.
+// (NOTE: static-const in a CONSTANT-expression context — e.g. an array dimension
+// `int a[L::m]` — is a separate constant-expr-parser gap, not yet wired.)
+#include <stdio.h>
+
+struct limits { static const int maxv = 127; static const int minv = -128; };
+struct derived : limits { static const int span = 255; };
+
+int main()
+{
+	printf("%d %d %d %d\n", limits::maxv, limits::minv, derived::span, derived::maxv);
+	return 0;
+}

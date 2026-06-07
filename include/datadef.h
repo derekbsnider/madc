@@ -661,6 +661,11 @@ public:
     std::map<std::string, Variable *> method_map; // unmangled name -> method variable
     std::map<std::string, DataDef *> type_aliases; // class-scope typedef/using aliases
     std::map<std::string, DataDef *> static_member_types; // class-scope static data members
+    // Integral static-const data members with a constant in-class initializer
+    // (e.g. `static const bool value = __is_class(T);` — the std::integral_constant
+    // pattern). Captured at parse so `X::value` / `X<T>::value` read the real value
+    // instead of a 0 placeholder.
+    std::map<std::string, int64_t> static_member_const_values;
     // Constructor overload set (each entry's FuncDef carries the param signature
     // and, for class-bound externals, an emit_symbol naming the real ctor).
     // A class with one ClassName() ctor has a single entry; a class with
