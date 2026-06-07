@@ -16171,10 +16171,22 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    {
 		TokenBase *tag_tb = pgm.nextToken();
 		TokenBase *after_tag = pgm.peekToken();
-		if ( after_tag
+		if ( after_tag && after_tag->id() == TokenID::tkSemi )
+		{
+		    // Nested forward declaration `class Inner;` — no body, no trailing
+		    // declarator; parse + register via the standard path (it consumes
+		    // the ';'). Must NOT use the definition-only + re-feed path below,
+		    // which would wrongly re-feed the tag as a member type.
+		    pgm.pushToken(tag_tb);
+		    if ( TokenKeyword *kw = dynamic_cast<TokenKeyword *>(agg_kw) )
+			pgm.parseKeyword(kw);
+		    else
+			pgm.Throw(agg_kw) << "Expected nested type keyword" << flush;
+		    handled_nested_type = true;
+		}
+		else if ( after_tag
 		  && (after_tag->id() == TokenID::tkColon
-		   || after_tag->id() == TokenID::tkOpBrc
-		   || after_tag->id() == TokenID::tkSemi) )
+		   || after_tag->id() == TokenID::tkOpBrc) )
 		{
 		    std::string nested_tag = contextual_identifier_name(tag_tb);
 		    pgm.pushToken(tag_tb);
