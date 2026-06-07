@@ -206,7 +206,38 @@ ways and prints the first error of each:
 same construct → it's the **PARSER**. The script's own header comment documents
 this and the known culprits.
 
-### 3.3c LATEST probe (after ctype decls + parse-time embed gen, 2026-06-07)
+### 3.3d LATEST probe (after pthread types + cv-qualifier typedef, 2026-06-07)
+```
+HEADER         madc (own preprocess)                                pp (parser-only)
+type_traits/utility/char_traits/iosfwd/cctype/clocale   OK          OK
+ostream/istream/iostream/sstream/fstream  172:17 use of undeclared identifier 'less'   OK
+string         42:9 Expecting type in class definition             OK
+map/set        36:9 Expecting type in class definition             OK
+memory         81:54 Expecting ';' after struct member             OK
+vector         2119:22 Expecting '{' after namespace name          OK
+string_view    768:45 Expecting a type argument to iterator<>      OK
+algorithm      52:13 'abs' is not a declaration in '::'            OK
+```
+Cleared this session-segment: the streams' `typedef` blocker — **`7da5b96`**
+defined the opaque pthread types (pthread_mutex_t/cond_t/key_t/… were
+"deferred"=undefined in the embedded stub, so gthr-default.h's typedefs failed).
+Also **`0c9523e`** fixed east-const typedefs (`typedef int const X;` read `const`
+as the alias) — found while writing the pthread types.
+
+**HIGH-LEVERAGE ROOT CAUSE IDENTIFIED — `struct` cannot have member methods.**
+The streams' `'less'` (`std::less` is a `struct` with `operator()`), `memory`'s
+`81:54 Expecting ';' after struct member`, and likely many more all trace to the
+SAME gap: madc only allows member functions on `class`, not `struct` (a bare
+`struct S { int m(int){...} };` → "Expecting ';' after struct member"). Real C++
+headers define `std::less`/`std::hash`/traits/etc. as struct-with-methods
+pervasively. Closing this (extend the struct-promotion work
+[[project_struct_is_class]]: a struct gains class-hood when it declares a member
+function, not only an object member) is the single highest-leverage next move —
+it should unblock several headers at once. It is a substantial, regression-
+sensitive parser change (struct parsing is core) → warrants a focused, test-
+gated pass.
+
+### 3.3c probe (after ctype decls + parse-time embed gen, 2026-06-07)
 ```
 HEADER         madc (own preprocess)                                pp (parser-only)
 type_traits/utility/char_traits/iosfwd/cctype   OK                 OK
@@ -604,6 +635,8 @@ printf '__INT64_TYPE__\n' | g++ -std=c++17 -E -x c++ - 2>/dev/null | tail -1
 ## 10. Commit list this session (newest first, branch feature/realhdr-parse-gaps2-claude)
 
 ```
+0c9523e fix(parser): accept CV-qualifiers after the base type in a typedef (east-const)
+7da5b96 fix(headers): define opaque pthread types in embedded pthread.h (unblocks gthr/streams)
 a4037f3 fix(headers,build): declare ctype functions (clears 'isalnum') + parse-time embed-gen
 e392a17 fix(parser): allocation-operator arity + noexcept template-id stripping (clears memory/vector/string)
 5a27a22 fix(build): regenerate embedded_headers.cpp on every build (catch deleted stubs)  [footgun]
@@ -691,12 +724,17 @@ touch std registration.
    (allocation-operator arity + noexcept template-id stripping).
 0b. ~~`'isalnum'`~~ — **DONE** `a4037f3` (declared ctype prototypes in the stub +
    parse-time embed-gen build fix).
-1. **`Expecting type after 'typedef'` — all 5 streams (48:21)** — NOW THE
-   DOMINANT BLOCKER. A `<bits/types.h>` typedef parses standalone but fails in
-   the stream-include context (same bug that blocked ctype-stub retirement).
-   Reduce the include interaction (which prior declaration/macro state makes the
-   typedef fail), fix the deepest layer. Clearing it also unblocks retiring the
-   ctype stub for the real header.
+0c. ~~streams `typedef` blocker~~ — **DONE** `7da5b96` (defined opaque pthread
+   types — they were undefined in the embedded stub). ~~east-const typedef~~ —
+   **DONE** `0c9523e`.
+1. **`struct` member methods — THE high-leverage target.** `std::less` (struct
+   with `operator()`) → streams' `'less'` (172:17); `memory` `81:54 Expecting ';'
+   after struct member`; and more. madc only allows methods on `class`. Extend
+   the struct→class promotion ([[project_struct_is_class]]: promote on object
+   member) to ALSO promote when a struct declares a member function. Substantial,
+   regression-sensitive (struct parse is core) — focused, test-gated pass; verify
+   against the torture suite + SMAUG (C structs must stay plain). Likely unblocks
+   the 5 streams + memory together.
 3. **`memory` `81:54 Expecting ';' after struct member`** — the struct-cannot-
    have-methods gap (a `struct` with a member function; madc only allows methods
    on `class`). Real C++ headers use `struct` with methods pervasively; this is
