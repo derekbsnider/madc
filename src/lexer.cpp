@@ -3476,6 +3476,7 @@ TokenBase *Program::_getToken()
 		    }
 		    std::map<std::string, const std::string *> param_map;
 		    std::string named_varargs;
+		    std::string empty_macro_arg;   // for params supplied no argument
 		    bool has_named_varargs = macro.variadic && !macro.variadic_param.empty();
 		    size_t fixed_param_count = macro.params.size();
 		    if ( has_named_varargs && fixed_param_count > 0 )
@@ -3495,6 +3496,13 @@ TokenBase *Program::_getToken()
 			else
 			    param_map[macro.params[i]] = &args[i];
 		    }
+		    // A macro called with fewer arguments than parameters binds the
+		    // missing params to EMPTY (C semantics) — e.g. `STR()` for
+		    // `#define STR(x) #x` binds x to "" so `#x` stringizes to "",
+		    // not a stray literal `#`. (glibc: __STRING(__USER_LABEL_PREFIX__)
+		    // with the prefix empty reaches the inner # with no argument.)
+		    for ( size_t i = args.size(); i < macro.params.size(); ++i )
+			param_map[macro.params[i]] = &empty_macro_arg;
 		    auto stringify_macro_arg = [](const std::string &raw) -> std::string {
 			std::string out("\"");
 			bool pending_space = false;
