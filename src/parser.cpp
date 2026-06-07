@@ -2267,6 +2267,15 @@ static void record_pending_template_instantiation(
     pending.push_back(pti);
 }
 
+TokenDataType *Program::instantiate_template_id(const std::string &tname,
+						TokenBase *tb,
+						const std::string &ns_hint)
+{
+    if ( TokenDataType *alias_inst = instantiate_template_alias_use(tname, tb) )
+	return alias_inst;
+    return instantiate_template_use(tname, tb, ns_hint);
+}
+
 TokenDataType *Program::instantiate_template_use(const std::string &tname,
 					       TokenBase *tb,
 					       const std::string &ns_hint)
@@ -2836,16 +2845,8 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	std::string member_name = contextual_identifier_name(member_tb);
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
-	    if ( TokenDataType *alias_inst =
-		    instantiate_template_alias_use(member_name, member_tb) )
-	    {
-		owner = dynamic_cast<DataDefCLASS *>(&alias_inst->definition);
-		if ( !owner )
-		    return alias_inst;
-		continue;
-	    }
 	    if ( TokenDataType *inst =
-		    instantiate_template_use(member_name, member_tb) )
+		    instantiate_template_id(member_name, member_tb) )
 	    {
 		owner = dynamic_cast<DataDefCLASS *>(&inst->definition);
 		if ( !owner )
@@ -2897,16 +2898,8 @@ TokenDataType *Program::resolve_class_member_type_chain(DataDefCLASS *owner,
 	std::string member_name = contextual_identifier_name(member_tb);
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
-	    if ( TokenDataType *alias_inst =
-		    instantiate_template_alias_use(member_name, member_tb) )
-	    {
-		owner = dynamic_cast<DataDefCLASS *>(&alias_inst->definition);
-		if ( !owner )
-		    return alias_inst;
-		continue;
-	    }
 	    if ( TokenDataType *inst =
-		    instantiate_template_use(member_name, member_tb) )
+		    instantiate_template_id(member_name, member_tb) )
 	    {
 		owner = dynamic_cast<DataDefCLASS *>(&inst->definition);
 		if ( !owner )
@@ -2944,10 +2937,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
 	    std::string tname = ((TokenDataType *)tb)->str;
-	    if ( TokenDataType *alias_inst =
-		    instantiate_template_alias_use(tname, tb) )
-		return alias_inst;
-	    if ( TokenDataType *inst = instantiate_template_use(tname, tb) )
+	    if ( TokenDataType *inst = instantiate_template_id(tname, tb) )
 		return inst;
 	}
 	if ( consume_class_member_chain
@@ -3006,9 +2996,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 
     if ( peekToken() && peekToken()->id() == TokenID::tkLT )
     {
-	if ( TokenDataType *alias_inst = instantiate_template_alias_use(tname, tb) )
-	    return alias_inst;
-	if ( TokenDataType *inst = instantiate_template_use(tname, tb) )
+	if ( TokenDataType *inst = instantiate_template_id(tname, tb) )
 	    return inst;
     }
 
@@ -3046,13 +3034,10 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	return alias_tok;
     }
 
-    if ( TokenDataType *alias_inst = instantiate_template_alias_use(tname, tb) )
-	return alias_inst;
-
-    // `Name<ConcreteType>` where Name is a captured template: instantiate (or
-    // reuse) the concrete class and return its type. Guarded on template_map +
-    // a following '<', so non-template identifiers are unaffected.
-    if ( TokenDataType *inst = instantiate_template_use(tname, tb) )
+    // `Name<ConcreteType>` where Name is a captured (alias or class) template:
+    // instantiate (or reuse) the concrete type and return it. Guarded on a
+    // following '<', so non-template identifiers are unaffected.
+    if ( TokenDataType *inst = instantiate_template_id(tname, tb) )
 	return inst;
 
     // `Q1::Q2::...::Name<Args>` where Name is a captured template. Templates live
@@ -3079,10 +3064,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 		for ( size_t k = 0; k < j; k++ )
 		    nextToken();               // consume '::' + each (qualifier '::')
 		TokenBase *name_tok = nextToken(); // consume the template name
-		if ( TokenDataType *alias_inst =
-			instantiate_template_alias_use(member_name, name_tok) )
-		    return alias_inst;
-		if ( TokenDataType *inst = instantiate_template_use(member_name, name_tok) )
+		if ( TokenDataType *inst = instantiate_template_id(member_name, name_tok) )
 		    return inst;
 		break;
 	    }
@@ -9321,11 +9303,8 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	DataDef *member_dd = NULL;
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
 	{
-	    if ( TokenDataType *alias_inst =
-		    pgm.instantiate_template_alias_use(member_name, member_tb) )
-		member_dd = &alias_inst->definition;
-	    else if ( TokenDataType *inst =
-		    pgm.instantiate_template_use(member_name, member_tb) )
+	    if ( TokenDataType *inst =
+		    pgm.instantiate_template_id(member_name, member_tb) )
 		member_dd = &inst->definition;
 	    else
 		pgm.skip_template_id_suffix();
@@ -10730,11 +10709,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( peekToken() && peekToken()->id() == TokenID::tkLT
 		      && template_declared_in_namespace(member_name, ns_name) )
 		    {
-			if ( TokenDataType *alias_inst =
-				instantiate_template_alias_use(member_name, member_tb) )
-			    member_dd = &alias_inst->definition;
-			else if ( TokenDataType *inst =
-				instantiate_template_use(member_name, member_tb, ns_name) )
+			if ( TokenDataType *inst =
+				instantiate_template_id(member_name, member_tb, ns_name) )
 			    member_dd = &inst->definition;
 		    }
 		    if ( DataDefCLASS *member_scope =
@@ -22166,9 +22142,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     {
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
-	    TokenDataType *inst = instantiate_template_alias_use(id, nt);
-	    if ( !inst )
-		inst = instantiate_template_use(id, nt);
+	    TokenDataType *inst = instantiate_template_id(id, nt);
 	    if ( inst )
 		id = inst->definition.name;
 	    else
@@ -22186,10 +22160,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		if ( part_tb->id() != TokenID::tkOPEROVER
 		  && peekToken() && peekToken()->id() == TokenID::tkLT )
 		{
-		    TokenDataType *inst =
-			instantiate_template_alias_use(part_name, part_tb);
-		    if ( !inst )
-			inst = instantiate_template_use(part_name, part_tb);
+		    TokenDataType *inst = instantiate_template_id(part_name, part_tb);
 		    if ( inst )
 			part_name = inst->definition.name;
 		    else

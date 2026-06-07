@@ -1674,6 +1674,14 @@ public:
 					    const std::string &ns_hint = std::string());
     TokenDataType *instantiate_template_alias_use(const std::string &tname,
 						  TokenBase *tb);
+    // Resolve a template-id `Name<...>` to its concrete type: an alias template
+    // first, then a class template (the order every call site used by hand).
+    // Single seam for the namespace hint so qualified uses pick the right
+    // same-named variant. Returns NULL if Name is not a (alias-or-class)
+    // template-id.
+    TokenDataType *instantiate_template_id(const std::string &tname,
+					   TokenBase *tb,
+					   const std::string &ns_hint = std::string());
     TokenDataType *instantiate_opaque_template_use(TemplateDef &td,
 						   const std::string &tname,
 						   TokenBase *tb);
