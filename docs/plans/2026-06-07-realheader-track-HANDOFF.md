@@ -15,6 +15,78 @@ Date: **2026-06-07** (late session). Branch **`feature/realhdr-parse-gaps2-claud
 
 ---
 
+## UPDATE 2026-06-07 (NEWEST) — `madc -E`, PP/parser RESEARCH, NESTED-STRUCT-METHOD fixes; `<memory>` now hits the template/std-hardcoding layer
+
+Branch HEAD now **`97eeeeb`** (`feature/realhdr-parse-gaps2-claude`, local, NOT
+pushed; `develop` untouched). Mission: get the **string / iostream / sstream /
+fstream** family parsing (en route to "parse anything clang can"). Worked the
+real-header track via a new instrument + `-E`-bisection of `<memory>` (a
+prerequisite the streams pull in).
+
+### Shipped this block
+1. **`madc -E`** (commit `1f8e3fd`, `src/madc.cpp`) — preprocess-only dump
+   (expand `#include`/`#define`/macros, print token stream, stop). Reuses the
+   `dump_source` path (madc preprocesses during `tokenize()`). Content-only for
+   clean diff vs `gcc -E | grep -v '^#'`. **This is the bisection instrument.**
+2. **PP/parser architecture research** (`1f8e3fd`,
+   `docs/plans/2026-06-07-parser-pp-architecture-research.md`) — source-grounded
+   study of gcc(libcpp+cp)/clang/c2mir. 5 convergent lessons; the big one is
+   **recursive declarators** (one node per `*`/`[]`/`()`) as the structural fix
+   for the multi-star/fnptr-decay bug class. Also: struct≡class confirmed; the
+   multiarch include path was a FALSE alarm (already in the generated sys list —
+   my earlier "230→53" conflated a non-`--std` run).
+3. **fix `d1f28f4` — nested method-bearing struct + trailing declarator
+   (STRUCT body).** `struct Outer { struct Inner { void f(){} } member; };`
+   failed; gcc/clang accept it. The struct-body parser routed the nested struct
+   to the data-only `parse_nested_aggregate_body` (no methods). Fix: when the
+   nested body needs the class parser, delegate the DEFINITION to TokenCLASS in
+   a new **definition-only mode** (`Program::class_definition_only`, returns at
+   `}` without consuming a trailing declarator); the outer member loop claims
+   the declarator. No parallel implementation.
+4. **fix `97eeeeb` — same, CLASS body** (the real `<memory>` blocker:
+   `struct __uses_alloc0 : __uses_alloc_base { struct _Sink {...} _M_a; }`).
+   When the outer aggregate has a base/methods it's the CLASS parser; its
+   nested-type path delegated+`continue`d, dropping the trailing declarator
+   (even data-only). Fix: definition-only parse (TokenSTRUCT now honors the
+   flag too), then **re-feed the tag as a bare type name** so the normal member
+   path reads `Inner m;`. Reuses the one member path.
+
+**Validation (both fixes):** fulltest **528/4/0/26** (the 4 known reds); full
+gcc.c-torture failset **IDENTICAL** to parent (88 FAIL, 0 regressions — the
+fixes are gated by `cpp_struct_body_needs_class_parser` which is false in C
+mode, so C/torture/SMAUG can't route). SMAUG soak = final confirmation
+(C89-unaffected by construction).
+
+### `<memory>` progress + NEXT blockers (bisect with `-E` then reparse for the REAL line)
+`<memory>` advanced past ALL nested-struct gaps; now derails at
+`template<typename _Tp, size_t _Nm> struct array;` →
+**`Expecting template class name`**. ROOT CAUSE (reduced): **`array` is a
+hardcoded builtin type token** — `TokenARRAY tkARRAY` (`datatokens.h:48`,
+`TokenDataType("array", ddARRAY)`), registered in `datatype_map`
+(`lexer.cpp:1854`) + `madc_ns["array"]` (`parser.cpp:7081`). So `struct array`
+lexes `array` as a keyword, not an identifier. This is **legacy
+std-hardcoding** (same class as `dtSTRING`/`tkVECTOR`), NOT a template-parser
+bug — it belongs to the **retire-std-hardcoding campaign**, and is the next
+target. (A bare `template<...> struct arr;` forward decl parses fine.)
+
+Other known gaps found while bisecting (gcc/clang accept all; not yet fixed):
+- **Chained method calls** `o.member.set(42)` → "chained method call not yet
+  supported" (codegen gap, separate).
+- **`Outer::Inner` qualified nested-type name** → "'Inner' is not a static
+  member of 'Outer'" (nested-type name resolution; bare `Inner` member works).
+- **`<cstddef>` `max_align_t`** → "not a declaration in '::'" (declarable, like
+  the Bucket-B libc decls).
+- **Deferred (§6):** the two ~2300-line body parsers (TokenSTRUCT vs TokenCLASS)
+  still duplicate nested-aggregate handling — these two fixes patched both;
+  full unification remains the right long-term move.
+
+`-E` bisection recipe: `bin/madc --std=c++17 -E probe.mad > pp.cpp` then
+`bin/madc --std=c++17 --emit=c11 pp.cpp` gives the REAL line (the live-include
+path reports bogus `.mad` coords). Reduce → confirm gcc+clang accept → fix
+deepest layer → re-bisect.
+
+---
+
 ## UPDATE 2026-06-07 (latest) — STRUCT METHODS + SMAUG C89 WARNING AUDIT DONE
 
 Branch HEAD now **`f52c3ad`** (`feature/realhdr-parse-gaps2-claude`, **local, NOT
