@@ -7464,14 +7464,14 @@ static std::string primary_name_from_cpp_spelling(const std::string &spelling)
     return spelling.substr(name_start, name_end - name_start);
 }
 
-static Variable *find_namespace_member_in_scope_chain(Program &pgm,
+Variable *Program::find_namespace_member_in_scope_chain(
 						      const std::string &ns_name,
 						      const std::string &member_name)
 {
     std::string cur = ns_name;
     while ( !cur.empty() )
     {
-	if ( Variable *var = pgm.find_namespace_member(cur, member_name) )
+	if ( Variable *var = find_namespace_member(cur, member_name) )
 	    return var;
 	size_t pos = cur.rfind("::");
 	if ( pos == std::string::npos )
@@ -7481,19 +7481,19 @@ static Variable *find_namespace_member_in_scope_chain(Program &pgm,
     return NULL;
 }
 
-static std::string resolve_namespace_name_in_scope(Program &pgm,
+std::string Program::resolve_namespace_name_in_scope(
 						   const std::string &name)
 {
     if ( name.empty() )
 	return std::string();
-    if ( !pgm.current_namespace.empty() )
+    if ( !current_namespace.empty() )
     {
-	std::string cur = pgm.current_namespace;
+	std::string cur = current_namespace;
 	for (;;)
 	{
 	    std::string candidate = cur + "::" + name;
-	    if ( pgm.namespace_map.find(candidate) != pgm.namespace_map.end()
-	      || pgm.namespace_datatype_map.find(candidate) != pgm.namespace_datatype_map.end() )
+	    if ( namespace_map.find(candidate) != namespace_map.end()
+	      || namespace_datatype_map.find(candidate) != namespace_datatype_map.end() )
 		return candidate;
 	    size_t pos = cur.rfind("::");
 	    if ( pos == std::string::npos )
@@ -7501,21 +7501,21 @@ static std::string resolve_namespace_name_in_scope(Program &pgm,
 	    cur = cur.substr(0, pos);
 	}
     }
-    if ( pgm.namespace_map.find(name) != pgm.namespace_map.end()
-      || pgm.namespace_datatype_map.find(name) != pgm.namespace_datatype_map.end() )
+    if ( namespace_map.find(name) != namespace_map.end()
+      || namespace_datatype_map.find(name) != namespace_datatype_map.end() )
 	return name;
     return std::string();
 }
 
-static std::string active_cpp_lookup_namespace(Program &pgm)
+std::string Program::active_cpp_lookup_namespace()
 {
-    if ( !pgm.current_namespace.empty() )
-	return pgm.current_namespace;
-    if ( pgm.compounds.empty() || !pgm.compounds.top()
-      || !pgm.compounds.top()->method
-      || !pgm.compounds.top()->method->owner_class )
+    if ( !current_namespace.empty() )
+	return current_namespace;
+    if ( compounds.empty() || !compounds.top()
+      || !compounds.top()->method
+      || !compounds.top()->method->owner_class )
 	return std::string();
-    DataDefCLASS *owner = pgm.compounds.top()->method->owner_class;
+    DataDefCLASS *owner = compounds.top()->method->owner_class;
     return namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling);
 }
 
@@ -7525,11 +7525,11 @@ Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expre
 
     if ( expression_head )
     {
-	std::string lookup_ns = active_cpp_lookup_namespace(*this);
+	std::string lookup_ns = active_cpp_lookup_namespace();
 	if ( !lookup_ns.empty() )
 	{
 	    Variable *var =
-		find_namespace_member_in_scope_chain(*this, lookup_ns, ident_tb->str);
+		find_namespace_member_in_scope_chain(lookup_ns, ident_tb->str);
 	    if ( var ) return var;
 	}
     }
@@ -10658,7 +10658,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    std::string resolved_ns_name =
-			resolve_namespace_name_in_scope(*this, ns_name);
+			resolve_namespace_name_in_scope(ns_name);
 		    if ( !resolved_ns_name.empty() )
 			ns_name = resolved_ns_name;
 		    namespace_map_t::iterator nsi = namespace_map.find(ns_name);

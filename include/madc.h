@@ -1581,6 +1581,13 @@ public:
 		const std::vector<std::string> &param_ids,
 		std::map<std::string, DataDef *> &param_types);
     bool scan_old_style_definition_suffix(std::vector<TokenBase *> &suffix);
+    // Namespace resolution helpers: walk the enclosing-namespace chain to find
+    // a member, resolve a bare name against the active namespace scope, and
+    // report the namespace the current C++ scope looks up in.
+    Variable *find_namespace_member_in_scope_chain(const std::string &ns_name,
+						   const std::string &member_name);
+    std::string resolve_namespace_name_in_scope(const std::string &name);
+    std::string active_cpp_lookup_namespace();
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
