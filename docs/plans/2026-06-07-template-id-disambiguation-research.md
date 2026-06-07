@@ -117,6 +117,15 @@ confirm `basic_string_view<char>` advances. Related: [[project_template_instanti
 
 ---
 
+## ✅ RESOLVED (2026-06-07, commit `9c6c6c2`) — partial specialization implemented
+The fix below was implemented as one gated pass: `partial_spec_map` +
+`is_partial_specialization`/`spec_pattern` on `TemplateDef` + registration in
+`TokenTEMPLATE::parse` + `match_partial_specialization`/`unify_spec_pattern_arg`
+most-specialized pattern unification in `instantiate_template_use`. fulltest 528/4
+zero-regr, torture 1566/88 identical, SMAUG ready/0-err, test `testpartialspec`
+matches g++. `<string_view>` advanced past iterator<> to a new "Expecting type in
+class definition" inside the `basic_string_view<char>` body (next bisection target).
+
 ## ⚠ CORRECTION (2026-06-07, evidence-based via instrumentation) — the live root cause is PARTIAL SPECIALIZATION, not 2935-2942
 
 The disambiguation hypothesis above was a **static misread**. Instrumenting the

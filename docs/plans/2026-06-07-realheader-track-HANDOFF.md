@@ -34,20 +34,25 @@ type-trait builtins** (`__is_*`/`__has_*`/`__underlying_type`/`__type_pack_eleme
 — verified absent); library STUBS (string/vector/map/set/algorithm/streams + glibc
 dups) in `include/madc/` are the WRONG bucket and the active shadowing blocker.
 
-**TWO LIVE WORK ITEMS (next session):**
-- **(parser, RE-DIAGNOSED 2026-06-07 — it's a FEATURE)** the `iterator<>` blocker
-  is NOT template-id-vs-type-alias (that 2935-2942 hypothesis was a static misread;
-  the live throw is at `parser.cpp:2341`). Instrumented root cause: madc parses
-  **partial specializations** (`template<class T> struct X<T*>`) but **silently
-  discards them and always instantiates the PRIMARY** (g++ returns 1, madc 0 on the
-  `tr<T*>` reducer). `<string_view>` needs `iterator_traits<_Tp*>`'s
-  `iterator_category`, which lives in the unimplemented pointer partial spec. Fix =
-  IMPLEMENT partial specialization: register partial specs in a new
-  `partial_spec_map` (they're dropped at `parser.cpp:20181/20263`) + most-specialized
-  pattern-unification matching in `instantiate_template_use` (2279). FULL plan +
-  reducers + g++ oracle in the ⚠CORRECTION section of the disambiguation research
-  doc. High blast radius — ONE focused gated pass (fulltest + torture failset-diff
-  + SMAUG). See [[project_template_instantiation]].
+**WORK ITEMS:**
+- **#1 PARTIAL SPECIALIZATION — ✅ DONE (commit `9c6c6c2`, 2026-06-07).** The
+  `iterator<>` blocker was NOT template-id-vs-alias (that 2935-2942 hypothesis was a
+  static misread; live throw was `parser.cpp:2341`). Real cause: madc parsed partial
+  specs (`template<class T> struct X<T*>`) but silently discarded them, always using
+  the primary. Implemented: `is_partial_specialization`+`spec_pattern` on TemplateDef,
+  `partial_spec_map`, registration (was dropped at `TokenTEMPLATE::parse`), and
+  most-specialized pattern-unification matching in `instantiate_template_use`. Gated:
+  fulltest 528/4 zero-regr · torture 1566/88 identical (inert for C) · SMAUG ready,
+  0 err · test `testpartialspec` matches g++. `<string_view>` advanced PAST iterator<>
+  → NEW frontier: `basic_string_view<char>` instantiation derails at "Expecting type
+  in class definition" (a member-decl the class-body parser rejects — bisect via -E
+  next). See [[project_template_instantiation]] + the ⚠CORRECTION/RESOLVED section of
+  the disambiguation research doc.
+- **#2 HEADER-PARTITION (in progress)** Step 0 add `__madc__`; Step 1 madc-owned
+  freestanding dir from c2mir's `mirc_*` (search-first + `#include_next`), NOT gcc's
+  `$OWN`; Step 2 close `madc -dM` vs `gcc -dM` gaps; Step 3 the `__is_*`/`__has_*`
+  builtin checklist (the `<type_traits>`/`<tuple>` conformance milestone). Master
+  plan = `madc-header-partition-handoff.md`.
 - **(header-partition, the master plan)** Step 0 add `__madc__`; Step 1 stand up a
   madc-owned freestanding dir from c2mir's `mirc_*` (search-first + `#include_next`
   chaining), NOT gcc's `$OWN` dir; Step 2 close `madc -dM` vs `gcc -dM` gaps;
