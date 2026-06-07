@@ -1671,7 +1671,26 @@ inline std::string &pop(std::string &result, MadArray &values) { return *__rust_
 //            pthread_rwlock_init, pthread_rwlock_rdlock,
 //            pthread_rwlock_wrlock, pthread_rwlock_unlock,
 //            pthread_rwlock_destroy
-// struct pthread_mutex_t / pthread_cond_t / pthread_attr_t deferred
+// Opaque POSIX thread types. The implementations live in libc (dlsym fallback),
+// but the TYPES must be declared so consumers can `typedef pthread_mutex_t X;`,
+// declare `pthread_mutex_t *` parameters, and size storage — without this,
+// libstdc++'s <bits/gthr-default.h> (`typedef pthread_mutex_t __gthread_mutex_t;`
+// …) fails with "Expecting type after 'typedef'". Sizes/alignment match glibc's
+// x86-64 layout (a union of a byte array + an alignment member), so by-value
+// storage and sizeof are correct; the contents stay opaque (manipulated only by
+// the libc pthread functions).
+typedef union { char __size[40]; long __align; } pthread_mutex_t;
+typedef union { char __size[48]; long long __align; } pthread_cond_t;
+typedef union { char __size[56]; long __align; } pthread_rwlock_t;
+typedef union { char __size[56]; long __align; } pthread_attr_t;
+typedef union { char __size[32]; long __align; } pthread_barrier_t;
+typedef union { char __size[4];  int __align; } pthread_mutexattr_t;
+typedef union { char __size[4];  int __align; } pthread_condattr_t;
+typedef union { char __size[8];  long __align; } pthread_rwlockattr_t;
+typedef union { char __size[4];  int __align; } pthread_barrierattr_t;
+typedef unsigned int pthread_key_t;
+typedef int pthread_once_t;
+typedef volatile int pthread_spinlock_t;
 
 // Thread creation attributes
 #define PTHREAD_CREATE_JOINABLE  0
