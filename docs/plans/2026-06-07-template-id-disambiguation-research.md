@@ -114,3 +114,62 @@ gcc: `cp_parser_template_name` / `lookup_template_name` gating `cp_parser_templa
 CAUTION: this touches core type-token resolution — go test-gated (fulltest +
 gcc.c-torture failset-diff + SMAUG soak), and re-run the real-header probe to
 confirm `basic_string_view<char>` advances. Related: [[project_template_instantiation]].
+
+---
+
+## ⚠ CORRECTION (2026-06-07, evidence-based via instrumentation) — the live root cause is PARTIAL SPECIALIZATION, not 2935-2942
+
+The disambiguation hypothesis above was a **static misread**. Instrumenting the
+actual `<string_view>` derail (live `bin/madc`, DBG at the throw sites) proves the
+failure never reaches `parser.cpp:2935-2942`. The chain is:
+
+`using string_view = basic_string_view<char>` (pp line 14060) → instantiate
+`basic_string_view<char>` → `using const_reverse_iterator =
+std::reverse_iterator<const_iterator>` → instantiate `reverse_iterator<const char*>`
+→ its base clause `: public iterator<typename iterator_traits<_Iterator>::iterator_category, …>`
+→ resolve arg `typename iterator_traits<const char*>::iterator_category`
+→ `iterator_traits<const char*>` resolves to the **empty PRIMARY** template
+(instrumented: `owner=iterator_traits_char_ member=iterator_category alias=NULL
+incomplete=0 depsurface=0`) → no `iterator_category` member → `resolve_typename_type_token`
+returns NULL → the arg to `iterator<>` is NULL → **throw at parser.cpp:2341**
+(NOT 2644, NOT 2935). The failing arg token is literally `typename`.
+
+**Root cause (confirmed with minimal reducers + g++ oracle):** madc parses
+partial specializations but **silently discards them and always instantiates the
+PRIMARY**.
+- `template<class T> struct tr{int v(){return 0;}}; template<class T> struct tr<T*>{int v(){return 1;}};`
+  `tr<char*>().v()` → **g++ returns 1, madc returns 0** (primary used for the
+  pointer too — a silent correctness bug, not just a parse error).
+- Explicit specialization (`template<> struct box<int>`) DOES work; only PARTIAL
+  specialization is unimplemented.
+
+**Where it's dropped:** `TokenTEMPLATE::parse` (parser.cpp). A partial spec has
+`specialized_template_id == true` AND `typeparams` **non-empty**. The explicit-spec
+branch fires only for `specialized_template_id && typeparams.empty()`
+(parser.cpp:20181); the primary branch fires only for `!specialized_template_id`
+(20263). A partial spec matches NEITHER → its captured body returns at 20272
+**without registering anything**.
+
+**The deepest-layer fix = implement partial specialization** (no shortcut;
+special-casing `iterator_traits` would be forbidden hardcoding):
+1. **Represent:** add `bool is_partial_specialization` + `std::vector<std::string>
+   spec_pattern` (the per-arg spellings, e.g. `["T*"]`) to `TemplateDef`
+   (include/madc.h:1082). Store partial specs in a NEW `partial_spec_map[class_name]
+   -> vector<TemplateDef>` — NOT `template_map`, because `register_template` merges
+   same-namespace variants and would clobber the primary.
+2. **Register:** in `TokenTEMPLATE::parse`, the partial-spec case
+   (`specialized_template_id && !typeparams.empty()`) captures body + own typeparams
+   + `spec_pattern = specialization_arg_spellings`; push into `partial_spec_map`.
+3. **Match at instantiation:** in `instantiate_template_use` (parser.cpp:2279),
+   after the concrete args are resolved, scan `partial_spec_map[tname]` for a spec
+   whose `spec_pattern` UNIFIES with the concrete args (deduce the spec's typeparams:
+   bare `T`→arg; `T*` vs `C*`→T=pointee; `const T`→recurse; literal must equal).
+   Pick the most specialized (most non-typeparam structure). If matched, instantiate
+   THAT body with the deduced substitution; else fall back to the primary.
+
+This is a real, high-blast-radius feature (the template engine all of std:: rides
+on). Implement as ONE focused, test-gated pass: fulltest 528/4/0/26 + FULL
+gcc.c-torture failset-diff (ZERO regressions) + SMAUG soak. Minimal regression
+tests: the `tr<T*>` reducer (expect 1), `tr3<char*>::cat` sizeof (expect 4), then
+the `<string_view>` probe advancing past line 14060. Related:
+[[project_template_instantiation]].

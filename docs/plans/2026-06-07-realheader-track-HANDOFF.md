@@ -35,11 +35,19 @@ type-trait builtins** (`__is_*`/`__has_*`/`__underlying_type`/`__type_pack_eleme
 dups) in `include/madc/` are the WRONG bucket and the active shadowing blocker.
 
 **TWO LIVE WORK ITEMS (next session):**
-- **(parser, ready)** the `iterator<>` blocker = template-id-vs-type-alias: fix at
-  `parser.cpp:2935–2942` (don't `instantiate_template_id` an already-resolved
-  `ttDataType` whose binding is a non-template alias; make `find_template` scope/
-  binding-aware). Reducer + clang-faithful detail in the disambiguation research
-  doc. Test-gated.
+- **(parser, RE-DIAGNOSED 2026-06-07 — it's a FEATURE)** the `iterator<>` blocker
+  is NOT template-id-vs-type-alias (that 2935-2942 hypothesis was a static misread;
+  the live throw is at `parser.cpp:2341`). Instrumented root cause: madc parses
+  **partial specializations** (`template<class T> struct X<T*>`) but **silently
+  discards them and always instantiates the PRIMARY** (g++ returns 1, madc 0 on the
+  `tr<T*>` reducer). `<string_view>` needs `iterator_traits<_Tp*>`'s
+  `iterator_category`, which lives in the unimplemented pointer partial spec. Fix =
+  IMPLEMENT partial specialization: register partial specs in a new
+  `partial_spec_map` (they're dropped at `parser.cpp:20181/20263`) + most-specialized
+  pattern-unification matching in `instantiate_template_use` (2279). FULL plan +
+  reducers + g++ oracle in the ⚠CORRECTION section of the disambiguation research
+  doc. High blast radius — ONE focused gated pass (fulltest + torture failset-diff
+  + SMAUG). See [[project_template_instantiation]].
 - **(header-partition, the master plan)** Step 0 add `__madc__`; Step 1 stand up a
   madc-owned freestanding dir from c2mir's `mirc_*` (search-first + `#include_next`
   chaining), NOT gcc's `$OWN` dir; Step 2 close `madc -dM` vs `gcc -dM` gaps;
