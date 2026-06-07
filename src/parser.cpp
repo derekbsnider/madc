@@ -4021,6 +4021,127 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
     return value;
 }
 
+// --- Type-trait builtins (__is_class, __is_base_of, …) ------------------------
+// libstdc++ <type_traits>/<tuple> implement std::is_* via these compiler
+// intrinsics. madc monomorphizes templates (token-substitute + re-parse on use),
+// so by the time `__is_class(T)` is parsed the arg is a CONCRETE type — no
+// dependent-placeholder handling is needed; evaluate to a bool constant here.
+//
+// CORRECTNESS-FIRST: only traits madc can answer FAITHFULLY from its DataDef model
+// are recognized; the rest fall through to the normal undeclared-identifier path
+// (a clear error, never a WRONG bool that would silently corrupt SFINAE). Adding a
+// new trait = one entry here + one branch in eval_type_trait — provided madc can
+// model it exactly.
+// Implement EXACTLY the gcc-13 trait builtins that madc can answer faithfully —
+// no more: providing a builtin gcc lacks (e.g. __is_pointer/__is_void, which gcc
+// implements in libstdc++, not the compiler) could shadow a library identifier.
+static int type_trait_arity(const std::string &name)
+{
+    if ( name == "__is_same" || name == "__is_base_of" )
+	return 2;
+    if ( name == "__is_class" || name == "__is_union" || name == "__is_enum" )
+	return 1;
+    return 0;   // not a supported trait
+}
+
+static bool is_type_trait_builtin(const std::string &name)
+{
+    return type_trait_arity(name) != 0;
+}
+
+static bool trait_is_enum(DataDef *dd)
+{
+    return dynamic_cast<DataDefENUM *>(dd) != NULL;
+}
+// __is_class: a (non-union) class OR struct. DataDefCLASS derives from
+// DataDefSTRUCT, so both match the cast; union_layout separates out unions, and a
+// DataDefENUM is not a DataDefSTRUCT so enums are excluded.
+static bool trait_is_class(DataDef *dd)
+{
+    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    return s && !s->union_layout;
+}
+static bool trait_is_union(DataDef *dd)
+{
+    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    return s && s->union_layout;
+}
+// __is_base_of(B, D): true if B and D name the same class, or B is a (direct or
+// indirect) base of class D. Ignores access (matches the intrinsic's semantics —
+// std:: layers accessibility on top). Both must be class types.
+static bool trait_is_base_of(DataDef *base, DataDef *derived)
+{
+    DataDefCLASS *b = dynamic_cast<DataDefCLASS *>(base);
+    DataDefCLASS *d = dynamic_cast<DataDefCLASS *>(derived);
+    if ( !b || !d )
+	return false;
+    if ( b == d || b->name == d->name )
+	return true;
+    if ( d->base_class && trait_is_base_of(b, d->base_class) )
+	return true;
+    for ( size_t i = 0; i < d->bases.size(); ++i )
+	if ( d->bases[i].base && trait_is_base_of(b, d->bases[i].base) )
+	    return true;
+    return false;
+}
+
+TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &name)
+{
+    int arity = type_trait_arity(name);
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	Throw(op_tb) << "Expecting '(' after " << name << flush;
+    nextToken(); // consume '('
+
+    std::vector<DataDef *> args;
+    for (;;)
+    {
+	TokenBase *at = nextToken();
+	std::string cv_spelling;
+	at = consume_template_type_arg_qualifiers(at, cv_spelling);
+	TokenDataType *adt = resolve_declared_type_token(at, true, true);
+	if ( !adt )
+	    Throw(at ? at : op_tb) << "Expecting a type argument to " << name << flush;
+	DataDef *dd = &adt->definition;
+	// Fold trailing pointer stars (`__is_pointer(int*)`), mirroring the
+	// template-argument parser.
+	while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+	{
+	    nextToken();
+	    dd = getPointerType(dd);
+	}
+	args.push_back(dd);
+	TokenBase *sep = nextToken();
+	if ( sep && sep->id() == TokenID::tkComma )
+	    continue;
+	if ( sep && sep->id() == TokenID::tkClBrk )
+	    break;
+	Throw(sep ? sep : op_tb) << "Expecting ',' or ')' in " << name << "(...)" << flush;
+    }
+
+    if ( (int)args.size() != arity )
+	Throw(op_tb) << name << " expects " << arity << " type argument(s), got "
+		     << args.size() << flush;
+
+    bool result = false;
+    if ( name == "__is_same" )
+	result = args[0] && args[1] && args[0]->name == args[1]->name;
+    else if ( name == "__is_enum" )
+	result = trait_is_enum(args[0]);
+    else if ( name == "__is_class" )
+	result = trait_is_class(args[0]);
+    else if ( name == "__is_union" )
+	result = trait_is_union(args[0]);
+    else if ( name == "__is_base_of" )
+	result = trait_is_base_of(args[0], args[1]);
+
+    TokenInt *ti = new TokenInt(result ? 1 : 0);
+    ti->setDataType(&ddBOOL);
+    ti->file = op_tb->file;
+    ti->line = op_tb->line;
+    ti->column = op_tb->column;
+    return ti;
+}
+
 static bool is_runtime_sized_type(DataDef *dd)
 {
     if ( !dd )
@@ -9969,6 +10090,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( !component_expr )
 			Throw(next_tb) << "Unsupported operand for " << ident_tb->str << flush;
 		    exStack.push(make_complex_component_token(component_expr, want_imag));
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		// type-trait builtins (__is_class, __is_base_of, …) — fold to a
+		// bool constant at parse time (monomorphized args are concrete).
+		if ( is_type_trait_builtin(ident_tb->str) )
+		{
+		    exStack.push(evaluate_type_trait(tb, ident_tb->str));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// sizeof / alignof — resolve to integer constant at parse time.

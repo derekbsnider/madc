@@ -1677,6 +1677,10 @@ public:
 					const std::string &op_name,
 					bool &have_value, size_t &query_value);
     size_t evaluate_type_query(TokenBase *op_tb, const std::string &op_name);
+    // Type-trait builtins (__is_class/__is_base_of/…): parse `( type-list )` and
+    // fold to a bool constant token. See parser.cpp for the supported (faithful)
+    // set; unsupported traits are not recognized (clear error, never a wrong bool).
+    TokenBase *evaluate_type_trait(TokenBase *op_tb, const std::string &name);
     TokenBase *try_parse_dynamic_type_query(TokenBase *op_tb,
 					    const std::string &op_name);
     TokenDataType *parse_typeof_datatype(TokenBase *op_tb);
