@@ -3643,58 +3643,58 @@ static int64_t apply_integer_cast_value(DataDef *cast_dd, int64_t val,
     return val;
 }
 
-static int64_t parse_constant_named_cpp_cast(Program &pgm, TokenBase *cast_tb,
+int64_t Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
 					     const std::string &cast_name)
 {
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
-	pgm.Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
-    pgm.nextToken();
+    if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
+	Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
+    nextToken();
 
-    TokenBase *type_tb = pgm.nextToken();
+    TokenBase *type_tb = nextToken();
     bool force_unsigned = false;
     while ( type_tb && (type_tb->id() == TokenID::tkCONST
 	   || type_tb->id() == TokenID::tkVOLATILE
 	   || type_tb->id() == TokenID::tkRESTRICT) )
-	type_tb = pgm.nextToken();
+	type_tb = nextToken();
     if ( type_tb && type_tb->type() == TokenType::ttIdentifier
       && ((TokenIdent *)type_tb)->str == "unsigned" )
 	force_unsigned = true;
 
-    TokenDataType *tdt = resolve_declared_type_token(pgm, type_tb, true, true);
+    TokenDataType *tdt = resolve_declared_type_token(*this, type_tb, true, true);
     if ( !tdt )
-	pgm.Throw(type_tb ? type_tb : cast_tb)
+	Throw(type_tb ? type_tb : cast_tb)
 	    << cast_name << " target is not a type" << flush;
     DataDef *cast_dd = &tdt->definition;
-    while ( pgm.peekToken()
-	 && (pgm.peekToken()->id() == TokenID::tkMul
-	  || pgm.peekToken()->id() == TokenID::tkCONST
-	  || pgm.peekToken()->id() == TokenID::tkVOLATILE
-	  || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
+    while ( peekToken()
+	 && (peekToken()->id() == TokenID::tkMul
+	  || peekToken()->id() == TokenID::tkCONST
+	  || peekToken()->id() == TokenID::tkVOLATILE
+	  || peekToken()->id() == TokenID::tkRESTRICT) )
     {
-	TokenBase *pt = pgm.nextToken();
+	TokenBase *pt = nextToken();
 	if ( pt->id() == TokenID::tkMul )
-	    cast_dd = pgm.getPointerType(cast_dd);
+	    cast_dd = getPointerType(cast_dd);
     }
-    if ( pgm.peekToken()
-      && (pgm.peekToken()->id() == TokenID::tkBand
-       || pgm.peekToken()->id() == TokenID::tkLand) )
+    if ( peekToken()
+      && (peekToken()->id() == TokenID::tkBand
+       || peekToken()->id() == TokenID::tkLand) )
     {
-	pgm.nextToken();
-	cast_dd = pgm.getPointerType(cast_dd);
+	nextToken();
+	cast_dd = getPointerType(cast_dd);
     }
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkGT )
-	pgm.Throw(cast_tb) << "Expecting '>' to close "
+    if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
+	Throw(cast_tb) << "Expecting '>' to close "
 			   << cast_name << "<...>" << flush;
-    pgm.nextToken();
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
-	pgm.Throw(cast_tb) << "Expecting '(' after "
+    nextToken();
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	Throw(cast_tb) << "Expecting '(' after "
 			   << cast_name << "<...>" << flush;
-    pgm.nextToken();
+    nextToken();
 
-    int64_t val = pgm.parse_constant_integer_expression();
-    TokenBase *close = pgm.nextToken();
+    int64_t val = parse_constant_integer_expression();
+    TokenBase *close = nextToken();
     if ( !close || close->id() != TokenID::tkClBrk )
-	pgm.Throw(close ? close : cast_tb)
+	Throw(close ? close : cast_tb)
 	    << "Expecting ')' after " << cast_name << "<...>(...)" << flush;
     return apply_integer_cast_value(cast_dd, val, force_unsigned);
 }
@@ -4129,7 +4129,7 @@ static bool try_eval_known_integer(TokenBase *tb, int64_t &out)
     return false;
 }
 
-static TokenBase *materialize_cast_literal_operand(Program &pgm, TokenBase *tb)
+TokenBase *Program::materialize_cast_literal_operand(TokenBase *tb)
 {
     if ( !tb )
 	return tb;
@@ -4139,9 +4139,9 @@ static TokenBase *materialize_cast_literal_operand(Program &pgm, TokenBase *tb)
     TokenStr *first = static_cast<TokenStr *>(tb);
     std::string literal = first->str;
     bool wide_literal = first->wide;
-    while ( pgm.peekToken() && pgm.peekToken()->type() == TokenType::ttString )
+    while ( peekToken() && peekToken()->type() == TokenType::ttString )
     {
-	TokenStr *next = static_cast<TokenStr *>(pgm.nextToken());
+	TokenStr *next = static_cast<TokenStr *>(nextToken());
 	if ( wide_literal || next->wide )
 	{
 	    if ( !wide_literal )
@@ -4174,7 +4174,7 @@ static TokenBase *materialize_cast_literal_operand(Program &pgm, TokenBase *tb)
 	    literal += next->str;
     }
 
-    Variable *var = wide_literal ? pgm.addWideLiteral(literal) : pgm.addLiteral(literal);
+    Variable *var = wide_literal ? addWideLiteral(literal) : addLiteral(literal);
     TokenVar *tv = new TokenVar(*var);
     tv->file = tb->file;
     tv->line = tb->line;
@@ -4794,7 +4794,7 @@ int64_t Program::parse_constant_primary()
 	if ( is_nullptr_identifier(name) )
 	    return 0;
 	if ( is_named_cpp_cast(name) )
-	    return parse_constant_named_cpp_cast(*this, tb, name);
+	    return parse_constant_named_cpp_cast(tb, name);
     }
     if ( tb && tb->id() == TokenID::tkNeg )
 	return -parse_constant_primary();
@@ -8450,63 +8450,63 @@ static bool is_named_cpp_cast(const std::string &name)
 	|| name == "const_cast";
 }
 
-static TokenBase *parse_named_cpp_cast(Program &pgm, TokenBase *cast_tb,
+TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
 				       const std::string &cast_name)
 {
-    skip_expression_whitespace(pgm);
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
-	pgm.Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
-    pgm.nextToken();
-    skip_expression_whitespace(pgm);
+    skip_expression_whitespace(*this);
+    if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
+	Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
+    nextToken();
+    skip_expression_whitespace(*this);
 
-    TokenBase *type_tb = pgm.nextToken();
+    TokenBase *type_tb = nextToken();
     while ( type_tb && (type_tb->id() == TokenID::tkCONST
 	   || type_tb->id() == TokenID::tkVOLATILE
 	   || type_tb->id() == TokenID::tkRESTRICT) )
-	type_tb = pgm.nextToken();
+	type_tb = nextToken();
 
-    TokenDataType *tdt = resolve_declared_type_token(pgm, type_tb, true, true);
+    TokenDataType *tdt = resolve_declared_type_token(*this, type_tb, true, true);
     if ( !tdt )
-	pgm.Throw(type_tb ? type_tb : cast_tb) << cast_name << " target is not a type" << flush;
+	Throw(type_tb ? type_tb : cast_tb) << cast_name << " target is not a type" << flush;
     DataDef *cast_dd = &tdt->definition;
-    while ( pgm.peekToken()
-	 && (pgm.peekToken()->id() == TokenID::tkMul
-	  || pgm.peekToken()->id() == TokenID::tkCONST
-	  || pgm.peekToken()->id() == TokenID::tkVOLATILE
-	  || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
+    while ( peekToken()
+	 && (peekToken()->id() == TokenID::tkMul
+	  || peekToken()->id() == TokenID::tkCONST
+	  || peekToken()->id() == TokenID::tkVOLATILE
+	  || peekToken()->id() == TokenID::tkRESTRICT) )
     {
-	TokenBase *pt = pgm.nextToken();
+	TokenBase *pt = nextToken();
 	if ( pt->id() == TokenID::tkMul )
-	    cast_dd = pgm.getPointerType(cast_dd);
+	    cast_dd = getPointerType(cast_dd);
     }
-    if ( pgm.peekToken()
-      && (pgm.peekToken()->id() == TokenID::tkBand
-       || pgm.peekToken()->id() == TokenID::tkLand) )
+    if ( peekToken()
+      && (peekToken()->id() == TokenID::tkBand
+       || peekToken()->id() == TokenID::tkLand) )
     {
-	pgm.nextToken();
-	cast_dd = pgm.getPointerType(cast_dd);
+	nextToken();
+	cast_dd = getPointerType(cast_dd);
     }
-    skip_expression_whitespace(pgm);
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkGT )
-	pgm.Throw(cast_tb) << "Expecting '>' to close " << cast_name << "<...>" << flush;
-    pgm.nextToken();
-    skip_expression_whitespace(pgm);
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
-	pgm.Throw(cast_tb) << "Expecting '(' after " << cast_name << "<...>" << flush;
-    pgm.nextToken();
+    skip_expression_whitespace(*this);
+    if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
+	Throw(cast_tb) << "Expecting '>' to close " << cast_name << "<...>" << flush;
+    nextToken();
+    skip_expression_whitespace(*this);
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	Throw(cast_tb) << "Expecting '(' after " << cast_name << "<...>" << flush;
+    nextToken();
 
-    TokenBase *expr_head = pgm.nextToken();
-    TokenBase *expr = pgm.parseExpression(expr_head, true, false, true, 1);
-    skip_expression_whitespace(pgm);
+    TokenBase *expr_head = nextToken();
+    TokenBase *expr = parseExpression(expr_head, true, false, true, 1);
+    skip_expression_whitespace(*this);
     TokenBase *close_tb = NULL;
-    if ( (pgm.curToken() && pgm.curToken()->id() == TokenID::tkClBrk)
-      || (pgm.prevToken() && pgm.prevToken()->id() == TokenID::tkClBrk) )
-	close_tb = pgm.curToken() && pgm.curToken()->id() == TokenID::tkClBrk
-	    ? pgm.curToken() : pgm.prevToken();
-    else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
-	close_tb = pgm.nextToken();
+    if ( (curToken() && curToken()->id() == TokenID::tkClBrk)
+      || (prevToken() && prevToken()->id() == TokenID::tkClBrk) )
+	close_tb = curToken() && curToken()->id() == TokenID::tkClBrk
+	    ? curToken() : prevToken();
+    else if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+	close_tb = nextToken();
     if ( !close_tb )
-	pgm.Throw(cast_tb) << "Expecting ')' after "
+	Throw(cast_tb) << "Expecting ')' after "
 	    << cast_name << "<...>(...)" << flush;
     TokenCast *tc = new TokenCast(cast_dd, expr);
     tc->file = cast_tb->file;
@@ -8842,39 +8842,39 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
     return result;
 }
 
-static TokenBase *parse_cast_unary_deref_operand(Program &pgm, TokenBase *star)
+TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 {
     if ( !star || star->id() != TokenID::tkMul )
 	return NULL;
 
-    TokenBase *deref_tb = pgm.nextToken();
+    TokenBase *deref_tb = nextToken();
     if ( !deref_tb )
-	pgm.Throw(star) << "expecting pointer expression after '*'" << flush;
+	Throw(star) << "expecting pointer expression after '*'" << flush;
 
     if ( deref_tb->id() == TokenID::tkOpBrk )
     {
-	TokenBase *inner_tb = pgm.nextToken();
-	TokenBase *inner_expr = pgm.parseExpression(inner_tb, true, false, true, 1);
+	TokenBase *inner_tb = nextToken();
+	TokenBase *inner_expr = parseExpression(inner_tb, true, false, true, 1);
 	if ( !inner_expr )
-	    pgm.Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
-	DataDef *dtype = effective_pointer_type_for_member_access(pgm, inner_expr);
+	    Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
+	DataDef *dtype = effective_pointer_type_for_member_access(*this, inner_expr);
 	if ( !dtype )
 	    dtype = inner_expr->datadef();
 	if ( !dtype || !dtype->is_pointer() )
-	    pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 	return new TokenDerefExpr(inner_expr, unwrap_subscript_element_type(dtype));
     }
 
     if ( deref_tb->type() != TokenType::ttIdentifier )
     {
-	pgm.pushToken(deref_tb);
+	pushToken(deref_tb);
 	return NULL;
     }
 
-    TokenBase *peek = pgm.peekToken();
+    TokenBase *peek = peekToken();
     if ( peek && peek->id() == TokenID::tkOpBrk )
     {
-	pgm.pushToken(deref_tb);
+	pushToken(deref_tb);
 	return NULL;
     }
 
@@ -8883,12 +8883,12 @@ static TokenBase *parse_cast_unary_deref_operand(Program &pgm, TokenBase *star)
 	       || peek->id() == TokenID::tkDot
 	       || peek->id() == TokenID::tkOpSqr) )
     {
-	pointer_expr = pgm.parsePostfixChain(deref_tb);
-	DataDef *dtype = effective_pointer_type_for_member_access(pgm, pointer_expr);
+	pointer_expr = parsePostfixChain(deref_tb);
+	DataDef *dtype = effective_pointer_type_for_member_access(*this, pointer_expr);
 	if ( !dtype )
 	    dtype = pointer_expr ? pointer_expr->datadef() : NULL;
 	if ( !dtype )
-	    pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 	if ( dtype->is_function() && dtype->is_numeric() )
 	    return pointer_expr;
 	if ( !dtype->is_pointer() )
@@ -8896,47 +8896,47 @@ static TokenBase *parse_cast_unary_deref_operand(Program &pgm, TokenBase *star)
 	    if ( TokenMember *tm = dynamic_cast<TokenMember *>(pointer_expr) )
 		if ( tm->is_fixed_array_member() )
 		    return new TokenDerefExpr(pointer_expr, dtype);
-	    pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 	}
 	return new TokenDerefExpr(pointer_expr, unwrap_subscript_element_type(dtype));
     }
 
     std::string name = ((TokenIdent *)deref_tb)->str;
-    Variable *var = pgm.findVariable(name);
+    Variable *var = findVariable(name);
     if ( !var )
-	pgm.Throw(deref_tb) << "undeclared identifier '" << name << "'" << flush;
+	Throw(deref_tb) << "undeclared identifier '" << name << "'" << flush;
     if ( var->type->is_function() && var->type->is_numeric() )
 	return new TokenVar(*var);
     if ( dynamic_cast<DataDefFPTR *>(var->type) != NULL )
 	return new TokenVar(*var);
     DataDef *base = deref_type_for_variable(var);
     if ( !base )
-	pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+	Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
     return new TokenDeref(*var, base);
 }
 
-static TokenBase *parse_cast_function_call_operand(Program &pgm, TokenBase *head)
+TokenBase *Program::parse_cast_function_call_operand(TokenBase *head)
 {
     if ( !head || head->type() != TokenType::ttIdentifier )
 	return NULL;
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	return NULL;
 
     TokenIdent *ident = static_cast<TokenIdent *>(head);
-    Variable *var = pgm.findVariable(ident->str);
+    Variable *var = findVariable(ident->str);
     if ( !var || !var->type || !var->type->is_function() )
 	return NULL;
 
-    Variable *call_var = pgm.runtime_eval_scope_target(var);
+    Variable *call_var = runtime_eval_scope_target(var);
     TokenCallFunc *tc = new TokenCallFunc(*call_var);
     tc->auto_scope_context = is_runtime_eval_scope_ctx_helper_name(call_var->name)
 	&& is_runtime_eval_scope_public_name(ident->str);
 
-    TokenBase *open = pgm.nextToken();
+    TokenBase *open = nextToken();
     tc->file = open->file;
     tc->line = open->line;
     tc->column = open->column;
-    pgm.parseCallFunc(tc);
+    parseCallFunc(tc);
     return tc;
 }
 
@@ -9791,7 +9791,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		}
 		if ( is_named_cpp_cast(ident_tb->str) )
 		{
-		    exStack.push(parse_named_cpp_cast(*this, tb, ident_tb->str));
+		    exStack.push(parse_named_cpp_cast(tb, ident_tb->str));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// dynamic_cast < TYPE * > ( EXPR )   (S5c)
@@ -11712,7 +11712,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    if ( cast_expr_tb
 		      && cast_expr_tb->type() == TokenType::ttIdentifier
 		      && peekToken() && peekToken()->id() == TokenID::tkOpBrk
-		      && (cast_expr = parse_cast_function_call_operand(*this, cast_expr_tb)) )
+		      && (cast_expr = parse_cast_function_call_operand(cast_expr_tb)) )
 		    {
 		    }
 		    else if ( cast_expr_tb
@@ -11723,7 +11723,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    }
 		    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkMul )
 		    {
-			cast_expr = parse_cast_unary_deref_operand(*this, cast_expr_tb);
+			cast_expr = parse_cast_unary_deref_operand(cast_expr_tb);
 			if ( !cast_expr )
 			    cast_expr = parseExpression(cast_expr_tb, true);
 		    }
@@ -11770,7 +11770,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    {
 				// Simple literal: cast binds tightly.
 				// (double)5 consumes only 5, not < 3.0.
-				cast_expr = materialize_cast_literal_operand(*this, cast_expr_tb);
+				cast_expr = materialize_cast_literal_operand(cast_expr_tb);
 			    }
 			    else if ( cast_expr_tb
 				   && (cast_expr_tb->id() == TokenID::tkBnot  // ~

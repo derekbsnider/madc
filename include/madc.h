@@ -1607,6 +1607,16 @@ public:
 					    const std::string &op_name);
     TokenDataType *parse_typeof_datatype(TokenBase *op_tb);
     bool try_parse_constant_offsetof_address(int64_t &out);
+    // Named C++ casts (static_cast/reinterpret_cast/const_cast/dynamic_cast):
+    // parse the expression form and the constant-folded form; plus the
+    // C-style cast operand helpers (deref/function-call/literal materialization).
+    int64_t parse_constant_named_cpp_cast(TokenBase *cast_tb,
+					  const std::string &cast_name);
+    TokenBase *parse_named_cpp_cast(TokenBase *cast_tb,
+				    const std::string &cast_name);
+    TokenBase *parse_cast_unary_deref_operand(TokenBase *star);
+    TokenBase *parse_cast_function_call_operand(TokenBase *head);
+    TokenBase *materialize_cast_literal_operand(TokenBase *tb);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
