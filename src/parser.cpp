@@ -9474,6 +9474,142 @@ static bool template_declared_in_namespace(Program &pgm,
 	&& tai->second.defining_namespace == ns_name;
 }
 
+// ttDataType switch-arm of parseExpression (see madc.h for the ExprStep
+// contract). Extracted verbatim so parseExpression's shunting-yard loop owns
+// only dispatch + stack drain; this owns the type-name-in-expression cases.
+Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
+				 std::stack<TokenBase *> &exStack,
+				 std::stack<TokenBase *> &opStack,
+				 TokenCpnd *code)
+{
+    TokenDataType *bt = (TokenDataType *)tb;
+    Variable *var = NULL;
+    // If the previous token is '.' or '->', the type name is a
+    // struct member name (e.g. `a.array[1]` where `array` is
+    // both a madc keyword and a union member).  Re-inject as
+    // a plain identifier and let the ttIdentifier path resolve it.
+    if ( prevToken()
+      && (prevToken()->id() == TokenID::tkDot || prevToken()->id() == TokenID::tkDeRef)
+      && is_contextual_identifier_token(bt) )
+    {
+	std::string ctx_name = contextual_identifier_name(bt);
+	tb = new TokenIdent(ctx_name);
+	tb->line = bt->line;
+	tb->column = bt->column;
+	return ExprStep::Redo;
+    }
+    if ( peekToken()
+      && (peekToken()->id() == TokenID::tkDot
+       || peekToken()->id() == TokenID::tkDeRef) )
+    {
+	std::string ctx_name = bt->str;
+	size_t sp = ctx_name.rfind(' ');
+	if ( sp != std::string::npos && sp + 1 < ctx_name.size() )
+	    ctx_name = ctx_name.substr(sp + 1);
+	tb = new TokenIdent(ctx_name);
+	tb->line = bt->line;
+	tb->column = bt->column;
+	return ExprStep::Redo;
+    }
+    if ( is_contextual_identifier_token(bt) )
+    {
+	std::string ctx_name = contextual_identifier_name(bt);
+	Variable *ctx_var =
+	    find_variable_for_contextual_type_name(*this, ctx_name);
+	if ( !ctx_var && peekToken()
+	  && peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    std::string dyn_name = ctx_name;
+	    size_t sp = dyn_name.rfind(' ');
+	    if ( sp != std::string::npos && sp + 1 < dyn_name.size() )
+		dyn_name = dyn_name.substr(sp + 1);
+	    if ( is_dynamic_symbol_fallback_enabled()
+	      && is_dynamic_symbol_allowed(dyn_name) )
+	    {
+		void *sym = dlsym(RTLD_DEFAULT, dyn_name.c_str());
+		if ( sym )
+		    ctx_var = addFunction(dyn_name,
+			datatype_vec_t{dynamic_symbol_fallback_return_type(dyn_name)},
+			(fVOIDFUNC)sym);
+	    }
+	}
+	if ( ctx_var && peekToken() && peekToken()->id() == TokenID::tkOpBrk
+	  && ctx_var->type && ctx_var->type->is_function() )
+	{
+	    TokenCallFunc *tc = new TokenCallFunc(*ctx_var);
+	    tb = nextToken();
+	    tc->line = tb->line;
+	    tc->column = tb->column;
+	    tb = parseCallFunc(tc);
+	    opStack.push(tc);
+	    if ( tb->id() == TokenID::tkSemi )
+		return ExprStep::Done;
+	    return ExprStep::Break;
+	}
+	if ( ctx_var
+	     && (!peekToken() || peekToken()->type() != TokenType::ttIdentifier) )
+	{
+	    DBG(cout << "ttDataType " << ctx_name << " resolves to variable" << endl);
+	    exStack.push(new TokenVar(*ctx_var));
+	    return ExprStep::Break;
+	}
+    }
+    if ( TokenBase *type_expr = parse_functional_type_expression(
+	    *this, tb, &bt->definition) )
+    {
+	exStack.push(type_expr);
+	return ExprStep::Break;
+    }
+    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+    {
+	var = NULL;
+	DataDefCLASS *class_scope =
+	    dynamic_cast<DataDefCLASS *>(&bt->definition);
+	if ( !class_scope )
+	    class_scope = resolve_expression_class_scope(*this, bt->str);
+	if ( class_scope )
+	{
+	    QualifiedClassExprAction action =
+		resolve_class_qualified_expression(*this, class_scope,
+		    bt->str, tb, exStack, &var, &tb);
+	    if ( action == QualifiedClassExprAction::ResolvedFunction )
+	    {
+		if ( var && var->type && var->type->is_function()
+		  && peekToken() && peekToken()->id() == TokenID::tkLT )
+		    skip_template_id_suffix(*this);
+		if ( var && var->type && var->type->is_function()
+		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    TokenCallFunc *tc = new TokenCallFunc(*var);
+		    tb = nextToken();
+		    tc->line = tb->line;
+		    tc->column = tb->column;
+		    tb = parseCallFunc(tc);
+		    opStack.push(tc);
+		    if ( tb->id() == TokenID::tkSemi )
+			return ExprStep::Done;
+		}
+		else if ( var )
+		    exStack.push(new TokenVar(*var));
+		return ExprStep::Break;
+	    }
+	    return ExprStep::Break;
+	}
+    }
+    // If the next token isn't an identifier, the user probably
+    // meant the data type *name* as a contextual identifier — a
+    // parameter or local variable named e.g. `string`. Look it up
+    // as a variable first; only treat as inline declaration if we
+    // don't find one and the next token is an identifier.
+    tb = nextToken();
+    if ( tb->type() != TokenType::ttIdentifier )
+	Throw(tb) << "Expecting identifier" << flush;
+    var = addVariable(code, bt->definition, ((TokenIdent *)tb)->str);
+    DBG(cout << "Pushing newly declared variable: " << var->name << " onto exStack" << endl);
+    exStack.push(new TokenVar(*var));
+    return ExprStep::Break;
+}
+
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
 				    bool stop_on_closing_paren, int initial_brackets,
 				    bool push_back_comma)
@@ -9482,7 +9618,6 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
     TokenOperator *to;
     stack<TokenBase *> exStack;
     stack<TokenBase *> opStack;
-    TokenDataType *bt;
     Variable *var;
     bool done = false;
     int brackets = initial_brackets;
@@ -11380,131 +11515,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		opStack.push(to);
 		break;
             case TokenType::ttDataType:
-		bt = (TokenDataType *)tb;
-		// If the previous token is '.' or '->', the type name is a
-		// struct member name (e.g. `a.array[1]` where `array` is
-		// both a madc keyword and a union member).  Re-inject as
-		// a plain identifier and let the ttIdentifier path resolve it.
-		if ( prevToken()
-		  && (prevToken()->id() == TokenID::tkDot || prevToken()->id() == TokenID::tkDeRef)
-		  && is_contextual_identifier_token(bt) )
-		{
-		    std::string ctx_name = contextual_identifier_name(bt);
-		    tb = new TokenIdent(ctx_name);
-		    tb->line = bt->line;
-		    tb->column = bt->column;
-		    goto redo_expression_token;
-		}
-		if ( peekToken()
-		  && (peekToken()->id() == TokenID::tkDot
-		   || peekToken()->id() == TokenID::tkDeRef) )
-		{
-		    std::string ctx_name = bt->str;
-		    size_t sp = ctx_name.rfind(' ');
-		    if ( sp != std::string::npos && sp + 1 < ctx_name.size() )
-			ctx_name = ctx_name.substr(sp + 1);
-		    tb = new TokenIdent(ctx_name);
-		    tb->line = bt->line;
-		    tb->column = bt->column;
-		    goto redo_expression_token;
-		}
-		if ( is_contextual_identifier_token(bt) )
-		{
-		    std::string ctx_name = contextual_identifier_name(bt);
-		    Variable *ctx_var =
-			find_variable_for_contextual_type_name(*this, ctx_name);
-		    if ( !ctx_var && peekToken()
-		      && peekToken()->id() == TokenID::tkOpBrk )
 		    {
-			std::string dyn_name = ctx_name;
-			size_t sp = dyn_name.rfind(' ');
-			if ( sp != std::string::npos && sp + 1 < dyn_name.size() )
-			    dyn_name = dyn_name.substr(sp + 1);
-			if ( is_dynamic_symbol_fallback_enabled()
-			  && is_dynamic_symbol_allowed(dyn_name) )
-			{
-			    void *sym = dlsym(RTLD_DEFAULT, dyn_name.c_str());
-			    if ( sym )
-				ctx_var = addFunction(dyn_name,
-				    datatype_vec_t{dynamic_symbol_fallback_return_type(dyn_name)},
-				    (fVOIDFUNC)sym);
-			}
+			ExprStep step = parseExpr_dataTypeArm(tb, exStack, opStack, code);
+			if ( step == ExprStep::Redo ) goto redo_expression_token;
+			if ( step == ExprStep::Continue ) continue;
+			if ( step == ExprStep::Done ) done = true;
 		    }
-		    if ( ctx_var && peekToken() && peekToken()->id() == TokenID::tkOpBrk
-		      && ctx_var->type && ctx_var->type->is_function() )
-		    {
-			TokenCallFunc *tc = new TokenCallFunc(*ctx_var);
-			tb = nextToken();
-			tc->line = tb->line;
-			tc->column = tb->column;
-			tb = parseCallFunc(tc);
-			opStack.push(tc);
-			if ( tb->id() == TokenID::tkSemi )
-			    done = true;
-			break;
-		    }
-		    if ( ctx_var
-			 && (!peekToken() || peekToken()->type() != TokenType::ttIdentifier) )
-		    {
-			DBG(cout << "ttDataType " << ctx_name << " resolves to variable" << endl);
-			exStack.push(new TokenVar(*ctx_var));
-			break;
-		    }
-		}
-		if ( TokenBase *type_expr = parse_functional_type_expression(
-			*this, tb, &bt->definition) )
-		{
-		    exStack.push(type_expr);
 		    break;
-		}
-		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
-		{
-		    var = NULL;
-		    DataDefCLASS *class_scope =
-			dynamic_cast<DataDefCLASS *>(&bt->definition);
-		    if ( !class_scope )
-			class_scope = resolve_expression_class_scope(*this, bt->str);
-		    if ( class_scope )
-		    {
-			QualifiedClassExprAction action =
-			    resolve_class_qualified_expression(*this, class_scope,
-				bt->str, tb, exStack, &var, &tb);
-			if ( action == QualifiedClassExprAction::ResolvedFunction )
-			{
-			    if ( var && var->type && var->type->is_function()
-			      && peekToken() && peekToken()->id() == TokenID::tkLT )
-				skip_template_id_suffix(*this);
-			    if ( var && var->type && var->type->is_function()
-			      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-			    {
-				TokenCallFunc *tc = new TokenCallFunc(*var);
-				tb = nextToken();
-				tc->line = tb->line;
-				tc->column = tb->column;
-				tb = parseCallFunc(tc);
-				opStack.push(tc);
-				if ( tb->id() == TokenID::tkSemi )
-				    done = true;
-			    }
-			    else if ( var )
-				exStack.push(new TokenVar(*var));
-			    break;
-			}
-			break;
-		    }
-		}
-		// If the next token isn't an identifier, the user probably
-		// meant the data type *name* as a contextual identifier — a
-		// parameter or local variable named e.g. `string`. Look it up
-		// as a variable first; only treat as inline declaration if we
-		// don't find one and the next token is an identifier.
-		tb = nextToken();
-		if ( tb->type() != TokenType::ttIdentifier )
-		    Throw(tb) << "Expecting identifier" << flush;
-		var = addVariable(code, bt->definition, ((TokenIdent *)tb)->str);
-		DBG(cout << "Pushing newly declared variable: " << var->name << " onto exStack" << endl);
-		exStack.push(new TokenVar(*var));
-		break;
 	    case TokenType::ttString:
 		if ( ((TokenStr *)tb)->wide )
 		    var = addWideLiteral(((TokenStr *)tb)->str);

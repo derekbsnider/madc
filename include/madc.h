@@ -1522,6 +1522,23 @@ public:
 			       bool stop_on_closing_paren=false,
 			       int initial_brackets=0,
 			       bool push_back_comma=false);
+    // Control-flow signal an extracted parseExpression switch-arm handler
+    // returns to the shunting-yard loop, one-to-one with the arm's original
+    // inline control flow: Break = fall to the per-token epilogue (peek/advance),
+    // Continue = re-enter the loop (the arm already advanced `tb`), Redo =
+    // re-dispatch the (rewritten) `tb` without advancing (was `goto
+    // redo_expression_token`), Done = terminate the expression (was
+    // `done = true`). Lets the giant per-type arms move into named methods
+    // while the loop keeps owning the stacks and the goto/continue.
+    enum class ExprStep { Break, Continue, Redo, Done };
+    // ttDataType switch-arm of parseExpression: a type name appearing in
+    // expression context (member name after ./->, contextual identifier /
+    // variable, functional-cast, ns-qualified callee, or an inline declaration).
+    // `tb` is in/out so a Redo can hand back a rewritten token.
+    ExprStep parseExpr_dataTypeArm(TokenBase *&tb,
+				   std::stack<TokenBase *> &exStack,
+				   std::stack<TokenBase *> &opStack,
+				   TokenCpnd *code);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
