@@ -1655,6 +1655,19 @@ public:
     bool template_declared_in_namespace(const std::string &name,
 					const std::string &ns_name);
     TokenBase *consume_unresolved_dependent_call(TokenBase *open);
+    // Type-token resolution: resolve a declared / namespaced / typename-qualified
+    // type name (optionally consuming the tokens, allowing lazy types, walking a
+    // class-member chain) to its TokenDataType.
+    TokenDataType *resolve_typename_type_token(TokenBase *first,
+					       bool allow_lazy_types,
+					       TokenBase *typename_tb);
+    TokenDataType *resolve_class_member_type_chain(DataDefCLASS *owner,
+						   TokenBase *owner_tb);
+    TokenDataType *resolve_declared_type_token(TokenBase *tb,
+					       bool consume_ns_tokens,
+					       bool allow_lazy_types,
+					       bool consume_class_member_chain = true);
+    TokenDataType *resolve_namespaced_type_token(TokenBase *tb, bool consume_tokens);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts

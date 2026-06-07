@@ -1746,19 +1746,19 @@ static TokenDataType *make_alias_type_token(const std::string &name,
     return tdt;
 }
 
-static TokenDataType *resolve_namespaced_type_token(Program &pgm, TokenBase *tb, bool consume_tokens)
+TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consume_tokens)
 {
-    if ( !tb || tb->type() != TokenType::ttIdentifier || !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+    if ( !tb || tb->type() != TokenType::ttIdentifier || !peekToken() || peekToken()->id() != TokenID::tkNS )
 	return NULL;
 
     std::string ns_name = ((TokenIdent *)tb)->str;
-    namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns_name);
-    if ( nti == pgm.namespace_datatype_map.end() )
+    namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
+    if ( nti == namespace_datatype_map.end() )
 	return NULL;
 
-    if ( pgm.tokens.size() < 2 )
+    if ( tokens.size() < 2 )
 	return NULL;
-    TokenBase *member_tb = pgm.tokens[1];
+    TokenBase *member_tb = tokens[1];
     if ( !member_tb )
 	return NULL;
     std::string member_name;
@@ -1776,8 +1776,8 @@ static TokenDataType *resolve_namespaced_type_token(Program &pgm, TokenBase *tb,
 
     if ( consume_tokens )
     {
-	pgm.nextToken(); // consume ::
-	pgm.nextToken(); // consume member
+	nextToken(); // consume ::
+	nextToken(); // consume member
     }
     return dti->second;
 }
@@ -1791,10 +1791,6 @@ static TokenDataType *resolve_namespaced_type_token(Program &pgm, TokenBase *tb,
 // NULL if `tname` is not a template / the syntax doesn't match (caller falls
 // through). Assumes `tb` (the template name) is already current; the next token
 // must be '<'. See docs/plans/2026-05-30-template-instantiation.md.
-static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
-						  bool consume_ns_tokens,
-						  bool allow_lazy_types,
-						  bool consume_class_member_chain = true);
 static TokenDataType *use_site_type_token(TokenDataType *proto, TokenBase *at);
 // Match `<`...`>` as a balanced delimiter pair, like `(`...`)` and `{`...`}`:
 // each `<` opens one template level and is closed by exactly ONE `>`. The lexer,
@@ -2316,7 +2312,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    {
 		std::string cv_spelling;
 		at = consume_template_type_arg_qualifiers(at, cv_spelling);
-		TokenDataType *adt = resolve_declared_type_token(*this, at, true, true);
+		TokenDataType *adt = resolve_declared_type_token(at, true, true);
 		if ( !adt )
 		    Throw(at) << "Expecting a type argument to "
 				  << tname << "<>" << flush;
@@ -2379,7 +2375,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    TokenBase *dtok = nextToken();
 	    std::string cv_spelling;
 	    dtok = consume_template_type_arg_qualifiers(dtok, cv_spelling);
-	    TokenDataType *adt = resolve_declared_type_token(*this, dtok, true, true);
+	    TokenDataType *adt = resolve_declared_type_token(dtok, true, true);
 	    if ( !adt )
 		Throw(dtok ? dtok : tb)
 		    << "Could not resolve default template argument for "
@@ -2619,7 +2615,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    std::string cv_spelling;
 	    at = consume_template_type_arg_qualifiers(at, cv_spelling);
 	    (void)cv_spelling;
-	    TokenDataType *adt = resolve_declared_type_token(*this, at, true, true);
+	    TokenDataType *adt = resolve_declared_type_token(at, true, true);
 	    if ( !adt )
 		Throw(at) << "Expecting a type argument to " << tname << "<>" << flush;
 	while ( peekToken() && peekToken()->id() == TokenID::tkMul )
@@ -2673,7 +2669,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	std::string cv_spelling;
 	dtok = consume_template_type_arg_qualifiers(dtok, cv_spelling);
 	(void)cv_spelling;
-	TokenDataType *adt = resolve_declared_type_token(*this, dtok, true, true);
+	TokenDataType *adt = resolve_declared_type_token(dtok, true, true);
 	if ( !adt )
 	    Throw(dtok ? dtok : tb) << "Could not resolve default template argument for "
 					<< td.typeparams[ai] << " in "
@@ -2712,7 +2708,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
     }
 
     TokenBase *head = nextToken();
-    TokenDataType *resolved = resolve_declared_type_token(*this, head, true, true);
+    TokenDataType *resolved = resolve_declared_type_token(head, true, true);
     if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	nextToken();
 
@@ -2782,15 +2778,15 @@ bool Program::request_template_instantiation_completion(const std::string &mangl
     return false;
 }
 
-static TokenDataType *resolve_typename_type_token(Program &pgm, TokenBase *first,
+TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 						  bool allow_lazy_types,
 						  TokenBase *typename_tb)
 {
     if ( !first )
-	pgm.Throw(typename_tb) << "Expecting qualified type after 'typename'" << flush;
+	Throw(typename_tb) << "Expecting qualified type after 'typename'" << flush;
 
     TokenDataType *owner_type =
-	resolve_declared_type_token(pgm, first, true, allow_lazy_types, false);
+	resolve_declared_type_token(first, true, allow_lazy_types, false);
     if ( !owner_type )
 	return NULL;
     DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(&owner_type->definition);
@@ -2798,37 +2794,37 @@ static TokenDataType *resolve_typename_type_token(Program &pgm, TokenBase *first
 	return NULL;
     if ( is_incomplete_class_datadef(owner) )
     {
-	pgm.request_template_instantiation_completion(owner->name);
-	datatype_map_iter refreshed = pgm.datatype_map.find(owner->name);
-	if ( refreshed != pgm.datatype_map.end() )
+	request_template_instantiation_completion(owner->name);
+	datatype_map_iter refreshed = datatype_map.find(owner->name);
+	if ( refreshed != datatype_map.end() )
 	    owner = dynamic_cast<DataDefCLASS *>(&refreshed->second->definition);
 	if ( !owner )
 	    return NULL;
     }
 
-    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
 	if ( is_incomplete_class_datadef(owner) )
 	{
-	    pgm.request_template_instantiation_completion(owner->name);
-	    datatype_map_iter refreshed = pgm.datatype_map.find(owner->name);
-	    if ( refreshed != pgm.datatype_map.end() )
+	    request_template_instantiation_completion(owner->name);
+	    datatype_map_iter refreshed = datatype_map.find(owner->name);
+	    if ( refreshed != datatype_map.end() )
 		owner = dynamic_cast<DataDefCLASS *>(&refreshed->second->definition);
 	    if ( !owner )
 		return NULL;
 	}
-	pgm.nextToken(); // consume ::
-	TokenBase *member_tb = pgm.nextToken();
+	nextToken(); // consume ::
+	TokenBase *member_tb = nextToken();
 	if ( member_tb && member_tb->id() == TokenID::tkTEMPLATE )
-	    member_tb = pgm.nextToken();
+	    member_tb = nextToken();
 	if ( !member_tb || !is_contextual_identifier_token(member_tb) )
-	    pgm.Throw(member_tb ? member_tb : typename_tb)
+	    Throw(member_tb ? member_tb : typename_tb)
 		<< "Expecting member type after '::' in typename" << flush;
 	std::string member_name = contextual_identifier_name(member_tb);
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
 	    if ( TokenDataType *alias_inst =
-		    pgm.instantiate_template_alias_use(member_name, member_tb) )
+		    instantiate_template_alias_use(member_name, member_tb) )
 	    {
 		owner = dynamic_cast<DataDefCLASS *>(&alias_inst->definition);
 		if ( !owner )
@@ -2836,22 +2832,22 @@ static TokenDataType *resolve_typename_type_token(Program &pgm, TokenBase *first
 		continue;
 	    }
 	    if ( TokenDataType *inst =
-		    pgm.instantiate_template_use(member_name, member_tb) )
+		    instantiate_template_use(member_name, member_tb) )
 	    {
 		owner = dynamic_cast<DataDefCLASS *>(&inst->definition);
 		if ( !owner )
 		    return inst;
 		continue;
 	    }
-	    pgm.skip_template_id_suffix();
+	    skip_template_id_suffix();
 	}
 
 	DataDef *alias_dd = resolve_class_type_alias(owner, member_name);
 	if ( !alias_dd && class_has_unresolved_dependent_surface(owner) )
-	    alias_dd = pgm.materialize_dependent_member_type(owner, member_name);
+	    alias_dd = materialize_dependent_member_type(owner, member_name);
 	if ( !alias_dd )
 	    return NULL;
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+	if ( !peekToken() || peekToken()->id() != TokenID::tkNS )
 	    return make_alias_type_token(member_name, alias_dd, member_tb);
 	owner = dynamic_cast<DataDefCLASS *>(alias_dd);
 	if ( !owner )
@@ -2861,36 +2857,35 @@ static TokenDataType *resolve_typename_type_token(Program &pgm, TokenBase *first
     return owner_type;
 }
 
-static TokenDataType *resolve_class_member_type_chain(Program &pgm,
-						      DataDefCLASS *owner,
+TokenDataType *Program::resolve_class_member_type_chain(DataDefCLASS *owner,
 						      TokenBase *owner_tb)
 {
-    if ( !owner || !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+    if ( !owner || !peekToken() || peekToken()->id() != TokenID::tkNS )
 	return NULL;
 
-    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
 	if ( is_incomplete_class_datadef(owner) )
 	{
-	    pgm.request_template_instantiation_completion(owner->name);
-	    datatype_map_iter refreshed = pgm.datatype_map.find(owner->name);
-	    if ( refreshed != pgm.datatype_map.end() )
+	    request_template_instantiation_completion(owner->name);
+	    datatype_map_iter refreshed = datatype_map.find(owner->name);
+	    if ( refreshed != datatype_map.end() )
 		owner = dynamic_cast<DataDefCLASS *>(&refreshed->second->definition);
 	    if ( !owner )
 		return NULL;
 	}
-	pgm.nextToken(); // consume ::
-	TokenBase *member_tb = pgm.nextToken();
+	nextToken(); // consume ::
+	TokenBase *member_tb = nextToken();
 	if ( member_tb && member_tb->id() == TokenID::tkTEMPLATE )
-	    member_tb = pgm.nextToken();
+	    member_tb = nextToken();
 	if ( !member_tb || !is_contextual_identifier_token(member_tb) )
-	    pgm.Throw(member_tb ? member_tb : owner_tb)
+	    Throw(member_tb ? member_tb : owner_tb)
 		<< "Expecting member type after '::'" << flush;
 	std::string member_name = contextual_identifier_name(member_tb);
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
 	    if ( TokenDataType *alias_inst =
-		    pgm.instantiate_template_alias_use(member_name, member_tb) )
+		    instantiate_template_alias_use(member_name, member_tb) )
 	    {
 		owner = dynamic_cast<DataDefCLASS *>(&alias_inst->definition);
 		if ( !owner )
@@ -2898,23 +2893,23 @@ static TokenDataType *resolve_class_member_type_chain(Program &pgm,
 		continue;
 	    }
 	    if ( TokenDataType *inst =
-		    pgm.instantiate_template_use(member_name, member_tb) )
+		    instantiate_template_use(member_name, member_tb) )
 	    {
 		owner = dynamic_cast<DataDefCLASS *>(&inst->definition);
 		if ( !owner )
 		    return inst;
 		continue;
 	    }
-	    pgm.skip_template_id_suffix();
+	    skip_template_id_suffix();
 	}
 
 	DataDef *alias_dd = resolve_class_type_alias(owner, member_name);
 	if ( !alias_dd && class_has_unresolved_dependent_surface(owner) )
-	    alias_dd = pgm.materialize_dependent_member_type(owner, member_name);
+	    alias_dd = materialize_dependent_member_type(owner, member_name);
 	if ( !alias_dd )
-	    pgm.Throw(member_tb) << "'" << member_name
+	    Throw(member_tb) << "'" << member_name
 				 << "' is not a type member" << flush;
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+	if ( !peekToken() || peekToken()->id() != TokenID::tkNS )
 	    return make_alias_type_token(member_name, alias_dd, member_tb);
 	owner = dynamic_cast<DataDefCLASS *>(alias_dd);
 	if ( !owner )
@@ -2924,7 +2919,7 @@ static TokenDataType *resolve_class_member_type_chain(Program &pgm,
     return NULL;
 }
 
-static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
+TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 						  bool consume_ns_tokens,
 						  bool allow_lazy_types,
 						  bool consume_class_member_chain)
@@ -2933,22 +2928,22 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
 	return NULL;
     if ( tb->type() == TokenType::ttDataType )
     {
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
 	    std::string tname = ((TokenDataType *)tb)->str;
 	    if ( TokenDataType *alias_inst =
-		    pgm.instantiate_template_alias_use(tname, tb) )
+		    instantiate_template_alias_use(tname, tb) )
 		return alias_inst;
-	    if ( TokenDataType *inst = pgm.instantiate_template_use(tname, tb) )
+	    if ( TokenDataType *inst = instantiate_template_use(tname, tb) )
 		return inst;
 	}
 	if ( consume_class_member_chain
-	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	  && peekToken() && peekToken()->id() == TokenID::tkNS )
 	    if ( DataDefCLASS *owner =
 		    dynamic_cast<DataDefCLASS *>(
 			&static_cast<TokenDataType *>(tb)->definition) )
 		if ( TokenDataType *member =
-			resolve_class_member_type_chain(pgm, owner, tb) )
+			resolve_class_member_type_chain(owner, tb) )
 		    return member;
 	return (TokenDataType *)tb;
     }
@@ -2956,13 +2951,13 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
       || tb->id() == TokenID::tkSTRUCT
       || tb->id() == TokenID::tkUNION )
     {
-	TokenBase *name_tb = pgm.nextToken();
+	TokenBase *name_tb = nextToken();
 	if ( !name_tb || !is_contextual_identifier_token(name_tb) )
 	{
-	    pgm.Throw(name_tb ? name_tb : tb)
+	    Throw(name_tb ? name_tb : tb)
 		<< "Expecting type name after elaborated type specifier" << flush;
 	}
-	if ( TokenDataType *tdt = resolve_declared_type_token(pgm, name_tb,
+	if ( TokenDataType *tdt = resolve_declared_type_token(name_tb,
 		consume_ns_tokens, allow_lazy_types) )
 	    return tdt;
 	return NULL;
@@ -2972,23 +2967,23 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
 
     std::string tname = contextual_identifier_name(tb);
     if ( tname == "typename" )
-	return resolve_typename_type_token(pgm, pgm.nextToken(),
+	return resolve_typename_type_token(nextToken(),
 					   allow_lazy_types, tb);
     if ( is_decltype_identifier(tname) )
     {
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	    return NULL;
-	pgm.nextToken(); // consume '('
-	TokenBase *expr_head = pgm.nextToken();
+	nextToken(); // consume '('
+	TokenBase *expr_head = nextToken();
 	if ( !expr_head )
-	    pgm.Throw(tb) << "Expecting expression in decltype(...)" << flush;
-	TokenBase *expr = pgm.parseExpression(expr_head, true);
-	TokenBase *close = pgm.nextToken();
+	    Throw(tb) << "Expecting expression in decltype(...)" << flush;
+	TokenBase *expr = parseExpression(expr_head, true);
+	TokenBase *close = nextToken();
 	if ( !close || close->id() != TokenID::tkClBrk )
-	    pgm.Throw(close ? close : tb) << "Expecting ')' after decltype(...)" << flush;
+	    Throw(close ? close : tb) << "Expecting ')' after decltype(...)" << flush;
 	DataDef *dd = expr ? expr->datadef() : NULL;
 	if ( !dd )
-	    pgm.Throw(tb) << "Could not resolve decltype(...) operand type" << flush;
+	    Throw(tb) << "Could not resolve decltype(...) operand type" << flush;
 	TokenDataType *tdt = new TokenDataType(dd->name.c_str(), *dd);
 	tdt->file = tb->file;
 	tdt->line = tb->line;
@@ -2996,16 +2991,16 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
 	return tdt;
     }
 
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
     {
-	if ( TokenDataType *alias_inst = pgm.instantiate_template_alias_use(tname, tb) )
+	if ( TokenDataType *alias_inst = instantiate_template_alias_use(tname, tb) )
 	    return alias_inst;
-	if ( TokenDataType *inst = pgm.instantiate_template_use(tname, tb) )
+	if ( TokenDataType *inst = instantiate_template_use(tname, tb) )
 	    return inst;
     }
 
-    datatype_map_iter dmi = pgm.datatype_map.find(tname);
-    if ( dmi != pgm.datatype_map.end() )
+    datatype_map_iter dmi = datatype_map.find(tname);
+    if ( dmi != datatype_map.end() )
     {
 	// dmi->second is the shared prototype token created at the typedef's
 	// definition, carrying the definition-site position. Return a clone
@@ -3017,34 +3012,34 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
 	use->line   = tb->line;
 	use->column = tb->column;
 	if ( consume_class_member_chain
-	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	  && peekToken() && peekToken()->id() == TokenID::tkNS )
 	    if ( DataDefCLASS *owner =
 		    dynamic_cast<DataDefCLASS *>(&use->definition) )
 		if ( TokenDataType *member =
-			resolve_class_member_type_chain(pgm, owner, tb) )
+			resolve_class_member_type_chain(owner, tb) )
 		    return member;
 	return use;
     }
 
-    if ( DataDef *class_alias = resolve_current_class_type_alias(pgm, tname) )
+    if ( DataDef *class_alias = resolve_current_class_type_alias(*this, tname) )
     {
 	TokenDataType *alias_tok = make_alias_type_token(tname, class_alias, tb);
 	if ( consume_class_member_chain
-	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	  && peekToken() && peekToken()->id() == TokenID::tkNS )
 	    if ( DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(class_alias) )
 		if ( TokenDataType *member =
-			resolve_class_member_type_chain(pgm, owner, tb) )
+			resolve_class_member_type_chain(owner, tb) )
 		    return member;
 	return alias_tok;
     }
 
-    if ( TokenDataType *alias_inst = pgm.instantiate_template_alias_use(tname, tb) )
+    if ( TokenDataType *alias_inst = instantiate_template_alias_use(tname, tb) )
 	return alias_inst;
 
     // `Name<ConcreteType>` where Name is a captured template: instantiate (or
     // reuse) the concrete class and return its type. Guarded on template_map +
     // a following '<', so non-template identifiers are unaffected.
-    if ( TokenDataType *inst = pgm.instantiate_template_use(tname, tb) )
+    if ( TokenDataType *inst = instantiate_template_use(tname, tb) )
 	return inst;
 
     // `Q1::Q2::...::Name<Args>` where Name is a captured template. Templates live
@@ -3054,53 +3049,53 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
     // (captured at template-parse time) supplies the correct Itanium canonical
     // spelling regardless of how the use site qualified it, so ABI-significant
     // intermediate namespace components are preserved.
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	// pgm.tokens[0] is the '::' after tb; a qualifier ident sits at index 1,
+	// tokens[0] is the '::' after tb; a qualifier ident sits at index 1,
 	// each followed by '::', until the template name (an ident) is followed
 	// by '<'.
 	size_t j = 1;
-	while ( j + 1 < pgm.tokens.size()
-	     && pgm.tokens[j] && is_contextual_identifier_token(pgm.tokens[j]) )
+	while ( j + 1 < tokens.size()
+	     && tokens[j] && is_contextual_identifier_token(tokens[j]) )
 	{
-	    if ( pgm.tokens[j+1]->id() == TokenID::tkLT
-	      && (pgm.template_map.count(contextual_identifier_name(pgm.tokens[j]))
-	       || pgm.template_alias_map.count(contextual_identifier_name(pgm.tokens[j]))) )
+	    if ( tokens[j+1]->id() == TokenID::tkLT
+	      && (template_map.count(contextual_identifier_name(tokens[j]))
+	       || template_alias_map.count(contextual_identifier_name(tokens[j]))) )
 	    {
-		std::string member_name = contextual_identifier_name(pgm.tokens[j]);
+		std::string member_name = contextual_identifier_name(tokens[j]);
 		for ( size_t k = 0; k < j; k++ )
-		    pgm.nextToken();               // consume '::' + each (qualifier '::')
-		TokenBase *name_tok = pgm.nextToken(); // consume the template name
+		    nextToken();               // consume '::' + each (qualifier '::')
+		TokenBase *name_tok = nextToken(); // consume the template name
 		if ( TokenDataType *alias_inst =
-			pgm.instantiate_template_alias_use(member_name, name_tok) )
+			instantiate_template_alias_use(member_name, name_tok) )
 		    return alias_inst;
-		if ( TokenDataType *inst = pgm.instantiate_template_use(member_name, name_tok) )
+		if ( TokenDataType *inst = instantiate_template_use(member_name, name_tok) )
 		    return inst;
 		break;
 	    }
-	    if ( pgm.tokens[j+1]->id() == TokenID::tkNS )
+	    if ( tokens[j+1]->id() == TokenID::tkNS )
 		j += 2;                            // skip a namespace qualifier
 	    else
 		break;
 	}
     }
 
-    if ( TokenDataType *ns_type = resolve_namespaced_type_token(pgm, tb, consume_ns_tokens) )
+    if ( TokenDataType *ns_type = resolve_namespaced_type_token(tb, consume_ns_tokens) )
     {
 	if ( consume_class_member_chain
-	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	  && peekToken() && peekToken()->id() == TokenID::tkNS )
 	    if ( DataDefCLASS *owner =
 		    dynamic_cast<DataDefCLASS *>(&ns_type->definition) )
 		if ( TokenDataType *member =
-			resolve_class_member_type_chain(pgm, owner, tb) )
+			resolve_class_member_type_chain(owner, tb) )
 		    return member;
 	return ns_type;
     }
 
-    if ( !allow_lazy_types || pgm.findVariable(tname) )
+    if ( !allow_lazy_types || findVariable(tname) )
 	return NULL;
 
-    DataDef *dd = pgm.lazy_resolve_type(tname);
+    DataDef *dd = lazy_resolve_type(tname);
     if ( !dd )
 	return NULL;
     return new TokenDataType(dd->name.c_str(), *dd);
@@ -3247,8 +3242,6 @@ static size_t query_datadef_measure(const DataDef *dd, bool want_alignof)
 	return 0;
     return want_alignof ? dd->alignment() : dd->size;
 }
-
-static TokenDataType *resolve_namespaced_type_token(Program &pgm, TokenBase *tb, bool consume_tokens);
 
 static std::string canonical_builtin_simple_type_name(DataDef *dd)
 {
@@ -3644,7 +3637,7 @@ int64_t Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
       && ((TokenIdent *)type_tb)->str == "unsigned" )
 	force_unsigned = true;
 
-    TokenDataType *tdt = resolve_declared_type_token(*this, type_tb, true, true);
+    TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true);
     if ( !tdt )
 	Throw(type_tb ? type_tb : cast_tb)
 	    << cast_name << " target is not a type" << flush;
@@ -8449,7 +8442,7 @@ TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
 	   || type_tb->id() == TokenID::tkRESTRICT) )
 	type_tb = nextToken();
 
-    TokenDataType *tdt = resolve_declared_type_token(*this, type_tb, true, true);
+    TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true);
     if ( !tdt )
 	Throw(type_tb ? type_tb : cast_tb) << cast_name << " target is not a type" << flush;
     DataDef *cast_dd = &tdt->definition;
@@ -9686,7 +9679,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		  && !ordinary_call_name )
 		{
 		    if ( TokenDataType *resolved_type =
-			    resolve_declared_type_token(*this, tb, false, true) )
+			    resolve_declared_type_token(tb, false, true) )
 		    {
 			if ( TokenBase *type_expr =
 				parse_functional_type_expression(*this, tb,
@@ -9786,7 +9779,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    nextToken(); // consume '<'
 		    skip_expression_whitespace(*this);
 		    TokenBase *type_tb = nextToken();
-		    TokenDataType *tdt = resolve_declared_type_token(*this, type_tb, true, true);
+		    TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true);
 		    if ( !tdt )
 			Throw(type_tb ? type_tb : tb) << "dynamic_cast target is not a type" << flush;
 		    DataDef *tgt = &tdt->definition;
@@ -9835,7 +9828,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // followed by ')'. resolve_declared_type_token returns NULL for a
 		    // variable/expression (it checks findVariable), so typeid(obj) and
 		    // typeid(*p) fall to the expression form.
-		    TokenDataType *tdt = resolve_declared_type_token(*this, first, false, true);
+		    TokenDataType *tdt = resolve_declared_type_token(first, false, true);
 		    skip_expression_whitespace(*this);
 		    if ( tdt && peekToken() && peekToken()->id() == TokenID::tkClBrk )
 		    {
@@ -13428,7 +13421,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		   || type_tb->id() == TokenID::tkVOLATILE
 		   || type_tb->id() == TokenID::tkRESTRICT) )
 		type_tb = pgm.nextToken();
-	    TokenDataType *target = resolve_declared_type_token(pgm, type_tb, true, true);
+	    TokenDataType *target = pgm.resolve_declared_type_token(type_tb, true, true);
 	    if ( !target )
 		pgm.Throw(type_tb ? type_tb : tn) << "Expecting type in using alias" << flush;
 	    DataDef *alias_dd = &target->definition;
@@ -14907,13 +14900,13 @@ static void parse_class_anonymous_aggregate_members(Program &pgm,
 	    else
 	    {
 		TokenDataType *mtype =
-		    resolve_declared_type_token(pgm, type_tb, true, true);
+		    pgm.resolve_declared_type_token(type_tb, true, true);
 		if ( mtype )
 		    base_member_dd = &mtype->definition;
 	    }
 	}
 	else if ( TokenDataType *mtype =
-		    resolve_declared_type_token(pgm, type_tb, true, true) )
+		    pgm.resolve_declared_type_token(type_tb, true, true) )
 	    base_member_dd = &mtype->definition;
 	else if ( type_tb->id() == TokenID::tkENUM )
 	    base_member_dd = &ddINT;
@@ -15336,7 +15329,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    bool template_base_syntax =
 		pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT;
 	    DataDefCLASS *bcls = NULL;
-	    if ( TokenDataType *bdt = resolve_declared_type_token(pgm, bn, true, true) )
+	    if ( TokenDataType *bdt = pgm.resolve_declared_type_token(bn, true, true) )
 	    {
 		bcls = dynamic_cast<DataDefCLASS *>(&bdt->definition);
 		if ( !bcls && !pgm.is_c_mode() )
@@ -15872,7 +15865,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	{
 	    pgm.nextToken(); // consume operator
 	    TokenBase *conv_tb = pgm.nextToken();
-	    TokenDataType *conv_type = resolve_declared_type_token(pgm, conv_tb, true, true);
+	    TokenDataType *conv_type = pgm.resolve_declared_type_token(conv_tb, true, true);
 	    if ( !conv_type )
 		pgm.Throw(conv_tb ? conv_tb : tn) << "Expecting conversion type after operator" << flush;
 	    DataDef *conv_ret = &conv_type->definition;
@@ -16066,7 +16059,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    continue;
 		}
 		TokenBase *type_head = pgm.nextToken();
-		TokenDataType *mtype = resolve_declared_type_token(pgm, type_head, true, true);
+		TokenDataType *mtype = pgm.resolve_declared_type_token(type_head, true, true);
 		if ( !mtype )
 		    pgm.Throw(type_head) << "Expecting type in class definition" << flush;
 
@@ -16554,7 +16547,7 @@ TokenBase *TokenFOR::parse(Program &pgm)
 
     // detect range-based for: for (type var : container)
     bool typed_for_init = false;
-    if ( TokenDataType *dt = resolve_declared_type_token(pgm, tn, true, true) )
+    if ( TokenDataType *dt = pgm.resolve_declared_type_token(tn, true, true) )
     {
 	// Optional `&` / `&&` between the element type and the name:
 	// `for (T& v : c)` / `for (T&& v : c)` is a REFERENCE loop var that
@@ -17113,7 +17106,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    // instantiate the template (consuming `<...>`). This lets a typedef
 	    // alias any composed type, not just a bare datatype_map name.
 	    pgm.nextToken(); // consume the first type token (tn), aligning the deque
-	    if ( TokenDataType *rt = resolve_declared_type_token(pgm, tn, true, true) )
+	    if ( TokenDataType *rt = pgm.resolve_declared_type_token(tn, true, true) )
 		base_dd = &rt->definition;
 	}
     }
@@ -17342,7 +17335,7 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	else if ( nt->type() == TokenType::ttDataType )
 	{
 	    TokenDataType *resolved =
-		resolve_declared_type_token(*this, nt, true, true);
+		resolve_declared_type_token(nt, true, true);
 	    param_dd = resolved ? &resolved->definition
 				: &((TokenDataType *)nt)->definition;
 	    if ( user_typedef_names.count(((TokenDataType *)nt)->str) )
@@ -17352,7 +17345,7 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	{
 	    std::string tname = ((TokenIdent *)nt)->str;
 	    TokenDataType *resolved =
-		resolve_declared_type_token(*this, nt, true, true);
+		resolve_declared_type_token(nt, true, true);
 	    if ( !resolved )
 		Throw(nt) << "Unknown type '" << tname << "' in function pointer typedef" << flush;
 	    param_dd = &resolved->definition;
@@ -17678,7 +17671,7 @@ TokenBase *TokenCONST::parse(Program &pgm)
 	    }
 	    TokenBase *type_tb = pgm.nextToken();
 	    if ( TokenDataType *resolved =
-		    resolve_declared_type_token(pgm, type_tb, true, true) )
+		    pgm.resolve_declared_type_token(type_tb, true, true) )
 		return pgm.parseDeclaration(resolved);
 	}
 	pgm.Throw(tn) << "Expecting type after 'const'" << flush;
@@ -17908,7 +17901,7 @@ TokenBase *TokenTRY::parse(Program &pgm)
 	else
 	{
 	    // catch(type var)
-	    TokenDataType *ctype = resolve_declared_type_token(pgm, tn, true, true);
+	    TokenDataType *ctype = pgm.resolve_declared_type_token(tn, true, true);
 	    if ( !ctype )
 		pgm.Throw(tn) << "Expected type in catch parameter" << flush;
 	    pgm.nextToken(); // consume type
@@ -18011,7 +18004,7 @@ TokenBase *TokenNEW::parse(Program &pgm)
     // DataDefCLASS pointer); any other type (string, scalar) -> alloc_type.
     // TokenDataType::definition is a reference, so &definition is the real
     // object and dynamic_cast recovers a class.
-    TokenDataType *tdt = resolve_declared_type_token(pgm, tn, true, true);
+    TokenDataType *tdt = pgm.resolve_declared_type_token(tn, true, true);
     if ( tdt )
     {
 	if ( DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(&tdt->definition) )
@@ -20572,7 +20565,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    {
 		std::string tname = ((TokenIdent *)nt)->str;
 		if ( TokenDataType *resolved =
-			resolve_declared_type_token(*this, nt, true, true) )
+			resolve_declared_type_token(nt, true, true) )
 		{
 		    pb = resolved;
 		    // Record the typedef alias for this parameter (matches the
@@ -21417,7 +21410,7 @@ TokenBase *Program::parseLambda()
     DBG(cout << "parseLambda() START" << endl);
 
     auto resolve_lambda_param_type = [&](TokenBase *type_tb) -> TokenDataType * {
-	return resolve_declared_type_token(*this, type_tb, true, true);
+	return resolve_declared_type_token(type_tb, true, true);
     };
 
     // we already consumed '[', peek at next token
@@ -23820,7 +23813,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		if ( dmi == datatype_map.end() )
 		{
 			    if ( TokenDataType *resolved =
-				    resolve_declared_type_token(*this, tb, true,
+				    resolve_declared_type_token(tb, true,
 								true, false) )
 			    {
 				if ( peekToken() && peekToken()->id() == TokenID::tkNS
@@ -23836,8 +23829,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 					    dynamic_cast<DataDefCLASS *>(
 						&resolved->definition) )
 					if ( TokenDataType *member =
-						resolve_class_member_type_chain(
-						    *this, owner, tb) )
+						resolve_class_member_type_chain(owner, tb) )
 					    return parseDeclaration(member);
 				}
 				DBG(std::cout << "parseStatement() identifier resolves as declared type, calling parseDeclaration" << std::endl);
@@ -23850,7 +23842,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 			DBG(std::cout << "parseStatement() template instantiation, calling parseDeclaration" << std::endl);
 			return parseDeclaration(inst);
 		    }
-		    if ( TokenDataType *ns_type = resolve_namespaced_type_token(*this, tb, true) )
+		    if ( TokenDataType *ns_type = resolve_namespaced_type_token(tb, true) )
 		    {
 			DBG(std::cout << "parseStatement() namespaced identifier is a registered type, calling parseDeclaration" << std::endl);
 			return parseDeclaration(ns_type);
