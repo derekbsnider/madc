@@ -206,7 +206,32 @@ ways and prints the first error of each:
 same construct → it's the **PARSER**. The script's own header comment documents
 this and the known culprits.
 
-### 3.3b LATEST probe (after allocation-operator + noexcept fixes, 2026-06-07)
+### 3.3c LATEST probe (after ctype decls + parse-time embed gen, 2026-06-07)
+```
+HEADER         madc (own preprocess)                                pp (parser-only)
+type_traits/utility/char_traits/iosfwd/cctype   OK                 OK
+ostream/istream/iostream/sstream/fstream  48:21 Expecting type after 'typedef'   OK
+string         42:9 Expecting type in class definition             OK
+map/set        36:9 Expecting type in class definition             OK
+memory         81:54 Expecting ';' after struct member             OK
+vector         2119:22 Expecting '{' after namespace name          OK
+string_view    768:45 Expecting a type argument to iterator<>      OK
+algorithm      52:13 'abs' is not a declaration in '::'            OK
+```
+**`a4037f3` cleared `isalnum`** (declared the ctype prototypes in the embedded
+`ctype.h` stub — the comment-only list never declared them) and fixed a build
+one-pass bug (regenerate embedded_headers.cpp at Makefile PARSE time; the
+recipe-time `.PHONY` from `5a27a22` updated the file too late for the same-make
+object rebuild — it masked the ctype edit behind a stale binary). cctype now
+green; string + 5 streams advanced past isalnum.
+**New dominant blocker: `Expecting type after 'typedef'` — all 5 streams** (48:21)
+— the SAME `<bits/types.h>` typedef-in-context parser bug seen when ctype
+retirement was attempted; it parses standalone but fails in the stream-include
+context. Reduce the bits/types include interaction. `string`/`map`/`set` share a
+`class definition` preprocessor blocker (36/42:9); `memory` hits the struct-
+cannot-have-methods gap (81:54); `vector` a namespace-parse issue (2119:22).
+
+### 3.3b probe (after allocation-operator + noexcept fixes, 2026-06-07)
 ```
 HEADER         madc (own preprocess)                                pp (parser-only)
 type_traits/utility/char_traits/iosfwd   OK                        OK
@@ -579,6 +604,7 @@ printf '__INT64_TYPE__\n' | g++ -std=c++17 -E -x c++ - 2>/dev/null | tail -1
 ## 10. Commit list this session (newest first, branch feature/realhdr-parse-gaps2-claude)
 
 ```
+a4037f3 fix(headers,build): declare ctype functions (clears 'isalnum') + parse-time embed-gen
 e392a17 fix(parser): allocation-operator arity + noexcept template-id stripping (clears memory/vector/string)
 5a27a22 fix(build): regenerate embedded_headers.cpp on every build (catch deleted stubs)  [footgun]
 05add19 fix(headers): regenerate embedded_headers.cpp to actually drop locale.h
@@ -663,17 +689,14 @@ touch std registration.
    ~~build footgun~~ — **DONE** `5a27a22`.
    ~~`Too many parameters` (memory/vector/string)~~ — **DONE** `e392a17`
    (allocation-operator arity + noexcept template-id stripping).
-1. **`'isalnum' is not a declaration in '::'`** — NOW THE DOMINANT BLOCKER:
-   string + ALL 5 streams (6 headers), the `<cctype>` `using ::isalnum;`.
-   Fastest win: add the ctype function declarations (isalnum/isalpha/… returning
-   int) to the embedded `include/madc/ctype.h` stub — the SAME approach as
-   struct lconv. (Retiring the ctype stub for the real header is the cleaner
-   long-term fix but is BLOCKED on the typedef-in-context bug, #2.)
-2. **ctype-retirement blocker — `Expecting type after 'typedef'`** in the
-   `<bits/types.h>` chain: real `<ctype.h>` parses alone but fails in the
-   stream-include context. Fix this typedef-in-context parser bug, THEN the
-   ctype stub can be retired (build fix makes that safe). Lower priority than
-   just fleshing the stub (#1).
+0b. ~~`'isalnum'`~~ — **DONE** `a4037f3` (declared ctype prototypes in the stub +
+   parse-time embed-gen build fix).
+1. **`Expecting type after 'typedef'` — all 5 streams (48:21)** — NOW THE
+   DOMINANT BLOCKER. A `<bits/types.h>` typedef parses standalone but fails in
+   the stream-include context (same bug that blocked ctype-stub retirement).
+   Reduce the include interaction (which prior declaration/macro state makes the
+   typedef fail), fix the deepest layer. Clearing it also unblocks retiring the
+   ctype stub for the real header.
 3. **`memory` `81:54 Expecting ';' after struct member`** — the struct-cannot-
    have-methods gap (a `struct` with a member function; madc only allows methods
    on `class`). Real C++ headers use `struct` with methods pervasively; this is
