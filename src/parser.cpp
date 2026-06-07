@@ -1630,17 +1630,17 @@ static DataDef *type_query_chain_datadef(TokenBase *chain)
     return chain->datadef();
 }
 
-static DataDef *resolve_named_datadef(Program &pgm, const std::string &name)
+DataDef *Program::resolve_named_datadef(const std::string &name)
 {
-    datadef_map_iter dmi = pgm.struct_map.find(name);
-    if ( dmi != pgm.struct_map.end() )
+    datadef_map_iter dmi = struct_map.find(name);
+    if ( dmi != struct_map.end() )
 	return dmi->second;
 
-    datatype_map_iter bmi = pgm.datatype_map.find(name);
-    if ( bmi != pgm.datatype_map.end() )
+    datatype_map_iter bmi = datatype_map.find(name);
+    if ( bmi != datatype_map.end() )
 	return &bmi->second->definition;
 
-    return pgm.lazy_resolve_type(name);
+    return lazy_resolve_type(name);
 }
 
 static DataDef *resolve_class_type_alias(DataDefCLASS *cls, const std::string &name)
@@ -1675,59 +1675,56 @@ static DataDef *resolve_class_static_member_type(DataDefCLASS *cls, const std::s
     return NULL;
 }
 
-static DataDef *resolve_current_class_type_alias(Program &pgm,
-						  const std::string &name)
+DataDef *Program::resolve_current_class_type_alias(const std::string &name)
 {
     for ( std::vector<DataDefCLASS *>::reverse_iterator it =
-	      pgm.class_scope_stack.rbegin();
-	  it != pgm.class_scope_stack.rend(); ++it )
+	      class_scope_stack.rbegin();
+	  it != class_scope_stack.rend(); ++it )
 	if ( DataDef *dd = resolve_class_type_alias(*it, name) )
 	    return dd;
-    if ( !pgm.compounds.empty() && pgm.compounds.top()
-      && pgm.compounds.top()->method
-      && pgm.compounds.top()->method->owner_class )
+    if ( !compounds.empty() && compounds.top()
+      && compounds.top()->method
+      && compounds.top()->method->owner_class )
 	if ( DataDef *dd =
-		resolve_class_type_alias(pgm.compounds.top()->method->owner_class,
+		resolve_class_type_alias(compounds.top()->method->owner_class,
 					 name) )
 	    return dd;
     return NULL;
 }
 
-static Variable *find_variable_for_contextual_type_name(Program &pgm,
-							const std::string &name)
+Variable *Program::find_variable_for_contextual_type_name(const std::string &name)
 {
     std::string lookup = name;
-    Variable *var = pgm.findVariable(lookup);
+    Variable *var = findVariable(lookup);
     if ( var )
 	return var;
     size_t sp = name.rfind(' ');
     if ( sp == std::string::npos || sp + 1 >= name.size() )
 	return NULL;
     lookup = name.substr(sp + 1);
-    return pgm.findVariable(lookup);
+    return findVariable(lookup);
 }
 
-static DataDefCLASS *resolve_expression_class_scope(Program &pgm,
-						    const std::string &name)
+DataDefCLASS *Program::resolve_expression_class_scope(const std::string &name)
 {
-    DataDef *dd = resolve_current_class_type_alias(pgm, name);
-    if ( !dd && !pgm.compounds.empty() && pgm.compounds.top()
-      && pgm.compounds.top()->method && pgm.compounds.top()->method->owner_class )
-	dd = resolve_class_type_alias(pgm.compounds.top()->method->owner_class, name);
+    DataDef *dd = resolve_current_class_type_alias(name);
+    if ( !dd && !compounds.empty() && compounds.top()
+      && compounds.top()->method && compounds.top()->method->owner_class )
+	dd = resolve_class_type_alias(compounds.top()->method->owner_class, name);
     if ( !dd )
     {
-	datatype_map_iter dti = pgm.datatype_map.find(name);
-	if ( dti != pgm.datatype_map.end() )
+	datatype_map_iter dti = datatype_map.find(name);
+	if ( dti != datatype_map.end() )
 	    dd = &dti->second->definition;
     }
     if ( !dd )
     {
-	datadef_map_iter dmi = pgm.struct_map.find(name);
-	if ( dmi != pgm.struct_map.end() )
+	datadef_map_iter dmi = struct_map.find(name);
+	if ( dmi != struct_map.end() )
 	    dd = dmi->second;
     }
     if ( !dd )
-	dd = pgm.lazy_resolve_type(name);
+	dd = lazy_resolve_type(name);
     return dynamic_cast<DataDefCLASS *>(dd);
 }
 
@@ -3021,7 +3018,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	return use;
     }
 
-    if ( DataDef *class_alias = resolve_current_class_type_alias(*this, tname) )
+    if ( DataDef *class_alias = resolve_current_class_type_alias(tname) )
     {
 	TokenDataType *alias_tok = make_alias_type_token(tname, class_alias, tb);
 	if ( consume_class_member_chain
@@ -3356,7 +3353,7 @@ static bool parse_builtin_types_compatible_operand(Program &pgm, TokenBase *type
 		if ( inner_var )
 		    inner_dd = inner_var->type;
 		else
-		    inner_dd = resolve_named_datadef(pgm, inner_name);
+		    inner_dd = pgm.resolve_named_datadef(inner_name);
 	    }
 	    else if ( inner_tb->type() == TokenType::ttDataType )
 		inner_dd = &((TokenDataType *)inner_tb)->definition;
@@ -3366,7 +3363,7 @@ static bool parse_builtin_types_compatible_operand(Program &pgm, TokenBase *type
 		TokenBase *tag_tb = pgm.nextToken();
 		if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
 		    return false;
-		inner_dd = resolve_named_datadef(pgm, contextual_identifier_name(tag_tb));
+		inner_dd = pgm.resolve_named_datadef(contextual_identifier_name(tag_tb));
 	    }
 	    if ( !inner_dd )
 	    {
@@ -3384,7 +3381,7 @@ static bool parse_builtin_types_compatible_operand(Program &pgm, TokenBase *type
 	}
 	else
 	{
-	    DataDef *dd = resolve_named_datadef(pgm, tname);
+	    DataDef *dd = pgm.resolve_named_datadef(tname);
 	    sig = canonical_builtin_simple_type_name(dd);
 	}
     }
@@ -3751,7 +3748,7 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	    have_value = true;
 	    return NULL;
 	}
-	dd = resolve_current_class_type_alias(*this, tname);
+	dd = resolve_current_class_type_alias(tname);
 	if ( dd )
 	    return dd;
     }
@@ -3801,9 +3798,9 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	}
 	else
 	{
-	    dd = resolve_current_class_type_alias(*this, tname);
+	    dd = resolve_current_class_type_alias(tname);
 	    if ( !dd )
-		dd = resolve_named_datadef(*this, tname);
+		dd = resolve_named_datadef(tname);
 	}
     }
     else if ( type_tb->type() == TokenType::ttKeyword
@@ -3811,7 +3808,7 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
     {
 	TokenBase *tag_tb = nextToken();
 	if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
-	    dd = resolve_named_datadef(*this, ((TokenIdent *)tag_tb)->str);
+	    dd = resolve_named_datadef(((TokenIdent *)tag_tb)->str);
 	if ( !dd )
 	    Throw(tag_tb) << "Unknown struct/union type in " << op_name << flush;
     }
@@ -4404,7 +4401,7 @@ TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
 	    std::string name = contextual_identifier_name(probe);
 	    if ( !findVariable(name) )
 	    {
-		DataDef *dd = resolve_named_datadef(*this, name);
+		DataDef *dd = resolve_named_datadef(name);
 		if ( TokenBase *query = consume_simple_named_type(dd) )
 		    return query;
 	    }
@@ -4430,7 +4427,7 @@ TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
     {
 	std::string name = ((TokenIdent *)type_tb)->str;
 	if ( !findVariable(name) )
-	    dd = resolve_named_datadef(*this, name);
+	    dd = resolve_named_datadef(name);
     }
     else if ( type_tb->type() == TokenType::ttKeyword
 	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
@@ -4438,7 +4435,7 @@ TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
 	++it;
 	if ( it == tokens.end() || !is_contextual_identifier_token(*it) )
 	    return NULL;
-	dd = resolve_named_datadef(*this, contextual_identifier_name(*it));
+	dd = resolve_named_datadef(contextual_identifier_name(*it));
     }
     if ( !is_runtime_sized_type(dd) )
 	return NULL;
@@ -4479,14 +4476,14 @@ TokenDataType *Program::parse_typeof_datatype(TokenBase *op_tb)
     {
 	TokenBase *tag_tb = nextToken();
 	if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
-	    dd = resolve_named_datadef(*this, ((TokenIdent *)tag_tb)->str);
+	    dd = resolve_named_datadef(((TokenIdent *)tag_tb)->str);
 	if ( !dd )
 	    Throw(tag_tb) << "Unknown struct type in typeof" << flush;
     }
     else if ( type_tb->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)type_tb)->str;
-	dd = resolve_named_datadef(*this, tname);
+	dd = resolve_named_datadef(tname);
 	if ( !dd )
 	{
 	    TokenBase *expr = parseExpression(type_tb, true, false, true, 1);
@@ -4680,12 +4677,12 @@ bool Program::try_parse_constant_offsetof_address(int64_t &out)
 	TokenBase *tag_tb = nextToken();
 	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
 	    return fail();
-	base_dd = resolve_named_datadef(*this, contextual_identifier_name(tag_tb));
+	base_dd = resolve_named_datadef(contextual_identifier_name(tag_tb));
     }
     else if ( type_tb->type() == TokenType::ttDataType )
 	base_dd = &static_cast<TokenDataType *>(type_tb)->definition;
     else if ( is_contextual_identifier_token(type_tb) )
-	base_dd = resolve_named_datadef(*this, contextual_identifier_name(type_tb));
+	base_dd = resolve_named_datadef(contextual_identifier_name(type_tb));
     if ( !base_dd )
 	return fail();
 
@@ -9486,7 +9483,7 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
     {
 	std::string ctx_name = contextual_identifier_name(bt);
 	Variable *ctx_var =
-	    find_variable_for_contextual_type_name(*this, ctx_name);
+	    find_variable_for_contextual_type_name(ctx_name);
 	if ( !ctx_var && peekToken()
 	  && peekToken()->id() == TokenID::tkOpBrk )
 	{
@@ -9537,7 +9534,7 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 	DataDefCLASS *class_scope =
 	    dynamic_cast<DataDefCLASS *>(&bt->definition);
 	if ( !class_scope )
-	    class_scope = resolve_expression_class_scope(*this, bt->str);
+	    class_scope = resolve_expression_class_scope(bt->str);
 	if ( class_scope )
 	{
 	    QualifiedClassExprAction action =
@@ -9667,8 +9664,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		bool ordinary_call_name =
-		    find_variable_for_contextual_type_name(*this,
-			ident_tb->str) != NULL;
+		    find_variable_for_contextual_type_name(ident_tb->str) != NULL;
 		if ( !ordinary_call_name
 		  && peekToken() && peekToken()->id() == TokenID::tkOpBrk
 		  && is_dynamic_symbol_fallback_enabled()
@@ -10619,7 +10615,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		{
 		    std::string ns_name = ident_tb->str;
 		    if ( DataDefCLASS *class_scope =
-			    resolve_expression_class_scope(*this, ns_name) )
+			    resolve_expression_class_scope(ns_name) )
 		    {
 			QualifiedClassExprAction action =
 			    resolve_class_qualified_expression(*this, class_scope,
@@ -19068,7 +19064,7 @@ static DataDefCLASS *resolve_qualified_class_owner(Program &pgm,
 	}
     }
 
-    return dynamic_cast<DataDefCLASS *>(resolve_named_datadef(pgm, class_name));
+    return dynamic_cast<DataDefCLASS *>(pgm.resolve_named_datadef(class_name));
 }
 
 static DataDefCLASS *promote_struct_base_to_class(Program &pgm,
@@ -19306,7 +19302,7 @@ static DataDef *resolve_param_type_from_tokens(Program &pgm,
 	}
     }
 
-    return resolve_named_datadef(pgm, parts.back());
+    return pgm.resolve_named_datadef(parts.back());
 }
 
 static bool parse_param_sig_from_tokens(Program &pgm,
@@ -20007,7 +20003,7 @@ bool Program::is_old_style_parameter_head(TokenBase *tb)
 	return false;
 
     std::string name = contextual_identifier_name(tb);
-    if ( resolve_named_datadef(*this, name) )
+    if ( resolve_named_datadef(name) )
 	return false;
 
     TokenBase *peek = peekToken();
@@ -20225,7 +20221,7 @@ bool Program::is_old_style_parameter_declaration_start(TokenBase *tb)
       || tb->id() == TokenID::tkREGISTER || is_restrict_token(tb) )
 	return true;
     if ( is_contextual_identifier_token(tb) )
-	return resolve_named_datadef(*this, contextual_identifier_name(tb)) != NULL;
+	return resolve_named_datadef(contextual_identifier_name(tb)) != NULL;
     return false;
 }
 
@@ -23498,7 +23494,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    {
 		std::string ctx = contextual_identifier_name(tb);
 		Variable *ctx_var =
-		    find_variable_for_contextual_type_name(*this, ctx);
+		    find_variable_for_contextual_type_name(ctx);
 		if ( ctx_var && peekToken()
 		  && peekToken()->id() != TokenID::tkMul  // not a pointer decl
 		  && peekToken()->type() != TokenType::ttIdentifier ) // not a decl

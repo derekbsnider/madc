@@ -1668,6 +1668,13 @@ public:
 					       bool allow_lazy_types,
 					       bool consume_class_member_chain = true);
     TokenDataType *resolve_namespaced_type_token(TokenBase *tb, bool consume_tokens);
+    // Type-name resolution helpers: look up a named DataDef (struct/typedef/lazy),
+    // a current-class type alias, a variable matching a contextual type name, and
+    // the class scope an expression name resolves to.
+    DataDef *resolve_named_datadef(const std::string &name);
+    DataDef *resolve_current_class_type_alias(const std::string &name);
+    Variable *find_variable_for_contextual_type_name(const std::string &name);
+    DataDefCLASS *resolve_expression_class_scope(const std::string &name);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
