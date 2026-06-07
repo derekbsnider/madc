@@ -15,38 +15,99 @@ Date: **2026-06-07** (late session). Branch **`feature/realhdr-parse-gaps2-claud
 
 ---
 
-## UPDATE 2026-06-07 (later) — STRUCT MEMBER METHODS LANDED (job 1 of §6)
+## UPDATE 2026-06-07 (latest) — STRUCT METHODS + SMAUG C89 WARNING AUDIT DONE
 
-Branch HEAD now **`952d6d2`** (was `bb829ed`/`98c9a20`). The §6 target's **job 1
-is DONE**: a `struct` body now parses member functions, operators, ctors/dtors,
-access labels — committed `2dbfa8e` (feature) + `952d6d2` (regression fixes).
+Branch HEAD now **`f52c3ad`** (`feature/realhdr-parse-gaps2-claude`, **local, NOT
+pushed**; `develop` untouched). Two arcs landed this session, all test-gated.
+**Live state:** fulltest **528/4/0/26** (4 known pre-existing reds); **FULL
+gcc.c-torture failset BYTE-IDENTICAL to the pre-session parent** (1566 passed, 89
+fail — I ran BOTH the parent `98c9a20` and the final build full and `comm`-diffed:
+**0 regressions** across every commit); **SMAUG boots clean** to "Realms of Despair
+ready … on port 4023", **0 errors**.
+
+### Arc 1 — struct member methods (job 1 of §6); commits `2dbfa8e`, `952d6d2`, `5939707`
+A `struct` body now parses member functions/operators/ctors/dtors/access labels.
 Mechanism: **widened `cpp_struct_body_needs_class_parser`** (the pre-existing
-struct→class delegation gate, parser.cpp ~13653) to detect a plain member
-function (`name(`) and a typed operator, so method-bearing structs route to
-`TokenCLASS::parse` like ctor/base-bearing ones already did. The struct path is
-UNTOUCHED (data-only structs — all of C/SMAUG — never route). Brought the class
-body parser to **parity** so nothing is dropped: comma declarators (`int x,y;`),
-bit-fields, leading+trailing member `__attribute__`; hoisted `parse_bitfield_width`
-to a shared `Program` method.
+struct→class delegation gate, parser.cpp ~13653) to detect a plain member function
+(`name(` — at class scope always a function) and a typed `operator`, so
+method-bearing structs route to `TokenCLASS::parse` like ctor/base-bearing ones
+already did. **Struct path UNTOUCHED** (data-only structs — all of C/SMAUG — never
+route). Brought the class body parser to **parity** so nothing drops: comma
+declarators (`int x,y;`), bit-fields (single+comma, named+unnamed), leading+trailing
+member `__attribute__`; hoisted `parse_bitfield_width` to a shared `Program` method.
+Gate false-positives (attribute *contents* `aligned(8)`/`mode(byte)`, array-dim
+`[sizeof()]`, NSDMI `= f()`) caused 12 transient torture regressions — all found via
+the parent-vs-mine failset diff and fixed (skip `__attribute__((...))` balanced
+parens, sqdepth + member_seen_eq guards). Tests: `teststructmethod`,
+`teststructmethodattr`.
 
-**VALIDATION (all green):** fulltest **528/4/0/26** (+teststructmethod,
-+teststructmethodattr); **FULL gcc.c-torture failset BYTE-IDENTICAL to parent**
-(ran both `98c9a20` and `952d6d2` full: 1566 passed, 89 fail, `comm` diff = ∅ both
-ways — **0 regressions**); SMAUG soak (C89 data structs unaffected — torture proves
-it, since torture runs in STD_MADC exactly like SMAUG). 12 transient regressions
-(attribute-content `aligned(8)`/`mode(byte)` misfiring method detection) were
-found via a parent-vs-mine failset diff and fixed (skip `__attribute__((...))`
-balanced parens in the gate).
+### Arc 2 — SMAUG C89 warning audit: 886 → 11 warnings (98.8%); commits `7810f3b`, `c13c931`, `735c719`, `f52c3ad`
+The SMAUG boot emitted 886 **c2mir** warnings (NOT madc-parser warnings — all from
+`/workspace/mir/c2mir/c2mir.c`, reflecting the types in madc's emitted node_t tree).
+Audited them; **found and fixed 4 real, GENERAL madc bugs** (not SMAUG-specific).
+Methodology that nailed each: a **3-way reducer — gcc, clang, AND c2m-direct
+(`/usr/local/bin/c2m`) vs madc**; when gcc/clang/c2m are silent but madc warns, the
+bug is madc's lowering, not c2mir strictness or source looseness.
+1. **`7810f3b` (Bucket B):** embedded `stdlib.h`/`stdio.h` left
+   malloc/calloc/realloc/fopen/fgets/getenv on the dlsym fallback (return typed
+   `long`); declared their real `void*`/`char*` returns (`unsigned long` for size_t,
+   as string.h does; FILE is `void`). 886→700.
+2. **`c13c931` (Bucket A — THE over-strict bug):** a Form-1 function typedef
+   (`typedef bool SPEC_FUN(CHAR_DATA*)`) param `SPEC_FUN *p` emitted as `SPEC_FUN **p`.
+   `CirBuilder::explicit_star_count` (cir_builder.cpp ~2066) **summed** the implicit
+   function-decay star with the explicit declarator `*` — they're the same pointer
+   level, must not stack. Changed `+=` to **max**. 700→17. (gcc/clang/c2m all silent
+   on the reducer; madc now matches.)
+3. **`735c719`:** `add_stdio()` registered stdin/stdout/stderr as `ddINT64` globals
+   (value right, integer type wrong) → typed as `ddVOIDptr` (FILE=void); declared
+   `inet_ntoa`/`inet_ntop` (char* returns) in `arpa/inet.h` (+`#include <netinet/in.h>`
+   for `struct in_addr`). 17→15.
+4. **`f52c3ad`:** `TokenCast` emitter (cir_builder.cpp ~5684) peeled ONE pointer
+   level and appended ONE `*`, so `(char **)` collapsed to `(char *)` (bit SMAUG's
+   `CREATE(dest,char*,n)` macro + every `T**` cast). Now peels/emits ALL DataDefPTR
+   levels (fptr keeps the single-pointer fallback). 15→11.
 
-**NEXT (this advanced `memory` 81:54→81:79 but did NOT clear streams):** the
-streams' `'less'` is the **stl_function.h DERAILMENT** — `std::less` is a struct
-template with a base, but the header parse derails ("Unexpected end of data") in
-the `less<void>` specialization (partial specs / nested struct templates /
-`__ptr_cmp<>{}` / `constexpr auto … -> decltype`). struct-methods was a PREREQ but
-this template bug kills `std::less` registration independently. That derailment is
-the next target for the streams. Still-open §6 work: the full **unification/dedup**
-of the two ~2300-line body parsers (this milestone reached parity by REUSING
-shared helpers, not merging) + the `is_nontrivial_class` re-gate (§6.4).
+**Remaining 11 SMAUG warnings are GENUINE C89 looseness that gcc -Wall also flags**
+(9 `grub.c` `int*` vs `bool*` arg mismatches; 2 `magic.c` int/pointer comparisons —
+my reducers could NOT reproduce them in madc, confirming SMAUG-specific). madc is
+now correctly **aligned with gcc**, NOT over-strict — do NOT silence these (would
+hide real bugs; user's "don't ignore warnings"). User's goal ("handle legacy code
+well, not be more strict than gcc") is met.
+
+**Known minor latent bug found but NOT fixed (rare, out of scope):** a *global*
+`FT **g` (pointer-to-function-pointer via a function typedef) under-counts to one
+`*` on the var path (the var path doesn't record explicit stars for fnptr aliases).
+Vanishingly rare, not in SMAUG, orthogonal to the param fix.
+
+### NEXT (real-header track — struct-methods advanced `memory` 81:54→81:79 but did NOT clear streams)
+The streams' `'less'` is the **`stl_function.h` DERAILMENT** — `std::less` is a
+struct template with a base, but the header parse derails ("Unexpected end of data",
+both madc-pp and gcc-pp → a PARSER bug) in the `less<void>` specialization (partial
+specs / nested struct templates / `__ptr_cmp<>{}` / `constexpr auto … -> decltype`).
+struct-methods was a PREREQ but this template bug kills `std::less` registration
+independently — **this is the next target for the streams.** Other live probe
+blockers (§5): `string`/`map`/`set` `36:9`/`42:9` (preprocessor), `vector` `2119:22`
+(namespace parse), `string_view` `768:45` (iterator<> template arg), `algorithm`
+`'abs'` (declare in `<cstdlib>` like the Bucket-B fns). Deferred §6 work: full
+**unification/dedup** of the two ~2300-line body parsers + the `is_nontrivial_class`
+re-gate (§6.4).
+
+### Verify-state on resume
+```bash
+cd /workspace/madc
+git rev-parse --short HEAD          # f52c3ad (or later)
+git branch --show-current           # feature/realhdr-parse-gaps2-claude
+git status --short                  # clean
+make -C src 2>&1 | grep -iE 'error|warning'   # clean
+make -C src fulltest 2>&1 | tail -2 # 528 passed / 4 failed
+bash scripts/probe_real_headers.sh 2>&1 | sed 's/\x1b\[[0-9;]*m//g'   # §5 frontier
+# SMAUG soak (boots to "ready ... port 4023", 0 errors):
+cd /workspace/MadSMAUG && MADC=/workspace/madc/bin/madc MADC_CPU_LIMIT=0 timeout 600 ./MadSMAUG.sh 4023 2>&1 | grep -cE 'warning --|ready at address|error:'
+# full torture failset diff (the regression gate for struct/class & cir changes):
+#   1. git checkout <parent> -- src/parser.cpp src/cir_builder.cpp include/madc.h ; make -C src ; run_gcc_testsuite.py > parent.log
+#   2. git checkout HEAD  -- (same) ; make -C src ; run_gcc_testsuite.py > now.log
+#   3. comm -13 <(failset parent) <(failset now)  → MUST be empty
+```
 
 ---
 
