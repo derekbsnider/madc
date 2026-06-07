@@ -1487,6 +1487,17 @@ public:
     int64_t parse_constant_lor();
     int64_t parse_constant_ternary();
     int64_t parse_constant_integer_expression();
+    // Array-dimension classification: decide whether the upcoming `[ … ]`
+    // dimension is a VLA (needs a runtime value) or a constant fold.
+    // `bracket_dim_needs_runtime_value` is the entry; the other three are its
+    // helpers (speculative constant-parse, runtime-name scan, sizeof/alignof
+    // fold-query probe). Scans the token stream from the current position.
+    bool bracket_dim_constant_expression_parses();
+    bool bracket_dim_uses_runtime_value(
+		const std::set<std::string> *runtime_names = NULL);
+    bool bracket_dim_has_constant_fold_query();
+    bool bracket_dim_needs_runtime_value(
+		const std::set<std::string> *runtime_names = NULL);
     // After a method call's arguments are parsed, re-bind `tc` to the overload
     // of `cls`'s method `id` that best matches the argument types (the initial
     // findMethod() bound the first by-name match). Returns `tc` unchanged when

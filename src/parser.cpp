@@ -5034,34 +5034,34 @@ int64_t Program::parse_constant_integer_expression()
     return parse_constant_ternary();
 }
 
-static bool bracket_dim_constant_expression_parses(Program &pgm)
+bool Program::bracket_dim_constant_expression_parses()
 {
-    auto saved_tokens = pgm.tokens;
-    size_t saved_diag_count = pgm.diagnostics.size();
-    Program::ErrorInfo saved_error = pgm.last_error;
+    auto saved_tokens = tokens;
+    size_t saved_diag_count = diagnostics.size();
+    Program::ErrorInfo saved_error = last_error;
     try
     {
-	int64_t n = pgm.parse_constant_integer_expression();
-	TokenBase *cl = pgm.nextToken();
-	pgm.tokens = saved_tokens;
-	pgm.diagnostics.resize(saved_diag_count);
-	pgm.last_error = saved_error;
+	int64_t n = parse_constant_integer_expression();
+	TokenBase *cl = nextToken();
+	tokens = saved_tokens;
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
 	return n >= 0 && cl && cl->id() == TokenID::tkClSqr;
     }
     catch ( ... )
     {
-	pgm.tokens = saved_tokens;
-	pgm.diagnostics.resize(saved_diag_count);
-	pgm.last_error = saved_error;
+	tokens = saved_tokens;
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
 	return false;
     }
 }
 
-static bool bracket_dim_uses_runtime_value(Program &pgm,
-					   const std::set<std::string> *runtime_names = NULL)
+bool Program::bracket_dim_uses_runtime_value(
+					   const std::set<std::string> *runtime_names)
 {
     int depth = 1;
-    for ( auto it = pgm.tokens.begin(); it != pgm.tokens.end() && depth > 0; ++it )
+    for ( auto it = tokens.begin(); it != tokens.end() && depth > 0; ++it )
     {
 	TokenBase *t = *it;
 	if ( t->id() == TokenID::tkOpSqr ) { ++depth; continue; }
@@ -5077,7 +5077,7 @@ static bool bracket_dim_uses_runtime_value(Program &pgm,
 	    continue;
 	if ( runtime_names && runtime_names->count(name) )
 	    return true;
-	Variable *v = pgm.findVariable(name);
+	Variable *v = findVariable(name);
 	if ( !v )
 	    continue;
 	if ( v->is_constant() )
@@ -5096,10 +5096,10 @@ static bool bracket_dim_uses_runtime_value(Program &pgm,
     return false;
 }
 
-static bool bracket_dim_has_constant_fold_query(Program &pgm)
+bool Program::bracket_dim_has_constant_fold_query()
 {
     int depth = 1;
-    for ( auto it = pgm.tokens.begin(); it != pgm.tokens.end() && depth > 0; ++it )
+    for ( auto it = tokens.begin(); it != tokens.end() && depth > 0; ++it )
     {
 	TokenBase *t = *it;
 	if ( t->id() == TokenID::tkOpSqr ) { ++depth; continue; }
@@ -5115,14 +5115,14 @@ static bool bracket_dim_has_constant_fold_query(Program &pgm)
     return false;
 }
 
-static bool bracket_dim_needs_runtime_value(Program &pgm,
-					    const std::set<std::string> *runtime_names = NULL)
+bool Program::bracket_dim_needs_runtime_value(
+					    const std::set<std::string> *runtime_names)
 {
-    if ( !bracket_dim_uses_runtime_value(pgm, runtime_names) )
+    if ( !bracket_dim_uses_runtime_value(runtime_names) )
 	return false;
-    if ( !bracket_dim_has_constant_fold_query(pgm) )
+    if ( !bracket_dim_has_constant_fold_query() )
 	return true;
-    return !bracket_dim_constant_expression_parses(pgm);
+    return !bracket_dim_constant_expression_parses();
 }
 
 static DataDef *parse_typedef_array_suffix(Program &pgm, DataDef *base_dd,
@@ -5146,7 +5146,7 @@ static DataDef *parse_typedef_array_suffix(Program &pgm, DataDef *base_dd,
 	    continue;
 	}
 	pgm.pushToken(cl);
-	if ( !alias_count_expr && bracket_dim_needs_runtime_value(pgm) )
+	if ( !alias_count_expr && pgm.bracket_dim_needs_runtime_value() )
 	{
 	    alias_count_expr = pgm.parseExpression(pgm.nextToken(), true);
 	    cl = pgm.nextToken();
@@ -14170,7 +14170,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    break;
 			}
 			pgm.pushToken(cl);
-			if ( !inner_count_expr && bracket_dim_needs_runtime_value(pgm) )
+			if ( !inner_count_expr && pgm.bracket_dim_needs_runtime_value() )
 			{
 			    inner_count_expr = pgm.parseExpression(pgm.nextToken(), true);
 			    cl = pgm.nextToken();
@@ -14226,7 +14226,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    TokenBase *cl = pgm.nextToken();
 			    if ( cl && cl->id() == TokenID::tkClSqr ) { ccount = 0; break; }
 			    pgm.pushToken(cl);
-			    if ( !ccount_expr && bracket_dim_needs_runtime_value(pgm) )
+			    if ( !ccount_expr && pgm.bracket_dim_needs_runtime_value() )
 			    {
 				ccount_expr = pgm.parseExpression(pgm.nextToken(), true);
 				cl = pgm.nextToken();
@@ -14467,7 +14467,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    break;
 			}
 			pgm.pushToken(cl);
-			if ( !member_count_expr && bracket_dim_needs_runtime_value(pgm) )
+			if ( !member_count_expr && pgm.bracket_dim_needs_runtime_value() )
 			{
 			    member_count_expr = pgm.parseExpression(pgm.nextToken(), true);
 			    cl = pgm.nextToken();
@@ -17167,7 +17167,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 		continue;
 	    }
 	    pgm.pushToken(cl);
-	    if ( !alias_count_expr && bracket_dim_needs_runtime_value(pgm) )
+	    if ( !alias_count_expr && pgm.bracket_dim_needs_runtime_value() )
 	    {
 		alias_count_expr = pgm.parseExpression(pgm.nextToken(), true);
 		cl = pgm.nextToken();
@@ -20619,7 +20619,7 @@ grabnt:
 		else
 		{
 		    TokenBase *dim_expr = NULL;
-		    if ( bracket_dim_needs_runtime_value(*this, NULL) )
+		    if ( bracket_dim_needs_runtime_value(NULL) )
 		    {
 			dim_expr = parseExpression(nextToken(), true);
 			param_array_dims.push_back(0);
@@ -20741,7 +20741,7 @@ grabnt:
 		param_runtime_names.insert(pid);
 		for ( size_t ii = 0; ii < ids.size(); ++ii )
 		    param_runtime_names.insert(ids[ii]);
-		if ( bracket_dim_needs_runtime_value(*this, &param_runtime_names) )
+		if ( bracket_dim_needs_runtime_value(&param_runtime_names) )
 		{
 		    dim_expr = parseExpression(nextToken(), true);
 		    param_array_dims.push_back(0);
@@ -22291,7 +22291,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // Constants (enum values, vfCONSTANT vars, typedef'd integer
 	    // constants) stay on the parse_constant_integer_expression path
 	    // because resolve_integer_constant handles them.
-	    bool is_vla = bracket_dim_needs_runtime_value(*this);
+	    bool is_vla = bracket_dim_needs_runtime_value();
 	    if ( is_vla && arr_dims.empty() && !vla_size_expr )
 	    {
 		// First-dim VLA: capture the runtime expression.
