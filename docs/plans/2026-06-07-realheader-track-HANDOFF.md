@@ -206,7 +206,33 @@ ways and prints the first error of each:
 same construct → it's the **PARSER**. The script's own header comment documents
 this and the known culprits.
 
-### 3.3 Current probe results (after bug-B + locale-stub retirement, 2026-06-07)
+### 3.3b LATEST probe (after allocation-operator + noexcept fixes, 2026-06-07)
+```
+HEADER         madc (own preprocess)                                pp (parser-only)
+type_traits/utility/char_traits/iosfwd   OK                        OK
+string         64:17 'isalnum' is not a declaration in '::'        OK   <-- joined streams
+ostream/istream/iostream/sstream/fstream 64:17 'isalnum' …         OK
+memory         81:54 Expecting ';' after struct member             OK   <-- struct-method gap
+vector         2119:22 Expecting '{' after namespace name          OK   <-- deep, new
+string_view    768:45 Expecting a type argument to iterator<>      OK
+map/set        36:9 Expecting type in class definition             OK
+algorithm      52:13 'abs' is not a declaration in '::'            OK
+```
+**`e392a17` cleared the `Too many parameters` blocker** (memory/vector/string):
+(1) operator new/delete overloads are collapsed to one name in madc and the
+C++17 aligned 2-arg `operator new(size, align_val_t)` tripped the arity check —
+fixed via `is_overloaded_allocation_operator()` accepting extra args; (2)
+`noexcept(...)` was a function-like macro that split its template-id condition on
+the `<...>` comma — fixed by balanced-paren stripping in the lexer (test
+`testnoexcepttemplatecond`). vector advanced 690→2119.
+**The dominant blocker is now `'isalnum'` — string + ALL 5 streams (6 headers)** —
+the `<cctype>` `using ::isalnum;`. Fastest win: add the ctype function decls to
+the embedded `include/madc/ctype.h` stub (the struct-lconv approach), since
+RETIRING the ctype stub is blocked on the `bits/types.h` typedef-in-context bug
+(§13 #2). `memory`'s `81:54` is the struct-cannot-have-methods gap; `vector`'s
+`2119` is a new namespace-parse issue.
+
+### 3.3 Earlier probe (after bug-B + locale-stub retirement, 2026-06-07)
 ```
 HEADER         madc (own preprocess)                                pp (parser-only)
 type_traits    OK                                                   OK
@@ -553,6 +579,7 @@ printf '__INT64_TYPE__\n' | g++ -std=c++17 -E -x c++ - 2>/dev/null | tail -1
 ## 10. Commit list this session (newest first, branch feature/realhdr-parse-gaps2-claude)
 
 ```
+e392a17 fix(parser): allocation-operator arity + noexcept template-id stripping (clears memory/vector/string)
 5a27a22 fix(build): regenerate embedded_headers.cpp on every build (catch deleted stubs)  [footgun]
 05add19 fix(headers): regenerate embedded_headers.cpp to actually drop locale.h
 39bd07a feat(headers): retire embedded locale.h stub — map <locale.h> to real libc
@@ -634,17 +661,26 @@ touch std registration.
 0. ~~`template_map` namespace-scoping (bug B)~~ — **DONE** `5ea75a2`/`4f4fbd2`.
    ~~`lconv` family~~ — **DONE** by retiring the locale.h stub (`39bd07a`/`05add19`).
    ~~build footgun~~ — **DONE** `5a27a22`.
-1. **`Too many parameters`** (memory 690 + vector 690 + string 149) — ONE
-   recurring root cause across 3 headers (probably the most leverage). Likely a
-   real parser limit on parameter count OR a macro mis-expansion producing an
-   over-long param list. Reduce: find the construct at the failing line under
-   `--dump-source`; check param-count handling in the declarator parser.
-2. **`'isalnum' is not a declaration in '::'`** (all 5 streams, `<cctype>`) —
-   the locale mirror, BUT BLOCKED ON a parser bug: retiring the `ctype.h` stub
-   surfaces `Expecting type after 'typedef'` in the `<bits/types.h>` chain (real
-   `<ctype.h>` parses alone; fails only in the stream-header include context).
-   So: FIRST fix that typedef-in-context bug (reduce the bits/types include
-   interaction), THEN retire the ctype.h stub (now safe via the build fix).
+   ~~`Too many parameters` (memory/vector/string)~~ — **DONE** `e392a17`
+   (allocation-operator arity + noexcept template-id stripping).
+1. **`'isalnum' is not a declaration in '::'`** — NOW THE DOMINANT BLOCKER:
+   string + ALL 5 streams (6 headers), the `<cctype>` `using ::isalnum;`.
+   Fastest win: add the ctype function declarations (isalnum/isalpha/… returning
+   int) to the embedded `include/madc/ctype.h` stub — the SAME approach as
+   struct lconv. (Retiring the ctype stub for the real header is the cleaner
+   long-term fix but is BLOCKED on the typedef-in-context bug, #2.)
+2. **ctype-retirement blocker — `Expecting type after 'typedef'`** in the
+   `<bits/types.h>` chain: real `<ctype.h>` parses alone but fails in the
+   stream-include context. Fix this typedef-in-context parser bug, THEN the
+   ctype stub can be retired (build fix makes that safe). Lower priority than
+   just fleshing the stub (#1).
+3. **`memory` `81:54 Expecting ';' after struct member`** — the struct-cannot-
+   have-methods gap (a `struct` with a member function; madc only allows methods
+   on `class`). Real C++ headers use `struct` with methods pervasively; this is
+   a structural parser gap worth a dedicated pass (promote struct→class method
+   parsing — see [[project_struct_is_class]]).
+4. **`vector` `2119:22 Expecting '{' after namespace name`** — new, deep; a
+   namespace-declaration parse issue. Reduce at that line.
 3. **`algorithm` `52:13 'abs' is not a declaration in '::'`** — twin of the
    cleared `lconv` pattern (`<cstdlib>` `using ::abs;`). Likely a small stdlib
    stub gap or another stub-retirement candidate.
