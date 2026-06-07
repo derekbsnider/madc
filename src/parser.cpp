@@ -20002,16 +20002,13 @@ static bool old_style_param_name_exists(const std::vector<std::string> &ids,
     return false;
 }
 
-static bool is_old_style_parameter_declaration_start(Program &pgm,
-						     TokenBase *tb);
-
-static bool old_style_parameter_head_has_declaration_suffix(Program &pgm)
+bool Program::old_style_parameter_head_has_declaration_suffix()
 {
     int paren_depth = 0;
     int square_depth = 0;
-    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    for ( size_t i = 0; i < tokens.size(); ++i )
     {
-	TokenBase *t = pgm.tokens[i];
+	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
 	if ( t->id() == TokenID::tkOpBrk )
@@ -20020,9 +20017,9 @@ static bool old_style_parameter_head_has_declaration_suffix(Program &pgm)
 	{
 	    if ( paren_depth == 0 )
 	    {
-		TokenBase *after = (i + 1 < pgm.tokens.size())
-		    ? pgm.tokens[i + 1] : NULL;
-		return is_old_style_parameter_declaration_start(pgm, after);
+		TokenBase *after = (i + 1 < tokens.size())
+		    ? tokens[i + 1] : NULL;
+		return is_old_style_parameter_declaration_start(after);
 	    }
 	    --paren_depth;
 	}
@@ -20034,20 +20031,20 @@ static bool old_style_parameter_head_has_declaration_suffix(Program &pgm)
     return false;
 }
 
-static bool is_old_style_parameter_head(Program &pgm, TokenBase *tb)
+bool Program::is_old_style_parameter_head(TokenBase *tb)
 {
-    if ( pgm.is_cpp_mode() )
+    if ( is_cpp_mode() )
 	return false;
     if ( !is_contextual_identifier_token(tb) )
 	return false;
 
     std::string name = contextual_identifier_name(tb);
-    if ( resolve_named_datadef(pgm, name) )
+    if ( resolve_named_datadef(*this, name) )
 	return false;
 
-    TokenBase *peek = pgm.peekToken();
+    TokenBase *peek = peekToken();
     return peek && (peek->id() == TokenID::tkComma || peek->id() == TokenID::tkClBrk)
-	&& old_style_parameter_head_has_declaration_suffix(pgm);
+	&& old_style_parameter_head_has_declaration_suffix();
 }
 
 static bool parse_array_designator_initializer(Program &pgm, TokenBase *&next_init,
@@ -20098,39 +20095,39 @@ static bool parse_array_designator_initializer(Program &pgm, TokenBase *&next_in
     return true;
 }
 
-static DataDef *parse_old_style_parameter_base(Program &pgm, TokenBase *&nt)
+DataDef *Program::parse_old_style_parameter_base(TokenBase *&nt)
 {
     while ( nt && (nt->id() == TokenID::tkCONST
 	       || nt->id() == TokenID::tkREGISTER
 	       || is_restrict_token(nt)) )
-	nt = pgm.nextToken();
+	nt = nextToken();
 
     if ( !nt )
-	pgm.Throw << "Unexpected end of input in K&R parameter declaration" << flush;
+	Throw << "Unexpected end of input in K&R parameter declaration" << flush;
 
     if ( nt->id() == TokenID::tkSTRUCT || nt->id() == TokenID::tkUNION )
     {
-	TokenBase *tag = pgm.nextToken();
+	TokenBase *tag = nextToken();
 	if ( !tag || !is_contextual_identifier_token(tag) )
-	    pgm.Throw(tag ? tag : nt) << "Expecting struct/union name in K&R parameter declaration" << flush;
+	    Throw(tag ? tag : nt) << "Expecting struct/union name in K&R parameter declaration" << flush;
 	std::string sname = contextual_identifier_name(tag);
-	datadef_map_iter sdmi = pgm.struct_map.find(sname);
-	if ( sdmi == pgm.struct_map.end() )
+	datadef_map_iter sdmi = struct_map.find(sname);
+	if ( sdmi == struct_map.end() )
 	{
 	    DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
 	    if ( nt->id() == TokenID::tkUNION )
 		fwd->union_layout = true;
-	    pgm.struct_map[sname] = fwd;
-	    sdmi = pgm.struct_map.find(sname);
+	    struct_map[sname] = fwd;
+	    sdmi = struct_map.find(sname);
 	}
 	return sdmi->second;
     }
 
     if ( nt->id() == TokenID::tkENUM )
     {
-	TokenBase *tag = pgm.peekToken();
+	TokenBase *tag = peekToken();
 	if ( tag && is_contextual_identifier_token(tag) )
-	    pgm.nextToken();
+	    nextToken();
 	return &ddINT32;
     }
 
@@ -20140,22 +20137,22 @@ static DataDef *parse_old_style_parameter_base(Program &pgm, TokenBase *&nt)
     if ( nt->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)nt)->str;
-	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
-	if ( tdmi != pgm.datatype_map.end() )
+	datatype_map_iter tdmi = datatype_map.find(tname);
+	if ( tdmi != datatype_map.end() )
 	    return &tdmi->second->definition;
     }
 
-    pgm.Throw(nt) << "Expecting type in K&R parameter declaration" << flush;
+    Throw(nt) << "Expecting type in K&R parameter declaration" << flush;
     return NULL;
 }
 
-static void parse_old_style_parameter_declaration(Program &pgm,
+void Program::parse_old_style_parameter_declaration(
 						  TokenBase *nt,
 						  const std::vector<std::string> &param_ids,
 						  std::map<std::string, DataDef *> &param_types)
 {
-    DataDef *base_type = parse_old_style_parameter_base(pgm, nt);
-    nt = pgm.nextToken();
+    DataDef *base_type = parse_old_style_parameter_base(nt);
+    nt = nextToken();
 
     while ( nt )
     {
@@ -20163,93 +20160,93 @@ static void parse_old_style_parameter_declaration(Program &pgm,
 	if ( nt && nt->id() == TokenID::tkOpBrk )
 	{
 	    TokenBase *open = nt;
-	    TokenBase *star = pgm.nextToken();
+	    TokenBase *star = nextToken();
 	    if ( star && star->id() == TokenID::tkMul )
 	    {
-		TokenBase *name_tok = pgm.nextToken();
+		TokenBase *name_tok = nextToken();
 		while ( name_tok && (is_post_pointer_qualifier_token(name_tok) || name_tok->id() == TokenID::tkCONST) )
-		    name_tok = pgm.nextToken();
+		    name_tok = nextToken();
 		if ( !name_tok || !is_contextual_identifier_token(name_tok) )
-		    pgm.Throw(name_tok ? name_tok : open) << "Expecting parameter name in K&R parameter declaration" << flush;
+		    Throw(name_tok ? name_tok : open) << "Expecting parameter name in K&R parameter declaration" << flush;
 
 		std::string name = contextual_identifier_name(name_tok);
 		if ( !old_style_param_name_exists(param_ids, name) )
-		    pgm.Throw(name_tok) << "K&R declaration for non-parameter '" << name << "'" << flush;
+		    Throw(name_tok) << "K&R declaration for non-parameter '" << name << "'" << flush;
 		if ( param_types.find(name) != param_types.end() )
-		    pgm.Throw(name_tok) << "Duplicate K&R parameter declaration for '" << name << "'" << flush;
+		    Throw(name_tok) << "Duplicate K&R parameter declaration for '" << name << "'" << flush;
 
-		TokenBase *close = pgm.nextToken();
+		TokenBase *close = nextToken();
 		if ( !close || close->id() != TokenID::tkClBrk )
-		    pgm.Throw(close ? close : open) << "Expected ')' after function pointer parameter name" << flush;
-		TokenBase *param_open = pgm.nextToken();
+		    Throw(close ? close : open) << "Expected ')' after function pointer parameter name" << flush;
+		TokenBase *param_open = nextToken();
 		if ( !param_open || param_open->id() != TokenID::tkOpBrk )
-		    pgm.Throw(param_open ? param_open : open) << "Expecting '(' for function pointer parameter list" << flush;
+		    Throw(param_open ? param_open : open) << "Expecting '(' for function pointer parameter list" << flush;
 
-		FuncDef *func = pgm.parseFnPtrParams(*decl_type);
+		FuncDef *func = parseFnPtrParams(*decl_type);
 		param_types[name] = new DataDefFPTR(func);
 
-		nt = pgm.nextToken();
+		nt = nextToken();
 		if ( !nt )
-		    pgm.Throw << "Unexpected end of input in K&R parameter declaration" << flush;
+		    Throw << "Unexpected end of input in K&R parameter declaration" << flush;
 		if ( nt->id() == TokenID::tkSemi )
 		    return;
 		if ( nt->id() != TokenID::tkComma )
-		    pgm.Throw(nt) << "Expecting ',' or ';' in K&R parameter declaration" << flush;
-		nt = pgm.nextToken();
+		    Throw(nt) << "Expecting ',' or ';' in K&R parameter declaration" << flush;
+		nt = nextToken();
 		continue;
 	    }
 	    if ( star )
-		pgm.pushToken(star);
+		pushToken(star);
 	}
 	while ( nt && (nt->id() == TokenID::tkMul || is_post_pointer_qualifier_token(nt)) )
 	{
 	    if ( nt->id() == TokenID::tkMul )
-		decl_type = pgm.getPointerType(decl_type);
-	    nt = pgm.nextToken();
+		decl_type = getPointerType(decl_type);
+	    nt = nextToken();
 	}
 
 	if ( !nt || !is_contextual_identifier_token(nt) )
-	    pgm.Throw(nt) << "Expecting parameter name in K&R parameter declaration" << flush;
+	    Throw(nt) << "Expecting parameter name in K&R parameter declaration" << flush;
 
 	std::string name = contextual_identifier_name(nt);
 	if ( !old_style_param_name_exists(param_ids, name) )
-	    pgm.Throw(nt) << "K&R declaration for non-parameter '" << name << "'" << flush;
+	    Throw(nt) << "K&R declaration for non-parameter '" << name << "'" << flush;
 	if ( param_types.find(name) != param_types.end() )
-	    pgm.Throw(nt) << "Duplicate K&R parameter declaration for '" << name << "'" << flush;
+	    Throw(nt) << "Duplicate K&R parameter declaration for '" << name << "'" << flush;
 
-	nt = pgm.nextToken();
+	nt = nextToken();
 	while ( nt && nt->id() == TokenID::tkOpSqr )
 	{
 	    int depth = 1;
 	    while ( depth > 0 )
 	    {
-		nt = pgm.nextToken();
+		nt = nextToken();
 		if ( !nt )
-		    pgm.Throw << "Unexpected end of input in K&R array parameter declarator" << flush;
+		    Throw << "Unexpected end of input in K&R array parameter declarator" << flush;
 		if ( nt->id() == TokenID::tkOpSqr )
 		    ++depth;
 		else if ( nt->id() == TokenID::tkClSqr )
 		    --depth;
 	    }
-	    decl_type = pgm.getPointerType(decl_type);
-	    nt = pgm.nextToken();
+	    decl_type = getPointerType(decl_type);
+	    nt = nextToken();
 	}
 
 	param_types[name] = decl_type;
 
 	if ( !nt )
-	    pgm.Throw << "Unexpected end of input in K&R parameter declaration" << flush;
+	    Throw << "Unexpected end of input in K&R parameter declaration" << flush;
 	if ( nt->id() == TokenID::tkSemi )
 	    return;
 	if ( nt->id() != TokenID::tkComma )
-	    pgm.Throw(nt) << "Expecting ',' or ';' in K&R parameter declaration" << flush;
-	nt = pgm.nextToken();
+	    Throw(nt) << "Expecting ',' or ';' in K&R parameter declaration" << flush;
+	nt = nextToken();
     }
 
-    pgm.Throw << "Unexpected end of input in K&R parameter declaration" << flush;
+    Throw << "Unexpected end of input in K&R parameter declaration" << flush;
 }
 
-static bool is_old_style_parameter_declaration_start(Program &pgm, TokenBase *tb)
+bool Program::is_old_style_parameter_declaration_start(TokenBase *tb)
 {
     if ( !tb )
 	return false;
@@ -20260,21 +20257,21 @@ static bool is_old_style_parameter_declaration_start(Program &pgm, TokenBase *tb
       || tb->id() == TokenID::tkREGISTER || is_restrict_token(tb) )
 	return true;
     if ( is_contextual_identifier_token(tb) )
-	return resolve_named_datadef(pgm, contextual_identifier_name(tb)) != NULL;
+	return resolve_named_datadef(*this, contextual_identifier_name(tb)) != NULL;
     return false;
 }
 
-static bool scan_old_style_definition_suffix(Program &pgm,
+bool Program::scan_old_style_definition_suffix(
 					     std::vector<TokenBase *> &suffix)
 {
-    if ( !is_old_style_parameter_declaration_start(pgm, pgm.peekToken()) )
+    if ( !is_old_style_parameter_declaration_start(peekToken()) )
 	return false;
 
     int paren_depth = 0;
     int square_depth = 0;
     for ( size_t guard = 0; guard < 512; ++guard )
     {
-	TokenBase *t = pgm.nextToken();
+	TokenBase *t = nextToken();
 	if ( !t )
 	    return false;
 	suffix.push_back(t);
@@ -20470,7 +20467,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // look for parameters
     while ( (nt=nextToken()) && nt->id() != TokenID::tkClBrk )
     {
-	if ( is_old_style_parameter_head(*this, nt) )
+	if ( is_old_style_parameter_head(nt) )
 	{
 	    old_style_params = true;
 	    while ( true )
@@ -20986,7 +20983,7 @@ paramdecl:
 	std::map<std::string, DataDef *> old_style_param_types;
 	while ( nt && nt->id() != TokenID::tkOpBrc )
 	{
-	    parse_old_style_parameter_declaration(*this, nt, old_style_ids,
+	    parse_old_style_parameter_declaration(nt, old_style_ids,
 						  old_style_param_types);
 	    nt = nextToken();
 	}
@@ -24067,7 +24064,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		bool found_brace = peekToken() && peekToken()->id() == TokenID::tkOpBrc;
 		std::vector<TokenBase *> suffix;
 		if ( !found_brace )
-		    found_brace = scan_old_style_definition_suffix(*this, suffix);
+		    found_brace = scan_old_style_definition_suffix(suffix);
 		for ( auto it = suffix.rbegin(); it != suffix.rend(); ++it )
 		    pushToken(*it);
 		for ( auto it = saved.rbegin(); it != saved.rend(); ++it )

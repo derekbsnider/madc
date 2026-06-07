@@ -1570,6 +1570,17 @@ public:
 				   bool stop_on_closing_paren,
 				   int initial_brackets, bool push_back_comma,
 				   TokenBase *&result);
+    // Old-style (K&R) parameter declarations: detection + parsing of the
+    // `int f(a, b) int a; char *b; { … }` form (C only). The detectors peek
+    // the stream; parse_old_style_parameter_declaration fills param_types.
+    bool old_style_parameter_head_has_declaration_suffix();
+    bool is_old_style_parameter_head(TokenBase *tb);
+    bool is_old_style_parameter_declaration_start(TokenBase *tb);
+    DataDef *parse_old_style_parameter_base(TokenBase *&nt);
+    void parse_old_style_parameter_declaration(TokenBase *nt,
+		const std::vector<std::string> &param_ids,
+		std::map<std::string, DataDef *> &param_types);
+    bool scan_old_style_definition_suffix(std::vector<TokenBase *> &suffix);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
