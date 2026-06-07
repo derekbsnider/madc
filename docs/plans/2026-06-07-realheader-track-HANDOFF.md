@@ -206,32 +206,46 @@ ways and prints the first error of each:
 same construct → it's the **PARSER**. The script's own header comment documents
 this and the known culprits.
 
-### 3.3 Current probe results (after the bug-B fix, 2026-06-07)
+### 3.3 Current probe results (after bug-B + locale-stub retirement, 2026-06-07)
 ```
 HEADER         madc (own preprocess)                                pp (parser-only)
 type_traits    OK                                                   OK
 utility        OK                                                   OK
 char_traits    OK   <-- bug B fixed                                 OK
 iosfwd         OK                                                   OK
+clocale        OK   <-- locale.h stub retired → real <locale.h>     OK
 memory         690:6 error: Too many parameters                     OK
 vector         690:6 error: Too many parameters                     OK
-string         53:15 error: 'lconv' is not a declaration in '::'    OK   <-- past char_traits
-string_view    768:45 error: Expecting a type argument to iterator<>  OK <-- past char_traits
-ostream        53:15 error: 'lconv' is not a declaration in '::'    OK
-istream        53:15 error: 'lconv' …                               OK
-iostream       53:15 …                                              OK
-sstream        53:15 …                                              OK
-fstream        53:15 …                                              OK
+string         149:31 error: Too many parameters                    OK   <-- past lconv
+string_view    768:45 error: Expecting a type argument to iterator<>  OK
+ostream        64:17 error: 'isalnum' is not a declaration in '::'  OK   <-- ctype using-decl
+istream        64:17 …                                              OK
+iostream       64:17 …                                              OK
+sstream        64:17 …                                              OK
+fstream        64:17 …                                              OK
 map            36:9 error: Expecting type in class definition       OK
 set            36:9 error: Expecting type in class definition       OK
 algorithm      52:13 error: 'abs' is not a declaration in '::'      OK
 ```
-The char_traits fix advanced all 8 string/streams headers. The string/streams
-family now shares ONE new blocker: `'lconv' is not a declaration in '::'` —
-almost certainly the same shape as `algorithm`'s `'abs'` (a global-namespace
-`using ::name;` of a libc symbol, here `lconv` from `<clocale>`), so fixing
-that family likely clears string + all 5 streams + algorithm together.
-`string_view` has its own next step (`iterator<>` template-arg resolution).
+Progress this session: char_traits/iosfwd/clocale green. **Retiring the embedded
+`locale.h` stub** (real `<locale.h>` now parses; madc predefines `_GNU_SOURCE`)
+cleared the whole locale `using ::` chain (lconv → uselocale → locale_t API) in
+ONE move — string/streams advanced past it. Now:
+- **`'isalnum' is not a declaration in '::'`** (all 5 streams) — the SAME pattern
+  for `<cctype>`. Retiring the `ctype.h` stub is the obvious mirror, BUT it was
+  TRIED and reverted: the real `<ctype.h>` parses *alone*, yet in the stream
+  chain it surfaces an *earlier* `Expecting type after 'typedef'` parser bug
+  (the `<bits/types.h>` interaction). So ctype is DEFERRED until that typedef
+  bug is fixed — see §13.
+- **`Too many parameters`** now hits memory(690) + vector(690) + string(149):
+  one recurring root cause, likely the highest-value next fix.
+- `algorithm`'s `'abs'` is the twin of the (now-cleared) `lconv` pattern.
+- `string_view` has its own `iterator<>` template-arg step.
+
+**Build footgun fixed (`5a27a22`):** deleting an embedded header didn't
+regenerate `embedded_headers.cpp` (mtime-only prereq can't see a deletion), so a
+retired stub stayed baked in. The generator is now idempotent + run on every
+build. Retiring a stub now Just Works.
 **The restoration's big win:** the `pp` (parser-only) column is now essentially
 all-green — including `map`/`set`/`vector`/`string`/streams. The OLD headline
 blocker for `<map>`/`<set>` (the `__ptr_cmp`/`operator<` `<…>` over-consumption)
@@ -539,6 +553,10 @@ printf '__INT64_TYPE__\n' | g++ -std=c++17 -E -x c++ - 2>/dev/null | tail -1
 ## 10. Commit list this session (newest first, branch feature/realhdr-parse-gaps2-claude)
 
 ```
+5a27a22 fix(build): regenerate embedded_headers.cpp on every build (catch deleted stubs)  [footgun]
+05add19 fix(headers): regenerate embedded_headers.cpp to actually drop locale.h
+39bd07a feat(headers): retire embedded locale.h stub — map <locale.h> to real libc
+6bae117 feat(headers): declare struct lconv + setlocale/localeconv in embedded locale.h (superseded by 39bd07a)
 4f4fbd2 refactor(parser): one instantiate_template_id seam for the alias|class template-id probe
 5ea75a2 fix(parser): namespace-scope template_map so same-named templates don't collide  [bug B]
 e91858f docs(plan): comprehensive rehydration handoff (this doc)
@@ -614,22 +632,35 @@ touch std registration.
 ## 13. Next threads, in priority order
 
 0. ~~`template_map` namespace-scoping (bug B)~~ — **DONE** `5ea75a2`/`4f4fbd2`.
-1. **`'lconv' / 'abs' is not a declaration in '::'`** — the string + all 5
-   streams headers now share the `'lconv'` blocker, and `algorithm` has the
-   twin `'abs'`. Both are a global-namespace `using ::name;` of a libc symbol
-   (lconv ← `<clocale>`, abs ← `<cstdlib>`) that madc doesn't have declared at
-   `::` at that point. Likely ONE fix clears 7 headers. THE immediate-next task.
-   Method: reduce `using ::lconv;` / `using ::abs;` to a minimal repro; check
-   whether the libc symbol/type is declared globally in madc's view (probe the
-   relevant embedded header / `<clocale>`,`<cstdlib>`), fix the deepest layer.
-2. **`memory`/`vector` `690:6 Too many parameters`** — §6. One root cause, 2
-   headers (a real parameter-count limit or a macro mis-expansion).
-3. **`map`/`set` `36:9 Expecting type in class definition`** — §6 (preprocessor).
-4. **`string_view` `768:45 iterator<>` template-arg resolution** — its own next
-   step after the `lconv` family.
-5. (Optional) restoration polish — §2.6 (dedup STRUCT/CLASS parse, operator<).
+   ~~`lconv` family~~ — **DONE** by retiring the locale.h stub (`39bd07a`/`05add19`).
+   ~~build footgun~~ — **DONE** `5a27a22`.
+1. **`Too many parameters`** (memory 690 + vector 690 + string 149) — ONE
+   recurring root cause across 3 headers (probably the most leverage). Likely a
+   real parser limit on parameter count OR a macro mis-expansion producing an
+   over-long param list. Reduce: find the construct at the failing line under
+   `--dump-source`; check param-count handling in the declarator parser.
+2. **`'isalnum' is not a declaration in '::'`** (all 5 streams, `<cctype>`) —
+   the locale mirror, BUT BLOCKED ON a parser bug: retiring the `ctype.h` stub
+   surfaces `Expecting type after 'typedef'` in the `<bits/types.h>` chain (real
+   `<ctype.h>` parses alone; fails only in the stream-header include context).
+   So: FIRST fix that typedef-in-context bug (reduce the bits/types include
+   interaction), THEN retire the ctype.h stub (now safe via the build fix).
+3. **`algorithm` `52:13 'abs' is not a declaration in '::'`** — twin of the
+   cleared `lconv` pattern (`<cstdlib>` `using ::abs;`). Likely a small stdlib
+   stub gap or another stub-retirement candidate.
+4. **`map`/`set` `36:9 Expecting type in class definition`** — §6 (preprocessor).
+5. **`string_view` `768:45 iterator<>` template-arg resolution** — its own step.
+6. (Optional) restoration polish — §2.6 (dedup STRUCT/CLASS parse, operator<).
    Also: qualified template-id as a *declaration* type (`ns::Tmpl<int> v;`) —
    a pre-existing gap surfaced while testing bug B (see §5 note).
+
+**Stub-retirement pattern (validated this session):** many curated stubs in
+`include/madc/` now shadow real headers the restored parser CAN handle. Retiring
+one (delete the file; the build regenerates `embedded_headers.cpp`) maps that
+include to real libc/libstdc++ and clears whole `using ::name;` chains at once —
+PROVIDED the real header (and everything it pulls in, in context) parses. Always
+gate with fulltest AND a full probe; revert if it surfaces an earlier parser bug
+(as ctype did). This is the on-ramp to the "wire real headers, retire stubs" arc.
 
 After the std:: header family is green under madc's own preprocessing, the next
 arc is wiring real headers into the build (retire curated stubs) per
