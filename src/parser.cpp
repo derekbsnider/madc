@@ -14996,6 +14996,17 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	return new TokenStructDef(dds, is_union);
     }
 
+    // Definition-only mode: the struct is now registered; record its body as a
+    // standalone top-level def (if tagged) and return at '}', leaving any
+    // trailing instance declarator OR ';' for the caller (an enclosing
+    // aggregate-body parser) to claim. See Program::class_definition_only.
+    if ( pgm.class_definition_only )
+    {
+	if ( tag )
+	    record_struct(dds, tag);
+	return new TokenStructDef(dds, is_union);
+    }
+
     // struct [tag] { ... } variable;
     // struct [tag] { ... } *first_whogr, *last_whogr;  (pointer decl)
     if ( tn && (tn->type() == TokenType::ttIdentifier
@@ -16165,11 +16176,40 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		   || after_tag->id() == TokenID::tkOpBrc
 		   || after_tag->id() == TokenID::tkSemi) )
 		{
+		    std::string nested_tag = contextual_identifier_name(tag_tb);
 		    pgm.pushToken(tag_tb);
+		    // Parse the nested type DEFINITION only (definition-only mode
+		    // stops at '}' and leaves any trailing instance declarator), so a
+		    // method-bearing nested struct routes through the one class-body
+		    // parser instead of the data-only nested-aggregate path.
+		    bool saved_def_only = pgm.class_definition_only;
+		    pgm.class_definition_only = true;
 		    if ( TokenKeyword *kw = dynamic_cast<TokenKeyword *>(agg_kw) )
-			pgm.parseKeyword(kw);
+		    {
+			try { pgm.parseKeyword(kw); }
+			catch(...) { pgm.class_definition_only = saved_def_only; throw; }
+		    }
 		    else
+		    {
+			pgm.class_definition_only = saved_def_only;
 			pgm.Throw(agg_kw) << "Expected nested type keyword" << flush;
+		    }
+		    pgm.class_definition_only = saved_def_only;
+		    // A trailing instance declarator (`struct Inner {...} m;`) makes
+		    // the nested type the member's type: re-feed the tag as a bare
+		    // type name so the normal member path reads `Inner m;`. A bare ';'
+		    // is a pure nested definition.
+		    TokenBase *after_def = pgm.peekToken();
+		    if ( after_def && after_def->id() == TokenID::tkSemi )
+			pgm.nextToken(); // consume ';' — pure nested type definition
+		    else if ( after_def )
+		    {
+			TokenIdent *type_name = new TokenIdent(nested_tag);
+			type_name->file = tag_tb->file;
+			type_name->line = tag_tb->line;
+			type_name->column = tag_tb->column;
+			pgm.pushToken(type_name);
+		    }
 		    handled_nested_type = true;
 		}
 		else
