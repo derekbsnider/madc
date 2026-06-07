@@ -25,6 +25,7 @@ class Method;
 class Program;
 class MadcEngine;
 class TokenSWITCH;
+struct DelimDepth;	// parser-internal balanced-delimiter depth (parser.cpp)
 class TokenCASE;
 
 class MadcTeeBuf : public std::streambuf
@@ -1462,6 +1463,12 @@ public:
     // angle-bracket / delimiter — fixing the operator< template mis-parse in
     // ONE place instead of every hand-rolled scanner.
     bool isOperatorIdStart(TokenBase *t);
+    // Stream form of the balanced-delimiter step: `t` was already pulled via
+    // nextToken(). Update `d`; if `t` is an operator-id keyword, consume its
+    // trailing symbol token(s) from the stream (appended to `extra` if given so
+    // a token-collecting caller can re-emit the full operator-function-id).
+    void delimStepStream(TokenBase *t, DelimDepth &d,
+			 std::vector<TokenBase *> *extra = NULL);
     // After a method call's arguments are parsed, re-bind `tc` to the overload
     // of `cls`'s method `id` that best matches the argument types (the initial
     // findMethod() bound the first by-name match). Returns `tc` unchanged when

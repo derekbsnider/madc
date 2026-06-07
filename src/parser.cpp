@@ -1865,31 +1865,36 @@ static size_t operator_id_token_span(const Seq &toks, size_t i)
 struct DelimDepth {
     int paren = 0, square = 0, brace = 0, angle = 0;
     bool top() const { return !paren && !square && !brace && !angle; }
+    // Pure delimiter bookkeeping for one token (NO operator-id handling — the
+    // callers below own that, differing by index vs stream access).
+    void update(TokenBase *t)
+    {
+	if ( !t )
+	    return;
+	switch ( t->id() )
+	{
+	    case TokenID::tkOpBrk: ++paren; break;
+	    case TokenID::tkClBrk: if ( paren > 0 )  --paren;  break;
+	    case TokenID::tkOpSqr: ++square; break;
+	    case TokenID::tkClSqr: if ( square > 0 ) --square; break;
+	    case TokenID::tkOpBrc: ++brace; break;
+	    case TokenID::tkClBrc: if ( brace > 0 )  --brace;  break;
+	    case TokenID::tkLT:    ++angle; break;
+	    case TokenID::tkGT:    if ( angle > 0 )  --angle;  break;
+	    case TokenID::tkBSR:   if ( angle > 0 )  angle = angle > 1 ? angle - 2 : 0; break;
+	    default: break;
+	}
+    }
 };
-// Update `d` for the token sequence at toks[i]; returns the number of tokens
-// consumed (1, or an operator-id's span). Index-based; templated for both
+// Index form: update `d` for the token sequence at toks[i]; returns the number
+// of tokens consumed (1, or an operator-id's span). Templated for both
 // std::vector and the std::deque token queue.
 template<typename Seq>
 static size_t delim_scan_step(const Seq &toks, size_t i, DelimDepth &d)
 {
     if ( size_t n = operator_id_token_span(toks, i) )
 	return n;
-    TokenBase *t = toks[i];
-    if ( !t )
-	return 1;
-    switch ( t->id() )
-    {
-	case TokenID::tkOpBrk: ++d.paren; break;
-	case TokenID::tkClBrk: if ( d.paren > 0 )  --d.paren;  break;
-	case TokenID::tkOpSqr: ++d.square; break;
-	case TokenID::tkClSqr: if ( d.square > 0 ) --d.square; break;
-	case TokenID::tkOpBrc: ++d.brace; break;
-	case TokenID::tkClBrc: if ( d.brace > 0 )  --d.brace;  break;
-	case TokenID::tkLT:    ++d.angle; break;
-	case TokenID::tkGT:    if ( d.angle > 0 )  --d.angle;  break;
-	case TokenID::tkBSR:   if ( d.angle > 0 )  d.angle = d.angle > 1 ? d.angle - 2 : 0; break;
-	default: break;
-    }
+    d.update(toks[i]);
     return 1;
 }
 
@@ -8435,6 +8440,17 @@ std::string Program::parseOperatorId(TokenBase *operator_tok,
 bool Program::isOperatorIdStart(TokenBase *t)
 {
     return token_is_operator_id_start(t);
+}
+
+void Program::delimStepStream(TokenBase *t, DelimDepth &d,
+			      std::vector<TokenBase *> *extra)
+{
+    if ( isOperatorIdStart(t) )
+    {
+	parseOperatorId(t, extra);
+	return;
+    }
+    d.update(t);
 }
 
 static bool is_named_cpp_cast(const std::string &name)
@@ -18949,54 +18965,21 @@ static void register_skipped_class_template_function(
 static std::vector<TokenBase *> collect_template_class_prefix(Program &pgm)
 {
     std::vector<TokenBase *> prefix;
-    int angle_depth = 0;
-    int paren_depth = 0;
-    int square_depth = 0;
-    int brace_depth = 0;
+    DelimDepth d;
     while ( pgm.peekToken() )
     {
 	TokenBase *pt = pgm.peekToken();
-	if ( angle_depth == 0 && paren_depth == 0 && square_depth == 0
-	  && brace_depth == 0
+	if ( d.top()
 	  && (pt->id() == TokenID::tkOpBrc || pt->id() == TokenID::tkSemi) )
 	    break;
 	TokenBase *t = pgm.nextToken();
-	// operator-function-id (`operator<`, …) in a partial-spec arg list
-	// (`struct __not_overloaded<_Tp,_Up,__void_t<decltype(operator<(a,b))>>`):
-	// the operator symbol is part of a NAME, never a delimiter.
-	if ( pgm.isOperatorIdStart(t) )
-	{
-	    std::vector<TokenBase *> opsyms;
-	    pgm.parseOperatorId(t, &opsyms);
-	    prefix.push_back(t->clone());
-	    for ( TokenBase *s : opsyms )
-		prefix.push_back(s->clone());
-	    continue;
-	}
 	prefix.push_back(t->clone());
-	if ( t->id() == TokenID::tkLT )
-	    ++angle_depth;
-	else if ( t->id() == TokenID::tkGT && angle_depth > 0 )
-	    --angle_depth;
-	else if ( t->id() == TokenID::tkBSR && angle_depth > 0 )
-	{
-	    if ( angle_depth > 1 )
-		angle_depth -= 2;
-	    else
-		angle_depth = 0;
-	}
-	else if ( t->id() == TokenID::tkOpBrk )
-	    ++paren_depth;
-	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
-	    --paren_depth;
-	else if ( t->id() == TokenID::tkOpSqr )
-	    ++square_depth;
-	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
-	    --square_depth;
-	else if ( t->id() == TokenID::tkOpBrc )
-	    ++brace_depth;
-	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
-	    --brace_depth;
+	// operator-ids (operator<, …) and their symbol token(s) are part of a
+	// NAME — collected verbatim, never counted as delimiters.
+	std::vector<TokenBase *> opsyms;
+	pgm.delimStepStream(t, d, &opsyms);
+	for ( TokenBase *s : opsyms )
+	    prefix.push_back(s->clone());
     }
     return prefix;
 }
@@ -19646,46 +19629,19 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		<< "Expecting '=' in template using declaration" << flush;
 
 	std::vector<TokenBase *> target;
-	int angle_depth = 0;
-	int paren_depth = 0;
-	int square_depth = 0;
+	DelimDepth d;
 	while ( pgm.peekToken() )
 	{
 	    TokenBase *at = pgm.nextToken();
-	    if ( at->id() == TokenID::tkSemi
-	      && angle_depth == 0 && paren_depth == 0 && square_depth == 0 )
+	    if ( at->id() == TokenID::tkSemi && d.top() )
 		break;
-	    // operator-function-id: consume `operator` + symbol opaquely (the
-	    // symbol is part of a NAME, never a delimiter).
-	    if ( pgm.isOperatorIdStart(at) )
-	    {
-		std::vector<TokenBase *> opsyms;
-		pgm.parseOperatorId(at, &opsyms);
-		target.push_back(at->clone());
-		for ( TokenBase *s : opsyms )
-		    target.push_back(s->clone());
-		continue;
-	    }
 	    target.push_back(at->clone());
-	    if ( at->id() == TokenID::tkLT )
-		++angle_depth;
-	    else if ( at->id() == TokenID::tkGT && angle_depth > 0 )
-		--angle_depth;
-	    else if ( at->id() == TokenID::tkBSR && angle_depth > 0 )
-	    {
-		if ( angle_depth > 1 )
-		    angle_depth -= 2;
-		else
-		    angle_depth = 0;
-	    }
-	    else if ( at->id() == TokenID::tkOpBrk )
-		++paren_depth;
-	    else if ( at->id() == TokenID::tkClBrk && paren_depth > 0 )
-		--paren_depth;
-	    else if ( at->id() == TokenID::tkOpSqr )
-		++square_depth;
-	    else if ( at->id() == TokenID::tkClSqr && square_depth > 0 )
-		--square_depth;
+	    // operator-ids and their symbol token(s) are part of a NAME, collected
+	    // verbatim and never counted as delimiters.
+	    std::vector<TokenBase *> opsyms;
+	    pgm.delimStepStream(at, d, &opsyms);
+	    for ( TokenBase *s : opsyms )
+		target.push_back(s->clone());
 	}
 	if ( target.empty() )
 	    pgm.Throw(alias_tb) << "Expecting target type in template using declaration" << flush;
