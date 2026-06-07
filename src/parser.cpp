@@ -13726,6 +13726,34 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 		--sqdepth;
 	    continue;
 	}
+	// Skip a whole `__attribute__((...))` — its contents (`aligned(8)`,
+	// `mode(byte)`, …) contain identifier-'(' patterns that would otherwise
+	// be mistaken for member functions below.
+	if ( is_attribute_identifier_token(t) )
+	{
+	    size_t j = i + 1;
+	    TokenBase *n = next_significant_token(tokens, j);
+	    if ( n && n->id() == TokenID::tkOpBrk )
+	    {
+		int ad = 0;
+		for ( ; j < tokens.size(); ++j )
+		{
+		    TokenBase *a = tokens[j];
+		    if ( !a )
+			continue;
+		    if ( a->id() == TokenID::tkOpBrk )
+			++ad;
+		    else if ( a->id() == TokenID::tkClBrk )
+		    {
+			--ad;
+			if ( ad == 0 )
+			    break;
+		    }
+		}
+		i = j; // the loop's ++i steps past the matching ')'
+	    }
+	    continue;
+	}
 	// A default member initializer (`int x = f();`) — past the '=' any
 	// identifier-then-'(' is a call in the initializer, NOT a method.
 	if ( t->id() == TokenID::tkAssign )
@@ -13748,11 +13776,25 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 	// may contain `sizeof(...)`/`offsetof(...)`); function-pointer members
 	// `T (*fp)(...)` are safe because there the '(' follows a type then
 	// '*', not a bare name.
-	if ( !member_seen_eq && sqdepth == 0 && is_contextual_identifier_token(t) )
+	if ( !member_seen_eq && sqdepth == 0 && is_contextual_identifier_token(t)
+	  && !is_attribute_identifier_token(t) )
 	{
-	    TokenBase *next = next_significant_token(tokens, i + 1);
-	    if ( next && next->id() == TokenID::tkOpBrk )
-		return true;
+	    // GNU/C specifier keywords that are `name(`-shaped but are NOT member
+	    // functions: asm labels, alignment / type queries. (`__attribute__`
+	    // is excluded above.) Everything else `name(` at member scope is a
+	    // member function declaration.
+	    std::string idn = contextual_identifier_name(t);
+	    bool non_method_specifier =
+		   idn == "__asm__" || idn == "__asm" || idn == "asm"
+		|| idn == "__alignof__" || idn == "__alignof" || idn == "alignof"
+		|| idn == "__typeof__" || idn == "__typeof" || idn == "typeof"
+		|| idn == "sizeof" || idn == "decltype";
+	    if ( !non_method_specifier )
+	    {
+		TokenBase *next = next_significant_token(tokens, i + 1);
+		if ( next && next->id() == TokenID::tkOpBrk )
+		    return true;
+	    }
 	}
 	if ( !member_start )
 	    continue;
@@ -15764,8 +15806,27 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     pgm.deferred_function_body_sink = &deferred_method_bodies;
     pgm.class_scope_stack.push_back(ddc);
 
+    // Consume member-level GNU attributes (`__attribute__((aligned(8)))` etc.)
+    // wherever they may appear on a member — leading and trailing. Reuses the
+    // shared consume_gnu_attributes helper (same as TokenSTRUCT::parse) so the
+    // class body parser does not drop attribute handling for structs routed
+    // here. The attribute payload is parsed-and-skipped (layout effects come
+    // through the struct/class layout path, unchanged).
+    auto skip_member_attributes = [&]()
+    {
+	while ( pgm.peekToken() && is_attribute_identifier_token(pgm.peekToken()) )
+	{
+	    TokenBase *after = pgm.consume_gnu_attributes(pgm.nextToken());
+	    if ( after )
+		pgm.pushToken(after);
+	}
+    };
+
 	while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 	{
+	skip_member_attributes();
+	if ( !(tn=pgm.peekToken()) || tn->id() == TokenID::tkClBrc )
+	    break;
 	// --- class-scope type aliases: typedef T name; / using name = T; ---
 	if ( tn->id() == TokenID::tkTYPEDEF )
 	{
@@ -16375,6 +16436,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		ddc->addBitField(mname, *cmember_dd, bf_width);
 		if ( access_flags && !ddc->member_access.empty() )
 		    ddc->member_access.back() = access_flags;
+		skip_member_attributes(); // `int f : 3 __attribute__((packed));`
 		tn = pgm.nextToken();
 		while ( tn && tn->id() == TokenID::tkComma )
 		{
@@ -16395,6 +16457,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    ddc->addBitField(bf_name, *bf_dd, w);
 		    if ( access_flags && !ddc->member_access.empty() )
 			ddc->member_access.back() = access_flags;
+		    skip_member_attributes();
 		    tn = pgm.nextToken();
 		}
 		if ( !tn || tn->id() != TokenID::tkSemi )
@@ -16474,6 +16537,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		ddc->member_access.back() = access_flags;
 	    DBG(cout << "TokenCLASS::parse() added member " << cmember_dd->name << ' ' << mname
 		<< " (count " << member_count << ", total " << ddc->size << ')' << endl);
+	    skip_member_attributes(); // `int x __attribute__((aligned(8)));`
 	    tn = pgm.nextToken();
 		// Additional declarators sharing the base type: `int x, y;`,
 		// `int *p, q;`, `char a[4], b;` — each re-derives pointer level
@@ -16523,6 +16587,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 				nis_array ? &ndims : NULL);
 			if ( access_flags && !ddc->member_access.empty() )
 				ddc->member_access.back() = access_flags;
+			skip_member_attributes();
 			tn = pgm.nextToken();
 		}
 	    if ( !tn || tn->id() != TokenID::tkSemi )
