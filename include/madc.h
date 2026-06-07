@@ -1700,6 +1700,20 @@ public:
     void parse_deferred_function_bodies(std::vector<DeferredFunctionBody> &bodies);
     DataDefCLASS *promote_struct_base_to_class(const std::string &name,
 					       DataDef *dd);
+    // GNU/C23 attribute consumers: skip/collect __attribute__((…)) (optionally
+    // capturing attrs / alias target / alignment / vector size), an asm("label")
+    // alias, [[…]] C23 attributes, a vector_size attribute value, and `...`.
+    TokenBase *consume_gnu_attributes(TokenBase *nt,
+				      std::set<std::string> *attrs = NULL,
+				      std::string *alias_target = NULL,
+				      size_t *explicit_align = NULL,
+				      size_t *vector_bytes = NULL);
+    TokenBase *consume_gnu_asm_label(TokenBase *nt, std::string *alias_target);
+    void skip_c23_attributes();
+    size_t parse_gnu_vector_size_attribute();
+    void consume_typedef_gnu_attributes(std::string *mode_name = NULL,
+					size_t *vector_bytes = NULL);
+    bool consume_ellipsis();
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts

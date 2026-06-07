@@ -1042,22 +1042,22 @@ static bool is_attribute_identifier_token(TokenBase *tb)
     return name == "__attribute__" || name == "__attribute";
 }
 
-static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
-					 std::set<std::string> *attrs = NULL,
-					 std::string *alias_target = NULL,
-					 size_t *explicit_align = NULL,
-					 size_t *vector_bytes = NULL)
+TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
+					 std::set<std::string> *attrs,
+					 std::string *alias_target,
+					 size_t *explicit_align,
+					 size_t *vector_bytes)
 {
     while ( nt && is_attribute_identifier_token(nt) )
     {
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 	{
 	    int adepth = 0;
 	    bool saw_alias = false;
 	    bool saw_aligned = false;
 	    bool saw_vector_size = false;
 	    do {
-		TokenBase *at = pgm.nextToken();
+		TokenBase *at = nextToken();
 		if ( !at ) break;
 		if ( attrs && adepth >= 2 && at->type() == TokenType::ttIdentifier )
 		    attrs->insert(((TokenIdent *)at)->str);
@@ -1086,14 +1086,14 @@ static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
 		    saw_vector_size = true;
 		else if ( saw_vector_size && at->id() == TokenID::tkOpBrk )
 		{
-		    int64_t n = pgm.parse_constant_integer_expression();
+		    int64_t n = parse_constant_integer_expression();
 		    if ( vector_bytes && n > 0 )
 			*vector_bytes = (size_t)n;
-		    TokenBase *cl = pgm.nextToken();
+		    TokenBase *cl = nextToken();
 		    if ( cl && cl->id() == TokenID::tkClBrk )
 			; // consumed vector_size(...) argument paren
 		    else if ( cl )
-			pgm.pushToken(cl);
+			pushToken(cl);
 		    saw_vector_size = false;
 		    continue; // don't do depth tracking for this paren pair
 		}
@@ -1101,7 +1101,7 @@ static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
 		else if ( at->id() == TokenID::tkClBrk ) --adepth;
 	    } while ( adepth > 0 );
 	}
-	nt = pgm.nextToken();
+	nt = nextToken();
     }
     return nt;
 }
@@ -1115,63 +1115,63 @@ static bool is_gnu_asm_identifier_token(TokenBase *tb)
     return name == "asm" || name == "__asm" || name == "__asm__";
 }
 
-static TokenBase *consume_gnu_asm_label(Program &pgm, TokenBase *nt,
+TokenBase *Program::consume_gnu_asm_label(TokenBase *nt,
 					std::string *alias_target)
 {
     while ( nt && is_gnu_asm_identifier_token(nt) )
     {
-	TokenBase *open = pgm.nextToken();
+	TokenBase *open = nextToken();
 	if ( !open || open->id() != TokenID::tkOpBrk )
-	    pgm.Throw(open ? open : nt) << "Expecting '(' after asm label" << flush;
-	TokenBase *label = pgm.nextToken();
+	    Throw(open ? open : nt) << "Expecting '(' after asm label" << flush;
+	TokenBase *label = nextToken();
 	if ( alias_target && label && label->type() == TokenType::ttString )
 	    *alias_target = ((TokenStr *)label)->str;
-	TokenBase *close = pgm.nextToken();
+	TokenBase *close = nextToken();
 	if ( !close || close->id() != TokenID::tkClBrk )
-	    pgm.Throw(close ? close : label) << "Expecting ')' after asm label" << flush;
-	nt = pgm.nextToken();
+	    Throw(close ? close : label) << "Expecting ')' after asm label" << flush;
+	nt = nextToken();
     }
     return nt;
 }
 
 // Skip C23 [[...]] attributes: [[gnu::noipa]], [[nodiscard]], etc.
 // Returns the next meaningful token after any [[...]] sequences.
-static void skip_c23_attributes(Program &pgm)
+void Program::skip_c23_attributes()
 {
-    while ( pgm.peekToken()
-	 && pgm.peekToken()->id() == TokenID::tkOpSqr )
+    while ( peekToken()
+	 && peekToken()->id() == TokenID::tkOpSqr )
     {
 	// peek ahead: is the NEXT token also [ ?
-	TokenBase *first_sq = pgm.nextToken(); // consume first [
-	if ( !pgm.peekToken()
-	  || pgm.peekToken()->id() != TokenID::tkOpSqr )
+	TokenBase *first_sq = nextToken(); // consume first [
+	if ( !peekToken()
+	  || peekToken()->id() != TokenID::tkOpSqr )
 	{
-	    pgm.pushToken(first_sq); // not [[, push back
+	    pushToken(first_sq); // not [[, push back
 	    return;
 	}
-	pgm.nextToken(); // consume second [
+	nextToken(); // consume second [
 	// Skip until ]]
 	int depth = 1;
 	while ( depth > 0 )
 	{
-	    TokenBase *t = pgm.nextToken();
+	    TokenBase *t = nextToken();
 	    if ( !t )
 		break;
 	    if ( t->id() == TokenID::tkOpSqr )
 	    {
-		if ( pgm.peekToken()
-		  && pgm.peekToken()->id() == TokenID::tkOpSqr )
+		if ( peekToken()
+		  && peekToken()->id() == TokenID::tkOpSqr )
 		{
-		    pgm.nextToken();
+		    nextToken();
 		    ++depth;
 		}
 	    }
 	    else if ( t->id() == TokenID::tkClSqr )
 	    {
-		if ( pgm.peekToken()
-		  && pgm.peekToken()->id() == TokenID::tkClSqr )
+		if ( peekToken()
+		  && peekToken()->id() == TokenID::tkClSqr )
 		{
-		    pgm.nextToken();
+		    nextToken();
 		    --depth;
 		}
 	    }
@@ -1179,27 +1179,27 @@ static void skip_c23_attributes(Program &pgm)
     }
 }
 
-static size_t parse_gnu_vector_size_attribute(Program &pgm)
+size_t Program::parse_gnu_vector_size_attribute()
 {
-    if ( !is_attribute_identifier_token(pgm.peekToken()) )
+    if ( !is_attribute_identifier_token(peekToken()) )
 	return 0;
-    pgm.nextToken(); // consume __attribute__
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+    nextToken(); // consume __attribute__
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	return 0;
     int depth = 0;
     bool saw_vector_size = false;
     size_t vector_bytes = 0;
     do {
-	TokenBase *at = pgm.nextToken();
+	TokenBase *at = nextToken();
 	if ( !at ) break;
 	if ( saw_vector_size && at->id() == TokenID::tkOpBrk )
 	{
-	    int64_t n = pgm.parse_constant_integer_expression();
+	    int64_t n = parse_constant_integer_expression();
 	    if ( n > 0 )
 		vector_bytes = (size_t)n;
-	    TokenBase *cl = pgm.nextToken();
+	    TokenBase *cl = nextToken();
 	    if ( !cl || cl->id() != TokenID::tkClBrk )
-		pgm.Throw(cl ? cl : at) << "Expected ')' after vector_size argument" << flush;
+		Throw(cl ? cl : at) << "Expected ')' after vector_size argument" << flush;
 	    saw_vector_size = false;
 	}
 	else if ( at->id() == TokenID::tkOpBrk ) ++depth;
@@ -1218,29 +1218,28 @@ static size_t parse_gnu_vector_size_attribute(Program &pgm)
     return vector_bytes;
 }
 
-static void consume_typedef_gnu_attributes(Program &pgm,
-					   std::string *mode_name = NULL,
-					   size_t *vector_bytes = NULL)
+void Program::consume_typedef_gnu_attributes(std::string *mode_name,
+					   size_t *vector_bytes)
 {
-    while ( is_attribute_identifier_token(pgm.peekToken()) )
+    while ( is_attribute_identifier_token(peekToken()) )
     {
-	pgm.nextToken(); // consume __attribute__
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	nextToken(); // consume __attribute__
+	if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	    continue;
 	int depth = 0;
 	bool saw_mode = false;
 	bool saw_vector_size = false;
 	do {
-	    TokenBase *at = pgm.nextToken();
+	    TokenBase *at = nextToken();
 	    if ( !at ) break;
 	    if ( saw_vector_size && at->id() == TokenID::tkOpBrk )
 	    {
-		int64_t n = pgm.parse_constant_integer_expression();
+		int64_t n = parse_constant_integer_expression();
 		if ( vector_bytes && n > 0 )
 		    *vector_bytes = (size_t)n;
-		TokenBase *cl = pgm.nextToken();
+		TokenBase *cl = nextToken();
 		if ( !cl || cl->id() != TokenID::tkClBrk )
-		    pgm.Throw(cl ? cl : at) << "Expected ')' after vector_size argument" << flush;
+		    Throw(cl ? cl : at) << "Expected ')' after vector_size argument" << flush;
 		saw_vector_size = false;
 	    }
 	    else if ( at->id() == TokenID::tkOpBrk )
@@ -11372,7 +11371,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			if ( peek1 && is_attribute_identifier_token(peek1) )
 			{
 			    TokenBase *attr_tok = nextToken();
-			    TokenBase *after_attr = consume_gnu_attributes(*this, attr_tok, NULL, NULL, NULL, &cast_vector_bytes);
+			    TokenBase *after_attr = consume_gnu_attributes(attr_tok, NULL, NULL, NULL, &cast_vector_bytes);
 			    if ( after_attr )
 			    {
 				pushToken(after_attr);
@@ -14004,7 +14003,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     {
 	while ( is_attribute_identifier_token(tn) )
 	{
-	    tn = consume_gnu_attributes(pgm, pgm.nextToken());
+	    tn = pgm.consume_gnu_attributes(pgm.nextToken());
 	    if ( tn )
 		pgm.pushToken(tn);
 	    tn = pgm.peekToken();
@@ -14067,7 +14066,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		{
 		    while ( is_attribute_identifier_token(tn) )
 		    {
-			tn = consume_gnu_attributes(pgm, pgm.nextToken());
+			tn = pgm.consume_gnu_attributes(pgm.nextToken());
 			if ( tn )
 			    pgm.pushToken(tn);
 			tn = pgm.peekToken();
@@ -14397,7 +14396,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		size_t member_align = 0;
 		while ( is_attribute_identifier_token(pgm.peekToken()) )
 		{
-		    TokenBase *after = consume_gnu_attributes(pgm, pgm.nextToken(), NULL, NULL, &member_align);
+		    TokenBase *after = pgm.consume_gnu_attributes(pgm.nextToken(), NULL, NULL, &member_align);
 		    if ( after )
 			pgm.pushToken(after);
 		}
@@ -14744,7 +14743,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
 		TokenIdent *alias = (TokenIdent *)tn;
 		alias_dd = parse_typedef_array_suffix(pgm, alias_dd, alias->str, tn);
-		consume_typedef_gnu_attributes(pgm);
+		pgm.consume_typedef_gnu_attributes();
 		bmi = pgm.datatype_map.find(alias->str);
 	    if ( bmi != pgm.datatype_map.end() && pgm.compounds.empty()
 	      && &bmi->second->definition != alias_dd )
@@ -14866,7 +14865,7 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
     {
 	while ( is_attribute_identifier_token(tn) )
 	{
-	    tn = consume_gnu_attributes(*this, nextToken());
+	    tn = consume_gnu_attributes(nextToken());
 	    if ( tn )
 		pushToken(tn);
 	    tn = peekToken();
@@ -17114,7 +17113,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     size_t gnu_vector_bytes = 0;
     if ( is_attribute_identifier_token(pgm.peekToken()) )
     {
-	consume_typedef_gnu_attributes(pgm, &gnu_mode_name, &gnu_vector_bytes);
+	pgm.consume_typedef_gnu_attributes(&gnu_mode_name, &gnu_vector_bytes);
 	base_dd = apply_gnu_mode_alias(base_dd, gnu_mode_name);
     }
 
@@ -17162,7 +17161,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
 
     if ( is_attribute_identifier_token(pgm.peekToken()) )
-	gnu_vector_bytes = parse_gnu_vector_size_attribute(pgm);
+	gnu_vector_bytes = pgm.parse_gnu_vector_size_attribute();
 
     // Function-pointer typedef Form 1: typedef RET NAME(params);
     TokenBase *post = pgm.peekToken();
@@ -18346,18 +18345,18 @@ static bool is_template_param_separator(TokenBase *tb)
 	|| tb->id() == TokenID::tkBSR);
 }
 
-static bool consume_ellipsis(Program &pgm)
+bool Program::consume_ellipsis()
 {
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkDot )
+    if ( !peekToken() || peekToken()->id() != TokenID::tkDot )
 	return false;
-    if ( pgm.tokens.size() < 3
-      || !pgm.tokens[1] || !pgm.tokens[2]
-      || pgm.tokens[1]->id() != TokenID::tkDot
-      || pgm.tokens[2]->id() != TokenID::tkDot )
+    if ( tokens.size() < 3
+      || !tokens[1] || !tokens[2]
+      || tokens[1]->id() != TokenID::tkDot
+      || tokens[2]->id() != TokenID::tkDot )
 	return false;
-    pgm.nextToken();
-    pgm.nextToken();
-    pgm.nextToken();
+    nextToken();
+    nextToken();
+    nextToken();
     return true;
 }
 
@@ -19549,7 +19548,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    TokenBase *intro = pgm.nextToken();
 	    if ( !is_template_type_param_intro(intro) )
 		pgm.Throw(intro) << "Expecting class or typename in template template parameter" << flush;
-	    if ( consume_ellipsis(pgm) )
+	    if ( pgm.consume_ellipsis() )
 	    {
 		if ( pgm.peekToken() && is_template_parameter_decl_name(pgm.peekToken()) )
 		    add_template_parameter(template_parameter_decl_name(pgm.nextToken()), false);
@@ -19571,7 +19570,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	}
 	else if ( is_template_type_param_intro(tn) )
 	{
-	    if ( consume_ellipsis(pgm) )
+	    if ( pgm.consume_ellipsis() )
 	    {
 		if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
 		    add_template_parameter(contextual_identifier_name(pgm.nextToken()), true);
@@ -19596,7 +19595,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	{
 	    bool qualified_type = pgm.consume_template_parameter_type_suffix();
 	    TokenBase *param_name = pgm.peekToken();
-	    if ( consume_ellipsis(pgm) )
+	    if ( pgm.consume_ellipsis() )
 	    {
 		if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
 		    add_template_parameter(contextual_identifier_name(pgm.nextToken()), false);
@@ -21006,7 +21005,7 @@ paramdecl:
     }
 
     std::string func_alias_name;
-    nt = consume_gnu_asm_label(*this, nt, &func_alias_name);
+    nt = consume_gnu_asm_label(nt, &func_alias_name);
 
     // Semicolon ends a function declaration; comma continues another
     // function declarator with the same return type: `void a(), b();`.
@@ -21056,7 +21055,7 @@ paramdecl:
 
     std::set<std::string> func_attrs;
     size_t func_align = 0;
-    nt = consume_gnu_attributes(*this, nt, &func_attrs, NULL, &func_align);
+    nt = consume_gnu_attributes(nt, &func_attrs, NULL, &func_align);
     if ( !func_alias_name.empty() )
 	var->storage_alias_name = func_alias_name;
     if ( func_attrs.count("no_instrument_function")
@@ -22365,7 +22364,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( is_attribute_identifier_token(nt) )
     {
 	TokenBase *attr = nextToken();
-	nt = consume_gnu_attributes(*this, attr, NULL, &storage_alias_name);
+	nt = consume_gnu_attributes(attr, NULL, &storage_alias_name);
 	if ( nt )
 	{
 	    pushToken(nt);
@@ -23439,7 +23438,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
       && peekToken() && peekToken()->id() == TokenID::tkOpSqr )
     {
 	pushToken(tb);
-	skip_c23_attributes(*this);
+	skip_c23_attributes();
 	tb = nextToken();
 	if ( !tb )
 	    return NULL;
@@ -23447,7 +23446,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
     size_t attr_vector_bytes = 0;
     if ( is_attribute_identifier_token(tb) )
     {
-	tb = consume_gnu_attributes(*this, tb, NULL, NULL, NULL, &attr_vector_bytes);
+	tb = consume_gnu_attributes(tb, NULL, NULL, NULL, &attr_vector_bytes);
 	if ( !tb )
 	    return NULL;
     }
@@ -24187,7 +24186,7 @@ bool Program::parse(TokenProgram *tp)
 	      && peekToken() && peekToken()->id() == TokenID::tkOpSqr )
 	    {
 		pushToken(tb);
-		skip_c23_attributes(*this);
+		skip_c23_attributes();
 		tb = nextToken();
 		if ( !tb || tokens.empty() )
 		    break;
