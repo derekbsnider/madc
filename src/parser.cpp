@@ -2444,6 +2444,22 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     std::string registered_mangled = td.owner_class
 	? td.owner_class->name + "__" + mangled : mangled;
 
+    // Partial specialization: if a partial spec of `tname` unifies with the concrete
+    // args and is more specialized than the primary, instantiate ITS body with the
+    // deduced params instead. The instantiation identity (mangled/canon/
+    // registered_mangled, computed above) stays keyed on the concrete args, so
+    // caching is unaffected — only the body source + substitution change.
+    {
+	std::map<std::string, TokenDataType *> spec_subst;
+	if ( Program::TemplateDef *spec = match_partial_specialization(
+		tname, type_args, arg_spellings, spec_subst) )
+	{
+	    td = *spec;
+	    subst = spec_subst;
+	    token_subst.clear();
+	}
+    }
+
     // Already instantiated? Return a use-site clone of the cached type.
     datatype_map_iter have = datatype_map.find(registered_mangled);
     if ( have != datatype_map.end() )
@@ -9529,6 +9545,129 @@ bool Program::template_declared_in_namespace(const std::string &name,
 	template_alias_map.find(name);
     return tai != template_alias_map.end()
 	&& tai->second.defining_namespace == ns_name;
+}
+
+// --- Partial specialization support -------------------------------------------
+
+// Unify one partial-spec pattern arg (its token sequence) against a concrete type
+// argument. Supports the shapes the real headers use: `[cv] PARAM [*]*` (DEDUCIBLE
+// — peel the pattern's pointer levels off the concrete type and bind PARAM to the
+// remainder), and a fully-concrete pattern (must spelling-equal the concrete arg).
+// On success records deductions in `ded`, adds a specificity score, returns true.
+static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
+				   const std::vector<std::string> &spec_params,
+				   DataDef *concrete,
+				   const std::string &concrete_spelling,
+				   std::map<std::string, DataDef *> &ded,
+				   int &score)
+{
+    std::string pat_spelling;
+    for ( size_t i = 0; i < pat.size(); ++i )
+	pat_spelling += template_token_fragment(pat[i]);
+
+    size_t i = 0;
+    int cv = 0;
+    while ( i < pat.size() && is_type_qualifier_token(pat[i]) ) { ++i; ++cv; }
+    bool simple = ( i < pat.size() && is_contextual_identifier_token(pat[i]) );
+    std::string core;
+    int ptr = 0;
+    if ( simple )
+    {
+	core = contextual_identifier_name(pat[i]);
+	++i;
+	while ( i < pat.size() )
+	{
+	    if ( pat[i]->id() == TokenID::tkMul ) { ++ptr; ++i; }
+	    else if ( is_type_qualifier_token(pat[i]) ) { ++i; }
+	    else { simple = false; break; }   // leftover token => not the simple shape
+	}
+    }
+    bool is_param = false;
+    if ( simple )
+	for ( size_t k = 0; k < spec_params.size(); ++k )
+	    if ( spec_params[k] == core ) { is_param = true; break; }
+
+    if ( !simple || !is_param )
+    {
+	// Concrete literal slot (e.g. `int`, or a non-deducible spelling): the
+	// pattern must match the concrete arg's spelling exactly.
+	if ( pat_spelling == concrete_spelling ) { score += 100; return true; }
+	return false;
+    }
+
+    // Deducible slot: peel `ptr` pointer levels off the concrete type to recover
+    // what PARAM binds to (pattern `T*` vs concrete `char*` => T = char).
+    DataDef *cur = concrete;
+    for ( int k = 0; k < ptr; ++k )
+    {
+	if ( !cur || !cur->is_pointer() ) return false;
+	cur = ((DataDefPTR *)cur)->base_type;
+    }
+    if ( !cur ) return false;
+    std::map<std::string, DataDef *>::iterator d = ded.find(core);
+    if ( d != ded.end() && d->second && d->second->name != cur->name )
+	return false;                         // inconsistent (e.g. pair<T,T> with T!=T)
+    ded[core] = cur;
+    score += ptr + cv;                        // more structure peeled => more specialized
+    return true;
+}
+
+Program::TemplateDef *Program::match_partial_specialization(const std::string &name,
+	const std::vector<TokenDataType *> &type_args,
+	const std::vector<std::string> &arg_spellings,
+	std::map<std::string, TokenDataType *> &out_subst)
+{
+    std::map<std::string, std::vector<TemplateDef> >::iterator it =
+	partial_spec_map.find(name);
+    if ( it == partial_spec_map.end() )
+	return NULL;
+    // v1 handles only all-type-param instantiations: type_args carries one entry per
+    // TYPE slot, so a size mismatch means a non-type param is present — bail to the
+    // primary rather than risk a wrong match.
+    if ( type_args.size() != arg_spellings.size() )
+	return NULL;
+
+    TemplateDef *best = NULL;
+    int best_score = -1;
+    std::map<std::string, DataDef *> best_ded;
+    for ( size_t s = 0; s < it->second.size(); ++s )
+    {
+	TemplateDef &spec = it->second[s];
+	if ( spec.spec_pattern.size() != type_args.size() )
+	    continue;                                  // pattern arity == primary arity
+	std::map<std::string, DataDef *> ded;
+	int score = 0;
+	bool ok = true;
+	for ( size_t i = 0; i < spec.spec_pattern.size(); ++i )
+	{
+	    if ( !type_args[i] ) { ok = false; break; }
+	    if ( !unify_spec_pattern_arg(spec.spec_pattern[i], spec.typeparams,
+					 &type_args[i]->definition,
+					 arg_spellings[i], ded, score) )
+	    { ok = false; break; }
+	}
+	if ( !ok )
+	    continue;
+	// Every own typeparam of the spec must have been deduced.
+	bool all = true;
+	for ( size_t k = 0; k < spec.typeparams.size(); ++k )
+	    if ( !ded.count(spec.typeparams[k]) ) { all = false; break; }
+	if ( !all )
+	    continue;
+	if ( score > best_score )
+	{
+	    best = &spec;
+	    best_score = score;
+	    best_ded = ded;
+	}
+    }
+    if ( !best )
+	return NULL;
+    out_subst.clear();
+    for ( std::map<std::string, DataDef *>::iterator d = best_ded.begin();
+	  d != best_ded.end(); ++d )
+	out_subst[d->first] = new TokenDataType(d->second->name.c_str(), *d->second);
+    return best;
 }
 
 // ttDataType switch-arm of parseExpression (see madc.h for the ExprStep
@@ -20090,6 +20229,9 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 
     bool specialized_template_id = false;
     std::vector<std::string> specialization_arg_spellings;
+    // For a PARTIAL specialization we also keep each arg slot's pattern tokens (a
+    // bare `<...>` explicit spec only needs the spellings).
+    std::vector<std::vector<TokenBase *>> spec_pattern_tokens;
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
     {
 	specialized_template_id = true;
@@ -20107,8 +20249,13 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    {
 		TokenBase *at = pgm.nextToken();
 		std::string spelling;
-		TokenBase *sep = pgm.collect_template_argument_spelling(at, spelling);
+		std::vector<TokenBase *> argtoks;
+		TokenBase *sep = pgm.collect_template_argument_spelling(at, spelling, &argtoks);
 		specialization_arg_spellings.push_back(spelling);
+		std::vector<TokenBase *> cloned;
+		for ( size_t ai = 0; ai < argtoks.size(); ++ai )
+		    cloned.push_back(argtoks[ai] ? argtoks[ai]->clone() : NULL);
+		spec_pattern_tokens.push_back(cloned);
 		if ( sep->id() == TokenID::tkComma )
 		    continue;
 		if ( pgm.consume_template_close(sep) )
@@ -20178,6 +20325,17 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     td.body = body;
     td.defining_namespace = pgm.current_namespace;  // e.g. "std" — for canonical_cpp_spelling
     td.owner_class = pgm.class_scope_stack.empty() ? NULL : pgm.class_scope_stack.back();
+    if ( specialized_template_id && !typeparams.empty() )
+    {
+	// Partial specialization (template<class T> struct X<pattern> {...}): store it
+	// for most-specialized pattern matching at instantiation. NOT placed in
+	// template_map (whose same-namespace merge would clobber the primary) and NOT
+	// instantiated now (it instantiates on demand, per concrete use).
+	td.is_partial_specialization = true;
+	td.spec_pattern = spec_pattern_tokens;
+	pgm.partial_spec_map[class_name].push_back(td);
+	return NULL;
+    }
     if ( specialized_template_id && typeparams.empty() )
     {
 	std::string mangled = class_name;

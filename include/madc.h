@@ -1088,7 +1088,12 @@ public:
 	    std::vector<TokenBase *> body;         // cloned tokens: `class Name { ... }`
 	std::string defining_namespace;        // current_namespace at capture (e.g. "std")
 	DataDefCLASS *owner_class;             // enclosing class for member templates
-	TemplateDef() : has_non_type_params(false), owner_class(nullptr) {}
+	bool is_partial_specialization;        // template<class T> struct X<T*> {...}
+	// For a partial spec: the pattern token sequence per arg slot (e.g. ["T","*"]
+	// for `X<T*>`). Empty for a primary template.
+	std::vector<std::vector<TokenBase *>> spec_pattern;
+	TemplateDef() : has_non_type_params(false), owner_class(nullptr),
+			is_partial_specialization(false) {}
     };
     // Templates are keyed by BARE name, but a same-named class template may be
     // declared in more than one namespace (e.g. std::char_traits and
@@ -1108,6 +1113,18 @@ public:
     // prior one) or append a new variant. only_if_absent => leave an existing
     // same-namespace variant untouched (first-wins, for bodyless forward decls).
     void register_template(const TemplateDef &td, bool only_if_absent);
+    // Partial specializations (template<class T> struct X<T*> {...}), keyed by bare
+    // class name. Kept OUT of template_map (its same-namespace merge would clobber
+    // the primary). Selected at instantiation by most-specialized pattern unification.
+    std::map<std::string, std::vector<TemplateDef>> partial_spec_map;
+    // Choose the most-specialized partial spec of `name` whose pattern unifies with
+    // the concrete TYPE args (all slots must be type args — v1 skips templates with
+    // non-type params); fills out_subst (spec-param -> deduced type) and returns the
+    // matching def, or NULL to fall back to the primary template.
+    TemplateDef *match_partial_specialization(const std::string &name,
+	    const std::vector<TokenDataType *> &type_args,
+	    const std::vector<std::string> &arg_spellings,
+	    std::map<std::string, TokenDataType *> &out_subst);
 	struct TemplateAliasDef {
 	    std::vector<std::string> typeparams;
 	    std::vector<std::vector<TokenBase *>> typeparam_defaults;

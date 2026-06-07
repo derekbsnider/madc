@@ -1,0 +1,26 @@
+// Template PARTIAL specialization: template<class T> struct X<T*> {...}.
+// madc parses partial specs but used to silently discard them and always
+// instantiate the primary (the <string_view> iterator_traits<_Tp*> blocker).
+// Now they register + most-specialized-match at instantiation, like g++/clang.
+//   - sel<char>  -> primary  (which()==0)
+//   - sel<int*>  -> pointer partial spec (which()==1)
+//   - user<char*>::ct resolves via it_traits<char*> (the dependent path that
+//     real <string_view> uses) to the pointer spec's `int`.
+#include <stdio.h>
+
+template<class T> struct it_traits { };
+template<class T> struct it_traits<T*> { typedef int cat; };
+template<class I> struct user { typedef typename it_traits<I>::cat ct; ct value; };
+
+template<class T> class sel { public: int which(){return 0;} };
+template<class T> class sel<T*> { public: int which(){return 1;} };
+
+int main()
+{
+	sel<char> a;
+	sel<int*> b;
+	user<char*> u;
+	u.value = 42;
+	printf("%d %d %d\n", a.which(), b.which(), u.value);
+	return 0;
+}
