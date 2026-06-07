@@ -22,6 +22,18 @@ retire-std-hardcoding campaign. New diagnostic **`--no-embedded-headers`**
 to the real filesystem header) makes madc use real headers so the track can
 proceed.
 
+**STRATEGY (user research → `docs/plans/2026-06-07-freestanding-vs-hosted-headers-strategy.md`):**
+a peer compiler ships ONLY the compiler-owned FREESTANDING set (stddef/stdarg/
+stdint/float/limits/stdalign/stdnoreturn/iso646/intrinsics — BORROW from c2mir's
+`mirc_*.h`, madc's own backend) and IMPERSONATES gcc just enough (`__GNUC__` +
+`__SIZEOF_*__`/`__*_TYPE__`/builtins) that UNMODIFIED hosted library headers
+parse — like Clang (a PEER, not a guest: also define a `__madc__` identity, which
+madc lacks today). Oracle = `gcc -print-file-name=include`. madc's impersonation
+is ✓ strong; the library STUBS in `include/madc/` are the WRONG bucket and the
+shadowing blocker — retire them (the retire-std-hardcoding deletion step).
+**OPEN FORK:** option B (consume real libstdc++ — this track) vs option A (keep the
+custom header-defined-class `<string>`); research favors B — confirm with user.
+
 **This session's commits (all gated: fulltest 528/4/0/26 · gcc.c-torture failset
 IDENTICAL 88, 0 regr · SMAUG boots clean):**
 - `d1f28f4` nested method-bearing struct + trailing declarator (STRUCT body)
