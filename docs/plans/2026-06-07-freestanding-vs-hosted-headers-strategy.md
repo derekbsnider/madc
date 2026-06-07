@@ -1,8 +1,54 @@
 # Header strategy: madc owns the FREESTANDING set, consumes the LIBRARY set unmodified
 
 **Date:** 2026-06-07. **Branch:** `feature/realhdr-parse-gaps2-claude`.
-**Status:** strategy note (from user research) — reframes the real-header track
-and the retire-std-hardcoding campaign. Records a strategic FORK to confirm.
+**Status:** strategy/principle note. **The authoritative OPERATIONAL plan is
+`madc-header-partition-handoff.md` (repo root)** — a 6-step implementation
+handoff (discover the set via `gcc -print-file-name=include` + checksum →
+classify 3 buckets by `#include_next` → implement a madc-owned freestanding dir →
+GCC-impersonation macros via `gcc -dM` diff → `<type_traits>` as a BUILTINS
+workstream → search order → acceptance tests). This doc is the principle + madc's
+current-state mapping + two refinements; defer to the partition handoff for the
+steps.
+
+**THE FORK IS RESOLVED → option B.** The partition handoff commits to B
+explicitly ("Do NOT handroll the C or C++ standard library… consume everything
+else stock"; the conformance milestone is getting real
+`<type_traits>/<tuple>/<vector>/<string>` through). So: consume real libstdc++/
+glibc unmodified; retire ALL madc library stubs **including** the custom
+header-defined-class `<string>`. The real-header track IS this plan.
+
+**TWO REFINEMENTS this doc adds to the partition handoff:**
+1. **Borrow the freestanding headers from c2mir** (`/workspace/mir/c2mir/mirc*.h`
+   + `x86_64/mirc_x86_64_*.h`) — madc's OWN backend already ships them, matched to
+   the `cir_node→c2mir→MIR` pipeline. Implementation source for the handoff's
+   Step 3 (gcc's `-print-file-name=include` dir is the COMPLETENESS cross-check,
+   per Step 1; do NOT add gcc's dir to the search path — handoff Non-goal #2).
+2. **Add a `__madc__` identity macro** (handoff Step 4 lists identity macros but
+   only gcc's) — be a PEER like Clang (`__clang__` + `__GNUC__`), not a guest.
+   madc has NO identity macro today.
+
+**KEY RECONCILIATION — `--no-embedded-headers` is a DIAGNOSTIC, not the end-state.**
+It falls through to the filesystem, which includes **gcc's own `$OWN` freestanding
+dir** (gcc's `stddef.h` etc.) — which the partition handoff Non-goal #2 says madc
+must NOT use (they assume gcc builtins madc may not match). So the asm-label /
+`__need_XXX` / multi-line-comment blockers we hit were partly in GCC's freestanding
+headers madc shouldn't even consume; the end-state replaces them with madc's OWN
+freestanding dir (from c2mir) + system LIBRARY dirs only. (Those lexer fixes are
+still general-good — glibc/libstdc++ headers have the same constructs.)
+
+**STEP 5 IS THE BIG WORKSTREAM (reframe).** Many remaining "parser" failures on
+real headers are actually **missing predefined macros or missing `__is_*`/`__has_*`
+builtins**, NOT lexer/parser bugs (handoff Non-goal: don't treat header failures as
+parser bugs by default). VERIFIED: madc implements **none** of the type-trait
+builtins (`__is_base_of`, `__is_trivially_constructible`, `__underlying_type`,
+`__type_pack_element`, `__integer_pack`, …) — a semantic-layer checklist that is
+the real `<type_traits>`/`<tuple>` conformance milestone. (The current `iterator<>`
+blocker is a genuine parser bug — template-id-vs-alias — and stays on the parser
+track; but expect most of the rest to be the builtin checklist.)
+
+---
+
+(original strategy note follows)
 
 ## The principle (per C/C++ "freestanding vs hosted" split)
 A peer compiler (gcc, clang) does NOT ship the standard library; it ships the
@@ -79,7 +125,10 @@ than reimplement.
 - **madc-specific (legit, keep):** `ns_php/ns_perl/ns_python/ns_ruby/ns_js/ns_rust`
   (+ headers) — the borrowed-language namespaces; not standard headers at all.
 
-## ★ STRATEGIC FORK to confirm with the user ★
+## ★ STRATEGIC FORK — RESOLVED → B (per `madc-header-partition-handoff.md`) ★
+(Kept for context; the partition handoff commits to B. The text below explains
+the two options.)
+
 madc's `include/madc/string` is **not** a freestanding header — it's the
 retire-std-hardcoding campaign's **custom header-defined `std::string`** (a thin
 class binding to real libstdc++ Itanium symbols; see
