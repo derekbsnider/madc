@@ -5685,13 +5685,27 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		if (tc) {
 			DataDef *cast_dd = tc->cast_type;
 			bool cast_is_ptr = cast_dd && cast_dd->is_pointer();
-			DataDefPTR *cast_ptr = cast_is_ptr ? dynamic_cast<DataDefPTR *>(cast_dd) : NULL;
-			if (cast_ptr && cast_ptr->base_type) cast_dd = cast_ptr->base_type;
+			// Peel ALL pointer levels and emit that many '*' — a `(char **)`
+			// cast must not collapse to `(char *)` (which mismatches a char**
+			// target: "incompatible types in assignment to a pointer"). Only
+			// DataDefPTR chains carry stackable levels; a non-DataDefPTR
+			// pointer (e.g. DataDefFPTR) keeps the single-pointer fallback.
+			int cast_ptr_levels = 0;
+			while (cast_dd) {
+				DataDefPTR *p = dynamic_cast<DataDefPTR *>(cast_dd);
+				if (!p || !p->base_type) break;
+				cast_dd = p->base_type;
+				cast_ptr_levels++;
+			}
 
 			node_t tl = type_list(cast_dd);
 			node_t cast_decl_list = list();
-			if (cast_is_ptr)
+			if (cast_ptr_levels > 0) {
+				for (int s = 0; s < cast_ptr_levels; s++)
+					append(cast_decl_list, pointer());
+			} else if (cast_is_ptr) {
 				append(cast_decl_list, pointer());
+			}
 			node_t type_decl = node2(N_DECL, ignore(), cast_decl_list);
 			node_t type_node = node2(N_TYPE, tl, type_decl);
 			return node2(N_CAST, type_node, translate_expr(tc->expr), tb);
