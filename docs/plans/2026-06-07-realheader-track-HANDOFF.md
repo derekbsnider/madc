@@ -31,6 +31,14 @@ Two big things happened this session, both on this branch:
    fixed a CIR **emitter** bug, landing 3 header-track commits. `<iosfwd>` is now
    fully green. The string/streams family advanced to ONE remaining blocker.
 
+**UPDATE 2026-06-07 (later same day): bug B is FIXED.** The `template_map`
+namespace-scoping fix landed (`5ea75a2`) + an amalgamation follow-up (`4f4fbd2`).
+`char_traits` now parses; the 8 string/streams headers advanced past it. See
+the **§5 "RESOLVED"** banner and the updated §3.3 table / §13 for the new
+frontier. The text below §5 is the original (pre-fix) plan, kept for the
+mechanism record. **New immediate-next: the `'lconv' is not a declaration in
+'::'` blocker** (string + all 5 streams headers, §6/§13).
+
 **The immediate-next task** (the live thread when this handoff was written): fix
 the **last char_traits blocker**, which is fully root-caused to a 3-line repro —
 **`template_map` is keyed by bare name, not namespace-scoped**, so a same-named
@@ -198,26 +206,32 @@ ways and prints the first error of each:
 same construct → it's the **PARSER**. The script's own header comment documents
 this and the known culprits.
 
-### 3.3 Current probe results (after this session's commits)
+### 3.3 Current probe results (after the bug-B fix, 2026-06-07)
 ```
 HEADER         madc (own preprocess)                                pp (parser-only)
 type_traits    OK                                                   OK
 utility        OK                                                   OK
+char_traits    OK   <-- bug B fixed                                 OK
+iosfwd         OK                                                   OK
 memory         690:6 error: Too many parameters                     OK
-string         473:4 'char_traits' is not a member of '__gnu_cxx'   OK
-string_view    473:4 'char_traits' is not a member of '__gnu_cxx'   OK
-char_traits    473:4 'char_traits' is not a member of '__gnu_cxx'   4374:4 same
-iosfwd         OK                                                   OK     <-- fully green now
-ostream        473:4 'char_traits' …                                OK
-istream        473:4 …                                              OK
-iostream       473:4 …                                              OK
-sstream        473:4 …                                              OK
-fstream        473:4 …                                              OK
 vector         690:6 error: Too many parameters                     OK
+string         53:15 error: 'lconv' is not a declaration in '::'    OK   <-- past char_traits
+string_view    768:45 error: Expecting a type argument to iterator<>  OK <-- past char_traits
+ostream        53:15 error: 'lconv' is not a declaration in '::'    OK
+istream        53:15 error: 'lconv' …                               OK
+iostream       53:15 …                                              OK
+sstream        53:15 …                                              OK
+fstream        53:15 …                                              OK
 map            36:9 error: Expecting type in class definition       OK
 set            36:9 error: Expecting type in class definition       OK
 algorithm      52:13 error: 'abs' is not a declaration in '::'      OK
 ```
+The char_traits fix advanced all 8 string/streams headers. The string/streams
+family now shares ONE new blocker: `'lconv' is not a declaration in '::'` —
+almost certainly the same shape as `algorithm`'s `'abs'` (a global-namespace
+`using ::name;` of a libc symbol, here `lconv` from `<clocale>`), so fixing
+that family likely clears string + all 5 streams + algorithm together.
+`string_view` has its own next step (`iterator<>` template-arg resolution).
 **The restoration's big win:** the `pp` (parser-only) column is now essentially
 all-green — including `map`/`set`/`vector`/`string`/streams. The OLD headline
 blocker for `<map>`/`<set>` (the `__ptr_cmp`/`operator<` `<…>` over-consumption)
@@ -285,7 +299,33 @@ bugs behind the char_traits failure; see §5.)
 
 ---
 
-## 5. THE OPEN BLOCKER — `__gnu_cxx::char_traits` (bug B) — fully root-caused
+## 5. ~~THE OPEN BLOCKER~~ — `__gnu_cxx::char_traits` (bug B) — **RESOLVED 2026-06-07**
+
+> **RESOLVED in `5ea75a2`** (+ amalgamation `4f4fbd2`). `template_map` is now
+> `map<string, vector<TemplateDef>>` (per-namespace variants keyed by bare name),
+> all selection funnels through a new `find_template(name, ns_hint)` helper,
+> `register_template()` owns insert/merge, and `instantiate_template_use()` takes
+> an `ns_hint` (and COPIES the selected `TemplateDef` to dodge a vector-realloc
+> dangling-reference hazard). The concrete-instantiation mangled key folds in the
+> namespace ONLY when the bare name actually has >1 variant, so every
+> single-namespace template's internal tag is byte-identical (zero churn for
+> std::). The expression-context qualified call passes the resolved namespace as
+> `ns_hint`; the type path was left on bare-name selection because its only
+> collision (`std::char_traits : public __gnu_cxx::char_traits`) resolves before
+> `std::char_traits` registers. Regression test `tests/testtemplatenamespacescope`.
+> Follow-up `4f4fbd2` collapsed 10 hand-rolled `alias_use`→`use` probe sites onto
+> one `instantiate_template_id(name, tb, ns_hint)` seam so the hint flows
+> uniformly. fulltest 524/4/0/26, no-std-hardcoding gate green.
+>
+> **Note (qualified template-id as a DECLARATION type):** `ns::Tmpl<int> v;` as a
+> variable declaration still fails ("Expecting ';' after struct member") — but it
+> fails with a SINGLE namespace too, so it is a SEPARATE pre-existing gap (the
+> declaration-type parser doesn't resolve qualified template-ids), NOT part of
+> bug B. Worth a future thread; the expression path (`ns::Tmpl<int>::f()`) works.
+>
+> The original (pre-fix) plan follows for the mechanism record.
+
+### (historical) THE OPEN BLOCKER — `__gnu_cxx::char_traits` (bug B)
 
 This blocks 8 headers: string, string_view, char_traits, ostream, istream,
 iostream, sstream, fstream (all `473:4 'char_traits' is not a member of namespace
@@ -499,6 +539,9 @@ printf '__INT64_TYPE__\n' | g++ -std=c++17 -E -x c++ - 2>/dev/null | tail -1
 ## 10. Commit list this session (newest first, branch feature/realhdr-parse-gaps2-claude)
 
 ```
+4f4fbd2 refactor(parser): one instantiate_template_id seam for the alias|class template-id probe
+5ea75a2 fix(parser): namespace-scope template_map so same-named templates don't collide  [bug B]
+e91858f docs(plan): comprehensive rehydration handoff (this doc)
 c2126dc fix(parser): resolve namespace-qualified types as struct members          [bug A]
 68dee85 feat(headers): flesh out embedded sys/cdefs.h with glibc attribute + inline macros
 0665b86 fix(cir+headers): array typedef of a tagged struct must not re-emit the body; add __gnuc_va_list
@@ -570,14 +613,23 @@ touch std registration.
 
 ## 13. Next threads, in priority order
 
-1. **`template_map` namespace-scoping (bug B / char_traits)** — §5. Unblocks 8
-   std:: headers (string/streams). Invasive; test-gated; add a `_tmpl`-style
-   regression test. THE immediate-next task.
+0. ~~`template_map` namespace-scoping (bug B)~~ — **DONE** `5ea75a2`/`4f4fbd2`.
+1. **`'lconv' / 'abs' is not a declaration in '::'`** — the string + all 5
+   streams headers now share the `'lconv'` blocker, and `algorithm` has the
+   twin `'abs'`. Both are a global-namespace `using ::name;` of a libc symbol
+   (lconv ← `<clocale>`, abs ← `<cstdlib>`) that madc doesn't have declared at
+   `::` at that point. Likely ONE fix clears 7 headers. THE immediate-next task.
+   Method: reduce `using ::lconv;` / `using ::abs;` to a minimal repro; check
+   whether the libc symbol/type is declared globally in madc's view (probe the
+   relevant embedded header / `<clocale>`,`<cstdlib>`), fix the deepest layer.
 2. **`memory`/`vector` `690:6 Too many parameters`** — §6. One root cause, 2
-   headers.
-3. **`map`/`set` `36:9`** (preprocessor) and **`algorithm` `52:13 abs`** — §6.
-4. (Optional) restoration polish — §2.6 (dedup STRUCT/CLASS parse, operator<
-   resolution).
+   headers (a real parameter-count limit or a macro mis-expansion).
+3. **`map`/`set` `36:9 Expecting type in class definition`** — §6 (preprocessor).
+4. **`string_view` `768:45 iterator<>` template-arg resolution** — its own next
+   step after the `lconv` family.
+5. (Optional) restoration polish — §2.6 (dedup STRUCT/CLASS parse, operator<).
+   Also: qualified template-id as a *declaration* type (`ns::Tmpl<int> v;`) —
+   a pre-existing gap surfaced while testing bug B (see §5 note).
 
 After the std:: header family is green under madc's own preprocessing, the next
 arc is wiring real headers into the build (retire curated stubs) per
