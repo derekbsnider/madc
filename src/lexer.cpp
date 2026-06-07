@@ -4497,6 +4497,21 @@ static std::string token_spelling(TokenBase *tb)
 	    return std::string();
 	case TokenType::ttInteger: return std::to_string(tb->ival());
 	case TokenType::ttReal:    return std::to_string(tb->dval());
+	case TokenType::ttChar:
+	{
+	    // Reconstruct a char literal that re-lexes to the same value.
+	    // TokenChar keeps only the value (not the original spelling), so this
+	    // is a canonical form: printable ASCII emitted directly (the quote and
+	    // backslash escaped), everything else as a hex escape. Without this case char
+	    // literals reconstructed as empty (dropping `'\0'`/`'\x7f'` operands),
+	    // which corrupted -E output fed back to the parser.
+	    int v = (int)tb->ival();
+	    if ( v >= 0x20 && v <= 0x7e && v != '\'' && v != '\\' )
+		return std::string("'") + (char)v + "'";
+	    char buf[16];
+	    snprintf(buf, sizeof(buf), "'\\x%x'", (unsigned)(v & 0xff));
+	    return std::string(buf);
+	}
 	case TokenType::ttOperator:
 	case TokenType::ttSymbol:  return std::string(1, (char)tb->get());
 	default:
