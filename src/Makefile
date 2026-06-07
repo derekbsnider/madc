@@ -190,8 +190,13 @@ $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 	rm -f $@
 	$(AR) $(ARFLAGS) $@ $^
 
-embedded_headers.cpp: $(MADHDRS)
+# Always run the generator (it is idempotent — only rewrites embedded_headers.cpp
+# when the content changes). An mtime-only prereq list cannot detect a DELETED
+# embedded header, which silently left a retired stub baked into the binary.
+.PHONY: gen_embedded_headers
+gen_embedded_headers:
 	../scripts/gen_embedded_headers.sh
+embedded_headers.cpp: gen_embedded_headers
 
 # Host system include search paths, captured from the configured compiler.
 # Host-specific + gitignored, so generate it if missing (a fresh checkout has
