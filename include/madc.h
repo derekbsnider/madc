@@ -1452,7 +1452,16 @@ public:
     // and return the canonical operator-function-id name ("operator<",
     // "operator()", "operatornew", "operator[]", …). The `operator` token itself
     // is the argument; its trailing symbol(s) are consumed from the stream.
-    std::string parseOperatorId(TokenBase *operator_tok);
+    // When `consumed` is non-null, each consumed symbol token is appended to it
+    // (so angle-bracket scanners can re-emit the operator-id verbatim).
+    std::string parseOperatorId(TokenBase *operator_tok,
+				std::vector<TokenBase *> *consumed = NULL);
+    // True when `t` is the `operator` keyword that introduces an
+    // operator-function-id. The scanners use this so an operator symbol
+    // (`operator<`, `operator>>`, …) is treated as part of a NAME, never as an
+    // angle-bracket / delimiter — fixing the operator< template mis-parse in
+    // ONE place instead of every hand-rolled scanner.
+    bool isOperatorIdStart(TokenBase *t);
     // After a method call's arguments are parsed, re-bind `tc` to the overload
     // of `cls`'s method `id` that best matches the argument types (the initial
     // findMethod() bound the first by-name match). Returns `tc` unchanged when

@@ -1888,6 +1888,24 @@ static TokenBase *collect_template_argument_spelling(Program &pgm,
 		tokens_out->push_back(new TokenGT());
 	    return new TokenGT();
 	}
+	// operator-function-id (`operator<`, `operator>>`, `operator()`, …):
+	// the operator symbol is part of a NAME, never an angle/paren/bracket
+	// delimiter. Consume `operator` + its symbol token(s) via the shared
+	// primitive without touching any depth counter.
+	if ( pgm.isOperatorIdStart(t) )
+	{
+	    std::vector<TokenBase *> opsyms;
+	    std::string opname = pgm.parseOperatorId(t, tokens_out ? &opsyms : NULL);
+	    spelling += opname;
+	    if ( tokens_out )
+	    {
+		tokens_out->push_back(t->clone());
+		for ( TokenBase *s : opsyms )
+		    tokens_out->push_back(s->clone());
+	    }
+	    t = pgm.nextToken();
+	    continue;
+	}
 	spelling += template_token_fragment(t);
 	if ( tokens_out )
 	    tokens_out->push_back(t->clone());
@@ -8313,9 +8331,18 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 }
 #endif
 
-std::string Program::parseOperatorId(TokenBase *operator_tok)
+std::string Program::parseOperatorId(TokenBase *operator_tok,
+				     std::vector<TokenBase *> *consumed)
 {
-    TokenBase *op_tok = nextToken();
+    // take() == nextToken() but also records the consumed token for callers
+    // (scanners) that need to re-emit the operator-id verbatim.
+    auto take = [&]() -> TokenBase * {
+	TokenBase *t = nextToken();
+	if ( consumed && t )
+	    consumed->push_back(t);
+	return t;
+    };
+    TokenBase *op_tok = take();
     if ( !op_tok )
 	Throw(operator_tok) << "Expected operator symbol after 'operator'" << flush;
     if ( op_tok->id() == TokenID::tkNEW || op_tok->id() == TokenID::tkDELETE )
@@ -8323,10 +8350,10 @@ std::string Program::parseOperatorId(TokenBase *operator_tok)
 	std::string name = op_tok->id() == TokenID::tkNEW ? "operatornew" : "operatordelete";
 	if ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
 	{
-	    TokenBase *sq = nextToken();
+	    TokenBase *sq = take();
 	    if ( !peekToken() || peekToken()->id() != TokenID::tkClSqr )
 		Throw(sq) << "Expected ']' in " << name << "[]" << flush;
-	    nextToken();
+	    take();
 	    name += "[]";
 	}
 	return name;
@@ -8337,20 +8364,26 @@ std::string Program::parseOperatorId(TokenBase *operator_tok)
     {
 	if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
 	    Throw(op_tok) << "Expected ')' in operator()" << flush;
-	nextToken();
+	take();
 	return "operator()";
     }
     if ( op_tok->id() == TokenID::tkOpSqr )
     {
 	if ( !peekToken() || peekToken()->id() != TokenID::tkClSqr )
 	    Throw(op_tok) << "Expected ']' in operator[]" << flush;
-	nextToken();
+	take();
 	return "operator[]";
     }
     char sym = (char)op_tok->get();
     if ( !sym )
 	Throw(op_tok) << "Unrecognized operator symbol" << flush;
     return std::string("operator") + sym;
+}
+
+bool Program::isOperatorIdStart(TokenBase *t)
+{
+    return t && is_contextual_identifier_token(t)
+	&& contextual_identifier_name(t) == "operator";
 }
 
 static bool is_named_cpp_cast(const std::string &name)
@@ -18312,6 +18345,14 @@ static void skip_template_id_suffix(Program &pgm)
     while ( depth > 0 && pgm.peekToken() )
     {
 	TokenBase *t = pgm.nextToken();
+	// operator-function-id (`operator<`, `operator>>`, …): the operator
+	// symbol is part of a NAME, never an angle bracket — consume it opaquely
+	// so e.g. `__void_t<decltype(operator<(a,b))>` balances correctly.
+	if ( pgm.isOperatorIdStart(t) )
+	{
+	    pgm.parseOperatorId(t);
+	    continue;
+	}
 	if ( t->id() == TokenID::tkLT )
 	    ++depth;
 	else if ( t->id() == TokenID::tkGT )
@@ -18895,6 +18936,18 @@ static std::vector<TokenBase *> collect_template_class_prefix(Program &pgm)
 	  && (pt->id() == TokenID::tkOpBrc || pt->id() == TokenID::tkSemi) )
 	    break;
 	TokenBase *t = pgm.nextToken();
+	// operator-function-id (`operator<`, …) in a partial-spec arg list
+	// (`struct __not_overloaded<_Tp,_Up,__void_t<decltype(operator<(a,b))>>`):
+	// the operator symbol is part of a NAME, never a delimiter.
+	if ( pgm.isOperatorIdStart(t) )
+	{
+	    std::vector<TokenBase *> opsyms;
+	    pgm.parseOperatorId(t, &opsyms);
+	    prefix.push_back(t->clone());
+	    for ( TokenBase *s : opsyms )
+		prefix.push_back(s->clone());
+	    continue;
+	}
 	prefix.push_back(t->clone());
 	if ( t->id() == TokenID::tkLT )
 	    ++angle_depth;
@@ -19616,6 +19669,17 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    if ( at->id() == TokenID::tkSemi
 	      && angle_depth == 0 && paren_depth == 0 && square_depth == 0 )
 		break;
+	    // operator-function-id: consume `operator` + symbol opaquely (the
+	    // symbol is part of a NAME, never a delimiter).
+	    if ( pgm.isOperatorIdStart(at) )
+	    {
+		std::vector<TokenBase *> opsyms;
+		pgm.parseOperatorId(at, &opsyms);
+		target.push_back(at->clone());
+		for ( TokenBase *s : opsyms )
+		    target.push_back(s->clone());
+		continue;
+	    }
 	    target.push_back(at->clone());
 	    if ( at->id() == TokenID::tkLT )
 		++angle_depth;
