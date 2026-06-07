@@ -1617,6 +1617,14 @@ public:
     TokenBase *parse_cast_unary_deref_operand(TokenBase *star);
     TokenBase *parse_cast_function_call_operand(TokenBase *head);
     TokenBase *materialize_cast_literal_operand(TokenBase *tb);
+    // Template-machinery leaf consumers: recognize a template-argument-list
+    // close (`>` or split `>>`), detect whether we're in an instantiated member
+    // body, consume a template-parameter type suffix, and collect a template
+    // default-argument token run.
+    bool parsing_template_instantiated_member_body();
+    bool consume_template_close(TokenBase *tok);
+    bool consume_template_parameter_type_suffix();
+    std::vector<TokenBase *> collect_template_default_argument();
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts

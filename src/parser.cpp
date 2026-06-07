@@ -1814,7 +1814,7 @@ static TokenDataType *instantiate_template_alias_use(Program &pgm,
 // consumes nothing extra. Applied at every template-angle close site.
 // (The open side never needs splitting — `<<` cannot appear as two template
 // opens in a well-formed template-id, since each level is introduced by a name.)
-static bool consume_template_close(Program &pgm, TokenBase *tok)
+bool Program::consume_template_close(TokenBase *tok)
 {
     if ( !tok )
 	return false;
@@ -1822,7 +1822,7 @@ static bool consume_template_close(Program &pgm, TokenBase *tok)
 	return true;                          // single '>'
     if ( tok->id() == TokenID::tkBSR )    // '>>' = this level's '>' + the outer one
     {
-	pgm.pushToken(new TokenGT());
+	pushToken(new TokenGT());
 	return true;
     }
     return false;
@@ -2099,7 +2099,7 @@ static TokenDataType *instantiate_opaque_template_use(Program &pgm,
 	args.push_back(spelling);
 	if ( sep->id() == TokenID::tkComma )
 	    continue;
-	if ( consume_template_close(pgm, sep) )
+	if ( pgm.consume_template_close(sep) )
 	    break;
 	pgm.Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
     }
@@ -2313,7 +2313,7 @@ static TokenDataType *instantiate_template_use(Program &pgm, const std::string &
 	  || pgm.peekToken()->id() == TokenID::tkBSR) )
     {
 	TokenBase *close = pgm.nextToken();
-	if ( !consume_template_close(pgm, close) )
+	if ( !pgm.consume_template_close(close) )
 	    pgm.Throw(close) << "Expecting '>' in " << tname << "<...>" << flush;
     }
     else
@@ -2366,7 +2366,7 @@ static TokenDataType *instantiate_template_use(Program &pgm, const std::string &
 	    ++pi;
 	    if ( sep->id() == TokenID::tkComma )
 		continue;
-	    if ( consume_template_close(pgm, sep) )
+	    if ( pgm.consume_template_close(sep) )
 		break;
 	    pgm.Throw(sep) << "Expecting ',' or '>' in "
 			   << tname << "<...>" << flush;
@@ -2579,7 +2579,7 @@ static TokenDataType *instantiate_template_alias_use(Program &pgm,
 	    args.push_back(spelling);
 	    if ( sep->id() == TokenID::tkComma )
 		continue;
-	    if ( consume_template_close(pgm, sep) )
+	    if ( pgm.consume_template_close(sep) )
 		break;
 	    pgm.Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
 	}
@@ -2648,7 +2648,7 @@ static TokenDataType *instantiate_template_alias_use(Program &pgm,
 	TokenBase *sep = pgm.nextToken();
 	if ( sep->id() == TokenID::tkComma )
 	    continue;
-	if ( consume_template_close(pgm, sep) )
+	if ( pgm.consume_template_close(sep) )
 	    break;
 	pgm.Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
     }
@@ -4550,13 +4550,13 @@ TokenDataType *Program::parse_typeof_datatype(TokenBase *op_tb)
     return new TokenDataType(dd->name.c_str(), *dd);
 }
 
-static bool parsing_template_instantiated_member_body(Program &pgm)
+bool Program::parsing_template_instantiated_member_body()
 {
-    if ( pgm.instantiating_canonical_spelling.empty()
-      || pgm.compounds.empty() || !pgm.compounds.top()
-      || !pgm.compounds.top()->method )
+    if ( instantiating_canonical_spelling.empty()
+      || compounds.empty() || !compounds.top()
+      || !compounds.top()->method )
 	return false;
-    return pgm.compounds.top()->method->owner_class != NULL;
+    return compounds.top()->method->owner_class != NULL;
 }
 
 void Program::consume_deferred_static_assert_statement(TokenBase *tb)
@@ -4585,7 +4585,7 @@ TokenBase *Program::parse_static_assert_statement(TokenBase *tb)
     if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	Throw(tb) << "Expecting '(' after " << ((TokenIdent *)tb)->str << flush;
 
-    if ( parsing_template_instantiated_member_body(*this) )
+    if ( parsing_template_instantiated_member_body() )
     {
 	consume_deferred_static_assert_statement(tb);
 	return NULL;
@@ -15407,7 +15407,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			first_arg = false;
 			if ( sep->id() == TokenID::tkComma )
 			    continue;
-			if ( consume_template_close(pgm, sep) )
+			if ( pgm.consume_template_close(sep) )
 			    break;
 			pgm.Throw(sep) << "Expecting ',' or '>' in qualified base template-id" << flush;
 		    }
@@ -18404,19 +18404,19 @@ static bool consume_ellipsis(Program &pgm)
     return true;
 }
 
-static std::vector<TokenBase *> collect_template_default_argument(Program &pgm)
+std::vector<TokenBase *> Program::collect_template_default_argument()
 {
     std::vector<TokenBase *> out;
     int angle_depth = 0;
     int paren_depth = 0;
     int square_depth = 0;
-    while ( pgm.peekToken() )
+    while ( peekToken() )
     {
-	TokenBase *pt = pgm.peekToken();
+	TokenBase *pt = peekToken();
 	if ( angle_depth == 0 && paren_depth == 0 && square_depth == 0
 	  && is_template_param_separator(pt) )
 	    return out;
-	TokenBase *t = pgm.nextToken();
+	TokenBase *t = nextToken();
 	if ( t->id() == TokenID::tkLT )
 	{
 	    out.push_back(t->clone());
@@ -18440,7 +18440,7 @@ static std::vector<TokenBase *> collect_template_default_argument(Program &pgm)
 	    {
 		out.push_back(new TokenGT());
 		angle_depth = 0;
-		pgm.pushToken(new TokenGT());
+		pushToken(new TokenGT());
 	    }
 	    else
 		out.push_back(t->clone());
@@ -18527,22 +18527,22 @@ static std::string template_parameter_decl_name(TokenBase *tb)
     return contextual_identifier_name(tb);
 }
 
-static bool consume_template_parameter_type_suffix(Program &pgm)
+bool Program::consume_template_parameter_type_suffix()
 {
     bool consumed = false;
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
     {
-	skip_template_id_suffix(pgm);
+	skip_template_id_suffix(*this);
 	consumed = true;
     }
-    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	pgm.nextToken();
-	TokenBase *member = pgm.nextToken();
+	nextToken();
+	TokenBase *member = nextToken();
 	if ( !is_template_parameter_type_name(member) )
-	    pgm.Throw(member) << "Expecting name after '::' in template parameter type" << flush;
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
-	    skip_template_id_suffix(pgm);
+	    Throw(member) << "Expecting name after '::' in template parameter type" << flush;
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+	    skip_template_id_suffix(*this);
 	consumed = true;
     }
     return consumed;
@@ -19584,7 +19584,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     for (;;)
     {
 	tn = pgm.nextToken();
-	if ( consume_template_close(pgm, tn) )
+	if ( pgm.consume_template_close(tn) )
 	    break;
 	if ( tn->id() == TokenID::tkTEMPLATE )
 	{
@@ -19639,7 +19639,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	else if ( tn->type() == TokenType::ttIdentifier
 	       || tn->type() == TokenType::ttDataType )
 	{
-	    bool qualified_type = consume_template_parameter_type_suffix(pgm);
+	    bool qualified_type = pgm.consume_template_parameter_type_suffix();
 	    TokenBase *param_name = pgm.peekToken();
 	    if ( consume_ellipsis(pgm) )
 	    {
@@ -19674,11 +19674,11 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
 	{
 	    pgm.nextToken();
-	    typeparam_defaults.back() = collect_template_default_argument(pgm);
+	    typeparam_defaults.back() = pgm.collect_template_default_argument();
 	}
 	tn = pgm.nextToken();
 	if ( tn->id() == TokenID::tkComma ) continue;
-	if ( consume_template_close(pgm, tn) ) break;
+	if ( pgm.consume_template_close(tn) ) break;
 	pgm.Throw(tn) << "Expecting ',' or '>' in template parameter list" << flush;
     }
 
@@ -19751,7 +19751,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	  || pgm.peekToken()->id() == TokenID::tkBSR) )
 	{
 	    TokenBase *close = pgm.nextToken();
-	    if ( !consume_template_close(pgm, close) )
+	    if ( !pgm.consume_template_close(close) )
 		pgm.Throw(close) << "Expecting '>' in explicit specialization" << flush;
 	}
 	else
@@ -19764,7 +19764,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		specialization_arg_spellings.push_back(spelling);
 		if ( sep->id() == TokenID::tkComma )
 		    continue;
-		if ( consume_template_close(pgm, sep) )
+		if ( pgm.consume_template_close(sep) )
 		    break;
 		pgm.Throw(sep) << "Expecting ',' or '>' in explicit specialization" << flush;
 	    }
