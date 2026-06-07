@@ -5919,6 +5919,7 @@ Program::Program()
       instantiating_dependent_surface(false),
       deferred_function_body_sink(NULL),
       parsing_cpp_struct_class(false),
+      class_definition_only(false),
       tkProgram(NULL),
       tkFunction(NULL),
       script_argc(0),
@@ -5948,6 +5949,7 @@ Program::Program(MadcEngine *eng)
       instantiating_dependent_surface(false),
       deferred_function_body_sink(NULL),
       parsing_cpp_struct_class(false),
+      class_definition_only(false),
       tkProgram(NULL),
       tkFunction(NULL),
       script_argc(0),
@@ -14514,7 +14516,41 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    pgm.Throw(stag) << "Expecting struct name" << flush;
 		std::string sname = ((TokenIdent *)stag)->str;
 		datadef_map_iter sdmi = pgm.struct_map.find(sname);
-		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
+		// A method-bearing nested struct (C++ `struct Inner { void f(){} } m;`)
+		// must be parsed by the one class-body parser, not the data-only
+		// nested-aggregate parser. Delegate the DEFINITION to TokenCLASS in
+		// definition-only mode (it registers `Inner`, stopping at '}'); the
+		// trailing member declarator (`m`) is then claimed by the enclosing
+		// struct member loop below, exactly as for a data-only nested type.
+		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc
+		     && pgm.cpp_struct_body_needs_class_parser(sname, pgm.peekToken()) )
+		{
+		    TokenIdent *class_tag = new TokenIdent(sname);
+		    class_tag->file = stag->file;
+		    class_tag->line = stag->line;
+		    class_tag->column = stag->column;
+		    pgm.pushToken(class_tag);
+		    bool saved_struct_class = pgm.parsing_cpp_struct_class;
+		    bool saved_def_only = pgm.class_definition_only;
+		    pgm.parsing_cpp_struct_class = true;
+		    pgm.class_definition_only = true;
+		    TokenCLASS class_parser;
+		    try { class_parser.parse(pgm); }
+		    catch(...)
+		    {
+			pgm.parsing_cpp_struct_class = saved_struct_class;
+			pgm.class_definition_only = saved_def_only;
+			throw;
+		    }
+		    pgm.parsing_cpp_struct_class = saved_struct_class;
+		    pgm.class_definition_only = saved_def_only;
+		    datadef_map_iter ndmi = pgm.struct_map.find(sname);
+		    if ( ndmi == pgm.struct_map.end() )
+			pgm.Throw(stag) << "Nested class '" << sname
+			    << "' not registered by class parser" << flush;
+		    mtype = new TokenDataType(sname.c_str(), *ndmi->second);
+		}
+		else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
 		{
 		    DataDefSTRUCT *inner = NULL;
 		    if ( sdmi == pgm.struct_map.end() )
@@ -16633,6 +16669,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
     // what follows?
     tn = pgm.peekToken();
+
+    // Definition-only mode: the class/struct is now registered; return at the
+    // closing '}' and let the caller (an enclosing aggregate-body parser) claim
+    // any trailing instance declarator as one of ITS members. See
+    // Program::class_definition_only and the nested-struct branch in
+    // TokenSTRUCT::parse.
+    if ( pgm.class_definition_only )
+	return NULL;
 
     if ( do_typedef )
     {

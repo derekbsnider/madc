@@ -1168,6 +1168,13 @@ public:
     };
     std::vector<DeferredFunctionBody> *deferred_function_body_sink;
     bool parsing_cpp_struct_class;
+    // When set, TokenCLASS::parse parses and registers the class/struct
+    // DEFINITION only and returns at the closing '}', WITHOUT consuming a
+    // trailing instance declarator. Used when a method-bearing struct is
+    // nested inside another aggregate's body: the class parser registers the
+    // nested type, then the enclosing struct-body parser claims the trailing
+    // member declarator (`struct Inner { void f(){} } member;`).
+    bool class_definition_only;
     // Source-ordered top-level declarations for CIR tree generation.
     // Each entry records what was declared and in what order, matching
     // the order c2m's parser produces in its MODULE LIST. The legacy
