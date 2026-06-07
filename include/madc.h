@@ -765,6 +765,14 @@ public:
     {
 	if ( !_pushback.empty() )
 	{
+	    // Delayed-pop blue paint. A macro-expansion frame whose text was fully
+	    // consumed on a PRIOR get() is dropped HERE, on the next read — NOT the
+	    // instant its last char was taken. That keeps the macro "disabled"
+	    // (macro_disabled()) while the token its expansion produced is re-lexed
+	    // and macro-checked, so a self-referential `#define A A` (or mutual
+	    // `A`<->`B`) expands once and stops instead of recursing to a crash.
+	    while ( !_pushback_frames.empty() && _pushback_frames.front().remaining == 0 )
+		_pushback_frames.pop_front();
 	    int ch = (unsigned char)_pushback[0];
 	    _pushback.erase(0, 1);
 	    bool recount = true;
@@ -773,13 +781,15 @@ public:
 		recount = _pushback_frames.front().recount;
 		if ( _pushback_frames.front().remaining > 0 )
 		    --_pushback_frames.front().remaining;
-		if ( _pushback_frames.front().remaining == 0 )
-		    _pushback_frames.pop_front();
 	    }
 	    if ( recount )
 		++_column;
 	    return ch;
 	}
+	// Pushback drained: any frames left are fully-consumed expansions — drop
+	// them so a later, independent use of the same macro can expand again.
+	if ( !_pushback_frames.empty() )
+	    _pushback_frames.clear();
 	int ch = _ss.get();
 	if ( ch == -1 ) { return -1; }
 	// C line splice: backslash + optional trailing whitespace + newline
