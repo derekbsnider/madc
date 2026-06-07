@@ -420,10 +420,27 @@ Take this as the working hypothesis: the struct-vs-class *semantics*
   handles member functions, ctors/dtors, access labels, bases, virtual, RTTI,
   multiple/virtual inheritance (all landed earlier — see
   `project_cpp_parser_correctness`, `project_multiple_inheritance`).
-- `struct` parsing: `TokenSTRUCT::parse` (the member loop is around parser.cpp
-  ~14036 — that's where bug-A §4.9 and the "Expecting type in/after struct
-  member" throws live). It parses **data members only** — it does NOT parse C++
-  member-function/ctor/dtor/operator constructs in a struct body. That's the gap.
+- `struct` parsing: `TokenSTRUCT::parse` (parser.cpp **13716**) runs a SEPARATE,
+  simpler member loop that parses **data members only**. It reads `<type> <name>`,
+  then expects `,` or `;`; when a `(` follows the name (a method), it throws
+  **"Expecting ';' after struct member"** at parser.cpp **14674**. It does NOT
+  call `parseFunction` or handle ctors/dtors/operators/access-labels. **THIS is
+  the gap, and it CONFIRMS the user's hypothesis** (§6.1b): the struct/class
+  difference is two separate BODY PARSERS, not a fundamental missing feature.
+- **Exact reuse anchors (class side, what the struct path should adopt):**
+  `TokenCLASS::parse` (parser.cpp **15299**) is the rich body parser — it detects
+  member functions and calls `pgm.parseFunction(...)` (parser.cpp **15849 / 15903
+  / 15960 / 16274** for methods / ctor-dtor / conversion-op / general member),
+  inside a **deferred-function-body sink** (set at ~15711–15712, restored at
+  ~16399; `enqueue_deferred_function_body` ~15197, `parse_deferred_function_body`
+  ~15212). The struct→class promotion finalize (object-member case) is at
+  `TokenSTRUCT::parse`'s closing-`}` (~parser.cpp 11185 per the old note — VERIFY;
+  it may have moved). **The fix = route the struct member loop through the same
+  member-declaration/method handler the class path uses (ideally unify the body
+  parse, parameterized by default access), set PUBLIC default access for
+  struct-origin classes, and promote a struct to DataDefCLASS when it gains any
+  C++ object feature (method/ctor/dtor/virtual/base) — exactly mirroring the
+  existing object-member promotion.**
 - **Struct→class PROMOTION already exists** (develop @ `78d1b27`, also on this
   branch): at `TokenSTRUCT::parse`'s closing-`}` finalize (~parser.cpp 11185 per
   the old note — VERIFY the current line), if any member `is_object()` by value
