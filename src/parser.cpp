@@ -3268,7 +3268,6 @@ static TokenDataType *parse_typeof_datatype(Program &pgm, TokenBase *op_tb);
 static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::string &op_name);
 static TokenBase *try_parse_dynamic_type_query(Program &pgm, TokenBase *op_tb,
 					       const std::string &op_name);
-static TokenBase *parse_static_assert_statement(Program &pgm, TokenBase *tb);
 static TokenDataType *resolve_namespaced_type_token(Program &pgm, TokenBase *tb, bool consume_tokens);
 
 static std::string canonical_builtin_simple_type_name(DataDef *dd)
@@ -4564,67 +4563,67 @@ static bool parsing_template_instantiated_member_body(Program &pgm)
     return pgm.compounds.top()->method->owner_class != NULL;
 }
 
-static void consume_deferred_static_assert_statement(Program &pgm, TokenBase *tb)
+void Program::consume_deferred_static_assert_statement(TokenBase *tb)
 {
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
-	pgm.Throw(tb) << "Expecting '(' after " << ((TokenIdent *)tb)->str << flush;
-    pgm.nextToken();
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	Throw(tb) << "Expecting '(' after " << ((TokenIdent *)tb)->str << flush;
+    nextToken();
 
     int depth = 1;
     while ( depth > 0 )
     {
-	TokenBase *t = pgm.nextToken();
+	TokenBase *t = nextToken();
 	if ( !t )
-	    pgm.Throw(tb) << "Unexpected end of input in static assertion" << flush;
+	    Throw(tb) << "Unexpected end of input in static assertion" << flush;
 	if ( t->id() == TokenID::tkOpBrk )
 	    ++depth;
 	else if ( t->id() == TokenID::tkClBrk )
 	    --depth;
     }
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
-	pgm.nextToken();
+    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	nextToken();
 }
 
-static TokenBase *parse_static_assert_statement(Program &pgm, TokenBase *tb)
+TokenBase *Program::parse_static_assert_statement(TokenBase *tb)
 {
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
-	pgm.Throw(tb) << "Expecting '(' after " << ((TokenIdent *)tb)->str << flush;
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	Throw(tb) << "Expecting '(' after " << ((TokenIdent *)tb)->str << flush;
 
-    if ( parsing_template_instantiated_member_body(pgm) )
+    if ( parsing_template_instantiated_member_body(*this) )
     {
-	consume_deferred_static_assert_statement(pgm, tb);
+	consume_deferred_static_assert_statement(tb);
 	return NULL;
     }
 
-    pgm.nextToken();
+    nextToken();
 
-    int64_t cond = pgm.parse_constant_integer_expression();
+    int64_t cond = parse_constant_integer_expression();
     std::string message = "static assertion failed";
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
+    if ( peekToken() && peekToken()->id() == TokenID::tkComma )
     {
-	pgm.nextToken();
-	TokenBase *msg_tb = pgm.nextToken();
+	nextToken();
+	TokenBase *msg_tb = nextToken();
 	if ( !msg_tb || msg_tb->type() != TokenType::ttString )
-	    pgm.Throw(msg_tb ? msg_tb : tb) << "Expecting string literal in static assertion" << flush;
+	    Throw(msg_tb ? msg_tb : tb) << "Expecting string literal in static assertion" << flush;
 	message = ((TokenStr *)msg_tb)->str;
     }
 
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
-	pgm.Throw(tb) << "Expecting ')' after static assertion" << flush;
-    pgm.nextToken();
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
-	pgm.nextToken();
+    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
+	Throw(tb) << "Expecting ')' after static assertion" << flush;
+    nextToken();
+    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	nextToken();
 
     if ( !cond )
-	pgm.Throw(tb) << message << flush;
+	Throw(tb) << message << flush;
     return NULL;
 }
 
-static void consume_class_static_assert_declaration(Program &pgm, TokenBase *tb)
+void Program::consume_class_static_assert_declaration(TokenBase *tb)
 {
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
-	pgm.Throw(tb) << "Expecting '(' after " << contextual_identifier_name(tb) << flush;
-    pgm.nextToken(); // consume '('
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	Throw(tb) << "Expecting '(' after " << contextual_identifier_name(tb) << flush;
+    nextToken(); // consume '('
 
     TokenBase *first_expr = NULL;
     size_t top_expr_tokens = 0;
@@ -4633,9 +4632,9 @@ static void consume_class_static_assert_declaration(Program &pgm, TokenBase *tb)
     int depth = 1;
     while ( depth > 0 )
     {
-	TokenBase *t = pgm.nextToken();
+	TokenBase *t = nextToken();
 	if ( !t )
-	    pgm.Throw(tb) << "Unexpected end of input in static assertion" << flush;
+	    Throw(tb) << "Unexpected end of input in static assertion" << flush;
 
 	if ( depth == 1 && before_message )
 	{
@@ -4659,8 +4658,8 @@ static void consume_class_static_assert_declaration(Program &pgm, TokenBase *tb)
 	else if ( t->id() == TokenID::tkClBrk )
 	    --depth;
     }
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
-	pgm.nextToken();
+    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	nextToken();
 
     bool simple_false = false;
     if ( top_expr_tokens == 1 && first_expr )
@@ -4676,7 +4675,7 @@ static void consume_class_static_assert_declaration(Program &pgm, TokenBase *tb)
 	}
     }
     if ( simple_false )
-	pgm.Throw(tb) << message << flush;
+	Throw(tb) << message << flush;
 }
 
 static bool try_parse_constant_offsetof_address(Program &pgm, int64_t &out)
@@ -16086,7 +16085,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			contextual_identifier_name(pgm.peekToken())) )
 		{
 		    TokenBase *assert_tb = pgm.nextToken();
-		    consume_class_static_assert_declaration(pgm, assert_tb);
+		    pgm.consume_class_static_assert_declaration(assert_tb);
 		    continue;
 		}
 		TokenBase *type_head = pgm.nextToken();
@@ -23602,7 +23601,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		return lbl;
 	    }
 	    if ( is_static_assert_identifier(((TokenIdent *)tb)->str) )
-		return parse_static_assert_statement(*this, tb);
+		return parse_static_assert_statement(tb);
 	    if ( is_typeof_identifier(((TokenIdent *)tb)->str) )
 		return parseDeclaration(parse_typeof_datatype(*this, tb));
 	    if ( ((TokenIdent *)tb)->str == "__label__" )

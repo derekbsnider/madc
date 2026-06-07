@@ -1588,6 +1588,12 @@ public:
 						   const std::string &member_name);
     std::string resolve_namespace_name_in_scope(const std::string &name);
     std::string active_cpp_lookup_namespace();
+    // static_assert: parse the statement form (folds the constant condition,
+    // throws with the message on failure), consume the deferred form inside an
+    // uninstantiated template body, and consume the class-scope declaration.
+    void consume_deferred_static_assert_statement(TokenBase *tb);
+    TokenBase *parse_static_assert_statement(TokenBase *tb);
+    void consume_class_static_assert_declaration(TokenBase *tb);
     // Statement-level expression parse: parseExpression + comma-chain.
     // parseExpression treats `,` as a hard stop (callers like for-loop
     // init/incr and call-arg lists rely on this). In statement contexts
