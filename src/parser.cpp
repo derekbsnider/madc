@@ -8313,21 +8313,20 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 }
 #endif
 
-static std::string parse_operator_name_after_keyword(Program &pgm,
-						     TokenBase *operator_tb)
+std::string Program::parseOperatorId(TokenBase *operator_tok)
 {
-    TokenBase *op_tok = pgm.nextToken();
+    TokenBase *op_tok = nextToken();
     if ( !op_tok )
-	pgm.Throw(operator_tb) << "Expected operator symbol after 'operator'" << flush;
+	Throw(operator_tok) << "Expected operator symbol after 'operator'" << flush;
     if ( op_tok->id() == TokenID::tkNEW || op_tok->id() == TokenID::tkDELETE )
     {
 	std::string name = op_tok->id() == TokenID::tkNEW ? "operatornew" : "operatordelete";
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	if ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
 	{
-	    TokenBase *sq = pgm.nextToken();
-	    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClSqr )
-		pgm.Throw(sq) << "Expected ']' in " << name << "[]" << flush;
-	    pgm.nextToken();
+	    TokenBase *sq = nextToken();
+	    if ( !peekToken() || peekToken()->id() != TokenID::tkClSqr )
+		Throw(sq) << "Expected ']' in " << name << "[]" << flush;
+	    nextToken();
 	    name += "[]";
 	}
 	return name;
@@ -8336,21 +8335,21 @@ static std::string parse_operator_name_after_keyword(Program &pgm,
 	return "operator" + ((TokenMultiOp *)op_tok)->str;
     if ( op_tok->id() == TokenID::tkOpBrk )
     {
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
-	    pgm.Throw(op_tok) << "Expected ')' in operator()" << flush;
-	pgm.nextToken();
+	if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
+	    Throw(op_tok) << "Expected ')' in operator()" << flush;
+	nextToken();
 	return "operator()";
     }
     if ( op_tok->id() == TokenID::tkOpSqr )
     {
-	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClSqr )
-	    pgm.Throw(op_tok) << "Expected ']' in operator[]" << flush;
-	pgm.nextToken();
+	if ( !peekToken() || peekToken()->id() != TokenID::tkClSqr )
+	    Throw(op_tok) << "Expected ']' in operator[]" << flush;
+	nextToken();
 	return "operator[]";
     }
     char sym = (char)op_tok->get();
     if ( !sym )
-	pgm.Throw(op_tok) << "Unrecognized operator symbol" << flush;
+	Throw(op_tok) << "Unrecognized operator symbol" << flush;
     return std::string("operator") + sym;
 }
 
@@ -11180,7 +11179,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			Throw(name_tb ? name_tb : tb) << "Expecting identifier after '::'" << flush;
 		    std::string gname;
 		    if ( name_tb->id() == TokenID::tkOPEROVER )
-			gname = parse_operator_name_after_keyword(*this, name_tb);
+			gname = parseOperatorId(name_tb);
 		    else if ( is_contextual_identifier_token(name_tb) )
 			gname = contextual_identifier_name(name_tb);
 		    else
@@ -11465,7 +11464,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		if ( ident_tb->str == "operator"
 		  && code && code->method && code->method->owner_class )
 		{
-		    member_lookup_name = parse_operator_name_after_keyword(*this, tb);
+		    member_lookup_name = parseOperatorId(tb);
 		    parsed_operator_name = true;
 		}
 		if ( ident_tb->str == "__FUNCTION__" || ident_tb->str == "__func__"
@@ -15989,7 +15988,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	std::string mname;
 	bool is_operator_method = (tn->id() == TokenID::tkOPEROVER);
 	if ( tn->id() == TokenID::tkOPEROVER )
-	    mname = parse_operator_name_after_keyword(pgm, tn);
+	    mname = pgm.parseOperatorId(tn);
 	else if ( tn->type() != TokenType::ttIdentifier )
 	    pgm.Throw(tn) << "Expecting member name in class definition" << flush;
 	else
@@ -19006,7 +19005,7 @@ static std::string parse_qualified_declarator_part(Program &pgm,
     if ( !part_tb )
 	pgm.Throw << "Unexpected end of input in qualified declarator" << flush;
     if ( part_tb->id() == TokenID::tkOPEROVER )
-	return parse_operator_name_after_keyword(pgm, part_tb);
+	return pgm.parseOperatorId(part_tb);
     if ( part_tb->id() == TokenID::tkBnot )
     {
 	TokenBase *dtor_tb = pgm.nextToken();
@@ -22077,7 +22076,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( !have_decl_id )
 	id = contextual_identifier_name(nt);
     if ( !have_decl_id && nt && nt->id() == TokenID::tkOPEROVER )
-	id = parse_operator_name_after_keyword(*this, nt);
+	id = parseOperatorId(nt);
     if ( !have_decl_id )
     {
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )

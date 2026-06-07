@@ -1448,6 +1448,11 @@ public:
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCallMethod(TokenCallMethod *);
+    // Consume the operator symbol token(s) following an `operator` keyword token
+    // and return the canonical operator-function-id name ("operator<",
+    // "operator()", "operatornew", "operator[]", …). The `operator` token itself
+    // is the argument; its trailing symbol(s) are consumed from the stream.
+    std::string parseOperatorId(TokenBase *operator_tok);
     // After a method call's arguments are parsed, re-bind `tc` to the overload
     // of `cls`'s method `id` that best matches the argument types (the initial
     // findMethod() bound the first by-name match). Returns `tc` unchanged when
