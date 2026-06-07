@@ -2268,14 +2268,18 @@ static void record_pending_template_instantiation(
 }
 
 TokenDataType *Program::instantiate_template_use(const std::string &tname,
-					       TokenBase *tb)
+					       TokenBase *tb,
+					       const std::string &ns_hint)
 {
-    auto tmi = template_map.find(tname);
-    if ( tmi == template_map.end() )
+    Program::TemplateDef *tdp = find_template(tname, ns_hint);
+    if ( !tdp )
 	return NULL;
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 	return NULL;
-    Program::TemplateDef &td = tmi->second;
+    // Copy (not reference): instantiating the body can re-enter template
+    // registration, and a vector reallocation would dangle a live reference.
+    // Both this function and instantiate_opaque_template_use only read td.
+    Program::TemplateDef td = *tdp;
     if ( td.has_non_type_params && td.body.empty() )
 	return instantiate_opaque_template_use(td, tname, tb);
 
@@ -2284,7 +2288,22 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     nextToken(); // consume '<'
     std::vector<TokenDataType *> type_args;
     std::vector<std::string> arg_spellings;
+    // A concrete instantiation's identity is (defining_namespace, name, args).
+    // The bare name alone suffices to key the type UNLESS the same bare name is
+    // declared in more than one namespace (e.g. std::char_traits vs
+    // __gnu_cxx::char_traits) — only then must the namespace enter the mangled
+    // key, so the two instantiations don't alias the same datatype_map entry.
+    // Keeping the common single-namespace case byte-identical avoids churning
+    // every std:: template's internal tag.
     std::string mangled = tname;
+    {
+	std::map<std::string, std::vector<Program::TemplateDef>>::iterator g =
+	    template_map.find(tname);
+	if ( g != template_map.end() && g->second.size() > 1
+	  && !td.defining_namespace.empty() )
+	    mangled = sanitize_template_fragment(td.defining_namespace)
+		    + "__" + tname;
+    }
     std::map<std::string, TokenDataType *> subst;
     std::map<std::string, std::vector<TokenBase *> > token_subst;
     size_t pi = 0;
@@ -2722,9 +2741,7 @@ void Program::complete_pending_template_instantiations(const std::string &class_
 	pending_template_instantiations.find(class_name);
     if ( pi == pending_template_instantiations.end() )
 	return;
-    std::map<std::string, Program::TemplateDef>::iterator ti =
-	template_map.find(class_name);
-    if ( ti == template_map.end() || ti->second.body.empty() )
+    if ( !template_with_body(class_name) )
 	return;
 
     std::vector<Program::PendingTemplateInstantiation> pending = pi->second;
@@ -9423,13 +9440,85 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
     }
 }
 
+Program::TemplateDef *Program::find_template(const std::string &name,
+					     const std::string &ns_hint)
+{
+    std::map<std::string, std::vector<Program::TemplateDef>>::iterator g =
+	template_map.find(name);
+    if ( g == template_map.end() || g->second.empty() )
+	return NULL;
+    std::vector<Program::TemplateDef> &variants = g->second;
+
+    if ( !ns_hint.empty() )
+    {
+	// Exact namespace match only — used both as a declared-in check and to
+	// instantiate the correct same-named template under a qualified use.
+	for ( size_t i = 0; i < variants.size(); ++i )
+	    if ( variants[i].defining_namespace == ns_hint )
+		return &variants[i];
+	return NULL;
+    }
+
+    // Unqualified: a single variant reproduces the old map-by-bare-name
+    // behavior exactly. Only when more than one namespace declares the same
+    // bare name do we have to choose — prefer the active namespace, then the
+    // global one, then fall back to the first.
+    if ( variants.size() == 1 )
+	return &variants[0];
+    for ( size_t i = 0; i < variants.size(); ++i )
+	if ( variants[i].defining_namespace == current_namespace )
+	    return &variants[i];
+    for ( size_t i = 0; i < variants.size(); ++i )
+	if ( variants[i].defining_namespace.empty() )
+	    return &variants[i];
+    return &variants[0];
+}
+
+Program::TemplateDef *Program::template_with_body(const std::string &name)
+{
+    std::map<std::string, std::vector<Program::TemplateDef>>::iterator g =
+	template_map.find(name);
+    if ( g == template_map.end() )
+	return NULL;
+    for ( size_t i = 0; i < g->second.size(); ++i )
+	if ( !g->second[i].body.empty() )
+	    return &g->second[i];
+    return NULL;
+}
+
+void Program::register_template(const Program::TemplateDef &td, bool only_if_absent)
+{
+    std::vector<Program::TemplateDef> &variants = template_map[td.class_name];
+    for ( size_t i = 0; i < variants.size(); ++i )
+    {
+	if ( variants[i].defining_namespace != td.defining_namespace )
+	    continue;
+	if ( only_if_absent )
+	    return;                       // first declaration in this ns wins
+	// Carry forward template-default arguments the prior declaration of this
+	// same template (same namespace) supplied but this one omitted.
+	Program::TemplateDef merged = td;
+	const Program::TemplateDef &prev = variants[i];
+	if ( merged.typeparam_defaults.size() < prev.typeparam_defaults.size() )
+	    merged.typeparam_defaults.resize(prev.typeparam_defaults.size());
+	for ( size_t k = 0; k < prev.typeparam_defaults.size(); ++k )
+	{
+	    if ( k >= merged.typeparam_defaults.size() )
+		break;
+	    if ( merged.typeparam_defaults[k].empty()
+	      && !prev.typeparam_defaults[k].empty() )
+		merged.typeparam_defaults[k] = prev.typeparam_defaults[k];
+	}
+	variants[i] = merged;
+	return;
+    }
+    variants.push_back(td);
+}
+
 bool Program::template_declared_in_namespace(const std::string &name,
 					   const std::string &ns_name)
 {
-    std::map<std::string, Program::TemplateDef>::iterator tmi =
-	template_map.find(name);
-    if ( tmi != template_map.end()
-      && tmi->second.defining_namespace == ns_name )
+    if ( find_template(name, ns_name) )
 	return true;
     std::map<std::string, Program::TemplateAliasDef>::iterator tai =
 	template_alias_map.find(name);
@@ -10645,7 +10734,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				instantiate_template_alias_use(member_name, member_tb) )
 			    member_dd = &alias_inst->definition;
 			else if ( TokenDataType *inst =
-				instantiate_template_use(member_name, member_tb) )
+				instantiate_template_use(member_name, member_tb, ns_name) )
 			    member_dd = &inst->definition;
 		    }
 		    if ( DataDefCLASS *member_scope =
@@ -19730,8 +19819,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    td.class_name = class_name;
 	    td.defining_namespace = pgm.current_namespace;
 	    td.owner_class = pgm.class_scope_stack.empty() ? NULL : pgm.class_scope_stack.back();
-	    if ( !specialized_template_id && pgm.template_map.find(class_name) == pgm.template_map.end() )
-		pgm.template_map[class_name] = td;
+	    if ( !specialized_template_id )
+		pgm.register_template(td, /*only_if_absent=*/true);
 	}
 	return NULL;
     }
@@ -19854,25 +19943,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     }
     if ( !specialized_template_id )
     {
-	std::map<std::string, Program::TemplateDef>::iterator existing =
-	    pgm.template_map.find(class_name);
-	if ( existing != pgm.template_map.end() )
-	{
-	    if ( td.typeparam_defaults.size()
-	      < existing->second.typeparam_defaults.size() )
-		td.typeparam_defaults.resize(
-		    existing->second.typeparam_defaults.size());
-	    for ( size_t i = 0; i < existing->second.typeparam_defaults.size(); ++i )
-	    {
-		if ( i >= td.typeparam_defaults.size() )
-		    break;
-		if ( td.typeparam_defaults[i].empty()
-		  && !existing->second.typeparam_defaults[i].empty() )
-		    td.typeparam_defaults[i] =
-			existing->second.typeparam_defaults[i];
-	    }
-	}
-	pgm.template_map[class_name] = td;
+	pgm.register_template(td, /*only_if_absent=*/false);
 	pgm.complete_pending_template_instantiations(class_name);
     }
     DBG(std::cout << "TokenTEMPLATE::parse() captured template '" << class_name

@@ -1076,7 +1076,24 @@ public:
 	DataDefCLASS *owner_class;             // enclosing class for member templates
 	TemplateDef() : has_non_type_params(false), owner_class(nullptr) {}
     };
-    std::map<std::string, TemplateDef> template_map;       // name -> definition
+    // Templates are keyed by BARE name, but a same-named class template may be
+    // declared in more than one namespace (e.g. std::char_traits and
+    // __gnu_cxx::char_traits). Each bare name therefore maps to a vector of
+    // per-namespace variants, disambiguated by TemplateDef::defining_namespace.
+    // All selection goes through find_template() so the no-collision case keeps
+    // exactly the old single-entry behavior.
+    std::map<std::string, std::vector<TemplateDef>> template_map; // name -> variants
+    // Select a template variant. ns_hint != "" => exact defining_namespace match
+    // (or NULL); ns_hint == "" => the sole variant if unique, else prefer
+    // current_namespace, then the global ("") variant, then the first.
+    TemplateDef *find_template(const std::string &name,
+			       const std::string &ns_hint = std::string());
+    // The variant carrying a parsed body, if any (for completion gating).
+    TemplateDef *template_with_body(const std::string &name);
+    // Replace the same-namespace variant (merging template-default args from the
+    // prior one) or append a new variant. only_if_absent => leave an existing
+    // same-namespace variant untouched (first-wins, for bodyless forward decls).
+    void register_template(const TemplateDef &td, bool only_if_absent);
 	struct TemplateAliasDef {
 	    std::vector<std::string> typeparams;
 	    std::vector<std::vector<TokenBase *>> typeparam_defaults;
@@ -1653,7 +1670,8 @@ public:
     TokenBase *consume_template_type_arg_qualifiers(TokenBase *tb,
 						    std::string &spelling);
     TokenDataType *instantiate_template_use(const std::string &tname,
-					    TokenBase *tb);
+					    TokenBase *tb,
+					    const std::string &ns_hint = std::string());
     TokenDataType *instantiate_template_alias_use(const std::string &tname,
 						  TokenBase *tb);
     TokenDataType *instantiate_opaque_template_use(TemplateDef &td,

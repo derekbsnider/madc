@@ -1,0 +1,24 @@
+// A class template's identity includes its defining namespace. Two namespaces
+// may declare a same-named template (the shape real libstdc++ uses for
+// std::char_traits vs __gnu_cxx::char_traits). Each qualified use must resolve
+// to — and instantiate — its OWN namespace's template, not whichever was
+// registered last. Regression for the bare-name `template_map` collision that
+// blocked the real <bits/char_traits.h>.
+namespace a { template<class C> struct W { static int f() { return 1; } }; }
+namespace b { template<class C> struct W { static int f() { return 2; } }; }
+
+// A third pair with a different bare name, to confirm the fix is general (not a
+// W/char_traits special-case) and that two args still mangle distinctly.
+namespace one { template<class T> struct K { static int g() { return 10; } }; }
+namespace two { template<class T> struct K { static int g() { return 20; } }; }
+
+int main()
+{
+	// Qualified static calls: each must hit its own namespace's variant, and
+	// the same-args instantiations must not alias one datatype_map entry.
+	printf("%d %d\n", a::W<int>::f(), b::W<int>::f());
+	printf("%d %d\n", one::K<int>::g(), two::K<int>::g());
+	// Re-using a::W<int> after b::W<int> was instantiated must still be a's.
+	printf("%d\n", a::W<int>::f() + two::K<int>::g());
+	return 0;
+}
