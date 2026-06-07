@@ -14021,8 +14021,20 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		pgm.nextToken(); // consume the identifier
 		mtype = tdmi->second;
 	    }
-	    else
-		pgm.Throw(tn) << "Expecting type in struct definition, got '" << tname << "'" << flush;
+		    else
+		    {
+			// A namespace- / class-qualified member type (`a::T`,
+			// `ns::Tmpl<...>`, `Outer::Inner`): the bare datatype_map lookup
+			// above only sees unqualified typedefs, so resolve the qualified
+			// form via the shared resolver (it consumes the identifier we hand
+			// it plus the ::/<...> tail). Guarded on a following `::` so genuine
+			// non-types still error here.
+			pgm.nextToken(); // consume the leading identifier
+			if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+			    mtype = pgm.resolve_declared_type_token(tn, true, true);
+			if ( !mtype )
+			    pgm.Throw(tn) << "Expecting type in struct definition, got '" << tname << "'" << flush;
+		    }
 	}
 	else if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkUNION )
 	{
