@@ -2083,17 +2083,26 @@ int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias
 	int stars = full_depth - base_depth;
 	if (stars < 0) stars = 0;
 	// A function-typedef alias (`typedef void DO_FUN(args)`) names a bare
-	// FUNCTION type, so a member/parameter/variable use of it is a
-	// pointer-to-function and carries one '*' that the parser does NOT record
-	// on the type: it keeps the bare DataDefFPTR (no DataDefPTR wrapper) so the
-	// expression parser's fn-ptr-call detection — which keys on
-	// `var.type` being DataDefFPTR — keeps working. fnptr_alias_stars adds the
-	// missing star for a Form-1 function typedef (1) and none for a Form-2
-	// pointer-to-function typedef (0, the pointer is already in the alias).
+	// FUNCTION type, so a use of it is a pointer-to-function and carries one
+	// implicit '*'. The variable/member/return paths keep the bare DataDefFPTR
+	// (no DataDefPTR wrapper) so the expression parser's fn-ptr-call detection
+	// — which keys on `var.type` being DataDefFPTR — keeps working; there the
+	// implicit star is the ONLY pointer (full_depth == base_depth, stars == 0).
+	// But a PARAMETER declared `DO_FUN *p` is wrapped by the param parser in a
+	// real DataDefPTR, so stars already counts that explicit '*'. The implicit
+	// decay star and an explicit '*' are the SAME pointer level — they must NOT
+	// stack (else `SPEC_FUN *special` renders as `SPEC_FUN **special`, a
+	// spurious pointer-to-function-pointer that c2mir flags "incompatible
+	// pointer types in comparison" against a plain function pointer). Take the
+	// MAX, not the sum: 0 explicit stars -> the implicit 1; N>=1 explicit stars
+	// -> N (the first explicit '*' IS the function-pointer level).
 	// `DO_FUN fn` (a bare-function declaration) never reaches here — it is
 	// represented as a FuncDef and emitted on the function path.
-	if (fnptr_alias)
-		stars += fnptr_alias_stars(alias);
+	if (fnptr_alias) {
+		int implicit = fnptr_alias_stars(alias);
+		if (implicit > stars)
+			stars = implicit;
+	}
 	return stars;
 }
 
