@@ -2122,9 +2122,25 @@ typedef unsigned long int uintptr_t;
 #define _SIZE_T_DEFINED
 #define size_t uint64_t
 #endif
+
+// Pointer-returning I/O functions must be declared so the parser knows their
+// real return type (FILE* — i.e. void* — or char*). Without a prototype they
+// default to the dlsym-fallback long return, so `fp = fopen(...)` /
+// `fgets(...)` mismatch (the "assigning integer without cast to pointer"
+// warning). printf/scanf-family stay on the dlsym path (they are variadic).
+extern void *fopen(char *path, char *mode);
+extern void *freopen(char *path, char *mode, void *stream);
+extern void *fdopen(int fd, char *mode);
+extern void *popen(char *command, char *type);
+extern void *tmpfile(void);
+extern char *fgets(char *s, int size, void *stream);
+extern char *gets(char *s);
+extern char *tmpnam(char *s);
 )EMBED"},
     {"stdlib.h", R"EMBED(// madc embedded stdlib.h — standard library constants
-// Functions (malloc, free, exit, atoi, atof, rand, srand, abs, etc.) via dlsym fallback
+// Most functions (free, exit, rand, srand, etc.) resolve through the dlsym
+// fallback. The pointer-returning allocators below are DECLARED so the parser
+// knows their real return type — see the block comment on the externs.
 
 #ifndef NULL
 #define NULL ((void *)0)
@@ -2133,6 +2149,17 @@ typedef unsigned long int uintptr_t;
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1
 #define RAND_MAX     2147483647
+
+// Pointer-returning functions must be declared so the parser knows their real
+// return type. Without a prototype they default to the dlsym-fallback long
+// return, so `p = malloc(...)` / `s = getenv(...)` mismatch (the "assigning
+// integer without cast to pointer" warning) — the same reasoning string.h
+// applies to the str* family. `unsigned long` stands in for size_t (as the
+// string.h copy family does) to avoid a size_t typedef dependency here.
+extern void *malloc(unsigned long size);
+extern void *calloc(unsigned long nmemb, unsigned long size);
+extern void *realloc(void *ptr, unsigned long size);
+extern char *getenv(char *name);
 )EMBED"},
     {"string", R"EMBED(// madc embedded <string> — std::string as a header-defined class that binds to
 // the REAL libstdc++ Itanium symbols (the Cfront model: madc emits no method
@@ -2289,6 +2316,10 @@ extern int memcmp(void *a, void *b, unsigned long n);
 // POSIX strings.h functions — available via dlsym fallback
 extern int strcasecmp(const char *s1, const char *s2);
 extern int strncasecmp(const char *s1, const char *s2, int n);
+// index/rindex return char* (the BSD spellings of strchr/strrchr) — declare so
+// `p = index(s, c)` doesn't mismatch the dlsym-fallback long return.
+extern char *index(char *s, int c);
+extern char *rindex(char *s, int c);
 
 #endif
 )EMBED"},
