@@ -360,6 +360,54 @@ static int emit_function(Program &prog, const char *filepath, const char *funcna
     return emit_function_text(lines, funcname);
 }
 
+// Print the command-line help. madc has accreted gcc/clang-style options over
+// time; keep this in sync with the argument parser in main().
+static void print_usage(const char *prog)
+{
+    std::cout <<
+"Usage: " << (prog ? prog : "madc") << " [options] <source> [program-args...]\n"
+"\n"
+"madc — My Advanced Dialect of C. Parses a C/C++ dialect into a cir_node tree,\n"
+"lowers it through c2mir -> MIR, and JIT-executes it (or emits C / a PCH).\n"
+"\n"
+"Input / mode:\n"
+"  <file>                  compile and JIT-run a single source file\n"
+"  --project <db.json>     build from a compile_commands.json: compile each\n"
+"                          translation unit, link the modules, run the entry\n"
+"  -E                      preprocess only (print the expanded source)\n"
+"\n"
+"Language / preprocessor (gcc/clang-style):\n"
+"  --std=<std>             c89/c90/c99/c11/c17/c23 (c = c11), c++NN, or madc\n"
+"                          (default; C++ keywords reserved). A .c TU under\n"
+"                          --project defaults to C mode.\n"
+"  -D<name>[=value]        define a preprocessor macro\n"
+"  -I<dir>                 add an include search directory\n"
+"  -l<name>                dlopen lib<name>.so (RTLD_GLOBAL) so its symbols\n"
+"                          resolve at link time (e.g. -lcrypt). Works with or\n"
+"                          without --project.\n"
+"  --no-includes           do not process #include directives\n"
+"  --no-embedded-headers   disable baked-in headers; use real system headers\n"
+"\n"
+"Codegen:\n"
+"  -O, -O0 .. -O3          JIT optimization level (bare -O = -O1)\n"
+"  -fno-builtin-<name>     disable a specific builtin\n"
+"  --finstrument-functions emit __cyg_profile instrumentation hooks\n"
+"\n"
+"Output (no run):\n"
+"  --emit=c11|mc11         render the cir_node tree as C / MC11 source\n"
+"  --emit-pch              write a .madh precompiled header\n"
+"  --emit-function <name>  print one function's source\n"
+"  --dump-source           reconstruct full-fidelity source\n"
+"  --dump-cir | --dump-nodes | --dump-cir-checked   dump the cir_node tree\n"
+"\n"
+"Misc:\n"
+"  -v, --verbose           verbose / debug output\n"
+"  -h, -?, --help          show this help\n"
+"\n"
+"Note: AOT object/executable output (--emit-object/--emit-executable/-o) is not\n"
+"available on the CIR backend; emit C with --emit=c11 and compile with gcc/clang.\n";
+}
+
 int main(int argc, char **argv)
 {
     install_crash_handler();
@@ -385,6 +433,8 @@ int main(int argc, char **argv)
     bool do_emit = false;         // --emit=c11|mc11: render cir_node tree as C, no run
     CirEmitLang emit_lang = celC11;
     const char *project_manifest = NULL;  // --project <compile_commands.json>
+    std::vector<std::string> link_libs;   // -l<name>: dlopen lib<name>.so (RTLD_GLOBAL)
+    bool show_help = false;               // --help / -h / -?
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -470,6 +520,21 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {
             project_manifest = argv[++i];
             filearg = i + 1;
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0
+                || strcmp(argv[i], "-?") == 0) {
+            show_help = true;
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "-l", 2) == 0 && argv[i][2] != '\0') {
+            // -l<name>: dlopen a shared library so its symbols are resolvable by
+            // the import resolver at link time (e.g. -lcrypt). Like a linker's
+            // -l, but it dlopen()s lib<name>.so (RTLD_GLOBAL). A name containing
+            // '/' or ending in .so is used verbatim.
+            std::string lib(argv[i] + 2);
+            if ( lib.find('/') == std::string::npos
+              && (lib.size() < 3 || lib.compare(lib.size() - 3, 3, ".so") != 0) )
+                lib = "lib" + lib + ".so";
+            link_libs.push_back(lib);
+            filearg = i + 1;
         } else if (strncmp(argv[i], "--emit=", 7) == 0) {
             // Render the cir_node tree (MC11-IR) as C source; do not run.
             const char *lang = argv[i] + 7;
@@ -490,6 +555,26 @@ int main(int argc, char **argv)
         } else {
             filearg = i;
             break;
+        }
+    }
+
+    if ( show_help )
+    {
+        print_usage(argv[0]);
+        return 0;
+    }
+
+    // -l<name>: dlopen each requested library (RTLD_GLOBAL) so the import
+    // resolver (dlsym(RTLD_DEFAULT, ...)) finds its symbols at link time. Done
+    // before any compile/run so it applies to both the single-file and
+    // --project paths.
+    for ( const std::string &lib : link_libs )
+    {
+        if ( !dlopen(lib.c_str(), RTLD_NOW | RTLD_GLOBAL) )
+        {
+            std::cerr << "madc: -l: failed to load " << lib << ": "
+                      << dlerror() << std::endl;
+            return 1;
         }
     }
 
