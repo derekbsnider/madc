@@ -6,7 +6,9 @@
 
 **Architecture:** A `ProjectManifest` data model (list of TUs + per-file flags + entry) sits between a pluggable *reader* (v1: `compile_commands.json`) and a *multi-TU engine*. The engine creates a fresh `Program` per TU (correct C TU isolation), builds one MIR module per TU into a shared `MIR_context` via the existing `c2mir_compile_tree` path, then does the single `MIR_link` already present in `madc_cir_execute` and runs `main`.
 
-**Tech Stack:** C++11, c2mir + libmir (madc fork at `/workspace/mir`), doctest unit tests, the `tests/*.mad` + fixture integration runner.
+**Tech Stack:** C++11, c2mir + libmir (madc fork at `/workspace/mir`), nlohmann/json v3.11.3 (vendored single-header at `include/json.hpp`, MIT), doctest unit tests, the `tests/*.mad` + fixture integration runner.
+
+**Dependency note:** `include/json.hpp` is already downloaded and committed — do NOT re-fetch it. Include it only from `src/madc_project.cpp`.
 
 **Spec:** `docs/superpowers/specs/2026-06-08-madc-project-build-driver-design.md`
 
@@ -20,8 +22,9 @@
 
 | File | Responsibility |
 |------|----------------|
-| `include/madc_project.h` (create) | `ProjectTU`, `ProjectManifest` structs; `read_compile_commands(...)` decl; `madc_project_execute(...)` decl. |
-| `src/madc_project.cpp` (create) | Minimal JSON parse + `read_compile_commands` (compile_commands.json → `ProjectManifest`). NO MIR code here. |
+| `include/json.hpp` (vendored, already committed) | nlohmann/json v3.11.3 single-header (MIT). Included ONLY by `madc_project.cpp` to isolate the heavy header to one TU. |
+| `include/madc_project.h` (create) | `ProjectTU`, `ProjectManifest` structs; `read_compile_commands(...)` decl; `madc_project_execute(...)` decl. Does NOT include json.hpp (keep it out of the public header). |
+| `src/madc_project.cpp` (create) | nlohmann/json parse + `read_compile_commands` (compile_commands.json → `ProjectManifest`). NO MIR code here. |
 | `src/madc_cir.cpp` (modify) | Add `build_tu_module(...)` helper (extracted from `madc_cir_execute`); add `madc_project_execute(...)` (loop TUs → modules → link → run). Reuses the file-static `cir_import_resolver`. |
 | `src/madc.cpp` (modify) | Add `--project <manifest>` CLI flag → call `madc_project_execute`. |
 | `src/Makefile` (modify) | Add `madc_project.o` to the object list. |
@@ -128,47 +131,16 @@ Expected: build fails — `read_compile_commands` undefined (no `src/madc_projec
 
 - [ ] **Step 4: Implement the minimal JSON reader in `src/madc_project.cpp`**
 
-Scope: `compile_commands.json` only — a JSON array of objects whose values are strings or arrays of strings. No numbers, no nesting beyond that. Implementation outline (write it fully):
+Use the vendored nlohmann/json (`include/json.hpp`) for parsing; keep the small shell-split / path-resolve / flag-scan helpers. Implementation (write it fully):
 ```cpp
 #include "madc_project.h"
+#include "json.hpp"
 #include <fstream>
-#include <sstream>
 #include <cctype>
 
-namespace {
-// Tiny scanner over the JSON text. Only supports: arrays, objects,
-// double-quoted strings (with \" \\ \/ \n \t escapes). Sufficient for
-// compile_commands.json.
-struct JsonScan {
-	const std::string &s; size_t i = 0;
-	explicit JsonScan(const std::string &str) : s(str) {}
-	void ws() { while (i < s.size() && std::isspace((unsigned char)s[i])) i++; }
-	bool eat(char c) { ws(); if (i < s.size() && s[i] == c) { i++; return true; } return false; }
-	bool peek(char c) { ws(); return i < s.size() && s[i] == c; }
-	bool str(std::string &out) {
-		ws();
-		if (i >= s.size() || s[i] != '"') return false;
-		i++; out.clear();
-		while (i < s.size() && s[i] != '"') {
-			char c = s[i++];
-			if (c == '\\' && i < s.size()) {
-				char e = s[i++];
-				switch (e) {
-				case 'n': out += '\n'; break;
-				case 't': out += '\t'; break;
-				case '"': out += '"'; break;
-				case '\\': out += '\\'; break;
-				case '/': out += '/'; break;
-				default: out += e; break;
-				}
-			} else out += c;
-		}
-		if (i >= s.size()) return false;
-		i++; // closing quote
-		return true;
-	}
-};
+using nlohmann::json;
 
+namespace {
 // Shell-split a `command` string into argv-like tokens. Honors simple
 // single/double quotes (compile_commands.json rarely needs more).
 void shell_split(const std::string &cmd, std::vector<std::string> &out) {
@@ -220,52 +192,41 @@ bool read_compile_commands(const std::string &path,
 			   ProjectManifest &out, std::string &err) {
 	std::ifstream f(path.c_str(), std::ios::binary);
 	if (!f) { err = "cannot open " + path; return false; }
-	std::stringstream ss; ss << f.rdbuf();
-	std::string text = ss.str();
 
-	JsonScan js(text);
-	if (!js.eat('[')) { err = "expected '[' at top level"; return false; }
-	if (js.peek(']')) { js.eat(']'); return true; } // empty array
-	do {
-		if (!js.eat('{')) { err = "expected '{' for entry"; return false; }
+	json root;
+	try {
+		// allow_exceptions=true, ignore_comments=true (some tools emit them)
+		root = json::parse(f, nullptr, true, /*ignore_comments=*/true);
+	} catch (const std::exception &e) {
+		err = std::string("JSON parse error: ") + e.what();
+		return false;
+	}
+	if (!root.is_array()) { err = "top-level JSON is not an array"; return false; }
+
+	for (const auto &entry : root) {
+		if (!entry.is_object()) { err = "entry is not an object"; return false; }
 		ProjectTU tu;
-		std::string command;
-		std::vector<std::string> arguments;
-		bool have_args = false, have_cmd = false;
-		do {
-			std::string key;
-			if (!js.str(key)) { err = "expected object key"; return false; }
-			if (!js.eat(':')) { err = "expected ':' after key"; return false; }
-			if (key == "arguments") {
-				if (!js.eat('[')) { err = "expected '[' for arguments"; return false; }
-				have_args = true;
-				if (!js.peek(']')) {
-					do { std::string v; if (!js.str(v)) { err="bad arg"; return false; }
-					     arguments.push_back(v); } while (js.eat(','));
-				}
-				if (!js.eat(']')) { err = "expected ']'"; return false; }
-			} else {
-				std::string val;
-				if (!js.str(val)) { err = "expected string value for " + key; return false; }
-				if (key == "file") tu.file = val;
-				else if (key == "directory") tu.working_dir = val;
-				else if (key == "command") { command = val; have_cmd = true; }
-				// "output" etc. ignored
-			}
-		} while (js.eat(','));
-		if (!js.eat('}')) { err = "expected '}'"; return false; }
+		tu.working_dir = entry.value("directory", std::string());
+		tu.file = entry.value("file", std::string());
+		if (tu.file.empty()) { err = "entry missing \"file\""; return false; }
+
+		std::vector<std::string> args;
+		if (entry.contains("arguments") && entry["arguments"].is_array()) {
+			for (const auto &a : entry["arguments"])
+				if (a.is_string()) args.push_back(a.get<std::string>());
+		} else if (entry.contains("command") && entry["command"].is_string()) {
+			shell_split(entry["command"].get<std::string>(), args);
+		}
 
 		tu.file = resolve(tu.working_dir, tu.file);
-		std::vector<std::string> args;
-		if (have_args) args = arguments;
-		else if (have_cmd) shell_split(command, args);
 		apply_args(args, tu.working_dir, tu);
 		out.tus.push_back(tu);
-	} while (js.eat(','));
-	if (!js.eat(']')) { err = "expected ']' to close array"; return false; }
+	}
 	return true;
 }
 ```
+Note: `json.hpp` throws on malformed input; the `try/catch` converts that to the
+`err` string. nlohmann's `ignore_comments` also tolerates `//`-comment'd DBs.
 
 - [ ] **Step 5: Register the test + reader in the build, run unit tests**
 
