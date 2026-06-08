@@ -1,5 +1,11 @@
 # REHYDRATION HANDOFF — real-header track + struct/class unification directive
 
+> ⇒ **SUPERSEDED for CURRENT state by `docs/plans/2026-06-08-rehydration-handoff.md`**
+> (the self-contained cold-start doc — HEAD 60c7e18, the 5-commit `<type_traits>`/
+> template arc, the `std::is_*<T>::value` keystone next steps). THIS file remains the
+> reference for the per-fix lexer/preprocessor history (UPDATE blocks below) and the
+> **struct/class unification directive (§6)**. Read the 2026-06-08 doc first.
+
 ## ⇉ COMPACTION ENTRY POINT — read this first, then the docs in order ⇉
 **2026-06-07. Branch `feature/realhdr-parse-gaps2-claude` (off `develop`, LOCAL /
 NOT pushed; `develop` untouched). HEAD `a2d3f98`.
