@@ -50,3 +50,16 @@ TEST_CASE("read_compile_commands: arguments array + two TUs") {
 	CHECK(m.tus[1].defines[0] == "B");
 	CHECK(m.entry == "main");
 }
+
+TEST_CASE("read_compile_commands: malformed input is rejected") {
+	ProjectManifest m; std::string err;
+
+	std::string bad = write_tmp("cc_bad.json", "[ this is not json ");
+	CHECK_FALSE(read_compile_commands(bad, m, err));
+	CHECK_FALSE(err.empty());
+
+	err.clear();
+	std::string notarr = write_tmp("cc_obj.json", "{\"x\":1}");
+	CHECK_FALSE(read_compile_commands(notarr, m, err));
+	CHECK_FALSE(err.empty());
+}

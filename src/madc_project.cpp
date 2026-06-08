@@ -40,11 +40,13 @@ void apply_args(const std::vector<std::string> &args,
 		const std::string &a = args[k];
 		if (a.rfind("-D", 0) == 0) {
 			std::string v = a.substr(2);
-			if (v.empty() && k + 1 < args.size()) v = args[++k];
+			if (v.empty() && k + 1 < args.size() && !args[k + 1].empty() && args[k + 1][0] != '-')
+				v = args[++k];
 			if (!v.empty()) tu.defines.push_back(v);
 		} else if (a.rfind("-I", 0) == 0) {
 			std::string v = a.substr(2);
-			if (v.empty() && k + 1 < args.size()) v = args[++k];
+			if (v.empty() && k + 1 < args.size() && !args[k + 1].empty() && args[k + 1][0] != '-')
+				v = args[++k];
 			if (!v.empty()) tu.include_dirs.push_back(resolve(dir, v));
 		} else if (a.rfind("-std=", 0) == 0) {
 			tu.std_option = a.substr(5);
