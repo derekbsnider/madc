@@ -2879,10 +2879,51 @@ void CirBuilder::emit_class_member_deps(
 		std::vector<uint32_t> dims;
 		DataDef *base = peel_carray_dims(dd, dims);
 		DataDefCLASS *dep = as_user_class(base);
-		if (!dep || dep == owner_class)
+		if (dep && dep != owner_class) {
+			emit_class_struct_with_deps(dep, top_list, emitted_structs,
+						    emitted_classes, emitting_classes);
 			continue;
-		emit_class_struct_with_deps(dep, top_list, emitted_structs,
+		}
+		// A by-value PLAIN struct/union member (e.g. a libstdc++ class that
+		// embeds pthread_mutex_t, whose union holds `struct __pthread_mutex_s`):
+		// c2mir needs that struct complete before the owner. The class-dep walk
+		// above skips it (not a class), so hoist its definition here too.
+		DataDefSTRUCT *sbase = dynamic_cast<DataDefSTRUCT *>(base);
+		if (sbase && sbase != sdd)
+			emit_struct_with_deps(sbase, top_list, emitted_structs,
+					      emitted_classes, emitting_classes);
+	}
+}
+
+void CirBuilder::emit_struct_with_deps(
+	DataDefSTRUCT *sdd, node_t top_list,
+	std::set<std::string> &emitted_structs,
+	std::set<DataDefCLASS *> &emitted_classes,
+	std::set<DataDefCLASS *> &emitting_classes)
+{
+	if (!sdd || !sdd->is_complete)
+		return;
+	// A class member routes through the class path (vtable/ctor machinery).
+	if (DataDefCLASS *c = as_user_class(sdd)) {
+		emit_class_struct_with_deps(c, top_list, emitted_structs,
 					    emitted_classes, emitting_classes);
+		return;
+	}
+	// Already emitted (by name) — its body and deps are out. Anonymous aggregates
+	// have a unique synthetic tag never recorded here, so they fall through to the
+	// recurse-only path below (their body is inlined at the use site).
+	if (!sdd->is_anonymous && emitted_structs.count(sdd->name))
+		return;
+	// By-value embedding is acyclic in valid C (an incomplete type can't be a
+	// by-value member), so recursing members first cannot loop.
+	emit_class_member_deps(sdd, top_list, emitted_structs,
+			       emitted_classes, emitting_classes);
+	// Emit the named struct's own body once; anonymous aggregates are spelled
+	// inline at the use site, so only their member deps (hoisted above) matter.
+	if (!sdd->is_anonymous && !emitted_structs.count(sdd->name)) {
+		emitted_structs.insert(sdd->name);
+		node_t sd = struct_def(sdd);
+		if (sd) append(top_list, sd);
 	}
 }
 

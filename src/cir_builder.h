@@ -429,6 +429,14 @@ public:
 					 std::set<std::string> &emitted_structs,
 					 std::set<DataDefCLASS *> &emitted_classes,
 					 std::set<DataDefCLASS *> &emitting_classes);
+	// Topologically hoist a PLAIN struct/union (DataDefSTRUCT, not a class) whose
+	// definition is needed before the struct that embeds it by value. Recurses
+	// into its own by-value members first; emits the named struct's body (anonymous
+	// aggregates are inlined at the use site, so only their member deps are hoisted).
+	void emit_struct_with_deps(DataDefSTRUCT *sdd, node_t top_list,
+				   std::set<std::string> &emitted_structs,
+				   std::set<DataDefCLASS *> &emitted_classes,
+				   std::set<DataDefCLASS *> &emitting_classes);
 	// Emit a class's virtual-method dispatch table as a file-scope array of
 	// type-erased function pointers in vtable_slot order:
 	//   void *ClassName__vtable[] = { (void*)C__slot0, (void*)C__slot1, ... };
