@@ -4347,6 +4347,258 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 	return mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
 }
 
+// --- W2: non-member operator overload resolution helpers (file-local) ---
+namespace {
+
+// Strip a leading "std::" (or any leading "ns::") qualifier — for comparing the
+// PRIMARY template name of a captured (namespace-relative) spelling against an
+// lhs class's fully-qualified canonical spelling.
+std::string strip_leading_qualifier(const std::string &s)
+{
+	size_t pos = s.rfind("::");
+	return pos == std::string::npos ? s : s.substr(pos + 2);
+}
+
+// Strip leading const/volatile words and trailing &/&&/whitespace.
+std::string strip_cv_ref_w2(const std::string &in, bool *was_ref = NULL)
+{
+	std::string s = in;
+	// trailing reference
+	while (!s.empty() && (s.back() == '&' || s.back() == ' '))
+	{
+		if (s.back() == '&' && was_ref) *was_ref = true;
+		s.pop_back();
+	}
+	// leading specifiers
+	for (;;)
+	{
+		size_t i = 0;
+		while (i < s.size() && s[i] == ' ') ++i;
+		static const char *cv[] = { "const", "volatile" };
+		bool stripped = false;
+		for (const char *w : cv)
+		{
+			size_t n = strlen(w);
+			if (s.compare(i, n, w) == 0
+			    && (i + n >= s.size() || s[i + n] == ' '))
+			{
+				s.erase(0, i + n);
+				stripped = true;
+				break;
+			}
+		}
+		if (!stripped) break;
+	}
+	// trim
+	size_t a = s.find_first_not_of(' ');
+	size_t b = s.find_last_not_of(' ');
+	return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
+}
+
+// Normalized form for an EXACT type-match comparison (param vs argument):
+// drop cv/ref and all whitespace. "const char*" and "char*" both -> "char*".
+std::string norm_type_w2(const std::string &s)
+{
+	std::string t = strip_cv_ref_w2(s);
+	std::string out;
+	for (char c : t) if (c != ' ') out += c;
+	return out;
+}
+
+// Split "head<a,b,c>" into head + top-level args (whitespace-trimmed). Returns
+// false if there is no top-level template-id. Nested <> are preserved in args.
+bool split_template_id_w2(const std::string &in, std::string &head,
+			  std::vector<std::string> &args)
+{
+	std::string s = strip_cv_ref_w2(in);
+	size_t lt = std::string::npos;
+	int depth = 0;
+	for (size_t i = 0; i < s.size(); ++i)
+	{
+		if (s[i] == '<') { if (depth == 0) { lt = i; } ++depth; break; }
+	}
+	if (lt == std::string::npos) { head = s; return false; }
+	head = s.substr(0, lt);
+	// trim head
+	size_t hb = head.find_last_not_of(' ');
+	if (hb != std::string::npos) head = head.substr(0, hb + 1);
+	depth = 0;
+	size_t start = lt + 1;
+	for (size_t i = lt; i < s.size(); ++i)
+	{
+		char c = s[i];
+		if (c == '<') ++depth;
+		else if (c == '>')
+		{
+			if (--depth == 0)
+			{
+				std::string a = s.substr(start, i - start);
+				size_t x = a.find_first_not_of(' ');
+				size_t y = a.find_last_not_of(' ');
+				if (x != std::string::npos) args.push_back(a.substr(x, y - x + 1));
+				break;
+			}
+		}
+		else if (c == ',' && depth == 1)
+		{
+			std::string a = s.substr(start, i - start);
+			size_t x = a.find_first_not_of(' ');
+			size_t y = a.find_last_not_of(' ');
+			if (x != std::string::npos) args.push_back(a.substr(x, y - x + 1));
+			start = i + 1;
+		}
+	}
+	return true;
+}
+
+// A minimal C++ type spelling for an argument's DataDef — enough to compare
+// (normalized) against a free operator's parameter spelling. Class -> canonical
+// spelling; pointer -> "<pointee>*"; otherwise the DataDef's own name.
+std::string datadef_cpp_spelling_w2(DataDef *dd)
+{
+	if (!dd) return "";
+	if (DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd))
+		return c->canonical_cpp_spelling.empty() ? c->name
+						         : c->canonical_cpp_spelling;
+	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd))
+		return datadef_cpp_spelling_w2(p->base_type) + "*";
+	return dd->name;
+}
+
+} // namespace
+
+node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls,
+		const std::string &mname, FuncDef *member_callee, TokenBase *origin)
+{
+	if (!m_prog || !lcls || top == NULL || !top->right) return NULL;
+	if (m_prog->free_operator_overloads.empty()) return NULL;
+
+	// lhs class fully-qualified spelling + its template-id decomposition.
+	std::string lhs_spelling = lcls->canonical_cpp_spelling.empty()
+				 ? lcls->name : lcls->canonical_cpp_spelling;
+	std::string lhs_head;
+	std::vector<std::string> lhs_args;
+	bool lhs_is_tid = split_template_id_w2(lhs_spelling, lhs_head, lhs_args);
+	std::string lhs_primary = strip_leading_qualifier(lhs_head);
+
+	// rhs argument type spelling (for matching the free candidate's 2nd param).
+	DataDef *rhs_dd = top->right->datadef();
+	std::string rhs_spelling = datadef_cpp_spelling_w2(rhs_dd);
+	std::string rhs_norm = norm_type_w2(rhs_spelling);
+
+	// member candidate's 2nd-parameter spelling (param 0 is __this): used to tell
+	// whether the member is ALSO an exact match (then we leave it to the member).
+	std::string member_p1_norm;
+	if (member_callee && member_callee->param_cpp_spellings.size() > 1)
+		member_p1_norm = norm_type_w2(member_callee->param_cpp_spellings[1]);
+	bool member_exact = !member_p1_norm.empty() && member_p1_norm == rhs_norm;
+
+	// Pick the most-specialized free candidate that (a) matches the operator,
+	// (b) param[0] deduce-matches the lhs class, (c) param[1] exactly matches rhs.
+	const Program::FreeOperatorOverload *best = NULL;
+	std::vector<std::string> best_targs;     // deduced, in template-param order
+	std::vector<std::string> best_bindings;  // parallel to template_params
+	for (const Program::FreeOperatorOverload &ov : m_prog->free_operator_overloads)
+	{
+		if (ov.opname != mname || ov.param_spellings.size() < 2) continue;
+		// (c) 2nd param must exactly match rhs (qualification/ref allowed).
+		if (norm_type_w2(ov.param_spellings[1]) != rhs_norm) continue;
+		// (b) deduce template params from param[0] vs the lhs class.
+		std::string p0head;
+		std::vector<std::string> p0args;
+		if (!split_template_id_w2(ov.param_spellings[0], p0head, p0args)) continue;
+		if (strip_leading_qualifier(p0head) != lhs_primary) continue;
+		if (!lhs_is_tid || p0args.size() != lhs_args.size()) continue;
+		// Bind: each template-param arg <- the lhs's concrete arg; each concrete
+		// arg must equal the lhs arg (normalized).
+		std::map<std::string, std::string> binding;
+		bool ok = true;
+		for (size_t i = 0; i < p0args.size(); ++i)
+		{
+			bool is_tparam = false;
+			for (const std::string &tp : ov.template_params)
+				if (tp == p0args[i]) { is_tparam = true; break; }
+			if (is_tparam) binding[p0args[i]] = lhs_args[i];
+			else if (norm_type_w2(p0args[i]) != norm_type_w2(lhs_args[i]))
+			{ ok = false; break; }
+		}
+		if (!ok) continue;
+		// Most-specialized = fewest template params (the char partial spec, one
+		// param, beats the general two-param template -> the symbol g++ calls).
+		if (best && ov.template_params.size() >= best->template_params.size())
+			continue;
+		std::vector<std::string> targs;
+		for (const std::string &tp : ov.template_params)
+		{
+			auto it = binding.find(tp);
+			if (it == binding.end()) { targs.clear(); break; }
+			targs.push_back(it->second);
+		}
+		if (targs.size() != ov.template_params.size()) continue;
+		best = &ov;
+		best_targs = targs;
+	}
+	if (!best) return NULL;
+	// Only override the member when the member is NOT itself an exact match
+	// (an exact-match member would win or tie under normal overload rules).
+	if (member_callee && member_exact) return NULL;
+
+	// Build the mangler inputs. The return / 1st-param stream type is the lhs's
+	// qualified spelling with each deduced template-param position replaced by
+	// the Itanium template-param placeholder $Tn (n = position in template_params).
+	// Re-express param[0]'s pattern fully-qualified: qualify the primary name with
+	// the operator's namespace and substitute template-param names with $Tn.
+	auto build_stream_type = [&](const std::string &pattern) -> std::string {
+		std::string head; std::vector<std::string> args;
+		if (!split_template_id_w2(pattern, head, args)) return std::string();
+		std::string qhead = head.find("::") != std::string::npos
+				  ? head : best->ns + "::" + head;
+		std::string out = qhead + "<";
+		for (size_t i = 0; i < args.size(); ++i)
+		{
+			if (i) out += ",";
+			int tpi = -1;
+			for (size_t k = 0; k < best->template_params.size(); ++k)
+				if (best->template_params[k] == args[i]) { tpi = (int)k; break; }
+			out += (tpi >= 0) ? ("$T" + std::to_string(tpi)) : args[i];
+		}
+		out += ">&";
+		return out;
+	};
+	std::string stream_type = build_stream_type(best->param_spellings[0]);
+	if (stream_type.empty()) return NULL;
+	std::vector<std::string> mparams = { stream_type, best->param_spellings[1] };
+	std::string sym = itanium_mangle_std_free_template(
+		best->opname.substr(strlen("operator")), best_targs,
+		stream_type, mparams);
+	if (sym.empty() || sym[0] != '_') return NULL;
+
+	DBG(std::cout << "[W2] bind free " << best->ns << "::" << best->opname
+	    << " -> " << sym << std::endl);
+
+	// Emit the mangled-direct call: free op takes (lhs-by-ref, rhs). Both operands
+	// are explicit (no hidden __this). Returns the stream BY REFERENCE -> N_DEREF.
+	node_t args = list();
+	append(args, object_arg_addr(top->left, lcls));   // ostream& (by address)
+	std::vector<ExternParam> eparams = { { {N_VOID}, true } };
+	bool rhs_is_ptr = !best->param_spellings[1].empty()
+			  && best->param_spellings[1].back() == '*';
+	if (rhs_is_ptr)
+	{
+		eparams.push_back({ {N_VOID}, true });
+		append(args, translate_expr(top->right));
+	}
+	else
+	{
+		eparams.push_back(native_param_shape(rhs_dd, false));
+		append(args, translate_expr(top->right));
+	}
+	need_output_extern(sym.c_str(), /*ret_ptr*/true, eparams, { N_VOID });
+	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	return node1(N_DEREF, call, origin);   // ostream&
+}
+
 node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 {
 	if (!top || !top->left || !top->right) return NULL;
@@ -4378,6 +4630,12 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	// Pick the overload matching the RHS. A class without this operator yields
 	// NULL -> fall through to generic handling.
 	FuncDef *callee = select_operator_overload(lcls, mname, top->right);
+	// W2: a NON-member operator declared at namespace scope (e.g. the free
+	// std::operator<<(ostream&, const char*)) may match rhs more exactly than the
+	// member candidate (member operator<<(const void*) needs a const char*->void*
+	// conversion). If so, bind it mangled-direct instead.
+	if (node_t freecall = try_free_operator_call(top, lcls, mname, callee, origin))
+		return freecall;
 	if (!callee) return NULL;
 
 	// A class-bound external operator names its real symbol via emit_symbol and

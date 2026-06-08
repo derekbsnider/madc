@@ -492,6 +492,17 @@ public:
 	// the left operand is not a user class or has no such operator (caller
 	// falls through to the built-in operator translation).
 	node_t class_operator_call(class TokenOperator *top, TokenBase *origin);
+	// W2 (retire-std-hardcoding-design): a NON-member operator declared at
+	// namespace scope (e.g. std::operator<<(ostream&, const char*)) may be a
+	// better match for `lhs <op> rhs` than the member candidate. Consider the
+	// captured Program::free_operator_overloads; if a free candidate's first
+	// parameter deduces-matches lhs's class and its second parameter matches rhs
+	// more exactly than the member, bind it mangled-direct (itanium_mangle_std_
+	// free_template) and return the call. NULL = no better free candidate (caller
+	// uses the member). member_callee may be NULL (no member operator at all).
+	node_t try_free_operator_call(class TokenOperator *top, DataDefCLASS *lcls,
+			const std::string &mname, class FuncDef *member_callee,
+			TokenBase *origin);
 	// Lower an overloaded UNARY operator on a user-defined class lvalue:
 	//   <op>c  ->  ClassName__operator<op>(&c)   (e.g. -c, !c, ~c, ++c, --c)
 	// `opsym` is the operator symbol text ("-", "!", "~", "++", "--"); `operand`
