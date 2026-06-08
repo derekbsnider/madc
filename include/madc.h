@@ -1146,6 +1146,21 @@ public:
     };
     std::map<std::string, std::vector<TemplateAliasDef>> template_alias_map;
     std::vector<TokenBase *> last_skipped_template_decl;
+    // W2 (retire-std-hardcoding-design): non-member operator overload candidates
+    // declared at namespace scope (e.g. std::operator<<). Member-operator
+    // resolution already exists (class_operator_call); these let `obj << x`
+    // ALSO consider a free `operator<<(ostream&, const char*)` and bind the
+    // winner mangled-direct via itanium_mangle_std_free_template. Captured from
+    // the declaration (signature as spellings + the ordered template params)
+    // so deduction + mangling are data-driven, never a stream-specific picker.
+    struct FreeOperatorOverload {
+	std::string ns;                            // "std"
+	std::string opname;                        // "operator<<"
+	std::vector<std::string> template_params;  // ordered: $T0,$T1,…
+	std::string return_spelling;               // "basic_ostream<char,_Traits>&"
+	std::vector<std::string> param_spellings;  // {"basic_ostream<char,_Traits>&","const char*"}
+    };
+    std::vector<FreeOperatorOverload> free_operator_overloads;
     struct PendingTemplateInstantiation {
 	std::string mangled_name;
 	std::string canonical_spelling;
