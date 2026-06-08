@@ -132,7 +132,13 @@ echo "  (T1+T2+T3 alone is the must-read floor; T4 + key src/ files as the task 
 
 bar "NEXT"
 _cur_branch=$(git -C /workspace/madc rev-parse --abbrev-ref HEAD 2>/dev/null)
-if [ "$_cur_branch" = "feature/retire-std-hardcoding-claude" ]; then
+if [ "$_cur_branch" = "feature/realhdr-parse-gaps2-claude" ]; then
+  echo "ACTIVE LINE (this branch): READ FIRST -> docs/plans/2026-06-08-smaug-project-boot-HANDOFF.md"
+  echo "  SMAUG boots from a FRESH compile via the umbrella AND --project (-lcrypt)."
+  echo "  HEAD 4aa0a20; fulltest 537/4; gcc.c-torture 1566/31/57/1. NEXT (deferred #1/#2):"
+  echo "  productize SMAUG --project in MadSMAUG + the auto-#load toggle (see the handoff)."
+  echo "  (The older 2026-06-08-codex-integration-and-smaug-revival handoff is SUPERSEDED.)"
+elif [ "$_cur_branch" = "feature/retire-std-hardcoding-claude" ]; then
   echo "ACTIVE LINE (this branch): READ FIRST -> docs/superpowers/plans/2026-06-02-retire-std-hardcoding-HANDOFF.md"
   echo "  NOTE: this campaign has been merged to develop; do not resume stale 475/gate-468 worklists."
   echo "  Current develop state is authoritative: check claude_status.json and docs/test-status.md."
