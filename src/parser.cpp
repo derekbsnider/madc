@@ -4926,12 +4926,124 @@ bool Program::try_parse_constant_offsetof_address(int64_t &out)
     return true;
 }
 
+// Fold a qualified name that resolves to a class-scoped integral constant
+// (a static-const data member or an enumerator) in CONSTANT context:
+// `Class::member`, `Outer::Inner::member`, `ns::Class::member`,
+// `ns::Tmpl<...>::member`. Reuses instantiate_template_id (for template-id
+// segments) and resolve_class_static_member_const_value (for the final member).
+// `first` is the already-consumed leading token (a type or a namespace name).
+// Consumes the `::`-chain on success; returns false (without guaranteeing the
+// stream position) only when the leading token can't begin such a chain — the
+// callers below gate on that so non-qualified atoms are untouched.
+bool Program::fold_constant_qualified_member(TokenBase *first, int64_t &out)
+{
+    if ( !first )
+	return false;
+    DataDefCLASS *scope = NULL;
+    std::string pending_ns;            // set while positioned right after a namespace name
+    if ( first->type() == TokenType::ttDataType )
+	scope = dynamic_cast<DataDefCLASS *>(&((TokenDataType *)first)->definition);
+    else if ( is_contextual_identifier_token(first) )
+    {
+	// In the raw constant-expression token stream a type name is still a
+	// bare identifier (not yet resolved to ttDataType).
+	std::string nm = contextual_identifier_name(first);
+	// Template-id leading segment `Name<...>::...`: instantiate to a scope.
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT
+	  && (template_map.count(nm) || template_alias_map.count(nm)) )
+	{
+	    if ( TokenDataType *inst = instantiate_template_id(nm, first) )
+		scope = dynamic_cast<DataDefCLASS *>(&inst->definition);
+	}
+	if ( !scope )
+	{
+	    datatype_map_iter di = datatype_map.find(nm);
+	    if ( di != datatype_map.end() )
+		scope = dynamic_cast<DataDefCLASS *>(&di->second->definition);
+	}
+	if ( !scope && (namespace_map.count(nm) || namespace_datatype_map.count(nm)) )
+	    pending_ns = nm;
+	if ( !scope && pending_ns.empty() )
+	    return false;
+    }
+    else
+	return false;
+    if ( !scope && pending_ns.empty() )
+	return false;
+    if ( !peekToken() || peekToken()->id() != TokenID::tkNS )
+	return false;
+
+    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
+    {
+	nextToken(); // consume '::'
+	TokenBase *seg = nextToken();
+	if ( !seg )
+	    return false;
+	std::string seg_name;
+	if ( seg->type() == TokenType::ttDataType )
+	    seg_name = ((TokenDataType *)seg)->str;
+	else if ( is_contextual_identifier_token(seg) )
+	    seg_name = contextual_identifier_name(seg);
+	else
+	    return false;
+
+	// template-id segment `Name<...>` — instantiate (in pending_ns if set).
+	DataDefCLASS *seg_scope = NULL;
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+	{
+	    if ( TokenDataType *inst =
+		    instantiate_template_id(seg_name, seg, pending_ns) )
+		seg_scope = dynamic_cast<DataDefCLASS *>(&inst->definition);
+	}
+
+	bool more = peekToken() && peekToken()->id() == TokenID::tkNS;
+	if ( more )
+	{
+	    // Intermediate segment: must name a class to descend into.
+	    if ( !seg_scope )
+	    {
+		if ( !pending_ns.empty() )
+		{
+		    namespace_datatype_map_t::iterator ni =
+			namespace_datatype_map.find(pending_ns);
+		    if ( ni != namespace_datatype_map.end() )
+		    {
+			datatype_map_iter di = ni->second.find(seg_name);
+			if ( di != ni->second.end() )
+			    seg_scope = dynamic_cast<DataDefCLASS *>(
+				&di->second->definition);
+		    }
+		}
+		else if ( scope )
+		    seg_scope = dynamic_cast<DataDefCLASS *>(
+			resolve_class_type_alias(scope, seg_name));
+	    }
+	    if ( !seg_scope )
+		return false;
+	    scope = seg_scope;
+	    pending_ns.clear();
+	    continue;
+	}
+
+	// Final segment: a member of the current class scope.
+	if ( seg_scope || !scope )
+	    return false;            // a type, or no scope to look in
+	return resolve_class_static_member_const_value(scope, seg_name, out);
+    }
+    return false;
+}
+
 int64_t Program::parse_constant_primary()
 {
     TokenBase *tb = nextToken();
     int64_t out = 0;
 
     if ( resolve_integer_constant(tb, out) )
+	return out;
+    // Qualified class-scoped integral constant: `Class::member`,
+    // `ns::Tmpl<...>::member`, etc. Folds to the captured value; gated on the
+    // leading token beginning such a chain, so plain atoms fall through.
+    if ( fold_constant_qualified_member(tb, out) )
 	return out;
     if ( tb && tb->type() == TokenType::ttIdentifier )
     {
@@ -14185,6 +14297,23 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 	  || t->id() == TokenID::tkSTATIC || t->id() == TokenID::tkTEMPLATE
 	  || t->id() == TokenID::tkTYPEDEF || t->id() == TokenID::tkUSING )
 	    return true;
+	// An enum DEFINITION member (`enum [class] [tag] { ... };`) needs the
+	// class body parser — the struct member loop only handles a bare
+	// enum-typed member (`enum Color c;`). Distinguish by a '{' appearing
+	// before this member's terminating ';'.
+	if ( t->id() == TokenID::tkENUM )
+	{
+	    for ( size_t j = i + 1; j < tokens.size(); ++j )
+	    {
+		TokenBase *u = tokens[j];
+		if ( !u )
+		    continue;
+		if ( u->id() == TokenID::tkOpBrc )
+		    return true;
+		if ( u->id() == TokenID::tkSemi )
+		    break;
+	    }
+	}
 	if ( is_contextual_identifier_token(t) )
 	{
 	    std::string name = contextual_identifier_name(t);
@@ -18332,6 +18461,19 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    (*scope_ns)[name] = evar;
 	    DBG(std::cout << "TokenENUM::parse() " << enum_tag << "::" << name
 		<< " = " << val << std::endl);
+	}
+	else if ( !pgm.is_c_mode() && !pgm.class_scope_stack.empty() )
+	{
+	    // Enumerator of an enum DEFINED inside a class/struct body: scope it
+	    // to the enclosing class as a constant member (Class::name), reusing
+	    // the static-const member store. This is how libstdc++ traits expose
+	    // `enum { __value = N };`. Not a global leak — the correct C++
+	    // semantic (the bare name does not resolve outside the class).
+	    DataDefCLASS *owner = pgm.class_scope_stack.back();
+	    owner->static_member_types[name] = &ddINT;
+	    owner->static_member_const_values[name] = val;
+	    DBG(std::cout << "TokenENUM::parse() " << owner->name << "::"
+		<< name << " = " << val << std::endl);
 	}
 	else
 	{
