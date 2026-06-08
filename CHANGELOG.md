@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### `--no-auto-load`: make `#load` linking explicit (2026-06-08)
+
+- New CLI flag `--no-auto-load`: madc does **not** act on `#load` directives
+  (e.g. an embedded header auto-loading libm/libcrypt). The named library is
+  not `dlopen`ed; the namespace is bound to the global symbol scope, so its
+  symbols must be provided explicitly — via `madc -l<lib>` or the host — and
+  linking is fully under the user's control. It does *not* error (that is the
+  stricter `enable_dlfcn_functions=false` sandbox knob). Backed by a new,
+  dedicated `RegistrationPolicy::enable_auto_library_loading` (default on),
+  set on the engine so `--project` translation units inherit it. New fixture
+  `tests/testnoautoload` (embedded `<math.h>` `#load`s libm; with the flag,
+  `sqrt` still resolves through madc's own libm link). fulltest 540/4.
+
 ### `--project`: relative manifest paths resolve against the manifest's own directory (2026-06-08)
 
 - When a `compile_commands.json` entry omits the `directory` field, madc now

@@ -991,6 +991,12 @@ public:
 	bool enable_core_functions = true;
 	bool enable_process_functions = true;
 	bool enable_dlfcn_functions = true;
+	// When false, a #load directive does not dlopen its named library; the
+	// namespace is bound to the global symbol scope instead, so the symbols
+	// must be provided explicitly (e.g. via `madc -l<lib>` or the host). Lets
+	// a build make all linking explicit. (enable_dlfcn_functions=false is the
+	// stricter sandbox knob that forbids #load outright.)
+	bool enable_auto_library_loading = true;
 	bool enable_runtime_eval_source_scope_access = true;
 	bool enable_runtime_eval_expression_scope_access = true;
 	bool enable_std_namespace = true;
@@ -1368,6 +1374,7 @@ public:
     void add_madc_namespace();
     bool is_namespace_registration_enabled(const std::string &name) const;
     bool is_dynamic_library_loading_enabled() const;
+    bool is_auto_library_loading_enabled() const;
     bool is_dynamic_symbol_fallback_enabled() const;
     bool is_runtime_eval_source_scope_access_enabled() const;
     bool is_runtime_eval_expression_scope_access_enabled() const;

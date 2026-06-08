@@ -7679,6 +7679,11 @@ bool Program::is_dynamic_library_loading_enabled() const
     return registration_policy.enable_dlfcn_functions;
 }
 
+bool Program::is_auto_library_loading_enabled() const
+{
+    return registration_policy.enable_auto_library_loading;
+}
+
 bool Program::is_dynamic_symbol_fallback_enabled() const
 {
     return registration_policy.enable_dlfcn_functions;

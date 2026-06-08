@@ -2266,16 +2266,29 @@ TokenBase *Program::_getToken()
 			source.get();
 		    if ( source.peek() == ';' )
 			source.get();
-		    // dlopen the library
-		    void *handle = dlopen(libname.c_str(), RTLD_LAZY | RTLD_GLOBAL);
-		    if ( !handle )
+		    // dlopen the library — unless auto-library-loading is off, in
+		    // which case the named library is NOT loaded; the namespace is
+		    // bound to the global symbol scope (dlopen(NULL)) so its symbols
+		    // come from explicit linking (`madc -l<lib>` / the host) instead.
+		    void *handle;
+		    if ( is_auto_library_loading_enabled() )
 		    {
-			std::string err = "Failed to load library: " + libname + ": " + dlerror();
-			Throw << err.c_str() << flush;
+			handle = dlopen(libname.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+			if ( !handle )
+			{
+			    std::string err = "Failed to load library: " + libname + ": " + dlerror();
+			    Throw << err.c_str() << flush;
+			}
+			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
+		    }
+		    else
+		    {
+			handle = dlopen(NULL, RTLD_LAZY | RTLD_GLOBAL);
+			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name
+				      << " — auto-load off, bound to global scope" << std::endl);
 		    }
 		    dlopen_map[ns_name] = handle;
 		    namespace_map[ns_name]; // create empty namespace
-		    DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
 		    return getToken();
 		}
 		if ( directive == "define" )

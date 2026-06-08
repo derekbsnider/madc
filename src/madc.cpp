@@ -387,6 +387,9 @@ static void print_usage(const char *prog)
 "  -l<name>                dlopen lib<name>.so (RTLD_GLOBAL) so its symbols\n"
 "                          resolve at link time (e.g. -lcrypt). Works with or\n"
 "                          without --project.\n"
+"  --no-auto-load          do not act on #load directives (e.g. an embedded\n"
+"                          header auto-loading libm/libcrypt); link explicitly\n"
+"                          via -l instead. The namespace binds to global scope.\n"
 "  --no-includes           do not process #include directives\n"
 "  --no-embedded-headers   disable baked-in headers; use real system headers\n"
 "\n"
@@ -489,6 +492,14 @@ int main(int argc, char **argv)
             // real headers on disk. Empty allowlist + restrict = allow nothing.
             prog->registration_policy.restrict_headers_to_allowlist = true;
             prog->registration_policy.allowed_headers.clear();
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--no-auto-load") == 0) {
+            // Do not act on #load directives: the named library is not loaded
+            // and the namespace binds to the global symbol scope, so linking
+            // is explicit (e.g. via -l). Set on the engine too so --project
+            // translation-unit Programs (created from the engine) inherit it.
+            engine.registration_policy.enable_auto_library_loading = false;
+            prog->registration_policy.enable_auto_library_loading = false;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--finstrument-functions") == 0) {
             prog->instrument_functions = true;
