@@ -421,6 +421,13 @@ public:
 	// *__vptr;` slot is prepended when the class (or a base) has virtual
 	// methods, matching the parser's layout (which reserves offset 0).
 	node_t class_struct_def(DataDefCLASS *cdd);
+	// The ordered member field list (vptr @0, secondary vptrs, members, and
+	// explicit char padding to match compute_layout) for a class. Shared by
+	// class_struct_def AND typedef_decl's inline-body path, so a class emitted
+	// via a `typedef struct C {..} alias;` def-point keeps its vptr slot(s)
+	// instead of falling back to the plain-struct anon_members_list (which drops
+	// the vptr — breaking the inline ctor's __vptr install and the object layout).
+	node_t class_member_list(DataDefCLASS *cdd);
 	void emit_class_member_deps(DataDefSTRUCT *sdd, node_t top_list,
 				    std::set<std::string> &emitted_structs,
 				    std::set<DataDefCLASS *> &emitted_classes,

@@ -2759,9 +2759,8 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	return sd;
 }
 
-node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
+node_t CirBuilder::class_member_list(DataDefCLASS *cdd)
 {
-	node_t struct_id = id(cdd->name.c_str());
 	node_t member_list = list();
 
 	// Virtual classes carry a hidden vtable pointer at offset 0. Emit it
@@ -2852,6 +2851,13 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 		}
 	}
 
+	return member_list;
+}
+
+node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
+{
+	node_t struct_id = id(cdd->name.c_str());
+	node_t member_list = class_member_list(cdd);
 	node_t struct_node = node2(N_STRUCT, struct_id, member_list);
 	node_t tl = node1(N_LIST, struct_node);
 
@@ -5117,9 +5123,17 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 				// aggregate's own definition point.
 				append(tl, node2(agg, id(sdd->name.c_str()), ignore()));
 			} else {
-				// Emit definition inline (typedef struct/union { ... } NAME)
-				append(tl, node2(agg, id(sdd->name.c_str()),
-						 anon_members_list(sdd)));
+				// Emit definition inline (typedef struct/union { ... } NAME).
+				// A class with a vptr slot (polymorphic, e.g. std::basic_ios)
+				// MUST use the class member list so __vptr (and any secondary
+				// vptrs / layout padding) is present — anon_members_list emits
+				// only the plain data members, dropping the vptr the inline ctor
+				// installs and the libstdc++-matching object layout.
+				DataDefCLASS *cdd_inline = as_user_class(base_dd);
+				node_t mbrs = (cdd_inline && cdd_inline->has_vptr_slot)
+					    ? class_member_list(cdd_inline)
+					    : anon_members_list(sdd);
+				append(tl, node2(agg, id(sdd->name.c_str()), mbrs));
 			}
 		}
 	} else {
