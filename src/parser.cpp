@@ -6304,6 +6304,18 @@ bool DataDefCLASS::is_externally_defined() const
     // libstdc++ (we must be able to name its real _ZTVSt.../_ZTISt... symbols).
     if ( !has_vtable || canonical_cpp_spelling.empty() )
 	return false;
+    // A polymorphic class DEFINED in a system/toolchain header is owned by that
+    // library: libstdc++ explicitly instantiates the standard facets/streams and
+    // emits their vtable, typeinfo, AND every member symbol (including inline
+    // virtual defaults) as weak symbols. madc must reference the real
+    // _ZTVSt.../_ZTISt... and must NOT re-synthesize a parallel vtable — even
+    // though the header gives some virtual slots (ctype::do_widen,
+    // num_put::do_put, basic_streambuf::imbue, …) an inline body. A USER class
+    // that overrides std:: virtuals is NOT from a system header, so it falls
+    // through to the slot-body / base analysis below and madc emits its own
+    // vtable. Data-driven (path-based), never a namespace==std test.
+    if ( from_system_header )
+	return true;
     // "madc has a body for this entity" = a real definition parsed in THIS TU
     // (not a bodyless prototype, not an extern-bound declaration, not a pure
     // virtual, not = default/delete).
@@ -16922,6 +16934,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	ddc->canonical_cpp_spelling = pgm.instantiating_canonical_spelling;
     else if ( ddc->canonical_cpp_spelling.empty() && !pgm.current_namespace.empty() )
 	ddc->canonical_cpp_spelling = pgm.current_namespace + "::" + tag->str;
+    // Record whether this class is being DEFINED from a system/toolchain header
+    // (glibc / libstdc++): such a class's vtable/typeinfo/member symbols are
+    // owned by that library's explicit instantiation, so madc defers to the real
+    // _ZTVSt.../_ZTISt... even when the header supplies inline virtual defaults.
+    // Data-driven path test (Rule #7) on the current parse file — for an
+    // instantiated/explicitly-specialized template the body tokens were cloned
+    // while parsing the defining system header, so _parse_file is that header.
+    ddc->from_system_header = pgm.is_system_header_path(TokenBase::_parse_file);
     std::string constructor_source_name = class_source_name;
     if ( !ddc->canonical_cpp_spelling.empty() )
     {

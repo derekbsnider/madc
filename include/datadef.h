@@ -730,6 +730,10 @@ public:
     std::map<std::string, bool> virtual_methods;  // names of methods declared virtual
     void **vtable;         // runtime vtable (array of function pointers, filled at compile time)
     bool has_vtable;       // true if this class or any base has virtual methods
+    bool from_system_header;  // defined in a system/toolchain header (glibc/libstdc++):
+			      // the library owns its vtable/typeinfo/member symbols (explicit
+			      // instantiation), so madc defers even when the header gives a
+			      // virtual slot an inline default. Data-driven (path-based).
     int vtable_slot(const std::string &name) const {
 	for ( size_t i = 0; i < vtable_slots.size(); ++i )
 	    if ( vtable_slots[i] == name ) return (int)i;
@@ -776,7 +780,8 @@ public:
 	  extern_ctor(NULL), extern_dtor(NULL), _dtor_ptr(NULL),
 	  enclosing_class(NULL), base_class(NULL), nvsize(0), own_block_off(0),
 	  has_vptr_slot(false), is_dependent_placeholder(false),
-	  has_dependent_surface(false), vtable(NULL), has_vtable(false) {}
+	  has_dependent_surface(false), vtable(NULL), has_vtable(false),
+	  from_system_header(false) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
     Variable *findMethod(std::string &s);
     // Among the same-name method overloads (this class + base chain), pick the
