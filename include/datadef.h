@@ -660,6 +660,7 @@ public:
     std::vector<Variable *> staticconst;
     std::map<std::string, Variable *> method_map; // unmangled name -> method variable
     std::map<std::string, DataDef *> type_aliases; // class-scope typedef/using aliases
+    std::vector<std::string> friend_class_names; // class names granted friend access
     std::map<std::string, DataDef *> static_member_types; // class-scope static data members
     // Integral static-const data members with a constant in-class initializer
     // (e.g. `static const bool value = __is_class(T);` — the std::integral_constant
@@ -1056,6 +1057,7 @@ extern DataDefUINT32 ddUINT32;
 extern DataDefUINT64 ddUINT64;
 extern DataDefFLOAT ddFLOAT;
 extern DataDefDOUBLE ddDOUBLE;
+extern DataDefSTRUCT ddMAX_ALIGN_T;
 extern DataDefLPSTR ddLPSTR;
 
 extern DataDefPTR ddVOIDptr, ddCHARptr, ddINTptr, ddINT32ptr;

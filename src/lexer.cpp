@@ -1833,6 +1833,7 @@ void Program::add_datatypes()
     static TokenDataType tkWCHAR_T("wchar_t", ddINT32);
     static TokenDataType tkCHAR16_T("char16_t", ddUINT16);
     static TokenDataType tkCHAR32_T("char32_t", ddUINT32);
+    static TokenDataType tkMAX_ALIGN_T("max_align_t", ddMAX_ALIGN_T);
     static TokenDataType tkFLOAT32("_Float32", ddFLOAT);
     static TokenDataType tkFLOAT64("_Float64", ddDOUBLE);
     static TokenDataType tkFLOAT128("_Float128", ddDOUBLE);
@@ -1867,6 +1868,7 @@ void Program::add_datatypes()
     datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
     datatype_map[tkCHAR16_T.str] = &tkCHAR16_T;
     datatype_map[tkCHAR32_T.str] = &tkCHAR32_T;
+    datatype_map[tkMAX_ALIGN_T.str] = &tkMAX_ALIGN_T;
     datatype_map[tkFLOAT32.str] = &tkFLOAT32;
     datatype_map[tkFLOAT64.str] = &tkFLOAT64;
     datatype_map[tkFLOAT128.str] = &tkFLOAT128;

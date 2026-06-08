@@ -281,6 +281,7 @@ static DataDef *builtin_datadef_from_spelling(const std::string &s)
     if ( s == "wchar_t" ) return &ddINT32;
     if ( s == "char16_t" ) return &ddUINT16;
     if ( s == "char32_t" ) return &ddUINT32;
+    if ( s == "max_align_t" ) return &ddMAX_ALIGN_T;
     if ( s == "LPSTR" ) return &ddLPSTR;
     if ( s == "array" ) return &ddARRAY;
     if ( s == "auto" ) return &ddAUTO;

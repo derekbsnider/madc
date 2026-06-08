@@ -1083,6 +1083,7 @@ public:
 	    std::vector<std::string> typeparams;   // e.g. ["T"]
 	    std::vector<std::vector<TokenBase *>> typeparam_defaults;
 	    std::vector<bool> typeparam_is_type;
+	    std::vector<bool> typeparam_is_pack;
 	    bool has_non_type_params;
 	    std::string class_name;                // e.g. "Box"
 	    std::vector<TokenBase *> body;         // cloned tokens: `class Name { ... }`
@@ -1129,6 +1130,7 @@ public:
 	    std::vector<std::string> typeparams;
 	    std::vector<std::vector<TokenBase *>> typeparam_defaults;
 	    std::vector<bool> typeparam_is_type;
+	    std::vector<bool> typeparam_is_pack;
 	    bool has_non_type_params;
 	    std::string alias_name;
 	std::vector<TokenBase *> target;
@@ -1136,7 +1138,7 @@ public:
 	DataDefCLASS *owner_class;
 	TemplateAliasDef() : has_non_type_params(false), owner_class(nullptr) {}
     };
-    std::map<std::string, TemplateAliasDef> template_alias_map;
+    std::map<std::string, std::vector<TemplateAliasDef>> template_alias_map;
     std::vector<TokenBase *> last_skipped_template_decl;
     struct PendingTemplateInstantiation {
 	std::string mangled_name;
@@ -1152,6 +1154,7 @@ public:
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
     namespace_datatype_map_t namespace_datatype_map; // namespace-owned type names
+    std::map<std::string, std::vector<std::string>> inline_namespace_children;
     std::string current_namespace;	// active namespace for resolution (set by ns:: prefix)
     // Canonical C++ spelling of the template-id being instantiated right now,
     // stashed by instantiate_template_use around the class re-parse so
@@ -1694,6 +1697,8 @@ public:
     // C-style cast operand helpers (deref/function-call/literal materialization).
     int64_t parse_constant_named_cpp_cast(TokenBase *cast_tb,
 					  const std::string &cast_name);
+    bool try_parse_constant_functional_cast(TokenBase *type_tb,
+					    int64_t &out);
     TokenBase *parse_named_cpp_cast(TokenBase *cast_tb,
 				    const std::string &cast_name);
     TokenBase *parse_cast_unary_deref_operand(TokenBase *star);
@@ -1724,7 +1729,8 @@ public:
 					    TokenBase *tb,
 					    const std::string &ns_hint = std::string());
     TokenDataType *instantiate_template_alias_use(const std::string &tname,
-						  TokenBase *tb);
+						  TokenBase *tb,
+						  const std::string &ns_hint = std::string());
     // Resolve a template-id `Name<...>` to its concrete type: an alias template
     // first, then a class template (the order every call site used by hand).
     // Single seam for the namespace hint so qualified uses pick the right
@@ -1736,6 +1742,9 @@ public:
     TokenDataType *instantiate_opaque_template_use(TemplateDef &td,
 						   const std::string &tname,
 						   TokenBase *tb);
+    TemplateAliasDef *find_template_alias(const std::string &name,
+					  const std::string &ns_hint = std::string());
+    void register_template_alias(const TemplateAliasDef &td);
     DataDefCLASS *materialize_dependent_member_type(DataDefCLASS *owner,
 						    const std::string &member_name);
     DataDefCLASS *materialize_opaque_class_type(const std::string &name,
@@ -1869,6 +1878,7 @@ public:
     // token stream. Used by unary `*` and `&` to avoid
     // parseExpression's greedy consumption of trailing binary ops.
     TokenBase *parsePostfixChain(TokenBase *head);
+    TokenBase *parsePostfixChainFrom(TokenBase *result, Variable *var);
     // Parse the operand after unary `&`, preserving C precedence by
     // stopping before trailing binary operators.
     TokenBase *parseAddressOfExpression(TokenBase *ampersand);

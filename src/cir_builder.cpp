@@ -6306,6 +6306,17 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 
 node_t CirBuilder::translate_if(TokenIF *ti)
 {
+	if (ti->condition_decl) {
+		node_t cond = translate_expr(ti->condition);
+		node_t then_body = translate_stmt_required(ti->statement);
+		node_t else_body = ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
+		node_t if_node = node4(N_IF, list(), cond, then_body, else_body, ti);
+		node_t items = list();
+		node_t decl = translate_stmt(ti->condition_decl);
+		if (decl) append(items, decl);
+		append(items, if_node);
+		return node2(N_BLOCK, list(), items, ti);
+	}
 	// Compile-time-constant condition: fold and prune the dead branch, like
 	// GCC. This is what makes `if (__builtin_constant_p(var)) link_error();`
 	// work: constant_p folds to a literal 0, so the dead `then` branch — and

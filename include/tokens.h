@@ -1416,9 +1416,10 @@ class TokenIF: public TokenKeyword
 {
 public:
     TokenBase *condition;
+    TokenBase *condition_decl;
     TokenBase *statement;
     TokenBase *elsestmt;
-    TokenIF() : TokenKeyword("if") { condition = statement = elsestmt = NULL; }
+    TokenIF() : TokenKeyword("if") { condition = condition_decl = statement = elsestmt = NULL; }
     virtual TokenBase *parse(Program &);
     virtual TokenID id() const { return TokenID::tkIF; }
     virtual TokenBase *clone() { return new TokenIF(); }
