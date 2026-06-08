@@ -14605,11 +14605,16 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    if ( !semi || semi->id() != TokenID::tkSemi )
 		pgm.Throw(semi ? semi : tn) << "Expecting ';' after using alias" << flush;
 	    TokenDataType *alias_tdt = new TokenDataType(alias_name.c_str(), *alias_dd);
-	    pgm.user_typedef_names.insert(alias_name);
+	    // Class-scope `using` aliases are not global C typedefs (see the
+	    // typedef path) — keep them out of user_typedef_names so use-sites emit
+	    // the resolved underlying type, not the bare alias name.
 	    if ( !pgm.class_scope_stack.empty() )
 		pgm.class_scope_stack.back()->type_aliases[alias_name] = alias_dd;
 	    else
+	    {
+		pgm.user_typedef_names.insert(alias_name);
 		pgm.datatype_map[alias_name] = alias_tdt;
+	    }
 	    if ( pgm.class_scope_stack.empty() && !pgm.current_namespace.empty() )
 		pgm.namespace_datatype_map[pgm.current_namespace][alias_name] = alias_tdt;
 	    if ( pgm.class_scope_stack.empty() && pgm.compounds.empty() )
@@ -18570,7 +18575,15 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // paths ignore the node (compile() is a no-op; MIR re-parses tokens).
     auto record_typedef = [&](const std::string &alias, DataDef *dd,
 			      TokenDataType *tdt, TokenBase *otok = nullptr) -> TokenBase * {
-	pgm.user_typedef_names.insert(alias);
+	// A class-scope member alias (e.g. `typedef _CharT char_type;`) is NOT a
+	// global C typedef — it is never emitted as a top-level `typedef`. Only
+	// file/namespace-scope typedefs belong in user_typedef_names, whose sole
+	// role is "names to emit verbatim as a type-spec." Adding class aliases here
+	// made param/return/member emission leak the bare alias name (e.g.
+	// `char_type`) into the generated C with no matching typedef -> c2mir
+	// "unknown type". Class aliases resolve via type_aliases instead.
+	if ( pgm.class_scope_stack.empty() )
+	    pgm.user_typedef_names.insert(alias);
 	if ( !pgm.class_scope_stack.empty() )
 	{
 	    pgm.class_scope_stack.back()->type_aliases[alias] = dd;
