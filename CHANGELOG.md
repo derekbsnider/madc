@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### `--project`: relative manifest paths resolve against the manifest's own directory (2026-06-08)
+
+- When a `compile_commands.json` entry omits the `directory` field, madc now
+  resolves that entry's `file` and `-I` paths against **the manifest file's own
+  directory** instead of the process working directory. This lets a manifest
+  with relative paths be checked into a repository and stay portable — it
+  resolves the same regardless of the cwd, which a program may need to set
+  elsewhere (e.g. SMAUG runs from its data directory). An explicit `directory`
+  is honored unchanged. New fixture `tests/testprojectreldir`. fulltest 539/4.
+
 ### A `.json` source defaults to `--project` mode (2026-06-08)
 
 - **`madc compile_commands.json [args...]`** now behaves as `madc --project

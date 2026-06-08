@@ -69,10 +69,23 @@ bool read_compile_commands(const std::string &path,
 	}
 	if (!root.is_array()) { err = "top-level JSON is not an array"; return false; }
 
+	// Base for relative paths when an entry omits "directory": the manifest's
+	// own directory. This lets a manifest with relative paths be committed and
+	// stay portable, resolving the same regardless of the process cwd (which a
+	// project's program may need to set elsewhere — e.g. SMAUG runs from its
+	// data directory). An explicit "directory" is honored unchanged.
+	std::string manifest_dir;
+	{
+		size_t s = path.find_last_of('/');
+		manifest_dir = (s == std::string::npos) ? std::string(".")
+						       : path.substr(0, s);
+	}
+
 	for (const auto &entry : root) {
 		if (!entry.is_object()) { err = "entry is not an object"; return false; }
 		ProjectTU tu;
 		tu.working_dir = entry.value("directory", std::string());
+		if (tu.working_dir.empty()) tu.working_dir = manifest_dir;
 		tu.file = entry.value("file", std::string());
 		if (tu.file.empty()) { err = "entry missing \"file\""; return false; }
 

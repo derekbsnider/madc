@@ -1,0 +1,4 @@
+[
+  {"file":"testproject_a.c","command":"gcc -c testproject_a.c"},
+  {"file":"testproject_b.c","command":"gcc -c testproject_b.c"}
+]
