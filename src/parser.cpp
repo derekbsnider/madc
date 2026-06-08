@@ -1024,6 +1024,37 @@ static bool is_post_pointer_qualifier_token(TokenBase *tb)
 	 || tb->id() == TokenID::tkVOLATILE);
 }
 
+// Shared declarator pointer-star consumer. See the header for the contract.
+// Replaces the copy-pasted `while (tkMul) { ... if (!fnptr_base) getPointerType }`
+// loops so the explicit `*` count is handled the SAME way everywhere.
+int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star)
+{
+    int stars = 0;
+    bool fnptr_base = (dynamic_cast<DataDefFPTR *>(dd) != NULL);
+    bool const_after = false;
+    while ( peekToken() && (peekToken()->id() == TokenID::tkMul
+			 || is_post_pointer_qualifier_token(peekToken())) )
+    {
+	if ( peekToken()->id() == TokenID::tkMul )
+	{
+	    nextToken();		// consume '*'
+	    ++stars;
+	    const_after = false;	// any const before this star was low-level
+	    if ( !fnptr_base )
+		dd = getPointerType(dd);
+	}
+	else
+	{
+	    if ( stars > 0 && peekToken()->id() == TokenID::tkCONST )
+		const_after = true;	// const after the last '*' = top-level const ptr
+	    nextToken();		// consume const/volatile/restrict
+	}
+    }
+    if ( out_const_after_star )
+	*out_const_after_star = const_after;
+    return stars;
+}
+
 static bool is_type_qualifier_token(TokenBase *tb)
 {
     return tb && tb->type() == TokenType::ttKeyword
@@ -23660,33 +23691,22 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     std::string decl_typedef_alias;
     if ( user_typedef_names.count(tb->str) )
 	decl_typedef_alias = tb->str;
-    // Function-pointer typedefs (DataDefFPTR) already represent pointers;
-    // `DO_FUN *cmd;` and `DO_FUN cmd;` both name a function-pointer variable.
+    // A function-type typedef base (DataDefFPTR) keeps its bare type — fn-ptr
+    // CALL detection keys on the type being DataDefFPTR — so the explicit '*'
+    // count is recorded on the Variable (below) instead of living in the type.
+    // `DO_FUN cmd;` (0 stars) is a C function declaration; `DO_FUN *cmd;` (1) a
+    // function-pointer variable. The shared helper consumes the star/qualifier
+    // run, wraps non-fn-ptr bases via getPointerType, and reports the count +
+    // the top-level-const-pointer flag.
     bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL);
-    // C allows CV-qualifiers (`const`/`restrict`) interleaved with
-    // pointer stars: `type const *p`, `int * const *xpp`, etc.
-    // Loop consuming any qualifier-or-star sequence; qualifiers are
-    // treated as no-ops, stars stack the pointer level.
-    while ( peekToken()
-	 && (peekToken()->id() == TokenID::tkMul
-	  || is_post_pointer_qualifier_token(peekToken())) )
-    {
-	if ( peekToken()->id() == TokenID::tkMul )
-	{
-	    nextToken(); // consume '*'
-	    saw_pointer_decl = true;
-	    saw_const_after_star = false; // reset — any const before this star is low-level
-	    if ( !is_fnptr_base )
-		decl_type = getPointerType(decl_type);
-	    DBG(std::cout << "parseDeclaration() pointer: " << decl_type->name << std::endl);
-	}
-	else
-	{
-	    if ( saw_pointer_decl && peekToken()->id() == TokenID::tkCONST )
-		saw_const_after_star = true; // const after last * = top-level const pointer
-	    nextToken(); // consume const/restrict
-	}
-    }
+    int n_decl_stars = consume_declarator_stars(decl_type, &saw_const_after_star);
+    if ( n_decl_stars > 0 )
+	saw_pointer_decl = true;
+    DBG(std::cout << "parseDeclaration() consumed " << n_decl_stars
+		  << " star(s); decl_type=" << decl_type->name << std::endl);
+    // Stars on a non-fn-ptr base are already folded into decl_type; only a
+    // fn-ptr base needs the count recorded (-1 = "use the emitter's legacy path").
+    int decl_fnptr_stars = is_fnptr_base ? n_decl_stars : -1;
 
     if ( !saw_pointer_decl )
     {
@@ -24134,6 +24154,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
 	    bool alloc = (!code || gotstatic) ? true : false;
 	    var = addVariable(code, *decl_type, id, 1, NULL, alloc);
+	    var->fnptr_explicit_stars = decl_fnptr_stars;
 	    if ( !decl_typedef_alias.empty() )
 		var->typedef_name = decl_typedef_alias;
 	    TokenDecl *td = new TokenDecl(*var);
@@ -24236,6 +24257,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    uint32_t prov_count = 1;
 	    for ( auto d : arr_dims ) prov_count *= d;
 	    provisional_decl_var = addVariable(code, *decl_type, id, prov_count, NULL, alloc);
+	    provisional_decl_var->fnptr_explicit_stars = decl_fnptr_stars;
 	    if ( gotstatic )
 		provisional_decl_var->flags |= vfSTATIC;
 	    if ( parsing_extern_decl )
@@ -24685,7 +24707,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    var->count = elem_count;
 	}
 	else
+	{
 	    var = addVariable(code, *decl_type, id, elem_count, NULL, alloc);
+	    var->fnptr_explicit_stars = decl_fnptr_stars;
+	}
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
 	// Record file-scope variables in top_decls in source order for the CIR

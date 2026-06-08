@@ -1851,7 +1851,18 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		}
 	}
 
-	int decl_stars = fnptr ? -1 : explicit_star_count(v->type, v->typedef_name);
+	// For a function-type-typedef variable the parser recorded the EXACT
+	// explicit '*' count (the type stays a bare DataDefFPTR), so emit exactly
+	// that — `DO_FUN do_look;` (0) renders as a C function declaration,
+	// `DO_FUN *fp;` (1) as a function-pointer variable. Other variables keep
+	// the legacy depth-derived count.
+	int decl_stars;
+	if (fnptr)
+		decl_stars = -1;
+	else if (v->fnptr_explicit_stars >= 0)
+		decl_stars = v->fnptr_explicit_stars;
+	else
+		decl_stars = explicit_star_count(v->type, v->typedef_name);
 	if (fnptr) {
 		// fn-ptr declarator suffixes already built by fnptr_decl_pieces.
 	} else if (decl_stars >= 0) {

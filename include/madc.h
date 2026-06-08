@@ -1596,6 +1596,17 @@ public:
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     DataDefPTR *getPointerType(DataDef *base);
+    // Consume a declarator's pointer-star run: a sequence of `*` interleaved with
+    // cv-qualifiers (const/volatile/restrict). Each `*` on a NON-fn-ptr base wraps
+    // `dd` via getPointerType (the type reflects the indirection); a DataDefFPTR
+    // base (function-type typedef) is left UNWRAPPED — fn-ptr call detection keys
+    // on the type being DataDefFPTR, so the count is returned for the caller to
+    // record (Variable::fnptr_explicit_stars) and the emitter renders exactly the
+    // stars written. Returns the number of `*` consumed; if out_const_after_star
+    // is non-NULL, sets it to whether a `const` followed the last `*` (top-level
+    // const pointer `T * const p`). One shared loop instead of the copy-pasted
+    // `while(tkMul){...}` declarator loops.
+    int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr);
     // parse a `(params)` list after the opening '(' has been consumed; used by
     // function-pointer typedefs. Builds a FuncDef with the given return type.
     // Parameter names are accepted but discarded. Stops after consuming ')'.

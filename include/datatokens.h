@@ -63,6 +63,12 @@ public:
     uint32_t flags;
     std::string storage_alias_name;
     std::string typedef_name; // if declared via typedef, the source alias (e.g. "EXT_BV")
+    // Explicit '*' count written on a function-type-typedef declarator, recorded
+    // because the type stays a bare DataDefFPTR (fn-ptr CALL detection keys on it,
+    // so the stars can't live in the type). `DO_FUN x` -> 0 (a C function
+    // declaration), `DO_FUN *fp` -> 1 (a function-pointer variable). -1 means
+    // "not a recorded fn-ptr-base declarator" -> emitter uses its legacy path.
+    int fnptr_explicit_stars = -1;
     std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
     int64_t object_size_hint;
     // C99 variable-length array: when non-NULL, the local was declared as
