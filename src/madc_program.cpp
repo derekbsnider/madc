@@ -4848,3 +4848,24 @@ void *Program::loaded_function_ptr(const std::string &name) const
 void Program::unload_object()
 {
 }
+
+void Program::add_include_dir(const std::string &dir)
+{
+	if (dir.empty())
+		return;
+	std::string p = dir;
+	if (p.back() != '/')
+		p += '/';
+	include_paths.push_back(p);
+}
+
+void Program::add_cli_define(const std::string &def)
+{
+	if (def.empty())
+		return;
+	std::string::size_type eq = def.find('=');
+	std::string name = (eq == std::string::npos) ? def : def.substr(0, eq);
+	std::string value = (eq == std::string::npos) ? std::string("1") : def.substr(eq + 1);
+	if (!name.empty())
+		cli_defines.push_back(std::make_pair(name, value));
+}

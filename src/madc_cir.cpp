@@ -290,6 +290,46 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		return -1;
 	}
 
+	// Phase 1: tokenize + parse EVERY TU before any MIR/c2m context exists.
+	// tokenize()/parse() can throw in this codebase; doing them here keeps
+	// every throwing call OUTSIDE the MIR_init()->teardown() bracket below,
+	// so a parse failure can never leak the MIR + c2m contexts. (This matches
+	// madc_cir_execute's ordering, where tokenize/parse run in main() before
+	// the MIR bracket is ever entered.) Programs own the arenas their modules
+	// will be built from, so they are held for the whole call.
+	struct ParsedTU {
+		std::unique_ptr<Program> prog;
+		std::string name;
+	};
+	std::vector<ParsedTU> parsed;
+	for (const ProjectTU &tu : manifest.tus) {
+		std::unique_ptr<Program> prog = engine.create_program();
+		prog->colors = true;
+		for (const std::string &inc : tu.include_dirs)
+			prog->add_include_dir(inc);
+		for (const std::string &d : tu.defines)
+			prog->add_cli_define(d);
+		if (!tu.std_option.empty())
+			prog->set_language_standard_option("--std=" + tu.std_option);
+
+		TokenProgram *tp = prog->tokenize(tu.file.c_str());
+		if (!tp) {
+			fprintf(stderr, "%s: tokenize failed\n", tu.file.c_str());
+			return -1;	// no MIR/c2m created yet — nothing to tear down
+		}
+		if (!prog->parse(tp)) {
+			fprintf(stderr, "%s: parse failed\n", tu.file.c_str());
+			return -1;	// no MIR/c2m created yet — nothing to tear down
+		}
+
+		ParsedTU pt;
+		pt.prog = std::move(prog);
+		pt.name = tu.file;
+		parsed.push_back(std::move(pt));
+	}
+
+	// Phase 2: now that all parsing is done, enter the MIR bracket. No
+	// throwing call sits between MIR_init() and teardown().
 	MIR_context_t ctx = MIR_init();
 	c2mir_init(ctx);
 	MIR_gen_init(ctx);
@@ -304,9 +344,8 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		return -1;
 	}
 
-	// Programs and builders must outlive MIR_gen()+run: their arenas back the
-	// modules. Hold them for the whole call.
-	std::vector<std::unique_ptr<Program>> progs;
+	// Builders must outlive MIR_gen()+run: their arenas back the modules.
+	// Hold them (and the already-parsed Programs) for the whole call.
 	std::vector<CirBuilder *> builders;
 	std::vector<MIR_module_t> modules;
 	auto teardown = [&]() {
@@ -317,40 +356,11 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		MIR_finish(ctx);
 	};
 
-	for (const ProjectTU &tu : manifest.tus) {
-		std::unique_ptr<Program> prog = engine.create_program();
-		prog->colors = true;
-		for (const std::string &inc : tu.include_dirs) {
-			std::string p = inc;
-			if (!p.empty() && p.back() != '/') p += '/';
-			prog->include_paths.push_back(p);
-		}
-		for (const std::string &d : tu.defines) {
-			std::string::size_type eq = d.find('=');
-			std::string name = (eq == std::string::npos) ? d : d.substr(0, eq);
-			std::string val  = (eq == std::string::npos) ? std::string("1") : d.substr(eq + 1);
-			if (!name.empty())
-				prog->cli_defines.push_back(std::make_pair(name, val));
-		}
-		if (!tu.std_option.empty())
-			prog->set_language_standard_option("--std=" + tu.std_option);
-
-		TokenProgram *tp = prog->tokenize(tu.file.c_str());
-		if (!tp) {
-			fprintf(stderr, "%s: tokenize failed\n", tu.file.c_str());
-			teardown();
-			return -1;
-		}
-		if (!prog->parse(tp)) {
-			fprintf(stderr, "%s: parse failed\n", tu.file.c_str());
-			teardown();
-			return -1;
-		}
-
+	for (ParsedTU &pt : parsed) {
 		CirBuilder *builder = NULL;
 		bool stop = false;
-		MIR_module_t mod = build_tu_module(ctx, c2m, prog.get(),
-						   tu.file.c_str(),
+		MIR_module_t mod = build_tu_module(ctx, c2m, pt.prog.get(),
+						   pt.name.c_str(),
 						   false, false, false,
 						   builder, stop);
 		builders.push_back(builder);	// may be NULL on failure; delete NULL is safe
@@ -358,7 +368,6 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			teardown();
 			return -1;
 		}
-		progs.push_back(std::move(prog));
 		modules.push_back(mod);
 	}
 
@@ -366,7 +375,8 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		MIR_load_module(ctx, m);
 	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
 
-	// Find the entry symbol across all modules.
+	// Find the entry symbol across all modules. First match wins; a
+	// duplicate entry (e.g. two main()s across TUs) is not diagnosed here.
 	void *code = nullptr;
 	MIR_module_t entry_mod = nullptr;
 	for (MIR_module_t m : modules) {

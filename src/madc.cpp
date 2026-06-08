@@ -407,12 +407,7 @@ int main(int argc, char **argv)
             const char *path = argv[i] + 2;
             if ( *path == '\0' && i + 1 < argc )
                 path = argv[++i];
-            if ( *path )
-            {
-                std::string p = path;
-                if ( p.back() != '/' ) p += '/';
-                prog->include_paths.push_back(p);
-            }
+            prog->add_include_dir(path);	// guards empty + normalizes trailing '/'
             filearg = i + 1;
         } else if (strncmp(argv[i], "-D", 2) == 0) {
             // -DNAME, -DNAME=VALUE, or -D NAME (repeatable). A bare NAME defines
@@ -422,15 +417,7 @@ int main(int argc, char **argv)
             const char *def = argv[i] + 2;
             if ( *def == '\0' && i + 1 < argc )
                 def = argv[++i];
-            if ( *def )
-            {
-                std::string d = def;
-                std::string::size_type eq = d.find('=');
-                std::string name = (eq == std::string::npos) ? d : d.substr(0, eq);
-                std::string value = (eq == std::string::npos) ? std::string("1") : d.substr(eq + 1);
-                if ( !name.empty() )
-                    prog->cli_defines.push_back(std::make_pair(name, value));
-            }
+            prog->add_cli_define(def);	// guards empty + splits NAME[=VALUE]
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-pch") == 0) {
             emit_pch = true;

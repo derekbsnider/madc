@@ -1180,6 +1180,8 @@ public:
     std::map<std::string, std::stack<std::string>> _macro_save_stack; // #pragma push_macro / pop_macro
     std::vector<std::string> include_paths;	// -I include search paths (for #include "file.h")
     std::vector<std::pair<std::string,std::string>> cli_defines;	// -DNAME[=VALUE] command-line defines (applied after builtins)
+    void add_include_dir(const std::string &dir);	// normalize (trailing '/') + append to include_paths
+    void add_cli_define(const std::string &def);	// split NAME[=VALUE] (bare => "1") into cli_defines
     std::map<std::string, bool> included_files;	// #include files already tokenized (require_once semantics)
     std::stack<bool> ifdef_stack;	// conditional compilation state stack
     std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
