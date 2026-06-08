@@ -13,8 +13,9 @@
 ## 0. THE 60-SECOND ORIENTATION
 
 - **Repo:** `/workspace/madc`. **Branch:** `feature/realhdr-parse-gaps2-claude`
-  (off `develop`). **HEAD:** `60c7e18`. **Working tree:** clean.
-- **90 commits ahead of `develop`.** `develop` is **untouched** by all this work.
+  (off `develop`). **HEAD:** `a99c1e5` (was `60c7e18`; +2 commits — see §12).
+  **Working tree:** clean.
+- **93 commits ahead of `develop`.** `develop` is **untouched** by all this work.
   **DO NOT push. DO NOT `/promote` develop→master.** (Parity gate — see §3.)
 - **fulltest baseline:** `531 passed / 4 failed / 0 timed out / 26 skipped`.
   The **4 failures are PRE-EXISTING and unrelated** to anything in this arc:
@@ -697,5 +698,133 @@ set (§7.B) or push the header-partition plan's Step 1 (§7.D). Use the `-E` bis
 + g++ oracle + instrument-don't-assume methodology (§6); be correctness-first (never a
 wrong trait bool); gate every change with fulltest + torture failset + SMAUG soak; do
 NOT push; do NOT promote to master.
+
+---
+
+## 12. SESSION UPDATE — 2026-06-08b (A1 keystone landed + real-header parse survey)
+
+**Two new gated commits on top of `60c7e18` (HEAD now `a99c1e5`):**
+```
+fea8963 feat(template): template-id X<T>::value in expression context (A1 keystone)
+a99c1e5 feat(class): resolve unqualified sibling static-const members in constant context
+```
+Both validated with the full gate trio. Clean torture re-run (no concurrent
+load) = **1566 passed / 31 compile / 57 runtime / 1 timed out** — exactly
+baseline. fulltest **533/4** (same 4 pre-existing reds) + 2 new tests
+(`testtemplateidvalue`, `teststaticconstsibling`). SMAUG boots ready, 0 errors.
+
+### 12.1 `fea8963` — A1 keystone (the §7.A gap, now CLOSED)
+Root cause was NOT in the instantiated class (the handoff feared a static-lookup
+gap). Proof: `typedef is_cls<S> A; A::value` already worked (`1 0`), so
+instantiation + `resolve_class_qualified_expression` were fine. The real gap was
+two-fold and purely in expression dispatch:
+- `parseExpr_identifierArm` rejected a bare template NAME before instantiating
+  it. Fix: when an unresolved identifier is in `template_map`/`template_alias_map`
+  and `<` follows, call `instantiate_template_id(name, ident_tb)` → `tb = inst;
+  return ExprStep::Redo`. (parser.cpp, top of the final `if (!var)` block ~11357.)
+- The ttIdentifier call site in `parseExpression` (~13474) silently DROPPED
+  `ExprStep::Redo` (the ttDataType arm at ~13411 honored it; the identifier arm
+  did not). Fix: `if ( step == ExprStep::Redo ) goto redo_expression_token;`.
+  This was the actual bug — the hook set `tb` but the loop overwrote it with
+  `nextToken()`. Inert pre-fix: the identifier arm only returns Redo from the new
+  hook. Provably inert for C (template maps empty).
+- EFFECT: `is_cls<S>::value` resolves; **real `<type_traits>` now PARSES**.
+
+### 12.2 `a99c1e5` — A2-rest (unqualified sibling static-const)
+`static const category all = (ctype | numeric | ...)` inside a class body — the
+real `std::ios_base` category-flags shape. New helper
+`Program::resolve_current_class_static_member_const_value` (parser.cpp ~1717,
+decl madc.h ~1767) mirrors `resolve_current_class_type_alias`: walks
+`class_scope_stack` + active method owner. Called from `parse_constant_primary`
+(parser.cpp ~4951, right after the trait-builtin fold); returns the captured
+value on a hit, falls through to the existing throw otherwise (narrow, inert for
+non-members and for C). Advanced `<ostream>`/`<istream>` past their const-expr
+blocker.
+
+### 12.3 REAL-HEADER PARSE LANDSCAPE (data-driven worklist)
+`for H in ...; printf '#include <%s>\nint main(){return 0;}\n'; madc --std=c++17
+--emit=c11` (error = parse blocker). **9/17 parse clean now:**
+```
+PARSE-OK   type_traits utility string sstream iostream fstream iosfwd vector map set
+PARSE-FAIL tuple        :: "Expecting template class name"
+PARSE-FAIL string_view  :: "Expecting integer constant expression"  (numeric_traits, §12.4)
+PARSE-FAIL ostream      :: "use of undeclared identifier 'less'"
+PARSE-FAIL istream      :: "use of undeclared identifier 'less'"
+PARSE-FAIL memory       :: "Expecting integer constant expression"  (numeric_traits, §12.4)
+PARSE-FAIL algorithm    :: "Unknown type 'string' in function pointer typedef"
+PARSE-FAIL functional   :: "Expecting template class name"
+```
+
+### 12.4 NEXT FEATURE (fully researched, NOT started) — class/struct-scoped anonymous enums + qualified const-expr
+`string_view`/`memory` derail on libstdc++'s `__numeric_traits_floating`:
+```cpp
+static const int __max_digits10 = (2 + (std::__are_same<_Value,float>::__value ? 24 : ...) ...);
+```
+After monomorphization → `std::__are_same<float,float>::__value`. Two missing
+pieces, both confirmed by reduction (g++ oracle):
+1. **Class/struct-scoped anonymous enums.** `__are_same` is
+   `struct __are_same { enum { __value = 0 }; };` (+ partial spec
+   `<_Tp,_Tp>{ enum {__value=1}; }`). madc CANNOT parse an anonymous enum in a
+   struct body (`TokenSTRUCT::parse` at parser.cpp:**14972** treats `enum` only
+   as a member *type* `enum X m;` → "Expecting member name in struct
+   definition"). The CLASS parser (`TokenCLASS::parse` ~16529, gated on
+   `class_body_enum_definition_follows()` 15619) DOES parse it, but
+   `TokenENUM::parse` (parser.cpp:**18198**) registers plain-enum enumerators
+   GLOBALLY (line **18339** `addVariable(NULL,...)`), so `Class::value` doesn't
+   resolve ("not a static member"). FIX (3 parts, each gated):
+   (a) TokenSTRUCT member loop ~14972: detect enum-definition
+       (`class_body_enum_definition_follows()`), route to `TokenENUM::parse`,
+       `continue` (mirror TokenCLASS 16529-16539). ADDITIVE — keep the existing
+       `enum X m;` member-type path untouched (struct parser is high-blast-radius;
+       blanket struct=class caused 65-120 torture regressions historically).
+   (b) `TokenENUM::parse`: when inside an aggregate (in C++ mode, non-scoped),
+       register enumerators into the current class/struct static-member store
+       (`static_member_types[name]=&ddINT; static_member_const_values[name]=val`)
+       instead of global. REUSES the machinery A2-rest added — then `Class::value`
+       resolves via `resolve_class_qualified_expression` (9603) and bare names via
+       `resolve_current_class_static_member_const_value`. NOTE: a plain struct is
+       `DataDefSTRUCT`, not on `class_scope_stack` (which is `DataDefCLASS*`);
+       `static_member_*` live on DataDefCLASS — but struct static-const ALREADY
+       works (`struct S{static const int x=5;}; S::x`→5), so the storage/promotion
+       path exists; find it (struct promotion at parser.cpp ~15246-15258, static
+       handling ~15407) and register enum constants the same way.
+2. **Qualified namespaced template-id `::value` in CONSTANT context.** Even with
+   (1), the const-expr parser (`parse_constant_primary` ~4908) can't fold
+   `std::__are_same<float,float>::__value`: it needs to recognize `std`
+   (namespace) → `__are_same` + `<...>` (`instantiate_template_id(name, tok,
+   "std")`) → `::__value` (resolve enum-constant/static-const on the instantiated
+   class). This is the const-expr analog of A1 (§12.1) + namespacing. REUSE
+   `instantiate_template_id` (works on the token stream the const-parser shares)
+   and `resolve_class_static_member_const_value`. The capture path
+   (`capture_constant_initializer_value` 5203) already catches throws and degrades
+   to 0 — so today `nt<float>::md` silently yields the WRONG value (0 vs g++ 26);
+   correctness REQUIRES this fold, not just non-crashing.
+   Reducer (g++ → `26 55`):
+   ```cpp
+   namespace nn { template<typename,typename> struct are_same{enum{value=0};};
+                  template<typename T> struct are_same<T,T>{enum{value=1};}; }
+   template<typename V> struct nt { static const int md=(2+(nn::are_same<V,float>::value?24:53)); };
+   // nt<float>::md, nt<double>::md
+   ```
+Other independent blockers (pick by leverage): `tuple`/`functional` =
+forward-declared class template with non-type param `template<typename _Tp,
+size_t _Nm> struct array;` ("Expecting template class name"); `ostream`/`istream`
+= `std::less` functional-comparator (likely cascades from `<functional>`);
+`algorithm` = `string` in a function-pointer typedef. Also note the SEPARATE
+runtime gap: mangled-direct std fns (e.g. `std::terminate` → `_ZNSt9terminateEv`)
+are emitted as wrapper calls the MIR loader can't resolve — that blocks RUNNING
+(not parsing) real-header programs; it's retire-std-hardcoding territory.
+
+### 12.5 Methodology reminders that paid off again
+- The A1 root cause was found by INSTRUMENTING the dispatch (temporary
+  `std::cerr` tags in the identifier/datatype arms), not by trusting the prior
+  handoff's static hypothesis (§6.2). The typedef-vs-direct A/B (`typedef
+  is_cls<S> A; A::value` works, direct doesn't) localized it to dispatch, not
+  instantiation.
+- Torture "timeouts" under concurrent load are FLAKY at the 5s per-test cap
+  (`run_gcc_testsuite.py --timeout` default 5.0): memcpy-a1/a2/a4 run ~3.8s clean
+  but cross 5s when SMAUG+fulltest run alongside. Always confirm a clean
+  no-load re-run before treating a timeout delta as a regression — the
+  compile/runtime FAIL counts are the real signal (they were identical).
 
 END OF HANDOFF.
