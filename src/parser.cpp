@@ -2325,10 +2325,21 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 static bool is_incomplete_class_datadef(DataDef *dd)
 {
     DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
-    return cls && (cls->is_dependent_placeholder
-	|| (cls->size == 0 && cls->members.empty()
+    if ( !cls )
+	return false;
+    if ( cls->is_dependent_placeholder )
+	return true;
+    // A `{ ... }` body was parsed: the class is COMPLETE even with zero members
+    // (a typedef-only trait such as iterator_traits<T> / __are_same<A,B>). Without
+    // this, such a fully-instantiated class matches the empty-aggregate heuristic
+    // below and is misread as "not yet instantiated", so the cache check in
+    // instantiate_template_use re-instantiates it on every reference (measured:
+    // iterator_traits<uint32_t> instantiated 6x for an empty <iostream> program).
+    if ( cls->is_complete )
+	return false;
+    return cls->size == 0 && cls->members.empty()
 	&& cls->methods.empty() && cls->ctors.empty()
-	&& cls->bases.empty()));
+	&& cls->bases.empty();
 }
 
 static bool is_incomplete_template_class_type(TokenDataType *tdt)
@@ -17991,6 +18002,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     ddc->compute_layout();
     ddc->apply_member_layout();
     ddc->build_vtable_groups(); // grouped vtable (primary + secondary polymorphic bases)
+    ddc->is_complete = true; // a `{ ... }` body was fully parsed (even if it had zero
+			     // members — e.g. a typedef-only trait like iterator_traits<T>).
+			     // Mirrors the C struct parser; without it an instantiated C++
+			     // class template stays is_complete=false and is misread as
+			     // "not yet instantiated", so instantiate_template_use's cache
+			     // never hits and re-instantiates it on every reference.
     DBG(cout << "TokenCLASS::parse() finalized layout, size now " << ddc->size << endl);
 
     pgm.parse_deferred_function_bodies(deferred_method_bodies);
