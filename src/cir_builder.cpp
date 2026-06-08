@@ -8816,6 +8816,13 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (auto &kv : prog->struct_map) {
 		DataDefCLASS *cdd = as_user_class(kv.second);
 		if (!cdd || class_has_own_user_dtor(cdd) || !class_needs_dtor(cdd)) continue;
+		// An externally-defined (libstdc++-owned) class's dtor lives in the .so;
+		// synthesizing a parallel Cls___dtor here both duplicates it and injects
+		// member-dtor cleanup for the library's internal members (e.g. the
+		// __cow_string _M_msg of the std exception classes, whose dtor libstdc++
+		// does not export) -> a dangling reference. Skip; complete-object
+		// destruction of such an object references the real dtor symbol instead.
+		if (cdd->is_externally_defined()) continue;
 		if (emitted_synth_dtors.count(cdd)) continue;
 		emitted_synth_dtors.insert(cdd);
 		node_t dd = synth_dtor_def(cdd);
@@ -8831,6 +8838,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (auto &kv : prog->struct_map) {
 		DataDefCLASS *cdd = as_user_class(kv.second);
 		if (!cdd || !class_needs_dtor(cdd)) continue;
+		if (cdd->is_externally_defined()) continue;   // libstdc++ owns it
 		std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
 		cdd->collect_vbases(vbs, seen);
 		if (vbs.empty()) continue;
@@ -8847,6 +8855,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (auto &kv : prog->struct_map) {
 		DataDefCLASS *cdd = as_user_class(kv.second);
 		if (!cdd || cdd->vtable_slot("~$deleting") < 0) continue;
+		if (cdd->is_externally_defined()) continue;   // libstdc++ owns it
 		if (emitted_deleting_dtors.count(cdd)) continue;
 		emitted_deleting_dtors.insert(cdd);
 		node_t dd0 = synth_deleting_dtor_def(cdd);
