@@ -516,6 +516,19 @@ public:
 	                                   const std::vector<std::string> &params)
 	{
 		reset();
+		// A function directly in namespace std is an Itanium <unscoped-name>
+		// using the St abbreviation (_ZSt<name>…), NOT a nested-name
+		// (_ZNSt<name>E…). libstdc++ exports e.g. std::terminate() as
+		// _ZSt9terminatev — the St-direct form is what resolves at link.
+		if (qualifiers.size() == 1 && qualifiers[0] == "std") {
+			std::string out = "_ZSt" + source_name(name);
+			if (params.empty())
+				out += "v";
+			else
+				for (const auto &p : params)
+					out += encode_type(parse_type(p));
+			return out;
+		}
 		std::vector<NameComponent> chain;
 		for (const auto &q : qualifiers)
 			chain.push_back(parse_component(q));
