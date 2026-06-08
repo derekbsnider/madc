@@ -124,6 +124,23 @@ class CirBuilder {
 	// madc-compiled functions only; external/native functions keep their own ABI.
 	const std::set<std::string> *m_user_func_names = nullptr;
 
+	// Top-level typedef aliases that COLLIDE: the same bare alias is registered
+	// by >1 namespace for DIFFERENT underlying struct tags (e.g. std::string and
+	// std::pmr::string both alias the bare name `string`). Flat C would then get
+	// two conflicting `typedef <tag> string;` -> c2mir "repeated declaration".
+	// Populated once per module (translate_module); empty for the common case.
+	std::set<std::string> m_ambiguous_typedef_aliases;
+	// The C identifier to EMIT for a typedef alias `alias` of type `dd`: normally
+	// the bare alias itself, but for an ambiguous alias (above) backed by a struct
+	// the already-unique struct tag instead, so std vs std::pmr stay distinct C
+	// names. Bare-alias STORAGE is unchanged (datatype_map lookups still key on
+	// the bare name); only emission of the type-spec id is rewritten.
+	std::string typedef_emit_name(const std::string &alias, DataDef *dd) const;
+	// Peel array/pointer layers to the DataDefSTRUCT a typedef ultimately names
+	// (NULL if none). Shared by translate_module's typedef pass, the collision
+	// detection, and typedef_emit_name.
+	static DataDefSTRUCT *struct_behind(DataDef *dd);
+
 	// GNU nested-function capture lowering. A nested function (`T inner(args){...}`
 	// defined inside another function) that references an enclosing local/param
 	// implicitly captures it BY REFERENCE — modelled exactly like a [&] lambda

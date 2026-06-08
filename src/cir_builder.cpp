@@ -1029,15 +1029,52 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 	return addr;
 }
 
+// Peel array/pointer layers to the DataDefSTRUCT a typedef ultimately names.
+DataDefSTRUCT *CirBuilder::struct_behind(DataDef *dd)
+{
+	// Peel fixed-array layers first: `typedef struct Tag {..} NAME[N];`
+	// carries the struct in DataDefCArray::element_type. Without this, an
+	// array typedef of a tagged struct is not recognized as the tag's
+	// body-definition point, so it never lands in emitted_structs and a
+	// SECOND array typedef of the same tag re-emits the full body —
+	// c2mir then rejects the duplicate ("tag X redeclaration"). This is
+	// what blocked `typedef __gnuc_va_list va_list;` (both va_list and
+	// __gnuc_va_list are `struct __madc_va_list_tag[1]`).
+	while (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd)) {
+		if (!ca->element_type) break;
+		dd = ca->element_type;
+	}
+	DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+	if (!s) {
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+		if (p) s = dynamic_cast<DataDefSTRUCT *>(p->base_type);
+	}
+	return s;
+}
+
+// The C identifier to emit for typedef alias `alias` of type `dd`. For an
+// alias that collides across namespaces (m_ambiguous_typedef_aliases), emit the
+// underlying struct's already-unique tag so the two namespaces' types stay
+// distinct C identifiers; otherwise the bare alias verbatim (the common case).
+std::string CirBuilder::typedef_emit_name(const std::string &alias,
+					  DataDef *dd) const
+{
+	if (alias.empty() || !m_ambiguous_typedef_aliases.count(alias))
+		return alias;
+	DataDefSTRUCT *sdd = struct_behind(dd);
+	return sdd ? sdd->name : alias;
+}
+
 // Build a type specifier LIST. If typedef_alias is set, emit ID("alias")
 // instead of raw type nodes — c2mir's checker resolves the typedef.
 node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 {
 	node_t lst = list();
 
-	// If a typedef name is available, emit ID("alias") — matches c2m's behavior
+	// If a typedef name is available, emit ID("alias") — matches c2m's behavior.
+	// An alias that collides across namespaces emits its unique struct tag.
 	if (!typedef_alias.empty()) {
-		append(lst, id(typedef_alias.c_str()));
+		append(lst, id(typedef_emit_name(typedef_alias, dd).c_str()));
 		return lst;
 	}
 
@@ -1593,8 +1630,9 @@ void CirBuilder::append_lit_type_spec(node_t spec, DataDef *dd,
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
 	if (!typedef_name.empty()) {
 		// Named via a typedef: emit ID("alias") so c2mir resolves the
-		// (possibly anonymous struct/union) layout from the typedef.
-		append(spec, id(typedef_name.c_str()));
+		// (possibly anonymous struct/union) layout from the typedef. A
+		// cross-namespace-colliding alias emits its unique struct tag.
+		append(spec, id(typedef_emit_name(typedef_name, dd).c_str()));
 	} else if (sdd && !dd->is_complex() && !sdd->is_anonymous) {
 		// A tagged struct/union: `struct Tag` / `union Tag`.
 		append(spec, node2(sdd->union_layout ? N_UNION : N_STRUCT,
@@ -1761,7 +1799,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			// the pointee resolves through the typedef's own (complete)
 			// definition. Dropping the alias to a `struct anonymous` tag left
 			// the pointee incomplete ("struct has no member" through `gp->`).
-			append(new_list, id(v->typedef_name.c_str()));
+			append(new_list, id(typedef_emit_name(v->typedef_name, v->type).c_str()));
 		} else if (anon_sdd) {
 			// Anonymous aggregate: inline the body (no tag to reference).
 			append(new_list, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
@@ -1786,7 +1824,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		node_t new_list = list();
 		append(new_list, simple(N_EXTERN));
 		if (!v->typedef_name.empty()) {
-			append(new_list, id(v->typedef_name.c_str()));
+			append(new_list, id(typedef_emit_name(v->typedef_name, v->type).c_str()));
 		} else if (anon_sdd) {
 			append(new_list, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
 					       ignore(), anon_members_list(anon_sdd)));
@@ -8019,34 +8057,25 @@ node_t CirBuilder::translate_module(Program *prog)
 			funcs.push_back(tf);
 	}
 
-	// Helper: resolve the (possibly pointer-wrapped) struct behind a DataDef.
-	auto struct_behind = [](DataDef *dd) -> DataDefSTRUCT * {
-		// Peel fixed-array layers first: `typedef struct Tag {..} NAME[N];`
-		// carries the struct in DataDefCArray::element_type. Without this, an
-		// array typedef of a tagged struct is not recognized as the tag's
-		// body-definition point, so it never lands in emitted_structs and a
-		// SECOND array typedef of the same tag re-emits the full body —
-		// c2mir then rejects the duplicate ("tag X redeclaration"). This is
-		// what blocked `typedef __gnuc_va_list va_list;` (both va_list and
-		// __gnuc_va_list are `struct __madc_va_list_tag[1]`).
-		while (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd)) {
-			if (!ca->element_type) break;
-			dd = ca->element_type;
-		}
-		DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
-		if (!s) {
-			DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
-			if (p) s = dynamic_cast<DataDefSTRUCT *>(p->base_type);
-		}
-		return s;
-	};
+	// (struct_behind is now a static member — resolves the struct a typedef
+	// ultimately names, peeling array/pointer layers.)
 
 	// Pre-scan: structs that have a bare standalone definition entry
 	// (`struct X {...};`). A typedef that references such a struct is a
 	// forward reference and must emit STRUCT(tag, IGNORE) — the full body is
 	// emitted once at the bare dkStruct, matching c2m's source structure.
+	// The same pass detects COLLIDING typedef aliases: one bare alias mapped
+	// to >1 distinct underlying struct tag (e.g. std::string vs std::pmr::string
+	// both registering `string`). Those emit their unique tag (typedef_emit_name)
+	// instead of the bare alias so flat C has no `typedef X string;` conflict.
 	std::set<std::string> struct_def_points;
+	std::map<std::string, std::set<std::string> > alias_tags;
 	for (auto &td : prog->top_decls) {
+		if (td.kind == Program::DeclKind::dkTypedef) {
+			DataDefSTRUCT *asdd = struct_behind(td.dd);
+			if (asdd && !td.name.empty())
+				alias_tags[td.name].insert(asdd->name);
+		}
 		if (td.kind == Program::DeclKind::dkStruct ||
 		    td.kind == Program::DeclKind::dkUnion) {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(td.dd);
@@ -8067,6 +8096,12 @@ node_t CirBuilder::translate_module(Program *prog)
 				struct_def_points.insert(sdd->name);
 		}
 	}
+
+	// An alias backing >1 distinct struct tag collides at flat-C module scope.
+	m_ambiguous_typedef_aliases.clear();
+	for (auto &kv : alias_tags)
+		if (kv.second.size() > 1)
+			m_ambiguous_typedef_aliases.insert(kv.first);
 
 	// Pass 0: top-level declarations in source order (faithful mirror).
 	// Stamp each declaration node with the source position the parser
@@ -8123,7 +8158,8 @@ node_t CirBuilder::translate_module(Program *prog)
 			if (sdd && sdd->is_complete)
 				emit_class_member_deps(sdd, top_list, emitted_structs,
 						       emitted_classes, emitting_classes);
-			node_t n = typedef_decl(td.name, td.dd, emitted_structs, forward);
+			node_t n = typedef_decl(typedef_emit_name(td.name, td.dd),
+						td.dd, emitted_structs, forward);
 			if (n) { stamp(n, td); append(top_list, n); }
 			// Mark the tag emitted once its body actually went out here: either
 			// this is its recorded def point, or a combined `typedef struct X
