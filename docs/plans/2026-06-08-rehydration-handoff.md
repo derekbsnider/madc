@@ -1,5 +1,11 @@
 # MADC REHYDRATION HANDOFF — 2026-06-08 (post-compaction, self-contained)
 
+> **SUPERSEDED for CURRENT state by `docs/plans/2026-06-08-FULL-rehydration-handoff.md`**
+> (HEAD `6344e7d`) — the consolidated, single-read cold-start doc. This file
+> remains valid for the granular per-commit §12/§13 session notes; the FULL doc
+> folds them into one coherent narrative and adds the §7 namespace-const-capture
+> root-cause map, the §10 two-evaluator mental model, and §13 process lessons.
+
 > **READ-FIRST, COLD-START DOCUMENT.** Assume you remember nothing. This file is
 > written to be exhaustive on purpose — after reading it (plus the rules in
 > `AGENTS.md`/`.claude/rules/`) you can resume the real-header / `<type_traits>`
