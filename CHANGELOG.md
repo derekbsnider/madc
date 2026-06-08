@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Fixed — SMAUG bring-up: C-source language mode + empty TUs (2026-06-08)
+
+- **Compile `.c` TUs in C mode under `--project`** (`2887740`): a `.c` source is C,
+  not C++ — gcc/clang select language by extension, so the build driver now defaults
+  a `.c` TU with no explicit `-std` to `--std=c89` (C mode). In `STD_MADC` the C++
+  keywords (`class`/`new`/…) are reserved, so SMAUG's `class` variables hit "Expecting
+  type name after elaborated type specifier" in `TokenIF`'s C++17 if-init
+  declaration-probe. Scoped to `--project`; torture/fulltest unchanged. Fixture
+  `tests/testproject_ckw`.
+- **Accept an empty translation unit** (`1851d88`): `Program::parse()` errored on an
+  empty token queue; a TU that is only comments or wholly `#ifdef`'d out is valid
+  C/C++ (gcc emits an empty object). Now a successful no-op parse. Unblocked SMAUG's
+  `services.c` (entirely `#ifdef WIN32`). Fixture `tests/testproject_empty`.
+- **Milestone:** SMAUG boots end-to-end from a fresh madc compile and stays up serving
+  ("Realms of Despair ready … on port N") via the umbrella + `--std=c` + `comm.c`'s real
+  `main` (MadSMAUG `master` `2140d3f`). Global `.bss` zero-init verified (matches gcc).
+
 ### Added — project build driver (v1) (2026-06-08)
 
 - **Project build driver (v1):** `madc --project <compile_commands.json>` compiles each translation unit independently (each with its own fresh `Program` applying that TU's `-D`/`-I`/`-std`), links the resulting MIR modules in one `MIR_context`, and JIT-runs `main` — multi-TU compile+link+run without a hand-written umbrella translation unit. First manifest reader = `compile_commands.json` (vendored nlohmann/json at `include/json.hpp`). See `docs/superpowers/specs/2026-06-08-madc-project-build-driver-design.md`.
