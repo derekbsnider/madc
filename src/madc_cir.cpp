@@ -282,6 +282,17 @@ int madc_cir_execute(Program *prog, const char *source_name,
 // Programs and CirBuilders own the node arenas backing their modules, so they
 // must outlive MIR_gen()+run — they are held for the whole call and torn down
 // only after the run completes.
+
+// A `.c` source is C, not C++ — gcc/clang select the language from the file
+// extension, and a build driver must do the same: in C mode the C++ keywords
+// (`class`, `new`, `delete`, `this`, …) are NOT reserved, so ordinary C code
+// using them as identifiers parses. Matches ".c" exactly (not ".cc"/".cpp"/
+// ".cxx"/".C", which are C++).
+static bool is_c_source_file(const std::string &path)
+{
+	return path.size() >= 2 && path.compare(path.size() - 2, 2, ".c") == 0;
+}
+
 int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			 int user_argc, char **user_argv)
 {
@@ -311,6 +322,10 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			prog->add_cli_define(d);
 		if (!tu.std_option.empty())
 			prog->set_language_standard_option("--std=" + tu.std_option);
+		else if (is_c_source_file(tu.file))
+			// No explicit -std and a .c file → compile as C (like
+			// gcc/clang), so C++ keywords stay usable as C identifiers.
+			prog->set_language_standard_option("--std=c89");
 
 		TokenProgram *tp = prog->tokenize(tu.file.c_str());
 		if (!tp) {

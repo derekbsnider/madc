@@ -1,0 +1,3 @@
+[
+  {"directory":"tests","file":"testproject_ckw.c","command":"gcc -c testproject_ckw.c"}
+]
