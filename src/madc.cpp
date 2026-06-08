@@ -27,6 +27,7 @@
 #include "madc.h"
 #include "madc_pch.h"
 #include "cir_emit_c.h"   // CirEmitLang
+#include "madc_project.h" // --project: compile_commands.json multi-TU driver
 
 extern int madc_cir_execute(Program *prog, const char *source_name,
                              int user_argc, char **user_argv,
@@ -383,6 +384,7 @@ int main(int argc, char **argv)
     bool dump_checked = false;    // --dump-cir-checked: post-check tree dump (c2m -d stage)
     bool do_emit = false;         // --emit=c11|mc11: render cir_node tree as C, no run
     CirEmitLang emit_lang = celC11;
+    const char *project_manifest = NULL;  // --project <compile_commands.json>
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -464,6 +466,9 @@ int main(int argc, char **argv)
             // (reconstruct_source over the post-PP tokens). Content-only (no
             // `# line` markers) so it diffs cleanly against `gcc -E | grep -v '^#'`.
             dump_source = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {
+            project_manifest = argv[++i];
             filearg = i + 1;
         } else if (strncmp(argv[i], "--emit=", 7) == 0) {
             // Render the cir_node tree (MC11-IR) as C source; do not run.
@@ -559,6 +564,22 @@ int main(int argc, char **argv)
     // --emit-function: tokenize+parse, find function, emit source lines
     if ( emit_function_name && filearg < argc )
 	return emit_function(*prog, argv[filearg], emit_function_name);
+
+    if ( project_manifest )
+    {
+	ProjectManifest manifest;
+	std::string err;
+	if ( !read_compile_commands(project_manifest, manifest, err) )
+	{
+	    std::cerr << "madc --project: " << err << std::endl;
+	    return 1;
+	}
+	// Remaining positionals (filearg..argc) become the program's argv.
+	int run_argc = argc - filearg;
+	char **run_argv = argv + filearg;
+	int rc = madc_project_execute(engine, manifest, run_argc, run_argv);
+	return (rc < 0) ? 1 : rc;
+    }
 
     if ( argc >= 2 && filearg < argc )
     {
