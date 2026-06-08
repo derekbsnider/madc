@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added — project build driver (v1) (2026-06-08)
+
+- **Project build driver (v1):** `madc --project <compile_commands.json>` compiles each translation unit independently (each with its own fresh `Program` applying that TU's `-D`/`-I`/`-std`), links the resulting MIR modules in one `MIR_context`, and JIT-runs `main` — multi-TU compile+link+run without a hand-written umbrella translation unit. First manifest reader = `compile_commands.json` (vendored nlohmann/json at `include/json.hpp`). See `docs/superpowers/specs/2026-06-08-madc-project-build-driver-design.md`.
+
 ### Added — C++11 opaque-enum declarations (`enum class E : T;`) (2026-06-06)
 
 `enum class E : T { ... }` (with body) parsed, but the forward/opaque declaration

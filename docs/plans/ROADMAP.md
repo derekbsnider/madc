@@ -539,8 +539,11 @@ output replacement, scope-level destruction.
 | 3.2 | PCH transition — replace text-embedded stubs | 2-3 wk | Blocked on parser | [precompiled-headers.md](precompiled-headers.md) |
 | 3.3 | PCH Phase 2 — AST serialization | 4-6 wk | Future | [precompiled-headers.md](precompiled-headers.md) |
 | 3.4 | PCH Phase 3 — C++20-style modules (.madm) | 6-8 wk | Future | [precompiled-headers.md](precompiled-headers.md) |
+| 3.5 | Project build driver v1 (`--project`) | — | **DONE** | [madc-project-build-driver](../superpowers/plans/2026-06-08-madc-project-build-driver.md) |
 
 **Dependencies:** 1.4 (parser cleanup) unblocks 3.2. 1.5 (token cleanup) before 3.3.
+
+- Project build driver v1 landed (`--project compile_commands.json`, multi-TU compile+link+JIT-run of `main`). Replaces the need for a hand-written umbrella translation unit (like SMAUG's `SMAUG.mad`) for multi-file C programs. Deferred follow-ons: Makefile-subset reader + a link-description section (compile_commands.json carries no link rule); native `.madproj`; other-ecosystem readers; honoring `ProjectTU.working_dir` for include resolution (SMAUG will need it); `--project` + `--emit=c11` (project mode currently ignores `--emit`); real object-code-to-disk (parity-recovery item — asmjit on master had it); parallel/incremental build + manifest auto-detection. **Next concrete step: SMAUG bring-up via a generated `compile_commands.json` (separate follow-on plan).**
 
 ---
 
