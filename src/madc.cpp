@@ -374,6 +374,8 @@ static void print_usage(const char *prog)
 "  <file>                  compile and JIT-run a single source file\n"
 "  --project <db.json>     build from a compile_commands.json: compile each\n"
 "                          translation unit, link the modules, run the entry\n"
+"  <file.json>             a .json source is treated as a project manifest\n"
+"                          (implicit --project; gcc/clang-style by extension)\n"
 "  -E                      preprocess only (print the expanded source)\n"
 "\n"
 "Language / preprocessor (gcc/clang-style):\n"
@@ -562,6 +564,20 @@ int main(int argc, char **argv)
     {
         print_usage(argv[0]);
         return 0;
+    }
+
+    // A .json input file with no explicit --project defaults to project mode:
+    // `madc compile_commands.json [args...]` == `madc --project compile_commands.json
+    // [args...]`. gcc/clang select by extension; we mirror that for the build driver.
+    if ( !project_manifest && filearg < argc )
+    {
+        const char *f = argv[filearg];
+        size_t flen = strlen(f);
+        if ( flen >= 5 && strcmp(f + flen - 5, ".json") == 0 )
+        {
+            project_manifest = f;
+            ++filearg;   // remaining positionals become the program's argv
+        }
     }
 
     // -l<name>: dlopen each requested library (RTLD_GLOBAL) so the import

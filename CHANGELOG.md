@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### A `.json` source defaults to `--project` mode (2026-06-08)
+
+- **`madc compile_commands.json [args...]`** now behaves as `madc --project
+  compile_commands.json [args...]`: a positional source file with a `.json`
+  extension is treated as a project manifest implicitly, mirroring how gcc/clang
+  select a tool by file extension. Options (e.g. `-lcrypt`) still precede the
+  source positional, as for any source file. New fixture `tests/testprojectjson`
+  exercises the implicit path through the production runner. fulltest 538/4.
+
 ### SMAUG boots via `--project` — the intended path (2026-06-08)
 
 - **`madc --project <compile_commands.json> -lcrypt`** compiles all 51 non-IMC
