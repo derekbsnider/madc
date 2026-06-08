@@ -20775,6 +20775,78 @@ static std::string serialize_token_range(const std::vector<TokenBase *> &toks,
 // stream-specific picker. Returns true if captured. (The existing
 // name-based registration path can't see an operator declarator: the token
 // before '(' is the operator symbol, not a name.)
+// Shared signature extractor for W2 free-function capture: serialize the return
+// type (tokens [ret_begin, declarator_start), minus leading specifiers) and the
+// top-level parameter type spellings (from lparen, parameter NAMES dropped),
+// into `out`. Returns false if the return type or parameter list is empty.
+static bool extract_free_signature(
+	Program &pgm, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams, const std::string &name,
+	size_t declarator_start, size_t lparen,
+	Program::FreeOperatorOverload &out)
+{
+    static const std::set<std::string> specifiers = {
+	"static", "constexpr", "inline", "virtual", "friend", "extern",
+	"typename", "template"
+    };
+    size_t ret_begin = 0;
+    while ( ret_begin < declarator_start && tokens[ret_begin]
+	 && is_contextual_identifier_token(tokens[ret_begin])
+	 && specifiers.count(contextual_identifier_name(tokens[ret_begin])) )
+	++ret_begin;
+    std::string ret_spelling = serialize_token_range(tokens, ret_begin, declarator_start);
+    if ( ret_spelling.empty() )
+	return false;
+    // Parameters: top-level (depth-0, angle-0, square-0) comma ranges inside
+    // (...), dropping a trailing parameter NAME. Angle tracking keeps a comma
+    // inside `<...>` template args from splitting a parameter.
+    std::vector<std::string> params;
+    int depth = 0, angle = 0, square = 0;
+    size_t pstart = lparen + 1;
+    auto flush_param = [&](size_t pend) {
+	size_t real_end = pend;
+	if ( real_end > pstart + 1 && tokens[real_end - 1]
+	  && tokens[real_end - 1]->type() == TokenType::ttIdentifier )
+	    --real_end;   // drop the parameter name (type spans > 1 token)
+	std::string sp = serialize_token_range(tokens, pstart, real_end);
+	if ( !sp.empty() )
+	    params.push_back(sp);
+    };
+    for ( size_t i = lparen + 1; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t ) continue;
+	TokenID id = (TokenID)t->id();
+	if ( id == TokenID::tkOpBrk ) ++depth;
+	else if ( id == TokenID::tkClBrk )
+	{
+	    if ( depth == 0 && angle == 0 && square == 0 )
+	    { flush_param(i); break; }
+	    if ( depth > 0 ) --depth;
+	}
+	else if ( id == TokenID::tkOpSqr ) ++square;
+	else if ( id == TokenID::tkClSqr ) { if ( square > 0 ) --square; }
+	else if ( id == TokenID::tkLT && depth == 0 && square == 0 ) ++angle;
+	else if ( id == TokenID::tkGT && angle > 0 && depth == 0 && square == 0 )
+	    --angle;
+	else if ( id == TokenID::tkBSR && angle > 0 && depth == 0 && square == 0 )
+	    angle = angle > 1 ? angle - 2 : 0;
+	else if ( id == TokenID::tkComma && depth == 0 && angle == 0 && square == 0 )
+	{
+	    flush_param(i);
+	    pstart = i + 1;
+	}
+    }
+    if ( params.empty() )
+	return false;
+    out.ns = pgm.current_namespace;
+    out.opname = name;
+    out.template_params = typeparams;
+    out.return_spelling = ret_spelling;
+    out.param_spellings = params;
+    return true;
+}
+
 static bool capture_free_operator_overload(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams)
@@ -20804,75 +20876,52 @@ static bool capture_free_operator_overload(
     if ( symbol.empty() || lparen >= tokens.size()
       || !tokens[lparen] || tokens[lparen]->id() != TokenID::tkOpBrk )
 	return false;
-    std::string opname = "operator" + symbol;
-    // Return type = tokens before tkOPEROVER, minus leading declaration specifiers.
-    static const std::set<std::string> specifiers = {
-	"static", "constexpr", "inline", "virtual", "friend", "extern",
-	"typename", "template"
-    };
-    size_t ret_begin = 0;
-    while ( ret_begin < oper_idx && tokens[ret_begin]
-	 && is_contextual_identifier_token(tokens[ret_begin])
-	 && specifiers.count(contextual_identifier_name(tokens[ret_begin])) )
-	++ret_begin;
-    std::string ret_spelling = serialize_token_range(tokens, ret_begin, oper_idx);
-    if ( ret_spelling.empty() )
-	return false;
-    // Parameters: top-level (depth-0) comma ranges inside (...), dropping a
-    // trailing parameter NAME (a plain identifier after a multi-token type).
-    std::vector<std::string> params;
-    int depth = 0;       // () nesting
-    int angle = 0;       // <> template-arg nesting (commas inside must NOT split)
-    int square = 0;      // [] nesting
-    size_t pstart = lparen + 1;
-    auto flush_param = [&](size_t pend) {
-	size_t real_end = pend;
-	if ( real_end > pstart + 1 && tokens[real_end - 1]
-	  && tokens[real_end - 1]->type() == TokenType::ttIdentifier )
-	    --real_end;   // drop the parameter name (type spans > 1 token)
-	std::string sp = serialize_token_range(tokens, pstart, real_end);
-	if ( !sp.empty() )
-	    params.push_back(sp);
-    };
-    for ( size_t i = lparen + 1; i < tokens.size(); ++i )
-    {
-	TokenBase *t = tokens[i];
-	if ( !t ) continue;
-	TokenID id = (TokenID)t->id();
-	if ( id == TokenID::tkOpBrk ) ++depth;
-	else if ( id == TokenID::tkClBrk )
-	{
-	    if ( depth == 0 && angle == 0 && square == 0 )
-	    { flush_param(i); break; }
-	    if ( depth > 0 ) --depth;
-	}
-	else if ( id == TokenID::tkOpSqr ) ++square;
-	else if ( id == TokenID::tkClSqr ) { if ( square > 0 ) --square; }
-	// Track template angle brackets only outside () and [] (a `<`/`>` there
-	// is comparison/shift, not a template bracket).
-	else if ( id == TokenID::tkLT && depth == 0 && square == 0 ) ++angle;
-	else if ( id == TokenID::tkGT && angle > 0 && depth == 0 && square == 0 )
-	    --angle;
-	else if ( id == TokenID::tkBSR && angle > 0 && depth == 0 && square == 0 )
-	    angle = angle > 1 ? angle - 2 : 0;
-	else if ( id == TokenID::tkComma && depth == 0 && angle == 0 && square == 0 )
-	{
-	    flush_param(i);
-	    pstart = i + 1;
-	}
-    }
-    if ( params.size() < 2 )   // a non-member binary operator takes 2 params
-	return false;
     Program::FreeOperatorOverload ov;
-    ov.ns = pgm.current_namespace;
-    ov.opname = opname;
-    ov.template_params = typeparams;
-    ov.return_spelling = ret_spelling;
-    ov.param_spellings = params;
+    if ( !extract_free_signature(pgm, tokens, typeparams, "operator" + symbol,
+				 oper_idx, lparen, ov) )
+	return false;
+    if ( ov.param_spellings.size() < 2 )   // a non-member binary operator takes 2
+	return false;
     pgm.free_operator_overloads.push_back(ov);
-    DBG(std::cout << "[W2] captured free " << ov.ns << "::" << opname
-	<< " ret=" << ret_spelling << " params=" << params.size() << std::endl);
+    DBG(std::cout << "[W2] captured free " << ov.ns << "::" << ov.opname
+	<< " ret=" << ov.return_spelling << " params=" << ov.param_spellings.size() << std::endl);
     return true;
+}
+
+// Capture a stream MANIPULATOR free function (std::endl/flush/ends): a namespace
+// template function of exactly one parameter whose parameter type equals its
+// return type (the templated stream `basic_ostream<_CharT,_Traits>&`). Stored in
+// the same overloads table (opname = the function name) so `os << endl` can lower
+// to a mangled-direct `endl(&os)` — the manipulator receives the stream object.
+// Does NOT skip the normal namespace registration (caller still records the name).
+static void capture_free_manipulator_overload(
+	Program &pgm, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams)
+{
+    if ( pgm.current_namespace.empty() || typeparams.empty() )
+	return;
+    std::string name;
+    size_t name_idx = skipped_template_function_declarator_name_index(tokens, &name);
+    if ( name_idx >= tokens.size() || name.empty() )
+	return;
+    size_t lparen = name_idx + 1;
+    if ( lparen >= tokens.size() || !tokens[lparen]
+      || tokens[lparen]->id() != TokenID::tkOpBrk )
+	return;
+    Program::FreeOperatorOverload ov;
+    if ( !extract_free_signature(pgm, tokens, typeparams, name, name_idx, lparen, ov) )
+	return;
+    // Manipulator shape: one parameter, parameter type == return type (modulo cv).
+    if ( ov.param_spellings.size() != 1 )
+	return;
+    auto strip_ws = [](const std::string &s) {
+	std::string o; for ( char c : s ) if ( c != ' ' ) o += c; return o;
+    };
+    if ( strip_ws(ov.param_spellings[0]) != strip_ws(ov.return_spelling) )
+	return;
+    pgm.free_operator_overloads.push_back(ov);
+    DBG(std::cout << "[W2] captured manipulator " << ov.ns << "::" << name
+	<< " type=" << ov.return_spelling << std::endl);
 }
 
 static void register_skipped_namespace_template_function(
@@ -20883,6 +20932,9 @@ static void register_skipped_namespace_template_function(
 	return;
     if ( capture_free_operator_overload(pgm, tokens, typeparams) )
 	return;   // W2: recorded as a non-member operator overload candidate
+    // W2: also record stream manipulators (endl/flush/ends) for `os << endl`
+    // mangled-direct lowering; this does NOT replace the normal name registration.
+    capture_free_manipulator_overload(pgm, tokens, typeparams);
     std::string name = skipped_template_function_declarator_name(tokens);
     if ( name.empty() )
 	return;

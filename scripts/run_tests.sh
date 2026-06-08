@@ -45,6 +45,7 @@ for t in tests/*.mad; do
     expect_file="tests/$base.expect"
     flags_file="tests/$base.flags"
     mir_skip_file="tests/$base.mir_skip"
+    timeout_file="tests/$base.timeout"
 
     # Skip tests marked as not transpilable (MIR is the default backend)
     if [ -f "$mir_skip_file" ]; then
@@ -56,11 +57,17 @@ for t in tests/*.mad; do
     flags=()
     [ -f "$flags_file" ] && read -r -a flags < "$flags_file"
     [ -f "$argv_file" ] && read -r -a args < "$argv_file"
+    # Per-test wall-clock cap (seconds); default 5. A `.timeout` fixture overrides
+    # it for tests that legitimately need longer — e.g. a real-libstdc++-header
+    # compile (no PCH yet) parses the full <iostream> closure. Generic filename
+    # convention, never a per-test branch in the runner.
+    tmo=5
+    [ -f "$timeout_file" ] && read -r tmo < "$timeout_file"
 
     if [ -f "$input_file" ]; then
-        out=$(timeout 5 bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>/dev/null)
+        out=$(timeout "$tmo" bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>/dev/null)
     else
-        out=$(timeout 5 bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>/dev/null)
+        out=$(timeout "$tmo" bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>/dev/null)
     fi
     rc=$?
 
