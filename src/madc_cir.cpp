@@ -29,6 +29,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_cir.h"
+#include "madc_project.h"
 #include "cir_builder.h"
 #include "cir_emit_c.h"
 
@@ -271,6 +272,129 @@ int madc_cir_execute(Program *prog, const char *source_name,
     delete builder;
 
     return result;
+}
+
+// Multi-TU project engine: compile each TU in the manifest into its own MIR
+// module within one shared MIR_context (and one shared c2m context — c2mir is
+// designed to compile multiple TUs into one context and link), accumulate the
+// modules, link them all with a single MIR_link, then JIT-run the entry.
+//
+// Programs and CirBuilders own the node arenas backing their modules, so they
+// must outlive MIR_gen()+run — they are held for the whole call and torn down
+// only after the run completes.
+int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
+			 int user_argc, char **user_argv)
+{
+	if (manifest.tus.empty()) {
+		fprintf(stderr, "madc_project_execute: empty manifest\n");
+		return -1;
+	}
+
+	MIR_context_t ctx = MIR_init();
+	c2mir_init(ctx);
+	MIR_gen_init(ctx);
+	MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
+
+	c2m_ctx_t c2m = cir_init(ctx, false);
+	if (!c2m) {
+		fprintf(stderr, "madc_project_execute: cir_init failed\n");
+		MIR_gen_finish(ctx);
+		c2mir_finish(ctx);
+		MIR_finish(ctx);
+		return -1;
+	}
+
+	// Programs and builders must outlive MIR_gen()+run: their arenas back the
+	// modules. Hold them for the whole call.
+	std::vector<std::unique_ptr<Program>> progs;
+	std::vector<CirBuilder *> builders;
+	std::vector<MIR_module_t> modules;
+	auto teardown = [&]() {
+		for (CirBuilder *b : builders) delete b;
+		cir_finish(c2m);
+		MIR_gen_finish(ctx);
+		c2mir_finish(ctx);
+		MIR_finish(ctx);
+	};
+
+	for (const ProjectTU &tu : manifest.tus) {
+		std::unique_ptr<Program> prog = engine.create_program();
+		prog->colors = true;
+		for (const std::string &inc : tu.include_dirs) {
+			std::string p = inc;
+			if (!p.empty() && p.back() != '/') p += '/';
+			prog->include_paths.push_back(p);
+		}
+		for (const std::string &d : tu.defines) {
+			std::string::size_type eq = d.find('=');
+			std::string name = (eq == std::string::npos) ? d : d.substr(0, eq);
+			std::string val  = (eq == std::string::npos) ? std::string("1") : d.substr(eq + 1);
+			if (!name.empty())
+				prog->cli_defines.push_back(std::make_pair(name, val));
+		}
+		if (!tu.std_option.empty())
+			prog->set_language_standard_option("--std=" + tu.std_option);
+
+		TokenProgram *tp = prog->tokenize(tu.file.c_str());
+		if (!tp) {
+			fprintf(stderr, "%s: tokenize failed\n", tu.file.c_str());
+			teardown();
+			return -1;
+		}
+		if (!prog->parse(tp)) {
+			fprintf(stderr, "%s: parse failed\n", tu.file.c_str());
+			teardown();
+			return -1;
+		}
+
+		CirBuilder *builder = NULL;
+		bool stop = false;
+		MIR_module_t mod = build_tu_module(ctx, c2m, prog.get(),
+						   tu.file.c_str(),
+						   false, false, false,
+						   builder, stop);
+		builders.push_back(builder);	// may be NULL on failure; delete NULL is safe
+		if (!mod) {
+			teardown();
+			return -1;
+		}
+		progs.push_back(std::move(prog));
+		modules.push_back(mod);
+	}
+
+	for (MIR_module_t m : modules)
+		MIR_load_module(ctx, m);
+	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
+
+	// Find the entry symbol across all modules.
+	void *code = nullptr;
+	MIR_module_t entry_mod = nullptr;
+	for (MIR_module_t m : modules) {
+		for (MIR_item_t item = DLIST_HEAD(MIR_item_t, m->items);
+		     item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
+			if (item->item_type == MIR_func_item &&
+			    strcmp(item->u.func->name, manifest.entry.c_str()) == 0) {
+				code = MIR_gen(ctx, item);
+				entry_mod = m;
+				break;
+			}
+		}
+		if (code) break;
+	}
+	if (!code) {
+		fprintf(stderr, "madc_project_execute: entry '%s' not found\n",
+			manifest.entry.c_str());
+		teardown();
+		return -1;
+	}
+
+	// Expose the entry's module to the crash handler for JIT symbolization.
+	g_jit_module = entry_mod;
+	int result = ((int (*)(int, char **))code)(user_argc, user_argv);
+	g_jit_module = nullptr;
+
+	teardown();
+	return result;
 }
 
 // Build the cir_node tree and render it as C source (no compile/run).
