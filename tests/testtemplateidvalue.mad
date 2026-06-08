@@ -1,0 +1,15 @@
+#include <stdio.h>
+struct S {};
+struct D : S {};
+enum E { X };
+template<class T> struct is_cls { static const bool value = __is_class(T); };
+template<class T> struct is_en  { static const bool value = __is_enum(T); };
+int main(){
+	// template-id ::value directly in expression context (A1 keystone)
+	printf("%d %d %d\n", is_cls<S>::value, is_cls<D>::value, is_cls<int>::value);
+	printf("%d %d\n", is_en<E>::value, is_en<int>::value);
+	// template-id ::value inside a larger arithmetic expression
+	int sum = is_cls<S>::value + is_cls<D>::value + is_en<E>::value;
+	printf("%d\n", sum);
+	return 0;
+}

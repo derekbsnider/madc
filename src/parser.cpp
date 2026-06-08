@@ -11355,6 +11355,23 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		}
 		if ( !var )
 		{
+		    // Template-id in expression context, e.g. `is_cls<S>::value`
+		    // or `is_cls<S>()`. The name is a registered template/alias and
+		    // a '<' follows: instantiate to the concrete type and re-dispatch
+		    // through the ttDataType arm, which owns the `::member` / object
+		    // handling. Guarded on a known template name so a stray `x < y`
+		    // on an undeclared `x` still reports the undeclared identifier.
+		    if ( peekToken() && peekToken()->id() == TokenID::tkLT
+		      && (template_map.count(ident_tb->str)
+		       || template_alias_map.count(ident_tb->str)) )
+		    {
+			if ( TokenDataType *inst =
+				instantiate_template_id(ident_tb->str, ident_tb) )
+			{
+			    tb = inst;
+			    return ExprStep::Redo;
+			}
+		    }
 		    // Functional construction `T(args)`: only when the unresolved
 		    // identifier names a class type followed by '(' (ordinary calls
 		    // resolved to `var` above). General; no per-class machinery.
@@ -13440,6 +13457,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	    case TokenType::ttIdentifier:
 		{
 		    ExprStep step = parseExpr_identifierArm(tb, exStack, opStack, code);
+		    if ( step == ExprStep::Redo ) goto redo_expression_token;
 		    if ( step == ExprStep::Done ) done = true;
 		}
 		break;
