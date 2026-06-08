@@ -1,3 +1,8 @@
+> **SUPERSEDED (2026-06-08 later) — READ `docs/plans/2026-06-08-smaug-project-boot-HANDOFF.md` INSTEAD.**
+> The "SMAUG NOT booting / elaborated-type at SMAUG.mad:1261" blocker below is RESOLVED:
+> SMAUG now boots from a fresh compile via BOTH the umbrella AND `madc --project … -lcrypt`.
+> HEAD is now `4aa0a20` (not `ecc92e4`). This doc is kept for the integration/diagnosis history only.
+
 # MADC — CODEX INTEGRATION + SMAUG REVIVAL HANDOFF (2026-06-08)
 
 > **READ-FIRST for the CURRENT situation.** This is the live state after
