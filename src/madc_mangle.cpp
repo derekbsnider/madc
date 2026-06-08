@@ -200,6 +200,23 @@ std::string itanium_typeinfo_sym(const std::string &class_name)
 	return "_ZTI" + source_name(class_name);
 }
 
+// Real Itanium vtable / typeinfo symbols for a class named by its canonical C++
+// spelling (e.g. "std::bad_alloc"), using the full St-aware type encoding. These
+// are the symbols libstdc++ actually exports — used when madc DEFERS an
+// externally-defined class to the library (it references the real _ZTVSt.../
+// _ZTISt... instead of synthesizing its own). For an un-namespaced name the
+// encoding equals source_name, so itanium_typeinfo_sym_cpp("C") == _ZTI1C.
+//   "std::bad_alloc" -> _ZTVSt9bad_alloc / _ZTISt9bad_alloc
+std::string itanium_vtable_sym_cpp(const std::string &cpp_spelling)
+{
+	return "_ZTV" + itanium_encode_type_sub(cpp_spelling);
+}
+
+std::string itanium_typeinfo_sym_cpp(const std::string &cpp_spelling)
+{
+	return "_ZTI" + itanium_encode_type_sub(cpp_spelling);
+}
+
 std::string itanium_typeinfo_name_sym(const std::string &class_name)
 {
 	return "_ZTS" + source_name(class_name);

@@ -49,6 +49,11 @@ std::string itanium_mangle_operator(const std::string &class_name,
 std::string itanium_typeinfo_sym(const std::string &class_name);
 std::string itanium_typeinfo_name_sym(const std::string &class_name);
 std::string itanium_typeinfo_name_string(const std::string &class_name);
+// Real libstdc++ vtable/typeinfo symbols from a canonical C++ spelling (St-aware),
+// e.g. "std::bad_alloc" -> _ZTVSt9bad_alloc / _ZTISt9bad_alloc. Used to defer an
+// externally-defined class's vtable/typeinfo to the library.
+std::string itanium_vtable_sym_cpp(const std::string &cpp_spelling);
+std::string itanium_typeinfo_sym_cpp(const std::string &cpp_spelling);
 
 // ---------------------------------------------------------------------------
 // Substitution-aware (template-id capable) mangling.

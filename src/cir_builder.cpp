@@ -2428,6 +2428,45 @@ static DataDefCLASS *class_behind(DataDef *dd); // defined below; used by the th
 // Externally-owned classes are NOT emitted here (their ABI owns the _ZTI*).
 // Returns an N_LIST of file-scope definitions (extern decls + _ZTS + _ZTI), or
 // NULL for a non-polymorphic class.
+// The vtable / typeinfo SYMBOL to reference for cdd. madc-emitted for a class
+// madc defines; the REAL libstdc++ _ZTVSt.../_ZTISt... for an externally-defined
+// class (whose machinery madc does not synthesize). For an un-namespaced user
+// class the encoded form equals source_name, so these reduce to the prior names.
+std::string CirBuilder::class_vtable_symbol(DataDefCLASS *cdd)
+{
+	if (cdd && cdd->is_externally_defined())
+		return itanium_vtable_sym_cpp(cdd->canonical_cpp_spelling);
+	return (cdd ? cdd->name : std::string()) + "__vtable";
+}
+
+std::string CirBuilder::class_typeinfo_symbol(DataDefCLASS *cdd)
+{
+	if (cdd && cdd->is_externally_defined())
+		return itanium_typeinfo_sym_cpp(cdd->canonical_cpp_spelling);
+	return itanium_typeinfo_sym(cdd ? cdd->name : std::string());
+}
+
+// `extern void *SYM[];` (deduped). NULL if already emitted this module.
+node_t CirBuilder::data_extern_decl(const std::string &sym)
+{
+	if (m_rtti_data_externs.count(sym)) return NULL;
+	m_rtti_data_externs.insert(sym);
+	node_t spec = list();
+	append(spec, simple(N_EXTERN));
+	append(spec, simple(N_VOID));
+	node_t dl = list();
+	append(dl, node3(N_ARR, ignore(), list(), ignore())); // []
+	append(dl, pointer());                                 // void* element
+	node_t decl = node2(N_DECL, id(sym.c_str()), dl);
+	node_t sd = simple(N_SPEC_DECL);
+	append(sd, node1(N_SHARE, spec));
+	append(sd, decl);
+	append(sd, ignore());
+	append(sd, ignore());
+	append(sd, ignore());
+	return sd;
+}
+
 node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd)
 {
 	if (!cdd || !cdd->has_vtable)
@@ -3953,7 +3992,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// its vbase-offset table is S4 — so gate on has_vtable, not has_vptr_slot.)
 	if (!cdd->has_user_ctor) {
 		if (!cdd->has_vtable) return NULL;
-		std::string vname = cdd->name + "__vtable";
+		std::string vname = class_vtable_symbol(cdd);
 		node_t blk = list();
 		for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
 			const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
@@ -5014,8 +5053,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		DataDefCLASS *srcC = class_behind(dc->operand ? dc->operand->datadef() : NULL);
 		if (!dstC || !srcC || !dstC->has_vtable || !srcC->has_vtable)
 			return error_node("dynamic_cast requires polymorphic class pointers", tb);
-		std::string src_ti = itanium_typeinfo_sym(srcC->name);
-		std::string dst_ti = itanium_typeinfo_sym(dstC->name);
+		std::string src_ti = class_typeinfo_symbol(srcC);
+		std::string dst_ti = class_typeinfo_symbol(dstC);
 		referenced_funcs.insert(src_ti);
 		referenced_funcs.insert(dst_ti);
 		long hint = -1; size_t off = 0;
@@ -5051,7 +5090,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		if (ti->static_type) {
 			DataDefCLASS *c = class_behind(ti->static_type);
 			if (!c) return error_node("typeid type operand is not a class type", tb);
-			std::string sym = itanium_typeinfo_sym(c->name);
+			std::string sym = class_typeinfo_symbol(c);
 			referenced_funcs.insert(sym);
 			return node2(N_CAST, tinfo_ptr(), id(sym.c_str()), tb);
 		}
@@ -5070,7 +5109,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			return node2(N_CAST, tinfo_ptr(), rtti, tb);
 		}
 		if (!ec) return error_node("typeid operand has no RTTI class type", tb);
-		std::string sym = itanium_typeinfo_sym(ec->name);
+		std::string sym = class_typeinfo_symbol(ec);
 		referenced_funcs.insert(sym);
 		return node2(N_CAST, tinfo_ptr(), id(sym.c_str()), tb);
 	}
@@ -5277,7 +5316,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// deref NULL and crash. A user ctor's body sets __vptr (func_def
 			// prologue); with no ctor we must set it here so `new B()` yields a
 			// usable polymorphic object. `__newN->__vptr = (void*)B__vtable`.
-			std::string vname = cdd->name + "__vtable";
+			std::string vname = class_vtable_symbol(cdd);
 			for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
 				const auto &G = cdd->vtable_groups[g];
 				std::string fld = (G.this_offset == 0)
@@ -7869,7 +7908,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		if (is_dtor)
 			class_member_destruct(ocls, epilogue, tf);
 		if (is_ctor && ocls->has_vtable) {
-			std::string vname = ocls->name + "__vtable";
+			std::string vname = class_vtable_symbol(ocls);
 			// Set each subobject's vptr to its group's address point in the flat
 			// table: __this->__vptr[_<off>] = (void*)(Cls__vtable + addr_point).
 			// Primary group (offset 0, addr_point 0) reproduces the old single
@@ -8450,11 +8489,18 @@ node_t CirBuilder::translate_module(Program *prog)
 		// has no body for) is OWNED by libstdc++: its vtable, typeinfo and
 		// implicit ctor/dtor live in the .so. madc must not synthesize a
 		// parallel set under wrong (un-namespaced) symbols; consumers reference
-		// the real _ZTVSt.../_ZTISt... instead (see class_real_vtable_symbol /
-		// the construction + RTTI sites). Suppressing here also drops the now-
-		// unneeded method prototypes (the vtable initializer is what registered
-		// them in referenced_funcs).
-		if (cdd->is_externally_defined()) continue;
+		// the real _ZTVSt.../_ZTISt... instead (see class_vtable_symbol /
+		// class_typeinfo_symbol + the construction/RTTI sites). Suppressing here
+		// also drops the now-unneeded method prototypes (the vtable initializer
+		// is what registered them in referenced_funcs). We DO emit extern decls
+		// for the library's real vtable/typeinfo so those references resolve.
+		if (cdd->is_externally_defined()) {
+			node_t ve = data_extern_decl(class_vtable_symbol(cdd));
+			if (ve) append(top_list, ve);
+			node_t te = data_extern_decl(class_typeinfo_symbol(cdd));
+			if (te) append(top_list, te);
+			continue;
+		}
 		// type_info first — the vtable's RTTI slot references _ZTI<cls>. (S5b)
 		node_t ti = class_typeinfo_def(cdd);
 		if (ti) append(top_list, ti);

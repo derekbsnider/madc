@@ -437,6 +437,15 @@ public:
 	// vtable. Must be emitted after the method prototypes it references.
 	node_t class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thunks);
 	node_t class_typeinfo_def(DataDefCLASS *cdd); // _ZTI/_ZTS objects; NULL if non-polymorphic (S5b)
+	// The vtable / typeinfo SYMBOL to reference for cdd: the madc-emitted
+	// `Cls__vtable` / `_ZTI<cls>` for a class madc defines, or the REAL
+	// libstdc++ `_ZTVSt.../_ZTISt...` for an externally-defined class (whose
+	// machinery madc does not synthesize — see is_externally_defined()).
+	std::string class_vtable_symbol(DataDefCLASS *cdd);
+	std::string class_typeinfo_symbol(DataDefCLASS *cdd);
+	// `extern void *SYM[];` (deduped via m_rtti_data_externs), or NULL if already
+	// emitted. For referencing an externally-defined class's real _ZTVSt.../_ZTISt...
+	node_t data_extern_decl(const std::string &sym);
 	void vbase_ctor_stmts(const std::string &objname, bool addr_of,
 			      DataDefCLASS *cdd, std::vector<node_t> &out, TokenBase *o);
 	void vbase_dtor_stmts(const std::string &objname, bool addr_of,
