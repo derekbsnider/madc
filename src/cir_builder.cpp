@@ -2432,6 +2432,9 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd)
 {
 	if (!cdd || !cdd->has_vtable)
 		return NULL;
+	// libstdc++ owns an externally-defined class's typeinfo (see Pass 1.5).
+	if (cdd->is_externally_defined())
+		return NULL;
 
 	std::string ti = itanium_typeinfo_sym(cdd->name);          // _ZTI<cls>
 	std::string ts = itanium_typeinfo_name_sym(cdd->name);     // _ZTS<cls>
@@ -2553,6 +2556,9 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd)
 node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thunks)
 {
 	if (!cdd || !cdd->has_vtable || cdd->vtable_slots.empty())
+		return NULL;
+	// libstdc++ owns an externally-defined class's vtable (see Pass 1.5).
+	if (cdd->is_externally_defined())
 		return NULL;
 
 	// Build a this-adjusting thunk: a function with the override's signature whose
@@ -8440,6 +8446,15 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (!cdd || !cdd->has_vtable) continue;
 		if (emitted_vtables.count(cdd)) continue;
 		emitted_vtables.insert(cdd);
+		// An externally-defined class (a std:: library polymorphic class madc
+		// has no body for) is OWNED by libstdc++: its vtable, typeinfo and
+		// implicit ctor/dtor live in the .so. madc must not synthesize a
+		// parallel set under wrong (un-namespaced) symbols; consumers reference
+		// the real _ZTVSt.../_ZTISt... instead (see class_real_vtable_symbol /
+		// the construction + RTTI sites). Suppressing here also drops the now-
+		// unneeded method prototypes (the vtable initializer is what registered
+		// them in referenced_funcs).
+		if (cdd->is_externally_defined()) continue;
 		// type_info first — the vtable's RTTI slot references _ZTI<cls>. (S5b)
 		node_t ti = class_typeinfo_def(cdd);
 		if (ti) append(top_list, ti);

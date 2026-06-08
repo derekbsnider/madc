@@ -700,6 +700,14 @@ public:
     bool is_dependent_placeholder; // synthesized unresolved/dependent C++ type
     bool has_dependent_surface; // parsed class whose template args/bases still carry dependent lookup
     bool is_polymorphic() const { return has_vtable; }
+    // True for a polymorphic class madc does NOT define: every owned method,
+    // ctor and dtor is a bodyless external declaration (bound to a libstdc++
+    // Itanium symbol), and its whole base chain is likewise external. madc emits
+    // NONE of its machinery (vtable, typeinfo, implicit ctor/dtor) and instead
+    // references the real _ZTVSt.../_ZTISt... symbols where the class is used.
+    // Purely data-driven (declaration_only/emit_symbol aggregation) — never a
+    // namespace or class-name test. Defined in parser.cpp (needs FuncDef).
+    bool is_externally_defined() const;
     void compute_layout(); // Itanium layout engine (defined in parser.cpp)
     void apply_member_layout(); // rewrite member_offsets from member_origin + computed layout
     // Subobject offset of `target` within this class (direct/transitive base), or

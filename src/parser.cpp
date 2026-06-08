@@ -6298,6 +6298,45 @@ void DataDefCLASS::collect_vbases(std::vector<DataDefCLASS *> &out,
     }
 }
 
+bool DataDefCLASS::is_externally_defined() const
+{
+    // Only a polymorphic class with a known Itanium spelling can be deferred to
+    // libstdc++ (we must be able to name its real _ZTVSt.../_ZTISt... symbols).
+    if ( !has_vtable || canonical_cpp_spelling.empty() )
+	return false;
+    // "madc has a body for this entity" = a real definition parsed in THIS TU
+    // (not a bodyless prototype, not an extern-bound declaration, not a pure
+    // virtual, not = default/delete).
+    auto has_madc_body = [](Variable *v) -> bool {
+	FuncDef *fd = v ? dynamic_cast<FuncDef *>(v->type) : NULL;
+	return fd && !fd->declaration_only && fd->emit_symbol.empty()
+	    && !fd->pure_virtual && !fd->defaulted_or_deleted;
+    };
+    // madc owns the vtable iff it defines (with a body, in THIS TU) any method
+    // that occupies a VTABLE SLOT — a virtual method or virtual destructor.
+    // Inline NON-virtual helpers (e.g. ctype::toupper, which forwards to the
+    // EXTERNAL virtual do_toupper) carry bodies but are NOT slots, so they must
+    // NOT disqualify — otherwise no real libstdc++ class would ever be deferred.
+    for ( Variable *m : methods )
+    {
+	FuncDef *fd = dynamic_cast<FuncDef *>(m ? m->type : NULL);
+	if ( fd && has_madc_body(m) && !fd->method_display_name.empty()
+	  && virtual_methods.find(fd->method_display_name) != virtual_methods.end() )
+	    return false;
+    }
+    // A destructor with a body (dtors don't carry method_display_name). Any
+    // bodied "~..." entry means madc emits this class's dtor slot.
+    for ( const auto &kv : method_map )
+	if ( !kv.first.empty() && kv.first[0] == '~' && has_madc_body(kv.second) )
+	    return false;
+    // A madc-defined base owns slots that also appear in this class's vtable
+    // (inherited), so it must emit its own vtable/typeinfo too. Recurse.
+    for ( const BaseSpec &bs : bases )
+	if ( bs.base && !bs.base->is_externally_defined() )
+	    return false;
+    return true;
+}
+
 DataDef *FuncDef::findParameter(std::string &s)
 {
     DBG(cout << "FuncDef[" << name << "]::findParameter(" << s << ')' << endl);
