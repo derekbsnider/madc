@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### SMAUG boots via `--project` — the intended path (2026-06-08)
+
+- **`madc --project <compile_commands.json> -lcrypt`** compiles all 51 non-IMC
+  SMAUG `.c` files as separate translation units, links the MIR modules, and runs
+  `comm.c`'s real `main` → "Realms of Despair ready … on port N" with a live
+  game loop (per-pulse area resets). No umbrella, no injected `main`.
+- **`fix(parser)` (`da4145c`) — record the explicit `*` count for function-type
+  typedef declarators.** madc collapsed `DO_FUN g` (a C function declaration) and
+  `DO_FUN *g` (a fn-ptr variable) into one bare `DataDefFPTR` (the parser consumed
+  the declarator `*` but never recorded it), so `DO_FUN do_look;` emitted as a NULL
+  fn-ptr global → multi-TU SIGSEGV / MIR repeated-decl. Now: count the stars, emit
+  exactly that many (recorded on `Variable::fnptr_explicit_stars`; the type stays
+  `DataDefFPTR` so fn-ptr call detection is unaffected). New shared
+  `Program::consume_declarator_stars` helper replaces the duplicated star-eating
+  loops. fulltest 537/4, torture 1566/31/57/1 unchanged.
+- **`feat(cli)` (`e4005e0`) — `-l<lib>` + `--help`/`-?`/`-h`.** `-l<name>` dlopens
+  `lib<name>.so` (`RTLD_GLOBAL`) so the import resolver finds its symbols at link —
+  general, works with or without `--project` (SMAUG needs `-lcrypt`). `--help`
+  finally prints a usage screen.
+
 ### Fixed — SMAUG bring-up: C-source language mode + empty TUs (2026-06-08)
 
 - **Compile `.c` TUs in C mode under `--project`** (`2887740`): a `.c` source is C,
