@@ -1715,6 +1715,27 @@ DataDef *Program::resolve_current_class_type_alias(const std::string &name)
     return NULL;
 }
 
+// Resolve an UNQUALIFIED identifier to the captured value of a static-const
+// data member of a class currently being parsed (or a method's owner class).
+// Lets an in-class constant initializer reference a sibling static-const
+// member, e.g. `static const category all = (ctype | numeric);`.
+bool Program::resolve_current_class_static_member_const_value(
+	const std::string &name, int64_t &out)
+{
+    for ( std::vector<DataDefCLASS *>::reverse_iterator it =
+	      class_scope_stack.rbegin();
+	  it != class_scope_stack.rend(); ++it )
+	if ( resolve_class_static_member_const_value(*it, name, out) )
+	    return true;
+    if ( !compounds.empty() && compounds.top()
+      && compounds.top()->method
+      && compounds.top()->method->owner_class )
+	if ( resolve_class_static_member_const_value(
+		 compounds.top()->method->owner_class, name, out) )
+	    return true;
+    return false;
+}
+
 Variable *Program::find_variable_for_contextual_type_name(const std::string &name)
 {
     std::string lookup = name;
@@ -4928,6 +4949,13 @@ int64_t Program::parse_constant_primary()
 	    TokenBase *r = evaluate_type_trait(tb, name);
 	    return static_cast<TokenInt *>(r)->ival();
 	}
+	// Unqualified sibling static-const member inside the class body,
+	// e.g. `static const category all = (ctype | numeric);`. Resolves
+	// to the value captured by capture_constant_initializer_value.
+	// Falls through to the throw below for any non-member identifier,
+	// so non-class constant contexts are unaffected.
+	if ( resolve_current_class_static_member_const_value(name, out) )
+	    return out;
 	if ( is_nullptr_identifier(name) )
 	    return 0;
 	if ( is_named_cpp_cast(name) )

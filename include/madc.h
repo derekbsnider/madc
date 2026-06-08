@@ -1764,6 +1764,7 @@ public:
     // the class scope an expression name resolves to.
     DataDef *resolve_named_datadef(const std::string &name);
     DataDef *resolve_current_class_type_alias(const std::string &name);
+    bool resolve_current_class_static_member_const_value(const std::string &name, int64_t &out);
     Variable *find_variable_for_contextual_type_name(const std::string &name);
     DataDefCLASS *resolve_expression_class_scope(const std::string &name);
     // Class-body parsing: detect when a struct body needs the class parser /
