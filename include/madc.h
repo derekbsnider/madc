@@ -11,6 +11,7 @@
 #include <functional>
 #include <istream>
 #include <map>
+#include <unordered_map>
 #include <memory>
 #include <ostream>
 #include <sstream>
@@ -239,6 +240,15 @@ public:
     TokenCpnd *parent;
     TokenCpnd *child;
     std::vector<Variable *> variables;
+    // O(1) name -> Variable* index over `variables`, built incrementally. The old
+    // linear scan in findVariable was the dominant parse cost on large real system
+    // headers (thousands of symbols per scope -> O(n^2)). `var_indexed` = how many
+    // of `variables` have been absorbed; findVariable absorbs any appended since,
+    // first-wins (emplace) to match the old front-to-back scan. `variables` is
+    // append-only during parse; the one erase site (foreach-catch lowering) resets
+    // the index, and a shrink is detected defensively below.
+    std::unordered_map<std::string, Variable *> var_index;
+    size_t var_indexed = 0;
     std::vector<TokenStmt *> statements;
     std::vector<TokenBase *> deferred;   // defer statements (compiled in LIFO at scope exit)
     std::vector<Variable *> destruct_order; // class-typed vars in declaration order (for LIFO dtor)

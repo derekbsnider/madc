@@ -7021,6 +7021,9 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 					if (cbody->variables[vi]->name == vname) {
 						cvtype = cbody->variables[vi]->type;
 						cbody->variables.erase(cbody->variables.begin() + vi);
+						// keep TokenCpnd's name index in sync with the erase
+						cbody->var_index.clear();
+						cbody->var_indexed = 0;
 						break;
 					}
 				}

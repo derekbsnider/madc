@@ -6375,9 +6375,38 @@ Variable *TokenCpnd::findParameter(std::string &id)
 Variable *TokenCpnd::findVariable(std::string &id)
 {
     DBG(cout << "TokenCpnd::findVariable(" << id << ") method: " << (method ? method->returns.name : "NULL") << endl);
-    for ( variable_vec_iter vvi = variables.begin(); vvi != variables.end(); ++vvi )
-	if ( !id.compare((*vvi)->name) )
-	    return *vvi;
+    // Absorb any newly-appended variables into the O(1) index (first-wins via
+    // emplace, matching the old front-to-back linear scan). A shrink (the single
+    // erase site) is detected and forces a rebuild.
+    if ( var_indexed > variables.size() )
+    {
+	var_index.clear();
+	var_indexed = 0;
+    }
+    for ( ; var_indexed < variables.size(); ++var_indexed )
+	if ( variables[var_indexed] )
+	    var_index.emplace(variables[var_indexed]->name, variables[var_indexed]);
+    std::unordered_map<std::string, Variable *>::iterator it = var_index.find(id);
+    Variable *res = (it != var_index.end()) ? it->second : NULL;
+    // A Variable's `name` can be MUTATED after it is appended (operator arity
+    // disambiguation renames a same-name overload). The cached key then goes
+    // stale: a lookup of the OLD name would falsely hit the renamed var, or a
+    // lookup of the NEW name would falsely miss. Detect staleness — a hit whose
+    // CURRENT name no longer matches — and rebuild the index from current names,
+    // then re-find. Rebuild fires only on a stale hit (rare: after a rename), so
+    // the common path stays O(1) and the result always matches a fresh scan.
+    if ( res && res->name != id )
+    {
+	var_index.clear();
+	var_indexed = 0;
+	for ( ; var_indexed < variables.size(); ++var_indexed )
+	    if ( variables[var_indexed] )
+		var_index.emplace(variables[var_indexed]->name, variables[var_indexed]);
+	it = var_index.find(id);
+	res = (it != var_index.end()) ? it->second : NULL;
+    }
+    if ( res )
+	return res;
     if ( parent )
 	return parent->findVariable(id);
 
