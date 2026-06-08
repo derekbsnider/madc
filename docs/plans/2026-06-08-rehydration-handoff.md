@@ -13,9 +13,9 @@
 ## 0. THE 60-SECOND ORIENTATION
 
 - **Repo:** `/workspace/madc`. **Branch:** `feature/realhdr-parse-gaps2-claude`
-  (off `develop`). **HEAD:** `a99c1e5` (was `60c7e18`; +2 commits — see §12).
+  (off `develop`). **HEAD:** `f6ef0a8` (was `60c7e18`; +4 commits — see §12, §13).
   **Working tree:** clean.
-- **93 commits ahead of `develop`.** `develop` is **untouched** by all this work.
+- **96 commits ahead of `develop`.** `develop` is **untouched** by all this work.
   **DO NOT push. DO NOT `/promote` develop→master.** (Parity gate — see §3.)
 - **fulltest baseline:** `531 passed / 4 failed / 0 timed out / 26 skipped`.
   The **4 failures are PRE-EXISTING and unrelated** to anything in this arc:
@@ -826,5 +826,85 @@ are emitted as wrapper calls the MIR loader can't resolve — that blocks RUNNIN
   but cross 5s when SMAUG+fulltest run alongside. Always confirm a clean
   no-load re-run before treating a timeout delta as a regression — the
   compile/runtime FAIL counts are the real signal (they were identical).
+
+---
+
+## 13. SESSION UPDATE — 2026-06-08c (class/struct anonymous enums + qualified const-fold)
+
+**Two more gated commits (HEAD now `f6ef0a8`):**
+```
+fea8963 feat(template): template-id X<T>::value in expression context (A1 keystone)   [§12]
+a99c1e5 feat(class): unqualified sibling static-const in constant context              [§12]
+f6ef0a8 feat(class/enum): class/struct-scoped anonymous enums + qualified constants in constant context
+```
+(`f6ef0a8` is the §13 work; the testanonenum commit folds the parser change + test.)
+Validated on a CLEAN rebuild: fulltest **534/4** (+`testanonenum`); gcc.c-torture
+**1566/31/57/1** identical to baseline; SMAUG ready, 0 errors.
+
+### 13.1 What landed (`f6ef0a8`) — all clean-build verified vs g++
+Three additive parts (see commit body for the full rationale):
+1. `cpp_struct_body_needs_class_parser` (parser.cpp ~14182) now detects an **enum
+   DEFINITION member** (`enum [class][tag] { … };`, distinguished from a bare
+   `enum T m;` by a `{` before the member `;`) and routes the struct to the
+   **class** body parser (which already parses enum members). Reuses the existing
+   struct→class delegation (14395); the high-blast-radius struct member loop is
+   untouched. C++-mode only.
+2. `TokenENUM::parse` (parser.cpp ~18353): a plain (non-scoped) enum defined inside
+   a class/struct in C++ mode registers its enumerators into the enclosing class's
+   `static_member_types` + `static_member_const_values` (reuses the A2 store)
+   instead of global constants — so `Class::e` resolves and the bare name doesn't
+   leak. C / scoped / global enums unchanged.
+3. `fold_constant_qualified_member` (parser.cpp ~4929, decl madc.h ~1768) + a hook
+   in `parse_constant_primary`: folds a qualified class-scoped integral constant in
+   CONSTANT context — `Class::m`, `Outer::Inner::m`, `ns::Class::m`, and template-id
+   forms `Tmpl<T>::m` / `ns::Tmpl<…>::m`. Reuses `instantiate_template_id` +
+   `resolve_class_static_member_const_value`. Gated on the leading token beginning
+   such a chain.
+Observables (all match g++): `tests/testanonenum.mad` → `1 2 3 5 6` / `3 4`;
+struct & class anon enums in expr context; `int a[Class::flag]`, `int a[W<int>::v]`
+fold. `<ostream>`/`<istream>` advanced past the `std::less` blocker to a new
+`_S_categories_size` gap.
+
+### 13.2 THE NEXT BLOCKER — namespace-qualified template-id in a static-const captured during instantiation (string_view/memory)
+The `<string_view>`/`<memory>` numeric_traits case
+`static const int __max_digits10 = (2 + (std::__are_same<_Value,float>::__value ? …))`
+inside instantiated `__numeric_traits_floating<float>` still mis-evaluates. **Precise,
+clean-build root-cause map (reducers in `tmp/_q*.mad`):**
+- `nn::are_same<int,int>::value` in **expression** context → **works** (`1 0`).
+  So the namespace + template-id + `::value` resolver is fine in the expr parser.
+- `nn::are_same<V,float>::value` in an instantiated **method body** (`_q4`, V→float)
+  → **works** (`1`). So template token-substitution of the namespaced id is fine.
+- The **same** id in a **static-const member initializer** (constant context) fails:
+  - fixed args `nn::are_same<int,float>` (`_q3`) → the const-capture reaches the
+    const-expr parser and THROWS "Expecting integer constant expression".
+  - with substituted `V` (`_q`) → capture is NOT called at all; md silently = 0.
+- In the const-capture/array-dim path the namespaced id is seen as `nn` **directly
+  followed by `<`** (the `::are_same` segment dropped; `nn` rawstr is literally
+  "nn") — `fold_constant_qualified_member` then can't proceed (no `::` after the ns
+  name). The expression parser sees the identical tokens intact, so the corruption
+  is **specific to the constant-capture path during instantiation**, NOT the stored
+  template body (the method path shares it and is fine), NOT substitution, NOT the
+  resolver.
+- NOTE the layered behavior: V-substituted vs fixed-args take *different* capture
+  routes (`_q` skips capture entirely → 0; `_q3` attempts it → throws). Both must
+  be chased.
+NEXT-SESSION PLAN: instrument the token stream AT THE START of
+`capture_constant_initializer_value` (and the array-dim const path) for a namespaced
+template-id, comparing against the method-body path, to find where `::Name` is
+dropped before `parse_constant_primary`/`fold_constant_qualified_member` runs. The
+fix is almost certainly upstream of the fold (the fold itself is proven correct for
+`ns::Tmpl<…>::m` once it receives intact tokens — it handles the non-instantiated
+forms). Plain (non-namespaced) `Tmpl<T>::value` already works end-to-end in const
+context (`_q2` → `26 55`), so only the **namespace prefix** in the const-capture
+remains.
+
+### 13.3 PROCESS LESSON (cost real time this session) — NAS mtime staleness
+On this QNAP filesystem, `make -C src` sometimes reports "up to date" and SKIPS
+recompiling an edited `src/parser.cpp` (mtime granularity / clock skew), so the
+running `bin/madc` reflects STALE code. Symptom: traces that "should" fire don't, or
+behavior flip-flops between rebuilds. **Always `touch src/<file>.cpp` before
+`make -C src`** when iterating on one file, and when results look impossible do a
+`make -C src clean && make -C src` to be certain. Several mid-session observations
+here were stale-build artifacts; only clean-build results in §13.1 are trusted.
 
 END OF HANDOFF.
