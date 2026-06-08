@@ -6149,6 +6149,16 @@ void DataDefCLASS::apply_member_layout()
 {
     for ( size_t i = 0; i < member_offsets.size(); i++ )
     {
+	// A virtual-base member (direct or transitive) sits at this class's hoisted
+	// vbase_offset[base] + its offset WITHIN that base. Checked first: it is
+	// shared (one subobject), so it must NOT use a per-path direct-base offset.
+	std::map<size_t, DataDefCLASS *>::iterator vbi = member_vbase.find(i);
+	if ( vbi != member_vbase.end() )
+	{
+	    size_t voff = vbase_offset.count(vbi->second) ? vbase_offset[vbi->second] : 0;
+	    member_offsets[i] = voff + member_offsets[i];
+	    continue;
+	}
 	int origin = (i < member_origin.size()) ? member_origin[i] : -1;
 	if ( origin < 0 )
 	    member_offsets[i] = own_block_off + member_offsets[i];
@@ -16934,22 +16944,69 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     {
 	ddc->bases = base_specs;
 	ddc->base_class = inherit_base; // first base, for legacy single-base paths
+
+	// Append source-class member `i` (with every parallel attribute vector)
+	// into ddc, tagging its origin. A non-NULL `vb` marks it a virtual-base
+	// member whose final offset is resolved against vbase_offset[vb] in
+	// apply_member_layout (so a shared vbase lands once, at the hoisted slot).
+	auto flatten_member = [&](DataDefCLASS *src, size_t i, int origin,
+				  DataDefCLASS *vb)
+	{
+	    size_t idx = ddc->members.size();
+	    ddc->members.push_back(src->members[i]);
+	    ddc->member_offsets.push_back(src->member_offsets[i]);
+	    ddc->member_counts.push_back(i < src->member_counts.size() ? src->member_counts[i] : 1);
+	    ddc->member_array_flags.push_back(i < src->member_array_flags.size() ? src->member_array_flags[i] : false);
+	    ddc->member_bitfields.push_back(i < src->member_bitfields.size() ? src->member_bitfields[i] : DataDefSTRUCT::BitFieldInfo());
+	    ddc->member_dims.push_back(i < src->member_dims.size() ? src->member_dims[i] : std::vector<uint32_t>());
+	    ddc->member_count_exprs.push_back(i < src->member_count_exprs.size() ? src->member_count_exprs[i] : NULL);
+	    ddc->member_access.push_back(i < src->member_access.size() ? src->member_access[i] : 0);
+	    ddc->member_origin.push_back(origin);
+	    if ( vb )
+		ddc->member_vbase[idx] = vb;
+	};
+
+	// Pass A: each NON-VIRTUAL direct base contributes its NON-virtual-base
+	// members per path (origin = the direct base index). A member that already
+	// belongs to a shared virtual base inside that base (member_vbase set) is
+	// SKIPPED here and re-added once by the closure pass — otherwise a diamond
+	// copies the shared base's members once per inheritance path (the c2mir
+	// "repeated declaration _M_*" wall) AND at the wrong per-path offset.
 	for ( size_t bi = 0; bi < ddc->bases.size(); bi++ )
 	{
+	    if ( ddc->bases[bi].is_virtual )
+		continue; // virtual direct base: handled by the closure pass below
 	    DataDefCLASS *b = ddc->bases[bi].base;
 	    for ( size_t i = 0; i < b->members.size(); ++i )
 	    {
-		ddc->members.push_back(b->members[i]);
-		ddc->member_offsets.push_back(b->member_offsets[i]);
-		ddc->member_counts.push_back(i < b->member_counts.size() ? b->member_counts[i] : 1);
-		ddc->member_array_flags.push_back(i < b->member_array_flags.size() ? b->member_array_flags[i] : false);
-		ddc->member_bitfields.push_back(i < b->member_bitfields.size() ? b->member_bitfields[i] : DataDefSTRUCT::BitFieldInfo());
-		ddc->member_dims.push_back(i < b->member_dims.size() ? b->member_dims[i] : std::vector<uint32_t>());
-		ddc->member_count_exprs.push_back(i < b->member_count_exprs.size() ? b->member_count_exprs[i] : NULL);
-		ddc->member_access.push_back(i < b->member_access.size() ? b->member_access[i] : 0);
-		ddc->member_origin.push_back((int)bi);
+		if ( b->member_vbase.count(i) )
+		    continue; // shared vbase member -> Pass B
+		flatten_member(b, i, (int)bi, NULL);
 	    }
-	    // Inherit methods (derived can override via method_map shadowing)
+	}
+
+	// Pass B: virtual-base closure — every unique virtual base (direct or
+	// transitive) exactly ONCE, in the canonical order compute_layout hoists
+	// them (collect_vbases). Each contributes only its OWN members (those not
+	// belonging to a still-deeper virtual base, which is its own closure
+	// entry); they resolve against vbase_offset[V]. Result: a shared vbase's
+	// members appear once at the hoisted offset, matching the Itanium layout.
+	std::vector<DataDefCLASS *> vbs;
+	std::set<DataDefCLASS *> vseen;
+	ddc->collect_vbases(vbs, vseen);
+	for ( DataDefCLASS *V : vbs )
+	    for ( size_t i = 0; i < V->members.size(); ++i )
+	    {
+		if ( V->member_vbase.count(i) )
+		    continue; // belongs to a deeper vbase (its own closure entry)
+		flatten_member(V, i, -1, V);
+	    }
+
+	// Inherit methods / vtable slots / dtor flags per direct base (order
+	// preserved; member flattening above is independent of this).
+	for ( size_t bi = 0; bi < ddc->bases.size(); bi++ )
+	{
+	    DataDefCLASS *b = ddc->bases[bi].base;
 	    for ( auto &mp : b->method_map )
 		if ( ddc->method_map.find(mp.first) == ddc->method_map.end() )
 		    ddc->method_map[mp.first] = mp.second;
@@ -16962,8 +17019,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    if ( ddc->vtable_slot(vs) < 0 ) ddc->vtable_slots.push_back(vs);
 		for ( auto &vm : b->virtual_methods ) ddc->virtual_methods[vm.first] = true;
 	    }
-	    DBG(cout << "TokenCLASS::parse() flattened " << b->members.size()
-		<< " members from base " << b->name << " (origin " << bi << ')' << endl);
+	    DBG(cout << "TokenCLASS::parse() inherited methods/vtable from base "
+		<< b->name << " (index " << bi << ')' << endl);
 	}
 	ddc->size = 0; // own members start at 0; compute_layout assigns the real total
     }

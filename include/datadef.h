@@ -239,6 +239,7 @@ struct memberpair_t {
 };
 
 class Variable; // forward dec
+class DataDefCLASS; // forward dec (member_vbase maps a member index to its virtual base)
 
 class DataDefSTRUCT: public DataDef
 {
@@ -267,6 +268,12 @@ public:
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
     std::vector<uint32_t> member_access;	// per-member access flags (0=public, vfPRIVATE, vfPROTECTED)
     std::vector<int> member_origin;	// per-member: base index it came from, or -1 = own (MI flatten)
+    // Member index -> the VIRTUAL base it belongs to (direct or transitive). A
+    // shared virtual base is flattened ONCE (by vbase closure), and its members
+    // resolve their final offset against vbase_offset[that base], NOT a per-path
+    // direct-base offset. Absent = not a virtual-base member. Mirrors the
+    // member_explicit_align map pattern (index-keyed, no parallel-vector burden).
+    std::map<size_t, DataDefCLASS *> member_vbase;
     std::map<size_t,size_t> member_explicit_align; // member index -> __attribute__((aligned(N))); absent = natural
     TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N

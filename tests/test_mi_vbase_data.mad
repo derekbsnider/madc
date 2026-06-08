@@ -1,0 +1,22 @@
+// Diamond with a DATA-carrying shared virtual base — the real <iostream> shape:
+// ios_base/basic_ios members reached via BOTH basic_istream and basic_ostream.
+// The shared virtual base must be flattened ONCE and laid out at the hoisted
+// vbase offset (Itanium / g++ layout), not duplicated once per inheritance path
+// (which was the c2mir "repeated declaration _M_*" wall blocking real <iostream>).
+struct Base  { int a; int b; };            // ios_base (data)
+struct Mid : Base { int c; };              // basic_ios : ios_base
+struct Left  : virtual Mid { int l; };     // basic_istream : virtual basic_ios
+struct Right : virtual Mid { int r; };     // basic_ostream : virtual basic_ios
+struct Diamond : Left, Right { int d; };   // basic_iostream : istream, ostream
+
+int main()
+{
+    Diamond x;
+    x.a = 1; x.b = 2; x.c = 3; x.l = 4; x.r = 5; x.d = 6;
+    // One shared Mid subobject: writing via the diamond and reading back is
+    // correct only if a/b/c are single, hoisted members at the g++ offsets.
+    printf("a=%d b=%d c=%d l=%d r=%d d=%d sum=%d size=%d\n",
+        x.a, x.b, x.c, x.l, x.r, x.d,
+        x.a + x.b + x.c + x.l + x.r + x.d, (int)sizeof(Diamond));
+    return 0;
+}
