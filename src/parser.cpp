@@ -25914,9 +25914,18 @@ bool Program::parse(TokenProgram *tp)
 
     if ( tokens.empty() )
     {
-	set_error(DiagnosticPhase::parser, "Program::parse() token queue empty", tp ? tp->source.c_str() : NULL, 0, 0);
-	cerr << "Program::parse() token queue empty" << endl;
-	return false;
+	// A translation unit with no tokens — only comments, or one whose
+	// entire contents are excluded by the preprocessor (e.g. SMAUG's
+	// services.c, which is wholly inside `#ifdef WIN32`, on a non-Windows
+	// build) — is valid C/C++: gcc/clang accept it and emit an empty
+	// object. Treat it as a successful empty parse (no top-level
+	// statements) rather than an error. Mirror the normal path's setup so
+	// downstream (translate_module → empty module) sees a consistent
+	// (empty) program.
+	inject_pending_auto_includes();
+	_parser_init();
+	ast.push(tp);
+	return true;
     }
 
     inject_pending_auto_includes();

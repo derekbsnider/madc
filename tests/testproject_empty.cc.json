@@ -1,0 +1,4 @@
+[
+  {"directory":"tests","file":"testproject_empty_a.c","command":"gcc -c testproject_empty_a.c"},
+  {"directory":"tests","file":"testproject_empty_b.c","command":"gcc -c testproject_empty_b.c"}
+]
