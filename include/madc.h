@@ -1395,6 +1395,7 @@ public:
     bool include_already_seen(const std::string &path);
     std::string resolve_include_path(const std::string &incfile, bool is_system);
     std::string resolve_include_next_path(const std::string &incfile);
+    bool is_system_header_path(const char *path) const;
     std::string expandIfMacros(const std::string &raw);
     bool should_tokenize_include(const std::string &path);
     bool auto_include_standard_identifier(const std::string &word);

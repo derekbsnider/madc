@@ -8289,10 +8289,49 @@ node_t CirBuilder::translate_module(Program *prog)
 	// Translate function bodies first, into a temp list, so referenced_funcs
 	// (populated as N_CALL nodes are built) is complete before the prototype
 	// pass — letting us emit extern protos for ONLY referenced functions.
+	//
+	// Reachability DCE for LIBRARY (system-header) function bodies: madc emits
+	// a *definition* only for entities it defines and that are actually used.
+	// Consuming a real libstdc++ header drags in that header's whole inline-
+	// method web (basic_string, basic_ios, ctype/num_put facets, …), almost all
+	// of it dead for a given program — and dead bodies are never exercised so
+	// their lowering is never correct. g++ never emits an inline function unless
+	// it is ODR-used (weak/COMDAT); this mirrors that model. We translate the
+	// user's own functions (roots) first, which seeds referenced_funcs with what
+	// user code actually calls, then translate a library function ONLY if it is
+	// reachable (its emit symbol or name is in referenced_funcs), to a fixpoint
+	// (a reached library fn may in turn call more). A function whose origin file
+	// is NOT a system header is always a root, so a pure-C / non-real-header
+	// build (where every function is user code) is byte-for-byte unchanged — the
+	// gate fires only for functions parsed from a system include directory.
 	std::vector<node_t> func_def_nodes;
+	std::map<std::string, TokenFunc *> lib_funcs;   // emit-symbol -> library fn
+	std::vector<TokenFunc *> roots;
 	for (TokenFunc *tf : funcs) {
+		FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
+		if (tfd && prog->is_system_header_path(tf->file))
+			lib_funcs[func_emit_name(tf->var, tfd)] = tf;
+		else
+			roots.push_back(tf);
+	}
+	for (TokenFunc *tf : roots) {
 		node_t fd = func_def(tf);
 		if (fd) func_def_nodes.push_back(fd);
+	}
+	std::set<std::string> lib_emitted;
+	for (bool grew = true; grew; ) {
+		grew = false;
+		for (auto &kv : lib_funcs) {
+			if (lib_emitted.count(kv.first)) continue;
+			TokenFunc *tf = kv.second;
+			if (!referenced_funcs.count(kv.first)
+			    && !referenced_funcs.count(tf->var.name))
+				continue;
+			lib_emitted.insert(kv.first);
+			node_t fd = func_def(tf);
+			if (fd) func_def_nodes.push_back(fd);
+			grew = true;
+		}
 	}
 	m_user_func_names = NULL;   // the backing set is a local; don't dangle
 
