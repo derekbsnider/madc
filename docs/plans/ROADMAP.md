@@ -69,15 +69,20 @@ high-level" — the answer is both.**
   state before broad real system-header PCH regeneration, finish class/member
   alias resolution for real iostream aliases (`char_type`, `iter_type`,
   `iostate`, `__streambuf_type`, `__ostream_type`, `__ios_type`, and friends),
-  and finish the remaining real-`std::string` richer-construction path by
-  instantiating/selecting defaulted member-template constructors generically.
-  `std::string` default construction, `size()`, assignment, append, real
-  `<iostream>` output, and the `tmp/fs_out.mad` ofstream write canary now run
-  through real headers. The ofstream canary was advanced by generic constructor
-  initializer-scope, inline namespace lookup, C++ namespace fallback, and
-  address-of reference-returning call parsing fixes; full `testfstream` /
-  `testloop` remain open. `std::string s("hello")` still lacks the
-  member-template constructor call.
+  and continue closing the real-header `cout`/stream operand walls.
+  `std::string` construction (`std::string s("hello")` → `hello len=5`),
+  mutation (`s += …`, `s = …`, `a + b`, `s[i]`), `size()`, real `<iostream>`
+  output including `cout << unsigned long` / `s.size()`, `std::getline`, and the
+  `tmp/fs_out.mad` ofstream write canary now run through real headers. Call-symbol
+  derivation is now unified onto a single `CirBuilder::call_emit_symbol` resolver
+  (precedence `emit_symbol ?: local_emit_name ?: var_emit_name`) guarded by
+  `scripts/check-call-emit-symbol.sh` — no more per-site re-implementations; this
+  unblocked binding inline extern-template members (`cout << unsigned long` →
+  `_ZNSolsEm`). Remaining real-header walls: `cout << std::string` (the free
+  `operator<<` must take the class rhs as a const reference, not a pointer), the
+  free-`std::`-fn `emit_symbol` migration (retire the call-site re-mangle + the
+  `__ns_` shim gate), and the per-red ingredients for `testfstream` / `testloop` /
+  `testdefer`, which remain open.
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
   engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
   pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped
