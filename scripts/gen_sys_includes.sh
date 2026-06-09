@@ -29,4 +29,16 @@ paths=$(printf '' | "$CXX" -x c++ -E -v - 2>&1 \
     fi
     echo '    (const char *)0'
     echo '};'
+    # The compiler-owned (bucket-1/2 freestanding) include dir — the one GCC
+    # supplies itself (stddef.h, stdarg.h, limits.h, intrinsics, …). The header
+    # partition (madc-header-partition-handoff.md) says madc PROVIDES equivalents
+    # for these, so when bypassing embedded SYSTEM-library shims we must still
+    # keep them: a header resolving here is freestanding, not a glibc/libstdc++
+    # twin. Empty string when detection fails (no compiler at build time).
+    owned=$("$CXX" -print-file-name=include 2>/dev/null)
+    case "$owned" in
+        include) owned="" ;;   # not found: -print-file-name echoes the bare arg
+        */) ;; *) [ -n "$owned" ] && owned="$owned/" ;;
+    esac
+    echo "const char *madc_compiler_owned_include_dir = \"$owned\";"
 } > "$OUT"

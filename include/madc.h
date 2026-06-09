@@ -1034,6 +1034,14 @@ public:
 	bool enable_rust_namespace = true;
 	bool restrict_headers_to_allowlist = false;
 	bool restrict_dlfcn_symbols_to_allowlist = false;
+	// Header partition (madc-header-partition-handoff.md): when true, an
+	// embedded baked-in header is bypassed in favor of the REAL system header
+	// IFF it is a system-library shim (glibc/libstdc++ twin). madc-own headers
+	// (no real twin: ns_php/__madc__/…) and compiler-owned freestanding headers
+	// (stddef/limits/float, resolved in the gcc-internal dir) stay embedded.
+	// This is the incremental shim-retirement lever — bypass system shims while
+	// keeping madc's own headers. Data-driven: see embedded_header_is_system_library_shim().
+	bool bypass_system_library_headers = false;
 	std::vector<std::string> allowed_headers;
 	std::vector<std::string> allowed_dlfcn_symbols;
 	RuntimeEvalChildPolicy runtime_eval_source_policy;
@@ -1451,6 +1459,11 @@ public:
     bool is_runtime_eval_source_scope_access_enabled() const;
     bool is_runtime_eval_expression_scope_access_enabled() const;
     bool is_embedded_header_allowed(const std::string &name) const;
+    // True iff a real system header named `name` exists in a glibc/libstdc++
+    // include dir (i.e. NOT the compiler-owned freestanding dir, and not a
+    // madc-own header with no real twin). Used to bypass embedded system-library
+    // shims to the real headers while keeping madc-own + freestanding embedded.
+    bool embedded_header_is_system_library_shim(const std::string &name) const;
     bool is_dynamic_symbol_allowed(const std::string &name) const;
     bool is_known_namespace(const std::string &name) const;
     Variable *runtime_eval_scope_target(Variable *var) const;

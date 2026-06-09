@@ -486,12 +486,15 @@ int main(int argc, char **argv)
             prog->skip_includes = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--no-embedded-headers") == 0) {
-            // Diagnostic: drive the EXISTING embedded-header gate
-            // (is_embedded_header_allowed / registration_policy) to disallow
-            // every baked-in stub, so system <...> includes fall through to the
-            // real headers on disk. Empty allowlist + restrict = allow nothing.
-            prog->registration_policy.restrict_headers_to_allowlist = true;
-            prog->registration_policy.allowed_headers.clear();
+            // Header partition (madc-header-partition-handoff.md): bypass embedded
+            // SYSTEM-library shims (glibc/libstdc++ twins) so `#include <...>` uses
+            // the REAL headers on disk, while KEEPING madc-own headers (ns_*/__madc__,
+            // which have no real twin) and compiler-owned freestanding headers
+            // (stddef/limits/float). The classifier is data-driven
+            // (embedded_header_is_system_library_shim). This is the incremental
+            // shim-retirement lever; it replaces the old disallow-everything gate,
+            // which wrongly also dropped ns_php etc.
+            prog->registration_policy.bypass_system_library_headers = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--no-auto-load") == 0) {
             // Do not act on #load directives: the named library is not loaded

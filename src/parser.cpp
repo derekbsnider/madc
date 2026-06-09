@@ -8274,8 +8274,52 @@ bool Program::is_runtime_eval_expression_scope_access_enabled() const
     return registration_policy.enable_runtime_eval_expression_scope_access;
 }
 
+// Header partition (madc-header-partition-handoff.md): classify an embedded
+// header by where its REAL twin lives, data-driven (Rule #7), no hardcoded list:
+//   - resolves in the compiler-owned freestanding dir (gcc -print-file-name=include:
+//     stddef.h/limits.h/float.h/intrinsics, incl. bucket-2 headers that ALSO exist
+//     in glibc) -> madc PROVIDES it -> NOT a shim (keep embedded).
+//   - resolves only in a glibc/libstdc++ dir (iostream/fstream/string/stdio.h/...)
+//     -> system-library shim (bypass -> use the real header).
+//   - no real twin (ns_php/__madc__ internals) -> madc-own (keep embedded).
+bool Program::embedded_header_is_system_library_shim(const std::string &name) const
+{
+    extern const char *madc_sys_include_paths[];
+    extern const char *madc_compiler_owned_include_dir;
+    const std::string owned =
+	(madc_compiler_owned_include_dir && *madc_compiler_owned_include_dir)
+	? madc_compiler_owned_include_dir : std::string();
+    // Freestanding (bucket 1/2): if the compiler supplies it, madc owns it.
+    if ( !owned.empty() )
+    {
+	std::ifstream probe((owned + name).c_str());
+	if ( probe.good() )
+	    return false;
+    }
+    static const char *fallback_paths[] = {
+	"/usr/local/include/", "/usr/include/", "/usr/include/x86_64-linux-gnu/",
+	(const char *)0
+    };
+    const char **paths = (madc_sys_include_paths[0] != NULL)
+			 ? madc_sys_include_paths : fallback_paths;
+    for ( int i = 0; paths[i]; ++i )
+    {
+	if ( !owned.empty() && owned == paths[i] )
+	    continue;   // already checked the compiler-owned dir above
+	std::ifstream probe((std::string(paths[i]) + name).c_str());
+	if ( probe.good() )
+	    return true;   // glibc/libstdc++ provides it -> system-library shim
+    }
+    return false;          // no real twin -> madc-own -> keep embedded
+}
+
 bool Program::is_embedded_header_allowed(const std::string &name) const
 {
+    // Bypass an embedded SYSTEM-library shim so the real header is used, while
+    // keeping madc-own (ns_*/__madc__) and freestanding (bucket-1/2) headers.
+    if ( registration_policy.bypass_system_library_headers
+      && embedded_header_is_system_library_shim(name) )
+	return false;
     if ( !registration_policy.restrict_headers_to_allowlist
       && registration_policy.allowed_headers.empty() )
 	return true;
