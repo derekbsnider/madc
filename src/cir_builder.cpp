@@ -4588,6 +4588,27 @@ bool deduce_free_stream_call(const std::string &lhs_spelling,
 	return true;
 }
 
+// Collect (canonical spelling, byte offset within the most-derived object) for a
+// class AND its non-virtual bases, transitively, most-derived first. Lets a free
+// operator whose stream parameter is a BASE (operator<<(ostream&,...)) bind when
+// called on a DERIVED stream (ofstream): we match the base spelling and adjust the
+// passed `this` to the base subobject. Virtual bases are skipped (their offset is
+// vtable-relative, and no std free operator takes a virtual-base stream by ref).
+static void collect_self_and_base_spellings(DataDefCLASS *cls, size_t base_off,
+		std::vector<std::pair<std::string, size_t> > &out)
+{
+	if (!cls) return;
+	std::string sp = cls->canonical_cpp_spelling.empty() ? cls->name
+		       : cls->canonical_cpp_spelling;
+	for (const auto &e : out) if (e.first == sp) return;   // dedup
+	out.push_back(std::make_pair(sp, base_off));
+	for (const BaseSpec &b : cls->bases)
+		if (b.base && !b.is_virtual)
+			collect_self_and_base_spellings(b.base, base_off + b.offset, out);
+	if (cls->base_class)   // single-inheritance primary base (offset 0)
+		collect_self_and_base_spellings(cls->base_class, base_off, out);
+}
+
 } // namespace
 
 node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls,
@@ -4599,6 +4620,35 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	// lhs class fully-qualified spelling.
 	std::string lhs_spelling = lcls->canonical_cpp_spelling.empty()
 				 ? lcls->name : lcls->canonical_cpp_spelling;
+
+	// Candidate stream spellings: the lhs class AND its non-virtual bases (with
+	// byte offsets), so a free operator whose parameter is a BASE stream
+	// (operator<<(ostream&,...)) binds when called on a DERIVED stream (ofstream).
+	std::vector<std::pair<std::string, size_t> > lhs_cands;
+	collect_self_and_base_spellings(lcls, 0, lhs_cands);
+
+	// Deduce against the first candidate (most-derived first) that matches; report
+	// the matched base offset so the passed stream pointer is adjusted to the base.
+	auto deduce_any = [&](const Program::FreeOperatorOverload &ov,
+			      std::vector<std::string> &targs, std::string &stype,
+			      size_t &off) -> bool {
+		for (const auto &cand : lhs_cands)
+			if (deduce_free_stream_call(cand.first, ov, targs, stype)) {
+				off = cand.second;
+				return true;
+			}
+		return false;
+	};
+	// Adjust a void* object address to a base subobject at byte `off`.
+	auto adjust_to_base = [&](node_t base, size_t off) -> node_t {
+		if (off == 0) return base;
+		node_t charp = node2(N_CAST,
+			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			base, origin);
+		node_t add = node2(N_ADD, charp, integer((long)off, origin), origin);
+		return node2(N_CAST, void_ptr_type(), add, origin);
+	};
 
 	// W2 manipulator: `os << endl` — the parser built a (0-arg) call node for the
 	// manipulator free function `endl`. The correct lowering passes the STREAM to
@@ -4613,8 +4663,8 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 			for (const Program::FreeOperatorOverload &ov : m_prog->free_operator_overloads) {
 				if (ov.opname != fname || ov.param_spellings.size() != 1) continue;
 				if (!fns.empty() && ov.ns != fns) continue;
-				std::vector<std::string> targs; std::string stype;
-				if (!deduce_free_stream_call(lhs_spelling, ov, targs, stype)) continue;
+				std::vector<std::string> targs; std::string stype; size_t boff = 0;
+				if (!deduce_any(ov, targs, stype, boff)) continue;
 				std::vector<std::string> mparams = { stype };
 				std::string msym = itanium_mangle_std_free_template(
 					ov.opname, targs, stype, mparams);
@@ -4622,7 +4672,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 				DBG(std::cout << "[W2] bind manipulator " << ov.ns << "::"
 				    << ov.opname << " -> " << msym << std::endl);
 				node_t a = list();
-				append(a, object_arg_addr(top->left, lcls));   // stream by address
+				append(a, adjust_to_base(object_arg_addr(top->left, lcls), boff));
 				need_output_extern(msym.c_str(), /*ret_ptr*/true,
 						   { { {N_VOID}, true } }, { N_VOID });
 				node_t call = node2(N_CALL, id(msym.c_str(), origin), a, origin);
@@ -4649,15 +4699,16 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	const Program::FreeOperatorOverload *best = NULL;
 	std::vector<std::string> best_targs;     // deduced, in template-param order
 	std::string best_stream_type;
+	size_t best_off = 0;                     // base-subobject offset of the match
 	for (const Program::FreeOperatorOverload &ov : m_prog->free_operator_overloads)
 	{
 		if (ov.opname != mname || ov.param_spellings.size() < 2) continue;
 		// (c) 2nd param must exactly match rhs (qualification/ref allowed).
 		if (norm_type_w2(ov.param_spellings[1]) != rhs_norm) continue;
-		// (b) deduce template args from param[0] vs the lhs class + build the
-		// $Tn-parameterized stream type for the mangler.
-		std::vector<std::string> targs; std::string stype;
-		if (!deduce_free_stream_call(lhs_spelling, ov, targs, stype)) continue;
+		// (b) deduce template args from param[0] vs the lhs class (or a base) +
+		// build the $Tn-parameterized stream type for the mangler.
+		std::vector<std::string> targs; std::string stype; size_t off = 0;
+		if (!deduce_any(ov, targs, stype, off)) continue;
 		// Most-specialized = fewest template params (the char partial spec, one
 		// param, beats the general two-param template -> the symbol g++ calls).
 		if (best && ov.template_params.size() >= best->template_params.size())
@@ -4665,6 +4716,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 		best = &ov;
 		best_targs = targs;
 		best_stream_type = stype;
+		best_off = off;
 	}
 	if (!best) return NULL;
 	// Only override the member when the member is NOT itself an exact match
@@ -4684,7 +4736,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	// Emit the mangled-direct call: free op takes (lhs-by-ref, rhs). Both operands
 	// are explicit (no hidden __this). Returns the stream BY REFERENCE -> N_DEREF.
 	node_t args = list();
-	append(args, object_arg_addr(top->left, lcls));   // ostream& (by address)
+	append(args, adjust_to_base(object_arg_addr(top->left, lcls), best_off)); // base stream& (by address)
 	std::vector<ExternParam> eparams = { { {N_VOID}, true } };
 	bool rhs_is_ptr = !best->param_spellings[1].empty()
 			  && best->param_spellings[1].back() == '*';
