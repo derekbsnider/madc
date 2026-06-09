@@ -519,3 +519,26 @@ compile (the pointer_traits layer remains), so it is intentionally NOT on the gr
 To continue: `git checkout feature/cpp-detection-idiom-claude`, rebuild, attack site 11947.
 Reducers: tmp/str1.mad (minimal), tmp/itchain.cpp (g++ oracle: iterator_category =
 random_access_iterator_tag — CONFIRMED reproduced through the detection idiom).
+
+### 12.8 NEXT-LAYER refinement (2026-06-09 turn 2) — it's pointer_traits INSTANTIATION, not the expr arm
+Probed the `Unknown namespace 'pointer'` site (parser.cpp:11947) further. The expression
+arm for `std::Template<args>::member` ALREADY EXISTS (parser.cpp ~11984: when
+`template_declared_in_namespace(member, ns)` and peek `<`, it calls
+`instantiate_template_id(member, member_tb, ns)` then `resolve_class_qualified_expression`
+for the `::member`). Probe `[PTP] ns=std member=pointer_traits peekLT=1 tdn=1` confirms it
+ENTERS that block. So the dispatch is fine — the failure is that
+`instantiate_template_id("pointer_traits", "std")` returns NULL for
+`std::pointer_traits<char*>` → member_dd stays NULL → fall-through mis-parses `<pointer>`
+as less-than and `pointer` becomes a stray `::` qualifier.
+
+So the REAL next sub-problem: **instantiate `std::pointer_traits<char*>`**. libstdc++'s
+`pointer_traits` (bits/ptr_traits.h) has a partial spec `pointer_traits<_Tp*>` (with
+`static pointer pointer_to(...)`), plus the primary uses the detection idiom (`_Ptr::element_type`
+via `__detected_or`). For `pointer=char*`, the `_Tp*` partial spec applies (handled by the
+flat `_Tp*` unifier — should work) — so check WHY instantiate_template_id returns NULL:
+likely the primary `pointer_traits<_Ptr>` body (which references `__detected_or_t<...>`
+member aliases like `element_type`/`difference_type`/`rebind`) is what's instantiated, or
+the partial spec isn't selected here. Probe `match_partial_specialization("pointer_traits",...)`
+and `instantiate_template_id` for pointer_traits<char*> next. g++ oracle: pointer_traits<char*>
+::pointer = char*, ::element_type = char, pointer_to(r) returns char*. (bits/ptr_traits.h.)
+Reducer tmp/str1.mad still stops here.
