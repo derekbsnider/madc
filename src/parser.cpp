@@ -8066,7 +8066,7 @@ void Program::add_process_functions()
 	    if ( fd )
 	    {
 		fd->local_emit_name = "__madc_getenv";
-		funcdef_map[fd->local_emit_name] = fd;
+		funcdef_map["__madc_getenv"] = fd;
 	    }
 	}
     }
