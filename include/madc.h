@@ -1249,6 +1249,15 @@ public:
 	DeferredFunctionBody() : var(NULL), method(NULL), file(NULL), line(0), column(0) {}
     };
     std::vector<DeferredFunctionBody> *deferred_function_body_sink;
+    // Lazy member-function-body instantiation ([temp.inst] conformance): for a
+    // system-header class (typically a template instantiation), member-function
+    // BODIES are NOT parsed at class-completion time — they are stashed here,
+    // keyed by emit symbol (var->name), and parsed only when ODR-used. This
+    // mirrors g++ (a class instantiation instantiates declarations, not member
+    // definitions) and dissolves walls in unused inline bodies (e.g.
+    // basic_string::_M_local_data). The cir_builder reachability fixpoint
+    // materializes a deferred body the moment its symbol enters referenced_funcs.
+    std::map<std::string, DeferredFunctionBody> deferred_lazy_bodies;
     bool parsing_cpp_struct_class;
     // When set, TokenCLASS::parse parses and registers the class/struct
     // DEFINITION only and returns at the closing '}', WITHOUT consuming a
@@ -1858,6 +1867,12 @@ public:
 					Method *method, TokenBase *open);
     void parse_deferred_function_body(DeferredFunctionBody &body);
     void parse_deferred_function_bodies(std::vector<DeferredFunctionBody> &bodies);
+    // Lazy member-function-body instantiation: parse a single deferred body by
+    // emit symbol on first ODR-use (returns the materialized TokenFunc, or NULL
+    // if the symbol has no deferred body / was already parsed).
+    TokenFunc *parse_deferred_lazy_body(const std::string &emit_symbol);
+    bool has_deferred_lazy_body(const std::string &emit_symbol) const
+	{ return deferred_lazy_bodies.find(emit_symbol) != deferred_lazy_bodies.end(); }
     DataDefCLASS *promote_struct_base_to_class(const std::string &name,
 					       DataDef *dd);
     // GNU/C23 attribute consumers: skip/collect __attribute__((…)) (optionally

@@ -8821,6 +8821,26 @@ node_t CirBuilder::translate_module(Program *prog)
 	std::set<std::string> lib_emitted;
 	for (bool grew = true; grew; ) {
 		grew = false;
+		// Lazy member-function-body instantiation ([temp.inst]): a system-header
+		// member body deferred at parse time (Program::deferred_lazy_bodies) is
+		// parsed NOW, the first time its emit symbol is ODR-used (in
+		// referenced_funcs). Parsing pushes a TokenFunc; fold it into lib_funcs so
+		// the loop below lowers it, and its own calls grow referenced_funcs →
+		// fixpoint. g++'s "instantiate definition only on ODR-use", at parse time.
+		if (!prog->deferred_lazy_bodies.empty()) {
+			std::vector<std::string> ready;
+			for (auto &db : prog->deferred_lazy_bodies)
+				if (!lib_funcs.count(db.first)
+				    && referenced_funcs.count(db.first))
+					ready.push_back(db.first);
+			for (auto &sym : ready) {
+				TokenFunc *tf = prog->parse_deferred_lazy_body(sym);
+				if (!tf) continue;
+				FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
+				lib_funcs[tfd ? func_emit_name(tf->var, tfd) : tf->var.name] = tf;
+				grew = true;
+			}
+		}
 		for (auto &kv : lib_funcs) {
 			if (lib_emitted.count(kv.first)) continue;
 			TokenFunc *tf = kv.second;

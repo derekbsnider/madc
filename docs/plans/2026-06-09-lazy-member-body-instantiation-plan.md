@@ -1,0 +1,146 @@
+# Plan — Lazy member-function-body instantiation (conform to [temp.inst])
+
+**Branch:** `feature/cpp-detection-idiom-claude` (WIP, off green tip `feature/header-partition-claude`).
+**Date:** 2026-06-09. **Tier:** 1 (pure madc front-end sema; c2mir never sees source).
+**Rule anchors:** #1 g++ is canon · #2 deepest layer · #4/#7 reuse existing, data-driven ·
+#5 layer boundaries · no-parallel-implementations.
+
+## 1. Problem (probe-confirmed, not theorized)
+
+`std::string line; line.size();` throws `Unknown namespace 'pointer'` at
+`basic_string.h:3486`. Root cause, established by probing (NOT the prior handoff's
+"instantiate pointer_traits<char*>" theory, which 4 probes falsified):
+
+- madc **eagerly parses every member-function BODY** when a class template is
+  instantiated. `_M_local_data()`'s body does `std::pointer_traits<pointer>::pointer_to(...)`;
+  during that eager body-parse `pointer` (a member typedef) isn't found → the throw.
+- `size()` **never calls** `_M_local_data()`. Per **[temp.inst]**, implicitly
+  instantiating a class instantiates member *declarations*; member-function
+  *definitions* instantiate only on **odr-use**. **g++ does not instantiate
+  `_M_local_data()`'s body here.** madc's eager body parse is a *conformance* bug.
+- Proof the general mechanism is fine: `tmp/ptr_repro.mad`
+  (`std::Tmpl<member-typedef>::staticmethod()` in an instantiated body) compiles
+  in madc. The wall is *only* that we parse a body we must not parse yet.
+
+The 119,740-line `-v` trace for that 2-line program is the eager-parse cost made visible.
+
+## 2. Architecture facts (from the two Explore maps)
+
+- **Eager site:** `parser.cpp:18213` — `parse_deferred_function_bodies(deferred_method_bodies)`
+  at the tail of `TokenCLASS::parse`. Instantiation re-enters `TokenCLASS::parse`
+  (re-injected tokens, `parser.cpp:2759-2760`), so every instantiation flushes every body.
+- **Per-method lazy-parse primitive (reuse):** `DeferredFunctionBody{var, method,
+  body_tokens, file, line, column}` (`madc.h:1242`), filled by
+  `enqueue_deferred_function_body` (`parser.cpp:16761`), drained by
+  `parse_deferred_function_body` / `..._bodies` (`parser.cpp:16776/16845`) which
+  re-push tokens, `parseCompound`, build a `TokenFunc`, push to `pending_funcs`.
+- **odr-use reachability engine (reuse):** `cir_builder.cpp:8789-8835`. `roots`
+  (user code, incl. `main`) lowered unconditionally; `lib_funcs` (system-header
+  bodies) lowered **only if their symbol ∈ `referenced_funcs`**, iterated to a
+  fixpoint. `referenced_funcs` is populated by: method calls
+  (`class_method_call`/`emit_symbol_method_call` → `referenced_funcs.insert(sym)`),
+  ctor use (`class_ctor_call:4192`), dtor use (`3738/7007`), vtable slots
+  (`class_vtable_def:2746`). The comment at 8798-8806 frames it as g++'s ODR model.
+- **External instantiations need no body:** libstdc++ template instantiations get
+  ctor/dtor bound to real `C1`/`D1` (`emit_symbol`, commit 6b5d4ea/38d9152), and
+  whole-vtable skip when `is_externally_defined()` (`cir_builder.cpp:2610`). So for
+  `std::string`, construction/destruction are external — the *only* bodies we ever
+  need are inline non-virtual methods actually called (e.g. `size()`).
+- **Emit symbol = `var.name`** (mangled `ClassName__method`); a body is emitted iff
+  a `TokenFunc` with that name is in `pending_funcs`. This is the join key between
+  the deferred-body map and `referenced_funcs`.
+- **Type/layout stays eager:** member typedefs (`type_aliases`) and data-member
+  layout (`compute_layout`) run *before* 18213 — deferring 18213 leaves them intact.
+
+## 3. Design — extend the existing engine from lazy-LOWER to lazy-PARSE
+
+**One sentence:** for *system-header template instantiations only*, don't parse
+member-function bodies at 18213; keep them keyed by emit symbol; the existing
+cir_builder reachability fixpoint parses a deferred body the moment its symbol is
+odr-used (`referenced_funcs`), then lowers it — feeding the fixpoint transitively.
+
+### 3a. Defer (parser side)
+- New persistent map on `Program`:
+  `std::map<std::string, DeferredFunctionBody> deferred_lazy_bodies;` (key = `var->name`).
+- At `parser.cpp:18213`, gate: if **(this class is a template instantiation) AND
+  (`ddc->from_system_header`)** → move each `DeferredFunctionBody` into
+  `deferred_lazy_bodies[body.var->name]` instead of parsing it. Else → parse now
+  (unchanged eager path). Gate predicate is data-driven (`from_system_header` +
+  the existing instantiation-context signal `instantiating_canonical_spelling` /
+  `parsing_template_instantiated_member_body()`), never a name test.
+- New parser method `bool Program::parse_deferred_lazy_body(const std::string &sym)`:
+  if `sym ∈ deferred_lazy_bodies` and not already materialized, call the existing
+  `parse_deferred_function_body` on it (→ `TokenFunc` in `pending_funcs`), erase
+  from the map, return true. Idempotent.
+
+### 3b. Demand (cir_builder side, inside the existing fixpoint)
+- In `translate_module`'s reachability fixpoint (`cir_builder.cpp:8822-8835`): when a
+  symbol `s ∈ referenced_funcs` has no lowered/known `TokenFunc` but
+  `prog->has_deferred_lazy_body(s)` → `prog->parse_deferred_lazy_body(s)`, take the
+  resulting `TokenFunc`, `func_def` it, set `grew=true`. Its calls insert into
+  `referenced_funcs` → next iteration materializes those. Pure extension of the loop.
+- cir_builder *requests* parsing via a `prog->` method (parser owns parsing) — no
+  layer inversion (cir_builder already depends on `prog`). At `translate_module`
+  time the token stream is quiescent, so re-pushing body tokens + `parseCompound`
+  is safe; verify empirically (probe #1 below).
+
+### 3c. Scope = zero blast radius outside the gate
+Non-system-header, non-template, and user-template bodies parse eagerly **exactly as
+today** → existing C++ tests, gcc.c-torture, and SMAUG are structurally untouched
+(C never sets `from_system_header` template instantiations with `<`-spellings).
+
+## 4. Why not alternatives (rejected)
+- *Fix `allocator_traits<>::pointer → char*` so the unused body parses* — fixes a
+  symptom of a body that must not be instantiated (anti-#2). (Still needed later for
+  LAYOUT of member types, but that is independent and not this wall.)
+- *Parse-time-only demand via `reselect_method_overload`* — misses emit-time odr-uses
+  (ctor/dtor/virtual/free-operator), risking the "missed completion-force" miscompile
+  the handoff feared. The emit-time `referenced_funcs` set is authoritative/complete.
+- *A new parse-time reachability walk* — duplicates the reachability engine
+  (violates no-parallel-implementations).
+
+## 5. Increments + gates (each gated before commit)
+Standing gates: build clean (no new warnings); `fulltest` (known reds
+testdefer/testfstream/testlargesizeofquery/testloop only); **gcc.c-torture run ALONE**
+(`1566/31/57/1`); canaries `testcout` real-header + `test_extern_polymorphic` +
+`tmp/fs_out.mad` (ofstream writes hello42 + clean exit). g++ is the oracle for values.
+
+- **I0 (probe).** Confirm `parse_deferred_function_body` is safe to call at
+  `translate_module` time (re-entrancy). Spike: defer one known-unused body, force a
+  call to another, verify materialization. Decide 3b feasibility before coding it.
+- **I1.** Add `deferred_lazy_bodies` + `parse_deferred_lazy_body` +
+  `has_deferred_lazy_body` (parser). No behavior change yet (map stays empty unless
+  the 18213 gate routes to it). Build + fulltest.
+- **I2.** Wire the 18213 gate (defer for system-header template instantiations).
+  Expect: `std::string line; line.size()` no longer parses `_M_local_data()`.
+  Probe str1; then the cir_builder side will still need I3 to lower `size()`.
+- **I3.** Wire the cir_builder fixpoint demand (3b). str1 should now compile + run
+  (`return (int)line.size()` == 0 for an empty string). Gate hard (canaries +
+  torture-alone — partial-spec/instantiation-touching ⇒ torture mandatory).
+- **I4.** Re-run the real-header `<string>`/`getline` path → testfstream/testloop.
+  Then land the chain (this + the detection idiom) onto the green tip once
+  `testcout_realhdr` is green again. Then `<sstream>` (#23).
+
+## 6. Risks
+- **Re-entrant parse at emit time** (I0 gates this). If unsafe, fall back to a
+  dedicated post-parse phase driven by a parse-time odr-use set (record symbols in
+  `reselect_method_overload` + static-call sites) — but verify it covers ctor/dtor/
+  virtual for any *non-external* deferred class (external ones need no body).
+- **Missed completion-force** → incomplete-type/undefined-symbol at MIR-link, which
+  fails LOUDLY (never silent). The `<`-spelling + `from_system_header` gate keeps the
+  surface small and the failure mode loud.
+- **A deferred body that IS needed but never referenced** ⇒ link error; caught by the
+  canaries (ofstream exercises the real write path) + torture/SMAUG.
+
+## 7. Anchors (verify with grep — lines drift)
+- `parser.cpp`: eager flush 18213 · `enqueue_deferred_function_body` 16761 ·
+  `parse_deferred_function_body` 16776 · `parse_deferred_function_bodies` 16845 ·
+  `instantiating_canonical_spelling`/`parsing_template_instantiated_member_body` ~4921 ·
+  `reselect_method_overload` 6054 · `request_template_instantiation_completion` 3000.
+- `cir_builder.cpp`: reachability fixpoint 8789-8835 · `referenced_funcs` inserts at
+  call/ctor/dtor/vtable (3262/4192/3738/7007/2746) · `func_def` 8101 · `translate_module` 8524.
+- `madc.h`: `DeferredFunctionBody` 1242 · `pending_funcs` 1241 · `FuncDef` flags ~120-171.
+- Reducers (tmp/): `str1.mad` (minimal trigger), `ptr_repro.mad` (general-mechanism OK),
+  `at1.mad` (alloc-traits pointer — layout follow-up, NOT this wall). g++ oracle for values.
+</content>
+</invoke>

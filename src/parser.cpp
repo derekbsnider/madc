@@ -16780,6 +16780,7 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 
     std::string saved_func = cur_func_name;
     std::string saved_namespace = current_namespace;
+    std::string saved_canon = instantiating_canonical_spelling;
     cur_func_name = body.var->name;
     if ( body.method->owner_class )
     {
@@ -16788,6 +16789,16 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 		body.method->owner_class->canonical_cpp_spelling);
 	if ( !method_namespace.empty() )
 	    current_namespace = method_namespace;
+	// Restore the template-instantiation context so nested template-ids and
+	// member-typedef resolution inside the body resolve against the SAME
+	// substitution this body had at eager-parse time (18213). Without this a
+	// lazily-materialized body loses the context and nested instantiations fall
+	// back to defaults (e.g. allocator<char> mis-resolving to allocator<int>).
+	// parsing_template_instantiated_member_body() keys off this + the owner.
+	if ( body.method->owner_class->canonical_cpp_spelling.find('<')
+	     != std::string::npos )
+	    instantiating_canonical_spelling =
+		body.method->owner_class->canonical_cpp_spelling;
     }
     try
     {
@@ -16836,16 +16847,39 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     {
 	cur_func_name = saved_func;
 	current_namespace = saved_namespace;
+	instantiating_canonical_spelling = saved_canon;
 	throw;
     }
     cur_func_name = saved_func;
     current_namespace = saved_namespace;
+    instantiating_canonical_spelling = saved_canon;
 }
 
 void Program::parse_deferred_function_bodies(std::vector<Program::DeferredFunctionBody> &bodies)
 {
     for ( size_t i = 0; i < bodies.size(); ++i )
 	parse_deferred_function_body(bodies[i]);
+}
+
+// Lazy member-function-body instantiation: materialize one deferred body on
+// first ODR-use. Reuses parse_deferred_function_body (which pushes the new
+// TokenFunc onto pending_funcs); we erase the entry BEFORE parsing so a
+// re-entrant request for the same symbol (a self-recursive body) is a no-op
+// rather than a double-parse, and return the freshly-parsed TokenFunc so the
+// caller (the cir_builder reachability fixpoint) can lower it immediately.
+TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
+{
+    std::map<std::string, DeferredFunctionBody>::iterator it =
+	deferred_lazy_bodies.find(emit_symbol);
+    if ( it == deferred_lazy_bodies.end() )
+	return NULL;
+    DeferredFunctionBody body = it->second; // copy out before erase
+    deferred_lazy_bodies.erase(it);
+    size_t before = pending_funcs.size();
+    parse_deferred_function_body(body);
+    if ( pending_funcs.size() > before )
+	return dynamic_cast<TokenFunc *>(pending_funcs.back());
+    return NULL;
 }
 
 static std::string join_scope_parts(const std::vector<std::string> &parts,
@@ -18210,7 +18244,29 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			     // never hits and re-instantiates it on every reference.
     DBG(cout << "TokenCLASS::parse() finalized layout, size now " << ddc->size << endl);
 
-    pgm.parse_deferred_function_bodies(deferred_method_bodies);
+    // Lazy member-function-body instantiation ([temp.inst]): for a system-header
+    // class (typically a template instantiation), DON'T parse member bodies now —
+    // stash each by emit symbol and let the cir_builder reachability fixpoint parse
+    // a body only when its symbol is ODR-used. This mirrors g++ (instantiating a
+    // class instantiates member DECLARATIONS, not member-function DEFINITIONS) and
+    // avoids parsing dead inline bodies — e.g. basic_string::_M_local_data, which a
+    // size()-only program never calls but which hits walls when force-parsed. Gated
+    // on from_system_header + a system-header body file so the deferred symbol's
+    // file classification matches the emit-layer lib_funcs split; any non-system
+    // body parses eagerly exactly as before (zero change for user / pure-C code).
+    if ( ddc->from_system_header )
+    {
+	for ( size_t i = 0; i < deferred_method_bodies.size(); ++i )
+	{
+	    Program::DeferredFunctionBody &b = deferred_method_bodies[i];
+	    if ( b.var && b.file && pgm.is_system_header_path(b.file) )
+		pgm.deferred_lazy_bodies[b.var->name] = b;
+	    else
+		pgm.parse_deferred_function_body(b);
+	}
+    }
+    else
+	pgm.parse_deferred_function_bodies(deferred_method_bodies);
 
     // Allocate vtable if needed
     if ( ddc->has_vtable )
