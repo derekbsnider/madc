@@ -10,15 +10,28 @@ turn-by-turn trail — still useful, but route from HERE).
 
 ## 0. ONE-PARAGRAPH STATE
 
-Branch **`feature/cpp-detection-idiom-claude`**, HEAD **`1bf014b`**, working tree
-**clean**. This session: (a) corrected the header-partition architecture I'd misread
-(see §2), (b) landed a **data-driven embedded-header shim-bypass classifier**
+Branch **`feature/cpp-detection-idiom-claude`**, HEAD **`4517ab9`**, working tree
+**clean**. Earlier this session: (a) corrected the header-partition architecture I'd
+misread (see §2), (b) landed a **data-driven embedded-header shim-bypass classifier**
 (`65d2d67`), (c) landed **mangled-direct binding for named `std::` free-function
-templates — `std::getline` works end-to-end** (`a1b4421`), (d) audited a **symbol-
-derivation drift** and, with the user, chose to **unify all call-symbol derivation onto
-`FuncDef::emit_symbol`** (Pattern A) with a drift-prevention gate. **That unification is
-NOT yet started — it is the next work (§5).** Gates GREEN: fulltest **543/4/0/26**,
-gcc.c-torture **1566/31/57/1** (both unchanged from baseline). The 4 reds
+templates — `std::getline` works end-to-end** (`a1b4421`).
+
+**STEPS 1 + 2 OF THE UNIFICATION ARE NOW DONE (the "resolver + gate FIRST" half):**
+- **`80e75ea`** — Step 1a: merged `class_emit_name`+`nested_emit_name` → `local_emit_name`.
+- **`d5d099e`** — Step 1b-i: added `CirBuilder::call_emit_symbol` (the ONE resolver,
+  `emit_symbol ?: local_emit_name ?: var_emit_name`); routed `func_emit_name` (the
+  half-baked path that ignored emit_symbol) through it.
+- **`32df579`** — Step 1b-ii: routed EVERY call-symbol site (class_method_symbol,
+  class_method_call, class_method_call_symbol, ctor_call_symbol, binary/unary operator,
+  post-inc, value-of/fn-ptr-decay) through `call_emit_symbol`. `local_emit_name`'s value
+  is now read in exactly ONE place.
+- **`4517ab9`** — Step 2: `scripts/check-call-emit-symbol.sh` (wired into fulltest) FAILS
+  on any raw `local_emit_name` value-read outside the resolver. Verified it catches an
+  injected drift. THE anti-drift mechanism the user asked for.
+All four commits behavior-preserving; gates UNCHANGED at each: fulltest **543/4/0/26**,
+gcc.c-torture **1566/31/57/1**.
+
+**NEXT = Step 3 (§5.3) — the payoff that moves the reds.** The 4 reds
 (testdefer/testfstream/testlargesizeofquery/testloop) are still red — getline is one
 ingredient; the remaining ingredients are in §4.
 
@@ -159,30 +172,30 @@ The three `fd->*emit*` strings collapse to TWO concepts:
 semantics are load-bearing in too many places; two is the correct stopping point.)
 
 ### 5.3 Execution plan (order = A: resolver+gate first, then migrate)
-**Step 1 — consolidate (behavior-preserving):**
-- Merge `class_emit_name` + `nested_emit_name` → `local_emit_name` (FuncDef, include/madc.h
-  ~131-141; update all readers/writers).
-- Add the ONE canonical resolver:
-  ```cpp
-  // THE single source of truth for a call's emitted symbol.
-  std::string CirBuilder::call_emit_symbol(const Variable &v, FuncDef *fd) const {
-      if (fd && !fd->emit_symbol.empty())     return fd->emit_symbol;     // external bind
-      if (fd && !fd->local_emit_name.empty()) return fd->local_emit_name; // madc-emitted rename
-      return var_emit_name(v);                                           // default
-  }
-  ```
-- Route EVERY call-symbol site through it: `func_emit_name` (160) → delegate;
-  `class_method_symbol` (823), `class_method_call_symbol` (3430), and the ctor/dtor symbol
-  helpers → fold their duplicated `emit_symbol ?: …` precedence into `call_emit_symbol`.
-- Gate: fulltest 543/4 + torture 1566/31/57/1 (behavior-preserving, must be unchanged).
+**Step 1 — consolidate (behavior-preserving). ✅ DONE (`80e75ea`, `d5d099e`, `32df579`).**
+- ✅ Merged `class_emit_name` + `nested_emit_name` → `local_emit_name` (FuncDef).
+- ✅ Added the ONE canonical resolver `CirBuilder::call_emit_symbol`. NOTE: shipped as TWO
+  overloads — a `static call_emit_symbol(FuncDef*, default_sym)` core (no instance state, so
+  the static helpers `class_method_call_symbol`/`ctor_call_symbol`/`class_method_symbol`
+  delegate to it) + a `(const Variable&, FuncDef*) const` form supplying `var_emit_name(v)`.
+- ✅ Routed EVERY call-symbol site through it (func_emit_name, class_method_symbol@843,
+  class_method_call@3231, class_method_call_symbol@3450, ctor_call_symbol@4181,
+  binary op@5489, unary op@5612, post-inc@6926, value-of/fn-ptr-decay@6516). Behavior-
+  preservation verified by the parser invariant `var.name==local_emit_name when set` (for
+  class methods; nested fns keep source-name alias but func_emit_name reads local_emit_name
+  first) + emit_symbol⊥local_emit_name. Gates UNCHANGED.
 
-**Step 2 — drift-prevention gate:** add `scripts/check-*.sh` (wired into fulltest, like
-`scripts/check-no-std-hardcoding.sh`) that FAILS if an `N_CALL` is emitted from a raw symbol
-(`…->var.name`, `func_emit_name`, a literal) instead of `call_emit_symbol(...)`. This is the
-mechanical guard so the drift can't recur. (Grep heuristic: `node2(N_CALL, id(` whose symbol
-arg isn't `call_emit_symbol(...)`-derived — refine to avoid false positives on intrinsics.)
+**Step 2 — drift-prevention gate. ✅ DONE (`4517ab9`).** `scripts/check-call-emit-symbol.sh`
+(wired into fulltest). Enforces the achievable invariant: `local_emit_name`'s VALUE is read
+ONLY inside `call_emit_symbol`; elsewhere only `.empty()` predicates / assignment LHS /
+comments. (The originally-imagined "every N_CALL symbol must be call_emit_symbol-derived"
+gate is impractical — legit raw-symbol N_CALLs exist: runtime helpers, intrinsics, the
+emit_symbol-direct external branches. The local_emit_name single-reader rule is the tight,
+low-false-positive proxy that actually catches hand-rolled symbol derivation.) Verified it
+fails on an injected `return f->local_emit_name;` and is green on the unified tree.
 
-**Step 3 — migrate free `std::` fns onto Pattern A:** place `emit_symbol` on the
+**Step 3 — migrate free `std::` fns onto Pattern A: ⬅ NEXT (the payoff that moves reds).**
+Place `emit_symbol` on the
 instantiated free-fn FuncDef (a free-function analog of `bind_declared_cpp_symbol` using
 `itanium_mangle_std_free_template`), so the call reads emit_symbol via `call_emit_symbol` and
 `try_std_free_function_call` / the W2 call-site re-mangle are RETIRED (one shared deducer +
