@@ -249,5 +249,16 @@ pointer = _Tp*` alias doesn't resolve to `char*` after subst — less likely.)
   NEXT: probe `instantiate_template_id`/`match_partial_specialization` for `pointer_traits<char*>`
   (the FLAT `_Tp*` unifier should pick it) + whether it's instantiated in the `_M_local_data`
   body context; then `addressof`. g++ oracle: returns `char*`. Reducer `tmp/str_use.mad`.
+
+  **CONFIRMED (PTPROBE in match_partial_specialization, run on str_use): `pointer_traits`
+  NEVER reaches `match_partial_specialization` → `pointer_traits<char*>` is NEVER INSTANTIATED
+  in the `_M_local_data` body.** So the gap is upstream of partial-spec matching: the expr-arm
+  doesn't instantiate the template-id. FIX = in the parseExpr namespace-resolution arm
+  (parser.cpp ~11984, the `std::NS::Template<Arg>::staticmember` dispatch) instantiate the
+  template-id `pointer_traits<char*>` then resolve the static member `pointer_to` on it (mirror
+  `resolve_typename_type_token`'s type-context handling). NOTE this body is reached via lazy
+  materialization at emit time (`parse_deferred_function_body`, with `instantiating_canonical_spelling`
+  restored) — verify the expr-arm + instantiate work in that re-parse context. HIGH blast radius
+  (parseExpr is core) → gate torture-ALONE. Then `addressof` → getline → testfstream/testloop.
 </content>
 </invoke>
