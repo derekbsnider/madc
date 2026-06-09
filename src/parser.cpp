@@ -3536,6 +3536,41 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	    return inst;
     }
 
+    // Unqualified type lookup inside a namespace: C++ searches the enclosing
+    // namespace chain (std::pmr -> std) BEFORE the global scope. Namespace-
+    // scope aliases live ONLY in namespace_datatype_map (not flat-leaked), so
+    // a header class inside namespace std deriving from bare `true_type`
+    // resolves here.
+    {
+	std::string scope = current_namespace;
+	while ( !scope.empty() )
+	{
+	    namespace_datatype_map_t::iterator nti =
+		namespace_datatype_map.find(scope);
+	    if ( nti != namespace_datatype_map.end() )
+	    {
+		datatype_map_iter ndmi = nti->second.find(tname);
+		if ( ndmi != nti->second.end() )
+		{
+		    TokenDataType *use = (TokenDataType *)ndmi->second->clone();
+		    use->file   = tb->file;
+		    use->line   = tb->line;
+		    use->column = tb->column;
+		    if ( consume_class_member_chain
+		      && peekToken() && peekToken()->id() == TokenID::tkNS )
+			if ( DataDefCLASS *owner =
+				dynamic_cast<DataDefCLASS *>(&use->definition) )
+			    if ( TokenDataType *member =
+				    resolve_class_member_type_chain(owner, tb) )
+				return member;
+		    return use;
+		}
+	    }
+	    size_t sp = scope.rfind("::");
+	    scope = sp == std::string::npos ? std::string() : scope.substr(0, sp);
+	}
+    }
+
     datatype_map_iter dmi = datatype_map.find(tname);
     if ( dmi != datatype_map.end() )
     {
@@ -15572,7 +15607,15 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    else
 	    {
 		pgm.user_typedef_names.insert(alias_name);
-		pgm.datatype_map[alias_name] = alias_tdt;
+		// A NAMESPACE-scope alias is visible only in its namespace
+		// (qualified use / using-directive import). Writing it into the
+		// flat global map here CLOBBERED the global name: parsing
+		// <string>'s `namespace pmr { using string = ...; }` replaced
+		// flat `string`, and the later `using namespace std` import
+		// skipped it as already-present — unqualified `string` became
+		// std::pmr::string (wrong allocator, wrong overloads).
+		if ( pgm.current_namespace.empty() )
+		    pgm.datatype_map[alias_name] = alias_tdt;
 	    }
 	    if ( pgm.class_scope_stack.empty() && !pgm.current_namespace.empty() )
 		pgm.namespace_datatype_map[pgm.current_namespace][alias_name] = alias_tdt;
