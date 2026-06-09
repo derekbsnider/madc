@@ -345,7 +345,11 @@ public:
 	// instantiated FuncDef (std:: free-function template bound mangled-direct
 	// via emit_symbol) so arg emission, retbuf classification, and callee
 	// naming all see the same instantiation.
-	class FuncDef *call_target_funcdef(class TokenCallFunc *tcf) const;
+	class FuncDef *call_target_funcdef(class TokenCallFunc *tcf);
+	// std:: free-function template instantiations: one FuncDef per mangled
+	// symbol, plus a per-call memo (NULL = checked, not such a call).
+	std::map<class TokenCallFunc *, class FuncDef *> m_free_fn_inst_by_call;
+	std::map<std::string, class FuncDef *> m_free_fn_inst_by_sym;
 	node_t integer(long val, TokenBase *origin = NULL);
 	// Type-aware integer literal: pick the c2mir literal node code
 	// (N_I/N_U/N_L/N_UL) from the literal's own DataDef so a suffixed
@@ -557,8 +561,13 @@ public:
 	node_t try_free_operator_call(class TokenOperator *top, DataDefCLASS *lcls,
 			const std::string &mname, class FuncDef *member_callee,
 			TokenBase *origin);
-	node_t try_std_free_function_call(class TokenCallFunc *tcf, class FuncDef *cdf,
-			TokenBase *origin);
+	// Instantiate a NAMED std:: free-function template for a call (overload
+	// select + template-arg deduction from the args' classes + Itanium mangle)
+	// and return a FuncDef carrying the symbol on emit_symbol — the generic
+	// call path does the rest (Pattern A). Memoized per call token and per
+	// symbol. NULL = not such a call (caller keeps the declared FuncDef).
+	class FuncDef *std_free_function_instantiation(class TokenCallFunc *tcf,
+			class FuncDef *cdf);
 	// Lower an overloaded UNARY operator on a user-defined class lvalue:
 	//   <op>c  ->  ClassName__operator<op>(&c)   (e.g. -c, !c, ~c, ++c, --c)
 	// `opsym` is the operator symbol text ("-", "!", "~", "++", "--"); `operand`

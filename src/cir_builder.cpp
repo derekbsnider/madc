@@ -437,7 +437,9 @@ static void native_func_shape(FuncDef *fd, bool &ret_ptr,
 			      std::vector<c2mir_node_code_t> &ret_specs,
 			      std::vector<CirBuilder::ExternParam> &params)
 {
-	ret_ptr = fd && fd->returns.is_pointer();
+	// A C++ reference return IS an address return (T& comes back as T*),
+	// same as the class-method extern shape.
+	ret_ptr = fd && (fd->returns.is_pointer() || fd->returns_ref);
 	ret_specs = ret_ptr ? std::vector<c2mir_node_code_t>{N_VOID}
 			    : native_scalar_specs(fd ? &fd->returns : NULL);
 	if (ret_specs.empty())
@@ -575,10 +577,16 @@ static FuncDef *call_target_funcdef_raw(TokenCallFunc *tcf)
 // Member wrapper: the ONE callee resolver every consumer (arg emission, retbuf
 // classification, callee naming, fn-ptr decay) goes through, so a per-call
 // instantiated FuncDef (a std:: free-function template bound mangled-direct via
-// emit_symbol) is seen consistently by all of them.
-FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf) const
+// emit_symbol) is seen consistently by all of them. Discovery is pure data: a
+// namespace function with captured free_function_overloads deduces and binds;
+// everything else resolves as declared (no name-prefix gates).
+FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
 {
-	return call_target_funcdef_raw(tcf);
+	FuncDef *fd = call_target_funcdef_raw(tcf);
+	if (fd && !fd->namespace_name.empty() && !fd->function_display_name.empty())
+		if (FuncDef *inst = std_free_function_instantiation(tcf, fd))
+			return inst;
+	return fd;
 }
 
 // A CALL to a madc-COMPILED function returning a non-trivial class by value.
@@ -4929,20 +4937,30 @@ bool deduce_free_stream_call(const std::string &lhs_spelling,
 	return true;
 }
 
-// Collect (canonical spelling, byte offset within the most-derived object) for a
-// class AND its non-virtual bases, transitively, most-derived first. Lets a free
-// operator whose stream parameter is a BASE (operator<<(ostream&,...)) bind when
-// called on a DERIVED stream (ofstream): we match the base spelling and adjust the
-// passed `this` to the base subobject. Virtual bases are skipped (their offset is
-// vtable-relative, and no std free operator takes a virtual-base stream by ref).
+// A class-or-base candidate for free-function template deduction: the canonical
+// spelling, the byte offset of the (base) subobject within the most-derived
+// object, and the class itself (so an instantiated FuncDef can carry the
+// matched base class as its parameter type).
+struct BaseCand {
+	std::string spelling;
+	size_t off;
+	DataDefCLASS *cls;
+};
+
+// Collect candidates for a class AND its non-virtual bases, transitively,
+// most-derived first. Lets a free operator whose stream parameter is a BASE
+// (operator<<(ostream&,...)) bind when called on a DERIVED stream (ofstream):
+// we match the base spelling and adjust the passed `this` to the base
+// subobject. Virtual bases are skipped (their offset is vtable-relative, and
+// no std free operator takes a virtual-base stream by ref).
 static void collect_self_and_base_spellings(DataDefCLASS *cls, size_t base_off,
-		std::vector<std::pair<std::string, size_t> > &out)
+		std::vector<BaseCand> &out)
 {
 	if (!cls) return;
 	std::string sp = cls->canonical_cpp_spelling.empty() ? cls->name
 		       : cls->canonical_cpp_spelling;
-	for (const auto &e : out) if (e.first == sp) return;   // dedup
-	out.push_back(std::make_pair(sp, base_off));
+	for (const auto &e : out) if (e.spelling == sp) return;   // dedup
+	out.push_back(BaseCand{sp, base_off, cls});
 	for (const BaseSpec &b : cls->bases)
 		if (b.base && !b.is_virtual)
 			collect_self_and_base_spellings(b.base, base_off + b.offset, out);
@@ -4976,16 +4994,16 @@ static bool targs_from_binding(const Program::FreeOperatorOverload &ov,
 static bool deduce_param_against_class(const std::string &pspell,
 		DataDefCLASS *acls, const std::vector<std::string> &tparams,
 		std::map<std::string, std::string> &binding,
-		size_t &off, std::string &qhead)
+		size_t &off, std::string &qhead, DataDefCLASS **matched_cls = NULL)
 {
 	if (!acls) return false;
 	std::string phead; std::vector<std::string> pargs;
 	if (!split_template_id_w2(pspell, phead, pargs)) return false;
-	std::vector<std::pair<std::string, size_t> > cands;
+	std::vector<BaseCand> cands;
 	collect_self_and_base_spellings(acls, 0, cands);
 	for (const auto &cand : cands) {
 		std::string chead; std::vector<std::string> cargs;
-		if (!split_template_id_w2(cand.first, chead, cargs)) continue;
+		if (!split_template_id_w2(cand.spelling, chead, cargs)) continue;
 		if (strip_leading_qualifier(chead) != strip_leading_qualifier(phead))
 			continue;
 		if (cargs.size() != pargs.size()) continue;
@@ -5006,8 +5024,9 @@ static bool deduce_param_against_class(const std::string &pspell,
 		}
 		if (good) {
 			binding = local;
-			off = cand.second;
+			off = cand.off;
 			qhead = chead;
+			if (matched_cls) *matched_cls = cand.cls;
 			return true;
 		}
 	}
@@ -5178,7 +5197,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	// Candidate stream spellings: the lhs class AND its non-virtual bases (with
 	// byte offsets), so a free operator whose parameter is a BASE stream
 	// (operator<<(ostream&,...)) binds when called on a DERIVED stream (ofstream).
-	std::vector<std::pair<std::string, size_t> > lhs_cands;
+	std::vector<BaseCand> lhs_cands;
 	collect_self_and_base_spellings(lcls, 0, lhs_cands);
 
 	// Deduce against the first candidate (most-derived first) that matches; report
@@ -5189,8 +5208,8 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 			      std::string &stype, size_t &off) -> bool {
 		for (const auto &cand : lhs_cands) {
 			binding.clear();
-			if (deduce_free_stream_call(cand.first, ov, binding, stype)) {
-				off = cand.second;
+			if (deduce_free_stream_call(cand.spelling, ov, binding, stype)) {
+				off = cand.off;
 				return true;
 			}
 		}
@@ -5406,27 +5425,35 @@ static std::string requalify_head(const std::string &spell, const std::string &q
 	return spell.substr(0, h) + qhead + spell.substr(lt);
 }
 
-// Bind a call to a NAMED std:: (real-libstdc++) free-function template MANGLED-DIRECT
-// to its Itanium symbol, instead of the wrong __ns_std_<name> wrapper stub. Selects an
-// overload by arity, deduces template args from the call's arg types (matching each
-// template-id param against the arg's class self/bases), $Tn-parameterizes the spellings,
-// mangles, and emits the call passing reference params by address. Returns NULL when the
-// call is not such a function (caller falls back to the normal path). See
-// free_function_overloads + project_cpp_mangled_direct.
-node_t CirBuilder::try_std_free_function_call(TokenCallFunc *tcf, FuncDef *cdf,
-		TokenBase *origin)
+// Instantiate a NAMED std:: (real-libstdc++) free-function template for a call,
+// binding it MANGLED-DIRECT on an instantiated FuncDef: the Itanium symbol
+// lives on FuncDef::emit_symbol (Pattern A), call_emit_symbol reads it, and the
+// GENERIC call path emits the args (class refs by address via object_arg_addr's
+// derived->base binding) and derefs the reference return. Selects an overload
+// by arity, deduces template args from the call's arg types (matching each
+// template-id param against the arg's class self/bases), $Tn-parameterizes the
+// spellings, mangles, and memoizes one FuncDef per symbol (negative results per
+// call token). Returns NULL when the call is not such a function — the caller
+// keeps the resolved declaration. See free_function_overloads +
+// project_cpp_mangled_direct.
+FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef *cdf)
 {
-	if (!m_prog || !cdf || cdf->function_display_name.empty()
-	    || cdf->namespace_name.empty())
+	if (!m_prog || !tcf || tcf->src_node || !cdf
+	    || cdf->function_display_name.empty() || cdf->namespace_name.empty()
+	    || !cdf->emit_symbol.empty())
 		return NULL;
+	auto mit = m_free_fn_inst_by_call.find(tcf);
+	if (mit != m_free_fn_inst_by_call.end()) return mit->second;
+	m_free_fn_inst_by_call[tcf] = NULL;   // negative-cache; success overwrites
 	const std::string ns = cdf->namespace_name;
 	const std::string name = cdf->function_display_name;
 	size_t argc = tcf->parameters.size();
 
 	const Program::FreeOperatorOverload *best = NULL;
-	std::vector<std::string> best_targs, best_param_spell, best_param_raw;
+	std::vector<std::string> best_targs, best_param_spell;
 	std::string best_ret;
-	std::vector<size_t> best_offs;
+	std::vector<DataDefCLASS *> best_pcls;          // matched (base) class per param
+	std::map<std::string, std::string> best_binding;
 	std::map<std::string, std::string> best_qmap;   // unqualified head -> qualified head
 	for (const Program::FreeOperatorOverload &ov : m_prog->free_function_overloads) {
 		if (ov.ns != ns || ov.opname != name) continue;
@@ -5434,6 +5461,7 @@ node_t CirBuilder::try_std_free_function_call(TokenCallFunc *tcf, FuncDef *cdf,
 		std::map<std::string, std::string> binding;
 		std::map<std::string, std::string> qmap;   // phead -> qualified head (this overload)
 		std::vector<size_t> offs(argc, 0);
+		std::vector<DataDefCLASS *> pcls(argc, NULL);
 		bool ok = true;
 		for (size_t i = 0; i < argc && ok; i++) {
 			std::string pspell = ov.param_spellings[i];
@@ -5446,7 +5474,7 @@ node_t CirBuilder::try_std_free_function_call(TokenCallFunc *tcf, FuncDef *cdf,
 			if (!acls) { ok = false; break; }
 			std::string qhead;
 			if (!deduce_param_against_class(pspell, acls, ov.template_params,
-							binding, offs[i], qhead))
+							binding, offs[i], qhead, &pcls[i]))
 				{ ok = false; break; }
 			std::string phead; std::vector<std::string> pargs;
 			split_template_id_w2(pspell, phead, pargs);
@@ -5465,9 +5493,9 @@ node_t CirBuilder::try_std_free_function_call(TokenCallFunc *tcf, FuncDef *cdf,
 		if (best && ov.template_params.size() >= best->template_params.size()) continue;
 		best = &ov;
 		best_targs = targs;
-		best_offs = offs;
+		best_pcls = pcls;
+		best_binding = binding;
 		best_qmap = qmap;
-		best_param_raw = ov.param_spellings;
 	}
 	if (!best) return NULL;
 
@@ -5488,37 +5516,62 @@ node_t CirBuilder::try_std_free_function_call(TokenCallFunc *tcf, FuncDef *cdf,
 	std::string sym = itanium_mangle_std_free_template(name, best_targs, best_ret,
 							   best_param_spell);
 	if (sym.empty() || sym[0] != '_') return NULL;
-	DBG(std::cout << "[FFCALL] bind " << ns << "::" << name << " -> " << sym << std::endl);
+	auto sit = m_free_fn_inst_by_sym.find(sym);
+	if (sit != m_free_fn_inst_by_sym.end()) {
+		m_free_fn_inst_by_call[tcf] = sit->second;
+		return sit->second;
+	}
 
-	node_t args = list();
-	std::vector<ExternParam> eparams;
-	for (size_t i = 0; i < argc; i++) {
-		const std::string &pspell = best_param_raw[i];
-		bool is_ref = !pspell.empty() && pspell.back() == '&';
-		if (is_ref) {
-			DataDefCLASS *acls = as_class_instance(tcf->parameters[i]->datadef());
-			node_t addr = object_arg_addr(tcf->parameters[i], acls);
-			if (best_offs[i]) {
-				node_t charp = node2(N_CAST,
-					node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-					      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-					addr, origin);
-				addr = node2(N_CAST, void_ptr_type(),
-					node2(N_ADD, charp, integer((long)best_offs[i], origin), origin),
-					origin);
-			}
-			append(args, addr);
-			eparams.push_back({ {N_VOID}, true });
-		} else {
-			append(args, translate_expr(tcf->parameters[i]));
-			eparams.push_back(native_param_shape(tcf->parameters[i]->datadef(), false));
+	// Return type: void, or a reference to a class deducible from the matched
+	// param classes (a stream fn returns one of its ref params' classes). A
+	// by-value class or unmapped builtin return bails — those shapes never
+	// bound mangled-direct here before either.
+	const std::string &rspell = best->return_spelling;
+	bool ret_ref = !rspell.empty() && rspell.back() == '&';
+	DataDef *ret_dd = NULL;
+	if (!ret_ref && norm_type_w2(rspell) == "void")
+		ret_dd = &ddVOID;
+	else if (ret_ref) {
+		for (size_t i = 0; i < best_pcls.size() && !ret_dd; i++) {
+			if (!best_pcls[i]) continue;
+			std::map<std::string, std::string> b2 = best_binding;
+			size_t off2 = 0; std::string qh2; DataDefCLASS *mc = NULL;
+			if (deduce_param_against_class(rspell, best_pcls[i],
+						       best->template_params,
+						       b2, off2, qh2, &mc)
+			    && b2 == best_binding && off2 == 0)
+				ret_dd = mc;
 		}
 	}
-	bool ret_ref = !best_ret.empty() && best_ret.back() == '&';
-	need_output_extern(sym.c_str(), ret_ref, eparams, { N_VOID });
-	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
-	CIR_NODE(call)->synth_from_origin = true;
-	return ret_ref ? node1(N_DEREF, call, origin) : call;
+	if (!ret_dd) return NULL;
+
+	FuncDef *inst = new FuncDef(*ret_dd);
+	inst->returns_ref = ret_ref;
+	inst->emit_symbol = sym;
+	inst->declaration_only = true;
+	inst->function_display_name = name;
+	inst->namespace_name = ns;
+	for (size_t i = 0; i < argc; i++) {
+		const std::string &pspell = best->param_spellings[i];
+		bool is_ref = !pspell.empty() && pspell.back() == '&';
+		DataDef *pdd = (is_ref && best_pcls[i])
+			       ? static_cast<DataDef *>(best_pcls[i])
+			       : tcf->parameters[i]->datadef();
+		inst->parameters.push_back(pdd ? pdd : &ddINT64);
+		inst->ref_params.push_back(is_ref);
+	}
+	// Extern proto now (mirrors the class-member emit_symbol binds): ref params
+	// are pointers, a reference return comes back as an address.
+	bool ret_ptr = false;
+	std::vector<c2mir_node_code_t> ret_specs;
+	std::vector<ExternParam> eparams;
+	native_func_shape(inst, ret_ptr, ret_specs, eparams);
+	need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs);
+	DBG(std::cout << "[FFCALL] instantiate " << ns << "::" << name
+	    << " -> " << sym << std::endl);
+	m_free_fn_inst_by_sym[sym] = inst;
+	m_free_fn_inst_by_call[tcf] = inst;
+	return inst;
 }
 
 node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
@@ -7382,13 +7435,6 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// local_emit_name), not the source name.
 				FuncDef *cdf = call_target_funcdef(tcf);
 				std::string callee_name = func_emit_name(tcf->var, cdf);
-				// A std:: (real-libstdc++) free function — e.g. std::getline —
-				// resolves to a __ns_std_<name> wrapper stub; bind it MANGLED-DIRECT
-				// to the real Itanium symbol instead. (project_cpp_mangled_direct)
-				if (callee_name.compare(0, 5, "__ns_") == 0) {
-					if (node_t ff = try_std_free_function_call(tcf, cdf, tb))
-						return ff;
-				}
 				Method *native_method = (Method *)tcf->var.data;
 				if (tcf->var.name == "system" && cdf
 				    && native_method && native_method->x86code && m_prog) {
