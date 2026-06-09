@@ -2927,9 +2927,25 @@ void CirBuilder::emit_struct_with_deps(
 	// Emit the named struct's own body once; anonymous aggregates are spelled
 	// inline at the use site, so only their member deps (hoisted above) matter.
 	if (!sdd->is_anonymous && !emitted_structs.count(sdd->name)) {
-		emitted_structs.insert(sdd->name);
-		node_t sd = struct_def(sdd);
-		if (sd) append(top_list, sd);
+		auto cti = m_combined_typedef_alias.find(sdd->name);
+		if (cti != m_combined_typedef_alias.end()) {
+			// The struct's def-point is a combined `typedef struct X {...} Y;`.
+			// Emit the WHOLE combined decl (body + alias Y together) so Y is in
+			// scope for dependents hoisted after it (a member typed `Y` would
+			// otherwise reference an undefined alias). typedef_decl emits the body
+			// because emitted_structs doesn't yet contain the tag; record Y so the
+			// source-order Pass 0 skips re-emitting this typedef.
+			Program::TopDecl *td = cti->second;
+			node_t n = typedef_decl(typedef_emit_name(td->name, td->dd),
+						td->dd, emitted_structs, false);
+			emitted_structs.insert(sdd->name);
+			m_hoisted_combined_aliases.insert(td->name);
+			if (n) append(top_list, n);
+		} else {
+			emitted_structs.insert(sdd->name);
+			node_t sd = struct_def(sdd);
+			if (sd) append(top_list, sd);
+		}
 	}
 }
 
@@ -3669,6 +3685,13 @@ std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
 std::string CirBuilder::class_complete_dtor_symbol(DataDefCLASS *cdd)
 {
 	if (!cdd) return std::string();
+	// An externally-defined class's real D1 IS the complete-object destructor:
+	// libstdc++ destroys the whole object (virtual bases included), so use it
+	// directly instead of a synthesized `Cls___dtor_complete` wrapper — which is
+	// never emitted for such a class (Pass 1.7 skips it), causing an undefined
+	// symbol at link if referenced by a cleanup attribute.
+	if (cdd->is_externally_defined())
+		return class_dtor_symbol(cdd);
 	std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
 	cdd->collect_vbases(vbs, seen);
 	if (vbs.empty()) return class_dtor_symbol(cdd);
@@ -8466,6 +8489,8 @@ node_t CirBuilder::translate_module(Program *prog)
 	// instead of the bare alias so flat C has no `typedef X string;` conflict.
 	std::set<std::string> struct_def_points;
 	std::map<std::string, std::set<std::string> > alias_tags;
+	m_combined_typedef_alias.clear();
+	m_hoisted_combined_aliases.clear();
 	for (auto &td : prog->top_decls) {
 		if (td.kind == Program::DeclKind::dkTypedef) {
 			DataDefSTRUCT *asdd = struct_behind(td.dd);
@@ -8488,8 +8513,12 @@ node_t CirBuilder::translate_module(Program *prog)
 			// the body) emit STRUCT(tag, IGNORE) instead of hoisting the body
 			// above types its members name (self-referential typedef cluster).
 			DataDefSTRUCT *sdd = struct_behind(td.dd);
-			if (sdd && sdd->is_complete)
+			if (sdd && sdd->is_complete) {
 				struct_def_points.insert(sdd->name);
+				// Remember the combined typedef so a hoist of this struct emits
+				// the body AND the alias together (first def-point wins).
+				m_combined_typedef_alias.emplace(sdd->name, &td);
+			}
 		}
 	}
 
@@ -8540,6 +8569,11 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (auto &td : prog->top_decls) {
 		switch (td.kind) {
 		case Program::DeclKind::dkTypedef: {
+			// Already emitted EARLY by emit_struct_with_deps as part of a combined
+			// `typedef struct X {...} Y;` it hoisted (a by-value member needed X
+			// complete before this source position). Skip the duplicate.
+			if (m_hoisted_combined_aliases.count(td.name))
+				break;
 			DataDefSTRUCT *sdd = struct_behind(td.dd);
 			// This typedef IS the tag's body-definition point when it carries
 			// the inline body (`typedef struct Tag {...} Tag;`, td.struct_body).

@@ -130,6 +130,16 @@ class CirBuilder {
 	// two conflicting `typedef <tag> string;` -> c2mir "repeated declaration".
 	// Populated once per module (translate_module); empty for the common case.
 	std::set<std::string> m_ambiguous_typedef_aliases;
+	// Struct-tag name -> the COMBINED `typedef struct Tag {...} Alias;` TopDecl that
+	// is the tag's body-definition point. When emit_struct_with_deps must hoist such
+	// a struct (a by-value member needs it complete early), it emits the WHOLE
+	// combined decl (body + alias) so the Alias name is available to dependents
+	// hoisted after it — not just the bare struct body (which would strand the alias
+	// at its original, later position -> "unknown type Alias"). Populated in the
+	// translate_module pre-scan; the aliases it emits early are recorded below so
+	// the source-order Pass 0 skips re-emitting them.
+	std::map<std::string, Program::TopDecl *> m_combined_typedef_alias;
+	std::set<std::string> m_hoisted_combined_aliases;
 	// The C identifier to EMIT for a typedef alias `alias` of type `dd`: normally
 	// the bare alias itself, but for an ambiguous alias (above) backed by a struct
 	// the already-unique struct tag instead, so std vs std::pmr stay distinct C
