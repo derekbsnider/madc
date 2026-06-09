@@ -4164,9 +4164,15 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// FIRST (base-most order), then run the ctor. The ctor itself constructs only
 	// non-virtual bases (it skips vbases), so this is the single place each shared
 	// vbase is constructed. No vbases -> just the ctor call (byte-identical).
+	//
+	// EXCEPTION: an externally-defined class bound to its real Itanium C1 ctor
+	// (emit_symbol set, e.g. std::basic_ofstream) — that complete-object ctor lives
+	// in libstdc++ and constructs the ENTIRE object, virtual bases and vptrs
+	// included. madc must not also construct the vbases here (it would call the
+	// vbase's ctor with the wrong overload — the basic_ios "too few arguments").
 	std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> vseen;
 	cdd->collect_vbases(vbs, vseen);
-	if (vbs.empty())
+	if (vbs.empty() || !ctor->emit_symbol.empty())
 		return ctor_stmt;
 	std::vector<node_t> stmts;
 	vbase_ctor_stmts(v->name, /*addr_of=*/true, cdd, stmts, origin);
@@ -8622,6 +8628,59 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (TokenFunc *tf : funcs)
 		user_func_names.insert(tf->var.name);
 	m_user_func_names = &user_func_names;
+
+	// Bind the ctors + dtor of EXTERNALLY-DEFINED (libstdc++-owned) classes to
+	// their real Itanium C1 / D1 symbols, BEFORE any construction is lowered (the
+	// global-ctor pass + the function bodies below). libstdc++'s explicit
+	// instantiation provides these out-of-line — exactly like the vtable/typeinfo
+	// (Pass 1.5) and the gated dtor synthesis (Pass 1.6). madc must NOT synthesize a
+	// member-wise ctor for such a class: it cannot reproduce the exact
+	// base/vbase-construction + vptr-install + layout ABI (the synthesized
+	// basic_ofstream ctor constructed basic_ios — a virtual base — with the wrong
+	// overload -> c2mir "too few arguments"; g++ emits a single C1 call and lets
+	// libstdc++ build the whole hierarchy, vbases and vptrs included). Setting
+	// emit_symbol routes construction (ctor_call_symbol) and destruction
+	// (class_dtor_symbol) to the real symbol AND suppresses the synthesized body +
+	// vbase chaining (external = !emit_symbol.empty()). Data-driven
+	// (is_externally_defined), never a namespace==std test (Rule #7).
+	{
+		std::set<DataDefCLASS *> bound_ext;
+		for (auto &kv : prog->struct_map) {
+			DataDefCLASS *cdd = as_user_class(kv.second);
+			if (!cdd || !cdd->is_externally_defined()) continue;
+			if (cdd->canonical_cpp_spelling.empty()) continue;
+			if (bound_ext.count(cdd)) continue;
+			bound_ext.insert(cdd);
+			const std::string &cls = cdd->canonical_cpp_spelling;
+			// CTOR binding only for TEMPLATE-INSTANTIATION classes (canonical
+			// spelling contains '<'): libstdc++ EXPLICITLY INSTANTIATES exactly
+			// the polymorphic template families (basic_ios/basic_ofstream/...,
+			// the locale facets), so their C1 ctors are exported out-of-line. A
+			// concrete polymorphic class like std::bad_alloc has an inline/defaulted
+			// ctor with NO exported _ZNSt9bad_allocC1Ev — binding it would dangle at
+			// link. (A wrong bind fails loudly at MIR-link, never silently.) Those
+			// concrete classes keep madc's vptr-init construction, which already
+			// works. The dtor is virtual (in the vtable) so it's exported for both.
+			bool ctor_exported = cls.find('<') != std::string::npos;
+			for (Variable *cv : ctor_exported ? cdd->ctors
+							  : std::vector<Variable *>()) {
+				FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+				if (!fd || !fd->emit_symbol.empty()) continue;
+				// Param spellings EXCLUDING the hidden __this (slot 0), same as
+				// bind_declared_cpp_symbol — so PKc / St13_Ios_Openmode match the ABI.
+				std::vector<std::string> psp;
+				for (size_t i = 1; i < fd->param_cpp_spellings.size(); ++i)
+					psp.push_back(fd->param_cpp_spellings[i]);
+				fd->emit_symbol = itanium_mangle_ctor_sub(cls, psp);
+			}
+			auto dit = cdd->method_map.find("~" + cdd->name);
+			if (dit != cdd->method_map.end() && dit->second) {
+				FuncDef *dt = dynamic_cast<FuncDef *>(dit->second->type);
+				if (dt && dt->emit_symbol.empty())
+					dt->emit_symbol = itanium_mangle_dtor_sub(cls);
+			}
+		}
+	}
 
 	// File-scope class-instance globals: emit storage for any not already
 	// covered by the dkGlobalVar pass (built-ins like
