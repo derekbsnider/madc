@@ -1670,6 +1670,53 @@ DataDef *Program::resolve_named_datadef(const std::string &name)
     if ( bmi != datatype_map.end() )
 	return &bmi->second->definition;
 
+    if ( name == "void" ) return &ddVOID;
+    if ( name == "bool" || name == "_Bool" ) return &ddBOOL;
+    if ( name == "char" ) return &ddCHAR;
+    if ( name == "signed char" ) return &ddINT8;
+    if ( name == "unsigned char" ) return &ddUINT8;
+    if ( name == "short" || name == "short int"
+      || name == "signed short" || name == "signed short int" )
+	return &ddINT16;
+    if ( name == "unsigned short" || name == "unsigned short int" )
+	return &ddUINT16;
+    if ( name == "int" || name == "signed" || name == "signed int" )
+	return &ddINT32;
+    if ( name == "unsigned" || name == "unsigned int" )
+	return &ddUINT32;
+    if ( name == "long" || name == "long int"
+      || name == "signed long" || name == "signed long int"
+      || name == "long long" || name == "long long int"
+      || name == "signed long long" || name == "signed long long int"
+      || name == "__int128" || name == "signed __int128" )
+	return &ddINT64;
+    if ( name == "unsigned long" || name == "unsigned long int"
+      || name == "unsigned long long" || name == "unsigned long long int"
+      || name == "unsigned __int128" )
+	return &ddUINT64;
+    if ( name == "float" || name == "_Float32" ) return &ddFLOAT;
+    if ( name == "double" || name == "long double"
+      || name == "_Float64" || name == "_Float128"
+      || name == "_Float32x" || name == "_Float64x" )
+	return &ddDOUBLE;
+    if ( name == "int8_t" ) return &ddINT8;
+    if ( name == "int16_t" ) return &ddINT16;
+    if ( name == "int32_t" ) return &ddINT32;
+    if ( name == "int64_t" ) return &ddINT64;
+    if ( name == "uint8_t" ) return &ddUINT8;
+    if ( name == "uint16_t" ) return &ddUINT16;
+    if ( name == "uint32_t" ) return &ddUINT32;
+    if ( name == "uint64_t" ) return &ddUINT64;
+    if ( name == "size_t" ) return &ddUINT64;
+    if ( name == "ptrdiff_t" ) return &ddINT64;
+    if ( name == "wchar_t" ) return &ddINT32;
+    if ( name == "char16_t" ) return &ddUINT16;
+    if ( name == "char32_t" ) return &ddUINT32;
+    if ( name == "max_align_t" ) return &ddMAX_ALIGN_T;
+    if ( name == "LPSTR" ) return &ddLPSTR;
+    if ( name == "array" ) return &ddARRAY;
+    if ( name == "auto" ) return &ddAUTO;
+
     return lazy_resolve_type(name);
 }
 
@@ -2137,6 +2184,145 @@ TokenBase *Program::collect_template_argument_spelling(TokenBase *first,
     return NULL;
 }
 
+static std::string single_contextual_token_name(const std::vector<TokenBase *> &toks)
+{
+    if ( toks.size() != 1 || !is_contextual_identifier_token(toks[0]) )
+	return "";
+    return contextual_identifier_name(toks[0]);
+}
+
+static TokenDataType *resolve_type_token_sequence(Program &pgm,
+						  const std::vector<TokenBase *> &seq,
+						  TokenBase *loc)
+{
+    if ( seq.empty() )
+	return NULL;
+
+    TokenSemi *sentinel = new TokenSemi();
+    std::vector<TokenBase *> inj;
+    for ( size_t i = 0; i < seq.size(); ++i )
+	inj.push_back(seq[i]->clone());
+    inj.push_back(sentinel);
+    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
+	  it != inj.rend(); ++it )
+	pgm.pushToken(*it);
+
+    TokenBase *head = pgm.nextToken();
+    std::string cv_spelling;
+    head = pgm.consume_template_type_arg_qualifiers(head, cv_spelling);
+    (void)cv_spelling;
+    TokenDataType *resolved = pgm.resolve_declared_type_token(head, true, true);
+    if ( resolved )
+    {
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	{
+	    pgm.nextToken();
+	    DataDefPTR *ptr = pgm.getPointerType(&resolved->definition);
+	    TokenDataType *pdt = new TokenDataType(ptr->name.c_str(), *ptr);
+	    pdt->file = loc ? loc->file : resolved->file;
+	    pdt->line = loc ? loc->line : resolved->line;
+	    pdt->column = loc ? loc->column : resolved->column;
+	    resolved = pdt;
+	}
+    }
+
+    bool have_sentinel = false;
+    for ( size_t si = 0; si < pgm.tokens.size(); ++si )
+	if ( pgm.tokens[si] == sentinel )
+	{
+	    have_sentinel = true;
+	    break;
+	}
+    if ( have_sentinel )
+    {
+	while ( pgm.peekToken() && pgm.peekToken() != sentinel )
+	    pgm.nextToken();
+	if ( pgm.peekToken() == sentinel )
+	    pgm.nextToken();
+    }
+    else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	pgm.nextToken();
+
+    return resolved;
+}
+
+static Program::TemplateAliasDef *find_template_alias_in_class_tree(
+	Program &pgm, const std::string &name, DataDefCLASS *owner,
+	DataDefCLASS **matched_owner, std::set<DataDefCLASS *> *seen = NULL)
+{
+    if ( !owner )
+	return NULL;
+    std::set<DataDefCLASS *> local_seen;
+    if ( !seen )
+	seen = &local_seen;
+    if ( seen->find(owner) != seen->end() )
+	return NULL;
+    seen->insert(owner);
+
+    std::map<std::string, std::vector<Program::TemplateAliasDef>>::iterator it =
+	pgm.template_alias_map.find(name);
+    if ( it != pgm.template_alias_map.end() )
+	for ( size_t i = 0; i < it->second.size(); ++i )
+	    if ( it->second[i].owner_class == owner )
+	    {
+		if ( matched_owner )
+		    *matched_owner = owner;
+		return &it->second[i];
+	    }
+
+    for ( size_t i = 0; i < owner->bases.size(); ++i )
+	if ( Program::TemplateAliasDef *td =
+		find_template_alias_in_class_tree(pgm, name,
+						  owner->bases[i].base,
+						  matched_owner, seen) )
+	    return td;
+    if ( Program::TemplateAliasDef *td =
+	    find_template_alias_in_class_tree(pgm, name, owner->base_class,
+					      matched_owner, seen) )
+	return td;
+    return find_template_alias_in_class_tree(pgm, name, owner->enclosing_class,
+					     matched_owner, seen);
+}
+
+static TokenDataType *resolve_simple_member_detection_alias(
+	Program &pgm, const Program::TemplateAliasDef &op_alias,
+	const std::vector<std::vector<TokenBase *> > &op_arg_tokens,
+	TokenBase *loc)
+{
+    const std::vector<TokenBase *> &target = op_alias.target;
+    if ( target.size() < 4 )
+	return NULL;
+    if ( !is_contextual_identifier_token(target[0])
+      || contextual_identifier_name(target[0]) != "typename" )
+	return NULL;
+    if ( !is_contextual_identifier_token(target[1])
+      || target[2]->id() != TokenID::tkNS
+      || !is_contextual_identifier_token(target[3]) )
+	return NULL;
+
+    std::string param_name = contextual_identifier_name(target[1]);
+    size_t param_index = op_alias.typeparams.size();
+    for ( size_t i = 0; i < op_alias.typeparams.size(); ++i )
+	if ( op_alias.typeparams[i] == param_name )
+	{
+	    param_index = i;
+	    break;
+	}
+    if ( param_index >= op_arg_tokens.size() )
+	return NULL;
+
+    TokenDataType *arg_type =
+	resolve_type_token_sequence(pgm, op_arg_tokens[param_index], loc);
+    DataDefCLASS *arg_class = arg_type
+	? dynamic_cast<DataDefCLASS *>(&arg_type->definition) : NULL;
+    if ( !arg_class )
+	return NULL;
+
+    std::string member_name = contextual_identifier_name(target[3]);
+    DataDef *member = resolve_class_type_alias(arg_class, member_name);
+    return member ? make_alias_type_token(member_name, member, loc) : NULL;
+}
+
 static bool template_param_expects_type(const std::vector<bool> &kinds,
 					size_t index)
 {
@@ -2383,6 +2569,14 @@ static bool class_has_unresolved_dependent_surface(DataDefCLASS *cls)
 	|| class_has_dependent_base(cls));
 }
 
+static bool class_allows_opaque_member_type(DataDefCLASS *cls)
+{
+    if ( class_has_unresolved_dependent_surface(cls) )
+	return true;
+    return cls && cls->from_system_header
+	&& cls->canonical_cpp_spelling.find('<') != std::string::npos;
+}
+
 static bool datadef_has_unresolved_dependent_surface(DataDef *dd)
 {
     if ( !dd )
@@ -2466,20 +2660,22 @@ static void record_pending_template_instantiation(
 }
 
 TokenDataType *Program::instantiate_template_id(const std::string &tname,
-						TokenBase *tb,
-						const std::string &ns_hint)
+					       TokenBase *tb,
+					       const std::string &ns_hint,
+					       DataDefCLASS *owner_hint)
 {
     if ( TokenDataType *alias_inst =
-	    instantiate_template_alias_use(tname, tb, ns_hint) )
+	    instantiate_template_alias_use(tname, tb, ns_hint, owner_hint) )
 	return alias_inst;
-    return instantiate_template_use(tname, tb, ns_hint);
+    return instantiate_template_use(tname, tb, ns_hint, owner_hint);
 }
 
 TokenDataType *Program::instantiate_template_use(const std::string &tname,
 					       TokenBase *tb,
-					       const std::string &ns_hint)
+					       const std::string &ns_hint,
+					       DataDefCLASS *owner_hint)
 {
-    Program::TemplateDef *tdp = find_template(tname, ns_hint);
+    Program::TemplateDef *tdp = find_template(tname, ns_hint, owner_hint);
     if ( !tdp )
 	return NULL;
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
@@ -2667,12 +2863,12 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	if ( td.body.empty() || !is_incomplete_template_class_type(cached) )
 	    return use_site_type_token(cached, tb);
     }
-
     if ( td.body.empty() )
     {
 	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
 	fwd->canonical_cpp_spelling = canon;
-	fwd->has_dependent_surface = dependent_surface;
+	fwd->is_dependent_placeholder = true;
+	fwd->has_dependent_surface = true;
 	struct_map[registered_mangled] = fwd;
 	TokenDataType *tdt = new TokenDataType(registered_mangled.c_str(), *fwd);
 	datatype_map[registered_mangled] = tdt;
@@ -2780,9 +2976,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 
 TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 						     TokenBase *tb,
-						     const std::string &ns_hint)
+						     const std::string &ns_hint,
+						     DataDefCLASS *owner_hint)
 {
-    Program::TemplateAliasDef *tdp = find_template_alias(tname, ns_hint);
+    Program::TemplateAliasDef *tdp = find_template_alias(tname, ns_hint,
+							 owner_hint);
     if ( !tdp )
 	return NULL;
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
@@ -2792,12 +2990,16 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
     {
 	nextToken(); // consume '<'
 	std::vector<std::string> args;
+	std::vector<std::vector<TokenBase *> > arg_tokens;
 	for (;;)
 	{
 	    TokenBase *at = nextToken();
 	    std::string spelling;
-	    TokenBase *sep = collect_template_argument_spelling(at, spelling);
+	    std::vector<TokenBase *> toks;
+	    TokenBase *sep = collect_template_argument_spelling(at, spelling,
+								&toks);
 	    args.push_back(spelling);
+	    arg_tokens.push_back(toks);
 	    if ( sep->id() == TokenID::tkComma )
 		continue;
 	    if ( consume_template_close(sep) )
@@ -2811,9 +3013,43 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	      || td.typeparam_defaults[ai].empty() )
 		break;
 	    std::string spelling;
+	    std::vector<TokenBase *> toks;
 	    for ( TokenBase *dt : td.typeparam_defaults[ai] )
+	    {
 		spelling += template_token_fragment(dt);
+		toks.push_back(dt->clone());
+	    }
 	    args.push_back(spelling);
+	    arg_tokens.push_back(toks);
+	}
+
+	if ( tname == "__detected_or_t" && arg_tokens.size() >= 2 )
+	{
+	    std::string op_name = single_contextual_token_name(arg_tokens[1]);
+	    DataDefCLASS *op_owner = NULL;
+	    Program::TemplateAliasDef *op_alias = NULL;
+	    if ( !op_name.empty() )
+	    {
+		for ( std::vector<DataDefCLASS *>::reverse_iterator it =
+			  class_scope_stack.rbegin();
+		      it != class_scope_stack.rend() && !op_alias; ++it )
+		    op_alias = find_template_alias_in_class_tree(*this, op_name,
+								*it,
+								&op_owner);
+	    }
+	    std::vector<std::vector<TokenBase *> > op_args;
+	    for ( size_t ai = 2; ai < arg_tokens.size(); ++ai )
+		op_args.push_back(arg_tokens[ai]);
+	    if ( op_alias )
+	    {
+		if ( TokenDataType *detected =
+			resolve_simple_member_detection_alias(*this, *op_alias,
+							      op_args, tb) )
+		    return detected;
+	    }
+	    if ( TokenDataType *fallback =
+		    resolve_type_token_sequence(*this, arg_tokens[0], tb) )
+		return fallback;
 	}
 
 	std::string mangled = tname;
@@ -2847,6 +3083,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 
     nextToken(); // consume '<'
     std::vector<TokenDataType *> args;
+    std::vector<std::string> arg_spellings;
     std::map<std::string, TokenDataType *> subst;
 	for (;;)
 	{
@@ -2866,6 +3103,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    adt = padt;
 	}
 	args.push_back(adt);
+	arg_spellings.push_back(template_type_arg_spelling(adt, cv_spelling));
 	TokenBase *sep = nextToken();
 	if ( sep->id() == TokenID::tkComma )
 	    continue;
@@ -2916,6 +3154,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	    nextToken();
 	args.push_back(adt);
+	arg_spellings.push_back(template_type_arg_spelling(adt, cv_spelling));
 	subst[td.typeparams[ai]] = adt;
     }
 
@@ -2934,7 +3173,8 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	}
 	inj.push_back(bt->clone());
     }
-    inj.push_back(new TokenSemi());
+    TokenSemi *alias_sentinel = new TokenSemi();
+    inj.push_back(alias_sentinel);
     for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
 	  it != inj.rend(); ++it )
 	pushToken(*it);
@@ -2948,13 +3188,53 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 
     TokenBase *head = nextToken();
     TokenDataType *resolved = resolve_declared_type_token(head, true, true);
-    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+    bool have_sentinel = false;
+    for ( size_t si = 0; si < tokens.size(); ++si )
+	if ( tokens[si] == alias_sentinel )
+	{
+	    have_sentinel = true;
+	    break;
+	}
+    if ( have_sentinel )
+    {
+	while ( peekToken() && peekToken() != alias_sentinel )
+	    nextToken();
+	if ( peekToken() == alias_sentinel )
+	    nextToken();
+    }
+    else if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	nextToken();
 
     if ( pushed_owner_scope
       && !class_scope_stack.empty()
       && class_scope_stack.back() == td.owner_class )
 	class_scope_stack.pop_back();
+
+    if ( !resolved && td.owner_class
+      && class_has_unresolved_dependent_surface(td.owner_class) )
+    {
+	std::string member_fragment = tname;
+	std::string owner_spelling = td.owner_class->canonical_cpp_spelling.empty()
+				   ? td.owner_class->name
+				   : td.owner_class->canonical_cpp_spelling;
+	std::string canon = owner_spelling + "::" + tname + "<";
+	for ( size_t ai = 0; ai < arg_spellings.size(); ++ai )
+	{
+	    member_fragment += "_" + sanitize_template_fragment(arg_spellings[ai]);
+	    if ( ai )
+		canon += ",";
+	    canon += arg_spellings[ai];
+	}
+	canon += ">";
+	std::string dep_name = td.owner_class->name + "__"
+			     + sanitize_template_fragment(member_fragment);
+	DataDefCLASS *dep = materialize_opaque_class_type(dep_name, canon);
+	if ( dep )
+	{
+	    dep->has_dependent_surface = true;
+	    return make_alias_type_token(dep_name, dep, tb);
+	}
+    }
 
     return resolved ? use_site_type_token(resolved, tb) : NULL;
 }
@@ -3021,9 +3301,33 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 {
     if ( !first )
 	Throw(typename_tb) << "Expecting qualified type after 'typename'" << flush;
+    if ( first->id() == TokenID::tkNS )
+    {
+	TokenBase *head = nextToken();
+	TokenDataType *resolved =
+	    resolve_declared_type_token(head, true, allow_lazy_types);
+	return resolved;
+    }
 
-    TokenDataType *owner_type =
-	resolve_declared_type_token(first, true, allow_lazy_types, false);
+    TokenDataType *owner_type = NULL;
+    if ( is_contextual_identifier_token(first)
+      && peekToken() && peekToken()->id() == TokenID::tkLT )
+    {
+	std::string first_name = contextual_identifier_name(first);
+	for ( std::vector<DataDefCLASS *>::reverse_iterator it =
+		  class_scope_stack.rbegin();
+	      it != class_scope_stack.rend(); ++it )
+	{
+	    if ( !*it )
+		continue;
+	    owner_type = instantiate_template_id(first_name, first,
+						std::string(), *it);
+	    if ( owner_type )
+		break;
+	}
+    }
+    if ( !owner_type )
+	owner_type = resolve_declared_type_token(first, true, allow_lazy_types, false);
     if ( !owner_type )
 	return NULL;
     DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(&owner_type->definition);
@@ -3061,10 +3365,13 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
 	    if ( TokenDataType *inst =
-		    instantiate_template_id(member_name, member_tb) )
+		    instantiate_template_id(member_name, member_tb,
+					    std::string(), owner) )
 	    {
 		owner = dynamic_cast<DataDefCLASS *>(&inst->definition);
 		if ( !owner )
+		    return inst;
+		if ( !peekToken() || peekToken()->id() != TokenID::tkNS )
 		    return inst;
 		continue;
 	    }
@@ -3072,7 +3379,7 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	}
 
 	DataDef *alias_dd = resolve_class_type_alias(owner, member_name);
-	if ( !alias_dd && class_has_unresolved_dependent_surface(owner) )
+	if ( !alias_dd && class_allows_opaque_member_type(owner) )
 	    alias_dd = materialize_dependent_member_type(owner, member_name);
 	if ( !alias_dd )
 	    return NULL;
@@ -3114,10 +3421,13 @@ TokenDataType *Program::resolve_class_member_type_chain(DataDefCLASS *owner,
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
 	    if ( TokenDataType *inst =
-		    instantiate_template_id(member_name, member_tb) )
+		    instantiate_template_id(member_name, member_tb,
+					    std::string(), owner) )
 	    {
 		owner = dynamic_cast<DataDefCLASS *>(&inst->definition);
 		if ( !owner )
+		    return inst;
+		if ( !peekToken() || peekToken()->id() != TokenID::tkNS )
 		    return inst;
 		continue;
 	    }
@@ -3125,7 +3435,7 @@ TokenDataType *Program::resolve_class_member_type_chain(DataDefCLASS *owner,
 	}
 
 	DataDef *alias_dd = resolve_class_type_alias(owner, member_name);
-	if ( !alias_dd && class_has_unresolved_dependent_surface(owner) )
+	if ( !alias_dd && class_allows_opaque_member_type(owner) )
 	    alias_dd = materialize_dependent_member_type(owner, member_name);
 	if ( !alias_dd )
 	    Throw(member_tb) << "'" << member_name
@@ -5210,7 +5520,8 @@ bool Program::fold_constant_qualified_member(TokenBase *first, int64_t &out)
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
 	    if ( TokenDataType *inst =
-		    instantiate_template_id(seg_name, seg, pending_ns) )
+		    instantiate_template_id(seg_name, seg, pending_ns,
+					    pending_ns.empty() ? scope : NULL) )
 		seg_scope = dynamic_cast<DataDefCLASS *>(&inst->definition);
 	}
 
@@ -5526,6 +5837,51 @@ int64_t Program::parse_constant_integer_expression()
     return parse_constant_ternary();
 }
 
+static bool constant_initializer_has_runtime_access(Program &pgm)
+{
+    int paren_depth = 0;
+    int square_depth = 0;
+    int brace_depth = 0;
+    for ( size_t i = 0; i < pgm.tokens.size(); ++i )
+    {
+	TokenBase *t = pgm.tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkSemi
+	  && paren_depth == 0 && square_depth == 0 && brace_depth == 0 )
+	    break;
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++paren_depth;
+	else if ( t->id() == TokenID::tkClBrk && paren_depth > 0 )
+	    --paren_depth;
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square_depth;
+	else if ( t->id() == TokenID::tkClSqr && square_depth > 0 )
+	    --square_depth;
+	else if ( t->id() == TokenID::tkOpBrc )
+	    ++brace_depth;
+	else if ( t->id() == TokenID::tkClBrc && brace_depth > 0 )
+	    --brace_depth;
+	if ( t->id() == TokenID::tkDot || t->id() == TokenID::tkDeRef )
+	    return true;
+	if ( !is_contextual_identifier_token(t) )
+	    continue;
+	TokenBase *next = (i + 1 < pgm.tokens.size()) ? pgm.tokens[i + 1] : NULL;
+	if ( next && (next->id() == TokenID::tkDot || next->id() == TokenID::tkDeRef) )
+	    return true;
+	std::string name = contextual_identifier_name(t);
+	bool bool_value = false;
+	bool constant_callable = name == "sizeof"
+			      || is_alignof_identifier(name)
+			      || is_type_trait_builtin(name)
+			      || is_bool_literal_identifier(name, bool_value)
+			      || is_nullptr_identifier(name);
+	if ( next && next->id() == TokenID::tkOpBrk && !constant_callable )
+	    return true;
+    }
+    return false;
+}
+
 // Speculatively fold a static-data-member initializer (caller has already consumed
 // the '=') to a constant integer, expecting a terminating ';'. On success the
 // initializer is CONSUMED (stream left at ';') and the value returned via `out`; on
@@ -5534,6 +5890,8 @@ int64_t Program::parse_constant_integer_expression()
 // bracket_dim_constant_expression_parses.
 bool Program::capture_constant_initializer_value(int64_t &out)
 {
+    if ( constant_initializer_has_runtime_access(*this) )
+	return false;
     auto saved_tokens = tokens;
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
@@ -10108,7 +10466,8 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
 	{
 	    if ( TokenDataType *inst =
-		    pgm.instantiate_template_id(member_name, member_tb) )
+		    pgm.instantiate_template_id(member_name, member_tb,
+						std::string(), scope) )
 		member_dd = &inst->definition;
 	    else
 		pgm.skip_template_id_suffix();
@@ -10226,7 +10585,8 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 }
 
 Program::TemplateDef *Program::find_template(const std::string &name,
-					     const std::string &ns_hint)
+					     const std::string &ns_hint,
+					     DataDefCLASS *owner_hint)
 {
     std::map<std::string, std::vector<Program::TemplateDef>>::iterator g =
 	template_map.find(name);
@@ -10239,7 +10599,8 @@ Program::TemplateDef *Program::find_template(const std::string &name,
 	// Exact namespace match only — used both as a declared-in check and to
 	// instantiate the correct same-named template under a qualified use.
 	for ( size_t i = 0; i < variants.size(); ++i )
-	    if ( variants[i].defining_namespace == ns_hint )
+	    if ( variants[i].defining_namespace == ns_hint
+	      && variants[i].owner_class == owner_hint )
 		return &variants[i];
 	std::map<std::string, std::vector<std::string>>::iterator ci =
 	    inline_namespace_children.find(ns_hint);
@@ -10250,7 +10611,8 @@ Program::TemplateDef *Program::find_template(const std::string &name,
 	{
 	    const std::string &child = pending[pi];
 	    for ( size_t i = 0; i < variants.size(); ++i )
-		if ( variants[i].defining_namespace == child )
+		if ( variants[i].defining_namespace == child
+		  && variants[i].owner_class == owner_hint )
 		    return &variants[i];
 	    ci = inline_namespace_children.find(child);
 	    if ( ci != inline_namespace_children.end() )
@@ -10260,23 +10622,33 @@ Program::TemplateDef *Program::find_template(const std::string &name,
 	return NULL;
     }
 
-    // Unqualified: a single variant reproduces the old map-by-bare-name
-    // behavior exactly. Only when more than one namespace declares the same
-    // bare name do we have to choose — prefer the active namespace, then the
-    // global one, then fall back to the first.
-    if ( variants.size() == 1 )
-	return &variants[0];
+    std::vector<Program::TemplateDef *> owned;
     for ( size_t i = 0; i < variants.size(); ++i )
-	if ( variants[i].defining_namespace == current_namespace )
+	if ( variants[i].owner_class == owner_hint )
+	    owned.push_back(&variants[i]);
+    if ( owned.empty() )
+	return NULL;
+
+    // Unqualified: a single matching-owner variant reproduces the old
+    // map-by-bare-name behavior exactly. Only when more than one namespace
+    // declares the same bare name do we have to choose — prefer the active
+    // namespace, then the global one, then the first matching-owner variant.
+    if ( owned.size() == 1 )
+	return owned[0];
+    for ( size_t i = 0; i < variants.size(); ++i )
+	if ( variants[i].owner_class == owner_hint
+	  && variants[i].defining_namespace == current_namespace )
 	    return &variants[i];
     for ( size_t i = 0; i < variants.size(); ++i )
-	if ( variants[i].defining_namespace.empty() )
+	if ( variants[i].owner_class == owner_hint
+	  && variants[i].defining_namespace.empty() )
 	    return &variants[i];
-    return &variants[0];
+    return owned[0];
 }
 
 Program::TemplateAliasDef *Program::find_template_alias(const std::string &name,
-							const std::string &ns_hint)
+							const std::string &ns_hint,
+							DataDefCLASS *owner_hint)
 {
     std::map<std::string, std::vector<Program::TemplateAliasDef>>::iterator g =
 	template_alias_map.find(name);
@@ -10287,7 +10659,8 @@ Program::TemplateAliasDef *Program::find_template_alias(const std::string &name,
     if ( !ns_hint.empty() )
     {
 	for ( size_t i = 0; i < variants.size(); ++i )
-	    if ( variants[i].defining_namespace == ns_hint )
+	    if ( variants[i].defining_namespace == ns_hint
+	      && variants[i].owner_class == owner_hint )
 		return &variants[i];
 	std::map<std::string, std::vector<std::string>>::iterator ci =
 	    inline_namespace_children.find(ns_hint);
@@ -10298,7 +10671,8 @@ Program::TemplateAliasDef *Program::find_template_alias(const std::string &name,
 	{
 	    const std::string &child = pending[pi];
 	    for ( size_t i = 0; i < variants.size(); ++i )
-		if ( variants[i].defining_namespace == child )
+		if ( variants[i].defining_namespace == child
+		  && variants[i].owner_class == owner_hint )
 		    return &variants[i];
 	    ci = inline_namespace_children.find(child);
 	    if ( ci != inline_namespace_children.end() )
@@ -10308,26 +10682,37 @@ Program::TemplateAliasDef *Program::find_template_alias(const std::string &name,
 	return NULL;
     }
 
+    std::vector<Program::TemplateAliasDef *> owned;
+    for ( size_t i = 0; i < variants.size(); ++i )
+	if ( variants[i].owner_class == owner_hint )
+	    owned.push_back(&variants[i]);
+    if ( owned.empty() )
+	return NULL;
+    if ( owner_hint && owned.size() == 1 )
+	return owned[0];
+
     if ( !current_namespace.empty() )
     {
 	std::string scope = current_namespace;
 	for (;;)
 	{
-	    for ( size_t i = 0; i < variants.size(); ++i )
-		if ( variants[i].defining_namespace == scope )
-		    return &variants[i];
+	    for ( size_t i = 0; i < owned.size(); ++i )
+		if ( owned[i]->defining_namespace == scope )
+		    return owned[i];
 	    size_t pos = scope.rfind("::");
 	    if ( pos == std::string::npos )
 		break;
 	    scope = scope.substr(0, pos);
 	}
     }
-    for ( size_t i = 0; i < variants.size(); ++i )
-	if ( variants[i].defining_namespace.empty() )
-	    return &variants[i];
+    for ( size_t i = 0; i < owned.size(); ++i )
+	if ( owned[i]->defining_namespace.empty() )
+	    return owned[i];
 
-    if ( current_namespace.empty() && variants.size() == 1 )
-	return &variants[0];
+    if ( current_namespace.empty() && owned.size() == 1 )
+	return owned[0];
+    if ( owner_hint )
+	return owned[0];
     return NULL;
 }
 
@@ -10348,7 +10733,8 @@ void Program::register_template(const Program::TemplateDef &td, bool only_if_abs
     std::vector<Program::TemplateDef> &variants = template_map[td.class_name];
     for ( size_t i = 0; i < variants.size(); ++i )
     {
-	if ( variants[i].defining_namespace != td.defining_namespace )
+	if ( variants[i].defining_namespace != td.defining_namespace
+	  || variants[i].owner_class != td.owner_class )
 	    continue;
 	if ( only_if_absent )
 	    return;                       // first declaration in this ns wins
@@ -17852,6 +18238,16 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		}
 		TokenBase *type_head = pgm.nextToken();
 		TokenDataType *mtype = pgm.resolve_declared_type_token(type_head, true, true);
+		if ( !mtype
+		  && (class_allows_opaque_member_type(ddc)
+		   || pgm.is_system_header_path(TokenBase::_parse_file))
+		  && type_head && is_contextual_identifier_token(type_head) )
+		{
+		    std::string type_name = contextual_identifier_name(type_head);
+		    if ( DataDefCLASS *opaque =
+			    pgm.materialize_dependent_member_type(ddc, type_name) )
+			mtype = make_alias_type_token(type_name, opaque, type_head);
+		}
 		if ( !mtype )
 		    pgm.Throw(type_head) << "Expecting type in class definition" << flush;
 
@@ -19217,6 +19613,36 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	alias = ((TokenDataType *)tn)->str;
     else if ( tn->type() == TokenType::ttKeyword )
 	alias = ((TokenKeyword *)tn)->str;
+    else if ( tn && tn->id() == TokenID::tkSemi
+	   && pgm.is_system_header_path(TokenBase::_parse_file) )
+    {
+	if ( pgm.peekToken()
+	  && is_contextual_identifier_token(pgm.peekToken())
+	  && pgm.tokens.size() > 1
+	  && pgm.tokens[1]
+	  && pgm.tokens[1]->id() == TokenID::tkSemi )
+	{
+	    alias_tok = pgm.nextToken();
+	    alias = contextual_identifier_name(alias_tok);
+	}
+	if ( alias.empty() )
+	{
+	    std::string spelling = trim_spelling(base_source_spelling);
+	    size_t pos = spelling.rfind("::");
+	    if ( pos != std::string::npos && pos + 2 < spelling.size() )
+	    {
+		alias = spelling.substr(pos + 2);
+		size_t lt = alias.find('<');
+		if ( lt != std::string::npos )
+		    alias = alias.substr(0, lt);
+		alias = trim_spelling(alias);
+		if ( !alias.empty() )
+		    alias_tok = new TokenIdent(alias.c_str());
+	    }
+	}
+	if ( alias.empty() )
+	    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
+    }
     else
     {
 	pgm.Throw(tn) << "Expecting alias name in typedef" << flush;

@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Real `<string>` richer mutation path advanced (2026-06-09)
+
+- Fixed the c2mir failure reached by real libstdc++ `std::string` mutators such
+  as `s += "x"` and `s = "hi"` by treating C++ reference returns as address
+  returns in the CIR/external-call boundary and applying the same derived-to-base
+  adjustment used for pointer returns. Focused reducers for default construction,
+  assignment, and append now compile/run quiet.
+- Corrected the remaining literal-construction diagnosis: `std::string s("hello")`
+  still crashes because madc emits destructor cleanup for unconstructed storage.
+  The emitted `basic_string<char>` layout is the expected 32 bytes; the next gap is
+  generic member-template constructor instantiation/selection for libstdc++'s
+  defaulted C-string constructor template, not a layout shim.
+- Validation: `make -C src fulltest` remains at the known baseline
+  `543 passed, 4 failed, 0 timed out, 26 skipped`; gcc.c-torture remains
+  `1566 passed, 31 compile-failed, 57 runtime-failed, 1 timed out, 30 skipped`;
+  real-header `testcout_realhdr`, `test_extern_polymorphic`, and `tmp/fs_out.mad`
+  canaries pass.
+
 ### `--no-auto-load`: make `#load` linking explicit (2026-06-08)
 
 - New CLI flag `--no-auto-load`: madc does **not** act on `#load` directives

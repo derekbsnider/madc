@@ -1119,11 +1119,14 @@ public:
     // All selection goes through find_template() so the no-collision case keeps
     // exactly the old single-entry behavior.
     std::map<std::string, std::vector<TemplateDef>> template_map; // name -> variants
-    // Select a template variant. ns_hint != "" => exact defining_namespace match
-    // (or NULL); ns_hint == "" => the sole variant if unique, else prefer
-    // current_namespace, then the global ("") variant, then the first.
+    // Select a template variant. owner_hint scopes nested member templates
+    // (e.g. allocator<T>::rebind<U>); NULL selects namespace/global templates.
+    // ns_hint != "" => exact defining_namespace match (or NULL); ns_hint == ""
+    // => the sole matching-owner variant if unique, else prefer current_namespace,
+    // then the global ("") variant, then the first matching-owner variant.
     TemplateDef *find_template(const std::string &name,
-			       const std::string &ns_hint = std::string());
+			       const std::string &ns_hint = std::string(),
+			       DataDefCLASS *owner_hint = NULL);
     // The variant carrying a parsed body, if any (for completion gating).
     TemplateDef *template_with_body(const std::string &name);
     // Replace the same-namespace variant (merging template-default args from the
@@ -1798,10 +1801,12 @@ public:
 						    std::string &spelling);
     TokenDataType *instantiate_template_use(const std::string &tname,
 					    TokenBase *tb,
-					    const std::string &ns_hint = std::string());
+					    const std::string &ns_hint = std::string(),
+					    DataDefCLASS *owner_hint = NULL);
     TokenDataType *instantiate_template_alias_use(const std::string &tname,
 						  TokenBase *tb,
-						  const std::string &ns_hint = std::string());
+						  const std::string &ns_hint = std::string(),
+						  DataDefCLASS *owner_hint = NULL);
     // Resolve a template-id `Name<...>` to its concrete type: an alias template
     // first, then a class template (the order every call site used by hand).
     // Single seam for the namespace hint so qualified uses pick the right
@@ -1809,12 +1814,14 @@ public:
     // template-id.
     TokenDataType *instantiate_template_id(const std::string &tname,
 					   TokenBase *tb,
-					   const std::string &ns_hint = std::string());
+					   const std::string &ns_hint = std::string(),
+					   DataDefCLASS *owner_hint = NULL);
     TokenDataType *instantiate_opaque_template_use(TemplateDef &td,
 						   const std::string &tname,
 						   TokenBase *tb);
     TemplateAliasDef *find_template_alias(const std::string &name,
-					  const std::string &ns_hint = std::string());
+					  const std::string &ns_hint = std::string(),
+					  DataDefCLASS *owner_hint = NULL);
     void register_template_alias(const TemplateAliasDef &td);
     DataDefCLASS *materialize_dependent_member_type(DataDefCLASS *owner,
 						    const std::string &member_name);

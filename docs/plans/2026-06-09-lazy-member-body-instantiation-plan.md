@@ -270,22 +270,26 @@ pointer = _Tp*` alias doesn't resolve to `char*` after subst — less likely.)
   context may itself be why the usual path isn't taken. HIGH blast radius if the fix lands in
   parseExpr/type resolution → gate torture-ALONE.
 
-  ### BISECTION (2026-06-09, no rebuild — ran reduced variants on the milestone binary)
-  `std::string` is really THREE distinct sub-issues; str1's success is the narrow path only:
+  ### BISECTION (2026-06-09, corrected by emit-C + g++ probes)
+  `std::string` split into distinct sub-issues; str1's success is the narrow path only:
   - **WORKS:** `std::string s; s.size()` (default ctor [external C1] + trivial size) — str1.
-  - **FAIL (c2mir @3486):** mutators `s += "x"` / `s = "hi"` — madc-EMITTED body (operator+=/
-    operator=/_M_replace/_M_construct) whose lowering produces "fn returning pointer returns
-    integer" + non-lvalue `&` (the pointer_traits/_M_local_data family, body resolution).
-  - **FAIL (RUNTIME crash, NOT compile):** `std::string s = "hello"` → COMPILES+runs, then
-    `SIGSEGV in __libc_free` at `main [JIT]` freeing `0xff…f9` (wild ptr). This is **layout
-    fidelity**: ctor-from-`const char*` is external C1; the dtor (external D1) frees because
-    the SSO check (`_M_p == &_M_local_buf[0]`) fails — madc's `basic_string<char>` byte-layout/
-    sizeof must match libstdc++ exactly for external C1/D1 to agree. (Default ctor works because
-    empty SSO is robust; "hello" still fits SSO so the crash is a layout/offset mismatch, NOT a
-    heap path.) DISTINCT from the @3486 body issue — own sub-task (cf. the ofstream vbase-layout
-    fidelity concern). Probe: compare madc `sizeof(std::string)` + member offsets vs g++ (g++
-    `__cxx11::basic_string<char>` = 32 bytes: _M_p@0, _M_string_length@8, union{_M_local_buf[16]
-    / _M_allocated_capacity}@16).
-  getline needs BOTH #2 (mutators) and #3 (layout) — so both gate testfstream/testloop.
-</content>
-</invoke>
+  - **FIXED in current WIP:** mutators `s += "x"` / `s = "hi"` no longer hit c2mir @3486.
+    Root cause was generic reference-return lowering, not `pointer_traits<char*>`: libstdc++
+    inline bodies return `basic_string&`/base references by address. madc now declares external
+    reference returns as pointer returns, derefs call expressions back to lvalues, and adjusts
+    `return <Derived-lvalue>;` for `Base&` with the same base-subobject offset logic used for
+    `Derived* -> Base*`. Reducers `r_assign` and `r_append` compile/run quiet.
+  - **STILL FAILS (RUNTIME crash, NOT compile):** `std::string s = "hello"` / `std::string s("hello")`
+    emits stack storage with the cleanup destructor but **no constructor call**, then external D1
+    frees uninitialized bytes (`SIGSEGV in __libc_free`, address `0xff...f9`). The layout theory is
+    REFUTED: `--emit=c11` shows the expected 32-byte libstdc++ layout (`_M_p@0`,
+    `_M_string_length@8`, SSO union at `@16`). The missing constructor candidate is the defaulted
+    member-template constructor
+    `template<typename = _RequireAllocator<_Alloc>> basic_string(const _CharT*, const _Alloc& = _Alloc())`.
+    madc currently skips class-scope function templates into generic methods, so this declaration
+    never enters `cdd->ctors`. g++ calls a TU-local weak specialization
+    `_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEC1IS3_EEPKcRKS3_`; libstdc++ does not
+    export that member-template specialization. Next fix is member-template constructor
+    instantiation/selection (and likely inline body materialization), not layout hardcoding.
+  getline still needs the remaining literal/member-template constructor path before the richer
+  input cases can be trusted.

@@ -704,6 +704,28 @@ node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rh
 	return node2(N_CAST, class_ptr_type(base), adj, origin);
 }
 
+// Derived->base reference return conversion. A C++ `Base& f() { return d; }`
+// lowers to returning the address of the selected base subobject, the same
+// adjustment as a `Derived*` -> `Base*` conversion but with the derived class
+// taken from the returned lvalue's own type.
+node_t CirBuilder::upcast_class_ref_addr(node_t value, DataDefCLASS *base,
+					 TokenBase *rhs, TokenBase *origin)
+{
+	DataDefCLASS *derived = as_user_class(rhs ? rhs->datadef() : NULL);
+	if (!base || !derived || base == derived) return value;
+	if (!derived->is_or_derives_from(base)) return value;
+	size_t off = derived->base_offset_of(base);
+	node_t adj = value;
+	if (off != 0 && off != (size_t)-1) {
+		node_t charp = node2(N_CAST,
+			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			value, origin);
+		adj = node2(N_ADD, charp, integer((long)off), origin);
+	}
+	return node2(N_CAST, class_ptr_type(base), adj, origin);
+}
+
 // `long <name>[words];` — opaque, 8-aligned storage for a C++ runtime object,
 // tagged with __attribute__((cleanup(dtor_sym))). This is the shared mechanism
 // behind every monomorphic runtime object madc lowers to a buffer + ctor/dtor
@@ -3048,13 +3070,14 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 }
 
 // The extern return-spec for an emit_symbol-bound method/operator: a pointer
-// return (c_str()) is declared via ret_ptr; an integer return (size()/length()
-// are unsigned long, the comparison family is int) needs a real integer base of
-// the right width/signedness so the value reads correctly; everything else
-// (void / string& treated as void) defaults to a void base. `ret_ptr` is out-param.
+// return (c_str()) or reference return (operator=(), _M_append()) is declared
+// via ret_ptr; an integer return (size()/length() are unsigned long, the
+// comparison family is int) needs a real integer base of the right
+// width/signedness so the value reads correctly; everything else defaults to a
+// void base. `ret_ptr` is out-param.
 static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &ret_ptr)
 {
-	ret_ptr = fd && fd->returns.is_pointer();
+	ret_ptr = fd && (fd->returns.is_pointer() || fd->returns_ref);
 	if (ret_ptr) return {};   // void* / char* — base is void, ret_ptr carries the star
 	if (fd && fd->returns.is_integer()) {
 		// An integer return MUST declare a real integer base — a void base drops
@@ -3072,7 +3095,18 @@ static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &r
 		default:                 return { N_LONG };
 		}
 	}
-	return {};   // void (clear; assign/append return string& we treat as void)
+	return {};
+}
+
+static bool is_constant_evaluated_call(TokenBase *tb)
+{
+	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(tb);
+	if (!tcf || !tcf->parameters.empty())
+		return false;
+	const std::string &name = tcf->var.name;
+	return name == "__builtin_is_constant_evaluated"
+	    || name == "__ns_std___is_constant_evaluated"
+	    || name == "__ns_std_is_constant_evaluated";
 }
 
 // Lower a call to a class method bound to an external symbol (emit_symbol).
@@ -3139,8 +3173,10 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
-	// A T&-returning method whose value is ignored — we declared the
-	// return as void and ignore the result, so no deref.
+	// A T&-returning method returns an address; deref so the call expression is
+	// the referenced lvalue, matching the non-external method/operator paths.
+	if (callee && callee->returns_ref)
+		return node1(N_DEREF, call, origin);
 	return call;
 }
 
@@ -6512,6 +6548,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttCallFunc) {
 		TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(tb);
 		if (tcf) {
+			if (is_constant_evaluated_call(tcf))
+				return integer(0, tb);
 			// __madc_{add,sub,mul}_overflow[_p]: choose the width/signedness-
 			// specific helper from the destination operand's type (the lexer
 			// only emitted the long-width generic, which mis-detects overflow
@@ -6809,8 +6847,12 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 	// A T&-returning function returns the ADDRESS of its (lvalue) result —
 	// `return x;` becomes `return &x;`. g++ does exactly this; the call site
 	// derefs. The expression must be an lvalue (the parser/g++ enforce that).
-	if (m_cur_func_returns_ref && tr->returns)
+	if (m_cur_func_returns_ref && tr->returns) {
 		expr = node1(N_ADDR, expr, tr);
+		if (m_cur_func_returns_class_ptr)
+			expr = upcast_class_ref_addr(expr, m_cur_func_returns_class_ptr,
+						     tr->returns, tr);
+	}
 	// Derived->base pointer return (`A *f() { return bptr; }`): make the
 	// implicit upcast explicit so c2mir does not warn.
 	else if (m_cur_func_returns_class_ptr && tr->returns) {
@@ -6859,6 +6901,8 @@ node_t CirBuilder::translate_if(TokenIF *ti)
 		TokenBase *branch = taken ? ti->statement : ti->elsestmt;
 		return branch ? translate_stmt_required(branch) : ignore();
 	}
+	if (is_constant_evaluated_call(ti->condition))
+		return ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
 	node_t cond = translate_expr(ti->condition);
 	node_t then_body = translate_stmt_required(ti->statement);
 	node_t else_body = ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
@@ -8132,9 +8176,11 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				  && !fd->is_multi_return();
 	// Track reference return so translate_return emits `return &<expr>`.
 	m_cur_func_returns_ref = ret_is_ref;
-	// Track a `Cls *` return so translate_return can emit a derived->base upcast.
+	// Track a `Cls *` or `Cls&` return so translate_return can emit a
+	// derived->base adjustment for returned class subobjects.
 	m_cur_func_returns_class_ptr = ret_is_ptr ? pointee_user_class(&fd->returns)
-						  : NULL;
+						  : (ret_is_ref ? as_user_class(&fd->returns)
+								: NULL);
 	// Track the scalar C return type so a gcc-accepted bare `return;` in a
 	// non-void function gets a typed zero (the returned value is indeterminate
 	// per gnu89/c11, so zero is a conformant lowering). Skip ref (returns by
@@ -8876,6 +8922,16 @@ node_t CirBuilder::translate_module(Program *prog)
 		std::string lookup_name = fname;
 		Variable *fvar = prog->tkProgram ? prog->tkProgram->findVariable(lookup_name) : NULL;
 		std::string symbol = fvar ? func_emit_name(*fvar, fd) : fname;
+		std::map<std::string, TokenFunc *>::iterator lfi = lib_funcs.find(symbol);
+		if (lfi != lib_funcs.end() && lfi->second) {
+			TokenFunc *ltf = lfi->second;
+			FuncDef *lfd = dynamic_cast<FuncDef *>(ltf->var.type);
+			if (lfd) {
+				fd = lfd;
+				fvar = &ltf->var;
+				symbol = func_emit_name(*fvar, fd);
+			}
+		}
 		if (!referenced_funcs.count(symbol) && !referenced_funcs.count(fname))
 			continue;
 
@@ -8893,7 +8949,8 @@ node_t CirBuilder::translate_module(Program *prog)
 			append(ext_list, id(fd->return_typedef_name.c_str()));
 			ret_decl_stars = explicit_star_count(&fd->returns,
 							     fd->return_typedef_name);
-		} else if (ret_dd && ret_dd->is_struct() && !ret_dd->is_complex()) {
+		} else if (ret_dd && (ret_dd->is_struct() || as_class_instance(ret_dd))
+			   && !ret_dd->is_complex()) {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(ret_dd);
 			if (sdd)
 				append(ext_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));

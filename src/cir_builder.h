@@ -69,9 +69,9 @@ class CirBuilder {
 	// double-free the shared string buffer at both scope exits). A TRIVIAL struct
 	// keeps c2mir's native struct return (no dtor -> bit-copy is safe).
 	DataDefCLASS *m_cur_func_returns_object = NULL;
-	// Pointee user-class while translating the body of a function returning a
-	// `Cls *` (a real user class pointer), else NULL. Lets translate_return emit
-	// an explicit derived->base upcast on `return <Derived*>;` (P2.6).
+	// Returned user-class while translating the body of a function returning a
+	// `Cls *` or `Cls&`, else NULL. Lets translate_return emit the derived->base
+	// adjustment for pointer and reference returns.
 	DataDefCLASS *m_cur_func_returns_class_ptr = NULL;
 	// Scalar C return type of the current function (non-NULL while translating a
 	// body whose C return type is a plain scalar — int/long/pointer/double — not
@@ -256,14 +256,13 @@ class CirBuilder {
 	node_t char_ptr_type();                      // N_TYPE node for a (char*) cast
 	node_t ptr_type_node(DataDef *dd);           // N_TYPE node for an arbitrary pointer DataDef
 	node_t class_ptr_type(DataDefCLASS *cdd);    // N_TYPE node for a (struct Cls *) cast
-	// Derived->base pointer conversion (single inheritance, base subobject at
-	// offset 0): if `lhs_dd` is `Base*` and the RHS expression `rhs` yields a
-	// `Derived*` (Derived derives from Base, not equal), wrap `value` in an
-	// explicit `(Base*)` cast so the emitted C is clean (no c2mir "incompatible
-	// pointer" warning). Returns `value` unchanged otherwise. Single inheritance
-	// only — offset 0.
+	// Derived->base pointer/reference conversion. Returns `value` unchanged when
+	// no conversion applies; otherwise emits the same base-subobject adjustment
+	// recorded by class layout.
 	node_t upcast_class_ptr(node_t value, DataDef *lhs_dd, class TokenBase *rhs,
 				class TokenBase *origin);
+	node_t upcast_class_ref_addr(node_t value, DataDefCLASS *base,
+				     class TokenBase *rhs, class TokenBase *origin);
 	node_t object_addr(const char *name, TokenBase *origin); // (void*)&name
 	node_t object_var_void_addr(const Variable &v, TokenBase *origin);
 	// Raw object-instance address of a NAMED variable (not void*-cast): the

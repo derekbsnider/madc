@@ -68,8 +68,10 @@ static std::string builtin_code(const std::string &t)
 	if (t == "int64_t")             return "l";
 	if (t == "uint64_t")            return "m";
 	if (t == "size_t")              return "m";
+	if (t == "std::size_t")         return "m";
 	if (t == "ssize_t")             return "l";
 	if (t == "ptrdiff_t")           return "l";
+	if (t == "std::ptrdiff_t")      return "l";
 
 	return "";
 }
@@ -419,6 +421,17 @@ TypeNode parse_type(const std::string &raw)
 	return t;
 }
 
+TypeNode parse_param_type(const std::string &raw)
+{
+	TypeNode t = parse_type(raw);
+	// Top-level cv-qualification is not part of a function parameter type in
+	// the Itanium ABI (`const size_t` by value encodes as `m`). Keep pointee
+	// const (`const char*` -> `PKc`) and reference-to-const (`const T&` -> `RK...`).
+	if (t.decos.size() == 1 && t.decos[0] == "K")
+		t.decos.clear();
+	return t;
+}
+
 // ---- the encoder -----------------------------------------------------------
 //
 // One ordered candidate table per top-level symbol. Each candidate is keyed by
@@ -500,7 +513,7 @@ public:
 			out += "v";
 		} else {
 			for (const auto &p : params)
-				out += encode_type(parse_type(p));
+				out += encode_type(parse_param_type(p));
 		}
 		return out;
 	}
@@ -524,7 +537,7 @@ public:
 		for (const auto &a : targs) out += encode_type(parse_type(a));
 		out += "E";
 		out += encode_type(parse_type(ret));
-		for (const auto &p : params) out += encode_type(parse_type(p));
+		for (const auto &p : params) out += encode_type(parse_param_type(p));
 		return out;
 	}
 
@@ -543,7 +556,7 @@ public:
 				out += "v";
 			else
 				for (const auto &p : params)
-					out += encode_type(parse_type(p));
+					out += encode_type(parse_param_type(p));
 			return out;
 		}
 		std::vector<NameComponent> chain;
@@ -557,7 +570,7 @@ public:
 			out += "v";
 		else
 			for (const auto &p : params)
-				out += encode_type(parse_type(p));
+				out += encode_type(parse_param_type(p));
 		return out;
 	}
 
