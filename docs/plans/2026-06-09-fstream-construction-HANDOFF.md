@@ -653,3 +653,47 @@ Then RC#2: free-function-template call lowering mishandles reference args/temps
 testfstream also needs its non-standard bits rewritten to standard C++
 (`to_string(s,42)`→`std::to_string`, `strlen(string)`/`system(string)`→`.c_str()`).
 testlargesizeofquery is a SEPARATE track (uint32→64 array-dim widening; niche/risky).
+
+---
+
+## ⚑ 2026-06-09 (turn 5 cont.) — RC#1 ROOT-CAUSED: std:: named free fns mis-routed to __ns_ wrapper
+
+**RC#1 was MISFRAMED as "getline overload sets dropped". The real root cause (probed
+via --emit=c11 on tmp/gl_qual.mad):** a call to a NAMED std:: free function emits the
+wrong symbol + signature. For `std::getline(inf,line)` madc emits:
+```
+extern long __ns_std_getline();      // 0-param/long stub — generic namespace-fn sig
+__ns_std_getline(inf, line);         // wrong symbol AND wrong signature
+```
+WHY: the 2-param std::getline has an INLINE BODY in libstdc++ <string>, so madc parses
+it as a namespace function DEFINITION and assigns the internal parse-id
+`__ns_std_getline` via `namespace_function_symbol()` (parser.cpp ~27155) — the SAME
+`__ns_<ns>_<name>` convention used for madc's OWN polyglot namespaces (php/perl/python/
+ruby/js/rust, whose `__ns_*` wrappers really exist). But std:: is REAL libstdc++, not a
+madc-owned polyglot ns: it must bind MANGLED-DIRECT to the real Itanium symbol
+`_ZSt7getlineIcSt11char_traitsIcESaIcEERSt13basic_istreamIT_T0_ES7_RNSt7__cxx11...`. The
+W2 mangled-direct path (cir_builder.cpp ~5090) is OPERATORS-ONLY; named std:: free
+functions never reach it → fall to the wrong `__ns_` wrapper. (project_cpp_mangled_direct.)
+
+Two separated sub-issues (probed):
+- QUALIFIED `std::getline(inf,line)`: resolves to the 2-param overload (arity OK) but
+  emits `__ns_std_getline` -> c2mir "incompatible argument type for pointer type
+  parameter" (RC#2 ref-arg lowering folds in here).
+- UNQUALIFIED `getline(inf,line)` (tests' `using namespace std`): resolves to the GLOBAL
+  POSIX `getline(char**,size_t*,FILE*)` (3 params, from real <cstdio>) -> "expected 3 got
+  2". Separate: unqualified lookup must form an overload set across ::getline + (via
+  using-directive) std::getline and pick by arg types. Sidesteppable by qualifying
+  std::getline in the standardized tests; the unqualified resolution is its own gap.
+
+**FIX DESIGN (reuse existing machinery, no new path):** at the named-free-function CALL
+site in cir_builder (TokenCallFunc lowering), when the callee is a std:: (system-header,
+from_system_header) free function — distinct from a madc-owned polyglot ns — deduce the
+template args from the call arg types (like W2's deduce_any for operators), call
+`itanium_mangle_std_free_template(name, targs, ret, param_spellings)` to get the real
+Itanium symbol, and emit the call to it with reference args lowered (pass &arg for T&
+params). Discriminator data-driven: madc-owned polyglot ns (php/perl/...) -> __ns_
+wrappers (correct); real-library ns (std, from_system_header) -> mangled-direct. The
+mangler already supports named fns ("7getline"); emit_symbol/the call path already honor
+a bound symbol. NEEDS: per-call template-arg deduction for named fns + ref-arg lowering.
+HIGH blast radius (namespace-fn call lowering) -> gate fulltest + torture ALONE.
+Reducers: tmp/gl_qual.mad (qualified), tmp/loop_real.mad (unqualified, full testloop shape).
