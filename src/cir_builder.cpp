@@ -9458,6 +9458,38 @@ node_t CirBuilder::translate_module(Program *prog)
 				if (dt && dt->emit_symbol.empty())
 					dt->emit_symbol = itanium_mangle_dtor_sub(cls);
 			}
+			// Non-template methods/operators of an EXPLICITLY-INSTANTIATED class
+			// (cls has '<') are exported out-of-line by libstdc++ too — the explicit
+			// instantiation `extern template class basic_ostream<char>;` emits ALL
+			// non-template members, INCLUDING the ones written `inline` in the header
+			// (e.g. operator<<(unsigned long) at <ostream>:172 `{return _M_insert(__n);}`).
+			// bind_declared_cpp_symbol only catches DECLARED-ONLY members
+			// (operator<<(int)); the inline ones reach here unbound, and emitting
+			// their bodies forwards into _M_insert<T> — a member TEMPLATE that the
+			// explicit instantiation does NOT export — which fails to lower. Bind them
+			// to the real member symbol so the call goes external and no body is
+			// emitted, exactly like the declared-only members. (member TEMPLATEs are
+			// skipped: not exported by the class instantiation.)
+			for (Variable *mv : ctor_exported ? cdd->methods
+							  : std::vector<Variable *>()) {
+				FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+				if (!fd || !fd->emit_symbol.empty() || fd->is_member_template)
+					continue;
+				if (fd->defaulted_or_deleted || fd->pure_virtual)
+					continue;
+				const std::string &dn = fd->method_display_name;
+				if (dn.empty() || dn[0] == '~')   // dtor handled above
+					continue;
+				std::vector<std::string> psp;
+				for (size_t i = 1; i < fd->param_cpp_spellings.size(); ++i)
+					psp.push_back(fd->param_cpp_spellings[i]);
+				if (dn.compare(0, 8, "operator") == 0)
+					fd->emit_symbol = itanium_mangle_operator_sub(
+						cls, dn.substr(8), psp, fd->is_const_method);
+				else
+					fd->emit_symbol = itanium_mangle_member_sub(
+						cls, dn, psp, fd->is_const_method);
+			}
 		}
 	}
 
