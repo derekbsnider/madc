@@ -1214,6 +1214,14 @@ public:
 	std::vector<std::string> param_spellings;  // {"basic_ostream<char,_Traits>&","const char*"}
     };
     std::vector<FreeOperatorOverload> free_operator_overloads;
+    // Named (non-operator) free-function template overloads captured from REAL
+    // system headers (libstdc++), e.g. std::getline. Reuses FreeOperatorOverload
+    // (opname holds the function name). The call site (cir_builder) selects an
+    // overload by arity + deduces template args from the call's arg types, then
+    // binds MANGLED-DIRECT to the real libstdc++ Itanium symbol — NOT the
+    // __ns_<ns>_<name> wrapper path (which is correct only for madc's own polyglot
+    // namespaces). See itanium_mangle_std_free_template + project_cpp_mangled_direct.
+    std::vector<FreeOperatorOverload> free_function_overloads;
     struct PendingTemplateInstantiation {
 	std::string mangled_name;
 	std::string canonical_spelling;

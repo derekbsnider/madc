@@ -22591,6 +22591,48 @@ static bool skipped_template_body_returns_inline_addressof(
     return false;
 }
 
+// Capture a NAMED (non-operator) free-function template signature from a REAL
+// system header (libstdc++) into pgm.free_function_overloads, so the call site
+// can bind it MANGLED-DIRECT to the real Itanium symbol instead of the
+// __ns_<ns>_<name> wrapper. Fires for EVERY overload (called before the
+// namespace-map single-Variable bail), system-header-only (madc-own polyglot ns
+// keep their __ns_ wrappers). Reuses extract_free_signature.
+static bool capture_free_function_overload(
+	Program &pgm, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams, const std::string &name)
+{
+    if ( pgm.current_namespace.empty() || name.empty() )
+	return false;
+    // Locate the declarator: the function-name token immediately before '('.
+    size_t declarator_start = tokens.size(), lparen = tokens.size();
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	if ( tokens[i] && is_skipped_template_function_name(tokens[i])
+	  && skipped_template_function_name(tokens[i]) == name
+	  && i + 1 < tokens.size() && tokens[i + 1]
+	  && tokens[i + 1]->id() == TokenID::tkOpBrk )
+	{ declarator_start = i; lparen = i + 1; break; }
+    }
+    if ( lparen >= tokens.size() )
+	return false;
+    // Only REAL system-header functions bind mangled-direct (data-driven, Rule #7):
+    // madc-own polyglot ns (php/perl/...) come from embedded headers, not system
+    // paths, and keep their __ns_ wrappers.
+    const char *f = tokens[declarator_start]->file;
+    if ( !f || !pgm.is_system_header_path(f) )
+	return false;
+    Program::FreeOperatorOverload ov;
+    if ( !extract_free_signature(pgm, tokens, typeparams, name,
+				 declarator_start, lparen, ov) )
+	return false;
+    for ( const Program::FreeOperatorOverload &e : pgm.free_function_overloads )
+	if ( e.ns == ov.ns && e.opname == ov.opname
+	  && e.param_spellings == ov.param_spellings )
+	    return true;   // already captured (same overload from re-parse)
+    pgm.free_function_overloads.push_back(ov);
+    return true;
+}
+
 static void register_skipped_namespace_template_function(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams)
@@ -22605,6 +22647,9 @@ static void register_skipped_namespace_template_function(
     std::string name = skipped_template_function_declarator_name(tokens);
     if ( name.empty() )
 	return;
+    // Capture EVERY overload's signature (before the single-Variable bail below)
+    // so the call site can select by arity + bind mangled-direct to libstdc++.
+    capture_free_function_overload(pgm, tokens, typeparams, name);
     variable_map_t &ns = pgm.namespace_map[pgm.current_namespace];
     if ( ns.find(name) != ns.end() )
 	return;

@@ -539,6 +539,8 @@ public:
 	node_t try_free_operator_call(class TokenOperator *top, DataDefCLASS *lcls,
 			const std::string &mname, class FuncDef *member_callee,
 			TokenBase *origin);
+	node_t try_std_free_function_call(class TokenCallFunc *tcf, class FuncDef *cdf,
+			TokenBase *origin);
 	// Lower an overloaded UNARY operator on a user-defined class lvalue:
 	//   <op>c  ->  ClassName__operator<op>(&c)   (e.g. -c, !c, ~c, ++c, --c)
 	// `opsym` is the operator symbol text ("-", "!", "~", "++", "--"); `operand`

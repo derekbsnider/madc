@@ -29,6 +29,15 @@
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
+// Compile-time-gated diagnostics (toggle with -DMADC_DBG_FREEFN); avoids the
+// thread_local madc_verbose that silences DBG on worker threads, and avoids
+// add/remove churn. Off in normal builds.
+#ifdef MADC_DBG_FREEFN
+#define FFDBG(x) do { x; } while(0)
+#else
+#define FFDBG(x) do {} while(0)
+#endif
+
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -5189,6 +5198,184 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	return node1(N_DEREF, call, origin);   // ostream&
 }
 
+// Replace each template-param NAME (whole identifier) in a type spelling with the
+// mangler's $Tn marker (parse_type maps $Tn -> Itanium T_/T0_/...). E.g.
+// "basic_istream<_CharT,_Traits>&" + [_CharT,_Traits,_Alloc] -> "basic_istream<$T0,$T1>&".
+static std::string substitute_tparams(const std::string &spell,
+		const std::vector<std::string> &tparams)
+{
+	std::string out;
+	size_t i = 0, n = spell.size();
+	while (i < n) {
+		char c = spell[i];
+		if (isalpha((unsigned char)c) || c == '_') {
+			size_t j = i + 1;
+			while (j < n && (isalnum((unsigned char)spell[j]) || spell[j] == '_'))
+				++j;
+			std::string word = spell.substr(i, j - i);
+			int tpi = -1;
+			for (size_t k = 0; k < tparams.size(); ++k)
+				if (tparams[k] == word) { tpi = (int)k; break; }
+			if (tpi >= 0) out += "$T" + std::to_string(tpi);
+			else out += word;
+			i = j;
+		} else { out += c; ++i; }
+	}
+	return out;
+}
+
+// Replace the leading template-id head of `spell` with the fully-qualified
+// `qhead` (from the matched class), so the mangler emits the right namespace
+// (St13basic_istream, NSt7__cxx1112basic_string, ...). The declaration captured
+// the head UNqualified (it lives inside `namespace std`), which would mangle as a
+// bare `13basic_istream`/`12basic_string` and never link.
+static std::string requalify_head(const std::string &spell, const std::string &qhead)
+{
+	if (qhead.empty()) return spell;
+	size_t lt = spell.find('<');
+	if (lt == std::string::npos) return spell;
+	return qhead + spell.substr(lt);
+}
+
+// Bind a call to a NAMED std:: (real-libstdc++) free-function template MANGLED-DIRECT
+// to its Itanium symbol, instead of the wrong __ns_std_<name> wrapper stub. Selects an
+// overload by arity, deduces template args from the call's arg types (matching each
+// template-id param against the arg's class self/bases), $Tn-parameterizes the spellings,
+// mangles, and emits the call passing reference params by address. Returns NULL when the
+// call is not such a function (caller falls back to the normal path). See
+// free_function_overloads + project_cpp_mangled_direct.
+node_t CirBuilder::try_std_free_function_call(TokenCallFunc *tcf, FuncDef *cdf,
+		TokenBase *origin)
+{
+	if (!m_prog || !cdf || cdf->function_display_name.empty()
+	    || cdf->namespace_name.empty())
+		return NULL;
+	const std::string ns = cdf->namespace_name;
+	const std::string name = cdf->function_display_name;
+	size_t argc = tcf->parameters.size();
+
+	const Program::FreeOperatorOverload *best = NULL;
+	std::vector<std::string> best_targs, best_param_spell, best_param_raw;
+	std::string best_ret;
+	std::vector<size_t> best_offs;
+	std::map<std::string, std::string> best_qmap;   // unqualified head -> qualified head
+	for (const Program::FreeOperatorOverload &ov : m_prog->free_function_overloads) {
+		if (ov.ns != ns || ov.opname != name) continue;
+		if (ov.param_spellings.size() != argc) continue;
+		std::map<std::string, std::string> binding;
+		std::map<std::string, std::string> qmap;   // phead -> qualified head (this overload)
+		std::vector<size_t> offs(argc, 0);
+		bool ok = true;
+		for (size_t i = 0; i < argc && ok; i++) {
+			std::string pspell = ov.param_spellings[i];
+			// Only template-id reference params participate in deduction; a
+			// param that is plainly a bare template-param name (e.g. `_CharT`
+			// by value) or `&&` rvalue-ref we skip this overload for now.
+			if (pspell.size() >= 2 && pspell.compare(pspell.size() - 2, 2, "&&") == 0)
+				{ ok = false; break; }   // prefer the lvalue-ref overload
+			std::string phead; std::vector<std::string> pargs;
+			if (!split_template_id_w2(pspell, phead, pargs)) { ok = false; break; }
+			DataDefCLASS *acls = as_class_instance(tcf->parameters[i]->datadef());
+			if (!acls) { ok = false; break; }
+			std::vector<std::pair<std::string, size_t> > cands;
+			collect_self_and_base_spellings(acls, 0, cands);
+			bool matched = false;
+			for (const auto &cand : cands) {
+				std::string chead; std::vector<std::string> cargs;
+				if (!split_template_id_w2(cand.first, chead, cargs)) continue;
+				if (strip_leading_qualifier(chead) != strip_leading_qualifier(phead))
+					continue;
+				if (cargs.size() != pargs.size()) continue;
+				std::map<std::string, std::string> local = binding;
+				bool good = true;
+				for (size_t k = 0; k < pargs.size(); k++) {
+					bool is_tp = false;
+					for (const std::string &tp : ov.template_params)
+						if (tp == pargs[k]) { is_tp = true; break; }
+					if (is_tp) {
+						auto it = local.find(pargs[k]);
+						if (it != local.end()
+						    && norm_type_w2(it->second) != norm_type_w2(cargs[k]))
+							{ good = false; break; }
+						local[pargs[k]] = cargs[k];
+					} else if (norm_type_w2(pargs[k]) != norm_type_w2(cargs[k]))
+						{ good = false; break; }
+				}
+				if (good) { binding = local; offs[i] = cand.second; matched = true;
+					qmap[phead] = chead;   // fully-qualified head for mangling
+					FFDBG(fprintf(stderr, "[FFCALL] %s param[%zu] phead=%s -> cand='%s' off=%zu\n",
+						name.c_str(), i, phead.c_str(), cand.first.c_str(), cand.second));
+					break; }
+			}
+			if (!matched) { ok = false; break; }
+		}
+		if (!ok) continue;
+		std::vector<std::string> targs;
+		for (const std::string &tp : ov.template_params) {
+			auto it = binding.find(tp);
+			if (it == binding.end()) { targs.clear(); break; }
+			targs.push_back(it->second);
+		}
+		if (targs.size() != ov.template_params.size()) continue;
+		if (best && ov.template_params.size() >= best->template_params.size()) continue;
+		best = &ov;
+		best_targs = targs;
+		best_offs = offs;
+		best_qmap = qmap;
+		best_param_raw = ov.param_spellings;
+	}
+	if (!best) return NULL;
+
+	// Build the mangler inputs: requalify each template-id head with the matched
+	// class's fully-qualified spelling (St / NSt7__cxx11...), then map template-param
+	// names to $Tn markers (parse_type -> T_/T0_/...).
+	auto qualify_and_param = [&](const std::string &spell) -> std::string {
+		std::string h; std::vector<std::string> a;
+		std::string q = (split_template_id_w2(spell, h, a) && best_qmap.count(h))
+				? best_qmap[h] : std::string();
+		return substitute_tparams(requalify_head(spell, q), best->template_params);
+	};
+	best_ret = qualify_and_param(best->return_spelling);
+	best_param_spell.clear();
+	for (const std::string &p : best->param_spellings)
+		best_param_spell.push_back(qualify_and_param(p));
+
+	std::string sym = itanium_mangle_std_free_template(name, best_targs, best_ret,
+							   best_param_spell);
+	if (sym.empty() || sym[0] != '_') return NULL;
+	DBG(std::cout << "[FFCALL] bind " << ns << "::" << name << " -> " << sym << std::endl);
+
+	node_t args = list();
+	std::vector<ExternParam> eparams;
+	for (size_t i = 0; i < argc; i++) {
+		const std::string &pspell = best_param_raw[i];
+		bool is_ref = !pspell.empty() && pspell.back() == '&';
+		if (is_ref) {
+			DataDefCLASS *acls = as_class_instance(tcf->parameters[i]->datadef());
+			node_t addr = object_arg_addr(tcf->parameters[i], acls);
+			if (best_offs[i]) {
+				node_t charp = node2(N_CAST,
+					node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+					      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+					addr, origin);
+				addr = node2(N_CAST, void_ptr_type(),
+					node2(N_ADD, charp, integer((long)best_offs[i], origin), origin),
+					origin);
+			}
+			append(args, addr);
+			eparams.push_back({ {N_VOID}, true });
+		} else {
+			append(args, translate_expr(tcf->parameters[i]));
+			eparams.push_back(native_param_shape(tcf->parameters[i]->datadef(), false));
+		}
+	}
+	bool ret_ref = !best_ret.empty() && best_ret.back() == '&';
+	need_output_extern(sym.c_str(), ret_ref, eparams, { N_VOID });
+	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	return ret_ref ? node1(N_DEREF, call, origin) : call;
+}
+
 node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 {
 	if (!top || !top->left || !top->right) return NULL;
@@ -7054,6 +7241,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// nested_emit_name), not the source name.
 				FuncDef *cdf = call_target_funcdef(tcf);
 				std::string callee_name = func_emit_name(tcf->var, cdf);
+				// A std:: (real-libstdc++) free function — e.g. std::getline —
+				// resolves to a __ns_std_<name> wrapper stub; bind it MANGLED-DIRECT
+				// to the real Itanium symbol instead. (project_cpp_mangled_direct)
+				if (callee_name.compare(0, 5, "__ns_") == 0) {
+					if (node_t ff = try_std_free_function_call(tcf, cdf, tb))
+						return ff;
+				}
 				Method *native_method = (Method *)tcf->var.data;
 				if (tcf->var.name == "system" && cdf
 				    && native_method && native_method->x86code && m_prog) {
