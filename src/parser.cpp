@@ -1627,7 +1627,7 @@ static DataDef *unwrap_subscript_element_type(DataDef *base_type)
 }
 
 static DataDef *build_fixed_array_query_type(DataDef *base_type,
-					     const std::vector<uint32_t> &dims,
+					     const std::vector<carray_dim_t> &dims,
 					     size_t consumed_dims)
 {
     if ( !base_type )
@@ -10078,7 +10078,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	    if ( tm && tm->is_fixed_array_member() && tm->var.type )
 	    {
 		DataDefSTRUCT *sdd = tm->owner_struct_type();
-		const std::vector<uint32_t> *dims = sdd ? sdd->m_dims(tm->var.name) : NULL;
+		const std::vector<carray_dim_t> *dims = sdd ? sdd->m_dims(tm->var.name) : NULL;
 		elem_type = (dims && !dims->empty())
 		    ? build_fixed_array_query_type(tm->var.type, *dims, 1)
 		    : tm->var.type;
@@ -14516,7 +14516,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 						{
 						    DataDefSTRUCT *sdd =
 							tm->owner_struct_type();
-						    const std::vector<uint32_t> *dims =
+						    const std::vector<carray_dim_t> *dims =
 							sdd ? sdd->m_dims(tm->var.name) : NULL;
 						    base = (dims && !dims->empty())
 							? build_fixed_array_query_type(tm->var.type,
@@ -16511,7 +16511,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // zero-length (`T x[0]`) array member keeps its 0 dimension
 		    // (m_is_flexible_array keys on member_dims) instead of collapsing
 		    // to a scalar.
-		    std::vector<uint32_t> inner_dims;
+		    std::vector<carray_dim_t> inner_dims;
 		    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
 		    {
 			inner_is_array_decl = true;
@@ -16538,7 +16538,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			cl = pgm.nextToken();
 			if ( !cl || cl->id() != TokenID::tkClSqr )
 			    pgm.Throw(cl ? cl : tn) << "Expected ']' in anonymous struct member array declaration" << flush;
-			inner_dims.push_back((uint32_t)n);
+			inner_dims.push_back((carray_dim_t)n);
 			if ( n == 0 ) { inner_count = 0; break; }
 			inner_count *= (size_t)n;
 		    }
@@ -16842,7 +16842,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    size_t member_count = 1;
 		    bool member_is_array_decl = false;
 		    TokenBase *member_count_expr = NULL;
-		    std::vector<uint32_t> member_dims;
+		    std::vector<carray_dim_t> member_dims;
 		    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
 		    {
 			member_is_array_decl = true;
@@ -16869,7 +16869,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			cl = pgm.nextToken();
 			if ( !cl || cl->id() != TokenID::tkClSqr )
 			    pgm.Throw(cl ? cl : tn) << "Expected ']' in struct member array declaration" << flush;
-			member_dims.push_back((uint32_t)n);
+			member_dims.push_back((carray_dim_t)n);
 			if ( n == 0 ) { member_count = 0; break; }
 			member_count *= (size_t)n;
 		    }
@@ -17296,7 +17296,7 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 	    std::string member_name = contextual_identifier_name(tn);
 	    size_t member_count = 1;
 	    bool member_is_array = false;
-	    std::vector<uint32_t> member_dims;
+	    std::vector<carray_dim_t> member_dims;
 	    while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
 	    {
 		member_is_array = true;
@@ -17316,7 +17316,7 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		if ( !cl || cl->id() != TokenID::tkClSqr )
 		    Throw(cl ? cl : tn)
 			<< "Expected ']' in anonymous class aggregate member" << flush;
-		member_dims.push_back((uint32_t)n);
+		member_dims.push_back((carray_dim_t)n);
 		if ( n == 0 )
 		{
 		    member_count = 0;
@@ -18453,7 +18453,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    ddc->member_counts.push_back(i < src->member_counts.size() ? src->member_counts[i] : 1);
 	    ddc->member_array_flags.push_back(i < src->member_array_flags.size() ? src->member_array_flags[i] : false);
 	    ddc->member_bitfields.push_back(i < src->member_bitfields.size() ? src->member_bitfields[i] : DataDefSTRUCT::BitFieldInfo());
-	    ddc->member_dims.push_back(i < src->member_dims.size() ? src->member_dims[i] : std::vector<uint32_t>());
+	    ddc->member_dims.push_back(i < src->member_dims.size() ? src->member_dims[i] : std::vector<carray_dim_t>());
 	    ddc->member_count_exprs.push_back(i < src->member_count_exprs.size() ? src->member_count_exprs[i] : NULL);
 	    ddc->member_access.push_back(i < src->member_access.size() ? src->member_access[i] : 0);
 	    ddc->member_origin.push_back(origin);
@@ -18954,7 +18954,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    std::string member_name = contextual_identifier_name(tn);
 		    size_t member_count = 1;
 		    bool member_is_array = false;
-		    std::vector<uint32_t> member_dims;
+		    std::vector<carray_dim_t> member_dims;
 		    while ( pgm.peekToken()
 			 && pgm.peekToken()->id() == TokenID::tkOpSqr )
 		    {
@@ -18976,7 +18976,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			if ( !cl || cl->id() != TokenID::tkClSqr )
 			    pgm.Throw(cl ? cl : tn)
 				<< "Expected ']' in class member array declarator" << flush;
-			member_dims.push_back((uint32_t)adim);
+			member_dims.push_back((carray_dim_t)adim);
 			if ( adim == 0 )
 			{
 			    member_count = 0;
@@ -19256,7 +19256,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // dims into one inline element count (mirrors TokenSTRUCT::parse's member loop).
 	    size_t member_count = 1;
 	    bool member_is_array = false;
-	    std::vector<uint32_t> member_dims;
+	    std::vector<carray_dim_t> member_dims;
 	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
 	    {
 		member_is_array = true;
@@ -19274,7 +19274,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		TokenBase *acl = pgm.nextToken();
 		if ( !acl || acl->id() != TokenID::tkClSqr )
 		    pgm.Throw(acl ? acl : tn) << "Expected ']' in class member array declarator" << flush;
-		member_dims.push_back((uint32_t)adim);
+		member_dims.push_back((carray_dim_t)adim);
 		member_count *= (size_t)adim;
 	    }
 	    if ( is_static_member )
@@ -19364,7 +19364,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			std::string nmname = ((TokenIdent *)nm)->str;
 			size_t ncount = 1;
 			bool nis_array = false;
-			std::vector<uint32_t> ndims;
+			std::vector<carray_dim_t> ndims;
 			while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
 			{
 				nis_array = true;
@@ -19382,7 +19382,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 				TokenBase *acl = pgm.nextToken();
 				if ( !acl || acl->id() != TokenID::tkClSqr )
 					pgm.Throw(acl ? acl : nm) << "Expected ']' in class member array declarator" << flush;
-				ndims.push_back((uint32_t)adim);
+				ndims.push_back((carray_dim_t)adim);
 				ncount *= (size_t)adim;
 			}
 			ddc->addMember(nmname, *next_dd, ncount, NULL, nis_array,
@@ -24317,7 +24317,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    }
 	    nt = nextToken();
 	}
-	std::vector<uint32_t> param_array_dims;
+	std::vector<carray_dim_t> param_array_dims;
 	std::vector<TokenBase *> param_array_dim_exprs;
 
 	// C `void` as sole parameter means no parameters (e.g. `int f(void)`).
@@ -24506,7 +24506,7 @@ grabnt:
 			int64_t n = parse_constant_integer_expression();
 			if ( n < 0 )
 			    Throw(nt) << "Parameter array dimension must be non-negative" << flush;
-			param_array_dims.push_back((uint32_t)n);
+			param_array_dims.push_back((carray_dim_t)n);
 		    }
 		    param_array_dim_exprs.push_back(dim_expr);
 		    TokenBase *cl = nextToken();
@@ -24543,7 +24543,7 @@ grabnt:
 		    // plain `int *a` (deref of which is scalar `int`, so `(*a)[i]`
 		    // would not be subscriptable). Build the nested CArray dims
 		    // (outermost first), then wrap in one pointer level.
-		    std::vector<uint32_t> pa_dims;
+		    std::vector<carray_dim_t> pa_dims;
 		    while ( nt && nt->id() == TokenID::tkOpSqr )
 		    {
 			TokenBase *dim_peek = peekToken();
@@ -24557,7 +24557,7 @@ grabnt:
 			    int64_t n = parse_constant_integer_expression();
 			    if ( n < 0 )
 				Throw(inner) << "Pointer-to-array parameter dimension must be non-negative" << flush;
-			    pa_dims.push_back((uint32_t)n);
+			    pa_dims.push_back((carray_dim_t)n);
 			    TokenBase *cl = nextToken();
 			    if ( !cl || cl->id() != TokenID::tkClSqr )
 				Throw(cl ? cl : inner) << "Expected ']' in pointer-to-array parameter" << flush;
@@ -24628,7 +24628,7 @@ grabnt:
 		    int64_t n = parse_constant_integer_expression();
 		    if ( n < 0 )
 			Throw(nt) << "Parameter array dimension must be non-negative" << flush;
-		    param_array_dims.push_back((uint32_t)n);
+		    param_array_dims.push_back((carray_dim_t)n);
 		}
 		param_array_dim_exprs.push_back(dim_expr);
 		TokenBase *cl = nextToken();
@@ -25762,7 +25762,7 @@ static void infer_flexible_array_member_counts(DataDefSTRUCT *sdd,
 }
 
 static DataDef *peel_carray_dimensions(DataDef *base_type,
-				       std::vector<uint32_t> &arr_dims,
+				       std::vector<carray_dim_t> &arr_dims,
 				       TokenBase *&vla_size_expr)
 {
     DataDef *decl_type = base_type;
@@ -25775,7 +25775,7 @@ static DataDef *peel_carray_dimensions(DataDef *base_type,
 	    arr_dims.push_back(1);
 	}
 	else
-	    arr_dims.push_back((uint32_t)alias_array->count);
+	    arr_dims.push_back((carray_dim_t)alias_array->count);
 	decl_type = alias_array->element_type ? alias_array->element_type : &ddINT;
     }
     return decl_type;
@@ -25859,7 +25859,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     string id;
     DataDefCLASS *qualified_owner_class = NULL;
     std::string qualified_member_name;
-    std::vector<uint32_t> arr_dims;
+    std::vector<carray_dim_t> arr_dims;
     std::vector<TokenBase *> arr_dim_exprs;
     TokenBase *vla_size_expr = NULL;
     bool have_decl_id = false;
@@ -25954,7 +25954,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    int64_t n = parse_constant_integer_expression();
 		    if ( n < 0 )
 			Throw(tb) << "Fixed-size array dimension must be non-negative" << flush;
-		    arr_dims.push_back((uint32_t)n);
+		    arr_dims.push_back((carray_dim_t)n);
 		    TokenBase *cl = nextToken();
 		    if ( !cl || cl->id() != TokenID::tkClSqr )
 			Throw(cl ? cl : tb) << "Expected ] in array declaration" << flush;
@@ -25992,7 +25992,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    int64_t n = parse_constant_integer_expression();
 		    if ( n < 0 )
 			Throw(tb) << "Fixed-size array dimension must be non-negative" << flush;
-		    arr_dims.push_back((uint32_t)n);
+		    arr_dims.push_back((carray_dim_t)n);
 		    TokenBase *cl = nextToken();
 		    if ( !cl || cl->id() != TokenID::tkClSqr )
 			Throw(cl ? cl : tb) << "Expected ] in array declaration" << flush;
@@ -26006,7 +26006,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    if ( param_open && param_open->id() == TokenID::tkOpSqr )
 	    {
 		// Pointer-to-array: `type (*name)[N]`
-		std::vector<uint32_t> ptr_array_dims;
+		std::vector<carray_dim_t> ptr_array_dims;
 		while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
 		{
 		    nextToken(); // consume '['
@@ -26020,7 +26020,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    int64_t dim = parse_constant_integer_expression();
 		    if ( dim < 0 )
 			Throw(open) << "Pointer-to-array dimension must be non-negative" << flush;
-		    ptr_array_dims.push_back((uint32_t)dim);
+		    ptr_array_dims.push_back((carray_dim_t)dim);
 		    TokenBase *cl = nextToken();
 		    if ( !cl || cl->id() != TokenID::tkClSqr )
 			Throw(cl ? cl : open) << "Expected ] in pointer-to-array declaration" << flush;
@@ -26313,7 +26313,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		if ( n < 0 )
 		    Throw(tb) << "Fixed-size array dimension must be non-negative" << flush;
 		// GCC: int arr[0] has sizeof 0; keep the zero dim.
-		arr_dims.push_back((uint32_t)n);
+		arr_dims.push_back((carray_dim_t)n);
 		arr_dim_exprs.push_back(NULL);
 		TokenBase *cl = nextToken();
 		if ( !cl || cl->id() != TokenID::tkClSqr )
@@ -26875,9 +26875,9 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		if ( arr_dims[0] == 0 )
 		{
 		    if ( arr_dims.size() > 1 && !has_nested_init && tail_count > 0 )
-			arr_dims[0] = (uint32_t)((init_list.size() + tail_count - 1) / tail_count);
+			arr_dims[0] = (carray_dim_t)((init_list.size() + tail_count - 1) / tail_count);
 		    else
-			arr_dims[0] = (uint32_t)init_list.size();
+			arr_dims[0] = (carray_dim_t)init_list.size();
 		}
 
 		size_t initializer_capacity = (size_t)arr_dims[0];

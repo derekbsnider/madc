@@ -403,7 +403,7 @@ public:
 	node_t fnptr_func_node(class FuncDef *fd);
 	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
 			       node_t spec_list, node_t decl_list,
-			       const std::vector<uint32_t> &lead_dims);
+			       const std::vector<carray_dim_t> &lead_dims);
 	// When `fd` returns an object BY VALUE through the __retbuf ABI (void
 	// return + hidden `T* __retbuf` first param), report that returned type so
 	// the fn-ptr type renders the same

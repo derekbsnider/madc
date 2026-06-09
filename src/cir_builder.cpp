@@ -1262,7 +1262,7 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 // prepends the array dims ([ARR, POINTER, FUNC]).
 void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 				   node_t spec_list, node_t decl_list,
-				   const std::vector<uint32_t> &lead_dims)
+				   const std::vector<carray_dim_t> &lead_dims)
 {
 	// A by-value object-returning target uses the __retbuf ABI: the C return
 	// type is `void` (the object travels through the hidden `T* __retbuf`
@@ -1344,12 +1344,12 @@ static int dd_ptr_depth(DataDef *dd);  // defined below; counts int** -> 2
 // dims=[2]. A runtime-sized CArray (count_expr != NULL) stops the peel and
 // contributes no dimension (it decays/uses a VLA path elsewhere).
 // Returns the innermost element type; appends each fixed dim to `dims`.
-static DataDef *peel_carray_dims(DataDef *dd, std::vector<uint32_t> &dims)
+static DataDef *peel_carray_dims(DataDef *dd, std::vector<carray_dim_t> &dims)
 {
 	while (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd)) {
 		if (ca->has_runtime_size() || !ca->element_type)
 			break;
-		dims.push_back((uint32_t)ca->count);
+		dims.push_back((carray_dim_t)ca->count);
 		dd = ca->element_type;
 	}
 	return dd;
@@ -1509,7 +1509,7 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		node_t pspec = list();
 		node_t pdecl_list = list();
 		fnptr_decl_pieces(fp->target, true, pspec, pdecl_list,
-				  std::vector<uint32_t>());
+				  std::vector<carray_dim_t>());
 		return wrap(pspec, pdecl_list);
 	}
 
@@ -1528,7 +1528,7 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			t = p->base_type;
 			ptr_levels++;
 		}
-		std::vector<uint32_t> adims;
+		std::vector<carray_dim_t> adims;
 		DataDef *elem = peel_carray_dims(t, adims);
 		if (!adims.empty()) {
 			// A direct CArray param (ptr_levels == 0) decays its outermost
@@ -1853,7 +1853,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// type T (append_type_specs has no CArray case), and emit the dims as N_ARR
 	// suffixes AFTER the pointer(s) below (declarator order [POINTER, ARR],
 	// which c2m reads as "pointer to array", vs [ARR, POINTER] = array of ptr).
-	std::vector<uint32_t> ptr_array_dims;
+	std::vector<carray_dim_t> ptr_array_dims;
 	if (is_ptr)
 		base_dd = peel_carray_dims(base_dd, ptr_array_dims);
 
@@ -1901,7 +1901,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// pointer to function): the array dimension binds tighter than the
 		// fn-ptr `*`, so it must lead the declarator suffixes. Hand the dims to
 		// fnptr_decl_pieces as lead_dims — it emits the N_ARR nodes first.
-		std::vector<uint32_t> fnptr_dims;
+		std::vector<carray_dim_t> fnptr_dims;
 		if (v->is_fixed_array())
 			fnptr_dims = v->dims;
 		fnptr_decl_pieces(fnptr->target, true, tl, fnptr_decl_list, fnptr_dims);
@@ -1994,7 +1994,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		if (!is_ptr && !v->typedef_name.empty() && m_prog) {
 			datatype_map_iter it = m_prog->datatype_map.find(v->typedef_name);
 			if (it != m_prog->datatype_map.end() && it->second) {
-				std::vector<uint32_t> tdims;
+				std::vector<carray_dim_t> tdims;
 				peel_carray_dims(&it->second->definition, tdims);
 				skip_tail = tdims.size();
 			}
@@ -2302,7 +2302,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	// multi-dim shape, falling back to member_counts (a single flat count) for
 	// 1-D array members. A runtime-sized member (member_count_exprs != NULL)
 	// is a flexible/VLA-ish member and contributes no constant dimension here.
-	std::vector<uint32_t> mdims;
+	std::vector<carray_dim_t> mdims;
 	// A trailing flexible array member (`T x[]` / `T x[0]`) gets an array
 	// declarator with an UNSPECIFIED size (N_ARR slot = N_IGNORE) so c2mir
 	// treats it as flexible and sizes the file-scope object from its
@@ -2314,12 +2314,12 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		m_flexible = owner->m_is_flexible_array(mname);
 		if (!m_flexible && owner->m_is_array_decl(mname)
 		    && !owner->m_count_expr(mname)) {
-			const std::vector<uint32_t> *dv = owner->m_dims(mname);
+			const std::vector<carray_dim_t> *dv = owner->m_dims(mname);
 			if (dv && !dv->empty()) {
 				mdims = *dv;
 			} else {
 				size_t c = owner->m_count(mname);
-				if (c >= 1) mdims.push_back((uint32_t)c);
+				if (c >= 1) mdims.push_back((carray_dim_t)c);
 			}
 		}
 	}
@@ -2745,7 +2745,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		std::string tname = cdd->name + "__thunk_" + std::to_string(off) + "_" + mname;
 		node_t ret_spec = list();
 		node_t throwaway = list();
-		fnptr_decl_pieces(ov, true, ret_spec, throwaway, std::vector<uint32_t>());
+		fnptr_decl_pieces(ov, true, ret_spec, throwaway, std::vector<carray_dim_t>());
 		node_t plist = list();
 		for (size_t i = 0; i < ov->parameters.size(); i++) {
 			std::string pn = (i == 0) ? "__self" : ("p" + std::to_string(i));
@@ -3015,7 +3015,7 @@ void CirBuilder::emit_class_member_deps(
 		DataDef *dd = m.second;
 		if (!dd || dd->is_pointer())
 			continue;
-		std::vector<uint32_t> dims;
+		std::vector<carray_dim_t> dims;
 		DataDef *base = peel_carray_dims(dd, dims);
 		DataDefCLASS *dep = as_user_class(base);
 		if (dep && dep != owner_class) {
@@ -4163,7 +4163,7 @@ node_t CirBuilder::method_fnptr_type(FuncDef *callee, DataDefCLASS *owner)
 	node_t spec_list = list();
 	node_t decl_list = list();
 	fnptr_decl_pieces(callee, true, spec_list, decl_list,
-			  std::vector<uint32_t>());
+			  std::vector<carray_dim_t>());
 	(void)owner;
 	return node2(N_TYPE, spec_list, node2(N_DECL, ignore(), decl_list));
 }
@@ -5956,7 +5956,7 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 			append(sl, simple(N_TYPEDEF));
 			node_t dl = list();
 			fnptr_decl_pieces(fn_td, td_ptr, sl, dl,
-					  std::vector<uint32_t>());
+					  std::vector<carray_dim_t>());
 			node_t share = node1(N_SHARE, sl);
 			node_t decl = node2(N_DECL, id(alias.c_str()), dl);
 			node_t spec_decl = simple(N_SPEC_DECL);
@@ -5999,7 +5999,7 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	// element type drives the spec list; the dims become N_ARR declarator
 	// suffixes below. Without this the CArray's dtRESERVED rawtype defaults to
 	// `int` and the dimensions are dropped entirely.
-	std::vector<uint32_t> arr_dims;
+	std::vector<carray_dim_t> arr_dims;
 	dd = peel_carray_dims(dd, arr_dims);
 
 	// Unwrap pointer for base type

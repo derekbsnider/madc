@@ -69,7 +69,7 @@ public:
     // declaration), `DO_FUN *fp` -> 1 (a function-pointer variable). -1 means
     // "not a recorded fn-ptr-base declarator" -> emitter uses its legacy path.
     int fnptr_explicit_stars = -1;
-    std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
+    std::vector<carray_dim_t> dims; // C fixed-size array shape; empty = scalar
     int64_t object_size_hint;
     // C99 variable-length array: when non-NULL, the local was declared as
     // `T name[expr]` with a runtime-valued size. The variable acts as a
@@ -88,8 +88,8 @@ public:
     inline bool is_fixed_array() const { return (flags & vfFIXEDARRAY) != 0; }
     inline bool has_aot_data() const { return aot_data_offset != (size_t)-1; }
     inline bool has_aot_cstr() const { return aot_cstr_offset != (size_t)-1; }
-    inline uint32_t total_elements() const {
-	uint32_t n = 1;
+    inline size_t total_elements() const {
+	size_t n = 1;
 	for ( auto d : dims ) n *= d;
 	return n;
     }

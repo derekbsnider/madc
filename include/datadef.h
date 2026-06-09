@@ -21,6 +21,11 @@ extern thread_local bool madc_verbose;
 extern thread_local int madc_opt_level;
 class TokenBase;
 
+// C fixed-size array dimension. 64-bit: huge dims like
+// `short buf[(1L << 62) - 256]` must survive layout/sizeof/offset math
+// (gcc.c-torture largesizeofquery) — never store a dim in a 32-bit type.
+typedef uint64_t carray_dim_t;
+
 enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass     };
 enum class RefType  : uint8_t { rtNone, rtValue, rtPointer, rtReference  };
 
@@ -264,7 +269,7 @@ public:
     std::vector<bool> member_array_flags;	// true when declarator used [] even if count folded to 1
     std::vector<size_t> member_offsets;	// per-member byte offset in the finalized layout
     std::vector<BitFieldInfo> member_bitfields;
-    std::vector<std::vector<uint32_t>> member_dims;
+    std::vector<std::vector<carray_dim_t>> member_dims;
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
     std::vector<uint32_t> member_access;	// per-member access flags (0=public, vfPRIVATE, vfPROTECTED)
     std::vector<int> member_origin;	// per-member: base index it came from, or -1 = own (MI flatten)
@@ -362,7 +367,7 @@ public:
 	bitfield_next_bit = 0;
     }
     void addMember(std::string n, DataDef &dd, size_t cnt, TokenBase *count_expr = NULL,
-	bool is_array_decl = false, const std::vector<uint32_t> *dims = NULL)
+	bool is_array_decl = false, const std::vector<carray_dim_t> *dims = NULL)
     {
 	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ") at offset " << size << std::endl);
 	endBitFieldRun();
@@ -375,7 +380,7 @@ public:
 	    member_array_flags.push_back(is_array_decl || count_expr != NULL);
 	    member_offsets.push_back(0);
 	    member_bitfields.push_back(BitFieldInfo());
-	    member_dims.push_back(dims ? *dims : std::vector<uint32_t>());
+	    member_dims.push_back(dims ? *dims : std::vector<carray_dim_t>());
 	    member_count_exprs.push_back(count_expr);
 	    member_access.push_back(0);
 	    size_t member_size = count_expr ? 0 : (dd.size * cnt);
@@ -389,7 +394,7 @@ public:
 	member_array_flags.push_back(is_array_decl || count_expr != NULL);
 	member_offsets.push_back(size);
 	member_bitfields.push_back(BitFieldInfo());
-	member_dims.push_back(dims ? *dims : std::vector<uint32_t>());
+	member_dims.push_back(dims ? *dims : std::vector<carray_dim_t>());
 	member_count_exprs.push_back(count_expr);
 	member_access.push_back(0);
 	if ( !count_expr )
@@ -458,7 +463,7 @@ public:
 	member_array_flags.push_back(false);
 	member_offsets.push_back(info.storage_offset);
 	member_bitfields.push_back(info);
-	member_dims.push_back(std::vector<uint32_t>());
+	member_dims.push_back(std::vector<carray_dim_t>());
 	member_count_exprs.push_back(NULL);
     }
     void addUnnamedBitField(DataDef &dd, size_t width)
@@ -491,7 +496,7 @@ public:
 	    if ( info.is_bitfield )
 		info.storage_offset += base_offset;
 	    member_bitfields.push_back(info);
-	    member_dims.push_back(i < agg.member_dims.size() ? agg.member_dims[i] : std::vector<uint32_t>());
+	    member_dims.push_back(i < agg.member_dims.size() ? agg.member_dims[i] : std::vector<carray_dim_t>());
 	    member_count_exprs.push_back(i < agg.member_count_exprs.size() ? agg.member_count_exprs[i] : NULL);
 	    member_access.push_back(i < agg.member_access.size() ? agg.member_access[i] : 0);
 	    member_origin.push_back(i < agg.member_origin.size() ? agg.member_origin[i] : -1);
@@ -578,7 +583,7 @@ public:
 		return (i < member_array_flags.size()) ? member_array_flags[i] : false;
 	return false;
     }
-    const std::vector<uint32_t> *m_dims(const std::string &member) const
+    const std::vector<carray_dim_t> *m_dims(const std::string &member) const
     {
 	for ( size_t i = 0; i < members.size(); ++i )
 	    if ( !member.compare(members[i].first) )
