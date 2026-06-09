@@ -159,6 +159,18 @@ if [ "$_cur_branch" = "feature/header-partition-claude" ]; then
   echo "  git checkout feature/cpp-detection-idiom-claude; make -C src; attack site 11947 (mirror"
   echo "  resolve_typename_type_token's type-context handling). Rule #2 NO shims; g++ oracle; gate hard."
   echo "  Then <sstream> (#23). (Supersedes 2026-06-08-header-partition-W2-perf-HANDOFF.md.)"
+elif [ "$_cur_branch" = "feature/cpp-detection-idiom-claude" ]; then
+  echo "ACTIVE LINE (this WIP branch): READ FIRST -> docs/plans/2026-06-09-fstream-construction-HANDOFF.md"
+  echo "  (esp. the top ⚑ banner + §12.7/§12.8). This branch = green tip d7344ac + the PROVEN __void_t"
+  echo "  SFINAE detection idiom + nested template-id partial-spec unifier (HEAD ~9fc2ce1+)."
+  echo "  It is OFF the green tip on purpose: mid-chain it regresses testcout_realhdr (fulltest 542/5)."
+  echo "  NEXT LAYER (§12.8): std::pointer_traits<char*> INSTANTIATION fails — instantiate_template_id"
+  echo "  returns NULL for it in basic_string::_M_local_data(); the expr-arm dispatch (parser.cpp:11984)"
+  echo "  is FINE. Probe instantiate_template_id/match_partial_specialization for pointer_traits<char*>"
+  echo "  (its _Tp* partial spec + detection-idiom primary, bits/ptr_traits.h). g++ oracle:"
+  echo "  pointer_traits<char*>::pointer=char*, ::element_type=char. Reducer tmp/str1.mad."
+  echo "  Rule #2 NO shims (don't even OFFER them); g++ oracle; gate fulltest+torture-ALONE+canaries"
+  echo "  before this lands on the green tip. DO NOT push without asking."
 elif [ "$_cur_branch" = "feature/realhdr-parse-gaps2-claude" ]; then
   echo "ACTIVE LINE (this branch): READ FIRST -> docs/plans/2026-06-08-smaug-project-boot-HANDOFF.md"
   echo "  SMAUG boots from a FRESH compile via the umbrella AND --project (-lcrypt)."
