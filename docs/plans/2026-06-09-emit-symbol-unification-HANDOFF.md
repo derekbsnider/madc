@@ -207,8 +207,16 @@ emit_symbol-direct external branches. The local_emit_name single-reader rule is 
 low-false-positive proxy that actually catches hand-rolled symbol derivation.) Verified it
 fails on an injected `return f->local_emit_name;` and is green on the unified tree.
 
-**Step 3 — migrate free `std::` fns onto Pattern A: ⬅ IN PROGRESS (design verified
-against the code 2026-06-09 late; the payoff that moves reds).**
+**Step 3 — migrate free `std::` fns onto Pattern A: ✅ DONE (named fns; 2026-06-09 late).**
+Landed as `f3b7c7f` (Steps A+B: member call_target_funcdef resolver + generic
+derived→base reference binding in object_arg_addr) and `689dbb2` (Step C:
+`std_free_function_instantiation` replaces try_std_free_function_call — FuncDef
+per symbol with emit_symbol, generic call path emits, `__ns_` SHIM GATE DELETED,
+native_func_shape ret_ptr |= returns_ref). getline emits the byte-identical
+symbol through the generic path; gates: fulltest 543/4/0/26,
+torture 1566/31/57/1 FAILSET IDENTICAL, check-call-emit-symbol GREEN.
+Remaining from this step: **D only** (the W2 OPERATOR path re-mangle — see below).
+Original design notes follow (kept for the D follow-up):
 Place `emit_symbol` on the instantiated free-fn FuncDef so the call reads emit_symbol via
 `call_emit_symbol`; `try_std_free_function_call`'s bespoke N_CALL emission and the `__ns_`
 prefix gate (cir_builder ~7357) are RETIRED. **Verified facts the design rests on:**
@@ -308,8 +316,15 @@ operator path to named functions:
 x.o | grep U` for the real symbols.
 
 ## 9. OPEN ITEMS
-- The `__ns_` shim gate (cir_builder ~7244) still in committed code — removed by §5.3 step 3.
-- W2 + getline call-site re-mangle → retire into emit_symbol (§5.3 step 3).
+- ~~The `__ns_` shim gate — removed by §5.3 step 3.~~ ✅ DONE (`689dbb2`).
+- ~~getline call-site re-mangle → retire into emit_symbol.~~ ✅ DONE (`689dbb2`).
+  Still open: the W2 OPERATOR path re-mangle (§5.3 step D) — operators don't flow
+  through the generic TokenCallFunc path; deducer already shared.
+- **std::string `a + b` SIGSEGV in real-header mode** (pre-existing, verified at
+  clean HEAD via stash/rebuild; "a+b works at c9fd222" is stale for
+  `--std=c++17 --no-embedded-headers`). Reducers: tmp/cstr3.mad, tmp/cstr4.mad.
+  Investigate what `a + b` lowers to (--dump-cir): by-value class return needs
+  the sret/retbuf ABI the free-fn paths decline.
 - testlargesizeofquery: separate uint32→64 array-dim track.
 - Physical shim deletion + STD_MADC `__cplusplus` flip: deferred (big, needs the cluster
   fixes first).

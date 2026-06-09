@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### `std::` free-function templates bind via `emit_symbol`; `__ns_` shim gate retired (2026-06-09)
+
+- Named `std::` free-function template calls (`std::getline`) now instantiate a
+  `FuncDef` carrying the Itanium symbol on `FuncDef::emit_symbol` — resolved by
+  the one `call_emit_symbol` precedence and emitted by the **generic** call
+  path. The bespoke `try_std_free_function_call` N_CALL emission and the
+  `__ns_` callee-prefix shim gate are deleted; discovery is a pure
+  `free_function_overloads` signature lookup (Pattern A everywhere for named
+  free fns; the W2 operator path's re-mangle is the remaining follow-up).
+- Foundations, each independently correct: `call_target_funcdef` became the one
+  member callee-resolver every consumer shares; `object_arg_addr` now binds a
+  Derived object to a Base parameter by selecting the base subobject at its
+  byte offset (previously it CONSTRUCTED a converting-ctor Base temp — wrong
+  for `Base&` binding, user classes included); `native_func_shape` treats a
+  C++ reference return as an address return.
+- Verified: getline emits the byte-identical mangled symbol through the new
+  path and reads lines end-to-end; cout/string canaries green;
+  `check-call-emit-symbol.sh` green. Gates: fulltest `543/4/0/26` (baseline);
+  gcc.c-torture `1566/31/57/1` with a byte-identical failset.
+
 ### `cout << std::string` works via the real free `operator<<` (2026-06-09)
 
 - The W2 free-operator path required the operator's 2nd parameter to exactly
