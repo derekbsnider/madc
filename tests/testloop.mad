@@ -1,5 +1,9 @@
 #!/../bin/madc
+// Standard C++ (g++-validated) — compiled through REAL libstdc++ headers via
+// the .flags fixture (--std=c++17 --no-embedded-headers).
 #include <iostream>
+#include <fstream>
+#include <string>
 using namespace std;
 
 int main()
@@ -20,7 +24,7 @@ int main()
     int count = 0;
     while ( inf.good() )
     {
-        getline(inf, line);
+        std::getline(inf, line);
         if ( inf.good() )
         {
             cout << line << endl;
@@ -32,7 +36,7 @@ int main()
 
     // cleanup
     string rm = "rm -f /tmp/madc_loop_test.txt";
-    system(rm);
+    system(rm.c_str());
 
     return 0;
 }
