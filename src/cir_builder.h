@@ -328,6 +328,13 @@ public:
 	// their own name.
 	std::string var_emit_name(const class Variable &v) const;
 	std::string func_emit_name(const class Variable &v, class FuncDef *fd) const;
+	// THE single source of truth for the C symbol a CALL references. Precedence:
+	// an external ABI bind (emit_symbol, madc emits no body) wins; then a
+	// madc-emitted body's non-default symbol (local_emit_name — hoisted nested
+	// fn or arity-disambiguated method/operator); else the variable's own emit
+	// name. Every call-symbol site routes through here so the precedence lives
+	// in ONE place and cannot drift (see scripts/check-call-emit-symbol.sh).
+	std::string call_emit_symbol(const class Variable &v, class FuncDef *fd) const;
 	node_t integer(long val, TokenBase *origin = NULL);
 	// Type-aware integer literal: pick the c2mir literal node code
 	// (N_I/N_U/N_L/N_UL) from the literal's own DataDef so a suffixed

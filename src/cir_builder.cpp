@@ -157,11 +157,31 @@ std::string CirBuilder::var_emit_name(const Variable &v) const
 	return v.storage_alias_name;
 }
 
-std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
+// THE single source of truth for the C symbol a call references. Precedence:
+//   1. emit_symbol     — bound to an EXTERNAL ABI symbol; madc emits no body.
+//   2. local_emit_name — a madc-emitted body's non-default symbol (a hoisted
+//                        nested fn / lambda, or an arity-disambiguated
+//                        method/operator).
+//   3. var_emit_name   — the variable's own emit name (default scheme; also
+//                        resolves data/asm-label aliases).
+// emit_symbol and local_emit_name are mutually exclusive by construction. The
+// parser maintains the invariant that whenever local_emit_name is set the
+// Variable's name is set equal to it, so historical call sites that fell back
+// to var.name already produced this value — routing them here is behavior-
+// preserving. New call sites MUST use this (enforced by
+// scripts/check-call-emit-symbol.sh) so the precedence cannot drift.
+std::string CirBuilder::call_emit_symbol(const Variable &v, FuncDef *fd) const
 {
+	if (fd && !fd->emit_symbol.empty())
+		return fd->emit_symbol;
 	if (fd && !fd->local_emit_name.empty())
 		return fd->local_emit_name;
 	return var_emit_name(v);
+}
+
+std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
+{
+	return call_emit_symbol(v, fd);
 }
 
 node_t CirBuilder::integer(long val, TokenBase *origin)
