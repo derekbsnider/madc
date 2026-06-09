@@ -10,7 +10,7 @@ turn-by-turn trail — still useful, but route from HERE).
 
 ## 0. ONE-PARAGRAPH STATE
 
-Branch **`feature/cpp-detection-idiom-claude`**, HEAD **`4517ab9`**, working tree
+Branch **`feature/cpp-detection-idiom-claude`**, HEAD **`0e6ba9a`**, working tree
 **clean**. Earlier this session: (a) corrected the header-partition architecture I'd
 misread (see §2), (b) landed a **data-driven embedded-header shim-bypass classifier**
 (`65d2d67`), (c) landed **mangled-direct binding for named `std::` free-function
@@ -31,9 +31,19 @@ templates — `std::getline` works end-to-end** (`a1b4421`).
 All four commits behavior-preserving; gates UNCHANGED at each: fulltest **543/4/0/26**,
 gcc.c-torture **1566/31/57/1**.
 
-**NEXT = Step 3 (§5.3) — the payoff that moves the reds.** The 4 reds
-(testdefer/testfstream/testlargesizeofquery/testloop) are still red — getline is one
-ingredient; the remaining ingredients are in §4.
+**STEP 3 STARTED — one wall cleared:**
+- **`0e6ba9a`** — bind inline extern-template-class members external →
+  **`cout << unsigned long` / `s.size()` now work** (member symbol `_ZNSolsEm`, g++ match;
+  body no longer emitted). Zero regressions. See §4.1. This used the unified call_emit_symbol
+  emit_symbol branch to route the call external.
+
+**REMAINING Step 3 (the reds still need these — §4):** (a) `cout << std::string` — the free
+`operator<<(ostream&, const string&)` must pass the class rhs as a const-REFERENCE (RK), not
+a pointer (§4.2); (b) the free-`std::`-fn emit_symbol migration — place emit_symbol on free-fn
+instantiations and RETIRE `try_std_free_function_call`/W2 call-site re-mangle + the `__ns_`
+shim gate (§5.3 step 3 remainder); (c) then the per-red ingredients (ofstream good()/open(),
+system(string), to_string, test rewrites to standard C++). The 4 reds
+(testdefer/testfstream/testlargesizeofquery/testloop) are still red.
 
 **The north star (user-confirmed, do not drift from it):** madc hand-rolls ONLY the
 bucket-1/2 freestanding compiler headers; ALL glibc + ALL libstdc++ are consumed REAL
@@ -111,19 +121,17 @@ rewritten to standard C++ where they use removed dialect forms.
 **Shared blockers (real-header `cout<<` operand binding) — both block testloop/testfstream;
 `cout` ITSELF works (testcout `cout<<const char*<<int<<endl` is green):**
 
-1. **`cout << unsigned long` / `long` / `long long` / `s.size()`** → c2mir error at
-   `/usr/include/c++/13/ostream:470` "lvalue required as unary & operand". ROOT CAUSE:
-   `operator<<(int)` is DECLARED-ONLY (`<ostream>:191`) → madc binds external `_ZNSolsEi`
-   (works). `operator<<(unsigned long)` is INLINE (`<ostream>:172` `{return _M_insert(__n);}`)
-   → madc EMITS the inline body, forwarding to `_M_insert<unsigned long>`, and mis-mangles
-   its `__ostream_type&` typedef return as `_ZNSo9_M_insertImEER14__ostream_typeT_` (typedef
-   not resolved to `So`). g++ binds the member directly: `cout<<int`→`_ZNSolsEi`,
-   `cout<<unsigned long`→`_ZNSolsEm` (libstdc++ exports the member out-of-line). **FIX = the
-   emit_symbol unification (§5): basic_ostream<char> is extern-template-instantiated → bind
-   ALL its members INCLUDING inline ones to the external libstdc++ symbol via emit_symbol;
-   don't emit inline bodies. Extend `bind_declared_cpp_symbol` (which today only binds
-   DECLARED-ONLY members) to inline members of extern-template classes.**
-2. **`cout << std::string`** → c2mir "incompatible argument type for pointer type parameter".
+1. **`cout << unsigned long` / `long long` / `s.size()` — ✅ FIXED (`0e6ba9a`).** Was: c2mir
+   error at `<ostream>:470` "lvalue required as unary & operand" because `operator<<(int)` is
+   DECLARED-ONLY (bound external `_ZNSolsEi`, worked) but `operator<<(unsigned long)` is INLINE
+   (`<ostream>:172 {return _M_insert(__n);}`) → madc emitted the body, forwarding into the
+   non-exported member template `_M_insert<T>`. FIX (landed): the post-parse CIR bind pass
+   (cir_builder ~9460, runs once `is_extern_template_instantiated` is known — unlike parse
+   time, so this canNOT go in `bind_declared_cpp_symbol`) now binds non-template, non-already-
+   bound methods/operators of EXPLICITLY-INSTANTIATED classes (cls spelling has '<') external,
+   mirroring its existing ctor/dtor binding. `cout<<(unsigned long)` → `_ZNSolsEm` (g++ match),
+   body not emitted. VERIFIED vs g++: `cout<<5UL`→5, `cout<<"len="<<s.size()`→len=11.
+2. **`cout << std::string` — ⬅ NEXT operand wall.** c2mir "incompatible argument type for pointer type parameter".
    g++ uses the free `operator<<(ostream&, const string&)` =
    `_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE`
    (**RK** = const reference). madc treats the `const string&` class operand as a POINTER
