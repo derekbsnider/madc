@@ -25,11 +25,14 @@
   returns in the CIR/external-call boundary and applying the same derived-to-base
   adjustment used for pointer returns. Focused reducers for default construction,
   assignment, and append now compile/run quiet.
-- Corrected the remaining literal-construction diagnosis: `std::string s("hello")`
-  still crashes because madc emits destructor cleanup for unconstructed storage.
-  The emitted `basic_string<char>` layout is the expected 32 bytes; the next gap is
-  generic member-template constructor instantiation/selection for libstdc++'s
-  defaulted C-string constructor template, not a layout shim.
+- Real libstdc++ `std::string` construction and mutation now compile and run
+  end-to-end (verified at `c9fd222`): `std::string s("hello")` (`hello len=5`),
+  `s += "..."`, `s = "..."`, `a + b`, and `.size()` all work. This supersedes the
+  earlier same-day diagnosis that `std::string s("hello")` "still crashes" / needed
+  member-template C-string-ctor instantiation — that wall is cleared. The next
+  functional wall is `std::getline` (`'getline' is not a member of namespace 'std'`
+  — unbound) and then `<fstream>` (`ofstream`/`ifstream` typedefs + `open()`/
+  `operator<<` + the `ios_base`/`basic_ostream` hierarchy, inc-5/inc-6).
 - Validation: `make -C src fulltest` remains at the known baseline
   `543 passed, 4 failed, 0 timed out, 26 skipped`; gcc.c-torture remains
   `1566 passed, 31 compile-failed, 57 runtime-failed, 1 timed out, 30 skipped`;

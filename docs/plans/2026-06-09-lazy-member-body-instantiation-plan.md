@@ -209,6 +209,17 @@ Verified: str1 `exit 0`; testcout `"This is a test, x = -1"` (= g++); fulltest *
 gcc.c-torture **1566/31/57/1** (UNCHANGED, C path untouched); canaries (ofstream hello42,
 test_extern_polymorphic) correct.
 
+> **⚑ SUPERSEDED 2026-06-09 (turn 4 / Codex, commits `c932003` + `c9fd222`).** Everything
+> in this REMAINING/BISECTION block below describing `std::string s("hello")` /
+> `s = "hello"` / `s += ...` as STILL FAILING (the `pointer_traits<char*>::pointer_to`,
+> `allocator_traits` `__detected_or_t`, and "missing member-template ctor / runtime crash"
+> diagnoses) is **RESOLVED**. VERIFIED at HEAD `c9fd222`: `std::string s("hello")` →
+> `hello len=5`; `s += "..."`, `s = "..."`, `a + b`, `s[i]`, `.size()` all compile + run.
+> Do NOT re-chase these (rule #4). **REAL NEXT WALL = `std::getline`**
+> (`'getline' is not a member of namespace 'std'` — the free-function template is not
+> bound/visible) then `<fstream>` inc-5/inc-6. The diagnostic trail below is kept for
+> history only.
+
 ### REMAINING (task #25) — richer string usage / getline
 `tmp/str_use.mad` (`std::string s="hello"; s+=" world"; cout<<s<<s.size()`) still fails at
 `basic_string.h:3486` — but now as **c2mir CHECK errors** (lvalue-required-as-&, incompatible

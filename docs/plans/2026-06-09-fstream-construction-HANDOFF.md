@@ -18,13 +18,19 @@ bottom, then the governing design corpus in §2.
 > **THIS WIP CHAIN IS NOW GREEN + GATED — landing-ready onto the green tip
 > `feature/header-partition-claude` (fast-forward) when the user OKs.** (Don't push remote
 > without asking.)
-> **NEXT (task #25): richer string usage / getline.** `std::string s="x"; s+=...` still
-> fails at basic_string.h:3486 as c2mir CHECK errors (NOT parse): operator+= is
-> madc-emitted, reaches _M_local_data, which returns `pointer` = the opaque
-> `allocator_traits<allocator<char>>::pointer` `__detected_or_t` STRUCT, not `char*` (§12.1).
-> FIX = select the `allocator_traits<allocator<_Tp>>` partial spec (pointer=`_Tp*`);
-> c80577c's unify_nested_spec_pattern_arg isn't selecting it (probe tmp/at1.mad). Then
-> getline → testfstream/testloop.
+> **⚑ UPDATE 2026-06-09 (turn 4 / Codex): string construction + mutation NOW WORK —
+> task-#25's "s+= still fails" is SUPERSEDED.** Later same-day commits `c932003`
+> ("advance real string mutation path") + `c9fd222` cleared the basic_string.h:3486
+> wall. VERIFIED at HEAD `c9fd222`: `std::string s("hello")` → `hello len=5`; `s += "..."`,
+> `s = "..."`, `a + b`, `.size()` all compile+run. The `allocator_traits` partial-spec /
+> `_M_local_data` `__detected_or_t` diagnosis below is resolved — do NOT re-chase it.
+> **REAL NEXT WALL: (1) `std::getline`** → `'getline' is not a member of namespace 'std'`
+> (unbound — bind the real libstdc++ `std::getline(istream&, string&)` overloads), **then
+> (2) `<fstream>`** ofstream/ifstream typedefs + `open()`/`operator<<` + `ios_base`/
+> `basic_ostream` hierarchy (inc-5/inc-6) → testfstream/testloop/testdefer. NOTE those
+> three reds' SOURCES use bare `ofstream` via `using namespace std` + only
+> `#include <iostream>` (no `#include <fstream>`) — old-shim reliance; closing them the
+> real-header way may also need the test sources to `#include <fstream>`.
 >
 > ## ⚑ 2026-06-09 (turn 3) CURRENT STATE — (superseded by the MILESTONE banner above)
 > **NEW WORK: lazy member-function-body instantiation ([temp.inst] conformance) —
