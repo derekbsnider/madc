@@ -4855,17 +4855,20 @@ std::string datadef_cpp_spelling_w2(DataDef *dd)
 	return dd->name;
 }
 
-// Deduce a free std stream function's template arguments from the lhs class and
-// build the $Tn-parameterized, namespace-qualified stream type (what
+// Deduce a free std stream function's template-param bindings from the lhs
+// class and build the $Tn-parameterized, namespace-qualified stream type (what
 // itanium_mangle_std_free_template wants for the return / stream parameter).
 // ov.param_spellings[0] is the stream-parameter pattern (e.g.
 // "basic_ostream<char,_Traits>&"); match it against the lhs class's canonical
 // template-id, binding each template-param position to the lhs's concrete arg,
 // requiring concrete (non-template-param) positions to match. Returns false if
-// it does not deduce-match. Shared by the binary-operator and manipulator paths.
+// it does not deduce-match. The binding may be PARTIAL — params that appear
+// only in later parameters (operator<<'s _Alloc appears only in the rhs
+// basic_string) are deduced by the caller; completeness is checked there via
+// targs_from_binding. Shared by the binary-operator and manipulator paths.
 bool deduce_free_stream_call(const std::string &lhs_spelling,
 		const Program::FreeOperatorOverload &ov,
-		std::vector<std::string> &targs, std::string &stream_type)
+		std::map<std::string, std::string> &binding, std::string &stream_type)
 {
 	std::string lhs_head; std::vector<std::string> lhs_args;
 	if (!split_template_id_w2(lhs_spelling, lhs_head, lhs_args)) return false;
@@ -4874,19 +4877,12 @@ bool deduce_free_stream_call(const std::string &lhs_spelling,
 	    || !split_template_id_w2(ov.param_spellings[0], p0head, p0args)) return false;
 	if (strip_leading_qualifier(p0head) != strip_leading_qualifier(lhs_head)) return false;
 	if (p0args.size() != lhs_args.size()) return false;
-	std::map<std::string, std::string> binding;
 	for (size_t i = 0; i < p0args.size(); ++i) {
 		bool is_tp = false;
 		for (const std::string &tp : ov.template_params)
 			if (tp == p0args[i]) { is_tp = true; break; }
 		if (is_tp) binding[p0args[i]] = lhs_args[i];
 		else if (norm_type_w2(p0args[i]) != norm_type_w2(lhs_args[i])) return false;
-	}
-	targs.clear();
-	for (const std::string &tp : ov.template_params) {
-		auto it = binding.find(tp);
-		if (it == binding.end()) return false;
-		targs.push_back(it->second);
 	}
 	std::string out = (p0head.find("::") != std::string::npos
 			   ? p0head : ov.ns + "::" + p0head) + "<";
@@ -4921,6 +4917,70 @@ static void collect_self_and_base_spellings(DataDefCLASS *cls, size_t base_off,
 			collect_self_and_base_spellings(b.base, base_off + b.offset, out);
 	if (cls->base_class)   // single-inheritance primary base (offset 0)
 		collect_self_and_base_spellings(cls->base_class, base_off, out);
+}
+
+// Build the template-arg list (in template-param order) from a binding map;
+// false when a template param was never bound (deduction incomplete).
+static bool targs_from_binding(const Program::FreeOperatorOverload &ov,
+		const std::map<std::string, std::string> &binding,
+		std::vector<std::string> &targs)
+{
+	targs.clear();
+	for (const std::string &tp : ov.template_params) {
+		auto it = binding.find(tp);
+		if (it == binding.end()) return false;
+		targs.push_back(it->second);
+	}
+	return true;
+}
+
+// Deduce-match ONE template-id parameter spelling against an argument class
+// (its self or a non-virtual base): bind each template-param position to the
+// class's concrete arg, require concrete positions to match, and keep the
+// bindings consistent with any made by earlier parameters. Reports the matched
+// base-subobject byte offset (pass the arg adjusted to that base) and the
+// matched class's fully-qualified head (for requalify_head — the captured
+// spelling is unqualified since it lives inside `namespace std`). Shared by
+// the named-free-fn (getline) and free-operator (cout<<string) paths.
+static bool deduce_param_against_class(const std::string &pspell,
+		DataDefCLASS *acls, const std::vector<std::string> &tparams,
+		std::map<std::string, std::string> &binding,
+		size_t &off, std::string &qhead)
+{
+	if (!acls) return false;
+	std::string phead; std::vector<std::string> pargs;
+	if (!split_template_id_w2(pspell, phead, pargs)) return false;
+	std::vector<std::pair<std::string, size_t> > cands;
+	collect_self_and_base_spellings(acls, 0, cands);
+	for (const auto &cand : cands) {
+		std::string chead; std::vector<std::string> cargs;
+		if (!split_template_id_w2(cand.first, chead, cargs)) continue;
+		if (strip_leading_qualifier(chead) != strip_leading_qualifier(phead))
+			continue;
+		if (cargs.size() != pargs.size()) continue;
+		std::map<std::string, std::string> local = binding;
+		bool good = true;
+		for (size_t k = 0; k < pargs.size(); k++) {
+			bool is_tp = false;
+			for (const std::string &tp : tparams)
+				if (tp == pargs[k]) { is_tp = true; break; }
+			if (is_tp) {
+				auto it = local.find(pargs[k]);
+				if (it != local.end()
+				    && norm_type_w2(it->second) != norm_type_w2(cargs[k]))
+					{ good = false; break; }
+				local[pargs[k]] = cargs[k];
+			} else if (norm_type_w2(pargs[k]) != norm_type_w2(cargs[k]))
+				{ good = false; break; }
+		}
+		if (good) {
+			binding = local;
+			off = cand.second;
+			qhead = chead;
+			return true;
+		}
+	}
+	return false;
 }
 
 static std::string template_placeholder_spelling(
@@ -5070,6 +5130,10 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 	return call;
 }
 
+static std::string substitute_tparams(const std::string &spell,
+		const std::vector<std::string> &tparams);
+static std::string requalify_head(const std::string &spell, const std::string &qhead);
+
 node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls,
 		const std::string &mname, FuncDef *member_callee, TokenBase *origin)
 {
@@ -5088,14 +5152,17 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 
 	// Deduce against the first candidate (most-derived first) that matches; report
 	// the matched base offset so the passed stream pointer is adjusted to the base.
+	// The binding may still be partial (params deducible only from the rhs).
 	auto deduce_any = [&](const Program::FreeOperatorOverload &ov,
-			      std::vector<std::string> &targs, std::string &stype,
-			      size_t &off) -> bool {
-		for (const auto &cand : lhs_cands)
-			if (deduce_free_stream_call(cand.first, ov, targs, stype)) {
+			      std::map<std::string, std::string> &binding,
+			      std::string &stype, size_t &off) -> bool {
+		for (const auto &cand : lhs_cands) {
+			binding.clear();
+			if (deduce_free_stream_call(cand.first, ov, binding, stype)) {
 				off = cand.second;
 				return true;
 			}
+		}
 		return false;
 	};
 	// Adjust a void* object address to a base subobject at byte `off`.
@@ -5122,8 +5189,11 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 			for (const Program::FreeOperatorOverload &ov : m_prog->free_operator_overloads) {
 				if (ov.opname != fname || ov.param_spellings.size() != 1) continue;
 				if (!fns.empty() && ov.ns != fns) continue;
-				std::vector<std::string> targs; std::string stype; size_t boff = 0;
-				if (!deduce_any(ov, targs, stype, boff)) continue;
+				std::map<std::string, std::string> binding;
+				std::string stype; size_t boff = 0;
+				if (!deduce_any(ov, binding, stype, boff)) continue;
+				std::vector<std::string> targs;
+				if (!targs_from_binding(ov, binding, targs)) continue;
 				std::vector<std::string> mparams = { stype };
 				std::string msym = itanium_mangle_std_free_template(
 					ov.opname, targs, stype, mparams);
@@ -5154,20 +5224,47 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	bool member_exact = !member_p1_norm.empty() && member_p1_norm == rhs_norm;
 
 	// Pick the most-specialized free candidate that (a) matches the operator,
-	// (b) param[0] deduce-matches the lhs class, (c) param[1] exactly matches rhs.
+	// (b) param[0] deduce-matches the lhs class, (c) param[1] exactly matches
+	// rhs, OR is a template-id deduce-matching the rhs CLASS (the free
+	// operator<<(ostream&, const basic_string<_CharT,_Traits,_Alloc>&) — _Alloc
+	// is deducible only from the rhs, and the rhs is passed by reference).
 	const Program::FreeOperatorOverload *best = NULL;
 	std::vector<std::string> best_targs;     // deduced, in template-param order
 	std::string best_stream_type;
 	size_t best_off = 0;                     // base-subobject offset of the match
+	bool best_rhs_deduced = false;           // rhs is a class passed by reference
+	size_t best_rhs_off = 0;                 // rhs base-subobject offset
+	std::string best_rhs_param;              // requalified $Tn param[1] (mangler)
 	for (const Program::FreeOperatorOverload &ov : m_prog->free_operator_overloads)
 	{
 		if (ov.opname != mname || ov.param_spellings.size() < 2) continue;
-		// (c) 2nd param must exactly match rhs (qualification/ref allowed).
-		if (norm_type_w2(ov.param_spellings[1]) != rhs_norm) continue;
 		// (b) deduce template args from param[0] vs the lhs class (or a base) +
 		// build the $Tn-parameterized stream type for the mangler.
-		std::vector<std::string> targs; std::string stype; size_t off = 0;
-		if (!deduce_any(ov, targs, stype, off)) continue;
+		std::map<std::string, std::string> binding;
+		std::string stype; size_t off = 0;
+		if (!deduce_any(ov, binding, stype, off)) continue;
+		// (c) 2nd param: exact rhs match, or template-id rhs-class deduction.
+		bool rhs_deduced = false;
+		size_t rhs_off = 0;
+		std::string rhs_qhead;
+		if (norm_type_w2(ov.param_spellings[1]) != rhs_norm)
+		{
+			const std::string &rspell = ov.param_spellings[1];
+			// Only a by-reference class param can deduce, and only the
+			// reference-returning stream shape fits this path's emission
+			// (N_DEREF of the call) — by-value returns stay on their own path.
+			bool rhs_is_ref = !rspell.empty() && rspell.back() == '&';
+			bool ret_is_ref = !ov.return_spelling.empty()
+					  && ov.return_spelling.back() == '&';
+			if (!rhs_is_ref || !ret_is_ref) continue;
+			if (!deduce_param_against_class(rspell, as_class_instance(rhs_dd),
+							ov.template_params, binding,
+							rhs_off, rhs_qhead))
+				continue;
+			rhs_deduced = true;
+		}
+		std::vector<std::string> targs;
+		if (!targs_from_binding(ov, binding, targs)) continue;
 		// Most-specialized = fewest template params (the char partial spec, one
 		// param, beats the general two-param template -> the symbol g++ calls).
 		if (best && ov.template_params.size() >= best->template_params.size())
@@ -5176,6 +5273,12 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 		best_targs = targs;
 		best_stream_type = stype;
 		best_off = off;
+		best_rhs_deduced = rhs_deduced;
+		best_rhs_off = rhs_off;
+		best_rhs_param = rhs_deduced
+			? substitute_tparams(requalify_head(ov.param_spellings[1], rhs_qhead),
+					     ov.template_params)
+			: ov.param_spellings[1];
 	}
 	if (!best) return NULL;
 	// Only override the member when the member is NOT itself an exact match
@@ -5183,7 +5286,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	if (member_callee && member_exact) return NULL;
 
 	std::string stream_type = best_stream_type;
-	std::vector<std::string> mparams = { stream_type, best->param_spellings[1] };
+	std::vector<std::string> mparams = { stream_type, best_rhs_param };
 	std::string sym = itanium_mangle_std_free_template(
 		best->opname.substr(strlen("operator")), best_targs,
 		stream_type, mparams);
@@ -5203,6 +5306,15 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	{
 		eparams.push_back({ {N_VOID}, true });
 		append(args, translate_expr(top->right));
+	}
+	else if (best_rhs_deduced)
+	{
+		// Deduced class rhs: the parameter is a reference — pass the object
+		// BY ADDRESS, adjusted to the matched base subobject.
+		eparams.push_back({ {N_VOID}, true });
+		append(args, adjust_to_base(
+			object_arg_addr(top->right, as_class_instance(rhs_dd)),
+			best_rhs_off));
 	}
 	else
 	{
@@ -5251,7 +5363,16 @@ static std::string requalify_head(const std::string &spell, const std::string &q
 	if (qhead.empty()) return spell;
 	size_t lt = spell.find('<');
 	if (lt == std::string::npos) return spell;
-	return qhead + spell.substr(lt);
+	// Replace only the head NAME — keep leading cv-qualifiers, or
+	// "const basic_string<...>&" would lose its const (RK -> R, wrong symbol).
+	size_t h = 0;
+	for (;;) {
+		while (h < lt && spell[h] == ' ') ++h;
+		if (spell.compare(h, 6, "const ") == 0) { h += 6; continue; }
+		if (spell.compare(h, 9, "volatile ") == 0) { h += 9; continue; }
+		break;
+	}
+	return spell.substr(0, h) + qhead + spell.substr(lt);
 }
 
 // Bind a call to a NAMED std:: (real-libstdc++) free-function template MANGLED-DIRECT
@@ -5290,41 +5411,17 @@ node_t CirBuilder::try_std_free_function_call(TokenCallFunc *tcf, FuncDef *cdf,
 			// by value) or `&&` rvalue-ref we skip this overload for now.
 			if (pspell.size() >= 2 && pspell.compare(pspell.size() - 2, 2, "&&") == 0)
 				{ ok = false; break; }   // prefer the lvalue-ref overload
-			std::string phead; std::vector<std::string> pargs;
-			if (!split_template_id_w2(pspell, phead, pargs)) { ok = false; break; }
 			DataDefCLASS *acls = as_class_instance(tcf->parameters[i]->datadef());
 			if (!acls) { ok = false; break; }
-			std::vector<std::pair<std::string, size_t> > cands;
-			collect_self_and_base_spellings(acls, 0, cands);
-			bool matched = false;
-			for (const auto &cand : cands) {
-				std::string chead; std::vector<std::string> cargs;
-				if (!split_template_id_w2(cand.first, chead, cargs)) continue;
-				if (strip_leading_qualifier(chead) != strip_leading_qualifier(phead))
-					continue;
-				if (cargs.size() != pargs.size()) continue;
-				std::map<std::string, std::string> local = binding;
-				bool good = true;
-				for (size_t k = 0; k < pargs.size(); k++) {
-					bool is_tp = false;
-					for (const std::string &tp : ov.template_params)
-						if (tp == pargs[k]) { is_tp = true; break; }
-					if (is_tp) {
-						auto it = local.find(pargs[k]);
-						if (it != local.end()
-						    && norm_type_w2(it->second) != norm_type_w2(cargs[k]))
-							{ good = false; break; }
-						local[pargs[k]] = cargs[k];
-					} else if (norm_type_w2(pargs[k]) != norm_type_w2(cargs[k]))
-						{ good = false; break; }
-				}
-				if (good) { binding = local; offs[i] = cand.second; matched = true;
-					qmap[phead] = chead;   // fully-qualified head for mangling
-					FFDBG(fprintf(stderr, "[FFCALL] %s param[%zu] phead=%s -> cand='%s' off=%zu\n",
-						name.c_str(), i, phead.c_str(), cand.first.c_str(), cand.second));
-					break; }
-			}
-			if (!matched) { ok = false; break; }
+			std::string qhead;
+			if (!deduce_param_against_class(pspell, acls, ov.template_params,
+							binding, offs[i], qhead))
+				{ ok = false; break; }
+			std::string phead; std::vector<std::string> pargs;
+			split_template_id_w2(pspell, phead, pargs);
+			qmap[phead] = qhead;   // fully-qualified head for mangling
+			FFDBG(fprintf(stderr, "[FFCALL] %s param[%zu] phead=%s -> qhead='%s' off=%zu\n",
+				name.c_str(), i, phead.c_str(), qhead.c_str(), offs[i]));
 		}
 		if (!ok) continue;
 		std::vector<std::string> targs;
