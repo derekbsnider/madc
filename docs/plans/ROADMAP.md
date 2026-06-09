@@ -40,7 +40,7 @@ high-level" — the answer is both.**
   a character, navigate the world, and fight (the Newgate serpent fight runs).
   The project's north-star goal — running a real C89 codebase end-to-end —
   is now demonstrated on CIR.
-- **CIR baseline (2026-06-09):** **543 integration/unit pass / 4 fail / 0 timeout / 26 skip**;
+- **CIR baseline (2026-06-09):** **544 integration/unit pass / 3 fail / 0 timeout / 26 skip**;
   **gcc.c-torture 1566/1685 (92.9%)** with 31 compile-failed, 57 runtime-failed,
   and 1 timed out, vs the old asmjit backend's 1645 (97.6%) — gap 79.
   The clean `develop` rebuild emits no compiler warnings. The failures are the

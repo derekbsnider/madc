@@ -111,10 +111,24 @@ fix the consumption bugs, defer physical shim deletion + the STD_MADC `__cpluspl
 All 3 stream tests should move to `--std=c++17 --no-embedded-headers` (real headers) + be
 rewritten to standard C++ where they use removed dialect forms.
 
-- **testloop**: ofstream/ifstream + `getline` (DONE) + `inf.good()` + `cout<<` + `system(string)`.
-- **testfstream**: above + non-standard `to_string(s,42)` (2-arg), `strlen(string)`,
-  `stoi` — rewrite to `std::to_string(42)`, `s.c_str()`, etc. (standard C++).
-- **testdefer**: the `defer` madc feature + ofstream.
+- **testloop**: ✅ GREEN (`65d0796`, fulltest 544/3/0/26) — rewritten standard C++ via real
+  headers (`--std=c++17 --no-embedded-headers` .flags). Unblocked by `8bc8b99` (TWO generic
+  fixes): (a) virtual-base `__this` for externally-bound methods — the adjustment was below
+  the emit_symbol early-return, so `inf.good()` called real `_ZNK...4goodEv` with &inf
+  instead of the basic_ios subobject; (b) namespace-scope `using` aliases no longer write
+  the FLAT datatype_map (`std::pmr::string` was CLOBBERING unqualified `string` → wrong
+  allocator → `open(const string&)` never matched); unqualified type lookup now searches
+  the enclosing-namespace chain (std::pmr→std) before global, proper C++ scoping.
+- **testfstream**: rewrite probed (tmp/fst_std.mad, g++-validated). Remaining wall:
+  **`std::to_string`/narrow conversions don't REGISTER** — they survive preprocessing
+  fully (verified in `-E`; the noexcept-conditional drops clean) but the non-template
+  inline free fns with bodies inside `namespace std`/__cxx11 never appear in
+  namespace_map["std"] → "'to_string' is not a member of namespace 'std'". `std::stoi`
+  same family. ALSO noted: `#include <cstring>` trips unknown `__builtin___memmove_chk`
+  (fortify builtins — declare/lower them, Tier 1).
+- **testdefer**: `defer` PARSES under `--std=c++17` + real headers but the deferred
+  statements DON'T RUN (probe tmp/df.mad prints only start/first — deferred couts and
+  close never execute). Investigate the defer lowering (cleanup-attr?) under real headers.
 - **testlargesizeofquery**: SEPARATE track — uint32→64 array-dim truncation
   (`short buf[(1<<62)-256]`); needs widening member_dims/arr_dims/N_ARR; niche/risky/deferred.
 

@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### testloop GREEN through real libstdc++ headers — fulltest 544/3/0/26 (2026-06-09)
+
+- Two generic fixes unblocked the full standard-C++ stream loop:
+  - **Virtual-base `__this` for externally-bound methods**: the inherited-method
+    base adjustment (which already understood virtual bases via the layout's
+    `vbase_offset` map) ran after the `emit_symbol` early-return, so the real
+    libstdc++ `good()` was called with the derived `ifstream*` instead of the
+    `basic_ios` subobject — reading garbage stream state. Hoisted above every
+    dispatch flavor.
+  - **Namespace-scope type visibility**: a namespace-scope `using alias = T;`
+    wrote the flat global type map, so `<string>`'s `namespace pmr { using
+    string = …; }` clobbered unqualified `string` with the pmr (polymorphic
+    allocator) type and the `using namespace std` import skipped it as
+    already-present — `ofstream::open(const string&)` could never match.
+    Namespace aliases now register per-namespace only, and unqualified type
+    lookup searches the enclosing-namespace chain before the global scope.
+- `tests/testloop.mad` rewritten to standard C++ (g++-validated, identical
+  output) and compiled through real system headers via a `.flags` fixture
+  (`--std=c++17 --no-embedded-headers`). First of the 4 known reds resolved:
+  fulltest `543/4/0/26` → `544/3/0/26`; gcc.c-torture unchanged at
+  `1566/31/57/1` with a byte-identical failset.
+
 ### `std::` free-function templates bind via `emit_symbol`; `__ns_` shim gate retired (2026-06-09)
 
 - Named `std::` free-function template calls (`std::getline`) now instantiate a
