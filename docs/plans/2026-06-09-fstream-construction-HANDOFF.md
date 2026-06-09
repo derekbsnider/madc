@@ -475,3 +475,47 @@ is a worthwhile FOLLOW-UP for perf/correctness but is NOT a substitute for the f
 - base-clause instantiation in `TokenCLASS::parse` 16857-16966.
 - Reducers (tmp/): `str1.mad` (`std::string line; line.size()` — minimal trigger),
   `str2.mad`, `str3.mad` (getline). g++ oracle `tmp/itchain.cpp`.
+
+### 12.7 PROGRESS 2026-06-09 (turn 2) — detection idiom IMPLEMENTED + proven; chain advanced 2 layers
+Three additive parser changes (≈215 insertions; in the working tree / WIP — NOT on the
+green tip, see below). All discovered via probe-then-fix against the g++ oracle:
+1. **Nested template-id partial-spec unification** — `unify_nested_spec_pattern_arg`
+   (parser.cpp ~10546) + wired into `match_partial_specialization`. So
+   `allocator_traits<allocator<char>>` selects the partial spec (string-based: strip ns,
+   split top-level args, recurse; deduce via `resolve_named_datadef`).
+2. **`typename` is NOT consumed in `consume_template_type_arg_qualifiers`** — that was a
+   wrong turn, REVERTED. The real `typename X<T>::member` arg handling lives in
+   `resolve_typename_type_token` (3024), which works once the member resolves.
+3. **`__void_t` detection idiom** — `eval_void_t_detection_slot` (parser.cpp ~10590,
+   decl in madc.h) wired as the 3rd fallback in the match loop. A `__void_t<Args...>`
+   pattern slot matches concrete `void` (or another `__void_t<...>`) IFF every Arg —
+   shape `typename PARAM::member[::member]`, with PARAM substituted from the slot-0
+   deduction in `ded` — resolves via `resolve_class_type_alias` (real SFINAE member-
+   existence). Unevaluable Arg shapes (decltype, `template rebind<>`) return false →
+   empty primary = today's behavior (no regression). GOTCHA found: `template_token_fragment`
+   concatenates WITHOUT spaces, so the arg renders `typename_Iterator::iterator_category`
+   (glued) — strip the leading 8-char `typename` keyword regardless of spacing.
+
+**EFFECT (verified):** `__iterator_traits<It, void>` now selects its `__void_t` partial
+spec → gets the 5 member aliases → `iterator_traits<It>` inherits them through its base
+(piece 1, `resolve_class_type_alias` base-recursion, already existed) → the
+`iterator<typename iterator_traits<_It>::iterator_category,…>` base of `reverse_iterator`
+RESOLVES. str1 advanced TWO layers: past `iterator<>` AND past the typename args.
+
+**NEXT LAYER (str1 now stops here):** `Unknown namespace 'pointer'` — in
+`basic_string::_M_local_data()` the body `std::pointer_traits<pointer>::pointer_to(*_M_local_buf)`
+is a **template-id-qualified static call in EXPRESSION context**; madc's expr parser
+(parseExpr identifier-arm, site **parser.cpp:11947** in `parseExpr_*`) captures the inner
+template ARG `pointer` as the `::` qualifier instead of treating `pointer_traits<pointer>`
+as a class scope. The expr-arm handles `ClassName::member` (`resolve_expression_class_scope`
+@~11931) but not `Template<Arg>::staticmember`. That's the next feature to add (instantiate
+the template-id, then resolve the static member on it — mirror what
+`resolve_typename_type_token` does for the type-context case).
+
+**WHERE THE WIP LIVES:** committed on branch **`feature/cpp-detection-idiom-claude`** (off
+`feature/header-partition-claude`@`28f7d4d`); the header-partition tip stays GREEN at
+`28f7d4d`. The detection idiom is correct + proven; it does NOT yet make str1/cout-realheader
+compile (the pointer_traits layer remains), so it is intentionally NOT on the green tip.
+To continue: `git checkout feature/cpp-detection-idiom-claude`, rebuild, attack site 11947.
+Reducers: tmp/str1.mad (minimal), tmp/itchain.cpp (g++ oracle: iterator_category =
+random_access_iterator_tag — CONFIRMED reproduced through the detection idiom).
