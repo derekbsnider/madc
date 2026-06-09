@@ -734,6 +734,15 @@ public:
 			      // the library owns its vtable/typeinfo/member symbols (explicit
 			      // instantiation), so madc defers even when the header gives a
 			      // virtual slot an inline default. Data-driven (path-based).
+    bool is_extern_template_instantiated; // an `extern template class X<...>;`
+			      // explicit-instantiation DECLARATION named this exact
+			      // instantiation: libstdc++ exports ALL its members out-of-line
+			      // (C1/D1/methods), so madc binds them to the real mangled
+			      // symbols instead of emitting bodies — even for a NON-polymorphic
+			      // class (basic_string<char>) that is_externally_defined() (which
+			      // requires a vtable) does not cover. The data-driven signal that
+			      // distinguishes basic_string<char> (exported) from vector<int>
+			      // (inline-only, NOT exported) — never a name test.
     int vtable_slot(const std::string &name) const {
 	for ( size_t i = 0; i < vtable_slots.size(); ++i )
 	    if ( vtable_slots[i] == name ) return (int)i;
@@ -781,7 +790,7 @@ public:
 	  enclosing_class(NULL), base_class(NULL), nvsize(0), own_block_off(0),
 	  has_vptr_slot(false), is_dependent_placeholder(false),
 	  has_dependent_surface(false), vtable(NULL), has_vtable(false),
-	  from_system_header(false) {}
+	  from_system_header(false), is_extern_template_instantiated(false) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
     Variable *findMethod(std::string &s);
     // Among the same-name method overloads (this class + base chain), pick the

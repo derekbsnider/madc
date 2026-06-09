@@ -1788,6 +1788,7 @@ public:
     void skip_template_id_suffix();
     void skip_template_nonclass_declaration(TokenBase *first,
 					    std::vector<TokenBase *> *seen = NULL);
+    void capture_extern_template_class_instantiation();
     void apply_template_call_return_inference(TokenCallFunc *tc);
     TokenBase *collect_template_argument_spelling(TokenBase *first,
 						  std::string &spelling,

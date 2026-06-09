@@ -8743,7 +8743,13 @@ node_t CirBuilder::translate_module(Program *prog)
 		std::set<DataDefCLASS *> bound_ext;
 		for (auto &kv : prog->struct_map) {
 			DataDefCLASS *cdd = as_user_class(kv.second);
-			if (!cdd || !cdd->is_externally_defined()) continue;
+			// Bind to libstdc++'s exported symbols for (a) polymorphic
+			// library classes (is_externally_defined, vtable-owned), and (b)
+			// NON-polymorphic instantiations named by an `extern template`
+			// decl (basic_string<char>) — libstdc++ exports those members
+			// out-of-line too, but is_externally_defined() requires a vtable.
+			if (!cdd || !(cdd->is_externally_defined()
+				   || cdd->is_extern_template_instantiated)) continue;
 			if (cdd->canonical_cpp_spelling.empty()) continue;
 			if (bound_ext.count(cdd)) continue;
 			bound_ext.insert(cdd);

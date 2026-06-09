@@ -19815,7 +19815,18 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	else if ( tn->id() == TokenID::tkTEMPLATE )
 	{
 	    handled = true;
-	    pgm.skip_template_nonclass_declaration(pgm.nextToken());
+	    TokenBase *tmpl = pgm.nextToken(); // consume 'template'
+	    TokenBase *kw = pgm.peekToken();
+	    // `extern template class/struct X<args>;` is a C++ explicit-instantiation
+	    // declaration: libstdc++ provides X<args>'s members out-of-line. Capture +
+	    // flag the instantiation so its ctor/dtor/members bind to the real mangled
+	    // symbols (see capture_extern_template_class_instantiation). Other forms
+	    // (function explicit instantiations) fall through to the skip.
+	    if ( kw && (kw->id() == TokenID::tkCLASS
+		     || kw->id() == TokenID::tkSTRUCT) )
+		pgm.capture_extern_template_class_instantiation();
+	    else
+		pgm.skip_template_nonclass_declaration(tmpl);
 	}
 	else if ( tn->type() == TokenType::ttKeyword )
 	{
@@ -20616,6 +20627,53 @@ bool Program::consume_template_parameter_type_suffix()
 	consumed = true;
     }
     return consumed;
+}
+
+// `extern template class X<args>;` / `extern template struct X<args>;` — a C++
+// explicit-instantiation DECLARATION. Called positioned at the class/struct
+// keyword. Resolve (instantiate) X<args> and flag the resulting class
+// is_extern_template_instantiated, so the cir_builder ctor/dtor binding pass
+// binds its members to libstdc++'s exported out-of-line mangled symbols
+// (C1/D1/methods) instead of emitting bodies — the data-driven signal that a
+// NON-polymorphic instantiation like basic_string<char> is library-provided
+// (is_externally_defined() requires a vtable and so misses it). Consumes
+// through the trailing ';'.
+void Program::capture_extern_template_class_instantiation()
+{
+    nextToken(); // consume 'class' / 'struct'
+    std::string ns_hint = current_namespace;
+    TokenBase *name_tb = nextToken();
+    auto name_of = [](TokenBase *t) -> std::string {
+	if ( !t ) return std::string();
+	if ( t->type() == TokenType::ttIdentifier ) return ((TokenIdent *)t)->str;
+	if ( t->type() == TokenType::ttDataType ) return ((TokenDataType *)t)->str;
+	return std::string();
+    };
+    std::string tname = name_of(name_tb);
+    // Namespace-qualified `std::basic_string<...>`: fold leading components into
+    // ns_hint, keep the last as the template name.
+    while ( name_tb && peekToken() && peekToken()->id() == TokenID::tkNS )
+    {
+	ns_hint = ns_hint.empty() ? tname : ns_hint + "::" + tname;
+	nextToken(); // consume '::'
+	name_tb = nextToken();
+	tname = name_of(name_tb);
+    }
+    if ( name_tb && !tname.empty()
+      && peekToken() && peekToken()->id() == TokenID::tkLT )
+    {
+	TokenDataType *inst = instantiate_template_id(tname, name_tb, ns_hint);
+	DataDefCLASS *cdd = inst
+	    ? dynamic_cast<DataDefCLASS *>(&inst->definition) : NULL;
+	if ( cdd )
+	    cdd->is_extern_template_instantiated = true;
+    }
+    // Consume the rest of the declaration through ';' (robust to whatever the
+    // template-id parse left, and to forms we don't capture).
+    while ( peekToken() && peekToken()->id() != TokenID::tkSemi )
+	nextToken();
+    if ( peekToken() )
+	nextToken(); // ';'
 }
 
 void Program::skip_template_nonclass_declaration(TokenBase *first,
