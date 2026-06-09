@@ -131,13 +131,18 @@ rewritten to standard C++ where they use removed dialect forms.
    bound methods/operators of EXPLICITLY-INSTANTIATED classes (cls spelling has '<') external,
    mirroring its existing ctor/dtor binding. `cout<<(unsigned long)` → `_ZNSolsEm` (g++ match),
    body not emitted. VERIFIED vs g++: `cout<<5UL`→5, `cout<<"len="<<s.size()`→len=11.
-2. **`cout << std::string` — ⬅ NEXT operand wall.** c2mir "incompatible argument type for pointer type parameter".
-   g++ uses the free `operator<<(ostream&, const string&)` =
-   `_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE`
-   (**RK** = const reference). madc treats the `const string&` class operand as a POINTER
-   (a star), not a reference. FIX (user steer "mangler shouldn't use stars"): the W2
-   free-operator path (try_free_operator_call, rhs handling ~cir_builder:5183
-   `native_param_shape`) must pass/type a class rhs as a const-REFERENCE (RK), not a pointer.
+2. **`cout << std::string` — ✅ FIXED (`bace903`).** Root cause was one layer deeper than
+   the "pointer vs reference" framing: the W2 candidate filter required param[1] to EXACTLY
+   match the rhs, so the free `operator<<(basic_ostream<_C,_T>&, const basic_string<_C,_T,_A>&)`
+   (template-dependent param; `_Alloc` deducible only from the rhs) was never selected and
+   madc fell back to the wrong MEMBER overload (`streambuf*`). FIX (landed): shared
+   `deduce_param_against_class` (extracted from the getline path — one implementation)
+   lets param[1] deduce against the rhs CLASS (reference param + reference return only);
+   deduced rhs passes BY ADDRESS; `requalify_head` now PRESERVES leading cv so the symbol
+   mangles **RK** not R. Emits g++'s exact symbol; chained `cout<<a<<" "<<b<<" "<<b.size()<<endl`
+   works. Side discovery (verified PRE-EXISTING at clean HEAD via stash/rebuild):
+   **`std::string a + b` SIGSEGVs in real-header mode** (garbage temporary, crash in
+   free/printf) — the "a+b works (c9fd222)" claim is stale for this mode; separate track.
 
 3. **Unqualified `getline(inf,line)`** (tests use `using namespace std`) resolves to the
    GLOBAL POSIX `getline(char**,size_t*,FILE*)` (3-param, from real `<cstdio>`) → "expected

@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### `cout << std::string` works via the real free `operator<<` (2026-06-09)
+
+- The W2 free-operator path required the operator's 2nd parameter to exactly
+  match the rhs type, so the free
+  `operator<<(basic_ostream<_CharT,_Traits>&, const basic_string<_CharT,_Traits,_Alloc>&)`
+  (template-dependent parameter; `_Alloc` deducible only from the rhs) was never
+  selected — madc fell back to the wrong member overload (`streambuf*`) and
+  c2mir rejected the call. Now a non-exact 2nd parameter may deduce against the
+  rhs class (reference param + reference return only), via a shared
+  `deduce_param_against_class` helper extracted from (and now also used by) the
+  named free-function (getline) path. The deduced rhs is passed by address and
+  `requalify_head` preserves leading cv-qualifiers, so the symbol mangles `RK`
+  (const reference) — byte-identical to g++'s
+  `_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE`.
+- Chained `cout << a << " " << b << " " << b.size() << endl` runs end-to-end in
+  `--std=c++17 --no-embedded-headers` mode.
+- Validation: fulltest unchanged at `543 passed, 4 failed, 0 timed out, 26
+  skipped`; gcc.c-torture unchanged at `1566/31/57/1` with a byte-identical
+  failset; real-header canaries green.
+- Known pre-existing (verified at the unmodified HEAD): `std::string a + b`
+  SIGSEGVs in real-header mode — tracked separately.
+
 ## [v0.26.0] — 2026-06-09
 
 Real-header C++ track: real libstdc++ `<string>`/`<iostream>`/`std::getline` via
