@@ -207,14 +207,51 @@ emit_symbol-direct external branches. The local_emit_name single-reader rule is 
 low-false-positive proxy that actually catches hand-rolled symbol derivation.) Verified it
 fails on an injected `return f->local_emit_name;` and is green on the unified tree.
 
-**Step 3 — migrate free `std::` fns onto Pattern A: ⬅ NEXT (the payoff that moves reds).**
-Place `emit_symbol` on the
-instantiated free-fn FuncDef (a free-function analog of `bind_declared_cpp_symbol` using
-`itanium_mangle_std_free_template`), so the call reads emit_symbol via `call_emit_symbol` and
-`try_std_free_function_call` / the W2 call-site re-mangle are RETIRED (one shared deducer +
-one placement). This also REMOVES the `__ns_` shim gate (it's moot once the call reads
-emit_symbol) — the gate I reverted this session (see §7) disappears here, not as a tweak.
-Also fixes cout<<unsigned long (§4.1): bind inline extern-template members' emit_symbol.
+**Step 3 — migrate free `std::` fns onto Pattern A: ⬅ IN PROGRESS (design verified
+against the code 2026-06-09 late; the payoff that moves reds).**
+Place `emit_symbol` on the instantiated free-fn FuncDef so the call reads emit_symbol via
+`call_emit_symbol`; `try_std_free_function_call`'s bespoke N_CALL emission and the `__ns_`
+prefix gate (cir_builder ~7357) are RETIRED. **Verified facts the design rests on:**
+- Non-template namespace fns (php::) already ride the generic path: parser puts the
+  Itanium symbol on `Variable::storage_alias_name` (parser.cpp ~27243 →
+  `namespace_cpp_function_symbol`), consumed via `var_emit_name` (precedence 3).
+  Template instantiations get `emit_symbol` (precedence 1) — per-call symbol.
+- The generic arg loop (cir_builder ~993) ALREADY passes class ref-params by address
+  (`param_object_class` → `object_arg_addr(arg, pc)`) and numeric refs via N_ADDR —
+  IF the callee FuncDef carries correct `parameters` + `ref_params`.
+- `call_target_funcdef` (static, cir_builder:565) is THE single resolver every consumer
+  uses (arg emission @989, retbuf classification @587, callee naming @7352, fn-ptr decay,
+  inline classifier) — the instantiation hook belongs THERE (memoized), so every consumer
+  sees the instantiated FuncDef consistently.
+- **GAP found: `object_arg_addr(arg, target)` (cir_builder:897) has NO derived→base
+  adjustment** — when the arg's class != target it falls into the CONVERTING-CTOR temp
+  path, which would construct a Base temp instead of upcasting for `Base&` params
+  (wrong for getline(ifstream→istream&) and for USER classes too). Must add: walk the
+  arg class's bases for `target`; if found at offset N, emit (void*)((char*)&arg + N).
+  Generic C++ correctness fix at the deepest layer.
+
+**Execution steps (gate each: build + getline/cout/string canaries + fulltest + torture):**
+- **A (mechanical):** `call_target_funcdef` static → CirBuilder method wrapping the static
+  core (callers are all CirBuilder methods). Behavior-preserving.
+- **B (generic fix):** derived→base ref binding in `object_arg_addr` (before the
+  converting-temp fallback).
+- **C (the migration):** extract the overload-selection/deduction half of
+  `try_std_free_function_call` into a shared `deduce_free_function_overload`; new
+  `std_free_function_instantiation(tcf, cdf)` = deduce → mangle →
+  build+memoize FuncDef {emit_symbol=sym, parameters=matched (base) class DataDefs,
+  ref_params, returns/returns_ref (resolve return spelling against matched param
+  classes, else builtin, else bail→NULL=fall through), declaration_only} +
+  `need_output_extern(sym, native_func_shape(inst))` (mirrors class-member binds).
+  Hook in `call_target_funcdef`: a namespace-fn FuncDef with captured
+  `free_function_overloads` for (ns, display_name) → return the instantiation
+  (memoized by TokenCallFunc*). Discovery = pure signature/data lookup — the `__ns_`
+  PREFIX gate dies. Then DELETE try_std_free_function_call's emission + the gate.
+  Check the generic call-result path derefs `returns_ref` externals (class-method
+  sites do at 3240/3366; if the plain-call path lacks it, add it there).
+- **D (later, separate):** the W2 OPERATOR path (try_free_operator_call) re-mangle —
+  operators don't flow through TokenCallFunc/the generic call path; migrating them
+  needs an operator-call analog and is NOT required to retire the named-fn machinery.
+  Keep its deducer shared (deduce_param_against_class already is, since `bace903`).
 
 **Gate each step: fulltest (known reds only) + gcc.c-torture ALONE + cout/getline/ofstream
 canaries. HIGH blast radius (every call-symbol site) — torture every iteration.**
