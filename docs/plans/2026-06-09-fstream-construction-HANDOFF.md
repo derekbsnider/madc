@@ -5,21 +5,30 @@
 Run `bash scripts/resume.sh` first (live git/build truth), then read this top to
 bottom, then the governing design corpus in §2.
 
-> ## ⚑ 2026-06-09 UPDATE — ofstream dtor FIXED; real `<string>` is the live front
-> - **ofstream dtor SIGSEGV FIXED** (`ecfc856`): array-of-class-object member dims
->   were dropped in `member_node`'s `is_class_object` path (ios_base `_Words
->   _M_local_word[8]` collapsed → -112B → C1 overflowed the slot). Confirmed via the
->   POST-CHECK c2mir tree. Real `<fstream>` ofstream constructs + writes `hello42` +
->   destructs cleanly. HEAD `f77ffa8`, 28 ahead of develop, LOCAL/UNPUSHED.
-> - **LIVE FRONT = real `<string>`** (gates `getline` → testfstream/testloop). See the
->   NEW **§12** below for the full root-cause map + the 4-piece detection-idiom plan and
->   the **g++ oracle values**. There is a **stashed prerequisite** (`stash@{0}`: nested
->   template-id partial-spec unifier — correct, but regresses `cout` ALONE until the
->   detection idiom lands; do NOT commit it alone). HEAD is GREEN with it stashed.
-> - User steering 2026-06-09: implement the **detection idiom** (the real feature; NOT a
->   shim — Rule #2, and do not even *offer* shims). Lazy member-typedef instantiation is
->   a valuable *follow-up* (the perf/architecture direction) but does NOT replace the
->   feature. "A test not using feature X" is NOT a reason to drop X. Keep g++ as oracle.
+> ## ⚑ 2026-06-09 (turn 2) CURRENT STATE — read this, then §12.7/§12.8
+> **TWO BRANCHES (everything is COMMITTED — no fragile stashes hold this work):**
+> - **GREEN TIP** = `feature/header-partition-claude` @ **`d7344ac`** (30 ahead of develop,
+>   LOCAL/UNPUSHED). fulltest **543/4** (known reds testdefer/testfstream/testlargesizeofquery/
+>   testloop); real-header `cout` + `ofstream` RUN. `bin/madc` on this branch matches it.
+> - **WIP** = `feature/cpp-detection-idiom-claude` @ **`9fc2ce1`** (= green tip + 2 commits):
+>   the `__void_t` SFINAE **detection idiom + nested template-id partial-spec unifier**,
+>   IMPLEMENTED and **PROVEN** (g++ oracle reproduced — see §12.7). NOT on the green tip
+>   because mid-chain it regresses `testcout_realhdr` (fulltest 542/5): real `<string>` is a
+>   multi-layer chain. **To continue: `git checkout feature/cpp-detection-idiom-claude && make -C src`.**
+> - **DONE earlier this session (on the green tip): ofstream dtor SIGSEGV FIXED** (`ecfc856`):
+>   array-of-class-object member dims dropped in `member_node`'s `is_class_object` path
+>   (ios_base `_Words _M_local_word[8]` → -112B → C1 overflowed the slot; confirmed via the
+>   POST-CHECK c2mir tree). Real `<fstream>` ofstream constructs + writes `hello42` + destructs cleanly.
+> - **LIVE FRONT = real `<string>`** (gates `getline` → testfstream/testloop). Detection idiom
+>   DONE (§12.7). **NEXT LAYER (§12.8): `std::pointer_traits<char*>` INSTANTIATION** —
+>   `instantiate_template_id` returns NULL for it in `basic_string::_M_local_data()`; the
+>   expr-arm dispatch (parser.cpp:11984) is fine, the pointer_traits instantiation is the gap.
+> - User steering 2026-06-09: implement the **REAL detection idiom** (NOT a shim — Rule #2, and
+>   do not even *offer* shims). Lazy member-typedef instantiation is a *follow-up*, not a
+>   substitute. "A test not using feature X" is NOT a reason to drop X. Keep g++ as oracle.
+> - NOTE: §0 TL;DR + §3–§5 below describe the EARLIER (ofstream-dtor) milestone of this
+>   session and have stale HEAD/count numbers — the authoritative current state is THIS banner
+>   + §12. The dtor "NEXT WALL = basic_string.h:3486" in §0 is SUPERSEDED by §12.
 
 > **THE PROCESS LESSON THAT GOVERNS THIS WORK (do not skip).** This campaign's
 > recurring failure: a fresh session rehydrates on the routed handoff only,
