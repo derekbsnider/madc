@@ -170,13 +170,18 @@ std::string CirBuilder::var_emit_name(const Variable &v) const
 // to var.name already produced this value — routing them here is behavior-
 // preserving. New call sites MUST use this (enforced by
 // scripts/check-call-emit-symbol.sh) so the precedence cannot drift.
-std::string CirBuilder::call_emit_symbol(const Variable &v, FuncDef *fd) const
+std::string CirBuilder::call_emit_symbol(FuncDef *fd, const std::string &default_sym)
 {
 	if (fd && !fd->emit_symbol.empty())
 		return fd->emit_symbol;
 	if (fd && !fd->local_emit_name.empty())
 		return fd->local_emit_name;
-	return var_emit_name(v);
+	return default_sym;
+}
+
+std::string CirBuilder::call_emit_symbol(const Variable &v, FuncDef *fd) const
+{
+	return call_emit_symbol(fd, var_emit_name(v));
 }
 
 std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
@@ -843,8 +848,7 @@ static FuncDef *class_method_def(DataDefCLASS *cdd, const char *name)
 static std::string class_method_symbol(DataDefCLASS *cdd, const char *name)
 {
 	FuncDef *fd = class_method_def(cdd, name);
-	if (fd && !fd->emit_symbol.empty()) return fd->emit_symbol;
-	return std::string(name ? name : "");
+	return CirBuilder::call_emit_symbol(fd, std::string(name ? name : ""));
 }
 
 // `(void*)&<name>` — an object instance address as void*. Used for synthetic
@@ -3248,8 +3252,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	// FuncDef carries an explicit emit_symbol, call through that instead of
 	// the default scheme.
 	FuncDef *callee = dynamic_cast<FuncDef *>(tm->var.type);
-	const std::string sym = (callee && !callee->emit_symbol.empty())
-				? callee->emit_symbol : tm->var.name;
+	const std::string sym = call_emit_symbol(tm->var, callee);
 
 	// A method bound to an external symbol (emit_symbol) has no madc-emitted
 	// body and is not in funcdef_map under its mangled name, so the
@@ -3450,9 +3453,7 @@ static FuncDef *class_assign_cstr_operator_def(DataDefCLASS *cdd)
 static std::string class_method_call_symbol(DataDefCLASS *cdd, FuncDef *fd,
 					    const std::string &name)
 {
-	if (fd && !fd->emit_symbol.empty()) return fd->emit_symbol;
-	if (fd && !fd->local_emit_name.empty()) return fd->local_emit_name;
-	return cdd ? cdd->name + "__" + name : name;
+	return CirBuilder::call_emit_symbol(fd, cdd ? cdd->name + "__" + name : name);
 }
 
 bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
@@ -4180,11 +4181,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 // ClassName__ClassName scheme (the first / only ctor).
 static std::string ctor_call_symbol(DataDefCLASS *cdd, FuncDef *ctor)
 {
-	if (ctor && !ctor->emit_symbol.empty())
-		return ctor->emit_symbol;
-	if (ctor && !ctor->local_emit_name.empty())
-		return ctor->local_emit_name;
-	return cdd->name + "__" + cdd->name;
+	return CirBuilder::call_emit_symbol(ctor, cdd->name + "__" + cdd->name);
 }
 
 // Select the constructor overload of `cdd` matching the initializer arguments by
@@ -5486,8 +5483,8 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 
 	// ClassName__operator== by default; an arity-disambiguated same-name
 	// overload (P2.1b gaps 3 & 4) carries its real symbol in local_emit_name.
-	std::string sym = !callee->local_emit_name.empty()
-			  ? callee->local_emit_name : (lcls->name + "__" + mname);
+	// (emit_symbol is empty here — the external-bind branch above returned.)
+	std::string sym = call_emit_symbol(callee, lcls->name + "__" + mname);
 
 	// Part B: an operator returning a class object BY VALUE (e.g. V operator+(V&))
 	// yields an rvalue; materialize it into an addressable cleanup temp so the
@@ -5609,10 +5606,7 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 	// referenced-funcs prototype pass (a madc-emitted method body). An
 	// arity-disambiguated same-name overload (P2.1b gaps 3 & 4 — the unary peer
 	// of a binary of the same name) carries its real symbol in local_emit_name.
-	std::string sym = !callee->emit_symbol.empty()
-			  ? callee->emit_symbol
-			  : (!callee->local_emit_name.empty()
-			     ? callee->local_emit_name : (cls->name + "__" + mname));
+	std::string sym = call_emit_symbol(callee, cls->name + "__" + mname);
 	std::vector<ExternParam> eparams = { { {N_VOID}, true } };
 	node_t args = list();
 	if (!callee->emit_symbol.empty()) {
@@ -6514,18 +6508,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// so leaving the short name there yields a clean c2mir error rather
 			// than a callback that reads garbage captures.
 			if (FuncDef *nfd = dynamic_cast<FuncDef *>(tv->var.type)) {
-				if (!nfd->local_emit_name.empty()
-				    && nfd->captured_vars.empty()) {
-					referenced_funcs.insert(nfd->local_emit_name);
-					return id(nfd->local_emit_name.c_str(), tb);
-				}
-				// A top-level function used as a VALUE (address-taken /
-				// function-pointer decay: `&abort`, `f = exit`, `{abort}`).
-				// Record it in referenced_funcs so translate_module emits its
-				// prototype — without it c2mir sees an "undeclared identifier"
-				// (call sites already record callees; a bare value-use must too).
-				if (nfd->local_emit_name.empty()) {
-					std::string sym = var_emit_name(tv->var);
+				// A function used as a VALUE (address-taken / function-pointer
+				// decay: `&abort`, `f = exit`, `{abort}`, or the hoisted symbol of
+				// a capture-free GNU nested fn). Emit its call symbol and record it
+				// so translate_module emits a prototype — without it c2mir sees an
+				// "undeclared identifier" (call sites already record callees; a bare
+				// value-use must too). EXCEPTION: a CAPTURING nested fn cannot be a
+				// plain function pointer (no slot for the captures — GCC uses a
+				// trampoline), so leave the short source name there to yield a clean
+				// c2mir error rather than a callback that reads garbage captures.
+				bool capturing_nested = !nfd->local_emit_name.empty()
+							&& !nfd->captured_vars.empty();
+				if (!capturing_nested) {
+					std::string sym = call_emit_symbol(tv->var, nfd);
 					referenced_funcs.insert(sym);
 					return id(sym.c_str(), tb);
 				}
@@ -6923,9 +6918,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						this_arg = object_var_addr(otv->var, tb);
 					else
 						this_arg = node1(N_ADDR, translate_expr(operand_tb), tb);
-					std::string sym = !post->local_emit_name.empty()
-							  ? post->local_emit_name
-							  : (icls->name + "__" + opmname);
+					std::string sym = call_emit_symbol(post, icls->name + "__" + opmname);
 					referenced_funcs.insert(sym);
 					node_t pargs = list();
 					append(pargs, this_arg);

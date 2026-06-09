@@ -334,6 +334,11 @@ public:
 	// fn or arity-disambiguated method/operator); else the variable's own emit
 	// name. Every call-symbol site routes through here so the precedence lives
 	// in ONE place and cannot drift (see scripts/check-call-emit-symbol.sh).
+	// The (fd, default_sym) form reads only FuncDef fields (no instance state)
+	// so static helpers can delegate to it; the (Variable, fd) form supplies
+	// var_emit_name(v) as the default.
+	static std::string call_emit_symbol(class FuncDef *fd,
+					    const std::string &default_sym);
 	std::string call_emit_symbol(const class Variable &v, class FuncDef *fd) const;
 	node_t integer(long val, TokenBase *origin = NULL);
 	// Type-aware integer literal: pick the c2mir literal node code
