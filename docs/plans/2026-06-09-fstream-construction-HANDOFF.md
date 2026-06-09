@@ -605,3 +605,51 @@ the partial spec isn't selected here. Probe `match_partial_specialization("point
 and `instantiate_template_id` for pointer_traits<char*> next. g++ oracle: pointer_traits<char*>
 ::pointer = char*, ::element_type = char, pointer_to(r) returns char*. (bits/ptr_traits.h.)
 Reducer tmp/str1.mad still stops here.
+
+---
+
+## ⚑ 2026-06-09 (turn 5) — HEADER PARTITION: shim-bypass classifier landed; incremental path chosen
+
+**Direction (user-confirmed):** retire the hand-rolled SYSTEM-header shims; madc
+provides ONLY bucket-1/2 freestanding compiler headers and CONSUMES real
+glibc/libstdc++ (see `madc-header-partition-handoff.md` + memory
+`[[project_header_partition_architecture]]`). Do NOT hand-author embedded
+libstdc++ (the prior "finish embedded <fstream> inc-5/inc-6" plan is RETRACTED —
+it was the vendoring anti-goal).
+
+**LANDED (commit `65d2d67`, gated fulltest 543/4, default mode untouched):**
+data-driven embedded-header classifier `embedded_header_is_system_library_shim()`
+(parser.cpp) + `RegistrationPolicy.bypass_system_library_headers` +
+`madc_compiler_owned_include_dir` (gen_sys_includes.sh). `--no-embedded-headers`
+now bypasses ONLY system-library shims (glibc/libstdc++ twins) to the REAL header,
+KEEPING madc-own (`ns_*`/`__madc__`, no real twin) and freestanding
+(`stddef`/`limits`/`float`, resolve in the compiler-owned dir) embedded. Fixes the
+old all-or-nothing that dropped ns_php.
+
+**Two blockers to PHYSICAL shim deletion (deferred per user's incremental choice):**
+1. STD_MADC deliberately omits `__cplusplus` (lexer.cpp:1481) → real libstdc++
+   fails in default mode; only `--std=c++` works.
+2. Embedded `<string>` mixes the libstdc++-binding basic_string (shim) with
+   madc-DIALECT helpers (`to_string(s,42)` 2-arg, `stoi`) → deleting it loses them
+   unless relocated to a madc-own header.
+
+**CHOSEN PATH (incremental):** get the 4 reds green via real headers in
+`--std=c++17 --no-embedded-headers` mode (the proven testcout_realhdr path), fixing
+real-header consumption bugs; defer physical shim deletion + the STD_MADC flip.
+
+**NEXT — RC#1 (free-function overload sets), the gating fix for getline:**
+`getline(inf,line)` under real headers → "Incorrect number of parameters: expected
+3 got 2" (parser.cpp:9523/9558). Root cause: `register_skipped_namespace_template_function`
+(parser.cpp ~22565) drops every overload after the first
+(`ns.find(name)!=ns.end() → return`) — namespace_map is one Variable per name, no
+overload sets. libstdc++ declares ~6 getline overloads (2-param + 3-param, lvalue +
+rvalue&&, + char/wchar_t specs). FIX = free-function overload sets: register all
+overloads + select by arity/arg-types at the call site (model on class-method
+`findMethodOverload`, parser.cpp ~6336). HIGH blast radius (namespace-function
+resolution used everywhere) → gate fulltest + torture ALONE every iteration.
+Then RC#2: free-function-template call lowering mishandles reference args/temps
+(`__madc_objtmp_N` undeclared / lvalue-`&` errors). Reducer: tmp/loop_real.mad.
+
+testfstream also needs its non-standard bits rewritten to standard C++
+(`to_string(s,42)`→`std::to_string`, `strlen(string)`/`system(string)`→`.c_str()`).
+testlargesizeofquery is a SEPARATE track (uint32→64 array-dim widening; niche/risky).
