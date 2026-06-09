@@ -697,3 +697,50 @@ mangler already supports named fns ("7getline"); emit_symbol/the call path alrea
 a bound symbol. NEEDS: per-call template-arg deduction for named fns + ref-arg lowering.
 HIGH blast radius (namespace-fn call lowering) -> gate fulltest + torture ALONE.
 Reducers: tmp/gl_qual.mad (qualified), tmp/loop_real.mad (unqualified, full testloop shape).
+
+---
+
+## ⚑ 2026-06-09 (turn 5 cont.) — std::getline DONE; next walls = cout<< operand binding
+
+**LANDED + GATED (commit `a1b4421`):** named std:: free-function templates bind
+mangled-direct. `std::getline(inf,line)` emits the EXACT g++ symbol
+`_ZSt7getlineIcSt11char_traitsIcESaIcEERSt13basic_istreamIT_T0_ES7_RNSt7__cxx1112basic_stringIS4_S5_T1_EE`
+and reads lines end-to-end. fulltest 543/4, torture 1566/31/57/1 (both unchanged).
+Mechanism (no shims, generalizes W2 operators to named fns): parse-capture every
+overload's signature (system-header-only) -> free_function_overloads; call site selects
+by arity, deduces template args by matching template-id params vs the arg's class
+self/bases, REQUALIFIES heads with the matched class's fully-qualified spelling
+(requalify_head), $Tn-substitutes (substitute_tparams), mangles, emits ref args by
+address. Diagnostics gated -DMADC_DBG_FREEFN (no churn). Files: parser.cpp
+(capture_free_function_overload), cir_builder.cpp (try_std_free_function_call +
+helpers), madc.h (free_function_overloads), cir_builder.h.
+
+**NEXT WALLS (cout<< operand binding — both are real, both block testloop/testfstream;
+cout ITSELF works: testcout `cout<<const char*<<int<<endl` is green):**
+
+1. **`cout << unsigned long` / `long` / `long long` / `s.size()`** -> c2mir error at
+   /usr/include/c++/13/ostream:470 "lvalue required as unary & operand". ROOT CAUSE:
+   `operator<<(int)` is DECLARED-ONLY (<ostream>:191) so madc binds it to external
+   `_ZNSolsEi` (works); but `operator<<(unsigned long)` is INLINE (<ostream>:172
+   `{return _M_insert(__n);}`) so madc EMITS the inline body, forwarding to
+   `_M_insert<unsigned long>`, and mis-mangles its `__ostream_type&` typedef return as
+   `_ZNSo9_M_insertImEER14__ostream_typeT_` (typedef NOT resolved to So). g++ binds the
+   member directly: `cout<<int`->`_ZNSolsEi`, `cout<<unsigned long`->`_ZNSolsEm` (the
+   member is exported out-of-line by libstdc++). FIX (user steer: no hardcoding, just
+   overload discovery): basic_ostream<char> is extern-template-instantiated -> bind ALL
+   its members INCLUDING inline ones to the external libstdc++ symbol, don't emit inline
+   bodies. Generalize the extern-template member binding (11ac1bc did basic_string
+   ctor/dtor + declared-only members) to inline members of extern-template classes.
+
+2. **`cout << std::string`** -> c2mir "incompatible argument type for pointer type
+   parameter". g++ uses the free `operator<<(ostream&, const string&)` =
+   `_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE`
+   (RK = const reference). madc is treating the `const string&` class operand as a
+   POINTER (star), not a reference. FIX (user steer: mangler shouldn't use stars): the
+   W2 free-operator path (try_free_operator_call, rhs handling ~cir_builder:5183
+   native_param_shape) must pass/type a class rhs as a const-reference (RK), not a
+   pointer. VERIFY: dump the symbol madc produces for cout<<string.
+
+Reducers: tmp/cul.mad (cout<<ulong), tmp/cstr.mad (cout<<string), tmp/gl_printf.mad
+(getline works). Also still open: unqualified `getline` (using namespace std) resolves to
+POSIX ::getline (3-param) not std::getline — overload set across global + using-directive.
