@@ -10486,6 +10486,195 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
     return true;
 }
 
+// Strip a leading namespace qualifier from a type spelling: drop everything up to
+// and including the last top-level "::" that precedes the first '<'.
+// "std::allocator<char>" -> "allocator<char>",
+// "std::__cxx11::basic_string<...>" -> "basic_string<...>", "char" -> "char".
+static std::string strip_type_namespace(const std::string &s)
+{
+    size_t lt = s.find('<');
+    size_t scan_end = (lt == std::string::npos) ? s.size() : lt;
+    size_t last = std::string::npos;
+    for ( size_t i = 0; i + 1 < scan_end; ++i )
+	if ( s[i] == ':' && s[i + 1] == ':' ) last = i;
+    if ( last == std::string::npos ) return s;
+    return s.substr(last + 2);
+}
+
+static std::string trim_spelling(const std::string &s)
+{
+    size_t a = 0, b = s.size();
+    while ( a < b && s[a] == ' ' ) ++a;
+    while ( b > a && s[b - 1] == ' ' ) --b;
+    return s.substr(a, b - a);
+}
+
+// Parse a template-id spelling "NAME<arg1,arg2,...>" into its outer name (namespace
+// stripped) and the top-level argument spellings (commas at angle-depth 0). Returns
+// false if `s` is not a template-id.
+static bool split_template_id_spelling(const std::string &s, std::string &outer,
+				       std::vector<std::string> &args)
+{
+    std::string b = strip_type_namespace(trim_spelling(s));
+    size_t lt = b.find('<');
+    if ( lt == std::string::npos || b.empty() || b[b.size() - 1] != '>' )
+	return false;
+    outer = trim_spelling(b.substr(0, lt));
+    std::string inner = b.substr(lt + 1, b.size() - lt - 2);
+    int depth = 0;
+    std::string cur;
+    for ( size_t i = 0; i < inner.size(); ++i )
+    {
+	char c = inner[i];
+	if ( c == '<' ) { ++depth; cur += c; }
+	else if ( c == '>' ) { --depth; cur += c; }
+	else if ( c == ',' && depth == 0 ) { args.push_back(trim_spelling(cur)); cur.clear(); }
+	else cur += c;
+    }
+    args.push_back(trim_spelling(cur));
+    return true;
+}
+
+// Unify a NESTED template-id pattern arg (e.g. `allocator<_Tp>`) against a concrete
+// type spelling (e.g. `std::allocator<char>`), deducing the spec's own type params
+// (_Tp -> char). Handles the namespace qualifier the flat unifier cannot, and
+// recurses for deeper nesting. Records deductions in `ded`, adds specificity, returns
+// true on a full structural match. This is what lets the real libstdc++
+// `allocator_traits<allocator<_Tp>>` partial spec be selected for
+// `allocator_traits<allocator<char>>` instead of falling to the primary template (the
+// `__detected_or_t<…>` machinery), which madc cannot reduce.
+bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
+	const std::vector<std::string> &spec_params,
+	const std::string &concrete_spelling,
+	std::map<std::string, DataDef *> &ded, int &score)
+{
+    std::string pouter, couter;
+    std::vector<std::string> pargs, cargs;
+    if ( !split_template_id_spelling(pat_spelling, pouter, pargs) )
+	return false;
+    if ( !split_template_id_spelling(concrete_spelling, couter, cargs) )
+	return false;
+    if ( pouter != couter || pargs.size() != cargs.size() )
+	return false;
+    score += 50;   // matching a template-id structure beats a bare-param slot
+    for ( size_t i = 0; i < pargs.size(); ++i )
+    {
+	bool is_param = false;
+	for ( size_t k = 0; k < spec_params.size(); ++k )
+	    if ( spec_params[k] == pargs[i] ) { is_param = true; break; }
+	if ( is_param )
+	{
+	    DataDef *cd = resolve_named_datadef(cargs[i]);
+	    if ( !cd ) return false;               // cannot bind -> fall to primary
+	    std::map<std::string, DataDef *>::iterator d = ded.find(pargs[i]);
+	    if ( d != ded.end() && d->second && d->second->name != cd->name )
+		return false;                      // inconsistent deduction
+	    ded[pargs[i]] = cd;
+	    score += 1;
+	}
+	else if ( pargs[i].find('<') != std::string::npos )
+	{
+	    if ( !unify_nested_spec_pattern_arg(pargs[i], spec_params, cargs[i], ded, score) )
+		return false;
+	}
+	else
+	{
+	    if ( strip_type_namespace(pargs[i]) != strip_type_namespace(cargs[i]) )
+		return false;
+	    score += 100;                          // exact concrete-literal slot
+	}
+    }
+    return true;
+}
+
+// Evaluate a `__void_t<Args...>` detection-idiom pattern slot (the SFINAE half of
+// libstdc++'s std::__detected_or / __iterator_traits / allocator_traits _Ptr/_Diff/
+// _Size etc.). `__void_t<...>` is `void` when every Arg is a well-formed type, and a
+// substitution failure otherwise — that failure is what removes the partial spec from
+// candidacy. So this slot matches a concrete `void` (or another `__void_t<...>`, the
+// materialized default) IFF every Arg, after substituting the already-deduced spec
+// params (`ded`, populated by earlier slots), names a real type. The Args in the
+// headers madc consumes have the shape `typename PARAM::member[::member...]` — a nested
+// dependent member type; this confirms each member exists via resolve_class_type_alias.
+// Arg shapes madc cannot evaluate (decltype(...), `template rebind<>`) conservatively
+// return false → the empty primary is selected → identical to today's behavior (no
+// regression); this only ADDS matches where detection genuinely succeeds.
+bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
+	const std::string &concrete_spelling,
+	const std::map<std::string, DataDef *> &ded, int &score)
+{
+    // The pattern slot must itself be a `__void_t<...>`.
+    std::string pouter;
+    std::vector<std::string> pargs;
+    if ( !split_template_id_spelling(slot_spelling, pouter, pargs) )
+	return false;
+    if ( pouter != "__void_t" && pouter != "void_t" )
+	return false;
+    // The concrete slot must reduce to void: literally `void`, or another
+    // `__void_t<...>` (the materialized primary default `__void_t<>` is void).
+    std::string cbare = strip_type_namespace(trim_spelling(concrete_spelling));
+    bool concrete_is_void = ( cbare == "void" );
+    if ( !concrete_is_void )
+    {
+	std::string couter; std::vector<std::string> cargs;
+	if ( split_template_id_spelling(concrete_spelling, couter, cargs)
+	  && (couter == "__void_t" || couter == "void_t") )
+	    concrete_is_void = true;
+    }
+    if ( !concrete_is_void )
+	return false;
+    // Every Arg of the pattern's __void_t<...> must be a well-formed type.
+    for ( size_t i = 0; i < pargs.size(); ++i )
+    {
+	std::string a = trim_spelling(pargs[i]);
+	if ( a.empty() )
+	    continue;                              // __void_t<> -> void, trivially
+	// Strip a leading `typename` disambiguator. The pattern is rendered by
+	// concatenating token fragments WITHOUT spaces, so it appears glued to the
+	// next identifier (`typename_Iterator`); `typename` is reserved, so no real
+	// identifier begins with it — stripping the 8-char keyword prefix is safe.
+	const std::string tn = "typename";
+	if ( a.compare(0, tn.size(), tn) == 0 )
+	    a = trim_spelling(a.substr(tn.size()));
+	// Split into `PARAM :: member :: member...` at top-level `::`.
+	std::vector<std::string> segs;
+	{
+	    int depth = 0; std::string cur;
+	    for ( size_t j = 0; j < a.size(); ++j )
+	    {
+		char c = a[j];
+		if ( c == '<' ) { ++depth; cur += c; }
+		else if ( c == '>' ) { --depth; cur += c; }
+		else if ( c == ':' && j + 1 < a.size() && a[j + 1] == ':' && depth == 0 )
+		{ segs.push_back(trim_spelling(cur)); cur.clear(); ++j; }
+		else cur += c;
+	    }
+	    segs.push_back(trim_spelling(cur));
+	}
+	if ( segs.size() < 2 )
+	    return false;                          // not PARAM::member -> can't confirm
+	std::map<std::string, DataDef *>::const_iterator pit = ded.find(segs[0]);
+	if ( pit == ded.end() || !pit->second )
+	    return false;
+	DataDefCLASS *cur = dynamic_cast<DataDefCLASS *>(pit->second);
+	for ( size_t s = 1; s < segs.size(); ++s )
+	{
+	    if ( !cur )
+		return false;
+	    if ( segs[s].find('<') != std::string::npos )
+		return false;                      // template member -> too complex to confirm
+	    if ( is_incomplete_class_datadef(cur) )
+		request_template_instantiation_completion(cur->name);
+	    DataDef *m = resolve_class_type_alias(cur, segs[s]);
+	    if ( !m )
+		return false;                      // member type absent -> SFINAE failure
+	    cur = dynamic_cast<DataDefCLASS *>(m);
+	}
+    }
+    score += 30;                                   // detection succeeded -> select this spec
+    return true;
+}
+
 Program::TemplateDef *Program::match_partial_specialization(const std::string &name,
 	const std::vector<TokenDataType *> &type_args,
 	const std::vector<std::string> &arg_spellings,
@@ -10515,8 +10704,19 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	for ( size_t i = 0; i < spec.spec_pattern.size(); ++i )
 	{
 	    if ( !type_args[i] ) { ok = false; break; }
+	    // Flat shapes (`[cv] PARAM [*]*`, concrete literal) first; on rejection,
+	    // try nested-template-id unification (`allocator<_Tp>` vs the concrete
+	    // `std::allocator<char>`); finally the `__void_t<...>` detection idiom
+	    // (SFINAE: the slot is void IFF its member-type Args exist on the deduced
+	    // params). Detection runs LAST so the earlier slots have populated `ded`.
 	    if ( !unify_spec_pattern_arg(spec.spec_pattern[i], spec.typeparams,
 					 &type_args[i]->definition,
+					 arg_spellings[i], ded, score)
+	      && !unify_nested_spec_pattern_arg(
+					 template_tokens_spelling(spec.spec_pattern[i]),
+					 spec.typeparams, arg_spellings[i], ded, score)
+	      && !eval_void_t_detection_slot(
+					 template_tokens_spelling(spec.spec_pattern[i]),
 					 arg_spellings[i], ded, score) )
 	    { ok = false; break; }
 	}

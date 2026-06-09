@@ -1142,6 +1142,21 @@ public:
 	    const std::vector<TokenDataType *> &type_args,
 	    const std::vector<std::string> &arg_spellings,
 	    std::map<std::string, TokenDataType *> &out_subst);
+    // Unify a nested template-id pattern arg (e.g. `allocator<_Tp>`) against a
+    // concrete type spelling (e.g. `std::allocator<char>`), deducing the spec's
+    // type params. Fallback used by match_partial_specialization when the flat
+    // unifier cannot match a template-id-shaped pattern slot.
+    bool unify_nested_spec_pattern_arg(const std::string &pat_spelling,
+	    const std::vector<std::string> &spec_params,
+	    const std::string &concrete_spelling,
+	    std::map<std::string, DataDef *> &ded, int &score);
+    // Evaluate a `__void_t<Args...>` detection-idiom partial-spec slot: matches a
+    // concrete void IFF every Arg (a `typename PARAM::member` dependent type) resolves
+    // after substituting the already-deduced params. The SFINAE half of the std
+    // detection idiom (__detected_or / __iterator_traits / allocator_traits).
+    bool eval_void_t_detection_slot(const std::string &slot_spelling,
+	    const std::string &concrete_spelling,
+	    const std::map<std::string, DataDef *> &ded, int &score);
 	struct TemplateAliasDef {
 	    std::vector<std::string> typeparams;
 	    std::vector<std::vector<TokenBase *>> typeparam_defaults;
