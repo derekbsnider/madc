@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Call-symbol derivation unified onto one resolver + drift gate (2026-06-09)
+
+- **One source of truth for a call's emitted C symbol.** Added
+  `CirBuilder::call_emit_symbol` with the precedence
+  `emit_symbol ?: local_emit_name ?: var_emit_name` and routed **every**
+  call-symbol site through it. Previously this precedence was re-implemented inline
+  at ~8 sites, each with a different partial slice (notably `func_emit_name`, which
+  ignored `emit_symbol` entirely) — the drift that shipped wrong symbols.
+- Merged the two synonymous `FuncDef` fields `class_emit_name` + `nested_emit_name`
+  into one `local_emit_name` (a madc-emitted body's non-default symbol — a hoisted
+  nested fn or an arity-disambiguated method/operator); `emit_symbol` (external ABI
+  bind, no body) stays distinct. Two fields, not three.
+- **Drift-prevention gate** `scripts/check-call-emit-symbol.sh`, wired into
+  `make fulltest`: fails if `local_emit_name`'s value is read as a symbol anywhere
+  outside `call_emit_symbol`. Verified it catches an injected violation.
+- **`cout << unsigned long` / `s.size()` now work.** The post-parse CIR bind pass
+  now binds non-template methods/operators of explicitly-instantiated libstdc++
+  classes (e.g. `basic_ostream<char>`) to their external symbol even when the header
+  marks them `inline` — so `operator<<(unsigned long)` binds the real member
+  `_ZNSolsEm` (g++ match) instead of emitting a body that forwards into the
+  non-exported `_M_insert<T>` template. Mirrors the existing ctor/dtor binding.
+- All steps behavior-preserving (parser invariant: `var.name == local_emit_name`
+  when set; `emit_symbol` mutually exclusive with `local_emit_name`). Validation:
+  `make -C src fulltest` unchanged at `543 passed, 4 failed, 0 timed out, 26 skipped`;
+  gcc.c-torture unchanged at `1566 passed, 31 compile-failed, 57 runtime-failed,
+  1 timed out, 30 skipped`. Remaining: `cout << std::string` (free-operator class rhs
+  as a const reference), the free-`std::`-fn `emit_symbol` migration, then the
+  per-red ingredients. See `docs/plans/2026-06-09-emit-symbol-unification-HANDOFF.md`.
+
 ### Real `<fstream>` ofstream canary advanced (2026-06-09)
 
 - `tmp/fs_out.mad` now compiles and runs through real libstdc++ `<fstream>` /
