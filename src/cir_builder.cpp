@@ -2231,12 +2231,22 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 
 	// A class object member embeds the lowered class struct directly. Its
 	// construction and destruction are driven by the enclosing class ctor/dtor;
-	// members have no independent cleanup attribute.
+	// members have no independent cleanup attribute. An ARRAY of class objects
+	// (`_Words _M_local_word[8]` in libstdc++'s ios_base) still needs its N_ARR
+	// declarator dims — without them the member collapses to a single element,
+	// undersizing the struct (ios_base lost 7*sizeof(_Words)=112B, so a
+	// libstdc++-constructed ofstream overflowed madc's stack slot and crashed in
+	// the dtor). Build the declarator with the same dims the scalar path uses.
 	if (is_class_object(mtype)) {
 		node_t mspec = type_list(mtype);   // -> struct string
+		node_t mdecl_list = list();
+		if (m_flexible)
+			append(mdecl_list, node3(N_ARR, ignore(), list(), ignore()));
+		for (size_t d = 0; d < mdims.size(); d++)
+			append(mdecl_list, node3(N_ARR, ignore(), list(), integer(mdims[d])));
 		node_t mmember = simple(N_MEMBER, m.origin);
 		append(mmember, node1(N_SHARE, mspec));
-		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), list()));
+		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), mdecl_list));
 		append(mmember, ignore());
 		append(mmember, ignore());
 		return mmember;
