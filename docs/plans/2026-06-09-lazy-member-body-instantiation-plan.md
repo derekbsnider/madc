@@ -269,5 +269,23 @@ pointer = _Tp*` alias doesn't resolve to `char*` after subst — less likely.)
   (`parse_deferred_function_body`, `instantiating_canonical_spelling` restored) — the re-parse
   context may itself be why the usual path isn't taken. HIGH blast radius if the fix lands in
   parseExpr/type resolution → gate torture-ALONE.
+
+  ### BISECTION (2026-06-09, no rebuild — ran reduced variants on the milestone binary)
+  `std::string` is really THREE distinct sub-issues; str1's success is the narrow path only:
+  - **WORKS:** `std::string s; s.size()` (default ctor [external C1] + trivial size) — str1.
+  - **FAIL (c2mir @3486):** mutators `s += "x"` / `s = "hi"` — madc-EMITTED body (operator+=/
+    operator=/_M_replace/_M_construct) whose lowering produces "fn returning pointer returns
+    integer" + non-lvalue `&` (the pointer_traits/_M_local_data family, body resolution).
+  - **FAIL (RUNTIME crash, NOT compile):** `std::string s = "hello"` → COMPILES+runs, then
+    `SIGSEGV in __libc_free` at `main [JIT]` freeing `0xff…f9` (wild ptr). This is **layout
+    fidelity**: ctor-from-`const char*` is external C1; the dtor (external D1) frees because
+    the SSO check (`_M_p == &_M_local_buf[0]`) fails — madc's `basic_string<char>` byte-layout/
+    sizeof must match libstdc++ exactly for external C1/D1 to agree. (Default ctor works because
+    empty SSO is robust; "hello" still fits SSO so the crash is a layout/offset mismatch, NOT a
+    heap path.) DISTINCT from the @3486 body issue — own sub-task (cf. the ofstream vbase-layout
+    fidelity concern). Probe: compare madc `sizeof(std::string)` + member offsets vs g++ (g++
+    `__cxx11::basic_string<char>` = 32 bytes: _M_p@0, _M_string_length@8, union{_M_local_buf[16]
+    / _M_allocated_capacity}@16).
+  getline needs BOTH #2 (mutators) and #3 (layout) — so both gate testfstream/testloop.
 </content>
 </invoke>
