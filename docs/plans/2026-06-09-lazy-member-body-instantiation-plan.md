@@ -216,9 +216,19 @@ return-expr), NOT a parse error. `operator+=` is madc-emitted (only ctor/dtor bi
 its body reaches `_M_local_data`, which returns `pointer` — and `basic_string::pointer` (via
 `allocator_traits<allocator<char>>::pointer`) still resolves to the opaque `__detected_or_t`
 STRUCT, not `char*` (§12.1). FIX = make that alloc-traits `pointer == char*` by selecting the
-`allocator_traits<allocator<_Tp>>` partial spec (pointer=`_Tp*`). `c80577c`'s
-`unify_nested_spec_pattern_arg` was meant to; `tmp/at1.mad` shows it's NOT selected — probe
-`match_partial_specialization` for `allocator_traits<allocator<char>>`. This is the member-TYPE
+`allocator_traits<allocator<_Tp>>` partial spec (pointer=`_Tp*`). This is the member-TYPE
 resolution (layout) that lazy-instantiation deliberately did NOT address.
+
+**REFINED 2026-06-09 (probed `match_partial_specialization` for `allocator_traits`):** the
+`allocator_traits<allocator<_Tp>>` partial spec **IS correctly selected** —
+`best=1, _Tp=char, score=51`; `c80577c`'s `unify_nested_spec_pattern_arg` WORKS. So this is
+NOT a partial-spec-matching bug. The struct-pointer is a DOWNSTREAM bug — most likely a
+CACHE/ORDER issue: `instantiate_template_use` runs `match_partial_specialization` (~2653)
+then a cache check (~2662) that returns a cached instance; if `allocator_traits<allocator<char>>`
+was first instantiated via the PRIMARY (`__detected_or_t`) and cached before the partial spec
+won, later refs (at1, `_M_local_data`) get the cached primary. NEXT PROBE: instantiation/cache
+order for `allocator_traits<allocator<char>>` (registered_mangled key + is_complete), and dump
+the selected partial-spec body's `pointer` member. (Or (b): the partial spec's `using
+pointer = _Tp*` alias doesn't resolve to `char*` after subst — less likely.)
 </content>
 </invoke>
