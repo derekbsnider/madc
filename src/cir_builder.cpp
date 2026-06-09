@@ -8825,41 +8825,47 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (fd) func_def_nodes.push_back(fd);
 	}
 	std::set<std::string> lib_emitted;
-	for (bool grew = true; grew; ) {
-		grew = false;
-		// Lazy member-function-body instantiation ([temp.inst]): a system-header
-		// member body deferred at parse time (Program::deferred_lazy_bodies) is
-		// parsed NOW, the first time its emit symbol is ODR-used (in
-		// referenced_funcs). Parsing pushes a TokenFunc; fold it into lib_funcs so
-		// the loop below lowers it, and its own calls grow referenced_funcs →
-		// fixpoint. g++'s "instantiate definition only on ODR-use", at parse time.
-		if (!prog->deferred_lazy_bodies.empty()) {
-			std::vector<std::string> ready;
-			for (auto &db : prog->deferred_lazy_bodies)
-				if (!lib_funcs.count(db.first)
-				    && referenced_funcs.count(db.first))
-					ready.push_back(db.first);
-			for (auto &sym : ready) {
-				TokenFunc *tf = prog->parse_deferred_lazy_body(sym);
-				if (!tf) continue;
-				FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
-				lib_funcs[tfd ? func_emit_name(tf->var, tfd) : tf->var.name] = tf;
+	// Reachability fixpoint: materialize ODR-used deferred member bodies + lower
+	// reachable library fns until referenced_funcs stops growing. Lazy
+	// member-function-body instantiation ([temp.inst]): a system-header body
+	// deferred at parse time (Program::deferred_lazy_bodies) is parsed NOW, the
+	// first time its emit symbol is ODR-used; parsing pushes a TokenFunc, we fold
+	// it into lib_funcs so it lowers, and its own calls grow referenced_funcs →
+	// fixpoint. g++'s "instantiate a definition only on ODR-use". Run as a lambda
+	// so it can be re-run AFTER the synth-dtor passes, which add member/base dtor
+	// symbols to referenced_funcs (e.g. a deferred allocator<int>::~allocator
+	// reached only through a synthesized aggregate dtor).
+	auto materialize_and_lower = [&]() {
+		for (bool grew = true; grew; ) {
+			grew = false;
+			if (!prog->deferred_lazy_bodies.empty()) {
+				std::vector<std::string> ready;
+				for (auto &db : prog->deferred_lazy_bodies)
+					if (!lib_funcs.count(db.first)
+					    && referenced_funcs.count(db.first))
+						ready.push_back(db.first);
+				for (auto &sym : ready) {
+					TokenFunc *tf = prog->parse_deferred_lazy_body(sym);
+					if (!tf) continue;
+					FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
+					lib_funcs[tfd ? func_emit_name(tf->var, tfd) : tf->var.name] = tf;
+					grew = true;
+				}
+			}
+			for (auto &kv : lib_funcs) {
+				if (lib_emitted.count(kv.first)) continue;
+				TokenFunc *tf = kv.second;
+				if (!referenced_funcs.count(kv.first)
+				    && !referenced_funcs.count(tf->var.name))
+					continue;
+				lib_emitted.insert(kv.first);
+				node_t fd = func_def(tf);
+				if (fd) func_def_nodes.push_back(fd);
 				grew = true;
 			}
 		}
-		for (auto &kv : lib_funcs) {
-			if (lib_emitted.count(kv.first)) continue;
-			TokenFunc *tf = kv.second;
-			if (!referenced_funcs.count(kv.first)
-			    && !referenced_funcs.count(tf->var.name))
-				continue;
-			lib_emitted.insert(kv.first);
-			node_t fd = func_def(tf);
-			if (fd) func_def_nodes.push_back(fd);
-			grew = true;
-		}
-	}
-	m_user_func_names = NULL;   // the backing set is a local; don't dangle
+	};
+	materialize_and_lower();
 
 	// Pass 0.75: Extern function prototypes — referenced-only (matches c2m,
 	// which only declares what #include pulled in).
@@ -9129,6 +9135,15 @@ node_t CirBuilder::translate_module(Program *prog)
 		node_t dd0 = synth_deleting_dtor_def(cdd);
 		if (dd0) append(top_list, dd0);
 	}
+
+	// Pass 1.9: re-run the reachability fixpoint. The synth-dtor passes (1.6/1.7/
+	// 1.8) and member/base-dtor cleanup insert member/base dtor symbols into
+	// referenced_funcs AFTER the first fixpoint ran — including deferred library
+	// dtors (e.g. allocator<int>::~allocator reached only through a synthesized
+	// aggregate dtor). Materialize + lower any now-ODR-used deferred body so it is
+	// DEFINED, not just referenced (else MIR-link "import of undefined item").
+	materialize_and_lower();
+	m_user_func_names = NULL;   // backing set is a translate_module local; don't dangle
 
 	// Pass 2: Function definitions (translated above).
 	for (node_t fd : func_def_nodes)
