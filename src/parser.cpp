@@ -8065,8 +8065,8 @@ void Program::add_process_functions()
 	    FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
 	    if ( fd )
 	    {
-		fd->nested_emit_name = "__madc_getenv";
-		funcdef_map[fd->nested_emit_name] = fd;
+		fd->local_emit_name = "__madc_getenv";
+		funcdef_map[fd->local_emit_name] = fd;
 	    }
 	}
     }
@@ -17384,7 +17384,7 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 // would re-use the first's already-declared FuncDef, losing its own parameters and
 // re-binding the first's emit_symbol. A unique key forces a fresh FuncDef so each
 // overload mangles to its own symbol; the caller records the key in
-// FuncDef::class_emit_name so CIR call sites reference the right body. (Call-site
+// FuncDef::local_emit_name so CIR call sites reference the right body. (Call-site
 // selection among same-arity overloads by argument TYPE is separate, later work.)
 std::string Program::unique_overload_symbol(std::string base)
 {
@@ -17987,7 +17987,7 @@ static bool try_parse_defaulted_member_template_constructor(
 	cfd->method_display_name = ctor_source_name;
 	std::string default_symbol = ddc->name + "__" + ddc->name;
 	if ( ctor_disambiguated || mangled != default_symbol )
-	    cfd->class_emit_name = mangled;
+	    cfd->local_emit_name = mangled;
     }
     if ( access_flags )
 	mvar->flags |= access_flags;
@@ -18714,7 +18714,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    if ( !cfd || !cfd->defaulted_or_deleted )
 		    {
 			if ( ctor_disambiguated && cfd )
-			    cfd->class_emit_name = mangled;
+			    cfd->local_emit_name = mangled;
 			if ( access_flags )
 			    mvar->flags |= access_flags;
 			ddc->methods.push_back(mvar);
@@ -19079,10 +19079,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // second body fails to register its params) AND in the emitted C (two
 	    // functions with one name). Detect the collision and give the NULLARY
 	    // (unary / prefix) overload a distinct `..._un` symbol, recorded in
-	    // FuncDef::class_emit_name so the CIR call sites reference the matching
+	    // FuncDef::local_emit_name so the CIR call sites reference the matching
 	    // name. The CIR already selects the right FuncDef by arity. Only
 	    // operators with a same-name peer collide; single overloads are
-	    // untouched (class_emit_name stays empty -> default scheme).
+	    // untouched (local_emit_name stays empty -> default scheme).
 	    // Nullary (unary / prefix) form: `(` immediately followed by `)`.
 	    bool this_is_nullary = pgm.peekToken()
 		&& pgm.peekToken()->id() == TokenID::tkClBrk;
@@ -19103,14 +19103,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    else
 		    {
 			// Existing peer was the nullary one — retag IT to `_un`
-			// (rename its FuncDef body symbol + record class_emit_name).
+			// (rename its FuncDef body symbol + record local_emit_name).
 			// Move its funcdef_map entry to the new key so the canonical
 			// ClassName__operatorX name is FREE for this binary overload
 			// (otherwise parseFunction sees it as already-declared and
 			// skips this overload's parameter registration).
 			std::string peer_name = tag->str + "__" + mname + "_un";
 			std::string peer_old = tag->str + "__" + mname;
-			peer_fd->class_emit_name = peer_name;
+			peer_fd->local_emit_name = peer_name;
 			peer->name = peer_name;
 			pgm.funcdef_map[peer_name] = peer_fd;
 			pgm.funcdef_map.erase(peer_old);
@@ -19144,7 +19144,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    if ( mfd->declaration_only && !mvar->storage_alias_name.empty() )
 			mfd->emit_symbol = mvar->storage_alias_name;
 		    if ( (name_disambiguated && this_is_nullary) || type_overload_disambiguated )
-			mfd->class_emit_name = mangled;
+			mfd->local_emit_name = mangled;
 		}
 		if ( access_flags )
 		    mvar->flags |= access_flags;
@@ -25067,8 +25067,8 @@ paramdecl:
 	configure_nested_function_captures(func);
 	// The nested fn is hoisted to the unique symbol `id`; every call site
 	// (which resolves the in-scope source-named alias below) must emit this
-	// hoisted name. The CIR builder reads it via FuncDef::nested_emit_name.
-	func->nested_emit_name = id;
+	// hoisted name. The CIR builder reads it via FuncDef::local_emit_name.
+	func->local_emit_name = id;
     }
 
     method = new Method(*var);

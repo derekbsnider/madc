@@ -62,11 +62,20 @@ public:
     // against potential_captures). Each becomes a hidden `T *name` parameter and
     // every call site forwards `&var`. Empty for a non-capturing function.
     std::vector<Variable *> captured_vars;
-    // A GNU nested function is hoisted to a unique top-level C symbol
-    // (`enclosing__name__N`); its in-scope local alias keeps the source name
-    // (`name`). This is the hoisted symbol every call site must reference.
-    // Empty for a non-nested function (call sites use the plain name).
-    std::string nested_emit_name;
+    // The C symbol a madc-EMITTED function's body is DEFINED-as and CALLED-as,
+    // when it differs from the default scheme. Two disjoint sources feed it
+    // (a FuncDef is never both a hoisted free fn and a class method):
+    //   - a GNU nested function / [&]-lambda hoisted to a unique top-level C
+    //     symbol (`enclosing__name__N`); its in-scope alias keeps the source
+    //     name, but every call site must reference this hoisted symbol.
+    //   - a madc-emitted class method/operator whose default
+    //     `ClassName__method` scheme collides with another overload of
+    //     DIFFERENT arity (unary vs binary `operator-`, prefix vs postfix
+    //     `operator++(int)`); this is the arity-disambiguated symbol.
+    // Empty for the common case (call sites use the default scheme). DISTINCT
+    // from emit_symbol: this still takes the normal madc-emitted-body path; it
+    // is NOT the extern-binding (no-body) path that emit_symbol triggers.
+    std::string local_emit_name;
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
     // reference parameter tracking: ref_params[i] == true when parameter i is T&
@@ -119,16 +128,6 @@ public:
     // method directly to an externally-provided C++ ABI symbol. madc emits no
     // body for such methods.
     std::string emit_symbol;
-    // For a madc-emitted class operator that shares its name with another
-    // overload of DIFFERENT arity (e.g. unary `operator-()` AND binary
-    // `operator-(const C&)`, or prefix `operator++()` AND postfix
-    // `operator++(int)`), the default `ClassName__operatorX` scheme collides.
-    // When set, this is the actual C symbol the method's BODY is emitted as and
-    // its CALL sites reference — an arity-disambiguated name. Empty for the
-    // common single-overload case (the default scheme is used). Distinct from
-    // emit_symbol: this still takes the normal madc-emitted-body path, NOT the
-    // extern-binding path that emit_symbol triggers.
-    std::string class_emit_name;
     // The UNMANGLED display name of a class method (`take`, `find`, `operator=`),
     // independent of the mangled call symbol stored as the Variable's name
     // (`Box__take`, `Box__take__o2`). Lets overload resolution enumerate the
@@ -159,7 +158,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), class_emit_name(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_return_spelling(), template_param_spellings(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_return_spelling(), template_param_spellings(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), pure_virtual(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }

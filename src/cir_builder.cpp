@@ -159,8 +159,8 @@ std::string CirBuilder::var_emit_name(const Variable &v) const
 
 std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
 {
-	if (fd && !fd->nested_emit_name.empty())
-		return fd->nested_emit_name;
+	if (fd && !fd->local_emit_name.empty())
+		return fd->local_emit_name;
 	return var_emit_name(v);
 }
 
@@ -3431,7 +3431,7 @@ static std::string class_method_call_symbol(DataDefCLASS *cdd, FuncDef *fd,
 					    const std::string &name)
 {
 	if (fd && !fd->emit_symbol.empty()) return fd->emit_symbol;
-	if (fd && !fd->class_emit_name.empty()) return fd->class_emit_name;
+	if (fd && !fd->local_emit_name.empty()) return fd->local_emit_name;
 	return cdd ? cdd->name + "__" + name : name;
 }
 
@@ -4155,15 +4155,15 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 
 // The call symbol for a constructor of `cdd`. Precedence: an external ABI
 // symbol (emit_symbol) > a
-// disambiguated-overload symbol (class_emit_name — the 2nd+ same-arity ctor,
+// disambiguated-overload symbol (local_emit_name — the 2nd+ same-arity ctor,
 // which mangles to its own ClassName__ClassName__oN) > the default
 // ClassName__ClassName scheme (the first / only ctor).
 static std::string ctor_call_symbol(DataDefCLASS *cdd, FuncDef *ctor)
 {
 	if (ctor && !ctor->emit_symbol.empty())
 		return ctor->emit_symbol;
-	if (ctor && !ctor->class_emit_name.empty())
-		return ctor->class_emit_name;
+	if (ctor && !ctor->local_emit_name.empty())
+		return ctor->local_emit_name;
 	return cdd->name + "__" + cdd->name;
 }
 
@@ -4229,10 +4229,10 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			best_var = cv;
 		}
 	}
-	if (best && best_var && best->class_emit_name.empty()) {
+	if (best && best_var && best->local_emit_name.empty()) {
 		std::string default_sym = cdd->name + "__" + cdd->name;
 		if (best_var->name != default_sym)
-			best->class_emit_name = best_var->name;
+			best->local_emit_name = best_var->name;
 	}
 	return best;
 }
@@ -4659,9 +4659,9 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 		}
 	}
 	if (best) {
-		if (best_var && best->class_emit_name.empty()
+		if (best_var && best->local_emit_name.empty()
 		    && best_var->name != mname)
-			best->class_emit_name = best_var->name;
+			best->local_emit_name = best_var->name;
 		return best;
 	}
 	if (first && !rhs_dd) return first;
@@ -4698,9 +4698,9 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 		}
 	}
 	if (best) {
-		if (best_var && best->class_emit_name.empty()
+		if (best_var && best->local_emit_name.empty()
 		    && best_var->name != mname)
-			best->class_emit_name = best_var->name;
+			best->local_emit_name = best_var->name;
 		return best;
 	}
 	if (any && !rhs_dd) return any;
@@ -5465,9 +5465,9 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 		this_arg = node1(N_ADDR, translate_expr(top->left), origin);
 
 	// ClassName__operator== by default; an arity-disambiguated same-name
-	// overload (P2.1b gaps 3 & 4) carries its real symbol in class_emit_name.
-	std::string sym = !callee->class_emit_name.empty()
-			  ? callee->class_emit_name : (lcls->name + "__" + mname);
+	// overload (P2.1b gaps 3 & 4) carries its real symbol in local_emit_name.
+	std::string sym = !callee->local_emit_name.empty()
+			  ? callee->local_emit_name : (lcls->name + "__" + mname);
 
 	// Part B: an operator returning a class object BY VALUE (e.g. V operator+(V&))
 	// yields an rvalue; materialize it into an addressable cleanup temp so the
@@ -5588,11 +5588,11 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 	// otherwise the default ClassName__operator<sym> scheme + the
 	// referenced-funcs prototype pass (a madc-emitted method body). An
 	// arity-disambiguated same-name overload (P2.1b gaps 3 & 4 — the unary peer
-	// of a binary of the same name) carries its real symbol in class_emit_name.
+	// of a binary of the same name) carries its real symbol in local_emit_name.
 	std::string sym = !callee->emit_symbol.empty()
 			  ? callee->emit_symbol
-			  : (!callee->class_emit_name.empty()
-			     ? callee->class_emit_name : (cls->name + "__" + mname));
+			  : (!callee->local_emit_name.empty()
+			     ? callee->local_emit_name : (cls->name + "__" + mname));
 	std::vector<ExternParam> eparams = { { {N_VOID}, true } };
 	node_t args = list();
 	if (!callee->emit_symbol.empty()) {
@@ -6494,17 +6494,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// so leaving the short name there yields a clean c2mir error rather
 			// than a callback that reads garbage captures.
 			if (FuncDef *nfd = dynamic_cast<FuncDef *>(tv->var.type)) {
-				if (!nfd->nested_emit_name.empty()
+				if (!nfd->local_emit_name.empty()
 				    && nfd->captured_vars.empty()) {
-					referenced_funcs.insert(nfd->nested_emit_name);
-					return id(nfd->nested_emit_name.c_str(), tb);
+					referenced_funcs.insert(nfd->local_emit_name);
+					return id(nfd->local_emit_name.c_str(), tb);
 				}
 				// A top-level function used as a VALUE (address-taken /
 				// function-pointer decay: `&abort`, `f = exit`, `{abort}`).
 				// Record it in referenced_funcs so translate_module emits its
 				// prototype — without it c2mir sees an "undeclared identifier"
 				// (call sites already record callees; a bare value-use must too).
-				if (nfd->nested_emit_name.empty()) {
+				if (nfd->local_emit_name.empty()) {
 					std::string sym = var_emit_name(tv->var);
 					referenced_funcs.insert(sym);
 					return id(sym.c_str(), tb);
@@ -6903,8 +6903,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						this_arg = object_var_addr(otv->var, tb);
 					else
 						this_arg = node1(N_ADDR, translate_expr(operand_tb), tb);
-					std::string sym = !post->class_emit_name.empty()
-							  ? post->class_emit_name
+					std::string sym = !post->local_emit_name.empty()
+							  ? post->local_emit_name
 							  : (icls->name + "__" + opmname);
 					referenced_funcs.insert(sym);
 					node_t pargs = list();
@@ -7238,7 +7238,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// A call to a GNU nested function resolves the in-scope
 				// source-named alias, but the function is HOISTED to a unique
 				// top-level symbol — emit that hoisted name (FuncDef::
-				// nested_emit_name), not the source name.
+				// local_emit_name), not the source name.
 				FuncDef *cdf = call_target_funcdef(tcf);
 				std::string callee_name = func_emit_name(tcf->var, cdf);
 				// A std:: (real-libstdc++) free function — e.g. std::getline —
