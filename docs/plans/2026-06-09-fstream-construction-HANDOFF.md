@@ -1,0 +1,315 @@
+# HANDOFF — real libstdc++ `<fstream>`: construction works, dtor crash is the wall
+
+**Read this FIRST on resume / post-compaction. Assume you remember NOTHING (a
+`/compact` is effectively a `/clear` — do not rely on conversational memory).**
+Run `bash scripts/resume.sh` first (live git/build truth), then read this top to
+bottom, then the governing design corpus in §2.
+
+> **THE PROCESS LESSON THAT GOVERNS THIS WORK (do not skip).** This campaign's
+> recurring failure: a fresh session rehydrates on the routed handoff only,
+> re-derives designs/building-blocks that already exist, and that re-derivation IS
+> the duplicate code the campaign exists to delete. Before planning ANYTHING:
+> (1) read the design corpus (§2); (2) `grep` for the capability before assuming
+> it's missing — treat "I think X is absent" as a search task, not a fact;
+> (3) PROBE before theorizing — this session I theorized a struct-identity split
+> and an undersizing root cause, both wrong; a 2-minute instrumented probe each
+> time would have saved an hour. See `[[feedback_rule4_check_own_prior_work]]`.
+
+---
+
+## 0. TL;DR
+
+Branch **`feature/header-partition-claude`**, HEAD **`22c5b53`**, working tree
+clean, **24 commits ahead of `develop`, local only (UNPUSHED — the user's call; do
+NOT push without asking).** Gates green every commit: **fulltest 543/4** (known
+reds testdefer/testfstream/testlargesizeofquery/testloop), **gcc.c-torture
+1566/31/57/1** (run ALONE), `<iostream>` + `test_extern_polymorphic` run.
+
+**This session got real libstdc++ `<fstream>` ofstream from a 12-error compile wall
+to: CONSTRUCTS via libstdc++'s real `C1` ctor + WRITES `hello42` correctly to a
+file.** The one remaining wall: the **destructor SIGSEGVs at scope exit** (after the
+writes succeed). **Root cause is NOT confirmed** — see §5, and heed the warning that
+`--emit=c11` text is NOT layout truth.
+
+**User's standing steering (2026-06-08):** (1) optimization is TABLED — get all the
+real std headers WORKING first (correctness/coverage over speed); next targets past
+`<iostream>` are `<fstream>` then `<sstream>`. (2) Embedded-header packaging (B-half)
+is ON HOLD. (3) The big perf lever (demand-driven instantiation + AST-compressed
+lazy-load PCH) is TABLED until everything works. (4) No shims, fix at the DEEPEST
+layer, every discriminator DATA-DRIVEN (never `namespace=="std"`). (5) Clean up
+background shells/processes when done.
+
+---
+
+## 1. HOW TO REHYDRATE (do this before touching anything)
+
+1. `bash scripts/resume.sh` — live branch/HEAD/build/runaway-process truth.
+2. Read this handoff fully.
+3. Read the design corpus (§2) — do NOT re-derive it.
+4. `git log --oneline --reverse develop..HEAD` — this session's 24 commits (listed §3).
+5. Skim memory `[[project_header_partition]]` (the live campaign status; this
+   handoff is its detailed twin).
+6. Cap EVERY run: `( ulimit -t 120; timeout 180 <cmd> )`, ONE heavy job at a time.
+   Background `-v` output to a FILE then grep — interactive `-v | grep` truncates
+   and has lied about capture counts repeatedly. `--emit=c11` is NOT a correctness
+   oracle (it skips c2mir checking AND, as found this session, can text-render a
+   layout differently from the real tree). Validate by RUNNING or by reading the
+   tree. NAS mtime trap: `touch src/<f>.cpp` before `make`; clean-rebuild if results
+   look impossible.
+
+---
+
+## 2. GOVERNING DESIGN CORPUS (READ — do not re-derive)
+
+The header-partition campaign = **madc ships only compiler-freestanding + its own
+`ns_*` headers, and CONSUMES the real glibc/libstdc++ headers** (eventually as one
+pre-lexed compressed embedded package), retiring the hand-tooled stdlib shims.
+
+- **`~/.claude/plans/clever-scribbling-dove.md`** — the approved campaign plan.
+  Build half **B1–B6**, runtime half **R1–R5**, **M** (shim retirement), **A**
+  (acceptance oracle). §8 tracks each.
+- **`docs/superpowers/specs/2026-06-02-retire-std-hardcoding-design.md`** — W1–W5
+  (W1 mangler, **W2 non-member operator resolution**, W3 ABI-from-declaration,
+  W4 extern header globals, W5 auto-include map).
+- **`docs/superpowers/plans/2026-06-02-mangler-nonmember-template-ops.md`** — the
+  W1 mangler-completeness plan (`itanium_mangle_std_free_template`).
+- `docs/plans/madc-vision-and-invariants.md` — invariants I1–I8.
+- Prior handoff `docs/plans/2026-06-08-header-partition-W2-perf-HANDOFF.md`
+  (the `<iostream>`-runs + perf milestone; this handoff continues it).
+- Memory: `[[project_header_partition]]`, `[[project_cpp_mangled_direct]]`,
+  `[[project_template_instantiation]]`, `[[project_multiple_inheritance]]`,
+  `[[feedback_rule4_check_own_prior_work]]`, `[[feedback_correct_over_shortcuts]]`,
+  `[[feedback_emitc_gcc_parity_oracle]]`.
+
+Branch facts (from git, not assumption): `feature/header-partition-claude` is the
+canonical tip (24 ahead of develop). `retire-std-hardcoding` is already merged into
+develop — not a competing branch. No fork to reconcile.
+
+---
+
+## 3. THIS SESSION'S WORK — the fstream-construction arc (8 fixes, last turn's 4 bolded)
+
+All gated 543/4 + 1566/31/57/1 + canaries. Prior commits (4fa746e..a82085b) are the
+`<iostream>`-runs + perf arc (see the 2026-06-08 handoff). This session added:
+
+| Commit | What it fixed |
+|---|---|
+| `39878b7` | **Instantiation cache / `is_complete`.** The C++ class-def parser (`TokenCLASS::parse`) never set `is_complete` after parsing a `{...}` body (unlike the C struct parser). So instantiated C++ class templates stayed `is_complete=false`; `is_incomplete_class_datadef` (parser.cpp:2325) matched them on the empty-aggregate heuristic (true for typedef-only traits like `iterator_traits<T>`), and `instantiate_template_use`'s cache re-instantiated them on EVERY reference (`iterator_traits<uint32_t>` 6×). Fix: `TokenCLASS::parse` sets `ddc->is_complete=true` after layout finalize (cir ~18006/parser ~18092); `is_incomplete_class_datadef` honors `is_complete`. Empty `<iostream>` instantiations 398→344, zero dups. |
+| `e6beebc` | **By-value plain-struct emission ordering.** `emit_class_member_deps` only hoisted by-value CLASS members before their owner; plain struct/union members (DataDefSTRUCT) were skipped. `basic_filebuf` embeds `pthread_mutex_t` (`_M_lock`, anon union holding `struct __pthread_mutex_s __data`) by value → emitted before `__pthread_mutex_s`'s def → c2mir "field __data has incomplete type". Fix: new `CirBuilder::emit_struct_with_deps` (cir 2904) hoists plain struct/union member types too (recurse members, emit named body; anon aggregates inline so only deps hoist). |
+| `e4fca20` | **vptr slot in typedef-def-point classes.** A polymorphic class emitted via `typedef struct C{...} alias;` (template instantiations: basic_ios, basic_ofstream) had its body emitted by `typedef_decl` via `anon_members_list` (plain-struct member list, NO vptr), dropping the `__vptr` slot. Fix: extracted `class_struct_def`'s field builder into `CirBuilder::class_member_list` (cir 2762); `typedef_decl`'s inline-body path uses it for a class with `has_vptr_slot`. |
+| **`6b5d4ea`** | **Mangled-direct construction/destruction for externally-defined classes (THE KEYSTONE).** madc was SYNTHESIZING ctors for libstdc++-owned classes (member-wise body + vbase chain), which can't reproduce the ABI. New pass (cir ~8740, before global-ctor + body translation) binds, for each `is_externally_defined` class: the dtor → real `D1`, and — for TEMPLATE-INSTANTIATION classes only (canonical spelling has `<`) — each ctor → real `C1` via `itanium_mangle_ctor_sub`(canonical, param spellings). `class_ctor_call` (cir 4051, ~line 4180) skips the vbase-construction chain when the ctor is bound (`emit_symbol` set). **GATING CAUGHT:** binding ALL external classes broke `std::bad_alloc` (inline/defaulted ctor, NO exported `_ZNSt9bad_allocC1Ev` → dangles at link) → hence the `<`-only gate; concrete classes keep madc's vptr-init ctor. A wrong bind fails LOUDLY at MIR-link. |
+| **`38d9152`** | **Combined-typedef hoist + external complete-dtor.** (a) `emit_struct_with_deps` hoisting a struct via bare `struct_def` stranded the alias of a COMBINED `typedef struct __pthread_internal_list{...} __pthread_list_t;` at its later position → `__pthread_mutex_s`'s member `__pthread_list_t __list` referenced an undefined alias → "unknown type __pthread_list_t". Fix: pre-scan maps each struct tag → its combined-typedef TopDecl (`m_combined_typedef_alias`); the hoist emits the WHOLE combined decl (body+alias) and records the alias (`m_hoisted_combined_aliases`) so Pass 0 skips re-emitting. (b) `class_complete_dtor_symbol` (cir 3685) returns the real `D1` for `is_externally_defined` classes (the synthesized `Cls___dtor_complete` wrapper is never emitted for them → was "undefined item …__dtor_complete" at the cleanup attribute). **ofstream now COMPILES + LINKS.** |
+| **`22c5b53`** | **W2 free-operator resolution for DERIVED streams.** `deduce_free_stream_call` (cir 4552) only matched the lhs's own head spelling, so `ofstream out; out<<"x"` (basic_ofstream != basic_ostream) rejected the free `operator<<(ostream&,const char*)` and mis-bound the MEMBER `operator<<(streambuf*)`, passing the `const char*` as a streambuf* → SIGSEGV in `__copy_streambufs`. Fix: `try_free_operator_call` (cir 4614) now deduces against the lhs class AND its non-virtual bases (`collect_self_and_base_spellings`, cir 4597 — spelling+offset, most-derived first) + adjusts the passed stream ptr to the base subobject (offset 0 for single-inheritance streams; `adjust_to_base` lambda). Both operator and `std::endl`-manipulator paths. **`out << "hello" << 42` now WRITES "hello42" correctly.** |
+
+---
+
+## 4. CURRENT fstream STATE (precise)
+
+Reducers in `tmp/` (gitignored): `tmp/fs_out.mad` (ofstream-only write), `tmp/fstream_test.mad`
+(full: ofstream write + ifstream getline), `tmp/iosrepro2.mad` (minimal array-of-object
+repro), `tmp/fssz.mad` (sizeof probe — currently errors, see §5).
+
+- **ofstream construction:** `std::ofstream out("f")` lowers to the EXACT g++ symbol
+  `_ZNSt14basic_ofstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode((&out),"f",16)`.
+  libstdc++ builds the whole hierarchy. ✅ (= g++)
+- **ofstream operator<<:** `out << "hello" << 42` binds the free
+  `operator<<(ostream&,const char*)` (via base deduction) + member `operator<<(int)`.
+  WRITES "hello42" to the file. ✅
+- **ofstream destructor:** **SIGSEGV at scope exit** (the writes flush first). ❌
+  Even `out << "x";` alone crashes at the implicit dtor. THE WALL.
+- **ifstream / getline:** not reached yet; the full `tmp/fstream_test.mad` also has a
+  `basic_string.h:3486` cluster (getline/char_traits, input path) — DEFERRED until
+  ofstream runs clean. (errors: invalid comparison operands ×2, subscript, lvalue
+  `&`, return-expr struct — a synthesized basic_string method body.)
+
+Run to reproduce the crash:
+```bash
+( ulimit -t 120; timeout 180 bin/madc --std=c++17 --no-embedded-headers tmp/fs_out.mad )
+# writes "hello42" to tmp/fs_out_scratch.txt then SIGSEGV
+```
+
+---
+
+## 5. THE DTOR CRASH — what's known, the unresolved contradiction, and NEXT STEPS
+
+**Do NOT trust the earlier "ofstream is undersized" claim — it is UNCONFIRMED and
+may be a `--emit=c11` text artifact.** Here's exactly what was found and what wasn't:
+
+**Finding via `--emit=c11`:** an array of an OBJECT-class member renders as a SCALAR.
+`ios_base` has `enum { _S_local_word_size = 8 };` and `_Words _M_local_word[_S_local_word_size];`
+where `_Words` has a ctor (`_Words() : _M_pword(0), _M_iword(0) {}`). madc emits
+`struct ios_base___Words _M_local_word;` with **no `[8]`**. Minimal reducer
+`tmp/iosrepro2.mad` reproduces it; a TRIVIAL `_Words` (no ctor) emits `[8]` correctly
+(`tmp/iosrepro.mad`). If real, this undersizes `ios_base`/`ofstream` → libstdc++'s
+C1/D1 overflow madc's stack slot → crash. (g++ sizes: ofstream=512 ifstream=520
+filebuf=240 ios=264 ostream=272.)
+
+**WHY IT'S UNCONFIRMED (the contradiction):** I instrumented `member_node`
+(cir_builder.cpp ~2189) — it RECEIVES the correct `is_array=1 count=8 dims=[8]`
+(MNPROBE), and `addMember` logs "count 8, total 144". `member_node`'s mdims block
+(~2194) + the N_ARR emit (~2360) SHOULD therefore emit `[8]`. `struct_def` (cir 2401)
+AND `anon_members_list` (cir 2158) BOTH go through `member_node`. So the c2mir TREE
+probably HAS `[8]` (correct) while only the cir_emit_c TEXT drops it. **If the tree is
+correctly `[8]`-sized, the dtor crash is NOT undersizing** and I chased a partial red
+herring. The contradiction (member_node has `[8]`, emitted text is scalar) was NOT
+resolved — candidates: (a) a 2nd non-`member_node` emitter produces the scalar and
+wins via `emitted_structs` dedup; (b) cir_emit_c's declarator renderer drops N_ARR for
+an object-typed member. Neither proven.
+
+**NEXT STEPS (fresh eyes — diagnose via RUNTIME, not `--emit=c11` text):**
+1. **gdb the JIT SIGSEGV.** `out<<"x"` crashes at the scope-exit dtor though "x"
+   writes. Get the real faulting frame/address. (Earlier minimal backtrace was 2
+   frames, no symbols — need a real build/gdb attach.)
+2. **Get madc's REAL `sizeof(std::ofstream)`** and compare to g++'s 512. BLOCKED by a
+   separate parser bug: `sizeof(std::ofstream)` / `sizeof(std::basic_ios<char>)`
+   errors "'X' is not a member of namespace 'std'" *in `sizeof` context* though the
+   same type parses elsewhere — a small namespaced-template-id-in-`sizeof` gap; FIX
+   THAT FIRST (it's also independently useful), or read the size off the c2mir tree
+   / `DataDefCLASS::size`.
+3. **If the tree IS correctly sized**, the crash is the D1 binding / vptr / vbase
+   layout: madc places the `basic_ios` virtual base at `+248` in ofstream
+   (construction emitted `(char*)&out + 248`) — compare to g++'s actual vbase offset
+   (`g++ -fdump-lang-class` or read the vtable's vbase-offset slot). Mangled-direct
+   construction of a class WITH virtual bases REQUIRES madc's layout to byte-match
+   libstdc++ (the MI/vbase layout engine S1–S4 exists — `[[project_multiple_inheritance]]`
+   — but may not match libstdc++ exactly for the stream diamond).
+4. **Separately (real bug regardless):** if cir_emit_c text-renders array-of-object
+   members as scalar, `--emit=c11` portable-C output is wrong even when the JIT tree
+   is right. Worth fixing; reducer `tmp/iosrepro2.mad`. Trace `member_node`'s N_ARR
+   into the cir_emit_c declarator renderer.
+
+---
+
+## 6. KEY FILE ANCHORS (verify with grep — line numbers drift)
+
+- `src/cir_builder.cpp`:
+  - `class_member_list` 2762 · `class_struct_def` just below it (wraps it).
+  - `emit_struct_with_deps` 2904 · `emit_class_member_deps` ~2867 (now recurses into
+    plain struct/union members; routes class members to `emit_class_struct_with_deps`).
+  - `member_node` ~2172 (the member emitter; mdims block ~2189–2202, N_ARR emit ~2360).
+  - `struct_def` 2401 · `anon_members_list` 2158.
+  - `class_complete_dtor_symbol` 3685 (returns D1 for external) · `class_dtor_symbol`
+    ~3648 (returns `emit_symbol` when set).
+  - `class_ctor_call` 4051 (vbase-chain skip when `ctor->emit_symbol` set, ~line 4180).
+  - `deduce_free_stream_call` 4552 · `collect_self_and_base_spellings` 4597 ·
+    `try_free_operator_call` 4614 (candidate loop ~4628/4636; `deduce_any` +
+    `adjust_to_base` lambdas; manipulator path + operator path).
+  - The ctor/dtor binding pass: ~8740 (`itanium_mangle_ctor_sub` call at 8760), just
+    before `collect_global_ctors`. Mirrors Pass 1.5 (vtable, ~8862) / Pass 1.6 (dtor
+    synth) which gate on `is_externally_defined()`.
+- `src/cir_builder.h`: `class_member_list` decl; `emit_struct_with_deps` decl;
+  `m_combined_typedef_alias` (map struct-tag → combined-typedef TopDecl) +
+  `m_hoisted_combined_aliases` (set) near `m_ambiguous_typedef_aliases` (~132).
+- `src/parser.cpp`: `is_incomplete_class_datadef` 2325 (honors `is_complete`);
+  `TokenCLASS::parse` data-member array parse ~17845, `addMember` ~17924, sets
+  `ddc->is_complete=true` ~18092 (after `build_vtable_groups`); `bind_declared_cpp_symbol`
+  16481 (only fires for `declaration_only` — that's why inline-bodied stream ctors
+  weren't bound at parse, hence the cir_builder pass).
+- `src/madc_mangle.cpp`: `itanium_mangle_ctor_sub` 831 (`_ZN…C1…`),
+  `itanium_mangle_dtor_sub` 839 (`_ZN…D1Ev`), `itanium_mangle_std_free_template`
+  (the `_ZStls…`/`_ZSt4endl…` generator W2 consumes).
+- `include/datadef.h`: `DataDefCLASS` — `is_complete` 283, `is_externally_defined()`
+  ~710, `from_system_header` ~733, `has_vptr_slot`, `bases` (BaseSpec{base,offset,
+  is_virtual} ~655), `is_anonymous` 286.
+- `DataDefCLASS::is_externally_defined()` (parser.cpp): has_vtable && canonical
+  spelling && every vtable slot bodyless-external && whole base chain external —
+  OR `from_system_header` (override for inline-virtual-default facets/streams, 12398f2).
+
+---
+
+## 7. METHOD + COMMANDS + GATES (mandatory)
+
+```bash
+bash scripts/resume.sh
+make -C src 2>&1 | grep -iE 'error:|warning:'                  # clean build, NAS: touch first
+make -C src fulltest 2>&1 | grep -E 'passed,|FAIL:'            # 543/4 known reds
+python3 scripts/run_gcc_testsuite.py --root gcc_testsuite --madc bin/madc | tail -2  # 1566/31/57/1 ALONE
+bin/madc --std=c++17 --no-embedded-headers tests/testcout.mad             # "This is a test, x = -1"
+bin/madc --std=c++17 --no-embedded-headers tests/test_extern_polymorphic.mad  # what=std::bad_alloc / name=St9bad_alloc
+( ulimit -t 120; timeout 180 bin/madc --std=c++17 --no-embedded-headers tmp/fs_out.mad )  # writes hello42 then SIGSEGV
+```
+- Per change: reduce → compare g++ AND clang → DEEPEST-layer fix → rebuild → re-probe
+  → fulltest (known reds only) → torture failset ALONE → commit. RUN to validate
+  (NOT `--emit=c11`).
+- These four fulltest reds PREDATE all this work: testdefer, testfstream,
+  testlargesizeofquery, testloop (the first three go green when the real-`<fstream>`
+  shim retirement lands, campaign M).
+- Anything touching struct/ctor/dtor/class-layout emission has HIGH blast radius
+  (C path + SMAUG) — torture ALONE every time; the C path is structurally untouched
+  because every new behavior gates on `is_externally_defined()` / `from_system_header`
+  / `<`-in-spelling, all false for C.
+
+---
+
+## 8. BROADER CAMPAIGN STATUS (every workstream)
+
+**retire-std-hardcoding W1–W5:** W1 mangler DONE (develop). **W2 non-member operator
+resolution DONE** + now matches derived streams (this session); REMAINS: `std::string`
+`operator<<`/`operator>>`/`getline` (the basic_string input-path cluster), friend
+operators + full ADL (task #19). W3 ABI-from-declaration PARTIAL. W4 extern globals
+PARTIAL. W5 auto-include map PARTIAL.
+
+**clever-scribbling-dove R1–R5:** R1 per-`--std` macros + `__has_*` NOT DONE. R2
+libstdc++ auto-load DONE (develop). R3 retire `array` keyword NOT DONE (blocks
+tuple/array). R4 trait-builtin breadth PARTIAL. R5 real-header sema: `<iostream>`
+DONE+RUNS; `<fstream>` construction DONE, dtor-crash blocker (§5); `<string_view>`/
+`<memory>` namespaced-template-id-const-capture gap still pending.
+
+**B1–B6 (pre-lexed embedded package):** NONE DONE — **ON HOLD per user** (part of the
+tabled optimization picture; the future direction supersedes the pre-LEX-raw-token
+framing → fully parse each header to an AST tree, store COMPRESSED, lazy-load).
+
+**M (shim retirement):** NOT DONE. `<iostream>` runs against the real header (candidate
+to start M with, carefully). `scripts/check-no-std-hardcoding.sh` is the grep-gate
+(wired into fulltest).
+
+**A (acceptance oracle):** NOT DONE. `testcout_realhdr` is the first end-to-end
+real-header regression test.
+
+**TABLED (do NOT start without the user re-opening it):** demand-driven / lazy
+template instantiation (task #24 — the 398-eager-instantiations lever; route concrete
+header template-ids to placeholders, force-complete at ODR-use; delicate, a missed
+completion-force = incomplete-type miscompile); the AST-compressed-lazy-load PCH.
+
+---
+
+## 9. TASK LIST (reconcile on resume; IDs from the session task tracker)
+
+- DONE: R2 auto-load (#7), ref-return &call (#16), W2 non-member operators (#17),
+  std::endl mangled-direct (#20), PERF scoped instantiation-cache fix (#21).
+- IN PROGRESS: R5 real-header sema (#14); **Real `<fstream>` compiles+runs (#22)** —
+  constructs+writes; dtor crash is the wall (§5).
+- PENDING: R1 per-std macros+`__has_*` (#8), A acceptance oracle (#9), B1/B2 (#10),
+  B3-B6 ON HOLD (#11), R3 retire `array` (#12), R4 trait breadth (#13), M shim
+  retirement (#15), friend+full-ADL (#19), Real `<sstream>` (#23), TABLED
+  demand-driven instantiation (#24).
+
+---
+
+## 10. WHY NONE OF THIS IS A SHIM (the user's standing constraint)
+
+Every discriminator is DATA-DRIVEN (`is_externally_defined`/`from_system_header`/
+`is_system_header_path`/`has_vptr_slot`/`<`-in-canonical-spelling), never
+`namespace=="std"` or a name test (Rule #7). Construction/destruction bind to the
+REAL libstdc++ `C1`/`D1` via the mangler that GENERATES the Itanium symbol (never a
+hardcoded `_ZNSt…` literal — that drift cost days). The `<`-only ctor gate is the
+"explicitly-instantiated template" proxy (libstdc++ exports those; concrete inline
+ctors like bad_alloc's it does not — a wrong bind fails LOUDLY at link, never
+silently). The instantiation-cache fix and the emission-ordering fixes are
+correctness fixes (O(n²)→O(1); definition-before-by-value-use), not shortcuts. The
+dtor crash will be fixed at the deepest layer (real layout / D1 binding), NOT papered
+over.
+
+## 11. OPEN ITEMS
+- **Unpushed:** branch is 24 commits ahead of `develop`, local only. Pending the
+  user's push decision — do NOT push without asking.
+- `tmp/` scratch (fs_out.mad, fstream_test.mad, iosrepro*.mad, fssz.mad, *.c, *.err) —
+  gitignored.
+- The `sizeof(std::ofstream)`-in-sizeof-context parser bug (§5 step 2) is a small
+  standalone gap worth fixing (unblocks the layout diagnosis + is generally useful).
+
+See `[[project_header_partition]]` (live status), `[[feedback_rule4_check_own_prior_work]]`,
+`[[project_cpp_mangled_direct]]`, `[[project_multiple_inheritance]]`,
+`[[feedback_emitc_gcc_parity_oracle]]`. Supersedes
+`docs/plans/2026-06-08-header-partition-W2-perf-HANDOFF.md` for current state (that one
+keeps the `<iostream>`-runs + findVariable-perf granular history).
