@@ -251,14 +251,23 @@ pointer = _Tp*` alias doesn't resolve to `char*` after subst — less likely.)
   body context; then `addressof`. g++ oracle: returns `char*`. Reducer `tmp/str_use.mad`.
 
   **CONFIRMED (PTPROBE in match_partial_specialization, run on str_use): `pointer_traits`
-  NEVER reaches `match_partial_specialization` → `pointer_traits<char*>` is NEVER INSTANTIATED
-  in the `_M_local_data` body.** So the gap is upstream of partial-spec matching: the expr-arm
-  doesn't instantiate the template-id. FIX = in the parseExpr namespace-resolution arm
-  (parser.cpp ~11984, the `std::NS::Template<Arg>::staticmember` dispatch) instantiate the
-  template-id `pointer_traits<char*>` then resolve the static member `pointer_to` on it (mirror
-  `resolve_typename_type_token`'s type-context handling). NOTE this body is reached via lazy
-  materialization at emit time (`parse_deferred_function_body`, with `instantiating_canonical_spelling`
-  restored) — verify the expr-arm + instantiate work in that re-parse context. HIGH blast radius
-  (parseExpr is core) → gate torture-ALONE. Then `addressof` → getline → testfstream/testloop.
+  NEVER reaches `match_partial_specialization` → `pointer_traits<char*>` is NEVER INSTANTIATED.**
+  So the gap is upstream of partial-spec matching.
+  **REFUTED (EAPROBE in the parseExpr ns-resolution arm ~11984): that arm is NOT the path that
+  parses `std::pointer_traits<pointer>::pointer_to` in the failing body** (member_name never
+  "pointer_traits" there). So the earlier "fix at ~11984" guess was WRONG. STILL OPEN (next
+  session, verify by probe — do NOT assume):
+    (a) WHICH method body produces the str_use c2mir errors? The `basic_string.h:3486` stamp is
+        the class-close fallback for ALL synthesized/instantiated bodies, so it is NOT
+        necessarily `_M_local_data` — instrument `parse_deferred_lazy_body` / func_def to print
+        the symbol whose body fails to lower.
+    (b) WHAT parse path handles `std::pointer_traits<pointer>::pointer_to(...)` in that body
+        (it's not the 11984 ns-arm — maybe a type-context resolver / `resolve_typename_type_token`
+        / a qualified-id path / a different parseExpr arm). Instrument to find where the
+        template-id should be instantiated and isn't.
+  Only after (a)+(b) form the fix. The body is reached via lazy materialization at emit time
+  (`parse_deferred_function_body`, `instantiating_canonical_spelling` restored) — the re-parse
+  context may itself be why the usual path isn't taken. HIGH blast radius if the fix lands in
+  parseExpr/type resolution → gate torture-ALONE.
 </content>
 </invoke>
