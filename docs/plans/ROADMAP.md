@@ -1,6 +1,6 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-06-06 (v0.25.0).
+Master plan linking all workstreams. Updated 2026-06-09 (v0.26.0).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -26,7 +26,7 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Version:** `0.25.0` (per `VERSION`) — released on `develop` (CIR backend).
+- **Version:** `0.26.0` (per `VERSION`) — released on `develop` (CIR backend).
   `master` still holds the v0.24.0 asmjit/Gecko backend at full C89 coverage;
   develop is **not** promoted to master until the CIR path reaches feature
   parity.

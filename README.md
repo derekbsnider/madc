@@ -237,37 +237,35 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.25.0 (2026-05-30)** — CIR is now madc's **sole** backend (asmjit and Gecko
-removed), and the headline milestone lands: **SMAUG 1.8 (~158k LOC C89) boots,
-runs as a live server, and is playable** through `cir_node` (MC11-IR) → c2mir →
-MIR → JIT — character creation, world navigation, and the Newgate serpent fight
-all run. Six root-cause runtime fixes (fn-ptr-typedef rendering,
-extern-at-creation, varargs intrinsic, switch default, strcmp-int, and a
-JIT-symbolizing crash handler) took SMAUG from won't-link to gameplay. Builds
-against the [madc MIR fork](https://github.com/derekbsnider/mir). See
-[`docs/release-notes/v0.25.0.md`](docs/release-notes/v0.25.0.md).
+**v0.26.0 (2026-06-09)** — the real-header C++ release: real libstdc++
+`std::string` (construct/mutate/concat/`.size()`), `cout <<` output, and
+`std::getline` all run end-to-end through **real system headers** with
+**mangled-direct binding** to libstdc++ — no wrappers. Call-symbol derivation
+is unified onto a single drift-gated `CirBuilder::call_emit_symbol` resolver.
+The new **`--project` build driver** compiles, links, and JITs a multi-TU
+`compile_commands.json` project in one process — SMAUG 1.8 boots end-to-end
+through it. The MIR fork (pinned `2ffebff`) contributes complete **≤16-byte
+SIMD/`vector_size`** support; VLAs and Go-style multi-return are reimplemented
+on CIR. See [`docs/release-notes/v0.26.0.md`](docs/release-notes/v0.26.0.md).
 
-Honest CIR baseline (2026-06-01, branch `feature/cir-stdstring-claude`):
-**455 integration pass / 8 fail / 55 skip**, unit suites green, and
-**gcc.c-torture 1565/1685 (92.9%)** vs the old asmjit backend's **1645 (97.6%)**
-on the same runner — the develop→master parity gate. The torture gap (80) is
-the remaining c2mir-front-end bugs plus floor/feature work (SIMD,
-VLA, inline asm, `scalar_storage_order`, …). In-process `eval`/exec + the REPL,
-and native AOT output, are deferred (stubbed) until the CIR path reaches parity.
+CIR baseline (2026-06-09): **543 integration/unit pass / 4 fail / 26 skip**
+(known reds: testdefer, testfstream, testlargesizeofquery, testloop — the open
+fstream/getline test rewrites), and **gcc.c-torture 1566/1685 (92.9%)** vs the
+old asmjit backend's **1645 (97.6%)** on the same runner — the develop→master
+parity gate (gap 79). In-process `eval`/exec + the REPL, and native AOT output,
+are deferred (stubbed) until the CIR path reaches parity.
 
-**Branch state:** `develop` carries v0.25.0 (CIR backend). `master` still holds
+**Branch state:** `develop` carries v0.26.0 (CIR backend). `master` still holds
 the v0.24.0 asmjit/Gecko backend at full C89 coverage (419 pass / 0 fail) —
 develop is **not** promoted to master until the CIR path reaches feature parity.
 
 ### Recent Releases
 
+- **v0.26.0** — Real-header C++: libstdc++ string/iostream/getline mangled-direct; call-symbol unification + gate; `--project` driver; ≤16-byte SIMD; VLAs; multi-return
 - **v0.25.0** — CIR sole backend; SMAUG 1.8 boots, runs, and is playable (serpent fight); integration 316→325
 - **v0.24.0** — Native C99 `_Complex` in c2mir, transpiler parity 410→419
 - **v0.23.0** — MIR default backend, clang++ compiler, transpiler parity 400→410
 - **v0.22.0** — Gecko+MIR transpiler: sema pre-pass, string runtime, O(1) anode dispatch, iostream wrappers
-- **v0.21.1** — Const enforcement, access control, token position, MIR backend architecture decision
-- **v0.21.0** — C++ class model: ctors/dtors, operators, refs, new/delete, inheritance, vtables, exceptions + unwinding
-- **v0.20.1** — Code cleanup Phase A: compiler file split, builtin dispatch table, --emit-function tool
 
 ## Roadmap
 

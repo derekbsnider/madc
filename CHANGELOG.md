@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.26.0] — 2026-06-09
+
+Real-header C++ track: real libstdc++ `<string>`/`<iostream>`/`std::getline` via
+mangled-direct binding, call-symbol derivation unified onto one gated resolver,
+the `--project` multi-TU build driver (SMAUG boots end-to-end through it),
+≤16-byte SIMD/`vector_size` through the MIR fork, VLAs, and multi-return
+reimplemented on CIR.
+
 ### Call-symbol derivation unified onto one resolver + drift gate (2026-06-09)
 
 - **One source of truth for a call's emitted C symbol.** Added
