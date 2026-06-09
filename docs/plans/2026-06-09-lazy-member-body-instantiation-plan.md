@@ -142,5 +142,54 @@ testdefer/testfstream/testlargesizeofquery/testloop only); **gcc.c-torture run A
 - `madc.h`: `DeferredFunctionBody` 1242 · `pending_funcs` 1241 · `FuncDef` flags ~120-171.
 - Reducers (tmp/): `str1.mad` (minimal trigger), `ptr_repro.mad` (general-mechanism OK),
   `at1.mad` (alloc-traits pointer — layout follow-up, NOT this wall). g++ oracle for values.
+
+## 8. RESULTS — landed 2026-06-09 (commit `2173ae0`, WIP branch)
+
+**DONE + committed.** I1+I2+I3 implemented; build clean; parse-at-emit-time
+materialization verified sound (no re-entrancy issue). The `instantiating_canonical_spelling`
+restore in `parse_deferred_function_body` was needed (without it a materialized body's
+nested template-ids fall back to defaults).
+
+**EFFECT (probed, not theorized):**
+- **testcout (real `<iostream>`):** clean WIP (no lazy) fails at the SAME
+  `_M_local_data` wall (`testcout.mad:3486:6 Unknown namespace 'pointer'`); WITH lazy
+  it **advances past** that wall — testcout never odr-uses `_M_local_data`. New frontier
+  below.
+- **str1 (`std::string line; line.size()`):** still the `pointer` wall, **correctly** —
+  `std::string`'s dtor genuinely odr-uses `_M_local_data` (dtor → `_M_dispose` → … →
+  `_M_local_data`), so lazy defers it but it materializes on use. Needs frontier #2.
+
+So lazy instantiation dissolves walls in *unused* inline bodies (real, conformant), but
+not in *used* ones — those need the body to actually compile or to be externally bound.
+
+### Frontier #1 — testcout: `import of undefined item allocator_int32_t___dtor`
+The materialized `basic_ostream<char>`/`basic_istream<char>` dtors reference
+`allocator<int>::~allocator()` (`int` is real here: `char_traits<char>::int_type == int`).
+That symbol is **referenced but never defined** in the lazy path (it WAS defined on the
+green tip via eager instantiation + the synth-dtor pass). Not in `deferred_lazy_bodies`
+(probe-confirmed) → either (a) a late-instantiated `allocator<int>` whose trivial dtor the
+synth-dtor pass (`cir_builder.cpp:9078`, gated `class_needs_dtor`) doesn't emit, while the
+materialized ostream-dtor body still emits the *call* → call-vs-definition mismatch; or
+(b) `allocator<int>::~allocator` is `declaration_only`. NEXT: instrument who references it
++ whether `allocator<int>` is in `struct_map`/`class_needs_dtor` at synth-dtor time; fix
+the mismatch at the deepest layer (likely: don't emit a call to a trivial/absent dtor, OR
+ensure the def is produced for a late instantiation).
+
+### Frontier #2 — str1 (the headline): `extern template` external-binding
+`basic_string<char>` is **non-polymorphic**, so `is_externally_defined()` returns false at
+the `!has_vtable` gate (`parser.cpp:6316`) → madc emits its ctor/dtor → they reach
+`_M_local_data` → wall. g++ uses libstdc++.so for `basic_string<char>` because `<string>`
+declares **`extern template class basic_string<char>;`**. madc has **no `extern template`
+handling** (grep confirms). THE FIX (data-driven, no name test): parse
+`extern template class X<...>;`, mark that instantiation as externally-provided, and bind
+its members (ctor→`C1`, dtor→`D1`, methods→mangled) to libstdc++ symbols (generalize the
+6b5d4ea/38d9152 binding to non-polymorphic extern-template instantiations; the
+`has_vtable` requirement in `is_externally_defined` is really "can we name its vtable" —
+for a non-poly class there's no vtable to worry about, only ctor/dtor/method symbols).
+CAUTION: do NOT blanket-bind all `from_system_header` non-poly instantiations — only
+`extern template`-declared ones; libstdc++ does not export inline-only instantiations like
+`vector<int>` (R2 note) → those must be madc-instantiated. With both lazy (done) +
+extern-binding, `_M_local_data`'s deferred body is never materialized → str1 links against
+libstdc++.so. This is the next major piece (its own focused session).
 </content>
 </invoke>

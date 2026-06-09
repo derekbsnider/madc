@@ -5,7 +5,34 @@
 Run `bash scripts/resume.sh` first (live git/build truth), then read this top to
 bottom, then the governing design corpus in §2.
 
-> ## ⚑ 2026-06-09 (turn 2) CURRENT STATE — read this, then §12.7/§12.8
+> ## ⚑ 2026-06-09 (turn 3) CURRENT STATE — read THIS first, then the plan doc
+> **NEW WORK: lazy member-function-body instantiation ([temp.inst] conformance) —
+> LANDED + committed `2173ae0` on `feature/cpp-detection-idiom-claude`.**
+> Full plan + confirmed results + the two next frontiers:
+> **`docs/plans/2026-06-09-lazy-member-body-instantiation-plan.md` (READ §8).**
+> - WHY: madc eagerly parsed every member body at class instantiation → force-parsed
+>   `basic_string::_M_local_data` (+ its `pointer_traits<pointer>` wall) for a size()-only
+>   program. g++ instantiates member DEFINITIONS only on ODR-use. Fixed: defer
+>   system-header member bodies (`Program::deferred_lazy_bodies`), materialize on demand
+>   in cir_builder's existing reachability fixpoint. Build clean.
+> - EFFECT (probed): **testcout (real `<iostream>`) ADVANCES PAST** the `_M_local_data`
+>   `Unknown namespace 'pointer'` wall (clean WIP hits it; lazy dissolves it — testcout
+>   never odr-uses `_M_local_data`). **str1 still hits it, correctly** — `std::string`'s
+>   dtor genuinely odr-uses `_M_local_data`, so lazy defers but it materializes.
+> - TWO NEXT FRONTIERS (plan §8): (1) testcout: `allocator_int32_t___dtor` undefined
+>   (call-vs-definition mismatch / late-instantiation synth-dtor gap; the `int` is REAL —
+>   `char_traits<char>::int_type==int`). (2) str1 HEADLINE: `basic_string<char>` is
+>   non-polymorphic so `is_externally_defined()` bails at `!has_vtable` (parser.cpp:6316)
+>   → madc emits its ctor/dtor → reaches `_M_local_data`. FIX = implement **`extern
+>   template`** handling (madc has NONE — grep-confirmed) and bind extern-template
+>   instantiations' members to libstdc++ `C1`/`D1`/mangled (generalize 6b5d4ea/38d9152 to
+>   non-poly). Do NOT blanket-bind all system non-poly instantiations (vector<int> isn't
+>   exported by libstdc++). This is the next major piece — its own focused session.
+> - §12.7/§12.8 (detection-idiom + pointer_traits) are SUPERSEDED as the "next layer" by
+>   plan §8 (pointer_traits was a symptom; the real chain is lazy + extern-template). The
+>   detection idiom itself still stands (proven).
+>
+> ## ⚑ 2026-06-09 (turn 2) STATE — (superseded by turn 3 for "next step"; branch facts current)
 > **TWO BRANCHES (everything is COMMITTED — no fragile stashes hold this work):**
 > - **GREEN TIP** = `feature/header-partition-claude` @ **`d7344ac`** (30 ahead of develop,
 >   LOCAL/UNPUSHED). fulltest **543/4** (known reds testdefer/testfstream/testlargesizeofquery/
