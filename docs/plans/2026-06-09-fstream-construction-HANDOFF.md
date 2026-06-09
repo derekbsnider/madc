@@ -5,6 +5,22 @@
 Run `bash scripts/resume.sh` first (live git/build truth), then read this top to
 bottom, then the governing design corpus in §2.
 
+> ## ⚑ 2026-06-09 UPDATE — ofstream dtor FIXED; real `<string>` is the live front
+> - **ofstream dtor SIGSEGV FIXED** (`ecfc856`): array-of-class-object member dims
+>   were dropped in `member_node`'s `is_class_object` path (ios_base `_Words
+>   _M_local_word[8]` collapsed → -112B → C1 overflowed the slot). Confirmed via the
+>   POST-CHECK c2mir tree. Real `<fstream>` ofstream constructs + writes `hello42` +
+>   destructs cleanly. HEAD `f77ffa8`, 28 ahead of develop, LOCAL/UNPUSHED.
+> - **LIVE FRONT = real `<string>`** (gates `getline` → testfstream/testloop). See the
+>   NEW **§12** below for the full root-cause map + the 4-piece detection-idiom plan and
+>   the **g++ oracle values**. There is a **stashed prerequisite** (`stash@{0}`: nested
+>   template-id partial-spec unifier — correct, but regresses `cout` ALONE until the
+>   detection idiom lands; do NOT commit it alone). HEAD is GREEN with it stashed.
+> - User steering 2026-06-09: implement the **detection idiom** (the real feature; NOT a
+>   shim — Rule #2, and do not even *offer* shims). Lazy member-typedef instantiation is
+>   a valuable *follow-up* (the perf/architecture direction) but does NOT replace the
+>   feature. "A test not using feature X" is NOT a reason to drop X. Keep g++ as oracle.
+
 > **THE PROCESS LESSON THAT GOVERNS THIS WORK (do not skip).** This campaign's
 > recurring failure: a fresh session rehydrates on the routed handoff only,
 > re-derives designs/building-blocks that already exist, and that re-derivation IS
@@ -368,3 +384,94 @@ See `[[project_header_partition]]` (live status), `[[feedback_rule4_check_own_pr
 `[[feedback_emitc_gcc_parity_oracle]]`. Supersedes
 `docs/plans/2026-06-08-header-partition-W2-perf-HANDOFF.md` for current state (that one
 keeps the `<iostream>`-runs + findVariable-perf granular history).
+
+---
+
+## 12. REAL `<string>` — root-cause map + the detection-idiom plan (2026-06-09)
+
+Getting real libstdc++ `<string>` to compile (the gate for `getline`, and thus
+testfstream/testloop the right way) was traced end-to-end this session. Layers peeled,
+in order, each by PROBING (not theorizing) + the g++ oracle:
+
+### 12.1 What's DONE / what's the wall
+- **DONE — array-of-class-object member dims** (`ecfc856`, §5). Unrelated to string but
+  was the ofstream dtor fix.
+- **PREREQUISITE, STASHED (`stash@{0}`, NOT committed)** — nested template-id partial-spec
+  unification. `allocator_traits<allocator<char>>` must select the partial spec
+  `allocator_traits<allocator<_Tp>>` (`pointer=_Tp*`, `size_type=size_t`) instead of the
+  primary (`pointer=__detected_or_t<…>`). madc's `unify_spec_pattern_arg` (parser.cpp
+  ~10405) only matched `[cv] PARAM [*]*` and exact-spelling; a NESTED template-id pattern
+  (`allocator<_Tp>` vs concrete `std::allocator<char>`, namespace-qualified) fell through
+  to the primary. Fix = `Program::unify_nested_spec_pattern_arg` (string-based: strip ns,
+  split top-level args, recurse; deduce `_Tp=char` via `resolve_named_datadef`) wired as a
+  fallback in `match_partial_specialization`'s loop. **Correct, but it regresses `cout`
+  ALONE** because it makes basic_string complete far enough to force the next layer →
+  do NOT commit it without the detection idiom. (+115 parser.cpp / +8 madc.h.)
+- **THE WALL — the `__void_t` detection idiom for `iterator_traits`.** madc EAGERLY
+  instantiates every basic_string member typedef incl. `reverse_iterator`, whose base
+  `iterator<typename iterator_traits<_It>::iterator_category, …>` (stl_iterator.h:137)
+  needs `iterator_traits<__normal_iterator<char*,string>>::iterator_category`.
+
+### 12.2 g++ ORACLE (the targets to reproduce — `tmp/itchain.cpp`)
+- `iterator_traits<__normal_iterator<char*,string>>::iterator_category` = **`std::random_access_iterator_tag`**
+- `…::value_type` = **`char`**
+- `iterator_traits<char*>::iterator_category` = `random_access_iterator_tag`
+- Chain: `__normal_iterator::iterator_category` (its member typedef) → `iterator_traits<char*>`
+  (pointer partial spec, works via the flat `_Tp*` unifier) → `random_access_iterator_tag`.
+
+### 12.3 The libstdc++ construct (C++17, stl_iterator_base_types.h:155-178)
+```cpp
+template<typename It, typename = __void_t<>> struct __iterator_traits {};           // primary, empty
+template<typename It> struct __iterator_traits<It,
+    __void_t<typename It::iterator_category, typename It::value_type,
+             typename It::difference_type, typename It::pointer, typename It::reference>>
+  { typedef typename It::iterator_category iterator_category; … };                   // SFINAE spec
+template<typename It> struct iterator_traits : public __iterator_traits<It> {};      // inherits
+```
+`__void_t<Args...>` = `void` IFF all `Args` are valid types. So the partial spec is
+selected IFF `It` has all five nested member types.
+
+### 12.4 FOUR PIECES (all in `src/parser.cpp`)
+1. **DONE/exists** — base-class type-alias lookup: `resolve_class_type_alias` (1676)
+   already recurses `bases[]`/`base_class`/`enclosing_class`. So once `__iterator_traits<It>`
+   has the alias, `iterator_traits<It>::iterator_category` finds it through the base.
+2. **MISSING (the core blocker)** — `__iterator_traits<It>` is **never instantiated**:
+   `match_partial_specialization` is NEVER called for `"__iterator_traits"` (verified by
+   probe). It's left an incomplete/dependent placeholder. Two sub-causes to untangle:
+   (a) `iterator_traits<__normal_iterator<…>>` is itself instantiated as dependent-surface
+   (so its base clause isn't really processed), and/or (b) the dependent template-id base
+   `__iterator_traits<_Iterator>` isn't getting `_Iterator` substituted + instantiated.
+   Investigate `instantiate_template_use`'s dependent path, `materialize_dependent_member_type`
+   (3082, the path `resolve_typename_type_token`@3024 takes when the owner is dependent),
+   and the base-clause loop (16857-16966; opaque-base fallback at 16952 — NOTE: probe showed
+   `__iterator_traits` base does NOT hit 16952, so it resolves to *something* — likely a
+   forward/incomplete that's never completed).
+3. **MISSING** — default template-arg materialization: the primary has 2 params
+   (`It`, `typename=__void_t<>`); an instantiation `__iterator_traits<It>` must materialize
+   the 2nd as `void` → type_args `[It, void]` so arity matches the partial spec's 2 pattern
+   slots (`<slot0:_Iterator><slot1:__void_t<typename _Iterator::iterator_category,…>>`).
+4. **MISSING** — `__void_t<…>` pattern-slot evaluation in `match_partial_specialization`:
+   a slot whose pattern outer-name is `__void_t` matches the concrete `void` IFF every arg
+   inside (e.g. `typename _Iterator::iterator_category`), with `_Iterator` substituted from
+   the slot-0 deduction, resolves to a valid type (SFINAE member-existence check via
+   `resolve_class_type_alias`/member-chain). This is ADDITIVE (no `__void_t` spec matches
+   today) so low regression risk on its own. `__void_t` is used pervasively (alloc_traits
+   `_Ptr`/`_Diff`/`_Size`, chrono, refwrap, functional_hash) → foundational for the campaign.
+
+### 12.5 Sequencing + gates
+Implement 2→3→4 (1 is done), restore `stash@{0}` alongside, validate each step against
+`tmp/str1.mad` and the §12.2 g++ oracle (`random_access_iterator_tag`), then gate HARD:
+fulltest (known reds), gcc.c-torture **alone** (1566/31/57/1), and the cout+ofstream
+canaries (this whole area gates on `is_externally_defined`/`from_system_header`/`<`-spelling,
+all false for C — but partial-spec selection touches ALL templates, so torture is mandatory).
+Lazy member-typedef instantiation (the user's architecture direction, currently tabled #24)
+is a worthwhile FOLLOW-UP for perf/correctness but is NOT a substitute for the feature.
+
+### 12.6 Anchors (verify with grep — drift)
+- `unify_spec_pattern_arg` 10405 · `unify_nested_spec_pattern_arg` (the stashed addition,
+  ~10489) · `match_partial_specialization` ~10560 · the matching loop's per-slot unify call.
+- `resolve_typename_type_token` 3024 (the `::member` walk on a typename-qualified type) ·
+  `resolve_class_type_alias` 1676 (base-recursive) · `materialize_dependent_member_type` 3082.
+- base-clause instantiation in `TokenCLASS::parse` 16857-16966.
+- Reducers (tmp/): `str1.mad` (`std::string line; line.size()` — minimal trigger),
+  `str2.mad`, `str3.mad` (getline). g++ oracle `tmp/itchain.cpp`.
