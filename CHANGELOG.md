@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Two of the three reds green: testlargesizeofquery + testdefer — fulltest 546/1/0/26 (2026-06-09)
+
+- **64-bit array dims (`carray_dim_t`)**: array dimensions were stored as
+  `uint32_t` throughout (Variable::dims, member_dims, parser/cir_builder dim
+  vectors), so `short buf[(1L<<62)-256]` truncated in the emitted struct layout
+  (madc's own size_t sizeof fold was right; c2mir's member offsets were wrong).
+  One typedef now carries every dim. testlargesizeofquery green; gcc.c-torture
+  `991014-1.c` flips to pass → **1567/31/56/1**.
+- **`defer` executes on CIR**: parsed-but-never-emitted since the asmjit
+  backend (whose `TokenCpnd::cleanup()` compiled it) was removed. CirBuilder
+  keeps a defer-scope stack and emits deferred statements inline (LIFO,
+  innermost scope first) at the compound's fall-off end and before every
+  return shape; `return <expr>` hoists the value into a typed temp so defers
+  run AFTER evaluation and before dtors (cleanup attribute). testdefer
+  rewritten to real libstdc++ headers (`.flags`/`.expect`); doc updated.
+- **C++ namespace free-function overload sets**: each overload of a C++
+  namespace function now parses into its own Variable/FuncDef under a unique
+  internal symbol (libstdc++'s nine inline `std::to_string` definitions all
+  collapsed onto one `__ns_` symbol before); the call site ranks the set by
+  arg types in `call_target_funcdef` (generic `score_arg_to_param`,
+  default-arg aware) and the winner's `local_emit_name` carries the symbol.
+  Inline-namespace members now mirror into the parent on plain re-opens too
+  (`inline namespace __cxx11` is re-opened as plain `namespace __cxx11 {`
+  throughout libstdc++). The `__retbuf` NRVO gate keys on the call's RESOLVED
+  emit symbol. `std::to_string`/`std::stoi` resolve;
+  `string s = to_string(42)` lowers via retbuf NRVO. **testfstream stays red**:
+  next wall is alias-spelled reference returns (`basic_string::operator[]`
+  returns `reference` — char& through the allocator_traits alias chain — and
+  madc drops the reference-ness, so the call misses its deref; reducers
+  `tmp/ts1.mad`, `tmp/ts4.mad`, `tmp/ts5.mad`).
+
 ### testloop GREEN through real libstdc++ headers — fulltest 544/3/0/26 (2026-06-09)
 
 - Two generic fixes unblocked the full standard-C++ stream loop:
