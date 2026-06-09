@@ -340,6 +340,12 @@ public:
 	static std::string call_emit_symbol(class FuncDef *fd,
 					    const std::string &default_sym);
 	std::string call_emit_symbol(const class Variable &v, class FuncDef *fd) const;
+	// The FuncDef behind a CALL token (direct call or fn-ptr target). THE one
+	// callee resolver every consumer goes through — it substitutes a per-call
+	// instantiated FuncDef (std:: free-function template bound mangled-direct
+	// via emit_symbol) so arg emission, retbuf classification, and callee
+	// naming all see the same instantiation.
+	class FuncDef *call_target_funcdef(class TokenCallFunc *tcf) const;
 	node_t integer(long val, TokenBase *origin = NULL);
 	// Type-aware integer literal: pick the c2mir literal node code
 	// (N_I/N_U/N_L/N_UL) from the literal's own DataDef so a suffixed

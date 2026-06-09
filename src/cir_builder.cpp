@@ -562,7 +562,7 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 // The FuncDef behind a CALL token: either the called function directly, or the
 // TARGET signature of a function-pointer variable being called indirectly
 // (`auto f = [...]; f()`). Both use the same __retbuf ABI for object returns.
-static FuncDef *call_target_funcdef(TokenCallFunc *tcf)
+static FuncDef *call_target_funcdef_raw(TokenCallFunc *tcf)
 {
 	if (!tcf) return NULL;
 	if (FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type))
@@ -570,6 +570,15 @@ static FuncDef *call_target_funcdef(TokenCallFunc *tcf)
 	if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(tcf->var.type))
 		return fp->target;
 	return NULL;
+}
+
+// Member wrapper: the ONE callee resolver every consumer (arg emission, retbuf
+// classification, callee naming, fn-ptr decay) goes through, so a per-call
+// instantiated FuncDef (a std:: free-function template bound mangled-direct via
+// emit_symbol) is seen consistently by all of them.
+FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf) const
+{
+	return call_target_funcdef_raw(tcf);
 }
 
 // A CALL to a madc-COMPILED function returning a non-trivial class by value.
@@ -900,6 +909,28 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	if (!target) target = class_behind(arg ? arg->datadef() : NULL);
 	if (!target)
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
+
+	// A Derived object bound to a Base parameter: C++ binds the base SUBOBJECT
+	// (reference binding / upcast) — take the object's own address and select
+	// the base at its byte offset. Without this, a derived arg fell into the
+	// converting-ctor temp fallback below, CONSTRUCTING a Base temp instead of
+	// binding. Offset 0 (single-inheritance primary base) emits the same
+	// own-address shape as before. Virtual bases keep the prior behavior
+	// (base_offset_of -1 -> no static adjustment), matching upcast_class_ptr.
+	DataDefCLASS *own = as_class_instance(arg ? arg->datadef() : NULL);
+	if (own && own != target && own->is_or_derives_from(target)) {
+		node_t addr = object_arg_addr(arg, own);
+		size_t off = own->base_offset_of(target);
+		if (off != 0 && off != (size_t)-1) {
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				addr, arg);
+			addr = node2(N_CAST, void_ptr_type(),
+				node2(N_ADD, charp, integer((long)off), arg), arg);
+		}
+		return addr;
+	}
 
 	if (is_class_object_value(arg)) {
 		// A class-object element (`v[i]`): the bare operator[] call is the
