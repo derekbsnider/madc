@@ -293,3 +293,27 @@ pointer = _Tp*` alias doesn't resolve to `char*` after subst — less likely.)
     instantiation/selection (and likely inline body materialization), not layout hardcoding.
   getline still needs the remaining literal/member-template constructor path before the richer
   input cases can be trusted.
+
+  ### ADVANCEMENT (2026-06-09, current WIP)
+  `tmp/fs_out.mad` now compiles and runs through real `<fstream>`/`<ofstream>`, writing
+  `hello42` and exiting cleanly. This is a canary advancement, not a full `testfstream`
+  close: `tests/testfstream.mad` and `tests/testloop.mad` remain in the known-red set.
+
+  The fixes were all generic parser/sema paths, not `std::` name shims:
+  - keep constructor parameter scope alive through trailing `throw()` / `noexcept`
+    before a constructor initializer list (real headers spell e.g. `facet(size_t __refs)
+    throw() : _M_refcount(__refs ? 1 : 0) { }`);
+  - search inline namespace children during unqualified namespace-member lookup, so
+    declarations in `std::_V2` are visible through `std` like g++;
+  - add the same namespace-scope fallback for non-expression-head C++ identifiers after
+    lexical lookup fails;
+  - parse `&ref_returning_function()` as address-of an addressable call expression, so
+    `&system_category()` follows the C++ expression path instead of the plain variable
+    address path.
+
+  Revalidated gates: `make -C src fulltest` remains **543 passed / 4 failed / 0 timed
+  out / 26 skipped** with known reds only (`testdefer`, `testfstream`,
+  `testlargesizeofquery`, `testloop`); standalone gcc.c-torture remains **1566 passed /
+  31 compile-failed / 57 runtime-failed / 1 timed out / 30 skipped**. Focused string
+  reducers, real-header `testcout_realhdr`, `test_extern_polymorphic`, and
+  `tmp/fs_out.mad` are green.

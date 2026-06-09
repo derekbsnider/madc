@@ -72,8 +72,12 @@ high-level" — the answer is both.**
   and finish the remaining real-`std::string` richer-construction path by
   instantiating/selecting defaulted member-template constructors generically.
   `std::string` default construction, `size()`, assignment, append, real
-  `<iostream>` output, and ofstream write canaries now run through real headers;
-  `std::string s("hello")` still lacks the member-template constructor call.
+  `<iostream>` output, and the `tmp/fs_out.mad` ofstream write canary now run
+  through real headers. The ofstream canary was advanced by generic constructor
+  initializer-scope, inline namespace lookup, C++ namespace fallback, and
+  address-of reference-returning call parsing fixes; full `testfstream` /
+  `testloop` remain open. `std::string s("hello")` still lacks the
+  member-template constructor call.
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
   engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
   pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped
@@ -546,6 +550,20 @@ output replacement, scope-level destruction.
 | 3.5 | Project build driver v1 (`--project`) | — | **DONE** | [madc-project-build-driver](../superpowers/plans/2026-06-08-madc-project-build-driver.md) |
 
 **Dependencies:** 1.4 (parser cleanup) unblocks 3.2. 1.5 (token cleanup) before 3.3.
+
+- **Unified front-end representation refactor (FULL DESIGN, later-stage optimization):**
+  [2026-06-09-frontend-representation-refactor.md](2026-06-09-frontend-representation-refactor.md)
+  is the comprehensive design that **details and reframes 3.1/3.3/3.4** (Phase-2 is now
+  pre-PARSE `cir_node` AST, not just pre-lex; Phase-3 modules = the embedded forest) **and adds
+  the Track-1 front-end prerequisites they depend on**: flat value-record token buffer + index
+  cursor + source-stack (PoC: 3.6–4.5× over `deque<TokenBase*>`); an arbitrary-precision
+  out-of-line value pool (fixes `__int128`/`_BitInt`, currently a 64-bit alias); `uid` as the
+  universal handle with madc metadata in `uid`-keyed side-arrays (the c2mir-blind superset) +
+  `uid`→MIR for debug info; static-immutable/project-volatile forest with materialize-on-resolve;
+  and an optional, fenced c2mir hook seam (HIR/LIR; OSR/deopt + polyglot dynamic execution are
+  flagged research-grade). Subsumes [2026-06-09-embedded-header-forest-design.md](2026-06-09-embedded-header-forest-design.md)
+  and [2026-06-09-lazy-member-body-instantiation-plan.md](2026-06-09-lazy-member-body-instantiation-plan.md)
+  (LANDED). **After** the current real-header correctness work, not before.
 
 - Project build driver v1 landed (`--project compile_commands.json`, multi-TU compile+link+JIT-run of `main`). Replaces the need for a hand-written umbrella translation unit (like SMAUG's `SMAUG.mad`) for multi-file C programs. Deferred follow-ons: Makefile-subset reader + a link-description section (compile_commands.json carries no link rule); native `.madproj`; other-ecosystem readers; honoring `ProjectTU.working_dir` for include resolution (SMAUG will need it); `--project` + `--emit=c11` (project mode currently ignores `--emit`); real object-code-to-disk (parity-recovery item — asmjit on master had it); parallel/incremental build + manifest auto-detection. **Next concrete step: SMAUG bring-up via a generated `compile_commands.json` (separate follow-on plan).**
 
