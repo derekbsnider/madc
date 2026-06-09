@@ -5,7 +5,28 @@
 Run `bash scripts/resume.sh` first (live git/build truth), then read this top to
 bottom, then the governing design corpus in §2.
 
-> ## ⚑ 2026-06-09 (turn 3) CURRENT STATE — read THIS first, then the plan doc
+> ## ⚑ 2026-06-09 (turn 3, FINAL) MILESTONE — real `<string>` + `<iostream>` COMPILE+RUN
+> **On `feature/cpp-detection-idiom-claude`, HEAD `aef0366`. ALL GATES GREEN: fulltest
+> 543/4 (known reds only — testcout_realhdr GREEN, the 542/5 detection-idiom regression
+> HEALED), gcc.c-torture 1566/31/57/1 (UNCHANGED), canaries OK.** Three commits:
+> `2173ae0` lazy member-function-body instantiation ([temp.inst]) · `11ac1bc` extern-template
+> external-binding (basic_string<char> ctor→C1/dtor→D1) · `aef0366` Pass 1.9 re-run the
+> reachability fixpoint after synth-dtors (define late-ODR'd deferred library dtors).
+> VERIFIED: `std::string line; line.size()` → exit 0; real `<iostream>` testcout →
+> "This is a test, x = -1" (= g++). FULL detail: plan doc §9
+> (`docs/plans/2026-06-09-lazy-member-body-instantiation-plan.md`).
+> **THIS WIP CHAIN IS NOW GREEN + GATED — landing-ready onto the green tip
+> `feature/header-partition-claude` (fast-forward) when the user OKs.** (Don't push remote
+> without asking.)
+> **NEXT (task #25): richer string usage / getline.** `std::string s="x"; s+=...` still
+> fails at basic_string.h:3486 as c2mir CHECK errors (NOT parse): operator+= is
+> madc-emitted, reaches _M_local_data, which returns `pointer` = the opaque
+> `allocator_traits<allocator<char>>::pointer` `__detected_or_t` STRUCT, not `char*` (§12.1).
+> FIX = select the `allocator_traits<allocator<_Tp>>` partial spec (pointer=`_Tp*`);
+> c80577c's unify_nested_spec_pattern_arg isn't selecting it (probe tmp/at1.mad). Then
+> getline → testfstream/testloop.
+>
+> ## ⚑ 2026-06-09 (turn 3) CURRENT STATE — (superseded by the MILESTONE banner above)
 > **NEW WORK: lazy member-function-body instantiation ([temp.inst] conformance) —
 > LANDED + committed `2173ae0` on `feature/cpp-detection-idiom-claude`.**
 > Full plan + confirmed results + the two next frontiers:

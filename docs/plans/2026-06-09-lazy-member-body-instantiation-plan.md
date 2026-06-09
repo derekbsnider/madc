@@ -191,5 +191,34 @@ CAUTION: do NOT blanket-bind all `from_system_header` non-poly instantiations �
 `vector<int>` (R2 note) → those must be madc-instantiated. With both lazy (done) +
 extern-binding, `_M_local_data`'s deferred body is never materialized → str1 links against
 libstdc++.so. This is the next major piece (its own focused session).
+
+## 9. MILESTONE — landed 2026-06-09 (commits `2173ae0`, `11ac1bc`, `aef0366`)
+
+**Real libstdc++ `<string>` AND `<iostream>` COMPILE + RUN end-to-end** (the str1 +
+testcout cases), ALL GATES GREEN. Three landed pieces:
+1. `2173ae0` — lazy member-function-body instantiation (frontiers #1/#2 were diagnosed here).
+2. `11ac1bc` — extern-template external-binding (frontier #2 fixed): `extern template
+   class basic_string<char>;` is captured + flagged `is_extern_template_instantiated`;
+   the binding pass binds its ctor→C1/dtor→D1 even though it's non-polymorphic.
+3. `aef0366` — Pass 1.9 re-runs the reachability fixpoint AFTER the synth-dtor passes
+   (frontier #1 fixed): a deferred library dtor (allocator<int>::~allocator) reached only
+   through a synthesized aggregate dtor is now materialized + DEFINED, not just referenced.
+
+Verified: str1 `exit 0`; testcout `"This is a test, x = -1"` (= g++); fulltest **543/4**
+(known reds only, testcout_realhdr GREEN — the 542/5 detection-idiom regression healed);
+gcc.c-torture **1566/31/57/1** (UNCHANGED, C path untouched); canaries (ofstream hello42,
+test_extern_polymorphic) correct.
+
+### REMAINING (task #25) — richer string usage / getline
+`tmp/str_use.mad` (`std::string s="hello"; s+=" world"; cout<<s<<s.size()`) still fails at
+`basic_string.h:3486` — but now as **c2mir CHECK errors** (lvalue-required-as-&, incompatible
+return-expr), NOT a parse error. `operator+=` is madc-emitted (only ctor/dtor bind external),
+its body reaches `_M_local_data`, which returns `pointer` — and `basic_string::pointer` (via
+`allocator_traits<allocator<char>>::pointer`) still resolves to the opaque `__detected_or_t`
+STRUCT, not `char*` (§12.1). FIX = make that alloc-traits `pointer == char*` by selecting the
+`allocator_traits<allocator<_Tp>>` partial spec (pointer=`_Tp*`). `c80577c`'s
+`unify_nested_spec_pattern_arg` was meant to; `tmp/at1.mad` shows it's NOT selected — probe
+`match_partial_specialization` for `allocator_traits<allocator<char>>`. This is the member-TYPE
+resolution (layout) that lazy-instantiation deliberately did NOT address.
 </content>
 </invoke>
