@@ -230,5 +230,24 @@ won, later refs (at1, `_M_local_data`) get the cached primary. NEXT PROBE: insta
 order for `allocator_traits<allocator<char>>` (registered_mangled key + is_complete), and dump
 the selected partial-spec body's `pointer` member. (Or (b): the partial spec's `using
 pointer = _Tp*` alias doesn't resolve to `char*` after subst — less likely.)
+
+**CORRECTED 2026-06-09 (two theories REFUTED by probing — the real layer is narrower):**
+- REFUTED #1 (alloc-traits pointer): `allocator_traits<allocator<char>>` selects its partial
+  spec correctly (`best=1, _Tp=char`); every `allocator_traits` instantiation has a CONCRETE
+  arg (probed all of them — no unreduced `_Char_alloc_type` rebind). So `pointer` is not a
+  struct via that path.
+- REFUTED #2 (`reinterpret_cast target is not a type`): that is a SEPARATE bare-`<memory>`
+  closure parse issue (e.g. `align.h` `reinterpret_cast<uintptr_t>`); `<string>` does NOT hit
+  it. Don't conflate.
+- **ACTUAL remaining layer = `pointer_traits<char*>::pointer_to` not resolving.** str_use
+  fails with c2mir CHECK errors at `_M_local_data` (`incompatible return-expr type in function
+  returning a pointer` + `lvalue required as & operand`), NOT a parse error. `_M_local_data()`
+  is `return std::pointer_traits<pointer>::pointer_to(*_M_local_buf);` (pointer=char*); the
+  `pointer_traits<char*>` `_Tp*` partial spec / its `pointer_to(element_type&){return
+  addressof(__r);}` isn't resolving → `pointer_to` yields a default int → "integer for pointer
+  result", and the inner `&` hits a non-lvalue. **This is exactly the prior handoff's §12.8.**
+  NEXT: probe `instantiate_template_id`/`match_partial_specialization` for `pointer_traits<char*>`
+  (the FLAT `_Tp*` unifier should pick it) + whether it's instantiated in the `_M_local_data`
+  body context; then `addressof`. g++ oracle: returns `char*`. Reducer `tmp/str_use.mad`.
 </content>
 </invoke>
