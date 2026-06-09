@@ -19,16 +19,31 @@ bottom, then the governing design corpus in §2.
 
 ## 0. TL;DR
 
-Branch **`feature/header-partition-claude`**, HEAD **`22c5b53`**, working tree
-clean, **24 commits ahead of `develop`, local only (UNPUSHED — the user's call; do
+Branch **`feature/header-partition-claude`**, HEAD **`ecfc856`**, working tree
+clean, **26 commits ahead of `develop`, local only (UNPUSHED — the user's call; do
 NOT push without asking).** Gates green every commit: **fulltest 543/4** (known
 reds testdefer/testfstream/testlargesizeofquery/testloop), **gcc.c-torture
 1566/31/57/1** (run ALONE), `<iostream>` + `test_extern_polymorphic` run.
 
-**This session got real libstdc++ `<fstream>` ofstream from a 12-error compile wall
+**UPDATE 2026-06-09: the dtor crash is FIXED (commit `ecfc856`) — real libstdc++
+`<fstream>` ofstream now CONSTRUCTS + WRITES `hello42` + DESTRUCTS cleanly, EXIT 0.**
+Root cause WAS undersizing, confirmed at the deepest layer (§5 below, now resolved):
+`member_node`'s class-object early-return path emitted an EMPTY declarator list,
+dropping the N_ARR dims for any `Class arr[N]` member. `ios_base`'s `_Words
+_M_local_word[8]` collapsed to one `_Words` → ios_base lost 112B → libstdc++'s C1
+overflowed madc's stack slot → dtor nil-dispatch. Confirmed via the POST-CHECK
+c2mir tree (`--dump-cir-checked`: empty `LIST()` vs the scalar sibling's `ARR()/I()4`),
+NOT `--emit=c11`. Fix = honor `mdims` in the class-object path like the scalar path.
+General bug (not stream-specific). **NEXT WALL = the ifstream/`std::getline`/
+`std::string` INPUT path** (`basic_string.h:3486` cluster — a synthesized basic_string
+method body, 6 c2mir check errors; the :3486 origin is a fallback stamp, real fault
+is the instantiated body). See §4/§8 (W2-remaining `std::string` operator>>/getline).
+
+**(historical, now resolved) This session got real libstdc++ `<fstream>` ofstream from a 12-error compile wall
 to: CONSTRUCTS via libstdc++'s real `C1` ctor + WRITES `hello42` correctly to a
-file.** The one remaining wall: the **destructor SIGSEGVs at scope exit** (after the
-writes succeed). **Root cause is NOT confirmed** — see §5, and heed the warning that
+file.** The one remaining wall WAS: the **destructor SIGSEGVs at scope exit** (after the
+writes succeed) — **NOW FIXED, see the UPDATE above**. (Original note, kept for the
+diagnostic trail: root cause was NOT confirmed at write time — see §5, and heed the warning that
 `--emit=c11` text is NOT layout truth.
 
 **User's standing steering (2026-06-08):** (1) optimization is TABLED — get all the
@@ -130,7 +145,28 @@ Run to reproduce the crash:
 
 ---
 
-## 5. THE DTOR CRASH — what's known, the unresolved contradiction, and NEXT STEPS
+## 5. THE DTOR CRASH — RESOLVED 2026-06-09 (commit `ecfc856`)
+
+**RESOLUTION:** undersizing WAS the root cause, and it was a real c2mir-tree bug
+(not just `--emit=c11`). `member_node`'s `is_class_object` early-return path
+(cir_builder.cpp ~2235) emitted `node2(N_DECL, id(...), list())` — an EMPTY
+declarator — dropping the `mdims` computed just above. So EVERY `Class arr[N]`
+member collapsed to one element. `ios_base`'s `_Words _M_local_word[8]` (the `_Words`
+elem has a ctor → `is_class_object` true) lost 7×16=112B; ofstream went 512→~400;
+libstdc++'s real `C1` overflowed madc's stack slot by 112B → `D1` walked
+`_M_word`/`_M_local_word`/callbacks off the corruption → nil-dispatch SIGSEGV.
+**Confirmed via the POST-CHECK c2mir tree** (`--dump-cir-checked` → `_M_local_word`
+had empty `LIST()`, sibling scalar `__pad1` had `ARR()/I()4`) — the JIT consumes the
+node_t tree directly (`c2mir_compile_tree`), so this was a genuine tree bug, and the
+`--emit=c11` scalar render was the same emit path being consistently wrong. **Fix:**
+the class-object path now builds its declarator with the same N_ARR dims (+ flexible
+handling) the scalar path uses; `_M_local_word` now emits `ARR()/I()8`; ofstream
+writes "hello42" AND destructs cleanly (EXIT 0). Gates: fulltest 543/4, torture
+1566/31/57/1, canaries — all green. The methodology that cracked it (per the user's
+steering): g++ `-S -fverbose-asm` for the 512-byte slot + offset-0 calls, then the
+`--dump-cir-checked` POST-CHECK tree (NOT `--emit=c11`) to confirm the dropped dim.
+
+--- ORIGINAL (diagnostic trail, now superseded by the resolution above) ---
 
 **Do NOT trust the earlier "ofstream is undersized" claim — it is UNCONFIRMED and
 may be a `--emit=c11` text artifact.** Here's exactly what was found and what wasn't:
