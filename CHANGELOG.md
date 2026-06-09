@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Real `<fstream>` ofstream canary advanced (2026-06-09)
+
+- `tmp/fs_out.mad` now compiles and runs through real libstdc++ `<fstream>` /
+  `<ofstream>`, writes `hello42`, and exits cleanly. This is a canary advancement;
+  full `tests/testfstream.mad` and `tests/testloop.mad` remain known reds.
+- Fixed the path with generic parser/sema behavior: constructor parameter scope now
+  survives trailing `throw()` / `noexcept` before constructor initializer lists,
+  unqualified namespace lookup searches inline namespace children, non-expression-head
+  C++ identifiers get the same namespace fallback after lexical lookup fails, and
+  `&ref_returning_function()` parses as address-of an addressable call expression.
+- Validation: `make -C src fulltest` remains at the known baseline
+  `543 passed, 4 failed, 0 timed out, 26 skipped`; gcc.c-torture remains
+  `1566 passed, 31 compile-failed, 57 runtime-failed, 1 timed out, 30 skipped`;
+  string reducers, real-header `testcout_realhdr`, `test_extern_polymorphic`, and
+  `tmp/fs_out.mad` canaries pass.
+
 ### Real `<string>` richer mutation path advanced (2026-06-09)
 
 - Fixed the c2mir failure reached by real libstdc++ `std::string` mutators such

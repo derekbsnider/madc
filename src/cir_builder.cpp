@@ -1570,6 +1570,35 @@ void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 	m_output_externs[symbol] = proto;
 }
 
+void CirBuilder::need_output_extern_unprototyped(
+	const char *symbol, bool ret_ptr,
+	const std::vector<c2mir_node_code_t> &ret_specs)
+{
+	if (m_output_externs.count(symbol)) return;
+
+	node_t ext_list = list();
+	append(ext_list, simple(N_EXTERN));
+	if (ret_specs.empty()) {
+		append(ext_list, simple(N_VOID));
+	} else {
+		for (size_t i = 0; i < ret_specs.size(); i++)
+			append(ext_list, simple(ret_specs[i]));
+	}
+	node_t share = node1(N_SHARE, ext_list);
+	node_t func_inner = node1(N_FUNC, list());
+	node_t decl_list = list();
+	append(decl_list, func_inner);
+	if (ret_ptr) append(decl_list, pointer());
+	node_t decl = node2(N_DECL, id(symbol), decl_list);
+	node_t proto = simple(N_SPEC_DECL);
+	append(proto, share);
+	append(proto, decl);
+	append(proto, ignore());
+	append(proto, ignore());
+	append(proto, ignore());
+	m_output_externs[symbol] = proto;
+}
+
 bool CirBuilder::init_slot_is_aggregate(DataDef *dd, size_t idx)
 {
 	if (!dd)
@@ -3202,6 +3231,9 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	// directly. `empty()` is lowered to `size() == 0` (the bool-returning
 	// libstdc++ empty() returns a 1-byte value that reads as garbage upper
 	// bits when taken as a 64-bit int), matching g++'s observable result.
+	if (callee && callee->is_member_template && callee->declaration_only)
+		if (node_t mt = member_template_method_call(tm, callee, this_arg, origin))
+			return mt;
 	if (callee && !callee->emit_symbol.empty())
 		return emit_symbol_method_call(tm, callee, sym, this_arg, origin);
 
@@ -3395,30 +3427,122 @@ static std::string class_method_call_symbol(DataDefCLASS *cdd, FuncDef *fd,
 }
 
 bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
-					std::vector<node_t> &out, TokenBase *origin)
+					std::vector<node_t> &out, TokenBase *origin,
+					const std::set<std::string> *skip)
 {
 	if (!cdd) return false;
 	bool any = false;
 	for (const auto &m : cdd->members) {
+		if (skip && skip->count(m.first)) continue;
 		DataDefCLASS *mc = as_class_instance(m.second);
 		if (!mc) continue;
-		FuncDef *ctor = class_default_ctor_def(mc);
-		if (!ctor) continue;
-		std::string sym = ctor_call_symbol(mc, ctor);
-		bool external = !ctor->emit_symbol.empty();
-		if (external)
-			need_output_extern(sym.c_str(), false, { { {N_VOID}, true } });
-		else
-			referenced_funcs.insert(sym);
 		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
 				   id(m.first.c_str(), origin));
-		node_t addr = node1(N_ADDR, fld, origin);
-		if (external)
-			addr = node2(N_CAST, void_ptr_type(), addr, origin);
-		node_t a = list();
-		append(a, addr);
-		node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
-		out.push_back(node2(N_EXPR, list(), call, origin));
+		node_t stmt = class_ctor_call_addr(node1(N_ADDR, fld, origin),
+						   mc, std::vector<TokenBase *>(),
+						   origin);
+		if (!stmt) continue;
+		out.push_back(stmt);
+		any = true;
+	}
+	return any;
+}
+
+static std::string last_scope_part(const std::string &name)
+{
+	size_t p = name.rfind("::");
+	return p == std::string::npos ? name : name.substr(p + 2);
+}
+
+static DataDef *class_alias_lookup_cir(DataDefCLASS *cls,
+				       const std::string &name,
+				       std::set<DataDefCLASS *> &seen)
+{
+	if (!cls || seen.count(cls)) return NULL;
+	seen.insert(cls);
+	auto it = cls->type_aliases.find(name);
+	if (it != cls->type_aliases.end())
+		return it->second;
+	std::string short_name = last_scope_part(name);
+	if (short_name != name) {
+		it = cls->type_aliases.find(short_name);
+		if (it != cls->type_aliases.end())
+			return it->second;
+	}
+	for (const BaseSpec &bs : cls->bases)
+		if (DataDef *bd = class_alias_lookup_cir(bs.base, name, seen))
+			return bd;
+	if (cls->base_class)
+		if (DataDef *bd = class_alias_lookup_cir(cls->base_class, name, seen))
+			return bd;
+	if (cls->enclosing_class)
+		return class_alias_lookup_cir(cls->enclosing_class, name, seen);
+	return NULL;
+}
+
+static bool ctor_initializer_targets_base(DataDefCLASS *owner,
+					  DataDefCLASS *base,
+					  const std::string &name)
+{
+	if (!owner || !base) return false;
+	std::string short_name = last_scope_part(name);
+	if (name == base->name || short_name == base->name)
+		return true;
+	if (!base->canonical_cpp_spelling.empty()) {
+		std::string bshort = last_scope_part(base->canonical_cpp_spelling);
+		size_t lt = bshort.find('<');
+		if (lt != std::string::npos)
+			bshort = bshort.substr(0, lt);
+		if (name == bshort || short_name == bshort)
+			return true;
+	}
+	std::set<DataDefCLASS *> seen;
+	DataDefCLASS *alias_cls = as_user_class(class_alias_lookup_cir(owner, name, seen));
+	return alias_cls && (alias_cls == base || alias_cls->is_or_derives_from(base));
+}
+
+static const FuncDef::CtorInitializer *find_base_initializer(
+	DataDefCLASS *owner, DataDefCLASS *base, FuncDef *fd)
+{
+	if (!fd) return NULL;
+	for (const FuncDef::CtorInitializer &ci : fd->ctor_initializers)
+		if (ctor_initializer_targets_base(owner, base, ci.name))
+			return &ci;
+	return NULL;
+}
+
+static const FuncDef::CtorInitializer *find_member_initializer(
+	FuncDef *fd, const std::string &name)
+{
+	if (!fd) return NULL;
+	for (const FuncDef::CtorInitializer &ci : fd->ctor_initializers)
+		if (ci.name == name || last_scope_part(ci.name) == name)
+			return &ci;
+	return NULL;
+}
+
+bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
+					std::vector<node_t> &out, TokenBase *origin)
+{
+	if (!cdd || !fd || fd->ctor_initializers.empty()) return false;
+	bool any = false;
+	for (const auto &m : cdd->members) {
+		const FuncDef::CtorInitializer *ci = find_member_initializer(fd, m.first);
+		if (!ci) continue;
+		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
+				   id(m.first.c_str(), origin));
+		if (DataDefCLASS *mc = as_class_instance(m.second)) {
+			node_t stmt = class_ctor_call_addr(node1(N_ADDR, fld, origin),
+							   mc, ci->args, origin);
+			if (!stmt) continue;
+			out.push_back(stmt);
+			any = true;
+			continue;
+		}
+		if (ci->args.size() != 1 || !ci->args[0])
+			continue;
+		node_t asgn = node2(N_ASSIGN, fld, translate_expr(ci->args[0]), origin);
+		out.push_back(node2(N_EXPR, list(), asgn, origin));
 		any = true;
 	}
 	return any;
@@ -4066,6 +4190,7 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 		return arg->datadef();
 	};
 	FuncDef *best = NULL;
+	Variable *best_var = NULL;
 	int best_score = -1;
 	for (Variable *cv : cdd->ctors) {
 		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
@@ -4089,9 +4214,116 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			if (s < 0) { ok = false; break; }
 			total += s;
 		}
-		if (ok && total > best_score) { best_score = total; best = fd; }
+		if (ok && total > best_score) {
+			best_score = total;
+			best = fd;
+			best_var = cv;
+		}
+	}
+	if (best && best_var && best->class_emit_name.empty()) {
+		std::string default_sym = cdd->name + "__" + cdd->name;
+		if (best_var->name != default_sym)
+			best->class_emit_name = best_var->name;
 	}
 	return best;
+}
+
+node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
+				   const std::vector<TokenBase *> &ctor_args,
+				   TokenBase *origin)
+{
+	if (!this_addr || !cdd) return NULL;
+
+	if (!cdd->has_user_ctor) {
+		if (!cdd->has_vtable) return NULL;
+		std::string vname = class_vtable_symbol(cdd);
+		node_t blk = list();
+		for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
+			const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
+			std::string fld = (G.this_offset == 0)
+				? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
+			node_t lhs = node2(N_DEREF_FIELD, this_addr,
+				id(fld.c_str(), origin));
+			node_t vptr_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t tab = id(vname.c_str(), origin);
+			node_t ap = (G.addr_point == 0) ? tab
+				: node2(N_ADD, tab, integer((long)G.addr_point, origin), origin);
+			node_t vtab = node2(N_CAST, vptr_type, ap, origin);
+			append(blk, node2(N_EXPR, list(),
+				node2(N_ASSIGN, lhs, vtab, origin), origin));
+		}
+		return node2(N_BLOCK, list(), blk, origin);
+	}
+
+	FuncDef *ctor = select_ctor_overload(cdd, ctor_args);
+	if (!ctor) {
+		if (cdd->ctors.empty() || ctor_args.empty()) {
+			auto it = cdd->method_map.find(cdd->name);
+			if (it != cdd->method_map.end() && it->second)
+				ctor = dynamic_cast<FuncDef *>(it->second->type);
+		}
+	}
+	if (!ctor)
+		return NULL;
+
+	std::string sym = ctor_call_symbol(cdd, ctor);
+
+	node_t args = list();
+	append(args, this_addr);
+	for (size_t i = 0; i < ctor_args.size(); i++) {
+		TokenBase *arg = ctor_args[i];
+		size_t pi = i + 1;
+		DataDef *pt = (ctor && pi < ctor->parameters.size())
+				? ctor->parameters[pi] : NULL;
+		bool is_ref_param = ctor && pi < ctor->ref_params.size()
+				    && ctor->ref_params[pi];
+		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
+			append(args, object_arg_addr(arg, pc));
+		else if (DataDefCLASS *vc = as_class_instance(pt))
+			append(args, object_arg_value(arg, vc));
+		else if (is_ref_param)
+			append(args, node1(N_ADDR, translate_expr(arg), arg));
+		else
+			append(args, translate_expr(arg));
+	}
+	for (size_t pi = ctor_args.size() + 1;
+	     ctor && pi < ctor->parameters.size() && pi < ctor->param_defaults.size()
+	     && ctor->param_defaults[pi]; pi++) {
+		TokenBase *darg = ctor->param_defaults[pi];
+		DataDef *pt = ctor->parameters[pi];
+		bool is_ref_param = pi < ctor->ref_params.size() && ctor->ref_params[pi];
+		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
+			append(args, object_arg_addr(darg, pc));
+		else if (DataDefCLASS *vc = as_class_instance(pt))
+			append(args, object_arg_value(darg, vc));
+		else if (is_ref_param)
+			append(args, node1(N_ADDR, translate_expr(darg), darg));
+		else
+			append(args, translate_expr(darg));
+	}
+	if (ctor && ctor->ctor_trailing_self)
+		append(args, this_addr);
+	if (ctor && !ctor->emit_symbol.empty()) {
+		std::vector<ExternParam> eparams;
+		eparams.push_back({ {N_VOID}, true });
+		for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
+			DataDef *pt = ctor->parameters[pi];
+			bool refp = pi < ctor->ref_params.size() && ctor->ref_params[pi];
+			if (param_object_class(pt, refp) || refp)
+				eparams.push_back({ {N_VOID}, true });
+			else if (pt && pt->is_pointer())
+				eparams.push_back({ {N_CHAR}, true });
+			else
+				eparams.push_back({ {N_LONG}, false });
+		}
+		if (ctor->ctor_trailing_self)
+			eparams.push_back({ {N_VOID}, true });
+		need_output_extern(sym.c_str(), false, eparams);
+	}
+	referenced_funcs.insert(sym);
+	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	return node2(N_EXPR, list(), call, origin);
 }
 
 node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
@@ -4527,6 +4759,16 @@ std::string norm_type_w2(const std::string &s)
 	return out;
 }
 
+static std::string strip_ref_ws_only(const std::string &in)
+{
+	std::string s = in;
+	while (!s.empty() && (s.back() == '&' || s.back() == ' '))
+		s.pop_back();
+	size_t a = s.find_first_not_of(' ');
+	size_t b = s.find_last_not_of(' ');
+	return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
+}
+
 // Split "head<a,b,c>" into head + top-level args (whitespace-trimmed). Returns
 // false if there is no top-level template-id. Nested <> are preserved in args.
 bool split_template_id_w2(const std::string &in, std::string &head,
@@ -4655,7 +4897,152 @@ static void collect_self_and_base_spellings(DataDefCLASS *cls, size_t base_off,
 		collect_self_and_base_spellings(cls->base_class, base_off, out);
 }
 
+static std::string template_placeholder_spelling(
+	const std::string &in, const std::vector<std::string> &params)
+{
+	std::string out;
+	for (size_t i = 0; i < in.size(); ) {
+		unsigned char c = (unsigned char)in[i];
+		if (isalpha(c) || in[i] == '_') {
+			size_t j = i + 1;
+			while (j < in.size()) {
+				unsigned char d = (unsigned char)in[j];
+				if (!isalnum(d) && in[j] != '_') break;
+				++j;
+			}
+			std::string ident = in.substr(i, j - i);
+			int pidx = -1;
+			for (size_t k = 0; k < params.size(); ++k)
+				if (params[k] == ident) { pidx = (int)k; break; }
+			if (pidx >= 0)
+				out += "$T" + std::to_string(pidx);
+			else
+				out += ident;
+			i = j;
+			continue;
+		}
+		out += in[i++];
+	}
+	return out;
+}
+
+static bool bind_member_template_param(const std::string &pattern,
+	const std::string &actual, const std::vector<std::string> &params,
+	std::map<std::string, std::string> &binding)
+{
+	std::string p = strip_cv_ref_w2(pattern);
+	std::string a = strip_ref_ws_only(actual);
+	for (const std::string &tp : params) {
+		if (p == tp) {
+			std::map<std::string, std::string>::iterator it = binding.find(tp);
+			if (it == binding.end()) {
+				binding[tp] = a;
+				return true;
+			}
+			return norm_type_w2(it->second) == norm_type_w2(a);
+		}
+		std::string ptr_pat = tp + "*";
+		if (norm_type_w2(p) == norm_type_w2(ptr_pat) && !a.empty()
+		    && a[a.size() - 1] == '*') {
+			std::string base = a.substr(0, a.size() - 1);
+			std::map<std::string, std::string>::iterator it = binding.find(tp);
+			if (it == binding.end()) {
+				binding[tp] = base;
+				return true;
+			}
+			return norm_type_w2(it->second) == norm_type_w2(base);
+		}
+	}
+	if (template_placeholder_spelling(p, params) != p)
+		return true;
+	return norm_type_w2(p) == norm_type_w2(a);
+}
+
 } // namespace
+
+node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
+					       node_t this_arg,
+					       TokenBase *origin)
+{
+	if (!tm || !callee || !callee->is_member_template
+	    || !callee->declaration_only || !callee->is_varargs)
+		return NULL;
+	DataDefCLASS *owner = !callee->parameters.empty()
+			    ? class_behind(callee->parameters[0]) : NULL;
+	if (!owner || owner->canonical_cpp_spelling.empty())
+		return NULL;
+	if (!owner->is_externally_defined() && !owner->is_extern_template_instantiated)
+		return NULL;
+	if (callee->template_param_names.empty()
+	    || callee->template_return_spelling.empty()
+	    || callee->template_param_spellings.size() != tm->parameters.size())
+		return NULL;
+
+	auto arg_spelling = [&](TokenBase *arg) -> std::string {
+		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
+			if (m_cur_method) {
+				FuncDef *curfd = dynamic_cast<FuncDef *>(m_cur_method->returns.type);
+				for (size_t i = 0; curfd && i < m_cur_method->parameters.size(); ++i)
+					if ((m_cur_method->parameters[i] == &tv->var
+					    || (m_cur_method->parameters[i]
+						&& m_cur_method->parameters[i]->name
+						   == tv->var.name))
+					    && i < curfd->param_cpp_spellings.size()
+					    && !curfd->param_cpp_spellings[i].empty())
+						return curfd->param_cpp_spellings[i];
+			}
+		}
+		return datadef_cpp_spelling_w2(arg ? arg->datadef() : NULL);
+	};
+
+	std::map<std::string, std::string> binding;
+	for (size_t i = 0; i < tm->parameters.size(); ++i) {
+		std::string actual = arg_spelling(tm->parameters[i]);
+		if (!bind_member_template_param(callee->template_param_spellings[i],
+						actual, callee->template_param_names,
+						binding))
+			return NULL;
+	}
+	std::vector<std::string> targs;
+	for (const std::string &tp : callee->template_param_names) {
+		std::map<std::string, std::string>::iterator it = binding.find(tp);
+		if (it == binding.end())
+			return NULL;
+		targs.push_back(it->second);
+	}
+	std::vector<std::string> params;
+	for (const std::string &p : callee->template_param_spellings)
+		params.push_back(template_placeholder_spelling(
+			p, callee->template_param_names));
+	std::string ret = template_placeholder_spelling(
+		callee->template_return_spelling, callee->template_param_names);
+	const std::string &mname = callee->method_display_name.empty()
+				 ? tm->var.name : callee->method_display_name;
+	std::string sym = itanium_mangle_member_template_sub(
+		owner->canonical_cpp_spelling, mname, targs, ret, params,
+		callee->is_const_method);
+	if (sym.empty() || sym[0] != '_')
+		return NULL;
+
+	node_t args = list();
+	append(args, this_arg);
+	for (TokenBase *arg : tm->parameters) {
+		DataDefCLASS *vc = as_class_instance(arg ? arg->datadef() : NULL);
+		if (vc)
+			append(args, object_arg_value(arg, vc));
+		else
+			append(args, translate_expr(arg));
+	}
+	bool ret_ptr = false;
+	std::vector<c2mir_node_code_t> ret_specs =
+		emit_symbol_ret_specs(callee, ret_ptr);
+	need_output_extern_unprototyped(sym.c_str(), ret_ptr, ret_specs);
+	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	if (callee->returns_ref)
+		return node1(N_DEREF, call, origin);
+	return call;
+}
 
 node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls,
 		const std::string &mname, FuncDef *member_callee, TokenBase *origin)
@@ -6550,6 +6937,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		if (tcf) {
 			if (is_constant_evaluated_call(tcf))
 				return integer(0, tb);
+			FuncDef *inline_fd = call_target_funcdef(tcf);
+			if (((inline_fd && inline_fd->inline_builtin_kind == "addressof")
+			     || tcf->var.name == "__builtin_addressof")
+			    && tcf->parameters.size() == 1) {
+				return node1(N_ADDR, translate_expr(tcf->parameters[0]), tb);
+			}
 			// __madc_{add,sub,mul}_overflow[_p]: choose the width/signedness-
 			// specific helper from the destination operand's type (the lexer
 			// only emitted the long-width generic, which mis-detects overflow
@@ -8146,6 +8539,8 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 {
 	FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
 	if (!fd) return NULL;
+	Method *saved_cur_method = m_cur_method;
+	m_cur_method = tf->method;
 
 	DataDef *ret_dd = &fd->returns;
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
@@ -8344,12 +8739,17 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	if (ocls) {
 		const std::string &fname = tf->var.name;
 		bool is_ctor = (fname == ocls->name + "__" + ocls->name);
+		if (!is_ctor)
+			for (Variable *cv : ocls->ctors)
+				if (cv && (cv->name == fname || cv->type == fd)) {
+					is_ctor = true;
+					break;
+				}
 		bool is_dtor = (fname == ocls->name + "___dtor");
 		// Cast __this to `Base *` (offset-adjusted to the base subobject) for a
 		// chained base ctor/dtor call. Offset 0 (primary/single base) = a plain
 		// cast, byte-identical to the previous single-base path.
-		auto base_call_at = [&](DataDefCLASS *b, size_t off, const std::string &bsym) -> node_t {
-			referenced_funcs.insert(bsym);
+		auto base_addr_at = [&](DataDefCLASS *b, size_t off) -> node_t {
 			node_t self = id("__this", tf);
 			node_t adj = self;
 			if (off != 0) {
@@ -8362,8 +8762,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			node_t t = node2(N_TYPE,
 				node1(N_LIST, node2(N_STRUCT, id(b->name.c_str()), ignore())),
 				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			return node2(N_CAST, t, adj, tf);
+		};
+		auto base_call_at = [&](DataDefCLASS *b, size_t off, const std::string &bsym) -> node_t {
+			referenced_funcs.insert(bsym);
 			node_t a = list();
-			append(a, node2(N_CAST, t, adj, tf));
+			append(a, base_addr_at(b, off));
 			node_t call = node2(N_CALL, id(bsym.c_str(), tf), a, tf);
 			return node2(N_EXPR, list(), call, tf);
 		};
@@ -8373,20 +8777,36 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		//      class) — set after base construction, matching C++.
 		// Epilogue (after the body): base dtor call (dtor with a base dtor).
 		std::vector<node_t> prologue, epilogue;
+		std::set<std::string> explicit_member_inits;
+		if (is_ctor && fd)
+			for (const FuncDef::CtorInitializer &ci : fd->ctor_initializers)
+				for (const auto &m : ocls->members)
+					if (ci.name == m.first || last_scope_part(ci.name) == m.first)
+						explicit_member_inits.insert(m.first);
 		// Construct each base in declaration order, with `this` adjusted to that
 		// base's subobject (MI). Single inheritance = one base @ offset 0.
 		if (is_ctor)
 			for (size_t bi = 0; bi < ocls->bases.size(); bi++) {
 				if (ocls->bases[bi].is_virtual) continue; // vbases: complete-object site
 				DataDefCLASS *b = ocls->bases[bi].base;
+				if (const FuncDef::CtorInitializer *ci =
+					find_base_initializer(ocls, b, fd)) {
+					node_t stmt = class_ctor_call_addr(
+						base_addr_at(b, ocls->base_offset_of(b)),
+						b, ci->args, tf);
+					if (stmt) prologue.push_back(stmt);
+					continue;
+				}
 				if (b->has_user_ctor)
 					prologue.push_back(base_call_at(b, ocls->base_offset_of(b),
 						b->name + "__" + b->name));
 			}
+		if (is_ctor)
+			class_ctor_initializer_stmts(ocls, fd, prologue, tf);
 		// Construct embedded object members at ctor entry (after base ctor),
 		// destruct them at dtor exit (before base dtor) — C++ member lifetime.
 		if (is_ctor)
-			class_member_construct(ocls, prologue, tf);
+			class_member_construct(ocls, prologue, tf, &explicit_member_inits);
 		if (is_dtor)
 			class_member_destruct(ocls, epilogue, tf);
 		if (is_ctor && ocls->has_vtable) {
@@ -8452,10 +8872,14 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		append(outer, body);
 		body = node2(N_BLOCK, list(), outer, tf);
 		// Re-emit with the wrapped body; the prologue runs once at main entry.
-		return node4(N_FUNC_DEF, ret_type, decl, list(), body, tf);
+		node_t out = node4(N_FUNC_DEF, ret_type, decl, list(), body, tf);
+		m_cur_method = saved_cur_method;
+		return out;
 	}
 
-	return node4(N_FUNC_DEF, ret_type, decl, list(), body, tf);
+	node_t out = node4(N_FUNC_DEF, ret_type, decl, list(), body, tf);
+	m_cur_method = saved_cur_method;
+	return out;
 }
 
 // Build the constructor-call statement for a file-scope class global `v` of
@@ -8813,7 +9237,7 @@ node_t CirBuilder::translate_module(Program *prog)
 			for (Variable *cv : ctor_exported ? cdd->ctors
 							  : std::vector<Variable *>()) {
 				FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
-				if (!fd || !fd->emit_symbol.empty()) continue;
+				if (!fd || !fd->emit_symbol.empty() || fd->is_member_template) continue;
 				// Param spellings EXCLUDING the hidden __this (slot 0), same as
 				// bind_declared_cpp_symbol — so PKc / St13_Ios_Openmode match the ABI.
 				std::vector<std::string> psp;

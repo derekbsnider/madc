@@ -518,6 +518,33 @@ public:
 		return out;
 	}
 
+	std::string mangle_member_template(const std::string &qualified_class,
+	                          const std::string &unqualified,
+	                          const std::vector<std::string> &targs,
+	                          const std::string &ret,
+	                          const std::vector<std::string> &params,
+	                          bool const_method)
+	{
+		reset();
+		TypeNode cls = parse_type(qualified_class);
+		std::string clsenc = encode_name(cls.name, /*standalone=*/false);
+		add_sub("@member-template:" + qualified_class + "::" + unqualified);
+
+		std::string out = "_ZN";
+		if (const_method) out += "K";
+		out += clsenc;
+		out += source_name(unqualified);
+		out += "I";
+		for (const auto &a : targs)
+			out += encode_type(parse_type(a));
+		out += "E";
+		out += "E";
+		out += encode_type(parse_type(ret));
+		for (const auto &p : params)
+			out += encode_type(parse_param_type(p));
+		return out;
+	}
+
 	// Mangle a non-member std:: function template:
 	//   _ZSt <opOrName> I<targs>E <ret> <params...>   (one substitution table)
 	// Function templates encode the return type. opOrName is already the
@@ -839,6 +866,19 @@ std::string itanium_mangle_member_sub(const std::string &qualified_class,
 	ItaniumMangler m;
 	return m.mangle_member(qualified_class, member, "",
 	                       param_types, const_method);
+}
+
+std::string itanium_mangle_member_template_sub(const std::string &qualified_class,
+                                       const std::string &member,
+                                       const std::vector<std::string> &template_arg_types,
+                                       const std::string &return_type,
+                                       const std::vector<std::string> &param_types,
+                                       bool const_method)
+{
+	ItaniumMangler m;
+	return m.mangle_member_template(qualified_class, member,
+	                                template_arg_types, return_type,
+	                                param_types, const_method);
 }
 
 std::string itanium_mangle_ctor_sub(const std::string &qualified_class,

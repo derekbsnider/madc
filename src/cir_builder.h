@@ -32,6 +32,7 @@ class Variable;
 class DataDef;
 class DataDefSTRUCT;
 class FuncDef;
+class Method;
 
 class CirBuilder {
 	c2m_ctx_t c2m;
@@ -80,6 +81,7 @@ class CirBuilder {
 	// (gnu89/c11 warn but accept it; the returned value is indeterminate, so a
 	// zero of the right type is a conformant lowering c2mir will compile).
 	DataDef *m_cur_func_scalar_ret = NULL;
+	Method *m_cur_method = NULL;
 	// True while translating the body of a multi-return function (`return a, b;`,
 	// Go-style). Such a function uses the multi-return __retbuf ABI: C return type
 	// `void`, a hidden `long *__retbuf` first parameter, and `return a, b;` becomes
@@ -417,6 +419,9 @@ public:
 				const std::vector<ExternParam> &params,
 				const std::vector<c2mir_node_code_t> &ret_specs
 					= std::vector<c2mir_node_code_t>());
+	void need_output_extern_unprototyped(const char *symbol, bool ret_ptr,
+				const std::vector<c2mir_node_code_t> &ret_specs
+					= std::vector<c2mir_node_code_t>());
 	// Map a builtin print-fn name to its madc_* runtime symbol ("" if not one).
 	static const char *builtin_output_runtime(const std::string &name);
 
@@ -490,6 +495,10 @@ public:
 	node_t emit_symbol_method_call(class TokenMember *tm, class FuncDef *callee,
 				       const std::string &sym, node_t this_arg,
 				       TokenBase *origin);
+	node_t member_template_method_call(class TokenMember *tm,
+				       class FuncDef *callee,
+				       node_t this_arg,
+				       TokenBase *origin);
 	// Build the hidden `__this` argument for a class method/operator call:
 	// the receiver's address for a value receiver, or the pointer itself for
 	// a pointer receiver. `recv_class` is filled with the receiver's class.
@@ -499,6 +508,9 @@ public:
 	//   ClassName__ClassName(&v, ctor_args...)
 	// Returns NULL when `v` is not a user class or has no user constructor.
 	node_t class_ctor_call(class Variable *v, DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin);
+	node_t class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
 	// Select the ctor overload of `cdd` matching the initializer arguments by
@@ -549,7 +561,10 @@ public:
 	// Used to give a class with object members proper member lifetime inside
 	// its (possibly synthesized) ctor/dtor. Returns true if it emitted any.
 	bool class_member_construct(DataDefCLASS *cdd, std::vector<node_t> &out,
-				    TokenBase *origin);
+				    TokenBase *origin,
+				    const std::set<std::string> *skip = NULL);
+	bool class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
+				    std::vector<node_t> &out, TokenBase *origin);
 	bool class_member_destruct(DataDefCLASS *cdd, std::vector<node_t> &out,
 				   TokenBase *origin);
 	// True when the class has at least one embedded object member needing

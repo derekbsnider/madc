@@ -1,6 +1,17 @@
 # Test Status
 
-> **Current (2026-06-06, `feature/simd-consume-claude` against `/workspace/mir`
+> **Current (2026-06-09, `feature/cpp-detection-idiom-claude` against
+> `/workspace/mir` `develop` @ `2ffebff`):** fulltest is **543 passed, 4 failed,
+> 0 timed out, 26 skipped** on `make -C src fulltest`. Known reds are
+> `testdefer.mad`, `testfstream.mad`, `testlargesizeofquery.mad`, and
+> `testloop.mad`. Standalone gcc.c-torture is unchanged at **1566 passed, 31
+> compile-failed, 57 runtime-failed, 1 timed out, 30 skipped**. Real-header
+> C++ canaries pass: `testcout_realhdr`, `test_extern_polymorphic`, focused
+> string default/assign/append/literal-call reducers, and `tmp/fs_out.mad`
+> (`<fstream>` / `<ofstream>` writes `hello42`). Full fstream/getline remains
+> open; the ofstream canary does not close `testfstream.mad`.
+
+> **Previous SIMD baseline (2026-06-06, `feature/simd-consume-claude` against `/workspace/mir`
 > `develop` @ `2ffebff`, `MIR_COMMIT` bumped `8864a73`→`2ffebff`):** integration
 > **515 passed, 4 failed, 1 timed out, 26 skipped** on the latest capped
 > `make -C src fulltest` — a session arc of 486→515 (+29): +18 from the MIR pin

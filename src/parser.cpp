@@ -2693,6 +2693,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // preserving non-type parameters as token sequences for later substitution.
     nextToken(); // consume '<'
     std::vector<TokenDataType *> type_args;
+    std::vector<TokenDataType *> arg_types_by_slot;
+    std::vector<std::vector<TokenBase *> > arg_tokens_by_slot;
     std::vector<std::string> arg_spellings;
     // A concrete instantiation's identity is (defining_namespace, name, args).
     // The bare name alone suffices to key the type UNLESS the same bare name is
@@ -2752,6 +2754,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    adt = padt;
 		}
 		type_args.push_back(adt);
+		arg_types_by_slot.push_back(adt);
+		arg_tokens_by_slot.push_back(std::vector<TokenBase *>());
 		subst[td.typeparams[pi]] = adt;
 		arg_spellings.push_back(template_type_arg_spelling(adt,
 								  cv_spelling));
@@ -2764,6 +2768,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		sep = collect_template_argument_spelling(at, spelling,
 							 &arg_tokens);
 		token_subst[td.typeparams[pi]] = arg_tokens;
+		arg_types_by_slot.push_back(NULL);
+		arg_tokens_by_slot.push_back(arg_tokens);
 		arg_spellings.push_back(spelling);
 	    }
 	    ++pi;
@@ -2803,6 +2809,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 		nextToken();
 	    type_args.push_back(adt);
+	    arg_types_by_slot.push_back(adt);
+	    arg_tokens_by_slot.push_back(std::vector<TokenBase *>());
 	    subst[td.typeparams[pi]] = adt;
 	    arg_spellings.push_back(template_type_arg_spelling(adt,
 							      cv_spelling));
@@ -2810,6 +2818,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	else
 	{
 	    token_subst[td.typeparams[pi]] = default_tokens;
+	    arg_types_by_slot.push_back(NULL);
+	    arg_tokens_by_slot.push_back(default_tokens);
 	    arg_spellings.push_back(template_tokens_spelling(default_tokens));
 	}
 	++pi;
@@ -2847,7 +2857,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     {
 	std::map<std::string, TokenDataType *> spec_subst;
 	if ( Program::TemplateDef *spec = match_partial_specialization(
-		tname, type_args, arg_spellings, spec_subst) )
+		tname, arg_types_by_slot, arg_spellings, arg_tokens_by_slot,
+		td.typeparam_is_type, spec_subst) )
 	{
 	    td = *spec;
 	    subst = spec_subst;
@@ -4002,27 +4013,21 @@ Variable *Program::resolve_c_identifier(TokenIdent *ident_tb, bool expression_he
 {
 	Variable *var = NULL;
 
-	if ( expression_head && !current_namespace.empty() )
+	if ( expression_head )
 	{
-	    namespace_map_t::iterator nsi = namespace_map.find(current_namespace);
-	    if ( nsi != namespace_map.end() )
-	    {
-		variable_map_iter vmi = nsi->second.find(ident_tb->str);
-		if ( vmi != nsi->second.end() )
-		    var = vmi->second;
-	    }
+	    std::string lookup_ns = active_cpp_lookup_namespace();
+	    if ( !lookup_ns.empty() )
+		var = find_namespace_member_in_scope_chain(lookup_ns,
+							   ident_tb->str);
 	}
 	if ( !var )
 	    var = findVariable(ident_tb->str);
-	if ( !var && !expression_head && !current_namespace.empty() )
+	if ( !var && !expression_head )
 	{
-	    namespace_map_t::iterator nsi = namespace_map.find(current_namespace);
-	    if ( nsi != namespace_map.end() )
-	    {
-		variable_map_iter vmi = nsi->second.find(ident_tb->str);
-		if ( vmi != nsi->second.end() )
-		    var = vmi->second;
-	    }
+	    std::string lookup_ns = active_cpp_lookup_namespace();
+	    if ( !lookup_ns.empty() )
+		var = find_namespace_member_in_scope_chain(lookup_ns,
+							   ident_tb->str);
 	}
 	return var;
 }
@@ -6244,6 +6249,65 @@ static Variable *find_method_by_callable_arity(DataDefCLASS *cls,
     return NULL;
 }
 
+static std::string norm_cpp_type_for_overload(const std::string &in)
+{
+    std::string s = in;
+    while (!s.empty() && (s.back() == '&' || s.back() == ' '))
+	s.pop_back();
+    for (;;)
+    {
+	size_t i = 0;
+	while ( i < s.size() && s[i] == ' ' ) ++i;
+	static const char *cv[] = { "const", "volatile" };
+	bool stripped = false;
+	for ( const char *w : cv )
+	{
+	    size_t n = strlen(w);
+	    if ( s.compare(i, n, w) == 0
+	      && (i + n >= s.size() || s[i + n] == ' ') )
+	    {
+		s.erase(0, i + n);
+		stripped = true;
+		break;
+	    }
+	}
+	if ( !stripped ) break;
+    }
+    std::string out;
+    for ( char c : s )
+	if ( c != ' ' )
+	    out += c;
+    return out;
+}
+
+static bool template_pattern_mentions_param(const std::string &pattern,
+					    const std::vector<std::string> &params)
+{
+    for ( size_t i = 0; i < pattern.size(); )
+    {
+	unsigned char c = (unsigned char)pattern[i];
+	if ( isalpha(c) || pattern[i] == '_' )
+	{
+	    size_t j = i + 1;
+	    while ( j < pattern.size() )
+	    {
+		unsigned char d = (unsigned char)pattern[j];
+		if ( !isalnum(d) && pattern[j] != '_' )
+		    break;
+		++j;
+	    }
+	    std::string ident = pattern.substr(i, j - i);
+	    for ( const std::string &p : params )
+		if ( p == ident )
+		    return true;
+	    i = j;
+	    continue;
+	}
+	++i;
+    }
+    return false;
+}
+
 Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 					  const std::vector<const DataDef *> &argtypes)
 {
@@ -6272,18 +6336,69 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	size_t hidden = (md && md->owner_class && !(mv->flags & vfSTATIC)) ? 1 : 0;
 	size_t pn = fd->parameters.size() >= hidden
 		  ? fd->parameters.size() - hidden : 0;
-	if ( pn != argtypes.size() )
+	bool varargs = fd->is_varargs && pn > 0;
+	size_t fixed = varargs ? pn - 1 : pn;
+	if ( (!varargs && pn != argtypes.size())
+	  || (varargs && argtypes.size() < fixed) )
 	    continue;
 	int total = 0;
 	bool ok = true;
-	for ( size_t i = 0; i < argtypes.size(); i++ )
+	for ( size_t i = 0; i < fixed; i++ )
 	{
-	    size_t pi = i + hidden;
-	    DataDef *pt = pi < fd->parameters.size() ? fd->parameters[pi] : NULL;
-	    bool refp = pi < fd->ref_params.size() && fd->ref_params[pi];
-	    int s = score_arg_to_param(argtypes[i], pt, refp);
+	    int s = -1;
+	    if ( fd->is_member_template
+	      && fd->template_param_spellings.size() == argtypes.size() )
+	    {
+		const std::string &pat = fd->template_param_spellings[i];
+		if ( template_pattern_mentions_param(pat,
+						     fd->template_param_names) )
+		    s = 1;
+		else
+		{
+		    std::string actual = cpp_spelling_for_mangle(
+			const_cast<DataDef *>(argtypes[i]), false);
+		    s = (norm_cpp_type_for_overload(pat)
+		      == norm_cpp_type_for_overload(actual)) ? 8 : -1;
+		}
+	    }
+	    else
+	    {
+		size_t pi = i + hidden;
+		DataDef *pt = pi < fd->parameters.size() ? fd->parameters[pi] : NULL;
+		bool refp = pi < fd->ref_params.size() && fd->ref_params[pi];
+		s = score_arg_to_param(argtypes[i], pt, refp);
+	    }
 	    if ( s < 0 ) { ok = false; break; }
 	    total += s;
+	}
+	if ( ok && varargs )
+	{
+	    if ( fd->is_member_template
+	      && fd->template_param_spellings.size() == argtypes.size() )
+	    {
+		for ( size_t i = fixed; i < argtypes.size(); ++i )
+		{
+		    const std::string &pat = fd->template_param_spellings[i];
+		    if ( template_pattern_mentions_param(
+			     pat, fd->template_param_names) )
+		    {
+			total += 1;
+			continue;
+		    }
+		    std::string actual = cpp_spelling_for_mangle(
+			const_cast<DataDef *>(argtypes[i]), false);
+		    if ( norm_cpp_type_for_overload(pat)
+		      != norm_cpp_type_for_overload(actual) )
+		    {
+			ok = false;
+			break;
+		    }
+		    total += 8;
+		}
+		if ( !ok )
+		    continue;
+	    }
+	    total += 1;
 	}
 	if ( ok && total > best_score )
 	{
@@ -6297,8 +6412,7 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
     // overloads. Only descend to the base when this class declares none.
     if ( any_named )
     {
-	std::string n(name);
-	return findMethod(n);   // no arity/type match: first by-name (>= findMethod)
+	return NULL;
     }
     if ( base_class )
 	return base_class->findMethodOverload(name, argtypes);
@@ -6933,6 +7047,7 @@ Program::Program()
       error_stream(&std::cerr),
       expression_context_root(NULL),
       instantiating_dependent_surface(false),
+      parsing_defaulted_member_template_constructor(false),
       deferred_function_body_sink(NULL),
       parsing_cpp_struct_class(false),
       class_definition_only(false),
@@ -6963,6 +7078,7 @@ Program::Program(MadcEngine *eng)
       error_stream(&std::cerr),
       expression_context_root(NULL),
       instantiating_dependent_surface(false),
+      parsing_defaulted_member_template_constructor(false),
       deferred_function_body_sink(NULL),
       parsing_cpp_struct_class(false),
       class_definition_only(false),
@@ -8458,10 +8574,24 @@ Variable *Program::find_namespace_member_in_scope_chain(
 						      const std::string &member_name)
 {
     std::string cur = ns_name;
+    std::set<std::string> seen;
     while ( !cur.empty() )
     {
-	if ( Variable *var = find_namespace_member(cur, member_name) )
-	    return var;
+	std::vector<std::string> pending;
+	pending.push_back(cur);
+	for ( size_t pi = 0; pi < pending.size(); ++pi )
+	{
+	    const std::string &scope = pending[pi];
+	    if ( !seen.insert(scope).second )
+		continue;
+	    if ( Variable *var = find_namespace_member(scope, member_name) )
+		return var;
+	    std::map<std::string, std::vector<std::string>>::iterator ci =
+		inline_namespace_children.find(scope);
+	    if ( ci != inline_namespace_children.end() )
+		for ( size_t i = 0; i < ci->second.size(); ++i )
+		    pending.push_back(ci->second[i]);
+	}
 	size_t pos = cur.rfind("::");
 	if ( pos == std::string::npos )
 	    break;
@@ -10206,6 +10336,25 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	}
 	Throw(addr_tb) << "expecting addressable expression after '&'" << flush;
     }
+    if ( is_contextual_identifier_token(addr_tb)
+      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+    {
+	addr_expr = parseExpression(addr_tb, true, false, false, 0);
+	if ( is_addressable_expression(addr_expr) )
+	{
+	    DataDefPTR *aptr = getPointerType(addr_expr->datadef());
+	    return new TokenAddrExpr(addr_expr, aptr);
+	}
+	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
+	{
+	    if ( tv->var.type && tv->var.type->is_function() )
+		return tv;
+	    tv->var.flags |= vfADDRTAKEN;
+	    DataDefPTR *aptr = getPointerType(tv->var.type);
+	    return new TokenAddrOf(tv->var, aptr);
+	}
+	Throw(addr_tb) << "expecting addressable expression after '&'" << flush;
+    }
 
     if ( !is_contextual_identifier_token(addr_tb) )
 	Throw(addr_tb) << "expecting variable name after '&'" << flush;
@@ -11061,19 +11210,88 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
     return true;
 }
 
+static bool parse_simple_template_non_type_value(const std::string &spelling,
+						 int64_t &out)
+{
+    std::string s = trim_spelling(spelling);
+    bool bv = false;
+    if ( is_bool_literal_identifier(s, bv) )
+    {
+	out = bv ? 1 : 0;
+	return true;
+    }
+
+    char *end = NULL;
+    errno = 0;
+    long long iv = strtoll(s.c_str(), &end, 0);
+    if ( end && *end == '\0' && errno == 0 )
+    {
+	out = iv;
+	return true;
+    }
+
+    const std::string suffix = "::value";
+    if ( s.size() > suffix.size()
+      && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0 )
+    {
+	std::string head = s.substr(0, s.size() - suffix.size());
+	std::string outer;
+	std::vector<std::string> args;
+	if ( split_template_id_spelling(head, outer, args)
+	  && strip_type_namespace(outer) == "is_void"
+	  && args.size() == 1 )
+	{
+	    std::string arg = strip_type_namespace(trim_spelling(args[0]));
+	    out = (arg == "void") ? 1 : 0;
+	    return true;
+	}
+    }
+
+    return false;
+}
+
+static bool non_type_partial_spec_arg_matches(Program &pgm,
+	const std::vector<TokenBase *> &pattern_tokens,
+	const std::vector<TokenBase *> &concrete_tokens,
+	const std::string &pattern_spelling,
+	const std::string &concrete_spelling,
+	int &score)
+{
+    if ( trim_spelling(pattern_spelling) == trim_spelling(concrete_spelling) )
+    {
+	score += 20;
+	return true;
+    }
+
+    int64_t pattern_value = 0;
+    int64_t concrete_value = 0;
+    (void)pgm;
+    (void)pattern_tokens;
+    (void)concrete_tokens;
+    if ( parse_simple_template_non_type_value(pattern_spelling, pattern_value)
+      && parse_simple_template_non_type_value(concrete_spelling, concrete_value)
+      && pattern_value == concrete_value )
+    {
+	score += 20;
+	return true;
+    }
+
+    return false;
+}
+
 Program::TemplateDef *Program::match_partial_specialization(const std::string &name,
-	const std::vector<TokenDataType *> &type_args,
+	const std::vector<TokenDataType *> &arg_types_by_slot,
 	const std::vector<std::string> &arg_spellings,
+	const std::vector<std::vector<TokenBase *>> &arg_tokens_by_slot,
+	const std::vector<bool> &param_is_type,
 	std::map<std::string, TokenDataType *> &out_subst)
 {
     std::map<std::string, std::vector<TemplateDef> >::iterator it =
 	partial_spec_map.find(name);
     if ( it == partial_spec_map.end() )
 	return NULL;
-    // v1 handles only all-type-param instantiations: type_args carries one entry per
-    // TYPE slot, so a size mismatch means a non-type param is present — bail to the
-    // primary rather than risk a wrong match.
-    if ( type_args.size() != arg_spellings.size() )
+    if ( arg_types_by_slot.size() != arg_spellings.size()
+      || arg_tokens_by_slot.size() != arg_spellings.size() )
 	return NULL;
 
     TemplateDef *best = NULL;
@@ -11082,27 +11300,37 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
     for ( size_t s = 0; s < it->second.size(); ++s )
     {
 	TemplateDef &spec = it->second[s];
-	if ( spec.spec_pattern.size() != type_args.size() )
+	if ( spec.spec_pattern.size() != arg_spellings.size() )
 	    continue;                                  // pattern arity == primary arity
 	std::map<std::string, DataDef *> ded;
 	int score = 0;
 	bool ok = true;
 	for ( size_t i = 0; i < spec.spec_pattern.size(); ++i )
 	{
-	    if ( !type_args[i] ) { ok = false; break; }
+	    std::string pattern_spelling =
+		template_tokens_spelling(spec.spec_pattern[i]);
+	    if ( !template_param_expects_type(param_is_type, i) )
+	    {
+		if ( !non_type_partial_spec_arg_matches(*this,
+			    spec.spec_pattern[i], arg_tokens_by_slot[i],
+			    pattern_spelling, arg_spellings[i], score) )
+		{ ok = false; break; }
+		continue;
+	    }
+	    if ( !arg_types_by_slot[i] ) { ok = false; break; }
 	    // Flat shapes (`[cv] PARAM [*]*`, concrete literal) first; on rejection,
 	    // try nested-template-id unification (`allocator<_Tp>` vs the concrete
 	    // `std::allocator<char>`); finally the `__void_t<...>` detection idiom
 	    // (SFINAE: the slot is void IFF its member-type Args exist on the deduced
 	    // params). Detection runs LAST so the earlier slots have populated `ded`.
 	    if ( !unify_spec_pattern_arg(spec.spec_pattern[i], spec.typeparams,
-					 &type_args[i]->definition,
+					 &arg_types_by_slot[i]->definition,
 					 arg_spellings[i], ded, score)
 	      && !unify_nested_spec_pattern_arg(
-					 template_tokens_spelling(spec.spec_pattern[i]),
+					 pattern_spelling,
 					 spec.typeparams, arg_spellings[i], ded, score)
 	      && !eval_void_t_detection_slot(
-					 template_tokens_spelling(spec.spec_pattern[i]),
+					 pattern_spelling,
 					 arg_spellings[i], ded, score) )
 	    { ok = false; break; }
 	}
@@ -17262,7 +17490,66 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
     DeferredFunctionBody body = it->second; // copy out before erase
     deferred_lazy_bodies.erase(it);
     size_t before = pending_funcs.size();
-    parse_deferred_function_body(body);
+    if ( body.full_definition )
+    {
+	DataDefCLASS *owner = body.method ? body.method->owner_class : NULL;
+	if ( !body.var || !owner )
+	    return NULL;
+	std::deque<TokenBase *> saved_tokens = tokens;
+	TokenBase *saved_prv = _prv_token;
+	TokenBase *saved_cur = _cur_token;
+	std::string saved_func = cur_func_name;
+	std::string saved_namespace = current_namespace;
+	std::string saved_canon = instantiating_canonical_spelling;
+	bool saved_ctor_init = parsing_defaulted_member_template_constructor;
+	for ( std::vector<TokenBase *>::reverse_iterator it2 =
+	      body.definition_tokens.rbegin();
+	      it2 != body.definition_tokens.rend(); ++it2 )
+	    pushToken(*it2);
+	cur_func_name = body.var->name;
+	std::string method_namespace =
+	    namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling);
+	if ( !method_namespace.empty() )
+	    current_namespace = method_namespace;
+	if ( owner->canonical_cpp_spelling.find('<') != std::string::npos )
+	    instantiating_canonical_spelling = owner->canonical_cpp_spelling;
+	parsing_defaulted_member_template_constructor = true;
+	try
+	{
+	    std::string parse_id = body.var->name;
+	    parseFunction(ddVOID, parse_id, owner);
+	}
+	catch(...)
+	{
+	    tokens = saved_tokens;
+	    _prv_token = saved_prv;
+	    _cur_token = saved_cur;
+	    cur_func_name = saved_func;
+	    current_namespace = saved_namespace;
+	    instantiating_canonical_spelling = saved_canon;
+	    parsing_defaulted_member_template_constructor = saved_ctor_init;
+	    throw;
+	}
+	tokens = saved_tokens;
+	_prv_token = saved_prv;
+	_cur_token = saved_cur;
+	cur_func_name = saved_func;
+	current_namespace = saved_namespace;
+	instantiating_canonical_spelling = saved_canon;
+	parsing_defaulted_member_template_constructor = saved_ctor_init;
+	if ( pending_funcs.size() > before )
+	{
+	    TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs.back());
+	    if ( tf && body.file && (!tf->file || tf->line <= 0) )
+	    {
+		tf->file = body.file;
+		tf->line = body.line;
+		tf->column = body.column;
+	    }
+	}
+    }
+    else
+	parse_deferred_function_body(body);
     if ( pending_funcs.size() > before )
 	return dynamic_cast<TokenFunc *>(pending_funcs.back());
     return NULL;
@@ -17276,7 +17563,409 @@ static void register_skipped_friend_type(
 	DataDefCLASS *owner, const std::vector<TokenBase *> &tokens);
 static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams,
 	uint32_t access_flags);
+
+static bool member_template_param_intro(TokenBase *t)
+{
+    if ( !t )
+	return false;
+    if ( t->id() == TokenID::tkCLASS )
+	return true;
+    if ( !is_contextual_identifier_token(t) )
+	return false;
+    std::string n = contextual_identifier_name(t);
+    return n == "typename" || n == "class";
+}
+
+static bool token_is_ellipsis_at(const std::deque<TokenBase *> &toks,
+				 size_t i, size_t end)
+{
+    return i + 2 < end
+	&& toks[i] && toks[i]->id() == TokenID::tkDot
+	&& toks[i + 1] && toks[i + 1]->id() == TokenID::tkDot
+	&& toks[i + 2] && toks[i + 2]->id() == TokenID::tkDot;
+}
+
+static bool template_list_close_index(const std::deque<TokenBase *> &toks,
+				      size_t lt_idx, size_t &close_idx)
+{
+    if ( lt_idx >= toks.size() || !toks[lt_idx]
+      || toks[lt_idx]->id() != TokenID::tkLT )
+	return false;
+    int depth = 0;
+    for ( size_t i = lt_idx; i < toks.size(); ++i )
+    {
+	TokenBase *t = toks[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkLT )
+	    ++depth;
+	else if ( t->id() == TokenID::tkGT && depth > 0 )
+	{
+	    --depth;
+	    if ( depth == 0 )
+	    {
+		close_idx = i;
+		return true;
+	    }
+	}
+	else if ( t->id() == TokenID::tkBSR && depth > 0 )
+	{
+	    if ( depth <= 2 )
+	    {
+		close_idx = i;
+		return true;
+	    }
+	    depth -= 2;
+	}
+    }
+    return false;
+}
+
+static bool template_param_slice_has_default(
+	const std::deque<TokenBase *> &toks, size_t begin, size_t end)
+{
+    int angle = 0;
+    int paren = 0;
+    int square = 0;
+    for ( size_t i = begin; i < end; ++i )
+    {
+	TokenBase *t = toks[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkLT && paren == 0 && square == 0 )
+	    ++angle;
+	else if ( t->id() == TokenID::tkGT && angle > 0 && paren == 0 && square == 0 )
+	    --angle;
+	else if ( t->id() == TokenID::tkBSR && angle > 0 && paren == 0 && square == 0 )
+	    angle = angle > 1 ? angle - 2 : 0;
+	else if ( t->id() == TokenID::tkOpBrk )
+	    ++paren;
+	else if ( t->id() == TokenID::tkClBrk && paren > 0 )
+	    --paren;
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square;
+	else if ( t->id() == TokenID::tkClSqr && square > 0 )
+	    --square;
+	else if ( t->id() == TokenID::tkAssign
+	       && angle == 0 && paren == 0 && square == 0 )
+	    return true;
+    }
+    return false;
+}
+
+static std::string template_param_name_from_slice(
+	const std::deque<TokenBase *> &toks, size_t begin, size_t end)
+{
+    while ( begin < end && !toks[begin] )
+	++begin;
+    if ( begin >= end )
+	return std::string();
+
+    if ( member_template_param_intro(toks[begin]) )
+    {
+	size_t i = begin + 1;
+	if ( token_is_ellipsis_at(toks, i, end) )
+	    i += 3;
+	if ( i >= end || !toks[i] || toks[i]->id() == TokenID::tkAssign )
+	    return std::string();
+	if ( is_contextual_identifier_token(toks[i]) )
+	    return contextual_identifier_name(toks[i]);
+	return std::string();
+    }
+
+    int angle = 0;
+    int paren = 0;
+    int square = 0;
+    std::string last_name;
+    for ( size_t i = begin; i < end; ++i )
+    {
+	TokenBase *t = toks[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkLT && paren == 0 && square == 0 )
+	    ++angle;
+	else if ( t->id() == TokenID::tkGT && angle > 0 && paren == 0 && square == 0 )
+	    --angle;
+	else if ( t->id() == TokenID::tkBSR && angle > 0 && paren == 0 && square == 0 )
+	    angle = angle > 1 ? angle - 2 : 0;
+	else if ( t->id() == TokenID::tkOpBrk )
+	    ++paren;
+	else if ( t->id() == TokenID::tkClBrk && paren > 0 )
+	    --paren;
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square;
+	else if ( t->id() == TokenID::tkClSqr && square > 0 )
+	    --square;
+	else if ( t->id() == TokenID::tkAssign
+	       && angle == 0 && paren == 0 && square == 0 )
+	    break;
+	else if ( angle == 0 && paren == 0 && square == 0
+	       && is_contextual_identifier_token(t) )
+	    last_name = contextual_identifier_name(t);
+    }
+    return last_name;
+}
+
+static bool collect_defaulted_template_param_names(
+	const std::deque<TokenBase *> &toks, size_t begin, size_t end,
+	std::set<std::string> &names)
+{
+    size_t param_begin = begin;
+    int angle = 0;
+    int paren = 0;
+    int square = 0;
+    for ( size_t i = begin; i <= end; ++i )
+    {
+	bool at_end = i == end;
+	TokenBase *t = at_end ? NULL : toks[i];
+	bool split = at_end;
+	if ( t )
+	{
+	    if ( t->id() == TokenID::tkLT && paren == 0 && square == 0 )
+		++angle;
+	    else if ( t->id() == TokenID::tkGT && angle > 0 && paren == 0 && square == 0 )
+		--angle;
+	    else if ( t->id() == TokenID::tkBSR && angle > 0 && paren == 0 && square == 0 )
+		angle = angle > 1 ? angle - 2 : 0;
+	    else if ( t->id() == TokenID::tkOpBrk )
+		++paren;
+	    else if ( t->id() == TokenID::tkClBrk && paren > 0 )
+		--paren;
+	    else if ( t->id() == TokenID::tkOpSqr )
+		++square;
+	    else if ( t->id() == TokenID::tkClSqr && square > 0 )
+		--square;
+	    else if ( t->id() == TokenID::tkComma
+		   && angle == 0 && paren == 0 && square == 0 )
+		split = true;
+	}
+	if ( !split )
+	    continue;
+	if ( param_begin < i )
+	{
+	    if ( !template_param_slice_has_default(toks, param_begin, i) )
+		return false;
+	    std::string name = template_param_name_from_slice(toks, param_begin, i);
+	    if ( !name.empty() )
+		names.insert(name);
+	}
+	param_begin = i + 1;
+    }
+    return true;
+}
+
+static size_t member_template_decl_end(const std::deque<TokenBase *> &toks,
+				       size_t start)
+{
+    int angle = 0;
+    int paren = 0;
+    int square = 0;
+    for ( size_t i = start; i < toks.size(); ++i )
+    {
+	TokenBase *t = toks[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkLT && paren == 0 && square == 0 )
+	    ++angle;
+	else if ( t->id() == TokenID::tkGT && angle > 0 && paren == 0 && square == 0 )
+	    --angle;
+	else if ( t->id() == TokenID::tkBSR && angle > 0 && paren == 0 && square == 0 )
+	    angle = angle > 1 ? angle - 2 : 0;
+	else if ( t->id() == TokenID::tkOpBrk )
+	    ++paren;
+	else if ( t->id() == TokenID::tkClBrk && paren > 0 )
+	    --paren;
+	else if ( t->id() == TokenID::tkOpSqr )
+	    ++square;
+	else if ( t->id() == TokenID::tkClSqr && square > 0 )
+	    --square;
+	else if ( t->id() == TokenID::tkSemi
+	       && angle == 0 && paren == 0 && square == 0 )
+	    return i;
+	else if ( t->id() == TokenID::tkOpBrc
+	       && angle == 0 && paren == 0 && square == 0 )
+	{
+	    int braces = 1;
+	    for ( size_t j = i + 1; j < toks.size(); ++j )
+	    {
+		if ( !toks[j] )
+		    continue;
+		if ( toks[j]->id() == TokenID::tkOpBrc )
+		    ++braces;
+		else if ( toks[j]->id() == TokenID::tkClBrc && --braces == 0 )
+		    return j;
+	    }
+	    return toks.size();
+	}
+    }
+    return toks.size();
+}
+
+static bool token_range_uses_any_name(const std::deque<TokenBase *> &toks,
+				      size_t begin, size_t end,
+				      const std::set<std::string> &names)
+{
+    if ( names.empty() )
+	return false;
+    for ( size_t i = begin; i < end && i < toks.size(); ++i )
+	if ( toks[i] && is_contextual_identifier_token(toks[i])
+	  && names.count(contextual_identifier_name(toks[i])) )
+	    return true;
+    return false;
+}
+
+static bool find_defaulted_member_template_ctor_name(
+	const std::deque<TokenBase *> &toks, size_t begin, size_t end,
+	const std::string &class_source_name,
+	const std::string &constructor_source_name,
+	size_t &name_idx)
+{
+    for ( size_t i = begin; i + 1 < end && i + 1 < toks.size(); ++i )
+    {
+	TokenBase *t = toks[i];
+	if ( !t || !is_contextual_identifier_token(t) )
+	    continue;
+	std::string name = contextual_identifier_name(t);
+	if ( name != class_source_name && name != constructor_source_name )
+	    continue;
+	if ( toks[i + 1] && toks[i + 1]->id() == TokenID::tkOpBrk )
+	{
+	    name_idx = i;
+	    return true;
+	}
+    }
+    return false;
+}
+
+static bool paren_close_index(const std::deque<TokenBase *> &toks,
+			      size_t open_idx, size_t &close_idx)
+{
+    if ( open_idx >= toks.size() || !toks[open_idx]
+      || toks[open_idx]->id() != TokenID::tkOpBrk )
+	return false;
+    int depth = 0;
+    for ( size_t i = open_idx; i < toks.size(); ++i )
+    {
+	TokenBase *t = toks[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++depth;
+	else if ( t->id() == TokenID::tkClBrk && --depth == 0 )
+	{
+	    close_idx = i;
+	    return true;
+	}
+    }
+    return false;
+}
+
+static bool try_parse_defaulted_member_template_constructor(
+	Program &pgm, DataDefCLASS *ddc, const std::string &class_source_name,
+	const std::string &constructor_source_name, const std::string &class_name,
+	uint32_t access_flags)
+{
+    if ( !ddc || pgm.tokens.size() < 4 || !pgm.tokens[0]
+      || pgm.tokens[0]->id() != TokenID::tkTEMPLATE
+      || !pgm.tokens[1] || pgm.tokens[1]->id() != TokenID::tkLT )
+	return false;
+
+    size_t close_idx = 0;
+    if ( !template_list_close_index(pgm.tokens, 1, close_idx) )
+	return false;
+
+    std::set<std::string> template_param_names;
+    if ( !collect_defaulted_template_param_names(pgm.tokens, 2, close_idx,
+						  template_param_names) )
+	return false;
+
+    size_t decl_end = member_template_decl_end(pgm.tokens, close_idx + 1);
+    if ( decl_end >= pgm.tokens.size() )
+	return false;
+    if ( token_range_uses_any_name(pgm.tokens, close_idx + 1, decl_end + 1,
+				   template_param_names) )
+	return false;
+
+    size_t name_idx = 0;
+    if ( !find_defaulted_member_template_ctor_name(
+	    pgm.tokens, close_idx + 1, decl_end + 1,
+	    class_source_name, constructor_source_name, name_idx) )
+	return false;
+
+    size_t open_idx = name_idx + 1;
+    size_t param_close_idx = 0;
+    if ( !paren_close_index(pgm.tokens, open_idx, param_close_idx) )
+	return false;
+    TokenBase *ctor_name_tok = pgm.tokens[name_idx];
+    std::string ctor_source_name = contextual_identifier_name(ctor_name_tok);
+    std::string mangled = class_name + "__" + ctor_source_name;
+    bool ctor_disambiguated = pgm.findVariable(mangled) != NULL;
+    if ( ctor_disambiguated )
+	mangled = pgm.unique_overload_symbol(mangled);
+
+    std::vector<TokenBase *> definition_tokens;
+    bool has_body = pgm.tokens[decl_end]
+	&& pgm.tokens[decl_end]->id() == TokenID::tkClBrc;
+    if ( has_body )
+	for ( size_t i = open_idx + 1; i <= decl_end; ++i )
+	    definition_tokens.push_back(pgm.tokens[i]
+					? pgm.tokens[i]->clone() : NULL);
+
+    std::deque<TokenBase *> saved_tokens = pgm.tokens;
+    std::deque<TokenBase *> signature_tokens;
+    for ( size_t i = open_idx + 1; i <= param_close_idx; ++i )
+	signature_tokens.push_back(pgm.tokens[i]);
+    signature_tokens.push_back(new TokenSemi());
+    pgm.tokens = signature_tokens;
+    try
+    {
+	pgm.parseFunction(ddVOID, mangled, ddc);
+    }
+    catch(...)
+    {
+	pgm.tokens = saved_tokens;
+	throw;
+    }
+    pgm.tokens = saved_tokens;
+    pgm.skip_template_nonclass_declaration(pgm.nextToken());
+
+    Variable *mvar = pgm.tkProgram ? pgm.tkProgram->findVariable(mangled) : NULL;
+    if ( !mvar )
+	return true;
+    FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type);
+    if ( cfd && cfd->defaulted_or_deleted )
+	return true;
+    if ( cfd )
+    {
+	cfd->is_member_template = true;
+	cfd->method_display_name = ctor_source_name;
+	std::string default_symbol = ddc->name + "__" + ddc->name;
+	if ( ctor_disambiguated || mangled != default_symbol )
+	    cfd->class_emit_name = mangled;
+    }
+    if ( access_flags )
+	mvar->flags |= access_flags;
+    ddc->methods.push_back(mvar);
+    if ( ddc->method_map.find(ctor_source_name) == ddc->method_map.end() )
+	ddc->method_map[ctor_source_name] = mvar;
+    ddc->ctors.push_back(mvar);
+    ddc->has_user_ctor = true;
+    if ( has_body )
+    {
+	Program::DeferredFunctionBody body;
+	body.var = mvar;
+	body.method = static_cast<Method *>(mvar->data);
+	body.definition_tokens = definition_tokens;
+	body.full_definition = true;
+	body.file = ctor_name_tok ? ctor_name_tok->file : NULL;
+	body.line = ctor_name_tok ? ctor_name_tok->line : 0;
+	body.column = ctor_name_tok ? ctor_name_tok->column : 0;
+	pgm.deferred_lazy_bodies[mangled] = body;
+    }
+    return true;
+}
 
 // forms:
 // class Name { type member; rettype method() { ... } };
@@ -17796,6 +18485,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// --- member template declaration: template<...> ...; ---
 	if ( tn->id() == TokenID::tkTEMPLATE )
 	{
+	    if ( try_parse_defaulted_member_template_constructor(
+		    pgm, ddc, class_source_name, constructor_source_name,
+		    tag->str, access_flags) )
+		continue;
 	    size_t method_count_before = ddc->methods.size();
 	    std::vector<TokenBase *> skipped_decl;
 	    pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
@@ -17807,8 +18500,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    register_skipped_friend_type(ddc, skipped_decl);
 		else
 		    register_skipped_class_template_function(
-			pgm, ddc, skipped_decl, access_flags);
+			pgm, ddc, skipped_decl,
+			pgm.last_skipped_template_typeparams, access_flags);
 		pgm.last_skipped_template_decl.clear();
+		pgm.last_skipped_template_typeparams.clear();
 	    }
 	    continue;
 	}
@@ -21188,6 +21883,8 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
 	    int body_depth = 1;
 	    while ( body_depth > 0 && (t = nextToken()) )
 	    {
+		if ( seen )
+		    seen->push_back(t);
 		if ( t->id() == TokenID::tkOpBrc )
 		    ++body_depth;
 		else if ( t->id() == TokenID::tkClBrc )
@@ -21633,6 +22330,100 @@ static bool extract_free_signature(
     return true;
 }
 
+static bool skipped_template_function_signature_spellings(
+	const std::vector<TokenBase *> &tokens, size_t declarator_start,
+	size_t lparen, std::string &return_spelling,
+	std::vector<std::string> &param_spellings)
+{
+    static const std::set<std::string> specifiers = {
+	"static", "constexpr", "inline", "virtual", "friend", "extern",
+	"typename", "template", "_GLIBCXX20_CONSTEXPR", "_GLIBCXX_CONSTEXPR"
+    };
+    size_t ret_begin = 0;
+    while ( ret_begin < declarator_start && tokens[ret_begin]
+	 && is_contextual_identifier_token(tokens[ret_begin])
+	 && specifiers.count(contextual_identifier_name(tokens[ret_begin])) )
+	++ret_begin;
+    return_spelling = serialize_token_range(tokens, ret_begin, declarator_start);
+    if ( return_spelling.empty() )
+	return false;
+
+    auto param_type_end = [&](size_t begin, size_t end) -> size_t {
+	size_t real_end = end;
+	int depth = 0, angle = 0, square = 0;
+	for ( size_t i = begin; i < end && i < tokens.size(); ++i )
+	{
+	    TokenBase *t = tokens[i];
+	    if ( !t ) continue;
+	    TokenID id = (TokenID)t->id();
+	    if ( id == TokenID::tkOpBrk ) ++depth;
+	    else if ( id == TokenID::tkClBrk && depth > 0 ) --depth;
+	    else if ( id == TokenID::tkOpSqr ) ++square;
+	    else if ( id == TokenID::tkClSqr && square > 0 ) --square;
+	    else if ( id == TokenID::tkLT && depth == 0 && square == 0 ) ++angle;
+	    else if ( id == TokenID::tkGT && angle > 0 && depth == 0 && square == 0 )
+		--angle;
+	    else if ( id == TokenID::tkBSR && angle > 0 && depth == 0 && square == 0 )
+		angle = angle > 1 ? angle - 2 : 0;
+	    else if ( id == TokenID::tkAssign && depth == 0 && angle == 0 && square == 0 )
+	    {
+		real_end = i;
+		break;
+	    }
+	}
+	size_t last = real_end;
+	while ( last > begin && !tokens[last - 1] )
+	    --last;
+	if ( last > begin + 1 && tokens[last - 1]
+	  && tokens[last - 1]->type() == TokenType::ttIdentifier )
+	{
+	    size_t prev = last - 1;
+	    while ( prev > begin && !tokens[prev - 1] )
+		--prev;
+	    if ( prev > begin && tokens[prev - 1]
+	      && tokens[prev - 1]->id() != TokenID::tkNS )
+		return last - 1;
+	}
+	return real_end;
+    };
+
+    param_spellings.clear();
+    int depth = 0, angle = 0, square = 0;
+    size_t pstart = lparen + 1;
+    auto flush_param = [&](size_t pend) {
+	size_t real_end = param_type_end(pstart, pend);
+	std::string sp = serialize_token_range(tokens, pstart, real_end);
+	if ( !sp.empty() && sp != "void" )
+	    param_spellings.push_back(sp);
+    };
+    for ( size_t i = lparen + 1; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t ) continue;
+	TokenID id = (TokenID)t->id();
+	if ( id == TokenID::tkOpBrk ) ++depth;
+	else if ( id == TokenID::tkClBrk )
+	{
+	    if ( depth == 0 && angle == 0 && square == 0 )
+	    { flush_param(i); break; }
+	    if ( depth > 0 ) --depth;
+	}
+	else if ( id == TokenID::tkOpSqr ) ++square;
+	else if ( id == TokenID::tkClSqr ) { if ( square > 0 ) --square; }
+	else if ( id == TokenID::tkLT && depth == 0 && square == 0 ) ++angle;
+	else if ( id == TokenID::tkGT && angle > 0 && depth == 0 && square == 0 )
+	    --angle;
+	else if ( id == TokenID::tkBSR && angle > 0 && depth == 0 && square == 0 )
+	    angle = angle > 1 ? angle - 2 : 0;
+	else if ( id == TokenID::tkComma && depth == 0 && angle == 0 && square == 0 )
+	{
+	    flush_param(i);
+	    pstart = i + 1;
+	}
+    }
+    return true;
+}
+
 static bool capture_free_operator_overload(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams)
@@ -21710,6 +22501,52 @@ static void capture_free_manipulator_overload(
 	<< " type=" << ov.return_spelling << std::endl);
 }
 
+static bool skipped_template_body_returns_inline_addressof(
+	Program &pgm, const std::vector<TokenBase *> &tokens)
+{
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t || t->id() != TokenID::tkRETURN )
+	    continue;
+	size_t j = i + 1;
+	std::vector<std::string> parts;
+	while ( j < tokens.size() && tokens[j] )
+	{
+	    if ( !is_contextual_identifier_token(tokens[j]) )
+		break;
+	    parts.push_back(contextual_identifier_name(tokens[j]));
+	    ++j;
+	    if ( j < tokens.size() && tokens[j]
+	      && tokens[j]->id() == TokenID::tkNS )
+	    {
+		++j;
+		continue;
+	    }
+	    break;
+	}
+	if ( parts.empty() || j >= tokens.size() || !tokens[j]
+	  || tokens[j]->id() != TokenID::tkOpBrk )
+	    continue;
+	const std::string &callee = parts.back();
+	if ( parts.size() == 1 && callee == "__builtin_addressof" )
+	    return true;
+	std::string ns_name = pgm.current_namespace;
+	if ( parts.size() > 1 )
+	    ns_name = join_scope_parts(parts, parts.size() - 1);
+	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
+	if ( nsi == pgm.namespace_map.end() )
+	    continue;
+	variable_map_iter vi = nsi->second.find(callee);
+	if ( vi == nsi->second.end() || !vi->second )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(vi->second->type);
+	if ( fd && fd->inline_builtin_kind == "addressof" )
+	    return true;
+    }
+    return false;
+}
+
 static void register_skipped_namespace_template_function(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams)
@@ -21744,6 +22581,8 @@ static void register_skipped_namespace_template_function(
 	fd->function_display_name = name;
 	fd->namespace_name = pgm.current_namespace;
 	record_skipped_template_return_pattern(fd, tokens, typeparams, name);
+	if ( skipped_template_body_returns_inline_addressof(pgm, tokens) )
+	    fd->inline_builtin_kind = "addressof";
     }
     ns[name] = var;
     ns.erase(parse_id);
@@ -21812,6 +22651,7 @@ static DataDef *skipped_template_function_return_type(
 
 static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams,
 	uint32_t access_flags)
 {
     if ( !owner )
@@ -21840,6 +22680,21 @@ static void register_skipped_class_template_function(
 	fd->is_varargs = true;
 	fd->declaration_only = true;
 	fd->method_display_name = name;
+	fd->is_member_template = true;
+	fd->template_param_names = typeparams;
+	std::string ret_spelling;
+	std::vector<std::string> param_spellings;
+	size_t name_idx = skipped_template_function_declarator_name_index(tokens,
+									  NULL);
+	if ( name_idx < tokens.size() && name_idx + 1 < tokens.size()
+	  && tokens[name_idx + 1]
+	  && tokens[name_idx + 1]->id() == TokenID::tkOpBrk
+	  && skipped_template_function_signature_spellings(
+		tokens, name_idx, name_idx + 1, ret_spelling, param_spellings) )
+	{
+	    fd->template_return_spelling = ret_spelling;
+	    fd->template_param_spellings = param_spellings;
+	}
     }
     Method *md = static_cast<Method *>(var->data);
     if ( md && !is_static )
@@ -22366,6 +23221,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 {
     DBG(std::cout << "TokenTEMPLATE::parse()" << std::endl);
     pgm.last_skipped_template_decl.clear();
+    pgm.last_skipped_template_typeparams.clear();
 
     TokenBase *tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkLT )
@@ -22539,6 +23395,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	std::vector<TokenBase *> skipped_decl;
 	pgm.skip_template_nonclass_declaration(class_kw, &skipped_decl);
 	pgm.last_skipped_template_decl = skipped_decl;
+	pgm.last_skipped_template_typeparams = typeparams;
 	if ( !pgm.deferred_function_body_sink )
 	    register_skipped_namespace_template_function(pgm, skipped_decl,
 							typeparams);
@@ -23264,6 +24121,14 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     Method temp_param_method(temp_param_fn);
     if ( owner_class )
 	temp_param_method.owner_class = owner_class;
+    if ( has_hidden_this )
+    {
+	DataDef *this_type = !func->parameters.empty()
+	    ? func->parameters[0] : getPointerType(owner_class);
+	Variable *scope_this = new Variable("__this", *this_type, 1, NULL, false);
+	scope_this->flags |= vfPARAM | vfLOCAL;
+	temp_param_method.parameters.push_back(scope_this);
+    }
     pushCompound();
     TokenCpnd *param_scope = compounds.empty() ? NULL : compounds.top();
     if ( param_scope )
@@ -23780,8 +24645,10 @@ paramdecl:
 
     nt = nextToken();
 
-    if ( !compounds.empty() && compounds.top() == param_scope )
-	popCompound();
+    // Keep the temporary parameter scope through trailing qualifiers and a
+    // possible constructor initializer list.  System headers commonly spell
+    // this as `ctor(args) throw() : member(param) {}`, so checking for ':' only
+    // immediately after ')' drops parameters too early.
 
     if ( old_style_params )
     {
@@ -23900,12 +24767,19 @@ paramdecl:
 		pushToken(open);
 		pushToken(next);
 		TokenDataType tdt(next_return->name.c_str(), *next_return);
+		if ( !compounds.empty() && compounds.top() == param_scope )
+		    popCompound();
 		parseDeclaration(&tdt);
 		return;
 	    }
+	    if ( !compounds.empty() && compounds.top() == param_scope )
+		popCompound();
 	    parseFunction(*next_return, next_id, owner_class, multi_ret,
 			  false, return_typedef_alias, static_class_method);
+	    return;
 	}
+	if ( !compounds.empty() && compounds.top() == param_scope )
+	    popCompound();
 	return;
     }
 
@@ -23927,6 +24801,8 @@ paramdecl:
 	if ( owner_class )
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
+	if ( !compounds.empty() && compounds.top() == param_scope )
+	    popCompound();
 	return;
     }
 
@@ -23950,65 +24826,146 @@ paramdecl:
 	func->declaration_only = pure_virtual;
 	func->defaulted_or_deleted = !pure_virtual;
 	func->pure_virtual = pure_virtual;
+	if ( !compounds.empty() && compounds.top() == param_scope )
+	    popCompound();
 	return;
     }
 
     if ( nt->id() == TokenID::tkColon )
     {
-	int paren_depth = 0;
-	int square_depth = 0;
-	int angle_depth = 0;
-	int brace_depth = 0;
-	bool expecting_initializer = true;
-	while ( (nt = nextToken()) )
+	bool parse_ctor_initializers = parsing_defaulted_member_template_constructor;
+	if ( !parse_ctor_initializers && owner_class )
 	{
-	    if ( isOperatorIdStart(nt) )
+	    std::string prefix = owner_class->name + "__";
+	    if ( id.compare(0, prefix.size(), prefix) == 0 )
 	    {
-		parseOperatorId(nt);
-		continue;
+		std::string ctor_tail = id.substr(prefix.size());
+		size_t overload_suffix = ctor_tail.rfind("__o");
+		if ( overload_suffix != std::string::npos )
+		{
+		    bool numeric_suffix = overload_suffix + 3 < ctor_tail.size();
+		    for ( size_t si = overload_suffix + 3;
+			  numeric_suffix && si < ctor_tail.size(); ++si )
+			if ( !isdigit((unsigned char)ctor_tail[si]) )
+			    numeric_suffix = false;
+		    if ( numeric_suffix )
+			ctor_tail = ctor_tail.substr(0, overload_suffix);
+		}
+		DataDef *ctor_alias = resolve_class_type_alias(owner_class,
+							       ctor_tail);
+		parse_ctor_initializers = (ctor_alias == owner_class);
 	    }
-	    if ( paren_depth == 0 && square_depth == 0
-	      && angle_depth == 0 && brace_depth == 0
-	      && nt->id() == TokenID::tkComma )
+	}
+	if ( !parse_ctor_initializers )
+	{
+	    int paren_depth = 0;
+	    int square_depth = 0;
+	    int angle_depth = 0;
+	    int brace_depth = 0;
+	    bool expecting_initializer = true;
+	    while ( (nt = nextToken()) )
 	    {
-		expecting_initializer = true;
-		continue;
-	    }
-	    if ( nt->id() == TokenID::tkOpBrk )
-	    {
-		++paren_depth;
-		if ( square_depth == 0 && angle_depth == 0 && brace_depth == 0 )
+		if ( isOperatorIdStart(nt) )
+		{
+		    parseOperatorId(nt);
+		    continue;
+		}
+		if ( paren_depth == 0 && square_depth == 0
+		  && angle_depth == 0 && brace_depth == 0
+		  && nt->id() == TokenID::tkComma )
+		{
+		    expecting_initializer = true;
+		    continue;
+		}
+		if ( nt->id() == TokenID::tkOpBrk )
+		{
+		    ++paren_depth;
+		    if ( square_depth == 0 && angle_depth == 0 && brace_depth == 0 )
+			expecting_initializer = false;
+		}
+		else if ( nt->id() == TokenID::tkClBrk && paren_depth > 0 )
+		    --paren_depth;
+		else if ( nt->id() == TokenID::tkOpSqr )
+		    ++square_depth;
+		else if ( nt->id() == TokenID::tkClSqr && square_depth > 0 )
+		    --square_depth;
+		else if ( nt->id() == TokenID::tkLT )
+		    ++angle_depth;
+		else if ( nt->id() == TokenID::tkGT && angle_depth > 0 )
+		    --angle_depth;
+		else if ( nt->id() == TokenID::tkBSR && angle_depth > 0 )
+		    angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
+		else if ( nt->id() == TokenID::tkOpBrc
+		       && paren_depth == 0 && square_depth == 0
+		       && angle_depth == 0 && expecting_initializer )
+		{
+		    ++brace_depth;
 		    expecting_initializer = false;
+		}
+		else if ( nt->id() == TokenID::tkClBrc && brace_depth > 0 )
+		    --brace_depth;
+		else if ( nt->id() == TokenID::tkOpBrc
+		       && paren_depth == 0 && square_depth == 0
+		       && angle_depth == 0 && brace_depth == 0 )
+		    break;
 	    }
-	    else if ( nt->id() == TokenID::tkClBrk && paren_depth > 0 )
-		--paren_depth;
-	    else if ( nt->id() == TokenID::tkOpSqr )
-		++square_depth;
-	    else if ( nt->id() == TokenID::tkClSqr && square_depth > 0 )
-		--square_depth;
-	    else if ( nt->id() == TokenID::tkLT )
-		++angle_depth;
-	    else if ( nt->id() == TokenID::tkGT && angle_depth > 0 )
-		--angle_depth;
-	    else if ( nt->id() == TokenID::tkBSR && angle_depth > 0 )
-		angle_depth = angle_depth > 1 ? angle_depth - 2 : 0;
-	    else if ( nt->id() == TokenID::tkOpBrc
-		   && paren_depth == 0 && square_depth == 0
-		   && angle_depth == 0 && expecting_initializer )
+	}
+	else
+	{
+	    func->ctor_initializers.clear();
+	    for (;;)
 	    {
-		++brace_depth;
-		expecting_initializer = false;
+		TokenBase *name_tb = nextToken();
+		if ( !name_tb )
+		    Throw << "Unexpected end of input in constructor initializer list" << flush;
+		if ( !is_contextual_identifier_token(name_tb) )
+		    Throw(name_tb) << "Expecting member or base name in constructor initializer list" << flush;
+		FuncDef::CtorInitializer init;
+		init.name = contextual_identifier_name(name_tb);
+		while ( peekToken() && peekToken()->id() == TokenID::tkNS )
+		{
+		    nextToken();
+		    TokenBase *part = nextToken();
+		    if ( !part || !is_contextual_identifier_token(part) )
+			Throw(part ? part : name_tb)
+			    << "Expecting qualified initializer name after '::'" << flush;
+		    init.name += "::" + contextual_identifier_name(part);
+		}
+		if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+		    skip_template_id_suffix();
+		TokenBase *open = nextToken();
+		if ( !open || (open->id() != TokenID::tkOpBrk
+			    && open->id() != TokenID::tkOpBrc) )
+		    Throw(open ? open : name_tb)
+			<< "Expecting '(' or '{' in constructor initializer" << flush;
+		TokenID close_id = open->id() == TokenID::tkOpBrk
+		    ? TokenID::tkClBrk : TokenID::tkClBrc;
+		while ( peekToken() && peekToken()->id() != close_id )
+		{
+		    init.args.push_back(parseExpression(nextToken(), true));
+		    if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+			nextToken();
+		}
+		if ( !peekToken() || peekToken()->id() != close_id )
+		    Throw(open) << "Unexpected end of constructor initializer arguments" << flush;
+		nextToken();
+		func->ctor_initializers.push_back(init);
+		nt = nextToken();
+		if ( !nt )
+		    Throw << "Unexpected end of input in constructor initializer list" << flush;
+		if ( nt->id() == TokenID::tkComma )
+		    continue;
+		if ( nt->id() == TokenID::tkOpBrc )
+		    break;
+		Throw(nt) << "Expecting ',' or function body after constructor initializer" << flush;
 	    }
-	    else if ( nt->id() == TokenID::tkClBrc && brace_depth > 0 )
-		--brace_depth;
-	    else if ( nt->id() == TokenID::tkOpBrc
-		   && paren_depth == 0 && square_depth == 0
-		   && angle_depth == 0 && brace_depth == 0 )
-		break;
 	}
 	if ( !nt )
 	    Throw << "Unexpected end of input in constructor initializer list" << flush;
     }
+
+    if ( !compounds.empty() && compounds.top() == param_scope )
+	popCompound();
 
     func->declaration_only = false;
     func->emit_symbol.clear();

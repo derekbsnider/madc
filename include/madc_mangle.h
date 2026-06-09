@@ -83,6 +83,17 @@ std::string itanium_mangle_member_sub(const std::string &qualified_class,
                                        const std::vector<std::string> &param_types,
                                        bool const_method);
 
+// Mangle a member function template specialization on a (possibly template-id)
+// class. `template_arg_types` are the deduced concrete template args; `return_type`
+// and `param_types` may use "$T0","$T1",... placeholders for the function
+// template parameters.
+std::string itanium_mangle_member_template_sub(const std::string &qualified_class,
+                                       const std::string &member,
+                                       const std::vector<std::string> &template_arg_types,
+                                       const std::string &return_type,
+                                       const std::vector<std::string> &param_types,
+                                       bool const_method);
+
 // Mangle a constructor (C1) on a (possibly template-id) class.
 std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
                                       const std::vector<std::string> &param_types);

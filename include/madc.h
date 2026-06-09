@@ -25,6 +25,7 @@
 class Method;
 class Program;
 class MadcEngine;
+class TokenBase;
 class TokenSWITCH;
 struct DelimDepth;	// parser-internal balanced-delimiter depth (parser.cpp)
 class TokenCASE;
@@ -139,12 +140,26 @@ public:
     // internal symbols while preserving the source name.
     std::string function_display_name;
     std::string namespace_name;
+    std::string inline_builtin_kind;
     // For an externally-bound ctor (emit_symbol set) whose real ABI takes a
     // trailing reference argument that madc has no value for, pass the object's
     // own address (&this) as that trailing arg.
     bool ctor_trailing_self;
+    // Member function/constructor template specializations are emitted in the
+    // current translation unit unless an explicit specialization says otherwise;
+    // an extern-template class instantiation does not export arbitrary member
+    // template specializations.
+    bool is_member_template;
+    std::vector<std::string> template_param_names;
+    std::string template_return_spelling;
+    std::vector<std::string> template_param_spellings;
+    struct CtorInitializer {
+	std::string name;
+	std::vector<TokenBase *> args;
+    };
+    std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), class_emit_name(), method_display_name(), function_display_name(), namespace_name(), ctor_trailing_self(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), class_emit_name(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_return_spelling(), template_param_spellings(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), pure_virtual(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -1138,12 +1153,13 @@ public:
     // the primary). Selected at instantiation by most-specialized pattern unification.
     std::map<std::string, std::vector<TemplateDef>> partial_spec_map;
     // Choose the most-specialized partial spec of `name` whose pattern unifies with
-    // the concrete TYPE args (all slots must be type args — v1 skips templates with
-    // non-type params); fills out_subst (spec-param -> deduced type) and returns the
-    // matching def, or NULL to fall back to the primary template.
+    // the concrete arguments. Type slots deduce into out_subst; non-type slots must
+    // fold to the same constant value. Returns NULL to fall back to the primary.
     TemplateDef *match_partial_specialization(const std::string &name,
-	    const std::vector<TokenDataType *> &type_args,
+	    const std::vector<TokenDataType *> &arg_types_by_slot,
 	    const std::vector<std::string> &arg_spellings,
+	    const std::vector<std::vector<TokenBase *>> &arg_tokens_by_slot,
+	    const std::vector<bool> &param_is_type,
 	    std::map<std::string, TokenDataType *> &out_subst);
     // Unify a nested template-id pattern arg (e.g. `allocator<_Tp>`) against a
     // concrete type spelling (e.g. `std::allocator<char>`), deducing the spec's
@@ -1174,6 +1190,7 @@ public:
     };
     std::map<std::string, std::vector<TemplateAliasDef>> template_alias_map;
     std::vector<TokenBase *> last_skipped_template_decl;
+    std::vector<std::string> last_skipped_template_typeparams;
     // W2 (retire-std-hardcoding-design): non-member operator overload candidates
     // declared at namespace scope (e.g. std::operator<<). Member-operator
     // resolution already exists (class_operator_call); these let `obj << x`
@@ -1211,6 +1228,7 @@ public:
     // method binding.
     std::string instantiating_canonical_spelling;
     bool instantiating_dependent_surface;
+    bool parsing_defaulted_member_template_constructor;
     std::vector<std::string> namespace_preference; // ordered namespace lookup; "c" means normal lexical/global resolution
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
     // function-like macro definitions: #define NAME(params) body
@@ -1246,10 +1264,12 @@ public:
 	Variable *var;
 	Method *method;
 	std::vector<TokenBase *> body_tokens;
+	std::vector<TokenBase *> definition_tokens;
+	bool full_definition;
 	const char *file;
 	int line;
 	int column;
-	DeferredFunctionBody() : var(NULL), method(NULL), file(NULL), line(0), column(0) {}
+	DeferredFunctionBody() : var(NULL), method(NULL), full_definition(false), file(NULL), line(0), column(0) {}
     };
     std::vector<DeferredFunctionBody> *deferred_function_body_sink;
     // Lazy member-function-body instantiation ([temp.inst] conformance): for a
