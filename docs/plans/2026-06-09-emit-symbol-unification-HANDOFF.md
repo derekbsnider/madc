@@ -1,0 +1,256 @@
+# HANDOFF — emit_symbol unification + header-partition shim retirement (2026-06-09)
+
+**READ THIS FIRST on resume / post-compaction. Assume you remember NOTHING.**
+Run `bash scripts/resume.sh` (live git/build truth), then read this top to bottom.
+This supersedes the older `docs/plans/2026-06-09-fstream-construction-HANDOFF.md` for
+*current state/next-step* (that doc keeps the granular fstream/string history and the
+turn-by-turn trail — still useful, but route from HERE).
+
+---
+
+## 0. ONE-PARAGRAPH STATE
+
+Branch **`feature/cpp-detection-idiom-claude`**, HEAD **`1bf014b`**, working tree
+**clean**. This session: (a) corrected the header-partition architecture I'd misread
+(see §2), (b) landed a **data-driven embedded-header shim-bypass classifier**
+(`65d2d67`), (c) landed **mangled-direct binding for named `std::` free-function
+templates — `std::getline` works end-to-end** (`a1b4421`), (d) audited a **symbol-
+derivation drift** and, with the user, chose to **unify all call-symbol derivation onto
+`FuncDef::emit_symbol`** (Pattern A) with a drift-prevention gate. **That unification is
+NOT yet started — it is the next work (§5).** Gates GREEN: fulltest **543/4/0/26**,
+gcc.c-torture **1566/31/57/1** (both unchanged from baseline). The 4 reds
+(testdefer/testfstream/testlargesizeofquery/testloop) are still red — getline is one
+ingredient; the remaining ingredients are in §4.
+
+**The north star (user-confirmed, do not drift from it):** madc hand-rolls ONLY the
+bucket-1/2 freestanding compiler headers; ALL glibc + ALL libstdc++ are consumed REAL
+from the system. `std::` types/functions bind MANGLED-DIRECT to the real libstdc++
+Itanium symbols via the ONE shared mangler — never via `__ns_` wrappers, never
+hand-authored, never special-cased by name. See `[[project_header_partition_architecture]]`
+and `[[project_cpp_mangled_direct]]`.
+
+---
+
+## 1. HOW TO REHYDRATE
+1. `bash scripts/resume.sh` — branch/HEAD/build/runaway-process truth.
+2. Read this doc fully, then `[[project_header_partition_architecture]]`,
+   `[[project_cpp_mangled_direct]]`, `[[feedback_gated_debug_not_churn]]`,
+   `[[feedback_verify_over_stale_handoff]]`.
+3. `git log --oneline 110e026..HEAD` for this branch's commits;
+   `git show a1b4421` for the getline mechanism; `65d2d67` for the classifier.
+4. Cap EVERY run: `( ulimit -t 120; timeout 180 <cmd> )`, ONE heavy job at a time.
+5. NAS mtime trap: `touch src/<f>.cpp` before `make`; verify the binary rebuilt
+   (`stat -c %Y bin/madc` before/after) — mtime drift silently skips rebuilds.
+
+---
+
+## 2. ARCHITECTURE I MISREAD TWICE (do not repeat)
+
+`madc-header-partition-handoff.md` is THE model. madc PROVIDES only bucket-1/2
+(freestanding compiler headers: stddef/stdarg/limits/float/intrinsics + `#include_next`
+shims). ALL glibc + ALL libstdc++ (`<string>`,`<iostream>`,`<fstream>`,…) are bucket-3,
+consumed REAL/unmodified. **Do NOT hand-author embedded libstdc++ (the prior
+"finish embedded <fstream> inc-5/inc-6" plan was the vendoring ANTI-GOAL — retracted).**
+The hand-rolled SYSTEM-header shims in `include/madc/` (iostream/fstream/sstream/string/
+vector/map/set/algorithm + glibc twins stdio.h/string.h/…) must be RETIRED, replaced by
+consuming the real headers. `--no-embedded-headers` = bypass shims, parse real headers.
+
+**Reality check (measured):** a full flip to real headers regresses 543→346 (the embedded
+shims are load-bearing for ~197 tests). BUT most of those regressions collapse to a FEW
+root-cause clusters (e.g. the `_GLIBCXX_BEGIN_NAMESPACE_VERSION` "failures" were an
+ARTIFACT of running real libstdc++ in STD_MADC mode WITHOUT `--std=c++17` — STD_MADC
+deliberately omits `__cplusplus`, lexer.cpp:1481). So retirement is INCREMENTAL, gated on
+fixing real-header consumption per cluster. Chosen path: get the 4 reds green via real
+headers in `--std=c++17 --no-embedded-headers` mode (the proven testcout_realhdr path),
+fix the consumption bugs, defer physical shim deletion + the STD_MADC `__cplusplus` flip.
+
+---
+
+## 3. WHAT LANDED THIS SESSION (committed)
+
+- **`65d2d67` — data-driven embedded-header partition classifier.** New policy
+  `RegistrationPolicy.bypass_system_library_headers`; `--no-embedded-headers` now bypasses
+  ONLY system-library shims (real glibc/libstdc++ twins) and KEEPS madc-own (`ns_*`/
+  `__madc__`, no real twin) + freestanding (resolve in the compiler-owned dir) embedded.
+  Classifier `Program::embedded_header_is_system_library_shim` (parser.cpp) +
+  `madc_compiler_owned_include_dir` (gen_sys_includes.sh). Fixes the old all-or-nothing
+  that wrongly dropped ns_php. Gate: fulltest 543/4 (default mode untouched).
+- **`a1b4421` — named `std::` free-function templates bind MANGLED-DIRECT (std::getline).**
+  See §6 for the full mechanism. VERIFIED: `std::getline(inf,line)` emits the EXACT g++
+  symbol and reads lines end-to-end. Gates: fulltest 543/4, torture 1566/31/57/1.
+- Doc syncs (`b63d54b`): corrected stale "std::string still crashes" claims (Codex's
+  c932003+c9fd222 made string construction/mutation/`s[i]`/`a+b`/`.size()` all work).
+
+---
+
+## 4. THE 4 RED TESTS — what each still needs
+
+All 3 stream tests should move to `--std=c++17 --no-embedded-headers` (real headers) + be
+rewritten to standard C++ where they use removed dialect forms.
+
+- **testloop**: ofstream/ifstream + `getline` (DONE) + `inf.good()` + `cout<<` + `system(string)`.
+- **testfstream**: above + non-standard `to_string(s,42)` (2-arg), `strlen(string)`,
+  `stoi` — rewrite to `std::to_string(42)`, `s.c_str()`, etc. (standard C++).
+- **testdefer**: the `defer` madc feature + ofstream.
+- **testlargesizeofquery**: SEPARATE track — uint32→64 array-dim truncation
+  (`short buf[(1<<62)-256]`); needs widening member_dims/arr_dims/N_ARR; niche/risky/deferred.
+
+**Shared blockers (real-header `cout<<` operand binding) — both block testloop/testfstream;
+`cout` ITSELF works (testcout `cout<<const char*<<int<<endl` is green):**
+
+1. **`cout << unsigned long` / `long` / `long long` / `s.size()`** → c2mir error at
+   `/usr/include/c++/13/ostream:470` "lvalue required as unary & operand". ROOT CAUSE:
+   `operator<<(int)` is DECLARED-ONLY (`<ostream>:191`) → madc binds external `_ZNSolsEi`
+   (works). `operator<<(unsigned long)` is INLINE (`<ostream>:172` `{return _M_insert(__n);}`)
+   → madc EMITS the inline body, forwarding to `_M_insert<unsigned long>`, and mis-mangles
+   its `__ostream_type&` typedef return as `_ZNSo9_M_insertImEER14__ostream_typeT_` (typedef
+   not resolved to `So`). g++ binds the member directly: `cout<<int`→`_ZNSolsEi`,
+   `cout<<unsigned long`→`_ZNSolsEm` (libstdc++ exports the member out-of-line). **FIX = the
+   emit_symbol unification (§5): basic_ostream<char> is extern-template-instantiated → bind
+   ALL its members INCLUDING inline ones to the external libstdc++ symbol via emit_symbol;
+   don't emit inline bodies. Extend `bind_declared_cpp_symbol` (which today only binds
+   DECLARED-ONLY members) to inline members of extern-template classes.**
+2. **`cout << std::string`** → c2mir "incompatible argument type for pointer type parameter".
+   g++ uses the free `operator<<(ostream&, const string&)` =
+   `_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE`
+   (**RK** = const reference). madc treats the `const string&` class operand as a POINTER
+   (a star), not a reference. FIX (user steer "mangler shouldn't use stars"): the W2
+   free-operator path (try_free_operator_call, rhs handling ~cir_builder:5183
+   `native_param_shape`) must pass/type a class rhs as a const-REFERENCE (RK), not a pointer.
+
+3. **Unqualified `getline(inf,line)`** (tests use `using namespace std`) resolves to the
+   GLOBAL POSIX `getline(char**,size_t*,FILE*)` (3-param, from real `<cstdio>`) → "expected
+   3 got 2". Needs an overload set across `::getline` + (via using-directive) `std::getline`,
+   picking by arg types. Sidesteppable by qualifying `std::getline` in the rewritten tests;
+   the unqualified lookup is its own gap.
+
+---
+
+## 5. THE NEXT WORK — emit_symbol unification (Pattern A) + drift-prevention gate
+
+**User decision (via AskUserQuestion): unify ALL call-symbol derivation onto
+`FuncDef::emit_symbol` (Pattern A everywhere). Exec order: resolver + gate FIRST, then
+migrate. Two emit fields, not three.**
+
+### 5.1 The drift (audited this session)
+- ONE shared mangler exists: `itanium_mangle_*` (madc_mangle.cpp). No competing mangler. ✓
+- **Pattern A (proper, "place on the node"):** class members get the mangled symbol placed
+  on `FuncDef::emit_symbol` at parse via `bind_declared_cpp_symbol` (parser.cpp:17339, sets
+  emit_symbol via itanium_mangle_ctor/dtor/operator/member_sub at 17363-17372). The call
+  reads emit_symbol (cir_builder:817, 3222, class_method_symbol@823, class_method_call_symbol@3430).
+  **Wired for CLASS MEMBERS ONLY.**
+- **Pattern B (call-site re-mangle):** free `std::` operators (W2 `try_free_operator_call`,
+  cir_builder:5047) and the new getline path (`try_std_free_function_call`) re-derive the
+  symbol at the call site via `itanium_mangle_std_free_template`. NOT placed on emit_symbol.
+- **THE HALF-BAKED PATH (user's exact concern):** `func_emit_name` (cir_builder:160) — the
+  chooser for EVERY free/namespace call — does NOT read `emit_symbol`; it only checks
+  `nested_emit_name`, then falls to `var_emit_name` (= `var.name` = `__ns_std_getline`). So
+  even if emit_symbol is placed on a free fn, this path ignores it.
+
+### 5.2 Two fields, not three (design decision)
+The three `fd->*emit*` strings collapse to TWO concepts:
+- `emit_symbol` = bind to an EXTERNAL ABI symbol, **madc emits NO body** (lots of code keys
+  on `!emit_symbol.empty()` to skip body emission). KEEP as-is — distinct semantics.
+- `class_emit_name` (arity-overload-disambiguated madc-emitted method symbol) and
+  `nested_emit_name` (hoisted nested-fn/lambda symbol) are **the SAME concept** — "the
+  symbol a madc-EMITTED function's body is defined-as and called-as" — never both set.
+  **MERGE into one `local_emit_name`.**
+(Do NOT also merge emit_symbol into one `emit_name`+is_external flag — its "no body"
+semantics are load-bearing in too many places; two is the correct stopping point.)
+
+### 5.3 Execution plan (order = A: resolver+gate first, then migrate)
+**Step 1 — consolidate (behavior-preserving):**
+- Merge `class_emit_name` + `nested_emit_name` → `local_emit_name` (FuncDef, include/madc.h
+  ~131-141; update all readers/writers).
+- Add the ONE canonical resolver:
+  ```cpp
+  // THE single source of truth for a call's emitted symbol.
+  std::string CirBuilder::call_emit_symbol(const Variable &v, FuncDef *fd) const {
+      if (fd && !fd->emit_symbol.empty())     return fd->emit_symbol;     // external bind
+      if (fd && !fd->local_emit_name.empty()) return fd->local_emit_name; // madc-emitted rename
+      return var_emit_name(v);                                           // default
+  }
+  ```
+- Route EVERY call-symbol site through it: `func_emit_name` (160) → delegate;
+  `class_method_symbol` (823), `class_method_call_symbol` (3430), and the ctor/dtor symbol
+  helpers → fold their duplicated `emit_symbol ?: …` precedence into `call_emit_symbol`.
+- Gate: fulltest 543/4 + torture 1566/31/57/1 (behavior-preserving, must be unchanged).
+
+**Step 2 — drift-prevention gate:** add `scripts/check-*.sh` (wired into fulltest, like
+`scripts/check-no-std-hardcoding.sh`) that FAILS if an `N_CALL` is emitted from a raw symbol
+(`…->var.name`, `func_emit_name`, a literal) instead of `call_emit_symbol(...)`. This is the
+mechanical guard so the drift can't recur. (Grep heuristic: `node2(N_CALL, id(` whose symbol
+arg isn't `call_emit_symbol(...)`-derived — refine to avoid false positives on intrinsics.)
+
+**Step 3 — migrate free `std::` fns onto Pattern A:** place `emit_symbol` on the
+instantiated free-fn FuncDef (a free-function analog of `bind_declared_cpp_symbol` using
+`itanium_mangle_std_free_template`), so the call reads emit_symbol via `call_emit_symbol` and
+`try_std_free_function_call` / the W2 call-site re-mangle are RETIRED (one shared deducer +
+one placement). This also REMOVES the `__ns_` shim gate (it's moot once the call reads
+emit_symbol) — the gate I reverted this session (see §7) disappears here, not as a tweak.
+Also fixes cout<<unsigned long (§4.1): bind inline extern-template members' emit_symbol.
+
+**Gate each step: fulltest (known reds only) + gcc.c-torture ALONE + cout/getline/ofstream
+canaries. HIGH blast radius (every call-symbol site) — torture every iteration.**
+
+---
+
+## 6. THE getline MECHANISM (DONE, `a1b4421`) — reference for the migration
+
+Named `std::` free-function template → real Itanium symbol, no shims, generalizes the W2
+operator path to named functions:
+- **Parse capture** (`capture_free_function_overload`, parser.cpp; called in
+  `register_skipped_namespace_template_function` BEFORE the single-Variable bail, so EVERY
+  overload is captured; system-header-only via `is_system_header_path`): records each
+  overload's return + param spellings + template params into `Program::free_function_overloads`
+  (reuses `extract_free_signature`).
+- **Call site** (`CirBuilder::try_std_free_function_call`, cir_builder.cpp; helpers
+  `substitute_tparams`, `requalify_head`): select overload by arity → deduce template args
+  by matching each template-id param against the call arg's class self/bases
+  (`collect_self_and_base_spellings`) → **requalify each head with the matched class's
+  FULLY-QUALIFIED spelling** (the captured spelling is unqualified since it lives inside
+  `namespace std`; without this you get a bare `13basic_istream`/`12basic_string` that never
+  links — must become `St13basic_istream`/`NSt7__cxx1112basic_string`) → `$Tn`-substitute
+  template params (the mangler maps `$Tn`→`T_`/`T0_`/…) → `itanium_mangle_std_free_template`
+  → emit N_CALL passing reference params BY ADDRESS, N_DEREF the result if the return is a ref.
+- **Currently gated on `__ns_` callee prefix** (cir_builder ~7244) — that's a SHIM (user
+  flagged it); it goes away in §5.3 step 3 when discovery becomes pure signature-match +
+  emit_symbol. (I reverted an uncommitted attempt to just drop the gate — do it properly.)
+
+---
+
+## 7. PROCESS / GOTCHAS (cost me time this session — heed them)
+- **`madc_verbose` is `thread_local`** → the repo's `DBG(x)` macro is SILENT on the
+  parser/cir_builder worker threads. Don't trust empty DBG output there. Use the gated
+  `FFDBG` macro (cir_builder.cpp, `#ifdef MADC_DBG_FREEFN`): build `make -C src
+  CXXFLAGS=-DMADC_DBG_FREEFN`, run, read stderr; normal build = off. Gate diagnostics with
+  `#if`, never add/remove churn (`[[feedback_gated_debug_not_churn]]`).
+- **`--dump-cir` writes to STDERR** (not stdout) — capture with `2>&1`, not `2>/dev/null`.
+  `--emit=c11` is a SEPARATE renderer (cir_emit_c.cpp), NOT the JIT/c2mir feed — for the JIT
+  path use `--dump-cir`. (I chased a `--emit=c11` `__ns_std_getline` that wasn't the JIT symbol.)
+- **NAS mtime drift** — `touch src/<f>.cpp` before `make`; verify `stat -c %Y bin/madc`
+  before/after actually changed.
+- **Tests run STD_MADC by default** (no `__cplusplus`); real libstdc++ needs `--std=c++17`.
+  Forcing `--no-embedded-headers` WITHOUT `--std=c++17` produces artifact failures.
+- **Gates:** fulltest 543/4/0/26 (reds: testdefer/testfstream/testlargesizeofquery/testloop);
+  gcc.c-torture 1566/31/57/1 (run ALONE: `python3 scripts/run_gcc_testsuite.py --root
+  gcc_testsuite --madc bin/madc`). Canaries: `tmp/gl_printf.mad` (getline reads lines),
+  testcout_realhdr ("This is a test, x = -1"), test_extern_polymorphic.
+- **Don't push remote without asking.** Commit early on this feature branch.
+
+## 8. REDUCERS (tmp/, gitignored)
+`tmp/gl_printf.mad` (getline works end-to-end), `tmp/gl_qual.mad`/`tmp/gl_only.mad`
+(getline + cout walls), `tmp/cul.mad` (cout<<unsigned long), `tmp/cstr.mad` (cout<<string),
+`tmp/loop_real.mad` (standard-C++ testloop shape). g++ oracle: `g++ -std=c++17 -c x.cpp; nm
+x.o | grep U` for the real symbols.
+
+## 9. OPEN ITEMS
+- The `__ns_` shim gate (cir_builder ~7244) still in committed code — removed by §5.3 step 3.
+- W2 + getline call-site re-mangle → retire into emit_symbol (§5.3 step 3).
+- testlargesizeofquery: separate uint32→64 array-dim track.
+- Physical shim deletion + STD_MADC `__cplusplus` flip: deferred (big, needs the cluster
+  fixes first).
+
+See `[[project_header_partition_architecture]]`, `[[project_cpp_mangled_direct]]`,
+`[[project_template_instantiation]]`, `[[feedback_gated_debug_not_churn]]`,
+`[[feedback_verify_over_stale_handoff]]`, `[[feedback_correct_over_shortcuts]]`.

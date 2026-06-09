@@ -1,5 +1,11 @@
 # HANDOFF — real libstdc++ `<fstream>`: construction works, dtor crash is the wall
 
+> **⚑ SUPERSEDED for CURRENT STATE/NEXT-STEP by
+> `docs/plans/2026-06-09-emit-symbol-unification-HANDOFF.md` (read THAT first).** This
+> doc keeps the granular fstream/string history + turn-by-turn trail (useful reference),
+> but the live state, the getline-DONE milestone, the cout<< walls, and the
+> emit_symbol-unification plan all live in the emit-symbol-unification handoff.
+
 **Read this FIRST on resume / post-compaction. Assume you remember NOTHING (a
 `/compact` is effectively a `/clear` — do not rely on conversational memory).**
 Run `bash scripts/resume.sh` first (live git/build truth), then read this top to
