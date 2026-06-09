@@ -7569,6 +7569,7 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 				append(items, p);
 			m_pending_stmts.clear();
 			append(items, node2(N_EXPR, list(), expr));
+			append_deferred_stmts(items, 0);
 			append(items, node2(N_RETURN, list(), ignore(), tr));
 			return node2(N_BLOCK, list(), items);
 		}
@@ -7588,6 +7589,7 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 			append(items, node2(N_EXPR, list(),
 					    node2(N_ASSIGN, slot, val, tr), tr));
 		}
+		append_deferred_stmts(items, 0);
 		append(items, node2(N_RETURN, list(), ignore(), tr));
 		return node2(N_BLOCK, list(), items, tr);
 	}
@@ -7609,6 +7611,7 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		m_pending_stmts.clear();
 		for (node_t s : copy_stmts)
 			append(items, s);
+		append_deferred_stmts(items, 0);
 		append(items, node2(N_RETURN, list(), ignore(), tr));
 		return node2(N_BLOCK, list(), items, tr);
 	}
@@ -7644,6 +7647,42 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		if (base && derived && base != derived
 		    && derived->is_or_derives_from(base))
 			expr = node2(N_CAST, class_ptr_type(base), expr, tr);
+	}
+	// Pending `defer`red statements run between the return expression's
+	// evaluation and the actual return (old-backend/Go ordering): hoist the
+	// value into a temp of the function's C return type, run the deferred
+	// statements, return the temp. A valueless return (or one with no
+	// hoistable C return type) just emits the deferred statements first —
+	// the synthesized zero-fill expr is a constant, so ordering is moot.
+	if (!m_defer_scopes.empty()) {
+		node_t items = list();
+		for (node_t p : m_pending_stmts)
+			append(items, p);
+		m_pending_stmts.clear();
+		if (tr->returns && m_cur_func_ret_spec_dd) {
+			char tmp[48];
+			snprintf(tmp, sizeof(tmp), "__madc_defer_ret%d",
+				 m_defer_tmp_counter++);
+			node_t sd = simple(N_SPEC_DECL, tr);
+			append(sd, m_cur_func_ret_spec_alias.empty()
+				   ? type_list(m_cur_func_ret_spec_dd)
+				   : type_list(m_cur_func_ret_spec_dd,
+					       m_cur_func_ret_spec_alias));
+			node_t dl = list();
+			for (int rs = 0; rs < m_cur_func_ret_stars; rs++)
+				append(dl, pointer());
+			append(sd, node2(N_DECL, id(tmp, tr), dl));
+			append(sd, ignore());
+			append(sd, ignore());
+			append(sd, expr);
+			append(items, sd);
+			append_deferred_stmts(items, 0);
+			append(items, node2(N_RETURN, list(), id(tmp, tr), tr));
+		} else {
+			append_deferred_stmts(items, 0);
+			append(items, node2(N_RETURN, list(), expr, tr));
+		}
+		return node2(N_BLOCK, list(), items, tr);
 	}
 	if (!m_pending_stmts.empty()) {
 		node_t items = list();
@@ -8654,10 +8693,37 @@ node_t CirBuilder::translate_stmt_required(TokenBase *tb)
 	return node2(N_EXPR, list(), ignore(), tb);
 }
 
+// Emit pending `defer`red statements into `items`: scopes from the innermost
+// down to m_defer_scopes[from_scope] inclusive, each scope's list in reverse
+// registration (LIFO) order. Each statement is re-translated at each exit
+// site (fresh nodes — a cir node is single-parent), with any materialized
+// temporaries flushed ahead of it, mirroring translate_block's statement loop.
+void CirBuilder::append_deferred_stmts(node_t items, size_t from_scope)
+{
+	for (size_t si = m_defer_scopes.size(); si-- > from_scope; ) {
+		TokenCpnd *sc = m_defer_scopes[si];
+		for (auto it = sc->deferred.rbegin(); it != sc->deferred.rend(); ++it) {
+			node_t s = translate_stmt(*it);
+			if (!s) continue;
+			for (node_t p : m_pending_stmts)
+				append(items, p);
+			m_pending_stmts.clear();
+			append(items, s);
+		}
+	}
+}
+
 node_t CirBuilder::translate_block(TokenCpnd *tc)
 {
 	node_t empty_list = list();
 	node_t items = list();
+
+	// A compound carrying `defer`red statements becomes an active defer
+	// scope for its whole translation: returns inside it (translate_return)
+	// emit the pending deferred statements before leaving the function.
+	const bool has_defers = !tc->deferred.empty();
+	if (has_defers)
+		m_defer_scopes.push_back(tc);
 
 	std::set<std::string> decl_vars;
 	for (auto *ts : tc->statements) {
@@ -8896,6 +8962,15 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		append(items, node2(N_EXPR, label_list, integer(0)));
 	}
 
+	// Fall-off end of a defer-carrying compound: run THIS scope's deferred
+	// statements (LIFO), then retire the scope. Early exits (return) emit
+	// them at the exit site instead; when the block ends in a return this
+	// emission is unreachable dead code, which is valid C.
+	if (has_defers) {
+		append_deferred_stmts(items, m_defer_scopes.size() - 1);
+		m_defer_scopes.pop_back();
+	}
+
 	// No manual scope-exit destruction: each eligible class object's storage
 	// decl carries a cleanup attribute, so the c2mir fork emits
 	// the destructor call on EVERY exit path (fall-through, return, break,
@@ -8931,6 +9006,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	if (!fd) return NULL;
 	Method *saved_cur_method = m_cur_method;
 	m_cur_method = tf->method;
+	// Fresh defer-scope context per function body (a nested/hoisted function
+	// must not see the enclosing function's pending defers).
+	std::vector<TokenCpnd *> saved_defer_scopes;
+	saved_defer_scopes.swap(m_defer_scopes);
 
 	DataDef *ret_dd = &fd->returns;
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
@@ -8977,6 +9056,9 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// Retbuf-returning OR multi-return fn: C return type is `void`.
 	int ret_decl_stars = ret_is_ptr ? 1 : 0;
 	node_t ret_type = NULL;
+	m_cur_func_ret_spec_dd = NULL;
+	m_cur_func_ret_spec_alias.clear();
+	m_cur_func_ret_stars = 0;
 	if (ret_via_retbuf || ret_is_multi) {
 		ret_type = type_list(&ddVOID);
 		ret_decl_stars = 0;
@@ -8984,9 +9066,19 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		ret_type = type_list(&fd->returns, fd->return_typedef_name);
 		ret_decl_stars = explicit_star_count(&fd->returns,
 						     fd->return_typedef_name);
+		if (!m_cur_func_returns_void) {
+			m_cur_func_ret_spec_dd = &fd->returns;
+			m_cur_func_ret_spec_alias = fd->return_typedef_name;
+		}
 	} else {
 		ret_type = type_list(ret_dd);
+		if (!m_cur_func_returns_void)
+			m_cur_func_ret_spec_dd = ret_dd;
 	}
+	// Record the C return type's pointer suffix count (a ref-return adds one
+	// below) so translate_return can declare a matching return-value temp
+	// when pending defers must run AFTER the return expression is evaluated.
+	m_cur_func_ret_stars = ret_decl_stars + (ret_is_ref ? 1 : 0);
 
 	// GNU nested-function / [&]-lambda capture context. A capturing function
 	// (has_captures) implicitly captures by reference whatever enclosing
@@ -9264,11 +9356,13 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		// Re-emit with the wrapped body; the prologue runs once at main entry.
 		node_t out = node4(N_FUNC_DEF, ret_type, decl, list(), body, tf);
 		m_cur_method = saved_cur_method;
+		m_defer_scopes.swap(saved_defer_scopes);
 		return out;
 	}
 
 	node_t out = node4(N_FUNC_DEF, ret_type, decl, list(), body, tf);
 	m_cur_method = saved_cur_method;
+	m_defer_scopes.swap(saved_defer_scopes);
 	return out;
 }
 

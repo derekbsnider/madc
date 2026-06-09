@@ -92,6 +92,30 @@ class CirBuilder {
 	bool m_cur_func_multi_return = false;
 	// Per-translation counter for unique multi-return buffer names (__mret_K).
 	int m_mret_counter = 0;
+	// Active `defer` scopes while translating the current function's body:
+	// each entry is a compound whose `deferred` vector is non-empty, innermost
+	// at the back. translate_block pushes/pops; a compound's fall-off end runs
+	// its OWN scope's deferred statements, a `return` runs EVERY active
+	// scope's (innermost scope first, each scope's list in reverse
+	// registration = LIFO order). Deferred statements run BEFORE destructors:
+	// dtors ride the c2mir cleanup attribute, which fires at the actual scope
+	// exit after these inline statements. Matches the old backend's
+	// TokenCpnd::cleanup() ordering.
+	std::vector<class TokenCpnd *> m_defer_scopes;
+	// Per-translation counter for unique defer return-value temp names.
+	int m_defer_tmp_counter = 0;
+	// Inputs to rebuild the current function's C return type at a return site
+	// (a cir node is single-parent, so func_def's spec tree cannot be reused):
+	// type_list(m_cur_func_ret_spec_dd[, m_cur_func_ret_spec_alias]) plus
+	// m_cur_func_ret_stars pointer suffixes. NULL spec_dd = no hoistable
+	// C return value (void / __retbuf / multi-return shapes).
+	DataDef *m_cur_func_ret_spec_dd = NULL;
+	std::string m_cur_func_ret_spec_alias;
+	int m_cur_func_ret_stars = 0;
+	// Append every pending deferred statement to `items`: scopes from the
+	// innermost down to m_defer_scopes[from_scope] inclusive, each scope's
+	// list in LIFO order. Flushes per-statement materialized temps.
+	void append_deferred_stmts(node_t items, size_t from_scope);
 	// Name of the hidden return-slot pointer parameter for a by-value class return.
 	static const char *RETBUF_NAME;
 	// Build the `struct <Cls> *__retbuf` named parameter node (N_SPEC_DECL), the

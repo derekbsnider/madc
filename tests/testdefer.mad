@@ -1,6 +1,13 @@
 #!/../bin/madc
+// Standard C++ plus madc's `defer` extension — compiled through REAL libstdc++
+// headers via the .flags fixture (--std=c++17 --no-embedded-headers).
+// Deferred statements run at scope exit in LIFO order, before destructors.
 #include <iostream>
+#include <fstream>
+#include <string>
+#include <cstdlib>
 using namespace std;
+
 int main()
 {
     // basic LIFO order
@@ -9,9 +16,11 @@ int main()
     defer cout << "second (deferred 2nd)" << endl;
     cout << "first" << endl;
 
-    // practical: file cleanup
+    // practical: file cleanup. LIFO: the close (registered last) runs first,
+    // then the rm — so the file is flushed before it is removed.
+    defer system("rm -f /tmp/madc_defer_test.txt");
     ofstream out;
-    string fname = "/tmp/defer_test.txt";
+    string fname = "/tmp/madc_defer_test.txt";
     out.open(fname);
     defer out.close();
     out << "written via deferred close" << endl;
