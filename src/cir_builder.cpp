@@ -583,9 +583,25 @@ static FuncDef *call_target_funcdef_raw(TokenCallFunc *tcf)
 FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
 {
 	FuncDef *fd = call_target_funcdef_raw(tcf);
-	if (fd && !fd->namespace_name.empty() && !fd->function_display_name.empty())
+	if (fd && !fd->namespace_name.empty() && !fd->function_display_name.empty()) {
 		if (FuncDef *inst = std_free_function_instantiation(tcf, fd))
 			return inst;
+		// NON-template namespace overload set (e.g. std::to_string's nine
+		// inline definitions): rank the parsed overloads by the call's arg
+		// types — the same generic ranking methods use — and resolve to the
+		// winner. Its local_emit_name carries the unique symbol, so every
+		// consumer of this resolver (args, retbuf classification, callee
+		// naming) sees the selected overload consistently.
+		if (m_prog) {
+			std::vector<const DataDef *> at;
+			for (TokenBase *p : tcf->parameters)
+				at.push_back(p ? p->datadef() : NULL);
+			if (Variable *w = m_prog->find_namespace_function_overload(
+					fd->namespace_name, fd->function_display_name, at))
+				if (FuncDef *wfd = dynamic_cast<FuncDef *>(w->type))
+					return wfd;
+		}
+	}
 	return fd;
 }
 
@@ -607,10 +623,15 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 	DataDefCLASS *cdd = class_return_via_retbuf(&fd->returns);
 	if (!cdd) return NULL;
 	// A fn-ptr call inherits the retbuf ABI from its rendered target type; a
-	// direct call is gated on m_user_func_names.
+	// direct call is gated on m_user_func_names — by the call's RESOLVED emit
+	// symbol (call_emit_symbol precedence), so an overload-set winner whose
+	// symbol differs from the called Variable's name (local_emit_name) and a
+	// call through a using-imported alias both classify by the function that
+	// is actually emitted.
 	if (dynamic_cast<DataDefFPTR *>(tcf->var.type))
 		return cdd;
-	if (!(m_user_func_names && m_user_func_names->count(tcf->var.name) > 0))
+	std::string sym = func_emit_name(tcf->var, fd);
+	if (!(m_user_func_names && m_user_func_names->count(sym) > 0))
 		return NULL;
 	return cdd;
 }
@@ -5821,11 +5842,14 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 // For a T&-returning operator[] this is the element ADDRESS (a T*); callers that
 // want the element lvalue deref it (class_subscript_call). NULL when the object
 // is not a class with an operator[].
-node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
+// Receiver-generic operator[] dispatch core: `recv_addr` is the receiver's
+// ADDRESS node (value object -> &obj, pointer receiver -> its value). Shared
+// by the named-variable (TokenSubscript) and expression-receiver
+// (TokenSubscriptExpr) subscript paths.
+node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
+					   TokenBase *index, TokenBase *origin)
 {
-	if (!tsub) return NULL;
-	DataDefCLASS *cls = class_behind(tsub->object.type);
-	if (!cls) return NULL;
+	if (!cls || !recv_addr) return NULL;
 	std::string opname = "operator[]";
 	Variable *mv = cls->findMethod(opname);
 	if (!mv) return NULL;
@@ -5838,13 +5862,14 @@ node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 	// referenced-funcs scheme for user-class method bodies. T& returns arrive as
 	// pointers; class_subscript_call derefs them so obj[i] is an lvalue.
 	if (callee && !callee->emit_symbol.empty()) {
-		node_t this_arg = object_var_void_addr(tsub->object, origin);
+		node_t this_arg = node2(N_CAST, void_ptr_type(), recv_addr, origin);
+		CIR_NODE(this_arg)->synth_from_origin = true;
 		// Param 0 = this (void*); param 1 = size_t index (a 64-bit scalar).
 		std::vector<ExternParam> eparams = { { {N_VOID}, true },
 						     { {N_LONG}, false } };
 		node_t args = list();
 		append(args, this_arg);
-		append(args, translate_expr(tsub->index));
+		append(args, translate_expr(index));
 		// T& -> pointer return; class_subscript_call derefs it to the element
 		// lvalue so obj[i] reads and obj[i] = x writes.
 		need_output_extern(callee->emit_symbol.c_str(), true, eparams,
@@ -5856,28 +5881,45 @@ node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 	}
 
 	std::string sym = cls->name + "__operator[]";   // ClassName__operator[]
-	// __this: value receiver -> &obj, pointer receiver -> obj.
-	bool recv_is_ptr = tsub->object.type && tsub->object.type->is_pointer();
-	node_t recv = id(tsub->object.name.c_str(), origin);
-	node_t this_arg = recv_is_ptr ? recv : node1(N_ADDR, recv, origin);
-
 	node_t args = list();
-	append(args, this_arg);
+	append(args, recv_addr);
 	// Index argument (operator[] parameter 1; parameter 0 = __this).
 	DataDef *idx_pt = (callee && callee->parameters.size() > 1)
 			? callee->parameters[1] : NULL;
 	bool refp = callee && callee->ref_params.size() > 1 && callee->ref_params[1];
 	if (DataDefCLASS *pc = param_object_class(idx_pt, refp))
-		append(args, object_arg_addr(tsub->index, pc));
+		append(args, object_arg_addr(index, pc));
 	else if (DataDefCLASS *vc = as_class_instance(idx_pt))
-		append(args, object_arg_value(tsub->index, vc));
+		append(args, object_arg_value(index, vc));
 	else if (refp)
-		append(args, node1(N_ADDR, translate_expr(tsub->index), tsub->index));
+		append(args, node1(N_ADDR, translate_expr(index), index));
 	else
-		append(args, translate_expr(tsub->index));
+		append(args, translate_expr(index));
 
 	referenced_funcs.insert(sym);
 	return node2(N_CALL, id(sym.c_str(), origin), args, origin);
+}
+
+node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
+{
+	if (!tsub) return NULL;
+	DataDefCLASS *cls = class_behind(tsub->object.type);
+	if (!cls) return NULL;
+	std::string opname = "operator[]";
+	Variable *mv = cls->findMethod(opname);
+	if (!mv) return NULL;
+	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
+	node_t recv_addr;
+	if (callee && !callee->emit_symbol.empty())
+		// (the core adds the void* cast — together = object_var_void_addr)
+		recv_addr = object_var_addr(tsub->object, origin);
+	else {
+		// __this: value receiver -> &obj, pointer receiver -> obj.
+		bool recv_is_ptr = tsub->object.type && tsub->object.type->is_pointer();
+		node_t recv = id(tsub->object.name.c_str(), origin);
+		recv_addr = recv_is_ptr ? recv : node1(N_ADDR, recv, origin);
+	}
+	return class_subscript_addr_on(cls, recv_addr, tsub->index, origin);
 }
 
 node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)

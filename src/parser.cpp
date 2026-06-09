@@ -6558,6 +6558,99 @@ void Program::resolve_object_operator_type(TokenOperator *to)
     if ( rt ) to->set_resolved_type(rt);
 }
 
+// Normalized text of one token for the namespace-overload identity key —
+// identifiers/keywords/datatypes by name, multi-char operators by their string,
+// single-char tokens verbatim, anything else by TokenID. Only stability and
+// distinctness matter (the key tells overloads apart); it is never emitted.
+static std::string overload_token_spelling(TokenBase *t)
+{
+    if ( !t )
+	return "?";
+    switch ( t->type() )
+    {
+	case TokenType::ttIdentifier:
+	case TokenType::ttKeyword:
+	case TokenType::ttDataType:
+	    return ((TokenIdent *)t)->str;
+	case TokenType::ttMultiOp:
+	    return ((TokenMultiOp *)t)->str;
+	default:
+	    break;
+    }
+    int64_t c = t->get();
+    if ( c > ' ' && c < 127 )
+	return std::string(1, (char)c);
+    char buf[24];
+    snprintf(buf, sizeof(buf), "#%d", (int)t->id());
+    return buf;
+}
+
+std::string Program::peek_param_list_spelling()
+{
+    // The parser sits just after the declarator's '('. Record the balanced
+    // parameter-list tokens, then push them back (LIFO deque) so the upcoming
+    // parseFunction sees the stream untouched.
+    std::vector<TokenBase *> recorded;
+    int depth = 1;
+    std::string spelling;
+    while ( depth > 0 )
+    {
+	TokenBase *t = nextToken();
+	if ( !t )
+	    break;
+	recorded.push_back(t);
+	if ( t->id() == TokenID::tkOpBrk )
+	    depth++;
+	else if ( t->id() == TokenID::tkClBrk && --depth == 0 )
+	    break;
+	if ( !spelling.empty() )
+	    spelling += ' ';
+	spelling += overload_token_spelling(t);
+    }
+    for ( size_t i = recorded.size(); i-- > 0; )
+	pushToken(recorded[i]);
+    return spelling;
+}
+
+Variable *Program::find_namespace_function_overload(const std::string &ns,
+		const std::string &name,
+		const std::vector<const DataDef *> &argtypes)
+{
+    std::map<std::string, std::vector<NamespaceFnOverload>>::iterator oi =
+	namespace_fn_overload_sets.find(ns + "::" + name);
+    if ( oi == namespace_fn_overload_sets.end() || oi->second.size() < 2 )
+	return NULL;
+    Variable *best = NULL;
+    int best_score = -1;
+    for ( NamespaceFnOverload &e : oi->second )
+    {
+	FuncDef *fd = e.var ? dynamic_cast<FuncDef *>(e.var->type) : NULL;
+	if ( !fd )
+	    continue;
+	size_t pn = fd->parameters.size();
+	// Default arguments make the function callable with
+	// [required..total] args (FuncDef::required_param_count).
+	if ( argtypes.size() < fd->required_param_count()
+	  || argtypes.size() > pn )
+	    continue;
+	int total = 0;
+	bool ok = true;
+	for ( size_t i = 0; i < argtypes.size(); i++ )
+	{
+	    bool refp = i < fd->ref_params.size() && fd->ref_params[i];
+	    int s = score_arg_to_param(argtypes[i], fd->parameters[i], refp);
+	    if ( s < 0 ) { ok = false; break; }
+	    total += s;
+	}
+	if ( ok && total > best_score )
+	{
+	    best_score = total;
+	    best = e.var;
+	}
+    }
+    return best;
+}
+
 TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
 		Variable &recv, DataDefCLASS *cls, const std::string &id)
 {
@@ -15342,6 +15435,25 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
 		seen = true;
 	if ( !seen )
 	    children.push_back(opened_namespace);
+    }
+    else
+    {
+	// A namespace once declared `inline` stays inline on re-open — the
+	// `inline` keyword is required only on the FIRST declaration
+	// (C++ [namespace.def]). libstdc++ does exactly this: <bits/c++config.h>
+	// declares `inline namespace __cxx11 { }` once, then every header
+	// re-opens it as plain `namespace __cxx11 {`. Without this, members
+	// added by re-opens (std::stoi, std::to_string) never mirror into the
+	// parent and are invisible as std:: members.
+	std::map<std::string, std::vector<std::string>>::iterator ci =
+	    inline_namespace_children.find(saved_namespace);
+	if ( ci != inline_namespace_children.end() )
+	    for ( size_t i = 0; i < ci->second.size(); ++i )
+		if ( ci->second[i] == opened_namespace )
+		{
+		    inline_namespace = true;
+		    break;
+		}
     }
 
     while ( (tn = nextToken()) )
@@ -27239,8 +27351,34 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     std::string source_id = id;
     std::string parse_id = id;
     bool namespace_function = !qualified_owner_class && !current_namespace.empty();
+    std::string ns_overload_spelling;
+    bool ns_overload_tracked = false;
     if ( namespace_function )
+    {
 	parse_id = namespace_function_symbol(current_namespace, source_id);
+	// C++ free-function overloading: each overload of ns::name gets its
+	// OWN Variable/FuncDef under a unique internal symbol; a
+	// re-declaration of the SAME parameter list reuses its existing
+	// symbol (forward decl -> definition). Without this every overload
+	// re-entered parseFunction under one shared id and the first
+	// signature swallowed the rest (libstdc++'s nine std::to_string
+	// definitions all collapsed to the int one).
+	if ( !is_c_mode() && current_linkage == LinkageSpec::Cpp )
+	{
+	    ns_overload_tracked = true;
+	    ns_overload_spelling = peek_param_list_spelling();
+	    std::vector<NamespaceFnOverload> &ovset =
+		namespace_fn_overload_sets[current_namespace + "::" + source_id];
+	    Variable *same = NULL;
+	    for ( size_t i = 0; i < ovset.size(); ++i )
+		if ( ovset[i].param_spelling == ns_overload_spelling )
+		    same = ovset[i].var;
+	    if ( same )
+		parse_id = same->name;
+	    else if ( !ovset.empty() )
+		parse_id = unique_overload_symbol(parse_id);
+	}
+    }
     else if ( !qualified_owner_class && !is_c_mode()
 	   && parse_id.compare(0, 8, "operator") == 0
 	   && findVariable(parse_id) )
@@ -27284,6 +27422,37 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	      && current_linkage == LinkageSpec::Cpp )
 		ns_var->storage_alias_name =
 		    namespace_cpp_function_symbol(current_namespace, source_id, fd);
+	    if ( fd && ns_overload_tracked )
+	    {
+		// Source identity for call-site overload ranking
+		// (cir_builder's call_target_funcdef enumerates the set).
+		fd->function_display_name = source_id;
+		fd->namespace_name = current_namespace;
+		std::vector<NamespaceFnOverload> &ovset =
+		    namespace_fn_overload_sets[current_namespace + "::" + source_id];
+		bool known = false;
+		for ( size_t i = 0; i < ovset.size(); ++i )
+		    if ( ovset[i].var == ns_var )
+			known = true;
+		if ( !known )
+		{
+		    NamespaceFnOverload e;
+		    e.param_spelling = ns_overload_spelling;
+		    e.var = ns_var;
+		    ovset.push_back(e);
+		}
+		// Once a name has 2+ overloads, every member's call symbol is
+		// its OWN unique Variable name (call_emit_symbol precedence:
+		// local_emit_name), so a call resolved through the shared
+		// namespace-map entry still emits the ranked winner's symbol.
+		// (Invariant: local_emit_name == its Variable's name.)
+		if ( ovset.size() >= 2 )
+		    for ( size_t i = 0; i < ovset.size(); ++i )
+			if ( FuncDef *ofd = ovset[i].var
+			     ? dynamic_cast<FuncDef *>(ovset[i].var->type) : NULL )
+			    if ( ofd->emit_symbol.empty() )
+				ofd->local_emit_name = ovset[i].var->name;
+	    }
 	    variable_map_t &ns = namespace_map[current_namespace];
 	    ns[source_id] = ns_var;
 	    ns.erase(parse_id);

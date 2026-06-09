@@ -1221,6 +1221,29 @@ public:
     // __ns_<ns>_<name> wrapper path (which is correct only for madc's own polyglot
     // namespaces). See itanium_mangle_std_free_template + project_cpp_mangled_direct.
     std::vector<FreeOperatorOverload> free_function_overloads;
+    // NON-template C++ namespace free-function overload sets (e.g. the nine
+    // inline `std::to_string(...)` definitions in <bits/basic_string.h>).
+    // Each overload parses into its OWN Variable/FuncDef under a unique
+    // internal symbol (unique_overload_symbol); this registry — keyed
+    // "ns::name" — lets the call site enumerate and rank them by arg types
+    // (the same generic score_arg_to_param ranking methods use).
+    // param_spelling is the normalized source spelling of the parameter list,
+    // used to tell a re-declaration of the SAME overload (reuse its Variable)
+    // from a NEW overload (mint a fresh symbol).
+    struct NamespaceFnOverload {
+	std::string param_spelling;
+	Variable *var;
+    };
+    std::map<std::string, std::vector<NamespaceFnOverload>> namespace_fn_overload_sets;
+    // Rank ns::name's parsed overloads against the call's arg types; returns
+    // the winning Variable, or NULL when no set (or no viable overload) exists.
+    Variable *find_namespace_function_overload(const std::string &ns,
+					       const std::string &name,
+					       const std::vector<const DataDef *> &argtypes);
+    // Record (then push back) the upcoming balanced parameter-list tokens —
+    // the parser sits just after the function declarator's '(' — returning a
+    // normalized spelling used as the overload-identity key.
+    std::string peek_param_list_spelling();
     struct PendingTemplateInstantiation {
 	std::string mangled_name;
 	std::string canonical_spelling;

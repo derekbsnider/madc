@@ -323,6 +323,10 @@ class CirBuilder {
 	// The BARE operator[] call (no deref) — for a T&-returning operator[] this
 	// is the element ADDRESS (a T*). Used to take a string element's address.
 	node_t class_subscript_addr(class TokenSubscript *tsub, TokenBase *origin);
+	// Receiver-generic operator[] dispatch core shared by the named-variable
+	// and expression-receiver subscript paths; recv_addr = receiver address.
+	node_t class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
+				       TokenBase *index, TokenBase *origin);
 	// True when `arg` is `obj[i]` on a class whose operator[] yields a class
 	// object element reached through the returned address.
 	static bool class_subscript_is_object(TokenBase *arg);
