@@ -130,12 +130,31 @@ repro), `tmp/fssz.mad` (sizeof probe — currently errors, see §5).
 - **ofstream operator<<:** `out << "hello" << 42` binds the free
   `operator<<(ostream&,const char*)` (via base deduction) + member `operator<<(int)`.
   WRITES "hello42" to the file. ✅
-- **ofstream destructor:** **SIGSEGV at scope exit** (the writes flush first). ❌
-  Even `out << "x";` alone crashes at the implicit dtor. THE WALL.
-- **ifstream / getline:** not reached yet; the full `tmp/fstream_test.mad` also has a
-  `basic_string.h:3486` cluster (getline/char_traits, input path) — DEFERRED until
-  ofstream runs clean. (errors: invalid comparison operands ×2, subscript, lvalue
-  `&`, return-expr struct — a synthesized basic_string method body.)
+- **ofstream destructor:** ✅ FIXED (ecfc856) — destructs cleanly, EXIT 0. (Was a
+  SIGSEGV at scope exit from the array-of-class-object undersizing; see §5.)
+- **ifstream / getline:** NEXT WALL — but it is NOT getline-specific. **Even a bare
+  `std::string line;` (no getline, no fstream) hits the same `basic_string.h:3486`
+  cluster** (6 c2mir check errors). ROOT CAUSE LOCATED (2026-06-09, via `--dump-cir`
+  on `tmp/str1.mad`): in the real-libstdc++ `<string>` instantiation, basic_string's
+  POINTER/SIZE members resolve to **opaque unreduced alias-template names instead of
+  concrete types**:
+    - `_Alloc_hider::_M_p` (should be `char*`) → `STRUCT() ID()
+      __detected_or_t_value_type____pointer__Char_alloc_type` (a struct, not a pointer).
+    - `_M_string_length` (should be `unsigned long`) → `STRUCT() ID()
+      allocator_traits_…_Size_…_type` (an `allocator_traits<>::size_type` alias).
+    - `_M_local_buf` IS correct (`char[16]`).
+  Because `_M_p` is a struct not a pointer, every method that does `_M_p[n]`,
+  `_M_p == x`, `&_M_p[n]`, or returns it fails → the 6 errors (subscript / comparison
+  ×2 / lvalue-`&` / struct-return). **THE GAP = alias-template + detection-idiom
+  resolution**: `allocator_traits<allocator<char>>::pointer`/`size_type` flow through
+  libstdc++'s `std::__detected_or_t<…>` / `__detector` SFINAE machinery, which madc is
+  NOT reducing to the concrete `char*`/`size_t`. This is a substantial template-
+  metaprogramming piece (sibling of the `__are_same`/trait-builtin + R5/C2 namespaced
+  template-id work), NOT a quick fix — it also gates campaign-M `<string>`-first
+  retirement and all of W2-remaining (`std::string` operator>>/getline). Reducer:
+  `tmp/str1.mad` (minimal: `std::string line; line.size();`). Suggested next move:
+  brainstorm the detection-idiom resolution approach before coding (alias-template
+  instantiation + `__detected_or`/`__detector` SFINAE → concrete member type).
 
 Run to reproduce the crash:
 ```bash
