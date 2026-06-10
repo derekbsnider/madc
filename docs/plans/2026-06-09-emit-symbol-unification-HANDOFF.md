@@ -332,11 +332,18 @@ x.o | grep U` for the real symbols.
 ## 9. OPEN ITEMS
 - ~~The `__ns_` shim gate — removed by §5.3 step 3.~~ ✅ DONE (`689dbb2`).
 - ~~getline call-site re-mangle → retire into emit_symbol.~~ ✅ DONE (`689dbb2`).
-  Still open: the W2 OPERATOR path re-mangle (§5.3 step D) — operators don't flow
-  through the generic TokenCallFunc path; deducer already shared.
-- **std::string `a + b` SIGSEGV in real-header mode** (pre-existing, verified at
-  clean HEAD via stash/rebuild; "a+b works at c9fd222" is stale for
-  `--std=c++17 --no-embedded-headers`). Reducers: tmp/cstr3.mad, tmp/cstr4.mad.
+- ~~The W2 OPERATOR path re-mangle (§5.3 step D).~~ ✅ DONE (`42a5cd3`,
+  2026-06-10): `std_free_operator_instantiation` (one scan, stream +
+  by-value shapes, member arbitration inside) + `class_operator_external_call`
+  (one emission for external members and free operators, incl. the
+  sret/__retbuf by-value shape and param[0]-class lhs base binding).
+  **THIS HANDOFF IS NOW FULLY EXECUTED** — steps 1, 2, 3, A, B, C, D all
+  landed; the operator path no longer derives symbols at the call site.
+- ~~**std::string `a + b` SIGSEGV in real-header mode**~~ ✅ DONE (`23027f7`,
+  2026-06-10): by-value class returns for free operators (the sret/retbuf
+  ABI the free paths used to decline) + decl-init copy elision; see
+  docs/plans/2026-06-10-all-reds-green-HANDOFF.md §4. Reducers
+  tmp/cstr3/4.mad GREEN under `--std=c++17 --no-embedded-headers`.
   Investigate what `a + b` lowers to (--dump-cir): by-value class return needs
   the sret/retbuf ABI the free-fn paths decline.
 - testlargesizeofquery: separate uint32→64 array-dim track.

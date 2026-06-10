@@ -191,8 +191,17 @@ General bugs fixed because the instantiations flushed them out:
      `tmp/rK.mad`) — pre-existing c2mir check error, unrelated to a+b.
    - The decl path still SILENTLY drops a class init when no ctor matches
      (`if (cc)` in translate_block) — should become a loud error.
-2. **W2 OPERATOR-path re-mangle (step D)** — see
-   `docs/plans/2026-06-09-emit-symbol-unification-HANDOFF.md`.
+2. ~~**W2 OPERATOR-path re-mangle (step D)**~~ **DONE 2026-06-10**
+   (`42a5cd3`, fulltest 549/0/0/26 exit 0, torture failset byte-identical,
+   SMAUG soaks): free operators ride Pattern A —
+   `std_free_operator_instantiation` (ONE scan, stream + by-value shapes,
+   member arbitration inside, memoized) places the symbol on
+   `FuncDef::emit_symbol`; `class_operator_external_call` (extracted from
+   class_operator_call, extended with param[0]-class lhs binding + the
+   sret/__retbuf by-value shape) is the ONE emission for external members
+   AND free operators. The interim by-value resolver/emitter pair and the
+   inline stream mangle+emit are deleted; symbols verified byte-identical.
+   The emit-symbol-unification handoff (2026-06-09) is now FULLY executed.
 3. **Torture parity gap** (Track 1.3, the promote gate): 1567 vs asmjit's
    1645 — worklist `docs/parity/root-cause-worklist.md`.
 4. (If prioritized) the §3 pack-elision gap — `std::stof`/`std::stod`.

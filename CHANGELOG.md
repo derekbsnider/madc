@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### W2 step D: free operators ride Pattern A — emit-symbol unification COMPLETE (2026-06-10)
+
+- **One emission, one symbol source for every operator call** (`42a5cd3`):
+  the last call-site symbol derivation is gone. `std_free_operator_instantiation`
+  scans the captured free namespace operators once (both the
+  reference-returning stream shape and the by-value class return), deduces
+  with the shared helpers, mangles via the one mangler, and returns an
+  instantiated `FuncDef` carrying the symbol on `emit_symbol`;
+  `class_operator_external_call` — the external member-operator emission
+  extracted and extended with parameters[0]-class lhs binding (derived→base
+  via `object_arg_addr`'s walk) and the Itanium sret/__retbuf by-value
+  shape — emits external members and free operators identically. The
+  interim by-value resolver/emitter pair is deleted; emitted symbols are
+  byte-identical. The 2026-06-09 emit-symbol-unification handoff is now
+  fully executed.
+
 ### Default-mode `#include <cstdio>` works — fulltest 549/0/0/26 (2026-06-10)
 
 - **Embedded stdio.h declares the full C89 stdio surface** (`8a897f8`): real
