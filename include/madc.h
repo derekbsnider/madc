@@ -1278,6 +1278,13 @@ public:
     // member bodies (parse_static_assert_statement).
     size_t fn_template_instantiation_depth = 0;
     void instantiate_namespace_fn_template_for_call(TokenCallFunc *tc);
+    // Namespaces named by `using namespace X;` directives (C++
+    // [namespace.udir]). The single-Variable import model skips a member
+    // whose name a global already claimed; unqualified CALL resolution
+    // consults these to bind the namespace overload when the global's arity
+    // rejects the call (using_namespace_call_fallback).
+    std::vector<std::string> active_using_namespaces;
+    Variable *using_namespace_call_fallback(Variable *var, size_t argc);
     // Parse an explicit template-argument list after a resolved function name
     // (`name<long, int>(...)`) into concrete DataDefs, consuming through the
     // closing '>'. Bails to opaque consumption (skip_template_id_suffix

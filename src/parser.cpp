@@ -8839,6 +8839,51 @@ std::string Program::active_cpp_lookup_namespace()
     return namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling);
 }
 
+// C++ [namespace.udir]: members of a `using namespace X;` namespace join
+// UNQUALIFIED overload resolution. The single-Variable import model skips a
+// namespace function whose name a GLOBAL already claimed (POSIX ::getline vs
+// std::getline) — when the resolved global function cannot accept the queued
+// call's argument count but an active using-directive namespace declares the
+// name, bind the namespace member instead (a body-less template placeholder
+// accepts any count; mangled-direct / overload ranking resolve it later).
+Variable *Program::using_namespace_call_fallback(Variable *var, size_t argc)
+{
+    FuncDef *fd = var ? dynamic_cast<FuncDef *>(var->type) : NULL;
+    if ( !fd || !fd->namespace_name.empty() )
+	return var;
+    // K&R empty parameter list accepts any argument count.
+    if ( fd->parameters.empty() && !fd->is_void_params )
+	return var;
+    size_t pn = fd->parameters.size() - (fd->is_varargs ? 1 : 0);
+    bool accepts = fd->is_varargs
+		 ? argc >= pn
+		 : (argc >= fd->required_param_count() && argc <= pn);
+    if ( accepts )
+	return var;
+    for ( size_t n = 0; n < active_using_namespaces.size(); ++n )
+    {
+	namespace_map_t::iterator nsi =
+	    namespace_map.find(active_using_namespaces[n]);
+	if ( nsi == namespace_map.end() )
+	    continue;
+	variable_map_iter vmi = nsi->second.find(var->name);
+	if ( vmi == nsi->second.end() || !vmi->second || vmi->second == var )
+	    continue;
+	FuncDef *nfd = dynamic_cast<FuncDef *>(vmi->second->type);
+	if ( !nfd )
+	    continue;
+	if ( nfd->parameters.empty() && !nfd->is_void_params )
+	    return vmi->second;   // placeholder/K&R: accepts any count
+	size_t npn = nfd->parameters.size() - (nfd->is_varargs ? 1 : 0);
+	bool nacc = nfd->is_varargs
+		  ? argc >= npn
+		  : (argc >= nfd->required_param_count() && argc <= npn);
+	if ( nacc )
+	    return vmi->second;
+    }
+    return var;
+}
+
 Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expression_head)
 {
     if ( !ident_tb ) return NULL;
@@ -13207,6 +13252,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    std::vector<DataDef *> call_explicit_targs;
 		    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 			call_explicit_targs = capture_call_template_args();
+		    // Unqualified call bound to a GLOBAL whose arity rejects it:
+		    // consult active using-directive namespaces (C++
+		    // [namespace.udir] — `getline(inf, line)` is std::getline,
+		    // not POSIX ::getline(char**, size_t*, FILE*)).
+		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+			var = using_namespace_call_fallback(var,
+				count_queued_call_arguments());
 		    // function pointer variable (DataDefFPTR) — different from regular functions
 		    if ( var->type->is_numeric() )
 		    {
@@ -15688,6 +15740,18 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	if ( ns_name.empty() )
 	    pgm.Throw(tn) << "Unknown namespace '" << raw_ns_name << "'" << flush;
 	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
+	// Record the active directive (C++ [namespace.udir]): its members join
+	// UNQUALIFIED overload resolution even when a global already claims the
+	// name — see using_namespace_call_fallback (POSIX ::getline vs
+	// std::getline).
+	{
+	    bool known = false;
+	    for ( size_t i = 0; i < pgm.active_using_namespaces.size(); ++i )
+		if ( pgm.active_using_namespaces[i] == ns_name )
+		    known = true;
+	    if ( !known )
+		pgm.active_using_namespaces.push_back(ns_name);
+	}
 	// import all members into global scope
 	if ( nsi != pgm.namespace_map.end() )
 	for ( variable_map_iter vmi = nsi->second.begin(); vmi != nsi->second.end(); ++vmi )

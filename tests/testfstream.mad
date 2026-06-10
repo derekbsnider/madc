@@ -1,12 +1,18 @@
 #!/../bin/madc
+// Standard C++ (g++-validated) — compiled through REAL libstdc++ headers via
+// the .flags fixture (--std=c++17 --no-embedded-headers).
 #include <iostream>
+#include <fstream>
+#include <string>
+#include <cstdlib>
+#include <cstring>
 using namespace std;
 
 int main()
 {
     // write a file
     ofstream outf;
-    string fname = "/tmp/madc_test.txt";
+    string fname = "/tmp/madc_fstream_test.txt";
     outf.open(fname);
     outf << "Hello from madc!" << endl;
     outf << "Line 2" << endl;
@@ -18,32 +24,25 @@ int main()
     ifstream inf;
     string line;
     inf.open(fname);
-
     getline(inf, line);
     cout << "1: " << line << endl;
     getline(inf, line);
     cout << "2: " << line << endl;
     getline(inf, line);
     cout << "3: " << line << endl;
-
     inf.close();
 
     // type conversions
-    string s;
-    to_string(s, 42);
+    string s = to_string(42);
     cout << "to_string: " << s << endl;
-
     string num = "12345";
-    int n;
-    n = stoi(num);
+    int n = stoi(num);
     cout << "stoi: " << n << endl;
-
-    n = strlen(num);
+    n = (int)strlen(num.c_str());
     cout << "strlen: " << n << endl;
 
     // cleanup
-    string rm = "rm -f /tmp/madc_test.txt";
-    system(rm);
-
+    string rm = "rm -f /tmp/madc_fstream_test.txt";
+    system(rm.c_str());
     return 0;
 }

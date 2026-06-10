@@ -602,6 +602,38 @@ extern "C" char *__madc_builtin_strcat_chk(char *dst, const char *src, unsigned 
     return __builtin___strcat_chk(dst, src, size);
 }
 
+extern "C" char *__madc_builtin_strncpy_chk(char *dst, const char *src, unsigned long n, unsigned long size)
+{
+    return __builtin___strncpy_chk(dst, src, n, size);
+}
+
+extern "C" char *__madc_builtin_strncat_chk(char *dst, const char *src, unsigned long n, unsigned long size)
+{
+    return __builtin___strncat_chk(dst, src, n, size);
+}
+
+// __builtin___mem*_chk family — bounds-checked memory operations
+// (glibc string_fortified.h inlines under _FORTIFY_SOURCE).
+extern "C" void *__madc_builtin_memcpy_chk(void *dst, const void *src, unsigned long n, unsigned long size)
+{
+    return __builtin___memcpy_chk(dst, src, n, size);
+}
+
+extern "C" void *__madc_builtin_memmove_chk(void *dst, const void *src, unsigned long n, unsigned long size)
+{
+    return __builtin___memmove_chk(dst, src, n, size);
+}
+
+extern "C" void *__madc_builtin_mempcpy_chk(void *dst, const void *src, unsigned long n, unsigned long size)
+{
+    return __builtin___mempcpy_chk(dst, src, n, size);
+}
+
+extern "C" void *__madc_builtin_memset_chk(void *dst, int c, unsigned long n, unsigned long size)
+{
+    return __builtin___memset_chk(dst, c, n, size);
+}
+
 // __builtin_frame_address: return caller's frame pointer
 extern "C" void *__madc_builtin_frame_address(int level)
 {

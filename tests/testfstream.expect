@@ -1,0 +1,7 @@
+wrote file
+1: Hello from madc!
+2: Line 2
+3: Line 3
+to_string: 42
+stoi: 12345
+strlen: 5

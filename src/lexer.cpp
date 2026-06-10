@@ -1447,6 +1447,12 @@ void Program::_tokenizer_init()
     define_map["__builtin___stpcpy_chk"] = "__madc_builtin_stpcpy_chk";
     define_map["__builtin___stpncpy_chk"] = "__madc_builtin_stpncpy_chk";
     define_map["__builtin___strcat_chk"] = "__madc_builtin_strcat_chk";
+    define_map["__builtin___strncpy_chk"] = "__madc_builtin_strncpy_chk";
+    define_map["__builtin___strncat_chk"] = "__madc_builtin_strncat_chk";
+    define_map["__builtin___memcpy_chk"] = "__madc_builtin_memcpy_chk";
+    define_map["__builtin___memmove_chk"] = "__madc_builtin_memmove_chk";
+    define_map["__builtin___mempcpy_chk"] = "__madc_builtin_mempcpy_chk";
+    define_map["__builtin___memset_chk"] = "__madc_builtin_memset_chk";
     define_map["__builtin_frame_address"] = "__madc_builtin_frame_address";
     define_map["__builtin_setjmp"] = "__madc_builtin_setjmp";
     define_map["__builtin_longjmp"] = "__madc_builtin_longjmp_val";
