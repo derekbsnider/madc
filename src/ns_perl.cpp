@@ -112,7 +112,8 @@ int64_t perl_scalar(madc::value *arr)
 // perl::push — append value to array (Perl: push @arr, $val)
 void perl_push(madc::value *arr, const char *str)
 {
-	arr->array().push_back(madc::value(perl_text_arg(str)));
+	ns_common::value_array_for_write(*arr, "perl::push")
+		.push_back(madc::value(perl_text_arg(str)));
 }
 
 // perl::pop — remove last element (Perl: $val = pop @arr)
@@ -122,10 +123,9 @@ std::string *perl_pop(std::string *result, madc::value *arr)
 	res.clear();
 	if ( !arr->is_array() || arr->as_array().empty() )
 		return result;
-	madc::value v = arr->array().back();
+	madc::value v = std::move(arr->array().back());
 	arr->array().pop_back();
-	if ( v.is_string() ) res = v.as_string();
-	else if ( v.is_integer() ) res = std::to_string(v.as_integer());
+	ns_common::value_to_string_no_real(v, res);
 	return result;
 }
 
@@ -136,17 +136,18 @@ std::string *perl_shift(std::string *result, madc::value *arr)
 	res.clear();
 	if ( !arr->is_array() || arr->as_array().empty() )
 		return result;
-	madc::value v = arr->array().front();
+	madc::value v = std::move(arr->array().front());
 	arr->array().erase(arr->array().begin());
-	if ( v.is_string() ) res = v.as_string();
-	else if ( v.is_integer() ) res = std::to_string(v.as_integer());
+	ns_common::value_to_string_no_real(v, res);
 	return result;
 }
 
 // perl::unshift — prepend value (Perl: unshift @arr, $val)
 void perl_unshift(madc::value *arr, const char *str)
 {
-	arr->array().insert(arr->array().begin(), madc::value(perl_text_arg(str)));
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "perl::unshift");
+	data.insert(data.begin(), madc::value(perl_text_arg(str)));
 }
 
 // perl::join — join array with separator (Perl: join(",", @arr))
@@ -158,11 +159,13 @@ std::string *perl_join(std::string *result, const char *sep, madc::value *arr)
 	if ( !arr->is_array() )
 		return result;
 	const std::vector<madc::value> &data = arr->as_array();
+	std::string tmp;
 	for ( size_t i = 0; i < data.size(); ++i )
 	{
 		if ( i > 0 ) res += s;
-		if ( data[i].is_string() ) res += data[i].as_string();
-		else if ( data[i].is_integer() ) res += std::to_string(data[i].as_integer());
+		tmp.clear();
+		if ( ns_common::value_to_string_no_real(data[i], tmp) )
+			res += tmp;
 	}
 	return result;
 }

@@ -942,11 +942,12 @@ public:
 
 // The script `array` / `madc::array` builtin IS the public `madc::value`
 // (include/libmadc/value.h) — one value type end-to-end. Display name stays
-// "array" (parser.cpp:1738 / pch.cpp / madc_ns keep resolving it); the
-// canonical C++ identity used for Itanium mangling is `madc::value`, so
-// script calls taking `array&` bind to the host `madc::value&` symbols.
-// Keyed (context) data is kind::object; indexed (php-style) arrays are
-// kind::array.
+// "array" (Program::resolve_named_datadef in parser.cpp,
+// builtin_datadef_from_spelling in pch.cpp, and the madc_ns alias keep
+// resolving it); the canonical C++ identity used for Itanium mangling is
+// `madc::value`, so script calls taking `array&` bind to the host
+// `madc::value&` symbols. Keyed (context) data is kind::object; indexed
+// (php-style) arrays are kind::array.
 class DataDefARRAY: public DDClass
 {
 public:

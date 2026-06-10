@@ -56,10 +56,18 @@ void madc_printstr(const char *s) { if (s) std::cout << s << std::endl; }
 // variables. The script `array` IS the public madc::value
 // (include/libmadc/value.h, pulled in via datadef.h). A default-constructed
 // value is kind::null (reads as empty; mutators vivify it to kind::array).
+// The CIR builder lowers `array a;` to an 8-aligned opaque long[] buffer
+// (CirBuilder::array_obj_words) that placement-new constructs into:
+static_assert(alignof(madc::value) <= alignof(long),
+	      "madc::value must fit the long[]-buffer alignment the CIR "
+	      "array lowering provides");
 void *madarray_construct(void *ptr)
     { return new(ptr) madc::value; }
 void madarray_destruct(void *ptr)
     { ((madc::value *)ptr)->~value(); }
+// Range-for length over a script array. Intentionally NOT
+// ns_common::value_count: foreach iterates indexed elements only, so an
+// object-kind ctx must read as length 0 here.
 long madarray_size(void *ptr)
     {
 	madc::value *v = (madc::value *)ptr;

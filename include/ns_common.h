@@ -52,6 +52,25 @@ bool contains   (const std::string &s, const std::string &needle);
 // whether to clear out or skip the value.
 bool value_to_string(const madc::value &v, std::string &out);
 
+// String/integer-only variant for the pop/shift/join family, whose
+// historical (MadValue-era, test-pinned) behavior excluded reals.
+bool value_to_string_no_real(const madc::value &v, std::string &out);
+
+// ---- Mutable container access at the extern-C boundary ----------------
+
+// Mutable kind::array / kind::object access for the extern-C script
+// helpers. kind::null vivifies; the right kind returns the live
+// container. Any OTHER kind is a script-level type error: one diagnostic
+// line goes to stderr (an error path — never DBG-gated, and never a C++
+// exception, which would escape the extern-C boundary into MIR-JIT
+// frames and abort the process) and a per-thread dummy container is
+// returned so the write degrades to a no-op. `who` names the calling
+// script helper in the diagnostic.
+std::vector<madc::value> &value_array_for_write(madc::value &v,
+						const char *who);
+std::map<std::string, madc::value> &value_object_for_write(madc::value &v,
+							    const char *who);
+
 // ---- Array helpers ---------------------------------------------------
 
 // Element count of a madc::value: array size, object size, or 0 for any

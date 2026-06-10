@@ -37,6 +37,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_mangle.h"
+#include "ns_common.h"
 
 using namespace std;
 
@@ -163,15 +164,20 @@ std::string stringify_runtime_eval_value(const madc::value &resolved)
 }
 
 // The script-side eval ctx IS a madc::value (the unified `array` builtin) —
-// no conversion layer. A never-touched ctx is kind::null; treat it as an
-// empty object context (vivify), matching the old empty-context behavior.
+// no conversion layer. A never-touched ctx is kind::null; READ-ONLY eval
+// must not mutate the caller's value, so it is presented as a shared empty
+// object context instead of being vivified in place (matching the old
+// empty-context behavior; only the context_set_*/scope setters vivify).
 // Non-object kinds are rejected downstream by the eval pipeline's own
 // context validation.
 const madc::value *runtime_eval_context(void *ctx)
 {
-    madc::value *context = (madc::value *)ctx;
+    const madc::value *context = (const madc::value *)ctx;
     if ( context && context->is_null() )
-	context->object();
+    {
+	static const madc::value empty_ctx = madc::value::make_object();
+	return &empty_ctx;
+    }
     return context;
 }
 
@@ -755,26 +761,33 @@ void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ct
 
 void *madc_context_set_int(void *ctx, void *key, int64_t value)
 {
-    ((madc::value *)ctx)->object()[*(std::string *)key] = madc::value(value);
+    ns_common::value_object_for_write(*(madc::value *)ctx,
+				      "madc::context_set_int")
+	[*(std::string *)key] = madc::value(value);
     return ctx;
 }
 
 void *madc_context_set_real(void *ctx, void *key, double value)
 {
-    ((madc::value *)ctx)->object()[*(std::string *)key] = madc::value(value);
+    ns_common::value_object_for_write(*(madc::value *)ctx,
+				      "madc::context_set_real")
+	[*(std::string *)key] = madc::value(value);
     return ctx;
 }
 
 void *madc_context_set_string(void *ctx, void *key, const char *value)
 {
-    ((madc::value *)ctx)->object()[*(std::string *)key]
-	= madc::value(std::string(value ? value : ""));
+    ns_common::value_object_for_write(*(madc::value *)ctx,
+				      "madc::context_set_string")
+	[*(std::string *)key] = madc::value(std::string(value ? value : ""));
     return ctx;
 }
 
 void *madc_context_set_array(void *ctx, void *key, void *value)
 {
-    ((madc::value *)ctx)->object()[*(std::string *)key] = *(const madc::value *)value;
+    ns_common::value_object_for_write(*(madc::value *)ctx,
+				      "madc::context_set_array")
+	[*(std::string *)key] = *(const madc::value *)value;
     return ctx;
 }
 
@@ -887,19 +900,25 @@ void *__madc_eval_expression_string_ctx_runtime(void *result, void *expr, void *
 // avoids materializing a std::string temp per captured variable).
 void *__madc_scope_set_int_runtime(void *ctx, const char *key, int64_t value)
 {
-    ((madc::value *)ctx)->object()[std::string(key)] = madc::value(value);
+    ns_common::value_object_for_write(*(madc::value *)ctx,
+				      "__madc_scope_set_int")
+	[std::string(key)] = madc::value(value);
     return ctx;
 }
 
 void *__madc_scope_set_real_runtime(void *ctx, const char *key, double value)
 {
-    ((madc::value *)ctx)->object()[std::string(key)] = madc::value(value);
+    ns_common::value_object_for_write(*(madc::value *)ctx,
+				      "__madc_scope_set_real")
+	[std::string(key)] = madc::value(value);
     return ctx;
 }
 
 void *__madc_scope_set_array_runtime(void *ctx, const char *key, void *value)
 {
-    ((madc::value *)ctx)->object()[std::string(key)] = *(const madc::value *)value;
+    ns_common::value_object_for_write(*(madc::value *)ctx,
+				      "__madc_scope_set_array")
+	[std::string(key)] = *(const madc::value *)value;
     return ctx;
 }
 

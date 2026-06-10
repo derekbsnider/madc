@@ -162,9 +162,12 @@ std::string *js_stringify(std::string *result, madc::value *arr)
 {
 	std::string &out = *result;
 	out = "[";
-	const std::vector<madc::value> empty;
-	const std::vector<madc::value> &data = arr->is_array() ? arr->as_array()
-							       : empty;
+	if ( !arr->is_array() )
+	{
+		out += "]";
+		return result;
+	}
+	const std::vector<madc::value> &data = arr->as_array();
 	for ( size_t i = 0; i < data.size(); ++i )
 	{
 		if ( i > 0 ) out += ",";

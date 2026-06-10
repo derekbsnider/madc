@@ -256,19 +256,22 @@ int64_t php_count(madc::value *arr)
 void php_array_push_str(madc::value *arr, const char *str)
 {
 	const char *s = (const char *)str;
-	arr->array().push_back(madc::value(std::string(s ? s : "")));
+	ns_common::value_array_for_write(*arr, "php::array_push")
+		.push_back(madc::value(std::string(s ? s : "")));
 }
 
 // php::array_push_int — append integer to array
 void php_array_push_int(madc::value *arr, int64_t val)
 {
-	arr->array().push_back(madc::value(val));
+	ns_common::value_array_for_write(*arr, "php::array_push_int")
+		.push_back(madc::value(val));
 }
 
 // php::array_push_array — append nested array by deep copy
 void php_array_push_array(madc::value *arr, madc::value *value)
 {
-	arr->array().push_back(*value);
+	ns_common::value_array_for_write(*arr, "php::array_push_array")
+		.push_back(*value);
 }
 
 // php::array_pop — remove and return last element as string
@@ -278,12 +281,9 @@ std::string *php_array_pop(std::string *result, madc::value *arr)
 	res.clear();
 	if ( !arr->is_array() || arr->as_array().empty() )
 		return result;
-	madc::value v = arr->array().back();
+	madc::value v = std::move(arr->array().back());
 	arr->array().pop_back();
-	if ( v.is_string() )
-		res = v.as_string();
-	else if ( v.is_integer() )
-		res = std::to_string(v.as_integer());
+	ns_common::value_to_string_no_real(v, res);
 	return result;
 }
 
@@ -379,7 +379,7 @@ void php_array_unique(madc::value *arr)
 		}
 		if ( !found ) unique.push_back(v);
 	}
-	arr->array() = unique;
+	arr->array() = std::move(unique);
 }
 
 // php::array_shift — remove first element, shift rest down
@@ -389,10 +389,9 @@ std::string *php_array_shift(std::string *result, madc::value *arr)
 	res.clear();
 	if ( !arr->is_array() || arr->as_array().empty() )
 		return result;
-	madc::value v = arr->array().front();
+	madc::value v = std::move(arr->array().front());
 	arr->array().erase(arr->array().begin());
-	if ( v.is_string() ) res = v.as_string();
-	else if ( v.is_integer() ) res = std::to_string(v.as_integer());
+	ns_common::value_to_string_no_real(v, res);
 	return result;
 }
 
@@ -400,8 +399,9 @@ std::string *php_array_shift(std::string *result, madc::value *arr)
 void php_array_unshift(madc::value *arr, const char *str)
 {
 	const char *s = (const char *)str;
-	arr->array().insert(arr->array().begin(),
-			    madc::value(std::string(s ? s : "")));
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "php::array_unshift");
+	data.insert(data.begin(), madc::value(std::string(s ? s : "")));
 }
 
 // php::sort — sort array (string comparison)
@@ -446,8 +446,10 @@ void php_array_merge(madc::value *dest, madc::value *src)
 {
 	if ( !src->is_array() )
 		return;
+	std::vector<madc::value> &d
+		= ns_common::value_array_for_write(*dest, "php::array_merge");
 	for ( auto &v : src->as_array() )
-		dest->array().push_back(v);
+		d.push_back(v);
 }
 
 

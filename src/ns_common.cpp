@@ -131,6 +131,51 @@ bool value_to_string(const madc::value &v, std::string &out)
 	return false;
 }
 
+bool value_to_string_no_real(const madc::value &v, std::string &out)
+{
+	if ( v.is_string() )
+	{
+		out = v.as_string();
+		return true;
+	}
+	if ( v.is_integer() )
+	{
+		out = std::to_string(v.as_integer());
+		return true;
+	}
+	return false;
+}
+
+static void report_kind_mismatch(const madc::value &v, const char *who,
+				 const char *wanted)
+{
+	std::cerr << (who ? who : "madc array helper")
+		  << ": value is " << madc::value::kind_name(v.type())
+		  << ", not " << wanted << " — write ignored" << std::endl;
+}
+
+std::vector<madc::value> &value_array_for_write(madc::value &v,
+						const char *who)
+{
+	if ( v.is_null() || v.is_array() )
+		return v.array();
+	report_kind_mismatch(v, who, "an array");
+	thread_local madc::value dummy;
+	dummy = madc::value::make_array();
+	return dummy.array();
+}
+
+std::map<std::string, madc::value> &value_object_for_write(madc::value &v,
+							    const char *who)
+{
+	if ( v.is_null() || v.is_object() )
+		return v.object();
+	report_kind_mismatch(v, who, "an object");
+	thread_local madc::value dummy;
+	dummy = madc::value::make_object();
+	return dummy.object();
+}
+
 size_t value_count(const madc::value &v)
 {
 	if ( v.is_array() )

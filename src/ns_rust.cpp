@@ -162,7 +162,8 @@ std::string *rust_get(std::string *result, madc::value *arr, int64_t idx)
 
 void rust_push(madc::value *arr, const char *value)
 {
-	arr->array().push_back(madc::value(rust_text_arg(value)));
+	ns_common::value_array_for_write(*arr, "rust::push")
+		.push_back(madc::value(rust_text_arg(value)));
 }
 
 std::string *rust_pop(std::string *result, madc::value *arr)
@@ -171,7 +172,7 @@ std::string *rust_pop(std::string *result, madc::value *arr)
 	res.clear();
 	if ( !arr->is_array() || arr->as_array().empty() )
 		return result;
-	madc::value v = arr->array().back();
+	madc::value v = std::move(arr->array().back());
 	arr->array().pop_back();
 	ns_common::value_to_string(v, res);
 	return result;

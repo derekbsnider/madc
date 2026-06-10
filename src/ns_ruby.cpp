@@ -97,7 +97,7 @@ void ruby_compact(madc::value *arr)
 			continue;
 		cleaned.push_back(v);
 	}
-	arr->array() = cleaned;
+	arr->array() = std::move(cleaned);
 }
 
 // ruby::flatten — flatten nested string (split by any whitespace into array)
