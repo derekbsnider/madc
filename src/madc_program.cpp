@@ -392,11 +392,12 @@ std::string build_expression_input_from_policy(const expression_policy &policy,
     return source.str();
 }
 
-bool expression_compare_token(TokenID id)
+bool is_expression_compare_token(TokenID id)
 {
     return id == TokenID::tkEquals || id == TokenID::tkNotEq
 	|| id == TokenID::tkLT || id == TokenID::tkLE
-	|| id == TokenID::tkGT || id == TokenID::tkGE;
+	|| id == TokenID::tkGT || id == TokenID::tkGE
+	|| id == TokenID::tk3Eq;
 }
 
 bool expression_operand_is_string(TokenBase *tb)
@@ -405,30 +406,43 @@ bool expression_operand_is_string(TokenBase *tb)
     return dd && dd->type() == DataType::dtCHARptr;
 }
 
-bool ensure_expression_strcmp(Program &pgm)
+Variable *ensure_expression_strcmp(Program &pgm)
 {
     std::string id = "strcmp";
-    if ( pgm.findVariable(id) )
-	return true;
+    if ( Variable *existing = pgm.findVariable(id) )
+	return existing;
     void *sym = dlsym(RTLD_DEFAULT, "strcmp");
     if ( !sym )
-	return false;
+	return NULL;
     // signed int return — embedded-headers.md comparison-family rule
-    pgm.addFunction(id, datatype_vec_t{DataType::dtINT, DataType::dtCHARptr,
-				       DataType::dtCHARptr}, (fVOIDFUNC)sym);
-    return true;
+    return pgm.addFunction(id, datatype_vec_t{DataType::dtINT, DataType::dtCHARptr,
+					      DataType::dtCHARptr}, (fVOIDFUNC)sym);
 }
 
 // The expression DSL compares string operands by VALUE (spec:
 // docs/superpowers/specs/2026-06-10-eval-leftovers-design.md). Comparison
-// nodes with two string operands become strcmp(a,b) OP 0; a string vs
-// non-string mix is a loud error. Full eval / the real language never
+// nodes with two string operands become strcmp(a,b) OP 0 (`===` becomes a
+// replacement strcmp(a,b) == 0 node — CIR has no tk3Eq lowering); a string
+// vs non-string mix is a loud error. Full eval / the real language never
 // reach this pass.
-bool rewrite_expression_string_compares(Program &pgm, TokenBase *tb,
+// The recursion set mirrors validate_expression_ast's node coverage — keep
+// the two in sync. call->src_node is unreachable here: the validator rejects
+// indirect calls before this pass runs.
+bool rewrite_expression_string_compares(Program &pgm, TokenBase *&tb,
 					std::string &error)
 {
     if ( !tb )
 	return true;
+    if ( TokenMember *member = dynamic_cast<TokenMember *>(tb) )
+    {
+	// covers TokenCallMethod too (TokenCallMethod : TokenMember)
+	if ( !rewrite_expression_string_compares(pgm, member->parent_expr, error) )
+	    return false;
+	for ( size_t i = 0; i < member->parameters.size(); ++i )
+	    if ( !rewrite_expression_string_compares(pgm, member->parameters[i], error) )
+		return false;
+	return true;
+    }
     if ( TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(tb) )
     {
 	for ( size_t i = 0; i < call->parameters.size(); ++i )
@@ -436,6 +450,27 @@ bool rewrite_expression_string_compares(Program &pgm, TokenBase *tb,
 		return false;
 	return true;
     }
+    if ( TokenSubscriptExpr *subexpr = dynamic_cast<TokenSubscriptExpr *>(tb) )
+    {
+	if ( !rewrite_expression_string_compares(pgm, subexpr->base_expr, error) )
+	    return false;
+	return rewrite_expression_string_compares(pgm, subexpr->index, error);
+    }
+    if ( TokenSubscript *sub = dynamic_cast<TokenSubscript *>(tb) )
+    {
+	if ( !rewrite_expression_string_compares(pgm, sub->index, error) )
+	    return false;
+	for ( size_t i = 0; i < sub->extra_indices.size(); ++i )
+	    if ( !rewrite_expression_string_compares(pgm, sub->extra_indices[i], error) )
+		return false;
+	return true;
+    }
+    if ( TokenAddrExpr *addr = dynamic_cast<TokenAddrExpr *>(tb) )
+	return rewrite_expression_string_compares(pgm, addr->expr, error);
+    if ( TokenDerefExpr *deref = dynamic_cast<TokenDerefExpr *>(tb) )
+	return rewrite_expression_string_compares(pgm, deref->expr, error);
+    if ( TokenCast *cast = dynamic_cast<TokenCast *>(tb) )
+	return rewrite_expression_string_compares(pgm, cast->expr, error);
     if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(tb) )
     {
 	if ( !rewrite_expression_string_compares(pgm, tq->condition, error) )
@@ -451,7 +486,7 @@ bool rewrite_expression_string_compares(Program &pgm, TokenBase *tb,
 	return false;
     if ( !rewrite_expression_string_compares(pgm, op->right, error) )
 	return false;
-    if ( !expression_compare_token(op->id()) )
+    if ( !is_expression_compare_token(op->id()) )
 	return true;
     bool ls = expression_operand_is_string(op->left);
     bool rs = expression_operand_is_string(op->right);
@@ -462,21 +497,37 @@ bool rewrite_expression_string_compares(Program &pgm, TokenBase *tb,
 	error = "cannot compare string and non-string values";
 	return false;
     }
-    if ( !ensure_expression_strcmp(pgm) )
+    Variable *sv = ensure_expression_strcmp(pgm);
+    if ( !sv )
     {
 	error = "could not resolve strcmp for string comparison";
 	return false;
     }
-    std::string id = "strcmp";
-    Variable *sv = pgm.findVariable(id);
     TokenCallFunc *cmp = new TokenCallFunc(*sv);
     cmp->file = op->file;
     cmp->line = op->line;
     cmp->column = op->column;
     cmp->parameters.push_back(op->left);
     cmp->parameters.push_back(op->right);
+    TokenInt *zero = new TokenInt(0);
+    zero->file = op->file;
+    zero->line = op->line;
+    zero->column = op->column;
+    if ( op->id() == TokenID::tk3Eq )
+    {
+	// `===` on two strings is same-type + equal-value, which for two
+	// strings is exactly strcmp == 0. Replace the node outright.
+	TokenEquals *eq = new TokenEquals();
+	eq->file = op->file;
+	eq->line = op->line;
+	eq->column = op->column;
+	eq->left = cmp;
+	eq->right = zero;
+	tb = eq;
+	return true;
+    }
     op->left = cmp;
-    op->right = new TokenInt(0);
+    op->right = zero;
     return true;
 }
 
@@ -1276,6 +1327,8 @@ bool validate_expression_ast_subscript_expr(TokenSubscriptExpr *sub,
     return validate_expression_ast(policy, sub->index, reason);
 }
 
+// The recursion set here is mirrored by rewrite_expression_string_compares
+// (the DSL strcmp lowering pass) — keep the two in sync.
 bool validate_expression_ast(const expression_policy &policy,
 			     TokenBase *expr,
 			     std::string &reason)

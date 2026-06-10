@@ -636,7 +636,25 @@ TEST_SUITE("madc::program") {
 
 	bool result = false;
 	CHECK_FALSE(pgm.eval_expression("user.name == 5", result, "expr_context_mixed_compare.mad"));
-	CHECK(pgm.has_error());
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("cannot compare string and non-string values") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression lowers cast-wrapped string compares by value") {
+	madc::program pgm;
+	std::map<std::string, madc::value> user_fields;
+	user_fields["name"] = madc::value("echo");
+	std::map<std::string, madc::value> root_fields;
+	root_fields["user"] = madc::value::make_object(user_fields);
+	pgm.set_expression_context(madc::value::make_object(root_fields));
+
+	bool result = false;
+	CHECK(pgm.eval_expression("(bool)(user.name == \"echo\")", result, "expr_context_cast_compare.mad"));
+	CHECK(result == true);
+	CHECK_FALSE(pgm.has_error());
     }
 
     TEST_CASE("eval_expression rewrites nested object context paths with parser-legal trivia") {
