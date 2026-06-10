@@ -392,6 +392,94 @@ std::string build_expression_input_from_policy(const expression_policy &policy,
     return source.str();
 }
 
+bool expression_compare_token(TokenID id)
+{
+    return id == TokenID::tkEquals || id == TokenID::tkNotEq
+	|| id == TokenID::tkLT || id == TokenID::tkLE
+	|| id == TokenID::tkGT || id == TokenID::tkGE;
+}
+
+bool expression_operand_is_string(TokenBase *tb)
+{
+    DataDef *dd = tb ? tb->datadef() : NULL;
+    return dd && dd->type() == DataType::dtCHARptr;
+}
+
+bool ensure_expression_strcmp(Program &pgm)
+{
+    std::string id = "strcmp";
+    if ( pgm.findVariable(id) )
+	return true;
+    void *sym = dlsym(RTLD_DEFAULT, "strcmp");
+    if ( !sym )
+	return false;
+    // signed int return — embedded-headers.md comparison-family rule
+    pgm.addFunction(id, datatype_vec_t{DataType::dtINT, DataType::dtCHARptr,
+				       DataType::dtCHARptr}, (fVOIDFUNC)sym);
+    return true;
+}
+
+// The expression DSL compares string operands by VALUE (spec:
+// docs/superpowers/specs/2026-06-10-eval-leftovers-design.md). Comparison
+// nodes with two string operands become strcmp(a,b) OP 0; a string vs
+// non-string mix is a loud error. Full eval / the real language never
+// reach this pass.
+bool rewrite_expression_string_compares(Program &pgm, TokenBase *tb,
+					std::string &error)
+{
+    if ( !tb )
+	return true;
+    if ( TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(tb) )
+    {
+	for ( size_t i = 0; i < call->parameters.size(); ++i )
+	    if ( !rewrite_expression_string_compares(pgm, call->parameters[i], error) )
+		return false;
+	return true;
+    }
+    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(tb) )
+    {
+	if ( !rewrite_expression_string_compares(pgm, tq->condition, error) )
+	    return false;
+	if ( !rewrite_expression_string_compares(pgm, tq->true_expr, error) )
+	    return false;
+	return rewrite_expression_string_compares(pgm, tq->false_expr, error);
+    }
+    TokenOperator *op = dynamic_cast<TokenOperator *>(tb);
+    if ( !op )
+	return true;
+    if ( !rewrite_expression_string_compares(pgm, op->left, error) )
+	return false;
+    if ( !rewrite_expression_string_compares(pgm, op->right, error) )
+	return false;
+    if ( !expression_compare_token(op->id()) )
+	return true;
+    bool ls = expression_operand_is_string(op->left);
+    bool rs = expression_operand_is_string(op->right);
+    if ( !ls && !rs )
+	return true;
+    if ( ls != rs )
+    {
+	error = "cannot compare string and non-string values";
+	return false;
+    }
+    if ( !ensure_expression_strcmp(pgm) )
+    {
+	error = "could not resolve strcmp for string comparison";
+	return false;
+    }
+    std::string id = "strcmp";
+    Variable *sv = pgm.findVariable(id);
+    TokenCallFunc *cmp = new TokenCallFunc(*sv);
+    cmp->file = op->file;
+    cmp->line = op->line;
+    cmp->column = op->column;
+    cmp->parameters.push_back(op->left);
+    cmp->parameters.push_back(op->right);
+    op->left = cmp;
+    op->right = new TokenInt(0);
+    return true;
+}
+
 DataDef *expression_result_datadef_internal(DataDef *expr_type, bool have_result)
 {
     if ( !have_result )
@@ -3105,6 +3193,21 @@ struct program::impl
 	    return false;
 	}
 
+	std::string compare_error;
+	if ( !rewrite_expression_string_compares(*pgm, expr, compare_error) )
+	{
+	    clear_public_errors();
+	    public_last_error = error(error::severity::error,
+				      error::phase::runtime,
+				      std::string("program::eval_expression rejected parsed expression: ")
+				      + compare_error,
+				      display_file.empty() ? path : display_file,
+				      expr->line, expr->column);
+	    has_public_last_error = true;
+	    public_diagnostics.push_back(public_last_error);
+	    return false;
+	}
+
 	DataDef *return_type = expression_result_datadef(infer_expression_result_type(expr), have_result);
 	if ( !return_type )
 	{
@@ -4498,6 +4601,19 @@ bool internal_program_runtime_eval_expression(::Program &self,
 	fail_program_runtime(child,
 			     std::string("program::eval_expression rejected parsed expression: ")
 			     + ast_validation_error,
+			     display_name.c_str(),
+			     expr->line,
+			     expr->column);
+	copy_program_public_error(self, child);
+	return false;
+    }
+
+    std::string compare_error;
+    if ( !rewrite_expression_string_compares(child, expr, compare_error) )
+    {
+	fail_program_runtime(child,
+			     std::string("program::eval_expression rejected parsed expression: ")
+			     + compare_error,
 			     display_name.c_str(),
 			     expr->line,
 			     expr->column);
