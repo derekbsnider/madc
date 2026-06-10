@@ -25,6 +25,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "ns_common.h"
 
 using namespace std;
 
@@ -62,132 +63,132 @@ int64_t perl_chomp(std::string *ptr)
 
 // perl::grep — filter array, keeping elements that match regex pattern
 // Perl: @matches = grep { /pattern/ } @array;
-void perl_grep(MadArray *dest, const char *needle, MadArray *src)
+void perl_grep(madc::value *dest, const char *needle, madc::value *src)
 {
-	MadArray &d = *dest;
 	std::string n = perl_text_arg(needle);
-	MadArray &s = *src;
-	d.data.clear();
-	d.assoc.clear();
+	*dest = madc::value::make_array();
+	if ( !src->is_array() )
+		return;
 	try {
 		std::regex re(n);
-		for ( auto &v : s.data )
+		for ( auto &v : src->as_array() )
 		{
 			if ( v.is_string() && std::regex_search(v.as_string(), re) )
-				d.data.push_back(v);
+				dest->array().push_back(v);
 		}
 	} catch (std::regex_error &) {
 		// fallback to substring match on invalid regex
-		for ( auto &v : s.data )
+		for ( auto &v : src->as_array() )
 		{
 			if ( v.is_string() && v.as_string().find(n) != std::string::npos )
-				d.data.push_back(v);
+				dest->array().push_back(v);
 		}
 	}
 }
 
 // perl::glob — file globbing, returns array of matching filenames
 // Perl: @files = glob("*.txt");
-void perl_glob(MadArray *arr, const char *pattern)
+void perl_glob(madc::value *arr, const char *pattern)
 {
-	MadArray &a = *arr;
 	std::string p = perl_text_arg(pattern);
-	a.data.clear();
-	a.assoc.clear();
+	*arr = madc::value::make_array();
 
 	glob_t globbuf;
 	int ret = ::glob(p.c_str(), GLOB_NOSORT, NULL, &globbuf);
 	if ( ret == 0 )
 	{
 		for ( size_t i = 0; i < globbuf.gl_pathc; ++i )
-			a.push(MadValue(std::string(globbuf.gl_pathv[i])));
+			arr->array().push_back(madc::value(std::string(globbuf.gl_pathv[i])));
 		globfree(&globbuf);
 	}
 }
 
 // perl::scalar — return count of elements in array (Perl's scalar @array)
-int64_t perl_scalar(MadArray *arr)
+int64_t perl_scalar(madc::value *arr)
 {
-	return (int64_t)arr->count();
+	return (int64_t)ns_common::value_count(*arr);
 }
 
 // perl::push — append value to array (Perl: push @arr, $val)
-void perl_push(MadArray *arr, const char *str)
+void perl_push(madc::value *arr, const char *str)
 {
-	arr->push(MadValue(perl_text_arg(str)));
+	arr->array().push_back(madc::value(perl_text_arg(str)));
 }
 
 // perl::pop — remove last element (Perl: $val = pop @arr)
-std::string *perl_pop(std::string *result, MadArray *arr)
+std::string *perl_pop(std::string *result, madc::value *arr)
 {
-	MadValue v = arr->pop();
 	std::string &res = *result;
+	res.clear();
+	if ( !arr->is_array() || arr->as_array().empty() )
+		return result;
+	madc::value v = arr->array().back();
+	arr->array().pop_back();
 	if ( v.is_string() ) res = v.as_string();
-	else if ( v.is_int() ) res = std::to_string(v.as_int());
-	else res.clear();
+	else if ( v.is_integer() ) res = std::to_string(v.as_integer());
 	return result;
 }
 
 // perl::shift — remove first element (Perl: $val = shift @arr)
-std::string *perl_shift(std::string *result, MadArray *arr)
+std::string *perl_shift(std::string *result, madc::value *arr)
 {
-	MadArray &a = *arr;
 	std::string &res = *result;
-	if ( a.data.empty() ) { res.clear(); return result; }
-	MadValue v = a.data.front();
-	a.data.erase(a.data.begin());
+	res.clear();
+	if ( !arr->is_array() || arr->as_array().empty() )
+		return result;
+	madc::value v = arr->array().front();
+	arr->array().erase(arr->array().begin());
 	if ( v.is_string() ) res = v.as_string();
-	else if ( v.is_int() ) res = std::to_string(v.as_int());
-	else res.clear();
+	else if ( v.is_integer() ) res = std::to_string(v.as_integer());
 	return result;
 }
 
 // perl::unshift — prepend value (Perl: unshift @arr, $val)
-void perl_unshift(MadArray *arr, const char *str)
+void perl_unshift(madc::value *arr, const char *str)
 {
-	arr->data.insert(arr->data.begin(), MadValue(perl_text_arg(str)));
+	arr->array().insert(arr->array().begin(), madc::value(perl_text_arg(str)));
 }
 
 // perl::join — join array with separator (Perl: join(",", @arr))
-std::string *perl_join(std::string *result, const char *sep, MadArray *arr)
+std::string *perl_join(std::string *result, const char *sep, madc::value *arr)
 {
 	std::string &res = *result;
 	std::string s = perl_text_arg(sep);
-	MadArray &a = *arr;
 	res.clear();
-	for ( size_t i = 0; i < a.data.size(); ++i )
+	if ( !arr->is_array() )
+		return result;
+	const std::vector<madc::value> &data = arr->as_array();
+	for ( size_t i = 0; i < data.size(); ++i )
 	{
 		if ( i > 0 ) res += s;
-		if ( a.data[i].is_string() ) res += a.data[i].as_string();
-		else if ( a.data[i].is_int() ) res += std::to_string(a.data[i].as_int());
+		if ( data[i].is_string() ) res += data[i].as_string();
+		else if ( data[i].is_integer() ) res += std::to_string(data[i].as_integer());
 	}
 	return result;
 }
 
 // perl::split — split string by regex pattern into array (Perl: split(/pattern/, $str))
-void perl_split(MadArray *arr, const char *delim, const char *str)
+void perl_split(madc::value *arr, const char *delim, const char *str)
 {
-	MadArray &a = *arr;
 	std::string d = perl_text_arg(delim);
 	std::string s = perl_text_arg(str);
-	a.data.clear();
-	a.assoc.clear();
-	if ( d.empty() ) { a.push(MadValue(s)); return; }
+	*arr = madc::value::make_array();
+	if ( d.empty() ) { arr->array().push_back(madc::value(s)); return; }
 	try {
 		std::regex re(d);
 		std::sregex_token_iterator it(s.begin(), s.end(), re, -1);
 		std::sregex_token_iterator end;
 		for ( ; it != end; ++it )
-			a.push(MadValue(it->str()));
+			arr->array().push_back(madc::value(it->str()));
 	} catch (std::regex_error &) {
 		// fallback to literal delimiter on invalid regex
 		size_t start = 0, pos;
 		while ( (pos = s.find(d, start)) != std::string::npos )
 		{
-			a.push(MadValue(s.substr(start, pos - start)));
+			arr->array().push_back(madc::value(s.substr(start, pos - start)));
 			start = pos + d.length();
 		}
-		a.push(MadValue(s.substr(start)));
+		arr->array().push_back(madc::value(s.substr(start)));
 	}
 }
 
@@ -310,15 +311,15 @@ extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
 int64_t __perl_chop(std::string *a) { return perl_chop(a); }
 int64_t __perl_chomp(std::string *a) { return perl_chomp(a); }
-void __perl_grep(MadArray *a, const char *b, MadArray *c) { perl_grep(a, b, c); }
-void __perl_glob(MadArray *a, const char *b) { perl_glob(a, b); }
-int64_t __perl_scalar(MadArray *a) { return perl_scalar(a); }
-void __perl_push(MadArray *a, const char *b) { perl_push(a, b); }
-std::string *__perl_pop(std::string *a, MadArray *b) { return perl_pop(a, b); }
-std::string *__perl_shift(std::string *a, MadArray *b) { return perl_shift(a, b); }
-void __perl_unshift(MadArray *a, const char *b) { perl_unshift(a, b); }
-std::string *__perl_join(std::string *a, const char *b, MadArray *c) { return perl_join(a, b, c); }
-void __perl_split(MadArray *a, const char *b, const char *c) { perl_split(a, b, c); }
+void __perl_grep(madc::value *a, const char *b, madc::value *c) { perl_grep(a, b, c); }
+void __perl_glob(madc::value *a, const char *b) { perl_glob(a, b); }
+int64_t __perl_scalar(madc::value *a) { return perl_scalar(a); }
+void __perl_push(madc::value *a, const char *b) { perl_push(a, b); }
+std::string *__perl_pop(std::string *a, madc::value *b) { return perl_pop(a, b); }
+std::string *__perl_shift(std::string *a, madc::value *b) { return perl_shift(a, b); }
+void __perl_unshift(madc::value *a, const char *b) { perl_unshift(a, b); }
+std::string *__perl_join(std::string *a, const char *b, madc::value *c) { return perl_join(a, b, c); }
+void __perl_split(madc::value *a, const char *b, const char *c) { perl_split(a, b, c); }
 std::string *__perl_reverse(std::string *a) { return perl_reverse(a); }
 std::string *__perl_lc(std::string *a) { return perl_lc(a); }
 std::string *__perl_uc(std::string *a) { return perl_uc(a); }

@@ -162,82 +162,17 @@ std::string stringify_runtime_eval_value(const madc::value &resolved)
     return std::string();
 }
 
-bool value_from_madarray_context(const MadArray &arr,
-				 madc::value &out,
-				 std::string &reason);
-
-bool value_from_madvalue_context(const MadValue &in,
-				 madc::value &out,
-				 std::string &reason)
+// The script-side eval ctx IS a madc::value (the unified `array` builtin) —
+// no conversion layer. A never-touched ctx is kind::null; treat it as an
+// empty object context (vivify), matching the old empty-context behavior.
+// Non-object kinds are rejected downstream by the eval pipeline's own
+// context validation.
+const madc::value *runtime_eval_context(void *ctx)
 {
-    switch ( in.kind )
-    {
-	case MadValueKind::mvINT:
-	    out = madc::value(static_cast<int64_t>(in.as_int()));
-	    return true;
-	case MadValueKind::mvDOUBLE:
-	    out = madc::value(in.as_double());
-	    return true;
-	case MadValueKind::mvSTRING:
-	    out = madc::value(in.as_string());
-	    return true;
-	case MadValueKind::mvARRAY:
-	    return value_from_madarray_context(in.as_array(), out, reason);
-	case MadValueKind::mvNONE:
-	    break;
-    }
-
-    reason = std::string("unsupported context value kind '")
-	+ std::to_string((int)in.kind) + "'";
-    return false;
-}
-
-bool value_from_madarray_context(const MadArray &arr,
-				 madc::value &out,
-				 std::string &reason)
-{
-    if ( !arr.data.empty() )
-    {
-	reason = "context arrays cannot contain positional elements";
-	return false;
-    }
-
-    std::map<std::string, madc::value> fields;
-    for ( std::size_t i = 0; i < arr.assoc.size(); ++i )
-    {
-	madc::value field_value;
-	if ( !value_from_madvalue_context(arr.assoc[i].second, field_value, reason) )
-	{
-	    reason = std::string("context field '") + arr.assoc[i].first + "': " + reason;
-	    return false;
-	}
-	fields[arr.assoc[i].first] = field_value;
-    }
-
-    out = madc::value::make_object(fields);
-    return true;
-}
-
-bool build_runtime_expression_context(const MadArray *ctx_array,
-				      Program &active,
-				      const char *helper_name,
-				      madc::value &context)
-{
-    context = madc::value();
-    if ( !ctx_array )
-	return true;
-
-    std::string reason;
-    if ( !value_from_madarray_context(*ctx_array, context, reason) )
-    {
-	active.set_error(Program::DiagnosticPhase::runtime,
-			 std::string(helper_name)
-			 + " rejected context: "
-			 + reason);
-	active.print_last_diagnostic(active.error());
-	return false;
-    }
-    return true;
+    madc::value *context = (madc::value *)ctx;
+    if ( context && context->is_null() )
+	context->object();
+    return context;
 }
 
 void report_runtime_eval_expression_type_error(Program &active,
@@ -429,7 +364,6 @@ void *madc_runtime_eval_expression_ctx(void *result, void *expr, void *ctx)
 {
     std::string &out = *(std::string *)result;
     std::string &expression = *(std::string *)expr;
-    MadArray &context_array = *(MadArray *)ctx;
     out.clear();
 
     std::unique_ptr<Program> owned;
@@ -437,15 +371,11 @@ void *madc_runtime_eval_expression_ctx(void *result, void *expr, void *ctx)
     if ( !active )
 	return result;
 
-    madc::value context;
-    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_ctx", context) )
-	return result;
-
     madc::value resolved;
     if ( !active->runtime_eval_expression(expression,
 					  resolved,
 					  "__madc_runtime_eval_expression",
-					  &context) )
+					  runtime_eval_context(ctx)) )
     {
 	active->print_last_diagnostic(active->error());
 	return result;
@@ -554,7 +484,6 @@ void *madc_runtime_eval_ctx(void *result, void *source, void *ctx)
 {
     std::string &out = *(std::string *)result;
     std::string &program_source = *(std::string *)source;
-    MadArray &context_array = *(MadArray *)ctx;
     out.clear();
 
     std::unique_ptr<Program> owned;
@@ -562,12 +491,8 @@ void *madc_runtime_eval_ctx(void *result, void *source, void *ctx)
     if ( !active )
 	return result;
 
-    madc::value context;
-    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval", context) )
-	return result;
-
     madc::value resolved;
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context) )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx)) )
     {
 	active->print_last_diagnostic(active->error());
 	return result;
@@ -585,14 +510,10 @@ bool madc_runtime_eval_bool_ctx(void *source, void *ctx)
 	return false;
 
     std::string &program_source = *(std::string *)source;
-    MadArray &context_array = *(MadArray *)ctx;
-    madc::value context;
     madc::value resolved;
     bool out = false;
 
-    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_bool", context) )
-	return false;
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context, "bool") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx), "bool") )
     {
 	active->print_last_diagnostic(active->error());
 	return false;
@@ -610,14 +531,10 @@ int64_t madc_runtime_eval_int_ctx(void *source, void *ctx)
 	return 0;
 
     std::string &program_source = *(std::string *)source;
-    MadArray &context_array = *(MadArray *)ctx;
-    madc::value context;
     madc::value resolved;
     int64_t out = 0;
 
-    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_int", context) )
-	return 0;
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context, "int") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx), "int") )
     {
 	active->print_last_diagnostic(active->error());
 	return 0;
@@ -635,14 +552,10 @@ double madc_runtime_eval_double_ctx(void *source, void *ctx)
 	return 0.0;
 
     std::string &program_source = *(std::string *)source;
-    MadArray &context_array = *(MadArray *)ctx;
-    madc::value context;
     madc::value resolved;
     double out = 0.0;
 
-    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_double", context) )
-	return 0.0;
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context, "double") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx), "double") )
     {
 	active->print_last_diagnostic(active->error());
 	return 0.0;
@@ -656,7 +569,6 @@ void *madc_runtime_eval_string_ctx(void *result, void *source, void *ctx)
 {
     std::string &out = *(std::string *)result;
     std::string &program_source = *(std::string *)source;
-    MadArray &context_array = *(MadArray *)ctx;
     out.clear();
 
     std::unique_ptr<Program> owned;
@@ -664,12 +576,8 @@ void *madc_runtime_eval_string_ctx(void *result, void *source, void *ctx)
     if ( !active )
 	return result;
 
-    madc::value context;
-    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_string", context) )
-	return result;
-
     madc::value resolved;
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context, "char *") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", runtime_eval_context(ctx), "char *") )
     {
 	active->print_last_diagnostic(active->error());
 	return result;
@@ -707,17 +615,13 @@ bool madc_runtime_eval_expression_bool_ctx(void *expr, void *ctx)
 	return false;
 
     std::string &expression = *(std::string *)expr;
-    MadArray &context_array = *(MadArray *)ctx;
     madc::value resolved;
     bool out = false;
 
-    madc::value context;
-    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_bool_ctx", context) )
-	return false;
     if ( !active->runtime_eval_expression(expression,
 					  resolved,
 					  "__madc_runtime_eval_expression",
-					  &context) )
+					  runtime_eval_context(ctx)) )
 	return false;
     if ( !coerce_runtime_expression_bool(*active, resolved, "madc::eval_expression_bool_ctx", out) )
 	return false;
@@ -752,17 +656,13 @@ int64_t madc_runtime_eval_expression_int_ctx(void *expr, void *ctx)
 	return 0;
 
     std::string &expression = *(std::string *)expr;
-    MadArray &context_array = *(MadArray *)ctx;
     madc::value resolved;
     int64_t out = 0;
 
-    madc::value context;
-    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_int_ctx", context) )
-	return 0;
     if ( !active->runtime_eval_expression(expression,
 					  resolved,
 					  "__madc_runtime_eval_expression",
-					  &context) )
+					  runtime_eval_context(ctx)) )
 	return 0;
     if ( !coerce_runtime_expression_int(*active, resolved, "madc::eval_expression_int_ctx", out) )
 	return 0;
@@ -797,17 +697,13 @@ double madc_runtime_eval_expression_double_ctx(void *expr, void *ctx)
 	return 0.0;
 
     std::string &expression = *(std::string *)expr;
-    MadArray &context_array = *(MadArray *)ctx;
     madc::value resolved;
     double out = 0.0;
 
-    madc::value context;
-    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_double_ctx", context) )
-	return 0.0;
     if ( !active->runtime_eval_expression(expression,
 					  resolved,
 					  "__madc_runtime_eval_expression",
-					  &context) )
+					  runtime_eval_context(ctx)) )
 	return 0.0;
     if ( !coerce_runtime_expression_double(*active, resolved, "madc::eval_expression_double_ctx", out) )
 	return 0.0;
@@ -839,7 +735,6 @@ void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ct
 {
     std::string &out = *(std::string *)result;
     std::string &expression = *(std::string *)expr;
-    MadArray &context_array = *(MadArray *)ctx;
     out.clear();
 
     std::unique_ptr<Program> owned;
@@ -847,14 +742,11 @@ void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ct
     if ( !active )
 	return result;
 
-    madc::value context;
-    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_string_ctx", context) )
-	return result;
     madc::value resolved;
     if ( !active->runtime_eval_expression(expression,
 					  resolved,
 					  "__madc_runtime_eval_expression",
-					  &context) )
+					  runtime_eval_context(ctx)) )
 	return result;
     if ( !coerce_runtime_expression_string(*active, resolved, "madc::eval_expression_string_ctx", out) )
 	return result;
@@ -863,25 +755,26 @@ void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ct
 
 void *madc_context_set_int(void *ctx, void *key, int64_t value)
 {
-    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(value));
+    ((madc::value *)ctx)->object()[*(std::string *)key] = madc::value(value);
     return ctx;
 }
 
 void *madc_context_set_real(void *ctx, void *key, double value)
 {
-    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(value));
+    ((madc::value *)ctx)->object()[*(std::string *)key] = madc::value(value);
     return ctx;
 }
 
 void *madc_context_set_string(void *ctx, void *key, const char *value)
 {
-    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(std::string(value ? value : "")));
+    ((madc::value *)ctx)->object()[*(std::string *)key]
+	= madc::value(std::string(value ? value : ""));
     return ctx;
 }
 
 void *madc_context_set_array(void *ctx, void *key, void *value)
 {
-    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(*(MadArray *)value));
+    ((madc::value *)ctx)->object()[*(std::string *)key] = *(const madc::value *)value;
     return ctx;
 }
 
@@ -994,19 +887,19 @@ void *__madc_eval_expression_string_ctx_runtime(void *result, void *expr, void *
 // avoids materializing a std::string temp per captured variable).
 void *__madc_scope_set_int_runtime(void *ctx, const char *key, int64_t value)
 {
-    ((MadArray *)ctx)->set(std::string(key), MadValue(value));
+    ((madc::value *)ctx)->object()[std::string(key)] = madc::value(value);
     return ctx;
 }
 
 void *__madc_scope_set_real_runtime(void *ctx, const char *key, double value)
 {
-    ((MadArray *)ctx)->set(std::string(key), MadValue(value));
+    ((madc::value *)ctx)->object()[std::string(key)] = madc::value(value);
     return ctx;
 }
 
 void *__madc_scope_set_array_runtime(void *ctx, const char *key, void *value)
 {
-    ((MadArray *)ctx)->set(std::string(key), MadValue(*(MadArray *)value));
+    ((madc::value *)ctx)->object()[std::string(key)] = *(const madc::value *)value;
     return ctx;
 }
 

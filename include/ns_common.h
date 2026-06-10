@@ -7,7 +7,7 @@
 //									//
 // The user-facing namespaces stay distinct; only the underlying	//
 // implementation logic is unified here. Each helper takes references	//
-// to std::string / MadArray / MadValue, never the void* shim layer.	//
+// to std::string / madc::value, never the void* shim layer.		//
 //									//
 //////////////////////////////////////////////////////////////////////////
 
@@ -44,26 +44,31 @@ bool starts_with(const std::string &s, const std::string &prefix);
 bool ends_with  (const std::string &s, const std::string &suffix);
 bool contains   (const std::string &s, const std::string &needle);
 
-// ---- MadValue stringification ----------------------------------------
+// ---- madc::value stringification --------------------------------------
 
-// Stringify a MadValue for join/column-style output. Handles string,
-// int, and double. Returns true on a recognized type (out is set);
+// Stringify a madc::value for join/column-style output. Handles string,
+// integer, and real. Returns true on a recognized kind (out is set);
 // returns false otherwise (out is left untouched). Callers decide
 // whether to clear out or skip the value.
-bool value_to_string(const MadValue &v, std::string &out);
+bool value_to_string(const madc::value &v, std::string &out);
 
 // ---- Array helpers ---------------------------------------------------
 
+// Element count of a madc::value: array size, object size, or 0 for any
+// other kind (a never-touched script array is kind::null == empty).
+size_t value_count(const madc::value &v);
+
 // Split `s` by literal `delim` and store the pieces as strings in `out`.
-// `out` is cleared first. An empty delim pushes the whole string as a
-// single element.
-void split_by_delim(MadArray &out, const std::string &s,
+// `out` is reset to an empty kind::array first. An empty delim pushes the
+// whole string as a single element.
+void split_by_delim(madc::value &out, const std::string &s,
 		    const std::string &delim);
 
 // Join `arr`'s string-coercible elements with `sep` into `out`. `out`
-// is cleared first. Elements that are not string/int/double are
-// skipped silently (matches the prior php_implode / rust_join shape).
-void join_with_sep(std::string &out, const MadArray &arr,
+// is cleared first. A non-array `arr` (null included) joins as empty.
+// Elements that are not string/integer/real are skipped silently
+// (matches the prior php_implode / rust_join shape).
+void join_with_sep(std::string &out, const madc::value &arr,
 		   const std::string &sep);
 
 }  // namespace ns_common

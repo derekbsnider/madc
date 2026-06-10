@@ -52,14 +52,19 @@ void madc_putf(float f)      { std::cout << f << std::endl; }
 void madc_puts(const char *s) { if (s) puts(s); }
 void madc_printstr(const char *s) { if (s) std::cout << s << std::endl; }
 
-// MadArray runtime — construct/destruct/size for transpiled array variables.
-// MadArray is defined in include/datadef.h (already included).
+// madc array runtime — construct/destruct/size for transpiled array
+// variables. The script `array` IS the public madc::value
+// (include/libmadc/value.h, pulled in via datadef.h). A default-constructed
+// value is kind::null (reads as empty; mutators vivify it to kind::array).
 void *madarray_construct(void *ptr)
-    { return new(ptr) MadArray; }
+    { return new(ptr) madc::value; }
 void madarray_destruct(void *ptr)
-    { ((MadArray *)ptr)->~MadArray(); }
+    { ((madc::value *)ptr)->~value(); }
 long madarray_size(void *ptr)
-    { return (long)((MadArray *)ptr)->data.size(); }
+    {
+	madc::value *v = (madc::value *)ptr;
+	return v->is_array() ? (long)v->as_array().size() : 0;
+    }
 
 
 } // extern "C"

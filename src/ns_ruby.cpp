@@ -67,48 +67,44 @@ std::string *ruby_tr(std::string *ptr, const char *from, const char *to)
 }
 
 // ruby::chars — split string into array of individual characters
-void ruby_chars(MadArray *arr, const char *str)
+void ruby_chars(madc::value *arr, const char *str)
 {
-	MadArray &a = *arr;
 	std::string s = ruby_text_arg(str);
-	a.data.clear();
-	a.assoc.clear();
+	*arr = madc::value::make_array();
 	for ( size_t i = 0; i < s.length(); ++i )
-		a.push(MadValue(std::string(1, s[i])));
+		arr->array().push_back(madc::value(std::string(1, s[i])));
 }
 
 // ruby::rotate — rotate array elements by n positions
 // [1,2,3,4,5].rotate(2) -> [3,4,5,1,2]
-void ruby_rotate(MadArray *arr, int64_t n)
+void ruby_rotate(madc::value *arr, int64_t n)
 {
-	MadArray &a = *arr;
-	if ( a.data.empty() ) return;
-	int64_t sz = (int64_t)a.data.size();
+	if ( !arr->is_array() || arr->as_array().empty() ) return;
+	std::vector<madc::value> &data = arr->array();
+	int64_t sz = (int64_t)data.size();
 	n = ((n % sz) + sz) % sz; // handle negative rotation
-	std::rotate(a.data.begin(), a.data.begin() + n, a.data.end());
+	std::rotate(data.begin(), data.begin() + n, data.end());
 }
 
 // ruby::compact — remove empty string entries from array
-void ruby_compact(MadArray *arr)
+void ruby_compact(madc::value *arr)
 {
-	MadArray &a = *arr;
-	std::vector<MadValue> cleaned;
-	for ( auto &v : a.data )
+	if ( !arr->is_array() ) return;
+	std::vector<madc::value> cleaned;
+	for ( auto &v : arr->as_array() )
 	{
 		if ( v.is_string() && v.as_string().empty() )
 			continue;
 		cleaned.push_back(v);
 	}
-	a.data = cleaned;
+	arr->array() = cleaned;
 }
 
 // ruby::flatten — flatten nested string (split by any whitespace into array)
-void ruby_flatten(MadArray *arr, const char *str)
+void ruby_flatten(madc::value *arr, const char *str)
 {
-	MadArray &a = *arr;
 	std::string s = ruby_text_arg(str);
-	a.data.clear();
-	a.assoc.clear();
+	*arr = madc::value::make_array();
 	std::string word;
 	for ( size_t i = 0; i < s.length(); ++i )
 	{
@@ -116,7 +112,7 @@ void ruby_flatten(MadArray *arr, const char *str)
 		{
 			if ( !word.empty() )
 			{
-				a.push(MadValue(word));
+				arr->array().push_back(madc::value(word));
 				word.clear();
 			}
 		}
@@ -124,7 +120,7 @@ void ruby_flatten(MadArray *arr, const char *str)
 			word += s[i];
 	}
 	if ( !word.empty() )
-		a.push(MadValue(word));
+		arr->array().push_back(madc::value(word));
 }
 
 // ruby::capitalize — capitalize first char, lowercase rest (Ruby semantics)
@@ -200,14 +196,14 @@ extern "C" {
 // Thin C-linkage wrappers for transpiler import resolution
 std::string *__rb_squeeze(std::string *a) { return ruby_squeeze(a); }
 std::string *__rb_tr(std::string *a, const char *b, const char *c) { return ruby_tr(a, b, c); }
-void __rb_chars(MadArray *a, const char *b) { ruby_chars(a, b); }
+void __rb_chars(madc::value *a, const char *b) { ruby_chars(a, b); }
 std::string *__rb_capitalize(std::string *a) { return ruby_capitalize(a); }
 std::string *__rb_delete(std::string *a, const char *b) { return ruby_delete_chars(a, b); }
 int64_t __rb_count(const char *a, const char *b) { return ruby_count(a, b); }
 int64_t __rb_include(const char *a, const char *b) { return ruby_include(a, b); }
 std::string *__rb_gsub(std::string *a, const char *b, const char *c) { return ruby_gsub(a, b, c); }
 std::string *__rb_sub(std::string *a, const char *b, const char *c) { return ruby_sub(a, b, c); }
-void __rb_rotate(MadArray *a, int64_t b) { ruby_rotate(a, b); }
-void __rb_compact(MadArray *a) { ruby_compact(a); }
-void __rb_flatten(MadArray *a, const char *b) { ruby_flatten(a, b); }
+void __rb_rotate(madc::value *a, int64_t b) { ruby_rotate(a, b); }
+void __rb_compact(madc::value *a) { ruby_compact(a); }
+void __rb_flatten(madc::value *a, const char *b) { ruby_flatten(a, b); }
 }

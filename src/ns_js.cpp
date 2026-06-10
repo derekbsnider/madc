@@ -157,20 +157,22 @@ int64_t js_parseInt(const char *str, int64_t radix)
 	catch (...) { return 0; }
 }
 
-// js::stringify — simple JSON-like serialization of a MadArray
-std::string *js_stringify(std::string *result, MadArray *arr)
+// js::stringify — simple JSON-like serialization of a madc array value
+std::string *js_stringify(std::string *result, madc::value *arr)
 {
-	MadArray &a = *arr;
 	std::string &out = *result;
 	out = "[";
-	for ( size_t i = 0; i < a.data.size(); ++i )
+	const std::vector<madc::value> empty;
+	const std::vector<madc::value> &data = arr->is_array() ? arr->as_array()
+							       : empty;
+	for ( size_t i = 0; i < data.size(); ++i )
 	{
 		if ( i > 0 ) out += ",";
-		if ( a.data[i].is_string() )
+		if ( data[i].is_string() )
 		{
 			out += "\"";
 			// escape special characters
-			for ( char c : a.data[i].as_string() )
+			for ( char c : data[i].as_string() )
 			{
 				if ( c == '"' ) out += "\\\"";
 				else if ( c == '\\' ) out += "\\\\";
@@ -180,10 +182,10 @@ std::string *js_stringify(std::string *result, MadArray *arr)
 			}
 			out += "\"";
 		}
-		else if ( a.data[i].is_int() )
-			out += std::to_string(a.data[i].as_int());
-		else if ( a.data[i].is_double() )
-			out += std::to_string(a.data[i].as_double());
+		else if ( data[i].is_integer() )
+			out += std::to_string(data[i].as_integer());
+		else if ( data[i].is_real() )
+			out += std::to_string(data[i].as_real());
 		else
 			out += "null";
 	}
@@ -216,5 +218,5 @@ std::string *__js_atob(std::string *a, const char *b) { return js_atob(a, b); }
 std::string *__js_encodeURIComponent(std::string *a, const char *b) { return js_encodeURIComponent(a, b); }
 std::string *__js_decodeURIComponent(std::string *a, const char *b) { return js_decodeURIComponent(a, b); }
 int64_t __js_parseInt(const char *a, int64_t b) { return js_parseInt(a, b); }
-std::string *__js_stringify(std::string *a, MadArray *b) { return js_stringify(a, b); }
+std::string *__js_stringify(std::string *a, madc::value *b) { return js_stringify(a, b); }
 }

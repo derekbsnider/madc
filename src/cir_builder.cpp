@@ -875,12 +875,13 @@ node_t CirBuilder::obj_default_ctor_call(const char *name, const char *ctor_sym,
 // Hidden return-slot pointer parameter for by-value object returns.
 const char *CirBuilder::RETBUF_NAME = "__retbuf";
 
-// ---- MadArray (`array`) object lowering ----
-// A madc `array` is a real MadArray C++ object using the runtime-object model:
-// an 8-aligned opaque buffer + madarray_construct/madarray_destruct (the
-// wrappers in madc_mir_backend.cpp). Unlike a string it needs no const char*
-// coercion: an array argument is always passed by pointer, and the buffer's
-// long[] name decays to that pointer naturally at the call site.
+// ---- madc array (`array`) object lowering ----
+// A madc `array` is a real madc::value C++ object (the unified public value
+// type) using the runtime-object model: an 8-aligned opaque buffer +
+// madarray_construct/madarray_destruct (the wrappers in madc_mir_backend.cpp).
+// Unlike a string it needs no const char* coercion: an array argument is
+// always passed by pointer, and the buffer's long[] name decays to that
+// pointer naturally at the call site.
 bool CirBuilder::is_array_object(DataDef *dd)
 {
 	return dd && dd->rawtype() == DataType::dtARRAY && !dd->is_pointer();
@@ -888,7 +889,7 @@ bool CirBuilder::is_array_object(DataDef *dd)
 
 size_t CirBuilder::array_obj_words() const
 {
-	return (sizeof(MadArray) + sizeof(long) - 1) / sizeof(long);
+	return (sizeof(madc::value) + sizeof(long) - 1) / sizeof(long);
 }
 
 node_t CirBuilder::array_storage_decl(const char *name, TokenBase *origin)
@@ -1877,8 +1878,8 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// destructor when one exists. Construction is injected as a separate
 	// class_ctor_call by translate_block (the 1->N C++ lowering).
 
-	// MadArray object (`array a;`): same opaque-storage model as runtime-object
-	// classes.
+	// madc array object (`array a;`, a madc::value): same opaque-storage
+	// model as runtime-object classes.
 	// madarray_construct is emitted as a separate statement by translate_block;
 	// the cleanup attribute on the storage handles scope-exit destruction.
 	if (is_array_object(v->type))
@@ -8382,7 +8383,7 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 	return node2(N_BLOCK, list(), items, tt);
 }
 
-// Range-based for over a MadArray: `for (T x : arr) body`.
+// Range-based for over a madc array (madc::value): `for (T x : arr) body`.
 // The parser already declared `x` in the ENCLOSING scope (so translate_block
 // emits its storage + ctor once, and the cleanup attribute destructs it), so
 // here we only emit:
@@ -8410,20 +8411,20 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 	}
 
 	// A raw fixed-size C array (`int a[N]`): compile-time element count + direct
-	// subscript — no MadArray runtime helper. Emit an ordinary indexed for-loop
+	// subscript — no madc-array runtime helper. Emit an ordinary indexed for-loop
 	// `for (long i = 0; i < N; i += 1) { T x = a[i]; <body> }`, exactly what g++
 	// lowers a range-for over an array to. (A VLA / runtime-sized array has no
 	// compile-time bound and is NOT handled here — it falls through.) Without
-	// this a plain array hit the MadArray fallback below, reading its raw bytes
-	// as a MadArray header -> garbage length -> out-of-bounds get -> SIGSEGV.
+	// this a plain array hit the madc-array fallback below, reading its raw bytes
+	// as a madc::value header -> garbage length -> out-of-bounds get -> SIGSEGV.
 	if (TokenVar *ctv = dynamic_cast<TokenVar *>(fe->container)) {
 		if (ctv->var.is_fixed_array() && !ctv->var.is_vla()
 		    && ctv->var.total_elements() > 0)
 			return translate_foreach_carray(fe, ctv);
 	}
 
-	// Reference loop var over a MadArray (php/perl dynamic array) is not
-	// supported: MadArray elements are tagged-union values fetched by
+	// Reference loop var over a madc array (php/perl dynamic array) is not
+	// supported: its elements are tagged madc::value entries fetched by
 	// __php_array_get_int (a value copy), with no stable element address to
 	// alias — so a `T&` can't faithfully mutate the source. Reject rather than
 	// silently copy (the reference contract would be violated). The aliasing
@@ -8434,7 +8435,7 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 				  "this container (only raw arrays and "
 				  "size()/operator[] containers)", fe);
 
-	// (void*)container — the MadArray object address (the var name decays to
+	// (void*)container — the madc::value object address (the var name decays to
 	// its long[] buffer, normalized to void*).
 	auto container_addr = [&]() -> node_t {
 		return node2(N_CAST, void_ptr_type(), translate_expr(fe->container), fe);
@@ -8469,7 +8470,7 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 	if (DataDefCLASS *ec = as_class_instance(fe->elemtype)) {
 		FuncDef *op = class_assign_cstr_operator_def(ec);
 		if (!op)
-			return error_node("range-for class elements over MadArray require "
+			return error_node("range-for class elements over a madc array require "
 					  "operator=(char*) on the element type", fe);
 		need_output_extern("__php_array_get_cstr", true,
 				   { { {N_VOID}, true }, { {N_LONG}, false } });
@@ -8618,7 +8619,7 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 //   for (long i = 0; i < N; i += 1) { x = a[i]; <body> }
 // N is the array's compile-time element count; `a[i]` is a direct subscript
 // (N_IND), element stride sizeof(T) — c2mir handles it natively, exactly like
-// g++'s array range-for lowering. No MadArray runtime helper.
+// g++'s array range-for lowering. No madc-array runtime helper.
 node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv)
 {
 	const char *arrname = ctv->var.name.c_str();
@@ -9037,7 +9038,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		if (dynamic_cast<FuncDef *>(v->type)) continue;
 		append(items, var_decl(v));
 		if (is_array_object(v->type)) {
-			// `array a;` — default-construct the MadArray object. Scope-exit
+			// `array a;` — default-construct the madc::value object. Scope-exit
 			// destruction is handled by the cleanup attribute (array_storage_decl).
 			append(items, array_ctor_call(v->name.c_str(), tc));
 		} else if (DataDefCLASS *cdd = as_class_instance(v->type)) {
@@ -9095,7 +9096,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			TokenDecl *sdcl = dynamic_cast<TokenDecl *>(stb);
 			bool file_global = sdcl && !(sdcl->var.flags & vfLOCAL)
 					&& !(sdcl->var.flags & vfSTATIC);
-			// MadArray object declaration: storage (via var_decl) + default ctor.
+			// madc array object declaration: storage (via var_decl) + default ctor.
 			if (sdcl && is_array_object(sdcl->var.type) && !file_global) {
 				if (!pending_labels.empty()) {
 					node_t ll = list();

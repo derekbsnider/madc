@@ -198,23 +198,20 @@ std::string *python_replace(std::string *ptr, const char *old_str, const char *n
 
 // python::format — simple Python-style string formatting
 // "Hello {}, you are {}" with positional args from array
-std::string *python_format(std::string *result, const char *fmt, MadArray *args)
+std::string *python_format(std::string *result, const char *fmt, madc::value *args)
 {
 	std::string &res = *result;
 	std::string f = python_text_arg(fmt);
-	MadArray &a = *args;
 	res = f;
+	if ( !args->is_array() )
+		return result;
+	const std::vector<madc::value> &data = args->as_array();
 	size_t arg_idx = 0;
 	size_t pos = 0;
-	while ( (pos = res.find("{}", pos)) != std::string::npos && arg_idx < a.data.size() )
+	while ( (pos = res.find("{}", pos)) != std::string::npos && arg_idx < data.size() )
 	{
 		std::string val;
-		if ( a.data[arg_idx].is_string() )
-			val = a.data[arg_idx].as_string();
-		else if ( a.data[arg_idx].is_int() )
-			val = std::to_string(a.data[arg_idx].as_int());
-		else if ( a.data[arg_idx].is_double() )
-			val = std::to_string(a.data[arg_idx].as_double());
+		ns_common::value_to_string(data[arg_idx], val);
 		res.replace(pos, 2, val);
 		pos += val.length();
 		++arg_idx;
@@ -239,5 +236,5 @@ int64_t __py_isalpha(const char *a) { return python_isalpha(a); }
 int64_t __py_isalnum(const char *a) { return python_isalnum(a); }
 int64_t __py_isspace(const char *a) { return python_isspace(a); }
 std::string *__py_replace(std::string *a, const char *b, const char *c) { return python_replace(a, b, c); }
-std::string *__py_format(std::string *a, const char *b, MadArray *c) { return python_format(a, b, c); }
+std::string *__py_format(std::string *a, const char *b, madc::value *c) { return python_format(a, b, c); }
 }

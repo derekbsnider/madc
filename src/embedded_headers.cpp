@@ -1105,7 +1105,7 @@ std::string *__js_atob(std::string *, const char *);
 std::string *__js_encodeURIComponent(std::string *, const char *);
 std::string *__js_decodeURIComponent(std::string *, const char *);
 int64_t __js_parseInt(const char *, int64_t);
-std::string *__js_stringify(std::string *, MadArray *);
+std::string *__js_stringify(std::string *, madc::value *);
 }
 
 namespace js {
@@ -1114,7 +1114,7 @@ inline std::string &atob(std::string &result, const char *input) { return *__js_
 inline std::string &encodeURIComponent(std::string &result, const char *input) { return *__js_encodeURIComponent(&result, input); }
 inline std::string &decodeURIComponent(std::string &result, const char *input) { return *__js_decodeURIComponent(&result, input); }
 inline int64_t parseInt(const char *text, int64_t radix) { return __js_parseInt(text, radix); }
-inline std::string &stringify(std::string &result, MadArray &values) { return *__js_stringify(&result, &values); }
+inline std::string &stringify(std::string &result, madc::value &values) { return *__js_stringify(&result, &values); }
 }
 
 #endif
@@ -1257,15 +1257,15 @@ namespace perl {
 extern "C" {
 int64_t __perl_chop(std::string *);
 int64_t __perl_chomp(std::string *);
-void __perl_grep(MadArray *, const char *, MadArray *);
-void __perl_glob(MadArray *, const char *);
-int64_t __perl_scalar(MadArray *);
-void __perl_push(MadArray *, const char *);
-std::string *__perl_pop(std::string *, MadArray *);
-std::string *__perl_shift(std::string *, MadArray *);
-void __perl_unshift(MadArray *, const char *);
-std::string *__perl_join(std::string *, const char *, MadArray *);
-void __perl_split(MadArray *, const char *, const char *);
+void __perl_grep(madc::value *, const char *, madc::value *);
+void __perl_glob(madc::value *, const char *);
+int64_t __perl_scalar(madc::value *);
+void __perl_push(madc::value *, const char *);
+std::string *__perl_pop(std::string *, madc::value *);
+std::string *__perl_shift(std::string *, madc::value *);
+void __perl_unshift(madc::value *, const char *);
+std::string *__perl_join(std::string *, const char *, madc::value *);
+void __perl_split(madc::value *, const char *, const char *);
 std::string *__perl_reverse(std::string *);
 std::string *__perl_lc(std::string *);
 std::string *__perl_uc(std::string *);
@@ -1280,15 +1280,15 @@ std::string *__perl_substr(std::string *, const char *, int64_t, int64_t);
 namespace perl {
 inline int64_t chop(std::string &s) { return __perl_chop(&s); }
 inline int64_t chomp(std::string &s) { return __perl_chomp(&s); }
-inline void grep(MadArray &dest, const char *needle, MadArray &src) { __perl_grep(&dest, needle, &src); }
-inline void glob(MadArray &out, const char *pattern) { __perl_glob(&out, pattern); }
-inline int64_t scalar(MadArray &values) { return __perl_scalar(&values); }
-inline void push(MadArray &values, const char *text) { __perl_push(&values, text); }
-inline std::string &pop(std::string &result, MadArray &values) { return *__perl_pop(&result, &values); }
-inline std::string &shift(std::string &result, MadArray &values) { return *__perl_shift(&result, &values); }
-inline void unshift(MadArray &values, const char *text) { __perl_unshift(&values, text); }
-inline std::string &join(std::string &result, const char *separator, MadArray &values) { return *__perl_join(&result, separator, &values); }
-inline void split(MadArray &out, const char *pattern, const char *text) { __perl_split(&out, pattern, text); }
+inline void grep(madc::value &dest, const char *needle, madc::value &src) { __perl_grep(&dest, needle, &src); }
+inline void glob(madc::value &out, const char *pattern) { __perl_glob(&out, pattern); }
+inline int64_t scalar(madc::value &values) { return __perl_scalar(&values); }
+inline void push(madc::value &values, const char *text) { __perl_push(&values, text); }
+inline std::string &pop(std::string &result, madc::value &values) { return *__perl_pop(&result, &values); }
+inline std::string &shift(std::string &result, madc::value &values) { return *__perl_shift(&result, &values); }
+inline void unshift(madc::value &values, const char *text) { __perl_unshift(&values, text); }
+inline std::string &join(std::string &result, const char *separator, madc::value &values) { return *__perl_join(&result, separator, &values); }
+inline void split(madc::value &out, const char *pattern, const char *text) { __perl_split(&out, pattern, text); }
 inline std::string &reverse(std::string &s) { return *__perl_reverse(&s); }
 inline std::string &lc(std::string &s) { return *__perl_lc(&s); }
 inline std::string &uc(std::string &s) { return *__perl_uc(&s); }
@@ -1409,27 +1409,27 @@ std::string *__php_str_rot13(std::string *);
 std::string *__php_chunk_split(std::string *, int64_t, std::string *);
 std::string *__php_number_format(std::string *, int64_t, std::string *);
 std::string *__php_wordwrap(std::string *, int64_t, std::string *);
-void __php_explode(MadArray *, const char *, const char *);
-std::string *__php_implode(std::string *, const char *, MadArray *);
-int64_t __php_count(MadArray *);
-void __php_array_push(MadArray *, const char *);
-void __php_array_push_int(MadArray *, int64_t);
-void __php_array_push_array(MadArray *, MadArray *);
-std::string *__php_array_pop(std::string *, MadArray *);
-std::string *__php_array_get(std::string *, MadArray *, int64_t);
-int64_t __php_array_get_int(MadArray *, int64_t);
-const char *__php_array_get_cstr(MadArray *, int64_t);
-void __php_array_reverse(MadArray *);
-int64_t __php_in_array(const char *, MadArray *);
-int64_t __php_array_search(const char *, MadArray *);
-void __php_array_unique(MadArray *);
-std::string *__php_array_shift(std::string *, MadArray *);
-void __php_array_unshift(MadArray *, const char *);
-void __php_sort(MadArray *);
-void __php_rsort(MadArray *);
-void __php_array_slice(MadArray *, MadArray *, int64_t, int64_t);
-void __php_array_merge(MadArray *, MadArray *);
-void __php_array_column(MadArray *, MadArray *, int64_t);
+void __php_explode(madc::value *, const char *, const char *);
+std::string *__php_implode(std::string *, const char *, madc::value *);
+int64_t __php_count(madc::value *);
+void __php_array_push(madc::value *, const char *);
+void __php_array_push_int(madc::value *, int64_t);
+void __php_array_push_array(madc::value *, madc::value *);
+std::string *__php_array_pop(std::string *, madc::value *);
+std::string *__php_array_get(std::string *, madc::value *, int64_t);
+int64_t __php_array_get_int(madc::value *, int64_t);
+const char *__php_array_get_cstr(madc::value *, int64_t);
+void __php_array_reverse(madc::value *);
+int64_t __php_in_array(const char *, madc::value *);
+int64_t __php_array_search(const char *, madc::value *);
+void __php_array_unique(madc::value *);
+std::string *__php_array_shift(std::string *, madc::value *);
+void __php_array_unshift(madc::value *, const char *);
+void __php_sort(madc::value *);
+void __php_rsort(madc::value *);
+void __php_array_slice(madc::value *, madc::value *, int64_t, int64_t);
+void __php_array_merge(madc::value *, madc::value *);
+void __php_array_column(madc::value *, madc::value *, int64_t);
 }
 
 namespace php {
@@ -1448,27 +1448,27 @@ inline std::string &str_rot13(std::string &s) { return *__php_str_rot13(&s); }
 inline std::string &chunk_split(std::string &s, int64_t chunklen, std::string &separator) { return *__php_chunk_split(&s, chunklen, &separator); }
 inline std::string &number_format(std::string &result, int64_t number, std::string &separator) { return *__php_number_format(&result, number, &separator); }
 inline std::string &wordwrap(std::string &s, int64_t width, std::string &separator) { return *__php_wordwrap(&s, width, &separator); }
-inline void explode(MadArray &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
-inline std::string &implode(std::string &result, const char *glue, MadArray &values) { return *__php_implode(&result, glue, &values); }
-inline int64_t count(MadArray &values) { return __php_count(&values); }
-inline void array_push(MadArray &values, const char *text) { __php_array_push(&values, text); }
-inline void array_push_int(MadArray &values, int64_t value) { __php_array_push_int(&values, value); }
-inline void array_push_array(MadArray &values, MadArray &nested) { __php_array_push_array(&values, &nested); }
-inline std::string &array_pop(std::string &result, MadArray &values) { return *__php_array_pop(&result, &values); }
-inline std::string &array_get(std::string &result, MadArray &values, int64_t index) { return *__php_array_get(&result, &values, index); }
-inline int64_t array_get_int(MadArray &values, int64_t index) { return __php_array_get_int(&values, index); }
-inline const char *array_get_cstr(MadArray &values, int64_t index) { return __php_array_get_cstr(&values, index); }
-inline void array_reverse(MadArray &values) { __php_array_reverse(&values); }
-inline int64_t in_array(const char *needle, MadArray &values) { return __php_in_array(needle, &values); }
-inline int64_t array_search(const char *needle, MadArray &values) { return __php_array_search(needle, &values); }
-inline void array_unique(MadArray &values) { __php_array_unique(&values); }
-inline std::string &array_shift(std::string &result, MadArray &values) { return *__php_array_shift(&result, &values); }
-inline void array_unshift(MadArray &values, const char *text) { __php_array_unshift(&values, text); }
-inline void sort(MadArray &values) { __php_sort(&values); }
-inline void rsort(MadArray &values) { __php_rsort(&values); }
-inline void array_slice(MadArray &dest, MadArray &src, int64_t offset, int64_t length) { __php_array_slice(&dest, &src, offset, length); }
-inline void array_merge(MadArray &dest, MadArray &src) { __php_array_merge(&dest, &src); }
-inline void array_column(MadArray &dest, MadArray &src, int64_t column_index) { __php_array_column(&dest, &src, column_index); }
+inline void explode(madc::value &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
+inline std::string &implode(std::string &result, const char *glue, madc::value &values) { return *__php_implode(&result, glue, &values); }
+inline int64_t count(madc::value &values) { return __php_count(&values); }
+inline void array_push(madc::value &values, const char *text) { __php_array_push(&values, text); }
+inline void array_push_int(madc::value &values, int64_t value) { __php_array_push_int(&values, value); }
+inline void array_push_array(madc::value &values, madc::value &nested) { __php_array_push_array(&values, &nested); }
+inline std::string &array_pop(std::string &result, madc::value &values) { return *__php_array_pop(&result, &values); }
+inline std::string &array_get(std::string &result, madc::value &values, int64_t index) { return *__php_array_get(&result, &values, index); }
+inline int64_t array_get_int(madc::value &values, int64_t index) { return __php_array_get_int(&values, index); }
+inline const char *array_get_cstr(madc::value &values, int64_t index) { return __php_array_get_cstr(&values, index); }
+inline void array_reverse(madc::value &values) { __php_array_reverse(&values); }
+inline int64_t in_array(const char *needle, madc::value &values) { return __php_in_array(needle, &values); }
+inline int64_t array_search(const char *needle, madc::value &values) { return __php_array_search(needle, &values); }
+inline void array_unique(madc::value &values) { __php_array_unique(&values); }
+inline std::string &array_shift(std::string &result, madc::value &values) { return *__php_array_shift(&result, &values); }
+inline void array_unshift(madc::value &values, const char *text) { __php_array_unshift(&values, text); }
+inline void sort(madc::value &values) { __php_sort(&values); }
+inline void rsort(madc::value &values) { __php_rsort(&values); }
+inline void array_slice(madc::value &dest, madc::value &src, int64_t offset, int64_t length) { __php_array_slice(&dest, &src, offset, length); }
+inline void array_merge(madc::value &dest, madc::value &src) { __php_array_merge(&dest, &src); }
+inline void array_column(madc::value &dest, madc::value &src, int64_t column_index) { __php_array_column(&dest, &src, column_index); }
 }
 
 #endif
@@ -1535,7 +1535,7 @@ int64_t __py_isalpha(const char *);
 int64_t __py_isalnum(const char *);
 int64_t __py_isspace(const char *);
 std::string *__py_replace(std::string *, const char *, const char *);
-std::string *__py_format(std::string *, const char *, MadArray *);
+std::string *__py_format(std::string *, const char *, madc::value *);
 }
 
 namespace python {
@@ -1553,7 +1553,7 @@ inline int64_t isalpha(const char *text) { return __py_isalpha(text); }
 inline int64_t isalnum(const char *text) { return __py_isalnum(text); }
 inline int64_t isspace(const char *text) { return __py_isspace(text); }
 inline std::string &replace(std::string &s, const char *old_text, const char *new_text) { return *__py_replace(&s, old_text, new_text); }
-inline std::string &format(std::string &result, const char *fmt, MadArray &args) { return *__py_format(&result, fmt, &args); }
+inline std::string &format(std::string &result, const char *fmt, madc::value &args) { return *__py_format(&result, fmt, &args); }
 }
 
 #endif
@@ -1602,31 +1602,31 @@ namespace ruby {
 extern "C" {
 std::string *__rb_squeeze(std::string *);
 std::string *__rb_tr(std::string *, const char *, const char *);
-void __rb_chars(MadArray *, const char *);
+void __rb_chars(madc::value *, const char *);
 std::string *__rb_capitalize(std::string *);
 std::string *__rb_delete(std::string *, const char *);
 int64_t __rb_count(const char *, const char *);
 int64_t __rb_include(const char *, const char *);
 std::string *__rb_gsub(std::string *, const char *, const char *);
 std::string *__rb_sub(std::string *, const char *, const char *);
-void __rb_rotate(MadArray *, int64_t);
-void __rb_compact(MadArray *);
-void __rb_flatten(MadArray *, const char *);
+void __rb_rotate(madc::value *, int64_t);
+void __rb_compact(madc::value *);
+void __rb_flatten(madc::value *, const char *);
 }
 
 namespace ruby {
 inline std::string &squeeze(std::string &s) { return *__rb_squeeze(&s); }
 inline std::string &tr(std::string &s, const char *from, const char *to) { return *__rb_tr(&s, from, to); }
-inline void chars(MadArray &out, const char *text) { __rb_chars(&out, text); }
+inline void chars(madc::value &out, const char *text) { __rb_chars(&out, text); }
 inline std::string &capitalize(std::string &s) { return *__rb_capitalize(&s); }
 inline std::string &delete_chars(std::string &s, const char *chars) { return *__rb_delete(&s, chars); }
 inline int64_t count(const char *text, const char *chars) { return __rb_count(text, chars); }
 inline int64_t include(const char *text, const char *substr) { return __rb_include(text, substr); }
 inline std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *__rb_gsub(&s, pattern, replacement); }
 inline std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *__rb_sub(&s, pattern, replacement); }
-inline void rotate(MadArray &values, int64_t n) { __rb_rotate(&values, n); }
-inline void compact(MadArray &values) { __rb_compact(&values); }
-inline void flatten(MadArray &values, const char *text) { __rb_flatten(&values, text); }
+inline void rotate(madc::value &values, int64_t n) { __rb_rotate(&values, n); }
+inline void compact(madc::value &values) { __rb_compact(&values); }
+inline void flatten(madc::value &values, const char *text) { __rb_flatten(&values, text); }
 }
 
 #endif
@@ -1695,14 +1695,14 @@ std::string *__rust_replace(std::string *, const char *, const char *);
 std::string *__rust_repeat(std::string *, int64_t);
 int64_t __rust_len(const char *);
 int64_t __rust_is_empty(const char *);
-void __rust_split(MadArray *, const char *, const char *);
-void __rust_split_whitespace(MadArray *, const char *);
-std::string *__rust_join(std::string *, MadArray *, const char *);
-std::string *__rust_first(std::string *, MadArray *);
-std::string *__rust_last(std::string *, MadArray *);
-std::string *__rust_get(std::string *, MadArray *, int64_t);
-void __rust_push(MadArray *, const char *);
-std::string *__rust_pop(std::string *, MadArray *);
+void __rust_split(madc::value *, const char *, const char *);
+void __rust_split_whitespace(madc::value *, const char *);
+std::string *__rust_join(std::string *, madc::value *, const char *);
+std::string *__rust_first(std::string *, madc::value *);
+std::string *__rust_last(std::string *, madc::value *);
+std::string *__rust_get(std::string *, madc::value *, int64_t);
+void __rust_push(madc::value *, const char *);
+std::string *__rust_pop(std::string *, madc::value *);
 }
 
 namespace rust {
@@ -1716,14 +1716,14 @@ inline std::string &replace(std::string &s, const char *from, const char *to) { 
 inline std::string &repeat(std::string &s, int64_t count) { return *__rust_repeat(&s, count); }
 inline int64_t len(const char *text) { return __rust_len(text); }
 inline int64_t is_empty(const char *text) { return __rust_is_empty(text); }
-inline void split(MadArray &out, const char *text, const char *delim) { __rust_split(&out, text, delim); }
-inline void split_whitespace(MadArray &out, const char *text) { __rust_split_whitespace(&out, text); }
-inline std::string &join(std::string &result, MadArray &values, const char *sep) { return *__rust_join(&result, &values, sep); }
-inline std::string &first(std::string &result, MadArray &values) { return *__rust_first(&result, &values); }
-inline std::string &last(std::string &result, MadArray &values) { return *__rust_last(&result, &values); }
-inline std::string &get(std::string &result, MadArray &values, int64_t idx) { return *__rust_get(&result, &values, idx); }
-inline void push(MadArray &values, const char *value) { __rust_push(&values, value); }
-inline std::string &pop(std::string &result, MadArray &values) { return *__rust_pop(&result, &values); }
+inline void split(madc::value &out, const char *text, const char *delim) { __rust_split(&out, text, delim); }
+inline void split_whitespace(madc::value &out, const char *text) { __rust_split_whitespace(&out, text); }
+inline std::string &join(std::string &result, madc::value &values, const char *sep) { return *__rust_join(&result, &values, sep); }
+inline std::string &first(std::string &result, madc::value &values) { return *__rust_first(&result, &values); }
+inline std::string &last(std::string &result, madc::value &values) { return *__rust_last(&result, &values); }
+inline std::string &get(std::string &result, madc::value &values, int64_t idx) { return *__rust_get(&result, &values, idx); }
+inline void push(madc::value &values, const char *value) { __rust_push(&values, value); }
+inline std::string &pop(std::string &result, madc::value &values) { return *__rust_pop(&result, &values); }
 }
 
 #endif

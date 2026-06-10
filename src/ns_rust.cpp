@@ -97,19 +97,17 @@ int64_t rust_is_empty(const char *ptr)
 	return (!ptr || !ptr[0]) ? 1 : 0;
 }
 
-void rust_split(MadArray *arr, const char *str, const char *delim)
+void rust_split(madc::value *arr, const char *str, const char *delim)
 {
 	std::string s = rust_text_arg(str);
 	std::string d = rust_text_arg(delim);
 	ns_common::split_by_delim(*arr, s, d);
 }
 
-void rust_split_whitespace(MadArray *arr, const char *str)
+void rust_split_whitespace(madc::value *arr, const char *str)
 {
-	MadArray &a = *arr;
 	std::string s = rust_text_arg(str);
-	a.data.clear();
-	a.assoc.clear();
+	*arr = madc::value::make_array();
 	std::string word;
 	for ( size_t i = 0; i < s.length(); ++i )
 	{
@@ -117,7 +115,7 @@ void rust_split_whitespace(MadArray *arr, const char *str)
 		{
 			if ( !word.empty() )
 			{
-				a.push(MadValue(word));
+				arr->array().push_back(madc::value(word));
 				word.clear();
 			}
 		}
@@ -125,56 +123,56 @@ void rust_split_whitespace(MadArray *arr, const char *str)
 			word += s[i];
 	}
 	if ( !word.empty() )
-		a.push(MadValue(word));
+		arr->array().push_back(madc::value(word));
 }
 
-std::string *rust_join(std::string *result, MadArray *arr, const char *sep)
+std::string *rust_join(std::string *result, madc::value *arr, const char *sep)
 {
 	std::string s = rust_text_arg(sep);
 	ns_common::join_with_sep(*result, *arr, s);
 	return result;
 }
 
-std::string *rust_first(std::string *result, MadArray *arr)
+std::string *rust_first(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
-	MadArray &a = *arr;
 	res.clear();
-	if ( !a.data.empty() )
-		ns_common::value_to_string(a.data[0], res);
+	if ( arr->is_array() && !arr->as_array().empty() )
+		ns_common::value_to_string(arr->as_array()[0], res);
 	return result;
 }
 
-std::string *rust_last(std::string *result, MadArray *arr)
+std::string *rust_last(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
-	MadArray &a = *arr;
 	res.clear();
-	if ( !a.data.empty() )
-		ns_common::value_to_string(a.data[a.data.size() - 1], res);
+	if ( arr->is_array() && !arr->as_array().empty() )
+		ns_common::value_to_string(arr->as_array().back(), res);
 	return result;
 }
 
-std::string *rust_get(std::string *result, MadArray *arr, int64_t idx)
+std::string *rust_get(std::string *result, madc::value *arr, int64_t idx)
 {
 	std::string &res = *result;
-	MadArray &a = *arr;
 	res.clear();
-	if ( idx >= 0 && (size_t)idx < a.data.size() )
-		ns_common::value_to_string(a.data[(size_t)idx], res);
+	if ( arr->is_array() && idx >= 0 && (size_t)idx < arr->as_array().size() )
+		ns_common::value_to_string(arr->as_array()[(size_t)idx], res);
 	return result;
 }
 
-void rust_push(MadArray *arr, const char *value)
+void rust_push(madc::value *arr, const char *value)
 {
-	arr->push(MadValue(rust_text_arg(value)));
+	arr->array().push_back(madc::value(rust_text_arg(value)));
 }
 
-std::string *rust_pop(std::string *result, MadArray *arr)
+std::string *rust_pop(std::string *result, madc::value *arr)
 {
 	std::string &res = *result;
-	MadValue v = arr->pop();
 	res.clear();
+	if ( !arr->is_array() || arr->as_array().empty() )
+		return result;
+	madc::value v = arr->array().back();
+	arr->array().pop_back();
 	ns_common::value_to_string(v, res);
 	return result;
 }
@@ -191,12 +189,12 @@ std::string *__rust_replace(std::string *a, const char *b, const char *c) { retu
 std::string *__rust_repeat(std::string *a, int64_t b) { return rust_repeat(a, b); }
 int64_t __rust_len(const char *a) { return rust_len(a); }
 int64_t __rust_is_empty(const char *a) { return rust_is_empty(a); }
-void __rust_split(MadArray *a, const char *b, const char *c) { rust_split(a, b, c); }
-void __rust_split_whitespace(MadArray *a, const char *b) { rust_split_whitespace(a, b); }
-std::string *__rust_join(std::string *a, MadArray *b, const char *c) { return rust_join(a, b, c); }
-std::string *__rust_first(std::string *a, MadArray *b) { return rust_first(a, b); }
-std::string *__rust_last(std::string *a, MadArray *b) { return rust_last(a, b); }
-std::string *__rust_get(std::string *a, MadArray *b, int64_t c) { return rust_get(a, b, c); }
-void __rust_push(MadArray *a, const char *b) { rust_push(a, b); }
-std::string *__rust_pop(std::string *a, MadArray *b) { return rust_pop(a, b); }
+void __rust_split(madc::value *a, const char *b, const char *c) { rust_split(a, b, c); }
+void __rust_split_whitespace(madc::value *a, const char *b) { rust_split_whitespace(a, b); }
+std::string *__rust_join(std::string *a, madc::value *b, const char *c) { return rust_join(a, b, c); }
+std::string *__rust_first(std::string *a, madc::value *b) { return rust_first(a, b); }
+std::string *__rust_last(std::string *a, madc::value *b) { return rust_last(a, b); }
+std::string *__rust_get(std::string *a, madc::value *b, int64_t c) { return rust_get(a, b, c); }
+void __rust_push(madc::value *a, const char *b) { rust_push(a, b); }
+std::string *__rust_pop(std::string *a, madc::value *b) { return rust_pop(a, b); }
 }

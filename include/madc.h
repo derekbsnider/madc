@@ -621,7 +621,7 @@ public:
             // This is what lets `v[i].method()` see a structured element.
             _datatype = e;
         else
-            _datatype = &ddINT64; // MadArray: default to int
+            _datatype = &ddINT64; // madc array (madc::value): default to int
     }
 
     // The element type produced by a class object's `operator[]`, or NULL when
@@ -645,7 +645,7 @@ public:
     virtual TokenType type() const { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }
     // The element type is computed in the constructor for every container
-    // kind (fixed array, pointer, string, SIMD, vector, map, MadArray).
+    // kind (fixed array, pointer, string, SIMD, vector, map, madc array).
     // The asmjit codegen path used a helper to refine multi-dimensional
     // fixed-array indexing; that path is gone, so return the stored
     // element type directly. The CIR backend derives types independently.

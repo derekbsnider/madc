@@ -211,4 +211,23 @@ TEST_SUITE("madc::value") {
 	CHECK(v.is_array());
 	CHECK(v.as_array().size() == 1);
     }
+
+    TEST_CASE("mutating accessors still throw on non-null kind mismatch") {
+	value v(int64_t(1));
+	CHECK_THROWS_AS(v.object(), std::runtime_error);
+	CHECK_THROWS_AS(v.array(),  std::runtime_error);
+	value o = value::make_object();
+	CHECK_THROWS_AS(o.array(),  std::runtime_error);
+	value a = value::make_array();
+	CHECK_THROWS_AS(a.object(), std::runtime_error);
+    }
+
+    TEST_CASE("a vivified value equals its make_ factory twin") {
+	value vo;
+	vo.object();
+	CHECK(vo == value::make_object());
+	value va;
+	va.array();
+	CHECK(va == value::make_array());
+    }
 }

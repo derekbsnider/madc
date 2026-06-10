@@ -12,6 +12,11 @@
 #include <set>
 #include <vector>
 
+// madc::value — THE one tagged value type (libmadc embedding API and the
+// script-side `array` / `madc::array` builtin alike). Depends only on the
+// standard library; no include cycle.
+#include "libmadc/value.h"
+
 extern thread_local bool madc_verbose;
 #ifndef DBG
 #define DBG(x) do { if (madc_verbose) { x; } } while (0)
@@ -935,145 +940,21 @@ public:
     }
 };
 
-class MadArray;
-
-// ---- MadValue: tagged union for PHP-style mixed-type arrays ----
-
-// MadValue's own discriminator. The PHP/borrowed-language mixed-array union
-// holds exactly these five alternatives; it formerly borrowed DataType enum
-// values (dtVOID/dtINT64/dtDOUBLE/std::string/dtARRAY) as the tag, which is a
-// different concept from DataDef type identity. A self-owned kind makes the
-// union self-consistent and removes the last MadValue dependency on the
-// std::string enum word (P2.14 chunk 2).
-enum class MadValueKind : uint8_t { mvNONE, mvINT, mvDOUBLE, mvSTRING, mvARRAY };
-
-struct MadValue
-{
-    MadValueKind kind;
-    union {
-	int64_t     ival;
-	double      dval;
-	void       *ptr;    // std::string*, MadArray*, etc.
-    };
-
-    MadValue();
-    MadValue(int64_t v);
-    MadValue(double v);
-    MadValue(const MadArray &a);
-
-    // string constructor — copies the string
-    MadValue(const std::string &s) : kind(MadValueKind::mvSTRING)
-    {
-	ptr = new std::string(s);
-    }
-
-    // copy constructor — deep copy strings
-    MadValue(const MadValue &o);
-
-    // assignment — deep copy strings
-    MadValue &operator=(const MadValue &o);
-
-    ~MadValue();
-
-    // accessors
-    int64_t      as_int()    const { return ival; }
-    double       as_double() const { return dval; }
-    std::string &as_string() const { return *(std::string *)ptr; }
-    MadArray    &as_array()  const { return *(MadArray *)ptr; }
-    bool         is_string() const { return kind == MadValueKind::mvSTRING; }
-    bool         is_int()    const { return kind == MadValueKind::mvINT; }
-    bool         is_double() const { return kind == MadValueKind::mvDOUBLE; }
-    bool         is_array()  const { return kind == MadValueKind::mvARRAY; }
-};
-
-// PHP-style array: ordered, mixed-type, supports both integer and string keys
-class MadArray
+// The script `array` / `madc::array` builtin IS the public `madc::value`
+// (include/libmadc/value.h) — one value type end-to-end. Display name stays
+// "array" (parser.cpp:1738 / pch.cpp / madc_ns keep resolving it); the
+// canonical C++ identity used for Itanium mangling is `madc::value`, so
+// script calls taking `array&` bind to the host `madc::value&` symbols.
+// Keyed (context) data is kind::object; indexed (php-style) arrays are
+// kind::array.
+class DataDefARRAY: public DDClass
 {
 public:
-    std::vector<MadValue> data;                      // indexed storage
-    std::vector<std::pair<std::string, MadValue>> assoc; // associative storage
-
-    size_t count() const { return data.size() + assoc.size(); }
-
-    // integer-indexed access
-    void push(const MadValue &v) { data.push_back(v); }
-    MadValue &at(size_t i) { return data.at(i); }
-    const MadValue &at(size_t i) const { return data.at(i); }
-
-    // associative access
-    MadValue &get(const std::string &key)
+    DataDefARRAY(): DDClass("array", sizeof(madc::value), DataType::dtARRAY)
     {
-	for ( auto &p : assoc )
-	    if ( p.first == key ) return p.second;
-	assoc.emplace_back(key, MadValue());
-	return assoc.back().second;
-    }
-
-    void set(const std::string &key, const MadValue &v)
-    {
-	for ( auto &p : assoc )
-	    if ( p.first == key ) { p.second = v; return; }
-	assoc.emplace_back(key, v);
-    }
-
-    MadValue pop()
-    {
-	if ( data.empty() ) return MadValue();
-	MadValue v = data.back();
-	data.pop_back();
-	return v;
+	canonical_cpp_spelling = "madc::value";
     }
 };
-
-class DataDefARRAY:    public DDClass { public: DataDefARRAY():   DDClass("array", sizeof(MadArray), DataType::dtARRAY) {} };
-
-inline MadValue::MadValue(const MadArray &a) : kind(MadValueKind::mvARRAY)
-{
-    ptr = new MadArray(a);
-}
-
-inline MadValue::MadValue() : kind(MadValueKind::mvNONE), ival(0) {}
-
-inline MadValue::MadValue(int64_t v) : kind(MadValueKind::mvINT), ival(v) {}
-
-inline MadValue::MadValue(double v) : kind(MadValueKind::mvDOUBLE), dval(v) {}
-
-inline MadValue::MadValue(const MadValue &o) : kind(o.kind)
-{
-    if ( kind == MadValueKind::mvSTRING && o.ptr )
-	ptr = new std::string(*(std::string *)o.ptr);
-    else if ( kind == MadValueKind::mvARRAY && o.ptr )
-	ptr = new MadArray(*(MadArray *)o.ptr);
-    else
-	ival = o.ival;
-}
-
-inline MadValue &MadValue::operator=(const MadValue &o)
-{
-    if ( this != &o )
-    {
-	if ( kind == MadValueKind::mvSTRING && ptr )
-	    delete (std::string *)ptr;
-	else if ( kind == MadValueKind::mvARRAY && ptr )
-	    delete (MadArray *)ptr;
-	kind = o.kind;
-	if ( kind == MadValueKind::mvSTRING && o.ptr )
-	    ptr = new std::string(*(std::string *)o.ptr);
-	else if ( kind == MadValueKind::mvARRAY && o.ptr )
-	    ptr = new MadArray(*(MadArray *)o.ptr);
-	else
-	    ival = o.ival;
-    }
-    return *this;
-}
-
-inline MadValue::~MadValue()
-{
-    if ( kind == MadValueKind::mvSTRING && ptr )
-	delete (std::string *)ptr;
-    else if ( kind == MadValueKind::mvARRAY && ptr )
-	delete (MadArray *)ptr;
-}
 
 class DataDefSIMD: public DataDef
 {

@@ -1,7 +1,7 @@
 #!/../bin/madc
 // Range-for over a fixed-size C array: `for (T v : a)`. A raw C array has a
-// compile-time element count and direct subscript — no MadArray runtime helper.
-// (Previously this fell into the MadArray fallback and SIGSEGV'd.)
+// compile-time element count and direct subscript — no madc-array runtime helper.
+// (Previously this fell into the madc-array fallback and SIGSEGV'd.)
 #include <iostream>
 using namespace std;
 

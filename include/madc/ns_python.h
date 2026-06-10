@@ -22,7 +22,7 @@ int64_t __py_isalpha(const char *);
 int64_t __py_isalnum(const char *);
 int64_t __py_isspace(const char *);
 std::string *__py_replace(std::string *, const char *, const char *);
-std::string *__py_format(std::string *, const char *, MadArray *);
+std::string *__py_format(std::string *, const char *, madc::value *);
 }
 
 namespace python {
@@ -40,7 +40,7 @@ inline int64_t isalpha(const char *text) { return __py_isalpha(text); }
 inline int64_t isalnum(const char *text) { return __py_isalnum(text); }
 inline int64_t isspace(const char *text) { return __py_isspace(text); }
 inline std::string &replace(std::string &s, const char *old_text, const char *new_text) { return *__py_replace(&s, old_text, new_text); }
-inline std::string &format(std::string &result, const char *fmt, MadArray &args) { return *__py_format(&result, fmt, &args); }
+inline std::string &format(std::string &result, const char *fmt, madc::value &args) { return *__py_format(&result, fmt, &args); }
 }
 
 #endif

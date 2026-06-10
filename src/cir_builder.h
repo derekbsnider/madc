@@ -307,12 +307,12 @@ class CirBuilder {
 	// materialized into a scope-local temporary first.
 	node_t object_arg_value(TokenBase *arg, DataDefCLASS *target);
 
-	// ---- MadArray (`array`) object lowering ----
+	// ---- madc array (`array`, a madc::value) object lowering ----
 	// Same opaque-object model as other runtime objects; array arguments are
 	// always passed by pointer and the long[] buffer name decays to that pointer
 	// at the call site.
 	static bool is_array_object(DataDef *dd);    // dtARRAY value type, not a pointer
-	size_t array_obj_words() const;              // ceil(sizeof(MadArray)/sizeof(long))
+	size_t array_obj_words() const;              // ceil(sizeof(madc::value)/sizeof(long))
 	node_t array_storage_decl(const char *name, TokenBase *origin);
 	node_t array_ctor_call(const char *name, TokenBase *origin);
 
@@ -735,7 +735,7 @@ public:
 	// (docs/plans/refs/exceptions-sjlj.md).
 	void emit_try_body_cleanup_push(const char *varname, class DataDefCLASS *cdd,
 					node_t items, class TokenBase *origin);
-	// Range-based for over a MadArray: `for (T x : arr) body`. The loop
+	// Range-based for over a madc array (madc::value): `for (T x : arr) body`. The loop
 	// variable is declared in the enclosing scope by the parser, so this only
 	// emits the index loop + per-iteration element fill (php_array_get /
 	// php_array_get_int) around the translated body.
@@ -749,7 +749,7 @@ public:
 				       class Variable *szmv, class Variable *opmv);
 	// Range-for over a raw fixed-size C array: `for (T x : a) body` -> a plain
 	// indexed loop over the array's compile-time element count with a direct
-	// subscript `a[__i]`. (No MadArray runtime helper.)
+	// subscript `a[__i]`. (No madc-array runtime helper.)
 	node_t translate_foreach_carray(class TokenFOREACH *fe, class TokenVar *ctv);
 	node_t translate_do(TokenDO *td);
 	node_t translate_switch(TokenSWITCH *ts);

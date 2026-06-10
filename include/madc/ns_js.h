@@ -13,7 +13,7 @@ std::string *__js_atob(std::string *, const char *);
 std::string *__js_encodeURIComponent(std::string *, const char *);
 std::string *__js_decodeURIComponent(std::string *, const char *);
 int64_t __js_parseInt(const char *, int64_t);
-std::string *__js_stringify(std::string *, MadArray *);
+std::string *__js_stringify(std::string *, madc::value *);
 }
 
 namespace js {
@@ -22,7 +22,7 @@ inline std::string &atob(std::string &result, const char *input) { return *__js_
 inline std::string &encodeURIComponent(std::string &result, const char *input) { return *__js_encodeURIComponent(&result, input); }
 inline std::string &decodeURIComponent(std::string &result, const char *input) { return *__js_decodeURIComponent(&result, input); }
 inline int64_t parseInt(const char *text, int64_t radix) { return __js_parseInt(text, radix); }
-inline std::string &stringify(std::string &result, MadArray &values) { return *__js_stringify(&result, &values); }
+inline std::string &stringify(std::string &result, madc::value &values) { return *__js_stringify(&result, &values); }
 }
 
 #endif
