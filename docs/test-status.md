@@ -1,20 +1,33 @@
 # Test Status
 
-> **Current (2026-06-09 late, `feature/cpp-detection-idiom-claude` against
-> `/workspace/mir` `develop` @ `2ffebff`):** fulltest is **546 passed, 1
-> failed, 0 timed out, 26 skipped** on `make -C src fulltest`. The ONE
-> remaining red is `testfstream.mad` (execution plan:
-> `docs/plans/2026-06-10-testfstream-alias-reference-plan.md`).
-> `testlargesizeofquery.mad` went green via the 64-bit `carray_dim_t` array-dim
-> widening, `testdefer.mad` via defer execution on CIR (test rewritten to real
-> libstdc++ headers with `.flags`/`.expect`), and `testloop.mad` earlier via
-> real headers. Standalone gcc.c-torture is **1567 passed, 31 compile-failed,
-> 56 runtime-failed, 1 timed out, 30 skipped** (`991014-1.c` newly passes; the
-> failset is otherwise byte-identical). Real-header C++ canaries pass:
-> `testcout_realhdr`, `test_extern_polymorphic`, `cout << std::string`,
-> `std::getline`, the `inf.good()` loop, and the defer LIFO/deferred-close
-> probes; `std::to_string`/`std::stoi` now RESOLVE (overload sets) but their
-> bodies still hit the alias-reference wall the plan addresses.
+> **Current (2026-06-10, `feature/cpp-detection-idiom-claude` @ `883c26e`
+> against `/workspace/mir` `develop` @ `2ffebff`):** fulltest is
+> **547 passed, 0 failed, 0 timed out, 26 skipped** — **ALL integration reds
+> are green.** `testfstream.mad` (the last red) passes rewritten to standard
+> C++ through REAL libstdc++ headers (`.flags` `--std=c++17
+> --no-embedded-headers` + `.expect`), executing `ofstream`/`ifstream` file
+> I/O, `std::getline`, and — via the NEW namespace function-template BODY
+> instantiation — real-header `std::to_string(42)` and `std::stoi(string)`
+> (the non-exported `__gnu_cxx::__stoa` / `std::__detail::__to_chars_*`
+> template bodies compile on demand). The session's chain
+> (plan `docs/plans/2026-06-10-testfstream-alias-reference-plan.md`, all
+> tasks done): alias-spelled reference returns (DataDefREF; `s[1]` deref +
+> `&s[1]`), fn-template instantiation (explicit args, packs, fn-ptr
+> deduction), overload-ranking fixes (`user_argc` default-arg poisoning,
+> fn-to-pointer decay), `current_namespace` restore in qualified statements,
+> fortify `__builtin___mem*_chk`, and `[namespace.udir]` unqualified-call
+> fallback (POSIX `::getline` vs `std::getline`). Standalone gcc.c-torture is
+> **1567 passed, 31 compile-failed, 56 runtime-failed, 1 timed out, 30
+> skipped** — failset byte-identical across the whole session. SMAUG boots.
+
+> **Previous (2026-06-09 late):** fulltest **546/1/0/26**; the one red was
+> `testfstream.mad`. `testlargesizeofquery.mad` went green via the 64-bit
+> `carray_dim_t` array-dim widening, `testdefer.mad` via defer execution on
+> CIR, and `testloop.mad` earlier via real headers; `991014-1.c` newly passed
+> in torture. Real-header C++ canaries: `testcout_realhdr`,
+> `test_extern_polymorphic`, `cout << std::string`, `std::getline`, the
+> `inf.good()` loop; `std::to_string`/`std::stoi` resolved (overload sets)
+> but their bodies still hit the alias-reference wall.
 
 > **Previous SIMD baseline (2026-06-06, `feature/simd-consume-claude` against `/workspace/mir`
 > `develop` @ `2ffebff`, `MIR_COMMIT` bumped `8864a73`→`2ffebff`):** integration

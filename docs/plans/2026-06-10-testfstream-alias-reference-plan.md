@@ -1,5 +1,15 @@
 # testfstream GREEN — alias-spelled reference returns + standard-C++ rewrite
 
+> **STATUS: COMPLETED 2026-06-10** — all tasks executed; fulltest
+> **547/0/0/26** (ALL integration reds green), torture 1567/31/56/1 failset
+> byte-identical, SMAUG boots. Commits: `5482124` (canon notes), `8b16fd8`
+> (alias-ref returns, DataDefREF), `c4a39aa` (namespace fn-template BODY
+> instantiation — to_string/stoi run), `883c26e` (testfstream rewrite +
+> fortify chk builtins + [namespace.udir] call fallback). Deferred v2 gaps,
+> by design: zero-element parameter packs (wstring stof/stod-shaped calls
+> keep the placeholder fallback) and template-id-shaped param deduction
+> (getline stays mangled-direct via Pattern A).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans
 > (inline) or superpowers:subagent-driven-development to implement task-by-task.
 > Steps use checkbox (`- [ ]`) syntax. **Read §0 (rules + state) before Task 1.**
@@ -91,7 +101,7 @@ canonical model madc must mirror. The point (user-directed): understand how
 the REAL compilers get through the same fstream wall-chain before designing
 the fix.
 
-- [ ] **Step 1.1: clang AST — what type does operator[] really have?**
+- [x] **Step 1.1: clang AST — what type does operator[] really have?**
 
 ```bash
 cat > /workspace/madc/tmp/canon1.cpp <<'EOF'
@@ -107,7 +117,7 @@ alias (`ElaboratedType`/`TypedefType`) is a *sugar layer over a canonical
 type*; the reference qualifier lives in the canonical type, never in the
 declarator. Record the exact dump lines.
 
-- [ ] **Step 1.2: g++ — same semantic model via codegen**
+- [x] **Step 1.2: g++ — same semantic model via codegen**
 
 ```bash
 cat > /workspace/madc/tmp/canon2.cpp <<'EOF'
@@ -123,7 +133,7 @@ returned pointer** (`movzbl (%rax)`) for `get`, and uses `%rax` directly for
 `addr` — confirming `T&` = address + deref-at-use, exactly madc's
 `returns_ref` lowering. Record the asm lines.
 
-- [ ] **Step 1.3: survey the rest of testfstream's wall chain in canon**
+- [x] **Step 1.3: survey the rest of testfstream's wall chain in canon**
 
 For each ingredient the rewritten test needs, confirm with g++/clang what the
 *semantics* are, and note which madc mechanism covers it (or doesn't):
@@ -149,7 +159,7 @@ Also record stoi's body dependency: it calls
 2026-06-09 reducer run got past stoi's CHECK with no errors, but runtime is
 unverified until Task 3.
 
-- [ ] **Step 1.4: write the canon-notes file + commit (docs-only)**
+- [x] **Step 1.4: write the canon-notes file + commit (docs-only)**
 
 The note must end with the model statement the fix follows:
 *"An alias is a type, not a spelling. Resolution of any type spelling —
@@ -177,7 +187,7 @@ git commit -m "docs: canon research — g++/clang alias-as-canonical-type model 
   into a DataDef and the `&` is dropped)
 - Test: reducers `tmp/ts5.mad`, `tmp/ts4.mad` (+ §0.3 gates)
 
-- [ ] **Step 2.1: trace (pre-edit checklist — do not skip)**
+- [x] **Step 2.1: trace (pre-edit checklist — do not skip)**
 
 Instrument or read until you can answer, in writing:
 (a) for `reference operator[](size_type)` parsed from the REAL
@@ -191,7 +201,7 @@ Key greps to start: `ret_is_ref` (19165), `template_alias_map`,
 `find_template_alias`, the class-scope alias handling cited in
 claude_status's "class-scope aliases/static member types" checkpoint.
 
-- [ ] **Step 2.2: decide the fix point by this criterion**
+- [x] **Step 2.2: decide the fix point by this criterion**
 
 The fix is correct ONLY if it lives where the alias target is RESOLVED (so
 every consumer — method returns, parameter types, locals — benefits), not in
@@ -203,7 +213,7 @@ Parameters spelled by ref-aliases should get the same treatment via
 `ref_params` if reachable with low risk; if that widens the blast radius,
 land returns first and file parameters as the explicit next commit.
 
-- [ ] **Step 2.3: implement, rebuild, run the two reducers**
+- [x] **Step 2.3: implement, rebuild, run the two reducers**
 
 ```bash
 ( timeout 580 make -C /workspace/madc/src -j2 ) 2>&1 | grep -E " error|warning:" | head
@@ -219,7 +229,7 @@ ts4 still fails, the residual is in how `&<method-call-returning-T&>` lowers
 pointer once `returns_ref` is true — check `m_cur_func_returns_ref` /
 class_subscript machinery before adding anything new).
 
-- [ ] **Step 2.4: run ALL §0.3 gates (especially the 9 canary container tests), commit**
+- [x] **Step 2.4: run ALL §0.3 gates (especially the 9 canary container tests), commit**
 
 ```bash
 git add -A && git commit -m "fix(cpp): alias-spelled reference returns keep their reference-ness"
@@ -239,14 +249,14 @@ reduce→attribute→deepest-layer loop; known candidate next walls, in order:
   reducers `tmp/cstr3.mad`/`tmp/cstr4.mad` — do NOT merge that fight into this
   task; if ts1 hits it, stop and report).
 
-- [ ] **Step 3.1: run the reducer**
+- [x] **Step 3.1: run the reducer**
 
 ```bash
 ( ulimit -t 120; timeout 120 bin/madc --std=c++17 --no-embedded-headers tmp/ts1.mad )
 # expect: to_string: 42 / stoi: 12345, exit 0
 ```
 
-- [ ] **Step 3.2: if green — §0.3 gates + commit; if red — reduce/attribute the NEXT wall and fix at its layer (one commit per wall)**
+- [x] **Step 3.2: if green — §0.3 gates + commit; if red — reduce/attribute the NEXT wall and fix at its layer (one commit per wall)**
 
 ---
 
@@ -261,7 +271,7 @@ The current test uses madc-dialect forms (`to_string(s, 42)` two-arg,
 C++ (g++-validated — this is canon3.cpp from Task 1.3, reuse it), per the
 testloop/testdefer precedent:
 
-- [ ] **Step 4.1: write the new test**
+- [x] **Step 4.1: write the new test**
 
 ```c++
 #!/../bin/madc
@@ -330,7 +340,7 @@ stoi: 12345
 strlen: 5
 ```
 
-- [ ] **Step 4.2: g++-validate the rewrite, then run it under madc**
+- [x] **Step 4.2: g++-validate the rewrite, then run it under madc**
 
 ```bash
 sed 1d tests/testfstream.mad > tmp/fstream_canon.cpp
@@ -345,7 +355,7 @@ reduce→attribute→deepest-layer→gate→commit cycle. If the test legitimate
 needs > 5s (real-header parse), add `tests/testfstream.timeout` with e.g. `15`
 — a generic fixture, never a runner branch.
 
-- [ ] **Step 4.3: full §0.3 gates — fulltest must now be 547/0/0/26 — commit, push**
+- [x] **Step 4.3: full §0.3 gates — fulltest must now be 547/0/0/26 — commit, push**
 
 ```bash
 git add tests/testfstream.mad tests/testfstream.flags tests/testfstream.expect
@@ -357,12 +367,12 @@ git push origin feature/cpp-detection-idiom-claude
 
 ### Task 5: sync mirrors + handoff
 
-- [ ] Update `claude_status.json` (head/branch/build_status/test_status),
+- [x] Update `claude_status.json` (head/branch/build_status/test_status),
   `CHANGELOG.md` ([Unreleased]), `docs/plans/ROADMAP.md` Track-1.3 red-list,
   `docs/test-status.md`, and the auto-memory RESTART-HANDOFF line; check off
   this plan's boxes; commit `docs: sync mirrors — all integration reds green`,
   push.
-- [ ] If ALL reds are green, note in the handoff that the next walls from the
+- [x] If ALL reds are green, note in the handoff that the next walls from the
   old list are: std::string `a+b` real-header SIGSEGV (pre-existing,
   `tmp/cstr3/4.mad`) and the W2 OPERATOR-path re-mangle (step D).
 

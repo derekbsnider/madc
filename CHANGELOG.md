@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+### ALL integration reds green: testfstream passes — fulltest 547/0/0/26 (2026-06-10)
+
+- **Alias-spelled reference returns** (`8b16fd8`): an alias is a type, not a
+  spelling. `typedef T&` / `using = T&` lowered the `&` to `getPointerType`,
+  so `basic_string::operator[]`'s `reference` return (= `char&` through the
+  allocator_traits chain, origin `bits/allocator.h:287`) resolved to a plain
+  `char*` with `returns_ref` false — `char c = s[1]` read garbage and `&s[1]`
+  was a non-lvalue. New `DataDefREF` (IS-A `DataDefPTR`, identical lowering)
+  carries the reference qualifier in the resolved type, so alias-chain hops
+  propagate it for free; the method parse unwraps it into
+  `FuncDef::returns_ref` exactly like a literal `&`. `parsePostfixChain` also
+  builds the main parser's `TokenSubscript` for a chain-head class `var[idx]`
+  (head-only + class-with-operator[]-only; fixed arrays keep their precise
+  element typing — testmemchr2darray/teststructchararraysubaddr canaries).
+- **Namespace function-template BODY instantiation** (`c4a39aa`): libstdc++
+  does not export its function templates (`__gnu_cxx::__stoa`,
+  `std::__detail::__to_chars_len/__to_chars_10_impl`), so mangled-direct can
+  never bind them — madc now retains a body-bearing namespace function
+  template's tokens (`Program::fn_template_map`) and instantiates on demand
+  at the call (Borland monomorphize): type-arg deduction from bare/cv/`*`/`&`
+  param shapes, structural fn-ptr matching (`&std::strtol`), ONE trailing
+  single-element parameter pack, simple defaulted template params
+  (`_Ret = _TRet`), and EXPLICIT template args (`__stoa<long, int>`) now
+  captured at the call site instead of discarded. The concrete overload
+  registers in `namespace_fn_overload_sets`; `call_target_funcdef` ranks it.
+  Fixes exposed and landed: parse-time-filled default args no longer poison
+  CIR re-ranking (`TokenCallFunc::user_argc`), function-to-pointer decay in
+  `score_arg_to_param`, a statement-level `ns::member(...)` restoring (not
+  clearing) `current_namespace`, `struct X {...} const var;` declarators,
+  local-class reuse across instantiations, eager method bodies inside
+  instantiations, and `class_dtor_symbol` resolving through the unified
+  `call_emit_symbol` (a function-local class's dtor lives on
+  `local_emit_name`). `std::to_string(42)` and `std::stoi(string)` execute
+  through the real header bodies.
+- **testfstream rewritten + green** (`883c26e`): standard C++
+  (g++/clang++-validated) through real headers via `.flags`/`.expect`.
+  Fortify `__builtin___mem*_chk`/`__strn*_chk` map to `__madc_builtin_*`
+  wrappers (the existing strcpy_chk pattern), and unqualified calls now
+  consult active using-directives when a global's arity rejects the call
+  (C++ [namespace.udir] — `getline(inf, line)` is `std::getline`, not POSIX
+  `::getline`), via `Program::active_using_namespaces` +
+  `using_namespace_call_fallback`.
+- Gates: fulltest **547/0/0/26**, gcc.c-torture **1567/31/56/1** with a
+  byte-identical failset across the whole session, SMAUG soak boots.
+
 ### Two of the three reds green: testlargesizeofquery + testdefer — fulltest 546/1/0/26 (2026-06-09)
 
 - **64-bit array dims (`carray_dim_t`)**: array dimensions were stored as
