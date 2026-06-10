@@ -195,4 +195,20 @@ TEST_SUITE("madc::value") {
 	a.array().push_back(value(int64_t(99)));
 	CHECK(a.as_array()[0].as_integer() == 99);
     }
+
+    TEST_CASE("object() on a null value vivifies an empty object") {
+	value v;
+	CHECK(v.is_null());
+	v.object()["k"] = value(int64_t(1));
+	CHECK(v.is_object());
+	CHECK(v.as_object().at("k").as_integer() == 1);
+    }
+
+    TEST_CASE("array() on a null value vivifies an empty array") {
+	value v;
+	CHECK(v.is_null());
+	v.array().push_back(value(int64_t(7)));
+	CHECK(v.is_array());
+	CHECK(v.as_array().size() == 1);
+    }
 }

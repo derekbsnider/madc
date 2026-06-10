@@ -230,6 +230,8 @@ const std::map<std::string, value> &value::as_object() const
 
 std::vector<value> &value::array()
 {
+    if ( _kind == kind::null )
+	_kind = kind::array;            // vivify: null -> empty array
     if ( _kind != kind::array )
 	throw std::runtime_error("madc::value::array: kind is not array");
     if ( !_array )
@@ -239,6 +241,8 @@ std::vector<value> &value::array()
 
 std::map<std::string, value> &value::object()
 {
+    if ( _kind == kind::null )
+	_kind = kind::object;           // vivify: null -> empty object
     if ( _kind != kind::object )
 	throw std::runtime_error("madc::value::object: kind is not object");
     if ( !_object )

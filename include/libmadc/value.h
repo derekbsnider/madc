@@ -4,8 +4,15 @@
 // madc::value — public host-facing tagged value type for the libmadc
 // embedding API. Carries the eight value kinds the host and a script
 // can exchange: null, boolean, integer, real, string, bytes, array,
-// and object. Internal `MadValue` (in datadef.h) is a separate type
-// used by php:: array machinery — do not mix the two.
+// and object.
+//
+// Vivification: the mutable accessors `object()` and `array()` convert
+// a kind::null value into an empty object / empty array respectively
+// (then return the live container), instead of throwing. A
+// default-constructed value therefore works with both keyed and indexed
+// helpers — the unified script array starts life null. Any other kind
+// mismatch still throws. The const `as_object()` / `as_array()`
+// accessors never vivify.
 
 #include <cstdint>
 #include <map>
