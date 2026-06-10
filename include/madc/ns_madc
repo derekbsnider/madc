@@ -1,0 +1,77 @@
+// madc embedded <ns_madc> — script-level runtime eval + expression eval.
+// Exported through libmadc exactly like the other ns_* namespaces (see
+// ns_php): the __madc_*_runtime implementations live in the host binary
+// (parser.cpp, extern "C", resolved via dlsym/-rdynamic); the madc::
+// functions below are ordinary namespace wrapper bodies over that C ABI.
+// Security: the runtime honours the engine's madc_runtime_eval_policy;
+// scope-access variants are gated by the parser's scope-access hooks.
+
+extern "C" {
+    std::string *__madc_eval_runtime(std::string *result, std::string *source);
+    bool __madc_eval_bool_runtime(std::string *source);
+    long __madc_eval_int_runtime(std::string *source);
+    double __madc_eval_double_runtime(std::string *source);
+    std::string *__madc_eval_string_runtime(std::string *result, std::string *source);
+
+    std::string *__madc_eval_expression_runtime(std::string *result, std::string *expr);
+    bool __madc_eval_expression_bool_runtime(std::string *expr);
+    long __madc_eval_expression_int_runtime(std::string *expr);
+    double __madc_eval_expression_double_runtime(std::string *expr);
+    std::string *__madc_eval_expression_string_runtime(std::string *result, std::string *expr);
+
+    std::string *__madc_eval_ctx_runtime(std::string *result, std::string *source, array *ctx);
+    bool __madc_eval_bool_ctx_runtime(std::string *source, array *ctx);
+    long __madc_eval_int_ctx_runtime(std::string *source, array *ctx);
+    double __madc_eval_double_ctx_runtime(std::string *source, array *ctx);
+    std::string *__madc_eval_string_ctx_runtime(std::string *result, std::string *source, array *ctx);
+
+    std::string *__madc_eval_expression_ctx_runtime(std::string *result, std::string *expr, array *ctx);
+    bool __madc_eval_expression_bool_ctx_runtime(std::string *expr, array *ctx);
+    long __madc_eval_expression_int_ctx_runtime(std::string *expr, array *ctx);
+    double __madc_eval_expression_double_ctx_runtime(std::string *expr, array *ctx);
+    std::string *__madc_eval_expression_string_ctx_runtime(std::string *result, std::string *expr, array *ctx);
+
+    array *__madc_context_set_int_runtime(array *ctx, std::string *key, long value);
+    array *__madc_context_set_real_runtime(array *ctx, std::string *key, double value);
+    array *__madc_context_set_string_runtime(array *ctx, std::string *key, const char *value);
+    array *__madc_context_set_array_runtime(array *ctx, std::string *key, array *value);
+}
+
+namespace madc {
+    // Full-program eval: the source must define (or be wrapped into)
+    // `__madc_eval()`; the rendered result text lands in `out`.
+    std::string &eval_unit(std::string &out, std::string &source) { return *__madc_eval_runtime(&out, &source); }
+    bool eval_bool(std::string &source) { return __madc_eval_bool_runtime(&source); }
+    long eval_int(std::string &source) { return __madc_eval_int_runtime(&source); }
+    long eval_int(const char *source) { std::string s = source; return __madc_eval_int_runtime(&s); }
+    double eval_double(std::string &source) { return __madc_eval_double_runtime(&source); }
+    std::string &eval_string(std::string &out, std::string &source) { return *__madc_eval_string_runtime(&out, &source); }
+
+    // Expression eval: a single expression, no function calls unless the
+    // engine's expression policy allows them.
+    bool eval_expression_bool(const char *expr) { std::string e = expr; return __madc_eval_expression_bool_runtime(&e); }
+    long eval_expression_int(const char *expr) { std::string e = expr; return __madc_eval_expression_int_runtime(&e); }
+    double eval_expression_double(const char *expr) { std::string e = expr; return __madc_eval_expression_double_runtime(&e); }
+    std::string &eval_expression_string(std::string &out, const char *expr) { std::string e = expr; return *__madc_eval_expression_string_runtime(&out, &e); }
+
+    // Typed out-parameter forms (overloaded on the destination). The
+    // string-destination form RENDERS any result type ("42", "4.000000",
+    // "echo") via the untyped runtime; eval_expression_string above is the
+    // strict string-typed coercion.
+    void eval_expression(long &out, const char *expr) { std::string e = expr; out = __madc_eval_expression_int_runtime(&e); }
+    void eval_expression(double &out, const char *expr) { std::string e = expr; out = __madc_eval_expression_double_runtime(&e); }
+    void eval_expression(std::string &out, const char *expr) { std::string e = expr; __madc_eval_expression_runtime(&out, &e); }
+
+    // Context-carrying forms: `ctx` is a madc array of nested key/value
+    // entries built with the context_set_* helpers below.
+    std::string &eval_expression_ctx(std::string &out, const char *expr, array &ctx) { std::string e = expr; return *__madc_eval_expression_ctx_runtime(&out, &e, &ctx); }
+    bool eval_expression_bool_ctx(const char *expr, array &ctx) { std::string e = expr; return __madc_eval_expression_bool_ctx_runtime(&e, &ctx); }
+    long eval_expression_int_ctx(const char *expr, array &ctx) { std::string e = expr; return __madc_eval_expression_int_ctx_runtime(&e, &ctx); }
+    double eval_expression_double_ctx(const char *expr, array &ctx) { std::string e = expr; return __madc_eval_expression_double_ctx_runtime(&e, &ctx); }
+    std::string &eval_expression_string_ctx(std::string &out, const char *expr, array &ctx) { std::string e = expr; return *__madc_eval_expression_string_ctx_runtime(&out, &e, &ctx); }
+
+    void context_set_int(array &ctx, std::string &key, long value) { __madc_context_set_int_runtime(&ctx, &key, value); }
+    void context_set_real(array &ctx, std::string &key, double value) { __madc_context_set_real_runtime(&ctx, &key, value); }
+    void context_set_string(array &ctx, std::string &key, const char *value) { __madc_context_set_string_runtime(&ctx, &key, value); }
+    void context_set_array(array &ctx, std::string &key, array &value) { __madc_context_set_array_runtime(&ctx, &key, &value); }
+}

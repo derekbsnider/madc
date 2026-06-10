@@ -1,6 +1,7 @@
 #!/usr/bin/env madc
 #include <iostream>
 using namespace std;
+#include <ns_madc>
 
 int main()
 {

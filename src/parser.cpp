@@ -989,6 +989,27 @@ void *__madc_eval_expression_string_ctx_runtime(void *result, void *expr, void *
     return madc_runtime_eval_expression_string_ctx(result, expr, ctx);
 }
 
+// cstr-key scope setters — the CIR builder's TokenScopeContext lowering
+// fills the captured-scope context array with these (a string literal key
+// avoids materializing a std::string temp per captured variable).
+void *__madc_scope_set_int_runtime(void *ctx, const char *key, int64_t value)
+{
+    ((MadArray *)ctx)->set(std::string(key), MadValue(value));
+    return ctx;
+}
+
+void *__madc_scope_set_real_runtime(void *ctx, const char *key, double value)
+{
+    ((MadArray *)ctx)->set(std::string(key), MadValue(value));
+    return ctx;
+}
+
+void *__madc_scope_set_array_runtime(void *ctx, const char *key, void *value)
+{
+    ((MadArray *)ctx)->set(std::string(key), MadValue(*(MadArray *)value));
+    return ctx;
+}
+
 void *__madc_context_set_int_runtime(void *ctx, void *key, int64_t value)
 {
     return madc_context_set_int(ctx, key, value);
@@ -25119,7 +25140,13 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     bool old_style_params = false;
     std::vector<std::string> old_style_ids;
     std::map<std::string, TokenBase *> param_vla_side_effects;
-    bool is_nested_function = !compounds.empty() && compounds.top() && compounds.top()->method;
+    // A block-scope `extern` FUNCTION DECLARATION is not a nested function —
+    // it declares the file-scope name with external linkage (C11 6.2.2p5).
+    // Mangling it nested (main__fabs__1) orphans the real name: the call
+    // then falls to the 64-bit dlsym default and a double return is read as
+    // a long (fabs(-2.5) -> 1.0). GNU nested functions are non-extern.
+    bool is_nested_function = !compounds.empty() && compounds.top() && compounds.top()->method
+			      && !parsing_extern_decl;
     std::string nested_local_name = id;
     TokenCpnd *nested_owner_scope = is_nested_function ? compounds.top() : NULL;
     bool has_hidden_this = owner_class && !static_class_method;
@@ -29304,6 +29331,24 @@ TokenBase *Program::parse_expression_unit(TokenProgram *tp)
     }
 
     _parser_init();
+
+    // The expression-policy input may prepend `#include <...>` lines (e.g.
+    // math.h, whose embedded header now carries REAL prototypes, not just
+    // #defines). Those expanded header tokens precede the user expression
+    // and are not parseable AS an expression — skip to the user's own
+    // tokens. The user expression is always the TAIL of the stream (the
+    // policy headers are prepended), so the LAST token's file identifies
+    // the user input — tp->source can be a display name that differs from
+    // the tokenized path. #define/#load act at lexer time, and the allowed
+    // functions register via register_expression_header_functions, so the
+    // skipped declaration tokens contribute nothing the expression needs.
+    if ( !tokens.empty() && tokens.back() && tokens.back()->file )
+    {
+	const char *user_file = tokens.back()->file;
+	while ( !tokens.empty() && tokens.front() && tokens.front()->file
+	     && strcmp(tokens.front()->file, user_file) != 0 )
+	    tokens.pop_front();
+    }
 
     try
     {

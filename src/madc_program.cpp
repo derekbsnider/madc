@@ -355,7 +355,8 @@ struct expression_function_spec
 bool text_list_contains(const std::vector<std::string> &items, const std::string &value);
 std::vector<expression_function_spec> expression_header_function_specs(const std::string &header);
 std::vector<std::string> expression_allowed_function_names(const expression_policy &policy);
-std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBase *> &tokens);
+std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBase *> &tokens,
+							 const std::vector<std::string> &exclude_files);
 void append_unique_strings(std::vector<std::string> &dst,
 			   const std::vector<std::string> &src);
 std::vector<std::string> expand_header_symbol_groups(const std::vector<std::string> &headers);
@@ -433,7 +434,7 @@ bool validate_expression_function_policy(Program &pgm,
 					 const std::deque<TokenBase *> &tokens,
 					 const std::string &display_file)
 {
-    std::vector<std::string> calls = collect_expression_token_calls(tokens);
+    std::vector<std::string> calls = collect_expression_token_calls(tokens, policy.allowed_headers);
     if ( calls.empty() )
 	return true;
     if ( !policy.allow_function_calls )
@@ -1118,13 +1119,24 @@ bool validate_expression_ast_call(const expression_policy &policy,
     return validate_expression_ast_list(call->parameters, policy, reason);
 }
 
-std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBase *> &tokens)
+std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBase *> &tokens,
+							 const std::vector<std::string> &exclude_files)
 {
     std::vector<std::string> calls;
     for ( std::size_t i = 0; i < tokens.size(); ++i )
     {
 	TokenBase *tb = tokens[i];
 	if ( !tb || tb->type() != TokenType::ttIdentifier )
+	    continue;
+	// Tokens expanded from a policy-allowed #include (e.g. the embedded
+	// math.h declarations) are NOT user input: a prototype
+	// `float sinf(float);` would otherwise read as a call to sinf and
+	// poison the allowlist check. The policy validates the USER
+	// EXPRESSION's tokens only, so skip tokens whose source file is one
+	// of the policy headers themselves. (Matching the user's display
+	// file instead would drop user tokens whenever tokenization ran
+	// under a temp path — the host eval_expression flow.)
+	if ( tb->file && text_list_contains(exclude_files, tb->file) )
 	    continue;
 	if ( i + 1 >= tokens.size() || !tokens[i + 1] || tokens[i + 1]->id() != TokenID::tkOpBrk )
 	    continue;
@@ -2943,7 +2955,7 @@ struct program::impl
     bool validate_expression_function_policy(const std::deque<TokenBase *> &tokens,
 					    const std::string &display_file)
     {
-	std::vector<std::string> calls = collect_expression_token_calls(tokens);
+	std::vector<std::string> calls = collect_expression_token_calls(tokens, current_expression_policy.allowed_headers);
 	if ( calls.empty() )
 	    return true;
 	if ( !current_expression_policy.allow_function_calls )

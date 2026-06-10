@@ -1,1 +1,1 @@
-madc::array and context API need transpiler support
+expression DSL string compare: user.name == "echo" lowers to pointer compare on CIR (name_ok=0); rest of the test passes

@@ -1426,11 +1426,16 @@ public:
     // the program's lifetime. Lexer used to store `c_str()` of a
     // stack-local std::string into tokens — the pointer dangled the
     // moment the include scope ended, leaving every later read of
-    // tb->file undefined. Reuse the existing `included_files` map
-    // (keys are std::string and stable since we never erase entries).
+    // tb->file undefined. NOTE: this must be its OWN store —
+    // `included_files` (the #include guard map) is CLEARED by
+    // _tokenizer_init() per tokenize, which dangled every previously
+    // interned pointer (the header-line-under-main-file diagnostic
+    // misattribution, and expression-unit user tokens whose file read
+    // as reused-heap garbage).
     const char *intern_file(const std::string &s) {
-	return included_files.emplace(s, true).first->first.c_str();
+	return interned_files.emplace(s).first->c_str();
     }
+    std::set<std::string> interned_files;	// stable token file names (never cleared)
 
     enum class LinkageSpec { Cpp, C };
     LinkageSpec current_linkage = LinkageSpec::Cpp;
