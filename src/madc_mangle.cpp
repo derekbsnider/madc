@@ -750,6 +750,8 @@ private:
 	{
 		std::string encoded;          // mangled prefix accumulated so far
 		size_t srcNameCount = 0;      // length-prefixed idents emitted at top
+		bool refPrefixed = false;     // a general S-ref absorbed a PREFIX level
+		bool bareRef = false;         // encoded is exactly a back-ref right now
 
 		for (size_t i = 0; i < chain.size(); ++i) {
 			const NameComponent &nc = chain[i];
@@ -761,9 +763,16 @@ private:
 				std::string abbr = std_abbrev(scopedNoArgs);
 				if (!ref.empty()) {
 					encoded = ref;
+					refPrefixed = false;            // whole name so far IS the ref
+					bareRef = true;
 				} else if (!abbr.empty()) {
 					encoded = abbr;                 // abbreviation: no slot
+					bareRef = false;
 				} else {
+					if (bareRef) {
+						refPrefixed = true;     // S-ref now acts as a prefix
+						bareRef = false;
+					}
 					encoded += source_name(nc.ident);
 					add_sub(canonKey);
 					srcNameCount++;
@@ -775,6 +784,8 @@ private:
 				std::string whole = std_complete_abbrev(chain, i);
 				if (!whole.empty()) {
 					encoded = whole;
+					refPrefixed = false;
+					bareRef = false;
 					continue;
 				}
 				// Template-prefix (name up to this ident, WITHOUT args).
@@ -782,11 +793,17 @@ private:
 				std::string pref = find_sub(prefixKey);
 				std::string pabbr = std_abbrev(scopedNoArgs);
 				std::string tprefix;
+				bool tprefixIsRef = false;
 				if (!pref.empty()) {
 					tprefix = pref;
+					tprefixIsRef = true;
 				} else if (!pabbr.empty()) {
 					tprefix = pabbr;
 				} else {
+					if (bareRef) {
+						refPrefixed = true;     // S-ref now acts as a prefix
+						bareRef = false;
+					}
 					tprefix = encoded + source_name(nc.ident);
 					add_sub(prefixKey);
 					srcNameCount++;
@@ -802,19 +819,26 @@ private:
 				std::string tidRef = find_sub(tidKey);
 				if (!tidRef.empty()) {
 					encoded = tidRef;
+					refPrefixed = false;            // whole name so far IS the ref
+					bareRef = true;
 				} else {
 					encoded = tprefix + "I" + args + "E";
 					add_sub(tidKey);
+					if (tprefixIsRef)
+						refPrefixed = true;     // substituted template-prefix
+					bareRef = false;
 				}
 			}
 		}
 
-		// Wrap in N..E only for a genuine nested-name used as a standalone type:
-		// i.e. when 2+ length-prefixed identifiers were emitted at the top level
-		// (the St/Sa/… abbreviations and back-refs absorb the scope without an
-		// N..E). A single source-name under std (e.g. St11char_traitsIcE) does
-		// not need wrapping.
-		if (standalone && srcNameCount >= 2)
+		// Wrap in N..E for a genuine nested-name used as a standalone type:
+		// 2+ length-prefixed identifiers emitted at the top level, OR a general
+		// S-ref back-reference used as a PREFIX (Itanium grammar: only St may
+		// stand unwrapped as an <unscoped-name> prefix — NS_5valueE, never
+		// RS_5value). The St/Sa/… abbreviations and a back-ref that IS the
+		// whole name absorb the scope without an N..E; a single source-name
+		// under std (e.g. St11char_traitsIcE) does not need wrapping.
+		if (standalone && (srcNameCount >= 2 || refPrefixed))
 			return "N" + encoded + "E";
 		return encoded;
 	}

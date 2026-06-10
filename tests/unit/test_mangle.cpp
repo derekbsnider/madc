@@ -198,6 +198,37 @@ TEST_SUITE("Itanium substitution: std::string") {
 	}
 }
 
+TEST_SUITE("Itanium substitution: madc::value (the unified script array)") {
+
+	// ddARRAY's canonical_cpp_spelling is madc::value; these pin the
+	// class-parameter rendering against g++-verified literals (generated
+	// from real prototypes via g++ -c + nm). The namespace prefix inside
+	// _ZN4madc...E substitutes to S_, and the class must keep its N..E
+	// wrap: RNS_5valueE, never RS_5value.
+
+	TEST_CASE("madc::value& parameter — namespace back-ref keeps the N..E wrap") {
+		// g++: void madc::context_set_int(madc::value&, std::string&, long)
+		CHECK(itanium_mangle_nested_sub({"madc"}, "context_set_int",
+		                                {"madc::value&", std_string_type() + "&", "long"})
+		      == "_ZN4madc15context_set_intERNS_5valueERNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEl");
+		// g++: bool madc::eval_expression_bool_ctx(const char*, madc::value&)
+		CHECK(itanium_mangle_nested_sub({"madc"}, "eval_expression_bool_ctx",
+		                                {"const char*", "madc::value&"})
+		      == "_ZN4madc24eval_expression_bool_ctxEPKcRNS_5valueE");
+	}
+
+	TEST_CASE("repeated madc::value& folds to a substitution") {
+		// g++: void madc::context_set_array(madc::value&, std::string&, madc::value&)
+		CHECK(itanium_mangle_nested_sub({"madc"}, "context_set_array",
+		                                {"madc::value&", std_string_type() + "&", "madc::value&"})
+		      == "_ZN4madc17context_set_arrayERNS_5valueERNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES1_");
+		// g++: long madc::eval_int_ctx(std::string&, madc::value&)
+		CHECK(itanium_mangle_nested_sub({"madc"}, "eval_int_ctx",
+		                                {std_string_type() + "&", "madc::value&"})
+		      == "_ZN4madc12eval_int_ctxERNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERNS_5valueE");
+	}
+}
+
 TEST_SUITE("Itanium substitution: std::vector") {
 
 	TEST_CASE("vector<long>") {
