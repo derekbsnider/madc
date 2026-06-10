@@ -613,7 +613,7 @@ extern "C" char *__madc_builtin_strncat_chk(char *dst, const char *src, unsigned
 }
 
 // __builtin___mem*_chk family — bounds-checked memory operations
-// (glibc string_fortified.h inlines under _FORTIFY_SOURCE).
+// (glibc fortify-wrapper header inlines under _FORTIFY_SOURCE).
 extern "C" void *__madc_builtin_memcpy_chk(void *dst, const void *src, unsigned long n, unsigned long size)
 {
     return __builtin___memcpy_chk(dst, src, n, size);
