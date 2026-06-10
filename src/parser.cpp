@@ -9150,6 +9150,23 @@ DataDefPTR *Program::getPointerType(DataDef *base)
     return ptr;
 }
 
+DataDefREF *Program::getReferenceType(DataDef *base)
+{
+    // C++ reference collapsing: a reference to a reference is the same
+    // reference type (`using r = T&; r& x` is still T&).
+    if ( base->is_reference() )
+	return static_cast<DataDefREF *>(base);
+
+    auto it = ref_type_cache.find(base);
+    if ( it != ref_type_cache.end() )
+	return it->second;
+
+    DataDefREF *ref = new DataDefREF(*base);
+    ref_type_cache[base] = ref;
+    DBG(std::cout << "getReferenceType() created reference to " << base->name << std::endl);
+    return ref;
+}
+
 // add a function definition
 Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod)
 {
@@ -10023,6 +10040,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
     if ( !result )
 	return NULL;
 
+    TokenBase *chain_head = result;
     while ( peekToken() )
     {
 	TokenID pid = peekToken()->id();
@@ -10161,6 +10179,28 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	    TokenBase *close = nextToken();
 	    if ( !close || close->id() != TokenID::tkClSqr )
 		Throw(close ? close : open) << "expected ']' in subscript" << flush;
+	    // Subscript on a chain-head variable of class type with operator[]
+	    // (`&s[1]` on a std::string): build the SAME TokenSubscript the main
+	    // expression parser builds for `var[idx]` — one construct, one tree
+	    // shape — so the CIR class operator[] dispatch fires (the parallel
+	    // TokenSubscriptExpr here lowered a raw struct subscript). Head-only
+	    // (a mid-chain TokenVar can be a member proxy whose bare name must
+	    // not be emitted) and class-only (fixed arrays / pointers keep this
+	    // path's more precise element typing, e.g. row types for sizeof).
+	    if ( result == chain_head )
+	    {
+		TokenVar *tvr = dynamic_cast<TokenVar *>(result);
+		if ( tvr
+		  && TokenSubscript::subscript_operator_element_type(tvr->var.type) )
+		{
+		    TokenSubscript *tsr = new TokenSubscript(tvr->var, idx_expr);
+		    tsr->file = open->file;
+		    tsr->line = open->line;
+		    tsr->column = open->column;
+		    result = tsr;
+		    continue;
+		}
+	    }
 	    DataDef *base_type = result->datadef();
 	    DataDef *elem_type = &ddINT64;
 	    // Fixed-array subscripts preserve the element type directly (the
@@ -15705,7 +15745,13 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	       || pgm.peekToken()->id() == TokenID::tkLand) )
 	    {
 		pgm.nextToken();
-		alias_dd = pgm.getPointerType(alias_dd);
+#if MADC_DEBUG_ALIASREF
+		std::cerr << "ALIASREF using-amp alias=" << alias_name
+			  << " base=" << alias_dd->name
+			  << " file=" << (TokenBase::_parse_file ? TokenBase::_parse_file : "?")
+			  << ":" << TokenBase::_parse_line << std::endl;
+#endif
+		alias_dd = pgm.getReferenceType(alias_dd);
 	    }
 	    TokenBase *semi = pgm.nextToken();
 	    if ( !semi || semi->id() != TokenID::tkSemi )
@@ -19170,6 +19216,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.nextToken(); // consume '&' or '&&'
 	    ret_is_ref = true;
 	}
+#if MADC_DEBUG_ALIASREF
+	if ( mtype->str == "reference" || mtype->str == "const_reference" )
+	    std::cerr << "ALIASREF member-ret class=" << ddc->name
+		      << " spelled=" << mtype->str
+		      << " resolved=" << cmember_dd->name
+		      << " type=" << (int)cmember_dd->type()
+		      << " ret_is_ref=" << ret_is_ref << std::endl;
+#endif
 
 	if ( !ret_is_ref && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
 	{
@@ -19223,6 +19277,15 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	if ( tn && tn->id() == TokenID::tkOpBrk )
 	{
 	    pgm.nextToken(); // consume '('
+	    // Alias-spelled reference return (`reference operator[](size_type)` —
+	    // the resolved alias IS char&): recover the reference-ness exactly as
+	    // a literal `&` after the return type would have — returns_ref + the
+	    // referee as the return type.
+	    if ( cmember_dd->is_reference() )
+	    {
+		ret_is_ref = true;
+		cmember_dd = static_cast<DataDefPTR *>(cmember_dd)->base_type;
+	    }
 	    // method declaration — parse as function, add to class methods
 	    DBG(cout << "TokenCLASS::parse() parsing method " << mname << endl);
 	    // mangle method name to avoid collisions: ClassName__methodName
@@ -20294,6 +20357,13 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    pgm.user_typedef_names.insert(alias);
 	if ( !pgm.class_scope_stack.empty() )
 	{
+#if MADC_DEBUG_ALIASREF
+	    if ( alias == "reference" || alias == "const_reference" )
+		std::cerr << "ALIASREF typedef-store class="
+			  << pgm.class_scope_stack.back()->name
+			  << " alias=" << alias << " dd=" << dd->name
+			  << " type=" << (int)dd->type() << std::endl;
+#endif
 	    pgm.class_scope_stack.back()->type_aliases[alias] = dd;
 	    return new TokenTypedefDecl(alias, dd);
 	}
@@ -20456,7 +20526,12 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
        || pgm.peekToken()->id() == TokenID::tkLand) )
     {
 	pgm.nextToken();
-	base_dd = pgm.getPointerType(base_dd);
+#if MADC_DEBUG_ALIASREF
+	std::cerr << "ALIASREF typedef-amp base=" << base_dd->name
+		  << " file=" << (TokenBase::_parse_file ? TokenBase::_parse_file : "?")
+		  << ":" << TokenBase::_parse_line << std::endl;
+#endif
+	base_dd = pgm.getReferenceType(base_dd);
     }
 
     std::string gnu_mode_name;

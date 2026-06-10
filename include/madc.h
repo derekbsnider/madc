@@ -1254,6 +1254,7 @@ public:
     std::set<std::string> template_instantiated;           // mangled names done
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup
     std::map<DataDef*, DataDefPTR*> ptr_type_cache; // cached pointer-to-T DataDefs
+    std::map<DataDef*, DataDefREF*> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
@@ -1719,6 +1720,7 @@ public:
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     DataDefPTR *getPointerType(DataDef *base);
+    DataDefREF *getReferenceType(DataDef *base);
     // Consume a declarator's pointer-star run: a sequence of `*` interleaved with
     // cv-qualifiers (const/volatile/restrict). Each `*` on a NON-fn-ptr base wraps
     // `dd` via getPointerType (the type reflects the indirection); a DataDefFPTR

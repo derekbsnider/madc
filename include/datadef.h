@@ -163,6 +163,14 @@ public:
     {
 	return _type >= 10000 && _type < 20000;
     }
+    // True only for DataDefREF: a type that came from a reference spelling
+    // (`typedef T& alias;` / `using alias = T&;`). Lowered as a pointer, but
+    // resolution keeps the reference-ness so consumers (method returns ->
+    // FuncDef::returns_ref) can recover the canonical T&.
+    virtual bool is_reference() const
+    {
+	return false;
+    }
     virtual bool is_struct() const
     {
 	if ( basetype() == BaseType::btStruct )
@@ -853,6 +861,20 @@ public:
     virtual bool is_pointer() const { return true; }
     virtual bool is_numeric() const { return true; }
     virtual bool is_integer() const { return true; }
+};
+
+// A reference type produced by alias resolution (`typedef T& alias;` /
+// `using alias = T&;` — e.g. basic_string::reference == char&). An alias is
+// a type, not a spelling: the resolved type must carry the reference
+// qualifier itself so it survives alias-chain hops. IS-A DataDefPTR (same
+// name, size, DataType) because madc lowers T& as T*; everything that does
+// not explicitly test is_reference() treats it exactly like the pointer it
+// lowers to. base_type is the referee.
+class DataDefREF : public DataDefPTR
+{
+public:
+    DataDefREF(DataDef &base) : DataDefPTR(base) {}
+    virtual bool is_reference() const { return true; }
 };
 
 class DataDefCArray : public DataDef
