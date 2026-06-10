@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### libmadc in-process eval returns — CirJitSession on CIR→c2mir→MIR (2026-06-10)
+
+- **The eval surface lives again** (`946750a`): stubbed since the asmjit
+  removal, `program::compile_* / exec_* / call / eval_unit / eval_body /
+  eval_expression` now run through a persistent `CirJitSession` (translate
+  + c2mir + MIR_link held alive; `MIR_gen` per function on demand) —
+  `madc_cir_execute` itself delegates to the session, so the CLI, the
+  suite, torture, and SMAUG all prove it. 49 of the 91 deferred unit cases
+  pass (zero regressions); the 42 still-deferred are categorized in the
+  suite header. `madc::eval_expression("6 * 7") == 42` in-process. Plan and
+  master-branch behavioral references:
+  `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md`.
+- **Un-skip audit** (`ce09527`): 3 stale `.mir_skip` fixtures lifted
+  (native `_Complex`, c2mir stmt-exprs, fixture issue resolved) —
+  integration suite 549→552.
+
 ### W2 step D: free operators ride Pattern A — emit-symbol unification COMPLETE (2026-06-10)
 
 - **One emission, one symbol source for every operator call** (`42a5cd3`):
