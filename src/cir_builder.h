@@ -378,6 +378,7 @@ public:
 	// symbol, plus a per-call memo (NULL = checked, not such a call).
 	std::map<class TokenCallFunc *, class FuncDef *> m_free_fn_inst_by_call;
 	std::map<std::string, class FuncDef *> m_free_fn_inst_by_sym;
+	std::map<class TokenOperator *, class FuncDef *> m_free_op_inst_by_call;
 	node_t integer(long val, TokenBase *origin = NULL);
 	// Type-aware integer literal: pick the c2mir literal node code
 	// (N_I/N_U/N_L/N_UL) from the literal's own DataDef so a suffixed
@@ -589,28 +590,34 @@ public:
 	node_t try_free_operator_call(class TokenOperator *top, DataDefCLASS *lcls,
 			const std::string &mname, class FuncDef *member_callee,
 			TokenBase *origin);
-	// A free namespace operator returning a class BY VALUE
-	// (std::operator+(const string&, const string&) -> string) uses the
-	// Itanium sret ABI — hidden result-slot first argument, void call.
-	// Resolution (pure, no emission) and emission are split so the
-	// declaration path can pre-check and construct straight into the
-	// declared variable (guaranteed copy elision — g++ emits one call with
-	// &var as the slot); expression contexts pass ret_slot=NULL and get a
-	// cleanup-tagged temp's object lvalue back.
-	struct FreeOpByValBind {
-		std::string sym;            // mangled Itanium symbol
-		DataDefCLASS *retc;         // by-value return class
-		DataDefCLASS *lcls, *rcls;  // operand classes (arg shaping)
-		size_t loff, roff;          // base-subobject adjust offsets
-	};
-	bool resolve_free_operator_byvalue(class TokenOperator *top,
+	// Pattern A for free namespace OPERATORS (W2 step D): overload-select +
+	// template-arg deduction against the operand classes, Itanium-mangle via
+	// the one mangler, and return an instantiated FuncDef carrying the
+	// symbol on emit_symbol — class_operator_external_call emits it like any
+	// external member operator. Handles BOTH the reference-returning stream
+	// shape (operator<<(ostream&, x) -> ostream&) and the by-value class
+	// return (operator+(const string&, const string&) -> string).
+	// Member arbitration lives here: an exact-match member vetoes the
+	// free candidate; a by-value free candidate binds only when the class
+	// declares NO matching member. Memoized per operator token and per
+	// symbol. NULL = the member (or generic) path keeps the call.
+	class FuncDef *std_free_operator_instantiation(class TokenOperator *top,
 			DataDefCLASS *lcls, const std::string &mname,
-			FreeOpByValBind &out);
-	node_t emit_free_operator_byvalue(const FreeOpByValBind &b,
-			class TokenOperator *top, TokenBase *origin,
-			node_t ret_slot);
-	// Adjust a void* object address to a base subobject at byte offset `off`.
-	node_t addr_at_base_off(node_t base, size_t off, TokenBase *origin);
+			class FuncDef *member_callee);
+	// Emit `lhs <op> rhs` against a callee bound to an EXTERNAL ABI symbol
+	// (FuncDef::emit_symbol): lhs by address (parameters[0]'s class when it
+	// names one — a free operator's BASE param binds a derived lhs via
+	// object_arg_addr's base walk — else the lhs class), rhs shaped by
+	// parameters[1]. A reference return is dereferenced to the lvalue; a
+	// NON-TRIVIAL by-value class return uses the Itanium sret/__retbuf
+	// shape — into ret_slot when the caller provides one (declaration-init
+	// copy elision; *slot_used reports it, caller wraps the bare call as a
+	// statement), else into a cleanup-tagged temp whose object lvalue is
+	// the expression value.
+	node_t class_operator_external_call(class TokenOperator *top,
+			DataDefCLASS *lcls, class FuncDef *callee, TokenBase *origin,
+			node_t ret_slot = NULL, DataDefCLASS *slot_cls = NULL,
+			bool *slot_used = NULL);
 	// Instantiate a NAMED std:: free-function template for a call (overload
 	// select + template-arg deduction from the args' classes + Itanium mangle)
 	// and return a FuncDef carrying the symbol on emit_symbol — the generic
