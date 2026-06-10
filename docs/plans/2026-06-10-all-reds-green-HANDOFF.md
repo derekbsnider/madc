@@ -170,14 +170,44 @@ General bugs fixed because the instantiations flushed them out:
 
 ## 4. Next work (in priority order, from the prior queue)
 
-1. **std::string `a+b` real-header SIGSEGV** — PRE-EXISTING, reducers
-   `tmp/cstr3.mad` / `tmp/cstr4.mad`. (Do not conflate with retbuf NRVO —
-   that gate keys on the resolved emit symbol since `b6fd773`.)
+1. ~~**std::string `a+b` real-header SIGSEGV**~~ **DONE 2026-06-10**
+   (`23027f7`, fulltest 548/0/0/26, torture failset byte-identical, SMAUG
+   boots): free namespace operators returning a class BY VALUE now bind
+   mangled-direct via the Itanium sret/__retbuf shape
+   (`resolve_free_operator_byvalue` + `emit_free_operator_byvalue`); decl
+   inits construct straight into the variable (copy elision, g++ canon);
+   parser types `a+b` via `free_binary_operator_return_class`. Root cause
+   was twofold: the W2 binder declined by-value returns AND the decl path
+   silently dropped the construction (uninit string → dtor freed garbage).
+   Pinned by `tests/teststringplus_realhdr.{mad,flags,expect}`.
+   IMPORTANT when verifying: the reducers ONLY reproduce under
+   `--std=c++17 --no-embedded-headers` — flagless runs take the embedded
+   path and mask the bug.
+   Spawned follow-up gaps (real, distinct, NOT regressions):
+   - `a + "literal"` — `operator+(const string&, const char*)` is NOT
+     exported by libstdc++ (only `(PKc,str)`, `(char,str)`, `(str,str)`
+     are) → needs fn-template BODY instantiation for free operators.
+   - `cout << s` where `s` is a const-string&-PARAMETER (reducer
+     `tmp/rK.mad`) — pre-existing c2mir check error, unrelated to a+b.
+   - The decl path still SILENTLY drops a class init when no ctor matches
+     (`if (cc)` in translate_block) — should become a loud error.
 2. **W2 OPERATOR-path re-mangle (step D)** — see
    `docs/plans/2026-06-09-emit-symbol-unification-HANDOFF.md`.
 3. **Torture parity gap** (Track 1.3, the promote gate): 1567 vs asmjit's
    1645 — worklist `docs/parity/root-cause-worklist.md`.
 4. (If prioritized) the §3 pack-elision gap — `std::stof`/`std::stod`.
+5. **`#include <cstdio>` DEFAULT-mode wall**: `'fpos_t' is not a declaration
+   in '::'` (cstdio:99 `using ::fpos_t;`; the glibc `typedef __fpos_t
+   fpos_t` never lands in madc's global namespace in STD_MADC mode), plus
+   the diagnostic misattributes the header line to the MAIN file's name.
+   Real-header mode (`--std=c++17 --no-embedded-headers`) is unaffected.
+   Reducer: `tmp/cstdio_probe.mad` (flagless).
+
+Note: `scripts/check-no-std-hardcoding.sh` had been RED (250 lines) since
+the 2026-06-08 nlohmann/json vendoring — all third-party false positives +
+one comment; fixed in `b0519de` (json.hpp excluded like doctest.h). It
+gates fulltest's exit code, so flagless-green fulltest claims between
+06-08 and 06-10 were test-green but gate-red.
 
 ## 5. Reducers on disk (tmp/, gitignored)
 
@@ -189,7 +219,10 @@ General bugs fixed because the instantiations flushed them out:
 | `tmp/ft1.mad` | deduced fn-template instantiation (`foo::len10(u)` → n=4) |
 | `tmp/ft2.mad` | explicit template args (`foo::conv<long,int>(42)` → r=42) |
 | `tmp/gl1.mad` | unqualified getline w/ `<cstdlib>`+`<cstring>` (udir fallback) |
-| `tmp/cstr3.mad` / `cstr4.mad` | NEXT WALL: string a+b SIGSEGV |
+| `tmp/cstr3.mad` / `cstr4.mad` | string a+b (GREEN since 23027f7; run WITH the real-header flags) |
+| `tmp/rG.mad` / `rI.mad` / `rL.mad` / `rA.mad` | a+b decl-init / assignment / call-arg / combined (all GREEN) |
+| `tmp/rK.mad` | OPEN: `cout << s` for a const-string&-PARAMETER (pre-existing) |
+| `tmp/cstdio_probe.mad` | OPEN: default-mode `#include <cstdio>` fpos_t wall (run FLAGLESS) |
 | `tmp/canon1-3.cpp` | the g++/clang canon evidence (notes in docs/plans/refs/) |
 
 ## 6. Gates (after EVERY behavior change; a task is not done without them)

@@ -1,9 +1,17 @@
 # Test Status
 
-> **Current (2026-06-10, `feature/cpp-detection-idiom-claude` @ `883c26e`
+> **Current (2026-06-10, `develop` @ `23027f7`
 > against `/workspace/mir` `develop` @ `2ffebff`):** fulltest is
-> **547 passed, 0 failed, 0 timed out, 26 skipped** — **ALL integration reds
-> are green.** `testfstream.mad` (the last red) passes rewritten to standard
+> **548 passed, 0 failed, 0 timed out, 26 skipped** (make exit 0, both check
+> gates GREEN) — **ALL integration reds are green.** New:
+> `teststringplus_realhdr.mad` pins real-header `std::string a+b` — by-value
+> FREE-operator returns bind the exported `_ZStpl…` mangled-direct and decl
+> inits copy-elide into the declared variable (the former handoff-§4 wall #1
+> SIGSEGV, `23027f7`). torture 1567/31/56/1, failset byte-identical.
+>
+> **Previous (2026-06-10, `feature/cpp-detection-idiom-claude` @ `883c26e`):**
+> fulltest **547/0/0/26** — the first all-greens run.
+> `testfstream.mad` (the last red) passes rewritten to standard
 > C++ through REAL libstdc++ headers (`.flags` `--std=c++17
 > --no-embedded-headers` + `.expect`), executing `ofstream`/`ifstream` file
 > I/O, `std::getline`, and — via the NEW namespace function-template BODY

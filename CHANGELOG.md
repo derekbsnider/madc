@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### std::string `a+b` runs through real libstdc++ — fulltest 548/0/0/26 (2026-06-10)
+
+- **By-value class returns for free namespace operators** (`23027f7`):
+  libstdc++'s `operator+` for strings is a free namespace template returning
+  the string by value; the W2 free-operator binder only emitted the
+  reference-returning stream shape, and the declaration path then silently
+  dropped the construction — `std::string c = a + b` left `c` as
+  uninitialized stack garbage (the real-header SIGSEGV). The new
+  `resolve_free_operator_byvalue`/`emit_free_operator_byvalue` pair deduces
+  both class parameters and the by-value class return with the existing
+  shared deducers, mangles via the one mangler, and emits the Itanium sret
+  shape (hidden result-slot first argument, void call) bound mangled-direct
+  to the exported weak `_ZStpl…` instantiations. Declaration inits construct
+  straight into the variable (guaranteed copy elision — g++'s exact one-call
+  shape); expression contexts materialize a cleanup-tagged temp. The parser
+  types `a + b` via the captured free operators when the class declares no
+  member operator (`Program::free_binary_operator_return_class`). New
+  integration test `teststringplus_realhdr` and a `test_mangle` pin of the
+  exported symbol.
+- **check-no-std-hardcoding gate back to 0/GREEN** (`b0519de`): the gate had
+  been red (250 lines) since the 2026-06-08 nlohmann/json vendoring — all
+  third-party false positives plus one comment naming a glibc header. The
+  vendored `include/json.hpp` is now excluded exactly like `doctest.h`.
+
 ## [v0.27.0] — 2026-06-10
 
 All integration reds green: the full test suite passes (547/0/0/26) for the
