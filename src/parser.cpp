@@ -6556,7 +6556,75 @@ void Program::resolve_object_operator_type(TokenOperator *to)
     std::string opname = std::string("operator") + opsym;
     DataDef *rt = unary ? lc->unary_operator_return_type(opname, postfix)
 			: lc->binary_operator_return_type(opname);
+    if ( !rt && !unary )
+	rt = free_binary_operator_return_class(lc, opname, to->right);
     if ( rt ) to->set_resolved_type(rt);
+}
+
+// The unqualified template-head component of a C++ type spelling:
+// "const std::__cxx11::basic_string<_CharT,_Traits,_Alloc>&" -> "basic_string".
+// Leading cv-qualifiers, the template-argument list, trailing &/*, and scope
+// qualifiers are stripped. Empty when the spelling has no identifier head.
+static std::string template_head_component(const std::string &spelling)
+{
+    size_t h = 0;
+    for ( ;; )
+    {
+	while ( h < spelling.size() && spelling[h] == ' ' ) ++h;
+	if ( spelling.compare(h, 6, "const ") == 0 ) { h += 6; continue; }
+	if ( spelling.compare(h, 9, "volatile ") == 0 ) { h += 9; continue; }
+	break;
+    }
+    size_t end = spelling.find('<', h);
+    if ( end == std::string::npos )
+    {
+	end = spelling.find_first_of("&*", h);
+	if ( end == std::string::npos ) end = spelling.size();
+    }
+    std::string head = spelling.substr(h, end - h);
+    while ( !head.empty() && head.back() == ' ' ) head.pop_back();
+    size_t sc = head.rfind("::");
+    return sc == std::string::npos ? head : head.substr(sc + 2);
+}
+
+DataDef *Program::free_binary_operator_return_class(DataDefCLASS *lc,
+	const std::string &opname, TokenBase *right)
+{
+    if ( !lc || !right || free_operator_overloads.empty() )
+	return NULL;
+    DataDefCLASS *rc = dynamic_cast<DataDefCLASS *>(right->datadef());
+    if ( !rc )
+	return NULL;     // the exported by-value set is class-by-const-ref both sides
+    std::string lhead = template_head_component(lc->canonical_cpp_spelling.empty()
+						? lc->name : lc->canonical_cpp_spelling);
+    std::string rhead = template_head_component(rc->canonical_cpp_spelling.empty()
+						? rc->name : rc->canonical_cpp_spelling);
+    if ( lhead.empty() || rhead.empty() )
+	return NULL;
+    for ( const FreeOperatorOverload &ov : free_operator_overloads )
+    {
+	if ( ov.opname != opname || ov.param_spellings.size() != 2 )
+	    continue;
+	const std::string &rspell = ov.return_spelling;
+	// By-value class returns only; reference-returning free operators
+	// (streams) keep their lowering-time typing.
+	if ( rspell.empty() || rspell.back() == '&' || rspell.back() == '*' )
+	    continue;
+	// Both params lvalue refs (&& overloads never bind mangled-direct).
+	const std::string &p0 = ov.param_spellings[0];
+	const std::string &p1 = ov.param_spellings[1];
+	if ( p0.size() < 2 || p0.back() != '&' || p0[p0.size() - 2] == '&' )
+	    continue;
+	if ( p1.size() < 2 || p1.back() != '&' || p1[p1.size() - 2] == '&' )
+	    continue;
+	if ( template_head_component(p0) != lhead
+	  || template_head_component(p1) != rhead )
+	    continue;
+	std::string rethead = template_head_component(rspell);
+	if ( rethead == lhead ) return lc;
+	if ( rethead == rhead ) return rc;
+    }
+    return NULL;
 }
 
 // Normalized text of one token for the namespace-overload identity key —

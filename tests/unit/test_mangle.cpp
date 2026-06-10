@@ -399,6 +399,15 @@ TEST_SUITE("Itanium substitution: non-member std template operators") {
 		      == "_ZSt4endlIcSt11char_traitsIcEERSt13basic_ostreamIT_T0_ES6_");
 	}
 
+	TEST_CASE("operator+ (const string&, const string&) -> string BY VALUE") {
+		// The libstdc++-exported weak symbol (nm -D libstdc++.so.6); function
+		// templates mangle the return type, here the by-value basic_string.
+		CHECK(itanium_mangle_std_free_template("+", {"char", TR, AL},
+		        STRT,
+		        {"const " + STRT + "&", "const " + STRT + "&"})
+		      == "_ZStplIcSt11char_traitsIcESaIcEENSt7__cxx1112basic_stringIT_T0_T1_EERKS8_SA_");
+	}
+
 	TEST_CASE("operator>> (istream&, string&) and getline") {
 		CHECK(itanium_mangle_std_free_template(">>", {"char", TR, AL},
 		        "std::basic_istream<$T0,$T1>&",

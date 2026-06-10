@@ -1,0 +1,22 @@
+// std::string operator+ through REAL libstdc++ headers (--no-embedded-headers).
+// Regression pin for the pre-v0.27.0 a+b SIGSEGV (reducers tmp/cstr3/4.mad):
+// concatenation via the real free std::operator+, the by-value result object,
+// and its c_str()/size() members. Standard C++ — validated against g++.
+#include <iostream>
+#include <string>
+
+int main()
+{
+	std::string a = "foo";
+	std::string b = "bar";
+
+	std::string c = a + b;
+	std::cout << c << std::endl;
+	std::cout << c.c_str() << " len=" << c.size() << std::endl;
+
+	// NOTE: `a + "literal"` (string + const char*) does not yet resolve on
+	// the real-header path ("invalid operand types of +") — covered on the
+	// embedded-header path by teststringplus.mad; add here once fixed.
+
+	return 0;
+}

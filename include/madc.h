@@ -1765,8 +1765,17 @@ public:
 		Variable &recv, class DataDefCLASS *cls, const std::string &id);
     // Type an operator expression on a class-object operand with the operator's
     // return type (Part A of generic operator-overload support). No-op unless the
-    // left operand is a class object declaring the matching binary operator.
+    // left operand is a class object declaring the matching binary operator, or
+    // (W2) a captured FREE namespace operator on the operand classes returns a
+    // class by value (std::operator+ on strings).
     void resolve_object_operator_type(class TokenOperator *to);
+    // The return CLASS of a captured FREE namespace binary operator on class
+    // operands whose return is a class BY VALUE deducing to one of the operand
+    // classes. Structural template-head check only — full deduction, overload
+    // arbitration, and symbol binding happen at lowering
+    // (CirBuilder::resolve_free_operator_byvalue). NULL = no such operator.
+    DataDef *free_binary_operator_return_class(class DataDefCLASS *lc,
+		const std::string &opname, TokenBase *right);
     TokenBase *parseCompound();
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);

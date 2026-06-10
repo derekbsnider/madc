@@ -589,6 +589,28 @@ public:
 	node_t try_free_operator_call(class TokenOperator *top, DataDefCLASS *lcls,
 			const std::string &mname, class FuncDef *member_callee,
 			TokenBase *origin);
+	// A free namespace operator returning a class BY VALUE
+	// (std::operator+(const string&, const string&) -> string) uses the
+	// Itanium sret ABI — hidden result-slot first argument, void call.
+	// Resolution (pure, no emission) and emission are split so the
+	// declaration path can pre-check and construct straight into the
+	// declared variable (guaranteed copy elision — g++ emits one call with
+	// &var as the slot); expression contexts pass ret_slot=NULL and get a
+	// cleanup-tagged temp's object lvalue back.
+	struct FreeOpByValBind {
+		std::string sym;            // mangled Itanium symbol
+		DataDefCLASS *retc;         // by-value return class
+		DataDefCLASS *lcls, *rcls;  // operand classes (arg shaping)
+		size_t loff, roff;          // base-subobject adjust offsets
+	};
+	bool resolve_free_operator_byvalue(class TokenOperator *top,
+			DataDefCLASS *lcls, const std::string &mname,
+			FreeOpByValBind &out);
+	node_t emit_free_operator_byvalue(const FreeOpByValBind &b,
+			class TokenOperator *top, TokenBase *origin,
+			node_t ret_slot);
+	// Adjust a void* object address to a base subobject at byte offset `off`.
+	node_t addr_at_base_off(node_t base, size_t off, TokenBase *origin);
 	// Instantiate a NAMED std:: free-function template for a call (overload
 	// select + template-arg deduction from the args' classes + Itanium mangle)
 	// and return a FuncDef carrying the symbol on emit_symbol — the generic

@@ -5251,6 +5251,153 @@ static std::string substitute_tparams(const std::string &spell,
 		const std::vector<std::string> &tparams);
 static std::string requalify_head(const std::string &spell, const std::string &qhead);
 
+node_t CirBuilder::addr_at_base_off(node_t base, size_t off, TokenBase *origin)
+{
+	if (off == 0) return base;
+	node_t charp = node2(N_CAST,
+		node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+		      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+		base, origin);
+	node_t add = node2(N_ADD, charp, integer((long)off, origin), origin);
+	return node2(N_CAST, void_ptr_type(), add, origin);
+}
+
+// Resolve a binary class-operand operator against the captured free namespace
+// operators that return a class BY VALUE — the shape the stream-shaped binder
+// in try_free_operator_call declines (its emission is N_DEREF of a
+// reference-returning call). std::operator+(const basic_string&, const
+// basic_string&) -> basic_string is the canonical case; libstdc++ exports the
+// char instantiations as weak symbols, so the call binds mangled-direct.
+// Member operators win (a class declaring a matching member keeps the member
+// path); rvalue-ref (&&) overloads are skipped (inline-only, not exported —
+// the lvalue overload is the symbol g++ links). Pure: no emission, no state.
+bool CirBuilder::resolve_free_operator_byvalue(TokenOperator *top,
+		DataDefCLASS *lcls, const std::string &mname, FreeOpByValBind &out)
+{
+	if (!m_prog || m_prog->free_operator_overloads.empty()) return false;
+	if (!top || !top->left || !top->right || !lcls) return false;
+	if (select_operator_overload(lcls, mname, top->right)) return false;
+	DataDefCLASS *rcls = as_class_instance(top->right->datadef());
+	if (!rcls) return false;   // the exported set is class-by-const-ref both sides
+
+	const Program::FreeOperatorOverload *best = NULL;
+	std::vector<std::string> best_targs;
+	std::string best_ret_spell;
+	std::vector<std::string> best_params;
+	size_t best_loff = 0, best_roff = 0;
+	DataDefCLASS *best_retc = NULL;
+	for (const Program::FreeOperatorOverload &ov : m_prog->free_operator_overloads) {
+		if (ov.opname != mname || ov.param_spellings.size() != 2) continue;
+		const std::string &rspell = ov.return_spelling;
+		// A by-value class return is a template-id with no trailing &/*.
+		if (rspell.empty() || rspell.back() == '&' || rspell.back() == '*')
+			continue;
+		// Both params lvalue refs; && overloads never bind mangled-direct.
+		auto is_lvalue_ref = [](const std::string &p) {
+			return p.size() >= 2 && p.back() == '&'
+			       && p[p.size() - 2] != '&';
+		};
+		if (!is_lvalue_ref(ov.param_spellings[0])
+		    || !is_lvalue_ref(ov.param_spellings[1]))
+			continue;
+		std::map<std::string, std::string> binding;
+		size_t loff = 0, roff = 0, retoff = 0;
+		std::string qh0, qh1, qhr;
+		DataDefCLASS *c0 = NULL, *c1 = NULL, *cr = NULL;
+		if (!deduce_param_against_class(ov.param_spellings[0], lcls,
+				ov.template_params, binding, loff, qh0, &c0))
+			continue;
+		if (!deduce_param_against_class(ov.param_spellings[1], rcls,
+				ov.template_params, binding, roff, qh1, &c1))
+			continue;
+		// The return class: the return template-id must deduce against one
+		// of the operand classes WITHOUT extending or changing the binding
+		// (operator+ returns the operand string class itself).
+		std::map<std::string, std::string> b2 = binding;
+		if (!(deduce_param_against_class(rspell, c0 ? c0 : lcls,
+				ov.template_params, b2, retoff, qhr, &cr)
+		      && b2 == binding && retoff == 0)) {
+			b2 = binding; retoff = 0; qhr.clear(); cr = NULL;
+			if (!(deduce_param_against_class(rspell, c1 ? c1 : rcls,
+					ov.template_params, b2, retoff, qhr, &cr)
+			      && b2 == binding && retoff == 0))
+				continue;
+		}
+		if (!cr) continue;
+		std::vector<std::string> targs;
+		if (!targs_from_binding(ov, binding, targs)) continue;
+		// Most-specialized = fewest template params.
+		if (best && ov.template_params.size() >= best->template_params.size())
+			continue;
+		auto qp = [&](const std::string &sp, const std::string &qh) {
+			return substitute_tparams(requalify_head(sp, qh),
+						  ov.template_params);
+		};
+		best = &ov;
+		best_targs = targs;
+		best_ret_spell = qp(rspell, qhr);
+		best_params.clear();
+		best_params.push_back(qp(ov.param_spellings[0], qh0));
+		best_params.push_back(qp(ov.param_spellings[1], qh1));
+		best_loff = loff;
+		best_roff = roff;
+		best_retc = cr;
+	}
+	if (!best || !best_retc) return false;
+	// The sret/__retbuf shape only fits a non-trivial class result; a trivial
+	// by-value class returns in registers and stays on the native paths.
+	if (!class_return_via_retbuf(best_retc)) return false;
+	std::string sym = itanium_mangle_std_free_template(
+		best->opname.substr(strlen("operator")), best_targs,
+		best_ret_spell, best_params);
+	if (sym.empty() || sym[0] != '_') return false;
+	out.sym = sym;
+	out.retc = best_retc;
+	out.lcls = lcls;
+	out.rcls = rcls;
+	out.loff = best_loff;
+	out.roff = best_roff;
+	return true;
+}
+
+// Emit a resolved by-value free operator call. The callee constructs its
+// result into the slot (Itanium sret == madc's __retbuf shape: hidden slot
+// first, void call — the callee also returns the slot in rax; ignored).
+// ret_slot non-NULL: the caller owns the slot (a declared variable — copy
+// elision); the bare N_CALL comes back for the caller to wrap as a statement.
+// ret_slot NULL: materialize a function-scope cleanup temp (mirrors
+// class_operator_call Part B) and return its object lvalue.
+node_t CirBuilder::emit_free_operator_byvalue(const FreeOpByValBind &b,
+		TokenOperator *top, TokenBase *origin, node_t ret_slot)
+{
+	need_output_extern(b.sym.c_str(), /*ret_ptr*/false,
+			   { { {N_VOID}, true }, { {N_VOID}, true },
+			     { {N_VOID}, true } });
+	char objtmp[40] = { 0 };
+	if (!ret_slot) {
+		snprintf(objtmp, sizeof(objtmp), "__madc_objtmp_%d",
+			 m_strtmp_counter++);
+		Variable *tmp = new Variable(objtmp, *b.retc, 1, NULL, false);
+		tmp->flags |= vfLOCAL;
+		m_pending_stmts.push_back(var_decl(tmp, origin));
+		ret_slot = node1(N_ADDR, id(objtmp, origin), origin);
+	}
+	node_t args = list();
+	append(args, ret_slot);
+	append(args, addr_at_base_off(object_arg_addr(top->left, b.lcls),
+				      b.loff, origin));
+	append(args, addr_at_base_off(object_arg_addr(top->right, b.rcls),
+				      b.roff, origin));
+	node_t call = node2(N_CALL, id(b.sym.c_str(), origin), args, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	DBG(std::cout << "[W2] bind by-value free operator -> " << b.sym
+	    << (objtmp[0] ? " (temp)" : " (elided)") << std::endl);
+	if (!objtmp[0])
+		return call;   // caller-provided slot; caller wraps the statement
+	m_pending_stmts.push_back(node2(N_EXPR, list(), call, origin));
+	return id(objtmp, origin);   // materialized object lvalue
+}
+
 node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls,
 		const std::string &mname, FuncDef *member_callee, TokenBase *origin)
 {
@@ -5284,13 +5431,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	};
 	// Adjust a void* object address to a base subobject at byte `off`.
 	auto adjust_to_base = [&](node_t base, size_t off) -> node_t {
-		if (off == 0) return base;
-		node_t charp = node2(N_CAST,
-			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-			base, origin);
-		node_t add = node2(N_ADD, charp, integer((long)off, origin), origin);
-		return node2(N_CAST, void_ptr_type(), add, origin);
+		return addr_at_base_off(base, off, origin);
 	};
 
 	// W2 manipulator: `os << endl` — the parser built a (0-arg) call node for the
@@ -5397,7 +5538,16 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 					     ov.template_params)
 			: ov.param_spellings[1];
 	}
-	if (!best) return NULL;
+	if (!best) {
+		// No reference-returning candidate. A free operator returning a
+		// class BY VALUE (std::operator+ on strings) has its own ABI shape;
+		// only when the class declares NO member operator (resolver checks).
+		FreeOpByValBind bv;
+		if (!member_callee
+		    && resolve_free_operator_byvalue(top, lcls, mname, bv))
+			return emit_free_operator_byvalue(bv, top, origin, NULL);
+		return NULL;
+	}
 	// Only override the member when the member is NOT itself an exact match
 	// (an exact-match member would win or tie under normal overload rules).
 	if (member_callee && member_exact) return NULL;
@@ -8961,6 +9111,39 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					m_pending_stmts.clear();
 					append(items, node2(N_EXPR, list(), icall, sdcl));
 					continue;
+				}
+				// `T c = a + b;` where a FREE namespace operator on the
+				// class operands returns T BY VALUE (std::operator+ on
+				// strings): construct straight into c — the Itanium sret
+				// slot is &c (guaranteed copy elision; g++ canon emits
+				// exactly one call, _ZStpl(&c,&a,&b)). The pure resolver
+				// pre-checks so nothing is emitted unless this shape
+				// fully binds; member-operator classes keep the
+				// class_ctor_call copy path below.
+				if (ctor_args.size() == 1) {
+					TokenOperator *iop =
+						dynamic_cast<TokenOperator *>(ctor_args[0]);
+					DataDefCLASS *ilcls = (iop && iop->left)
+						? as_class_instance(iop->left->datadef())
+						: NULL;
+					const char *iopsym = iop
+						? binop_overload_symbol(iop->id()) : "";
+					FreeOpByValBind bind;
+					if (ilcls && iopsym[0]
+					    && resolve_free_operator_byvalue(iop, ilcls,
+						std::string("operator") + iopsym, bind)
+					    && bind.retc == cdcl) {
+						node_t slot = node1(N_ADDR,
+							id(sdcl->var.name.c_str(), sdcl),
+							sdcl);
+						node_t oc = emit_free_operator_byvalue(
+							bind, iop, sdcl, slot);
+						for (node_t p : m_pending_stmts)
+							append(items, p);
+						m_pending_stmts.clear();
+						append(items, node2(N_EXPR, list(), oc, sdcl));
+						continue;
+					}
 				}
 				node_t cc = class_ctor_call(&sdcl->var, cdcl,
 							    ctor_args, sdcl);
