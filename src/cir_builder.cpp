@@ -583,9 +583,28 @@ static FuncDef *call_target_funcdef_raw(TokenCallFunc *tcf)
 FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
 {
 	FuncDef *fd = call_target_funcdef_raw(tcf);
+#if MADC_DEBUG_FNTPL
+	if (tcf && tcf->var.name.compare(0, 5, "__ns_") == 0)
+		fprintf(stderr, "FNTPL gate var=%s fd=%d ns='%s' disp='%s'\n",
+			tcf->var.name.c_str(), fd != NULL,
+			fd ? fd->namespace_name.c_str() : "",
+			fd ? fd->function_display_name.c_str() : "");
+#endif
 	if (fd && !fd->namespace_name.empty() && !fd->function_display_name.empty()) {
-		if (FuncDef *inst = std_free_function_instantiation(tcf, fd))
+		if (FuncDef *inst = std_free_function_instantiation(tcf, fd)) {
+#if MADC_DEBUG_FNTPL
+			if (tcf && tcf->var.name.compare(0, 5, "__ns_") == 0)
+				fprintf(stderr, "FNTPL patternA var=%s -> emit=%s\n",
+					tcf->var.name.c_str(),
+					inst->emit_symbol.c_str());
+#endif
 			return inst;
+		}
+#if MADC_DEBUG_FNTPL
+		if (tcf && tcf->var.name.compare(0, 5, "__ns_") == 0)
+			fprintf(stderr, "FNTPL gate2 var=%s m_prog=%d\n",
+				tcf->var.name.c_str(), m_prog != NULL);
+#endif
 		// NON-template namespace overload set (e.g. std::to_string's nine
 		// inline definitions): rank the parsed overloads by the call's arg
 		// types — the same generic ranking methods use — and resolve to the
@@ -593,9 +612,16 @@ FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
 		// consumer of this resolver (args, retbuf classification, callee
 		// naming) sees the selected overload consistently.
 		if (m_prog) {
+			// Rank only the USER-WRITTEN args: parse-time-appended
+			// defaults came from one overload's declaration and must
+			// not veto it (TokenCallFunc::user_argc).
+			size_t n = tcf->parameters.size();
+			if (tcf->user_argc != (size_t)-1 && tcf->user_argc < n)
+				n = tcf->user_argc;
 			std::vector<const DataDef *> at;
-			for (TokenBase *p : tcf->parameters)
-				at.push_back(p ? p->datadef() : NULL);
+			for (size_t i = 0; i < n; i++)
+				at.push_back(tcf->parameters[i]
+					     ? tcf->parameters[i]->datadef() : NULL);
 			if (Variable *w = m_prog->find_namespace_function_overload(
 					fd->namespace_name, fd->function_display_name, at))
 				if (FuncDef *wfd = dynamic_cast<FuncDef *>(w->type))
@@ -3941,8 +3967,12 @@ std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
 	auto it = cdd->method_map.find("~" + cdd->name);
 	if (it != cdd->method_map.end() && it->second) {
 		FuncDef *dt = dynamic_cast<FuncDef *>(it->second->type);
-		if (dt && !dt->emit_symbol.empty())
-			return dt->emit_symbol;
+		// The one call-symbol resolver (emit_symbol ?: local_emit_name ?:
+		// default): a FUNCTION-LOCAL class's dtor registers under a nested
+		// unique symbol carried by local_emit_name; reading only
+		// emit_symbol emitted a dangling Cls___dtor cleanup reference.
+		if (dt)
+			return call_emit_symbol(dt, cdd->name + "___dtor");
 	}
 	return cdd->name + "___dtor";
 }
@@ -4232,6 +4262,13 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	// above); there is no implicit object->scalar/pointer conversion here.
 	if (adc->is_object())
 		return -1;
+	// Function-to-pointer decay: a bare function argument binds a
+	// function-pointer parameter (`__stoa(&std::strtol, ...)`). Other
+	// argument positions discriminate between overloads whose fn-ptr
+	// signatures differ.
+	if (dynamic_cast<const DataDefFPTR *>(pdc)
+	    && (adc->is_function() || dynamic_cast<const DataDefFPTR *>(adc)))
+		return 4;
 	bool p_ptr = pdc->is_pointer(), a_ptr = adc->is_pointer();
 	bool p_num = pdc->is_numeric(), a_num = adc->is_numeric();
 	if (p_ptr || a_ptr)

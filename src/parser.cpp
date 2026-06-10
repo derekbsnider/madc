@@ -5303,7 +5303,8 @@ TokenBase *Program::parse_static_assert_statement(TokenBase *tb)
     if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	Throw(tb) << "Expecting '(' after " << ((TokenIdent *)tb)->str << flush;
 
-    if ( parsing_template_instantiated_member_body() )
+    if ( parsing_template_instantiated_member_body()
+      || fn_template_instantiation_depth > 0 )
     {
 	consume_deferred_static_assert_statement(tb);
 	return NULL;
@@ -6619,7 +6620,15 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
     std::map<std::string, std::vector<NamespaceFnOverload>>::iterator oi =
 	namespace_fn_overload_sets.find(ns + "::" + name);
     if ( oi == namespace_fn_overload_sets.end() || oi->second.size() < 2 )
+    {
+#if MADC_DEBUG_FNTPL
+	std::cerr << "FNTPL rank-early key=" << ns << "::" << name
+		  << " found=" << (oi != namespace_fn_overload_sets.end())
+		  << " size=" << (oi != namespace_fn_overload_sets.end()
+				  ? oi->second.size() : 0) << std::endl;
+#endif
 	return NULL;
+    }
     Variable *best = NULL;
     int best_score = -1;
     for ( NamespaceFnOverload &e : oi->second )
@@ -6632,13 +6641,28 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
 	// [required..total] args (FuncDef::required_param_count).
 	if ( argtypes.size() < fd->required_param_count()
 	  || argtypes.size() > pn )
+	{
+#if MADC_DEBUG_FNTPL
+	    std::cerr << "FNTPL rank " << ns << "::" << name << " cand="
+		      << e.var->name << " ARITY-SKIP pn=" << pn
+		      << " req=" << fd->required_param_count()
+		      << " argc=" << argtypes.size() << std::endl;
+#endif
 	    continue;
+	}
 	int total = 0;
 	bool ok = true;
 	for ( size_t i = 0; i < argtypes.size(); i++ )
 	{
 	    bool refp = i < fd->ref_params.size() && fd->ref_params[i];
 	    int s = score_arg_to_param(argtypes[i], fd->parameters[i], refp);
+#if MADC_DEBUG_FNTPL
+	    std::cerr << "FNTPL rank " << ns << "::" << name << " cand="
+		      << e.var->name << " arg" << i << " a="
+		      << (argtypes[i] ? argtypes[i]->name : "?") << " p="
+		      << (fd->parameters[i] ? fd->parameters[i]->name : "?")
+		      << " refp=" << refp << " s=" << s << std::endl;
+#endif
 	    if ( s < 0 ) { ok = false; break; }
 	    total += s;
 	}
@@ -6648,6 +6672,11 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
 	    best = e.var;
 	}
     }
+#if MADC_DEBUG_FNTPL
+    std::cerr << "FNTPL rank " << ns << "::" << name << " WINNER="
+	      << (best ? best->name : "(none)") << " score=" << best_score
+	      << std::endl;
+#endif
     return best;
 }
 
@@ -9647,6 +9676,12 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	tc->parameters.push_back(ctx_token);
     }
 
+    // Namespace function template callee (a body-less placeholder registered
+    // from a skipped template declaration): instantiate the retained template
+    // body for THIS call's argument types. The concrete overload registers in
+    // namespace_fn_overload_sets; call_target_funcdef ranks it at CIR time.
+    instantiate_namespace_fn_template_for_call(tc);
+
     apply_template_call_return_inference(tc);
 
     // (need check for optional parameters)
@@ -9671,6 +9706,34 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	else
 	{
 	    FuncDef *fd = (FuncDef *)tc->var.type;
+	    // Late-bound namespace overload set (C++ overloads / fn-template
+	    // instantiations): the parse-bound Variable is just ONE member of
+	    // the set (or the body-less template placeholder). Re-rank with the
+	    // user-written args: a winner supplies the defaults and the arity
+	    // contract; with NO winner the call is left for CIR-time resolution
+	    // — the arbitrary parse-bound member's arity must not hard-fail it.
+	    bool late_bound_no_winner = false;
+	    if ( !fd->namespace_name.empty() && !fd->function_display_name.empty() )
+	    {
+		std::map<std::string, std::vector<NamespaceFnOverload>>::iterator oi =
+		    namespace_fn_overload_sets.find(fd->namespace_name + "::"
+						    + fd->function_display_name);
+		if ( oi != namespace_fn_overload_sets.end()
+		  && (oi->second.size() >= 2 || fd->declaration_only) )
+		{
+		    std::vector<const DataDef *> at;
+		    for ( size_t i = 0; i < tc->parameters.size(); ++i )
+			at.push_back(tc->parameters[i]
+				     ? tc->parameters[i]->datadef() : NULL);
+		    Variable *w = find_namespace_function_overload(
+			    fd->namespace_name, fd->function_display_name, at);
+		    FuncDef *wfd = w ? dynamic_cast<FuncDef *>(w->type) : NULL;
+		    if ( wfd )
+			fd = wfd;
+		    else
+			late_bound_no_winner = true;
+		}
+	    }
 	    // C++ default arguments: fill omitted TRAILING args from the parameter
 	    // defaults (param_defaults is index-aligned with parameters, hidden
 	    // __this/__retbuf/__va_args slots hold NULL). Stop at the first param
@@ -9681,7 +9744,11 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 		for ( size_t i = hidden + tc->argc(); i < fd->parameters.size(); ++i )
 		{
 		    if ( i < fd->param_defaults.size() && fd->param_defaults[i] )
+		    {
+			if ( tc->user_argc == (size_t)-1 )
+			    tc->user_argc = tc->parameters.size();
 			tc->parameters.push_back(fd->param_defaults[i]);
+		    }
 		    else
 			break;
 		}
@@ -9690,7 +9757,8 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    // Only f(void) means exactly zero. Skip the check for empty-param functions.
 	    // Allocation operators have multiple standard overloads collapsed onto one
 	    // name (see is_overloaded_allocation_operator), so their arity is not fixed.
-	    if ( !(fd->parameters.empty() && !fd->is_void_params)
+	    if ( !late_bound_no_winner
+	      && !(fd->parameters.empty() && !fd->is_void_params)
 	      && !is_overloaded_allocation_operator(tc->var.name) )
 	    {
 		size_t expected = fd->parameters.size()
@@ -13132,8 +13200,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		ns_resolved:
 		if ( var->type->is_function() )
 		{
+		    // Explicit template arguments on a namespace function call
+		    // (`__stoa<long, int>(...)`): capture them for fn-template
+		    // instantiation (attached to the TokenCallFunc below);
+		    // non-type/dependent lists fall back to opaque consumption.
+		    std::vector<DataDef *> call_explicit_targs;
 		    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
-			skip_template_id_suffix();
+			call_explicit_targs = capture_call_template_args();
 		    // function pointer variable (DataDefFPTR) — different from regular functions
 		    if ( var->type->is_numeric() )
 		    {
@@ -13219,6 +13292,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    TokenCallFunc *tc = new TokenCallFunc(*call_var);
 		    tc->auto_scope_context = is_runtime_eval_scope_ctx_helper_name(call_var->name)
 			&& is_runtime_eval_scope_public_name(ident_tb->str);
+		    tc->explicit_template_args = call_explicit_targs;
 		    tb = nextToken();
 		    tc->line = tb->line;
 		    tc->column = tb->column;
@@ -18507,6 +18581,37 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.struct_map[tag->str] = ddc;
 	    completing_forward_decl = true;
 	}
+	else if ( pgm.fn_template_instantiation_depth > 0 && fwd
+	       && fwd->is_complete )
+	{
+	    // A second instantiation of a function template re-defining the
+	    // body's LOCAL class (`__stoa`'s `struct _Save_errno {...} const
+	    // __save_errno;`): the definition is identical per instantiation —
+	    // reuse the first one, skip this body, and parse the trailing
+	    // declarator against the existing type.
+	    int bdepth = 1;
+	    while ( bdepth > 0 && pgm.peekToken() )
+	    {
+		TokenBase *bt = pgm.nextToken();
+		if ( bt->id() == TokenID::tkOpBrc )
+		    ++bdepth;
+		else if ( bt->id() == TokenID::tkClBrc )
+		    --bdepth;
+	    }
+	    TokenBase *after = pgm.peekToken();
+	    while ( after && (after->id() == TokenID::tkCONST
+			   || after->id() == TokenID::tkVOLATILE) )
+	    {
+		pgm.nextToken();
+		after = pgm.peekToken();
+	    }
+	    if ( after && after->type() == TokenType::ttIdentifier )
+		return pgm.parseDeclaration(
+		    new TokenDataType(tag->str.c_str(), *fwd));
+	    if ( after && after->id() == TokenID::tkSemi )
+		pgm.nextToken();
+	    return NULL;
+	}
 	else
 	    pgm.Throw(tag) << "Class '" << tag->str << "' already defined" << flush;
     }
@@ -19612,7 +19717,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	for ( size_t i = 0; i < deferred_method_bodies.size(); ++i )
 	{
 	    Program::DeferredFunctionBody &b = deferred_method_bodies[i];
-	    if ( b.var && b.file && pgm.is_system_header_path(b.file) )
+	    // Inside an instantiated function-template body, parse method
+	    // bodies EAGERLY even though the tokens carry a system-header
+	    // file: a local class's ctor/dtor (`__stoa`'s _Save_errno) is
+	    // referenced by the surrounding body/cleanup machinery, which
+	    // never triggers the lazy-on-call path.
+	    if ( b.var && b.file && pgm.is_system_header_path(b.file)
+	      && pgm.fn_template_instantiation_depth == 0 )
 		pgm.deferred_lazy_bodies[b.var->name] = b;
 	    else
 		pgm.parse_deferred_function_body(b);
@@ -19657,6 +19768,16 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     }
 
     // class Name { ... } variable;
+    // class Name { ... } const variable; — cv-qualifiers between the closing
+    // '}' and the declarator are no-ops for madc's type model; skip them
+    // (libstdc++'s `struct _Save_errno {...} const __save_errno;` shape).
+    while ( tn && (tn->id() == TokenID::tkCONST
+		|| tn->id() == TokenID::tkVOLATILE) )
+    {
+	pgm.nextToken();
+	tn = pgm.peekToken();
+    }
+
     if ( tn && tn->type() == TokenType::ttIdentifier )
     {
 	tdt = new TokenDataType(tag->str.c_str(), *ddc);
@@ -21978,6 +22099,67 @@ void Program::skip_template_id_suffix()
     }
 }
 
+std::vector<DataDef *> Program::capture_call_template_args()
+{
+    std::vector<DataDef *> out;
+    if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
+	return out;
+    nextToken(); // consume '<'
+    // Opaque-bail: consume the remainder of the list (depth already 1, as in
+    // skip_template_id_suffix after its '<') and report no captured args.
+    auto bail = [&]() -> std::vector<DataDef *> {
+	int depth = 1;
+	while ( depth > 0 && peekToken() )
+	{
+	    TokenBase *t = nextToken();
+	    if ( isOperatorIdStart(t) )
+	    {
+		parseOperatorId(t);
+		continue;
+	    }
+	    if ( t->id() == TokenID::tkLT )
+		++depth;
+	    else if ( t->id() == TokenID::tkGT )
+		--depth;
+	    else if ( t->id() == TokenID::tkBSR )
+		depth = depth > 1 ? depth - 2 : 0;
+	}
+	return std::vector<DataDef *>();
+    };
+    for (;;)
+    {
+	if ( peekToken() && (peekToken()->id() == TokenID::tkGT
+	      || peekToken()->id() == TokenID::tkBSR) )
+	{
+	    consume_template_close(nextToken());
+	    return out;
+	}
+	TokenBase *at = nextToken();
+	if ( !at )
+	    return out;
+	std::string cv_spelling;
+	at = consume_template_type_arg_qualifiers(at, cv_spelling);
+	TokenDataType *adt = resolve_declared_type_token(at, true, true);
+	if ( !adt )
+	    return bail();
+	DataDef *dd = &adt->definition;
+	while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+	{
+	    nextToken();
+	    dd = getPointerType(dd);
+	}
+	out.push_back(dd);
+	TokenBase *sep = nextToken();
+	if ( !sep )
+	    return out;
+	if ( sep->id() == TokenID::tkComma )
+	    continue;
+	if ( consume_template_close(sep) )
+	    return out;
+	return bail();
+    }
+}
+
 static bool is_template_parameter_type_name(TokenBase *tb)
 {
     return tb && (tb->type() == TokenType::ttIdentifier
@@ -22865,7 +23047,10 @@ static bool capture_free_function_overload(
 
 static void register_skipped_namespace_template_function(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
-	const std::vector<std::string> &typeparams)
+	const std::vector<std::string> &typeparams,
+	const std::vector<std::vector<TokenBase *>> *typeparam_defaults,
+	const std::vector<bool> *typeparam_is_type,
+	const std::vector<bool> *typeparam_is_pack)
 {
     if ( pgm.current_namespace.empty() )
 	return;
@@ -22880,31 +23065,503 @@ static void register_skipped_namespace_template_function(
     // Capture EVERY overload's signature (before the single-Variable bail below)
     // so the call site can select by arity + bind mangled-direct to libstdc++.
     capture_free_function_overload(pgm, tokens, typeparams, name);
+    // Retain the declaration tokens of a BODY-BEARING function template so a
+    // call site can instantiate the body on demand (madc must compile the body
+    // of any template the library does not export — e.g. __gnu_cxx::__stoa,
+    // std::__detail::__to_chars_10_impl inside stoi/to_string).
+    bool retained_body = false;
+    {
+	bool has_body = false;
+	for ( size_t i = 0; i < tokens.size(); ++i )
+	    if ( tokens[i] && tokens[i]->id() == TokenID::tkOpBrc )
+	    { has_body = true; break; }
+	if ( has_body && !typeparams.empty() )
+	{
+	    Program::FnTemplateDef ft;
+	    ft.typeparams = typeparams;
+	    if ( typeparam_defaults ) ft.typeparam_defaults = *typeparam_defaults;
+	    if ( typeparam_is_type )  ft.typeparam_is_type = *typeparam_is_type;
+	    if ( typeparam_is_pack )  ft.typeparam_is_pack = *typeparam_is_pack;
+	    ft.decl = tokens;
+	    ft.ns = pgm.current_namespace;
+	    pgm.fn_template_map[pgm.current_namespace + "::" + name].push_back(ft);
+	    retained_body = true;
+	}
+    }
     variable_map_t &ns = pgm.namespace_map[pgm.current_namespace];
-    if ( ns.find(name) != ns.end() )
-	return;
-    std::string parse_id = namespace_function_symbol(pgm.current_namespace, name);
-    Variable *var = pgm.tkProgram ? pgm.tkProgram->findVariable(parse_id) : NULL;
-    if ( !var )
+    Variable *var = NULL;
     {
-	DataDef *ret = skipped_template_function_return_type(pgm, NULL, tokens,
-							     name);
-	var = pgm.addFunction(parse_id,
-	    datatype_vec_t{ret ? ret : &ddINT64}, NULL);
+	variable_map_iter ni = ns.find(name);
+	if ( ni != ns.end() )
+	    var = ni->second;
     }
     if ( !var )
-	return;
-    if ( FuncDef *fd = dynamic_cast<FuncDef *>(var->type) )
     {
-	fd->declaration_only = true;
-	fd->function_display_name = name;
-	fd->namespace_name = pgm.current_namespace;
-	record_skipped_template_return_pattern(fd, tokens, typeparams, name);
-	if ( skipped_template_body_returns_inline_addressof(pgm, tokens) )
-	    fd->inline_builtin_kind = "addressof";
+	std::string parse_id = namespace_function_symbol(pgm.current_namespace, name);
+	var = pgm.tkProgram ? pgm.tkProgram->findVariable(parse_id) : NULL;
+	if ( !var )
+	{
+	    DataDef *ret = skipped_template_function_return_type(pgm, NULL, tokens,
+								 name);
+	    var = pgm.addFunction(parse_id,
+		datatype_vec_t{ret ? ret : &ddINT64}, NULL);
+	}
+	if ( !var )
+	    return;
+	if ( FuncDef *fd = dynamic_cast<FuncDef *>(var->type) )
+	{
+	    fd->declaration_only = true;
+	    fd->function_display_name = name;
+	    fd->namespace_name = pgm.current_namespace;
+	    record_skipped_template_return_pattern(fd, tokens, typeparams, name);
+	    if ( skipped_template_body_returns_inline_addressof(pgm, tokens) )
+		fd->inline_builtin_kind = "addressof";
+	}
+	ns[name] = var;
+	ns.erase(parse_id);
     }
-    ns[name] = var;
-    ns.erase(parse_id);
+    // Seed the overload set with the body-less placeholder once a body-bearing
+    // template is retained: instantiations then always mint a FRESH overload
+    // symbol (re-entering parseFunction under the placeholder's id would
+    // swallow their parameters — the single-id overload collapse), and
+    // call_target_funcdef's ranking sees placeholder + concrete overloads
+    // together (the 0-param placeholder is arity-filtered out of the ranking).
+    if ( retained_body && var )
+    {
+	std::vector<Program::NamespaceFnOverload> &ovset =
+	    pgm.namespace_fn_overload_sets[pgm.current_namespace + "::" + name];
+	bool seeded = false;
+	for ( size_t i = 0; i < ovset.size(); ++i )
+	    if ( ovset[i].var == var )
+		seeded = true;
+	if ( !seeded )
+	{
+	    Program::NamespaceFnOverload e;
+	    e.param_spelling = "\x01fn-template-placeholder";
+	    e.var = var;
+	    ovset.push_back(e);
+	}
+    }
+}
+
+// Deduce which template parameter a parameter SPELLING names, and what the
+// argument's DataDef binds it to. Supported shapes: bare `Tp` with optional
+// cv-qualifiers, one trailing '&', and trailing '*'s (each '*' unwraps one
+// pointer level of the argument's type). Returns 0 when the param involves no
+// template parameter (a concrete slot — callers ignore it), 1 when bound
+// (tp_out / dd_out set), -1 when a template parameter appears in a shape this
+// deducer can't handle (template-id, function pointer, '&&', defaulted expr) —
+// the variant is then not instantiable from this call.
+static void fn_template_split_words(const std::string &spelling,
+				    std::vector<std::string> &words)
+{
+    std::string cur;
+    for ( size_t i = 0; i <= spelling.size(); ++i )
+    {
+	char c = i < spelling.size() ? spelling[i] : ' ';
+	if ( isalnum((unsigned char)c) || c == '_' )
+	    { cur += c; continue; }
+	if ( !cur.empty() ) { words.push_back(cur); cur.clear(); }
+	if ( c == ' ' )
+	    continue;
+	words.push_back(std::string(1, c));
+    }
+}
+
+static bool fn_template_word_is_cv(const std::string &w)
+{
+    return w == "const" || w == "volatile" || w == "restrict"
+	|| w == "__restrict" || w == "__restrict__"
+	|| w == "typename" || w == "struct" || w == "class";
+}
+
+// True when a parameter SPELLING is a parameter-pack expansion of `pack`
+// (`_Base ...`, optionally cv-qualified). Stars/references on a pack are not
+// supported shapes.
+static bool fn_template_param_is_pack(const std::string &spelling,
+				      const std::string &pack)
+{
+    if ( pack.empty() )
+	return false;
+    std::vector<std::string> words;
+    fn_template_split_words(spelling, words);
+    std::string core;
+    size_t dots = 0;
+    for ( size_t i = 0; i < words.size(); ++i )
+    {
+	const std::string &w = words[i];
+	if ( fn_template_word_is_cv(w) )
+	    continue;
+	if ( w == "." ) { ++dots; continue; }
+	if ( !core.empty() )
+	    return false;
+	core = w;
+    }
+    return dots == 3 && core == pack;
+}
+
+static int fn_template_deduce_param(const std::string &spelling,
+				    const std::vector<std::string> &typeparams,
+				    DataDef *arg_dd,
+				    std::string &tp_out, DataDef *&dd_out)
+{
+    std::vector<std::string> words;
+    fn_template_split_words(spelling, words);
+    bool involves_tp = false;
+    for ( size_t i = 0; i < words.size() && !involves_tp; ++i )
+	for ( size_t j = 0; j < typeparams.size() && !involves_tp; ++j )
+	    if ( words[i] == typeparams[j] )
+		involves_tp = true;
+    if ( !involves_tp )
+	return 0;
+    size_t stars = 0, amps = 0;
+    std::string core;
+    for ( size_t i = 0; i < words.size(); ++i )
+    {
+	const std::string &w = words[i];
+	if ( fn_template_word_is_cv(w) )
+	    continue;
+	if ( w == "*" ) { ++stars; continue; }
+	if ( w == "&" ) { ++amps; continue; }
+	if ( !core.empty() )
+	    return -1;
+	core = w;
+    }
+    if ( core.empty() || amps > 1 )
+	return -1;
+    bool is_tp = false;
+    for ( size_t j = 0; j < typeparams.size(); ++j )
+	if ( core == typeparams[j] )
+	    is_tp = true;
+    if ( !is_tp || !arg_dd )
+	return -1;
+    DataDef *dd = arg_dd;
+    if ( dd->is_reference() )
+	dd = static_cast<DataDefPTR *>(dd)->base_type;
+    for ( size_t i = 0; i < stars; ++i )
+    {
+	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	if ( !p || !p->base_type )
+	    return -1;
+	dd = p->base_type;
+    }
+    tp_out = core;
+    dd_out = dd;
+    return 1;
+}
+
+// Match a function-pointer parameter SPELLING
+// (`_TRet ( * __convf ) ( const _CharT * , _CharT * * , _Base . . . )`)
+// against a function-typed argument, binding template parameters from the
+// return and parameter positions via fn_template_deduce_param. The last
+// sub-parameter may be the parameter pack (single-element). Returns false
+// when the spelling and the argument's function type don't match.
+static bool fn_template_deduce_fnptr_param(const std::string &spelling,
+	const std::vector<std::string> &typeparams,
+	const std::string &pack_param,
+	DataDef *arg_dd,
+	std::map<std::string, DataDef *> &binding)
+{
+    size_t p1 = spelling.find('(');
+    if ( p1 == std::string::npos )
+	return false;
+    size_t p1c = spelling.find(')', p1);
+    size_t star = spelling.find('*', p1);
+    if ( p1c == std::string::npos || star == std::string::npos || star > p1c )
+	return false;
+    size_t p2 = spelling.find('(', p1c);
+    size_t p2c = spelling.rfind(')');
+    if ( p2 == std::string::npos || p2c == std::string::npos || p2c <= p2 )
+	return false;
+
+    FuncDef *fd = dynamic_cast<FuncDef *>(arg_dd);
+    if ( !fd )
+	if ( DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(arg_dd) )
+	    fd = fp->target;
+    if ( !fd )
+	return false;
+
+    std::string tp;
+    DataDef *dd = NULL;
+    int r = fn_template_deduce_param(spelling.substr(0, p1), typeparams,
+				     &fd->returns, tp, dd);
+    if ( r < 0 )
+	return false;
+    if ( r == 1 )
+    {
+	if ( binding.find(tp) == binding.end() )
+	    binding[tp] = dd;
+    }
+
+    // Sub-parameters: top-level comma split; nested parens/template-ids are
+    // not supported shapes.
+    std::string plist = spelling.substr(p2 + 1, p2c - p2 - 1);
+    std::vector<std::string> subs;
+    size_t start = 0;
+    for ( size_t i = 0; i <= plist.size(); ++i )
+    {
+	if ( i == plist.size() || plist[i] == ',' )
+	{
+	    std::string s = plist.substr(start, i - start);
+	    if ( s.find_first_not_of(' ') != std::string::npos )
+		subs.push_back(s);
+	    start = i + 1;
+	}
+	else if ( plist[i] == '(' || plist[i] == '<' )
+	    return false;
+    }
+    for ( size_t j = 0; j < subs.size(); ++j )
+    {
+	if ( !pack_param.empty() && j + 1 == subs.size()
+	  && fn_template_param_is_pack(subs[j], pack_param) )
+	{
+	    // Single-element pack: exactly one function parameter remains.
+	    if ( fd->parameters.size() != subs.size() )
+		return false;
+	    if ( binding.find(pack_param) == binding.end() )
+		binding[pack_param] = fd->parameters[j];
+	    return true;
+	}
+	if ( j >= fd->parameters.size() )
+	    return false;
+	std::string stp;
+	DataDef *sdd = NULL;
+	int sr = fn_template_deduce_param(subs[j], typeparams,
+					  fd->parameters[j], stp, sdd);
+	if ( sr < 0 )
+	    return false;
+	if ( sr == 1 && binding.find(stp) == binding.end() )
+	    binding[stp] = sdd;
+    }
+    return fd->parameters.size() == subs.size();
+}
+
+// Instantiate one retained namespace function template for a call: deduce the
+// type parameters from the call's argument types, substitute them into a clone
+// of the retained declaration tokens, and re-parse the result as a concrete
+// namespace function definition (the instantiate_template_use recipe: inject
+// at the front of the token deque, parse with the function/class context
+// cleared and current_namespace set to the template's namespace). The parsed
+// definition registers itself in namespace_fn_overload_sets under its own
+// unique symbol; call_target_funcdef ranks the set against the call's arg
+// types at CIR time. A parse failure is non-fatal: the injected tokens are
+// drained and the call falls back to the body-less placeholder.
+static bool try_instantiate_namespace_fn_template(Program &pgm,
+	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc)
+{
+    // Type parameters only; one parameter pack allowed in the LAST position
+    // (bound to exactly one element — `__stoa`'s `_Base...` shape).
+    std::string pack_param;
+    for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+    {
+	if ( i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i] )
+	    return false;
+	if ( i < ft.typeparam_is_pack.size() && ft.typeparam_is_pack[i] )
+	{
+	    if ( i + 1 != ft.typeparams.size() )
+		return false;
+	    pack_param = ft.typeparams[i];
+	}
+    }
+    std::string name = skipped_template_function_declarator_name(ft.decl);
+    if ( name.empty() )
+	return false;
+    size_t name_idx = ft.decl.size(), lparen = ft.decl.size();
+    for ( size_t i = 0; i < ft.decl.size(); ++i )
+	if ( ft.decl[i] && is_skipped_template_function_name(ft.decl[i])
+	  && skipped_template_function_name(ft.decl[i]) == name
+	  && i + 1 < ft.decl.size() && ft.decl[i + 1]
+	  && ft.decl[i + 1]->id() == TokenID::tkOpBrk )
+	{ name_idx = i; lparen = i + 1; break; }
+    if ( lparen >= ft.decl.size() )
+	return false;
+    Program::FreeOperatorOverload ov;
+    if ( !extract_free_signature(pgm, ft.decl, ft.typeparams, name, name_idx,
+				 lparen, ov) )
+	return false;
+    if ( tc->parameters.size() > ov.param_spellings.size() )
+	return false;
+    std::map<std::string, DataDef *> binding;
+    // Explicit template arguments bind the leading (non-pack) parameters.
+    {
+	size_t nonpack = ft.typeparams.size() - (pack_param.empty() ? 0 : 1);
+	if ( tc->explicit_template_args.size() > nonpack )
+	    return false;
+	for ( size_t i = 0; i < tc->explicit_template_args.size(); ++i )
+	    binding[ft.typeparams[i]] = tc->explicit_template_args[i];
+    }
+    for ( size_t i = 0; i < ov.param_spellings.size(); ++i )
+    {
+	if ( i >= tc->parameters.size() )
+	{
+	    // Unfilled trailing param: viable only with a default ('=' in the
+	    // spelling); fn_template_deduce_param rejects defaulted slots that
+	    // involve a template parameter, so no binding is lost here.
+	    if ( ov.param_spellings[i].find('=') == std::string::npos )
+		return false;
+	    continue;
+	}
+	const std::string &sp = ov.param_spellings[i];
+	DataDef *arg_dd = tc->parameters[i] ? tc->parameters[i]->datadef() : NULL;
+	// Trailing parameter pack (`_Base... __base`): bind the pack to the
+	// one remaining argument's type (the sizes are equal here, so exactly
+	// one argument fills it).
+	if ( i + 1 == ov.param_spellings.size()
+	  && fn_template_param_is_pack(sp, pack_param) )
+	{
+	    if ( !arg_dd )
+		return false;
+	    DataDef *pd = arg_dd;
+	    if ( pd->is_reference() )
+		pd = static_cast<DataDefPTR *>(pd)->base_type;
+	    if ( binding.find(pack_param) == binding.end() )
+		binding[pack_param] = pd;
+	    continue;
+	}
+	// Function-pointer parameter shape: structural match against the
+	// argument's function type.
+	if ( sp.find('(') != std::string::npos )
+	{
+	    if ( !fn_template_deduce_fnptr_param(sp, ft.typeparams, pack_param,
+						 arg_dd, binding) )
+		return false;
+	    continue;
+	}
+	std::string tp;
+	DataDef *dd = NULL;
+	int r = fn_template_deduce_param(sp, ft.typeparams, arg_dd, tp, dd);
+	if ( r < 0 )
+	    return false;
+	if ( r == 0 )
+	    continue;
+	if ( binding.find(tp) == binding.end() )
+	    binding[tp] = dd;
+    }
+    // Unbound parameters fall back to simple template-parameter defaults: a
+    // single token naming an already-bound parameter (`typename _Ret = _TRet`)
+    // or a concrete type.
+    for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+    {
+	if ( binding.count(ft.typeparams[i]) )
+	    continue;
+	if ( i < ft.typeparam_defaults.size()
+	  && ft.typeparam_defaults[i].size() == 1 )
+	{
+	    TokenBase *d = ft.typeparam_defaults[i][0];
+	    std::string dn = d ? contextual_identifier_name(d) : "";
+	    if ( !dn.empty() && binding.count(dn) )
+	    { binding[ft.typeparams[i]] = binding[dn]; continue; }
+	    if ( d && d->type() == TokenType::ttDataType )
+	    { binding[ft.typeparams[i]] = &((TokenDataType *)d)->definition; continue; }
+	}
+	return false;
+    }
+
+    std::string inst_key = key + "<";
+    for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+	inst_key += binding[ft.typeparams[i]]->name + ",";
+    inst_key += ">";
+    if ( pgm.fn_template_instantiated.count(inst_key) )
+	return true;
+    pgm.fn_template_instantiated.insert(inst_key);
+
+    std::map<std::string, TokenDataType *> subst;
+    for ( std::map<std::string, DataDef *>::iterator b = binding.begin();
+	  b != binding.end(); ++b )
+	subst[b->first] = new TokenDataType(b->second->name.c_str(), *b->second);
+    std::vector<TokenBase *> inj;
+    for ( size_t i = 0; i < ft.decl.size(); ++i )
+    {
+	TokenBase *bt = ft.decl[i];
+	if ( !bt )
+	    continue;
+	if ( bt->type() == TokenType::ttIdentifier )
+	{
+	    std::map<std::string, TokenDataType *>::iterator si =
+		subst.find(((TokenIdent *)bt)->str);
+	    if ( si != subst.end() )
+		inj.push_back(si->second->clone());
+	    else
+		inj.push_back(bt->clone());
+	    // One-element pack expansion: `_Base...` (type position) and
+	    // `__base...` (value expansion) both expand to the single bound
+	    // element — drop the `...` (three tkDot tokens). Real C varargs
+	    // (`, ...`) follow a comma, never an identifier, and survive.
+	    if ( !pack_param.empty()
+	      && i + 3 < ft.decl.size()
+	      && ft.decl[i+1] && ft.decl[i+1]->id() == TokenID::tkDot
+	      && ft.decl[i+2] && ft.decl[i+2]->id() == TokenID::tkDot
+	      && ft.decl[i+3] && ft.decl[i+3]->id() == TokenID::tkDot )
+		i += 3;
+	    continue;
+	}
+	inj.push_back(bt->clone());
+    }
+
+    size_t base_depth = pgm.tokens.size();
+    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
+	  it != inj.rend(); ++it )
+	pgm.pushToken(*it);
+
+    std::stack<TokenCpnd *> saved_compounds;
+    std::swap(pgm.compounds, saved_compounds);
+    std::vector<DataDefCLASS *> saved_class_scope_stack;
+    std::swap(pgm.class_scope_stack, saved_class_scope_stack);
+    std::string saved_func = pgm.cur_func_name;
+    pgm.cur_func_name.clear();
+    std::string saved_namespace = pgm.current_namespace;
+    Program::LinkageSpec saved_linkage = pgm.current_linkage;
+    pgm.current_namespace = ft.ns;
+    pgm.current_linkage = Program::LinkageSpec::Cpp;
+
+    bool ok = true;
+    ++pgm.fn_template_instantiation_depth;
+    try
+    {
+	TokenBase *first = pgm.nextToken();
+	TokenBase *stmt = pgm.parseStatement(first);
+	if ( stmt && pgm.tkProgram )
+	    pgm.tkProgram->statements.push_back((TokenStmt *)stmt);
+    }
+    catch ( ... )
+    {
+	ok = false;
+	while ( pgm.tokens.size() > base_depth )
+	    pgm.nextToken();
+    }
+    --pgm.fn_template_instantiation_depth;
+
+    std::swap(pgm.class_scope_stack, saved_class_scope_stack);
+    std::swap(pgm.compounds, saved_compounds);
+    pgm.cur_func_name = saved_func;
+    pgm.current_namespace = saved_namespace;
+    pgm.current_linkage = saved_linkage;
+#if MADC_DEBUG_FNTPL
+    std::cerr << "FNTPL inst " << inst_key
+	      << (ok ? " ok" : " FAILED (placeholder kept)") << std::endl;
+#endif
+    DBG(std::cout << "fn-template instantiation " << inst_key
+	<< (ok ? " ok" : " FAILED (placeholder kept)") << std::endl);
+    return ok;
+}
+
+void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
+{
+    if ( !tc )
+	return;
+    FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+    if ( !fd || !fd->declaration_only
+      || fd->namespace_name.empty() || fd->function_display_name.empty() )
+	return;
+    std::map<std::string, std::vector<FnTemplateDef>>::iterator mi =
+	fn_template_map.find(fd->namespace_name + "::"
+			     + fd->function_display_name);
+    if ( mi == fn_template_map.end() )
+	return;
+    for ( size_t vi = 0; vi < mi->second.size(); ++vi )
+	if ( try_instantiate_namespace_fn_template(*this, mi->second[vi],
+		mi->first, tc) )
+	    return;
 }
 
 static bool skipped_template_function_is_static(
@@ -23717,7 +24374,10 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.last_skipped_template_typeparams = typeparams;
 	if ( !pgm.deferred_function_body_sink )
 	    register_skipped_namespace_template_function(pgm, skipped_decl,
-							typeparams);
+							typeparams,
+							&typeparam_defaults,
+							&typeparam_is_type,
+							&typeparam_is_pack);
 	return NULL;
     }
     TokenBase *name_tb = pgm.nextToken();
@@ -27490,6 +28150,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( namespace_function )
     {
 	Variable *ns_var = tkProgram ? tkProgram->findVariable(parse_id) : NULL;
+#if MADC_DEBUG_FNTPL
+	if ( parse_id.find("__stoa") != std::string::npos )
+	    std::cerr << "FNTPL ovset-push parse_id=" << parse_id
+		      << " ns_var=" << (ns_var != NULL)
+		      << " tracked=" << ns_overload_tracked
+		      << " key=" << current_namespace << "::" << source_id
+		      << std::endl;
+#endif
 	if ( ns_var )
 	{
 	    FuncDef *fd = dynamic_cast<FuncDef *>(ns_var->type);
@@ -28098,9 +28766,15 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		if ( nsi != namespace_map.end() )
 		{
 		    nextToken(); // consume ::
+		    // RESTORE (not clear) the enclosing namespace: this also
+		    // runs for statements inside a namespace-context parse
+		    // (an instantiated template body, a namespace block) —
+		    // clearing stomped the context for everything after the
+		    // qualified statement.
+		    std::string saved_stmt_ns = current_namespace;
 		    current_namespace = ns_name;
 		    TokenBase *result = parseStatement(nextToken());
-		    current_namespace.clear();
+		    current_namespace = saved_stmt_ns;
 		    return result;
 		}
 	    }

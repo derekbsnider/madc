@@ -378,6 +378,18 @@ public:
     std::vector<TokenBase *> parameters;
     DataDef *return_override = nullptr;
     bool returns_ref_override = false;
+    // Explicit template arguments captured at the call site
+    // (`__stoa<long, int>(...)`): leading template parameters bound
+    // left-to-right by instantiate_namespace_fn_template_for_call.
+    // Empty for ordinary calls.
+    std::vector<DataDef *> explicit_template_args;
+    // Number of USER-WRITTEN arguments, set when parseCallFunc appends
+    // C++ default arguments. Overload ranking must consider only these:
+    // the defaults were copied from ONE overload's declaration, and scoring
+    // them (e.g. the literal 0 of `size_t* __idx = 0` against the pointer
+    // param) would veto the very overload that supplied them.
+    // (size_t)-1 = no defaults appended; every argument is user-written.
+    size_t user_argc = (size_t)-1;
     // Non-null when the function-pointer value comes from a sub-expression
     // (e.g. a struct member access c.fn or arr[i].fn) rather than a variable.
     // When set, TokenCallFunc::compile loads the fn-ptr by compiling src_node
@@ -1240,6 +1252,38 @@ public:
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
 					       const std::vector<const DataDef *> &argtypes);
+    // Namespace FUNCTION templates with retained declaration tokens (the
+    // post-`template<...>` range: [specifiers] RET name(params) [noexcept]
+    // { body }), keyed "ns::name". Bodies are not parsed at capture; a call
+    // whose callee is the body-less placeholder instantiates on demand
+    // (Borland monomorphize: substitute the deduced type args into the
+    // retained tokens and re-parse as a concrete namespace function — it
+    // registers in namespace_fn_overload_sets and call_target_funcdef ranks
+    // it). Tokens are retained raw (the program owns its token stream; same
+    // lifetime model as last_skipped_template_decl) and cloned per
+    // instantiation.
+    struct FnTemplateDef {
+	std::vector<std::string> typeparams;
+	std::vector<std::vector<TokenBase *>> typeparam_defaults;
+	std::vector<bool> typeparam_is_type;
+	std::vector<bool> typeparam_is_pack;
+	std::vector<TokenBase *> decl;
+	std::string ns;
+    };
+    std::map<std::string, std::vector<FnTemplateDef>> fn_template_map;
+    std::set<std::string> fn_template_instantiated;   // "ns::name<t1,t2,...>" memo
+    // > 0 while re-parsing an instantiated function-template body (nesting =
+    // instantiation triggering instantiation). static_asserts inside such a
+    // body are consumed unevaluated, exactly like instantiated class-template
+    // member bodies (parse_static_assert_statement).
+    size_t fn_template_instantiation_depth = 0;
+    void instantiate_namespace_fn_template_for_call(TokenCallFunc *tc);
+    // Parse an explicit template-argument list after a resolved function name
+    // (`name<long, int>(...)`) into concrete DataDefs, consuming through the
+    // closing '>'. Bails to opaque consumption (skip_template_id_suffix
+    // semantics) and returns an EMPTY list when an argument is not a
+    // resolvable type, so a value argument never mis-binds a type parameter.
+    std::vector<DataDef *> capture_call_template_args();
     // Record (then push back) the upcoming balanced parameter-list tokens —
     // the parser sits just after the function declarator's '(' — returning a
     // normalized spelling used as the overload-identity key.
