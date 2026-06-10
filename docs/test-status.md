@@ -2,7 +2,7 @@
 
 > **Current (2026-06-10, `develop` @ `8a897f8`+regen
 > against `/workspace/mir` `develop` @ `2ffebff`):** fulltest is
-> **549 passed, 0 failed, 0 timed out, 26 skipped** (make exit 0, both check
+> **555 passed, 0 failed, 0 timed out, 20 skipped** (make exit 0, both check
 > gates GREEN) — **ALL integration reds are green.** New this cycle:
 > `teststringplus_realhdr.mad` pins real-header `std::string a+b` — by-value
 > FREE-operator returns bind the exported `_ZStpl…` mangled-direct and decl

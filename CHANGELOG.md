@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Script-level `madc::eval_*` via `<ns_madc>` — fulltest 555/0/0/20 (2026-06-10)
+
+- **`madc::eval_*` exported through libmadc** (`8d73306`) exactly like the
+  other `ns_*` namespaces: `include/madc/ns_madc` declares the existing
+  `__madc_eval_*_runtime` extern-C exports and implements the `madc::`
+  wrappers as ordinary namespace bodies — no engine-side registration.
+  `testmadceval`, `testmadcevalexpr`, `testmadcevalexprtyped` are green
+  (`.mir_skip` lifted); the ctx and scope tests keep precise skip reasons.
+  CIR learns the scope-capture argument (`TokenScopeContext` → cstr-key
+  `__madc_scope_set_*` setter calls).
+- **Two general latent bugs fixed at root** (both reproduced on the plain
+  CLI): a block-scope `extern double fabs(double);` parsed as a GNU
+  *nested function*, orphaning the real name so the call fell to the
+  64-bit dlsym default (`fabs(-2.5)` → `1.0`; C11 6.2.2p5 — block-scope
+  function declarations have file scope); and `intern_file()` dangled
+  every interned `TokenBase::file` pointer because it reused the
+  `#include` guard map that `_tokenizer_init()` clears — the root cause of
+  the header-line-under-main-file diagnostic misattribution. Interned
+  names now have their own never-cleared store.
+- **Expression-eval pipeline repaired** (broke silently when the embedded
+  `math.h` gained real prototypes): the policy validator no longer reads
+  policy-header prototypes as user function calls, and
+  `parse_expression_unit` skips the prepended header tokens by anchoring
+  on the tail token's file.
+
 ### libmadc in-process eval returns — CirJitSession on CIR→c2mir→MIR (2026-06-10)
 
 - **The eval surface lives again** (`946750a`): stubbed since the asmjit

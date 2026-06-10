@@ -204,14 +204,27 @@ General bugs fixed because the instantiations flushed them out:
    The emit-symbol-unification handoff (2026-06-09) is now FULLY executed.
 3. **Torture parity gap** (Track 1.3, the promote gate): 1567 vs asmjit's
    1645 — worklist `docs/parity/root-cause-worklist.md`.
-3b. **libmadc eval track** (increment 1 DONE `946750a` — CirJitSession,
-   49/91 deferred unit cases alive, eval_expression works in-process):
-   increment 2 = the 42 re-skipped unit categories (fork-child execution,
-   string call marshalling, get/set_global, register_function callbacks,
-   limit shapes); increment 3 = register the still-present
-   `madc_runtime_eval_*` helpers as `madc::` builtins → un-skips the 5
-   `testmadceval*` integration tests. Plan + master-branch refs:
-   `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md`.
+3b. **libmadc eval track** (increments 1+3 largely DONE):
+   - Increment 1 (`946750a`): CirJitSession — 49/91 deferred unit cases
+     alive, eval_expression works in-process.
+   - Increment 3 (`8d73306`): script-level `madc::eval_*` exported via
+     the `<ns_madc>` embedded header (the php::explode pattern — NO
+     engine registration, per user direction). testmadceval,
+     testmadcevalexpr, testmadcevalexprtyped GREEN. Along the way TWO
+     general bugs fixed at root (block-scope `extern` fn decls parsed as
+     NESTED functions → double returns read as long, C11 6.2.2p5; the
+     intern_file dangle above) + the expression-eval pipeline repaired
+     (policy validator + parse_expression_unit vs real math.h
+     prototypes). TokenScopeContext now lowers on CIR (cstr-key
+     __madc_scope_set_* setters).
+   - REMAINING: increment 2 = the 42 re-skipped unit categories
+     (fork-child execution, string call marshalling, get/set_global,
+     register_function callbacks, limit shapes); increment 3 leftovers =
+     testmadcevalexprctx (expression DSL string compare `user.name ==
+     "echo"` lowers to pointer compare) and testmadcevalscope (capture
+     must move to the USER call site — public-name hook; string locals
+     need re-capturing, the collector lost them when dtSTRING retired).
+   Plan + master refs: `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md`.
 4. (If prioritized) the §3 pack-elision gap — `std::stof`/`std::stod`.
 5. ~~**`#include <cstdio>` DEFAULT-mode wall**~~ **DONE 2026-06-10**
    (`8a897f8` + `e0e8…` regen, fulltest **549/0/0/26** exit 0, torture
@@ -223,9 +236,12 @@ General bugs fixed because the instantiations flushed them out:
    predates variadic prototype support). Pinned by
    `tests/testcstdio.{mad,expect}` (default-mode `<cstdio>` +
    `std::printf` + a+b/c_str/printf interop = the cstr4 shape).
-   STILL OPEN from this wall: the diagnostic misattributes a header's
-   line number to the MAIN file's name (`tmp/x.mad:99` for cstdio:99) —
-   separate lexer file-tracking bug.
+   ~~STILL OPEN from this wall: the diagnostic misattributes a header's
+   line number to the MAIN file's name~~ **FIXED** (`8d73306`): root cause
+   was `intern_file()` reusing `included_files` — the #include guard map
+   `_tokenizer_init()` CLEARS per tokenize — dangling every previously
+   interned `TokenBase::file` pointer. Interned names now live in their
+   own never-cleared store (`Program::interned_files`).
 
 Note: `scripts/check-no-std-hardcoding.sh` had been RED (250 lines) since
 the 2026-06-08 nlohmann/json vendoring — all third-party false positives +
