@@ -237,35 +237,36 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.26.0 (2026-06-09)** — the real-header C++ release: real libstdc++
-`std::string` (construct/mutate/concat/`.size()`), `cout <<` output, and
-`std::getline` all run end-to-end through **real system headers** with
-**mangled-direct binding** to libstdc++ — no wrappers. Call-symbol derivation
-is unified onto a single drift-gated `CirBuilder::call_emit_symbol` resolver.
-The new **`--project` build driver** compiles, links, and JITs a multi-TU
-`compile_commands.json` project in one process — SMAUG 1.8 boots end-to-end
-through it. The MIR fork (pinned `2ffebff`) contributes complete **≤16-byte
-SIMD/`vector_size`** support; VLAs and Go-style multi-return are reimplemented
-on CIR. See [`docs/release-notes/v0.26.0.md`](docs/release-notes/v0.26.0.md).
+**v0.27.0 (2026-06-10)** — the all-greens release: the full integration suite
+passes (**547 / 0 / 0 / 26**) for the first time on the CIR backend. The last
+red, `testfstream`, runs as standard C++ through **real libstdc++ headers**,
+unlocked by **alias-spelled reference returns** (an alias is a *type*:
+`basic_string::operator[]`'s `reference` return derefs at use, `&s[1]` is an
+lvalue) and **namespace function-template body instantiation** — madc
+monomorphizes the non-exported libstdc++ template bodies on demand, so
+real-header `std::to_string(42)` and `std::stoi(string)` execute. Plus C++
+[namespace.udir] unqualified-call resolution (POSIX `::getline` vs
+`std::getline`), fortify `__builtin___mem*_chk` builtins, and overload-ranking
+correctness fixes. See
+[`docs/release-notes/v0.27.0.md`](docs/release-notes/v0.27.0.md).
 
-CIR baseline (2026-06-09): **543 integration/unit pass / 4 fail / 26 skip**
-(known reds: testdefer, testfstream, testlargesizeofquery, testloop — the open
-fstream/getline test rewrites), and **gcc.c-torture 1566/1685 (92.9%)** vs the
-old asmjit backend's **1645 (97.6%)** on the same runner — the develop→master
-parity gate (gap 79). In-process `eval`/exec + the REPL, and native AOT output,
-are deferred (stubbed) until the CIR path reaches parity.
+CIR baseline (2026-06-10): **547 integration/unit pass / 0 fail / 26 skip**
+(zero known reds), and **gcc.c-torture 1567/1685 (93.0%)** vs the old asmjit
+backend's **1645 (97.6%)** on the same runner — the develop→master parity gate
+(gap 78). In-process `eval`/exec + the REPL, and native AOT output, are
+deferred (stubbed) until the CIR path reaches parity.
 
-**Branch state:** `develop` carries v0.26.0 (CIR backend). `master` still holds
+**Branch state:** `develop` carries v0.27.0 (CIR backend). `master` still holds
 the v0.24.0 asmjit/Gecko backend at full C89 coverage (419 pass / 0 fail) —
 develop is **not** promoted to master until the CIR path reaches feature parity.
 
 ### Recent Releases
 
+- **v0.27.0** — All integration reds green (547/0); alias-spelled reference returns; namespace fn-template body instantiation (real-header to_string/stoi); [namespace.udir] call resolution; fortify chk builtins
 - **v0.26.0** — Real-header C++: libstdc++ string/iostream/getline mangled-direct; call-symbol unification + gate; `--project` driver; ≤16-byte SIMD; VLAs; multi-return
 - **v0.25.0** — CIR sole backend; SMAUG 1.8 boots, runs, and is playable (serpent fight); integration 316→325
 - **v0.24.0** — Native C99 `_Complex` in c2mir, transpiler parity 410→419
 - **v0.23.0** — MIR default backend, clang++ compiler, transpiler parity 400→410
-- **v0.22.0** — Gecko+MIR transpiler: sema pre-pass, string runtime, O(1) anode dispatch, iostream wrappers
 
 ## Roadmap
 

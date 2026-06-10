@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v0.27.0] — 2026-06-10
+
+All integration reds green: the full test suite passes (547/0/0/26) for the
+first time on the CIR backend — alias-spelled reference returns, namespace
+function-template body instantiation (real-header `std::to_string`/`std::stoi`),
+and the standard-C++ testfstream through real libstdc++ headers.
+
 ### ALL integration reds green: testfstream passes — fulltest 547/0/0/26 (2026-06-10)
 
 - **Alias-spelled reference returns** (`8b16fd8`): an alias is a type, not a
