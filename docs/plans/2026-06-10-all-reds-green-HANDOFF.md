@@ -204,6 +204,14 @@ General bugs fixed because the instantiations flushed them out:
    The emit-symbol-unification handoff (2026-06-09) is now FULLY executed.
 3. **Torture parity gap** (Track 1.3, the promote gate): 1567 vs asmjit's
    1645 — worklist `docs/parity/root-cause-worklist.md`.
+3b. **libmadc eval track** (increment 1 DONE `946750a` — CirJitSession,
+   49/91 deferred unit cases alive, eval_expression works in-process):
+   increment 2 = the 42 re-skipped unit categories (fork-child execution,
+   string call marshalling, get/set_global, register_function callbacks,
+   limit shapes); increment 3 = register the still-present
+   `madc_runtime_eval_*` helpers as `madc::` builtins → un-skips the 5
+   `testmadceval*` integration tests. Plan + master-branch refs:
+   `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md`.
 4. (If prioritized) the §3 pack-elision gap — `std::stof`/`std::stod`.
 5. ~~**`#include <cstdio>` DEFAULT-mode wall**~~ **DONE 2026-06-10**
    (`8a897f8` + `e0e8…` regen, fulltest **549/0/0/26** exit 0, torture
