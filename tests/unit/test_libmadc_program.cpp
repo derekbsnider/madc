@@ -132,10 +132,17 @@ std::string executable_command(const std::string &exe_path)
 
 } // namespace
 
+// In-process compile/exec/call/eval run on the CIR→c2mir→MIR backend via
+// CirJitSession (see docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md).
+// Cases still marked doctest::skip() are the deferred increments: AOT
+// save/load (stubbed on CIR), fork_per_invocation child execution, host
+// callback registration (register_function/engine callbacks), script
+// string-object & std::string call marshalling, get_global/set_global,
+// script-side runtime-eval scope access, invoke_limits rejection shapes,
+// and error-surface details that still differ from the asmjit-era spec.
 TEST_SUITE("madc::program") {
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("compile_file succeeds for a valid file with main" * doctest::skip()) {
+    TEST_CASE("compile_file succeeds for a valid file with main") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path, "int main() { return 0; }\n");
@@ -147,7 +154,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("exec_file reports runtime error when main is missing" * doctest::skip()) {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
@@ -163,8 +169,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("exec_string succeeds for a simple in-memory program" * doctest::skip()) {
+    TEST_CASE("exec_string succeeds for a simple in-memory program") {
 	madc::program pgm;
 
 	CHECK(pgm.exec_string("int main() { return 0; }\n", "memory_test.mad"));
@@ -185,8 +190,7 @@ TEST_SUITE("madc::program") {
 	CHECK(pgm.diagnostics()[0].file == "memory_test.mad");
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("diagnostics reset across runs" * doctest::skip()) {
+    TEST_CASE("diagnostics reset across runs") {
 	madc::program pgm;
 
 	CHECK_FALSE(pgm.exec_string("int main( { return 0; }\n", "bad.mad"));
@@ -200,8 +204,7 @@ TEST_SUITE("madc::program") {
 	CHECK(pgm.diagnostics().empty());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval compiles in-memory source and returns integer result" * doctest::skip()) {
+    TEST_CASE("eval compiles in-memory source and returns integer result") {
 	madc::program pgm;
 	madc::value result;
 
@@ -214,7 +217,6 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-	// DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
 	TEST_CASE("eval returns string results through char pointer marshaling" * doctest::skip()) {
 	madc::program pgm;
 	madc::value result;
@@ -243,8 +245,7 @@ TEST_SUITE("madc::program") {
 	CHECK(pgm.diagnostics()[0].file == "eval_bad.mad");
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval requires the reserved zero-arg entry function" * doctest::skip()) {
+    TEST_CASE("eval requires the reserved zero-arg entry function") {
 	madc::program pgm;
 	madc::value result;
 
@@ -255,8 +256,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message == "program::call cannot find function '__madc_eval'");
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("madc::eval convenience wrapper mirrors program eval" * doctest::skip()) {
+    TEST_CASE("madc::eval convenience wrapper mirrors program eval") {
 	madc::value result;
 
 	CHECK(madc::eval("int helper() { return 6; }\n"
@@ -267,8 +267,7 @@ TEST_SUITE("madc::program") {
 	CHECK(result.as_integer() == 42);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_unit names the explicit full-translation-unit lane" * doctest::skip()) {
+    TEST_CASE("eval_unit names the explicit full-translation-unit lane") {
 	madc::program pgm;
 	int64_t result = 0;
 
@@ -280,8 +279,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("madc::eval_unit convenience wrapper mirrors program eval_unit" * doctest::skip()) {
+    TEST_CASE("madc::eval_unit convenience wrapper mirrors program eval_unit") {
 	int64_t result = 0;
 
 	CHECK(madc::eval_unit("int helper() { return 6; }\n"
@@ -291,8 +289,7 @@ TEST_SUITE("madc::program") {
 	CHECK(result == 42);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("typed eval overloads write directly into host destinations" * doctest::skip()) {
+    TEST_CASE("typed eval overloads write directly into host destinations") {
 	madc::program pgm;
 	int64_t i = 0;
 	std::string s;
@@ -309,8 +306,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("typed eval_expression overloads write directly into host destinations" * doctest::skip()) {
+    TEST_CASE("typed eval_expression overloads write directly into host destinations") {
 	madc::program pgm;
 	int64_t i = 0;
 	std::string s;
@@ -323,8 +319,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("typed convenience wrappers mirror typed program eval" * doctest::skip()) {
+    TEST_CASE("typed convenience wrappers mirror typed program eval") {
 	int64_t eval_result = 0;
 	int64_t expr_result = 0;
 
@@ -339,8 +334,7 @@ TEST_SUITE("madc::program") {
 	CHECK(expr_result == 42);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_body wraps typed host bodies automatically" * doctest::skip()) {
+    TEST_CASE("eval_body wraps typed host bodies automatically") {
 	madc::program pgm;
 	int64_t i = 0;
 	std::string s;
@@ -358,8 +352,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_body still accepts explicit eval entry source" * doctest::skip()) {
+    TEST_CASE("eval_body still accepts explicit eval entry source") {
 	madc::program pgm;
 	int64_t i = 0;
 
@@ -370,8 +363,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_body supports explicit return contract for madc::value" * doctest::skip()) {
+    TEST_CASE("eval_body supports explicit return contract for madc::value") {
 	madc::value result;
 
 	CHECK(madc::eval_body("return 42;",
@@ -396,8 +388,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("requires a non-void scalar or string return type") != std::string::npos);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("typed eval overloads reject incompatible result kinds" * doctest::skip()) {
+    TEST_CASE("typed eval overloads reject incompatible result kinds") {
 	madc::program pgm;
 	std::string s;
 
@@ -410,8 +401,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("requires a string result") != std::string::npos);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression evaluates a plain arithmetic expression" * doctest::skip()) {
+    TEST_CASE("eval_expression evaluates a plain arithmetic expression") {
 	madc::program pgm;
 	madc::value result;
 
@@ -476,8 +466,7 @@ TEST_SUITE("madc::program") {
 	REQUIRE(err != NULL);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression still allows ternary expressions through the AST validator" * doctest::skip()) {
+    TEST_CASE("eval_expression still allows ternary expressions through the AST validator") {
 	madc::program pgm;
 	madc::value result;
 
@@ -499,8 +488,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("subscript access is disabled by expression policy") != std::string::npos);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression can enable subscript access explicitly" * doctest::skip()) {
+    TEST_CASE("eval_expression can enable subscript access explicitly") {
 	madc::program pgm;
 	madc::expression_policy policy;
 	policy.allow_subscript_access = true;
@@ -524,8 +512,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("pointer operations are disabled by expression policy") != std::string::npos);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression can enable pointer operations explicitly" * doctest::skip()) {
+    TEST_CASE("eval_expression can enable pointer operations explicitly") {
 	madc::program pgm;
 	madc::expression_policy policy;
 	policy.allow_pointer_operations = true;
@@ -538,8 +525,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression can use host-supplied integer bindings" * doctest::skip()) {
+    TEST_CASE("eval_expression can use host-supplied integer bindings") {
 	madc::program pgm;
 	std::map<std::string, madc::value> bindings;
 	bindings["x"] = madc::value(static_cast<int64_t>(6));
@@ -553,7 +539,6 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("eval_expression can return host-supplied string bindings" * doctest::skip()) {
 	madc::program pgm;
 	std::map<std::string, madc::value> bindings;
@@ -582,8 +567,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("cannot bind value kind 'array'") != std::string::npos);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression can use object context fields as bindings" * doctest::skip()) {
+    TEST_CASE("eval_expression can use object context fields as bindings") {
 	madc::program pgm;
 	std::map<std::string, madc::value> fields;
 	fields["x"] = madc::value(static_cast<int64_t>(6));
@@ -597,8 +581,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression can traverse nested object context primitives" * doctest::skip()) {
+    TEST_CASE("eval_expression can traverse nested object context primitives") {
 	madc::program pgm;
 	std::map<std::string, madc::value> stats_fields;
 	stats_fields["level"] = madc::value(static_cast<int64_t>(41));
@@ -615,8 +598,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression can return top-level string context fields" * doctest::skip()) {
+    TEST_CASE("eval_expression can return top-level string context fields") {
 	madc::program pgm;
 	std::map<std::string, madc::value> fields;
 	fields["name"] = madc::value("echo");
@@ -629,8 +611,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression can traverse nested object context string fields" * doctest::skip()) {
+    TEST_CASE("eval_expression can traverse nested object context string fields") {
 	madc::program pgm;
 	std::map<std::string, madc::value> user_fields;
 	user_fields["name"] = madc::value("echo");
@@ -645,8 +626,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression rewrites nested object context paths with parser-legal trivia" * doctest::skip()) {
+    TEST_CASE("eval_expression rewrites nested object context paths with parser-legal trivia") {
 	madc::program pgm;
 	std::map<std::string, madc::value> stats_fields;
 	stats_fields["level"] = madc::value(static_cast<int64_t>(41));
@@ -701,8 +681,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("cannot descend through non-object field 'user.name'") != std::string::npos);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression ignores unrelated unsupported context fields" * doctest::skip()) {
+    TEST_CASE("eval_expression ignores unrelated unsupported context fields") {
 	madc::program pgm;
 	std::map<std::string, madc::value> root_fields;
 	root_fields["x"] = madc::value(static_cast<int64_t>(6));
@@ -760,7 +739,6 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("function calls are not allowed") != std::string::npos);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("eval_expression can use math.h header groups for libm functions" * doctest::skip()) {
 	madc::program pgm;
 	madc::expression_policy policy;
@@ -775,8 +753,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression can use direct symbol allowlists without headers" * doctest::skip()) {
+    TEST_CASE("eval_expression can use direct symbol allowlists without headers") {
 	madc::program pgm;
 	madc::expression_policy policy;
 	policy.allow_function_calls = true;
@@ -806,8 +783,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("rejected function call to 'strcmp'") != std::string::npos);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("eval_expression returns string literals through c_string marshaling" * doctest::skip()) {
+    TEST_CASE("eval_expression returns string literals through c_string marshaling") {
 	madc::program pgm;
 	madc::value result;
 
@@ -817,8 +793,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("madc::eval_expression convenience wrapper mirrors program eval_expression" * doctest::skip()) {
+    TEST_CASE("madc::eval_expression convenience wrapper mirrors program eval_expression") {
 	madc::value result;
 
 	CHECK(madc::eval_expression("6 * 7", &result, "api_eval_expr.mad"));
@@ -826,13 +801,11 @@ TEST_SUITE("madc::program") {
 	CHECK(result.as_integer() == 42);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("madc::exec_string convenience wrapper mirrors program exec" * doctest::skip()) {
+    TEST_CASE("madc::exec_string convenience wrapper mirrors program exec") {
 	CHECK(madc::exec_string("int main() { return 0; }\n", "api_exec_string.mad"));
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("madc::exec_file convenience wrapper mirrors program exec" * doctest::skip()) {
+    TEST_CASE("madc::exec_file convenience wrapper mirrors program exec") {
 	std::string path = make_temp_source_path();
 	write_file(path, "int main() { return 0; }\n");
 
@@ -1066,7 +1039,6 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message == "use of undeclared identifier 'strlen'");
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("compile_options can disable extern late-bind dlsym fallback" * doctest::skip()) {
 	madc::program pgm;
 	madc::compile_options options = pgm.get_compile_options();
@@ -1083,8 +1055,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message == "dynamic symbol fallback is disabled by registration policy");
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("invoke_limits can reject excessive output from exec" * doctest::skip()) {
+    TEST_CASE("invoke_limits can reject excessive output from exec") {
 	madc::program pgm;
 	madc::invoke_limits limits;
 	limits.output_bytes = 4;
@@ -1098,7 +1069,6 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("output_bytes limit") != std::string::npos);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("invoke_limits can reject excessive cpu usage from call" * doctest::skip()) {
 	madc::program pgm;
 	REQUIRE(pgm.register_function(
@@ -1128,7 +1098,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("invoke_limits can reject excessive resident growth from call" * doctest::skip()) {
 	madc::program pgm;
 	g_host_memory.clear();
@@ -1160,7 +1129,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("fork_per_invocation exec_string succeeds for a simple program" * doctest::skip()) {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
@@ -1172,7 +1140,6 @@ TEST_SUITE("madc::program") {
 	CHECK(pgm.diagnostics().empty());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("fork_per_invocation exec_file reports runtime errors" * doctest::skip()) {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
@@ -1192,7 +1159,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("fork_per_invocation exec_string counts stdout toward output limits" * doctest::skip()) {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
@@ -1211,7 +1177,6 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("output_bytes limit") != std::string::npos);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("fork_per_invocation exec_string counts stderr toward output limits" * doctest::skip()) {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
@@ -1232,8 +1197,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("output_bytes limit") != std::string::npos);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("fork_per_invocation call returns scalar results from child execution" * doctest::skip()) {
+    TEST_CASE("fork_per_invocation call returns scalar results from child execution") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
 	policy.execution = madc::execution_mode::fork_per_invocation;
@@ -1254,7 +1218,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-	// DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
 	TEST_CASE("fork_per_invocation eval returns string results from child execution" * doctest::skip()) {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
@@ -1272,8 +1235,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("fork_per_invocation eval_expression returns scalar results from child execution" * doctest::skip()) {
+    TEST_CASE("fork_per_invocation eval_expression returns scalar results from child execution") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
 	policy.execution = madc::execution_mode::fork_per_invocation;
@@ -1286,8 +1248,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("program destruction restores cerr stream state" * doctest::skip()) {
+    TEST_CASE("program destruction restores cerr stream state") {
 	{
 	    madc::program pgm;
 	    CHECK(pgm.exec_string("int main() { return 0; }\n", "scoped_ok.mad"));
@@ -1297,7 +1258,6 @@ TEST_SUITE("madc::program") {
 	CHECK(true);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("register_function exposes a host integer callback to scripts" * doctest::skip()) {
 	madc::program pgm;
 	g_host_sum = 0;
@@ -1314,7 +1274,6 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("register_function supports string to const char* coercion" * doctest::skip()) {
 	madc::program pgm;
 	g_host_strlen = 0;
@@ -1331,8 +1290,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("call invokes a compiled script function with integer args and return" * doctest::skip()) {
+    TEST_CASE("call invokes a compiled script function with integer args and return") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -1349,8 +1307,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("call passes string values to char pointer parameters" * doctest::skip()) {
+    TEST_CASE("call passes string values to char pointer parameters") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -1367,8 +1324,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("call invokes a compiled script function with four integer args" * doctest::skip()) {
+    TEST_CASE("call invokes a compiled script function with four integer args") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -1390,7 +1346,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("register_function supports four integer parameters" * doctest::skip()) {
 	madc::program pgm;
 	g_host_sum = 0;
@@ -1413,7 +1368,6 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-	// DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
 	TEST_CASE("register_function deduces c-string callback signatures" * doctest::skip()) {
 	madc::program pgm;
 	g_host_strlen = 0;
@@ -1443,7 +1397,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("script-side runtime eval sees current scope when allowed" * doctest::skip()) {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
@@ -1472,7 +1425,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("script-side runtime eval scope access can be disabled independently" * doctest::skip()) {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
@@ -1506,7 +1458,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("script-side runtime expression scope access can be disabled without affecting full eval" * doctest::skip()) {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
@@ -1539,7 +1490,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("script-side full eval scope access can be disabled without affecting runtime expression eval" * doctest::skip()) {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
@@ -1572,7 +1522,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("runtime_eval_policy can restrict child full eval independently of the parent program" * doctest::skip()) {
 	madc::program pgm;
 	madc::runtime_eval_policy policy = pgm.get_runtime_eval_policy();
@@ -1596,7 +1545,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-	// DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
 	TEST_CASE("call supports std::string arguments for script string parameters" * doctest::skip()) {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
@@ -1615,7 +1563,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-	// DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
 	TEST_CASE("call supports script string object returns" * doctest::skip()) {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
@@ -1634,12 +1581,10 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("register_function does not expose C++ object native signatures" * doctest::skip()) {
+    TEST_CASE("register_function does not expose C++ object native signatures") {
 	CHECK(true);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("madc C API can compile and call scalar and string results" * doctest::skip()) {
 	madc_program *pgm = madc_program_create();
 	REQUIRE(pgm != NULL);
@@ -1766,7 +1711,6 @@ TEST_SUITE("madc::program") {
 	madc_program_destroy(pgm);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("get_global and set_global roundtrip integer globals" * doctest::skip()) {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
@@ -1790,7 +1734,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("set_global preserves 64-bit integer values" * doctest::skip()) {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
@@ -1816,7 +1759,6 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-	// DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
 	TEST_CASE("get_global and set_global roundtrip string globals" * doctest::skip()) {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
@@ -1846,8 +1788,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("get_global rejects unsupported array globals" * doctest::skip()) {
+    TEST_CASE("get_global rejects unsupported array globals") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -1873,7 +1814,6 @@ TEST_SUITE("madc::program") {
 
 TEST_SUITE("save_object") {
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("save_object writes a valid ELF relocatable" * doctest::skip()) {
 	madc::program pgm;
 	REQUIRE(pgm.compile_string(
@@ -1901,7 +1841,6 @@ TEST_SUITE("save_object") {
 	std::remove(obj_path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("save_object includes function symbols" * doctest::skip()) {
 	madc::program pgm;
 	REQUIRE(pgm.compile_string(
@@ -1928,7 +1867,6 @@ TEST_SUITE("save_object") {
 	std::remove(obj_path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("save_executable writes a runnable ELF binary" * doctest::skip()) {
 	madc::program pgm;
 	pgm.set_aot_mode(true);
@@ -1959,7 +1897,6 @@ TEST_SUITE("save_object") {
 	std::remove(exe_path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("save_executable runs global initialization before main and supports stderr" * doctest::skip()) {
 	madc::program pgm;
 	pgm.set_aot_mode(true);
@@ -1987,7 +1924,6 @@ TEST_SUITE("save_object") {
 	std::remove(exe_path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("save_executable preserves global array layout across function-scope extern redeclarations" * doctest::skip()) {
 	madc::program pgm;
 	pgm.set_aot_mode(true);
@@ -2017,7 +1953,6 @@ TEST_SUITE("save_object") {
 	std::remove(exe_path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("save_executable returns char pointers from string literals" * doctest::skip()) {
 	madc::program pgm;
 	pgm.set_aot_mode(true);
@@ -2045,7 +1980,6 @@ TEST_SUITE("save_object") {
 	std::remove(exe_path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("save_executable assigns char pointers from string literals" * doctest::skip()) {
 	madc::program pgm;
 	pgm.set_aot_mode(true);
@@ -2092,7 +2026,6 @@ TEST_SUITE("save_object") {
 
 TEST_SUITE("load_object") {
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("save then load round-trip calls produce correct results" * doctest::skip()) {
 	std::string obj_path = "/tmp/madc_test_roundtrip.o";
 
@@ -2131,7 +2064,6 @@ TEST_SUITE("load_object") {
 	CHECK(pgm.has_error());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("loaded function callable multiple times" * doctest::skip()) {
 	std::string obj_path = "/tmp/madc_test_multi_load.o";
 
@@ -2160,7 +2092,6 @@ TEST_SUITE("load_object") {
 	std::remove(obj_path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("has_function returns false for absent symbol in loaded object" * doctest::skip()) {
 	std::string obj_path = "/tmp/madc_test_absent.o";
 
@@ -2183,7 +2114,6 @@ TEST_SUITE("load_object") {
 	std::remove(obj_path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("save_object emits UNDEF symbols for external calls" * doctest::skip()) {
 	// Compile a script that calls abs() — a libc function resolved
 	// via dlsym at compile time. The .o should contain an UNDEF
@@ -2222,8 +2152,7 @@ TEST_SUITE("load_object") {
 
 TEST_SUITE("compile_string / exec") {
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("compile_string compiles without executing" * doctest::skip()) {
+    TEST_CASE("compile_string compiles without executing") {
 	madc::program pgm;
 	REQUIRE(pgm.compile_string(
 	    "int add(int a, int b) { return a + b; }\n"
@@ -2240,8 +2169,7 @@ TEST_SUITE("compile_string / exec") {
 	CHECK_FALSE(pgm.is_compiled());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("exec runs main on already-compiled program" * doctest::skip()) {
+    TEST_CASE("exec runs main on already-compiled program") {
 	madc::program pgm;
 	REQUIRE(pgm.compile_string(
 	    "int counter = 0;\n"
@@ -2255,8 +2183,7 @@ TEST_SUITE("compile_string / exec") {
 	CHECK(result.as_integer() == 42);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("call works multiple times on compiled program" * doctest::skip()) {
+    TEST_CASE("call works multiple times on compiled program") {
 	madc::program pgm;
 	REQUIRE(pgm.compile_string(
 	    "int add(int a, int b) { return a + b; }\n"
@@ -2272,8 +2199,7 @@ TEST_SUITE("compile_string / exec") {
 	CHECK(r3.as_integer() == 300);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("compile_file then call multiple times" * doctest::skip()) {
+    TEST_CASE("compile_file then call multiple times") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -2291,7 +2217,6 @@ TEST_SUITE("compile_string / exec") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("compile_string with engine callback then call" * doctest::skip()) {
 	madc::engine eng;
 	g_host_sum = 0;
@@ -2316,8 +2241,7 @@ TEST_SUITE("compile_string / exec") {
 
 TEST_SUITE("program::has_function") {
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("has_function returns true for compiled function" * doctest::skip()) {
+    TEST_CASE("has_function returns true for compiled function") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -2329,8 +2253,7 @@ TEST_SUITE("program::has_function") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("has_function returns false for nonexistent function" * doctest::skip()) {
+    TEST_CASE("has_function returns false for nonexistent function") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path, "int main() { return 0; }\n");
@@ -2339,8 +2262,7 @@ TEST_SUITE("program::has_function") {
 	std::remove(path.c_str());
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("has_function returns false for global variable" * doctest::skip()) {
+    TEST_CASE("has_function returns false for global variable") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -2363,8 +2285,7 @@ TEST_SUITE("program::has_function") {
 
 TEST_SUITE("madc::engine") {
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("engine creates a program that compiles and runs" * doctest::skip()) {
+    TEST_CASE("engine creates a program that compiles and runs") {
 	madc::engine eng;
 	madc::program pgm = eng.create_program();
 	int64_t result = 0;
@@ -2396,8 +2317,7 @@ TEST_SUITE("madc::engine") {
 	CHECK(pgm_limits.output_bytes == 4096);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
-    TEST_CASE("two programs from the same engine have independent state" * doctest::skip()) {
+    TEST_CASE("two programs from the same engine have independent state") {
 	madc::engine eng;
 	madc::program p1 = eng.create_program();
 	madc::program p2 = eng.create_program();
@@ -2409,7 +2329,6 @@ TEST_SUITE("madc::engine") {
 	CHECK(r2 == 30);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("engine-registered callback is available to created programs" * doctest::skip()) {
 	madc::engine eng;
 	g_host_sum = 0;
@@ -2422,7 +2341,6 @@ TEST_SUITE("madc::engine") {
 	CHECK(g_host_sum == 42);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("engine-registered callback is available to multiple programs" * doctest::skip()) {
 	madc::engine eng;
 	g_host_sum = 0;
@@ -2442,7 +2360,6 @@ TEST_SUITE("madc::engine") {
 	CHECK(g_host_sum == 30);
     }
 
-    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
     TEST_CASE("program created from engine can still register its own callbacks" * doctest::skip()) {
 	madc::engine eng;
 	madc::program pgm = eng.create_program();

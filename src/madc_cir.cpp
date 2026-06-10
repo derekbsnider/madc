@@ -204,73 +204,116 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     return mod;
 }
 
-int madc_cir_execute(Program *prog, const char *source_name,
-		     int user_argc, char **user_argv,
-		     bool dump_tree, bool dump_nodes, bool dump_checked)
+CirJitSession::CirJitSession()
+    : ctx(NULL), c2m(NULL), builder(NULL), mod(NULL)
 {
-    MIR_context_t ctx = MIR_init();
+}
+
+CirJitSession::~CirJitSession()
+{
+    teardown();
+}
+
+void CirJitSession::teardown()
+{
+    // The proven madc_cir_execute order; the builder owns the node arena
+    // backing the module, so it is deleted last.
+    if (c2m) cir_finish(c2m);
+    if (ctx) {
+	MIR_gen_finish(ctx);
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+    }
+    delete builder;
+    ctx = NULL;
+    c2m = NULL;
+    builder = NULL;
+    mod = NULL;
+    gen_cache.clear();
+}
+
+bool CirJitSession::build(Program *prog, const char *source_name,
+			  bool dump_tree, bool dump_nodes, bool dump_checked,
+			  bool *dump_stop)
+{
+    if (dump_stop) *dump_stop = false;
+    if (ctx) teardown();   // a rebuild starts from a clean context
+
+    ctx = MIR_init();
     c2mir_init(ctx);
     MIR_gen_init(ctx);
     MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
 
-    c2m_ctx_t c2m = cir_init(ctx, dump_checked);
+    c2m = cir_init(ctx, dump_checked);
     if (!c2m) {
-	fprintf(stderr, "madc_cir_execute: cir_init failed\n");
-	MIR_gen_finish(ctx);
-	c2mir_finish(ctx);
-	MIR_finish(ctx);
-	return -1;
+	fprintf(stderr, "%s: cir_init failed\n", source_name);
+	teardown();
+	return false;
     }
 
-    CirBuilder *builder = NULL;
     bool stop = false;
-    MIR_module_t mod = build_tu_module(ctx, c2m, prog, source_name,
-				       dump_tree, dump_nodes, dump_checked,
-				       builder, stop);
+    mod = build_tu_module(ctx, c2m, prog, source_name,
+			  dump_tree, dump_nodes, dump_checked,
+			  builder, stop);
     if (!mod) {
-	// dump_checked: dumped the post-check tree and stopped (success, 0).
-	// Otherwise build_tu_module already printed the diagnostic.
-	cir_finish(c2m);
-	c2mir_finish(ctx);
-	MIR_gen_finish(ctx);
-	MIR_finish(ctx);
-	return stop ? 0 : -1;
+	// dump_checked: dumped the post-check tree and stopped (not an
+	// error). Otherwise build_tu_module printed the diagnostic.
+	if (dump_stop) *dump_stop = stop;
+	teardown();
+	return false;
     }
 
     MIR_load_module(ctx, mod);
     MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
+    return true;
+}
 
-    void *code = nullptr;
+void *CirJitSession::function_code(const char *emitted_name)
+{
+    if (!mod || !emitted_name || !emitted_name[0]) return NULL;
+    std::map<std::string, void *>::iterator gi = gen_cache.find(emitted_name);
+    if (gi != gen_cache.end()) return gi->second;
+    void *code = NULL;
     for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
 	 item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
 	if (item->item_type == MIR_func_item &&
-	    strcmp(item->u.func->name, "main") == 0) {
+	    strcmp(item->u.func->name, emitted_name) == 0) {
 	    code = MIR_gen(ctx, item);
 	    break;
 	}
     }
+    if (code) gen_cache[emitted_name] = code;
+    return code;
+}
 
-    if (!code) {
-	fprintf(stderr, "madc_cir_execute: main() not found\n");
-	cir_finish(c2m);
-	c2mir_finish(ctx);
-	MIR_gen_finish(ctx);
-	MIR_finish(ctx);
-	delete builder;
-	return -1;
-    }
-
+int CirJitSession::run_main(int argc, char **argv, bool *ok)
+{
+    void *code = function_code("main");
+    if (ok) *ok = (code != NULL);
+    if (!code) return -1;
     // Expose the module to the crash handler for JIT symbolization.
     g_jit_module = mod;
-    int result = ((int (*)(int, char **))code)(user_argc, user_argv);
+    int result = ((int (*)(int, char **))code)(argc, argv);
     g_jit_module = NULL;
+    return result;
+}
 
-    cir_finish(c2m);
-    MIR_gen_finish(ctx);
-    c2mir_finish(ctx);
-    MIR_finish(ctx);
-    delete builder;
+int madc_cir_execute(Program *prog, const char *source_name,
+		     int user_argc, char **user_argv,
+		     bool dump_tree, bool dump_nodes, bool dump_checked)
+{
+    CirJitSession session;
+    bool stop = false;
+    if (!session.build(prog, source_name, dump_tree, dump_nodes,
+		       dump_checked, &stop))
+	return stop ? 0 : -1;
 
+    bool ok = false;
+    int result = session.run_main(user_argc, user_argv, &ok);
+    if (!ok) {
+	fprintf(stderr, "madc_cir_execute: main() not found\n");
+	return -1;
+    }
     return result;
 }
 

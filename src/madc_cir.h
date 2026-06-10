@@ -13,6 +13,8 @@
 #define __MADC_CIR_H 1
 
 #include <cstdio>
+#include <map>
+#include <string>
 #include "mir.h"
 #include "cir_emit_c.h"   // CirEmitLang
 
@@ -27,6 +29,50 @@ class TokenBase;
 class TokenCpnd;
 class TokenFunc;
 class Program;
+class CirBuilder;
+
+// A compiled-and-linked CIR->c2mir->MIR module held alive for repeated
+// in-process calls — the engine behind libmadc's program::exec / call /
+// eval surface (madc_cir_execute is the same machinery one-shot).
+// Lifecycle: build() once per compiled Program (translate + cir_compile +
+// MIR_load_module + MIR_link), then function_code()/run_main() any number
+// of times; the destructor tears down gen/c2mir/MIR and the node-arena-
+// owning CirBuilder in the proven order. A RECOMPILE means a fresh session
+// (the module references the old Program's tree).
+class CirJitSession
+{
+public:
+    CirJitSession();
+    ~CirJitSession();
+
+    // Translate `prog` and link the module. False on translate/compile
+    // failure (diagnostics to stderr, mirroring madc_cir_execute). The dump
+    // flags reproduce madc_cir_execute's CLI behavior; dump_checked stops
+    // after the post-check dump (sets *dump_stop, returns false, no error).
+    bool build(Program *prog, const char *source_name,
+	       bool dump_tree = false, bool dump_nodes = false,
+	       bool dump_checked = false, bool *dump_stop = 0);
+    bool built() const { return mod != 0; }
+
+    // The generated code address for a module function by its EMITTED name
+    // (plain madc functions emit under their source name; the eval entry is
+    // "__madc_eval"). Generates on first use, memoized. NULL when absent.
+    void *function_code(const char *emitted_name);
+
+    // Generate and run main(argc, argv); returns main's return value.
+    // `ok` (when non-null) reports whether main was found and invoked.
+    int run_main(int argc, char **argv, bool *ok = 0);
+
+private:
+    MIR_context_t ctx;
+    c2m_ctx_t c2m;
+    CirBuilder *builder;
+    MIR_module_t mod;
+    std::map<std::string, void *> gen_cache;
+    void teardown();
+    CirJitSession(const CirJitSession &);
+    CirJitSession &operator=(const CirJitSession &);
+};
 
 // Initialize a c2mir context for CIR translation.
 // Call AFTER c2mir_init(mir_ctx).

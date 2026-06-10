@@ -34,6 +34,7 @@ extern thread_local bool madc_verbose;
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_cir.h"
 
 namespace madc {
 
@@ -466,12 +467,7 @@ bool invoke_program_zero_arg_function(Program &pgm,
 	return fail_program_runtime(pgm,
 				    "program::call target '" + name + "' is not a function");
 
-    Method *method = static_cast<Method *>(var->data);
-    if ( !method || !method->x86code )
-	return fail_program_runtime(pgm,
-				    "program::call target '" + name + "' has no callable code");
-
-    FuncDef *func = static_cast<FuncDef *>(method->returns.type);
+    FuncDef *func = dynamic_cast<FuncDef *>(var->type);
     if ( !func )
 	return fail_program_runtime(pgm,
 				    "program::call target '" + name + "' has no function metadata");
@@ -492,9 +488,17 @@ bool invoke_program_zero_arg_function(Program &pgm,
 
     pgm.clear_diagnostics();
     pgm.clear_error();
-    pgm.push_runtime_scope();
-    pgm.root_fn();
-    pgm.pop_runtime_scope();
+
+    // CIR backend: this path serves ad-hoc child Programs (runtime eval /
+    // the synthetic expression entry), so it builds a one-shot JIT session
+    // for the bare Program — the named-entry analogue of madc_cir_execute.
+    CirJitSession session;
+    if ( !session.build(&pgm, "<eval>") )
+	return fail_program_runtime(pgm, "eval compilation (CIR->MIR) failed");
+    void *fncode = session.function_code(name.c_str());
+    if ( !fncode )
+	return fail_program_runtime(pgm,
+				    "program::call target '" + name + "' has no callable code");
     if ( pgm.last_error.has_error )
 	return false;
 
@@ -507,15 +511,15 @@ bool invoke_program_zero_arg_function(Program &pgm,
 	    case program::native_type::void_type:
 	    {
 		typedef void (*fn_t)();
-		reinterpret_cast<fn_t>(method->x86code)();
+		reinterpret_cast<fn_t>(fncode)();
 		result = value();
 		ok = true;
 		break;
 	    }
-	    case program::native_type::boolean:   ok = call_target0<bool>(method->x86code, &result); break;
-	    case program::native_type::integer:   ok = call_target0<int64_t>(method->x86code, &result); break;
-	    case program::native_type::real:      ok = call_target0<double>(method->x86code, &result); break;
-	    case program::native_type::c_string:  ok = call_target0<const char *>(method->x86code, &result); break;
+	    case program::native_type::boolean:   ok = call_target0<bool>(fncode, &result); break;
+	    case program::native_type::integer:   ok = call_target0<int64_t>(fncode, &result); break;
+	    case program::native_type::real:      ok = call_target0<double>(fncode, &result); break;
+	    case program::native_type::c_string:  ok = call_target0<const char *>(fncode, &result); break;
 	}
 	pgm.pop_runtime_scope();
 	if ( ok )
@@ -2288,6 +2292,13 @@ struct program::impl
     std::map<std::string, value> active_expression_bindings;
     invoke_limits current_invoke_limits;
     std::vector<void *> callback_trampolines;
+    // The CIR->c2mir->MIR in-process JIT session behind exec/call/eval.
+    // Built lazily on first run from the parsed Program; reset (with the
+    // Program) on every recompile. See docs/plans/2026-06-10-libmadc-eval-
+    // on-cir-plan.md.
+    std::unique_ptr<CirJitSession> jit;
+    bool compiled_ok = false;
+    std::string compiled_display;
 
     impl()
 	: eng(&owned_engine)
@@ -2329,6 +2340,9 @@ struct program::impl
 	pgm = eng->create_program();
 	pgm->aot_tracking = aot_mode;
 	runtime_initialized = false;
+	jit.reset();           // the old session references the old Program's tree
+	compiled_ok = false;
+	compiled_display.clear();
 	clear_public_errors();
     }
 
@@ -2446,6 +2460,8 @@ struct program::impl
 	    sync_public_errors();
 	    return false;
 	}
+	compiled_ok = true;
+	compiled_display = path;
 	sync_public_errors();
 	return true;
     }
@@ -2459,7 +2475,29 @@ struct program::impl
 	    sync_public_errors();
 	    return false;
 	}
+	compiled_ok = true;
+	compiled_display = display_file;
 	sync_public_errors();
+	return true;
+    }
+
+    // Build (or reuse) the CIR->MIR JIT session for the compiled Program.
+    bool ensure_jit_built()
+    {
+	if ( !compiled_ok || !pgm )
+	    return fail_runtime("program requires a successfully compiled program");
+	if ( jit && jit->built() )
+	    return true;
+	if ( !jit )
+	    jit.reset(new CirJitSession());
+	const char *name = compiled_display.empty() ? "<memory>"
+						    : compiled_display.c_str();
+	if ( !jit->build(pgm.get(), name) )
+	{
+	    jit.reset();
+	    sync_public_errors();
+	    return fail_runtime("program compilation (CIR->MIR) failed");
+	}
 	return true;
     }
 
@@ -2565,10 +2603,7 @@ struct program::impl
 	    return exec_compiled_in_child(path, display_file);
 
 	bool ok = invoke_with_limits("exec", [this]() -> bool {
-	    pgm->execute();
-	    runtime_initialized = !pgm->last_error.has_error;
-	    sync_public_errors();
-	    return !pgm->last_error.has_error;
+	    return run_main_now();
 	});
 	if ( !ok && has_public_last_error && !pgm->last_error.has_error )
 	    return false;
@@ -2579,6 +2614,24 @@ struct program::impl
 	return ok;
     }
 
+    // Run the compiled program's main() through the CIR JIT session (the
+    // body both exec lambdas share). A missing main is a runtime error,
+    // matching the CLI's behavior.
+    bool run_main_now()
+    {
+	if ( !ensure_jit_built() )
+	    return false;
+	static char progname[] = "madc-program";
+	char *argv0[2] = { progname, NULL };
+	bool ran = false;
+	jit->run_main(1, argv0, &ran);
+	if ( !ran )
+	    return fail_runtime("program::exec: main() not found");
+	runtime_initialized = !pgm->last_error.has_error;
+	sync_public_errors();
+	return !pgm->last_error.has_error;
+    }
+
     bool exec_compiled_with_display(const std::string &actual_file,
 				    const std::string &display_file)
     {
@@ -2586,10 +2639,7 @@ struct program::impl
 	    return exec_compiled_in_child(actual_file, display_file);
 
 	bool ok = invoke_with_limits("exec", [this]() -> bool {
-	    pgm->execute();
-	    runtime_initialized = !pgm->last_error.has_error;
-	    sync_public_errors();
-	    return !pgm->last_error.has_error;
+	    return run_main_now();
 	});
 	if ( !ok && has_public_last_error && !pgm->last_error.has_error )
 	    return false;
@@ -3075,6 +3125,11 @@ struct program::impl
 	}
 
 	bool ok = pgm->compile();
+	if ( ok )
+	{
+	    compiled_ok = true;
+	    compiled_display = display_file.empty() ? path : display_file;
+	}
 	if ( display_file != path )
 	    sync_public_errors(display_file, path);
 	else
@@ -3274,14 +3329,16 @@ struct program::impl
     {
 	if ( runtime_initialized )
 	    return true;
-	if ( !pgm || !pgm->root_fn )
+	if ( !compiled_ok || !pgm )
 	    return fail_runtime("program::call requires a successfully compiled program");
 
+	// CIR backend: "runtime initialized" = the JIT session is built and
+	// linked. (The asmjit-era root_fn() top-level run is gone; dynamic
+	// global initializers are a later increment — see the plan doc.)
 	pgm->clear_diagnostics();
 	pgm->clear_error();
-	pgm->push_runtime_scope();
-	pgm->root_fn();
-	pgm->pop_runtime_scope();
+	if ( !ensure_jit_built() )
+	    return false;
 	sync_public_errors();
 	if ( pgm->last_error.has_error )
 	    return false;
@@ -3580,8 +3637,9 @@ struct program::impl
 	Variable *var = pgm->findVariable(id);
 	if ( !var || !var->type || var->type->basetype() != BaseType::btFunct )
 	    return false;
-	Method *method = static_cast<Method *>(var->data);
-	return method && method->x86code;
+	// CIR backend: a parsed function is callable — the JIT session
+	// generates its code on first call; no per-Method code pointer.
+	return true;
     }
 
     bool load_object(const std::string &path)
@@ -3664,11 +3722,14 @@ struct program::impl
 	if ( !var->type || var->type->basetype() != BaseType::btFunct )
 	    return fail_runtime("program::call target '" + name + "' is not a function");
 
-	Method *method = static_cast<Method *>(var->data);
-	if ( !method || !method->x86code )
+	// CIR backend: the code pointer comes from the JIT session (plain
+	// madc functions emit under their source name); the signature comes
+	// from the parsed FuncDef on the Variable.
+	void *fncode = jit ? jit->function_code(name.c_str()) : NULL;
+	if ( !fncode )
 	    return fail_runtime("program::call target '" + name + "' has no callable code");
 
-	FuncDef *func = static_cast<FuncDef *>(method->returns.type);
+	FuncDef *func = dynamic_cast<FuncDef *>(var->type);
 	if ( !func )
 	    return fail_runtime("program::call target '" + name + "' has no function metadata");
 	if ( func->is_multi_return() )
@@ -3702,21 +3763,21 @@ struct program::impl
 	    switch ( args.size() )
 	    {
 		case 0:
-		    ok = dispatch_call0(method->x86code, ret_type, result);
+		    ok = dispatch_call0(fncode, ret_type, result);
 		    break;
 		case 1:
-		    ok = dispatch_call1(method->x86code, ret_type, arg_types[0], arg_storage[0], result);
+		    ok = dispatch_call1(fncode, ret_type, arg_types[0], arg_storage[0], result);
 		    break;
 		case 2:
-		    ok = dispatch_call2(method->x86code, ret_type, arg_types[0], arg_types[1],
+		    ok = dispatch_call2(fncode, ret_type, arg_types[0], arg_types[1],
 					arg_storage[0], arg_storage[1], result);
 		    break;
 		case 3:
-		    ok = dispatch_call3(method->x86code, ret_type, arg_types[0], arg_types[1], arg_types[2],
+		    ok = dispatch_call3(fncode, ret_type, arg_types[0], arg_types[1], arg_types[2],
 					arg_storage[0], arg_storage[1], arg_storage[2], result);
 		    break;
 		case 4:
-		    ok = dispatch_call4(method->x86code, ret_type, arg_types[0], arg_types[1],
+		    ok = dispatch_call4(fncode, ret_type, arg_types[0], arg_types[1],
 					arg_types[2], arg_types[3],
 					arg_storage[0], arg_storage[1], arg_storage[2], arg_storage[3], result);
 		    break;
@@ -4048,12 +4109,12 @@ bool program::compile_string(const std::string &source, const std::string &virtu
 
 bool program::is_compiled() const
 {
-    return _impl->pgm && _impl->pgm->root_fn;
+    return _impl->pgm && _impl->compiled_ok;
 }
 
 bool program::save_object(const std::string &path)
 {
-    if ( !_impl->pgm || !_impl->pgm->root_fn )
+    if ( !_impl->pgm || !_impl->compiled_ok )
     {
 	_impl->clear_public_errors();
 	_impl->public_last_error = error(error::severity::error,
@@ -4078,7 +4139,7 @@ bool program::save_object(const std::string &path)
 
 bool program::save_executable(const std::string &path)
 {
-    if ( !_impl->pgm || !_impl->pgm->root_fn )
+    if ( !_impl->pgm || !_impl->compiled_ok )
     {
 	_impl->clear_public_errors();
 	_impl->public_last_error = error(error::severity::error,
@@ -4795,11 +4856,11 @@ program::program(engine &eng)
 
 bool Program::compile()
 {
-    set_error(Program::DiagnosticPhase::compiler,
-	      "Program::compile() is unavailable: the asmjit JIT codegen "
-	      "backend was removed. Use the CIR backend via madc_cir_execute() "
-	      "(the madc CLI does this by default).");
-    return false;
+    // On the CIR backend, Program-level compilation IS the front end: the
+    // tokenize+parse that already ran. Code generation happens at the
+    // CIR->c2mir->MIR stage (CirJitSession / madc_cir_execute), driven
+    // lazily at execute/call/eval time. A parsed Program is compile-ready.
+    return !last_error.has_error;
 }
 
 void Program::execute()
