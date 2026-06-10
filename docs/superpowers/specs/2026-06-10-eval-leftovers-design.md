@@ -6,16 +6,22 @@ landed there; this covers everything that remains).
 
 ## Scope and order
 
-Three packages, in this order. **AOT save/load is explicitly excluded**
+Four packages, in this order. **AOT save/load is explicitly excluded**
 (long-defer, per user — it is the separate AOT track, not eval).
 
 1. **B — expression-DSL string compare** (`testmadcevalexprctx`): small,
    self-contained.
-2. **A — scope capture at the user call site** (`testmadcevalscope` + the
-   scope-access unit category): the design-sensitive piece.
-3. **C — increment-2 unit categories** (the remaining non-AOT
+2. **A0 — value unification** (user decision 2026-06-10): `MadValue` and
+   `MadArray` die; the one host type is the public `madc::value`;
+   script-side `madc::array` becomes an alias of `madc::value`. This is
+   the prerequisite that unblocks full mangled-direct resolution for the
+   array-taking `madc::` publics.
+3. **A — scope capture at the user call site** (`testmadcevalscope` + the
+   scope-access unit category) + the full ns_madc mangled-direct
+   migration: the design-sensitive piece.
+4. **C — increment-2 unit categories** (the remaining non-AOT
    `doctest::skip()` cases in `tests/unit/test_libmadc_program.cpp`):
-   large but divisible by category.
+   large but divisible by category. Gets its own plan once B/A0/A land.
 
 ## Why these broke: asmjit era vs CIR era (context)
 
@@ -85,6 +91,76 @@ rejection ("cannot compare string and non-string values") via the
 existing `fail_program_runtime` plumbing with line/column, instead of
 silent pointer/int comparison.
 
+## Package A0 — value unification (`MadValue`/`MadArray` → `madc::value`)
+
+**User decision (2026-06-10):** the internal `MadValue`/`MadArray` pair
+(datadef.h, asmjit-era php:: machinery) and the public `madc::value`
+(include/libmadc/value.h, phase 4.2 of the embedding API) are parallel
+implementations of the same concept — the value.h header's own
+"deliberately separate, do not mix" comment marks the debt. They unify
+onto the public type. `ddVALUE` does not exist; `MadValueKind` dies with
+`MadValue`.
+
+**Decisive inventory (verified 2026-06-10):**
+- madcdat's ~284 `madc::value` references are all object-kind rows; it
+  touches `kind::array` exactly once → array-representation freedom.
+- No ns_* helper ever READS `MadArray.assoc` (only `.clear()` calls);
+  every array helper operates on the indexed `data` vector. The sole
+  real assoc consumer is `build_runtime_expression_context`
+  (parser.cpp:206-214) — the MadArray→value conversion layer itself.
+- Therefore: PHP-hybrid arrays are unexercised; the keyed/indexed split
+  maps exactly onto `kind::object`/`kind::array`; and the
+  insertion-ordering concern has zero real consumers (`as_object()`
+  stays `std::map` — no public API change).
+
+**The shape:**
+- `madc::value` is THE type. Its 8 kinds are unchanged (madcdat's
+  object-kind rows are load-bearing — merging kinds was considered and
+  rejected). One semantic addition: `object()` / `array()` on a
+  `kind::null` value VIVIFY it (null → empty object / empty array)
+  instead of throwing, so a default-constructed script `madc::array`
+  works with both keyed and indexed helpers.
+- Script-side `madc::array` = an ALIAS of `madc::value` (one
+  implementation, both names). The mangler resolves the alias to the
+  class identity (g++ canon — typedefs are transparent in mangling), so
+  script calls to `madc::eval_expression_ctx(..., array&)` produce the
+  host `madc::value&` symbols. `ddARRAY` is retargeted: it describes
+  `sizeof(madc::value)` with qualified class identity `madc::value`;
+  the `array` / `madc::array` name mappings (parser.cpp:1738,
+  `madc_ns["array"]`, pch.cpp:286) keep resolving to it. The `dtARRAY`
+  DataType tag and the builtin registration survive until A0.2.
+- Keyed context arrays (`context_set_*`, scope capture) become
+  `kind::object` entries; indexed php::/perl::/… arrays become
+  `kind::array` vectors. The ns_*.cpp helper signatures change
+  `MadArray*` → `madc::value*` and bodies use `value::array()` /
+  `value::object()`; behavior is pinned by the existing testphp /
+  testperl / testlang / testrust / testmadceval* expectations.
+- **`build_runtime_expression_context` is DELETED** — the script ctx
+  already IS a `madc::value` object; `set_expression_context_root`
+  consumes it directly. `validate_expression_context_paths` and
+  `make_expression_context_literal` already speak `madc::value`.
+- The `__madc_scope_set_*` setters cast to `madc::value*` and write
+  object fields.
+- Layering note: datadef.h (core) gains `#include "libmadc/value.h"` —
+  the value type is genuinely shared between the compiler runtime and
+  the embedding API; the C++ layer is the one real implementation
+  (cpp-first-api). No cycle: value.h depends only on the standard
+  library.
+- TRACE REQUIRED before edit (pre-edit checklist): how builtin ddARRAY
+  objects construct/destruct on CIR today (`madc::array ctx;` works in
+  testmadcevalexprctx — find that lowering). Zero-initialized
+  `std::vector`s function as empty in practice, but `madc::value` holds
+  a `std::string` member, which zero-init does NOT make valid — the
+  unified type needs real ctor/dtor calls (mangled-direct to the host
+  `madc::value` symbols madc itself exports, the std::string model).
+
+**A0.2 (queued, NOT this track):** retire the builtin entirely — a true
+header-defined `madc::value`/`madc::array` class parsed from an embedded
+header, deleting `parser.cpp:1738` / `pch.cpp:286` / `TokenARRAY` /
+`madc_ns["array"]` and the `dtARRAY` tag. Gate: container-template
+instantiation (faithful layout: the class holds `std::vector` /
+`std::map` / `unique_ptr` members) or a pimpl refactor of `madc::value`.
+
 ## Package A — scope capture at the user call site
 
 **Trigger:** at namespace-call binding (generalize the two existing
@@ -142,11 +218,14 @@ identifier resolution; full-eval path: typed child globals via
   deleted; every `madc::` public (eval, expression, ctx, and
   context_set_* families) becomes declaration-only, resolved
   mangled-direct to real `namespace madc { … }` C++ implementations in
-  the host. Per `.claude/rules/cpp-first-api.md`: the C++ layer is the
-  one real implementation; the extern-C exports remain host-side as
-  thin shims over it for C hosts (declared in the C API surface, not in
-  the script header). Gates: the three green `testmadceval*` tests pin
-  behavior through the migration.
+  the host (new `src/ns_madc.cpp`, the ns_php.cpp layout). Per
+  `.claude/rules/cpp-first-api.md`: the C++ layer is the one real
+  implementation; the extern-C exports remain host-side as thin shims
+  over it for C hosts (declared in the C API surface, not in the script
+  header). The array-taking publics resolve mangled-direct because
+  package A0 made script `madc::array` alias the host `madc::value`.
+  Gates: the three green `testmadceval*` tests pin behavior through the
+  migration.
 - Collector: capture string-class locals/params/globals as
   `kind::string` (it captures bool/int/real/array today; string support
   left when `dtSTRING` retired).
@@ -205,6 +284,18 @@ silent fallback to the non-ctx call.
   `bin/test_*` (only `make -C src test` does).
 
 ## Rejected alternatives
+
+- **A0 — interim rename only** (`MadArray` → `madc::array` as a distinct
+  class, `MadValue` untouched or nested): churns the same six ns_*.cpp
+  files twice once the unification lands; rejected in favor of unifying
+  now, while the public API has ~one consumer.
+- **A0 — merging value's `array`/`object` kinds** (one PHP-style hybrid
+  container): madcdat's rows-as-objects make `kind::object` load-bearing
+  across the storage backends; rejected.
+- **A0 — pimpl `madc::array` now** to retire the builtin completely in
+  this track: honest but adds compiler-path risk across six namespace
+  surfaces on top of the eval work; queued as the A0.2 gate option
+  instead.
 
 - **A2 — parser intrinsics** lowering `madc::eval_*` straight to the
   `_ctx_runtime` helpers: duplicates the wrappers' marshalling in the
