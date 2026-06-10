@@ -250,7 +250,7 @@ real-header `std::to_string(42)` and `std::stoi(string)` execute. Plus C++
 correctness fixes. See
 [`docs/release-notes/v0.27.0.md`](docs/release-notes/v0.27.0.md).
 
-CIR baseline (2026-06-10, post-release): **548 integration/unit pass / 0 fail /
+CIR baseline (2026-06-10, post-release): **549 integration/unit pass / 0 fail /
 26 skip** (zero known reds; real-header `std::string a+b` landed after the
 release via by-value free-operator returns),
 and **gcc.c-torture 1567/1685 (93.0%)** vs the old asmjit

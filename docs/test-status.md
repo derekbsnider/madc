@@ -1,13 +1,15 @@
 # Test Status
 
-> **Current (2026-06-10, `develop` @ `23027f7`
+> **Current (2026-06-10, `develop` @ `8a897f8`+regen
 > against `/workspace/mir` `develop` @ `2ffebff`):** fulltest is
-> **548 passed, 0 failed, 0 timed out, 26 skipped** (make exit 0, both check
-> gates GREEN) — **ALL integration reds are green.** New:
+> **549 passed, 0 failed, 0 timed out, 26 skipped** (make exit 0, both check
+> gates GREEN) — **ALL integration reds are green.** New this cycle:
 > `teststringplus_realhdr.mad` pins real-header `std::string a+b` — by-value
 > FREE-operator returns bind the exported `_ZStpl…` mangled-direct and decl
 > inits copy-elide into the declared variable (the former handoff-§4 wall #1
-> SIGSEGV, `23027f7`). torture 1567/31/56/1, failset byte-identical.
+> SIGSEGV, `23027f7`) — and `testcstdio.mad` pins default-mode
+> `#include <cstdio>` over the completed embedded stdio.h shim (`8a897f8`).
+> torture 1567/31/56/1, failset byte-identical after both changes.
 >
 > **Previous (2026-06-10, `feature/cpp-detection-idiom-claude` @ `883c26e`):**
 > fulltest **547/0/0/26** — the first all-greens run.

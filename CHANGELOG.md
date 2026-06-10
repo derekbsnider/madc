@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Default-mode `#include <cstdio>` works — fulltest 549/0/0/26 (2026-06-10)
+
+- **Embedded stdio.h declares the full C89 stdio surface** (`8a897f8`): real
+  libstdc++ `<cstdio>` imports every stdio name with `using ::…;`, and a
+  using-declaration needs a global-scope declaration to bind to (the
+  ctype.h/`<cctype>` precedent) — default-mode `#include <cstdio>` previously
+  died at `'fpos_t' is not a declaration in '::'`. The shim now carries a
+  real-glibc-layout `fpos_t`, `int`-typed returns for the whole int family,
+  and real variadic printf/scanf prototypes (the old "stay on dlsym"
+  limitation predates variadic prototype support; SMAUG soaks clean). New
+  test `testcstdio`.
+
 ### std::string `a+b` runs through real libstdc++ — fulltest 548/0/0/26 (2026-06-10)
 
 - **By-value class returns for free namespace operators** (`23027f7`):

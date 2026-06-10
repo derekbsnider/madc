@@ -196,12 +196,19 @@ General bugs fixed because the instantiations flushed them out:
 3. **Torture parity gap** (Track 1.3, the promote gate): 1567 vs asmjit's
    1645 — worklist `docs/parity/root-cause-worklist.md`.
 4. (If prioritized) the §3 pack-elision gap — `std::stof`/`std::stod`.
-5. **`#include <cstdio>` DEFAULT-mode wall**: `'fpos_t' is not a declaration
-   in '::'` (cstdio:99 `using ::fpos_t;`; the glibc `typedef __fpos_t
-   fpos_t` never lands in madc's global namespace in STD_MADC mode), plus
-   the diagnostic misattributes the header line to the MAIN file's name.
-   Real-header mode (`--std=c++17 --no-embedded-headers`) is unaffected.
-   Reducer: `tmp/cstdio_probe.mad` (flagless).
+5. ~~**`#include <cstdio>` DEFAULT-mode wall**~~ **DONE 2026-06-10**
+   (`8a897f8` + `e0e8…` regen, fulltest **549/0/0/26** exit 0, torture
+   failset byte-identical, SMAUG soaks with the new prototypes): the
+   embedded stdio.h shim now declares the full C89 stdio surface (the
+   ctype.h/<cctype> precedent — a using-declaration needs a global decl
+   to bind to) incl. a real-layout `fpos_t` and REAL VARIADIC
+   printf/scanf-family prototypes (the old "stay on dlsym" limitation
+   predates variadic prototype support). Pinned by
+   `tests/testcstdio.{mad,expect}` (default-mode `<cstdio>` +
+   `std::printf` + a+b/c_str/printf interop = the cstr4 shape).
+   STILL OPEN from this wall: the diagnostic misattributes a header's
+   line number to the MAIN file's name (`tmp/x.mad:99` for cstdio:99) —
+   separate lexer file-tracking bug.
 
 Note: `scripts/check-no-std-hardcoding.sh` had been RED (250 lines) since
 the 2026-06-08 nlohmann/json vendoring — all third-party false positives +
