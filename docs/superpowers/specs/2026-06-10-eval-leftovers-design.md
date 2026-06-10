@@ -75,10 +75,10 @@ what context strings and string literals materialize as, via
 machinery-emitted `strcmp` call needs no policy exception, and user code
 still cannot call functions unless the policy allows.
 
-**Mechanism detail left to the plan:** whether the child calls libc
-`strcmp` directly (registered internally, resolved through the existing
-dlsym import path) or a `__madc_expr_strcmp_runtime` extern-C export
-(like the `__madc_scope_set_*` setters). Same shape either way.
+**Mechanism:** the child calls libc `strcmp` directly (registered
+internally, resolved through the existing dlsym import path) — `strcmp`
+is natively extern-C, so no madc-side export is needed and no C++ type
+information is at stake. No `__madc_expr_strcmp_runtime` shim.
 
 **New error:** a mixed compare (`user.name == 5`) becomes a loud DSL
 rejection ("cannot compare string and non-string values") via the
@@ -106,19 +106,25 @@ the `TokenScopeContext` (CIR lowering already landed in `8d73306`).
 
 **Data flow:** caller locals → `collect_runtime_eval_scope_variables`
 snapshot (by value) → CIR lowers `TokenScopeContext` to
-`__madc_scope_set_*` calls populating the array → `_ctx` wrapper →
-`__madc_eval_*_ctx_runtime` → `build_runtime_expression_context` →
+`__madc_scope_set_*` calls populating the array → `madc::*_ctx`
+(mangled-direct host C++ function) → `build_runtime_expression_context` →
 `madc::value` object → child program (expression path: context-root
 identifier resolution; full-eval path: typed child globals via
 `install_runtime_eval_scope_globals`).
 
 **Additions:**
-- `<ns_madc>`: the five full-eval `_ctx` public wrappers
-  (`eval_unit_ctx`, `eval_bool_ctx`, `eval_int_ctx`, `eval_double_ctx`,
-  `eval_string_ctx` — names mirror their non-ctx publics; overload
-  shapes too, e.g. `eval_int_ctx(const char*, array&)`). Their
-  `__madc_eval_*_ctx_runtime` C exports already exist and are declared
-  in the header.
+- `<ns_madc>`: the five full-eval `_ctx` publics (`eval_unit_ctx`,
+  `eval_bool_ctx`, `eval_int_ctx`, `eval_double_ctx`, `eval_string_ctx`
+  — names mirror their non-ctx publics; overload shapes too, e.g.
+  `eval_int_ctx(const char*, array&)`) as **declaration-only C++
+  namespace functions resolved mangled-direct** (user direction,
+  2026-06-10): no extern-C runtime declarations, no wrapper bodies. The
+  implementations are real `namespace madc { … }` C++ functions in the
+  host binary (parser.cpp, next to the `madc_runtime_eval_*` internals
+  they call), exported via -rdynamic and resolved by
+  `cir_import_resolver` through their Itanium symbols — the proven
+  php:: declaration-only pattern. This keeps C++ type information
+  (`array&`, overloads) instead of flattening through a C ABI.
 - **String-class predicate** (new named helper, per
   `.claude/rules/helper-methods.md`): "is this DataDef the std::string
   class". Shared machinery — the collector uses it now; increment-2
@@ -128,6 +134,19 @@ identifier resolution; full-eval path: typed child globals via
   and the auto-include trigger map: the libmadc boundary marshals to
   `madc::value` kinds, and `kind::string` ↔ `std::string` is that
   boundary's job.
+- **Migrate the existing `<ns_madc>` surface to the same shape** (user
+  direction, 2026-06-10): the extern-C `__madc_*_runtime` exports are
+  EXCLUSIVELY the C-linkage API for C programmers consuming
+  libmadc.a/.so — never the script-side resolution path. The script
+  header's extern-C declarations and `madc::` wrapper bodies are
+  deleted; every `madc::` public (eval, expression, ctx, and
+  context_set_* families) becomes declaration-only, resolved
+  mangled-direct to real `namespace madc { … }` C++ implementations in
+  the host. Per `.claude/rules/cpp-first-api.md`: the C++ layer is the
+  one real implementation; the extern-C exports remain host-side as
+  thin shims over it for C hosts (declared in the C API surface, not in
+  the script header). Gates: the three green `testmadceval*` tests pin
+  behavior through the migration.
 - Collector: capture string-class locals/params/globals as
   `kind::string` (it captures bool/int/real/array today; string support
   left when `dtSTRING` retired).
@@ -136,7 +155,11 @@ identifier resolution; full-eval path: typed child globals via
   ~992-1008) taking `std::string*` — the host copies the value out, so
   the CIR lowering stays a plain pointer pass (no `c_str()` emission).
   Plus the matching string branch in the cir_builder TokenScopeContext
-  lowering (cir_builder.cpp:7787-7806).
+  lowering (cir_builder.cpp:7787-7806). These setters stay extern-C:
+  they are compiler-machinery symbols emitted by the CIR builder (the
+  `__madc_vla_free` category), not user-resolved namespace functions —
+  the mangled-direct direction applies to the user-facing `madc::`
+  surface.
 - `char*` locals: NOT captured in this pass (no test needs them);
   trivially added later with a cstr setter if wanted.
 
