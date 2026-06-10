@@ -154,6 +154,14 @@ onto the public type. `ddVALUE` does not exist; `MadValueKind` dies with
   unified type needs real ctor/dtor calls (mangled-direct to the host
   `madc::value` symbols madc itself exports, the std::string model).
 
+**Forward vision (user, 2026-06-10):** `madc::array` / `madc::value` are
+meant to grow beyond their humble beginnings into the first-class madc
+data types. If a language-flavored type (e.g. `php::array`) is ever
+needed, it gets MINTED as its own type later, with auto-conversion
+helpers — `operator=` overloads — between it and `madc::value`/`madc::array`.
+Conversions between first-class citizens, never a revived parallel
+internal implementation.
+
 **A0.2 (queued, NOT this track):** retire the builtin entirely — a true
 header-defined `madc::value`/`madc::array` class parsed from an embedded
 header, deleting `parser.cpp:1738` / `pch.cpp:286` / `TokenARRAY` /
