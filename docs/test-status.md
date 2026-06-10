@@ -1,6 +1,6 @@
 # Test Status
 
-> **Current (2026-06-10, `develop` @ `8a897f8`+regen
+> **Current (2026-06-10, `develop` @ `7e84242`
 > against `/workspace/mir` `develop` @ `2ffebff`):** fulltest is
 > **555 passed, 0 failed, 0 timed out, 20 skipped** (make exit 0, both check
 > gates GREEN) — **ALL integration reds are green.** New this cycle:
