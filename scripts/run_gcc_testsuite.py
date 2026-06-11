@@ -74,6 +74,20 @@ def skip_reason(path, unsupported_targets):
 	return ""
 
 
+def load_skip_manifest(manifest_path):
+	"""Map test basename -> skip reason from the formal skip manifest."""
+	skips = {}
+	if not manifest_path or not Path(manifest_path).exists():
+		return skips
+	for line in read_text(Path(manifest_path)).splitlines():
+		line = line.strip()
+		if not line or line.startswith("#"):
+			continue
+		parts = line.split(None, 1)
+		skips[parts[0]] = parts[1] if len(parts) > 1 else "manifest skip"
+	return skips
+
+
 def madc_args_from_directives(path):
 	text = read_text(path)
 	args = []
@@ -273,6 +287,16 @@ def parse_args(argv):
 		action="store_true",
 		help="run tests with known unsupported dg target requirements",
 	)
+	parser.add_argument(
+		"--skip-manifest",
+		default=str(root / "docs" / "parity" / "torture-skip-manifest.txt"),
+		help="formal skip manifest (class-(c) tests; see docs/parity/failset-classification.md)",
+	)
+	parser.add_argument(
+		"--include-manifest-skips",
+		action="store_true",
+		help="run tests listed in the skip manifest anyway",
+	)
 	return parser.parse_args(argv)
 
 
@@ -305,12 +329,15 @@ def main(argv):
 	}
 
 	unsupported_targets = set() if args.include_unsupported else DEFAULT_UNSUPPORTED_TARGETS
+	manifest_skips = {} if args.include_manifest_skips else load_skip_manifest(args.skip_manifest)
 
 	for test in tests:
 		if not test.exists():
 			result = Result(test, "FAIL(harness)", "missing file")
 		elif is_builtin_companion_source(test):
 			result = Result(test, "SKIP", "builtin companion source")
+		elif test.name in manifest_skips:
+			result = Result(test, "SKIP", "manifest: " + manifest_skips[test.name])
 		else:
 			reason = skip_reason(test, unsupported_targets)
 			if reason:

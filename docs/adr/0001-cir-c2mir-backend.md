@@ -173,7 +173,16 @@ User-visible language features stay on the c2mir path so they also flow through
   CIR baseline, climbing back; 486 integration pass / 4 fail / 1 timeout after
   the 2026-06-05 retire-std-hardcoding merge). The *destination* is right; the
   cost was the rebuild. **develop is not promoted to master until the CIR path
-  reaches feature parity** (KG `Decision{promote_parity_gate}`).
+  reaches feature parity** (KG `Decision{promote_parity_gate}`). *Parity
+  re-defined 2026-06-11* (user-signed failset audit,
+  `docs/parity/failset-classification.md`): the gcc-torture gate is **all 41
+  class-(a) standard-C failures fixed — ≥1608 of the 1652 in-scope tests** —
+  with 33 class-(c) gcc-internal/torture-only tests formally skipped and the
+  14 class-(b) real-world GNU extensions tracked as roadmap items, NOT gate
+  blockers. The old wording "match or exceed asmjit's 1645" is retired: the
+  audit's oracle run showed CIR already passes 34 tests asmjit fails while
+  asmjit passes 82 CIR fails — the two capability sets diverged, so the raw
+  count compared apples to oranges. 100% torture parity was never the goal.
 - **Everything must be expressible as C11 (+ c2mir extensions).** Accepted —
   it is, by madc's definition; and the emit-C path can target gcc/clang where
   c2mir's own limits would otherwise bind.
