@@ -110,6 +110,34 @@ stays at pin `4aa628b` (clean). The O2 bug surface is now scoped: **8 O2-only fa
 GVN mem-forwarding accounts for 3 of them; the remaining **5** (varargs `stdarg-3`/`strct-varg-1`
 + optimizer-PR value-mismatches `20141107-1`/`920908-1`/`pr43236`) need real root-causing.
 
+## Upstream PR #430 adoption (2026-06-11) — computed-goto RA fixes
+
+**ADOPTED** (user-queued review): [vnmakarov/mir#430](https://github.com/vnmakarov/mir/pull/430)
+(cyanogilvie, OPEN upstream) — two RA bugs breaking computed goto (`laddr`/`jmpi`) under
+MIR-gen at `-O2`/`-O3`:
+
+1. **`insn_descs[MIR_LADDR]` missing `OUT_FLAG`** on the destination operand (`mir.c`) —
+   RA treats the laddr dest as a *use*: under pressure it reloads before / skips the spill
+   after, and a later `jmpi` jumps through stale spill-slot memory.
+2. **`split_edge_if_necessary` assumes direct-branch block exits** — a `jmpi` successor
+   edge cannot be split; the full RA overwrote jmpi's *register operand with a label*
+   (NDEBUG: an N-way indirect jump silently becomes an unconditional jump). Fix: functions
+   containing `MIR_JMPI` use the simplified RA; `busy_used_locs` stays allocated in sync
+   with `used_locs` since RA mode now varies per function (`mir-gen.c`).
+
+Verification on the fork: the PR's `jmpi-crash.mir` reducer **SIGSEGV'd under
+`MIR_TYPE=gen` at pin `2ffebff`** (interp correct: `1 2 3`); after the fix gen prints
+`1 2 3` exit 0. Full MIR `make test` green (Tests 1121, Success tests 2242 — identical
+to the pre-patch baseline). Both commits are **verbatim cherry-picks preserving the PR
+author** (no `ADOPTED-FROM` source comments — kept byte-identical so a future upstream
+merge of #430 dedups cleanly).
+
+Gate relevance: inert at madc's O1 torture gate (`optimize_level < 2` already takes the
+simplified RA), but madc ships user-facing `-O2`/`-O3`, the fork carries labels-as-values
+(computed goto), and bug 2's silent-misexecution mode is exactly the class the O2-viability
+thread (open thread 1 below) must not stack on top of. Watch upstream: if #430 lands and
+diverges from these shas, re-sync.
+
 ## Open threads (the actually-valuable derived work)
 
 1. **Make madc-O2 viable** (orthogonal to the O1 parity gate; codegen-quality, not promotion).

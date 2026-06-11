@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### MIR fork: upstream PR #430 adopted — computed-goto RA fixes (2026-06-11, `feature/mir-pr430-claude`)
+
+- **Two register-allocator bugs breaking computed goto (`laddr`/`jmpi`) under
+  MIR-gen at `-O2`/`-O3` fixed in the fork**
+  ([vnmakarov/mir#430](https://github.com/vnmakarov/mir/pull/430), cyanogilvie;
+  verbatim cherry-picks preserving authorship, fork `develop`
+  `2ffebff` → `65b99fc`, `MIR_COMMIT` bumped same-commit): (1)
+  `insn_descs[MIR_LADDR]` lacked `OUT_FLAG` on its destination — RA treated the
+  laddr dest as a *use*, losing the label address under pressure (a later
+  `jmpi` jumped through stale spill-slot memory); (2) `split_edge_if_necessary`
+  assumed direct-branch block exits and overwrote `jmpi`'s register operand
+  with a label (NDEBUG: an N-way indirect jump silently became unconditional) —
+  functions containing `MIR_JMPI` now use the simplified RA, with
+  `busy_used_locs` kept in sync since RA mode varies per function.
+- The PR's `jmpi-crash.mir` reducer SIGSEGV'd under `MIR_TYPE=gen` on the fork
+  at `2ffebff` and now prints `1 2 3` exit 0. Inert at madc's O1 torture gate
+  but live at the user-facing `-O2`/`-O3` flags; clears a silent-misexecution
+  class off the O2-viability track. Triage record:
+  `docs/parity/mir-fork-community-patches.md`.
+- Gates: MIR `make test` green (Tests 1121, Success 2242 — identical
+  baseline), fulltest **572 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  torture failset **byte-identical** (1567/26/29/0/63), SMAUG soak green.
+
 ## [v0.28.0] — 2026-06-11
 
 The C++20 three-way-comparison release: the `<=>` compliance track (P2.15) is
