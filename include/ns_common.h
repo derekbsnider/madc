@@ -92,4 +92,32 @@ void join_with_sep(std::string &out, const madc::value &arr,
 
 }  // namespace ns_common
 
+// ---- madc:: runtime-eval internals (defined in src/parser.cpp) ---------
+// The single real eval pipeline behind the madc:: script namespace: the
+// namespace madc publics and the extern-C __madc_*_runtime exports in
+// src/ns_madc.cpp both delegate here. The internals live in parser.cpp
+// because they drive the active Program's runtime_eval_source /
+// runtime_eval_expression machinery. void* parameters: result/source/expr
+// are std::string*, ctx is madc::value* (the unified script array).
+void *madc_runtime_eval(void *result, void *source);
+bool madc_runtime_eval_bool(void *source);
+int64_t madc_runtime_eval_int(void *source);
+double madc_runtime_eval_double(void *source);
+void *madc_runtime_eval_string(void *result, void *source);
+void *madc_runtime_eval_ctx(void *result, void *source, void *ctx);
+bool madc_runtime_eval_bool_ctx(void *source, void *ctx);
+int64_t madc_runtime_eval_int_ctx(void *source, void *ctx);
+double madc_runtime_eval_double_ctx(void *source, void *ctx);
+void *madc_runtime_eval_string_ctx(void *result, void *source, void *ctx);
+void *madc_runtime_eval_expression(void *result, void *expr);
+bool madc_runtime_eval_expression_bool(void *expr);
+int64_t madc_runtime_eval_expression_int(void *expr);
+double madc_runtime_eval_expression_double(void *expr);
+void *madc_runtime_eval_expression_string(void *result, void *expr);
+void *madc_runtime_eval_expression_ctx(void *result, void *expr, void *ctx);
+bool madc_runtime_eval_expression_bool_ctx(void *expr, void *ctx);
+int64_t madc_runtime_eval_expression_int_ctx(void *expr, void *ctx);
+double madc_runtime_eval_expression_double_ctx(void *expr, void *ctx);
+void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ctx);
+
 #endif // __NS_COMMON_H

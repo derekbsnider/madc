@@ -342,6 +342,14 @@ bool is_runtime_eval_expression_helper_name(const std::string &name)
 	|| name == "__madc_eval_expression_string_runtime";
 }
 
+} // namespace
+
+// ---- madc:: runtime-eval internals --------------------------------------
+// External linkage: declared in ns_common.h, consumed by src/ns_madc.cpp's
+// namespace madc publics and extern-C exports. They live here because they
+// drive the active Program's runtime_eval_source / runtime_eval_expression
+// machinery (and the anonymous helpers above).
+
 void *madc_runtime_eval_expression(void *result, void *expr)
 {
     std::string &out = *(std::string *)result;
@@ -759,141 +767,13 @@ void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ct
     return result;
 }
 
-void *madc_context_set_int(void *ctx, void *key, int64_t value)
-{
-    ns_common::value_object_for_write(*(madc::value *)ctx,
-				      "madc::context_set_int")
-	[*(std::string *)key] = madc::value(value);
-    return ctx;
-}
-
-void *madc_context_set_real(void *ctx, void *key, double value)
-{
-    ns_common::value_object_for_write(*(madc::value *)ctx,
-				      "madc::context_set_real")
-	[*(std::string *)key] = madc::value(value);
-    return ctx;
-}
-
-void *madc_context_set_string(void *ctx, void *key, const char *value)
-{
-    ns_common::value_object_for_write(*(madc::value *)ctx,
-				      "madc::context_set_string")
-	[*(std::string *)key] = madc::value(std::string(value ? value : ""));
-    return ctx;
-}
-
-void *madc_context_set_array(void *ctx, void *key, void *value)
-{
-    ns_common::value_object_for_write(*(madc::value *)ctx,
-				      "madc::context_set_array")
-	[*(std::string *)key] = *(const madc::value *)value;
-    return ctx;
-}
-
-} // namespace
+// The __madc_eval_*_runtime / __madc_context_set_*_runtime extern-C
+// exports and the namespace madc publics live in src/ns_madc.cpp; both
+// delegate to the internals above. Only the compiler-machinery scope
+// setters stay here (cpp-first-api.md: they are CIR-builder-emitted
+// symbols, not user-resolved functions).
 
 extern "C" {
-
-void *__madc_eval_runtime(void *result, void *source)
-{
-    return madc_runtime_eval(result, source);
-}
-
-bool __madc_eval_bool_runtime(void *source)
-{
-    return madc_runtime_eval_bool(source);
-}
-
-int64_t __madc_eval_int_runtime(void *source)
-{
-    return madc_runtime_eval_int(source);
-}
-
-double __madc_eval_double_runtime(void *source)
-{
-    return madc_runtime_eval_double(source);
-}
-
-void *__madc_eval_string_runtime(void *result, void *source)
-{
-    return madc_runtime_eval_string(result, source);
-}
-
-void *__madc_eval_ctx_runtime(void *result, void *source, void *ctx)
-{
-    return madc_runtime_eval_ctx(result, source, ctx);
-}
-
-bool __madc_eval_bool_ctx_runtime(void *source, void *ctx)
-{
-    return madc_runtime_eval_bool_ctx(source, ctx);
-}
-
-int64_t __madc_eval_int_ctx_runtime(void *source, void *ctx)
-{
-    return madc_runtime_eval_int_ctx(source, ctx);
-}
-
-double __madc_eval_double_ctx_runtime(void *source, void *ctx)
-{
-    return madc_runtime_eval_double_ctx(source, ctx);
-}
-
-void *__madc_eval_string_ctx_runtime(void *result, void *source, void *ctx)
-{
-    return madc_runtime_eval_string_ctx(result, source, ctx);
-}
-
-void *__madc_eval_expression_runtime(void *result, void *expr)
-{
-    return madc_runtime_eval_expression(result, expr);
-}
-
-bool __madc_eval_expression_bool_runtime(void *expr)
-{
-    return madc_runtime_eval_expression_bool(expr);
-}
-
-int64_t __madc_eval_expression_int_runtime(void *expr)
-{
-    return madc_runtime_eval_expression_int(expr);
-}
-
-double __madc_eval_expression_double_runtime(void *expr)
-{
-    return madc_runtime_eval_expression_double(expr);
-}
-
-void *__madc_eval_expression_string_runtime(void *result, void *expr)
-{
-    return madc_runtime_eval_expression_string(result, expr);
-}
-
-void *__madc_eval_expression_ctx_runtime(void *result, void *expr, void *ctx)
-{
-    return madc_runtime_eval_expression_ctx(result, expr, ctx);
-}
-
-bool __madc_eval_expression_bool_ctx_runtime(void *expr, void *ctx)
-{
-    return madc_runtime_eval_expression_bool_ctx(expr, ctx);
-}
-
-int64_t __madc_eval_expression_int_ctx_runtime(void *expr, void *ctx)
-{
-    return madc_runtime_eval_expression_int_ctx(expr, ctx);
-}
-
-double __madc_eval_expression_double_ctx_runtime(void *expr, void *ctx)
-{
-    return madc_runtime_eval_expression_double_ctx(expr, ctx);
-}
-
-void *__madc_eval_expression_string_ctx_runtime(void *result, void *expr, void *ctx)
-{
-    return madc_runtime_eval_expression_string_ctx(result, expr, ctx);
-}
 
 // cstr-key scope setters — the CIR builder's TokenScopeContext lowering
 // fills the captured-scope context array with these (a string literal key
@@ -920,26 +800,6 @@ void *__madc_scope_set_array_runtime(void *ctx, const char *key, void *value)
 				      "__madc_scope_set_array")
 	[std::string(key)] = *(const madc::value *)value;
     return ctx;
-}
-
-void *__madc_context_set_int_runtime(void *ctx, void *key, int64_t value)
-{
-    return madc_context_set_int(ctx, key, value);
-}
-
-void *__madc_context_set_real_runtime(void *ctx, void *key, double value)
-{
-    return madc_context_set_real(ctx, key, value);
-}
-
-void *__madc_context_set_string_runtime(void *ctx, void *key, const char *value)
-{
-    return madc_context_set_string(ctx, key, value);
-}
-
-void *__madc_context_set_array_runtime(void *ctx, void *key, void *value)
-{
-    return madc_context_set_array(ctx, key, value);
 }
 
 }
@@ -28256,16 +28116,26 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    ovset.push_back(e);
 		}
 		// Once a name has 2+ overloads, every member's call symbol is
-		// its OWN unique Variable name (call_emit_symbol precedence:
-		// local_emit_name), so a call resolved through the shared
+		// its OWN binding, so a call resolved through the shared
 		// namespace-map entry still emits the ranked winner's symbol.
-		// (Invariant: local_emit_name == its Variable's name.)
+		// A declaration-only overload is bound to its external
+		// Itanium symbol (madc emits no body to call) — carry it on
+		// emit_symbol; a bodied overload's call symbol is its unique
+		// Variable name on local_emit_name (invariant:
+		// local_emit_name == its Variable's name).
 		if ( ovset.size() >= 2 )
 		    for ( size_t i = 0; i < ovset.size(); ++i )
 			if ( FuncDef *ofd = ovset[i].var
 			     ? dynamic_cast<FuncDef *>(ovset[i].var->type) : NULL )
-			    if ( ofd->emit_symbol.empty() )
+			{
+			    if ( !ofd->emit_symbol.empty() )
+				continue;
+			    if ( ofd->declaration_only
+			      && !ovset[i].var->storage_alias_name.empty() )
+				ofd->emit_symbol = ovset[i].var->storage_alias_name;
+			    else if ( ofd->local_emit_name.empty() )
 				ofd->local_emit_name = ovset[i].var->name;
+			}
 	    }
 	    variable_map_t &ns = namespace_map[current_namespace];
 	    ns[source_id] = ns_var;
