@@ -1,4 +1,19 @@
-# Item 2b handoff — `a + "literal"` free-operator instantiation (analysis done, code not started)
+# Item 2b handoff — `a + "literal"` free-operator instantiation
+
+> **⚑ DONE 2026-06-11.** 2b-i landed at `a89fe3a`; **2b-ii landed at `9245775`**
+> (plus the prerequisite char_traits explicit-spec instantiation-key fix
+> `1abbee8` — `std::char_traits<char>::length` silently folded to 0 via the
+> dependent-call placeholder; one key rule + legacy-placeholder flesh/alias +
+> foreign-qualified rename skip). The plan below was executed with one
+> deviation: instead of CIR-side overload preference (step 3), the parser
+> rewrites the TokenOperator into a TokenCallFunc on the instantiated overload
+> (Cfront lowering, `lower_free_operator_to_call`) — the normal call pipeline
+> then owns emission. CIR gained call-convention lock-step fixes instead
+> (emit_symbol sret returns, Pass 0.75 retbuf externs + materialized-sym
+> classification, block-scope class typedef tag-reference, ctor-overload
+> call-arg typing). Test: `tests/teststrplusbody_realhdr.mad`. Gates:
+> fulltest 561/0/0/18 exit 0, torture failset byte-identical, SMAUG green.
+> Remaining in the batch: **2c / 2d below.**
 
 State as of `feature/template-instantiation-claude` @ `398cb82`. 2a (empty-pack
 elision) and the iostream:80 warning fix are LANDED and gated on this branch.
