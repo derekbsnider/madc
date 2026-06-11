@@ -445,13 +445,20 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   the machinery (hoisted friends bind forward `r<=>0` AND reversed
   `0<=>r`). Test `testspaceship_realhdr` (8 g++-verified shapes). Known
   corner: `<=>` sits at the relational precedence tier (unparenthesized
-  `a < b <=> c` groups left). Remaining plan:
-  1. Rewritten candidates ([over.match.oper]): `r != 0` rewrites to
-     `!(r == 0)` (<compare> defines NO operator!=), `a < b` →
-     `(a <=> b) < 0` for class types, reversed `==`. Today `r != 0`
-     errors loudly. Plus `= default` comparison generation
-     (operator==(strong_ordering,strong_ordering) = default is skipped,
-     so ordering-vs-ordering compares need it).
+  `a < b <=> c` groups left). **Rewritten candidates LANDED** (2026-06-11,
+  `aff26fa`, [over.match.oper]): `x != y` → `!(x == y)` (member ==
+  serves too), `x == y` → reversed `y == x`, relationals →
+  `(x <=> y) @ 0` when an operator<=> covers the pair — the
+  only-`<=>`/`==` class idiom yields all six comparisons
+  (`testrewritten_realhdr`). Recursion bounded via
+  `lower_free_operator_to_call(no_rewrite)`. Remaining plan:
+  1. `= default` comparison generation: the hoist filter skips
+     `friend constexpr bool operator==(strong_ordering, strong_ordering)
+     = default;`, so ordering-vs-ordering `==` (and defaulted member
+     `operator<=>` on user classes) still need synthesis.
+  2. Precedence polish: `<=>` sits at the relational tier (C++ ranks it
+     between shifts and relationals) — unparenthesized `a < b <=> c`
+     groups left.
 
 ### P3 — broader standards surface (later)
 - **Polyglot transpiler (far-future direction).** The endgame generalizes the

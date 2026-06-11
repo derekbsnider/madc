@@ -1,6 +1,15 @@
 # Test Status
 
-> **Current (2026-06-11, `feature/template-instantiation-claude` @ `7a56d72`
+> **Current (2026-06-11, `feature/template-instantiation-claude` @ `aff26fa`
+> — `<=>` rewritten candidates):** fulltest **571 passed, 0 failed, 0 timed
+> out, 18 skipped** (make exit 0, both check gates GREEN). `r != 0`,
+> `0 == e`, and the only-`<=>`/`==` user-class idiom (all six comparisons)
+> work — new test `testrewritten_realhdr` (9 g++-verified shapes).
+> gcc.c-torture failset **byte-identical** (1567/26/29/0/63); SMAUG green.
+> NEW known gap (pre-existing): `Q a(1), b(2);` ctor-arg multi-declarator
+> hangs the parser — split declarations.
+>
+> **Previous (2026-06-11, `feature/template-instantiation-claude` @ `7a56d72`
 > — `<=>` slice 3a, the token lowering):** fulltest **570 passed, 0 failed,
 > 0 timed out, 18 skipped** (make exit 0, both check gates GREEN).
 > `a <=> b` works on builtin scalars (byte-select into a category temp;

@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### `<=>` rewritten candidates — `r != 0`, reversed `==`, relationals via `<=>` (2026-06-11, `feature/template-instantiation-claude` @ `aff26fa`)
+
+- **C++20 [over.match.oper] rewritten candidates**: when every direct
+  candidate misses, `x != y` lowers to `!(x == y)` (a member `operator==`
+  serves too; `<compare>` defines no `operator!=`), `x == y` tries the
+  reversed `y == x`, and the relationals `< > <= >=` lower to
+  `(x <=> y) @ 0` when an `operator<=>` covers the operand pair. The C++20
+  idiom works: a class implementing only `operator<=>` + `operator==` gets
+  all six comparisons (`testrewritten_realhdr`, 9 g++-verified shapes).
+  Recursion is bounded via `lower_free_operator_to_call`'s new
+  `no_rewrite` parameter.
+- Known gap found in passing (pre-existing, verified at clean HEAD):
+  `Q a(1), b(2);` — multi-declarator with ctor-argument initializers —
+  hangs the parser (parseExprStmt loop at the comma). Recorded in
+  claude_status known gaps; workaround: split the declarations.
+- Gates: fulltest **571 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  torture failset **byte-identical**, SMAUG soak green.
+
 ### `<=>` slice 3a — the token lowering itself; `a <=> b` works (2026-06-11, `feature/template-instantiation-claude` @ `7a56d72`)
 
 - **Builtin scalars** ([expr.spaceship]): `a <=> b` lowers CIR-side to a
