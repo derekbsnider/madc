@@ -18435,6 +18435,152 @@ static bool skipped_friend_operator_definition(
     return false;
 }
 
+// True when a skipped FRIEND comparison operator is DEFAULTED
+// (`friend bool operator==(T, T) noexcept = default;`): an operator
+// declarator followed at top level by `= default` before any body or ';'.
+static bool skipped_friend_defaulted_comparison(
+	const std::vector<TokenBase *> &tokens, std::string *opname_out)
+{
+    std::string opname;
+    size_t oper_idx = 0, lparen = 0;
+    if ( !find_free_operator_declarator(tokens, opname, oper_idx, lparen) )
+	return false;
+    if ( opname != "operator==" && opname != "operator<=>" )
+	return false;
+    int depth = 0;
+    for ( size_t i = lparen; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++depth;
+	else if ( t->id() == TokenID::tkClBrk )
+	    --depth;
+	else if ( depth == 0 )
+	{
+	    if ( t->id() == TokenID::tkOpBrc || t->id() == TokenID::tkSemi )
+		return false;	// a real body / plain declaration
+	    if ( t->id() == TokenID::tkAssign )
+	    {
+		TokenBase *nx = (i + 1 < tokens.size()) ? tokens[i + 1] : NULL;
+		bool dflt = nx
+		    && ((nx->id() == TokenID::tkDEFAULT)
+			|| (is_contextual_identifier_token(nx)
+			    && contextual_identifier_name(nx) == "default"));
+		if ( dflt && opname_out )
+		    *opname_out = opname;
+		return dflt;
+	    }
+	}
+    }
+    return false;
+}
+
+// Synthesize the namespace-scope DEFINITION of a DEFAULTED comparison
+// operator ([class.compare.default]) from the class's ordered member list,
+// as source tokens for the friend-hoist queue:
+//   operator==  -> bool operator==(T __madc_l, T __madc_r)
+//                  { return __madc_l.m1 == __madc_r.m1 && ...; }
+//   operator<=> -> Cat operator<=>(T __madc_l, T __madc_r)
+//                  { if (__madc_l.m1 != __madc_r.m1)
+//                        return __madc_l.m1 <=> __madc_r.m1; ...
+//                    return __madc_l.mN <=> __madc_r.mN; }
+// Cat = std::partial_ordering when any member is floating, else
+// std::strong_ordering. Scalar/pointer members only — bases, class-typed
+// members, or an empty member list bail (no synthesis; the loud
+// no-candidate error remains). Runs at class COMPLETION so the member list
+// is final.
+static bool synthesize_defaulted_comparison(
+	Program &pgm, DataDefCLASS *ddc, const std::string &opname,
+	std::vector<TokenBase *> &out)
+{
+    if ( !ddc || ddc->members.empty() || !ddc->bases.empty() )
+	return false;
+    bool spaceship = (opname == "operator<=>");
+    bool floating = false;
+    for ( size_t i = 0; i < ddc->members.size(); ++i )
+    {
+	DataDef *md = ddc->members[i].second;
+	if ( !md || md->is_object()
+	  || !(md->is_numeric() || md->is_pointer()) )
+	    return false;
+	if ( md->is_real() )
+	    floating = true;
+    }
+    TokenDataType *ret_tdt;
+    if ( spaceship )
+    {
+	namespace_datatype_map_t::iterator ni =
+	    pgm.namespace_datatype_map.find("std");
+	if ( ni == pgm.namespace_datatype_map.end() )
+	    return false;	// no parsed <compare> — cannot synthesize
+	datatype_map_iter di = ni->second.find(floating ? "partial_ordering"
+						       : "strong_ordering");
+	if ( di == ni->second.end() || !di->second )
+	    return false;
+	ret_tdt = (TokenDataType *)di->second->clone();
+    }
+    else
+	ret_tdt = new TokenDataType("bool", ddBOOL);
+
+    auto member_pair = [&](std::vector<TokenBase *> &v, const std::string &m,
+			   TokenBase *op)
+    {
+	v.push_back(new TokenIdent("__madc_l"));
+	v.push_back(new TokenDot());
+	v.push_back(new TokenIdent(m.c_str()));
+	v.push_back(op);
+	v.push_back(new TokenIdent("__madc_r"));
+	v.push_back(new TokenDot());
+	v.push_back(new TokenIdent(m.c_str()));
+    };
+
+    out.push_back(ret_tdt);
+    out.push_back(new TokenOPEROVER());
+    if ( spaceship )
+	out.push_back(new Token3Way());
+    else
+	out.push_back(new TokenEquals());
+    out.push_back(new TokenOpBrk());
+    out.push_back(new TokenDataType(ddc->name.c_str(), *ddc));
+    out.push_back(new TokenIdent("__madc_l"));
+    out.push_back(new TokenComma());
+    out.push_back(new TokenDataType(ddc->name.c_str(), *ddc));
+    out.push_back(new TokenIdent("__madc_r"));
+    out.push_back(new TokenClBrk());
+    out.push_back(new TokenOpBrc());
+    if ( !spaceship )
+    {
+	out.push_back(new TokenRETURN());
+	for ( size_t i = 0; i < ddc->members.size(); ++i )
+	{
+	    if ( i )
+		out.push_back(new TokenLand());
+	    member_pair(out, ddc->members[i].first, new TokenEquals());
+	}
+	out.push_back(new TokenSemi());
+    }
+    else
+    {
+	for ( size_t i = 0; i + 1 < ddc->members.size(); ++i )
+	{
+	    out.push_back(new TokenIF());
+	    out.push_back(new TokenOpBrk());
+	    member_pair(out, ddc->members[i].first, new TokenNotEq());
+	    out.push_back(new TokenClBrk());
+	    out.push_back(new TokenRETURN());
+	    member_pair(out, ddc->members[i].first, new Token3Way());
+	    out.push_back(new TokenSemi());
+	}
+	out.push_back(new TokenRETURN());
+	member_pair(out, ddc->members.back().first, new Token3Way());
+	out.push_back(new TokenSemi());
+    }
+    out.push_back(new TokenClBrc());
+    return true;
+}
+
 // Parse a hoisted hidden-friend operator DEFINITION at namespace scope. A
 // friend definition inside a class body is a NAMESPACE-SCOPE function per
 // C++ ([class.friend]) — the class body parser skips friend declarations
@@ -19405,6 +19551,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // Hidden-friend operator DEFINITIONS collected from the body, hoisted to
     // namespace scope after the class completes ([class.friend]).
     std::vector<std::vector<TokenBase *>> hoisted_friend_operator_defs;
+    // DEFAULTED friend comparisons (`= default` ==/<=>): synthesized from the
+    // ordered member list at class COMPLETION ([class.compare.default]).
+    std::vector<std::string> defaulted_comparison_ops;
 
     // Consume member-level GNU attributes (`__attribute__((aligned(8)))` etc.)
     // wherever they may appear on a member — leading and trailing. Reuses the
@@ -19504,12 +19653,19 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // A hidden-friend operator DEFINITION is a namespace-scope
 	    // function ([class.friend]) — queue it for hoisting once the
 	    // class completes (parse_hoisted_friend_operator), and grant it
-	    // friendship by function name.
+	    // friendship by function name. A DEFAULTED friend comparison is
+	    // queued for member-list synthesis instead.
 	    std::string friend_opname;
 	    if ( skipped_friend_operator_definition(skipped_decl,
 						    &friend_opname) )
 	    {
 		hoisted_friend_operator_defs.push_back(skipped_decl);
+		ddc->friend_function_names.push_back(friend_opname);
+	    }
+	    else if ( skipped_friend_defaulted_comparison(skipped_decl,
+							  &friend_opname) )
+	    {
+		defaulted_comparison_ops.push_back(friend_opname);
 		ddc->friend_function_names.push_back(friend_opname);
 	    }
 	    continue;
@@ -20082,7 +20238,25 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    {
 		FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type);
 		if ( mfd && mfd->defaulted_or_deleted )
+		{
+		    // A DEFAULTED member comparison synthesizes its
+		    // namespace-scope definition from the member list at
+		    // class completion ([class.compare.default]); a defaulted
+		    // operator<=> implicitly declares a defaulted operator==
+		    // too (p4).
+		    if ( is_operator_method
+		      && (mname == "operator<=>" || mname == "operator==") )
+		    {
+			defaulted_comparison_ops.push_back(mname);
+			ddc->friend_function_names.push_back(mname);
+			if ( mname == "operator<=>" )
+			{
+			    defaulted_comparison_ops.push_back("operator==");
+			    ddc->friend_function_names.push_back("operator==");
+			}
+		    }
 		    continue;
+		}
 		if ( FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type) )
 		{
 		    mfd->returns_ref = ret_is_ref;
@@ -20368,9 +20542,26 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     DBG(cout << "TokenCLASS::parse() registered class " << tag->str << " size=" << ddc->size << endl);
 
     // Hoist hidden-friend operator definitions to namespace scope now that
-    // the class is complete (their params/return can name it).
+    // the class is complete (their params/return can name it), and
+    // synthesize the queued DEFAULTED comparisons from the final member
+    // list ([class.compare.default]).
     for ( size_t i = 0; i < hoisted_friend_operator_defs.size(); ++i )
 	parse_hoisted_friend_operator(pgm, hoisted_friend_operator_defs[i]);
+    for ( size_t i = 0; i < defaulted_comparison_ops.size(); ++i )
+    {
+	// Dedupe (a class may default operator<=> AND operator== explicitly;
+	// <=> already queues its implicit ==).
+	bool dup = false;
+	for ( size_t j = 0; j < i; ++j )
+	    if ( defaulted_comparison_ops[j] == defaulted_comparison_ops[i] )
+		dup = true;
+	if ( dup )
+	    continue;
+	std::vector<TokenBase *> synth;
+	if ( synthesize_defaulted_comparison(pgm, ddc,
+					     defaulted_comparison_ops[i], synth) )
+	    parse_hoisted_friend_operator(pgm, synth);
+    }
 
     // what follows?
     tn = pgm.peekToken();
