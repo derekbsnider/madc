@@ -74,12 +74,16 @@ pure aliases: `uint32_t` ≡ `unsigned int`). Then:
   false, `a === 5u` → true. Suffixes give exact control; `===` never
   converts.
 
-### 2.2 Class involved — the domain rule
+### 2.2 Class involved — user overload first, then the domain rule
 
 When at least one operand is a class object (including references,
 which resolve as the referenced class — existing 2d machinery):
 
-- Defer to the **same `operator==` overload resolution `==` uses**
+- **User `operator===` wins.** If a viable user-declared `operator===`
+  (member or free/friend — see §2.5) exists for the operand pair,
+  ordinary overload resolution dispatches it, exactly like any other
+  operator. Only when none exists does the domain rule below apply.
+- Otherwise defer to the **same `operator==` overload resolution `==` uses**
   (member/free operator==, implicit ctor conversions, the existing
   candidate scoring). A scalar/literal that implicitly converts into
   the class's domain is compared *inside* that domain.
@@ -90,9 +94,9 @@ which resolve as the referenced class — existing 2d machinery):
     runtime (integer tag vs real).
   - `std::string s("x"); s === "x"` → **true** (the literal enters the
     string domain; matches PHP, where a string literal IS a string).
-- **Same class, no viable `operator==`** → compile error, identical to
-  `==` ("no match"). Same-type strict comparison genuinely needs the
-  class to say how values compare.
+- **Same class, no viable `operator===` and no viable `operator==`** →
+  compile error, identical to `==` ("no match"). Same-type strict
+  comparison genuinely needs the class to say how values compare.
 - **No viable candidate across different types** (where `==` would be
   a compile error) → **statically false** instead. Unrelated domains
   are simply not strictly equal.
@@ -105,7 +109,38 @@ effects are preserved, evaluation order is kept, and the result is the
 constant. No warning is emitted — static falseness is the operator's
 semantics, not a suspected mistake.
 
-### 2.4 Relation to `==` on `madc::value`
+### 2.4 `!==` dispatch with user overloads
+
+`a !== b` first tries a viable user `operator!==`; if none exists it is
+`!(a === b)` (which itself may dispatch a user `operator===`). It never
+falls back to `operator!=`.
+
+### 2.5 User-defined `operator===` / `operator!==` (dialect extension)
+
+- Declarable like any other overloaded operator: member, free, or
+  hidden friend. The parser's operator-name grammar accepts the `===` /
+  `!==` tokens after the `operator` keyword.
+- **Gating is automatic:** the tokens only lex under STD_MADC (§1), so
+  `operator===` in a `--std=c++` TU is a syntax error with no extra
+  machinery — same philosophy as the `<=>` floor.
+- **Mangling (madc_mangle, the single symbol source):** Itanium has no
+  operator code for `===`, so madc uses the vendor-extended operator
+  encoding `v <arity> <source-name>`:
+  `operator===` ⇒ `v23eq3` (binary, source-name `eq3`) and
+  `operator!==` ⇒ `v23ne3` (binary, source-name `ne3`). Member forms
+  mangle with arity 1 semantics handled by the normal member-operator
+  path (the encoding still records the vendor name). Only
+  madc-dialect classes can declare these, so every definition and call
+  site is a madc-emitted symbol — no g++/libstdc++ interop arises by
+  construction.
+- `= default` synthesis for `operator===` is NOT part of this track
+  (no C++ default-comparison analogue; see Out of scope).
+- Rationale for inclusion: if `==` on `madc::value` is later loosened
+  to PHP-style juggling, its strict compare moves to `operator===` —
+  the overload gives that change a home without touching `===`'s core
+  rules.
+
+### 2.6 Relation to `==` on `madc::value`
 
 `value::operator==` is currently strict in the C++ runtime, so `==`
 and `===` coincide on two `madc::value` operands today. If `==` on
@@ -122,12 +157,17 @@ separate change to the `==` path; `===` semantics here do not move.
   switch region, `cir_builder.cpp:7834`):
   - `tk3Eq` / `tk3NotEq`, both operands scalar: `same_representation`
     → emit `N_EQ` / `N_NE`; mismatch → `N_COMMA(l, r, 0|1)`.
-  - Class involved: route through the **identical** operator-dispatch
-    path `tkEquals` uses (the operator-name mapping at
-    `cir_builder.cpp:4803` resolves `tk3Eq → "=="`); `tk3NotEq` wraps
-    the dispatched compare in `N_NOT`. No viable candidate + different
-    types → the comma-constant lowering; same type → propagate the
-    same error `==` raises.
+  - Class involved: first resolve a user overload under the operator
+    names `"==="` / `"!=="` (the operator-name mapping at
+    `cir_builder.cpp:4803` gains `tk3Eq → "==="`, `tk3NotEq → "!=="`,
+    tried before the fallbacks); if none, `tk3Eq` routes through the
+    **identical** operator-dispatch path `tkEquals` uses (`"=="`), and
+    `tk3NotEq` wraps the resolved `===` compare in `N_NOT`. No viable
+    candidate + different types → the comma-constant lowering; same
+    type → propagate the same error `==` raises.
+  - `madc_mangle` gains the vendor-extended operator names (§2.5):
+    `operator===` ⇒ `v23eq3`, `operator!==` ⇒ `v23ne3`; `test_mangle`
+    pins both.
 - `Token3Eq` (and `Token3NotEq`) remain in the high-level tree — the
   MC11-IR both-views invariant. c2mir sees only ordinary C11 nodes.
   **Zero MIR-fork changes.**
@@ -163,7 +203,10 @@ separate change to the `==` path; `===` semantics here do not move.
   (`a === 5` false, `a === 5u` true); pointer pointee rule + address
   compare; `madc::value === 5 / 5.0 / "5"`; `std::string === "x"` /
   different value; side-effect preservation of a statically-false
-  compare (`f() === g()` with counters); the full `!==` mirror of each.
+  compare (`f() === g()` with counters); the full `!==` mirror of each;
+  a class declaring `operator===` (e.g. Money: `==` compares amount,
+  `===` compares amount AND currency) exercising member and free
+  forms, `!==` fallback negation, and an explicit `operator!==`.
 - **`tests/test3eqgate.*`** (`.flags` with `--std=c++17`,
   `.expect_err`): `a === b` must fail to compile outside STD_MADC —
   test3waygate precedent.
@@ -175,7 +218,8 @@ separate change to the `==` path; `===` semantics here do not move.
 
 ## Out of scope
 
-- Loose `==` juggling on `madc::value` (PHP-style `5 == "5"`).
-- A user-overloadable `operator===` (would need mangling/dialect
-  design; the domain rule covers the known use cases).
+- Loose `==` juggling on `madc::value` (PHP-style `5 == "5"`). When it
+  happens, `value`'s strict compare moves to `operator===` (§2.5).
+- `= default` synthesis for `operator===` / `operator!==` (no C++
+  default-comparison analogue to mirror).
 - Warning on statically-false `===` (could be added later if wanted).
