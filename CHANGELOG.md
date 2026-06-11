@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### `<=>` slice 1 — C++20 std-floor gating + loud unhandled-binop default (2026-06-11, `feature/template-instantiation-claude` @ `90e5f5c`)
+
+- **`a <=> b` no longer compiles as `a + b`.** The lexer tokenized `<=>`
+  under every `--std=`, and the CIR builder's binary-operator switch
+  silently lowered any unmapped operator as N_ADD — `3 <=> 7` returned 10
+  in the madc dialect. The token is now gated at the C++20 std floor
+  (STD_MADC + `--std=c++20`+; below the floor it lexes `<=` then `>` and
+  parse rejects, like g++ -std=c++17), and the unhandled-binop default is
+  a loud `error_node` (pre-c2mir gate). New test `test3waygate`.
+- **User ruling:** the lowering will be the FAITHFUL
+  `std::strong_ordering`/`partial_ordering` category objects from the real
+  `<compare>` header — no pragmatic-int shape. Probe: the category classes
+  don't yet register when parsing real `<compare>` (prerequisite work
+  recorded in `docs/plans/cpp-support.md` **P2.15** with the g++ -O0 canon
+  shape).
+- Gates: fulltest **565 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  torture failset **byte-identical**, SMAUG soak green.
+
 ### Template-instantiation batch 2d — reference operands resolve as the referenced class (2026-06-11, `feature/template-instantiation-claude` @ `e124de5`) — BATCH COMPLETE
 
 - **2d — `cout << s` with a `const std::string &s` parameter works** (and

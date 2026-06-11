@@ -108,7 +108,7 @@ testable — is **drift** and is rejected. (Memory: `project_north_star_c23_cpp2
 | General `auto` deduction | "'auto' type deduction" unsupported (only fn-ptr/lambda) | **P2.3** |
 | `const` **enforcement** | silently allows `const int x; x = 6;` | **P2.4** |
 | Access control enforcement | uncertain — `private:`+accessor probe errored; verify | **P2.5** |
-| **`<=>`** (C++20 three-way comparison) | LEXES ONLY (`Token3Way`, `tk3Way`) — zero parser/CIR references; ungated by `--std=` | **P2.15** |
+| **`<=>`** (C++20 three-way comparison) | gated + loud error (slice 1, `90e5f5c`); faithful `<compare>` lowering pending — `std::strong_ordering` doesn't register from the real header yet | **P2.15** |
 
 ### C side (C11 → C23)
 The CIR is a C11 AST consumed by c2mir. Broad C parity (toward `master`'s ~C89 +
@@ -381,19 +381,28 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   Absorbs P2.9. DEFINITION OF DONE = grep returns zero; recognition-migration alone is
   NOT done (the tag still exists = drift risk).
 
-- **P2.15 — `<=>` three-way comparison (C++20).** Current state (verified
-  2026-06-11): the lexer tokenizes `<=>` into `Token3Way` (`src/lexer.cpp`,
-  `include/tokens.h` `tk3Way`) and NOTHING consumes it — zero references in
-  parser.cpp / cir_builder.cpp, and the token is NOT gated by the
-  LanguageStd enum (it lexes under every `--std=`). Staged plan:
+- **P2.15 — `<=>` three-way comparison (C++20).** Slice 1 LANDED
+  (2026-06-11, `90e5f5c`): the token is gated at the C++20 std floor
+  (STD_MADC + `--std=c++20`+; below the floor it lexes `<=` then `>` and is
+  rejected at parse — test `test3waygate`), and the CIR builder's
+  unhandled-binary-operator default is a LOUD error_node (it silently
+  lowered any unmapped operator as N_ADD — `a <=> b` compiled as `a + b`
+  in the madc dialect since the token existed). `a <=> b` now errors
+  cleanly until the faithful lowering lands. PREREQUISITE found by probe:
+  `std::strong_ordering` does NOT register when parsing the real
+  `<compare>` (`use of undeclared identifier` — the category classes, their
+  constexpr class-typed statics `less`/`equal`/`greater`, and their
+  hidden-friend `operator@(ordering, __cmp_cat::__unspec)` need real-header
+  parsing work first; g++ -O0 canon: `<=>` itself is an INLINE byte-select
+  into `_M_value`, `r < 0` CALLS the TU-local friend
+  `_ZStltSt15strong_orderingNSt9__cmp_cat8__unspecE`). Remaining plan:
   1. Builtin scalars: parse `a <=> b` as a binary operator. Lowering
-     semantics are an OPEN USER DECISION: pragmatic `(a>b)-(a<b)` int
-     result (madc-mode), vs faithful `std::strong_ordering` /
+     semantics RULED (user, 2026-06-11): FAITHFUL `std::strong_ordering` /
      `partial_ordering` category objects from the real `<compare>` header
-     (required for `--std=c++20` conformance). Either way, GATE the token
-     at the C++20 std floor via the LanguageStd enum (`--std=c++17` must
-     reject it once parsing exists; today it lexes ungated —
-     [[project_std_enum_gatekeeping]] pattern).
+     (g++/clang canon; required for `--std=c++20` conformance) — no
+     pragmatic-int shape. GATE the token at the C++20 std floor via the
+     LanguageStd enum (`--std=c++17` must reject it once parsing exists;
+     today it lexes ungated — [[project_std_enum_gatekeeping]] pattern).
   2. Class `operator<=>` overloads — ride the existing member/free
      operator machinery (operand_object_class-aware) + mangled-direct /
      body instantiation for std types.
