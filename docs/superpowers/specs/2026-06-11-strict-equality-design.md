@@ -223,3 +223,22 @@ separate change to the `==` path; `===` semantics here do not move.
 - `= default` synthesis for `operator===` / `operator!==` (no C++
   default-comparison analogue to mirror).
 - Warning on statically-false `===` (could be added later if wanted).
+- **Script-side `array` (the unified `madc::value`) strict equality**
+  (deferred 2026-06-11, implementation Task 7): script `array` is the
+  builtin `dtARRAY` runtime-object surface, and whole-value scalar ops
+  do not exist on it yet (`array v; v = 5;` is "assignment of
+  incompatible value" today) — there is no `==` surface for `===` to
+  mirror. It lands with the eval-package-C / script-value-expression
+  work. The eval DSL already gives `===`/`!==` strict semantics over
+  dynamic values (`eval_expression`), and §2.2's `madc::value` examples
+  hold for C++-host-side class usage.
+- A REVERSED-operand rewritten candidate for `===` (mixed-class free
+  `operator===(A, B)` called with swapped operands). `==` has one per
+  [over.match.oper]; `===` is a dialect operator with no standard
+  mandate — add it to the same `rewritten_operator_candidate` family if
+  a real use case appears.
+- `tests/test3eqclass_realhdr` (string cases through REAL libstdc++
+  headers with `--no-embedded-headers`): blocked on real `<string>`
+  parsing under STD_MADC (the `_GLIBCXX_BEGIN_NAMESPACE_VERSION` gap,
+  header-partition campaign). The embedded `<string>` path tested today
+  binds the same real libstdc++ symbols mangled-direct.
