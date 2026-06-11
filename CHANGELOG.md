@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### `<=>` slice 2b — hidden-friend operator bodies; `r < 0` works from the real `<compare>` (2026-06-11, `feature/template-instantiation-claude` @ `5f63a20`)
+
+- **Free-operator dispatch**: a parsed non-member operator function with a
+  body — a user-written global/namespace free operator, a hoisted hidden
+  friend, or a prior template instantiation — is found and called for
+  class-operand operator expressions (`find_free_operator_function` ranks
+  the union of all `"::"+opname`-suffixed overload sets via the shared
+  `score_arg_to_param`; the winner lowers to an ordinary `TokenCallFunc`).
+  Global-scope `operatorX` definitions now register per-overload sets under
+  the `"::operatorX"` key. Comparisons (`== != < > <= >=`) joined the
+  parse-time operator family — `std::string ==`/`!=` now compile via the
+  existing body-instantiation path as a side effect. Test `testfreeop`.
+- **Literal `0` is a null-pointer constant** in overload ranking
+  ([conv.ptr]): `score_arg_to_param` gains `arg_is_zero_literal` (rank 3 —
+  below pointer args, above user-defined conversions), threaded from every
+  ranking layer that can see the argument token, including
+  `select_ctor_overload` — so the `0` in `r < 0` materializes the
+  `__cmp_cat::__unspec` argument through its `__unspec(__unspec*)` ctor.
+- **Hidden-friend operator DEFINITIONS hoist to namespace scope** once the
+  class completes ([class.friend] — they are namespace-scope functions,
+  TU-local, NOT exported by libstdc++, so the bodies must compile). Friend
+  FUNCTIONS are now modeled: `DataDefCLASS::friend_function_names`
+  (name-based grant, like `friend_class_names`); the FuncDef display name
+  is stamped BEFORE the body parses so the grant matches while the hoisted
+  body reads `__v._M_value`. Tests `testhiddenfriend`,
+  `testcompareops_realhdr` (strong/weak/partial orderings vs literal 0,
+  reversed operands, unordered — 7 shapes, g++-verified).
+- NOT in scope: C++20 rewritten candidates — `r != 0` (rewrites to
+  `!(r == 0)`; `<compare>` defines no `operator!=`) still errors loudly,
+  and `= default` comparison generation. Queued in cpp-support.md P2.15.
+- Gates per commit: fulltest up to **569 / 0 / 0 / 18** (exit 0, both check
+  gates GREEN), torture failset **byte-identical** (1567/26/29/0/63),
+  SMAUG soak green.
+
 ### `<=>` slice 2a′ — standalone `#include <compare>` works, g++'s chain duplicated (2026-06-11, `feature/template-instantiation-claude` @ `fcceefb`)
 
 - **`__cpp_concepts=202002L` at the C++20 floor** — g++ compiles

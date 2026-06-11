@@ -108,7 +108,7 @@ testable — is **drift** and is rejected. (Memory: `project_north_star_c23_cpp2
 | General `auto` deduction | "'auto' type deduction" unsupported (only fn-ptr/lambda) | **P2.3** |
 | `const` **enforcement** | silently allows `const int x; x = 6;` | **P2.4** |
 | Access control enforcement | uncertain — `private:`+accessor probe errored; verify | **P2.5** |
-| **`<=>`** (C++20 three-way comparison) | gated + loud error (slice 1, `90e5f5c`); faithful `<compare>` lowering pending — `std::strong_ordering` doesn't register from the real header yet | **P2.15** |
+| **`<=>`** (C++20 three-way comparison) | category types + hidden-friend operator bodies work from the real `<compare>` (slices 1–2b; `r < 0` calls the compiled friend); the `<=>` token lowering itself + rewritten candidates pending | **P2.15** |
 
 ### C side (C11 → C23)
 The CIR is a C11 AST consumed by c2mir. Broad C parity (toward `master`'s ~C89 +
@@ -414,20 +414,40 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   `bits/c++config.h` in, exactly like g++) + requires-clause /
   trailing-requires / concept-definition consumption in the template
   skippers + `using NAME = type;` alias names may shadow registered type
-  names. Remaining plan:
+  names. **Slice 2b LANDED** (2026-06-11, three commits ending `5f63a20`):
+  `r < 0` calls the compiled TU-local hidden friend (tests
+  `testcompareops_realhdr` — strong/weak/partial vs literal 0, reversed
+  operands, unordered, 7 shapes g++-verified — plus `testhiddenfriend`,
+  `testfreeop`). Three general mechanisms: (i) free-operator DISPATCH —
+  parsed non-member operator functions (user-written, hoisted friends,
+  prior instantiations) rank via the shared score_arg_to_param over the
+  union of "::"+opname-suffixed overload sets and lower to an ordinary
+  TokenCallFunc; global-scope `operatorX` definitions register per-overload
+  sets under the "::operatorX" key; comparisons joined the
+  object_operator_symbol family (std::string ==/!= now compile via body
+  instantiation as a side effect); (ii) literal 0 = null-pointer constant
+  in score_arg_to_param ([conv.ptr], rank 3), threaded from every
+  token-sighted ranking layer incl. select_ctor_overload (materializes
+  the `__unspec` argument through its `__unspec(__unspec*)` ctor); (iii)
+  hidden-friend operator DEFINITIONS hoist to namespace scope after the
+  class completes ([class.friend]) + friend FUNCTIONS are modeled
+  (DataDefCLASS::friend_function_names, name-based grant; the FuncDef
+  display name is stamped before the body parses so `__v._M_value`
+  resolves inside the hoisted body). Remaining plan:
   1. Builtin scalars: parse `a <=> b` as a binary operator. Lowering
      semantics RULED (user, 2026-06-11): FAITHFUL `std::strong_ordering` /
      `partial_ordering` category objects from the real `<compare>` header
      (g++/clang canon; required for `--std=c++20` conformance) — no
-     pragmatic-int shape. GATE the token at the C++20 std floor via the
-     LanguageStd enum (`--std=c++17` must reject it once parsing exists;
-     today it lexes ungated — [[project_std_enum_gatekeeping]] pattern).
-  2. Class `operator<=>` overloads — ride the existing member/free
-     operator machinery (operand_object_class-aware) + mangled-direct /
-     body instantiation for std types.
-  3. Rewritten candidates (`a < b` → `(a <=> b) < 0`, reversed `==`) and
-     `= default` generation for `operator<=>` — parser overload-resolution
-     work, last.
+     pragmatic-int shape. The token IS gated at the C++20 floor (slice 1);
+     class `operator<=>` overloads then ride the (now reference-aware +
+     free-operator) machinery — the hoisted friend `operator<=>` bodies
+     already parse.
+  2. Rewritten candidates ([over.match.oper]): `r != 0` rewrites to
+     `!(r == 0)` (<compare> defines NO operator!=), `a < b` →
+     `(a <=> b) < 0` for class types, reversed `==`. Today `r != 0`
+     errors loudly. Plus `= default` comparison generation
+     (operator==(strong_ordering,strong_ordering) = default is skipped,
+     so ordering-vs-ordering compares need it).
 
 ### P3 — broader standards surface (later)
 - **Polyglot transpiler (far-future direction).** The endgame generalizes the

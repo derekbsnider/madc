@@ -1,6 +1,20 @@
 # Test Status
 
-> **Current (2026-06-11, `feature/template-instantiation-claude` @ `e124de5`
+> **Current (2026-06-11, `feature/template-instantiation-claude` @ `5f63a20`
+> — `<=>` slice 2b COMPLETE, hidden-friend operator bodies):** fulltest
+> **569 passed, 0 failed, 0 timed out, 18 skipped** (make exit 0, both
+> check gates GREEN). `r < 0` on `std::strong_ordering` calls the compiled
+> TU-local friend from the real `<compare>`. New tests: `testfreeop`
+> (free-operator dispatch by overload resolution + literal-0
+> null-pointer-constant overload choice, g++-verified), `testhiddenfriend`
+> (user-code hidden-friend operators, default std), `testcompareops_realhdr`
+> (`<compare>` strong/weak/partial orderings vs literal 0, reversed
+> operands, unordered — 7 shapes, g++-verified). NOT in scope: C++20
+> rewritten candidates (`r != 0`) — errors loudly, queued in
+> cpp-support.md P2.15. gcc.c-torture failset **byte-identical** per
+> ingredient commit (1567/26/29/0/63); SMAUG soak green per commit.
+>
+> **Previous (2026-06-11, `feature/template-instantiation-claude` @ `e124de5`
 > — template-instantiation batch COMPLETE, 2a/2b/2c/2d):** fulltest **564
 > passed, 0 failed, 0 timed out, 18 skipped** (make exit 0, both check gates
 > GREEN). New tests this branch: `teststod{,_realhdr}` (2a fn-template
