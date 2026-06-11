@@ -196,7 +196,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.27.0, develop): 557 integration/unit tests pass (0 failing, 18 skipped); gcc.c-torture 1567 of 1652 in-scope (95.0%) — promote gate = all 41 remaining standard-C failures fixed (≥1608), 33 gcc-only/torture-only tests formally skipped per [`docs/parity/failset-classification.md`](docs/parity/failset-classification.md). `std::string` is a real C++ class and `std::vector`/`map`/`set` are real `#include`-defined `std::` templates (the legacy `dtSTRING`/`tkSTRING`/`tkVECTOR`/`ns_stl` shortcuts are retired). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.27.0, develop + the template-instantiation branch): 561 integration/unit tests pass (0 failing, 18 skipped); gcc.c-torture 1567 of 1652 in-scope (95.0%) — promote gate = all 41 remaining standard-C failures fixed (≥1608), 33 gcc-only/torture-only tests formally skipped per [`docs/parity/failset-classification.md`](docs/parity/failset-classification.md). `std::string` is a real C++ class and `std::vector`/`map`/`set` are real `#include`-defined `std::` templates (the legacy `dtSTRING`/`tkSTRING`/`tkVECTOR`/`ns_stl` shortcuts are retired). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -250,10 +250,13 @@ real-header `std::to_string(42)` and `std::stoi(string)` execute. Plus C++
 correctness fixes. See
 [`docs/release-notes/v0.27.0.md`](docs/release-notes/v0.27.0.md).
 
-CIR baseline (2026-06-11): **557 integration/unit pass / 0 fail /
+CIR baseline (2026-06-11): **561 integration/unit pass / 0 fail /
 18 skip** (zero known reds; post-release landings: real-header
-`std::string a+b`, the MadValue/MadArray → `madc::value` unification, and
-script-level `madc::eval_*` with user-call-site scope capture),
+`std::string a+b`, the MadValue/MadArray → `madc::value` unification,
+script-level `madc::eval_*` with user-call-site scope capture, and the
+template-instantiation batch — `std::stof/stod` pack elision,
+`"pre" + s` mangled-direct, and `a + "literal"` free-operator BODY
+instantiation with the char_traits explicit-spec key fix),
 and **gcc.c-torture 1567 of 1652 in-scope (95.0%)** — the develop→master
 promote gate is **all 41 remaining standard-C failures fixed (≥1608)**, per
 the user-signed failset classification audit

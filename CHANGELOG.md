@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+### Template-instantiation batch 2a/2b — operator BODY instantiation (2026-06-11, `feature/template-instantiation-claude` @ `9245775`)
+
+- **2b-ii — `a + "literal"` compiles the real libstdc++ `operator+` body**
+  (`9245775`): the `(const basic_string&, const _CharT*)` shape is not
+  exported, so the retained operator template's body instantiates (g++'s
+  TU-local weak specialization, Borland monomorphize). Operator templates
+  join `fn_template_map` (keyed `ns::operatorX`); deduction matches
+  template-id params against the operand class's canonical template
+  arguments (texts resolve through the one `instantiate_template_id` seam);
+  the expression lowers Cfront-style — the TokenOperator becomes a
+  TokenCallFunc on the instantiated overload (`lower_free_operator_to_call`),
+  only when no member operator and no exported mangled-direct shape covers
+  the operands. The 2a instantiation tail split into the shared
+  `instantiate_fn_template_binding`. CIR call-convention lock-step fixes the
+  chain exposed: Itanium sret for external member calls returning
+  non-trivial classes by value (`get_allocator`, g++-verified), Pass-0.75
+  retbuf-shaped externs + `m_materialized_lib_syms` classification for
+  lazily-materialized bodies, block-scope class typedefs reference the
+  file-scope tag (no shadowing local body), and ctor-overload selection
+  types call arguments by the resolved callee's return class (so
+  `return __str_concat(...);` copy-constructs into `__retbuf` — was a
+  bit-copy double-free). New test `teststrplusbody_realhdr`.
+- **char_traits explicit-specialization instantiation-key fix** (`1abbee8`):
+  `std::char_traits<char>::length("abc")` silently folded to **0** — once a
+  template name exists in 2+ namespaces, use sites key instantiations
+  namespace-qualified, but explicit specializations registered under the
+  legacy unqualified key, so use sites instantiated the hollow primary and
+  every static call became a dependent-call placeholder. One shared key
+  rule (`template_instantiation_key_head`), in-place completion of the
+  legacy placeholder (+ qualified-key alias), and qualified same-name
+  references to OTHER namespaces no longer renamed during primary
+  instantiation (`__gnu_cxx::char_traits<_CharT>` base was clobbered).
+- **2b-i — literal-lhs free operators** (`a89fe3a`): `"pre" + s` binds the
+  EXPORTED mixed shape `operator+(const char*, const string&)`
+  mangled-direct (W2 Pass 2b). Test `teststrlitplus_realhdr`.
+- **2a — fn-template EMPTY parameter-pack elision** (`6f93682`):
+  `std::stof/stod/stold` instantiate (`__gnu_cxx::__stoa`'s empty `_Base...`
+  elides). Tests `teststod{,_realhdr}`.
+- **iostream:80 `__ioinit` warning fix** (`398cb82`): class-qualified
+  nested-type declarations parse; external-ctor receiver cast to `void*`.
+- Gates at each landing: fulltest **561 / 0 / 0 / 18** (exit 0, both check
+  gates GREEN), full gcc.c-torture failset **byte-identical** to the
+  55-line baseline (1567/26/29/0/63), SMAUG soak green.
+
 ### Failset classification audit — promote gate re-defined, 33 formal skips (2026-06-11, `21bfec9`)
 
 - **The 88-test gcc.c-torture failset is fully classified**
