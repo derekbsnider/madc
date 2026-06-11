@@ -108,6 +108,7 @@ testable — is **drift** and is rejected. (Memory: `project_north_star_c23_cpp2
 | General `auto` deduction | "'auto' type deduction" unsupported (only fn-ptr/lambda) | **P2.3** |
 | `const` **enforcement** | silently allows `const int x; x = 6;` | **P2.4** |
 | Access control enforcement | uncertain — `private:`+accessor probe errored; verify | **P2.5** |
+| **`<=>`** (C++20 three-way comparison) | LEXES ONLY (`Token3Way`, `tk3Way`) — zero parser/CIR references; ungated by `--std=` | **P2.15** |
 
 ### C side (C11 → C23)
 The CIR is a C11 AST consumed by c2mir. Broad C parity (toward `master`'s ~C89 +
@@ -379,6 +380,26 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   5. **grep=0 verify** (`grep dtSTRING\|dtSTRINGref src/ include/` → 0) + 409+ green.
   Absorbs P2.9. DEFINITION OF DONE = grep returns zero; recognition-migration alone is
   NOT done (the tag still exists = drift risk).
+
+- **P2.15 — `<=>` three-way comparison (C++20).** Current state (verified
+  2026-06-11): the lexer tokenizes `<=>` into `Token3Way` (`src/lexer.cpp`,
+  `include/tokens.h` `tk3Way`) and NOTHING consumes it — zero references in
+  parser.cpp / cir_builder.cpp, and the token is NOT gated by the
+  LanguageStd enum (it lexes under every `--std=`). Staged plan:
+  1. Builtin scalars: parse `a <=> b` as a binary operator. Lowering
+     semantics are an OPEN USER DECISION: pragmatic `(a>b)-(a<b)` int
+     result (madc-mode), vs faithful `std::strong_ordering` /
+     `partial_ordering` category objects from the real `<compare>` header
+     (required for `--std=c++20` conformance). Either way, GATE the token
+     at the C++20 std floor via the LanguageStd enum (`--std=c++17` must
+     reject it once parsing exists; today it lexes ungated —
+     [[project_std_enum_gatekeeping]] pattern).
+  2. Class `operator<=>` overloads — ride the existing member/free
+     operator machinery (operand_object_class-aware) + mangled-direct /
+     body instantiation for std types.
+  3. Rewritten candidates (`a < b` → `(a <=> b) < 0`, reversed `==`) and
+     `= default` generation for `operator<=>` — parser overload-resolution
+     work, last.
 
 ### P3 — broader standards surface (later)
 - **Polyglot transpiler (far-future direction).** The endgame generalizes the
