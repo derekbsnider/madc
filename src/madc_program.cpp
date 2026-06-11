@@ -397,7 +397,7 @@ bool is_expression_compare_token(TokenID id)
     return id == TokenID::tkEquals || id == TokenID::tkNotEq
 	|| id == TokenID::tkLT || id == TokenID::tkLE
 	|| id == TokenID::tkGT || id == TokenID::tkGE
-	|| id == TokenID::tk3Eq;
+	|| id == TokenID::tk3Eq || id == TokenID::tk3NotEq;
 }
 
 bool expression_operand_is_string(TokenBase *tb)
@@ -422,9 +422,14 @@ Variable *ensure_expression_strcmp(Program &pgm)
 // The expression DSL compares string operands by VALUE (spec:
 // docs/superpowers/specs/2026-06-10-eval-leftovers-design.md). Comparison
 // nodes with two string operands become strcmp(a,b) OP 0 (`===` becomes a
-// replacement strcmp(a,b) == 0 node — CIR has no tk3Eq lowering); a string
-// vs non-string mix is a loud error. Full eval / the real language never
-// reach this pass.
+// replacement strcmp(a,b) == 0 node and `!==` its strcmp(a,b) != 0 twin —
+// the DSL's value semantics; the real language's ===/!== lower in CIR via
+// strict_equality_lowering and never reach this pass); a string vs
+// non-string mix is a loud error.
+// The rewrite must cover EVERY compare token over string operands: an
+// unrewritten compare keeps char* operands at the root, and
+// infer_expression_result_type would marshal the int result as a pointer
+// (the host then strlen()s it — a real crash, caught by unit test).
 // The recursion set mirrors validate_expression_ast's node coverage — keep
 // the two in sync. call->src_node is unreachable here: the validator rejects
 // indirect calls before this pass runs.
@@ -524,6 +529,18 @@ bool rewrite_expression_string_compares(Program &pgm, TokenBase *&tb,
 	eq->left = cmp;
 	eq->right = zero;
 	tb = eq;
+	return true;
+    }
+    if ( op->id() == TokenID::tk3NotEq )
+    {
+	// `!==` on two strings is !(===): strcmp != 0. Replace the node.
+	TokenNotEq *ne = new TokenNotEq();
+	ne->file = op->file;
+	ne->line = op->line;
+	ne->column = op->column;
+	ne->left = cmp;
+	ne->right = zero;
+	tb = ne;
 	return true;
     }
     op->left = cmp;
@@ -735,6 +752,13 @@ DataDef *infer_expression_result_type(TokenBase *expr)
     TokenOperator *op = dynamic_cast<TokenOperator *>(expr);
     if ( !op )
 	return dt;
+
+    // A comparison yields int 0/1 regardless of operand types (C semantics);
+    // never adopt a pointer or real OPERAND type as the comparison's result.
+    // (Without this, `5 === 5.0` inferred double and `s !== "x"` inferred
+    // char* — the host then mis-marshalled the int result.)
+    if ( is_expression_compare_token(op->id()) )
+	return &ddINT;
 
     DataDef *left = infer_expression_result_type(op->left);
     DataDef *right = infer_expression_result_type(op->right);

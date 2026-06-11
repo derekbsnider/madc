@@ -657,6 +657,56 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
+    TEST_CASE("eval_expression strict equality on strings compares by value") {
+	madc::program pgm;
+
+	bool result = false;
+	CHECK(pgm.eval_expression("\"abc\" === \"abc\"", result, "expr_strict_str_eq.mad"));
+	CHECK(result == true);
+	CHECK_FALSE(pgm.has_error());
+
+	CHECK(pgm.eval_expression("\"abc\" !== \"abc\"", result, "expr_strict_str_ne.mad"));
+	CHECK(result == false);
+	CHECK_FALSE(pgm.has_error());
+
+	CHECK(pgm.eval_expression("\"abc\" !== \"abd\"", result, "expr_strict_str_ne2.mad"));
+	CHECK(result == true);
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression strict equality on numbers is type-strict") {
+	madc::program pgm;
+
+	bool result = false;
+	CHECK(pgm.eval_expression("5 === 5", result, "expr_strict_int_eq.mad"));
+	CHECK(result == true);
+	CHECK_FALSE(pgm.has_error());
+
+	CHECK(pgm.eval_expression("5 === 6", result, "expr_strict_int_ne.mad"));
+	CHECK(result == false);
+	CHECK_FALSE(pgm.has_error());
+
+	CHECK(pgm.eval_expression("5 !== 6", result, "expr_strict_int_ne2.mad"));
+	CHECK(result == true);
+	CHECK_FALSE(pgm.has_error());
+
+	// int literal vs double literal: different type domains
+	CHECK(pgm.eval_expression("5 === 5.0", result, "expr_strict_mixed_num.mad"));
+	CHECK(result == false);
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression rejects strict string to non-string comparison") {
+	madc::program pgm;
+
+	bool result = false;
+	CHECK_FALSE(pgm.eval_expression("\"5\" !== 5", result, "expr_strict_mixed_compare.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->message.find("cannot compare string and non-string values") != std::string::npos);
+    }
+
     TEST_CASE("eval_expression rewrites nested object context paths with parser-legal trivia") {
 	madc::program pgm;
 	std::map<std::string, madc::value> stats_fields;
