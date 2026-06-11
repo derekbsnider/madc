@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [v0.29.0] — 2026-06-11
+
+The backend-correctness release: MIR-gen `-O2` reaches exact `-O1` torture parity
+(1567 = 1567, failsets byte-identical) — all 8 O2-only failures root-caused to
+five real c2mir/MIR bugs and fixed at the deepest layer — plus the fork synced
+with everything useful from upstream (PR #430 computed-goto RA fixes, PR #432
+GVN narrow-reload extension, PR #433 jump_opt label liveness, PR #434 aarch64
+LD stack rounding; #418/#420 already carried). Fork pinned at `9ab36fb`.
+
 ### MIR fork: upstream PRs #432/#433/#434 adopted (2026-06-11, `feature/mir-pr430-claude`)
 
 - **Full upstream-activity sweep** (user-requested) found fresh fix-PRs for

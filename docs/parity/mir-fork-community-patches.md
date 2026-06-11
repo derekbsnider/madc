@@ -177,6 +177,26 @@ newly exposed) and then **root-caused to FIVE distinct bugs, all fixed** (fork
 longer behind a known-broken gate; whether O2 *beats* O1 in code quality/perf is a
 separate (open) question.
 
+## Attribution / provenance policy (re-affirmed 2026-06-11)
+
+Every adopted patch must trace back to its origin. The mechanisms, in layers:
+1. **Git author metadata** — upstream PRs are cherry-picked preserving the original
+   author (`git log --format='%an'` shows e.g. `Cyan Ogilvie` on all five PR commits;
+   committer is us). Messages are kept verbatim so the patch-id matches upstream for
+   future merge dedup.
+2. **Git notes** (`refs/notes/commits`, pushed to the fork) — each adopted commit
+   carries an `ADOPTED-FROM: upstream PR vnmakarov/mir#NNN (author)` note, added
+   without rewriting hashes (`git log --notes` shows them).
+3. **Source comments** — hand-applied (non-cherry-pick) adoptions carry an
+   `ADOPTED-FROM: <fork> @ <sha>` comment at the fix site (the theMackabu pattern).
+4. **This document** — the narrative record mapping fork shas ↔ upstream PRs/issues.
+
+Context worth knowing: cyanogilvie's burst of high-quality MIR fixes (#430–#434) comes
+from building a MIR backend for slimcc —
+https://github.com/cyanogilvie/slimcc/tree/mir-backend — another C-frontend-on-MIR
+project whose pipeline stresses the same generator paths madc does. **Watch that tree
+and their MIR fork for further fixes.**
+
 ## Upstream activity sweep + PR #432/#433/#434 adoption (2026-06-11, round 2)
 
 A full sweep of recent upstream `vnmakarov/mir` activity (user-requested) found three

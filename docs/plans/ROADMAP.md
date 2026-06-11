@@ -1,6 +1,6 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-06-11 (v0.28.0).
+Master plan linking all workstreams. Updated 2026-06-11 (v0.29.0).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -26,12 +26,11 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Version:** `0.28.0` (per `VERSION`) — released on `develop` (CIR backend);
-  the C++20 three-way-comparison release (fulltest 572/0/0/18 — the `<=>`
-  compliance track complete: real-`<compare>` category types, hidden-friend
-  bodies, the token lowering, rewritten candidates, `= default` comparison
-  synthesis; plus the template-instantiation batch, one `madc::value` with
-  call-site scope capture, and the user-signed failset audit).
+- **Version:** `0.29.0` (per `VERSION`) — released on `develop` (CIR backend);
+  the backend-correctness release (MIR-gen `-O2` = `-O1` torture parity, 1567
+  byte-identical — five c2mir/MIR bugs root-caused and fixed; fork synced with
+  upstream PRs #430/#432/#433/#434, pinned @ `9ab36fb`). v0.28.0 (same day)
+  was the C++20 `<=>` compliance-track-complete release.
   `master` still holds the v0.24.0 asmjit/Gecko backend at full C89 coverage;
   develop is **not** promoted to master until the CIR path reaches feature
   parity.

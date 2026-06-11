@@ -237,43 +237,42 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.28.0 (2026-06-11)** — the C++20 three-way-comparison release: the **`<=>`
-compliance track is complete** (cpp-support.md P2.15). `a <=> b` lowers to
-faithful `std::strong_ordering`/`partial_ordering` category objects from the
-**real `<compare>` header** (the g++ -O0 byte-select canon); hidden-friend
-operator bodies hoist and compile; **rewritten candidates** ([over.match.oper])
-give a class defining only `operator<=>` + `operator==` all six comparisons;
-and **`= default` comparison synthesis** ([class.compare.default]) compiles
-defaulted `==`/`<=>` from the member list — a lone defaulted member
-`operator<=>` yields all six. Also: the completed template-instantiation batch
-(`a + "literal"` instantiates the real libstdc++ `operator+` body, reference
-operands resolve as the referenced class), the libmadc eval leftovers (one
-public `madc::value` end-to-end, mangled-direct `<ns_madc>`, user-call-site
-scope capture), and the user-signed torture failset audit. See
-[`docs/release-notes/v0.28.0.md`](docs/release-notes/v0.28.0.md).
+**v0.29.0 (2026-06-11)** — the backend-correctness release: MIR-gen **`-O2`
+reaches exact `-O1` gcc.c-torture parity** (1567 = 1567, byte-identical
+failsets), closing the long-standing "O2 broken" item. All 8 O2-only failures
+were root-caused to five real c2mir/MIR bugs and fixed at the deepest layer in
+the madc MIR fork: struct `va_arg` wrongly CSE'd by GVN, the classic lost-copy
+problem in out-of-SSA for self-loop blocks, a union type-punning aliasing hole
+(MIR core gains an alias-conflict relation), per-function
+`optimize("-fno-strict-aliasing")` honoring (through the madc front end and
+c2mir, surviving MIR inlining), and an interpreter-FFI XMM accounting bug for
+mixed-class vararg structs. The fork also synced with upstream: PRs #430
+(computed-goto RA), #432 (GVN narrow-reload extension), #433 (jump_opt label
+liveness), #434 (aarch64 LD stack rounding) — pinned at `9ab36fb`. See
+[`docs/release-notes/v0.29.0.md`](docs/release-notes/v0.29.0.md).
 
 CIR baseline (2026-06-11): **572 integration/unit pass / 0 fail / 0 timeout /
 18 skip** (zero known reds, both check gates GREEN) and **gcc.c-torture 1567
-of 1652 in-scope (95.0%)** — the develop→master promote gate is **all 41
-remaining standard-C failures fixed (≥1608)**, per the user-signed failset
-classification audit
+of 1652 in-scope (95.0%) at `-O1` and `-O2`** — the develop→master promote
+gate is **all 41 remaining standard-C failures fixed (≥1608)**, per the
+user-signed failset classification audit
 ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)):
 33 gcc-internal/torture-only tests are formally skipped
 (`docs/parity/torture-skip-manifest.txt`) and 14 real-world GNU extensions
 are roadmap items, not gate blockers. In-process `eval`/exec runs on the CIR
 JIT (`CirJitSession`); the REPL and native AOT output remain deferred.
 
-**Branch state:** `develop` carries v0.28.0 (CIR backend). `master` still holds
+**Branch state:** `develop` carries v0.29.0 (CIR backend). `master` still holds
 the v0.24.0 asmjit/Gecko backend at full C89 coverage (419 pass / 0 fail) —
 develop is **not** promoted to master until the CIR path reaches feature parity.
 
 ### Recent Releases
 
+- **v0.29.0** — Backend correctness: MIR-gen O2 = O1 torture parity (five c2mir/MIR bugs root-caused + fixed); fork synced with upstream PRs #430/#432/#433/#434, pinned @ 9ab36fb
 - **v0.28.0** — C++20 `<=>` track complete (real `<compare>`, rewritten candidates, `= default` synthesis); template-instantiation batch; one `madc::value` + call-site scope capture; promote gate re-defined; fulltest 572/0
 - **v0.27.0** — All integration reds green (547/0); alias-spelled reference returns; namespace fn-template body instantiation (real-header to_string/stoi); [namespace.udir] call resolution; fortify chk builtins
 - **v0.26.0** — Real-header C++: libstdc++ string/iostream/getline mangled-direct; call-symbol unification + gate; `--project` driver; ≤16-byte SIMD; VLAs; multi-return
 - **v0.25.0** — CIR sole backend; SMAUG 1.8 boots, runs, and is playable (serpent fight); integration 316→325
-- **v0.24.0** — Native C99 `_Complex` in c2mir, transpiler parity 410→419
 
 ## Roadmap
 
