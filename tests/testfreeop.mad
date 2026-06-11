@@ -1,6 +1,8 @@
 // Free (non-member) operator functions dispatch by overload resolution:
-// a parsed global `operator<` / `operator==` with a body is found and
-// called for class operands (the same family hoisted hidden friends ride).
+// a parsed global operator with a body is found and called for class
+// operands (the family hoisted hidden friends ride). `a == 0` exercises
+// the null-pointer-constant rule: literal 0 binds the const int* overload
+// (standard conversion) over operator==(A,A) via the A(int) ctor (udc).
 #include <cstdio>
 class A {
 public:
@@ -9,6 +11,7 @@ public:
 };
 bool operator<(A a, int b) { return a.v < b; }
 bool operator==(A a, A b) { return a.v == b.v; }
+bool operator==(A a, const int *p) { return p == 0; }
 int main()
 {
 	A a(-1);
@@ -17,5 +20,7 @@ int main()
 		printf("less\n");
 	if (a == b)
 		printf("eq\n");
+	if (a == 0)
+		printf("nullptr-const\n");
 	return 0;
 }

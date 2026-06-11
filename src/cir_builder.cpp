@@ -4271,7 +4271,8 @@ node_t CirBuilder::method_fnptr_type(FuncDef *callee, DataDefCLASS *owner)
 // special-cased; runtime/library classes fall out of the class-object +
 // converting-ctor rules like any other class.
 int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
-		       bool param_is_ref, bool allow_udc)
+		       bool param_is_ref, bool allow_udc,
+		       bool arg_is_zero_literal)
 {
 	if (!pdc || !adc)
 		return 0;   // unknown shape: neutral, don't reject
@@ -4300,7 +4301,8 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			if (!fd || fd->parameters.size() != 2)   // __this + exactly one
 				continue;
 			bool cref = fd->ref_params.size() > 1 && fd->ref_params[1];
-			int s = score_arg_to_param(adc, fd->parameters[1], cref, false);
+			int s = score_arg_to_param(adc, fd->parameters[1], cref, false,
+						   arg_is_zero_literal);
 			if (s > best)
 				best = s;
 		}
@@ -4342,10 +4344,16 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	}
 	bool p_ptr = pdc->is_pointer(), a_ptr = adc->is_pointer();
 	bool p_num = pdc->is_numeric(), a_num = adc->is_numeric();
-	if (p_ptr || a_ptr)
-		return (p_ptr && a_ptr)
-		     ? (adc->rawtype() == pdc->rawtype() ? 5 : 4)
-		     : -1;
+	if (p_ptr || a_ptr) {
+		if (p_ptr && a_ptr)
+			return adc->rawtype() == pdc->rawtype() ? 5 : 4;
+		// A null-pointer constant (integer literal 0) binds any pointer
+		// parameter — a standard conversion ([conv.ptr]), ranked below a
+		// pointer argument but above a user-defined conversion.
+		if (p_ptr && arg_is_zero_literal)
+			return 3;
+		return -1;
+	}
 	if (p_num && a_num)
 		return adc->rawtype() == pdc->rawtype() ? 5 : 4;
 	return 0;            // unrecognized pairing: neutral

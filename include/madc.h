@@ -197,8 +197,13 @@ public:
 // cleared on the recursive converting-ctor check so an implicit conversion
 // sequence uses at most one user-defined conversion (the C++ rule), which also
 // bounds the recursion to depth 1. Defined in cir_builder.cpp.
+// `arg_is_zero_literal`: the argument EXPRESSION is an integer literal of value
+// zero — a C++ null-pointer constant ([conv.ptr]), so it binds a pointer
+// parameter as a standard conversion. Only callers that can see the argument
+// token set it; the DataDef alone cannot carry "literal zero".
 int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
-		       bool param_is_ref = false, bool allow_udc = true);
+		       bool param_is_ref = false, bool allow_udc = true,
+		       bool arg_is_zero_literal = false);
 
 class DataStruct: public DataDef
 {
@@ -1254,9 +1259,12 @@ public:
 					       const std::vector<const DataDef *> &argtypes);
     // A parsed CONCRETE free-operator function viable for the operand types:
     // ranks the union of every "::"+opname-suffixed overload set (all
-    // namespaces + the global "" key). NULL when none binds.
+    // namespaces + the global "" key). NULL when none binds. `zero_args`
+    // (optional, index-aligned) marks integer-literal-zero arguments
+    // (null-pointer constants).
     Variable *find_free_operator_function(const std::string &opname,
-					  const std::vector<const DataDef *> &argtypes);
+					  const std::vector<const DataDef *> &argtypes,
+					  const std::vector<bool> *zero_args = NULL);
     // The DataDef an operand denotes for free-operator overload ranking
     // (reference-transparent via operand_object_class).
     DataDef *free_operator_arg_datadef(TokenBase *operand);

@@ -6418,6 +6418,13 @@ static const char *object_operator_symbol(TokenID id)
     }
 }
 
+// A C++ null-pointer constant: an integer LITERAL of value zero ([conv.ptr]).
+// nullptr is already pointer-typed (TokenNullptr) and binds pointers natively.
+static bool is_zero_integer_literal(TokenBase *t)
+{
+    return t && t->id() == TokenID::tkInt && t->ival() == 0;
+}
+
 // The class-object DataDef an operand expression DENOTES for operator /
 // overload resolution. A reference operand IS the referenced object in every
 // expression context (C++ semantics); madc stores both a reference-typed
@@ -6513,7 +6520,10 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to)
 	std::vector<const DataDef *> at;
 	at.push_back(free_operator_arg_datadef(to->left));
 	at.push_back(free_operator_arg_datadef(to->right));
-	if ( Variable *win = find_free_operator_function(opname, at) )
+	std::vector<bool> zl;
+	zl.push_back(is_zero_integer_literal(to->left));
+	zl.push_back(is_zero_integer_literal(to->right));
+	if ( Variable *win = find_free_operator_function(opname, at, &zl) )
 	{
 	    TokenCallFunc *tc = new TokenCallFunc(*win);
 	    tc->file = to->file;
@@ -6703,10 +6713,13 @@ std::string Program::peek_param_list_spelling()
 // Rank parsed function-overload candidates against a call's argument types via
 // the shared generic score_arg_to_param ranking (the ONE ranking ctor /
 // member-operator / namespace-call selection all use). Returns the winning
-// Variable, or NULL when no candidate is viable.
+// Variable, or NULL when no candidate is viable. `zero_args` (optional,
+// index-aligned with argtypes) marks arguments that are integer literals of
+// value zero — C++ null-pointer constants ([conv.ptr]).
 static Variable *rank_fn_overload_candidates(
 	const std::vector<Program::NamespaceFnOverload> &cands,
-	const std::vector<const DataDef *> &argtypes)
+	const std::vector<const DataDef *> &argtypes,
+	const std::vector<bool> *zero_args = NULL)
 {
     Variable *best = NULL;
     int best_score = -1;
@@ -6734,7 +6747,9 @@ static Variable *rank_fn_overload_candidates(
 	for ( size_t i = 0; i < argtypes.size(); i++ )
 	{
 	    bool refp = i < fd->ref_params.size() && fd->ref_params[i];
-	    int s = score_arg_to_param(argtypes[i], fd->parameters[i], refp);
+	    bool zlit = zero_args && i < zero_args->size() && (*zero_args)[i];
+	    int s = score_arg_to_param(argtypes[i], fd->parameters[i], refp,
+				       true, zlit);
 #if MADC_DEBUG_FNTPL
 	    std::cerr << "FNTPL rank cand=" << e.var->name << " arg" << i
 		      << " a=" << (argtypes[i] ? argtypes[i]->name : "?")
@@ -6785,7 +6800,8 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
 // all entries together. Hoisted hidden friends, user-written free operators,
 // and prior template instantiations all live in these sets.
 Variable *Program::find_free_operator_function(const std::string &opname,
-		const std::vector<const DataDef *> &argtypes)
+		const std::vector<const DataDef *> &argtypes,
+		const std::vector<bool> *zero_args)
 {
     const std::string suffix = "::" + opname;
     std::vector<NamespaceFnOverload> cands;
@@ -6801,7 +6817,7 @@ Variable *Program::find_free_operator_function(const std::string &opname,
     }
     if ( cands.empty() )
 	return NULL;
-    return rank_fn_overload_candidates(cands, argtypes);
+    return rank_fn_overload_candidates(cands, argtypes, zero_args);
 }
 
 // The DataDef an operand denotes for free-operator overload ranking: a
