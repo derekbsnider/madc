@@ -1,1 +1,0 @@
-scope capture must happen at the USER call site (public-name hook), not inside the ns_madc wrapper body; string locals also need capturing (collector lost dtSTRING when it retired)

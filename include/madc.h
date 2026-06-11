@@ -1554,7 +1554,14 @@ public:
     bool is_dynamic_symbol_allowed(const std::string &name) const;
     bool is_known_namespace(const std::string &name) const;
     Variable *runtime_eval_scope_target(Variable *var) const;
+    Variable *runtime_eval_scope_public_target(Variable *var);
     void collect_runtime_eval_scope_variables(std::vector<Variable *> &out) const;
+    // The variable whose declaration INITIALIZER is currently being parsed
+    // (saved/restored around the init-expression parse, so nesting is safe).
+    // Runtime-eval scope capture must skip it: `int x = madc::eval_*(…)`
+    // would otherwise capture the uninitialized x AND emit the capture
+    // setter ahead of x's C declaration.
+    Variable *decl_init_self = NULL;
     void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
     Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name);
     Variable *resolve_preferred_identifier(class TokenIdent *ident_tb, bool expression_head);

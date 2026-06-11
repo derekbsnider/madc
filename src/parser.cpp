@@ -173,6 +173,10 @@ std::string stringify_runtime_eval_value(const madc::value &resolved)
 const madc::value *runtime_eval_context(void *ctx)
 {
     const madc::value *context = (const madc::value *)ctx;
+    DBG(std::cerr << "runtime_eval_context ctx=" << ctx << " kind="
+		  << (context ? madc::value::kind_name(context->type()) : "(none)")
+		  << " size=" << (context && context->is_object()
+				  ? context->as_object().size() : 0) << std::endl);
     if ( context && context->is_null() )
     {
 	static const madc::value empty_ctx = madc::value::make_object();
@@ -313,6 +317,7 @@ bool is_runtime_eval_scope_ctx_helper_name(const std::string &name)
 bool is_runtime_eval_scope_public_name(const std::string &name)
 {
     return name == "eval"
+	|| name == "eval_unit"
 	|| name == "eval_bool"
 	|| name == "eval_int"
 	|| name == "eval_double"
@@ -780,6 +785,7 @@ extern "C" {
 // avoids materializing a std::string temp per captured variable).
 void *__madc_scope_set_int_runtime(void *ctx, const char *key, int64_t value)
 {
+    DBG(std::cerr << "scope_set_int ctx=" << ctx << " " << key << "=" << value << std::endl);
     ns_common::value_object_for_write(*(madc::value *)ctx,
 				      "__madc_scope_set_int")
 	[std::string(key)] = madc::value(value);
@@ -8444,6 +8450,33 @@ Variable *Program::runtime_eval_scope_target(Variable *var) const
     return mapped ? mapped : var;
 }
 
+// madc:: namespace publics resolve mangled-direct — the host wrapper body
+// can never capture the CALLER's scope, so capture is a parse-time
+// call-site transform: rebind the call to the sibling _ctx overload set
+// (the parseCallFunc tail appends the captured-scope context argument and
+// its late-bound overload re-rank picks the right _ctx member once the
+// argument types, including the appended ctx array, are known). Honors
+// the same per-family engine gates as the helper-name mapping above.
+Variable *Program::runtime_eval_scope_public_target(Variable *var)
+{
+    FuncDef *fd = var && var->type
+	? dynamic_cast<FuncDef *>(var->type) : NULL;
+    if ( !fd || fd->namespace_name != "madc" )
+	return var;
+    const std::string &display = fd->function_display_name;
+    if ( !is_runtime_eval_scope_public_name(display) )
+	return var;
+    bool expression = display.compare(0, 15, "eval_expression") == 0;
+    if ( expression ? !is_runtime_eval_expression_scope_access_enabled()
+		    : !is_runtime_eval_source_scope_access_enabled() )
+	return var;
+    namespace_map_t::iterator nsi = namespace_map.find(fd->namespace_name);
+    if ( nsi == namespace_map.end() )
+	return var;
+    variable_map_iter vmi = nsi->second.find(display + "_ctx");
+    return vmi != nsi->second.end() ? vmi->second : var;
+}
+
 namespace {
 
 bool is_runtime_eval_scope_supported_variable(Variable *var)
@@ -8471,8 +8504,13 @@ bool is_runtime_eval_scope_supported_variable(Variable *var)
 
 void append_runtime_eval_scope_variable(std::vector<Variable *> &out,
 					std::set<std::string> &seen,
-					Variable *var)
+					Variable *var,
+					Variable *decl_init_self)
 {
+    // `int x = madc::eval_*(…)`: x is in scope inside its own initializer
+    // (C++ scope rules) but uninitialized — never capture it.
+    if ( var && var == decl_init_self )
+	return;
     if ( !is_runtime_eval_scope_supported_variable(var) )
 	return;
     if ( seen.insert(var->name).second )
@@ -8490,20 +8528,20 @@ void Program::collect_runtime_eval_scope_variables(std::vector<Variable *> &out)
     for ( TokenCpnd *scope = code; scope; scope = scope->parent )
     {
 	for ( variable_vec_iter it = scope->variables.begin(); it != scope->variables.end(); ++it )
-	    append_runtime_eval_scope_variable(out, seen, *it);
+	    append_runtime_eval_scope_variable(out, seen, *it, decl_init_self);
     }
 
     if ( code && code->method )
     {
 	for ( variable_vec_iter it = code->method->parameters.begin();
 	      it != code->method->parameters.end(); ++it )
-	    append_runtime_eval_scope_variable(out, seen, *it);
+	    append_runtime_eval_scope_variable(out, seen, *it, decl_init_self);
     }
 
     if ( tkProgram )
     {
 	for ( variable_vec_iter it = tkProgram->variables.begin(); it != tkProgram->variables.end(); ++it )
-	    append_runtime_eval_scope_variable(out, seen, *it);
+	    append_runtime_eval_scope_variable(out, seen, *it, decl_init_self);
     }
 }
 
@@ -10317,9 +10355,16 @@ TokenBase *Program::parse_cast_function_call_operand(TokenBase *head)
 	return NULL;
 
     Variable *call_var = runtime_eval_scope_target(var);
+    bool public_scope_rebind = false;
+    if ( call_var == var )
+    {
+	call_var = runtime_eval_scope_public_target(var);
+	public_scope_rebind = (call_var != var);
+    }
     TokenCallFunc *tc = new TokenCallFunc(*call_var);
-    tc->auto_scope_context = is_runtime_eval_scope_ctx_helper_name(call_var->name)
-	&& is_runtime_eval_scope_public_name(ident->str);
+    tc->auto_scope_context = public_scope_rebind
+	|| (is_runtime_eval_scope_ctx_helper_name(call_var->name)
+	 && is_runtime_eval_scope_public_name(ident->str));
 
     TokenBase *open = nextToken();
     tc->file = open->file;
@@ -13213,9 +13258,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			}
 		    }
 		    Variable *call_var = runtime_eval_scope_target(var);
+		    bool public_scope_rebind = false;
+		    if ( call_var == var )
+		    {
+			call_var = runtime_eval_scope_public_target(var);
+			public_scope_rebind = (call_var != var);
+		    }
 		    TokenCallFunc *tc = new TokenCallFunc(*call_var);
-		    tc->auto_scope_context = is_runtime_eval_scope_ctx_helper_name(call_var->name)
-			&& is_runtime_eval_scope_public_name(ident_tb->str);
+		    tc->auto_scope_context = public_scope_rebind
+			|| (is_runtime_eval_scope_ctx_helper_name(call_var->name)
+			 && is_runtime_eval_scope_public_name(ident_tb->str));
 		    tc->explicit_template_args = call_explicit_targs;
 		    tb = nextToken();
 		    tc->line = tb->line;
@@ -27921,7 +27973,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    TokenBase *rhs_head = nextToken();
 	    if ( !rhs_head )
 		Throw(nt) << "Expected initializer after '='" << flush;
+	    Variable *saved_decl_init_self = decl_init_self;
+	    decl_init_self = var;
 	    TokenBase *rhs = parseExpression(rhs_head, true);
+	    decl_init_self = saved_decl_init_self;
 	    TokenAssign *assign = new TokenAssign();
 	    copy_token_location(assign, tb);
 	    assign->left = new TokenVar(*var);
@@ -27935,7 +27990,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // conditional=true so `;` stops without being consumed, which lets
 	    // the comma-continuation loop below distinguish "end of decl" (peek
 	    // is `;`) from "more decls" (peek is `,` or the next identifier).
+	    Variable *saved_decl_init_self = decl_init_self;
+	    decl_init_self = var;
 	    td->initialize = parseExpression(new TokenVar(*var), true);
+	    decl_init_self = saved_decl_init_self;
 	    TokenAssign *ta = dynamic_cast<TokenAssign *>(td->initialize);
 	    TokenVar *lhs_var = ta ? dynamic_cast<TokenVar *>(ta->left) : NULL;
 	    if ( !ta || !lhs_var || &lhs_var->var != var )

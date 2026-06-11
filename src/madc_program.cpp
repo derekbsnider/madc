@@ -2194,6 +2194,15 @@ bool set_variable_from_value(Variable *var, const value &in)
 	var->modified();
 	return true;
     }
+    if ( type == &ddCHARptr && in.is_string() )
+    {
+	// Scope/context text binding: `in` references a field of the
+	// caller-owned context object, which outlives the eval call —
+	// bind its C string directly.
+	*static_cast<const char **>(var->data) = in.as_string().c_str();
+	var->modified();
+	return true;
+    }
     if ( type->is_integer() || type->is_pointer() )
     {
 	if ( !in.is_integer() )

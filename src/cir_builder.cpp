@@ -7776,15 +7776,18 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		return node1(N_LABEL_ADDR, id(tla->name.c_str(), tb), tb);
 
 	// Runtime-eval scope capture (the parser appends a TokenScopeContext
-	// argument to __madc_eval_*_ctx_runtime calls when scope access is
-	// enabled — see parseCallFunc). The context_var is a parser-allocated
-	// `array` LOCAL of the enclosing compound (declared/constructed by the
-	// normal block lowering); fill it with the captured scope variables'
-	// CURRENT values via the cstr-key runtime setters (the captured key
-	// set is fixed per call site, so values simply overwrite on re-entry
-	// — no reset needed, unlike the asmjit compile which reconstructed),
-	// then the expression value is the ctx array's ADDRESS (the appended
-	// argument meets the ctx-helper's `array *` parameter).
+	// argument to the madc:: *_ctx publics when scope access is enabled —
+	// see parseCallFunc). The context_var is a parser-allocated `array`
+	// LOCAL of the enclosing compound (declared/constructed by the normal
+	// block lowering); fill it with the captured scope variables' CURRENT
+	// values via the cstr-key runtime setters (the captured key set is
+	// fixed per call site, so values simply overwrite on re-entry — no
+	// reset needed, unlike the asmjit compile which reconstructed), then
+	// the expression value is the ctx array LVALUE: the call's
+	// reference-parameter emission takes its address for the publics'
+	// `array &` parameter (an extra N_ADDR here double-wrapped it and the
+	// host read a pointer slot as a null value), and a pointer-shaped
+	// legacy consumer gets the same address via C array decay.
 	if (TokenScopeContext *tsc = dynamic_cast<TokenScopeContext *>(tb)) {
 		const char *cn = tsc->context_var.name.c_str();
 		for (Variable *sv : tsc->scope_vars) {
@@ -7826,7 +7829,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			CIR_NODE(call)->synth_from_origin = true;
 			m_pending_stmts.push_back(node2(N_EXPR, list(), call, tb));
 		}
-		return node1(N_ADDR, id(cn, tb), tb);
+		return id(cn, tb);
 	}
 
 	DBG(std::cerr << "cir: unhandled expr " << describe_token(tb)
