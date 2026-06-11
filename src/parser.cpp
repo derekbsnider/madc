@@ -1939,6 +1939,24 @@ static std::string sanitize_template_fragment(const std::string &s)
     return out.empty() ? std::string("_") : out;
 }
 
+// The datatype_map / struct_map key HEAD for a template instantiation: the
+// bare name unless the same name is declared in 2+ namespaces (std::char_traits
+// vs __gnu_cxx::char_traits), where the defining namespace must disambiguate.
+// Every registration AND lookup of an instantiated template must use this one
+// rule — an explicit specialization registered under a differently-formed key
+// is invisible to use sites, which then instantiate the primary instead.
+static std::string template_instantiation_key_head(
+	Program &pgm, const std::string &tname,
+	const std::string &defining_namespace)
+{
+    std::map<std::string, std::vector<Program::TemplateDef>>::iterator g =
+	pgm.template_map.find(tname);
+    if ( g != pgm.template_map.end() && g->second.size() > 1
+      && !defining_namespace.empty() )
+	return sanitize_template_fragment(defining_namespace) + "__" + tname;
+    return tname;
+}
+
 TokenBase *Program::collect_template_argument_spelling(TokenBase *first,
 						     std::string &spelling,
 						     std::vector<TokenBase *> *tokens_out)
@@ -2520,15 +2538,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // key, so the two instantiations don't alias the same datatype_map entry.
     // Keeping the common single-namespace case byte-identical avoids churning
     // every std:: template's internal tag.
-    std::string mangled = tname;
-    {
-	std::map<std::string, std::vector<Program::TemplateDef>>::iterator g =
-	    template_map.find(tname);
-	if ( g != template_map.end() && g->second.size() > 1
-	  && !td.defining_namespace.empty() )
-	    mangled = sanitize_template_fragment(td.defining_namespace)
-		    + "__" + tname;
-    }
+    std::string mangled =
+	template_instantiation_key_head(*this, tname, td.defining_namespace);
     std::map<std::string, TokenDataType *> subst;
     std::map<std::string, std::vector<TokenBase *> > token_subst;
     size_t pi = 0;
@@ -2728,13 +2739,28 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    }
 	    if ( s == td.class_name )
 	    {
-		TokenIdent *ni = (TokenIdent *)bt->clone();
-		ni->str = mangled;
-		inj.push_back(ni);
-		if ( bi + 1 < td.body.size()
-		  && td.body[bi + 1]->id() == TokenID::tkLT )
-		    bi = template_id_suffix_end(td.body, bi + 1);
-		continue;
+		// A namespace-QUALIFIED reference to a same-named template in
+		// a DIFFERENT namespace (`__gnu_cxx::char_traits<_CharT>` as
+		// std::char_traits' base) is not a self-reference — renaming
+		// it (and swallowing its <...>) corrupts the base/typedef.
+		// Leave it for normal qualified resolution.
+		bool foreign_qualified =
+		    bi >= 2 && td.body[bi-1]
+		    && td.body[bi-1]->id() == TokenID::tkNS
+		    && td.body[bi-2]
+		    && is_contextual_identifier_token(td.body[bi-2])
+		    && contextual_identifier_name(td.body[bi-2])
+		       != td.defining_namespace;
+		if ( !foreign_qualified )
+		{
+		    TokenIdent *ni = (TokenIdent *)bt->clone();
+		    ni->str = mangled;
+		    inj.push_back(ni);
+		    if ( bi + 1 < td.body.size()
+		      && td.body[bi + 1]->id() == TokenID::tkLT )
+			bi = template_id_suffix_end(td.body, bi + 1);
+		    continue;
+		}
 	    }
 	}
 	inj.push_back(bt->clone());
@@ -10983,6 +11009,17 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 		mvar = arity_mvar;
 	    if ( !mvar )
 	    {
+#ifdef MADC_DBG_QCALL
+		fprintf(stderr, "[QCALL] no method '%s' on '%s' dep=%d"
+			" methods=%zu base=%s(dep=%d)\n",
+			member_name.c_str(), scope->name.c_str(),
+			class_has_unresolved_dependent_surface(scope) ? 1 : 0,
+			scope->methods.size(),
+			scope->base_class ? scope->base_class->name.c_str() : "-",
+			scope->base_class
+			&& class_has_unresolved_dependent_surface(scope->base_class)
+			    ? 1 : 0);
+#endif
 		if ( class_has_unresolved_dependent_surface(scope) )
 		{
 		    TokenBase *open = pgm.nextToken();
@@ -24662,7 +24699,12 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     }
     if ( specialized_template_id && typeparams.empty() )
     {
-	std::string mangled = class_name;
+	// Same key rule as instantiate_template_use, or use sites miss this
+	// specialization and instantiate the primary (std::char_traits<char>
+	// folding static calls to 0 was exactly that).
+	std::string mangled = template_instantiation_key_head(
+	    pgm, class_name, td.owner_class ? std::string()
+					    : td.defining_namespace);
 	std::string canon;
 	if ( td.owner_class )
 	{
@@ -24683,6 +24725,32 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	canon += ">";
 	std::string registered_mangled = td.owner_class
 	    ? td.owner_class->name + "__" + mangled : mangled;
+
+	// A use BEFORE the name became multi-namespace registered a hollow
+	// placeholder under the legacy UNQUALIFIED key, and DataDef pointers
+	// captured from it (e.g. basic_string's _Traits slot from the
+	// stringfwd.h typedefs) reference THAT object. Parse the
+	// specialization INTO that object (the class parser completes a
+	// same-tag forward declaration in place), then alias the qualified
+	// key to it so both spellings name the one class.
+	std::string alias_key;
+	{
+	    std::string legacy_mangled = class_name;
+	    for ( size_t i = 0; i < specialization_arg_spellings.size(); ++i )
+		legacy_mangled += "_"
+		    + sanitize_template_fragment(specialization_arg_spellings[i]);
+	    std::string legacy_registered = td.owner_class
+		? td.owner_class->name + "__" + legacy_mangled : legacy_mangled;
+	    datatype_map_iter li = pgm.datatype_map.find(legacy_registered);
+	    if ( legacy_registered != registered_mangled
+	      && li != pgm.datatype_map.end()
+	      && is_incomplete_template_class_type((TokenDataType *)li->second) )
+	    {
+		alias_key = registered_mangled;
+		mangled = legacy_mangled;
+		registered_mangled = legacy_registered;
+	    }
+	}
 
 	std::vector<TokenBase *> inj;
 	for ( size_t bi = 0; bi < body.size(); ++bi )
@@ -24737,6 +24805,23 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.instantiating_dependent_surface = saved_dependent_surface;
 	pgm.current_namespace = saved_namespace;
 
+	// Both key spellings must name the ONE parsed class: qualified-key
+	// lookups (instantiate_template_use's rule) and legacy-key pointer
+	// holders resolve to the same DataDefCLASS.
+	if ( !alias_key.empty() )
+	{
+	    datatype_map_iter ri = pgm.datatype_map.find(registered_mangled);
+	    if ( ri != pgm.datatype_map.end() )
+	    {
+		pgm.datatype_map[alias_key] = ri->second;
+		if ( !td.defining_namespace.empty() )
+		    pgm.namespace_datatype_map[td.defining_namespace][alias_key] =
+			(TokenDataType *)ri->second;
+	    }
+	    datadef_map_iter si = pgm.struct_map.find(registered_mangled);
+	    if ( si != pgm.struct_map.end() )
+		pgm.struct_map[alias_key] = si->second;
+	}
 	if ( pgm.datatype_map.find(registered_mangled) == pgm.datatype_map.end() )
 	    pgm.Throw(name_tb) << "internal: explicit specialization "
 			       << registered_mangled << " did not register" << flush;
