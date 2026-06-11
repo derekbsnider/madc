@@ -1,6 +1,15 @@
 # Test Status
 
-> **Current (2026-06-11, `feature/template-instantiation-claude` @ `aff26fa`
+> **Current (2026-06-11, `feature/template-instantiation-claude` @ `01528ed`
+> — `= default` comparison synthesis; `<=>` track COMPLETE):** fulltest
+> **572 passed, 0 failed, 0 timed out, 18 skipped** (make exit 0, both
+> check gates GREEN). Ordering-vs-ordering `==`/`!=` and
+> `auto operator<=>(const V&) const = default` (all six comparisons from
+> one declaration) work — new test `testdefaultedcmp_realhdr` (8 shapes,
+> g++-verified). gcc.c-torture failset **byte-identical**
+> (1567/26/29/0/63); SMAUG green.
+>
+> **Previous (2026-06-11, `feature/template-instantiation-claude` @ `aff26fa`
 > — `<=>` rewritten candidates):** fulltest **571 passed, 0 failed, 0 timed
 > out, 18 skipped** (make exit 0, both check gates GREEN). `r != 0`,
 > `0 == e`, and the only-`<=>`/`==` user-class idiom (all six comparisons)

@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### `= default` comparison synthesis — the `<=>` track is complete (2026-06-11, `feature/template-instantiation-claude` @ `01528ed`)
+
+- **Defaulted `==`/`<=>` compile** ([class.compare.default]): the definition
+  is synthesized from the class's ordered member list at class completion
+  and parsed through the friend-hoist machinery. `==` synthesizes the
+  memberwise `&&`-chain; `<=>` the lexicographic early-return chain
+  (category = `partial_ordering` if any member is floating, else
+  `strong_ordering`). Both trigger sites: a defaulted FRIEND
+  (`<compare>`'s `operator==(strong_ordering, strong_ordering) = default`
+  — ordering-vs-ordering `==`/`!=` now work) and a defaulted MEMBER
+  (`auto operator<=>(const V&) const = default;` alone yields all six
+  comparisons — the implicit defaulted `==`, p4). Scalar/pointer members
+  only; bases or class-typed members bail to the loud error.
+- This completes the `<=>` compliance track (P2.15): gating, `<compare>`
+  types, hidden-friend bodies, the token lowering, rewritten candidates,
+  and defaulted-comparison synthesis. Remaining polish: the precedence
+  corner (`<=>` at the relational tier).
+- New test: `testdefaultedcmp_realhdr` (8 shapes incl. the lexicographic
+  chain, g++-verified). Gates: fulltest **572 / 0 / 0 / 18** (exit 0, both
+  check gates GREEN), torture failset **byte-identical**, SMAUG soak green.
+
 ### `<=>` rewritten candidates — `r != 0`, reversed `==`, relationals via `<=>` (2026-06-11, `feature/template-instantiation-claude` @ `aff26fa`)
 
 - **C++20 [over.match.oper] rewritten candidates**: when every direct

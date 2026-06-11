@@ -451,14 +451,21 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   `(x <=> y) @ 0` when an operator<=> covers the pair — the
   only-`<=>`/`==` class idiom yields all six comparisons
   (`testrewritten_realhdr`). Recursion bounded via
-  `lower_free_operator_to_call(no_rewrite)`. Remaining plan:
-  1. `= default` comparison generation: the hoist filter skips
-     `friend constexpr bool operator==(strong_ordering, strong_ordering)
-     = default;`, so ordering-vs-ordering `==` (and defaulted member
-     `operator<=>` on user classes) still need synthesis.
-  2. Precedence polish: `<=>` sits at the relational tier (C++ ranks it
-     between shifts and relationals) — unparenthesized `a < b <=> c`
-     groups left.
+  `lower_free_operator_to_call(no_rewrite)`. **`= default` synthesis
+  LANDED** (2026-06-11, `01528ed`, [class.compare.default]): defaulted
+  ==/<=> synthesize from the ORDERED member list at class completion via
+  the friend-hoist machinery (== → memberwise &&-chain; <=> →
+  lexicographic early-return chain, category from the parsed `<compare>`;
+  scalar/pointer members only). Both trigger sites: defaulted FRIEND
+  (<compare>'s `operator==(strong,strong) = default` → ordering-vs-
+  ordering ==/!=) and defaulted MEMBER (`auto operator<=>(const V&) const
+  = default;` alone yields all six comparisons — implicit defaulted ==,
+  p4). Test `testdefaultedcmp_realhdr`. **THE `<=>` TRACK IS COMPLETE.**
+  Remaining polish (non-blocking):
+  1. Precedence: `<=>` sits at the relational tier (C++ ranks it between
+     shifts and relationals) — unparenthesized `a < b <=> c` groups left.
+  2. Synthesis breadth: bases / class-typed members (recursive member
+     comparison) bail to the loud error today.
 
 ### P3 — broader standards surface (later)
 - **Polyglot transpiler (far-future direction).** The endgame generalizes the
