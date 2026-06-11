@@ -44,11 +44,17 @@ high-level" — the answer is both.**
   The project's north-star goal — running a real C89 codebase end-to-end —
   is now demonstrated on CIR.
 - **CIR baseline (2026-06-11, `feature/eval-leftovers-claude` @ `b99d38e`):** **557 integration/unit pass / 0 fail / 0 timeout / 18 skip** (eval leftovers B+A0+A: DSL string VALUE compares, MadValue/MadArray → one `madc::value`, mangled-direct `<ns_madc>` + user-call-site scope capture — testmadcevalscope joins; previous 2026-06-10 develop baseline was 555/0/0/20 — the post-release sweep: real-header `std::string a+b` via by-value FREE-operator returns + decl-init copy elision, default-mode `<cstdio>`, W2 step D Pattern-A operators, 3 stale skips lifted, and script-level `madc::eval_*` via `<ns_madc>`; libmadc in-process eval runs on CirJitSession);
-  **gcc.c-torture 1567/1685 (93.0%)** with 31 compile-failed, 56 runtime-failed,
-  and 1 timed out, vs the old asmjit backend's 1645 (97.6%) — gap 78.
-  The clean `develop` rebuild emits no compiler warnings. The failures are the
-  active CIR coverage worklist — see Track 1.3 — and the gate for promotion to
-  master.
+  **gcc.c-torture 1567 of 1652 in-scope (95.0%)** with 26 compile-failed,
+  29 runtime-failed, 0 timed out under the post-audit baseline; 33 class-(c)
+  tests (gcc-internal / torture-only / UB) formally skipped per
+  `docs/parity/failset-classification.md` (user-signed 2026-06-11) via
+  `docs/parity/torture-skip-manifest.txt`. The promote gate is **all 41
+  class-(a) standard-C failures fixed (≥1608 of 1652 in-scope)**; the old
+  "match asmjit 1645" wording is retired (capability sets diverged: asmjit
+  passes 82 of CIR's 88 failures; CIR passes 34 of asmjit's 40 failures).
+  Class-(b) GNU extensions (14 tests) are roadmap items, not gate blockers.
+  The clean `develop` rebuild emits no compiler warnings. The class-(a)
+  failures are the active CIR coverage worklist — see Track 1.3.
 - **C++ model — proven on the old backend, being re-established on CIR:**
   ctors/dtors, operator overloading, references, `new`/`delete`, single
   inheritance, vtables, SJLJ exceptions + unwinding, access control, const

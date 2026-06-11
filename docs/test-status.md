@@ -1,6 +1,18 @@
 # Test Status
 
-> **Current (2026-06-11, `feature/eval-leftovers-claude`
+> **Current (2026-06-11, `develop` @ `21bfec9` — failset classification
+> audit):** fulltest **557 passed, 0 failed, 0 timed out, 18 skipped** (make
+> exit 0, both check gates GREEN; re-verified at the audit commit — no
+> compiler code changed). gcc.c-torture moves to the post-audit baseline:
+> **1567 passed, 26 compile-failed, 29 runtime-failed, 0 timed out, 63
+> skipped** — the 33 class-(c) gcc-internal/torture-only tests are now
+> FORMAL skips via `docs/parity/torture-skip-manifest.txt` (user-signed
+> audit `docs/parity/failset-classification.md`; in-scope denominator 1652,
+> promote gate = all 41 class-(a) standard-C failures fixed = ≥1608).
+> Regression baseline `tmp/failset_lsq.txt` regenerated (55 lines);
+> `docs/parity/torture-failset-current.txt` synced.
+>
+> **Previous (2026-06-11, `feature/eval-leftovers-claude`
 > against `/workspace/mir` `develop` @ `2ffebff`):** fulltest is
 > **557 passed, 0 failed, 0 timed out, 18 skipped** (make exit 0, both check
 > gates GREEN). The eval-leftovers branch landed packages B (DSL string

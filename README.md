@@ -196,7 +196,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.25.0, develop): 457 integration tests pass (6 failing — the CIR coverage worklist, 55 skipped); gcc.c-torture parity 1565/1685 (92.9%) vs the old asmjit backend's 1645 (97.6%). `std::string` is a real C++ class and `std::vector`/`map`/`set` are real `#include`-defined `std::` templates (the legacy `dtSTRING`/`tkSTRING`/`tkVECTOR`/`ns_stl` shortcuts are retired). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.27.0, develop): 557 integration/unit tests pass (0 failing, 18 skipped); gcc.c-torture 1567 of 1652 in-scope (95.0%) — promote gate = all 41 remaining standard-C failures fixed (≥1608), 33 gcc-only/torture-only tests formally skipped per [`docs/parity/failset-classification.md`](docs/parity/failset-classification.md). `std::string` is a real C++ class and `std::vector`/`map`/`set` are real `#include`-defined `std::` templates (the legacy `dtSTRING`/`tkSTRING`/`tkVECTOR`/`ns_stl` shortcuts are retired). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -254,10 +254,13 @@ CIR baseline (2026-06-11): **557 integration/unit pass / 0 fail /
 18 skip** (zero known reds; post-release landings: real-header
 `std::string a+b`, the MadValue/MadArray → `madc::value` unification, and
 script-level `madc::eval_*` with user-call-site scope capture),
-and **gcc.c-torture 1567/1685 (93.0%)** vs the old asmjit
-backend's **1645 (97.6%)** on the same runner — the develop→master parity gate
-(gap 78; a classification audit of the failing tail vs gcc-only extensions
-is queued to right-size this gate). In-process `eval`/exec runs on the CIR
+and **gcc.c-torture 1567 of 1652 in-scope (95.0%)** — the develop→master
+promote gate is **all 41 remaining standard-C failures fixed (≥1608)**, per
+the user-signed failset classification audit
+([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)):
+33 gcc-internal/torture-only tests are formally skipped
+(`docs/parity/torture-skip-manifest.txt`) and 14 real-world GNU extensions
+are roadmap items, not gate blockers. In-process `eval`/exec runs on the CIR
 JIT (`CirJitSession`); the REPL and native AOT output remain deferred.
 
 **Branch state:** `develop` carries v0.27.0 (CIR backend). `master` still holds

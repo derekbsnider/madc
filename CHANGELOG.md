@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Failset classification audit — promote gate re-defined, 33 formal skips (2026-06-11, `21bfec9`)
+
+- **The 88-test gcc.c-torture failset is fully classified**
+  (`docs/parity/failset-classification.md`, user-signed): **41 class-(a)
+  standard-C compliance bugs** (~12 root causes — K&R old-style definition
+  *parsing* ×23, implicit-decl forward-call binding ×5, labels-have-function-
+  scope ×2, wide literals ×2, implicit-int returns ×2, plus singletons incl.
+  a C23 variadics gap and madc's `string` builtin leaking into C mode),
+  **14 class-(b) real-world GNU extensions** (roadmap items: `__int128`,
+  SIMD global-initializer drop, packed/misalign, `__sync_*`, by-value ABI,
+  aligned>16, cond-void-arm), **33 class-(c) gcc-internal/torture-only/UB
+  tests formally skipped** via `docs/parity/torture-skip-manifest.txt`
+  (generic basename→reason lookup in `run_gcc_testsuite.py`;
+  `--include-manifest-skips` overrides).
+- **Promote gate re-defined** (ADR 0001, branching.md ×2, ROADMAP 1.3):
+  all class-(a) fixed = **≥1608 of 1652 in-scope** (currently 1567).
+  "Match asmjit 1645" retired — the audit's oracle run showed the
+  capability sets diverged (asmjit passes 82 of CIR's 88 fails; CIR passes
+  34 of asmjit's 40). 100% torture parity is explicitly not the goal.
+- **User rulings recorded:** K&R/implicit-int/implicit-decl accepted in
+  STD_MADC + `--std=c89`–`c17`, hard error in `--std=c23`+ and all C++
+  modes; `string` is NOT a builtin type (retire-std-hardcoding keystone);
+  VLA-in-struct not supported (clang: "will never be supported").
+- **Stale attributions corrected:** simd-1/-2 are no longer floor gaps
+  (fork `2ffebff` compiles them; the live bug is dropped global vector
+  initializers); bitfld-5 hides a standalone C89 tag-shadow parse bug.
+- New torture baseline (full run verified): **1567 / 26 / 29 / 0 / 63**.
+
 ### Eval leftovers landed: DSL string compares (B), one value type (A0), call-site scope capture (A) — fulltest 557/0/0/18 (2026-06-11)
 
 - **B — expression-DSL string compares are value compares** (`b144571`,
