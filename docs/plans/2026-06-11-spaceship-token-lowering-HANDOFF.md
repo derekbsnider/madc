@@ -3,6 +3,16 @@
 **Date:** 2026-06-11 · **Supersedes** `docs/plans/2026-06-11-spaceship-slice2b-HANDOFF.md`
 as the cold-restart contract (its §3c/3d queue items remain valid; everything else is here).
 
+> **UPDATE (same day, @ `7a56d72`): §3a is DONE** — the `<=>` token works
+> (builtin byte-select into a category temp via
+> `CirBuilder::three_way_builtin_lowering` + parse-time
+> `Program::comparison_category_class` typing + `"<=>"` in both operator
+> symbol maps; test `testspaceship_realhdr`, 8 g++-verified shapes;
+> fulltest 570/0/0/18, torture failset identical, SMAUG green). The next
+> work item is **§3b (rewritten candidates + `= default` comparisons)**;
+> details in cpp-support.md P2.15. Precedence corner noted there: `<=>`
+> sits at the relational tier, unparenthesized `a < b <=> c` groups left.
+
 ## STEP 0 — rehydrate
 
 ```bash

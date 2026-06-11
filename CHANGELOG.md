@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### `<=>` slice 3a — the token lowering itself; `a <=> b` works (2026-06-11, `feature/template-instantiation-claude` @ `7a56d72`)
+
+- **Builtin scalars** ([expr.spaceship]): `a <=> b` lowers CIR-side to a
+  comparison-category temp with the inline byte-select stored into
+  `_M_value` — no call, the g++ -O0 canon. Integral/pointer operands yield
+  `std::strong_ordering` (`l<r ? -1 : l>r ? 1 : 0`); floating yield
+  `std::partial_ordering` with the unordered arm (`... : l==r ? 0 : 2`,
+  2 = `__cmp_cat::_Ncmp::_Unordered`). Operands are materialized into
+  typed temps so each is evaluated exactly once. Parse-time,
+  `Program::comparison_category_class` types the expression as the
+  category CLASS from the parsed `<compare>` — which is what lets
+  `(a<=>b) < 0` dispatch to the hoisted hidden friend and
+  `auto r = a <=> b` copy-init. Without `<compare>` the expression is
+  rejected loudly with an include hint.
+- **Class operands**: `"<=>"` joined `object_operator_symbol` +
+  `binop_overload_symbol`, so member/friend `operator<=>` overloads ride
+  the existing operator machinery — the hoisted `<compare>` friends bind
+  both directions (`r <=> 0` and the reversed `0 <=> r` `__unspec` shape).
+- Known corner: `<=>` sits at the relational precedence tier
+  (unparenthesized `a < b <=> c` groups left; canonical shapes unaffected).
+- New test: `testspaceship_realhdr` — 8 shapes, g++-verified. Gates:
+  fulltest **570 / 0 / 0 / 18** (exit 0, both check gates GREEN), torture
+  failset **byte-identical**, SMAUG soak green.
+
 ### `<=>` slice 2b — hidden-friend operator bodies; `r < 0` works from the real `<compare>` (2026-06-11, `feature/template-instantiation-claude` @ `5f63a20`)
 
 - **Free-operator dispatch**: a parsed non-member operator function with a

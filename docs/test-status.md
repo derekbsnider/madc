@@ -1,6 +1,15 @@
 # Test Status
 
-> **Current (2026-06-11, `feature/template-instantiation-claude` @ `5f63a20`
+> **Current (2026-06-11, `feature/template-instantiation-claude` @ `7a56d72`
+> — `<=>` slice 3a, the token lowering):** fulltest **570 passed, 0 failed,
+> 0 timed out, 18 skipped** (make exit 0, both check gates GREEN).
+> `a <=> b` works on builtin scalars (byte-select into a category temp;
+> partial_ordering unordered=2 for NaN) and class operands (hoisted friend
+> operator<=>, forward + reversed). New test: `testspaceship_realhdr`
+> (8 g++-verified shapes). gcc.c-torture failset **byte-identical**
+> (1567/26/29/0/63); SMAUG soak green.
+>
+> **Previous (2026-06-11, `feature/template-instantiation-claude` @ `5f63a20`
 > — `<=>` slice 2b COMPLETE, hidden-friend operator bodies):** fulltest
 > **569 passed, 0 failed, 0 timed out, 18 skipped** (make exit 0, both
 > check gates GREEN). `r < 0` on `std::strong_ordering` calls the compiled

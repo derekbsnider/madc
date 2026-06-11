@@ -433,16 +433,20 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   class completes ([class.friend]) + friend FUNCTIONS are modeled
   (DataDefCLASS::friend_function_names, name-based grant; the FuncDef
   display name is stamped before the body parses so `__v._M_value`
-  resolves inside the hoisted body). Remaining plan:
-  1. Builtin scalars: parse `a <=> b` as a binary operator. Lowering
-     semantics RULED (user, 2026-06-11): FAITHFUL `std::strong_ordering` /
-     `partial_ordering` category objects from the real `<compare>` header
-     (g++/clang canon; required for `--std=c++20` conformance) — no
-     pragmatic-int shape. The token IS gated at the C++20 floor (slice 1);
-     class `operator<=>` overloads then ride the (now reference-aware +
-     free-operator) machinery — the hoisted friend `operator<=>` bodies
-     already parse.
-  2. Rewritten candidates ([over.match.oper]): `r != 0` rewrites to
+  resolves inside the hoisted body). **Slice 3a LANDED** (2026-06-11,
+  `7a56d72`): the `<=>` TOKEN works — builtin scalars lower CIR-side to a
+  comparison-category temp + inline byte-select into `_M_value` (g++ -O0
+  canon, no call; integral→strong_ordering, floating→partial_ordering with
+  unordered=2; operands evaluated exactly once), parse-time
+  `Program::comparison_category_class` types the expression as the
+  category CLASS (so `(a<=>b) < 0` friend-dispatches and `auto r = a<=>b`
+  copy-inits; loud include-hint error without `<compare>`), and `"<=>"`
+  joined the operator symbol maps so class `operator<=>` overloads ride
+  the machinery (hoisted friends bind forward `r<=>0` AND reversed
+  `0<=>r`). Test `testspaceship_realhdr` (8 g++-verified shapes). Known
+  corner: `<=>` sits at the relational precedence tier (unparenthesized
+  `a < b <=> c` groups left). Remaining plan:
+  1. Rewritten candidates ([over.match.oper]): `r != 0` rewrites to
      `!(r == 0)` (<compare> defines NO operator!=), `a < b` →
      `(a <=> b) < 0` for class types, reversed `==`. Today `r != 0`
      errors loudly. Plus `= default` comparison generation
