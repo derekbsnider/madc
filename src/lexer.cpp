@@ -1009,6 +1009,7 @@ void Program::_tokenizer_init()
     pending_auto_include_headers.clear();
     pending_auto_include_identifiers.clear();
     suppress_auto_include_scan = false;
+    pending_no_strict_aliasing = false;
     add_keywords();
     add_datatypes();
     struct_map["teststruct"] = &ddTESTSTRUCT;
@@ -3803,7 +3804,8 @@ TokenBase *Program::_getToken()
 		      || gnu_attribute_text_has_name(attr_text, "scalar_storage_order")
 		      || gnu_attribute_text_has_name(attr_text, "vector_size")
 		      || gnu_attribute_text_has_name(attr_text, "alias")
-		      || gnu_attribute_text_has_name(attr_text, "no_instrument_function") )
+		      || gnu_attribute_text_has_name(attr_text, "no_instrument_function")
+		      || gnu_attribute_text_has_name(attr_text, "optimize") )
 		    {
 			source.pushback(attr_text);
 			return new TokenIdent(word);

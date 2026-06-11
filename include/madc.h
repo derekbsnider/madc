@@ -158,13 +158,16 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_return_spelling(), template_param_spellings(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_return_spelling(), template_param_spellings(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), pure_virtual(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
     bool is_varargs;  // function declared with ... (variadic)
     bool is_void_params; // f(void) — explicitly zero params (vs f() which is K&R unspecified)
     bool no_instrument_function;
+    // __attribute__((optimize("-fno-strict-aliasing"))): the CIR builder forwards
+    // this as an N_ATTR in the FUNC_DEF specs; c2mir suppresses TBAA per-function.
+    bool no_strict_aliasing;
     bool has_large_struct_retbuf; // __retbuf was injected for struct return > 16 bytes
     // True when DECLARED with no body (prototype ended in ';' / ',' not '{').
     // For a C++ class method whose class carries canonical C++ spelling, this
@@ -2108,6 +2111,9 @@ public:
 				      std::string *alias_target = NULL,
 				      size_t *explicit_align = NULL,
 				      size_t *vector_bytes = NULL);
+    // Set by consume_gnu_attributes on optimize("-fno-strict-aliasing") in any
+    // position; consumed (and cleared) by the function-declaration parse.
+    bool pending_no_strict_aliasing;
     TokenBase *consume_gnu_asm_label(TokenBase *nt, std::string *alias_target);
     void skip_c23_attributes();
     size_t parse_gnu_vector_size_attribute();

@@ -138,11 +138,51 @@ simplified RA), but madc ships user-facing `-O2`/`-O3`, the fork carries labels-
 thread (open thread 1 below) must not stack on top of. Watch upstream: if #430 lands and
 diverges from these shas, re-sync.
 
+## O2-viability campaign (2026-06-11) — DONE: O2 reaches exact O1 parity
+
+The "8 O2-only failures" surface was re-measured at fork `65b99fc` (composition had
+shifted: `20141107-1`/`991228-1` had been fixed by fork evolution; `pr41395-2`/`pr41463`
+newly exposed) and then **root-caused to FIVE distinct bugs, all fixed** (fork
+`65b99fc` → `cc74fef`, all reproduced on stock `c2m -eg` first — pure c2mir/MIR bugs):
+
+1. **`6c83111` — VA_BLOCK_ARG missing from `fixed_place_insn_p`**: GVN CSE'd two
+   identical-looking struct `va_arg` fetches; the replace rewrite corrupted SSA edges
+   (op 0 is an input address, not a def) → copy_prop SIGSEGV. Fixed `strct-varg-1`,
+   `920908-1`.
+2. **`058893f` — lost-copy hazard in out-of-SSA** (`make_conventional_ssa`): the
+   same-bb fast path renamed phi uses to the congruence reg, but a SELF-LOOP block's
+   back-edge copy lands before the tail branch — the branch read the next iteration's
+   value (`while (i-- > 0)` ran one short). Fixed `stdarg-3` (gen), `pr43236`. The old
+   "GVN mem-forwarding accounts for alias-1/991228-1/pr79043" theory was wrong — no
+   GVN gating shim needed.
+3. **`7a90960` — union alias-conflict relation**: c2mir gives union-internal accesses
+   the union class 'U…' but pointer-deref accesses the member class; flat id-compare
+   `may_alias_p` never aliased them. MIR core gains `MIR_add_alias_conflict` /
+   `MIR_alias_conflict_p`; c2mir registers union-class↔member-leaf-class conflicts.
+   Fixed `pr41463`, `pr41395-2`.
+4. **`bcdd0c5` — honor `optimize("-fno-strict-aliasing")`**: per-function TBAA
+   suppression (alias class 0), surviving MIR inlining. Fixed `alias-1`, `pr79043`
+   under c2m. (madc-side: the lexer attribute allowlist gains `optimize`, the parser
+   records the pending flag in `consume_gnu_attributes` + applies it at the function
+   parse, and the CIR builder forwards an `N_ATTR` in the FUNC_DEF specs.)
+5. **`cc74fef` — ff_call XMM slot over-counting** (bonus, found inside stdarg-3's
+   interp leg): `_MIR_get_ff_call` advanced `n_xregs` for INTEGER block eightbytes
+   (Win64 copy-paste), so each mixed `{double,long}` vararg struct after the first
+   landed its SSE half one XMM too high through the interpreter FFI. Fixed `stdarg-3`
+   under `c2m -ei`.
+
+**Result: torture at `-O2` = 1567 = torture at `-O1`, failsets byte-identical** (was
+1559/8-worse). O1 failset unchanged (byte-identical), fulltest 572/0/0/18, MIR
+`make test` identical baseline (1121/2242), SMAUG soak green. madc `-O2`/`-O3` are no
+longer behind a known-broken gate; whether O2 *beats* O1 in code quality/perf is a
+separate (open) question.
+
 ## Open threads (the actually-valuable derived work)
 
-1. **Make madc-O2 viable** (orthogonal to the O1 parity gate; codegen-quality, not promotion).
-   Root-cause the GVN mem-forwarding bug (deepest fix, vs the ≥O3 shim) + the 5 remaining O2-only
-   failures above. Only worth it once O2 can actually beat O1. Not the current priority.
+1. ~~**Make madc-O2 viable**~~ **DONE 2026-06-11** (see the O2-viability campaign above):
+   all 8 O2-only failures root-caused to 5 real bugs and fixed; O2 = O1 = 1567 with
+   byte-identical failsets. Remaining: evaluate whether O2 actually *helps* (perf), and
+   consider flipping madc's default `madc_opt_level` 1 → 2 after a soak period.
 2. **REPL/embedded module lifecycle** — adopt the converged unload/recycle/compact APIs (recur in
    3 forks) when the mode-4 REPL / libmadc-embedded tier lands.
 3. **BASIC front-end** — polyglot Phase 3; cyrilmhansen as prior art + a `.bas` conformance corpus.

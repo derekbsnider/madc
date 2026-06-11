@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### MIR-gen O2 reaches O1 parity — five c2mir/MIR bugs fixed (2026-06-11, `feature/mir-pr430-claude`)
+
+- **All 8 O2-only gcc.c-torture failures root-caused and fixed** (fork
+  `65b99fc` → `cc74fef`, `MIR_COMMIT` bumped same-commit; every bug
+  reproduced on stock `c2m -eg`/`-ei` first): (1) `MIR_VA_BLOCK_ARG`
+  missing from GVN's `fixed_place_insn_p` — struct `va_arg` fetches were
+  CSE'd, corrupting SSA edges (SIGSEGV in copy_prop; `strct-varg-1`,
+  `920908-1`); (2) the classic **lost-copy hazard** in out-of-SSA — a
+  self-loop block's back-edge copy lands before the tail branch, so a
+  branch testing the phi var read the *next* iteration's value and
+  `while (i-- > 0)` loops ran one short (`stdarg-3` gen, `pr43236`);
+  (3) **union alias-conflict relation** — union-class ('U…') accesses and
+  member-class pointer-deref accesses to the same memory never aliased
+  under the flat id-compare; MIR core gains `MIR_add_alias_conflict` /
+  `MIR_alias_conflict_p` and c2mir registers union↔member-leaf conflicts
+  (`pr41463`, `pr41395-2`); (4) **`optimize("-fno-strict-aliasing")`
+  honored** per-function — c2mir suppresses TBAA (alias class 0) for the
+  attributed function, surviving MIR inlining (`alias-1`, `pr79043`);
+  (5) `_MIR_get_ff_call` **XMM slot over-counting** for mixed-class block
+  varargs — each `{double,long}`-style struct after the first landed its
+  SSE half one XMM register too high through the interpreter FFI
+  (`stdarg-3` interp).
+- **madc side**: the lexer attribute allowlist gains `optimize`; the
+  parser consumes a GNU attribute between declaration specifiers and the
+  declarator (`static void __attribute__((…)) f()`) and records the
+  pending no-strict-aliasing flag; the CIR builder forwards it as an
+  `N_ATTR` in the FUNC_DEF specs (the vector_size/cleanup convention).
+  New `FuncDef::no_strict_aliasing`.
+- **Result: gcc.c-torture at `-O2` = 1567 = `-O1`, failsets
+  byte-identical** (O2 was 1559 and structurally behind since the
+  2026-06-02 experiment; the old "GVN mem-forwarding" theory is retired —
+  no optimization-disabling shim needed). Full record:
+  `docs/parity/mir-fork-community-patches.md`.
+- Gates: MIR `make test` identical baseline (1121/2242), fulltest
+  **572 / 0 / 0 / 18** (exit 0, both check gates GREEN), torture O1
+  failset **byte-identical**, SMAUG soak green.
+
 ### MIR fork: upstream PR #430 adopted — computed-goto RA fixes (2026-06-11, `feature/mir-pr430-claude`)
 
 - **Two register-allocator bugs breaking computed goto (`laddr`/`jmpi`) under

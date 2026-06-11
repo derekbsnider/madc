@@ -904,11 +904,22 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 	    bool saw_alias = false;
 	    bool saw_aligned = false;
 	    bool saw_vector_size = false;
+	    bool saw_optimize = false;
 	    do {
 		TokenBase *at = nextToken();
 		if ( !at ) break;
 		if ( attrs && adepth >= 2 && at->type() == TokenType::ttIdentifier )
 		    attrs->insert(((TokenIdent *)at)->str);
+		if ( at->type() == TokenType::ttIdentifier
+		  && (((TokenIdent *)at)->str == "optimize"
+		   || ((TokenIdent *)at)->str == "__optimize__") )
+		    saw_optimize = true;
+		else if ( saw_optimize && at->type() == TokenType::ttString )
+		{
+		    if ( ((TokenStr *)at)->str.find("no-strict-aliasing") != std::string::npos )
+			pending_no_strict_aliasing = true;
+		    saw_optimize = false;
+		}
 		if ( at->type() == TokenType::ttIdentifier
 		  && ((TokenIdent *)at)->str == "alias" )
 		    saw_alias = true;
@@ -27278,6 +27289,11 @@ paramdecl:
     if ( func_attrs.count("no_instrument_function")
       || func_attrs.count("__no_instrument_function__") )
 	func->no_instrument_function = true;
+    if ( pending_no_strict_aliasing )
+    {
+	func->no_strict_aliasing = true;
+	pending_no_strict_aliasing = false;
+    }
     if ( func_align > 0 )
 	func->explicit_alignment = func_align;
     // Check again for forward declaration after __attribute__
@@ -28228,6 +28244,17 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     parsing_const_decl = false;
 
     DBG(std::cout << "parseDeclaration(" << tb->str << ") START" << std::endl);
+
+    // A GNU attribute can sit between the declaration specifiers and the
+    // declarator (`static void __attribute__((optimize(...))) f()`).
+    // consume_gnu_attributes records anything madc acts on (e.g. the pending
+    // no-strict-aliasing flag the function parse picks up).
+    if ( is_attribute_identifier_token(peekToken()) )
+    {
+	TokenBase *after = consume_gnu_attributes(nextToken());
+	if ( after )
+	    pushToken(after);
+    }
 
     // check for pointer declarator(s): type * [*...] identifier.
     // base_type is the declared type without any `*`s — comma-continuations

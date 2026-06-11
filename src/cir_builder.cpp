@@ -9776,6 +9776,16 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// when pending defers must run AFTER the return expression is evaluated.
 	m_cur_func_ret_stars = ret_decl_stars + (ret_is_ref ? 1 : 0);
 
+	// optimize("-fno-strict-aliasing") rides the FUNC_DEF specs as an N_ATTR
+	// (the vector_size/cleanup convention); c2mir's sema marks the function and
+	// generates its accesses with alias class 0, surviving MIR inlining.
+	if (fd->no_strict_aliasing) {
+		node_t attr_args = list();
+		static const char no_sa[] = "-fno-strict-aliasing";
+		append(attr_args, str(no_sa, sizeof (no_sa), tf));
+		append(ret_type, node2(N_ATTR, id("optimize", tf), attr_args, tf));
+	}
+
 	// GNU nested-function / [&]-lambda capture context. A capturing function
 	// (has_captures) implicitly captures by reference whatever enclosing
 	// vars/params its body uses (its potential_captures). We translate the body
