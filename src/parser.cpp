@@ -6517,7 +6517,8 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 // definition (libstdc++ does not export that shape — the body must compile).
 // Fires ONLY when no member operator and no exported free shape covers the
 // operand pair; those keep their existing typing + CIR lowerings untouched.
-TokenBase *Program::lower_free_operator_to_call(TokenOperator *to)
+TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
+						bool no_rewrite)
 {
     if ( !to || to->argc() != 2 || !to->left || !to->right )
 	return NULL;
@@ -6565,7 +6566,7 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to)
     Variable *callee = NULL;
     if ( !instantiate_free_operator_template(opname, to->left, to->right,
 					     &callee) || !callee )
-	return NULL;
+	return no_rewrite ? NULL : rewritten_operator_candidate(to);
     TokenCallFunc *tc = new TokenCallFunc(*callee);
     tc->file = to->file;
     tc->line = to->line;
@@ -6573,6 +6574,91 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to)
     tc->parameters.push_back(to->left);
     tc->parameters.push_back(to->right);
     return tc;
+}
+
+// C++20 REWRITTEN candidates ([over.match.oper]) — consulted only after every
+// direct candidate set missed (member/W2 early-outs, parsed free operators,
+// retained templates; lower_free_operator_to_call's tail):
+//   x != y  ->  !(x == y)      (the == may itself bind reversed)
+//   x == y  ->  y == x         (the reversed candidate; == is symmetric)
+//   x @ y   ->  (x <=> y) @ 0  (@ in < > <= >=) when an operator<=> covers
+//                              the operand pair
+// Synthesized lowerings pass no_rewrite=true wherever re-entry must not
+// rewrite again, so the recursion terminates (!= -> == -> reversed == is the
+// longest chain). Reached only with a class operand (the caller's lc/rc
+// guard), so builtin operators are untouched.
+TokenBase *Program::rewritten_operator_candidate(TokenOperator *to)
+{
+    TokenID idd = (TokenID)to->id();
+    if ( idd == TokenID::tkNotEq )
+    {
+	TokenEquals *eq = new TokenEquals();
+	eq->left = to->left;
+	eq->right = to->right;
+	eq->file = to->file; eq->line = to->line; eq->column = to->column;
+	TokenBase *eqexpr = lower_free_operator_to_call(eq);
+	if ( !eqexpr )
+	{
+	    // A MEMBER operator== still serves the rewrite (the CIR
+	    // builder's class_operator_call lowers the == token); anything
+	    // else keeps the original loud != failure.
+	    DataDefCLASS *lc = operand_object_class(to->left);
+	    if ( !lc || !lc->binary_operator_return_type("operator==") )
+		return NULL;
+	    resolve_object_operator_type(eq);
+	    eqexpr = eq;
+	}
+	TokenLnot *neg = new TokenLnot();
+	neg->right = eqexpr;
+	neg->file = to->file; neg->line = to->line; neg->column = to->column;
+	return neg;
+    }
+    if ( idd == TokenID::tkEquals )
+    {
+	TokenEquals *rev = new TokenEquals();
+	rev->left = to->right;
+	rev->right = to->left;
+	rev->file = to->file; rev->line = to->line; rev->column = to->column;
+	return lower_free_operator_to_call(rev, /*no_rewrite=*/true);
+    }
+    if ( idd == TokenID::tkLT || idd == TokenID::tkGT
+      || idd == TokenID::tkLE || idd == TokenID::tkGE )
+    {
+	Token3Way *t3 = new Token3Way();
+	t3->left = to->left;
+	t3->right = to->right;
+	t3->file = to->file; t3->line = to->line; t3->column = to->column;
+	TokenBase *t3expr = lower_free_operator_to_call(t3, /*no_rewrite=*/true);
+	if ( !t3expr )
+	{
+	    // A MEMBER operator<=> serves too (CIR lowers the token); else
+	    // there is no three-way candidate — keep the original failure.
+	    DataDefCLASS *lc = operand_object_class(to->left);
+	    if ( !lc || !lc->binary_operator_return_type("operator<=>") )
+		return NULL;
+	    resolve_object_operator_type(t3);
+	    t3expr = t3;
+	}
+	TokenOperator *cmp;
+	switch ( idd )
+	{
+	    case TokenID::tkLT: cmp = new TokenLT(); break;
+	    case TokenID::tkGT: cmp = new TokenGT(); break;
+	    case TokenID::tkLE: cmp = new TokenLE(); break;
+	    default:            cmp = new TokenGE(); break;
+	}
+	cmp->left = t3expr;
+	cmp->right = new TokenInt(0);
+	cmp->file = to->file; cmp->line = to->line; cmp->column = to->column;
+	// The comparison-category friends (operator@(ordering, __unspec))
+	// bind this; NULL would leave a half-rewritten tree, so fall back to
+	// the raw token only if it carries a class operand CIR can dispatch.
+	if ( TokenBase *low = lower_free_operator_to_call(cmp, true) )
+	    return low;
+	resolve_object_operator_type(cmp);
+	return cmp;
+    }
+    return NULL;
 }
 
 // The unqualified template-head component of a C++ type spelling:

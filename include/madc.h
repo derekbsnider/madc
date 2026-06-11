@@ -1317,7 +1317,12 @@ public:
     // a retained operator template (no member operator, no exported free
     // shape), return a call node to the instantiated overload. NULL = not
     // this path; the normal operator machinery proceeds.
-    TokenBase *lower_free_operator_to_call(class TokenOperator *to);
+    TokenBase *lower_free_operator_to_call(class TokenOperator *to,
+					   bool no_rewrite = false);
+    // C++20 rewritten candidates ([over.match.oper]): != via ==, reversed
+    // ==, relationals via (x <=> y) @ 0. Consulted only after every direct
+    // candidate set missed.
+    TokenBase *rewritten_operator_candidate(class TokenOperator *to);
     // The std comparison-category class a builtin <=> yields
     // ([expr.spaceship]); NULL when <compare> has not been parsed.
     DataDef *comparison_category_class(class TokenOperator *to);
