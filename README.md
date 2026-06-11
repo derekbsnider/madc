@@ -250,13 +250,15 @@ real-header `std::to_string(42)` and `std::stoi(string)` execute. Plus C++
 correctness fixes. See
 [`docs/release-notes/v0.27.0.md`](docs/release-notes/v0.27.0.md).
 
-CIR baseline (2026-06-10, post-release): **555 integration/unit pass / 0 fail /
-26 skip** (zero known reds; real-header `std::string a+b` landed after the
-release via by-value free-operator returns),
+CIR baseline (2026-06-11): **557 integration/unit pass / 0 fail /
+18 skip** (zero known reds; post-release landings: real-header
+`std::string a+b`, the MadValue/MadArray → `madc::value` unification, and
+script-level `madc::eval_*` with user-call-site scope capture),
 and **gcc.c-torture 1567/1685 (93.0%)** vs the old asmjit
 backend's **1645 (97.6%)** on the same runner — the develop→master parity gate
-(gap 78). In-process `eval`/exec + the REPL, and native AOT output, are
-deferred (stubbed) until the CIR path reaches parity.
+(gap 78; a classification audit of the failing tail vs gcc-only extensions
+is queued to right-size this gate). In-process `eval`/exec runs on the CIR
+JIT (`CirJitSession`); the REPL and native AOT output remain deferred.
 
 **Branch state:** `develop` carries v0.27.0 (CIR backend). `master` still holds
 the v0.24.0 asmjit/Gecko backend at full C89 coverage (419 pass / 0 fail) —
