@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [v0.28.0] — 2026-06-11
+
+The C++20 three-way-comparison release: the `<=>` compliance track (P2.15) is
+complete — std-gating, real-`<compare>` category types, hidden-friend operator
+bodies, the token lowering, rewritten candidates, and `= default` comparison
+synthesis — alongside the completed template-instantiation batch (libstdc++
+operator BODY instantiation, reference operands), the libmadc eval leftovers
+(one `madc::value`, mangled-direct `<ns_madc>`, call-site scope capture), and
+the user-signed torture failset audit that re-defined the promote gate.
+Fulltest 572/0/0/18, gcc.c-torture 1567/1652 in-scope (95.0%), SMAUG boots.
+
 ### `= default` comparison synthesis — the `<=>` track is complete (2026-06-11, `feature/template-instantiation-claude` @ `01528ed`)
 
 - **Defaulted `==`/`<=>` compile** ([class.compare.default]): the definition

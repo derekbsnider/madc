@@ -237,46 +237,43 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.27.0 (2026-06-10)** — the all-greens release: the full integration suite
-passes (**547 / 0 / 0 / 26**) for the first time on the CIR backend. The last
-red, `testfstream`, runs as standard C++ through **real libstdc++ headers**,
-unlocked by **alias-spelled reference returns** (an alias is a *type*:
-`basic_string::operator[]`'s `reference` return derefs at use, `&s[1]` is an
-lvalue) and **namespace function-template body instantiation** — madc
-monomorphizes the non-exported libstdc++ template bodies on demand, so
-real-header `std::to_string(42)` and `std::stoi(string)` execute. Plus C++
-[namespace.udir] unqualified-call resolution (POSIX `::getline` vs
-`std::getline`), fortify `__builtin___mem*_chk` builtins, and overload-ranking
-correctness fixes. See
-[`docs/release-notes/v0.27.0.md`](docs/release-notes/v0.27.0.md).
+**v0.28.0 (2026-06-11)** — the C++20 three-way-comparison release: the **`<=>`
+compliance track is complete** (cpp-support.md P2.15). `a <=> b` lowers to
+faithful `std::strong_ordering`/`partial_ordering` category objects from the
+**real `<compare>` header** (the g++ -O0 byte-select canon); hidden-friend
+operator bodies hoist and compile; **rewritten candidates** ([over.match.oper])
+give a class defining only `operator<=>` + `operator==` all six comparisons;
+and **`= default` comparison synthesis** ([class.compare.default]) compiles
+defaulted `==`/`<=>` from the member list — a lone defaulted member
+`operator<=>` yields all six. Also: the completed template-instantiation batch
+(`a + "literal"` instantiates the real libstdc++ `operator+` body, reference
+operands resolve as the referenced class), the libmadc eval leftovers (one
+public `madc::value` end-to-end, mangled-direct `<ns_madc>`, user-call-site
+scope capture), and the user-signed torture failset audit. See
+[`docs/release-notes/v0.28.0.md`](docs/release-notes/v0.28.0.md).
 
-CIR baseline (2026-06-11): **561 integration/unit pass / 0 fail /
-18 skip** (zero known reds; post-release landings: real-header
-`std::string a+b`, the MadValue/MadArray → `madc::value` unification,
-script-level `madc::eval_*` with user-call-site scope capture, and the
-template-instantiation batch — `std::stof/stod` pack elision,
-`"pre" + s` mangled-direct, and `a + "literal"` free-operator BODY
-instantiation with the char_traits explicit-spec key fix),
-and **gcc.c-torture 1567 of 1652 in-scope (95.0%)** — the develop→master
-promote gate is **all 41 remaining standard-C failures fixed (≥1608)**, per
-the user-signed failset classification audit
+CIR baseline (2026-06-11): **572 integration/unit pass / 0 fail / 0 timeout /
+18 skip** (zero known reds, both check gates GREEN) and **gcc.c-torture 1567
+of 1652 in-scope (95.0%)** — the develop→master promote gate is **all 41
+remaining standard-C failures fixed (≥1608)**, per the user-signed failset
+classification audit
 ([`docs/parity/failset-classification.md`](docs/parity/failset-classification.md)):
 33 gcc-internal/torture-only tests are formally skipped
 (`docs/parity/torture-skip-manifest.txt`) and 14 real-world GNU extensions
 are roadmap items, not gate blockers. In-process `eval`/exec runs on the CIR
 JIT (`CirJitSession`); the REPL and native AOT output remain deferred.
 
-**Branch state:** `develop` carries v0.27.0 (CIR backend). `master` still holds
+**Branch state:** `develop` carries v0.28.0 (CIR backend). `master` still holds
 the v0.24.0 asmjit/Gecko backend at full C89 coverage (419 pass / 0 fail) —
 develop is **not** promoted to master until the CIR path reaches feature parity.
 
 ### Recent Releases
 
+- **v0.28.0** — C++20 `<=>` track complete (real `<compare>`, rewritten candidates, `= default` synthesis); template-instantiation batch; one `madc::value` + call-site scope capture; promote gate re-defined; fulltest 572/0
 - **v0.27.0** — All integration reds green (547/0); alias-spelled reference returns; namespace fn-template body instantiation (real-header to_string/stoi); [namespace.udir] call resolution; fortify chk builtins
 - **v0.26.0** — Real-header C++: libstdc++ string/iostream/getline mangled-direct; call-symbol unification + gate; `--project` driver; ≤16-byte SIMD; VLAs; multi-return
 - **v0.25.0** — CIR sole backend; SMAUG 1.8 boots, runs, and is playable (serpent fight); integration 316→325
 - **v0.24.0** — Native C99 `_Complex` in c2mir, transpiler parity 410→419
-- **v0.23.0** — MIR default backend, clang++ compiler, transpiler parity 400→410
 
 ## Roadmap
 
