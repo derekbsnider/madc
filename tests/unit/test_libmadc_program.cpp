@@ -1428,10 +1428,12 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("script-side runtime eval sees current scope when allowed" * doctest::skip()) {
+    TEST_CASE("script-side runtime eval sees current scope when allowed") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
+		   "#include <string>\n"
+		   "#include <ns_madc>\n"
 		   "int probe_expr(int base) {\n"
 		   "    int bonus = 2;\n"
 		   "    return madc::eval_expression_int(\"base + bonus\");\n"
@@ -1456,7 +1458,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("script-side runtime eval scope access can be disabled independently" * doctest::skip()) {
+    TEST_CASE("script-side runtime eval scope access can be disabled independently") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
 	policy.allow_runtime_eval_source_scope_access = false;
@@ -1465,6 +1467,8 @@ TEST_SUITE("madc::program") {
 
 	std::string path = make_temp_source_path();
 	write_file(path,
+		   "#include <string>\n"
+		   "#include <ns_madc>\n"
 		   "int probe_expr(int base) {\n"
 		   "    int bonus = 2;\n"
 		   "    return madc::eval_expression_int(\"base + bonus\");\n"
@@ -1489,7 +1493,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("script-side runtime expression scope access can be disabled without affecting full eval" * doctest::skip()) {
+    TEST_CASE("script-side runtime expression scope access can be disabled without affecting full eval") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
 	policy.allow_runtime_eval_expression_scope_access = false;
@@ -1497,6 +1501,8 @@ TEST_SUITE("madc::program") {
 
 	std::string path = make_temp_source_path();
 	write_file(path,
+		   "#include <string>\n"
+		   "#include <ns_madc>\n"
 		   "int probe_expr(int base) {\n"
 		   "    int bonus = 2;\n"
 		   "    return madc::eval_expression_int(\"base + bonus\");\n"
@@ -1521,7 +1527,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("script-side full eval scope access can be disabled without affecting runtime expression eval" * doctest::skip()) {
+    TEST_CASE("script-side full eval scope access can be disabled without affecting runtime expression eval") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
 	policy.allow_runtime_eval_source_scope_access = false;
@@ -1529,6 +1535,8 @@ TEST_SUITE("madc::program") {
 
 	std::string path = make_temp_source_path();
 	write_file(path,
+		   "#include <string>\n"
+		   "#include <ns_madc>\n"
 		   "int probe_expr(int base) {\n"
 		   "    int bonus = 2;\n"
 		   "    return madc::eval_expression_int(\"base + bonus\");\n"
