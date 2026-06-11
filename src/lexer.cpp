@@ -1508,9 +1508,14 @@ void Program::_tokenizer_init()
     // floor (the build-time capture can't know them — they describe THIS
     // compiler's features, not the host's). <compare> requires
     // __cpp_impl_three_way_comparison >= 201907L to expose the comparison
-    // category types.
+    // category types, and includes <concepts>, whose body gates on
+    // __cpp_concepts and carries the <type_traits> -> bits/c++config.h
+    // chain every standalone libstdc++ include relies on.
     if ( is_cpp_mode() && language_std >= STD_CPP20 )
+    {
 	define_map["__cpp_impl_three_way_comparison"] = "201907L";
+	define_map["__cpp_concepts"] = "202002L";
+    }
     for ( const MadcPredefFunc *f = madc_predefined_functions(); f->name; ++f )
     {
 	MacroDef m;

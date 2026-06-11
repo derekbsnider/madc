@@ -1969,6 +1969,14 @@ public:
     // opaque instantiation, dependent/opaque member-type materialization,
     // deferred-instantiation completion, and the template-decl skippers.
     void skip_template_id_suffix();
+    // Consume a C++20 requires-clause at the current token (constraints are
+    // not evaluated — madc has no concepts; the constrained declaration
+    // parses as if unconstrained). Returns true if a clause was consumed.
+    bool skip_requires_clause();
+    // The constraint scanner behind it (the `requires` keyword already
+    // consumed) — also used for trailing requires-clauses by the
+    // template-declaration skipper.
+    void skip_constraint_expression();
     void skip_template_nonclass_declaration(TokenBase *first,
 					    std::vector<TokenBase *> *seen = NULL);
     void capture_extern_template_class_instantiation();

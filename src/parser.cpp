@@ -16058,12 +16058,17 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	return NULL;
     }
 
-    // using std::cout;
-    if ( is_contextual_identifier_token(tn) )
+    // using std::cout;  — and `using NAME = type;` where NAME may shadow an
+    // ALREADY-REGISTERED type name (the token then lexes as ttDataType, not
+    // an identifier: class-scope `using int64_t = __INT64_TYPE__;` in
+    // <compare>'s _Strong_order machinery).
+    if ( is_contextual_identifier_token(tn)
+      || (tn->type() == TokenType::ttDataType
+	  && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign) )
     {
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
 	{
-	    std::string alias_name = contextual_identifier_name(tn);
+	    std::string alias_name = using_declaration_name(tn);
 	    pgm.nextToken(); // consume '='
 	    TokenBase *type_tb = pgm.nextToken();
 	    while ( type_tb && (type_tb->id() == TokenID::tkCONST
@@ -22526,6 +22531,90 @@ void Program::capture_extern_template_class_instantiation()
 	nextToken(); // ';'
 }
 
+// Consume a C++20 requires-clause if one starts at the current token:
+// `requires` constraint-logical-or-expression — primaries (an id-expression
+// with optional qualifiers/template-args, a parenthesized constraint, a
+// bool literal, or a requires-expression `requires [(params)] { ... }`,
+// each optionally negated) joined by && / ||. madc does not EVALUATE
+// constraints (no concepts support); callers consume the clause so the
+// constrained declaration parses as if unconstrained. Returns true if a
+// clause was consumed.
+bool Program::skip_requires_clause()
+{
+    TokenBase *kw = peekToken();
+    if ( !kw || !is_contextual_identifier_token(kw)
+      || contextual_identifier_name(kw) != "requires" )
+	return false;
+    nextToken(); // consume 'requires'
+    skip_constraint_expression();
+    return true;
+}
+
+// The constraint scanner behind skip_requires_clause — the `requires`
+// keyword is already consumed. Also used by the template-declaration
+// skipper for TRAILING requires-clauses (between a declarator and the
+// function body), where the requires-expression's braces must not be
+// mistaken for the body.
+void Program::skip_constraint_expression()
+{
+    auto skip_balanced = [&](TokenID open, TokenID close)
+    {
+	if ( !peekToken() || peekToken()->id() != open )
+	    return;
+	nextToken();
+	int depth = 1;
+	TokenBase *t;
+	while ( depth > 0 && (t = nextToken()) )
+	{
+	    if ( t->id() == open ) ++depth;
+	    else if ( t->id() == close ) --depth;
+	}
+    };
+    for (;;)
+    {
+	TokenBase *p = peekToken();
+	if ( !p )
+	    return;
+	if ( p->id() == TokenID::tkLnot )
+	{
+	    nextToken();   // '!' — the negated primary follows
+	    continue;
+	}
+	if ( is_contextual_identifier_token(p)
+	  && contextual_identifier_name(p) == "requires" )
+	{
+	    // requires-expression: requires [(params)] { requirements }
+	    nextToken();
+	    skip_balanced(TokenID::tkOpBrk, TokenID::tkClBrk);
+	    skip_balanced(TokenID::tkOpBrc, TokenID::tkClBrc);
+	}
+	else if ( p->id() == TokenID::tkOpBrk )
+	    skip_balanced(TokenID::tkOpBrk, TokenID::tkClBrk);
+	else
+	{
+	    // id-expression primary: ident (:: ident)* with optional
+	    // template arguments (also covers true/false literals).
+	    nextToken();
+	    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
+	    {
+		nextToken();
+		if ( peekToken() )
+		    nextToken();
+	    }
+	    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+		skip_template_id_suffix();
+	}
+	if ( peekToken()
+	  && (peekToken()->id() == TokenID::tkLand
+	   || peekToken()->id() == TokenID::tkLor) )
+	{
+	    nextToken();
+	    continue;
+	}
+	return;
+    }
+}
+
 void Program::skip_template_nonclass_declaration(TokenBase *first,
 					       std::vector<TokenBase *> *seen)
 {
@@ -22571,6 +22660,22 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
 	}
 	if ( t->id() == TokenID::tkOPEROVER )
 	    consume_operator_spelling = true;
+	// A TRAILING requires-clause (between the declarator and the function
+	// body: `... noexcept(...) requires requires { ... } { body }`): the
+	// constraint is consumed as a unit so a requires-expression's braces
+	// are never mistaken for the body brace below. Constraint tokens are
+	// deliberately not appended to `seen` (signature extraction must not
+	// see them).
+	else if ( angle_depth == 0 && paren_depth == 0 && square_depth == 0
+	       && brace_depth == 0 && is_contextual_identifier_token(t)
+	       && contextual_identifier_name(t) == "requires" )
+	{
+	    if ( seen && !seen->empty() && seen->back() == t )
+		seen->pop_back();
+	    skip_constraint_expression();
+	    t = nextToken();
+	    continue;
+	}
 	// Track template angle brackets ONLY outside parens/subscripts. Inside
 	// `(...)` or `[...]` a `<`/`>` is a comparison/shift operator, not a
 	// template bracket — e.g. a trailing return `-> decltype(a < b)` or
@@ -25080,8 +25185,43 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.Throw(tn) << "Expecting ',' or '>' in template parameter list" << flush;
     }
 
+    // C++20 requires-clause between the template-parameter-list and the
+    // declaration (`template<...> requires C<T> struct X ...`): consume it
+    // so the dispatch below sees the real declaration head. madc does not
+    // evaluate constraints (no concepts); the declaration parses as if
+    // unconstrained.
+    pgm.skip_requires_clause();
+
     // Expect `class|struct Name` then capture through the matching '}'.
     TokenBase *class_kw = pgm.nextToken();
+    // C++20 concept definition: `template<...> concept Name = constraint;`.
+    // madc does not evaluate concepts — consume to the terminating ';' at
+    // depth 0. A top-level '{' inside the constraint is a requires-expression
+    // body or a braced-init (`_Tp{}`), always balanced, NEVER a function
+    // body — the generic nonclass skipper's body rule would return at the
+    // first '}' and leave the constraint tail dangling in the stream.
+    // Only (), [], {} are tracked: a constraint cannot carry a top-level ';'
+    // inside template angles (and a comparison `<` inside a compound
+    // requirement would desync angle counting — `{ a < b } -> bool;`).
+    if ( is_contextual_identifier_token(class_kw)
+      && contextual_identifier_name(class_kw) == "concept" )
+    {
+	int paren = 0, square = 0, brace = 0;
+	TokenBase *t;
+	while ( (t = pgm.nextToken()) )
+	{
+	    if ( t->id() == TokenID::tkSemi
+	      && paren == 0 && square == 0 && brace == 0 )
+		break;
+	    if ( t->id() == TokenID::tkOpBrk ) ++paren;
+	    else if ( t->id() == TokenID::tkClBrk && paren > 0 ) --paren;
+	    else if ( t->id() == TokenID::tkOpSqr ) ++square;
+	    else if ( t->id() == TokenID::tkClSqr && square > 0 ) --square;
+	    else if ( t->id() == TokenID::tkOpBrc ) ++brace;
+	    else if ( t->id() == TokenID::tkClBrc && brace > 0 ) --brace;
+	}
+	return NULL;
+    }
     if ( class_kw->id() == TokenID::tkUSING )
     {
 	TokenBase *alias_tb = pgm.nextToken();

@@ -3,11 +3,14 @@
 // class-typed constexpr statics resolve to their out-of-class-definition
 // storage (not the silent-0 integral fold), and the copied value carries
 // the right _M_value byte. Exercises: __cplusplus tracking --std=,
-// __cpp_impl_three_way_comparison, scope-relative namespace-qualified
+// __cpp_impl_three_way_comparison + __cpp_concepts (the <compare> →
+// <concepts> → <type_traits> → c++config chain — <compare> is deliberately
+// the FIRST include, the g++-equivalent standalone shape), requires-clause
+// / concept-definition consumption, scope-relative namespace-qualified
 // member types (__cmp_cat::type), enum class in a nested namespace,
 // out-of-class static member definitions with ctor args.
-#include <cstdio>
 #include <compare>
+#include <cstdio>
 
 int main()
 {
