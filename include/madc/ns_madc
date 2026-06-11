@@ -41,6 +41,8 @@ namespace madc {
     long eval_expression_int_ctx(const char *expr, array &ctx);
     double eval_expression_double_ctx(const char *expr, array &ctx);
     std::string &eval_expression_string_ctx(std::string &out, const char *expr, array &ctx);
+    void eval_expression_ctx(long &out, const char *expr, array &ctx);
+    void eval_expression_ctx(double &out, const char *expr, array &ctx);
 
     // Context-carrying full-eval forms — the rebind targets for call-site
     // scope capture.

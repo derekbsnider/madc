@@ -79,6 +79,15 @@ double eval_expression_double_ctx(const char *expr, value &ctx)
 std::string &eval_expression_string_ctx(std::string &out, const char *expr, value &ctx)
 	{ std::string e = expr ? expr : ""; return *(std::string *)madc_runtime_eval_expression_string_ctx(&out, &e, &ctx); }
 
+// Typed out-parameter ctx forms — every eval_expression overload needs a
+// _ctx sibling or the call-site scope-capture rebind has no target (the
+// std::string& destination is covered by the render form above, which
+// the rebind's overload re-rank already selects).
+void eval_expression_ctx(long &out, const char *expr, value &ctx)
+	{ std::string e = expr ? expr : ""; out = madc_runtime_eval_expression_int_ctx(&e, &ctx); }
+void eval_expression_ctx(double &out, const char *expr, value &ctx)
+	{ std::string e = expr ? expr : ""; out = madc_runtime_eval_expression_double_ctx(&e, &ctx); }
+
 // Context-carrying full-eval forms — the rebind targets for call-site
 // scope capture (the parser rebinds a madc::eval_* call to its _ctx
 // sibling and appends the captured scope when scope access is enabled).

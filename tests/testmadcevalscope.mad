@@ -23,5 +23,12 @@ int main()
 	printf("%d\n", probe_eval(40));
 	madc::eval_expression_string(out, "who");
 	printf("%s\n", out.c_str());
+	int seven = 7;
+	long lout = 0;
+	madc::eval_expression(lout, "seven * 6");
+	printf("%ld\n", lout);
+	double dout = 0;
+	madc::eval_expression(dout, "seven * 0.5");
+	printf("%.1f\n", dout);
 	return 0;
 }
