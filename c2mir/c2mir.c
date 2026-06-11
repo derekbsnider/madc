@@ -6339,6 +6339,8 @@ struct node_scope {
 struct decl {
   /* true if address is taken, reg can be used or is used: */
   unsigned addr_p : 1, reg_p : 1, asm_p : 1, used_p : 1;
+  /* function carries __attribute__((optimize("-fno-strict-aliasing"))): */
+  unsigned no_strict_aliasing_p : 1;
   int bit_offset, width; /* for bitfields, -1 bit_offset for non bitfields. */
   mir_size_t offset;     /* var offset in frame or bss */
   node_t scope;          /* declaration scope */
@@ -9090,6 +9092,7 @@ static void init_decl (c2m_ctx_t c2m_ctx, decl_t decl) {
 
   decl->addr_p = FALSE;
   decl->reg_p = decl->asm_p = decl->used_p = FALSE;
+  decl->no_strict_aliasing_p = FALSE;
   decl->offset = 0;
   decl->bit_offset = -1;
   decl->param_args_start = decl->param_args_num = 0;
@@ -9788,6 +9791,30 @@ static const char *check_attrs (c2m_ctx_t c2m_ctx, node_t r, decl_t decl, node_t
     error (c2m_ctx, POS (r), "antialias attribute should be given for a pointer type");
   }
   return alias_id->u.s.s;
+}
+
+/* TRUE if a specifier/attribute list carries
+   __attribute__((optimize("-fno-strict-aliasing"))) — gcc's spelling for suppressing
+   type-based alias disambiguation in one function. */
+static int specs_no_strict_aliasing_p (node_t specs) {
+  node_t n, id, list, arg;
+
+  if (specs == NULL) return FALSE;
+  if (specs->code == N_SHARE) specs = NL_HEAD (specs->u.ops);
+  if (specs == NULL || specs->code != N_LIST) return FALSE;
+  for (n = NL_HEAD (specs->u.ops); n != NULL; n = NL_NEXT (n)) {
+    if (n->code != N_ATTR) continue;
+    id = NL_HEAD (n->u.ops);
+    if (id == NULL || id->code != N_ID || !attr_name_eq_p (id->u.s.s, "optimize")) continue;
+    list = NL_NEXT (id);
+    if (list == NULL || list->code != N_LIST) continue;
+    for (arg = NL_HEAD (list->u.ops); arg != NULL; arg = NL_NEXT (arg))
+      if (arg->code == N_STR
+          && (strcmp (arg->u.s.s, "-fno-strict-aliasing") == 0
+              || strcmp (arg->u.s.s, "no-strict-aliasing") == 0))
+        return TRUE;
+  }
+  return FALSE;
 }
 
 #define BUILTIN_VA_START \
@@ -11235,6 +11262,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     curr_call_arg_area_offset = 0;
     VARR_TRUNC (decl_t, func_decls_for_allocation, 0);
     create_decl (c2m_ctx, top_scope, r, decl_spec, NULL, FALSE);
+    if (specs_no_strict_aliasing_p (NL_HEAD (r->u.ops)))
+      ((decl_t) r->attr)->no_strict_aliasing_p = TRUE;
     curr_scope = func_block_scope;
     check (c2m_ctx, declarations, r);
     /* Process parameter identifier list:  */
@@ -11861,6 +11890,7 @@ struct gen_ctx {
   HTAB (MIR_item_t) * proto_tab;
   VARR (node_t) * node_stack;
   VARR (MIR_alias_t) * union_alias_done; /* union classes whose member conflicts are registered */
+  int curr_no_strict_aliasing_p; /* current func has optimize("-fno-strict-aliasing") */
 };
 
 #define zero_op gen_ctx->zero_op
@@ -11901,6 +11931,7 @@ struct gen_ctx {
 #define proto_tab gen_ctx->proto_tab
 #define node_stack gen_ctx->node_stack
 #define union_alias_done gen_ctx->union_alias_done
+#define curr_no_strict_aliasing_p gen_ctx->curr_no_strict_aliasing_p
 
 static op_t new_op (decl_t decl, MIR_op_t mir_op) {
   op_t res;
@@ -12222,6 +12253,7 @@ static MIR_alias_t get_type_alias (c2m_ctx_t c2m_ctx, struct type *type) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_alias_t alias;
 
+  if (curr_no_strict_aliasing_p) return 0; /* every access may alias in this function */
   switch (type->mode) {
   case TM_BASIC:
     if (type->u.basic_type != TP_CHAR && type->u.basic_type != TP_SCHAR
@@ -17650,6 +17682,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                                          VARR_LENGTH (MIR_var_t, proto_info.arg_vars),
                                          VARR_ADDR (MIR_var_t, proto_info.arg_vars)));
     func_decl->u.item = curr_func;
+    curr_no_strict_aliasing_p = func_decl->no_strict_aliasing_p;
     DLIST_INIT (MIR_insn_t, slow_code_part);
     if (ns->stack_var_p /* we can have empty struct only with size 0 and still need a frame: */
         || ns->size > 0) {
