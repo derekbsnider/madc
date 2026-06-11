@@ -587,6 +587,10 @@ extern const char *MIR_reg_hard_reg_name (MIR_context_t ctx, MIR_reg_t reg, MIR_
 
 extern const char *MIR_alias_name (MIR_context_t ctx, MIR_alias_t alias);
 extern MIR_alias_t MIR_alias (MIR_context_t ctx, const char *name);
+/* Mark two distinct alias classes as possibly referring to the same memory
+   (e.g. a union access class and a member access class).  Symmetric. */
+extern void MIR_add_alias_conflict (MIR_context_t ctx, MIR_alias_t alias1, MIR_alias_t alias2);
+extern int MIR_alias_conflict_p (MIR_context_t ctx, MIR_alias_t alias1, MIR_alias_t alias2);
 
 extern MIR_op_t MIR_new_reg_op (MIR_context_t ctx, MIR_reg_t reg);
 extern MIR_op_t MIR_new_int_op (MIR_context_t ctx, int64_t v);

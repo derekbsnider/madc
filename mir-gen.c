@@ -3475,16 +3475,17 @@ static void calculate_dominators (gen_ctx_t gen_ctx) {
 #define mem_av_in in
 #define mem_av_out out
 
-static int may_alias_p (MIR_alias_t alias1, MIR_alias_t alias2, MIR_alias_t nonalias1,
-                        MIR_alias_t nonalias2) {
-  return (alias1 == 0 || alias2 == 0 || alias1 == alias2)
+static int may_alias_p (gen_ctx_t gen_ctx, MIR_alias_t alias1, MIR_alias_t alias2,
+                        MIR_alias_t nonalias1, MIR_alias_t nonalias2) {
+  return (alias1 == 0 || alias2 == 0 || alias1 == alias2
+          || MIR_alias_conflict_p (gen_ctx->ctx, alias1, alias2))
          && (nonalias1 == 0 || nonalias2 == 0 || nonalias1 != nonalias2);
 }
 
-static int may_mem_alias_p (const MIR_op_t *mem1, const MIR_op_t *mem2) {
+static int may_mem_alias_p (gen_ctx_t gen_ctx, const MIR_op_t *mem1, const MIR_op_t *mem2) {
   gen_assert (mem1->mode == MIR_OP_VAR_MEM && mem2->mode == MIR_OP_VAR_MEM);
-  return may_alias_p (mem1->u.var_mem.alias, mem2->u.var_mem.alias, mem1->u.var_mem.nonalias,
-                      mem2->u.var_mem.nonalias);
+  return may_alias_p (gen_ctx, mem1->u.var_mem.alias, mem2->u.var_mem.alias,
+                      mem1->u.var_mem.nonalias, mem2->u.var_mem.nonalias);
 }
 
 static void mem_av_con_func_0 (bb_t bb) { bitmap_clear (bb->mem_av_in); }
@@ -3519,7 +3520,7 @@ static int mem_av_trans_func (gen_ctx_t gen_ctx, bb_t bb) {
       FOREACH_BITMAP_BIT (bi2, bb->gen, nel2) { /* consider only stores */
         mem_insn = VARR_GET (mem_expr_t, mem_exprs, nel2)->insn;
         if (mem_insn->ops[0].mode == MIR_OP_VAR_MEM
-            && may_mem_alias_p (mem_ref, &mem_insn->ops[0])) {
+            && may_mem_alias_p (gen_ctx, mem_ref, &mem_insn->ops[0])) {
           alias_p = TRUE;
           break;
         }
@@ -3543,7 +3544,8 @@ static void update_mem_availability (gen_ctx_t gen_ctx, bitmap_t mem_av, bb_insn
   FOREACH_BITMAP_BIT (bi, mem_av, nel) {
     mem_insn = VARR_GET (mem_expr_t, mem_exprs, nel)->insn;
     if (!ld_p
-        && may_mem_alias_p (&mem_insn->ops[mem_insn->ops[0].mode == MIR_OP_VAR_MEM ? 0 : 1],
+        && may_mem_alias_p (gen_ctx,
+                            &mem_insn->ops[mem_insn->ops[0].mode == MIR_OP_VAR_MEM ? 0 : 1],
                             mem_ref))
       bitmap_clear_bit_p (mem_av, nel);
   }
@@ -5058,8 +5060,8 @@ static void make_live_from_mem (gen_ctx_t gen_ctx, MIR_op_t *mem_ref, bitmap_t g
 
   gen_assert (mem_ref->mode == MIR_OP_VAR_MEM);
   for (size_t i = 1; i < VARR_LENGTH (mem_attr_t, mem_attrs); i++) {
-    if (!may_alias_p (mem_ref->u.var_mem.alias, mem_attr_addr[i].alias, mem_ref->u.var_mem.nonalias,
-                      mem_attr_addr[i].nonalias))
+    if (!may_alias_p (gen_ctx, mem_ref->u.var_mem.alias, mem_attr_addr[i].alias,
+                      mem_ref->u.var_mem.nonalias, mem_attr_addr[i].nonalias))
       continue;
     if (must_alloca_p && (mem_attr_addr[i].alloca_flag & MUST_ALLOCA)
         && !alloca_mem_intersect_p (gen_ctx, mem_ref->u.var_mem.nloc, mem_ref->u.var_mem.type,
@@ -9978,7 +9980,8 @@ static void generate_bb_version_machine_code (gen_ctx_t gen_ctx, bb_version_t bb
         if (mem_spot_p (dest_spot)) {
           spot_attr_t *spot_attr_addr = VARR_ADDR (spot_attr_t, spot_attrs);
           for (spot = FIRST_MEM_SPOT; spot <= max_spot; spot++)
-            if (may_mem_alias_p (spot_attr_addr[dest_spot].mem_ref, spot_attr_addr[spot].mem_ref))
+            if (may_mem_alias_p (gen_ctx, spot_attr_addr[dest_spot].mem_ref,
+                                 spot_attr_addr[spot].mem_ref))
               bitmap_clear_bit_p (nonzero_property_spots, spot);
           spot_attr.mem_ref = &curr_insn->ops[0];
         }

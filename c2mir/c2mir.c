@@ -11811,6 +11811,7 @@ typedef struct reg_var reg_var_t;
 DEF_HTAB (reg_var_t);
 DEF_VARR (int);
 DEF_VARR (MIR_type_t);
+DEF_VARR (MIR_alias_t);
 
 struct init_el {
   c2m_ctx_t c2m_ctx; /* for sorting */
@@ -11859,6 +11860,7 @@ struct gen_ctx {
   int curr_mir_proto_num;
   HTAB (MIR_item_t) * proto_tab;
   VARR (node_t) * node_stack;
+  VARR (MIR_alias_t) * union_alias_done; /* union classes whose member conflicts are registered */
 };
 
 #define zero_op gen_ctx->zero_op
@@ -11898,6 +11900,7 @@ struct gen_ctx {
 #define curr_mir_proto_num gen_ctx->curr_mir_proto_num
 #define proto_tab gen_ctx->proto_tab
 #define node_stack gen_ctx->node_stack
+#define union_alias_done gen_ctx->union_alias_done
 
 static op_t new_op (decl_t decl, MIR_op_t mir_op) {
   op_t res;
@@ -12177,9 +12180,47 @@ static void get_type_alias_name (c2m_ctx_t c2m_ctx, struct type *type, VARR (cha
   }
 }
 
+static MIR_alias_t get_type_alias (c2m_ctx_t c2m_ctx, struct type *type);
+
+/* A union access keeps the union's alias class while a pointer-deref access to the same
+   memory carries the member type's own class, so the two classes must be declared
+   conflicting ([class.union] type punning through unions is valid C).  Walk the union's
+   value-embedded member tree (pointers are leaves) and register a conflict between the
+   union class and every distinct member access class. */
+static void add_union_member_conflicts (c2m_ctx_t c2m_ctx, struct type *type,
+                                        MIR_alias_t union_alias) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  MIR_alias_t alias;
+
+  switch (type->mode) {
+  case TM_ARR: add_union_member_conflicts (c2m_ctx, type->u.arr_type->el_type, union_alias); break;
+  case TM_VECTOR:
+    add_union_member_conflicts (c2m_ctx, type->u.vector_type->el_type, union_alias);
+    break;
+  case TM_STRUCT:
+  case TM_UNION:
+    if (type->mode == TM_UNION && (alias = get_type_alias (c2m_ctx, type)) != 0)
+      MIR_add_alias_conflict (ctx, union_alias, alias);
+    for (node_t member = NL_HEAD (NL_EL (type->u.tag_type->u.ops, 1)->u.ops); member != NULL;
+         member = NL_NEXT (member))
+      if (member->code == N_MEMBER) {
+        decl_t decl = member->attr;
+
+        add_union_member_conflicts (c2m_ctx, decl->decl_spec.type, union_alias);
+      }
+    break;
+  case TM_FUNC: break;
+  default:
+    if ((alias = get_type_alias (c2m_ctx, type)) != 0)
+      MIR_add_alias_conflict (ctx, union_alias, alias);
+    break;
+  }
+}
+
 static MIR_alias_t get_type_alias (c2m_ctx_t c2m_ctx, struct type *type) {
   MIR_context_t ctx = c2m_ctx->ctx;
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  MIR_alias_t alias;
 
   switch (type->mode) {
   case TM_BASIC:
@@ -12198,7 +12239,24 @@ static MIR_alias_t get_type_alias (c2m_ctx_t c2m_ctx, struct type *type) {
   VARR_TRUNC (char, temp_string, 0);
   get_type_alias_name (c2m_ctx, type, temp_string);
   VARR_PUSH (char, temp_string, '\0');
-  return MIR_alias (ctx, VARR_ADDR (char, temp_string));
+  alias = MIR_alias (ctx, VARR_ADDR (char, temp_string));
+  if (type->mode == TM_UNION && alias != 0) {
+    size_t i;
+
+    for (i = 0; i < VARR_LENGTH (MIR_alias_t, union_alias_done); i++)
+      if (VARR_GET (MIR_alias_t, union_alias_done, i) == alias) break;
+    if (i >= VARR_LENGTH (MIR_alias_t, union_alias_done)) {
+      VARR_PUSH (MIR_alias_t, union_alias_done, alias);
+      for (node_t member = NL_HEAD (NL_EL (type->u.tag_type->u.ops, 1)->u.ops); member != NULL;
+           member = NL_NEXT (member))
+        if (member->code == N_MEMBER) {
+          decl_t decl = member->attr;
+
+          add_union_member_conflicts (c2m_ctx, decl->decl_spec.type, alias);
+        }
+    }
+  }
+  return alias;
 }
 
 static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_t false_label,
@@ -18175,6 +18233,7 @@ static void gen_finish (c2m_ctx_t c2m_ctx) {
   if (switch_cases != NULL) VARR_DESTROY (case_t, switch_cases);
   if (init_els != NULL) VARR_DESTROY (init_el_t, init_els);
   if (node_stack != NULL) VARR_DESTROY (node_t, node_stack);
+  if (union_alias_done != NULL) VARR_DESTROY (MIR_alias_t, union_alias_done);
   free (c2m_ctx->gen_ctx);
 }
 
@@ -18197,6 +18256,7 @@ static void gen_mir (c2m_ctx_t c2m_ctx, node_t r) {
   VARR_CREATE (case_t, switch_cases, alloc, 64);
   VARR_CREATE (init_el_t, init_els, alloc, 128);
   VARR_CREATE (node_t, node_stack, alloc, 8);
+  VARR_CREATE (MIR_alias_t, union_alias_done, alloc, 8);
   abort_proto = abort_item = memcmp_proto = memcmp_item = copysignf_proto = copysignf_item
     = nan_proto = nan_item = memset_proto = memset_item = memcpy_proto = memcpy_item = NULL;
   int128_divmod_proto = divti3_item = udivti3_item = modti3_item = umodti3_item = NULL;

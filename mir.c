@@ -502,13 +502,17 @@ static void string_finish (MIR_alloc_t alloc, VARR (string_t) * *strs, HTAB (str
 
 /* Functions to work with aliases.  */
 
+DEF_HTAB (uint64_t);
+
 struct alias_ctx {
   VARR (string_t) * aliases;
   HTAB (string_t) * alias_tab;
+  HTAB (uint64_t) * alias_conflict_tab; /* normalized (min<<32)|max alias id pairs */
 };
 
 #define aliases ctx->alias_ctx->aliases
 #define alias_tab ctx->alias_ctx->alias_tab
+#define alias_conflict_tab ctx->alias_ctx->alias_conflict_tab
 
 MIR_alias_t MIR_alias (MIR_context_t ctx, const char *name) {
   return (MIR_alias_t) string_store (ctx, &aliases, &alias_tab,
@@ -521,6 +525,32 @@ const char *MIR_alias_name (MIR_context_t ctx, MIR_alias_t alias) {
   if (alias >= VARR_LENGTH (string_t, aliases))
     MIR_get_error_func (ctx) (MIR_alloc_error, "Wrong alias number");
   return VARR_ADDR (string_t, aliases)[alias].str.s;
+}
+
+static int alias_conflict_eq (uint64_t k1, uint64_t k2, void *arg MIR_UNUSED) { return k1 == k2; }
+static htab_hash_t alias_conflict_hash (uint64_t k, void *arg MIR_UNUSED) {
+  return (htab_hash_t) mir_hash (&k, sizeof (k), 0x2b);
+}
+
+static uint64_t alias_conflict_key (MIR_alias_t alias1, MIR_alias_t alias2) {
+  return alias1 < alias2 ? (((uint64_t) alias1 << 32) | alias2)
+                         : (((uint64_t) alias2 << 32) | alias1);
+}
+
+void MIR_add_alias_conflict (MIR_context_t ctx, MIR_alias_t alias1, MIR_alias_t alias2) {
+  uint64_t tab_key;
+
+  if (alias1 == 0 || alias2 == 0 || alias1 == alias2) return;
+  HTAB_DO (uint64_t, alias_conflict_tab, alias_conflict_key (alias1, alias2), HTAB_INSERT,
+           tab_key);
+}
+
+int MIR_alias_conflict_p (MIR_context_t ctx, MIR_alias_t alias1, MIR_alias_t alias2) {
+  uint64_t tab_key;
+
+  if (alias1 == 0 || alias2 == 0 || alias1 == alias2) return FALSE;
+  return HTAB_DO (uint64_t, alias_conflict_tab, alias_conflict_key (alias1, alias2), HTAB_FIND,
+                  tab_key);
 }
 
 /* New Page */
@@ -820,10 +850,12 @@ MIR_context_t _MIR_init (MIR_alloc_t alloc, MIR_code_alloc_t code_alloc) {
   curr_func = NULL;
   curr_label_num = 0;
   if ((ctx->string_ctx = MIR_malloc (alloc, sizeof (struct string_ctx))) == NULL
-      || (ctx->alias_ctx = MIR_malloc (alloc, sizeof (struct string_ctx))) == NULL)
+      || (ctx->alias_ctx = MIR_malloc (alloc, sizeof (struct alias_ctx))) == NULL)
     MIR_get_error_func (ctx) (MIR_alloc_error, "Not enough memory for ctx");
   string_init (alloc, &strings, &string_tab);
   string_init (alloc, &aliases, &alias_tab);
+  HTAB_CREATE (uint64_t, alias_conflict_tab, alloc, 64, alias_conflict_hash, alias_conflict_eq,
+               NULL);
   VARR_CREATE (MIR_proto_t, unspec_protos, alloc, 0);
   check_and_prepare_insn_descs (ctx);
   DLIST_INIT (MIR_module_t, all_modules);
@@ -972,6 +1004,7 @@ void MIR_finish (MIR_context_t ctx) {
   VARR_DESTROY (MIR_proto_t, unspec_protos);
   string_finish (ctx->alloc, &strings, &string_tab);
   string_finish (ctx->alloc, &aliases, &alias_tab);
+  HTAB_DESTROY (uint64_t, alias_conflict_tab);
   simplify_finish (ctx);
   VARR_DESTROY (size_t, insn_nops);
   code_finish (ctx);
