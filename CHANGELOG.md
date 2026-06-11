@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### `<=>` slice 2a′ — standalone `#include <compare>` works, g++'s chain duplicated (2026-06-11, `feature/template-instantiation-claude` @ `fcceefb`)
+
+- **`__cpp_concepts=202002L` at the C++20 floor** — g++ compiles
+  `<compare>` standalone because concepts activate `<concepts>`, whose
+  `#include <type_traits>` carries `bits/c++config.h` in; madc now follows
+  the same chain. Constraints are CONSUMED, never evaluated (no concepts
+  semantics) — constrained declarations parse as if unconstrained.
+- Parser tolerance the activated regions needed: requires-clauses between
+  template header and declaration (`__detected_or`), TRAILING
+  requires-clauses between declarator and body (a requires-expression's
+  braces were mistaken for the function body), `concept` definitions
+  consumed to the top-level `;` without angle-tracking (comparison `<`
+  inside compound requirements desyncs it), and `using NAME = type;`
+  where NAME shadows a registered type name (`using int64_t = ...`).
+- `testcompare_realhdr` now includes `<compare>` FIRST (109ms). The one
+  remaining `<=>` wall: hidden-friend operator bodies (slice 2b).
+- Gates: fulltest **566 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  torture failset **byte-identical**, SMAUG soak green.
+
 ### `<=>` slice 2a — `<compare>` category types from the real header (2026-06-11, `feature/template-instantiation-claude` @ `c8fdb48`)
 
 - **`std::strong_ordering` / `partial_ordering` / `weak_ordering` register

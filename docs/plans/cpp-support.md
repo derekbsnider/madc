@@ -406,9 +406,15 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   pseudo-namespaces (+ `parsePostfixChain` walk), file-scope ctor-syntax
   declarations record top_decls (out-of-class static member definitions
   kept their ctor args), and CLASS-typed static members resolve to their
-  storage instead of the silent-0 integral fold. KNOWN LIMIT: a TU whose
-  FIRST include is `<compare>` fails (`bits/c++config.h` arrives via
-  `<concepts>` in g++, gated out here). Remaining plan:
+  storage instead of the silent-0 integral fold. **Slice 2a′ LANDED**
+  (`fcceefb`): standalone `#include <compare>` works — g++'s chain
+  duplicated by defining `__cpp_concepts=202002L` at the C++20 floor
+  (constraints CONSUMED, never evaluated — constrained declarations parse
+  as if unconstrained; `<concepts>`' active body carries `<type_traits>` →
+  `bits/c++config.h` in, exactly like g++) + requires-clause /
+  trailing-requires / concept-definition consumption in the template
+  skippers + `using NAME = type;` alias names may shadow registered type
+  names. Remaining plan:
   1. Builtin scalars: parse `a <=> b` as a binary operator. Lowering
      semantics RULED (user, 2026-06-11): FAITHFUL `std::strong_ordering` /
      `partial_ordering` category objects from the real `<compare>` header
