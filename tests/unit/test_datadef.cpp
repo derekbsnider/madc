@@ -1356,3 +1356,65 @@ TEST_SUITE("Program isolation") {
 	engine.reset_standard_streams();
     }
 }
+
+TEST_SUITE("DataDef::same_representation (=== type-domain identity)") {
+    TEST_CASE("integers: size+signedness; tags are the representation") {
+        DataDef i32("int", 4, DataType::dtINT32);
+        DataDef u32("uint32_t", 4, DataType::dtUINT32);
+        DataDef u8("uint8_t", 1, DataType::dtUINT8);
+        DataDef i64a("long", 8, DataType::dtINT64);
+        DataDef i64b("long long", 8, DataType::dtINT64);
+        DataDef ch("char", 1, DataType::dtCHAR);
+        DataDef i8("int8_t", 1, DataType::dtINT8);
+        CHECK(!i32.same_representation(u32));   // signedness
+        CHECK(!u32.same_representation(u8));    // size
+        CHECK(i64a.same_representation(i64b));  // long === long long
+        CHECK(ch.same_representation(i8));      // char == int8 on this target
+        CHECK(!ch.same_representation(u8));
+        CHECK(i32.same_representation(i32));
+    }
+    TEST_CASE("kinds: bool/float/int are distinct domains") {
+        DataDef b("bool", 1, DataType::dtBOOL);
+        DataDef u8("uint8_t", 1, DataType::dtUINT8);
+        DataDef f("float", 4, DataType::dtFLOAT);
+        DataDef d("double", 8, DataType::dtDOUBLE);
+        DataDef i32("int", 4, DataType::dtINT32);
+        CHECK(!b.same_representation(u8));
+        CHECK(!f.same_representation(d));
+        CHECK(!i32.same_representation(d));
+        CHECK(d.same_representation(d));
+    }
+    TEST_CASE("enums are their own domain") {
+        DataDefENUM color("Color");
+        DataDefENUM color2("Color");
+        DataDefENUM fruit("Fruit");
+        DataDef i32("int", 4, DataType::dtINT32);
+        CHECK(!color.same_representation(i32));   // enum vs int: false
+        CHECK(!i32.same_representation(color));
+        CHECK(!color.same_representation(fruit)); // different enums
+        CHECK(color.same_representation(color2)); // same enum name
+    }
+    TEST_CASE("pointers recurse on the pointee; refs compare as referee") {
+        DataDef i32("int", 4, DataType::dtINT32);
+        DataDef u32("uint32_t", 4, DataType::dtUINT32);
+        DataDefPTR pi(i32);
+        DataDefPTR pi2(i32);
+        DataDefPTR pu(u32);
+        DataDefREF ri(i32);
+        CHECK(pi.same_representation(pi2));
+        CHECK(!pi.same_representation(pu));    // pointee signedness
+        CHECK(!pi.same_representation(i32));   // ptr vs non-ptr
+        CHECK(ri.same_representation(i32));    // T& reads as T
+    }
+    TEST_CASE("C arrays compare element + count") {
+        DataDef i32("int", 4, DataType::dtINT32);
+        DataDef u32("uint32_t", 4, DataType::dtUINT32);
+        DataDefCArray a4(i32, "int[4]", 4);
+        DataDefCArray b4(i32, "int[4]", 4);
+        DataDefCArray a5(i32, "int[5]", 5);
+        DataDefCArray u4(u32, "uint32_t[4]", 4);
+        CHECK(a4.same_representation(b4));
+        CHECK(!a4.same_representation(a5));
+        CHECK(!a4.same_representation(u4));
+    }
+}

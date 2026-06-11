@@ -6332,6 +6332,77 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
     return NULL;
 }
 
+// === type-domain identity (spec §2.1). Typedefs are already resolved to the
+// underlying DataDef before this is called; const/volatile never reach DataDef.
+// The DataType tag IS the representation for simple scalars (dtCHAR==dtINT8,
+// long and long long are both dtINT64, bool/float/double/ldouble distinct).
+bool DataDef::same_representation(DataDef &d)
+{
+	DataDef *a = this, *b = &d;
+	// References compare as their referee (=== reads rvalues).
+	while ( a->is_reference() )
+		a = static_cast<DataDefPTR *>(a)->base_type;
+	while ( b->is_reference() )
+		b = static_cast<DataDefPTR *>(b)->base_type;
+	if ( a == b )
+		return true;
+	// Enums are their own domain: only the same enum type matches.
+	DataDefENUM *ae = dynamic_cast<DataDefENUM *>(a);
+	DataDefENUM *be = dynamic_cast<DataDefENUM *>(b);
+	if ( ae || be )
+		return ae && be && ae->enum_name == be->enum_name;
+	// Function (pointer) types: identical signature.
+	if ( a->is_function() || b->is_function() )
+	{
+		if ( !a->is_function() || !b->is_function() )
+			return false;
+		FuncDef *af = dynamic_cast<FuncDef *>(a);
+		FuncDef *bf = dynamic_cast<FuncDef *>(b);
+		if ( DataDefFPTR *afp = dynamic_cast<DataDefFPTR *>(a) )
+			af = afp->target;
+		if ( DataDefFPTR *bfp = dynamic_cast<DataDefFPTR *>(b) )
+			bf = bfp->target;
+		if ( !af || !bf )
+			return af == bf;
+		if ( !af->returns.same_representation(bf->returns) )
+			return false;
+		if ( af->parameters.size() != bf->parameters.size() )
+			return false;
+		for ( size_t i = 0; i < af->parameters.size(); ++i )
+		{
+			if ( !af->parameters[i] || !bf->parameters[i] )
+				return af->parameters[i] == bf->parameters[i];
+			if ( !af->parameters[i]->same_representation(*bf->parameters[i]) )
+				return false;
+		}
+		return true;
+	}
+	// C arrays: element domain + count.
+	DataDefCArray *aa = dynamic_cast<DataDefCArray *>(a);
+	DataDefCArray *ba = dynamic_cast<DataDefCArray *>(b);
+	if ( aa || ba )
+	{
+		if ( !aa || !ba || aa->count != ba->count )
+			return false;
+		return aa->element_type->same_representation(*ba->element_type);
+	}
+	// Class/struct/array-object/complex/simd types: identity — the a == b
+	// fast path above; different instances are different domains.
+	if ( a->basetype() != BaseType::btSimple || b->basetype() != BaseType::btSimple )
+		return false;
+	// Pointers: recurse on the pointee when both sides carry one. (The
+	// builtin dtXXXptr tags encode a simple pointee, and DataDefPTR sets the
+	// same tag, so the tag compare below also covers pointer-to-simple.)
+	DataDefPTR *ap = dynamic_cast<DataDefPTR *>(a);
+	DataDefPTR *bp = dynamic_cast<DataDefPTR *>(b);
+	if ( ap && bp )
+		return ap->base_type->same_representation(*bp->base_type);
+	if ( a->is_pointer() != b->is_pointer() )
+		return false;
+	// Simple scalars (and same-tag builtin pointers): exact tag equality.
+	return a->type() == b->type();
+}
+
 DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 {
     // Prefer a binary (params > 1 incl. __this) overload. Search the source
