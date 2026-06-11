@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Template-instantiation batch 2c — loud no-ctor-match + the reference-arg scoring fix it surfaced (2026-06-11, `feature/template-instantiation-claude` @ `79f5e66`)
+
+- **2c — decl-path silent ctor-drop is now a loud error** (`79f5e66`): when
+  a class HAS user constructors but none matches the initializer,
+  `class_ctor_call` / `class_ctor_call_addr` returned NULL and every
+  caller's `if (cc)` guard silently dropped the construction (the a+b
+  SIGSEGV hid behind this for days). Both no-match tails now return an
+  `error_node` naming the class and argument types — the pre-c2mir gate
+  rejects the tree with file:line:col. The early no-user-ctor NULLs stay
+  (member-ctor / trivial-copy fallbacks). New test `testctornomatch`.
+- **Reference-parameter ctor arguments select the copy ctor** (`b5de674`):
+  the surfacing run flagged exactly one real pre-existing silent drop —
+  `select_ctor_overload` scored a `vfREFERENCE` variable by its pointer
+  representation (`const A &p` → `A*`), so `A local(p)` never matched any
+  ctor and the construction was dropped (garbage reads). Ctor scoring now
+  unwraps references to the referenced class, same as
+  `select_operator_overload` always did. This was also dropping the
+  `allocator<char>` copy-construction inside materialized libstdc++
+  `operator+`/`__str_concat` bodies (harmless only because the allocator
+  is stateless). New test `testctorrefarg`.
+- **Test runner: generic `.expect_err` fixture convention** — a
+  compile-error test must exit nonzero (not a timeout) and its stderr must
+  contain every listed line; the EXE pass skips such tests. Rule +
+  reasoning updated (`.claude/rules/test-fixtures.md`,
+  `docs/rules/test-fixtures.md`).
+- Gates: fulltest **563 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  gcc.c-torture failset **byte-identical** (1567/26/29/0/63), SMAUG soak
+  green (exit 124 + ready line).
+
 ### Template-instantiation batch 2a/2b — operator BODY instantiation (2026-06-11, `feature/template-instantiation-claude` @ `9245775`)
 
 - **2b-ii — `a + "literal"` compiles the real libstdc++ `operator+` body**

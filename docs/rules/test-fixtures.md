@@ -41,6 +41,16 @@ For stdin input, `bin/madc foo.mad < foo.input` is preferred over
 `echo | prog` buries the input in the runner and has to be re-built
 whenever it changes. With a fixture file, the runner doesn't care.
 
+## Why `.expect_err` exists
+
+Loud-diagnostic work (the no-ctor-match error, the `--std=` hard-error
+gates) needs regression tests asserting that a program *fails* to compile
+with a specific message. The plain `.expect` contract requires exit 0, so
+it cannot express this. `.expect_err` inverts the contract for that one
+test: nonzero exit (a timeout still fails) and the listed lines must
+appear on stderr — the diagnostics are the expected output. The EXE pass
+skips these tests because the source does not compile by design.
+
 ## How to add a new capability
 
 If the runner needs a new knob (say, compiler flags or environment variables), resist the

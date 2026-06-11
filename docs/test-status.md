@@ -1,16 +1,20 @@
 # Test Status
 
-> **Current (2026-06-11, `feature/template-instantiation-claude` @ `92adc35`
-> — template-instantiation batch 2a/2b):** fulltest **561 passed, 0 failed,
-> 0 timed out, 18 skipped** (make exit 0, both check gates GREEN). New tests
-> this branch: `teststod{,_realhdr}` (2a fn-template empty-pack elision —
-> std::stof/stod), `teststrlitplus_realhdr` (2b-i `"pre" + s` exported
-> mangled-direct), `teststrplusbody_realhdr` (2b-ii `a + "bar"` free-operator
-> BODY instantiation, foobar/prefoobar). Includes the char_traits
-> explicit-spec instantiation-key fix (`1abbee8` —
-> `std::char_traits<char>::length` silently folded to 0 before). gcc.c-torture
-> failset **byte-identical** to the post-audit baseline (1567/26/29/0/63);
-> SMAUG soak green (exit 124 + ready line).
+> **Current (2026-06-11, `feature/template-instantiation-claude` @ `79f5e66`
+> — template-instantiation batch 2a/2b/2c):** fulltest **563 passed, 0
+> failed, 0 timed out, 18 skipped** (make exit 0, both check gates GREEN).
+> New tests this branch: `teststod{,_realhdr}` (2a fn-template empty-pack
+> elision — std::stof/stod), `teststrlitplus_realhdr` (2b-i `"pre" + s`
+> exported mangled-direct), `teststrplusbody_realhdr` (2b-ii `a + "bar"`
+> free-operator BODY instantiation, foobar/prefoobar), `testctornomatch`
+> (2c: a class declaration whose initializer matches no ctor is a LOUD
+> compile error — first `.expect_err` compile-error test), `testctorrefarg`
+> (`A local(p)` from `const A&` selects the copy ctor — the one real silent
+> drop the 2c gate surfaced). Includes the char_traits explicit-spec
+> instantiation-key fix (`1abbee8` — `std::char_traits<char>::length`
+> silently folded to 0 before). gcc.c-torture failset **byte-identical** to
+> the post-audit baseline (1567/26/29/0/63); SMAUG soak green (exit 124 +
+> ready line).
 >
 > **Previous (2026-06-11, `develop` @ `21bfec9` — failset classification
 > audit):** fulltest **557 passed, 0 failed, 0 timed out, 18 skipped** (make
