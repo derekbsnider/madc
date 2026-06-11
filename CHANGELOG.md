@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+### `===` / `!==` strict equality — STD_MADC dialect (`feature/strict-equality-claude`)
+
+- **New dialect operators**: `a === b` is type-domain identity AND value
+  equality; `a !== b` is its pure negation (never `operator!=`). Scalars
+  compare by representation (`uint32_t === int32_t` false even when values
+  match; `long === long long` true — both 64-bit signed; enums and `bool`
+  are their own domains; pointers recurse on the pointee; literals keep
+  their C type — `a === 5u` matches a `uint32_t`, `a === 5` does not).
+  Statically-false compares still evaluate both operands (comma lowering;
+  two pure literals fold to the constant so `===` works in constant
+  initializers). Spec: `docs/superpowers/specs/2026-06-11-strict-equality-design.md`.
+- **Class operands**: a user `operator===`/`operator!==` dispatches first
+  (member or free — new Itanium vendor-extended manglings `v23eq3` /
+  `v23ne3`, pinned in `test_mangle`); otherwise the domain rule
+  strict-compares through the class's own `operator==`, so
+  `std::string s("x"); s === "x"` is true (the literal enters the string
+  domain via the embedded `<string>` binding real libstdc++ symbols
+  mangled-direct). Same class with no `operator===`/`operator==` is a loud
+  compile error (`test3eqerr` expect_err fixture).
+- **Type predicate**: new `DataDef::same_representation()` (doctest-covered)
+  — typedefs are aliases, qualifiers ignored, function pointers match by
+  signature incl. varargs-ness; fixed a double-pointer/reference tag-range
+  collision found during review.
+- **Conformance fix**: the tokens are now STD_MADC-gated in the lexer
+  (`<=>`-style floor) — previously `===` lexed even at `--std=c++17`;
+  below the floor `===`/`!==` lex as `==` `=` / `!=` `=`, the conforming
+  syntax error (`test3eqgate`/`test3noteqgate`).
+- **Parser/CIR plumbing**: `tk3Eq`/`tk3NotEq` Tier-1 lowering in
+  `CirBuilder::strict_equality_lowering` (zero MIR-fork changes); free
+  `operator===`/`!==` dispatch through the one free-operator family;
+  `x !== y` rewrites to `!(x === y)` when a user `===` exists. Two
+  deep-layer fixes surfaced by TDD: plain (non-scoped) enum variables now
+  keep their `DataDefENUM` identity, and reference-encoded scalar operands
+  resolve through the new `operand_value_datadef` helper.
+- **eval-DSL**: `!==` joins the string value-compare rewrite
+  (`strcmp != 0`); comparison results now infer as `int` in
+  `infer_expression_result_type` — previously a string `!==` segfaulted
+  the host (int result marshalled as `char*`) and `5 === 5.0` was
+  rejected as non-boolean (same pre-existing flaw as `1 < 2.0` into a
+  bool destination).
+- **Deferred** (recorded in the spec): script-side `array`/`madc::value`
+  strict equality (no whole-value scalar ops on that surface yet — lands
+  with eval package C), reversed-operand `===` candidates, and the
+  real-header `test3eqclass_realhdr` variant (blocked on real `<string>`
+  under STD_MADC).
+- New tests: `test3eq` (29 scalar shapes incl. side-effect preservation),
+  `test3eqclass` (16 class/overload shapes), `test3eqerr`,
+  `test3eqgate`/`test3noteqgate`; doctest suites for
+  `same_representation` and the DSL strict compares.
+
 ## [v0.29.0] — 2026-06-11
 
 The backend-correctness release: MIR-gen `-O2` reaches exact `-O1` torture parity

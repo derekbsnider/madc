@@ -1,6 +1,22 @@
 # Test Status
 
-> **Current (2026-06-11, `feature/template-instantiation-claude` @ `01528ed`
+> **Current (2026-06-11, `feature/strict-equality-claude` @ `1ffbc8c`
+> — `===`/`!==` strict equality, STD_MADC dialect):** fulltest
+> **577 passed, 0 failed, 0 timed out, 18 skipped** (make exit 0, both
+> check gates GREEN, clean rebuild zero warnings). New operators:
+> type-domain identity AND value equality (`uint32_t === int32_t` false;
+> `long === long long` true; enums/bool own domains; literals keep their
+> C type), user `operator===`/`operator!==` overloading (vendor-extended
+> manglings `v23eq3`/`v23ne3`), class domain rule via `operator==`
+> (`string s === "x"` true), STD_MADC token gating (conformance fix),
+> eval-DSL `!==` + comparison-result inference fix (a string `!==`
+> previously segfaulted the host). New tests: `test3eq`, `test3eqclass`,
+> `test3eqerr` (expect_err), `test3eqgate`/`test3noteqgate` (std-floor).
+> gcc.c-torture failset **byte-identical** (1567/26/29/0/63); SMAUG soak
+> green (exit 124 + ready line). Deferred (spec): script-side `array`
+> strict equality (no whole-value scalar ops on that surface yet).
+>
+> **Previous (2026-06-11, `feature/template-instantiation-claude` @ `01528ed`
 > — `= default` comparison synthesis; `<=>` track COMPLETE):** fulltest
 > **572 passed, 0 failed, 0 timed out, 18 skipped** (make exit 0, both
 > check gates GREEN). Ordering-vs-ordering `==`/`!=` and
