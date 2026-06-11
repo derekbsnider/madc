@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Template-instantiation batch 2d — reference operands resolve as the referenced class (2026-06-11, `feature/template-instantiation-claude` @ `e124de5`) — BATCH COMPLETE
+
+- **2d — `cout << s` with a `const std::string &s` parameter works** (and
+  `a + b` on two reference params): madc stores references as
+  `DataDefPTR(T)` + `vfREFERENCE`, and every operator-resolution surface
+  typed operands by raw `datadef()` — a reference operand was invisible to
+  the overload sets. `cout << s` bound the bogus member
+  `operator<<(basic_streambuf*)` via the findMethod fallback (the c2mir
+  check error in `tmp/rK.mad`); `a + b` fell to raw pointer arithmetic.
+  One reference-aware helper per layer — `Program::operand_object_class`
+  (parse-time typing/lowering surfaces) and
+  `CirBuilder::operand_object_class` (CIR operator lowering + free-operator
+  instantiation rhs typing) — used everywhere; plain `T*` operands stay
+  opaque (only the reference representation is transparent). Arg emission
+  was already reference-aware. New test `teststrrefparam_realhdr`.
+- This completes the template-instantiation batch (2a pack elision, 2b-i
+  literal-lhs, 2b-ii operator body instantiation, 2c loud no-ctor-match,
+  2d reference operands).
+- Gates: fulltest **564 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  gcc.c-torture failset **byte-identical** (1567/26/29/0/63), SMAUG soak
+  green (exit 124 + ready line).
+
 ### Template-instantiation batch 2c — loud no-ctor-match + the reference-arg scoring fix it surfaced (2026-06-11, `feature/template-instantiation-claude` @ `79f5e66`)
 
 - **2c — decl-path silent ctor-drop is now a loud error** (`79f5e66`): when
