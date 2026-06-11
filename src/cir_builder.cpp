@@ -657,7 +657,13 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 	if (dynamic_cast<DataDefFPTR *>(tcf->var.type))
 		return cdd;
 	std::string sym = func_emit_name(tcf->var, fd);
-	if (!(m_user_func_names && m_user_func_names->count(sym) > 0))
+	// A deferred lazy body ([temp.inst]) materializes as a madc-emitted
+	// definition (retbuf ABI) once referenced — classify it that way both
+	// BEFORE materialization (still in deferred_lazy_bodies) and AFTER
+	// (m_materialized_lib_syms; the deferred entry is erased on parse).
+	if (!(m_user_func_names && m_user_func_names->count(sym) > 0)
+	    && !m_materialized_lib_syms.count(sym)
+	    && !(m_prog && m_prog->has_deferred_lazy_body(sym)))
 		return NULL;
 	return cdd;
 }
@@ -3288,12 +3294,28 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 		return eq;
 	}
 
+	// A by-value NON-TRIVIAL class return uses the Itanium sret ABI: hidden
+	// result-slot FIRST argument (before __this), void call, and the call
+	// expression is the materialized cleanup-tagged temp's lvalue (g++
+	// canon: get_allocator() receives the sret slot in %rdi, this in %rsi).
+	DataDefCLASS *retc = (!callee->returns_ref && !callee->returns.is_pointer())
+			     ? class_return_via_retbuf(&callee->returns) : NULL;
+	char sret_tmp[40] = { 0 };
+	if (retc)
+		object_temp_decl(retc, sret_tmp, sizeof(sret_tmp), origin);
+
 	// Build the parameter shapes for the extern declaration and the args.
 	// Param 0 is the hidden __this (a void* object pointer). Each subsequent
 	// param mirrors the method's declared parameter type.
 	std::vector<ExternParam> eparams;
-	eparams.push_back({ {N_VOID}, true });   // this (void*)
 	node_t args = list();
+	if (retc) {
+		eparams.push_back({ {N_VOID}, true });   // sret slot (void*)
+		append(args, node2(N_CAST, void_ptr_type(),
+				   node1(N_ADDR, id(sret_tmp, origin), origin),
+				   origin));
+	}
+	eparams.push_back({ {N_VOID}, true });   // this (void*)
 	append(args, node2(N_CAST, void_ptr_type(), this_arg, origin));   // this (void*)
 	for (size_t i = 0; i < tm->parameters.size(); i++) {
 		TokenBase *arg = tm->parameters[i];
@@ -3319,9 +3341,19 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 
 	bool ret_ptr = false;
 	std::vector<c2mir_node_code_t> ret_specs = emit_symbol_ret_specs(callee, ret_ptr);
+	if (retc) {
+		ret_ptr = false;
+		ret_specs = { N_VOID };
+	}
 	need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
+	if (retc) {
+		// sret: the call runs as a statement; the expression value is the
+		// temp's object lvalue.
+		m_pending_stmts.push_back(node2(N_EXPR, list(), call, origin));
+		return id(sret_tmp, origin);
+	}
 	// A T&-returning method returns an address; deref so the call expression is
 	// the referenced lvalue, matching the non-external method/operator paths.
 	if (callee && callee->returns_ref)
@@ -4331,6 +4363,14 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 	if (!cdd || cdd->ctors.empty()) return NULL;
 	auto ctor_arg_datadef = [this](TokenBase *arg) -> DataDef * {
 		if (!arg) return NULL;
+		// A class-returning CALL argument types by the RESOLVED callee's
+		// return class — the call token's own datadef may still be a
+		// body-less template placeholder's `long` (the overload-set winner
+		// is ranked at CIR time). Without this, `return f(...);` in a
+		// retbuf function missed the copy ctor and bit-copied the result
+		// (aliasing the heap buffer -> double free).
+		if (DataDefCLASS *rc = object_returning_call_class(arg))
+			return rc;
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
 			if (tv->var.is_fixed_array() && tv->var.type && m_prog)
 				return m_prog->getPointerType(tv->var.type);
@@ -9090,8 +9130,18 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 	{ TokenTypedefDecl *ttd = dynamic_cast<TokenTypedefDecl *>(tb);
 	  if (ttd) {
 		std::set<std::string> no_emitted_structs;
+		// A user-class struct is ALWAYS emitted at file scope (Pass 0.5):
+		// a block-scope alias of one must REFERENCE that tag. Re-emitting
+		// the body here defines a SHADOWING function-local tag — a local
+		// `typedef basic_string<...> _Str;` made `*__retbuf = ...` an
+		// incompatible struct assignment (and mis-flattened the SSO
+		// union). Plain C block-scope struct typedefs keep the body.
+		DataDef *ttd_base = ttd->target_type;
+		while (DataDefPTR *tp = dynamic_cast<DataDefPTR *>(ttd_base))
+			ttd_base = tp->base_type;
+		bool class_alias = as_user_class(ttd_base) != NULL;
 		node_t n = typedef_decl(ttd->alias, ttd->target_type,
-					no_emitted_structs, false);
+					no_emitted_structs, class_alias);
 		if (n) { CIR_NODE(n)->origin = ttd; set_pos(CIR_NODE(n), ttd); }
 		return n;
 	  } }
@@ -10188,6 +10238,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (TokenFunc *tf : funcs)
 		user_func_names.insert(tf->var.name);
 	m_user_func_names = &user_func_names;
+	m_materialized_lib_syms.clear();   // per-module, like m_user_func_names
 
 	// Bind the ctors + dtor of EXTERNALLY-DEFINED (libstdc++-owned) classes to
 	// their real Itanium C1 / D1 symbols, BEFORE any construction is lowered (the
@@ -10345,6 +10396,15 @@ node_t CirBuilder::translate_module(Program *prog)
 					if (!tf) continue;
 					FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
 					lib_funcs[tfd ? func_emit_name(tf->var, tfd) : tf->var.name] = tf;
+					// The materialized body is madc-emitted: record its
+					// symbols so by-value class returns classify as the
+					// retbuf ABI at every later call site. (Pass 0.75's
+					// extern stays — it is the declaration call sites in
+					// earlier-emitted bodies rely on — but now in the
+					// retbuf shape for such returns.)
+					m_materialized_lib_syms.insert(tf->var.name);
+					if (tfd)
+						m_materialized_lib_syms.insert(func_emit_name(tf->var, tfd));
 					grew = true;
 				}
 			}
@@ -10392,10 +10452,22 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
 		int ret_decl_stars = ret_is_ptr ? 1 : 0;
 
+		// A madc-emitted by-value non-trivial class return uses the
+		// __retbuf ABI — the extern must mirror func_proto/func_def
+		// (void return + hidden `struct T *__retbuf` first param), or a
+		// lazily-materialized definition conflicts with this declaration
+		// ("incompatible types of ... declarations").
+		DataDefCLASS *ret_obj = (!ret_is_ptr && !ret_is_ref
+					 && !fd->is_multi_return())
+					? class_return_via_retbuf(ret_dd) : NULL;
+
 		// Build: EXTERN + type spec
 		node_t ext_list = list();
 		append(ext_list, simple(N_EXTERN));
-		if (!fd->return_typedef_name.empty()) {
+		if (ret_obj) {
+			append_type_specs(ext_list, &ddVOID);
+			ret_decl_stars = 0;
+		} else if (!fd->return_typedef_name.empty()) {
 			append(ext_list, id(fd->return_typedef_name.c_str()));
 			ret_decl_stars = explicit_star_count(&fd->returns,
 							     fd->return_typedef_name);
@@ -10413,7 +10485,9 @@ node_t CirBuilder::translate_module(Program *prog)
 
 		// Parameters
 		node_t param_list = list();
-		if (fd->parameters.empty() && fd->is_void_params) {
+		if (ret_obj)
+			append(param_list, retbuf_param((DataDef *)ret_obj, NULL));
+		if (fd->parameters.empty() && fd->is_void_params && !ret_obj) {
 			node_t void_spec = node1(N_LIST, simple(N_VOID));
 			node_t void_decl = node2(N_DECL, ignore(), list());
 			append(param_list, node2(N_TYPE, void_spec, void_decl));

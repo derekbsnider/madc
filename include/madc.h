@@ -1276,12 +1276,27 @@ public:
     };
     std::map<std::string, std::vector<FnTemplateDef>> fn_template_map;
     std::set<std::string> fn_template_instantiated;   // "ns::name<t1,t2,...>" memo
+    // inst_key -> the overload Variable that instantiation registered, so an
+    // operator USE site can call the instantiated definition directly.
+    std::map<std::string, Variable *> fn_template_instantiated_vars;
     // > 0 while re-parsing an instantiated function-template body (nesting =
     // instantiation triggering instantiation). static_asserts inside such a
     // body are consumed unevaluated, exactly like instantiated class-template
     // member bodies (parse_static_assert_statement).
     size_t fn_template_instantiation_depth = 0;
     void instantiate_namespace_fn_template_for_call(TokenCallFunc *tc);
+    // Deduce + instantiate a retained free-OPERATOR template body for
+    // `lhs <op> rhs` (e.g. operator+(const basic_string&, const _CharT*) —
+    // libstdc++ does not export that shape, so the BODY must compile).
+    // Returns the deduced return class; *callee_out = the registered overload.
+    DataDef *instantiate_free_operator_template(const std::string &opname,
+						TokenBase *lhs, TokenBase *rhs,
+						Variable **callee_out);
+    // Cfront lowering: when a binary class-operand operator resolves ONLY via
+    // a retained operator template (no member operator, no exported free
+    // shape), return a call node to the instantiated overload. NULL = not
+    // this path; the normal operator machinery proceeds.
+    TokenBase *lower_free_operator_to_call(class TokenOperator *to);
     // Namespaces named by `using namespace X;` directives (C++
     // [namespace.udir]). The single-Variable import model skips a member
     // whose name a global already claimed; unqualified CALL resolution

@@ -149,6 +149,12 @@ class CirBuilder {
 	// otherwise. Gates the by-value non-trivial-class return (__retbuf) ABI to
 	// madc-compiled functions only; external/native functions keep their own ABI.
 	const std::set<std::string> *m_user_func_names = nullptr;
+	// Emit symbols of deferred lazy bodies ([temp.inst]) MATERIALIZED this
+	// module: madc emits their definitions (retbuf ABI for by-value class
+	// returns) but they are not in m_user_func_names; the classification in
+	// object_returning_call_class needs them after deferred_lazy_bodies
+	// erases the materialized entry.
+	std::set<std::string> m_materialized_lib_syms;
 
 	// Top-level typedef aliases that COLLIDE: the same bare alias is registered
 	// by >1 namespace for DIFFERENT underlying struct tags (e.g. std::string and

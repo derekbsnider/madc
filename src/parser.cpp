@@ -6365,6 +6365,30 @@ DataDef *DataDefCLASS::unary_operator_return_type(const std::string &opname,
     return NULL;
 }
 
+// The operator SYMBOL the object-operator machinery types/lowers for a token,
+// NULL when the token is not in that family (comparison/bitwise results are
+// already typed correctly). Shared by resolve_object_operator_type and
+// lower_free_operator_to_call so the two stay one family.
+static const char *object_operator_symbol(TokenID id)
+{
+    switch ( id )
+    {
+	case TokenID::tkAdd: return "+";
+	case TokenID::tkSub: return "-";
+	case TokenID::tkNeg: return "-";
+	case TokenID::tkMul: return "*";
+	case TokenID::tkDiv: return "/";
+	case TokenID::tkMod: return "%";
+	case TokenID::tkLnot: return "!";
+	case TokenID::tkBnot: return "~";
+	case TokenID::tkInc: return "++";
+	case TokenID::tkDec: return "--";
+	case TokenID::tkBSL: return "<<";
+	case TokenID::tkBSR: return ">>";
+	default: return NULL;
+    }
+}
+
 // Type an operator expression whose left operand is a class object that declares
 // the matching operator, using that operator's return type. Without this,
 // object operators report the default arithmetic datadef, so copy-init ctor
@@ -6382,23 +6406,9 @@ void Program::resolve_object_operator_type(TokenOperator *to)
     if ( !lc && (!to->right
 	      || !dynamic_cast<DataDefCLASS *>(to->right->datadef())) )
 	return;	// neither side is a class object
-    const char *opsym;
-    switch ( to->id() )
-    {
-	case TokenID::tkAdd: opsym = "+"; break;
-	case TokenID::tkSub: opsym = "-"; break;
-	case TokenID::tkNeg: opsym = "-"; break;
-	case TokenID::tkMul: opsym = "*"; break;
-	case TokenID::tkDiv: opsym = "/"; break;
-	case TokenID::tkMod: opsym = "%"; break;
-	case TokenID::tkLnot: opsym = "!"; break;
-	case TokenID::tkBnot: opsym = "~"; break;
-	case TokenID::tkInc: opsym = "++"; break;
-	case TokenID::tkDec: opsym = "--"; break;
-	case TokenID::tkBSL: opsym = "<<"; break;
-	case TokenID::tkBSR: opsym = ">>"; break;
-	default: return;     // comparison/bitwise results are already typed correctly
-    }
+    const char *opsym = object_operator_symbol(to->id());
+    if ( !opsym )
+	return;
     std::string opname = std::string("operator") + opsym;
     DataDef *rt = NULL;
     if ( lc )
@@ -6414,6 +6424,47 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 	rt = free_binary_operator_return_class_nonclass_lhs(to->left, opname,
 							    to->right);
     if ( rt ) to->set_resolved_type(rt);
+}
+
+// Cfront lowering for a retained free-operator template: `a + "bar"` becomes a
+// CALL to the instantiated std::operator+(const basic_string&, const _CharT*)
+// definition (libstdc++ does not export that shape — the body must compile).
+// Fires ONLY when no member operator and no exported free shape covers the
+// operand pair; those keep their existing typing + CIR lowerings untouched.
+TokenBase *Program::lower_free_operator_to_call(TokenOperator *to)
+{
+    if ( !to || to->argc() != 2 || !to->left || !to->right )
+	return NULL;
+    const char *opsym = object_operator_symbol(to->id());
+    if ( !opsym )
+	return NULL;
+    DataDefCLASS *lc = dynamic_cast<DataDefCLASS *>(to->left->datadef());
+    DataDefCLASS *rc = dynamic_cast<DataDefCLASS *>(to->right->datadef());
+    if ( !lc && !rc )
+	return NULL;
+    std::string opname = std::string("operator") + opsym;
+    if ( lc && lc->binary_operator_return_type(opname) )
+	return NULL;	// member operator owns the expression
+    if ( lc && free_binary_operator_return_class(lc, opname, to->right) )
+	return NULL;	// exported free shape: mangled-direct (W2) owns it
+    if ( !lc && free_binary_operator_return_class_nonclass_lhs(to->left, opname,
+							       to->right) )
+	return NULL;	// exported literal-lhs mixed shape: same
+#ifdef MADC_DBG_QCALL
+    fprintf(stderr, "[FREEOP] try %s lc=%s rc=%s\n", opname.c_str(),
+	    lc ? lc->name.c_str() : "-", rc ? rc->name.c_str() : "-");
+#endif
+    Variable *callee = NULL;
+    if ( !instantiate_free_operator_template(opname, to->left, to->right,
+					     &callee) || !callee )
+	return NULL;
+    TokenCallFunc *tc = new TokenCallFunc(*callee);
+    tc->file = to->file;
+    tc->line = to->line;
+    tc->column = to->column;
+    tc->parameters.push_back(to->left);
+    tc->parameters.push_back(to->right);
+    return tc;
 }
 
 // The unqualified template-head component of a C++ type spelling:
@@ -9446,6 +9497,16 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 			to->left = exStack.top(); exStack.pop();  DBG(cout << "popped " << to->left->ival() << endl);
 		    }
 		}
+	    }
+	    // A binary class-operand operator covered ONLY by a retained
+	    // operator template lowers to a CALL to the instantiated body
+	    // (Cfront lowering — `a + "bar"` IS std::operator+(a, "bar")).
+	    if ( TokenBase *opcall = lower_free_operator_to_call(to) )
+	    {
+		DBG(cout << "Lowered free operator to call" << endl);
+		opStack.pop();
+		exStack.push(opcall);
+		break;
 	    }
 	    // Type a class-object operator expression with the operator's RETURN type
 	    // (generic operator-overload support — applies to every class identically).
@@ -22999,24 +23060,21 @@ static bool skipped_template_function_signature_spellings(
     return true;
 }
 
-static bool capture_free_operator_overload(
-	Program &pgm, const std::vector<TokenBase *> &tokens,
-	const std::vector<std::string> &typeparams)
+// Locate a free-operator declarator in a token range: tkOPEROVER, the operator
+// symbol (possibly MULTIPLE tokens — `<<` can lex as `<` `<`, `>>` as `>` `>`,
+// `<<=` as `<` `<` `=`; the concatenated fragments are the spelling), then the
+// param-list '('. Excludes operator()/operator[] — no symbol fragments before
+// '(' — which are not the binary free operators this machinery targets.
+static bool find_free_operator_declarator(
+	const std::vector<TokenBase *> &tokens, std::string &opname_out,
+	size_t &oper_idx_out, size_t &lparen_out)
 {
-    if ( pgm.current_namespace.empty() )
-	return false;
-    // Locate the operator declarator: tkOPEROVER, then its symbol token, then '('.
     size_t oper_idx = tokens.size();
     for ( size_t i = 0; i < tokens.size(); ++i )
 	if ( tokens[i] && tokens[i]->id() == TokenID::tkOPEROVER )
 	{ oper_idx = i; break; }
     if ( oper_idx + 2 >= tokens.size() )
 	return false;
-    // The operator symbol may span MULTIPLE tokens (`<<` can lex as `<` `<`,
-    // `>>` as `>` `>`, `<<=` as `<` `<` `=`). Collect every symbol fragment
-    // between `operator` and the param-list '(' — that concatenation is the
-    // operator spelling. (Excludes operator()/operator[] — no symbol fragments
-    // before '(' — which are not the binary free operators W2 targets.)
     size_t lparen = oper_idx + 1;
     std::string symbol;
     while ( lparen < tokens.size() && tokens[lparen]
@@ -23028,13 +23086,32 @@ static bool capture_free_operator_overload(
     if ( symbol.empty() || lparen >= tokens.size()
       || !tokens[lparen] || tokens[lparen]->id() != TokenID::tkOpBrk )
 	return false;
+    opname_out = "operator" + symbol;
+    oper_idx_out = oper_idx;
+    lparen_out = lparen;
+    return true;
+}
+
+static bool capture_free_operator_overload(
+	Program &pgm, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams,
+	std::string *opname_out = NULL)
+{
+    if ( pgm.current_namespace.empty() )
+	return false;
+    std::string opname;
+    size_t oper_idx = 0, lparen = 0;
+    if ( !find_free_operator_declarator(tokens, opname, oper_idx, lparen) )
+	return false;
     Program::FreeOperatorOverload ov;
-    if ( !extract_free_signature(pgm, tokens, typeparams, "operator" + symbol,
+    if ( !extract_free_signature(pgm, tokens, typeparams, opname,
 				 oper_idx, lparen, ov) )
 	return false;
     if ( ov.param_spellings.size() < 2 )   // a non-member binary operator takes 2
 	return false;
     pgm.free_operator_overloads.push_back(ov);
+    if ( opname_out )
+	*opname_out = ov.opname;
     DBG(std::cout << "[W2] captured free " << ov.ns << "::" << ov.opname
 	<< " ret=" << ov.return_spelling << " params=" << ov.param_spellings.size() << std::endl);
     return true;
@@ -23164,6 +23241,37 @@ static bool capture_free_function_overload(
     return true;
 }
 
+// Retain a BODY-BEARING function/operator-template declaration in
+// fn_template_map (keyed "ns::name") so a use site can instantiate the body
+// on demand — madc must compile the body of any template specialization the
+// library does not export. Returns true when retained.
+static bool retain_namespace_fn_template_body(
+	Program &pgm, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams,
+	const std::vector<std::vector<TokenBase *>> *typeparam_defaults,
+	const std::vector<bool> *typeparam_is_type,
+	const std::vector<bool> *typeparam_is_pack,
+	const std::string &name)
+{
+    if ( name.empty() || typeparams.empty() )
+	return false;
+    bool has_body = false;
+    for ( size_t i = 0; i < tokens.size(); ++i )
+	if ( tokens[i] && tokens[i]->id() == TokenID::tkOpBrc )
+	{ has_body = true; break; }
+    if ( !has_body )
+	return false;
+    Program::FnTemplateDef ft;
+    ft.typeparams = typeparams;
+    if ( typeparam_defaults ) ft.typeparam_defaults = *typeparam_defaults;
+    if ( typeparam_is_type )  ft.typeparam_is_type = *typeparam_is_type;
+    if ( typeparam_is_pack )  ft.typeparam_is_pack = *typeparam_is_pack;
+    ft.decl = tokens;
+    ft.ns = pgm.current_namespace;
+    pgm.fn_template_map[pgm.current_namespace + "::" + name].push_back(ft);
+    return true;
+}
+
 static void register_skipped_namespace_template_function(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
@@ -23173,8 +23281,19 @@ static void register_skipped_namespace_template_function(
 {
     if ( pgm.current_namespace.empty() )
 	return;
-    if ( capture_free_operator_overload(pgm, tokens, typeparams) )
-	return;   // W2: recorded as a non-member operator overload candidate
+    std::string captured_opname;
+    if ( capture_free_operator_overload(pgm, tokens, typeparams,
+					&captured_opname) )
+    {
+	// W2 recorded the SIGNATURE for mangled-direct binding; ALSO retain a
+	// body-bearing operator template (keyed "ns::operatorX") so a use
+	// site can instantiate the BODY when libstdc++ does not export the
+	// matching shape (operator+(const basic_string&, const _CharT*)).
+	retain_namespace_fn_template_body(pgm, tokens, typeparams,
+					  typeparam_defaults, typeparam_is_type,
+					  typeparam_is_pack, captured_opname);
+	return;
+    }
     // W2: also record stream manipulators (endl/flush/ends) for `os << endl`
     // mangled-direct lowering; this does NOT replace the normal name registration.
     capture_free_manipulator_overload(pgm, tokens, typeparams);
@@ -23188,25 +23307,9 @@ static void register_skipped_namespace_template_function(
     // call site can instantiate the body on demand (madc must compile the body
     // of any template the library does not export — e.g. __gnu_cxx::__stoa,
     // std::__detail::__to_chars_10_impl inside stoi/to_string).
-    bool retained_body = false;
-    {
-	bool has_body = false;
-	for ( size_t i = 0; i < tokens.size(); ++i )
-	    if ( tokens[i] && tokens[i]->id() == TokenID::tkOpBrc )
-	    { has_body = true; break; }
-	if ( has_body && !typeparams.empty() )
-	{
-	    Program::FnTemplateDef ft;
-	    ft.typeparams = typeparams;
-	    if ( typeparam_defaults ) ft.typeparam_defaults = *typeparam_defaults;
-	    if ( typeparam_is_type )  ft.typeparam_is_type = *typeparam_is_type;
-	    if ( typeparam_is_pack )  ft.typeparam_is_pack = *typeparam_is_pack;
-	    ft.decl = tokens;
-	    ft.ns = pgm.current_namespace;
-	    pgm.fn_template_map[pgm.current_namespace + "::" + name].push_back(ft);
-	    retained_body = true;
-	}
-    }
+    bool retained_body = retain_namespace_fn_template_body(pgm, tokens,
+	typeparams, typeparam_defaults, typeparam_is_type, typeparam_is_pack,
+	name);
     variable_map_t &ns = pgm.namespace_map[pgm.current_namespace];
     Variable *var = NULL;
     {
@@ -23475,6 +23578,11 @@ static bool fn_template_deduce_fnptr_param(const std::string &spelling,
 // unique symbol; call_target_funcdef ranks the set against the call's arg
 // types at CIR time. A parse failure is non-fatal: the injected tokens are
 // drained and the call falls back to the body-less placeholder.
+static bool instantiate_fn_template_binding(Program &pgm,
+	Program::FnTemplateDef &ft, const std::string &key,
+	std::map<std::string, DataDef *> &binding,
+	const std::string &pack_param, bool pack_empty, Variable **var_out);
+
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc)
 {
@@ -23563,6 +23671,28 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		binding[pack_param] = pd;
 	    continue;
 	}
+	// Every template parameter this spelling names is already bound
+	// (explicit template arguments — `__str_concat<_Str>(...)` whose
+	// params are `typename _Str::value_type const*` shapes): nothing to
+	// deduce; substitution resolves the spelling. Fn-ptr and pack shapes
+	// keep their structural deduction (it also sets pack_empty).
+	if ( sp.find('(') == std::string::npos
+	  && !fn_template_param_is_pack(sp, pack_param) )
+	{
+	    std::vector<std::string> words;
+	    fn_template_split_words(sp, words);
+	    bool names_tp = false, unbound = false;
+	    for ( size_t wi = 0; wi < words.size(); ++wi )
+		for ( size_t tj = 0; tj < ft.typeparams.size(); ++tj )
+		    if ( words[wi] == ft.typeparams[tj] )
+		    {
+			names_tp = true;
+			if ( !binding.count(ft.typeparams[tj]) )
+			    unbound = true;
+		    }
+	    if ( names_tp && !unbound )
+		continue;
+	}
 	// Function-pointer parameter shape: structural match against the
 	// argument's function type.
 	if ( sp.find('(') != std::string::npos )
@@ -23590,6 +23720,20 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     // saying empty while a trailing argument filled the pack is a mismatch).
     if ( pack_empty && binding.count(pack_param) )
 	return false;
+    return instantiate_fn_template_binding(pgm, ft, key, binding, pack_param,
+					    pack_empty, NULL);
+}
+
+// Instantiate a retained fn-template DECLARATION with a deduced type binding:
+// defaults fill unbound parameters, the substituted tokens re-parse as a
+// concrete namespace function (it registers in namespace_fn_overload_sets
+// under `key`), the memoized inst_key dedupes. *var_out (optional) receives
+// the overload Variable the instantiation registered — the call target.
+static bool instantiate_fn_template_binding(Program &pgm,
+	Program::FnTemplateDef &ft, const std::string &key,
+	std::map<std::string, DataDef *> &binding,
+	const std::string &pack_param, bool pack_empty, Variable **var_out)
+{
     // Unbound parameters fall back to simple template-parameter defaults: a
     // single token naming an already-bound parameter (`typename _Ret = _TRet`)
     // or a concrete type.
@@ -23618,8 +23762,24 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		     ? binding[ft.typeparams[i]]->name : std::string()) + ",";
     inst_key += ">";
     if ( pgm.fn_template_instantiated.count(inst_key) )
+    {
+	if ( var_out )
+	{
+	    std::map<std::string, Variable *>::iterator vi =
+		pgm.fn_template_instantiated_vars.find(inst_key);
+	    if ( vi != pgm.fn_template_instantiated_vars.end() )
+		*var_out = vi->second;
+	}
 	return true;
+    }
     pgm.fn_template_instantiated.insert(inst_key);
+    size_t pre_ovset = 0;
+    {
+	std::map<std::string, std::vector<Program::NamespaceFnOverload>>::iterator
+	    oi = pgm.namespace_fn_overload_sets.find(key);
+	if ( oi != pgm.namespace_fn_overload_sets.end() )
+	    pre_ovset = oi->second.size();
+    }
 
     std::map<std::string, TokenDataType *> subst;
     for ( std::map<std::string, DataDef *>::iterator b = binding.begin();
@@ -23738,7 +23898,307 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 #endif
     DBG(std::cout << "fn-template instantiation " << inst_key
 	<< (ok ? " ok" : " FAILED (placeholder kept)") << std::endl);
+    if ( ok )
+    {
+	// The parsed definition appended its overload entry under `key` —
+	// remember its Variable so operator USE sites can call it.
+	std::map<std::string, std::vector<Program::NamespaceFnOverload>>::iterator
+	    oi = pgm.namespace_fn_overload_sets.find(key);
+	if ( oi != pgm.namespace_fn_overload_sets.end()
+	  && oi->second.size() > pre_ovset && oi->second.back().var )
+	{
+	    pgm.fn_template_instantiated_vars[inst_key] = oi->second.back().var;
+	    if ( var_out )
+		*var_out = oi->second.back().var;
+	}
+    }
     return ok;
+}
+
+static std::string spelling_strip_spaces(const std::string &s)
+{
+    std::string out;
+    for ( size_t i = 0; i < s.size(); ++i )
+	if ( s[i] != ' ' )
+	    out += s[i];
+    return out;
+}
+
+// Resolve a CANONICAL type spelling ("char", "std::char_traits<char>") to its
+// TokenDataType, instantiating the template-id on demand through the one
+// production seam (instantiate_template_id). NULL when unresolvable.
+static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
+						      const std::string &spelling)
+{
+    std::string s = spelling_strip_spaces(spelling);
+    if ( s.empty() || s.find('*') != std::string::npos
+      || s.find('&') != std::string::npos )
+	return NULL;
+    // The namespace qualifier comes off the HEAD before the generic splitter
+    // (which strips it) — it is the ns_hint that picks the right same-named
+    // template (std::char_traits vs __gnu_cxx::char_traits).
+    size_t lt = s.find('<');
+    std::string head = lt == std::string::npos ? s : s.substr(0, lt);
+    std::string ns;
+    size_t sc = head.rfind("::");
+    if ( sc != std::string::npos )
+    {
+	ns = head.substr(0, sc);
+	head = head.substr(sc + 2);
+    }
+    if ( lt == std::string::npos )
+    {
+	if ( !ns.empty() )
+	{
+	    namespace_datatype_map_t::iterator ni =
+		pgm.namespace_datatype_map.find(ns);
+	    if ( ni != pgm.namespace_datatype_map.end() )
+	    {
+		datatype_map_iter di = ni->second.find(head);
+		if ( di != ni->second.end() )
+		    return di->second;
+	    }
+	}
+	datatype_map_iter di = pgm.datatype_map.find(head);
+	return di != pgm.datatype_map.end() ? di->second : NULL;
+    }
+    std::string outer;
+    std::vector<std::string> args;
+    if ( !split_template_id_spelling(s, outer, args) )
+	return NULL;
+    std::vector<TokenDataType *> arg_types;
+    for ( size_t i = 0; i < args.size(); ++i )
+    {
+	TokenDataType *at = resolve_canonical_type_spelling(pgm, args[i]);
+	if ( !at )
+	    return NULL;
+	arg_types.push_back(at);
+    }
+    // Feed `< a1 , a2 , ... >` through the token stream — the shape
+    // instantiate_template_id consumes (one production seam, no parallel
+    // instantiation path).
+    std::vector<TokenBase *> toks;
+    toks.push_back(new TokenLT());
+    for ( size_t i = 0; i < arg_types.size(); ++i )
+    {
+	if ( i )
+	    toks.push_back(new TokenComma());
+	toks.push_back(arg_types[i]->clone());
+    }
+    toks.push_back(new TokenGT());
+    for ( std::vector<TokenBase *>::reverse_iterator it = toks.rbegin();
+	  it != toks.rend(); ++it )
+	pgm.pushToken(*it);
+    TokenIdent *anchor = new TokenIdent(head.c_str());
+    return pgm.instantiate_template_id(head, anchor, ns);
+}
+
+// Deduce a retained free-OPERATOR template against the two operand types and
+// instantiate its body. Template-id params (`const basic_string<_CharT,
+// _Traits,_Alloc>&`) deduce against the operand class's canonical template
+// arguments; plain params (`const _CharT*`) via fn_template_deduce_param;
+// conflicting bindings reject the candidate (so operator+(string,_CharT)
+// never claims a const char* rhs). Returns the deduced RETURN class;
+// *callee_out = the registered overload Variable.
+static DataDef *try_instantiate_free_operator_template(Program &pgm,
+	Program::FnTemplateDef &ft, const std::string &key,
+	const std::string &opname, TokenBase *lhs, TokenBase *rhs,
+	Variable **callee_out)
+{
+    // Type parameters only, no packs — the string/stream operator family.
+    for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+    {
+	if ( i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i] )
+	    return NULL;
+	if ( i < ft.typeparam_is_pack.size() && ft.typeparam_is_pack[i] )
+	    return NULL;
+    }
+    std::string declared_op;
+    size_t oper_idx = 0, lparen = 0;
+    if ( !find_free_operator_declarator(ft.decl, declared_op, oper_idx, lparen)
+      || declared_op != opname )
+	return NULL;
+    Program::FreeOperatorOverload ov;
+    if ( !extract_free_signature(pgm, ft.decl, ft.typeparams, opname,
+				 oper_idx, lparen, ov) )
+	return NULL;
+    if ( ov.param_spellings.size() != 2 )
+	return NULL;
+#ifdef MADC_DBG_QCALL
+    fprintf(stderr, "[FREEOP]  cand p0='%s' p1='%s' ret='%s'\n",
+	    ov.param_spellings[0].c_str(), ov.param_spellings[1].c_str(),
+	    ov.return_spelling.c_str());
+#endif
+    TokenBase *operands[2] = { lhs, rhs };
+    std::map<std::string, DataDef *> binding;
+    std::map<std::string, std::string> text_binding;
+    DataDefCLASS *param_cls[2] = { NULL, NULL };
+    for ( size_t i = 0; i < 2; ++i )
+    {
+	const std::string &sp = ov.param_spellings[i];
+	std::string flat = spelling_strip_spaces(sp);
+	if ( flat.size() >= 2 && flat.compare(flat.size() - 2, 2, "&&") == 0 )
+	    return NULL;	// && overloads never take this path
+	DataDef *arg_dd = operands[i] ? operands[i]->datadef() : NULL;
+	if ( !arg_dd )
+	    return NULL;
+	DataDef *arg_core = arg_dd;
+	if ( arg_core->is_reference() )
+	    arg_core = static_cast<DataDefPTR *>(arg_core)->base_type;
+	std::vector<std::string> words;
+	fn_template_split_words(sp, words);
+	bool names_tp = false;
+	for ( size_t wi = 0; wi < words.size() && !names_tp; ++wi )
+	    for ( size_t tj = 0; tj < ft.typeparams.size() && !names_tp; ++tj )
+		if ( words[wi] == ft.typeparams[tj] )
+		    names_tp = true;
+	if ( sp.find('<') != std::string::npos && names_tp )
+	{
+	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(arg_core);
+	    if ( !cls )
+		return NULL;
+	    const std::string canon = cls->canonical_cpp_spelling.empty()
+				    ? cls->name : cls->canonical_cpp_spelling;
+	    if ( template_head_component(sp) != template_head_component(canon) )
+	    {
+#ifdef MADC_DBG_QCALL
+		fprintf(stderr, "[FREEOP]   head mismatch '%s' vs '%s'\n",
+			template_head_component(sp).c_str(),
+			template_head_component(canon).c_str());
+#endif
+		return NULL;
+	    }
+	    // The splitter wants a bare template-id: drop the param's leading
+	    // cv-qualifiers and trailing reference before splitting.
+	    std::string sp_core = sp;
+	    for (;;)
+	    {
+		while ( !sp_core.empty() && sp_core[0] == ' ' )
+		    sp_core.erase(0, 1);
+		if ( sp_core.compare(0, 6, "const ") == 0 )
+		{ sp_core.erase(0, 6); continue; }
+		if ( sp_core.compare(0, 9, "volatile ") == 0 )
+		{ sp_core.erase(0, 9); continue; }
+		break;
+	    }
+	    while ( !sp_core.empty()
+		 && (sp_core.back() == '&' || sp_core.back() == ' ') )
+		sp_core.pop_back();
+	    std::string phead, chead;
+	    std::vector<std::string> pargs, cargs;
+	    if ( !split_template_id_spelling(spelling_strip_spaces(sp_core),
+					     phead, pargs)
+	      || !split_template_id_spelling(spelling_strip_spaces(canon),
+					     chead, cargs)
+	      || pargs.size() != cargs.size() )
+	    {
+#ifdef MADC_DBG_QCALL
+		fprintf(stderr, "[FREEOP]   tid split/arity fail sp='%s' canon='%s'\n",
+			sp.c_str(), canon.c_str());
+#endif
+		return NULL;
+	    }
+	    for ( size_t ai = 0; ai < pargs.size(); ++ai )
+	    {
+		const std::string &p = pargs[ai];
+		const std::string &c = cargs[ai];
+		bool is_tp = false;
+		for ( size_t tj = 0; tj < ft.typeparams.size(); ++tj )
+		    if ( p == ft.typeparams[tj] )
+			is_tp = true;
+		if ( is_tp )
+		{
+		    std::map<std::string, std::string>::iterator ti =
+			text_binding.find(p);
+		    if ( ti != text_binding.end() && ti->second != c )
+			return NULL;
+		    text_binding[p] = c;
+		}
+		else if ( p != c )
+		    return NULL;
+	    }
+	    param_cls[i] = cls;
+	    continue;
+	}
+	std::string tp;
+	DataDef *dd = NULL;
+	int r = fn_template_deduce_param(sp, ft.typeparams, arg_dd, tp, dd);
+	if ( r < 0 )
+	    return NULL;
+	if ( r == 1 )
+	{
+	    std::map<std::string, DataDef *>::iterator bi = binding.find(tp);
+	    if ( bi != binding.end() && bi->second != dd
+	      && bi->second->name != dd->name )
+		return NULL;
+	    if ( bi == binding.end() )
+		binding[tp] = dd;
+	}
+    }
+    // Text bindings (from the class's canonical args) become DataDefs through
+    // the production instantiation seam; a conflict with a deduced binding
+    // rejects the candidate.
+    for ( std::map<std::string, std::string>::iterator ti = text_binding.begin();
+	  ti != text_binding.end(); ++ti )
+    {
+	TokenDataType *tdt = resolve_canonical_type_spelling(pgm, ti->second);
+	if ( !tdt )
+	    return NULL;
+	std::map<std::string, DataDef *>::iterator bi = binding.find(ti->first);
+	if ( bi != binding.end() )
+	{
+	    if ( bi->second != &tdt->definition
+	      && bi->second->name != tdt->definition.name )
+		return NULL;
+	    continue;
+	}
+	binding[ti->first] = &tdt->definition;
+    }
+    Variable *callee = NULL;
+    if ( !instantiate_fn_template_binding(pgm, ft, key, binding, std::string(),
+					  false, &callee) || !callee )
+	return NULL;
+    if ( callee_out )
+	*callee_out = callee;
+    // The RETURN class: a by-value template-id whose head matches a deduced
+    // operand class names that class (operator+ returns the string class).
+    std::string rhead = template_head_component(ov.return_spelling);
+    for ( size_t i = 0; i < 2; ++i )
+	if ( param_cls[i] )
+	{
+	    const std::string chead = template_head_component(
+		param_cls[i]->canonical_cpp_spelling.empty()
+		    ? param_cls[i]->name
+		    : param_cls[i]->canonical_cpp_spelling);
+	    if ( rhead == chead )
+		return param_cls[i];
+	}
+    if ( FuncDef *fd = dynamic_cast<FuncDef *>(callee->type) )
+	return &fd->returns;
+    return NULL;
+}
+
+DataDef *Program::instantiate_free_operator_template(const std::string &opname,
+	TokenBase *lhs, TokenBase *rhs, Variable **callee_out)
+{
+    const std::string suffix = "::" + opname;
+    for ( std::map<std::string, std::vector<FnTemplateDef>>::iterator mi =
+	      fn_template_map.begin(); mi != fn_template_map.end(); ++mi )
+    {
+	const std::string &key = mi->first;
+	if ( key.size() <= suffix.size()
+	  || key.compare(key.size() - suffix.size(), suffix.size(), suffix) )
+	    continue;
+#ifdef MADC_DBG_QCALL
+	fprintf(stderr, "[FREEOP] key %s candidates=%zu\n", key.c_str(),
+		mi->second.size());
+#endif
+	for ( size_t vi = 0; vi < mi->second.size(); ++vi )
+	    if ( DataDef *ret = try_instantiate_free_operator_template(
+		    *this, mi->second[vi], key, opname, lhs, rhs, callee_out) )
+		return ret;
+    }
+    return NULL;
 }
 
 void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
