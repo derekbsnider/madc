@@ -495,8 +495,7 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
         gen_mov (code, (i + nres) * sizeof (long double), 12, TRUE);   /* r12 = block addr */
         gen_mov2 (code, 0, iregs[n_iregs], TRUE);                      /* arg_reg = mem[r12] */
         if (qwords == 2) gen_mov2 (code, 8, iregs[n_iregs + 1], TRUE); /* arg_reg = mem[r12 + 8] */
-        n_iregs += qwords;
-        n_xregs += qwords;
+        n_iregs += qwords; /* an all-INTEGER block consumes no SSE registers */
         continue;
       } else if (type == MIR_T_BLK + 2 && n_xregs + qwords <= max_xregs) {
         assert (qwords <= 2);
@@ -510,7 +509,6 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
         gen_mov (code, (i + nres) * sizeof (long double), 12, TRUE); /* r12 = block addr */
         gen_mov2 (code, 0, iregs[n_iregs], TRUE);                    /* arg_reg = mem[r12] */
         n_iregs++;
-        n_xregs++;
         gen_movxmm2 (code, 8, n_xregs, TRUE); /* xmm = mem[r12 + 8] */
         n_xregs++;
         continue;
@@ -521,7 +519,6 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
         n_xregs++;
         gen_mov2 (code, 8, iregs[n_iregs], TRUE); /* arg_reg = mem[r12 + 8] */
         n_iregs++;
-        n_xregs++;
         continue;
       }
       gen_blk_mov (code, sp_offset, (i + nres) * sizeof (long double), qwords);
