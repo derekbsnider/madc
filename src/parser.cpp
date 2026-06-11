@@ -6414,6 +6414,7 @@ static const char *object_operator_symbol(TokenID id)
 	case TokenID::tkGT: return ">";
 	case TokenID::tkLE: return "<=";
 	case TokenID::tkGE: return ">=";
+	case TokenID::tk3Way: return "<=>";
 	default: return NULL;
     }
 }
@@ -6442,6 +6443,28 @@ DataDefCLASS *Program::operand_object_class(TokenBase *operand)
     return NULL;
 }
 
+// The std comparison-category class a builtin `<=>` yields ([expr.spaceship]):
+// std::partial_ordering when either operand is floating, else
+// std::strong_ordering. These are the STANDARD names of the standard types
+// the operator produces — language semantics (like nullptr -> (void*)0), not
+// a user-name special case. NULL when <compare> has not been parsed; the
+// expression then stays untyped and the CIR lowering rejects loudly.
+DataDef *Program::comparison_category_class(TokenOperator *to)
+{
+    if ( !to ) return NULL;
+    bool floating =
+	(to->left && to->left->datadef() && to->left->datadef()->is_real())
+     || (to->right && to->right->datadef() && to->right->datadef()->is_real());
+    namespace_datatype_map_t::iterator ni = namespace_datatype_map.find("std");
+    if ( ni == namespace_datatype_map.end() )
+	return NULL;
+    datatype_map_iter di = ni->second.find(floating ? "partial_ordering"
+						     : "strong_ordering");
+    if ( di == ni->second.end() || !di->second )
+	return NULL;
+    return &di->second->definition;
+}
+
 // Type an operator expression whose left operand is a class object that declares
 // the matching operator, using that operator's return type. Without this,
 // object operators report the default arithmetic datadef, so copy-init ctor
@@ -6449,6 +6472,17 @@ DataDefCLASS *Program::operand_object_class(TokenBase *operand)
 void Program::resolve_object_operator_type(TokenOperator *to)
 {
     if ( !to ) return;
+    // Builtin `a <=> b` (no class operand): the result IS a comparison-
+    // category object ([expr.spaceship]); class-operand <=> resolves through
+    // the operator machinery below / the free-operator dispatch like any
+    // other operator.
+    if ( to->id() == TokenID::tk3Way
+      && !operand_object_class(to->left) && !operand_object_class(to->right) )
+    {
+	if ( DataDef *cat = comparison_category_class(to) )
+	    to->set_resolved_type(cat);
+	return;
+    }
     bool unary = to->argc() == 1;
     bool postfix = unary && to->left != NULL;
     TokenBase *operand = unary ? (postfix ? to->left : to->right) : to->left;

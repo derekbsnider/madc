@@ -1318,6 +1318,9 @@ public:
     // shape), return a call node to the instantiated overload. NULL = not
     // this path; the normal operator machinery proceeds.
     TokenBase *lower_free_operator_to_call(class TokenOperator *to);
+    // The std comparison-category class a builtin <=> yields
+    // ([expr.spaceship]); NULL when <compare> has not been parsed.
+    DataDef *comparison_category_class(class TokenOperator *to);
     // Namespaces named by `using namespace X;` directives (C++
     // [namespace.udir]). The single-Variable import model skips a member
     // whose name a global already claimed; unqualified CALL resolution

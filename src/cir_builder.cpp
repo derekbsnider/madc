@@ -4811,6 +4811,7 @@ static const char *binop_overload_symbol(TokenID id)
 	case TokenID::tkGT:     return ">";
 	case TokenID::tkLE:     return "<=";
 	case TokenID::tkGE:     return ">=";
+	case TokenID::tk3Way:   return "<=>";
 	case TokenID::tkAdd:    return "+";
 	case TokenID::tkSub:    return "-";
 	case TokenID::tkMul:    return "*";
@@ -6218,6 +6219,64 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	if (callee && callee->returns_ref)
 		return node1(N_DEREF, ocall, origin);
 	return ocall;
+}
+
+// C++20 builtin three-way comparison ([expr.spaceship]), per g++ -O0 canon
+// (tmp/spaceship.s): NO call — declare a comparison-category temp and store
+// the inline byte-select into its _M_value (offset 0, __cmp_cat::type):
+//   integral/pointer: (l < r ? -1 : l > r ? 1 : 0)            -> strong_ordering
+//   floating:         (l < r ? -1 : l > r ? 1 : l == r ? 0 : 2) -> partial_ordering
+//                     (2 = __cmp_cat::_Ncmp::_Unordered)
+// The category class was resolved at parse time from the parsed <compare>
+// (Program::comparison_category_class); class operands with an operator<=>
+// were dispatched through the operator machinery before reaching here. Each
+// operand is materialized into a typed temp so it is evaluated exactly once.
+node_t CirBuilder::three_way_builtin_lowering(TokenOperator *top, TokenBase *origin)
+{
+	DataDefCLASS *cat = as_class_instance(top ? top->datadef() : NULL);
+	if (!cat || !top->left || !top->right)
+		return error_node("'<=>' needs the comparison-category types — "
+				  "#include <compare> (C++20)", origin);
+	DataDef *ldd = top->left->datadef();
+	DataDef *rdd = top->right->datadef();
+	if (!ldd || !rdd)
+		return error_node("'<=>' operand has no type", origin);
+	char oname[40], lname[40], rname[40];
+	snprintf(oname, sizeof(oname), "__madc_objtmp_%d", m_strtmp_counter++);
+	snprintf(lname, sizeof(lname), "__madc_swtmp_%d", m_strtmp_counter++);
+	snprintf(rname, sizeof(rname), "__madc_swtmp_%d", m_strtmp_counter++);
+	Variable *ot = new Variable(oname, *cat, 1, NULL, false);
+	ot->flags |= vfLOCAL;
+	Variable *lt = new Variable(lname, *ldd, 1, NULL, false);
+	lt->flags |= vfLOCAL;
+	Variable *rt = new Variable(rname, *rdd, 1, NULL, false);
+	rt->flags |= vfLOCAL;
+	m_pending_stmts.push_back(var_decl(ot, origin));
+	m_pending_stmts.push_back(var_decl(lt, origin));
+	m_pending_stmts.push_back(var_decl(rt, origin));
+	m_pending_stmts.push_back(node2(N_EXPR, list(),
+		node2(N_ASSIGN, id(lname, origin), translate_expr(top->left),
+		      origin), origin));
+	m_pending_stmts.push_back(node2(N_EXPR, list(),
+		node2(N_ASSIGN, id(rname, origin), translate_expr(top->right),
+		      origin), origin));
+	bool floating = ldd->is_real() || rdd->is_real();
+	node_t tail = floating
+	    ? node3(N_COND,
+		    node2(N_EQ, id(lname, origin), id(rname, origin), origin),
+		    integer(0, origin), integer(2, origin), origin)
+	    : integer(0, origin);
+	node_t sel = node3(N_COND,
+		node2(N_LT, id(lname, origin), id(rname, origin), origin),
+		integer(-1, origin),
+		node3(N_COND,
+		      node2(N_GT, id(lname, origin), id(rname, origin), origin),
+		      integer(1, origin), tail, origin), origin);
+	node_t fld = node2(N_FIELD, id(oname, origin), id("_M_value", origin),
+			   origin);
+	m_pending_stmts.push_back(node2(N_EXPR, list(),
+		node2(N_ASSIGN, fld, sel, origin), origin));
+	return id(oname, origin);   // the category-typed object lvalue
 }
 
 // Among a class's operator overloads of name `mname`, select the UNARY one:
@@ -7753,6 +7812,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					return node1(N_STMTEXPR, blk, tb);
 				}
 			}
+
+			// C++20 builtin <=> ([expr.spaceship]): category-typed temp +
+			// inline byte-select (class operands with operator<=> were
+			// dispatched by class_operator_call / the parse-time free-
+			// operator lowering above).
+			if (tb->id() == TokenID::tk3Way)
+				return three_way_builtin_lowering(top, tb);
 
 			node_t left = translate_expr(top->left);
 			node_t right = translate_expr(top->right);

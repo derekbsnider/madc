@@ -599,6 +599,11 @@ public:
 	// the left operand is not a user class or has no such operator (caller
 	// falls through to the built-in operator translation).
 	node_t class_operator_call(class TokenOperator *top, TokenBase *origin);
+	// C++20 builtin `a <=> b` ([expr.spaceship]): comparison-category temp
+	// + inline byte-select into _M_value (g++ -O0 canon, no call). The
+	// category class was resolved at parse time from the parsed <compare>.
+	node_t three_way_builtin_lowering(class TokenOperator *top,
+					  TokenBase *origin);
 	// W2 (retire-std-hardcoding-design): a NON-member operator declared at
 	// namespace scope (e.g. std::operator<<(ostream&, const char*)) may be a
 	// better match for `lhs <op> rhs` than the member candidate. Consider the
