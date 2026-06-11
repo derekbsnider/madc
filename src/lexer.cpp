@@ -2875,7 +2875,12 @@ TokenBase *Program::_getToken()
 	    if (source.peek() == '=')
 	    {
 		source.get();
-		if (source.peek() == '>') { source.get(); return new Token3Way; }  // <=>
+		// <=> is C++20 (and the madc dialect). Below the std floor the
+		// sequence lexes as <= then > — pre-C++20 sources that happen
+		// to contain the characters keep their old meaning.
+		if (source.peek() == '>'
+		 && (language_std == STD_MADC || language_std >= STD_CPP20))
+		    { source.get(); return new Token3Way; }		  // <=>
 		return new TokenLE;					  // <=
 	    }
 	    if (source.peek() == '<')

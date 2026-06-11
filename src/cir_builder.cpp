@@ -7780,9 +7780,18 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			case TokenID::tkXorEq:  code = N_XOR_ASSIGN; break;
 			case TokenID::tkBSLEq:  code = N_LSH_ASSIGN; break;
 			case TokenID::tkBSREq:  code = N_RSH_ASSIGN; break;
-			default:
-				DBG(std::cerr << "cir: unhandled binary op " << (int)tb->id() << std::endl);
-				code = N_ADD;
+			default: {
+				// No CIR lowering for this operator. Previously this
+				// silently fell back to N_ADD — `a <=> b` compiled as
+				// a + b. Reject via the pre-c2mir gate instead (same
+				// policy as the unhandled-expression tail).
+				char buf[160];
+				snprintf(buf, sizeof(buf),
+					 "unhandled binary operator: %s (CIR builder "
+					 "has no lowering for token id %d)",
+					 describe_token(tb).c_str(), (int)tb->id());
+				return error_node(buf, tb);
+			}
 			}
 			// Derived->base pointer reassignment (`A *a; B *b; a = b;`):
 			// make the implicit upcast explicit so c2mir does not warn.
