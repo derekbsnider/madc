@@ -26842,6 +26842,29 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // in `char *p, *q;` has its own `*`s, not cumulative.
     DataDef *base_type = &tb->definition;
     DataDef *decl_type = base_type;
+    // Class-qualified NESTED type in a declaration: `ios_base::Init __ioinit;`
+    // / `static Outer::Inner obj;` — fold the `:: name [:: name …]` chain
+    // into the nested type before declarator parsing. Resolution is via
+    // type_aliases only, so a static-member or template-id chain falls
+    // through to the existing paths (and the existing diagnostics).
+    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+    {
+	if ( DataDefCLASS *qcls = dynamic_cast<DataDefCLASS *>(base_type) )
+	{
+	    DataDef *chain_dd = NULL;
+	    size_t chain_consume = 0;
+	    std::string chain_leaf;
+	    if ( peek_class_member_type_chain(qcls, tokens, 0, chain_dd,
+					      chain_consume, chain_leaf)
+	      && chain_dd )
+	    {
+		for ( size_t ci = 0; ci < chain_consume; ++ci )
+		    nextToken();
+		base_type = chain_dd;
+		decl_type = chain_dd;
+	    }
+	}
+    }
     bool saw_pointer_decl = false;
     bool saw_const_after_star = false; // `int * const p` — top-level const on a pointer
     bool ret_is_ref = false;

@@ -4425,8 +4425,16 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 
 	std::string sym = ctor_call_symbol(cdd, ctor);
 
+	// An externally-bound (emit_symbol) ctor is declared with a void* this
+	// (need_output_extern below) — cast the receiver to match, exactly like
+	// emit_symbol_method_call and the external-dtor paths. An uncast
+	// struct* arg against the void* extern decl trips c2mir's pointer
+	// check (the iostream:80 __ioinit warning).
+	bool external_ctor = ctor && !ctor->emit_symbol.empty();
 	node_t args = list();
-	append(args, this_addr);
+	append(args, external_ctor
+		     ? node2(N_CAST, void_ptr_type(), this_addr, origin)
+		     : this_addr);
 	for (size_t i = 0; i < ctor_args.size(); i++) {
 		TokenBase *arg = ctor_args[i];
 		size_t pi = i + 1;
@@ -4459,8 +4467,10 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 			append(args, translate_expr(darg));
 	}
 	if (ctor && ctor->ctor_trailing_self)
-		append(args, this_addr);
-	if (ctor && !ctor->emit_symbol.empty()) {
+		append(args, external_ctor
+			     ? node2(N_CAST, void_ptr_type(), this_addr, origin)
+			     : this_addr);
+	if (external_ctor) {
 		std::vector<ExternParam> eparams;
 		eparams.push_back({ {N_VOID}, true });
 		for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
@@ -4549,8 +4559,16 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 
 	std::string sym = ctor_call_symbol(cdd, ctor);
 
+	// Externally-bound ctor: declared below with a void* this — cast the
+	// receiver to match (emit_symbol_method_call convention; an uncast
+	// struct* arg against the void* extern trips c2mir's pointer check —
+	// the iostream:80 __ioinit warning).
+	bool external_ctor = ctor && !ctor->emit_symbol.empty();
 	node_t args = list();
-	append(args, node1(N_ADDR, id(v->name.c_str(), origin), origin)); // &v
+	node_t self_addr = node1(N_ADDR, id(v->name.c_str(), origin), origin);
+	append(args, external_ctor
+		     ? node2(N_CAST, void_ptr_type(), self_addr, origin)
+		     : self_addr); // &v
 	for (size_t i = 0; i < ctor_args.size(); i++) {
 		TokenBase *arg = ctor_args[i];
 		size_t pi = i + 1;   // skip __this
@@ -4588,15 +4606,19 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		// Some external constructors have a trailing reference parameter for which
 		// the parsed declaration supplied no call-site value. See
 		// FuncDef::ctor_trailing_self.
-	if (ctor && ctor->ctor_trailing_self)
-		append(args, node1(N_ADDR, id(v->name.c_str(), origin), origin));
+	if (ctor && ctor->ctor_trailing_self) {
+		node_t self2 = node1(N_ADDR, id(v->name.c_str(), origin), origin);
+		append(args, external_ctor
+			     ? node2(N_CAST, void_ptr_type(), self2, origin)
+			     : self2);
+	}
 		// A ctor bound to an EXTERNAL symbol MUST be declared with a typed
 		// prototype, exactly like emit_symbol_method_call does for methods. Without
 		// it c2mir/MIR marshals the call as an implicit function and shifts the
 		// arguments. User-class ctors are defined in-module (emit_symbol empty) ->
 		// no extern. Build the param shapes in lockstep with the args appended
 		// above: this(void*) + each ctor param + the optional trailing self pointer.
-	if (ctor && !ctor->emit_symbol.empty()) {
+	if (external_ctor) {
 		std::vector<ExternParam> eparams;
 		eparams.push_back({ {N_VOID}, true });   // this
 		for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
