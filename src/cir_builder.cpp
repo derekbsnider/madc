@@ -5312,10 +5312,38 @@ static std::string requalify_head(const std::string &spell, const std::string &q
 // the operator itself returning the lhs stream). Memoized per operator
 // token and per symbol — the emission (class_operator_external_call) and
 // every other consumer see one FuncDef per symbol.
+// Replace whole-identifier occurrences of `name` with `val` in a type
+// spelling — substitutes a DEDUCED template binding back into a parameter
+// spelling (`const _CharT*` + {_CharT->char} -> `const char*`).
+static std::string subst_bound_ident(const std::string &spell,
+		const std::string &name, const std::string &val)
+{
+	std::string out;
+	size_t i = 0, n = spell.size();
+	while (i < n) {
+		char c = spell[i];
+		if (isalpha((unsigned char)c) || c == '_') {
+			size_t j = i + 1;
+			while (j < n && (isalnum((unsigned char)spell[j]) || spell[j] == '_'))
+				++j;
+			std::string w = spell.substr(i, j - i);
+			out += (w == name) ? val : w;
+			i = j;
+			continue;
+		}
+		out += c;
+		++i;
+	}
+	return out;
+}
+
 FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 		DataDefCLASS *lcls, const std::string &mname, FuncDef *member_callee)
 {
-	if (!m_prog || !lcls || !top || !top->left || !top->right) return NULL;
+	if (!m_prog || !top || !top->left || !top->right) return NULL;
+	// lcls may be NULL for the literal-lhs mixed shape (`"pre" + s`) —
+	// then the rhs must be the class operand (Pass 2b below).
+	if (!lcls && !as_class_instance(top->right->datadef())) return NULL;
 	if (m_prog->free_operator_overloads.empty()) return NULL;
 	auto mit = m_free_op_inst_by_call.find(top);
 	if (mit != m_free_op_inst_by_call.end()) return mit->second;
@@ -5324,7 +5352,8 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	// lhs class candidates: self AND non-virtual bases, most-derived first
 	// (a free operator taking a BASE stream binds a derived lhs).
 	std::vector<BaseCand> lhs_cands;
-	collect_self_and_base_spellings(lcls, 0, lhs_cands);
+	if (lcls)
+		collect_self_and_base_spellings(lcls, 0, lhs_cands);
 	auto deduce_lhs = [&](const Program::FreeOperatorOverload &ov,
 			      std::map<std::string, std::string> &binding,
 			      std::string &stype, DataDefCLASS **cls) -> bool {
@@ -5478,6 +5507,70 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 			best_ret_ref = false;
 		}
 	}
+
+	// Pass 2b — the literal-lhs mixed shape: `"pre" + s`. param[1] (the
+	// class, by const-ref) deduces the binding FIRST; param[0] (a
+	// non-class pointer/value, `const _CharT*`) must then SUBSTITUTE to
+	// the lhs type exactly. Binds the exported
+	// operator+(const char*, const string&) mangled-direct.
+	if (!best && !lcls && !member_callee && as_class_instance(rhs_dd))
+	{
+		DataDefCLASS *rcls = as_class_instance(rhs_dd);
+		DataDef *lhs_dd = top->left->datadef();
+		std::string lhs_norm = lhs_dd
+			? norm_type_w2(datadef_cpp_spelling_w2(lhs_dd)) : std::string();
+		auto is_lvalue_ref = [](const std::string &p) {
+			return p.size() >= 2 && p.back() == '&'
+			       && p[p.size() - 2] != '&';
+		};
+		for (const Program::FreeOperatorOverload &ov : m_prog->free_operator_overloads)
+		{
+			if (ov.opname != mname || ov.param_spellings.size() != 2) continue;
+			const std::string &rspell = ov.return_spelling;
+			if (rspell.empty() || rspell.back() == '&' || rspell.back() == '*')
+				continue;	// by-value class return shapes only
+			if (is_lvalue_ref(ov.param_spellings[0]))
+				continue;	// class-lhs shapes belong to Pass 2
+			if (!is_lvalue_ref(ov.param_spellings[1]))
+				continue;
+			std::map<std::string, std::string> binding;
+			size_t roff = 0, retoff = 0;
+			std::string qh1, qhr;
+			DataDefCLASS *c1 = NULL, *cr = NULL;
+			if (!deduce_param_against_class(ov.param_spellings[1], rcls,
+					ov.template_params, binding, roff, qh1, &c1))
+				continue;
+			std::string p0sub = ov.param_spellings[0];
+			for (const auto &b : binding)
+				p0sub = subst_bound_ident(p0sub, b.first, b.second);
+			if (lhs_norm.empty() || norm_type_w2(p0sub) != lhs_norm)
+				continue;
+			std::map<std::string, std::string> b2 = binding;
+			if (!(deduce_param_against_class(rspell, c1 ? c1 : rcls,
+					ov.template_params, b2, retoff, qhr, &cr)
+			      && b2 == binding && retoff == 0))
+				continue;
+			if (!cr || !class_return_via_retbuf(cr)) continue;
+			std::vector<std::string> targs;
+			if (!targs_from_binding(ov, binding, targs)) continue;
+			if (best && ov.template_params.size() >= best->template_params.size())
+				continue;
+			auto qp = [&](const std::string &sp, const std::string &qh) {
+				return substitute_tparams(requalify_head(sp, qh),
+							  ov.template_params);
+			};
+			best = &ov;
+			best_targs = targs;
+			best_ret_spell = qp(rspell, qhr);
+			best_params.clear();
+			best_params.push_back(qp(ov.param_spellings[0], std::string()));
+			best_params.push_back(qp(ov.param_spellings[1], qh1));
+			best_lcls = NULL;
+			best_rcls = c1 ? c1 : rcls;
+			best_retc = cr;
+			best_ret_ref = false;
+		}
+	}
 	if (!best || !best_retc) return NULL;
 
 	std::string sym = itanium_mangle_std_free_template(
@@ -5496,8 +5589,17 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	inst->declaration_only = true;
 	inst->function_display_name = mname;
 	inst->namespace_name = best->ns;
-	inst->parameters.push_back(best_lcls ? (DataDef *)best_lcls : (DataDef *)lcls);
-	inst->ref_params.push_back(true);
+	if (best_lcls || lcls) {
+		inst->parameters.push_back(best_lcls ? (DataDef *)best_lcls
+						     : (DataDef *)lcls);
+		inst->ref_params.push_back(true);
+	} else {
+		// Literal-lhs (Pass 2b): param[0] is the non-class lhs type
+		// itself (a pointer/value, never a reference).
+		DataDef *lhs_dd0 = top->left->datadef();
+		inst->parameters.push_back(lhs_dd0 ? lhs_dd0 : (DataDef *)&ddINT64);
+		inst->ref_params.push_back(false);
+	}
 	bool rhs_is_ptr = !best->param_spellings[1].empty()
 			  && best->param_spellings[1].back() == '*';
 	if (best_rcls) {
@@ -5564,8 +5666,15 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 		append(args, slot);
 	}
 
-	eparams.push_back({ {N_VOID}, true });
-	append(args, object_arg_addr(top->left, lhs_target));
+	if (lhs_target) {
+		eparams.push_back({ {N_VOID}, true });
+		append(args, object_arg_addr(top->left, lhs_target));
+	} else {
+		// Literal-lhs free operator: param[0] is a non-class
+		// pointer/value — shape it like the rhs's non-class branches.
+		eparams.push_back(native_param_shape(pt0, false));
+		append(args, translate_expr(top->left));
+	}
 	// Single explicit RHS argument, shaped by parameters[1].
 	DataDef *pt = (callee->parameters.size() > 1) ? callee->parameters[1] : NULL;
 	bool refp = callee->ref_params.size() > 1 && callee->ref_params[1];
@@ -5611,7 +5720,9 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls,
 		const std::string &mname, FuncDef *member_callee, TokenBase *origin)
 {
-	if (!m_prog || !lcls || top == NULL || !top->right) return NULL;
+	if (!m_prog || top == NULL || !top->right) return NULL;
+	// NULL lcls = the literal-lhs mixed shape; the rhs must be the class.
+	if (!lcls && !as_class_instance(top->right->datadef())) return NULL;
 	if (m_prog->free_operator_overloads.empty()) return NULL;
 
 	// W2 manipulator: `os << endl` — the parser built a (0-arg) call node for
@@ -5621,7 +5732,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	// pf(*this).) The instantiated FuncDef is memoized per symbol like every
 	// other Pattern-A binding; the matched (base) stream class rides its
 	// parameters[0], and object_arg_addr's base walk adjusts a derived lhs.
-	if (mname == "operator<<") {
+	if (mname == "operator<<" && lcls) {
 		if (TokenCallFunc *rc = dynamic_cast<TokenCallFunc *>(top->right)) {
 			FuncDef *rfd = dynamic_cast<FuncDef *>(rc->var.type);
 			std::string fname = (rfd && !rfd->function_display_name.empty())
@@ -5908,7 +6019,15 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 		if (rtv && (rtv->var.flags & vfREFERENCE))
 			lcls = class_behind(rtv->var.type);
 	}
-	if (!lcls) return NULL;
+	if (!lcls) {
+		// `"pre" + s`: a non-class lhs with a CLASS rhs — only the free
+		// operator set's mixed shape can bind (no member candidate).
+		if (!as_class_instance(top->right->datadef())) return NULL;
+		const char *opsym0 = binop_overload_symbol(top->id());
+		if (!opsym0[0]) return NULL;
+		return try_free_operator_call(top, NULL,
+			std::string("operator") + opsym0, NULL, origin);
+	}
 	const char *opsym = binop_overload_symbol(top->id());
 	if (!opsym[0]) return NULL;
 

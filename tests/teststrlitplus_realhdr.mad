@@ -1,0 +1,3 @@
+#include <string>
+#include <iostream>
+int main() { std::string b = "bar"; std::string c = "pre" + b; std::cout << c << std::endl; return 0; }

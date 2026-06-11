@@ -1792,6 +1792,10 @@ public:
     // (CirBuilder::resolve_free_operator_byvalue). NULL = no such operator.
     DataDef *free_binary_operator_return_class(class DataDefCLASS *lc,
 		const std::string &opname, TokenBase *right);
+    // Literal-lhs sibling (`"pre" + s`): param[0] non-class pointer/value,
+    // param[1] the class by const-ref; returns the by-value return class.
+    DataDef *free_binary_operator_return_class_nonclass_lhs(TokenBase *left,
+		const std::string &opname, TokenBase *right);
     TokenBase *parseCompound();
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);

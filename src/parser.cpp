@@ -6351,8 +6351,11 @@ void Program::resolve_object_operator_type(TokenOperator *to)
     TokenBase *operand = unary ? (postfix ? to->left : to->right) : to->left;
     if ( !operand ) return;
     DataDefCLASS *lc = dynamic_cast<DataDefCLASS *>(operand->datadef());
-    if ( !lc )
+    if ( !lc && unary )
 	return;
+    if ( !lc && (!to->right
+	      || !dynamic_cast<DataDefCLASS *>(to->right->datadef())) )
+	return;	// neither side is a class object
     const char *opsym;
     switch ( to->id() )
     {
@@ -6371,10 +6374,19 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 	default: return;     // comparison/bitwise results are already typed correctly
     }
     std::string opname = std::string("operator") + opsym;
-    DataDef *rt = unary ? lc->unary_operator_return_type(opname, postfix)
-			: lc->binary_operator_return_type(opname);
-    if ( !rt && !unary )
-	rt = free_binary_operator_return_class(lc, opname, to->right);
+    DataDef *rt = NULL;
+    if ( lc )
+    {
+	rt = unary ? lc->unary_operator_return_type(opname, postfix)
+		   : lc->binary_operator_return_type(opname);
+	if ( !rt && !unary )
+	    rt = free_binary_operator_return_class(lc, opname, to->right);
+    }
+    else
+	// `"pre" + s`: a non-class lhs with a class rhs — the free operator
+	// set's mixed shape (operator+(const _CharT*, const basic_string&)).
+	rt = free_binary_operator_return_class_nonclass_lhs(to->left, opname,
+							    to->right);
     if ( rt ) to->set_resolved_type(rt);
 }
 
@@ -6440,6 +6452,49 @@ DataDef *Program::free_binary_operator_return_class(DataDefCLASS *lc,
 	std::string rethead = template_head_component(rspell);
 	if ( rethead == lhead ) return lc;
 	if ( rethead == rhead ) return rc;
+    }
+    return NULL;
+}
+
+// Literal-lhs variant: `"pre" + s` — the free set's mixed shape
+// (param[0] a non-class pointer/value like `const _CharT*`, param[1] the
+// class by const-ref). Returns the operator's by-value return class.
+DataDef *Program::free_binary_operator_return_class_nonclass_lhs(
+	TokenBase *left, const std::string &opname, TokenBase *right)
+{
+    if ( !left || !right || free_operator_overloads.empty() )
+	return NULL;
+    DataDefCLASS *rc = dynamic_cast<DataDefCLASS *>(right->datadef());
+    DataDef *ld = left->datadef();
+    if ( !rc || !ld || dynamic_cast<DataDefCLASS *>(ld) )
+	return NULL;	// class-lhs rides the main path
+    std::string rhead = template_head_component(rc->canonical_cpp_spelling.empty()
+						? rc->name : rc->canonical_cpp_spelling);
+    if ( rhead.empty() )
+	return NULL;
+    for ( const FreeOperatorOverload &ov : free_operator_overloads )
+    {
+	if ( ov.opname != opname || ov.param_spellings.size() != 2 )
+	    continue;
+	const std::string &rspell = ov.return_spelling;
+	if ( rspell.empty() || rspell.back() == '&' || rspell.back() == '*' )
+	    continue;	// by-value class returns only
+	const std::string &p0 = ov.param_spellings[0];
+	const std::string &p1 = ov.param_spellings[1];
+	// param[1]: the class, by lvalue reference.
+	if ( p1.size() < 2 || p1.back() != '&' || p1[p1.size() - 2] == '&' )
+	    continue;
+	if ( template_head_component(p1) != rhead )
+	    continue;
+	// param[0]: NOT an lvalue reference — a pointer shape matches a
+	// pointer lhs, a value shape a non-pointer lhs.
+	if ( p0.empty() || p0.back() == '&' )
+	    continue;
+	bool p0_ptr = p0.back() == '*';
+	if ( p0_ptr != ld->is_pointer() )
+	    continue;
+	if ( template_head_component(rspell) == rhead )
+	    return rc;
     }
     return NULL;
 }
