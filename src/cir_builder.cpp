@@ -6299,6 +6299,17 @@ node_t CirBuilder::three_way_builtin_lowering(TokenOperator *top, TokenBase *ori
 	return id(oname, origin);   // the category-typed object lvalue
 }
 
+// A side-effect-free literal constant token: numeric / char / string
+// literal (TokenNullptr is a TokenInt). Identifier reads are excluded —
+// only true literals are folded by strict_equality_lowering below.
+static bool is_literal_constant_token(TokenBase *tb)
+{
+	return dynamic_cast<TokenInt *>(tb)
+	    || dynamic_cast<TokenReal *>(tb)
+	    || dynamic_cast<TokenChar *>(tb)
+	    || dynamic_cast<TokenStr *>(tb);
+}
+
 // Strict equality `===` / `!==` (STD_MADC dialect): type-domain identity AND
 // value equality. Scalars use DataDef::same_representation; class operands
 // strict-compare inside the class domain via the SAME operator== dispatch ==
@@ -6332,6 +6343,12 @@ node_t CirBuilder::strict_equality_lowering(TokenOperator *top, TokenBase *origi
 		}
 	}
 	// Different domains: constant result, operands still evaluated.
+	// Two pure literals have no side effects to preserve, and the comma
+	// form is NOT a C constant expression — fold to the bare integer so
+	// file-scope initializers like `int g = (1 === 1.0);` stay constant.
+	if (is_literal_constant_token(top->left)
+	 && is_literal_constant_token(top->right))
+		return integer(neq ? 1 : 0, origin);
 	node_t left = translate_expr(top->left);
 	node_t right = translate_expr(top->right);
 	return node2(N_COMMA, node2(N_COMMA, left, right, origin),

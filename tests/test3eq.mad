@@ -9,6 +9,11 @@ double dside(double v) { g_calls++; return v; }
 enum Color { RED = 5 };
 enum Fruit { APPLE = 5 };
 
+// A statically-false === between two literals must stay a C constant
+// expression so it can initialize a file-scope variable.
+int gconst = (1 === 1.0);	// 0: int vs double domains
+int gconst2 = (2 !== 1);	// 1: same domain, different value
+
 // A reference operand reads as its referee: int& === int is the int domain.
 int refside(int &r)
 {
@@ -82,5 +87,8 @@ int main()
 	// A statically-false compare still evaluates both operands.
 	int r = (iside(1) === dside(1.0));
 	printf("sfx=%d calls=%d\n", r, g_calls);	// sfx=0 calls=2
+
+	printf("gc=%d\n", gconst);		// 0
+	printf("gc2=%d\n", gconst2);		// 1
 	return 0;
 }

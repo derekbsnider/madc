@@ -24,3 +24,5 @@ s_ri=1
 n_ri=0
 s_ru=0
 sfx=0 calls=2
+gc=0
+gc2=1
