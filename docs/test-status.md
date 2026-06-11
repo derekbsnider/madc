@@ -1,7 +1,22 @@
 # Test Status
 
-> **Current (2026-06-10, `develop` @ `7e84242`
+> **Current (2026-06-11, `feature/eval-leftovers-claude`
 > against `/workspace/mir` `develop` @ `2ffebff`):** fulltest is
+> **557 passed, 0 failed, 0 timed out, 18 skipped** (make exit 0, both check
+> gates GREEN). The eval-leftovers branch landed packages B (DSL string
+> compares via strcmp lowering), A0 (MadValue/MadArray → one `madc::value`
+> end-to-end), and A (declaration-only mangled-direct `<ns_madc>` +
+> user-call-site scope capture): `testmadcevalexprctx` extended (string
+> value compares) and `testmadcevalscope` un-skipped — 42/42/echo plus the
+> typed-out forms — and `test_libmadc_program` is **97 passed / 38 skipped**
+> (the four script-side scope-access categories join). `test_mangle` pins
+> the madc::value class-param symbols (the substitution back-ref N..E wrap
+> fix) and the text-carrier marshalling predicate. torture **1567/31/56/1**,
+> failset byte-identical to the baseline; SMAUG boots (soak exit 124 +
+> ready line).
+>
+> **Previous (2026-06-10, `develop` @ `7e84242`
+> against `/workspace/mir` `develop` @ `2ffebff`):** fulltest was
 > **555 passed, 0 failed, 0 timed out, 20 skipped** (make exit 0, both check
 > gates GREEN) — **ALL integration reds are green.** New this cycle:
 > `teststringplus_realhdr.mad` pins real-header `std::string a+b` — by-value

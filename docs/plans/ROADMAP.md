@@ -43,7 +43,7 @@ high-level" — the answer is both.**
   a character, navigate the world, and fight (the Newgate serpent fight runs).
   The project's north-star goal — running a real C89 codebase end-to-end —
   is now demonstrated on CIR.
-- **CIR baseline (2026-06-10, post-v0.27.0 @ `7e84242`):** **555 integration/unit pass / 0 fail / 0 timeout / 20 skip — ALL integration reds green** (the post-release sweep: real-header `std::string a+b` via by-value FREE-operator returns + decl-init copy elision, default-mode `<cstdio>`, W2 step D Pattern-A operators, 3 stale skips lifted, and script-level `madc::eval_*` via `<ns_madc>` — testmadceval/expr/exprtyped join; libmadc in-process eval runs on CirJitSession);
+- **CIR baseline (2026-06-11, `feature/eval-leftovers-claude` @ `b99d38e`):** **557 integration/unit pass / 0 fail / 0 timeout / 18 skip** (eval leftovers B+A0+A: DSL string VALUE compares, MadValue/MadArray → one `madc::value`, mangled-direct `<ns_madc>` + user-call-site scope capture — testmadcevalscope joins; previous 2026-06-10 develop baseline was 555/0/0/20 — the post-release sweep: real-header `std::string a+b` via by-value FREE-operator returns + decl-init copy elision, default-mode `<cstdio>`, W2 step D Pattern-A operators, 3 stale skips lifted, and script-level `madc::eval_*` via `<ns_madc>`; libmadc in-process eval runs on CirJitSession);
   **gcc.c-torture 1567/1685 (93.0%)** with 31 compile-failed, 56 runtime-failed,
   and 1 timed out, vs the old asmjit backend's 1645 (97.6%) — gap 78.
   The clean `develop` rebuild emits no compiler warnings. The failures are the
@@ -87,9 +87,15 @@ high-level" — the answer is both.**
   `__ns_` shim gate), and the per-red ingredients for `testfstream` / `testloop` /
   `testdefer`, which remain open.
 - **libmadc:** C++ embedding API (security policy, structured diagnostics,
-  engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
-  pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped
-  as its future spec).
+  engine-owned IO). In-process compile/exec/`eval` **runs on CIR→c2mir→MIR**
+  via `CirJitSession` (2026-06-10), the script-level `madc::eval_*` surface is
+  declaration-only mangled-direct through `<ns_madc>`, the script `array` IS
+  the public `madc::value` (A0 unification, 2026-06-11), and runtime-eval
+  scope capture fires at the user call site (int/real/array/string locals,
+  per-family engine gates). Remaining: package C — `register_function`,
+  `get/set_global`, string call marshalling, fork/limits, the policy tail
+  (the 38 `test_libmadc_program` skips; see
+  `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md`).
 - **AOT (native object/executable):** deferred, low priority. Near-term native
   builds come from emit-`.c` + an external compiler; `save_object` /
   `save_executable` are stubbed (signatures kept) for a later MIR-based revisit.

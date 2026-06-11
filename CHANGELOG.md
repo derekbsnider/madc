@@ -2,6 +2,65 @@
 
 ## [Unreleased]
 
+### Eval leftovers landed: DSL string compares (B), one value type (A0), call-site scope capture (A) — fulltest 557/0/0/18 (2026-06-11)
+
+- **B — expression-DSL string compares are value compares** (`b144571`,
+  `89fee0f`, `a30b1f1`): a rewrite pass after policy validation lowers
+  every comparison whose operands are both string-typed to
+  `strcmp(a,b) OP 0` (all six relational operators); a string vs
+  non-string mix is a loud rejection (pinned). Confined to the
+  expression-DSL pipeline — full eval and the real language never see it.
+  `testmadcevalexprctx` extended (`name_ok`/`lt`/`ge` now value-true).
+- **A0 — MadValue/MadArray deleted; one `madc::value` end-to-end**
+  (`bb9d3f3`, `e60c466`, `66eeaaf`): the script `array` builtin IS the
+  public `madc::value` (ddARRAY retargeted, canonical identity
+  `madc::value`); `value::object()/array()` vivify from null; the
+  `build_runtime_expression_context` conversion layer is gone. The
+  extern-C boundary is kind-safe (`value_array_for_write` /
+  `value_object_for_write`: stderr diagnostic + no-op dummy instead of a
+  C++ exception escaping into MIR-JIT frames), the pop/shift/join family
+  keeps its pinned string/int-only conversion, and read-only eval no
+  longer vivifies a caller's null ctx in place.
+- **Itanium mangler: substitution back-ref as a name PREFIX keeps the
+  N..E wrap** (`fe06468`): `madc::value` as a parameter of a second
+  `madc::` function rendered `RS_5value` where g++ emits `RNS_5valueE` —
+  encode_name now wraps when a back-ref becomes a prefix (only `St` may
+  stand unwrapped). Pinned against four g++-verified literals; this
+  unblocked the whole mangled-direct `_ctx` surface.
+- **A — `<ns_madc>` is declaration-only mangled-direct** (`daf04ed`):
+  scripts bind `madc::eval_*` / `context_set_*` straight to the real
+  `namespace madc` implementations in the new `src/ns_madc.cpp`
+  (cpp-first-api.md); the extern-C `__madc_*_runtime` exports move there
+  as the C-host API only. New `eval_*_ctx` publics (full-eval five +
+  typed-out expression forms). General fix exposed by the FIRST
+  declaration-only overload set: such an overload's call symbol is its
+  external Itanium symbol on `emit_symbol`, never a bodiless internal
+  `__ns_*__oN` name.
+- **A — scope capture learns std::string locals** (`86e0a48`):
+  `DataDef::marshals_value_text()` — the marshalling-boundary predicate,
+  DEFINED in the mangler (the gate's one permitted home for std::
+  symbol knowledge; spellings compare via Itanium encoding, so the
+  pre-C++11 ABI type stays distinct) — plus the
+  `__madc_scope_set_string_runtime` setter and the CIR text branch.
+- **A — scope capture fires at the madc:: public call site**
+  (`1627e62`): `testmadcevalscope` un-skipped and GREEN (42/42/echo +
+  typed-out forms): calls to the madc:: publics rebind to their `_ctx`
+  sibling overloads when the per-family engine gates allow, and the
+  existing parseCallFunc tail appends the captured-scope ctx. Three root
+  fixes en route: the TokenScopeContext lowering yields the ctx LVALUE
+  (an extra N_ADDR double-wrapped it against `array&` params — the host
+  read a pointer slot as a null value); `int x = madc::eval_*(…)` no
+  longer captures x inside its own initializer (`decl_init_self`); and
+  full-eval scope bindings install captured string locals
+  (`set_variable_from_value` text case).
+- **Unit scope-access categories un-skipped** (`e250f6c`):
+  `test_libmadc_program` 97 passed / 38 skipped — the four script-side
+  scope-access cases pin the gate semantics (on→42/42, both-off→0/0,
+  expression-off→0/42, source-off→42/0).
+- Gates: fulltest **557/0/0/18** exit 0 (both check gates GREEN);
+  gcc.c-torture **1567/31/56/1** with the failset byte-identical to the
+  baseline; SMAUG boots (soak exit 124 + ready line).
+
 ### Script-level `madc::eval_*` via `<ns_madc>` — fulltest 555/0/0/20 (2026-06-10)
 
 - **`madc::eval_*` exported through libmadc** (`8d73306`) exactly like the
