@@ -6401,18 +6401,6 @@ bool DataDef::same_representation(DataDef &d)
 	// fast path above; different instances are different domains.
 	if ( a->basetype() != BaseType::btSimple || b->basetype() != BaseType::btSimple )
 		return false;
-	// References have a SECOND encoding besides DataDefREF (stripped above):
-	// a bare ref TAG (reftype() == rtReference) on a plain DataDef, with no
-	// referee instance to chase. === reads rvalues, so strip the ref offset
-	// (rtDeRef) BEFORE any pointer-ness comparison — a bare ref tag over a
-	// pointer tag (_type 30000+x) reports is_pointer()==false until
-	// normalized. The pointer offset (10000) is representational and stays.
-	DataType atag = a->type();
-	DataType btag = b->type();
-	if ( a->reftype() == RefType::rtReference )
-		atag = rtDeRef(atag);
-	if ( b->reftype() == RefType::rtReference )
-		btag = rtDeRef(btag);
 	// Pointers: recurse on the pointee when both sides carry one. (The
 	// builtin dtXXXptr tags encode a simple pointee, and DataDefPTR sets the
 	// same tag, so the tag compare below also covers pointer-to-simple.)
@@ -6420,6 +6408,21 @@ bool DataDef::same_representation(DataDef &d)
 	DataDefPTR *bp = dynamic_cast<DataDefPTR *>(b);
 	if ( ap && bp )
 		return ap->base_type->same_representation(*bp->base_type);
+	// References have a SECOND encoding besides DataDefREF (stripped above):
+	// a bare ref TAG (reftype() == rtReference) on a PLAIN DataDef, with no
+	// referee instance to chase. === reads rvalues, so strip the ref offset
+	// (rtDeRef) BEFORE the pointer-ness comparison — a bare ref tag over a
+	// pointer tag (_type 30000+x) reports is_pointer()==false until
+	// normalized. The pointer offset (10000) is representational and stays.
+	// Never strip a DataDefPTR: a pointer-over-pointer wrap reuses the
+	// 20000+x tag range (rtPtr of a 10000+x pointee), so its reftype() reads
+	// rtReference — stripping would collapse T** into T.
+	DataType atag = a->type();
+	DataType btag = b->type();
+	if ( !ap && a->reftype() == RefType::rtReference )
+		atag = rtDeRef(atag);
+	if ( !bp && b->reftype() == RefType::rtReference )
+		btag = rtDeRef(btag);
 	// Pointer-ness must agree, compared on the ref-stripped tags:
 	// rawtype(tag) != tag <=> the stripped tag carries the pointer offset.
 	if ( (rawtype(atag) != atag) != (rawtype(btag) != btag) )
