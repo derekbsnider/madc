@@ -146,6 +146,10 @@ std::string itanium_mangle_dtor(const std::string &class_name)
 
 static std::string operator_code(const std::string &op)
 {
+	// madc dialect operators — Itanium vendor-extended operator-name
+	// encoding `v <arity> <source-name>` (no standard code exists).
+	if (op == "===") return "v23eq3";
+	if (op == "!==") return "v23ne3";
 	if (op == "==") return "eq";
 	if (op == "!=") return "ne";
 	if (op == "<")  return "lt";

@@ -136,6 +136,14 @@ TEST_SUITE("Itanium operator mangling") {
 		CHECK(itanium_mangle_operator("Iter", "--", {}) == "_ZN4ItermmEv");
 	}
 
+	TEST_CASE("Dialect strict-equality operators (Itanium vendor-extended)") {
+		// operator=== => v2 (binary vendor op) + source-name "eq3"
+		CHECK(itanium_mangle_operator("Money", "===", {"const Money&"})
+		      == "_ZN5Moneyv23eq3ERK5Money");
+		CHECK(itanium_mangle_operator("Money", "!==", {"const Money&"})
+		      == "_ZN5Moneyv23ne3ERK5Money");
+	}
+
 	TEST_CASE("Unknown operator returns empty") {
 		CHECK(itanium_mangle_operator("Foo", "???", {"int"}) == "");
 	}

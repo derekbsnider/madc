@@ -6525,6 +6525,8 @@ static const char *object_operator_symbol(TokenID id)
 	case TokenID::tkLE: return "<=";
 	case TokenID::tkGE: return ">=";
 	case TokenID::tk3Way: return "<=>";
+	case TokenID::tk3Eq: return "===";
+	case TokenID::tk3NotEq: return "!==";
 	default: return NULL;
     }
 }
@@ -6717,6 +6719,33 @@ TokenBase *Program::rewritten_operator_candidate(TokenOperator *to)
 		return NULL;
 	    resolve_object_operator_type(eq);
 	    eqexpr = eq;
+	}
+	TokenLnot *neg = new TokenLnot();
+	neg->right = eqexpr;
+	neg->file = to->file; neg->line = to->line; neg->column = to->column;
+	return neg;
+    }
+    if ( idd == TokenID::tk3NotEq )
+    {
+	// Strict inequality: `x !== y` is `!(x === y)` — the === may itself
+	// dispatch a user operator=== (free or member). It NEVER rewrites to
+	// operator!= or operator== (spec §2.4); with no === candidate the
+	// token stays for the CIR domain-rule lowering.
+	Token3Eq *eq3 = new Token3Eq();
+	eq3->left = to->left;
+	eq3->right = to->right;
+	eq3->file = to->file; eq3->line = to->line; eq3->column = to->column;
+	TokenBase *eqexpr = lower_free_operator_to_call(eq3, /*no_rewrite=*/true);
+	if ( !eqexpr )
+	{
+	    // A MEMBER operator=== still serves the negation (the CIR
+	    // builder's class_operator_call lowers the === token); anything
+	    // else keeps the original token for strict_equality_lowering.
+	    DataDefCLASS *lc = operand_object_class(to->left);
+	    if ( !lc || !lc->binary_operator_return_type("operator===") )
+		return NULL;
+	    resolve_object_operator_type(eq3);
+	    eqexpr = eq3;
 	}
 	TokenLnot *neg = new TokenLnot();
 	neg->right = eqexpr;

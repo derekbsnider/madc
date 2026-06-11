@@ -5,6 +5,30 @@
 #include <string>
 using namespace std;
 
+// User operator=== dispatches BEFORE the domain rule; explicit user
+// operator!== dispatches before the !(===) negation (spec §2.2/§2.4/§2.5).
+class Money {
+public:
+	long amount;
+	int currency;
+	Money(long a, int c) : amount(a), currency(c) {}
+	bool operator==(const Money &o) const { return amount == o.amount; }
+	bool operator===(const Money &o) const {
+		return amount == o.amount && currency == o.currency;
+	}
+};
+
+// Free-form user operators on a second class: free operator=== and an
+// explicit free operator!== must both dispatch before any fallback.
+class Tag {
+public:
+	int id;
+	Tag(int i) : id(i) {}
+	bool operator==(const Tag &o) const { return id == o.id; }
+};
+bool operator===(const Tag &a, const Tag &b) { return a.id == b.id && a.id >= 0; }
+bool operator!==(const Tag &a, const Tag &b) { return a.id != b.id; }
+
 class Plain {
 public:
 	int v;
@@ -29,5 +53,22 @@ int main()
 	printf("s_lit=%d\n", s === "x");	// 1: literal enters the domain
 	printf("s_lit2=%d\n", s === "y");	// 0
 	printf("s_neq=%d\n", s !== "x");	// 0
+
+	Money usd5(5, 1);
+	Money cad5(5, 2);
+	Money usd5b(5, 1);
+	printf("m_eq=%d\n", usd5 == cad5);	// 1: loose == ignores currency
+	printf("m_seq=%d\n", usd5 === cad5);	// 0: user operator===
+	printf("m_seq2=%d\n", usd5 === usd5b);	// 1
+	printf("m_neq=%d\n", usd5 !== cad5);	// 1: !== = !(user ===)
+
+	Tag t1(3);
+	Tag t2(3);
+	Tag tn(-4);
+	Tag tn2(-4);
+	printf("t_seq=%d\n", t1 === t2);	// 1: free operator===
+	printf("t_negs=%d\n", tn === tn2);	// 0: free === (negative ids)
+	printf("t_neq=%d\n", t1 !== t2);	// 0: explicit free operator!==
+	printf("t_neqn=%d\n", tn !== tn2);	// 0: explicit !== wins over !(===)
 	return 0;
 }
