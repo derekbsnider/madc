@@ -7803,12 +7803,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				setter = "__madc_scope_set_real_runtime";
 				val = id(sv->name.c_str(), tb);
 				val_shape = { {N_DOUBLE}, false };
+			} else if (sv->type->marshals_value_text()) {
+				// the host reads the text object by pointer
+				setter = "__madc_scope_set_string_runtime";
+				val = node1(N_ADDR, id(sv->name.c_str(), tb), tb);
+				val_shape = { {N_VOID}, true };
 			} else if (raw == DataType::dtARRAY) {
 				setter = "__madc_scope_set_array_runtime";
 				val = node1(N_ADDR, id(sv->name.c_str(), tb), tb);
 				val_shape = { {N_VOID}, true };
 			} else {
-				continue;   // collector admits bool/int/real/array only
+				continue;   // collector admits bool/int/real/text/array
 			}
 			need_output_extern(setter, /*ret_ptr*/true,
 					   { { {N_VOID}, true },

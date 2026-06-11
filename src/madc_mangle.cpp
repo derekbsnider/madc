@@ -8,6 +8,8 @@
 
 #include "madc_mangle.h"
 #include <cstring>
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
+#include "datadef.h"
 
 // Length-prefixed source name: "Foo" → "3Foo"
 static std::string source_name(const std::string &name)
@@ -970,6 +972,23 @@ std::string std_string_type()
 {
 	return "std::__cxx11::basic_string<char,std::char_traits<char>,"
 	       "std::allocator<char>>";
+}
+
+// Marshalling-boundary predicate (declared on DataDef in datadef.h, defined
+// HERE because the mangler is the one permitted home for std:: symbol
+// knowledge): is this type the class carrying madc::value's text kind?
+// Spellings compare through the Itanium encoding, never raw strings:
+// spacing/substitution variants normalize, while genuinely distinct ABI
+// types (pre-C++11 std::basic_string vs std::__cxx11::) stay distinct.
+bool DataDef::marshals_value_text() const
+{
+	const std::string &spelling =
+		canonical_cpp_spelling.empty() ? name : canonical_cpp_spelling;
+	if (spelling.empty())
+		return false;
+	static const std::string text_carrier =
+		itanium_encode_type_sub(std_string_type());
+	return itanium_encode_type_sub(spelling) == text_carrier;
 }
 
 std::string std_vector_type(const std::string &elem)

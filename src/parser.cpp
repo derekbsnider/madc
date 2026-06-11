@@ -802,6 +802,16 @@ void *__madc_scope_set_array_runtime(void *ctx, const char *key, void *value)
     return ctx;
 }
 
+// `str` is the captured local's address; the host reads the std::string
+// by pointer and copies it into the context (read-only snapshot).
+void *__madc_scope_set_string_runtime(void *ctx, const char *key, void *str)
+{
+    ns_common::value_object_for_write(*(madc::value *)ctx,
+				      "__madc_scope_set_string")
+	[std::string(key)] = madc::value(*(const std::string *)str);
+    return ctx;
+}
+
 }
 
 static bool is_restrict_token(TokenBase *tb)
@@ -8455,6 +8465,7 @@ bool is_runtime_eval_scope_supported_variable(Variable *var)
     return raw == DataType::dtBOOL
 	|| var->type->is_integer()
 	|| var->type->is_real()
+	|| var->type->marshals_value_text()
 	|| raw == DataType::dtARRAY;
 }
 

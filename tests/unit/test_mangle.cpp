@@ -2,6 +2,8 @@
 #include "doctest.h"
 
 #include "madc_mangle.h"
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
+#include "datadef.h"
 
 TEST_SUITE("Itanium type encoding") {
 
@@ -226,6 +228,38 @@ TEST_SUITE("Itanium substitution: madc::value (the unified script array)") {
 		CHECK(itanium_mangle_nested_sub({"madc"}, "eval_int_ctx",
 		                                {std_string_type() + "&", "madc::value&"})
 		      == "_ZN4madc12eval_int_ctxERNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERNS_5valueE");
+	}
+}
+
+TEST_SUITE("marshalling-boundary text-carrier predicate") {
+
+	// DataDef::marshals_value_text() lives in madc_mangle.cpp (the one
+	// permitted home for std:: symbol knowledge); spellings compare
+	// through the Itanium encoding, never raw string compares.
+
+	TEST_CASE("spellings compare via Itanium encoding") {
+		DataDef cxx11("basic_string", 32, DataType::dtVOID);
+		cxx11.canonical_cpp_spelling = std_string_type();
+		CHECK(cxx11.marshals_value_text());
+
+		// template-arg spacing is a spelling variant, not a type
+		DataDef spaced("basic_string", 32, DataType::dtVOID);
+		spaced.canonical_cpp_spelling =
+			"std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char>>";
+		CHECK(spaced.marshals_value_text());
+
+		// pre-C++11-ABI std::basic_string (no __cxx11) is a DIFFERENT
+		// type (encodes Ss, not NSt7__cxx11...): must NOT match
+		DataDef oldabi("basic_string", 32, DataType::dtVOID);
+		oldabi.canonical_cpp_spelling =
+			"std::basic_string<char,std::char_traits<char>,std::allocator<char>>";
+		CHECK_FALSE(oldabi.marshals_value_text());
+
+		DataDef other("Foo", 8, DataType::dtVOID);
+		CHECK_FALSE(other.marshals_value_text());
+
+		DataDef unnamed("", 0, DataType::dtVOID);
+		CHECK_FALSE(unnamed.marshals_value_text());
 	}
 }
 

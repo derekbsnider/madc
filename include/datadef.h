@@ -105,6 +105,14 @@ public:
     // namespace/template declarations so a bodyless C++ method can bind to its
     // external mangled symbol without class-name tests.
     std::string	 canonical_cpp_spelling;
+    // Marshalling-boundary predicate (libmadc value kinds): true when this
+    // type is the class that carries madc::value's TEXT kind, i.e. a value
+    // of it marshals to kind::string at the libmadc boundary (runtime-eval
+    // scope capture now; string call marshalling next). Defined in
+    // src/madc_mangle.cpp — the one permitted home for std:: symbol
+    // knowledge (scripts/check-no-std-hardcoding.sh); callers ask the
+    // marshalling question and never name the type.
+    bool marshals_value_text() const;
     DataDef() { size = 0; _type = 0; }
     DataDef(std::string n, size_t s, DataType d) { name = n; size = s; _type = (uint32_t)d; }
     virtual ~DataDef() {}
