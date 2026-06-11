@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### MIR fork: upstream PRs #432/#433/#434 adopted (2026-06-11, `feature/mir-pr430-claude`)
+
+- **Full upstream-activity sweep** (user-requested) found fresh fix-PRs for
+  the three open issues queued for fixing; all three cherry-picked (fork
+  `cc74fef` → `9ab36fb`, `MIR_COMMIT` bumped same-commit): **#432** — GVN
+  store-forwarding to a narrower typed reload lost the load's sign/zero
+  extension (reproduced on the fork: gen O2/O3 returned 4294967023 for
+  -273; independently root-caused to the same site before the sweep found
+  the PR); **#433** — jump_opt freed labels referenced only by
+  `laddr`/lref (half already carried via the theMackabu lref loop —
+  valgrind pre/post control showed no behavioral exposure on our fork; the
+  new `MIR_LADDR` scan is defensive completion); **#434** — aarch64
+  `% 16`-vs-round-up-to-16 in `va_arg_builtin` + `_MIR_get_ff_call`
+  (untestable here; serves the ARM64 track). PRs #420/#418 from the sweep
+  were already carried via the 2026-06-02 theMackabu backport. Remaining
+  upstream items triaged in `docs/parity/mir-fork-community-patches.md`
+  (#426 lref-vs-MIR_read noted as the reason `issue424.mir` can't load via
+  the binary round-trip — pre-existing, in-process JIT unaffected).
+- Gates: MIR `make test` exit 0 (+3 new regression tests, 1124/2248 +
+  1128/2256), fulltest **572 / 0 / 0 / 18**, torture O1 failset
+  **byte-identical**, **O2 still = O1 byte-identical**, SMAUG soak green.
+
 ### MIR-gen O2 reaches O1 parity — five c2mir/MIR bugs fixed (2026-06-11, `feature/mir-pr430-claude`)
 
 - **All 8 O2-only gcc.c-torture failures root-caused and fixed** (fork

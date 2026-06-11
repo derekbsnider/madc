@@ -177,6 +177,47 @@ newly exposed) and then **root-caused to FIVE distinct bugs, all fixed** (fork
 longer behind a known-broken gate; whether O2 *beats* O1 in code quality/perf is a
 separate (open) question.
 
+## Upstream activity sweep + PR #432/#433/#434 adoption (2026-06-11, round 2)
+
+A full sweep of recent upstream `vnmakarov/mir` activity (user-requested) found three
+fresh fix-PRs by cyanogilvie (same author as #430) for the three open issues we were
+about to fix ourselves — all three **ADOPTED as cherry-picks** (fork `cc74fef` →
+`9ab36fb`, pin bumped same-commit):
+
+- **PR #432 → issue #423** (`3de6283`): GVN store-forwarding to a *narrower typed
+  reload* forwarded the raw 64-bit stored register, losing the load's sign/zero
+  extension (32-bit ops leave upper halves undefined in MIR). Reproduced on the fork
+  (gen O2/O3 returned 4294967023 for -273) and root-caused independently before the
+  sweep found the PR — the PR's fix materializes the forward temp with the matching
+  EXT insn. Verified: the C repro and `c-tests/mir/issue423.mir` both pass.
+- **PR #433 → issue #424** (`290024c`): jump_opt could free labels referenced only by
+  `laddr` insns / lref data; `gen_setup_lrefs` then read freed insns. Comment-only
+  conflict with our existing theMackabu lref-preservation loop (the fork already
+  carried HALF of this fix — that's why a valgrind pre/post control showed our fork
+  was NOT behaviorally exposed by the issue's C repro). The new `MIR_LADDR` scan is
+  defensive completion for direct-MIR producers emitting laddr without lref data.
+  Note: `c-tests/mir/issue424.mir` passes via the suite runner but cannot LOAD via
+  the m2b → mir-bin-run binary round-trip — that is upstream **issue #426** (label
+  refs break `MIR_read`), pre-existing and unchanged on our fork.
+- **PR #434 → issue #431** (`9ab36fb`): aarch64 `(x+15) % 16` where round-up-to-16 was
+  intended, in `va_arg_builtin` + `_MIR_get_ff_call` (long double past the 8
+  v-registers crashed / corrupted stack args). Untestable on this x86-64 box;
+  mechanically obvious, serves the ARM64 track (Track 6.1). Its `va-ld-stack.c` test
+  passes on x86-64 too.
+
+Also checked from the sweep: **PR #420** (vararg RET error-path use-after-NULL) and
+**PR #418** (`MIR_NO_GEN_DEBUG` guards) — **both already carried** by the fork via the
+2026-06-02 theMackabu backport (`23fd2678f` adoptions). Remaining upstream items noted
+for the future, none urgent for us: **#426** (lref vs `MIR_read` — would matter if madc
+ever ships computed-goto code through saved .bmir; in-process JIT unaffected), **#410**
+(`try_spilled_reg_mem` error at O1 — could not reproduce locally, no reducer in issue),
+**#429** (ARM64 by-value struct >16B — ARM64 track), **#394** (`_Thread_local` feature
+gap), **#411** (c2mir memory usage on sqlite3 — perf).
+
+Gates (round 2): MIR `make test` exit 0 with the three new regression tests counted in
+(1124/2248 interp, 1128/2256 gen), fulltest 572/0/0/18, torture O1 failset
+byte-identical, **O2 still = O1 byte-identical** (parity preserved), SMAUG soak green.
+
 ## Open threads (the actually-valuable derived work)
 
 1. ~~**Make madc-O2 viable**~~ **DONE 2026-06-11** (see the O2-viability campaign above):
