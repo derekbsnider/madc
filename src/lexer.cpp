@@ -2052,7 +2052,11 @@ TokenBase *Program::_getToken()
 	    if (source.peek() == '=')
 	    {
 		source.get();
-		if (source.peek() == '=') { source.get(); return new Token3Eq; } // ===
+		// === is the madc dialect's strict-equality token. Below the
+		// std floor the sequence lexes as == then = — C/C++ sources
+		// keep their conforming syntax error.
+		if (source.peek() == '=' && language_std == STD_MADC)
+		    { source.get(); return new Token3Eq; }		// ===
 		return new TokenEquals;					// ==
 	    }
 	    if (source.peek() == '>') { source.get(); return new TokenFatArrow; } // =>
@@ -2713,7 +2717,12 @@ TokenBase *Program::_getToken()
 	case ']': return new TokenClSqr;
 	case '~': return new TokenBnot;
 	case '!': if (source.peek() != '=') return new TokenLnot;		// !
-	    source.get(); return new TokenNotEq;				// !=
+	    source.get();
+	    // !== is the madc dialect's strict not-equal; below the floor it
+	    // lexes as != then = (conforming syntax error).
+	    if (source.peek() == '=' && language_std == STD_MADC)
+		{ source.get(); return new Token3NotEq; }		// !==
+	    return new TokenNotEq;					// !=
 	case '&':
 	    if (source.peek() == '&') { source.get(); return new TokenLand;   }  // &&
 	    if (source.peek() == '=') { source.get(); return new TokenBandEq; }  // &=

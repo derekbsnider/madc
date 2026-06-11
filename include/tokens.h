@@ -51,7 +51,8 @@ enum class TokenID {
   tkFatArrow, tkMATCH,    // => (rust::match arm) and the match statement itself
   tkUNION, tkNEW, tkDELETE,
   tkDynamicCast, tkTypeid,    // RTTI (S5): dynamic_cast<T*>(e), typeid(e|T)
-  tkObjTemp                   // functional construction temporary: T(args)
+  tkObjTemp,                  // functional construction temporary: T(args)
+  tk3NotEq                    // !== strict not-equal (STD_MADC dialect)
 };
 
 enum class TokenAssoc {
@@ -702,6 +703,18 @@ public:
     virtual inline int precedence() const { return 7; }
     inline int64_t ioperate() const { return (left->datatype() == right->datatype() && left->ival() == right->ival()) ? 1 : 0; }
     inline double foperate() const { return (left->datatype() == right->datatype() && left->dval() == right->dval()) ? 1 : 0; }
+};
+
+// comparison operator !== (not exactly equal to) — !(===)
+class Token3NotEq: public TokenMultiOp
+{
+public:
+    Token3NotEq() : TokenMultiOp("!==") {}
+    virtual TokenID id() const { return TokenID::tk3NotEq; }
+    virtual TokenBase *clone() { return new Token3NotEq(); }
+    virtual inline int precedence() const { return 7; }
+    inline int64_t ioperate() const { return (left->datatype() == right->datatype() && left->ival() == right->ival()) ? 0 : 1; }
+    inline double foperate() const { return (left->datatype() == right->datatype() && left->dval() == right->dval()) ? 0 : 1; }
 };
 
 // comparison operator != (not equal to)

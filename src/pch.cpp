@@ -148,6 +148,7 @@ static TokenBase *token_from_id(TokenID ti)
     case TokenID::tkAssign: return new TokenAssign();
     case TokenID::tkEquals: return new TokenEquals();
     case TokenID::tk3Eq: return new Token3Eq();
+    case TokenID::tk3NotEq: return new Token3NotEq();
     case TokenID::tkPlus: return new TokenAdd();
     case TokenID::tkInc: return new TokenInc();
     case TokenID::tkSub: return new TokenSub();

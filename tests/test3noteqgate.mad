@@ -1,0 +1,8 @@
+// !== is a madc-dialect (STD_MADC) token only. Below the std floor the
+// sequence lexes as `!=` then `=` — a conforming syntax error. See .expect_err.
+int main()
+{
+	int a = 5, b = 6;
+	int r = (a !== b);
+	return r;
+}
