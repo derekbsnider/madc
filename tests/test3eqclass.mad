@@ -1,0 +1,33 @@
+// Strict equality on class operands: the domain rule strict-compares
+// through the class's operator== when no user operator=== exists.
+// std::string: a literal enters the string domain (spec §2.2).
+#include <cstdio>
+#include <string>
+using namespace std;
+
+class Plain {
+public:
+	int v;
+	Plain(int x) : v(x) {}
+	bool operator==(const Plain &o) const { return v == o.v; }
+};
+
+int main()
+{
+	Plain p1(7);
+	Plain p2(7);
+	Plain p3(8);
+	printf("p_seq=%d\n", p1 === p2);	// 1: domain rule via operator==
+	printf("p_seq2=%d\n", p1 === p3);	// 0
+	printf("p_neq=%d\n", p1 !== p2);	// 0: !(===)
+
+	string s("x");
+	string s2("x");
+	string s3("y");
+	printf("s_seq=%d\n", s === s2);		// 1
+	printf("s_seq2=%d\n", s === s3);	// 0
+	printf("s_lit=%d\n", s === "x");	// 1: literal enters the domain
+	printf("s_lit2=%d\n", s === "y");	// 0
+	printf("s_neq=%d\n", s !== "x");	// 0
+	return 0;
+}
