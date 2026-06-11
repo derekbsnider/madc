@@ -1252,6 +1252,14 @@ public:
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
 					       const std::vector<const DataDef *> &argtypes);
+    // A parsed CONCRETE free-operator function viable for the operand types:
+    // ranks the union of every "::"+opname-suffixed overload set (all
+    // namespaces + the global "" key). NULL when none binds.
+    Variable *find_free_operator_function(const std::string &opname,
+					  const std::vector<const DataDef *> &argtypes);
+    // The DataDef an operand denotes for free-operator overload ranking
+    // (reference-transparent via operand_object_class).
+    DataDef *free_operator_arg_datadef(TokenBase *operand);
     // Mid-parse arity-check deferral: true when the call's namespace overload
     // set has a member accepting more than argc args (or a retained fn
     // template that could instantiate one) — the tail re-rank decides then.

@@ -6408,6 +6408,12 @@ static const char *object_operator_symbol(TokenID id)
 	case TokenID::tkDec: return "--";
 	case TokenID::tkBSL: return "<<";
 	case TokenID::tkBSR: return ">>";
+	case TokenID::tkEquals: return "==";
+	case TokenID::tkNotEq: return "!=";
+	case TokenID::tkLT: return "<";
+	case TokenID::tkGT: return ">";
+	case TokenID::tkLE: return "<=";
+	case TokenID::tkGE: return ">=";
 	default: return NULL;
     }
 }
@@ -6499,6 +6505,25 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to)
     fprintf(stderr, "[FREEOP] try %s lc=%s rc=%s\n", opname.c_str(),
 	    lc ? lc->name.c_str() : "-", rc ? rc->name.c_str() : "-");
 #endif
+    // A parsed CONCRETE free operator covering the operand pair (a hoisted
+    // hidden friend, a user-written free operator function, or a prior
+    // instantiation) is preferred over instantiating a retained template
+    // ([over.match.best]: a non-template beats a template specialization).
+    {
+	std::vector<const DataDef *> at;
+	at.push_back(free_operator_arg_datadef(to->left));
+	at.push_back(free_operator_arg_datadef(to->right));
+	if ( Variable *win = find_free_operator_function(opname, at) )
+	{
+	    TokenCallFunc *tc = new TokenCallFunc(*win);
+	    tc->file = to->file;
+	    tc->line = to->line;
+	    tc->column = to->column;
+	    tc->parameters.push_back(to->left);
+	    tc->parameters.push_back(to->right);
+	    return tc;
+	}
+    }
     Variable *callee = NULL;
     if ( !instantiate_free_operator_template(opname, to->left, to->right,
 					     &callee) || !callee )
@@ -6675,6 +6700,60 @@ std::string Program::peek_param_list_spelling()
     return spelling;
 }
 
+// Rank parsed function-overload candidates against a call's argument types via
+// the shared generic score_arg_to_param ranking (the ONE ranking ctor /
+// member-operator / namespace-call selection all use). Returns the winning
+// Variable, or NULL when no candidate is viable.
+static Variable *rank_fn_overload_candidates(
+	const std::vector<Program::NamespaceFnOverload> &cands,
+	const std::vector<const DataDef *> &argtypes)
+{
+    Variable *best = NULL;
+    int best_score = -1;
+    for ( const Program::NamespaceFnOverload &e : cands )
+    {
+	FuncDef *fd = e.var ? dynamic_cast<FuncDef *>(e.var->type) : NULL;
+	if ( !fd )
+	    continue;
+	size_t pn = fd->parameters.size();
+	// Default arguments make the function callable with
+	// [required..total] args (FuncDef::required_param_count).
+	if ( argtypes.size() < fd->required_param_count()
+	  || argtypes.size() > pn )
+	{
+#if MADC_DEBUG_FNTPL
+	    std::cerr << "FNTPL rank cand=" << e.var->name
+		      << " ARITY-SKIP pn=" << pn
+		      << " req=" << fd->required_param_count()
+		      << " argc=" << argtypes.size() << std::endl;
+#endif
+	    continue;
+	}
+	int total = 0;
+	bool ok = true;
+	for ( size_t i = 0; i < argtypes.size(); i++ )
+	{
+	    bool refp = i < fd->ref_params.size() && fd->ref_params[i];
+	    int s = score_arg_to_param(argtypes[i], fd->parameters[i], refp);
+#if MADC_DEBUG_FNTPL
+	    std::cerr << "FNTPL rank cand=" << e.var->name << " arg" << i
+		      << " a=" << (argtypes[i] ? argtypes[i]->name : "?")
+		      << " p="
+		      << (fd->parameters[i] ? fd->parameters[i]->name : "?")
+		      << " refp=" << refp << " s=" << s << std::endl;
+#endif
+	    if ( s < 0 ) { ok = false; break; }
+	    total += s;
+	}
+	if ( ok && total > best_score )
+	{
+	    best_score = total;
+	    best = e.var;
+	}
+    }
+    return best;
+}
+
 Variable *Program::find_namespace_function_overload(const std::string &ns,
 		const std::string &name,
 		const std::vector<const DataDef *> &argtypes)
@@ -6691,55 +6770,50 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
 #endif
 	return NULL;
     }
-    Variable *best = NULL;
-    int best_score = -1;
-    for ( NamespaceFnOverload &e : oi->second )
-    {
-	FuncDef *fd = e.var ? dynamic_cast<FuncDef *>(e.var->type) : NULL;
-	if ( !fd )
-	    continue;
-	size_t pn = fd->parameters.size();
-	// Default arguments make the function callable with
-	// [required..total] args (FuncDef::required_param_count).
-	if ( argtypes.size() < fd->required_param_count()
-	  || argtypes.size() > pn )
-	{
-#if MADC_DEBUG_FNTPL
-	    std::cerr << "FNTPL rank " << ns << "::" << name << " cand="
-		      << e.var->name << " ARITY-SKIP pn=" << pn
-		      << " req=" << fd->required_param_count()
-		      << " argc=" << argtypes.size() << std::endl;
-#endif
-	    continue;
-	}
-	int total = 0;
-	bool ok = true;
-	for ( size_t i = 0; i < argtypes.size(); i++ )
-	{
-	    bool refp = i < fd->ref_params.size() && fd->ref_params[i];
-	    int s = score_arg_to_param(argtypes[i], fd->parameters[i], refp);
-#if MADC_DEBUG_FNTPL
-	    std::cerr << "FNTPL rank " << ns << "::" << name << " cand="
-		      << e.var->name << " arg" << i << " a="
-		      << (argtypes[i] ? argtypes[i]->name : "?") << " p="
-		      << (fd->parameters[i] ? fd->parameters[i]->name : "?")
-		      << " refp=" << refp << " s=" << s << std::endl;
-#endif
-	    if ( s < 0 ) { ok = false; break; }
-	    total += s;
-	}
-	if ( ok && total > best_score )
-	{
-	    best_score = total;
-	    best = e.var;
-	}
-    }
+    Variable *best = rank_fn_overload_candidates(oi->second, argtypes);
 #if MADC_DEBUG_FNTPL
     std::cerr << "FNTPL rank " << ns << "::" << name << " WINNER="
-	      << (best ? best->name : "(none)") << " score=" << best_score
-	      << std::endl;
+	      << (best ? best->name : "(none)") << std::endl;
 #endif
     return best;
+}
+
+// A parsed CONCRETE free-operator function viable for the operand types: scan
+// every registered overload set whose key ends in "::" + opname — every
+// namespace plus the global scope's "" key, the same suffix walk
+// instantiate_free_operator_template uses for retained templates — and rank
+// all entries together. Hoisted hidden friends, user-written free operators,
+// and prior template instantiations all live in these sets.
+Variable *Program::find_free_operator_function(const std::string &opname,
+		const std::vector<const DataDef *> &argtypes)
+{
+    const std::string suffix = "::" + opname;
+    std::vector<NamespaceFnOverload> cands;
+    for ( std::map<std::string, std::vector<NamespaceFnOverload>>::iterator mi =
+	      namespace_fn_overload_sets.begin();
+	  mi != namespace_fn_overload_sets.end(); ++mi )
+    {
+	const std::string &key = mi->first;
+	if ( key.size() < suffix.size()
+	  || key.compare(key.size() - suffix.size(), suffix.size(), suffix) )
+	    continue;
+	cands.insert(cands.end(), mi->second.begin(), mi->second.end());
+    }
+    if ( cands.empty() )
+	return NULL;
+    return rank_fn_overload_candidates(cands, argtypes);
+}
+
+// The DataDef an operand denotes for free-operator overload ranking: a
+// reference operand ranks as the referenced class (operand_object_class —
+// C++ reference transparency), everything else as its expression datadef.
+DataDef *Program::free_operator_arg_datadef(TokenBase *operand)
+{
+    if ( !operand )
+	return NULL;
+    if ( DataDefCLASS *oc = operand_object_class(operand) )
+	return oc;
+    return operand->datadef();
 }
 
 TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
@@ -29116,9 +29190,26 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
     }
     else if ( !qualified_owner_class && !is_c_mode()
-	   && parse_id.compare(0, 8, "operator") == 0
-	   && findVariable(parse_id) )
-	parse_id = unique_overload_symbol(parse_id);
+	   && current_linkage == LinkageSpec::Cpp
+	   && source_id.compare(0, 8, "operator") == 0 )
+    {
+	// C++ free-OPERATOR overloading at GLOBAL scope: the same per-overload
+	// Variable/FuncDef model as namespace functions, registered under the
+	// empty-namespace key ("::operatorX"), so operator-expression dispatch
+	// (find_free_operator_function) can enumerate and rank the parsed set.
+	ns_overload_tracked = true;
+	ns_overload_spelling = peek_param_list_spelling();
+	std::vector<NamespaceFnOverload> &ovset =
+	    namespace_fn_overload_sets["::" + source_id];
+	Variable *same = NULL;
+	for ( size_t i = 0; i < ovset.size(); ++i )
+	    if ( ovset[i].param_spelling == ns_overload_spelling )
+		same = ovset[i].var;
+	if ( same )
+	    parse_id = same->name;
+	else if ( findVariable(parse_id) )
+	    parse_id = unique_overload_symbol(parse_id);
+    }
 
     bool qualified_static_member = false;
     if ( qualified_owner_class && !qualified_member_name.empty() )
@@ -29148,7 +29239,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
     }
 
-    if ( namespace_function )
+    if ( namespace_function || ns_overload_tracked )
     {
 	Variable *ns_var = tkProgram ? tkProgram->findVariable(parse_id) : NULL;
 #if MADC_DEBUG_FNTPL
@@ -29162,7 +29253,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	if ( ns_var )
 	{
 	    FuncDef *fd = dynamic_cast<FuncDef *>(ns_var->type);
-	    if ( fd && fd->declaration_only
+	    if ( namespace_function && fd && fd->declaration_only
 	      && current_linkage == LinkageSpec::Cpp )
 		ns_var->storage_alias_name =
 		    namespace_cpp_function_symbol(current_namespace, source_id, fd);
@@ -29207,9 +29298,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 				ofd->local_emit_name = ovset[i].var->name;
 			}
 	    }
-	    variable_map_t &ns = namespace_map[current_namespace];
-	    ns[source_id] = ns_var;
-	    ns.erase(parse_id);
+	    if ( namespace_function )
+	    {
+		variable_map_t &ns = namespace_map[current_namespace];
+		ns[source_id] = ns_var;
+		ns.erase(parse_id);
+	    }
 	}
     }
 

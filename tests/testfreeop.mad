@@ -1,0 +1,21 @@
+// Free (non-member) operator functions dispatch by overload resolution:
+// a parsed global `operator<` / `operator==` with a body is found and
+// called for class operands (the same family hoisted hidden friends ride).
+#include <cstdio>
+class A {
+public:
+	int v;
+	A(int x) : v(x) {}
+};
+bool operator<(A a, int b) { return a.v < b; }
+bool operator==(A a, A b) { return a.v == b.v; }
+int main()
+{
+	A a(-1);
+	A b(-1);
+	if (a < 0)
+		printf("less\n");
+	if (a == b)
+		printf("eq\n");
+	return 0;
+}
