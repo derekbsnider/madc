@@ -339,6 +339,12 @@ class CirBuilder {
 	// True when `arg` is `base[i]` where base is a raw class pointer or fixed
 	// class array. The element is reached by the address `&base[i]`.
 	static bool class_array_subscript_is_object(TokenBase *arg);
+	// The class an OPERAND expression denotes for operator/overload
+	// resolution: its datadef's class, or — for a reference variable
+	// (vfREFERENCE, stored as DataDefPTR(T)) — the referenced class. A plain
+	// `T*` pointer operand stays NULL: only the reference representation is
+	// transparent (pointer operands keep pointer semantics).
+	DataDefCLASS *operand_object_class(TokenBase *t);
 
 	// Internal: set position on a node in c2mir's node_positions VARR
 	void set_pos(cir_node *cn, const char *file, int line, int col);

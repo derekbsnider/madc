@@ -6389,6 +6389,29 @@ static const char *object_operator_symbol(TokenID id)
     }
 }
 
+// The class-object DataDef an operand expression DENOTES for operator /
+// overload resolution. A reference operand IS the referenced object in every
+// expression context (C++ semantics); madc stores both a reference-typed
+// expression (DataDefREF) and a reference variable (`const A &p`, vfREFERENCE
+// + DataDefPTR(A)) as pointers, so resolution must unwrap them. A plain `A*`
+// pointer operand stays NULL — pointer operands keep pointer semantics.
+DataDefCLASS *Program::operand_object_class(TokenBase *operand)
+{
+    if ( !operand )
+	return NULL;
+    DataDef *dd = operand->datadef();
+    if ( DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd) )
+	return c;
+    if ( dd && dd->is_reference() )
+	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+	    return dynamic_cast<DataDefCLASS *>(rp->base_type);
+    TokenVar *tv = dynamic_cast<TokenVar *>(operand);
+    if ( tv && (tv->var.flags & vfREFERENCE) )
+	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tv->var.type) )
+	    return dynamic_cast<DataDefCLASS *>(rp->base_type);
+    return NULL;
+}
+
 // Type an operator expression whose left operand is a class object that declares
 // the matching operator, using that operator's return type. Without this,
 // object operators report the default arithmetic datadef, so copy-init ctor
@@ -6400,11 +6423,10 @@ void Program::resolve_object_operator_type(TokenOperator *to)
     bool postfix = unary && to->left != NULL;
     TokenBase *operand = unary ? (postfix ? to->left : to->right) : to->left;
     if ( !operand ) return;
-    DataDefCLASS *lc = dynamic_cast<DataDefCLASS *>(operand->datadef());
+    DataDefCLASS *lc = operand_object_class(operand);
     if ( !lc && unary )
 	return;
-    if ( !lc && (!to->right
-	      || !dynamic_cast<DataDefCLASS *>(to->right->datadef())) )
+    if ( !lc && (!to->right || !operand_object_class(to->right)) )
 	return;	// neither side is a class object
     const char *opsym = object_operator_symbol(to->id());
     if ( !opsym )
@@ -6438,8 +6460,8 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to)
     const char *opsym = object_operator_symbol(to->id());
     if ( !opsym )
 	return NULL;
-    DataDefCLASS *lc = dynamic_cast<DataDefCLASS *>(to->left->datadef());
-    DataDefCLASS *rc = dynamic_cast<DataDefCLASS *>(to->right->datadef());
+    DataDefCLASS *lc = operand_object_class(to->left);
+    DataDefCLASS *rc = operand_object_class(to->right);
     if ( !lc && !rc )
 	return NULL;
     std::string opname = std::string("operator") + opsym;
@@ -6498,7 +6520,7 @@ DataDef *Program::free_binary_operator_return_class(DataDefCLASS *lc,
 {
     if ( !lc || !right || free_operator_overloads.empty() )
 	return NULL;
-    DataDefCLASS *rc = dynamic_cast<DataDefCLASS *>(right->datadef());
+    DataDefCLASS *rc = operand_object_class(right);
     if ( !rc )
 	return NULL;     // the exported by-value set is class-by-const-ref both sides
     std::string lhead = template_head_component(lc->canonical_cpp_spelling.empty()
@@ -6541,9 +6563,9 @@ DataDef *Program::free_binary_operator_return_class_nonclass_lhs(
 {
     if ( !left || !right || free_operator_overloads.empty() )
 	return NULL;
-    DataDefCLASS *rc = dynamic_cast<DataDefCLASS *>(right->datadef());
+    DataDefCLASS *rc = operand_object_class(right);
     DataDef *ld = left->datadef();
-    if ( !rc || !ld || dynamic_cast<DataDefCLASS *>(ld) )
+    if ( !rc || !ld || operand_object_class(left) )
 	return NULL;	// class-lhs rides the main path
     std::string rhead = template_head_component(rc->canonical_cpp_spelling.empty()
 						? rc->name : rc->canonical_cpp_spelling);
@@ -24045,6 +24067,11 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	DataDef *arg_core = arg_dd;
 	if ( arg_core->is_reference() )
 	    arg_core = static_cast<DataDefPTR *>(arg_core)->base_type;
+	// A reference VARIABLE operand (`const A &p`, vfREFERENCE +
+	// DataDefPTR(A)) denotes the referenced class, like the
+	// reference-typed expression above.
+	else if ( DataDefCLASS *oc = pgm.operand_object_class(operands[i]) )
+	    arg_core = oc;
 	std::vector<std::string> words;
 	fn_template_split_words(sp, words);
 	bool names_tp = false;

@@ -1,0 +1,28 @@
+// Reference parameters in operator expressions (item 2d): a `const
+// std::string &` operand must resolve operator overloads as the string class,
+// not as its pointer representation.
+//   - `cout << s` binds the FREE std::operator<<(ostream&, const string&)
+//     mangled-direct (madc used to bind the bogus member streambuf* overload).
+//   - `a + b` on two reference params instantiates/binds the free operator+
+//     (madc used to lower raw pointer arithmetic: "invalid operand types").
+#include <iostream>
+#include <string>
+
+void show(const std::string &s)
+{
+	std::cout << s << std::endl;
+}
+
+std::string join(const std::string &a, const std::string &b)
+{
+	return a + b;
+}
+
+int main()
+{
+	std::string x = "foo";
+	std::string y = "bar";
+	show(x);
+	show(join(x, y));
+	return 0;
+}

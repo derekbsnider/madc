@@ -1794,6 +1794,12 @@ public:
     // bound to the winning overload (same parameters / parent_expr / position).
     class TokenCallMethod *reselect_method_overload(class TokenCallMethod *tc,
 		Variable &recv, class DataDefCLASS *cls, const std::string &id);
+    // The class-object DataDef an operand expression DENOTES for operator /
+    // overload resolution: its datadef's class, or — for a reference-typed
+    // expression / a REFERENCE variable (`const A &p`, vfREFERENCE stored as
+    // DataDefPTR(A)) — the referenced class. A plain `A*` pointer operand
+    // stays NULL: only the reference representation is transparent here.
+    class DataDefCLASS *operand_object_class(TokenBase *operand);
     // Type an operator expression on a class-object operand with the operator's
     // return type (Part A of generic operator-overload support). No-op unless the
     // left operand is a class object declaring the matching binary operator, or

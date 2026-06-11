@@ -3171,6 +3171,21 @@ static DataDefCLASS *class_behind(DataDef *dd)
 	return NULL;
 }
 
+// A reference operand IS the referenced object in every expression context
+// (C++ semantics); madc stores a reference variable as DataDefPTR(T) +
+// vfREFERENCE, so resolution must unwrap it or the operand looks like a
+// pointer and no class operator/ctor overload ever matches.
+DataDefCLASS *CirBuilder::operand_object_class(TokenBase *t)
+{
+	if (!t) return NULL;
+	if (DataDefCLASS *c = as_class_instance(t->datadef()))
+		return c;
+	if (TokenVar *tv = dynamic_cast<TokenVar *>(t))
+		if (tv->var.flags & vfREFERENCE)
+			return class_behind(tv->var.type);
+	return NULL;
+}
+
 // True when a NAMED variable holds the object's address rather than the object
 // itself. For these the object address is the variable's value (`name`); for a
 // value object lvalue it is `&name`. This is the single addressing rule shared
@@ -5420,7 +5435,7 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	if (!m_prog || !top || !top->left || !top->right) return NULL;
 	// lcls may be NULL for the literal-lhs mixed shape (`"pre" + s`) —
 	// then the rhs must be the class operand (Pass 2b below).
-	if (!lcls && !as_class_instance(top->right->datadef())) return NULL;
+	if (!lcls && !operand_object_class(top->right)) return NULL;
 	if (m_prog->free_operator_overloads.empty()) return NULL;
 	auto mit = m_free_op_inst_by_call.find(top);
 	if (mit != m_free_op_inst_by_call.end()) return mit->second;
@@ -5445,7 +5460,14 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	};
 
 	// rhs argument type spelling (for matching the candidate's 2nd param).
+	// A reference rhs denotes the referenced class — without the unwrap the
+	// spelling is the pointer representation and no candidate ever matches
+	// (`cout << s` with a `const string &s` parameter bound the bogus
+	// member streambuf* overload).
 	DataDef *rhs_dd = top->right->datadef();
+	if (!as_class_instance(rhs_dd))
+		if (DataDefCLASS *rdc = operand_object_class(top->right))
+			rhs_dd = rdc;
 	std::string rhs_norm = norm_type_w2(datadef_cpp_spelling_w2(rhs_dd));
 
 	// member candidate's 2nd-parameter spelling (param 0 is __this): an
@@ -5799,7 +5821,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 {
 	if (!m_prog || top == NULL || !top->right) return NULL;
 	// NULL lcls = the literal-lhs mixed shape; the rhs must be the class.
-	if (!lcls && !as_class_instance(top->right->datadef())) return NULL;
+	if (!lcls && !operand_object_class(top->right)) return NULL;
 	if (m_prog->free_operator_overloads.empty()) return NULL;
 
 	// W2 manipulator: `os << endl` — the parser built a (0-arg) call node for
@@ -6076,13 +6098,11 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 {
 	if (!top || !top->left || !top->right) return NULL;
-	// The operator LHS must be a class object lvalue, not a pointer to one:
-	// `T s; s = x` is operator=, but `T *p; p = ...` is a plain pointer
-	// assignment.
-	// as_class_instance resolves an object class without unwrapping pointers;
-	// class_behind would treat `T*` as an object and mis-route pointer
-	// assignment through operator=.
-	DataDefCLASS *lcls = as_class_instance(top->left->datadef());
+	// The operator LHS must be a class object lvalue (or a reference to one),
+	// not a pointer to one: `T s; s = x` is operator=, but `T *p; p = ...`
+	// is a plain pointer assignment. operand_object_class resolves the class
+	// without unwrapping plain pointers (only the reference representation).
+	DataDefCLASS *lcls = operand_object_class(top->left);
 	if (!lcls && class_subscript_is_object(top->left)) {
 		TokenSubscript *lsub = dynamic_cast<TokenSubscript *>(top->left);
 		DataDefCLASS *ccls = lsub ? class_behind(lsub->object.type) : NULL;
@@ -6092,14 +6112,9 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 		if (ofd) lcls = class_behind(&ofd->returns);
 	}
 	if (!lcls) {
-		TokenVar *rtv = dynamic_cast<TokenVar *>(top->left);
-		if (rtv && (rtv->var.flags & vfREFERENCE))
-			lcls = class_behind(rtv->var.type);
-	}
-	if (!lcls) {
 		// `"pre" + s`: a non-class lhs with a CLASS rhs — only the free
 		// operator set's mixed shape can bind (no member candidate).
-		if (!as_class_instance(top->right->datadef())) return NULL;
+		if (!operand_object_class(top->right)) return NULL;
 		const char *opsym0 = binop_overload_symbol(top->id());
 		if (!opsym0[0]) return NULL;
 		return try_free_operator_call(top, NULL,
@@ -9448,7 +9463,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					TokenOperator *iop =
 						dynamic_cast<TokenOperator *>(ctor_args[0]);
 					DataDefCLASS *ilcls = (iop && iop->left)
-						? as_class_instance(iop->left->datadef())
+						? operand_object_class(iop->left)
 						: NULL;
 					const char *iopsym = iop
 						? binop_overload_symbol(iop->id()) : "";
