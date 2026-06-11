@@ -1475,6 +1475,20 @@ public:
     bool is_c_mode() const { return language_std >= STD_C89 && language_std <= STD_C23; }
     bool is_cpp_mode() const { return language_std >= STD_CPP98 && language_std <= STD_CPP26; }
     bool auto_includes_enabled() const { return language_std == STD_MADC; }
+    // The __cplusplus value the selected --std= mandates (C++26 uses g++'s
+    // provisional 202400L until the standard fixes one).
+    const char *cplusplus_value_for_std() const {
+	switch ( language_std ) {
+	case STD_CPP98: case STD_CPP03: return "199711L";
+	case STD_CPP11: return "201103L";
+	case STD_CPP14: return "201402L";
+	case STD_CPP17: return "201703L";
+	case STD_CPP20: return "202002L";
+	case STD_CPP23: return "202302L";
+	case STD_CPP26: return "202400L";
+	default:        return "201703L";
+	}
+    }
     bool set_language_standard(const std::string &standard);
     bool set_language_standard_option(const std::string &arg);
     bool aot_tracking;

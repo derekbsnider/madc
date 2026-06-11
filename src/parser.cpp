@@ -1752,14 +1752,39 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
     if ( !tb || tb->type() != TokenType::ttIdentifier || !peekToken() || peekToken()->id() != TokenID::tkNS )
 	return NULL;
 
+    // Scope-relative qualification: inside `namespace std`, `__cmp_cat::type`
+    // names std::__cmp_cat::type (C++ searches the enclosing-namespace chain
+    // before the global scope). resolve_namespace_name_in_scope falls back to
+    // the absolute name itself, preserving the old absolute-only behavior.
     std::string ns_name = ((TokenIdent *)tb)->str;
+    std::string resolved_ns = resolve_namespace_name_in_scope(ns_name);
+    if ( !resolved_ns.empty() )
+	ns_name = resolved_ns;
+
+    // Extend through nested qualifiers (`a::b::member`): tokens[0] is the '::'
+    // after tb; each ident+'::' pair deepens the namespace while the deeper
+    // path names a known namespace. tokens[j] ends as the member candidate.
+    size_t j = 1;
+    while ( j + 1 < tokens.size()
+	 && tokens[j] && is_contextual_identifier_token(tokens[j])
+	 && tokens[j + 1] && tokens[j + 1]->id() == TokenID::tkNS )
+    {
+	std::string deeper = ns_name + "::"
+			   + contextual_identifier_name(tokens[j]);
+	if ( namespace_datatype_map.find(deeper) == namespace_datatype_map.end()
+	  && namespace_map.find(deeper) == namespace_map.end() )
+	    break;
+	ns_name = deeper;
+	j += 2;
+    }
+
     namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
     if ( nti == namespace_datatype_map.end() )
 	return NULL;
 
-    if ( tokens.size() < 2 )
+    if ( j >= tokens.size() )
 	return NULL;
-    TokenBase *member_tb = tokens[1];
+    TokenBase *member_tb = tokens[j];
     if ( !member_tb )
 	return NULL;
     std::string member_name;
@@ -1776,10 +1801,8 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
 	return NULL;
 
     if ( consume_tokens )
-    {
-	nextToken(); // consume ::
-	nextToken(); // consume member
-    }
+	for ( size_t k = 0; k <= j; ++k )
+	    nextToken(); // each qualifier's '::' (+ ident) and the member
     return dti->second;
 }
 
@@ -10178,20 +10201,41 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 
     std::string name = contextual_identifier_name(head);
     // Scoped-enum value `Tag::Value` (e.g. inside a cast `(int)Size::Large`).
-    // The enumerators live in the tag's pseudo-namespace (see TokenENUM::parse).
+    // The enumerators live in the tag's pseudo-namespace (see TokenENUM::parse)
+    // — QUALIFIED by the declaring namespace, so resolve scope-relatively and
+    // walk nested qualifiers (`std::__cmp_cat::_Ord::less`).
     if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	namespace_map_t::iterator nsi = namespace_map.find(name);
-	if ( nsi != namespace_map.end() )
+	std::string ns_name = name;
+	std::string resolved_ns = resolve_namespace_name_in_scope(ns_name);
+	if ( !resolved_ns.empty() )
+	    ns_name = resolved_ns;
+	if ( namespace_map.find(ns_name) != namespace_map.end()
+	  || namespace_datatype_map.find(ns_name) != namespace_datatype_map.end() )
 	{
 	    nextToken(); // consume '::'
 	    TokenBase *member_tb = nextToken();
 	    if ( !member_tb || !is_contextual_identifier_token(member_tb) )
-		Throw(head) << "Expecting identifier after '" << name << "::'" << flush;
+		Throw(head) << "Expecting identifier after '" << ns_name << "::'" << flush;
 	    std::string member = contextual_identifier_name(member_tb);
-	    variable_map_iter vmi = nsi->second.find(member);
-	    if ( vmi == nsi->second.end() )
-		Throw(member_tb) << "'" << member << "' is not a member of '" << name << "'" << flush;
+	    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
+	    {
+		std::string deeper = ns_name + "::" + member;
+		if ( namespace_map.find(deeper) == namespace_map.end()
+		  && namespace_datatype_map.find(deeper) == namespace_datatype_map.end() )
+		    break;
+		nextToken(); // consume '::'
+		member_tb = nextToken();
+		if ( !member_tb || !is_contextual_identifier_token(member_tb) )
+		    Throw(head) << "Expecting identifier after '" << deeper << "::'" << flush;
+		ns_name = deeper;
+		member = contextual_identifier_name(member_tb);
+	    }
+	    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
+	    variable_map_iter vmi;
+	    if ( nsi == namespace_map.end()
+	      || (vmi = nsi->second.find(member)) == nsi->second.end() )
+		Throw(member_tb) << "'" << member << "' is not a member of '" << ns_name << "'" << flush;
 	    TokenBase *r = new TokenVar(*vmi->second);
 	    r->file = head->file;
 	    r->line = head->line;
@@ -11146,6 +11190,25 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 
 	if ( DataDef *static_dd = resolve_class_static_member_type(scope, member_name) )
 	{
+	    // A CLASS-typed static data member is an OBJECT: resolve to its
+	    // storage (the Class__member global its out-of-class definition
+	    // declared — `inline constexpr partial_ordering
+	    // partial_ordering::less(...)`), never to the integral-constant
+	    // fold below (which silently zeroes every use).
+	    if ( dynamic_cast<DataDefCLASS *>(static_dd) )
+	    {
+		std::string storage_name = scope->name + "__" + member_name;
+		if ( Variable *svar = pgm.findVariable(storage_name) )
+		{
+		    TokenVar *tv = new TokenVar(*svar);
+		    tv->file = member_tb->file;
+		    tv->line = member_tb->line;
+		    tv->column = member_tb->column;
+		    exStack.push(tv);
+		    *tb_out = member_tb;
+		    return QualifiedClassExprAction::PushedExpression;
+		}
+	    }
 	    int64_t cv = 0;
 	    resolve_class_static_member_const_value(scope, member_name, cv);
 	    TokenInt *ti = new TokenInt(cv);
@@ -21321,8 +21384,16 @@ TokenBase *TokenENUM::parse(Program &pgm)
     // Scoped enumerators are registered under a pseudo-namespace keyed by the
     // tag (Tag::Value), reusing the existing namespace_map resolution path so
     // `Tag::Value` resolves and the bare name does NOT leak (the C++ scoped
-    // semantic). I6: no parallel scoped-naming machinery.
-    variable_map_t *scope_ns = scoped ? &pgm.namespace_map[enum_tag] : NULL;
+    // semantic). I6: no parallel scoped-naming machinery. Inside a namespace
+    // the key is the QUALIFIED tag (std::__cmp_cat::_Ord) — same-named enums
+    // in different namespaces stay distinct, the qualified expression walk
+    // (`ns::Tag::Value`) finds the chain, and scope-relative `Tag::Value`
+    // resolves via resolve_namespace_name_in_scope.
+    std::string scoped_ns_key = enum_tag;
+    if ( scoped && !pgm.current_namespace.empty()
+      && pgm.class_scope_stack.empty() )
+	scoped_ns_key = pgm.current_namespace + "::" + enum_tag;
+    variable_map_t *scope_ns = scoped ? &pgm.namespace_map[scoped_ns_key] : NULL;
 
     int64_t val = 0;
     while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
@@ -27987,6 +28058,25 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    nextToken(); // consume ')'
 	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 		nextToken(); // consume ';'
+	    // A FILE-SCOPE ctor-syntax declaration (`Cls g(args);`, incl. an
+	    // out-of-class static member definition `Cls Cls::less(args);`)
+	    // must record its TokenDecl in top_decls like the `=`-initializer
+	    // flow does — global_ctor_call recovers the ctor arguments from
+	    // there. Without the entry the initializer was silently dropped
+	    // and the global default-constructed.
+	    if ( var && (code == NULL || code == tkProgram) )
+	    {
+		Program::TopDecl gtd;
+		gtd.kind = Program::DeclKind::dkGlobalVar;
+		gtd.name = var->name;
+		gtd.var = var;
+		gtd.dd = var->type;
+		gtd.file = tb->file;
+		gtd.line = tb->line;
+		gtd.origin = tb;
+		gtd.decl = td;
+		top_decls.push_back(gtd);
+	    }
 	    return td;
 	}
     }

@@ -1492,8 +1492,25 @@ void Program::_tokenizer_init()
 	if ( !is_cpp_mode()
 	  && (strcmp(o->name, "__cplusplus") == 0 || strcmp(o->name, "__GNUG__") == 0) )
 	    continue;
+	// __cplusplus tracks the SELECTED --std=, not the value captured at
+	// build time (the capture ran the host g++ at one fixed std; a pinned
+	// 201703L made every `#if __cplusplus > 201703L` header region —
+	// all of <compare>, the C++20 surface of <concepts>/<ranges> —
+	// silently preprocess away under --std=c++20).
+	if ( strcmp(o->name, "__cplusplus") == 0 )
+	{
+	    define_map[o->name] = cplusplus_value_for_std();
+	    continue;
+	}
 	define_map[o->name] = o->value;
     }
+    // Compiler feature-test macros madc provides itself, gated by the std
+    // floor (the build-time capture can't know them — they describe THIS
+    // compiler's features, not the host's). <compare> requires
+    // __cpp_impl_three_way_comparison >= 201907L to expose the comparison
+    // category types.
+    if ( is_cpp_mode() && language_std >= STD_CPP20 )
+	define_map["__cpp_impl_three_way_comparison"] = "201907L";
     for ( const MadcPredefFunc *f = madc_predefined_functions(); f->name; ++f )
     {
 	MacroDef m;
