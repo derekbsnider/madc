@@ -6346,7 +6346,10 @@ bool DataDef::same_representation(DataDef &d)
 		b = static_cast<DataDefPTR *>(b)->base_type;
 	if ( a == b )
 		return true;
-	// Enums are their own domain: only the same enum type matches.
+	// Enums are their own domain: only the same enum type matches. Identity is
+	// keyed on the bare enum_name — aliasing creates multiple DataDefENUM
+	// instances for one source enum, so pointer identity would be wrong;
+	// cross-namespace same-name enums are a known approximation.
 	DataDefENUM *ae = dynamic_cast<DataDefENUM *>(a);
 	DataDefENUM *be = dynamic_cast<DataDefENUM *>(b);
 	if ( ae || be )
@@ -6364,14 +6367,22 @@ bool DataDef::same_representation(DataDef &d)
 			bf = bfp->target;
 		if ( !af || !bf )
 			return af == bf;
+		if ( af == bf )
+			return true;
 		if ( !af->returns.same_representation(bf->returns) )
+			return false;
+		if ( af->is_varargs != bf->is_varargs )
 			return false;
 		if ( af->parameters.size() != bf->parameters.size() )
 			return false;
 		for ( size_t i = 0; i < af->parameters.size(); ++i )
 		{
+			// A missing (NULL) param slot matches only a missing slot,
+			// and a both-NULL slot must not exempt the remaining params.
+			if ( !af->parameters[i] && !bf->parameters[i] )
+				continue;
 			if ( !af->parameters[i] || !bf->parameters[i] )
-				return af->parameters[i] == bf->parameters[i];
+				return false;
 			if ( !af->parameters[i]->same_representation(*bf->parameters[i]) )
 				return false;
 		}

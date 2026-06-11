@@ -1406,6 +1406,51 @@ TEST_SUITE("DataDef::same_representation (=== type-domain identity)") {
         CHECK(!pi.same_representation(i32));   // ptr vs non-ptr
         CHECK(ri.same_representation(i32));    // T& reads as T
     }
+    TEST_CASE("function signatures: return + params + varargs; fptr targets") {
+        DataDef i32("int", 4, DataType::dtINT32);
+        DataDef u32("uint32_t", 4, DataType::dtUINT32);
+        DataDef d("double", 8, DataType::dtDOUBLE);
+
+        FuncDef f1(i32);            // int(int, double)
+        f1.parameters.push_back(&i32);
+        f1.parameters.push_back(&d);
+        FuncDef f2(i32);            // int(int, double)
+        f2.parameters.push_back(&i32);
+        f2.parameters.push_back(&d);
+        FuncDef f3(i32);            // int(uint32_t, double)
+        f3.parameters.push_back(&u32);
+        f3.parameters.push_back(&d);
+        FuncDef f4(i32);            // int(int)
+        f4.parameters.push_back(&i32);
+        FuncDef f5(i32);            // int(int, double, ...)
+        f5.parameters.push_back(&i32);
+        f5.parameters.push_back(&d);
+        f5.is_varargs = true;
+
+        CHECK(f1.same_representation(f2));   // identical signature
+        CHECK(!f1.same_representation(f3));  // differing param type
+        CHECK(!f1.same_representation(f4));  // differing param count
+        CHECK(!f1.same_representation(f5));  // varargs-ness differs
+
+        DataDefFPTR p1(&f1);
+        DataDefFPTR p2(&f1);
+        CHECK(p1.same_representation(p2));   // same target FuncDef
+
+        // A NULL param slot matches only a NULL slot, and a both-NULL
+        // slot must NOT exempt the remaining params from checking.
+        FuncDef g1(i32);            // int(NULL, int)
+        g1.parameters.push_back(NULL);
+        g1.parameters.push_back(&i32);
+        FuncDef g2(i32);            // int(NULL, double)
+        g2.parameters.push_back(NULL);
+        g2.parameters.push_back(&d);
+        FuncDef g3(i32);            // int(NULL, int)
+        g3.parameters.push_back(NULL);
+        g3.parameters.push_back(&i32);
+        CHECK(!g1.same_representation(g2));  // both-NULL continues; later mismatch
+        CHECK(g1.same_representation(g3));   // both-NULL + matching rest
+        CHECK(!g1.same_representation(f1));  // one-NULL vs typed param
+    }
     TEST_CASE("C arrays compare element + count") {
         DataDef i32("int", 4, DataType::dtINT32);
         DataDef u32("uint32_t", 4, DataType::dtUINT32);
