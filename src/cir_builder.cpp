@@ -4439,7 +4439,8 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 				    ? fd->parameters[pi] : NULL;
 			bool refp = pi < fd->ref_params.size() && fd->ref_params[pi];
 			DataDef *adc = ctor_arg_datadef(ctor_args[i]);
-			int s = score_arg_to_param(adc, pt, refp);
+			int s = score_arg_to_param(adc, pt, refp, true,
+					is_zero_integer_literal(ctor_args[i]));
 			if (s < 0) { ok = false; break; }
 			total += s;
 		}

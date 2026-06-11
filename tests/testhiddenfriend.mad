@@ -1,0 +1,22 @@
+// A hidden-friend operator DEFINITION inside a class body is a
+// namespace-scope function ([class.friend]): hoisted after the class
+// completes, granted friendship by name (it reads the private member),
+// and found by free-operator dispatch.
+#include <cstdio>
+class B {
+	int v;
+public:
+	B(int x) : v(x) {}
+	friend bool operator<(B a, int b) { return a.v < b; }
+	friend bool operator==(B a, B b) { return a.v == b.v; }
+};
+int main()
+{
+	B b(-2);
+	B c(-2);
+	if (b < 0)
+		printf("hf-less\n");
+	if (b == c)
+		printf("hf-eq\n");
+	return 0;
+}

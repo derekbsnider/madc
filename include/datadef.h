@@ -694,6 +694,9 @@ public:
     std::map<std::string, Variable *> method_map; // unmangled name -> method variable
     std::map<std::string, DataDef *> type_aliases; // class-scope typedef/using aliases
     std::vector<std::string> friend_class_names; // class names granted friend access
+    std::vector<std::string> friend_function_names; // friend FUNCTION declarations
+				// (name-based grant, like friend_class_names —
+				// hidden-friend operators hoisted to namespace scope)
     std::map<std::string, DataDef *> static_member_types; // class-scope static data members
     // Integral static-const data members with a constant in-class initializer
     // (e.g. `static const bool value = __is_class(T);` — the std::integral_constant

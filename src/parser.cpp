@@ -6418,12 +6418,6 @@ static const char *object_operator_symbol(TokenID id)
     }
 }
 
-// A C++ null-pointer constant: an integer LITERAL of value zero ([conv.ptr]).
-// nullptr is already pointer-typed (TokenNullptr) and binds pointers natively.
-static bool is_zero_integer_literal(TokenBase *t)
-{
-    return t && t->id() == TokenID::tkInt && t->ival() == 0;
-}
 
 // The class-object DataDef an operand expression DENOTES for operator /
 // overload resolution. A reference operand IS the referenced object in every
@@ -11096,32 +11090,64 @@ static bool class_or_enclosing_is_friend_of(DataDefCLASS *cls,
     return false;
 }
 
+// A FREE function granted friendship by name (friend_function_names — the
+// hidden-friend operator grant; same name-based model as friend_class_names).
+static bool function_is_friend_of(const std::string &fname,
+				  DataDefCLASS *owner_cls)
+{
+    if ( fname.empty() || !owner_cls )
+	return false;
+    for ( size_t i = 0; i < owner_cls->friend_function_names.size(); ++i )
+	if ( owner_cls->friend_function_names[i] == fname )
+	    return true;
+    return false;
+}
+
+// The identity of the function body being parsed, for the friend-function
+// grant: its display name when recorded (overload sets carry the source name
+// — "operator<"), else its Variable name.
+static std::string current_function_friend_name(TokenCpnd *code)
+{
+    if ( !code || !code->method )
+	return std::string();
+    if ( FuncDef *fd = dynamic_cast<FuncDef *>(code->method->returns.type) )
+	if ( !fd->function_display_name.empty() )
+	    return fd->function_display_name;
+    return code->method->returns.name;
+}
+
 // Access-control core (P2.5 / P2.5c). Given a member's access flag `acc`
 // (0=public, vfPRIVATE, vfPROTECTED), the class that OWNS it, the member name,
 // and the class whose method body we are currently parsing (NULL outside any
 // method), return a human-readable violation string, or empty when access is
 // allowed. Public is always allowed; private only from the SAME class's
 // methods; protected from the declaring class or a derived class's methods.
+// `cur_function` is the name of the FREE function body being parsed (empty
+// outside one) — a hidden-friend operator's grant (friend_function_names).
 // Used by BOTH the data-member path (flag from member_access) and the
 // method-call path (flag from the method Variable's flags) — one rule, two
-// callers (I6). `friend`, access-changing using-declarations, and private
+// callers (I6). Access-changing using-declarations and private
 // inheritance are out of scope.
 static std::string access_flag_violation(uint32_t acc, DataDefCLASS *owner_cls,
 					 const std::string &name,
-					 DataDefCLASS *cur_class)
+					 DataDefCLASS *cur_class,
+					 const std::string &cur_function
+					     = std::string())
 {
     if ( acc == 0 || !owner_cls )
 	return std::string();   // public, or no class owner -> always allowed
     if ( acc == vfPRIVATE )
     {
 	if ( class_or_enclosing_is_same(cur_class, owner_cls)
-	  || class_or_enclosing_is_friend_of(cur_class, owner_cls) )
+	  || class_or_enclosing_is_friend_of(cur_class, owner_cls)
+	  || function_is_friend_of(cur_function, owner_cls) )
 	    return std::string();
 	return "'" + name + "' is a private member of '" + owner_cls->name + "'";
     }
     // vfPROTECTED: reachable from the declaring class or any derived class.
     if ( class_or_enclosing_is_or_derives(cur_class, owner_cls)
-      || class_or_enclosing_is_friend_of(cur_class, owner_cls) )
+      || class_or_enclosing_is_friend_of(cur_class, owner_cls)
+      || function_is_friend_of(cur_function, owner_cls) )
 	return std::string();
     return "'" + name + "' is a protected member of '" + owner_cls->name + "'";
 }
@@ -11131,14 +11157,16 @@ static std::string access_flag_violation(uint32_t acc, DataDefCLASS *owner_cls,
 // plain C struct leaves every entry 0=public), so this is a no-op for structs.
 static std::string member_access_violation(DataDef *owner_type,
 					    const std::string &name,
-					    DataDefCLASS *cur_class)
+					    DataDefCLASS *cur_class,
+					    const std::string &cur_function
+						= std::string())
 {
     DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(owner_type);
     if ( !sdd )
 	return std::string();
     return access_flag_violation(sdd->m_access(name),
 				 dynamic_cast<DataDefCLASS *>(owner_type),
-				 name, cur_class);
+				 name, cur_class, cur_function);
 }
 
 // Method-call access check (P2.5c): the access flag lives on the resolved
@@ -12860,7 +12888,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			DataDefCLASS *cur_class =
 			    (code && code->method) ? code->method->owner_class : NULL;
 			std::string av =
-			    member_access_violation(struct_type, id, cur_class);
+			    member_access_violation(struct_type, id, cur_class,
+				current_function_friend_name(code));
 			if ( !av.empty() )
 			    Throw(tb) << av << flush;
 		    }
@@ -13124,7 +13153,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			DataDefCLASS *cur_class =
 			    (code && code->method) ? code->method->owner_class : NULL;
 			std::string av =
-			    member_access_violation(base, id, cur_class);
+			    member_access_violation(base, id, cur_class,
+				current_function_friend_name(code));
 			if ( !av.empty() )
 			    Throw(tb) << av << flush;
 		    }
@@ -18244,6 +18274,105 @@ static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
 	uint32_t access_flags);
+static bool find_free_operator_declarator(
+	const std::vector<TokenBase *> &tokens, std::string &opname_out,
+	size_t &oper_idx_out, size_t &lparen_out);
+
+// True when a skipped FRIEND declaration is a free-operator DEFINITION (has a
+// body): `friend bool operator<(...) noexcept { ... }`. Bodyless friend
+// declarations and defaulted/deleted ones (`= default;` / `= delete;`) are
+// not definitions madc can hoist. `opname_out` receives the operator's
+// function name ("operator<") for the friendship grant.
+static bool skipped_friend_operator_definition(
+	const std::vector<TokenBase *> &tokens, std::string *opname_out)
+{
+    std::string opname;
+    size_t oper_idx = 0, lparen = 0;
+    if ( !find_free_operator_declarator(tokens, opname, oper_idx, lparen) )
+	return false;
+    if ( opname_out )
+	*opname_out = opname;
+    int depth = 0;
+    for ( size_t i = lparen; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++depth;
+	else if ( t->id() == TokenID::tkClBrk )
+	    --depth;
+	else if ( depth == 0 )
+	{
+	    if ( t->id() == TokenID::tkOpBrc )
+		return true;	// body
+	    if ( t->id() == TokenID::tkSemi )
+		return false;	// declaration only
+	    if ( t->id() == TokenID::tkAssign )
+		return false;	// = default / = delete
+	}
+    }
+    return false;
+}
+
+// Parse a hoisted hidden-friend operator DEFINITION at namespace scope. A
+// friend definition inside a class body is a NAMESPACE-SCOPE function per
+// C++ ([class.friend]) — the class body parser skips friend declarations
+// wholesale, so an operator definition's tokens are re-injected and parsed
+// as an ordinary free function once the class completes (its parameter and
+// return types can then name the just-registered class). It registers in
+// the free-operator overload sets like any parsed free operator, which is
+// how `r < 0` finds <compare>'s operator<(strong_ordering,
+// __cmp_cat::__unspec). Token re-injection + scope isolation mirror
+// instantiate_fn_template_binding.
+static void parse_hoisted_friend_operator(Program &pgm,
+	const std::vector<TokenBase *> &decl)
+{
+    std::vector<TokenBase *> inj;
+    for ( size_t i = 0; i < decl.size(); ++i )
+    {
+	TokenBase *t = decl[i];
+	if ( !t )
+	    continue;
+	// Drop the leading `friend` specifier — at namespace scope the rest
+	// is an ordinary function definition.
+	if ( inj.empty() && is_contextual_identifier_token(t)
+	  && contextual_identifier_name(t) == "friend" )
+	    continue;
+	inj.push_back(t->clone());
+    }
+    if ( inj.empty() )
+	return;
+    DBG(std::cout << "parse_hoisted_friend_operator(): injecting "
+	<< inj.size() << " tokens" << std::endl);
+    size_t base_depth = pgm.tokens.size();
+    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
+	  it != inj.rend(); ++it )
+	pgm.pushToken(*it);
+    std::stack<TokenCpnd *> saved_compounds;
+    std::swap(pgm.compounds, saved_compounds);
+    std::vector<DataDefCLASS *> saved_class_scope_stack;
+    std::swap(pgm.class_scope_stack, saved_class_scope_stack);
+    std::string saved_func = pgm.cur_func_name;
+    pgm.cur_func_name.clear();
+    try
+    {
+	TokenBase *first = pgm.nextToken();
+	TokenBase *stmt = pgm.parseStatement(first);
+	if ( stmt && pgm.tkProgram )
+	    pgm.tkProgram->statements.push_back((TokenStmt *)stmt);
+    }
+    catch ( ... )
+    {
+	DBG(std::cerr << "parse_hoisted_friend_operator(): parse failed"
+	    << std::endl);
+    }
+    while ( pgm.tokens.size() > base_depth )
+	pgm.nextToken();
+    std::swap(pgm.class_scope_stack, saved_class_scope_stack);
+    std::swap(pgm.compounds, saved_compounds);
+    pgm.cur_func_name = saved_func;
+}
 
 static bool member_template_param_intro(TokenBase *t)
 {
@@ -19153,6 +19282,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	pgm.deferred_function_body_sink;
     pgm.deferred_function_body_sink = &deferred_method_bodies;
     pgm.class_scope_stack.push_back(ddc);
+    // Hidden-friend operator DEFINITIONS collected from the body, hoisted to
+    // namespace scope after the class completes ([class.friend]).
+    std::vector<std::vector<TokenBase *>> hoisted_friend_operator_defs;
 
     // Consume member-level GNU attributes (`__attribute__((aligned(8)))` etc.)
     // wherever they may appear on a member — leading and trailing. Reuses the
@@ -19249,6 +19381,17 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    skipped_decl.push_back(tn);
 	    pgm.skip_template_nonclass_declaration(first, &skipped_decl);
 	    register_skipped_friend_type(ddc, skipped_decl);
+	    // A hidden-friend operator DEFINITION is a namespace-scope
+	    // function ([class.friend]) — queue it for hoisting once the
+	    // class completes (parse_hoisted_friend_operator), and grant it
+	    // friendship by function name.
+	    std::string friend_opname;
+	    if ( skipped_friend_operator_definition(skipped_decl,
+						    &friend_opname) )
+	    {
+		hoisted_friend_operator_defs.push_back(skipped_decl);
+		ddc->friend_function_names.push_back(friend_opname);
+	    }
 	    continue;
 	}
 
@@ -20103,6 +20246,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // The class type was registered early (before the body loop) so methods
     // could reference their own type; ddc is now complete with its final size.
     DBG(cout << "TokenCLASS::parse() registered class " << tag->str << " size=" << ddc->size << endl);
+
+    // Hoist hidden-friend operator definitions to namespace scope now that
+    // the class is complete (their params/return can name it).
+    for ( size_t i = 0; i < hoisted_friend_operator_defs.size(); ++i )
+	parse_hoisted_friend_operator(pgm, hoisted_friend_operator_defs[i]);
 
     // what follows?
     tn = pgm.peekToken();
@@ -26095,6 +26243,12 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     func->returns_ref = return_ref;
     if ( !return_typedef_alias.empty() )
 	func->return_typedef_name = return_typedef_alias;
+    // The SOURCE name of a tracked free-function overload (parseDeclaration
+    // sets it for this call) — stamped BEFORE the body parses so the
+    // hidden-friend access grant (current_function_friend_name) sees
+    // "operator<" while parsing the body, not the internal overload symbol.
+    if ( !pending_function_display_name.empty() )
+	func->function_display_name = pending_function_display_name;
 
     // for multi-return functions, inject hidden __retbuf parameter as first arg
     if ( multi_ret && multi_ret->size() > 1 )
@@ -29235,8 +29389,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	qualified_static_member =
 	    existing_member && (existing_member->flags & vfSTATIC);
     }
+    if ( ns_overload_tracked )
+	pending_function_display_name = source_id;
     parseFunction(*decl_type, parse_id, qualified_owner_class, NULL, ret_is_ref,
 		  decl_typedef_alias, qualified_static_member);
+    pending_function_display_name.clear();
 
     if ( qualified_owner_class && !qualified_member_name.empty() )
     {

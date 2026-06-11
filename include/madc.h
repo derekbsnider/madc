@@ -1214,6 +1214,11 @@ public:
     };
     std::map<std::string, std::vector<TemplateAliasDef>> template_alias_map;
     std::vector<TokenBase *> last_skipped_template_decl;
+    // The SOURCE name of the tracked free-function overload parseDeclaration
+    // is about to hand to parseFunction ("operator<"), stamped on the FuncDef
+    // BEFORE its body parses (the hidden-friend access grant compares
+    // display names mid-body). Cleared after the parseFunction call.
+    std::string pending_function_display_name;
     std::vector<std::string> last_skipped_template_typeparams;
     // W2 (retire-std-hardcoding-design): non-member operator overload candidates
     // declared at namespace scope (e.g. std::operator<<). Member-operator

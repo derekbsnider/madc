@@ -917,6 +917,15 @@ public:
     virtual void setDataType(DataDef *d) { if (d && (d->is_integer() || d->is_complex())) _datatype = d; }
 };
 
+// A C++ null-pointer constant: an integer LITERAL of value zero ([conv.ptr]).
+// Feeds score_arg_to_param's arg_is_zero_literal at every ranking layer that
+// can see the argument token. nullptr is already pointer-typed (TokenNullptr)
+// and binds pointer parameters natively.
+inline bool is_zero_integer_literal(const TokenBase *t)
+{
+    return t && t->id() == TokenID::tkInt && t->ival() == 0;
+}
+
 class TokenNullptr: public TokenInt
 {
 public:
