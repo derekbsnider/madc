@@ -4372,6 +4372,16 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 		if (DataDefCLASS *rc = object_returning_call_class(arg))
 			return rc;
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
+			// A reference variable's datadef is the pointer
+			// representation (T&  ->  T*); for overload matching the
+			// expression names a T lvalue. Same unwrap as
+			// select_operator_overload's overload_arg_datadef — without
+			// it a `const A &p` argument scores as A* and the copy
+			// ctor never matches (A local(p) dropped construction).
+			if ((tv->var.flags & vfREFERENCE) && tv->var.type) {
+				if (DataDefCLASS *rc = class_behind(tv->var.type))
+					return rc;
+			}
 			if (tv->var.is_fixed_array() && tv->var.type && m_prog)
 				return m_prog->getPointerType(tv->var.type);
 		}

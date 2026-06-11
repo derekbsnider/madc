@@ -1,0 +1,26 @@
+// A reference parameter used as a constructor argument: `A local(p)` where
+// p is `const A &` must select the copy ctor (the reference's datadef is the
+// pointer representation; overload scoring unwraps it to the referenced
+// class). This construction was silently dropped before the loud no-match
+// gate — local read garbage.
+class A
+{
+public:
+	int x;
+	A() { x = 0; }
+	A(const A &o) { x = o.x; }
+};
+
+void f(const A &p)
+{
+	A local(p);
+	printf("%d\n", local.x);
+}
+
+int main()
+{
+	A a;
+	a.x = 42;
+	f(a);
+	return 0;
+}
