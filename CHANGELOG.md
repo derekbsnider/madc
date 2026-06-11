@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### `<=>` slice 2a — `<compare>` category types from the real header (2026-06-11, `feature/template-instantiation-claude` @ `c8fdb48`)
+
+- **`std::strong_ordering` / `partial_ordering` / `weak_ordering` register
+  and carry correct values from the real `<compare>` under `--std=c++20`**
+  (test `testcompare_realhdr`: -1 0 1 2, g++-verified). Five general fixes:
+  `__cplusplus` now tracks the selected `--std=` (was pinned at the
+  build-capture's 201703L, silently preprocessing away every C++20 header
+  region) + `__cpp_impl_three_way_comparison` defined at the C++20 floor;
+  `resolve_namespaced_type_token` gains scope-relative qualification and
+  nested chains (`__cmp_cat::type` as a member type inside `namespace
+  std`); scoped-enum enumerator pseudo-namespaces key by the QUALIFIED tag
+  (+ the same walk in `parsePostfixChain`); file-scope ctor-syntax
+  declarations record their `TokenDecl` in `top_decls` (out-of-class
+  static member definitions had their ctor arguments silently dropped);
+  CLASS-typed static member expressions resolve to their definition
+  storage instead of the silent-0 `TokenInt` fold.
+- Known limit: a TU whose first include is `<compare>` still fails
+  (`bits/c++config.h` normally arrives via `<concepts>`, whose body
+  self-gates on the deliberately-undefined `__cpp_concepts`). Remaining
+  for `<=>`: hidden-friend operator bodies (`r < 0`) + the token lowering.
+- Gates: fulltest **566 / 0 / 0 / 18** (exit 0, both check gates GREEN),
+  torture failset **byte-identical**, SMAUG soak green.
+
 ### `<=>` slice 1 — C++20 std-floor gating + loud unhandled-binop default (2026-06-11, `feature/template-instantiation-claude` @ `90e5f5c`)
 
 - **`a <=> b` no longer compiles as `a + b`.** The lexer tokenized `<=>`

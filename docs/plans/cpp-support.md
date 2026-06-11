@@ -395,7 +395,20 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   hidden-friend `operator@(ordering, __cmp_cat::__unspec)` need real-header
   parsing work first; g++ -O0 canon: `<=>` itself is an INLINE byte-select
   into `_M_value`, `r < 0` CALLS the TU-local friend
-  `_ZStltSt15strong_orderingNSt9__cmp_cat8__unspecE`). Remaining plan:
+  `_ZStltSt15strong_orderingNSt9__cmp_cat8__unspecE`). **Slice 2a LANDED**
+  (`c8fdb48`): the category types register and carry correct values from
+  the REAL `<compare>` (test `testcompare_realhdr`, g++-verified -1 0 1 2)
+  via five general fixes — `__cplusplus` tracks `--std=` +
+  `__cpp_impl_three_way_comparison` at the C++20 floor (feature-test
+  macros describe THIS compiler, not the capture host; `__cpp_concepts`
+  deliberately undefined), scope-relative/nested
+  `resolve_namespaced_type_token`, namespace-qualified scoped-enum
+  pseudo-namespaces (+ `parsePostfixChain` walk), file-scope ctor-syntax
+  declarations record top_decls (out-of-class static member definitions
+  kept their ctor args), and CLASS-typed static members resolve to their
+  storage instead of the silent-0 integral fold. KNOWN LIMIT: a TU whose
+  FIRST include is `<compare>` fails (`bits/c++config.h` arrives via
+  `<concepts>` in g++, gated out here). Remaining plan:
   1. Builtin scalars: parse `a <=> b` as a binary operator. Lowering
      semantics RULED (user, 2026-06-11): FAITHFUL `std::strong_ordering` /
      `partial_ordering` category objects from the real `<compare>` header
