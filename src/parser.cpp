@@ -32,6 +32,14 @@
 #include <stack>
 #include "libmadc/program.h"
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
+// Temporary fn-template pack diagnostics — enable with
+// make CXXFLAGS="-std=c++11 -Wall -DMADC_DBG_PACK" (worker-thread-safe,
+// unlike DBG/madc_verbose which is thread_local-dead on parser workers).
+#ifdef MADC_DBG_PACK
+#define DBG_PACK(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define DBG_PACK(...) do {} while (0)
+#endif
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -9444,6 +9452,33 @@ static bool is_overloaded_allocation_operator(const std::string &name)
 	|| name == "operatordelete" || name == "operatordelete[]";
 }
 
+// The mid-parse arity check sees only the PROVISIONALLY-bound overload; for a
+// namespace overload set (C++ overloads / fn-template instantiations) the real
+// target is re-ranked at the call tail. Defer the "Too many parameters" throw
+// when ANY set member could take more arguments — or when the family has a
+// retained function template (a new arity can still be instantiated for this
+// very call, which happens AFTER the arguments parse).
+bool Program::namespace_overload_set_accepts_more(TokenCallFunc *tc,
+						  size_t argc)
+{
+    FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+    if ( !fd || fd->namespace_name.empty()
+      || fd->function_display_name.empty() )
+	return false;
+    std::string key = fd->namespace_name + "::" + fd->function_display_name;
+    std::map<std::string, std::vector<NamespaceFnOverload>>::iterator oi =
+	namespace_fn_overload_sets.find(key);
+    if ( oi != namespace_fn_overload_sets.end() )
+	for ( size_t i = 0; i < oi->second.size(); ++i )
+	{
+	    FuncDef *ofd = oi->second[i].var
+		? dynamic_cast<FuncDef *>(oi->second[i].var->type) : NULL;
+	    if ( ofd && (ofd->is_varargs || ofd->parameters.size() > argc) )
+		return true;
+	}
+    return fn_template_map.count(key) != 0;
+}
+
 static bool call_accepts_extra_args(TokenCallFunc *tc)
 {
     FuncDef *fd = (FuncDef *)tc->var.type;
@@ -9582,8 +9617,12 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    FuncDef *_fd = (FuncDef *)tc->var.type;
 	    if ( !_fd->parameters.empty()
 	    &&   !call_accepts_extra_args(tc)
-	    &&   ++paramcnt >= _fd->parameters.size() )
+	    &&   ++paramcnt >= _fd->parameters.size()
+	    &&   !namespace_overload_set_accepts_more(tc, paramcnt) )
 	    {
+		DBG_PACK("arity throw: call %s params=%zu paramcnt=%zu\n",
+			 tc->var.name.c_str(), _fd->parameters.size(),
+			 paramcnt);
 		Throw(tb) << "Too many parameters" << flush;
 	    }
 	    continue;
@@ -23242,13 +23281,16 @@ static int fn_template_deduce_param(const std::string &spelling,
 // (`_TRet ( * __convf ) ( const _CharT * , _CharT * * , _Base . . . )`)
 // against a function-typed argument, binding template parameters from the
 // return and parameter positions via fn_template_deduce_param. The last
-// sub-parameter may be the parameter pack (single-element). Returns false
-// when the spelling and the argument's function type don't match.
+// sub-parameter may be the parameter pack: one-element (binds) or EMPTY
+// (`strtod(const char*, char**)` against the `_Base...` tail — sets
+// pack_empty, binds nothing). Returns false when the spelling and the
+// argument's function type don't match.
 static bool fn_template_deduce_fnptr_param(const std::string &spelling,
 	const std::vector<std::string> &typeparams,
 	const std::string &pack_param,
 	DataDef *arg_dd,
-	std::map<std::string, DataDef *> &binding)
+	std::map<std::string, DataDef *> &binding,
+	bool &pack_empty)
 {
     size_t p1 = spelling.find('(');
     if ( p1 == std::string::npos )
@@ -23303,6 +23345,13 @@ static bool fn_template_deduce_fnptr_param(const std::string &spelling,
 	if ( !pack_param.empty() && j + 1 == subs.size()
 	  && fn_template_param_is_pack(subs[j], pack_param) )
 	{
+	    // Empty pack: every function parameter was consumed by the
+	    // non-pack sub-parameters — the pack deduces to zero elements.
+	    if ( fd->parameters.size() == subs.size() - 1 )
+	    {
+		pack_empty = true;
+		return true;
+	    }
 	    // Single-element pack: exactly one function parameter remains.
 	    if ( fd->parameters.size() != subs.size() )
 		return false;
@@ -23337,6 +23386,7 @@ static bool fn_template_deduce_fnptr_param(const std::string &spelling,
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc)
 {
+    DBG_PACK("try_inst %s args=%zu\n", key.c_str(), tc->parameters.size());
     // Type parameters only; one parameter pack allowed in the LAST position
     // (bound to exactly one element — `__stoa`'s `_Base...` shape).
     std::string pack_param;
@@ -23366,10 +23416,18 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     Program::FreeOperatorOverload ov;
     if ( !extract_free_signature(pgm, ft.decl, ft.typeparams, name, name_idx,
 				 lparen, ov) )
+    {
+	DBG_PACK("try_inst %s: extract_free_signature failed\n", key.c_str());
 	return false;
+    }
     if ( tc->parameters.size() > ov.param_spellings.size() )
 	return false;
+#ifdef MADC_DBG_PACK
+    for ( size_t i = 0; i < ov.param_spellings.size(); ++i )
+	DBG_PACK("  param[%zu] '%s'\n", i, ov.param_spellings[i].c_str());
+#endif
     std::map<std::string, DataDef *> binding;
+    bool pack_empty = false;	// the pack deduced to ZERO elements (elide it)
     // Explicit template arguments bind the leading (non-pack) parameters.
     {
 	size_t nonpack = ft.typeparams.size() - (pack_param.empty() ? 0 : 1);
@@ -23382,6 +23440,13 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     {
 	if ( i >= tc->parameters.size() )
 	{
+	    // Trailing pack with no argument left: deduces EMPTY — elide it.
+	    if ( i + 1 == ov.param_spellings.size()
+	      && fn_template_param_is_pack(ov.param_spellings[i], pack_param) )
+	    {
+		pack_empty = true;
+		continue;
+	    }
 	    // Unfilled trailing param: viable only with a default ('=' in the
 	    // spelling); fn_template_deduce_param rejects defaulted slots that
 	    // involve a template parameter, so no binding is lost here.
@@ -23411,8 +23476,12 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	if ( sp.find('(') != std::string::npos )
 	{
 	    if ( !fn_template_deduce_fnptr_param(sp, ft.typeparams, pack_param,
-						 arg_dd, binding) )
+						 arg_dd, binding, pack_empty) )
+	    {
+		DBG_PACK("  fnptr deduce FAILED on '%s' (arg_dd=%s)\n",
+			 sp.c_str(), arg_dd ? arg_dd->name.c_str() : "NULL");
 		return false;
+	    }
 	    continue;
 	}
 	std::string tp;
@@ -23425,6 +23494,10 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	if ( binding.find(tp) == binding.end() )
 	    binding[tp] = dd;
     }
+    // An empty pack must not ALSO have bound an element (a fn-ptr deduction
+    // saying empty while a trailing argument filled the pack is a mismatch).
+    if ( pack_empty && binding.count(pack_param) )
+	return false;
     // Unbound parameters fall back to simple template-parameter defaults: a
     // single token naming an already-bound parameter (`typename _Ret = _TRet`)
     // or a concrete type.
@@ -23432,6 +23505,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     {
 	if ( binding.count(ft.typeparams[i]) )
 	    continue;
+	if ( pack_empty && ft.typeparams[i] == pack_param )
+	    continue;	// legitimately unbound — elided below
 	if ( i < ft.typeparam_defaults.size()
 	  && ft.typeparam_defaults[i].size() == 1 )
 	{
@@ -23447,7 +23522,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 
     std::string inst_key = key + "<";
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
-	inst_key += binding[ft.typeparams[i]]->name + ",";
+	inst_key += (binding.count(ft.typeparams[i])
+		     ? binding[ft.typeparams[i]]->name : std::string()) + ",";
     inst_key += ">";
     if ( pgm.fn_template_instantiated.count(inst_key) )
 	return true;
@@ -23458,6 +23534,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	  b != binding.end(); ++b )
 	subst[b->first] = new TokenDataType(b->second->name.c_str(), *b->second);
     std::vector<TokenBase *> inj;
+    std::string pack_value_name;	// the pack's VALUE name (`__base`)
     for ( size_t i = 0; i < ft.decl.size(); ++i )
     {
 	TokenBase *bt = ft.decl[i];
@@ -23465,8 +23542,37 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    continue;
 	if ( bt->type() == TokenType::ttIdentifier )
 	{
+	    const std::string &idname = ((TokenIdent *)bt)->str;
+	    // EMPTY pack: elide every `_Base...` (type position, incl. the
+	    // trailing value name `__base`) and `__base...` (value expansion)
+	    // together with the comma that precedes it.
+	    if ( pack_empty
+	      && (idname == pack_param
+		  || (!pack_value_name.empty() && idname == pack_value_name))
+	      && i + 3 < ft.decl.size()
+	      && ft.decl[i+1] && ft.decl[i+1]->id() == TokenID::tkDot
+	      && ft.decl[i+2] && ft.decl[i+2]->id() == TokenID::tkDot
+	      && ft.decl[i+3] && ft.decl[i+3]->id() == TokenID::tkDot )
+	    {
+		if ( !inj.empty() && inj.back()
+		  && inj.back()->id() == TokenID::tkComma )
+		{
+		    delete inj.back();
+		    inj.pop_back();
+		}
+		i += 3;
+		if ( idname == pack_param
+		  && i + 1 < ft.decl.size() && ft.decl[i+1]
+		  && ft.decl[i+1]->type() == TokenType::ttIdentifier )
+		{
+		    // `_Base... __base` — record + drop the value name.
+		    pack_value_name = ((TokenIdent *)ft.decl[i+1])->str;
+		    ++i;
+		}
+		continue;
+	    }
 	    std::map<std::string, TokenDataType *>::iterator si =
-		subst.find(((TokenIdent *)bt)->str);
+		subst.find(idname);
 	    if ( si != subst.end() )
 		inj.push_back(si->second->clone());
 	    else
@@ -23486,6 +23592,16 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	inj.push_back(bt->clone());
     }
 
+#ifdef MADC_DBG_PACK
+    if ( pack_empty )
+    {
+	DBG_PACK("inst %s EMPTY-PACK inj:", inst_key.c_str());
+	for ( size_t i = 0; i < inj.size(); ++i )
+	    DBG_PACK(" %s",
+		     inj[i] ? overload_token_spelling(inj[i]).c_str() : "?");
+	DBG_PACK("\n");
+    }
+#endif
     size_t base_depth = pgm.tokens.size();
     for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
 	  it != inj.rend(); ++it )
@@ -23537,8 +23653,13 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 {
     if ( !tc )
 	return;
+    // NOT gated on fd->declaration_only: once one instantiation registers
+    // (e.g. stoi's `__stoa<..., int>`), later calls resolve to that
+    // non-declaration-only FuncDef — but a DIFFERENT specialization may be
+    // required (stod's empty-pack shape). The template's presence in
+    // fn_template_map is the signal; the inst_key memo dedupes.
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
-    if ( !fd || !fd->declaration_only
+    if ( !fd
       || fd->namespace_name.empty() || fd->function_display_name.empty() )
 	return;
     std::map<std::string, std::vector<FnTemplateDef>>::iterator mi =

@@ -1252,6 +1252,10 @@ public:
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
 					       const std::vector<const DataDef *> &argtypes);
+    // Mid-parse arity-check deferral: true when the call's namespace overload
+    // set has a member accepting more than argc args (or a retained fn
+    // template that could instantiate one) — the tail re-rank decides then.
+    bool namespace_overload_set_accepts_more(TokenCallFunc *tc, size_t argc);
     // Namespace FUNCTION templates with retained declaration tokens (the
     // post-`template<...>` range: [specifiers] RET name(params) [noexcept]
     // { body }), keyed "ns::name". Bodies are not parsed at capture; a call

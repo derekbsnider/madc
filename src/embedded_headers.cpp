@@ -2388,6 +2388,10 @@ namespace std {
 		return atoi(s.c_str());
 	    }
 
+	    float stof(const string &s) {
+		return (float)atof(s.c_str());
+	    }
+
 	    double stod(const string &s) {
 		return atof(s.c_str());
 	    }

@@ -4264,12 +4264,35 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	if (adc->is_object())
 		return -1;
 	// Function-to-pointer decay: a bare function argument binds a
-	// function-pointer parameter (`__stoa(&std::strtol, ...)`). Other
-	// argument positions discriminate between overloads whose fn-ptr
-	// signatures differ.
+	// function-pointer parameter (`__stoa(&std::strtol, ...)`).
+	// Discriminate by SIGNATURE — C++ has no implicit conversion between
+	// incompatible function-pointer types, and overloads can differ ONLY
+	// here (the __stoa<float>/<double> instantiations). Unknown target
+	// shapes stay at the legacy neutral score.
 	if (dynamic_cast<const DataDefFPTR *>(pdc)
-	    && (adc->is_function() || dynamic_cast<const DataDefFPTR *>(adc)))
-		return 4;
+	    && (adc->is_function() || dynamic_cast<const DataDefFPTR *>(adc))) {
+		const FuncDef *pf =
+		    dynamic_cast<const DataDefFPTR *>(pdc)->target;
+		const FuncDef *af = dynamic_cast<const FuncDef *>(adc);
+		if (!af)
+			if (const DataDefFPTR *afp =
+			    dynamic_cast<const DataDefFPTR *>(adc))
+				af = afp->target;
+		if (!pf || !af)
+			return 4;
+		if (pf->parameters.size() != af->parameters.size()
+		    || pf->is_varargs != af->is_varargs
+		    || pf->returns.rawtype() != af->returns.rawtype())
+			return -1;
+		for (size_t i = 0; i < pf->parameters.size(); i++) {
+			if (!pf->parameters[i] || !af->parameters[i])
+				continue;
+			if (pf->parameters[i]->rawtype()
+			    != af->parameters[i]->rawtype())
+				return -1;
+		}
+		return 5;
+	}
 	bool p_ptr = pdc->is_pointer(), a_ptr = adc->is_pointer();
 	bool p_num = pdc->is_numeric(), a_num = adc->is_numeric();
 	if (p_ptr || a_ptr)
