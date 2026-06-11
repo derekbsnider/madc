@@ -1,0 +1,86 @@
+// === / !== strict equality: type-domain identity AND value equality.
+// Spec: docs/superpowers/specs/2026-06-11-strict-equality-design.md
+#include <cstdio>
+
+int g_calls = 0;
+int iside(int v) { g_calls++; return v; }
+double dside(double v) { g_calls++; return v; }
+
+enum Color { RED = 5 };
+enum Fruit { APPLE = 5 };
+
+// A reference operand reads as its referee: int& === int is the int domain.
+int refside(int &r)
+{
+	int loc = 7;
+	uint32_t u = 7;
+	printf("s_ri=%d\n", r === loc);		// 1: int& reads as int
+	printf("n_ri=%d\n", r !== loc);		// 0
+	printf("s_ru=%d\n", r === u);		// 0: signedness differs
+	return 0;
+}
+
+int main()
+{
+	uint32_t a = 5;
+	int32_t  b = 5;
+	uint8_t  c = 5;
+
+	printf("eq_ab=%d\n", a == b);		// loose: 1
+	printf("eq_ac=%d\n", a == c);		// loose: 1
+	printf("s_ab=%d\n", a === b);		// 0: signedness differs
+	printf("s_ac=%d\n", a === c);		// 0: size differs
+	printf("n_ab=%d\n", a !== b);		// 1
+
+	uint32_t a2 = 5;
+	printf("s_aa2=%d\n", a === a2);		// 1: same type same value
+	printf("s_a6=%d\n", a === 6u);		// 0: same type diff value
+	printf("n_aa2=%d\n", a !== a2);		// 0
+
+	long lv = 7;
+	long long llv = 7;
+	printf("s_long=%d\n", lv === llv);	// 1: both 64-bit signed
+
+	double d = 5;
+	float f = 5;
+	double d2 = 5;
+	printf("s_df=%d\n", d === f);		// 0: float vs double
+	printf("s_dd=%d\n", d === d2);		// 1
+
+	bool t = true;
+	uint8_t u1 = 1;
+	printf("s_bu=%d\n", t === u1);		// 0: bool is its own kind
+
+	char ch = 5;
+	int8_t i8 = 5;
+	printf("s_ci8=%d\n", ch === i8);	// 1: char==int8_t here
+	printf("s_cu8=%d\n", ch === c);		// 0: char vs uint8_t
+
+	printf("s_a5=%d\n", a === 5);		// 0: int literal vs uint32_t
+	printf("s_a5u=%d\n", a === 5u);		// 1: suffix gives the type
+
+	enum Color col = RED;
+	enum Color col2 = RED;
+	enum Fruit fr = APPLE;
+	int five = 5;
+	printf("s_ei=%d\n", col === five);	// 0: enum vs int
+	printf("s_ee=%d\n", col === fr);	// 0: different enums
+	printf("s_cc=%d\n", col === col2);	// 1: same enum same value
+
+	int x = 1;
+	int32_t y = 1;
+	int *px = &x;
+	int32_t *py = &y;
+	uint32_t *pu = (uint32_t *)&x;
+	printf("s_pxy=%d\n", px === py);	// 0: same domain, diff address
+	printf("s_pxx=%d\n", px === &x);	// 1
+	printf("s_pxu=%d\n", px === pu);	// 0: pointee signedness differs
+
+	int rv = 7;
+	refside(rv);
+
+	// A statically-false compare still evaluates both operands.
+	int r = (iside(1) === dside(1.0));
+	printf("sfx=%d calls=%d\n", r, g_calls);	// sfx=0 calls=2
+	return 0;
+}

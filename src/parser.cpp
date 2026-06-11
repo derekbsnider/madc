@@ -6411,7 +6411,18 @@ bool DataDef::same_representation(DataDef &d)
 	if ( a->is_pointer() != b->is_pointer() )
 		return false;
 	// Simple scalars (and same-tag builtin pointers): exact tag equality.
-	return a->type() == b->type();
+	// References have a SECOND encoding besides DataDefREF (stripped above):
+	// a bare ref TAG (_type >= 20000, reftype()==rtReference) on a plain
+	// DataDef, with no referee instance to chase. === reads rvalues, so
+	// strip the ref offset before comparing; the pointer offset (10000) is
+	// representational and stays.
+	uint32_t atag = (uint32_t)a->type();
+	uint32_t btag = (uint32_t)b->type();
+	if ( atag >= 20000 )
+		atag -= 20000;
+	if ( btag >= 20000 )
+		btag -= 20000;
+	return atag == btag;
 }
 
 DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
@@ -21984,16 +21995,17 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	// Treat enum as int and let the caller parse the variable declaration
 	if ( !enum_tag.empty() )
 	{
-	    // Scoped enum used as a type name resolves to its registered
-	    // DataDefENUM; a plain enum forward-reference is just int.
-	    if ( scoped )
+	    // A registered enum tag resolves to its DataDefENUM — scoped or
+	    // plain (`enum Color col;` after the definition keeps the enum's
+	    // type domain; === depends on it). A plain tag only resolves to an
+	    // actual enum type; only a genuine forward reference decays to int.
+	    datatype_map_iter dti = pgm.datatype_map.find(enum_tag);
+	    if ( dti != pgm.datatype_map.end()
+	      && (scoped
+	       || dynamic_cast<DataDefENUM *>(&dti->second->definition)) )
 	    {
-		datatype_map_iter dti = pgm.datatype_map.find(enum_tag);
-		if ( dti != pgm.datatype_map.end() )
-		{
-		    pgm.pushToken(dti->second);
-		    return NULL;
-		}
+		pgm.pushToken(dti->second);
+		return NULL;
 	    }
 	    pgm.pushToken(new TokenDataType("int", ddINT));
 	    return NULL;

@@ -345,6 +345,11 @@ class CirBuilder {
 	// `T*` pointer operand stays NULL: only the reference representation is
 	// transparent (pointer operands keep pointer semantics).
 	DataDefCLASS *operand_object_class(TokenBase *t);
+	// The type DOMAIN of an OPERAND's value read — the scalar twin of
+	// operand_object_class: a reference variable (vfREFERENCE, stored as
+	// DataDefPTR(T)) reads as its referee T; everything else is the
+	// expression's datadef(). Plain pointers keep pointer semantics.
+	DataDef *operand_value_datadef(TokenBase *t);
 
 	// Internal: set position on a node in c2mir's node_positions VARR
 	void set_pos(cir_node *cn, const char *file, int line, int col);
@@ -598,12 +603,21 @@ public:
 	// when c's class defines a matching operator method. Returns NULL when
 	// the left operand is not a user class or has no such operator (caller
 	// falls through to the built-in operator translation).
-	node_t class_operator_call(class TokenOperator *top, TokenBase *origin);
+	// opsym_override substitutes the operator spelling looked up from
+	// top->id() (e.g. strict equality dispatching through "=="); NULL =
+	// derive from binop_overload_symbol(top->id()).
+	node_t class_operator_call(class TokenOperator *top, TokenBase *origin,
+				   const char *opsym_override = NULL);
 	// C++20 builtin `a <=> b` ([expr.spaceship]): comparison-category temp
 	// + inline byte-select into _M_value (g++ -O0 canon, no call). The
 	// category class was resolved at parse time from the parsed <compare>.
 	node_t three_way_builtin_lowering(class TokenOperator *top,
 					  TokenBase *origin);
+	// madc dialect strict equality `a === b` / `a !== b`: type-domain
+	// identity AND value equality (STD_MADC only; spec
+	// docs/superpowers/specs/2026-06-11-strict-equality-design.md).
+	node_t strict_equality_lowering(class TokenOperator *top,
+					TokenBase *origin);
 	// W2 (retire-std-hardcoding-design): a NON-member operator declared at
 	// namespace scope (e.g. std::operator<<(ostream&, const char*)) may be a
 	// better match for `lhs <op> rhs` than the member candidate. Consider the

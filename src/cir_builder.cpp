@@ -3186,6 +3186,21 @@ DataDefCLASS *CirBuilder::operand_object_class(TokenBase *t)
 	return NULL;
 }
 
+// The scalar twin of operand_object_class: a reference variable (`int &x`,
+// vfREFERENCE + DataDefPTR(int)) reads as its referee in every expression
+// context (its value use auto-derefs — see the TokenVar translation), so its
+// value DOMAIN is the pointee, not the pointer. Everything else answers with
+// the expression's own datadef(); plain pointers keep pointer semantics.
+DataDef *CirBuilder::operand_value_datadef(TokenBase *t)
+{
+	if (!t) return NULL;
+	if (TokenVar *tv = dynamic_cast<TokenVar *>(t))
+		if ((tv->var.flags & vfREFERENCE) && tv->var.type)
+			if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(tv->var.type))
+				return p->base_type;
+	return t->datadef();
+}
+
 // True when a NAMED variable holds the object's address rather than the object
 // itself. For these the object address is the variable's value (`name`); for a
 // value object lvalue it is `&name`. This is the single addressing rule shared
@@ -4807,6 +4822,8 @@ static const char *binop_overload_symbol(TokenID id)
 	switch (id) {
 	case TokenID::tkEquals: return "==";
 	case TokenID::tkNotEq:  return "!=";
+	case TokenID::tk3Eq:    return "===";
+	case TokenID::tk3NotEq: return "!==";
 	case TokenID::tkLT:     return "<";
 	case TokenID::tkGT:     return ">";
 	case TokenID::tkLE:     return "<=";
@@ -6105,7 +6122,8 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 	return inst;
 }
 
-node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
+node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
+				       const char *opsym_override)
 {
 	if (!top || !top->left || !top->right) return NULL;
 	// The operator LHS must be a class object lvalue (or a reference to one),
@@ -6125,12 +6143,14 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 		// `"pre" + s`: a non-class lhs with a CLASS rhs — only the free
 		// operator set's mixed shape can bind (no member candidate).
 		if (!operand_object_class(top->right)) return NULL;
-		const char *opsym0 = binop_overload_symbol(top->id());
+		const char *opsym0 = opsym_override ? opsym_override
+						    : binop_overload_symbol(top->id());
 		if (!opsym0[0]) return NULL;
 		return try_free_operator_call(top, NULL,
 			std::string("operator") + opsym0, NULL, origin);
 	}
-	const char *opsym = binop_overload_symbol(top->id());
+	const char *opsym = opsym_override ? opsym_override
+					   : binop_overload_symbol(top->id());
 	if (!opsym[0]) return NULL;
 
 	std::string mname = std::string("operator") + opsym;
@@ -6277,6 +6297,45 @@ node_t CirBuilder::three_way_builtin_lowering(TokenOperator *top, TokenBase *ori
 	m_pending_stmts.push_back(node2(N_EXPR, list(),
 		node2(N_ASSIGN, fld, sel, origin), origin));
 	return id(oname, origin);   // the category-typed object lvalue
+}
+
+// Strict equality `===` / `!==` (STD_MADC dialect): type-domain identity AND
+// value equality. Scalars use DataDef::same_representation; class operands
+// strict-compare inside the class domain via the SAME operator== dispatch ==
+// uses (a user operator===/!== was already tried by class_operator_call at
+// the translate_expr binary entry). A statically-false compare still
+// evaluates both operands: (l, r, 0|1).
+// Spec: docs/superpowers/specs/2026-06-11-strict-equality-design.md §2-3.
+node_t CirBuilder::strict_equality_lowering(TokenOperator *top, TokenBase *origin)
+{
+	bool neq = top->id() == TokenID::tk3NotEq;
+	DataDefCLASS *lcls = operand_object_class(top->left);
+	DataDefCLASS *rcls = operand_object_class(top->right);
+	if (lcls || rcls) {
+		// Domain rule: defer to the class's operator== machinery.
+		node_t eq = class_operator_call(top, origin, "==");
+		if (eq)
+			return neq ? node1(N_NOT, eq, origin) : eq;
+		if (lcls && lcls == rcls) {
+			std::string msg = "no match for strict equality on '"
+				+ lcls->name
+				+ "' (no operator=== or operator==)";
+			return error_node(msg.c_str(), origin);
+		}
+	} else {
+		DataDef *ldd = operand_value_datadef(top->left);
+		DataDef *rdd = operand_value_datadef(top->right);
+		if (ldd && rdd && ldd->same_representation(*rdd)) {
+			node_t left = translate_expr(top->left);
+			node_t right = translate_expr(top->right);
+			return node2(neq ? N_NE : N_EQ, left, right, origin);
+		}
+	}
+	// Different domains: constant result, operands still evaluated.
+	node_t left = translate_expr(top->left);
+	node_t right = translate_expr(top->right);
+	return node2(N_COMMA, node2(N_COMMA, left, right, origin),
+		     integer(neq ? 1 : 0, origin), origin);
 }
 
 // Among a class's operator overloads of name `mname`, select the UNARY one:
@@ -7819,6 +7878,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// operator lowering above).
 			if (tb->id() == TokenID::tk3Way)
 				return three_way_builtin_lowering(top, tb);
+
+			// madc dialect strict equality === / !== — spec
+			// docs/superpowers/specs/2026-06-11-strict-equality-design.md.
+			// (A user operator===/!== was already dispatched by
+			// class_operator_call above.)
+			if (tb->id() == TokenID::tk3Eq || tb->id() == TokenID::tk3NotEq)
+				return strict_equality_lowering(top, tb);
 
 			node_t left = translate_expr(top->left);
 			node_t right = translate_expr(top->right);
