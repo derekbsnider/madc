@@ -4434,6 +4434,33 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 	return best;
 }
 
+// A class with user constructors whose initializer matched none of them.
+// Previously this case returned NULL and every caller's `if (cc)` guard
+// silently dropped the construction — the object was left unconstructed and
+// the program read garbage or crashed far from the cause. Emit an error node
+// instead so the pre-c2mir gate rejects the tree (same policy as the
+// unhandled-expression tail of translate_expr); the origin token carries the
+// source file:line:col, printed by cir_report_errors.
+node_t CirBuilder::no_ctor_match_error(DataDefCLASS *cdd,
+				       const std::vector<TokenBase *> &ctor_args,
+				       TokenBase *origin)
+{
+	std::string args_desc;
+	for (size_t i = 0; i < ctor_args.size(); i++) {
+		if (i) args_desc += ", ";
+		DataDef *ad = ctor_args[i] ? ctor_args[i]->datadef() : NULL;
+		if (DataDefCLASS *rc = object_returning_call_class(ctor_args[i]))
+			ad = rc;
+		args_desc += (ad && !ad->name.empty()) ? ad->name
+						       : std::string("<unknown>");
+	}
+	char buf[256];
+	snprintf(buf, sizeof(buf),
+		 "no matching constructor for call to '%s(%s)'",
+		 cdd ? cdd->name.c_str() : "<class>", args_desc.c_str());
+	return error_node(buf, origin);
+}
+
 node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 				   const std::vector<TokenBase *> &ctor_args,
 				   TokenBase *origin)
@@ -4471,7 +4498,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		}
 	}
 	if (!ctor)
-		return NULL;
+		return no_ctor_match_error(cdd, ctor_args, origin);
 
 	std::string sym = ctor_call_symbol(cdd, ctor);
 
@@ -4605,7 +4632,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		}
 	}
 	if (!ctor)
-		return NULL;
+		return no_ctor_match_error(cdd, ctor_args, origin);
 
 	std::string sym = ctor_call_symbol(cdd, ctor);
 

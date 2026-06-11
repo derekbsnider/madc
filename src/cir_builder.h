@@ -564,10 +564,18 @@ public:
 	// Build the constructor-call statement for a class instance `v`:
 	//   ClassName__ClassName(&v, ctor_args...)
 	// Returns NULL when `v` is not a user class or has no user constructor.
+	// When the class HAS user ctors but none matches the initializer, returns
+	// an error_node (loud no-match) — never NULL, so callers cannot silently
+	// drop a required construction.
 	node_t class_ctor_call(class Variable *v, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
 	node_t class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin);
+	// The loud no-match result shared by both ctor-call builders: an
+	// error_node naming the class and the initializer argument types.
+	node_t no_ctor_match_error(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
 	// Select the ctor overload of `cdd` matching the initializer arguments by

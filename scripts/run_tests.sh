@@ -10,6 +10,11 @@
 #   tests/foo.expect — if present, the test must exit 0 AND produce
 #                      output that contains every line listed here as
 #                      a substring. Otherwise exit-0 is enough.
+#   tests/foo.expect_err — marks a compile-error test: madc must exit
+#                      NONZERO (not a timeout) and its diagnostics
+#                      (stderr) must contain every line listed here as
+#                      a substring. The EXE pass skips these — the
+#                      source does not compile by design.
 #
 # No test names are hard-coded here.
 #
@@ -43,6 +48,7 @@ for t in tests/*.mad; do
     input_file="tests/$base.input"
     argv_file="tests/$base.argv"
     expect_file="tests/$base.expect"
+    expect_err_file="tests/$base.expect_err"
     flags_file="tests/$base.flags"
     mir_skip_file="tests/$base.mir_skip"
     timeout_file="tests/$base.timeout"
@@ -64,29 +70,56 @@ for t in tests/*.mad; do
     tmo=5
     [ -f "$timeout_file" ] && read -r tmo < "$timeout_file"
 
-    if [ -f "$input_file" ]; then
-        out=$(timeout "$tmo" bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>/dev/null)
+    if [ -f "$expect_err_file" ]; then
+        # Compile-error test: capture stderr — the diagnostics ARE the
+        # expected output.
+        if [ -f "$input_file" ]; then
+            out=$(timeout "$tmo" bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
+        else
+            out=$(timeout "$tmo" bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
+        fi
+        rc=$?
+        ok=1
+        timed_out=0
+        if [ $rc -eq 124 ]; then
+            ok=0
+            timed_out=1
+        elif [ $rc -eq 0 ]; then
+            ok=0
+        else
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                if ! grep -qF -- "$line" <<< "$out"; then
+                    ok=0
+                    break
+                fi
+            done < "$expect_err_file"
+        fi
     else
-        out=$(timeout "$tmo" bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>/dev/null)
-    fi
-    rc=$?
+        if [ -f "$input_file" ]; then
+            out=$(timeout "$tmo" bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>/dev/null)
+        else
+            out=$(timeout "$tmo" bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>/dev/null)
+        fi
+        rc=$?
 
-    ok=1
-    timed_out=0
-    if [ $rc -eq 124 ]; then
-        ok=0
-        timed_out=1
-    elif [ $rc -ne 0 ]; then
-        ok=0
-    elif [ -f "$expect_file" ]; then
-        while IFS= read -r line; do
-            [ -z "$line" ] && continue
-            # Each expected line must appear somewhere in the output.
-            if ! grep -qF -- "$line" <<< "$out"; then
-                ok=0
-                break
-            fi
-        done < "$expect_file"
+        ok=1
+        timed_out=0
+        if [ $rc -eq 124 ]; then
+            ok=0
+            timed_out=1
+        elif [ $rc -ne 0 ]; then
+            ok=0
+        elif [ -f "$expect_file" ]; then
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                # Each expected line must appear somewhere in the output.
+                if ! grep -qF -- "$line" <<< "$out"; then
+                    ok=0
+                    break
+                fi
+            done < "$expect_file"
+        fi
     fi
 
     if [ $ok -eq 1 ]; then
@@ -102,7 +135,7 @@ for t in tests/*.mad; do
     fi
 
     # EXE pass: compile to native and run
-    if [ $RUN_EXE -eq 1 ] && [ $ok -eq 1 ]; then
+    if [ $RUN_EXE -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ]; then
         exe_path="/tmp/madc_test_exe_${base}"
         if bin/madc "${flags[@]}" -o "$exe_path" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
