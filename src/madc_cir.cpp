@@ -19,6 +19,8 @@
 #include <fstream>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdarg.h>
+#include <setjmp.h>
 #include <dlfcn.h>
 
 
@@ -77,6 +79,36 @@ static void *cir_import_resolver(const char *name)
     if (!addr)
 	DBG(std::cerr << "cir_import_resolver: unresolved: " << name << std::endl);
     return addr;
+}
+
+// -----------------------------------------------------------------------
+// MIR fatal-error containment
+// -----------------------------------------------------------------------
+//
+// MIR's default error handler exit(1)s the PROCESS — fatal for an embedding
+// host (libmadc): a bad module (e.g. an unresolved import at link time) must
+// surface as a diagnostic, not kill the application. MIR_error_func_t is
+// declared noreturn, so the supported recovery shape is longjmp back to the
+// armed call site; the frames jumped across are plain C (mir.c), so no C++
+// destructors are skipped.
+static thread_local jmp_buf cir_mir_error_jmp;
+static thread_local bool cir_mir_error_armed = false;
+static thread_local char cir_mir_error_text[512];
+
+static void MIR_NO_RETURN cir_mir_error(MIR_error_type_t error_type,
+					const char *format, ...)
+{
+    (void)error_type;
+    va_list ap;
+    va_start(ap, format);
+    vsnprintf(cir_mir_error_text, sizeof(cir_mir_error_text), format, ap);
+    va_end(ap);
+    if (cir_mir_error_armed)
+	longjmp(cir_mir_error_jmp, 1);
+    // Unarmed (a fatal outside a guarded region): keep MIR's fail-fast
+    // default so the error is never silently swallowed.
+    fprintf(stderr, "MIR fatal error: %s\n", cir_mir_error_text);
+    exit(1);
 }
 
 // -----------------------------------------------------------------------
@@ -240,6 +272,7 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     if (ctx) teardown();   // a rebuild starts from a clean context
 
     ctx = MIR_init();
+    MIR_set_error_func(ctx, cir_mir_error);
     c2mir_init(ctx);
     MIR_gen_init(ctx);
     MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
@@ -263,8 +296,17 @@ bool CirJitSession::build(Program *prog, const char *source_name,
 	return false;
     }
 
+    if (setjmp(cir_mir_error_jmp)) {
+	// A MIR fatal (e.g. "import of undefined item") longjmp'd back here.
+	cir_mir_error_armed = false;
+	fprintf(stderr, "%s: MIR error: %s\n", source_name, cir_mir_error_text);
+	teardown();
+	return false;
+    }
+    cir_mir_error_armed = true;
     MIR_load_module(ctx, mod);
     MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
+    cir_mir_error_armed = false;
     return true;
 }
 
@@ -273,6 +315,14 @@ void *CirJitSession::function_code(const char *emitted_name)
     if (!mod || !emitted_name || !emitted_name[0]) return NULL;
     std::map<std::string, void *>::iterator gi = gen_cache.find(emitted_name);
     if (gi != gen_cache.end()) return gi->second;
+    if (setjmp(cir_mir_error_jmp)) {
+	// A MIR fatal during lazy codegen longjmp'd back here.
+	cir_mir_error_armed = false;
+	fprintf(stderr, "%s: MIR codegen error: %s\n", emitted_name,
+		cir_mir_error_text);
+	return NULL;
+    }
+    cir_mir_error_armed = true;
     void *code = NULL;
     for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
 	 item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
@@ -282,6 +332,7 @@ void *CirJitSession::function_code(const char *emitted_name)
 	    break;
 	}
     }
+    cir_mir_error_armed = false;
     if (code) gen_cache[emitted_name] = code;
     return code;
 }
