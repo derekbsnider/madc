@@ -13808,9 +13808,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( nsi == namespace_map.end() )
 		    {
 #ifdef MADC_DEBUG_NS_RESOLVE
-			fprintf(stderr, "[ns-resolve] unknown ns '%s' inst_depth=%d inst='%s'\n",
-				ns_name.c_str(), fn_template_instantiation_depth,
-				instantiating_canonical_spelling.c_str());
+			{
+			    std::string up;
+			    for ( size_t ui = 0; ui < tokens.size() && ui < 10; ++ui )
+			    {
+				if ( !tokens[ui] ) continue;
+				if ( !up.empty() ) up += ' ';
+				up += overload_token_spelling(tokens[ui]);
+			    }
+			    fprintf(stderr, "[ns-resolve] unknown ns '%s' inst_depth=%d inst='%s' next: %s\n",
+				    ns_name.c_str(), fn_template_instantiation_depth,
+				    instantiating_canonical_spelling.c_str(), up.c_str());
+			}
 #endif
 			Throw(tb) << "Unknown namespace '" << ns_name << "'" << flush;
 		    }
@@ -31271,7 +31280,14 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 				  && datatype_statement_starts_qualified_expr() )
 				{
 				    resetPrevToken();
-				    return parseExprStmt(tb);
+				    // Hand the RESOLVED type token to the
+				    // expression parser, not the bare ident:
+				    // resolve_declared_type_token consumed the
+				    // template-id (`allocator_traits<_A>` ->
+				    // the instantiated class), and the bare
+				    // name alone no longer resolves the class
+				    // scope for `::member(...)`.
+				    return parseExprStmt(resolved);
 				}
 				if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 				{
