@@ -11100,7 +11100,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
           e2 = arg->attr;
           t2 = e2->type;
           if (t2->mode != TM_PTR || !standard_integer_type_p (t2->u.ptr_type)
-              || t2->u.ptr_type->u.basic_type < TP_INT) /* only [u]int, [u]long, [u]longlong */
+              || t2->u.ptr_type->u.basic_type == TP_BOOL) /* any non-bool integer (gcc) */
             error (c2m_ctx, POS (arg), "wrong type of 3rd argument of %s call",
                    add_overflow_p   ? ADD_OVERFLOW
                    : sub_overflow_p ? SUB_OVERFLOW
@@ -17955,31 +17955,104 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         true_label = false_label = NULL;
         break;
       }
-      t = get_mir_type (c2m_ctx, e->type->u.ptr_type);
-      MIR_append_insn (ctx, curr_func,
-                       MIR_new_insn (ctx,
-                                     t == MIR_T_I32 || t == MIR_T_U32
-                                       ? (add_overflow_p   ? MIR_ADDOS
-                                          : sub_overflow_p ? MIR_SUBOS
-                                          : t == MIR_T_I32 ? MIR_MULOS
-                                                           : MIR_UMULOS)
-                                       : (add_overflow_p   ? MIR_ADDO
-                                          : sub_overflow_p ? MIR_SUBO
-                                          : t == MIR_T_I64 ? MIR_MULO
-                                                           : MIR_UMULO),
-                                     MIR_new_mem_op (ctx, t, 0, op3.mir_op.u.reg, 0, 1), op1.mir_op,
-                                     op2.mir_op));
-      if (true_label != NULL) {
-        MIR_op_t lab_op = MIR_new_label_op (ctx, true_label);
-        emit1 (c2m_ctx, t == MIR_T_I32 || t == MIR_T_I64 ? MIR_BO : MIR_UBO, lab_op);
-        emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, false_label));
-      } else {
-        label = MIR_new_label (ctx);
-        res = get_new_temp (c2m_ctx, MIR_T_I64);
-        emit1 (c2m_ctx, t == MIR_T_I32 || t == MIR_T_I64 ? MIR_BO : MIR_UBO,
-               MIR_new_label_op (ctx, label));
-        emit2 (c2m_ctx, MIR_MOV, res.mir_op, MIR_new_int_op (ctx, 0));
-        emit_label_insn_opt (c2m_ctx, label);
+      {
+        struct type *rt = e->type->u.ptr_type;
+        struct type *at1 = ((struct expr *) NL_HEAD (args->u.ops)->attr)->type;
+        struct type *at2 = ((struct expr *) NL_EL (args->u.ops, 1)->attr)->type;
+        /* The native overflow insns are exact ONLY when both operand types
+           equal the result type (no width/signedness mixing). */
+        int exact_p = (at1->mode == TM_BASIC && at2->mode == TM_BASIC && rt->mode == TM_BASIC
+                       && at1->u.basic_type == rt->u.basic_type
+                       && at2->u.basic_type == rt->u.basic_type);
+
+        t = get_mir_type (c2m_ctx, rt);
+        if (exact_p && (t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_I64 || t == MIR_T_U64)) {
+          MIR_append_insn (ctx, curr_func,
+                           MIR_new_insn (ctx,
+                                         t == MIR_T_I32 || t == MIR_T_U32
+                                           ? (add_overflow_p   ? MIR_ADDOS
+                                              : sub_overflow_p ? MIR_SUBOS
+                                              : t == MIR_T_I32 ? MIR_MULOS
+                                                               : MIR_UMULOS)
+                                           : (add_overflow_p   ? MIR_ADDO
+                                              : sub_overflow_p ? MIR_SUBO
+                                              : t == MIR_T_I64 ? MIR_MULO
+                                                               : MIR_UMULO),
+                                         MIR_new_mem_op (ctx, t, 0, op3.mir_op.u.reg, 0, 1),
+                                         op1.mir_op, op2.mir_op));
+          if (true_label != NULL) {
+            MIR_op_t lab_op = MIR_new_label_op (ctx, true_label);
+            emit1 (c2m_ctx, t == MIR_T_I32 || t == MIR_T_I64 ? MIR_BO : MIR_UBO, lab_op);
+            emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, false_label));
+          } else {
+            /* Value form. The B[U]O must stay ADJACENT to the overflow insn
+               (MIR validates that), so branch first and set the flag on each
+               arm — the old code had no 1-store at all: on overflow it
+               jumped past the 0-store into an uninitialized temp. */
+            MIR_label_t done_label = MIR_new_label (ctx);
+
+            label = MIR_new_label (ctx);
+            res = get_new_temp (c2m_ctx, MIR_T_I64);
+            emit1 (c2m_ctx, t == MIR_T_I32 || t == MIR_T_I64 ? MIR_BO : MIR_UBO,
+                   MIR_new_label_op (ctx, label));
+            emit2 (c2m_ctx, MIR_MOV, res.mir_op, MIR_new_int_op (ctx, 0));
+            emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, done_label));
+            emit_label_insn_opt (c2m_ctx, label);
+            emit2 (c2m_ctx, MIR_MOV, res.mir_op, MIR_new_int_op (ctx, 1));
+            emit_label_insn_opt (c2m_ctx, done_label);
+          }
+        } else {
+          /* General gcc semantics (mixed operand types / narrow results):
+             compute at 128 bits — exact "infinite precision" for any
+             <=64-bit operands — wrap-store the result type's low bits, and
+             flag = the stored value re-extended differs from the 128-bit
+             value. */
+          node_code_t opc = add_overflow_p ? N_ADD : sub_overflow_p ? N_SUB : N_MUL;
+          struct type i128t;
+          struct type *vt;
+          op_t srcs[2], dest128, low, stored, resmem, re128, l1, h1, l2, h2, fl, fh, flag;
+
+          init_type (&i128t);
+          i128t.mode = TM_BASIC;
+          i128t.u.basic_type = TP_INT128;
+          for (n = 0; n < 2; n++) {
+            op_t aop = n == 0 ? op1 : op2;
+            struct type *at = n == 0 ? at1 : at2;
+
+            if (!int128_type_p (at))
+              srcs[n] = scalar_to_int128_mem (c2m_ctx, aop, at);
+            else if (aop.mir_op.mode == MIR_OP_MEM)
+              srcs[n] = aop;
+            else /* a 128-bit constant: side-effect-free, re-materialize */
+              srcs[n] = materialize_int128_scalar_node (c2m_ctx, NL_EL (args->u.ops, n), at);
+          }
+          vt = int128_one_lane_vector_type (c2m_ctx, &i128t, r);
+          dest128 = int128_temp (c2m_ctx);
+          emit_int128_vector_bin_op (c2m_ctx, opc, srcs[0], &i128t, srcs[1], &i128t, vt,
+                                     dest128);
+          low = get_new_temp (c2m_ctx, MIR_T_I64);
+          emit2 (c2m_ctx, MIR_MOV, low.mir_op,
+                 int128_half_op (c2m_ctx, dest128, MIR_T_I64, 0).mir_op);
+          stored = cast (c2m_ctx, low, t, TRUE);
+          resmem = new_op (NULL, MIR_new_mem_op (ctx, t, 0, op3.mir_op.u.reg, 0, 1));
+          emit_scalar_assign (c2m_ctx, resmem, &stored, t, FALSE);
+          re128 = scalar_to_int128_mem (c2m_ctx, stored, rt);
+          load_int128_halves (c2m_ctx, dest128, MIR_T_U64, &l1, &h1);
+          load_int128_halves (c2m_ctx, re128, MIR_T_U64, &l2, &h2);
+          fl = get_new_temp (c2m_ctx, MIR_T_I64);
+          fh = get_new_temp (c2m_ctx, MIR_T_I64);
+          flag = get_new_temp (c2m_ctx, MIR_T_I64);
+          emit3 (c2m_ctx, MIR_NE, fl.mir_op, l1.mir_op, l2.mir_op);
+          emit3 (c2m_ctx, MIR_NE, fh.mir_op, h1.mir_op, h2.mir_op);
+          emit3 (c2m_ctx, MIR_OR, flag.mir_op, fl.mir_op, fh.mir_op);
+          if (true_label != NULL) {
+            emit3 (c2m_ctx, MIR_BNE, MIR_new_label_op (ctx, true_label), flag.mir_op,
+                   MIR_new_int_op (ctx, 0));
+            emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, false_label));
+          } else {
+            res = flag;
+          }
+        }
       }
       true_label = false_label = NULL;
       break;
