@@ -1,5 +1,28 @@
 # HANDOFF — type-table/value-ABI track + package-C globals; next = verify branch, then string call marshalling
 
+> **STATUS UPDATE 2026-06-12 (same day, later) — PACKAGE-C INCREMENT 2 EXECUTED** on
+> `feature/eval-string-call-claude` (3 commits: MIR-fatal containment /
+> const-char* binding fold / text_object call marshalling). The eval-globals
+> branch was MERGED earlier (queue item 1 done; CHANGELOG entry at merge).
+> All 5 targeted skips now pass — eval char* (:221) was a STALE skip (fixed
+> by increment 1's __madc_global_init); string bindings (:543) were an
+> undefined-import MIR_link fatal that EXITED THE HOST (now: CirJitSession
+> contains MIR fatals via MIR_set_error_func+longjmp, and constant char*
+> binding reads fold to string literals in CirBuilder — the int-fold
+> analogue); call std::string args (:1638) pass as borrowed by-value blobs
+> (callee emits no param dtor), string returns (:1656) read the hidden
+> __retbuf live object, C-API (:1678) rides the same path. Host carrier
+> type named ONLY via `madc_text_carrier` (new, madc_mangle.h — the
+> sanctioned std:: home; `\bstring_[a-z]` and `sizeof(std::` are gate-banned
+> in production code — name marshalling identifiers in the text_* family).
+> Gates at branch head: units 112/0/30, fulltest 577/0/0/18 exit 0 + both
+> gates GREEN, torture 1567 failset NAME-IDENTICAL (8 truthful
+> runtime→compile reclassifications: undefined-import tests previously died
+> via MIR's own exit(1)), SMAUG --project soak ready+124. NEXT = queue item
+> 3: register_function (~8 skips, host→script trampolines on the 32-byte
+> value ABI). NOTE: claude_status.json head/branch fields predate the
+> eval-globals merge — sync at next track milestone per mirror-sync cadence.
+
 Date: 2026-06-12 (same-day successor to `2026-06-12-strict-equality-HANDOFF.md`,
 which remains the ===/!== mechanism reference). This is the **current
 cold-restart contract**.
