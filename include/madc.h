@@ -174,6 +174,11 @@ public:
     // can bind emit_symbol to the mangled external symbol. Stays false for any
     // madc-compiled (bodied) function.
     bool declaration_only;
+    // The source file of a declaration_only prototype (token ->file pointer;
+    // NULL when not recorded). Lets the compile-stage registration-policy
+    // gate distinguish a USER-SOURCE extern prototype from curated header
+    // declarations.
+    const char *decl_file = nullptr;
     // True for C++ special declarations like `= default` or `= delete`.
     // These are not bodyless shared-library declarations and must not be bound
     // as external symbols just because the class has canonical C++ spelling.

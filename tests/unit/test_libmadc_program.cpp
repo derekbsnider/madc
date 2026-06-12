@@ -155,7 +155,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("exec_file reports runtime error when main is missing" * doctest::skip()) {
+    TEST_CASE("exec_file reports runtime error when main is missing") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path, "int helper() { return 1; }\n");
@@ -834,7 +834,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("function calls are not allowed") != std::string::npos);
     }
 
-    TEST_CASE("eval_expression can use math.h header groups for libm functions" * doctest::skip()) {
+    TEST_CASE("eval_expression can use math.h header groups for libm functions") {
 	madc::program pgm;
 	madc::expression_policy policy;
 	policy.allow_function_calls = true;
@@ -1134,7 +1134,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message == "use of undeclared identifier 'strlen'");
     }
 
-    TEST_CASE("compile_options can disable extern late-bind dlsym fallback" * doctest::skip()) {
+    TEST_CASE("compile_options can disable extern late-bind dlsym fallback") {
 	madc::program pgm;
 	madc::compile_options options = pgm.get_compile_options();
 	options.enable_dlfcn_functions = false;
@@ -1625,7 +1625,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("runtime_eval_policy can restrict child full eval independently of the parent program" * doctest::skip()) {
+    TEST_CASE("runtime_eval_policy can restrict child full eval independently of the parent program") {
 	madc::program pgm;
 	madc::runtime_eval_policy policy = pgm.get_runtime_eval_policy();
 	policy.allow_core_functions = false;
@@ -1633,6 +1633,8 @@ TEST_SUITE("madc::program") {
 
 	std::string path = make_temp_source_path();
 	write_file(path,
+		   "#include <string>\n"
+		   "#include <ns_madc>\n"
 		   "int probe_eval() {\n"
 		   "    return madc::eval_int(\"puti(7); return 42;\");\n"
 		   "}\n"

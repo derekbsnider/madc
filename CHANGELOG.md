@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### libmadc policy tail — late-bind dlsym gate; remaining non-AOT skips retired
+
+- **`enable_dlfcn_functions = false` now also gates the LINK-time dlsym
+  fallback**: a user-source `extern` prototype with no body and no
+  sanctioned binding (no mangled `emit_symbol`, not an `addFunction`
+  registration) can only ever resolve through the JIT link's dlsym — it
+  is rejected at the compile stage with the same "dynamic symbol
+  fallback is disabled by registration policy" diagnostic the parse-time
+  gate uses (new `FuncDef::decl_file` provenance distinguishes user
+  source from curated header declarations, which stay permitted).
+- 4 more unit tests green (`test_libmadc_program` **132 passed / 11
+  skipped** — every remaining skip is the deferred AOT save/load
+  family): missing-`main` exec_file runtime error, `eval_expression`
+  math.h header groups, the late-bind dlsym gate, and
+  `runtime_eval_policy` child full-eval restriction (the last two test
+  sources modernized: the CIR missing-main message and the
+  `<string>`/`<ns_madc>` includes the script-side eval surface requires).
+
 ### libmadc fork-per-invocation execution on CIR
 
 - **`fork_per_invocation` exec/eval run on the CIR backend**: the forked

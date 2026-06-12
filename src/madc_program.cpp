@@ -4866,6 +4866,30 @@ bool Program::compile()
     // tokenize+parse that already ran. Code generation happens at the
     // CIR->c2mir->MIR stage (CirJitSession / madc_cir_execute), driven
     // lazily at execute/call/eval time. A parsed Program is compile-ready.
+    //
+    // ONE policy gate lives here: with dynamic symbol fallback disabled, a
+    // USER-SOURCE prototype with no body and no sanctioned binding (no
+    // emit_symbol, not an addFunction registration — those create FuncDefs
+    // with declaration_only false) could only ever resolve through the JIT
+    // link's dlsym fallback. Reject it at compile, the late-bind analogue of
+    // the parse-time undeclared-identifier gate. Curated header declarations
+    // (decl_file != the main translation unit) stay permitted.
+    if ( !last_error.has_error && !is_dynamic_symbol_fallback_enabled()
+      && tkProgram && !tkProgram->source.empty() )
+    {
+	for ( funcdef_map_iter fmi = funcdef_map.begin();
+	      fmi != funcdef_map.end(); ++fmi )
+	{
+	    FuncDef *fd = fmi->second;
+	    if ( !fd || !fd->declaration_only || !fd->emit_symbol.empty() )
+		continue;
+	    if ( !fd->decl_file || tkProgram->source != fd->decl_file )
+		continue;
+	    set_error(DiagnosticPhase::compiler,
+		      "dynamic symbol fallback is disabled by registration policy");
+	    return false;
+	}
+    }
     return !last_error.has_error;
 }
 

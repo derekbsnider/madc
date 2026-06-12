@@ -27617,6 +27617,7 @@ paramdecl:
 	if ( owner_class )
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
+	func->decl_file = nt ? nt->file : NULL;
 	DBG(std::cout << "parseFunction() forward declaration of function " << id << std::endl);
 	if ( nt->id() == TokenID::tkComma )
 	{
@@ -27679,6 +27680,7 @@ paramdecl:
 	if ( owner_class )
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
+	func->decl_file = nt ? nt->file : NULL;
 	if ( !compounds.empty() && compounds.top() == param_scope )
 	    popCompound();
 	return;
