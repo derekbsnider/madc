@@ -695,3 +695,25 @@ TEST_CASE("CirBuilder: ostream parenthesized shift value" * doctest::skip()) {
     CHECK(cir_capture(std::string(P) + "int main() { cout << (1 << 2); return 0; }") == "4");
     CHECK(cir_capture(std::string(P) + "int main() { cout << \"a\" << (1 << 2) << \"b\"; return 0; }") == "a4b");
 }
+
+TEST_CASE("CirJitSession resolves global data addresses by name") {
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(
+	"int counter = 4;\nint zeroed;\nlong big = 5000000000;\nint main() { return 0; }\n",
+	"<test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+
+    CirJitSession session;
+    REQUIRE(session.build(prog.get(), "<test>"));
+    void *addr = session.data_address("counter");
+    REQUIRE(addr != (void *)NULL);
+    CHECK(*(int *)addr == 4);
+    void *big_addr = session.data_address("big");
+    REQUIRE(big_addr != (void *)NULL);
+    CHECK(*(int64_t *)big_addr == 5000000000LL);
+    void *z = session.data_address("zeroed");      // zero-init: bss or data
+    REQUIRE(z != (void *)NULL);
+    CHECK(*(int *)z == 0);
+    CHECK(session.data_address("no_such_global") == (void *)NULL);
+}

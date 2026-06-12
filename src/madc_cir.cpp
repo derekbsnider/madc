@@ -286,6 +286,25 @@ void *CirJitSession::function_code(const char *emitted_name)
     return code;
 }
 
+void *CirJitSession::data_address(const char *emitted_name)
+{
+    if (!mod || !emitted_name || !emitted_name[0]) return NULL;
+    for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
+	 item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
+	const char *name = NULL;
+	switch (item->item_type) {
+	    case MIR_data_item:      name = item->u.data->name; break;
+	    case MIR_bss_item:       name = item->u.bss->name; break;
+	    case MIR_ref_data_item:  name = item->u.ref_data->name; break;
+	    case MIR_expr_data_item: name = item->u.expr_data->name; break;
+	    default: break;
+	}
+	if (name != NULL && strcmp(name, emitted_name) == 0)
+	    return item->addr;
+    }
+    return NULL;
+}
+
 int CirJitSession::run_main(int argc, char **argv, bool *ok)
 {
     void *code = function_code("main");

@@ -59,6 +59,11 @@ public:
     // "__madc_eval"). Generates on first use, memoized. NULL when absent.
     void *function_code(const char *emitted_name);
 
+    // The linked runtime address of a module DATA/BSS item by its emitted
+    // name (globals emit under their source identifier). Valid after
+    // build() (module loaded + linked). NULL when absent.
+    void *data_address(const char *emitted_name);
+
     // Generate and run main(argc, argv); returns main's return value.
     // `ok` (when non-null) reports whether main was found and invoked.
     int run_main(int argc, char **argv, bool *ok = 0);
