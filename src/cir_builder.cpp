@@ -11411,6 +11411,15 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (fd) func_def_nodes.push_back(fd);
 	}
 	std::set<std::string> lib_emitted;
+	// TokenFuncs parsed by the fixpoint below (parse_deferred_lazy_body). They
+	// are NOT in the `funcs` snapshot taken at entry, so Pass 1's forward-proto
+	// loop never sees them — they get their prototypes in the late proto pass
+	// after the LAST fixpoint run (a body materialized in the Pass-1.9 re-run
+	// would otherwise be defined module-tail with no forward declaration, and
+	// every call to it from an earlier definition becomes an implicit-int K&R
+	// call: pointer returns truncate, struct args mis-wire — the
+	// __madc_shim string-ctor segfault).
+	std::vector<TokenFunc *> materialized_funcs;
 	// Reachability fixpoint: materialize ODR-used deferred member bodies + lower
 	// reachable library fns until referenced_funcs stops growing. Lazy
 	// member-function-body instantiation ([temp.inst]): a system-header body
@@ -11435,6 +11444,7 @@ node_t CirBuilder::translate_module(Program *prog)
 					if (!tf) continue;
 					FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
 					lib_funcs[tfd ? func_emit_name(tf->var, tfd) : tf->var.name] = tf;
+					materialized_funcs.push_back(tf);
 					// The materialized body is madc-emitted: record its
 					// symbols so by-value class returns classify as the
 					// retbuf ABI at every later call site. (Pass 0.75's
@@ -11640,9 +11650,15 @@ node_t CirBuilder::translate_module(Program *prog)
 		emitted_globals.insert(gname);
 	}
 
-	// Pass 0.8: output externs for runtime and external symbols referenced by lowering.
-	for (auto &kv : m_output_externs)
+	// Pass 0.8: output externs for runtime and external symbols referenced by
+	// lowering SO FAR. Bodies translated by the Pass-1.9 fixpoint re-run
+	// register more entries after this point; the late declaration pass below
+	// Pass 1.9 flushes those (emitted_extern_syms records this batch).
+	std::set<std::string> emitted_extern_syms;
+	for (auto &kv : m_output_externs) {
 		append(top_list, kv.second);
+		emitted_extern_syms.insert(kv.first);
+	}
 
 	// Pass 1: forward prototypes for every user function. Emitted AFTER the
 	// struct/class definitions (Pass 0 / 0.5) — so a by-value struct param or
@@ -11781,6 +11797,24 @@ node_t CirBuilder::translate_module(Program *prog)
 	// DEFINED, not just referenced (else MIR-link "import of undefined item").
 	materialize_and_lower();
 	m_user_func_names = NULL;   // backing set is a translate_module local; don't dangle
+
+	// Pass 1.95: late declarations — everything the fixpoint runs added after
+	// the early declaration passes had already emitted. Both lists land in
+	// top_list here, still ahead of every definition (Pass 2), so each call
+	// compiles against a real signature instead of a C implicit-int default
+	// (which truncates pointer returns and mis-wires struct args — the
+	// __madc_shim string-ctor segfault).
+	// (a) Forward prototypes for fixpoint-materialized bodies: they are not in
+	//     the `funcs` snapshot Pass 1 iterates.
+	for (TokenFunc *tf : materialized_funcs) {
+		node_t proto = func_proto(tf);
+		if (proto) append(top_list, proto);
+	}
+	// (b) Externs registered (need_output_extern) during fixpoint body
+	//     translation after Pass 0.8 ran.
+	for (auto &kv : m_output_externs)
+		if (!emitted_extern_syms.count(kv.first))
+			append(top_list, kv.second);
 
 	// Synthesize `void __madc_global_init(void)` — the ONE home for the
 	// file-scope class-global ctor calls (collected by collect_global_ctors).
