@@ -237,6 +237,9 @@ class CirBuilder {
 	// the 32-byte madc_value ABI. NULL when the signature is not
 	// host-marshallable (the host then gets a clean unsupported error).
 	node_t synth_call_shim(Program *prog, TokenFunc *tf);
+	// The shim core, keyed on the function Variable — serves parsed
+	// functions AND host-callback trampolines (which have no TokenFunc).
+	node_t synth_call_shim_var(Program *prog, Variable *fvar);
 	node_t ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 				  FuncDef *ctor,
 				  const std::vector<node_t> &explicit_nodes,

@@ -10357,6 +10357,14 @@ FuncDef *class_text_ctor(DataDefCLASS *cdd)
 
 node_t CirBuilder::synth_call_shim(Program *prog, TokenFunc *tf)
 {
+	return tf ? synth_call_shim_var(prog, &tf->var) : NULL;
+}
+
+// The shim core, keyed on the function VARIABLE so it serves both parsed
+// functions (via the TokenFunc wrapper above) and host-callback trampolines
+// (addFunction-declared, defined by synth_host_trampoline — no TokenFunc).
+node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
+{
 	// Classify one parameter position; false = not marshallable.
 	auto classify_param = [](DataDef *pt, bool is_ref, ShimSlot &out) -> bool {
 		if (!pt || is_ref) return false;
@@ -10378,9 +10386,9 @@ node_t CirBuilder::synth_call_shim(Program *prog, TokenFunc *tf)
 		return false;
 	};
 
-	FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
-	if (!prog || !tf || !fd) return NULL;
-	if (tf->var.name.empty() || tf->var.name == "main") return NULL;
+	FuncDef *fd = fvar ? dynamic_cast<FuncDef *>(fvar->type) : NULL;
+	if (!prog || !fvar || !fd) return NULL;
+	if (fvar->name.empty() || fvar->name == "main") return NULL;
 	if (fd->is_multi_return() || fd->is_varargs) return NULL;
 	// Function-LOCAL entities (GNU nested fns, lambdas) hoist under a
 	// local_emit_name and may take hidden capture parameters — they are
@@ -10391,9 +10399,9 @@ node_t CirBuilder::synth_call_shim(Program *prog, TokenFunc *tf)
 	// Host-callable = globally name-addressable (perform_call resolves via
 	// findVariable); methods/lambdas/locals are not.
 	{
-		std::string lookup = tf->var.name;
+		std::string lookup = fvar->name;
 		Variable *gv = prog->tkProgram ? prog->tkProgram->findVariable(lookup) : NULL;
-		if (gv != &tf->var) return NULL;
+		if (gv != fvar) return NULL;
 	}
 
 	// Classify the signature; bail (no shim) on anything unmarshallable.
@@ -10433,7 +10441,7 @@ node_t CirBuilder::synth_call_shim(Program *prog, TokenFunc *tf)
 		return NULL;
 	}
 
-	std::string target_sym = call_emit_symbol(fd, tf->var.name);
+	std::string target_sym = call_emit_symbol(fd, fvar->name);
 	std::string shim_name = "__madc_shim_" + target_sym;
 	referenced_funcs.insert(target_sym);
 
@@ -10677,6 +10685,17 @@ void CirBuilder::synth_call_shims(Program *prog,
 {
 	for (TokenFunc *tf : roots) {
 		node_t shim = synth_call_shim(prog, tf);
+		if (shim) func_def_nodes.push_back(shim);
+	}
+	// Host-callback trampolines (synth_host_trampoline) are name-addressable
+	// module functions too: give each one a shim so program::call works on
+	// registered names through the same ONE call surface.
+	for (const Program::HostCallbackReg &reg : prog->host_callback_regs) {
+		std::string lookup = reg.name;
+		Variable *fv = prog->tkProgram
+			       ? prog->tkProgram->findVariable(lookup) : NULL;
+		if (!fv) continue;
+		node_t shim = synth_call_shim_var(prog, fv);
 		if (shim) func_def_nodes.push_back(shim);
 	}
 }

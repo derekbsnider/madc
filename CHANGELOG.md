@@ -22,12 +22,20 @@
 - **Session import overrides**: the JIT session binds the trampoline's
   `__madc_host_cb_<k>` import to the host entry at MIR link (the import
   resolver consults the linking Program's registrations before dlsym).
-- 8 unit tests unskipped (`test_libmadc_program` 121 passed / 22
+- **`program::call` works directly on host-registered names**: the shim
+  core was re-keyed on the function `Variable`
+  (`CirBuilder::synth_call_shim_var`) so host-callback trampolines —
+  which have no parsed `TokenFunc` — get marshalling shims like any
+  module function; `call()` on them flows through the same one call
+  surface, so the `invoke_limits` cpu/memory enforcement applies
+  unchanged.
+- 10 unit tests unskipped (`test_libmadc_program` 123 passed / 20
   skipped): explicit/deduced registration, string→`const char*` coercion,
   four-arg callbacks, `const char*` returns, engine inheritance across
-  multiple programs, and host→script→host call chains. Remaining skips:
-  `pgm.call` directly on a host-registered name (shim coverage over
-  trampolines — queued with fork/limits), fork shapes, AOT.
+  multiple programs, host→script→host call chains, and the
+  `invoke_limits` cpu_ms/memory_bytes rejection paths over host
+  callbacks. Remaining skips: fork-per-invocation shapes, AOT
+  save/load (deferred), policy stragglers.
 
 ### Parser known-gaps sweep: ctor-comma declarators, VLA sizeof, const array dims
 

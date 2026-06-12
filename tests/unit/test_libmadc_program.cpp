@@ -1164,7 +1164,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("output_bytes limit") != std::string::npos);
     }
 
-    TEST_CASE("invoke_limits can reject excessive cpu usage from call" * doctest::skip()) {
+    TEST_CASE("invoke_limits can reject excessive cpu usage from call") {
 	madc::program pgm;
 	REQUIRE(pgm.register_function(
 	    "host_spin",
@@ -1193,7 +1193,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("invoke_limits can reject excessive resident growth from call" * doctest::skip()) {
+    TEST_CASE("invoke_limits can reject excessive resident growth from call") {
 	madc::program pgm;
 	g_host_memory.clear();
 	REQUIRE(pgm.register_function(
