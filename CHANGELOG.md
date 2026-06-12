@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Real `__int128` / `unsigned __int128` (P0 wide-integer track, slices 1+1.5)
+
+- **`__int128` is a real 16-byte type** (SysV alignment 16) end-to-end:
+  lexer type words → new `ddINT128`/`ddUINT128` DataDefs (`dtINT128`/
+  `dtUINT128` at the append-only enum tail; the type predicates became
+  explicit sets — the historical `[dtFLOAT, dtRESERVED)` range would have
+  misclassified tail entries), typeid slots 19/20 backed, CIR emits
+  `[N_UNSIGNED,] N_INT128`, `--emit=c11` renders `__int128`, PCH spelling
+  map. Previously `__int128` silently aliased to the 64-bit types while
+  `__SIZEOF_INT128__=16` was defined — >64-bit values truncated.
+- **Enabled by the MIR fork's scalar-int128 raise** (fork `develop` @
+  `545ad46`, pushed; `MIR_COMMIT` pinned): c2mir previously lowered int128
+  CONSTANTS and one-lane v128 VECTORS only — scalar `__int128` variables
+  had no MIR lowering at all. The fork now covers scalar gen (dispatch onto
+  the one-lane-vector halves emitters), 128-bit constant folding, the SysV
+  two-INTEGER-eightbyte ABI, int128↔float helper conversions, switch,
+  truthiness, inc/dec, and implicit conversions in both directions; c2mir
+  also defines `__SIZEOF_INT128__` + the `__int128_t`/`__uint128_t`
+  builtin typedefs now.
+- **`__builtin_add/sub/mul_overflow` pass through as real c2mir builtins**
+  (handled natively at every width incl. `__int128`); the old textual remap
+  to 64-bit `__madc_*` helpers truncated 128-bit results (the `*_p`
+  predicate variants stay mapped). On the c2mir side this surfaced and
+  fixed three pre-existing bugs: an uninitialized VALUE-form overflow flag,
+  rejection of result types narrower than `int`, and wrong flags for mixed
+  operand/result types (now computed at 128 bits — exact infinite
+  precision for ≤64-bit operands).
+- gcc.c-torture: **+2** (`pr122943`, `pr63302` — failset 55 → 53 names,
+  zero regressions); new `tests/testint128.mad` verified byte-identical to
+  `gcc -O0`. Known residual for slice 3: switch case labels wider than 64
+  bits still truncate in madc's parse-time constant fold.
+
 ### libmadc policy tail — late-bind dlsym gate; remaining non-AOT skips retired
 
 - **`enable_dlfcn_functions = false` now also gates the LINK-time dlsym
