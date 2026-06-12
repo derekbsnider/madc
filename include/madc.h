@@ -1538,6 +1538,11 @@ public:
     } language_std;
     bool is_c_mode() const { return language_std >= STD_C89 && language_std <= STD_C23; }
     bool is_cpp_mode() const { return language_std >= STD_CPP98 && language_std <= STD_CPP26; }
+    // K&R-era recovery (old-style parameter declarations, file-scope
+    // implicit-int definitions) is admitted ONLY under an explicit C
+    // standard that predates C23 (which removed them) — never in the
+    // madc dialect or any C++ mode.
+    bool knr_supported() const { return language_std >= STD_C78 && language_std < STD_C23; }
     bool auto_includes_enabled() const { return language_std == STD_MADC; }
     // The __cplusplus value the selected --std= mandates (C++26 uses g++'s
     // provisional 202400L until the standard fixes one).

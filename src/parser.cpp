@@ -26569,7 +26569,7 @@ bool Program::old_style_parameter_head_has_declaration_suffix()
 
 bool Program::is_old_style_parameter_head(TokenBase *tb)
 {
-    if ( is_cpp_mode() )
+    if ( !knr_supported() )
 	return false;
     if ( !is_contextual_identifier_token(tb) )
 	return false;
@@ -30948,7 +30948,8 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    }
 	// C89 implicit-int function definition: `name(params) { body }`
 	// at file scope with no return type defaults to int.
-	if ( tb->type() == TokenType::ttIdentifier
+	if ( knr_supported()
+	    && tb->type() == TokenType::ttIdentifier
 	    && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 	{
 	    std::string fname = ((TokenIdent *)tb)->str;
