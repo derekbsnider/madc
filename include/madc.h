@@ -1455,6 +1455,10 @@ public:
     // materializes a deferred body the moment its symbol enters referenced_funcs.
     std::map<std::string, DeferredFunctionBody> deferred_lazy_bodies;
     bool parsing_cpp_struct_class;
+    // Set by TokenSTRUCT::parse when delegating a UNION with class-only syntax
+    // to the class parser ([class.union]); TokenCLASS::parse consumes it and
+    // marks the DataDefCLASS union_layout.
+    bool parsing_cpp_union_class = false;
     // When set, TokenCLASS::parse parses and registers the class/struct
     // DEFINITION only and returns at the closing '}', WITHOUT consuming a
     // trailing instance declarator. Used when a method-bearing struct is
@@ -1909,7 +1913,17 @@ public:
     class DataDefCLASS *operand_object_class(TokenBase *operand);
     // The VALUE view of an operand's type (reference expression / vfREFERENCE
     // variable -> the referenced type) for deduction and overload ranking.
-    static DataDef *operand_value_datadef(TokenBase *operand);
+    // A CALL operand types by its RESOLVED callee's return — see
+    // resolved_call_funcdef.
+    DataDef *operand_value_datadef(TokenBase *operand);
+    // The RESOLVED callee of a call token whose parse-bound Variable may be an
+    // arbitrary member of a late-bound namespace overload set (overloads /
+    // fn-template instantiations register after the call site parses). Re-ranks
+    // the set with the call's argument value types; the parse-side mirror of
+    // CirBuilder::call_target_funcdef. Returns the bound FuncDef when no set
+    // applies; sets *no_winner when a set applies but no candidate is viable.
+    FuncDef *resolved_call_funcdef(class TokenCallFunc *tc,
+				   bool *no_winner = NULL);
     // Type an operator expression on a class-object operand with the operator's
     // return type (Part A of generic operator-overload support). No-op unless the
     // left operand is a class object declaring the matching binary operator, or

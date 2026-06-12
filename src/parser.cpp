@@ -10593,31 +10593,13 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    bool late_bound_no_winner = false;
 	    // namespace_name may be EMPTY: tracked global-scope operator
 	    // overloads (::operator new/delete) key their set as "::name".
+	    // resolved_call_funcdef is the ONE re-rank implementation (also
+	    // the call-operand typing in operand_value_datadef).
 	    if ( !fd->function_display_name.empty() )
 	    {
-		std::map<std::string, std::vector<NamespaceFnOverload>>::iterator oi =
-		    namespace_fn_overload_sets.find(fd->namespace_name + "::"
-						    + fd->function_display_name);
-		if ( oi != namespace_fn_overload_sets.end()
-		  && (oi->second.size() >= 2 || fd->declaration_only) )
-		{
-		    std::vector<const DataDef *> at;
-		    std::vector<bool> zeros;
-		    for ( size_t i = 0; i < tc->parameters.size(); ++i )
-		    {
-			at.push_back(operand_value_datadef(tc->parameters[i]));
-			zeros.push_back(
-			    is_zero_integer_literal(tc->parameters[i]));
-		    }
-		    Variable *w = find_namespace_function_overload(
-			    fd->namespace_name, fd->function_display_name,
-			    at, &zeros);
-		    FuncDef *wfd = w ? dynamic_cast<FuncDef *>(w->type) : NULL;
-		    if ( wfd )
-			fd = wfd;
-		    else
-			late_bound_no_winner = true;
-		}
+		FuncDef *rfd = resolved_call_funcdef(tc, &late_bound_no_winner);
+		if ( rfd && !late_bound_no_winner )
+		    fd = rfd;
 	    }
 	    // C++ default arguments: fill omitted TRAILING args from the parameter
 	    // defaults (param_defaults is index-aligned with parameters, hidden
@@ -17450,7 +17432,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // __attribute__ can also appear after the tag name
     consume_attribute();
 
-    if ( !is_union && tag && pgm.cpp_struct_body_needs_class_parser(tag->str, tn) )
+    // A union with class-only syntax delegates too ([class.union] — a union
+    // IS a class; real vector's `union _Storage` has a ctor/dtor/deleted
+    // operator=). parsing_cpp_union_class makes the class parser mark the
+    // resulting DataDefCLASS union_layout.
+    if ( tag && pgm.cpp_struct_body_needs_class_parser(tag->str, tn) )
     {
 	TokenIdent *class_tag = new TokenIdent(tag->str);
 	class_tag->file = tag->file;
@@ -17458,7 +17444,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	class_tag->column = tag->column;
 	pgm.pushToken(class_tag);
 	bool saved_cpp_struct_class = pgm.parsing_cpp_struct_class;
+	bool saved_cpp_union_class = pgm.parsing_cpp_union_class;
 	pgm.parsing_cpp_struct_class = true;
+	pgm.parsing_cpp_union_class = is_union;
 	TokenCLASS class_parser;
 	TokenBase *result = NULL;
 	try
@@ -17468,9 +17456,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	catch(...)
 	{
 	    pgm.parsing_cpp_struct_class = saved_cpp_struct_class;
+	    pgm.parsing_cpp_union_class = saved_cpp_union_class;
 	    throw;
 	}
 	pgm.parsing_cpp_struct_class = saved_cpp_struct_class;
+	pgm.parsing_cpp_union_class = saved_cpp_union_class;
 	return result;
     }
 
@@ -17970,18 +17960,22 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    class_tag->column = stag->column;
 		    pgm.pushToken(class_tag);
 		    bool saved_struct_class = pgm.parsing_cpp_struct_class;
+		    bool saved_union_class = pgm.parsing_cpp_union_class;
 		    bool saved_def_only = pgm.class_definition_only;
 		    pgm.parsing_cpp_struct_class = true;
+		    pgm.parsing_cpp_union_class = nested_union_kw;
 		    pgm.class_definition_only = true;
 		    TokenCLASS class_parser;
 		    try { class_parser.parse(pgm); }
 		    catch(...)
 		    {
 			pgm.parsing_cpp_struct_class = saved_struct_class;
+			pgm.parsing_cpp_union_class = saved_union_class;
 			pgm.class_definition_only = saved_def_only;
 			throw;
 		    }
 		    pgm.parsing_cpp_struct_class = saved_struct_class;
+		    pgm.parsing_cpp_union_class = saved_union_class;
 		    pgm.class_definition_only = saved_def_only;
 		    datadef_map_iter ndmi = pgm.struct_map.find(sname);
 		    if ( ndmi == pgm.struct_map.end() )
@@ -19717,6 +19711,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     TokenDataType *tdt;
     std::string class_source_name;
     DataDefCLASS *nested_owner_class = NULL;
+    // A C++ UNION with class-only syntax ([class.union] — a union is a class)
+    // is delegated here by TokenSTRUCT::parse with this flag set; it applies
+    // to THIS class only (consume it so nested members don't inherit it).
+    bool union_class = pgm.parsing_cpp_union_class;
+    pgm.parsing_cpp_union_class = false;
     bool do_typedef = pgm.parsing_typedef_decl
 	|| (pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false);
     datatype_map_iter bmi;
@@ -20042,6 +20041,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     }
     if ( !ddc )
 	ddc = new DataDefCLASS(tag->str, 0, DataType::dtRESERVED);
+    if ( union_class )
+	ddc->union_layout = true;   // members overlap at offset 0 (layout + CIR
+				    // emission both branch on this flag)
     // If we are instantiating a template, record its canonical C++ spelling so a
     // bodyless method in this class can be mangled to the real C++ symbol with
     // no class-name test. Non-template namespace classes get the same treatment.
@@ -22137,7 +22139,17 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     }
     if ( !base_dd )
     {
-	pgm.Throw(tn) << "Expecting type after 'typedef'" << flush;
+	std::string upcoming;
+	for ( size_t ui = 0; ui < pgm.tokens.size() && ui < 8; ++ui )
+	{
+	    if ( !pgm.tokens[ui] ) continue;
+	    if ( !upcoming.empty() ) upcoming += ' ';
+	    upcoming += overload_token_spelling(pgm.tokens[ui]);
+	}
+	pgm.Throw(tn) << "Expecting type after 'typedef', got '"
+	    << (tn && tn->type() == TokenType::ttIdentifier
+		? ((TokenIdent *)tn)->str : overload_token_spelling(tn))
+	    << "' (next: " << upcoming << ")" << flush;
     }
 
     // handle pointer + interleaved CV-qualifiers between the base type and the
@@ -24871,11 +24883,66 @@ static bool fn_template_param_is_pack(const std::string &spelling,
 // (`_S_on_swap(_Alloc&,_Alloc&)` calling `__alloc_on_swap(__a,__b)`
 // deduced _Alloc = allocator<int>* and ranking then rejected the
 // instantiated overload).
+FuncDef *Program::resolved_call_funcdef(TokenCallFunc *tc, bool *no_winner)
+{
+    if ( no_winner )
+	*no_winner = false;
+    if ( !tc || !tc->var.type || !tc->var.type->is_function() )
+	return NULL;
+    if ( tc->var.type->is_numeric() )	// fn-ptr variable: no overload set
+	return NULL;
+    FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+    if ( !fd || fd->function_display_name.empty() )
+	return fd;
+    std::map<std::string, std::vector<NamespaceFnOverload>>::iterator oi =
+	namespace_fn_overload_sets.find(fd->namespace_name + "::"
+					+ fd->function_display_name);
+    if ( oi == namespace_fn_overload_sets.end()
+      || !(oi->second.size() >= 2 || fd->declaration_only) )
+	return fd;
+    // Rank only the USER-WRITTEN args: parse-appended defaults came from one
+    // overload's declaration and must not veto the others.
+    size_t n = tc->parameters.size();
+    if ( tc->user_argc != (size_t)-1 && tc->user_argc < n )
+	n = tc->user_argc;
+    std::vector<const DataDef *> at;
+    std::vector<bool> zeros;
+    for ( size_t i = 0; i < n; ++i )
+    {
+	at.push_back(operand_value_datadef(tc->parameters[i]));
+	zeros.push_back(is_zero_integer_literal(tc->parameters[i]));
+    }
+    Variable *w = find_namespace_function_overload(
+	fd->namespace_name, fd->function_display_name, at, &zeros);
+    FuncDef *wfd = w ? dynamic_cast<FuncDef *>(w->type) : NULL;
+    if ( wfd )
+	return wfd;
+    if ( no_winner )
+	*no_winner = true;
+    return fd;
+}
+
 DataDef *Program::operand_value_datadef(TokenBase *operand)
 {
     DataDef *dd = operand ? operand->datadef() : NULL;
     if ( !dd )
 	return NULL;
+    // A CALL operand types by its RESOLVED callee's return type: the
+    // parse-bound Variable can be an arbitrary member of a late-bound
+    // overload set (deduction read `auto` from __niter_base's bound
+    // placeholder while the re-rank winner returned the real iterator type).
+    if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(operand) )
+	if ( !tcf->return_override )
+	    if ( FuncDef *rfd = resolved_call_funcdef(tcf) )
+	    {
+		DataDef *r = &rfd->returns;
+		if ( r->is_reference() )
+		    return static_cast<DataDefPTR *>(r)->base_type;
+		if ( rfd->returns_ref )
+		    if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r) )
+			return rp->base_type ? rp->base_type : r;
+		return r;
+	    }
     if ( dd->is_reference() )
 	return static_cast<DataDefPTR *>(dd)->base_type;
     TokenVar *tv = dynamic_cast<TokenVar *>(operand);
@@ -25122,7 +25189,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    continue;
 	}
 	const std::string &sp = ov.param_spellings[i];
-	DataDef *arg_dd = Program::operand_value_datadef(tc->parameters[i]);
+	DataDef *arg_dd = pgm.operand_value_datadef(tc->parameters[i]);
 	// Trailing parameter pack (`_Base... __base`): bind the pack to the
 	// one remaining argument's type (the sizes are equal here, so exactly
 	// one argument fills it).
@@ -27270,6 +27337,36 @@ TokenBase *Program::consume_balanced_parenthesized_suffix(TokenBase *open)
     return nextToken();
 }
 
+// True when `= default` on this class member can be parsed as an EMPTY body:
+// the DEFAULT constructor (no user parameters beyond the hidden __this). The
+// implicitly-defined default ctor's whole job — base and member construction —
+// is synthesized by the ctor-prologue machinery, so an empty body is its exact
+// definition. Defaulted copy/move ctors, assignment, and dtors need memberwise
+// synthesis / triviality preservation and are NOT claimed here.
+static bool defaulted_member_parses_empty(DataDefCLASS *owner,
+					  const std::string &id, FuncDef *func)
+{
+    if ( !owner || !func )
+	return false;
+    if ( func->parameters.size() > 1 )	// param 0 is the hidden __this
+	return false;
+    std::string prefix = owner->name + "__";
+    if ( id.compare(0, prefix.size(), prefix) != 0 )
+	return false;
+    std::string ctor_tail = id.substr(prefix.size());
+    size_t osfx = ctor_tail.rfind("__o");
+    if ( osfx != std::string::npos )
+    {
+	bool numeric = osfx + 3 < ctor_tail.size();
+	for ( size_t si = osfx + 3; numeric && si < ctor_tail.size(); ++si )
+	    if ( !isdigit((unsigned char)ctor_tail[si]) )
+		numeric = false;
+	if ( numeric )
+	    ctor_tail = ctor_tail.substr(0, osfx);
+    }
+    return resolve_class_type_alias(owner, ctor_tail) == owner;
+}
+
 // parse a function definition, can be a forward declaration, or function definition
 void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class,
 			    std::vector<DataDef *> *multi_ret, bool return_ref,
@@ -28127,24 +28224,43 @@ paramdecl:
 	TokenBase *assigned = nextToken();
 	bool pure_virtual = assigned && assigned->type() == TokenType::ttInteger
 	    && assigned->ival() == 0;
+	bool explicitly_defaulted = assigned
+	    && (assigned->id() == TokenID::tkDEFAULT
+		|| (is_contextual_identifier_token(assigned)
+		    && contextual_identifier_name(assigned) == "default"));
 	nt = assigned;
 	while ( nt && nt->id() != TokenID::tkSemi )
 	    nt = nextToken();
 	if ( !nt )
 	    Throw << "Unexpected end of input after defaulted/deleted function declaration" << flush;
-	if ( !method )
+	// [dcl.fct.def.default]: an explicitly-defaulted DEFAULT constructor
+	// IS the implicitly-defined one. Its entire job — base and member
+	// construction — is synthesized by the ctor-prologue machinery, so
+	// parse on as if the source wrote `{}`; the ctor registers, ranks,
+	// and emits like a user-written empty ctor.
+	if ( explicitly_defaulted
+	  && defaulted_member_parses_empty(owner_class, id, func) )
 	{
-	    method = new Method(*var);
-	    var->data = (void *)method;
+	    pushToken(new TokenClBrc());
+	    pushToken(new TokenOpBrc());
+	    nt = nextToken();
 	}
-	if ( owner_class )
-	    method->owner_class = owner_class;
-	func->declaration_only = pure_virtual;
-	func->defaulted_or_deleted = !pure_virtual;
-	func->pure_virtual = pure_virtual;
-	if ( !compounds.empty() && compounds.top() == param_scope )
-	    popCompound();
-	return;
+	else
+	{
+	    if ( !method )
+	    {
+		method = new Method(*var);
+		var->data = (void *)method;
+	    }
+	    if ( owner_class )
+		method->owner_class = owner_class;
+	    func->declaration_only = pure_virtual;
+	    func->defaulted_or_deleted = !pure_virtual;
+	    func->pure_virtual = pure_virtual;
+	    if ( !compounds.empty() && compounds.top() == param_scope )
+		popCompound();
+	    return;
+	}
     }
 
     if ( nt->id() == TokenID::tkColon )

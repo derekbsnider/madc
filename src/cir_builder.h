@@ -137,6 +137,13 @@ class CirBuilder {
 	// flushes this buffer ahead of each statement. Mirrors the old transpiler's
 	// emit_ns_arg statement-level temp construction.
 	std::vector<node_t> m_pending_stmts;
+	// Splice m_pending_stmts into `out` (preserving order) and clear it.
+	// For statement-list builders that run OUTSIDE translate_block's
+	// statement loop (ctor/dtor prologue + epilogue synthesis): a temp
+	// materialized while building a prologue statement must be emitted
+	// into the same prologue, before its consumer — without this it
+	// leaked into the NEXT translated function's body.
+	void flush_pending_stmts(std::vector<node_t> &out);
 	int m_strtmp_counter = 0;
 	// File-scope class-instance globals lower to opaque
 	// struct storage at file scope plus a constructor call that must run before

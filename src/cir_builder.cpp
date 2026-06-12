@@ -640,7 +640,7 @@ FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
 			std::vector<const DataDef *> at;
 			std::vector<bool> zeros;
 			for (size_t i = 0; i < n; i++) {
-				at.push_back(Program::operand_value_datadef(
+				at.push_back(m_prog->operand_value_datadef(
 						tcf->parameters[i]));
 				zeros.push_back(is_zero_integer_literal(
 						tcf->parameters[i]));
@@ -1003,7 +1003,13 @@ DataDef *CirBuilder::ref_returning_call_type(TokenBase *arg)
 	FuncDef *cfd = call_target_funcdef(tcf);
 	if (!tcf->returns_ref_override && !(cfd && cfd->returns_ref))
 		return NULL;
-	DataDef *r = tcf->returns();
+	// Type by the call_target_funcdef-RESOLVED callee: for a late-bound
+	// overload set the parse-bound var is an arbitrary set member (the
+	// parser defers resolution to CIR), so the token's own returns() can
+	// name another overload's return type. An explicit return_override
+	// still wins (tcf->returns() honors it).
+	DataDef *r = (cfd && cfd->returns_ref && !tcf->return_override)
+		   ? &cfd->returns : tcf->returns();
 	if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r))
 		r = rp->base_type ? rp->base_type : r;
 	return r;
@@ -3532,11 +3538,28 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 			this_arg, origin);
 	}
 
+	// A method returning a NON-TRIVIAL class by value uses the __retbuf ABI
+	// (func_def / func_proto / fnptr_decl_pieces all lower the signature with
+	// a hidden LEADING `struct <T> *__retbuf` ahead of __this): the call site
+	// materializes a cleanup-tagged temp of the return class, passes its
+	// address as that leading arg, and the expression value is the temp
+	// lvalue — the method-call mirror of object_call_temp_addr. Without this
+	// the call was emitted bare: one arg short, and non-addressable as a
+	// value (`__x.get_allocator() == __a` in real _Vector_base).
+	DataDefCLASS *ret_obj = (callee && !callee->returns_ref
+				 && !callee->is_multi_return())
+				? class_return_via_retbuf(&callee->returns) : NULL;
+	char ret_tmp[40] = { 0 };
+	if (ret_obj)
+		object_temp_decl(ret_obj, ret_tmp, sizeof(ret_tmp), origin);
+
 	// Build the argument list: hidden __this first, then the explicit args.
 	// Coerce each explicit arg to its declared parameter shape (string object
 	// / numeric reference), mirroring the free-function call path. The
 	// callee's parameter 0 is __this, so explicit arg i maps to parameter i+1.
 	node_t args = list();
+	if (ret_obj)
+		append(args, node1(N_ADDR, id(ret_tmp, origin), origin));
 	append(args, this_arg);
 	for (size_t i = 0; i < tm->parameters.size(); i++) {
 		TokenBase *arg = tm->parameters[i];
@@ -3593,11 +3616,22 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 		// Cast the slot to the method's function-pointer type.
 		node_t fnptr_type = method_fnptr_type(callee, vowner);
 		node_t fn = node2(N_CAST, fnptr_type, slotref, origin);
-		return node2(N_CALL, fn, args, origin);
+		node_t vcall = node2(N_CALL, fn, args, origin);
+		if (ret_obj) {
+			m_pending_stmts.push_back(node2(N_EXPR, list(), vcall, origin));
+			return id(ret_tmp, origin);
+		}
+		return vcall;
 	}
 
 	referenced_funcs.insert(sym);
 	node_t mcall = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	// __retbuf ABI: the void call writes the result into the temp; the
+	// expression value is the materialized temp lvalue.
+	if (ret_obj) {
+		m_pending_stmts.push_back(node2(N_EXPR, list(), mcall, origin));
+		return id(ret_tmp, origin);
+	}
 	// A T&-returning method returns the address of its result; deref so the
 	// call expression is the referenced lvalue (read: *p; write: *p = rhs).
 	if (callee && callee->returns_ref)
@@ -3693,6 +3727,14 @@ static std::string class_method_call_symbol(DataDefCLASS *cdd, FuncDef *fd,
 	return CirBuilder::call_emit_symbol(fd, cdd ? cdd->name + "__" + name : name);
 }
 
+void CirBuilder::flush_pending_stmts(std::vector<node_t> &out)
+{
+	if (m_pending_stmts.empty()) return;
+	for (node_t p : m_pending_stmts)
+		out.push_back(p);
+	m_pending_stmts.clear();
+}
+
 bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
 					std::vector<node_t> &out, TokenBase *origin,
 					const std::set<std::string> *skip)
@@ -3703,12 +3745,17 @@ bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
 		if (skip && skip->count(m.first)) continue;
 		DataDefCLASS *mc = as_class_instance(m.second);
 		if (!mc) continue;
+#ifdef MADC_DEBUG_CTORINIT
+		fprintf(stderr, "[ctorinit] member-default owner=%s member=%s mclass=%s\n",
+			cdd->name.c_str(), m.first.c_str(), mc->name.c_str());
+#endif
 		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
 				   id(m.first.c_str(), origin));
 		node_t stmt = class_ctor_call_addr(node1(N_ADDR, fld, origin),
 						   mc, std::vector<TokenBase *>(),
 						   origin);
 		if (!stmt) continue;
+		flush_pending_stmts(out);
 		out.push_back(stmt);
 		any = true;
 	}
@@ -3753,18 +3800,37 @@ static bool ctor_initializer_targets_base(DataDefCLASS *owner,
 {
 	if (!owner || !base) return false;
 	std::string short_name = last_scope_part(name);
-	if (name == base->name || short_name == base->name)
+	if (name == base->name || short_name == base->name) {
+#ifdef MADC_DEBUG_CTORINIT
+		fprintf(stderr, "[ctorinit] base-match NAME owner=%s base=%s ci=%s\n",
+			owner->name.c_str(), base->name.c_str(), name.c_str());
+#endif
 		return true;
+	}
 	if (!base->canonical_cpp_spelling.empty()) {
 		std::string bshort = last_scope_part(base->canonical_cpp_spelling);
 		size_t lt = bshort.find('<');
 		if (lt != std::string::npos)
 			bshort = bshort.substr(0, lt);
-		if (name == bshort || short_name == bshort)
+		if (name == bshort || short_name == bshort) {
+#ifdef MADC_DEBUG_CTORINIT
+			fprintf(stderr, "[ctorinit] base-match SPELLING owner=%s base=%s (bshort=%s) ci=%s\n",
+				owner->name.c_str(), base->name.c_str(),
+				bshort.c_str(), name.c_str());
+#endif
 			return true;
+		}
 	}
 	std::set<DataDefCLASS *> seen;
 	DataDefCLASS *alias_cls = as_user_class(class_alias_lookup_cir(owner, name, seen));
+#ifdef MADC_DEBUG_CTORINIT
+	fprintf(stderr, "[ctorinit] base-match ALIAS? owner=%s base=%s ci=%s alias_cls=%s -> %d (owner.encl=%s owner.base_class=%s)\n",
+		owner->name.c_str(), base->name.c_str(), name.c_str(),
+		alias_cls ? alias_cls->name.c_str() : "(null)",
+		(int)(alias_cls && (alias_cls == base || alias_cls->is_or_derives_from(base))),
+		owner->enclosing_class ? owner->enclosing_class->name.c_str() : "(null)",
+		owner->base_class ? owner->base_class->name.c_str() : "(null)");
+#endif
 	return alias_cls && (alias_cls == base || alias_cls->is_or_derives_from(base));
 }
 
@@ -3796,19 +3862,42 @@ bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 	for (const auto &m : cdd->members) {
 		const FuncDef::CtorInitializer *ci = find_member_initializer(fd, m.first);
 		if (!ci) continue;
+#ifdef MADC_DEBUG_CTORINIT
+		fprintf(stderr, "[ctorinit] member-init owner=%s member=%s ci=%s nargs=%zu mclass=%s\n",
+			cdd->name.c_str(), m.first.c_str(), ci->name.c_str(),
+			ci->args.size(),
+			as_class_instance(m.second) ? as_class_instance(m.second)->name.c_str() : "(non-class)");
+#endif
 		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
 				   id(m.first.c_str(), origin));
 		if (DataDefCLASS *mc = as_class_instance(m.second)) {
 			node_t stmt = class_ctor_call_addr(node1(N_ADDR, fld, origin),
 							   mc, ci->args, origin);
 			if (!stmt) continue;
+			flush_pending_stmts(out);
 			out.push_back(stmt);
 			any = true;
+			continue;
+		}
+		if (ci->args.empty()) {
+			// Value-initialization `member()` ([dcl.init]p8): a scalar
+			// or pointer member ZERO-initializes (real
+			// `_Vector_impl_data() : _M_start(), _M_finish(), ...` —
+			// skipping it left garbage that the dtor then freed).
+			// Class members took the ctor-call arm above.
+			if (m.second && (m.second->is_numeric()
+					 || m.second->is_pointer())) {
+				node_t z = node2(N_ASSIGN, fld,
+						 integer(0L, origin), origin);
+				out.push_back(node2(N_EXPR, list(), z, origin));
+				any = true;
+			}
 			continue;
 		}
 		if (ci->args.size() != 1 || !ci->args[0])
 			continue;
 		node_t asgn = node2(N_ASSIGN, fld, translate_expr(ci->args[0]), origin);
+		flush_pending_stmts(out);
 		out.push_back(node2(N_EXPR, list(), asgn, origin));
 		any = true;
 	}
@@ -4594,6 +4683,45 @@ node_t CirBuilder::no_ctor_match_error(DataDefCLASS *cdd,
 	snprintf(buf, sizeof(buf),
 		 "no matching constructor for call to '%s(%s)'",
 		 cdd ? cdd->name.c_str() : "<class>", args_desc.c_str());
+#ifdef MADC_DEBUG_CTORINIT
+	fprintf(stderr, "[ctorinit] NO-MATCH cdd=%s nctors=%zu origin=%s:%d\n",
+		cdd ? cdd->name.c_str() : "(null)",
+		cdd ? cdd->ctors.size() : 0,
+		origin && origin->file ? origin->file : "?", origin ? origin->line : 0);
+	for (size_t i = 0; i < ctor_args.size(); i++) {
+		TokenBase *a = ctor_args[i];
+		TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(a);
+		FuncDef *cfd = tcf ? call_target_funcdef(tcf) : NULL;
+		DataDef *tret = tcf ? tcf->returns() : NULL;
+		fprintf(stderr, "[ctorinit]   arg%zu tok=%s @%s:%d datadef=%s tcf.var=%s cfd=%p cfd.ret=%s cfd.returns_ref=%d tok.returns=%s ref_override=%d\n",
+			i, a ? typeid(*a).name() : "(null)",
+			a && a->file ? a->file : "?", a ? a->line : 0,
+			a && a->datadef() ? a->datadef()->name.c_str() : "(none)",
+			tcf ? tcf->var.name.c_str() : "-",
+			(void *)cfd,
+			cfd ? cfd->returns.name.c_str() : "-",
+			cfd ? (int)cfd->returns_ref : -1,
+			tret ? tret->name.c_str() : "-",
+			tcf ? (int)tcf->returns_ref_override : -1);
+	}
+	if (cdd)
+		for (Variable *cv : cdd->ctors) {
+			FuncDef *cf = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+			if (!cf) {
+				fprintf(stderr, "[ctorinit]   cand %s (NOT FuncDef: type=%s)\n",
+					cv ? cv->name.c_str() : "(null)",
+					cv && cv->type ? cv->type->name.c_str() : "(null)");
+				continue;
+			}
+			std::string ps;
+			for (size_t pi = 1; pi < cf->parameters.size(); pi++) {
+				if (pi > 1) ps += ", ";
+				ps += cf->parameters[pi] ? cf->parameters[pi]->name : "?";
+			}
+			fprintf(stderr, "[ctorinit]   cand %s(%s) req=%zu\n",
+				cv->name.c_str(), ps.c_str(), cf->required_param_count());
+		}
+#endif
 	return error_node(buf, origin);
 }
 
@@ -8568,12 +8696,19 @@ node_t CirBuilder::translate_if(TokenIF *ti)
 {
 	if (ti->condition_decl) {
 		node_t cond = translate_expr(ti->condition);
+		// Temps materialized by the CONDITION (m_pending_stmts) must be
+		// declared before the IF — otherwise the then/else block's own
+		// statement loop swallows them into the wrong scope.
+		std::vector<node_t> cond_temps;
+		flush_pending_stmts(cond_temps);
 		node_t then_body = translate_stmt_required(ti->statement);
 		node_t else_body = ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
 		node_t if_node = node4(N_IF, list(), cond, then_body, else_body, ti);
 		node_t items = list();
 		node_t decl = translate_stmt(ti->condition_decl);
 		if (decl) append(items, decl);
+		for (node_t p : cond_temps)
+			append(items, p);
 		append(items, if_node);
 		return node2(N_BLOCK, list(), items, ti);
 	}
@@ -8595,9 +8730,20 @@ node_t CirBuilder::translate_if(TokenIF *ti)
 	if (is_constant_evaluated_call(ti->condition))
 		return ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
 	node_t cond = translate_expr(ti->condition);
+	// Temps materialized by the CONDITION must be emitted ahead of the IF
+	// (see the condition_decl arm above).
+	std::vector<node_t> cond_temps;
+	flush_pending_stmts(cond_temps);
 	node_t then_body = translate_stmt_required(ti->statement);
 	node_t else_body = ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
-	return node4(N_IF, list(), cond, then_body, else_body, ti);
+	node_t if_node = node4(N_IF, list(), cond, then_body, else_body, ti);
+	if (cond_temps.empty())
+		return if_node;
+	node_t items = list();
+	for (node_t p : cond_temps)
+		append(items, p);
+	append(items, if_node);
+	return node2(N_BLOCK, list(), items, ti);
 }
 
 node_t CirBuilder::translate_while(TokenBase *tw)
@@ -10209,6 +10355,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					node_t stmt = class_ctor_call_addr(
 						base_addr_at(b, ocls->base_offset_of(b)),
 						b, ci->args, tf);
+					flush_pending_stmts(prologue);
 					if (stmt) prologue.push_back(stmt);
 					continue;
 				}
