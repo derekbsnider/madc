@@ -604,6 +604,17 @@ output replacement, scope-level destruction.
 
 **Dependencies:** 4.2 before 4.4 and 4.5.
 
+- **Type table + value ABI (DESIGN AGREED 2026-06-12):**
+  [2026-06-12-type-table-value-abi-design.md](2026-06-12-type-table-value-abi-design.md)
+  — one segmented uint32-typeid table (primitives / system-forest / project
+  segments) as the canonical type identity, plus a 32-byte `madc_value`
+  interchange struct (16-byte payload inlines every madc primitive incl.
+  `__int128`/`_Complex`/`v128`; SSO; refcounted cells; gradual-typing flags
+  LOCKED/COERCE/NULLABLE; re-tag unrestricted by default). **Eval package C is
+  the first consumer**; the cir_node `datadef` side-array (refactor P3), forest
+  type-ref serialization (P4), and the tag-arithmetic retirement are later
+  campaigns on top. NaN-boxing (5A.5) stays internal-madcdis-only.
+
 ---
 
 ## Track 5: Data Substrate & Storage
