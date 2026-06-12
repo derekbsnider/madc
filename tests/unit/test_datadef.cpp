@@ -1520,7 +1520,10 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(MADC_TYPEID_INT32_PTR == 28);
         CHECK(MADC_TYPEID_ARRAY == 29);
         CHECK(MADC_TYPEID_AUTO == 30);
-        CHECK(MADC_TYPEID_PRIMITIVE_LAST == 30);
+        CHECK(MADC_TYPEID_TEXT == 31);
+        CHECK(MADC_TYPEID_BYTES == 32);
+        CHECK(MADC_TYPEID_OBJECT == 33);
+        CHECK(MADC_TYPEID_PRIMITIVE_LAST == 33);
         CHECK(MADC_TYPEID_PRIMITIVE_LAST < MADC_TYPEID_PRIMITIVE_END);
         CHECK(MADC_TYPEID_PRIMITIVE_END == 0x100);
         CHECK(MADC_TYPEID_SYSTEM_BASE == 0x100);
@@ -1546,6 +1549,9 @@ TEST_SUITE("type table (typeid) identity layer") {
         // reserved-but-unbacked slots resolve NULL until P0 lands
         CHECK(madc_primitive_for_slot(MADC_TYPEID_INT128) == (DataDef *)NULL);
         CHECK(madc_primitive_for_slot(MADC_TYPEID_LONG_DOUBLE) == (DataDef *)NULL);
+        // dynamic value kinds have no compiler DataDef
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_TEXT) == (DataDef *)NULL);
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_OBJECT) == (DataDef *)NULL);
         // out-of-segment queries resolve NULL
         CHECK(madc_primitive_for_slot(MADC_TYPEID_INVALID) == (DataDef *)NULL);
         CHECK(madc_primitive_for_slot(MADC_TYPEID_PRIMITIVE_END) == (DataDef *)NULL);

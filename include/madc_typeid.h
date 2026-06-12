@@ -59,7 +59,13 @@ enum
     MADC_TYPEID_INT32_PTR      = 28,
     MADC_TYPEID_ARRAY          = 29,
     MADC_TYPEID_AUTO           = 30,
-    MADC_TYPEID_PRIMITIVE_LAST = 30,
+    /* Dynamic value kinds (the madc_value ABI): payload kinds that have no
+     * compiler DataDef — owned text, raw bytes, and the string-keyed object.
+     * The dynamic array kind reuses MADC_TYPEID_ARRAY (ddARRAY, slot 29). */
+    MADC_TYPEID_TEXT           = 31,
+    MADC_TYPEID_BYTES          = 32,
+    MADC_TYPEID_OBJECT         = 33,
+    MADC_TYPEID_PRIMITIVE_LAST = 33,
 
     MADC_TYPEID_PRIMITIVE_END  = 0x100,
     MADC_TYPEID_SYSTEM_BASE    = 0x100
