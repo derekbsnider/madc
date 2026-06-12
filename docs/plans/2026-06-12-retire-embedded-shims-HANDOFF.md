@@ -10,6 +10,118 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-12 (session 4) — w2c GREEN; w2a PARSES fully; 13 root causes
+
+**Commits `c8870aa` → `03d5990` → `a6c9d72`** (this branch). `tmp/w2c.mad`
+(`_Vector_base<int,allocator<int>> b;`) constructs + destructs END-TO-END
+(exit 0). `tmp/w2a.mad` (`vector<int> v;`) now PARSES the complete real
+`<vector>` chain and stops at CIR overload selection. Suite re-verified
+TWICE at this state: **549/33/0/18, failset byte-identical to the
+session-3 baseline** (tmp/runtests_s4a.log @ c8870aa, tmp/runtests_s4b.log
+@ a6c9d72) — zero regressions incl. all polyglot-namespace tests.
+
+The 13 root causes, in landing order (all general mechanisms):
+
+1. **ref_returning_call_type types by the RESOLVED callee** (CIR): a
+   late-bound overload set leaves tcf->var on an arbitrary member; the
+   token's returns() said `allocator&&` where the re-rank winner returned
+   `_Vector_impl&&` → the `_Vector_impl_data(allocator)` no-ctor-match.
+2. **flush_pending_stmts** (new helper): ctor/dtor prologue+epilogue
+   builders splice materialized temp decls into THEIR OWN list — they
+   leaked into the NEXT translated function (undeclared `__a` in
+   _Vector_base's dtor).
+3. **translate_if flushes condition temps ahead of the IF** (both arms) —
+   they landed inside the then/else block (undeclared objtmp). NOTE:
+   while/for conditions NOT yet covered (temp would hoist wrongly —
+   semantics: per-iteration construction; revisit when hit).
+4. **`= default` DEFAULT ctor parses as `{}`** ([dcl.fct.def.default],
+   defaulted_member_parses_empty): the prologue machinery IS the implicit
+   definition. `= delete` + defaulted copy/move stay declaration-only —
+   defaulted COPY/MOVE need memberwise synthesis (OPEN; vector's
+   `_Vector_base(_Vector_base&&) = default;` will need it).
+5. **class_method_call __retbuf ABI at the CALL SITE** (direct + vtable):
+   by-value non-trivial class returns materialize a cleanup-tagged temp,
+   pass &temp as the hidden LEADING arg; expression value = temp lvalue
+   (`__x.get_allocator() == __a`).
+6. **Empty mem-initializer = value-initialization** ([dcl.init]p8):
+   scalar/pointer member zero-assign (`_Vector_impl_data() : _M_start()…`
+   left garbage the dtor freed → abort).
+7. **Union with class-only syntax delegates to the class parser**
+   ([class.union]; parsing_cpp_union_class → DataDefCLASS::union_layout;
+   layout + CIR emission already branch on it). Real vector's
+   `union _Storage` in _Temporary_value.
+8. **operand_value_datadef types CALL operands by the re-ranked winner**
+   via new `Program::resolved_call_funcdef` — the ONE parse-side re-rank
+   (parseCallFunc's arity block refactored onto it). Fixes
+   `__relocate_a_1<auto,…>` deduced from __niter_base's bound placeholder.
+9. **Class-template-id qualified EXPRESSIONS keep the resolved class**:
+   parseStatement's decl probe consumed `allocator_traits<_A>` then handed
+   parseExprStmt the BARE ident → "Unknown namespace 'allocator_traits'".
+   Pass the resolved TokenDataType (dataType arm owns Type::member(...)).
+   Reducer tmp/w8d.mad.
+10. ***member dispatches operator*** on a CLASS member reached via
+    implicit this (member twin of the variable arm) — move_iterator's
+    `*_M_current`.
+11. **`typename X::type{...}` in EXPRESSION position** ([expr.type.conv]):
+    resolve the dependent type, Redo through the dataType arm (vector
+    swap's `typename _Alloc_traits::is_always_equal{}`).
+12. **Unqualified type-name functional-construction fallback** in the
+    ident arm (`true_type()` inside std bodies): resolve through the one
+    shared resolver, Redo.
+13. **ARGUMENT LEXICAL NAMESPACE** ([basic.lookup]) — THE BIG ONE:
+    parseCallFunc/parseCallMethod CLEARED current_namespace around every
+    argument parse (a polyglot-era artifact: statement-level
+    `php::foo(args)` carries the CALLEE's ns in current_namespace, args
+    are user-scope). The qualified-stmt arm now RECORDS the lexical ns
+    (qualified_stmt_callee_ns / qualified_stmt_lexical_ns) and argument
+    parsing restores THAT. This is why `true_type()` was "undeclared"
+    ONLY inside instantiated member bodies (ns='' mid-body).
+
+**WHERE w2a STOPS (next session entry):** 7 untranslatable nodes, all
+CIR-side overload selection:
+- `no matching constructor '__normal_iterator(__normal_iterator)'` —
+  the IMPLICIT COPY ctor: candidates are default + `(int* const&)` only;
+  same-class arg must select implicit memberwise copy
+  ([class.copy.ctor]) — likely fix in class_ctor_call_addr/
+  select_ctor_overload's no-match tail: same-class arg + no user copy
+  ctor → bit-copy (the class is trivially copyable).
+- `__normal_iterator(move_iterator<…>)` and
+  `_Vector_base(__normal_iterator, allocator*, integral_constant_bool_true)`
+  — ctor-initializer arg ROUTING (3 args at a 2-param ctor: looks like a
+  delegating-ctor or mem-init arg mis-split; instrument with
+  MADC_DEBUG_CTORINIT and read the NO-MATCH dumps).
+
+**Diagnostics added (all gated MADC_DEBUG_NS_RESOLVE /
+MADC_DEBUG_CTORINIT):** unknown-ns + deref-fail + undeclared-ident dumps
+with instantiation context + upcoming-token stream; deferred-body entry
+prints owner/spelling/derived-ns; typedef error names the offending token
++ stream; verbose no-ctor-match candidate dump (hardened — an earlier
+version crashed on a dangling string).
+
+**Session reducer inventory additions (tmp/):** w8a-w8d
+(allocator_traits qualified-expr; w8d = the 14-line repro), w9a-w9c
+(true_type resolution; w9c exposes OPEN gap: static constexpr member
+`value` — "Unidentified member 'value' in integral_constant_bool_true").
+
+**OPEN gaps queued (hit but not yet blocking w2a):** defaulted copy/move
+ctor memberwise synthesis · static constexpr data members
+(integral_constant::value) · static member-template instantiation via
+class-qualified call (w8d's residual: `import of undefined item
+allocator_traits_…_destroy`) · while/for condition temp placement ·
+global-scope (non-namespace) fn templates never instantiate (w7e/w7g).
+
+**TORTURE (full run @ a6c9d72, tmp/gcctest_s4.log): 1567/37/18/0/63 — 3
+names OVER the 52-name baseline: `20101011-1.c` (real `<signal.h>` chain,
+"Expecting member name in anonymous struct definition", reducer
+tmp/w10a.mad) and `loop-2f.c`/`loop-2g.c` (`<sys/mman.h>`, "unexpected
+token type 10" = the wall-4 sys-header desync family). ATTRIBUTED by
+rebuild-at-6cb9003: all 3 fail at session-3 HEAD too — session-2/3 drift
+(those sessions never ran torture), NOT today's fixes (today = ZERO
+torture regressions). Fold all 3 into wall 4; they are MERGE-GATE
+blockers (zero-regression rule).
+
+---
+
 ## STATUS UPDATE 2026-06-12 (session 2) — WALL 2 CORE BROKEN; one residual
 
 **12 root-cause fixes landed this session** (WIP commit on this branch; all
