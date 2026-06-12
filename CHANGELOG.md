@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Type table (typeid) identity layer (`feature/type-table-claude`)
+
+- **New canonical type identity**: a segmented uint32 typeid space
+  (`include/madc_typeid.h`) — 0 invalid, `[1,0x100)` ABI-pinned primitive
+  slots (255 usable; slots 18–22 pre-reserved for the P0 wide-value types),
+  `[0x100,0x01000000)` reserved for the embedded-forest system segment,
+  `[0x01000000,…)` per-Program project segment. Slot numbers are append-only
+  ABI, doctest-pinned like the manglings.
+- `DataDef::type_id` (0 = unregistered); `madc_primitive_for_slot()` as the
+  single source of truth slot↔global-primitive, stamped idempotently from
+  `Program::add_datatypes()`; `Program::type_id_for()` as the one lazy
+  registration chokepoint and `type_from_id()` segment-dispatching reverse
+  lookup with defensive NULLs. Zero behavior change — nothing consumes the
+  ids yet (the 32-byte `madc_value` ABI and eval package C are next).
+- Design: `docs/plans/2026-06-12-type-table-value-abi-design.md` (one table
+  for static AND dynamic typing; 32-byte value ABI with gradual-typing flags
+  LOCKED/COERCE/NULLABLE; re-tag unrestricted by default). Doc set
+  reconciled: forest + frontend-refactor + madcdis-plan UPDATE blocks
+  (madcdis's 8-byte tagged handle = internal pool handle only;
+  `value_header.type_tag` := typeid; shared cell-header shape).
+
 ### `===` / `!==` strict equality — STD_MADC dialect (`feature/strict-equality-claude`)
 
 - **New dialect operators**: `a === b` is type-domain identity AND value
