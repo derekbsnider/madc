@@ -10,6 +10,42 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 6) — EVAL SCOPE CAPTURE FIXED; UNIT SUITE FULLY GREEN
+
+**Commit `83c0ba4`** (this branch). Queue item (a) closed: runtime-eval
+scope capture no longer sweeps parse-time constants. Root cause was in
+`is_runtime_eval_scope_supported_variable` (parser.cpp ~9381), NOT the
+CIR lowering: bare-`vfCONSTANT` globals (glibc anonymous-enum constants
+`_ISupper` et al., `PTHREAD_*`) have no declaration in the emitted
+module — reads of them FOLD — so the TokenScopeContext by-name capture
+emitted undeclared identifiers and the PARENT TU failed to compile at
+every scope-access eval call site. Fix: the collector's predicate
+excludes `vfCONSTANT`-without-`vfCONSTDECL` (a value, not runtime scope
+state); const-DECLARED vars (real storage) stay capturable.
+
+**Gates:** unit `test_libmadc_program` **132/0/11** (was 128/4; only
+deferred-AOT skips remain — unit phase fully green again). Integration
+**555/27** (+3: testmadcevalexpr/testmadcevalexprtyped/testmadcevalscope,
+zero new; log tmp/runtests_s6a.log). Torture failset **byte-identical to
+the 52-name baseline** (1570 passed, tmp/gcctest_s6.log). SMAUG soak
+green (exit 124 + ready line).
+
+**Eval cluster re-attribution:** the 3 still-failing eval tests are NOT
+scope-capture: testmadceval + testmadcevalexprctx die on wall 5
+(`_ZNSolsESo` — `cout << endl` overload mis-pick, same as
+testmultiret/testrust); testmadc_ns dies on wall 2 (`std::vector<int>`
+instantiation). Wall 3 as a distinct wall is CLOSED.
+
+**Queue item (c) verified done:** no `cc_*.json` scratch manifests remain
+in /workspace/MadSMAUG.
+
+**REMAINING QUEUE:** (b) w2a CIR faces per the session-4 banner (implicit
+copy ctor `__normal_iterator(__normal_iterator)` first, then the
+`_Vector_base` 3-arg mem-init mis-route) — unblocks the ~12-test
+container cluster + testmadc_ns; then wall 5 (`_ZNSolsESo`, +4 tests).
+
+---
+
 ## STATUS UPDATE 2026-06-12/13 (session 5) — WALL 4 CLOSED; SMAUG BOOTS ON REAL GLIBC
 
 **Commits `63e3efb` → `3b460ea` → `ea3078a`** (this branch). All three
