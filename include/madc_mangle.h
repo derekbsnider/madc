@@ -148,13 +148,4 @@ std::string std_map_type(const std::string &key,
 std::string std_set_type(const std::string &elem);          // std::set<elem,std::less<elem>,std::allocator<elem>>
 std::string std_stringstream_type();                        // std::__cxx11::basic_stringstream<char,...>
 
-// The HOST-side object type of the text carrier — the class
-// DataDef::marshals_value_text() identifies (the mangler is the one
-// permitted home for std:: type knowledge; see
-// scripts/check-no-std-hardcoding.sh). Marshalling code that must hold or
-// size a live text-carrier object at the embedding boundary (libmadc
-// call/global marshalling) types it through this alias, never through the
-// concrete class name.
-typedef std::string madc_text_carrier;
-
 #endif // __MADC_MANGLE_H

@@ -25,8 +25,7 @@ public:
 	boolean,
 	integer,
 	real,
-	c_string,
-	text_object	// by-value text-carrier parameter / hidden-retbuf return
+	c_string
     };
 
     struct native_signature
