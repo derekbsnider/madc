@@ -4693,16 +4693,12 @@ node_t CirBuilder::no_ctor_match_error(DataDefCLASS *cdd,
 		TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(a);
 		FuncDef *cfd = tcf ? call_target_funcdef(tcf) : NULL;
 		DataDef *tret = tcf ? tcf->returns() : NULL;
-		fprintf(stderr, "[ctorinit]   arg%zu tok=%s @%s:%d datadef=%s tcf.var=%s cfd=%p cfd.ret=%s cfd.returns_ref=%d tok.returns=%s ref_override=%d\n",
+		(void)tret;
+		fprintf(stderr, "[ctorinit]   arg%zu tok=%s line=%d datadef=%s cfd=%p\n",
 			i, a ? typeid(*a).name() : "(null)",
-			a && a->file ? a->file : "?", a ? a->line : 0,
+			a ? a->line : 0,
 			a && a->datadef() ? a->datadef()->name.c_str() : "(none)",
-			tcf ? tcf->var.name.c_str() : "-",
-			(void *)cfd,
-			cfd ? cfd->returns.name.c_str() : "-",
-			cfd ? (int)cfd->returns_ref : -1,
-			tret ? tret->name.c_str() : "-",
-			tcf ? (int)tcf->returns_ref_override : -1);
+			(void *)cfd);
 	}
 	if (cdd)
 		for (Variable *cv : cdd->ctors) {

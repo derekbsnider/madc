@@ -10514,7 +10514,15 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	if ( tb->id() == TokenID::tkSemi ) { break; }
 	DBG(cout << "parseCallFunc() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
 	std::string saved_namespace = current_namespace;
-	current_namespace.clear();
+	// Arguments resolve in the CALL SITE's lexical namespace
+	// ([basic.lookup]), not the callee's: only the statement-level
+	// qualified-call arm (php::foo(args)) switches current_namespace to
+	// the callee's namespace, recording the lexical one. An unqualified
+	// call inside a namespace-context body KEEPS its enclosing namespace
+	// (true_type() inside std::vector::_M_move_assign = std::true_type;
+	// the old unconditional clear() broke that).
+	if ( qualified_stmt_callee_ns )
+	    current_namespace = qualified_stmt_lexical_ns;
 	tb = parseExpression(tb, true);
 	current_namespace = saved_namespace;
 	if ( !tb ) { break; }
@@ -10827,7 +10835,15 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	if ( tb->id() == TokenID::tkSemi ) { break; }
 	DBG(cout << "parseCallMethod() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
 	std::string saved_namespace = current_namespace;
-	current_namespace.clear();
+	// Arguments resolve in the CALL SITE's lexical namespace
+	// ([basic.lookup]), not the callee's: only the statement-level
+	// qualified-call arm (php::foo(args)) switches current_namespace to
+	// the callee's namespace, recording the lexical one. An unqualified
+	// call inside a namespace-context body KEEPS its enclosing namespace
+	// (true_type() inside std::vector::_M_move_assign = std::true_type;
+	// the old unconditional clear() broke that).
+	if ( qualified_stmt_callee_ns )
+	    current_namespace = qualified_stmt_lexical_ns;
 	tb = parseExpression(tb, true);
 	current_namespace = saved_namespace;
 	if ( !tb ) { break; }
@@ -11200,6 +11216,29 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
     return result;
 }
 
+#ifdef MADC_DEBUG_NS_RESOLVE
+static void debug_deref_fail(Program &pgm, int site, TokenBase *deref_tb,
+			     DataDef *dtype)
+{
+    std::string up;
+    for ( size_t ui = 0; ui < pgm.tokens.size() && ui < 8; ++ui )
+    {
+	if ( !pgm.tokens[ui] ) continue;
+	if ( !up.empty() ) up += ' ';
+	up += overload_token_spelling(pgm.tokens[ui]);
+    }
+    fprintf(stderr, "[deref-fail] site=%d tok=%s dtype=%s inst='%s' ns='%s' next: %s\n",
+	    site,
+	    deref_tb && deref_tb->type() == TokenType::ttIdentifier
+		? ((TokenIdent *)deref_tb)->str.c_str() : "(expr)",
+	    dtype ? dtype->name.c_str() : "(null)",
+	    pgm.instantiating_canonical_spelling.c_str(),
+	    pgm.current_namespace.c_str(), up.c_str());
+}
+#else
+#define debug_deref_fail(pgm, site, tb, dt) do { } while (0)
+#endif
+
 TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 {
     if ( !star || star->id() != TokenID::tkMul )
@@ -11225,7 +11264,10 @@ TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 	if ( !dtype )
 	    dtype = inner_expr->datadef();
 	if ( !dtype || !dtype->is_pointer() )
+	{
+	    debug_deref_fail(*this, 1, deref_tb, dtype);
 	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+	}
 	return new TokenDerefExpr(inner_expr, unwrap_subscript_element_type(dtype));
     }
 
@@ -11252,7 +11294,10 @@ TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 	if ( !dtype )
 	    dtype = pointer_expr ? pointer_expr->datadef() : NULL;
 	if ( !dtype )
+	{
+	    debug_deref_fail(*this, 2, deref_tb, dtype);
 	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+	}
 	if ( dtype->is_function() && dtype->is_numeric() )
 	    return pointer_expr;
 	if ( !dtype->is_pointer() )
@@ -11260,6 +11305,7 @@ TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 	    if ( TokenMember *tm = dynamic_cast<TokenMember *>(pointer_expr) )
 		if ( tm->is_fixed_array_member() )
 		    return new TokenDerefExpr(pointer_expr, dtype);
+	    debug_deref_fail(*this, 3, deref_tb, dtype);
 	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 	}
 	return new TokenDerefExpr(pointer_expr, unwrap_subscript_element_type(dtype));
@@ -11275,7 +11321,10 @@ TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 	return new TokenVar(*var);
     DataDef *base = deref_type_for_variable(var);
     if ( !base )
+    {
+	debug_deref_fail(*this, 4, deref_tb, var->type);
 	Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+    }
     return new TokenDeref(*var, base);
 }
 
@@ -14219,8 +14268,42 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    return ExprStep::Redo;
 			}
 		    }
+		    // `typename X::type{...}` / `typename X::type(...)` — a
+		    // dependent-type temporary in EXPRESSION position
+		    // ([expr.type.conv]; real vector swap passes
+		    // `typename _Alloc_traits::is_always_equal{}`). Resolve
+		    // the qualified type and Redo through the dataType arm,
+		    // which owns functional construction.
+		    if ( ident_tb->str == "typename" && peekToken() )
+		    {
+			if ( TokenDataType *tdt = resolve_typename_type_token(
+				nextToken(), true, ident_tb) )
+			{
+			    tb = tdt;
+			    return ExprStep::Redo;
+			}
+		    }
+		    // Last resort before "undeclared": an unqualified NAME that
+		    // resolves as a TYPE in the current namespace/class context
+		    // and is followed by '(' / '{' is a functional construction
+		    // ([expr.type.conv] — `true_type()` inside std::vector's
+		    // body names std::true_type). Resolve through the one
+		    // shared type resolver and Redo through the dataType arm.
+		    if ( peekToken()
+		      && (peekToken()->id() == TokenID::tkOpBrk
+		       || peekToken()->id() == TokenID::tkOpBrc) )
+		    {
+			if ( TokenDataType *tdt =
+				resolve_declared_type_token(ident_tb, true, true) )
+			{
+			    tb = tdt;
+			    return ExprStep::Redo;
+			}
+		    }
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ident_tb->str << endl);
+		    { debug_deref_fail(*this, 14255, ident_tb, NULL);
 		    Throw(tb) << "use of undeclared identifier '" << ident_tb->str << '\'' << flush;
+		    }
 		}
 		ns_resolved:
 		if ( var->type->is_function() )
@@ -15667,7 +15750,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			if ( !dtype )
 			    dtype = deref_expr->datadef();
 			if ( !dtype )
+			    { debug_deref_fail(*this, 15702, deref_tb, NULL);
 			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+			    }
 			if ( dynamic_cast<DataDefFPTR *>(dtype) != NULL )
 			{
 			    exStack.push(deref_expr);
@@ -15701,7 +15786,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				exStack.push(new TokenDerefExpr(deref_expr, dep_base));
 				return done ? ExprStep::Done : ExprStep::Break;
 			    }
+			    { debug_deref_fail(*this, 15736, deref_tb, NULL);
 			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+			    }
 			}
 			DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
 			DataDef *base = dptr ? dptr->base_type : &ddINT64;
@@ -15757,6 +15844,19 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 						    new Variable(dname, *mtype, 1, NULL, false);
 						TokenMember *tm =
 						    new TokenMember(*thisvar, *member, ofs);
+						// `*member` where the member is a CLASS
+						// object dispatches its operator* (the
+						// implicit-this member twin of the
+						// variable arm below — move_iterator's
+						// `*_M_current` on __normal_iterator).
+						if ( TokenCallMethod *opcall =
+							make_unary_object_operator_call(
+							    NULL, tm, "operator*") )
+						{
+						    exStack.push(opcall);
+						    return done ? ExprStep::Done
+								: ExprStep::Break;
+						}
 						DataDef *base = NULL;
 						if ( tm->is_fixed_array_member() )
 						{
@@ -15773,7 +15873,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 						    base =
 							dependent_deref_result_type(mtype);
 						if ( !base )
+						    { debug_deref_fail(*this, 15808, deref_tb, NULL);
 						    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+						    }
 						exStack.push(new TokenDerefExpr(tm, base));
 						return done ? ExprStep::Done : ExprStep::Break;
 					    }
@@ -15807,7 +15909,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    if ( !base )
 					base = dependent_deref_result_type(dvar->type);
 				    if ( !base )
+					{ debug_deref_fail(*this, 15842, deref_tb, NULL);
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+					}
 				    if ( peekToken() && (peekToken()->id() == TokenID::tkInc || peekToken()->id() == TokenID::tkDec) )
 				    {
 					TokenBase *step_tb = nextToken();
@@ -15852,7 +15956,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 						Throw(operand_tb) << "undeclared identifier '" << vname << "'" << flush;
 					    DataDef *base = deref_type_for_variable(var);
 					    if ( !base )
+						{ debug_deref_fail(*this, 15887, operand_tb, NULL);
 						Throw(operand_tb) << "cannot dereference non-pointer type" << flush;
+						}
 					    // Postfix ++/-- on the innermost variable:
 					    // `**pp++` = `*(*(pp++))`.  Wrap the variable
 					    // in a postfix step before building the deref
@@ -15894,7 +16000,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					    if ( !dtype )
 						dtype = deref_expr->datadef();
 					    if ( !dtype || !dtype->is_pointer() )
+						{ debug_deref_fail(*this, 15929, stars[si], NULL);
 						Throw(stars[si]) << "cannot dereference non-pointer type" << flush;
+						}
 					    DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
 					    DataDef *base = dptr ? dptr->base_type : &ddINT64;
 					    deref_expr = new TokenDerefExpr(deref_expr, base);
@@ -15917,7 +16025,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					if ( !inner_dtype )
 					    inner_dtype = inner_expr ? inner_expr->datadef() : NULL;
 					if ( !inner_dtype || !inner_dtype->is_pointer() )
+					    { debug_deref_fail(*this, 15952, inner_tb, NULL);
 					    Throw(inner_tb) << "cannot dereference non-pointer type" << flush;
+					    }
 					DataDefPTR *inner_dptr = dynamic_cast<DataDefPTR *>(inner_dtype);
 					DataDef *inner_base = inner_dptr ? inner_dptr->base_type : &ddINT64;
 					if ( peekToken()
@@ -15956,7 +16066,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					    Throw(inner_tb) << "undeclared identifier '" << inner_name << "'" << flush;
 					DataDef *inner_base = deref_type_for_variable(inner_var);
 					if ( !inner_base )
+					    { debug_deref_fail(*this, 15991, inner_tb, NULL);
 					    Throw(inner_tb) << "cannot dereference non-pointer type" << flush;
+					    }
 					// Postfix ++/-- on inner var: `**pp++`
 					// = `*(*(pp++))`.  Use TokenDerefStep so
 					// the increment targets pp.
@@ -16043,7 +16155,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					}
 				    }
 				    if ( !id_var->type->is_pointer() )
+					{ debug_deref_fail(*this, 16078, deref_tb, NULL);
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+					}
 				    DataDefPTR *idptr = dynamic_cast<DataDefPTR *>(id_var->type);
 				    DataDef *base = (idptr && idptr->base_type) ? idptr->base_type : &ddINT64;
 				    TokenOperator *step;
@@ -16056,7 +16170,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    deref_expr = new TokenDerefExpr(step, base);
 				    DataDef *dtype = id_var->type;
 				    if ( !dtype || !dtype->is_pointer() )
+					{ debug_deref_fail(*this, 16091, deref_tb, NULL);
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+					}
 				    exStack.push(deref_expr);
 				    return done ? ExprStep::Done : ExprStep::Break;
 				}
@@ -16093,7 +16209,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					    exStack.push(new TokenDerefExpr(inner_expr, dep_base));
 					    return done ? ExprStep::Done : ExprStep::Break;
 					}
+					{ debug_deref_fail(*this, 16128, deref_tb, NULL);
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+					}
 				    }
 				    DataDefPTR *inner_dptr = dynamic_cast<DataDefPTR *>(inner_dtype);
 				    DataDef *inner_base = inner_dptr ? inner_dptr->base_type : &ddINT64;
@@ -16125,7 +16243,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				if ( !dtype )
 				    dtype = deref_expr->datadef();
 				if ( !dtype )
+				    { debug_deref_fail(*this, 16160, deref_tb, NULL);
 				    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+				    }
 				if ( dtype->is_function() && dtype->is_numeric() )
 				{
 				    exStack.push(deref_expr);
@@ -16172,7 +16292,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					exStack.push(new TokenDerefExpr(deref_expr, dep_base));
 					return done ? ExprStep::Done : ExprStep::Break;
 				    }
+				    { debug_deref_fail(*this, 16207, deref_tb, NULL);
 				    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+				    }
 				}
 				DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
 				DataDef *base = dptr ? dptr->base_type : &ddINT64;
@@ -18868,6 +18990,14 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     std::string saved_namespace = current_namespace;
     std::string saved_canon = instantiating_canonical_spelling;
     cur_func_name = body.var->name;
+#ifdef MADC_DEBUG_NS_RESOLVE
+    fprintf(stderr, "[deferred-body] var=%s owner=%s spelling='%s' ns-derived='%s' cur-ns='%s'\n",
+	    body.var->name.c_str(),
+	    body.method->owner_class ? body.method->owner_class->name.c_str() : "(none)",
+	    body.method->owner_class ? body.method->owner_class->canonical_cpp_spelling.c_str() : "",
+	    body.method->owner_class ? namespace_scope_from_cpp_spelling(body.method->owner_class->canonical_cpp_spelling).c_str() : "",
+	    current_namespace.c_str());
+#endif
     if ( body.method->owner_class )
     {
 	std::string method_namespace =
@@ -31369,9 +31499,28 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    // clearing stomped the context for everything after the
 		    // qualified statement.
 		    std::string saved_stmt_ns = current_namespace;
+		    bool saved_qflag = qualified_stmt_callee_ns;
+		    std::string saved_qns = qualified_stmt_lexical_ns;
+		    // Record the LEXICAL namespace so argument parsing inside
+		    // the qualified call restores it (see parseCallFunc).
+		    qualified_stmt_callee_ns = true;
+		    qualified_stmt_lexical_ns = saved_stmt_ns;
 		    current_namespace = ns_name;
-		    TokenBase *result = parseStatement(nextToken());
+		    TokenBase *result = NULL;
+		    try
+		    {
+			result = parseStatement(nextToken());
+		    }
+		    catch(...)
+		    {
+			current_namespace = saved_stmt_ns;
+			qualified_stmt_callee_ns = saved_qflag;
+			qualified_stmt_lexical_ns = saved_qns;
+			throw;
+		    }
 		    current_namespace = saved_stmt_ns;
+		    qualified_stmt_callee_ns = saved_qflag;
+		    qualified_stmt_lexical_ns = saved_qns;
 		    return result;
 		}
 	    }

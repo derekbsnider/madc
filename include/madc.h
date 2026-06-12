@@ -1459,6 +1459,13 @@ public:
     // to the class parser ([class.union]); TokenCLASS::parse consumes it and
     // marks the DataDefCLASS union_layout.
     bool parsing_cpp_union_class = false;
+    // The statement-level qualified-call arm (`php::foo(args);`) switches
+    // current_namespace to the CALLEE's namespace for the statement parse.
+    // Call ARGUMENTS must still resolve in the call site's LEXICAL namespace
+    // ([basic.lookup]) — these record it so parseCallFunc/parseCallMethod
+    // restore the lexical scope (not empty) around argument parsing.
+    bool qualified_stmt_callee_ns = false;
+    std::string qualified_stmt_lexical_ns;
     // When set, TokenCLASS::parse parses and registers the class/struct
     // DEFINITION only and returns at the closing '}', WITHOUT consuming a
     // trailing instance declarator. Used when a method-bearing struct is
