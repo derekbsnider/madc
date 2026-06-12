@@ -2668,6 +2668,41 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		Throw(dtok ? dtok : tb)
 		    << "Could not resolve default template argument for "
 		    << td.typeparams[pi] << " in " << tname << "<>" << flush;
+	    // Fold the default's declarator suffix (`_Tp*`, `_Tp&`, `_Tp&&`)
+	    // into the argument type, mirroring the explicit-argument path's
+	    // star fold. Stopping at the base type left the suffix tokens in
+	    // the LIVE stream (std::iterator's `_Pointer = _Tp*, _Reference =
+	    // _Tp&` defaults leaked a stray `&` that derailed the enclosing
+	    // class definition) and dropped the suffix from the arg identity.
+	    for (;;)
+	    {
+		TokenBase *sfx = peekToken();
+		if ( !sfx )
+		    break;
+		if ( sfx->id() == TokenID::tkMul )
+		{
+		    nextToken();
+		    DataDefPTR *ptr = getPointerType(&adt->definition);
+		    TokenDataType *padt = new TokenDataType(ptr->name.c_str(), *ptr);
+		    padt->file = dtok->file;
+		    padt->line = dtok->line;
+		    padt->column = dtok->column;
+		    adt = padt;
+		    continue;
+		}
+		if ( sfx->id() == TokenID::tkBand || sfx->id() == TokenID::tkLand )
+		{
+		    nextToken();
+		    DataDefREF *ref = getReferenceType(&adt->definition);
+		    TokenDataType *radt = new TokenDataType(ref->name.c_str(), *ref);
+		    radt->file = dtok->file;
+		    radt->line = dtok->line;
+		    radt->column = dtok->column;
+		    adt = radt;
+		    continue;
+		}
+		break;
+	    }
 	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 		nextToken();
 	    type_args.push_back(adt);
@@ -19551,6 +19586,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		if ( !bcls && !pgm.is_c_mode() )
 		    bcls = pgm.promote_struct_base_to_class(base_name, &bdt->definition);
 		base_name = bdt->definition.name;
+#ifdef MADC_DEBUG_BASE_CLAUSE
+		fprintf(stderr, "[base-clause] '%s' resolved as declared type '%s' bcls=%p next=%d\n",
+			source_base_name.c_str(), base_name.c_str(), (void *)bcls,
+			pgm.peekToken() ? (int)pgm.peekToken()->id() : -1);
+#endif
 	    }
 	    else
 	    {

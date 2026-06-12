@@ -16,48 +16,14 @@ OUTFILE="$TOPDIR/src/precompiled_headers.cpp"
 TMPDIR="$TOPDIR/tmp/pch_build"
 
 # Headers to pre-compile (relative to /usr/include or absolute)
+#
+# EMPTY since the retire-embedded-shims campaign: the old blobs were stale
+# (single-mode gcc -E captures that don't preserve include-guard/macro state
+# and predate presents_as_cpp()), so the named-PCH layer silently shadowed
+# the real filesystem headers. Re-populate ONLY once PCH generation preserves
+# include-guard/macro state and is keyed per language mode (the deferred PCH
+# regeneration track) — the lookup machinery in the lexer is kept live.
 HEADERS=(
-    stdio.h
-    stdlib.h
-    string.h
-    strings.h
-    stdint.h
-    stddef.h
-    stdbool.h
-    errno.h
-    fcntl.h
-    signal.h
-    math.h
-    unistd.h
-    time.h
-    ctype.h
-    assert.h
-    float.h
-    locale.h
-    dirent.h
-    dlfcn.h
-    grp.h
-    pwd.h
-    poll.h
-    regex.h
-    pthread.h
-    termios.h
-    syslog.h
-    fnmatch.h
-    glob.h
-    malloc.h
-    alloca.h
-    crypt.h
-    netdb.h
-    arpa/inet.h
-    netinet/in.h
-    sys/stat.h
-    sys/types.h
-    sys/wait.h
-    sys/time.h
-    sys/socket.h
-    sys/select.h
-    sys/resource.h
 )
 
 # Check prerequisites

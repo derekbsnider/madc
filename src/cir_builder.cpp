@@ -1234,6 +1234,11 @@ std::string CirBuilder::typedef_emit_name(const std::string &alias,
 	if (alias.empty() || !m_ambiguous_typedef_aliases.count(alias))
 		return alias;
 	DataDefSTRUCT *sdd = struct_behind(dd);
+#ifdef MADC_DEBUG_TYPEDEF_EMIT
+	fprintf(stderr, "[typedef_emit_name] alias=%s dd=%p type=%d peeled=%s\n",
+		alias.c_str(), (void *)dd, dd ? (int)dd->type() : -1,
+		sdd ? sdd->name.c_str() : "(null)");
+#endif
 	return sdd ? sdd->name : alias;
 }
 
@@ -10360,6 +10365,11 @@ struct ShimSlot {
 
 // The const-char*-converting constructor of `cdd`, if any (the same loose
 // shape global_ctor_call's built-in path matches: this + one pointer param).
+// Must be CALLABLE with exactly one text argument: every parameter after the
+// const-char* needs a default (real <string> declares basic_string(const
+// char*, size_type, const allocator&) with NO size default ahead of the
+// (const char*, const allocator& = ...) converting ctor — picking by shape
+// alone emitted a 2-arg call against a 4-arg prototype).
 FuncDef *class_text_ctor(DataDefCLASS *cdd)
 {
 	if (!cdd) return NULL;
@@ -10367,7 +10377,9 @@ FuncDef *class_text_ctor(DataDefCLASS *cdd)
 		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
 		if (!fd || fd->parameters.size() < 2) continue;
 		DataDef *p1 = fd->parameters[1];
-		if (p1 && p1->type() == DataType::dtCHARptr) return fd;
+		if (p1 && p1->type() == DataType::dtCHARptr
+		    && fd->required_param_count() <= 2)
+			return fd;
 	}
 	return NULL;
 }
@@ -11281,7 +11293,13 @@ node_t CirBuilder::translate_module(Program *prog)
 			append_type_specs(ext_list, &ddVOID);
 			ret_decl_stars = 0;
 		} else if (!fd->return_typedef_name.empty()) {
-			append(ext_list, id(fd->return_typedef_name.c_str()));
+			// Route through the alias chokepoint: a cross-namespace-
+			// colliding alias (std::string vs std::pmr::string) must
+			// emit its unique struct tag here exactly like every other
+			// type-spec site, or the extern references an alias the
+			// module never defines ("unknown type string").
+			append(ext_list, id(typedef_emit_name(fd->return_typedef_name,
+							      &fd->returns).c_str()));
 			ret_decl_stars = explicit_star_count(&fd->returns,
 							     fd->return_typedef_name);
 		} else if (ret_dd && (ret_dd->is_struct() || as_class_instance(ret_dd))

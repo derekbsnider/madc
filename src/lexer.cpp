@@ -2178,7 +2178,10 @@ TokenBase *Program::_getToken()
 			source.get(); // consume closing delimiter
 		    // angle-bracket includes: prefer real precompiled headers, then
 		    // text-embedded compatibility headers, then filesystem source.
-		    if ( is_system )
+		    // #include_next is POSITIONAL (continue the path search after
+		    // the current header's dir) — it must never resolve through
+		    // the named PCH/embedded caches, only the filesystem walk.
+		    if ( is_system && !is_include_next )
 		    {
 			if ( !suppress_auto_include_scan
 			  && pending_auto_include_headers.count(incfile) )
