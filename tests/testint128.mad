@@ -1,0 +1,44 @@
+// Real 16-byte __int128 / unsigned __int128 (P0 wide-integer work).
+// Output verified against gcc -O0 (tmp/int128.c oracle shape).
+#include <stdio.h>
+
+static unsigned __int128 add1(unsigned __int128 x) { return x + 1; }
+
+int main()
+{
+    __int128 a = 1;
+    a <<= 100;
+    __int128 b = a + 5;
+    unsigned __int128 u = (unsigned __int128)0 - 1;
+    printf("sizeof=%d %d\n", (int)sizeof(__int128), (int)sizeof(unsigned __int128));
+    printf("hi=%llu lo=%llu\n", (unsigned long long)(b >> 64), (unsigned long long)b);
+    printf("uhi=%llu ulo=%llu\n", (unsigned long long)(u >> 64), (unsigned long long)u);
+    __int128 neg = -1;
+    printf("neg_hi=%llx neg_lo=%llx\n", (unsigned long long)((unsigned __int128)neg >> 64), (unsigned long long)neg);
+    __int128 m = (__int128)1234567890123456789LL * 97;
+    printf("m_hi=%llu m_lo=%llu\n", (unsigned long long)((unsigned __int128)m >> 64), (unsigned long long)m);
+    __int128 d = m / 97;
+    printf("d=%lld\n", (long long)d);
+    if (u > (unsigned __int128)a)
+        printf("cmp_ok\n");
+    // params/returns, inc/dec, compound, truthiness, float conversions
+    unsigned __int128 r = add1((unsigned __int128)41);
+    ++r;
+    r *= 3;
+    if (r)
+        printf("r=%llu\n", (unsigned long long)r);
+    double fd = (double)a;
+    __int128 back = (__int128)fd;
+    printf("fd_ok=%d\n", (int)(back == a));
+    // overflow builtins at 128 bits
+    unsigned __int128 ov;
+    int flag = __builtin_mul_overflow((unsigned char)4, -16, &ov);
+    printf("ov_lo=%lld flag_is_int=%d\n", (long long)ov, flag == 0 || flag == 1);
+    // switch on __int128 (case labels >64 bits await the slice-3 widening of
+    // madc's parse-time constant fold; see the P0 plan doc)
+    switch (d) {
+    case 1234567890123456789LL: printf("switch_ok\n"); break;
+    default: printf("switch_bad\n"); break;
+    }
+    return 0;
+}

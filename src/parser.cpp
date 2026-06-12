@@ -8760,6 +8760,14 @@ void Program::populate_builtin_registry()
     // call parses; cir_builder emits N_CALL(__builtin_va_start, ap) and c2mir
     // intrinsic-lowers it. The arg is the user's va_list (array -> pointer).
     builtin_registry.add_core_function("__builtin_va_start", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVOID)}, (fVOIDFUNC)NULL);
+    // __builtin_add/sub/mul_overflow(a, b, res_ptr): c2mir builtins, lowered
+    // in-place at every width incl. __int128. Registered with ZERO declared
+    // params (variadic convention) so the arguments reach the CIR call with
+    // their real compile-time types — declared params would coerce a 128-bit
+    // operand down to the declared width. NULL pointer: no real symbol.
+    builtin_registry.add_core_function("__builtin_add_overflow", datatype_vec_t{DataType::dtINT32}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__builtin_sub_overflow", datatype_vec_t{DataType::dtINT32}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__builtin_mul_overflow", datatype_vec_t{DataType::dtINT32}, (fVOIDFUNC)NULL);
     // __destroy(ptr): compiler intrinsic that destructs the pointed-to object.
     // No real symbol (NULL pointer, like __builtin_va_start) — the parser
     // accepts the call and cir_builder lowers it to the element type's class

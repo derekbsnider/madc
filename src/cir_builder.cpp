@@ -385,6 +385,16 @@ static DataDefCLASS *as_class_instance(DataDef *dd)
 	return as_user_class(dd);
 }
 
+// c2mir lowers these call names in-place as builtins (it even rejects user
+// declarations of them); never emit an extern prototype for one.
+static bool is_c2mir_builtin_call_name(const std::string &name)
+{
+	return name.compare(0, 13, "__builtin_va_") == 0
+	    || name == "__builtin_add_overflow"
+	    || name == "__builtin_sub_overflow"
+	    || name == "__builtin_mul_overflow";
+}
+
 static DataDefCLASS *class_behind(DataDef *dd);
 
 static DataDefCLASS *param_object_class(DataDef *dd, bool refp)
@@ -8191,7 +8201,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// turns it into an undefined external symbol at MIR-link.
 				// So skip the proto for them. (__builtin_va_arg has its
 				// own translation path above.)
-				if (tcf->var.name.compare(0, 13, "__builtin_va_") != 0)
+				if (!is_c2mir_builtin_call_name(tcf->var.name))
 					referenced_funcs.insert(callee_name);
 				func_id = id(callee_name.c_str(), tb);
 			}

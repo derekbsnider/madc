@@ -1,6 +1,28 @@
 # P0 — Value pool + wide-integer correctness (implementation plan)
 
 **Status:** ACTIVE (2026-06-12). Branch `feature/p0-value-pool-claude`.
+
+> **STATUS UPDATE (2026-06-12, later):** slice 1 committed gated (`a651b9a`);
+> **slice 1.5 (the c2mir scalar-int128 raise) IMPLEMENTED** on the mir fork
+> branch `feature/scalar-int128-claude` @ `1ee0961` (c2mir-test suite green
+> incl. bootstrap) and the madc guard FLIPPED (guard removed; MIR_COMMIT
+> bumped in the same commit). c2mir now compiles scalar __int128 end-to-end:
+> gen dispatch onto the one-lane-vector halves emitters, 128-bit const
+> folding, SysV two-eightbyte ABI, int128<->float helper conversions,
+> overflow builtins, switch, truthiness, inc/dec, implicit conversions.
+> `__SIZEOF_INT128__` is now defined by c2mir (x86_64 linux) +
+> `__int128_t`/`__uint128_t` builtin typedefs.
+> madc additionally stopped remapping `__builtin_add/sub/mul_overflow` to the
+> 64-bit `__madc_*` helpers — they pass through as real c2mir builtins
+> (registered 0-param so args keep their compile-time types); the `*_p`
+> variants stay remapped. `tests/testint128.mad` output == gcc -O0.
+> Torture int128 set via madc: 13/14 (+2 former failset entries pr122943 +
+> pr63302 now pass; pr92904 remains failset for its unrelated aligned-attr
+> gap). **Slice-3 residual found:** case labels >64 bits truncate in madc's
+> parse-time constant fold (`parse_constant_*` rungs) — the int128 switch
+> itself works; only the >64-bit LABEL value is wrong. Float→int128 implicit
+> (non-cast) conversions use the signed helper (explicit casts pick by
+> target signedness; divergence is UB-only inputs).
 Executes **P0** of `2026-06-09-frontend-representation-refactor.md` — rung 1 of
 the forest-prerequisite ladder in `2026-06-12-embedding-track-complete-HANDOFF.md`.
 The TYPE-side substrate (typeid table + 32-byte `madc_value` ABI) already landed

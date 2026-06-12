@@ -1262,12 +1262,10 @@ void Program::_tokenizer_init()
     define_map["__bswap_16"] = "__madc_bswap16";
     define_map["__bswap_32"] = "__madc_bswap32";
 
-    // __builtin_*_overflow: overflow-checking arithmetic (GCC extension).
-    // Mapped to helper functions in va_helpers.cpp that use __int128.
-    define_map["__builtin_add_overflow"] = "__madc_add_overflow";
-    define_map["__builtin_sub_overflow"] = "__madc_sub_overflow";
-    define_map["__builtin_mul_overflow"] = "__madc_mul_overflow";
-
+    // __builtin_add/sub/mul_overflow pass through to CIR as real c2mir
+    // builtins (handled natively at every width incl. __int128); the old
+    // __madc_* long-helper remap truncated wider-than-64-bit results.
+    // The *_p predicate variants stay mapped (no c2mir builtin for them).
     define_map["__builtin_add_overflow_p"] = "__madc_add_overflow_p";
     define_map["__builtin_sub_overflow_p"] = "__madc_sub_overflow_p";
     define_map["__builtin_mul_overflow_p"] = "__madc_mul_overflow_p";
@@ -3954,22 +3952,10 @@ TokenBase *Program::_getToken()
 			case TS_INT128:
 			case TS_SIGNED + TS_INT128:
 			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-#ifdef MADC_INT128_REAL
-			    // Real 16-byte __int128 (P0). Gated until the c2mir
-			    // fork lowers SCALAR int128 (today: consts + one-lane
-			    // v128 only) — flipping early fatals MIR on any
-			    // __int128 variable. See docs/plans/2026-06-12-p0-value-pool-plan.md.
 			    return new TokenDataType("__int128", ddINT128);
-#else
-			    return new TokenDataType("__int128", ddINT64);
-#endif
 			case TS_UNSIGNED + TS_INT128:
 			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-#ifdef MADC_INT128_REAL
 			    return new TokenDataType("unsigned __int128", ddUINT128);
-#else
-			    return new TokenDataType("unsigned __int128", ddUINT64);
-#endif
 			case TS_FLOAT:
 			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddFLOAT); return new TokenDataType(dd->name.c_str(), *dd); }
 			    return new TokenDataType("float", ddFLOAT);
