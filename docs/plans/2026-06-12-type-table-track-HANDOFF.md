@@ -30,6 +30,31 @@
 > Gates after revert+cleanup: units 109/0/33, fulltest+torture per the
 > validation log. NOTE: claude_status.json head/branch fields predate the
 > eval-globals merge — sync at next track milestone per mirror-sync cadence.
+>
+> **REVISED-QUEUE ITEM 1 EXECUTED (same day): madc::value WRAPPER REWORK
+> MERGED to the branch (e05b6d3).** std::string/_bytes members DELETED; the
+> class is a thin RAII wrapper over the 32-byte struct (text = char SSO/
+> cells; array/object keep container backing until the madcdis pool phase).
+> GENERIC INSTANCES landed: madc_cell destroy finalizer +
+> madc_value_make_instance(type_id,size,destroy) + value::make_instance/
+> instance_data/type_id/data/size — a typed instance of ANY table type is a
+> first-class value (equality = cell identity; doctest pins sharing +
+> exactly-once finalization). Storage runtime moved to madc_value.cpp (one
+> home). CIR: obj_storage_decl gained an align param — `array a;` lowers to
+> _Alignas(alignof(madc::value)) long[] (16-aligned struct vs old 8-aligned
+> buffer). TWO LATENT BUGS fixed at depth: value_as<const char*> + the
+> ddCHARptr binding installer borrowed soon-dead text — the binding one was
+> ALWAYS a use-after-free (bindings map cleared BEFORE the lazy JIT build
+> reads var->data; SSO exposed it); binding storage now OWNS a strdup-style
+> copy (addLiteral convention). as_string() is BY-VALUE now (54 sites
+> compiled unchanged); as_bytes/make_bytes(vector) → data()/size()/
+> make_bytes(ptr,len); kind enum gained `instance` (one -Wswitch fix in
+> madcdat_storage.cpp). GATES @ e05b6d3: units all suites green (program
+> 109/0/33), fulltest 577/0/0/18 exit 0 both gates GREEN, torture 1567
+> failset NAME-IDENTICAL (0 of the 55 flip), SMAUG --project soak ready+124
+> (exercises the realigned array runtime), madcdat-ENABLED clean build green
+> (19 suites) then lean config restored. NEXT = queue item 2: the shim/
+> trampoline machinery (register_function foundation).
 
 Date: 2026-06-12 (same-day successor to `2026-06-12-strict-equality-HANDOFF.md`,
 which remains the ===/!== mechanism reference). This is the **current
