@@ -13749,7 +13749,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			ns_name = resolved_ns_name;
 		    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
 		    if ( nsi == namespace_map.end() )
+		    {
+#ifdef MADC_DEBUG_NS_RESOLVE
+			fprintf(stderr, "[ns-resolve] unknown ns '%s' inst_depth=%d inst='%s'\n",
+				ns_name.c_str(), fn_template_instantiation_depth,
+				instantiating_canonical_spelling.c_str());
+#endif
 			Throw(tb) << "Unknown namespace '" << ns_name << "'" << flush;
+		    }
 		    nextToken(); // consume '::'
 		    TokenBase *member_tb = nextToken(); // consume member identifier
 		    if ( !member_tb )
@@ -25061,6 +25068,69 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	DBG_PACK("\n");
     }
 #endif
+    // SFINAE pre-check ([temp.deduct]): substitution failure in the
+    // SIGNATURE silently discards the candidate — it must never reach the
+    // body parse below (whose failure path can consume past the injected
+    // tokens into the OUTER stream). The common library shape is a
+    // dependent return type (`typename __gnu_cxx::__enable_if<...,T>::__type
+    // abs(...)` in real <cmath>): when the substituted decl head carries a
+    // `typename` qualified-id, resolve it in a sandboxed token push first;
+    // no resolution -> not an error, the overload just doesn't exist.
+    {
+	size_t head = 0;
+	auto is_word = [&](TokenBase *t, const char *w) {
+	    return t && t->type() == TokenType::ttIdentifier
+		&& ((TokenIdent *)t)->str == w;
+	};
+	while ( head < inj.size()
+	     && (is_word(inj[head], "constexpr") || is_word(inj[head], "inline")
+		 || is_word(inj[head], "static") || is_word(inj[head], "const")
+		 || is_word(inj[head], "volatile")) )
+	    ++head;
+	if ( head < inj.size() && is_word(inj[head], "typename") )
+	{
+	    // The return type runs from `typename` to the declarator name
+	    // (the identifier directly followed by '(' at angle depth 0).
+	    size_t rt_end = head + 1;
+	    int adepth = 0;
+	    for ( ; rt_end < inj.size(); ++rt_end )
+	    {
+		TokenBase *t = inj[rt_end];
+		if ( !t ) continue;
+		if ( t->id() == TokenID::tkLT ) ++adepth;
+		else if ( t->id() == TokenID::tkGT && adepth > 0 ) --adepth;
+		else if ( t->id() == TokenID::tkBSR && adepth > 1 ) adepth -= 2;
+		else if ( t->id() == TokenID::tkBSR && adepth == 1 ) adepth = 0;
+		else if ( adepth == 0 && t->type() == TokenType::ttIdentifier
+		       && rt_end + 1 < inj.size() && inj[rt_end+1]
+		       && inj[rt_end+1]->id() == TokenID::tkOpBrk )
+		    break;
+	    }
+	    if ( rt_end < inj.size() )
+	    {
+		size_t sandbox_base = pgm.tokens.size();
+		pgm.pushToken(new TokenSemi());
+		for ( size_t ri = rt_end; ri-- > head + 1; )
+		    pgm.pushToken(inj[ri]->clone());
+		bool resolved = false;
+		try
+		{
+		    resolved = pgm.resolve_typename_type_token(
+				   pgm.nextToken(), true, inj[head]) != NULL;
+		}
+		catch ( ... ) { resolved = false; }
+		while ( pgm.tokens.size() > sandbox_base )
+		    pgm.nextToken();
+		if ( !resolved )
+		{
+		    DBG(std::cout << "fn-template " << inst_key
+			<< " discarded: return-type substitution failure (SFINAE)"
+			<< std::endl);
+		    return false;
+		}
+	    }
+	}
+    }
     size_t base_depth = pgm.tokens.size();
     for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
 	  it != inj.rend(); ++it )

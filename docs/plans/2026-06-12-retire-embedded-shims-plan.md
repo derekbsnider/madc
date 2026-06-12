@@ -1,5 +1,30 @@
 # Retire the embedded bucket-3 header shims — campaign plan
 
+## STATUS (2026-06-12, live — read top-down)
+
+Branch `feature/retire-embedded-shims-claude` @ `bb8083b`. Phases 0+1
+COMMITTED+GATED (fa25e7f K&R gate / 13383b7 presents_as_cpp; fulltest 582
+green, torture 52-name baseline zero-regr, SMAUG soak green). Phase 2+3
+sweep COMMITTED as WIP (2d61556 all shims deleted +23k lines removed;
+bb8083b preprocessor root causes). Integration currently ~546/36.
+Remaining walls, in attack order:
+1. `typename __gnu_cxx::__enable_if<...>::__type` dependent return types
+   on real <cmath> fn templates — parser swallows `typename` as a
+   namespace qualifier (blocks testmathh/testieeehugeval/m1 family).
+2. Class-scope alias (`typedef _Bit_iterator iterator`) not visible in
+   hidden-friend operator bodies — blocks real <vector>/<map>/<set>
+   (testvector/map/set/containerdtor/template*/subscript*).
+3. testmadceval*: `_ISupper` undeclared (ctype enum emission on eval path).
+4. teststat/teststatret/testservent: parse error in real sys/stat.h chain.
+5. testmultiret/testrust: bogus mangled `_ZNSolsESo` import (operator<<
+   overload mis-pick).
+6. `--emit=c11` name hygiene on real-header path (operatornew[]__o5,
+   operator""s leak into emitted C — JIT unaffected).
+Gates for any merge talk: fulltest green + torture diff vs the 52-name
+baseline (`docs/parity/torture-failset-current.txt`) + SMAUG soak.
+Reducers live in tmp/ (realios/p2/c9/c11/d1-d3/v1-v6/m1-m4) — rerun with
+NO flags (default mode is the point).
+
 **Branch:** `feature/retire-embedded-shims-claude` (off `develop` @ `2832fc0`)
 **Governing doc:** `madc-header-partition-handoff.md` (the partition model).
 **User mandate (2026-06-12):** delete every hand-rolled glibc/libstdc++ twin in
