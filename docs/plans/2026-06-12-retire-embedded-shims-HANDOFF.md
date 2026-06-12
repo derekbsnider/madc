@@ -10,6 +10,38 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## SESSION-5 ENTRY PLAN (decided with user 2026-06-12, end of session 4)
+
+**STEP 0 — NAMESPACE-STACK REFACTOR (do FIRST, fresh context):** replace
+the single mutable `Program::current_namespace` string (135 refs, ~10
+hand-rolled save/restore sites, some not exception-safe) with
+`std::vector<std::string> namespace_stack` + an RAII guard
+(`NamespaceScope`), the idiomatic twin of `class_scope_stack` (vector,
+NOT deque — back-ops only, tiny depth, needs iteration; std::stack
+forbids the enclosing-chain walk). `current_namespace` becomes a read
+ACCESSOR (back() or empty) so the ~125 read sites don't change; the ~10
+mutation sites become guards. DELETE the `qualified_stmt_callee_ns` /
+`qualified_stmt_lexical_ns` flag pair: the statement-level qualified-call
+(`php::foo(args)`) callee-namespace override moves OUT of lexical-scope
+state (a parameter to head resolution / its own member), and argument
+parsing just reads the lexical stack top. WHY FIRST: walls 3 (eval-TU ns
+context) + 4 (sys headers) are namespace-adjacent — do not stack more
+save/restore patches; the conflation (lexical scope vs qualification
+override) caused both the 2023 clear() hack and session-4's bug. GATE:
+full suite (549/33 byte-identical) + torture name-diff vs the 52-name
+baseline (+ the 3 known wall-4 names), committed alone before any other
+work.
+
+**THEN session-4's queue:** w2a CIR faces (implicit copy ctor
+`__normal_iterator(__normal_iterator)` — [class.copy.ctor] same-class
+arg + no user copy ctor → implicit memberwise/bit-copy in
+select_ctor_overload's no-match tail; then the
+`_Vector_base(__normal_iterator, allocator*, integral_constant_bool_true)`
+3-arg mis-route — read the MADC_DEBUG_CTORINIT NO-MATCH dumps) → walls
+3/4/5 per the session-4 banner below.
+
+---
+
 ## STATUS UPDATE 2026-06-12 (session 4) — w2c GREEN; w2a PARSES fully; 13 root causes
 
 **Commits `c8870aa` → `03d5990` → `a6c9d72`** (this branch). `tmp/w2c.mad`
