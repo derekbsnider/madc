@@ -2,6 +2,62 @@
 
 ## [Unreleased]
 
+### Synthesized host-call shims — the embedding boundary's one call surface (`feature/eval-string-call-claude`)
+
+- **`CirBuilder::synth_call_shim`** (translate_module Pass 0.74) emits
+  `long __madc_shim_<sym>(char *args, char *ret)` per host-callable
+  function, marshalling over the 32-byte `madc_value` ABI: typeid
+  validation via `Program::type_id_for` (the type table's first codegen
+  consumer), class parameters constructed via the class's **own ctor**
+  through `ctor_call_assemble` (the one ctor assembler, refactored from
+  `class_ctor_call_addr`), `c_str()`/`size()`-protocol class returns →
+  TEXT values, any other class return → a typed INSTANCE cell (the callee
+  constructs into the cell; finalizer = the class's complete dtor). The
+  host knows ZERO class ABI.
+- `program::perform_call` and the child-eval path now call **only** the
+  shim; the `value_as`/`call_targetN`/`dispatch_callN` pyramid (~430
+  lines) and the 4-argument limit are deleted. New `value::from_raw`;
+  new C getters `madc_value_get_type_id/integer/real/bool`.
+- Shim eligibility excludes `is_simd()` signatures and
+  `local_emit_name`/`captured_vars` functions (GNU nested functions take
+  hidden capture parameters).
+- All 5 string-call marshalling skips unskipped (`std::string`
+  args/returns through `program::call`); new generic pin: a user-class
+  return arrives as a typed instance value with exactly-once finalization
+  (`test_libmadc_program` 113 passed / 30 skipped).
+
+### `madc::value` drops `std::string` — thin RAII over the 32-byte ABI (`feature/eval-string-call-claude`)
+
+- **`madc::value` is now a thin RAII wrapper over the 32-byte
+  `madc_value` struct** — the `_string`/`_bytes` members are deleted;
+  text lives in SSO/refcounted cells per the value-ABI design.
+  `as_string()` returns **by value**; `as_bytes()`/`make_bytes(vector)`
+  became `data()`/`size()`/`make_bytes(ptr,len)`.
+- **Generic typed-instance values**: `madc_cell` destroy finalizers +
+  `madc_value_make_instance(type_id,size,destroy)` and
+  `value::make_instance/instance_data/type_id/data/size` — a typed
+  instance of ANY table type is a first-class value (equality = cell
+  identity; doctest pins sharing + exactly-once finalization). Value
+  storage runtime consolidated in `madc_value.cpp`.
+- CIR `obj_storage_decl` gained an alignment parameter — `array a;`
+  lowers to an `_Alignas(alignof(madc::value))` buffer (the 16-aligned
+  struct previously overflowed an 8-aligned `long[]` buffer).
+- Fixed a latent **use-after-free**: expression-binding text was read by
+  the lazy JIT build after `eval_expression` cleared the bindings map;
+  binding storage now owns a copy (the `addLiteral` convention).
+
+### libmadc: MIR-fatal containment + const-char* binding fold (`feature/eval-string-call-claude`)
+
+- **A bad module can never `exit()` an embedding host**: `CirJitSession`
+  arms `MIR_set_error_func` + `longjmp`, converting MIR fatals into
+  ordinary compile diagnostics. 8 torture undefined-import tests
+  truthfully reclassified runtime→compile (failset names unchanged); a
+  containment regression test pins the no-host-exit contract.
+- **Host `const char*` expression bindings fold to string literals** (the
+  int-fold analogue), so bound text participates in constant contexts.
+- Dead lexer container-keyword relics (`keyword_map.erase("vector"/…)`)
+  deleted — non-keywords are never tokenized.
+
 ### libmadc: get/set_global on live MIR storage + dynamic global init (`feature/eval-globals-claude`)
 
 - **`program::get_global`/`set_global` now operate on the JIT's live
