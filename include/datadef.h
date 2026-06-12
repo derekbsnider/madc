@@ -120,8 +120,14 @@ public:
     // value domain? Spec: docs/superpowers/specs/2026-06-11-strict-equality-design.md
     // §2.1. Defined in src/parser.cpp (needs the DataDef subclass set).
     bool same_representation(DataDef &d);
-    DataDef() { size = 0; _type = 0; }
-    DataDef(std::string n, size_t s, DataType d) { name = n; size = s; _type = (uint32_t)d; }
+    // Canonical typeid: index into the segmented type table
+    // (include/madc_typeid.h; docs/plans/2026-06-12-type-table-value-abi-design.md
+    // §2). 0 = not yet registered. Primitives carry fixed ABI slots
+    // (stamped by madc_stamp_primitive_type_ids()); everything else is
+    // lazy-stamped per Program by Program::type_id_for().
+    uint32_t	 type_id;
+    DataDef() { size = 0; _type = 0; type_id = 0; }
+    DataDef(std::string n, size_t s, DataType d) { name = n; size = s; _type = (uint32_t)d; type_id = 0; }
     virtual ~DataDef() {}
     virtual bool is_compatible(DataDef &d)
     {
@@ -1040,6 +1046,11 @@ public:
     DataDefAUTO() : DataDef("auto", 0, DataType::dtVOID) {}
 };
 extern DataDefAUTO ddAUTO;
+
+// Type table identity layer — slot <-> global-primitive mapping (the single
+// source of truth; defined in src/parser.cpp next to same_representation).
+DataDef *madc_primitive_for_slot(uint32_t slot);
+void madc_stamp_primitive_type_ids();
 
 // function pointer type — wraps a FuncDef to carry the target signature
 class FuncDef;  // forward declaration (defined in madc.h)

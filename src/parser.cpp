@@ -6431,6 +6431,56 @@ bool DataDef::same_representation(DataDef &d)
 	return atag == btag;
 }
 
+// --- Type table (typeid) identity layer ----------------------------------
+// docs/plans/2026-06-12-type-table-value-abi-design.md §2. Slot numbers are
+// ABI (pinned in tests/unit/test_datadef.cpp). This switch is the single
+// source of truth for slot -> global primitive; the stamping loop and
+// Program::type_from_id() both derive from it. Reserved slots (P0 wide
+// values: 18-22) return NULL until their DataDefs exist.
+DataDef *madc_primitive_for_slot(uint32_t slot)
+{
+	switch ( slot )
+	{
+		case MADC_TYPEID_VOID:		return &ddVOID;
+		case MADC_TYPEID_VOID_REF:	return &ddVOIDref;
+		case MADC_TYPEID_BOOL:		return &ddBOOL;
+		case MADC_TYPEID_CHAR:		return &ddCHAR;
+		case MADC_TYPEID_INT:		return &ddINT;
+		case MADC_TYPEID_INT8:		return &ddINT8;
+		case MADC_TYPEID_INT16:		return &ddINT16;
+		case MADC_TYPEID_INT24:		return &ddINT24;
+		case MADC_TYPEID_INT32:		return &ddINT32;
+		case MADC_TYPEID_INT64:		return &ddINT64;
+		case MADC_TYPEID_UINT8:		return &ddUINT8;
+		case MADC_TYPEID_UINT16:	return &ddUINT16;
+		case MADC_TYPEID_UINT24:	return &ddUINT24;
+		case MADC_TYPEID_UINT32:	return &ddUINT32;
+		case MADC_TYPEID_UINT64:	return &ddUINT64;
+		case MADC_TYPEID_FLOAT:		return &ddFLOAT;
+		case MADC_TYPEID_DOUBLE:	return &ddDOUBLE;
+		case MADC_TYPEID_MAX_ALIGN_T:	return &ddMAX_ALIGN_T;
+		case MADC_TYPEID_LPSTR:		return &ddLPSTR;
+		case MADC_TYPEID_VOID_PTR:	return &ddVOIDptr;
+		case MADC_TYPEID_CHAR_PTR:	return &ddCHARptr;
+		case MADC_TYPEID_INT_PTR:	return &ddINTptr;
+		case MADC_TYPEID_INT32_PTR:	return &ddINT32ptr;
+		case MADC_TYPEID_ARRAY:		return &ddARRAY;
+		case MADC_TYPEID_AUTO:		return &ddAUTO;
+		default:			return NULL;
+	}
+}
+
+void madc_stamp_primitive_type_ids()
+{
+	for ( uint32_t slot = 1; slot <= MADC_TYPEID_PRIMITIVE_LAST; ++slot )
+	{
+		DataDef *dd = madc_primitive_for_slot(slot);
+
+		if ( dd )
+			dd->type_id = slot;
+	}
+}
+
 DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 {
     // Prefer a binary (params > 1 incl. __this) overload. Search the source

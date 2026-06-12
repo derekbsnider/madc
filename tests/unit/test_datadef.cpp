@@ -1526,4 +1526,28 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(MADC_TYPEID_SYSTEM_BASE == 100);
         CHECK(MADC_TYPEID_PROJECT_BASE == 0x01000000u);
     }
+
+    TEST_CASE("primitive stamping round-trips slot <-> global DataDef") {
+        madc_stamp_primitive_type_ids();
+        CHECK(ddVOID.type_id == MADC_TYPEID_VOID);
+        CHECK(ddINT.type_id == MADC_TYPEID_INT);
+        CHECK(ddUINT64.type_id == MADC_TYPEID_UINT64);
+        CHECK(ddDOUBLE.type_id == MADC_TYPEID_DOUBLE);
+        CHECK(ddCHARptr.type_id == MADC_TYPEID_CHAR_PTR);
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_INT) == &ddINT);
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_AUTO) == &ddAUTO);
+        // every backed slot stamps to exactly its own number
+        for ( uint32_t s = 1; s <= MADC_TYPEID_PRIMITIVE_LAST; ++s )
+        {
+            DataDef *dd = madc_primitive_for_slot(s);
+            if ( dd )
+                CHECK(dd->type_id == s);
+        }
+        // reserved-but-unbacked slots resolve NULL until P0 lands
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_INT128) == (DataDef *)NULL);
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_LONG_DOUBLE) == (DataDef *)NULL);
+        // out-of-segment queries resolve NULL
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_INVALID) == (DataDef *)NULL);
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_PRIMITIVE_END) == (DataDef *)NULL);
+    }
 }

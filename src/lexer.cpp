@@ -1883,6 +1883,10 @@ void Program::add_keywords()
 // add static tokens for base data types
 void Program::add_datatypes()
 {
+    // Idempotent: globals get the same fixed ABI slot every time, so
+    // multiple Programs per process (project driver) are safe.
+    madc_stamp_primitive_type_ids();
+
     static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
     static TokenDataType tkSIZE_T("size_t", ddUINT64);
     static TokenDataType tkWCHAR_T("wchar_t", ddINT32);
