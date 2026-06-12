@@ -9392,6 +9392,16 @@ bool is_runtime_eval_scope_supported_variable(Variable *var)
 	return false;
     if ( is_runtime_eval_scope_helper_name(var->name) )
 	return false;
+    // A parse-time constant (vfCONSTANT without vfCONSTDECL: enum
+    // constants, host-installed eval binding constants) has no
+    // declaration in the emitted module — reads of it FOLD to its value,
+    // so the scope-context lowering's by-name capture would emit an
+    // undeclared identifier (real glibc headers register hundreds:
+    // _ISupper, PTHREAD_*). It is a value, not runtime scope state.
+    // const-DECLARED variables (vfCONSTDECL) keep real storage and stay
+    // capturable.
+    if ( var->is_constant() && !(var->flags & vfCONSTDECL) )
+	return false;
 
     DataType raw = var->type->rawtype();
     return raw == DataType::dtBOOL
