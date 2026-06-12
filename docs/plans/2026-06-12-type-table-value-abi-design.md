@@ -26,10 +26,31 @@ Related docs this builds on / feeds:
   so P1 is not built against pointers and re-done. The token-kind enum already
   lives by the same append-only/ABI-pinned discipline the primitive slots
   adopt (PCH serializes kind ids — the `tk3NotEq`-at-enum-tail rule).
-- `docs/plans/ROADMAP.md` Track 5A.5 — NaN-boxing stays a *possible internal*
-  optimization for dense value storage inside madcdis, much later. The 32-byte
-  struct here is the **ABI/interchange** representation. They are complementary,
-  not competing; do not let the docs frame them as alternatives.
+- `docs/plans/madcdis-plan.md` (Track 5A) — **reconciled 2026-06-12.** The
+  madcdis plan predates this design and specifies its own value system
+  (Principle 5, Class Model, V1: "`madc::value` with inline scalars and heap
+  pointers" — an 8-byte tag + 60-bit handle, with a heap `value_header`
+  carrying `type_tag`/refcount/hash/flags). Precedence and division of labor:
+  - The **public `madc::value` is THIS design** (32-byte typeid struct; the
+    A0-landed class becomes its RAII wrapper). madcdis's 8-byte tagged handle
+    is the *internal pool value-handle* (dense storage tier) — it marshals
+    to/from `madc_value` at the substrate boundary and must not claim the
+    public name.
+  - **`value_header.type_tag` := the uint32 typeid from this table** (ONE
+    table). This is an enabler for madcdis, not a constraint: its
+    position-independent `mem://`/`shm://` pools cannot store `DataDef*`
+    pointers; the segmented stable-integer ids are exactly what pool-resident
+    type refs need.
+  - **Adopted back from madcdis into §3's cell header:** saturating refcounts
+    with a permanent tier (literals/schema skip counting — the SMAUG hashstr
+    discipline), and reserved `cell_flags` bits for interned / frozen /
+    hash-present — so a malloc'd cell today and a pool-resident cell later
+    share one header shape.
+  - **SSO/interning interplay:** strings ≤16 bytes inline and are never
+    interned (no sharing benefit); interning is the long-string and
+    `madc::Symbol` discipline, a madcdis pool feature (V2).
+  - madcdis's sequencing is unchanged (Track 5 starts only after Track 1.3
+    parity); see the UPDATE block in `madcdis-plan.md`.
 
 ## 1. Context — why
 
@@ -158,9 +179,15 @@ rule-#7-conforming design (no hardcoding specifics into general machinery).
 **Heap cells & ownership:** pointer payloads reference a refcounted cell:
 `{ uint32_t refcount; uint32_t cell_flags; payload bytes… }`. Copy = retain,
 `madc_value_clear` = release. Refcounts are non-atomic (script execution is
-single-threaded per engine; fork isolation gives CoW pages). The refcount
-lives in the cell, NOT the value struct — struct copies are independent and
-inline counts would desync.
+single-threaded per engine; fork isolation gives CoW pages) and **saturating
+with a permanent tier** (a cell at the saturation count is never decremented
+or freed — literals and schema metadata pin there; the SMAUG hashstr
+discipline, adopted from `madcdis-plan.md` Principle 5). `cell_flags`
+reserves bits for `permanent` / `interned` / `frozen` / `hash-present` so
+this header is the malloc'd form of madcdis's pool `value_header` — one
+header shape across both tiers, not a fork. The refcount lives in the cell,
+NOT the value struct — struct copies are independent and inline counts would
+desync.
 
 **Array / object representation:** an array is a value whose typeid is an
 array entry, `data_ptr` → contiguous `madc_value` buffer, `size` = count.

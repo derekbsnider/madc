@@ -6,6 +6,31 @@ Active design track. `madcdis` is the typed in-memory data substrate
 that ships as part of core `libmadc`. It supersedes earlier framings
 in which the entire data subsystem was optional.
 
+> **UPDATE 2026-06-12** — reconciled with
+> `docs/plans/2026-06-12-type-table-value-abi-design.md` (DESIGN AGREED),
+> which post-dates this plan. Sequencing is unchanged (Track 5 still starts
+> only after Track 1.3 parity), but four points re-base when V1 begins:
+> - **The public `madc::value` is the 32-byte typeid struct** of that design
+>   (today: the A0-unified class in `include/libmadc/value.h`, which becomes
+>   its RAII wrapper). The 8-byte tag + 60-bit handle described in Principle 5
+>   / Class Model / V1 is the **internal pool value-handle** (the dense
+>   storage tier) — rename it accordingly (e.g. `madc::pool_handle`); it
+>   marshals to/from `madc_value` at the substrate boundary and must not
+>   claim the public name.
+> - **`value_header.type_tag` is the uint32 typeid** from the one segmented
+>   type table — no second type vocabulary. This is an enabler:
+>   position-independent `mem://`/`shm://` pools cannot hold `DataDef*`
+>   pointers; the table's stable-integer segments are what pool-resident type
+>   refs require.
+> - **The cell header is shared, not parallel:** the value ABI's malloc'd
+>   cell `{refcount, cell_flags, payload}` already adopts this plan's
+>   saturating-refcount + permanent tier and reserves flag bits for
+>   interned/frozen/hash-present, so `value_header` is its pool-resident
+>   superset — one header shape across both tiers.
+> - **Interning starts above the SSO line:** strings ≤16 bytes live inline in
+>   the 32-byte value and are never interned; interning (V2) is the
+>   long-string and `madc::Symbol` discipline.
+
 This plan is paired with:
 
 - `madcdis-memory-research.md` — the design lineage and technical
