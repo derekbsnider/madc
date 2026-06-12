@@ -69,6 +69,9 @@ public:
     // instance into instance_data().
     static value make_instance(uint32_t type_id, size_t size,
 			       void (*destroy)(void *payload));
+    // Adopt a raw interchange struct (scalar/text/bytes/instance kinds):
+    // copies the struct and retains its payload cell.
+    static value from_raw(const madc_value &raw);
 
     value(const value &other);
     value(value &&other) noexcept;

@@ -35,6 +35,7 @@ extern thread_local bool madc_verbose;
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_cir.h"
+#include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
 
 namespace madc {
 
@@ -361,9 +362,6 @@ void append_unique_strings(std::vector<std::string> &dst,
 			   const std::vector<std::string> &src);
 std::vector<std::string> expand_header_symbol_groups(const std::vector<std::string> &headers);
 bool native_type_from_datadef(DataDef *type, program::native_type &out);
-template <typename R>
-bool call_target0(void *fn, value *result);
-
 void copy_program_public_error(Program &dst, const Program &src)
 {
     dst.diagnostics = src.diagnostics;
@@ -611,6 +609,64 @@ bool validate_expression_function_policy(Program &pgm,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Host-call shims — the ONE call surface to compiled script functions.
+// ---------------------------------------------------------------------------
+// The module carries a synthesized `long __madc_shim_<sym>(char*, char*)`
+// adapter per host-callable function (CirBuilder::synth_call_shim): a packed
+// madc_value argument array in, one madc_value out. ALL signature knowledge
+// (validation, class construction/destruction, retbuf, conversions) lives in
+// the compiled adapter, derived from the parsed headers — the host side
+// below is signature-blind.
+typedef long (*madc_shim_fn)(void *args, void *out);
+
+std::string shim_symbol_for(FuncDef *func, const std::string &name)
+{
+    return "__madc_shim_" + CirBuilder::call_emit_symbol(func, name);
+}
+
+bool invoke_call_shim(void *shim, const std::vector<value> &args,
+		      value *result, std::string &error)
+{
+    std::vector<madc_value> cargs(args.size());
+    for ( std::size_t i = 0; i < args.size(); ++i )
+	madc_value_init(&cargs[i]);
+    for ( std::size_t i = 0; i < args.size(); ++i )
+    {
+	if ( args[i].is_array() || args[i].is_object() )
+	{
+	    for ( std::size_t j = 0; j < i; ++j )
+		madc_value_clear(&cargs[j]);
+	    error = std::string("program::call cannot marshal argument kind '")
+		    + value::kind_name(args[i].type()) + "'";
+	    return false;
+	}
+	madc_value_copy(&cargs[i], &args[i].raw());
+    }
+    madc_value out;
+    madc_value_init(&out);
+    long rc = reinterpret_cast<madc_shim_fn>(shim)(
+	cargs.empty() ? NULL : cargs.data(), &out);
+    for ( std::size_t i = 0; i < cargs.size(); ++i )
+	madc_value_clear(&cargs[i]);
+    if ( rc != 0 )
+    {
+	madc_value_clear(&out);
+	std::ostringstream os;
+	if ( rc >= 1 && rc <= (long)args.size() )
+	    os << "program::call argument " << (rc - 1)
+	       << " has an incompatible kind";
+	else
+	    os << "program::call marshalling failed (shim code " << rc << ")";
+	error = os.str();
+	return false;
+    }
+    if ( result )
+	*result = value::from_raw(out);
+    madc_value_clear(&out);
+    return true;
+}
+
 bool invoke_program_zero_arg_function(Program &pgm,
 				      const std::string &name,
 				      value &result)
@@ -638,58 +694,40 @@ bool invoke_program_zero_arg_function(Program &pgm,
 	return fail_program_runtime(pgm,
 				    "program::call argument count mismatch for '" + name + "'");
 
-    program::native_type ret_type;
-    if ( !native_type_from_datadef(&func->returns, ret_type) )
-	return fail_program_runtime(pgm,
-				    "program::call does not support this return type yet");
-
     pgm.clear_diagnostics();
     pgm.clear_error();
 
     // CIR backend: this path serves ad-hoc child Programs (runtime eval /
     // the synthetic expression entry), so it builds a one-shot JIT session
     // for the bare Program — the named-entry analogue of madc_cir_execute.
+    // The call itself goes through the function's synthesized marshalling
+    // shim, like every host call.
     CirJitSession session;
     if ( !session.build(&pgm, "<eval>") )
 	return fail_program_runtime(pgm, "eval compilation (CIR->MIR) failed");
-    void *fncode = session.function_code(name.c_str());
-    if ( !fncode )
+    void *shim = session.function_code(shim_symbol_for(func, name).c_str());
+    if ( !shim )
 	return fail_program_runtime(pgm,
-				    "program::call target '" + name + "' has no callable code");
+				    "program::call does not support this signature yet ('"
+				    + name + "' has no marshalling shim)");
     if ( pgm.last_error.has_error )
 	return false;
 
     try
     {
 	pgm.push_runtime_scope();
-	bool ok = false;
-	switch ( ret_type )
-	{
-	    case program::native_type::void_type:
-	    {
-		typedef void (*fn_t)();
-		reinterpret_cast<fn_t>(fncode)();
-		result = value();
-		ok = true;
-		break;
-	    }
-	    case program::native_type::boolean:   ok = call_target0<bool>(fncode, &result); break;
-	    case program::native_type::integer:   ok = call_target0<int64_t>(fncode, &result); break;
-	    case program::native_type::real:      ok = call_target0<double>(fncode, &result); break;
-	    case program::native_type::c_string:  ok = call_target0<const char *>(fncode, &result); break;
-	}
+	std::string err;
+	bool ok = invoke_call_shim(shim, std::vector<value>(), &result, err);
 	pgm.pop_runtime_scope();
-	if ( ok )
-	    return true;
+	if ( !ok )
+	    return fail_program_runtime(pgm, err);
+	return true;
     }
     catch ( const std::exception &e )
     {
 	pgm.pop_runtime_scope();
 	return fail_program_runtime(pgm, e.what());
     }
-
-    return fail_program_runtime(pgm,
-				"program::call could not dispatch the requested signature");
 }
 
 std::string read_text_file(const std::string &path)
@@ -2118,69 +2156,6 @@ bool native_type_from_datadef(DataDef *type, program::native_type &out)
     return false;
 }
 
-template <typename T>
-T value_as(const value &v);
-
-template <>
-bool value_as<bool>(const value &v)
-{
-    return v.as_boolean();
-}
-
-template <>
-int64_t value_as<int64_t>(const value &v)
-{
-    return v.as_integer();
-}
-
-template <>
-double value_as<double>(const value &v)
-{
-    if ( v.is_real() )
-	return v.as_real();
-    if ( v.is_integer() )
-	return static_cast<double>(v.as_integer());
-    throw std::runtime_error("madc::program::call expected real-compatible argument");
-}
-
-template <>
-const char *value_as<const char *>(const value &v)
-{
-    // Borrow the value's OWN text payload (SSO or cell, NUL-terminated) —
-    // it outlives the call because the value sits in the caller-owned arg
-    // storage. as_string() returns a copy whose c_str() would dangle.
-    const char *text = madc_value_text(&v.raw(), NULL);
-    if ( text == NULL )
-	throw std::runtime_error("madc::program::call expected string argument");
-    return text;
-}
-
-template <typename T>
-value value_from(T v);
-
-template <>
-value value_from<bool>(bool v)
-{
-    return value(v);
-}
-
-template <>
-value value_from<int64_t>(int64_t v)
-{
-    return value(v);
-}
-
-template <>
-value value_from<double>(double v)
-{
-    return value(v);
-}
-
-template <>
-value value_from<const char *>(const char *v)
-{
-    return value(v);
-}
 
 // Storage-form read: marshal one scalar at `data` of type `type` into a
 // host value. `data` may be the parser's var->data OR a resolved live MIR
@@ -2389,125 +2364,6 @@ bool install_runtime_eval_scope_globals(Program &pgm,
     return true;
 }
 
-template <typename R>
-bool call_target0(void *fn, value *result)
-{
-    typedef R (*fn_t)();
-    R ret = reinterpret_cast<fn_t>(fn)();
-    if ( result )
-	*result = value_from<R>(ret);
-    return true;
-}
-
-template <>
-bool call_target0<void>(void *fn, value *result)
-{
-    typedef void (*fn_t)();
-    reinterpret_cast<fn_t>(fn)();
-    if ( result )
-	*result = value();
-    return true;
-}
-
-template <typename R, typename A0>
-bool call_target1(void *fn, const value &a0, value *result)
-{
-    typedef R (*fn_t)(A0);
-    R ret = reinterpret_cast<fn_t>(fn)(value_as<A0>(a0));
-    if ( result )
-	*result = value_from<R>(ret);
-    return true;
-}
-
-template <typename A0>
-bool call_target1_void(void *fn, const value &a0, value *result)
-{
-    typedef void (*fn_t)(A0);
-    reinterpret_cast<fn_t>(fn)(value_as<A0>(a0));
-    if ( result )
-	*result = value();
-    return true;
-}
-
-template <typename R, typename A0, typename A1>
-bool call_target2(void *fn, const value &a0, const value &a1, value *result)
-{
-    typedef R (*fn_t)(A0, A1);
-    R ret = reinterpret_cast<fn_t>(fn)(value_as<A0>(a0), value_as<A1>(a1));
-    if ( result )
-	*result = value_from<R>(ret);
-    return true;
-}
-
-template <typename A0, typename A1>
-bool call_target2_void(void *fn, const value &a0, const value &a1, value *result)
-{
-    typedef void (*fn_t)(A0, A1);
-    reinterpret_cast<fn_t>(fn)(value_as<A0>(a0), value_as<A1>(a1));
-    if ( result )
-	*result = value();
-    return true;
-}
-
-template <typename R, typename A0, typename A1, typename A2>
-bool call_target3(void *fn, const value &a0, const value &a1, const value &a2, value *result)
-{
-    typedef R (*fn_t)(A0, A1, A2);
-    R ret = reinterpret_cast<fn_t>(fn)(value_as<A0>(a0),
-				       value_as<A1>(a1),
-				       value_as<A2>(a2));
-    if ( result )
-	*result = value_from<R>(ret);
-    return true;
-}
-
-template <typename A0, typename A1, typename A2>
-bool call_target3_void(void *fn, const value &a0, const value &a1, const value &a2, value *result)
-{
-    typedef void (*fn_t)(A0, A1, A2);
-    reinterpret_cast<fn_t>(fn)(value_as<A0>(a0),
-			       value_as<A1>(a1),
-			       value_as<A2>(a2));
-    if ( result )
-	*result = value();
-    return true;
-}
-
-template <typename R, typename A0, typename A1, typename A2, typename A3>
-bool call_target4(void *fn,
-		  const value &a0,
-		  const value &a1,
-		  const value &a2,
-		  const value &a3,
-		  value *result)
-{
-    typedef R (*fn_t)(A0, A1, A2, A3);
-    R ret = reinterpret_cast<fn_t>(fn)(value_as<A0>(a0),
-				       value_as<A1>(a1),
-				       value_as<A2>(a2),
-				       value_as<A3>(a3));
-    if ( result )
-	*result = value_from<R>(ret);
-    return true;
-}
-
-template <typename A0, typename A1, typename A2, typename A3>
-bool call_target4_void(void *fn,
-		       const value &a0,
-		       const value &a1,
-		       const value &a2,
-		       const value &a3,
-		       value *result)
-{
-    typedef void (*fn_t)(A0, A1, A2, A3);
-    reinterpret_cast<fn_t>(fn)(value_as<A0>(a0),
-			       value_as<A1>(a1),
-			       value_as<A2>(a2),
-			       value_as<A3>(a3));
-    if ( result )
-	*result = value();
-    return true;
-}
 
 } // namespace
 
@@ -3627,281 +3483,6 @@ struct program::impl
 	return current_security_policy.execution == execution_mode::fork_per_invocation;
     }
 
-    bool dispatch_call0(void *fn, native_type ret_type, value *result)
-    {
-	switch ( ret_type )
-	{
-	    case native_type::void_type: return call_target0<void>(fn, result);
-	    case native_type::boolean:   return call_target0<bool>(fn, result);
-	    case native_type::integer:   return call_target0<int64_t>(fn, result);
-	    case native_type::real:      return call_target0<double>(fn, result);
-	    case native_type::c_string:  return call_target0<const char *>(fn, result);
-	}
-	return false;
-    }
-
-    template <typename A0>
-    bool dispatch_call1_ret(void *fn, native_type ret_type, const value &arg0, value *result)
-    {
-	switch ( ret_type )
-	{
-	    case native_type::void_type: return call_target1_void<A0>(fn, arg0, result);
-	    case native_type::boolean:   return call_target1<bool, A0>(fn, arg0, result);
-	    case native_type::integer:   return call_target1<int64_t, A0>(fn, arg0, result);
-	    case native_type::real:      return call_target1<double, A0>(fn, arg0, result);
-	    case native_type::c_string:  return call_target1<const char *, A0>(fn, arg0, result);
-	}
-	return false;
-    }
-
-    bool dispatch_call1(void *fn, native_type ret_type, native_type arg0_type,
-			const value &arg0, value *result)
-    {
-	switch ( arg0_type )
-	{
-	    case native_type::boolean: return dispatch_call1_ret<bool>(fn, ret_type, arg0, result);
-	    case native_type::integer: return dispatch_call1_ret<int64_t>(fn, ret_type, arg0, result);
-	    case native_type::real:    return dispatch_call1_ret<double>(fn, ret_type, arg0, result);
-	    case native_type::c_string:return dispatch_call1_ret<const char *>(fn, ret_type, arg0, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    template <typename A0, typename A1>
-    bool dispatch_call2_ret(void *fn, native_type ret_type,
-			    const value &arg0, const value &arg1, value *result)
-    {
-	switch ( ret_type )
-	{
-	    case native_type::void_type: return call_target2_void<A0, A1>(fn, arg0, arg1, result);
-	    case native_type::boolean:   return call_target2<bool, A0, A1>(fn, arg0, arg1, result);
-	    case native_type::integer:   return call_target2<int64_t, A0, A1>(fn, arg0, arg1, result);
-	    case native_type::real:      return call_target2<double, A0, A1>(fn, arg0, arg1, result);
-	    case native_type::c_string:  return call_target2<const char *, A0, A1>(fn, arg0, arg1, result);
-	}
-	return false;
-    }
-
-    template <typename A0>
-    bool dispatch_call2_arg1(void *fn, native_type ret_type, native_type arg1_type,
-			     const value &arg0, const value &arg1, value *result)
-    {
-	switch ( arg1_type )
-	{
-	    case native_type::boolean: return dispatch_call2_ret<A0, bool>(fn, ret_type, arg0, arg1, result);
-	    case native_type::integer: return dispatch_call2_ret<A0, int64_t>(fn, ret_type, arg0, arg1, result);
-	    case native_type::real:    return dispatch_call2_ret<A0, double>(fn, ret_type, arg0, arg1, result);
-	    case native_type::c_string:return dispatch_call2_ret<A0, const char *>(fn, ret_type, arg0, arg1, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    bool dispatch_call2(void *fn, native_type ret_type,
-			native_type arg0_type, native_type arg1_type,
-			const value &arg0, const value &arg1, value *result)
-    {
-	switch ( arg0_type )
-	{
-	    case native_type::boolean: return dispatch_call2_arg1<bool>(fn, ret_type, arg1_type, arg0, arg1, result);
-	    case native_type::integer: return dispatch_call2_arg1<int64_t>(fn, ret_type, arg1_type, arg0, arg1, result);
-	    case native_type::real:    return dispatch_call2_arg1<double>(fn, ret_type, arg1_type, arg0, arg1, result);
-	    case native_type::c_string:return dispatch_call2_arg1<const char *>(fn, ret_type, arg1_type, arg0, arg1, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    template <typename A0, typename A1, typename A2>
-    bool dispatch_call3_ret(void *fn,
-			    native_type ret_type,
-			    const value &arg0,
-			    const value &arg1,
-			    const value &arg2,
-			    value *result)
-    {
-	switch ( ret_type )
-	{
-	    case native_type::void_type: return call_target3_void<A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	    case native_type::boolean:   return call_target3<bool, A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	    case native_type::integer:   return call_target3<int64_t, A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	    case native_type::real:      return call_target3<double, A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	    case native_type::c_string:  return call_target3<const char *, A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	}
-	return false;
-    }
-
-    template <typename A0, typename A1>
-    bool dispatch_call3_arg2(void *fn,
-			     native_type ret_type,
-			     native_type arg2_type,
-			     const value &arg0,
-			     const value &arg1,
-			     const value &arg2,
-			     value *result)
-    {
-	switch ( arg2_type )
-	{
-	    case native_type::boolean: return dispatch_call3_ret<A0, A1, bool>(fn, ret_type, arg0, arg1, arg2, result);
-	    case native_type::integer: return dispatch_call3_ret<A0, A1, int64_t>(fn, ret_type, arg0, arg1, arg2, result);
-	    case native_type::real:    return dispatch_call3_ret<A0, A1, double>(fn, ret_type, arg0, arg1, arg2, result);
-	    case native_type::c_string:return dispatch_call3_ret<A0, A1, const char *>(fn, ret_type, arg0, arg1, arg2, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    template <typename A0>
-    bool dispatch_call3_arg1(void *fn,
-			     native_type ret_type,
-			     native_type arg1_type,
-			     native_type arg2_type,
-			     const value &arg0,
-			     const value &arg1,
-			     const value &arg2,
-			     value *result)
-    {
-	switch ( arg1_type )
-	{
-	    case native_type::boolean: return dispatch_call3_arg2<A0, bool>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::integer: return dispatch_call3_arg2<A0, int64_t>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::real:    return dispatch_call3_arg2<A0, double>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::c_string:return dispatch_call3_arg2<A0, const char *>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    bool dispatch_call3(void *fn,
-			native_type ret_type,
-			native_type arg0_type,
-			native_type arg1_type,
-			native_type arg2_type,
-			const value &arg0,
-			const value &arg1,
-			const value &arg2,
-			value *result)
-    {
-	switch ( arg0_type )
-	{
-	    case native_type::boolean: return dispatch_call3_arg1<bool>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::integer: return dispatch_call3_arg1<int64_t>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::real:    return dispatch_call3_arg1<double>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::c_string:return dispatch_call3_arg1<const char *>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    template <typename A0, typename A1, typename A2, typename A3>
-    bool dispatch_call4_ret(void *fn,
-			    native_type ret_type,
-			    const value &arg0,
-			    const value &arg1,
-			    const value &arg2,
-			    const value &arg3,
-			    value *result)
-    {
-	switch ( ret_type )
-	{
-	    case native_type::void_type: return call_target4_void<A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	    case native_type::boolean:   return call_target4<bool, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	    case native_type::integer:   return call_target4<int64_t, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	    case native_type::real:      return call_target4<double, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	    case native_type::c_string:  return call_target4<const char *, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	}
-	return false;
-    }
-
-    template <typename A0, typename A1, typename A2>
-    bool dispatch_call4_arg3(void *fn,
-			     native_type ret_type,
-			     native_type arg3_type,
-			     const value &arg0,
-			     const value &arg1,
-			     const value &arg2,
-			     const value &arg3,
-			     value *result)
-    {
-	switch ( arg3_type )
-	{
-	    case native_type::boolean: return dispatch_call4_ret<A0, A1, A2, bool>(fn, ret_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::integer: return dispatch_call4_ret<A0, A1, A2, int64_t>(fn, ret_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::real:    return dispatch_call4_ret<A0, A1, A2, double>(fn, ret_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::c_string:return dispatch_call4_ret<A0, A1, A2, const char *>(fn, ret_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    template <typename A0, typename A1>
-    bool dispatch_call4_arg2(void *fn,
-			     native_type ret_type,
-			     native_type arg2_type,
-			     native_type arg3_type,
-			     const value &arg0,
-			     const value &arg1,
-			     const value &arg2,
-			     const value &arg3,
-			     value *result)
-    {
-	switch ( arg2_type )
-	{
-	    case native_type::boolean: return dispatch_call4_arg3<A0, A1, bool>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::integer: return dispatch_call4_arg3<A0, A1, int64_t>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::real:    return dispatch_call4_arg3<A0, A1, double>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::c_string:return dispatch_call4_arg3<A0, A1, const char *>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    template <typename A0>
-    bool dispatch_call4_arg1(void *fn,
-			     native_type ret_type,
-			     native_type arg1_type,
-			     native_type arg2_type,
-			     native_type arg3_type,
-			     const value &arg0,
-			     const value &arg1,
-			     const value &arg2,
-			     const value &arg3,
-			     value *result)
-    {
-	switch ( arg1_type )
-	{
-	    case native_type::boolean: return dispatch_call4_arg2<A0, bool>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::integer: return dispatch_call4_arg2<A0, int64_t>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::real:    return dispatch_call4_arg2<A0, double>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::c_string:return dispatch_call4_arg2<A0, const char *>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
-
-    bool dispatch_call4(void *fn,
-			native_type ret_type,
-			native_type arg0_type,
-			native_type arg1_type,
-			native_type arg2_type,
-			native_type arg3_type,
-			const value &arg0,
-			const value &arg1,
-			const value &arg2,
-			const value &arg3,
-			value *result)
-    {
-	switch ( arg0_type )
-	{
-	    case native_type::boolean: return dispatch_call4_arg1<bool>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::integer: return dispatch_call4_arg1<int64_t>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::real:    return dispatch_call4_arg1<double>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::c_string:return dispatch_call4_arg1<const char *>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
-	    case native_type::void_type: break;
-	}
-	return false;
-    }
 
     bool has_function(const std::string &name) const
     {
@@ -3998,13 +3579,6 @@ struct program::impl
 	if ( !var->type || var->type->basetype() != BaseType::btFunct )
 	    return fail_runtime("program::call target '" + name + "' is not a function");
 
-	// CIR backend: the code pointer comes from the JIT session (plain
-	// madc functions emit under their source name); the signature comes
-	// from the parsed FuncDef on the Variable.
-	void *fncode = jit ? jit->function_code(name.c_str()) : NULL;
-	if ( !fncode )
-	    return fail_runtime("program::call target '" + name + "' has no callable code");
-
 	FuncDef *func = dynamic_cast<FuncDef *>(var->type);
 	if ( !func )
 	    return fail_runtime("program::call target '" + name + "' has no function metadata");
@@ -4014,63 +3588,30 @@ struct program::impl
 	    return fail_runtime("program::call does not support variadic functions yet");
 	if ( args.size() != func->parameters.size() )
 	    return fail_runtime("program::call argument count mismatch for '" + name + "'");
-	if ( args.size() > 4 )
-	    return fail_runtime("program::call currently supports up to 4 arguments");
 
-	native_type ret_type;
-	if ( !native_type_from_datadef(&func->returns, ret_type) )
-	    return fail_runtime("program::call does not support this return type yet");
-
-	std::vector<native_type> arg_types;
-	arg_types.reserve(func->parameters.size());
-	for ( std::size_t i = 0; i < func->parameters.size(); ++i )
-	{
-	    native_type arg_type;
-	    if ( !native_type_from_datadef(func->parameters[i], arg_type) )
-		return fail_runtime("program::call does not support this parameter type yet");
-	    arg_types.push_back(arg_type);
-	}
+	// The ONE call path: the function's synthesized marshalling shim
+	// (CirBuilder::synth_call_shim). A function without one has a
+	// signature the boundary cannot marshal yet.
+	void *shim = jit ? jit->function_code(shim_symbol_for(func, name).c_str()) : NULL;
+	if ( !shim )
+	    return fail_runtime("program::call does not support this signature yet ('"
+				+ name + "' has no marshalling shim)");
 
 	try
 	{
-	    bool ok = false;
-	    std::vector<value> arg_storage(args.begin(), args.end());
 	    pgm->push_runtime_scope();
-	    switch ( args.size() )
-	    {
-		case 0:
-		    ok = dispatch_call0(fncode, ret_type, result);
-		    break;
-		case 1:
-		    ok = dispatch_call1(fncode, ret_type, arg_types[0], arg_storage[0], result);
-		    break;
-		case 2:
-		    ok = dispatch_call2(fncode, ret_type, arg_types[0], arg_types[1],
-					arg_storage[0], arg_storage[1], result);
-		    break;
-		case 3:
-		    ok = dispatch_call3(fncode, ret_type, arg_types[0], arg_types[1], arg_types[2],
-					arg_storage[0], arg_storage[1], arg_storage[2], result);
-		    break;
-		case 4:
-		    ok = dispatch_call4(fncode, ret_type, arg_types[0], arg_types[1],
-					arg_types[2], arg_types[3],
-					arg_storage[0], arg_storage[1], arg_storage[2], arg_storage[3], result);
-		    break;
-		default:
-		    break;
-	    }
+	    std::string err;
+	    bool ok = invoke_call_shim(shim, args, result, err);
 	    pgm->pop_runtime_scope();
-	    if ( ok )
-		return true;
+	    if ( !ok )
+		return fail_runtime(err);
+	    return true;
 	}
 	catch ( const std::exception &e )
 	{
 	    pgm->pop_runtime_scope();
 	    return fail_runtime(e.what());
 	}
-
-	return fail_runtime("program::call could not dispatch the requested signature");
     }
 
     bool call_in_child(const std::string &name, const std::vector<value> &args, value *result)

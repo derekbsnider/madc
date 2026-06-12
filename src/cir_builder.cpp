@@ -4548,16 +4548,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 
 	std::string sym = ctor_call_symbol(cdd, ctor);
 
-	// An externally-bound (emit_symbol) ctor is declared with a void* this
-	// (need_output_extern below) — cast the receiver to match, exactly like
-	// emit_symbol_method_call and the external-dtor paths. An uncast
-	// struct* arg against the void* extern decl trips c2mir's pointer
-	// check (the iostream:80 __ioinit warning).
-	bool external_ctor = ctor && !ctor->emit_symbol.empty();
-	node_t args = list();
-	append(args, external_ctor
-		     ? node2(N_CAST, void_ptr_type(), this_addr, origin)
-		     : this_addr);
+	std::vector<node_t> explicit_nodes;
 	for (size_t i = 0; i < ctor_args.size(); i++) {
 		TokenBase *arg = ctor_args[i];
 		size_t pi = i + 1;
@@ -4566,16 +4557,45 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		bool is_ref_param = ctor && pi < ctor->ref_params.size()
 				    && ctor->ref_params[pi];
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
-			append(args, object_arg_addr(arg, pc));
+			explicit_nodes.push_back(object_arg_addr(arg, pc));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
-			append(args, object_arg_value(arg, vc));
+			explicit_nodes.push_back(object_arg_value(arg, vc));
 		else if (is_ref_param)
-			append(args, node1(N_ADDR, translate_expr(arg), arg));
+			explicit_nodes.push_back(node1(N_ADDR, translate_expr(arg), arg));
 		else
-			append(args, translate_expr(arg));
+			explicit_nodes.push_back(translate_expr(arg));
 	}
-	for (size_t pi = ctor_args.size() + 1;
-	     ctor && pi < ctor->parameters.size() && pi < ctor->param_defaults.size()
+	return ctor_call_assemble(this_addr, cdd, ctor, explicit_nodes, origin);
+}
+
+// The ONE constructor-call assembler: completes trailing default arguments
+// (e.g. libstdc++'s allocator parameter), appends the trailing-self pattern,
+// declares the extern for an externally-bound ctor, and builds the call.
+// `explicit_nodes` are already-translated argument expressions — the token
+// path (class_ctor_call_addr) and node-level synthesizers (host-call shims)
+// both end here, so default-arg completion can never diverge between them.
+node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
+				      FuncDef *ctor,
+				      const std::vector<node_t> &explicit_nodes,
+				      TokenBase *origin)
+{
+	if (!this_addr || !cdd || !ctor) return NULL;
+	std::string sym = ctor_call_symbol(cdd, ctor);
+
+	// An externally-bound (emit_symbol) ctor is declared with a void* this
+	// (need_output_extern below) — cast the receiver to match, exactly like
+	// emit_symbol_method_call and the external-dtor paths. An uncast
+	// struct* arg against the void* extern decl trips c2mir's pointer
+	// check (the iostream:80 __ioinit warning).
+	bool external_ctor = !ctor->emit_symbol.empty();
+	node_t args = list();
+	append(args, external_ctor
+		     ? node2(N_CAST, void_ptr_type(), this_addr, origin)
+		     : this_addr);
+	for (node_t en : explicit_nodes)
+		append(args, en);
+	for (size_t pi = explicit_nodes.size() + 1;
+	     pi < ctor->parameters.size() && pi < ctor->param_defaults.size()
 	     && ctor->param_defaults[pi]; pi++) {
 		TokenBase *darg = ctor->param_defaults[pi];
 		DataDef *pt = ctor->parameters[pi];
@@ -4589,7 +4609,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		else
 			append(args, translate_expr(darg));
 	}
-	if (ctor && ctor->ctor_trailing_self)
+	if (ctor->ctor_trailing_self)
 		append(args, external_ctor
 			     ? node2(N_CAST, void_ptr_type(), this_addr, origin)
 			     : this_addr);
@@ -10286,6 +10306,375 @@ void CirBuilder::collect_global_ctors(Program *prog,
 	}
 }
 
+
+// -----------------------------------------------------------------------
+// Host-call shims — the embedding boundary's call surface.
+// -----------------------------------------------------------------------
+// For every host-callable user function F the module carries a synthesized
+//   long __madc_shim_<sym>(char *__args, char *__out)
+// adapter over the 32-byte madc_value ABI (madc_api.h): __args is a packed
+// madc_value array, __out one madc_value slot. The adapter validates the
+// argument type ids (returning 1+i on a mismatch at argument i, 100 on an
+// allocation failure, 0 on success), converts arguments through the C value
+// helpers, calls F through its NORMAL lowered ABI, and converts the result
+// back. ALL class knowledge — constructors, destructor symbols, by-value /
+// __retbuf classification, sizes, typeids — comes from the parsed headers
+// through the same generic machinery script-side calls use; the HOST never
+// touches a class ABI (the no-per-class-helpers principle). The value
+// helpers are compiler-machinery extern-C symbols (the cpp-first-api.md
+// exception category), resolved from the host process at MIR link.
+
+namespace {
+
+// One marshallable parameter/return position.
+struct ShimSlot {
+	enum Kind { K_BOOL, K_INT, K_REAL, K_CSTR, K_CLASS_TEXT, K_CLASS_INST } kind;
+	DataDefCLASS *cdd = NULL;     // class kinds
+	FuncDef *text_ctor = NULL;    // K_CLASS_TEXT: the const-char* converting ctor
+};
+
+// The const-char*-converting constructor of `cdd`, if any (the same loose
+// shape global_ctor_call's built-in path matches: this + one pointer param).
+FuncDef *class_text_ctor(DataDefCLASS *cdd)
+{
+	if (!cdd) return NULL;
+	for (Variable *cv : cdd->ctors) {
+		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+		if (!fd || fd->parameters.size() < 2) continue;
+		DataDef *p1 = fd->parameters[1];
+		if (p1 && p1->type() == DataType::dtCHARptr) return fd;
+	}
+	return NULL;
+}
+
+} // namespace
+
+node_t CirBuilder::synth_call_shim(Program *prog, TokenFunc *tf)
+{
+	// Classify one parameter position; false = not marshallable.
+	auto classify_param = [](DataDef *pt, bool is_ref, ShimSlot &out) -> bool {
+		if (!pt || is_ref) return false;
+		if (DataDefCLASS *cdd = as_class_instance(pt)) {
+			out.cdd = cdd;
+			if (FuncDef *tc = class_text_ctor(cdd)) {
+				out.kind = ShimSlot::K_CLASS_TEXT;
+				out.text_ctor = tc;
+			} else {
+				out.kind = ShimSlot::K_CLASS_INST;
+			}
+			return true;
+		}
+		if (pt->type() == DataType::dtCHARptr) { out.kind = ShimSlot::K_CSTR; return true; }
+		if (pt->is_pointer() || pt->is_simd()) return false;
+		if (pt->type() == DataType::dtBOOL)   { out.kind = ShimSlot::K_BOOL; return true; }
+		if (pt->is_integer())                 { out.kind = ShimSlot::K_INT;  return true; }
+		if (pt->is_real())                    { out.kind = ShimSlot::K_REAL; return true; }
+		return false;
+	};
+
+	FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+	if (!prog || !tf || !fd) return NULL;
+	if (tf->var.name.empty() || tf->var.name == "main") return NULL;
+	if (fd->is_multi_return() || fd->is_varargs) return NULL;
+	// Function-LOCAL entities (GNU nested fns, lambdas) hoist under a
+	// local_emit_name and may take hidden capture parameters — they are
+	// not host-callable by name.
+	if (!fd->local_emit_name.empty() || !fd->captured_vars.empty()
+	    || fd->has_captures)
+		return NULL;
+	// Host-callable = globally name-addressable (perform_call resolves via
+	// findVariable); methods/lambdas/locals are not.
+	{
+		std::string lookup = tf->var.name;
+		Variable *gv = prog->tkProgram ? prog->tkProgram->findVariable(lookup) : NULL;
+		if (gv != &tf->var) return NULL;
+	}
+
+	// Classify the signature; bail (no shim) on anything unmarshallable.
+	std::vector<ShimSlot> params;
+	for (size_t i = 0; i < fd->parameters.size(); i++) {
+		ShimSlot slot;
+		bool is_ref = i < fd->ref_params.size() && fd->ref_params[i];
+		if (!classify_param(fd->parameters[i], is_ref, slot)) return NULL;
+		params.push_back(slot);
+	}
+	DataDef *rt = &fd->returns;
+	DataDefCLASS *ret_cdd = class_return_via_retbuf(rt);
+	enum { R_VOID, R_BOOL, R_INT, R_REAL, R_CSTR, R_TEXTOBJ, R_INST } rkind;
+	FuncDef *ret_cstr_fd = NULL, *ret_len_fd = NULL;
+	if (ret_cdd) {
+		// A returned object with the c_str()/size() (or length()) text
+		// protocol converts to a TEXT value; any other class returns as a
+		// typed INSTANCE cell finalized by its own destructor. Generic:
+		// protocol/identity questions only, never a concrete class name.
+		ret_cstr_fd = class_method_def(ret_cdd, "c_str");
+		ret_len_fd = class_method_def(ret_cdd, "size");
+		if (!ret_len_fd) ret_len_fd = class_method_def(ret_cdd, "length");
+		rkind = (ret_cstr_fd && ret_len_fd) ? R_TEXTOBJ : R_INST;
+	} else if (!rt || rt->type() == DataType::dtVOID) {
+		rkind = R_VOID;
+	} else if (rt->type() == DataType::dtCHARptr) {
+		rkind = R_CSTR;
+	} else if (as_class_instance(rt) || rt->is_pointer() || rt->is_simd()) {
+		return NULL;	// trivial-class / pointer / SIMD returns: not marshalled yet
+	} else if (rt->type() == DataType::dtBOOL) {
+		rkind = R_BOOL;
+	} else if (rt->is_integer()) {
+		rkind = R_INT;
+	} else if (rt->is_real()) {
+		rkind = R_REAL;
+	} else {
+		return NULL;
+	}
+
+	std::string target_sym = call_emit_symbol(fd, tf->var.name);
+	std::string shim_name = "__madc_shim_" + target_sym;
+	referenced_funcs.insert(target_sym);
+
+	// Value-helper externs (compiler machinery; resolved from the host).
+	std::vector<ExternParam> p1{ { {N_CHAR}, true } };
+	need_output_extern("madc_value_get_type_id", false, p1, {N_UNSIGNED});
+	std::vector<node_t> stmts;
+
+	// `__args + i*sizeof(madc_value)` — the i-th packed value slot. The 32
+	// comes from the REAL struct (ABI-pinned), never a hand-written byte count.
+	auto arg_slot = [&](size_t i) -> node_t {
+		if (i == 0) return id("__args");
+		return node2(N_ADD, id("__args"),
+			     integer((long)(i * sizeof(madc_value))));
+	};
+	auto helper_call = [&](const char *sym, std::initializer_list<node_t> args) {
+		node_t a = list();
+		for (node_t n : args) append(a, n);
+		return node2(N_CALL, id(sym), a);
+	};
+
+	// 1. Argument type validation — `if (get_type_id(slot) != T [&& != T2]) return i+1;`
+	for (size_t i = 0; i < params.size(); i++) {
+		std::vector<uint32_t> ok_tids;
+		switch (params[i].kind) {
+		case ShimSlot::K_BOOL: ok_tids = {MADC_TYPEID_BOOL, MADC_TYPEID_INT64}; break;
+		case ShimSlot::K_INT:  ok_tids = {MADC_TYPEID_INT64, MADC_TYPEID_BOOL}; break;
+		case ShimSlot::K_REAL: ok_tids = {MADC_TYPEID_DOUBLE, MADC_TYPEID_INT64}; break;
+		case ShimSlot::K_CSTR:
+		case ShimSlot::K_CLASS_TEXT: ok_tids = {MADC_TYPEID_TEXT}; break;
+		case ShimSlot::K_CLASS_INST:
+			ok_tids = {prog->type_id_for(params[i].cdd)};
+			break;
+		}
+		node_t cond = NULL;
+		for (uint32_t t : ok_tids) {
+			node_t ne = node2(N_NE,
+					  helper_call("madc_value_get_type_id", {arg_slot(i)}),
+					  integer((long)t));
+			cond = cond ? node2(N_ANDAND, cond, ne) : ne;
+		}
+		stmts.push_back(node4(N_IF, list(), cond,
+				      node2(N_RETURN, list(), integer((long)i + 1)),
+				      ignore()));
+	}
+
+	// 2. Class-text parameter temporaries: `struct X __madc_shim_pN;` with the
+	// scope-cleanup destructor, constructed from the slot's text via the
+	// class's OWN converting constructor.
+	std::vector<std::string> param_tmp(params.size());
+	std::vector<ExternParam> text_params{ { {N_CHAR}, true }, { {N_VOID}, true } };
+	for (size_t i = 0; i < params.size(); i++) {
+		if (params[i].kind != ShimSlot::K_CLASS_TEXT) continue;
+		char tname[40];
+		snprintf(tname, sizeof(tname), "__madc_shim_p%u", (unsigned)i);
+		param_tmp[i] = tname;
+		Variable *tv = new Variable(tname, *params[i].cdd, 1, NULL, false);
+		tv->flags |= vfLOCAL;
+		node_t vd = var_decl(tv, NULL);
+		if (!vd) return NULL;
+		stmts.push_back(vd);
+		need_output_extern("madc_value_text", true, text_params);
+		std::vector<node_t> ctor_arg_nodes;
+		ctor_arg_nodes.push_back(
+			helper_call("madc_value_text", {arg_slot(i), integer(0)}));
+		node_t cc = ctor_call_assemble(node1(N_ADDR, id(tname)),
+					       params[i].cdd, params[i].text_ctor,
+					       ctor_arg_nodes, NULL);
+		if (!cc) return NULL;
+		// Default-argument completion can materialize temporaries
+		// (e.g. the allocator object) via m_pending_stmts — drain them
+		// ahead of the ctor call, as block translation would.
+		for (node_t pstmt : m_pending_stmts)
+			stmts.push_back(pstmt);
+		m_pending_stmts.clear();
+		stmts.push_back(cc);
+	}
+
+	// 3. Return landing: an instance cell or a protocol temp, before the call.
+	std::string ret_tmp;
+	if (rkind == R_INST) {
+		// `char *__cell = 0; __cell = make_instance(__out, TID, SIZE, &dtor);`
+		// The callee then constructs the result DIRECTLY into the cell;
+		// the cell's finalizer is the class's own complete-object dtor.
+		std::string dtor_sym = class_complete_dtor_symbol(ret_cdd);
+		std::vector<ExternParam> dparams{ { {N_VOID}, true } };
+		need_output_extern(dtor_sym.c_str(), false, dparams);
+		referenced_funcs.insert(dtor_sym);
+		std::vector<ExternParam> mi_params{
+			{ {N_CHAR}, true }, { {N_UNSIGNED}, false },
+			{ {N_LONG}, false }, { {N_VOID}, true } };
+		need_output_extern("madc_value_make_instance", true, mi_params);
+		node_t cdecl = simple(N_SPEC_DECL);
+		append(cdecl, node1(N_SHARE, node1(N_LIST, simple(N_CHAR))));
+		append(cdecl, node2(N_DECL, id("__cell"), node1(N_LIST, pointer())));
+		append(cdecl, ignore());
+		append(cdecl, ignore());
+		append(cdecl, ignore());
+		stmts.push_back(cdecl);
+		node_t mi = helper_call("madc_value_make_instance",
+					{id("__out"),
+					 integer((long)prog->type_id_for(ret_cdd)),
+					 integer((long)ret_cdd->size),
+					 id(dtor_sym.c_str())});
+		stmts.push_back(node2(N_EXPR, list(), node2(N_ASSIGN, id("__cell"), mi)));
+		stmts.push_back(node4(N_IF, list(),
+				      node2(N_EQ, id("__cell"), integer(0)),
+				      node2(N_RETURN, list(), integer(100)),
+				      ignore()));
+	} else if (rkind == R_TEXTOBJ) {
+		ret_tmp = "__madc_shim_ret";
+		Variable *rv = new Variable(ret_tmp, *ret_cdd, 1, NULL, false);
+		rv->flags |= vfLOCAL;
+		node_t vd = var_decl(rv, NULL);
+		if (!vd) return NULL;
+		stmts.push_back(vd);
+	}
+
+	// 4. The call to F through its normal lowered ABI.
+	node_t cargs = list();
+	if (rkind == R_INST)
+		append(cargs, node2(N_CAST, class_ptr_type(ret_cdd), id("__cell")));
+	else if (rkind == R_TEXTOBJ)
+		append(cargs, node1(N_ADDR, id(ret_tmp.c_str())));
+	for (size_t i = 0; i < params.size(); i++) {
+		switch (params[i].kind) {
+		case ShimSlot::K_BOOL:
+			need_output_extern("madc_value_get_bool", false, p1, {N_INT});
+			append(cargs, helper_call("madc_value_get_bool", {arg_slot(i)}));
+			break;
+		case ShimSlot::K_INT:
+			need_output_extern("madc_value_get_integer", false, p1, {N_LONG});
+			append(cargs, helper_call("madc_value_get_integer", {arg_slot(i)}));
+			break;
+		case ShimSlot::K_REAL:
+			need_output_extern("madc_value_get_real", false, p1, {N_DOUBLE});
+			append(cargs, helper_call("madc_value_get_real", {arg_slot(i)}));
+			break;
+		case ShimSlot::K_CSTR:
+			need_output_extern("madc_value_text", true, text_params);
+			append(cargs, helper_call("madc_value_text", {arg_slot(i), integer(0)}));
+			break;
+		case ShimSlot::K_CLASS_TEXT:
+			append(cargs, id(param_tmp[i].c_str()));
+			break;
+		case ShimSlot::K_CLASS_INST: {
+			std::vector<ExternParam> dp{ { {N_CHAR}, true }, { {N_VOID}, true } };
+			need_output_extern("madc_value_data", true, dp);
+			append(cargs, node1(N_DEREF,
+					    node2(N_CAST, class_ptr_type(params[i].cdd),
+						  helper_call("madc_value_data",
+							      {arg_slot(i), integer(0)}))));
+			break;
+		}
+		}
+	}
+	node_t call = node2(N_CALL, id(target_sym.c_str()), cargs);
+
+	// 5. Result conversion (set helpers; scalar calls nest in the setter).
+	std::vector<ExternParam> set_scalar{ { {N_CHAR}, true }, { {N_LONG}, false } };
+	std::vector<ExternParam> set_real_p{ { {N_CHAR}, true }, { {N_DOUBLE}, false } };
+	std::vector<ExternParam> set_str{ { {N_CHAR}, true }, { {N_CHAR}, true } };
+	std::vector<ExternParam> set_str_n{ { {N_CHAR}, true }, { {N_CHAR}, true },
+					    { {N_LONG}, false } };
+	switch (rkind) {
+	case R_VOID:
+	case R_INST:
+		stmts.push_back(node2(N_EXPR, list(), call));
+		break;
+	case R_TEXTOBJ: {
+		stmts.push_back(node2(N_EXPR, list(), call));
+		std::string cs = class_method_symbol(ret_cdd, "c_str");
+		std::string ls = ret_len_fd == class_method_def(ret_cdd, "size")
+				 ? class_method_symbol(ret_cdd, "size")
+				 : class_method_symbol(ret_cdd, "length");
+		std::vector<ExternParam> mp{ { {N_VOID}, true } };
+		need_output_extern(cs.c_str(), true, mp);
+		need_output_extern(ls.c_str(), false, mp, {N_LONG});
+		referenced_funcs.insert(cs);
+		referenced_funcs.insert(ls);
+		need_output_extern("madc_value_set_string_n", false, set_str_n, {N_INT});
+		node_t addr1 = node1(N_ADDR, id(ret_tmp.c_str()));
+		node_t addr2 = node1(N_ADDR, id(ret_tmp.c_str()));
+		stmts.push_back(node2(N_EXPR, list(),
+			helper_call("madc_value_set_string_n",
+				    {id("__out"),
+				     helper_call(cs.c_str(), {addr1}),
+				     helper_call(ls.c_str(), {addr2})})));
+		break;
+	}
+	case R_BOOL:
+		need_output_extern("madc_value_set_bool", false, set_scalar, {N_INT});
+		stmts.push_back(node2(N_EXPR, list(),
+			helper_call("madc_value_set_bool", {id("__out"), call})));
+		break;
+	case R_INT:
+		need_output_extern("madc_value_set_integer", false, set_scalar, {N_INT});
+		stmts.push_back(node2(N_EXPR, list(),
+			helper_call("madc_value_set_integer", {id("__out"), call})));
+		break;
+	case R_REAL:
+		need_output_extern("madc_value_set_real", false, set_real_p, {N_INT});
+		stmts.push_back(node2(N_EXPR, list(),
+			helper_call("madc_value_set_real", {id("__out"), call})));
+		break;
+	case R_CSTR:
+		need_output_extern("madc_value_set_string", false, set_str, {N_INT});
+		stmts.push_back(node2(N_EXPR, list(),
+			helper_call("madc_value_set_string", {id("__out"), call})));
+		break;
+	}
+	stmts.push_back(node2(N_RETURN, list(), integer(0)));
+
+	// Assemble: long __madc_shim_<sym>(char *__args, char *__out) { ... }
+	auto char_ptr_param = [&](const char *pname) {
+		node_t pp = simple(N_SPEC_DECL);
+		append(pp, node1(N_LIST, simple(N_CHAR)));
+		append(pp, node2(N_DECL, id(pname), node1(N_LIST, pointer())));
+		append(pp, ignore());
+		append(pp, ignore());
+		append(pp, ignore());
+		return pp;
+	};
+	node_t param_list = list();
+	append(param_list, char_ptr_param("__args"));
+	append(param_list, char_ptr_param("__out"));
+	node_t decl = node2(N_DECL, id(shim_name.c_str()),
+			    node1(N_LIST, node1(N_FUNC, param_list)));
+	node_t items = list();
+	for (node_t st : stmts) append(items, st);
+	node_t body = node2(N_BLOCK, list(), items);
+	node_t out = node4(N_FUNC_DEF, node1(N_LIST, simple(N_LONG)), decl,
+			   list(), body);
+	CIR_NODE(out)->synth_from_origin = true;
+	return out;
+}
+
+void CirBuilder::synth_call_shims(Program *prog,
+				  const std::vector<TokenFunc *> &roots,
+				  std::vector<node_t> &func_def_nodes)
+{
+	for (TokenFunc *tf : roots) {
+		node_t shim = synth_call_shim(prog, tf);
+		if (shim) func_def_nodes.push_back(shim);
+	}
+}
+
 // -----------------------------------------------------------------------
 // Top-level module translation
 // -----------------------------------------------------------------------
@@ -10677,6 +11066,12 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 	};
 	materialize_and_lower();
+
+	// Pass 0.74: host-call shims — one __madc_shim_<sym> adapter per
+	// host-callable user function (see synth_call_shim). Synthesized here so
+	// the value-helper externs flow into Pass 0.8 and the referenced member
+	// symbols (c_str/size protocol, dtors) are seen by the Pass-1.9 fixpoint.
+	synth_call_shims(prog, roots, func_def_nodes);
 
 	// Pass 0.75: Extern function prototypes — referenced-only (matches c2m,
 	// which only declares what #include pulled in).

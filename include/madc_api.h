@@ -396,6 +396,12 @@ void *madc_value_make_instance(madc_value *value, uint32_t type_id,
 /* Generic payload accessor: text / bytes / instance payload pointer
  * (NULL for inline scalars and null). size out-param is optional. */
 const void *madc_value_data(const madc_value *value, size_t *size);
+/* Payload getters (shim/adapter-facing; safe defaults on kind mismatch —
+ * adapters validate type_id first via madc_value_get_type_id). */
+uint32_t madc_value_get_type_id(const madc_value *value);
+int64_t madc_value_get_integer(const madc_value *value);   /* INT64|BOOL */
+double madc_value_get_real(const madc_value *value);       /* DOUBLE; coerces INT64/BOOL */
+int madc_value_get_bool(const madc_value *value);          /* BOOL|INT64 */
 
 const char *madc_value_kind_name(madc_value_kind kind);
 const char *madc_error_severity_name(madc_error_severity severity);

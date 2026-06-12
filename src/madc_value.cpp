@@ -319,6 +319,44 @@ const char *madc_value_text(const madc_value *value, size_t *text_length)
     return text;
 }
 
+/* Shim-facing getters: synthesized call adapters (CirBuilder
+ * translate_call_shims) read payloads through these so emitted code never
+ * re-declares the struct layout. Numeric leniency mirrors the host call
+ * contract: integers admit bool, reals coerce from integer. */
+uint32_t madc_value_get_type_id(const madc_value *value)
+{
+    return value ? value->type_id : (uint32_t)MADC_TYPEID_INVALID;
+}
+
+int64_t madc_value_get_integer(const madc_value *value)
+{
+    if ( value == NULL )
+	return 0;
+    if ( value->type_id == MADC_TYPEID_INT64 || value->type_id == MADC_TYPEID_BOOL )
+	return value->integer_value;
+    return 0;
+}
+
+double madc_value_get_real(const madc_value *value)
+{
+    if ( value == NULL )
+	return 0.0;
+    if ( value->type_id == MADC_TYPEID_DOUBLE )
+	return value->real_value;
+    if ( value->type_id == MADC_TYPEID_INT64 || value->type_id == MADC_TYPEID_BOOL )
+	return (double)value->integer_value;
+    return 0.0;
+}
+
+int madc_value_get_bool(const madc_value *value)
+{
+    if ( value == NULL )
+	return 0;
+    if ( value->type_id == MADC_TYPEID_BOOL || value->type_id == MADC_TYPEID_INT64 )
+	return value->integer_value != 0;
+    return 0;
+}
+
 const void *madc_value_data(const madc_value *value, size_t *size)
 {
     if ( size != NULL )
@@ -430,6 +468,13 @@ value value::make_instance(uint32_t type_id, size_t size,
 {
     value v;
     madc_value_make_instance(&v._v, type_id, size, destroy);
+    return v;
+}
+
+value value::from_raw(const madc_value &raw)
+{
+    value v;
+    madc_value_copy(&v._v, &raw);
     return v;
 }
 

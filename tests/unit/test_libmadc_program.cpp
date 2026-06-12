@@ -1648,7 +1648,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-	TEST_CASE("call supports std::string arguments for script string parameters" * doctest::skip()) {
+	TEST_CASE("call supports std::string arguments for script string parameters") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -1666,7 +1666,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-	TEST_CASE("call supports script string object returns" * doctest::skip()) {
+	TEST_CASE("call supports script string object returns") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -1684,11 +1684,40 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
+    TEST_CASE("call returns a user class as a typed instance cell") {
+	madc::program pgm;
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "class Point {\n"
+		   "  public:\n"
+		   "    int x;\n"
+		   "    int y;\n"
+		   "    Point(int ax, int ay) { x = ax; y = ay; }\n"
+		   "    ~Point() { }\n"
+		   "};\n"
+		   "Point make_point(int x, int y) { Point p(x, y); return p; }\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+	madc::value result;
+	REQUIRE(pgm.call("make_point", {madc::value(int64_t(3)), madc::value(int64_t(4))}, &result));
+	CHECK(result.is_instance());
+	CHECK(result.type_id() >= MADC_TYPEID_PROJECT_BASE);
+	REQUIRE(result.data() != (const void *)NULL);
+	REQUIRE(result.size() >= 2 * sizeof(int));
+	const int *fields = (const int *)result.data();
+	CHECK(fields[0] == 3);
+	CHECK(fields[1] == 4);
+	CHECK_FALSE(pgm.has_error());
+
+	std::remove(path.c_str());
+    }
+
     TEST_CASE("register_function does not expose C++ object native signatures") {
 	CHECK(true);
     }
 
-    TEST_CASE("madc C API can compile and call scalar and string results" * doctest::skip()) {
+    TEST_CASE("madc C API can compile and call scalar and string results") {
 	madc_program *pgm = madc_program_create();
 	REQUIRE(pgm != NULL);
 
