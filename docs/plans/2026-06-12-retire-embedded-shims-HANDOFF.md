@@ -102,6 +102,75 @@ The authority for bucket 1/2 membership is `gcc -print-file-name=include`
   m1-m4.mad (math.h), h1-h4.mad (hypot shape), pfx1/pfx2.mad
   (m4_pp.txt prefixes), bisect.sh (prefix bisector).
 
+## 3.5 VERIFIED WORKING (do not re-litigate; re-prove with these exact commands)
+
+All in DEFAULT mode (no flags) unless noted — that is the point of the campaign:
+
+```bash
+# Real <iostream>/<string>/cin/getline/cerr, g++-byte-identical:
+printf '#include <iostream>\n#include <string>\nint main(){ std::string s; std::cin >> s; std::cout << "got: " << s << std::endl; return 0; }\n' > tmp/ok1.mad
+echo hello | bin/madc tmp/ok1.mad          # -> "got: hello", exit 0
+# Real <math.h>/<cmath> incl. float pass + SFINAE abs/sqrt + hypot3:
+printf '#include <math.h>\n#include <stdio.h>\nint main(){ printf("%%f\\n", HUGE_VAL); return 0; }\n' > tmp/ok2.mad
+bin/madc tmp/ok2.mad                        # -> inf, exit 0 (stderr noise = wall 7)
+# Real <vector> HEADER parses+compiles (instantiation = wall 2):
+printf '#include <vector>\nint main(){ return 0; }\n' > tmp/ok3.mad
+bin/madc tmp/ok3.mad                        # exit 0
+# K&R gating (user ruling):
+printf 'int f(a,b) int a; int b; { return a+b; }\nint main(){ return f(1,2)==3?0:1; }\n' > tmp/ok4.mad
+bin/madc --std=c17 tmp/ok4.mad; echo $?     # 0 (accepted)
+bin/madc tmp/ok4.mad; echo $?               # 1 (rejected in dialect)
+# Suite baseline at branch HEAD: 549 passed / 33 failed / 0 timed out / 18 skipped.
+# Phase 0+1 gates (recorded green 2026-06-12): torture 1570/34/18 = the 52-name
+# baseline docs/parity/torture-failset-current.txt; SMAUG --project soak green.
+```
+
+The 18 pre-campaign `--no-embedded-headers` tests (testfstream/testloop/
+testdefer/test_extern_polymorphic/*_realhdr/3-way gates) all still pass.
+
+## 3.6 THE EXACT 33 FAILURES at HEAD (tmp/runtests_p2h.log), by cluster
+
+- **Container instantiation (12)** — wall 2: testvector testvectorptr
+  testmap testset testcontainerdtor testtemplatecontainer
+  testtemplatestring testsubscript testsubscriptarrow testsubscriptmember
+  teststruct3 test3eqclass. First error: `vector<int> v;` → "Expecting
+  type after 'typedef'" inside the monomorphized real template body.
+- **String-class behaviors (5)** — likely same root as containers (real
+  basic_string member-template instantiation): teststdstringconv
+  teststringglobal teststringref teststringrel testrefreturn.
+- **madc eval surface (6)** — wall 3 (_ISupper ctype enums in the eval
+  TU): testmadceval testmadcevalexpr testmadcevalexprctx
+  testmadcevalexprtyped testmadcevalscope testmadc_ns.
+- **sys headers parse (3)** — wall 4: teststat teststatret testservent.
+- **operator<< mangle (2)** — wall 5 (_ZNSolsESo): testmultiret testrust.
+- **sstream (1)** — `__byte_op_t` undeclared: testsstream.
+- **foreach/php array (2)**: testforeach2 testforeachref ("too few
+  arguments" class — check shim/trampoline interplay with real string).
+- **misc (2)**: testprefer (prefer directive + real headers),
+  testrubycharsshadow.
+
+## 3.7 TRAPS REDISCOVERED THIS SESSION (cost real time; don't repeat)
+
+- **Log truncation**: `cmd | tail -N > log` in a background task loses
+  the failset head. ALWAYS `cmd > tmp/x.log 2>&1` then inspect.
+- **tmp/*.madh shadowing**: find_filesystem_precompiled_header includes
+  the CURRENT SOURCE DIR in its candidates — stale .madh files next to
+  tmp/ reducers silently hijack `#include <...>`. `rm tmp/*.madh` first.
+- **Stale-binary fulltest lie**: a fulltest summary that contradicts a
+  by-hand run of the same binary = NAS mtime staleness. `make -C src
+  clean` + full rebuild, then re-run by hand before trusting either.
+- **Error-position misattribution**: errors from header-origin tokens
+  print the MAIN file's name with the header's line number (e.g.
+  "tmp/x.mad:3567"). The line number belongs to the real header — find
+  it with `grep -n` in the suspect header, or via `madc -E` output.
+- **Exit codes through pipes**: `bin/madc x | head; echo $?` reports
+  head's status. Use `>/dev/null 2>&1; echo $?`.
+- **DBG() is dead on worker threads** (thread_local) — use the gated
+  `#ifdef MADC_DEBUG_*` fprintf diagnostics (§3) instead.
+- **Throw prints unconditionally** (throwbuf::sync → stderr) even when
+  the exception is caught and tolerated — printed error ≠ fatal error;
+  check the EXIT CODE.
+
 ## 4. REMAINING WALLS (attack order; per-fix METHOD in §6)
 
 1. ~~typename dependent return types~~ CLEARED @1b91e9f.
