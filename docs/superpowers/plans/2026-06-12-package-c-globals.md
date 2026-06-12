@@ -1,5 +1,15 @@
 # Package C increment 1: get/set_global on live MIR storage — Implementation Plan
 
+> **STATUS: EXECUTED 2026-06-12** on `feature/eval-globals-claude` (4 commits).
+> All three global tests unskipped (integer roundtrip, 64-bit preserve, STRING
+> roundtrip — Task 4's reach check landed fully); neighbor canary added;
+> test_libmadc_program 106/0/35. Beyond plan: dynamic global init restructured
+> into the synthesized `__madc_global_init` module function (main calls it;
+> call-only sessions run it at runtime init; static once-guard) — the c2mir
+> declaration grammar is `N_SPEC_DECL(N_SHARE(specs), declarator, attrs, asm,
+> init)` (c2mir.c:538), 5 children, miss it and codegen segfaults. Gates:
+> fulltest 577/0/0/18 exit 0, both gates GREEN, zero warnings.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans (inline — no implementation subagents under Fable). Checkbox steps.
 
 **Goal:** Unskip the get/set_global tests in `tests/unit/test_libmadc_program.cpp` (:1806 integer roundtrip, :1829 64-bit preserve; :1854 string global if the prior art reaches) by making the libmadc global accessors operate on the **JIT's live MIR data**, not the parser's `var->data` backing store.
