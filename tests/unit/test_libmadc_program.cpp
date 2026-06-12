@@ -165,7 +165,7 @@ TEST_SUITE("madc::program") {
 	const madc::error *err = pgm.last_error();
 	REQUIRE(err != NULL);
 	CHECK(err->stage == madc::error::phase::runtime);
-	CHECK(err->message == "Program::execute() cannot find main");
+	CHECK(err->message == "program::exec: main() not found");
 
 	std::remove(path.c_str());
     }
@@ -1224,7 +1224,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("fork_per_invocation exec_string succeeds for a simple program" * doctest::skip()) {
+    TEST_CASE("fork_per_invocation exec_string succeeds for a simple program") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
 	policy.execution = madc::execution_mode::fork_per_invocation;
@@ -1235,7 +1235,7 @@ TEST_SUITE("madc::program") {
 	CHECK(pgm.diagnostics().empty());
     }
 
-    TEST_CASE("fork_per_invocation exec_file reports runtime errors" * doctest::skip()) {
+    TEST_CASE("fork_per_invocation exec_file reports runtime errors") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
 	policy.execution = madc::execution_mode::fork_per_invocation;
@@ -1249,12 +1249,12 @@ TEST_SUITE("madc::program") {
 	const madc::error *err = pgm.last_error();
 	REQUIRE(err != NULL);
 	CHECK(err->stage == madc::error::phase::runtime);
-	CHECK(err->message == "Program::execute() cannot find main");
+	CHECK(err->message == "program::exec: main() not found");
 
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("fork_per_invocation exec_string counts stdout toward output limits" * doctest::skip()) {
+    TEST_CASE("fork_per_invocation exec_string counts stdout toward output limits") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
 	policy.execution = madc::execution_mode::fork_per_invocation;
@@ -1272,7 +1272,7 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message.find("output_bytes limit") != std::string::npos);
     }
 
-    TEST_CASE("fork_per_invocation exec_string counts stderr toward output limits" * doctest::skip()) {
+    TEST_CASE("fork_per_invocation exec_string counts stderr toward output limits") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
 	policy.execution = madc::execution_mode::fork_per_invocation;
@@ -1313,7 +1313,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-	TEST_CASE("fork_per_invocation eval returns string results from child execution" * doctest::skip()) {
+	TEST_CASE("fork_per_invocation eval returns string results from child execution") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
 	policy.execution = madc::execution_mode::fork_per_invocation;

@@ -2845,12 +2845,19 @@ struct program::impl
 		_exit(121);
 
 	    engine().reset_standard_streams();
-	    pgm->execute();
-	    runtime_initialized = !pgm->last_error.has_error;
-	    if ( display_file != path )
-		sync_public_errors(display_file, path);
-	    else
-		sync_public_errors();
+	    // The child runs main through the CIR JIT session (built here, in
+	    // the child — that IS the fork-isolation model: the parent process
+	    // never executes script code). run_main_now syncs pgm diagnostics;
+	    // skip the re-sync when it failed via fail_runtime with no pgm
+	    // error (e.g. missing main), as the non-fork exec paths do.
+	    bool ran_ok = run_main_now();
+	    if ( !(!ran_ok && has_public_last_error && !pgm->last_error.has_error) )
+	    {
+		if ( display_file != path )
+		    sync_public_errors(display_file, path);
+		else
+		    sync_public_errors();
+	    }
 
 	    exec_child_report report;
 	    report.ok = !has_public_last_error;

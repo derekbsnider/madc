@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### libmadc fork-per-invocation execution on CIR
+
+- **`fork_per_invocation` exec/eval run on the CIR backend**: the forked
+  child still called the removed asmjit backend's `Program::execute()`
+  stub; it now builds the CIR JIT session and runs `main` in the child
+  (`run_main_now`) — the parent process never executes script code,
+  which is the fork-isolation model. The parent-side machinery (output
+  relay, rusage-based cpu/memory limits, output_bytes accounting, child
+  report protocol) was already complete and is unchanged.
+- 5 unit tests unskipped (`test_libmadc_program` 128 passed / 15
+  skipped): forked exec_string success, forked exec_file runtime-error
+  reporting (missing `main` now reports the CIR path's
+  "program::exec: main() not found"), stdout/stderr output-limit
+  accounting from the child, and string eval results marshalled from
+  child execution. Remaining skips: AOT save/load (deferred) and policy
+  stragglers.
+
 ### libmadc `register_function` — host callbacks via compiler-synthesized trampolines
 
 - **Scripts can now call host-registered native functions**:
