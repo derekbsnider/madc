@@ -1133,6 +1133,15 @@ public:
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     datadef_map_t  struct_map;		// data definitions defined by struct
+    // Type table identity layer — project segment (madc_typeid.h; design
+    // docs/plans/2026-06-12-type-table-value-abi-design.md §2). Holds every
+    // non-primitive DataDef this Program has been asked an id for; index i
+    // <=> typeid MADC_TYPEID_PROJECT_BASE + i. Lazy registration order is
+    // ask order (deterministic per compilation). Pointers, NOT values:
+    // DataDef is polymorphic and ids must survive growth.
+    std::vector<DataDef *> project_types;
+    uint32_t type_id_for(DataDef *dd);	// THE lazy-stamp chokepoint
+    DataDef *type_from_id(uint32_t id);	// segment-dispatching reverse lookup
     // Captured `template<typename T> class Name {...}` definitions for
     // Borland-model instantiation: name -> {type params, the class-body token
     // range}. `Name<ConcreteT>` clones+substitutes+re-parses it as a concrete

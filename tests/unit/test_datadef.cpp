@@ -1550,4 +1550,29 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(madc_primitive_for_slot(MADC_TYPEID_INVALID) == (DataDef *)NULL);
         CHECK(madc_primitive_for_slot(MADC_TYPEID_PRIMITIVE_END) == (DataDef *)NULL);
     }
+
+    TEST_CASE("project segment: lazy stamp, memoization, round trip") {
+        Program pgm;
+        DataDef a("UserTypeA", 4, DataType::dtINT);
+        DataDef b("UserTypeB", 8, DataType::dtINT64);
+
+        CHECK(a.type_id == 0);                          // unregistered until asked
+        uint32_t ida = pgm.type_id_for(&a);
+        CHECK(ida == MADC_TYPEID_PROJECT_BASE);         // first project id
+        CHECK(pgm.type_id_for(&a) == ida);              // memoized via the stamp
+        CHECK(pgm.type_from_id(ida) == &a);             // round trip
+        CHECK(pgm.type_id_for(&b) == MADC_TYPEID_PROJECT_BASE + 1);
+        CHECK(pgm.type_from_id(MADC_TYPEID_PROJECT_BASE + 1) == &b);
+
+        // primitives resolve through the slot table
+        madc_stamp_primitive_type_ids();
+        CHECK(pgm.type_from_id(MADC_TYPEID_CHAR) == &ddCHAR);
+        CHECK(pgm.type_id_for(&ddCHAR) == MADC_TYPEID_CHAR);    // no re-stamp
+
+        // defensive NULLs: invalid, reserved system segment, foreign/unknown ids
+        CHECK(pgm.type_from_id(MADC_TYPEID_INVALID) == (DataDef *)NULL);
+        CHECK(pgm.type_from_id(MADC_TYPEID_SYSTEM_BASE + 5) == (DataDef *)NULL);
+        CHECK(pgm.type_from_id(MADC_TYPEID_PROJECT_BASE + 99) == (DataDef *)NULL);
+        CHECK(pgm.type_id_for((DataDef *)NULL) == MADC_TYPEID_INVALID);
+    }
 }

@@ -6481,6 +6481,34 @@ void madc_stamp_primitive_type_ids()
 	}
 }
 
+uint32_t Program::type_id_for(DataDef *dd)
+{
+	if ( !dd )
+		return MADC_TYPEID_INVALID;
+	if ( dd->type_id )
+		return dd->type_id;
+	project_types.push_back(dd);
+	dd->type_id = MADC_TYPEID_PROJECT_BASE + (uint32_t)(project_types.size() - 1);
+	return dd->type_id;
+}
+
+DataDef *Program::type_from_id(uint32_t id)
+{
+	if ( id == MADC_TYPEID_INVALID )
+		return NULL;
+	if ( id < MADC_TYPEID_PRIMITIVE_END )
+		return madc_primitive_for_slot(id);
+	if ( id >= MADC_TYPEID_PROJECT_BASE )
+	{
+		uint32_t idx = id - MADC_TYPEID_PROJECT_BASE;
+
+		if ( idx < project_types.size() )
+			return project_types[idx];
+		return NULL;	// foreign Program's id, or never registered
+	}
+	return NULL;	// system segment: reserved for the embedded forest
+}
+
 DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 {
     // Prefer a binary (params > 1 incl. __this) overload. Search the source
