@@ -230,7 +230,19 @@ class CirBuilder {
 	// TokenDecl in cir_node::origin and set synth_from_origin.
 	// See docs/superpowers/plans/2026-05-30-cir-stdstring-lowering.md.
 	node_t obj_storage_decl(const char *name, size_t words,
-				const char *dtor_sym, TokenBase *origin);
+				const char *dtor_sym, TokenBase *origin,
+				size_t align = 0);
+	// Host-call shim synthesis (translate_module): a per-function
+	// `long __madc_shim_<sym>(char *__args, char *__out)` adapter over
+	// the 32-byte madc_value ABI. NULL when the signature is not
+	// host-marshallable (the host then gets a clean unsupported error).
+	node_t synth_call_shim(Program *prog, TokenFunc *tf);
+	node_t ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
+				  FuncDef *ctor,
+				  const std::vector<node_t> &explicit_nodes,
+				  TokenBase *origin);
+	void synth_call_shims(Program *prog, const std::vector<TokenFunc *> &roots,
+			      std::vector<node_t> &func_def_nodes);
 	node_t obj_default_ctor_call(const char *name, const char *ctor_sym,
 				     TokenBase *origin);
 

@@ -1,5 +1,84 @@
 # HANDOFF — type-table/value-ABI track + package-C globals; next = verify branch, then string call marshalling
 
+> **STATUS UPDATE 2026-06-12 (same day, later) — INCREMENT 2 REDIRECTED, USER
+> DESIGN DIRECTION.** On `feature/eval-string-call-claude`: the MIR-fatal
+> containment (ed81566: CirJitSession arms MIR_set_error_func+longjmp — a bad
+> module can NEVER exit() an embedding host; 8 torture undefined-import tests
+> truthfully reclassify runtime→compile, failset names IDENTICAL) and the
+> const-char* binding fold (5de2425: host bindings fold to string literals,
+> the int-fold analogue) STAND. The text_object/madc_text_carrier call
+> marshalling was REVERTED (ba0697f reverts 4dffaf6): it put std::string ABI
+> knowledge (sizeof, bit-copy, manual dtor) in HOST code — caught by the user
+> as exactly the hardcoding the campaign retires. THE PRINCIPLE (user,
+> emphatic): std::string/containers are header-defined classes like any user
+> class, NOT primitives — no per-class helpers ANYWHERE; if it isn't a C/C++
+> keyword it must not be tokenized; #include is the entire integration cost.
+> Dead lexer keyword_map.erase("vector"/"map"/"set") relics deleted same day.
+> **REVISED QUEUE** (user-agreed): (1) madc::value WRAPPER REWORK — drop
+> std::string _string/_bytes members, class becomes thin RAII wrapper over
+> the 32-byte madc_value struct (the design doc's deferred phase; needs
+> array/object CELL design in the C runtime; as_string() const-ref API must
+> change; ~54 as_string sites / ~17 files incl. ns_*, madcdat drivers —
+> re-enable madcdat for final validation); (2) shim/trampoline machinery =
+> register_function foundation — per-function adapters SYNTHESIZED through
+> the normal CIR pipeline, uniform madc_value in/out, class params
+> constructed/destructed via ordinary header-resolved ctors, return
+> conversion via header-declared overloads (host knows ZERO class ABI);
+> (3) string call marshalling falls out of (2) — re-unskip :1638/:1656/:1678
+> then. Tests :221/:543 pass and STAY unskipped (containment+fold);
+> a new containment regression test pins the no-host-exit contract.
+> Gates after revert+cleanup: units 109/0/33, fulltest+torture per the
+> validation log. NOTE: claude_status.json head/branch fields predate the
+> eval-globals merge — sync at next track milestone per mirror-sync cadence.
+>
+> **REVISED-QUEUE ITEM 1 EXECUTED (same day): madc::value WRAPPER REWORK
+> MERGED to the branch (e05b6d3).** std::string/_bytes members DELETED; the
+> class is a thin RAII wrapper over the 32-byte struct (text = char SSO/
+> cells; array/object keep container backing until the madcdis pool phase).
+> GENERIC INSTANCES landed: madc_cell destroy finalizer +
+> madc_value_make_instance(type_id,size,destroy) + value::make_instance/
+> instance_data/type_id/data/size — a typed instance of ANY table type is a
+> first-class value (equality = cell identity; doctest pins sharing +
+> exactly-once finalization). Storage runtime moved to madc_value.cpp (one
+> home). CIR: obj_storage_decl gained an align param — `array a;` lowers to
+> _Alignas(alignof(madc::value)) long[] (16-aligned struct vs old 8-aligned
+> buffer). TWO LATENT BUGS fixed at depth: value_as<const char*> + the
+> ddCHARptr binding installer borrowed soon-dead text — the binding one was
+> ALWAYS a use-after-free (bindings map cleared BEFORE the lazy JIT build
+> reads var->data; SSO exposed it); binding storage now OWNS a strdup-style
+> copy (addLiteral convention). as_string() is BY-VALUE now (54 sites
+> compiled unchanged); as_bytes/make_bytes(vector) → data()/size()/
+> make_bytes(ptr,len); kind enum gained `instance` (one -Wswitch fix in
+> madcdat_storage.cpp). GATES @ e05b6d3: units all suites green (program
+> 109/0/33), fulltest 577/0/0/18 exit 0 both gates GREEN, torture 1567
+> failset NAME-IDENTICAL (0 of the 55 flip), SMAUG --project soak ready+124
+> (exercises the realigned array runtime), madcdat-ENABLED clean build green
+> (19 suites) then lean config restored.
+>
+> **QUEUE ITEM 2 EXECUTED (same day): SYNTHESIZED HOST-CALL SHIMS (87f1808)
+> — the embedding boundary's ONE call surface.** CirBuilder::synth_call_shim
+> (translate_module Pass 0.74) emits `long __madc_shim_<sym>(char*,char*)`
+> per host-callable function over the 32-byte value ABI: typeid validation
+> (Program::type_id_for — the table's first CODEGEN consumer), class params
+> via the class's OWN ctor (ctor_call_assemble = the ONE ctor assembler,
+> refactored from class_ctor_call_addr — default-arg/allocator completion
+> shared), c_str/size-protocol returns → TEXT, ANY other class return →
+> typed INSTANCE cell (callee constructs into the cell; finalizer = the
+> class's complete dtor). perform_call + child-eval call ONLY the shim;
+> the value_as/call_targetN/dispatch pyramid (~430 lines) and the 4-arg
+> limit are DELETED. value::from_raw adopts raw structs incl. instances.
+> New C getters madc_value_get_type_id/integer/real/bool. ELIGIBILITY
+> GOTCHAS (found by fulltest): exclude is_simd() params/returns (vector
+> typedefs classify is_integer!) and local_emit_name/captured_vars
+> functions (GNU nested fns take hidden capture params). 3 string-call
+> skips UNSKIPPED + NEW generic pin: user class returns as instance value
+> (project typeid, live fields, exactly-once dtor). test_libmadc_program
+> 113/0/30. GATES @ 87f1808: fulltest 577/0/0/18 both GREEN, torture 1567
+> failset NAME-IDENTICAL, SMAUG --project ready+124 (51 TUs synthesize
+> shims), madcdat-enabled clean build green (19 suites), lean restored.
+> NEXT = register_function rides the same machinery in reverse
+> (script→host trampolines), then fork/limits + policy tail.
+
 Date: 2026-06-12 (same-day successor to `2026-06-12-strict-equality-HANDOFF.md`,
 which remains the ===/!== mechanism reference). This is the **current
 cold-restart contract**.
