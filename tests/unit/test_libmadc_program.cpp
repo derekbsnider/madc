@@ -1803,7 +1803,7 @@ TEST_SUITE("madc::program") {
 	madc_program_destroy(pgm);
     }
 
-    TEST_CASE("get_global and set_global roundtrip integer globals" * doctest::skip()) {
+    TEST_CASE("get_global and set_global roundtrip integer globals") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -1826,7 +1826,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("set_global preserves 64-bit integer values" * doctest::skip()) {
+    TEST_CASE("set_global preserves 64-bit integer values") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -1876,6 +1876,36 @@ TEST_SUITE("madc::program") {
 	REQUIRE(pgm.call("first_name_char", {}, &result));
 	REQUIRE(result.is_string());
 	CHECK(result.as_string() == "bravo");
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("set_global writes exactly the variable's size (neighbor canary)") {
+	madc::program pgm;
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int a = 4;\n"
+		   "int b = 7;\n"
+		   "int read_b() { return b; }\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+
+	// The old helpers wrote int globals as int64 — an 8-byte store that
+	// clobbers the neighboring 4-byte global on real MIR data layout.
+	REQUIRE(pgm.set_global("a", madc::value(int64_t(9))));
+
+	madc::value current;
+	REQUIRE(pgm.get_global("b", &current));
+	REQUIRE(current.is_integer());
+	CHECK(current.as_integer() == 7);
+
+	REQUIRE(pgm.call("read_b", {}, &current));
+	REQUIRE(current.is_integer());
+	CHECK(current.as_integer() == 7);
+
+	REQUIRE(pgm.get_global("a", &current));
+	CHECK(current.as_integer() == 9);
 
 	std::remove(path.c_str());
     }

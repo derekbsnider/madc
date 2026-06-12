@@ -2176,46 +2176,88 @@ value value_from<const char *>(const char *v)
     return value(v);
 }
 
-bool value_from_variable(Variable *var, value &out)
+// Storage-form read: marshal one scalar at `data` of type `type` into a
+// host value. `data` may be the parser's var->data OR a resolved live MIR
+// data-item address (get_global) — callers own that choice; this function
+// must therefore access EXACTLY type->size bytes (an 8-byte read of a
+// 4-byte int is fine on calloc'd parse-time storage but reads a neighbor
+// on real MIR data layout).
+bool value_from_storage(DataDef *type, void *data, size_t count,
+			bool is_array_like, value &out)
 {
-    if ( !var || !var->type || !var->data )
+    if ( !type || !data )
 	return false;
 
-    if ( var->count != 1 || var->is_fixed_array() || var->is_vla() )
+    if ( count != 1 || is_array_like )
 	return false;
 
-    DataDef *type = var->type;
     if ( type == &ddBOOL )
     {
-	out = value(static_cast<bool>(*static_cast<bool *>(var->data)));
+	out = value(static_cast<bool>(*static_cast<bool *>(data)));
 	return true;
     }
     if ( type->is_integer() || type->is_pointer() )
     {
-	out = value(static_cast<int64_t>(var->get<int64_t>()));
+	bool u = type->is_unsigned();
+	int64_t v = 0;
+	switch ( type->size )
+	{
+	    case 1:
+		v = u ? (int64_t)*static_cast<uint8_t *>(data)
+		      : (int64_t)*static_cast<int8_t *>(data);
+		break;
+	    case 2:
+	    case 3:	// int24 storage mirrors the 16-bit write dispatch
+		v = u ? (int64_t)*static_cast<uint16_t *>(data)
+		      : (int64_t)*static_cast<int16_t *>(data);
+		break;
+	    case 4:
+		v = u ? (int64_t)*static_cast<uint32_t *>(data)
+		      : (int64_t)*static_cast<int32_t *>(data);
+		break;
+	    case 8:
+		v = *static_cast<int64_t *>(data);
+		break;
+	    default:
+		return false;
+	}
+	out = value(v);
 	return true;
     }
     if ( type->is_real() )
     {
-	out = value(static_cast<double>(var->get<double>()));
+	out = value(type->size == 4
+		    ? static_cast<double>(*static_cast<float *>(data))
+		    : *static_cast<double *>(data));
 	return true;
     }
     return false;
 }
 
-bool set_variable_from_value(Variable *var, const value &in)
+bool value_from_variable(Variable *var, value &out)
 {
-    if ( !var || !var->type || !var->data )
+    if ( !var )
+	return false;
+    return value_from_storage(var->type, var->data, var->count,
+			      var->is_fixed_array() || var->is_vla(), out);
+}
+
+// Storage-form write: see value_from_storage — accesses exactly
+// type->size bytes so a resolved MIR data address is safe (the old
+// dd-identity dispatch wrote ddINT as int64: an 8-byte store on a 4-byte
+// int, neighbor-clobbering on real data layout).
+bool set_storage_from_value(DataDef *type, void *data, size_t count,
+			    bool is_array_like, const value &in)
+{
+    if ( !type || !data )
 	return false;
 
-    if ( var->count != 1 || var->is_fixed_array() || var->is_vla() )
+    if ( count != 1 || is_array_like )
 	return false;
 
-    DataDef *type = var->type;
     if ( type == &ddBOOL )
     {
-	*static_cast<bool *>(var->data) = in.as_boolean();
-	var->modified();
+	*static_cast<bool *>(data) = in.as_boolean();
 	return true;
     }
     if ( type == &ddCHARptr && in.is_string() )
@@ -2223,49 +2265,57 @@ bool set_variable_from_value(Variable *var, const value &in)
 	// Scope/context text binding: `in` references a field of the
 	// caller-owned context object, which outlives the eval call —
 	// bind its C string directly.
-	*static_cast<const char **>(var->data) = in.as_string().c_str();
-	var->modified();
+	*static_cast<const char **>(data) = in.as_string().c_str();
 	return true;
     }
-    if ( type->is_integer() || type->is_pointer() )
+    if ( type->is_pointer() )
+	return false;
+    if ( type->is_integer() )
     {
 	if ( !in.is_integer() )
 	    return false;
 	int64_t v = in.as_integer();
-	if ( type == &ddCHAR )
-	    *static_cast<char *>(var->data) = static_cast<char>(v);
-	else if ( type == &ddINT || type == &ddINT64 )
-	    *static_cast<int64_t *>(var->data) = v;
-	else if ( type == &ddINT8 )
-	    *static_cast<int8_t *>(var->data) = static_cast<int8_t>(v);
-	else if ( type == &ddINT16 || type == &ddINT24 )
-	    *static_cast<int16_t *>(var->data) = static_cast<int16_t>(v);
-	else if ( type == &ddINT32 )
-	    *static_cast<int32_t *>(var->data) = static_cast<int32_t>(v);
-	else if ( type == &ddUINT8 )
-	    *static_cast<uint8_t *>(var->data) = static_cast<uint8_t>(v);
-	else if ( type == &ddUINT16 || type == &ddUINT24 )
-	    *static_cast<uint16_t *>(var->data) = static_cast<uint16_t>(v);
-	else if ( type == &ddUINT32 )
-	    *static_cast<uint32_t *>(var->data) = static_cast<uint32_t>(v);
-	else if ( type == &ddUINT64 )
-	    *static_cast<uint64_t *>(var->data) = static_cast<uint64_t>(v);
-	else
-	    return false;
-	var->modified();
+	switch ( type->size )
+	{
+	    case 1:
+		*static_cast<uint8_t *>(data) = static_cast<uint8_t>(v);
+		break;
+	    case 2:
+	    case 3:	// int24 keeps its historical 16-bit storage dispatch
+		*static_cast<uint16_t *>(data) = static_cast<uint16_t>(v);
+		break;
+	    case 4:
+		*static_cast<uint32_t *>(data) = static_cast<uint32_t>(v);
+		break;
+	    case 8:
+		*static_cast<int64_t *>(data) = v;
+		break;
+	    default:
+		return false;
+	}
 	return true;
     }
     if ( type->is_real() )
     {
 	double d = in.is_real() ? in.as_real() : static_cast<double>(in.as_integer());
-	if ( type == &ddFLOAT )
-	    *static_cast<float *>(var->data) = static_cast<float>(d);
+	if ( type->size == 4 )
+	    *static_cast<float *>(data) = static_cast<float>(d);
 	else
-	    *static_cast<double *>(var->data) = d;
-	var->modified();
+	    *static_cast<double *>(data) = d;
 	return true;
     }
     return false;
+}
+
+bool set_variable_from_value(Variable *var, const value &in)
+{
+    if ( !var )
+	return false;
+    if ( !set_storage_from_value(var->type, var->data, var->count,
+				 var->is_fixed_array() || var->is_vla(), in) )
+	return false;
+    var->modified();
+    return true;
 }
 
 DataDef *expression_binding_datadef(const value &v)
@@ -4172,8 +4222,17 @@ struct program::impl
 	    if ( var->type && var->type->basetype() == BaseType::btFunct )
 		return fail_runtime("program::get_global target '" + name + "' is a function");
 
+	    // Compiled code reads the MIR module's data item, not the
+	    // parser's var->data backing store — resolve the live address
+	    // (globals emit under their source identifier) and fall back to
+	    // parse-time storage only when the item is absent.
+	    void *storage = jit ? jit->data_address(id.c_str()) : NULL;
 	    value out;
-	    if ( !value_from_variable(var, out) )
+	    bool marshaled = storage
+		? value_from_storage(var->type, storage, var->count,
+				     var->is_fixed_array() || var->is_vla(), out)
+		: value_from_variable(var, out);
+	    if ( !marshaled )
 		return fail_runtime("program::get_global does not support this variable type yet");
 	    *result = out;
 	    return true;
@@ -4199,8 +4258,18 @@ struct program::impl
 
 	    try
 	    {
-		if ( !set_variable_from_value(var, new_value) )
+		// Write the LIVE MIR data item when present (see get_global);
+		// parse-time var->data is the fallback for unemitted vars.
+		void *storage = jit ? jit->data_address(id.c_str()) : NULL;
+		bool stored = storage
+		    ? set_storage_from_value(var->type, storage, var->count,
+					     var->is_fixed_array() || var->is_vla(),
+					     new_value)
+		    : set_variable_from_value(var, new_value);
+		if ( !stored )
 		    return fail_runtime("program::set_global does not support this variable type yet");
+		if ( storage )
+		    var->modified();
 	    }
 	    catch ( const std::exception &e )
 	    {
