@@ -10131,15 +10131,19 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// va_list struct copy mis-set reg_save_area in large frames (e.g. SMAUG's
 	// bug() with char buf[MAX_STRING_LENGTH]), corrupting the list.
 
-	// File-scope class globals construct before any user code runs (C++ static
-	// init). madc realizes this by prepending their ctor
-	// calls — collected in source/declaration order — to main's body. (Their
-	// scope-exit destruction is deferred: the cleanup attribute on a file-scope
-	// object never fires; program teardown reclaims the memory.)
+	// File-scope class globals construct before any user code runs (C++
+	// static init). The ctor calls live in ONE synthesized module function,
+	// __madc_global_init (built in translate_module, guarded against
+	// re-entry): main calls it here, and call-only embedding sessions
+	// (libmadc call/get_global/set_global without main) invoke it at
+	// runtime init — both paths share the one implementation. (Scope-exit
+	// destruction of file-scope objects stays deferred: program teardown
+	// reclaims the memory.)
 	if (tf->var.name == "main" && !m_global_ctor_stmts.empty()) {
 		node_t outer = list();
-		for (node_t s : m_global_ctor_stmts)
-			append(outer, s);
+		node_t icall = node2(N_CALL, id("__madc_global_init", tf), list(), tf);
+		CIR_NODE(icall)->synth_from_origin = true;
+		append(outer, node2(N_EXPR, list(), icall, tf));
 		append(outer, body);
 		body = node2(N_BLOCK, list(), outer, tf);
 		// Re-emit with the wrapped body; the prologue runs once at main entry.
@@ -10954,6 +10958,42 @@ node_t CirBuilder::translate_module(Program *prog)
 	// DEFINED, not just referenced (else MIR-link "import of undefined item").
 	materialize_and_lower();
 	m_user_func_names = NULL;   // backing set is a translate_module local; don't dangle
+
+	// Synthesize `void __madc_global_init(void)` — the ONE home for the
+	// file-scope class-global ctor calls (collected by collect_global_ctors).
+	// main's prologue calls it (translate_func), and main-less embedding
+	// sessions invoke it at runtime init via CirJitSession::function_code.
+	// A static once-guard makes a second invocation (host init + run_main)
+	// a no-op. Emitted FIRST among definitions so main's call (and any
+	// earlier-in-source function) sees the definition.
+	if (!m_global_ctor_stmts.empty()) {
+		// declaration: N_SPEC_DECL(N_SHARE(specs), declarator, attrs,
+		// asm, initializer) — c2mir.c:538.
+		node_t gspec = list();
+		append(gspec, simple(N_STATIC));
+		append(gspec, simple(N_INT));
+		node_t guard_decl = simple(N_SPEC_DECL);
+		append(guard_decl, node1(N_SHARE, gspec));
+		append(guard_decl, node2(N_DECL, id("__madc_gi_done"), list()));
+		append(guard_decl, ignore());
+		append(guard_decl, ignore());
+		append(guard_decl, ignore());
+
+		node_t items = list();
+		append(items, guard_decl);
+		append(items, node4(N_IF, list(), id("__madc_gi_done"),
+				    node2(N_RETURN, list(), ignore()), ignore()));
+		append(items, node2(N_EXPR, list(),
+				    node2(N_ASSIGN, id("__madc_gi_done"), integer(1))));
+		for (node_t s : m_global_ctor_stmts)
+			append(items, s);
+		node_t ibody = node2(N_BLOCK, list(), items);
+		node_t iret = node1(N_LIST, simple(N_VOID));
+		node_t idecl = node2(N_DECL, id("__madc_global_init"),
+				     node1(N_LIST, node1(N_FUNC, list())));
+		func_def_nodes.insert(func_def_nodes.begin(),
+				      node4(N_FUNC_DEF, iret, idecl, list(), ibody));
+	}
 
 	// Pass 2: Function definitions (translated above).
 	for (node_t fd : func_def_nodes)

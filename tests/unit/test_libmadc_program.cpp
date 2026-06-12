@@ -1851,7 +1851,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-	TEST_CASE("get_global and set_global roundtrip string globals" * doctest::skip()) {
+	TEST_CASE("get_global and set_global roundtrip string globals") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,

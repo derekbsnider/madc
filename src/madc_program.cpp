@@ -3584,8 +3584,8 @@ struct program::impl
 	    return fail_runtime("program::call requires a successfully compiled program");
 
 	// CIR backend: "runtime initialized" = the JIT session is built and
-	// linked. (The asmjit-era root_fn() top-level run is gone; dynamic
-	// global initializers are a later increment — see the plan doc.)
+	// linked, and dynamic global initializers have run. (The asmjit-era
+	// root_fn() top-level run is gone.)
 	pgm->clear_diagnostics();
 	pgm->clear_error();
 	if ( !ensure_jit_built() )
@@ -3593,6 +3593,16 @@ struct program::impl
 	sync_public_errors();
 	if ( pgm->last_error.has_error )
 	    return false;
+	// File-scope class globals (e.g. `std::string g = "hi";`) construct in
+	// the synthesized module function __madc_global_init — main calls it
+	// too, but a call-only session never runs main. The function carries a
+	// static once-guard, so init-here + a later run_main stays single-shot.
+	if ( jit )
+	{
+	    void *ginit = jit->function_code("__madc_global_init");
+	    if ( ginit )
+		((void (*)())ginit)();
+	}
 	runtime_initialized = true;
 	return true;
     }
@@ -4227,6 +4237,17 @@ struct program::impl
 	    // (globals emit under their source identifier) and fall back to
 	    // parse-time storage only when the item is absent.
 	    void *storage = jit ? jit->data_address(id.c_str()) : NULL;
+	    // Text-carrier globals (real libstdc++ std::string objects under
+	    // the header model) marshal by reading the LIVE object — same
+	    // mechanism as __madc_scope_set_string_runtime (parser.cpp).
+	    // Requires the resolved MIR object; the parse-time fallback
+	    // would read unconstructed memory.
+	    if ( storage && var->count == 1 && var->type
+	    &&   var->type->marshals_value_text() )
+	    {
+		*result = value(*static_cast<const std::string *>(storage));
+		return true;
+	    }
 	    value out;
 	    bool marshaled = storage
 		? value_from_storage(var->type, storage, var->count,
@@ -4261,6 +4282,15 @@ struct program::impl
 		// Write the LIVE MIR data item when present (see get_global);
 		// parse-time var->data is the fallback for unemitted vars.
 		void *storage = jit ? jit->data_address(id.c_str()) : NULL;
+		if ( storage && var->count == 1 && var->type
+		&&   var->type->marshals_value_text() && new_value.is_string() )
+		{
+		    // Assign through the live object: the host's libstdc++
+		    // operator= manages the real string's storage.
+		    *static_cast<std::string *>(storage) = new_value.as_string();
+		    var->modified();
+		    return true;
+		}
 		bool stored = storage
 		    ? set_storage_from_value(var->type, storage, var->count,
 					     var->is_fixed_array() || var->is_vla(),
