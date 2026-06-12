@@ -2901,10 +2901,9 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // so a bodyless method binds to the real C++ symbol without class-name tests.
     std::string saved_canon = instantiating_canonical_spelling;
     bool saved_dependent_surface = instantiating_dependent_surface;
-    std::string saved_namespace = current_namespace;
     instantiating_canonical_spelling = canon;
     instantiating_dependent_surface = dependent_surface;
-    current_namespace = td.defining_namespace;
+    NamespaceScope ns_scope(*this, td.defining_namespace);
 
     bool pushed_owner_scope = false;
     if ( td.owner_class )
@@ -2926,7 +2925,6 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     cur_func_name = saved_func;
     instantiating_canonical_spelling = saved_canon;
     instantiating_dependent_surface = saved_dependent_surface;
-    current_namespace = saved_namespace;
 
     datatype_map_iter now = datatype_map.find(registered_mangled);
     if ( now == datatype_map.end() )
@@ -3533,7 +3531,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
     // a header class inside namespace std deriving from bare `true_type`
     // resolves here.
     {
-	std::string scope = current_namespace;
+	std::string scope = current_namespace();
 	while ( !scope.empty() )
 	{
 	    namespace_datatype_map_t::iterator nti =
@@ -9597,9 +9595,9 @@ std::string Program::resolve_namespace_name_in_scope(
 {
     if ( name.empty() )
 	return std::string();
-    if ( !current_namespace.empty() )
+    if ( !current_namespace().empty() )
     {
-	std::string cur = current_namespace;
+	std::string cur = current_namespace();
 	for (;;)
 	{
 	    std::string candidate = cur + "::" + name;
@@ -9620,8 +9618,12 @@ std::string Program::resolve_namespace_name_in_scope(
 
 std::string Program::active_cpp_lookup_namespace()
 {
-    if ( !current_namespace.empty() )
-	return current_namespace;
+    // The statement-level qualified-call override (php::foo(args)) wins for
+    // head resolution; see Program::stmt_callee_namespace.
+    if ( !stmt_callee_namespace.empty() )
+	return stmt_callee_namespace;
+    if ( !current_namespace().empty() )
+	return current_namespace();
     if ( compounds.empty() || !compounds.top()
       || !compounds.top()->method
       || !compounds.top()->method->owner_class )
@@ -9946,12 +9948,12 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 	    if ( !parsing_extern_decl )
 		var->flags &= ~vfEXTERN;
 	}
-	if ( !current_namespace.empty() && parsing_extern_decl
+	if ( !current_namespace().empty() && parsing_extern_decl
 	  && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
 	    var->storage_alias_name =
-		namespace_cpp_variable_symbol(current_namespace, id);
-	if ( !current_namespace.empty() )
-	    namespace_map[current_namespace][id] = var;
+		namespace_cpp_variable_symbol(current_namespace(), id);
+	if ( !current_namespace().empty() )
+	    namespace_map[current_namespace()][id] = var;
 	return var;
     }
     var = new Variable(id, dd, c, init, alloc);
@@ -9960,13 +9962,13 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
     // above and leaves its storage class untouched.
     if ( parsing_extern_decl )
 	var->flags |= vfEXTERN;
-    if ( !current_namespace.empty() && parsing_extern_decl
+    if ( !current_namespace().empty() && parsing_extern_decl
       && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
 	var->storage_alias_name =
-	    namespace_cpp_variable_symbol(current_namespace, id);
+	    namespace_cpp_variable_symbol(current_namespace(), id);
     tkProgram->variables.push_back(var);
-    if ( !current_namespace.empty() )
-	namespace_map[current_namespace][id] = var;
+    if ( !current_namespace().empty() )
+	namespace_map[current_namespace()][id] = var;
 
     DBG(std::cout << "Added new global variable type: " << dd.name << " size: "
 		<< dd.size << " name: " << id << " ptr: " << var << " flags: " << var->flags << std::endl);
@@ -10513,18 +10515,13 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	}
 	if ( tb->id() == TokenID::tkSemi ) { break; }
 	DBG(cout << "parseCallFunc() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
-	std::string saved_namespace = current_namespace;
 	// Arguments resolve in the CALL SITE's lexical namespace
-	// ([basic.lookup]), not the callee's: only the statement-level
-	// qualified-call arm (php::foo(args)) switches current_namespace to
-	// the callee's namespace, recording the lexical one. An unqualified
-	// call inside a namespace-context body KEEPS its enclosing namespace
-	// (true_type() inside std::vector::_M_move_assign = std::true_type;
-	// the old unconditional clear() broke that).
-	if ( qualified_stmt_callee_ns )
-	    current_namespace = qualified_stmt_lexical_ns;
+	// ([basic.lookup]): the head is resolved by now, so the statement-level
+	// qualified-call override (php::foo(args)) is spent — clear it. The
+	// lexical namespace_stack is untouched and already correct (true_type()
+	// inside std::vector::_M_move_assign = std::true_type).
+	stmt_callee_namespace.clear();
 	tb = parseExpression(tb, true);
-	current_namespace = saved_namespace;
 	if ( !tb ) { break; }
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
@@ -10834,18 +10831,13 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	}
 	if ( tb->id() == TokenID::tkSemi ) { break; }
 	DBG(cout << "parseCallMethod() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
-	std::string saved_namespace = current_namespace;
 	// Arguments resolve in the CALL SITE's lexical namespace
-	// ([basic.lookup]), not the callee's: only the statement-level
-	// qualified-call arm (php::foo(args)) switches current_namespace to
-	// the callee's namespace, recording the lexical one. An unqualified
-	// call inside a namespace-context body KEEPS its enclosing namespace
-	// (true_type() inside std::vector::_M_move_assign = std::true_type;
-	// the old unconditional clear() broke that).
-	if ( qualified_stmt_callee_ns )
-	    current_namespace = qualified_stmt_lexical_ns;
+	// ([basic.lookup]): the head is resolved by now, so the statement-level
+	// qualified-call override (php::foo(args)) is spent — clear it. The
+	// lexical namespace_stack is untouched and already correct (true_type()
+	// inside std::vector::_M_move_assign = std::true_type).
+	stmt_callee_namespace.clear();
 	tb = parseExpression(tb, true);
-	current_namespace = saved_namespace;
 	if ( !tb ) { break; }
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
@@ -11233,7 +11225,7 @@ static void debug_deref_fail(Program &pgm, int site, TokenBase *deref_tb,
 		? ((TokenIdent *)deref_tb)->str.c_str() : "(expr)",
 	    dtype ? dtype->name.c_str() : "(null)",
 	    pgm.instantiating_canonical_spelling.c_str(),
-	    pgm.current_namespace.c_str(), up.c_str());
+	    pgm.current_namespace().c_str(), up.c_str());
 }
 #else
 #define debug_deref_fail(pgm, site, tb, dt) do { } while (0)
@@ -12078,7 +12070,7 @@ Program::TemplateDef *Program::find_template(const std::string &name,
 	return owned[0];
     for ( size_t i = 0; i < variants.size(); ++i )
 	if ( variants[i].owner_class == owner_hint
-	  && variants[i].defining_namespace == current_namespace )
+	  && variants[i].defining_namespace == current_namespace() )
 	    return &variants[i];
     for ( size_t i = 0; i < variants.size(); ++i )
 	if ( variants[i].owner_class == owner_hint
@@ -12132,9 +12124,9 @@ Program::TemplateAliasDef *Program::find_template_alias(const std::string &name,
     if ( owner_hint && owned.size() == 1 )
 	return owned[0];
 
-    if ( !current_namespace.empty() )
+    if ( !current_namespace().empty() )
     {
-	std::string scope = current_namespace;
+	std::string scope = current_namespace();
 	for (;;)
 	{
 	    for ( size_t i = 0; i < owned.size(); ++i )
@@ -12150,7 +12142,7 @@ Program::TemplateAliasDef *Program::find_template_alias(const std::string &name,
 	if ( owned[i]->defining_namespace.empty() )
 	    return owned[i];
 
-    if ( current_namespace.empty() && owned.size() == 1 )
+    if ( current_namespace().empty() && owned.size() == 1 )
 	return owned[0];
     if ( owner_hint )
 	return owned[0];
@@ -16690,20 +16682,21 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
 	Throw(tn) << "Expecting '{' after namespace name" << flush;
 
     // Nested namespaces concatenate (`namespace a { namespace b { ... } }`
-    // and `namespace a::b { ... }` → "a::b"); restore the outer namespace on exit.
-    std::string saved_namespace = current_namespace;
-    current_namespace = saved_namespace;
+    // and `namespace a::b { ... }` → "a::b"); the guard restores the outer
+    // namespace on exit (including on throw).
+    std::string enclosing_namespace = current_namespace();
+    std::string opened_namespace = enclosing_namespace;
     for ( size_t i = 0; i < ns_parts.size(); ++i )
     {
-	current_namespace = current_namespace.empty()
-			  ? ns_parts[i] : (current_namespace + "::" + ns_parts[i]);
-	namespace_map[current_namespace];
+	opened_namespace = opened_namespace.empty()
+			 ? ns_parts[i] : (opened_namespace + "::" + ns_parts[i]);
+	namespace_map[opened_namespace];
     }
-    std::string opened_namespace = current_namespace;
+    NamespaceScope ns_scope(*this, opened_namespace);
     if ( inline_namespace )
     {
 	std::vector<std::string> &children =
-	    inline_namespace_children[saved_namespace];
+	    inline_namespace_children[enclosing_namespace];
 	bool seen = false;
 	for ( size_t i = 0; i < children.size(); ++i )
 	    if ( children[i] == opened_namespace )
@@ -16721,7 +16714,7 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
 	// added by re-opens (std::stoi, std::to_string) never mirror into the
 	// parent and are invisible as std:: members.
 	std::map<std::string, std::vector<std::string>>::iterator ci =
-	    inline_namespace_children.find(saved_namespace);
+	    inline_namespace_children.find(enclosing_namespace);
 	if ( ci != inline_namespace_children.end() )
 	    for ( size_t i = 0; i < ci->second.size(); ++i )
 		if ( ci->second[i] == opened_namespace )
@@ -16743,15 +16736,14 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
     }
 
     if ( inline_namespace )
-	mirror_inline_namespace_into_parent(saved_namespace,
+	mirror_inline_namespace_into_parent(enclosing_namespace,
 					    opened_namespace);
-    current_namespace = saved_namespace;
     DBG(std::cout << "TokenNAMESPACE::parse() end of namespace '" << ns_name << "'" << std::endl);
     return NULL;
 }
 
 // parse a `namespace NAME { ... }` definition block.
-// Sets pgm.current_namespace for the duration of the body so definitions
+// Sets pgm.current_namespace() for the duration of the body so definitions
 // declared inside (templates, classes, functions) register under the
 // namespace, then restores the previous namespace. Body statements that
 // yield a node (e.g. a global initializer) are appended to the program.
@@ -16811,9 +16803,9 @@ TokenBase *TokenUSING::parse(Program &pgm)
     {
 	if ( namespace_exists(name) )
 	    return name;
-	if ( !pgm.current_namespace.empty() )
+	if ( !pgm.current_namespace().empty() )
 	{
-	    std::string nested = pgm.current_namespace + "::" + name;
+	    std::string nested = pgm.current_namespace() + "::" + name;
 	    if ( namespace_exists(nested) )
 		return nested;
 	}
@@ -16938,16 +16930,16 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    pgm.Throw(member) << "'" << name << "' is not a declaration in '"
 			      << (source_ns.empty() ? std::string("::") : source_ns)
 			      << "'" << flush;
-	if ( !pgm.current_namespace.empty() )
+	if ( !pgm.current_namespace().empty() )
 	{
 	    if ( v )
-		pgm.namespace_map[pgm.current_namespace][name] = v;
+		pgm.namespace_map[pgm.current_namespace()][name] = v;
 	    if ( source_ns.empty() && dti != pgm.datatype_map.end() )
-		pgm.namespace_datatype_map[pgm.current_namespace][name] = dti->second;
+		pgm.namespace_datatype_map[pgm.current_namespace()][name] = dti->second;
 	    else if ( !source_ns.empty()
 		   && nti != pgm.namespace_datatype_map.end()
 		   && ns_dti != nti->second.end() )
-		pgm.namespace_datatype_map[pgm.current_namespace][name] = ns_dti->second;
+		pgm.namespace_datatype_map[pgm.current_namespace()][name] = ns_dti->second;
 	}
 	else
 	{
@@ -17014,7 +17006,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		      << " dd=" << alias_dd->name
 		      << " cls=" << (pgm.class_scope_stack.empty() ? "-"
 				     : pgm.class_scope_stack.back()->name)
-		      << " ns=" << pgm.current_namespace
+		      << " ns=" << pgm.current_namespace()
 		      << " compounds=" << !pgm.compounds.empty() << std::endl;
 #endif
 	    // Class-scope `using` aliases are not global C typedefs (see the
@@ -17036,17 +17028,17 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		// non-empty) is a local typedef ([dcl.typedef]): register it
 		// flat exactly as TokenTYPEDEF does, even when the body parses
 		// inside a namespace (fn-template instantiation runs with
-		// current_namespace set — real <bits/alloc_traits.h>
+		// current_namespace() set — real <bits/alloc_traits.h>
 		// __alloc_on_swap declares `using __pocs = ...;` locally and
 		// then constructs `__pocs()` in expression position).
-		if ( pgm.current_namespace.empty() || !pgm.compounds.empty() )
+		if ( pgm.current_namespace().empty() || !pgm.compounds.empty() )
 		    pgm.datatype_map[alias_name] = alias_tdt;
 	    }
 	    // Namespace visibility is for NAMESPACE-scope aliases only — a
 	    // block-scope alias must not leak into the namespace type map.
-	    if ( pgm.class_scope_stack.empty() && !pgm.current_namespace.empty()
+	    if ( pgm.class_scope_stack.empty() && !pgm.current_namespace().empty()
 	      && pgm.compounds.empty() )
-		pgm.namespace_datatype_map[pgm.current_namespace][alias_name] = alias_tdt;
+		pgm.namespace_datatype_map[pgm.current_namespace()][alias_name] = alias_tdt;
 	    if ( pgm.class_scope_stack.empty() && pgm.compounds.empty() )
 	    {
 		Program::TopDecl td;
@@ -17092,12 +17084,12 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    pgm.Throw(tn) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
 	// import into the current namespace, or global scope outside a namespace
 	std::string name = member_name;
-	if ( !pgm.current_namespace.empty() )
+	if ( !pgm.current_namespace().empty() )
 	{
 	    if ( have_var )
-		pgm.namespace_map[pgm.current_namespace][name] = vmi->second;
+		pgm.namespace_map[pgm.current_namespace()][name] = vmi->second;
 	    if ( have_type )
-		pgm.namespace_datatype_map[pgm.current_namespace][name] = dti->second;
+		pgm.namespace_datatype_map[pgm.current_namespace()][name] = dti->second;
 	}
 	else
 	{
@@ -17423,8 +17415,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     auto record_typedef = [&](const std::string &alias, DataDef *dd, TokenDataType *tdt_, TokenBase *otok = nullptr, bool defines_body = false)
     {
 	pgm.user_typedef_names.insert(alias);
-	if ( tdt_ && !pgm.current_namespace.empty() )
-	    pgm.namespace_datatype_map[pgm.current_namespace][alias] = tdt_;
+	if ( tdt_ && !pgm.current_namespace().empty() )
+	    pgm.namespace_datatype_map[pgm.current_namespace()][alias] = tdt_;
 	// A typedef inside a function body is block-scoped: the CIR builder emits
 	// it in-place from the TokenTypedefDecl in the statement stream (the only
 	// correct scope for a VLA typedef whose bound references locals). Only
@@ -17447,8 +17439,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     {
 	if ( !sdd || pgm.is_c_mode() )
 	    return NULL;
-	if ( sdd->canonical_cpp_spelling.empty() && !pgm.current_namespace.empty() )
-	    sdd->canonical_cpp_spelling = pgm.current_namespace + "::" + name;
+	if ( sdd->canonical_cpp_spelling.empty() && !pgm.current_namespace().empty() )
+	    sdd->canonical_cpp_spelling = pgm.current_namespace() + "::" + name;
 	TokenDataType *tdt_ = NULL;
 	datatype_map_iter existing = pgm.datatype_map.find(name);
 	if ( existing != pgm.datatype_map.end()
@@ -17459,8 +17451,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    tdt_ = new TokenDataType(name.c_str(), *sdd);
 	    pgm.datatype_map[name] = tdt_;
 	}
-	if ( !pgm.current_namespace.empty() )
-	    pgm.namespace_datatype_map[pgm.current_namespace][name] = tdt_;
+	if ( !pgm.current_namespace().empty() )
+	    pgm.namespace_datatype_map[pgm.current_namespace()][name] = tdt_;
 	return tdt_;
     };
 
@@ -18987,7 +18979,6 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	return;
 
     std::string saved_func = cur_func_name;
-    std::string saved_namespace = current_namespace;
     std::string saved_canon = instantiating_canonical_spelling;
     cur_func_name = body.var->name;
 #ifdef MADC_DEBUG_NS_RESOLVE
@@ -18996,15 +18987,16 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	    body.method->owner_class ? body.method->owner_class->name.c_str() : "(none)",
 	    body.method->owner_class ? body.method->owner_class->canonical_cpp_spelling.c_str() : "",
 	    body.method->owner_class ? namespace_scope_from_cpp_spelling(body.method->owner_class->canonical_cpp_spelling).c_str() : "",
-	    current_namespace.c_str());
+	    current_namespace().c_str());
 #endif
+    std::string body_namespace = current_namespace();
     if ( body.method->owner_class )
     {
 	std::string method_namespace =
 	    namespace_scope_from_cpp_spelling(
 		body.method->owner_class->canonical_cpp_spelling);
 	if ( !method_namespace.empty() )
-	    current_namespace = method_namespace;
+	    body_namespace = method_namespace;
 	// Restore the template-instantiation context so nested template-ids and
 	// member-typedef resolution inside the body resolve against the SAME
 	// substitution this body had at eager-parse time (18213). Without this a
@@ -19016,6 +19008,7 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	    instantiating_canonical_spelling =
 		body.method->owner_class->canonical_cpp_spelling;
     }
+    NamespaceScope ns_scope(*this, body_namespace);
     try
     {
 	for ( std::vector<TokenBase *>::reverse_iterator it = body.body_tokens.rbegin();
@@ -19078,12 +19071,10 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     catch(...)
     {
 	cur_func_name = saved_func;
-	current_namespace = saved_namespace;
 	instantiating_canonical_spelling = saved_canon;
 	throw;
     }
     cur_func_name = saved_func;
-    current_namespace = saved_namespace;
     instantiating_canonical_spelling = saved_canon;
 }
 
@@ -19117,7 +19108,6 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	TokenBase *saved_prv = _prv_token;
 	TokenBase *saved_cur = _cur_token;
 	std::string saved_func = cur_func_name;
-	std::string saved_namespace = current_namespace;
 	std::string saved_canon = instantiating_canonical_spelling;
 	bool saved_ctor_init = parsing_defaulted_member_template_constructor;
 	for ( std::vector<TokenBase *>::reverse_iterator it2 =
@@ -19127,8 +19117,8 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	cur_func_name = body.var->name;
 	std::string method_namespace =
 	    namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling);
-	if ( !method_namespace.empty() )
-	    current_namespace = method_namespace;
+	NamespaceScope ns_scope(*this, method_namespace.empty()
+					? current_namespace() : method_namespace);
 	if ( owner->canonical_cpp_spelling.find('<') != std::string::npos )
 	    instantiating_canonical_spelling = owner->canonical_cpp_spelling;
 	parsing_defaulted_member_template_constructor = true;
@@ -19143,7 +19133,6 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	    _prv_token = saved_prv;
 	    _cur_token = saved_cur;
 	    cur_func_name = saved_func;
-	    current_namespace = saved_namespace;
 	    instantiating_canonical_spelling = saved_canon;
 	    parsing_defaulted_member_template_constructor = saved_ctor_init;
 	    throw;
@@ -19152,7 +19141,6 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	_prv_token = saved_prv;
 	_cur_token = saved_cur;
 	cur_func_name = saved_func;
-	current_namespace = saved_namespace;
 	instantiating_canonical_spelling = saved_canon;
 	parsing_defaulted_member_template_constructor = saved_ctor_init;
 	if ( pending_funcs.size() > before )
@@ -20075,13 +20063,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    fwd->enclosing_class = nested_owner_class;
 		    nested_owner_class->type_aliases[class_source_name] = fwd;
 		}
-		else if ( !pgm.current_namespace.empty() )
-		    fwd->canonical_cpp_spelling = pgm.current_namespace + "::" + tag->str;
+		else if ( !pgm.current_namespace().empty() )
+		    fwd->canonical_cpp_spelling = pgm.current_namespace() + "::" + tag->str;
 		pgm.struct_map[tag->str] = fwd;
 		tdt = new TokenDataType(tag->str.c_str(), *fwd);
 		pgm.datatype_map[tag->str] = tdt;
-		if ( !pgm.current_namespace.empty() )
-		    pgm.namespace_datatype_map[pgm.current_namespace][tag->str] = tdt;
+		if ( !pgm.current_namespace().empty() )
+		    pgm.namespace_datatype_map[pgm.current_namespace()][tag->str] = tdt;
 		pgm.nextToken();
 		return NULL;
 	    }
@@ -20197,8 +20185,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     }
     else if ( !pgm.instantiating_canonical_spelling.empty() )
 	ddc->canonical_cpp_spelling = pgm.instantiating_canonical_spelling;
-    else if ( ddc->canonical_cpp_spelling.empty() && !pgm.current_namespace.empty() )
-	ddc->canonical_cpp_spelling = pgm.current_namespace + "::" + tag->str;
+    else if ( ddc->canonical_cpp_spelling.empty() && !pgm.current_namespace().empty() )
+	ddc->canonical_cpp_spelling = pgm.current_namespace() + "::" + tag->str;
     // Record whether this class is being DEFINED from a system/toolchain header
     // (glibc / libstdc++): such a class's vtable/typeinfo/member symbols are
     // owned by that library's explicit instantiation, so madc defers to the real
@@ -20234,8 +20222,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	pgm.datatype_map[tag->str] = tdt;
 	if ( nested_owner_class )
 	    nested_owner_class->type_aliases[class_source_name] = ddc;
-	if ( !pgm.current_namespace.empty() )
-	    pgm.namespace_datatype_map[pgm.current_namespace][tag->str] = tdt;
+	if ( !pgm.current_namespace().empty() )
+	    pgm.namespace_datatype_map[pgm.current_namespace()][tag->str] = tdt;
     }
     else
     {
@@ -20250,8 +20238,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    tdt = existing_type->second;
 	if ( nested_owner_class )
 	    nested_owner_class->type_aliases[class_source_name] = ddc;
-	if ( !pgm.current_namespace.empty() )
-	    pgm.namespace_datatype_map[pgm.current_namespace][tag->str] = tdt;
+	if ( !pgm.current_namespace().empty() )
+	    pgm.namespace_datatype_map[pgm.current_namespace()][tag->str] = tdt;
     }
     ddc->type_aliases[class_source_name] = ddc;
     if ( constructor_source_name != class_source_name )
@@ -22101,7 +22089,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	      << (is_contextual_identifier_token(tn) ? contextual_identifier_name(tn)
 		  : tn->type() == TokenType::ttDataType ? ((TokenDataType *)tn)->str
 		  : std::to_string((int)tn->id()))
-	      << " ns=" << pgm.current_namespace << std::endl;
+	      << " ns=" << pgm.current_namespace() << std::endl;
 #endif
 
     // Record a typedef in source order for the CIR backend and return an
@@ -22114,7 +22102,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 		  << " dd=" << (dd ? dd->name : "<null>")
 		  << " cls=" << (pgm.class_scope_stack.empty() ? "-"
 				 : pgm.class_scope_stack.back()->name)
-		  << " ns=" << pgm.current_namespace
+		  << " ns=" << pgm.current_namespace()
 		  << " compounds=" << !pgm.compounds.empty() << std::endl;
 #endif
 	// A class-scope member alias (e.g. `typedef _CharT char_type;`) is NOT a
@@ -22141,9 +22129,9 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	// Namespace visibility is for NAMESPACE-scope typedefs only — a
 	// block-scope typedef (compounds non-empty) must not leak into the
 	// namespace type map (fn-template instantiated bodies parse with
-	// current_namespace set; their locals are not namespace members).
-	if ( tdt && !pgm.current_namespace.empty() && pgm.compounds.empty() )
-	    pgm.namespace_datatype_map[pgm.current_namespace][alias] = tdt;
+	// current_namespace() set; their locals are not namespace members).
+	if ( tdt && !pgm.current_namespace().empty() && pgm.compounds.empty() )
+	    pgm.namespace_datatype_map[pgm.current_namespace()][alias] = tdt;
 	// A typedef inside a function body is block-scoped: the CIR builder emits
 	// it in-place from the returned TokenTypedefDecl in the statement stream
 	// (the only correct scope for a VLA typedef whose bound references locals).
@@ -22213,9 +22201,9 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    pgm.Throw(tn) << "Expecting alias name in typedef enum" << flush;
 
 	DataDef *enum_alias_dd = new DataDefENUM(alias);
-	if ( !pgm.current_namespace.empty() )
+	if ( !pgm.current_namespace().empty() )
 	    enum_alias_dd->canonical_cpp_spelling =
-		pgm.current_namespace + "::" + alias;
+		pgm.current_namespace() + "::" + alias;
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *enum_alias_dd);
 	if ( pgm.class_scope_stack.empty() )
 	    pgm.datatype_map[alias] = tdt;
@@ -22474,12 +22462,12 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	base_dd = alias_dd;
     }
     else if ( pgm.class_scope_stack.empty()
-	   && !pgm.current_namespace.empty()
+	   && !pgm.current_namespace().empty()
 	   && base_dd && !base_dd->is_pointer()
 	   && base_dd->basetype() == BaseType::btSimple )
     {
 	DataDef *alias_dd = new DataDef(alias, base_dd->size, base_dd->type());
-	alias_dd->canonical_cpp_spelling = pgm.current_namespace + "::" + alias;
+	alias_dd->canonical_cpp_spelling = pgm.current_namespace() + "::" + alias;
 	base_dd = alias_dd;
     }
     if ( base_dd && is_incomplete_class_datadef(base_dd) )
@@ -22720,13 +22708,13 @@ TokenBase *TokenENUM::parse(Program &pgm)
 			owner_spelling + "::" + enum_tag;
 		    owner->type_aliases[enum_tag] = enum_dd;
 		}
-		else if ( !pgm.current_namespace.empty() )
+		else if ( !pgm.current_namespace().empty() )
 		    enum_dd->canonical_cpp_spelling =
-			pgm.current_namespace + "::" + enum_tag;
+			pgm.current_namespace() + "::" + enum_tag;
 		TokenDataType *tdt = new TokenDataType(enum_tag.c_str(), *enum_dd);
 		pgm.datatype_map[enum_tag] = tdt;
-		if ( !pgm.current_namespace.empty() )
-		    pgm.namespace_datatype_map[pgm.current_namespace][enum_tag] = tdt;
+		if ( !pgm.current_namespace().empty() )
+		    pgm.namespace_datatype_map[pgm.current_namespace()][enum_tag] = tdt;
 	    }
 	    pgm.nextToken(); // consume ';'
 	    return NULL;
@@ -22771,13 +22759,13 @@ TokenBase *TokenENUM::parse(Program &pgm)
 		owner_spelling + "::" + enum_tag;
 	    owner->type_aliases[enum_tag] = enum_dd;
 	}
-	else if ( !pgm.current_namespace.empty() )
+	else if ( !pgm.current_namespace().empty() )
 	    enum_dd->canonical_cpp_spelling =
-		pgm.current_namespace + "::" + enum_tag;
+		pgm.current_namespace() + "::" + enum_tag;
 	TokenDataType *tdt = new TokenDataType(enum_tag.c_str(), *enum_dd);
 	pgm.datatype_map[enum_tag] = tdt;
-	if ( !pgm.current_namespace.empty() )
-	    pgm.namespace_datatype_map[pgm.current_namespace][enum_tag] = tdt;
+	if ( !pgm.current_namespace().empty() )
+	    pgm.namespace_datatype_map[pgm.current_namespace()][enum_tag] = tdt;
 	DBG(std::cout << "TokenENUM::parse() enum type " << enum_tag << std::endl);
     }
 
@@ -22790,9 +22778,9 @@ TokenBase *TokenENUM::parse(Program &pgm)
     // (`ns::Tag::Value`) finds the chain, and scope-relative `Tag::Value`
     // resolves via resolve_namespace_name_in_scope.
     std::string scoped_ns_key = enum_tag;
-    if ( scoped && !pgm.current_namespace.empty()
+    if ( scoped && !pgm.current_namespace().empty()
       && pgm.class_scope_stack.empty() )
-	scoped_ns_key = pgm.current_namespace + "::" + enum_tag;
+	scoped_ns_key = pgm.current_namespace() + "::" + enum_tag;
     variable_map_t *scope_ns = scoped ? &pgm.namespace_map[scoped_ns_key] : NULL;
 
     int64_t val = 0;
@@ -23891,7 +23879,7 @@ bool Program::consume_template_parameter_type_suffix()
 void Program::capture_extern_template_class_instantiation()
 {
     nextToken(); // consume 'class' / 'struct'
-    std::string ns_hint = current_namespace;
+    std::string ns_hint = current_namespace();
     TokenBase *name_tb = nextToken();
     auto name_of = [](TokenBase *t) -> std::string {
 	if ( !t ) return std::string();
@@ -24551,7 +24539,7 @@ static bool extract_free_signature(
     }
     if ( params.empty() )
 	return false;
-    out.ns = pgm.current_namespace;
+    out.ns = pgm.current_namespace();
     out.opname = name;
     out.template_params = typeparams;
     out.return_spelling = ret_spelling;
@@ -24690,7 +24678,7 @@ static bool capture_free_operator_overload(
 	const std::vector<std::string> &typeparams,
 	std::string *opname_out = NULL)
 {
-    if ( pgm.current_namespace.empty() )
+    if ( pgm.current_namespace().empty() )
 	return false;
     std::string opname;
     size_t oper_idx = 0, lparen = 0;
@@ -24720,7 +24708,7 @@ static void capture_free_manipulator_overload(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams)
 {
-    if ( pgm.current_namespace.empty() || typeparams.empty() )
+    if ( pgm.current_namespace().empty() || typeparams.empty() )
 	return;
     std::string name;
     size_t name_idx = skipped_template_function_declarator_name_index(tokens, &name);
@@ -24776,7 +24764,7 @@ static bool skipped_template_body_returns_inline_addressof(
 	const std::string &callee = parts.back();
 	if ( parts.size() == 1 && callee == "__builtin_addressof" )
 	    return true;
-	std::string ns_name = pgm.current_namespace;
+	std::string ns_name = pgm.current_namespace();
 	if ( parts.size() > 1 )
 	    ns_name = join_scope_parts(parts, parts.size() - 1);
 	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
@@ -24802,7 +24790,7 @@ static bool capture_free_function_overload(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams, const std::string &name)
 {
-    if ( pgm.current_namespace.empty() || name.empty() )
+    if ( pgm.current_namespace().empty() || name.empty() )
 	return false;
     // Locate the declarator: the function-name token immediately before '('.
     size_t declarator_start = tokens.size(), lparen = tokens.size();
@@ -24860,8 +24848,8 @@ static bool retain_namespace_fn_template_body(
     if ( typeparam_is_type )  ft.typeparam_is_type = *typeparam_is_type;
     if ( typeparam_is_pack )  ft.typeparam_is_pack = *typeparam_is_pack;
     ft.decl = tokens;
-    ft.ns = pgm.current_namespace;
-    pgm.fn_template_map[pgm.current_namespace + "::" + name].push_back(ft);
+    ft.ns = pgm.current_namespace();
+    pgm.fn_template_map[pgm.current_namespace() + "::" + name].push_back(ft);
     return true;
 }
 
@@ -24872,7 +24860,7 @@ static void register_skipped_namespace_template_function(
 	const std::vector<bool> *typeparam_is_type,
 	const std::vector<bool> *typeparam_is_pack)
 {
-    if ( pgm.current_namespace.empty() )
+    if ( pgm.current_namespace().empty() )
 	return;
     std::string captured_opname;
     if ( capture_free_operator_overload(pgm, tokens, typeparams,
@@ -24903,7 +24891,7 @@ static void register_skipped_namespace_template_function(
     bool retained_body = retain_namespace_fn_template_body(pgm, tokens,
 	typeparams, typeparam_defaults, typeparam_is_type, typeparam_is_pack,
 	name);
-    variable_map_t &ns = pgm.namespace_map[pgm.current_namespace];
+    variable_map_t &ns = pgm.namespace_map[pgm.current_namespace()];
     Variable *var = NULL;
     {
 	variable_map_iter ni = ns.find(name);
@@ -24912,7 +24900,7 @@ static void register_skipped_namespace_template_function(
     }
     if ( !var )
     {
-	std::string parse_id = namespace_function_symbol(pgm.current_namespace, name);
+	std::string parse_id = namespace_function_symbol(pgm.current_namespace(), name);
 	var = pgm.tkProgram ? pgm.tkProgram->findVariable(parse_id) : NULL;
 	if ( !var )
 	{
@@ -24927,7 +24915,7 @@ static void register_skipped_namespace_template_function(
 	{
 	    fd->declaration_only = true;
 	    fd->function_display_name = name;
-	    fd->namespace_name = pgm.current_namespace;
+	    fd->namespace_name = pgm.current_namespace();
 	    record_skipped_template_return_pattern(fd, tokens, typeparams, name);
 	    if ( skipped_template_body_returns_inline_addressof(pgm, tokens) )
 		fd->inline_builtin_kind = "addressof";
@@ -24944,7 +24932,7 @@ static void register_skipped_namespace_template_function(
     if ( retained_body && var )
     {
 	std::vector<Program::NamespaceFnOverload> &ovset =
-	    pgm.namespace_fn_overload_sets[pgm.current_namespace + "::" + name];
+	    pgm.namespace_fn_overload_sets[pgm.current_namespace() + "::" + name];
 	bool seeded = false;
 	for ( size_t i = 0; i < ovset.size(); ++i )
 	    if ( ovset[i].var == var )
@@ -25246,7 +25234,7 @@ static bool fn_template_deduce_fnptr_param(const std::string &spelling,
 // of the retained declaration tokens, and re-parse the result as a concrete
 // namespace function definition (the instantiate_template_use recipe: inject
 // at the front of the token deque, parse with the function/class context
-// cleared and current_namespace set to the template's namespace). The parsed
+// cleared and current_namespace() set to the template's namespace). The parsed
 // definition registers itself in namespace_fn_overload_sets under its own
 // unique symbol; call_target_funcdef ranks the set against the call's arg
 // types at CIR time. A parse failure is non-fatal: the injected tokens are
@@ -25624,9 +25612,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     std::string saved_func = pgm.cur_func_name;
     pgm.cur_func_name.clear();
-    std::string saved_namespace = pgm.current_namespace;
     Program::LinkageSpec saved_linkage = pgm.current_linkage;
-    pgm.current_namespace = ft.ns;
+    Program::NamespaceScope ns_scope(pgm, ft.ns);
     pgm.current_linkage = Program::LinkageSpec::Cpp;
 
     bool ok = true;
@@ -25663,7 +25650,6 @@ static bool instantiate_fn_template_binding(Program &pgm,
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     std::swap(pgm.compounds, saved_compounds);
     pgm.cur_func_name = saved_func;
-    pgm.current_namespace = saved_namespace;
     pgm.current_linkage = saved_linkage;
 #if MADC_DEBUG_FNTPL
     std::cerr << "FNTPL inst " << inst_key
@@ -26175,9 +26161,9 @@ DataDefCLASS *Program::resolve_qualified_class_owner(const std::vector<std::stri
 	}
     }
 
-    if ( !current_namespace.empty() )
+    if ( !current_namespace().empty() )
     {
-	namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(current_namespace);
+	namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(current_namespace());
 	if ( nti != namespace_datatype_map.end() )
 	{
 	    datatype_map_iter dti = nti->second.find(class_name);
@@ -26208,11 +26194,11 @@ DataDefCLASS *Program::promote_struct_base_to_class(const std::string &name,
     datatype_map[name] = tdt;
     if ( sdd->name != name )
 	datatype_map[sdd->name] = new TokenDataType(sdd->name.c_str(), *cls);
-    if ( !current_namespace.empty() )
+    if ( !current_namespace().empty() )
     {
-	namespace_datatype_map[current_namespace][name] = tdt;
+	namespace_datatype_map[current_namespace()][name] = tdt;
 	if ( sdd->name != name )
-	    namespace_datatype_map[current_namespace][sdd->name] =
+	    namespace_datatype_map[current_namespace()][sdd->name] =
 		datatype_map[sdd->name];
     }
     return cls;
@@ -26837,7 +26823,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	ad.has_non_type_params = has_non_type_params;
 	ad.alias_name = alias_name;
 	ad.target = target;
-	ad.defining_namespace = pgm.current_namespace;
+	ad.defining_namespace = pgm.current_namespace();
 	ad.owner_class = pgm.class_scope_stack.empty() ? NULL : pgm.class_scope_stack.back();
 	pgm.register_template_alias(ad);
 	return NULL;
@@ -26918,7 +26904,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    td.typeparam_is_pack = typeparam_is_pack;
 	    td.has_non_type_params = has_non_type_params;
 	    td.class_name = class_name;
-	    td.defining_namespace = pgm.current_namespace;
+	    td.defining_namespace = pgm.current_namespace();
 	    td.owner_class = pgm.class_scope_stack.empty() ? NULL : pgm.class_scope_stack.back();
 	    if ( !specialized_template_id )
 		pgm.register_template(td, /*only_if_absent=*/true);
@@ -26959,7 +26945,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     td.has_non_type_params = has_non_type_params;
     td.class_name = class_name;
     td.body = body;
-    td.defining_namespace = pgm.current_namespace;  // e.g. "std" — for canonical_cpp_spelling
+    td.defining_namespace = pgm.current_namespace();  // e.g. "std" — for canonical_cpp_spelling
     td.owner_class = pgm.class_scope_stack.empty() ? NULL : pgm.class_scope_stack.back();
     if ( specialized_template_id && !typeparams.empty() )
     {
@@ -27053,10 +27039,9 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.cur_func_name.clear();
 	std::string saved_canon = pgm.instantiating_canonical_spelling;
 	bool saved_dependent_surface = pgm.instantiating_dependent_surface;
-	std::string saved_namespace = pgm.current_namespace;
 	pgm.instantiating_canonical_spelling = canon;
 	pgm.instantiating_dependent_surface = false;
-	pgm.current_namespace = td.defining_namespace;
+	Program::NamespaceScope ns_scope(pgm, td.defining_namespace);
 
 	bool pushed_owner_scope = false;
 	if ( td.owner_class )
@@ -27078,7 +27063,6 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.cur_func_name = saved_func;
 	pgm.instantiating_canonical_spelling = saved_canon;
 	pgm.instantiating_dependent_surface = saved_dependent_surface;
-	pgm.current_namespace = saved_namespace;
 
 	// Both key spellings must name the ONE parsed class: qualified-key
 	// lookups (instantiate_template_use's rule) and legacy-key pointer
@@ -30768,12 +30752,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
     std::string source_id = id;
     std::string parse_id = id;
-    bool namespace_function = !qualified_owner_class && !current_namespace.empty();
+    bool namespace_function = !qualified_owner_class && !current_namespace().empty();
     std::string ns_overload_spelling;
     bool ns_overload_tracked = false;
     if ( namespace_function )
     {
-	parse_id = namespace_function_symbol(current_namespace, source_id);
+	parse_id = namespace_function_symbol(current_namespace(), source_id);
 	// C++ free-function overloading: each overload of ns::name gets its
 	// OWN Variable/FuncDef under a unique internal symbol; a
 	// re-declaration of the SAME parameter list reuses its existing
@@ -30786,7 +30770,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    ns_overload_tracked = true;
 	    ns_overload_spelling = peek_param_list_spelling();
 	    std::vector<NamespaceFnOverload> &ovset =
-		namespace_fn_overload_sets[current_namespace + "::" + source_id];
+		namespace_fn_overload_sets[current_namespace() + "::" + source_id];
 	    Variable *same = NULL;
 	    for ( size_t i = 0; i < ovset.size(); ++i )
 		if ( ovset[i].param_spelling == ns_overload_spelling )
@@ -30858,7 +30842,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    std::cerr << "FNTPL ovset-push parse_id=" << parse_id
 		      << " ns_var=" << (ns_var != NULL)
 		      << " tracked=" << ns_overload_tracked
-		      << " key=" << current_namespace << "::" << source_id
+		      << " key=" << current_namespace() << "::" << source_id
 		      << std::endl;
 #endif
 	if ( ns_var )
@@ -30871,15 +30855,15 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	      && fd && fd->declaration_only
 	      && current_linkage == LinkageSpec::Cpp )
 		ns_var->storage_alias_name =
-		    namespace_cpp_function_symbol(current_namespace, source_id, fd);
+		    namespace_cpp_function_symbol(current_namespace(), source_id, fd);
 	    if ( fd && ns_overload_tracked )
 	    {
 		// Source identity for call-site overload ranking
 		// (cir_builder's call_target_funcdef enumerates the set).
 		fd->function_display_name = source_id;
-		fd->namespace_name = current_namespace;
+		fd->namespace_name = current_namespace();
 		std::vector<NamespaceFnOverload> &ovset =
-		    namespace_fn_overload_sets[current_namespace + "::" + source_id];
+		    namespace_fn_overload_sets[current_namespace() + "::" + source_id];
 		bool known = false;
 		for ( size_t i = 0; i < ovset.size(); ++i )
 		    if ( ovset[i].var == ns_var )
@@ -30915,7 +30899,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    }
 	    if ( namespace_function )
 	    {
-		variable_map_t &ns = namespace_map[current_namespace];
+		variable_map_t &ns = namespace_map[current_namespace()];
 		ns[source_id] = ns_var;
 		ns.erase(parse_id);
 	    }
@@ -31493,35 +31477,15 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		if ( nsi != namespace_map.end() )
 		{
 		    nextToken(); // consume ::
-		    // RESTORE (not clear) the enclosing namespace: this also
-		    // runs for statements inside a namespace-context parse
-		    // (an instantiated template body, a namespace block) —
-		    // clearing stomped the context for everything after the
-		    // qualified statement.
-		    std::string saved_stmt_ns = current_namespace;
-		    bool saved_qflag = qualified_stmt_callee_ns;
-		    std::string saved_qns = qualified_stmt_lexical_ns;
-		    // Record the LEXICAL namespace so argument parsing inside
-		    // the qualified call restores it (see parseCallFunc).
-		    qualified_stmt_callee_ns = true;
-		    qualified_stmt_lexical_ns = saved_stmt_ns;
-		    current_namespace = ns_name;
-		    TokenBase *result = NULL;
-		    try
-		    {
-			result = parseStatement(nextToken());
-		    }
-		    catch(...)
-		    {
-			current_namespace = saved_stmt_ns;
-			qualified_stmt_callee_ns = saved_qflag;
-			qualified_stmt_lexical_ns = saved_qns;
-			throw;
-		    }
-		    current_namespace = saved_stmt_ns;
-		    qualified_stmt_callee_ns = saved_qflag;
-		    qualified_stmt_lexical_ns = saved_qns;
-		    return result;
+		    // The callee-namespace override applies to HEAD resolution
+		    // only ([basic.lookup]) — it lives outside the lexical
+		    // namespace_stack (which stays untouched, so statements
+		    // inside a namespace-context parse keep their context);
+		    // active_cpp_lookup_namespace() consults it first, and
+		    // parseCallFunc/parseCallMethod clear it once the head is
+		    // resolved so arguments resolve lexically.
+		    QualifiedCalleeScope callee_scope(*this, ns_name);
+		    return parseStatement(nextToken());
 		}
 	    }
 	    // := short declaration: identifier := expression;

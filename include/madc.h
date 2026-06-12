@@ -1380,7 +1380,27 @@ public:
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
     namespace_datatype_map_t namespace_datatype_map; // namespace-owned type names
     std::map<std::string, std::vector<std::string>> inline_namespace_children;
-    std::string current_namespace;	// active namespace for resolution (set by ns:: prefix)
+    // Lexical namespace context. Each entry is the FULL active namespace
+    // ("std::__cxx11"); back() is the active one (empty stack = global scope).
+    // The idiomatic twin of class_scope_stack: a vector (not std::stack) so
+    // the enclosing-chain walk stays possible. Mutate ONLY via NamespaceScope.
+    std::vector<std::string> namespace_stack;
+    const std::string &current_namespace() const
+    {
+	static const std::string global_scope;
+	return namespace_stack.empty() ? global_scope : namespace_stack.back();
+    }
+    // RAII guard for namespace_stack — exception-safe by construction.
+    class NamespaceScope
+    {
+	Program &pgm;
+	NamespaceScope(const NamespaceScope &);
+	NamespaceScope &operator=(const NamespaceScope &);
+    public:
+	NamespaceScope(Program &p, const std::string &ns) : pgm(p)
+	{ pgm.namespace_stack.push_back(ns); }
+	~NamespaceScope() { pgm.namespace_stack.pop_back(); }
+    };
     // Canonical C++ spelling of the template-id being instantiated right now,
     // stashed by instantiate_template_use around the class re-parse so
     // TokenCLASS::parse can record it on the new DataDefCLASS for bodyless C++
@@ -1459,13 +1479,26 @@ public:
     // to the class parser ([class.union]); TokenCLASS::parse consumes it and
     // marks the DataDefCLASS union_layout.
     bool parsing_cpp_union_class = false;
-    // The statement-level qualified-call arm (`php::foo(args);`) switches
-    // current_namespace to the CALLEE's namespace for the statement parse.
-    // Call ARGUMENTS must still resolve in the call site's LEXICAL namespace
-    // ([basic.lookup]) — these record it so parseCallFunc/parseCallMethod
-    // restore the lexical scope (not empty) around argument parsing.
-    bool qualified_stmt_callee_ns = false;
-    std::string qualified_stmt_lexical_ns;
+    // Statement-level qualified-call (`php::foo(args);`): the CALLEE namespace
+    // override for HEAD resolution only ([basic.lookup] — the qualification
+    // applies to the called name, not the arguments). Deliberately NOT part of
+    // namespace_stack (it is a qualification override, not lexical scope):
+    // active_cpp_lookup_namespace() consults it first, and parseCallFunc /
+    // parseCallMethod clear it before the argument loop so arguments resolve
+    // in the lexical namespace. Set/restored only via QualifiedCalleeScope.
+    std::string stmt_callee_namespace;
+    class QualifiedCalleeScope
+    {
+	Program &pgm;
+	std::string saved;
+	QualifiedCalleeScope(const QualifiedCalleeScope &);
+	QualifiedCalleeScope &operator=(const QualifiedCalleeScope &);
+    public:
+	QualifiedCalleeScope(Program &p, const std::string &ns)
+	    : pgm(p), saved(p.stmt_callee_namespace)
+	{ pgm.stmt_callee_namespace = ns; }
+	~QualifiedCalleeScope() { pgm.stmt_callee_namespace = saved; }
+    };
     // When set, TokenCLASS::parse parses and registers the class/struct
     // DEFINITION only and returns at the closing '}', WITHOUT consuming a
     // trailing instance declarator. Used when a method-bearing struct is
