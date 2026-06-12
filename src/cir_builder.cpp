@@ -7336,6 +7336,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				const std::string &content = tv->var.name.substr(11);
 				return str(content.c_str(), content.size() + 1, tb);
 			}
+			// The same fold for a set()-valued `const char *` constant: a
+			// host-installed expression/scope binding (libmadc) stores the
+			// bound C-string pointer into var->data and marks the variable
+			// constant. That pointer targets HOST memory the compiled
+			// module cannot reference symbolically — left as a variable
+			// read, the global emits as an undefined extern import and
+			// MIR_link fails. The binding is a read-only snapshot by
+			// contract, so bake it: fold the read to a string literal.
+			if (tv->var.is_constant() && tv->var.data
+			    && !(tv->var.flags & vfCONSTDECL) && tv->var.type
+			    && tv->var.type->type() == DataType::dtCHARptr) {
+				const char *text = *(const char **)tv->var.data;
+				if (text)
+					return str(text, strlen(text) + 1, tb);
+			}
 			// Value-use of a GNU nested function's in-scope alias (taking its
 			// address / passing it as a callback) names the HOISTED symbol. Only
 			// for a capture-free nested fn: a capturing one cannot be a plain
