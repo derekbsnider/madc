@@ -12,6 +12,28 @@ and subsumes/extends two design docs:
 Must honor the set-in-stone invariants: MC11-IR (`cir_node` derives from c2mir `node_t`, is BOTH
 high-level + lowered) and ADR-0001 (c2mir is the sole backend; direct-MIR is a scalpel).
 
+> **UPDATE 2026-06-12** — `docs/plans/2026-06-12-type-table-value-abi-design.md` is now
+> **DESIGN AGREED** and supplies the concrete *type-identity* substrate this plan assumed but
+> never specified: a segmented uint32-typeid table (primitives `[1,100)` / system-forest
+> `[100,0x01000000)` / per-Program project segment). Consequences for this plan:
+> - It is the **type-side sibling of P0's value-handle scheme** (a wide literal =
+>   `typeid(__int128)` + value-pool handle — same shape, two tables).
+> - **P3's `datadef` side-array holds typeids, not `DataDef*`** — that is the moment forest
+>   type-references become memcpy-serializable; **P4** serializes type refs as ids, with the
+>   system segment frozen at forest-build time.
+> - **P1 binding:** design the flat token record with `type_id` + value-pool-handle as its
+>   reference fields from the start, so P1 is not built against pointers and re-done.
+> - **Sequencing pull-forward:** the table's *identity layer* + the 32-byte `madc_value` ABI
+>   land **early** (eval package C is their first consumer) — that slice is no longer behind
+>   the "later-stage" fence; the rest of this plan's phasing is unchanged.
+> Landings since 2026-06-09 that this plan's premises now rely on: system-header reachability
+> DCE + lazy member-body instantiation are live on develop (the materialize-on-resolve seed);
+> the strict-equality track added `DataDef::same_representation` (a direct typeid-fast-path
+> consumer) and re-proved the append-only/enum-tail PCH id discipline the typeid slots adopt.
+> Citation note: `clever-scribbling-dove.md` was since overwritten (it now mirrors this doc);
+> the B3–B6 referent survives only as reconstructed in
+> `docs/plans/2026-06-08-header-partition-HANDOFF.md`.
+
 ---
 
 ## 0. CURRENT MINDSET (the framing, before the detailed plan)
@@ -254,6 +276,9 @@ accelerate, never gate correctness.** `uid`→MIR (P3/P6) is the substrate for a
   handoff docs).
 - **Subsumes/extends** `docs/plans/2026-06-09-embedded-header-forest-design.md` (forest/modules — §5)
   and `docs/plans/2026-06-09-lazy-member-body-instantiation-plan.md` (lazy [temp.inst], LANDED — §6).
+- **Companion (AGREED 2026-06-12):** `docs/plans/2026-06-12-type-table-value-abi-design.md` — the
+  segmented uint32-typeid table + 32-byte `madc_value` ABI; the type-identity substrate for P0/P3/P4
+  (see the UPDATE block at the top). Its identity layer + value ABI land early via eval package C.
 - Honors `.claude/rules/mc11-ir.md` (cir_node IS node_t + high-level) and `docs/adr/0001-cir-c2mir-backend.md`
   (c2mir sole backend; direct-MIR scalpel) and `.claude/rules/lowering-vs-raising.md` (OSR/`_BitInt` =
   Tier-2/3 raises, fenced).

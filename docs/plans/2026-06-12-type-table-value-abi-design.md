@@ -17,6 +17,15 @@ Related docs this builds on / feeds:
 - `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md` — eval package C
   (`register_function`, `get/set_global`, string call marshalling) is the
   **first consumer** of the new value ABI.
+- **Tokens (refactor P1) — the same move, opposite storage answer.** P1's flat
+  token records are this design's twin for the token spine: tokens are
+  millions, uniform, transient → kill the objects, keep records; DataDefs are
+  thousands, polymorphic, long-lived → keep the objects, table the ids.
+  **Binding requirement:** the P1 token record must name `type_id` (this
+  table) and the P0 value-pool handle as its reference fields from the start,
+  so P1 is not built against pointers and re-done. The token-kind enum already
+  lives by the same append-only/ABI-pinned discipline the primitive slots
+  adopt (PCH serializes kind ids — the `tk3NotEq`-at-enum-tail rule).
 - `docs/plans/ROADMAP.md` Track 5A.5 — NaN-boxing stays a *possible internal*
   optimization for dense value storage inside madcdis, much later. The 32-byte
   struct here is the **ABI/interchange** representation. They are complementary,

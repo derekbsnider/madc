@@ -6,6 +6,22 @@ correctness/coverage of the real libstdc++ headers comes first (real `<string>`/
 MC11-IR invariant (`.claude/rules/mc11-ir.md`) and the landed lazy member-body instantiation
 (`docs/plans/2026-06-09-lazy-member-body-instantiation-plan.md`).
 
+> **UPDATE 2026-06-12** — this doc remains the **prior-art / mental-model reference**; the
+> *operative phasing* is `docs/plans/2026-06-09-frontend-representation-refactor.md` (forest =
+> P4/P5 there). Two reconciliations since writing:
+> - The Part-3 verdicts "Copy Clang: ID/offset cross-refs, separate Type tables, type-ID
+>   low-bits-for-builtins" now have an **AGREED concrete madc design**:
+>   `docs/plans/2026-06-12-type-table-value-abi-design.md`. Forest type references serialize
+>   as uint32 typeids, and the table's **system segment `[100, 0x01000000)` IS this doc's
+>   "frozen at build time" id space** — name→tree index entries resolve type identity through
+>   it. The ID/handle indirection called for under "Storage / embedding" is therefore no
+>   longer an open design item for *types* (tokens/nodes: refactor P1/P3).
+> - Citation note: `clever-scribbling-dove.md` was since overwritten (it now mirrors the
+>   refactor doc); the B3–B6 referent survives only as reconstructed in
+>   `docs/plans/2026-06-08-header-partition-HANDOFF.md`. The system-header reachability DCE
+>   referenced alongside lazy bodies is live on develop (`cir_builder.cpp` reachability
+>   fixpoint), despite its own handoff doc predating the landing.
+
 ## Context — why
 
 C++ headers are an enormous glut; parsing the libstdc++ closure dominates compile time. The goal is **speed**: support a **standard define-set BLAZINGLY FAST**; a non-standard config (`NDEBUG`, odd feature macros, `-m32`, `_FILE_OFFSET_BITS`, …) pays a **live-parse penalty**.
