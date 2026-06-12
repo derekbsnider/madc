@@ -12,6 +12,7 @@ static char x86_64_mirc[]
     "\n"
     "#define __SIZEOF_DOUBLE__ 8\n"
     "#define __SIZEOF_FLOAT__ 4\n"
+    "#define __SIZEOF_INT128__ 16\n"
     "#define __SIZEOF_INT__ 4\n"
     "#define __SIZEOF_LONG_DOUBLE__ 16\n"
     "#define __SIZEOF_LONG_LONG__ 8\n"
@@ -128,4 +129,6 @@ static char x86_64_mirc[]
 #error Uknown OS
 #endif
     "\n"
-    "void *alloca (unsigned long);\n";
+    "void *alloca (unsigned long);\n"
+    "typedef __int128 __int128_t;\n"
+    "typedef unsigned __int128 __uint128_t;\n";

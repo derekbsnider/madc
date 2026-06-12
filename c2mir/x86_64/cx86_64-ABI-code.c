@@ -123,6 +123,13 @@ static int classify_arg_1 (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t type
 #endif
   }
 
+  if (int128_type_p (type)) {
+    /* SysV AMD64: __int128 is two INTEGER eightbytes (rdi:rsi-style pairs). */
+    assert (n_qwords == 2);
+    types[0] = MIR_T_I64;
+    types[1] = MIR_T_I64;
+    return 2;
+  }
   if (complex_type_p (type)) {
     /* _Complex (SysV AMD64): the two components occupy consecutive bytes.
        - float _Complex   = 8 bytes  -> ONE SSE eightbyte holding both floats
@@ -401,7 +408,7 @@ static MIR_type_t get_blk_type (int n_qwords, MIR_type_t *qword_types) {
 static MIR_type_t target_get_blk_type (c2m_ctx_t c2m_ctx, struct type *arg_type) {
   MIR_type_t qword_types[MAX_QWORDS];
   int n_qwords = classify_arg (c2m_ctx, arg_type, qword_types, FALSE);
-  assert (aggregate_type_p (arg_type));
+  assert (aggregate_type_p (arg_type) || int128_type_p (arg_type));
   return get_blk_type (n_qwords, qword_types);
 }
 
@@ -416,7 +423,9 @@ static void target_add_arg_proto (c2m_ctx_t c2m_ctx, const char *name, struct ty
   var.name = name;
   if (n_qwords == 1 && qword_types[0] == MIR_T_V128) {
     var.type = MIR_T_V128;
-  } else if (complex_type_p (arg_type)) {
+  } else if (complex_type_p (arg_type) || int128_type_p (arg_type)) {
+    /* __int128 params mirror the call-site classification (two INTEGER
+       eightbytes as a BLK) — the scalar branch would emit MIR_T_UNDEF. */
     var.type = get_blk_type (n_qwords, qword_types);
     var.size = type_size (c2m_ctx, arg_type);
   } else if (!aggregate_type_p (arg_type)) {
