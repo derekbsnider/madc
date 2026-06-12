@@ -53,8 +53,31 @@
 > 109/0/33), fulltest 577/0/0/18 exit 0 both gates GREEN, torture 1567
 > failset NAME-IDENTICAL (0 of the 55 flip), SMAUG --project soak ready+124
 > (exercises the realigned array runtime), madcdat-ENABLED clean build green
-> (19 suites) then lean config restored. NEXT = queue item 2: the shim/
-> trampoline machinery (register_function foundation).
+> (19 suites) then lean config restored.
+>
+> **QUEUE ITEM 2 EXECUTED (same day): SYNTHESIZED HOST-CALL SHIMS (87f1808)
+> — the embedding boundary's ONE call surface.** CirBuilder::synth_call_shim
+> (translate_module Pass 0.74) emits `long __madc_shim_<sym>(char*,char*)`
+> per host-callable function over the 32-byte value ABI: typeid validation
+> (Program::type_id_for — the table's first CODEGEN consumer), class params
+> via the class's OWN ctor (ctor_call_assemble = the ONE ctor assembler,
+> refactored from class_ctor_call_addr — default-arg/allocator completion
+> shared), c_str/size-protocol returns → TEXT, ANY other class return →
+> typed INSTANCE cell (callee constructs into the cell; finalizer = the
+> class's complete dtor). perform_call + child-eval call ONLY the shim;
+> the value_as/call_targetN/dispatch pyramid (~430 lines) and the 4-arg
+> limit are DELETED. value::from_raw adopts raw structs incl. instances.
+> New C getters madc_value_get_type_id/integer/real/bool. ELIGIBILITY
+> GOTCHAS (found by fulltest): exclude is_simd() params/returns (vector
+> typedefs classify is_integer!) and local_emit_name/captured_vars
+> functions (GNU nested fns take hidden capture params). 3 string-call
+> skips UNSKIPPED + NEW generic pin: user class returns as instance value
+> (project typeid, live fields, exactly-once dtor). test_libmadc_program
+> 113/0/30. GATES @ 87f1808: fulltest 577/0/0/18 both GREEN, torture 1567
+> failset NAME-IDENTICAL, SMAUG --project ready+124 (51 TUs synthesize
+> shims), madcdat-enabled clean build green (19 suites), lean restored.
+> NEXT = register_function rides the same machinery in reverse
+> (script→host trampolines), then fork/limits + policy tail.
 
 Date: 2026-06-12 (same-day successor to `2026-06-12-strict-equality-HANDOFF.md`,
 which remains the ===/!== mechanism reference). This is the **current
