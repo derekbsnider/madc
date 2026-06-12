@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### libmadc: get/set_global on live MIR storage + dynamic global init (`feature/eval-globals-claude`)
+
+- **`program::get_global`/`set_global` now operate on the JIT's live
+  module data** via the new `CirJitSession::data_address()` (data/bss item
+  lookup by emitted name), with the parser's `var->data` only as fallback —
+  previously host reads/writes were invisible to compiled code. Three
+  package-C tests unskipped (`test_libmadc_program` 106 passed / 35 skipped).
+- **Size-correct value↔storage helpers** (`value_from_storage` /
+  `set_storage_from_value`): every access is exactly `type->size` bytes —
+  the old dispatch wrote `int` globals as int64, clobbering the neighboring
+  global on real MIR data layout (neighbor-canary regression test added).
+- **Dynamic global initialization runs in call-only sessions**: file-scope
+  class-global ctor calls moved from main-prologue inlining into ONE
+  synthesized module function `__madc_global_init` (static once-guard);
+  `main` calls it and `ensure_runtime_initialized` invokes it for main-less
+  embedding sessions — `std::string g = "alice";` used to read empty unless
+  `main` ran.
+- **String globals marshal both directions** by reading/assigning the LIVE
+  libstdc++ `std::string` object at the resolved MIR address (the
+  `__madc_scope_set_string_runtime` mechanism); the parse-time fallback is
+  never used for text carriers (unconstructed memory).
+
 ### 32-byte `madc_value` ABI (`feature/value-abi-claude`)
 
 - **The interchange value is now the 32-byte typeid struct** (design §3):
