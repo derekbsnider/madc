@@ -3,6 +3,12 @@
 **Status:** DESIGN AGREED (2026-06-12, user-signed direction in session dialog).
 Implementation phased; the identity layer + value ABI are near-term (eval
 package C builds on them), the compiler-internal migration is a later campaign.
+**§6 phase 1 (identity layer) IMPLEMENTED** on `feature/type-table-claude`
+(2026-06-12, plan `docs/superpowers/plans/2026-06-12-type-table-identity-layer.md`):
+`include/madc_typeid.h` ABI slots, `DataDef::type_id` + `madc_primitive_for_slot`
+/ `madc_stamp_primitive_type_ids` (stamped from `add_datatypes`), and
+`Program::type_id_for` / `type_from_id`; doctest-pinned; fulltest 577/0/0/18,
+zero warnings, both check gates green. Next: §6 phase 2 (the 32-byte value ABI).
 
 Related docs this builds on / feeds:
 - `docs/plans/2026-06-09-frontend-representation-refactor.md` — P0 (value pool),
