@@ -1543,6 +1543,11 @@ public:
     // standard that predates C23 (which removed them) — never in the
     // madc dialect or any C++ mode.
     bool knr_supported() const { return language_std >= STD_C78 && language_std < STD_C23; }
+    // The madc dialect is a C++ superset: like every explicit C++ mode it
+    // presents to system headers as g++ (__cplusplus/__GNUG__ defined), so
+    // the REAL glibc/libstdc++ headers configure their C++ surface. Only
+    // explicit C standards present as plain gcc.
+    bool presents_as_cpp() const { return language_std == STD_MADC || is_cpp_mode(); }
     bool auto_includes_enabled() const { return language_std == STD_MADC; }
     // The __cplusplus value the selected --std= mandates (C++26 uses g++'s
     // provisional 202400L until the standard fixes one).

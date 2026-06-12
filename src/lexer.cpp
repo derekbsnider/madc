@@ -1483,12 +1483,12 @@ void Program::_tokenizer_init()
     // Predefined compiler macros captured at build time (gen_predefined_macros.sh).
     // Seeded AFTER the hand-set builtins (so the real toolchain values win) and
     // BEFORE -D (so -D can override, matching gcc). Real system headers branch on
-    // these. __cplusplus / __GNUG__ are C++-only: seed them ONLY in an explicit
-    // C++ std, never in C mode or the STD_MADC default — so the bulk of tests (and
-    // C code's `#ifdef __cplusplus`) are unaffected.
+    // these. __cplusplus / __GNUG__ follow presents_as_cpp(): the madc dialect and
+    // every explicit C++ std impersonate g++ (so real libstdc++ headers parse);
+    // explicit C modes stay plain gcc (C code's `#ifdef __cplusplus` unaffected).
     for ( const MadcPredefObj *o = madc_predefined_objects(); o->name; ++o )
     {
-	if ( !is_cpp_mode()
+	if ( !presents_as_cpp()
 	  && (strcmp(o->name, "__cplusplus") == 0 || strcmp(o->name, "__GNUG__") == 0) )
 	    continue;
 	// __cplusplus tracks the SELECTED --std=, not the value captured at
