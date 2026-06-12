@@ -21,6 +21,12 @@ typedef struct madc_cell
 {
     uint32_t refcount;
     uint32_t cell_flags;   /* reserved: permanent/interned/frozen/hash-present */
+    /* Payload finalizer, run exactly once when the refcount reaches 0,
+     * before the cell is freed. NULL for plain byte payloads (text,
+     * bytes). A typed-instance cell carries the instance type's own
+     * destructor here (e.g. a JIT-resolved class dtor thunk) — the cell
+     * never knows WHAT it holds, only how to let it go. */
+    void (*destroy)(void *payload);
 } madc_cell;
 
 #define MADC_CELL_PERMANENT 0xFFFFFFFFu
@@ -29,6 +35,8 @@ typedef struct madc_cell
  * Returns the PAYLOAD pointer (the cell header sits immediately before
  * it); NULL on allocation failure. */
 void *madc_cell_alloc(size_t payload_size);
+/* As madc_cell_alloc, with a payload finalizer (may be NULL). */
+void *madc_cell_alloc_dtor(size_t payload_size, void (*destroy)(void *payload));
 /* Payload pointer -> its cell header. */
 madc_cell *madc_cell_of(void *payload);
 void madc_cell_retain(void *payload);

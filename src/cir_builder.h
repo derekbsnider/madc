@@ -230,7 +230,8 @@ class CirBuilder {
 	// TokenDecl in cir_node::origin and set synth_from_origin.
 	// See docs/superpowers/plans/2026-05-30-cir-stdstring-lowering.md.
 	node_t obj_storage_decl(const char *name, size_t words,
-				const char *dtor_sym, TokenBase *origin);
+				const char *dtor_sym, TokenBase *origin,
+				size_t align = 0);
 	node_t obj_default_ctor_call(const char *name, const char *ctor_sym,
 				     TokenBase *origin);
 

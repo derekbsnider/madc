@@ -2146,7 +2146,13 @@ double value_as<double>(const value &v)
 template <>
 const char *value_as<const char *>(const value &v)
 {
-    return v.as_string().c_str();
+    // Borrow the value's OWN text payload (SSO or cell, NUL-terminated) —
+    // it outlives the call because the value sits in the caller-owned arg
+    // storage. as_string() returns a copy whose c_str() would dangle.
+    const char *text = madc_value_text(&v.raw(), NULL);
+    if ( text == NULL )
+	throw std::runtime_error("madc::program::call expected string argument");
+    return text;
 }
 
 template <typename T>
@@ -2262,10 +2268,19 @@ bool set_storage_from_value(DataDef *type, void *data, size_t count,
     }
     if ( type == &ddCHARptr && in.is_string() )
     {
-	// Scope/context text binding: `in` references a field of the
-	// caller-owned context object, which outlives the eval call —
-	// bind its C string directly.
-	*static_cast<const char **>(data) = in.as_string().c_str();
+	// Text binding: the storage OWNS a copy (addLiteral's `data holds
+	// a stable char*` convention). Borrowing the value's payload broke
+	// here: the JIT build that reads this pointer runs LAZILY at call
+	// time, after eval_expression clears the bindings map (a latent
+	// use-after-free in the std::string era, exposed by SSO).
+	size_t len = 0;
+	const char *text = madc_value_text(&in.raw(), &len);
+	char *copy = static_cast<char *>(std::malloc(len + 1));
+	if ( copy == NULL )
+	    return false;
+	std::memcpy(copy, text ? text : "", len);
+	copy[len] = '\0';
+	*static_cast<const char **>(data) = copy;
 	return true;
     }
     if ( type->is_pointer() )

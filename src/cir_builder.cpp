@@ -839,9 +839,15 @@ node_t CirBuilder::upcast_class_ref_addr(node_t value, DataDefCLASS *base,
 // build the N_ATTR node directly (no source preprocessing, so the glibc
 // `__attribute__`-emptying issue doesn't apply).
 node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
-				    const char *dtor_sym, TokenBase *origin)
+				    const char *dtor_sym, TokenBase *origin,
+				    size_t align)
 {
 	node_t spec = list();
+	// An object whose alignment exceeds the long[] buffer's natural 8
+	// (e.g. the 16-aligned madc_value inside madc::value) declares it:
+	// _Alignas(align) long name[words].
+	if (align > alignof(long))
+		append(spec, node1(N_ALIGNAS, integer((long)align, origin)));
 	append(spec, simple(N_LONG, origin));
 	node_t share = node1(N_SHARE, spec);
 	node_t decl_list = list();
@@ -883,7 +889,7 @@ const char *CirBuilder::RETBUF_NAME = "__retbuf";
 
 // ---- madc array (`array`) object lowering ----
 // A madc `array` is a real madc::value C++ object (the unified public value
-// type) using the runtime-object model: an 8-aligned opaque buffer +
+// type) using the runtime-object model: an alignof(madc::value) opaque buffer +
 // madarray_construct/madarray_destruct (the wrappers in madc_mir_backend.cpp).
 // Unlike a string it needs no const char* coercion: an array argument is
 // always passed by pointer, and the buffer's long[] name decays to that
@@ -900,7 +906,8 @@ size_t CirBuilder::array_obj_words() const
 
 node_t CirBuilder::array_storage_decl(const char *name, TokenBase *origin)
 {
-	return obj_storage_decl(name, array_obj_words(), "madarray_destruct", origin);
+	return obj_storage_decl(name, array_obj_words(), "madarray_destruct", origin,
+				alignof(madc::value));
 }
 
 node_t CirBuilder::array_ctor_call(const char *name, TokenBase *origin)

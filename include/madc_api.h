@@ -384,6 +384,18 @@ int madc_value_copy(madc_value *dst, const madc_value *src);
 /* Uniform text accessor (SSO or cell; NUL-terminated either way). NULL when
  * the value holds no text. text_length out-param is optional. */
 const char *madc_value_text(const madc_value *value, size_t *text_length);
+/* Raw bytes payload: copies `size` bytes into a refcounted cell. */
+int madc_value_set_bytes_n(madc_value *value, const void *data, size_t size);
+/* A typed INSTANCE of any table type: allocates a zeroed refcounted cell
+ * of `size` bytes tagged `type_id`, finalized by `destroy` when the last
+ * reference drops (NULL for trivially-destructible instances — the cell
+ * never knows what it holds, only how to let it go). Returns the payload
+ * pointer for the caller to construct into; NULL on failure. */
+void *madc_value_make_instance(madc_value *value, uint32_t type_id,
+			       uint64_t size, void (*destroy)(void *payload));
+/* Generic payload accessor: text / bytes / instance payload pointer
+ * (NULL for inline scalars and null). size out-param is optional. */
+const void *madc_value_data(const madc_value *value, size_t *size);
 
 const char *madc_value_kind_name(madc_value_kind kind);
 const char *madc_error_severity_name(madc_error_severity severity);

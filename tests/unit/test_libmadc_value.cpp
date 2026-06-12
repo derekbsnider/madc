@@ -12,6 +12,7 @@ thread_local bool madc_verbose = false;
 #include "libmadc/value.h"
 
 #include <map>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -71,9 +72,31 @@ TEST_SUITE("madc::value") {
 
     TEST_CASE("bytes roundtrip") {
 	std::vector<uint8_t> raw{0x01, 0x02, 0xff};
-	value v = value::make_bytes(raw);
+	value v = value::make_bytes(raw.data(), raw.size());
 	CHECK(v.is_bytes());
-	CHECK(v.as_bytes() == raw);
+	REQUIRE(v.size() == raw.size());
+	CHECK(std::memcmp(v.data(), raw.data(), raw.size()) == 0);
+    }
+
+    TEST_CASE("typed instance cell: identity, sharing, finalizer") {
+	static int destroyed = 0;
+	destroyed = 0;
+	struct hooks { static void destroy(void *) { ++destroyed; } };
+	const uint32_t fake_type = MADC_TYPEID_PRIMITIVE_END + 7;
+	value v = value::make_instance(fake_type, 24, &hooks::destroy);
+	CHECK(v.is_instance());
+	CHECK(v.type_id() == fake_type);
+	CHECK(v.size() == 24);
+	REQUIRE(v.data() != nullptr);
+	*(int *)v.instance_data() = 42;
+	value w = v;                     // copy retains the SAME cell
+	CHECK(w == v);                   // instance equality = identity
+	CHECK(w.data() == v.data());
+	CHECK(destroyed == 0);
+	w = value();                     // one reference down
+	CHECK(destroyed == 0);
+	v = value();                     // last reference: finalizer runs once
+	CHECK(destroyed == 1);
     }
 
     TEST_CASE("array make_array empty and populated") {
@@ -158,8 +181,9 @@ TEST_SUITE("madc::value") {
 	CHECK(value(1.5) == value(1.5));
 	CHECK(value("x") == value("x"));
 	CHECK(value("x") != value("y"));
-	CHECK(value::make_bytes({1,2,3}) == value::make_bytes({1,2,3}));
-	CHECK(value::make_bytes({1,2,3}) != value::make_bytes({1,2,4}));
+	const uint8_t b123[] = {1,2,3}, b124[] = {1,2,4};
+	CHECK(value::make_bytes(b123, 3) == value::make_bytes(b123, 3));
+	CHECK(value::make_bytes(b123, 3) != value::make_bytes(b124, 3));
 	CHECK(value::make_array() == value::make_array());
 
 	value o1 = value::make_object();
