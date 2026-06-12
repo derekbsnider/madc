@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### 32-byte `madc_value` ABI (`feature/value-abi-claude`)
+
+- **The interchange value is now the 32-byte typeid struct** (design §3):
+  `{uint32 type_id; uint32 flags; uint64 size; 16-byte aligned union}` —
+  every madc primitive inlines (incl. the reserved `__int128`/`_Complex`/
+  `v128` slots), strings ≤15 bytes live inline NUL-terminated (SSO), longer
+  text in NUL-terminated refcounted cells (`include/madc_value_cell.h`:
+  non-atomic saturating counts with a permanent tier). New
+  `madc_value_copy` (retains the shared cell) and `madc_value_text`
+  (uniform SSO/cell accessor). `MADC_VALUE_*` kind constants are now
+  **aliases for typeid slots** (one vocabulary; numeric values changed) —
+  dynamic kinds TEXT/BYTES/OBJECT took primitive slots 31–33.
+- **Gradual typing enforced at the helpers** (design §4): unrestricted
+  re-tag by default; `MADC_VF_TYPE_COERCE` converts within the numeric
+  family toward the locked domain; `MADC_VF_TYPE_LOCKED` rejects
+  cross-domain sets; `MADC_VF_NULLABLE` admits typed nulls (`size==0`,
+  domain kept); `MADC_VF_CONST` is read-only. The contract survives
+  `madc_value_clear`.
+- The `madc::value` ↔ `madc_value` bridges rewrote onto the new layout;
+  the C++ `madc::value` class is unchanged (wrapper conversion is a later
+  phase per the design's A0 guardrail).
+
 ### Type table (typeid) identity layer (`feature/type-table-claude`)
 
 - **New canonical type identity**: a segmented uint32 typeid space
