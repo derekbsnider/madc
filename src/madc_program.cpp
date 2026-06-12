@@ -35,6 +35,7 @@ extern thread_local bool madc_verbose;
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_cir.h"
+#include "madc_mangle.h"	// madc_text_carrier — the host-side text-carrier type
 
 namespace madc {
 
@@ -363,6 +364,7 @@ std::vector<std::string> expand_header_symbol_groups(const std::vector<std::stri
 bool native_type_from_datadef(DataDef *type, program::native_type &out);
 template <typename R>
 bool call_target0(void *fn, value *result);
+bool call_target0_text_ret(void *fn, value *result);
 
 void copy_program_public_error(Program &dst, const Program &src)
 {
@@ -677,6 +679,7 @@ bool invoke_program_zero_arg_function(Program &pgm,
 	    case program::native_type::integer:   ok = call_target0<int64_t>(fncode, &result); break;
 	    case program::native_type::real:      ok = call_target0<double>(fncode, &result); break;
 	    case program::native_type::c_string:  ok = call_target0<const char *>(fncode, &result); break;
+	    case program::native_type::text_object: ok = call_target0_text_ret(fncode, &result); break;
 	}
 	pgm.pop_runtime_scope();
 	if ( ok )
@@ -982,6 +985,9 @@ const char *eval_body_wrapper_return_type(madc::program::native_type return_type
 	    return "double";
 	case madc::program::native_type::c_string:
 	    return "char *";
+	case madc::program::native_type::text_object:
+	    // No C surface type for a by-value string-object wrapper; eval
+	    // string results travel as `char *` (the c_string case above).
 	case madc::program::native_type::void_type:
 	    break;
 	    }
@@ -2105,6 +2111,15 @@ bool native_type_from_datadef(DataDef *type, program::native_type &out)
 	    break;
     }
 
+    // The text-carrier class (std::string under the header object model)
+    // marshals as a live string object: by-value struct argument, hidden
+    // __retbuf return. Pointers/references to it are not marshalled here.
+    if ( !type->is_pointer() && type->marshals_value_text() )
+    {
+	out = program::native_type::text_object;
+	return true;
+    }
+
     if ( type->is_integer() )
     {
 	out = program::native_type::integer;
@@ -2147,6 +2162,27 @@ template <>
 const char *value_as<const char *>(const value &v)
 {
     return v.as_string().c_str();
+}
+
+// A by-value text-carrier (std::string) argument at the JIT call boundary.
+// madc lowers `f(std::string s)` to a by-value struct parameter and the
+// callee BORROWS it (no destructor runs on the parameter — `echo`-style
+// bodies read through it or copy-construct from it), so the marshal is a
+// bit-copy of the host value's backing std::string: the blob's data pointer
+// stays valid for the whole call because the backing object (the value in
+// perform_call's arg_storage) outlives it — including the SSO case, where
+// the pointer targets the backing object's own internal buffer.
+struct text_object_blob
+{
+    alignas(alignof(madc_text_carrier)) unsigned char bytes[sizeof(madc_text_carrier)];
+};
+
+template <>
+text_object_blob value_as<text_object_blob>(const value &v)
+{
+    text_object_blob blob;
+    std::memcpy(&blob, &v.as_string(), sizeof(blob));
+    return blob;
 }
 
 template <typename T>
@@ -2492,6 +2528,67 @@ bool call_target4_void(void *fn,
     if ( result )
 	*result = value();
     return true;
+}
+
+// String-object return: `std::string f(args)` compiles through the hidden
+// retbuf ABI — `void f(std::string *__retbuf, args)`; the callee
+// copy-constructs the result into the caller-owned slot. The host owns the
+// slot object: read the live std::string into the result value, destroy it.
+inline bool text_ret_slot_to_result(text_object_blob &slot, value *result)
+{
+    madc_text_carrier *s = reinterpret_cast<madc_text_carrier *>(slot.bytes);
+    if ( result )
+	*result = value(*s);
+    s->~basic_string();
+    return true;
+}
+
+bool call_target0_text_ret(void *fn, value *result)
+{
+    typedef void (*fn_t)(void *);
+    text_object_blob slot;
+    reinterpret_cast<fn_t>(fn)(&slot);
+    return text_ret_slot_to_result(slot, result);
+}
+
+template <typename A0>
+bool call_target1_text_ret(void *fn, const value &a0, value *result)
+{
+    typedef void (*fn_t)(void *, A0);
+    text_object_blob slot;
+    reinterpret_cast<fn_t>(fn)(&slot, value_as<A0>(a0));
+    return text_ret_slot_to_result(slot, result);
+}
+
+template <typename A0, typename A1>
+bool call_target2_text_ret(void *fn, const value &a0, const value &a1, value *result)
+{
+    typedef void (*fn_t)(void *, A0, A1);
+    text_object_blob slot;
+    reinterpret_cast<fn_t>(fn)(&slot, value_as<A0>(a0), value_as<A1>(a1));
+    return text_ret_slot_to_result(slot, result);
+}
+
+template <typename A0, typename A1, typename A2>
+bool call_target3_text_ret(void *fn, const value &a0, const value &a1,
+			     const value &a2, value *result)
+{
+    typedef void (*fn_t)(void *, A0, A1, A2);
+    text_object_blob slot;
+    reinterpret_cast<fn_t>(fn)(&slot, value_as<A0>(a0), value_as<A1>(a1),
+			       value_as<A2>(a2));
+    return text_ret_slot_to_result(slot, result);
+}
+
+template <typename A0, typename A1, typename A2, typename A3>
+bool call_target4_text_ret(void *fn, const value &a0, const value &a1,
+			     const value &a2, const value &a3, value *result)
+{
+    typedef void (*fn_t)(void *, A0, A1, A2, A3);
+    text_object_blob slot;
+    reinterpret_cast<fn_t>(fn)(&slot, value_as<A0>(a0), value_as<A1>(a1),
+			       value_as<A2>(a2), value_as<A3>(a3));
+    return text_ret_slot_to_result(slot, result);
 }
 
 } // namespace
@@ -3621,6 +3718,7 @@ struct program::impl
 	    case native_type::integer:   return call_target0<int64_t>(fn, result);
 	    case native_type::real:      return call_target0<double>(fn, result);
 	    case native_type::c_string:  return call_target0<const char *>(fn, result);
+	    case native_type::text_object: return call_target0_text_ret(fn, result);
 	}
 	return false;
     }
@@ -3635,6 +3733,7 @@ struct program::impl
 	    case native_type::integer:   return call_target1<int64_t, A0>(fn, arg0, result);
 	    case native_type::real:      return call_target1<double, A0>(fn, arg0, result);
 	    case native_type::c_string:  return call_target1<const char *, A0>(fn, arg0, result);
+	    case native_type::text_object: return call_target1_text_ret<A0>(fn, arg0, result);
 	}
 	return false;
     }
@@ -3648,6 +3747,7 @@ struct program::impl
 	    case native_type::integer: return dispatch_call1_ret<int64_t>(fn, ret_type, arg0, result);
 	    case native_type::real:    return dispatch_call1_ret<double>(fn, ret_type, arg0, result);
 	    case native_type::c_string:return dispatch_call1_ret<const char *>(fn, ret_type, arg0, result);
+	    case native_type::text_object: return dispatch_call1_ret<text_object_blob>(fn, ret_type, arg0, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3664,6 +3764,7 @@ struct program::impl
 	    case native_type::integer:   return call_target2<int64_t, A0, A1>(fn, arg0, arg1, result);
 	    case native_type::real:      return call_target2<double, A0, A1>(fn, arg0, arg1, result);
 	    case native_type::c_string:  return call_target2<const char *, A0, A1>(fn, arg0, arg1, result);
+	    case native_type::text_object: return call_target2_text_ret<A0, A1>(fn, arg0, arg1, result);
 	}
 	return false;
     }
@@ -3678,6 +3779,7 @@ struct program::impl
 	    case native_type::integer: return dispatch_call2_ret<A0, int64_t>(fn, ret_type, arg0, arg1, result);
 	    case native_type::real:    return dispatch_call2_ret<A0, double>(fn, ret_type, arg0, arg1, result);
 	    case native_type::c_string:return dispatch_call2_ret<A0, const char *>(fn, ret_type, arg0, arg1, result);
+	    case native_type::text_object: return dispatch_call2_ret<A0, text_object_blob>(fn, ret_type, arg0, arg1, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3693,6 +3795,7 @@ struct program::impl
 	    case native_type::integer: return dispatch_call2_arg1<int64_t>(fn, ret_type, arg1_type, arg0, arg1, result);
 	    case native_type::real:    return dispatch_call2_arg1<double>(fn, ret_type, arg1_type, arg0, arg1, result);
 	    case native_type::c_string:return dispatch_call2_arg1<const char *>(fn, ret_type, arg1_type, arg0, arg1, result);
+	    case native_type::text_object: return dispatch_call2_arg1<text_object_blob>(fn, ret_type, arg1_type, arg0, arg1, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3713,6 +3816,7 @@ struct program::impl
 	    case native_type::integer:   return call_target3<int64_t, A0, A1, A2>(fn, arg0, arg1, arg2, result);
 	    case native_type::real:      return call_target3<double, A0, A1, A2>(fn, arg0, arg1, arg2, result);
 	    case native_type::c_string:  return call_target3<const char *, A0, A1, A2>(fn, arg0, arg1, arg2, result);
+	    case native_type::text_object: return call_target3_text_ret<A0, A1, A2>(fn, arg0, arg1, arg2, result);
 	}
 	return false;
     }
@@ -3732,6 +3836,7 @@ struct program::impl
 	    case native_type::integer: return dispatch_call3_ret<A0, A1, int64_t>(fn, ret_type, arg0, arg1, arg2, result);
 	    case native_type::real:    return dispatch_call3_ret<A0, A1, double>(fn, ret_type, arg0, arg1, arg2, result);
 	    case native_type::c_string:return dispatch_call3_ret<A0, A1, const char *>(fn, ret_type, arg0, arg1, arg2, result);
+	    case native_type::text_object: return dispatch_call3_ret<A0, A1, text_object_blob>(fn, ret_type, arg0, arg1, arg2, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3753,6 +3858,7 @@ struct program::impl
 	    case native_type::integer: return dispatch_call3_arg2<A0, int64_t>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
 	    case native_type::real:    return dispatch_call3_arg2<A0, double>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
 	    case native_type::c_string:return dispatch_call3_arg2<A0, const char *>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
+	    case native_type::text_object: return dispatch_call3_arg2<A0, text_object_blob>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3774,6 +3880,7 @@ struct program::impl
 	    case native_type::integer: return dispatch_call3_arg1<int64_t>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
 	    case native_type::real:    return dispatch_call3_arg1<double>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
 	    case native_type::c_string:return dispatch_call3_arg1<const char *>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
+	    case native_type::text_object: return dispatch_call3_arg1<text_object_blob>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3795,6 +3902,7 @@ struct program::impl
 	    case native_type::integer:   return call_target4<int64_t, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
 	    case native_type::real:      return call_target4<double, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
 	    case native_type::c_string:  return call_target4<const char *, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
+	    case native_type::text_object: return call_target4_text_ret<A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
 	}
 	return false;
     }
@@ -3815,6 +3923,7 @@ struct program::impl
 	    case native_type::integer: return dispatch_call4_ret<A0, A1, A2, int64_t>(fn, ret_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::real:    return dispatch_call4_ret<A0, A1, A2, double>(fn, ret_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::c_string:return dispatch_call4_ret<A0, A1, A2, const char *>(fn, ret_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::text_object: return dispatch_call4_ret<A0, A1, A2, text_object_blob>(fn, ret_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3837,6 +3946,7 @@ struct program::impl
 	    case native_type::integer: return dispatch_call4_arg3<A0, A1, int64_t>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::real:    return dispatch_call4_arg3<A0, A1, double>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::c_string:return dispatch_call4_arg3<A0, A1, const char *>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::text_object: return dispatch_call4_arg3<A0, A1, text_object_blob>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3860,6 +3970,7 @@ struct program::impl
 	    case native_type::integer: return dispatch_call4_arg2<A0, int64_t>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::real:    return dispatch_call4_arg2<A0, double>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::c_string:return dispatch_call4_arg2<A0, const char *>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::text_object: return dispatch_call4_arg2<A0, text_object_blob>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::void_type: break;
 	}
 	return false;
@@ -3883,6 +3994,7 @@ struct program::impl
 	    case native_type::integer: return dispatch_call4_arg1<int64_t>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::real:    return dispatch_call4_arg1<double>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::c_string:return dispatch_call4_arg1<const char *>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::text_object: return dispatch_call4_arg1<text_object_blob>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
 	    case native_type::void_type: break;
 	}
 	return false;
