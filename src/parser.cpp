@@ -19053,7 +19053,8 @@ static bool synthesize_defaulted_comparison(
 // __cmp_cat::__unspec). Token re-injection + scope isolation mirror
 // instantiate_fn_template_binding.
 static void parse_hoisted_friend_operator(Program &pgm,
-	const std::vector<TokenBase *> &decl)
+	const std::vector<TokenBase *> &decl,
+	DataDefCLASS *owner = NULL)
 {
     std::vector<TokenBase *> inj;
     for ( size_t i = 0; i < decl.size(); ++i )
@@ -19080,6 +19081,14 @@ static void parse_hoisted_friend_operator(Program &pgm,
     std::swap(pgm.compounds, saved_compounds);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
+    // [class.friend]: a friend DEFINED inside the class has its names
+    // looked up in the class's scope first — its signature/body may use
+    // class-scope aliases (`typedef _Bit_iterator iterator;` then
+    // `friend iterator operator+(const iterator&, ...)` in real
+    // bits/stl_bvector.h). Parse with the owner pushed as the (only)
+    // class scope; everything else stays namespace-scope clean.
+    if ( owner )
+	pgm.class_scope_stack.push_back(owner);
     std::string saved_func = pgm.cur_func_name;
     pgm.cur_func_name.clear();
     try
@@ -21012,7 +21021,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // synthesize the queued DEFAULTED comparisons from the final member
     // list ([class.compare.default]).
     for ( size_t i = 0; i < hoisted_friend_operator_defs.size(); ++i )
-	parse_hoisted_friend_operator(pgm, hoisted_friend_operator_defs[i]);
+	parse_hoisted_friend_operator(pgm, hoisted_friend_operator_defs[i], ddc);
     for ( size_t i = 0; i < defaulted_comparison_ops.size(); ++i )
     {
 	// Dedupe (a class may default operator<=> AND operator== explicitly;
@@ -21026,7 +21035,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	std::vector<TokenBase *> synth;
 	if ( synthesize_defaulted_comparison(pgm, ddc,
 					     defaulted_comparison_ops[i], synth) )
-	    parse_hoisted_friend_operator(pgm, synth);
+	    parse_hoisted_friend_operator(pgm, synth, ddc);
     }
 
     // what follows?

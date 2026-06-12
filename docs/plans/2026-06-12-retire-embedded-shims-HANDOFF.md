@@ -105,17 +105,27 @@ The authority for bucket 1/2 membership is `gcc -print-file-name=include`
 ## 4. REMAINING WALLS (attack order; per-fix METHOD in §6)
 
 1. ~~typename dependent return types~~ CLEARED @1b91e9f.
-   ~~math param-scope leak~~ CLEARED @ stream-boundary fix.
-2. **Class-scope alias in hidden-friend bodies** — `typedef _Bit_iterator
-   iterator;` then `friend iterator operator+(const iterator&, ...)` in
-   real bits/stl_bvector.h → "use of undeclared identifier 'iterator'".
-   Blocks real `<vector>` and with it map/set/sstream clusters
-   (testvector/map/set/containerdtor/templatecontainer/templatestring/
-   subscript*/sstream — the largest cluster, ~15 tests). Reducer: v1.mad
-   (`#include <vector>`). Related: the claude_status known-gap about
-   char_type/iter_type alias resolution — same family; fix generically
-   (class-scope alias visibility during member/friend body parse), no
-   per-alias hacks.
+   ~~math param-scope leak~~ CLEARED @d11f5a3 (stream boundary).
+   ~~class-scope alias in hidden-friend bodies~~ CLEARED @ the
+   parse_hoisted_friend_operator owner-scope fix ([class.friend] lookup:
+   hoisted parse runs with the owner class pushed on class_scope_stack).
+   Real `#include <vector>` now PARSES AND COMPILES clean (tmp/v1.mad).
+2. **Real container template INSTANTIATION** — `vector<int> nums;`
+   (testvector:8) now fails with "Expecting type after 'typedef'" while
+   monomorphizing the REAL vector template body (a typedef inside the
+   instantiated body doesn't resolve). This is the new face of the
+   container cluster (testvector/vectorptr/map/set/containerdtor/
+   templatecontainer/templatestring/subscript* — ~12 tests). See memory
+   `project_template_instantiation` (Borland monomorphize is THE model;
+   string already works this way). Separately testsstream fails earlier
+   on `__byte_op_t` undeclared (std::byte operator machinery in real
+   <sstream>/<ostream> chain) — reduce independently.
+   ALSO: a known LATENT gap from the same friend machinery — hidden
+   friend NON-operator definitions (`friend iterator mk(...) {...}`) are
+   skipped but never hoisted (tmp/w1.mad: "mk undeclared" at use).
+   libstdc++ uses hidden-friend swap() widely; generalize the hoist
+   predicate from operator-definitions to ANY friend definition with a
+   body.
 3. **testmadceval\*** (6 tests) — emitted eval code references `_ISupper`
    etc.: glibc ctype.h's anonymous enum constants don't reach the child
    eval TU. Likely the eval-TU synthesis (`<ns_madc>` path) needs the
