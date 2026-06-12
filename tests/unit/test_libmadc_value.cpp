@@ -231,3 +231,52 @@ TEST_SUITE("madc::value") {
 	CHECK(va == value::make_array());
     }
 }
+
+// --- The 32-byte madc_value C ABI + cell runtime (madc_api.h /
+// madc_value_cell.h). Header-only struct + the cell impl in madc_value.o —
+// still no parser/compiler internals in this binary.
+#include "madc_api.h"
+#include "madc_value_cell.h"
+#include <cstddef>
+#include <cstdlib>
+
+TEST_SUITE("madc_value 32-byte ABI") {
+
+    TEST_CASE("layout is pinned ABI") {
+        CHECK(sizeof(madc_value) == 32);
+        CHECK(alignof(madc_value) == 16);
+        CHECK(offsetof(madc_value, type_id) == 0);
+        CHECK(offsetof(madc_value, flags) == 4);
+        CHECK(offsetof(madc_value, size) == 8);
+        CHECK(MADC_VALUE_NULL == MADC_TYPEID_INVALID);
+        CHECK(MADC_VALUE_BOOLEAN == MADC_TYPEID_BOOL);
+        CHECK(MADC_VALUE_INTEGER == MADC_TYPEID_INT64);
+        CHECK(MADC_VALUE_REAL == MADC_TYPEID_DOUBLE);
+        CHECK(MADC_VALUE_STRING == MADC_TYPEID_TEXT);
+        CHECK(MADC_VF_HEAP == 1u);
+        CHECK(MADC_VF_INLINE_TEXT == 2u);
+        CHECK(MADC_VF_TYPE_LOCKED == 4u);
+        CHECK(MADC_VF_TYPE_COERCE == 8u);
+        CHECK(MADC_VF_NULLABLE == 16u);
+        CHECK(MADC_VF_CONST == 32u);
+    }
+
+    TEST_CASE("cell runtime: retain/release/saturation") {
+        void *p = madc_cell_alloc(8);
+        REQUIRE(p != (void *)NULL);
+        CHECK(madc_cell_refcount(p) == 1);
+        madc_cell_retain(p);
+        CHECK(madc_cell_refcount(p) == 2);
+        madc_cell_release(p);
+        CHECK(madc_cell_refcount(p) == 1);
+        madc_cell_release(p);                    // frees; do not touch p after
+        void *q = madc_cell_alloc(4);
+        REQUIRE(q != (void *)NULL);
+        madc_cell_of(q)->refcount = MADC_CELL_PERMANENT - 1;
+        madc_cell_retain(q);                     // saturates
+        CHECK(madc_cell_refcount(q) == MADC_CELL_PERMANENT);
+        madc_cell_release(q);                    // permanent: no-op, no free
+        CHECK(madc_cell_refcount(q) == MADC_CELL_PERMANENT);
+        std::free(madc_cell_of(q));              // test cleanup of permanent cell
+    }
+}

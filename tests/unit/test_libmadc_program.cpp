@@ -22,6 +22,7 @@ thread_local bool madc_verbose = false;
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_api.h"
+#include "madc_value_cell.h"
 #include "libmadc/api.h"
 #include "libmadc/engine.h"
 #include "libmadc/program.h"
@@ -1695,14 +1696,16 @@ TEST_SUITE("madc::program") {
 	REQUIRE(madc_value_set_integer(&args[0], 19) == MADC_OK);
 	REQUIRE(madc_value_set_integer(&args[1], 23) == MADC_OK);
 	REQUIRE(madc_program_call(pgm, "add", args, 2, &result) == MADC_OK);
-	CHECK(result.kind == MADC_VALUE_INTEGER);
+	CHECK(result.type_id == MADC_VALUE_INTEGER);
 	CHECK(result.integer_value == 42);
 
 	madc_value_clear(&result);
 	REQUIRE(madc_program_call(pgm, "greet", NULL, 0, &result) == MADC_OK);
-	CHECK(result.kind == MADC_VALUE_STRING);
-	REQUIRE(result.text_value != NULL);
-	CHECK(std::string(result.text_value, result.text_length) == "hello");
+	CHECK(result.type_id == MADC_VALUE_STRING);
+	size_t greet_len = 0;
+	const char *greet_text = madc_value_text(&result, &greet_len);
+	REQUIRE(greet_text != (const char *)NULL);
+	CHECK(std::string(greet_text, greet_len) == "hello");
 
 	madc_value_clear(&args[0]);
 	madc_value_clear(&args[1]);
@@ -2495,5 +2498,65 @@ TEST_SUITE("madc::engine") {
 
 	madc::engine eng2(std::move(eng1));
 	CHECK(eng2.get_invoke_limits().cpu_ms == 999);
+    }
+}
+
+// --- 32-byte madc_value ABI behavior (helpers live in madc_c_api.cpp,
+// which this binary links). Layout/cell-runtime pins live in
+// test_libmadc_value.cpp; this suite covers the helper semantics.
+TEST_SUITE("madc_value ABI helpers") {
+
+    TEST_CASE("string SSO vs cell + copy/clear refcounts") {
+	madc_value v; madc_value_init(&v);
+	REQUIRE(madc_value_set_string(&v, "short") == MADC_OK);   // 5 -> SSO
+	CHECK((v.flags & MADC_VF_INLINE_TEXT) != 0);
+	CHECK(v.size == 5);
+	CHECK(std::string(madc_value_text(&v, NULL)) == "short");
+	REQUIRE(madc_value_set_string(&v, "exactly16bytes!!") == MADC_OK); // 16 -> cell
+	CHECK((v.flags & MADC_VF_HEAP) != 0);
+	CHECK(madc_cell_refcount(v.text_value) == 1);
+	madc_value c; madc_value_init(&c);
+	REQUIRE(madc_value_copy(&c, &v) == MADC_OK);
+	CHECK(c.text_value == v.text_value);                      // shared cell
+	CHECK(madc_cell_refcount(v.text_value) == 2);
+	madc_value_clear(&c);
+	CHECK(madc_cell_refcount(v.text_value) == 1);
+	size_t len = 0;
+	CHECK(std::string(madc_value_text(&v, &len)) == "exactly16bytes!!");
+	CHECK(len == 16);
+	madc_value_clear(&v);
+	CHECK(v.type_id == MADC_VALUE_NULL);
+    }
+
+    TEST_CASE("gradual-typing flags on set helpers") {
+	madc_value v; madc_value_init(&v);
+	REQUIRE(madc_value_set_integer(&v, 5) == MADC_OK);
+	v.flags |= MADC_VF_TYPE_LOCKED;
+	CHECK(madc_value_set_string(&v, "no") == MADC_ERROR);     // cross-domain
+	CHECK(madc_value_set_real(&v, 1.5) == MADC_ERROR);        // LOCKED: no numeric juggle
+	CHECK(madc_value_set_null(&v) == MADC_ERROR);             // not nullable
+	CHECK(v.integer_value == 5);                              // untouched by rejections
+	v.flags |= MADC_VF_NULLABLE;
+	CHECK(madc_value_set_null(&v) == MADC_OK);                // ?int accepts null
+	CHECK(v.type_id == MADC_VALUE_INTEGER);                   // lock keeps the domain
+	CHECK(v.size == 0);                                       // typed-null marker
+	CHECK(madc_value_set_integer(&v, 7) == MADC_OK);          // and accepts its domain
+	CHECK(v.integer_value == 7);
+
+	madc_value w; madc_value_init(&w);
+	REQUIRE(madc_value_set_integer(&w, 1) == MADC_OK);
+	w.flags |= MADC_VF_TYPE_COERCE;
+	CHECK(madc_value_set_real(&w, 2.9) == MADC_OK);           // converts toward INT64
+	CHECK(w.type_id == MADC_VALUE_INTEGER);
+	CHECK(w.integer_value == 2);
+	CHECK(madc_value_set_string(&w, "no") == MADC_ERROR);     // coerce is numeric-only
+
+	madc_value k; madc_value_init(&k);
+	REQUIRE(madc_value_set_integer(&k, 9) == MADC_OK);
+	k.flags |= MADC_VF_CONST;
+	CHECK(madc_value_set_integer(&k, 10) == MADC_ERROR);      // read-only
+	CHECK(k.integer_value == 9);
+	madc_value_clear(&v); madc_value_clear(&w);
+	k.flags &= ~(uint32_t)MADC_VF_CONST; madc_value_clear(&k);
     }
 }

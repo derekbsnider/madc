@@ -299,3 +299,63 @@ const char *value::kind_name(kind k)
 }
 
 } // namespace madc
+
+// --- madc_value cell runtime (refcounted payload cells) -------------------
+// docs/plans/2026-06-12-type-table-value-abi-design.md §3. Lives in this TU
+// so the cell runtime links everywhere madc::value does (incl. the
+// no-compiler-internals test_libmadc_value binary).
+#include "madc_value_cell.h"
+#include <cstdlib>
+#include <cstring>
+
+extern "C" {
+
+void *madc_cell_alloc(size_t payload_size)
+{
+	madc_cell *cell = static_cast<madc_cell *>(std::malloc(sizeof(madc_cell) + payload_size));
+
+	if ( cell == NULL )
+		return NULL;
+	cell->refcount = 1;
+	cell->cell_flags = 0;
+	std::memset(cell + 1, 0, payload_size);
+	return cell + 1;
+}
+
+madc_cell *madc_cell_of(void *payload)
+{
+	if ( payload == NULL )
+		return NULL;
+	return static_cast<madc_cell *>(payload) - 1;
+}
+
+void madc_cell_retain(void *payload)
+{
+	madc_cell *cell = madc_cell_of(payload);
+
+	if ( cell == NULL || cell->refcount == MADC_CELL_PERMANENT )
+		return;
+	if ( cell->refcount == MADC_CELL_PERMANENT - 1 )
+		cell->refcount = MADC_CELL_PERMANENT;	// saturate
+	else
+		++cell->refcount;
+}
+
+void madc_cell_release(void *payload)
+{
+	madc_cell *cell = madc_cell_of(payload);
+
+	if ( cell == NULL || cell->refcount == MADC_CELL_PERMANENT )
+		return;
+	if ( --cell->refcount == 0 )
+		std::free(cell);
+}
+
+uint32_t madc_cell_refcount(const void *payload)
+{
+	if ( payload == NULL )
+		return 0;
+	return (static_cast<const madc_cell *>(payload) - 1)->refcount;
+}
+
+} // extern "C"

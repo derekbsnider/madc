@@ -1,4 +1,5 @@
 #include "madc_api.h"
+#include "madc_value_cell.h"
 
 #include "libmadc/engine.h"
 #include "libmadc/program.h"
@@ -25,34 +26,114 @@ struct madc_engine_opaque
 
 namespace {
 
+// Semantic flag bits: the variable's gradual-typing contract. They (and,
+// for LOCKED/COERCE, the type_id domain) survive a clear; storage bits and
+// the payload do not. Design doc §4.
+const uint32_t MADC_VF_SEMANTIC =
+    MADC_VF_TYPE_LOCKED | MADC_VF_TYPE_COERCE | MADC_VF_NULLABLE | MADC_VF_CONST;
+
+bool is_numeric_kind(uint32_t k)
+{
+    return k == MADC_TYPEID_BOOL || k == MADC_TYPEID_INT64 || k == MADC_TYPEID_DOUBLE;
+}
+
 void clear_c_value(madc_value *value)
 {
     if ( value == NULL )
 	return;
-    if ( value->text_value != NULL )
-	std::free(value->text_value);
-    value->kind = MADC_VALUE_NULL;
-    value->boolean_value = 0;
-    value->integer_value = 0;
-    value->real_value = 0.0;
-    value->text_value = NULL;
-    value->text_length = 0;
+    if ( (value->flags & MADC_VF_HEAP) && value->data_ptr != NULL )
+	madc_cell_release(value->data_ptr);
+    uint32_t kept_flags = value->flags & MADC_VF_SEMANTIC;
+    uint32_t kept_type = (kept_flags & (MADC_VF_TYPE_LOCKED | MADC_VF_TYPE_COERCE))
+	? value->type_id : (uint32_t)MADC_TYPEID_INVALID;
+    std::memset(value, 0, sizeof(*value));
+    value->flags = kept_flags;
+    value->type_id = kept_type;
+}
+
+// Gradual-typing gate (design doc §4): may `value` accept a payload of
+// kind `incoming`? Plain values re-tag freely; COERCE admits the numeric
+// family (the caller converts toward the existing domain); LOCKED admits
+// only its own domain; NULLABLE gates null under either. CONST rejects all.
+bool value_accepts_kind(const madc_value *value, uint32_t incoming, bool is_null_set)
+{
+    if ( value->flags & MADC_VF_CONST )
+	return false;
+    if ( (value->flags & (MADC_VF_TYPE_LOCKED | MADC_VF_TYPE_COERCE)) == 0 )
+	return true;
+    if ( is_null_set )
+	return (value->flags & MADC_VF_NULLABLE) != 0;
+    if ( value->type_id == incoming || value->type_id == MADC_TYPEID_INVALID )
+	return true;
+    if ( value->flags & MADC_VF_TYPE_COERCE )
+	return is_numeric_kind(value->type_id) && is_numeric_kind(incoming);
+    return false;
+}
+
+// Write a numeric payload honoring the contract: plain values re-tag to
+// `incoming`; COERCE converts toward the existing domain. `ival` carries
+// bool/integer payloads, `rval` the real payload (selected by `incoming`).
+int set_numeric_value(madc_value *value, uint32_t incoming, int64_t ival, double rval)
+{
+    if ( value == NULL )
+	return MADC_ERROR;
+    if ( !value_accepts_kind(value, incoming, false) )
+	return MADC_ERROR;
+    uint32_t target = incoming;
+    if ( (value->flags & MADC_VF_TYPE_COERCE) && value->type_id != MADC_TYPEID_INVALID
+    &&   value->type_id != incoming && is_numeric_kind(value->type_id) )
+	target = value->type_id;
+    clear_c_value(value);
+    value->type_id = target;
+    switch ( target )
+    {
+	case MADC_TYPEID_BOOL:
+	    value->integer_value =
+		(incoming == MADC_TYPEID_DOUBLE ? rval != 0.0 : ival != 0) ? 1 : 0;
+	    value->size = 1;
+	    break;
+	case MADC_TYPEID_INT64:
+	    value->integer_value = (incoming == MADC_TYPEID_DOUBLE) ? (int64_t)rval : ival;
+	    value->size = 8;
+	    break;
+	case MADC_TYPEID_DOUBLE:
+	    value->real_value = (incoming == MADC_TYPEID_DOUBLE) ? rval : (double)ival;
+	    value->size = 8;
+	    break;
+	default:
+	    return MADC_ERROR;
+    }
+    return MADC_OK;
 }
 
 bool set_c_string(madc_value *value, const char *data, size_t length)
 {
     if ( value == NULL )
 	return false;
-    clear_c_value(value);
-    char *copy = static_cast<char *>(std::malloc(length + 1));
-    if ( copy == NULL )
+    if ( !value_accepts_kind(value, MADC_TYPEID_TEXT, false) )
 	return false;
-    if ( length > 0 && data != NULL )
+    clear_c_value(value);
+    value->type_id = MADC_TYPEID_TEXT;
+    value->size = length;
+    if ( length <= 15 )
+    {
+	if ( length > 0 && data != NULL )
+	    std::memcpy(value->inline_text, data, length);
+	value->inline_text[length] = '\0';
+	value->flags |= MADC_VF_INLINE_TEXT;
+	return true;
+    }
+    char *copy = static_cast<char *>(madc_cell_alloc(length + 1));
+    if ( copy == NULL )
+    {
+	value->size = 0;
+	return false;	// value left as a typed null
+    }
+    if ( data != NULL )
 	std::memcpy(copy, data, length);
     copy[length] = '\0';
-    value->kind = MADC_VALUE_STRING;
     value->text_value = copy;
-    value->text_length = length;
+    value->flags |= MADC_VF_HEAP;
     return true;
 }
 
@@ -84,20 +165,14 @@ bool from_cpp_value(const madc::value &src, madc_value *dst)
 	    clear_c_value(dst);
 	    return true;
 	case madc::value::kind::boolean:
-	    clear_c_value(dst);
-	    dst->kind = MADC_VALUE_BOOLEAN;
-	    dst->boolean_value = src.as_boolean() ? 1 : 0;
-	    return true;
+	    return set_numeric_value(dst, MADC_TYPEID_BOOL,
+				     src.as_boolean() ? 1 : 0, 0.0) == MADC_OK;
 	case madc::value::kind::integer:
-	    clear_c_value(dst);
-	    dst->kind = MADC_VALUE_INTEGER;
-	    dst->integer_value = src.as_integer();
-	    return true;
+	    return set_numeric_value(dst, MADC_TYPEID_INT64,
+				     src.as_integer(), 0.0) == MADC_OK;
 	case madc::value::kind::real:
-	    clear_c_value(dst);
-	    dst->kind = MADC_VALUE_REAL;
-	    dst->real_value = src.as_real();
-	    return true;
+	    return set_numeric_value(dst, MADC_TYPEID_DOUBLE,
+				     0, src.as_real()) == MADC_OK;
 	case madc::value::kind::string:
 	{
 	    const std::string &s = src.as_string();
@@ -110,24 +185,25 @@ bool from_cpp_value(const madc::value &src, madc_value *dst)
 
 bool to_cpp_value(const madc_value &src, madc::value &dst)
 {
-    switch ( src.kind )
+    switch ( src.type_id )
     {
-	case MADC_VALUE_NULL:
+	case MADC_TYPEID_INVALID:
 	    dst = madc::value();
 	    return true;
-	case MADC_VALUE_BOOLEAN:
-	    dst = madc::value(src.boolean_value != 0);
+	case MADC_TYPEID_BOOL:
+	    dst = madc::value(src.integer_value != 0);
 	    return true;
-	case MADC_VALUE_INTEGER:
+	case MADC_TYPEID_INT64:
 	    dst = madc::value(src.integer_value);
 	    return true;
-	case MADC_VALUE_REAL:
+	case MADC_TYPEID_DOUBLE:
 	    dst = madc::value(src.real_value);
 	    return true;
-	case MADC_VALUE_STRING:
+	case MADC_TYPEID_TEXT:
 	{
-	    const char *data = src.text_value ? src.text_value : "";
-	    dst = madc::value(std::string(data, src.text_length));
+	    size_t len = 0;
+	    const char *data = madc_value_text(&src, &len);
+	    dst = madc::value(std::string(data ? data : "", len));
 	    return true;
 	}
 	default:
@@ -1118,12 +1194,7 @@ void madc_value_init(madc_value *value)
 {
     if ( value == NULL )
 	return;
-    value->kind = MADC_VALUE_NULL;
-    value->boolean_value = 0;
-    value->integer_value = 0;
-    value->real_value = 0.0;
-    value->text_value = NULL;
-    value->text_length = 0;
+    std::memset(value, 0, sizeof(*value));
 }
 
 void madc_value_clear(madc_value *value)
@@ -1160,38 +1231,25 @@ int madc_value_set_null(madc_value *value)
 {
     if ( value == NULL )
 	return MADC_ERROR;
+    if ( !value_accepts_kind(value, MADC_TYPEID_INVALID, true) )
+	return MADC_ERROR;
     clear_c_value(value);
     return MADC_OK;
 }
 
 int madc_value_set_bool(madc_value *value, int boolean_value)
 {
-    if ( value == NULL )
-	return MADC_ERROR;
-    clear_c_value(value);
-    value->kind = MADC_VALUE_BOOLEAN;
-    value->boolean_value = boolean_value ? 1 : 0;
-    return MADC_OK;
+    return set_numeric_value(value, MADC_TYPEID_BOOL, boolean_value ? 1 : 0, 0.0);
 }
 
 int madc_value_set_integer(madc_value *value, int64_t integer_value)
 {
-    if ( value == NULL )
-	return MADC_ERROR;
-    clear_c_value(value);
-    value->kind = MADC_VALUE_INTEGER;
-    value->integer_value = integer_value;
-    return MADC_OK;
+    return set_numeric_value(value, MADC_TYPEID_INT64, integer_value, 0.0);
 }
 
 int madc_value_set_real(madc_value *value, double real_value)
 {
-    if ( value == NULL )
-	return MADC_ERROR;
-    clear_c_value(value);
-    value->kind = MADC_VALUE_REAL;
-    value->real_value = real_value;
-    return MADC_OK;
+    return set_numeric_value(value, MADC_TYPEID_DOUBLE, 0, real_value);
 }
 
 int madc_value_set_string(madc_value *value, const char *text_value)
@@ -1208,6 +1266,40 @@ int madc_value_set_string_n(madc_value *value,
     if ( value == NULL )
 	return MADC_ERROR;
     return set_c_string(value, text_value, text_length) ? MADC_OK : MADC_ERROR;
+}
+
+int madc_value_copy(madc_value *dst, const madc_value *src)
+{
+    if ( dst == NULL || src == NULL )
+	return MADC_ERROR;
+    if ( dst == src )
+	return MADC_OK;
+    // Retain BEFORE releasing dst — src may alias dst's cell.
+    if ( (src->flags & MADC_VF_HEAP) && src->data_ptr != NULL )
+	madc_cell_retain(src->data_ptr);
+    if ( (dst->flags & MADC_VF_HEAP) && dst->data_ptr != NULL )
+	madc_cell_release(dst->data_ptr);
+    // Copy is INITIALIZATION semantics: dst becomes a full copy of src,
+    // including src's gradual-typing contract (a copy of a locked value is
+    // locked). Contract-honoring assignment is a separate package-C surface.
+    *dst = *src;
+    return MADC_OK;
+}
+
+const char *madc_value_text(const madc_value *value, size_t *text_length)
+{
+    if ( text_length != NULL )
+	*text_length = 0;
+    if ( value == NULL )
+	return NULL;
+    const char *text = NULL;
+    if ( value->flags & MADC_VF_INLINE_TEXT )
+	text = value->inline_text;
+    else if ( (value->flags & MADC_VF_HEAP) && value->type_id == MADC_TYPEID_TEXT )
+	text = value->text_value;
+    if ( text != NULL && text_length != NULL )
+	*text_length = (size_t)value->size;
+    return text;
 }
 
 void madc_expression_policy_init(madc_expression_policy *policy)
