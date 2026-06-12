@@ -19,9 +19,9 @@
  * frozen (pinned in tests/unit/test_datadef.cpp). Append-only — a new
  * primitive takes the next free slot below MADC_TYPEID_PRIMITIVE_END;
  * never renumber (same discipline as the token-kind enum tail rule).
- * Slots 18-22 are reserved ahead for the P0 wide-value work
- * (__int128 / _BitInt / long double / _Complex); they have no backing
- * DataDef yet and madc_primitive_for_slot() returns NULL for them.
+ * Slots 19/20 are backed (ddINT128/ddUINT128, the P0 wide-value work).
+ * Slots 18, 21, 22 remain reserved (long double / _Complex); they have
+ * no backing DataDef yet and madc_primitive_for_slot() returns NULL.
  *
  * Pure C header: consumed by the compiler core (datadef.h) and, with
  * the value ABI, by the C embedding API (madc_api.h).
@@ -47,8 +47,8 @@ enum
     MADC_TYPEID_FLOAT          = 16,
     MADC_TYPEID_DOUBLE         = 17,
     MADC_TYPEID_LONG_DOUBLE    = 18,  /* reserved: P0 wide-value work */
-    MADC_TYPEID_INT128         = 19,  /* reserved: P0 */
-    MADC_TYPEID_UINT128        = 20,  /* reserved: P0 */
+    MADC_TYPEID_INT128         = 19,  /* ddINT128 */
+    MADC_TYPEID_UINT128        = 20,  /* ddUINT128 */
     MADC_TYPEID_COMPLEX_FLOAT  = 21,  /* reserved: P0 */
     MADC_TYPEID_COMPLEX_DOUBLE = 22,  /* reserved: P0 */
     MADC_TYPEID_MAX_ALIGN_T    = 23,

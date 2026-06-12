@@ -417,6 +417,8 @@ static std::vector<c2mir_node_code_t> native_scalar_specs(DataDef *dd)
 	case DataType::dtINT16:
 	case DataType::dtINT32:  return {N_INT};
 	case DataType::dtINT64:  return {N_LONG};
+	case DataType::dtINT128: return {N_INT128};
+	case DataType::dtUINT128: return {N_UNSIGNED, N_INT128};
 	default:                 return {N_LONG};
 	}
 }
@@ -510,6 +512,11 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	case DataType::dtUINT64:
 		append(lst, simple(N_UNSIGNED));
 		append(lst, simple(N_LONG));
+		break;
+	case DataType::dtINT128: append(lst, simple(N_INT128)); break;
+	case DataType::dtUINT128:
+		append(lst, simple(N_UNSIGNED));
+		append(lst, simple(N_INT128));
 		break;
 	case DataType::dtFLOAT:  append(lst, simple(N_FLOAT)); break;
 	case DataType::dtDOUBLE: append(lst, simple(N_DOUBLE)); break;
@@ -3284,6 +3291,8 @@ static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &r
 		case DataType::dtUINT32: return { N_UNSIGNED, N_INT };
 		case DataType::dtINT64:  return { N_LONG };
 		case DataType::dtINT32:  return { N_INT };
+		case DataType::dtINT128: return { N_INT128 };
+		case DataType::dtUINT128: return { N_UNSIGNED, N_INT128 };
 		default:                 return { N_LONG };
 		}
 	}

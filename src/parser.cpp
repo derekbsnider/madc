@@ -6116,6 +6116,8 @@ DataDefUINT16 ddUINT16;
 DataDefUINT24 ddUINT24;
 DataDefUINT32 ddUINT32;
 DataDefUINT64 ddUINT64;
+DataDefINT128 ddINT128;
+DataDefUINT128 ddUINT128;
 DataDefFLOAT ddFLOAT;
 DataDefDOUBLE ddDOUBLE;
 DataDefSTRUCT ddMAX_ALIGN_T("max_align_t", 0);
@@ -6596,6 +6598,8 @@ DataDef *madc_primitive_for_slot(uint32_t slot)
 		case MADC_TYPEID_UINT64:	return &ddUINT64;
 		case MADC_TYPEID_FLOAT:		return &ddFLOAT;
 		case MADC_TYPEID_DOUBLE:	return &ddDOUBLE;
+		case MADC_TYPEID_INT128:	return &ddINT128;
+		case MADC_TYPEID_UINT128:	return &ddUINT128;
 		case MADC_TYPEID_MAX_ALIGN_T:	return &ddMAX_ALIGN_T;
 		case MADC_TYPEID_LPSTR:		return &ddLPSTR;
 		case MADC_TYPEID_VOID_PTR:	return &ddVOIDptr;

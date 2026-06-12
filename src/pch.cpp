@@ -260,11 +260,18 @@ static DataDef *builtin_datadef_from_spelling(const std::string &s)
     if ( s == "unsigned" || s == "unsigned int" ) return &ddUINT32;
     if ( s == "long" || s == "long int" || s == "signed long"
       || s == "signed long int" || s == "long long" || s == "long long int"
-      || s == "signed long long" || s == "signed long long int"
-      || s == "__int128" || s == "signed __int128" ) return &ddINT64;
+      || s == "signed long long" || s == "signed long long int" ) return &ddINT64;
     if ( s == "unsigned long" || s == "unsigned long int"
-      || s == "unsigned long long" || s == "unsigned long long int"
-      || s == "unsigned __int128" ) return &ddUINT64;
+      || s == "unsigned long long" || s == "unsigned long long int" ) return &ddUINT64;
+#ifdef MADC_INT128_REAL
+    if ( s == "__int128" || s == "signed __int128" ) return &ddINT128;
+    if ( s == "unsigned __int128" ) return &ddUINT128;
+#else
+    // Mirrors the lexer's gated TS_INT128 arms — the spellings must map to
+    // the SAME DataDef the live lexer produces or PCH round-trips skew.
+    if ( s == "__int128" || s == "signed __int128" ) return &ddINT64;
+    if ( s == "unsigned __int128" ) return &ddUINT64;
+#endif
     if ( s == "float" || s == "_Float32" ) return &ddFLOAT;
     if ( s == "double" || s == "long double"
       || s == "_Float64" || s == "_Float128"
