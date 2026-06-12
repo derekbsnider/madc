@@ -1,5 +1,38 @@
 # HANDOFF — type-table/value-ABI track + package-C globals; next = verify branch, then string call marshalling
 
+> **STATUS UPDATE 2026-06-12 (later still) — BRANCH MERGED; KNOWN-GAPS SWEEP +
+> REGISTER_FUNCTION LANDED ON DEVELOP.** User approved: feature/eval-string-
+> call-claude merged --no-ff to develop (CHANGELOG entries added at merge,
+> d7b439b). Then on develop: (a) **known-gaps sweep 739afcb** — ctor-comma
+> declarator hang fixed (comma-continuation in the ctor-syntax decl path,
+> tests/testctorcomma.mad); VLA-VARIABLE sizeof fixed for 1D/multidim/typedef
+> alike (runtime dims captured into hidden `__madc_vla_dim_*` uint64 locals at
+> declaration via materialize_vla_dim_capture — side effects once, C99
+> 6.5.3.4p2 declaration-time semantics; try_parse_vla_variable_sizeof builds
+> the runtime product; tests/testvlasizeof.mad); global const array dims fixed
+> (parse-known const scalar int initializers baked into var->data, NEW
+> vfCONSTBAKED admits the CIR read-fold so `const int H=G+3;` emits a constant
+> file-scope initializer; tests/testconstdim.mad); testfortypedcomma flake
+> unreproducible (25x green), delisted. Residual recorded: VLA sizeof in
+> constant-required contexts + alignof(vla) still fold 8.
+> (b) **REGISTER_FUNCTION 76a6f38 — the shim machinery reversed.** Host
+> callbacks via compiler-synthesized trampolines: program/engine impls hold
+> host_callback_entry registries (engine regs seed created programs);
+> reset_program installs Program::HostCallbackReg KIND-CODE records;
+> _parser_init's add_host_callbacks declares ordinary prototypes;
+> CirBuilder::synth_host_trampoline (translate_module Pass 0.73) emits
+> `RET name(params) { return __madc_host_cb_<k>([bound,] params...); }` —
+> typed pass-throughs, ZERO runtime dispatch (anti-pyramid); the deduced
+> form's user callback is the typed adapter's hidden first arg;
+> cir_import_resolver consults the linking Program's regs (thread_local
+> around MIR_link, cleared on the containment longjmp path) before dlsym.
+> 8 tests unskipped → test_libmadc_program 121/0/22. GATES at each commit:
+> fulltest 580/0/0/18 both GREEN (+3 sweep tests), torture 1567 failset
+> NAME-IDENTICAL (55/55; 34/21 split = containment reclassification), SMAUG
+> --project soak ready+124, zero warnings. NEXT: shim coverage over
+> trampolines (pgm.call directly on host-registered names — unlocks the
+> cpu_ms/memory_bytes invoke-limit skips), then fork/limits + policy tail.
+
 > **STATUS UPDATE 2026-06-12 (same day, later) — INCREMENT 2 REDIRECTED, USER
 > DESIGN DIRECTION.** On `feature/eval-string-call-claude`: the MIR-fatal
 > containment (ed81566: CirJitSession arms MIR_set_error_func+longjmp — a bad
