@@ -7355,8 +7355,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// added vfCONSTANT to const-declared scalars for WRITE enforcement;
 			// excluding vfCONSTDECL here keeps the READ fold limited to the
 			// set()-valued constants it always handled correctly.)
+			// EXCEPTION: vfCONSTBAKED marks the const-declared scalar whose
+			// parse-time-known initializer WAS set() into data (an integral
+			// constant expression, C++ [expr.const]) — fold it like an enum
+			// value; this is what lets `const int H = G + 3;` emit a constant
+			// file-scope initializer c2mir accepts.
 			if (tv->var.is_constant() && tv->var.data
-			    && !(tv->var.flags & vfCONSTDECL) && tv->var.type
+			    && (!(tv->var.flags & vfCONSTDECL)
+				|| (tv->var.flags & vfCONSTBAKED)) && tv->var.type
 			    && tv->var.type->is_integer() && !tv->var.type->is_pointer())
 				return integer(tv->var.get<int64_t>(), tb);
 			if (tv->var.name.compare(0, 11, "__literal__") == 0) {

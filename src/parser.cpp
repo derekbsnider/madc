@@ -5000,6 +5000,41 @@ TokenBase *Program::materialize_runtime_struct_size_captures(TokenCpnd *code,
     return td;
 }
 
+// Capture a VLA dimension expression into a hidden uint64 local declared
+// just before the VLA variable. Both the heap-allocation count and any
+// later sizeof(var) read the capture, so the dimension expression's side
+// effects run exactly once and sizeof reflects the declaration-time value
+// even when the dimension variable changes afterwards (C99 6.5.3.4p2; gcc
+// keeps the VLA bound in a hidden temp the same way). dim_expr is REPLACED
+// with a TokenVar referencing the capture; the returned TokenDecl carries
+// the original expression as the capture's initializer.
+TokenBase *Program::materialize_vla_dim_capture(TokenCpnd *code,
+						TokenBase *&dim_expr,
+						TokenBase *loc)
+{
+    if ( !code || !dim_expr )
+	return NULL;
+
+    static int vla_dim_capture_counter = 0;
+    std::string cap_name = "__madc_vla_dim_" + std::to_string(vla_dim_capture_counter++);
+    Variable *cap_var = addVariable(code, ddUINT64, cap_name, 1, NULL, false);
+    TokenDecl *td = new TokenDecl(*cap_var);
+    td->file = loc ? loc->file : NULL;
+    td->line = loc ? loc->line : 0;
+    td->column = loc ? loc->column : 0;
+
+    TokenAssign *assign = new TokenAssign();
+    assign->file = td->file;
+    assign->line = td->line;
+    assign->column = td->column;
+    assign->left = new TokenVar(*cap_var);
+    assign->right = dim_expr;
+    td->initialize = assign;
+
+    dim_expr = new TokenVar(*cap_var);
+    return td;
+}
+
 TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
 					       const std::string &op_name)
 {
@@ -5077,6 +5112,109 @@ TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
 	Throw(consumed) << "Expecting ')' after " << op_name << " type" << flush;
     nextToken();
     return make_type_query_token(op_tb, dd, false);
+}
+
+// sizeof applied to a VLA VARIABLE (`sizeof(a)` / `sizeof a` where `a` was
+// declared `T a[n]`): the result is a runtime value — the product of the
+// declaration-time dimension captures (materialize_vla_dim_capture rewrote
+// the stored dim expressions to TokenVars over those hidden locals) times
+// the element size. Returns NULL without consuming tokens when the operand
+// is not a bare VLA variable; the constant path handles everything else.
+// alignof never needs this: alignment is a property of the element type.
+TokenBase *Program::try_parse_vla_variable_sizeof(TokenBase *op_tb,
+						  const std::string &op_name)
+{
+    if ( is_alignof_identifier(op_name) )
+	return NULL;
+
+    bool paren = peekToken() && peekToken()->id() == TokenID::tkOpBrk;
+    TokenBase *ident_tb = NULL;
+    if ( paren )
+    {
+	if ( tokens.size() < 3 )
+	    return NULL;
+	if ( !tokens[1] || !is_contextual_identifier_token(tokens[1])
+	  || !tokens[2] || tokens[2]->id() != TokenID::tkClBrk )
+	    return NULL;
+	ident_tb = tokens[1];
+    }
+    else
+    {
+	ident_tb = peekToken();
+	if ( !ident_tb || !is_contextual_identifier_token(ident_tb) )
+	    return NULL;
+    }
+
+    std::string vla_var_name = contextual_identifier_name(ident_tb);
+    Variable *v = findVariable(vla_var_name);
+    if ( !v || !v->is_vla() || !v->vla_size_expr )
+	return NULL;
+
+    // Fresh leaf per use — AST nodes are single-use; the declaration keeps
+    // ownership of the stored dim expressions.
+    auto dim_leaf = [&](TokenBase *e) -> TokenBase * {
+	if ( !e )
+	    return NULL;
+	if ( TokenVar *tv = dynamic_cast<TokenVar *>(e) )
+	{
+	    TokenVar *fresh = new TokenVar(tv->var);
+	    copy_token_location(fresh, op_tb);
+	    return fresh;
+	}
+	if ( TokenInt *ti = dynamic_cast<TokenInt *>(e) )
+	{
+	    TokenInt *c = new TokenInt(ti->ival());
+	    c->setDataType(&ddUINT64);
+	    copy_token_location(c, op_tb);
+	    return c;
+	}
+	return NULL;
+    };
+    auto mul = [&](TokenBase *l, TokenBase *r) -> TokenBase * {
+	TokenMul *m = new TokenMul();
+	copy_token_location(m, op_tb);
+	m->left = l;
+	m->right = r;
+	return m;
+    };
+
+    TokenBase *total = dim_leaf(v->vla_size_expr);
+    if ( !total )
+	return NULL;
+    DataDef *elem = v->type;
+    if ( DataDefPTR *wp = dynamic_cast<DataDefPTR *>(elem) )
+	elem = wp->base_type;
+    while ( DataDefCArray *c = dynamic_cast<DataDefCArray *>(elem) )
+    {
+	TokenBase *d;
+	if ( c->has_runtime_size() )
+	    d = dim_leaf(c->count_expr);
+	else
+	{
+	    TokenInt *ci = new TokenInt((int64_t)c->count);
+	    ci->setDataType(&ddUINT64);
+	    copy_token_location(ci, op_tb);
+	    d = ci;
+	}
+	if ( !d )
+	    return NULL;
+	total = mul(total, d);
+	elem = c->element_type;
+    }
+    TokenInt *esz = new TokenInt((int64_t)elem->size);
+    esz->setDataType(&ddUINT64);
+    copy_token_location(esz, op_tb);
+    total = mul(total, esz);
+
+    if ( paren )
+    {
+	nextToken(); // consume '('
+	nextToken(); // consume identifier
+	nextToken(); // consume ')'
+    }
+    else
+	nextToken(); // consume identifier
+    return total;
 }
 
 TokenDataType *Program::parse_typeof_datatype(TokenBase *op_tb)
@@ -12645,6 +12783,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		{
 		    if ( TokenBase *query_tb = try_parse_dynamic_type_query(tb, ident_tb->str) )
 			exStack.push(query_tb);
+		    else if ( TokenBase *vla_tb = try_parse_vla_variable_sizeof(tb, ident_tb->str) )
+			exStack.push(vla_tb);
 		    else
 		    {
 			size_t query_value = evaluate_type_query(tb, ident_tb->str);
@@ -22187,7 +22327,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    // Scoped: a standalone constant Variable kept ONLY in the tag's
 	    // pseudo-namespace, so bare `name` does not resolve globally.
 	    Variable *evar = new Variable(name, ddINT, 1, NULL, true);
-	    evar->set((int)val);
+	    evar->set(val);
 	    evar->makeconstant();
 	    (*scope_ns)[name] = evar;
 	    DBG(std::cout << "TokenENUM::parse() " << enum_tag << "::" << name
@@ -22210,7 +22350,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	{
 	    // register as a global constant variable (plain C enum)
 	    Variable *evar = pgm.addVariable(NULL, ddINT, name, 1, NULL, true);
-	    evar->set((int)val);
+	    evar->set(val);
 	    evar->makeconstant();
 	    DBG(std::cout << "TokenENUM::parse() " << name << " = " << val << std::endl);
 	}
@@ -28987,6 +29127,27 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    nextToken(); // consume ')'
 	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 		nextToken(); // consume ';'
+	    else if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+	    {
+		// Comma-continuation: `Q a(1), b(2);` — same convention as the
+		// `=`-initializer flow below: consume the ',' and push a clone
+		// of the base-type token (plus storage markers) so the next
+		// parseStatement re-enters parseDeclaration for the next
+		// declarator.
+		nextToken(); // consume ','
+		TokenBase *peek = peekToken();
+		bool looks_like_next_decl = peek
+		    && (peek->id() == TokenID::tkMul
+		     || peek->type() == TokenType::ttIdentifier
+		     || is_contextual_identifier_token(peek));
+		if ( !looks_like_next_decl )
+		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
+		pushToken(tb->clone());
+		if ( parsing_extern_decl )
+		    pushToken(new TokenEXTERN());
+		if ( gotstatic )
+		    pushToken(new TokenSTATIC());
+	    }
 	    // A FILE-SCOPE ctor-syntax declaration (`Cls g(args);`, incl. an
 	    // out-of-class static member definition `Cls Cls::less(args);`)
 	    // must record its TokenDecl in top_decls like the `=`-initializer
@@ -29640,6 +29801,21 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    else
 	    if ( vla_size_expr )
 	    {
+		// Capture each runtime dimension into a hidden uint64 local
+		// FIRST: the heap-allocation count and any later sizeof(var)
+		// both read the captures, so dimension side effects run once
+		// and sizeof reflects the declaration-time value (C99
+		// 6.5.3.4p2). Constant dims (TokenInt) need no capture.
+		if ( code )
+		{
+		    if ( !dynamic_cast<TokenInt *>(vla_size_expr) )
+			if ( TokenBase *cap = materialize_vla_dim_capture(code, vla_size_expr, tb) )
+			    code->statements.push_back((TokenStmt *)cap);
+		    for ( size_t i = 1; i < arr_dim_exprs.size(); ++i )
+			if ( arr_dim_exprs[i] && !dynamic_cast<TokenInt *>(arr_dim_exprs[i]) )
+			    if ( TokenBase *cap = materialize_vla_dim_capture(code, arr_dim_exprs[i], tb) )
+				code->statements.push_back((TokenStmt *)cap);
+		}
 		// C99 VLA: the variable is really a pointer-to-element. Don't
 		// set vfFIXEDARRAY — let pointer-subscript handling cover
 		// `arr[i]` access paths. voperand emits the malloc at scope
@@ -29809,6 +29985,27 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // local init (`static int x=7` read 0; `static const char *p="x"`
 	    // SIGSEGV'd on null). Leaving td->initialize set lets var_decl emit it
 	    // inline, which is the deepest-layer correct fix (PR-style: pr53084).
+	    // A `const`-declared scalar integer whose initializer folds at
+	    // parse time gets the VALUE baked into its parse-time buffer:
+	    // C++ makes such a constant an integral constant expression
+	    // (g++ accepts `const int G = 5; int g[G];`), and the constant
+	    // readers (read_constant_integer) read var->data. Without the
+	    // bake a file-scope const's calloc'd buffer reads 0, so the
+	    // array dimension silently became zero. The var->data guard
+	    // limits this to allocated (file-scope/static) storage; locals
+	    // keep the C-canon VLA path. Runtime emission is unchanged —
+	    // the SPEC_DECL initializer above still runs.
+	    if ( (var->flags & vfCONSTDECL) && var->data
+	      && var->type && var->type->is_integer()
+	      && !var->type->is_pointer() )
+	    {
+		TokenAssign *cta = dynamic_cast<TokenAssign *>(td->initialize);
+		int64_t cval = 0;
+		if ( cta && cta->right
+		  && try_eval_known_integer(cta->right, cval)
+		  && var->set(cval) )
+		    var->flags |= vfCONSTBAKED;
+	    }
 	}
 	update_pointer_object_size_hints(td->initialize);
 

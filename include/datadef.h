@@ -87,6 +87,9 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			  vfCONSTDECL  =131072, // `const`-DECLARED var (vfCONSTANT for write
 			                        // enforcement) whose value is NOT set() into
 			                        // data — so it must NOT be read-fold-substituted
+			  vfCONSTBAKED =262144, // `const`-DECLARED var whose parse-time-known
+			                        // initializer value WAS set() into data — an
+			                        // integral constant expression; read-fold OK
 			} varflag_t;
 
 #define rtNone(x) 0

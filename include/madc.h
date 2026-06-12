@@ -2154,6 +2154,10 @@ public:
 					       TokenBase *src);
     TokenBase *materialize_runtime_struct_size_captures(TokenCpnd *code,
 							DataDefSTRUCT *dds, TokenBase *loc);
+    TokenBase *materialize_vla_dim_capture(TokenCpnd *code,
+					   TokenBase *&dim_expr, TokenBase *loc);
+    TokenBase *try_parse_vla_variable_sizeof(TokenBase *op_tb,
+					     const std::string &op_name);
     TokenBase *parse_functional_type_expression(TokenBase *type_tb,
 						DataDef *type_dd);
     TokenBase *parse_namespace_block(bool inline_namespace);

@@ -97,7 +97,7 @@ public:
     inline void makeconstant() { flags |= vfCONSTANT; }
     inline bool is_global()   const { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
     inline bool is_constant() const { if ( (flags & vfCONSTANT) ) return true; return false; }
-    bool set(int c)
+    bool set(int64_t c)
     {
 	if ( !data ) { return false; }
 	/**/ if (type == &ddCHAR)   *((char *)data) = c;

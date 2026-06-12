@@ -1,0 +1,24 @@
+// Multi-declarator declarations with ctor-argument initializers:
+// `Q a(1), b(2);` — each declarator gets its own ctor call.
+// (Used to hang the parser: the ctor-syntax declaration path had no
+// comma-continuation, leaving `, b(2);` orphaned in the token stream.)
+
+class Q
+{
+public:
+	int v;
+	Q(int x) { v = x; }
+	Q(int x, int y) { v = x * 10 + y; }
+};
+
+Q g1(7), g2(8, 9);
+
+int main()
+{
+	Q a(1), b(2);
+	Q c(3), d(4, 5), e(6);
+	printf("%d %d\n", a.v, b.v);
+	printf("%d %d %d\n", c.v, d.v, e.v);
+	printf("%d %d\n", g1.v, g2.v);
+	return 0;
+}

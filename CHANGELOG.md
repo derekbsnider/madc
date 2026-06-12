@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Parser known-gaps sweep: ctor-comma declarators, VLA sizeof, const array dims
+
+- **`Q a(1), b(2);` no longer hangs the parser**: the ctor-call-syntax
+  declaration path gained the standard comma-continuation (consume `,`,
+  re-inject the base type) the `=`-initializer flow already had — the
+  orphaned `, b(2);` used to spin `parseExprStmt` forever. Works for
+  local and file-scope declarator lists (`tests/testctorcomma.mad`).
+- **`sizeof` of a VLA variable is now the runtime byte count** (C99
+  6.5.3.4p2) instead of pointer size 8 — for 1D, multidim, and
+  typedef'd VLA variables alike. Runtime dimensions are captured into
+  hidden `__madc_vla_dim_*` uint64 locals at the declaration (gcc keeps
+  VLA bounds in hidden temps the same way), so dimension side effects
+  run exactly once, the heap-allocation count reads the capture, and
+  `sizeof(a)` reflects the declaration-time value even if the dimension
+  variable changes afterwards (`tests/testvlasizeof.mad`).
+- **A file-scope `const int G = 5;` works as an array dimension** (C++
+  integral-constant-expression semantics, g++-verified): parse-time-known
+  scalar-integer const initializers are baked into the variable's
+  parse-time buffer (new `vfCONSTBAKED` flag) instead of reading the
+  calloc'd zero ("warning -- zero array size"). The CIR read-fold admits
+  baked consts, so `const int H = G + 3;` emits a constant file-scope
+  initializer c2mir accepts (`tests/testconstdim.mad`). `Variable::set`
+  widened `int`→`int64_t` (drops a latent enum-value truncation).
+- `tests/testfortypedcomma.mad` flakiness is no longer reproducible at
+  live HEAD (25 consecutive green runs) — resolved by intervening parser
+  work; removed from the known-gaps list.
+
 ### Synthesized host-call shims — the embedding boundary's one call surface (`feature/eval-string-call-claude`)
 
 - **`CirBuilder::synth_call_shim`** (translate_module Pass 0.74) emits
