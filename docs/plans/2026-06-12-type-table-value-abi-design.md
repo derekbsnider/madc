@@ -9,6 +9,17 @@ package C builds on them), the compiler-internal migration is a later campaign.
 / `madc_stamp_primitive_type_ids` (stamped from `add_datatypes`), and
 `Program::type_id_for` / `type_from_id`; doctest-pinned; fulltest 577/0/0/18,
 zero warnings, both check gates green. Next: §6 phase 2 (the 32-byte value ABI).
+**§6 phase 2 (value ABI) IMPLEMENTED** on `feature/value-abi-claude`
+(2026-06-12, plan `docs/superpowers/plans/2026-06-12-value-abi-phase2.md`):
+the 32-byte struct + `MADC_VF_*` flags in `madc_api.h` (old `madc_value_kind`
+constants now alias typeid slots — TEXT/BYTES/OBJECT took slots 31-33),
+`madc_value_cell.h` refcounted-cell runtime (saturating + permanent tier),
+helpers/bridges rewritten with SSO + gradual-typing enforcement
+(LOCKED/COERCE/NULLABLE/CONST; contract survives clear; typed null = size 0),
+new `madc_value_copy`/`madc_value_text`. Refinement vs §3 as written: SSO
+threshold is **15 bytes + NUL** so inline text is always a valid C string;
+cell text is NUL-terminated too. fulltest 577/0/0/18, zero warnings, gates
+green. Next: eval package C consumes this ABI.
 
 Related docs this builds on / feeds:
 - `docs/plans/2026-06-09-frontend-representation-refactor.md` — P0 (value pool),
