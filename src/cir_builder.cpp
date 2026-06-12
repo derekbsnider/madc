@@ -2372,6 +2372,23 @@ static int dd_ptr_depth(DataDef *dd)
 	return depth;
 }
 
+// Peel ALL pointer levels off `dd` to its base type, returning the star
+// count. The function-return emitters use this so a multi-star return
+// (`const unsigned short **__ctype_b_loc(void)`) keeps every level — the
+// old peel-one-level pattern emitted `unsigned short *`, and the ctype
+// macros' `(*__ctype_b_loc())[i]` then subscripted a scalar.
+static int dd_peel_pointers(DataDef *&dd)
+{
+	int depth = 0;
+	while (dd && dd->is_pointer()) {
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+		if (!p || !p->base_type) break;
+		dd = p->base_type;
+		depth++;
+	}
+	return depth;
+}
+
 int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias)
 {
 	if (alias.empty())
@@ -6961,8 +6978,7 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	DataDef *ret_dd = &fd->returns;
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 	bool ret_is_ref = fd->returns_ref;   // T& -> returned by address (one more *)
-	DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
-	if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
+	int ret_star_depth = dd_peel_pointers(ret_dd);
 
 	// A by-value non-trivial class return uses the __retbuf ABI (void return +
 	// hidden `struct <T> *__retbuf` first param); keep the prototype in
@@ -6974,7 +6990,7 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	DataDef *retbuf_dd = (DataDef *)ret_obj;
 	bool ret_is_multi = fd->is_multi_return();   // void ret + `long *__retbuf` first param
 
-	int ret_decl_stars = ret_is_ptr ? 1 : 0;
+	int ret_decl_stars = ret_star_depth;
 	node_t ret_type = NULL;
 	if (ret_via_retbuf || ret_is_multi) {
 		ret_type = type_list(&ddVOID);
@@ -10079,8 +10095,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	DataDef *ret_dd = &fd->returns;
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 	bool ret_is_ref = fd->returns_ref;   // T& -> returned by address (one more *)
-	DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
-	if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
+	int ret_star_depth = dd_peel_pointers(ret_dd);
 
 	// A by-value non-trivial class return uses the struct-return (__retbuf) ABI:
 	// the C return type is `void`, a hidden `struct <T> *__retbuf` is the first
@@ -10119,7 +10134,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				? &fd->returns : NULL;
 
 	// Retbuf-returning OR multi-return fn: C return type is `void`.
-	int ret_decl_stars = ret_is_ptr ? 1 : 0;
+	int ret_decl_stars = ret_star_depth;
 	node_t ret_type = NULL;
 	m_cur_func_ret_spec_dd = NULL;
 	m_cur_func_ret_spec_alias.clear();
@@ -11508,9 +11523,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		DataDef *ret_dd = &fd->returns;
 		bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 		bool ret_is_ref = fd->returns_ref;
-		DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
-		if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
-		int ret_decl_stars = ret_is_ptr ? 1 : 0;
+		int ret_decl_stars = dd_peel_pointers(ret_dd);
 
 		// A madc-emitted by-value non-trivial class return uses the
 		// __retbuf ABI — the extern must mirror func_proto/func_def

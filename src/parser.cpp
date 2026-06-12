@@ -7930,6 +7930,7 @@ Program::Program()
       _include_string(false),
       colors(false),
       language_std(STD_MADC),
+      gnu_dialect(false),
       aot_tracking(false),
       instrument_functions(false),
       skip_includes(false),
@@ -7961,6 +7962,7 @@ Program::Program(MadcEngine *eng)
       _include_string(false),
       colors(false),
       language_std(STD_MADC),
+      gnu_dialect(false),
       aot_tracking(false),
       instrument_functions(false),
       skip_includes(false),
@@ -7971,6 +7973,24 @@ Program::Program(MadcEngine *eng)
 
 bool Program::set_language_standard(const std::string &standard)
 {
+    // GNU dialects map onto their base standard with the gnu_dialect
+    // modifier (gcc parity: -std=gnu17 = C17 + GNU extensions, no
+    // __STRICT_ANSI__; plain gcc defaults to gnu17, plain g++ to gnu++17).
+    if ( standard.compare(0, 5, "gnu++") == 0 )
+    {
+	if ( !set_language_standard("c++" + standard.substr(5)) )
+	    return false;
+	gnu_dialect = true;
+	return true;
+    }
+    if ( standard.compare(0, 3, "gnu") == 0 )
+    {
+	if ( !set_language_standard("c" + standard.substr(3)) )
+	    return false;
+	gnu_dialect = true;
+	return true;
+    }
+    gnu_dialect = false;
     if ( standard == "madc" )
 	language_std = STD_MADC;
     else if ( standard == "c78" )
@@ -10365,15 +10385,28 @@ bool Program::namespace_overload_set_accepts_more(TokenCallFunc *tc,
     return fn_template_map.count(key) != 0;
 }
 
+FuncDef *Program::call_signature_funcdef(const Variable &var)
+{
+    if ( FuncDef *fd = dynamic_cast<FuncDef *>(var.type) )
+	return fd;
+    if ( DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(var.type) )
+	return fp->target;
+    return NULL;
+}
+
 static bool call_accepts_extra_args(TokenCallFunc *tc)
 {
-    FuncDef *fd = (FuncDef *)tc->var.type;
-    Method *md = (Method *)tc->var.data;
-
+    FuncDef *fd = Program::call_signature_funcdef(tc->var);
+    if ( !fd )
+	return true;   // unknown signature — later stages judge the call
     if ( fd->is_varargs )
 	return true;
     if ( is_overloaded_allocation_operator(tc->var.name) )
 	return true;
+    // var.data is a Method only for real function variables; a fn-ptr
+    // value's data is its storage, not a Method.
+    Method *md = dynamic_cast<FuncDef *>(tc->var.type)
+	       ? (Method *)tc->var.data : NULL;
     if ( fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall") )
 	return true;
     return false;
@@ -10500,8 +10533,8 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	if ( tb->id() == TokenID::tkComma )
 	{
-	    FuncDef *_fd = (FuncDef *)tc->var.type;
-	    if ( !_fd->parameters.empty()
+	    FuncDef *_fd = call_signature_funcdef(tc->var);
+	    if ( _fd && !_fd->parameters.empty()
 	    &&   !call_accepts_extra_args(tc)
 	    &&   ++paramcnt >= _fd->parameters.size()
 	    &&   !namespace_overload_set_accepts_more(tc, paramcnt) )
@@ -10509,7 +10542,10 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 		DBG_PACK("arity throw: call %s params=%zu paramcnt=%zu\n",
 			 tc->var.name.c_str(), _fd->parameters.size(),
 			 paramcnt);
-		Throw(tb) << "Too many parameters" << flush;
+		Throw(tb) << "Too many parameters in call to '"
+			  << tc->var.name << "' (declared "
+			  << _fd->parameters.size() << ", got argument "
+			  << (paramcnt + 1) << ')' << flush;
 	    }
 	    continue;
 	}
@@ -10586,9 +10622,8 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 		    Throw(tc) << "Incorrect number of parameters for '" << tc->var.name << "': expected " << expected << " got " << tc->argc() << flush;
 	    }
 	}
-	else
+	else if ( FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type) )
 	{
-	    FuncDef *fd = (FuncDef *)tc->var.type;
 	    // Late-bound namespace overload set (C++ overloads / fn-template
 	    // instantiations): the parse-bound Variable is just ONE member of
 	    // the set (or the body-less template placeholder). Re-rank with the
@@ -10821,11 +10856,15 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	if ( tb->id() == TokenID::tkComma )
 	{
-	    if ( !((FuncDef *)tc->var.type)->is_varargs
+	    FuncDef *_mfd = call_signature_funcdef(tc->var);
+	    if ( _mfd && !_mfd->is_varargs
 	    &&   !is_overloaded_allocation_operator(tc->var.name)
-	    &&   ++paramcnt >= ((FuncDef *)tc->var.type)->parameters.size() )
+	    &&   ++paramcnt >= _mfd->parameters.size() )
 	    {
-		Throw(tb) << "Too many parameters" << flush;
+		Throw(tb) << "Too many parameters in call to method '"
+			  << tc->var.name << "' (declared "
+			  << _mfd->parameters.size()
+			  << ", got argument " << (paramcnt + 1) << ')' << flush;
 	    }
 	    continue;
 	}
@@ -10845,8 +10884,8 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	tc->parameters.push_back(tb);
     }
     // (need check for optional parameters)
-    FuncDef *fd = (FuncDef *)tc->var.type;
-    if ( !fd->is_varargs && !fd->param_defaults.empty() )
+    FuncDef *fd = call_signature_funcdef(tc->var);
+    if ( fd && !fd->is_varargs && !fd->param_defaults.empty() )
     {
 	size_t hidden = function_uses_hidden_this(tc->var) ? 1 : 0;
 	for ( size_t i = hidden + tc->argc(); i < fd->parameters.size(); ++i )
@@ -10857,12 +10896,13 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 		break;
 	}
     }
-    if ( ((FuncDef *)tc->var.type)->is_varargs
-      ? (tc->argc()+1 < ((FuncDef *)tc->var.type)->parameters.size()-1)
-      : (tc->argc()+1 != ((FuncDef *)tc->var.type)->parameters.size()) )
+    if ( fd
+      && (fd->is_varargs
+	  ? (tc->argc()+1 < fd->parameters.size()-1)
+	  : (tc->argc()+1 != fd->parameters.size())) )
     {
-	DBG(std::cout << "parseCallMethod: argument count: " << tc->argc() << " expected: " << ((FuncDef *)tc->var.type)->parameters.size() << std::endl);
-	Throw(tc) << "Incorrect number of parameters: expected " << ((FuncDef *)tc->var.type)->parameters.size() << " got " << tc->argc()+1 << flush;
+	DBG(std::cout << "parseCallMethod: argument count: " << tc->argc() << " expected: " << fd->parameters.size() << std::endl);
+	Throw(tc) << "Incorrect number of parameters: expected " << fd->parameters.size() << " got " << tc->argc()+1 << flush;
     }
 
     return tb;
@@ -17925,6 +17965,23 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    continue;
 			// semicolon consumed — fall through to done_members check
 		    }
+		    else if ( tn && tn->id() == TokenID::tkOpBrk
+			   && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+		    {
+			// Function-pointer member inside a nested/anonymous
+			// aggregate (glibc sigevent: `void (*_function)(__sigval_t);`
+			// in the anonymous union) — same declarator tail as the
+			// top-level struct member arm.
+			TokenBase *open_tok = pgm.nextToken();   // consume '*'
+			std::string mname;
+			inner_member_dd = pgm.parse_fnptr_member_tail(*inner_member_dd,
+								      mname, open_tok);
+			inner->addMember(mname, *inner_member_dd, 1);
+			tn = pgm.nextToken();
+			if ( !tn || (tn->id() != TokenID::tkSemi && tn->id() != TokenID::tkComma) )
+			    pgm.Throw(tn ? tn : loc) << "Expecting ';' after function pointer struct member" << flush;
+			continue;
+		    }
 		    else
 		    {
 		    if ( !is_contextual_identifier_token(tn) )
@@ -18238,19 +18295,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			{
 			    // Typed function-pointer member, e.g. `void (*callback)(void *)`
 			    // or `char *(*resolver)(int)`.
-			    tn = pgm.nextToken();
-			    if ( !is_contextual_identifier_token(tn) )
-				pgm.Throw(tn) << "Expecting member name in function pointer struct declarator" << flush;
-			    std::string mname = contextual_identifier_name(tn);
-			    tn = pgm.nextToken();
-			    if ( !tn || tn->id() != TokenID::tkClBrk )
-				pgm.Throw(tn ? tn : inner) << "Expected ')' after function pointer member name" << flush;
-			    tn = pgm.nextToken();
-			    if ( !tn || tn->id() != TokenID::tkOpBrk )
-				pgm.Throw(tn ? tn : inner) << "Expected '(' after function pointer member name" << flush;
-			    FuncDef *func = pgm.parseFnPtrParams(*member_dd);
-			    DataDefFPTR *fptr_type = new DataDefFPTR(func);
-			    member_dd = fptr_type;
+			    std::string mname;
+			    member_dd = pgm.parse_fnptr_member_tail(*member_dd,
+								    mname, inner);
 
 			    dds->addMember(mname, *member_dd, 1);
 			    if ( !member_typedef_alias.empty() && !dds->members.empty() )
@@ -22482,6 +22529,27 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	pgm.nextToken();
 
     return record_typedef(alias, base_dd, tdt, alias_tok);
+}
+
+// Function-pointer MEMBER declarator tail: `name ) ( params )` after the
+// caller consumed `RET ( *`. Returns the member's DataDefFPTR and sets mname.
+// Shared by the top-level and nested-aggregate struct member parsers.
+DataDefFPTR *Program::parse_fnptr_member_tail(DataDef &returns,
+					      std::string &mname,
+					      TokenBase *open_tok)
+{
+    TokenBase *tn = nextToken();
+    if ( !is_contextual_identifier_token(tn) )
+	Throw(tn ? tn : open_tok) << "Expecting member name in function pointer struct declarator" << flush;
+    mname = contextual_identifier_name(tn);
+    tn = nextToken();
+    if ( !tn || tn->id() != TokenID::tkClBrk )
+	Throw(tn ? tn : open_tok) << "Expected ')' after function pointer member name" << flush;
+    tn = nextToken();
+    if ( !tn || tn->id() != TokenID::tkOpBrk )
+	Throw(tn ? tn : open_tok) << "Expected '(' after function pointer member name" << flush;
+    FuncDef *func = parseFnPtrParams(returns);
+    return new DataDefFPTR(func);
 }
 
 // Parse a function-pointer parameter list. The opening '(' has already been

@@ -450,9 +450,11 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		if (!tu.std_option.empty())
 			prog->set_language_standard_option("--std=" + tu.std_option);
 		else if (is_c_source_file(tu.file))
-			// No explicit -std and a .c file → compile as C (like
-			// gcc/clang), so C++ keywords stay usable as C identifiers.
-			prog->set_language_standard_option("--std=c89");
+			// No explicit -std and a .c file → gcc's actual default C
+			// dialect, gnu17 (C17 base + GNU, no __STRICT_ANSI__) — so
+			// C++ keywords stay usable as C identifiers AND glibc's
+			// feature gates (timercmp, strdup, …) match plain gcc.
+			prog->set_language_standard_option("--std=gnu17");
 
 		TokenProgram *tp = prog->tokenize(tu.file.c_str());
 		if (!tp) {

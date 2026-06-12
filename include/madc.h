@@ -1598,8 +1598,36 @@ public:
 	STD_C78, STD_C86, STD_C88, STD_C89, STD_C90, STD_C94, STD_C95, STD_C99, STD_C11, STD_C17, STD_C23,
 	STD_CPP98, STD_CPP03, STD_CPP11, STD_CPP14, STD_CPP17, STD_CPP20, STD_CPP23, STD_CPP26
     } language_std;
+    // GNU dialect modifier: `--std=gnuNN` / `--std=gnu++NN` selects the base
+    // standard (language_std) WITHOUT strict-ANSI conformance — gcc's actual
+    // default dialect is gnu17, not c17. Feature gating stays on
+    // language_std; this flag only controls strictness presentation.
+    bool gnu_dialect;
     bool is_c_mode() const { return language_std >= STD_C89 && language_std <= STD_C23; }
     bool is_cpp_mode() const { return language_std >= STD_CPP98 && language_std <= STD_CPP26; }
+    // gcc parity for C modes: -std=cNN defines __STRICT_ANSI__, -std=gnuNN
+    // (gcc's default dialect) does not — real glibc headers branch on it
+    // (features.h suppresses _DEFAULT_SOURCE under strict ANSI, hiding
+    // timercmp/strdup-class declarations SMAUG needs).
+    // KNOWN DIVERGENCE: STD_MADC and the C++ modes keep the captured strict
+    // presentation even though plain g++ (gnu++17) is non-strict — lifting
+    // it opens glibc's `!__STRICT_ANSI__` float regions (__HAVE_FLOAT128 →
+    // __float128/_FloatN declarations) that madc cannot type yet. Lift once
+    // __float128/_FloatN land (the __int128 P0 track's float sibling).
+    bool strict_ansi_mode() const
+    { return !(is_c_mode() && gnu_dialect); }
+    // The __STDC_VERSION__ value a C mode mandates (gcc parity; c89/c90
+    // predate the macro — NULL = leave undefined, like gcc -std=c89).
+    const char *stdc_version_for_std() const {
+	switch ( language_std ) {
+	case STD_C94: case STD_C95: return "199409L";
+	case STD_C99: return "199901L";
+	case STD_C11: return "201112L";
+	case STD_C17: return "201710L";
+	case STD_C23: return "202311L";
+	default:      return (const char *)0;
+	}
+    }
     // K&R-era recovery (old-style parameter declarations, file-scope
     // implicit-int definitions) is admitted ONLY under an explicit C
     // standard that predates C23 (which removed them) — never in the
@@ -2001,6 +2029,20 @@ public:
     // function-pointer typedefs. Builds a FuncDef with the given return type.
     // Parameter names are accepted but discarded. Stops after consuming ')'.
     FuncDef *parseFnPtrParams(DataDef &returns);
+    // The FuncDef giving a CALL's signature: the variable's own FuncDef, or
+    // the target signature behind a function-pointer type (DataDefFPTR).
+    // NULL when the variable isn't callable-typed. Parse-time twin of the CIR
+    // builder's call_target_funcdef — never blind-cast var.type to FuncDef
+    // (a fn-ptr call's DataDefFPTR read as FuncDef is UB: SMAUG's
+    // `(*skill->spell_fun)(...)` arity check read garbage).
+    static FuncDef *call_signature_funcdef(const Variable &var);
+    // Function-pointer MEMBER declarator tail: parses `name ) ( params )`
+    // after the leading `RET ( *` was consumed; returns the DataDefFPTR and
+    // sets mname. Shared by the top-level and nested-aggregate struct member
+    // parsers (e.g. glibc sigevent's `void (*_function)(__sigval_t);` inside
+    // an anonymous union).
+    DataDefFPTR *parse_fnptr_member_tail(DataDef &returns, std::string &mname,
+					 TokenBase *open_tok);
     TokenBase *parseExpression(TokenBase *, bool conditional=false,
 			       bool ternary_branch=false,
 			       bool stop_on_closing_paren=false,

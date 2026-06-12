@@ -312,7 +312,8 @@ static bool next_source_word_is(Source &source, const char *match)
     while ( source.good() )
     {
 	int c = source.peek();
-	if ( c == ' ' || c == '\t' || c == '\n' || c == '\r' )
+	if ( c == ' ' || c == '\t' || c == '\n' || c == '\r'
+	  || c == '\f' || c == '\v' )
 	    consumed += (char)source.get();
 	else
 	    break;
@@ -992,6 +993,26 @@ struct MadcPredefFunc { const char *name; const char *params; const char *body; 
 extern const MadcPredefObj  *madc_predefined_objects();
 extern const MadcPredefFunc *madc_predefined_functions();
 
+// Captured-predefine names that exist only in g++'s C++ modes (the capture
+// runs g++; `gcc -std=cNN -dM` defines none of these). Skipped when the
+// selected mode does not present as C++ — diff of `g++ -x c++ -dM` vs
+// `gcc -std=c17 -dM` plus the __cpp_* feature-test family.
+static bool predefine_is_cpp_only(const char *name)
+{
+    if ( strncmp(name, "__cpp_", 6) == 0 )
+	return true;
+    static const char *const cpp_only[] = {
+	"__cplusplus", "__GNUG__", "_GNU_SOURCE", "__DEPRECATED",
+	"__EXCEPTIONS", "__GLIBCXX_BITSIZE_INT_N_0", "__GLIBCXX_TYPE_INT_N_0",
+	"__GXX_EXPERIMENTAL_CXX0X__", "__GXX_RTTI", "__GXX_WEAK__",
+	"__STDCPP_DEFAULT_NEW_ALIGNMENT__", "__STDCPP_THREADS__", NULL
+    };
+    for ( int i = 0; cpp_only[i]; ++i )
+	if ( strcmp(name, cpp_only[i]) == 0 )
+	    return true;
+    return false;
+}
+
 void Program::_tokenizer_init()
 {
 
@@ -1539,13 +1560,21 @@ void Program::_tokenizer_init()
     // Predefined compiler macros captured at build time (gen_predefined_macros.sh).
     // Seeded AFTER the hand-set builtins (so the real toolchain values win) and
     // BEFORE -D (so -D can override, matching gcc). Real system headers branch on
-    // these. __cplusplus / __GNUG__ follow presents_as_cpp(): the madc dialect and
+    // these. C++-only macros follow presents_as_cpp(): the madc dialect and
     // every explicit C++ std impersonate g++ (so real libstdc++ headers parse);
-    // explicit C modes stay plain gcc (C code's `#ifdef __cplusplus` unaffected).
+    // explicit C modes stay plain gcc — the capture ran g++, but `gcc -std=cNN
+    // -dM` defines NONE of these, and real glibc headers branch on them
+    // (_GNU_SOURCE selects the transparent-union __SOCKADDR_ARG bind/accept
+    // signatures; C code's `#ifdef __cplusplus` regions must stay off).
     for ( const MadcPredefObj *o = madc_predefined_objects(); o->name; ++o )
     {
-	if ( !presents_as_cpp()
-	  && (strcmp(o->name, "__cplusplus") == 0 || strcmp(o->name, "__GNUG__") == 0) )
+	if ( !presents_as_cpp() && predefine_is_cpp_only(o->name) )
+	    continue;
+	// The capture ran a STRICT-std g++; strictness follows the SELECTED
+	// mode (gcc parity: plain gcc/g++ default to the gnu dialects and
+	// define no __STRICT_ANSI__ — glibc's features.h would otherwise
+	// suppress _DEFAULT_SOURCE and hide timercmp-class declarations).
+	if ( strcmp(o->name, "__STRICT_ANSI__") == 0 && !strict_ansi_mode() )
 	    continue;
 	// __cplusplus tracks the SELECTED --std=, not the value captured at
 	// build time (the capture ran the host g++ at one fixed std; a pinned
@@ -1558,6 +1587,15 @@ void Program::_tokenizer_init()
 	    continue;
 	}
 	define_map[o->name] = o->value;
+    }
+    // C modes define __STDC_VERSION__ per the selected standard (gcc parity;
+    // the g++-run capture cannot supply it, and glibc gates its C99/C11
+    // surfaces — __USE_ISOC99/__USE_ISOC11 — on it). c89/c90 predate the
+    // macro and leave it undefined, like gcc -std=c89.
+    if ( is_c_mode() )
+    {
+	if ( const char *sv = stdc_version_for_std() )
+	    define_map["__STDC_VERSION__"] = sv;
     }
     // Compiler feature-test macros madc provides itself, gated by the std
     // floor (the build-time capture can't know them — they describe THIS
@@ -2213,9 +2251,16 @@ TokenBase *Program::_getToken()
     if ( ch == -1 ) { return NULL; }  // EOF after last char (no trailing newline)
     switch( ch )
     {
+	// Form feed and vertical tab are whitespace (C11 5.4 / [lex.charset]).
+	// glibc headers use lone ^L page separators (regex.h, bits/mman*.h);
+	// falling through to the char-token default desynced the whole
+	// following parse ("unexpected token type 10" — the wall-4 family).
 	case ' ':
+	case '\f':
+	case '\v':
 	    cnt = 1;
-	    while ( source.peek() == ' ' )
+	    while ( source.peek() == ' ' || source.peek() == '\f'
+		 || source.peek() == '\v' )
 	    {
 		++cnt;
 		source.get();
