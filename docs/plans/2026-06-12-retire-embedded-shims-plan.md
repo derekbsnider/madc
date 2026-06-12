@@ -2,6 +2,12 @@
 
 ## STATUS (2026-06-12, live — read top-down)
 
+**FULL COLD-START HANDOFF (read that first):**
+`docs/plans/2026-06-12-retire-embedded-shims-HANDOFF.md` — includes the
+process-conformance items (P1–P5) that institutionalize
+`madc-header-partition-handoff.md`, the diagnostics arsenal, and the
+current wall list. The block below is the shorter chronology.
+
 Branch `feature/retire-embedded-shims-claude` @ `1b91e9f`. Phases 0+1
 COMMITTED+GATED (fa25e7f K&R gate / 13383b7 presents_as_cpp; fulltest 582
 green, torture 52-name baseline zero-regr, SMAUG soak green). Phase 2+3

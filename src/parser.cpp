@@ -25159,10 +25159,24 @@ static bool instantiate_fn_template_binding(Program &pgm,
     catch ( ... )
     {
 	ok = false;
-	while ( pgm.tokens.size() > base_depth )
-	    pgm.nextToken();
     }
     --pgm.fn_template_instantiation_depth;
+#if MADC_DEBUG_FNTPL
+    if ( pgm.tokens.size() != base_depth )
+	std::cerr << "FNTPL inst " << inst_key << " STREAM IMBALANCE: tokens "
+		  << pgm.tokens.size() << " vs base " << base_depth
+		  << (pgm.tokens.size() > base_depth ? " (leftover inj)" : " (CONSUMED OUTER TOKENS)")
+		  << std::endl;
+#endif
+    // Restore the stream boundary UNCONDITIONALLY. The injected run is the
+    // whole instantiated declaration; any token the parse left behind is
+    // garbage for the OUTER context (an "ok" __hypot3<float> instantiation
+    // left 2 trailing inj tokens, which the resumed outer parse consumed —
+    // shifting every following declaration: "__z undeclared" two functions
+    // later in real <cmath>). A parse that consumed BEYOND the boundary
+    // cannot be repaired here; it is at least made visible above.
+    while ( pgm.tokens.size() > base_depth )
+	pgm.nextToken();
 
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     std::swap(pgm.compounds, saved_compounds);
