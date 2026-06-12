@@ -1,0 +1,11 @@
+sizeof=16 16
+hi=68719476736 lo=5
+uhi=18446744073709551615 ulo=18446744073709551615
+neg_hi=ffffffffffffffff neg_lo=ffffffffffffffff
+m_hi=6 m_lo=9072620899717998837
+d=1234567890123456789
+cmp_ok
+r=129
+fd_ok=1
+ov_lo=-64 flag_is_int=1
+switch_ok

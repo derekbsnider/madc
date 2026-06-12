@@ -43,7 +43,12 @@ enum class DataType : uint16_t {
 	dtUINT16, dtINT16, dtSHORT=dtINT16, dtUINT24, dtINT24,
 	dtUINT32, dtINT32, dtUINT64, dtINT64, dtINT=dtINT32,
 	dtFLOAT=12, dtFLOAT32=dtFLOAT, dtDOUBLE, dtDOUBLE64=dtDOUBLE,
-	dtLDOUBLE, dtDOUBLE80 = dtLDOUBLE, dtSIMD, dtRESERVED = 255,
+	dtLDOUBLE, dtDOUBLE80 = dtLDOUBLE, dtSIMD,
+	// Append-only tail (PCH/typeid discipline): new simple types take the
+	// next free slot; never renumber. 128-bit integers live ABOVE dtFLOAT,
+	// so the type predicates (is_integer/is_real) use explicit sets, not
+	// the historical "< dtFLOAT" range.
+	dtINT128, dtUINT128, dtRESERVED = 255,
 	dtMUTEX = 256, dtTHREAD, dtTHISTHREAD,
 	dtARRAY,
 
@@ -52,7 +57,8 @@ enum class DataType : uint16_t {
 	dtUINT16ptr, dtINT16ptr, dtSHORTptr=dtINT16ptr, dtUINT24ptr, dtINT24ptr,
 	dtUINT32ptr, dtINT32ptr, dtUINT64ptr, dtINT64ptr, dtINTptr=dtINT32ptr,
 	dtFLOATptr, dtFLOAT32ptr=dtFLOATptr, dtDOUBLEptr, dtDOUBLE64ptr=dtDOUBLEptr,
-	dtLDOUBLEptr, dtDOUBLE80ptr=dtLDOUBLEptr, dtRESERVEDptr = 10255,
+	dtLDOUBLEptr, dtDOUBLE80ptr=dtLDOUBLEptr, dtSIMDptr,
+	dtINT128ptr, dtUINT128ptr, dtRESERVEDptr = 10255,
 	dtMUTEXptr = 10256, dtTHREADptr, dtTHISTHREADptr,
 	dtARRAYptr,
 
@@ -61,7 +67,8 @@ enum class DataType : uint16_t {
 	dtUINT16ref, dtINT16ref, dtSHORTref=dtINT16ref, dtUINT24ref, dtINT24ref,
 	dtUINT32ref, dtINT32ref, dtUINT64ref, dtINT64ref, dtINTref=dtINT32ref,
 	dtFLOATref, dtFLOAT32ref=dtFLOATref, dtDOUBLEref, dtDOUBLE64ref=dtDOUBLEref,
-	dtLDOUBLEref, dtDOUBLE80ref=dtLDOUBLEref, dtRESERVEDref = 20255,
+	dtLDOUBLEref, dtDOUBLE80ref=dtLDOUBLEref, dtSIMDref,
+	dtINT128ref, dtUINT128ref, dtRESERVEDref = 20255,
 	dtMUTEXref = 20256, dtTHREADref, dtTHISTHREADref,
 	dtARRAYref,
 };
@@ -156,15 +163,20 @@ public:
 	    return false;
 	if ( _type > 0 && _type < (uint16_t)DataType::dtFLOAT )
 	    return true;
-	return false;
+	// 128-bit integers sit above dtFLOAT in the append-only enum tail.
+	return _type == (uint16_t)DataType::dtINT128
+	    || _type == (uint16_t)DataType::dtUINT128;
     }
     virtual bool is_real() const
     {
 	if ( basetype() != BaseType::btSimple )
 	    return false;
-	if ( _type >= (uint16_t)DataType::dtFLOAT && _type < (uint16_t)DataType::dtRESERVED )
-	    return true;
-	return false;
+	// Explicit set: the enum tail past dtLDOUBLE holds non-real types
+	// (dtSIMD, dtINT128, ...), so the historical [dtFLOAT, dtRESERVED)
+	// range no longer classifies correctly.
+	return _type == (uint16_t)DataType::dtFLOAT
+	    || _type == (uint16_t)DataType::dtDOUBLE
+	    || _type == (uint16_t)DataType::dtLDOUBLE;
     }
     virtual bool is_simd() const { return false; }
     virtual bool is_unsigned() const
@@ -176,6 +188,7 @@ public:
 	    case DataType::dtUINT24:
 	    case DataType::dtUINT32:
 	    case DataType::dtUINT64:
+	    case DataType::dtUINT128:
 		return true;
 	    default:
 		return false;
@@ -878,6 +891,14 @@ class DataDefUINT16:    public DataDef { public: DataDefUINT16():  DataDef("uint
 class DataDefUINT24:    public DataDef { public: DataDefUINT24():  DataDef("uint24_t", 3, DataType::dtUINT24) {} };
 class DataDefUINT32:    public DataDef { public: DataDefUINT32():  DataDef("uint32_t", 4, DataType::dtUINT32) {} };
 class DataDefUINT64:    public DataDef { public: DataDefUINT64():  DataDef("uint64_t", 8, DataType::dtUINT64) {} };
+// 128-bit integers: SysV x86-64 ABI alignment is 16 (the base alignment()
+// caps simple types at 8, which is correct for every other scalar).
+class DataDefINT128:    public DataDef { public:
+	DataDefINT128():  DataDef("__int128", 16, DataType::dtINT128) {}
+	virtual size_t alignment() const { return 16; } };
+class DataDefUINT128:   public DataDef { public:
+	DataDefUINT128(): DataDef("unsigned __int128", 16, DataType::dtUINT128) {}
+	virtual size_t alignment() const { return 16; } };
 class DataDefFLOAT:     public DataDef { public: DataDefFLOAT() :  DataDef("float", 4,    DataType::dtFLOAT) {} };
 class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("double", 8,   DataType::dtDOUBLE) {} };
 class DataDefLPSTR:     public DataDef { public: DataDefLPSTR():   DataDef("LPSTR", sizeof(char *), rtPtr(DataType::dtCHAR)) {} };
@@ -1020,6 +1041,8 @@ extern DataDefUINT16 ddUINT16;
 extern DataDefUINT24 ddUINT24;
 extern DataDefUINT32 ddUINT32;
 extern DataDefUINT64 ddUINT64;
+extern DataDefINT128 ddINT128;
+extern DataDefUINT128 ddUINT128;
 extern DataDefFLOAT ddFLOAT;
 extern DataDefDOUBLE ddDOUBLE;
 extern DataDefSTRUCT ddMAX_ALIGN_T;

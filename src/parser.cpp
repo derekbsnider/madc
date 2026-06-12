@@ -6116,6 +6116,8 @@ DataDefUINT16 ddUINT16;
 DataDefUINT24 ddUINT24;
 DataDefUINT32 ddUINT32;
 DataDefUINT64 ddUINT64;
+DataDefINT128 ddINT128;
+DataDefUINT128 ddUINT128;
 DataDefFLOAT ddFLOAT;
 DataDefDOUBLE ddDOUBLE;
 DataDefSTRUCT ddMAX_ALIGN_T("max_align_t", 0);
@@ -6596,6 +6598,8 @@ DataDef *madc_primitive_for_slot(uint32_t slot)
 		case MADC_TYPEID_UINT64:	return &ddUINT64;
 		case MADC_TYPEID_FLOAT:		return &ddFLOAT;
 		case MADC_TYPEID_DOUBLE:	return &ddDOUBLE;
+		case MADC_TYPEID_INT128:	return &ddINT128;
+		case MADC_TYPEID_UINT128:	return &ddUINT128;
 		case MADC_TYPEID_MAX_ALIGN_T:	return &ddMAX_ALIGN_T;
 		case MADC_TYPEID_LPSTR:		return &ddLPSTR;
 		case MADC_TYPEID_VOID_PTR:	return &ddVOIDptr;
@@ -8756,6 +8760,14 @@ void Program::populate_builtin_registry()
     // call parses; cir_builder emits N_CALL(__builtin_va_start, ap) and c2mir
     // intrinsic-lowers it. The arg is the user's va_list (array -> pointer).
     builtin_registry.add_core_function("__builtin_va_start", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVOID)}, (fVOIDFUNC)NULL);
+    // __builtin_add/sub/mul_overflow(a, b, res_ptr): c2mir builtins, lowered
+    // in-place at every width incl. __int128. Registered with ZERO declared
+    // params (variadic convention) so the arguments reach the CIR call with
+    // their real compile-time types — declared params would coerce a 128-bit
+    // operand down to the declared width. NULL pointer: no real symbol.
+    builtin_registry.add_core_function("__builtin_add_overflow", datatype_vec_t{DataType::dtINT32}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__builtin_sub_overflow", datatype_vec_t{DataType::dtINT32}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__builtin_mul_overflow", datatype_vec_t{DataType::dtINT32}, (fVOIDFUNC)NULL);
     // __destroy(ptr): compiler intrinsic that destructs the pointed-to object.
     // No real symbol (NULL pointer, like __builtin_va_start) — the parser
     // accepts the call and cir_builder lowers it to the element type's class

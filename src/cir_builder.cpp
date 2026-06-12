@@ -385,6 +385,16 @@ static DataDefCLASS *as_class_instance(DataDef *dd)
 	return as_user_class(dd);
 }
 
+// c2mir lowers these call names in-place as builtins (it even rejects user
+// declarations of them); never emit an extern prototype for one.
+static bool is_c2mir_builtin_call_name(const std::string &name)
+{
+	return name.compare(0, 13, "__builtin_va_") == 0
+	    || name == "__builtin_add_overflow"
+	    || name == "__builtin_sub_overflow"
+	    || name == "__builtin_mul_overflow";
+}
+
 static DataDefCLASS *class_behind(DataDef *dd);
 
 static DataDefCLASS *param_object_class(DataDef *dd, bool refp)
@@ -417,6 +427,8 @@ static std::vector<c2mir_node_code_t> native_scalar_specs(DataDef *dd)
 	case DataType::dtINT16:
 	case DataType::dtINT32:  return {N_INT};
 	case DataType::dtINT64:  return {N_LONG};
+	case DataType::dtINT128: return {N_INT128};
+	case DataType::dtUINT128: return {N_UNSIGNED, N_INT128};
 	default:                 return {N_LONG};
 	}
 }
@@ -510,6 +522,11 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	case DataType::dtUINT64:
 		append(lst, simple(N_UNSIGNED));
 		append(lst, simple(N_LONG));
+		break;
+	case DataType::dtINT128: append(lst, simple(N_INT128)); break;
+	case DataType::dtUINT128:
+		append(lst, simple(N_UNSIGNED));
+		append(lst, simple(N_INT128));
 		break;
 	case DataType::dtFLOAT:  append(lst, simple(N_FLOAT)); break;
 	case DataType::dtDOUBLE: append(lst, simple(N_DOUBLE)); break;
@@ -3284,6 +3301,8 @@ static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &r
 		case DataType::dtUINT32: return { N_UNSIGNED, N_INT };
 		case DataType::dtINT64:  return { N_LONG };
 		case DataType::dtINT32:  return { N_INT };
+		case DataType::dtINT128: return { N_INT128 };
+		case DataType::dtUINT128: return { N_UNSIGNED, N_INT128 };
 		default:                 return { N_LONG };
 		}
 	}
@@ -8182,7 +8201,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// turns it into an undefined external symbol at MIR-link.
 				// So skip the proto for them. (__builtin_va_arg has its
 				// own translation path above.)
-				if (tcf->var.name.compare(0, 13, "__builtin_va_") != 0)
+				if (!is_c2mir_builtin_call_name(tcf->var.name))
 					referenced_funcs.insert(callee_name);
 				func_id = id(callee_name.c_str(), tb);
 			}

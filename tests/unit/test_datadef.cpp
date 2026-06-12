@@ -1546,8 +1546,18 @@ TEST_SUITE("type table (typeid) identity layer") {
             if ( dd )
                 CHECK(dd->type_id == s);
         }
-        // reserved-but-unbacked slots resolve NULL until P0 lands
-        CHECK(madc_primitive_for_slot(MADC_TYPEID_INT128) == (DataDef *)NULL);
+        // P0: 128-bit integer slots are backed (16-byte, integer, align 16)
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_INT128) == &ddINT128);
+        CHECK(madc_primitive_for_slot(MADC_TYPEID_UINT128) == &ddUINT128);
+        CHECK(ddINT128.size == 16);
+        CHECK(ddUINT128.size == 16);
+        CHECK(ddINT128.alignment() == 16);
+        CHECK(ddINT128.is_integer());
+        CHECK(ddUINT128.is_integer());
+        CHECK(!ddINT128.is_real());
+        CHECK(!ddINT128.is_unsigned());
+        CHECK(ddUINT128.is_unsigned());
+        // reserved-but-unbacked slots resolve NULL until their P0 slice lands
         CHECK(madc_primitive_for_slot(MADC_TYPEID_LONG_DOUBLE) == (DataDef *)NULL);
         // dynamic value kinds have no compiler DataDef
         CHECK(madc_primitive_for_slot(MADC_TYPEID_TEXT) == (DataDef *)NULL);
