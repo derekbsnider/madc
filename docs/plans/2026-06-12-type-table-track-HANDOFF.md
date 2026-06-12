@@ -1,26 +1,34 @@
 # HANDOFF — type-table/value-ABI track + package-C globals; next = verify branch, then string call marshalling
 
-> **STATUS UPDATE 2026-06-12 (same day, later) — PACKAGE-C INCREMENT 2 EXECUTED** on
-> `feature/eval-string-call-claude` (3 commits: MIR-fatal containment /
-> const-char* binding fold / text_object call marshalling). The eval-globals
-> branch was MERGED earlier (queue item 1 done; CHANGELOG entry at merge).
-> All 5 targeted skips now pass — eval char* (:221) was a STALE skip (fixed
-> by increment 1's __madc_global_init); string bindings (:543) were an
-> undefined-import MIR_link fatal that EXITED THE HOST (now: CirJitSession
-> contains MIR fatals via MIR_set_error_func+longjmp, and constant char*
-> binding reads fold to string literals in CirBuilder — the int-fold
-> analogue); call std::string args (:1638) pass as borrowed by-value blobs
-> (callee emits no param dtor), string returns (:1656) read the hidden
-> __retbuf live object, C-API (:1678) rides the same path. Host carrier
-> type named ONLY via `madc_text_carrier` (new, madc_mangle.h — the
-> sanctioned std:: home; `\bstring_[a-z]` and `sizeof(std::` are gate-banned
-> in production code — name marshalling identifiers in the text_* family).
-> Gates at branch head: units 112/0/30, fulltest 577/0/0/18 exit 0 + both
-> gates GREEN, torture 1567 failset NAME-IDENTICAL (8 truthful
-> runtime→compile reclassifications: undefined-import tests previously died
-> via MIR's own exit(1)), SMAUG --project soak ready+124. NEXT = queue item
-> 3: register_function (~8 skips, host→script trampolines on the 32-byte
-> value ABI). NOTE: claude_status.json head/branch fields predate the
+> **STATUS UPDATE 2026-06-12 (same day, later) — INCREMENT 2 REDIRECTED, USER
+> DESIGN DIRECTION.** On `feature/eval-string-call-claude`: the MIR-fatal
+> containment (ed81566: CirJitSession arms MIR_set_error_func+longjmp — a bad
+> module can NEVER exit() an embedding host; 8 torture undefined-import tests
+> truthfully reclassify runtime→compile, failset names IDENTICAL) and the
+> const-char* binding fold (5de2425: host bindings fold to string literals,
+> the int-fold analogue) STAND. The text_object/madc_text_carrier call
+> marshalling was REVERTED (ba0697f reverts 4dffaf6): it put std::string ABI
+> knowledge (sizeof, bit-copy, manual dtor) in HOST code — caught by the user
+> as exactly the hardcoding the campaign retires. THE PRINCIPLE (user,
+> emphatic): std::string/containers are header-defined classes like any user
+> class, NOT primitives — no per-class helpers ANYWHERE; if it isn't a C/C++
+> keyword it must not be tokenized; #include is the entire integration cost.
+> Dead lexer keyword_map.erase("vector"/"map"/"set") relics deleted same day.
+> **REVISED QUEUE** (user-agreed): (1) madc::value WRAPPER REWORK — drop
+> std::string _string/_bytes members, class becomes thin RAII wrapper over
+> the 32-byte madc_value struct (the design doc's deferred phase; needs
+> array/object CELL design in the C runtime; as_string() const-ref API must
+> change; ~54 as_string sites / ~17 files incl. ns_*, madcdat drivers —
+> re-enable madcdat for final validation); (2) shim/trampoline machinery =
+> register_function foundation — per-function adapters SYNTHESIZED through
+> the normal CIR pipeline, uniform madc_value in/out, class params
+> constructed/destructed via ordinary header-resolved ctors, return
+> conversion via header-declared overloads (host knows ZERO class ABI);
+> (3) string call marshalling falls out of (2) — re-unskip :1638/:1656/:1678
+> then. Tests :221/:543 pass and STAY unskipped (containment+fold);
+> a new containment regression test pins the no-host-exit contract.
+> Gates after revert+cleanup: units 109/0/33, fulltest+torture per the
+> validation log. NOTE: claude_status.json head/branch fields predate the
 > eval-globals merge — sync at next track milestone per mirror-sync cadence.
 
 Date: 2026-06-12 (same-day successor to `2026-06-12-strict-equality-HANDOFF.md`,
