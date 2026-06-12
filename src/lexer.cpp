@@ -1006,6 +1006,7 @@ void Program::_tokenizer_init()
     _include_stdio = false;
     _include_string = false;
     included_files.clear();
+    include_guard_by_file.clear();
     pending_auto_include_headers.clear();
     pending_auto_include_identifiers.clear();
     suppress_auto_include_scan = false;
@@ -1286,6 +1287,61 @@ void Program::_tokenizer_init()
 	m.body = "((void)(__addr))";
 	macro_map["__builtin_prefetch"] = m;
     }
+    // FP classification builtins (type-generic compiler magic; real <math.h>
+    // C++ regions call them directly). Lowered Tier-1 onto the REAL glibc
+    // classification exports (__fpclassify*/__isnan*/__isinf*/__signbit*/
+    // __finite*), dispatched by sizeof — float subnormals would misclassify
+    // if promoted through a double-only helper. Statement-expr keeps the
+    // operand single-evaluation, matching the builtin's contract.
+    {
+	MacroDef m;
+	m.params = {"__a", "__b", "__c", "__d", "__e", "__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "int __madc_fc = (sizeof(__madc_fcx) == 4 ? __fpclassifyf(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __fpclassify(__madc_fcx) "
+		 ": __fpclassifyl(__madc_fcx)); "
+		 "__madc_fc == FP_NAN ? (__a) : __madc_fc == FP_INFINITE ? (__b) "
+		 ": __madc_fc == FP_NORMAL ? (__c) : __madc_fc == FP_SUBNORMAL ? (__d) : (__e); })";
+	macro_map["__builtin_fpclassify"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "sizeof(__madc_fcx) == 4 ? __isnanf(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __isnan(__madc_fcx) : __isnanl(__madc_fcx); })";
+	macro_map["__builtin_isnan"] = m;
+    }
+    {
+	// __isinf* return the SIGN (+1/-1) for infinities, 0 otherwise —
+	// exactly __builtin_isinf_sign's contract.
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "sizeof(__madc_fcx) == 4 ? __isinff(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __isinf(__madc_fcx) : __isinfl(__madc_fcx); })";
+	macro_map["__builtin_isinf_sign"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "sizeof(__madc_fcx) == 4 ? __finitef(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __finite(__madc_fcx) : __finitel(__madc_fcx); })";
+	macro_map["__builtin_isfinite"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "int __madc_fc = (sizeof(__madc_fcx) == 4 ? __fpclassifyf(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __fpclassify(__madc_fcx) "
+		 ": __fpclassifyl(__madc_fcx)); __madc_fc == FP_NORMAL; })";
+	macro_map["__builtin_isnormal"] = m;
+    }
+    // (The IEEE quiet-comparison builtin family — isgreater/isless/
+    // isunordered/… — is defined further below; quiet `<`/`>` are already
+    // their correct lowering.)
     // __builtin_constant_p(expr) — always return 0 (not a constant)
     {
 	MacroDef m;
@@ -1715,6 +1771,113 @@ std::string Program::resolve_include_next_path(const std::string &incfile)
     return incfile; // not found — will fail at open
 }
 
+// Detect the classic include guard of a header file: the first significant
+// line is `#ifndef NAME` (or `#if !defined(NAME)`) and its matching `#endif`
+// closes the file with nothing significant after it. Returns the guard macro
+// name, or "" when the file is NOT fully guard-wrapped (e.g. glibc's
+// bits/mathcalls.h, which is INTENTIONALLY included multiple times with a
+// different _Mdouble_ each pass).
+static std::string detect_include_guard(const std::string &file_path)
+{
+    std::ifstream in(file_path.c_str());
+    if ( !in )
+	return std::string();
+    std::string guard;
+    int depth = 0;
+    bool seen_open = false;     // saw the opening #ifndef
+    bool closed = false;        // matching #endif reached (depth back to 0)
+    bool in_block_comment = false;
+    std::string line;
+    while ( std::getline(in, line) )
+    {
+	// Fold line continuations so a split directive reads whole.
+	while ( !line.empty() && line.back() == '\\' && in )
+	{
+	    std::string cont;
+	    if ( !std::getline(in, cont) )
+		break;
+	    line.pop_back();
+	    line += cont;
+	}
+	// Strip comments for significance testing.
+	std::string sig;
+	for ( size_t i = 0; i < line.size(); ++i )
+	{
+	    if ( in_block_comment )
+	    {
+		if ( line[i] == '*' && i + 1 < line.size() && line[i+1] == '/' )
+		{ in_block_comment = false; ++i; }
+		continue;
+	    }
+	    if ( line[i] == '/' && i + 1 < line.size() && line[i+1] == '*' )
+	    { in_block_comment = true; ++i; continue; }
+	    if ( line[i] == '/' && i + 1 < line.size() && line[i+1] == '/' )
+		break;
+	    sig += line[i];
+	}
+	size_t p = sig.find_first_not_of(" \t");
+	if ( p == std::string::npos )
+	    continue;
+	if ( closed )
+	    return std::string();   // significant content after the guard's #endif
+	if ( sig[p] != '#' )
+	{
+	    if ( !seen_open )
+		return std::string();   // code before any guard
+	    continue;
+	}
+	++p;
+	while ( p < sig.size() && (sig[p] == ' ' || sig[p] == '\t') ) ++p;
+	std::string dir;
+	while ( p < sig.size() && (isalpha((unsigned char)sig[p]) || sig[p] == '_') )
+	    dir += sig[p++];
+	if ( !seen_open )
+	{
+	    std::string name;
+	    if ( dir == "ifndef" )
+	    {
+		while ( p < sig.size() && (sig[p] == ' ' || sig[p] == '\t') ) ++p;
+		while ( p < sig.size() && (isalnum((unsigned char)sig[p]) || sig[p] == '_') )
+		    name += sig[p++];
+	    }
+	    else if ( dir == "if" )
+	    {
+		// `#if !defined(NAME)` / `#if !defined NAME` (whole condition)
+		std::string rest = sig.substr(p);
+		size_t b = rest.find_first_not_of(" \t");
+		if ( b != std::string::npos && rest[b] == '!' )
+		{
+		    size_t d = rest.find("defined", b);
+		    if ( d != std::string::npos )
+		    {
+			d += 7;
+			while ( d < rest.size() && (rest[d]==' '||rest[d]=='\t'||rest[d]=='(') ) ++d;
+			while ( d < rest.size() && (isalnum((unsigned char)rest[d]) || rest[d]=='_') )
+			    name += rest[d++];
+			while ( d < rest.size() && (rest[d]==' '||rest[d]=='\t'||rest[d]==')') ) ++d;
+			if ( d < rest.size() )
+			    name.clear();   // trailing condition — not a pure guard
+		    }
+		}
+	    }
+	    if ( name.empty() )
+		return std::string();
+	    guard = name;
+	    seen_open = true;
+	    depth = 1;
+	    continue;
+	}
+	if ( dir == "if" || dir == "ifdef" || dir == "ifndef" )
+	    ++depth;
+	else if ( dir == "endif" )
+	{
+	    if ( --depth == 0 )
+		closed = true;
+	}
+    }
+    return (seen_open && closed) ? guard : std::string();
+}
+
 bool Program::should_tokenize_include(const std::string &path)
 {
     std::string canonical = path;
@@ -1727,10 +1890,43 @@ bool Program::should_tokenize_include(const std::string &path)
 	    free(rp);
 	}
     }
-    if ( include_already_seen(canonical) )
-	return false;
-    included_files[canonical] = true;
-    return true;
+    if ( !path.empty() && path[0] == '<' )
+    {
+	// Named (embedded/PCH) include keys: blanket once-only — the baked
+	// sets assume single inclusion and the surviving embedded headers
+	// carry no #ifndef guards of their own.
+	if ( include_already_seen(canonical) )
+	    return false;
+	included_files[canonical] = true;
+	return true;
+    }
+    // User ("...") includes keep madc's dialect require-once semantics
+    // (pinned by tests/testincludeonce.mad). SYSTEM headers get gcc's
+    // multiple-include semantics below — they are written for gcc and
+    // rely on it (bits/mathcalls.h).
+    if ( !is_system_header_path(canonical.c_str()) )
+    {
+	if ( include_already_seen(canonical) )
+	    return false;
+	included_files[canonical] = true;
+	return true;
+    }
+    // System headers: gcc's multiple-include optimization. Skip a
+    // repeat inclusion ONLY when the file is fully wrapped in an include
+    // guard whose macro is (still) defined. A guard-less header (glibc's
+    // bits/mathcalls.h, multi-included with a different _Mdouble_ per
+    // pass) is re-tokenized every time, exactly like gcc.
+    auto gi = include_guard_by_file.find(canonical);
+    if ( gi == include_guard_by_file.end() )
+    {
+	include_guard_by_file[canonical] = detect_include_guard(canonical);
+	return true;
+    }
+    const std::string &guard = gi->second;
+    if ( guard.empty() )
+	return true;
+    return define_map.find(guard) == define_map.end()
+	&& macro_map.find(guard) == macro_map.end();
 }
 
 static bool file_exists(const std::string &path)
@@ -2190,14 +2386,32 @@ TokenBase *Program::_getToken()
 				<< "> deferred to auto-include prelude" << std::endl);
 			    return getToken();
 			}
+			// The NAME-level once-only key gates ONLY the named
+			// PCH/embedded resolutions (their baked token sets assume
+			// single inclusion and carry no #ifndef guards). A
+			// filesystem-resolved header must NOT be deduped by name:
+			// its dedup is the guard-aware full-path check below, so a
+			// deliberately guard-less header (bits/mathcalls.h, multi-
+			// included with a different _Mdouble_ per pass) re-tokenizes.
 			std::string include_key = "<" + incfile + ">";
-			if ( !should_tokenize_include(include_key) )
+			bool name_already_included = include_already_seen(include_key);
+			bool resolves_named = false;
+			std::string pch_path;
+			if ( find_filesystem_precompiled_header(*this, incfile, true, pch_path) )
+			    resolves_named = true;
+			else if ( find_precompiled_header(incfile) )
+			    resolves_named = true;
+			else if ( find_embedded_header(incfile)
+			       && is_embedded_header_allowed(incfile) )
+			    resolves_named = true;
+			if ( resolves_named && name_already_included )
 			{
 			    DBG(std::cout << "#include <" << incfile << "> skipped (already included)" << std::endl);
 			    return getToken();
 			}
-			std::string pch_path;
-			if ( find_filesystem_precompiled_header(*this, incfile, true, pch_path) )
+			if ( resolves_named )
+			    should_tokenize_include(include_key);   // record the name
+			if ( !pch_path.empty() )
 			{
 			    DBG(std::cout << "#include <" << incfile << "> (precompiled file "
 				<< pch_path << ")" << std::endl);
@@ -4140,9 +4354,91 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    }
 	    else if ( macro_map.count(word) > 0 )
 	    {
-		// Function-like macro without args in #if context → treat as defined (1)
-		out += "1";
-		changed = true;
+		// Function-like macro: expand a real invocation by collecting
+		// its balanced argument list from the expression text and
+		// substituting parameters into the body (the standard requires
+		// full macro expansion in #if). Replacing the call with a bare
+		// "1" left the argument list behind as garbage tokens —
+		// `__GNUC_PREREQ (7, 0) && !defined X` became `1 (7, 0) && …`,
+		// derailing the evaluator so the defined-operator tail
+		// produced the wrong branch (glibc's floatn-common.h
+		// __HAVE_FLOATN_NOT_TYPEDEF condition).
+		size_t j = i;
+		while ( j < expr.size() && (expr[j] == ' ' || expr[j] == '\t') )
+		    ++j;
+		if ( j < expr.size() && expr[j] == '(' )
+		{
+		    const MacroDef &m = macro_map[word];
+		    std::vector<std::string> margs;
+		    std::string marg;
+		    int mdepth = 0;
+		    ++j; // consume '('
+		    for ( ; j < expr.size(); ++j )
+		    {
+			char mc = expr[j];
+			if ( mc == '(' ) { ++mdepth; marg += mc; }
+			else if ( mc == ')' )
+			{
+			    if ( mdepth == 0 ) { ++j; break; }
+			    --mdepth; marg += mc;
+			}
+			else if ( mc == ',' && mdepth == 0 )
+			{ margs.push_back(marg); marg.clear(); }
+			else marg += mc;
+		    }
+		    if ( !marg.empty() || !margs.empty() )
+			margs.push_back(marg);
+		    auto trim = [](std::string &s) {
+			while ( !s.empty() && (s.front()==' '||s.front()=='\t') ) s.erase(s.begin());
+			while ( !s.empty() && (s.back()==' '||s.back()=='\t') ) s.pop_back();
+		    };
+		    for ( auto &a : margs ) trim(a);
+		    // Substitute params in a single pass over the body so an
+		    // argument matching a later parameter name isn't cascaded.
+		    const std::string &body = m.body;
+		    std::string expanded;
+		    size_t b = 0;
+		    while ( b < body.size() )
+		    {
+			if ( !isalpha((unsigned char)body[b]) && body[b] != '_' )
+			{ expanded += body[b++]; continue; }
+			std::string bw;
+			while ( b < body.size()
+			     && (isalnum((unsigned char)body[b]) || body[b] == '_') )
+			    bw += body[b++];
+			bool subst = false;
+			for ( size_t pi2 = 0; pi2 < m.params.size(); ++pi2 )
+			    if ( bw == m.params[pi2] )
+			    {
+				expanded += pi2 < margs.size() ? margs[pi2] : "";
+				subst = true;
+				break;
+			    }
+			if ( !subst && m.variadic
+			  && (bw == "__VA_ARGS__"
+			      || (!m.variadic_param.empty() && bw == m.variadic_param)) )
+			{
+			    for ( size_t va = m.params.size(); va < margs.size(); ++va )
+			    {
+				if ( va > m.params.size() ) expanded += ", ";
+				expanded += margs[va];
+			    }
+			    subst = true;
+			}
+			if ( !subst )
+			    expanded += bw;
+		    }
+		    out += "(" + expanded + ")";
+		    i = j;
+		    changed = true;
+		}
+		else
+		{
+		    // Function-like macro name with NO argument list: keep the
+		    // historical behavior (treated as 1 in #if context).
+		    out += "1";
+		    changed = true;
+		}
 	    }
 	    else
 		out += word; // leave as-is (will become 0 in the evaluator)

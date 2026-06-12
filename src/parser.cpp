@@ -14053,6 +14053,28 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				(fVOIDFUNC)sym);
 			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
 			}
+			else if ( fname.compare(0, 10, "__builtin_") == 0 )
+			{
+			    // GCC semantics: every __builtin_X with a libc twin X
+			    // behaves exactly as X. A builtin with no native
+			    // handling and no real __builtin_* symbol resolves to
+			    // its libc twin when the host actually exports it —
+			    // data-driven, no per-builtin list (real <math.h> C++
+			    // regions call __builtin_acosf etc. directly).
+			    std::string twin = fname.substr(10);
+			    void *tsym = is_dynamic_symbol_allowed(twin)
+				       ? dlsym(RTLD_DEFAULT, twin.c_str()) : NULL;
+			    if ( tsym )
+			    {
+				var = addFunction(fname,
+				    datatype_vec_t{dynamic_symbol_fallback_return_type(twin)},
+				    (fVOIDFUNC)tsym);
+				if ( var )
+				    if ( FuncDef *bfd = dynamic_cast<FuncDef *>(var->type) )
+					bfd->emit_symbol = twin;
+				DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " via libc twin " << twin << endl);
+			    }
+			}
 		    }
 		    if ( !var && is_implicit_complex_builtin_name(fname) )
 		    {

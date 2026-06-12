@@ -1405,6 +1405,10 @@ public:
     void add_include_dir(const std::string &dir);	// normalize (trailing '/') + append to include_paths
     void add_cli_define(const std::string &def);	// split NAME[=VALUE] (bare => "1") into cli_defines
     std::map<std::string, bool> included_files;	// #include files already tokenized (require_once semantics)
+    // realpath -> detected include-guard macro ("" = guard-less, always
+    // re-tokenize). Drives gcc's multiple-include optimization in
+    // should_tokenize_include.
+    std::map<std::string, std::string> include_guard_by_file;
     std::stack<bool> ifdef_stack;	// conditional compilation state stack
     std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
