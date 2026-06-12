@@ -9002,11 +9002,39 @@ void Program::add_madc_namespace()
     DBG(std::cout << "add_madc_namespace() registered madc:: with " << madc_ns.size() << " members" << std::endl);
 }
 
+// Declare each libmadc host-callback registration as an ordinary function
+// prototype so script calls resolve and type-check through the normal
+// machinery. The CIR builder synthesizes the trampoline DEFINITION
+// (synth_host_trampolines); the JIT session binds the trampoline's import
+// symbol to the host entry at MIR link.
+void Program::add_host_callbacks()
+{
+    auto kind_typespec = [](int k) -> typespec_t {
+	switch ( k )
+	{
+	    case HostCallbackReg::K_BOOL: return DataType::dtBOOL;
+	    case HostCallbackReg::K_INT:  return DataType::dtINT64;
+	    case HostCallbackReg::K_REAL: return DataType::dtDOUBLE;
+	    case HostCallbackReg::K_CSTR: return rtPtr(DataType::dtCHAR);
+	    default:                      return DataType::dtVOID;
+	}
+    };
+    for ( const HostCallbackReg &reg : host_callback_regs )
+    {
+	datatype_vec_t types;
+	types.push_back(kind_typespec(reg.returns));
+	for ( int k : reg.params )
+	    types.push_back(kind_typespec(k));
+	addFunction(reg.name, types, (fVOIDFUNC)NULL);
+    }
+}
+
 void Program::_parser_init()
 {
     ensure_registration_config();
     add_functions();
     add_globals();
+    add_host_callbacks();
     // populate lazy_map for included headers (actual registration deferred to first use)
     if ( _include_iostream ) add_iostream();
     if ( _include_stdio )   add_stdio();

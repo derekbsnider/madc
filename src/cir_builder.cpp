@@ -10682,6 +10682,120 @@ void CirBuilder::synth_call_shims(Program *prog,
 }
 
 // -----------------------------------------------------------------------
+// Host-callback trampolines — register_function's module half.
+// -----------------------------------------------------------------------
+// The reverse of synth_call_shim: the embedding host registered a native
+// function; scripts call it by name through an ordinary prototype
+// (Program::add_host_callbacks). Here the module gains the DEFINITION
+//   RET name(p0..pn) { return __madc_host_cb_<k>([bound,] p0..pn); }
+// — a typed pass-through call the compiler emits with the registration's
+// real low types, so there is NO runtime type dispatch anywhere (the
+// lesson of the deleted value_as/call_targetN pyramid). The import symbol
+// is bound to the host entry (the deduced form's typed adapter, or the
+// explicit form's callback itself) by the JIT session's import resolver
+// at MIR link; `bound` carries the deduced form's user callback as the
+// adapter's hidden first argument.
+node_t CirBuilder::synth_host_trampoline(Program *prog,
+					 const Program::HostCallbackReg &reg)
+{
+	typedef Program::HostCallbackReg HCR;
+	if (!prog || reg.name.empty() || reg.import_sym.empty() || !reg.entry)
+		return NULL;
+
+	// The kind's DataDef — same vocabulary add_host_callbacks declared the
+	// prototype with, so the definition matches the Pass-0.75 extern proto.
+	auto kind_dd = [&](int k) -> DataDef * {
+		switch (k) {
+		case HCR::K_BOOL: return &ddBOOL;
+		case HCR::K_INT:  return &ddINT64;
+		case HCR::K_REAL: return &ddDOUBLE;
+		case HCR::K_CSTR: return prog->getPointerType(&ddCHAR);
+		default:          return &ddVOID;
+		}
+	};
+
+	// Extern proto for the import the session binds to the host entry.
+	std::vector<ExternParam> eps;
+	if (reg.bound)
+		eps.push_back({ {N_LONG}, false });
+	for (int k : reg.params) {
+		switch (k) {
+		case HCR::K_BOOL: eps.push_back({ {N_CHAR}, false });   break;
+		case HCR::K_INT:  eps.push_back({ {N_LONG}, false });   break;
+		case HCR::K_REAL: eps.push_back({ {N_DOUBLE}, false }); break;
+		case HCR::K_CSTR: eps.push_back({ {N_CHAR}, true });    break;
+		default: return NULL;	// void parameter: not registrable
+		}
+	}
+	bool ret_cstr = reg.returns == HCR::K_CSTR;
+	std::vector<c2mir_node_code_t> ret_specs;
+	switch (reg.returns) {
+	case HCR::K_VOID: case HCR::K_CSTR: break;
+	case HCR::K_BOOL: ret_specs = {N_CHAR};   break;
+	case HCR::K_INT:  ret_specs = {N_LONG};   break;
+	case HCR::K_REAL: ret_specs = {N_DOUBLE}; break;
+	default: return NULL;
+	}
+	need_output_extern(reg.import_sym.c_str(), ret_cstr, eps, ret_specs);
+	referenced_funcs.insert(reg.import_sym);
+
+	// Body: [return] __madc_host_cb_<k>([bound,] __p0..__pn);
+	node_t cargs = list();
+	if (reg.bound)
+		append(cargs, integer((long)reg.bound));
+	char pn[16];
+	for (size_t i = 0; i < reg.params.size(); i++) {
+		snprintf(pn, sizeof(pn), "__p%u", (unsigned)i);
+		append(cargs, id(pn));
+	}
+	node_t call = node2(N_CALL, id(reg.import_sym.c_str()), cargs);
+	node_t items = list();
+	if (reg.returns == HCR::K_VOID)
+		append(items, node2(N_EXPR, list(), call));
+	else
+		append(items, node2(N_RETURN, list(), call));
+	node_t body = node2(N_BLOCK, list(), items);
+
+	// Definition signature — param_decl/type_list keep it byte-compatible
+	// with the prototype func_proto emits for the same FuncDef types.
+	node_t param_list = list();
+	if (reg.params.empty()) {
+		node_t void_spec = node1(N_LIST, simple(N_VOID));
+		node_t void_decl = node2(N_DECL, ignore(), list());
+		append(param_list, node2(N_TYPE, void_spec, void_decl));
+	}
+	for (size_t i = 0; i < reg.params.size(); i++) {
+		snprintf(pn, sizeof(pn), "__p%u", (unsigned)i);
+		node_t pd = param_decl(kind_dd(reg.params[i]), pn);
+		if (!pd) return NULL;
+		append(param_list, pd);
+	}
+	node_t decl_list = list();
+	append(decl_list, node1(N_FUNC, param_list));
+	node_t ret_type;
+	if (ret_cstr) {
+		ret_type = type_list(&ddCHAR);
+		append(decl_list, pointer());
+	} else {
+		ret_type = type_list(kind_dd(reg.returns));
+	}
+	node_t decl = node2(N_DECL, id(reg.name.c_str()), decl_list);
+	node_t out = node4(N_FUNC_DEF, ret_type, decl, list(), body);
+	CIR_NODE(out)->synth_from_origin = true;
+	return out;
+}
+
+void CirBuilder::synth_host_trampolines(Program *prog,
+					std::vector<node_t> &func_def_nodes)
+{
+	if (!prog) return;
+	for (const Program::HostCallbackReg &reg : prog->host_callback_regs) {
+		node_t t = synth_host_trampoline(prog, reg);
+		if (t) func_def_nodes.push_back(t);
+	}
+}
+
+// -----------------------------------------------------------------------
 // Top-level module translation
 // -----------------------------------------------------------------------
 
@@ -11072,6 +11186,11 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 	};
 	materialize_and_lower();
+
+	// Pass 0.73: host-callback trampolines — one module definition per
+	// libmadc register_function registration (see synth_host_trampoline);
+	// scripts call the host through these typed pass-throughs.
+	synth_host_trampolines(prog, func_def_nodes);
 
 	// Pass 0.74: host-call shims — one __madc_shim_<sym> adapter per
 	// host-callable user function (see synth_call_shim). Synthesized here so

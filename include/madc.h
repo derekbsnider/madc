@@ -1458,6 +1458,24 @@ public:
 	TopDecl() : kind(DeclKind::dkStruct), dd(nullptr), tdt(nullptr), var(nullptr), file(nullptr), line(0), origin(nullptr), decl(nullptr), struct_body(false) {}
     };
     std::vector<TopDecl> top_decls;
+    // Host-callback registrations (libmadc register_function): the embedding
+    // host exposes a native function to scripts. _parser_init declares each
+    // as an ordinary prototype (add_host_callbacks), and the CIR builder
+    // synthesizes a module trampoline definition
+    //   RET name(params) { return __madc_host_cb_<k>([bound,] params...); }
+    // whose import symbol the JIT session resolves to `entry` at MIR link.
+    // Types are carried as Kind codes (not DataDef*) so registrations
+    // survive Program re-creation across recompiles.
+    struct HostCallbackReg {
+	enum Kind { K_VOID = 0, K_BOOL, K_INT, K_REAL, K_CSTR };
+	std::string name;	 // script-visible function name
+	std::string import_sym;	 // __madc_host_cb_<k> the trampoline calls
+	uintptr_t entry = 0;	 // host address bound to import_sym at link
+	uintptr_t bound = 0;	 // deduced-form callback passed as hidden first arg (0 = none)
+	int returns = K_VOID;
+	std::vector<int> params;
+    };
+    std::vector<HostCallbackReg> host_callback_regs;
     // Names registered via a user `typedef` (populated when a typedef is
     // recorded). Used to decide when a type was written with a typedef
     // alias so CIR emits ID("alias"); distinguishes user typedefs from
@@ -1607,6 +1625,7 @@ public:
     void add_dlfcn_functions();
     void add_functions();
     void add_globals();
+    void add_host_callbacks();	// declares host_callback_regs prototypes (libmadc register_function)
     void add_iostream();	// populates lazy_map for cout, cin, cerr (via #include <iostream>)
     void add_stdio();		// placeholder for #include <stdio.h> registration
     Variable *lazy_resolve(const std::string &name);	// on-demand variable/function registration

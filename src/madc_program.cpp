@@ -2367,6 +2367,62 @@ bool install_runtime_eval_scope_globals(Program &pgm,
 
 } // namespace
 
+// One host-callback registration as stored by program/engine impls. `entry`
+// is the address the trampoline's import resolves to (the deduced form's
+// typed adapter, or the explicit form's callback itself); `bound` carries
+// the deduced form's user callback, passed as the adapter's hidden first
+// argument (0 for the explicit form).
+struct host_callback_entry
+{
+    std::string name;
+    uintptr_t entry = 0;
+    uintptr_t bound = 0;
+    program::native_signature signature;
+};
+
+static bool valid_host_callback_name(const std::string &name)
+{
+    if ( name.empty() )
+	return false;
+    if ( !(isalpha((unsigned char)name[0]) || name[0] == '_') )
+	return false;
+    for ( char c : name )
+	if ( !(isalnum((unsigned char)c) || c == '_') )
+	    return false;
+    return true;
+}
+
+static bool valid_host_callback_signature(const program::native_signature &sig)
+{
+    typedef program::native_type nt;
+    switch ( sig.returns )
+    {
+	case nt::void_type: case nt::boolean: case nt::integer:
+	case nt::real: case nt::c_string:
+	    break;
+	default:
+	    return false;
+    }
+    for ( nt p : sig.parameters )
+	if ( p != nt::boolean && p != nt::integer
+	  && p != nt::real && p != nt::c_string )
+	    return false;
+    return true;
+}
+
+static int host_kind_from_native(program::native_type t)
+{
+    typedef program::native_type nt;
+    switch ( t )
+    {
+	case nt::boolean:  return Program::HostCallbackReg::K_BOOL;
+	case nt::integer:  return Program::HostCallbackReg::K_INT;
+	case nt::real:     return Program::HostCallbackReg::K_REAL;
+	case nt::c_string: return Program::HostCallbackReg::K_CSTR;
+	default:           return Program::HostCallbackReg::K_VOID;
+    }
+}
+
 struct program::impl
 {
     struct invoke_snapshot
@@ -2399,6 +2455,10 @@ struct program::impl
     std::map<std::string, value> active_expression_bindings;
     invoke_limits current_invoke_limits;
     std::vector<void *> callback_trampolines;
+    // Host-callback registrations (register_function): installed into the
+    // fresh Program's host_callback_regs on every reset_program, so they
+    // apply to whatever is compiled next.
+    std::vector<host_callback_entry> host_callbacks;
     // The CIR->c2mir->MIR in-process JIT session behind exec/call/eval.
     // Built lazily on first run from the parsed Program; reset (with the
     // Program) on every recompile. See docs/plans/2026-06-10-libmadc-eval-
@@ -2446,6 +2506,7 @@ struct program::impl
 	    runtime_eval_child_policy_from_public(current_runtime_eval_policy);
 	pgm = eng->create_program();
 	pgm->aot_tracking = aot_mode;
+	install_host_callbacks();
 	runtime_initialized = false;
 	jit.reset();           // the old session references the old Program's tree
 	compiled_ok = false;
@@ -3317,14 +3378,9 @@ struct program::impl
 			   native_function callback,
 			   const native_signature &signature)
     {
-	(void)name; (void)callback; (void)signature;
-	// Host callbacks require the in-process JIT to thunk a script call
-	// into a native function pointer. The asmjit JIT has been removed;
-	// the CIR → c2mir → MIR backend does not yet expose a host-callback
-	// registration path. Fail cleanly until MIR-backed callbacks land.
-	return fail_runtime("host callbacks are not available without the asmjit "
-			    "JIT; MIR-backed host-callback registration is not yet "
-			    "implemented");
+	// Explicit-signature form: the trampoline calls the callback itself
+	// through the signature's low types (no adapter, no hidden arg).
+	return add_host_callback(name, (uintptr_t)callback, 0, signature);
     }
 
     bool register_cpp_callback(const std::string &name,
@@ -3332,10 +3388,56 @@ struct program::impl
 			       const native_signature &signature,
 			       native_function adapter_entry)
     {
-	(void)name; (void)callback_ptr; (void)signature; (void)adapter_entry;
-	return fail_runtime("host callbacks are not available without the asmjit "
-			    "JIT; MIR-backed host-callback registration is not yet "
-			    "implemented");
+	// Deduced form: the trampoline calls the typed adapter, passing the
+	// user callback as the adapter's hidden first argument.
+	return add_host_callback(name, (uintptr_t)adapter_entry,
+				 (uintptr_t)callback_ptr, signature);
+    }
+
+    bool add_host_callback(const std::string &name, uintptr_t entry,
+			   uintptr_t bound, const native_signature &signature)
+    {
+	if ( !valid_host_callback_name(name) )
+	    return fail_runtime("register_function: invalid function name '"
+				+ name + "'");
+	if ( !entry )
+	    return fail_runtime("register_function: null callback for '"
+				+ name + "'");
+	if ( !valid_host_callback_signature(signature) )
+	    return fail_runtime("register_function: unsupported signature for '"
+				+ name + "'");
+	for ( const host_callback_entry &e : host_callbacks )
+	    if ( e.name == name )
+		return fail_runtime("register_function: '" + name
+				    + "' is already registered");
+	host_callback_entry e;
+	e.name = name;
+	e.entry = entry;
+	e.bound = bound;
+	e.signature = signature;
+	host_callbacks.push_back(e);
+	// Applies at the next compile: every compile path begins with
+	// reset_program, which installs the registrations into the fresh
+	// Program (install_host_callbacks).
+	return true;
+    }
+
+    void install_host_callbacks()
+    {
+	pgm->host_callback_regs.clear();
+	int k = 0;
+	for ( const host_callback_entry &e : host_callbacks )
+	{
+	    Program::HostCallbackReg reg;
+	    reg.name = e.name;
+	    reg.import_sym = "__madc_host_cb_" + std::to_string(k++);
+	    reg.entry = e.entry;
+	    reg.bound = e.bound;
+	    reg.returns = host_kind_from_native(e.signature.returns);
+	    for ( program::native_type p : e.signature.parameters )
+		reg.params.push_back(host_kind_from_native(p));
+	    pgm->host_callback_regs.push_back(reg);
+	}
     }
 
     bool fail_runtime(const std::string &message)
@@ -4553,6 +4655,9 @@ struct engine::impl
     runtime_eval_policy current_runtime_eval_policy;
     invoke_limits current_invoke_limits;
     std::vector<void *> callback_trampolines;
+    // Engine-level host-callback registrations: copied into each program
+    // created from this engine (create_program), ahead of the program's own.
+    std::vector<host_callback_entry> host_callbacks;
 
     impl()
     {
@@ -4678,16 +4783,34 @@ const invoke_limits &engine::get_invoke_limits() const
     return _impl->current_invoke_limits;
 }
 
+static bool engine_add_host_callback(std::vector<host_callback_entry> &list,
+				     const std::string &name, uintptr_t entry,
+				     uintptr_t bound,
+				     const program::native_signature &signature)
+{
+    if ( !valid_host_callback_name(name) || !entry
+      || !valid_host_callback_signature(signature) )
+	return false;
+    for ( const host_callback_entry &e : list )
+	if ( e.name == name )
+	    return false;
+    host_callback_entry e;
+    e.name = name;
+    e.entry = entry;
+    e.bound = bound;
+    e.signature = signature;
+    list.push_back(e);
+    return true;
+}
+
 bool engine::register_function(const std::string &name,
 			       program::native_function callback,
 			       const program::native_signature &signature)
 {
-    (void)name; (void)callback; (void)signature;
-    // Host callbacks require an in-process JIT thunk to bridge a script
-    // call to a native function pointer. The asmjit JIT was removed; the
-    // CIR → c2mir → MIR backend does not yet expose host-callback
-    // registration. Fail cleanly until MIR-backed callbacks land.
-    return false;
+    // Explicit-signature form; applies to programs created AFTER this call
+    // (create_program copies the engine's registrations into the program).
+    return engine_add_host_callback(_impl->host_callbacks, name,
+				    (uintptr_t)callback, 0, signature);
 }
 
 bool engine::register_cpp_callback(const std::string &name,
@@ -4695,8 +4818,11 @@ bool engine::register_cpp_callback(const std::string &name,
 				   const program::native_signature &signature,
 				   program::native_function adapter_entry)
 {
-    (void)name; (void)callback_ptr; (void)signature; (void)adapter_entry;
-    return false;
+    // Deduced form: the adapter receives the user callback as its hidden
+    // first argument.
+    return engine_add_host_callback(_impl->host_callbacks, name,
+				    (uintptr_t)adapter_entry,
+				    (uintptr_t)callback_ptr, signature);
 }
 
 // Deferred: needs engine::impl to be complete.
@@ -4708,6 +4834,10 @@ program::program(engine &eng)
 		     eng._impl->current_runtime_eval_policy,
 		     eng._impl->current_invoke_limits))
 {
+    // Engine-level host-callback registrations seed the program's list (the
+    // program may add its own on top). Installed into the parse Program at
+    // the next compile's reset_program.
+    _impl->host_callbacks = eng._impl->host_callbacks;
 }
 
 } // namespace madc

@@ -73,8 +73,19 @@ void cir_finish(c2m_ctx_t c2m)
 // Import resolver for MIR linking — finds C library symbols via dlsym
 // -----------------------------------------------------------------------
 
+// Host-callback registrations of the Program being linked: the synthesized
+// trampolines (synth_host_trampoline) call __madc_host_cb_<k> imports whose
+// addresses exist only in this table — dlsym can never find them. Set around
+// MIR_link by the session/one-shot build paths (same single-threaded session
+// discipline as the fatal-containment state below).
+static thread_local const std::vector<Program::HostCallbackReg> *cir_active_host_regs = NULL;
+
 static void *cir_import_resolver(const char *name)
 {
+    if (cir_active_host_regs)
+	for (const Program::HostCallbackReg &r : *cir_active_host_regs)
+	    if (r.entry && r.import_sym == name)
+		return (void *)r.entry;
     void *addr = dlsym(RTLD_DEFAULT, name);
     if (!addr)
 	DBG(std::cerr << "cir_import_resolver: unresolved: " << name << std::endl);
@@ -299,13 +310,16 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     if (setjmp(cir_mir_error_jmp)) {
 	// A MIR fatal (e.g. "import of undefined item") longjmp'd back here.
 	cir_mir_error_armed = false;
+	cir_active_host_regs = NULL;
 	fprintf(stderr, "%s: MIR error: %s\n", source_name, cir_mir_error_text);
 	teardown();
 	return false;
     }
     cir_mir_error_armed = true;
     MIR_load_module(ctx, mod);
+    cir_active_host_regs = &prog->host_callback_regs;
     MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
+    cir_active_host_regs = NULL;
     cir_mir_error_armed = false;
     return true;
 }

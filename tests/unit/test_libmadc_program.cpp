@@ -1353,7 +1353,7 @@ TEST_SUITE("madc::program") {
 	CHECK(true);
     }
 
-    TEST_CASE("register_function exposes a host integer callback to scripts" * doctest::skip()) {
+    TEST_CASE("register_function exposes a host integer callback to scripts") {
 	madc::program pgm;
 	g_host_sum = 0;
 
@@ -1369,7 +1369,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    TEST_CASE("register_function supports string to const char* coercion" * doctest::skip()) {
+    TEST_CASE("register_function supports string to const char* coercion") {
 	madc::program pgm;
 	g_host_strlen = 0;
 
@@ -1441,7 +1441,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("register_function supports four integer parameters" * doctest::skip()) {
+    TEST_CASE("register_function supports four integer parameters") {
 	madc::program pgm;
 	g_host_sum = 0;
 
@@ -1463,7 +1463,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-	TEST_CASE("register_function deduces c-string callback signatures" * doctest::skip()) {
+	TEST_CASE("register_function deduces c-string callback signatures") {
 	madc::program pgm;
 	g_host_strlen = 0;
 
@@ -2381,7 +2381,7 @@ TEST_SUITE("compile_string / exec") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("compile_string with engine callback then call" * doctest::skip()) {
+    TEST_CASE("compile_string with engine callback then call") {
 	madc::engine eng;
 	g_host_sum = 0;
 	REQUIRE(eng.register_function("host_add", host_add));
@@ -2493,7 +2493,7 @@ TEST_SUITE("madc::engine") {
 	CHECK(r2 == 30);
     }
 
-    TEST_CASE("engine-registered callback is available to created programs" * doctest::skip()) {
+    TEST_CASE("engine-registered callback is available to created programs") {
 	madc::engine eng;
 	g_host_sum = 0;
 	REQUIRE(eng.register_function("host_add", host_add));
@@ -2505,7 +2505,7 @@ TEST_SUITE("madc::engine") {
 	CHECK(g_host_sum == 42);
     }
 
-    TEST_CASE("engine-registered callback is available to multiple programs" * doctest::skip()) {
+    TEST_CASE("engine-registered callback is available to multiple programs") {
 	madc::engine eng;
 	g_host_sum = 0;
 	REQUIRE(eng.register_function("host_add", host_add));
@@ -2524,7 +2524,7 @@ TEST_SUITE("madc::engine") {
 	CHECK(g_host_sum == 30);
     }
 
-    TEST_CASE("program created from engine can still register its own callbacks" * doctest::skip()) {
+    TEST_CASE("program created from engine can still register its own callbacks") {
 	madc::engine eng;
 	madc::program pgm = eng.create_program();
 	g_host_sum = 0;

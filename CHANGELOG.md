@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### libmadc `register_function` — host callbacks via compiler-synthesized trampolines
+
+- **Scripts can now call host-registered native functions**:
+  `program::register_function` (both the explicit
+  `native_function`+`native_signature` form and the template-deduced
+  `Ret(*)(Args...)` form) and the `engine::register_function` family are
+  implemented on the CIR backend — the asmjit-era "not yet implemented"
+  stubs are gone. Engine-level registrations are inherited by every
+  program created from the engine; programs can add their own on top.
+- **The shim machinery reversed, with zero runtime type dispatch**: each
+  registration is declared to the parser as an ordinary prototype
+  (`Program::add_host_callbacks`) and the CIR builder synthesizes the
+  module definition `RET name(params) { return __madc_host_cb_<k>(...); }`
+  (`synth_host_trampoline`, translate_module Pass 0.73) — a typed
+  pass-through the compiler emits with the registration's real low types
+  (long/double/char/char*). The deduced form's user callback rides as the
+  typed adapter's hidden first argument. No host-side dispatch pyramid.
+- **Session import overrides**: the JIT session binds the trampoline's
+  `__madc_host_cb_<k>` import to the host entry at MIR link (the import
+  resolver consults the linking Program's registrations before dlsym).
+- 8 unit tests unskipped (`test_libmadc_program` 121 passed / 22
+  skipped): explicit/deduced registration, string→`const char*` coercion,
+  four-arg callbacks, `const char*` returns, engine inheritance across
+  multiple programs, and host→script→host call chains. Remaining skips:
+  `pgm.call` directly on a host-registered name (shim coverage over
+  trampolines — queued with fork/limits), fork shapes, AOT.
+
 ### Parser known-gaps sweep: ctor-comma declarators, VLA sizeof, const array dims
 
 - **`Q a(1), b(2);` no longer hangs the parser**: the ctor-call-syntax

@@ -243,6 +243,15 @@ class CirBuilder {
 				  TokenBase *origin);
 	void synth_call_shims(Program *prog, const std::vector<TokenFunc *> &roots,
 			      std::vector<node_t> &func_def_nodes);
+	// Host-callback trampoline synthesis (translate_module): one module
+	// definition `RET name(params) { return __madc_host_cb_<k>(...); }`
+	// per Program::HostCallbackReg — the reverse of synth_call_shim. The
+	// import symbol is bound to the host entry by the JIT session's
+	// import resolver at MIR link.
+	node_t synth_host_trampoline(Program *prog,
+				     const Program::HostCallbackReg &reg);
+	void synth_host_trampolines(Program *prog,
+				    std::vector<node_t> &func_def_nodes);
 	node_t obj_default_ctor_call(const char *name, const char *ctor_sym,
 				     TokenBase *origin);
 
