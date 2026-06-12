@@ -2138,9 +2138,6 @@ TokenBase *Program::_getToken()
 			    keyword_map.erase("using");
 			    keyword_map.erase("namespace");
 			    keyword_map.erase("prefer");
-			    keyword_map.erase("vector");
-			    keyword_map.erase("map");
-			    keyword_map.erase("set");
 			}
 		    }
 		}
