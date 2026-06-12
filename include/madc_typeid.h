@@ -7,8 +7,9 @@
  *
  * Segments:
  *   0                       invalid / "no type" sentinel
- *   [1, 100)                primitives — pinned ABI slots (this enum)
- *   [100, 0x01000000)       system segment — embedded-forest types,
+ *   [1, 0x100)              primitives — pinned ABI slots (this enum);
+ *                           255 usable, a primitive id fits in a byte
+ *   [0x100, 0x01000000)     system segment — embedded-forest types,
  *                           frozen at forest build time (reserved; no
  *                           occupants until the forest lands)
  *   [0x01000000, 2^32)      project segment — per-Program user types,
@@ -60,8 +61,8 @@ enum
     MADC_TYPEID_AUTO           = 30,
     MADC_TYPEID_PRIMITIVE_LAST = 30,
 
-    MADC_TYPEID_PRIMITIVE_END  = 100,
-    MADC_TYPEID_SYSTEM_BASE    = 100
+    MADC_TYPEID_PRIMITIVE_END  = 0x100,
+    MADC_TYPEID_SYSTEM_BASE    = 0x100
 };
 
 #define MADC_TYPEID_PROJECT_BASE 0x01000000u

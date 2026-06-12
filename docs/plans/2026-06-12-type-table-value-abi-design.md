@@ -94,8 +94,9 @@ A single id→type table; **uint32 typeid** is the canonical type identity.
 
 ```
 id 0                  invalid / "no type" sentinel
-[1, 100)              primitives — pinned compile-time constants (enum), ABI-stable
-[100, 0x01000000)     system segment — types from the embedded system forest,
+[1, 0x100)            primitives — pinned compile-time constants (enum),
+                      ABI-stable; 255 usable, a primitive id fits in a byte
+[0x100, 0x01000000)   system segment — types from the embedded system forest,
                       frozen at forest build time, identical across runs
 [0x01000000, 2^32)    project segment — user typedefs/structs/classes/enums,
                       per-Program, deterministic registration order

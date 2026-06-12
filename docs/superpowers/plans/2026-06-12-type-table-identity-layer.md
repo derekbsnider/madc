@@ -4,7 +4,7 @@
 
 **Goal:** Land phase 1 of `docs/plans/2026-06-12-type-table-value-abi-design.md` — the uint32 typeid identity layer: ABI-pinned primitive slots, `DataDef::type_id`, and the per-Program project segment with lazy stamping. Zero behavior change; compiler internals keep using `DataDef*`.
 
-**Architecture:** A pure-C header (`include/madc_typeid.h`) pins the segmented id space (0 invalid · `[1,100)` primitives · `[100,0x01000000)` system-forest reserved · `[0x01000000,…)` project). One switch (`madc_primitive_for_slot`) is the single source of truth slot↔global-DataDef; `Program::type_id_for()` is the single lazy-registration chokepoint for everything else. Nothing consumes the ids yet — the value ABI (next plan) and eval package C are the consumers.
+**Architecture:** A pure-C header (`include/madc_typeid.h`) pins the segmented id space (0 invalid · `[1,0x100)` primitives · `[0x100,0x01000000)` system-forest reserved · `[0x01000000,…)` project). *(Amended post-execution 2026-06-12: primitive segment widened from `[1,100)` to `[1,0x100)` — 255 usable slots, primitive ids fit in a byte — user decision; code blocks below predate the widening.)* One switch (`madc_primitive_for_slot`) is the single source of truth slot↔global-DataDef; `Program::type_id_for()` is the single lazy-registration chokepoint for everything else. Nothing consumes the ids yet — the value ABI (next plan) and eval package C are the consumers.
 
 **Tech Stack:** C++11, tabs, doctest (`tests/unit/test_datadef.cpp`, linked with parser.o via `TESTOBJ`). Repo rules apply: capped test runs, `make -C src test` is the only target that relinks `bin/test_*`, commit messages via `git commit -F tmp/msg.txt`.
 

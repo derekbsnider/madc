@@ -12,7 +12,7 @@ MC11-IR invariant (`.claude/rules/mc11-ir.md`) and the landed lazy member-body i
 > - The Part-3 verdicts "Copy Clang: ID/offset cross-refs, separate Type tables, type-ID
 >   low-bits-for-builtins" now have an **AGREED concrete madc design**:
 >   `docs/plans/2026-06-12-type-table-value-abi-design.md`. Forest type references serialize
->   as uint32 typeids, and the table's **system segment `[100, 0x01000000)` IS this doc's
+>   as uint32 typeids, and the table's **system segment `[0x100, 0x01000000)` IS this doc's
 >   "frozen at build time" id space** — name→tree index entries resolve type identity through
 >   it. The ID/handle indirection called for under "Storage / embedding" is therefore no
 >   longer an open design item for *types* (tokens/nodes: refactor P1/P3).

@@ -14,8 +14,8 @@ high-level + lowered) and ADR-0001 (c2mir is the sole backend; direct-MIR is a s
 
 > **UPDATE 2026-06-12** — `docs/plans/2026-06-12-type-table-value-abi-design.md` is now
 > **DESIGN AGREED** and supplies the concrete *type-identity* substrate this plan assumed but
-> never specified: a segmented uint32-typeid table (primitives `[1,100)` / system-forest
-> `[100,0x01000000)` / per-Program project segment). Consequences for this plan:
+> never specified: a segmented uint32-typeid table (primitives `[1,0x100)` / system-forest
+> `[0x100,0x01000000)` / per-Program project segment). Consequences for this plan:
 > - It is the **type-side sibling of P0's value-handle scheme** (a wide literal =
 >   `typeid(__int128)` + value-pool handle — same shape, two tables).
 > - **P3's `datadef` side-array holds typeids, not `DataDef*`** — that is the moment forest
