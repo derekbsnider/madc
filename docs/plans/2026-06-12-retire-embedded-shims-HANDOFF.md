@@ -10,6 +10,57 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-12/13 (session 5) — WALL 4 CLOSED; SMAUG BOOTS ON REAL GLIBC
+
+**Commits `63e3efb` → `3b460ea` → `ea3078a`** (this branch). All three
+individually gated, zero regressions; suite improved to **552/30** (+3:
+testservent/teststat/teststatret), torture failset **byte-identical to the
+52-name pre-drift baseline** (wall 4's 20101011-1/loop-2f/loop-2g recovered),
+**SMAUG 1.8 boots end-to-end on REAL glibc and survives the soak** (the
+canonical `MadSMAUG.sh` invocation; exit 124 + ready line).
+
+1. `63e3efb` **STEP 0 namespace-stack refactor** (as planned): vector +
+   RAII `NamespaceScope`; `current_namespace()` is a read accessor; the
+   qualified-stmt flag pair is replaced by `stmt_callee_namespace` +
+   `QualifiedCalleeScope` (head-resolution override via
+   `active_cpp_lookup_namespace()`; parseCallFunc/Method clear the spent
+   override — args read the untouched lexical stack).
+2. `3b460ea` **unit-suite SEGFAULT root-caused + fixed**: Pass-1.9
+   fixpoint-materialized bodies were defined module-tail UNDECLARED
+   (both declaration passes had already run) → implicit-int K&R calls,
+   truncated pointer returns, mis-wired struct args (the __madc_shim
+   wild store; alone-pass/full-crash = stale-stack dependence). New Pass
+   1.95 emits late protos + late externs. ALSO: the eval policy gate now
+   keys on the tokenized SOURCE FILE (real header paths broke the old
+   policy-header-name exclude). Unit suite: crash → **128/4**.
+3. `ea3078a` **wall 4, the whole chain** (each a real-glibc construct the
+   shims had hidden): FF/VT = whitespace · fn-ptr members in
+   nested/anonymous aggregates (shared parse_fnptr_member_tail) · arity
+   checks via Program::call_signature_funcdef (blind (FuncDef*) casts on
+   DataDefFPTR were UB — order/cwd-shapeshifting failures) · multi-star
+   returns (dd_peel_pointers ×3 emit sites) · C++-only predefines gated
+   out of C modes (predefine_is_cpp_only) · **GNU dialects**
+   (--std=gnu89..gnu17, gnu++NN; gnu_dialect modifier) with gcc-parity
+   strictness (__STRICT_ANSI__ strict-only, __STDC_VERSION__ per C std) ·
+   project driver no-std .c → gnu17.
+
+**TRAP LEARNED (cost a 222-failure suite run, caught by the gate,
+uncommitted):** lifting __STRICT_ANSI__ from STD_MADC/C++ modes opens
+glibc's `!__STRICT_ANSI__` float regions → `__float128`/`_FloatN`
+declarations madc cannot type. The strictness lift is C-gnu-modes-only
+until __float128/_FloatN land (noted in strict_ansi_mode()'s comment).
+
+**REMAINING QUEUE:** (a) eval scope capture sweeps real-header constants
+(`_ISupper` enum constants, interference-size constexprs) into
+TokenScopeContext — emits identifiers that don't exist in C; the 4
+remaining test_libmadc_program failures (walls 3-adjacent; root-cause
+located in collect_runtime_eval_scope_variables/its CIR lowering at
+cir_builder ~8482). (b) w2a CIR faces per the session-4 banner below
+(implicit copy ctor first). (c) `cc_skfirst.json`/`cc_bis*.json` scratch
+manifests in /workspace/MadSMAUG — delete when done.
+
+---
+
 ## SESSION-5 ENTRY PLAN (decided with user 2026-06-12, end of session 4)
 
 **STEP 0 — NAMESPACE-STACK REFACTOR (do FIRST, fresh context):** replace
