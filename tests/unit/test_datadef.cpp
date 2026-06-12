@@ -1483,3 +1483,47 @@ TEST_SUITE("DataDef::same_representation (=== type-domain identity)") {
         CHECK(!a4.same_representation(u4));
     }
 }
+
+TEST_SUITE("type table (typeid) identity layer") {
+
+    // The slot numbers are ABI (design doc §7): once eval package C ships,
+    // these constants are frozen, exactly like the manglings in test_mangle.
+    TEST_CASE("primitive slot constants are pinned ABI") {
+        CHECK(MADC_TYPEID_INVALID == 0);
+        CHECK(MADC_TYPEID_VOID == 1);
+        CHECK(MADC_TYPEID_VOID_REF == 2);
+        CHECK(MADC_TYPEID_BOOL == 3);
+        CHECK(MADC_TYPEID_CHAR == 4);
+        CHECK(MADC_TYPEID_INT == 5);
+        CHECK(MADC_TYPEID_INT8 == 6);
+        CHECK(MADC_TYPEID_INT16 == 7);
+        CHECK(MADC_TYPEID_INT24 == 8);
+        CHECK(MADC_TYPEID_INT32 == 9);
+        CHECK(MADC_TYPEID_INT64 == 10);
+        CHECK(MADC_TYPEID_UINT8 == 11);
+        CHECK(MADC_TYPEID_UINT16 == 12);
+        CHECK(MADC_TYPEID_UINT24 == 13);
+        CHECK(MADC_TYPEID_UINT32 == 14);
+        CHECK(MADC_TYPEID_UINT64 == 15);
+        CHECK(MADC_TYPEID_FLOAT == 16);
+        CHECK(MADC_TYPEID_DOUBLE == 17);
+        CHECK(MADC_TYPEID_LONG_DOUBLE == 18);
+        CHECK(MADC_TYPEID_INT128 == 19);
+        CHECK(MADC_TYPEID_UINT128 == 20);
+        CHECK(MADC_TYPEID_COMPLEX_FLOAT == 21);
+        CHECK(MADC_TYPEID_COMPLEX_DOUBLE == 22);
+        CHECK(MADC_TYPEID_MAX_ALIGN_T == 23);
+        CHECK(MADC_TYPEID_LPSTR == 24);
+        CHECK(MADC_TYPEID_VOID_PTR == 25);
+        CHECK(MADC_TYPEID_CHAR_PTR == 26);
+        CHECK(MADC_TYPEID_INT_PTR == 27);
+        CHECK(MADC_TYPEID_INT32_PTR == 28);
+        CHECK(MADC_TYPEID_ARRAY == 29);
+        CHECK(MADC_TYPEID_AUTO == 30);
+        CHECK(MADC_TYPEID_PRIMITIVE_LAST == 30);
+        CHECK(MADC_TYPEID_PRIMITIVE_LAST < MADC_TYPEID_PRIMITIVE_END);
+        CHECK(MADC_TYPEID_PRIMITIVE_END == 100);
+        CHECK(MADC_TYPEID_SYSTEM_BASE == 100);
+        CHECK(MADC_TYPEID_PROJECT_BASE == 0x01000000u);
+    }
+}

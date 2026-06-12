@@ -17,6 +17,9 @@
 // standard library; no include cycle.
 #include "libmadc/value.h"
 
+// Canonical typeid segments + ABI-pinned primitive slots (pure C header).
+#include "madc_typeid.h"
+
 extern thread_local bool madc_verbose;
 #ifndef DBG
 #define DBG(x) do { if (madc_verbose) { x; } } while (0)
