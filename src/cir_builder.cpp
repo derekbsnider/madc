@@ -607,7 +607,9 @@ FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
 			fd ? fd->namespace_name.c_str() : "",
 			fd ? fd->function_display_name.c_str() : "");
 #endif
-	if (fd && !fd->namespace_name.empty() && !fd->function_display_name.empty()) {
+	// namespace_name may be EMPTY: tracked global-scope operator overload
+	// sets (::operator new/delete) key as "::name" and rank identically.
+	if (fd && !fd->function_display_name.empty()) {
 		if (FuncDef *inst = std_free_function_instantiation(tcf, fd)) {
 #if MADC_DEBUG_FNTPL
 			if (tcf && tcf->var.name.compare(0, 5, "__ns_") == 0)
@@ -636,11 +638,16 @@ FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
 			if (tcf->user_argc != (size_t)-1 && tcf->user_argc < n)
 				n = tcf->user_argc;
 			std::vector<const DataDef *> at;
-			for (size_t i = 0; i < n; i++)
-				at.push_back(tcf->parameters[i]
-					     ? tcf->parameters[i]->datadef() : NULL);
+			std::vector<bool> zeros;
+			for (size_t i = 0; i < n; i++) {
+				at.push_back(Program::operand_value_datadef(
+						tcf->parameters[i]));
+				zeros.push_back(is_zero_integer_literal(
+						tcf->parameters[i]));
+			}
 			if (Variable *w = m_prog->find_namespace_function_overload(
-					fd->namespace_name, fd->function_display_name, at))
+					fd->namespace_name, fd->function_display_name,
+					at, &zeros))
 				if (FuncDef *wfd = dynamic_cast<FuncDef *>(w->type))
 					return wfd;
 		}
@@ -989,12 +996,53 @@ node_t CirBuilder::object_cstr_arg(TokenBase *arg)
 // Coerce an argument to a class-object pointer for an object/reference
 // parameter. Existing object lvalues pass by address; a value accepted by a
 // converting ctor is materialized into a scope-lived temp.
+DataDef *CirBuilder::ref_returning_call_type(TokenBase *arg)
+{
+	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
+	if (!tcf) return NULL;
+	FuncDef *cfd = call_target_funcdef(tcf);
+	if (!tcf->returns_ref_override && !(cfd && cfd->returns_ref))
+		return NULL;
+	DataDef *r = tcf->returns();
+	if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r))
+		r = rp->base_type ? rp->base_type : r;
+	return r;
+}
+
 node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 {
 	if (!target) target = as_class_instance(arg ? arg->datadef() : NULL);
 	if (!target) target = class_behind(arg ? arg->datadef() : NULL);
 	if (!target)
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
+
+	// A REFERENCE-returning call (std::move(x), a T&/T&& method): the call
+	// VALUE already is the referenced object's address. Bind it directly
+	// (with the base-subobject offset for a derived->base upcast) — the
+	// temp-construction fallback below would re-select the same binding
+	// and recurse.
+	if (DataDef *rt = ref_returning_call_type(arg)) {
+		DataDefCLASS *rc = as_class_instance(rt);
+		if (!rc) rc = class_behind(rt);
+		if (rc && (rc == target || rc->is_or_derives_from(target))) {
+			// translate_expr AUTO-DEREFS a ref-returning call to its
+			// value; re-take the address (&* folds in c2mir).
+			node_t addr = node2(N_CAST, void_ptr_type(),
+					    node1(N_ADDR, translate_expr(arg), arg),
+					    arg);
+			size_t off = rc != target ? rc->base_offset_of(target)
+						  : 0;
+			if (off != 0 && off != (size_t)-1) {
+				node_t charp = node2(N_CAST,
+					node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+					      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+					addr, arg);
+				addr = node2(N_CAST, void_ptr_type(),
+					node2(N_ADD, charp, integer((long)off), arg), arg);
+			}
+			return addr;
+		}
+	}
 
 	// A Derived object bound to a Base parameter: C++ binds the base SUBOBJECT
 	// (reference binding / upcast) — take the object's own address and select
@@ -4336,6 +4384,19 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	if (pdc->is_object()) {
 		if (adc->is_object() && same_object_class(adc, pdc))
 			return 5;   // exact class match (copy / same object)
+		// Derived-to-base binding ([conv.ptr]/[dcl.init.ref]): a DERIVED
+		// argument binds a BASE class parameter (base copy/move ctor from
+		// a derived object — `_Tp_alloc_type(std::move(__x))` slicing the
+		// allocator base out of _Vector_impl). Ranked below exact, above
+		// a user-defined conversion.
+		if (adc->is_object()) {
+			const DataDefCLASS *ac =
+			    dynamic_cast<const DataDefCLASS *>(adc);
+			const DataDefCLASS *pc2 =
+			    dynamic_cast<const DataDefCLASS *>(pdc);
+			if (ac && pc2 && ac->is_or_derives_from(pc2))
+				return 3;
+		}
 		if (!allow_udc)
 			return -1;  // no further user-defined conversion permitted
 		const DataDefCLASS *pc = dynamic_cast<const DataDefCLASS *>(pdc);
@@ -4440,6 +4501,11 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 		// (aliasing the heap buffer -> double free).
 		if (DataDefCLASS *rc = object_returning_call_class(arg))
 			return rc;
+		// A REFERENCE-returning call argument (std::move(x), a T&/T&&
+		// returning method) denotes the referenced lvalue: unwrap the
+		// pointer representation, like the vfREFERENCE variable below.
+		if (DataDef *rt = ref_returning_call_type(arg))
+			return rt;
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
 			// A reference variable's datadef is the pointer
 			// representation (T&  ->  T*); for overload matching the
@@ -7743,6 +7809,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		TokenCast *tc = dynamic_cast<TokenCast *>(tb);
 		if (tc) {
 			DataDef *cast_dd = tc->cast_type;
+			// A cast to REFERENCE type is a no-op on the operand
+			// OBJECT ([expr.static.cast]p3 — static_cast<T&&>(x) IS
+			// x): emit the operand lvalue unchanged so `&` /
+			// ref-return lowerings still see an addressable object.
+			if (cast_dd && cast_dd->is_reference())
+				return translate_expr(tc->expr);
 			bool cast_is_ptr = cast_dd && cast_dd->is_pointer();
 			// Peel ALL pointer levels and emit that many '*' — a `(char **)`
 			// cast must not collapse to `(char *)` (which mismatches a char**
@@ -10140,9 +10212,19 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					if (stmt) prologue.push_back(stmt);
 					continue;
 				}
-				if (b->has_user_ctor)
-					prologue.push_back(base_call_at(b, ocls->base_offset_of(b),
-						b->name + "__" + b->name));
+				if (b->has_user_ctor) {
+					// Resolve the base's DEFAULT ctor through the
+					// ctor list — a RENAMED nested class registers
+					// its ctor as Class__SourceName, so the blind
+					// Class__Class composition is an undefined
+					// import there.
+					FuncDef *bctor = select_ctor_overload(
+						b, std::vector<TokenBase *>());
+					prologue.push_back(base_call_at(b,
+						ocls->base_offset_of(b),
+						bctor ? ctor_call_symbol(b, bctor)
+						      : b->name + "__" + b->name));
+				}
 			}
 		if (is_ctor)
 			class_ctor_initializer_stmts(ocls, fd, prologue, tf);

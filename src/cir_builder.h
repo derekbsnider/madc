@@ -266,6 +266,10 @@ class CirBuilder {
 	// A CALL to a madc-COMPILED function returning a non-trivial class by value
 	// (one routed through the __retbuf ABI). Returns the class, or NULL.
 	DataDefCLASS *object_returning_call_class(TokenBase *arg);
+	// The referenced type of a REFERENCE-returning call argument
+	// (std::move(x), a T&/T&& method) — the pointer representation
+	// unwrapped; NULL when arg is not a ref-returning call.
+	DataDef *ref_returning_call_type(TokenBase *arg);
 	// The class that, returned by value, must use the __retbuf ABI (a
 	// non-trivial class needing a dtor). NULL for trivial structs (native
 	// struct return). See cir_builder.cpp.

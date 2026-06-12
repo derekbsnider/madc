@@ -10,6 +10,131 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-12 (session 2) — WALL 2 CORE BROKEN; one residual
+
+**12 root-cause fixes landed this session** (WIP commit on this branch; all
+general mechanisms, no shims). The `vector<int>` chain now gets through
+`__alloc_traits` rebind, `std::move`/`__alloc_on_swap` instantiation, the
+nested `_Vector_impl`/`_Vector_impl_data` classes, and the late-declared
+`_M_impl` member. What landed, in dependency order:
+
+1. **`__builtin_addressof`** registered as a core builtin (parser
+   `populate_builtin_registry`, zero-param variadic convention, NULL sym;
+   CIR already lowered it to N_ADDR by name).
+2. **`resolve_member_chain_or_type`** — the ONE seam: every
+   `resolve_declared_type_token` branch (incl. all template-id
+   instantiation paths + the ns-qualified branch) now consumes
+   `Tmpl<Args>::member` chains. With a **non-destructive first-segment
+   probe** (member must be a REAL alias/template — expression-position
+   `Type::static_member` and if-condition heads stay untouched; the opaque
+   escape deliberately NOT probed).
+3. **Global operator overload sets rank** — the 3 gates
+   (`namespace_overload_set_accepts_more`, parse re-rank,
+   `call_target_funcdef`) accept EMPTY namespace_name (set key
+   "::operatornew"); declaration-only global operators bind Itanium
+   mangled-direct: `operator_code` got nw/na/dl/da,
+   `mangle_nested_function` got the global `_Z<code><params>` form →
+   `_Znwm`/`_ZdlPvm`/`_ZdlPvmSt11align_val_t` resolve real libstdc++.
+4. **Block-scope `using X = T;`** registers flat like a local typedef
+   ([dcl.typedef]); block-scope typedef/using no longer LEAK into
+   namespace_datatype_map (fn-template instantiation runs with
+   current_namespace set — `__alloc_on_swap`'s `__pocs`).
+5. **Ident → type re-dispatch**: an identifier naming a datatype_map type
+   followed by `::` Redo's through the ttDataType arm (post-tokenization
+   registrations: block-scope aliases in instantiated bodies).
+6. **`operand_value_datadef`** (Program static): value view of
+   reference-typed/vfREFERENCE operands; used by fn-template DEDUCTION
+   arg typing AND both overload-ranking arg lists (parser + CIR). Fixes
+   `__alloc_on_swap<allocator<int>*>` (pointer-model leak).
+7. **`_Tp&&` deduction** — fn_template_deduce_param accepts amps==2
+   (rvalue/forwarding refs deduce the VALUE type); std::move/forward
+   instantiate.
+8. **`DelimDepth` C++ angle rules** — `<` opens ONLY after a name-like
+   token (ident/type/`template`); `>` closes only when not inside parens
+   opened within the list (per-open paren-depth stack). Real
+   `integral_constant<bool, _Tp(-1) < _Tp(0)>` no longer desyncs the
+   template scanner (it ate type_traits lines 874→2141: ALL the
+   remove_*/add_*/make_* transforms were silently lost).
+9. **Reference-cast = no-op on the object**: `static_cast<T&&>(x)` parses
+   the target via getReferenceType; CIR cast arm emits the operand lvalue
+   unchanged (is_reference target). `ref_returning_call_type` helper:
+   ctor-arg typing + `object_arg_addr` bind a ref-returning call's value
+   as the object address directly (`&*` folds) — no temp-construct
+   recursion (that was a stack-overflow segfault).
+10. **Derived-to-base ctor binding** — score_arg_to_param scores a derived
+    class arg to a base class param 3 (slicing via base copy/move ctor);
+    `object_arg_addr` upcasts ref-returning-call receivers with base
+    offset.
+11. **Nested-class fixes**: struct member-type slot resolves through the
+    one shared resolver (enclosing-class aliases per [basic.scope.class]);
+    base-clause nested structs delegate to the class parser (predicate
+    pre-guard dropped); NAMED `struct Q {...};` member-less definitions no
+    longer inline as anonymous aggregates (`is_anonymous` gate); renamed
+    nested classes' FIRST ctor carries local_emit_name
+    (Class__SourceName ≠ Class__Class); implicit base default-ctor calls
+    resolve via select_ctor_overload + ctor_call_symbol (not blind
+    Class__Class composition).
+12. **Deferred ctor mem-initializers** — [class.base.init] complete-class
+    context: in-class ctor init-lists are token-CAPTURED
+    (DeferredFunctionBody::ctor_init_tokens) and parsed with the deferred
+    body at class completion via the extracted
+    `parse_ctor_initializer_list` (out-of-class ctors still parse eagerly).
+    Real `_Vector_base(..., _Vector_base&& __x) : _M_impl(...,
+    std::move(__x._M_impl))` names the member declared AFTER the ctor.
+
+Also: "Unidentified member" diagnostic now names member + class.
+
+**WHERE IT STOPS (next session entry point):** `tmp/w2c.mad`
+(`std::_Vector_base<int, std::allocator<int> > b;`) now fails ONLY with
+`cir error: no matching constructor for call to
+'_Vector_base..._Vector_impl_data(allocator_int32_t)'` — a ctor-INITIALIZER
+mis-route at CIR time: something constructs the `_Vector_impl_data` BASE
+with the `__a` allocator argument. `_Vector_impl`'s ctors registered
+correctly (o2 = `(const _Tp_alloc_type&)` verified in --dump-cir).
+Hypothesis space (verify, don't trust): (a)
+`ctor_initializer_targets_base`'s alias clause
+(`class_alias_lookup_cir(owner,"_Tp_alloc_type")` walks enclosing_class →
+_Vector_base's alias = allocator; allocator does NOT derive from
+_Vector_impl_data, so on paper it shouldn't match — CHECK what it actually
+returns, esp. whether `enclosing_class`/`base_class` are even set on the
+delegated nested class); (b) `class_ctor_initializer_stmts`' member loop
+with flattened base members; (c) `class_member_construct` default-
+constructing `_M_impl` with stale explicit args. Instrument
+ctor_initializer_targets_base with a gated fprintf and run tmp/w2c.mad.
+After w2c: w2a (`vector<int> v;`) is the next face up.
+
+**Diagnostics added (gated)**: `MADC_DEBUG_TYPEDEF_PARSE` (TokenTYPEDEF
+enter/record + USING-ALIAS record), `MADC_DEBUG_FNTPL` now also dumps
+injected instantiation tokens when env `MADC_DEBUG_FNTPL_DUMP=<substr>`
+matches the inst key. TokenTEMPLATE::parse DBG prints file:line — the
+GAP-detection one-liner that found fix 8:
+`grep "TokenTEMPLATE::parse() at" log | awk -F: '{...}'` (see git log).
+
+**Session reducer inventory (tmp/, all default-mode)**: w2a..w2s
+(vector/alloc_traits chain), w3a..w3l (__alloc_on_swap/using-alias),
+w4a..w4m (nested _Vector_impl shapes), w5a..w5i (std::move,
+remove_reference, full _Vector_impl replica w5a = GREEN), w6a/w6b
+(declval/array-spec probes — green). w2c/w2a are the live walls.
+
+**Follow-up noted (user question)**: whether madc-LOCAL template
+instantiations should be NAMED with their Itanium mangling (instead of
+`__ns_std_*`/flattened keys) for --emit=c11 diffability and
+auto-resolution of library-exported explicit instantiations — naming
+fidelity only, linkage semantics unchanged.
+
+**PRE-EXISTING unit-test crash (verified NOT this session)**:
+`bin/test_libmadc_program` SEGFAULTS in the full run (inside a JIT'd
+`__madc_shim_*` during the string-call shim tests; backtrace:
+`gdb -batch -ex run -ex bt bin/test_libmadc_program`). It kills
+`make -C src fulltest` at the UNIT phase before integration tests run.
+Verified by stashing this session's diff + rebuilding: the BASELINE
+branch crashes identically — so this branch's recorded 549/33 came from
+`bash scripts/run_tests.sh` directly. Run integration that way until
+root-caused (own wall; state-dependent: single `-tc=` runs pass, the
+full sequence crashes).
+
+---
+
 ## 0. TL;DR
 
 Branch **`feature/retire-embedded-shims-claude`** off develop @ `2832fc0`

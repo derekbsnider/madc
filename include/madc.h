@@ -1276,9 +1276,13 @@ public:
     std::map<std::string, std::vector<NamespaceFnOverload>> namespace_fn_overload_sets;
     // Rank ns::name's parsed overloads against the call's arg types; returns
     // the winning Variable, or NULL when no set (or no viable overload) exists.
+    // `zero_args` (parallel to argtypes, optional) marks literal-0 arguments —
+    // the null-pointer-constant rule ([conv.ptr]) must survive the re-rank
+    // (global ::operator== sets rank here too: testfreeop's `a == 0`).
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
-					       const std::vector<const DataDef *> &argtypes);
+					       const std::vector<const DataDef *> &argtypes,
+					       const std::vector<bool> *zero_args = NULL);
     // A parsed CONCRETE free-operator function viable for the operand types:
     // ranks the union of every "::"+opname-suffixed overload set (all
     // namespaces + the global "" key). NULL when none binds. `zero_args`
@@ -1424,6 +1428,12 @@ public:
 	Method *method;
 	std::vector<TokenBase *> body_tokens;
 	std::vector<TokenBase *> definition_tokens;
+	// A constructor's mem-initializer-list tokens (after ':', before the
+	// body '{'), parsed at class COMPLETION like the body — initializer
+	// ARGUMENTS are complete-class context ([class.base.init]): real
+	// _Vector_base's `: _M_impl(..., std::move(__x._M_impl))` names a
+	// member declared after the constructor.
+	std::vector<TokenBase *> ctor_init_tokens;
 	bool full_definition;
 	const char *file;
 	int line;
@@ -1431,6 +1441,10 @@ public:
 	DeferredFunctionBody() : var(NULL), method(NULL), full_definition(false), file(NULL), line(0), column(0) {}
     };
     std::vector<DeferredFunctionBody> *deferred_function_body_sink;
+    // Mem-initializer tokens captured for the NEXT enqueue_deferred_function_body
+    // (set by parseFunction's ':' arm when a class-body ctor defers).
+    std::vector<TokenBase *> pending_deferred_ctor_inits;
+    TokenBase *parse_ctor_initializer_list(FuncDef *func);
     // Lazy member-function-body instantiation ([temp.inst] conformance): for a
     // system-header class (typically a template instantiation), member-function
     // BODIES are NOT parsed at class-completion time — they are stashed here,
@@ -1893,6 +1907,9 @@ public:
     // DataDefPTR(A)) — the referenced class. A plain `A*` pointer operand
     // stays NULL: only the reference representation is transparent here.
     class DataDefCLASS *operand_object_class(TokenBase *operand);
+    // The VALUE view of an operand's type (reference expression / vfREFERENCE
+    // variable -> the referenced type) for deduction and overload ranking.
+    static DataDef *operand_value_datadef(TokenBase *operand);
     // Type an operator expression on a class-object operand with the operator's
     // return type (Part A of generic operator-overload support). No-op unless the
     // left operand is a class object declaring the matching binary operator, or
@@ -2108,6 +2125,9 @@ public:
 					       TokenBase *typename_tb);
     TokenDataType *resolve_class_member_type_chain(DataDefCLASS *owner,
 						   TokenBase *owner_tb);
+    TokenDataType *resolve_member_chain_or_type(TokenDataType *type_tok,
+						TokenBase *tb,
+						bool consume_class_member_chain);
     TokenDataType *resolve_declared_type_token(TokenBase *tb,
 					       bool consume_ns_tokens,
 					       bool allow_lazy_types,
