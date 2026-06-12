@@ -2,15 +2,21 @@
 
 ## STATUS (2026-06-12, live — read top-down)
 
-Branch `feature/retire-embedded-shims-claude` @ `bb8083b`. Phases 0+1
+Branch `feature/retire-embedded-shims-claude` @ `1b91e9f`. Phases 0+1
 COMMITTED+GATED (fa25e7f K&R gate / 13383b7 presents_as_cpp; fulltest 582
 green, torture 52-name baseline zero-regr, SMAUG soak green). Phase 2+3
 sweep COMMITTED as WIP (2d61556 all shims deleted +23k lines removed;
-bb8083b preprocessor root causes). Integration currently ~546/36.
+bb8083b preprocessor root causes; 1b91e9f SFINAE pre-check). Integration
+currently 546/36/0/18.
 Remaining walls, in attack order:
-1. `typename __gnu_cxx::__enable_if<...>::__type` dependent return types
-   on real <cmath> fn templates — parser swallows `typename` as a
-   namespace qualifier (blocks testmathh/testieeehugeval/m1 family).
+1. CLEARED @1b91e9f (was: typename dependent return types — now a
+   sandboxed SFINAE pre-check discards unresolvable candidates). NEW
+   first wall in the math family: param-scope leak after a mid-body
+   fn-template instantiation — real <cmath> hypot(double,double,double)
+   cmath:3571 reports "__z undeclared" (the SECOND 3-arg hypot overload,
+   right after __hypot3<float> instantiated from inside the FIRST one's
+   body; suspect instantiation save/restore state or stream position).
+   Reducer: tmp/m4.mad (#include <math.h> alone, default mode).
 2. Class-scope alias (`typedef _Bit_iterator iterator`) not visible in
    hidden-friend operator bodies — blocks real <vector>/<map>/<set>
    (testvector/map/set/containerdtor/template*/subscript*).
