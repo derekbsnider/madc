@@ -1217,6 +1217,24 @@ public:
     bool eval_void_t_detection_slot(const std::string &slot_spelling,
 	    const std::string &concrete_spelling,
 	    const std::map<std::string, DataDef *> &ded, int &score);
+    // Constant-fold ONE non-type template argument from its already-collected
+    // token vector (+ spelling), WITHOUT touching the live token stream or
+    // instantiating anything — a LOCAL cursor only. Recognizes manifest integer/
+    // bool literals and the type-trait builtins (`__has_trivial_destructor(T)`,
+    // `__is_same(A,B)`, …). Returns false (→ keep the spelling) for any form it
+    // cannot fold with certainty (dependent / value-dependent / unsupported).
+    bool fold_nontype_template_arg(const std::vector<TokenBase *> &argtoks,
+				   const std::string &spelling, int64_t &out);
+    // The canonical, identifier-safe instantiation-key fragment for ONE template
+    // argument: a foldable non-type arg renders as its normalized VALUE (so
+    // `<true>`, `<1>`, and `<__has_trivial_destructor(int)>` all key identically
+    // and select the matching specialization), else the sanitized spelling
+    // (byte-identical to the legacy behavior). EVERY template-instantiation
+    // key-build site routes through this so keys agree corpus-wide — the
+    // canonical-forms discipline (docs/plans/2026-06-13-canonical-forms-on-mc11ir-sketch.md);
+    // canonicalizing at only SOME sites shatters identity (the 202-regression).
+    std::string canonical_arg_key_fragment(const std::vector<TokenBase *> &argtoks,
+					   const std::string &spelling);
 	struct TemplateAliasDef {
 	    std::vector<std::string> typeparams;
 	    std::vector<std::vector<TokenBase *>> typeparam_defaults;

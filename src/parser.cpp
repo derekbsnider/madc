@@ -2393,7 +2393,8 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     canon += tname + "<";
     for ( size_t i = 0; i < args.size(); ++i )
     {
-	mangled += "_" + sanitize_template_fragment(args[i]);
+	mangled += "_" + canonical_arg_key_fragment(std::vector<TokenBase *>(),
+						    args[i]);
 	if ( i )
 	    canon += ",";
 	canon += args[i];
@@ -2749,7 +2750,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     }
 
     for ( size_t i = 0; i < arg_spellings.size(); ++i )
-	mangled += "_" + sanitize_template_fragment(arg_spellings[i]);
+	mangled += "_" + canonical_arg_key_fragment(arg_tokens_by_slot[i],
+						    arg_spellings[i]);
 
     // Canonical C++ spelling for Itanium mangling, built from the defining
     // namespace + template name + each arg's canonical spelling (the args were
@@ -3107,7 +3109,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	canon += tname + "<";
 	for ( size_t i = 0; i < args.size(); ++i )
 	{
-	    mangled += "_" + sanitize_template_fragment(args[i]);
+	    mangled += "_" + canonical_arg_key_fragment(arg_tokens[i], args[i]);
 	    if ( i )
 		canon += ",";
 	    canon += args[i];
@@ -3262,7 +3264,8 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	std::string canon = owner_spelling + "::" + tname + "<";
 	for ( size_t ai = 0; ai < arg_spellings.size(); ++ai )
 	{
-	    member_fragment += "_" + sanitize_template_fragment(arg_spellings[ai]);
+	    member_fragment += "_" + canonical_arg_key_fragment(
+		std::vector<TokenBase *>(), arg_spellings[ai]);
 	    if ( ai )
 		canon += ",";
 	    canon += arg_spellings[ai];
@@ -12876,6 +12879,108 @@ static bool non_type_partial_spec_arg_matches(Program &pgm,
     }
 
     return false;
+}
+
+// Read ONE type operand from an already-collected, closed token vector at cursor
+// `i`, advancing it. Read-ONLY and NON-re-entrant: a primitive / typedef type
+// token resolves directly (no live stream, no instantiation), and a trailing
+// `*` run makes it a pointer. Returns NULL if the token at `i` does not name a
+// resolvable type. (The live evaluator resolve_declared_type_token consumes the
+// global stream — must NOT be used here; that re-entrancy is what regressed.)
+static DataDef *read_local_type_operand(Program &pgm,
+		const std::vector<TokenBase *> &toks, size_t &i)
+{
+    if ( i >= toks.size() || !toks[i] )
+	return NULL;
+    DataDef *dd = NULL;
+    TokenBase *t = toks[i];
+    if ( t->type() == TokenType::ttDataType )
+	dd = &((TokenDataType *)t)->definition;
+    else if ( is_contextual_identifier_token(t) )
+    {
+	datatype_map_iter it =
+	    pgm.datatype_map.find(contextual_identifier_name(t));
+	if ( it != pgm.datatype_map.end() && it->second )
+	    dd = &it->second->definition;
+    }
+    if ( !dd )
+	return NULL;
+    ++i;
+    while ( i < toks.size() && toks[i] && toks[i]->id() == TokenID::tkMul )
+    {
+	dd = pgm.getPointerType(dd);
+	++i;
+    }
+    return dd;
+}
+
+// Fold a type-trait builtin call `NAME ( type [, type] )` at cursor `i`, reusing
+// the SAME pure DataDef predicates the live evaluator (evaluate_type_trait) uses
+// — only the parse is local-cursor instead of stream-driven. NON-re-entrant.
+static bool eval_local_type_trait(Program &pgm,
+		const std::vector<TokenBase *> &toks, size_t &i, int64_t &out)
+{
+    if ( i >= toks.size() || !toks[i] || !is_contextual_identifier_token(toks[i]) )
+	return false;
+    std::string nm = contextual_identifier_name(toks[i]);
+    int arity = type_trait_arity(nm);
+    if ( arity == 0 )
+	return false;
+    if ( i + 1 >= toks.size() || !toks[i + 1]
+      || toks[i + 1]->id() != TokenID::tkOpBrk )
+	return false;
+    size_t j = i + 2;
+    std::vector<DataDef *> targs;
+    for (;;)
+    {
+	DataDef *dd = read_local_type_operand(pgm, toks, j);
+	if ( !dd )
+	    return false;
+	targs.push_back(dd);
+	if ( j < toks.size() && toks[j] && toks[j]->id() == TokenID::tkComma )
+	{ ++j; continue; }
+	if ( j < toks.size() && toks[j] && toks[j]->id() == TokenID::tkClBrk )
+	{ ++j; break; }
+	return false;
+    }
+    if ( (int)targs.size() != arity )
+	return false;
+    bool r;
+    if ( nm == "__has_trivial_destructor" ) r = trait_has_trivial_destructor(targs[0]);
+    else if ( nm == "__is_class" )          r = trait_is_class(targs[0]);
+    else if ( nm == "__is_union" )          r = trait_is_union(targs[0]);
+    else if ( nm == "__is_enum" )           r = trait_is_enum(targs[0]);
+    else if ( nm == "__is_same" )           r = targs[0] && targs[1]
+						 && targs[0]->name == targs[1]->name;
+    else if ( nm == "__is_base_of" )        r = trait_is_base_of(targs[0], targs[1]);
+    else return false;
+    out = r ? 1 : 0;
+    i = j;
+    return true;
+}
+
+bool Program::fold_nontype_template_arg(const std::vector<TokenBase *> &argtoks,
+					const std::string &spelling, int64_t &out)
+{
+    // Manifest integer / bool literal (and the is_void<T>::value idiom): folds
+    // from the spelling alone — no stream access, no recursion.
+    if ( parse_simple_template_non_type_value(spelling, out) )
+	return true;
+    // A type-trait builtin call: fold from the collected tokens with a local
+    // cursor. Must consume the WHOLE arg (no trailing tokens) to count.
+    size_t i = 0;
+    if ( eval_local_type_trait(*this, argtoks, i, out) && i == argtoks.size() )
+	return true;
+    return false;
+}
+
+std::string Program::canonical_arg_key_fragment(
+		const std::vector<TokenBase *> &argtoks, const std::string &spelling)
+{
+    int64_t v = 0;
+    if ( fold_nontype_template_arg(argtoks, spelling, v) )
+	return sanitize_template_fragment(std::to_string(v));
+    return sanitize_template_fragment(spelling);
 }
 
 Program::TemplateDef *Program::match_partial_specialization(const std::string &name,
@@ -27591,7 +27696,10 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	canon += class_name + "<";
 	for ( size_t i = 0; i < specialization_arg_spellings.size(); ++i )
 	{
-	    mangled += "_" + sanitize_template_fragment(specialization_arg_spellings[i]);
+	    mangled += "_" + pgm.canonical_arg_key_fragment(
+		i < spec_pattern_tokens.size() ? spec_pattern_tokens[i]
+					       : std::vector<TokenBase *>(),
+		specialization_arg_spellings[i]);
 	    if ( i )
 		canon += ",";
 	    canon += specialization_arg_spellings[i];
@@ -27611,8 +27719,10 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	{
 	    std::string legacy_mangled = class_name;
 	    for ( size_t i = 0; i < specialization_arg_spellings.size(); ++i )
-		legacy_mangled += "_"
-		    + sanitize_template_fragment(specialization_arg_spellings[i]);
+		legacy_mangled += "_" + pgm.canonical_arg_key_fragment(
+		    i < spec_pattern_tokens.size() ? spec_pattern_tokens[i]
+						   : std::vector<TokenBase *>(),
+		    specialization_arg_spellings[i]);
 	    std::string legacy_registered = td.owner_class
 		? td.owner_class->name + "__" + legacy_mangled : legacy_mangled;
 	    datatype_map_iter li = pgm.datatype_map.find(legacy_registered);
