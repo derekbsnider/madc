@@ -1323,6 +1323,27 @@ void CirBuilder::object_temp_decl(DataDefCLASS *cdd, char *name_buf,
 node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 					 TokenBase *origin)
 {
+	// A by-value-returning METHOD call: class_method_call already materializes
+	// its own sret temp and passes the Itanium (sret, this, args) shape with the
+	// base-subobject adjustment. Delegate to it and take the address of the
+	// resulting object lvalue — the free-function arg build below injects no
+	// receiver, so a method (get_allocator()) was emitted one arg short
+	// ("too few arguments": get_allocator(&sret) vs the (__retbuf, __this) body).
+	// object_call_temp_addr is only reached for retbuf returns
+	// (object_returning_call_class gates on class_return_via_retbuf), so
+	// class_method_call takes its materializing sret branch and returns a temp
+	// lvalue.
+	if (call_tok && call_tok->type() == TokenType::ttCallMethod) {
+		if (TokenMember *tcm = dynamic_cast<TokenMember *>(call_tok)) {
+			node_t lv = class_method_call(tcm, origin);
+			if (lv) {
+				node_t addr = node2(N_CAST, void_ptr_type(),
+						    node1(N_ADDR, lv, origin), origin);
+				CIR_NODE(addr)->synth_from_origin = true;
+				return addr;
+			}
+		}
+	}
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(call_tok);
 	char name[40];
 	object_temp_decl(cdd, name, sizeof(name), origin);
