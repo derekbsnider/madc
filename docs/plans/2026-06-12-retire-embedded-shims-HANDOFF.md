@@ -10,6 +10,48 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 7, part 14) — reference-qualified type as a template arg (shared fold helper); w2a move_iterator wall DOWN
+
+**COMMITTED `47e2f89`, FULLY GATED.** suite 558/27 (+testreftemplatearg, failure list
+byte-identical), unit all-pass, gcc-torture 1571 / 51-name failset byte-identical
+(zero regressions), SMAUG soak green. **w2a's 2 move_iterator conditional_t errors
+CLEARED**; w2a now advances to a NEW, distinct error (see below).
+
+ROOT CAUSE: a reference-qualified TYPE is a valid template argument
+(`conditional<b, int&, long>`, `__conditional_t<…, remove_reference_t<R>&&, …>`),
+but the explicit template-arg parsers folded only a trailing `*` and threw on
+`&`/`&&` — blocking move_iterator::reference (the conditional_t went opaque).
+LEAN FIX (per the polyglot/modular steer — the `*`-fold was copy-pasted across the
+arg loops): extract ONE `Program::fold_template_arg_declarator(adt, origin)`
+(consumes `*`/`&`/`&&`, wraps via getPointerType/getReferenceType; the latter already
+collapses, and madc models all references as one DataDefREF) and replace the
+duplicated `*`-only loops in instantiate_template_use (explicit) +
+instantiate_template_alias_use (type-only). Net: LESS code + reference support
+uniformly. Reducers tmp/{rt1,rt2,rr1,mi5} pass (mi5 = exact move_iterator mirror).
+Research/design: `docs/plans/2026-06-13-reference-template-args-research.md`. Clang
+oracle confirmed the canonical type is `int&&`; clang BuildReferenceType gave the
+collapsing rule (recon at /workspace/llvm-clang-src, Apache-2.0, not vendored).
+KNOWN narrow corner (NOT on w2a path): `remove_reference<int&>::type` as a bound
+LOCAL still has fuzzy reference semantics (the pre-existing reference-typedef-local
+gap, tmp/ref3/ref4) — own slice. Further condense candidate: the 4757 builtin-trait
+`*`-fold (DataDef-based) could share a DataDef-level variant of the helper.
+
+### w2a's NEW blocker (1 error) — duplicate emission of a nested template class
+
+`tmp/w2a_emit.c` now compiles past move_iterator and fails MIR-link with **"Repeated
+item declaration …_Temporary_value___Storage___dtor"**. BOTH `vector::_Temporary_value`
+AND its nested `union _Storage` are emitted TWICE (≈ lines 984 and 1470), so their
+dtors are defined twice. The two `_Temporary_value::dtor` bodies even DIFFER — the
+first just calls `_Storage::dtor`, the second has the real
+`__alloc_traits::destroy(...)` + `_Storage::dtor` — i.e. an early/incomplete emission
+AND the full one both land. This is an EMISSION-DEDUP bug for a nested class inside a
+monomorphized template (NOT reference/template-arg related). NEXT SLICE: find why
+`_Temporary_value` (a nested class of vector used by `_M_insert_aux`/temporaries) is
+instantiated/emitted twice and dedup it (one definition per monomorphized member).
+Reducer: minimize from tmp/w2a.mad (it's the only w2a error now). w2a arc: 35 → 1.
+
+---
+
 ## STATUS UPDATE 2026-06-13 (session 7, part 13) — instantiate alias templates with a non-type param (general; w2a stays 2)
 
 **COMMITTED `4a50ae0`, FULLY GATED.** suite 557/27 (+testconditionalt, failure list
