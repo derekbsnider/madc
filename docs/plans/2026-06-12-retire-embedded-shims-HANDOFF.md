@@ -10,6 +10,66 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 7, part 11) — call a parenthesized function designator `(E)(args)` (w2a 5→4)
+
+**COMMITTED `e048e9e`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
+gcc-torture 1571 / 51-name failset byte-identical (zero regressions/swaps), SMAUG
+soak green. w2a **5 → 4** — the std::max `lvalue-required-as-assign-LHS` cleared.
+
+ROOT CAUSE (general, NOT std::max-specific): madc had no path to CALL a
+PARENTHESIZED function DESIGNATOR. libstdc++ writes `(std::max)(size(), __n)`
+(parens suppress macros/ADL). A bare function name followed by `)` decays to a
+function-designator `TokenVar` (function-to-pointer decay, parser ~14526). When
+the next `(` was processed, only `DataDefFPTR` *variables* matched the fptr-call
+branches — a `FuncDef` designator fell through to grouping, so the `(` opened a
+comma-expression and the callee was orphaned (`(std::max)(a,b)` → `(a , b)`, or
+the bare template name `__ns_std_max` leaked as an undefined import). Confirmed
+general with `tmp/mx6.mad` (`(mymax)(a,b)`, a plain user function — same drop).
+
+FIX: a new branch in parseExpression's `(`-handler (right after the var-fptr
+branch, ~15514) forms a `TokenCallFunc` when exStack top is a function-typed
+`TokenVar` AND the just-consumed token is the `)` that closed the grouping.
+That pair — `prevToken()==tkClBrk` + a function-typed designator + a following
+`(` — uniquely identifies `(E)(args)`: a bare `func(args)` never reaches here
+(the direct-call path forms the call before pushing onto exStack), and a
+function name decays to its address only when followed by a value-context token
+(`,`/`)`/`]`/operator), never `(`. Two deliberate choices: (a) NO
+`!opstack_has_pending_op` gate — the postfix call binds tighter than any pending
+binary op, so `size() + (std::max)(...)` must still form the call (the functor
+branch already omits it); (b) NO `src_node` — parseCallFunc's overload re-rank /
+template instantiation rebinds the call to the instantiated funcdef
+(`__ns_std_max__o2`) instead of pinning the un-instantiated designator name.
+Works for plain functions and namespace function templates alike.
+
+**Session arc: w2a 35 → 4** across parts 5-11. Reducers tmp/mx1..mx6.
+
+### NEXT SESSION — w2a's last 4, LINE-ATTRIBUTED (start here)
+
+Workflow unchanged: `bin/madc --emit=c11 tmp/w2a.mad > tmp/w2a_emit.c` then
+`/workspace/mir/c2m tmp/w2a_emit.c -ei 2>&1 | grep -v warning`. The 4 remaining
+(line numbers drift ~1 per slice — re-attribute each run):
+
+1. **`tmp/w2a_emit.c:~2173` — `__madc_objtmp_75` undeclared + struct/union arg**
+   (two errors on one line, in the allocator `operator=` arg of
+   `_M_move_assign`). The session-4 while/for CONDITION-TEMP placement gap: a
+   materialized temp is referenced but its decl landed in the wrong scope
+   (pending-stmt placement for a temp created inside a condition/sub-expression).
+   Likely the highest-value next target (closes 2 of the 4 at once).
+2. **`tmp/w2a_emit.c:~1627` — `conversion to non-scalar type requested`** (NEW
+   face this session; was masked behind the std::max error). Attribute the
+   construct (a cast/conversion to a class type emitted as a scalar cast); reduce
+   independently before designing.
+3. **`tmp/w2a_emit.c:~1687` — std::move / move_iterator reference return**
+   `return (*__ns_std_move(&(*operator[](...))))` in move_iterator::operator*
+   returning `__conditional_t<...>&`: std::move yields `T&&` and the
+   by-value/ref-return shape mismatches the conditional reference type. Niche.
+- Plus 2× pointer-type-param WARNINGS — verify they actually block before
+  spending a slice (likely benign).
+- Separate known bug (surfaced by w17/w19, NOT in w2a's 4): `a + N` array-decay
+  ctor arg types as INT (pointer decay missing).
+
+---
+
 ## STATUS UPDATE 2026-06-13 (session 6, part 10) — receiver on a materialized by-value method (w2a 8→5)
 
 **COMMITTED `14c0c25`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
