@@ -10,6 +10,30 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 6, part 10) — receiver on a materialized by-value method (w2a 8→5)
+
+**COMMITTED `14c0c25`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
+gcc-torture 1571 / 51-name failset byte-identical (zero regressions), SMAUG soak
+green. w2a **8 → 5** — too-few-args cluster **3 → 0**.
+
+ROOT CAUSE: `object_call_temp_addr` materialized a by-value object-returning call
+with the FREE-function arg shape (`&__retbuf` + explicit args, no receiver). For a
+METHOD (`get_allocator()` returning allocator by value via sret) that dropped the
+hidden `this`, emitting the call one arg short of its `(__retbuf, __this)` body
+("too few arguments"). FIX: a by-value-returning method call now delegates to
+`class_method_call` (which already materializes its own sret temp and passes the
+Itanium (sret, this, args) shape with base-subobject `this` adjustment);
+object_call_temp_addr addresses the resulting lvalue. Only reached for retbuf
+returns (object_returning_call_class gates on class_return_via_retbuf), so
+class_method_call always takes its materializing sret branch.
+
+**w2a REMAINING (5 errors):** 2× pointer-type-param, 1× __madc_objtmp (while/for
+condition-temp, session-4 gap), 1× lvalue-as-assign-LHS, 1× struct/union
+return-expr (std::move/move_iterator). **Session arc: w2a 35 → 5** across parts
+5-10.
+
+---
+
 ## STATUS UPDATE 2026-06-13 (session 6, part 9) — operator[] on a sub-expression receiver (w2a 11→8)
 
 **COMMITTED `9f4ce08`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
