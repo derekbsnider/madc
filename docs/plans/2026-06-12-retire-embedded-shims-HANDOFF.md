@@ -10,6 +10,53 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 6, part 5) — operator member-vs-free FIXED (w2a 35→21)
+
+**COMMITTED `0ae2a07`, FULLY GATED.** suite 556/27 (failure list byte-identical),
+unit all-pass, gcc-torture 1571 / 51-name failset byte-identical (ZERO regressions/
+swaps), SMAUG soak green (exit 124 + `Realms of Despair ready ... port 4000`). w2a
+check errors **35 → 21** — all 10 operator-overload-selection errors cleared.
+
+ROOT CAUSE (the part-4 NEXT-SLICE, now solved differently than scoped): `iter - iter`
+on `__gnu_cxx::__normal_iterator` (member ONLY has `operator-(difference_type)`)
+wrongly bound the arithmetic member. The C++-correct binding is the free cross-type
+template `__gnu_cxx::operator-(const It&, const It&)` — and it is an **inline template,
+NOT an exported symbol**, so the part-4 plan's "mangled-direct" framing was WRONG: it
+must be BODY-INSTANTIATED via the existing `lower_free_operator_to_call` →
+`instantiate_free_operator_template` path (the same machinery that handles `a+"lit"`).
+
+THREE coupled, narrowly-scoped fixes (`src/parser.cpp` + `include/datadef.h`):
+1. **`lower_free_operator_to_call` member guard** — the name-only "member owns it" bail
+   now yields ONLY when: rhs is a class object AND every same-name binary member takes a
+   non-class param (new `DataDefCLASS::binary_operator_only_takes_nonclass`) AND NO
+   reference-returning free overload exists for the op AND a retained free-operator
+   template actually binds. Else it bails exactly as before.
+2. **`resolve_canonical_type_spelling`** — resolve POINTER template args (`int*`,
+   `const int*`, `T**`); cv dropped for base resolution (madc tracks const only in a
+   type's identity, like `instantiate_template_id`); fails safe.
+3. **`free_binary_operator_return_class`** — reject dependent/nested-member returns
+   (`__normal_iterator<...>::difference_type`) and deduced returns (`auto`/`decltype`):
+   they don't name an operand class by value (else the same-type free `operator-`
+   wrongly claimed the expr, blocking lowering).
+
+**HARD-WON LESSON (regression bisect, ~4 full-suite runs):** the FIRST instinct —
+broadly relaxing the member guard to "viable member owns it" via `findMethodOverload`
+— regressed **32 tests** (string/struct/class/stream). Cause: `ostream << string` ALSO
+fits "member takes non-class param + class rhs" (member `operator<<` takes scalars), but
+its correct binding is the EXPORTED reference-returning W2 `operator<<` done by the cir
+builder — NOT a body instantiation. The ref-return guard (#1's "NO reference-returning
+free overload") is what distinguishes the two. Changes #2/#3 are independently safe
+(556/27 each); #1 is the one that needed the narrowing. Reducers: tmp/w17 (iter-const_iter),
+tmp/w18 (iter-iter), tmp/w19 (real libstdc++ iterators).
+
+**w2a REMAINING (21 errors, next slices):** 6× lvalue-required-&, 5× incompatible
+struct/union return-expr, 3× too-few-args, 3× subscripted-value-not-array, ~comparison,
+1× `__madc_objtmp` (while/for condition-temp placement, session-4 gap). Separate known
+bug surfaced by w17/w19: `a + N` array-decay arg to a ctor types as INT (pointer decay
+missing) — blocked the first w17 form. 3-way oracle usable via emit-C `safe_ident`.
+
+---
+
 ## STATUS UPDATE 2026-06-13 (session 6, part 4) — w2a: struct-by-value extern params (35 errors)
 
 **COMMITTED `bce0b07`.** Suite 556/27 (failure list byte-identical) + unit 10/10 GREEN;
@@ -18,7 +65,7 @@ by-value class params (a real-libstdc++-container category absent from the C tor
 suite), so regression is unlikely; VERIFY the failset still = 51-name baseline + SMAUG
 soak before treating bce0b07 as fully gated. w2a check errors **42 → 35**.
 
-### NEXT SLICE — FULLY SPEC'D, ready to implement on the bce0b07 base
+### ~~NEXT SLICE~~ DONE in part 5 (`0ae2a07`) — kept for the recon detail; superseded by the part-5 banner above
 **Operator overload member-vs-free mis-selection** (the remaining 10 arithmetic-arg
 errors). REDUCER `tmp/w16.mad` (g++ → `3`; madc → "incompatible argument type for
 arithmetic type parameter"). Shape: a class with BOTH a member `operator-(long)` (the
