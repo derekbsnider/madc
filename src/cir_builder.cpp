@@ -3444,12 +3444,29 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 	bool from_var = false;
 	if (tm->parent_expr) {
 		recv_type = tm->parent_expr->datadef();
+		recv_class = class_behind(recv_type);
+		if (!recv_class) return NULL;
+		// A by-value object-returning CALL receiver (`*begin()` — begin()
+		// returns the iterator by value) is a prvalue; `&call` is not an lvalue
+		// and c2mir rejects it. object_arg_addr materializes it into an
+		// addressable temp ([class.temporary]: a retbuf return via
+		// object_call_temp_addr, a trivially-copyable register return via a
+		// copy into a temp). Gated to the CALL case so an lvalue receiver keeps
+		// its direct &obj — object_arg_addr would otherwise copy a non-matching
+		// lvalue into a temp and call the method on the copy. Detected before
+		// translate_expr so the call is emitted once (inside object_arg_addr).
+		bool recv_is_ptr = recv_type && recv_type->is_pointer();
+		if (!recv_is_ptr
+		    && (tm->parent_expr->type() == TokenType::ttCallFunc
+			|| tm->parent_expr->type() == TokenType::ttCallMethod)
+		    && !ref_returning_call_type(tm->parent_expr))
+			return object_arg_addr(tm->parent_expr, recv_class);
 		recv_node = translate_expr(tm->parent_expr);
-	} else {
-		recv_type = tm->object.type;
-		recv_node = id(tm->object.name.c_str(), origin);
-		from_var = true;
+		return recv_is_ptr ? recv_node : node1(N_ADDR, recv_node, origin);
 	}
+	recv_type = tm->object.type;
+	recv_node = id(tm->object.name.c_str(), origin);
+	from_var = true;
 	recv_class = class_behind(recv_type);
 	if (!recv_class) return NULL;
 	// A NAMED object variable uses the unified addressing rule (a by-value /
