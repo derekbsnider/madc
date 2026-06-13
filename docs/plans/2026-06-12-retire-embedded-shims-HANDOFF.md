@@ -2,11 +2,189 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read this top-down. The governing process document is
+then read the "SESSION 7 CLOSE" master section directly below (it is
+self-contained for cold start; the per-part banners further down are detailed
+chronology, read them only for depth). The governing process document is
 **`madc-header-partition-handoff.md` (repo root)** — the user has had to
 re-point at it repeatedly; every decision here must trace to it. Its
 companion memory: `project_retire_embedded_shims` +
 `project_header_partition_architecture`.
+
+---
+
+# ★ SESSION 7 CLOSE — COMPREHENSIVE REHYDRATION (READ THIS FIRST) — 2026-06-13
+
+## 0. One-paragraph orientation
+
+madc is a C/C++ dialect compiler whose front end builds a `cir_node` tree
+(== c2mir `node_t`, the MC11-IR) fed to c2mir → MIR → JIT (sole backend; see
+`docs/adr/0001`). The **retire-embedded-shims campaign** deleted all hand-rolled
+"bucket-3" stdlib shims so madc now parses the REAL installed glibc + libstdc++
+(`/usr/include/c++/13`) in EVERY mode incl. default (default mode `presents_as_cpp()`).
+Every integration failure since is a *latent real-header bug* the shims used to
+hide. The campaign's live proving ground is `tmp/w2a.mad` =
+`#include <vector>\nint main(){ std::vector<int> v; return 0; }` — getting the real
+`std::vector<int>` to compile+run end-to-end. **This session drove w2a from 35
+c2m check-errors down to 1.**
+
+## 1. Live state (verify with `bash scripts/resume.sh`)
+
+- **Branch:** `feature/retire-embedded-shims-claude` @ **`74f061e`** (LOCAL ONLY —
+  never push; develop untouched). 
+- **MIR fork** `/workspace/mir` @ `5df536f` == `MIR_COMMIT` pin → satisfied.
+- **All gates GREEN** at HEAD: integration suite **558 passed / 27 failed / 18
+  skipped** (the 27 failures are the documented latent-real-header set, byte-identical
+  to the session baseline `tmp/baseline_fails_s7.txt`); unit (`make -C src test`)
+  all-pass; gcc-torture **1571 passed / 51-name failset byte-identical** to
+  `docs/parity/torture-failset-current.txt` (ZERO regressions); SMAUG soak green
+  (exit 124 + "Realms of Despair ready ... port 4000").
+- Build: `make -C src` (clang++ by default). bin at `bin/madc`.
+
+## 2. What session 7 landed (parts 11-14, each individually FULLY GATED)
+
+| Commit | What | w2a |
+|---|---|---|
+| `e048e9e` | **call a parenthesized function designator `(E)(args)`** — `(std::max)(a,b)` (libstdc++ parenthesizes to suppress macros/ADL) was dropping the callee. New parseExpression branch keyed on `prevToken()==)` + a function-typed `TokenVar` + following `(`; no `src_node` so parseCallFunc rebinds the instantiated template funcdef. | 5→4 |
+| `8ba77dc` | **scope a non-compound if-branch's materialized temps** — new `CirBuilder::translate_branch_stmt` wraps a single-statement then/else + its temps in one block (the `true_type()` temp in `vector::_M_move_assign(false_type)` was leaking into the else block). | 4→2 |
+| `4a50ae0` | **instantiate alias templates with a non-type param** — `conditional_t`/`enable_if_t<bool,…>` were opaque placeholders; the `has_non_type_params` path of `instantiate_template_alias_use` now token-substitutes args into the alias body + resolves in an **isolated token stream** (save `tokens` / swap a fresh deque / restore — shared-stream push/drain SIGSEGV'd, reverted). +`tests/testconditionalt`. (General fix; did not itself clear w2a.) | 2→2 |
+| `47e2f89` | **reference-qualified type as a template argument** — extracted ONE `Program::fold_template_arg_declarator(adt,origin)` helper (consumes `*`/`&`/`&&`, wraps via getPointer/getReferenceType) and replaced the COPY-PASTED `*`-only folds in `instantiate_template_use` (explicit) + `instantiate_template_alias_use` (type-only). **Cleared w2a's move_iterator `conditional_t` wall.** +`tests/testreftemplatearg`. | 2→1 |
+
+Plus docs commits `554e5d2`/`38f90eb`/`97bdb9d`/`468d5d8`/`74f061e` (banners, the
+research doc, status/memory sync).
+
+## 3. THE NEXT TASK — w2a's LAST error: duplicate emission of a nested template class
+
+**Repro (this IS the minimal reducer):**
+```
+rm -f tmp/*.madh
+bin/madc --emit=c11 tmp/w2a.mad > tmp/w2a_emit.c 2>/dev/null
+/workspace/mir/c2m tmp/w2a_emit.c -ei 2>&1 | grep -v warning
+#  -> Repeated item declaration vector_int32_t_std__allocator_int32_t____Temporary_value___Storage___dtor
+```
+**Diagnosis:** `vector::_Temporary_value` AND its nested `union _Storage` are emitted
+TWICE in `tmp/w2a_emit.c` (≈ lines 984 and 1470), so `_Temporary_value___Storage___dtor`
+(and `_Temporary_value___dtor`) are DEFINED twice → MIR-link "Repeated item declaration".
+Tell-tale: the two `_Temporary_value___dtor` bodies **DIFFER** — the first just calls
+`_Storage___dtor`; the second has the real `__alloc_traits…destroy(...)` + `_Storage___dtor`.
+So this is not a trivial double-print: `_Temporary_value` is being **instantiated twice**
+(an early/incomplete instantiation AND the full one both reach emission).
+
+**Starting hypothesis (verify, don't trust):** `_Temporary_value` is a NESTED class of
+`std::vector`; it is reached twice during monomorphization and represented by TWO distinct
+`DataDefCLASS` instances that mangle to the SAME emitted symbol, so the emitter's class/func
+dedup sets miss them. Relevant machinery: `CirBuilder::emit_class_member_deps`
+(cir_builder.cpp ~3297) with `emitted_classes`/`emitting_classes`; class-method emission;
+`referenced_funcs` (cir_builder.h:43); the template monomorphization cache in parser.cpp
+(`instantiate_template_use` / `complete_pending_template_instantiations` /
+`pending_template_instantiations`). **Fix direction options:** (a) dedup emitted
+functions/classes by their EMITTED SYMBOL NAME (mangled) at the emission boundary — the
+unfakeable contract — OR (b) ensure a nested class is instantiation-cached once (find why
+`_Temporary_value` is instantiated twice and collapse to one DataDefCLASS). Prefer the
+deepest cause: if it's two instantiations, fix the cache (b); if two emissions of one
+instance, fix the emit dedup (a). Attribute with `--emit=c11` + the differing dtor bodies;
+a tighter reducer = a user template class with a nested class used by one member (to confirm
+it's general, not vector-specific).
+
+After this falls, w2a `std::vector<int> v;` should COMPILE; then RUN it
+(`bin/madc tmp/w2a.mad`) — runtime is the real milestone, and clearing the vector
+instantiation wall unblocks the ~12-test container cluster (testvector/map/set/…) +
+testmadc_ns per §3.6 below.
+
+## 4. RESEARCH — reference types as template arguments (DONE this session)
+
+Full writeup: **`docs/plans/2026-06-13-reference-template-args-research.md`**. Summary:
+- The entire move_iterator blocker reduced to ONE feature — a **reference-qualified type
+  as a template argument** (`Tmpl<int&>`, `Tmpl<T&&>`). Verified everything else already
+  works (member alias templates, gcc-13 internal `__conditional_t`, traits, `__base_ref`,
+  reference RETURN types).
+- **Recon assets (KEEP):** clang-18.1.3 binary is the **oracle** (`clang++ -Xclang
+  -ast-dump` / `-fsyntax-only`; confirmed `move_iterator<int*-iter>::reference` == `int&&`).
+  Sparse clang **frontend source** at **`/workspace/llvm-clang-src`** (55M, Apache-2.0,
+  `clang/lib/Sema` + `clang/lib/AST` + includes) — RECON ONLY, not vendored, madc stays lean.
+  Canonical reference-collapsing rule from `clang/lib/Sema/SemaType.cpp:2250`
+  `Sema::BuildReferenceType`: `LValueRef = spelledAsLValue || base isa LValueReferenceType`
+  (so `T& &`/`T& &&`/`T&& &`→`T&`; only `T&&`-of-nonref stays `T&&`). madc models ALL
+  references as one `DataDefREF` (no lvalue/rvalue split in the type) and `getReferenceType`
+  already collapses, so madc's version is simpler but correct for its pointer-model.
+- **Design principle reaffirmed by the user:** keep folding/reusing/condensing — one shared
+  helper per rule, less hard-coding, because the **polyglot** intent (one IR, many
+  source/target languages) needs a modular, general parser. The `fold_template_arg_declarator`
+  extraction is the template of this: it REMOVED duplication while adding a feature.
+
+## 5. KNOWN GAPS / SEPARATE BUGS (off the w2a path — do not conflate)
+
+- **reference-typedef/alias LOCAL binding is fuzzy/broken** (PRE-EXISTING, no templates):
+  `typedef int& RT; RT r = n; r = 7;` prints 5 not 7 ("assigning integer without cast to
+  pointer") — `tmp/ref3.mad`/`tmp/ref4.mad`. A reference reached via a typedef/alias isn't
+  given reference-BINDING semantics for a LOCAL (works for a DIRECT `int& r` and for RETURN
+  types — `tmp/ref1.mad`/`tmp/ref2.mad`). Its own slice (reference-aliased-local binding).
+- **`remove_reference<int&>::type` as a bound local** has the same fuzzy semantics (newly
+  reachable after p14; off w2a path).
+- **`a + N` array-decay** as a ctor argument types as INT (pointer decay missing in that
+  position) — surfaced by w17/w19, not in w2a.
+- **Caught-instantiation stderr noise** (wall-7 class): the p13 isolated resolve's caught
+  exceptions still PRINT ("Expecting…type<…>") because `throwbuf::sync` writes
+  unconditionally; exit-code-neutral. A discarded candidate should print nothing — fix at
+  emission/diagnostics suppression.
+- **Further condense candidate:** the builtin-trait `*`-fold (parser.cpp ~4757,
+  `__is_pointer(int*)`) is DataDef-based and could share a DataDef-level variant of
+  `fold_template_arg_declarator`. Continues the fold/reuse mandate.
+
+## 6. METHOD + GATES (mandatory, unchanged)
+
+Per fix: reduce in `tmp/` (DEFAULT mode — no flags — is the campaign point; real headers)
+→ attribute with the **3 oracles** (`clang++ -fsyntax-only`/`-ast-dump`,
+`gcc -S -fverbose-asm`, stock `/workspace/mir/c2m FILE -ei`; for madc-path bugs use
+`--dump-cir`, NOT emit-C-as-truth) → DEEPEST-layer fix, no shims/special-cases, extract a
+shared helper over copy-paste → rebuild (`make -C src`) → re-probe reducers → FULL GATE,
+ONE heavy job at a time, capped `( ulimit -t 3600; timeout 3000 … )`:
+1. `bash scripts/run_tests.sh` → diff `^FAIL:` list vs `tmp/baseline_fails_s7.txt` (must be
+   byte-identical; pass count may only rise).
+2. `make -C src test` (unit).
+3. `python3 scripts/run_gcc_testsuite.py` → basename failset diff vs
+   `docs/parity/torture-failset-current.txt` (51 names, byte-identical).
+4. SMAUG soak: `cd /workspace/MadSMAUG/runtime/area && ( ulimit -t 120; timeout 50
+   /workspace/madc/bin/madc --project /workspace/MadSMAUG/compile_commands.json -lcrypt 4000 )`
+   — exit 124 + ready line = good.
+Then commit on THIS branch (Co-Authored-By: Claude Opus 4.8) and sync the mirrors
+(claude_status.json head line REPLACED not appended; this handoff banner; memory
+`project_retire_embedded_shims` + MEMORY.md index — MEMORY.md must stay < ~24985 bytes).
+Background long runs (`run_in_background`), FULL logs to `tmp/` (never `| tail` — truncates
+the failset). After killing a run, `pgrep -f run_tests|run_gcc|c2m|bin/madc` to confirm no
+leftovers before restarting.
+
+## 7. REDUCER INVENTORY (tmp/ is gitignored — recreate if the tree was reset)
+
+- `tmp/w2a.mad` — `#include <vector>\nint main(){ std::vector<int> v; return 0; }` (THE wall).
+- `tmp/mi2.mad` — make_move_iterator + `*mi` (move_iterator operator* instantiation).
+- `tmp/mi5.mad` — exact gcc-13 move_iterator mirror (internal `__conditional_t` member-alias
+  template + member-alias base_ref + `remove_reference<base_ref>::type&&` true branch); PASSES.
+- `tmp/rt1.mad` `conditional_t<true,int&&,long>`, `tmp/rt2.mad` `conditional_t<true,int&,long>`,
+  `tmp/rr1.mad` `remove_reference<int&>::type` — reference-arg parse; PASS.
+- `tmp/ct1..ct5.mad` — conditional_t / is_reference probes. `tmp/mat1.mad` member alias
+  template, `tmp/ic1.mad` internal __conditional_t form — PASS.
+- `tmp/ref1..ref4.mad` — reference local/return/typedef-binding (ref1/ref2 pass; ref3/ref4
+  show the pre-existing typedef-local gap). `tmp/mi3.mad`/`tmp/mi4.mad` bridge reducers.
+- WIP patches (NOT committed, in tmp/): `conditional_t_alias_wip.patch` (superseded by
+  4a50ae0), `reftemplatearg_wip.patch` (the one-loop version, superseded by 47e2f89's helper).
+
+## 8. CAMPAIGN CONTEXT (condensed; full detail in §0-§8 of the original handoff below)
+
+- **Partition model** (`madc-header-partition-handoff.md`): madc owns ONLY bucket-1/2
+  freestanding/compiler headers (float/limits/stdarg/stdbool/stddef/stdint) + madc's own
+  `ns_*`; ALL glibc + ALL libstdc++ are consumed REAL/unmodified (bucket 3, DELETED shims).
+  Authority for bucket 1/2 = `gcc -print-file-name=include`.
+- **User rulings (binding):** no shims / no per-case hacks / fix at the deepest layer
+  (categorical); K&R recovery only under explicit `--std=c78..c17`; don't lift
+  `__STRICT_ANSI__` from STD_MADC/C++ modes until `__float128`/`_FloatN` land (it opens
+  glibc float regions madc can't type — cost a 222-fail run once); develop is LOCAL/stable,
+  promote only at the gcc-torture parity gate (`.claude/rules/branching.md`).
+- **Walls already cleared this campaign:** K&R gate, presents_as_cpp, the shim sweep, PP
+  root causes, SFINAE pre-check, wall-4 (sys headers / SMAUG boots on real glibc), eval
+  scope capture, and the session-7 w2a faces above.
+- **Merge gate (do NOT merge to develop before ALL):** fulltest 100% green + both check
+  gates + P1 partition gate · torture zero-regr vs 51-name baseline · SMAUG soak ·
+  `bash scripts/run_tests.sh --exe` · mirrors synced · user approval.
 
 ---
 
