@@ -29,16 +29,14 @@ c2m check-errors down to 1.**
 
 ## 1. Live state (verify with `bash scripts/resume.sh`)
 
-- **Branch:** `feature/retire-embedded-shims-claude` @ **`2a46bed`** (LOCAL ONLY —
+- **Branch:** `feature/retire-embedded-shims-claude` @ **`4cde0e2`** (LOCAL ONLY —
   never push; develop untouched). 
 - **MIR fork** `/workspace/mir` @ `5df536f` == `MIR_COMMIT` pin → satisfied.
-- **All gates GREEN** at HEAD: integration suite **558 passed / 27 failed / 18
-  skipped** (FAIL list byte-identical to `tmp/baseline_fails_s7.txt`; the new
-  `tests/testnestedtemplatedtor` from `2a46bed` was added after this run's file-list
-  snapshot → next full run reads **559 passed**); unit (`make -C src test`) all-pass;
-  gcc-torture **1571 passed / 51-name failset byte-identical** to
-  `docs/parity/torture-failset-current.txt` (ZERO regressions); SMAUG soak green
-  (exit 124 + "Realms of Despair ready ... port 4000").
+- **All gates GREEN** at HEAD: integration suite **559 passed / 27 failed / 18
+  skipped** (FAIL list byte-identical to `tmp/baseline_fails_s7.txt`; +`testnestedtemplatedtor`);
+  unit (`make -C src test`) all-pass; gcc-torture **1571 passed / 51-name failset
+  byte-identical** to `docs/parity/torture-failset-current.txt` (ZERO regressions);
+  SMAUG soak green (exit 124 + "Realms of Despair ready ... port 4000").
 - Build: `make -C src` (clang++ by default). bin at `bin/madc`.
 
 ## 2. What session 7 landed (parts 11-14, each individually FULLY GATED)
@@ -53,40 +51,42 @@ c2m check-errors down to 1.**
 Plus docs commits `554e5d2`/`38f90eb`/`97bdb9d`/`468d5d8`/`74f061e` (banners, the
 research doc, status/memory sync).
 
-## 3. THE NEXT TASK — w2a's 2 remaining faces (dtor-dedup wall CLEARED @ `2a46bed`)
+## 3. THE NEXT TASK — w2a: member-template instantiation during LATE materialization
 
-**The duplicate-emission wall is DOWN.** Root cause was NOT two instances (the part-14
-hypothesis (b) was wrong — verified by pointer: ONE `DataDefCLASS`): a nested class inside
-a template keeps its *source-tag* `method_map` keys (`Inner`/`~Inner`) while its composed
-name becomes `Outer_int32_t__Inner`, so every `method_map.find("~"+cdd->name)` dtor lookup
-MISSED → `class_has_own_user_dtor` false → the synth-dtor pass wrongly fired → dtor emitted
-twice. Fix = name-independent `CirBuilder::class_own_dtor` (the `~`-keyed `method_map` entry
-whose Variable is also in `cdd->methods`; inherited dtors live in `method_map` ONLY).
-Library-independent (13-line pure-user reducer `tmp/dup3.mad` reproduced it). Regression
-test `tests/testnestedtemplatedtor`.
+**Prior walls CLEARED this session** (parts 15-17, all gated): dtor double-emission
+(`2a46bed`), EAGER template member-body instantiation (`f76c07c` — the deep one), and
+late free-fn-template emission (`4cde0e2`). w2a's 35→1 then advanced past the dtor wall,
+the integer-const-expr (`__move_storage`) + `__alloc_traits::construct` faces (both were
+in NEVER-ODR-USED members, now correctly NOT instantiated), and `std::_Destroy`.
 
-**Repro for the 2 NEW faces:**
+**Repro (current single face):**
 ```
 rm -f tmp/*.madh
 bin/madc tmp/w2a.mad 2>&1 | grep -v -i 'warning\|setrlimit'
-#  -> tmp/w2a.mad:2:28: Expecting integer constant expression
-#  -> MIR error: import of undefined item __alloc_traits_std__allocator_int32_t__int32_t__construct
+#  -> MIR error: import of undefined item allocator_traits_std__allocator_int32_t___destroy
 ```
-Both are NEW (previously masked behind the dup-emission error) and UNRELATED to dtors:
-1. **`Expecting integer constant expression`** at the `std::vector<int> v;` decl site —
-   a constant-expression context inside the instantiated vector body isn't folding (likely
-   an array bound / `_S_*` constexpr / `sizeof`-style operand). Reduce independently:
-   attribute WHICH constant-expr in the monomorphized body, then fold it at sema.
-2. **undefined `__alloc_traits…construct`** — `std::allocator_traits<…>::construct` is a
-   member TEMPLATE that is referenced but never instantiated/emitted (cf. the `destroy`
-   sibling that DOES emit). Find why `construct` isn't reached by the deferred-lazy-body
-   fixpoint (`referenced_funcs` miss, or member-template-instantiation gap) — the
-   `getline`/`std_free_function_instantiation` + `parse_deferred_lazy_body` machinery is
-   the precedent. Likely the higher-value of the two (a real member-template-call gap).
+**Diagnosis:** `std::vector<int>`'s dtor is now lazily materialized; it calls `std::_Destroy`
+(free fn template, now emitted via the part-17 drain); `_Destroy`'s body calls
+`allocator_traits<allocator<int>>::destroy(alloc, p)` — a static **MEMBER TEMPLATE** of an
+instantiated class template. In `tmp/w2a_emit.c` `_Destroy__o2` is defined (~line 804) and
+calls `allocator_traits_std__allocator_int32_t___destroy(...)`, but that symbol is emitted
+only as `extern void …___destroy();` (EMPTY params, NO body, ~line 633) — the member-template
+call was lowered to a bare name without instantiating it. The cascade continues:
+`destroy` → `_S_destroy` (SFINAE overloads, alloc_traits.h:284/291) → `allocator<int>::destroy`.
 
-After BOTH fall, `std::vector<int> v;` should COMPILE; then RUN it (`bin/madc tmp/w2a.mad`)
-— runtime is the milestone, and clearing the vector instantiation wall unblocks the
-~12-test container cluster (testvector/map/set/…) + testmadc_ns per §3.6.
+**The slice:** complete the LATE-materialization machinery so a member-template call inside a
+lazily-materialized body instantiates the member template (like the part-17 drain did for FREE
+function templates). This is the member-template analogue. Likely ONE mechanism that
+cascade-resolves destroy + _S_destroy + allocator::destroy (all member-template/member calls
+through the same late path). Investigate why the call emits a bare extant-less extern instead
+of instantiating — the member-template instantiation that fires at normal parse time does NOT
+fire when the calling body is re-parsed by `parse_deferred_lazy_body` in the cir fixpoint.
+Caveat: reducing this is finicky — `tmp/mt1.mad` (free-fn-tmpl → member-tmpl of instantiated
+class tmpl, eager) hit a DIFFERENT bug ("undeclared mydestroy"), so the area has multiple
+interacting issues; attribute against the REAL w2a path with `--emit=c11`, not just reducers.
+
+After it: `std::vector<int> v;` should COMPILE, then RUN it (`bin/madc tmp/w2a.mad`) — the
+milestone — unblocking the ~12-test container cluster + testmadc_ns per §3.6.
 
 ## 4. RESEARCH — reference types as template arguments (DONE this session)
 
@@ -183,6 +183,45 @@ leftovers before restarting.
 - **Merge gate (do NOT merge to develop before ALL):** fulltest 100% green + both check
   gates + P1 partition gate · torture zero-regr vs 51-name baseline · SMAUG soak ·
   `bash scripts/run_tests.sh --exe` · mirrors synced · user approval.
+
+---
+
+## STATUS UPDATE 2026-06-13 (session 8, parts 16-17) — EAGER→LAZY template member instantiation + late free-fn emission (w2a advances deep)
+
+**COMMITTED `f76c07c` (part 16) + `4cde0e2` (part 17), each FULLY GATED** (suite 559/27
+byte-identical, unit all-pass, gcc-torture 1571 / 51-name failset byte-identical, SMAUG
+soak green).
+
+**Part 16 (`f76c07c`) — the deep one. Template member bodies now instantiate LAZILY**
+([temp.inst]p2: implicit class instantiation instantiates member DECLARATIONS, not
+DEFINITIONS). madc was EAGER — `std::vector<int> v;` force-parsed all 70 vector members
+incl. never-ODR-used ones (`operator=(vector&&)`'s `constexpr __move_storage`,
+`__alloc_traits::construct`), which were w2a's "2 faces". The lazy machinery existed but
+was gated on `from_system_header`, WRONG for instantiated templates. DEEPEST root cause:
+`TokenBase`'s ctors stamp file/line/column from the STATIC `_parse_file`, and `clone()`
+builds tokens through them — so cloning a template's body during instantiation stamped
+every clone with the INSTANTIATION SITE (`tmp/w2a.mad`), discarding the system-header
+origin → `from_system_header=0` → eager. (Same bug = the long-standing errors
+misattributed to "2:28".) FIX (instantiate_template_use): point `_parse_file`/line/column
+at the template body's defining file across the clone loop, then restore; `nextToken()`
+propagates it from each consumed token during the re-parse, so `from_system_header`, lazy
+deferral, AND error attribution all see the true origin. Also decide lazy-vs-eager PER BODY
+(each body's own origin file) not the class-level flag. User-template instantiation stays
+eager (verified `tmp/lazy1.mad`).
+
+**Part 17 (`4cde0e2`) — late free-fn-template emission.** A lazily-materialized body
+(vector's dtor, parsed by the cir fixpoint) can instantiate a free fn template it calls
+(`std::_Destroy`); that new TokenFunc appends to `prog->pending_funcs` but the fixpoint
+only consumed `parse_deferred_lazy_body`'s returned `.back()`, orphaning `_Destroy`
+(referenced extern, never defined → MIR "import of undefined item __ns_std__Destroy__o2").
+FIX: `materialize_and_lower` drains TokenFuncs appended past the entry boundary into
+`lib_funcs` each round (deduped, recorded as materialized-lib syms); the reachability loop
+defines them when ODR-used; transitive instantiations caught by the grew-loop.
+
+**w2a arc this session:** 35 → 1 → (p15 dtor-dedup) → 2 faces → (p16 lazy-inst) → 1 →
+(p17 drain) → `allocator_traits::destroy` (member-template in late materialization — see
+§3, the NEXT slice). Reducers: tmp/ff1 (free-fn-tmpl, works), tmp/lazy1 (user template
+stays eager), tmp/mt1 (member-tmpl reduce — hit a DIFFERENT bug, area has multiple issues).
 
 ---
 
