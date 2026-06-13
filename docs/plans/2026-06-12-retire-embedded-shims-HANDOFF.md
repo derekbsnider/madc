@@ -10,6 +10,32 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 6, part 7) — by-value-call method receiver (w2a 17→15; lvalue-& cluster CLOSED)
+
+**COMMITTED `1ff43b5`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
+gcc-torture 1571 / 51-name failset byte-identical (zero regressions), SMAUG soak
+green. w2a **17 → 15** — the last 2 "lvalue required as unary &" cleared (cluster
+now 0; parts 6+7 together cleared all 6).
+
+ROOT CAUSE: a method on a by-value object-returning call (`*begin()` lowered as
+`begin().operator*()`) computed `this` as `&translate_expr(begin())`; begin()
+returns the iterator by value (a prvalue, REGISTER-returned for a trivially-
+copyable iterator so `object_returning_call_class` returns NULL — no retbuf),
+making `&call` invalid. FIX: `class_this_arg` routes a by-value object-returning
+CALL receiver through `object_arg_addr` (which materializes BOTH the retbuf case
+via object_call_temp_addr AND the trivially-copyable register case via a copy into
+a temp). Gated to the CALL case (ttCallFunc/ttCallMethod, non-ref return), detected
+BEFORE translate_expr (emit the call once). An lvalue receiver keeps its direct
+&obj — routing ALL value receivers through object_arg_addr would copy a
+non-matching lvalue into a temp and call the method on the COPY (mutation bug).
+
+**w2a REMAINING (15 errors):** 5× incompatible struct/union return-expr, 3× too-
+few-args, 3× subscripted-value-not-array (operator[] on object), 2× pointer-type-
+param, 1× __madc_objtmp (while/for condition-temp, session-4 gap), 1×
+lvalue-as-assign-LHS, 1× struct/union-param.
+
+---
+
 ## STATUS UPDATE 2026-06-13 (session 6, part 6) — prvalue ref-arg materialization (w2a 21→17)
 
 **COMMITTED `839a3de`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
