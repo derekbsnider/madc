@@ -1194,6 +1194,57 @@ node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
 	return id(name, arg);
 }
 
+bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
+{
+	if (!arg)
+		return false;
+	TokenType t = arg->type();
+	// A by-value-returning call is a prvalue; a reference-returning call is an
+	// lvalue (its result is the referent — addressable).
+	if (t == TokenType::ttCallFunc || t == TokenType::ttCallMethod)
+		return ref_returning_call_type(arg) == NULL;
+	// Literals are prvalues.
+	if (t == TokenType::ttInteger || t == TokenType::ttReal
+	    || t == TokenType::ttChar || t == TokenType::ttString)
+		return true;
+	if (TokenOperator *op = dynamic_cast<TokenOperator *>(arg)) {
+		TokenID id = op->id();
+		// Postfix ++/-- (operand on the LEFT) yields the OLD value — a prvalue.
+		// Prefix forms (operand on the right) are lvalues; leave them alone.
+		if ((id == TokenID::tkInc || id == TokenID::tkDec) && op->left && !op->right)
+			return true;
+		// Builtin BINARY arithmetic/bitwise results are prvalues. Unary forms of
+		// the same tokens are NOT here (`*p` deref and `&x` address-of are
+		// lvalues / already addresses), so require argc()==2.
+		if (op->argc() == 2)
+			switch (id) {
+			case TokenID::tkAdd: case TokenID::tkSub:
+			case TokenID::tkMul: case TokenID::tkDiv: case TokenID::tkMod:
+			case TokenID::tkBand: case TokenID::tkBor: case TokenID::tkXor:
+			case TokenID::tkBSL: case TokenID::tkBSR:
+				return true;
+			default: break;
+			}
+	}
+	return false;
+}
+
+node_t CirBuilder::ref_param_arg_addr(TokenBase *arg)
+{
+	DataDef *vt = arg ? arg->datadef() : NULL;
+	if (vt && expr_is_nonaddressable_rvalue(arg)) {
+		char name[32];
+		snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
+		Variable *tmp = new Variable(name, *vt, 1, NULL, false);
+		tmp->flags |= vfLOCAL;
+		m_pending_stmts.push_back(var_decl(tmp, arg));
+		node_t assign = node2(N_ASSIGN, id(name, arg), translate_expr(arg), arg);
+		m_pending_stmts.push_back(node2(N_EXPR, list(), assign, arg));
+		return node1(N_ADDR, id(name, arg), arg);
+	}
+	return node1(N_ADDR, translate_expr(arg), arg);
+}
+
 // Translate a call's explicit arguments into `args`, coercing object
 // parameters and numeric reference parameters. Does NOT inject hidden params
 // (__this / __retbuf).
@@ -1220,10 +1271,10 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
 			// Numeric reference parameter (`int &x`): the callee takes a
-			// pointer, so pass the argument's address. The argument lvalue
-			// translates normally (a vfREFERENCE arg re-derefs to its own
-			// pointer, and &(*p) folds to p).
-			append(args, node1(N_ADDR, translate_expr(arg), arg));
+			// pointer, so pass the argument's address. An lvalue translates
+			// normally (a vfREFERENCE arg re-derefs to its own pointer, and
+			// &(*p) folds to p); a prvalue arg is materialized into a temp.
+			append(args, ref_param_arg_addr(arg));
 		else if (is_char_pointer(pt) && is_class_object_value(arg))
 			append(args, object_cstr_arg(arg));
 		else if (is_size1_pointer(pt) && is_class_object_value(arg))
@@ -3648,7 +3699,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
-			append(args, node1(N_ADDR, translate_expr(arg), arg));
+			append(args, ref_param_arg_addr(arg));
 		else
 			append(args, translate_expr(arg));
 	}
@@ -4104,7 +4155,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 			else if (DataDefCLASS *vc = as_class_instance(pt))
 				append(args, object_arg_value(arg, vc));
 			else if (refp)
-				append(args, node1(N_ADDR, translate_expr(arg), arg));
+				append(args, ref_param_arg_addr(arg));
 			else
 				append(args, translate_expr(arg));
 		};
@@ -4955,7 +5006,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			explicit_nodes.push_back(object_arg_value(arg, vc));
 		else if (is_ref_param)
-			explicit_nodes.push_back(node1(N_ADDR, translate_expr(arg), arg));
+			explicit_nodes.push_back(ref_param_arg_addr(arg));
 		else
 			explicit_nodes.push_back(translate_expr(arg));
 	}
@@ -4999,7 +5050,7 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(darg, vc));
 		else if (is_ref_param)
-			append(args, node1(N_ADDR, translate_expr(darg), darg));
+			append(args, ref_param_arg_addr(darg));
 		else
 			append(args, translate_expr(darg));
 	}
@@ -5108,7 +5159,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
-			append(args, node1(N_ADDR, translate_expr(arg), arg));
+			append(args, ref_param_arg_addr(arg));
 		else
 			append(args, translate_expr(arg));
 	}
@@ -5126,7 +5177,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(darg, vc));
 		else if (is_ref_param)
-			append(args, node1(N_ADDR, translate_expr(darg), darg));
+			append(args, ref_param_arg_addr(darg));
 		else
 			append(args, translate_expr(darg));
 	}
@@ -7502,7 +7553,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						else if (DataDefCLASS *vc = as_class_instance(pt))
 							append(a, object_arg_value(arg, vc));
 						else if (refp)
-							append(a, node1(N_ADDR, translate_expr(arg), arg));
+							append(a, ref_param_arg_addr(arg));
 						else
 							append(a, translate_expr(arg));
 					}
@@ -7603,7 +7654,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				else if (DataDefCLASS *vc = as_class_instance(pt))
 					append(cargs, object_arg_value(arg, vc));
 				else if (refp)
-					append(cargs, node1(N_ADDR, translate_expr(arg), arg));
+					append(cargs, ref_param_arg_addr(arg));
 				else
 					append(cargs, translate_expr(arg));
 			}

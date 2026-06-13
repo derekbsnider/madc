@@ -348,6 +348,20 @@ class CirBuilder {
 	// materialized into a scope-local temporary first.
 	node_t object_arg_value(TokenBase *arg, DataDefCLASS *target);
 
+	// Address of an argument bound to a NON-class reference parameter
+	// (`const T&`, T scalar/pointer). An lvalue passes by address directly; a
+	// prvalue (a by-value call result, a post-increment, a builtin
+	// arithmetic result — `_M_current++`, `it.base() - n`) is not addressable,
+	// so it is materialized into a scope-lived temp whose address is passed
+	// ([class.temporary]: binding a const ref to a prvalue).
+	node_t ref_param_arg_addr(TokenBase *arg);
+	// True for the argument forms that are unambiguously prvalues and therefore
+	// not addressable: a by-value-returning call, a postfix ++/--, a builtin
+	// binary arithmetic/bitwise result, or a literal. Conservative by design —
+	// it only flags forms that `&expr` already rejects, so lvalue arguments keep
+	// the existing direct-address lowering untouched.
+	bool expr_is_nonaddressable_rvalue(TokenBase *arg);
+
 	// ---- madc array (`array`, a madc::value) object lowering ----
 	// Same opaque-object model as other runtime objects; array arguments are
 	// always passed by pointer and the long[] buffer name decays to that pointer
