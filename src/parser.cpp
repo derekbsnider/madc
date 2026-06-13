@@ -24390,6 +24390,16 @@ static void record_skipped_template_return_pattern(
 	"typename", "const", "volatile", "auto"
     };
 
+    // Identity-return shape ONLY ([temp.deduct] practical subset: std::move/
+    // forward/declval — `_Tp&& move(_Tp&)`): walking BACK from the declarator,
+    // refs and specifiers may intervene, and the first significant token must
+    // BE the template parameter. Any other token — `>` of a template-id, `*`,
+    // `::`, a class name — means the return type merely CONTAINS the
+    // parameter, and overriding the call's return with the bare argument type
+    // would be wrong (make_move_iterator returns move_iterator<_Iterator>;
+    // the old skip-past scan found `_Iterator` inside the template-id and
+    // typed the call __normal_iterator — deducing __uninitialized_copy_a's
+    // _InputIterator wrong and reusing the plain-copy instantiation).
     std::string return_param;
     bool return_ref = false;
     for ( size_t i = name_index; i-- > 0; )
@@ -24403,15 +24413,13 @@ static void record_skipped_template_return_pattern(
 	    continue;
 	}
 	if ( !is_contextual_identifier_token(t) )
-	    continue;
+	    break;
 	std::string tname = contextual_identifier_name(t);
 	if ( specifiers.count(tname) )
 	    continue;
 	if ( is_template_type_parameter_name(typeparams, tname) )
-	{
 	    return_param = tname;
-	    break;
-	}
+	break;   // the first non-specifier token decides — bare param or not
     }
     if ( return_param.empty() )
 	return;
@@ -25395,6 +25403,11 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	}
 	const std::string &sp = ov.param_spellings[i];
 	DataDef *arg_dd = pgm.operand_value_datadef(tc->parameters[i]);
+#if MADC_DEBUG_FNTPL
+	std::cerr << "FNTPL deduce " << key << " param[" << i << "] sp='" << sp
+		  << "' arg_dd=" << (arg_dd ? arg_dd->name : "(null)")
+		  << std::endl;
+#endif
 	// Trailing parameter pack (`_Base... __base`): bind the pack to the
 	// one remaining argument's type (the sizes are equal here, so exactly
 	// one argument fills it).

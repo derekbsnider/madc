@@ -624,6 +624,23 @@ public:
 	node_t no_ctor_match_error(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
+	// IMPLICIT COPY CONSTRUCTOR fallback ([class.copy.ctor]), shared by
+	// both ctor-call builders' no-match tails: a same-class single argument
+	// selects the implicitly-declared copy ctor; for a trivially-copyable
+	// class that is a member-wise bit copy — a struct assignment into
+	// `dst_lvalue`. NULL when the fallback does not apply.
+	node_t try_implicit_copy_construct(node_t dst_lvalue, DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin);
+	// Recursive trivial-copyability ([class.prop] subset): no own user
+	// dtor, no user copy ctor, no vtable, members/bases recursively so.
+	bool class_trivially_copyable(DataDefCLASS *cdd);
+	bool class_trivially_copyable(DataDefCLASS *cdd,
+			       std::set<DataDefCLASS *> &seen);
+	// The class/type a ctor argument expression denotes for overload
+	// matching (resolved callee returns, reference unwrap, array decay) —
+	// shared by select_ctor_overload and try_implicit_copy_construct.
+	DataDef *ctor_arg_datadef(TokenBase *arg);
 	// Select the ctor overload of `cdd` matching the initializer arguments by
 	// generic overload scoring. NULL when no overload set is recorded.
 	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,

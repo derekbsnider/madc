@@ -3811,32 +3811,52 @@ static DataDef *class_alias_lookup_cir(DataDefCLASS *cls,
 	return NULL;
 }
 
+// Does mem-initializer `name` denote `target` — by class name, canonical C++
+// spelling, or a type alias visible from `owner`? Shared by the base-
+// initializer and delegating-constructor classifiers.
+static bool ctor_initializer_names_class(DataDefCLASS *owner,
+					 DataDefCLASS *target,
+					 const std::string &name)
+{
+	if (!owner || !target) return false;
+	std::string short_name = last_scope_part(name);
+	if (name == target->name || short_name == target->name)
+		return true;
+	if (!target->canonical_cpp_spelling.empty()) {
+		std::string tshort = last_scope_part(target->canonical_cpp_spelling);
+		size_t lt = tshort.find('<');
+		if (lt != std::string::npos)
+			tshort = tshort.substr(0, lt);
+		if (name == tshort || short_name == tshort)
+			return true;
+	}
+	std::set<DataDefCLASS *> seen;
+	return as_user_class(class_alias_lookup_cir(owner, name, seen)) == target;
+}
+
 static bool ctor_initializer_targets_base(DataDefCLASS *owner,
 					  DataDefCLASS *base,
 					  const std::string &name)
 {
 	if (!owner || !base) return false;
-	std::string short_name = last_scope_part(name);
-	if (name == base->name || short_name == base->name) {
+	// A mem-initializer naming the constructor's OWN class is a DELEGATING
+	// constructor ([class.base.init]p6), never a base initializer — without
+	// this guard the alias clause below matches it against any base the
+	// owner derives from (real vector's `: vector(__rv, __m, true_type{})`
+	// fired its 3 args at _Vector_base's 2-param ctors).
+	if (ctor_initializer_names_class(owner, owner, name)) {
 #ifdef MADC_DEBUG_CTORINIT
-		fprintf(stderr, "[ctorinit] base-match NAME owner=%s base=%s ci=%s\n",
+		fprintf(stderr, "[ctorinit] base-match DELEGATING owner=%s ci=%s -> 0\n",
+			owner->name.c_str(), name.c_str());
+#endif
+		return false;
+	}
+	if (ctor_initializer_names_class(owner, base, name)) {
+#ifdef MADC_DEBUG_CTORINIT
+		fprintf(stderr, "[ctorinit] base-match NAMED owner=%s base=%s ci=%s\n",
 			owner->name.c_str(), base->name.c_str(), name.c_str());
 #endif
 		return true;
-	}
-	if (!base->canonical_cpp_spelling.empty()) {
-		std::string bshort = last_scope_part(base->canonical_cpp_spelling);
-		size_t lt = bshort.find('<');
-		if (lt != std::string::npos)
-			bshort = bshort.substr(0, lt);
-		if (name == bshort || short_name == bshort) {
-#ifdef MADC_DEBUG_CTORINIT
-			fprintf(stderr, "[ctorinit] base-match SPELLING owner=%s base=%s (bshort=%s) ci=%s\n",
-				owner->name.c_str(), base->name.c_str(),
-				bshort.c_str(), name.c_str());
-#endif
-			return true;
-		}
 	}
 	std::set<DataDefCLASS *> seen;
 	DataDefCLASS *alias_cls = as_user_class(class_alias_lookup_cir(owner, name, seen));
@@ -3844,11 +3864,11 @@ static bool ctor_initializer_targets_base(DataDefCLASS *owner,
 	fprintf(stderr, "[ctorinit] base-match ALIAS? owner=%s base=%s ci=%s alias_cls=%s -> %d (owner.encl=%s owner.base_class=%s)\n",
 		owner->name.c_str(), base->name.c_str(), name.c_str(),
 		alias_cls ? alias_cls->name.c_str() : "(null)",
-		(int)(alias_cls && (alias_cls == base || alias_cls->is_or_derives_from(base))),
+		(int)(alias_cls && alias_cls->is_or_derives_from(base)),
 		owner->enclosing_class ? owner->enclosing_class->name.c_str() : "(null)",
 		owner->base_class ? owner->base_class->name.c_str() : "(null)");
 #endif
-	return alias_cls && (alias_cls == base || alias_cls->is_or_derives_from(base));
+	return alias_cls && alias_cls->is_or_derives_from(base);
 }
 
 static const FuncDef::CtorInitializer *find_base_initializer(
@@ -3857,6 +3877,19 @@ static const FuncDef::CtorInitializer *find_base_initializer(
 	if (!fd) return NULL;
 	for (const FuncDef::CtorInitializer &ci : fd->ctor_initializers)
 		if (ctor_initializer_targets_base(owner, base, ci.name))
+			return &ci;
+	return NULL;
+}
+
+// The mem-initializer (if any) naming the constructor's own class — a C++11
+// DELEGATING constructor ([class.base.init]p6: it must then be the only
+// initializer, and the targeted ctor performs the complete initialization).
+static const FuncDef::CtorInitializer *find_delegating_initializer(
+	DataDefCLASS *owner, FuncDef *fd)
+{
+	if (!fd) return NULL;
+	for (const FuncDef::CtorInitializer &ci : fd->ctor_initializers)
+		if (ctor_initializer_names_class(owner, owner, ci.name))
 			return &ci;
 	return NULL;
 }
@@ -4593,49 +4626,54 @@ static std::string ctor_call_symbol(DataDefCLASS *cdd, FuncDef *ctor)
 // copy-init sees the operator's class return type, not a pointer/arithmetic type.
 // `cdd->ctors` lists the overloads. Returns NULL when no overload set is recorded
 // (caller falls back to the single ctor keyed under the class name).
+// The expression class/type a ctor (or copy-fallback) ARGUMENT denotes for
+// overload matching — the ONE resolver shared by select_ctor_overload and
+// try_implicit_copy_construct so they can never disagree.
+DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
+{
+	if (!arg) return NULL;
+	// A class-returning CALL argument types by the RESOLVED callee's
+	// return class — the call token's own datadef may still be a
+	// body-less template placeholder's `long` (the overload-set winner
+	// is ranked at CIR time). Without this, `return f(...);` in a
+	// retbuf function missed the copy ctor and bit-copied the result
+	// (aliasing the heap buffer -> double free).
+	if (DataDefCLASS *rc = object_returning_call_class(arg))
+		return rc;
+	// A REFERENCE-returning call argument (std::move(x), a T&/T&&
+	// returning method) denotes the referenced lvalue: unwrap the
+	// pointer representation, like the vfREFERENCE variable below.
+	if (DataDef *rt = ref_returning_call_type(arg))
+		return rt;
+	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
+		// A reference variable's datadef is the pointer
+		// representation (T&  ->  T*); for overload matching the
+		// expression names a T lvalue. Same unwrap as
+		// select_operator_overload's overload_arg_datadef — without
+		// it a `const A &p` argument scores as A* and the copy
+		// ctor never matches (A local(p) dropped construction).
+		if ((tv->var.flags & vfREFERENCE) && tv->var.type) {
+			if (DataDefCLASS *rc = class_behind(tv->var.type))
+				return rc;
+		}
+		if (tv->var.is_fixed_array() && tv->var.type && m_prog)
+			return m_prog->getPointerType(tv->var.type);
+	}
+	if (TokenMember *tm = dynamic_cast<TokenMember *>(arg)) {
+		if (tm->is_fixed_array_member() && tm->var.type && m_prog)
+			return m_prog->getPointerType(tm->var.type);
+	}
+	if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(arg->datadef())) {
+		if (ca->element_type && m_prog)
+			return m_prog->getPointerType(ca->element_type);
+	}
+	return arg->datadef();
+}
+
 FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 					  const std::vector<TokenBase *> &ctor_args)
 {
 	if (!cdd || cdd->ctors.empty()) return NULL;
-	auto ctor_arg_datadef = [this](TokenBase *arg) -> DataDef * {
-		if (!arg) return NULL;
-		// A class-returning CALL argument types by the RESOLVED callee's
-		// return class — the call token's own datadef may still be a
-		// body-less template placeholder's `long` (the overload-set winner
-		// is ranked at CIR time). Without this, `return f(...);` in a
-		// retbuf function missed the copy ctor and bit-copied the result
-		// (aliasing the heap buffer -> double free).
-		if (DataDefCLASS *rc = object_returning_call_class(arg))
-			return rc;
-		// A REFERENCE-returning call argument (std::move(x), a T&/T&&
-		// returning method) denotes the referenced lvalue: unwrap the
-		// pointer representation, like the vfREFERENCE variable below.
-		if (DataDef *rt = ref_returning_call_type(arg))
-			return rt;
-		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
-			// A reference variable's datadef is the pointer
-			// representation (T&  ->  T*); for overload matching the
-			// expression names a T lvalue. Same unwrap as
-			// select_operator_overload's overload_arg_datadef — without
-			// it a `const A &p` argument scores as A* and the copy
-			// ctor never matches (A local(p) dropped construction).
-			if ((tv->var.flags & vfREFERENCE) && tv->var.type) {
-				if (DataDefCLASS *rc = class_behind(tv->var.type))
-					return rc;
-			}
-			if (tv->var.is_fixed_array() && tv->var.type && m_prog)
-				return m_prog->getPointerType(tv->var.type);
-		}
-		if (TokenMember *tm = dynamic_cast<TokenMember *>(arg)) {
-			if (tm->is_fixed_array_member() && tm->var.type && m_prog)
-				return m_prog->getPointerType(tm->var.type);
-		}
-		if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(arg->datadef())) {
-			if (ca->element_type && m_prog)
-				return m_prog->getPointerType(ca->element_type);
-		}
-		return arg->datadef();
-	};
 	FuncDef *best = NULL;
 	Variable *best_var = NULL;
 	int best_score = -1;
@@ -4709,13 +4747,15 @@ node_t CirBuilder::no_ctor_match_error(DataDefCLASS *cdd,
 		TokenBase *a = ctor_args[i];
 		TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(a);
 		FuncDef *cfd = tcf ? call_target_funcdef(tcf) : NULL;
-		DataDef *tret = tcf ? tcf->returns() : NULL;
-		(void)tret;
-		fprintf(stderr, "[ctorinit]   arg%zu tok=%s line=%d datadef=%s cfd=%p\n",
+		DataDef *resolved = ctor_arg_datadef(a);
+		fprintf(stderr, "[ctorinit]   arg%zu tok=%s line=%d datadef=%s resolved=%s callee=%s ret=%s ref=%d\n",
 			i, a ? typeid(*a).name() : "(null)",
 			a ? a->line : 0,
 			a && a->datadef() ? a->datadef()->name.c_str() : "(none)",
-			(void *)cfd);
+			resolved ? resolved->name.c_str() : "(none)",
+			tcf ? tcf->var.name.c_str() : "(not-call)",
+			cfd ? cfd->returns.name.c_str() : "(no-cfd)",
+			cfd ? (int)cfd->returns_ref : -1);
 	}
 	if (cdd)
 		for (Variable *cv : cdd->ctors) {
@@ -4736,6 +4776,66 @@ node_t CirBuilder::no_ctor_match_error(DataDefCLASS *cdd,
 		}
 #endif
 	return error_node(buf, origin);
+}
+
+// Recursive trivial-copyability ([class.prop], the subset madc models): no
+// own user dtor, no user copy ctor, no vtable, and every class-type member
+// and base is itself trivially copyable. NOTE class_needs_dtor is the WRONG
+// gate for copyability — it treats ANY object member as non-trivial, but
+// move_iterator{__normal_iterator{int*}} is bit-copyable.
+bool CirBuilder::class_trivially_copyable(DataDefCLASS *cdd,
+					  std::set<DataDefCLASS *> &seen)
+{
+	if (!cdd) return false;
+	if (seen.count(cdd)) return true;   // already under verification
+	seen.insert(cdd);
+	if (class_has_own_user_dtor(cdd) || cdd->has_vtable) return false;
+	if (class_copy_ctor_def(cdd)) return false;
+	for (const auto &m : cdd->members)
+		if (DataDefCLASS *mc = as_class_instance(m.second))
+			if (!class_trivially_copyable(mc, seen)) return false;
+	for (const BaseSpec &bs : cdd->bases)
+		if (bs.base && !class_trivially_copyable(bs.base, seen))
+			return false;
+	if (cdd->base_class && !class_trivially_copyable(cdd->base_class, seen))
+		return false;
+	return true;
+}
+
+bool CirBuilder::class_trivially_copyable(DataDefCLASS *cdd)
+{
+	std::set<DataDefCLASS *> seen;
+	return class_trivially_copyable(cdd, seen);
+}
+
+// IMPLICIT COPY CONSTRUCTOR ([class.copy.ctor]): a same-class initializer
+// argument that matched no user ctor selects the implicitly-declared copy
+// ctor — C++ synthesizes one whenever the class declares no copy ctor, even
+// with other user ctors present (real __normal_iterator/move_iterator: only
+// a default and an `explicit (iterator&)` ctor exist). For a trivially-
+// copyable class that is a member-wise bit copy, expressed as a struct
+// assignment into the destination lvalue. A class WITH a user copy ctor
+// never takes this fallback — its no-match stays a loud error (bit-copying
+// past a real copy ctor would mask an overload-scoring bug). Non-trivially-
+// copyable classes need member-wise copy-construction; deferred — they
+// declare copy ctors in practice. Returns NULL when the fallback does not
+// apply.
+node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
+					       DataDefCLASS *cdd,
+					       const std::vector<TokenBase *> &ctor_args,
+					       TokenBase *origin)
+{
+	if (!dst_lvalue || !cdd) return NULL;
+	if (ctor_args.size() != 1 || !ctor_args[0]) return NULL;
+	// Resolve the argument's class with the SAME resolver overload scoring
+	// uses (ref-returning calls like std::move(x), reference variables,
+	// resolved callees) — the raw token datadef may be a stale overload-set
+	// binding (move_iterator's `: _M_current(std::move(__i))`).
+	if (as_class_instance(ctor_arg_datadef(ctor_args[0])) != cdd) return NULL;
+	if (!class_trivially_copyable(cdd)) return NULL;
+	node_t src = translate_expr(ctor_args[0]);
+	node_t asgn = node2(N_ASSIGN, dst_lvalue, src, origin);
+	return node2(N_EXPR, list(), asgn, origin);
 }
 
 node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
@@ -4768,6 +4868,12 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 
 	FuncDef *ctor = select_ctor_overload(cdd, ctor_args);
 	if (!ctor) {
+		node_t dst = node1(N_DEREF,
+			node2(N_CAST, class_ptr_type(cdd), this_addr, origin),
+			origin);
+		if (node_t cc = try_implicit_copy_construct(dst, cdd, ctor_args,
+							    origin))
+			return cc;
 		if (cdd->ctors.empty() || ctor_args.empty()) {
 			auto it = cdd->method_map.find(cdd->name);
 			if (it != cdd->method_map.end() && it->second)
@@ -4906,22 +5012,12 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	// to the single ctor keyed under the class name.
 	FuncDef *ctor = select_ctor_overload(cdd, ctor_args);
 	if (!ctor) {
-		// IMPLICIT COPY CONSTRUCTOR: `T c = <T value>` with no matching ctor.
-		// C++ synthesizes a copy ctor when the class declares none; for a TRIVIAL
-		// class (no user dtor / object members / non-trivial base) that is a
-		// member-wise bit copy, expressed here as a struct assignment from the
-		// source object. So a user class without an explicit copy ctor still
-		// copy-initializes (e.g. from an operator+ result) instead of mis-binding
-		// an unrelated ctor. (Non-trivial classes need member-wise
-		// copy-construction; deferred — they typically declare a copy ctor.)
-		if (ctor_args.size() == 1 && ctor_args[0]
-		    && as_class_instance(ctor_args[0]->datadef()) == cdd
-		    && !class_needs_dtor(cdd)) {
-			node_t src = translate_expr(ctor_args[0]);
-			node_t asgn = node2(N_ASSIGN, id(v->name.c_str(), origin),
-					    src, origin);
-			return node2(N_EXPR, list(), asgn, origin);
-		}
+		// IMPLICIT COPY CONSTRUCTOR: `T c = <T value>` with no matching
+		// ctor (see try_implicit_copy_construct).
+		if (node_t cc = try_implicit_copy_construct(
+				id(v->name.c_str(), origin), cdd, ctor_args,
+				origin))
+			return cc;
 		if (cdd->ctors.empty() || ctor_args.empty()) {
 			auto it = cdd->method_map.find(cdd->name);
 			if (it != cdd->method_map.end() && it->second)
@@ -10085,6 +10181,9 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 {
 	FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
 	if (!fd) return NULL;
+#ifdef MADC_DEBUG_CTORINIT
+	fprintf(stderr, "[ctorinit] func-def %s\n", tf->var.name.c_str());
+#endif
 	Method *saved_cur_method = m_cur_method;
 	m_cur_method = tf->method;
 	// Fresh defer-scope context per function body (a nested/hoisted function
@@ -10350,14 +10449,29 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		// Epilogue (after the body): base dtor call (dtor with a base dtor).
 		std::vector<node_t> prologue, epilogue;
 		std::set<std::string> explicit_member_inits;
-		if (is_ctor && fd)
+		// C++11 DELEGATING constructor ([class.base.init]p6): the targeted
+		// same-class ctor performs the COMPLETE initialization (bases,
+		// members, vptr) before this ctor's body runs — the entire
+		// construction prologue is the delegation call; everything below
+		// (base ctors, member inits, default member construction, vptr
+		// stores) belongs to the target ctor, not this one.
+		const FuncDef::CtorInitializer *delegating_ci =
+			(is_ctor && fd) ? find_delegating_initializer(ocls, fd)
+					: NULL;
+		if (delegating_ci) {
+			node_t stmt = class_ctor_call_addr(id("__this", tf), ocls,
+							   delegating_ci->args, tf);
+			flush_pending_stmts(prologue);
+			if (stmt) prologue.push_back(stmt);
+		}
+		if (is_ctor && !delegating_ci && fd)
 			for (const FuncDef::CtorInitializer &ci : fd->ctor_initializers)
 				for (const auto &m : ocls->members)
 					if (ci.name == m.first || last_scope_part(ci.name) == m.first)
 						explicit_member_inits.insert(m.first);
 		// Construct each base in declaration order, with `this` adjusted to that
 		// base's subobject (MI). Single inheritance = one base @ offset 0.
-		if (is_ctor)
+		if (is_ctor && !delegating_ci)
 			for (size_t bi = 0; bi < ocls->bases.size(); bi++) {
 				if (ocls->bases[bi].is_virtual) continue; // vbases: complete-object site
 				DataDefCLASS *b = ocls->bases[bi].base;
@@ -10384,15 +10498,15 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 						      : b->name + "__" + b->name));
 				}
 			}
-		if (is_ctor)
+		if (is_ctor && !delegating_ci)
 			class_ctor_initializer_stmts(ocls, fd, prologue, tf);
 		// Construct embedded object members at ctor entry (after base ctor),
 		// destruct them at dtor exit (before base dtor) — C++ member lifetime.
-		if (is_ctor)
+		if (is_ctor && !delegating_ci)
 			class_member_construct(ocls, prologue, tf, &explicit_member_inits);
 		if (is_dtor)
 			class_member_destruct(ocls, epilogue, tf);
-		if (is_ctor && ocls->has_vtable) {
+		if (is_ctor && !delegating_ci && ocls->has_vtable) {
 			std::string vname = class_vtable_symbol(ocls);
 			// Set each subobject's vptr to its group's address point in the flat
 			// table: __this->__vptr[_<off>] = (void*)(Cls__vtable + addr_point).
