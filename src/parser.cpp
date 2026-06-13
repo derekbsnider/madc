@@ -6771,6 +6771,47 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
     return NULL;
 }
 
+bool DataDefCLASS::binary_operator_only_takes_nonclass(const std::string &opname)
+{
+    bool any = false;
+    // The explicit parameter (index 1, after the hidden __this) of a binary
+    // member operator. A reference param is stored as DataDefPTR(referee) — unwrap
+    // it so `const T&` is judged a class param, not a pointer.
+    auto param_is_class = [](FuncDef *fd) -> bool {
+	if ( fd->parameters.size() <= 1 ) return false;
+	DataDef *p1 = fd->parameters[1];
+	bool refp = fd->ref_params.size() > 1 && fd->ref_params[1];
+	if ( refp && p1 && p1->is_pointer() )
+	    p1 = static_cast<DataDefPTR *>(p1)->base_type;
+	return p1 && p1->is_object();
+    };
+    for ( variable_vec_iter vvi = methods.begin(); vvi != methods.end(); ++vvi )
+    {
+	Variable *mv = *vvi;
+	if ( !mv || opname.compare(mv->name) != 0 ) continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	if ( !fd || fd->parameters.size() <= 1 ) continue;
+	any = true;
+	if ( param_is_class(fd) ) return false;
+    }
+    std::string mangled = name + "__" + opname;
+    std::string mangled_overload_prefix = mangled + "__o";
+    for ( variable_vec_iter vvi = methods.begin(); vvi != methods.end(); ++vvi )
+    {
+	Variable *mv = *vvi;
+	if ( !mv || (mangled.compare(mv->name) != 0
+	  && mv->name.compare(0, mangled_overload_prefix.size(),
+			      mangled_overload_prefix) != 0) ) continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	if ( !fd || fd->parameters.size() <= 1 ) continue;
+	any = true;
+	if ( param_is_class(fd) ) return false;
+    }
+    if ( any ) return true;
+    if ( base_class ) return base_class->binary_operator_only_takes_nonclass(opname);
+    return false;
+}
+
 DataDef *DataDefCLASS::unary_operator_return_type(const std::string &opname,
 						  bool postfix)
 {
@@ -6950,7 +6991,41 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
 	return NULL;
     std::string opname = std::string("operator") + opsym;
     if ( lc && lc->binary_operator_return_type(opname) )
-	return NULL;	// member operator owns the expression
+    {
+	// A named member operator normally owns the expression. The ONE exception:
+	// the rhs is a class object but every same-name binary member takes a
+	// non-class (arithmetic/pointer) parameter — the iterator signature
+	// (`operator-(difference_type)` only), where `iter - iter` must instead bind
+	// the free cross-type `operator-(const It&, const It&)` retained-template
+	// body. Even then we ONLY divert if such a template actually binds; otherwise
+	// the member / cir-builder W2 path owns it and we bail exactly as before (so
+	// `ostream << string`, whose member operator<< takes scalars but whose free
+	// operator<< is an exported reference-returning W2 symbol, is untouched).
+	DataDefCLASS *rcls = operand_object_class(to->right);
+	if ( !(rcls && lc->binary_operator_only_takes_nonclass(opname)) )
+	    return NULL;
+	// Only a VALUE/scalar-returning free operator is body-instantiated here.
+	// A reference-returning free overload (`std::operator<<(ostream&, ...)` →
+	// `ostream&`) is the exported W2 mangled-direct shape bound by the cir
+	// builder; diverting `ostream << string` to a body instantiation breaks it.
+	for ( const FreeOperatorOverload &ov : free_operator_overloads )
+	    if ( ov.opname == opname && !ov.return_spelling.empty()
+	      && ov.return_spelling.back() == '&' )
+		return NULL;
+	Variable *nv_callee = NULL;
+	if ( instantiate_free_operator_template(opname, to->left, to->right,
+						&nv_callee) && nv_callee )
+	{
+	    TokenCallFunc *tc = new TokenCallFunc(*nv_callee);
+	    tc->file = to->file;
+	    tc->line = to->line;
+	    tc->column = to->column;
+	    tc->parameters.push_back(to->left);
+	    tc->parameters.push_back(to->right);
+	    return tc;
+	}
+	return NULL;	// no free template bound — member / W2 path owns it
+    }
     if ( lc && free_binary_operator_return_class(lc, opname, to->right) )
 	return NULL;	// exported free shape: mangled-direct (W2) owns it
     if ( !lc && free_binary_operator_return_class_nonclass_lhs(to->left, opname,
@@ -7155,6 +7230,13 @@ DataDef *Program::free_binary_operator_return_class(DataDefCLASS *lc,
 	// By-value class returns only; reference-returning free operators
 	// (streams) keep their lowering-time typing.
 	if ( rspell.empty() || rspell.back() == '&' || rspell.back() == '*' )
+	    continue;
+	// A dependent/nested member return (`__normal_iterator<...>::difference_type`)
+	// or a deduced return (`auto`/`decltype(...)`) does NOT name an operand class
+	// by value — it is a scalar/member type handled by retained-template body
+	// instantiation, not the mangled-direct exported shape.
+	if ( rspell.find(">::") != std::string::npos
+	  || rspell == "auto" || rspell.compare(0, 9, "decltype(") == 0 )
 	    continue;
 	// Both params lvalue refs (&& overloads never bind mangled-direct).
 	const std::string &p0 = ov.param_spellings[0];
@@ -25781,9 +25863,32 @@ static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
 						      const std::string &spelling)
 {
     std::string s = spelling_strip_spaces(spelling);
-    if ( s.empty() || s.find('*') != std::string::npos
-      || s.find('&') != std::string::npos )
-	return NULL;
+    if ( s.empty() || s.find('&') != std::string::npos )
+	return NULL;	// references are not representable as a bound type arg
+    // A pointer template argument (`int*`, `const int*`, `T**`): resolve the
+    // pointee spelling, then wrap in getPointerType per indirection level. Real
+    // iterators bind their _It param to a pointer (vector<int>::iterator's
+    // _It == int*, const_iterator's == const int*), so this path must produce a
+    // distinct DataDef for each — `const` is preserved on the pointee so the two
+    // instantiations stay distinct types.
+    if ( s.back() == '*' )
+    {
+	size_t stars = 0;
+	while ( !s.empty() && s.back() == '*' ) { s.pop_back(); ++stars; }
+	// Drop a leading cv-qualifier on the pointee: madc tracks const/volatile
+	// only in a type's IDENTITY/name (instantiate_template_id folds the bare
+	// base into the DataDefPTR and records cv separately), so the DataDef for
+	// `const int*` is DataDefPTR(int) — the same base resolution as `int*`.
+	while ( s.compare(0, 5, "const") == 0 || s.compare(0, 8, "volatile") == 0 )
+	    s.erase(0, s[0] == 'c' ? 5 : 8);
+	TokenDataType *base = resolve_canonical_type_spelling(pgm, s);
+	if ( !base )
+	    return NULL;
+	DataDef *dd = &base->definition;
+	for ( size_t i = 0; i < stars; ++i )
+	    dd = pgm.getPointerType(dd);
+	return dd ? new TokenDataType(spelling.c_str(), *dd) : NULL;
+    }
     // The namespace qualifier comes off the HEAD before the generic splitter
     // (which strips it) — it is the ns_hint that picks the right same-named
     // template (std::char_traits vs __gnu_cxx::char_traits).
@@ -25998,7 +26103,13 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
     {
 	TokenDataType *tdt = resolve_canonical_type_spelling(pgm, ti->second);
 	if ( !tdt )
+	{
+#ifdef MADC_DBG_QCALL
+	    fprintf(stderr, "[FREEOP]   text_binding %s='%s' unresolved\n",
+		    ti->first.c_str(), ti->second.c_str());
+#endif
 	    return NULL;
+	}
 	std::map<std::string, DataDef *>::iterator bi = binding.find(ti->first);
 	if ( bi != binding.end() )
 	{
@@ -26012,7 +26123,13 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
     Variable *callee = NULL;
     if ( !instantiate_fn_template_binding(pgm, ft, key, binding, std::string(),
 					  false, &callee) || !callee )
+    {
+#ifdef MADC_DBG_QCALL
+	fprintf(stderr, "[FREEOP]   instantiate_fn_template_binding failed key=%s\n",
+		key.c_str());
+#endif
 	return NULL;
+    }
     if ( callee_out )
 	*callee_out = callee;
     // The RETURN class: a by-value template-id whose head matches a deduced

@@ -864,6 +864,13 @@ public:
     // Prefers a parameterized (binary) overload; searches the unmangled name then
     // the mangled ClassName__operatorX family, then the base chain. NULL if none.
     DataDef *binary_operator_return_type(const std::string &opname);
+    // True iff this class declares at least one binary `opname` member AND every
+    // such member's explicit parameter is a NON-class (arithmetic/pointer) type —
+    // i.e. no member can bind a class-object rhs. The iterator signature
+    // (`operator-(difference_type)` only) where `iter - iter` must instead bind
+    // the free cross-type operator template. Members taking a class parameter
+    // make this false (they own the expression by normal overload rules).
+    bool binary_operator_only_takes_nonclass(const std::string &opname);
     // Return type of a unary operator method (`operator-`, `operator!`,
     // `operator++`, etc.). `postfix` selects the parameterized postfix form for
     // ++/-- and the nullary form otherwise.
