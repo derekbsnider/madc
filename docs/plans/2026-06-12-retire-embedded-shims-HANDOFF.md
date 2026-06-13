@@ -10,6 +10,75 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 7, part 12) — scope a non-compound if-branch's materialized temps (w2a 4→2)
+
+**COMMITTED `8ba77dc`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
+gcc-torture 1571 / 51-name failset byte-identical (zero regressions/swaps), SMAUG
+soak green. w2a **4 → 2** — BOTH `__madc_objtmp_75` errors cleared (the session-4
+condition-temp gap, branch-statement variant).
+
+ROOT CAUSE: a then/else branch that is a single (NON-compound) statement
+materializing a temporary leaked that temp past the branch. `translate_stmt_required`
+does not flush `m_pending_stmts` (a compound branch self-flushes inside
+`translate_block`; a bare statement has no scope), so the temp's decl was swept
+into the NEXT translated block's flush — landing, undeclared at its use, inside the
+ELSE block. Real `vector::_M_move_assign(false_type)`:
+`if (alloc==alloc) _M_move_assign(std::move(__x), true_type()); else {...}` — the
+`true_type()` temp decl landed in the else block.
+FIX: new `CirBuilder::translate_branch_stmt` wraps a controlled statement + any
+temps it materialized into ONE block (temps declared before the stmt, cleaned up at
+branch exit), only when `m_pending_stmts` is non-empty (compound / temp-free
+branches unchanged). `translate_if` uses it for then/else in both arms. The
+branch-statement analogue of the session-4 condition-temp flush. **Loop bodies are
+the same class — left for when one actually manifests** (the helper is ready).
+
+### w2a's LAST 2 — the move_iterator `conditional_t` reference-type cluster (deep; was "niche")
+
+Both remaining errors are ONE cluster: `move_iterator<It>::operator*` returns
+`reference = __conditional_t<is_reference<__base_ref>::value,
+remove_reference_t<__base_ref>::type&&, __base_ref>` which for `vector<int>` is
+`int&&`. madc left it an OPAQUE struct type, so:
+- `tmp/w2a_emit.c:~1627` `conversion to non-scalar type requested` — `operator*`
+  C-casts `(*operator*(...))` to `(struct __conditional_t_...)` (can't cast to a
+  struct in C).
+- `tmp/w2a_emit.c:~1687` `incompatible return-expr type in function returning a
+  struct/union` — same `operator*`, the `std::move(*__x)` return-expr vs the
+  conditional_t struct return type.
+
+**INVESTIGATION DONE THIS SESSION (root cause located, fix attempted + REVERTED):**
+The foundational gap is alias-template instantiation with a NON-TYPE param.
+`instantiate_template_alias_use` (parser.cpp ~2936) has TWO paths: the
+type-params-only path (~3043) substitutes args into the alias body `td.target` and
+resolves; the `has_non_type_params` path (~2948) does NOT — after a
+`__detected_or_t` special case it collapses straight to an OPAQUE placeholder
+struct (~3031). So `conditional_t<bool,T,F>` / `enable_if_t<bool,T>` never expand.
+Verified with reducers (tmp/ct1..ct5):
+- `conditional<true,int,long>::type` (DIRECT, no alias) resolves fine — partial-spec
+  selection WORKS (ct4=int, ct5=long).
+- `conditional_t<true,int,long>` (the ALIAS) → opaque `struct conditional_t_true_int_long`
+  (ct1, the bug).
+- `is_reference<int&>::value` in EXPRESSION position → PARSE error "Expecting ',' or
+  '>'" (ct2) — a SEPARATE gap: a reference template arg `int&` in expression context.
+  (As a conditional_t template ARG it parses fine — ct3.)
+
+A WIP fix (token-substitute args into `td.target` + resolve in the non-type path,
+fall through to placeholder on NULL) made ct1/ct3/ct4/ct5 PASS but **CRASHED on the
+real w2a header** — token-stream desync + SIGSEGV deep in re-entrant template-alias
+instantiation (backtrace through instantiate_free_operator_template →
+DeferredFunctionBody copy ctor). REVERTED to keep the tree stable; WIP saved at
+**`tmp/conditional_t_alias_wip.patch`**. NEXT-SESSION PLAN: the simple-case fix is
+correct in shape but not re-entrancy-safe for the real header — the body resolution
+recurses into more alias/template instantiations that interact with the pushed-token
+sentinel. Make the substitution re-entrant (resolve the substituted body in an
+ISOLATED token context, like the SFINAE pre-check `instantiate_fn_template_binding`
+sandbox at parser.cpp ~1b91e9f, rather than push/drain on the shared `tokens`
+stream), and SFINAE-guard `enable_if_t` (absent `::type` must fail softly). This is a
+genuine multi-step slice (alias-template non-type instantiation + re-entrancy), not a
+one-liner — the handoff was right to mark it lowest-priority; budget it as its own
+session.
+
+---
+
 ## STATUS UPDATE 2026-06-13 (session 7, part 11) — call a parenthesized function designator `(E)(args)` (w2a 5→4)
 
 **COMMITTED `e048e9e`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
