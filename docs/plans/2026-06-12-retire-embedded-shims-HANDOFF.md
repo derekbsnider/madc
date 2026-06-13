@@ -51,7 +51,22 @@ c2m check-errors down to 1.**
 Plus docs commits `554e5d2`/`38f90eb`/`97bdb9d`/`468d5d8`/`74f061e` (banners, the
 research doc, status/memory sync).
 
-## 3. THE NEXT TASK — w2a: non-type template-arg EXPRESSION evaluation for partial-spec selection
+## 3. THE NEXT TASK — w2a: non-type template-arg CANONICALIZATION + member-template instantiation
+
+> **READ FIRST: `docs/plans/2026-06-13-nontype-template-arg-canonicalization-research.md`** (part-19
+> research). A first attempt to fold the non-type arg at the collection site **regressed 202 tests**
+> (reverted; saved at `tmp/nontype_fold_v2_wip.patch` — do NOT reapply). Root cause: madc keys
+> instantiations by raw arg SPELLING in MANY places, so folding at a couple of sites makes keys
+> inconsistent across the header corpus; plus the isolated-stream evaluator is re-entrancy-fragile
+> during header parsing. clang canonicalizes a non-type arg to **(value, param-type)** once at SEMA
+> (`<true>`==`<1>`==`<trait()>`). The fix is two independent, non-trivial pieces: **(A)** canonicalize
+> at the ONE key-construction chokepoint with a NON-re-entrant local-cursor evaluator + record
+> non-type param TYPES in `TemplateDef`; **(B)** member-template instantiation of the selected spec's
+> `_Destroy_aux<true>::__destroy<int*>` (still a bare extern — the p18-reframed feature). w2a needs
+> BOTH. Reducers: `tmp/nt1.mad` (member-access, → must print TRIVIAL), `tmp/nt2.mad` (direct decl).
+> The older framing below predates the research; the research doc supersedes it.
+
+
 
 **THE part-18 reframing (`a64fd00`, gated):** part-17's "member-template instantiation
 during late materialization" hypothesis was the WRONG LAYER. `allocator_traits::destroy`
