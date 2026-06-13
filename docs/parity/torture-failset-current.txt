@@ -35,7 +35,6 @@ loop-3b.c
 loop-3c.c
 misalign.c
 mod-1.c
-pr117432.c
 pr122000.c
 pr17078-1.c
 pr22061-1.c
