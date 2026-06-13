@@ -10,6 +10,33 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 6, part 8) — by-value class return on a method extern (w2a 15→11)
+
+**COMMITTED `a7448fe`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
+gcc-torture 1571 / 51-name failset byte-identical (zero regressions), SMAUG soak
+green. w2a **15 → 11** — struct/union return-expr cluster **5 → 1**.
+
+ROOT CAUSE: an external mangled-direct libstdc++ method returning a trivially-
+copyable class BY VALUE (register-returned, no retbuf — `vector::_M_erase` /
+`_M_insert_rval` return `__normal_iterator`) had its extern return type fall
+through `emit_symbol_ret_specs` to a VOID base (a class is neither pointer/ref nor
+integer). `return <call>(...)` in a struct-returning caller then mismatched. FIX:
+`need_output_extern` grew an optional `ret_cls` — when set it declares the return
+as the class's struct/union tag via `class_tag_ref` (the RETURN mirror of the
+part-4 `ExternParam::cls` by-value-PARAM fix), taking precedence over
+ret_specs/ret_ptr. `emit_symbol_method_call` passes it for a by-value (non-ref,
+non-pointer) class return that is NOT retbuf-returned. The remaining 1
+struct-return is the std::move/move_iterator rvalue-ref-return shape (distinct).
+
+**w2a REMAINING (11 errors):** 3× too-few-args, 3× subscripted-value-not-array
+(operator[] on object), 2× pointer-type-param, 1× __madc_objtmp (while/for
+condition-temp, session-4 gap), 1× lvalue-as-assign-LHS, 1× incompatible
+struct/union return-expr (std::move/move_iterator). **Session arc: w2a 35 → 11**
+across parts 5-8 (operator member-vs-free, prvalue ref-args, method receiver,
+by-value class return).
+
+---
+
 ## STATUS UPDATE 2026-06-13 (session 6, part 7) — by-value-call method receiver (w2a 17→15; lvalue-& cluster CLOSED)
 
 **COMMITTED `1ff43b5`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
