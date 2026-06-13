@@ -41,8 +41,13 @@ spec. Now a foldable non-type arg keys by its VALUE.
 chain selected). NEXT = the separate **"B" feature**: member-template instantiation
 of `_Destroy_aux<true>::__destroy<int*>` (currently a bare undefined import
 `_Destroy_aux_1____destroy`) — capture the member-fn-template body + monomorphize
-per ODR-use, reusing `instantiate_fn_template_binding` (research doc §4.B,
-`register_skipped_class_template_function` ~26434). DEFERRED: `typeparam_types`
+per ODR-use, reusing `instantiate_fn_template_binding`. **GROUNDED DESIGN (read
+first):** `docs/plans/2026-06-13-member-fn-template-instantiation-design.md` — body
+capture + a parse-time `instantiate_member_fn_template_for_call` hook (sibling of
+the namespace one at parser.cpp:10880) + a parser-side deducer + THE CRUX
+(register/rebind the instantiated method under the name the already-bound call
+resolves to). Reducer `tmp/mft1.mad` (library-independent). Static-only first;
+gate HARD (this is the 202-regression / SIGSEGV-revert area). DEFERRED: `typeparam_types`
 (bool-normalizing nonzero ints, `<2>`==`<true>`) — the evaluator self-gates so it
 is not needed for the cleared corpus.
 
