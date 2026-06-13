@@ -837,6 +837,12 @@ public:
 	// an empty `;` (correctly dropped inside a block); a required slot
 	// must instead receive c2mir's empty-statement node, EXPR(LIST,IGNORE).
 	node_t translate_stmt_required(TokenBase *tb);
+	// Translate a single (possibly non-compound) controlled statement — an
+	// if/else branch or a loop body — scoping any temporaries it materializes
+	// into a wrapping block so they are declared before the statement and
+	// cleaned up at its exit (a compound statement already does this via
+	// translate_block; a bare statement has no scope of its own).
+	node_t translate_branch_stmt(TokenBase *tb);
 	node_t translate_block(TokenCpnd *tc);
 	node_t translate_return(TokenRETURN *tr);
 	node_t translate_if(TokenIF *ti);

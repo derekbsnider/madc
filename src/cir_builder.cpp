@@ -9000,6 +9000,30 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 	return node2(N_RETURN, list(), expr, tr);
 }
 
+node_t CirBuilder::translate_branch_stmt(TokenBase *tb)
+{
+	if (!tb) return ignore();
+	node_t body = translate_stmt_required(tb);
+	// A compound branch flushed its own temps inside translate_block, leaving
+	// m_pending_stmts empty. A NON-compound branch (a bare expression-statement
+	// such as `_M_move_assign(std::move(__x), true_type());`) leaves the temps
+	// it materialized (the `true_type()` temp) on m_pending_stmts — they must be
+	// scoped to THIS branch. Without the wrap they leak past the branch and get
+	// swept into the next translated block's flush (a then-branch temp landing,
+	// undeclared at its use, inside the else block — real vector
+	// _M_move_assign(false_type)). Wrap temps + statement into one block: the
+	// temps are declared before the statement and cleaned up at branch exit.
+	if (m_pending_stmts.empty())
+		return body;
+	std::vector<node_t> temps;
+	flush_pending_stmts(temps);
+	node_t items = list();
+	for (node_t p : temps)
+		append(items, p);
+	append(items, body);
+	return node2(N_BLOCK, list(), items, tb);
+}
+
 node_t CirBuilder::translate_if(TokenIF *ti)
 {
 	if (ti->condition_decl) {
@@ -9009,8 +9033,8 @@ node_t CirBuilder::translate_if(TokenIF *ti)
 		// statement loop swallows them into the wrong scope.
 		std::vector<node_t> cond_temps;
 		flush_pending_stmts(cond_temps);
-		node_t then_body = translate_stmt_required(ti->statement);
-		node_t else_body = ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
+		node_t then_body = translate_branch_stmt(ti->statement);
+		node_t else_body = ti->elsestmt ? translate_branch_stmt(ti->elsestmt) : ignore();
 		node_t if_node = node4(N_IF, list(), cond, then_body, else_body, ti);
 		node_t items = list();
 		node_t decl = translate_stmt(ti->condition_decl);
@@ -9042,8 +9066,8 @@ node_t CirBuilder::translate_if(TokenIF *ti)
 	// (see the condition_decl arm above).
 	std::vector<node_t> cond_temps;
 	flush_pending_stmts(cond_temps);
-	node_t then_body = translate_stmt_required(ti->statement);
-	node_t else_body = ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
+	node_t then_body = translate_branch_stmt(ti->statement);
+	node_t else_body = ti->elsestmt ? translate_branch_stmt(ti->elsestmt) : ignore();
 	node_t if_node = node4(N_IF, list(), cond, then_body, else_body, ti);
 	if (cond_temps.empty())
 		return if_node;
