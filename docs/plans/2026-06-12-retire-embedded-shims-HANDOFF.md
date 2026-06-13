@@ -10,6 +10,27 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 6, part 3) — MIR upstream sweep (PRs #437-440)
+
+**Commits `56ee053` (MIR pin 545ad46→5df536f) + `eeed70a` (emit-C hygiene).**
+Adopted 4 upstream vnmakarov/mir PRs onto fork develop (pushed) + one madc
+refinement. Headline: **#438 fixed a LIVE x86-64 generator bug** — a struct
+param before `...` made `va_arg` read the named struct's register-save slot
+as a vararg (3-way oracle: `MIR_gen` gave 60/3.0/3018 vs gcc 330/3.8/3018).
+Pinned by `tests/testvastruct.mad`; also fixed gcc-torture `pr117432.c`
+→ **failset 52→51, ZERO regressions**. #437's 128MB code-holder reservation
+**arch-gated OFF x86-64** (fork `5df536f`, proposed upstream): rel32 reaches
+±2GB so it's unneeded there, and it OOM-crashed the leaky-VLA torture case
+`20040811-1.c` by eating commit headroom (that VLA leak is a NEW known gap —
+see claude_status: VLA not freed on backward goto). #439 C23 paramless
+variadic; #440 block-arg copy (aarch64/riscv64/s390x/ppc64, inert on x86-64).
+emit-C `eeed70a`: `safe_ident` (per-byte mnemonic flatten of operator
+spellings) + DOTS-only param list → `()`, unlocking the 3-way c2m oracle for
+the w2a faces (the JIT tree path is untouched — c2mir never sees emitted C).
+Gates: fulltest 556/27 (failure list byte-identical, +testvastruct), unit
+10/10, torture 1571/failset 51, cir-fidelity exit 0, SMAUG soak green.
+Triage: docs/parity/mir-fork-community-patches.md (round 3).
+
 ## STATUS UPDATE 2026-06-13 (session 6, part 2) — w2a CIR FACES: 83 → 42 CHECK ERRORS
 
 **Commits `dd27c5e` → `ba6dd30` → `87cc363`** (after the eval fix below).
