@@ -27,10 +27,39 @@ object_call_temp_addr addresses the resulting lvalue. Only reached for retbuf
 returns (object_returning_call_class gates on class_return_via_retbuf), so
 class_method_call always takes its materializing sret branch.
 
-**w2a REMAINING (5 errors):** 2× pointer-type-param, 1× __madc_objtmp (while/for
-condition-temp, session-4 gap), 1× lvalue-as-assign-LHS, 1× struct/union
-return-expr (std::move/move_iterator). **Session arc: w2a 35 → 5** across parts
-5-10.
+**Session arc: w2a 35 → 5** across parts 5-10.
+
+### NEXT SESSION — w2a's last 5, LINE-ATTRIBUTED (start here)
+
+Workflow: `bin/madc --emit=c11 tmp/w2a.mad > tmp/w2a_emit.c` then
+`/workspace/mir/c2m tmp/w2a_emit.c -ei 2>&1 | grep -v warning`. (The emit-C path
+still line-attributes; the JIT path reports all at file:2:28.) Three distinct,
+somewhat deeper root causes remain — each its own slice, full gate each:
+
+1. **`tmp/w2a_emit.c:2121` — `std::max` free-fn-template not CALLED** (in
+   `_M_check_len`). `std::max(size(), __n)` mis-lowered to
+   `size(__this) = (__ns_std_max + (size(__this) , __n))` — the function name
+   `__ns_std_max` leaks as a bare identifier (uninstantiated/uncalled), a bogus
+   `+`, a comma expr, and an assignment whose LHS is the `size()` call ("lvalue
+   required as left operand of assignment"). Root: the std::max/min free-function
+   template isn't being resolved+instantiated+called at this site (cf. the
+   getline / std_free_function_instantiation machinery). Likely the highest-value
+   next target (a real free-fn-template call gap, not just a shape).
+2. **`tmp/w2a_emit.c:2162` — `__madc_objtmp_74` undeclared + struct/union param**
+   (in `_M_move_assign__o2`, the allocator `operator=` arg). The session-4
+   while/for CONDITION-TEMP placement gap: a materialized temp is referenced but
+   its decl landed in the wrong scope (pending-stmt placement for a temp created
+   inside a condition/sub-expression). Two errors on one line.
+3. **`tmp/w2a_emit.c:1686` — std::move / move_iterator reference return** (the 1
+   remaining struct-return). `return (*__ns_std_move(&(*operator[](&_M_current,
+   __n))))` in move_iterator::operator* returning `__conditional_t<...>&`:
+   std::move yields `T&&` and the by-value/ref-return shape mismatches the
+   conditional reference type. Niche; lowest priority of the three.
+- Plus 2× "incompatible argument type for pointer type parameter" — emitted as
+  WARNINGS by c2mir (may be benign / not among the 5 hard errors; verify whether
+  they actually block before spending a slice).
+- Separate known bug (surfaced by w17/w19, NOT in w2a's 5): `a + N` array-decay
+  ctor arg types as INT (pointer decay missing).
 
 ---
 
