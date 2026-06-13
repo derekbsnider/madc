@@ -29,11 +29,11 @@ c2m check-errors down to 1.**
 
 ## 1. Live state (verify with `bash scripts/resume.sh`)
 
-- **Branch:** `feature/retire-embedded-shims-claude` @ **`4cde0e2`** (LOCAL ONLY —
+- **Branch:** `feature/retire-embedded-shims-claude` @ **`a64fd00`** (LOCAL ONLY —
   never push; develop untouched). 
 - **MIR fork** `/workspace/mir` @ `5df536f` == `MIR_COMMIT` pin → satisfied.
-- **All gates GREEN** at HEAD: integration suite **559 passed / 27 failed / 18
-  skipped** (FAIL list byte-identical to `tmp/baseline_fails_s7.txt`; +`testnestedtemplatedtor`);
+- **All gates GREEN** at HEAD: integration suite **560 passed / 27 failed / 18
+  skipped** (FAIL list byte-identical to `tmp/baseline_fails_s7.txt`; +`testnestedtemplatedtor` +`testpartialorder`);
   unit (`make -C src test`) all-pass; gcc-torture **1571 passed / 51-name failset
   byte-identical** to `docs/parity/torture-failset-current.txt` (ZERO regressions);
   SMAUG soak green (exit 124 + "Realms of Despair ready ... port 4000").
@@ -51,42 +51,56 @@ c2m check-errors down to 1.**
 Plus docs commits `554e5d2`/`38f90eb`/`97bdb9d`/`468d5d8`/`74f061e` (banners, the
 research doc, status/memory sync).
 
-## 3. THE NEXT TASK — w2a: member-template instantiation during LATE materialization
+## 3. THE NEXT TASK — w2a: non-type template-arg EXPRESSION evaluation for partial-spec selection
 
-**Prior walls CLEARED this session** (parts 15-17, all gated): dtor double-emission
-(`2a46bed`), EAGER template member-body instantiation (`f76c07c` — the deep one), and
-late free-fn-template emission (`4cde0e2`). w2a's 35→1 then advanced past the dtor wall,
-the integer-const-expr (`__move_storage`) + `__alloc_traits::construct` faces (both were
-in NEVER-ODR-USED members, now correctly NOT instantiated), and `std::_Destroy`.
+**THE part-18 reframing (`a64fd00`, gated):** part-17's "member-template instantiation
+during late materialization" hypothesis was the WRONG LAYER. `allocator_traits::destroy`
+is `[[__gnu__::__always_inline__]]` — libstdc++ exports NOTHING for it (`nm -D` count 0).
+g++ never calls it: it selects the more-specialized `_Destroy(_FwdIt,_FwdIt,allocator<_Tp>&)`
+(alloc_traits.h:942), which delegates to the trivially-destructible-aware 2-arg
+`_Destroy(first,last)`. madc picked the general `_Destroy(...,_Allocator&)` because it had
+**no function-template partial ordering** ([temp.func.order]) — `instantiate_namespace_fn_template_for_call`
+took the first candidate that deduced (registration order). Fix = partial ordering +
+template-id param deduction + `__has_trivial_destructor` builtin (see the part-18 banner).
+DEEPEST LAYER lesson: don't build machinery (member-template instantiation) to service a call
+g++ never makes — fix the overload mis-selection.
 
-**Repro (current single face):**
+**Repro (current single face — the wall ADVANCED):**
 ```
 rm -f tmp/*.madh
 bin/madc tmp/w2a.mad 2>&1 | grep -v -i 'warning\|setrlimit'
-#  -> MIR error: import of undefined item allocator_traits_std__allocator_int32_t___destroy
+#  -> MIR error: import of undefined item _Destroy_aux___has_trivial_destructor__Value_type_____destroy
 ```
-**Diagnosis:** `std::vector<int>`'s dtor is now lazily materialized; it calls `std::_Destroy`
-(free fn template, now emitted via the part-17 drain); `_Destroy`'s body calls
-`allocator_traits<allocator<int>>::destroy(alloc, p)` — a static **MEMBER TEMPLATE** of an
-instantiated class template. In `tmp/w2a_emit.c` `_Destroy__o2` is defined (~line 804) and
-calls `allocator_traits_std__allocator_int32_t___destroy(...)`, but that symbol is emitted
-only as `extern void …___destroy();` (EMPTY params, NO body, ~line 633) — the member-template
-call was lowered to a bare name without instantiating it. The cascade continues:
-`destroy` → `_S_destroy` (SFINAE overloads, alloc_traits.h:284/291) → `allocator<int>::destroy`.
+**Diagnosis (from `bin/madc --emit=c11 tmp/w2a.mad > tmp/w2a_emit.c`):** the specialized
+`_Destroy` chain is now selected — `__ns_std__Destroy__o2` (3-arg, ~L804) → `__ns_std__Destroy__o3`
+(2-arg, ~L807) → `typedef int _Value_type;` (L808, _Value_type RESOLVES to int) →
+`_Destroy_aux___has_trivial_destructor__Value_type_____destroy(__first, __last)` (L809).
+`struct _Destroy_aux_true` already EXISTS (L60). The bug: the template-id
+`_Destroy_aux<__has_trivial_destructor(_Value_type)>` flattens its non-type arg
+expression RAW into the instantiation name instead of EVALUATING it to `true` (→ `_Destroy_aux_true`).
+`__has_trivial_destructor(int)` DOES fold in expression position (the new builtin), but is NOT
+reached in template-argument position.
 
-**The slice:** complete the LATE-materialization machinery so a member-template call inside a
-lazily-materialized body instantiates the member template (like the part-17 drain did for FREE
-function templates). This is the member-template analogue. Likely ONE mechanism that
-cascade-resolves destroy + _S_destroy + allocator::destroy (all member-template/member calls
-through the same late path). Investigate why the call emits a bare extant-less extern instead
-of instantiating — the member-template instantiation that fires at normal parse time does NOT
-fire when the calling body is re-parsed by `parse_deferred_lazy_body` in the cir fixpoint.
-Caveat: reducing this is finicky — `tmp/mt1.mad` (free-fn-tmpl → member-tmpl of instantiated
-class tmpl, eager) hit a DIFFERENT bug ("undeclared mydestroy"), so the area has multiple
-interacting issues; attribute against the REAL w2a path with `--emit=c11`, not just reducers.
+**The slice:** evaluate non-type template-ARGUMENT *expressions* during class template-id arg
+collection so `_Destroy_aux<__has_trivial_destructor(_Value_type)>` selects the `<true>`
+partial spec. Today `non_type_partial_spec_arg_matches` (parser.cpp ~12808) only matches via
+`parse_simple_template_non_type_value` (literal ints) — the unevaluated trait-call spelling never
+matches `_Destroy_aux<true>`. Find where the `_Destroy_aux<...>` member-access template-id's
+concrete args are collected/sanitized (the flattened name `_Destroy_aux___has_trivial_destructor__Value_type_`
+is built by `sanitize_template_fragment` on the raw arg) and route a non-type arg through the
+constant/expression evaluator (which now knows `__has_trivial_destructor`) BEFORE building the
+instantiation key. Attribute on the REAL w2a path with `--emit=c11` (reducers diverge: `tmp/po4.mad`
+hit the global/ns fn-template instantiation gap `__ns_ns_destroy_one`; `tmp/po2.mad` user-class arg
+gives `acls=null` — user template-ids carry NO `canonical_cpp_spelling`, unlike libstdc++ classes).
 
-After it: `std::vector<int> v;` should COMPILE, then RUN it (`bin/madc tmp/w2a.mad`) — the
-milestone — unblocking the ~12-test container cluster + testmadc_ns per §3.6.
+After it: `std::vector<int> v;` should COMPILE, then RUN it — unblocking the ~12-test container
+cluster + testmadc_ns per §3.6.
+
+**KNOWN pre-existing limitation surfaced (NOT triggered by w2a; follow-up):** the fn-template
+`inst_key` memo (`fn_template_instantiated`, parser.cpp ~25771) encodes only typeparam VALUES, so
+two same-name overloads sharing a typeparam that binds to the same type COLLIDE (the second reuses
+the first's instantiation). w2a's `_Destroy` overloads bind DIFFERENT typeparams (`_Allocator=allocator<int>`
+vs `_Tp=int`), so unaffected. Fix later: key on the overload signature too.
 
 ## 4. RESEARCH — reference types as template arguments (DONE this session)
 
@@ -183,6 +197,43 @@ leftovers before restarting.
 - **Merge gate (do NOT merge to develop before ALL):** fulltest 100% green + both check
   gates + P1 partition gate · torture zero-regr vs 51-name baseline · SMAUG soak ·
   `bash scripts/run_tests.sh --exe` · mirrors synced · user approval.
+
+---
+
+## STATUS UPDATE 2026-06-13 (session 8, part 18) — function-template PARTIAL ORDERING + template-id deduction + __has_trivial_destructor (the part-17 "next task" was the wrong layer)
+
+**COMMITTED `a64fd00`, FULLY GATED** (integration 560/27 byte-identical +`testpartialorder`,
+unit all-pass, gcc-torture 1571 / 51-name failset byte-identical, SMAUG soak green).
+
+**The reframing:** part-17's NEXT-task (member-template instantiation of `allocator_traits::destroy`)
+was the WRONG LAYER. `nm -D libstdc++` exports ZERO `allocator_traits` symbols — `destroy` is
+`[[__gnu__::__always_inline__]]`, header-only; mangling/instantiating it services a call **g++ never
+makes**. g++ selects the more-specialized `_Destroy(_FwdIt,_FwdIt,allocator<_Tp>&)` (alloc_traits.h:942)
+→ trivially-destructible-aware 2-arg `_Destroy` → empty for int. madc picked the general
+`_Destroy(...,_Allocator&)` because it had **NO function-template partial ordering**
+(`instantiate_namespace_fn_template_for_call` took the first registration-order candidate that deduced).
+
+**Three coupled pieces (all parser.cpp), deepest layer, no shims:**
+1. **Partial ordering ([temp.func.order])**: `po_more_specialized` / `po_at_least_specialized` —
+   symbolic deduction of one template's params (deduction vars) against the other's parameter list
+   (its params = unique opaque atoms), with backtracking + binding consistency in `po_pattern_match`.
+   `instantiate_namespace_fn_template_for_call` now orders candidates most-specialized-first;
+   incomparable candidates keep registration order (selection changes ONLY on a genuine specialization
+   relationship — surgical, hence zero regressions). Handles pointer (`T*`>`T`) AND template-id
+   (`allocator<_Tp>`>`_Allocator`).
+2. **Template-id param deduction**: `try_instantiate_namespace_fn_template` deduces inner params from a
+   template-id parameter (`allocator<_Tp>&` ← `allocator<int>&`) by reusing
+   `Program::unify_nested_spec_pattern_arg` against the arg class's `canonical_cpp_spelling`
+   (`fn_template_deduce_param` only did single-word cores). This makes the specialized `_Destroy`
+   deducible, hence selectable.
+3. **`__has_trivial_destructor(T)` builtin** (gcc-13 intrinsic, faithful [class.dtor] triviality):
+   added to the `type_trait_arity` / `evaluate_type_trait` table.
+
+**w2a arc:** `allocator_traits::destroy` (undefined) → `_Destroy_aux<__has_trivial_destructor(_Value_type)>`
+(undefined). The specialized chain is selected, `_Value_type` resolves to int, `struct _Destroy_aux_true`
+exists — the remaining gap is non-type template-ARG expression evaluation (see §3, the NEW next task).
+Reducers: `tmp/po5.mad` (T*>T, → `tests/testpartialorder`), `tmp/po2.mad`/`tmp/po4.mad` (diverge — user-class
+no canonical_cpp_spelling / global-fn-template gap). ROADMAP 2.10 added (flattened→mangled naming unification).
 
 ---
 
