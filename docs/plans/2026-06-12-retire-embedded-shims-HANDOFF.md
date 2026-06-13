@@ -29,13 +29,14 @@ c2m check-errors down to 1.**
 
 ## 1. Live state (verify with `bash scripts/resume.sh`)
 
-- **Branch:** `feature/retire-embedded-shims-claude` @ **`74f061e`** (LOCAL ONLY —
+- **Branch:** `feature/retire-embedded-shims-claude` @ **`2a46bed`** (LOCAL ONLY —
   never push; develop untouched). 
 - **MIR fork** `/workspace/mir` @ `5df536f` == `MIR_COMMIT` pin → satisfied.
 - **All gates GREEN** at HEAD: integration suite **558 passed / 27 failed / 18
-  skipped** (the 27 failures are the documented latent-real-header set, byte-identical
-  to the session baseline `tmp/baseline_fails_s7.txt`); unit (`make -C src test`)
-  all-pass; gcc-torture **1571 passed / 51-name failset byte-identical** to
+  skipped** (FAIL list byte-identical to `tmp/baseline_fails_s7.txt`; the new
+  `tests/testnestedtemplatedtor` from `2a46bed` was added after this run's file-list
+  snapshot → next full run reads **559 passed**); unit (`make -C src test`) all-pass;
+  gcc-torture **1571 passed / 51-name failset byte-identical** to
   `docs/parity/torture-failset-current.txt` (ZERO regressions); SMAUG soak green
   (exit 124 + "Realms of Despair ready ... port 4000").
 - Build: `make -C src` (clang++ by default). bin at `bin/madc`.
@@ -52,43 +53,40 @@ c2m check-errors down to 1.**
 Plus docs commits `554e5d2`/`38f90eb`/`97bdb9d`/`468d5d8`/`74f061e` (banners, the
 research doc, status/memory sync).
 
-## 3. THE NEXT TASK — w2a's LAST error: duplicate emission of a nested template class
+## 3. THE NEXT TASK — w2a's 2 remaining faces (dtor-dedup wall CLEARED @ `2a46bed`)
 
-**Repro (this IS the minimal reducer):**
+**The duplicate-emission wall is DOWN.** Root cause was NOT two instances (the part-14
+hypothesis (b) was wrong — verified by pointer: ONE `DataDefCLASS`): a nested class inside
+a template keeps its *source-tag* `method_map` keys (`Inner`/`~Inner`) while its composed
+name becomes `Outer_int32_t__Inner`, so every `method_map.find("~"+cdd->name)` dtor lookup
+MISSED → `class_has_own_user_dtor` false → the synth-dtor pass wrongly fired → dtor emitted
+twice. Fix = name-independent `CirBuilder::class_own_dtor` (the `~`-keyed `method_map` entry
+whose Variable is also in `cdd->methods`; inherited dtors live in `method_map` ONLY).
+Library-independent (13-line pure-user reducer `tmp/dup3.mad` reproduced it). Regression
+test `tests/testnestedtemplatedtor`.
+
+**Repro for the 2 NEW faces:**
 ```
 rm -f tmp/*.madh
-bin/madc --emit=c11 tmp/w2a.mad > tmp/w2a_emit.c 2>/dev/null
-/workspace/mir/c2m tmp/w2a_emit.c -ei 2>&1 | grep -v warning
-#  -> Repeated item declaration vector_int32_t_std__allocator_int32_t____Temporary_value___Storage___dtor
+bin/madc tmp/w2a.mad 2>&1 | grep -v -i 'warning\|setrlimit'
+#  -> tmp/w2a.mad:2:28: Expecting integer constant expression
+#  -> MIR error: import of undefined item __alloc_traits_std__allocator_int32_t__int32_t__construct
 ```
-**Diagnosis:** `vector::_Temporary_value` AND its nested `union _Storage` are emitted
-TWICE in `tmp/w2a_emit.c` (≈ lines 984 and 1470), so `_Temporary_value___Storage___dtor`
-(and `_Temporary_value___dtor`) are DEFINED twice → MIR-link "Repeated item declaration".
-Tell-tale: the two `_Temporary_value___dtor` bodies **DIFFER** — the first just calls
-`_Storage___dtor`; the second has the real `__alloc_traits…destroy(...)` + `_Storage___dtor`.
-So this is not a trivial double-print: `_Temporary_value` is being **instantiated twice**
-(an early/incomplete instantiation AND the full one both reach emission).
+Both are NEW (previously masked behind the dup-emission error) and UNRELATED to dtors:
+1. **`Expecting integer constant expression`** at the `std::vector<int> v;` decl site —
+   a constant-expression context inside the instantiated vector body isn't folding (likely
+   an array bound / `_S_*` constexpr / `sizeof`-style operand). Reduce independently:
+   attribute WHICH constant-expr in the monomorphized body, then fold it at sema.
+2. **undefined `__alloc_traits…construct`** — `std::allocator_traits<…>::construct` is a
+   member TEMPLATE that is referenced but never instantiated/emitted (cf. the `destroy`
+   sibling that DOES emit). Find why `construct` isn't reached by the deferred-lazy-body
+   fixpoint (`referenced_funcs` miss, or member-template-instantiation gap) — the
+   `getline`/`std_free_function_instantiation` + `parse_deferred_lazy_body` machinery is
+   the precedent. Likely the higher-value of the two (a real member-template-call gap).
 
-**Starting hypothesis (verify, don't trust):** `_Temporary_value` is a NESTED class of
-`std::vector`; it is reached twice during monomorphization and represented by TWO distinct
-`DataDefCLASS` instances that mangle to the SAME emitted symbol, so the emitter's class/func
-dedup sets miss them. Relevant machinery: `CirBuilder::emit_class_member_deps`
-(cir_builder.cpp ~3297) with `emitted_classes`/`emitting_classes`; class-method emission;
-`referenced_funcs` (cir_builder.h:43); the template monomorphization cache in parser.cpp
-(`instantiate_template_use` / `complete_pending_template_instantiations` /
-`pending_template_instantiations`). **Fix direction options:** (a) dedup emitted
-functions/classes by their EMITTED SYMBOL NAME (mangled) at the emission boundary — the
-unfakeable contract — OR (b) ensure a nested class is instantiation-cached once (find why
-`_Temporary_value` is instantiated twice and collapse to one DataDefCLASS). Prefer the
-deepest cause: if it's two instantiations, fix the cache (b); if two emissions of one
-instance, fix the emit dedup (a). Attribute with `--emit=c11` + the differing dtor bodies;
-a tighter reducer = a user template class with a nested class used by one member (to confirm
-it's general, not vector-specific).
-
-After this falls, w2a `std::vector<int> v;` should COMPILE; then RUN it
-(`bin/madc tmp/w2a.mad`) — runtime is the real milestone, and clearing the vector
-instantiation wall unblocks the ~12-test container cluster (testvector/map/set/…) +
-testmadc_ns per §3.6 below.
+After BOTH fall, `std::vector<int> v;` should COMPILE; then RUN it (`bin/madc tmp/w2a.mad`)
+— runtime is the milestone, and clearing the vector instantiation wall unblocks the
+~12-test container cluster (testvector/map/set/…) + testmadc_ns per §3.6.
 
 ## 4. RESEARCH — reference types as template arguments (DONE this session)
 
@@ -185,6 +183,46 @@ leftovers before restarting.
 - **Merge gate (do NOT merge to develop before ALL):** fulltest 100% green + both check
   gates + P1 partition gate · torture zero-regr vs 51-name baseline · SMAUG soak ·
   `bash scripts/run_tests.sh --exe` · mirrors synced · user approval.
+
+---
+
+## STATUS UPDATE 2026-06-13 (session 8, part 15) — emit a nested-template class's dtor once (w2a 1→2-new-faces; dup-emission wall DOWN)
+
+**COMMITTED `2a46bed`, FULLY GATED.** suite 558/27 (FAIL list byte-identical;
+`tests/testnestedtemplatedtor` added post-snapshot → 559 next run), unit all-pass,
+gcc-torture 1571 / 51-name failset byte-identical (ZERO regressions), SMAUG soak
+green. **w2a's "Repeated item declaration ..._Temporary_value___Storage___dtor"
+wall CLEARED.**
+
+ROOT CAUSE (part-14 hypothesis (b) "two instances" was WRONG — verified by pointer:
+ONE `DataDefCLASS`): a nested class inside a class template keeps its SOURCE-TAG
+`method_map` keys (`Inner`/`~Inner`) while its composed name becomes
+`Outer_int32_t__Inner`. Every emitter dtor lookup did `method_map.find("~"+cdd->name)`
+= `"~Outer_int32_t__Inner"` → MISS → `class_has_own_user_dtor` false → the
+synthesized-dtor pass wrongly fired → the dtor was emitted TWICE (an empty synth body
+AND the full user body). LIBRARY-INDEPENDENT — reduced to a 13-line pure-user template
+(`tmp/dup3.mad`, no libstdc++).
+
+FIX (deepest layer, name-independent): new `Variable *CirBuilder::class_own_dtor(cdd)`
+— the own dtor is the `~`-prefixed `method_map` entry whose Variable is ALSO in
+`cdd->methods` (inherited dtors are copied into `method_map` ONLY by the base-merge at
+parser.cpp ~20600, never into `methods`). Mirrors how a destructor is identified
+structurally (by kind) rather than by reconstructing the key from `cdd->name`. Routed
+all four `"~"+cdd->name` dtor-lookup sites (class_member_destruct, class_dtor_symbol,
+the external-class dtor binding, class_has_own_user_dtor) through it — net LESS code.
+Diagnostics were `#ifdef MADC_DEBUG_DTOREMIT` gated (build with
+`make -C src FEATURE_DEFINES=-DMADC_DEBUG_DTOREMIT`), then removed. New regression test
+`tests/testnestedtemplatedtor` (dtor fires exactly once: `val 7` / `dtor 7`).
+Reducers: `tmp/dup1.mad` (by-value Inner return), `tmp/dup2.mad` (Inner unused → 1 dtor,
+the negative control), `tmp/dup3.mad` (Inner referenced by a member → 2 dtors, the bug).
+
+### w2a's 2 NEW faces (see §3 above — start there next session)
+
+`std::vector<int> v;` now advances past the dup-emission wall to two NEW, distinct,
+dtor-UNRELATED faces (previously masked): (1) `Expecting integer constant expression`
+at the decl site (a constexpr in the instantiated vector body not folding); (2) undefined
+`__alloc_traits…construct` (a member TEMPLATE referenced but never instantiated — cf. its
+`destroy` sibling that DOES emit). w2a arc: 35 → 1 → (dup wall down) → 2 new faces.
 
 ---
 
