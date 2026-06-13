@@ -549,10 +549,32 @@ master and unblocks Tracks 3, 5, 6, and AOT.**
 | 2.7 | Exception handling (SJLJ) | 3-4 wk | **DONE** (v0.21.0) — Phase A + B (unwinding) | [cpp-support.md](cpp-support.md) |
 | 2.8 | Quality of life | Ongoing | **Started** — access control, auto token position | [cpp-support.md](cpp-support.md) |
 | 2.9 | Generic extern class ctor/dtor | — | **DONE** (v0.21.0) — replaces per-type switch boilerplate | — |
+| 2.10 | **Single-name local instantiations (flattened→Itanium-mangled)** | 1-2 wk | **Planned** | — |
 
 **2.3 remaining:** pointer-to-const enforcement (`*p` writes), const methods.
 **2.8 remaining:** enum class, auto type deduction, broader real-iostream
 output replacement, scope-level destruction.
+
+**2.10 — name every madc-local template instantiation by its Itanium mangled
+name, retiring the flattened-key scheme.** Today madc carries TWO naming schemes
+for the same entity: libstdc++-exported symbols are referenced mangled-direct
+(`_ZNSt6vectorIiSaIiEE…`, via `madc_mangle`), while madc-monomorphized local
+bodies (class-template instances like `vector<int>` + nested types, free-fn-
+template instances `__ns_std__Destroy`/`__addressof`, member-template instances)
+get flattened keys (`vector_int32_t_std__allocator_int32_t_…`). Carrying two
+names for one entity is a standing source of confusion and drift (the mangler
+should be the single name source). Unifying on the mangled name everywhere
+(symbol table, emitted C, call sites, struct tags) gives: (a) `--emit=c11`
+diffability against g++; (b) **free linker dedup** — a local instantiation whose
+mangled name coincides with a libstdc++ weak export ODR-merges automatically, so
+the "exported vs inline-only" decision disappears (always mangle; emit a body
+only when nothing else defines it). **Cost/risk:** mangler completeness —
+correct Itanium for nested types, member templates, and substitution compression
+(`S_`/`S0_`); a wrong name becomes a link error or a silent wrong-symbol bind, so
+migrate one category at a time behind the full gate. The member-template
+convergence (Phase 2.10's first consumer — emit a local body under the mangled
+name `itanium_mangle_member_template_sub` already computes when the owner is
+local/not-exported) establishes the pattern.
 
 **Dependencies:** All met. 2.1-2.7 complete.
 

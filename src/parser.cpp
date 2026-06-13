@@ -4699,7 +4699,8 @@ static int type_trait_arity(const std::string &name)
 {
     if ( name == "__is_same" || name == "__is_base_of" )
 	return 2;
-    if ( name == "__is_class" || name == "__is_union" || name == "__is_enum" )
+    if ( name == "__is_class" || name == "__is_union" || name == "__is_enum"
+      || name == "__has_trivial_destructor" )
 	return 1;
     return 0;   // not a supported trait
 }
@@ -4725,6 +4726,29 @@ static bool trait_is_union(DataDef *dd)
 {
     DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
     return s && s->union_layout;
+}
+// __has_trivial_destructor(T) ([class.dtor] triviality, the gcc-13 builtin
+// libstdc++'s stl_construct.h dispatches `_Destroy_aux<...>` on): a non-class
+// type is trivially destructible; a class is iff it has no user-declared (or
+// virtual) destructor AND every direct base and every class-type data member is
+// trivially destructible. Pointer members are non-class, hence trivial.
+static bool trait_has_trivial_destructor(DataDef *dd)
+{
+    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    if ( !c )
+	return true;
+    if ( c->has_user_dtor )
+	return false;
+    if ( c->base_class && !trait_has_trivial_destructor(c->base_class) )
+	return false;
+    for ( size_t i = 0; i < c->bases.size(); ++i )
+	if ( c->bases[i].base && !trait_has_trivial_destructor(c->bases[i].base) )
+	    return false;
+    for ( size_t i = 0; i < c->members.size(); ++i )
+	if ( c->members[i].second
+	  && !trait_has_trivial_destructor(c->members[i].second) )
+	    return false;
+    return true;
 }
 // __is_base_of(B, D): true if B and D name the same class, or B is a (direct or
 // indirect) base of class D. Ignores access (matches the intrinsic's semantics —
@@ -4793,6 +4817,8 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	result = trait_is_union(args[0]);
     else if ( name == "__is_base_of" )
 	result = trait_is_base_of(args[0], args[1]);
+    else if ( name == "__has_trivial_destructor" )
+	result = trait_has_trivial_destructor(args[0]);
 
     TokenInt *ti = new TokenInt(result ? 1 : 0);
     ti->setDataType(&ddBOOL);
@@ -25713,6 +25739,41 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    }
 	    continue;
 	}
+	// Template-id parameter (`allocator<_Tp>&`, `All<_Tp>&`): deduce the
+	// inner template params structurally against the argument's class
+	// ([temp.deduct.type]). fn_template_deduce_param only handles a
+	// single-word core (`_Tp`/`_Tp*`/`_Tp&`); a template-id needs the
+	// nested unifier (shared with class-template partial-spec selection),
+	// and is what makes the more-specialized `_Destroy(...,allocator<_Tp>&)`
+	// overload deducible (hence selectable by partial ordering).
+	{
+	    std::string core = sp;
+	    while ( !core.empty()
+		 && (core.back() == '&' || core.back() == '*'
+		     || core.back() == ' ') )
+		core.erase(core.size() - 1);
+	    std::string pouter;
+	    std::vector<std::string> pargs_probe;
+	    if ( split_template_id_spelling(core, pouter, pargs_probe) )
+	    {
+		// The argument's canonical C++ template-id spelling (`ns::All<int>`),
+		// NOT the flattened mangle name (`All_int32_t`) — the unifier matches
+		// `<...>` structure.
+		DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(arg_dd);
+		std::string concrete =
+		    acls && !acls->canonical_cpp_spelling.empty()
+		    ? acls->canonical_cpp_spelling
+		    : (arg_dd ? cpp_spelling_for_mangle(arg_dd, false)
+			      : std::string());
+		int sc = 0;
+		bool uok = !concrete.empty()
+		  && pgm.unify_nested_spec_pattern_arg(core, ft.typeparams,
+						       concrete, binding, sc);
+		if ( uok )
+		    continue;
+		return false;	// template-id param the argument can't match
+	    }
+	}
 	std::string tp;
 	DataDef *dd = NULL;
 	int r = fn_template_deduce_param(sp, ft.typeparams, arg_dd, tp, dd);
@@ -26346,6 +26407,121 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
     return NULL;
 }
 
+// --- Function-template partial ordering ([temp.func.order]) ----------------
+// When several same-name function templates all deduce for a call, the MOST
+// SPECIALIZED is selected (e.g. libstdc++'s `_Destroy(_FwdIt,_FwdIt,allocator<T>&)`
+// over the general `_Destroy(_FwdIt,_FwdIt,_Allocator&)`). madc carries each
+// template's parameters as spellings, so the standard's "synthesize unique
+// types, then try to deduce the other" test is done symbolically: candidate X
+// is "at least as specialized as" Y when every Y parameter pattern (Y's template
+// params = deduction variables) matches the corresponding X parameter (X's
+// template params = unique opaque atoms). X is MORE specialized iff X>=Y and not
+// Y>=X. This yields a partial order; incomparable candidates keep registration
+// order, so selection only changes when a genuine specialization exists.
+
+static bool po_param_spellings(Program &pgm, Program::FnTemplateDef &ft,
+			       std::vector<std::string> &out)
+{
+    std::string name = skipped_template_function_declarator_name(ft.decl);
+    if ( name.empty() )
+	return false;
+    size_t name_idx = ft.decl.size(), lparen = ft.decl.size();
+    for ( size_t i = 0; i < ft.decl.size(); ++i )
+	if ( ft.decl[i] && is_skipped_template_function_name(ft.decl[i])
+	  && skipped_template_function_name(ft.decl[i]) == name
+	  && i + 1 < ft.decl.size() && ft.decl[i + 1]
+	  && ft.decl[i + 1]->id() == TokenID::tkOpBrk )
+	{ name_idx = i; lparen = i + 1; break; }
+    if ( lparen >= ft.decl.size() )
+	return false;
+    Program::FreeOperatorOverload ov;
+    if ( !extract_free_signature(pgm, ft.decl, ft.typeparams, name, name_idx,
+				 lparen, ov) )
+	return false;
+    out = ov.param_spellings;
+    return true;
+}
+
+static bool po_word_is_param(const std::string &w,
+			     const std::vector<std::string> &params)
+{
+    for ( const std::string &p : params )
+	if ( w == p )
+	    return true;
+    return false;
+}
+
+// Symbolic deduction: does PATTERN `pat` (its template params `pvars` are
+// deduction variables) match TARGET `tgt` (whose own template params are unique
+// opaque atoms)? A pattern var binds to a contiguous run of target tokens — the
+// SMALLEST run that lets the remainder match (so `T` deduces from `UNIQ*` as
+// `T=UNIQ*`, while `T*` requires the target to end in `*`); repeated vars must
+// bind consistently. cv / typename / struct / class words are normalized away.
+static bool po_pattern_match(const std::vector<std::string> &pat, size_t pi,
+			     const std::vector<std::string> &tgt, size_t ti,
+			     const std::vector<std::string> &pvars,
+			     std::map<std::string, std::string> &bind)
+{
+    while ( pi < pat.size() && fn_template_word_is_cv(pat[pi]) ) ++pi;
+    while ( ti < tgt.size() && fn_template_word_is_cv(tgt[ti]) ) ++ti;
+    if ( pi >= pat.size() )
+	return ti >= tgt.size();
+    if ( po_word_is_param(pat[pi], pvars) )
+    {
+	// Bind the var to tgt[ti..te); try the smallest run first.
+	for ( size_t te = ti + 1; te <= tgt.size(); ++te )
+	{
+	    std::string sub;
+	    for ( size_t k = ti; k < te; ++k )
+		sub += tgt[k];
+	    std::map<std::string, std::string>::iterator it = bind.find(pat[pi]);
+	    if ( it != bind.end() && it->second != sub )
+		continue;	// inconsistent with an earlier binding of this var
+	    std::map<std::string, std::string> save = bind;
+	    bind[pat[pi]] = sub;
+	    if ( po_pattern_match(pat, pi + 1, tgt, te, pvars, bind) )
+		return true;
+	    bind = save;
+	}
+	return false;
+    }
+    if ( ti >= tgt.size() )
+	return false;
+    if ( pat[pi] != tgt[ti] )
+	return false;
+    return po_pattern_match(pat, pi + 1, tgt, ti + 1, pvars, bind);
+}
+
+// "Is X at least as specialized as Y" ([temp.func.order]): deduce Y's template
+// params (deduction variables) against X's parameter list (X's template params
+// treated as unique opaque atoms). Equal arity required.
+static bool po_at_least_specialized(Program &pgm, Program::FnTemplateDef &X,
+				    Program::FnTemplateDef &Y)
+{
+    std::vector<std::string> px, py;
+    if ( !po_param_spellings(pgm, X, px) || !po_param_spellings(pgm, Y, py) )
+	return false;
+    if ( px.empty() || px.size() != py.size() )
+	return false;
+    std::map<std::string, std::string> bind;	// Y's deductions, consistent across params
+    for ( size_t i = 0; i < px.size(); ++i )
+    {
+	std::vector<std::string> wx, wy;
+	fn_template_split_words(px[i], wx);	// TARGET (X params opaque)
+	fn_template_split_words(py[i], wy);	// PATTERN (Y params = vars)
+	if ( !po_pattern_match(wy, 0, wx, 0, Y.typeparams, bind) )
+	    return false;
+    }
+    return true;
+}
+
+static bool po_more_specialized(Program &pgm, Program::FnTemplateDef &A,
+				Program::FnTemplateDef &B)
+{
+    return po_at_least_specialized(pgm, A, B)
+	&& !po_at_least_specialized(pgm, B, A);
+}
+
 void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 {
     if ( !tc )
@@ -26364,9 +26540,21 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 			     + fd->function_display_name);
     if ( mi == fn_template_map.end() )
 	return;
+    // Order candidates most-specialized first ([temp.func.order]) so the
+    // first-viable selection below picks the most specialized overload that
+    // deduces. Incomparable candidates keep registration order.
+    std::vector<Program::FnTemplateDef *> order;
     for ( size_t vi = 0; vi < mi->second.size(); ++vi )
-	if ( try_instantiate_namespace_fn_template(*this, mi->second[vi],
-		mi->first, tc) )
+    {
+	Program::FnTemplateDef *cand = &mi->second[vi];
+	size_t pos = order.size();
+	for ( size_t j = 0; j < order.size(); ++j )
+	    if ( po_more_specialized(*this, *cand, *order[j]) )
+	    { pos = j; break; }
+	order.insert(order.begin() + pos, cand);
+    }
+    for ( Program::FnTemplateDef *cand : order )
+	if ( try_instantiate_namespace_fn_template(*this, *cand, mi->first, tc) )
 	    return;
 }
 
