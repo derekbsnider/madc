@@ -15511,6 +15511,59 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    done = true;
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
+		    // Direct invocation through a PARENTHESIZED function
+		    // designator: `(funcname)(args)`, `(std::max)(args)`.
+		    // libstdc++ wraps `(std::max)` / `(std::min)` in parens to
+		    // suppress macros/ADL — a real call, not a cast. After the
+		    // inner `(funcname)` resolves, exStack top is a TokenVar
+		    // whose type IS a function (a FuncDef, not a fn-pointer);
+		    // the just-consumed token is the `)` that closed the
+		    // grouping. A bare `funcname(args)` never reaches here (the
+		    // direct-call path forms the call before pushing onto
+		    // exStack), and a function name decays to its address only
+		    // when followed by a value-context token (`,`/`)`/`]`/op) —
+		    // never `(`. So prevToken()==`)` + a function-typed TokenVar
+		    // + a following `(` uniquely identifies `(E)(args)`. Routing
+		    // through parseCallFunc on the SAME function var resolves the
+		    // overload / instantiates the template from the call args,
+		    // exactly as the direct path would.
+		    // (`(args)` is a postfix call — precedence tighter than any
+		    // pending binary operator on opStack — so unlike the member
+		    // fptr path this does NOT gate on opstack_has_pending_op:
+		    // `size() + (std::max)(size(), __n)` must form the call even
+		    // with the `+` pending. prevToken()==`)` is the tight
+		    // discriminator that keeps it from firing spuriously.)
+		    TokenVar *fn_designator_base = NULL;
+		    TokenBase *prev_for_fn_designator = prevToken();
+		    if ( !exStack.empty()
+		      && !member_is_assign_lhs
+		      && prev_for_fn_designator
+		      && prev_for_fn_designator->id() == TokenID::tkClBrk
+		      && exStack.top()->type() == TokenType::ttVariable
+		      && (fn_designator_base = dynamic_cast<TokenVar *>(exStack.top())) != NULL
+		      && fn_designator_base->var.type
+		      && fn_designator_base->var.type->is_function() )
+		    {
+			TokenVar *tv = fn_designator_base;
+			exStack.pop();
+			// No src_node: this is a normal (possibly template)
+			// function call, so parseCallFunc's overload re-rank /
+			// template instantiation rebinds tc to the instantiated
+			// funcdef. Setting src_node would pin emission to the
+			// un-instantiated designator name (`__ns_std_max` instead
+			// of the deduced `__ns_std_max__o2`).
+			TokenCallFunc *tc = new TokenCallFunc(tv->var);
+			tc->file = tb->file;
+			tc->line = tb->line;
+			tc->column = tb->column;
+			tb = parseCallFunc(tc);
+			DBG(cout << "parenthesized function designator call through "
+			    << tv->var.name << endl);
+			opStack.push(tc);
+			if ( tb && tb->id() == TokenID::tkSemi )
+			    done = true;
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
 		    // Generic expression-as-function-pointer call:
 		    // `(c ? foo : bar)()`, `(expr)(args)` — when the
 		    // exStack top is a ternary or explicit DataDefFPTR
