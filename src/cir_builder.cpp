@@ -561,15 +561,22 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 {
 	if (class_subscript_is_object(arg) || class_array_subscript_is_object(arg))
 		return true;
-	if (TokenMember *tm = dynamic_cast<TokenMember *>(arg))
-		return as_class_instance(tm->datadef()) != NULL;
-	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
-		if (tv->var.name.compare(0, 11, "__literal__") == 0)
-			return false;
-		if ((tv->var.flags & vfREFERENCE) && class_behind(tv->var.type))
-			return true;
-		return as_class_instance(tv->var.type) != NULL;
-	}
+	// type() discriminators gate the downcasts: TokenCallMethod derives
+	// from TokenMember which derives from TokenCallFunc which derives from
+	// TokenVar — an ungated downcast would classify a method CALL (an
+	// rvalue when returning by value) as an addressable member/variable
+	// lvalue. (dynamic_cast stays — TokenVar virtually inherits TokenBase.)
+	if (arg && arg->type() == TokenType::ttMember)
+		if (TokenMember *tm = dynamic_cast<TokenMember *>(arg))
+			return as_class_instance(tm->datadef()) != NULL;
+	if (arg && arg->type() == TokenType::ttVariable)
+		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
+			if (tv->var.name.compare(0, 11, "__literal__") == 0)
+				return false;
+			if ((tv->var.flags & vfREFERENCE) && class_behind(tv->var.type))
+				return true;
+			return as_class_instance(tv->var.type) != NULL;
+		}
 	return false;
 }
 
@@ -1097,12 +1104,15 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 			return node2(N_CAST, void_ptr_type(),
 				node1(N_ADDR, translate_expr(arg), arg), arg);
 		// An object member is embedded in the enclosing struct. Translate the
-		// member access, take its address, and cast.
-		if (dynamic_cast<TokenMember *>(arg))
+		// member access, take its address, and cast. (type()-gated like
+		// is_class_object_value — a TokenCallMethod must NOT take the
+		// &member or named-variable arms.)
+		if (arg->type() == TokenType::ttMember)
 			return node2(N_CAST, void_ptr_type(),
 			    node1(N_ADDR, translate_expr(arg), arg), arg);
-		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
-			return object_var_void_addr(tv->var, arg);
+		if (arg->type() == TokenType::ttVariable)
+			if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
+				return object_var_void_addr(tv->var, arg);
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
 	}
 
@@ -1111,7 +1121,22 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(arg))
 		if (as_class_instance(ot->obj_class) == target)
 			return object_call_temp_addr(arg, target, arg);
-	if (as_class_instance(arg ? arg->datadef() : NULL) == target)
+	// A call returning a TRIVIALLY-COPYABLE class BY VALUE lowers to a raw
+	// call node — an rvalue; `&call` is not an lvalue and c2mir rejects it
+	// (`b.base() - a.base()`). Fall through to the materializing tail,
+	// where the implicit-copy fallback assigns the value into an
+	// addressable temp ([class.temporary]). NON-trivial returns never get
+	// here as raw calls: madc-compiled ones took the retbuf arm above, and
+	// external sret calls materialize their own slot temp inside
+	// translate_expr (so &translate_expr IS a temp lvalue — routing them
+	// into the tail recursed object_arg_addr -> class_ctor_call forever
+	// through the copy ctor's const-ref parameter).
+	bool rvalue_call = (arg && (arg->type() == TokenType::ttCallFunc
+				    || arg->type() == TokenType::ttCallMethod)
+			    && !ref_returning_call_type(arg)
+			    && class_trivially_copyable(target));
+	if (!rvalue_call
+	    && as_class_instance(arg ? arg->datadef() : NULL) == target)
 		return node2(N_CAST, void_ptr_type(),
 			     node1(N_ADDR, translate_expr(arg), arg), arg);
 
@@ -6551,7 +6576,11 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	if (ltv && top->left->type() == TokenType::ttVariable)
 		this_arg = object_var_addr(ltv->var, origin);
 	else
-		this_arg = node1(N_ADDR, translate_expr(top->left), origin);
+		// Expression receivers route through object_arg_addr (member ->
+		// &__this->member, ref-returning call -> the address, by-value
+		// object-returning call -> a materialized cleanup temp — a bare
+		// &call is not an lvalue; `__x.base() - __y.base()` chains).
+		this_arg = object_arg_addr(top->left, lcls);
 
 	// ClassName__operator== by default; an arity-disambiguated same-name
 	// overload (P2.1b gaps 3 & 4) carries its real symbol in local_emit_name.
@@ -6791,7 +6820,12 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 	if (otv && operand->type() == TokenType::ttVariable)
 		this_arg = object_var_addr(otv->var, origin);
 	else
-		this_arg = node1(N_ADDR, translate_expr(operand), origin);
+		// object_arg_addr handles every expression receiver shape:
+		// member -> &__this->member, ref-returning call -> the address
+		// itself, by-value object-returning call -> a materialized
+		// cleanup temp (a bare &call is not an lvalue and c2mir
+		// rejects it — reverse_iterator's `--base()`-style chains).
+		this_arg = object_arg_addr(operand, cls);
 
 	// A class-bound external operator names its real symbol via emit_symbol;
 	// otherwise the default ClassName__operator<sym> scheme + the
@@ -8158,7 +8192,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					if (otv && operand_tb->type() == TokenType::ttVariable)
 						this_arg = object_var_addr(otv->var, tb);
 					else
-						this_arg = node1(N_ADDR, translate_expr(operand_tb), tb);
+						this_arg = object_arg_addr(operand_tb, icls);
 					std::string sym = call_emit_symbol(post, icls->name + "__" + opmname);
 					referenced_funcs.insert(sym);
 					node_t pargs = list();
