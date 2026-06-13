@@ -794,10 +794,19 @@ public:
 	// True when a class needs an (implicit) destructor: it has a user dtor,
 	// embedded object members, or a base class that needs one.
 	bool class_needs_dtor(DataDefCLASS *cdd);
-	// True only when THIS class wrote its own ~Cls() (method_map["~Cls"]).
-	// has_user_dtor is inherited (a derived class with a non-trivial base also
-	// sets it), so it cannot gate synthesis: a class with a non-trivial base but
-	// no OWN dtor still needs a synthesized Cls___dtor chaining to the base.
+	// The class's OWN destructor method (the one it wrote itself), or NULL.
+	// Found name-independently: the method_map carries a "~"-prefixed key for
+	// every reachable dtor (own + inherited via the base-merge at parser.cpp
+	// ~20600), but ONLY own methods are in cdd->methods — inherited entries are
+	// copied into method_map alone. So the own dtor is the "~"-keyed entry whose
+	// Variable is also in cdd->methods. Keyed on the source tag ("~Inner"), NOT
+	// on cdd->name, so it survives a nested/instantiated class whose composed
+	// name (Outer_int32_t__Inner) differs from its tag (Inner).
+	Variable *class_own_dtor(DataDefCLASS *cdd);
+	// True only when THIS class wrote its own ~Cls(). has_user_dtor is inherited
+	// (a derived class with a non-trivial base also sets it), so it cannot gate
+	// synthesis: a class with a non-trivial base but no OWN dtor still needs a
+	// synthesized Cls___dtor chaining to the base.
 	bool class_has_own_user_dtor(DataDefCLASS *cdd);
 	// The destructor symbol used as the cleanup function for a class
 	// instance (ClassName___dtor) — whether user-written or synthesized.

@@ -4126,9 +4126,8 @@ bool CirBuilder::class_member_destruct(DataDefCLASS *cdd,
 		if (!mc || !class_needs_dtor(mc)) continue;
 		std::string sym = class_dtor_symbol(mc);
 		bool external = false;
-		auto it = mc->method_map.find("~" + mc->name);
-		if (it != mc->method_map.end() && it->second) {
-			FuncDef *dt = dynamic_cast<FuncDef *>(it->second->type);
+		if (Variable *dv = class_own_dtor(mc)) {
+			FuncDef *dt = dynamic_cast<FuncDef *>(dv->type);
 			external = dt && !dt->emit_symbol.empty();
 		}
 		if (external)
@@ -4158,10 +4157,27 @@ bool CirBuilder::class_needs_dtor(DataDefCLASS *cdd)
 	return false;
 }
 
+Variable *CirBuilder::class_own_dtor(DataDefCLASS *cdd)
+{
+	if (!cdd) return NULL;
+	// A "~"-prefixed method_map key marks a destructor (own or inherited). The
+	// own dtor is the one whose Variable is also in cdd->methods; inherited dtors
+	// are copied into method_map alone (parser.cpp base-merge ~20600). This is
+	// name-independent: a nested/instantiated class keeps its source-tag key
+	// ("~Inner") while cdd->name is the composed name ("Outer_int32_t__Inner").
+	for (auto &kv : cdd->method_map) {
+		if (kv.first.empty() || kv.first[0] != '~' || !kv.second)
+			continue;
+		if (std::find(cdd->methods.begin(), cdd->methods.end(), kv.second)
+		    != cdd->methods.end())
+			return kv.second;
+	}
+	return NULL;
+}
+
 bool CirBuilder::class_has_own_user_dtor(DataDefCLASS *cdd)
 {
-	if (!cdd) return false;
-	return cdd->method_map.find("~" + cdd->name) != cdd->method_map.end();
+	return class_own_dtor(cdd) != NULL;
 }
 
 static std::string ctor_call_symbol(DataDefCLASS *cdd, FuncDef *ctor);
@@ -4404,9 +4420,8 @@ std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
 		// Cls___dtor body for it (synth_dtor_def early-returns on has_user_dtor).
 		// The external dtor takes only `this`, matching the cleanup attribute's
 		// `void (*)(T*)` shape.
-	auto it = cdd->method_map.find("~" + cdd->name);
-	if (it != cdd->method_map.end() && it->second) {
-		FuncDef *dt = dynamic_cast<FuncDef *>(it->second->type);
+	if (Variable *dv = class_own_dtor(cdd)) {
+		FuncDef *dt = dynamic_cast<FuncDef *>(dv->type);
 		// The one call-symbol resolver (emit_symbol ?: local_emit_name ?:
 		// default): a FUNCTION-LOCAL class's dtor registers under a nested
 		// unique symbol carried by local_emit_name; reading only
@@ -11682,9 +11697,8 @@ node_t CirBuilder::translate_module(Program *prog)
 					psp.push_back(fd->param_cpp_spellings[i]);
 				fd->emit_symbol = itanium_mangle_ctor_sub(cls, psp);
 			}
-			auto dit = cdd->method_map.find("~" + cdd->name);
-			if (dit != cdd->method_map.end() && dit->second) {
-				FuncDef *dt = dynamic_cast<FuncDef *>(dit->second->type);
+			if (Variable *dv = class_own_dtor(cdd)) {
+				FuncDef *dt = dynamic_cast<FuncDef *>(dv->type);
 				if (dt && dt->emit_symbol.empty())
 					dt->emit_symbol = itanium_mangle_dtor_sub(cls);
 			}
