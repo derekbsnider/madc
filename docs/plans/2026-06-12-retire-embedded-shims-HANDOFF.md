@@ -10,6 +10,72 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 6, part 2) — w2a CIR FACES: 83 → 42 CHECK ERRORS
+
+**Commits `dd27c5e` → `ba6dd30` → `87cc363`** (after the eval fix below).
+All three gated identically: suite 555/27 failure-list byte-identical,
+unit 10/10 binaries, torture failset = the 52-name baseline (1570
+passed), SMAUG soak green. `vector<int> v;` (tmp/w2a.mad) went from 7
+ctor no-match errors + 83 c2mir check errors to **42 check errors, all
+7 no-matches cleared**. Root causes, all general mechanisms:
+
+1. `dd27c5e` — **implicit copy ctor** ([class.copy.ctor]) in BOTH
+   ctor-call builders via shared try_implicit_copy_construct, gated on
+   new recursive class_trivially_copyable (class_needs_dtor was the
+   wrong predicate — any object member counted as non-trivial, but
+   move_iterator{__normal_iterator{int*}} is bit-copyable); arg typing
+   via the promoted CirBuilder::ctor_arg_datadef (the ONE resolver).
+   **Delegating ctors** ([class.base.init]p6): a mem-init naming the
+   ctor's own class is delegation, never a base initializer (the alias
+   clause matched `: vector(__rv,__m,true_type{})` against _Vector_base
+   and fired 3 args at 2-param base ctors); the prologue is ONLY the
+   delegation call. **Identity-return inference restricted**: the
+   backward scan skipped non-identifier tokens, so make_move_iterator's
+   `move_iterator<_Iterator>` return matched as bare `_Iterator` —
+   return_override became the ARG type, __uninitialized_copy_a deduced
+   wrong and silently REUSED the plain-copy instantiation. Now fires
+   only when the return IS the bare param (std::move/forward keep it).
+2. `ba6dd30` — **one aggregate-tag-kind owner** (class_tag_ref):
+   ~20 sites hardcoded N_STRUCT while branching sites followed
+   union_layout → class-parsed unions (_Temporary_value::_Storage)
+   emitted mixed kinds ("kind of tag unmatched"); class_struct_def's
+   DEFINITION now branches too. **ttVariable discriminates operator
+   receivers** (prefix/postfix/binary): TokenMember/TokenCallFunc
+   DERIVE from TokenVar; the downcast emitted an implicit-this member's
+   bare name (`--current` → "undeclared identifier current/_M_current",
+   16 errors). Reducer tmp/w12a.mad (plain user class — general bug).
+3. `87cc363` — **type()-gated object classification**
+   (is_class_object_value + object_arg_addr's member/var arms:
+   TokenCallMethod passed the TokenMember downcast) and
+   **trivially-copyable rvalue-call receivers materialize**: raw-call
+   rvalues (`__y.base() - __x.base()`) fall to object_arg_addr's
+   materializing tail (implicit-copy assign into a temp). The gate MUST
+   be class_trivially_copyable: external sret calls already yield a
+   temp lvalue inside translate_expr — routing them into the tail
+   recursed object_arg_addr→class_ctor_call through the copy ctor's
+   const-ref param (teststringplus SEGFAULT, caught by the suite gate).
+
+**SYSTEMIC TRAP (watch for more):** the token hierarchy
+TokenCallMethod : TokenMember : TokenCallFunc : TokenVar means EVERY
+`dynamic_cast<TokenVar*>`/`<TokenMember*>` classification site is
+suspect — gate on type()==ttVariable/ttMember. Remaining un-audited
+downcast sites in cir_builder.cpp: ~566(fixed)/1104(fixed)/3299/3313/
+4662/5276/5718/7684/8111/8218/9260.
+
+**w2a REMAINING (42 check errors, next session's entry):**
+17× "incompatible argument type for arithmetic type parameter" (biggest
+— start here), 11× int-without-cast-for-pointer warnings, 6× lvalue-&,
+5× "incompatible return-expr type in function returning struct/union",
+3× too-few-arguments, 3× subscripted-value-not-array, 3× invalid
+comparison operands, 1× "undeclared identifier __madc_objtmp_66"
+(pending-stmt placement — likely the while/for condition-temp gap noted
+in session 4). Reducers: tmp/w12a.mad, tmp/w12b.mad (both g++-matched
+green), tmp/w12c.mad free. KNOWN SEPARATE BUG found en route: `N n2(arr
++ 3);` — array+int as a ctor arg types as INT (decay missing in that
+position); sidestepped in w12b, unfixed.
+
+---
+
 ## STATUS UPDATE 2026-06-13 (session 6) — EVAL SCOPE CAPTURE FIXED; UNIT SUITE FULLY GREEN
 
 **Commit `83c0ba4`** (this branch). Queue item (a) closed: runtime-eval
