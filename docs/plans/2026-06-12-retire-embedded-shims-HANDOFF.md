@@ -10,6 +10,70 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 7, part 13) — instantiate alias templates with a non-type param (general; w2a stays 2)
+
+**COMMITTED `4a50ae0`, FULLY GATED.** suite 557/27 (+testconditionalt, failure list
+byte-identical), unit all-pass, gcc-torture 1571 / 51-name failset byte-identical
+(zero regressions), SMAUG soak green. **w2a UNCHANGED at 2** — this is a general
+fix, not a w2a-clearing one (see the blocker chain below).
+
+ROOT CAUSE: an alias template with a NON-TYPE param (`conditional_t<bool,T,F>`,
+`enable_if_t<bool,T>`, …) collapsed to an opaque placeholder struct instead of
+expanding — `conditional_t<true,int,long>` stayed `struct conditional_t_true_int_long`.
+`instantiate_template_alias_use`'s type-params-only path (~3043) substitutes args
+into the alias body and resolves; the `has_non_type_params` path (~2948) did not.
+FIX: the non-type path now token-substitutes the collected args (type AND non-type,
+each as its raw token sequence — `_Cond` -> the `true` token) into `td.target` and
+resolves, in an ISOLATED token stream (save tokens / swap fresh deque / restore) —
+NOT push/drain on the shared stream, which desynced the suspended outer template
+parse and SIGSEGV'd (the reverted first attempt). Falls through to the placeholder
+on resolution failure (dependent use / SFINAE absent-`::type`). New test
+`tests/testconditionalt.mad`. Verified `conditional<true,int,long>::type` (direct,
+no alias) already worked — only the alias was broken.
+
+### w2a's LAST 2 — FULL BLOCKER CHAIN (move_iterator conditional_t reference type)
+
+Both remaining errors (`tmp/w2a_emit.c:~1639` conversion-to-non-scalar,
+`:~1699` struct-return) are `move_iterator<__normal_iterator<int*>>::operator*`
+returning `reference = conditional_t<is_reference<__base_ref>::value,
+remove_reference_t<__base_ref>::type&&, __base_ref>` (= `int&&`), left an opaque
+struct. Reducer **`tmp/mi2.mad`** (make_move_iterator + `*mi`) reproduces it
+minimally. The chain, INNERMOST-first (each a prerequisite for the next):
+
+1. **Reference-qualified TYPE as a template argument** (`conditional<b, int&, long>`,
+   `conditional<b, remove_reference_t<R>&&, R>`). Reducers `tmp/rt1.mad`
+   (`int&&`), `tmp/rt2.mad` (`int&`). The explicit-arg template-id parser
+   (parser.cpp ~2646) folds only `*` (pointer); the DEFAULT-arg path (~2715-2743)
+   ALREADY folds `&`/`&&` via getReferenceType. WIP `tmp/reftemplatearg_wip.patch`
+   mirrors that fold into the explicit-arg path → rt1/rt2 PARSE. **But it's
+   parse-only: the resulting `int&` local has BROKEN reference SEMANTICS** (modeled
+   as a raw pointer; `r = n` assigns the pointer, doesn't bind — silent
+   miscompile). REVERTED: a loud parse error became silent wrong code, and it
+   didn't clear w2a. The real fix must also give a template-arg-derived reference
+   type correct binding/return semantics — a reference-semantics slice, not just a
+   parse fold.
+2. **`__base_ref` member-alias resolution INSIDE the isolated conditional_t
+   resolve.** Even with (1) parsing, w2a's conditional_t args
+   (`is_reference<__base_ref>::value`, `remove_reference<__base_ref>::type&&`)
+   name `__base_ref` — move_iterator's `using __base_ref =
+   iterator_traits<It>::reference`. In the part-13 isolated resolve, `__base_ref`
+   does NOT resolve to `int&` (the isolated token stream + only conditional_t's
+   own owner pushed; the move_iterator instantiation scope/alias isn't reachable
+   there) → resolve fails → placeholder. Simplified reducer `tmp/mi3.mad` (member
+   alias `R=T&` + conditional_t, NO rvalue-ref branch) WORKS, so the gap is
+   specifically (1)+(2) together in the real shape (`tmp/mi4.mad` is the bridge
+   reducer; it also needs `#include <utility>` for std::move).
+
+NEXT-SESSION PLAN: this is a genuine multi-piece slice (reference-as-template-arg
+WITH correct reference semantics + member-alias resolution in the alias-instantiation
+context). Do (1)-with-real-semantics first (reducer rt1/rt2 + a binding test), then
+(2). Until then w2a sits at 2 and the move_iterator emit carries caught-but-printed
+"Expecting ',' or '>' in type<...>" stderr noise (wall-7 class: a CAUGHT isolated-resolve
+exception that Throw prints unconditionally; exit code unaffected). WIP patches:
+`tmp/conditional_t_alias_wip.patch` (superseded by 4a50ae0), `tmp/reftemplatearg_wip.patch`.
+
+---
+
 ## STATUS UPDATE 2026-06-13 (session 7, part 12) — scope a non-compound if-branch's materialized temps (w2a 4→2)
 
 **COMMITTED `8ba77dc`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
