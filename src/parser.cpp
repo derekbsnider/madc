@@ -3011,6 +3011,79 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		return fallback;
 	}
 
+	// Substitute the collected args — type AND non-type, each as its raw
+	// token sequence — into the alias body and resolve, the alias-template
+	// analogue of the type-params-only path below. Without this an alias
+	// template with a non-type param (`conditional_t<bool,T,F>`,
+	// `enable_if_t<bool,T>`, …) collapsed straight to the opaque placeholder,
+	// so `conditional_t<true,int,long>` never became `int`.
+	//
+	// The body is resolved in an ISOLATED token stream (save/swap-in a fresh
+	// deque/restore) rather than push/drain on the shared `tokens`: this alias
+	// use is frequently reached WHILE instantiating an outer template body
+	// (real `move_iterator::reference`), and resolving the substituted body
+	// recurses into more template/alias instantiation — sentinel-draining the
+	// shared stream desynced the suspended outer parse (SIGSEGV). Isolation
+	// makes the recursion self-contained. If resolution fails — a genuinely
+	// dependent use, or an absent `::type` (SFINAE) — fall through to the
+	// opaque placeholder exactly as before.
+	{
+	    std::map<std::string, const std::vector<TokenBase *> *> tok_subst;
+	    for ( size_t i = 0; i < td.typeparams.size() && i < arg_tokens.size(); ++i )
+		tok_subst[td.typeparams[i]] = &arg_tokens[i];
+	    std::deque<TokenBase *> body;
+	    for ( TokenBase *bt : td.target )
+	    {
+		if ( bt->type() == TokenType::ttIdentifier )
+		{
+		    std::map<std::string, const std::vector<TokenBase *> *>::iterator si =
+			tok_subst.find(((TokenIdent *)bt)->str);
+		    if ( si != tok_subst.end() )
+		    {
+			for ( TokenBase *rt : *si->second )
+			    body.push_back(rt->clone());
+			continue;
+		    }
+		}
+		body.push_back(bt->clone());
+	    }
+	    body.push_back(new TokenSemi());
+
+	    std::deque<TokenBase *> saved_tokens = tokens;
+	    size_t saved_diag_count = diagnostics.size();
+	    Program::ErrorInfo saved_error = last_error;
+	    tokens = body;
+
+	    bool pushed_owner_scope = false;
+	    if ( td.owner_class )
+	    {
+		class_scope_stack.push_back(td.owner_class);
+		pushed_owner_scope = true;
+	    }
+
+	    TokenDataType *resolved = NULL;
+	    try
+	    {
+		TokenBase *head = nextToken();
+		resolved = resolve_declared_type_token(head, true, true);
+	    }
+	    catch ( ... ) { resolved = NULL; }
+
+	    if ( pushed_owner_scope
+	      && !class_scope_stack.empty()
+	      && class_scope_stack.back() == td.owner_class )
+		class_scope_stack.pop_back();
+
+	    tokens = saved_tokens;
+	    if ( !resolved )
+	    {
+		diagnostics.resize(saved_diag_count);
+		last_error = saved_error;
+	    }
+	    else
+		return use_site_type_token(resolved, tb);
+	}
+
 	std::string mangled = tname;
 	std::string canon = td.defining_namespace.empty() ? std::string()
 			  : (td.defining_namespace + "::");

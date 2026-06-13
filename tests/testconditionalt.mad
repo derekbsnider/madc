@@ -1,0 +1,16 @@
+// Alias templates with a NON-TYPE parameter must instantiate by substituting
+// the args into the alias body and resolving — not collapse to an opaque
+// placeholder. conditional_t<bool,T,F> is the canonical case.
+#include <type_traits>
+#include <stdio.h>
+
+int main()
+{
+	// literal-bool condition selects the branch type
+	std::conditional_t<true,  int, long> a = 5;
+	std::conditional_t<false, int, long> b = 7;
+	// trait-valued condition (is_reference<int&>::value == true -> first branch)
+	std::conditional_t<std::is_reference<int&>::value, int, long> c = 9;
+	printf("a=%d b=%ld c=%d\n", a, (long)b, c);
+	return (a == 5 && b == 7 && c == 9) ? 0 : 1;
+}
