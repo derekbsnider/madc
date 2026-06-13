@@ -2815,6 +2815,29 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // Build the substituted, renamed class-definition token sequence:
     // clone each body token; rename the class tag (TokenIdent == class_name) to
     // `mangled`; replace each type-parameter ident with its concrete type token.
+    //
+    // clone() stamps each new token's file/line/column from the STATIC
+    // _parse_file/_parse_line (TokenBase's ctor), which here is the INSTANTIATION
+    // SITE (e.g. the user .mad), not the template's defining file. That misfiles
+    // every instantiated member body to the use site, so a system-header template
+    // (std::vector) is wrongly classified from_system_header=0 and ALL its member
+    // bodies parse eagerly — hitting walls in members the program never ODR-uses
+    // (vector::operator=(vector&&)'s __move_storage). nextToken() propagates
+    // _parse_file from each consumed token during the re-parse below, so giving the
+    // clones the template's real (system-header) origin makes from_system_header,
+    // lazy-body deferral, AND error attribution all see the true source. Point
+    // _parse_* at the template body's origin across the clone loop, then restore.
+    const char *cloned_pf = TokenBase::_parse_file;
+    int cloned_pl = TokenBase::_parse_line;
+    int cloned_pc = TokenBase::_parse_column;
+    for ( TokenBase *bt0 : td.body )
+	if ( bt0 && bt0->file )
+	{
+	    TokenBase::_parse_file = bt0->file;
+	    TokenBase::_parse_line = bt0->line;
+	    TokenBase::_parse_column = bt0->column;
+	    break;
+	}
     std::vector<TokenBase *> inj;
     for ( size_t bi = 0; bi < td.body.size(); ++bi )
     {
@@ -2864,6 +2887,12 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // consuming the caller's following tokens (e.g. the declared variable name).
     TokenSemi *semi = new TokenSemi();
     inj.push_back(semi);
+    // Restore the live parse position now that all instantiation clones are made;
+    // nextToken() will re-derive _parse_file from each injected token as the class
+    // re-parses (the clones now carry the template's true origin file).
+    TokenBase::_parse_file = cloned_pf;
+    TokenBase::_parse_line = cloned_pl;
+    TokenBase::_parse_column = cloned_pc;
 
     DBG(std::cout << "instantiate_template_use(): injecting " << inj.size()
 	<< " tokens for " << mangled << std::endl);
@@ -21589,25 +21618,32 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // on from_system_header + a system-header body file so the deferred symbol's
     // file classification matches the emit-layer lib_funcs split; any non-system
     // body parses eagerly exactly as before (zero change for user / pure-C code).
-    if ( ddc->from_system_header )
+    // Lazy member-function-body instantiation ([temp.inst]) is decided PER BODY by
+    // the body's OWN origin file — NOT by the class-level ddc->from_system_header.
+    // For a template instantiation the class is cloned + re-parsed while the static
+    // _parse_file is the INSTANTIATION SITE (e.g. the user .mad), so a system-header
+    // template (std::vector<int>) is misclassified from_system_header=0 and would
+    // force ALL 70 member bodies to parse eagerly — hitting walls in members a given
+    // program never ODR-uses (vector::operator=(vector&&)'s __move_storage). The
+    // cloned body tokens, however, keep their real defining file (the system header),
+    // so per-body is the correct signal. A body from a system header (and not inside
+    // a function-template instantiation — see the depth note) is stashed by emit
+    // symbol and parsed only when ODR-used by the cir_builder reachability fixpoint;
+    // every non-system body (user / pure-C code) parses eagerly exactly as before.
+    for ( size_t i = 0; i < deferred_method_bodies.size(); ++i )
     {
-	for ( size_t i = 0; i < deferred_method_bodies.size(); ++i )
-	{
-	    Program::DeferredFunctionBody &b = deferred_method_bodies[i];
-	    // Inside an instantiated function-template body, parse method
-	    // bodies EAGERLY even though the tokens carry a system-header
-	    // file: a local class's ctor/dtor (`__stoa`'s _Save_errno) is
-	    // referenced by the surrounding body/cleanup machinery, which
-	    // never triggers the lazy-on-call path.
-	    if ( b.var && b.file && pgm.is_system_header_path(b.file)
-	      && pgm.fn_template_instantiation_depth == 0 )
-		pgm.deferred_lazy_bodies[b.var->name] = b;
-	    else
-		pgm.parse_deferred_function_body(b);
-	}
+	Program::DeferredFunctionBody &b = deferred_method_bodies[i];
+	// Inside an instantiated function-template body, parse method bodies
+	// EAGERLY even though the tokens carry a system-header file: a local
+	// class's ctor/dtor (`__stoa`'s _Save_errno) is referenced by the
+	// surrounding body/cleanup machinery, which never triggers the
+	// lazy-on-call path.
+	if ( b.var && b.file && pgm.is_system_header_path(b.file)
+	  && pgm.fn_template_instantiation_depth == 0 )
+	    pgm.deferred_lazy_bodies[b.var->name] = b;
+	else
+	    pgm.parse_deferred_function_body(b);
     }
-    else
-	pgm.parse_deferred_function_bodies(deferred_method_bodies);
 
     // Allocate vtable if needed
     if ( ddc->has_vtable )
