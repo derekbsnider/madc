@@ -12,6 +12,41 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 8, part 20) — static member fn-template instantiation (the "B" feature); w2a (`std::vector<int> v;`) COMPILES + RUNS end-to-end
+
+**COMMITTED `fd9b4de`, FULLY GATED** (integration 561/27 FAIL-list byte-identical,
+unit all-pass, gcc-torture 1571 / 51-name failset byte-identical, SMAUG soak exit
+124 + ready). Design + as-built: `docs/plans/2026-06-13-member-fn-template-instantiation-design.md`.
+
+**THE WALL IS DOWN:** `tmp/w2a.mad` (`#include <vector>\nstd::vector<int> v;`) now
+compiles AND runs (exit 0). A class's STATIC member FUNCTION template of a madc-LOCAL
+monomorphized class (`_Destroy_aux<true>::__destroy<int*>`) was emitted as a bare
+undefined extern; it now instantiates on ODR-use.
+- `register_skipped_class_template_function` retains the static body-bearing member
+  template's decl + owner on the FuncDef.
+- `instantiate_member_fn_template_for_call` (parser.cpp, at the namespace-hook point
+  10880): LOCAL owner only (exported → `member_template_method_call`); builds a
+  one-shot `FnTemplateDef` (strip `static`, rename declarator to a DISTINCT
+  `<call-sym>__mti` to KEEP real params vs the varargs placeholder) and instantiates
+  via the shared `try_instantiate_namespace_fn_template`. Reuses the ONE instantiation
+  mechanism — no parallel instantiator (embedded-AST trajectory guardrail).
+- CRUX (resolved): `tc->var` is a `Variable &` (not rebindable) and the late
+  (lib_funcs) definition emits its raw var name, so alias the CALL not the def — set
+  the PLACEHOLDER FuncDef's `local_emit_name = inst_name`.
+
+**NEXT (container cluster — testvector etc.):** w2a was a minimal proving ground; the
+container TESTS do more (push/access/iterate). `testvector` now advances past the
+`_Destroy_aux` wall to the next chain link: **`use of undeclared identifier '_S_destroy'`**
+(testvector.mad:428) — `std::allocator_traits<...>::_S_destroy` (or the `_Destroy`→
+`_S_destroy`→`allocator::destroy` chain). Likely another static-member / member-template
+or a member-access resolution gap; reduce from testvector. Known separate gaps surfaced
+(NOT blockers, gate-clean): array→pointer decay in template DEDUCTION (array args →
+`It=int` not `int*`, `tmp/mft2.mad`); multi-type instantiation of one static member
+template (single `local_emit_name` slot); trait canonicalization of template-id type
+args (`__has_trivial_destructor(Aux<false>)`).
+
+---
+
 ## STATUS UPDATE 2026-06-13 (session 8, part 19) — non-type template-arg CANONICALIZATION (Phase 1, the canonical-forms discipline); w2a folds to `_Destroy_aux_1`
 
 **COMMITTED `90e9dcd`, FULLY GATED** (integration 561/27 FAIL-list byte-identical
