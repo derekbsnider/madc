@@ -641,6 +641,10 @@ public:
 	// matching (resolved callee returns, reference unwrap, array decay) —
 	// shared by select_ctor_overload and try_implicit_copy_construct.
 	DataDef *ctor_arg_datadef(TokenBase *arg);
+	// Aggregate tag-REFERENCE node (`struct X` / `union X` per the
+	// definition's union_layout) — every reference site must agree with
+	// the definition's kind or c2mir rejects the tag.
+	node_t class_tag_ref(DataDef *dd, TokenBase *origin = NULL);
 	// Select the ctor overload of `cdd` matching the initializer arguments by
 	// generic overload scoring. NULL when no overload set is recorded.
 	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,

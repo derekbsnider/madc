@@ -744,12 +744,24 @@ node_t CirBuilder::ptr_type_node(DataDef *dd)
 		     node2(N_DECL, ignore(), decl_list));
 }
 
+// Tag-REFERENCE node for an aggregate type: N_UNION when the class/struct
+// uses union layout ([class.union] via DataDefSTRUCT::union_layout),
+// N_STRUCT otherwise. EVERY reference site must agree with the definition's
+// kind or c2mir rejects the module ("kind of tag X is unmatched with
+// previous declaration" — real vector's _Temporary_value::_Storage union).
+node_t CirBuilder::class_tag_ref(DataDef *dd, TokenBase *origin)
+{
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+	return node2(sdd && sdd->union_layout ? N_UNION : N_STRUCT,
+		     id(dd->name.c_str(), origin), ignore());
+}
+
 // N_TYPE node for a `struct Cls *` cast target (matches class_struct_def's
 // `struct Cls` spec + one pointer level). Used for derived->base upcasts.
 node_t CirBuilder::class_ptr_type(DataDefCLASS *cdd)
 {
 	node_t spec = list();
-	append(spec, node2(N_STRUCT, id(cdd->name.c_str()), ignore()));
+	append(spec, class_tag_ref(cdd));
 	node_t decl_list = list();
 	append(decl_list, pointer());
 	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
@@ -1437,7 +1449,7 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 		// append_type_specs would mis-render the class's dtRESERVED rawtype as
 		// `int` (the bug that made `auto g = [](){ S s; ...; return s; }`
 		// produce `int (*g)()`).
-		append(spec_list, node2(N_STRUCT, id(ret_dd->name.c_str()), ignore()));
+		append(spec_list, class_tag_ref(ret_dd));
 	} else {
 		append_type_specs(spec_list, ret_dd);
 	}
@@ -2915,8 +2927,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		node_t adj = node2(N_SUB, charp, integer((long)off));
 		// (MOwner*)adj
 		node_t ownerp = node2(N_CAST,
-			node2(N_TYPE, node1(N_LIST, node2(N_STRUCT,
-				id(mowner->name.c_str()), ignore())),
+			node2(N_TYPE, node1(N_LIST, class_tag_ref(mowner)),
 			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 			adj);
 		node_t a = list();
@@ -2950,7 +2961,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		// (struct Cls *)(__self - off)
 		node_t adj = node2(N_SUB, id("__self"), integer((long)off));
 		node_t cls_spec = node2(N_TYPE,
-			node1(N_LIST, node2(N_STRUCT, id(cdd->name.c_str()), ignore())),
+			node1(N_LIST, class_tag_ref(cdd)),
 			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 		node_t adj_cast = node2(N_CAST, cls_spec, adj);
 		node_t a = list();
@@ -3145,7 +3156,12 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 {
 	node_t struct_id = id(cdd->name.c_str());
 	node_t member_list = class_member_list(cdd);
-	node_t struct_node = node2(N_STRUCT, struct_id, member_list);
+	// A class-parsed union ([class.union]: union with ctors/methods
+	// delegates to the class parser) must DEFINE as N_UNION — every
+	// reference site (class_tag_ref) already follows union_layout, and a
+	// struct-kind definition mismatches them all.
+	node_t struct_node = node2(cdd->union_layout ? N_UNION : N_STRUCT,
+				   struct_id, member_list);
 	node_t tl = node1(N_LIST, struct_node);
 
 	node_t spec_decl = simple(N_SPEC_DECL);
@@ -3549,8 +3565,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	if (owner && owner != recv_class) {
 		this_arg = node2(N_CAST,
 			node2(N_TYPE,
-			      node1(N_LIST, node2(N_STRUCT, id(owner->name.c_str()),
-						  ignore())),
+			      node1(N_LIST, class_tag_ref(owner)),
 			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 			this_arg, origin);
 	}
@@ -4187,7 +4202,7 @@ node_t CirBuilder::class_ptr_bind(DataDefCLASS *cdd, const char *nm,
 {
 	node_t sd = simple(N_SPEC_DECL, origin);
 	append(sd, node1(N_SHARE, node1(N_LIST,
-		node2(N_STRUCT, id(cdd->name.c_str(), origin), ignore()))));
+		class_tag_ref(cdd, origin))));
 	append(sd, node2(N_DECL, id(nm, origin), node1(N_LIST, pointer())));
 	append(sd, ignore());
 	append(sd, ignore());
@@ -4227,8 +4242,7 @@ void CirBuilder::class_copy_assign_from_addr(DataDefCLASS *cdd, TokenBase *lhs,
 	snprintf(lname, sizeof(lname), "__ca_l_%d", m_strtmp_counter++);
 	snprintf(rname, sizeof(rname), "__ca_r_%d", m_strtmp_counter++);
 	node_t rcast = node2(N_CAST,
-		node2(N_TYPE, node1(N_LIST, node2(N_STRUCT,
-			id(cdd->name.c_str(), origin), ignore())),
+		node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd, origin)),
 			node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
 		rhs_addr, origin);
 	out.push_back(class_ptr_bind(cdd, lname,
@@ -4302,7 +4316,7 @@ void CirBuilder::vbase_dtor_stmts(const std::string &objname, bool addr_of,
 			adj = node2(N_ADD, charp, integer((long)off, o), o);
 		}
 		node_t vt = node2(N_TYPE,
-			node1(N_LIST, node2(N_STRUCT, id(vb->name.c_str()), ignore())),
+			node1(N_LIST, class_tag_ref(vb)),
 			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 		std::string dsym = class_dtor_symbol(vb);
 		referenced_funcs.insert(dsym);
@@ -4317,7 +4331,7 @@ void CirBuilder::vbase_dtor_stmts(const std::string &objname, bool addr_of,
 node_t CirBuilder::synth_complete_dtor_def(DataDefCLASS *cdd)
 {
 	node_t ret_type = node1(N_LIST, simple(N_VOID));
-	node_t pspec = node1(N_LIST, node2(N_STRUCT, id(cdd->name.c_str()), ignore()));
+	node_t pspec = node1(N_LIST, class_tag_ref(cdd));
 	node_t param = simple(N_SPEC_DECL);
 	append(param, pspec);
 	append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
@@ -4349,7 +4363,7 @@ node_t CirBuilder::synth_complete_dtor_def(DataDefCLASS *cdd)
 node_t CirBuilder::synth_deleting_dtor_def(DataDefCLASS *cdd)
 {
 	node_t ret_type = node1(N_LIST, simple(N_VOID));
-	node_t pspec = node1(N_LIST, node2(N_STRUCT, id(cdd->name.c_str()), ignore()));
+	node_t pspec = node1(N_LIST, class_tag_ref(cdd));
 	node_t param = simple(N_SPEC_DECL);
 	append(param, pspec);
 	append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
@@ -4383,7 +4397,7 @@ node_t CirBuilder::synth_deleting_dtor_def(DataDefCLASS *cdd)
 node_t CirBuilder::synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd)
 {
 	node_t ret_type = node1(N_LIST, simple(N_VOID));
-	node_t pspec = node1(N_LIST, node2(N_STRUCT, id(cdd->name.c_str()), ignore()));
+	node_t pspec = node1(N_LIST, class_tag_ref(cdd));
 	node_t param = simple(N_SPEC_DECL);
 	append(param, pspec);
 	append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
@@ -4440,7 +4454,7 @@ node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 	node_t ret_type = node1(N_LIST, simple(N_VOID));
 	// A NAMED parameter is an N_SPEC_DECL (matches param_decl); an N_TYPE is
 	// only for unnamed/abstract params and would lose the __this name.
-	node_t pspec = node1(N_LIST, node2(N_STRUCT, id(cdd->name.c_str()), ignore()));
+	node_t pspec = node1(N_LIST, class_tag_ref(cdd));
 	node_t param = simple(N_SPEC_DECL);
 	append(param, pspec);
 	append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
@@ -4474,7 +4488,7 @@ node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
 			adj = node2(N_ADD, charp, integer((long)off));
 		}
 		node_t bt = node2(N_TYPE,
-			node1(N_LIST, node2(N_STRUCT, id(b->name.c_str()), ignore())),
+			node1(N_LIST, class_tag_ref(b)),
 			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 		node_t a = list();
 		append(a, node2(N_CAST, bt, adj));
@@ -5157,7 +5171,7 @@ void CirBuilder::vbase_ctor_stmts(const std::string &objname, bool addr_of,
 			adj = node2(N_ADD, charp, integer((long)off, o), o);
 		}
 		node_t vt = node2(N_TYPE,
-			node1(N_LIST, node2(N_STRUCT, id(vb->name.c_str()), ignore())),
+			node1(N_LIST, class_tag_ref(vb)),
 			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 		std::string vsym = vb->name + "__" + vb->name;
 		referenced_funcs.insert(vsym);
@@ -6528,9 +6542,13 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 
 	// The lhs `this` address for a user-class operator: a NAMED variable
 	// honours the unified pointer-stored rule; any other lhs expression is
-	// addressed by &expr (a value lvalue).
+	// addressed by &expr (a value lvalue). type()==ttVariable, not a
+	// TokenVar downcast — TokenMember/TokenCallFunc derive from TokenVar,
+	// and the downcast emitted an implicit-this member's bare name
+	// (reverse_iterator's `current + __n`).
 	node_t this_arg;
-	if (TokenVar *ltv = dynamic_cast<TokenVar *>(top->left))
+	TokenVar *ltv = dynamic_cast<TokenVar *>(top->left);
+	if (ltv && top->left->type() == TokenType::ttVariable)
 		this_arg = object_var_addr(ltv->var, origin);
 	else
 		this_arg = node1(N_ADDR, translate_expr(top->left), origin);
@@ -6762,9 +6780,15 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 	if (!callee) return NULL;   // class declares no unary operator<sym> -> built-in
 
 	// The `this` address: a NAMED object variable honours the unified
-	// pointer-stored rule; any other operand expression is addressed by &expr.
+	// pointer-stored rule; any other operand expression is addressed by
+	// &expr. The discriminator is type()==ttVariable, NOT a TokenVar
+	// downcast — TokenMember/TokenCallFunc DERIVE from TokenVar, and the
+	// downcast caught an implicit-this member (`--current` in
+	// reverse_iterator::operator++), emitting its bare member name
+	// instead of &__this->member.
 	node_t this_arg;
-	if (TokenVar *otv = dynamic_cast<TokenVar *>(operand))
+	TokenVar *otv = dynamic_cast<TokenVar *>(operand);
+	if (otv && operand->type() == TokenType::ttVariable)
 		this_arg = object_var_addr(otv->var, origin);
 	else
 		this_arg = node1(N_ADDR, translate_expr(operand), origin);
@@ -7314,7 +7338,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		append(args, integer(hint, tb));
 		node_t call = node2(N_CALL, id("__dynamic_cast"), args, tb);
 		node_t tgt_t = node2(N_TYPE,
-			node1(N_LIST, node2(N_STRUCT, id(dstC->name.c_str()), ignore())),
+			node1(N_LIST, class_tag_ref(dstC)),
 			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 		return node2(N_CAST, tgt_t, call, tb);
 	}
@@ -7473,14 +7497,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		// struct C * type node, reused for the decl and the cast.
 		auto ptr_type = [&]() -> node_t {
 			return node2(N_TYPE,
-				node1(N_LIST, node2(N_STRUCT,
-					id(cdd->name.c_str()), ignore())),
+				node1(N_LIST, class_tag_ref(cdd)),
 				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 		};
 		auto struct_type = [&]() -> node_t {
 			return node2(N_TYPE,
-				node1(N_LIST, node2(N_STRUCT,
-					id(cdd->name.c_str()), ignore())),
+				node1(N_LIST, class_tag_ref(cdd)),
 				node2(N_DECL, ignore(), list()));
 		};
 		// calloc(1, sizeof(struct C)) -> void*. Declare the prototype so
@@ -7498,7 +7520,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		// struct C *__newN = (struct C*)calloc(...);
 		node_t decl = simple(N_SPEC_DECL);
 		append(decl, node1(N_SHARE, node1(N_LIST,
-			node2(N_STRUCT, id(cdd->name.c_str()), ignore()))));
+			class_tag_ref(cdd))));
 		append(decl, node2(N_DECL, id(tmp, tb), node1(N_LIST, pointer())));
 		append(decl, ignore());
 		append(decl, ignore());
@@ -8128,8 +8150,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					if (fd && fd->parameters.size() > 1) { post = fd; break; }
 				}
 				if (post) {
+					// type()==ttVariable, not a TokenVar downcast:
+					// TokenMember/TokenCallFunc derive from TokenVar
+					// (see class_unary_operator_call's receiver).
 					node_t this_arg;
-					if (TokenVar *otv = dynamic_cast<TokenVar *>(operand_tb))
+					TokenVar *otv = dynamic_cast<TokenVar *>(operand_tb);
+					if (otv && operand_tb->type() == TokenType::ttVariable)
 						this_arg = object_var_addr(otv->var, tb);
 					else
 						this_arg = node1(N_ADDR, translate_expr(operand_tb), tb);
@@ -8525,8 +8551,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (DataDefCLASS *ocls = object_returning_call_class(tcf)) {
 				node_t addr = object_call_temp_addr(tcf, ocls, tb);
 				node_t cp_type = node2(N_TYPE,
-					node1(N_LIST, node2(N_STRUCT,
-						id(ocls->name.c_str(), tb), ignore())),
+					node1(N_LIST, class_tag_ref(ocls, tb)),
 					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 				node_t as_cp = node2(N_CAST, cp_type, addr, tb);
 				return node1(N_DEREF, as_cp, tb);
@@ -10431,7 +10456,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				adj = node2(N_ADD, charp, integer((long)off), tf);
 			}
 			node_t t = node2(N_TYPE,
-				node1(N_LIST, node2(N_STRUCT, id(b->name.c_str()), ignore())),
+				node1(N_LIST, class_tag_ref(b)),
 				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 			return node2(N_CAST, t, adj, tf);
 		};
