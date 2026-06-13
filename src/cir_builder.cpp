@@ -11797,6 +11797,12 @@ node_t CirBuilder::translate_module(Program *prog)
 	// so it can be re-run AFTER the synth-dtor passes, which add member/base dtor
 	// symbols to referenced_funcs (e.g. a deferred allocator<int>::~allocator
 	// reached only through a synthesized aggregate dtor).
+	// Functions instantiated DURING a lazy re-parse (a materialized dtor body that
+	// calls a free-fn template like std::_Destroy) append to prog->pending_funcs
+	// but are NOT in the entry `funcs` snapshot — without folding them in they get
+	// an extern proto (referenced) but no definition -> MIR "import of undefined
+	// item". Drain anything appended past this boundary into lib_funcs each round.
+	size_t pf_drained = prog->pending_funcs.size();
 	auto materialize_and_lower = [&]() {
 		for (bool grew = true; grew; ) {
 			grew = false;
@@ -11823,6 +11829,20 @@ node_t CirBuilder::translate_module(Program *prog)
 						m_materialized_lib_syms.insert(func_emit_name(tf->var, tfd));
 					grew = true;
 				}
+			}
+			// Fold functions newly instantiated by the re-parses above (e.g. a
+			// std::_Destroy free-fn-template reached only through a lazily-
+			// materialized dtor) so the reachability loop below can define them.
+			while (pf_drained < prog->pending_funcs.size()) {
+				TokenFunc *ntf = dynamic_cast<TokenFunc *>(prog->pending_funcs[pf_drained++]);
+				if (!ntf || ntf->is_overridden) continue;
+				FuncDef *nfd = dynamic_cast<FuncDef *>(ntf->var.type);
+				std::string key = nfd ? func_emit_name(ntf->var, nfd) : ntf->var.name;
+				if (lib_funcs.count(key)) continue;
+				lib_funcs[key] = ntf;
+				m_materialized_lib_syms.insert(ntf->var.name);
+				if (nfd) m_materialized_lib_syms.insert(key);
+				grew = true;
 			}
 			for (auto &kv : lib_funcs) {
 				if (lib_emitted.count(kv.first)) continue;
