@@ -12,6 +12,42 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 8, part 19) — non-type template-arg CANONICALIZATION (Phase 1, the canonical-forms discipline); w2a folds to `_Destroy_aux_1`
+
+**COMMITTED `90e9dcd`, FULLY GATED** (integration 561/27 FAIL-list byte-identical
+to `tmp/baseline_fails_s7.txt` +testarraydecayadd, unit all-pass, gcc-torture 1571 /
+51-name failset byte-identical, SMAUG soak exit 124 + ready line). Implements
+**Phase 1** of `docs/plans/2026-06-13-canonical-forms-on-mc11ir-sketch.md`.
+
+**The fix:** madc keyed a template instantiation's identity by the raw SPELLING
+of its non-type args, so `<true>`, `<1>`, `<__has_trivial_destructor(int)>` were
+THREE different instantiations — the w2a use never selected the matching `<true>`
+spec. Now a foldable non-type arg keys by its VALUE.
+- `Program::fold_nontype_template_arg()` — a **NON-re-entrant LOCAL-CURSOR**
+  evaluator over the already-collected arg tokens. Folds int/bool literals (reuses
+  `parse_simple_template_non_type_value`) + the type-trait builtins (reuses the
+  `trait_*` DataDef predicates). `read_local_type_operand` resolves type operands
+  read-only (ttDataType / datatype_map / trailing `*`). NEVER touches
+  `Program::tokens`, never instantiates — the two faults behind the **202-regression**.
+- `Program::canonical_arg_key_fragment()` — foldable arg → normalized value
+  (identifier-safe), else `sanitize_template_fragment(spelling)` (byte-identical).
+- **Routed ALL SIX per-arg key-build sites** (use, opaque, both alias paths, both
+  explicit-spec registration keys). All-or-nothing is mandatory (the 202-regression
+  lesson); opaque/dependent paths pass empty tokens → spelling fallback.
+
+**Effect:** `tmp/nt1.mad` → TRIVIAL (was NONTRIVIAL); `tmp/nt2.mad` selects the
+`<true>` spec. **w2a ADVANCED**: key folded
+`_Destroy_aux___has_trivial_destructor__Value_type_` → **`_Destroy_aux_1`** (spec
+chain selected). NEXT = the separate **"B" feature**: member-template instantiation
+of `_Destroy_aux<true>::__destroy<int*>` (currently a bare undefined import
+`_Destroy_aux_1____destroy`) — capture the member-fn-template body + monomorphize
+per ODR-use, reusing `instantiate_fn_template_binding` (research doc §4.B,
+`register_skipped_class_template_function` ~26434). DEFERRED: `typeparam_types`
+(bool-normalizing nonzero ints, `<2>`==`<true>`) — the evaluator self-gates so it
+is not needed for the cleared corpus.
+
+---
+
 # ★ SESSION 7 CLOSE — COMPREHENSIVE REHYDRATION (READ THIS FIRST) — 2026-06-13
 
 ## 0. One-paragraph orientation

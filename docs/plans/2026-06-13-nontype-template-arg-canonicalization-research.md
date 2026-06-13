@@ -164,8 +164,17 @@ machinery). This is the substantial feature reframed-away in p18 and is required
 
 ## 6. Status / next
 
-- Tree clean at `20e4bb3`; the canonicalization attempt is reverted (saved patch only).
+- **A is DONE and gated** (`90e9dcd`, session-8 part 19): canonicalization at the ONE key
+  chokepoint via `Program::canonical_arg_key_fragment` + a non-re-entrant local-cursor evaluator
+  (`fold_nontype_template_arg` / `read_local_type_operand` / `eval_local_type_trait`), routed through
+  all six per-arg key-build sites. `typeparam_types` was DEFERRED — the evaluator self-gates (a bare
+  type name never folds → spelling), so it is not needed for the cleared corpus; revisit only if a
+  header needs bool-normalization of a nonzero non-type arg (`<2>`==`<true>`). nt1/nt2 pass; w2a's key
+  folded to `_Destroy_aux_1`.
 - `__has_trivial_destructor` builtin, partial ordering, and template-id deduction (p18, `a64fd00`)
-  are committed and stand — they correctly route w2a to this non-type-arg face.
-- Next implementer: do **A** at the key chokepoint with a local-cursor evaluator + `TemplateDef`
-  param types, gate hard; then **B** (member-template instantiation). Neither is a one-liner.
+  stand — they correctly routed w2a to the non-type-arg face A clears.
+- **NEXT = B** (member-template instantiation of `_Destroy_aux<true>::__destroy<int*>`, the bare
+  undefined import `_Destroy_aux_1____destroy`): capture the member-fn-template body + monomorphize
+  per ODR-use, reusing `instantiate_fn_template_binding`; member templates are registered
+  declaration-only with the body skipped (`register_skipped_class_template_function` ~26434). Not a
+  one-liner.

@@ -1,7 +1,11 @@
 # Sketch — canonical forms on MC11-IR ("SEMA benefits without a SEMA rewrite")
 
-**Date:** 2026-06-13 (session 8). **Status:** design sketch, not yet scheduled. Companion to
-`2026-06-13-nontype-template-arg-canonicalization-research.md`. **No code yet.**
+**Date:** 2026-06-13 (session 8). **Status:** **Phase 1 LANDED + gated** (`90e9dcd`, session-8
+part 19) — non-type template-arg canonicalization at the one key chokepoint, non-re-entrant
+local-cursor evaluator, all six key-build sites routed; `typeparam_types` deferred (evaluator
+self-gates). Later increments (type-arg canonical keys, general const-expr canonicalization,
+sugared/canonical split) remain unscheduled — build only if the pain recurs. Companion to
+`2026-06-13-nontype-template-arg-canonicalization-research.md`.
 
 ## The idea in one sentence
 
