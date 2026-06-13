@@ -1828,16 +1828,22 @@ const char *CirBuilder::builtin_output_runtime(const std::string &name)
 
 void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 				    const std::vector<ExternParam> &params,
-				    const std::vector<c2mir_node_code_t> &ret_specs)
+				    const std::vector<c2mir_node_code_t> &ret_specs,
+				    DataDefCLASS *ret_cls)
 {
 	if (m_output_externs.count(symbol)) return;
 
 	node_t ext_list = list();
 	append(ext_list, simple(N_EXTERN));
-	// Return base type: N_VOID by default, or the caller-supplied specs
-	// (e.g. {N_LONG} for a long-returning runtime fn — a void base would
-	// silently truncate/misread a value used in arithmetic/comparison).
-	if (ret_specs.empty()) {
+	// Return base type: a by-value class return is the class's struct/union tag
+	// (a trivially-copyable register return — _M_erase/_M_insert_rval yield
+	// __normal_iterator by value); otherwise N_VOID by default, or the
+	// caller-supplied specs (e.g. {N_LONG} for a long-returning runtime fn — a
+	// void base would silently truncate/misread a value used in arithmetic).
+	if (ret_cls) {
+		append(ext_list, class_tag_ref(ret_cls));
+		ret_ptr = false;   // a by-value struct return is not a pointer
+	} else if (ret_specs.empty()) {
 		append(ext_list, simple(N_VOID));
 	} else {
 		for (size_t i = 0; i < ret_specs.size(); i++)
@@ -3600,11 +3606,18 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 
 	bool ret_ptr = false;
 	std::vector<c2mir_node_code_t> ret_specs = emit_symbol_ret_specs(callee, ret_ptr);
+	// A trivially-copyable class returned BY VALUE (register-returned, not via
+	// retbuf): declare the extern returning the class's struct tag, else the
+	// scalar-spec path falls to a void base and `return <call>(...)` in a
+	// struct-returning caller mismatches (_M_erase/_M_insert_rval -> iterator).
+	DataDefCLASS *ret_cls = NULL;
 	if (retc) {
 		ret_ptr = false;
 		ret_specs = { N_VOID };
+	} else if (!callee->returns_ref && !callee->returns.is_pointer()) {
+		ret_cls = as_class_instance(&callee->returns);
 	}
-	need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs);
+	need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs, ret_cls);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
 	if (retc) {

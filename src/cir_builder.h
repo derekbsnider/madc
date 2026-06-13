@@ -545,10 +545,16 @@ public:
 	// ret_ptr=true -> returns void*, else void. ret_specs overrides the
 	// return base type when non-empty (e.g. {N_LONG} for a long-returning
 	// runtime fn); empty means the default base type N_VOID.
+	// `ret_cls` (when non-null) declares the return type as that class's
+	// struct/union tag — for a method/function that returns a trivially-copyable
+	// class BY VALUE (register-returned, no retbuf). It takes precedence over
+	// ret_specs/ret_ptr (a by-value struct return is neither a scalar base nor a
+	// pointer). Mirrors ExternParam::cls for by-value class parameters.
 	void need_output_extern(const char *symbol, bool ret_ptr,
 				const std::vector<ExternParam> &params,
 				const std::vector<c2mir_node_code_t> &ret_specs
-					= std::vector<c2mir_node_code_t>());
+					= std::vector<c2mir_node_code_t>(),
+				class DataDefCLASS *ret_cls = NULL);
 	void need_output_extern_unprototyped(const char *symbol, bool ret_ptr,
 				const std::vector<c2mir_node_code_t> &ret_specs
 					= std::vector<c2mir_node_code_t>());
