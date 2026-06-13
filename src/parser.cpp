@@ -10879,6 +10879,12 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     // namespace_fn_overload_sets; call_target_funcdef ranks it at CIR time.
     instantiate_namespace_fn_template_for_call(tc);
 
+    // Static member function template of a madc-LOCAL class (e.g.
+    // `_Destroy_aux<true>::__destroy`): instantiate its retained body for THIS
+    // call and alias the definition's symbol to the call's, so the call's
+    // extern resolves to a real definition instead of an undefined import.
+    instantiate_member_fn_template_for_call(tc);
+
     apply_template_call_return_inference(tc);
 
     // (need check for optional parameters)
@@ -26707,6 +26713,78 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	    return;
 }
 
+void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
+{
+    if ( !tc )
+	return;
+    FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+    if ( !fd || !fd->is_member_template || fd->member_template_decl.empty()
+      || !fd->member_template_owner || fd->template_param_names.empty() )
+	return;
+    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
+    if ( !owner )
+	return;
+    // LOCAL owner only — a libstdc++-EXPORTED member template binds
+    // mangled-direct (CirBuilder::member_template_method_call). A madc-
+    // monomorphized local instance (`_Destroy_aux<true>`) has no external
+    // definition, so its member template body must be instantiated here.
+    if ( owner->is_externally_defined() || owner->is_extern_template_instantiated )
+	return;
+
+    // A one-shot free-function template from the retained body: rename the
+    // declarator to a unique instantiation symbol (so the parsed function
+    // neither collides with the declaration-only placeholder member nor with
+    // sibling instances) and drop the `static` linkage specifier so the
+    // definition has the external linkage the call's extern expects. The
+    // instantiated definition is then aliased (local_emit_name) to the call's
+    // symbol below.
+    FnTemplateDef ft;
+    ft.typeparams = fd->template_param_names;
+    ft.typeparam_is_type.assign(ft.typeparams.size(), true);
+    ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
+    ft.ns = std::string();
+    // The instantiated definition gets a DISTINCT name (so it keeps its real
+    // parameters instead of colliding with the varargs declaration-only
+    // placeholder, which would drop them). The call is then aliased to this
+    // name below (the placeholder's local_emit_name), so call and definition
+    // emit the same symbol. NOTE: one alias slot per placeholder — a static
+    // member template instantiated at MORE THAN ONE type is a follow-up
+    // (the call would need per-type overload re-selection, like free fns).
+    std::string inst_name = tc->var.name + "__mti";
+    for ( size_t i = 0; i < fd->member_template_decl.size(); ++i )
+    {
+	TokenBase *t = fd->member_template_decl[i];
+	if ( t && (t->id() == TokenID::tkSTATIC
+		|| (t->type() == TokenType::ttIdentifier
+		    && static_cast<TokenIdent *>(t)->str == "static")) )
+	    continue;	// drop the static specifier
+	ft.decl.push_back(t ? t->clone() : NULL);
+    }
+    size_t name_idx = skipped_template_function_declarator_name_index(ft.decl, NULL);
+    if ( name_idx >= ft.decl.size() || !ft.decl[name_idx] )
+	return;
+    {
+	TokenBase *old = ft.decl[name_idx];
+	TokenBase *ren = new TokenIdent(inst_name.c_str());
+	ren->file = old->file;
+	ren->line = old->line;
+	ren->column = old->column;
+	ft.decl[name_idx] = ren;
+    }
+
+    std::string key = inst_name;
+    if ( !try_instantiate_namespace_fn_template(*this, ft, key, tc) )
+	return;
+    // Alias the CALL to the instantiated definition: the call references the
+    // declaration-only placeholder FuncDef (tc->var is a reference, not
+    // rebindable), so set the placeholder's local_emit_name to the
+    // instantiated definition's symbol — call_emit_symbol then emits that, and
+    // the unique-named definition (with real params) supplies it. First
+    // instantiation wins the single alias slot.
+    if ( fd->local_emit_name.empty() )
+	fd->local_emit_name = inst_name;
+}
+
 static bool skipped_template_function_is_static(
 	const std::vector<TokenBase *> &tokens)
 {
@@ -26824,6 +26902,27 @@ static void register_skipped_class_template_function(
 	var->flags |= access_flags;
     owner->methods.push_back(var);
     owner->method_map[name] = var;
+
+    // Retain the body of a STATIC member function template so an ODR-use call
+    // site can instantiate it locally (instantiate_member_fn_template_for_call)
+    // when the owner is a madc-LOCAL class libstdc++ does not export. Only
+    // body-bearing static templates qualify; non-static (this-taking) member
+    // templates and bodyless declarations stay on the existing paths.
+    if ( fd && is_static )
+    {
+	bool has_body = false;
+	for ( size_t i = 0; i < tokens.size(); ++i )
+	    if ( tokens[i] && tokens[i]->id() == TokenID::tkOpBrc )
+	    { has_body = true; break; }
+	if ( has_body )
+	{
+	    fd->member_template_owner = owner;
+	    fd->member_template_decl.clear();
+	    for ( size_t i = 0; i < tokens.size(); ++i )
+		fd->member_template_decl.push_back(tokens[i] ? tokens[i]->clone()
+							     : NULL);
+	}
+    }
 }
 
 std::vector<TokenBase *> Program::collect_template_class_prefix()

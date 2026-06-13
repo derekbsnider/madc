@@ -1,8 +1,45 @@
 # Design — member function-template instantiation on ODR-use (the "B" feature)
 
-**Date:** 2026-06-13 (session 8, after part 19). **Status:** design, ready to implement.
-**Branch:** `feature/retire-embedded-shims-claude`. **Reducer:** `tmp/mft1.mad` (library-independent),
-real wall `tmp/w2a.mad`.
+**Date:** 2026-06-13 (session 8, after part 19). **Status:** IMPLEMENTED (part 20) — static
+member templates of madc-LOCAL classes instantiate on ODR-use; `tmp/w2a.mad`
+(`std::vector<int> v;`) now COMPILES AND RUNS end-to-end (exit 0). Reducers `tmp/mft1.mad`
+(runs both branches), `tmp/mft3.mad` (param-using body, pointer args → `sum=100`).
+**Branch:** `feature/retire-embedded-shims-claude`.
+
+## As-built (part 20)
+
+- **Capture:** `register_skipped_class_template_function` retains a STATIC body-bearing member
+  template's decl tokens + owner on the FuncDef (`member_template_decl`, `member_template_owner`).
+- **Hook:** `instantiate_member_fn_template_for_call(tc)` (parser.cpp, called at 10880 right after
+  the namespace one): for a declaration-only static member-template callee with a LOCAL owner
+  (`!is_externally_defined()` — exported ones keep `member_template_method_call`), build a one-shot
+  `FnTemplateDef` from the retained body (strip `static`, rename the declarator to a DISTINCT
+  `<call-sym>__mti` so it keeps its real params instead of colliding with the varargs placeholder),
+  and instantiate via the shared `try_instantiate_namespace_fn_template` → `instantiate_fn_template_binding`.
+- **Call→def binding (the crux, resolved):** `tc->var` is a `Variable &` (NOT rebindable), and the
+  late-materialized (lib_funcs) definition emits its raw var name (not `func_emit_name`), so aliasing
+  the *definition* fails. Instead alias the *call*: set the PLACEHOLDER FuncDef's `local_emit_name =
+  inst_name` (the placeholder is `tc->var.type`; `call_emit_symbol` emits `local_emit_name`). Call and
+  unique-named definition now emit the same symbol; the placeholder's extern + the real definition
+  link.
+
+## Known limitations (separate gaps, NOT B bugs — all gate-clean)
+
+- **Array→pointer decay in deduction**: an ARRAY arg (`a`, `a+4`) deduces `It=int` not `int*`
+  (`tmp/mft2.mad` → "cannot dereference non-pointer"). Pointer args work (`tmp/mft3.mad`). Separate
+  pre-existing deduction-decay gap.
+- **Multi-type instantiation of ONE static member template**: a single `local_emit_name` alias slot
+  per placeholder (first instantiation wins). A second DISTINCT type would need per-type call
+  overload re-selection (like free fns). Rare in the cleared corpus.
+- **Non-static member templates** (this-taking): out of scope; the hook is gated to `vfSTATIC`.
+- **Trait canonicalization of template-id type args** (`__has_trivial_destructor(Aux<false>)`): the
+  Phase-1 evaluator's `read_local_type_operand` doesn't resolve template-id types (`tmp/mft1.mad`
+  prints GENERIC vs g++ TRIVIAL). Separate Phase-1 follow-up.
+
+---
+
+**Original design (below) — superseded by As-built; the rebind path it proposed was infeasible
+(`tc->var` is a reference), corrected to the call-alias above.**
 
 ## The gap
 

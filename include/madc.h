@@ -152,13 +152,21 @@ public:
     std::vector<std::string> template_param_names;
     std::string template_return_spelling;
     std::vector<std::string> template_param_spellings;
+    // For a STATIC member function template of a madc-LOCAL (monomorphized,
+    // not libstdc++-exported) class, the retained body declaration tokens
+    // (declarator + params + `{ ... }`, WITHOUT the `template<...>` header) and
+    // the owning class. A call site instantiates the body on ODR-use
+    // (instantiate_member_fn_template_for_call) instead of leaving a bare
+    // undefined extern. Empty unless the body was retained.
+    std::vector<TokenBase *> member_template_decl;
+    DataDef *member_template_owner;
     struct CtorInitializer {
 	std::string name;
 	std::vector<TokenBase *> args;
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_return_spelling(), template_param_spellings(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), pure_virtual(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -1345,6 +1353,16 @@ public:
     // member bodies (parse_static_assert_statement).
     size_t fn_template_instantiation_depth = 0;
     void instantiate_namespace_fn_template_for_call(TokenCallFunc *tc);
+    // A STATIC member function template of a madc-LOCAL class (a monomorphized
+    // template instance such as `_Destroy_aux<true>`) is registered
+    // declaration-only with its body retained on the FuncDef
+    // (register_skipped_class_template_function). When such a callee is called,
+    // deduce its template params from the call's args, instantiate the retained
+    // body via the shared free-fn-template machinery, and alias the instantiated
+    // definition's emitted symbol (local_emit_name) to the call's symbol so the
+    // call's extern resolves to the real definition at link. libstdc++-EXPORTED
+    // member templates keep the mangled-direct path (member_template_method_call).
+    void instantiate_member_fn_template_for_call(TokenCallFunc *tc);
     // Deduce + instantiate a retained free-OPERATOR template body for
     // `lhs <op> rhs` (e.g. operator+(const basic_string&, const _CharT*) —
     // libstdc++ does not export that shape, so the BODY must compile).
