@@ -4501,12 +4501,22 @@ struct machine_code_ctx {
    the bb thunk -> bb wrapper and generated-code -> bb thunk branches of
    lazy basic-block generation (seen with musl libc's allocator on aarch64).
    If the reservation is exhausted or unavailable, fall back to individual
-   mappings as before.  */
+   mappings as before.
+
+   x86-64 is excluded: its direct branches (call/jmp rel32) reach +-2GB, so
+   scattered code holders stay in range without a reservation, and the
+   pre-reservation individual-mapping path has always been correct there.
+   The 128MB reservation only helps reach-limited targets (aarch64 +-128MB),
+   while on a memory-pressured host it needlessly subtracts 128MB of commit
+   headroom from the jitted program itself -- enough to flip a ~2GB-peak
+   workload to an out-of-memory NULL allocation.  (madc refinement of the
+   upstream PR; proposed back to it.)  */
 #ifndef MIR_CODE_RESERVE_SIZE
-#if UINTPTR_MAX == 0xffffffffffffffffu && !defined(_WIN32)
+#if UINTPTR_MAX == 0xffffffffffffffffu && !defined(_WIN32) \
+    && !defined(__x86_64__) && !defined(__amd64__)
 #define MIR_CODE_RESERVE_SIZE (128 * 1024 * 1024)
 #else
-#define MIR_CODE_RESERVE_SIZE 0 /* scarce address space (or Windows commit charge) */
+#define MIR_CODE_RESERVE_SIZE 0 /* x86-64 (rel32 +-2GB), Windows, or 32-bit */
 #endif
 #endif
 
