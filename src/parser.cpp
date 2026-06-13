@@ -2639,20 +2639,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		if ( !adt )
 		    Throw(at) << "Expecting a type argument to "
 				  << tname << "<>" << flush;
-		// Fold trailing pointer stars into the argument's type, mirroring a
-		// pointer typedef (`Box<char*>`, `Vec<T**>`). A single pointer-typed
-		// TokenDataType substitutes cleanly into the body — the same shape the
-		// parser produces for `typedef char *charptr; charptr m;`.
-		while ( peekToken() && peekToken()->id() == TokenID::tkMul )
-		{
-		    nextToken();
-		    DataDefPTR *ptr = getPointerType(&adt->definition);
-		    TokenDataType *padt = new TokenDataType(ptr->name.c_str(), *ptr);
-		    padt->file = at->file;
-		    padt->line = at->line;
-		    padt->column = at->column;
-		    adt = padt;
-		}
+		// Fold a trailing declarator suffix (`*`/`&`/`&&`) into the arg type.
+		adt = fold_template_arg_declarator(adt, at);
 		type_args.push_back(adt);
 		arg_types_by_slot.push_back(adt);
 		arg_tokens_by_slot.push_back(std::vector<TokenBase *>());
@@ -3126,14 +3114,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    TokenDataType *adt = resolve_declared_type_token(at, true, true);
 	    if ( !adt )
 		Throw(at) << "Expecting a type argument to " << tname << "<>" << flush;
-	while ( peekToken() && peekToken()->id() == TokenID::tkMul )
-	{
-	    nextToken();
-	    DataDefPTR *ptr = getPointerType(&adt->definition);
-	    TokenDataType *padt = new TokenDataType(ptr->name.c_str(), *ptr);
-	    padt->file = at->file; padt->line = at->line; padt->column = at->column;
-	    adt = padt;
-	}
+	adt = fold_template_arg_declarator(adt, at);
 	args.push_back(adt);
 	arg_spellings.push_back(template_type_arg_spelling(adt, cv_spelling));
 	TokenBase *sep = nextToken();
@@ -10217,6 +10198,36 @@ DataDefREF *Program::getReferenceType(DataDef *base)
     ref_type_cache[base] = ref;
     DBG(std::cout << "getReferenceType() created reference to " << base->name << std::endl);
     return ref;
+}
+
+TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
+						     TokenBase *origin)
+{
+    // A template argument may carry a pointer/reference declarator suffix; fold it
+    // into the arg type so it substitutes cleanly into the template body (the same
+    // shape `typedef char *cp; cp m;` produces). `&`/`&&` collapse via
+    // getReferenceType (madc models all references with one DataDefREF, so the
+    // lvalue/rvalue spelling does not change the type). Shared by every
+    // template-argument parser instead of a per-site copy of the star fold.
+    while ( peekToken()
+	 && (peekToken()->id() == TokenID::tkMul
+	  || peekToken()->id() == TokenID::tkBand
+	  || peekToken()->id() == TokenID::tkLand) )
+    {
+	TokenID sfx = nextToken()->id();
+	DataDef *wrapped = (sfx == TokenID::tkMul)
+	    ? static_cast<DataDef *>(getPointerType(&adt->definition))
+	    : static_cast<DataDef *>(getReferenceType(&adt->definition));
+	TokenDataType *next = new TokenDataType(wrapped->name.c_str(), *wrapped);
+	if ( origin )
+	{
+	    next->file = origin->file;
+	    next->line = origin->line;
+	    next->column = origin->column;
+	}
+	adt = next;
+    }
+    return adt;
 }
 
 // add a function definition
