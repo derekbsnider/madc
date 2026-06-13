@@ -10,6 +10,62 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 6, part 4) — w2a: struct-by-value extern params (35 errors)
+
+**COMMITTED `bce0b07`.** Suite 556/27 (failure list byte-identical) + unit 10/10 GREEN;
+torture+SMAUG running (tmp/gcctest_s7.log) — the fix only changes emitted externs for
+by-value class params (a real-libstdc++-container category absent from the C torture
+suite), so regression is unlikely; VERIFY the failset still = 51-name baseline + SMAUG
+soak before treating bce0b07 as fully gated. w2a check errors **42 → 35**.
+
+### NEXT SLICE — FULLY SPEC'D, ready to implement on the bce0b07 base
+**Operator overload member-vs-free mis-selection** (the remaining 10 arithmetic-arg
+errors). REDUCER `tmp/w16.mad` (g++ → `3`; madc → "incompatible argument type for
+arithmetic type parameter"). Shape: a class with BOTH a member `operator-(long)` (the
+arithmetic/difference_type overload) AND a free/friend `operator-(const It&, const
+CIt&)`; calling `x - y` where y is a DIFFERENT type (real: `__position - cbegin()`,
+iterator − const_iterator) must pick the free operator, but madc binds the member and
+jams the struct into the `long` param.
+ROOT CAUSE: `select_operator_overload` (cir_builder.cpp) — its final KEYED-LOOKUP
+fallback `Variable *mv = cls->findMethod(key); return ...` returns the first by-name
+member IGNORING arg viability, even when scoring already rejected every member
+(`best == NULL` because `operator-(long)` scored <0 against the class rhs). FIX: when
+`rhs_dd` is non-null and no member scored ≥0, the keyed fallback must return NULL (not a
+non-viable member), so `class_operator_call` falls through to `try_free_operator_call`.
+CAVEAT verified read-only: `try_free_operator_call` requires `free_operator_overloads`
+populated (W2-captured NAMESPACE-SCOPE operator TEMPLATES) — libstdc++'s `__gnu_cxx::
+operator-` template IS captured, so w2a should bind it once the member is rejected; but
+`tmp/w16.mad`'s file-scope NON-template friend is NOT captured, so w16 alone may then
+fall to built-in `-` (error) rather than pass — use the w2a error-count delta as the
+real signal, and add a libstdc++-shaped reducer (namespace template free operator) to
+confirm. RISK: the keyed fallback exists for a reason (catches scan misses) — making it
+viability-checked could regress other operator cases, so the FULL torture gate is
+mandatory before committing this one.
+After it: 6× lvalue-&, 5× struct/union return-expr, 3× too-few-args, 3× subscript,
+3× comparison, 1× `__madc_objtmp_66` (while/for condition-temp placement, session-4 gap). The 3-way oracle is now usable (emit-C `safe_ident` from part 3), so
+errors are line-attributed via `/workspace/mir/c2m tmp/w2a_s7b.c -ei`.
+
+ROOT CAUSE fixed: a by-VALUE class/struct PARAM to a mangled-direct libstdc++ method
+(real `vector::_M_fill_insert(__normal_iterator __position, ...)`) was declared
+ARITHMETIC in the emitted extern prototype — `native_param_shape` fell through
+`param_object_class` (ref-only) to `native_scalar_specs` → `{N_LONG}`, while the call
+passed the struct value (`object_arg_value`). c2mir: "incompatible argument type for
+arithmetic type parameter". Fix: `ExternParam` grew a `DataDefCLASS *cls` field (NO
+default member initializer — keeps it a C++11 aggregate so `{specs, ptr}` inits still
+work, `cls` value-inits null); `native_param_shape` returns `{ {}, false, vc }` for a
+by-value class; `need_output_extern` renders `cls` via `class_tag_ref` (struct/union
+tag, no pointer). The arithmetic-arg family dropped 17 → 10.
+
+**w2a REMAINING (35 errors, next slices, each a DISTINCT root cause):**
+- **10× arithmetic-arg, now OPERATOR OVERLOAD SELECTION** (NOT the extern shape):
+  `__position - cbegin()` bound `__normal_iterator::operator-(difference_type)` (the
+  arithmetic-param overload) instead of `operator-(const __normal_iterator&)` — wrong
+  overload picked when the arg is an iterator struct. Line 1946 etc. **Best next target.**
+- 6× lvalue-required-&, 5× incompatible struct/union return-expr, 3× too-few-args,
+  3× subscripted-value-not-array, 3× invalid comparison operands, 1×
+  `__madc_objtmp_66` undeclared (pending-stmt placement — the while/for condition-temp
+  gap from session 4), 1× lvalue-required-as-assign-LHS, 1× struct/union-param.
+
 ## STATUS UPDATE 2026-06-13 (session 6, part 3) — MIR upstream sweep (PRs #437-440)
 
 **Commits `56ee053` (MIR pin 545ad46→5df536f) + `eeed70a` (emit-C hygiene).**
