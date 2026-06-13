@@ -513,7 +513,20 @@ public:
 
 	// ---- Output (Phase-2) ----
 	// A param of an output extern: its type-spec node codes + whether it is a pointer.
-	struct ExternParam { std::vector<c2mir_node_code_t> specs; bool ptr; };
+	// A parameter shape for an emitted extern prototype. `cls` (when
+	// non-null) means a by-VALUE struct/union param of that class — its
+	// tag is emitted via class_tag_ref and `specs`/`ptr` are ignored
+	// (a by-value libstdc++ iterator/value_type arg, e.g. vector's
+	// _M_fill_insert(__normal_iterator, ...)). Otherwise it's a scalar
+	// (`specs`) optionally one pointer level (`ptr`). NO default member
+	// initializer — that would make ExternParam a non-aggregate under
+	// C++11 and break every `{ {specs}, ptr }` braced init; trailing
+	// `cls` is value-initialized to null by those two-field inits.
+	struct ExternParam {
+		std::vector<c2mir_node_code_t> specs;
+		bool ptr;
+		class DataDefCLASS *cls;
+	};
 	// Record (once) an extern proto for an output runtime/libstdc++ symbol.
 	// ret_ptr=true -> returns void*, else void. ret_specs overrides the
 	// return base type when non-empty (e.g. {N_LONG} for a long-returning

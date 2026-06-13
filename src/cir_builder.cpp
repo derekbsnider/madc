@@ -436,13 +436,23 @@ static std::vector<c2mir_node_code_t> native_scalar_specs(DataDef *dd)
 static CirBuilder::ExternParam native_param_shape(DataDef *dd, bool refp)
 {
 	if (param_object_class(dd, refp))
-		return { {N_VOID}, true };
+		return { {N_VOID}, true, NULL };
 	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) {
 		if (p->base_type && p->base_type->rawtype() == DataType::dtCHAR)
-			return { {N_CHAR}, true };
-		return { {N_VOID}, true };
+			return { {N_CHAR}, true, NULL };
+		return { {N_VOID}, true, NULL };
 	}
-	return { native_scalar_specs(dd), false };
+	// A by-VALUE class/struct param (not a reference — that took the
+	// param_object_class void* branch above): declare it as the struct
+	// tag, by value. Without this the class fell through to
+	// native_scalar_specs -> {N_LONG}, so the extern proto declared an
+	// ARITHMETIC param while the call passed the struct value
+	// (object_arg_value) -> c2mir "incompatible argument type for
+	// arithmetic type parameter" (real vector's _M_fill_insert taking a
+	// __normal_iterator by value).
+	if (DataDefCLASS *vc = as_class_instance(dd))
+		return { {}, false, vc };
+	return { native_scalar_specs(dd), false, NULL };
 }
 
 static void native_func_shape(FuncDef *fd, bool &ret_ptr,
@@ -1792,10 +1802,18 @@ void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 	} else {
 		for (size_t i = 0; i < params.size(); i++) {
 			node_t specs = list();
-			for (size_t j = 0; j < params[i].specs.size(); j++)
-				append(specs, simple(params[i].specs[j]));
+			// A by-value struct/union param: one tag-ref spec (struct X
+			// / union X per union_layout), no pointer. Otherwise the
+			// scalar spec list, optionally one pointer level.
+			if (params[i].cls) {
+				append(specs, class_tag_ref(params[i].cls));
+			} else {
+				for (size_t j = 0; j < params[i].specs.size(); j++)
+					append(specs, simple(params[i].specs[j]));
+			}
 			node_t pdecl_list = list();
-			if (params[i].ptr) append(pdecl_list, pointer());
+			if (params[i].ptr && !params[i].cls)
+				append(pdecl_list, pointer());
 			node_t pdecl = node2(N_DECL, ignore(), pdecl_list);
 			append(param_list, node2(N_TYPE, specs, pdecl));
 		}
