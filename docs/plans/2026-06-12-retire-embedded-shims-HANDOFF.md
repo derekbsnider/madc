@@ -48,6 +48,34 @@ viability guard is only safe once the free path provably binds. w16's file-scope
 NON-template friend is a separate, lower-priority gap (ordinary free-function operator
 lookup, not W2-captured). RISK: broad overload-resolution change — full torture gate
 mandatory.
+
+**RECON DONE 2026-06-13 (real libstdc++ `/usr/include/c++/13/bits/stl_iterator.h`):**
+The two `operator-` forms overload resolution chooses between for `__position −
+cbegin()` (iterator − const_iterator):
+- MEMBER `:1157` — `__normal_iterator operator-(difference_type __n) const`; param is
+  arithmetic (`ptrdiff_t`). NON-viable for a const_iterator arg (no conversion to
+  ptrdiff_t) → madc's scorer correctly returns `best==NULL`.
+- FREE cross-type TEMPLATE `:1321` (namespace `__gnu_cxx`):
+  `operator-(const __normal_iterator<_IteratorL,_C>&, const __normal_iterator<_IteratorR,_C>&)`
+  → `decltype(__lhs.base() - __rhs.base())` (= difference_type). TWO DISTINCT iterator
+  template params, SHARED `_Container`. This is the C++-correct selection.
+DESIGN for the fix (harder than the existing W2 `operator<<` path, which deduces ONE
+param from the RHS with the stream as the matched class): the binary path must deduce
+BOTH operands as template-ids of the SAME primary template (`__normal_iterator`) with a
+consistency constraint on the shared `_Container`, then mangle/bind. IMPLEMENTATION
+STEP 0 — **DONE/VERIFIED 2026-06-13**: `capture_free_operator_overload` (parser.cpp
+~24762) captures ANY namespace-scope binary operator (`param_spellings.size() >= 2`),
+NOT gated to `<<`/`>>` — so `__gnu_cxx::operator-` IS already in
+`free_operator_overloads`. **The fix is MATCHING-ONLY** (no capture extension): extend
+`try_free_operator_call`'s general binary section (cir_builder.cpp, after the
+`operator<<` manipulator special-case) to, for a binary op whose LHS is a class and
+whose member overload is non-viable, scan `free_operator_overloads` for a same-`opname`
+2-param entry and deduce BOTH operands as template-ids of the SAME primary template with
+a shared trailing param (`_Container`) — model it on the existing `deduce_free_stream_call`
+/ `targs_from_binding` / `itanium_mangle_std_free_template` machinery (which already does
+ONE-param deduction for `operator<<`). Then the keyed-fallback viability guard becomes
+safe. The recon pointer + method is in memory `feedback_research_and_gcc_recon`
+(/workspace/gcc + installed gcc-13 headers).
 After it: 6× lvalue-&, 5× struct/union return-expr, 3× too-few-args, 3× subscript,
 3× comparison, 1× `__madc_objtmp_66` (while/for condition-temp placement, session-4 gap). The 3-way oracle is now usable (emit-C `safe_ident` from part 3), so
 errors are line-attributed via `/workspace/mir/c2m tmp/w2a_s7b.c -ei`.
