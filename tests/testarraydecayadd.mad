@@ -1,0 +1,15 @@
+// Array-to-pointer decay in additive pointer arithmetic ([conv.array]):
+// `arr + n` (and the commutative `n + arr`) must self-type as `element *` even
+// in a self-determined context (a constructor argument, with no pointer target
+// to coerce to). Before the fix the `+` operator typed `a + 2` as `int`, so the
+// `P(const int*)` ctor didn't match. g++/clang: prints 3 then 4.
+#include <cstdio>
+struct P { const int* p; P(const int* q) { p = q; } };
+int main()
+{
+    int a[5] = {1, 2, 3, 4, 5};
+    P x(a + 2);     // arr + n  -> int*  -> *p == 3
+    P y(1 + a);     // n + arr  -> int*  -> *p == 2
+    printf("%d %d\n", *x.p, *y.p);
+    return 0;
+}

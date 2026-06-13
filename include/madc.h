@@ -1998,6 +1998,10 @@ public:
     // (W2) a captured FREE namespace operator on the operand classes returns a
     // class by value (std::operator+ on strings).
     void resolve_object_operator_type(class TokenOperator *to);
+    // Array-to-pointer decay ([conv.array]) for an operator operand: returns the
+    // decayed `element *` type for a fixed-array variable / array member /
+    // array-typed expression, else NULL. See parser.cpp.
+    DataDef *array_decay_pointer(TokenBase *operand);
     // The return CLASS of a captured FREE namespace binary operator on class
     // operands whose return is a class BY VALUE deducing to one of the operand
     // classes. Structural template-head check only — full deduction, overload

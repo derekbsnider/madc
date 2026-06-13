@@ -7038,6 +7038,30 @@ DataDef *Program::comparison_category_class(TokenOperator *to)
 // the matching operator, using that operator's return type. Without this,
 // object operators report the default arithmetic datadef, so copy-init ctor
 // selection, chained operator expressions, and `auto` all mis-resolve.
+// Array-to-pointer decay ([conv.array]) for an operator operand: a fixed-array
+// variable / array member / array-typed expression denotes `element *` in a
+// value context. Mirrors the trichotomy in CirBuilder::ctor_arg_datadef.
+// TokenMember derives from TokenVar, so it is checked first. Returns NULL when
+// the operand is not an array.
+DataDef *Program::array_decay_pointer(TokenBase *operand)
+{
+    if ( !operand ) return NULL;
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(operand) )
+    {
+	if ( tm->is_fixed_array_member() && tm->var.type )
+	    return getPointerType(tm->var.type);
+    }
+    else if ( TokenVar *tv = dynamic_cast<TokenVar *>(operand) )
+    {
+	if ( tv->var.is_fixed_array() && tv->var.type )
+	    return getPointerType(tv->var.type);
+    }
+    if ( DataDefCArray *ca = dynamic_cast<DataDefCArray *>(operand->datadef()) )
+	if ( ca->element_type )
+	    return getPointerType(ca->element_type);
+    return NULL;
+}
+
 void Program::resolve_object_operator_type(TokenOperator *to)
 {
     if ( !to ) return;
@@ -7059,6 +7083,26 @@ void Program::resolve_object_operator_type(TokenOperator *to)
     DataDefCLASS *lc = operand_object_class(operand);
     if ( !lc && unary )
 	return;
+    // Array-to-pointer decay in additive pointer arithmetic ([conv.array]):
+    // `arr + n` / `arr - n` / `n + arr` self-type as `element *`. datadef()'s
+    // lazy is_pointer() branch only recognizes real pointers, not arrays, so a
+    // self-determined context (ctor-arg / overload-arg typing, with no pointer
+    // target to coerce to) wrongly saw `int`. Only when neither operand is a
+    // class object.
+    if ( !lc && !operand_object_class(to->right)
+      && (to->id() == TokenID::tkAdd || to->id() == TokenID::tkSub)
+      && to->left && to->right )
+    {
+	DataDef *ld = to->left->datadef();
+	DataDef *rd = to->right->datadef();
+	if ( rd && rd->is_numeric() && !rd->is_pointer() )
+	    if ( DataDef *dp = array_decay_pointer(to->left) )
+	    { to->set_resolved_type(dp); return; }
+	if ( to->id() == TokenID::tkAdd
+	  && ld && ld->is_numeric() && !ld->is_pointer() )
+	    if ( DataDef *dp = array_decay_pointer(to->right) )
+	    { to->set_resolved_type(dp); return; }
+    }
     if ( !lc && (!to->right || !operand_object_class(to->right)) )
 	return;	// neither side is a class object
     const char *opsym = object_operator_symbol(to->id());
