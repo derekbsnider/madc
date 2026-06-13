@@ -10,6 +10,30 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 6, part 9) — operator[] on a sub-expression receiver (w2a 11→8)
+
+**COMMITTED `9f4ce08`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
+gcc-torture 1571 / 51-name failset byte-identical (zero regressions), SMAUG soak
+green. w2a **11 → 8** — subscripted-value cluster **3 → 0**.
+
+ROOT CAUSE: a subscript on a class-object SUB-EXPRESSION (`(*this)[n]` in
+vector::at, `__this->_M_current[n]` in a move_iterator) parses as a
+TokenSubscriptExpr, whose CIR lowering fell straight to a raw N_IND — c2mir
+rejects it (the base is a struct, not array/pointer). The named-variable
+TokenSubscript path already dispatches to operator[]; the expression-receiver
+path did not. FIX: the TokenSubscriptExpr handler now dispatches to the class's
+operator[] via `class_subscript_addr_on` (the shared receiver-generic core) when
+base_expr is a class object declaring operator[], deref'ing a T& return; receiver
+address from object_arg_addr. Falls through to the raw/VLA-flatten lowering
+otherwise.
+
+**w2a REMAINING (8 errors):** 3× too-few-args, 2× pointer-type-param, 1×
+__madc_objtmp (while/for condition-temp, session-4 gap), 1× lvalue-as-assign-LHS,
+1× struct/union return-expr (std::move/move_iterator). **Session arc: w2a 35 → 8**
+across parts 5-9.
+
+---
+
 ## STATUS UPDATE 2026-06-13 (session 6, part 8) — by-value class return on a method extern (w2a 15→11)
 
 **COMMITTED `a7448fe`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
