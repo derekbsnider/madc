@@ -29,18 +29,25 @@ jams the struct into the `long` param.
 ROOT CAUSE: `select_operator_overload` (cir_builder.cpp) — its final KEYED-LOOKUP
 fallback `Variable *mv = cls->findMethod(key); return ...` returns the first by-name
 member IGNORING arg viability, even when scoring already rejected every member
-(`best == NULL` because `operator-(long)` scored <0 against the class rhs). FIX: when
-`rhs_dd` is non-null and no member scored ≥0, the keyed fallback must return NULL (not a
-non-viable member), so `class_operator_call` falls through to `try_free_operator_call`.
-CAVEAT verified read-only: `try_free_operator_call` requires `free_operator_overloads`
-populated (W2-captured NAMESPACE-SCOPE operator TEMPLATES) — libstdc++'s `__gnu_cxx::
-operator-` template IS captured, so w2a should bind it once the member is rejected; but
-`tmp/w16.mad`'s file-scope NON-template friend is NOT captured, so w16 alone may then
-fall to built-in `-` (error) rather than pass — use the w2a error-count delta as the
-real signal, and add a libstdc++-shaped reducer (namespace template free operator) to
-confirm. RISK: the keyed fallback exists for a reason (catches scan misses) — making it
-viability-checked could regress other operator cases, so the FULL torture gate is
-mandatory before committing this one.
+(`best == NULL` because `operator-(long)` scored <0 against the class rhs). The member
+then gets the struct rhs jammed into its `long` param.
+
+**NEGATIVE RESULT (tested 2026-06-13, REVERTED — do NOT re-attempt the one-liner):**
+making the keyed fallback `if (rhs_dd) return NULL;` (reject non-viable member, expecting
+`class_operator_call` to fall through to `try_free_operator_call`) made things WORSE —
+w2a **35 → 39** errors, and w16 turned into "invalid operand types of -". Reason:
+`try_free_operator_call` does NOT actually bind the cross-type `operator-` for these
+cases (its general binary path doesn't match `iterator − const_iterator`; only the
+`operator<<`/`a+"literal"` shapes are handled). So rejecting the member just converts a
+wrong-but-compiling bind into a hard "no operator" failure. **The REAL fix is bigger:**
+extend `try_free_operator_call`'s general binary path to match a captured namespace
+operator TEMPLATE (`__gnu_cxx::operator-`) against TWO differently-typed class args
+(deduce both iterator params), bind it mangled-direct, AND THEN reject the non-viable
+member. Design the free-operator-template binary matching FIRST; the keyed-fallback
+viability guard is only safe once the free path provably binds. w16's file-scope
+NON-template friend is a separate, lower-priority gap (ordinary free-function operator
+lookup, not W2-captured). RISK: broad overload-resolution change — full torture gate
+mandatory.
 After it: 6× lvalue-&, 5× struct/union return-expr, 3× too-few-args, 3× subscript,
 3× comparison, 1× `__madc_objtmp_66` (while/for condition-temp placement, session-4 gap). The 3-way oracle is now usable (emit-C `safe_ident` from part 3), so
 errors are line-attributed via `/workspace/mir/c2m tmp/w2a_s7b.c -ei`.
