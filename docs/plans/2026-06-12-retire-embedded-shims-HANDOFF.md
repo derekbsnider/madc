@@ -10,6 +10,34 @@ companion memory: `project_retire_embedded_shims` +
 
 ---
 
+## STATUS UPDATE 2026-06-13 (session 6, part 6) — prvalue ref-arg materialization (w2a 21→17)
+
+**COMMITTED `839a3de`, FULLY GATED.** suite 556/27 byte-identical, unit all-pass,
+gcc-torture 1571 / 51-name failset byte-identical (zero regressions), SMAUG soak
+green. w2a **21 → 17** — 4 of the 6 "lvalue required as unary & operand" cleared.
+
+ROOT CAUSE: a non-class reference param (`const T&`, T scalar/pointer) was lowered
+as `&translate_expr(arg)` unconditionally; for a prvalue arg (`__normal_iterator(
+_M_current++)` postfix++, or a by-value-call result) `&(prvalue)` is rejected.
+FIX: new `CirBuilder::ref_param_arg_addr` materializes the prvalue into a temp and
+passes its address. Fires ONLY for unambiguous prvalues
+(`expr_is_nonaddressable_rvalue`: by-value call, postfix ++/--, builtin binary
+arith/bitwise, literal) — forms `&expr` already rejected, so lvalue args keep the
+direct-address path and nothing previously-compiling changes (the safety
+principle: opt-IN materialization of already-broken forms). Applied at all 9
+non-class ref-param address-of sites (do NOT touch the `node1(N_ADDR,
+translate_expr(arg), arg)` occurrences INSIDE object_arg_addr / ref_param_arg_addr
+itself — line ~1245 is the helper's own fallback, replacing it self-recurses).
+
+**w2a REMAINING (17 errors):** 5× incompatible struct/union return-expr, 3× too-
+few-args, 3× subscripted-value-not-array (operator[] on object), 2× lvalue-& (the
+METHOD-THIS-on-rvalue case — `front()`/`back()` = `&begin(...)` as the operator*
+this-pointer; a DIFFERENT site than the ref-arg path, needs this-arg rvalue
+materialization), 2× pointer-type-param, 1× __madc_objtmp (while/for condition-temp),
+1× lvalue-as-assign-LHS, 1× struct/union-param.
+
+---
+
 ## STATUS UPDATE 2026-06-13 (session 6, part 5) — operator member-vs-free FIXED (w2a 35→21)
 
 **COMMITTED `0ae2a07`, FULLY GATED.** suite 556/27 (failure list byte-identical),
