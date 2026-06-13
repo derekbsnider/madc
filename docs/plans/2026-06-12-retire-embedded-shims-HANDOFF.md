@@ -31,7 +31,22 @@ on resolution failure (dependent use / SFINAE absent-`::type`). New test
 `tests/testconditionalt.mad`. Verified `conditional<true,int,long>::type` (direct,
 no alias) already worked — only the alias was broken.
 
-### w2a's LAST 2 — FULL BLOCKER CHAIN (move_iterator conditional_t reference type)
+### w2a's LAST 2 — RESEARCHED to a single root feature (2026-06-13)
+
+**FULL RESEARCH + LEAN DESIGN: `docs/plans/2026-06-13-reference-template-args-research.md`
+(read it first).** Both errors reduce to ONE missing feature: **a reference-qualified
+TYPE as a template argument** (`Tmpl<int&>`/`Tmpl<T&&>`). Everything else the
+move_iterator `__conditional_t` needs already works (member alias templates, the
+internal __conditional_t form, traits, `__base_ref`, reference RETURN types — all
+verified with reducers tmp/mat1,ic1,mi3,ref1,ref2). The parse gap is duplicated
+`*`-only declarator folds across ~4 template-arg loops; LEAN fix = extract ONE
+`fold_template_type_arg_suffix` helper (collapsing per clang BuildReferenceType) and
+replace the copy-pasted folds (net: less code). Reference-typedef-LOCAL binding
+(tmp/ref3,ref4) is a SEPARATE pre-existing gap, NOT needed for w2a. Clang frontend
+source checked out at /workspace/llvm-clang-src (recon only). Older chain notes below
+are superseded by the research doc.
+
+### (superseded) earlier blocker-chain notes — move_iterator conditional_t reference type
 
 Both remaining errors (`tmp/w2a_emit.c:~1639` conversion-to-non-scalar,
 `:~1699` struct-return) are `move_iterator<__normal_iterator<int*>>::operator*`
