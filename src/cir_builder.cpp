@@ -8031,6 +8031,27 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	{
 		TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tb);
 		if (tse) {
+			// operator[] on a class-object SUB-EXPRESSION receiver
+			// (`(*this)[n]` in vector::at, `__this->_M_current[n]` in a
+			// move_iterator) — dispatch to the class's operator[] like the
+			// named-variable TokenSubscript path, instead of a raw N_IND that
+			// c2mir rejects ("subscripted value is neither array nor pointer").
+			if (DataDefCLASS *bcls = as_class_instance(
+				    tse->base_expr ? tse->base_expr->datadef() : NULL)) {
+				std::string subop = "operator[]";
+				Variable *mv = bcls->findMethod(subop);
+				FuncDef *callee = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+				if (callee) {
+					node_t recv_addr = object_arg_addr(tse->base_expr, bcls);
+					node_t addr = class_subscript_addr_on(bcls, recv_addr,
+									      tse->index, tb);
+					if (addr)
+						// operator[] returns T& -> a pointer; deref to the
+						// element lvalue (mirror of class_subscript_call).
+						return callee->returns_ref
+						       ? node1(N_DEREF, addr, tb) : addr;
+				}
+			}
 			// Multi-dim VLA `M1[i0][i1]...[ik]` parses as a NESTED
 			// TokenSubscriptExpr(...(TokenSubscript(M1,i0))...,ik) because M1 is
 			// a flat malloc'd pointer (c2mir has no VLA types), so the nested
