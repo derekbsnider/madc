@@ -26915,7 +26915,13 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     FnTemplateDef ft;
     ft.typeparams = fd->template_param_names;
     ft.typeparam_is_type.assign(ft.typeparams.size(), true);
-    ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
+    // Honor a variadic typeparam (`typename... _Args`) — a member template like
+    // allocator_traits::construct must instantiate its pack from the call's
+    // trailing args. Fall back to none-are-packs when pack-ness wasn't recorded.
+    if ( fd->template_param_is_pack.size() == ft.typeparams.size() )
+	ft.typeparam_is_pack = fd->template_param_is_pack;
+    else
+	ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
     ft.ns = std::string();
     // The instantiated definition gets a DISTINCT name (so it keeps its real
     // parameters instead of colliding with the varargs declaration-only
@@ -27053,6 +27059,10 @@ static void register_skipped_class_template_function(
 	fd->method_display_name = name;
 	fd->is_member_template = true;
 	fd->template_param_names = typeparams;
+	// Preserve pack-ness (parallel global set by the skipped-template parse
+	// alongside last_skipped_template_typeparams, which `typeparams` mirrors).
+	if ( pgm.last_skipped_template_typeparam_is_pack.size() == typeparams.size() )
+	    fd->template_param_is_pack = pgm.last_skipped_template_typeparam_is_pack;
 	std::string ret_spelling;
 	std::vector<std::string> param_spellings;
 	size_t name_idx = skipped_template_function_declarator_name_index(tokens,
@@ -27825,6 +27835,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.skip_template_nonclass_declaration(class_kw, &skipped_decl);
 	pgm.last_skipped_template_decl = skipped_decl;
 	pgm.last_skipped_template_typeparams = typeparams;
+	pgm.last_skipped_template_typeparam_is_pack = typeparam_is_pack;
 	if ( !pgm.deferred_function_body_sink )
 	    register_skipped_namespace_template_function(pgm, skipped_decl,
 							typeparams,

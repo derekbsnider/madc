@@ -150,6 +150,11 @@ public:
     // template specializations.
     bool is_member_template;
     std::vector<std::string> template_param_names;
+    // Pack-ness per template_param_names entry (a `typename... _Args` parameter
+    // pack vs a plain `typename _Up`). Needed so a variadic member template
+    // (allocator_traits::construct) instantiates its `_Args...` correctly.
+    // Empty == none-are-packs (back-compat for older registrations).
+    std::vector<bool> template_param_is_pack;
     std::string template_return_spelling;
     std::vector<std::string> template_param_spellings;
     // For a STATIC member function template of a madc-LOCAL (monomorphized,
@@ -166,7 +171,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), pure_virtual(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -1263,6 +1268,10 @@ public:
     // display names mid-body). Cleared after the parseFunction call.
     std::string pending_function_display_name;
     std::vector<std::string> last_skipped_template_typeparams;
+    // Pack-ness of last_skipped_template_typeparams (parallel vector), so a
+    // skipped member template's variadic typeparam (`typename... _Args`) is
+    // preserved through register_skipped_class_template_function.
+    std::vector<bool> last_skipped_template_typeparam_is_pack;
     // W2 (retire-std-hardcoding-design): non-member operator overload candidates
     // declared at namespace scope (e.g. std::operator<<). Member-operator
     // resolution already exists (class_operator_call); these let `obj << x`
