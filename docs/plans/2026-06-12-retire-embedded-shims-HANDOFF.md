@@ -23,18 +23,21 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 → `__gnu_cxx::__alloc_traits<allocator<int>>::construct`.
 
 ## 1. Live state (verify `bash scripts/resume.sh` + `git status`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`17677f2`** (LOCAL ONLY; develop
-  untouched). Last COMMITTED code: `17677f2` (sub-gap 11, direct-init of a non-class var); prior
-  `83a05d7` (sub-gap 10), `011769f` (sub-gap 9), `f644bb9` (sub-gap 8), `2e8abc1` (sub-gap 7),
+- **Branch** `feature/retire-embedded-shims-claude` @ **`ce4313a`** (LOCAL ONLY; develop
+  untouched). Last COMMITTED code: `ce4313a` (fn-ptr-param overload fix → cleared the
+  `_ZNSolsESo` wall, 27→21 failures); prior `17677f2` (sub-gap 11, direct-init), `83a05d7`
+  (sub-gap 10), `011769f` (sub-gap 9), `f644bb9` (sub-gap 8), `2e8abc1` (sub-gap 7),
   `7202523` (sub-gap 6), `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4) + docs mirrors. Tree is
   CLEAN. MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN at HEAD `17677f2`** (sub-gap 11): integration **575 passed / 27 failed / 18
-  skipped** (FAIL list byte-identical to `tmp/baseline_fails_s7.txt`; cumulative session-9 new
-  tests +testmemtmpl{order,refparam,fwdrefpack,typedefparam,packexpand,instance}
-  +testusingbasemember +testvariadicmembertmpl +testplacementnewglobal +testplacementnewvoidp
-  +testoutoflinemember +testoutoflinemembertemplate +testautotrailingreturn +testdirectinit);
+- **All gates GREEN at HEAD `ce4313a`**: integration **581 passed / 21 failed / 0 timed out / 18
+  skipped** (the **first headline-failure drop in ~4 sessions: 27 → 21**; six tests cleared —
+  testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx; zero
+  regressions vs `tmp/baseline_fails_s7.txt` minus those six);
   unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
   `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready.
+- **NOTE on the 21:** the prior sub-gap work (4-11) all landed on `tv1` (a reducer), so the 27
+  headline was flat for ~4 sessions while *passed* rose from added sub-gap tests. The `_ZNSolsESo`
+  fix is the first to flip pre-existing FAILING tests. See §3.6b below for the current 21 clustered.
 - Build: `make -C src` (clang++ default), bin at `bin/madc`. Clean, no warnings. NOTE: after a
   `FEATURE_DEFINES=-D…` debug build, `touch src/parser.cpp` before a plain `make -C src` or the
   stale debug `.o` is reused.
@@ -54,6 +57,7 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 | `011769f` | **sub-gap 9 — out-of-line member TEMPLATE definitions.** A two-level-head out-of-line def (`template<class T> template<class U> RET S<T>::f(U){body}`, e.g. vector::_M_realloc_insert's C++11 variadic form) was EXCLUDED by sub-gap 8. The in-class member-tmpl DECLARATION (re-parsed at monomorphization) creates the member as an `is_member_template` placeholder with an EMPTY `member_template_decl`, so `instantiate_member_fn_template_for_call` (sub-gap 5) bailed → undefined import. Fix combines sub-gap-8 capture + sub-gap-5 per-call instantiation (NO new machinery): `skipped_template_outofline_member` now REPORTS `is_member_template` instead of rejecting a `template`-first decl (the class-id walk-back already finds `Class<...>::member` — inner head has no top-level `(` and sits left of the class-id); records inner type-params + pack-ness via new `extract_inner_template_typeparams`. `register_outofline_member_instantiations` member-tmpl branch substitutes the CLASS params (inner pass through) + class-id→mangled, transforms the substituted `template<U...> RET <mangled>::name(params){body}` into the in-class member-decl form `RET name(params){body}` (strip inner head + `<mangled>::` qualifier), fills the monomorphized member's `member_template_decl`/`owner`/`template_param_names`/`is_pack`. The call then instantiates per inner-arg binding (existing sub-gap-5 path). +testoutoflinemembertemplate. tv1 advances to sub-gap 10. |
 | `83a05d7` | **sub-gap 10 — auto-return functions with a trailing return type.** `auto f(params) -> T {...}` (C++11; e.g. libstdc++'s cross-type `__normal_iterator operator-` returning `decltype(__lhs.base() - __rhs.base())`, reached by `_M_realloc_insert`'s `__position - begin()`) was rejected — `parseDeclaration` treated `auto` only as a deduced VARIABLE ("'auto' requires an initializer"). Fix: (1) parseDeclaration auto-var block guarded `&& nt->id() != tkOpBrk` so `auto f(` falls through to the function path (decl_type stays ddAUTO); (2) parseFunction's trailing-qualifier loop CAPTURES a `-> T` (tkDeRef) as raw balanced tokens, RESOLVED below after the param variables enter scope (so `-> decltype(params)` names them; resolve_declared_type_token handles decltype) — FuncDef::returns is a reference so the resolved type rebuilds the FuncDef via new `clone_funcdef_with_return` + re-points Variable/funcdef_map; (3) deferred (in-class method) bodies carry the captured tokens on `DeferredFunctionBody::trailing_ret_tokens` and resolve at materialization (`parse_deferred_function_body`, params back in scope). Deduced-return `auto f(){return e;}` (no `-> T`) is a follow-up. +testautotrailingreturn. tv1 advances to sub-gap 11. |
 | `17677f2` | **sub-gap 11 — direct-initialization of a non-class variable.** `T name(expr)` for a non-class type (`pointer __new_start(this->_M_allocate(__len));` in `_M_realloc_insert`; `typedef int* P; P p(q);`) always parsed as a function declaration → first paren token `this`/`q` threw "Failed to find type … when parsing function parameters". madc did ctor-style direct-init for CLASS types only. Fix (parser.cpp, deepest layer, reuses the `= expr` machinery — no new init path): new non-consuming `paren_group_is_nonclass_direct_init()` returns true ONLY when the token after `(` cannot begin a parameter-declaration (a literal, `this`, or a ttIdentifier naming an in-scope value — type names tokenize as ttDataType), a SOUND under-approximation (every diversion is unambiguously direct-init; param-clause-capable starts keep the most-vexing-parse default = function decl). A parseDeclaration branch (after the class ctor-call branch) injects a synthetic `=` before the `(` so `(expr)` parses through the scalar/pointer `= expr` path (mirrors `T x{...}` brace-init). **C++/madc only (`!is_c_mode()`)** — load-bearing: a K&R def `void f(x,v) union u *x, v;` whose param names shadow file-scope globals (gcc-torture `921112-1.c`) otherwise diverted (the regression the gate fixes, caught by the torture failset diff). Verified vs clang++ AND g++. +testdirectinit. tv1 advances PAST the `this`-param wall to `use of undeclared identifier '_ValueType1'` (sub-gap 12). |
+| `ce4313a` | **fn-ptr-param overload fix — cleared the `_ZNSolsESo` wall (27→21).** `cout << (long)` mangled the bogus import `_ZNSolsESo` (`operator<<(ostream)`) instead of `_ZNSolsEl`. Root: `DataDefFPTR::is_numeric()` returns true, so in `score_arg_to_param` a function-pointer PARAMETER fell through to the numeric-vs-numeric branch and a 64-bit integer arg matched the ostream manipulator `operator<<(ostream& (*)(ostream&))` with score 5 (rawtype 64==64), TYING `operator<<(long)` and — registered first — winning. Only 64-bit ints hit it (int/short scored 4 there; float/double non-integer). Fix (cir_builder `score_arg_to_param`): a fn-ptr param now handles every arg shape — a function/fn-ptr arg binds by signature, the null-pointer constant scores 3, any other arg is REJECTED (-1). Surgical + general (matches gcc/clang). Cleared 6 tests (testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx); testmadceval advances to a separate runtime-eval `std` wall. +`tests/testmadcevalexprctx.timeout=30` (it now RUNS — 12 runtime `eval_*_ctx` calls, each a full child-Program compile→JIT ~0.36s, ~5.5s total; per test-fixtures.md). Verified vs clang++ AND g++. |
 
 ## 3. THE NEXT TASK — sub-gap 12: `_ValueType1` undeclared
 `tmp/tv1` advanced PAST the sub-gap-11 (direct-init) wall to a NEW face: **`use of undeclared
@@ -69,6 +73,27 @@ Also still open (off the critical path): the sub-gap-10 follow-up **deduced-retu
 return e; }` (no trailing `-> T`, deduce from the body's return expression). Full detail:
 `docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"sub-gap 12".
 After this: the ~10-test container cluster + 5 string-class tests likely share these roots.
+
+### 3.6b — THE CURRENT 21 FAILURES, clustered by first-error (at `ce4313a`)
+~8 distinct root-cause walls (measured, not assumed — the earlier "container+string share one
+root, drops fast" was over-optimistic lumping; the real container chain is ~4 tests, the rest are
+independent):
+- **container/string template INSTANTIATION (~12)** — the live `tv1` chain + faces: `_S_destroy`
+  undeclared (testvector, testforeachref, teststringref, testsubscriptmember); `Missing operand`
+  in an instantiated body (testrefreturn, testtemplatecontainer, testtemplatestring); `Expecting
+  ',' or '>' in template parameter list` (testmap, testsubscript); `… did not register`
+  (testmadc_ns); string op typing (teststringglobal `shift operands should be integer`,
+  teststringrel `incompatible pointer arg`).
+- **`Unsupported parenthesized member declarator in class definition` (2)** — testcontainerdtor, testset.
+- **`expression before '->' must be a pointer` (2)** — testsubscriptarrow, testvectorptr (operator-> on an object).
+- **`__ns_std_for_each` undefined (1)** — testforeach2 (std::for_each free-fn-template instantiation).
+- **`__byte_op_t` undeclared (1)** — testsstream (std::byte op machinery in `<sstream>`).
+- **`to_string` overload (1)** — teststdstringconv.
+- **`=== ` strict-equality on basic_string (1)** — test3eqclass.
+- **runtime-eval `std` parse (1)** — testmadceval (`Failed to find type 'std'` in `__madc_runtime_eval`,
+  the second wall behind the now-fixed `_ZNSolsESo`).
+Highest leverage now is the container chain (sub-gap 12 → `_S_destroy`, ~4 tests) since the big
+single-fix detour (`_ZNSolsESo`, 7 tests) is done.
 
 ## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. DO NOT reapply
 `tmp/nontype_fold_v2_wip.patch` (the reverted 202-regression).
