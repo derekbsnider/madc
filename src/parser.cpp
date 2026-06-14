@@ -7755,8 +7755,15 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     if ( !tc || !cls )
 	return tc;
     std::vector<const DataDef *> at;
+    // Type each argument by REFERENCE TRANSPARENCY (operand_value_datadef): a
+    // reference variable/parameter argument (`const string& __rhs`) denotes the
+    // referenced OBJECT, not the raw pointer representation. Without this, inside
+    // the instantiated free `operator<(const string&, const string&)` body
+    // `__lhs.compare(__rhs)` scored `__rhs` as a `string*` and bound
+    // `string::compare(const char*)` instead of `compare(const basic_string&)`,
+    // then jammed the dereferenced string into the char* param (teststringrel).
     for ( TokenBase *p : tc->parameters )
-	at.push_back(p ? p->datadef() : NULL);
+	at.push_back(p ? operand_value_datadef(p) : NULL);
     Variable *ov = cls->findMethodOverload(id, at);
     if ( !ov || ov == &tc->var )
 	return tc;   // already the best (or single) overload — no change
