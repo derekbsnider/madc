@@ -1565,6 +1565,70 @@ static DataDef *resolve_class_type_alias(DataDefCLASS *cls, const std::string &n
     return NULL;
 }
 
+// Class-scope `using <Base>::<member>;` ([namespace.udecl]): import the base
+// class's <member> overload(s) into THIS class's overload set so they compete
+// with the class's own same-name overloads (a using-declaration defeats name
+// hiding). Real `__gnu_cxx::__alloc_traits` does `using _Base_type::construct;`
+// to expose std::allocator_traits<_Alloc>::construct alongside its own
+// custom-pointer construct overload — overload resolution + [temp.func.order]
+// then pick the right one. Handles the single-name-scope, single-member shape;
+// returns false (caller falls back to skipping the declaration) for any other
+// shape or an unresolved/non-class base. Peeks pgm.tokens; consumes ONLY on a
+// successful import (so unhandled forms reach the existing skip unchanged).
+static bool try_import_using_base_member(Program &pgm, DataDefCLASS *ddc)
+{
+    if ( !ddc )
+	return false;
+    // tokens: [0]=using [1]=scope-name [2]=:: [3]=member [4]=;
+    if ( pgm.tokens.size() < 5 )
+	return false;
+    TokenBase *scope_tb = pgm.tokens[1], *ns_tb = pgm.tokens[2];
+    TokenBase *mem_tb = pgm.tokens[3], *semi_tb = pgm.tokens[4];
+    if ( !scope_tb || !ns_tb || !mem_tb || !semi_tb )
+	return false;
+    if ( ns_tb->id() != TokenID::tkNS || semi_tb->id() != TokenID::tkSemi )
+	return false;
+    if ( !is_contextual_identifier_token(scope_tb)
+      || !is_contextual_identifier_token(mem_tb) )
+	return false;
+    std::string scope_name = contextual_identifier_name(scope_tb);
+    std::string member = contextual_identifier_name(mem_tb);
+    if ( scope_name.empty() || member.empty() )
+	return false;
+    DataDefCLASS *base =
+	dynamic_cast<DataDefCLASS *>(resolve_class_type_alias(ddc, scope_name));
+    if ( !base )
+	return false;
+    bool imported = false;
+    for ( size_t i = 0; i < base->methods.size(); ++i )
+    {
+	Variable *bm = base->methods[i];
+	if ( !bm )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(bm->type);
+	if ( !fd )
+	    continue;
+	const std::string &disp = fd->method_display_name.empty()
+				? bm->name : fd->method_display_name;
+	if ( disp != member )
+	    continue;
+	bool present = false;
+	for ( size_t j = 0; j < ddc->methods.size(); ++j )
+	    if ( ddc->methods[j] == bm ) { present = true; break; }
+	if ( present )
+	    continue;
+	ddc->methods.push_back(bm);
+	if ( ddc->method_map.find(member) == ddc->method_map.end() )
+	    ddc->method_map[member] = bm;
+	imported = true;
+    }
+    if ( !imported )
+	return false;
+    pgm.nextToken(); pgm.nextToken(); pgm.nextToken();	// using scope ::
+    pgm.nextToken(); pgm.nextToken();			// member ;
+    return true;
+}
+
 static DataDef *resolve_class_static_member_type(DataDefCLASS *cls, const std::string &name)
 {
     if ( !cls )
@@ -20952,7 +21016,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		&& pgm.tokens[2] && pgm.tokens[2]->id() == TokenID::tkAssign;
 	    if ( alias_decl )
 		pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
-	    else
+	    else if ( !try_import_using_base_member(pgm, ddc) )
 		pgm.skip_template_nonclass_declaration(pgm.nextToken());
 	    continue;
 	}

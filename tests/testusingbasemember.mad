@@ -1,0 +1,29 @@
+#!/../bin/madc
+// [namespace.udecl]: a class-scope `using Base::m;` imports the base's m
+// overload(s) into the derived overload set so they compete with the derived's
+// own overloads (defeating name hiding). Combined with [temp.func.order], a
+// pointer arg must select the base's more-specialized make(U*), not the
+// derived's generic make(P). Mirrors __gnu_cxx::__alloc_traits's
+// `using _Base_type::construct;` over its own custom-pointer construct.
+#include <iostream>
+using namespace std;
+template<typename A>
+struct Base {
+    template<typename U>
+    static int make(U* p, int v) { *p = v; return 2; }
+};
+template<typename A>
+struct Derived : Base<A> {
+    typedef Base<A> _Base_type;
+    using _Base_type::make;
+    template<typename P>
+    static int make(P p, int v) { return 1; }   // generic, hides base w/o using
+};
+int main()
+{
+    int x = 0;
+    int which = Derived<int>::make(&x, 42);   // base make(U*): which=2, x=42
+    cout << "which=" << which << endl;
+    cout << "x=" << x << endl;
+    return 0;
+}
