@@ -143,13 +143,17 @@ gates green; advanced tv1/testvector/testvectorptr past the deref wall (no flip)
   the default is a SINGLE token — a bound-param name (`_Ret = _TRet`) or a concrete
   `ttDataType`. Any MULTI-token default falls through to `return false`, so the
   param stays unbound → fr fallback `int64_t` cascades. Two layers:
-  - **(a) suffix/earlier-param defaults** — `template<typename T, typename R = T*>`
-    (`R` depends on `T` + a `*`). Reducer `tmp/cond2.mad` (`R = T*`, NO conditional)
-    reproduces `import of undefined __ns_ns_mk`. Fix: substitute the already-bound
-    params into the default tokens and resolve the type (fold `*`/`&` via the
-    existing `fold_template_arg_declarator`/`getPointerType` machinery — note this
-    is where the plan's ORIGINAL "declarator-suffix" idea actually applies: the
-    DEFAULT's tokens, not the body's). Tractable.
+  - **(a) suffix/earlier-param defaults — ✅ DONE (`5104dc1`).**
+    `template<typename T, typename R = T*>` (`R` depends on `T` + a `*`). Fixed in
+    `instantiate_fn_template_binding`: a default is now a BASE token (bound-param
+    name or `ttDataType`) + declarator suffixes (`*`→getPointerType,
+    `&`/`&&`→getReferenceType) + cv-qualifiers, folded as pure DataDef ops (no live
+    token stream). This is where the plan's ORIGINAL "declarator-suffix" idea
+    actually applies — the DEFAULT's tokens, not the body's. +testtmpldefaultparam;
+    reducer `tmp/cond2.mad` passes. All 4 gates green (integration 590/15, zero
+    regr). NOTE: a reference default `R = T&` exposed a SEPARATE
+    reference-return-from-defaulted-param gap (deferred; not needed for the std
+    shape, which uses `R = T*`).
   - **(b) trait-expression defaults** — `_ReturnType = __conditional_t<
     __move_if_noexcept_cond<_Tp>::value, move_iterator<_Tp*>, _Tp*>`
     (`<bits/stl_iterator.h>:1828`, exactly `__make_move_if_noexcept_iterator`). For
