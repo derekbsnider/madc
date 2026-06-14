@@ -142,13 +142,37 @@ Tests `testmemtmplinstance` (member access via `this` proves the method model, x
 reducers `tmp/im1` (this-independent body, x=5), `tmp/im2` (member access, x=35). tv1 now
 advances to **sub-gap 6** (placement-new in the construct body).
 
-### REMAINING sub-gap 6 — placement-new in the construct body (NEXT slice)
-With instance instantiation working, tv1's `__new_allocator<int>::construct` body parses to
-`::new((void*)__p) _Up(std::forward<_Args>(__args)...)` and fails with **`use of undeclared
-identifier 'new'`** — placement new (`::new(ptr) T(args)`) in an (instantiated) method body is
-not parsed/lowered. Reduce placement new from scratch (`#include <new>; ::new(p) T(args)`),
-check whether it's a general gap or specific to the instantiated-body parse, attribute, fix
-deepest layer, gate hard.
+### Sub-gap 6 (`7202523`) — global-qualified new/delete `::new` / `::delete` (DONE, gated)
+tv1's `__new_allocator<int>::construct` body is `::new((void*)__p) _Up(std::forward<_Args>(__args)...)`
+and failed **`use of undeclared identifier 'new'`**. Determined GENERAL, not instantiation-specific:
+unqualified `new(p) T(v)` works (`tmp/pn2`); `::new(p) T(v)` fails (`tmp/pn1`). Root: the leading-`::`
+(global scope) branch of the expression parser read the token after `::` via
+`contextual_identifier_name`, which maps the `new`/`delete` keywords to "new"/"delete", then looked
+them up as identifiers. Fix (parser.cpp leading-`::` block): intercept a following `new`/`delete`
+keyword and delegate to `TokenNEW`/`TokenDELETE::parse` (the same dispatch the unqualified form
+uses); the `::` selects global operator new/delete, otherwise identical. +testplacementnewglobal.
+PRE-EXISTING shared gaps (off-fix, fail for the UNqualified form too): scalar HEAP `new int(7)`
+(`tmp/pn4` → "new without a class type") and CLASS placement `new(p) T()` (`tmp/pn5` → "incompatible
+types in assignment to struct/union").
+
+### Sub-gap 7 (`2e8abc1`) — placement-new through a void* address (DONE, gated)
+With `::new` parsing, tv1's construct body lowered scalar placement new as `*(void*)__p = value`
+(the placement expr `(void*)__p`'s own type) → c2mir **"assignment of incompatible value"** (can't
+deref `void*`). Fix (cir_builder.cpp scalar placement-new branch, ~7649): cast the placement address
+to the CONSTRUCTED type's pointer `(T*)addr` before the deref-store — placement new constructs a `T`
+at the address regardless of the pointer's static type; a no-op when addr is already `T*` (e.g.
+`new(&buf) int`). Handles `alloc_type`'s own pointer depth (levels+1). +testplacementnewvoidp
+(`::new((void*)&buf) int(42)` → v=42). tv1 advances to sub-gap 8.
+
+### REMAINING sub-gap 8 — out-of-line `.tcc` member definitions (NEXT slice)
+tv1 now → **`import of undefined item ..._M_realloc_insert`**. `vector::_M_realloc_insert` (push_back's
+grow path) is a NON-template member defined OUT-OF-LINE in `bits/vector.tcc` (separate from the class
+body in `stl_vector.h`). Out-of-line member DEFINITIONS of a monomorphized class template are not
+instantiated/emitted (only in-class-body member defs are). Reduce a class template with an out-of-line
+member def used on a monomorphization (`template<class T> struct S{void f();}; template<class T> void
+S<T>::f(){...}` then `S<int> s; s.f();`), attribute via `--dump-cir`, determine where out-of-line /
+`.tcc` member defs are captured during Borland monomorphization (`TokenTEMPLATE::parse` +
+`instantiate_template_use`), fix deepest layer, gate hard. Likely a larger slice than 4-7.
 
 ### EARLIER sub-gaps (superseded — kept for history)
 1. **Forwarding-reference parameter packs** (`_Args&&... __args`): `try_instantiate_namespace_fn_template`

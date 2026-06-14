@@ -22,15 +22,17 @@ cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. The live wal
 now the **container cluster**, entered via `testvector` → `std::vector<int>::push_back`
 → `__gnu_cxx::__alloc_traits<allocator<int>>::construct`.
 
-## 1. Live state (verify `bash scripts/resume.sh`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`7760712`** (LOCAL ONLY; develop
-  untouched). Last CODE commit `7760712` (sub-gap 5); prior `58d6c7f` (sub-gap 4) + docs
-  mirrors. MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN** at HEAD: integration **569 passed / 27 failed / 18 skipped** (FAIL
-  list byte-identical to `tmp/baseline_fails_s7.txt`; +testmemtmplorder +testusingbasemember
-  +testvariadicmembertmpl +testmemtmplrefparam +testmemtmplfwdrefpack +testmemtmpltypedefparam
-  +testmemtmplpackexpand +testmemtmplinstance); unit all-pass; gcc-torture **1571 / 51-name
-  failset byte-identical** to `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready.
+## 1. Live state (verify `bash scripts/resume.sh` + `git status`)
+- **Branch** `feature/retire-embedded-shims-claude` @ **`2e8abc1`** (LOCAL ONLY; develop
+  untouched). Last COMMITTED code: `2e8abc1` (sub-gap 7, placement-new void* store); prior
+  `7202523` (sub-gap 6), `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4) + docs mirrors. Tree is
+  CLEAN (sub-gap 7 is committed). MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
+- **All gates GREEN at HEAD `2e8abc1`** (sub-gap 7): integration **571 passed / 27 failed / 18
+  skipped** (FAIL list byte-identical to `tmp/baseline_fails_s7.txt`; cumulative session-9 new
+  tests +testmemtmpl{order,refparam,fwdrefpack,typedefparam,packexpand,instance}
+  +testusingbasemember +testvariadicmembertmpl +testplacementnewglobal +testplacementnewvoidp);
+  unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
+  `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready.
 - Build: `make -C src` (clang++ default), bin at `bin/madc`. Clean, no warnings. NOTE: after a
   `FEATURE_DEFINES=-D…` debug build, `touch src/parser.cpp` before a plain `make -C src` or the
   stale debug `.o` is reused.
@@ -44,19 +46,25 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 | `5a15685` | **part 24 — reference params + fwd-ref packs + class-scope typedef params in member-tmpl instantiation.** (1) ref args were passed BY VALUE (call bound to the varargs PLACEHOLDER, no ref_params → SIGSEGV) — `reselect_static_member_overload` now binds the call to the instantiated DEFINITION (`<placeholder>__mti`, real params+ref_params) for EVERY member-tmpl static call (selection + rebind SEPARATED). (2) `Args&&...` fwd-ref packs: `fn_template_param_is_pack` accepts ref-quals + the 1-elem substitution copies `&&` through before dropping `...`. (3) class-scope typedef params (`allocator_type&`): instantiate with owner on `class_scope_stack` (`FnTemplateDef::owner_class`) + parseFunction `resolve_current_class_type_alias` fallback. +testmemtmplrefparam/fwdrefpack/typedefparam. REJECTED: mutating the placeholder signature (corrupts findMethodOverload arity gate, flips selection — do NOT reintroduce). |
 | `58d6c7f` | **sub-gap 4 — PATTERN pack expansion in a member-tmpl body.** `instantiate_fn_template_binding` dropped a one-element pack `...` only after a bare pack name (`args...`/`Args&&...`); a PATTERN expansion `std::forward<Args>(args)...` (type pack as a template-arg + value pack, `...` after `)`) left the three `tkDot` in the stream → "Missing operand" + undefined extern. The pattern is already substituted inline for the single bound element, so the fix DROPS a three-`tkDot` run that doesn't follow an emitted comma (a C varargs `, ...` does) — generalizes the identifier-anchored drop to pattern-anchored. +testmemtmplpackexpand. `tmp/vmt10` runs; tv1 advances to the instance-member-template wall (sub-gap 5). |
 | `7760712` | **sub-gap 5 — INSTANCE member-template instantiation AS A METHOD.** An instance member template of a LOCAL class (`__a.construct(...)` on `__new_allocator<int>`) emitted an undefined extern (the B-feature only did STATIC `Owner::m(args)`, as free functions). Clang/gcc research (recon /workspace/llvm-clang-src + /workspace/gcc): both instantiate a member fn template AS A METHOD of the class (static-ness = a flag; `this` intrinsic, never a free-fn receiver). Fix: `FnTemplateDef::instance_method`; retain body for instance templates too; `instantiate_fn_template_binding` parses the instance case via `parseFunction(retdd, inst_name, owner)` (hidden `__this`, member resolution) instead of `parseStatement`; `parseCallMethod` calls the hook; cir_builder Pass 0.75 SKIPS member-template placeholders (their `(struct C*, ...)` extern conflicted with the definition). +testmemtmplinstance (member access proves the method model). tv1 advances to sub-gap 6 (placement-new). |
+| `7202523` | **sub-gap 6 — global-qualified new/delete `::new`/`::delete`.** `::new(p) T(args)` failed "use of undeclared identifier 'new'": the leading-`::` (global scope) expression branch read the token after `::` via `contextual_identifier_name`, which maps the `new`/`delete` keywords to strings, then looked them up as identifiers. Fix (parser.cpp leading-`::` block): intercept a following `new`/`delete` and delegate to `TokenNEW`/`TokenDELETE::parse` (same dispatch as the unqualified form). The construct body uses `::new((void*)__p) _Up(...)`. +testplacementnewglobal. PRE-EXISTING shared gaps (off-fix): scalar HEAP `new int(7)` + CLASS placement `new(p) T()` both fail in CIR for the unqualified form too. tv1 advances to sub-gap 7. |
+| `2e8abc1` | **sub-gap 7 — placement-new void* store.** The instantiated construct body lowered scalar placement new as `*(void*)__p = value` → c2mir "assignment of incompatible value". Fix (cir_builder.cpp ~7649, scalar placement-new branch): cast the placement address to the CONSTRUCTED type's pointer `(T*)addr` before the deref-store (placement new constructs a `T` regardless of the pointer's static type; a no-op when addr is already `T*`; handles `alloc_type`'s own pointer depth). +testplacementnewvoidp. tv1 advances to sub-gap 8 (`_M_realloc_insert`). |
 
-## 3. THE NEXT TASK — sub-gap 6: placement-new in the construct body
-Sub-gaps 4 (pack expansion, `58d6c7f`) and 5 (instance member-template instantiation,
-`7760712`) are DONE. `tmp/tv1` (`vector<int>; push_back`) now advances past the construct body
-to a NEW, distinct wall: **`use of undeclared identifier 'new'`**. The instantiated
-`__new_allocator<int>::construct` body is `::new((void*)__p) _Up(std::forward<_Args>(__args)...)`
-— PLACEMENT NEW (`::new(ptr) T(args)`) in an (instantiated) method body is not parsed/lowered.
-Reduce placement new from scratch (`#include <new>; ::new(p) T(args)`), determine whether it's
-a GENERAL gap or specific to the instantiated-body parse (test placement new in a normal
-function first), attribute via `--dump-cir`/3 oracles, fix deepest layer, gate hard. Full
-detail: `docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"SESSION 9"
-(sub-gap 6). After this: testvector should advance further; the ~12-test container cluster +
-5 string-class tests likely share these roots.
+## 3. THE NEXT TASK — sub-gap 8: out-of-line `.tcc` member definitions
+`tmp/tv1` (`vector<int>; push_back`) now hits:
+**`import of undefined item vector_int32_t_std__allocator_int32_t____M_realloc_insert`**.
+`vector::_M_realloc_insert` is the push_back GROW path — a NON-template member function defined
+**OUT-OF-LINE in `bits/vector.tcc`** (line 123 etc.), separate from the class body in
+`stl_vector.h`. So sub-gap 8 is: out-of-line member DEFINITIONS (in a `.tcc`) of a monomorphized
+class template are not instantiated/emitted (only in-class-body member defs are). Likely a larger
+slice than 4-7. Reduce a class template with an out-of-line member def used on a monomorphization
+(`template<class T> struct S { void f(); }; template<class T> void S<T>::f(){...}` then `S<int> s;
+s.f();`), attribute via `--dump-cir`, determine where `.tcc`/out-of-line member defs are (or
+aren't) captured during Borland monomorphization (how does madc currently see `bits/*.tcc`? — the
+class-template body capture is in/around `TokenTEMPLATE::parse` + `instantiate_template_use`), fix
+deepest layer, gate hard. Full detail:
+`docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"SESSION 9". After this:
+testvector should advance further; the ~12-test container cluster + 5 string-class tests likely
+share these roots.
 
 ## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. DO NOT reapply
 `tmp/nontype_fold_v2_wip.patch` (the reverted 202-regression).
@@ -65,15 +73,22 @@ detail: `docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"SE
 The promoted ones are now tests (`tests/testmemtmpl*`/`testusingbasemember`/`testvariadicmembertmpl`).
 The live wall + the sub-gap-4 probes are NOT tests (they fail) — recreate:
 - `tmp/tv1.mad` — `#include <vector>\nint main(){ std::vector<int> v; v.push_back(10); return 0; }`
-  (THE wall; now fails at sub-gap 6, placement-new in `__new_allocator<int>::construct` —
-  `use of undeclared identifier 'new'`).
+  (THE wall; now fails at sub-gap 8 — `import of undefined item ..._M_realloc_insert`, the
+  out-of-line `bits/vector.tcc` push_back grow path).
 - `tmp/vmt9.mad` — body `sink(args...)` (plain value-pack expansion) → **WORKS** (the control).
 - `tmp/vmt10.mad` — body `sink(std::forward<Args>(args)...)` (PATTERN expansion, type+value pack)
-  → **WORKS** (was the sub-gap-4 repro, fixed @58d6c7f; needs `#include <utility>`).
+  → **WORKS** (sub-gap-4 repro, fixed @58d6c7f; needs `#include <utility>`).
   Promoted to `tests/testmemtmplpackexpand`.
 - `tmp/im1.mad` — instance member tmpl, `this`-independent body (`*p=5`) → **WORKS** (x=5).
 - `tmp/im2.mad` — instance member tmpl, member access via this (`*p=base+5`) → **WORKS** (x=35).
   Promoted to `tests/testmemtmplinstance` (the sub-gap-5 proof of the method model).
+- `tmp/pn1.mad` — `::new(&buf) int(42)` → **WORKS** (v=42; sub-gap-6 repro, the `int*` placement).
+- `tmp/pn4.mad` — `new int(7)` (unqualified HEAP scalar new) → **FAILS** "new without a class
+  type" (PRE-EXISTING CIR gap, shared with `::new int`; off the critical path).
+- `tmp/pn5.mad` — `new(&b) Pt()` (unqualified CLASS placement) → **FAILS** "incompatible types
+  in assignment to struct/union" (PRE-EXISTING CIR gap, shared with `::new(p) T()`; off path).
+- (sub-gap 7) `tests/testplacementnewvoidp` (`::new((void*)&buf) int(42)`) → **WORKS** (v=42) once
+  the working-tree fix is built; was the void*-store repro.
 - `tmp/vmt2.mad` — multi-element pack (pre-existing, off the critical path: deduction binds
   only zero/one pack element, parser.cpp ~25876).
 - u3/u4/u5, refm1, vmt5/6/7, mft3 — covered by the promoted tests; recreate from the design doc
