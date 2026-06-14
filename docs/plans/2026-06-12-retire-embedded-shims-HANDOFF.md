@@ -23,14 +23,15 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 → `__gnu_cxx::__alloc_traits<allocator<int>>::construct`.
 
 ## 1. Live state (verify `bash scripts/resume.sh` + `git status`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`ce4313a`** (LOCAL ONLY; develop
-  untouched). Last COMMITTED code: `ce4313a` (fn-ptr-param overload fix → cleared the
-  `_ZNSolsESo` wall, 27→21 failures); prior `17677f2` (sub-gap 11, direct-init), `83a05d7`
+- **Branch** `feature/retire-embedded-shims-claude` @ **`f120470`** (LOCAL ONLY; develop
+  untouched). Last COMMITTED code: `f120470` (sub-gap 12 — `__is_trivial(T)` builtin; advances tv1,
+  0 test flips, count stays 21); prior `ce4313a` (fn-ptr-param overload fix → cleared the
+  `_ZNSolsESo` wall, 27→21 failures), `17677f2` (sub-gap 11, direct-init), `83a05d7`
   (sub-gap 10), `011769f` (sub-gap 9), `f644bb9` (sub-gap 8), `2e8abc1` (sub-gap 7),
   `7202523` (sub-gap 6), `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4) + docs mirrors. Tree is
   CLEAN. MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN at HEAD `ce4313a`**: integration **581 passed / 21 failed / 0 timed out / 18
-  skipped** (the **first headline-failure drop in ~4 sessions: 27 → 21**; six tests cleared —
+- **All gates GREEN at HEAD `f120470`**: integration **581 passed / 21 failed / 0 timed out / 18
+  skipped** (the headline drop **27 → 21** came at `ce4313a`; six tests cleared —
   testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx; zero
   regressions vs `tmp/baseline_fails_s7.txt` minus those six);
   unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
@@ -58,21 +59,38 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 | `83a05d7` | **sub-gap 10 — auto-return functions with a trailing return type.** `auto f(params) -> T {...}` (C++11; e.g. libstdc++'s cross-type `__normal_iterator operator-` returning `decltype(__lhs.base() - __rhs.base())`, reached by `_M_realloc_insert`'s `__position - begin()`) was rejected — `parseDeclaration` treated `auto` only as a deduced VARIABLE ("'auto' requires an initializer"). Fix: (1) parseDeclaration auto-var block guarded `&& nt->id() != tkOpBrk` so `auto f(` falls through to the function path (decl_type stays ddAUTO); (2) parseFunction's trailing-qualifier loop CAPTURES a `-> T` (tkDeRef) as raw balanced tokens, RESOLVED below after the param variables enter scope (so `-> decltype(params)` names them; resolve_declared_type_token handles decltype) — FuncDef::returns is a reference so the resolved type rebuilds the FuncDef via new `clone_funcdef_with_return` + re-points Variable/funcdef_map; (3) deferred (in-class method) bodies carry the captured tokens on `DeferredFunctionBody::trailing_ret_tokens` and resolve at materialization (`parse_deferred_function_body`, params back in scope). Deduced-return `auto f(){return e;}` (no `-> T`) is a follow-up. +testautotrailingreturn. tv1 advances to sub-gap 11. |
 | `17677f2` | **sub-gap 11 — direct-initialization of a non-class variable.** `T name(expr)` for a non-class type (`pointer __new_start(this->_M_allocate(__len));` in `_M_realloc_insert`; `typedef int* P; P p(q);`) always parsed as a function declaration → first paren token `this`/`q` threw "Failed to find type … when parsing function parameters". madc did ctor-style direct-init for CLASS types only. Fix (parser.cpp, deepest layer, reuses the `= expr` machinery — no new init path): new non-consuming `paren_group_is_nonclass_direct_init()` returns true ONLY when the token after `(` cannot begin a parameter-declaration (a literal, `this`, or a ttIdentifier naming an in-scope value — type names tokenize as ttDataType), a SOUND under-approximation (every diversion is unambiguously direct-init; param-clause-capable starts keep the most-vexing-parse default = function decl). A parseDeclaration branch (after the class ctor-call branch) injects a synthetic `=` before the `(` so `(expr)` parses through the scalar/pointer `= expr` path (mirrors `T x{...}` brace-init). **C++/madc only (`!is_c_mode()`)** — load-bearing: a K&R def `void f(x,v) union u *x, v;` whose param names shadow file-scope globals (gcc-torture `921112-1.c`) otherwise diverted (the regression the gate fixes, caught by the torture failset diff). Verified vs clang++ AND g++. +testdirectinit. tv1 advances PAST the `this`-param wall to `use of undeclared identifier '_ValueType1'` (sub-gap 12). |
 | `ce4313a` | **fn-ptr-param overload fix — cleared the `_ZNSolsESo` wall (27→21).** `cout << (long)` mangled the bogus import `_ZNSolsESo` (`operator<<(ostream)`) instead of `_ZNSolsEl`. Root: `DataDefFPTR::is_numeric()` returns true, so in `score_arg_to_param` a function-pointer PARAMETER fell through to the numeric-vs-numeric branch and a 64-bit integer arg matched the ostream manipulator `operator<<(ostream& (*)(ostream&))` with score 5 (rawtype 64==64), TYING `operator<<(long)` and — registered first — winning. Only 64-bit ints hit it (int/short scored 4 there; float/double non-integer). Fix (cir_builder `score_arg_to_param`): a fn-ptr param now handles every arg shape — a function/fn-ptr arg binds by signature, the null-pointer constant scores 3, any other arg is REJECTED (-1). Surgical + general (matches gcc/clang). Cleared 6 tests (testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx); testmadceval advances to a separate runtime-eval `std` wall. +`tests/testmadcevalexprctx.timeout=30` (it now RUNS — 12 runtime `eval_*_ctx` calls, each a full child-Program compile→JIT ~0.36s, ~5.5s total; per test-fixtures.md). Verified vs clang++ AND g++. |
+| `f120470` | **sub-gap 12 — `__is_trivial(T)` builtin.** `_M_realloc_insert`→`uninitialized_copy` gates a memmove opt on `__is_trivial(_ValueType1)` (where `typedef typename iterator_traits<It>::value_type _ValueType1;`). madc's trait table lacked `__is_trivial`, so it parsed as a call to undeclared fn `__is_trivial` and its type-arg `_ValueType1` was looked up as a value → "undeclared identifier '_ValueType1'" (the typedef itself registers fine). Fix: add `__is_trivial` to `type_trait_arity` + `evaluate_type_trait` + the constexpr-fold path; new `trait_is_trivial` ([basic.types]: non-class trivial; class trivial iff no user ctor/dtor, non-polymorphic, all bases/members trivial). Verified vs g++ AND clang++ (int/ptr/POD=1, user-ctor/dtor/virtual=0). **0 test flips** (advances tv1 like sub-gaps 4-11). tv1 advances PAST `_ValueType1` to **`cannot dereference non-pointer type`** (sub-gap 13). |
 
-## 3. THE NEXT TASK — sub-gap 12: `_ValueType1` undeclared
-`tmp/tv1` advanced PAST the sub-gap-11 (direct-init) wall to a NEW face: **`use of undeclared
-identifier '_ValueType1'`** (reported at `tv1.mad:428:54` — header-origin line misattribution),
-then the MIR import of `vector_int32_t_std__allocator_int32_t____M_realloc_insert`. `_ValueType1`
-is a libstdc++-INTERNAL template-parameter name (likely the `__relocate`/`__uninitialized` or
-iterator-traits machinery reached inside `_M_realloc_insert`'s instantiated body — a template param
-that isn't being substituted/bound). **sub-gap 12** = find where `_ValueType1` is left as a bare
-identifier (a template typeparam that didn't get its binding substituted during member-template /
-out-of-line monomorphization) and bind it. **Reduce** from tv1 (DEFAULT mode, no flags); attribute
-via the 3 oracles + `--emit=c11`/`--dump-cir` (NOT emit-C-as-truth); fix the deepest layer.
-Also still open (off the critical path): the sub-gap-10 follow-up **deduced-return** `auto f(){
-return e; }` (no trailing `-> T`, deduce from the body's return expression). Full detail:
-`docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"sub-gap 12".
-After this: the ~10-test container cluster + 5 string-class tests likely share these roots.
+## 3. THE NEXT TASK — strategy note + sub-gap 13 + the std::string-operator walls
+**STRATEGIC FINDING (2026-06-14):** the container chain is DEEP and FORKS per-operation —
+`tv1` (push_back of int) is at sub-gap 13 while `testvector` (and 3 others) are at a DIFFERENT wall
+(`_S_destroy`), each many sub-gaps from green. Sub-gaps advance `tv1` (a reducer) but do NOT flip
+the 21 tests (only `ce4313a`/`_ZNSolsESo` flipped tests this session). For headline-count drops, the
+**independent singletons** (not gated on container instantiation) are higher leverage:
+teststringrel + teststringglobal + test3eqclass (std::string operators), testforeach2
+(`std::for_each`), testsstream (`__byte_op_t`), teststdstringconv (`to_string` overload),
+testmadceval (runtime-eval `std`). See §3.6b for the full clustering.
+
+**teststringrel ROOT CAUSE (found, fix not yet landed):** `a < b` (two std::strings) instantiates
+the free `operator<(const string&, const string&)` whose body is `__lhs.compare(__rhs) < 0`. madc
+selects `string::compare(const char*)` (`_ZNK…compareEPKc`) instead of `compare(const basic_string&)`
+(`…compareERKS_`), then passes the dereferenced string into a `char*` param → "incompatible argument
+type for pointer type parameter". DIRECT `a.compare(b)` picks the string overload CORRECTLY — the bug
+is ONLY inside the instantiated body: the reference PARAMETER `__rhs` (`const string&`) is scored as a
+raw `string*` for the method-overload, so `compare(const basic_string&)` (needs a string object) is
+rejected and `compare(const char*)` wins. FIX = unwrap a reference-variable/param arg to its referenced
+object type when building argtypes for NON-STATIC method-overload resolution (parseCallMethod /
+the instance-method `findMethodOverload(id, at)` arg-typing — the static paths at parser.cpp ~14069 /
+~14363 use raw `p->datadef()`; the non-static instance path needs the same `operand_value_datadef`-style
+unwrap select_operator_overload's `overload_arg_datadef` already does). Likely also flips test3eqclass
+(=== on basic_string) and helps the string cluster. Reduce: `tmp/sr1.mad` (`string a,b; a<b`),
+`tmp/sc1.mad` (direct compare — WORKS, the control).
+
+**sub-gap 13 (the container chain, if continued):** `tmp/tv1` now → **`cannot dereference non-pointer
+type`** (a `*X` where X isn't typed as a pointer, deeper in `_M_realloc_insert`'s body). Reduce from
+tv1, 3 oracles + `--emit=c11`/`--dump-cir`, deepest layer. Note testvector etc. ALSO need `_S_destroy`
+(`std::allocator_traits<...>::_S_destroy`, a separate static-member wall) — so the container tests
+need BOTH, multiple sub-gaps. Also off-path: deduced-return `auto f(){return e;}` (no `-> T`).
 
 ### 3.6b — THE CURRENT 21 FAILURES, clustered by first-error (at `ce4313a`)
 ~8 distinct root-cause walls (measured, not assumed — the earlier "container+string share one
