@@ -26210,11 +26210,21 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
 	    if ( FuncDef *rfd = resolved_call_funcdef(tcf) )
 	    {
 		DataDef *r = &rfd->returns;
+		// A reference return modeled as a DataDefREF unwraps to its
+		// referent (the reference's value type).
 		if ( r->is_reference() )
 		    return static_cast<DataDefPTR *>(r)->base_type;
-		if ( rfd->returns_ref )
-		    if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r) )
-			return rp->base_type ? rp->base_type : r;
+		// A reference return modeled via the `returns_ref` FLAG stores
+		// the REFERENT directly in `returns` (parseFunction /
+		// trailing-return convention: `int&`->int, `int*&`->int*,
+		// `string&`->string), so `r` ALREADY IS the value type. Do NOT
+		// strip its own pointer level — the old `rp->base_type` turned a
+		// `T*&` return (e.g. `__normal_iterator::base()` returning
+		// `const _Iterator&` with `_Iterator = int*`) into the scalar
+		// `int`, so `T*`/`_InIt` template-argument deduction against it
+		// failed, the param fell back to the `int64_t` default, and the
+		// instantiated `decltype(*__first)` threw "cannot dereference
+		// non-pointer type" deep in the std::vector container chain.
 		return r;
 	    }
     if ( dd->is_reference() )
