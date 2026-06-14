@@ -18,9 +18,25 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ## 0. Orientation
 Same campaign as SESSION 8 (real glibc+libstdc++ every mode; sole backend
-cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. The live wall is
-now the **container cluster**, entered via `testvector` → `std::vector<int>::push_back`
-→ `__gnu_cxx::__alloc_traits<allocator<int>>::construct`.
+cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. Integration is at
+**581 passed / 21 failed / 0 timed out** (down from 27 this session).
+
+**WHAT THIS SESSION ADDED (3 code commits, all individually FULLY GATED), latest first:**
+- `f120470` **sub-gap 12 — `__is_trivial(T)` builtin** (was missing from the trait table →
+  `_ValueType1` undeclared). Advances `tv1` to sub-gap 13; **0 test flips** (count stays 21).
+- `ce4313a` **fn-ptr-param overload fix — the `_ZNSolsESo` wall, the FIRST headline drop in ~4
+  sessions: 27 → 21** (six tests). `cout << (long)` mis-bound the ostream manipulator because
+  `DataDefFPTR::is_numeric()` is true; a fn-ptr param now rejects a non-function arg.
+- `17677f2` **sub-gap 11 — direct-initialization of a non-class variable** (`T name(expr)`;
+  C++/madc-only `!is_c_mode()` gate). +testdirectinit.
+
+**THE KEY STRATEGIC FINDING (read §3):** the container chain is DEEP and FORKS per-operation, so
+sub-gap work advances the `tv1` REDUCER but does NOT flip the 21 tests — only `_ZNSolsESo` flipped
+tests this session. **Headline-count drops come from the INDEPENDENT singletons** (std::string
+operators, `std::for_each`, `__byte_op_t`, `to_string`, runtime-eval-`std`), NOT more container
+sub-gaps. **NEXT (recommended, root cause already located): the teststringrel std::string-compare
+reference-arg fix** — a real count-dropper (see §3). The user explicitly wants the headline count
+to drop; pick count-droppers over deepening the container chain.
 
 ## 1. Live state (verify `bash scripts/resume.sh` + `git status`)
 - **Branch** `feature/retire-embedded-shims-claude` @ **`f120470`** (LOCAL ONLY; develop
