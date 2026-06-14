@@ -2,13 +2,103 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the "SESSION 7 CLOSE" master section directly below (it is
-self-contained for cold start; the per-part banners further down are detailed
-chronology, read them only for depth). The governing process document is
-**`madc-header-partition-handoff.md` (repo root)** — the user has had to
-re-point at it repeatedly; every decision here must trace to it. Its
-companion memory: `project_retire_embedded_shims` +
-`project_header_partition_architecture`.
+then read the **"SESSION 8 CLOSE"** block immediately below (current state +
+NEXT). The "SESSION 7 CLOSE" master section further down is the campaign primer
+(partition model, user rulings, verified-working commands, traps) — still
+valid for background; its §1 "Live state" git HEAD is STALE (use SESSION 8
+CLOSE). The per-part STATUS banners are detailed chronology, read only for
+depth. The governing process document is **`madc-header-partition-handoff.md`
+(repo root)** — every decision here must trace to it. Companion memory:
+`project_retire_embedded_shims` + `project_header_partition_architecture`.
+
+---
+
+# ★ SESSION 8 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-13
+
+## 0. One-paragraph orientation
+madc is a C/C++ dialect compiler whose front end builds a `cir_node` tree
+(== c2mir `node_t`, the MC11-IR) → c2mir → MIR → JIT (sole backend, ADR 0001).
+The **retire-embedded-shims campaign** deleted all hand-rolled bucket-3 stdlib
+shims, so madc parses the REAL installed glibc + libstdc++ in EVERY mode incl.
+default (`presents_as_cpp()`). The live proving wall is `tmp/w2a.mad` =
+`#include <vector>\nint main(){ std::vector<int> v; return 0; }`. **Session 8
+took w2a from its last face to FULLY COMPILING + RUNNING (exit 0).**
+
+## 1. Live state (verify with `bash scripts/resume.sh`)
+- **Branch:** `feature/retire-embedded-shims-claude` @ **`c875fe1`** (LOCAL ONLY,
+  never push; develop untouched).
+- **MIR fork** `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
+- **All gates GREEN** at HEAD: integration **561 passed / 27 failed / 18 skipped**
+  (FAIL list byte-identical to `tmp/baseline_fails_s7.txt`); unit (`make -C src
+  test`) all-pass; gcc-torture **1571 passed / 51-name failset byte-identical**
+  to `docs/parity/torture-failset-current.txt` (ZERO regressions); SMAUG soak
+  exit 124 + "Realms of Despair ready ... port 4000".
+- Build: `make -C src` (clang++ default), bin at `bin/madc`. Clean, no warnings.
+
+## 2. What session 8 landed (each individually FULLY GATED)
+| Commit | What |
+|---|---|
+| `dd1bc31` | array→pointer decay ([conv.array]) in additive pointer arithmetic (`Program::array_decay_pointer`; `arr+n`/`n+arr`/`arr-n` self-type as `element*` in self-determined ctor/overload-arg contexts). +`tests/testarraydecayadd` |
+| `90e9dcd` | **part 19 — non-type template-arg CANONICALIZATION** (Phase 1, canonical-forms discipline). Keyed instantiation identity by raw arg SPELLING → now by VALUE: `Program::canonical_arg_key_fragment` + the NON-re-entrant local-cursor `Program::fold_nontype_template_arg` (int/bool literals + type-trait builtins; `read_local_type_operand` read-only, never touches `Program::tokens`/never instantiates = immune to the 202-regression's two faults). Routed ALL SIX per-arg key-build sites (all-or-nothing). w2a key folded `_Destroy_aux<__has_trivial_destructor(_Value_type)>` → `_Destroy_aux_1`. `typeparam_types` DEFERRED (evaluator self-gates). |
+| `fd9b4de` | **part 20 — STATIC MEMBER FN-TEMPLATE INSTANTIATION ("B")** → w2a COMPILES + RUNS. `register_skipped_class_template_function` retains a static body-bearing member template's decl+owner on the FuncDef; `Program::instantiate_member_fn_template_for_call` (parser.cpp, at the namespace-hook point ~10880; LOCAL owner only — exported keep `member_template_method_call`) builds a one-shot `FnTemplateDef` (strip `static`, rename declarator → `<call-sym>__mti` to KEEP real params vs the varargs placeholder) via the shared `try_instantiate_namespace_fn_template`. CRUX (resolved): `tc->var` is a `Variable&` (not rebindable) and the late lib_funcs def emits its raw var name, so alias the CALL — set the placeholder FuncDef's `local_emit_name = inst_name`. |
+
+Plus docs: `037c717` (filed embedded-AST design under docs/plans/), `399ec5b`
+(B design doc), `2ac66c7`/`c875fe1` (handoff/status banners).
+
+## 3. THE NEXT TASK — container cluster (testvector etc.)
+w2a was a minimal proving ground (`vector<int> v;`); the container TESTS do more
+(push/access/iterate). **`testvector` now advances past the `_Destroy_aux` wall to
+its next face:** `use of undeclared identifier '_S_destroy'` (`tests/testvector.mad:428`)
+— the `std::allocator_traits<...>::_S_destroy` link of the
+`_Destroy`→`_S_destroy`→`allocator::destroy` chain. Likely another static-member /
+member-template or member-access resolution gap; **reduce from testvector** (default
+mode, real headers), attribute via the 3 oracles + `--emit=c11`, fix deepest layer,
+gate hard. The ~12-test container cluster (testvector/vectorptr/map/set/
+containerdtor/templatecontainer/templatestring/subscript*/teststruct3/test3eqclass)
++ the 5 string-class tests likely share roots. Full failing set: §3.6 of SESSION 7 CLOSE.
+
+## 4. KNOWN gate-clean gaps surfaced this session (NOT blockers; separate slices)
+- **Array→pointer decay in template DEDUCTION**: an ARRAY arg (`a`, `a+4`) deduces
+  `It=int` not `int*` (`tmp/mft2.mad` → "cannot dereference non-pointer"); pointer
+  args work (`tmp/mft3.mad` → sum=100). The deduction analogue of the dd1bc31
+  operator fix. (Distinct from the dd1bc31 fix, which is operator-operand typing.)
+- **Multi-type instantiation of ONE static member template**: a single
+  `local_emit_name` alias slot per placeholder (first wins). A second DISTINCT type
+  needs per-type call overload re-selection (like free fns). Rare in the corpus.
+- **Trait canonicalization of template-id TYPE args**: `read_local_type_operand`
+  doesn't resolve template-id types, so `__has_trivial_destructor(Aux<false>)`
+  doesn't fold (`tmp/mft1.mad` prints GENERIC vs g++ TRIVIAL). Phase-1 follow-up.
+- Pre-existing (off the live path): reference-typedef-LOCAL binding fuzzy
+  (`tmp/ref3`/`ref4`); caught-instantiation stderr noise (wall-7, exit-neutral).
+
+## 5. METHOD + GATES (mandatory)
+Per fix: reduce in `tmp/` (DEFAULT mode, no flags = the campaign point, real headers)
+→ attribute with the 3 oracles (`clang++ -fsyntax-only`/`-ast-dump`, `gcc -S
+-fverbose-asm`, stock `/workspace/mir/c2m FILE -ei`; for madc-path bugs use
+`--emit=c11` + `--dump-cir`, NOT emit-C-as-truth) → DEEPEST-layer fix, no shims,
+extract shared helpers over copy-paste, REUSE the one instantiation mechanism (the
+embedded-AST trajectory guardrail — no parallel instantiator) → rebuild
+(`make -C src`) → re-probe reducers → FULL GATE, ONE heavy job at a time, capped
+`( ulimit -t 3600; timeout 3000 … )`, FULL logs to `tmp/` (never `| tail`):
+1. `bash scripts/run_tests.sh` → diff `^FAIL:` vs `tmp/baseline_fails_s7.txt` (byte-identical; pass count may only rise).
+2. `make -C src test` (unit).
+3. `python3 scripts/run_gcc_testsuite.py` → failset basename diff vs `docs/parity/torture-failset-current.txt` (51 names; extract via `grep -E '^FAIL\((compile|runtime)\):' | sed -E 's#.*/([^/ ]+\.c) .*#\1#' | sort -u`).
+4. SMAUG soak: `cd /workspace/MadSMAUG/runtime/area && ( ulimit -t 120; timeout 50 /workspace/madc/bin/madc --project /workspace/MadSMAUG/compile_commands.json -lcrypt 4000 )` — exit 124 + ready line.
+Then commit on THIS branch (Co-Authored-By: Claude Opus 4.8) + sync mirrors (this
+banner, `project_retire_embedded_shims` memory + MEMORY.md index < ~24985 bytes).
+After killing a run, `pgrep -f run_tests|run_gcc|c2m|bin/madc` to confirm no leftovers.
+
+## 6. REDUCERS (tmp/ is gitignored — recreate if reset)
+- `tmp/w2a.mad` — `#include <vector>\nint main(){ std::vector<int> v; return 0; }` (NOW PASSES, exit 0).
+- `tmp/nt1.mad`/`nt2.mad` — non-type canonicalization (part 19): nt1→TRIVIAL, nt2 picks `<true>` spec.
+- `tmp/mft1.mad` (member-tmpl, runs both branches), `tmp/mft2.mad` (param-using body, ARRAY args — hits the deduction-decay gap), `tmp/mft3.mad` (param-using body, POINTER args → sum=100).
+- Older: `tmp/baseline_fails_s7.txt` (27-name FAIL baseline), `tmp/nontype_fold_v2_wip.patch` (the reverted 202-regression — DO NOT reapply).
+
+## 7. MERGE GATE (do NOT merge to develop before ALL)
+fulltest 100% green + both check gates + P1 partition gate · torture zero-regr vs
+51-name baseline · SMAUG soak · `bash scripts/run_tests.sh --exe` · mirrors synced
+· user approval (develop is shared/stable). Promote develop→master is a SEPARATE,
+later gate (gcc-torture parity, `.claude/rules/branching.md`).
 
 ---
 
