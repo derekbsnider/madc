@@ -27042,6 +27042,42 @@ static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
 // conflicting bindings reject the candidate (so operator+(string,_CharT)
 // never claims a const char* rhs). Returns the deduced RETURN class;
 // *callee_out = the registered overload Variable.
+// A free-operator candidate whose parameter is a CONCRETE type (names no
+// template parameter) only matches when the argument actually IS that type
+// (or, for a class, derives from it). fn_template_deduce_param returns 0 ("no
+// deduction") for such a param WITHOUT checking it, so without this guard the
+// libstdc++ std::operator<<(byte, _IntegerType) — param0 the enum class `byte`,
+// param1 a deduced integer — spuriously matches `stream << x` (param0 never
+// checked) and then FATALLY fails instantiating its __byte_op_t<x> return type.
+// g++/clang reject it on the byte-vs-stream parameter ([over.match.viable]).
+// Only a NAMED user type (class/enum) constrains here; scalars/pointers stay
+// permissive (implicit conversions, char*, etc.).
+static bool free_operator_concrete_param_matches(Program &pgm,
+		const std::string &sp, DataDef *arg_core)
+{
+    std::string core = sp;
+    while ( !core.empty() && (core.back() == '&' || core.back() == ' ') )
+	core.pop_back();
+    while ( core.compare(0, 6, "const ") == 0 )    core.erase(0, 6);
+    while ( core.compare(0, 9, "volatile ") == 0 ) core.erase(0, 9);
+    if ( core.empty() || core.back() == '*' )
+	return true;	// pointer / empty: permissive (conversions)
+    TokenDataType *tdt = resolve_canonical_type_spelling(pgm, core);
+    if ( !tdt )
+	return true;	// unresolvable -> cannot disprove; stay permissive
+    DataDef *pdd = &tdt->definition;
+    DataDefCLASS *pcls = dynamic_cast<DataDefCLASS *>(pdd);
+    if ( !pcls && !dynamic_cast<DataDefENUM *>(pdd) )
+	return true;	// scalar / builtin param: permissive
+    if ( pdd == arg_core || (arg_core && pdd->name == arg_core->name) )
+	return true;
+    if ( pcls )
+	if ( DataDefCLASS *ac = dynamic_cast<DataDefCLASS *>(arg_core) )
+	    if ( ac->is_or_derives_from(pcls) )
+		return true;
+    return false;	// a concrete named type the argument is not -> reject
+}
+
 static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	const std::string &opname, TokenBase *lhs, TokenBase *rhs,
@@ -27172,6 +27208,8 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	int r = fn_template_deduce_param(sp, ft.typeparams, arg_dd, tp, dd);
 	if ( r < 0 )
 	    return NULL;
+	if ( r == 0 && !free_operator_concrete_param_matches(pgm, sp, arg_core) )
+	    return NULL;	// concrete param the arg is not (e.g. byte vs stream)
 	if ( r == 1 )
 	{
 	    std::map<std::string, DataDef *>::iterator bi = binding.find(tp);
