@@ -4780,7 +4780,7 @@ static int type_trait_arity(const std::string &name)
     if ( name == "__is_same" || name == "__is_base_of" )
 	return 2;
     if ( name == "__is_class" || name == "__is_union" || name == "__is_enum"
-      || name == "__has_trivial_destructor" )
+      || name == "__has_trivial_destructor" || name == "__is_trivial" )
 	return 1;
     return 0;   // not a supported trait
 }
@@ -4827,6 +4827,31 @@ static bool trait_has_trivial_destructor(DataDef *dd)
     for ( size_t i = 0; i < c->members.size(); ++i )
 	if ( c->members[i].second
 	  && !trait_has_trivial_destructor(c->members[i].second) )
+	    return false;
+    return true;
+}
+// __is_trivial(T) ([basic.types]: a trivially-copyable type with a trivial
+// default constructor — the gcc/clang builtin libstdc++'s uninitialized_copy /
+// stl_algobase dispatch the memmove optimization on). A non-class type
+// (scalar/pointer/enum) is trivial; a class is trivial iff it declares no
+// constructor or destructor, is not polymorphic, and every base and class-type
+// member is itself trivial. Conservative for the rare user-copy-ctor-only case
+// (returns false), which only ever disables an optimization — never miscompiles.
+// Verified against g++ and clang++ (int/ptr/POD=1, user-ctor/user-dtor/virtual=0).
+static bool trait_is_trivial(DataDef *dd)
+{
+    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    if ( !c )
+	return true;
+    if ( c->has_user_ctor || c->has_user_dtor || c->is_polymorphic() )
+	return false;
+    if ( c->base_class && !trait_is_trivial(c->base_class) )
+	return false;
+    for ( size_t i = 0; i < c->bases.size(); ++i )
+	if ( c->bases[i].base && !trait_is_trivial(c->bases[i].base) )
+	    return false;
+    for ( size_t i = 0; i < c->members.size(); ++i )
+	if ( c->members[i].second && !trait_is_trivial(c->members[i].second) )
 	    return false;
     return true;
 }
@@ -4899,6 +4924,8 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	result = trait_is_base_of(args[0], args[1]);
     else if ( name == "__has_trivial_destructor" )
 	result = trait_has_trivial_destructor(args[0]);
+    else if ( name == "__is_trivial" )
+	result = trait_is_trivial(args[0]);
 
     TokenInt *ti = new TokenInt(result ? 1 : 0);
     ti->setDataType(&ddBOOL);
@@ -13120,6 +13147,7 @@ static bool eval_local_type_trait(Program &pgm,
 	return false;
     bool r;
     if ( nm == "__has_trivial_destructor" ) r = trait_has_trivial_destructor(targs[0]);
+    else if ( nm == "__is_trivial" )        r = trait_is_trivial(targs[0]);
     else if ( nm == "__is_class" )          r = trait_is_class(targs[0]);
     else if ( nm == "__is_union" )          r = trait_is_union(targs[0]);
     else if ( nm == "__is_enum" )           r = trait_is_enum(targs[0]);
