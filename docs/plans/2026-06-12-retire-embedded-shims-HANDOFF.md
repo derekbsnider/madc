@@ -23,12 +23,13 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 → `__gnu_cxx::__alloc_traits<allocator<int>>::construct`.
 
 ## 1. Live state (verify `bash scripts/resume.sh`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`505fd1f`** (LOCAL ONLY; develop
+- **Branch** `feature/retire-embedded-shims-claude` @ **`5a15685`** (LOCAL ONLY; develop
   untouched). MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN** at HEAD: integration **564 passed / 27 failed / 18 skipped** (FAIL
+- **All gates GREEN** at HEAD: integration **567 passed / 27 failed / 18 skipped** (FAIL
   list byte-identical to `tmp/baseline_fails_s7.txt`; +testmemtmplorder +testusingbasemember
-  +testvariadicmembertmpl); unit all-pass; gcc-torture **1571 / 51-name failset
-  byte-identical** to `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready.
+  +testvariadicmembertmpl +testmemtmplrefparam +testmemtmplfwdrefpack +testmemtmpltypedefparam);
+  unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
+  `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready.
 
 ## 2. What session 9 landed (parts 21-23, each FULLY GATED) — the testvector member-overload chain
 | Commit | What |
@@ -36,21 +37,21 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 | `39cb5d2` | **part 21 — [temp.func.order] for STATIC member-template calls.** `findMethodOverload` partial-ordering TIEBREAK (`member_tmpl_more_specialized`, reuses part-18 `po_pattern_match`) + `reselect_static_member_overload` (post-arg reselect+rebuild for `Owner::m(args)`, wired at both qualified-call builders via owner/member out-params on `resolve_class_qualified_expression`). `take(U*)` beats `take(P)`. +testmemtmplorder. |
 | `746aaa7` | **part 22 — class-scope `using Base::member;` imports base overloads.** Was skipped (name hiding dropped them); `try_import_using_base_member` pushes the base's same-name overloads into the derived set ([namespace.udecl]). Now the BASE `allocator_traits::construct` is selected over `__alloc_traits`'s own SFINAE one. +testusingbasemember. |
 | `505fd1f` | **part 23 — preserve parameter-pack-ness for member-template instantiation.** B-feature hardcoded `typeparam_is_pack=false`; threaded real pack flags (`FuncDef::template_param_is_pack` ← `last_skipped_template_typeparam_is_pack`). A by-value variadic static member template now instantiates+runs. +testvariadicmembertmpl. |
+| `5a15685` | **part 24 — reference params + fwd-ref packs + class-scope typedef params in member-tmpl instantiation.** (1) ref args were passed BY VALUE (call bound to the varargs PLACEHOLDER, no ref_params → SIGSEGV) — `reselect_static_member_overload` now binds the call to the instantiated DEFINITION (`<placeholder>__mti`, real params+ref_params) for EVERY member-tmpl static call (selection + rebind SEPARATED). (2) `Args&&...` fwd-ref packs: `fn_template_param_is_pack` accepts ref-quals + the 1-elem substitution copies `&&` through before dropping `...`. (3) class-scope typedef params (`allocator_type&`): instantiate with owner on `class_scope_stack` (`FnTemplateDef::owner_class`) + parseFunction `resolve_current_class_type_alias` fallback. +testmemtmplrefparam/fwdrefpack/typedefparam. REJECTED: mutating the placeholder signature (corrupts findMethodOverload arity gate, flips selection — do NOT reintroduce). |
 
-## 3. THE NEXT TASK — finish testvector's `construct` chain (two precisely-isolated sub-gaps)
-Selection is now correct (base `allocator_traits<allocator<int>>::construct` chosen) and the
-pack arity is handled; `tmp/tv1` (`vector<int>; push_back`) now fails ONLY because that
-template's body can't be instantiated, blocked on TWO sub-gaps (full detail + reducers in
-`docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"SESSION 9"):
-1. **Forwarding-ref parameter packs** `_Args&&...` — deduction fails in
-   `try_instantiate_namespace_fn_template` (`tmp/vmt6` fails; `tmp/vmt5` by-value pack works).
-2. **Class-scope typedef params** `allocator_type&` — the namespace-routed instantiation
-   (`ns=""`) loses the owner scope so `allocator_type` won't resolve (`tmp/vmt7`: "Failed to
-   find type 'Alloc'"). Push the owner on `class_scope_stack` during the member-template
-   instantiation parse.
-   (Pre-existing, off the critical path: multi-element packs `tmp/vmt2`.)
-After both: testvector should advance past `construct`; the ~12-test container cluster +
-5 string-class tests likely share these roots.
+## 3. THE NEXT TASK — sub-gap 4: pack EXPANSION in the construct body
+The construct overload chain is now fully selected + instantiated (selection, typedef params,
+ref-args, pack arity all done). `tmp/tv1` (`vector<int>; push_back`) advances to the body:
+`__a.construct(__p, std::forward<_Args>(__args)...)` → **"Missing operand"**.
+`instantiate_fn_template_binding` substitutes a pack in PARAMETER + empty-pack positions but
+NOT a one-element pack EXPANSION inside a call-argument expression
+(`std::forward<_Args>(__args)...` — the `__args...` value expansion wrapped in a
+`std::forward<_Args>(...)` call, plus the `<_Args>` type expansion). Reduce a pure-user
+`f(g<Args>(args)...)` body and expand the value-name `...` (+ `<_Args>`) into the single bound
+element. Pre-existing off-path: multi-element packs (`tmp/vmt2`). Full detail + reducers:
+`docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"SESSION 9". After this:
+testvector should advance past `construct`; the ~12-test container cluster + 5 string-class
+tests likely share these roots.
 
 ## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. Reducers above live in `tmp/`
 (gitignored; recreate from the design doc). DO NOT reapply `tmp/nontype_fold_v2_wip.patch`.

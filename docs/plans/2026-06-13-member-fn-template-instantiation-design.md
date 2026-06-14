@@ -50,7 +50,41 @@ instantiation gaps; the first three are FIXED + gated this session, two sub-gaps
 construct is chosen) → `allocator_traits_..._construct` undefined import (pack arity now OK)
 → blocked on the TWO remaining sub-gaps below.
 
-### REMAINING sub-gaps for the full testvector `construct` chain (NEXT slice — precisely isolated)
+### Part 24 (`5a15685`) — reference params, fwd-ref packs, class-scope typedef params (sub-gaps 1-3 CLEARED)
+
+The three sub-gaps below are FIXED + gated (integration 567/27 byte-identical +3 tests,
+unit, torture 1571/51, SMAUG). tv1 advances through all four construct faces (selection,
+typedef params, ref-args, pack arity) to the NEW blocker = sub-gap 4 (pack EXPANSION in the
+body). Reducers tmp/refm1, tmp/vmt6, tmp/vmt7 → x=77; tests testmemtmplrefparam /
+testmemtmplfwdrefpack / testmemtmpltypedefparam.
+
+- **Reference args were passed by VALUE** (SIGSEGV): the call bound to the varargs
+  declaration-only PLACEHOLDER, which has no `ref_params`. Fix: `reselect_static_member_overload`
+  binds the call to the instantiated DEFINITION (`<placeholder>__mti`, real params + ref_params,
+  non-varargs) for EVERY member-template static call. Selection and rebind are SEPARATED —
+  findMethodOverload disambiguates multi-overload sets, but a single resolved overload still
+  gets the rebind (findMethodOverload can't score a typedef-ref param, so don't gate the
+  rebind on it). **Rejected alternative:** mutating the placeholder's signature corrupts
+  findMethodOverload's arity gate (return-in-parameters[0] + is_varargs=false) and FLIPPED
+  overload selection (caught by u3/u4 regressing) — do NOT reintroduce it.
+- **Forwarding-ref packs** `Args&&...`: `fn_template_param_is_pack` accepts a `&`/`&&`-qualified
+  pack core; the one-element pack substitution copies the ref-qualifier through before dropping
+  the `...` (previously only dropped `...` immediately after the type ident → stray `...`).
+- **Class-scope typedef params** `allocator_type&`/`Alloc&`: instantiate with the owner class on
+  `class_scope_stack` (`FnTemplateDef::owner_class`, re-pushed inside
+  `instantiate_fn_template_binding` after it swaps the stack to fresh) + a
+  `resolve_current_class_type_alias` fallback in parseFunction's param-type resolution.
+
+### REMAINING sub-gap 4 — pack EXPANSION in a body expression (NEXT slice)
+tv1 now fails at the construct body `__a.construct(__p, std::forward<_Args>(__args)...)` with
+**"Missing operand"** — `instantiate_fn_template_binding` substitutes the pack in PARAMETER and
+empty-pack positions, but a one-element pack EXPANSION inside a call-argument expression
+(`std::forward<_Args>(__args)...`) isn't expanded (the `__args...` value expansion wrapped in a
+`std::forward<_Args>(...)` call). Reduce a pure-user `f(g<Args>(args)...)` body; expand the
+value-name `...` (and the `<_Args>` type expansion) into the single bound element. Pre-existing
+off-path: multi-element packs (`tmp/vmt2`).
+
+### EARLIER sub-gaps (superseded — kept for history)
 1. **Forwarding-reference parameter packs** (`_Args&&... __args`): `try_instantiate_namespace_fn_template`
    deduction fails for an rvalue-ref pack (`tmp/vmt6` → undefined import; `tmp/vmt5` by-value
    pack works). Likely in the pack-binding branch (`fn_template_param_is_pack` / the `&&`
