@@ -19,9 +19,29 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 ## 0. Orientation
 Same campaign as SESSION 8 (real glibc+libstdc++ every mode; sole backend
 cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. Integration is at
-**588 passed / 15 failed / 0 timed out** (failures down from 27 this session; +testalignas).
+**589 passed / 15 failed / 0 timed out** (failures down from 27 this session; +testalignas, +testtransform).
 
-**WHAT THIS SESSION ADDED (9 code commits + 3 test fixes, all FULLY GATED), latest first:**
+**WHAT THIS SESSION ADDED (10 code commits + 3 test fixes, all FULLY GATED), latest first:**
+- `77a7983` **function→fn-ptr argument decay in namespace-fn-template deduction (feature; +testtransform, NO headline flip).**
+  [temp.deduct.call]: deducing a by-value type param from a FUNCTION arg decays it `R(Args)`→`R(*)(Args)`.
+  `try_instantiate_namespace_fn_template` bound the param to the bare FuncDef (`operand_value_datadef`
+  returns the function) → an instantiated `std::transform(b,e,fn)` emitted an incomplete non-callable
+  `void __op` param. Fix: a function arg vs a by-value (no `&`) bare type param decays to `DataDefFPTR`.
+  Verified vs g++ (testtransform: 2 4 6 8, warning-free). **testforeach2 still FAILS** — the
+  std-algorithm-with-functor area is a DEEP multi-bug region (see §3 post-mortem): this fix is one of
+  ~5 walls. **CRITICAL deferred findings** (do not re-discover): (a) BARE C-array arg
+  (`transform(a,a+4,b,fn)`) hits a separate call-site overload-binding gap — the array arg isn't decayed
+  when re-selecting the instantiated overload (`import of undefined item __ns_std_transform`); the
+  array→pointer deduction decay was DROPPED from this commit (untestable-to-green without that call-site
+  fix). (b) `std::for_each` returns its functor BY VALUE → a function returning an ANONYMOUS fn-ptr
+  renders its return type as `long` (DataDefFPTR's dtINT64 base; `func_def` has NO fn-returning-fn-ptr
+  declarator — only typedef'd fn-ptr returns render, fpr2) → c2mir "returning pointer without cast for
+  integer result" warning; that's why the test uses transform (iterator return), not for_each.
+  (c) std::string BY VALUE through an instantiated for_each body CORRUPTS (fe14). (d) count_if wraps the
+  predicate in `_Iter_pred` (another instantiation wall). (e) user GLOBAL free fn templates with
+  deduction (`twice(21)`) don't resolve at all ("undeclared identifier") — only CLASS templates +
+  NAMESPACE fn templates + operator templates do. Gated 589/15 zero regr, torture 51 byte-identical
+  (one memclr.c suite-timeout flake, passes standalone), SMAUG.
 - `9b7b944` **C++11 `alignas` keyword support (feature; +testalignas, NO headline flip).** madc mapped
   the C11 `_Alignas`→`__attribute__` (lexer consumes specifier+parens) but had ZERO handling for the
   C++11 bare keyword `alignas` → `alignas(N) <decl>` parsed `alignas` as a TYPE name, then `(` tripped
@@ -138,9 +158,11 @@ streams it sees today, but a latent MI gap; flag if an MI virtual-through-second
 The canonical correct walk is `is_or_derives_from`'s `for (b : bases)`.
 
 ## 1. Live state (verify `bash scripts/resume.sh` + `git status`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`9b7b944`** (LOCAL ONLY; develop
-  untouched). `9b7b944` = C++11 `alignas` keyword support (CODE; +testalignas, advances set/map chain,
-  NO headline flip). Prior `c93c5e1` = eval wrapper hoists a leading `#include` out of the synthetic
+- **Branch** `feature/retire-embedded-shims-claude` @ **`77a7983`** (LOCAL ONLY; develop
+  untouched). `77a7983` = function→fn-ptr argument decay in namespace-fn-template deduction (CODE;
+  +testtransform, NO headline flip; std-algorithm/functor area is deep — see §0/§3). Prior `9b7b944` =
+  C++11 `alignas` keyword support (CODE; +testalignas, advances set/map chain, NO headline flip). Prior
+  `c93c5e1` = eval wrapper hoists a leading `#include` out of the synthetic
   `__madc_eval` body to file scope (CODE); flipped testmadceval 16→15. Prior `a47c86e` = inherited-operator return type
   searches ALL bases (CODE) + testsstream test fix (`<sstream>` + `cout << ss.str()`); flipped
   testsstream 17→16. Prior `b3beadb` = free-operator concrete-param match guard (CODE; the byte
@@ -154,8 +176,8 @@ The canonical correct walk is `is_or_derives_from`'s `for (b : bases)`.
   (sub-gap 10), `011769f` (sub-gap 9), `f644bb9` (sub-gap 8), `2e8abc1` (sub-gap 7),
   `7202523` (sub-gap 6), `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4) + docs mirrors. Tree is
   CLEAN. MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN at `9b7b944`**: integration **588 passed / 15 failed / 0 timed out / 18
-  skipped** (failures this session: **27 → 15**; +testalignas new pass; flips: `ce4313a` six —
+- **All gates GREEN at `77a7983`**: integration **589 passed / 15 failed / 0 timed out / 18
+  skipped** (failures this session: **27 → 15**; +testalignas +testtransform new passes; flips: `ce4313a` six —
   testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx; `390d8a0`
   teststringrel; `c518a00` test3eqclass; `73cff0a` teststringglobal; `fe2417a` teststdstringconv;
   `a47c86e` testsstream; `c93c5e1` testmadceval; zero regressions); unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
@@ -190,6 +212,7 @@ The canonical correct walk is `is_or_derives_from`'s `for (b : bases)`.
 | `73cff0a` | **teststringglobal — TEST FIX, ambiguous global `empty` vs C++17 `std::empty` (19 → 18).** `cout << empty` on a file-scope global `string empty;` errored "shift operands should be of an integer type". NOT a operator<</global-string bug (the prior §3 hypothesis): with `using namespace std`, the bare name `empty` is genuinely AMBIGUOUS against the C++17 free fn `std::empty` (`<bits/range_access.h>`, pulled transitively by `<iostream>`). Both g++ AND clang++ REJECT the original: "reference to 'empty' is ambiguous" (candidates `::empty`, `std::empty`). The test only passed against the old embedded shims (no `std::empty`) — it is invalid C++17 under real headers, so this is a TEST bug. Renamed the default-ctor global `empty`→`blank` (+ comment), preserving the test's intent (file-scope std::string + operator<<); madc now compiles+runs it g++-faithfully. LATENT madc gap (NOT fixed, noted for later): madc silently resolves the bare name to `std::empty` (a fn → shift) where the canon compilers hard-error the ambiguity — proper ambiguity detection in unqualified lookup under a using-directive is a separate unstarted feature. Test-only change: binary unchanged at `c518a00`, so unit/torture/SMAUG carry. Gate: integration 584/18. |
 | `fe2417a` | **teststdstringconv — TEST FIX, standard 1-arg `std::to_string` (18 → 17).** Called `std::to_string(s, 42)` — a 2-arg (out, value) writer that does NOT exist in real libstdc++ (to_string is the 1-arg value→string converter that RETURNS the string). g++ AND clang++ both reject it ("no matching function for call to to_string(std::string&, int)"); only worked under the old shims (same INVALID-TEST class as teststringglobal). The other calls (std::stoi/std::stod on a std::string) are valid + already work. Rewrote `std::string s; std::to_string(s, 42);` → `std::string s = std::to_string(42);` (+ comment); both canon compilers accept the rewrite; madc runs it (42/12345/3.5). Test-only: binary unchanged at `c518a00`. Gate: integration 585/17. |
 | `b3beadb` | **free-operator concrete-param match guard (correctness; NO count flip).** A free-operator candidate whose param is a CONCRETE type (no template param) was accepted against ANY arg in that position: `fn_template_deduce_param` returns 0 ("no deduction") without checking, and `try_instantiate_free_operator_template` only rejected on a negative result. So libstdc++ `std::operator<<(byte, _IntegerType)` (param0 = enum class `byte`, param1 deduced) spuriously matched `stream << x` (param0 never checked) then FATALLY failed instantiating `__byte_op_t<x>` (the std::byte shift machinery: `__byte_operand<x>` has no `::__type` for non-integer x). g++/clang reject it on the byte-vs-stream param. Surfaced on a std::stringstream `<<` chain (testsstream): stringstream is basic_iostream, so its `<<` is NOT taken by the cout/cin fast-path and falls to general free-op resolution. Fix: new `free_operator_concrete_param_matches` — when `fn_template_deduce_param` returns 0, a concrete NAMED (class/enum) param must BE the arg's class or a base (`is_or_derives_from`); scalars/pointers/unresolvable stay permissive. Removes the fatal byte mis-instantiation (`__byte_op_t` gone). testsstream STILL fails on a separate deeper bug (see §0/§3) — standalone correctness fix + prerequisite, NO count flip. Gated: 585/17 FAIL-list byte-identical, unit, torture 1571/51, SMAUG. |
+| `77a7983` | **function→fn-ptr argument decay in namespace-fn-template deduction (feature; +testtransform, NO headline flip).** [temp.deduct.call]: deducing a by-value type param from a FUNCTION arg decays it `R(Args)`→`R(*)(Args)`. `try_instantiate_namespace_fn_template` bound the param to the bare FuncDef (`operand_value_datadef` returns the function), so an instantiated `std::transform(b,e,fn)` emitted an incomplete non-callable `void __op` param. Fix: a function arg deduced against a by-value (no `&`) bare type param decays to `DataDefFPTR` → the param is a real `R (*__op)(Args)` and `__op(*__first)` calls through it. Verified vs g++ (testtransform 2 4 6 8, warning-free, via POINTER iterators). DEEP-AREA findings deferred (see §0): bare-array call-site binding gap; for_each anonymous-fn-ptr RETURN renders as `long` (func_def has no fn-returning-fn-ptr declarator → warning, why the test uses transform not for_each); std::string-by-value through an instantiated body corrupts; count_if's `_Iter_pred` wrapper; user GLOBAL free fn templates with deduction don't resolve. Gated: integration 589/15 (+testtransform, zero regressions), unit, torture 51-name failset byte-identical (one memclr.c suite-timeout flake — passes standalone), SMAUG soak exit 124 + ready. |
 | `9b7b944` | **C++11 `alignas` keyword support (feature; +testalignas, NO headline flip).** madc mapped the C11 `_Alignas`→`__attribute__` (lexer consumes the specifier + its parens, preserving only layout-attribute names) but had ZERO handling for the C++11 bare keyword `alignas` → `alignas(N) <decl>` parsed `alignas` as a TYPE name and the following `(` tripped the class-member parser: "Unsupported parenthesized member declarator in class definition". Surfaced instantiating std::set/std::map — libstdc++'s `__aligned_membuf<_Tp>` (the `_Rb_tree` node storage, `<bits/aligned_buffer.h>`) declares `alignas(__alignof__(_Tp)) unsigned char _M_storage[sizeof(_Tp)];`. Fix (deepest layer, DRY): map `alignas` to the same lexer define_map path as `_Alignas` so both spellings are consumed identically at member/file/local scope (`alignas` is a C++ keyword + a C11 `<stdalign.h>` macro, never a real identifier). Verified vs g++ (testalignas: `alignas(16)`/`alignas(double)` members parse+run). ADVANCES the set/map chain past the alignas wall to the next `_Rb_tree` wall ("Reference data members (T&) are not supported", a genuine reference-data-member feature), so testset/testcontainerdtor do NOT flip yet (deep chain, not a singleton). NOTE: the alignment value is not yet recorded on the member (stripped, same as `_Alignas`) — a shared follow-up. Reducers tmp/al1 (alignas members, =g++), tmp/set2/set4 (set advanced to the ref-member wall). Gated: integration 588/15 (testalignas new pass, 15-cluster unchanged, zero regressions), unit, torture 1571/51 byte-identical, SMAUG soak exit 124 + ready. |
 | `c93c5e1` | **eval wrapper hoists leading #include out of the function body — flips testmadceval (16 → 15).** `build_eval_body_wrapper_source` wrapped the ENTIRE eval source — incl. a leading `#include` — INSIDE the synthetic `double __madc_eval() { ... }`. The lexer inlines header tokens wherever the directive sits, so `<math.h>`→`<cmath>`'s `namespace std` declarations were parsed as FUNCTION-LOCAL statements → "Failed to find type 'std' when parsing function parameters", and eval_double returned garbage (eval_int/bool/string include no header so they passed). `#include` inside a function body is invalid C++ anyway (can't open `namespace std` in a function); the eval API's intent is file-scope includes, and the wrapper is madc's own synthesis (the correct layer). Fix: hoist the CONTIGUOUS leading run of preprocessor directives (blank lines allowed, `\`-continued lines kept whole) to file scope before the function; only the leading run moves so code order is preserved and a mid-body #if/#endif is untouched. NB a SEPARATE pre-existing non-fatal diagnostic ("cannot dereference non-pointer type" parsing `<cmath>`) still prints to stderr — it fires at top-level `#include <math.h>` too (sub-gap-13 class, independent of eval), does NOT affect correctness (eval_double returns 4, exits 0; the runner discards stderr). Reducers tmp/ev1 (eval_double w/ math.h, now returns 4), tmp/ev2 (eval_double no-include control), tmp/mm1 (top-level math.h — shows the same independent <cmath> diagnostic). Gated: integration 587/15 FAIL-list = prior 16 minus testmadceval (zero regressions), unit, torture 1571/51 byte-identical, SMAUG soak exit 124 + ready. |
 | `a47c86e` | **inherited-operator return type searches ALL bases — flips testsstream (17 → 16).** `DataDefCLASS::binary_operator_return_type` recursed into only the SINGLE primary base (`base_class`) to find an inherited binary operator's return type — for multiple inheritance that misses an operator inherited from a NON-primary base. `basic_iostream : basic_istream, basic_ostream` keeps `operator<<` in base #2, so a chained `stringstream << a << b` lost its parse-time type: the inner `ss<<a` emitted the correct `_ZStls...basic_ostream(&ss+16,&a)` call but its RESULT type was NULL (primary `basic_istream` has no `<<`), so the outer `<<` saw a non-class operand → builtin shift ("shift operands should be of an integer type"). `ostringstream` (single base `basic_ostream`, offset 0) worked, isolating the MI base-walk as root. Fix (deepest layer): iterate the full `bases` list (the MI direct-base set, which includes the primary) exactly as `is_or_derives_from` does, returning the first base that declares the operator; the legacy single-`base_class` walk is kept only for the (today unreachable) bases-empty path. Combined TEST FIX (INVALID-TEST class): g++/clang both reject `stringstream` without `#include <sstream>` (incomplete type), and the test used the retired `printstream(ss)` builtin (tied to the removed hardcoded dtSSTREAM tag) → added `<sstream>` + standard `cout << ss.str() << endl` (output matches g++ canon); +tests/testsstream.expect. Gated: integration 586/16 FAIL-list = prior 17 minus testsstream (zero regressions), unit, torture 1571/51 byte-identical, SMAUG soak exit 124 + ready. |
@@ -202,22 +225,30 @@ REDUCER but do NOT flip tests. **Headline-count drops come from the INDEPENDENT 
 session `_ZNSolsESo` (27→21, 6 tests) and `390d8a0` teststringrel (21→20) both did. **Keep picking
 count-droppers** from the §3.6b clusters; deepen the container chain only when the independents run out.
 
-**The clean singletons that flipped this session are done (test3eqclass / teststringglobal /
-teststdstringconv / testsstream / testmadceval). The remaining 15 are all compound or deep — the full
-breakdown is in §0's NEXT block** (testforeach2 compound; the deep container chain incl. set/map now
-at the reference-data-member wall; operator-> on object).
-NOTE the set/map pair (testset/testcontainerdtor) ADVANCED @9b7b944 past the `alignas` wall and is now
-at "Reference data members (T&) are not supported" (a `T& member;` in libstdc++ `_Rb_tree` — a genuine
-reference-data-member feature: store as a pointer, bind in the ctor init-list, access transparently;
-the c11-transpiler rule says references→pointer semantics). NOT a quick misparse.
-Recommended next single target = **testforeach2** (compound but only ~2 fixes): (a) `std::for_each(names, fn)`
-is a 2-arg call g++/clang reject — real for_each is 3-arg first/last/fn, an INVALID-TEST rewrite to
-3-arg over iterators; (b) even a VALID 3-arg `std::for_each(a,a+3,pr)` fails in madc with
-`istreambuf_iterator<> expects 2 argument(s), got 1` (a real free-fn-template instantiation/overload
-bug). 3-oracle the call FIRST (part (a) is the test, part (b) is madc). Alternatively the "operator->
-on an object" pair (testsubscriptarrow/testvectorptr, "expression before '->' must be a pointer") may
-be a cleaner singleton. The deep container chain (testvector/map/set/subscript*/template*/refreturn)
-is the hardest — leave for last.
+**The clean singletons are EXHAUSTED. ALL 15 remaining are deep multi-wall chains** — proven this
+session by drilling three of them (set/map, operator->, testforeach2), each gated on multiple distinct
+deep features, NOT ~1-2-fix slices:
+- **testset / testcontainerdtor** (set/map `_Rb_tree`): alignas (done @9b7b944) → now "Reference data
+  members (T&) are not supported" (a `T& member;` in `_Rb_tree` — needs the reference-data-member
+  feature: store as pointer, bind in ctor init-list, access transparently; c11-transpiler rule =
+  references→pointer) → then more `_Rb_tree`/`_S_destroy` walls.
+- **testsubscriptarrow / testvectorptr** ("operator-> on object"): GATED on the `vector<A*>` container
+  chain — `vb[0]` must type as `A*&` before `->` works. NOT independent.
+- **testforeach2** (std::for_each over functor): function-decay (done @77a7983) is only 1 of ~5 walls —
+  bare-array call-site binding, for_each anonymous-fn-ptr RETURN rendering (→`long`, warning),
+  std::string-by-value through an instantiated body (corrupts), lambda-as-functor. See §0 `77a7983`.
+- **the container/string chain** (testvector/map/teststringref/testsubscript*/testtemplate*/testrefreturn
+  /testmadc_ns/testforeachref): the `tv1` chain at sub-gap 13 (`cannot dereference non-pointer type`) +
+  `_S_destroy` + `Missing operand` in instantiated bodies — the deep template-instantiation core.
+
+**RECOMMENDATION: the next real progress is the deep template-instantiation CORE, not single slices.**
+The unifying root behind most of these is instantiated-template-body fidelity: pointer/iterator typing
+(`cannot dereference non-pointer type`), std::string-by-value copy ABI, and call-site overload binding
+for decayed args. This is multi-session work — pick ONE core wall (the `tv1` sub-gap-13 "cannot
+dereference non-pointer type" is the most leveraged, unblocking the container chain) and drive it, OR
+the reference-data-member feature (unblocks set/map). Confirm scope with the user before a long dig.
+Smaller self-contained wins still available: the for_each anonymous-fn-ptr RETURN rendering (a real
+warning-causing gap, `func_def` fn-returning-fn-ptr declarator) is bounded and worth doing.
 
 Method: reduce in `tmp/` (DEFAULT mode, no flags), attribute via the 3 oracles + `--emit=c11`/
 `--dump-cir`, fix the deepest layer, full 4-gate. Reducer template: `tmp/sr1.mad` (string `a<b`,
@@ -229,7 +260,7 @@ tv1, 3 oracles + `--emit=c11`/`--dump-cir`, deepest layer. Note testvector etc. 
 (`std::allocator_traits<...>::_S_destroy`, a separate static-member wall) — so the container tests
 need BOTH, multiple sub-gaps. Also off-path: deduced-return `auto f(){return e;}` (no `-> T`).
 
-### 3.6b — THE CURRENT 15 FAILURES, clustered by first-error (at `9b7b944`)
+### 3.6b — THE CURRENT 15 FAILURES, clustered by first-error (at `77a7983`)
 ~4 distinct root-cause walls (measured, not assumed — the earlier "container+string share one
 root, drops fast" was over-optimistic lumping; the real container chain is ~4 tests, the rest are
 independent):
@@ -242,14 +273,16 @@ independent):
   `_Rb_tree` chain; ADVANCED @9b7b944 past the prior `alignas`/parenthesized-member-declarator wall —
   a `T& member;` in libstdc++; needs the reference-data-member feature, references→pointer semantics).
 - **`expression before '->' must be a pointer` (2)** — testsubscriptarrow, testvectorptr (operator-> after a `vector<A*>` subscript element; GATED on the vector container chain — `vb[0]` must type as `A*&` first, so NOT independent singletons).
-- **`__ns_std_for_each` undefined / istreambuf_iterator deduction (1)** — testforeach2 (COMPOUND: invalid 2-arg call + real 3-arg instantiation bug; see §3).
+- **std-algorithm-with-functor (1)** — testforeach2 (DEEP, ~5 walls: function-decay done @77a7983,
+  bare-array call-site binding, for_each anonymous-fn-ptr RETURN rendering, std::string-by-value through
+  the instantiated body, lambda-as-functor; see §0/§3). NOT compound-2-fix as earlier believed.
 [test3eqclass FIXED @c518a00; teststringglobal FIXED @73cff0a; teststdstringconv FIXED @fe2417a;
 testsstream FIXED @a47c86e (byte guard @b3beadb + MI base-walk + test `<sstream>`); testmadceval
 FIXED @c93c5e1 (eval wrapper #include hoist); alignas keyword @9b7b944 (+testalignas; advanced set/map
-to the ref-data-member wall, no flip).]
-Highest leverage now: testforeach2 (compound, ~2 fixes). The "operator-> on an object" pair and the
-set/map ref-data-member pair are both GATED on deep container features, NOT quick singletons; the rest
-are the deep container chain. NB the INVALID-TEST class
+to the ref-data-member wall, no flip); function→fn-ptr decay @77a7983 (+testtransform; advanced
+testforeach2, no flip).]
+ALL 15 remaining are deep multi-wall (see §3 RECOMMENDATION — pivot to the template-instantiation
+CORE). NB the INVALID-TEST class
 (teststringglobal/teststdstringconv/testsstream-test-side): always 3-oracle the failing call FIRST —
 several of these tests use old-shim convenience signatures real libstdc++ rejects, so the fix is the
 test, not madc.
