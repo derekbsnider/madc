@@ -4,8 +4,10 @@
 
 int main()
 {
-    std::string s;
-    std::to_string(s, 42);
+    // std::to_string is the standard 1-arg value->string converter (returns
+    // the string); it is NOT an (out, value) writer — that 2-arg form only
+    // existed under the old embedded shims and both g++/clang reject it.
+    std::string s = std::to_string(42);
     printf("%s\n", s.c_str());
 
     std::string num = "12345";
