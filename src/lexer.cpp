@@ -1051,9 +1051,13 @@ void Program::_tokenizer_init()
     // would split into two macro arguments ("Too many parameters"). It is
     // stripped by balanced-paren consumption in getToken() instead.
     define_map["__extension__"] = "";
-    // _Alignas(N) is a C11 keyword — consume like __attribute__
-    // The lexer handles it by stripping the specifier and its parens.
+    // _Alignas(N) (C11) / alignas(N) (C++11) are alignment specifiers — consume
+    // like __attribute__. The lexer strips the specifier and its parens (or, when
+    // the argument names a layout attribute, preserves it for the parser). Both
+    // spellings map to the same path; libstdc++ uses the bare `alignas` keyword
+    // (e.g. __aligned_membuf's `alignas(__alignof__(_Tp)) unsigned char ...`).
     define_map["_Alignas"] = "__attribute__";
+    define_map["alignas"] = "__attribute__";
     define_map["__restrict"] = "";
     define_map["__restrict__"] = "";
     define_map["__signed__"] = "signed";
