@@ -125,7 +125,36 @@ case in `tmp/` DEFAULT-mode, 3-oracle (g++ / clang++ / stock c2m) before fixing.
 - **Gates:** integration 589/15 (zero regr), unit, torture 51-name byte-identical,
   SMAUG soak. **No headline flip** (as predicted) — Stage 1 is the cascade.
 
-### Stage 1 — reference-to-pointer-param method return type (THE core) — ROOT RE-DIAGNOSED 2026-06-14
+### Stage 1 — reference-to-pointer-param method return type (THE core) — PART 1 DONE (`a12314b`)
+
+**PART 1 LANDED (`a12314b`):** the fix was a one-spot change in
+`operand_value_datadef` — the `returns_ref` branch stripped a pointer level off a
+reference-return whose referent is a pointer (`int*&` → `int` instead of `int*`),
+breaking `T*` deduction from `__normal_iterator::base()`-typed args. By the
+`parseFunction`/trailing-return convention `FuncDef::returns` stores the referent
+directly, so `returns` already IS the value type; the strip was always wrong when
+it fired (and never served `std::move`-of-class, the case it shipped with). All 4
+gates green; advanced tv1/testvector/testvectorptr past the deref wall (no flip).
+
+**FOLLOW-ON WALLS (Stage 1 part 2+, the next tv1 chain), each a separate root:**
+- **`__make_move_if_noexcept_iterator` `conditional_t` RETURN → `int64_t`** (the
+  tv1 blocker now). Its return is a defaulted template param `_ReturnType =
+  __conditional_t<...>` (`<bits/stl_uninitialized.h>` / `<bits/stl_iterator.h>`):
+  madc can't evaluate the `conditional_t`, so `_ReturnType` is unbound and
+  defaults to `int64_t`, which feeds `std::__uninitialized_copy_a`'s `_InputIterator`
+  (→ int64_t → the same `decltype(*__first)` throw, now one layer deeper). This is
+  the "move_iterator conditional_t" wall noted in KG/memory. Likely needs
+  `conditional_t`/`__conditional_t` resolution in a defaulted-return-param position.
+- **testvector line 17: "incompatible types in assignment to an arithmetic type
+  lvalue"** — a distinct wall reached once the deref is past (subscript/assign
+  through the instantiated `operator[]`/data path).
+- **testvectorptr line 28: "expression before '->' must be a pointer"** — `w[i]->v`
+  where `w[i]` (vector<T*> subscript) should yield `T*`; the subscript result type
+  loses pointer-ness (sibling of the just-fixed reference-return-of-pointer, but in
+  `operator[]`/subscript typing — verify whether the same `returns`-strip pattern
+  recurs in the subscript path).
+
+**ORIGINAL ROOT RE-DIAGNOSIS (2026-06-14, retained for context):**
 - **The original hypothesis (declarator-suffix re-application) is DISPROVEN by
   reducers.** Pointer template arguments and `T*` declarators in instantiated
   bodies ARE preserved correctly: `tmp/ptarg1.mad` (`Iter<int*>` with `It cur;
