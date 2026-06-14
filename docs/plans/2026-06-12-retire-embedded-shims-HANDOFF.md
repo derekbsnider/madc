@@ -19,11 +19,17 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 ## 0. Orientation
 Same campaign as SESSION 8 (real glibc+libstdc++ every mode; sole backend
 cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. Integration is at
-**581 passed / 21 failed / 0 timed out** (down from 27 this session).
+**582 passed / 20 failed / 0 timed out** (down from 27 this session).
 
-**WHAT THIS SESSION ADDED (3 code commits, all individually FULLY GATED), latest first:**
+**WHAT THIS SESSION ADDED (4 code commits, all individually FULLY GATED), latest first:**
+- `390d8a0` **teststringrel — reference-transparency in method-overload reselection (21 → 20).**
+  Inside the instantiated `operator<(const string&, const string&)` body `__lhs.compare(__rhs)`
+  mis-bound `compare(const char*)` because `__rhs` (a `const string&` param) was scored as a raw
+  `string*`. `reselect_method_overload` now types args via `operand_value_datadef` (reference
+  transparency). Flips teststringrel. (test3eqclass `===` and teststringglobal `operator<<` are
+  separate roots, still failing.)
 - `f120470` **sub-gap 12 — `__is_trivial(T)` builtin** (was missing from the trait table →
-  `_ValueType1` undeclared). Advances `tv1` to sub-gap 13; **0 test flips** (count stays 21).
+  `_ValueType1` undeclared). Advances `tv1` to sub-gap 13; **0 test flips**.
 - `ce4313a` **fn-ptr-param overload fix — the `_ZNSolsESo` wall, the FIRST headline drop in ~4
   sessions: 27 → 21** (six tests). `cout << (long)` mis-bound the ostream manipulator because
   `DataDefFPTR::is_numeric()` is true; a fn-ptr param now rejects a non-function arg.
@@ -39,15 +45,16 @@ reference-arg fix** — a real count-dropper (see §3). The user explicitly want
 to drop; pick count-droppers over deepening the container chain.
 
 ## 1. Live state (verify `bash scripts/resume.sh` + `git status`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`f120470`** (LOCAL ONLY; develop
-  untouched). Last COMMITTED code: `f120470` (sub-gap 12 — `__is_trivial(T)` builtin; advances tv1,
-  0 test flips, count stays 21); prior `ce4313a` (fn-ptr-param overload fix → cleared the
-  `_ZNSolsESo` wall, 27→21 failures), `17677f2` (sub-gap 11, direct-init), `83a05d7`
+- **Branch** `feature/retire-embedded-shims-claude` @ **`390d8a0`** (LOCAL ONLY; develop
+  untouched). Last COMMITTED code: `390d8a0` (teststringrel — ref-transparency in method-overload
+  reselection, 21→20); prior `f120470` (sub-gap 12 — `__is_trivial(T)` builtin; advances tv1, 0
+  flips), `ce4313a` (fn-ptr-param overload fix → cleared the `_ZNSolsESo` wall, 27→21),
+  `17677f2` (sub-gap 11, direct-init), `83a05d7`
   (sub-gap 10), `011769f` (sub-gap 9), `f644bb9` (sub-gap 8), `2e8abc1` (sub-gap 7),
   `7202523` (sub-gap 6), `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4) + docs mirrors. Tree is
   CLEAN. MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN at HEAD `f120470`**: integration **581 passed / 21 failed / 0 timed out / 18
-  skipped** (the headline drop **27 → 21** came at `ce4313a`; six tests cleared —
+- **All gates GREEN at HEAD `390d8a0`**: integration **582 passed / 20 failed / 0 timed out / 18
+  skipped** (this session: **27 → 20**; `ce4313a` cleared six —
   testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx; zero
   regressions vs `tmp/baseline_fails_s7.txt` minus those six);
   unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
@@ -76,31 +83,38 @@ to drop; pick count-droppers over deepening the container chain.
 | `17677f2` | **sub-gap 11 — direct-initialization of a non-class variable.** `T name(expr)` for a non-class type (`pointer __new_start(this->_M_allocate(__len));` in `_M_realloc_insert`; `typedef int* P; P p(q);`) always parsed as a function declaration → first paren token `this`/`q` threw "Failed to find type … when parsing function parameters". madc did ctor-style direct-init for CLASS types only. Fix (parser.cpp, deepest layer, reuses the `= expr` machinery — no new init path): new non-consuming `paren_group_is_nonclass_direct_init()` returns true ONLY when the token after `(` cannot begin a parameter-declaration (a literal, `this`, or a ttIdentifier naming an in-scope value — type names tokenize as ttDataType), a SOUND under-approximation (every diversion is unambiguously direct-init; param-clause-capable starts keep the most-vexing-parse default = function decl). A parseDeclaration branch (after the class ctor-call branch) injects a synthetic `=` before the `(` so `(expr)` parses through the scalar/pointer `= expr` path (mirrors `T x{...}` brace-init). **C++/madc only (`!is_c_mode()`)** — load-bearing: a K&R def `void f(x,v) union u *x, v;` whose param names shadow file-scope globals (gcc-torture `921112-1.c`) otherwise diverted (the regression the gate fixes, caught by the torture failset diff). Verified vs clang++ AND g++. +testdirectinit. tv1 advances PAST the `this`-param wall to `use of undeclared identifier '_ValueType1'` (sub-gap 12). |
 | `ce4313a` | **fn-ptr-param overload fix — cleared the `_ZNSolsESo` wall (27→21).** `cout << (long)` mangled the bogus import `_ZNSolsESo` (`operator<<(ostream)`) instead of `_ZNSolsEl`. Root: `DataDefFPTR::is_numeric()` returns true, so in `score_arg_to_param` a function-pointer PARAMETER fell through to the numeric-vs-numeric branch and a 64-bit integer arg matched the ostream manipulator `operator<<(ostream& (*)(ostream&))` with score 5 (rawtype 64==64), TYING `operator<<(long)` and — registered first — winning. Only 64-bit ints hit it (int/short scored 4 there; float/double non-integer). Fix (cir_builder `score_arg_to_param`): a fn-ptr param now handles every arg shape — a function/fn-ptr arg binds by signature, the null-pointer constant scores 3, any other arg is REJECTED (-1). Surgical + general (matches gcc/clang). Cleared 6 tests (testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx); testmadceval advances to a separate runtime-eval `std` wall. +`tests/testmadcevalexprctx.timeout=30` (it now RUNS — 12 runtime `eval_*_ctx` calls, each a full child-Program compile→JIT ~0.36s, ~5.5s total; per test-fixtures.md). Verified vs clang++ AND g++. |
 | `f120470` | **sub-gap 12 — `__is_trivial(T)` builtin.** `_M_realloc_insert`→`uninitialized_copy` gates a memmove opt on `__is_trivial(_ValueType1)` (where `typedef typename iterator_traits<It>::value_type _ValueType1;`). madc's trait table lacked `__is_trivial`, so it parsed as a call to undeclared fn `__is_trivial` and its type-arg `_ValueType1` was looked up as a value → "undeclared identifier '_ValueType1'" (the typedef itself registers fine). Fix: add `__is_trivial` to `type_trait_arity` + `evaluate_type_trait` + the constexpr-fold path; new `trait_is_trivial` ([basic.types]: non-class trivial; class trivial iff no user ctor/dtor, non-polymorphic, all bases/members trivial). Verified vs g++ AND clang++ (int/ptr/POD=1, user-ctor/dtor/virtual=0). **0 test flips** (advances tv1 like sub-gaps 4-11). tv1 advances PAST `_ValueType1` to **`cannot dereference non-pointer type`** (sub-gap 13). |
+| `390d8a0` | **teststringrel — reference transparency in method-overload reselection (21 → 20).** `a < b` instantiates the free `operator<(const string&, const string&)` whose body is `__lhs.compare(__rhs)`; madc bound `string::compare(const char*)` instead of `compare(const basic_string&)` and jammed the dereferenced string into the char* param → "incompatible argument type for pointer type parameter". The bug was ONLY in the instantiated body — the reference param `__rhs` (`const string&`) was scored as a raw `string*` in `reselect_method_overload` (which built argtypes from raw `p->datadef()`). Fix: `reselect_method_overload` now types each arg via `operand_value_datadef` (reference transparency — a reference var/param arg denotes the referenced OBJECT, not the pointer; the same helper already used at parser.cpp ~26117). compare(const basic_string&) now scores an exact object match and wins. Verified vs clang++/g++. Flips teststringrel. test3eqclass (`===`) + teststringglobal (`operator<<` on a global) are SEPARATE roots, still failing. |
 
-## 3. THE NEXT TASK — strategy note + sub-gap 13 + the std::string-operator walls
-**STRATEGIC FINDING (2026-06-14):** the container chain is DEEP and FORKS per-operation —
-`tv1` (push_back of int) is at sub-gap 13 while `testvector` (and 3 others) are at a DIFFERENT wall
-(`_S_destroy`), each many sub-gaps from green. Sub-gaps advance `tv1` (a reducer) but do NOT flip
-the 21 tests (only `ce4313a`/`_ZNSolsESo` flipped tests this session). For headline-count drops, the
-**independent singletons** (not gated on container instantiation) are higher leverage:
-teststringrel + teststringglobal + test3eqclass (std::string operators), testforeach2
-(`std::for_each`), testsstream (`__byte_op_t`), teststdstringconv (`to_string` overload),
-testmadceval (runtime-eval `std`). See §3.6b for the full clustering.
+## 3. THE NEXT TASK — pick a count-dropper (the strategy that's working)
+**STRATEGIC FINDING (2026-06-14, proven this session):** the container chain is DEEP and FORKS
+per-operation — `tv1` (push_back of int) is at sub-gap 13 while `testvector` (and 3 others) are at a
+DIFFERENT wall (`_S_destroy`), each many sub-gaps from green. Container sub-gaps advance the `tv1`
+REDUCER but do NOT flip tests. **Headline-count drops come from the INDEPENDENT singletons**: this
+session `_ZNSolsESo` (27→21, 6 tests) and `390d8a0` teststringrel (21→20) both did. **Keep picking
+count-droppers** from the §3.6b clusters; deepen the container chain only when the independents run out.
 
-**teststringrel ROOT CAUSE (found, fix not yet landed):** `a < b` (two std::strings) instantiates
-the free `operator<(const string&, const string&)` whose body is `__lhs.compare(__rhs) < 0`. madc
-selects `string::compare(const char*)` (`_ZNK…compareEPKc`) instead of `compare(const basic_string&)`
-(`…compareERKS_`), then passes the dereferenced string into a `char*` param → "incompatible argument
-type for pointer type parameter". DIRECT `a.compare(b)` picks the string overload CORRECTLY — the bug
-is ONLY inside the instantiated body: the reference PARAMETER `__rhs` (`const string&`) is scored as a
-raw `string*` for the method-overload, so `compare(const basic_string&)` (needs a string object) is
-rejected and `compare(const char*)` wins. FIX = unwrap a reference-variable/param arg to its referenced
-object type when building argtypes for NON-STATIC method-overload resolution (parseCallMethod /
-the instance-method `findMethodOverload(id, at)` arg-typing — the static paths at parser.cpp ~14069 /
-~14363 use raw `p->datadef()`; the non-static instance path needs the same `operand_value_datadef`-style
-unwrap select_operator_overload's `overload_arg_datadef` already does). Likely also flips test3eqclass
-(=== on basic_string) and helps the string cluster. Reduce: `tmp/sr1.mad` (`string a,b; a<b`),
-`tmp/sc1.mad` (direct compare — WORKS, the control).
+**REMAINING COUNT-DROPPER CANDIDATES (the 20, see §3.6b), in rough leverage order:**
+- **test3eqclass** — `===` strict-equality on `basic_string`: `cir error: no match for strict equality
+  on '…basic_string…' (no operator=== or operator==)`. The `===` lowering doesn't find string's
+  `operator==`. Likely sibling of the teststringrel fix (a string comparison-operator binding).
+  Reduce `string a,b; a===b;`.
+- **teststringglobal** — `cout << empty` (a GLOBAL `std::string`) lowered as a bitwise shift
+  ("shift operands should be of an integer type", line 14 = `cout << empty`): `operator<<` not binding
+  on a global-string operand. Reduce a global `std::string` + `cout <<`.
+- **testforeach2** — `__ns_std_for_each` undefined import (`std::for_each` free-fn-template
+  instantiation not emitted). Reduce `std::for_each(a, a+n, fn)`.
+- **testsstream** — `__byte_op_t` undeclared (std::byte op machinery in `<sstream>`/`<ostream>`).
+- **teststdstringconv** — `to_string` overload: "Too many parameters in call to
+  `…to_string__o9` (declared 1, got argument 2)".
+- **testmadceval** — `Failed to find type 'std'` in `__madc_runtime_eval` (the runtime-eval child TU
+  doesn't see `std::`; the second wall behind the now-fixed `_ZNSolsESo`).
+- (deeper) **container chain sub-gap 13:** `tmp/tv1` → `cannot dereference non-pointer type` (a `*X`
+  where X isn't typed as a pointer, in `_M_realloc_insert`); `_S_destroy` blocks testvector+3. Multi-
+  sub-gap; lower leverage than the singletons above.
+
+Method: reduce in `tmp/` (DEFAULT mode, no flags), attribute via the 3 oracles + `--emit=c11`/
+`--dump-cir`, fix the deepest layer, full 4-gate. Reducer template: `tmp/sr1.mad` (string `a<b`,
+fixed) / `tmp/sc1.mad` (direct compare, the control).
 
 **sub-gap 13 (the container chain, if continued):** `tmp/tv1` now → **`cannot dereference non-pointer
 type`** (a `*X` where X isn't typed as a pointer, deeper in `_M_realloc_insert`'s body). Reduce from
@@ -108,26 +122,27 @@ tv1, 3 oracles + `--emit=c11`/`--dump-cir`, deepest layer. Note testvector etc. 
 (`std::allocator_traits<...>::_S_destroy`, a separate static-member wall) — so the container tests
 need BOTH, multiple sub-gaps. Also off-path: deduced-return `auto f(){return e;}` (no `-> T`).
 
-### 3.6b — THE CURRENT 21 FAILURES, clustered by first-error (at `ce4313a`)
+### 3.6b — THE CURRENT 20 FAILURES, clustered by first-error (at `390d8a0`)
 ~8 distinct root-cause walls (measured, not assumed — the earlier "container+string share one
 root, drops fast" was over-optimistic lumping; the real container chain is ~4 tests, the rest are
 independent):
-- **container/string template INSTANTIATION (~12)** — the live `tv1` chain + faces: `_S_destroy`
+- **container/string template INSTANTIATION (~11)** — the live `tv1` chain + faces: `_S_destroy`
   undeclared (testvector, testforeachref, teststringref, testsubscriptmember); `Missing operand`
   in an instantiated body (testrefreturn, testtemplatecontainer, testtemplatestring); `Expecting
   ',' or '>' in template parameter list` (testmap, testsubscript); `… did not register`
-  (testmadc_ns); string op typing (teststringglobal `shift operands should be integer`,
-  teststringrel `incompatible pointer arg`).
+  (testmadc_ns); `cout << empty-global-string` lowered as a shift (teststringglobal). [teststringrel
+  FIXED @390d8a0.]
 - **`Unsupported parenthesized member declarator in class definition` (2)** — testcontainerdtor, testset.
 - **`expression before '->' must be a pointer` (2)** — testsubscriptarrow, testvectorptr (operator-> on an object).
 - **`__ns_std_for_each` undefined (1)** — testforeach2 (std::for_each free-fn-template instantiation).
 - **`__byte_op_t` undeclared (1)** — testsstream (std::byte op machinery in `<sstream>`).
 - **`to_string` overload (1)** — teststdstringconv.
-- **`=== ` strict-equality on basic_string (1)** — test3eqclass.
+- **`=== ` strict-equality on basic_string (1)** — test3eqclass (no `operator===`/`==` bound; likely a
+  sibling of the teststringrel fix).
 - **runtime-eval `std` parse (1)** — testmadceval (`Failed to find type 'std'` in `__madc_runtime_eval`,
   the second wall behind the now-fixed `_ZNSolsESo`).
-Highest leverage now is the container chain (sub-gap 12 → `_S_destroy`, ~4 tests) since the big
-single-fix detour (`_ZNSolsESo`, 7 tests) is done.
+Highest leverage now: the independent singletons (test3eqclass, teststringglobal, testforeach2,
+testsstream, teststdstringconv, testmadceval) — each ~1 fix → 1 test, NOT the deep container chain.
 
 ## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. DO NOT reapply
 `tmp/nontype_fold_v2_wip.patch` (the reverted 202-regression).
