@@ -21,7 +21,15 @@ Same campaign as SESSION 8 (real glibc+libstdc++ every mode; sole backend
 cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. Integration is at
 **585 passed / 17 failed / 0 timed out** (down from 27 this session).
 
-**WHAT THIS SESSION ADDED (5 code commits + 2 test fixes, all FULLY GATED), latest first:**
+**WHAT THIS SESSION ADDED (6 code commits + 2 test fixes, all FULLY GATED), latest first:**
+- `b3beadb` **free-operator concrete-param match guard (correctness; NO count drop yet).** A free
+  operator whose param is a CONCRETE type (no template param) was accepted against ANY arg
+  (`fn_template_deduce_param` returns 0 without checking). So `std::operator<<(byte, _IntegerType)`
+  spuriously matched a `stream << x` and FATALLY failed instantiating `__byte_op_t<x>`. New
+  `free_operator_concrete_param_matches`: a concrete NAMED (class/enum) param must BE the arg's class
+  or a base of it (`is_or_derives_from`); scalars/pointers stay permissive. g++/clang reject the byte
+  op on that param. **testsstream still fails on a SEPARATE deeper bug** (see §3) — this is a
+  standalone correctness fix + prerequisite. Gated: 585/17 FAIL-list byte-identical, torture 1571/51, SMAUG.
 - `fe2417a` **teststdstringconv — TEST FIX: standard 1-arg `std::to_string` (18 → 17).** Called
   `std::to_string(s, 42)` (a 2-arg (out,value) writer) — does NOT exist in real libstdc++ (to_string
   is the 1-arg value→string converter that RETURNS the string); g++ AND clang++ both reject it. Only
@@ -64,19 +72,31 @@ flip the headline count (this session `_ZNSolsESo` 27→21, teststringrel 21→2
 teststringglobal 19→18, teststdstringconv 18→17). **Headline-count drops come from the INDEPENDENT
 singletons**, NOT container sub-gaps. **A SUB-CLASS of those singletons = INVALID-TEST fixes**
 (teststringglobal, teststdstringconv): tests written against old-shim convenience signatures that
-real libstdc++ + g++/clang reject — fix the test to standard usage, NOT madc. **NEXT (see §3):**
-testsstream (`__byte_op_t`) and testmadceval (runtime-eval `std`). **testforeach2 is NOT a clean
-singleton** — it's compound: (a) `std::for_each(names, fn)` is a 2-arg call g++ rejects (real
-for_each is 3-arg first/last/fn) AND (b) even a VALID 3-arg `std::for_each(a,a+3,pr)` fails in madc
-with `istreambuf_iterator<> expects 2 argument(s), got 1` (a real free-fn-template instantiation/
-overload-resolution bug — likely the C++17 execution-policy `for_each` overload or a default
-template-arg gap; worth its own slice). Defer until the simpler singletons run out.
+real libstdc++ + g++/clang reject — fix the test to standard usage, NOT madc. **THE CLEAN SINGLETONS
+ARE NOW EXHAUSTED; the remaining 17 are the HARD cluster** — each compound or deep, NOT ~1-fix drops:
+- **testsstream — 3-part deep (byte part DONE @b3beadb):** (1) byte concrete-param ✓; (2) a
+  std::stringstream `<<` CHAIN's intermediate result is not parse-time-typed as basic_ostream when the
+  stream matched via a base subobject, so the outer `<<` lowers to a builtin shift ("shift operands
+  should be of an integer type") — cout/ostringstream are FINE, only stringstream (basic_iostream);
+  the inner `ss<<h` correctly emits `_ZStls...basic_ostream...(&ss+16, &h)` but its parse-time type is
+  lost; (3) the test needs `#include <sstream>` (stringstream w/ only <iostream> = g++ "incomplete
+  type"). Fix the parse-time operator-result-type for a base-matched stream, then add <sstream>.
+- **testmadceval — deep:** the runtime-eval child TU loses `std::` only for `eval_double` (`#include
+  <math.h>` in the eval'd source): `Failed to find type 'std' when parsing function parameters` in
+  `__madc_runtime_eval`. eval_unit/int/bool work; the math-include eval child doesn't see std::.
+- **testforeach2 — compound:** (a) `std::for_each(names, fn)` is a 2-arg call g++ rejects (real
+  for_each is 3-arg) AND (b) VALID 3-arg `std::for_each(a,a+3,pr)` fails with `istreambuf_iterator<>
+  expects 2 argument(s), got 1` (free-fn-template instantiation/overload bug).
+- The rest = the deep container chain (testvector/map/set/subscript*/template*/refreturn — _S_destroy
+  + tv1 sub-gap 13) + "parenthesized member declarator" (testcontainerdtor/testset) + "operator-> on
+  object" (testsubscriptarrow/testvectorptr).
 
 ## 1. Live state (verify `bash scripts/resume.sh` + `git status`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`fe2417a`** (LOCAL ONLY; develop
-  untouched). Last two commits are TEST FIXES (binary unchanged at `c518a00`): `fe2417a`
-  (teststdstringconv 2-arg→1-arg std::to_string, 18→17), `73cff0a` (teststringglobal `empty`→`blank`,
-  19→18). Last COMMITTED code: `c518a00` (test3eqclass — strict-equality `===` domain rule for a
+- **Branch** `feature/retire-embedded-shims-claude` @ **`b3beadb`** (LOCAL ONLY; develop
+  untouched). `b3beadb` = free-operator concrete-param match guard (CODE, binary changed; correctness,
+  NO count drop — testsstream needs more). Prior two are TEST FIXES (binary was unchanged at
+  `c518a00`): `fe2417a` (teststdstringconv 2-arg→1-arg std::to_string, 18→17), `73cff0a`
+  (teststringglobal `empty`→`blank`, 19→18). Prior code: `c518a00` (test3eqclass — strict-equality `===` domain rule for a
   free `operator==`, 20→19); prior `390d8a0` (teststringrel — ref-transparency in method-overload
   reselection, 21→20), `f120470` (sub-gap 12 — `__is_trivial(T)` builtin; advances tv1, 0
   flips), `ce4313a` (fn-ptr-param overload fix → cleared the `_ZNSolsESo` wall, 27→21),
@@ -84,13 +104,13 @@ template-arg gap; worth its own slice). Defer until the simpler singletons run o
   (sub-gap 10), `011769f` (sub-gap 9), `f644bb9` (sub-gap 8), `2e8abc1` (sub-gap 7),
   `7202523` (sub-gap 6), `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4) + docs mirrors. Tree is
   CLEAN. MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN**: integration **585 passed / 17 failed / 0 timed out / 18
-  skipped** (this session: **27 → 17**; `ce4313a` cleared six —
+- **All gates GREEN at `b3beadb`**: integration **585 passed / 17 failed / 0 timed out / 18
+  skipped** (this session: **27 → 17**; flips: `ce4313a` six —
   testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx; `390d8a0`
   teststringrel; `c518a00` test3eqclass; `73cff0a` teststringglobal; `fe2417a` teststdstringconv; zero
   regressions); unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
-  `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready. (`73cff0a`+`fe2417a` are
-  test-only — binary unchanged at `c518a00`, so torture/unit/SMAUG carry from the `c518a00` validation.)
+  `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready. (`b3beadb` re-gated all four
+  green — it's a code change; it adds no flip. `73cff0a`+`fe2417a` were test-only.)
 - **NOTE on the count:** the sub-gap work (4-12) all lands on `tv1` (a reducer), so the headline only
   drops on the INDEPENDENT singletons (`_ZNSolsESo`, teststringrel, test3eqclass, teststringglobal,
   teststdstringconv so far). See §3.6b below for the current 17 clustered.
@@ -119,8 +139,9 @@ template-arg gap; worth its own slice). Defer until the simpler singletons run o
 | `c518a00` | **test3eqclass — strict-equality `===` domain rule for a FREE `operator==` (20 → 19).** `s === s2`/`s === "x"` on std::string errored "no match for strict equality … (no operator=== or operator==)". `===`/`!==` (madc dialect) had NO parse-time DOMAIN-RULE fallback to `operator==`. A user operator=== bound directly (Money member, Tag free); a class with a MEMBER operator== bound via the CIR builder (Plain). But std::string's operator== is a FREE bool-returning template, and `strict_equality_lowering`'s `class_operator_call(top,"==")` delegates the free shape to `std_free_operator_instantiation`, which only binds reference-returning (W2) + by-value-class (operator+) free operators — never a bool-returning one. Normal `a == b` works because the PARSER lowers it to a call via `lower_free_operator_to_call`; `===` was left raw. Fix (parser, deepest layer, reuses the ONE free-operator lowering — no new CIR machinery): `rewritten_operator_candidate` applies the domain rule (spec §2.2/2.4/2.5) after the direct user operator===/!== sets miss — `x === y`→`x == y`, `x !== y`→`!(x == y)` via new `lower_strict_equality_domain_rule` (lowers a synthetic TokenEquals exactly as `==`). Returns NULL (token kept for CIR member-== dispatch / different-domain constant) when no == covers the pair, so member-== (Plain) and member-=== (Money) are untouched; only the free/value-returning == lowers to a call. All 4 paths correct (Plain/string/string-literal via ==, Money via member ===, Tag via free ===); verified vs the g++-canon .expect 16/16. |
 | `73cff0a` | **teststringglobal — TEST FIX, ambiguous global `empty` vs C++17 `std::empty` (19 → 18).** `cout << empty` on a file-scope global `string empty;` errored "shift operands should be of an integer type". NOT a operator<</global-string bug (the prior §3 hypothesis): with `using namespace std`, the bare name `empty` is genuinely AMBIGUOUS against the C++17 free fn `std::empty` (`<bits/range_access.h>`, pulled transitively by `<iostream>`). Both g++ AND clang++ REJECT the original: "reference to 'empty' is ambiguous" (candidates `::empty`, `std::empty`). The test only passed against the old embedded shims (no `std::empty`) — it is invalid C++17 under real headers, so this is a TEST bug. Renamed the default-ctor global `empty`→`blank` (+ comment), preserving the test's intent (file-scope std::string + operator<<); madc now compiles+runs it g++-faithfully. LATENT madc gap (NOT fixed, noted for later): madc silently resolves the bare name to `std::empty` (a fn → shift) where the canon compilers hard-error the ambiguity — proper ambiguity detection in unqualified lookup under a using-directive is a separate unstarted feature. Test-only change: binary unchanged at `c518a00`, so unit/torture/SMAUG carry. Gate: integration 584/18. |
 | `fe2417a` | **teststdstringconv — TEST FIX, standard 1-arg `std::to_string` (18 → 17).** Called `std::to_string(s, 42)` — a 2-arg (out, value) writer that does NOT exist in real libstdc++ (to_string is the 1-arg value→string converter that RETURNS the string). g++ AND clang++ both reject it ("no matching function for call to to_string(std::string&, int)"); only worked under the old shims (same INVALID-TEST class as teststringglobal). The other calls (std::stoi/std::stod on a std::string) are valid + already work. Rewrote `std::string s; std::to_string(s, 42);` → `std::string s = std::to_string(42);` (+ comment); both canon compilers accept the rewrite; madc runs it (42/12345/3.5). Test-only: binary unchanged at `c518a00`. Gate: integration 585/17. |
+| `b3beadb` | **free-operator concrete-param match guard (correctness; NO count flip).** A free-operator candidate whose param is a CONCRETE type (no template param) was accepted against ANY arg in that position: `fn_template_deduce_param` returns 0 ("no deduction") without checking, and `try_instantiate_free_operator_template` only rejected on a negative result. So libstdc++ `std::operator<<(byte, _IntegerType)` (param0 = enum class `byte`, param1 deduced) spuriously matched `stream << x` (param0 never checked) then FATALLY failed instantiating `__byte_op_t<x>` (the std::byte shift machinery: `__byte_operand<x>` has no `::__type` for non-integer x). g++/clang reject it on the byte-vs-stream param. Surfaced on a std::stringstream `<<` chain (testsstream): stringstream is basic_iostream, so its `<<` is NOT taken by the cout/cin fast-path and falls to general free-op resolution. Fix: new `free_operator_concrete_param_matches` — when `fn_template_deduce_param` returns 0, a concrete NAMED (class/enum) param must BE the arg's class or a base (`is_or_derives_from`); scalars/pointers/unresolvable stay permissive. Removes the fatal byte mis-instantiation (`__byte_op_t` gone). testsstream STILL fails on a separate deeper bug (see §0/§3) — standalone correctness fix + prerequisite, NO count flip. Gated: 585/17 FAIL-list byte-identical, unit, torture 1571/51, SMAUG. |
 
-## 3. THE NEXT TASK — pick a count-dropper (the strategy that's working)
+## 3. THE NEXT TASK — the clean singletons are EXHAUSTED; remaining = HARD cluster (see §0)
 **STRATEGIC FINDING (2026-06-14, proven this session):** the container chain is DEEP and FORKS
 per-operation — `tv1` (push_back of int) is at sub-gap 13 while `testvector` (and 3 others) are at a
 DIFFERENT wall (`_S_destroy`), each many sub-gaps from green. Container sub-gaps advance the `tv1`
@@ -128,21 +149,14 @@ REDUCER but do NOT flip tests. **Headline-count drops come from the INDEPENDENT 
 session `_ZNSolsESo` (27→21, 6 tests) and `390d8a0` teststringrel (21→20) both did. **Keep picking
 count-droppers** from the §3.6b clusters; deepen the container chain only when the independents run out.
 
-**REMAINING COUNT-DROPPER CANDIDATES (the 17, see §3.6b), in rough leverage order:**
-- **testsstream** — `__byte_op_t` undeclared (std::byte op machinery in `<sstream>`/`<ostream>`).
-  Reduce a `<sstream>` include; CHECK FIRST whether the test uses a non-standard signature (the
-  teststringglobal/teststdstringconv invalid-test class) before assuming a madc bug.
-- **testmadceval** — `Failed to find type 'std'` in `__madc_runtime_eval` (the runtime-eval child TU
-  doesn't see `std::`; the second wall behind the now-fixed `_ZNSolsESo`).
-- **testforeach2 (compound, defer)** — (a) `std::for_each(names, fn)` is a 2-arg call g++ rejects
-  (real for_each is 3-arg first/last/fn — INVALID-TEST, would need a rewrite to 3-arg over standard
-  iterators); AND (b) even VALID 3-arg `std::for_each(a,a+3,pr)` fails in madc with
-  `istreambuf_iterator<> expects 2 argument(s), got 1` — a real free-fn-template instantiation/
-  overload-resolution bug (likely the C++17 execution-policy `for_each` overload or a default
-  template-arg gap). Needs BOTH a test rewrite AND a code fix; own slice.
-- (deeper) **container chain sub-gap 13:** `tmp/tv1` → `cannot dereference non-pointer type` (a `*X`
-  where X isn't typed as a pointer, in `_M_realloc_insert`); `_S_destroy` blocks testvector+3. Multi-
-  sub-gap; lower leverage than the singletons above.
+**The clean singletons that flipped this session are done (test3eqclass / teststringglobal /
+teststdstringconv). The remaining 17 are all compound or deep — the full breakdown is in §0's NEXT
+block** (testsstream 3-part with the byte part done @b3beadb; testmadceval runtime-eval `std`;
+testforeach2 compound; the container chain; parenthesized-member-declarator; operator-> on object).
+Recommended next single target = **testsstream part 2**: the std::stringstream `<<`-chain parse-time
+result-type bug (the inner `ss<<h` emits the right `_ZStls...basic_ostream(&ss+16,&h)` but its
+parse-time type isn't basic_ostream, so the outer `<<` lowers to a builtin shift; cout/ostringstream
+are fine). Then add `#include <sstream>` and testsstream flips.
 
 Method: reduce in `tmp/` (DEFAULT mode, no flags), attribute via the 3 oracles + `--emit=c11`/
 `--dump-cir`, fix the deepest layer, full 4-gate. Reducer template: `tmp/sr1.mad` (string `a<b`,
