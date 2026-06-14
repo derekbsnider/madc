@@ -19,9 +19,21 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 ## 0. Orientation
 Same campaign as SESSION 8 (real glibc+libstdc++ every mode; sole backend
 cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. Integration is at
-**585 passed / 17 failed / 0 timed out** (down from 27 this session).
+**586 passed / 16 failed / 0 timed out** (down from 27 this session).
 
-**WHAT THIS SESSION ADDED (6 code commits + 2 test fixes, all FULLY GATED), latest first:**
+**WHAT THIS SESSION ADDED (7 code commits + 3 test fixes, all FULLY GATED), latest first:**
+- `a47c86e` **inherited-operator return type searches ALL bases — flips testsstream (17 → 16).**
+  `DataDefCLASS::binary_operator_return_type` walked only the SINGLE primary base (`base_class`)
+  for an inherited binary operator's return type; for MI it missed an operator inherited from a
+  NON-primary base. `basic_iostream : basic_istream, basic_ostream` keeps `operator<<` in base #2,
+  so a chained `stringstream << a << b` lost its parse-time type — the inner `ss<<a` emitted the
+  correct `_ZStls...basic_ostream(&ss+16,&a)` but its RESULT type was NULL (primary `basic_istream`
+  has no `<<`), so the outer `<<` saw a non-class operand → builtin shift ("shift operands should be
+  of an integer type"). ostringstream (single base, offset 0) worked, isolating the MI base-walk as
+  root. Fix: iterate the full `bases` list (MI direct-base set incl. primary) like `is_or_derives_from`.
+  Combined TEST FIX (INVALID-TEST class): g++/clang reject `stringstream` without `#include <sstream>`,
+  and the test used the retired `printstream(ss)` builtin (removed hardcoded dtSSTREAM tag) → added
+  `<sstream>` + `cout << ss.str() << endl`; +tests/testsstream.expect. Gated: 586/16 zero regr, torture 1571/51, SMAUG.
 - `b3beadb` **free-operator concrete-param match guard (correctness; NO count drop yet).** A free
   operator whose param is a CONCRETE type (no template param) was accepted against ANY arg
   (`fn_template_deduce_param` returns 0 without checking). So `std::operator<<(byte, _IntegerType)`
@@ -69,19 +81,17 @@ cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. Integration 
 **THE KEY STRATEGIC FINDING (read §3):** the container chain is DEEP and FORKS per-operation, so
 sub-gap work advances the `tv1` REDUCER but does NOT flip tests — only the INDEPENDENT singletons
 flip the headline count (this session `_ZNSolsESo` 27→21, teststringrel 21→20, test3eqclass 20→19,
-teststringglobal 19→18, teststdstringconv 18→17). **Headline-count drops come from the INDEPENDENT
-singletons**, NOT container sub-gaps. **A SUB-CLASS of those singletons = INVALID-TEST fixes**
-(teststringglobal, teststdstringconv): tests written against old-shim convenience signatures that
-real libstdc++ + g++/clang reject — fix the test to standard usage, NOT madc. **THE CLEAN SINGLETONS
-ARE NOW EXHAUSTED; the remaining 17 are the HARD cluster** — each compound or deep, NOT ~1-fix drops:
-- **testsstream — 3-part deep (byte part DONE @b3beadb):** (1) byte concrete-param ✓; (2) a
-  std::stringstream `<<` CHAIN's intermediate result is not parse-time-typed as basic_ostream when the
-  stream matched via a base subobject, so the outer `<<` lowers to a builtin shift ("shift operands
-  should be of an integer type") — cout/ostringstream are FINE, only stringstream (basic_iostream);
-  the inner `ss<<h` correctly emits `_ZStls...basic_ostream...(&ss+16, &h)` but its parse-time type is
-  lost; (3) the test needs `#include <sstream>` (stringstream w/ only <iostream> = g++ "incomplete
-  type"). Fix the parse-time operator-result-type for a base-matched stream, then add <sstream>.
-- **testmadceval — deep:** the runtime-eval child TU loses `std::` only for `eval_double` (`#include
+teststringglobal 19→18, teststdstringconv 18→17, testsstream 17→16). **Headline-count drops come from
+the INDEPENDENT singletons**, NOT container sub-gaps. **A SUB-CLASS of those singletons = INVALID-TEST
+fixes** (teststringglobal, teststdstringconv, testsstream's test side): tests written against old-shim
+convenience signatures that real libstdc++ + g++/clang reject — fix the test to standard usage, NOT
+madc. **THE CLEAN SINGLETONS ARE NOW EXHAUSTED; the remaining 16 are the HARD cluster** — each
+compound or deep, NOT ~1-fix drops:
+- **testsstream — DONE @a47c86e** (all 3 parts): (1) byte concrete-param guard @b3beadb; (2) the MI
+  base-walk fix — `binary_operator_return_type` now searches ALL `bases`, so the `stringstream <<`
+  chain keeps its basic_ostream result type (operator<< is in the 2nd base basic_ostream, not the
+  primary basic_istream); (3) test fix `<sstream>` + `cout << ss.str()`.
+- **testmadceval — deep (NEXT recommended single target):** the runtime-eval child TU loses `std::` only for `eval_double` (`#include
   <math.h>` in the eval'd source): `Failed to find type 'std' when parsing function parameters` in
   `__madc_runtime_eval`. eval_unit/int/bool work; the math-include eval child doesn't see std::.
 - **testforeach2 — compound:** (a) `std::for_each(names, fn)` is a 2-arg call g++ rejects (real
@@ -91,10 +101,19 @@ ARE NOW EXHAUSTED; the remaining 17 are the HARD cluster** — each compound or 
   + tv1 sub-gap 13) + "parenthesized member declarator" (testcontainerdtor/testset) + "operator-> on
   object" (testsubscriptarrow/testvectorptr).
 
+**a47c86e POST-MORTEM (the MI base-walk class of bug):** the dual representation `base_class` (single
+primary) + `bases` (full MI direct-base list, populated together at the flatten site) means ANY
+helper that walks inheritance via `base_class` alone is silently MI-incorrect. `binary_operator_return_type`
+was one; AUDIT the others (`is_virtual_method` still uses `base_class`-only — fine for the single-base
+streams it sees today, but a latent MI gap; flag if an MI virtual-through-secondary-base case surfaces).
+The canonical correct walk is `is_or_derives_from`'s `for (b : bases)`.
+
 ## 1. Live state (verify `bash scripts/resume.sh` + `git status`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`b3beadb`** (LOCAL ONLY; develop
-  untouched). `b3beadb` = free-operator concrete-param match guard (CODE, binary changed; correctness,
-  NO count drop — testsstream needs more). Prior two are TEST FIXES (binary was unchanged at
+- **Branch** `feature/retire-embedded-shims-claude` @ **`a47c86e`** (LOCAL ONLY; develop
+  untouched). `a47c86e` = inherited-operator return type searches ALL bases (CODE) + testsstream test
+  fix (`<sstream>` + `cout << ss.str()`); flips testsstream 17→16. Prior `b3beadb` = free-operator
+  concrete-param match guard (CODE; correctness, the byte prerequisite for testsstream). Before that,
+  two TEST FIXES (binary was unchanged at
   `c518a00`): `fe2417a` (teststdstringconv 2-arg→1-arg std::to_string, 18→17), `73cff0a`
   (teststringglobal `empty`→`blank`, 19→18). Prior code: `c518a00` (test3eqclass — strict-equality `===` domain rule for a
   free `operator==`, 20→19); prior `390d8a0` (teststringrel — ref-transparency in method-overload
@@ -104,11 +123,11 @@ ARE NOW EXHAUSTED; the remaining 17 are the HARD cluster** — each compound or 
   (sub-gap 10), `011769f` (sub-gap 9), `f644bb9` (sub-gap 8), `2e8abc1` (sub-gap 7),
   `7202523` (sub-gap 6), `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4) + docs mirrors. Tree is
   CLEAN. MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN at `b3beadb`**: integration **585 passed / 17 failed / 0 timed out / 18
-  skipped** (this session: **27 → 17**; flips: `ce4313a` six —
+- **All gates GREEN at `a47c86e`**: integration **586 passed / 16 failed / 0 timed out / 18
+  skipped** (this session: **27 → 16**; flips: `ce4313a` six —
   testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx; `390d8a0`
-  teststringrel; `c518a00` test3eqclass; `73cff0a` teststringglobal; `fe2417a` teststdstringconv; zero
-  regressions); unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
+  teststringrel; `c518a00` test3eqclass; `73cff0a` teststringglobal; `fe2417a` teststdstringconv;
+  `a47c86e` testsstream; zero regressions); unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
   `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready. (`b3beadb` re-gated all four
   green — it's a code change; it adds no flip. `73cff0a`+`fe2417a` were test-only.)
 - **NOTE on the count:** the sub-gap work (4-12) all lands on `tv1` (a reducer), so the headline only
@@ -140,6 +159,7 @@ ARE NOW EXHAUSTED; the remaining 17 are the HARD cluster** — each compound or 
 | `73cff0a` | **teststringglobal — TEST FIX, ambiguous global `empty` vs C++17 `std::empty` (19 → 18).** `cout << empty` on a file-scope global `string empty;` errored "shift operands should be of an integer type". NOT a operator<</global-string bug (the prior §3 hypothesis): with `using namespace std`, the bare name `empty` is genuinely AMBIGUOUS against the C++17 free fn `std::empty` (`<bits/range_access.h>`, pulled transitively by `<iostream>`). Both g++ AND clang++ REJECT the original: "reference to 'empty' is ambiguous" (candidates `::empty`, `std::empty`). The test only passed against the old embedded shims (no `std::empty`) — it is invalid C++17 under real headers, so this is a TEST bug. Renamed the default-ctor global `empty`→`blank` (+ comment), preserving the test's intent (file-scope std::string + operator<<); madc now compiles+runs it g++-faithfully. LATENT madc gap (NOT fixed, noted for later): madc silently resolves the bare name to `std::empty` (a fn → shift) where the canon compilers hard-error the ambiguity — proper ambiguity detection in unqualified lookup under a using-directive is a separate unstarted feature. Test-only change: binary unchanged at `c518a00`, so unit/torture/SMAUG carry. Gate: integration 584/18. |
 | `fe2417a` | **teststdstringconv — TEST FIX, standard 1-arg `std::to_string` (18 → 17).** Called `std::to_string(s, 42)` — a 2-arg (out, value) writer that does NOT exist in real libstdc++ (to_string is the 1-arg value→string converter that RETURNS the string). g++ AND clang++ both reject it ("no matching function for call to to_string(std::string&, int)"); only worked under the old shims (same INVALID-TEST class as teststringglobal). The other calls (std::stoi/std::stod on a std::string) are valid + already work. Rewrote `std::string s; std::to_string(s, 42);` → `std::string s = std::to_string(42);` (+ comment); both canon compilers accept the rewrite; madc runs it (42/12345/3.5). Test-only: binary unchanged at `c518a00`. Gate: integration 585/17. |
 | `b3beadb` | **free-operator concrete-param match guard (correctness; NO count flip).** A free-operator candidate whose param is a CONCRETE type (no template param) was accepted against ANY arg in that position: `fn_template_deduce_param` returns 0 ("no deduction") without checking, and `try_instantiate_free_operator_template` only rejected on a negative result. So libstdc++ `std::operator<<(byte, _IntegerType)` (param0 = enum class `byte`, param1 deduced) spuriously matched `stream << x` (param0 never checked) then FATALLY failed instantiating `__byte_op_t<x>` (the std::byte shift machinery: `__byte_operand<x>` has no `::__type` for non-integer x). g++/clang reject it on the byte-vs-stream param. Surfaced on a std::stringstream `<<` chain (testsstream): stringstream is basic_iostream, so its `<<` is NOT taken by the cout/cin fast-path and falls to general free-op resolution. Fix: new `free_operator_concrete_param_matches` — when `fn_template_deduce_param` returns 0, a concrete NAMED (class/enum) param must BE the arg's class or a base (`is_or_derives_from`); scalars/pointers/unresolvable stay permissive. Removes the fatal byte mis-instantiation (`__byte_op_t` gone). testsstream STILL fails on a separate deeper bug (see §0/§3) — standalone correctness fix + prerequisite, NO count flip. Gated: 585/17 FAIL-list byte-identical, unit, torture 1571/51, SMAUG. |
+| `a47c86e` | **inherited-operator return type searches ALL bases — flips testsstream (17 → 16).** `DataDefCLASS::binary_operator_return_type` recursed into only the SINGLE primary base (`base_class`) to find an inherited binary operator's return type — for multiple inheritance that misses an operator inherited from a NON-primary base. `basic_iostream : basic_istream, basic_ostream` keeps `operator<<` in base #2, so a chained `stringstream << a << b` lost its parse-time type: the inner `ss<<a` emitted the correct `_ZStls...basic_ostream(&ss+16,&a)` call but its RESULT type was NULL (primary `basic_istream` has no `<<`), so the outer `<<` saw a non-class operand → builtin shift ("shift operands should be of an integer type"). `ostringstream` (single base `basic_ostream`, offset 0) worked, isolating the MI base-walk as root. Fix (deepest layer): iterate the full `bases` list (the MI direct-base set, which includes the primary) exactly as `is_or_derives_from` does, returning the first base that declares the operator; the legacy single-`base_class` walk is kept only for the (today unreachable) bases-empty path. Combined TEST FIX (INVALID-TEST class): g++/clang both reject `stringstream` without `#include <sstream>` (incomplete type), and the test used the retired `printstream(ss)` builtin (tied to the removed hardcoded dtSSTREAM tag) → added `<sstream>` + standard `cout << ss.str() << endl` (output matches g++ canon); +tests/testsstream.expect. Gated: integration 586/16 FAIL-list = prior 17 minus testsstream (zero regressions), unit, torture 1571/51 byte-identical, SMAUG soak exit 124 + ready. |
 
 ## 3. THE NEXT TASK — the clean singletons are EXHAUSTED; remaining = HARD cluster (see §0)
 **STRATEGIC FINDING (2026-06-14, proven this session):** the container chain is DEEP and FORKS
@@ -150,13 +170,14 @@ session `_ZNSolsESo` (27→21, 6 tests) and `390d8a0` teststringrel (21→20) bo
 count-droppers** from the §3.6b clusters; deepen the container chain only when the independents run out.
 
 **The clean singletons that flipped this session are done (test3eqclass / teststringglobal /
-teststdstringconv). The remaining 17 are all compound or deep — the full breakdown is in §0's NEXT
-block** (testsstream 3-part with the byte part done @b3beadb; testmadceval runtime-eval `std`;
-testforeach2 compound; the container chain; parenthesized-member-declarator; operator-> on object).
-Recommended next single target = **testsstream part 2**: the std::stringstream `<<`-chain parse-time
-result-type bug (the inner `ss<<h` emits the right `_ZStls...basic_ostream(&ss+16,&h)` but its
-parse-time type isn't basic_ostream, so the outer `<<` lowers to a builtin shift; cout/ostringstream
-are fine). Then add `#include <sstream>` and testsstream flips.
+teststdstringconv / testsstream). The remaining 16 are all compound or deep — the full breakdown is
+in §0's NEXT block** (testmadceval runtime-eval `std`; testforeach2 compound; the container chain;
+parenthesized-member-declarator; operator-> on object).
+Recommended next single target = **testmadceval**: the runtime-eval child TU loses `std::` ONLY for
+`eval_double` (the eval'd source `#include`s `<math.h>`) — `Failed to find type 'std' when parsing
+function parameters` in `__madc_runtime_eval`, while eval_unit/int/bool work. Likely the child-Program
+construction for the math-include case doesn't seed/inherit the `std` namespace; reduce the eval'd
+source (DEFAULT mode), 3-oracle, fix the child-TU setup at the deepest layer.
 
 Method: reduce in `tmp/` (DEFAULT mode, no flags), attribute via the 3 oracles + `--emit=c11`/
 `--dump-cir`, fix the deepest layer, full 4-gate. Reducer template: `tmp/sr1.mad` (string `a<b`,
@@ -168,8 +189,8 @@ tv1, 3 oracles + `--emit=c11`/`--dump-cir`, deepest layer. Note testvector etc. 
 (`std::allocator_traits<...>::_S_destroy`, a separate static-member wall) — so the container tests
 need BOTH, multiple sub-gaps. Also off-path: deduced-return `auto f(){return e;}` (no `-> T`).
 
-### 3.6b — THE CURRENT 17 FAILURES, clustered by first-error (at `fe2417a`)
-~6 distinct root-cause walls (measured, not assumed — the earlier "container+string share one
+### 3.6b — THE CURRENT 16 FAILURES, clustered by first-error (at `a47c86e`)
+~5 distinct root-cause walls (measured, not assumed — the earlier "container+string share one
 root, drops fast" was over-optimistic lumping; the real container chain is ~4 tests, the rest are
 independent):
 - **container/string template INSTANTIATION (~10)** — the live `tv1` chain + faces: `_S_destroy`
@@ -180,14 +201,14 @@ independent):
 - **`Unsupported parenthesized member declarator in class definition` (2)** — testcontainerdtor, testset.
 - **`expression before '->' must be a pointer` (2)** — testsubscriptarrow, testvectorptr (operator-> on an object).
 - **`__ns_std_for_each` undefined / istreambuf_iterator deduction (1)** — testforeach2 (COMPOUND: invalid 2-arg call + real 3-arg instantiation bug; see §3).
-- **`__byte_op_t` undeclared (1)** — testsstream (std::byte op machinery in `<sstream>`).
 - **runtime-eval `std` parse (1)** — testmadceval (`Failed to find type 'std'` in `__madc_runtime_eval`,
   the second wall behind the now-fixed `_ZNSolsESo`).
-[test3eqclass FIXED @c518a00; teststringglobal FIXED @73cff0a; teststdstringconv FIXED @fe2417a.]
-Highest leverage now: testsstream + testmadceval (each ~1 fix → 1 test); testforeach2 is compound;
-the rest are the deep container chain. NB the INVALID-TEST class (teststringglobal/teststdstringconv):
-always 3-oracle the failing call FIRST — several of these tests use old-shim convenience signatures
-real libstdc++ rejects, so the fix is the test, not madc.
+[test3eqclass FIXED @c518a00; teststringglobal FIXED @73cff0a; teststdstringconv FIXED @fe2417a;
+testsstream FIXED @a47c86e (byte guard @b3beadb + MI base-walk + test `<sstream>`).]
+Highest leverage now: testmadceval (~1 fix → 1 test); testforeach2 is compound;
+the rest are the deep container chain. NB the INVALID-TEST class (teststringglobal/teststdstringconv/
+testsstream-test-side): always 3-oracle the failing call FIRST — several of these tests use old-shim
+convenience signatures real libstdc++ rejects, so the fix is the test, not madc.
 
 ## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. DO NOT reapply
 `tmp/nontype_fold_v2_wip.patch` (the reverted 202-regression).
