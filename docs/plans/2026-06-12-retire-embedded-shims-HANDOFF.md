@@ -19,9 +19,18 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 ## 0. Orientation
 Same campaign as SESSION 8 (real glibc+libstdc++ every mode; sole backend
 cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. Integration is at
-**582 passed / 20 failed / 0 timed out** (down from 27 this session).
+**583 passed / 19 failed / 0 timed out** (down from 27 this session).
 
-**WHAT THIS SESSION ADDED (4 code commits, all individually FULLY GATED), latest first:**
+**WHAT THIS SESSION ADDED (5 code commits, all individually FULLY GATED), latest first:**
+- `c518a00` **test3eqclass — strict-equality `===` domain rule for a FREE `operator==` (20 → 19).**
+  `s === s2` / `s === "x"` on std::string errored "no match for strict equality … (no operator===
+  or operator==)". `===`/`!==` had no parse-time domain-rule fallback to `operator==`: a member ==
+  bound via the CIR builder, a user === bound directly, but std::string's FREE bool-returning
+  `operator==` never bound (the CIR free-operator path only binds ref/by-value-class returns).
+  `rewritten_operator_candidate` now lowers `x === y`→`x == y` / `x !== y`→`!(x == y)` (spec
+  §2.2/2.4/2.5) through the SAME `lower_free_operator_to_call` normal `==` uses (new helper
+  `lower_strict_equality_domain_rule`). Returns NULL (token kept for CIR member-== / different-domain
+  constant) when no == covers the pair — Plain/Money/Tag untouched. Flips test3eqclass.
 - `390d8a0` **teststringrel — reference-transparency in method-overload reselection (21 → 20).**
   Inside the instantiated `operator<(const string&, const string&)` body `__lhs.compare(__rhs)`
   mis-bound `compare(const char*)` because `__rhs` (a `const string&` param) was scored as a raw
@@ -37,31 +46,33 @@ cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. Integration 
   C++/madc-only `!is_c_mode()` gate). +testdirectinit.
 
 **THE KEY STRATEGIC FINDING (read §3):** the container chain is DEEP and FORKS per-operation, so
-sub-gap work advances the `tv1` REDUCER but does NOT flip the 21 tests — only `_ZNSolsESo` flipped
-tests this session. **Headline-count drops come from the INDEPENDENT singletons** (std::string
-operators, `std::for_each`, `__byte_op_t`, `to_string`, runtime-eval-`std`), NOT more container
-sub-gaps. **NEXT (recommended, root cause already located): the teststringrel std::string-compare
-reference-arg fix** — a real count-dropper (see §3). The user explicitly wants the headline count
-to drop; pick count-droppers over deepening the container chain.
+sub-gap work advances the `tv1` REDUCER but does NOT flip tests — only the INDEPENDENT singletons
+flip the headline count (this session `_ZNSolsESo` 27→21, teststringrel 21→20, test3eqclass 20→19,
+all string/stream singletons). **Headline-count drops come from the INDEPENDENT singletons**
+(std::string operators, `std::for_each`, `__byte_op_t`, `to_string`, runtime-eval-`std`), NOT more
+container sub-gaps. **NEXT (recommended count-droppers, see §3):** teststringglobal (`cout <<` a
+GLOBAL std::string lowered as a shift) and testforeach2 (`std::for_each` free-fn-template). Pick
+count-droppers over deepening the container chain; the user explicitly wants the headline to drop.
 
 ## 1. Live state (verify `bash scripts/resume.sh` + `git status`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`390d8a0`** (LOCAL ONLY; develop
-  untouched). Last COMMITTED code: `390d8a0` (teststringrel — ref-transparency in method-overload
-  reselection, 21→20); prior `f120470` (sub-gap 12 — `__is_trivial(T)` builtin; advances tv1, 0
+- **Branch** `feature/retire-embedded-shims-claude` @ **`c518a00`** (LOCAL ONLY; develop
+  untouched). Last COMMITTED code: `c518a00` (test3eqclass — strict-equality `===` domain rule for a
+  free `operator==`, 20→19); prior `390d8a0` (teststringrel — ref-transparency in method-overload
+  reselection, 21→20), `f120470` (sub-gap 12 — `__is_trivial(T)` builtin; advances tv1, 0
   flips), `ce4313a` (fn-ptr-param overload fix → cleared the `_ZNSolsESo` wall, 27→21),
   `17677f2` (sub-gap 11, direct-init), `83a05d7`
   (sub-gap 10), `011769f` (sub-gap 9), `f644bb9` (sub-gap 8), `2e8abc1` (sub-gap 7),
   `7202523` (sub-gap 6), `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4) + docs mirrors. Tree is
   CLEAN. MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN at HEAD `390d8a0`**: integration **582 passed / 20 failed / 0 timed out / 18
-  skipped** (this session: **27 → 20**; `ce4313a` cleared six —
-  testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx; zero
-  regressions vs `tmp/baseline_fails_s7.txt` minus those six);
+- **All gates GREEN at HEAD `c518a00`**: integration **583 passed / 19 failed / 0 timed out / 18
+  skipped** (this session: **27 → 19**; `ce4313a` cleared six —
+  testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx; `390d8a0`
+  teststringrel; `c518a00` test3eqclass; zero regressions);
   unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
   `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready.
-- **NOTE on the 21:** the prior sub-gap work (4-11) all landed on `tv1` (a reducer), so the 27
-  headline was flat for ~4 sessions while *passed* rose from added sub-gap tests. The `_ZNSolsESo`
-  fix is the first to flip pre-existing FAILING tests. See §3.6b below for the current 21 clustered.
+- **NOTE on the count:** the sub-gap work (4-12) all lands on `tv1` (a reducer), so the headline only
+  drops on the INDEPENDENT singletons (`_ZNSolsESo`, teststringrel, test3eqclass so far). See §3.6b
+  below for the current 19 clustered.
 - Build: `make -C src` (clang++ default), bin at `bin/madc`. Clean, no warnings. NOTE: after a
   `FEATURE_DEFINES=-D…` debug build, `touch src/parser.cpp` before a plain `make -C src` or the
   stale debug `.o` is reused.
@@ -84,6 +95,7 @@ to drop; pick count-droppers over deepening the container chain.
 | `ce4313a` | **fn-ptr-param overload fix — cleared the `_ZNSolsESo` wall (27→21).** `cout << (long)` mangled the bogus import `_ZNSolsESo` (`operator<<(ostream)`) instead of `_ZNSolsEl`. Root: `DataDefFPTR::is_numeric()` returns true, so in `score_arg_to_param` a function-pointer PARAMETER fell through to the numeric-vs-numeric branch and a 64-bit integer arg matched the ostream manipulator `operator<<(ostream& (*)(ostream&))` with score 5 (rawtype 64==64), TYING `operator<<(long)` and — registered first — winning. Only 64-bit ints hit it (int/short scored 4 there; float/double non-integer). Fix (cir_builder `score_arg_to_param`): a fn-ptr param now handles every arg shape — a function/fn-ptr arg binds by signature, the null-pointer constant scores 3, any other arg is REJECTED (-1). Surgical + general (matches gcc/clang). Cleared 6 tests (testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx); testmadceval advances to a separate runtime-eval `std` wall. +`tests/testmadcevalexprctx.timeout=30` (it now RUNS — 12 runtime `eval_*_ctx` calls, each a full child-Program compile→JIT ~0.36s, ~5.5s total; per test-fixtures.md). Verified vs clang++ AND g++. |
 | `f120470` | **sub-gap 12 — `__is_trivial(T)` builtin.** `_M_realloc_insert`→`uninitialized_copy` gates a memmove opt on `__is_trivial(_ValueType1)` (where `typedef typename iterator_traits<It>::value_type _ValueType1;`). madc's trait table lacked `__is_trivial`, so it parsed as a call to undeclared fn `__is_trivial` and its type-arg `_ValueType1` was looked up as a value → "undeclared identifier '_ValueType1'" (the typedef itself registers fine). Fix: add `__is_trivial` to `type_trait_arity` + `evaluate_type_trait` + the constexpr-fold path; new `trait_is_trivial` ([basic.types]: non-class trivial; class trivial iff no user ctor/dtor, non-polymorphic, all bases/members trivial). Verified vs g++ AND clang++ (int/ptr/POD=1, user-ctor/dtor/virtual=0). **0 test flips** (advances tv1 like sub-gaps 4-11). tv1 advances PAST `_ValueType1` to **`cannot dereference non-pointer type`** (sub-gap 13). |
 | `390d8a0` | **teststringrel — reference transparency in method-overload reselection (21 → 20).** `a < b` instantiates the free `operator<(const string&, const string&)` whose body is `__lhs.compare(__rhs)`; madc bound `string::compare(const char*)` instead of `compare(const basic_string&)` and jammed the dereferenced string into the char* param → "incompatible argument type for pointer type parameter". The bug was ONLY in the instantiated body — the reference param `__rhs` (`const string&`) was scored as a raw `string*` in `reselect_method_overload` (which built argtypes from raw `p->datadef()`). Fix: `reselect_method_overload` now types each arg via `operand_value_datadef` (reference transparency — a reference var/param arg denotes the referenced OBJECT, not the pointer; the same helper already used at parser.cpp ~26117). compare(const basic_string&) now scores an exact object match and wins. Verified vs clang++/g++. Flips teststringrel. test3eqclass (`===`) + teststringglobal (`operator<<` on a global) are SEPARATE roots, still failing. |
+| `c518a00` | **test3eqclass — strict-equality `===` domain rule for a FREE `operator==` (20 → 19).** `s === s2`/`s === "x"` on std::string errored "no match for strict equality … (no operator=== or operator==)". `===`/`!==` (madc dialect) had NO parse-time DOMAIN-RULE fallback to `operator==`. A user operator=== bound directly (Money member, Tag free); a class with a MEMBER operator== bound via the CIR builder (Plain). But std::string's operator== is a FREE bool-returning template, and `strict_equality_lowering`'s `class_operator_call(top,"==")` delegates the free shape to `std_free_operator_instantiation`, which only binds reference-returning (W2) + by-value-class (operator+) free operators — never a bool-returning one. Normal `a == b` works because the PARSER lowers it to a call via `lower_free_operator_to_call`; `===` was left raw. Fix (parser, deepest layer, reuses the ONE free-operator lowering — no new CIR machinery): `rewritten_operator_candidate` applies the domain rule (spec §2.2/2.4/2.5) after the direct user operator===/!== sets miss — `x === y`→`x == y`, `x !== y`→`!(x == y)` via new `lower_strict_equality_domain_rule` (lowers a synthetic TokenEquals exactly as `==`). Returns NULL (token kept for CIR member-== dispatch / different-domain constant) when no == covers the pair, so member-== (Plain) and member-=== (Money) are untouched; only the free/value-returning == lowers to a call. All 4 paths correct (Plain/string/string-literal via ==, Money via member ===, Tag via free ===); verified vs the g++-canon .expect 16/16. |
 
 ## 3. THE NEXT TASK — pick a count-dropper (the strategy that's working)
 **STRATEGIC FINDING (2026-06-14, proven this session):** the container chain is DEEP and FORKS
@@ -93,11 +105,7 @@ REDUCER but do NOT flip tests. **Headline-count drops come from the INDEPENDENT 
 session `_ZNSolsESo` (27→21, 6 tests) and `390d8a0` teststringrel (21→20) both did. **Keep picking
 count-droppers** from the §3.6b clusters; deepen the container chain only when the independents run out.
 
-**REMAINING COUNT-DROPPER CANDIDATES (the 20, see §3.6b), in rough leverage order:**
-- **test3eqclass** — `===` strict-equality on `basic_string`: `cir error: no match for strict equality
-  on '…basic_string…' (no operator=== or operator==)`. The `===` lowering doesn't find string's
-  `operator==`. Likely sibling of the teststringrel fix (a string comparison-operator binding).
-  Reduce `string a,b; a===b;`.
+**REMAINING COUNT-DROPPER CANDIDATES (the 19, see §3.6b), in rough leverage order:**
 - **teststringglobal** — `cout << empty` (a GLOBAL `std::string`) lowered as a bitwise shift
   ("shift operands should be of an integer type", line 14 = `cout << empty`): `operator<<` not binding
   on a global-string operand. Reduce a global `std::string` + `cout <<`.
@@ -122,7 +130,7 @@ tv1, 3 oracles + `--emit=c11`/`--dump-cir`, deepest layer. Note testvector etc. 
 (`std::allocator_traits<...>::_S_destroy`, a separate static-member wall) — so the container tests
 need BOTH, multiple sub-gaps. Also off-path: deduced-return `auto f(){return e;}` (no `-> T`).
 
-### 3.6b — THE CURRENT 20 FAILURES, clustered by first-error (at `390d8a0`)
+### 3.6b — THE CURRENT 19 FAILURES, clustered by first-error (at `c518a00`)
 ~8 distinct root-cause walls (measured, not assumed — the earlier "container+string share one
 root, drops fast" was over-optimistic lumping; the real container chain is ~4 tests, the rest are
 independent):
@@ -137,11 +145,10 @@ independent):
 - **`__ns_std_for_each` undefined (1)** — testforeach2 (std::for_each free-fn-template instantiation).
 - **`__byte_op_t` undeclared (1)** — testsstream (std::byte op machinery in `<sstream>`).
 - **`to_string` overload (1)** — teststdstringconv.
-- **`=== ` strict-equality on basic_string (1)** — test3eqclass (no `operator===`/`==` bound; likely a
-  sibling of the teststringrel fix).
 - **runtime-eval `std` parse (1)** — testmadceval (`Failed to find type 'std'` in `__madc_runtime_eval`,
   the second wall behind the now-fixed `_ZNSolsESo`).
-Highest leverage now: the independent singletons (test3eqclass, teststringglobal, testforeach2,
+[test3eqclass `===` FIXED @c518a00.]
+Highest leverage now: the independent singletons (teststringglobal, testforeach2,
 testsstream, teststdstringconv, testmadceval) — each ~1 fix → 1 test, NOT the deep container chain.
 
 ## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. DO NOT reapply
