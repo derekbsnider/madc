@@ -23,15 +23,19 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 → `__gnu_cxx::__alloc_traits<allocator<int>>::construct`.
 
 ## 1. Live state (verify `bash scripts/resume.sh`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`5a15685`** (LOCAL ONLY; develop
-  untouched). MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
+- **Branch** `feature/retire-embedded-shims-claude` @ **`c0d9b68`** (LOCAL ONLY; develop
+  untouched). Last CODE commit `5a15685`; `336555c`/`6063979`/`c0d9b68` are docs/status/mirror
+  only (gate state unchanged). MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
 - **All gates GREEN** at HEAD: integration **567 passed / 27 failed / 18 skipped** (FAIL
   list byte-identical to `tmp/baseline_fails_s7.txt`; +testmemtmplorder +testusingbasemember
   +testvariadicmembertmpl +testmemtmplrefparam +testmemtmplfwdrefpack +testmemtmpltypedefparam);
   unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
   `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready.
+- Build: `make -C src` (clang++ default), bin at `bin/madc`. Clean, no warnings. NOTE: after a
+  `FEATURE_DEFINES=-D…` debug build, `touch src/parser.cpp` before a plain `make -C src` or the
+  stale debug `.o` is reused.
 
-## 2. What session 9 landed (parts 21-23, each FULLY GATED) — the testvector member-overload chain
+## 2. What session 9 landed (parts 21-24, each FULLY GATED) — the testvector member-overload chain
 | Commit | What |
 |---|---|
 | `39cb5d2` | **part 21 — [temp.func.order] for STATIC member-template calls.** `findMethodOverload` partial-ordering TIEBREAK (`member_tmpl_more_specialized`, reuses part-18 `po_pattern_match`) + `reselect_static_member_overload` (post-arg reselect+rebuild for `Owner::m(args)`, wired at both qualified-call builders via owner/member out-params on `resolve_class_qualified_expression`). `take(U*)` beats `take(P)`. +testmemtmplorder. |
@@ -54,8 +58,21 @@ off-path: multi-element packs (`tmp/vmt2`). Full detail + reducers:
 testvector should advance past `construct`; the ~12-test container cluster + 5 string-class
 tests likely share these roots.
 
-## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. Reducers above live in `tmp/`
-(gitignored; recreate from the design doc). DO NOT reapply `tmp/nontype_fold_v2_wip.patch`.
+## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. DO NOT reapply
+`tmp/nontype_fold_v2_wip.patch` (the reverted 202-regression).
+
+## 5. SESSION-9 REDUCER INVENTORY (tmp/ is gitignored — recreate; all DEFAULT mode, no flags)
+The promoted ones are now tests (`tests/testmemtmpl*`/`testusingbasemember`/`testvariadicmembertmpl`).
+The live wall + the sub-gap-4 probes are NOT tests (they fail) — recreate:
+- `tmp/tv1.mad` — `#include <vector>\nint main(){ std::vector<int> v; v.push_back(10); return 0; }`
+  (THE wall; now fails only at sub-gap 4, the construct body PATTERN pack expansion).
+- `tmp/vmt9.mad` — body `sink(args...)` (plain value-pack expansion) → **WORKS** (the control).
+- `tmp/vmt10.mad` — body `sink(std::forward<Args>(args)...)` (PATTERN expansion, type+value pack)
+  → **"Missing operand"** (the sub-gap-4 repro; needs `#include <utility>`).
+- `tmp/vmt2.mad` — multi-element pack (pre-existing, off the critical path: deduction binds
+  only zero/one pack element, parser.cpp ~25876).
+- u3/u4/u5, refm1, vmt5/6/7, mft3 — covered by the promoted tests; recreate from the design doc
+  if needed for bisection.
 
 ---
 
