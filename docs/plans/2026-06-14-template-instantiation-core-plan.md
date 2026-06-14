@@ -154,15 +154,27 @@ gates green; advanced tv1/testvector/testvectorptr past the deref wall (no flip)
     regr). NOTE: a reference default `R = T&` exposed a SEPARATE
     reference-return-from-defaulted-param gap (deferred; not needed for the std
     shape, which uses `R = T*`).
-  - **(b) trait-expression defaults** — `_ReturnType = __conditional_t<
-    __move_if_noexcept_cond<_Tp>::value, move_iterator<_Tp*>, _Tp*>`
-    (`<bits/stl_iterator.h>:1828`, exactly `__make_move_if_noexcept_iterator`). For
-    `int` the cond is false → `_ReturnType = _Tp* = int*`. Needs evaluating
-    `__conditional_t<bool,A,B>` AND the `__move_if_noexcept_cond<T>::value` trait at
-    instantiation. Reducer `tmp/cond1.mad` (`R = std::conditional<false,double,T*>
-    ::type`). Harder — this is what tv1 actually needs; (a) alone won't flip tv1.
-    (cond3.mad also showed `std::conditional<...>::type` member-access has a
-    separate "'type' is not a static member" gap to clear.)
+  - **(b) trait-expression defaults — ✅ DONE (`cd8dc11`).** New
+    `Program::resolve_template_param_default_type` substitutes the bound params
+    into the default's tokens and resolves the full type in an ISOLATED stream
+    (the recursion-safe alias-resolver pattern), wired as the fallback in
+    `instantiate_fn_template_binding` after the 2a fold. `resolve_declared_type_token`
+    already evaluates `conditional`/`conditional_t` — the gap was that the
+    defaulted-param slot never invoked resolution. So `R = typename
+    std::conditional<COND,A,B>::type` defaults now evaluate. +testtmpldefaultcond
+    (both branches); reducer `tmp/cond1.mad` passes. All 4 gates green (591/15).
+  - **(c) member alias template `__conditional<C>::template type<A,B>` — NEXT
+    (the actual tv1 blocker now).** tv1's real default is `_ReturnType =
+    __conditional_t<__move_if_noexcept_cond<_Tp>::value, move_iterator<_Tp*>,
+    _Tp*>` (`<bits/stl_iterator.h>:1828`). `__conditional_t` is NOT `conditional` —
+    it's `template<bool C, class If, class Else> using __conditional_t = typename
+    __conditional<C>::template type<If, Else>` (type_traits:134), where
+    `__conditional<bool>` is a struct holding a MEMBER ALIAS TEMPLATE
+    `template<class T, class> using type = T;` (type_traits:119). After part 2b,
+    tv1 advanced to **"type<> expects 0 type argument(s), got 2"** — madc treats
+    the member `type<...>` as a 0-arg template. Needs member-alias-template-with-
+    args resolution, AND the `__move_if_noexcept_cond<_Tp>::value` bool trait.
+    Reducer to build: a `__conditional<false>::type<A,B>` analogue.
 - **testvector line 17: "incompatible types in assignment to an arithmetic type
   lvalue"** — a distinct wall reached once the deref is past (subscript/assign
   through the instantiated `operator[]`/data path).
