@@ -4732,14 +4732,23 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	// above); there is no implicit object->scalar/pointer conversion here.
 	if (adc->is_object())
 		return -1;
-	// Function-to-pointer decay: a bare function argument binds a
-	// function-pointer parameter (`__stoa(&std::strtol, ...)`).
-	// Discriminate by SIGNATURE — C++ has no implicit conversion between
-	// incompatible function-pointer types, and overloads can differ ONLY
-	// here (the __stoa<float>/<double> instantiations). Unknown target
-	// shapes stay at the legacy neutral score.
-	if (dynamic_cast<const DataDefFPTR *>(pdc)
-	    && (adc->is_function() || dynamic_cast<const DataDefFPTR *>(adc))) {
+	// A function-pointer PARAMETER. Function-to-pointer decay: a bare function
+	// argument binds it (`__stoa(&std::strtol, ...)`), discriminated by
+	// SIGNATURE (C++ has no implicit conversion between incompatible
+	// function-pointer types; the __stoa<float>/<double> instantiations differ
+	// ONLY here). A NON-function argument does NOT bind a fn-ptr param — C++ has
+	// no integer/float→function-pointer conversion (only the null-pointer
+	// constant). This rejection is load-bearing: DataDefFPTR::is_numeric() is
+	// true, so without it a fn-ptr param falls through to the numeric branch
+	// below and a 64-bit integer argument spuriously matched the ostream
+	// manipulator `operator<<(ostream& (*)(ostream&))`, tying (rawtype 64==64)
+	// and — registered first — beating `operator<<(long)` (`cout << (long)`
+	// mangled the bogus _ZNSolsESo; int/float/double were unaffected).
+	if (dynamic_cast<const DataDefFPTR *>(pdc)) {
+		const bool arg_is_fn = adc->is_function()
+		    || dynamic_cast<const DataDefFPTR *>(adc);
+		if (!arg_is_fn)
+			return arg_is_zero_literal ? 3 : -1; // null binds; else reject
 		const FuncDef *pf =
 		    dynamic_cast<const DataDefFPTR *>(pdc)->target;
 		const FuncDef *af = dynamic_cast<const FuncDef *>(adc);
