@@ -23,14 +23,14 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 → `__gnu_cxx::__alloc_traits<allocator<int>>::construct`.
 
 ## 1. Live state (verify `bash scripts/resume.sh`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`c0d9b68`** (LOCAL ONLY; develop
-  untouched). Last CODE commit `5a15685`; `336555c`/`6063979`/`c0d9b68` are docs/status/mirror
-  only (gate state unchanged). MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN** at HEAD: integration **567 passed / 27 failed / 18 skipped** (FAIL
+- **Branch** `feature/retire-embedded-shims-claude` @ **`58d6c7f`** (LOCAL ONLY; develop
+  untouched). Last CODE commit `58d6c7f` (sub-gap 4); prior docs/status/mirror commits
+  `c0d9b68`/`2cc9dcb`. MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
+- **All gates GREEN** at HEAD: integration **568 passed / 27 failed / 18 skipped** (FAIL
   list byte-identical to `tmp/baseline_fails_s7.txt`; +testmemtmplorder +testusingbasemember
-  +testvariadicmembertmpl +testmemtmplrefparam +testmemtmplfwdrefpack +testmemtmpltypedefparam);
-  unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
-  `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready.
+  +testvariadicmembertmpl +testmemtmplrefparam +testmemtmplfwdrefpack +testmemtmpltypedefparam
+  +testmemtmplpackexpand); unit all-pass; gcc-torture **1571 / 51-name failset byte-identical**
+  to `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready.
 - Build: `make -C src` (clang++ default), bin at `bin/madc`. Clean, no warnings. NOTE: after a
   `FEATURE_DEFINES=-D…` debug build, `touch src/parser.cpp` before a plain `make -C src` or the
   stale debug `.o` is reused.
@@ -42,20 +42,25 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 | `746aaa7` | **part 22 — class-scope `using Base::member;` imports base overloads.** Was skipped (name hiding dropped them); `try_import_using_base_member` pushes the base's same-name overloads into the derived set ([namespace.udecl]). Now the BASE `allocator_traits::construct` is selected over `__alloc_traits`'s own SFINAE one. +testusingbasemember. |
 | `505fd1f` | **part 23 — preserve parameter-pack-ness for member-template instantiation.** B-feature hardcoded `typeparam_is_pack=false`; threaded real pack flags (`FuncDef::template_param_is_pack` ← `last_skipped_template_typeparam_is_pack`). A by-value variadic static member template now instantiates+runs. +testvariadicmembertmpl. |
 | `5a15685` | **part 24 — reference params + fwd-ref packs + class-scope typedef params in member-tmpl instantiation.** (1) ref args were passed BY VALUE (call bound to the varargs PLACEHOLDER, no ref_params → SIGSEGV) — `reselect_static_member_overload` now binds the call to the instantiated DEFINITION (`<placeholder>__mti`, real params+ref_params) for EVERY member-tmpl static call (selection + rebind SEPARATED). (2) `Args&&...` fwd-ref packs: `fn_template_param_is_pack` accepts ref-quals + the 1-elem substitution copies `&&` through before dropping `...`. (3) class-scope typedef params (`allocator_type&`): instantiate with owner on `class_scope_stack` (`FnTemplateDef::owner_class`) + parseFunction `resolve_current_class_type_alias` fallback. +testmemtmplrefparam/fwdrefpack/typedefparam. REJECTED: mutating the placeholder signature (corrupts findMethodOverload arity gate, flips selection — do NOT reintroduce). |
+| `58d6c7f` | **sub-gap 4 — PATTERN pack expansion in a member-tmpl body.** `instantiate_fn_template_binding` dropped a one-element pack `...` only after a bare pack name (`args...`/`Args&&...`); a PATTERN expansion `std::forward<Args>(args)...` (type pack as a template-arg + value pack, `...` after `)`) left the three `tkDot` in the stream → "Missing operand" + undefined extern. The pattern is already substituted inline for the single bound element, so the fix DROPS a three-`tkDot` run that doesn't follow an emitted comma (a C varargs `, ...` does) — generalizes the identifier-anchored drop to pattern-anchored. +testmemtmplpackexpand. `tmp/vmt10` runs; tv1 advances to the instance-member-template wall (sub-gap 5). |
 
-## 3. THE NEXT TASK — sub-gap 4: pack EXPANSION in the construct body
-The construct overload chain is now fully selected + instantiated (selection, typedef params,
-ref-args, pack arity all done). `tmp/tv1` (`vector<int>; push_back`) advances to the body:
-`__a.construct(__p, std::forward<_Args>(__args)...)` → **"Missing operand"**.
-ISOLATED 2026-06-14: `tmp/vmt9` `sink(args...)` (plain value-pack expansion) WORKS; `tmp/vmt10`
-`sink(std::forward<Args>(args)...)` (a PATTERN expansion — the run before `...` carries the TYPE
-pack `Args` as a template-arg AND the value pack `args`) → "Missing operand". So
-`instantiate_fn_template_binding` handles a bare `args...` but not a one-element PATTERN
-expansion; generalize the identifier-anchored one-element `...`-drop to a pattern-anchored one
-(substitute `Args`→bound type + `args`→arg, drop `...`). Reducer `tmp/vmt10`. Pre-existing
-off-path: multi-element packs (`tmp/vmt2`). Full detail + reducers:
-`docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"SESSION 9". After this:
-testvector should advance past `construct`; the ~12-test container cluster + 5 string-class
+## 3. THE NEXT TASK — sub-gap 5: INSTANCE member-template instantiation
+Sub-gap 4 (pack expansion) is DONE (`58d6c7f`). `tmp/tv1` (`vector<int>; push_back`) now
+advances past the construct body to a NEW, distinct wall:
+**`import of undefined item __new_allocator_int32_t__construct`**. The allocator_traits
+`construct` body calls `__a.construct(__p, std::forward<_Args>(__args)...)` — an INSTANCE
+member-template call (`__a` is an OBJECT, `__new_allocator<int>`), not the STATIC
+`Owner::m(args)` form the B-feature (`instantiate_member_fn_template_for_call`) +
+`reselect_static_member_overload` handle. `__new_allocator` is a madc-LOCAL monomorphized
+class, so its `construct` member template must instantiate on ODR-use like the static one does.
+Likely: extend the B-feature hook (or add an instance sibling) to the member-access/`->`-call
+path so a declaration-only LOCAL instance member template instantiates + rebinds; exported
+instance member templates already route through `member_template_method_call` — first confirm
+whether THAT path can be reused for a LOCAL owner. Reduce an instance member-template call
+from scratch (`obj.m(args)` where `m` is `template<...> void m(...)`), attribute via
+`--dump-cir`, fix deepest layer, gate hard. Full detail:
+`docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"SESSION 9" (sub-gap 5).
+After this: testvector should advance further; the ~12-test container cluster + 5 string-class
 tests likely share these roots.
 
 ## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. DO NOT reapply
@@ -65,10 +70,12 @@ tests likely share these roots.
 The promoted ones are now tests (`tests/testmemtmpl*`/`testusingbasemember`/`testvariadicmembertmpl`).
 The live wall + the sub-gap-4 probes are NOT tests (they fail) — recreate:
 - `tmp/tv1.mad` — `#include <vector>\nint main(){ std::vector<int> v; v.push_back(10); return 0; }`
-  (THE wall; now fails only at sub-gap 4, the construct body PATTERN pack expansion).
+  (THE wall; now fails at sub-gap 5, the INSTANCE member-template call
+  `__new_allocator<int>::construct` — `import of undefined item __new_allocator_int32_t__construct`).
 - `tmp/vmt9.mad` — body `sink(args...)` (plain value-pack expansion) → **WORKS** (the control).
 - `tmp/vmt10.mad` — body `sink(std::forward<Args>(args)...)` (PATTERN expansion, type+value pack)
-  → **"Missing operand"** (the sub-gap-4 repro; needs `#include <utility>`).
+  → now **WORKS** (was the sub-gap-4 repro, fixed @58d6c7f; needs `#include <utility>`).
+  Promoted to `tests/testmemtmplpackexpand`.
 - `tmp/vmt2.mad` — multi-element pack (pre-existing, off the critical path: deduction binds
   only zero/one pack element, parser.cpp ~25876).
 - u3/u4/u5, refm1, vmt5/6/7, mft3 — covered by the promoted tests; recreate from the design doc

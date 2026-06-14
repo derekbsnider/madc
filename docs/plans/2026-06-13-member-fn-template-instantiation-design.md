@@ -75,21 +75,38 @@ testmemtmplfwdrefpack / testmemtmpltypedefparam.
   `instantiate_fn_template_binding` after it swaps the stack to fresh) + a
   `resolve_current_class_type_alias` fallback in parseFunction's param-type resolution.
 
-### REMAINING sub-gap 4 — PATTERN pack expansion in a body expression (NEXT slice, ISOLATED)
-tv1 fails at the construct body `__a.construct(__p, std::forward<_Args>(__args)...)` with
+### Sub-gap 4 (`58d6c7f`) — PATTERN pack expansion in a body expression (DONE, gated)
+tv1 failed at the construct body `__a.construct(__p, std::forward<_Args>(__args)...)` with
 **"Missing operand"**. CHARACTERIZED (2026-06-14):
 - `tmp/vmt9` `sink(args...)` (plain VALUE-pack expansion in a call arg) → **WORKS** (sink 42).
 - `tmp/vmt10` `sink(std::forward<Args>(args)...)` (a PATTERN expansion: the run before `...`
   contains BOTH the TYPE pack `Args` as a template-arg `<Args>` AND the value pack `args`) →
   **"Missing operand"** (`import of undefined item C__fwd__mti`).
-So `instantiate_fn_template_binding`'s pack substitution handles a bare value-name `args...`
-but NOT a one-element PATTERN expansion `<...Args...>(...args...)...`. The fix: in the body
-substitution, when a `...` follows a multi-token pattern that references the pack (type pack as
-a template-id arg and/or value pack), expand the pattern for the single bound element
-(substitute `Args`→bound type, `args`→the arg) and drop the `...` — generalize the current
-identifier-anchored one-element drop to a pattern-anchored one. Reducer `tmp/vmt10` (no
-libstdc++ beyond `<utility>` for std::forward; or a pure `wrap<Args>(args)...`). Pre-existing
-off-path: multi-element packs (`tmp/vmt2`).
+`instantiate_fn_template_binding`'s pack substitution handled a bare value-name `args...`
+but NOT a one-element PATTERN expansion `<...Args...>(...args...)...`. The pattern's tokens
+ARE substituted correctly inline by the main loop (type pack `Args`→bound type via `subst`,
+value pack `args`→the bound arg), so for the single bound element the only missing step is
+DROPPING the trailing `...` (which follows `)`, not an identifier, so the identifier-anchored
+drop never fired and the three `tkDot` survived → stray ellipsis). **Fix:** before the
+identifier handling in the substitution loop, drop a three-`tkDot` run that does NOT follow an
+emitted comma — a pack-expansion ellipsis (a genuine C varargs `, ...` follows a comma). Gated
+on a pack template (`!pack_param.empty()`). Test `testmemtmplpackexpand`; reducer `tmp/vmt10`.
+Pre-existing off-path: multi-element packs (`tmp/vmt2`, deduction binds only one element).
+
+### REMAINING sub-gap 5 — INSTANCE member-template instantiation (NEXT slice)
+tv1 now advances past the construct body to a NEW, distinct wall:
+**`import of undefined item __new_allocator_int32_t__construct`**. The allocator_traits
+`construct` body calls `__a.construct(__p, std::forward<_Args>(__args)...)` — an INSTANCE
+member-template call (`__a` is an object, `__new_allocator<int>`), not the STATIC
+`Owner::m(args)` form the B-feature (`instantiate_member_fn_template_for_call`) +
+`reselect_static_member_overload` handle. `__new_allocator` is a madc-LOCAL monomorphized
+class, so its `construct` member template must instantiate on ODR-use the way the static one
+does. Likely: extend the B-feature hook (or add an instance sibling) to the
+member-access/`->`-call path so a declaration-only LOCAL instance member template instantiates
++ rebinds. Reduce an instance-member-template call from scratch (`obj.m<...>(args)` /
+`obj.m(args)` where `m` is `template<...> void m(...)`), attribute via `--dump-cir`, fix
+deepest layer, gate hard. Exported instance member templates already route through
+`member_template_method_call` — confirm whether that path can be reused for LOCAL owners.
 
 ### EARLIER sub-gaps (superseded — kept for history)
 1. **Forwarding-reference parameter packs** (`_Args&&... __args`): `try_instantiate_namespace_fn_template`
