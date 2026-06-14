@@ -125,21 +125,55 @@ case in `tmp/` DEFAULT-mode, 3-oracle (g++ / clang++ / stock c2m) before fixing.
 - **Gates:** integration 589/15 (zero regr), unit, torture 51-name byte-identical,
   SMAUG soak. **No headline flip** (as predicted) — Stage 1 is the cascade.
 
-### Stage 1 — re-apply declarator suffixes onto the substituted base (THE core)
-- **The fix:** in the substitution clone loop (class path `parser.cpp:2899-2951`;
-  fn path `parser.cpp:26642-26737`), when a type-param identifier is replaced by
-  its `subst` `TokenDataType` AND the following body tokens are declarator
-  operators (`*` / `&` / `&&`), fold them into the substituted type
-  (`getPointerType` / `getReferenceType`) — the mirror of
-  `fold_template_arg_declarator` (`parser.cpp:10546`) applied at the *use site in
-  the body*, not just at the template argument. So `_Tp* first` with `_Tp=int`
-  seats `first` as `int*`, and madc's existing deref self-determination types
-  `*first` as `int`.
-- **Unblocks:** the `cannot dereference non-pointer type` class → the whole
+### Stage 1 — reference-to-pointer-param method return type (THE core) — ROOT RE-DIAGNOSED 2026-06-14
+- **The original hypothesis (declarator-suffix re-application) is DISPROVEN by
+  reducers.** Pointer template arguments and `T*` declarators in instantiated
+  bodies ARE preserved correctly: `tmp/ptarg1.mad` (`Iter<int*>` with `It cur;
+  It base(){return cur;}`) and `tmp/base1.mad` (`It{ T* cur; T* base(){...} }`)
+  both emit correct C (`int *cur`, `base` returns `int*`) and run correctly.
+  (NB: madc's process exit code is RUN-SUCCESS, not `main()`'s return — verify
+  reducer correctness via `cout`/`--emit=c11`, never `$?`. Cost ~an hour here.)
+- **The VERIFIED root** (traced on `tmp/tv1.mad` with `MADC_DEBUG_NS_RESOLVE` +
+  `MADC_DEBUG_FNTPL`): a class-template method whose return type is a **reference
+  to a pointer-typed template parameter** — `It& base()` / `const It& base()
+  const` with `It = int*`, i.e. exactly `__gnu_cxx::__normal_iterator::base()`
+  (returns `const _Iterator&`) — has its **declaration-side** return type
+  recorded as the SCALAR `int32_t`, even though the lazy DEFINITION emits the
+  correct `int**` (reference-to-`int*`). So at a template-argument-DEDUCTION site,
+  `operand_value_datadef(__position.base())` reads the bound (declaration) method's
+  `returns` = `int32_t`, and `_InIt`/`T*` deduction against a scalar fails →
+  the param is left unbound → falls back to the `int64_t` default → that default
+  cascades through `__uninitialized_move_if_noexcept_a` →
+  `__uninitialized_copy_a` → `uninitialized_copy`, whose body
+  `using _From = decltype(*__first);` then throws **`cannot dereference
+  non-pointer type`** (the reported `stl_uninitialized.h:179`; the tv1 error
+  line/col is the monomorphization origin, not the real site).
+- **Reducers (in `tmp/`, DEFAULT mode):** `tmp/ref2.mad` / `tmp/ref5.mad` — a
+  namespace class template `W<It>{ It cur; const It& base() const {...} }` (or
+  non-const `It&`) + a namespace fn template `sink(T* first, T* last)`; calling
+  `ns::sink(w.base(), w.base())` with `W<int*>` reproduces `import of undefined
+  __ns_ns_sink` and `FNTPL deduce ns::sink param[0] sp='T*' arg_dd=int32_t`.
+  `tmp/ref3.mad` (`int* p = w.base();`) proves the SAME call types correctly as
+  `int*` in direct-assignment context — so the type IS recoverable; the bug is
+  the declaration-side return-type recording read by the deduction path. The
+  `const` is NOT the trigger (`It&` fails identically). A free (non-namespace)
+  `sink` hits the SEPARATE global-free-fn-template gap (`use of undeclared
+  identifier`), so reduce inside a namespace.
+- **Where the fix likely belongs:** the class-template method-instantiation path
+  that records a method's return-type `DataDef` on its DECLARATION/placeholder
+  FuncDef when the class is monomorphized — a `T&`/`const T&` return where `T`
+  binds to a POINTER must record `getReferenceType(int*)` (a `DataDefREF` over
+  `int*`, which `operand_value_datadef` already unwraps to `int*`), not the
+  scalar base. `getReferenceType` itself is correct (`parser.cpp:10540`); the
+  loss is upstream, in how `It&` is resolved/substituted for the declaration's
+  return at instantiation time (the definition resolves it correctly later, so
+  the decl and def diverge). Confirm with the emit-C-vs-bound-FuncDef comparison.
+- **Unblocks:** the `cannot dereference non-pointer type` class → the
   `std::vector` container chain (`tv1` sub-gap 13 and the ~10 dependent tests).
-- **Reducer:** `tmp/tv1.mad` (`std::vector<int> v; v.push_back(10);`).
-- **Risk:** medium — touches the shared clone loop; gate hard. This is the
-  highest-leverage single change in the plan.
+- **Risk:** medium — touches class-template method instantiation; gate hard.
+  Highest-leverage single change in the plan. **NOT YET IMPLEMENTED** — root
+  re-diagnosed; the original Stage-2 (iterator-proxy deref-time safety net) may
+  become unnecessary or change shape once the decl-side return type is correct.
 
 ### Stage 2 — deref-time safety net for iterator-proxy classes
 - **The fix:** in `deref_type_for_variable` (`parser.cpp:1277`) and

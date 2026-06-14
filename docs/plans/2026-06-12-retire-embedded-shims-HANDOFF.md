@@ -24,9 +24,16 @@ The last CODE commit is **`f03cfb4`** (binary built from it) — **Stage 0 of th
 argument decay, all 4 gates green, zero regressions).
 **★ THE PLAN IS IN PROGRESS:** `docs/plans/2026-06-14-template-instantiation-core-plan.md` — the staged plan
 for the deep template-instantiation core behind all 15 remaining failures. READ IT before resuming work; §3
-below summarizes it. **NEXT = Stage 1 (THE CORE)** — re-apply declarator suffixes (`*`/`&`) onto the
-substituted base in the clone loop, the highest-leverage change (unblocks the ~10-test std::vector container
-chain). The clean singletons are exhausted; this plan is the path forward.
+below summarizes it. **NEXT = Stage 1 (THE CORE), root RE-DIAGNOSED 2026-06-14 (not yet implemented).** The
+plan's original Stage-1 hypothesis (re-apply `*`/`&` declarator suffixes) is **DISPROVEN** by reducers —
+pointer template args / `T*` declarators ARE preserved. The VERIFIED root (full trace + reducers in plan §4
+Stage 1): a class-template method returning a **reference to a pointer-typed template param** (`const It&
+base() const` with `It=int*`, i.e. `__normal_iterator::base()`) records its DECLARATION-side return as the
+scalar `int32_t` (the lazy DEFINITION emits the correct `int**`), so template-arg deduction reads `int32_t`,
+`T*` deduction fails → unbound → `int64_t` default cascades → `decltype(*__first)` throws "cannot dereference
+non-pointer type". Reducers: `tmp/ref2.mad`/`ref5.mad` (fail), `tmp/ref3.mad` (assignment context works —
+proves the type is recoverable). NB madc's exit code is RUN-SUCCESS not `main()`'s return — verify reducers
+via cout/`--emit=c11`. The clean singletons are exhausted; this plan is the path forward.
 
 **WHAT THIS SESSION ADDED (10 code commits + 3 test fixes, all FULLY GATED), latest first:**
 - `77a7983` **function→fn-ptr argument decay in namespace-fn-template deduction (feature; +testtransform, NO headline flip).**
