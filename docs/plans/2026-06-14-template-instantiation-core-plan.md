@@ -108,15 +108,22 @@ Each stage is independently shippable behind the full 4-gate (integration +
 unit + gcc-torture 51-name failset byte-identical + SMAUG soak). Reduce every
 case in `tmp/` DEFAULT-mode, 3-oracle (g++ / clang++ / stock c2m) before fixing.
 
-### Stage 0 — array→pointer argument decay in deduction (low risk, quick win)
-- **Where:** `operand_value_datadef` (`parser.cpp:26191`) and/or the `*`-peel in
-  `fn_template_deduce_param` (`parser.cpp:26263`). A `DataDefCArray` arg, when
-  matched against a by-value (no-`&`) param, decays to `getPointerType(element)`.
-  This is the sibling of the already-landed function→fn-ptr decay (`77a7983`) and
-  exactly the spot flagged "deferred" at `parser.cpp:26555`.
-- **Unblocks:** `std::transform(a, a+N, b, fn)` / `for_each` over bare arrays.
-- **Reducer:** `tmp/tr2.mad` (currently `import of undefined item __ns_std_transform`).
-- **Risk:** low — only changes array args to namespace-fn templates.
+### Stage 0 — array→pointer argument decay in deduction — ✅ DONE (`f03cfb4`)
+- **What landed:** a bare C-array argument used as a VALUE decays to a
+  pointer-to-element ([conv.array]/[temp.deduct.call]). A fixed array is a
+  Variable with the `vfFIXEDARRAY` flag (`var.type` = ELEMENT type), so it types
+  as `int` rather than a `DataDefCArray`; the decay is applied via
+  `Program::array_decay_pointer(operand)` (handles the flag, fixed-array members
+  and `DataDefCArray` uniformly) at THREE sites — by-value deduction
+  (`parser.cpp` ~26557, beside the `77a7983` function→fn-ptr decay), the
+  parse-time re-rank `resolved_call_funcdef` (`parser.cpp` ~26178), and the
+  emit-time non-template overload ranker `call_target_funcdef`
+  (`cir_builder.cpp` ~659). NOT applied inside `operand_value_datadef` itself so
+  reference-to-array deduction keeps the array type.
+- **Unblocked:** `std::transform(a, a+N, b, fn)` / `for_each` over bare arrays.
+- **Reducer:** `tmp/tr2.mad` → "2 4 6 8"; +testtransform.mad bare-array coverage.
+- **Gates:** integration 589/15 (zero regr), unit, torture 51-name byte-identical,
+  SMAUG soak. **No headline flip** (as predicted) — Stage 1 is the cascade.
 
 ### Stage 1 — re-apply declarator suffixes onto the substituted base (THE core)
 - **The fix:** in the substitution clone loop (class path `parser.cpp:2899-2951`;
@@ -210,10 +217,10 @@ three paths adopt, and migrate one path at a time behind a guard, gating each.
   4-gate evidence in the message.
 
 ## 7. Recommended order & expected payoff
-Stage 0 (quick, transform/for_each-on-arrays) → **Stage 1 (the core — unblocks
-the ~10-test container chain)** → Stage 2 → Stage 3 (string ABI) → Stage 4
-(set/map) → Stage 5 (residuals + fn-ptr-return warning). Stage 1 is the single
-highest-leverage change; Stages 0/2/4 are contained; Stage 3 is the riskiest
-(ABI). Realistic expectation: Tier 1 can flip most of the 15 remaining failures;
-the count won't move on Stage 0 alone (it advances reducers, like the sub-gaps),
-but Stage 1 should cascade.
+~~Stage 0 (quick, transform/for_each-on-arrays)~~ ✅ DONE (`f03cfb4`) → **Stage 1
+(the core — unblocks the ~10-test container chain) ← NEXT** → Stage 2 → Stage 3
+(string ABI) → Stage 4 (set/map) → Stage 5 (residuals + fn-ptr-return warning).
+Stage 1 is the single highest-leverage change; Stages 0/2/4 are contained;
+Stage 3 is the riskiest (ABI). Realistic expectation: Tier 1 can flip most of the
+15 remaining failures; the count did NOT move on Stage 0 alone (it advanced the
+reducer, like the sub-gaps), but Stage 1 should cascade.
