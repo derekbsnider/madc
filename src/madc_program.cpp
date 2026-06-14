@@ -1000,10 +1000,62 @@ bool source_contains_explicit_eval_entry(const std::string &source)
 std::string build_eval_body_wrapper_source(const std::string &source,
 					   const char *return_type)
 {
+    // Split into lines, retaining each line's trailing '\n'.
+    std::vector<std::string> lines;
+    for ( size_t i = 0, n = source.size(); i < n; )
+    {
+	size_t eol = source.find('\n', i);
+	size_t end = (eol == std::string::npos) ? n : eol + 1;
+	lines.push_back(source.substr(i, end - i));
+	i = end;
+    }
+
+    // Hoist the CONTIGUOUS leading run of preprocessor directives (blank lines
+    // allowed) out of the wrapper FUNCTION BODY to file scope. A `#include`
+    // left inside the body inlines the header's declarations as function-local
+    // statements — e.g. <math.h> pulls <cmath>'s `namespace std`, whose
+    // std-typed parameters then fail to resolve at function-body scope
+    // ("Failed to find type 'std'"). Only the leading run is moved (the
+    // conventional includes-at-top form), so code order is preserved and a
+    // mid-body #if/#endif block is left untouched. Backslash-continued
+    // directive lines are kept whole.
+    auto first_nonws = [](const std::string &s) -> int {
+	for ( size_t j = 0; j < s.size(); ++j )
+	    if ( s[j] != ' ' && s[j] != '\t' && s[j] != '\r' && s[j] != '\n' )
+		return (unsigned char)s[j];
+	return -1;	// blank line
+    };
+    auto continues = [](const std::string &s) -> bool {
+	size_t j = s.find_last_not_of("\r\n");
+	return j != std::string::npos && s[j] == '\\';
+    };
+    std::string preamble, body;
+    size_t k = 0;
+    for ( ; k < lines.size(); ++k )
+    {
+	int c = first_nonws(lines[k]);
+	if ( c == '#' )
+	{
+	    preamble += lines[k];
+	    while ( continues(lines[k]) && k + 1 < lines.size() )
+		preamble += lines[++k];
+	    continue;
+	}
+	if ( c == -1 )		// blank line within the leading run
+	{
+	    preamble += lines[k];
+	    continue;
+	}
+	break;			// first real code line — the rest is the body
+    }
+    for ( ; k < lines.size(); ++k )
+	body += lines[k];
+
     std::ostringstream wrapped;
-    wrapped << return_type << " " << eval_entry_name() << "() {\n"
-	    << source;
-    if ( source.empty() || source[source.size() - 1] != '\n' )
+    wrapped << preamble
+	    << return_type << " " << eval_entry_name() << "() {\n"
+	    << body;
+    if ( body.empty() || body[body.size() - 1] != '\n' )
 	wrapped << "\n";
     wrapped << "}\n";
     return wrapped.str();
