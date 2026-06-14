@@ -20,6 +20,10 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 Same campaign as SESSION 8 (real glibc+libstdc++ every mode; sole backend
 cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. Integration is at
 **589 passed / 15 failed / 0 timed out** (failures down from 27 this session; +testalignas, +testtransform).
+Tree HEAD is **`ec93049`** (a docs/plan commit); the last CODE commit is **`77a7983`** (binary built from it).
+**★ THE NEXT TASK IS PLANNED:** `docs/plans/2026-06-14-template-instantiation-core-plan.md` (@ec93049) — the
+staged plan for the deep template-instantiation core behind all 15 remaining failures. READ IT before
+resuming work; §3 below summarizes it. The clean singletons are exhausted; this plan is the path forward.
 
 **WHAT THIS SESSION ADDED (10 code commits + 3 test fixes, all FULLY GATED), latest first:**
 - `77a7983` **function→fn-ptr argument decay in namespace-fn-template deduction (feature; +testtransform, NO headline flip).**
@@ -241,14 +245,29 @@ deep features, NOT ~1-2-fix slices:
   /testmadc_ns/testforeachref): the `tv1` chain at sub-gap 13 (`cannot dereference non-pointer type`) +
   `_S_destroy` + `Missing operand` in instantiated bodies — the deep template-instantiation core.
 
-**RECOMMENDATION: the next real progress is the deep template-instantiation CORE, not single slices.**
-The unifying root behind most of these is instantiated-template-body fidelity: pointer/iterator typing
-(`cannot dereference non-pointer type`), std::string-by-value copy ABI, and call-site overload binding
-for decayed args. This is multi-session work — pick ONE core wall (the `tv1` sub-gap-13 "cannot
-dereference non-pointer type" is the most leveraged, unblocking the container chain) and drive it, OR
-the reference-data-member feature (unblocks set/map). Confirm scope with the user before a long dig.
-Smaller self-contained wins still available: the for_each anonymous-fn-ptr RETURN rendering (a real
-warning-causing gap, `func_def` fn-returning-fn-ptr declarator) is bounded and worth doing.
+**★ NEXT TASK IS NOW PLANNED — see `docs/plans/2026-06-14-template-instantiation-core-plan.md` @ec93049.**
+3-way source recon (clang TreeTransform/SemaTemplateInstantiate, gcc cp/pt.cc tsubst, madc's own token-
+substitution web) produced a staged plan for the deep template-instantiation CORE behind all 15 remaining
+failures. **Convergent finding:** clang/gcc do SEMANTIC substitution — substitute types into DECLARATIONS
+first (concrete-typed params/locals seated in a per-instantiation scope), then re-invoke the SAME
+expression builders so result types are recomputed from concrete operands (clang RebuildUnaryOperator→
+BuildUnaryOp; gcc INDIRECT_REF→build_x_indirect_ref). madc re-parses substituted TOKENS, so the body's
+types are re-derived context-free + lossily. **KEY:** madc already owns operator self-determination (half
+the model); the missing half is seating the substituted DECLARATIONS with their concrete `DataDef` before
+the body is typed — the `subst` map already HOLDS the right DataDef, it's just flattened to a token.
+**Tier 1 (incremental, do first) — 6 gated stages** (full detail + file:line in the plan): Stage 0
+array→pointer decay (one spot, `operand_value_datadef`/`fn_template_deduce_param` ~26263, where 77a7983's
+comment deferred it; unblocks transform/for_each on arrays); **Stage 1 = THE CORE** — re-apply declarator
+suffixes (`*`/`&`) onto the substituted base in the clone loop (mirror `fold_template_arg_declarator`
+~10546 at the body USE site) so `_Tp* first` seats as `int*` → kills `cannot dereference non-pointer type`
+→ unblocks the ~10-test std::vector chain; Stage 2 iterator-proxy deref (operator*/pointer in
+`deref_type_for_variable` ~1277); Stage 3 complete-class identity for std::string by-value (retbuf ABI,
+`class_return_via_retbuf` cir_builder ~4191); Stage 4 reference data members (parser ~21932); Stage 5
+residuals (`_S_destroy`, fn-returning-fn-ptr RETURN rendering in func_def ~10520). **Tier 2 (durable,
+LATER, do NOT start before Tier 1 pays off):** tsubst over the retained `cir_node` parse subtree (MC11-IR
+already keeps it) — one `substitute_parse_subtree` primitive replacing the ~86-fn clone-and-reparse web.
+RECOMMENDED ORDER: Stage 0 (quick) → Stage 1 (highest leverage) → 2 → 3 → 4 → 5. Confirm scope with user
+before Tier 2.
 
 Method: reduce in `tmp/` (DEFAULT mode, no flags), attribute via the 3 oracles + `--emit=c11`/
 `--dump-cir`, fix the deepest layer, full 4-gate. Reducer template: `tmp/sr1.mad` (string `a<b`,
