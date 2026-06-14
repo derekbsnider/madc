@@ -25018,6 +25018,48 @@ static std::string skipped_template_function_declarator_name(
     return name;
 }
 
+// Extract the MEMBER (inner) template-parameter names + pack-ness from the inner
+// `template<...>` head of an out-of-line member-template definition (the leading
+// `template < ... >` of `template<class U> RET S<T>::f(U){body}`). Used to set the
+// monomorphized member's template_param_names/is_pack consistently with the
+// attached member_template_decl. Handles `class U` / `typename U` / `...` packs /
+// `= default`; an unnamed param is skipped (rare in member templates).
+static void extract_inner_template_typeparams(
+	const std::vector<TokenBase *> &decl,
+	std::vector<std::string> &names, std::vector<bool> &is_pack)
+{
+    if ( decl.size() < 2 || !decl[0] || decl[0]->id() != TokenID::tkTEMPLATE
+      || !decl[1] || decl[1]->id() != TokenID::tkLT )
+	return;
+    size_t close = template_id_suffix_end(decl, 1);
+    int depth = 0;
+    bool before_eq = true, saw_dots = false;
+    std::string last;
+    auto flush = [&]() {
+	if ( !last.empty() ) { names.push_back(last); is_pack.push_back(saw_dots); }
+	last.clear(); before_eq = true; saw_dots = false;
+    };
+    for ( size_t i = 2; i < close; ++i )
+    {
+	TokenBase *t = decl[i];
+	if ( !t ) continue;
+	if ( t->id() == TokenID::tkLT ) { ++depth; continue; }
+	if ( t->id() == TokenID::tkGT ) { --depth; continue; }
+	if ( depth > 0 ) continue;
+	if ( t->id() == TokenID::tkComma ) { flush(); continue; }
+	if ( t->id() == TokenID::tkAssign ) { before_eq = false; continue; }
+	if ( !before_eq ) continue;
+	if ( t->id() == TokenID::tkDot ) { saw_dots = true; continue; }
+	if ( is_contextual_identifier_token(t) )
+	{
+	    std::string s = contextual_identifier_name(t);
+	    if ( s == "class" || s == "typename" ) continue;
+	    last = s;
+	}
+    }
+    flush();
+}
+
 // An OUT-OF-LINE member DEFINITION of a class template:
 //   template<...> RET ClassName<args>::member(params) { body }
 // (the bits/*.tcc shape, e.g. `void vector<_Tp,_Alloc>::_M_realloc_insert(...)`).
@@ -25026,16 +25068,18 @@ static std::string skipped_template_function_declarator_name(
 // where ClassName is a registered template. Sets class_name_out + member_name_out.
 static bool skipped_template_outofline_member(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
-	std::string &class_name_out, std::string &member_name_out)
+	std::string &class_name_out, std::string &member_name_out,
+	bool &is_member_template_out)
 {
     // An out-of-line member TEMPLATE (`template<class...> template<member...>
     // RET Class<...>::member(...)`, e.g. vector::_M_realloc_insert's variadic
-    // form) has a SECOND template-head as its first token (the outer head was
-    // already consumed by TokenTEMPLATE::parse). That needs per-call member-
-    // template instantiation, not a plain method body — out of scope here; leave
-    // it to the namespace-fn path (clean undefined-import) until that lands.
-    if ( !tokens.empty() && tokens[0] && tokens[0]->id() == TokenID::tkTEMPLATE )
-	return false;
+    // form) carries a SECOND template-head as its first token (the outer head was
+    // already consumed by TokenTEMPLATE::parse). The class-id walk-back below
+    // still locates Class<...>::member correctly (the inner head has no top-level
+    // '(' and sits left of the class-id); we only record that it IS a member
+    // template so the caller attaches its body via the member-template path.
+    is_member_template_out = !tokens.empty() && tokens[0]
+	&& tokens[0]->id() == TokenID::tkTEMPLATE;
     std::string member;
     size_t ni = skipped_template_function_declarator_name_index(tokens, &member);
     if ( ni == tokens.size() || ni < 2 || member.empty() )
@@ -25158,6 +25202,42 @@ void Program::register_outofline_member_instantiations(
 		}
 	    }
 	    sub.push_back(bt->clone());
+	}
+
+	// An out-of-line member TEMPLATE (two-level head): attach its body to the
+	// monomorphized member's member_template_decl so the sub-gap-5 per-call path
+	// (instantiate_member_fn_template_for_call) instantiates it per inner-arg
+	// binding. Transform the substituted `template<U...> RET <mangled>::name(
+	// params){body}` into the in-class member-decl form `RET name(params){body}`
+	// the consumer expects: strip the inner `template<...>` head and the
+	// `<mangled>::` declarator qualifier.
+	if ( def.is_member_template )
+	{
+	    FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type);
+	    if ( !mfd || !mfd->member_template_decl.empty() )
+		continue;	// not a member, or already attached
+	    std::vector<TokenBase *> decl2;
+	    size_t start = 0;
+	    if ( !sub.empty() && sub[0] && sub[0]->id() == TokenID::tkTEMPLATE
+	      && sub.size() > 1 && sub[1] && sub[1]->id() == TokenID::tkLT )
+		start = template_id_suffix_end(sub, 1) + 1;
+	    for ( size_t i = start; i < sub.size(); ++i )
+		decl2.push_back(sub[i]);
+	    size_t qni = skipped_template_function_declarator_name_index(decl2, NULL);
+	    if ( qni == decl2.size() )
+		continue;
+	    if ( qni >= 2 && decl2[qni - 1]
+	      && decl2[qni - 1]->id() == TokenID::tkNS )
+		decl2.erase(decl2.begin() + (qni - 2), decl2.begin() + qni);
+	    mfd->is_member_template = true;
+	    mfd->member_template_owner = ddc;
+	    mfd->member_template_decl = decl2;
+	    if ( !def.inner_typeparams.empty() )
+	    {
+		mfd->template_param_names = def.inner_typeparams;
+		mfd->template_param_is_pack = def.inner_is_pack;
+	    }
+	    continue;
 	}
 
 	// definition_tokens = everything AFTER the member's '(' (params + body),
@@ -28209,13 +28289,19 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	// mis-registered as a namespace free function (which never gets called and
 	// leaves the real member an undefined import — e.g. vector::_M_realloc_insert).
 	std::string ool_class, ool_member;
+	bool ool_is_member_template = false;
 	if ( !pgm.deferred_function_body_sink
 	  && skipped_template_outofline_member(pgm, skipped_decl,
-					       ool_class, ool_member) )
+					       ool_class, ool_member,
+					       ool_is_member_template) )
 	{
 	    Program::OutOfLineMemberDef d;
 	    d.member_name = ool_member;
 	    d.typeparams = typeparams;
+	    d.is_member_template = ool_is_member_template;
+	    if ( ool_is_member_template )
+		extract_inner_template_typeparams(skipped_decl,
+						  d.inner_typeparams, d.inner_is_pack);
 	    for ( size_t i = 0; i < skipped_decl.size(); ++i )
 		d.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone() : NULL);
 	    pgm.out_of_line_member_defs[pgm.current_namespace() + "::" + ool_class]

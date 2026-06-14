@@ -1547,8 +1547,17 @@ public:
     // unused out-of-line members never instantiate).
     struct OutOfLineMemberDef {
 	std::string member_name;
-	std::vector<std::string> typeparams;
+	std::vector<std::string> typeparams;	// CLASS (outer) type-params
 	std::vector<TokenBase *> decl;	// full decl incl body, owned clones
+	// An out-of-line member TEMPLATE (`template<class T> template<class U>
+	// RET S<T>::f(U){body}`, two-level head — e.g. vector::_M_realloc_insert's
+	// C++11 variadic form) attaches its body to the monomorphized member as a
+	// member_template_decl, instantiated per-call by the sub-gap-5 path; a plain
+	// member def becomes a deferred (ODR-use-lazy) full body. inner_typeparams /
+	// inner_is_pack are the MEMBER (inner) template parameters.
+	bool is_member_template = false;
+	std::vector<std::string> inner_typeparams;
+	std::vector<bool> inner_is_pack;
     };
     std::map<std::string, std::vector<OutOfLineMemberDef>> out_of_line_member_defs;
     void register_outofline_member_instantiations(

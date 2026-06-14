@@ -191,18 +191,36 @@ free function (`std::_M_realloc_insert`) — never called, leaving the real memb
 +test `testoutoflinemember` (void + non-void + this-access). Reducers `tmp/ool1` (void → 7),
 `tmp/ool2` (non-void → 41), `tmp/ool_nt` (non-template control → 9).
 
-### sub-gap 9 — out-of-line MEMBER TEMPLATE definitions (the NEXT slice; tv1's real face)
-tv1 (`vector<int>::push_back`) advanced PAST the undefined import to:
-`Failed to find type '_Args' ...`. In C++11+, `vector::_M_realloc_insert` is NOT a plain member — it is
-an out-of-line member **TEMPLATE** with a TWO-level head
+### sub-gap 9 — out-of-line MEMBER TEMPLATE definitions — DONE (commit pending)
+An out-of-line member **TEMPLATE** with a TWO-level head
 (`template<class _Tp,_Alloc> template<typename... _Args> void vector<_Tp,_Alloc>::_M_realloc_insert(
-iterator, _Args&&...)`, bits/vector.tcc:441). sub-gap 8 deliberately EXCLUDES this (detection returns
-false when the skipped decl's first token is `template`), so tv1 falls back to the clean
-`import of undefined item ..._M_realloc_insert` (unchanged from before sub-gap 8). sub-gap 9 = combine
-the out-of-line capture (sub-gap 8) with per-call member-template instantiation (sub-gap 5): capture the
-inner `template<...>` head + body, and on each distinct `_Args` binding instantiate it as a method of the
-monomorphized class. Larger slice. Reduce: `template<class T> struct S{ template<class U> void f(U); };
-template<class T> template<class U> void S<T>::f(U u){...}` then `S<int> s; s.f(3);`.
+iterator, _Args&&...)`, bits/vector.tcc:441) — sub-gap 8 excluded it. The fix combines sub-gap 8's
+out-of-line capture with the sub-gap-5 per-call member-template instantiation path:
+- **Capture** (`skipped_template_outofline_member` now REPORTS `is_member_template` instead of
+  rejecting a `template`-first decl — the class-id walk-back already locates `Class<...>::member`
+  correctly, the inner head has no top-level `(` and sits left of the class-id). The capture also
+  records the inner (member) type-params + pack-ness via `extract_inner_template_typeparams`.
+- **Attach** (`register_outofline_member_instantiations`, member-template branch): substitute the
+  CLASS params (the inner params pass through) + rename the class-id → mangled tag, then transform the
+  substituted `template<U...> RET <mangled>::name(params){body}` into the in-class member-decl form
+  `RET name(params){body}` the sub-gap-5 consumer expects (strip the inner `template<...>` head + the
+  `<mangled>::` declarator qualifier), and set it as the monomorphized member's `member_template_decl`
+  (+ `member_template_owner`, `template_param_names`/`is_pack` from the inner head). The in-class
+  member-template DECLARATION (re-parsed during monomorphization) already created the member as an
+  `is_member_template` placeholder with an EMPTY `member_template_decl`; this fills it. On the call,
+  `instantiate_member_fn_template_for_call` (sub-gap 5) instantiates the body per inner-arg binding as
+  a method of the monomorphized class — no new instantiation machinery.
+
++test `testoutoflinemembertemplate` (void + non-void + this-access). Reducer `tmp/oot1` (→ 42). tv1
+(`vector<int>::push_back`) advances PAST `_M_realloc_insert` to sub-gap 10.
+
+### sub-gap 10 — `auto` declaration in an instantiated `.tcc` body (the NEXT slice; tv1's new face)
+tv1 now → **`'auto' requires an initializer`** (tv1.mad:428:54 — header-origin line misattribution).
+A now-instantiated out-of-line `.tcc` body (`_M_realloc_insert` or another member it reaches) contains
+an `auto` declaration form madc's `parseDeclaration` auto path rejects (it requires `auto x = init`).
+Likely an `auto&&`/range-for/structured form, or a deduction site. Reduce: find the `auto` in the
+materialized body (`--emit=c11` the smallest vector reducer, or grep vector.tcc around the reachable
+members), attribute, fix the auto-decl parse/deduction at the deepest layer.
 
 ### EARLIER sub-gaps (superseded — kept for history)
 1. **Forwarding-reference parameter packs** (`_Args&&... __args`): `try_instantiate_namespace_fn_template`
