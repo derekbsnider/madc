@@ -6997,7 +6997,20 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 	if ( fd->parameters.size() > 1 ) return &fd->returns;
     }
     if ( any ) return &any->returns;
-    if ( base_class ) return base_class->binary_operator_return_type(opname);
+    // Multiple/virtual inheritance: the operator may be inherited from ANY direct
+    // base, not only the primary. basic_iostream inherits operator<< from its
+    // SECOND base (basic_ostream); the first (basic_istream) has none — so a
+    // chained `stringstream << x` lost its basic_ostream result type while the
+    // single-base ostringstream worked. `bases` lists every direct base (the
+    // primary included), so this subsumes the legacy single-`base_class` walk.
+    for ( const BaseSpec &b : bases )
+	if ( b.base )
+	    if ( DataDef *rt = b.base->binary_operator_return_type(opname) )
+		return rt;
+    // Legacy single-base path: a class that set base_class without populating
+    // bases (then base_class is the sole parent).
+    if ( bases.empty() && base_class )
+	return base_class->binary_operator_return_type(opname);
     return NULL;
 }
 
