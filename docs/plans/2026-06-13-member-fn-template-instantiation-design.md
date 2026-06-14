@@ -237,17 +237,47 @@ FUNCTION with a trailing return type: libstdc++'s cross-type `__normal_iterator 
 (`-> decltype(this->x)`→7). Deduced-return `auto f(){return e;}` (no `-> T`) is a follow-up (`tmp/au2`
 fails "returning void"). tv1 advances PAST the auto-return wall to sub-gap 11.
 
-### sub-gap 11 — direct-initialization of a non-class variable (the NEXT slice; tv1's new face)
-tv1 now → **`Failed to find type 'this' when parsing function parameters`**. The instrumented site
-(now removed) was inside `_M_realloc_insert`'s instantiated body:
-**`pointer __new_start(this->_M_allocate(__len));`** — DIRECT-INITIALIZATION of a NON-class (pointer)
-variable `T name(expr)`, mis-parsed as a FUNCTION declaration `pointer __new_start(<params>)` (first
-"param" token `this` is not a type). madc already does ctor-style direct-init for CLASS types; a
-pointer/scalar `T` is the gap. sub-gap 11 = recognize `T name(expr)` for a non-class `T` as
-direct-init (= `T name = expr`) when the parenthesized content is an expression, not a
-parameter-declaration-list. Reduce: `typedef int* P; P p(q);` then use `*p`. Look at parseDeclaration's
-function-vs-direct-init disambiguation (`paren_group_is_function_def()` + the class-ctor-init path);
-fix the deepest layer.
+### sub-gap 11 — direct-initialization of a non-class variable — DONE (commit pending)
+tv1 was at **`Failed to find type 'this' when parsing function parameters`** from inside
+`_M_realloc_insert`'s instantiated body: **`pointer __new_start(this->_M_allocate(__len));`** —
+DIRECT-INITIALIZATION of a NON-class (pointer) variable `T name(expr)`, mis-parsed as a FUNCTION
+declaration `pointer __new_start(<params>)` (first "param" token `this` is not a type). madc already
+does ctor-style direct-init for CLASS types (the ctor-call branch in parseDeclaration); a
+pointer/scalar `T` was the gap — `T name(...)` always fell through to the function-declaration path.
+
+**As-built:** a non-class `T name(X)` is direct-init (== `T name = X`, [dcl.ambig.res] the
+"most vexing parse") when `X` is an expression rather than a parameter-declaration-clause. Fix
+(parser.cpp, deepest layer, reuses the existing `= expr` initializer machinery — no new init path):
+- New `Program::paren_group_is_nonclass_direct_init()` — a non-consuming peek at the token after the
+  `(`. Returns true (→ direct-init) ONLY when that token CANNOT begin a parameter-declaration: a
+  literal (ttInteger/ttReal/ttString/ttChar), `this`, or a ttIdentifier that names an in-scope value
+  variable (`findVariable`). A type name tokenizes as ttDataType, so a ttIdentifier here is a
+  non-type name. This is a SOUND under-approximation: every diverted form is unambiguously direct-init;
+  anything that could begin a param-clause (a type/keyword, `void`, empty `()`, `*`/`&`) keeps the
+  most-vexing-parse default (function declaration).
+- A new branch in parseDeclaration (right after the class ctor-call branch, before the brace-init
+  block) injects a synthetic `=` before the `(` when the type is non-class, non-`auto`, non-array,
+  non-reference AND `paren_group_is_nonclass_direct_init()` — so `(X)` parses as a parenthesized
+  primary expression through the existing scalar/pointer `= expr` path (mirrors the `T x{...}`
+  brace-init synthetic-`=` reuse).
+- **C++/madc only** (`!is_c_mode()`): `T name(expr)` direct-init is not C syntax — in C `int x(5);`
+  is a function declaration. The gate is load-bearing: a K&R definition `void f(x, v) union u *x, v;`
+  whose param NAMES shadow file-scope globals (gcc-torture `921112-1.c`) otherwise diverted to
+  direct-init (the regression that the gate fixes — caught by the torture failset diff).
+
+Reducers (tmp/, default mode): `di1` (`typedef int* P; P p(q)` → `*p`=7), `di2` (`int *p(q)` → 7),
+`di3` (`int x(5)` → 5), `di8` (`enum E e(raw)` → 2); MVP defaults preserved: `di9` (`int f(P)` typedef
+param stays a function decl), `di10` (`int g()` stays a function decl). Promoted to
+`tests/testdirectinit`. tv1 advances PAST the `this`-param wall to **`use of undeclared identifier
+'_ValueType1'`** (the next face — see sub-gap 12).
+
+### sub-gap 12 — `_ValueType1` undeclared (the NEXT slice; tv1's new face)
+`tmp/tv1` now fails at **`use of undeclared identifier '_ValueType1'`** then the MIR import of
+`vector_int32_t_std__allocator_int32_t____M_realloc_insert`. `_ValueType1` is a libstdc++-internal
+template parameter name (likely from the `__relocate`/`__uninitialized` or iterator-traits machinery
+reached inside `_M_realloc_insert`'s instantiated body). Reduce from tv1, attribute via the 3 oracles
++ `--emit=c11`/`--dump-cir`, fix the deepest layer. Also the deduced-return follow-up from sub-gap 10
+(`auto f(){ return e; }`, no `-> T`) remains open and off the critical path.
 
 ### EARLIER sub-gaps (superseded — kept for history)
 1. **Forwarding-reference parameter packs** (`_Args&&... __args`): `try_instantiate_namespace_fn_template`

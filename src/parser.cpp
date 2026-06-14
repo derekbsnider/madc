@@ -30874,6 +30874,48 @@ bool Program::paren_group_is_function_def()
     return false;
 }
 
+// `T name(X)` is direct-initialization (== `T name = X`) rather than a function
+// DECLARATION when X is an expression, not a parameter-declaration-clause
+// ([dcl.ambig.res], the "most vexing parse"). A class type with constructors is
+// handled by the ctor-call branch in parseDeclaration; this covers a NON-class
+// type (`pointer __new_start(this->_M_allocate(__len));` in libstdc++'s
+// _M_realloc_insert, or `typedef int* P; P p(q);`). The default is a function
+// declaration, so this returns true ONLY when the first inner token CANNOT begin
+// a parameter-declaration — making every diversion an unambiguous direct-init: a
+// literal, `this`, or an in-scope identifier that names a value (not a type;
+// type names tokenize as ttDataType, so a ttIdentifier here is a non-type name).
+// tokens.front() is expected to be the `(`; nothing is consumed.
+bool Program::paren_group_is_nonclass_direct_init()
+{
+    if ( tokens.size() < 2 )
+	return false;
+    TokenBase *open = tokens[0];
+    if ( !open || open->id() != TokenID::tkOpBrk )
+	return false;
+    TokenBase *first = tokens[1];
+    if ( !first )
+	return false;
+    switch ( first->type() )
+    {
+    case TokenType::ttInteger:
+    case TokenType::ttReal:
+    case TokenType::ttString:
+    case TokenType::ttChar:
+	return true; // a literal cannot begin a parameter-declaration
+    case TokenType::ttIdentifier:
+	{
+	    std::string nm = ((TokenIdent *)first)->str;
+	    if ( nm == "this" )
+		return true; // `this->...` — a member-access expression
+	    if ( findVariable(nm) )
+		return true; // an in-scope value (a type would be ttDataType)
+	    return false;
+	}
+    default:
+	return false;
+    }
+}
+
 TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 					      DataDef *referent_type)
 {
@@ -31515,6 +31557,30 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    }
 	    return td;
 	}
+    }
+
+    // C++ direct-initialization of a NON-class variable: `T x(expr)` /
+    // `T *p(expr)` (e.g. libstdc++'s `pointer __new_start(this->_M_allocate(__len));`
+    // and `typedef int* P; P p(q);`). A CLASS type was already consumed by the
+    // ctor-call branch above; for a non-class type `T x(expr)` is direct-init
+    // (== `T x = expr`) UNLESS the parenthesized group is a parameter-declaration
+    // (a function declaration — most vexing parse, [dcl.ambig.res]). Reuse the
+    // `= expr` initializer machinery by injecting a synthetic '=' before the '('
+    // so the parenthesized group parses as a primary expression. `auto` keeps its
+    // own deduction path (handled above); arrays/references are excluded.
+    if ( nt->id() == TokenID::tkOpBrk && arr_dims.empty() && !ret_is_ref
+      && !is_c_mode()           // `T name(expr)` direct-init is C++/madc only; in
+				// C `int x(5);` is always a function declaration,
+				// and a K&R definition `void f(x,v)` whose param
+				// names shadow globals must NOT divert here
+      && &tb->definition != &ddAUTO
+      && decl_type->basetype() != BaseType::btClass
+      && paren_group_is_nonclass_direct_init() )
+    {
+	TokenBase *syn = new TokenAssign();
+	syn->file = nt->file; syn->line = nt->line; syn->column = nt->column;
+	pushToken(syn);
+	nt = peekToken(); // the synthetic '=' — falls into the variable path below
     }
 
     DataDef *reference_value_type = ret_is_ref ? decl_type : NULL;

@@ -2442,6 +2442,7 @@ public:
     bool is_shared_global_extern_reference(TokenCpnd *code, Variable *var);
     bool next_parenthesized_type_is_compound_literal();
     bool paren_group_is_function_def();
+    bool paren_group_is_nonclass_direct_init();
     bool parse_array_designator_initializer(TokenBase *&next_init,
 					    size_t &first_index, size_t &last_index);
     bool parse_builtin_types_compatible_operand(TokenBase *type_tb,

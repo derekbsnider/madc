@@ -1,0 +1,36 @@
+#!/../bin/madc
+// C++ direct-initialization of a NON-class variable: `T name(expr)` — sub-gap 11.
+// madc treated `T name(...)` as a function declaration for every non-class type,
+// so `pointer __new_start(this->_M_allocate(__len));` inside libstdc++'s
+// std::vector<int>::_M_realloc_insert threw "Failed to find type 'this'". A
+// non-class `T name(expr)` whose parenthesized group is an EXPRESSION (not a
+// parameter-declaration-clause) is now recognized as direct-init (== `T name =
+// expr`, [dcl.ambig.res]). The most-vexing-parse default (a parameter clause is a
+// function declaration) is preserved: `int f(P)` and `int g()` stay declarations.
+#include <stdio.h>
+
+typedef int *PTR;
+
+int g() { return 9; }
+int adder(int);          // function declaration whose param is a value-less type
+int adder(int a) { return a + 1; }
+
+int main()
+{
+	int x(5);                // scalar direct-init
+	printf("%d\n", x);       // 5
+
+	int n = 7;
+	int *q = &n;
+	int *p(q);               // raw-pointer direct-init
+	printf("%d\n", *p);      // 7
+
+	PTR r(q);                // typedef-pointer direct-init
+	printf("%d\n", *r);      // 7
+
+	int g();                 // most-vexing parse: a function declaration
+	printf("%d\n", g());     // 9
+
+	printf("%d\n", adder(41)); // 42
+	return 0;
+}
