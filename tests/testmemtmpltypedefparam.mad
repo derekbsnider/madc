@@ -1,0 +1,17 @@
+#!/../bin/madc
+// A class-scope typedef used as a parameter type (`Alloc&`) must resolve when a
+// static member function template is instantiated (owner class in scope).
+#include <iostream>
+using namespace std;
+struct C {
+    typedef int Alloc;
+    template<typename U, typename... Args>
+    static void build(Alloc& a, U* p, Args... args) { *p = a; }
+};
+int main()
+{
+    int a = 77, x = 0;
+    C::build(a, &x, 10);      // Alloc& resolves to int& -> x = 77
+    cout << "x=" << x << endl;
+    return 0;
+}

@@ -7744,22 +7744,51 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
     std::vector<const DataDef *> at;
     for ( TokenBase *p : tc->parameters )
 	at.push_back(p ? p->datadef() : NULL);
+    // Selection: a more-specialized overload may win the [temp.func.order]
+    // tiebreak (`take(U*)` over `take(P)`). When findMethodOverload can't score
+    // a candidate (e.g. a typedef-reference param it doesn't model), keep the
+    // already parse-resolved overload (tc->var) — the rebind below still applies.
     Variable *ov = owner->findMethodOverload(member, at);
-    if ( !ov || ov == &tc->var || !(ov->flags & vfSTATIC) )
-	return tc;   // already the best (or single) overload — no change
-    TokenCallFunc *tc2 = new TokenCallFunc(*ov);
-    tc2->parameters = tc->parameters;
-    tc2->explicit_template_args = tc->explicit_template_args;
-    tc2->auto_scope_context = tc->auto_scope_context;
-    tc2->file = tc->file;
-    tc2->line = tc->line;
-    tc2->column = tc->column;
-    // The instantiation hooks ran inside parseCallFunc against the originally
-    // bound overload; re-run them on the corrected overload so its body is
-    // materialized and its symbol aliased (the B-feature path).
-    instantiate_namespace_fn_template_for_call(tc2);
-    instantiate_member_fn_template_for_call(tc2);
-    return tc2;
+    Variable *selvar = (ov && (ov->flags & vfSTATIC)) ? ov : &tc->var;
+    TokenCallFunc *sel = tc;
+    if ( selvar != &tc->var )
+    {
+	sel = new TokenCallFunc(*selvar);
+	sel->parameters = tc->parameters;
+	sel->explicit_template_args = tc->explicit_template_args;
+	sel->auto_scope_context = tc->auto_scope_context;
+	sel->file = tc->file;
+	sel->line = tc->line;
+	sel->column = tc->column;
+    }
+    // Ensure the selected member template is instantiated (idempotent / memoized
+    // when parseCallFunc already ran the hook on the original binding).
+    instantiate_namespace_fn_template_for_call(sel);
+    instantiate_member_fn_template_for_call(sel);
+    // Bind the call to the instantiated DEFINITION (real parameters + ref_params,
+    // non-varargs) rather than the varargs placeholder, so REFERENCE arguments
+    // are passed by address (the placeholder carries no ref_params, and mutating
+    // it would corrupt findMethodOverload's arity gate). The B-feature names the
+    // definition `<placeholder>__mti`; fall back to the placeholder+alias path
+    // (correct for by-value/pointer args) when it isn't found.
+    FuncDef *sfd = dynamic_cast<FuncDef *>(sel->var.type);
+    if ( sfd && sfd->is_member_template )
+    {
+	std::string inst_name = sel->var.name + "__mti";
+	Variable *idef = findVariable(inst_name);
+	if ( idef && dynamic_cast<FuncDef *>(idef->type) )
+	{
+	    TokenCallFunc *tc3 = new TokenCallFunc(*idef);
+	    tc3->parameters = sel->parameters;
+	    tc3->explicit_template_args = sel->explicit_template_args;
+	    tc3->auto_scope_context = sel->auto_scope_context;
+	    tc3->file = sel->file;
+	    tc3->line = sel->line;
+	    tc3->column = sel->column;
+	    return tc3;
+	}
+    }
+    return sel;
 }
 
 // Round `sz` up to alignment `a` (a is a power of two).
@@ -25661,6 +25690,11 @@ static bool fn_template_param_is_pack(const std::string &spelling,
 	if ( fn_template_word_is_cv(w) )
 	    continue;
 	if ( w == "." ) { ++dots; continue; }
+	// A reference-qualified pack (`_Args&... __a`, forwarding-ref
+	// `_Args&&... __a`) is still a pack of `_Args`; the bound element type
+	// strips the reference at the binding site (pd->is_reference()).
+	if ( w == "&" )
+	    continue;
 	if ( !core.empty() )
 	    return false;
 	core = w;
@@ -26199,12 +26233,32 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    // `__base...` (value expansion) both expand to the single bound
 	    // element — drop the `...` (three tkDot tokens). Real C varargs
 	    // (`, ...`) follow a comma, never an identifier, and survive.
-	    if ( !pack_param.empty()
-	      && i + 3 < ft.decl.size()
-	      && ft.decl[i+1] && ft.decl[i+1]->id() == TokenID::tkDot
-	      && ft.decl[i+2] && ft.decl[i+2]->id() == TokenID::tkDot
-	      && ft.decl[i+3] && ft.decl[i+3]->id() == TokenID::tkDot )
-		i += 3;
+	    // Reference-qualified pack (`_Base&&...`/`_Base&...`): copy through
+	    // the `&`/`&&` then drop the `...` (a plain pack leaves k at i+1).
+	    // C varargs (`, ...`) follow a comma, never an identifier, survive.
+	    if ( !pack_param.empty() )
+	    {
+		size_t k = i + 1;
+		while ( k < ft.decl.size() && ft.decl[k]
+		     && (ft.decl[k]->id() == TokenID::tkBand
+			 || ft.decl[k]->id() == TokenID::tkLand) )
+		{
+		    inj.push_back(ft.decl[k]->clone());
+		    ++k;
+		}
+		if ( k + 2 < ft.decl.size()
+		  && ft.decl[k]   && ft.decl[k]->id() == TokenID::tkDot
+		  && ft.decl[k+1] && ft.decl[k+1]->id() == TokenID::tkDot
+		  && ft.decl[k+2] && ft.decl[k+2]->id() == TokenID::tkDot )
+		    i = k + 2;	// consumed ref-quals + the three dots
+		else
+		    while ( k > i + 1 )	// no `...`: undo the ref copy-through
+		    {
+			delete inj.back();
+			inj.pop_back();
+			--k;
+		    }
+	    }
 	    continue;
 	}
 	inj.push_back(bt->clone());
@@ -26315,6 +26369,11 @@ static bool instantiate_fn_template_binding(Program &pgm,
     std::swap(pgm.compounds, saved_compounds);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
+    // A MEMBER function template instantiates with its owner class in scope so
+    // the params/body resolve class-scope members ([basic.scope.class]) — the
+    // swap above cleared the caller's scope, so re-establish the owner here.
+    if ( ft.owner_class )
+	pgm.class_scope_stack.push_back(ft.owner_class);
     std::string saved_func = pgm.cur_func_name;
     pgm.cur_func_name.clear();
     Program::LinkageSpec saved_linkage = pgm.current_linkage;
@@ -26953,6 +27012,11 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     }
 
     std::string key = inst_name;
+    // Instantiate WITH the owner class in scope so the params/body resolve
+    // class-scope members ([basic.scope.class]) — `allocator_type& __a`,
+    // `value_type`, etc. (instantiate_fn_template_binding swaps class_scope_stack
+    // to fresh, then re-pushes ft.owner_class).
+    ft.owner_class = owner;
     if ( !try_instantiate_namespace_fn_template(*this, ft, key, tc) )
 	return;
     // Alias the CALL to the instantiated definition: the call references the
@@ -28809,6 +28873,17 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		    // Record the typedef alias for this parameter (matches the
 		    // var/member paths' user_typedef_names check) so the CIR
 		    // builder keeps `Alias` as the type spec.
+		    if ( user_typedef_names.count(tname) )
+			param_alias = tname;
+		}
+		else if ( DataDef *cls_alias =
+			      resolve_current_class_type_alias(tname) )
+		{
+		    // A CLASS-SCOPE typedef/using used as a parameter type
+		    // ([basic.scope.class]) — a member function template
+		    // instantiated with its owner on class_scope_stack whose
+		    // params name `allocator_type&`/`value_type`/etc.
+		    pb = new TokenDataType(tname.c_str(), *cls_alias);
 		    if ( user_typedef_names.count(tname) )
 			param_alias = tname;
 		}

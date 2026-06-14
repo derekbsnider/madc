@@ -1,0 +1,17 @@
+#!/../bin/madc
+// A forwarding-reference parameter pack (`Args&&...`) in a static member
+// function template must deduce, substitute (drop the `...` past the `&&`),
+// and pass its reference args by address.
+#include <iostream>
+using namespace std;
+struct C {
+    template<typename U, typename... Args>
+    static void build(int& a, U* p, Args&&... args) { *p = a; }
+};
+int main()
+{
+    int a = 77, x = 0;
+    C::build(a, &x, 10);      // pack {10}; *p = a -> x = 77
+    cout << "x=" << x << endl;
+    return 0;
+}

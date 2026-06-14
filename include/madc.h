@@ -1350,6 +1350,13 @@ public:
 	std::vector<bool> typeparam_is_pack;
 	std::vector<TokenBase *> decl;
 	std::string ns;
+	// Owner class for a MEMBER function template being instantiated: pushed
+	// on class_scope_stack during the body parse so the params/body resolve
+	// class-scope members ([basic.scope.class]). NULL for free/namespace fn
+	// templates. (No default initializer — keeps the aggregate-init shape.)
+	DataDefCLASS *owner_class;
+	FnTemplateDef() : typeparams(), typeparam_defaults(), typeparam_is_type(),
+	    typeparam_is_pack(), decl(), ns(), owner_class(NULL) {}
     };
     std::map<std::string, std::vector<FnTemplateDef>> fn_template_map;
     std::set<std::string> fn_template_instantiated;   // "ns::name<t1,t2,...>" memo
