@@ -23,14 +23,15 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 → `__gnu_cxx::__alloc_traits<allocator<int>>::construct`.
 
 ## 1. Live state (verify `bash scripts/resume.sh` + `git status`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`2e8abc1`** (LOCAL ONLY; develop
-  untouched). Last COMMITTED code: `2e8abc1` (sub-gap 7, placement-new void* store); prior
-  `7202523` (sub-gap 6), `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4) + docs mirrors. Tree is
-  CLEAN (sub-gap 7 is committed). MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN at HEAD `2e8abc1`** (sub-gap 7): integration **571 passed / 27 failed / 18
+- **Branch** `feature/retire-embedded-shims-claude` @ **`f644bb9`** (LOCAL ONLY; develop
+  untouched). Last COMMITTED code: `f644bb9` (sub-gap 8, out-of-line member defs); prior
+  `2e8abc1` (sub-gap 7), `7202523` (sub-gap 6), `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4)
+  + docs mirrors. Tree is CLEAN. MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
+- **All gates GREEN at HEAD `f644bb9`** (sub-gap 8): integration **572 passed / 27 failed / 18
   skipped** (FAIL list byte-identical to `tmp/baseline_fails_s7.txt`; cumulative session-9 new
   tests +testmemtmpl{order,refparam,fwdrefpack,typedefparam,packexpand,instance}
-  +testusingbasemember +testvariadicmembertmpl +testplacementnewglobal +testplacementnewvoidp);
+  +testusingbasemember +testvariadicmembertmpl +testplacementnewglobal +testplacementnewvoidp
+  +testoutoflinemember);
   unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
   `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready.
 - Build: `make -C src` (clang++ default), bin at `bin/madc`. Clean, no warnings. NOTE: after a
@@ -48,23 +49,27 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 | `7760712` | **sub-gap 5 — INSTANCE member-template instantiation AS A METHOD.** An instance member template of a LOCAL class (`__a.construct(...)` on `__new_allocator<int>`) emitted an undefined extern (the B-feature only did STATIC `Owner::m(args)`, as free functions). Clang/gcc research (recon /workspace/llvm-clang-src + /workspace/gcc): both instantiate a member fn template AS A METHOD of the class (static-ness = a flag; `this` intrinsic, never a free-fn receiver). Fix: `FnTemplateDef::instance_method`; retain body for instance templates too; `instantiate_fn_template_binding` parses the instance case via `parseFunction(retdd, inst_name, owner)` (hidden `__this`, member resolution) instead of `parseStatement`; `parseCallMethod` calls the hook; cir_builder Pass 0.75 SKIPS member-template placeholders (their `(struct C*, ...)` extern conflicted with the definition). +testmemtmplinstance (member access proves the method model). tv1 advances to sub-gap 6 (placement-new). |
 | `7202523` | **sub-gap 6 — global-qualified new/delete `::new`/`::delete`.** `::new(p) T(args)` failed "use of undeclared identifier 'new'": the leading-`::` (global scope) expression branch read the token after `::` via `contextual_identifier_name`, which maps the `new`/`delete` keywords to strings, then looked them up as identifiers. Fix (parser.cpp leading-`::` block): intercept a following `new`/`delete` and delegate to `TokenNEW`/`TokenDELETE::parse` (same dispatch as the unqualified form). The construct body uses `::new((void*)__p) _Up(...)`. +testplacementnewglobal. PRE-EXISTING shared gaps (off-fix): scalar HEAP `new int(7)` + CLASS placement `new(p) T()` both fail in CIR for the unqualified form too. tv1 advances to sub-gap 7. |
 | `2e8abc1` | **sub-gap 7 — placement-new void* store.** The instantiated construct body lowered scalar placement new as `*(void*)__p = value` → c2mir "assignment of incompatible value". Fix (cir_builder.cpp ~7649, scalar placement-new branch): cast the placement address to the CONSTRUCTED type's pointer `(T*)addr` before the deref-store (placement new constructs a `T` regardless of the pointer's static type; a no-op when addr is already `T*`; handles `alloc_type`'s own pointer depth). +testplacementnewvoidp. tv1 advances to sub-gap 8 (`_M_realloc_insert`). |
+| `f644bb9` | **sub-gap 8 — out-of-line member DEFINITIONS of a class template.** `template<class T> RET S<T>::member(...){body}` (the bits/*.tcc shape) was never captured — a class instantiation re-parses only the class BODY, so `TokenTEMPLATE::parse`'s non-class branch mis-registered the out-of-line def as a NAMESPACE free fn (`std::member`), never called → real member an undefined import. Fix (reuses the lazy-body machinery, NO parallel path): (1) `skipped_template_outofline_member` detects the `Class<...>::member` declarator (Class a registered template) → the non-class branch stores `{member,typeparams,decl}` in `Program::out_of_line_member_defs` keyed by `<ns>::<class>` instead of a free fn; (2) `register_outofline_member_instantiations` (from `instantiate_template_use` post-monomorphize) substitutes def type-params (positional to use-site args) + class-id→mangled tag, registers a `full_definition` `deferred_lazy_bodies[member->name]` (the SAME path `parse_deferred_lazy_body` uses for defaulted member-tmpl ctors; lazy = ODR-use only, unused members never instantiate), and CLEARS the member's `emit_symbol`/`declaration_only` so the call uses the LOCAL emit name (== the deferred key) not the mangled-direct extern; (3) `parse_deferred_lazy_body` full_definition re-parses with the member's REAL return type, not hardcoded `ddVOID` (else a non-void out-of-line member's return was rewritten to void; ctor caller unchanged). Out-of-line member TEMPLATES (two-level head) EXCLUDED → sub-gap 9. +testoutoflinemember. tv1 advances to sub-gap 9. |
 
-## 3. THE NEXT TASK — sub-gap 8: out-of-line `.tcc` member definitions
-`tmp/tv1` (`vector<int>; push_back`) now hits:
-**`import of undefined item vector_int32_t_std__allocator_int32_t____M_realloc_insert`**.
-`vector::_M_realloc_insert` is the push_back GROW path — a NON-template member function defined
-**OUT-OF-LINE in `bits/vector.tcc`** (line 123 etc.), separate from the class body in
-`stl_vector.h`. So sub-gap 8 is: out-of-line member DEFINITIONS (in a `.tcc`) of a monomorphized
-class template are not instantiated/emitted (only in-class-body member defs are). Likely a larger
-slice than 4-7. Reduce a class template with an out-of-line member def used on a monomorphization
-(`template<class T> struct S { void f(); }; template<class T> void S<T>::f(){...}` then `S<int> s;
-s.f();`), attribute via `--dump-cir`, determine where `.tcc`/out-of-line member defs are (or
-aren't) captured during Borland monomorphization (how does madc currently see `bits/*.tcc`? — the
-class-template body capture is in/around `TokenTEMPLATE::parse` + `instantiate_template_use`), fix
-deepest layer, gate hard. Full detail:
-`docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"SESSION 9". After this:
-testvector should advance further; the ~12-test container cluster + 5 string-class tests likely
-share these roots.
+## 3. THE NEXT TASK — sub-gap 9: out-of-line MEMBER TEMPLATE definitions
+`tmp/tv1` (`vector<int>; push_back`) advanced PAST the undefined import to:
+**`Failed to find type '_Args' when parsing function parameters`**. In C++11+ (we present as g++ →
+201703L), `vector::_M_realloc_insert` is NOT a plain member — it is an out-of-line member **TEMPLATE**
+with a TWO-level head:
+`template<class _Tp,_Alloc> template<typename... _Args> void vector<_Tp,_Alloc>::_M_realloc_insert(
+iterator, _Args&&...)` (`bits/vector.tcc:441`). sub-gap 8 deliberately EXCLUDES this (its detection
+returns false when the skipped decl's first token is `template`), so tv1 falls back to the clean
+`import of undefined item ..._M_realloc_insert` (unchanged from before sub-gap 8). **sub-gap 9 =
+combine the out-of-line capture (sub-gap 8) with per-call member-template instantiation (sub-gap 5):**
+capture the inner `template<...>` head + body alongside the class-param head, and on each distinct
+`_Args` binding instantiate it as a method of the monomorphized class. Likely a larger slice.
+**Reduce** (DEFAULT mode, no flags): `template<class T> struct S{ template<class U> void f(U); };
+template<class T> template<class U> void S<T>::f(U u){...}` then `S<int> s; s.f(3);`. The sub-gap-8
+machinery (`out_of_line_member_defs`, `register_outofline_member_instantiations`, the
+`full_definition` lazy path) is the natural foundation; the new work is the inner member-template
+head capture + per-`_Args` monomorphization. Full detail:
+`docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"sub-gap 9". After this:
+the ~10-test container cluster + 5 string-class tests likely share these roots.
 
 ## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. DO NOT reapply
 `tmp/nontype_fold_v2_wip.patch` (the reverted 202-regression).
@@ -73,8 +78,13 @@ share these roots.
 The promoted ones are now tests (`tests/testmemtmpl*`/`testusingbasemember`/`testvariadicmembertmpl`).
 The live wall + the sub-gap-4 probes are NOT tests (they fail) — recreate:
 - `tmp/tv1.mad` — `#include <vector>\nint main(){ std::vector<int> v; v.push_back(10); return 0; }`
-  (THE wall; now fails at sub-gap 8 — `import of undefined item ..._M_realloc_insert`, the
-  out-of-line `bits/vector.tcc` push_back grow path).
+  (THE wall; now fails at sub-gap 9 — `Failed to find type '_Args'`, the out-of-line member
+  TEMPLATE `_M_realloc_insert`; clean `import of undefined item ..._M_realloc_insert` once sub-gap 9
+  re-excludes it, see §3).
+- `tmp/ool1.mad` — out-of-line VOID member of a class template (`S<T>::set`) → **WORKS** (7).
+  `tmp/ool2.mad` — out-of-line NON-VOID member (`Box<T>::fetch`) → **WORKS** (41, return-type fix).
+  `tmp/ool_nt.mad` — out-of-line member of a NON-template class (control) → **WORKS** (9, unchanged).
+  Promoted: `tests/testoutoflinemember` (void + non-void + this-access). (sub-gap 8 reducers.)
 - `tmp/vmt9.mad` — body `sink(args...)` (plain value-pack expansion) → **WORKS** (the control).
 - `tmp/vmt10.mad` — body `sink(std::forward<Args>(args)...)` (PATTERN expansion, type+value pack)
   → **WORKS** (sub-gap-4 repro, fixed @58d6c7f; needs `#include <utility>`).
