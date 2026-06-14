@@ -26175,7 +26175,15 @@ FuncDef *Program::resolved_call_funcdef(TokenCallFunc *tc, bool *no_winner)
     std::vector<bool> zeros;
     for ( size_t i = 0; i < n; ++i )
     {
-	at.push_back(operand_value_datadef(tc->parameters[i]));
+	// [conv.array]/[conv.func]: an array (or function) argument used as a
+	// VALUE for overload resolution decays to a pointer. Without this a bare
+	// `int a[N]` argument typed as the element `int` (its Variable carries
+	// the array-ness as a flag, not a DataDefCArray) failed to rank against
+	// the instantiated iterator overload's `int*` parameter, so the call fell
+	// back to the declaration-only placeholder and emitted an undefined
+	// `__ns_<fn>` import. array_decay_pointer returns NULL for non-arrays.
+	DataDef *adp = array_decay_pointer(tc->parameters[i]);
+	at.push_back(adp ? adp : operand_value_datadef(tc->parameters[i]));
 	zeros.push_back(is_zero_integer_literal(tc->parameters[i]));
     }
     Variable *w = find_namespace_function_overload(
@@ -26547,17 +26555,22 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    }
 	}
 	// [temp.deduct.call]: deducing a BY-VALUE (non-reference) type parameter
-	// from a FUNCTION argument applies the function-to-pointer decay —
-	// `R(Args)` -> `R(*)(Args)`. Without this `transform(b, e, fn)` deduced the
-	// operation type parameter from `fn` as the bare FuncDef, which emitted an
-	// incomplete, non-callable `void __op` parameter. A reference parameter
-	// (spelling has `&`) binds the function directly — no decay.
-	// (Array-to-pointer argument decay is a sibling rule, deferred until the
-	// matching call-site overload-binding gap for a bare-array argument lands.)
+	// from a FUNCTION or ARRAY argument applies the standard decays —
+	// `R(Args)` -> `R(*)(Args)`, `T[N]` -> `T*`. Without the function decay
+	// `transform(b, e, fn)` deduced the operation type parameter from `fn` as
+	// the bare FuncDef (incomplete, non-callable `void __op`); without the
+	// array decay `transform(a, a+N, b, fn)` deduced the iterator parameter
+	// from `a` as the array type `int[N]`, so the body's `*__first` hit
+	// "cannot dereference non-pointer type". A reference parameter (spelling
+	// has `&`) binds directly — no decay (the array/function keeps its type).
 	DataDef *deduce_dd = arg_dd;
 	if ( sp.find('&') == std::string::npos )
+	{
 	    if ( FuncDef *afd = dynamic_cast<FuncDef *>(arg_dd) )
 		deduce_dd = new DataDefFPTR(afd);
+	    else if ( DataDef *adp = pgm.array_decay_pointer(tc->parameters[i]) )
+		deduce_dd = adp;
+	}
 	std::string tp;
 	DataDef *dd = NULL;
 	int r = fn_template_deduce_param(sp, ft.typeparams, deduce_dd, tp, dd);

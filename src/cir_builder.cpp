@@ -657,7 +657,20 @@ FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
 			std::vector<const DataDef *> at;
 			std::vector<bool> zeros;
 			for (size_t i = 0; i < n; i++) {
-				at.push_back(m_prog->operand_value_datadef(
+				// [conv.array]/[conv.func]: an array (or function)
+				// argument used as a VALUE for overload resolution
+				// decays to a pointer. A bare `int a[N]` argument types
+				// as the element `int` (the array-ness is a Variable
+				// flag, not a DataDefCArray), so without decay it failed
+				// to match the instantiated iterator overload's `int*`
+				// parameter and the call fell back to the declaration-
+				// only placeholder (undefined `__ns_<fn>` import). The
+				// parse-time re-rank (resolved_call_funcdef) decays the
+				// same way. array_decay_pointer returns NULL otherwise.
+				DataDef *adp = m_prog->array_decay_pointer(
+						tcf->parameters[i]);
+				at.push_back(adp ? adp
+					: m_prog->operand_value_datadef(
 						tcf->parameters[i]));
 				zeros.push_back(is_zero_integer_literal(
 						tcf->parameters[i]));
