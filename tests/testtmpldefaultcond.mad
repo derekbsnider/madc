@@ -1,0 +1,31 @@
+#!../bin/madc
+// Defaulted template TYPE parameter whose default is a TRAIT EXPRESSION
+// (`R = typename std::conditional<COND, A, B>::type`). The default must be
+// EVALUATED at instantiation: substitute the bound params, resolve the
+// conditional's `::type`, fold any suffix. Before the fix a multi-token
+// trait-expression default was not resolved -> R fell back to int64_t -> wrong
+// return type + undefined import. This is the std-library shape behind
+// __make_move_if_noexcept_iterator's conditional-defaulted iterator return.
+#include <type_traits>
+#include <iostream>
+using namespace std;
+
+namespace nn {
+    // false condition selects the else branch -> R = T*
+    template<typename T, typename R = typename conditional<false, double, T*>::type>
+    R as_ptr(T* p) { return (R)p; }
+
+    // true condition selects the then branch -> R = T*
+    template<typename T, typename R = typename conditional<true, T*, double>::type>
+    R as_ptr2(T* p) { return (R)p; }
+}
+
+int main()
+{
+    int a[2] = {7, 8};
+    int *p = nn::as_ptr(a + 0);    // R = int* (else branch)
+    cout << *p << endl;            // 7
+    int *q = nn::as_ptr2(a + 1);   // R = int* (then branch)
+    cout << *q << endl;            // 8
+    return 0;
+}

@@ -26599,6 +26599,85 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 					    pack_empty, NULL);
 }
 
+// Resolve a fn-template parameter's DEFAULT token run (`R = T*`,
+// `R = __conditional_t<__move_if_noexcept_cond<_Tp>::value, move_iterator<_Tp*>,
+// _Tp*>`, …) to a concrete type. The already-bound type parameters are spliced
+// into the default's tokens (a bound param name -> its DataDef), then the result
+// is resolved in an ISOLATED token stream — the same recursion-safe pattern the
+// alias-template resolver uses (resolving a trait/template-id default recurses
+// into more instantiation, and sentinel-draining the shared `tokens` would
+// desync a suspended outer parse). Trailing `*`/`&` declarator suffixes fold via
+// getPointerType/getReferenceType. Returns NULL for a still-dependent /
+// unresolvable default (e.g. an absent `::type` — SFINAE), so the caller bails.
+DataDef *Program::resolve_template_param_default_type(
+		const std::vector<TokenBase *> &default_tokens,
+		const std::map<std::string, DataDef *> &binding,
+		DataDefCLASS *owner)
+{
+    if ( default_tokens.empty() )
+	return NULL;
+    std::deque<TokenBase *> body;
+    for ( TokenBase *bt : default_tokens )
+    {
+	if ( bt && bt->type() == TokenType::ttIdentifier )
+	{
+	    std::map<std::string, DataDef *>::const_iterator bi =
+		binding.find(((TokenIdent *)bt)->str);
+	    if ( bi != binding.end() && bi->second )
+	    {
+		body.push_back(new TokenDataType(bi->second->name.c_str(),
+						 *bi->second));
+		continue;
+	    }
+	}
+	body.push_back(bt->clone());
+    }
+    body.push_back(new TokenSemi());
+
+    std::deque<TokenBase *> saved_tokens = tokens;
+    size_t saved_diag_count = diagnostics.size();
+    ErrorInfo saved_error = last_error;
+    tokens = body;
+
+    bool pushed_owner = false;
+    if ( owner )
+    { class_scope_stack.push_back(owner); pushed_owner = true; }
+
+    TokenDataType *resolved = NULL;
+    try
+    {
+	TokenBase *head = nextToken();
+	std::string cv;
+	head = consume_template_type_arg_qualifiers(head, cv);
+	resolved = resolve_declared_type_token(head, true, true);
+	while ( resolved && peekToken()
+	     && (peekToken()->id() == TokenID::tkMul
+	      || peekToken()->id() == TokenID::tkBand
+	      || peekToken()->id() == TokenID::tkLand) )
+	{
+	    TokenID sfx = nextToken()->id();
+	    DataDef *w = (sfx == TokenID::tkMul)
+		? static_cast<DataDef *>(getPointerType(&resolved->definition))
+		: static_cast<DataDef *>(getReferenceType(&resolved->definition));
+	    resolved = new TokenDataType(w->name.c_str(), *w);
+	}
+    }
+    catch ( ... ) { resolved = NULL; }
+
+    if ( pushed_owner && !class_scope_stack.empty()
+      && class_scope_stack.back() == owner )
+	class_scope_stack.pop_back();
+
+    tokens = saved_tokens;
+    if ( !resolved )
+    {
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
+	return NULL;
+    }
+    return &resolved->definition;
+}
+
 // Instantiate a retained fn-template DECLARATION with a deduced type binding:
 // defaults fill unbound parameters, the substituted tokens re-parse as a
 // concrete namespace function (it registers in namespace_fn_overload_sets
@@ -26661,6 +26740,14 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    }
 	    if ( ok && base )
 	    { binding[ft.typeparams[i]] = base; continue; }
+	    // Trait-expression / template-id default (`R = __conditional_t<...>`,
+	    // `enable_if_t<...>`): substitute the bound params and resolve the full
+	    // type in an isolated stream. This is the layer-(b) case behind
+	    // __make_move_if_noexcept_iterator's conditional_t-defaulted iterator
+	    // return type in the std::vector chain.
+	    if ( DataDef *rd = pgm.resolve_template_param_default_type(
+		    ft.typeparam_defaults[i], binding, ft.owner_class) )
+	    { binding[ft.typeparams[i]] = rd; continue; }
 	}
 	return false;
     }

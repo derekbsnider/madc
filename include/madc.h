@@ -2129,6 +2129,14 @@ public:
     // OR reference type is a valid template argument (`Vec<T*>`,
     // `conditional<b, int&, long>`, `__conditional_t<…, remove_reference_t<R>&&, …>`).
     TokenDataType *fold_template_arg_declarator(TokenDataType *adt, TokenBase *origin);
+    // Resolve a fn-template parameter's DEFAULT token run to a concrete type,
+    // substituting the already-bound type parameters in, then resolving in an
+    // isolated token stream (handles trait-expression / template-id defaults like
+    // `R = __conditional_t<...>`). Returns NULL for a still-dependent default.
+    DataDef *resolve_template_param_default_type(
+		const std::vector<TokenBase *> &default_tokens,
+		const std::map<std::string, DataDef *> &binding,
+		DataDefCLASS *owner);
     // Consume a declarator's pointer-star run: a sequence of `*` interleaved with
     // cv-qualifiers (const/volatile/restrict). Each `*` on a NON-fn-ptr base wraps
     // `dd` via getPointerType (the type reflects the indirection); a DataDefFPTR
