@@ -1,0 +1,34 @@
+#!/../bin/madc
+// `auto`-return functions with a TRAILING RETURN TYPE (`auto f(...) -> T`,
+// C++11) — sub-gap 10. madc's parseDeclaration treated `auto` only as a deduced
+// VARIABLE (`auto x = init`) and threw "'auto' requires an initializer" on an
+// auto-return function. Now a `(` after the declarator routes to the function
+// path, and parseFunction resolves the trailing `-> T` once parameters are in
+// scope (so `-> decltype(params)` works), refreshing the return type. Covers a
+// free function, a concrete and a decltype trailing type, and member functions
+// (the deferred-body path) including `decltype(this->member)`.
+// (This is the libstdc++ cross-type `__normal_iterator operator-` shape that
+// std::vector<int>::push_back reaches.)
+#include <stdio.h>
+
+auto fdiff(int a, int b) -> int { return a - b; }
+auto fdecl(int a, int b) -> decltype(a - b) { return a - b; }
+
+struct S {
+	int x;
+	auto get() -> decltype(x) { return x; }
+	auto thru() -> decltype(this->x) { return this->x; }
+	auto twice() -> int { return x * 2; }
+};
+
+int main()
+{
+	printf("%d\n", fdiff(5, 3));   // 2
+	printf("%d\n", fdecl(9, 2));   // 7
+	S s;
+	s.x = 21;
+	printf("%d\n", s.get());       // 21
+	printf("%d\n", s.thru());      // 21
+	printf("%d\n", s.twice());     // 42
+	return 0;
+}

@@ -19594,8 +19594,11 @@ std::vector<TokenBase *> Program::collect_compound_body_tokens(TokenBase *open)
     return body;
 }
 
+static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret);
+
 void Program::enqueue_deferred_function_body(Variable *var,
-					   Method *method, TokenBase *open)
+					   Method *method, TokenBase *open,
+					   const std::vector<TokenBase *> *trailing_ret)
 {
     if ( !deferred_function_body_sink )
 	return;
@@ -19607,6 +19610,11 @@ void Program::enqueue_deferred_function_body(Variable *var,
     body.column = open ? open->column : 0;
     body.ctor_init_tokens.swap(pending_deferred_ctor_inits);
     body.body_tokens = collect_compound_body_tokens(open);
+    // A trailing return type (`-> T`) captured by parseFunction is resolved when
+    // the body materializes (params back in scope), the deferred analogue of the
+    // eager resolution below the param-variable creation.
+    if ( trailing_ret )
+	body.trailing_ret_tokens = *trailing_ret;
     deferred_function_body_sink->push_back(body);
 }
 
@@ -19726,6 +19734,44 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
 	if ( code )
 	    code->method = body.method;
+
+	// Resolve a captured `auto`-return trailing type now that the method's
+	// parameters are back in scope (code->method set), and adopt it onto the
+	// method's FuncDef — the deferred analogue of parseFunction's eager path.
+	if ( !body.trailing_ret_tokens.empty() && body.var )
+	{
+	    FuncDef *cur = dynamic_cast<FuncDef *>(body.var->type);
+	    std::vector<TokenBase *> trtoks = body.trailing_ret_tokens;
+	    trtoks.push_back(new TokenSemi());
+	    for ( std::vector<TokenBase *>::reverse_iterator it = trtoks.rbegin();
+		  it != trtoks.rend(); ++it )
+		pushToken(*it);
+	    TokenBase *rt = nextToken();
+	    TokenDataType *rtt = resolve_declared_type_token(rt, true, true);
+	    DataDef *new_ret = rtt ? &rtt->definition : NULL;
+	    bool tr_ref = false;
+	    for ( ; new_ret ; )
+	    {
+		TokenBase *s = peekToken();
+		if ( s && s->id() == TokenID::tkMul )
+		    { nextToken(); new_ret = getPointerType(new_ret); continue; }
+		if ( s && (s->id() == TokenID::tkBand || s->id() == TokenID::tkLand) )
+		    { nextToken(); tr_ref = true; continue; }
+		break;
+	    }
+	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+		nextToken();
+	    if ( cur && new_ret && &cur->returns != new_ret )
+	    {
+		FuncDef *fresh = clone_funcdef_with_return(cur, *new_ret);
+		if ( tr_ref )
+		    fresh->returns_ref = true;
+		funcdef_map[body.var->name] = fresh;
+		body.var->type = fresh;
+	    }
+	    else if ( cur && tr_ref )
+		cur->returns_ref = true;
+	}
 
 	if ( !body.ctor_init_tokens.empty() )
 	    if ( FuncDef *ffd = dynamic_cast<FuncDef *>(body.var->type) )
@@ -28969,6 +29015,61 @@ static bool defaulted_member_parses_empty(DataDefCLASS *owner,
     return resolve_class_type_alias(owner, ctor_tail) == owner;
 }
 
+// Clone a FuncDef with a DIFFERENT return type. FuncDef::returns is a reference
+// (cannot be reseated), so a return-type change after the FuncDef exists must
+// rebuild it — used for an `auto`-return function whose real type is only known
+// from its trailing return type (`-> T`) once parameters are in scope. Copies
+// every FuncDef field except `returns` (the DataDef base is default-constructed
+// identically for both, as it is for every FuncDef).
+static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
+{
+    FuncDef *f = new FuncDef(new_ret);
+    f->parameters = src->parameters;
+    f->explicit_alignment = src->explicit_alignment;
+    f->has_captures = src->has_captures;
+    f->potential_captures = src->potential_captures;
+    f->captures = src->captures;
+    f->captured_vars = src->captured_vars;
+    f->local_emit_name = src->local_emit_name;
+    f->return_types = src->return_types;
+    f->ref_params = src->ref_params;
+    f->const_params = src->const_params;
+    f->param_cpp_spellings = src->param_cpp_spellings;
+    f->param_typedef_names = src->param_typedef_names;
+    f->param_defaults = src->param_defaults;
+    f->returns_ref = src->returns_ref;
+    f->template_return_param_name = src->template_return_param_name;
+    f->template_return_deduce_arg_index = src->template_return_deduce_arg_index;
+    f->template_return_deduce_from_pointer = src->template_return_deduce_from_pointer;
+    f->template_return_ref = src->template_return_ref;
+    f->return_typedef_name = src->return_typedef_name;
+    f->emit_symbol = src->emit_symbol;
+    f->method_display_name = src->method_display_name;
+    f->function_display_name = src->function_display_name;
+    f->namespace_name = src->namespace_name;
+    f->inline_builtin_kind = src->inline_builtin_kind;
+    f->ctor_trailing_self = src->ctor_trailing_self;
+    f->is_member_template = src->is_member_template;
+    f->template_param_names = src->template_param_names;
+    f->template_param_is_pack = src->template_param_is_pack;
+    f->template_return_spelling = src->template_return_spelling;
+    f->template_param_spellings = src->template_param_spellings;
+    f->member_template_decl = src->member_template_decl;
+    f->member_template_owner = src->member_template_owner;
+    f->ctor_initializers = src->ctor_initializers;
+    f->is_varargs = src->is_varargs;
+    f->is_void_params = src->is_void_params;
+    f->no_instrument_function = src->no_instrument_function;
+    f->no_strict_aliasing = src->no_strict_aliasing;
+    f->has_large_struct_retbuf = src->has_large_struct_retbuf;
+    f->declaration_only = src->declaration_only;
+    f->decl_file = src->decl_file;
+    f->defaulted_or_deleted = src->defaulted_or_deleted;
+    f->pure_virtual = src->pure_virtual;
+    f->is_const_method = src->is_const_method;
+    return f;
+}
+
 // parse a function definition, can be a forward declaration, or function definition
 void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class,
 			    std::vector<DataDef *> *multi_ret, bool return_ref,
@@ -29720,11 +29821,37 @@ paramdecl:
     // parser.cpp:11774/11777). The rest are consumed (not yet modelled).
     // Must run before the forward-decl checks (tkSemi/tkComma) and the brace
     // check so both `T m() const;` and `T m() const {}` parse.
+    // A TRAILING RETURN TYPE (`-> T`, C++11) is captured here but resolved BELOW,
+    // after the parameter variables enter scope: `-> decltype(__a - __b)` names
+    // the parameters, which are not yet findable at this point. Collected raw
+    // (balanced) until the body '{' / ';' / ','.
+    std::vector<TokenBase *> trailing_ret_tokens;
     for (;;) {
 	TokenBase *q = nt;
 	if ( !q ) break;
 	if ( q->id() == TokenID::tkCONST ) { func->is_const_method = true; nt = nextToken(); continue; }
 	if ( q->id() == TokenID::tkVOLATILE || q->id() == TokenID::tkRESTRICT ) { nt = nextToken(); continue; }
+	if ( q->id() == TokenID::tkDeRef )	// `->` trailing return type
+	{
+	    nt = nextToken();
+	    int pd = 0, sd = 0, bd = 0;
+	    while ( nt )
+	    {
+		if ( pd == 0 && sd == 0 && bd == 0
+		  && (nt->id() == TokenID::tkOpBrc || nt->id() == TokenID::tkSemi
+		   || nt->id() == TokenID::tkComma) )
+		    break;
+		if ( nt->id() == TokenID::tkOpBrk ) ++pd;
+		else if ( nt->id() == TokenID::tkClBrk && pd > 0 ) --pd;
+		else if ( nt->id() == TokenID::tkOpSqr ) ++sd;
+		else if ( nt->id() == TokenID::tkClSqr && sd > 0 ) --sd;
+		else if ( nt->id() == TokenID::tkOpBrc ) ++bd;
+		else if ( nt->id() == TokenID::tkClBrc && bd > 0 ) --bd;
+		trailing_ret_tokens.push_back(nt->clone());
+		nt = nextToken();
+	    }
+	    continue;
+	}
 	if ( q->id() == TokenID::tkTHROW )
 	{
 	    TokenBase *open = nextToken();
@@ -30074,7 +30201,8 @@ paramdecl:
 
     if ( deferred_function_body_sink )
     {
-	enqueue_deferred_function_body(var, method, nt);
+	enqueue_deferred_function_body(var, method, nt,
+	    trailing_ret_tokens.empty() ? NULL : &trailing_ret_tokens);
 	return;
     }
 
@@ -30088,6 +30216,50 @@ paramdecl:
     else
     {
 	DBG(cout << "parseFunction() code = NULL" << endl);
+    }
+
+    // Resolve a captured trailing return type now that the parameter variables
+    // are in scope (the compound's method is set), so `-> decltype(__a - __b)`
+    // can name them. FuncDef::returns is a reference, so adopting the resolved
+    // type rebuilds the FuncDef (clone_funcdef_with_return) and re-points the
+    // Variable / funcdef_map; the TokenFunc below then sees the real return type.
+    if ( !trailing_ret_tokens.empty() )
+    {
+	trailing_ret_tokens.push_back(new TokenSemi());
+	for ( std::vector<TokenBase *>::reverse_iterator it =
+		  trailing_ret_tokens.rbegin();
+	      it != trailing_ret_tokens.rend(); ++it )
+	    pushToken(*it);
+	TokenBase *rt = nextToken();
+	TokenDataType *rtt = resolve_declared_type_token(rt, true, true);
+	if ( !rtt )
+	    Throw(rt ? rt : nt)
+		<< "Could not resolve trailing return type" << flush;
+	DataDef *new_ret = &rtt->definition;
+	bool tr_ref = false;
+	for (;;)
+	{
+	    TokenBase *s = peekToken();
+	    if ( s && s->id() == TokenID::tkMul )
+		{ nextToken(); new_ret = getPointerType(new_ret); continue; }
+	    if ( s && (s->id() == TokenID::tkBand || s->id() == TokenID::tkLand) )
+		{ nextToken(); tr_ref = true; continue; }
+	    break;
+	}
+	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	    nextToken();
+	if ( new_ret && &func->returns != new_ret )
+	{
+	    FuncDef *fresh = clone_funcdef_with_return(func, *new_ret);
+	    if ( tr_ref )
+		fresh->returns_ref = true;
+	    funcdef_map[id] = fresh;
+	    if ( var )
+		var->type = fresh;
+	    func = fresh;
+	}
+	else if ( tr_ref )
+	    func->returns_ref = true;
     }
 
     TokenFunc *tf = new TokenFunc(*var);
@@ -31038,7 +31210,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	Throw << "expecting token after identifier" << flush;
 
     // auto type inference: auto fn = func_name; or auto fn = [](params) { body };
-    if ( &tb->definition == &ddAUTO )
+    // An `auto`-RETURN FUNCTION (`auto f(params) -> T {...}` / deduced `auto f(){...}`)
+    // is NOT a variable — a `(` after the declarator means a function, whose return
+    // type parseFunction resolves from the trailing `-> T` once parameters are in
+    // scope. Fall through to the function path below (decl_type stays ddAUTO).
+    if ( &tb->definition == &ddAUTO && nt->id() != TokenID::tkOpBrk )
     {
 	if ( nt->id() != TokenID::tkAssign )
 	    Throw(tb) << "'auto' requires an initializer" << flush;

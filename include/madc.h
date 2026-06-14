@@ -1508,6 +1508,9 @@ public:
 	Method *method;
 	std::vector<TokenBase *> body_tokens;
 	std::vector<TokenBase *> definition_tokens;
+	// A captured trailing return type (`-> T`) of an `auto`-return method,
+	// resolved when the deferred body materializes (parameters back in scope).
+	std::vector<TokenBase *> trailing_ret_tokens;
 	// A constructor's mem-initializer-list tokens (after ':', before the
 	// body '{'), parsed at class COMPLETION like the body — initializer
 	// ARGUMENTS are complete-class context ([class.base.init]): real
@@ -2365,7 +2368,8 @@ public:
     std::string unique_overload_symbol(std::string base);
     std::vector<TokenBase *> collect_compound_body_tokens(TokenBase *open);
     void enqueue_deferred_function_body(Variable *var,
-					Method *method, TokenBase *open);
+					Method *method, TokenBase *open,
+					const std::vector<TokenBase *> *trailing_ret = NULL);
     void parse_deferred_function_body(DeferredFunctionBody &body);
     void parse_deferred_function_bodies(std::vector<DeferredFunctionBody> &bodies);
     // Lazy member-function-body instantiation: parse a single deferred body by
