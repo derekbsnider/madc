@@ -16960,6 +16960,21 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    TokenBase *name_tb = nextToken();
 		    if ( !name_tb )
 			Throw(name_tb ? name_tb : tb) << "Expecting identifier after '::'" << flush;
+		    // `::new (...)` / `::delete ...` — a GLOBAL-qualified new/delete
+		    // expression ([expr.new]/[expr.delete] with a leading `::`): use
+		    // the global operator new/delete. The `::` is already consumed;
+		    // the new-expression is otherwise identical to the unqualified
+		    // form (placement `::new(p) T(args)` is what allocator /
+		    // __new_allocator::construct emit). Delegate to the keyword's own
+		    // parse, exactly like the unqualified dispatch below.
+		    if ( name_tb->id() == TokenID::tkNEW
+		      || name_tb->id() == TokenID::tkDELETE )
+		    {
+			TokenBase *node = ((TokenKeyword *)name_tb)->parse(*this);
+			if ( node )
+			    exStack.push(node);
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
 		    std::string gname;
 		    if ( name_tb->id() == TokenID::tkOPEROVER )
 			gname = parseOperatorId(name_tb);
