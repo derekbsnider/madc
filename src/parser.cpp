@@ -6560,6 +6560,10 @@ static bool template_pattern_mentions_param(const std::string &pattern,
     return false;
 }
 
+// [temp.func.order] tiebreak for member function templates (defined below, after
+// the partial-ordering primitives it reuses).
+static bool member_tmpl_more_specialized(FuncDef *A, FuncDef *B);
+
 Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 					  const std::vector<const DataDef *> &argtypes)
 {
@@ -6656,6 +6660,16 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	{
 	    best_score = total;
 	    best = mv;
+	}
+	else if ( ok && total == best_score && best )
+	{
+	    // Viability tie: prefer the more-specialized member template
+	    // ([temp.func.order]). Without this the first-registered candidate
+	    // wins arbitrarily — `take(P)` could shadow the exact `take(U*)`.
+	    FuncDef *best_fd = dynamic_cast<FuncDef *>(best->type);
+	    if ( best_fd && best_fd->is_member_template && fd->is_member_template
+	      && member_tmpl_more_specialized(fd, best_fd) )
+		best = mv;
 	}
     }
     if ( best )
@@ -7648,6 +7662,39 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     tc2->file = tc->file;
     tc2->line = tc->line;
     tc2->column = tc->column;
+    return tc2;
+}
+
+TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
+		DataDefCLASS *owner, const std::string &member)
+{
+    if ( !tc || !owner || member.empty() )
+	return tc;
+    FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+    // Only member TEMPLATES need the post-arg reselection: a non-template static
+    // overload set is already disambiguated by find_method_by_callable_arity at
+    // resolution time. Narrowing here keeps the change surgical (the part-18
+    // partial-ordering lesson: touch selection only on a genuine relationship).
+    if ( !fd || !fd->is_member_template )
+	return tc;
+    std::vector<const DataDef *> at;
+    for ( TokenBase *p : tc->parameters )
+	at.push_back(p ? p->datadef() : NULL);
+    Variable *ov = owner->findMethodOverload(member, at);
+    if ( !ov || ov == &tc->var || !(ov->flags & vfSTATIC) )
+	return tc;   // already the best (or single) overload — no change
+    TokenCallFunc *tc2 = new TokenCallFunc(*ov);
+    tc2->parameters = tc->parameters;
+    tc2->explicit_template_args = tc->explicit_template_args;
+    tc2->auto_scope_context = tc->auto_scope_context;
+    tc2->file = tc->file;
+    tc2->line = tc->line;
+    tc2->column = tc->column;
+    // The instantiation hooks ran inside parseCallFunc against the originally
+    // bound overload; re-run them on the corrected overload so its body is
+    // materialized and its symbol aliased (the B-feature path).
+    instantiate_namespace_fn_template_for_call(tc2);
+    instantiate_member_fn_template_for_call(tc2);
     return tc2;
 }
 
@@ -12166,7 +12213,8 @@ enum class QualifiedClassExprAction {
 static QualifiedClassExprAction resolve_class_qualified_expression(
 	Program &pgm, DataDefCLASS *scope, const std::string &scope_name,
 	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
-	Variable **var_out, TokenBase **tb_out)
+	Variable **var_out, TokenBase **tb_out,
+	DataDefCLASS **owner_out = NULL, std::string *member_out = NULL)
 {
     TokenBase *member_tb = NULL;
     std::string member_name;
@@ -12274,6 +12322,10 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	    }
 	    *var_out = mvar;
 	    *tb_out = member_tb;
+	    if ( owner_out )
+		*owner_out = scope;	// the FINAL (possibly nested) owner
+	    if ( member_out )
+		*member_out = member_name;
 	    return QualifiedClassExprAction::ResolvedFunction;
 	}
 
@@ -13162,9 +13214,12 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 	    class_scope = resolve_expression_class_scope(bt->str);
 	if ( class_scope )
 	{
+	    DataDefCLASS *resolved_owner = NULL;
+	    std::string resolved_member;
 	    QualifiedClassExprAction action =
 		resolve_class_qualified_expression(*this, class_scope,
-		    bt->str, tb, exStack, &var, &tb);
+		    bt->str, tb, exStack, &var, &tb,
+		    &resolved_owner, &resolved_member);
 	    if ( action == QualifiedClassExprAction::ResolvedFunction )
 	    {
 		if ( var && var->type && var->type->is_function()
@@ -13178,6 +13233,12 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 		    tc->line = tb->line;
 		    tc->column = tb->column;
 		    tb = parseCallFunc(tc);
+		    // A static member-template call resolved its callee by
+		    // name+arity BEFORE the args were known; reselect now that
+		    // the arg types are parsed ([over.match] + [temp.func.order]).
+		    tc = reselect_static_member_overload(tc, resolved_owner,
+						         resolved_member);
+		    var = &tc->var;
 		    opStack.push(tc);
 		    if ( tb->id() == TokenID::tkSemi )
 			return ExprStep::Done;
@@ -13256,6 +13317,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 {
     Variable *var = NULL;
     bool done = false;
+    // A qualified static-member call (`Owner::m`) records its resolved owner +
+    // member here so the shared `ns_resolved:` call builder can reselect the
+    // overload once the arg types are known ([over.match]+[temp.func.order]).
+    // Declared before any `goto ns_resolved` so the jumps don't skip an init.
+    DataDefCLASS *qstatic_owner = NULL;
+    std::string qstatic_member;
 		std::string contextual_name = contextual_identifier_name(tb);
 		TokenIdent contextual_ident(contextual_name);
 		TokenIdent *ident_tb = tb->type() == TokenType::ttIdentifier
@@ -14262,7 +14329,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    {
 			QualifiedClassExprAction action =
 			    resolve_class_qualified_expression(*this, class_scope,
-				ns_name, tb, exStack, &var, &tb);
+				ns_name, tb, exStack, &var, &tb,
+				&qstatic_owner, &qstatic_member);
 			if ( action == QualifiedClassExprAction::ResolvedFunction )
 			    goto ns_resolved;
 			return done ? ExprStep::Done : ExprStep::Break;
@@ -14342,7 +14410,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    QualifiedClassExprAction action =
 				resolve_class_qualified_expression(*this,
 				    member_scope, member_name, member_tb,
-				    exStack, &var, &tb);
+				    exStack, &var, &tb,
+				    &qstatic_owner, &qstatic_member);
 			    if ( action == QualifiedClassExprAction::ResolvedFunction )
 				goto ns_resolved;
 			    return done ? ExprStep::Done : ExprStep::Break;
@@ -14372,7 +14441,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    QualifiedClassExprAction action =
 					resolve_class_qualified_expression(*this,
 					    member_scope, member_name, member_tb,
-					    exStack, &var, &tb);
+					    exStack, &var, &tb,
+					    &qstatic_owner, &qstatic_member);
 				    if ( action == QualifiedClassExprAction::ResolvedFunction )
 					goto ns_resolved;
 				    return done ? ExprStep::Done : ExprStep::Break;
@@ -14840,6 +14910,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    {
 			tb = parseCallFunc(tc);
 			DBG(cout << "parseCallFunc returned with token " << (char)tb->get() << endl);
+			// Qualified static member-template call: reselect the
+			// overload now that the arg types are known
+			// ([over.match]+[temp.func.order]).
+			if ( qstatic_owner )
+			{
+			    tc = reselect_static_member_overload(tc,
+					qstatic_owner, qstatic_member);
+			    var = &tc->var;
+			}
 		    }
 		    DBG(cout << "Pushing found function call: " << var->name << "() onto opStack" << endl);
 		    opStack.push(tc);
@@ -26675,6 +26754,37 @@ static bool po_more_specialized(Program &pgm, Program::FnTemplateDef &A,
 {
     return po_at_least_specialized(pgm, A, B)
 	&& !po_at_least_specialized(pgm, B, A);
+}
+
+// [temp.func.order] for MEMBER function templates: same symbolic deduction as
+// po_at_least_specialized, but reading the per-parameter spellings directly off
+// the FuncDefs (template_param_spellings) instead of an FnTemplateDef. "Is X at
+// least as specialized as Y" = deduce Y's typeparams (vars) against X's params
+// (X's typeparams opaque). Used by findMethodOverload to break a viability tie
+// (two member templates that both deduce to the same arg) toward the more
+// specialized overload (`take(U*)` over `take(P)`), matching gcc/clang.
+static bool member_tmpl_at_least_specialized(FuncDef *X, FuncDef *Y)
+{
+    const std::vector<std::string> &px = X->template_param_spellings;
+    const std::vector<std::string> &py = Y->template_param_spellings;
+    if ( px.empty() || px.size() != py.size() )
+	return false;
+    std::map<std::string, std::string> bind;	// Y's deductions, consistent
+    for ( size_t i = 0; i < px.size(); ++i )
+    {
+	std::vector<std::string> wx, wy;
+	fn_template_split_words(px[i], wx);	// TARGET (X typeparams opaque)
+	fn_template_split_words(py[i], wy);	// PATTERN (Y typeparams = vars)
+	if ( !po_pattern_match(wy, 0, wx, 0, Y->template_param_names, bind) )
+	    return false;
+    }
+    return true;
+}
+
+static bool member_tmpl_more_specialized(FuncDef *A, FuncDef *B)
+{
+    return member_tmpl_at_least_specialized(A, B)
+	&& !member_tmpl_at_least_specialized(B, A);
 }
 
 void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)

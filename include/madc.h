@@ -2009,6 +2009,15 @@ public:
     // bound to the winning overload (same parameters / parent_expr / position).
     class TokenCallMethod *reselect_method_overload(class TokenCallMethod *tc,
 		Variable &recv, class DataDefCLASS *cls, const std::string &id);
+    // Static-member-call analogue of reselect_method_overload: a qualified
+    // static call (`Owner::m(args)`) resolves its callee by name+arity BEFORE
+    // the args are parsed, so once the arg types are known reselect the overload
+    // by [over.match] + [temp.func.order] (findMethodOverload's partial-order
+    // tiebreak). Returns a NEW TokenCallFunc bound to the better overload (with
+    // the member-template instantiation hooks re-run on it) when one is found,
+    // else the original `tc`.
+    class TokenCallFunc *reselect_static_member_overload(class TokenCallFunc *tc,
+		class DataDefCLASS *owner, const std::string &member);
     // The class-object DataDef an operand expression DENOTES for operator /
     // overload resolution: its datadef's class, or — for a reference-typed
     // expression / a REFERENCE variable (`const A &p`, vfREFERENCE stored as
