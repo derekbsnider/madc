@@ -2,8 +2,9 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 8 CLOSE"** block immediately below (current state +
-NEXT). The "SESSION 7 CLOSE" master section further down is the campaign primer
+then read the **"SESSION 9 CLOSE"** block immediately below (current state +
+NEXT); the "SESSION 8 CLOSE" block under it is prior chronology (w2a). The
+"SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
 valid for background; its §1 "Live state" git HEAD is STALE (use SESSION 8
 CLOSE). The per-part STATUS banners are detailed chronology, read only for
@@ -13,7 +14,50 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 8 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-13
+# ★ SESSION 9 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-14
+
+## 0. Orientation
+Same campaign as SESSION 8 (real glibc+libstdc++ every mode; sole backend
+cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. The live wall is
+now the **container cluster**, entered via `testvector` → `std::vector<int>::push_back`
+→ `__gnu_cxx::__alloc_traits<allocator<int>>::construct`.
+
+## 1. Live state (verify `bash scripts/resume.sh`)
+- **Branch** `feature/retire-embedded-shims-claude` @ **`505fd1f`** (LOCAL ONLY; develop
+  untouched). MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
+- **All gates GREEN** at HEAD: integration **564 passed / 27 failed / 18 skipped** (FAIL
+  list byte-identical to `tmp/baseline_fails_s7.txt`; +testmemtmplorder +testusingbasemember
+  +testvariadicmembertmpl); unit all-pass; gcc-torture **1571 / 51-name failset
+  byte-identical** to `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready.
+
+## 2. What session 9 landed (parts 21-23, each FULLY GATED) — the testvector member-overload chain
+| Commit | What |
+|---|---|
+| `39cb5d2` | **part 21 — [temp.func.order] for STATIC member-template calls.** `findMethodOverload` partial-ordering TIEBREAK (`member_tmpl_more_specialized`, reuses part-18 `po_pattern_match`) + `reselect_static_member_overload` (post-arg reselect+rebuild for `Owner::m(args)`, wired at both qualified-call builders via owner/member out-params on `resolve_class_qualified_expression`). `take(U*)` beats `take(P)`. +testmemtmplorder. |
+| `746aaa7` | **part 22 — class-scope `using Base::member;` imports base overloads.** Was skipped (name hiding dropped them); `try_import_using_base_member` pushes the base's same-name overloads into the derived set ([namespace.udecl]). Now the BASE `allocator_traits::construct` is selected over `__alloc_traits`'s own SFINAE one. +testusingbasemember. |
+| `505fd1f` | **part 23 — preserve parameter-pack-ness for member-template instantiation.** B-feature hardcoded `typeparam_is_pack=false`; threaded real pack flags (`FuncDef::template_param_is_pack` ← `last_skipped_template_typeparam_is_pack`). A by-value variadic static member template now instantiates+runs. +testvariadicmembertmpl. |
+
+## 3. THE NEXT TASK — finish testvector's `construct` chain (two precisely-isolated sub-gaps)
+Selection is now correct (base `allocator_traits<allocator<int>>::construct` chosen) and the
+pack arity is handled; `tmp/tv1` (`vector<int>; push_back`) now fails ONLY because that
+template's body can't be instantiated, blocked on TWO sub-gaps (full detail + reducers in
+`docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"SESSION 9"):
+1. **Forwarding-ref parameter packs** `_Args&&...` — deduction fails in
+   `try_instantiate_namespace_fn_template` (`tmp/vmt6` fails; `tmp/vmt5` by-value pack works).
+2. **Class-scope typedef params** `allocator_type&` — the namespace-routed instantiation
+   (`ns=""`) loses the owner scope so `allocator_type` won't resolve (`tmp/vmt7`: "Failed to
+   find type 'Alloc'"). Push the owner on `class_scope_stack` during the member-template
+   instantiation parse.
+   (Pre-existing, off the critical path: multi-element packs `tmp/vmt2`.)
+After both: testvector should advance past `construct`; the ~12-test container cluster +
+5 string-class tests likely share these roots.
+
+## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. Reducers above live in `tmp/`
+(gitignored; recreate from the design doc). DO NOT reapply `tmp/nontype_fold_v2_wip.patch`.
+
+---
+
+# ★ SESSION 8 CLOSE — COLD-START REHYDRATION — 2026-06-13
 
 ## 0. One-paragraph orientation
 madc is a C/C++ dialect compiler whose front end builds a `cir_node` tree

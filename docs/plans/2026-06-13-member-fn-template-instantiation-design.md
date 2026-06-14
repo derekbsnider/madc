@@ -6,6 +6,69 @@ member templates of madc-LOCAL classes instantiate on ODR-use; `tmp/w2a.mad`
 (runs both branches), `tmp/mft3.mad` (param-using body, pointer args → `sum=100`).
 **Branch:** `feature/retire-embedded-shims-claude`.
 
+---
+
+## SESSION 9 (2026-06-14) — container cluster: testvector member-overload chain (parts 21-23)
+
+`testvector` (the NEXT wall after w2a) reduced to `std::vector<int>::push_back` →
+`__gnu_cxx::__alloc_traits<allocator<int>>::construct(impl, p, x)`. madc bound the WRONG
+construct overload and emitted an undefined extern. Root-caused to FOUR stacked overload /
+instantiation gaps; the first three are FIXED + gated this session, two sub-gaps remain.
+
+- **Part 21 `39cb5d2` — [temp.func.order] for STATIC member-template calls.** A qualified
+  static call (`Owner::m(args)`) resolved by name+arity BEFORE args were parsed and never
+  reselected, so the first-registered overload won a tie (registration-order luck, not
+  partial ordering). Fixes: (a) `findMethodOverload` gains a partial-ordering TIEBREAK
+  (`member_tmpl_more_specialized`, reusing part-18 `po_pattern_match` over
+  `template_param_spellings`/`template_param_names`) — `take(U*)` beats `take(P)` for a
+  pointer arg; (b) `reselect_static_member_overload` (static analogue of
+  `reselect_method_overload`): after `parseCallFunc` parses the args, a qualified static
+  member-TEMPLATE call reselects + rebuilds the `TokenCallFunc` (tc->var is a non-rebindable
+  reference) + re-runs the instantiation hooks. Wired at both qualified-call builders
+  (parseExpr_dataTypeArm + parseExpr_identifierArm's `ns_resolved` join via owner/member
+  out-params on `resolve_class_qualified_expression`). Test `testmemtmplorder`. Reducers
+  `tmp/u4`/`tmp/u5`.
+- **Part 22 `746aaa7` — class-scope `using Base::member;` imports base overloads.** It was
+  SKIPPED (imported nothing), so name hiding dropped the base overloads when the derived
+  declared its own. `try_import_using_base_member` (class-body parser) resolves the scope to
+  a base `DataDefCLASS` (`resolve_class_type_alias`) and pushes its same-name overload(s)
+  into the derived `methods`/`method_map` ([namespace.udecl]). Single-name-scope +
+  single-member shape; else falls back to skip. Now overload resolution + part-21 partial
+  ordering select the BASE `allocator_traits<allocator<int>>::construct` (`_Up*`) over
+  `__alloc_traits`'s own SFINAE `construct` (`_Ptr`). Test `testusingbasemember`. Reducer
+  `tmp/u3`.
+- **Part 23 `505fd1f` — preserve parameter-pack-ness for member-template instantiation.**
+  The B-feature hardcoded `ft.typeparam_is_pack = false`, so a variadic typeparam
+  (`typename... _Args`) was deduced as one non-pack type → instantiation rejected. Threaded
+  pack-ness: `FuncDef::template_param_is_pack` ← `Program::last_skipped_template_typeparam_is_pack`
+  (set with `last_skipped_template_typeparams`) ← copied in
+  `register_skipped_class_template_function` → used by `instantiate_member_fn_template_for_call`.
+  A by-value variadic static member template now instantiates+runs (test
+  `testvariadicmembertmpl`, `tmp/vmt5`).
+
+**w2a/testvector arc this session:** `_S_destroy` face → (selection now correct: the base
+construct is chosen) → `allocator_traits_..._construct` undefined import (pack arity now OK)
+→ blocked on the TWO remaining sub-gaps below.
+
+### REMAINING sub-gaps for the full testvector `construct` chain (NEXT slice — precisely isolated)
+1. **Forwarding-reference parameter packs** (`_Args&&... __args`): `try_instantiate_namespace_fn_template`
+   deduction fails for an rvalue-ref pack (`tmp/vmt6` → undefined import; `tmp/vmt5` by-value
+   pack works). Likely in the pack-binding branch (`fn_template_param_is_pack` / the `&&`
+   collapse on a pack spelling).
+2. **Class-scope typedef params in the instantiation context** (`allocator_type& __a`, a
+   class-scope `typedef`/`using`): the B-feature routes the body through
+   `try_instantiate_namespace_fn_template` with `ns=""`, so the owner class scope is lost and
+   `allocator_type` doesn't resolve (`tmp/vmt7` → "Failed to find type 'Alloc' when parsing
+   function parameters"). Needs the owner class pushed on `class_scope_stack` (or
+   member-aware resolution) during the member-template instantiation parse.
+   Also pre-existing: **multi-element packs** (`tmp/vmt2`, 2+ elements) — the deduction binds
+   only zero/one pack element (single-element comment at parser.cpp ~25876); construct's pack
+   is 1-element so it's not on the critical path, but `_S_construct`/emplace will need it.
+
+Reducers (tmp/, gitignored): `u3` (using-import+order), `u4`/`u5` (member partial order),
+`vmt2` (multi-elem pack), `vmt5` (by-value pack OK), `vmt6` (fwd-ref pack FAILS), `vmt7`
+(typedef param FAILS), `tv1` (`vector<int>; push_back` — the live wall).
+
 ## As-built (part 20)
 
 - **Capture:** `register_skipped_class_template_function` retains a STATIC body-bearing member
