@@ -26192,6 +26192,26 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	TokenBase *bt = ft.decl[i];
 	if ( !bt )
 	    continue;
+	// Pattern pack-expansion ellipsis (`std::forward<Args>(args)...`,
+	// `g<Args>(args)...`): the pattern's tokens are substituted inline by
+	// the loop above (type pack `Args` -> bound type via `subst`, value pack
+	// `args` -> the bound arg), so for the single bound element the pattern
+	// is already correct — the trailing `...` just needs dropping. The
+	// identifier-anchored drop below only catches a `...` directly after a
+	// bare pack name (`args...`/`Args...`/`Args&&...`); a `...` that follows
+	// a parenthesized/closing-token pattern reaches here instead. A genuine
+	// C varargs `, ...` follows a comma (emitted) and is preserved.
+	if ( !pack_param.empty()
+	  && bt->id() == TokenID::tkDot
+	  && i + 2 < ft.decl.size()
+	  && ft.decl[i+1] && ft.decl[i+1]->id() == TokenID::tkDot
+	  && ft.decl[i+2] && ft.decl[i+2]->id() == TokenID::tkDot
+	  && !( !inj.empty() && inj.back()
+		&& inj.back()->id() == TokenID::tkComma ) )
+	{
+	    i += 2;	// drop the three-dot pack-expansion ellipsis
+	    continue;
+	}
 	if ( bt->type() == TokenType::ttIdentifier )
 	{
 	    const std::string &idname = ((TokenIdent *)bt)->str;

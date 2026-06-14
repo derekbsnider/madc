@@ -1,0 +1,25 @@
+#!/../bin/madc
+// A PATTERN parameter-pack expansion in a static member function template
+// body — `f(std::forward<Args>(args)...)`, where the run before `...` carries
+// BOTH the type pack `Args` (as a template-arg `<Args>`) AND the value pack
+// `args` — must substitute the bound element inline and DROP the trailing
+// `...` (sub-gap 4). The plain value-pack form `f(args...)` already worked;
+// this is the pattern-anchored generalization of the one-element `...`-drop in
+// instantiate_fn_template_binding.
+#include <iostream>
+#include <utility>
+using namespace std;
+int g_sink = 0;
+void sink(int v) { g_sink = v; }
+struct C {
+    template<typename... Args>
+    static void fwd(int* p, Args&&... args)
+    { sink(std::forward<Args>(args)...); *p = g_sink; }   // forwards 42 -> *p = 42
+};
+int main()
+{
+    int x = 0;
+    C::fwd(&x, 42);
+    cout << "x=" << x << endl;
+    return 0;
+}
