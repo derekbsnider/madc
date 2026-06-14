@@ -23,16 +23,16 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 → `__gnu_cxx::__alloc_traits<allocator<int>>::construct`.
 
 ## 1. Live state (verify `bash scripts/resume.sh` + `git status`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`83a05d7`** (LOCAL ONLY; develop
-  untouched). Last COMMITTED code: `83a05d7` (sub-gap 10, auto-return trailing type); prior
-  `011769f` (sub-gap 9), `f644bb9` (sub-gap 8), `2e8abc1` (sub-gap 7), `7202523` (sub-gap 6),
-  `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4) + docs mirrors. Tree is CLEAN. MIR fork
-  `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN at HEAD `83a05d7`** (sub-gap 10): integration **574 passed / 27 failed / 18
+- **Branch** `feature/retire-embedded-shims-claude` @ **`17677f2`** (LOCAL ONLY; develop
+  untouched). Last COMMITTED code: `17677f2` (sub-gap 11, direct-init of a non-class var); prior
+  `83a05d7` (sub-gap 10), `011769f` (sub-gap 9), `f644bb9` (sub-gap 8), `2e8abc1` (sub-gap 7),
+  `7202523` (sub-gap 6), `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4) + docs mirrors. Tree is
+  CLEAN. MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
+- **All gates GREEN at HEAD `17677f2`** (sub-gap 11): integration **575 passed / 27 failed / 18
   skipped** (FAIL list byte-identical to `tmp/baseline_fails_s7.txt`; cumulative session-9 new
   tests +testmemtmpl{order,refparam,fwdrefpack,typedefparam,packexpand,instance}
   +testusingbasemember +testvariadicmembertmpl +testplacementnewglobal +testplacementnewvoidp
-  +testoutoflinemember +testoutoflinemembertemplate +testautotrailingreturn);
+  +testoutoflinemember +testoutoflinemembertemplate +testautotrailingreturn +testdirectinit);
   unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
   `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready.
 - Build: `make -C src` (clang++ default), bin at `bin/madc`. Clean, no warnings. NOTE: after a
@@ -53,24 +53,21 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 | `f644bb9` | **sub-gap 8 — out-of-line member DEFINITIONS of a class template.** `template<class T> RET S<T>::member(...){body}` (the bits/*.tcc shape) was never captured — a class instantiation re-parses only the class BODY, so `TokenTEMPLATE::parse`'s non-class branch mis-registered the out-of-line def as a NAMESPACE free fn (`std::member`), never called → real member an undefined import. Fix (reuses the lazy-body machinery, NO parallel path): (1) `skipped_template_outofline_member` detects the `Class<...>::member` declarator (Class a registered template) → the non-class branch stores `{member,typeparams,decl}` in `Program::out_of_line_member_defs` keyed by `<ns>::<class>` instead of a free fn; (2) `register_outofline_member_instantiations` (from `instantiate_template_use` post-monomorphize) substitutes def type-params (positional to use-site args) + class-id→mangled tag, registers a `full_definition` `deferred_lazy_bodies[member->name]` (the SAME path `parse_deferred_lazy_body` uses for defaulted member-tmpl ctors; lazy = ODR-use only, unused members never instantiate), and CLEARS the member's `emit_symbol`/`declaration_only` so the call uses the LOCAL emit name (== the deferred key) not the mangled-direct extern; (3) `parse_deferred_lazy_body` full_definition re-parses with the member's REAL return type, not hardcoded `ddVOID` (else a non-void out-of-line member's return was rewritten to void; ctor caller unchanged). Out-of-line member TEMPLATES (two-level head) EXCLUDED → sub-gap 9. +testoutoflinemember. tv1 advances to sub-gap 9. |
 | `011769f` | **sub-gap 9 — out-of-line member TEMPLATE definitions.** A two-level-head out-of-line def (`template<class T> template<class U> RET S<T>::f(U){body}`, e.g. vector::_M_realloc_insert's C++11 variadic form) was EXCLUDED by sub-gap 8. The in-class member-tmpl DECLARATION (re-parsed at monomorphization) creates the member as an `is_member_template` placeholder with an EMPTY `member_template_decl`, so `instantiate_member_fn_template_for_call` (sub-gap 5) bailed → undefined import. Fix combines sub-gap-8 capture + sub-gap-5 per-call instantiation (NO new machinery): `skipped_template_outofline_member` now REPORTS `is_member_template` instead of rejecting a `template`-first decl (the class-id walk-back already finds `Class<...>::member` — inner head has no top-level `(` and sits left of the class-id); records inner type-params + pack-ness via new `extract_inner_template_typeparams`. `register_outofline_member_instantiations` member-tmpl branch substitutes the CLASS params (inner pass through) + class-id→mangled, transforms the substituted `template<U...> RET <mangled>::name(params){body}` into the in-class member-decl form `RET name(params){body}` (strip inner head + `<mangled>::` qualifier), fills the monomorphized member's `member_template_decl`/`owner`/`template_param_names`/`is_pack`. The call then instantiates per inner-arg binding (existing sub-gap-5 path). +testoutoflinemembertemplate. tv1 advances to sub-gap 10. |
 | `83a05d7` | **sub-gap 10 — auto-return functions with a trailing return type.** `auto f(params) -> T {...}` (C++11; e.g. libstdc++'s cross-type `__normal_iterator operator-` returning `decltype(__lhs.base() - __rhs.base())`, reached by `_M_realloc_insert`'s `__position - begin()`) was rejected — `parseDeclaration` treated `auto` only as a deduced VARIABLE ("'auto' requires an initializer"). Fix: (1) parseDeclaration auto-var block guarded `&& nt->id() != tkOpBrk` so `auto f(` falls through to the function path (decl_type stays ddAUTO); (2) parseFunction's trailing-qualifier loop CAPTURES a `-> T` (tkDeRef) as raw balanced tokens, RESOLVED below after the param variables enter scope (so `-> decltype(params)` names them; resolve_declared_type_token handles decltype) — FuncDef::returns is a reference so the resolved type rebuilds the FuncDef via new `clone_funcdef_with_return` + re-points Variable/funcdef_map; (3) deferred (in-class method) bodies carry the captured tokens on `DeferredFunctionBody::trailing_ret_tokens` and resolve at materialization (`parse_deferred_function_body`, params back in scope). Deduced-return `auto f(){return e;}` (no `-> T`) is a follow-up. +testautotrailingreturn. tv1 advances to sub-gap 11. |
+| `17677f2` | **sub-gap 11 — direct-initialization of a non-class variable.** `T name(expr)` for a non-class type (`pointer __new_start(this->_M_allocate(__len));` in `_M_realloc_insert`; `typedef int* P; P p(q);`) always parsed as a function declaration → first paren token `this`/`q` threw "Failed to find type … when parsing function parameters". madc did ctor-style direct-init for CLASS types only. Fix (parser.cpp, deepest layer, reuses the `= expr` machinery — no new init path): new non-consuming `paren_group_is_nonclass_direct_init()` returns true ONLY when the token after `(` cannot begin a parameter-declaration (a literal, `this`, or a ttIdentifier naming an in-scope value — type names tokenize as ttDataType), a SOUND under-approximation (every diversion is unambiguously direct-init; param-clause-capable starts keep the most-vexing-parse default = function decl). A parseDeclaration branch (after the class ctor-call branch) injects a synthetic `=` before the `(` so `(expr)` parses through the scalar/pointer `= expr` path (mirrors `T x{...}` brace-init). **C++/madc only (`!is_c_mode()`)** — load-bearing: a K&R def `void f(x,v) union u *x, v;` whose param names shadow file-scope globals (gcc-torture `921112-1.c`) otherwise diverted (the regression the gate fixes, caught by the torture failset diff). Verified vs clang++ AND g++. +testdirectinit. tv1 advances PAST the `this`-param wall to `use of undeclared identifier '_ValueType1'` (sub-gap 12). |
 
-## 3. THE NEXT TASK — sub-gap 11: direct-initialization of a non-class variable
-`tmp/tv1` advanced PAST the auto-return wall to a NEW face: **`Failed to find type 'this' when
-parsing function parameters`** (reported at `tv1.mad:428:54` — header-origin line misattribution).
-The instrumented site (gated diag, now removed) was the func id
-`vector_int32_t_..._M_realloc_insert__mti____new_start__1` — i.e. inside `_M_realloc_insert`'s
-instantiated body, the statement **`pointer __new_start(this->_M_allocate(__len));`**. This is
-DIRECT-INITIALIZATION of a NON-class (pointer) variable `T name(expr)`, which madc mis-parses as a
-FUNCTION declaration `pointer __new_start(<params>)` — the first "param" token is `this`, not a type
-→ the error. (madc already does ctor-style direct-init for CLASS types; a pointer/scalar type is the
-gap.) **sub-gap 11** = recognize `T name(expr)` for a non-class `T` as direct-initialization (= `T
-name = expr`), not a function declaration, when the parenthesized content is an expression rather
-than a parameter-declaration-list. **Reduce** (DEFAULT mode, no flags): `int *p(some_int_ptr_expr);`
-or `typedef int* P; P p(q);` then use `*p`. Look at parseDeclaration's function-vs-direct-init
-disambiguation (`paren_group_is_function_def()` / the class-ctor-init path); fix the deepest layer.
-Also a follow-up from sub-gap 10: **deduced-return** `auto f(){ return e; }` (no trailing `-> T`)
-is still unsupported (deduce from the body's return expression). Full detail:
-`docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"sub-gap 11".
+## 3. THE NEXT TASK — sub-gap 12: `_ValueType1` undeclared
+`tmp/tv1` advanced PAST the sub-gap-11 (direct-init) wall to a NEW face: **`use of undeclared
+identifier '_ValueType1'`** (reported at `tv1.mad:428:54` — header-origin line misattribution),
+then the MIR import of `vector_int32_t_std__allocator_int32_t____M_realloc_insert`. `_ValueType1`
+is a libstdc++-INTERNAL template-parameter name (likely the `__relocate`/`__uninitialized` or
+iterator-traits machinery reached inside `_M_realloc_insert`'s instantiated body — a template param
+that isn't being substituted/bound). **sub-gap 12** = find where `_ValueType1` is left as a bare
+identifier (a template typeparam that didn't get its binding substituted during member-template /
+out-of-line monomorphization) and bind it. **Reduce** from tv1 (DEFAULT mode, no flags); attribute
+via the 3 oracles + `--emit=c11`/`--dump-cir` (NOT emit-C-as-truth); fix the deepest layer.
+Also still open (off the critical path): the sub-gap-10 follow-up **deduced-return** `auto f(){
+return e; }` (no trailing `-> T`, deduce from the body's return expression). Full detail:
+`docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"sub-gap 12".
 After this: the ~10-test container cluster + 5 string-class tests likely share these roots.
 
 ## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. DO NOT reapply
@@ -80,8 +77,12 @@ After this: the ~10-test container cluster + 5 string-class tests likely share t
 The promoted ones are now tests (`tests/testmemtmpl*`/`testusingbasemember`/`testvariadicmembertmpl`).
 The live wall + the sub-gap-4 probes are NOT tests (they fail) — recreate:
 - `tmp/tv1.mad` — `#include <vector>\nint main(){ std::vector<int> v; v.push_back(10); return 0; }`
-  (THE wall; now fails at sub-gap 11 — `Failed to find type 'this' when parsing function parameters`,
-  i.e. `pointer __new_start(this->_M_allocate(__len));` direct-init mis-parsed as a function, see §3).
+  (THE wall; now fails at sub-gap 12 — `use of undeclared identifier '_ValueType1'`, see §3).
+- `tmp/di1.mad` `typedef int* P; P p(q)` → `*p`=7 · `tmp/di2.mad` `int *p(q)` → 7 · `tmp/di3.mad`
+  `int x(5)` → 5 · `tmp/di8.mad` `enum E e(raw)` → 2 — direct-init forms, all **WORK** (sub-gap 11).
+  MVP defaults preserved: `tmp/di9.mad` `int f(P)` (typedef param) + `tmp/di10.mad` `int g()` stay
+  function declarations. `tmp/k1.c` = gcc-torture `921112-1.c` (K&R def w/ global-shadowing param
+  names) — the C-mode-gate regression repro; **WORKS** under `--std=c17`. Promoted: `tests/testdirectinit`.
 - `tmp/au1.mad` `auto f(int,int) -> int` → **WORKS** (2). `tmp/au3.mad` `-> decltype(a-b)` → **WORKS**
   (5). `tmp/au4.mad` member `-> decltype(x)`/`-> int` → **WORKS** (21 42). `tmp/au5.mad` member
   `-> decltype(this->x)` → **WORKS** (7). Promoted: `tests/testautotrailingreturn`. (sub-gap 10.)
