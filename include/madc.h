@@ -1404,6 +1404,8 @@ public:
     // ==, relationals via (x <=> y) @ 0. Consulted only after every direct
     // candidate set missed.
     TokenBase *rewritten_operator_candidate(class TokenOperator *to);
+    // madc strict-equality === domain rule: lower `x === y` to `x == y`.
+    TokenBase *lower_strict_equality_domain_rule(class TokenOperator *to);
     // The std comparison-category class a builtin <=> yields
     // ([expr.spaceship]); NULL when <compare> has not been parsed.
     DataDef *comparison_category_class(class TokenOperator *to);

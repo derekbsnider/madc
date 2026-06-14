@@ -7344,6 +7344,27 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
     return tc;
 }
 
+// madc strict-equality DOMAIN RULE (spec §2.2): with no user operator===,
+// `x === y` strict-compares THROUGH the operand's operator== (a literal enters
+// the operand's domain). Reuses the ONE free-operator lowering normal `==`
+// uses, so a class whose `operator==` is a free template (real std::string's
+// `bool operator==(const basic_string&, const basic_string&)`) binds here just
+// as `a == b` does. Returns the lowered `x == y` call, or NULL when no
+// operator== covers the pair — the caller then keeps the strict-equality token
+// for strict_equality_lowering's member-== dispatch or different-domain
+// constant. (A class whose == is a MEMBER returns NULL here and is dispatched
+// in the CIR builder; only a free/value-returning == is lowered to a call.)
+TokenBase *Program::lower_strict_equality_domain_rule(TokenOperator *to)
+{
+    if ( !to || !to->left || !to->right )
+	return NULL;
+    TokenEquals *eq = new TokenEquals();
+    eq->left = to->left;
+    eq->right = to->right;
+    eq->file = to->file; eq->line = to->line; eq->column = to->column;
+    return lower_free_operator_to_call(eq, /*no_rewrite=*/false);
+}
+
 // C++20 REWRITTEN candidates ([over.match.oper]) — consulted only after every
 // direct candidate set missed (member/W2 early-outs, parsed free operators,
 // retained templates; lower_free_operator_to_call's tail):
@@ -7351,6 +7372,8 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
 //   x == y  ->  y == x         (the reversed candidate; == is symmetric)
 //   x @ y   ->  (x <=> y) @ 0  (@ in < > <= >=) when an operator<=> covers
 //                              the operand pair
+//   x === y ->  x == y         (madc domain rule §2.2, no user operator===)
+//   x !== y ->  !(x === y), or !(x == y) by the domain rule (§2.4/2.5)
 // Synthesized lowerings pass no_rewrite=true wherever re-entry must not
 // rewrite again, so the recursion terminates (!= -> == -> reversed == is the
 // longest chain). Reached only with a class operand (the caller's lc/rc
@@ -7394,19 +7417,37 @@ TokenBase *Program::rewritten_operator_candidate(TokenOperator *to)
 	TokenBase *eqexpr = lower_free_operator_to_call(eq3, /*no_rewrite=*/true);
 	if ( !eqexpr )
 	{
-	    // A MEMBER operator=== still serves the negation (the CIR
-	    // builder's class_operator_call lowers the === token); anything
-	    // else keeps the original token for strict_equality_lowering.
 	    DataDefCLASS *lc = operand_object_class(to->left);
-	    if ( !lc || !lc->binary_operator_return_type("operator===") )
-		return NULL;
-	    resolve_object_operator_type(eq3);
-	    eqexpr = eq3;
+	    if ( lc && lc->binary_operator_return_type("operator===") )
+	    {
+		// A MEMBER operator=== still serves the negation (the CIR
+		// builder's class_operator_call lowers the === token).
+		resolve_object_operator_type(eq3);
+		eqexpr = eq3;
+	    }
+	    else
+	    {
+		// Domain rule (spec §2.4/2.5): no user operator===/!== — `x !== y`
+		// is `!(x == y)` through the operand's operator==. No == candidate
+		// keeps the original token for strict_equality_lowering (member-==
+		// dispatch or the different-domain constant).
+		eqexpr = lower_strict_equality_domain_rule(to);
+		if ( !eqexpr )
+		    return NULL;
+	    }
 	}
 	TokenLnot *neg = new TokenLnot();
 	neg->right = eqexpr;
 	neg->file = to->file; neg->line = to->line; neg->column = to->column;
 	return neg;
+    }
+    if ( idd == TokenID::tk3Eq )
+    {
+	// Strict equality domain rule (spec §2.2): no user operator=== bound
+	// above — strict-compare through operator==. NULL keeps the token for
+	// strict_equality_lowering (member-== dispatch / different-domain
+	// constant).
+	return lower_strict_equality_domain_rule(to);
     }
     if ( idd == TokenID::tkEquals )
     {
