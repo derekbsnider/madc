@@ -1534,6 +1534,28 @@ public:
     // basic_string::_M_local_data). The cir_builder reachability fixpoint
     // materializes a deferred body the moment its symbol enters referenced_funcs.
     std::map<std::string, DeferredFunctionBody> deferred_lazy_bodies;
+    // Out-of-line member DEFINITIONS of a class template
+    // (`template<class T> RET ClassName<T>::member(params){body}` — the bits/*.tcc
+    // shape, e.g. std::vector::_M_realloc_insert). A class instantiation re-parses
+    // only the class BODY (in-class member defs); an out-of-line def is a separate
+    // top-level template, so its body was never captured -> "import of undefined
+    // item". Captured at parse time keyed by "<defining-ns>::<class-name>"; when
+    // ClassName<Args> is monomorphized, each captured def is substituted with the
+    // concrete args and registered as a full_definition deferred_lazy_body keyed by
+    // the instantiated member's emit symbol, so the body materializes on ODR-use
+    // ([temp.inst]p2) exactly like an in-class-defined member (lazy, not eager —
+    // unused out-of-line members never instantiate).
+    struct OutOfLineMemberDef {
+	std::string member_name;
+	std::vector<std::string> typeparams;
+	std::vector<TokenBase *> decl;	// full decl incl body, owned clones
+    };
+    std::map<std::string, std::vector<OutOfLineMemberDef>> out_of_line_member_defs;
+    void register_outofline_member_instantiations(
+	const std::string &class_name, const std::string &defining_namespace,
+	const std::string &registered_mangled, DataDefCLASS *ddc,
+	const std::vector<TokenDataType *> &arg_types_by_slot,
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot);
     bool parsing_cpp_struct_class;
     // Set by TokenSTRUCT::parse when delegating a UNION with class-only syntax
     // to the class parser ([class.union]); TokenCLASS::parse consumes it and

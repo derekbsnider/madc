@@ -164,15 +164,45 @@ at the address regardless of the pointer's static type; a no-op when addr is alr
 `new(&buf) int`). Handles `alloc_type`'s own pointer depth (levels+1). +testplacementnewvoidp
 (`::new((void*)&buf) int(42)` → v=42). tv1 advances to sub-gap 8.
 
-### REMAINING sub-gap 8 — out-of-line `.tcc` member definitions (NEXT slice)
-tv1 now → **`import of undefined item ..._M_realloc_insert`**. `vector::_M_realloc_insert` (push_back's
-grow path) is a NON-template member defined OUT-OF-LINE in `bits/vector.tcc` (separate from the class
-body in `stl_vector.h`). Out-of-line member DEFINITIONS of a monomorphized class template are not
-instantiated/emitted (only in-class-body member defs are). Reduce a class template with an out-of-line
-member def used on a monomorphization (`template<class T> struct S{void f();}; template<class T> void
-S<T>::f(){...}` then `S<int> s; s.f();`), attribute via `--dump-cir`, determine where out-of-line /
-`.tcc` member defs are captured during Borland monomorphization (`TokenTEMPLATE::parse` +
-`instantiate_template_use`), fix deepest layer, gate hard. Likely a larger slice than 4-7.
+### sub-gap 8 — out-of-line `.tcc` member definitions — DONE (commit pending)
+A member of a class template DEFINED outside the class body
+(`template<class T> RET S<T>::member(...) { body }` — the `bits/*.tcc` shape) was never captured:
+`instantiate_template_use` re-parses only the class BODY, and the out-of-line def is a separate
+top-level template, so `TokenTEMPLATE::parse`'s non-class branch mis-registered it as a NAMESPACE
+free function (`std::_M_realloc_insert`) — never called, leaving the real member an undefined import.
+
+**Fix (deepest layer, reuses the existing lazy-body machinery):**
+- **Capture** (`skipped_template_outofline_member` + `TokenTEMPLATE::parse` non-class branch): detect a
+  skipped non-class template decl whose declarator name is preceded by `::` after a class-template-id
+  `Class<...>` where `Class` is a registered template; store `{member_name, typeparams, decl}` keyed by
+  `<defining-ns>::<class-name>` in `Program::out_of_line_member_defs`. Do NOT register it as a free fn.
+- **Instantiate** (`register_outofline_member_instantiations`, called from `instantiate_template_use`
+  after the class is monomorphized): substitute the def's type-params (positional to the use-site args)
+  → concretes and the class-id `Class<...>` → the mangled tag, then register a `full_definition`
+  `deferred_lazy_bodies[member->name]` (the SAME lazy path `parse_deferred_lazy_body` uses for
+  defaulted member-template ctors). The body materializes only on ODR-use ([temp.inst]p2) — unused
+  out-of-line members never instantiate. CLEAR the member's `emit_symbol`/`declaration_only` so the
+  call falls through to the LOCAL emit name (== the deferred key) instead of the mangled-direct extern.
+- **Return-type fix** (`parse_deferred_lazy_body` full_definition): re-parse with the member's REAL
+  return type, not hardcoded `ddVOID` — `parseFunction` refreshes an already-declared funcdef's return
+  from the passed type, so a non-void out-of-line member (`iterator insert(...)`) was silently rewritten
+  to void. A ctor's funcdef returns ddVOID, so the defaulted-ctor caller is unchanged.
+
++test `testoutoflinemember` (void + non-void + this-access). Reducers `tmp/ool1` (void → 7),
+`tmp/ool2` (non-void → 41), `tmp/ool_nt` (non-template control → 9).
+
+### sub-gap 9 — out-of-line MEMBER TEMPLATE definitions (the NEXT slice; tv1's real face)
+tv1 (`vector<int>::push_back`) advanced PAST the undefined import to:
+`Failed to find type '_Args' ...`. In C++11+, `vector::_M_realloc_insert` is NOT a plain member — it is
+an out-of-line member **TEMPLATE** with a TWO-level head
+(`template<class _Tp,_Alloc> template<typename... _Args> void vector<_Tp,_Alloc>::_M_realloc_insert(
+iterator, _Args&&...)`, bits/vector.tcc:441). sub-gap 8 deliberately EXCLUDES this (detection returns
+false when the skipped decl's first token is `template`), so tv1 falls back to the clean
+`import of undefined item ..._M_realloc_insert` (unchanged from before sub-gap 8). sub-gap 9 = combine
+the out-of-line capture (sub-gap 8) with per-call member-template instantiation (sub-gap 5): capture the
+inner `template<...>` head + body, and on each distinct `_Args` binding instantiate it as a method of the
+monomorphized class. Larger slice. Reduce: `template<class T> struct S{ template<class U> void f(U); };
+template<class T> template<class U> void S<T>::f(U u){...}` then `S<int> s; s.f(3);`.
 
 ### EARLIER sub-gaps (superseded — kept for history)
 1. **Forwarding-reference parameter packs** (`_Args&&... __args`): `try_instantiate_namespace_fn_template`

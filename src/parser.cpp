@@ -3009,6 +3009,19 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     instantiating_canonical_spelling = saved_canon;
     instantiating_dependent_surface = saved_dependent_surface;
 
+    // Attach any out-of-line member definitions (`Class<T>::member` in a .tcc) of
+    // this template to the freshly-instantiated class as deferred (ODR-use-lazy)
+    // member bodies. Keyed on the PRIMARY template's name+ns and the use-site args
+    // (arg_*_by_slot), so the def's type-parameters map positionally to concretes.
+    {
+	datadef_map_iter sm = struct_map.find(registered_mangled);
+	DataDefCLASS *inst_ddc = sm != struct_map.end()
+	    ? dynamic_cast<DataDefCLASS *>(sm->second) : NULL;
+	register_outofline_member_instantiations(td.class_name,
+	    td.defining_namespace, registered_mangled, inst_ddc,
+	    arg_types_by_slot, arg_tokens_by_slot);
+    }
+
     datatype_map_iter now = datatype_map.find(registered_mangled);
     if ( now == datatype_map.end() )
 	Throw(tb) << "internal: template instantiation " << registered_mangled << " did not register" << flush;
@@ -19807,7 +19820,14 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	try
 	{
 	    std::string parse_id = body.var->name;
-	    parseFunction(ddVOID, parse_id, owner);
+	    // Re-parse with the member's REAL return type, not ddVOID: parseFunction
+	    // refreshes an already-declared funcdef's return type from the passed
+	    // type (a `void f()` forward-decl → `bool f()` definition replaces the
+	    // FuncDef), so a non-void out-of-line member (`iterator insert(...)`)
+	    // would have its return silently rewritten to void. A ctor's funcdef
+	    // returns ddVOID, so the defaulted-ctor caller is unchanged.
+	    FuncDef *mfd = dynamic_cast<FuncDef *>(body.var->type);
+	    parseFunction(mfd ? mfd->returns : (DataDef &)ddVOID, parse_id, owner);
 	}
 	catch(...)
 	{
@@ -24998,6 +25018,185 @@ static std::string skipped_template_function_declarator_name(
     return name;
 }
 
+// An OUT-OF-LINE member DEFINITION of a class template:
+//   template<...> RET ClassName<args>::member(params) { body }
+// (the bits/*.tcc shape, e.g. `void vector<_Tp,_Alloc>::_M_realloc_insert(...)`).
+// Detected by the declarator-name token being immediately preceded by a `::`
+// whose left side is a class-template-id `ClassName<...>` (or a bare class name)
+// where ClassName is a registered template. Sets class_name_out + member_name_out.
+static bool skipped_template_outofline_member(
+	Program &pgm, const std::vector<TokenBase *> &tokens,
+	std::string &class_name_out, std::string &member_name_out)
+{
+    // An out-of-line member TEMPLATE (`template<class...> template<member...>
+    // RET Class<...>::member(...)`, e.g. vector::_M_realloc_insert's variadic
+    // form) has a SECOND template-head as its first token (the outer head was
+    // already consumed by TokenTEMPLATE::parse). That needs per-call member-
+    // template instantiation, not a plain method body — out of scope here; leave
+    // it to the namespace-fn path (clean undefined-import) until that lands.
+    if ( !tokens.empty() && tokens[0] && tokens[0]->id() == TokenID::tkTEMPLATE )
+	return false;
+    std::string member;
+    size_t ni = skipped_template_function_declarator_name_index(tokens, &member);
+    if ( ni == tokens.size() || ni < 2 || member.empty() )
+	return false;
+    if ( !tokens[ni - 1] || tokens[ni - 1]->id() != TokenID::tkNS )
+	return false;   // member name not preceded by `::` -> not qualified
+    size_t j = ni - 2;
+    std::string cls;
+    if ( tokens[j] && (tokens[j]->id() == TokenID::tkGT
+		    || tokens[j]->id() == TokenID::tkBSR) )
+    {
+	// Walk back over the class-template-id's `<...>` to its opening `<`.
+	// Going backwards: `>` (or `>>`) opens, `<` closes the angle nesting.
+	int depth = 0;
+	size_t k = j;
+	for ( ;; )
+	{
+	    TokenBase *t = tokens[k];
+	    if ( t && t->id() == TokenID::tkBSR )
+		depth += 2;
+	    else if ( t && t->id() == TokenID::tkGT )
+		++depth;
+	    else if ( t && t->id() == TokenID::tkLT )
+	    {
+		--depth;
+		if ( depth <= 0 )
+		    break;
+	    }
+	    if ( k == 0 )
+		return false;
+	    --k;
+	}
+	if ( k == 0 || !is_contextual_identifier_token(tokens[k - 1]) )
+	    return false;
+	cls = contextual_identifier_name(tokens[k - 1]);
+    }
+    else if ( is_contextual_identifier_token(tokens[j]) )
+	cls = contextual_identifier_name(tokens[j]);
+    else
+	return false;
+    if ( cls.empty() || !pgm.find_template(cls, pgm.current_namespace()) )
+	return false;
+    class_name_out = cls;
+    member_name_out = member;
+    return true;
+}
+
+// On monomorphizing ClassName<Args>, materialize every captured out-of-line
+// member definition of ClassName as a deferred full-definition body of the
+// instantiated class, keyed by the member's emit symbol. Substitution mirrors
+// instantiate_template_use's body clone loop: each of the def's type-parameters
+// (positional to the use-site args) maps to its concrete argument, and the
+// class-template-id `ClassName<...>` maps to the monomorphized class tag. The
+// body materializes only on ODR-use (parse_deferred_lazy_body), so unused
+// out-of-line members never instantiate ([temp.inst]p2) — the same lazy model
+// in-class member bodies use.
+void Program::register_outofline_member_instantiations(
+	const std::string &class_name, const std::string &defining_namespace,
+	const std::string &registered_mangled, DataDefCLASS *ddc,
+	const std::vector<TokenDataType *> &arg_types_by_slot,
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot)
+{
+    if ( !ddc )
+	return;
+    std::map<std::string, std::vector<OutOfLineMemberDef> >::iterator it =
+	out_of_line_member_defs.find(defining_namespace + "::" + class_name);
+    if ( it == out_of_line_member_defs.end() )
+	return;
+    for ( size_t di = 0; di < it->second.size(); ++di )
+    {
+	OutOfLineMemberDef &def = it->second[di];
+	Variable *mvar = ddc->findMethod(def.member_name);
+	if ( !mvar || !mvar->data )
+	    continue;	// no in-class declaration to attach the body to
+	// Already materialized (a re-instantiation, or an overload already bound)?
+	if ( deferred_lazy_bodies.count(mvar->name) )
+	    continue;
+
+	std::map<std::string, TokenDataType *> tsubst;
+	std::map<std::string, std::vector<TokenBase *> > toksubst;
+	for ( size_t i = 0; i < def.typeparams.size()
+			 && i < arg_types_by_slot.size(); ++i )
+	{
+	    if ( arg_types_by_slot[i] )
+		tsubst[def.typeparams[i]] = arg_types_by_slot[i];
+	    else if ( i < arg_tokens_by_slot.size() )
+		toksubst[def.typeparams[i]] = arg_tokens_by_slot[i];
+	}
+
+	std::vector<TokenBase *> sub;
+	for ( size_t bi = 0; bi < def.decl.size(); ++bi )
+	{
+	    TokenBase *bt = def.decl[bi];
+	    if ( !bt ) { sub.push_back(NULL); continue; }
+	    if ( bt->type() == TokenType::ttIdentifier )
+	    {
+		const std::string &s = ((TokenIdent *)bt)->str;
+		std::map<std::string, TokenDataType *>::iterator si =
+		    tsubst.find(s);
+		if ( si != tsubst.end() )
+		    { sub.push_back(si->second->clone()); continue; }
+		std::map<std::string, std::vector<TokenBase *> >::iterator ti =
+		    toksubst.find(s);
+		if ( ti != toksubst.end() )
+		{
+		    for ( size_t ni2 = 0; ni2 < ti->second.size(); ++ni2 )
+			sub.push_back(ti->second[ni2]
+				      ? ti->second[ni2]->clone() : NULL);
+		    continue;
+		}
+		if ( s == class_name )
+		{
+		    TokenIdent *ren = (TokenIdent *)bt->clone();
+		    ren->str = registered_mangled;
+		    sub.push_back(ren);
+		    if ( bi + 1 < def.decl.size() && def.decl[bi + 1]
+		      && def.decl[bi + 1]->id() == TokenID::tkLT )
+			bi = template_id_suffix_end(def.decl, bi + 1);
+		    continue;
+		}
+	    }
+	    sub.push_back(bt->clone());
+	}
+
+	// definition_tokens = everything AFTER the member's '(' (params + body),
+	// the shape parse_deferred_lazy_body's full_definition branch re-parses.
+	size_t mni = skipped_template_function_declarator_name_index(sub, NULL);
+	if ( mni == sub.size() )
+	    continue;
+	size_t op = mni + 1;
+	while ( op < sub.size()
+	     && !(sub[op] && sub[op]->id() == TokenID::tkOpBrk) )
+	    ++op;
+	if ( op >= sub.size() )
+	    continue;
+
+	DeferredFunctionBody body;
+	body.var = mvar;
+	body.method = static_cast<Method *>(mvar->data);
+	for ( size_t i = op + 1; i < sub.size(); ++i )
+	    body.definition_tokens.push_back(sub[i]);
+	if ( body.definition_tokens.empty() )
+	    continue;
+	body.full_definition = true;
+	body.file = def.decl.empty() || !def.decl[0] ? NULL : def.decl[0]->file;
+	body.line = def.decl.empty() || !def.decl[0] ? 0 : def.decl[0]->line;
+	body.column = def.decl.empty() || !def.decl[0] ? 0 : def.decl[0]->column;
+	deferred_lazy_bodies[mvar->name] = body;
+	// The in-class declaration bound the member to an EXTERNAL mangled-direct
+	// symbol (declaration_only -> emit_symbol = the Itanium name, expecting the
+	// library to provide it). We now provide a LOCAL body, so clear that binding:
+	// the call site falls through to the member's own emit name (== mvar->name,
+	// the deferred-body key) and the materialized body is emitted under it.
+	if ( FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type) )
+	{
+	    mfd->emit_symbol.clear();
+	    mfd->declaration_only = false;
+	}
+    }
+}
+
 static bool is_template_type_parameter_name(
 	const std::vector<std::string> &typeparams, const std::string &name)
 {
@@ -28003,6 +28202,26 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.last_skipped_template_decl = skipped_decl;
 	pgm.last_skipped_template_typeparams = typeparams;
 	pgm.last_skipped_template_typeparam_is_pack = typeparam_is_pack;
+	// An out-of-line member DEFINITION of a class template
+	// (`template<...> RET Class<args>::member(...) { body }`) is NOT a free
+	// function — capture it keyed by the class so it instantiates as a member
+	// body when Class<Args> is monomorphized ([temp.inst]p2), instead of being
+	// mis-registered as a namespace free function (which never gets called and
+	// leaves the real member an undefined import — e.g. vector::_M_realloc_insert).
+	std::string ool_class, ool_member;
+	if ( !pgm.deferred_function_body_sink
+	  && skipped_template_outofline_member(pgm, skipped_decl,
+					       ool_class, ool_member) )
+	{
+	    Program::OutOfLineMemberDef d;
+	    d.member_name = ool_member;
+	    d.typeparams = typeparams;
+	    for ( size_t i = 0; i < skipped_decl.size(); ++i )
+		d.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone() : NULL);
+	    pgm.out_of_line_member_defs[pgm.current_namespace() + "::" + ool_class]
+		.push_back(d);
+	    return NULL;
+	}
 	if ( !pgm.deferred_function_body_sink )
 	    register_skipped_namespace_template_function(pgm, skipped_decl,
 							typeparams,
