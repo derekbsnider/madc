@@ -26546,9 +26546,21 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		return false;	// template-id param the argument can't match
 	    }
 	}
+	// [temp.deduct.call]: deducing a BY-VALUE (non-reference) type parameter
+	// from a FUNCTION argument applies the function-to-pointer decay —
+	// `R(Args)` -> `R(*)(Args)`. Without this `transform(b, e, fn)` deduced the
+	// operation type parameter from `fn` as the bare FuncDef, which emitted an
+	// incomplete, non-callable `void __op` parameter. A reference parameter
+	// (spelling has `&`) binds the function directly — no decay.
+	// (Array-to-pointer argument decay is a sibling rule, deferred until the
+	// matching call-site overload-binding gap for a bare-array argument lands.)
+	DataDef *deduce_dd = arg_dd;
+	if ( sp.find('&') == std::string::npos )
+	    if ( FuncDef *afd = dynamic_cast<FuncDef *>(arg_dd) )
+		deduce_dd = new DataDefFPTR(afd);
 	std::string tp;
 	DataDef *dd = NULL;
-	int r = fn_template_deduce_param(sp, ft.typeparams, arg_dd, tp, dd);
+	int r = fn_template_deduce_param(sp, ft.typeparams, deduce_dd, tp, dd);
 	if ( r < 0 )
 	    return false;
 	if ( r == 0 )
