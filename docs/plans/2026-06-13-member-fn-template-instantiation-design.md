@@ -93,20 +93,62 @@ emitted comma — a pack-expansion ellipsis (a genuine C varargs `, ...` follows
 on a pack template (`!pack_param.empty()`). Test `testmemtmplpackexpand`; reducer `tmp/vmt10`.
 Pre-existing off-path: multi-element packs (`tmp/vmt2`, deduction binds only one element).
 
-### REMAINING sub-gap 5 — INSTANCE member-template instantiation (NEXT slice)
-tv1 now advances past the construct body to a NEW, distinct wall:
-**`import of undefined item __new_allocator_int32_t__construct`**. The allocator_traits
-`construct` body calls `__a.construct(__p, std::forward<_Args>(__args)...)` — an INSTANCE
-member-template call (`__a` is an object, `__new_allocator<int>`), not the STATIC
-`Owner::m(args)` form the B-feature (`instantiate_member_fn_template_for_call`) +
-`reselect_static_member_overload` handle. `__new_allocator` is a madc-LOCAL monomorphized
-class, so its `construct` member template must instantiate on ODR-use the way the static one
-does. Likely: extend the B-feature hook (or add an instance sibling) to the
-member-access/`->`-call path so a declaration-only LOCAL instance member template instantiates
-+ rebinds. Reduce an instance-member-template call from scratch (`obj.m<...>(args)` /
-`obj.m(args)` where `m` is `template<...> void m(...)`), attribute via `--dump-cir`, fix
-deepest layer, gate hard. Exported instance member templates already route through
-`member_template_method_call` — confirm whether that path can be reused for LOCAL owners.
+### Sub-gap 5 — INSTANCE member-template instantiation (DONE, see commit; gated)
+tv1 advanced past the construct body to **`import of undefined item
+__new_allocator_int32_t__construct`**. The allocator_traits `construct` body calls
+`__a.construct(__p, std::forward<_Args>(__args)...)` — an INSTANCE member-template call (`__a`
+is an OBJECT, `__new_allocator<int>`), not the STATIC `Owner::m(args)` form the B-feature
+handled. `__new_allocator` is a madc-LOCAL monomorphized class, so its `construct` member
+template must instantiate on ODR-use.
+
+**Clang/gcc research (recon: `/workspace/llvm-clang-src`, `/workspace/gcc`, recon-only).**
+Both canon compilers instantiate a member function template **as a method of the (specialized)
+class** — static vs instance is only a storage-class flag, and a non-static method's implicit
+`this` is intrinsic to its type; it is NEVER lowered to a free function with an explicit
+receiver. Clang (`SemaTemplateInstantiateDecl.cpp`): `VisitCXXMethodDecl` (~2588) builds
+`CXXMethodDecl::Create(…, Record, …, SC = D->isStatic()?SC_Static:SC_None, …)` — a method of
+`Record` (the class); `SubstFunctionType` (4451-4460) sets `ThisContext = the class` +
+`ThisTypeQuals` from the object parameter, so the body's `this` substitutes to `Class<Args>*`;
+the body is instantiated under `CXXThisScopeRAII ThisScope(SemaRef, ThisContext, …)` (3645,
+3725, 688) so `this`/member access resolve. GCC (`gcc/cp/pt.cc`): `instantiate_decl` does
+`push_nested_class(DECL_CONTEXT(t))` and the spec keeps `DECL_CONTEXT = the class` (1666) —
+same model.
+
+**Implication for madc + the fix.** madc's STATIC path (`instantiate_member_fn_template_for_call`)
+takes a shortcut — drop `static`, rename, re-parse as a FREE function (no `this`) — which is
+behaviorally fine for static (no object parameter) but doesn't generalize. The clang-faithful
+fix for instance members is to instantiate them **as a method of the owner** (hidden `__this`,
+class-scope body), not a free function with a fake receiver param (that only works for
+`this`-independent bodies and silently diverges otherwise — rejected). As-built:
+- `FnTemplateDef::instance_method` flag (owner_class alone can't distinguish: the static path
+  also sets owner_class for class-scope member resolution).
+- `register_skipped_class_template_function` retains the body for body-bearing member templates
+  regardless of static-ness (was `is_static`-gated).
+- `instantiate_member_fn_template_for_call` sets `ft.instance_method = !is_static`.
+- `instantiate_fn_template_binding`: when `instance_method && owner_class`, after building the
+  substituted `inj` tokens, split `RET name ( params ) { body }` at the params and call
+  `parseFunction(retdd, inst_name, owner_class)` (the same method-parse entry as
+  `parse_deferred_lazy_body` / out-of-line ctor defs) — hidden `__this`, member resolution —
+  instead of `parseStatement` (free function). Frees the unused head tokens.
+- `parseCallMethod` calls `instantiate_member_fn_template_for_call(tc)` after args (mirrors
+  parseCallFunc; a TokenCallMethod IS-A TokenCallFunc).
+- cir_builder Pass 0.75 (extern prototypes) SKIPS member-template placeholders: an instance
+  placeholder's varargs+`this` signature `(struct C *, ...)` otherwise conflicts with the
+  instantiated definition `(struct C *, int*, int)` ("incompatible types of … declarations").
+  The instantiated definition carries its own prototype; an exported member template is called
+  through its Itanium-mangled symbol, not the placeholder name.
+
+Tests `testmemtmplinstance` (member access via `this` proves the method model, x=35),
+reducers `tmp/im1` (this-independent body, x=5), `tmp/im2` (member access, x=35). tv1 now
+advances to **sub-gap 6** (placement-new in the construct body).
+
+### REMAINING sub-gap 6 — placement-new in the construct body (NEXT slice)
+With instance instantiation working, tv1's `__new_allocator<int>::construct` body parses to
+`::new((void*)__p) _Up(std::forward<_Args>(__args)...)` and fails with **`use of undeclared
+identifier 'new'`** — placement new (`::new(ptr) T(args)`) in an (instantiated) method body is
+not parsed/lowered. Reduce placement new from scratch (`#include <new>; ::new(p) T(args)`),
+check whether it's a general gap or specific to the instantiated-body parse, attribute, fix
+deepest layer, gate hard.
 
 ### EARLIER sub-gaps (superseded — kept for history)
 1. **Forwarding-reference parameter packs** (`_Args&&... __args`): `try_instantiate_namespace_fn_template`

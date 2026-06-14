@@ -11876,6 +11876,15 @@ node_t CirBuilder::translate_module(Program *prog)
 		const std::string &fname = kv.first;
 		FuncDef *fd = kv.second;
 		if (!fd || user_func_names.count(fname)) continue;
+		// A declaration-only member-template PLACEHOLDER never needs a
+		// module-level extern here: when instantiated locally the definition
+		// carries its own prototype, and an EXPORTED member template is
+		// called through its Itanium-mangled symbol (member_template_method_call
+		// + need_output_extern_unprototyped), not the placeholder's name. Its
+		// varargs placeholder signature (e.g. `(struct C *, ...)` for an
+		// instance member with the hidden __this) otherwise CONFLICTS with the
+		// instantiated definition ("incompatible types of ... declarations").
+		if (fd->is_member_template) continue;
 		std::string lookup_name = fname;
 		Variable *fvar = prog->tkProgram ? prog->tkProgram->findVariable(lookup_name) : NULL;
 		std::string symbol = fvar ? func_emit_name(*fvar, fd) : fname;

@@ -1,0 +1,24 @@
+#!/../bin/madc
+// An INSTANCE (non-static) member function template of a madc-LOCAL class must
+// instantiate on ODR-use AS A METHOD — hidden `__this`, so member access in the
+// body resolves (the clang/gcc model: a member fn template instantiates as a
+// method of the class; static-ness is just a flag). Static member templates
+// already worked (testvariadicmembertmpl); this is the instance analogue, wired
+// in parseCallMethod + instantiate_fn_template_binding's method-parse branch.
+// `base` (a member, reached via the implicit this) proves the method model.
+#include <iostream>
+using namespace std;
+struct C {
+    int base;
+    template<typename U, typename... Args>
+    void store(U* p, Args... args) { *p = base + 5; }
+};
+int main()
+{
+    C c;
+    c.base = 30;
+    int x = 0;
+    c.store(&x, 1);          // instance member template: *x = base + 5 = 35
+    cout << "x=" << x << endl;
+    return 0;
+}

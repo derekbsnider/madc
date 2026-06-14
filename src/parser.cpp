@@ -11307,6 +11307,15 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
 	tc->parameters.push_back(tb);
     }
+
+    // Instance member function template of a madc-LOCAL class (e.g.
+    // `__new_allocator<int>::construct`): instantiate its retained body for THIS
+    // call AS A METHOD and alias the call's symbol (the placeholder's
+    // local_emit_name), so the call's extern resolves to a real definition
+    // instead of an undefined import. The static analogue runs in parseCallFunc;
+    // the qualified-static one in reselect_static_member_overload.
+    instantiate_member_fn_template_for_call(tc);
+
     // (need check for optional parameters)
     FuncDef *fd = call_signature_funcdef(tc->var);
     if ( fd && !fd->is_varargs && !fd->param_defaults.empty() )
@@ -24933,6 +24942,8 @@ static bool ignored_template_declarator_call_name(const std::string &name)
 static DataDef *skipped_template_function_return_type(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::string &name);
+static bool skipped_template_function_is_static(
+	const std::vector<TokenBase *> &tokens);
 
 static size_t skipped_template_function_declarator_name_index(
 	const std::vector<TokenBase *> &tokens, std::string *name_out)
@@ -26357,10 +26368,46 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    }
 	}
     }
+    // INSTANCE member template: parse the substituted definition AS A METHOD of
+    // ft.owner_class (parseFunction, hidden `__this`, member access) instead of
+    // a free function — the clang/gcc model (a member fn template instantiates
+    // as a method of the class; static-ness is just a flag). parseFunction
+    // expects the stream positioned AFTER the `(`, so split the injected
+    // `RET name ( params ) { body }` at the params: push [params .. body], pass
+    // the return type + name to parseFunction, and free the unused head tokens.
+    bool as_method = ft.instance_method && ft.owner_class;
+    DataDef *method_ret = &ddVOID;
+    std::string method_id;
+    size_t method_params_start = 0;
+    if ( as_method )
+    {
+	std::string nm;
+	size_t nidx = skipped_template_function_declarator_name_index(inj, &nm);
+	if ( nidx + 1 < inj.size() && inj[nidx]
+	  && inj[nidx + 1] && inj[nidx + 1]->id() == TokenID::tkOpBrk
+	  && !nm.empty() )
+	{
+	    method_id = nm;
+	    method_ret = skipped_template_function_return_type(
+			     pgm, ft.owner_class, inj, method_id);
+	    method_params_start = nidx + 2;
+	}
+	else
+	    as_method = false;	// malformed — fall back to the free-fn parse
+    }
+
     size_t base_depth = pgm.tokens.size();
-    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
-	  it != inj.rend(); ++it )
-	pgm.pushToken(*it);
+    if ( as_method )
+    {
+	for ( size_t k = inj.size(); k-- > method_params_start; )
+	    pgm.pushToken(inj[k]);
+	for ( size_t k = 0; k < method_params_start; ++k )
+	    delete inj[k];	// RET .. name .. `(` — not pushed; free them
+    }
+    else
+	for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
+	      it != inj.rend(); ++it )
+	    pgm.pushToken(*it);
 #if MADC_DEBUG_FNTPL
     {
 	const char *dump = ::getenv("MADC_DEBUG_FNTPL_DUMP");
@@ -26404,10 +26451,23 @@ static bool instantiate_fn_template_binding(Program &pgm,
     ++pgm.fn_template_instantiation_depth;
     try
     {
-	TokenBase *first = pgm.nextToken();
-	TokenBase *stmt = pgm.parseStatement(first);
-	if ( stmt && pgm.tkProgram )
-	    pgm.tkProgram->statements.push_back((TokenStmt *)stmt);
+	if ( as_method )
+	{
+	    // Parse as a method of ft.owner_class: hidden `__this` + class-scope
+	    // member resolution. parseFunction registers funcdef_map[method_id]
+	    // and appends the TokenFunc to pending_funcs (emitted later); the
+	    // caller aliases the call to method_id via the placeholder's
+	    // local_emit_name.
+	    std::string idc = method_id;
+	    pgm.parseFunction(*method_ret, idc, ft.owner_class);
+	}
+	else
+	{
+	    TokenBase *first = pgm.nextToken();
+	    TokenBase *stmt = pgm.parseStatement(first);
+	    if ( stmt && pgm.tkProgram )
+		pgm.tkProgram->statements.push_back((TokenStmt *)stmt);
+	}
     }
     catch ( ... )
     {
@@ -27037,6 +27097,12 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // `value_type`, etc. (instantiate_fn_template_binding swaps class_scope_stack
     // to fresh, then re-pushes ft.owner_class).
     ft.owner_class = owner;
+    // An INSTANCE (non-static) member template instantiates AS A METHOD of the
+    // owner (hidden `__this`, member access resolves) — the clang/gcc model. A
+    // static one stays a free function (no implicit object parameter). The
+    // `static` specifier was dropped above, so re-derive from the retained decl.
+    ft.instance_method =
+	!skipped_template_function_is_static(fd->member_template_decl);
     if ( !try_instantiate_namespace_fn_template(*this, ft, key, tc) )
 	return;
     // Alias the CALL to the instantiated definition: the call references the
@@ -27171,12 +27237,14 @@ static void register_skipped_class_template_function(
     owner->methods.push_back(var);
     owner->method_map[name] = var;
 
-    // Retain the body of a STATIC member function template so an ODR-use call
-    // site can instantiate it locally (instantiate_member_fn_template_for_call)
-    // when the owner is a madc-LOCAL class libstdc++ does not export. Only
-    // body-bearing static templates qualify; non-static (this-taking) member
-    // templates and bodyless declarations stay on the existing paths.
-    if ( fd && is_static )
+    // Retain the body of a body-bearing member function template so an ODR-use
+    // call site can instantiate it locally (instantiate_member_fn_template_for_call)
+    // when the owner is a madc-LOCAL class libstdc++ does not export. Both STATIC
+    // and INSTANCE (this-taking) member templates qualify: a static one
+    // instantiates as a free function, an instance one as a METHOD of the owner
+    // (the clang/gcc model — static-ness is just a flag). Bodyless declarations
+    // stay on the existing mangled-direct paths.
+    if ( fd )
     {
 	bool has_body = false;
 	for ( size_t i = 0; i < tokens.size(); ++i )

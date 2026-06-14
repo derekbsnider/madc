@@ -1355,8 +1355,16 @@ public:
 	// class-scope members ([basic.scope.class]). NULL for free/namespace fn
 	// templates. (No default initializer — keeps the aggregate-init shape.)
 	DataDefCLASS *owner_class;
+	// INSTANCE (non-static) member function template: the instantiated body
+	// is parsed AS A METHOD of owner_class (hidden `__this`, member access),
+	// not as a free function — the clang/gcc model (a member fn template is
+	// instantiated as a CXXMethodDecl of the class; static-ness is just a
+	// flag). False for free/namespace templates AND for STATIC member
+	// templates (those stay on the free-function parse).
+	bool instance_method;
 	FnTemplateDef() : typeparams(), typeparam_defaults(), typeparam_is_type(),
-	    typeparam_is_pack(), decl(), ns(), owner_class(NULL) {}
+	    typeparam_is_pack(), decl(), ns(), owner_class(NULL),
+	    instance_method(false) {}
     };
     std::map<std::string, std::vector<FnTemplateDef>> fn_template_map;
     std::set<std::string> fn_template_instantiated;   // "ns::name<t1,t2,...>" memo
