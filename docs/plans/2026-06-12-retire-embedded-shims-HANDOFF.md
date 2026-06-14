@@ -19,9 +19,14 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 ## 0. Orientation
 Same campaign as SESSION 8 (real glibc+libstdc++ every mode; sole backend
 cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. Integration is at
-**584 passed / 18 failed / 0 timed out** (down from 27 this session).
+**585 passed / 17 failed / 0 timed out** (down from 27 this session).
 
-**WHAT THIS SESSION ADDED (5 code commits + 1 test fix, all FULLY GATED), latest first:**
+**WHAT THIS SESSION ADDED (5 code commits + 2 test fixes, all FULLY GATED), latest first:**
+- `fe2417a` **teststdstringconv — TEST FIX: standard 1-arg `std::to_string` (18 → 17).** Called
+  `std::to_string(s, 42)` (a 2-arg (out,value) writer) — does NOT exist in real libstdc++ (to_string
+  is the 1-arg value→string converter that RETURNS the string); g++ AND clang++ both reject it. Only
+  worked under the old shims. Rewrote to `std::string s = std::to_string(42);` (stoi/stod were already
+  valid + work). Same INVALID-TEST class as teststringglobal. Test-only; binary unchanged.
 - `73cff0a` **teststringglobal — TEST FIX: global `empty` was ambiguous vs C++17 `std::empty` (19 → 18).**
   `cout << empty` errored "shift operands should be of an integer type". NOT an operator<</global-string
   bug (the prior hypothesis was wrong): the file-scope global named `empty` is ambiguous against the
@@ -56,16 +61,22 @@ cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. Integration 
 **THE KEY STRATEGIC FINDING (read §3):** the container chain is DEEP and FORKS per-operation, so
 sub-gap work advances the `tv1` REDUCER but does NOT flip tests — only the INDEPENDENT singletons
 flip the headline count (this session `_ZNSolsESo` 27→21, teststringrel 21→20, test3eqclass 20→19,
-teststringglobal 19→18 — all string/stream singletons). **Headline-count drops come from the
-INDEPENDENT singletons** (std::string operators, `std::for_each`, `__byte_op_t`, `to_string`,
-runtime-eval-`std`), NOT more container sub-gaps. **NEXT (recommended count-droppers, see §3):**
-testforeach2 (`std::for_each` free-fn-template instantiation) and teststdstringconv (`to_string`
-overload). Pick count-droppers over deepening the container chain; the user wants the headline to drop.
+teststringglobal 19→18, teststdstringconv 18→17). **Headline-count drops come from the INDEPENDENT
+singletons**, NOT container sub-gaps. **A SUB-CLASS of those singletons = INVALID-TEST fixes**
+(teststringglobal, teststdstringconv): tests written against old-shim convenience signatures that
+real libstdc++ + g++/clang reject — fix the test to standard usage, NOT madc. **NEXT (see §3):**
+testsstream (`__byte_op_t`) and testmadceval (runtime-eval `std`). **testforeach2 is NOT a clean
+singleton** — it's compound: (a) `std::for_each(names, fn)` is a 2-arg call g++ rejects (real
+for_each is 3-arg first/last/fn) AND (b) even a VALID 3-arg `std::for_each(a,a+3,pr)` fails in madc
+with `istreambuf_iterator<> expects 2 argument(s), got 1` (a real free-fn-template instantiation/
+overload-resolution bug — likely the C++17 execution-policy `for_each` overload or a default
+template-arg gap; worth its own slice). Defer until the simpler singletons run out.
 
 ## 1. Live state (verify `bash scripts/resume.sh` + `git status`)
-- **Branch** `feature/retire-embedded-shims-claude` @ **`73cff0a`** (LOCAL ONLY; develop
-  untouched). Last commit `73cff0a` (TEST FIX: teststringglobal global `empty`→`blank`, 19→18; binary
-  unchanged). Last COMMITTED code: `c518a00` (test3eqclass — strict-equality `===` domain rule for a
+- **Branch** `feature/retire-embedded-shims-claude` @ **`fe2417a`** (LOCAL ONLY; develop
+  untouched). Last two commits are TEST FIXES (binary unchanged at `c518a00`): `fe2417a`
+  (teststdstringconv 2-arg→1-arg std::to_string, 18→17), `73cff0a` (teststringglobal `empty`→`blank`,
+  19→18). Last COMMITTED code: `c518a00` (test3eqclass — strict-equality `===` domain rule for a
   free `operator==`, 20→19); prior `390d8a0` (teststringrel — ref-transparency in method-overload
   reselection, 21→20), `f120470` (sub-gap 12 — `__is_trivial(T)` builtin; advances tv1, 0
   flips), `ce4313a` (fn-ptr-param overload fix → cleared the `_ZNSolsESo` wall, 27→21),
@@ -73,16 +84,16 @@ overload). Pick count-droppers over deepening the container chain; the user want
   (sub-gap 10), `011769f` (sub-gap 9), `f644bb9` (sub-gap 8), `2e8abc1` (sub-gap 7),
   `7202523` (sub-gap 6), `7760712` (sub-gap 5), `58d6c7f` (sub-gap 4) + docs mirrors. Tree is
   CLEAN. MIR fork `/workspace/mir` @ `5df536f` == `MIR_COMMIT` → satisfied.
-- **All gates GREEN**: integration **584 passed / 18 failed / 0 timed out / 18
-  skipped** (this session: **27 → 18**; `ce4313a` cleared six —
+- **All gates GREEN**: integration **585 passed / 17 failed / 0 timed out / 18
+  skipped** (this session: **27 → 17**; `ce4313a` cleared six —
   testmultiret/testrust/teststruct3/testprefer/testrubycharsshadow/testmadcevalexprctx; `390d8a0`
-  teststringrel; `c518a00` test3eqclass; `73cff0a` teststringglobal; zero regressions);
-  unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
-  `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready. (`73cff0a` is a test-only
-  rename — binary unchanged at `c518a00`, so torture/unit/SMAUG carry from the `c518a00` validation.)
+  teststringrel; `c518a00` test3eqclass; `73cff0a` teststringglobal; `fe2417a` teststdstringconv; zero
+  regressions); unit all-pass; gcc-torture **1571 / 51-name failset byte-identical** to
+  `docs/parity/torture-failset-current.txt`; SMAUG soak exit 124 + ready. (`73cff0a`+`fe2417a` are
+  test-only — binary unchanged at `c518a00`, so torture/unit/SMAUG carry from the `c518a00` validation.)
 - **NOTE on the count:** the sub-gap work (4-12) all lands on `tv1` (a reducer), so the headline only
-  drops on the INDEPENDENT singletons (`_ZNSolsESo`, teststringrel, test3eqclass, teststringglobal so
-  far). See §3.6b below for the current 18 clustered.
+  drops on the INDEPENDENT singletons (`_ZNSolsESo`, teststringrel, test3eqclass, teststringglobal,
+  teststdstringconv so far). See §3.6b below for the current 17 clustered.
 - Build: `make -C src` (clang++ default), bin at `bin/madc`. Clean, no warnings. NOTE: after a
   `FEATURE_DEFINES=-D…` debug build, `touch src/parser.cpp` before a plain `make -C src` or the
   stale debug `.o` is reused.
@@ -107,6 +118,7 @@ overload). Pick count-droppers over deepening the container chain; the user want
 | `390d8a0` | **teststringrel — reference transparency in method-overload reselection (21 → 20).** `a < b` instantiates the free `operator<(const string&, const string&)` whose body is `__lhs.compare(__rhs)`; madc bound `string::compare(const char*)` instead of `compare(const basic_string&)` and jammed the dereferenced string into the char* param → "incompatible argument type for pointer type parameter". The bug was ONLY in the instantiated body — the reference param `__rhs` (`const string&`) was scored as a raw `string*` in `reselect_method_overload` (which built argtypes from raw `p->datadef()`). Fix: `reselect_method_overload` now types each arg via `operand_value_datadef` (reference transparency — a reference var/param arg denotes the referenced OBJECT, not the pointer; the same helper already used at parser.cpp ~26117). compare(const basic_string&) now scores an exact object match and wins. Verified vs clang++/g++. Flips teststringrel. test3eqclass (`===`) + teststringglobal (`operator<<` on a global) are SEPARATE roots, still failing. |
 | `c518a00` | **test3eqclass — strict-equality `===` domain rule for a FREE `operator==` (20 → 19).** `s === s2`/`s === "x"` on std::string errored "no match for strict equality … (no operator=== or operator==)". `===`/`!==` (madc dialect) had NO parse-time DOMAIN-RULE fallback to `operator==`. A user operator=== bound directly (Money member, Tag free); a class with a MEMBER operator== bound via the CIR builder (Plain). But std::string's operator== is a FREE bool-returning template, and `strict_equality_lowering`'s `class_operator_call(top,"==")` delegates the free shape to `std_free_operator_instantiation`, which only binds reference-returning (W2) + by-value-class (operator+) free operators — never a bool-returning one. Normal `a == b` works because the PARSER lowers it to a call via `lower_free_operator_to_call`; `===` was left raw. Fix (parser, deepest layer, reuses the ONE free-operator lowering — no new CIR machinery): `rewritten_operator_candidate` applies the domain rule (spec §2.2/2.4/2.5) after the direct user operator===/!== sets miss — `x === y`→`x == y`, `x !== y`→`!(x == y)` via new `lower_strict_equality_domain_rule` (lowers a synthetic TokenEquals exactly as `==`). Returns NULL (token kept for CIR member-== dispatch / different-domain constant) when no == covers the pair, so member-== (Plain) and member-=== (Money) are untouched; only the free/value-returning == lowers to a call. All 4 paths correct (Plain/string/string-literal via ==, Money via member ===, Tag via free ===); verified vs the g++-canon .expect 16/16. |
 | `73cff0a` | **teststringglobal — TEST FIX, ambiguous global `empty` vs C++17 `std::empty` (19 → 18).** `cout << empty` on a file-scope global `string empty;` errored "shift operands should be of an integer type". NOT a operator<</global-string bug (the prior §3 hypothesis): with `using namespace std`, the bare name `empty` is genuinely AMBIGUOUS against the C++17 free fn `std::empty` (`<bits/range_access.h>`, pulled transitively by `<iostream>`). Both g++ AND clang++ REJECT the original: "reference to 'empty' is ambiguous" (candidates `::empty`, `std::empty`). The test only passed against the old embedded shims (no `std::empty`) — it is invalid C++17 under real headers, so this is a TEST bug. Renamed the default-ctor global `empty`→`blank` (+ comment), preserving the test's intent (file-scope std::string + operator<<); madc now compiles+runs it g++-faithfully. LATENT madc gap (NOT fixed, noted for later): madc silently resolves the bare name to `std::empty` (a fn → shift) where the canon compilers hard-error the ambiguity — proper ambiguity detection in unqualified lookup under a using-directive is a separate unstarted feature. Test-only change: binary unchanged at `c518a00`, so unit/torture/SMAUG carry. Gate: integration 584/18. |
+| `fe2417a` | **teststdstringconv — TEST FIX, standard 1-arg `std::to_string` (18 → 17).** Called `std::to_string(s, 42)` — a 2-arg (out, value) writer that does NOT exist in real libstdc++ (to_string is the 1-arg value→string converter that RETURNS the string). g++ AND clang++ both reject it ("no matching function for call to to_string(std::string&, int)"); only worked under the old shims (same INVALID-TEST class as teststringglobal). The other calls (std::stoi/std::stod on a std::string) are valid + already work. Rewrote `std::string s; std::to_string(s, 42);` → `std::string s = std::to_string(42);` (+ comment); both canon compilers accept the rewrite; madc runs it (42/12345/3.5). Test-only: binary unchanged at `c518a00`. Gate: integration 585/17. |
 
 ## 3. THE NEXT TASK — pick a count-dropper (the strategy that's working)
 **STRATEGIC FINDING (2026-06-14, proven this session):** the container chain is DEEP and FORKS
@@ -116,14 +128,18 @@ REDUCER but do NOT flip tests. **Headline-count drops come from the INDEPENDENT 
 session `_ZNSolsESo` (27→21, 6 tests) and `390d8a0` teststringrel (21→20) both did. **Keep picking
 count-droppers** from the §3.6b clusters; deepen the container chain only when the independents run out.
 
-**REMAINING COUNT-DROPPER CANDIDATES (the 18, see §3.6b), in rough leverage order:**
-- **testforeach2** — `__ns_std_for_each` undefined import (`std::for_each` free-fn-template
-  instantiation not emitted). Reduce `std::for_each(a, a+n, fn)`.
+**REMAINING COUNT-DROPPER CANDIDATES (the 17, see §3.6b), in rough leverage order:**
 - **testsstream** — `__byte_op_t` undeclared (std::byte op machinery in `<sstream>`/`<ostream>`).
-- **teststdstringconv** — `to_string` overload: "Too many parameters in call to
-  `…to_string__o9` (declared 1, got argument 2)".
+  Reduce a `<sstream>` include; CHECK FIRST whether the test uses a non-standard signature (the
+  teststringglobal/teststdstringconv invalid-test class) before assuming a madc bug.
 - **testmadceval** — `Failed to find type 'std'` in `__madc_runtime_eval` (the runtime-eval child TU
   doesn't see `std::`; the second wall behind the now-fixed `_ZNSolsESo`).
+- **testforeach2 (compound, defer)** — (a) `std::for_each(names, fn)` is a 2-arg call g++ rejects
+  (real for_each is 3-arg first/last/fn — INVALID-TEST, would need a rewrite to 3-arg over standard
+  iterators); AND (b) even VALID 3-arg `std::for_each(a,a+3,pr)` fails in madc with
+  `istreambuf_iterator<> expects 2 argument(s), got 1` — a real free-fn-template instantiation/
+  overload-resolution bug (likely the C++17 execution-policy `for_each` overload or a default
+  template-arg gap). Needs BOTH a test rewrite AND a code fix; own slice.
 - (deeper) **container chain sub-gap 13:** `tmp/tv1` → `cannot dereference non-pointer type` (a `*X`
   where X isn't typed as a pointer, in `_M_realloc_insert`); `_S_destroy` blocks testvector+3. Multi-
   sub-gap; lower leverage than the singletons above.
@@ -138,8 +154,8 @@ tv1, 3 oracles + `--emit=c11`/`--dump-cir`, deepest layer. Note testvector etc. 
 (`std::allocator_traits<...>::_S_destroy`, a separate static-member wall) — so the container tests
 need BOTH, multiple sub-gaps. Also off-path: deduced-return `auto f(){return e;}` (no `-> T`).
 
-### 3.6b — THE CURRENT 18 FAILURES, clustered by first-error (at `73cff0a`)
-~7 distinct root-cause walls (measured, not assumed — the earlier "container+string share one
+### 3.6b — THE CURRENT 17 FAILURES, clustered by first-error (at `fe2417a`)
+~6 distinct root-cause walls (measured, not assumed — the earlier "container+string share one
 root, drops fast" was over-optimistic lumping; the real container chain is ~4 tests, the rest are
 independent):
 - **container/string template INSTANTIATION (~10)** — the live `tv1` chain + faces: `_S_destroy`
@@ -149,14 +165,15 @@ independent):
   (testmadc_ns). [teststringrel FIXED @390d8a0; teststringglobal FIXED @73cff0a (test rename).]
 - **`Unsupported parenthesized member declarator in class definition` (2)** — testcontainerdtor, testset.
 - **`expression before '->' must be a pointer` (2)** — testsubscriptarrow, testvectorptr (operator-> on an object).
-- **`__ns_std_for_each` undefined (1)** — testforeach2 (std::for_each free-fn-template instantiation).
+- **`__ns_std_for_each` undefined / istreambuf_iterator deduction (1)** — testforeach2 (COMPOUND: invalid 2-arg call + real 3-arg instantiation bug; see §3).
 - **`__byte_op_t` undeclared (1)** — testsstream (std::byte op machinery in `<sstream>`).
-- **`to_string` overload (1)** — teststdstringconv.
 - **runtime-eval `std` parse (1)** — testmadceval (`Failed to find type 'std'` in `__madc_runtime_eval`,
   the second wall behind the now-fixed `_ZNSolsESo`).
-[test3eqclass `===` FIXED @c518a00.]
-Highest leverage now: the independent singletons (testforeach2, testsstream, teststdstringconv,
-testmadceval) — each ~1 fix → 1 test, NOT the deep container chain.
+[test3eqclass FIXED @c518a00; teststringglobal FIXED @73cff0a; teststdstringconv FIXED @fe2417a.]
+Highest leverage now: testsstream + testmadceval (each ~1 fix → 1 test); testforeach2 is compound;
+the rest are the deep container chain. NB the INVALID-TEST class (teststringglobal/teststdstringconv):
+always 3-oracle the failing call FIRST — several of these tests use old-shim convenience signatures
+real libstdc++ rejects, so the fix is the test, not madc.
 
 ## 4. METHOD + GATES — unchanged from SESSION 8 CLOSE §5 below. DO NOT reapply
 `tmp/nontype_fold_v2_wip.patch` (the reverted 202-regression).
