@@ -43,12 +43,13 @@ now the **container cluster**, entered via `testvector` → `std::vector<int>::p
 The construct overload chain is now fully selected + instantiated (selection, typedef params,
 ref-args, pack arity all done). `tmp/tv1` (`vector<int>; push_back`) advances to the body:
 `__a.construct(__p, std::forward<_Args>(__args)...)` → **"Missing operand"**.
-`instantiate_fn_template_binding` substitutes a pack in PARAMETER + empty-pack positions but
-NOT a one-element pack EXPANSION inside a call-argument expression
-(`std::forward<_Args>(__args)...` — the `__args...` value expansion wrapped in a
-`std::forward<_Args>(...)` call, plus the `<_Args>` type expansion). Reduce a pure-user
-`f(g<Args>(args)...)` body and expand the value-name `...` (+ `<_Args>`) into the single bound
-element. Pre-existing off-path: multi-element packs (`tmp/vmt2`). Full detail + reducers:
+ISOLATED 2026-06-14: `tmp/vmt9` `sink(args...)` (plain value-pack expansion) WORKS; `tmp/vmt10`
+`sink(std::forward<Args>(args)...)` (a PATTERN expansion — the run before `...` carries the TYPE
+pack `Args` as a template-arg AND the value pack `args`) → "Missing operand". So
+`instantiate_fn_template_binding` handles a bare `args...` but not a one-element PATTERN
+expansion; generalize the identifier-anchored one-element `...`-drop to a pattern-anchored one
+(substitute `Args`→bound type + `args`→arg, drop `...`). Reducer `tmp/vmt10`. Pre-existing
+off-path: multi-element packs (`tmp/vmt2`). Full detail + reducers:
 `docs/plans/2026-06-13-member-fn-template-instantiation-design.md` §"SESSION 9". After this:
 testvector should advance past `construct`; the ~12-test container cluster + 5 string-class
 tests likely share these roots.

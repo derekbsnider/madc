@@ -75,13 +75,20 @@ testmemtmplfwdrefpack / testmemtmpltypedefparam.
   `instantiate_fn_template_binding` after it swaps the stack to fresh) + a
   `resolve_current_class_type_alias` fallback in parseFunction's param-type resolution.
 
-### REMAINING sub-gap 4 — pack EXPANSION in a body expression (NEXT slice)
-tv1 now fails at the construct body `__a.construct(__p, std::forward<_Args>(__args)...)` with
-**"Missing operand"** — `instantiate_fn_template_binding` substitutes the pack in PARAMETER and
-empty-pack positions, but a one-element pack EXPANSION inside a call-argument expression
-(`std::forward<_Args>(__args)...`) isn't expanded (the `__args...` value expansion wrapped in a
-`std::forward<_Args>(...)` call). Reduce a pure-user `f(g<Args>(args)...)` body; expand the
-value-name `...` (and the `<_Args>` type expansion) into the single bound element. Pre-existing
+### REMAINING sub-gap 4 — PATTERN pack expansion in a body expression (NEXT slice, ISOLATED)
+tv1 fails at the construct body `__a.construct(__p, std::forward<_Args>(__args)...)` with
+**"Missing operand"**. CHARACTERIZED (2026-06-14):
+- `tmp/vmt9` `sink(args...)` (plain VALUE-pack expansion in a call arg) → **WORKS** (sink 42).
+- `tmp/vmt10` `sink(std::forward<Args>(args)...)` (a PATTERN expansion: the run before `...`
+  contains BOTH the TYPE pack `Args` as a template-arg `<Args>` AND the value pack `args`) →
+  **"Missing operand"** (`import of undefined item C__fwd__mti`).
+So `instantiate_fn_template_binding`'s pack substitution handles a bare value-name `args...`
+but NOT a one-element PATTERN expansion `<...Args...>(...args...)...`. The fix: in the body
+substitution, when a `...` follows a multi-token pattern that references the pack (type pack as
+a template-id arg and/or value pack), expand the pattern for the single bound element
+(substitute `Args`→bound type, `args`→the arg) and drop the `...` — generalize the current
+identifier-anchored one-element drop to a pattern-anchored one. Reducer `tmp/vmt10` (no
+libstdc++ beyond `<utility>` for std::forward; or a pure `wrap<Args>(args)...`). Pre-existing
 off-path: multi-element packs (`tmp/vmt2`).
 
 ### EARLIER sub-gaps (superseded — kept for history)
