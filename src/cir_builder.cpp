@@ -7646,10 +7646,30 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					construct = node2(N_CALL, id(csym.c_str(), tb), a, tb);
 				}
 			} else {
-				// Scalar T: *addr = arg (or zero-init when no args).
+				// Scalar T: *(T *)addr = arg (or zero-init when no args).
+				// Cast the placement address to the CONSTRUCTED type's
+				// pointer before the store: placement new constructs a T at
+				// the address regardless of the pointer's static type, and
+				// libstdc++ writes `::new((void *)__p) _Up(...)` — storing
+				// through the raw `(void *)` yields "assignment of incompatible
+				// value". A no-op when addr is already T* (e.g. `new(&buf) int`).
 				node_t rhs = tn->ctor_args.empty()
 						? integer(0, tb) : translate_expr(tn->ctor_args[0]);
-				construct = node2(N_ASSIGN, node1(N_DEREF, addr(), tb), rhs, tb);
+				int levels = 1;
+				DataDef *t = tn->alloc_type;
+				while (t && t->is_pointer()) {
+					DataDefPTR *p = dynamic_cast<DataDefPTR *>(t);
+					if (!p) break;
+					t = p->base_type;
+					levels++;
+				}
+				node_t decls = list();
+				for (int i = 0; i < levels; i++) append(decls, pointer());
+				node_t tptr = node2(N_TYPE, type_list(t),
+						    node2(N_DECL, ignore(), decls));
+				node_t typed_addr = node2(N_CAST, tptr, addr(), tb);
+				construct = node2(N_ASSIGN, node1(N_DEREF, typed_addr, tb),
+						  rhs, tb);
 			}
 			// ({ <construct>; addr; }) — yields the placement address (T*).
 			node_t items = list();
