@@ -214,13 +214,40 @@ out-of-line capture with the sub-gap-5 per-call member-template instantiation pa
 +test `testoutoflinemembertemplate` (void + non-void + this-access). Reducer `tmp/oot1` (→ 42). tv1
 (`vector<int>::push_back`) advances PAST `_M_realloc_insert` to sub-gap 10.
 
-### sub-gap 10 — `auto` declaration in an instantiated `.tcc` body (the NEXT slice; tv1's new face)
-tv1 now → **`'auto' requires an initializer`** (tv1.mad:428:54 — header-origin line misattribution).
-A now-instantiated out-of-line `.tcc` body (`_M_realloc_insert` or another member it reaches) contains
-an `auto` declaration form madc's `parseDeclaration` auto path rejects (it requires `auto x = init`).
-Likely an `auto&&`/range-for/structured form, or a deduction site. Reduce: find the `auto` in the
-materialized body (`--emit=c11` the smallest vector reducer, or grep vector.tcc around the reachable
-members), attribute, fix the auto-decl parse/deduction at the deepest layer.
+### sub-gap 10 — auto-return functions with a trailing return type — DONE (commit pending)
+The `'auto' requires an initializer` face was NOT a stray `auto` decl — it was an `auto`-RETURN
+FUNCTION with a trailing return type: libstdc++'s cross-type `__normal_iterator operator-` returning
+`decltype(__lhs.base() - __rhs.base())` (reached by `_M_realloc_insert`'s `__position - begin()`).
+`parseDeclaration` treated `auto` only as a deduced VARIABLE. Fix:
+- parseDeclaration: the auto-var block is guarded `&& nt->id() != tkOpBrk` — a `(` after the
+  declarator (`auto f(`) means a function, so control falls through to the function path (decl_type
+  stays ddAUTO).
+- parseFunction: the trailing-qualifier loop CAPTURES a `-> T` (`tkDeRef`) as raw balanced tokens, and
+  RESOLVES it below — after the param VARIABLES enter scope (`code->method` set), since
+  `-> decltype(__a - __b)` names the parameters (not findable at the qualifier loop). `FuncDef::returns`
+  is a reference (cannot be reseated), so the resolved type rebuilds the FuncDef via the new
+  `clone_funcdef_with_return` and re-points the Variable / `funcdef_map` (handles trailing `*`/`&`).
+- Deferred (in-class method) bodies carry the captured tokens on
+  `DeferredFunctionBody::trailing_ret_tokens` and resolve at materialization
+  (`parse_deferred_function_body`, params back in scope) — `enqueue_deferred_function_body` gained an
+  optional `trailing_ret` param.
+
++test `testautotrailingreturn` (free + member, concrete + `decltype` + `decltype(this->x)`). Reducers
+`tmp/au1` (`-> int`→2), `tmp/au3` (`-> decltype(a-b)`→5), `tmp/au4` (member→21 42), `tmp/au5`
+(`-> decltype(this->x)`→7). Deduced-return `auto f(){return e;}` (no `-> T`) is a follow-up (`tmp/au2`
+fails "returning void"). tv1 advances PAST the auto-return wall to sub-gap 11.
+
+### sub-gap 11 — direct-initialization of a non-class variable (the NEXT slice; tv1's new face)
+tv1 now → **`Failed to find type 'this' when parsing function parameters`**. The instrumented site
+(now removed) was inside `_M_realloc_insert`'s instantiated body:
+**`pointer __new_start(this->_M_allocate(__len));`** — DIRECT-INITIALIZATION of a NON-class (pointer)
+variable `T name(expr)`, mis-parsed as a FUNCTION declaration `pointer __new_start(<params>)` (first
+"param" token `this` is not a type). madc already does ctor-style direct-init for CLASS types; a
+pointer/scalar `T` is the gap. sub-gap 11 = recognize `T name(expr)` for a non-class `T` as
+direct-init (= `T name = expr`) when the parenthesized content is an expression, not a
+parameter-declaration-list. Reduce: `typedef int* P; P p(q);` then use `*p`. Look at parseDeclaration's
+function-vs-direct-init disambiguation (`paren_group_is_function_def()` + the class-ctor-init path);
+fix the deepest layer.
 
 ### EARLIER sub-gaps (superseded — kept for history)
 1. **Forwarding-reference parameter packs** (`_Args&&... __args`): `try_instantiate_namespace_fn_template`
