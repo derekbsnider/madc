@@ -28,12 +28,18 @@ for the deep template-instantiation core behind all 15 remaining failures. READ 
 resuming. **Stage 1 part 1 (`a12314b`)** fixed `operand_value_datadef` stripping a pointer level off a
 reference-to-pointer return (`int*&`→`int`), which broke `T*` deduction from `__normal_iterator::base()`; it
 advanced all 3 vector tests (tv1/testvector/testvectorptr) past the "cannot dereference non-pointer type" wall
-(no flip yet). **NEXT = Stage 1 part 2: the move_iterator `conditional_t` RETURN wall** —
-`__make_move_if_noexcept_iterator`'s defaulted return param `_ReturnType = __conditional_t<...>` resolves to
-`int64_t` (madc can't evaluate the conditional_t), cascading into `std::__uninitialized_copy_a`'s
-`_InputIterator`→int64_t→the same deref throw one layer deeper. Plus testvector L17 "incompatible types in
-assignment to arithmetic lvalue" and testvectorptr L28 "expression before '->' must be a pointer" (vector<T*>
-subscript loses pointer-ness — verify if the same `returns`-strip pattern recurs in `operator[]`). NB madc's
+(no flip yet). **NEXT = Stage 1 part 2: DEFAULTED TEMPLATE TYPE PARAMETERS in fn templates** — root pinned at
+`instantiate_fn_template_binding` (`parser.cpp:26615-26632`): it fills an unbound type param from its default
+ONLY for a SINGLE-token default (bound-param name or concrete type); any MULTI-token default falls to `return
+false` → param unbound → `int64_t` fallback cascades. Two layers: (a) suffix/earlier-param defaults `R = T*`
+(reducer `tmp/cond2.mad`; fix = substitute bound params into the default tokens + fold `*`/`&` via
+`fold_template_arg_declarator` — this is where the plan's ORIGINAL declarator-suffix idea actually applies);
+(b) trait-expression defaults `_ReturnType = __conditional_t<__move_if_noexcept_cond<_Tp>::value,
+move_iterator<_Tp*>, _Tp*>` (`bits/stl_iterator.h:1828` = `__make_move_if_noexcept_iterator`, reducer
+`tmp/cond1.mad`) — needs `__conditional_t`+trait evaluation; (b) is what tv1 actually needs, (a) alone won't
+flip it. Also independent: testvector L17 "incompatible types in assignment to arithmetic lvalue",
+testvectorptr L28 "expression before '->' must be a pointer" (vector<T*> subscript loses pointer-ness — check
+if the `returns`-strip pattern recurs in `operator[]`). NB madc's
 exit code is RUN-SUCCESS not `main()`'s return — verify reducers via cout/`--emit=c11`. The plan's ORIGINAL
 Stage-1 hypothesis (declarator-suffix re-application) is DISPROVEN; the real chain is reference/return-type
 value-typing fidelity. The clean singletons are exhausted; this plan is the path forward.

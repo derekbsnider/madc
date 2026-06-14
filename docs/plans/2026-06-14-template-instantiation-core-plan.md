@@ -137,14 +137,28 @@ it fired (and never served `std::move`-of-class, the case it shipped with). All 
 gates green; advanced tv1/testvector/testvectorptr past the deref wall (no flip).
 
 **FOLLOW-ON WALLS (Stage 1 part 2+, the next tv1 chain), each a separate root:**
-- **`__make_move_if_noexcept_iterator` `conditional_t` RETURN → `int64_t`** (the
-  tv1 blocker now). Its return is a defaulted template param `_ReturnType =
-  __conditional_t<...>` (`<bits/stl_uninitialized.h>` / `<bits/stl_iterator.h>`):
-  madc can't evaluate the `conditional_t`, so `_ReturnType` is unbound and
-  defaults to `int64_t`, which feeds `std::__uninitialized_copy_a`'s `_InputIterator`
-  (→ int64_t → the same `decltype(*__first)` throw, now one layer deeper). This is
-  the "move_iterator conditional_t" wall noted in KG/memory. Likely needs
-  `conditional_t`/`__conditional_t` resolution in a defaulted-return-param position.
+- **Stage 1 part 2 = DEFAULTED TEMPLATE TYPE PARAMETERS in fn templates** (the tv1
+  blocker now). Root pinned precisely: `instantiate_fn_template_binding`
+  (`parser.cpp:26615-26632`) fills an unbound type param from its default ONLY when
+  the default is a SINGLE token — a bound-param name (`_Ret = _TRet`) or a concrete
+  `ttDataType`. Any MULTI-token default falls through to `return false`, so the
+  param stays unbound → fr fallback `int64_t` cascades. Two layers:
+  - **(a) suffix/earlier-param defaults** — `template<typename T, typename R = T*>`
+    (`R` depends on `T` + a `*`). Reducer `tmp/cond2.mad` (`R = T*`, NO conditional)
+    reproduces `import of undefined __ns_ns_mk`. Fix: substitute the already-bound
+    params into the default tokens and resolve the type (fold `*`/`&` via the
+    existing `fold_template_arg_declarator`/`getPointerType` machinery — note this
+    is where the plan's ORIGINAL "declarator-suffix" idea actually applies: the
+    DEFAULT's tokens, not the body's). Tractable.
+  - **(b) trait-expression defaults** — `_ReturnType = __conditional_t<
+    __move_if_noexcept_cond<_Tp>::value, move_iterator<_Tp*>, _Tp*>`
+    (`<bits/stl_iterator.h>:1828`, exactly `__make_move_if_noexcept_iterator`). For
+    `int` the cond is false → `_ReturnType = _Tp* = int*`. Needs evaluating
+    `__conditional_t<bool,A,B>` AND the `__move_if_noexcept_cond<T>::value` trait at
+    instantiation. Reducer `tmp/cond1.mad` (`R = std::conditional<false,double,T*>
+    ::type`). Harder — this is what tv1 actually needs; (a) alone won't flip tv1.
+    (cond3.mad also showed `std::conditional<...>::type` member-access has a
+    separate "'type' is not a static member" gap to clear.)
 - **testvector line 17: "incompatible types in assignment to an arithmetic type
   lvalue"** — a distinct wall reached once the deref is past (subscript/assign
   through the instantiated `operator[]`/data path).
