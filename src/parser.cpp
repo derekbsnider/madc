@@ -26609,9 +26609,18 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	std::map<std::string, DataDef *> &binding,
 	const std::string &pack_param, bool pack_empty, Variable **var_out)
 {
-    // Unbound parameters fall back to simple template-parameter defaults: a
-    // single token naming an already-bound parameter (`typename _Ret = _TRet`)
-    // or a concrete type.
+    // Unbound parameters fall back to their template-parameter defaults. The
+    // default is a token run: a BASE type (a single token — an already-bound
+    // parameter name `_Ret = _TRet`, or a concrete `ttDataType`) optionally
+    // followed by declarator suffixes (`_Tp*`, `_Tp&`, `_Tp&&`) and cv-
+    // qualifiers. Resolve the base, then FOLD the suffixes onto it
+    // (getPointerType / getReferenceType) — mirroring the class-template
+    // default path (parser.cpp ~2762) so `typename R = T*` seats R as the
+    // pointer, not unbound. Without the fold a multi-token default left R
+    // unbound -> the int64_t fallback -> a wrong return type and an undefined
+    // import (e.g. __make_move_if_noexcept_iterator's iterator return).
+    // A trait-expression default (`__conditional_t<...>`) has no resolvable
+    // single base token -> still bails (the layer-(b) follow-on).
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
     {
 	if ( binding.count(ft.typeparams[i]) )
@@ -26619,14 +26628,39 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	if ( pack_empty && ft.typeparams[i] == pack_param )
 	    continue;	// legitimately unbound — elided below
 	if ( i < ft.typeparam_defaults.size()
-	  && ft.typeparam_defaults[i].size() == 1 )
+	  && !ft.typeparam_defaults[i].empty() )
 	{
-	    TokenBase *d = ft.typeparam_defaults[i][0];
-	    std::string dn = d ? contextual_identifier_name(d) : "";
-	    if ( !dn.empty() && binding.count(dn) )
-	    { binding[ft.typeparams[i]] = binding[dn]; continue; }
-	    if ( d && d->type() == TokenType::ttDataType )
-	    { binding[ft.typeparams[i]] = &((TokenDataType *)d)->definition; continue; }
+	    const std::vector<TokenBase *> &dtoks = ft.typeparam_defaults[i];
+	    DataDef *base = NULL;
+	    bool ok = true;
+	    for ( size_t j = 0; j < dtoks.size() && ok; ++j )
+	    {
+		TokenBase *s = dtoks[j];
+		if ( !s )
+		    continue;
+		TokenID sid = s->id();
+		if ( sid == TokenID::tkCONST || sid == TokenID::tkVOLATILE )
+		    continue;	// cv-qualifier: no effect on madc's type identity
+		if ( !base )
+		{
+		    std::string dn = contextual_identifier_name(s);
+		    if ( !dn.empty() && binding.count(dn) )
+			base = binding[dn];
+		    else if ( s->type() == TokenType::ttDataType )
+			base = &((TokenDataType *)s)->definition;
+		    else
+			ok = false;	// unresolvable base (trait expr, etc.)
+		    continue;
+		}
+		if ( sid == TokenID::tkMul )
+		    base = pgm.getPointerType(base);
+		else if ( sid == TokenID::tkBand || sid == TokenID::tkLand )
+		    base = pgm.getReferenceType(base);
+		else
+		    ok = false;	// not a plain declarator suffix
+	    }
+	    if ( ok && base )
+	    { binding[ft.typeparams[i]] = base; continue; }
 	}
 	return false;
     }
