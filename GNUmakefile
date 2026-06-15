@@ -154,7 +154,7 @@ debug2: $(BUILD_DIR)/libmir.$(LIBSUFF) $(BUILD_DIR)/$(SOLIB) $(EXECUTABLES)
 
 install: $(BUILD_DIR)/libmir.$(LIBSUFF) $(BUILD_DIR)/$(SOLIB) $(EXECUTABLES) | $(PREFIX)/include $(PREFIX)/lib $(PREFIX)/bin
 	install -m a+r $(SRC_DIR)/mir.h $(SRC_DIR)/mir-dlist.h $(SRC_DIR)/mir-varr.h $(SRC_DIR)/mir-htab.h\
-		       $(SRC_DIR)/mir-gen.h $(SRC_DIR)/c2mir/c2mir.h $(PREFIX)/include
+		       $(SRC_DIR)/mir-gen.h $(SRC_DIR)/mir-dwarf.h $(SRC_DIR)/c2mir/c2mir.h $(PREFIX)/include
 	install -m a+r $(BUILD_DIR)/libmir.$(LIBSUFF) $(BUILD_DIR)/$(SOLIB) $(PREFIX)/lib
 ifeq ($(OS),Windows_NT)
 else
@@ -199,7 +199,7 @@ bench: interp-bench gen-bench gen-bench2 io-bench mir2c-bench c2mir-sieve-bench 
 	@echo ==============================Bench is done
 
 # ------------------ MIR --------------------------
-MIR_SRC:=$(SRC_DIR)/mir.c $(SRC_DIR)/mir-gen.c
+MIR_SRC:=$(SRC_DIR)/mir.c $(SRC_DIR)/mir-gen.c $(SRC_DIR)/mir-dwarf.c
 MIR_BUILD:=$(MIR_SRC:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.$(OBJSUFF))
 
 $(BUILD_DIR)/%.$(OBJSUFF): $(SRC_DIR)/%.c | $(BUILD_DIR)
@@ -212,7 +212,7 @@ clean-mir:
 -include $(MIR_BUILD:.$(OBJSUFF)=.d)
 
 # ------------------ LIBMIR -----------------------
-$(BUILD_DIR)/libmir.$(LIBSUFF): $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/c2mir/c2mir.$(OBJSUFF)
+$(BUILD_DIR)/libmir.$(LIBSUFF): $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-dwarf.$(OBJSUFF) $(BUILD_DIR)/c2mir/c2mir.$(OBJSUFF)
 ifeq ($(CC),cl)
 	lib -nologo $^ -OUT:$@
 else
@@ -220,7 +220,7 @@ else
 endif
 
 # ------------------ LIBMIR SO --------------------
-$(BUILD_DIR)/$(SOLIB): $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/c2mir/c2mir.$(OBJSUFF)
+$(BUILD_DIR)/$(SOLIB): $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-dwarf.$(OBJSUFF) $(BUILD_DIR)/c2mir/c2mir.$(OBJSUFF)
 ifeq ($(CC),cl)
 	$(CC) -nologo -D_USRDLL -D_WINDLL $^ -link -DLL -OUT:$@
 else
