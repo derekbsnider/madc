@@ -22,15 +22,31 @@ been reached yet):
    pack expansion -> `catch()` -> "Expected type in catch parameter". Blocked
    `vector::_M_realloc_insert` (variadic member; `__catch(...)` exception block).
    Fix: don't drop a `...` directly after an open `(`. +tests/testvariadiccatchall.
-3. **NEXT wall (live, localized via gcc-on-emitted-C):**
-   `__enable_if_t<std::__is_bitwise_relocatable<int>::value, int>` is left as an
-   opaque INCOMPLETE struct type — `enable_if_t<true, T>` is not resolving to `T`.
-   Site: `__relocate_a_1`'s return type (the C++17 `_S_use_relocate()` /
-   `__relocate_a` path `vector::_M_realloc_insert` takes for trivially-relocatable
-   elements). Needs `enable_if_t<bool,T>` alias resolution (+ the
-   `__is_bitwise_relocatable` trait — likely a libstdc++ trait over
-   `__is_trivially_relocatable`/triviality, or another intrinsic). RE-DIAGNOSE at
-   the implementation start; this is a fresh wall, not Slice 2.
+3. **NEXT wall (live, localized + reducer-confirmed):**
+   `__enable_if_t<std::__is_bitwise_relocatable<int>::value, int*>` is left an opaque
+   INCOMPLETE struct type instead of resolving to `int*`. Site: `__relocate_a_1`'s
+   RETURN TYPE (the C++17 `_S_use_relocate()` / `__relocate_a` path that
+   `vector::_M_realloc_insert` takes for trivially-relocatable elements).
+   `__is_bitwise_relocatable<_Tp> : is_trivial<_Tp>` (stl_uninitialized.h:1084) — so
+   its `::value` is an INHERITED `is_trivial<T>` value, and `__enable_if_t<bool,T>`
+   is the alias `typename enable_if<bool,T>::type`. **REDUCER (tmp/eif2.mad,
+   `--std=c++17 --no-embedded-headers`; g++/clang accept, madc FAILS "use of
+   undeclared identifier 'pick'"):**
+   ```cpp
+   template<class T> struct bwr : is_trivial<T> {};
+   template<bool C, class T> using eif = typename enable_if<C, T>::type;
+   template<class T> eif<bwr<T>::value, T*> pick(T* p){ return p; }
+   int main(){ int x=5; int* r = pick(&x); return (*r==5)?0:1; }
+   ```
+   A function template whose RETURN TYPE is `enable_if_t<DerivedTrait<T>::value, T*>`
+   fails to instantiate -> the fn is never declared. Facets to separate at
+   implementation: (a) folding an INHERITED trait `::value` (`bwr<T>` derives from
+   is_trivial — does madc read the base's `::value`?); (b) the
+   `enable_if_t<bool,T>` alias resolving in RETURN-TYPE position with a dependent
+   non-type bool arg; (c) a possible orthogonal fn-template-call/emission gap (the
+   bare `eif<...>` global decls in tmp/eif.mad partly resolved but weren't usable —
+   compare). 3-oracle FIRST; isolate (a)/(b)/(c). is_constructible (the original
+   "Slice 2") is still BEHIND this. This is a FRESH wall, not Slice 2.
 
 fulltest 609 -> 611 across the two fixes; zero regression each. `__is_constructible`
 (the original Slice 2) is still pending and now sits BEHIND the enable_if_t wall.
