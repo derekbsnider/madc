@@ -2849,7 +2849,17 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		tname, arg_types_by_slot, arg_spellings, arg_tokens_by_slot,
 		td.typeparam_is_type, spec_subst) )
 	{
+	    // Keep the USE-SITE owner across the swap. A nested class template's
+	    // partial spec is stored globally by simple name (partial_spec_map[name])
+	    // with owner_class frozen to whichever enclosing instance was parsed
+	    // first (e.g. allocator_traits<pmr::polymorphic_allocator<...>::rebind_alloc>),
+	    // not the allocator_traits<X> actually being instantiated here. The
+	    // instantiation identity (registered_mangled, computed above) is keyed on
+	    // the primary's use-site owner; letting the spec's stale owner replace it
+	    // re-registers the body under the wrong owner prefix → "did not register".
+	    DataDefCLASS *use_site_owner = td.owner_class;
 	    td = *spec;
+	    td.owner_class = use_site_owner;
 	    subst = spec_subst;
 	    token_subst.clear();
 	}
