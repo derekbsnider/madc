@@ -226,6 +226,31 @@ the aa49933 member-vs-`std::` precedence fix. Correct fix: an unqualified templa
 name must only resolve to a candidate whose `defining_namespace` is reachable from the
 current scope; `std::pmr::vector` is excluded, leaving `std::vector`.
 
+### UPDATE 2026-06-15 (session 10, part 3) — alias-reachability fix DONE @`ba15e16` (#2)
+
+The pmr alias-reachability bug is FIXED (zero-regr, still 597/12). `find_template_alias`
+(parser.cpp:12667) dropped its blind single-candidate fallback; an unqualified candidate
+in a non-enclosing/non-global namespace is now reachable only if its `defining_namespace`
+is in `active_using_namespaces` (else NULL → caller falls to `find_template` and picks
+the class template `std::vector`). VALIDATED: `vector<A*>` now resolves to
+`std::vector<A*, std::allocator<A*>>` — the spurious `pmr::polymorphic_allocator` opaque
+type on `vb[0]` is gone; arrow1 now advances to the REAL allocator_traits `_Diff`
+did-not-register wall. No test flips (all 12 stay blocked at the deeper allocator wall).
+
+**★ NEXT = MULTI-SESSION #1 — the `__a.destroy(__p)` allocator-reference-param keystone.**
+This is THE count-dropper (gates testvector, testforeachref, teststringref,
+testsubscriptmember, + tmp/vint). Wall: `member reference is not a structure or union`
+at `:428:54`. In the instantiated `allocator_traits<allocator<T>>::_S_destroy(_Alloc2& __a,
+_Tp* __p, int)` body, `__a.destroy(__p)` fails because the allocator REFERENCE param
+`_Alloc2& __a` isn't typed as its class in the monomorphized static-member-template body,
+so the `.destroy` member-ref is rejected. START: reduce from **tmp/vint** (`vector<int> v;
+v.push_back(7); v[0];`) — NOT the synthetic sd*/ad* reducers (they hit earlier walls).
+3-oracle the `__a.destroy` call vs g++/clang FIRST. Likely root: reference-param type
+fidelity in instantiate_fn_template_binding's static-member path (the `_Alloc2&` param
+must denote its referenced allocator class for member access) — cf. the ref-transparency
+fixes 390d8a0 (reselect_method_overload via operand_value_datadef) and a12314b. Expect
+multiple walls after this one (it's the libstdc++ allocator_traits chain).
+
 ---
 
 # ★ SESSION 9 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-14
