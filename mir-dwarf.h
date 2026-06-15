@@ -22,7 +22,7 @@
                            fn->line_map, fn->line_map_len);
        for each local var v with reg r and type t:
          int64_t off; MIR_reg_frame_offset (fn, r, &off);
-         MIR_dwarf_add_var (d, v->name, v->is_param, t, off, deref_p);
+         MIR_dwarf_add_var (d, v->name, v->is_param, t, off, deref_p, 0);
      void *buf; size_t size;
      MIR_dwarf_emit (d, &buf, &size);
      MIR_dwarf_jit_t h = MIR_dwarf_gdb_register (buf, size);  // takes buf
@@ -99,11 +99,17 @@ extern void MIR_dwarf_add_param_type (MIR_dwarf_t d, MIR_dwarf_type_t fn, MIR_dw
    recently added function.  */
 extern void MIR_dwarf_add_func (MIR_dwarf_t d, const char *name, const void *addr, size_t size,
                                 const MIR_line_map_t *line_map, size_t line_map_len);
-/* fp_offset: the variable's frame-pointer-relative slot, from
-   MIR_reg_frame_offset.  deref_p: nonzero if that slot holds the variable's
-   *address* (an ALLOCA-style frontend) rather than its value. */
+/* Location of the variable, built as the DWARF expression
+     DW_OP_fbreg(fp_offset) [DW_OP_deref] [DW_OP_plus_uconst(member_offset)].
+   fp_offset: the frame-pointer-relative slot, from MIR_reg_frame_offset.
+   deref_p: nonzero if that slot holds an *address* (an ALLOCA-style frontend)
+   rather than the value itself.  member_offset: a constant added after the
+   optional deref -- e.g. a frontend that homes all locals in one frame block
+   and indexes each by a byte offset passes the block-pointer slot with
+   deref_p=1 and the per-variable offset here (0 when unused). */
 extern void MIR_dwarf_add_var (MIR_dwarf_t d, const char *name, int is_param,
-                               MIR_dwarf_type_t type, int64_t fp_offset, int deref_p);
+                               MIR_dwarf_type_t type, int64_t fp_offset, int deref_p,
+                               uint64_t member_offset);
 
 /* Produce the in-memory ELF object.  On success returns 0 and sets *buf
    (malloc'd; free with free(), or hand to MIR_dwarf_gdb_register which takes

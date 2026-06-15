@@ -117,6 +117,7 @@ enum {
   DW_ATE_unsigned = 0x07,
   DW_ATE_unsigned_char = 0x08,
   DW_OP_deref = 0x06,
+  DW_OP_plus_uconst = 0x23,
   DW_OP_fbreg = 0x91,
   DW_OP_reg6 = 0x56,  /* x86_64 rbp */
   DW_OP_reg29 = 0x6d, /* aarch64 x29 */
@@ -191,6 +192,7 @@ typedef struct {
   int is_param, deref_p;
   uint32_t type;
   int64_t fp_offset;
+  uint64_t member_offset; /* added (DW_OP_plus_uconst) after the optional deref */
   int next;
 } dwvar_t;
 
@@ -359,10 +361,10 @@ void MIR_dwarf_add_func (MIR_dwarf_t d, const char *name, const void *addr, size
 }
 
 void MIR_dwarf_add_var (MIR_dwarf_t d, const char *name, int is_param, MIR_dwarf_type_t type,
-                        int64_t fp_offset, int deref_p) {
+                        int64_t fp_offset, int deref_p, uint64_t member_offset) {
   if (d->n_funcs == 0) return;
   dwvar_t v = {.name = dw_strdup (name), .is_param = is_param, .type = type, .fp_offset = fp_offset,
-               .deref_p = deref_p, .next = -1};
+               .member_offset = member_offset, .deref_p = deref_p, .next = -1};
   VEC_PUSH (d, vars, v);
   int idx = d->n_vars - 1;
   dwfunc_t *f = &d->funcs[d->cur_func];
@@ -594,6 +596,10 @@ static void emit_info (MIR_dwarf_t d, dwbuf_t *b, uint64_t text_base, uint64_t t
       buf_u8 (&e, DW_OP_fbreg);
       buf_sleb (&e, dv->fp_offset);
       if (dv->deref_p) buf_u8 (&e, DW_OP_deref);
+      if (dv->member_offset != 0) {
+        buf_u8 (&e, DW_OP_plus_uconst);
+        buf_uleb (&e, dv->member_offset);
+      }
       buf_uleb (b, e.len);
       buf_bytes (b, e.p, e.len);
       free (e.p);
@@ -671,6 +677,18 @@ static void emit_line (MIR_dwarf_t d, dwbuf_t *b) {
 }
 
 #ifdef MIR_DWARF_HAVE_ELF
+/* One ELF section descriptor for the output object assembler below.  A named
+   type (rather than an anonymous struct + typeof) so the file stays compilable
+   by C frontends without the GNU typeof extension -- e.g. MIR's own c2m, which
+   builds mir-dwarf.c as part of its self-bootstrap. */
+typedef struct {
+  const char *name;
+  uint32_t type, link, info, align;
+  uint64_t flags, addr, entsize;
+  const dwbuf_t *body;
+  uint64_t size;
+} dwsec_t;
+
 int MIR_dwarf_emit (MIR_dwarf_t d, void **buf, size_t *size) {
   if (buf != NULL) *buf = NULL;
   if (size != NULL) *size = 0;
@@ -712,26 +730,20 @@ int MIR_dwarf_emit (MIR_dwarf_t d, void **buf, size_t *size) {
   emit_info (d, &info, text_base, text_size, cu_name);
   emit_line (d, &line);
 
-  struct {
-    const char *name;
-    uint32_t type, link, info, align;
-    uint64_t flags, addr, entsize;
-    const dwbuf_t *body;
-    uint64_t size;
-  } S[16];
+  dwsec_t S[16];
   int ns = 0;
-  S[ns++] = (typeof (S[0])){0};
-  S[ns++] = (typeof (S[0])){".text", SHT_NOBITS, 0, 0, 16, SHF_ALLOC | SHF_EXECINSTR, text_base, 0,
-                            NULL, text_size};
+  S[ns++] = (dwsec_t){0};
+  S[ns++] = (dwsec_t){".text", SHT_NOBITS, 0, 0, 16, SHF_ALLOC | SHF_EXECINSTR, text_base, 0,
+                      NULL, text_size};
   int i_symtab = ns;
-  S[ns++] = (typeof (S[0])){".symtab", SHT_SYMTAB, 0, 1, 8, 0, 0, sizeof (Elf64_Sym), &symtab,
-                            symtab.len};
+  S[ns++] = (dwsec_t){".symtab", SHT_SYMTAB, 0, 1, 8, 0, 0, sizeof (Elf64_Sym), &symtab,
+                      symtab.len};
   int i_strtab = ns;
-  S[ns++] = (typeof (S[0])){".strtab", SHT_STRTAB, 0, 0, 1, 0, 0, 0, &strtab, strtab.len};
+  S[ns++] = (dwsec_t){".strtab", SHT_STRTAB, 0, 0, 1, 0, 0, 0, &strtab, strtab.len};
   S[i_symtab].link = (uint32_t) i_strtab;
-  S[ns++] = (typeof (S[0])){".debug_abbrev", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &abbrev, abbrev.len};
-  S[ns++] = (typeof (S[0])){".debug_info", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &info, info.len};
-  S[ns++] = (typeof (S[0])){".debug_line", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &line, line.len};
+  S[ns++] = (dwsec_t){".debug_abbrev", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &abbrev, abbrev.len};
+  S[ns++] = (dwsec_t){".debug_info", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &info, info.len};
+  S[ns++] = (dwsec_t){".debug_line", SHT_PROGBITS, 0, 0, 1, 0, 0, 0, &line, line.len};
   int i_shstr = ns;
   dwbuf_t shstr = {0};
   buf_u8 (&shstr, 0);
@@ -740,7 +752,7 @@ int MIR_dwarf_emit (MIR_dwarf_t d, void **buf, size_t *size) {
   for (int i = 1; i < ns; i++) { name_off[i] = (uint32_t) shstr.len; buf_str (&shstr, S[i].name); }
   uint32_t name_shstr = (uint32_t) shstr.len;
   buf_str (&shstr, ".shstrtab");
-  S[ns++] = (typeof (S[0])){".shstrtab", SHT_STRTAB, 0, 0, 1, 0, 0, 0, &shstr, shstr.len};
+  S[ns++] = (dwsec_t){".shstrtab", SHT_STRTAB, 0, 0, 1, 0, 0, 0, &shstr, shstr.len};
   name_off[i_shstr] = name_shstr;
 
   size_t off = sizeof (Elf64_Ehdr);
@@ -816,8 +828,15 @@ struct jit_descriptor {
   uint32_t version, action_flag;
   struct jit_code_entry *relevant_entry, *first_entry;
 };
-/* gdb sets a breakpoint here; must not be inlined or elided. */
-void __attribute__ ((noinline)) __jit_debug_register_code (void) { __asm__ __volatile__ (""); }
+/* gdb sets a breakpoint here; must not be inlined or elided.  The empty asm is
+   an optimization barrier for that; MIR's own c2m (which builds this file in its
+   self-bootstrap) neither supports inline asm nor performs the elision, so it is
+   skipped there. */
+void __attribute__ ((noinline)) __jit_debug_register_code (void) {
+#ifndef __mirc__
+  __asm__ __volatile__ ("");
+#endif
+}
 struct jit_descriptor __jit_debug_descriptor = {1, 0, NULL, NULL};
 
 static pthread_mutex_t mir_dwarf_jit_mutex = PTHREAD_MUTEX_INITIALIZER;

@@ -29,6 +29,7 @@
 #include "time.h"
 
 #include "c2mir.h"
+#include "mir-dwarf.h"
 
 #if defined(__x86_64__) || defined(_M_AMD64)
 #include "x86_64/cx86_64.h"
@@ -16718,6 +16719,331 @@ size_t c2mir_get_source_files (MIR_context_t ctx, const char ***names) {
   return c2m_dbg_nfiles;
 }
 
+/* --- source-debug type + variable builder (single-threaded debug builds).
+   While compiling (types and decls live) we build the rich C type graph into a
+   persistent mir-dwarf object and snapshot each function's named locals/params
+   with their MIR location (a value-holding reg, or a byte offset into the
+   function's frame ALLOCA block).  The driver, after gen, resolves those to
+   frame-pointer offsets and emits the GDB-JIT object (c2mir_get_debug_object).
+   Aggregates, pointers, enums, bitfields and recursive types are all described
+   here -- the reference for a frontend wiring rich types into MIR + gdb. --- */
+
+static MIR_dwarf_t c2m_dbg;                                /* lazily created */
+static MIR_dwarf_type_t c2m_dbg_basic[TP_LDOUBLE + 1];     /* base-type cache */
+static node_t *c2m_dbg_tags;                               /* aggregate/enum tag nodes */
+static MIR_dwarf_type_t *c2m_dbg_tagtypes;                 /* parallel handles */
+static size_t c2m_dbg_ntags, c2m_dbg_ctags;
+
+typedef struct {
+  const char *name;       /* C name for the variable DIE */
+  const char *reg_name;   /* MIR reg holding the value, or NULL => memory */
+  uint64_t member_offset; /* memory case: byte offset within the frame block */
+  MIR_dwarf_type_t type;
+  int is_param;
+} c2m_dbgvar_t;
+
+typedef struct {
+  MIR_item_t item;
+  size_t first_var, n_vars;
+} c2m_dbgfunc_t;
+
+static c2m_dbgvar_t *c2m_dbg_vars;
+static size_t c2m_dbg_nvars, c2m_dbg_cvars;
+static c2m_dbgfunc_t *c2m_dbg_funcrecs;
+static size_t c2m_dbg_nfuncrecs, c2m_dbg_cfuncrecs;
+
+static MIR_dwarf_type_t c2m_dbg_type (c2m_ctx_t c2m_ctx, struct type *type);
+
+static MIR_dwarf_type_t c2m_dbg_tag_find (node_t tag) {
+  for (size_t i = 0; i < c2m_dbg_ntags; i++)
+    if (c2m_dbg_tags[i] == tag) return c2m_dbg_tagtypes[i];
+  return 0;
+}
+
+static void c2m_dbg_tag_add (node_t tag, MIR_dwarf_type_t h) {
+  if (c2m_dbg_ntags == c2m_dbg_ctags) {
+    c2m_dbg_ctags = c2m_dbg_ctags ? c2m_dbg_ctags * 2 : 16;
+    c2m_dbg_tags = realloc (c2m_dbg_tags, c2m_dbg_ctags * sizeof (node_t));
+    c2m_dbg_tagtypes = realloc (c2m_dbg_tagtypes, c2m_dbg_ctags * sizeof (MIR_dwarf_type_t));
+  }
+  c2m_dbg_tags[c2m_dbg_ntags] = tag;
+  c2m_dbg_tagtypes[c2m_dbg_ntags++] = h;
+}
+
+static MIR_dwarf_type_t c2m_dbg_basic_type (c2m_ctx_t c2m_ctx, enum basic_type bt) {
+  const char *nm;
+  MIR_dwarf_encoding_t enc;
+  int sz;
+
+  if (bt == TP_VOID) return 0;
+  if (c2m_dbg_basic[bt] != 0) return c2m_dbg_basic[bt];
+  sz = basic_type_size (bt);
+  switch (bt) {
+  case TP_BOOL: nm = "_Bool"; enc = MIR_DWARF_ENC_BOOL; break;
+  case TP_CHAR:
+    nm = "char";
+    enc = char_is_signed_p () ? MIR_DWARF_ENC_SIGNED_CHAR : MIR_DWARF_ENC_UNSIGNED_CHAR;
+    break;
+  case TP_SCHAR: nm = "signed char"; enc = MIR_DWARF_ENC_SIGNED_CHAR; break;
+  case TP_UCHAR: nm = "unsigned char"; enc = MIR_DWARF_ENC_UNSIGNED_CHAR; break;
+  case TP_SHORT: nm = "short"; enc = MIR_DWARF_ENC_SIGNED; break;
+  case TP_USHORT: nm = "unsigned short"; enc = MIR_DWARF_ENC_UNSIGNED; break;
+  case TP_INT: nm = "int"; enc = MIR_DWARF_ENC_SIGNED; break;
+  case TP_UINT: nm = "unsigned int"; enc = MIR_DWARF_ENC_UNSIGNED; break;
+  case TP_LONG: nm = "long"; enc = MIR_DWARF_ENC_SIGNED; break;
+  case TP_ULONG: nm = "unsigned long"; enc = MIR_DWARF_ENC_UNSIGNED; break;
+  case TP_LLONG: nm = "long long"; enc = MIR_DWARF_ENC_SIGNED; break;
+  case TP_ULLONG: nm = "unsigned long long"; enc = MIR_DWARF_ENC_UNSIGNED; break;
+  case TP_FLOAT: nm = "float"; enc = MIR_DWARF_ENC_FLOAT; break;
+  case TP_DOUBLE: nm = "double"; enc = MIR_DWARF_ENC_FLOAT; break;
+  case TP_LDOUBLE: nm = "long double"; enc = MIR_DWARF_ENC_FLOAT; break;
+  default: return 0;
+  }
+  return c2m_dbg_basic[bt] = MIR_dwarf_base_type (c2m_dbg, nm, enc, sz);
+}
+
+/* Add DIEs for the named members of struct/union type `type` into the already
+   created aggregate handle `agg`.  Unnamed anonymous struct/union members are
+   flattened in place (their member offsets are already absolute). */
+static void c2m_dbg_add_members (c2m_ctx_t c2m_ctx, MIR_dwarf_type_t agg, struct type *type) {
+  for (node_t el = NL_HEAD (NL_EL (type->u.tag_type->u.ops, 1)->u.ops); el != NULL;
+       el = NL_NEXT (el)) {
+    decl_t decl;
+    struct type *mt;
+    node_t declarator, id;
+    const char *name;
+
+    if (el->code != N_MEMBER) continue;
+    decl = el->attr;
+    mt = decl->decl_spec.type;
+    declarator = NL_EL (el->u.ops, 1);
+    id = (declarator != NULL && declarator->code == N_DECL) ? NL_HEAD (declarator->u.ops) : NULL;
+    name = (id != NULL && id->code == N_ID) ? id->u.s.s : NULL;
+    if (name == NULL) { /* unnamed: flatten anonymous struct/union, skip unnamed bitfields */
+      if ((mt->mode == TM_STRUCT || mt->mode == TM_UNION)
+          && mt->unnamed_anon_struct_union_member_type_p)
+        c2m_dbg_add_members (c2m_ctx, agg, mt);
+      continue;
+    }
+    if (decl->width >= 0) /* bitfield: DW_AT_data_bit_offset is from the struct start */
+      MIR_dwarf_add_bitfield (c2m_dbg, agg, name, c2m_dbg_type (c2m_ctx, mt),
+                              (int64_t) decl->offset * MIR_CHAR_BIT + decl->bit_offset, decl->width);
+    else
+      MIR_dwarf_add_member (c2m_dbg, agg, name, c2m_dbg_type (c2m_ctx, mt),
+                            (int64_t) decl->offset);
+  }
+}
+
+/* Build (interning aggregates/enums by tag node so recursive types terminate)
+   the mir-dwarf type describing c2mir `type`. */
+static MIR_dwarf_type_t c2m_dbg_type (c2m_ctx_t c2m_ctx, struct type *type) {
+  if (type == NULL) return 0;
+  switch (type->mode) {
+  case TM_BASIC: return c2m_dbg_basic_type (c2m_ctx, type->u.basic_type);
+  case TM_PTR: return MIR_dwarf_pointer_type (c2m_dbg, c2m_dbg_type (c2m_ctx, type->u.ptr_type));
+  case TM_ARR: {
+    struct arr_type *at = type->u.arr_type;
+    struct expr *ce = at->size->attr;
+    int64_t nel = (at->size->code == N_IGNORE || ce == NULL || !ce->const_p) ? 0 : (int64_t) ce->c.i_val;
+    return MIR_dwarf_array_type (c2m_dbg, c2m_dbg_type (c2m_ctx, at->el_type), nel);
+  }
+  case TM_FUNC:
+    return MIR_dwarf_func_type (c2m_dbg, c2m_dbg_type (c2m_ctx, type->u.func_type->ret_type));
+  case TM_ENUM: {
+    node_t tag = type->u.tag_type, id, list;
+    MIR_dwarf_type_t h = c2m_dbg_tag_find (tag);
+
+    if (h != 0) return h;
+    id = NL_HEAD (tag->u.ops);
+    h = MIR_dwarf_enum_type (c2m_dbg, (id != NULL && id->code == N_ID) ? id->u.s.s : NULL,
+                             basic_type_size (get_enum_basic_type (type)));
+    c2m_dbg_tag_add (tag, h);
+    if ((list = NL_EL (tag->u.ops, 1)) != NULL && list->code == N_LIST)
+      for (node_t ec = NL_HEAD (list->u.ops); ec != NULL; ec = NL_NEXT (ec))
+        if (ec->code == N_ENUM_CONST) {
+          node_t cid = NL_HEAD (ec->u.ops);
+          struct enum_value *ev = ec->attr;
+          if (cid != NULL && cid->code == N_ID && ev != NULL)
+            MIR_dwarf_add_enumerator (c2m_dbg, h, cid->u.s.s, (int64_t) ev->u.i_val);
+        }
+    return h;
+  }
+  case TM_STRUCT:
+  case TM_UNION: {
+    node_t tag = type->u.tag_type, id;
+    MIR_dwarf_type_t h = c2m_dbg_tag_find (tag);
+    int incomplete;
+
+    if (h != 0) return h;
+    id = NL_HEAD (tag->u.ops);
+    incomplete = incomplete_type_p (c2m_ctx, type);
+    h = MIR_dwarf_struct_type (c2m_dbg, (id != NULL && id->code == N_ID) ? id->u.s.s : NULL,
+                               incomplete ? 0 : (int64_t) type_size (c2m_ctx, type),
+                               type->mode == TM_UNION);
+    c2m_dbg_tag_add (tag, h); /* insert before members so self-references resolve */
+    if (!incomplete) c2m_dbg_add_members (c2m_ctx, h, type);
+    return h;
+  }
+  default: return 0;
+  }
+}
+
+static void c2m_dbg_push_var (const char *name, const char *reg_name, uint64_t member_offset,
+                              MIR_dwarf_type_t type, int is_param) {
+  if (c2m_dbg_nvars == c2m_dbg_cvars) {
+    c2m_dbg_cvars = c2m_dbg_cvars ? c2m_dbg_cvars * 2 : 64;
+    c2m_dbg_vars = realloc (c2m_dbg_vars, c2m_dbg_cvars * sizeof (c2m_dbgvar_t));
+  }
+  c2m_dbg_vars[c2m_dbg_nvars].name = name;
+  c2m_dbg_vars[c2m_dbg_nvars].reg_name = reg_name;
+  c2m_dbg_vars[c2m_dbg_nvars].member_offset = member_offset;
+  c2m_dbg_vars[c2m_dbg_nvars].type = type;
+  c2m_dbg_vars[c2m_dbg_nvars++].is_param = is_param;
+}
+
+/* Snapshot one named local/param: record its rich type and its MIR location --
+   a value-holding reg (reg_p) named like in codegen, or a byte offset into the
+   frame block (everything else: aggregates, address-taken, etc.). */
+static void c2m_dbg_record_decl (c2m_ctx_t c2m_ctx, const char *cname, decl_t decl, int is_param,
+                                 unsigned scope_num) {
+  struct type *type = decl->decl_spec.type;
+  MIR_dwarf_type_t t;
+
+  if (cname == NULL || type == NULL) return;
+  t = c2m_dbg_type (c2m_ctx, type);
+  if (decl->reg_p) {
+    MIR_type_t mt = promote_mir_int_type (get_mir_type (c2m_ctx, type));
+    c2m_dbg_push_var (cname, get_reg_var_name (c2m_ctx, mt, cname, scope_num), 0, t, is_param);
+  } else {
+    c2m_dbg_push_var (cname, NULL, decl->offset, t, is_param);
+  }
+}
+
+/* Walk function-body statements (never expressions, to avoid leaf nodes)
+   collecting automatic locals; statics/typedefs/externs and locals in GNU
+   statement-expressions are not described. */
+static void c2m_dbg_collect_locals (c2m_ctx_t c2m_ctx, node_t n) {
+  node_t el;
+
+  if (n == NULL) return;
+  switch (n->code) {
+  case N_SPEC_DECL: {
+    decl_t decl = n->attr;
+    struct decl_spec *ds;
+    node_t declarator, id;
+
+    if (decl == NULL) return;
+    ds = &decl->decl_spec;
+    if (ds->typedef_p || ds->extern_p || ds->static_p || ds->thread_local_p) return;
+    if (ds->type == NULL || ds->type->mode == TM_FUNC) return;
+    declarator = NL_EL (n->u.ops, 1);
+    id = (declarator != NULL && declarator->code == N_DECL) ? NL_HEAD (declarator->u.ops) : NULL;
+    if (id == NULL || id->code != N_ID) return;
+    c2m_dbg_record_decl (c2m_ctx, id->u.s.s, decl, FALSE,
+                         ((struct node_scope *) decl->scope->attr)->func_scope_num);
+    return;
+  }
+  case N_BLOCK:
+    for (el = NL_HEAD (NL_EL (n->u.ops, 1)->u.ops); el != NULL; el = NL_NEXT (el))
+      c2m_dbg_collect_locals (c2m_ctx, el);
+    return;
+  case N_IF:
+    c2m_dbg_collect_locals (c2m_ctx, NL_EL (n->u.ops, 2));
+    c2m_dbg_collect_locals (c2m_ctx, NL_EL (n->u.ops, 3));
+    return;
+  case N_SWITCH:
+  case N_WHILE:
+  case N_DO:
+    c2m_dbg_collect_locals (c2m_ctx, NL_EL (n->u.ops, 2));
+    return;
+  case N_FOR:
+    if ((el = NL_EL (n->u.ops, 1)) != NULL && el->code == N_LIST)
+      for (node_t d = NL_HEAD (el->u.ops); d != NULL; d = NL_NEXT (d))
+        c2m_dbg_collect_locals (c2m_ctx, d);
+    c2m_dbg_collect_locals (c2m_ctx, NL_EL (n->u.ops, 4));
+    return;
+  default: return; /* expression statements, returns, gotos: no nested decls */
+  }
+}
+
+/* Called from gen() after a function is finished: snapshot its params and
+   locals for later DWARF emission. */
+static void c2m_dbg_snapshot_func (c2m_ctx_t c2m_ctx, node_t func_def, struct type *func_type,
+                                   node_t body) {
+  decl_t func_decl = func_def->attr;
+  node_t param_list = func_type->u.func_type->param_list;
+  size_t first = c2m_dbg_nvars;
+
+  if (c2m_dbg == NULL && (c2m_dbg = MIR_dwarf_init ()) == NULL) return; /* unsupported host */
+  if (param_list != NULL) {
+    node_t first_param = NL_HEAD (param_list->u.ops);
+    if (first_param != NULL && !void_param_p (first_param))
+      for (node_t p = first_param; p != NULL; p = NL_NEXT (p)) {
+        node_t declarator, id;
+        decl_t pdecl;
+
+        if (p->code != N_SPEC_DECL) continue;
+        pdecl = p->attr;
+        declarator = NL_EL (p->u.ops, 1);
+        id = (declarator != NULL && declarator->code == N_DECL) ? NL_HEAD (declarator->u.ops) : NULL;
+        if (pdecl == NULL || id == NULL || id->code != N_ID) continue;
+        c2m_dbg_record_decl (c2m_ctx, id->u.s.s, pdecl, TRUE, 0);
+      }
+  }
+  c2m_dbg_collect_locals (c2m_ctx, body);
+  if (c2m_dbg_nfuncrecs == c2m_dbg_cfuncrecs) {
+    c2m_dbg_cfuncrecs = c2m_dbg_cfuncrecs ? c2m_dbg_cfuncrecs * 2 : 32;
+    c2m_dbg_funcrecs = realloc (c2m_dbg_funcrecs, c2m_dbg_cfuncrecs * sizeof (c2m_dbgfunc_t));
+  }
+  c2m_dbg_funcrecs[c2m_dbg_nfuncrecs].item = func_decl->u.item;
+  c2m_dbg_funcrecs[c2m_dbg_nfuncrecs].first_var = first;
+  c2m_dbg_funcrecs[c2m_dbg_nfuncrecs++].n_vars = c2m_dbg_nvars - first;
+}
+
+/* Safe reg-by-name lookup (0 if absent): a func reg's number is its index in
+   func->vars + 1 (see new_func_reg in mir.c). */
+static MIR_reg_t c2m_dbg_find_reg (MIR_func_t func, const char *name) {
+  for (size_t i = 0; i < VARR_LENGTH (MIR_var_t, func->vars); i++)
+    if (strcmp (VARR_GET (MIR_var_t, func->vars, i).name, name) == 0) return (MIR_reg_t) (i + 1);
+  return 0;
+}
+
+int c2mir_get_debug_object (MIR_context_t ctx, void **buf, size_t *size) {
+  if (c2m_dbg == NULL || c2m_dbg_nfuncrecs == 0) return 1;
+  for (size_t i = 0; i < c2m_dbg_nfiles; i++) MIR_dwarf_add_file (c2m_dbg, c2m_dbg_files[i]);
+  for (size_t i = 0; i < c2m_dbg_nfuncrecs; i++) {
+    MIR_item_t it = c2m_dbg_funcrecs[i].item;
+    MIR_func_t func;
+
+    if (it == NULL || it->item_type != MIR_func_item) continue;
+    func = it->u.func;
+    if (func->machine_code == NULL) continue;
+    MIR_dwarf_add_func (c2m_dbg, func->name, func->machine_code, func->code_len, func->line_map,
+                        func->line_map_len);
+    for (size_t v = c2m_dbg_funcrecs[i].first_var;
+         v < c2m_dbg_funcrecs[i].first_var + c2m_dbg_funcrecs[i].n_vars; v++) {
+      c2m_dbgvar_t *dv = &c2m_dbg_vars[v];
+      MIR_reg_t reg;
+      int deref_p;
+      uint64_t member;
+      int64_t slot;
+
+      if (dv->reg_name != NULL) { /* value lives in the reg (skip if never created) */
+        if ((reg = c2m_dbg_find_reg (func, dv->reg_name)) == 0) continue;
+        deref_p = 0;
+        member = 0;
+      } else { /* memory: [fp_block + offset]; the fp reg's slot holds the block address */
+        if ((reg = c2m_dbg_find_reg (func, FP_NAME)) == 0) continue;
+        deref_p = 1;
+        member = dv->member_offset;
+      }
+      if (!MIR_reg_frame_offset (func, reg, &slot)) continue;
+      MIR_dwarf_add_var (c2m_dbg, dv->name, dv->is_param, dv->type, slot, deref_p, member);
+    }
+  }
+  return MIR_dwarf_emit (c2m_dbg, buf, size);
+}
+
 static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_t false_label,
                  int val_p, op_t *desirable_dest, int *expect_res) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
@@ -18522,6 +18848,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       DLIST_APPEND (MIR_insn_t, curr_func->u.func->insns, insn);
     }
     MIR_finish_func (ctx);
+    if (c2m_options->debug_info_p) c2m_dbg_snapshot_func (c2m_ctx, r, decl_type, stmt);
     if (func_decl->decl_spec.linkage == N_EXTERN)
       MIR_new_export (ctx, NL_HEAD (declarator->u.ops)->u.s.s);
     finish_curr_func_reg_vars (c2m_ctx);

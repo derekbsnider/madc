@@ -41,4 +41,12 @@ int c2mir_compile (MIR_context_t ctx, struct c2mir_options *ops, int (*getc_func
    by the driver to build the DWARF file table.  Single-threaded compiles only. */
 size_t c2mir_get_source_files (MIR_context_t ctx, const char ***names);
 
+/* For a debug_info_p compile, after MIR_link/gen: build the in-memory GDB-JIT
+   DWARF object (function symbols, .debug_line, and rich-typed variable DIEs for
+   the snapshotted locals/params) covering all generated functions.  On success
+   returns 0 and sets *buf (malloc'd; hand to MIR_dwarf_gdb_register, which takes
+   ownership) and *size; returns nonzero if there is nothing to emit or the host
+   is unsupported.  Single-threaded compiles only. */
+int c2mir_get_debug_object (MIR_context_t ctx, void **buf, size_t *size);
+
 #endif
