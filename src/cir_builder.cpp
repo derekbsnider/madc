@@ -11998,6 +11998,20 @@ node_t CirBuilder::translate_module(Program *prog)
 				std::string key = nfd ? func_emit_name(ntf->var, nfd) : ntf->var.name;
 				if (lib_funcs.count(key)) continue;
 				lib_funcs[key] = ntf;
+				// Forward prototype: a free-fn-template instantiation reached
+				// ONLY during a late re-parse (e.g. _Node_handle::release →
+				// std::move → __ns_std_move__o2) gets a DEFINITION below (Pass 2)
+				// but, unlike the deferred_lazy_bodies path (~11978), was never
+				// recorded for the Pass-1.95(a) proto loop — so an earlier-emitted
+				// body that calls it (release, line 909) precedes the definition
+				// (line 938) with no declaration, and c2mir applies K&R implicit-int
+				// (`int()`), truncating the pointer return ("conflicting types").
+				// Record it here so Pass 1.95(a) emits its forward proto. (The
+				// lib_funcs.count(key) guard above makes this push at most once per
+				// key; the deferred path already routes its own funcs to
+				// materialized_funcs, and its keys are in lib_funcs so they short-
+				// circuit before here — no double-push.)
+				materialized_funcs.push_back(ntf);
 				m_materialized_lib_syms.insert(ntf->var.name);
 				if (nfd) m_materialized_lib_syms.insert(key);
 				grew = true;
