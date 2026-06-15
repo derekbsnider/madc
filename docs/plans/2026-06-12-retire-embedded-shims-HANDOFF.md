@@ -19,12 +19,16 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
-Integration **605 passed / 12 failed / 0 timed out / 18 skipped** (+testnestedtidbase).
-Code HEAD **`258da80`**, tree clean. Branch LOCAL-ONLY
-(`feature/retire-embedded-shims-claude`); develop untouched. MIR fork `5df536f` (pin satisfied).
-Build current, zero warnings. **This session (14) landed ONE fix and cleared the SESSION-13 §1b
-wall** (nested class with a template-id base). The ★ NEXT wall (member alias template as a
-member type) is precisely isolated + reduced in §1b — START THERE.
+Integration **607 passed / 12 failed / 0 timed out / 18 skipped** (+testnestedtidbase,
++testmemberaliastmplmember, +testpseudodtor). Code HEAD **`e4aad35`**, tree clean. Branch
+LOCAL-ONLY (`feature/retire-embedded-shims-claude`); develop untouched. MIR fork `5df536f`
+(pin satisfied). Build current, zero warnings. **This session (14) landed THREE fixes**, each
+clearing a successive PARSE wall in the `<map>`/`<set>` closure (the container onion):
+(1) nested class with a template-id base (`258da80`, §0b); (2) member alias template used as a
+member type (member-alias fix, §0c); (3) explicit/pseudo destructor call `ptr->~T()` (`e4aad35`,
+§0d). map/set now PARSE the full closure and hit a **c2mir SEMANTIC-check wall** (not a parse
+error) — the ★ NEXT wall, scoped in §1b. START THERE (NB: it's an emission-layer bug, a different
+class than this session's three parse fixes).
 
 ## 0b. ★ NESTED CLASS w/ TEMPLATE-ID BASE — CLEARED (`258da80`)
 The SESSION-13 §1b wall is fixed at the deepest layer. ROOT (confirmed via gated diag, not
@@ -44,69 +48,87 @@ the nested case to match). 18 lines. +tests/testnestedtidbase (3-oracled g++/cla
 runs in DEFAULT mode). Zero regr; the real `std::map` `value_compare : binary_function<...>`
 shape now parses → map/subscript/containerdtor/madc_ns advance to the NEW wall below.
 
-## 1b. ★★ NEXT WALL — member ALIAS TEMPLATE used as a member type (precisely isolated, MEATY)
-The 4 advanced tests (testmap, testsubscript, testcontainerdtor, testmadc_ns) now hit
-`/usr/include/c++/13/bits/node_handle.h:313-318`: a class-body MEMBER ALIAS TEMPLATE used as a
-member's type with an NSDMI:
-```cpp
-template<typename _Tp>
-  using __pointer = __ptr_rebind<typename _AllocTraits::pointer, remove_reference_t<_Tp>>;
-__pointer<_Key>  _M_pkey = nullptr;   // member type = member-alias-template-id  ← FAILS
+## 0c. ★ MEMBER ALIAS TEMPLATE as a member type — CLEARED (member-alias fix)
+A class-body MEMBER ALIAS TEMPLATE used unqualified as a member's type
+(`template<class _Tp> using __pointer = __ptr_rebind<...>;` then `__pointer<_Key> _M_pkey;`,
+node_handle.h:313-318) failed: the `<_Key>` was left unconsumed → member-name expectation hit `<`.
+ROOT (diag-confirmed): in `resolve_declared_type_token`, the `<`-suffix branch first tries
+`instantiate_template_id(tname, tb)` with owner_hint=NULL, which matches only top-level templates;
+a member alias template is registered under its OWNER class so the NULL-owner lookup misses it,
+the bare name resolves, and `<...>` is left. The existing retry-with-each-class-scope loop
+(parser.cpp ~3806) covered only `template_map.count(tname)` (member CLASS templates), not member
+ALIAS templates. FIX: extend that condition to `template_map.count(tname) ||
+template_alias_map.count(tname)` — `instantiate_template_id` already tries the alias path first
+(`instantiate_template_alias_use`), so the enclosing-class owner_hint finds + instantiates the
+member alias. One-line condition change. +tests/testmemberaliastmplmember (3-oracled = 7).
+
+## 0d. ★ EXPLICIT/PSEUDO DESTRUCTOR CALL `ptr->~T()` — CLEARED (`e4aad35`)
+`__p->~_Up();` (new_allocator.h:198, allocator_traits/container element destruction) failed with
+"Missing operand": the `->`/`.` operator starved because the `~` after it is not a member
+identifier, so the member-access path (parser.cpp:14636) was never reached and `~` was treated as
+a stray unary op. FIX (3 pieces, no shim): (parser operator arm ~15542) when `.`/`->` is followed
+by `~`, intercept → consume `~ type-name ( )`, synthesize a void-valued `TokenExplicitDtor`
+(tokens.h; obj/dtor_class/is_arrow — a dedicated node, NOT `delete` which is dtor+free); (cir_builder
+translate_expr) emit the COMPLETE-dtor call on the object (`->`=>lhs ptr, `.`=>&lhs) via the existing
+`class_needs_dtor` + `class_complete_dtor_symbol` (honours implicit member/base dtors, no free) —
+trivial/scalar = no-op but the object is still evaluated. Was KG-deferred
+(project_cpp_parser_correctness). +tests/testpseudodtor (3-oracled = `100 5 7`: real dtor runs, scalar no-op).
+
+## 1b. ★★ NEXT WALL — c2mir SEMANTIC-check error on inherited `_M_ptr` (emission layer, NOT parse)
+With the three parse walls cleared, map/set now PARSE the full `<map>`/`<set>` closure and fail in
+**c2mir's check pass** (CIR emission is wrong, not the parse). The set/map reducers
+(`tmp/sii.mad`/`tmp/mii.mad`, `--std=c++17 --no-embedded-headers`) report 4 c2mir check errors, all
+stamped `/usr/include/c++/13/bits/node_handle.h:64:29` (the clone-token-line artifact — line 64 is
+`class _Node_handle_common`):
 ```
-ROOT (diag-confirmed): when the member type is `__pointer<_Key>`, `resolve_declared_type_token`
-(parser.cpp ~22191, TokenCLASS member loop) resolves the BARE `__pointer` (the member alias) but
-does NOT instantiate the template-id — the `<_Key>` is left unconsumed → member-name expectation
-(parser.cpp ~22276) hits `<` (id 40 = tkLT) → "Expecting member name in class definition" (system
-header; real-mode the opaque-member-type fallback ~22192 fires first, also leaving `<`). The
-non-system reducer raises "Expecting type in class definition" (~22203) — SAME root.
-**Minimal reducer (3-oracle PASS g++/clang = 7; madc FAILS; run `--std=c++17 --no-embedded-headers`):**
+node_handle.h:64:29: too few arguments
+node_handle.h:64:29: undeclared identifier _M_ptr
+node_handle.h:64:29: incompatible argument type for pointer type parameter
+node_handle.h:64:29: invalid type argument of unary *
+c2mir_compile_tree: 4 check errors
 ```
-template<typename U> struct wrap { U v; };
-template<typename K, typename V> struct holder {
-    template<typename T> using ptr = wrap<T>;   // member alias template
-    ptr<K> a; ptr<V> b;                          // ← member-alias-template-id member type
-    int run() { a.v = 3; b.v = 4; return a.v + b.v; }
-};
-int main(){ holder<int,int> h; return h.run(); }   // 7
-```
-This is the UNQUALIFIED-within-own-body member-type case. NOTE: SESSION-10 FEATURE 1 (`c3209d0`)
-already added member-alias-template-id resolution for the QUALIFIED form `Owner<...>::type<A,B>`
-in declaration/typedef contexts (`resolve_class_member_type_chain` + `find_template_alias` +
-`instantiate_template_alias_use`). The fix here likely routes the member-type resolve at
-parser.cpp ~22191 through that SAME machinery: when the bare name resolves to a member alias
-template (`find_template_alias` against the enclosing `class_scope_stack`) AND peek is `<`,
-instantiate the alias-use (consuming `<...>`) instead of returning the bare alias. 3-oracle FIRST;
-instrument with the gated-diag method (§2) at parser.cpp ~22276/22203. Expect FURTHER `_Rb_tree`
-walls after; this gates map/subscript/containerdtor/madc_ns. testset is SEPARATE (C++20
-`set::contains` at testset.mad:19). The other open walls (§ below, re-diagnose live):
-`_ValueType2`/`__is_assignable` arity-2 (testvector/testforeachref, LARGE); "Missing operand"
-@:428 (teststringref/testsubscriptmember); `rebind<>` @:47 (testsubscriptarrow/testvectorptr);
-`__ns_std_for_each` MIR-link (testforeach2).
+`_M_ptr` is a data member of `_Node_handle_common` (the base). The emitted CIR references it from a
+method body where it is NOT declared/visible — likely a lazy member-body instantiated against a
+`this` whose struct didn't get `_M_ptr` emitted (inherited-member flattening, or the
+`__pointer<_Key>`/`__ptr_rebind` member-type emission). DISTINCT from the parse onion — this is a
+CIR-builder emission bug. METHOD: the use-site line stamping is useless here; instrument c2mir's
+check-error path OR dump the emitted CIR (`--emit=c11` on the reducer, then find the function
+referencing `_M_ptr` and see whether the struct declares it / whether the method's `this` type is
+right). Likely in cir_builder member/struct emission or lazy-member-instantiation. 3-oracle the
+shape first (a derived class whose inherited method body uses a base data member, instantiated
+lazily). gates map/subscript/containerdtor/madc_ns; testset SEPARATE (C++20 `set::contains` @19).
+Other open walls (re-diagnose live): `_ValueType2`/`__is_assignable` arity-2
+(testvector/testforeachref, LARGE); "Missing operand" @:428 (teststringref/testsubscriptmember);
+`rebind<>` @:47 (testsubscriptarrow/testvectorptr); `__ns_std_for_each` MIR-link (testforeach2).
 
 ## 2. Method + reducers (this session)
 3-oracle every fix (g++ AND clang++ + madc; verify VALUES via cout, exit code = RUN-SUCCESS not
-main()). Gated-diag method (`#if MADC_DIAG_NB` at the throw, `OPTIONAL_CPPFLAGS=-DMADC_DIAG_NB=1`,
-`rm -f obj/parser.o obj/pic/parser.o` to force-recompile; print `tn->file:line:col`+`id()`+next
-tokens). Decode TokenID via include/tokens.h (tkOpBrc=16, tkLT=40). Reducers (tmp/, regenerate;
-run `--std=c++17 --no-embedded-headers`): t5/t6/t7 (nested template-id base — now all PASS);
-`tmp/mat.cpp` (member-alias-template member type, the NEXT wall — FAILS); `tmp/mii.mad`
-(`#include <map>`+`map<int,int>` — advances to node_handle.h:318). testnestedtidbase.mad is the
-committed regression guard for 0b.
+main()). Gated-diag method (`#if MADC_DIAG_X` at the throw, `OPTIONAL_CPPFLAGS=-DMADC_DIAG_X=1`,
+`rm -f obj/parser.o obj/pic/parser.o` [+ `obj/cir_builder.o obj/pic/cir_builder.o`] to
+force-recompile; print `tn->file:line:col`+`id()`+next tokens, OR for an expression-parser bug the
+operator's `id()`+`cur_func_name`). Decode TokenID via include/tokens.h (tkOpBrc=16, tkBnot=`~`,
+tkDot=35, tkDeRef=`->`=36, tkLT=40). Reducers (tmp/, regenerate; `--std=c++17 --no-embedded-headers`):
+t5/t6/t7 (nested template-id base — PASS); `tmp/mat.cpp` (member-alias member type — PASS);
+`tmp/pdtor.mad`/`tmp/pdtor2.cpp` (pseudo-dtor — PASS); `tmp/sii.mad`/`tmp/mii.mad` (set/map — now
+hit the c2mir `_M_ptr` check wall, §1b). The three committed regression guards: testnestedtidbase,
+testmemberaliastmplmember, testpseudodtor.
 
 ## 3. State for the next agent
-- Code HEAD **`258da80`**, tree clean, **605/12/0/18**, build current+warning-free, MIR pin
-  `5df536f` OK. Session-14 commit: `258da80` (nested template-id base isolation fix).
-- DONE: alloc-rebind keystone (S12); NSDMI (S13 §0b); ptr-to-member type Stage 1 (S13 §1);
-  friend keyword (S13 §0c); nested template-id base (S14 §0b).
-- **★ NEXT = §1b: member ALIAS TEMPLATE used as a member type** (precisely isolated + reduced;
-  MEATY). Gates 4 tests (map/subscript/containerdtor/madc_ns). Likely route the member-type
-  resolve (parser.cpp ~22191) through the existing member-alias-template-id machinery
-  (`c3209d0`). 3-oracle first; gated-diag to confirm. Expect further `_Rb_tree` walls.
+- Code HEAD **`e4aad35`**, tree clean, **607/12/0/18**, build current+warning-free, MIR pin
+  `5df536f` OK. Session-14 commits: `258da80` (nested template-id base), member-alias fix,
+  `e4aad35` (pseudo-dtor) + this doc.
+- DONE: alloc-rebind keystone (S12); NSDMI + ptr-to-member Stage 1 + friend keyword (S13); this
+  session — nested template-id base (§0b), member alias template as member type (§0c),
+  explicit/pseudo destructor call (§0d).
+- **★ NEXT = §1b: c2mir SEMANTIC-check wall on inherited `_M_ptr`** (node_handle.h; map/set now
+  PARSE fully, fail in c2mir's check pass). EMISSION-layer bug (cir_builder / lazy-member
+  instantiation), a DIFFERENT class than this session's three parse fixes — use `--emit=c11` on the
+  reducer to inspect the bad CIR, not the gated-throw-diag. Gates map/subscript/containerdtor/madc_ns.
 - OTHER open (re-diagnose live): `_ValueType2`/`__is_assignable` arity-2 (2, LARGE); "Missing
   operand" @:428 (2); `rebind<>` @:47 (2); for_each MIR-link (1); testset `set::contains` C++20.
-  Ptr-to-member Stage 2 (`.*`/`->*`/`&C::m`) + brace-init NSDMI = no-test-consumer follow-ups.
-  ALSO seen this session (no current consumer): `Outer::Inner` qualified nested-type-name in a
-  declaration ("'Inner' is not a static member of 'Outer'") — a separate small gap.
+  Ptr-to-member Stage 2 (`.*`/`->*`/`&C::m`) + brace-init NSDMI + the `.~T()` (dot-form, vs the
+  `->~T()` tested) virtual-dispatch corner = no-test-consumer follow-ups. ALSO seen (no consumer):
+  `Outer::Inner` qualified nested-type-name in a declaration — a separate small gap.
 
 ---
 
