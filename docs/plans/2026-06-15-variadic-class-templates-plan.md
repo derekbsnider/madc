@@ -1,8 +1,32 @@
 # Plan — Variadic class templates done right (the `__and_`/`__or_`/`_List`/`tuple` family)
 
-**Status:** design/research plan (not immediate coding). Authored 2026-06-15 while
-context on the SESSION-10 part-2c Feature-2 attempt is fresh. Companion artifacts:
-`docs/plans/2026-06-12-retire-embedded-shims-HANDOFF.md` (§SESSION-10),
+**Status (UPDATED 2026-06-15, SESSION 15): PREMISE SUPERSEDED for the vector cluster
+— do NOT schedule Stages A–D as push_back work.** This plan's §1 premise was
+"`tmp/tv1.mad` = `vector<int>::push_back` is blocked by the `__and_<…>::type`
+variadic-CLASS chain." That is no longer true:
+- **S11 (`b934fbe`, template-template-param partial spec) + S12 (`a5c7309`,
+  nested-inner-pack deduction — the S12 handoff called it "the SAFE subset of this
+  plan's Stage B")** already resolved the `__and_` chain. **Verified at HEAD
+  `79141eb`:** the emitted C for `vector<int>::push_back` contains NO `__and_` /
+  `__not_` / `__move_if_noexcept_cond` opaque types — they FOLD. push_back now emits
+  real `move_if_noexcept`/`relocate` codegen and its current blocker is
+  `enable_if_t<__is_bitwise_relocatable<T>::value, T*>` (alias-template resolution),
+  unrelated to variadic class templates.
+- **SIBLING track, NOT this plan:** the SESSION-15 catch-all fix (`79141eb`) was a
+  variadic-FUNCTION-template *body-substitution* bug (a `...` drop at
+  parser.cpp ~27490) — a different code path from this plan's variadic-CLASS-template
+  primary/partial-spec/lazy-formation gaps (2659/13275/28519). The g1/g2 reducers
+  (SESSION 15, `tmp/`) showed FURTHER variadic-FUNCTION-template gaps (free/member
+  variadic fn-template call + emission) that also live outside this plan.
+- **So before investing the multi-session Stages A–D**, RE-VALIDATE whether any
+  *current* failing test needs a genuine variadic-class-template primary+partial-spec
+  that does NOT fold (e.g. a `tuple`/`__and_` use in a non-folding context). As of
+  HEAD the vector cluster does not. Stage A (the `has_non_type_params` type-pack bug,
+  28519) remains a real standalone correctness fix worth doing on its own merits.
+
+Original status: design/research plan (not immediate coding). Authored 2026-06-15
+while context on the SESSION-10 part-2c Feature-2 attempt is fresh. Companion
+artifacts: `docs/plans/2026-06-12-retire-embedded-shims-HANDOFF.md` (§SESSION-10),
 `docs/plans/2026-06-14-template-instantiation-core-plan.md` (§4 part 2c feature 2),
 WIP patch `tmp/feature2_variadic_partialspec_wip.patch`, reducers `tmp/db1-6.mad`.
 
