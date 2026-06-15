@@ -28548,7 +28548,30 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		tn = pgm.nextToken();
 		if ( !is_template_parameter_decl_name(tn) )
 		    pgm.Throw(tn) << "Expecting type-parameter name in template<>" << flush;
-		add_template_parameter(template_parameter_decl_name(tn), true);
+		// Disambiguate a TYPE parameter (`typename T`) from a NON-TYPE
+		// parameter whose type is a dependent typename-specifier
+		// (`typename enable_if<C, bool>::type = true` — the pervasive
+		// libstdc++ SFINAE idiom). If the name just read is immediately
+		// followed by '<' or '::', it is the head of a qualified/template
+		// type, not the parameter's own name: consume the rest of that
+		// type-specifier, then the optional parameter name, and register an
+		// anonymous non-type parameter. madc does not evaluate the
+		// constraint (no concepts; see below), so the enclosing declaration
+		// parses as if unconstrained — only the parse must succeed.
+		if ( pgm.peekToken()
+		  && (pgm.peekToken()->id() == TokenID::tkLT
+		   || pgm.peekToken()->id() == TokenID::tkNS) )
+		{
+		    pgm.consume_template_parameter_type_suffix();
+		    if ( pgm.peekToken()
+		      && is_template_parameter_decl_name(pgm.peekToken()) )
+			pgm.nextToken();   // optional (unused) parameter name
+		    add_template_parameter("__anon_ntparam"
+			+ std::to_string(anon_param_index++), false);
+		    has_non_type_params = true;
+		}
+		else
+		    add_template_parameter(template_parameter_decl_name(tn), true);
 	    }
 	}
 	else if ( tn->type() == TokenType::ttIdentifier
