@@ -75,6 +75,10 @@ resolves to NULL (alias-template lookup, or the `::template __rebind<...>::type`
   `template_map["_Rb_tree_impl"]` holds one variant whose owner IS the instantiated
   `_Rb_tree` on the scope stack. **Advanced testset/testcontainerdtor** past the member-type
   wall (now hit "Expecting ';' after struct member" deeper in `_Rb_tree`).
+- **`b934fbe`** — template-template-PARAMETER partial specialization (`__replace_first_arg`):
+  the allocator-rebind keystone's core piece. FULL detail in §0b above. +1 gated test
+  (`testtmpltmplparam`), 3-oracled g++/clang/madc; zero regressions. Real set/map did NOT
+  advance (blocked upstream on `__alloc_rebind` alias resolution — §0b / §2).
 
 ## 2. ★ NEXT — the deep #1 is the `pair`/`_Rb_tree` instantiation ONION (multi-session)
 The remaining 12 are gated behind a STACK of distinct libstdc++ template features. The
@@ -89,7 +93,10 @@ template `__rebind` + `__void_t` partial-spec (SFINAE) + the allocator's own mem
 `_Tp::template rebind<_Up>::other` + the `_Tp_alloc_type`/`_Alloc_traits` typedef chain.
 Implementing this faithfully is the highest-leverage next slice (unblocks set, map,
 containerdtor, AND the vector member-ref pair) — but it is a multi-feature slice, not a
-one-liner. 3-oracle first. Current per-test walls (re-mapped live; set/vector advanced this
+one-liner. 3-oracle first. **PROGRESS (b934fbe, §0b): the template-template-PARAM partial-spec
+piece (`__replace_first_arg`) is now DONE + gated.** The remaining keystone blocker is the
+`__alloc_rebind` ALIAS-template resolution returning NULL upstream of the `__rebind` match —
+that is the next sub-slice. Current per-test walls (re-mapped live; set/vector advanced this
 turn):
 - **pointer-to-member param type** `int C::*` (3 tests: testmadc_ns, testmap, testsubscript)
   — error "Failed to find type when parsing function parameters" @ stl_pair.h (stamped :188).
