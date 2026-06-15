@@ -155,15 +155,43 @@ line 39): `#if MADC_DIAG_X … #endif` printing the offending token's `id()`/`ty
 `file:line:col` + the next ~6 tokens, then **force-recompile** parser (`rm -f obj/parser.o
 obj/pic/parser.o` — a `-D` change alone does NOT retrigger make). This pinpoints the REAL
 header construct behind a use-site-stamped error line. Decode TokenID via include/tokens.h
-(tkBase=0; tkMul/tkStar=13; tkLT=40; tkNS=`::`). Reducers in tmp/: vstr, mii (map<int,int>),
-sii (set<int>) — run with `--std=c++17 --no-embedded-headers`.
+(tkBase=0; tkMul/tkStar=13; tkLT=40; tkNS=`::`).
+
+## 3b. REDUCERS — REGENERATE THESE (tmp/ is NOT persistent across resume/clean)
+The session reducers live in `tmp/` and DO NOT survive a workspace clean. The landed
+feature is permanently guarded by `tests/testtmpltmplparam.mad` (committed). The debugging
+reducers below are the active targets for the NEXT slice — recreate them verbatim and run
+each with `--std=c++17 --no-embedded-headers`. The b-series bisection reducers (b1–b9) can be
+re-derived from the §0b narrative; the load-bearing ones are inlined here.
+
+Real-wall reproducers (reproduce the 6 remaining walls; all currently FAIL):
+- `tmp/sii.mad` (set `__alloc_rebind` wall): `#include <set>` ⏎ `using namespace std;` ⏎
+  `int main(){ set<int> s; return 0; }`
+- `tmp/mii.mad` (pair pointer-to-member wall): `#include <map>` ⏎ `using namespace std;` ⏎
+  `int main(){ map<int,int> m; return 0; }`
+- `tmp/vint.mad` (`__is_assignable` `_ValueType2` wall): `#include <vector>` ⏎
+  `using namespace std;` ⏎ `int main(){ vector<int> v; v.push_back(7); int x=v[0]; return 0; }`
+- `tmp/vstr.mad` / `tmp/vsm.mad` (vector member-ref `_Alloc_traits::construct` wall):
+  `#include <vector>` + `#include <string>` + `using namespace std;` then
+  `int main(){ vector<string> v; v.push_back("hi"); int n=v[0].length(); return 0; }`
+
+Keystone pinpoint reducer (headers-free; PASSES since b934fbe — the regression check for the
+template-template-param feature; `tests/testtmpltmplparam.mad` is the committed superset):
+```
+template<typename T,typename U> struct rfa;
+template<template<typename> class C,typename A,typename U> struct rfa<C<A>,U>{using type=C<U>;};
+template<typename T> struct myalloc{int payload;};
+int main(){ typename rfa<myalloc<int>,char>::type x; x.payload=7; return 0; }
+```
+(Before b934fbe this gave "Unidentified member 'payload' in 'rfa_myalloc_int32_t_char__type'";
+now exits 0. g++ AND clang++ both accept it — `-fsyntax-only`.)
 
 ## 4. State for the next agent
 - Code HEAD `b934fbe` (+ docs commits), tree clean, 598/12, build current, MIR pin `5df536f` OK.
 - KEYSTONE is PARTIALLY landed (§0b): template-template-param partial spec works (gated by
   testtmpltmplparam). NEXT keystone sub-slice = the `__alloc_rebind` alias-template resolution
-  (returns NULL upstream of the partial-spec match). 3-oracle first; reducers in tmp/ (b5/b6/
-  b10/areb pass; sii/vsm/vint/vstr still show the real walls).
+  (returns NULL upstream of the partial-spec match). 3-oracle first; reducers are in §3b
+  (REGENERATE — tmp/ is not persistent): sii/mii/vint/vstr/vsm reproduce the real walls.
 - The 2 previously-UNDIAG walls are now diagnosed (this turn) and BOTH point at the
   allocator-traits/rebind KEYSTONE (see §2 callout). RECOMMENDED next slice: the
   allocator-traits/rebind machinery — it unblocks set/map/containerdtor AND the vector
