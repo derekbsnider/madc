@@ -205,8 +205,26 @@ members (`value_type`, `rebind_alloc`, `pointer`, `_Diff`, …) to the REAL type
 (value_type→element `T`), not opaque placeholders. That one fix gates vector +
 both subscript-via-vector tests + likely the destroy-ref wall. More tractable than
 full nested-class-template instantiation, and squarely the documented allocator chain.
-Also chase WHY `std::pmr::polymorphic_allocator` is appearing as the default allocator
-for `vector<A*>` (should be `std::allocator<A*>`).
+
+**REFINEMENT (part 2 probe):** the SHARED keystone wall is confirmed to be the
+`__a.destroy(__p)` allocator-REFERENCE-param wall — `member reference is not a
+structure or union` at `:428:54`. BOTH `vector<int>` (tmp/vint, real
+`std::allocator<int>` chain) and testvector hit it; it also gates stringref,
+foreachref, subscriptmember. This is the deep target flagged after `0913b97`
+(reference-param type fidelity in an instantiated static-member-template body — the
+allocator ref param `_Alloc2& __a` must denote its class so `__a.destroy` resolves;
+cf. the ref-transparency fixes 390d8a0 / a12314b). Reduce from tmp/vint (NOT the
+synthetic sd*/ad* reducers — they hit earlier walls).
+The `pmr::polymorphic_allocator` opaque type is SECONDARY (surfaced only when typing
+`vb[0]`'s operator[] return on `vector<A*>`, not in the real instantiation) BUT it
+exposed a genuine latent name-lookup bug worth fixing on its own: `find_template_alias`
+(parser.cpp:12667) with an empty ns_hint falls back (12730) to the ONLY alias named
+`vector` — `std::pmr::vector` (`<vector>` lines 84-87) — even though `std::pmr` is
+NOT reachable (only `std` is, via `using namespace std`). It doesn't filter candidates
+by namespace REACHABILITY (global / enclosing / using-directive'd) — same bug class as
+the aa49933 member-vs-`std::` precedence fix. Correct fix: an unqualified template/alias
+name must only resolve to a candidate whose `defining_namespace` is reachable from the
+current scope; `std::pmr::vector` is excluded, leaving `std::vector`.
 
 ---
 
