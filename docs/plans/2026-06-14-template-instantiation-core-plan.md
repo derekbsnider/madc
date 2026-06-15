@@ -163,18 +163,40 @@ gates green; advanced tv1/testvector/testvectorptr past the deref wall (no flip)
     defaulted-param slot never invoked resolution. So `R = typename
     std::conditional<COND,A,B>::type` defaults now evaluate. +testtmpldefaultcond
     (both branches); reducer `tmp/cond1.mad` passes. All 4 gates green (591/15).
-  - **(c) member alias template `__conditional<C>::template type<A,B>` — NEXT
-    (the actual tv1 blocker now).** tv1's real default is `_ReturnType =
-    __conditional_t<__move_if_noexcept_cond<_Tp>::value, move_iterator<_Tp*>,
-    _Tp*>` (`<bits/stl_iterator.h>:1828`). `__conditional_t` is NOT `conditional` —
-    it's `template<bool C, class If, class Else> using __conditional_t = typename
-    __conditional<C>::template type<If, Else>` (type_traits:134), where
-    `__conditional<bool>` is a struct holding a MEMBER ALIAS TEMPLATE
-    `template<class T, class> using type = T;` (type_traits:119). After part 2b,
-    tv1 advanced to **"type<> expects 0 type argument(s), got 2"** — madc treats
-    the member `type<...>` as a 0-arg template. Needs member-alias-template-with-
-    args resolution, AND the `__move_if_noexcept_cond<_Tp>::value` bool trait.
-    Reducer to build: a `__conditional<false>::type<A,B>` analogue.
+  - **(c) part 2c = TWO features (SESSION 10, 2026-06-15).**
+    - **FEATURE 1 — member-alias-template-id `__conditional<C>::template type<A,B>`
+      — DONE @`c3209d0`, FULLY GATED (592/15, zero regr).** The resolution
+      machinery already existed (chain-walker body → instantiate_template_id →
+      instantiate_template_alias_use; resolve_typename_type_token uses it). Two
+      gaps in REACHING it, fixed (parser.cpp, 17 lines): (1)
+      `resolve_class_member_type_chain` first-segment probe now admits
+      `find_template_alias` so `Owner<...>::type<A,B>` chains descend; (2)
+      parseDeclaration's leading-chain falls through to the CONSUMING chain-walker
+      for a member-template-id leaf (the peek helper bails on the trailing `<`).
+      Real `<type_traits>` `std::__conditional_t<...>` now resolves (tmp/mat6).
+      +tests/testmemberaliastmpl. The earlier "type<> expects 0 type argument(s)"
+      diagnosis (a 0-arg member `type`) was a SYMPTOM of feature 2, not this.
+    - **FEATURE 2 — variadic-primary template-id `::member` — ROOT-CAUSED, NOT
+      STARTED (the real tv1 wall).** tv1's `_ReturnType` default is
+      `__conditional_t<__move_if_noexcept_cond<_Tp>::value, ...>` and madc cannot
+      PARSE `__move_if_noexcept_cond`'s base clause
+      `__and_<__not_<is_nothrow_move_constructible<_Tp>>, is_copy_constructible<_Tp>>::type`
+      (bits/move.h:102-104). PRECISE ROOT (reduced, g++-confirmed): a VARIADIC
+      primary template-id followed by `::member` does not resolve — generally
+      (tmp/db4 typedef `And2<X,Y>::type`), not just base clauses (tmp/db3).
+      Non-variadic `::type` works (tmp/db1/db2, incl. nested template-ids +
+      dependent param + `::value` inheritance). WHY: `instantiate_template_use`
+      (parser.cpp:2659) short-circuits a variadic primary to
+      `instantiate_opaque_template_use` (opaque placeholder, no members) BEFORE the
+      arg-parse loop (2664) and partial-spec selection (2848); the real `__and_`
+      primary is a bare fwd-decl, its 1-/2-arg PARTIAL SPECS carry the `::type`
+      bodies. The main arg-loop can't collect pack args (that's why the opaque
+      short-circuit exists). Fix needs variadic-arg collection into the concrete
+      path + partial-spec selection from a variadic primary
+      (`match_partial_specialization` at 13254 exists; the gap is reaching it).
+      SUBSTANTIAL (full session+). Even then tv1 may not flip (further
+      `__uninitialized_copy_a`/`_M_realloc_insert` walls). Weigh the 14-failure
+      survey first — headline drops come from independent singletons.
 - **testvector line 17: "incompatible types in assignment to an arithmetic type
   lvalue"** — a distinct wall reached once the deref is past (subscript/assign
   through the instantiated `operator[]`/data path).

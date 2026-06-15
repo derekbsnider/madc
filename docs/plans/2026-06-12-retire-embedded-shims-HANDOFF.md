@@ -2,8 +2,9 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 9 CLOSE"** block immediately below (current state +
-NEXT); the "SESSION 8 CLOSE" block under it is prior chronology (w2a). The
+then read the **"SESSION 10 CLOSE"** block immediately below (current state +
+NEXT), then "SESSION 9 CLOSE" for the prior chronology (parts 2a/2b + sub-gaps).
+The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
 valid for background; its §1 "Live state" git HEAD is STALE (use SESSION 8
@@ -11,6 +12,63 @@ CLOSE). The per-part STATUS banners are detailed chronology, read only for
 depth. The governing process document is **`madc-header-partition-handoff.md`
 (repo root)** — every decision here must trace to it. Companion memory:
 `project_retire_embedded_shims` + `project_header_partition_architecture`.
+
+---
+
+# ★ SESSION 10 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-15
+
+## 0. Orientation
+Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
+Integration is at **592 passed / 15 failed / 0 timed out / 18 skipped**
+(+testmemberaliastmpl; the documented 15 unchanged, zero regressions). Last CODE
+commit **`c3209d0`** (binary built from it). Working on **Stage 1 part 2c** of
+`docs/plans/2026-06-14-template-instantiation-core-plan.md` — the tv1 std::vector
+blocker. Part 2c is TWO features (as the SESSION-9 SIZING note predicted):
+
+**FEATURE 1 — member-alias-template-id resolution — DONE @`c3209d0`, FULLY GATED.**
+`Owner<...>::type<A,B>` (libstdc++ `__conditional<C>::template type<If,Else>`,
+the `__conditional_t` building block) now resolves in DECLARATION and TYPEDEF
+contexts, not just the typename-in-alias path. The resolution machinery already
+existed (the chain-walker loop body → instantiate_template_id →
+instantiate_template_alias_use; resolve_typename_type_token uses it). Two gaps in
+REACHING it, both fixed (parser.cpp, 17 lines, no new path): (1)
+`resolve_class_member_type_chain`'s first-segment probe now admits
+`find_template_alias` so `Owner<...>::type<A,B>` chains descend; (2)
+parseDeclaration's leading-chain block falls through to the CONSUMING chain-walker
+for a member-template-id leaf (the non-consuming peek helper bails on the trailing
+`<`). Reducers tmp/mat1-6 pass incl. real `<type_traits>` `std::__conditional_t`
+(mat6); +tests/testmemberaliastmpl (g++/clang `7 3.5 9.5 4 6.5`). Gated: 592/15
+zero regr, unit, gcc-torture 1571/51 byte-identical, SMAUG soak exit 124 + ready.
+
+**FEATURE 2 — variadic-primary template-id `::member` (the tv1 wall) — ROOT-CAUSED,
+NOT STARTED.** After feature 1, tv1 still fails: its `_ReturnType` default is
+`__conditional_t<__move_if_noexcept_cond<_Tp>::value, ...>`, and madc cannot even
+PARSE `__move_if_noexcept_cond`'s definition (bits/move.h:102-104): its base clause
+is `__and_<__not_<is_nothrow_move_constructible<_Tp>>, is_copy_constructible<_Tp>>::type`.
+**PRECISE ROOT (reduced, 3-oracle):** a VARIADIC-PRIMARY template-id followed by
+`::member` does not resolve the member — generally, not just in base clauses.
+Reducers (DEFAULT mode, g++ accepts both, madc errors): `tmp/db3.mad` (variadic
+`And2<...>::type` as a base specifier → "Expecting identifier after type"),
+`tmp/db4.mad` (same as a TYPEDEF → "Expecting alias name in typedef").
+Non-variadic `And<...>::type` WORKS (tmp/db1, tmp/db2) incl. nested template-ids +
+dependent param + `::value` inheritance — so the dependent-base/`::value` shape is
+fine; the trigger is purely the VARIADIC primary. WHY: `instantiate_template_use`
+(parser.cpp:2659) short-circuits a variadic primary to `instantiate_opaque_template_use`
+(an opaque dependent placeholder, no real members) BEFORE the arg-parse loop
+(2664+) and the partial-spec selection (2848). The real `__and_` primary is a bare
+fwd-decl `template<typename...> struct __and_;`; its 1-arg/2-arg PARTIAL SPECS have
+the real bodies with `::type`. The main arg-parse loop can't collect pack args
+(`pi >= td.typeparams.size()` throws — that's WHY the opaque short-circuit exists),
+so the fix needs **variadic-arg collection into the concrete-instantiation path +
+partial-spec selection from a variadic primary** (machinery `match_partial_specialization`
+at 13254 already exists; the gap is reaching it for a variadic primary with concrete
+args). This is a SUBSTANTIAL feature (full session, likely more), NOT a quick slice.
+Even after it, tv1 may not flip (further `__uninitialized_copy_a`/`_M_realloc_insert`
+walls per the SIZING note; testvector L17 / testvectorptr L28 are separate roots).
+**RECOMMENDATION:** before sinking a session into feature 2, weigh the survey of the
+other 14 failures — headline drops come from independent singletons, not the tv1
+chain (see SESSION 9 §3). madc exit code = RUN-SUCCESS not main()'s return — verify
+reducers via cout/`--emit=c11`.
 
 ---
 
