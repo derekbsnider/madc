@@ -203,6 +203,7 @@ DEF_VARR (spot_attr_t);
 
 DEF_VARR (MIR_op_t);
 DEF_VARR (MIR_insn_t);
+DEF_VARR (MIR_line_map_t);
 
 struct gen_ctx {
   MIR_context_t ctx;
@@ -234,6 +235,7 @@ struct gen_ctx {
   struct ra_ctx *ra_ctx;
   struct combine_ctx *combine_ctx;
   VARR (MIR_op_t) * temp_ops;
+  VARR (MIR_line_map_t) * line_map; /* (code_offset, file, line) per insn during target_translate */
   VARR (MIR_insn_t) * temp_insns, *temp_insns2;
   VARR (bb_insn_t) * temp_bb_insns, *temp_bb_insns2;
   VARR (loop_node_t) * loop_nodes, *queue_nodes, *loop_entries; /* used in building loop tree */
@@ -274,6 +276,7 @@ struct gen_ctx {
 #define overall_bbs_num gen_ctx->overall_bbs_num
 #define overall_gen_bbs_num gen_ctx->overall_gen_bbs_num
 #define temp_ops gen_ctx->temp_ops
+#define gen_line_map gen_ctx->line_map
 #define temp_insns gen_ctx->temp_insns
 #define temp_insns2 gen_ctx->temp_insns2
 #define temp_bb_insns gen_ctx->temp_bb_insns
@@ -312,6 +315,21 @@ DEF_VARR (int);
 DEF_VARR (uint8_t);
 DEF_VARR (uint64_t);
 DEF_VARR (MIR_code_reloc_t);
+
+/* Record a (code_offset -> source loc) entry while target_translate emits insn,
+   coalescing runs with the same location.  Targets call this from their emit
+   loop just before appending an insn's machine code.  No-op for unlocated insns
+   so non-debug compiles cost nothing but the branch. */
+static void gen_record_line (gen_ctx_t gen_ctx, size_t code_offset, MIR_insn_t insn) {
+  if (insn->line == 0 && insn->file_id == 0) return;
+  size_t n = VARR_LENGTH (MIR_line_map_t, gen_line_map);
+  if (n != 0) {
+    MIR_line_map_t *last = &VARR_ADDR (MIR_line_map_t, gen_line_map)[n - 1];
+    if (last->line == insn->line && last->file_id == insn->file_id) return;
+  }
+  MIR_line_map_t e = {(uint32_t) code_offset, insn->file_id, insn->line};
+  VARR_PUSH (MIR_line_map_t, gen_line_map, e);
+}
 
 #if defined(__x86_64__) || defined(_M_AMD64)
 #include "mir-gen-x86_64.c"
@@ -706,6 +724,8 @@ static void gen_add_insn_before (gen_ctx_t gen_ctx, MIR_insn_t before, MIR_insn_
     insn_for_bb = DLIST_PREV (MIR_insn_t, before);
     gen_assert (insn_for_bb == NULL || !MIR_any_branch_code_p (insn_for_bb->code));
   }
+  insn->file_id = before->file_id; /* inherit source loc from the anchor for debug info */
+  insn->line = before->line;
   MIR_insert_insn_before (ctx, curr_func_item, before, insn);
   create_new_bb_insns (gen_ctx, DLIST_PREV (MIR_insn_t, insn), before, insn_for_bb);
 }
@@ -716,6 +736,8 @@ static void gen_add_insn_after (gen_ctx_t gen_ctx, MIR_insn_t after, MIR_insn_t 
   gen_assert (insn->code != MIR_LABEL);
   if (MIR_any_branch_code_p (insn_for_bb->code)) insn_for_bb = DLIST_NEXT (MIR_insn_t, insn_for_bb);
   gen_assert (!MIR_any_branch_code_p (insn_for_bb->code));
+  insn->file_id = after->file_id; /* inherit source loc from the anchor for debug info */
+  insn->line = after->line;
   MIR_insert_insn_after (gen_ctx->ctx, curr_func_item, after, insn);
   create_new_bb_insns (gen_ctx, after, DLIST_NEXT (MIR_insn_t, insn), insn_for_bb);
 }
@@ -9533,9 +9555,24 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
     print_CFG (gen_ctx, FALSE, FALSE, TRUE, TRUE, NULL);
   });
   if (machine_code_p) {
+    VARR_TRUNC (MIR_line_map_t, gen_line_map, 0);
     code = target_translate (gen_ctx, &code_len);
     machine_code = func_item->u.func->call_addr = _MIR_publish_code (ctx, code, code_len);
     target_rebase (gen_ctx, func_item->u.func->call_addr);
+    { /* Hand the collected (code_offset -> source loc) map to the func for debug info. */
+      size_t lm_len = VARR_LENGTH (MIR_line_map_t, gen_line_map);
+      if (func_item->u.func->line_map != NULL) {
+        MIR_free (gen_alloc (gen_ctx), func_item->u.func->line_map);
+        func_item->u.func->line_map = NULL;
+        func_item->u.func->line_map_len = 0;
+      }
+      if (lm_len != 0) {
+        MIR_line_map_t *lm = gen_malloc (gen_ctx, lm_len * sizeof (MIR_line_map_t));
+        memcpy (lm, VARR_ADDR (MIR_line_map_t, gen_line_map), lm_len * sizeof (MIR_line_map_t));
+        func_item->u.func->line_map = lm;
+        func_item->u.func->line_map_len = lm_len;
+      }
+    }
 #if MIR_GEN_CALL_TRACE
     func_item->u.func->call_addr = _MIR_get_wrapper (ctx, func_item, print_and_execute_wrapper);
 #endif
@@ -9728,6 +9765,7 @@ void MIR_gen_init (MIR_context_t ctx) {
   VARR_CREATE (void_ptr_t, to_free, alloc, 0);
   addr_insn_p = FALSE;
   VARR_CREATE (MIR_op_t, temp_ops, alloc, 16);
+  VARR_CREATE (MIR_line_map_t, gen_line_map, alloc, 0);
   VARR_CREATE (MIR_insn_t, temp_insns, alloc, 16);
   VARR_CREATE (MIR_insn_t, temp_insns2, alloc, 16);
   VARR_CREATE (bb_insn_t, temp_bb_insns, alloc, 16);
@@ -9799,6 +9837,7 @@ void MIR_gen_finish (MIR_context_t ctx) {
   bitmap_destroy (temp_bitmap2);
   bitmap_destroy (temp_bitmap3);
   VARR_DESTROY (MIR_op_t, temp_ops);
+  VARR_DESTROY (MIR_line_map_t, gen_line_map);
   VARR_DESTROY (MIR_insn_t, temp_insns);
   VARR_DESTROY (MIR_insn_t, temp_insns2);
   VARR_DESTROY (bb_insn_t, temp_bb_insns);

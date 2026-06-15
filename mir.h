@@ -306,8 +306,19 @@ struct MIR_insn {
   DLIST_LINK (MIR_insn_t) insn_link;
   MIR_insn_code_t code : 32;
   unsigned int nops : 32; /* number of operands */
+  uint32_t file_id;       /* frontend source file id (0 = none); see MIR_set_source_loc */
+  uint32_t line;          /* frontend source line (0 = none) */
   MIR_op_t ops[1];
 };
+
+/* One generated-code-offset -> source-location mapping, in code-offset order;
+   the function's line map (MIR_func.line_map) is filled by MIR_gen when the
+   frontend stamped insns via MIR_set_source_loc.  Enables DWARF .debug_line. */
+typedef struct MIR_line_map {
+  uint32_t code_offset; /* byte offset into the function's machine code */
+  uint32_t file_id;     /* frontend file id at this offset */
+  uint32_t line;        /* frontend line at this offset */
+} MIR_line_map_t;
 
 /* Definition of double list of insns */
 DEF_DLIST (MIR_insn_t, insn_link);
@@ -338,6 +349,8 @@ typedef struct MIR_func {
   size_t code_len; /* byte length of the generated machine code at machine_code; 0 if not generated */
   void *internal;  /* internal data structure */
   struct MIR_lref_data *first_lref; /* label addr data of the func: defined by module load */
+  MIR_line_map_t *line_map; /* code-offset -> source-loc map, or NULL; filled by MIR_gen */
+  size_t line_map_len;      /* number of entries in line_map */
 } *MIR_func_t;
 
 typedef struct MIR_proto {
@@ -571,6 +584,11 @@ extern MIR_insn_t MIR_new_insn_arr (MIR_context_t ctx, MIR_insn_code_t code, siz
 extern MIR_insn_t MIR_new_insn (MIR_context_t ctx, MIR_insn_code_t code, ...);
 extern MIR_insn_t MIR_new_call_insn (MIR_context_t ctx, size_t nops, ...);
 extern MIR_insn_t MIR_new_jcall_insn (MIR_context_t ctx, size_t nops, ...);
+/* Set the source location stamped onto every insn created afterwards (until the
+   next call), so a frontend can publish debug info: file_id is an opaque
+   frontend file index, line a 1-based source line; both 0 means "no location".
+   The generator carries these through its passes and fills MIR_func.line_map. */
+extern void MIR_set_source_loc (MIR_context_t ctx, uint32_t file_id, uint32_t line);
 extern MIR_insn_t MIR_new_ret_insn (MIR_context_t ctx, size_t nops, ...);
 extern MIR_insn_t MIR_copy_insn (MIR_context_t ctx, MIR_insn_t insn);
 

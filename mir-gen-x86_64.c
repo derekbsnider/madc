@@ -3192,6 +3192,7 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
       if (MIR_branch_code_p (insn->code)) /* possible replacement change */
         ind = find_insn_pattern (gen_ctx, insn, NULL);
       gen_assert (ind >= 0);
+      gen_record_line (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
 #ifndef NDEBUG
       size_t len_before = VARR_LENGTH (uint8_t, result_code);
 #endif

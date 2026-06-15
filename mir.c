@@ -44,6 +44,7 @@ struct MIR_context {
   struct MIR_module environment_module;
   MIR_module_t curr_module;
   MIR_func_t curr_func;
+  uint32_t curr_source_file_id, curr_source_line; /* stamped onto new insns; see MIR_set_source_loc */
   size_t curr_label_num;
   DLIST (MIR_module_t) all_modules;
   VARR (MIR_module_t) * modules_to_link;
@@ -914,6 +915,7 @@ static void remove_item (MIR_context_t ctx, MIR_item_t item) {
        ("fix: guard against NULL vars/internal during module teardown"). */
     if (item->u.func->vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->vars);
     if (item->u.func->global_vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->global_vars);
+    if (item->u.func->line_map != NULL) MIR_free (ctx->alloc, item->u.func->line_map);
     if (item->u.func->internal != NULL) func_regs_finish (ctx, item->u.func);
     MIR_free (ctx->alloc, item->u.func);
     break;
@@ -1509,6 +1511,9 @@ static MIR_item_t new_func_arr (MIR_context_t ctx, const char *name, size_t nres
   func->machine_code = func->call_addr = NULL;
   func->code_len = 0;
   func->first_lref = NULL;
+  func->line_map = NULL;
+  func->line_map_len = 0;
+  ctx->curr_source_file_id = ctx->curr_source_line = 0; /* don't bleed across functions */
   func_regs_init (ctx, func);
   for (size_t i = 0; i < nargs; i++) {
     char *stored_name;
@@ -2375,7 +2380,14 @@ static MIR_insn_t create_insn (MIR_context_t ctx, size_t nops, MIR_insn_code_t c
 #endif
   insn->code = code;
   insn->data = NULL;
+  insn->file_id = ctx->curr_source_file_id;
+  insn->line = ctx->curr_source_line;
   return insn;
+}
+
+void MIR_set_source_loc (MIR_context_t ctx, uint32_t file_id, uint32_t line) {
+  ctx->curr_source_file_id = file_id;
+  ctx->curr_source_line = line;
 }
 
 static MIR_insn_t new_insn1 (MIR_context_t ctx, MIR_insn_code_t code) {
@@ -3928,6 +3940,9 @@ static int simplify_func (MIR_context_t ctx, MIR_item_t func_item, int mem_float
   for (insn = DLIST_HEAD (MIR_insn_t, func->insns); insn != NULL; insn = next_insn) {
     MIR_insn_code_t code = insn->code;
     MIR_op_t temp_op;
+    /* Insns simplify creates for this insn inherit its source location. */
+    ctx->curr_source_file_id = insn->file_id;
+    ctx->curr_source_line = insn->line;
 
     if ((code == MIR_MOV || code == MIR_FMOV || code == MIR_DMOV || code == MIR_LDMOV)
         && insn->ops[0].mode == MIR_OP_MEM && insn->ops[1].mode == MIR_OP_MEM) {
