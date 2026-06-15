@@ -56,37 +56,49 @@ fixed the first two (the third is redundant for the real case):
 ## 1. ★ NEXT — set/multiset/containerdtor advanced to the NSDMI wall (the new deepest layer)
 With the keystone resolved, set/multiset/containerdtor advanced PAST the `__alloc_rebind` /
 "Expecting type in using alias" wall to a NEW deeper wall:
-- **`node_handle.h:394` — default member initializer (NSDMI) — ★ NEXT SLICE, FULLY SCOPED:**
+- **`node_handle.h:394` — default member initializer (NSDMI) — ★ NEXT SLICE (LARGE; parse half stashed):**
   `struct _Node_insert_return { _Iterator position = _Iterator(); bool inserted = false; _NodeHandle node; };`.
   madc's member parser (TokenSTRUCT::parse, both `struct` AND `class` use it; the `= init` lands at the
   `,`/`;` check ~parser.cpp:19412 "Expecting ';' after struct/class member") has NO NSDMI handling — a
   GENERAL gap: even `struct S { int x = 5; };` / `class C { public: int x = 5; };` error (tmp/nsdmi.mad,
   tmp/nsdmi_class.mad). Must be FAITHFUL, not a skip (`=5` is a non-zero default that must be applied).
-  **CONCRETE DESIGN (decided this session — the construction model is mapped):**
-  1. **Storage:** add `std::map<size_t, std::vector<TokenBase*>> member_default_inits;` to DataDefSTRUCT
-     (sparse, index-keyed, mirrors member_explicit_align), holding the CLONED init-expr tokens per member.
-  2. **Parse:** in TokenSTRUCT::parse, after addMember + `tn=nextToken()` + attribute-skip, if `tn` is
-     `tkAssign` consume the balanced init expr (track ()/[]/{} depth) up to the top-level `,`/`;`, clone +
-     store in member_default_inits[idx], set `tn` to the terminator. (This alone clears the PARSE wall.)
-  3. **Apply via CtorInitializer synthesis (REUSE, don't add a parallel path):** an NSDMI ≡ a member-init
-     in the default ctor for any member NOT explicitly initialized. FuncDef::CtorInitializer is just
-     {name, args(tokens)} (include/madc.h:168) — synthesize one per NSDMI'd member (args = the stored
-     init tokens; for `= _Iterator()` the member-init form is `position(_Iterator())` so wrap/store args to
-     match how class_ctor_initializer_stmts consumes them — VERIFY the arg format against the parser's
-     init-list builder first) and inject into the ctor's ctor_initializers when absent from the explicit
-     set. Then the existing apply path (cir_builder.cpp class_ctor_initializer_stmts @~10802, gated by the
-     `explicit_member_inits` set @10767-10771) handles it for free.
-  4. **Trigger (the wide part):** default-construction runs from THREE entry points — (a) the ctor-synthesis
-     path (cir_builder.cpp ~10767, classes WITH a ctor — covers _Node_insert_return since it has OBJECT
-     members → already gets an implicit ctor, verified tmp/implctor.mad tag=42); (b) the decl-site
-     object-member path `class_instance_member_ctors` (~10195, no-user-ctor + object members); (c) NOTHING
-     for a scalar-only struct with no ctor. So add `class_has_default_member_inits(cdd)` and OR it into the
-     "needs construction" conditions (the class_has_object_members checks @10195/10377 + the ctor-synthesis
-     trigger) so a scalar-only NSDMI struct gets its inits applied. Keep ordering = declaration order;
-     explicit ctor init-list / aggregate-init must OVERRIDE the NSDMI (the explicit_member_inits skip set
-     already gives this for the ctor path).
-  Reduce from tmp/nsdmi.mad (`struct S{int x=5;int y=7;}` → 5 7) + an OBJECT-member NSDMI reducer; 3-oracle;
-  verify VALUES via cout (not just that it parses). Expect FURTHER _Rb_tree walls after (the onion is deep).
+  **★ SCOPE RE-ASSESSED THIS SESSION: NSDMI is a LARGE slice, not medium. The parse half is done +
+  STASHED (`git stash@{0}`, "WIP nsdmi parse-capture+storage"); the apply half hit a real architectural
+  blocker (scalar-only structs aren't class instances). Do NOT commit parse-only — it turns the old clean
+  parse-ERROR into SILENT GARBAGE values (the forbidden bug); that's exactly why the WIP is stashed, not
+  committed.** Refined design (supersedes the earlier sketch):
+  1. **Storage (DONE in stash):** `std::map<std::string, TokenBase*> member_default_inits;` on DataDefSTRUCT
+     — keyed by member NAME (survives MI reorder), value = the PARSED init expression (not raw tokens; the
+     apply needs a translatable expr tree).
+  2. **Parse (DONE in stash):** in TokenSTRUCT::parse (after addMember + attribute-skip, before the `,`/`;`
+     check ~19505), if `tn` is `tkAssign`/`tkOpBrc` collect the balanced init, then for the `=` case PARSE it
+     via `parseExpression` in an ISOLATED token stream (save/clear/restore pgm.tokens) and store the result.
+     Brace-init / unparseable exprs stored as nothing (object members fall to value-init). VERIFIED: this
+     clears the parse wall — **set/multiset/containerdtor now advance from :394 to `:188` (the SAME
+     pointer-to-member `int C::*` wall as map — see next bullet; so NSDMI + ptr-to-member TOGETHER gate set/map).**
+  3. **Apply (NOT done — a CIR helper, NOT CtorInitializer synthesis): the implicit default ctor has NO
+     FuncDef**, so you cannot attach ctor_initializers to it. Add a CIR helper
+     `emit_member_default_inits(cdd, inst_name, arrow, out, origin, skip)` mirroring the SCALAR arm of
+     class_ctor_initializer_stmts (cir_builder.cpp:4124-4144): for each member with a member_default_inits
+     entry not in `skip`, emit `recv.member = translate_expr(expr)` (arrow=false `N_FIELD` for a named local,
+     arrow=true `N_DEREF_FIELD` for `__this`). Object members are SKIPPED here — `= T()` is value-init,
+     already handled by the existing member construction.
+  4. **Trigger (the BLOCKER — why it's large): three entry points, and scalar-only structs reach NONE.**
+     (a) ctor-prologue (cir_builder.cpp ~10802, after class_ctor_initializer_stmts) → call the helper with
+     `__this`/arrow=true/skip=explicit_member_inits. **Covers _Node_insert_return (it has OBJECT members →
+     is promoted to a class instance → gets an implicit ctor, verified tmp/implctor.mad).** (b) decl-site
+     (~10195) for a no-ctor class instance → helper with the var name/arrow=false. (c) **A scalar-only
+     `struct S{int x=5;}` is NOT `as_class_instance` (struct→class promotion only fires for OBJECT members,
+     per [[project_struct_is_class]] 78d1b27) → it never reaches the decl-site construction block at all.**
+     So the general case ALSO needs the struct→class promotion criterion EXTENDED to "has member_default_inits"
+     (analogous to the object-member promotion; gate it hard — blanket struct=class regressed 65-113 in the
+     past, but object-only promotion was safe in ~28 lines), THEN the decl-site (b) applies it. Keep ordering
+     = declaration order; explicit ctor init-list / aggregate-init OVERRIDES the NSDMI (the
+     explicit_member_inits skip already gives this on the ctor path).
+  Reduce from tmp/nsdmi.mad (`struct S{int x=5;int y=7;}` → 5 7, scalar-only = needs the promotion) AND an
+  OBJECT-member NSDMI reducer (needs only entry (a)); 3-oracle; verify VALUES via cout. Expect FURTHER
+  _Rb_tree walls after. **Pragmatic path: do entry (a) [object-member structs, covers the keystone] +
+  promotion+entry (b/c) [scalar-only] together so no silent-garbage gap exists at any commit.**
 - **map/testsubscript** are at the SEPARATE pointer-to-member wall (`stl_pair.h:~188` "Failed to find
   type when parsing function parameters" — pair's `__zero_as_null_pointer_constant(int __z::*)`
   pointer-to-DATA-member param). Own slice (real ptr-to-member type, see SESSION-11 §2).
@@ -110,9 +122,12 @@ Reducers (tmp/, NOT persistent — regenerate; run `--std=c++17 --no-embedded-he
 ## 3. State for the next agent
 - Code HEAD `d0d6f5d`, tree clean, 601/12, build current+warning-free, MIR pin `5df536f` OK.
 - KEYSTONE CRACKED + all partial-spec/void_t debt cleared (§0b: 2a `1183204`, 2b `a5c7309`, bug1 `d0d6f5d`).
-- NEXT = **NSDMI support** — FULLY SCOPED in §1 (storage + parse + CtorInitializer-synthesis apply +
-  3-entry-point trigger; reduce from tmp/nsdmi.mad, 3-oracle, must apply VALUES not just parse). Then the
-  remaining per-test walls (§1). The variadic-class-template plan
+- NEXT = **NSDMI support — LARGE slice, fully designed in §1** (parse half DONE + STASHED `git stash@{0}`;
+  apply half blocked on scalar-only-struct→class promotion). Do NOT commit parse-only (silent garbage =
+  forbidden). Reduce from tmp/nsdmi.mad (scalar-only) + an object-member reducer; 3-oracle; apply VALUES.
+  NB set/multiset/containerdtor's NSDMI wall sits in FRONT of the SAME ptr-to-member `int C::*` wall as map
+  (proven: with the stashed parse, set advances :394→:188), so NSDMI + ptr-to-member together gate set/map.
+  Then the remaining per-test walls (§1). The variadic-class-template plan
   (docs/plans/2026-06-15-variadic-class-templates-plan.md) is the LARGER variadic-PRIMARY effort
   (`__and_`/`__or_`/tuple) — distinct from the keystone, still pending; my 2b did only its safe subset.
 
