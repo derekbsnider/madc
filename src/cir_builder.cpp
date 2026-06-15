@@ -10368,6 +10368,21 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					node_t cargs = list();
 					append(cargs, node1(N_ADDR,
 						id(sdcl->var.name.c_str(), sdcl), sdcl));
+					// A retbuf-returning METHOD call (`T v = obj.m();`,
+					// TokenCallMethod : TokenMember) needs its hidden __this
+					// receiver between the retbuf and the explicit args —
+					// build_call_args emits only explicit args. Without it the
+					// copy-elided call drops `this` (`m(&v)` instead of
+					// `m(&v, &__this->obj)`) -> c2mir "too few arguments". The
+					// free-function case (itcf not a TokenMember) is unchanged.
+					if (TokenCallMethod *imeth =
+					    dynamic_cast<TokenCallMethod *>(itcf)) {
+						DataDefCLASS *rc = NULL;
+						node_t this_arg =
+							class_this_arg(imeth, rc, sdcl);
+						if (this_arg)
+							append(cargs, this_arg);
+					}
 					build_call_args(itcf, cargs);
 					node_t icall = node2(N_CALL,
 						id(isym.c_str(), sdcl), cargs, sdcl);

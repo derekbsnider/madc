@@ -1,0 +1,26 @@
+#!/../bin/madc
+// `T v = obj.m();` where `m()` returns a NON-TRIVIAL class BY VALUE (the retbuf
+// ABI, triggered here by Inner's member having a user dtor) and the receiver
+// `obj` is a member object. The copy-elision-into-declared-object path
+// (construct directly into v via the call's __retbuf) must still pass the
+// method's hidden __this receiver — it previously dropped it, emitting
+// `m(&v)` instead of `m(&v, &__this->obj)` -> c2mir "too few arguments".
+// This is the libstdc++ `_Node_handle_common::_M_reset`
+// (`_NodeAlloc __alloc = _M_alloc.release();`) shape.
+#include <iostream>
+using namespace std;
+
+int g_dtor = 0;
+struct Alloc { int id; ~Alloc(){ g_dtor++; } };
+
+struct Holder {
+	struct Inner { Alloc a; Alloc release(){ return a; } } m;
+	int run() { m.a.id = 5; Alloc got = m.release(); return got.id; }
+};
+
+int main()
+{
+	Holder h;
+	cout << h.run() << endl;	// 5
+	return 0;
+}
