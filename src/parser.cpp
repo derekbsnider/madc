@@ -14797,8 +14797,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				// operator-> result is a pointer VALUE; pass it as
 				// __this directly (recv_is_ptr), like a pointer element.
 				recv_parent = lhs;
-			    else if ( lhs->type() != TokenType::ttVariable
-				   && lhs->type() != TokenType::ttMember )
+			    else if ( lhs->type() == TokenType::ttMember )
+				// The receiver is itself a member access (`__this->p`
+				// for an unqualified member `p`, or `obj.p`). obj_var is
+				// only the member FIELD's Variable (`p`) — emitting it
+				// bare drops the `__this->`/`obj.` qualifier. Pass the
+				// whole member expression as parent_expr so class_this_arg
+				// emits the full `__this->p` pointer value as __this.
+				recv_parent = lhs;
+			    else if ( lhs->type() != TokenType::ttVariable )
 				Throw(tb) << "chained arrow method call not yet supported" << flush;
 			    TokenCallMethod *tc = new TokenCallMethod(*obj_var, *var);
 			    if ( recv_parent )
