@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 11 CLOSE"** block immediately below (current state +
-NEXT), then "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 12 CLOSE"** block immediately below (current state +
+NEXT), then "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -12,6 +12,84 @@ CLOSE). The per-part STATUS banners are detailed chronology, read only for
 depth. The governing process document is **`madc-header-partition-handoff.md`
 (repo root)** — every decision here must trace to it. Companion memory:
 `project_retire_embedded_shims` + `project_header_partition_architecture`.
+
+---
+
+# ★ SESSION 12 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-15
+
+## 0. Orientation
+Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
+Integration **600 passed / 12 failed / 0 timed out / 18 skipped** (+2 new gated tests:
+testtmpltmplparamnested, testtmpltmplparamvariadic). Code HEAD **`a5c7309`**, tree clean.
+Branch LOCAL-ONLY (`feature/retire-embedded-shims-claude`); develop untouched. MIR fork
+`5df536f` (pin satisfied). Build current, zero warnings.
+
+## 0b. ★ THE ALLOCATOR-REBIND KEYSTONE IS CRACKED (2 commits this session)
+The `__alloc_rebind` keystone (the SESSION-11 §2 "★ KEYSTONE", gating set/map/containerdtor)
+now RESOLVES. Root-caused precisely to THREE bugs via faithful 3-oracle reducers (g++/clang/madc),
+fixed the first two (the third is redundant for the real case):
+- **`1183204`** — bug 2a: nested-arg deduction in template-template-param partial spec.
+  My own b934fbe deduced the inner param via `resolve_named_datadef(SPELLING)`, which can't
+  resolve a template-id spelling (`node<int64_t>` is keyed in struct_map by MANGLED name, not
+  canonical spelling). New `resolve_arg_spelling_datadef()` falls back to a `canonical_cpp_spelling`
+  match. +testtmpltmplparamnested. (areb11 shape.)
+- **`a5c7309`** — bug 2b: variadic trailing-pack deduction. The REAL `__replace_first_arg` spec is
+  `template<template<typename,typename...> class _ST, typename _Up, typename _Tp, typename... _Types>
+   struct __replace_first_arg<_ST<_Tp,_Types...>, _Up> { using type = _ST<_Up,_Types...>; };` — a
+  trailing pack `_Types...` in the pattern's INNER args. `unify_nested_spec_pattern_arg` required
+  exact inner arity. Fix (3 parts): pack absorbs remaining inner args (0+); threaded through
+  `match_partial_specialization` (new pack_ded, counted in "all deduced"); `_Types...` expanded in
+  the spec-body re-parse (empty pack drops the preceding `,` + consumes the `...`). +testtmpltmplparamvariadic.
+  **This is the SAFE nested-inner-pack subset of `docs/plans/2026-06-15-variadic-class-templates-plan.md`
+  (Stage B's spirit): `__replace_first_arg`'s PRIMARY is non-variadic, so NONE of the opaque-short-circuit
+  (Stage A/C) / lazy-formation (Stage D) cascade that reverted the session-10 variadic-PRIMARY attempt
+  applies. Non-pack unify path kept byte-identical (new branch fires only when the last inner parg ends `...`).**
+- bug 1 (NOT fixed, redundant here): `eval_void_t_detection_slot` (parser.cpp:~13211) bails on a
+  template-MEMBER SFINAE probe (`T::template rebind<U>::other` contains `<` → "too complex"). So the
+  `__rebind` void_t partial spec is never selected → falls to the primary `__rebind : __replace_first_arg`,
+  which (with 2a+2b) now gives the right `allocator<int>`. Fixing bug 1 would be a redundant second path
+  for the real case; leave it unless a future case needs the void_t spec specifically.
+
+## 1. ★ NEXT — set/multiset/containerdtor advanced to the NSDMI wall (the new deepest layer)
+With the keystone resolved, set/multiset/containerdtor advanced PAST the `__alloc_rebind` /
+"Expecting type in using alias" wall to a NEW deeper wall:
+- **`node_handle.h:394` — default member initializer (NSDMI):** `struct _Node_insert_return {
+  _Iterator position = _Iterator(); bool inserted = false; _NodeHandle node; };`. madc's struct-member
+  parser (TokenSTRUCT::parse, the `= init` would land at parser.cpp:~19412 "Expecting ';' after struct
+  member") does NOT handle a default member initializer AT ALL — confirmed general gap: even
+  `struct S { int x = 5; };` errors (tmp/nsdmi.mad). **This is the NEXT slice.** It must be FAITHFUL,
+  not a skip: `= 5` is a non-zero default, so the initializer must be PARSED + STORED + APPLIED during
+  default-construction (feed the existing CtorInitializer machinery — cir_builder.cpp:4089
+  find_member_initializer / class_member_construct:10806; the class-member path at parser.cpp:18312 only
+  has a method-detection SCANNER for `=`, NOT real NSDMI application). Reduce from tmp/nsdmi.mad
+  (`struct S { int x = 5; int y = 7; };`) — 3-oracle first; verify the values are actually applied
+  (cout), not just that it parses. Expect FURTHER _Rb_tree walls after this (the onion is deep).
+- **map/testsubscript** are at the SEPARATE pointer-to-member wall (`stl_pair.h:~188` "Failed to find
+  type when parsing function parameters" — pair's `__zero_as_null_pointer_constant(int __z::*)`
+  pointer-to-DATA-member param). Own slice (real ptr-to-member type, see SESSION-11 §2).
+- **testvector/testforeachref** at `:428` `_ValueType2` = the `__is_assignable` arity-2 trait gap
+  (SESSION-11 §2 / session-10 part 6 — needs faithful assignment-overload resolution; LARGE).
+- **teststringref/testsubscriptmember** at `:428` (vector member-ref `_Alloc_traits::construct`);
+  testsubscriptarrow/testvectorptr (vector<T*> `->`); testforeach2 (`__ns_std_for_each` MIR-link).
+  See SESSION-11 §2 for the full per-test wall map (most still valid; set/containerdtor moved).
+
+## 2. Method + reducers (this session)
+3-oracle every fix (g++ AND clang++ `-fsyntax-only` + madc; verify VALUES via cout, exit code =
+RUN-SUCCESS not main()). Gated-diag method (SESSION-11 §3) still the tool: `#if MADC_DIAG_X` at a throw,
+`OPTIONAL_CPPFLAGS=-DMADC_DIAG_X=1`, `rm -f obj/parser.o obj/pic/parser.o` to force-recompile.
+Reducers (tmp/, NOT persistent — regenerate; run `--std=c++17 --no-embedded-headers`):
+- `tmp/sii.mad` (`#include <set>` ⏎ `using namespace std;` ⏎ `int main(){ set<int> s; return 0; }`) —
+  now advances to node_handle.h:394 NSDMI wall.
+- `tmp/nsdmi.mad` (`struct S { int x = 5; int y = 7; };` + print) — the NSDMI gap, headers-free. NEXT target.
+- areb11/areb12 (template-template-param nested + variadic-pack) are now permanently guarded by
+  tests/testtmpltmplparamnested.mad + tests/testtmpltmplparamvariadic.mad (committed).
+
+## 3. State for the next agent
+- Code HEAD `a5c7309`, tree clean, 600/12, build current+warning-free, MIR pin `5df536f` OK.
+- KEYSTONE CRACKED (§0b). NEXT = **NSDMI support** (§1, faithful parse+store+apply, reduce from tmp/nsdmi.mad,
+  3-oracle, must apply values). Then the remaining per-test walls (§1). The variadic-class-template
+  plan (docs/plans/2026-06-15-variadic-class-templates-plan.md) is the LARGER variadic-PRIMARY effort
+  (`__and_`/`__or_`/tuple) — distinct from the keystone, still pending; my 2b did only its safe subset.
 
 ---
 
