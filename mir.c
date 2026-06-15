@@ -36,6 +36,7 @@ struct MIR_context {
   MIR_code_alloc_t code_alloc;
   int func_redef_permission_p;        /* when true loaded func can be redfined lately */
   int no_inline_p;                    /* when true MIR_link does not inline calls (e.g. for debug) */
+  int spill_all_p;                    /* when true the generator homes every local in the stack (debug) */
   VARR (size_t) * insn_nops;          /* constant after initialization */
   VARR (MIR_proto_t) * unspec_protos; /* protos of unspec insns (set only during initialization) */
   VARR (char) * temp_string;
@@ -66,6 +67,7 @@ struct MIR_context {
 #define error_func ctx->error_func
 #define func_redef_permission_p ctx->func_redef_permission_p
 #define no_inline_p ctx->no_inline_p
+#define spill_all_p ctx->spill_all_p
 #define unspec_protos ctx->unspec_protos
 #define insn_nops ctx->insn_nops
 #define temp_string ctx->temp_string
@@ -775,6 +777,19 @@ int MIR_get_inline_permission_p (MIR_context_t ctx) { return !no_inline_p; }
 
 void MIR_set_inline_permission (MIR_context_t ctx, int enable_p) { no_inline_p = !enable_p; }
 
+int MIR_get_spill_all_p (MIR_context_t ctx) { return spill_all_p; }
+
+void MIR_set_spill_all (MIR_context_t ctx, int enable_p) { spill_all_p = enable_p; }
+
+int MIR_reg_frame_offset (MIR_func_t func, MIR_reg_t reg, int64_t *offset) {
+  for (size_t i = 0; i < func->reg_locs_len; i++)
+    if (func->reg_locs[i].reg == reg) {
+      if (offset != NULL) *offset = func->reg_locs[i].fp_offset;
+      return 1;
+    }
+  return 0;
+}
+
 static htab_hash_t item_hash (MIR_item_t it, void *arg MIR_UNUSED) {
   return (htab_hash_t) mir_hash_finish (
     mir_hash_step (mir_hash_step (mir_hash_init (28), (uint64_t) MIR_item_name (NULL, it)),
@@ -851,6 +866,7 @@ MIR_context_t _MIR_init (MIR_alloc_t alloc, MIR_code_alloc_t code_alloc) {
   ctx->code_alloc = code_alloc;
   error_func = default_error;
   no_inline_p = FALSE;
+  spill_all_p = FALSE;
   func_redef_permission_p = FALSE;
   curr_module = NULL;
   curr_func = NULL;
@@ -923,6 +939,7 @@ static void remove_item (MIR_context_t ctx, MIR_item_t item) {
     if (item->u.func->vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->vars);
     if (item->u.func->global_vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->global_vars);
     if (item->u.func->line_map != NULL) MIR_free (ctx->alloc, item->u.func->line_map);
+    if (item->u.func->reg_locs != NULL) MIR_free (ctx->alloc, item->u.func->reg_locs);
     if (item->u.func->internal != NULL) func_regs_finish (ctx, item->u.func);
     MIR_free (ctx->alloc, item->u.func);
     break;
@@ -1520,6 +1537,8 @@ static MIR_item_t new_func_arr (MIR_context_t ctx, const char *name, size_t nres
   func->first_lref = NULL;
   func->line_map = NULL;
   func->line_map_len = 0;
+  func->reg_locs = NULL;
+  func->reg_locs_len = 0;
   ctx->curr_source_file_id = ctx->curr_source_line = 0; /* don't bleed across functions */
   func_regs_init (ctx, func);
   for (size_t i = 0; i < nargs; i++) {

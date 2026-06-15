@@ -204,6 +204,7 @@ DEF_VARR (spot_attr_t);
 DEF_VARR (MIR_op_t);
 DEF_VARR (MIR_insn_t);
 DEF_VARR (MIR_line_map_t);
+DEF_VARR (MIR_reg_loc_t);
 
 struct gen_ctx {
   MIR_context_t ctx;
@@ -236,6 +237,7 @@ struct gen_ctx {
   struct combine_ctx *combine_ctx;
   VARR (MIR_op_t) * temp_ops;
   VARR (MIR_line_map_t) * line_map; /* (code_offset, file, line) per insn during target_translate */
+  VARR (MIR_reg_loc_t) * reg_locs;  /* (reg, fp_offset) for stack-homed locals in spill-all mode */
   VARR (MIR_insn_t) * temp_insns, *temp_insns2;
   VARR (bb_insn_t) * temp_bb_insns, *temp_bb_insns2;
   VARR (loop_node_t) * loop_nodes, *queue_nodes, *loop_entries; /* used in building loop tree */
@@ -277,6 +279,7 @@ struct gen_ctx {
 #define overall_gen_bbs_num gen_ctx->overall_gen_bbs_num
 #define temp_ops gen_ctx->temp_ops
 #define gen_line_map gen_ctx->line_map
+#define gen_reg_locs gen_ctx->reg_locs
 #define temp_insns gen_ctx->temp_insns
 #define temp_insns2 gen_ctx->temp_insns2
 #define temp_bb_insns gen_ctx->temp_bb_insns
@@ -7610,6 +7613,7 @@ static void assign (gen_ctx_t gen_ctx) {
   bitmap_t *used_locs_addr, *busy_used_locs_addr;
   allocno_info_t allocno_info;
   MIR_func_t func = curr_func_item->u.func;
+  int spill_all = MIR_get_spill_all_p (ctx); /* debug: home every non-tied local in the stack */
   bitmap_t global_hard_regs = _MIR_get_module_global_var_hard_regs (ctx, curr_func_item->module);
   const char *msg;
   const int simplified_p = ONLY_SIMPLIFIED_RA || optimize_level < 2 || jmpi_p;
@@ -7628,7 +7632,9 @@ static void assign (gen_ctx_t gen_ctx) {
   for (reg = MAX_HARD_REG + 1; reg <= max_var; reg++) {
     allocno_info.reg = reg;
     allocno_info.tied_reg_p = bitmap_bit_p (tied_regs, reg);
-    if (bitmap_bit_p (addr_regs, reg)) {
+    /* Address-taken regs always live in memory; in spill-all (debug) mode every
+       non-tied local does too, so it has a stable, queryable frame slot. */
+    if (bitmap_bit_p (addr_regs, reg) || (spill_all && !allocno_info.tied_reg_p)) {
       type = MIR_reg_type (gen_ctx->ctx, reg - MAX_HARD_REG, func);
       best_loc = get_new_stack_slot (gen_ctx, type, &slots_num);
       VARR_SET (MIR_reg_t, reg_renumber, reg, best_loc);
@@ -8581,6 +8587,21 @@ static void reg_alloc (gen_ctx_t gen_ctx) {
 
   build_live_ranges (gen_ctx);
   assign (gen_ctx);
+  if (MIR_get_spill_all_p (gen_ctx->ctx)) {
+    /* Record each local's stack home so a debugger can locate it. Only the
+       frame-pointer-kept (alloca/debug) case gives a stable base; the offsets
+       are what target_get_stack_slot_offset returns. */
+    MIR_func_t pf = curr_func_item->u.func;
+    VARR_TRUNC (MIR_reg_loc_t, gen_reg_locs, 0);
+    for (reg = MAX_HARD_REG + 1; reg <= max_var; reg++) {
+      MIR_reg_t loc = VARR_GET (MIR_reg_t, reg_renumber, reg);
+      if (loc == MIR_NON_VAR || loc <= MAX_HARD_REG) continue;
+      MIR_type_t t = MIR_reg_type (gen_ctx->ctx, reg - MAX_HARD_REG, pf);
+      MIR_disp_t off = target_get_stack_slot_offset (gen_ctx, t, loc - MAX_HARD_REG - 1);
+      MIR_reg_loc_t e = {(uint32_t) (reg - MAX_HARD_REG), (int64_t) off};
+      VARR_PUSH (MIR_reg_loc_t, gen_reg_locs, e);
+    }
+  }
   DEBUG (2, {
     fprintf (debug_file, "+++++++++++++Disposition after assignment:");
     for (reg = MAX_HARD_REG + 1; reg <= max_var; reg++) {
@@ -9578,6 +9599,19 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
         func_item->u.func->line_map = lm;
         func_item->u.func->line_map_len = lm_len;
       }
+      size_t rl_len = VARR_LENGTH (MIR_reg_loc_t, gen_reg_locs);
+      if (func_item->u.func->reg_locs != NULL) {
+        MIR_free (gen_alloc (gen_ctx), func_item->u.func->reg_locs);
+        func_item->u.func->reg_locs = NULL;
+        func_item->u.func->reg_locs_len = 0;
+      }
+      if (rl_len != 0) {
+        MIR_reg_loc_t *rl = gen_malloc (gen_ctx, rl_len * sizeof (MIR_reg_loc_t));
+        memcpy (rl, VARR_ADDR (MIR_reg_loc_t, gen_reg_locs), rl_len * sizeof (MIR_reg_loc_t));
+        func_item->u.func->reg_locs = rl;
+        func_item->u.func->reg_locs_len = rl_len;
+      }
+      VARR_TRUNC (MIR_reg_loc_t, gen_reg_locs, 0);
     }
 #if MIR_GEN_CALL_TRACE
     func_item->u.func->call_addr = _MIR_get_wrapper (ctx, func_item, print_and_execute_wrapper);
@@ -9772,6 +9806,7 @@ void MIR_gen_init (MIR_context_t ctx) {
   addr_insn_p = FALSE;
   VARR_CREATE (MIR_op_t, temp_ops, alloc, 16);
   VARR_CREATE (MIR_line_map_t, gen_line_map, alloc, 0);
+  VARR_CREATE (MIR_reg_loc_t, gen_reg_locs, alloc, 0);
   VARR_CREATE (MIR_insn_t, temp_insns, alloc, 16);
   VARR_CREATE (MIR_insn_t, temp_insns2, alloc, 16);
   VARR_CREATE (bb_insn_t, temp_bb_insns, alloc, 16);
@@ -9844,6 +9879,7 @@ void MIR_gen_finish (MIR_context_t ctx) {
   bitmap_destroy (temp_bitmap3);
   VARR_DESTROY (MIR_op_t, temp_ops);
   VARR_DESTROY (MIR_line_map_t, gen_line_map);
+  VARR_DESTROY (MIR_reg_loc_t, gen_reg_locs);
   VARR_DESTROY (MIR_insn_t, temp_insns);
   VARR_DESTROY (MIR_insn_t, temp_insns2);
   VARR_DESTROY (bb_insn_t, temp_bb_insns);
