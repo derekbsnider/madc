@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 12 CLOSE"** block immediately below (current state +
-NEXT), then "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 13 CLOSE"** block immediately below (current state +
+NEXT), then "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -12,6 +12,94 @@ CLOSE). The per-part STATUS banners are detailed chronology, read only for
 depth. The governing process document is **`madc-header-partition-handoff.md`
 (repo root)** — every decision here must trace to it. Companion memory:
 `project_retire_embedded_shims` + `project_header_partition_architecture`.
+
+---
+
+# ★ SESSION 13 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-15
+
+## 0. Orientation
+Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
+Integration **602 passed / 12 failed / 0 timed out / 18 skipped** (+1 new test testnsdmi).
+Code HEAD **`789db74`**, tree clean. Branch LOCAL-ONLY (`feature/retire-embedded-shims-claude`);
+develop untouched. MIR fork `5df536f` (pin satisfied). Build current, zero warnings.
+The SESSION-12 NSDMI stash (`stash@{0}` "WIP nsdmi parse-capture+storage") is now COMMITTED
+in refined form and was DROPPED — do not look for it.
+
+## 0b. ★ NSDMI LANDED (`789db74`) — the SESSION-12 NEXT slice is DONE
+C++11 default member initializers (`int x = 5;`) now work end-to-end. Three parts (full
+detail in the commit body):
+- **Parse:** new shared `Program::capture_member_default_init(tn, dds, mname)` captures an
+  `= expr` init (balanced to top-level `,`/`;`), parses it in an ISOLATED token stream,
+  stores it by member NAME in the new `DataDefSTRUCT::member_default_inits`. Called from
+  BOTH member-body parsers — TokenSTRUCT::parse (no methods) AND TokenCLASS::parse (with
+  methods/ctors, incl. the comma-shared sub-loop). The SESSION-12 handoff WRONGLY said only
+  TokenSTRUCT::parse is used; TokenCLASS::parse is a SEPARATE path (a struct/class WITH
+  methods routes there — error sites parser.cpp ~22427/~22572). **Equal-init only:**
+  brace-or-equal-init `m{...}` is deliberately NOT consumed (faithful aggregate/value-init
+  unmodeled; silently dropping it would garbage a scalar) → `{` still raises the clean parse
+  error. That's the documented brace-init follow-up.
+- **Apply:** new `CirBuilder::emit_member_default_inits(cdd, recv, arrow, out, skip)` mirrors
+  the scalar arm of class_ctor_initializer_stmts; emits `recv.member = expr` (arrow→`__this->`)
+  for scalar/pointer members not in `skip`; object members skipped (value-init handled by
+  member construction). Wired at THREE entry points: ctor prologue (skip=explicit_member_inits
+  so `: x(a)` overrides), the no-ctor statement decl-site, and the no-ctor variables-loop.
+  KEY DISCOVERY: a local `S s;` is a TokenDecl → handled by the STATEMENT path
+  (cir_builder.cpp ~10409, `class_ctor_call`→NULL for a no-ctor/no-vtable class), NOT the
+  variables loop — that's where the scalar apply had to go.
+- **Promotion:** extended the object-member struct→class promotion (78d1b27) to ALSO fire on
+  `!member_default_inits.empty()` (parser.cpp ~19650), so a scalar-only `struct S{int x=5;}`
+  becomes a class instance and reaches construction. As narrow as the object-member criterion.
+3-oracled g++/clang/madc (run, values compared): testnsdmi covers scalar-only, comma-shared
+`int a=1,b=2,c=3;`, pointer `int*p=nullptr;`, ctor-override (`P() {}`=NSDMI vs `P(int a):x(a)`
+overrides x keeps y), and object-member (`int n=3; string s=string(); bool f=false;`).
+
+## 1. ★ NEXT — set/multiset/containerdtor now share map's pointer-to-member wall
+With NSDMI cleared, set advanced from node_handle.h:394 to **stl_pair.h:188 "Failed to find
+type when parsing function parameters"** — the SAME `int C::*` pointer-to-DATA-member wall as
+map/testsubscript (SESSION-11 §2). This is the new shared wall for set/multiset/containerdtor
+AND map/testsubscript:
+- ROOT: pair's PRIVATE nested `struct __zero_as_null_pointer_constant` (stl_pair.h:613) has
+  ctor param `__zero_as_null_pointer_constant(int __z::*)` — a pointer-to-DATA-member. madc has
+  NO pointer-to-member type. The failing token is `*` (tkMul/tkStar=13).
+- FIX = a real pointer-to-member type (new DataDef category; a data-member-ptr is an 8-byte
+  offset). OWN SLICE; 3-oracle gcc/clang FIRST. Higher-leverage alternative worth weighing
+  (SESSION-11 §2): deferring/skipping member-SIGNATURE parse for un-ODR-used private members of
+  system-header templates (the BODY deferral already exists, parser.cpp:2885) would clear
+  pointer-to-member + the deprecated DR-811 C-vararg ctors at once — broader/riskier. Pick one.
+**LIVE wall map of all 12 (re-run at HEAD `789db74` — clusters 3/4 SHIFTED from the
+SESSION-12 doc, verified live):**
+- **(1) `int C::*` ptr-to-member @ stl_pair.h:188 "Failed to find type" — 5 tests:**
+  testset, testmap, testsubscript, testcontainerdtor, testmadc_ns. ★ NEXT (above).
+- **(2) `_ValueType2` / `__is_assignable` arity-2 @ :428 "use of undeclared identifier
+  '_ValueType2'" — 2 tests:** testvector, testforeachref. `uninitialized_copy`'s arity-2
+  assignment trait; needs faithful assignment-overload resolution. LARGE.
+- **(3) "Missing operand" @ :428 — 2 tests:** teststringref, testsubscriptmember (the
+  `vector<string>` member-ref pair, `v[0].length()`). NOTE: was `_Alloc_traits::construct`
+  in the SESSION-12 doc — advanced; re-diagnose live.
+- **(4) `Expecting a type argument to rebind<>` @ :47 — 2 tests:** testsubscriptarrow,
+  testvectorptr (the `vector<T*>` pair — the rebind chain invoked without resolving the
+  `T*` element). NOTE: was the vector<T*>`->` wall in the doc — shifted earlier; re-diagnose.
+- **(5) `__ns_std_for_each` MIR-link undefined — 1 test:** testforeach2 (free fn-template
+  instantiated but not emitted for MIR link).
+The allocator-rebind keystone (cracked SESSION 12) + NSDMI are both behind us; pointer-to-member
+(cluster 1) is the next shared count-dropper (gates ≈5 tests).
+
+## 2. Method + reducers (this session)
+3-oracle every fix (g++ AND clang++ + madc; verify VALUES via cout, exit code = RUN-SUCCESS not
+main()). Gated-diag method still the tool (`#if MADC_DIAG_X` + `OPTIONAL_CPPFLAGS=-DMADC_DIAG_X=1`
++ `rm -f obj/parser.o obj/pic/parser.o obj/cir_builder.o obj/pic/cir_builder.o`). Reducers (tmp/,
+regenerate; run `--std=c++17 --no-embedded-headers`): `tmp/sii.mad` (set, now at :188 ptr-to-member);
+testnsdmi.mad is the committed NSDMI regression guard. For the next slice reduce the
+pointer-to-member wall from `tmp/mii.mad` (map) or `tmp/sii.mad` (set).
+
+## 3. State for the next agent
+- Code HEAD `789db74`, tree clean, 602/12, build current+warning-free, MIR pin `5df536f` OK.
+- NSDMI DONE (§0b); allocator-rebind keystone DONE (SESSION 12). NEXT = the `int C::*`
+  pointer-to-member type — the shared set/map/subscript wall at stl_pair.h:188 (§1). Decide
+  ptr-to-member-type vs system-header-member-signature-deferral; 3-oracle first. Brace-init NSDMI
+  is a documented smaller follow-up. The variadic-class-template plan
+  (docs/plans/2026-06-15-variadic-class-templates-plan.md) remains the larger variadic-PRIMARY
+  effort, still pending and distinct.
 
 ---
 
