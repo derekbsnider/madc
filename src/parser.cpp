@@ -2642,6 +2642,10 @@ TokenDataType *Program::instantiate_template_id(const std::string &tname,
     return instantiate_template_use(tname, tb, ns_hint, owner_hint);
 }
 
+// Defined below (near the partial-spec unifiers); used here to resolve a
+// deduced pack element's spelling to its instantiated type token.
+static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &spelling);
+
 TokenDataType *Program::instantiate_template_use(const std::string &tname,
 					       TokenBase *tb,
 					       const std::string &ns_hint,
@@ -2679,6 +2683,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	template_instantiation_key_head(*this, tname, td.defining_namespace);
     std::map<std::string, TokenDataType *> subst;
     std::map<std::string, std::vector<TokenBase *> > token_subst;
+    // A trailing-pack param deduced by a partial spec (`_SomeTemplate<_Tp, _Types...>`
+    // in __replace_first_arg): name -> the pack's element type tokens (empty for an
+    // empty pack). Expanded in the body loop where `_Types...` appears.
+    std::map<std::string, std::vector<TokenDataType *> > pack_subst;
     size_t pi = 0;
     if ( peekToken() && (peekToken()->id() == TokenID::tkGT
 	  || peekToken()->id() == TokenID::tkBSR) )
@@ -2846,9 +2854,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     {
 	std::map<std::string, TokenDataType *> spec_subst;
 	std::map<std::string, std::string> spec_tmpl_subst;
+	std::map<std::string, std::vector<std::string> > spec_pack_subst;
 	if ( Program::TemplateDef *spec = match_partial_specialization(
 		tname, arg_types_by_slot, arg_spellings, arg_tokens_by_slot,
-		td.typeparam_is_type, spec_subst, spec_tmpl_subst) )
+		td.typeparam_is_type, spec_subst, spec_tmpl_subst, spec_pack_subst) )
 	{
 	    // Keep the USE-SITE owner across the swap. A nested class template's
 	    // partial spec is stored globally by simple name (partial_spec_map[name])
@@ -2873,6 +2882,24 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		std::vector<TokenBase *> repl;
 		repl.push_back(new TokenIdent(t->second));
 		token_subst[t->first] = repl;
+	    }
+	    // A deduced trailing pack (`_Types...`) binds to the absorbed concrete
+	    // args; resolve each element spelling to its type token for body
+	    // expansion. The real allocator rebind leaves it empty (`allocator<_Tp>`
+	    // has no extra args), so an empty pack — and its `...`/comma elision —
+	    // is the common path.
+	    pack_subst.clear();
+	    for ( std::map<std::string, std::vector<std::string> >::iterator p =
+		      spec_pack_subst.begin(); p != spec_pack_subst.end(); ++p )
+	    {
+		std::vector<TokenDataType *> elems;
+		for ( size_t ei = 0; ei < p->second.size(); ++ei )
+		{
+		    DataDef *edd = resolve_arg_spelling_datadef(*this, p->second[ei]);
+		    if ( edd )
+			elems.push_back(new TokenDataType(edd->name.c_str(), *edd));
+		}
+		pack_subst[p->first] = elems;
 	    }
 	}
     }
@@ -2941,6 +2968,35 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    {
 		for ( size_t ni = 0; ni < nti->second.size(); ++ni )
 		    inj.push_back(nti->second[ni]->clone());
+		continue;
+	    }
+	    std::map<std::string, std::vector<TokenDataType *> >::iterator pki =
+		pack_subst.find(s);
+	    if ( pki != pack_subst.end() )
+	    {
+		// Pack expansion `_Types...`: emit the absorbed element types
+		// comma-separated. An EMPTY pack (the common allocator-rebind
+		// case) must drop the immediately-preceding `,` already emitted
+		// (so `C<_Up, _Types...>` -> `C<_Up>`, never `C<_Up,>`). The
+		// trailing `...` (three tkDot) in the body is then consumed.
+		const std::vector<TokenDataType *> &elems = pki->second;
+		if ( elems.empty() && !inj.empty()
+		  && inj.back()->id() == TokenID::tkComma )
+		{
+		    delete inj.back();
+		    inj.pop_back();
+		}
+		for ( size_t ei = 0; ei < elems.size(); ++ei )
+		{
+		    if ( ei )
+		        inj.push_back(new TokenComma());
+		    inj.push_back(elems[ei]->clone());
+		}
+		if ( bi + 3 < td.body.size()
+		  && td.body[bi+1]->id() == TokenID::tkDot
+		  && td.body[bi+2]->id() == TokenID::tkDot
+		  && td.body[bi+3]->id() == TokenID::tkDot )
+		    bi += 3;   // consume the pack-expansion ellipsis
 		continue;
 	    }
 	    if ( s == td.class_name )
@@ -13039,7 +13095,8 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	const std::vector<std::string> &spec_params,
 	const std::string &concrete_spelling,
 	std::map<std::string, DataDef *> &ded, int &score,
-	std::map<std::string, std::string> *out_tmpl)
+	std::map<std::string, std::string> *out_tmpl,
+	std::map<std::string, std::vector<std::string> > *out_pack)
 {
     std::string pouter, couter;
     std::vector<std::string> pargs, cargs;
@@ -13047,7 +13104,20 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	return false;
     if ( !split_template_id_spelling(concrete_spelling, couter, cargs) )
 	return false;
-    if ( pargs.size() != cargs.size() )
+    // A trailing parameter pack in the pattern's inner args (`_SomeTemplate<_Tp,
+    // _Types...>`, the real libstdc++ __replace_first_arg) absorbs the remaining
+    // concrete args (0+). Detect it here: the last inner pattern arg ends with the
+    // pack ellipsis `...`. Without a pack, arity must match exactly (unchanged).
+    bool has_inner_pack = !pargs.empty()
+		       && pargs.back().size() >= 3
+		       && pargs.back().compare(pargs.back().size() - 3, 3, "...") == 0;
+    size_t nfixed = has_inner_pack ? pargs.size() - 1 : pargs.size();
+    if ( has_inner_pack )
+    {
+	if ( !out_pack || cargs.size() < nfixed )
+	    return false;                          // can't deduce a pack here / too few args
+    }
+    else if ( pargs.size() != cargs.size() )
 	return false;
     if ( pouter != couter )
     {
@@ -13071,7 +13141,7 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
     }
     else
 	score += 50;   // matching a template-id structure beats a bare-param slot
-    for ( size_t i = 0; i < pargs.size(); ++i )
+    for ( size_t i = 0; i < nfixed; ++i )
     {
 	bool is_param = false;
 	for ( size_t k = 0; k < spec_params.size(); ++k )
@@ -13088,7 +13158,7 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	}
 	else if ( pargs[i].find('<') != std::string::npos )
 	{
-	    if ( !unify_nested_spec_pattern_arg(pargs[i], spec_params, cargs[i], ded, score, out_tmpl) )
+	    if ( !unify_nested_spec_pattern_arg(pargs[i], spec_params, cargs[i], ded, score, out_tmpl, out_pack) )
 		return false;
 	}
 	else
@@ -13097,6 +13167,20 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 		return false;
 	    score += 100;                          // exact concrete-literal slot
 	}
+    }
+    if ( has_inner_pack )
+    {
+	// Bind the pack param (name minus the trailing `...`) to the remaining
+	// concrete args (the tail past the fixed slots). Empty is valid — the
+	// real `allocator<_Tp>` rebind leaves _Types... empty.
+	std::string pack_name = pargs.back().substr(0, pargs.back().size() - 3);
+	std::vector<std::string> tail(cargs.begin() + nfixed, cargs.end());
+	std::map<std::string, std::vector<std::string> >::iterator pit =
+	    out_pack->find(pack_name);
+	if ( pit != out_pack->end() && pit->second != tail )
+	    return false;                          // inconsistent pack deduction
+	(*out_pack)[pack_name] = tail;
+	score += (int)tail.size();                 // more absorbed args = more specific
     }
     return true;
 }
@@ -13367,7 +13451,8 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	const std::vector<std::vector<TokenBase *>> &arg_tokens_by_slot,
 	const std::vector<bool> &param_is_type,
 	std::map<std::string, TokenDataType *> &out_subst,
-	std::map<std::string, std::string> &out_template_subst)
+	std::map<std::string, std::string> &out_template_subst,
+	std::map<std::string, std::vector<std::string> > &out_pack_subst)
 {
     std::map<std::string, std::vector<TemplateDef> >::iterator it =
 	partial_spec_map.find(name);
@@ -13381,6 +13466,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
     int best_score = -1;
     std::map<std::string, DataDef *> best_ded;
     std::map<std::string, std::string> best_tmpl;
+    std::map<std::string, std::vector<std::string> > best_pack;
     for ( size_t s = 0; s < it->second.size(); ++s )
     {
 	TemplateDef &spec = it->second[s];
@@ -13388,6 +13474,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	    continue;                                  // pattern arity == primary arity
 	std::map<std::string, DataDef *> ded;
 	std::map<std::string, std::string> tmpl_ded;   // template-template-param deductions
+	std::map<std::string, std::vector<std::string> > pack_ded; // inner trailing-pack deductions
 	int score = 0;
 	bool ok = true;
 	for ( size_t i = 0; i < spec.spec_pattern.size(); ++i )
@@ -13423,7 +13510,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	      && !unify_nested_spec_pattern_arg(
 					 pattern_spelling,
 					 spec.typeparams, nested_concrete, ded, score,
-					 &tmpl_ded)
+					 &tmpl_ded, &pack_ded)
 	      && !eval_void_t_detection_slot(
 					 pattern_spelling,
 					 arg_spellings[i], ded, score) )
@@ -13436,7 +13523,8 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	bool all = true;
 	for ( size_t k = 0; k < spec.typeparams.size(); ++k )
 	    if ( !ded.count(spec.typeparams[k])
-	      && !tmpl_ded.count(spec.typeparams[k]) ) { all = false; break; }
+	      && !tmpl_ded.count(spec.typeparams[k])
+	      && !pack_ded.count(spec.typeparams[k]) ) { all = false; break; }
 	if ( !all )
 	    continue;
 	if ( score > best_score )
@@ -13445,6 +13533,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	    best_score = score;
 	    best_ded = ded;
 	    best_tmpl = tmpl_ded;
+	    best_pack = pack_ded;
 	}
     }
     if ( !best )
@@ -13454,6 +13543,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	  d != best_ded.end(); ++d )
 	out_subst[d->first] = new TokenDataType(d->second->name.c_str(), *d->second);
     out_template_subst = best_tmpl;
+    out_pack_subst = best_pack;
     return best;
 }
 

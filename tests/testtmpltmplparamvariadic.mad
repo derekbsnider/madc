@@ -1,0 +1,28 @@
+// Template-template-parameter partial specialization with a VARIADIC pattern and a
+// trailing PARAMETER PACK ([temp.class.spec]) — the exact shape of libstdc++'s
+// allocator-rebind keystone __replace_first_arg:
+//   template<template<typename,typename...> class C, typename Up, typename Tp, typename... Rest>
+//     struct replace_first<C<Tp, Rest...>, Up> { using type = C<Up, Rest...>; };
+// The trailing pack `Rest...` must absorb the remaining (here zero) inner args of a
+// single-parameter template argument, yielding C<Up>. Verified vs g++ AND clang++.
+#include <iostream>
+using namespace std;
+
+template<typename T, typename U> struct replace_first { };
+template<template<typename, typename...> class C, typename Up, typename Tp, typename... Rest>
+	struct replace_first<C<Tp, Rest...>, Up> { using type = C<Up, Rest...>; };
+
+template<typename T> struct node { T x; };
+template<typename T> struct myalloc { T held; };
+
+template<typename A, typename U>
+	using rebind_t = typename replace_first<A, U>::type;
+
+int main() {
+	// myalloc<node<long>>: deduce C=myalloc, Tp=node<long>, Rest={} (empty pack);
+	// yield myalloc<int>. held is int.
+	rebind_t<myalloc<node<long> >, int> a;
+	a.held = 77;
+	cout << "variadic=" << a.held << endl;   // 77
+	return 0;
+}
