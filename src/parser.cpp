@@ -3552,8 +3552,14 @@ TokenDataType *Program::resolve_class_member_type_chain(DataDefCLASS *owner,
 	    // expression positions) must not consume `::static_member` of a
 	    // dependent-surface class. Committed type contexts that need
 	    // opaque materialization (typename ...) run their own loop.
+	    // A member ALIAS template (`Owner<...>::type<A,B>`, e.g. libstdc++'s
+	    // `__conditional<C>::template type<If,Else>`) is the third member-TYPE
+	    // shape the loop body resolves (via instantiate_template_id ->
+	    // instantiate_template_alias_use), so the probe must admit it too —
+	    // otherwise the chain never descends and the type fails to resolve.
 	    if ( !resolve_class_type_alias(owner, probe_name)
-	      && !find_template(probe_name, std::string(), owner) )
+	      && !find_template(probe_name, std::string(), owner)
+	      && !find_template_alias(probe_name, std::string(), owner) )
 		return NULL;
 	    first_segment = false;
 	}
@@ -31296,6 +31302,16 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    nextToken();
 		base_type = chain_dd;
 		decl_type = chain_dd;
+	    }
+	    else if ( TokenDataType *member =
+			  resolve_class_member_type_chain(qcls, tb) )
+	    {
+		// A member-TEMPLATE-id leaf (`Sel<true>::type<int,double>` — a
+		// member alias template instantiated with args) needs the
+		// CONSUMING chain-walker; the peek helper above bails on the
+		// trailing `<`. Same resolution resolve_typename_type_token uses.
+		base_type = &member->definition;
+		decl_type = base_type;
 	    }
 	}
     }
