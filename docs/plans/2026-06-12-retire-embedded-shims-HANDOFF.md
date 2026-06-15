@@ -90,6 +90,44 @@ walls; testvector L17 / testvectorptr L28 are separate roots). **RECOMMENDATION
 headline drops come from independent singletons, not the tv1 chain (SESSION 9 §3).
 madc exit code = RUN-SUCCESS not main()'s return — verify reducers via cout/`--emit=c11`.
 
+## SURVEY of the 15 current failures (2026-06-15) — clustered by first error
+Run each test, captured first error, classified. ~7 root clusters:
+- **★ member-vs-`std::` unqualified-lookup precedence (3): testrefreturn,
+  testtemplatecontainer, testtemplatestring — BEST NEXT TARGET, CONTAINED.**
+  Reduced to `tmp/rr10.mad` (NO templates, NO container headers): a class data
+  member named `data` (`int* data;`), referenced UNQUALIFIED inside a method
+  (`return data[i];`), resolves to the C++17 free fn `std::data` (pulled by `using
+  namespace std`) instead of the member → "Missing operand" (or `import of
+  undefined item __ns_std_data` with explicit `this->data`). g++ AND clang accept it
+  (member scope is searched before the using-directive'd namespace). Proof:
+  rr16 (rename `data`→`d`) WORKS; rr17 (drop `using namespace std`) WORKS. REAL madc
+  bug: unqualified name lookup in a method must prefer a class member over a
+  using-directive namespace function. Foundational — `data`/`size`/`begin`/`end`/
+  `swap`/`empty`/`count`/`find` are all C++17 free fns + common member names. Likely
+  flips testrefreturn (pure user code) outright; advances the other two. NOT the
+  variadic/container chain. (Distinct from teststringglobal's GLOBAL-`empty`
+  AMBIGUITY which g++/clang REJECT — a MEMBER cleanly wins, so this is a real bug.)
+- **`_S_destroy` container chain (4): testvector, testforeachref, teststringref,
+  testsubscriptmember** — all at `:428:54`, `std::allocator_traits<…>::_S_destroy`
+  (the `_Destroy`→`_S_destroy`→`allocator::destroy` chain). One shared root, highest
+  count, but DEEP (libstdc++ static-member resolution; likely more walls after).
+- **Reference data members `T&` (2): testcontainerdtor, testset** — `_Rb_tree` node
+  storage `T& member;`; one self-contained feature (references→pointer member), but
+  more `_Rb_tree` walls likely follow.
+- **`->` on a subscript element (2): testsubscriptarrow, testvectorptr** —
+  `vector<T*>` element loses pointer-ness; GATED on the container chain.
+- **parse "Expecting ',' or '>' in template parameter list" (2): testmap,
+  testsubscript** — `:188` is a FLATTENED header line (files are 33/55 lines), i.e.
+  a `<map>` header parse wall. DEEP.
+- **`std::for_each` undefined import (1): testforeach2** — deep std-algorithm/functor
+  area (≥5 walls per SESSION-9 §0).
+- **allocator_traits `_Diff` "did not register" (1): testmadc_ns** — deep
+  template-instantiation internal error.
+**SURVEY CONCLUSION:** the member-vs-`std::` lookup-precedence bug (cluster 1) is the
+clear best next target — contained, reduced (tmp/rr10), 3-oracle-confirmed,
+foundational, independent of the deep chains, potential ≤3-test flip. Take it BEFORE
+the multi-session variadic feature (plan: `docs/plans/2026-06-15-variadic-class-templates-plan.md`).
+
 ---
 
 # ★ SESSION 9 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-14
