@@ -176,27 +176,33 @@ gates green; advanced tv1/testvector/testvectorptr past the deref wall (no flip)
       Real `<type_traits>` `std::__conditional_t<...>` now resolves (tmp/mat6).
       +tests/testmemberaliastmpl. The earlier "type<> expects 0 type argument(s)"
       diagnosis (a 0-arg member `type`) was a SYMPTOM of feature 2, not this.
-    - **FEATURE 2 — variadic-primary template-id `::member` — ROOT-CAUSED, NOT
-      STARTED (the real tv1 wall).** tv1's `_ReturnType` default is
-      `__conditional_t<__move_if_noexcept_cond<_Tp>::value, ...>` and madc cannot
-      PARSE `__move_if_noexcept_cond`'s base clause
-      `__and_<__not_<is_nothrow_move_constructible<_Tp>>, is_copy_constructible<_Tp>>::type`
-      (bits/move.h:102-104). PRECISE ROOT (reduced, g++-confirmed): a VARIADIC
-      primary template-id followed by `::member` does not resolve — generally
-      (tmp/db4 typedef `And2<X,Y>::type`), not just base clauses (tmp/db3).
-      Non-variadic `::type` works (tmp/db1/db2, incl. nested template-ids +
-      dependent param + `::value` inheritance). WHY: `instantiate_template_use`
-      (parser.cpp:2659) short-circuits a variadic primary to
-      `instantiate_opaque_template_use` (opaque placeholder, no members) BEFORE the
-      arg-parse loop (2664) and partial-spec selection (2848); the real `__and_`
-      primary is a bare fwd-decl, its 1-/2-arg PARTIAL SPECS carry the `::type`
-      bodies. The main arg-loop can't collect pack args (that's why the opaque
-      short-circuit exists). Fix needs variadic-arg collection into the concrete
-      path + partial-spec selection from a variadic primary
-      (`match_partial_specialization` at 13254 exists; the gap is reaching it).
-      SUBSTANTIAL (full session+). Even then tv1 may not flip (further
-      `__uninitialized_copy_a`/`_M_realloc_insert` walls). Weigh the 14-failure
-      survey first — headline drops come from independent singletons.
+    - **FEATURE 2 — variadic-primary template-id `::member` — ATTEMPTED &
+      REVERTED (clean); FULLY root-caused + clang-grounded; WIP patch saved.**
+      tv1's `_ReturnType` default is `__conditional_t<__move_if_noexcept_cond<_Tp>::value,
+      ...>` and madc cannot PARSE `__move_if_noexcept_cond`'s base clause
+      `__and_<__not_<...>, is_copy_constructible<_Tp>>::type` (bits/move.h:102-104).
+      ROOT (reduced, g++/clang): a VARIADIC primary template-id followed by
+      `::member` does not resolve — generally (tmp/db4 typedef, tmp/db5 `::n`), not
+      just base clauses (tmp/db3). Non-variadic works (tmp/db1/db2/db6). TWO causes:
+      (1) `instantiate_template_use` (parser.cpp:2659) short-circuits a variadic
+      primary to opaque BEFORE the arg loop + partial-spec selection (2848); (2) a
+      BUG at parser.cpp:28519 — a TYPE pack (`template<typename...>`) wrongly sets
+      `has_non_type_params=true`, so the SECOND opaque short-circuit (~2675) also
+      fires for a bare variadic fwd-decl. CLANG MODEL (grounded:
+      SemaTemplateInstantiate.cpp:3670 `getPatternForClassTemplateSpecialization`):
+      clang NEVER opaques on pack-ness — it deduces each partial spec against the
+      concrete args, most-specialized wins, no match → primary; opaqueness is for
+      DEPENDENT args. madc's `match_partial_specialization` (13254) == that deduction.
+      ATTEMPTED FIX (works on db1-6, REVERTED, saved
+      `tmp/feature2_variadic_partialspec_wip.patch`): both opaque short-circuits skip
+      when partial specs exist + arg loop binds extra args to a trailing pack slot +
+      default-fill treats an empty trailing pack as valid (`tuple<>`). REVERTED
+      because it destabilizes the WHOLE `<iostream>` trait closure: previously-opaque
+      variadic traits now instantiate eagerly and hit NEW walls — every test then
+      failed at a header `using X = Variadic<...>;` (parser.cpp:17798, target NULL).
+      NEXT: reapply the patch, drive the header cascade down one wall at a time under
+      the 4-gate (or narrow to `::member` contexts via lookahead). MULTI-SESSION;
+      even then tv1 may not flip. STRONGLY weigh the 14-failure survey first.
 - **testvector line 17: "incompatible types in assignment to an arithmetic type
   lvalue"** — a distinct wall reached once the deref is past (subscript/assign
   through the instantiated `operator[]`/data path).

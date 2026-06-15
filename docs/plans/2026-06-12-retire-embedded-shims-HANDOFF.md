@@ -40,35 +40,55 @@ for a member-template-id leaf (the non-consuming peek helper bails on the traili
 (mat6); +tests/testmemberaliastmpl (g++/clang `7 3.5 9.5 4 6.5`). Gated: 592/15
 zero regr, unit, gcc-torture 1571/51 byte-identical, SMAUG soak exit 124 + ready.
 
-**FEATURE 2 — variadic-primary template-id `::member` (the tv1 wall) — ROOT-CAUSED,
-NOT STARTED.** After feature 1, tv1 still fails: its `_ReturnType` default is
+**FEATURE 2 — variadic-primary template-id `::member` (the tv1 wall) — ATTEMPTED,
+REVERTED (clean), FULLY ROOT-CAUSED + clang-grounded. WIP patch saved.** After
+feature 1, tv1 still fails: its `_ReturnType` default is
 `__conditional_t<__move_if_noexcept_cond<_Tp>::value, ...>`, and madc cannot even
-PARSE `__move_if_noexcept_cond`'s definition (bits/move.h:102-104): its base clause
-is `__and_<__not_<is_nothrow_move_constructible<_Tp>>, is_copy_constructible<_Tp>>::type`.
+PARSE `__move_if_noexcept_cond`'s definition (bits/move.h:102-104): base clause
+`__and_<__not_<is_nothrow_move_constructible<_Tp>>, is_copy_constructible<_Tp>>::type`.
 **PRECISE ROOT (reduced, 3-oracle):** a VARIADIC-PRIMARY template-id followed by
-`::member` does not resolve the member — generally, not just in base clauses.
-Reducers (DEFAULT mode, g++ accepts both, madc errors): `tmp/db3.mad` (variadic
-`And2<...>::type` as a base specifier → "Expecting identifier after type"),
-`tmp/db4.mad` (same as a TYPEDEF → "Expecting alias name in typedef").
-Non-variadic `And<...>::type` WORKS (tmp/db1, tmp/db2) incl. nested template-ids +
-dependent param + `::value` inheritance — so the dependent-base/`::value` shape is
-fine; the trigger is purely the VARIADIC primary. WHY: `instantiate_template_use`
+`::member` does not resolve the member — generally (typedef + base clause), not
+just base clauses. Reducers (DEFAULT mode, g++/clang accept, madc errors before the
+fix): `tmp/db3.mad` (variadic `And2<...>::type` as a base specifier), `tmp/db4.mad`
+(same as a TYPEDEF), `tmp/db5.mad` (`::n` static member, proves the partial spec
+isn't selected). Non-variadic `And<...>::type` WORKS (tmp/db1/db2/db6) incl. nested
+template-ids + dependent param + `::value` inheritance — the trigger is purely the
+VARIADIC primary. **TWO coupled causes:** (1) `instantiate_template_use`
 (parser.cpp:2659) short-circuits a variadic primary to `instantiate_opaque_template_use`
-(an opaque dependent placeholder, no real members) BEFORE the arg-parse loop
-(2664+) and the partial-spec selection (2848). The real `__and_` primary is a bare
-fwd-decl `template<typename...> struct __and_;`; its 1-arg/2-arg PARTIAL SPECS have
-the real bodies with `::type`. The main arg-parse loop can't collect pack args
-(`pi >= td.typeparams.size()` throws — that's WHY the opaque short-circuit exists),
-so the fix needs **variadic-arg collection into the concrete-instantiation path +
-partial-spec selection from a variadic primary** (machinery `match_partial_specialization`
-at 13254 already exists; the gap is reaching it for a variadic primary with concrete
-args). This is a SUBSTANTIAL feature (full session, likely more), NOT a quick slice.
-Even after it, tv1 may not flip (further `__uninitialized_copy_a`/`_M_realloc_insert`
-walls per the SIZING note; testvector L17 / testvectorptr L28 are separate roots).
-**RECOMMENDATION:** before sinking a session into feature 2, weigh the survey of the
-other 14 failures — headline drops come from independent singletons, not the tv1
-chain (see SESSION 9 §3). madc exit code = RUN-SUCCESS not main()'s return — verify
-reducers via cout/`--emit=c11`.
+(opaque placeholder, no members) BEFORE the arg loop + partial-spec selection (2848);
+(2) a genuine BUG at parser.cpp:**28519** — a TYPE parameter pack
+(`template<typename...>`) wrongly sets `has_non_type_params = true`, so the SECOND
+opaque short-circuit (`has_non_type_params && body.empty()`, ~2675) ALSO fires for a
+bare variadic fwd-decl (the real `__and_`/`__or_` shape). The `__and_` primary is a
+fwd-decl; its 1-/2-arg PARTIAL SPECS hold the `::type` bodies. **CLANG MODEL
+(grounded, /workspace/llvm-clang-src/clang/lib/Sema/SemaTemplateInstantiate.cpp:3670
+`getPatternForClassTemplateSpecialization` + :3816):** clang NEVER goes opaque on
+pack-ness — it `DeduceTemplateArguments(Partial, concrete-args)` for each partial
+spec, most-specialized wins (`getMoreSpecializedPartialSpecialization`), no match →
+primary; opaqueness is gated on DEPENDENCE of the args, not packs. madc's
+`match_partial_specialization` (13254) is the equivalent of that deduction. **THE
+ATTEMPTED FIX (works on db1-6, but REVERTED — saved `tmp/feature2_variadic_partialspec_wip.patch`,
+93 lines):** (a) both opaque short-circuits skip when `partial_spec_map.count(tname)`;
+(b) the arg loop binds extra args to a trailing pack slot (clamped slot index)
+instead of erroring; (c) the default-fill loop treats a trailing pack reaching zero
+args as a valid EMPTY pack (`tuple<>`) — without (c), `tuple<>` regressed. **WHY
+REVERTED — the cascade:** turning on variadic-partial-spec instantiation GLOBALLY
+made previously-opaque libstdc++ variadic traits in the `<iostream>` closure
+instantiate eagerly and hit NEW downstream walls — `tmp/db6.mad` (and every test)
+then failed at a header `using X = Variadic<...>;` alias → "Expecting type in using
+alias" (parser.cpp:17798, the alias target resolved NULL). This is the deep cascade
+the SIZING note predicted: the fix is architecturally right but destabilizes the
+trait machinery; it needs the downstream walls cleared incrementally under the full
+gate, OR narrowing (only fall through in a `::member` context — needs lookahead past
+the balanced `<...>` for a trailing `::`, fragile). **NEXT-SESSION PLAN:** reapply
+`tmp/feature2_variadic_partialspec_wip.patch`, then drive the header cascade down
+one wall at a time (start: the `using X = Variadic<...>` NULL at parser.cpp:17798),
+each behind the 4-gate. This is MULTI-SESSION. Even when tv1's `__conditional_t`
+chain clears, tv1 may not flip (further `_M_realloc_insert`/`__uninitialized_copy_a`
+walls; testvector L17 / testvectorptr L28 are separate roots). **RECOMMENDATION
+(re-affirmed):** strongly weigh the ~20-min survey of the other 14 failures first —
+headline drops come from independent singletons, not the tv1 chain (SESSION 9 §3).
+madc exit code = RUN-SUCCESS not main()'s return — verify reducers via cout/`--emit=c11`.
 
 ---
 
