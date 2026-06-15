@@ -12727,8 +12727,16 @@ Program::TemplateAliasDef *Program::find_template_alias(const std::string &name,
 	if ( owned[i]->defining_namespace.empty() )
 	    return owned[i];
 
-    if ( current_namespace().empty() && owned.size() == 1 )
-	return owned[0];
+    // Unqualified lookup ([basic.lookup.unqual] + [namespace.udir]): a candidate
+    // in a non-enclosing, non-global namespace is reachable ONLY if that namespace
+    // is named by an active using-directive. A nested namespace is NOT pulled in by
+    // a using-directive on its parent — so `std::pmr::vector` must NOT satisfy an
+    // unqualified `vector` under `using namespace std` (only `std` is reachable);
+    // the class template `std::vector` (found via find_template) must win instead.
+    for ( size_t i = 0; i < owned.size(); ++i )
+	for ( size_t u = 0; u < active_using_namespaces.size(); ++u )
+	    if ( owned[i]->defining_namespace == active_using_namespaces[u] )
+		return owned[i];
     if ( owner_hint )
 	return owned[0];
     return NULL;
