@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 15 CLOSE"** block immediately below (current state +
-NEXT), then "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 16 CLOSE"** block immediately below (current state +
+NEXT), then "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -12,6 +12,52 @@ CLOSE). The per-part STATUS banners are detailed chronology, read only for
 depth. The governing process document is **`madc-header-partition-handoff.md`
 (repo root)** — every decision here must trace to it. Companion memory:
 `project_retire_embedded_shims` + `project_header_partition_architecture`.
+
+---
+
+# ★ SESSION 16 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-15
+
+## 0. Orientation
+Same campaign (real glibc+libstdc++ every mode; sole backend cir_node->c2mir->MIR).
+Integration **613 passed / 12 failed / 0 timed out / 18 skipped** (+testaliasnontypebool).
+Code HEAD **`a67cc72`**, tree clean. Branch LOCAL-ONLY; develop untouched. MIR fork
+`5df536f` (pin satisfied). Build current, zero warnings. **This session (16) cleared
+the enable_if_t/relocatable wall** — the SESSION-15 ★ live wall — with ONE fix.
+
+## 0d. ★ enable_if_t / non-type bool fold — CLEARED (`a67cc72`)
+Plan `docs/plans/2026-06-15-enable-if-alias-nontype-bool-fold-plan.md` (its §0 = the
+OUTCOME, read it). ROOT (refined from the SESSION-15 recon by gated diag + 3-oracle):
+a non-type bool/int template arg was collected RAW and never folded, so `enable_if`'s
+partial spec `enable_if<true,T>` was selected ONLY for a LITERAL `true`/`false`; a
+`(1==1)` / `Trait<int>::value` / `__is_bitwise_relocatable<int>::value` arg left
+`enable_if_t<C,T>` opaque (the `__relocate_a_1` return-type wall in push_back). NOT
+alias-specific — direct `std::enable_if<(1==1),int>::type` failed too, only "passing"
+via an opaque-`::type` fallback that ignores the bool (§6b). **FIX (deepest layer):
+fold every NON-dependent non-type arg at substitution in `instantiate_template_use`
+(explicit + default), reusing the SAME `parse_constant_integer_expression`
+static_assert uses (folds `Trait<T>::value` via `fold_constant_qualified_member`), via
+new `Program::fold_nontype_arg_constant` — isolated stream + muted std::cerr (the
+speculative parse Throws, and throwbuf::sync prints BEFORE the caught exception, so a
+legit fallback would leak a spurious diagnostic).** g++/clang do exactly this
+(`convert_nontype_argument`/`fold_non_dependent_expr`; converted-constant-expression).
+3-oracle table flips (blit/bdir/bcon resolve; blit2/ddir2 controls hold);
++testaliasnontypebool (42/3.5/77). fulltest 612->613, ZERO regression.
+
+**★ LIVE NEXT WALL (push_back, peeled one layer):** `tmp/v1.mad`
+(`vector<int> v; v.push_back(7);`, real headers) now fails ONLY with `MIR error:
+import of undefined item __ns_std___uninitialized_move_if_noexcept_a` — a referenced
+free-fn-template instantiation that is never instantiated/emitted (NOT a c2mir check
+error; the parse + emit are clean). Likely the late-instantiation/proto drain OR the
+global-vs-namespaced free-fn-template lookup gap (cf. SESSION-15 §6: a GLOBAL-scope
+free fn template is "undeclared", `tmp/fc.cpp` vs `tmp/ns1.cpp`). Triage that first:
+is `__uninitialized_move_if_noexcept_a` instantiated-but-not-emitted (proto/drain) or
+not-instantiated-at-all (lookup/deduction)? 3-oracle + the emit-c11/gcc localizer.
+
+**Separate follow-ups (unchanged, NOT this slice):** §6b false-masking
+(`enable_if<false,T>::type` wrongly accepted via opaque-member fallback);
+`__is_constructible` intrinsic (still behind the deeper push_back layers);
+empty-`_Rb_tree` dtor SIGSEGV; `_Tp2 already defined` (set+map same TU); STALE-API
+tests (testmap/subscript/madc_ns/set/foreach2 — test-content decision).
 
 ---
 

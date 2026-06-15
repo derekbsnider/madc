@@ -1,11 +1,40 @@
 # Plan — alias-template non-type bool arg must use the full constexpr fold (`enable_if_t<C,T>`)
 
-**Status: RECON + 3-ORACLE DONE 2026-06-15 (SESSION 15) — ready to IMPLEMENT in a
-fresh cycle (this is the handoff).** Branch `feature/retire-embedded-shims-claude`
-(LOCAL-ONLY). This is the live vector-cluster wall after `__is_assignable` (`a2f453f`)
-and the catch-all fix (`79141eb`). Companion: handoff
-`docs/plans/2026-06-12-retire-embedded-shims-HANDOFF.md` §0d, and
+**Status: IMPLEMENTED + LANDED 2026-06-15 (SESSION 16) — `a67cc72`.** Branch
+`feature/retire-embedded-shims-claude` (LOCAL-ONLY). This was the live vector-cluster
+wall after `__is_assignable` (`a2f453f`) and the catch-all fix (`79141eb`). Companion:
+handoff `docs/plans/2026-06-12-retire-embedded-shims-HANDOFF.md` §0d, and
 `docs/plans/2026-06-15-is-assignable-constructible-intrinsics-plan.md` §0.
+
+## 0. OUTCOME (what actually landed — read this first)
+The plan's "literal-only fold" framing was IMPRECISE. The recon (gated diag +
+3-oracle) refined it: the non-type bool arg is NEVER folded for partial-spec
+selection (only literals match), AND the wall is NOT specific to the alias path — a
+DIRECT `std::enable_if<(1==1),int>::type` also failed to select the partial spec; it
+only "worked" via an opaque-`::type` fallback that ignores the bool (it wrongly
+accepts `enable_if<false,int>::type` too — see §6b). **Deepest layer = fold every
+NON-dependent non-type arg at substitution, in `instantiate_template_use` (covers
+direct AND alias, since the alias body re-enters it), reusing the SAME
+`parse_constant_integer_expression` `static_assert` uses (folds `Trait<T>::value` via
+`fold_constant_qualified_member`).** New helper `Program::fold_nontype_arg_constant`
+(isolated stream + muted std::cerr — throwbuf::sync prints before the caught
+exception, so a legit fallback would leak a spurious diagnostic). Result: the
+enable_if_t/relocatable wall is CLEARED — `tmp/v1.mad` (`vector<int>::push_back`)
+peels to its next layer (undefined `__ns_std___uninitialized_move_if_noexcept_a`
+instantiation, §7). 3-oracle table flips (blit/bdir/bcon resolve; blit2/ddir2 hold).
++`tests/testaliasnontypebool` (3-oracled 42/3.5/77). **fulltest 612 -> 613, same 12
+known-wall fails, ZERO regression.**
+
+### §6b. Separate follow-up (pre-existing, NOT fixed here)
+A concrete non-dependent `enable_if<false,T>::type` is still wrongly ACCEPTED (g++/
+clang reject: "`type` does not name a type"). The false branch correctly folds to 0
+and so never selects the `enable_if<true,T>` partial spec — but `::type` then resolves
+through the opaque-member fallback (`class_allows_opaque_member_type` /
+`materialize_dependent_member_type` in `resolve_typename_type_token`), which should
+NOT fire for a concrete (non-dependent) instantiation with no such member. This masks
+negative SFINAE; harmless for push_back (its overloads split on ARGUMENT type, not on
+enable_if presence). Own slice — risky (the fallback legitimately serves dependent
+member types).
 
 ## 1. Problem
 
