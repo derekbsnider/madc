@@ -27487,7 +27487,14 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	  && ft.decl[i+1] && ft.decl[i+1]->id() == TokenID::tkDot
 	  && ft.decl[i+2] && ft.decl[i+2]->id() == TokenID::tkDot
 	  && !( !inj.empty() && inj.back()
-		&& inj.back()->id() == TokenID::tkComma ) )
+		&& inj.back()->id() == TokenID::tkComma )
+	  // A `...` directly after an open `(` is a catch-all `catch(...)` or a
+	  // C-varargs `(...)`, NOT a pattern pack-expansion (which always trails
+	  // the END of a pattern: `)`, identifier, `>`). Preserve it — dropping it
+	  // turns `catch(...)` into `catch()` when a variadic template body is
+	  // instantiated (e.g. vector::_M_realloc_insert's exception-safety block).
+	  && !( !inj.empty() && inj.back()
+		&& inj.back()->id() == TokenID::tkOpBrk ) )
 	{
 	    i += 2;	// drop the three-dot pack-expansion ellipsis
 	    continue;

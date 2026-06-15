@@ -1,0 +1,20 @@
+#!/../bin/madc
+// Regression guard: a catch-all `catch(...)` inside a VARIADIC template body
+// must survive instantiation. The variadic-template body substitution dropped
+// any three-dot `...` not preceded by a comma, mistaking the catch-all ellipsis
+// for a parameter-pack expansion -> `catch(...)` became `catch()` -> parse error
+// ("Expected type in catch parameter"). This blocked std::vector::push_back
+// (vector::_M_realloc_insert is variadic and its exception-safety block uses
+// `__catch(...)`). The fix preserves a `...` that directly follows an open `(`
+// (a catch-all / C-varargs), since a real pack-expansion `...` always trails the
+// END of a pattern (`)`, identifier, `>`). Parse-only (no throw) to isolate the
+// fix from exception-runtime behaviour. 3-oracled g++/clang/madc.
+template<class... A> struct V {
+	int f() { try { return 7; } catch(...) { return 0; } }
+};
+
+int main()
+{
+	V<int> v;
+	return v.f() == 7 ? 0 : 1;
+}
