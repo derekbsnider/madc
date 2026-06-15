@@ -1269,6 +1269,25 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
 		// invisible here, so a convertible literal/scalar argument is passed raw
 		// instead of being materialized into a class temporary.
 	FuncDef *callee = call_target_funcdef(tcf);
+	// A madc-instantiated member function template: the call token is bound to
+	// the declaration-only placeholder (its var is a non-rebindable reference);
+	// instantiate_member_fn_template_for_call recorded the instantiated
+	// definition's symbol on the placeholder's local_emit_name but left the
+	// placeholder's varargs / no-ref_params shape (deliberately — mutating it
+	// would corrupt the parser's findMethodOverload arity gate). For ARGUMENT
+	// COERCION we need the real parameters + ref_params, so resolve to the
+	// instantiated definition here (metadata only — the emit symbol still comes
+	// from the placeholder + local_emit_name). Without this a sibling
+	// member-template call in an instantiated body (`_S_destroy(__a, __p, 0)`
+	// forwarding `_Alloc2& __a`) dereferenced the reference arg (`(*__a)`) into a
+	// pointer parameter.
+	if (callee && callee->is_member_template
+	    && !callee->local_emit_name.empty() && m_prog) {
+		if (Variable *iv = m_prog->findVariable(callee->local_emit_name))
+			if (FuncDef *ifd = dynamic_cast<FuncDef *>(iv->type))
+				if (ifd != callee)
+					callee = ifd;
+	}
 	size_t nargs = tcf->parameters.size();
 	if (tcf->var.name == "__builtin_va_start" && nargs > 1)
 		nargs = 1;
