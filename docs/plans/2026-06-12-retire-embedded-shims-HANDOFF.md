@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 13 CLOSE"** block immediately below (current state +
-NEXT), then "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 14 CLOSE"** block immediately below (current state +
+NEXT), then "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -12,6 +12,101 @@ CLOSE). The per-part STATUS banners are detailed chronology, read only for
 depth. The governing process document is **`madc-header-partition-handoff.md`
 (repo root)** — every decision here must trace to it. Companion memory:
 `project_retire_embedded_shims` + `project_header_partition_architecture`.
+
+---
+
+# ★ SESSION 14 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-15
+
+## 0. Orientation
+Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
+Integration **605 passed / 12 failed / 0 timed out / 18 skipped** (+testnestedtidbase).
+Code HEAD **`258da80`**, tree clean. Branch LOCAL-ONLY
+(`feature/retire-embedded-shims-claude`); develop untouched. MIR fork `5df536f` (pin satisfied).
+Build current, zero warnings. **This session (14) landed ONE fix and cleared the SESSION-13 §1b
+wall** (nested class with a template-id base). The ★ NEXT wall (member alias template as a
+member type) is precisely isolated + reduced in §1b — START THERE.
+
+## 0b. ★ NESTED CLASS w/ TEMPLATE-ID BASE — CLEARED (`258da80`)
+The SESSION-13 §1b wall is fixed at the deepest layer. ROOT (confirmed via gated diag, not
+guessed): `instantiate_template_use` (parser.cpp ~3060) already isolates the instantiation
+re-parse from the caller's parse *context* (compounds, class_scope_stack, cur_func_name,
+instantiating_*) but NOT from its parse *MODE*. The enclosing nested-class delegation
+(TokenSTRUCT/TokenCLASS member loop, parser.cpp ~19325) sets `class_definition_only=true` +
+`parsing_cpp_struct_class=true`. When a template-id base (`bf<int>`) is instantiated
+mid-base-clause, those flags leak into the re-parse → the instantiated body early-returns at
+its own `}` (TokenCLASS:~22725 / TokenSTRUCT:~19820) and leaves the injection-terminating `;`
+(the synthesized terminator at parser.cpp ~3033) unconsumed → that stray `;` derails the base
+clause, which mis-registers the nested tag as a fwd decl + swallows the `;`, leaving the nested
+type's real `{...}` body to crash the outer member loop ("Expecting member name"). FIX:
+save/clear/restore `class_definition_only` + `parsing_cpp_struct_class` + `parsing_cpp_union_class`
+inside that SAME isolation block (top-level instantiation already runs with them clear — isolate
+the nested case to match). 18 lines. +tests/testnestedtidbase (3-oracled g++/clang/madc = 49,
+runs in DEFAULT mode). Zero regr; the real `std::map` `value_compare : binary_function<...>`
+shape now parses → map/subscript/containerdtor/madc_ns advance to the NEW wall below.
+
+## 1b. ★★ NEXT WALL — member ALIAS TEMPLATE used as a member type (precisely isolated, MEATY)
+The 4 advanced tests (testmap, testsubscript, testcontainerdtor, testmadc_ns) now hit
+`/usr/include/c++/13/bits/node_handle.h:313-318`: a class-body MEMBER ALIAS TEMPLATE used as a
+member's type with an NSDMI:
+```cpp
+template<typename _Tp>
+  using __pointer = __ptr_rebind<typename _AllocTraits::pointer, remove_reference_t<_Tp>>;
+__pointer<_Key>  _M_pkey = nullptr;   // member type = member-alias-template-id  ← FAILS
+```
+ROOT (diag-confirmed): when the member type is `__pointer<_Key>`, `resolve_declared_type_token`
+(parser.cpp ~22191, TokenCLASS member loop) resolves the BARE `__pointer` (the member alias) but
+does NOT instantiate the template-id — the `<_Key>` is left unconsumed → member-name expectation
+(parser.cpp ~22276) hits `<` (id 40 = tkLT) → "Expecting member name in class definition" (system
+header; real-mode the opaque-member-type fallback ~22192 fires first, also leaving `<`). The
+non-system reducer raises "Expecting type in class definition" (~22203) — SAME root.
+**Minimal reducer (3-oracle PASS g++/clang = 7; madc FAILS; run `--std=c++17 --no-embedded-headers`):**
+```
+template<typename U> struct wrap { U v; };
+template<typename K, typename V> struct holder {
+    template<typename T> using ptr = wrap<T>;   // member alias template
+    ptr<K> a; ptr<V> b;                          // ← member-alias-template-id member type
+    int run() { a.v = 3; b.v = 4; return a.v + b.v; }
+};
+int main(){ holder<int,int> h; return h.run(); }   // 7
+```
+This is the UNQUALIFIED-within-own-body member-type case. NOTE: SESSION-10 FEATURE 1 (`c3209d0`)
+already added member-alias-template-id resolution for the QUALIFIED form `Owner<...>::type<A,B>`
+in declaration/typedef contexts (`resolve_class_member_type_chain` + `find_template_alias` +
+`instantiate_template_alias_use`). The fix here likely routes the member-type resolve at
+parser.cpp ~22191 through that SAME machinery: when the bare name resolves to a member alias
+template (`find_template_alias` against the enclosing `class_scope_stack`) AND peek is `<`,
+instantiate the alias-use (consuming `<...>`) instead of returning the bare alias. 3-oracle FIRST;
+instrument with the gated-diag method (§2) at parser.cpp ~22276/22203. Expect FURTHER `_Rb_tree`
+walls after; this gates map/subscript/containerdtor/madc_ns. testset is SEPARATE (C++20
+`set::contains` at testset.mad:19). The other open walls (§ below, re-diagnose live):
+`_ValueType2`/`__is_assignable` arity-2 (testvector/testforeachref, LARGE); "Missing operand"
+@:428 (teststringref/testsubscriptmember); `rebind<>` @:47 (testsubscriptarrow/testvectorptr);
+`__ns_std_for_each` MIR-link (testforeach2).
+
+## 2. Method + reducers (this session)
+3-oracle every fix (g++ AND clang++ + madc; verify VALUES via cout, exit code = RUN-SUCCESS not
+main()). Gated-diag method (`#if MADC_DIAG_NB` at the throw, `OPTIONAL_CPPFLAGS=-DMADC_DIAG_NB=1`,
+`rm -f obj/parser.o obj/pic/parser.o` to force-recompile; print `tn->file:line:col`+`id()`+next
+tokens). Decode TokenID via include/tokens.h (tkOpBrc=16, tkLT=40). Reducers (tmp/, regenerate;
+run `--std=c++17 --no-embedded-headers`): t5/t6/t7 (nested template-id base — now all PASS);
+`tmp/mat.cpp` (member-alias-template member type, the NEXT wall — FAILS); `tmp/mii.mad`
+(`#include <map>`+`map<int,int>` — advances to node_handle.h:318). testnestedtidbase.mad is the
+committed regression guard for 0b.
+
+## 3. State for the next agent
+- Code HEAD **`258da80`**, tree clean, **605/12/0/18**, build current+warning-free, MIR pin
+  `5df536f` OK. Session-14 commit: `258da80` (nested template-id base isolation fix).
+- DONE: alloc-rebind keystone (S12); NSDMI (S13 §0b); ptr-to-member type Stage 1 (S13 §1);
+  friend keyword (S13 §0c); nested template-id base (S14 §0b).
+- **★ NEXT = §1b: member ALIAS TEMPLATE used as a member type** (precisely isolated + reduced;
+  MEATY). Gates 4 tests (map/subscript/containerdtor/madc_ns). Likely route the member-type
+  resolve (parser.cpp ~22191) through the existing member-alias-template-id machinery
+  (`c3209d0`). 3-oracle first; gated-diag to confirm. Expect further `_Rb_tree` walls.
+- OTHER open (re-diagnose live): `_ValueType2`/`__is_assignable` arity-2 (2, LARGE); "Missing
+  operand" @:428 (2); `rebind<>` @:47 (2); for_each MIR-link (1); testset `set::contains` C++20.
+  Ptr-to-member Stage 2 (`.*`/`->*`/`&C::m`) + brace-init NSDMI = no-test-consumer follow-ups.
+  ALSO seen this session (no current consumer): `Outer::Inner` qualified nested-type-name in a
+  declaration ("'Inner' is not a static member of 'Outer'") — a separate small gap.
 
 ---
 
