@@ -19,12 +19,17 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
-Integration is at **596 passed / 12 failed / 0 timed out / 18 skipped**. Last CODE
-commit **`aa49933`** (binary built from it). **DONE this session, all 4 gates green,
+Integration is at **597 passed / 12 failed / 0 timed out / 18 skipped**. Last CODE
+commit **`0913b97`** (binary built from it). **DONE this session, all 4 gates green,
 zero regressions:** part-2c FEATURE 1 (`c3209d0` member-alias-template-id) +
 testmemberaliastmpl; **member-vs-`std::` unqualified-lookup precedence (`aa49933`,
 the SURVEY winner) — flipped testrefreturn/testtemplatecontainer/testtemplatestring
-(15→12) + testmembernamestd.** (part-2c FEATURE 2, variadic-primary `::member`, was
+(15→12) + testmembernamestd**; **static-member-fn-template instantiates as a static
+method of its owner (`0913b97`) — clears the `_S_destroy`-undeclared wall on all 4
+cluster tests (testvector/testforeachref/teststringref/testsubscriptmember),
++teststaticmembertmplsibling; NO flip yet — they advance to the deeper
+allocator_traits `__a.destroy(__p)` wall ("member reference is not a structure or
+union", testvector.mad:428).** (part-2c FEATURE 2, variadic-primary `::member`, was
 attempted+REVERTED — see below + `docs/plans/2026-06-15-variadic-class-templates-plan.md`.)
 Earlier part-2c work and the older Stage 0/1 history are below. Historically this was
 **Stage 1 part 2c** of
@@ -134,9 +139,20 @@ bug (cluster 1) was the best next target and is now FIXED — flipped all 3 (tes
 testtemplatecontainer, testtemplatestring), +testmembernamestd, 15→12, zero regressions.
 **REMAINING 12, ranked for the NEXT pick:**
 - `_S_destroy` container chain (4: testvector, testforeachref, teststringref,
-  testsubscriptmember) — highest count, ONE shared root (`allocator_traits<…>::_S_destroy`
-  static member), but DEEP (libstdc++; likely more walls after). Highest leverage IF
-  the static-member resolution is tractable — investigate first.
+  testsubscriptmember) — ADVANCED ONE WALL @`0913b97` (the `_S_destroy`-undeclared
+  wall is cleared: a static member fn template now instantiates as a static method of
+  its owner so its body resolves the sibling static `_S_destroy`). NEW wall, all 4 at
+  testvector.mad:428: **"member reference is not a structure or union"** — the selected
+  `_S_destroy(_Alloc2& __a, _Tp* __p, int)` overload does `__a.destroy(__p)` but `__a`
+  (the allocator REF param) isn't typed as its class in the instantiated body, so the
+  `.destroy` member-ref fails. DEEP (real allocator_traits; not cleanly reducible
+  synthetically — tmp/sd5 gives a different error, tmp/ad1 hits an earlier `<memory>`
+  parse wall "Expecting member name in class definition" at type_traits ~line 67). A
+  multi-wall drill like tv1; likely more walls after this one. Probable root for the
+  new wall: reference-parameter type fidelity in an instantiated static-member-template
+  body (cf. the earlier reference-transparency fixes 390d8a0 / a12314b — the ref param
+  must denote its referenced class for member access). Investigate via vector (the
+  synthetic reducers don't reach it).
 - T&-data-members (2: testcontainerdtor, testset), `->`-on-subscript (2:
   testsubscriptarrow/testvectorptr, gated on the container chain), template-param parse
   in `<map>` (2: testmap/testsubscript), for_each (1), `_Diff` did-not-register (1).
