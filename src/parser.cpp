@@ -3057,6 +3057,21 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::string saved_func = cur_func_name;
     cur_func_name.clear();
+    // The instantiated body is a self-contained, fully-terminated class
+    // definition (its own struct/class keyword + a synthesized trailing ';',
+    // injected above). It must be parsed in FULL, never inheriting the caller's
+    // parse MODE: an enclosing nested-class delegation (TokenSTRUCT/TokenCLASS
+    // member loop) leaves class_definition_only / parsing_cpp_struct_class set,
+    // which would make this re-parse early-return at the body's '}' and leave
+    // the terminating ';' to derail the caller (e.g. a template-id base clause
+    // `struct I : bf<int> {...}`). Top-level instantiation already runs with
+    // these clear; isolate the nested case to match.
+    bool saved_def_only = class_definition_only;
+    bool saved_cpp_struct_class = parsing_cpp_struct_class;
+    bool saved_cpp_union_class = parsing_cpp_union_class;
+    class_definition_only = false;
+    parsing_cpp_struct_class = false;
+    parsing_cpp_union_class = false;
 
     // Stashed around the re-parse; TokenCLASS::parse records it on the DataDefCLASS
     // so a bodyless method binds to the real C++ symbol without class-name tests.
@@ -3084,6 +3099,9 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     std::swap(class_scope_stack, saved_class_scope_stack);
     std::swap(compounds, saved_compounds);
     cur_func_name = saved_func;
+    class_definition_only = saved_def_only;
+    parsing_cpp_struct_class = saved_cpp_struct_class;
+    parsing_cpp_union_class = saved_cpp_union_class;
     instantiating_canonical_spelling = saved_canon;
     instantiating_dependent_surface = saved_dependent_surface;
 
