@@ -19,9 +19,15 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
-Integration is at **592 passed / 15 failed / 0 timed out / 18 skipped**
-(+testmemberaliastmpl; the documented 15 unchanged, zero regressions). Last CODE
-commit **`c3209d0`** (binary built from it). Working on **Stage 1 part 2c** of
+Integration is at **596 passed / 12 failed / 0 timed out / 18 skipped**. Last CODE
+commit **`aa49933`** (binary built from it). **DONE this session, all 4 gates green,
+zero regressions:** part-2c FEATURE 1 (`c3209d0` member-alias-template-id) +
+testmemberaliastmpl; **member-vs-`std::` unqualified-lookup precedence (`aa49933`,
+the SURVEY winner) — flipped testrefreturn/testtemplatecontainer/testtemplatestring
+(15→12) + testmembernamestd.** (part-2c FEATURE 2, variadic-primary `::member`, was
+attempted+REVERTED — see below + `docs/plans/2026-06-15-variadic-class-templates-plan.md`.)
+Earlier part-2c work and the older Stage 0/1 history are below. Historically this was
+**Stage 1 part 2c** of
 `docs/plans/2026-06-14-template-instantiation-core-plan.md` — the tv1 std::vector
 blocker. Part 2c is TWO features (as the SESSION-9 SIZING note predicted):
 
@@ -123,10 +129,20 @@ Run each test, captured first error, classified. ~7 root clusters:
   area (≥5 walls per SESSION-9 §0).
 - **allocator_traits `_Diff` "did not register" (1): testmadc_ns** — deep
   template-instantiation internal error.
-**SURVEY CONCLUSION:** the member-vs-`std::` lookup-precedence bug (cluster 1) is the
-clear best next target — contained, reduced (tmp/rr10), 3-oracle-confirmed,
-foundational, independent of the deep chains, potential ≤3-test flip. Take it BEFORE
-the multi-session variadic feature (plan: `docs/plans/2026-06-15-variadic-class-templates-plan.md`).
+**SURVEY CONCLUSION (winner DONE @`aa49933`):** the member-vs-`std::` lookup-precedence
+bug (cluster 1) was the best next target and is now FIXED — flipped all 3 (testrefreturn,
+testtemplatecontainer, testtemplatestring), +testmembernamestd, 15→12, zero regressions.
+**REMAINING 12, ranked for the NEXT pick:**
+- `_S_destroy` container chain (4: testvector, testforeachref, teststringref,
+  testsubscriptmember) — highest count, ONE shared root (`allocator_traits<…>::_S_destroy`
+  static member), but DEEP (libstdc++; likely more walls after). Highest leverage IF
+  the static-member resolution is tractable — investigate first.
+- T&-data-members (2: testcontainerdtor, testset), `->`-on-subscript (2:
+  testsubscriptarrow/testvectorptr, gated on the container chain), template-param parse
+  in `<map>` (2: testmap/testsubscript), for_each (1), `_Diff` did-not-register (1).
+The variadic-primary `::member` feature (multi-session, plan
+`docs/plans/2026-06-15-variadic-class-templates-plan.md`) underlies several of these but
+is a large effort — weigh `_S_destroy` and the T&-data-member feature first.
 
 ---
 
