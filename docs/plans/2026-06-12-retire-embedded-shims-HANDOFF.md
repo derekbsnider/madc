@@ -19,8 +19,8 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
-Integration **600 passed / 12 failed / 0 timed out / 18 skipped** (+2 new gated tests:
-testtmpltmplparamnested, testtmpltmplparamvariadic). Code HEAD **`a5c7309`**, tree clean.
+Integration **601 passed / 12 failed / 0 timed out / 18 skipped** (+3 new gated tests:
+testtmpltmplparamnested, testtmpltmplparamvariadic, testvoidtmembersfinae). Code HEAD **`d0d6f5d`**, tree clean.
 Branch LOCAL-ONLY (`feature/retire-embedded-shims-claude`); develop untouched. MIR fork
 `5df536f` (pin satisfied). Build current, zero warnings.
 
@@ -44,26 +44,49 @@ fixed the first two (the third is redundant for the real case):
   (Stage B's spirit): `__replace_first_arg`'s PRIMARY is non-variadic, so NONE of the opaque-short-circuit
   (Stage A/C) / lazy-formation (Stage D) cascade that reverted the session-10 variadic-PRIMARY attempt
   applies. Non-pack unify path kept byte-identical (new branch fires only when the last inner parg ends `...`).**
-- bug 1 (NOT fixed, redundant here): `eval_void_t_detection_slot` (parser.cpp:~13211) bails on a
-  template-MEMBER SFINAE probe (`T::template rebind<U>::other` contains `<` → "too complex"). So the
-  `__rebind` void_t partial spec is never selected → falls to the primary `__rebind : __replace_first_arg`,
-  which (with 2a+2b) now gives the right `allocator<int>`. Fixing bug 1 would be a redundant second path
-  for the real case; leave it unless a future case needs the void_t spec specifically.
+- **`d0d6f5d`** — bug 1 FIXED (per user: don't leave bugs even if redundant here): `eval_void_t_detection_slot`
+  bailed on a template-MEMBER SFINAE probe (`T::template rebind<U>::other` has `<` → "too complex"), so the
+  void_t partial spec was never selected when the probe goes through a template member. Redundant for `__rebind`
+  (the primary already yields `allocator<int>`), but a real general bug: any void_t spec whose result DIFFERS
+  from its primary AND whose probe uses a template member was silently mis-selected. Fix: new
+  `confirm_dependent_member_type` resolves the dependent member chain (deduced params substituted) through the
+  real machinery (resolve_typename_type_token, in an isolated stream) instead of bailing. +testvoidtmembersfinae
+  (a void_t spec → withrebind<char> vs primary int; 3-oracle).
 
 ## 1. ★ NEXT — set/multiset/containerdtor advanced to the NSDMI wall (the new deepest layer)
 With the keystone resolved, set/multiset/containerdtor advanced PAST the `__alloc_rebind` /
 "Expecting type in using alias" wall to a NEW deeper wall:
-- **`node_handle.h:394` — default member initializer (NSDMI):** `struct _Node_insert_return {
-  _Iterator position = _Iterator(); bool inserted = false; _NodeHandle node; };`. madc's struct-member
-  parser (TokenSTRUCT::parse, the `= init` would land at parser.cpp:~19412 "Expecting ';' after struct
-  member") does NOT handle a default member initializer AT ALL — confirmed general gap: even
-  `struct S { int x = 5; };` errors (tmp/nsdmi.mad). **This is the NEXT slice.** It must be FAITHFUL,
-  not a skip: `= 5` is a non-zero default, so the initializer must be PARSED + STORED + APPLIED during
-  default-construction (feed the existing CtorInitializer machinery — cir_builder.cpp:4089
-  find_member_initializer / class_member_construct:10806; the class-member path at parser.cpp:18312 only
-  has a method-detection SCANNER for `=`, NOT real NSDMI application). Reduce from tmp/nsdmi.mad
-  (`struct S { int x = 5; int y = 7; };`) — 3-oracle first; verify the values are actually applied
-  (cout), not just that it parses. Expect FURTHER _Rb_tree walls after this (the onion is deep).
+- **`node_handle.h:394` — default member initializer (NSDMI) — ★ NEXT SLICE, FULLY SCOPED:**
+  `struct _Node_insert_return { _Iterator position = _Iterator(); bool inserted = false; _NodeHandle node; };`.
+  madc's member parser (TokenSTRUCT::parse, both `struct` AND `class` use it; the `= init` lands at the
+  `,`/`;` check ~parser.cpp:19412 "Expecting ';' after struct/class member") has NO NSDMI handling — a
+  GENERAL gap: even `struct S { int x = 5; };` / `class C { public: int x = 5; };` error (tmp/nsdmi.mad,
+  tmp/nsdmi_class.mad). Must be FAITHFUL, not a skip (`=5` is a non-zero default that must be applied).
+  **CONCRETE DESIGN (decided this session — the construction model is mapped):**
+  1. **Storage:** add `std::map<size_t, std::vector<TokenBase*>> member_default_inits;` to DataDefSTRUCT
+     (sparse, index-keyed, mirrors member_explicit_align), holding the CLONED init-expr tokens per member.
+  2. **Parse:** in TokenSTRUCT::parse, after addMember + `tn=nextToken()` + attribute-skip, if `tn` is
+     `tkAssign` consume the balanced init expr (track ()/[]/{} depth) up to the top-level `,`/`;`, clone +
+     store in member_default_inits[idx], set `tn` to the terminator. (This alone clears the PARSE wall.)
+  3. **Apply via CtorInitializer synthesis (REUSE, don't add a parallel path):** an NSDMI ≡ a member-init
+     in the default ctor for any member NOT explicitly initialized. FuncDef::CtorInitializer is just
+     {name, args(tokens)} (include/madc.h:168) — synthesize one per NSDMI'd member (args = the stored
+     init tokens; for `= _Iterator()` the member-init form is `position(_Iterator())` so wrap/store args to
+     match how class_ctor_initializer_stmts consumes them — VERIFY the arg format against the parser's
+     init-list builder first) and inject into the ctor's ctor_initializers when absent from the explicit
+     set. Then the existing apply path (cir_builder.cpp class_ctor_initializer_stmts @~10802, gated by the
+     `explicit_member_inits` set @10767-10771) handles it for free.
+  4. **Trigger (the wide part):** default-construction runs from THREE entry points — (a) the ctor-synthesis
+     path (cir_builder.cpp ~10767, classes WITH a ctor — covers _Node_insert_return since it has OBJECT
+     members → already gets an implicit ctor, verified tmp/implctor.mad tag=42); (b) the decl-site
+     object-member path `class_instance_member_ctors` (~10195, no-user-ctor + object members); (c) NOTHING
+     for a scalar-only struct with no ctor. So add `class_has_default_member_inits(cdd)` and OR it into the
+     "needs construction" conditions (the class_has_object_members checks @10195/10377 + the ctor-synthesis
+     trigger) so a scalar-only NSDMI struct gets its inits applied. Keep ordering = declaration order;
+     explicit ctor init-list / aggregate-init must OVERRIDE the NSDMI (the explicit_member_inits skip set
+     already gives this for the ctor path).
+  Reduce from tmp/nsdmi.mad (`struct S{int x=5;int y=7;}` → 5 7) + an OBJECT-member NSDMI reducer; 3-oracle;
+  verify VALUES via cout (not just that it parses). Expect FURTHER _Rb_tree walls after (the onion is deep).
 - **map/testsubscript** are at the SEPARATE pointer-to-member wall (`stl_pair.h:~188` "Failed to find
   type when parsing function parameters" — pair's `__zero_as_null_pointer_constant(int __z::*)`
   pointer-to-DATA-member param). Own slice (real ptr-to-member type, see SESSION-11 §2).
@@ -85,10 +108,12 @@ Reducers (tmp/, NOT persistent — regenerate; run `--std=c++17 --no-embedded-he
   tests/testtmpltmplparamnested.mad + tests/testtmpltmplparamvariadic.mad (committed).
 
 ## 3. State for the next agent
-- Code HEAD `a5c7309`, tree clean, 600/12, build current+warning-free, MIR pin `5df536f` OK.
-- KEYSTONE CRACKED (§0b). NEXT = **NSDMI support** (§1, faithful parse+store+apply, reduce from tmp/nsdmi.mad,
-  3-oracle, must apply values). Then the remaining per-test walls (§1). The variadic-class-template
-  plan (docs/plans/2026-06-15-variadic-class-templates-plan.md) is the LARGER variadic-PRIMARY effort
+- Code HEAD `d0d6f5d`, tree clean, 601/12, build current+warning-free, MIR pin `5df536f` OK.
+- KEYSTONE CRACKED + all partial-spec/void_t debt cleared (§0b: 2a `1183204`, 2b `a5c7309`, bug1 `d0d6f5d`).
+- NEXT = **NSDMI support** — FULLY SCOPED in §1 (storage + parse + CtorInitializer-synthesis apply +
+  3-entry-point trigger; reduce from tmp/nsdmi.mad, 3-oracle, must apply VALUES not just parse). Then the
+  remaining per-test walls (§1). The variadic-class-template plan
+  (docs/plans/2026-06-15-variadic-class-templates-plan.md) is the LARGER variadic-PRIMARY effort
   (`__and_`/`__or_`/tuple) — distinct from the keystone, still pending; my 2b did only its safe subset.
 
 ---
