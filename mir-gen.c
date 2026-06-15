@@ -9350,6 +9350,12 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
     });
     return func_item->addr;
   }
+  /* Newly created gen insns (prologue, spill/reload, ...) that don't inherit a
+     source location from an anchor must not pick up a stale one left in the
+     context by a prior function's build or generation.  Start each function's
+     generation unlocated; located insns keep the location set when they were
+     built, and gen_add_insn_before/after still inherit from their anchor. */
+  MIR_set_source_loc (ctx, 0, 0);
   DEBUG (0, {
     fprintf (debug_file, "Code generation of function %s:\n", MIR_item_name (ctx, func_item));
   });
