@@ -213,6 +213,14 @@ public:
     {
 	return false;
     }
+    // True only for DataDefMemberPtr: a C++ pointer-to-member (`T C::*`).
+    // Lowered as a scalar (a ptrdiff_t offset for a data member), but distinct
+    // from an ordinary pointer so the `.*`/`->*` operators (Stage 2) and
+    // overload resolution can recover the member-pointer-ness.
+    virtual bool is_member_pointer() const
+    {
+	return false;
+    }
     virtual bool is_struct() const
     {
 	if ( basetype() == BaseType::btStruct )
@@ -941,6 +949,28 @@ class DataDefREF : public DataDefPTR
 public:
     DataDefREF(DataDef &base) : DataDefPTR(base) {}
     virtual bool is_reference() const { return true; }
+};
+
+// C++ pointer-to-DATA-member `T C::*`. Lowered (Itanium ABI) as a `ptrdiff_t`
+// byte offset into the object — 8 bytes, an integer scalar for codegen — so it
+// is a `dtINT64`-typed DataDef. Kept as its own class (NOT a plain integer) so
+// `is_member_pointer()` is true and the `.*`/`->*` operators + overload
+// resolution (Stage 2) can recover the owning class and member type. The null
+// member pointer is -1 (a 0 offset is a valid first member). `owner_class` is the
+// `C`; `member_type` is the pointee `T`. Member-FUNCTION pointers (a 16-byte
+// `{ptr, this-adjust}` struct) are a separate, later representation.
+class DataDefMemberPtr : public DataDef
+{
+public:
+    DataDef *owner_class;        // the `C` in `T C::*` (NULL if unresolved at parse)
+    std::string owner_name;      // the spelled owner (e.g. a nested-in-template class)
+    DataDef *member_type;        // the pointee/member type `T`
+    DataDefMemberPtr(DataDef *owner, const std::string &owner_nm, DataDef &member)
+	: DataDef(member.name + " " + owner_nm + "::*", 8, DataType::dtINT64),
+	  owner_class(owner), owner_name(owner_nm), member_type(&member) {}
+    virtual bool is_numeric() const { return true; }
+    virtual bool is_integer() const { return true; }
+    virtual bool is_member_pointer() const { return true; }
 };
 
 class DataDefCArray : public DataDef

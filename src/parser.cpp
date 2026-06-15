@@ -30335,6 +30335,46 @@ grabnt:
 	    }
 	    Throw(inner ? inner : nt) << "Unsupported parenthesized parameter declarator" << flush;
 	}
+	// Pointer-to-DATA-member declarator: `<name> :: *` after the base type
+	// (`int C::*`). A name followed by `::` `*` is unambiguously a pointer-to-
+	// member (a parameter name cannot be qualified); without this, `C` is mistaken
+	// for the param name and the stray `::` `*` derail the parse. Recognize it
+	// SYNTACTICALLY — do NOT gate on resolving the owner: a class nested in a
+	// template (the stl_pair `__zero_as_null_pointer_constant` case) is not in
+	// struct_map by simple name here. Owner is resolved best-effort (for Stage 2
+	// offset computation); when NULL the type still lowers as a ptrdiff_t scalar.
+	// Member-FUNCTION pointers use the parenthesized `(C::*name)(args)` form.
+	if ( ( nt->type() == TokenType::ttDataType
+	    || is_contextual_identifier_token(nt) )
+	  && peekToken() && peekToken()->id() == TokenID::tkNS )
+	{
+	    std::string ptm_owner_name = (nt->type() == TokenType::ttDataType)
+		? ((TokenDataType *)nt)->definition.name
+		: contextual_identifier_name(nt);
+	    DataDef *ptm_owner = NULL;
+	    if ( nt->type() == TokenType::ttDataType )
+		ptm_owner = &((TokenDataType *)nt)->definition;
+	    else
+	    {
+		datadef_map_iter omi = struct_map.find(ptm_owner_name);
+		if ( omi != struct_map.end() )
+		    ptm_owner = omi->second;
+	    }
+	    TokenBase *ptm_ns = nextToken(); // consume '::'
+	    if ( peekToken() && peekToken()->id() == TokenID::tkStar )
+	    {
+		nextToken(); // consume '*'
+		param_dd = new DataDefMemberPtr(ptm_owner, ptm_owner_name, *param_dd);
+		rtype = RefType::rtValue; // the ptr-to-member is itself an 8-byte scalar
+		// Optional cv-qualifiers on the pointer-to-member.
+		while ( peekToken()
+		     && (peekToken()->id() == TokenID::tkCONST
+		      || peekToken()->id() == TokenID::tkVOLATILE) )
+		    nextToken();
+		goto grabnt; // a name, further declarator, or ',' / ')'
+	    }
+	    pushToken(ptm_ns); // not `::*` — restore for the normal path (qualified type, etc.)
+	}
 	if ( !is_contextual_identifier_token(nt) )
 	{
 	    Throw(nt) << "Expecting identifier after type" << flush;
