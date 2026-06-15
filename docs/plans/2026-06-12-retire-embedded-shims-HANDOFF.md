@@ -19,8 +19,9 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 ## 0. Orientation
 Same campaign as SESSION 8 (real glibc+libstdc++ every mode; sole backend
 cir_node→c2mir→MIR). w2a (`std::vector<int> v;`) compiles+runs. Integration is at
-**589 passed / 15 failed / 0 timed out** (failures down from 27 this session; +testalignas, +testtransform).
-The last CODE commit is **`cd8dc11`** (binary built from it). **DONE this session, all 4-gates green, zero
+**591 passed / 15 failed / 0 timed out / 18 skipped** (failures down from 27 across sessions; +testalignas,
++testtransform, +testtmpldefaultparam, +testtmpldefaultcond). The last CODE commit is **`cd8dc11`** (binary
+built from it); tree HEAD is the docs commit `d19a682`. **DONE this session, all 4-gates green, zero
 regressions:** Stage 0 (`f03cfb4` array→ptr decay), Stage 1 part 1 (`a12314b` reference-to-pointer return
 value typing), Stage 1 part 2a (`5104dc1` multi-token defaulted type params `R = T*`), Stage 1 part 2b
 (`cd8dc11` trait-expression defaulted type params `R = conditional<...>::type`). Integration now 591/15
@@ -40,7 +41,21 @@ __move_if_noexcept_cond<_Tp>::value, move_iterator<_Tp*>, _Tp*>` (`bits/stl_iter
 (type_traits:119). After 2b, tv1 advanced to **"type<> expects 0 type argument(s), got 2"** — madc treats the
 member `type<...>` as a 0-arg template. Part 2c = member-alias-template-with-args resolution + the
 `__move_if_noexcept_cond<_Tp>::value` bool trait. Reducer to build: `__conditional<false>::type<A,B>` analogue.
-A reference default `R = T&` is a separate deferred gap. Also independent walls once the deref chain clears:
+
+**★ SIZING (assessed 2026-06-14, before diving in): part 2c is a FULL SESSION, likely more than one — NOT a
+contained slice like 2a/2b.** It is TWO distinct substantial features: (1) **member-alias-template-id
+resolution** `Class<...>::type<Args>` — madc cannot even PARSE this today (user-defined reducer `tmp/mat1.mad`
+`Sel<false>::type<double,int>`, NO headers, fails "Expecting identifier after type"); needs a new parser
+grammar form (qualified member *template*-id access) PLUS a resolution/instantiation path — comparable to or
+bigger than 2b. (2) **`__move_if_noexcept_cond<_Tp>::value`** is NOT a literal — it derives from
+`__and_<__not_<is_nothrow_move_constructible<_Tp>>, is_copy_constructible<_Tp>>::type` (`bits/move.h:102`);
+evaluating it needs two type-traits + the `__not_`/`__and_` metafunctions + inheriting `::value` from an
+`integral_constant` base — its own trait-evaluation feature. (3) Even with both, tv1 may NOT flip — `_ReturnType`
+then flows back into `__uninitialized_copy_a`/`_M_realloc_insert` (possible further walls), and testvector L17 /
+testvectorptr L28 are confirmed SEPARATE roots. **RECOMMENDATION before sinking a session into 2c: first spend
+~20 min surveying the other 14 failures (testmap/testset = ref data members [orig plan Stage 4];
+teststringref; testforeach2; testsubscript*) to confirm tv1's remaining chain is the best return — a different
+failure may be closer to a headline flip.** A reference default `R = T&` is a separate deferred gap. Also independent walls once the deref chain clears:
 testvector L17 "incompatible types in assignment to arithmetic lvalue", testvectorptr L28 "expression before
 '->' must be a pointer" (vector<T*> subscript loses pointer-ness — check if the `returns`-strip recurs in
 `operator[]`). NB madc's
