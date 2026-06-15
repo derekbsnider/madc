@@ -251,6 +251,40 @@ must denote its referenced allocator class for member access) — cf. the ref-tr
 fixes 390d8a0 (reselect_method_overload via operand_value_datadef) and a12314b. Expect
 multiple walls after this one (it's the libstdc++ allocator_traits chain).
 
+### UPDATE 2026-06-15 (session 10, part 4) — keystone wall #1 DOWN @`67577e7` (zero-regr, still 597/12)
+
+The `__a.destroy(__p)` allocator-reference-param wall is CLEARED. ROOT was NOT a
+parser ref-param-fidelity bug — it was a CIR arg-coercion bug: a call to a
+madc-instantiated STATIC member fn template binds to the declaration-only PLACEHOLDER
+FuncDef (the call token's `var` is a non-rebindable reference).
+`instantiate_member_fn_template_for_call` (parser.cpp:27707) records the instantiated
+def's symbol on the placeholder's `local_emit_name` for NAMING but deliberately leaves
+the placeholder's varargs / no-`ref_params` shape (mutating it corrupts the parser's
+findMethodOverload arity gate — see the comment at 27786). `build_call_args`
+(cir_builder.cpp:1264) then read the PLACEHOLDER's params for arg coercion, saw no
+ref_params, and dereferenced a forwarded reference arg into a pointer param
+(`_S_destroy((*__a), __p, 0)` — `(*__a)` is a struct, param is a pointer).
+FIX: in build_call_args, when the resolved callee is a member-template placeholder with
+a recorded `local_emit_name`, resolve the instantiated definition (real params +
+ref_params) via `m_prog->findVariable(local_emit_name)` for the COERCION LOOP ONLY —
+naming still uses the placeholder + local_emit_name (redirecting the shared
+`call_target_funcdef` instead broke the emit symbol → `Traits__sd` undefined; the
+narrow build_call_args-local redirect is correct). Reducers tmp/sdref2,4,5,6 (static
+member fn tmpl forwarding a class-ref param to a sibling static member tmpl) all =g++.
+
+**★ NEXT WALLS (continue #1) — the cluster now advances to TWO new allocator_traits walls:**
+- **`allocator_traits<allocator<T>>::_Diff<…> did not register`** at `:105:53` —
+  testvector, teststringref, testsubscriptmember, testmadc_ns. A nested template
+  `_Diff` (in `<bits/alloc_traits.h>`, the SFINAE difference_type probe) fails to
+  register during monomorphization ("internal: template instantiation … did not
+  register"). Reduce from tmp/vint or a 2-level nested template-in-template.
+- **`type<> expects 0 type argument(s), got 2`** at `:428:54` — tmp/vint, testforeachref
+  (+ MIR undefined `vector_…__M_realloc_insert`). A `type<...>` (likely a nested
+  member typedef/alias used as a template-id with args) is being treated as taking 0
+  type args. Reduce from tmp/vint.
+Both are further allocator_traits/nested-template-instantiation walls. tmp/vint is the
+canonical reducer (NOT sd*/ad*). 3-oracle each new wall vs g++/clang first.
+
 ---
 
 # ★ SESSION 9 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-14
