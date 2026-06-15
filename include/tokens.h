@@ -53,7 +53,8 @@ enum class TokenID {
   tkDynamicCast, tkTypeid,    // RTTI (S5): dynamic_cast<T*>(e), typeid(e|T)
   tkObjTemp,                  // functional construction temporary: T(args)
   tk3NotEq,                   // !== strict not-equal (STD_MADC dialect)
-  tkFRIEND                    // C++ `friend` declaration specifier
+  tkFRIEND,                   // C++ `friend` declaration specifier
+  tkExplicitDtor              // explicit/pseudo destructor call: obj.~T() / ptr->~T()
 };
 
 enum class TokenAssoc {
@@ -1322,6 +1323,25 @@ public:
     virtual TokenID id() const { return TokenID::tkObjTemp; }
     virtual DataDef *datadef() const { return (DataDef *)obj_class; }
     virtual TokenBase *clone() { return new TokenObjTemp(*this); }
+};
+
+// Explicit / pseudo destructor call: `obj.~T()` or `ptr->~T()`. Built by the
+// expression parser when a `~` follows a `.`/`->`. `obj` is the lhs expression
+// (an object for `.`, a pointer for `->`); `dtor_class` is the named type when
+// it is a class with a destructor, NULL for a trivial/scalar type (then the
+// call is a no-op — `obj` is still evaluated for side effects). CirBuilder
+// emits the complete-destructor call (no free, unlike `delete`).
+class TokenExplicitDtor: public TokenBase
+{
+public:
+    TokenBase *obj;
+    DataDefCLASS *dtor_class;
+    bool is_arrow;
+    TokenExplicitDtor(TokenBase *o, DataDefCLASS *c, bool arrow)
+	: TokenBase(), obj(o), dtor_class(c), is_arrow(arrow) { _datatype = &ddVOID; }
+    virtual TokenID id() const { return TokenID::tkExplicitDtor; }
+    virtual DataDef *datadef() const { return &ddVOID; }
+    virtual TokenBase *clone() { return new TokenExplicitDtor(*this); }
 };
 
 class TokenSTRUCT: public TokenKeyword

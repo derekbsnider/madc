@@ -7940,6 +7940,30 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		return node1(N_STMTEXPR, block, tb);
 	}
 
+	// obj.~T() / ptr->~T() — explicit/pseudo destructor call. Run T's complete
+	// destructor on the object (no free(), unlike `delete`). The `this` is the
+	// lhs pointer for `->`, the lhs object's address for `.`. When T is trivial
+	// (class_needs_dtor false) or scalar (dtor_class NULL), it is a no-op — but
+	// the object expression is still evaluated for side effects. Void-valued.
+	if (TokenExplicitDtor *ted = dynamic_cast<TokenExplicitDtor *>(tb)) {
+		DataDefCLASS *cdd = ted->dtor_class;
+		node_t obj_ptr = ted->is_arrow
+			? translate_expr(ted->obj)
+			: node1(N_ADDR, translate_expr(ted->obj), tb);
+		if (cdd && class_needs_dtor(cdd)) {
+			std::string dsym = class_complete_dtor_symbol(cdd);
+			referenced_funcs.insert(dsym);
+			node_t dargs = list();
+			append(dargs, obj_ptr);
+			return node2(N_CALL, id(dsym.c_str(), tb), dargs, tb);
+		}
+		node_t items = list();
+		append(items, node2(N_EXPR, list(), obj_ptr, tb));
+		append(items, node2(N_EXPR, list(), integer(0, tb), tb));
+		node_t block = node2(N_BLOCK, list(), items, tb);
+		return node1(N_STMTEXPR, block, tb);
+	}
+
 	// String literal
 	if (tb->type() == TokenType::ttString) {
 		TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);

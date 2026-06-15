@@ -15529,6 +15529,36 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 	    && (opStack.top()->id() == TokenID::tkInc
 	     || opStack.top()->id() == TokenID::tkDec);
     };
+		// obj.~T() / ptr->~T() — explicit/pseudo destructor call. Recognized
+		// when a member-access operator is immediately followed by '~' (a
+		// member can never be named `~...`, so this never shadows ordinary
+		// member access). The lhs object/pointer is already on exStack; consume
+		// `~ type-name ( )` and synthesize a void-valued TokenExplicitDtor.
+		if ( (tb->id() == TokenID::tkDot || tb->id() == TokenID::tkDeRef)
+		  && !exStack.empty()
+		  && peekToken() && peekToken()->id() == TokenID::tkBnot )
+		{
+		    bool is_arrow = (tb->id() == TokenID::tkDeRef);
+		    nextToken(); // consume '~'
+		    TokenBase *tyt = nextToken();
+		    TokenDataType *dt = resolve_declared_type_token(tyt, true, true);
+		    if ( !dt )
+			Throw(tyt ? tyt : tb) << "Unknown type in explicit destructor call" << flush;
+		    TokenBase *opbrk = nextToken();
+		    if ( !opbrk || opbrk->id() != TokenID::tkOpBrk )
+			Throw(opbrk ? opbrk : tb) << "Expected '(' in explicit destructor call" << flush;
+		    TokenBase *clbrk = nextToken();
+		    if ( !clbrk || clbrk->id() != TokenID::tkClBrk )
+			Throw(clbrk ? clbrk : tb) << "Expected ')' in explicit destructor call" << flush;
+		    TokenBase *lhs = exStack.top(); exStack.pop();
+		    DataDefCLASS *dcls = dynamic_cast<DataDefCLASS *>(&dt->definition);
+		    TokenExplicitDtor *ted = new TokenExplicitDtor(lhs, dcls, is_arrow);
+		    ted->file = tb->file;
+		    ted->line = tb->line;
+		    ted->column = tb->column;
+		    exStack.push(ted);
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
 		if ( tb->id() == TokenID::tkComma )
 		{
 		    // C comma operator inside parenthesized expression
