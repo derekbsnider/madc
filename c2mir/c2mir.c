@@ -16693,6 +16693,31 @@ static void make_cond_val (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label,
   emit_label_insn_opt (c2m_ctx, end_label);
 }
 
+/* --- source-debug file registry (single-threaded debug builds; see
+   c2mir_get_source_files).  fnames from pos_t are compiler-interned and stable,
+   so we store the pointers directly.  One-shot process; the small table is
+   intentionally not freed. --- */
+static const char **c2m_dbg_files;
+static size_t c2m_dbg_nfiles, c2m_dbg_cfiles;
+
+static uint32_t c2m_dbg_intern_file (const char *fname) {
+  for (size_t i = 0; i < c2m_dbg_nfiles; i++)
+    if (c2m_dbg_files[i] == fname || strcmp (c2m_dbg_files[i], fname) == 0)
+      return (uint32_t) (i + 1);
+  if (c2m_dbg_nfiles == c2m_dbg_cfiles) {
+    c2m_dbg_cfiles = c2m_dbg_cfiles ? c2m_dbg_cfiles * 2 : 8;
+    c2m_dbg_files = realloc (c2m_dbg_files, c2m_dbg_cfiles * sizeof (char *));
+  }
+  c2m_dbg_files[c2m_dbg_nfiles++] = fname;
+  return (uint32_t) c2m_dbg_nfiles;
+}
+
+size_t c2mir_get_source_files (MIR_context_t ctx, const char ***names) {
+  (void) ctx;
+  *names = c2m_dbg_files;
+  return c2m_dbg_nfiles;
+}
+
 static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_t false_label,
                  int val_p, op_t *desirable_dest, int *expect_res) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
@@ -16711,6 +16736,11 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   int expr_attr_p, stmt_p;
 
   classify_node (r, &expr_attr_p, &stmt_p);
+  if (c2m_options->debug_info_p && stmt_p && curr_func != NULL) {
+    pos_t p = POS (r);
+    if (p.fname != NULL && p.lno > 0)
+      MIR_set_source_loc (ctx, c2m_dbg_intern_file (p.fname), (uint32_t) p.lno);
+  }
   assert ((true_label == NULL && false_label == NULL && expect_res == NULL)
           || (true_label != NULL && false_label != NULL));
   assert (!val_p || desirable_dest == NULL);

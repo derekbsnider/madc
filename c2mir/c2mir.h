@@ -20,6 +20,7 @@ struct c2mir_options {
   FILE *message_file;
   int debug_p, verbose_p, ignore_warnings_p, no_prepro_p, prepro_only_p;
   int syntax_only_p, pedantic_p, asm_p, object_p;
+  int debug_info_p; /* stamp source locations for gdb debug info (see mir-dwarf.h) */
   size_t module_num;
   FILE *prepro_output_file; /* non-null for prepro_only_p */
   const char *output_file_name;
@@ -33,5 +34,11 @@ void c2mir_init (MIR_context_t ctx);
 void c2mir_finish (MIR_context_t ctx);
 int c2mir_compile (MIR_context_t ctx, struct c2mir_options *ops, int (*getc_func) (void *),
                    void *getc_data, const char *source_name, FILE *output_file);
+
+/* For a debug_info_p compile: the source files referenced by the stamped line
+   numbers, in file-id order (index i has file id i+1).  Returns the count and
+   sets *names to the (compiler-owned) array.  Valid until c2mir_finish.  Used
+   by the driver to build the DWARF file table.  Single-threaded compiles only. */
+size_t c2mir_get_source_files (MIR_context_t ctx, const char ***names);
 
 #endif

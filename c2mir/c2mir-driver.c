@@ -54,6 +54,7 @@ typedef pthread_attr_t mir_thread_attr_t;
 #include "c2mir.h"
 #include "mir-gen.h"
 #include "mir-int128-helper.h"
+#include "mir-dwarf.h"
 #include "real-time.h"
 
 #include "mir-alloc-default.c"
@@ -322,6 +323,8 @@ static void init_options (int argc, char *argv[]) {
       options.asm_p = TRUE;
     } else if (strcmp (argv[i], "-c") == 0) {
       options.object_p = TRUE;
+    } else if (strcmp (argv[i], "-g") == 0) {
+      options.debug_info_p = TRUE;
     } else if (strcmp (argv[i], "-w") == 0) {
       options.ignore_warnings_p = TRUE;
     } else if (strcmp (argv[i], "-v") == 0) {
@@ -430,6 +433,7 @@ static void init_options (int argc, char *argv[]) {
   options.macro_commands_num = VARR_LENGTH (macro_command_t, macro_commands);
   options.macro_commands = VARR_ADDR (macro_command_t, macro_commands);
   if (!C2MIR_PARALLEL || threads_num <= 1) threads_num = 0;
+  if (options.debug_info_p) threads_num = 0; /* single-threaded: shared debug file registry */
 }
 
 static int t_getc (void *data) {
@@ -487,6 +491,30 @@ static void *import_resolver (const char *name) {
     exit (1);
   }
   return sym;
+}
+
+/* Build a GDB-JIT DWARF object for the generated functions and register it so
+   an attached gdb can step the source and break by file:line.  Called after the
+   eager link, while the per-function line maps (MIR_func.line_map) are valid. */
+static void register_source_debug (MIR_context_t ctx) {
+  MIR_dwarf_t d = MIR_dwarf_init ();
+  const char **files;
+  size_t nf;
+  void *buf;
+  size_t size;
+
+  if (d == NULL) return; /* unsupported host */
+  nf = c2mir_get_source_files (ctx, &files);
+  for (size_t i = 0; i < nf; i++) MIR_dwarf_add_file (d, files[i]);
+  for (MIR_module_t m = DLIST_HEAD (MIR_module_t, *MIR_get_module_list (ctx)); m != NULL;
+       m = DLIST_NEXT (MIR_module_t, m))
+    for (MIR_item_t it = DLIST_HEAD (MIR_item_t, m->items); it != NULL;
+         it = DLIST_NEXT (MIR_item_t, it))
+      if (it->item_type == MIR_func_item && it->u.func->machine_code != NULL)
+        MIR_dwarf_add_func (d, it->u.func->name, it->u.func->machine_code, it->u.func->code_len,
+                            it->u.func->line_map, it->u.func->line_map_len);
+  if (MIR_dwarf_emit (d, &buf, &size) == 0) MIR_dwarf_gdb_register (buf, size);
+  MIR_dwarf_destroy (d);
 }
 
 static int mir_read_func (MIR_context_t ctx MIR_UNUSED) { return t_getc (&curr_input); }
@@ -939,6 +967,14 @@ int main (int argc, char *argv[], char *env[]) {
           fprintf (stderr, "MIR gen init finish         -- %.0f usec\n",
                    real_usec_time () - start_time);
         if (optimize_level >= 0) MIR_gen_set_optimize_level (main_ctx, (unsigned) optimize_level);
+        if (options.debug_info_p && gen_exec_p) {
+          /* Debuggable codegen: O0 (clean stepping), no inlining (one frame per
+             function), spill every local to a stable frame slot (so a debugger
+             can locate it). */
+          MIR_gen_set_optimize_level (main_ctx, 0);
+          MIR_set_inline_permission (main_ctx, 0);
+          MIR_set_spill_all (main_ctx, 1);
+        }
         if (gen_debug_level >= 0) {
           MIR_gen_set_debug_file (main_ctx, stderr);
           MIR_gen_set_debug_level (main_ctx, gen_debug_level);
@@ -950,6 +986,7 @@ int main (int argc, char *argv[], char *env[]) {
                   import_resolver);
         if (options.verbose_p)
           fprintf (stderr, "MIR link finish        -- %.0f usec\n", real_usec_time () - start_time);
+        if (options.debug_info_p && gen_exec_p) register_source_debug (main_ctx);
         fun_addr = main_func->addr;
         start_time = real_usec_time ();
         result_code = (int) fun_addr (fun_argc, fun_argv, env);
