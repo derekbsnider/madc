@@ -309,6 +309,28 @@ mid-resolution); needed the real deep chain.
   template typeparam left UNBOUND during member-tmpl/out-of-line monomorphization of
   `_M_realloc_insert`'s body (sibling of the session-9 `_ValueType1`; see that history).
   Reduce from tmp/vint.
+  **ROOT-CAUSED (session 10 part 6, NOT a typedef-registration bug):** the failing
+  function is `std::uninitialized_copy` (bits/stl_uninitialized.h:161; confirmed by
+  instrumenting try_instantiate_namespace_fn_template — it's the LAST nsinst before the
+  throw). Its `_ValueType2` typedef IS registered fine (same shape as `_ValueType1`,
+  which works via the `__is_trivial(_ValueType1)` builtin at line 174). `_ValueType2` is
+  then used at line 182 inside the macro `_GLIBCXX_USE_ASSIGN_FOR_INIT(_ValueType2, _From)`
+  which expands (stl_uninitialized.h:99) to
+  `__is_trivial(T) && __is_assignable(T&, U) && std::__check_constructible<T,U>()`.
+  **`__is_assignable` is NOT in madc's trait table** (type_trait_arity, parser.cpp:4792 —
+  only __is_same/__is_base_of/__is_class/__is_union/__is_enum/__has_trivial_destructor/
+  __is_trivial). So `__is_assignable(_ValueType2&, _From)` is parsed as a FUNCTION CALL,
+  and its arg `_ValueType2 & _From` as a bitwise-AND expression → `_ValueType2` read as a
+  VALUE → "use of undeclared identifier". (`_From` = `decltype(*__first)`, line 179.)
+  **FIX shape:** add `__is_assignable` (arity 2) to type_trait_arity + evaluate_type_trait,
+  answered FAITHFULLY ([meta.unary]/[over]: `declval<T>() = declval<U>()` well-formed —
+  needs assignment-operator overload resolution over madc's DataDef model; the trait-table
+  comment forbids a half-faithful trait because a wrong bool corrupts SFINAE). Also audit
+  `std::__check_constructible<T,U>()` (a real libstdc++ fn template — should resolve as a
+  template, but verify it's reached/parsed once __is_assignable no longer mis-tokenizes
+  the `&&` chain) and the sibling `__is_constructible`/`__is_trivially_*` builtins. This
+  is why vt2a/b/c (synthetic) all PASS — they don't use `__is_assignable`. NOT a quick
+  fix (faithful assignment-resolution); own slice.
 - **vector<string>** (testvector, teststringref, testsubscriptmember, testmadc_ns):
   `allocator_traits<…>::_Diff<…> did not register` at `:105` — this is
   instantiate_template_use's "did not register" (parser.cpp:3027), NOT the dangling
