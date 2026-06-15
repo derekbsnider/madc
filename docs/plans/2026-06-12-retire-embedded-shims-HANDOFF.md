@@ -19,11 +19,28 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
-Integration **602 passed / 12 failed / 0 timed out / 18 skipped** (+1 new test testnsdmi).
-Code HEAD **`789db74`**, tree clean. Branch LOCAL-ONLY (`feature/retire-embedded-shims-claude`);
-develop untouched. MIR fork `5df536f` (pin satisfied). Build current, zero warnings.
-The SESSION-12 NSDMI stash (`stash@{0}` "WIP nsdmi parse-capture+storage") is now COMMITTED
-in refined form and was DROPPED — do not look for it.
+Integration **604 passed / 12 failed / 0 timed out / 18 skipped** (+testnsdmi, testptmtype,
+testfriendkeyword). Code HEAD **`6351ef8`**, tree clean. Branch LOCAL-ONLY
+(`feature/retire-embedded-shims-claude`); develop untouched. MIR fork `5df536f` (pin satisfied).
+Build current, zero warnings. The SESSION-12 NSDMI stash was COMMITTED + DROPPED — gone.
+**This session (13) landed THREE features:** NSDMI (`789db74`, §0b), pointer-to-member type
+Stage 1 (`a435cdc`, §1), and the `friend`-keyword de-shim (`6351ef8`, §0c). The ★ NEXT wall
+(nested class with a template-id base) is precisely isolated + fully scoped in §1b — START THERE.
+
+## 0c. ★ `friend` IS NOW A REAL KEYWORD (`6351ef8`) — a shim was retired
+`friend` was NEVER a keyword — no token. A whole subsystem string-matched the identifier
+`"friend"` across both member parsers + helpers (it "worked" by accident; the user flagged it
+as a shim — see [[feedback_correct_over_shortcuts]] "PAST shims surface"). Fixed properly:
+new `tkFRIEND` token + `TokenFRIEND` keyword (lexer keyword_map, C++-gated `!is_c_mode()`,
+like `class`/`using`); ALL `str=="friend"` parser checks → `id()==tkFRIEND` (enum-over-strings);
+the decl-specifier *spelling* sets (`{"static","friend",...}`) stay (a keyword token's text is
+still "friend"; matching a SET by spelling isn't a per-name special-case). Also fixed a
+pre-existing gap the test exposed: ordinary friend FUNCTION decls (`friend int peek(const C&);`)
+weren't granting access (only operators/classes were) — now the declarator name is recorded in
+`friend_function_names` (madc DOES enforce friend access). +testfriendkeyword. **NB: `friend`
+was NOT the map wall** (the template-id friends already parsed by accident). AUDIT NOTE: watch
+for more `str=="<keyword>"` / `name=="literal"` string-matching in parse/compile paths — those
+are shims; the 4 surviving "friend" string-list entries are specifier *spelling* sets (OK).
 
 ## 0b. ★ NSDMI LANDED (`789db74`) — the SESSION-12 NEXT slice is DONE
 C++11 default member initializers (`int x = 5;`) now work end-to-end. Three parts (full
@@ -89,6 +106,39 @@ a CLEAN parse error today, no silent mis-init. Member-FUNCTION pointers = Stage 
 "Missing operand" @:428; testsubscriptarrow/testvectorptr `rebind<>` @:47; testforeach2 MIR-link.)
 The allocator-rebind keystone (SESSION 12) + NSDMI + ptr-to-member-type Stage 1 are all behind us.
 
+## 1b. ★★ NEXT WALL — nested class/struct with a TEMPLATE-ID base (carry-over, MEATY)
+This is the precisely-isolated blocker for **4 of the 5** advanced tests (map, testsubscript,
+testcontainerdtor, testmadc_ns) — they hit `stl_map.h:102` "Expecting member name in class
+definition" / the bare-set reducer hits node walls. ROOT (3-oracle isolated, g++/clang accept all):
+a **nested** class/struct whose **base clause is a template-id** is mis-parsed. The real construct
+is `std::map`'s nested `class value_compare : public std::binary_function<value_type, value_type,
+bool>` (stl_map.h:133) — the base `binary_function<...>` is a template-id (its dependent-typedef
+args are NOT the trigger; even a concrete arg fails).
+**Minimal reducers (REGENERATE — tmp/ is not persistent; run `--std=c++17 --no-embedded-headers`):**
+```
+// t5 FAILS "Expecting member name in struct definition":
+template<class A> struct bf {};
+struct O { struct I : bf<int> { int c; }; };
+int main(){ return 0; }
+// t6 OK  (top-level template-id base):   struct I : bf<int> { int c; };
+// t7 OK  (nested SIMPLE base):           struct O { struct I : B { int c; }; };
+```
+So: top-level template-id base WORKS, nested simple base WORKS, **nested + template-id base FAILS**.
+The nested NAMED class/struct base-clause parser consumes a simple base NAME but not the trailing
+`<...>` template-id. WHERE TO LOOK: `TokenSTRUCT::parse` named-nested-struct member path —
+`parse_nested_aggregate_body` lambda is parser.cpp ~19012 (anon/nested aggregates); the
+"Expecting member name in struct definition" throws are parser.cpp **19446 / 19492** (named nested
+struct path). The `tkColon` handlers at ~19203/19254 are BITFIELDS, not base clauses — find where a
+named nested struct's `: Base` is consumed and why it stops at `<`. (The `t5` outer struct may or
+may not promote to TokenCLASS::parse; instrument with a gated token-window diag at the throw — the
+SESSION-13 method, `#if MADC_DIAG_X` + `OPTIONAL_CPPFLAGS=-DMADC_DIAG_X=1` + `rm -f obj/parser.o
+obj/pic/parser.o` — to confirm which parser and the exact token where it derails.) FIX = make the
+nested base-clause parser consume+resolve a template-id base (instantiate it, like the top-level
+base-clause path at TokenCLASS::parse ~21341-21570 already does — likely route nested base parsing
+through the SAME base-clause code). 3-oracle FIRST. Expect FURTHER walls after (the `_Rb_tree`
+closure); this gates map/subscript/containerdtor/madc_ns. testset is SEPARATE (its own C++20
+`set::contains` at testset.mad:19 — a different, smaller gap).
+
 ## 2. Method + reducers (this session)
 3-oracle every fix (g++ AND clang++ + madc; verify VALUES via cout, exit code = RUN-SUCCESS not
 main()). Gated-diag method still the tool (`#if MADC_DIAG_X` + `OPTIONAL_CPPFLAGS=-DMADC_DIAG_X=1`
@@ -98,17 +148,20 @@ operand"); `tmp/ptm{1,2,3}.cpp` (ptr-to-member: data-type / data-use / member-fn
 ptm2/3 = Stage 2/3). testnsdmi.mad + testptmtype.mad are the committed regression guards.
 
 ## 3. State for the next agent
-- Code HEAD = the ptr-to-member Stage 1 commit, tree clean, **603/12**, build current+warning-free,
-  MIR pin `5df536f` OK. (HEAD was `789db74` after NSDMI; +ptr-to-member Stage 1 + this doc.)
-- NSDMI DONE (§0b); allocator-rebind keystone DONE (SESSION 12); ptr-to-member-type Stage 1 DONE
-  (§1, plan 2026-06-15-pointer-to-member-type-plan.md). **NEXT = re-triage the NEW walls the 5
-  advanced to** (`:102 "Expecting member name in class definition"` for map/subscript/containerdtor/
-  madc_ns; `set::contains` C++20 member for testset) — these are NOT pointer-to-member. Decide
-  whether to drive those, the `_ValueType2`/`__is_assignable` cluster (2 tests), or ptr-to-member
-  Stage 2 (`.*`/`->*`/`&C::m` — no current test consumer). Brace-init NSDMI is a documented
-  smaller follow-up. The variadic-class-template plan
-  (docs/plans/2026-06-15-variadic-class-templates-plan.md) remains the larger variadic-PRIMARY
-  effort, still pending and distinct.
+- Code HEAD **`6351ef8`**, tree clean, **604/12/0/18**, build current+warning-free, MIR pin
+  `5df536f` OK. Session 13 commits: `789db74` NSDMI, `a435cdc` ptr-to-member Stage 1, `6351ef8`
+  friend-keyword de-shim (+ docs `1ef530a`/`d62c387`/`12521cf`).
+- DONE: alloc-rebind keystone (S12); NSDMI (§0b); ptr-to-member type Stage 1 (§1, plan
+  2026-06-15-pointer-to-member-type-plan.md); friend keyword (§0c).
+- **★ NEXT = §1b: nested class/struct with a TEMPLATE-ID base** (carry-over, MEATY; precisely
+  isolated, reducers t5/t6/t7 inline in §1b). Gates 4 tests (map/subscript/containerdtor/madc_ns).
+  Fix in the nested base-clause parser (throws parser.cpp 19446/19492). 3-oracle first; instrument
+  with the gated-diag method to confirm the exact derail token. Expect further `_Rb_tree` walls.
+- OTHER open (re-diagnose live): `_ValueType2`/`__is_assignable` arity-2 (2 tests, LARGE);
+  "Missing operand" @:428 (2); `rebind<>` @:47 (2); for_each MIR-link (1); testset `set::contains`
+  C++20 (smaller). Ptr-to-member Stage 2 (`.*`/`->*`/`&C::m`) + brace-init NSDMI = no-test-consumer
+  follow-ups. Variadic-class-template plan (2026-06-15-variadic-class-templates-plan.md) still
+  pending + distinct.
 
 ---
 
