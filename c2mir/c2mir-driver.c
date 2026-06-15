@@ -493,26 +493,78 @@ static void *import_resolver (const char *name) {
   return sym;
 }
 
+/* Map a c2mir reg-var MIR type to a cached DWARF base type.  c2mir keeps every
+   scalar local/param in a pseudo-register promoted to one of these seven types
+   (see "MIR var naming" in c2mir.c), so the granularity is coarse: a C char or
+   short is homed as i32 and prints as a 4-byte int, a pointer as i64.  Richer
+   per-C-type DIEs would require walking c2mir's decl tree; the promoted view is
+   correct in value and is what this reference consumer exposes. */
+static MIR_dwarf_type_t debug_base_type (MIR_dwarf_t d, MIR_type_t t,
+                                         MIR_dwarf_type_t cache[MIR_T_BOUND]) {
+  if (cache[t] != 0) return cache[t];
+  switch (t) {
+  case MIR_T_I64: cache[t] = MIR_dwarf_base_type (d, "long", MIR_DWARF_ENC_SIGNED, 8); break;
+  case MIR_T_U64: cache[t] = MIR_dwarf_base_type (d, "unsigned long", MIR_DWARF_ENC_UNSIGNED, 8); break;
+  case MIR_T_I32: cache[t] = MIR_dwarf_base_type (d, "int", MIR_DWARF_ENC_SIGNED, 4); break;
+  case MIR_T_U32: cache[t] = MIR_dwarf_base_type (d, "unsigned int", MIR_DWARF_ENC_UNSIGNED, 4); break;
+  case MIR_T_F: cache[t] = MIR_dwarf_base_type (d, "float", MIR_DWARF_ENC_FLOAT, 4); break;
+  case MIR_T_D: cache[t] = MIR_dwarf_base_type (d, "double", MIR_DWARF_ENC_FLOAT, 8); break;
+  case MIR_T_LD: cache[t] = MIR_dwarf_base_type (d, "long double", MIR_DWARF_ENC_FLOAT, 16); break;
+  default: return 0; /* aggregate/temp/special reg -- not a scalar local */
+  }
+  return cache[t];
+}
+
+/* Emit a DWARF variable DIE for each named scalar local/param of the just-added
+   function.  c2mir's reg-var names are "<prefix><scope>_<cname>" for real
+   variables and "<prefix>_<n>" for temporaries (plus "fp"/"Ret_Addr"); we keep
+   only the former.  With spill-all every such reg has a frame slot holding its
+   value, so the location is DW_OP_fbreg(offset) with no deref. */
+static void register_func_vars (MIR_context_t ctx, MIR_dwarf_t d, MIR_func_t func,
+                                MIR_dwarf_type_t cache[MIR_T_BOUND]) {
+  size_t nvars = VARR_LENGTH (MIR_var_t, func->vars);
+
+  for (size_t i = 0; i < nvars; i++) {
+    MIR_var_t var = VARR_GET (MIR_var_t, func->vars, i);
+    const char *name = var.name, *cname;
+    MIR_dwarf_type_t type;
+    int64_t offset;
+
+    if (name == NULL || name[1] < '0' || name[1] > '9') continue; /* temp or special reg */
+    if ((cname = strchr (name, '_')) == NULL || cname[1] == '\0') continue;
+    cname++;
+    if ((type = debug_base_type (d, var.type, cache)) == 0) continue;
+    /* reg number of vars[i] is i+1 (see new_func_reg in mir.c). */
+    if (!MIR_reg_frame_offset (func, (MIR_reg_t) (i + 1), &offset)) continue;
+    MIR_dwarf_add_var (d, cname, i < func->nargs, type, offset, /*deref_p=*/0);
+  }
+}
+
 /* Build a GDB-JIT DWARF object for the generated functions and register it so
-   an attached gdb can step the source and break by file:line.  Called after the
-   eager link, while the per-function line maps (MIR_func.line_map) are valid. */
+   an attached gdb can step the source, break by file:line, and inspect scalar
+   locals/params.  Called after the eager link, while the per-function line maps
+   (MIR_func.line_map) and spill-all frame slots (MIR_func.reg_locs) are valid. */
 static void register_source_debug (MIR_context_t ctx) {
   MIR_dwarf_t d = MIR_dwarf_init ();
+  MIR_dwarf_type_t type_cache[MIR_T_BOUND];
   const char **files;
   size_t nf;
   void *buf;
   size_t size;
 
   if (d == NULL) return; /* unsupported host */
+  for (int i = 0; i < MIR_T_BOUND; i++) type_cache[i] = 0;
   nf = c2mir_get_source_files (ctx, &files);
   for (size_t i = 0; i < nf; i++) MIR_dwarf_add_file (d, files[i]);
   for (MIR_module_t m = DLIST_HEAD (MIR_module_t, *MIR_get_module_list (ctx)); m != NULL;
        m = DLIST_NEXT (MIR_module_t, m))
     for (MIR_item_t it = DLIST_HEAD (MIR_item_t, m->items); it != NULL;
          it = DLIST_NEXT (MIR_item_t, it))
-      if (it->item_type == MIR_func_item && it->u.func->machine_code != NULL)
+      if (it->item_type == MIR_func_item && it->u.func->machine_code != NULL) {
         MIR_dwarf_add_func (d, it->u.func->name, it->u.func->machine_code, it->u.func->code_len,
                             it->u.func->line_map, it->u.func->line_map_len);
+        register_func_vars (ctx, d, it->u.func, type_cache);
+      }
   if (MIR_dwarf_emit (d, &buf, &size) == 0) MIR_dwarf_gdb_register (buf, size);
   MIR_dwarf_destroy (d);
 }
