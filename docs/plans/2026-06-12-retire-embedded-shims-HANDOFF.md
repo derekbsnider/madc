@@ -160,6 +160,54 @@ The variadic-primary `::member` feature (multi-session, plan
 `docs/plans/2026-06-15-variadic-class-templates-plan.md`) underlies several of these but
 is a large effort — weigh `_S_destroy` and the T&-data-member feature first.
 
+### UPDATE 2026-06-15 (session 10, part 2) — reference data members DONE + remaining-12 root-cause CONSOLIDATION
+
+**Landed @`aaf6b42` (zero-regr, still 597/12):** reference data members `T&` are
+no longer a fatal error. A `T& m;` class member is now modeled as `DataDefREF`
+(is-a `DataDefPTR`, 8 bytes, `is_reference`, base_type=referee) — the same
+pointer lowering clang/g++ use (bound in the ctor mem-init list, never rebound).
+The fix only activates where a hard throw previously fired, so it cannot regress.
+Advances testset/testcontainerdtor ONE wall. Runtime reference-member access
+(auto-deref) + ctor mem-init binding (`_M_t(__t)`→store `&__t`) are NOT yet wired
+(untestable until the tree body parses).
+
+**Root-cause map of the remaining 12 (re-probed at live HEAD — they are ~ONE root,
+not 12 bugs):**
+- **Root A — libstdc++ container/allocator template machinery (11 of 12).** The
+  dominant root is `allocator_traits<A>` resolving its NESTED members to OPAQUE
+  placeholders instead of real types:
+  - `value_type` → opaque (NOT element `T`). Proven: `vb[0]` on a `vector<A*>` is a
+    `TokenSubscript` whose datadef is the literal opaque type
+    `allocator_traits_std__pmr__polymorphic_allocator_A____rebind_alloc__value_type`
+    (`is_ptr=0`) — so the element loses its real type. (Suspicious: `pmr::polymorphic_allocator`
+    appears — default-allocator resolution went astray.) Breaks **testvector,
+    testvectorptr, testsubscriptarrow, testsubscriptmember** (the `->`-on-subscript
+    failures are NOT a `->` bug — the element type is opaque so the arrow's
+    "must be a pointer" check at parser.cpp ~14376 rejects it).
+  - `_Diff` "did not register" → **testmadc_ns**.
+  - `__a.destroy(__p)` on the allocator-REFERENCE param → `member reference is not a
+    structure or union` at `:428:54` → **teststringref, testforeachref** (+ testvector's
+    deeper wall) — the `_S_destroy` ref-param-fidelity wall from `0913b97`.
+  - `_Rb_tree` monomorphization (nested class templates + reference members) →
+    **testset, testmap, testcontainerdtor**. Next `_Rb_tree` wall after the T& fix:
+    a data member typed as a NESTED class template (`_Rb_tree_impl<_Compare> _M_impl;`
+    at stl_tree.h:708) — `_Rb_tree_impl` is a `template<...> struct` nested in
+    `_Rb_tree` but madc records it only as a "skipped template" (parser.cpp ~21265),
+    not an instantiable nested class template. clang registers it as a
+    `ClassTemplateDecl` in the parent DeclContext, instantiated on demand.
+  - template-parameter-list parse in a `<map>` header → **testsubscript**.
+- **Root B — madc DSL outlier (1 of 12): testforeach2.** `std::for_each(array, func)`
+  is a madc CONTAINER-overload EXTENSION (not the iterator-pair std signature) over the
+  php `array` type; `__ns_std_for_each` is an undefined symbol. Off the C++23 north-star.
+
+**HIGHEST-LEVERAGE NEXT PIECE:** make `allocator_traits<Alloc>` resolve its nested
+members (`value_type`, `rebind_alloc`, `pointer`, `_Diff`, …) to the REAL types
+(value_type→element `T`), not opaque placeholders. That one fix gates vector +
+both subscript-via-vector tests + likely the destroy-ref wall. More tractable than
+full nested-class-template instantiation, and squarely the documented allocator chain.
+Also chase WHY `std::pmr::polymorphic_allocator` is appearing as the default allocator
+for `vector<A*>` (should be `std::allocator<A*>`).
+
 ---
 
 # ★ SESSION 9 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-14
