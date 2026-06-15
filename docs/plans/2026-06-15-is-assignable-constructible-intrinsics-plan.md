@@ -1,10 +1,43 @@
 # Plan — faithful `__is_assignable` / `__is_constructible` intrinsics (vector cluster)
 
-**Status: RECON DONE 2026-06-15 (SESSION 15) — ready for review, then implement
-incrementally (Slice 1 `__is_assignable`, Slice 2 `__is_constructible`).** Branch
-`feature/retire-embedded-shims-claude` (LOCAL-ONLY). Goal set by user: "Compiler
-work: Group 1 — vector cluster." Companion handoff
+**Status: SLICE 1 DONE (`a2f453f`) + catch-drop fix (`79141eb`); NEXT wall is
+`enable_if_t<__is_bitwise_relocatable<T>::value, T>`, NOT is_constructible.**
+Branch `feature/retire-embedded-shims-claude` (LOCAL-ONLY). Goal set by user:
+"Compiler work: Group 1 — vector cluster." Companion handoff
 `docs/plans/2026-06-12-retire-embedded-shims-HANDOFF.md` §1b.
+
+## 0. PROGRESS (SESSION 15)
+
+The vector-cluster onion, peeled in order (each wall SEPARATE; the plan's
+"Slice 2 = is_constructible" prediction was WRONG — is_constructible has not even
+been reached yet):
+
+1. **`__is_assignable` intrinsic — DONE (`a2f453f`).** Faithful 2-arg intrinsic +
+   ref/cv arg-capture in both eval paths + `FuncDef::is_deleted` /
+   `DataDefCLASS::has_deleted_copy_assign` for faithful deleted-assign detection.
+   3-oracled (tests/testisassignable). Cleared the `_ValueType2 undeclared` wall.
+2. **catch-all `catch(...)` dropped in variadic template bodies — DONE
+   (`79141eb`).** The variadic-template body substitution (parser.cpp ~27484)
+   dropped any non-comma-preceded `...`, mistaking the catch-all ellipsis for a
+   pack expansion -> `catch()` -> "Expected type in catch parameter". Blocked
+   `vector::_M_realloc_insert` (variadic member; `__catch(...)` exception block).
+   Fix: don't drop a `...` directly after an open `(`. +tests/testvariadiccatchall.
+3. **NEXT wall (live, localized via gcc-on-emitted-C):**
+   `__enable_if_t<std::__is_bitwise_relocatable<int>::value, int>` is left as an
+   opaque INCOMPLETE struct type — `enable_if_t<true, T>` is not resolving to `T`.
+   Site: `__relocate_a_1`'s return type (the C++17 `_S_use_relocate()` /
+   `__relocate_a` path `vector::_M_realloc_insert` takes for trivially-relocatable
+   elements). Needs `enable_if_t<bool,T>` alias resolution (+ the
+   `__is_bitwise_relocatable` trait — likely a libstdc++ trait over
+   `__is_trivially_relocatable`/triviality, or another intrinsic). RE-DIAGNOSE at
+   the implementation start; this is a fresh wall, not Slice 2.
+
+fulltest 609 -> 611 across the two fixes; zero regression each. `__is_constructible`
+(the original Slice 2) is still pending and now sits BEHIND the enable_if_t wall.
+
+---
+
+(Recon below retained.)
 
 ## 1. Problem / what this unblocks
 
