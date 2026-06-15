@@ -4904,7 +4904,8 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 // implements in libstdc++, not the compiler) could shadow a library identifier.
 static int type_trait_arity(const std::string &name)
 {
-    if ( name == "__is_same" || name == "__is_base_of" )
+    if ( name == "__is_same" || name == "__is_base_of"
+      || name == "__is_assignable" )
 	return 2;
     if ( name == "__is_class" || name == "__is_union" || name == "__is_enum"
       || name == "__has_trivial_destructor" || name == "__is_trivial" )
@@ -5001,6 +5002,123 @@ static bool trait_is_base_of(DataDef *base, DataDef *derived)
     return false;
 }
 
+// One parsed type-argument to a type trait, with the ref/cv qualification that
+// `__is_assignable` / `__is_constructible` are sensitive to (`int&` != `int`,
+// `const int&` != `int&`). `dd` is the REFERENT type (references are recorded as
+// flags, not folded into a DataDefREF) after folding any trailing `*`.
+struct TraitTypeArg
+{
+    DataDef *dd;
+    bool is_lref;          // trailing `&`
+    bool is_rref;          // trailing `&&`
+    bool referent_const;   // leading `const`
+    TraitTypeArg() : dd(NULL), is_lref(false), is_rref(false), referent_const(false) {}
+    bool same_as(const TraitTypeArg &o) const
+    {
+	return dd && o.dd && dd->name == o.dd->name
+	    && is_lref == o.is_lref && is_rref == o.is_rref
+	    && referent_const == o.referent_const;
+    }
+};
+
+// Tri-state: 1 = yes, 0 = no, -1 = madc cannot determine faithfully (the caller
+// raises a clear error rather than emit a WRONG bool — a wrong trait result would
+// silently corrupt SFINAE; see the correctness-first note on type_trait_arity).
+
+// Is class `c` copy-/move-assignable? A usable (non-`= delete`) user `operator=`
+// makes it assignable; an `operator=` that is `= delete` makes it not. With no
+// user `operator=` the implicit one applies: assignable iff every base and every
+// object/reference data member is assignable (a reference member deletes the
+// implicit copy-assign). Mirrors what class_copy_assign_members synthesizes plus
+// the deleted-operator=/reference-member exclusions g++/clang apply.
+static int trait_class_assignable(DataDefCLASS *c)
+{
+    if ( !c )
+	return -1;
+    for ( Variable *mv : c->methods )
+    {
+	if ( !mv )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+	if ( !fd || fd->parameters.size() < 2 )
+	    continue;
+	bool is_assign = mv->name == "operator="
+	    || fd->method_display_name == "operator="
+	    || mv->name == c->name + "__operator=";
+	if ( !is_assign )
+	    continue;
+	if ( !fd->is_deleted )
+	    return 1;            // a usable copy/move operator= exists
+	return 0;                // the (only) operator= is deleted
+    }
+    // A deleted `operator=` was dropped from `methods` (recorded as a flag).
+    if ( c->has_deleted_copy_assign )
+	return 0;
+    if ( c->base_class )
+    {
+	int s = trait_class_assignable(c->base_class);
+	if ( s != 1 )
+	    return s;
+    }
+    for ( size_t i = 0; i < c->bases.size(); ++i )
+    {
+	if ( !c->bases[i].base )
+	    continue;
+	int s = trait_class_assignable(c->bases[i].base);
+	if ( s != 1 )
+	    return s;
+    }
+    for ( size_t i = 0; i < c->members.size(); ++i )
+    {
+	DataDef *m = c->members[i].second;
+	if ( !m )
+	    continue;
+	if ( dynamic_cast<DataDefREF *>(m) )
+	    return 0;            // a reference member deletes the implicit copy-assign
+	if ( DataDefCLASS *mc = dynamic_cast<DataDefCLASS *>(m) )
+	{
+	    int s = trait_class_assignable(mc);
+	    if ( s != 1 )
+		return s;
+	}
+    }
+    return 1;
+}
+
+// Is a scalar/pointer/enum lvalue of type `to` assignable from a value of type
+// `from`? Same type or two arithmetic types (arithmetic conversions) or a
+// pointer from a pointer/null. Anything else madc does not model exactly -> -1.
+static int trait_scalar_assignable_from(DataDef *to, DataDef *from)
+{
+    if ( !to || !from )
+	return -1;
+    if ( to == from || to->name == from->name )
+	return 1;
+    if ( to->is_numeric() && from->is_numeric() )
+	return 1;
+    if ( to->is_pointer() && (from->is_pointer() || from->is_numeric()) )
+	return 1;
+    return -1;
+}
+
+// __is_assignable(To, From): is `declval<To>() = declval<From>()` well-formed?
+// (The gcc/clang intrinsic; libstdc++'s std::is_assignable wraps it.)
+static int trait_is_assignable(const TraitTypeArg &to, const TraitTypeArg &from)
+{
+    DataDefCLASS *to_class = dynamic_cast<DataDefCLASS *>(to.dd);
+    // A non-class prvalue (no reference) cannot be assigned to; nor can a
+    // non-class rvalue reference. A class prvalue/rvalue-ref CAN (member op=).
+    if ( !to_class && !to.is_lref )
+	return 0;
+    if ( !to_class && to.is_rref )
+	return 0;
+    if ( to.referent_const )
+	return 0;
+    if ( !to_class )
+	return trait_scalar_assignable_from(to.dd, from.dd);
+    return trait_class_assignable(to_class);
+}
+
 TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &name)
 {
     int arity = type_trait_arity(name);
@@ -5008,12 +5126,14 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	Throw(op_tb) << "Expecting '(' after " << name << flush;
     nextToken(); // consume '('
 
-    std::vector<DataDef *> args;
+    std::vector<TraitTypeArg> args;
     for (;;)
     {
+	TraitTypeArg a;
 	TokenBase *at = nextToken();
 	std::string cv_spelling;
 	at = consume_template_type_arg_qualifiers(at, cv_spelling);
+	a.referent_const = cv_spelling.find("const") != std::string::npos;
 	TokenDataType *adt = resolve_declared_type_token(at, true, true);
 	if ( !adt )
 	    Throw(at ? at : op_tb) << "Expecting a type argument to " << name << flush;
@@ -5025,7 +5145,13 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	    nextToken();
 	    dd = getPointerType(dd);
 	}
-	args.push_back(dd);
+	a.dd = dd;
+	// Trailing reference (`T&` / `T&&`) — load-bearing for __is_assignable.
+	if ( peekToken() && peekToken()->id() == TokenID::tkBand )
+	{ nextToken(); a.is_lref = true; }
+	else if ( peekToken() && peekToken()->id() == TokenID::tkLand )
+	{ nextToken(); a.is_rref = true; }
+	args.push_back(a);
 	TokenBase *sep = nextToken();
 	if ( sep && sep->id() == TokenID::tkComma )
 	    continue;
@@ -5040,19 +5166,27 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 
     bool result = false;
     if ( name == "__is_same" )
-	result = args[0] && args[1] && args[0]->name == args[1]->name;
+	result = args[0].same_as(args[1]);
     else if ( name == "__is_enum" )
-	result = trait_is_enum(args[0]);
+	result = trait_is_enum(args[0].dd);
     else if ( name == "__is_class" )
-	result = trait_is_class(args[0]);
+	result = trait_is_class(args[0].dd);
     else if ( name == "__is_union" )
-	result = trait_is_union(args[0]);
+	result = trait_is_union(args[0].dd);
     else if ( name == "__is_base_of" )
-	result = trait_is_base_of(args[0], args[1]);
+	result = trait_is_base_of(args[0].dd, args[1].dd);
     else if ( name == "__has_trivial_destructor" )
-	result = trait_has_trivial_destructor(args[0]);
+	result = trait_has_trivial_destructor(args[0].dd);
     else if ( name == "__is_trivial" )
-	result = trait_is_trivial(args[0]);
+	result = trait_is_trivial(args[0].dd);
+    else if ( name == "__is_assignable" )
+    {
+	int s = trait_is_assignable(args[0], args[1]);
+	if ( s < 0 )
+	    Throw(op_tb) << "cannot faithfully evaluate __is_assignable(...) for "
+			 << "these operand types" << flush;
+	result = s != 0;
+    }
 
     TokenInt *ti = new TokenInt(result ? 1 : 0);
     ti->setDataType(&ddBOOL);
@@ -13464,11 +13598,20 @@ static bool non_type_partial_spec_arg_matches(Program &pgm,
 // `*` run makes it a pointer. Returns NULL if the token at `i` does not name a
 // resolvable type. (The live evaluator resolve_declared_type_token consumes the
 // global stream — must NOT be used here; that re-entrancy is what regressed.)
-static DataDef *read_local_type_operand(Program &pgm,
-		const std::vector<TokenBase *> &toks, size_t &i)
+static bool read_local_type_arg(Program &pgm,
+		const std::vector<TokenBase *> &toks, size_t &i, TraitTypeArg &out)
 {
     if ( i >= toks.size() || !toks[i] )
-	return NULL;
+	return false;
+    // Leading cv-qualifiers (`const int&` etc. — load-bearing for __is_assignable).
+    while ( i < toks.size() && is_type_qualifier_token(toks[i]) )
+    {
+	if ( toks[i]->id() == TokenID::tkCONST )
+	    out.referent_const = true;
+	++i;
+    }
+    if ( i >= toks.size() || !toks[i] )
+	return false;
     DataDef *dd = NULL;
     TokenBase *t = toks[i];
     if ( t->type() == TokenType::ttDataType )
@@ -13481,14 +13624,19 @@ static DataDef *read_local_type_operand(Program &pgm,
 	    dd = &it->second->definition;
     }
     if ( !dd )
-	return NULL;
+	return false;
     ++i;
     while ( i < toks.size() && toks[i] && toks[i]->id() == TokenID::tkMul )
     {
 	dd = pgm.getPointerType(dd);
 	++i;
     }
-    return dd;
+    out.dd = dd;
+    if ( i < toks.size() && toks[i] && toks[i]->id() == TokenID::tkBand )
+    { out.is_lref = true; ++i; }
+    else if ( i < toks.size() && toks[i] && toks[i]->id() == TokenID::tkLand )
+    { out.is_rref = true; ++i; }
+    return true;
 }
 
 // Fold a type-trait builtin call `NAME ( type [, type] )` at cursor `i`, reusing
@@ -13507,13 +13655,13 @@ static bool eval_local_type_trait(Program &pgm,
       || toks[i + 1]->id() != TokenID::tkOpBrk )
 	return false;
     size_t j = i + 2;
-    std::vector<DataDef *> targs;
+    std::vector<TraitTypeArg> targs;
     for (;;)
     {
-	DataDef *dd = read_local_type_operand(pgm, toks, j);
-	if ( !dd )
+	TraitTypeArg a;
+	if ( !read_local_type_arg(pgm, toks, j, a) )
 	    return false;
-	targs.push_back(dd);
+	targs.push_back(a);
 	if ( j < toks.size() && toks[j] && toks[j]->id() == TokenID::tkComma )
 	{ ++j; continue; }
 	if ( j < toks.size() && toks[j] && toks[j]->id() == TokenID::tkClBrk )
@@ -13523,14 +13671,20 @@ static bool eval_local_type_trait(Program &pgm,
     if ( (int)targs.size() != arity )
 	return false;
     bool r;
-    if ( nm == "__has_trivial_destructor" ) r = trait_has_trivial_destructor(targs[0]);
-    else if ( nm == "__is_trivial" )        r = trait_is_trivial(targs[0]);
-    else if ( nm == "__is_class" )          r = trait_is_class(targs[0]);
-    else if ( nm == "__is_union" )          r = trait_is_union(targs[0]);
-    else if ( nm == "__is_enum" )           r = trait_is_enum(targs[0]);
-    else if ( nm == "__is_same" )           r = targs[0] && targs[1]
-						 && targs[0]->name == targs[1]->name;
-    else if ( nm == "__is_base_of" )        r = trait_is_base_of(targs[0], targs[1]);
+    if ( nm == "__has_trivial_destructor" ) r = trait_has_trivial_destructor(targs[0].dd);
+    else if ( nm == "__is_trivial" )        r = trait_is_trivial(targs[0].dd);
+    else if ( nm == "__is_class" )          r = trait_is_class(targs[0].dd);
+    else if ( nm == "__is_union" )          r = trait_is_union(targs[0].dd);
+    else if ( nm == "__is_enum" )           r = trait_is_enum(targs[0].dd);
+    else if ( nm == "__is_same" )           r = targs[0].same_as(targs[1]);
+    else if ( nm == "__is_base_of" )        r = trait_is_base_of(targs[0].dd, targs[1].dd);
+    else if ( nm == "__is_assignable" )
+    {
+	int s = trait_is_assignable(targs[0], targs[1]);
+	if ( s < 0 )
+	    return false;   // undetermined -> not a constant-foldable trait here
+	r = s != 0;
+    }
     else return false;
     out = r ? 1 : 0;
     i = j;
@@ -22398,6 +22552,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type);
 		if ( mfd && mfd->defaulted_or_deleted )
 		{
+		    // A deleted `operator=` (a binary assignment operator: this +
+		    // one arg) is dropped here; record it so __is_assignable reports
+		    // the class as not copy-assignable.
+		    if ( mfd->is_deleted && is_operator_method
+		      && mname == "operator=" && mfd->parameters.size() >= 2 )
+			ddc->has_deleted_copy_assign = true;
 		    // A DEFAULTED member comparison synthesizes its
 		    // namespace-scope definition from the member list at
 		    // class completion ([class.compare.default]); a defaulted
@@ -29906,6 +30066,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->declaration_only = src->declaration_only;
     f->decl_file = src->decl_file;
     f->defaulted_or_deleted = src->defaulted_or_deleted;
+    f->is_deleted = src->is_deleted;
     f->pure_virtual = src->pure_virtual;
     f->is_const_method = src->is_const_method;
     return f;
@@ -29981,6 +30142,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->no_instrument_function = func->no_instrument_function;
 	    fresh->explicit_alignment = func->explicit_alignment;
 	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
+	    fresh->is_deleted = func->is_deleted;
 	    fresh->pure_virtual = func->pure_virtual;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
@@ -30003,6 +30165,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->no_instrument_function = func->no_instrument_function;
 	    fresh->explicit_alignment = func->explicit_alignment;
 	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
+	    fresh->is_deleted = func->is_deleted;
 	    fresh->pure_virtual = func->pure_virtual;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
@@ -30849,6 +31012,10 @@ paramdecl:
 	    && (assigned->id() == TokenID::tkDEFAULT
 		|| (is_contextual_identifier_token(assigned)
 		    && contextual_identifier_name(assigned) == "default"));
+	bool explicitly_deleted = assigned
+	    && (assigned->id() == TokenID::tkDELETE
+		|| (is_contextual_identifier_token(assigned)
+		    && contextual_identifier_name(assigned) == "delete"));
 	nt = assigned;
 	while ( nt && nt->id() != TokenID::tkSemi )
 	    nt = nextToken();
@@ -30877,6 +31044,7 @@ paramdecl:
 		method->owner_class = owner_class;
 	    func->declaration_only = pure_virtual;
 	    func->defaulted_or_deleted = !pure_virtual;
+	    func->is_deleted = explicitly_deleted;
 	    func->pure_virtual = pure_virtual;
 	    if ( !compounds.empty() && compounds.top() == param_scope )
 		popCompound();

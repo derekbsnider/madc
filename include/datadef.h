@@ -734,6 +734,10 @@ class DataDefCLASS: public DataDefSTRUCT
 public:
     std::vector<Variable *> methods;
     std::vector<Variable *> staticconst;
+    // A user `operator=` declared `= delete` is dropped from `methods` (like every
+    // defaulted/deleted special member). Record the fact so __is_assignable can
+    // report the class as NOT copy-assignable (a wrong "true" would corrupt SFINAE).
+    bool has_deleted_copy_assign = false;
     std::map<std::string, Variable *> method_map; // unmangled name -> method variable
     std::map<std::string, DataDef *> type_aliases; // class-scope typedef/using aliases
     std::vector<std::string> friend_class_names; // class names granted friend access
