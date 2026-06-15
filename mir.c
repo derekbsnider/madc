@@ -3914,6 +3914,10 @@ static int simplify_func (MIR_context_t ctx, MIR_item_t func_item, int mem_float
     MIR_get_error_func (ctx) (MIR_wrong_param_value_error, "MIR_remove_simplify: wrong func item");
   vn_empty (ctx);
   func = func_item->u.func;
+  /* The arg-extension insns below are inserted at the function head; don't let
+     them inherit a stale source line (the prologue would adopt it as the func's
+     first line).  Leave them unlocated; the per-insn loop restamps the rest. */
+  ctx->curr_source_file_id = ctx->curr_source_line = 0;
   for (size_t i = 0; i < func->nargs; i++) {
     MIR_var_t var = VARR_GET (MIR_var_t, func->vars, i);
 
