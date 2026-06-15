@@ -52,7 +52,8 @@ enum class TokenID {
   tkUNION, tkNEW, tkDELETE,
   tkDynamicCast, tkTypeid,    // RTTI (S5): dynamic_cast<T*>(e), typeid(e|T)
   tkObjTemp,                  // functional construction temporary: T(args)
-  tk3NotEq                    // !== strict not-equal (STD_MADC dialect)
+  tk3NotEq,                   // !== strict not-equal (STD_MADC dialect)
+  tkFRIEND                    // C++ `friend` declaration specifier
 };
 
 enum class TokenAssoc {
@@ -1205,6 +1206,18 @@ public:
     TokenUSING() : TokenKeyword("using") {}
     virtual TokenID id() const { return TokenID::tkUSING; }
     virtual TokenBase *clone() { return (TokenBase*)new TokenUSING(); }
+    virtual TokenBase *parse(Program &);
+};
+
+// C++ `friend` declaration specifier. Only valid leading a member declaration
+// inside a class/struct body (the struct/class member parsers intercept it on
+// the tkFRIEND token); a standalone parse is a misplaced-friend error.
+class TokenFRIEND: public TokenKeyword
+{
+public:
+    TokenFRIEND() : TokenKeyword("friend") {}
+    virtual TokenID id() const { return TokenID::tkFRIEND; }
+    virtual TokenBase *clone() { return (TokenBase*)new TokenFRIEND(); }
     virtual TokenBase *parse(Program &);
 };
 

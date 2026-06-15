@@ -926,6 +926,7 @@ TokenEXTERN	tkEXTERN;
 TokenRESTRICT	tkRESTRICT;
 TokenVOLATILE	tkVOLATILE;
 TokenUSING	tkUSING;
+TokenFRIEND	tkFRIEND;
 TokenNAMESPACE	tkNAMESPACE;
 TokenPREFER	tkPREFER;
 TokenDEFER	tkDEFER;
@@ -2112,6 +2113,7 @@ void Program::add_keywords()
 	keyword_map[tkTEMPLATE.str] = &tkTEMPLATE;
 	keyword_map[tkNEW.str] = &tkNEW;
 	keyword_map[tkDELETE.str] = &tkDELETE;
+	keyword_map[tkFRIEND.str] = &tkFRIEND;
     }
     keyword_map[tkDEFER.str] = &tkDEFER;
 }

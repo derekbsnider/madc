@@ -17874,6 +17874,15 @@ TokenBase *TokenNAMESPACE::parse(Program &pgm)
     return pgm.parse_namespace_block(false);
 }
 
+// `friend` is only valid as a member-declaration specifier inside a class/struct
+// body; the struct/class member parsers intercept the tkFRIEND token there. A
+// dispatch to this standalone parse means `friend` appeared at statement scope.
+TokenBase *TokenFRIEND::parse(Program &pgm)
+{
+    pgm.Throw(this) << "'friend' is only allowed inside a class or struct definition" << flush;
+    return NULL;
+}
+
 // parse 'using' statement
 // forms:
 // using namespace std;       — import all members of std into global scope
@@ -18470,10 +18479,12 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 		    break;
 	    }
 	}
+	if ( t->id() == TokenID::tkFRIEND )
+	    return true;
 	if ( is_contextual_identifier_token(t) )
 	{
 	    std::string name = contextual_identifier_name(t);
-	    if ( name == "explicit" || name == "virtual" || name == "friend"
+	    if ( name == "explicit" || name == "virtual"
 	      || name == "public" || name == "private" || name == "protected" )
 		return true;
 	}
@@ -20447,6 +20458,8 @@ static void register_skipped_class_template_function(
 static bool find_free_operator_declarator(
 	const std::vector<TokenBase *> &tokens, std::string &opname_out,
 	size_t &oper_idx_out, size_t &lparen_out);
+static std::string skipped_template_function_declarator_name(
+	const std::vector<TokenBase *> &tokens);
 
 // True when a skipped FRIEND declaration is a free-operator DEFINITION (has a
 // body): `friend bool operator<(...) noexcept { ... }`. Bodyless friend
@@ -20653,8 +20666,7 @@ static void parse_hoisted_friend_operator(Program &pgm,
 	    continue;
 	// Drop the leading `friend` specifier — at namespace scope the rest
 	// is an ordinary function definition.
-	if ( inj.empty() && is_contextual_identifier_token(t)
-	  && contextual_identifier_name(t) == "friend" )
+	if ( inj.empty() && t->id() == TokenID::tkFRIEND )
 	    continue;
 	inj.push_back(t->clone());
     }
@@ -21711,8 +21723,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    }
 	}
 
-	if ( tn->type() == TokenType::ttIdentifier
-	  && ((TokenIdent *)tn)->str == "friend" )
+	if ( tn->id() == TokenID::tkFRIEND )
 	{
 	    pgm.nextToken();
 	    TokenBase *first = pgm.nextToken();
@@ -21739,6 +21750,18 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    {
 		defaulted_comparison_ops.push_back(friend_opname);
 		ddc->friend_function_names.push_back(friend_opname);
+	    }
+	    else
+	    {
+		// An ordinary friend function DECLARATION
+		// (`friend int peek(const C&);`) grants friendship by name. A
+		// friend class/struct/union declaration has no function
+		// declarator, so the extractor yields nothing and only the
+		// befriended TYPE (register_skipped_friend_type, above) is recorded.
+		std::string friend_fname =
+		    skipped_template_function_declarator_name(skipped_decl);
+		if ( !friend_fname.empty() )
+		    ddc->friend_function_names.push_back(friend_fname);
 	    }
 	    continue;
 	}
@@ -22229,7 +22252,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	if ( tn->id() == TokenID::tkOPEROVER )
 	    mname = pgm.parseOperatorId(tn);
 	else if ( tn->type() != TokenType::ttIdentifier )
+	{
 	    pgm.Throw(tn) << "Expecting member name in class definition" << flush;
+	}
 	else
 	    mname = ((TokenIdent *)tn)->str;
 
@@ -25439,8 +25464,7 @@ static bool skipped_template_decl_is_friend_type(
 	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
-	if ( t->type() == TokenType::ttIdentifier
-	  && static_cast<TokenIdent *>(t)->str == "friend" )
+	if ( t->id() == TokenID::tkFRIEND )
 	{
 	    saw_friend = true;
 	    continue;
@@ -25485,8 +25509,7 @@ static std::string skipped_friend_type_name(
 	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
-	if ( t->type() == TokenType::ttIdentifier
-	  && static_cast<TokenIdent *>(t)->str == "friend" )
+	if ( t->id() == TokenID::tkFRIEND )
 	    continue;
 	if ( token_is_friend_elaborated_type(t) )
 	{
