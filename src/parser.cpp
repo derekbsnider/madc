@@ -26992,7 +26992,17 @@ static bool instantiate_fn_template_binding(Program &pgm,
     // expects the stream positioned AFTER the `(`, so split the injected
     // `RET name ( params ) { body }` at the params: push [params .. body], pass
     // the return type + name to parseFunction, and free the unused head tokens.
-    bool as_method = ft.instance_method && ft.owner_class;
+    // Both INSTANCE and STATIC member templates instantiate AS A METHOD of the
+    // owner so the body resolves class-scope members ([basic.lookup.unqual]) —
+    // e.g. allocator_traits::destroy calls its sibling static _S_destroy
+    // unqualified, and a static member template `run<T>` calls a sibling static
+    // `helper`. static-ness is just a flag: a static member parses with the
+    // owner in scope but NO hidden `__this` (parseFunction's static_class_method)
+    // — the clang/gcc model. Previously a static member template was parsed as a
+    // free function (no owner), so its body's unqualified sibling-member
+    // references failed ("undeclared identifier").
+    bool as_method = ft.owner_class != NULL;
+    bool static_member_method = !ft.instance_method;
     DataDef *method_ret = &ddVOID;
     std::string method_id;
     size_t method_params_start = 0;
@@ -27076,7 +27086,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    // caller aliases the call to method_id via the placeholder's
 	    // local_emit_name.
 	    std::string idc = method_id;
-	    pgm.parseFunction(*method_ret, idc, ft.owner_class);
+	    pgm.parseFunction(*method_ret, idc, ft.owner_class, NULL, false,
+			      std::string(), static_member_method);
 	}
 	else
 	{
