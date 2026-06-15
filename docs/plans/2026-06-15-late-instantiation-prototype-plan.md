@@ -1,8 +1,10 @@
 # Plan — forward prototypes for late-drained free-fn-template instantiations
 
-**Status:** recon done, ready to implement next session. Branch
-`feature/retire-embedded-shims-claude` (LOCAL-ONLY). Companion: handoff
-`docs/plans/2026-06-12-retire-embedded-shims-HANDOFF.md` §1b (SESSION 14).
+**Status: APPROVED 2026-06-15 — do A then B** (user-confirmed: land A first as the
+low-risk targeted fix, then B as the clang-aligned class-killer hardening pass,
+each fully validated under fulltest before the next). Recon done; ready to
+implement. Branch `feature/retire-embedded-shims-claude` (LOCAL-ONLY). Companion:
+handoff `docs/plans/2026-06-12-retire-embedded-shims-HANDOFF.md` §1b (SESSION 14).
 
 ## 1. Problem
 

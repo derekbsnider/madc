@@ -109,25 +109,28 @@ tmp/sii.mad > tmp/sii.c; gcc -std=gnu11 -fsyntax-only -w tmp/sii.c` →
 sii.c:909:104: invalid type argument of unary '*' (have 'int')
 sii.c:938:47:  conflicting types for '__ns_std_move__o2'
 ```
-ROOT: `__ns_std_move__o2` (an overload-disambiguated `std::move` instantiation) is DEFINED (line
-938) and USED (line 909, inside the lazily-materialized `_Optional_alloc::release` body) but has NO
-forward PROTOTYPE before its use → c2mir implicitly declares it `int` (K&R) → `*int` + conflicting
-def. The proto pass (translate_module Pass 0.75) is `referenced_funcs`-driven and runs before the
-late fixpoint that materializes `release` (whose body first references `__ns_std_move__o2`). The
-late proto pass (after the LAST fixpoint, ~cir_builder 11940-12060) is supposed to proto
-late-materialized funcs but MISSES this std::move instantiation (it's emitted via
-`std_free_function_instantiation`/`m_free_fn_inst_by_sym`, ~cir_builder 6584+, not the
-lib_funcs/materialized_funcs path the late proto pass iterates). **SAME CLASS as the
-`__ns_std_for_each` MIR-link failure (testforeach2)** — instantiated free fn-templates not
-proto'd/emitted for definition-before-use. FIX (emission/ordering, HIGHER REGRESSION RISK than the
-parse fixes — validate hard): ensure free-fn-template instantiations reached during the late
-fixpoint get a forward prototype emitted before their use (add their emit symbol to the late proto
-set, or fold `m_free_fn_inst_by_sym` entries into the late proto pass). 3-oracle a reducer first: a
-class whose lazily-materialized method body calls a `std::move`-like free template returning a
-non-trivial class by value. gates map/subscript/containerdtor/madc_ns (+ likely testforeach2).
-testset SEPARATE (C++20 `set::contains` @19). Other open walls (re-diagnose live):
-`_ValueType2`/`__is_assignable` arity-2 (testvector/testforeachref, LARGE); "Missing operand" @:428
-(teststringref/testsubscriptmember); `rebind<>` @:47 (testsubscriptarrow/testvectorptr).
+**★ FULL RECON + APPROVED PLAN: `docs/plans/2026-06-15-late-instantiation-prototype-plan.md`
+(APPROVED A-then-B). READ IT — it has the exact line refs, the clang model, and the validation
+strategy.** Summary: `__ns_std_move__o2` (an overload-disambiguated `std::move` instantiation) is
+DEFINED (line 938) and USED (909, inside the lazily-materialized `_Optional_alloc::release` body)
+with NO forward PROTOTYPE → c2mir K&R implicit-int (`*int` + conflicting def). PRECISE GAP
+(cir_builder `translate_module`): the fixpoint's `pending_funcs` drain (~11994-12004) folds late
+instantiations into `lib_funcs` (→ a definition, ~12012) but does NOT push them to
+`materialized_funcs` — and Pass 1.95(a) (~12361) only emits forward protos for `materialized_funcs`
+(the `deferred_lazy_bodies` path, ~11978). Pass 0.75 (~12031) also misses it (keyed by the
+`funcdef_map` template symbol, not the `__o2` instantiation symbol). So: def emitted, no proto, use
+precedes def. **SAME CLASS as testforeach2's `__ns_std_for_each` MIR-link** — likely a 2-test fix.
+CLANG (`PerformPendingInstantiations`, SemaTemplateInstantiateDecl.cpp:6417) can't hit this: AST
+decls + LLVM-IR symbol references have no textual declare-before-use rule; the bug is intrinsic to
+madc's ordered-C11 emission → invariant "declare everything you define". **APPROACH A (do first,
+low risk):** in the pending_funcs drain, also push the drained TokenFunc to `materialized_funcs` so
+Pass 1.95(a) protos it (dedup vs Pass 0.75). **APPROACH B (then, class-killer, higher risk):** drive
+the forward-proto pass off `func_def_nodes` (every madc-DEFINED fn), excluding extern-only/libc +
+member-template placeholders. HIGHER REGRESSION RISK (proto passes touch every module) — verify-first
+diag, 3-oracle reducer, full `gcc-on-emitted-C` + fulltest each step. gates map/subscript/containerdtor/madc_ns
+(+ likely testforeach2). testset SEPARATE (C++20 `set::contains` @19). Other open walls (re-diagnose
+live): `_ValueType2`/`__is_assignable` arity-2 (testvector/testforeachref, LARGE); "Missing operand"
+@:428 (teststringref/testsubscriptmember); `rebind<>` @:47 (testsubscriptarrow/testvectorptr).
 
 ## 2. Method + reducers (this session)
 3-oracle every fix (g++ AND clang++ + madc; verify VALUES via cout, exit code = RUN-SUCCESS not
@@ -155,6 +158,11 @@ testmemberaliastmplmember, testpseudodtor, testmemberarrowcall, testretbufmethod
   (`__ns_std_move__o2`). EMISSION/ORDERING bug in translate_module's late proto pass — HIGHER
   regression risk than the parse fixes, validate hard. SAME class as testforeach2's
   `__ns_std_for_each` MIR-link → likely a 2-test fix. Localize with gcc-on-emitted-C (§0).
+  **★ APPROVED PLAN `docs/plans/2026-06-15-late-instantiation-prototype-plan.md` — do A then B**
+  (A = push pending_funcs-drained instantiations to `materialized_funcs`, low risk; B = proto off
+  `func_def_nodes`, class-killer, higher risk). The plan has exact line refs + clang model +
+  validation; START by reading it. NOTE doc commits since last code commit: `c3ab56a` (handoff),
+  `e305e85` (this plan) — code HEAD is still `b54c128` (609/12).
 - OTHER open (re-diagnose live): `_ValueType2`/`__is_assignable` arity-2 (2, LARGE); "Missing
   operand" @:428 (2); `rebind<>` @:47 (2); testset `set::contains` C++20.
   Ptr-to-member Stage 2 (`.*`/`->*`/`&C::m`) + brace-init NSDMI + `*member->method()` (deref of a
