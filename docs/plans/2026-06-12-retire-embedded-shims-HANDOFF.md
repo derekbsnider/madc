@@ -19,15 +19,41 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
-Integration **609 passed / 12 failed / 0 timed out / 18 skipped** (UNCHANGED pass
-count — see §0b for why; +1 committed regression guard testlateinstproto, but the
-12 remaining failures are all behind SEPARATE walls). Code HEAD **`2ab2bd4`**, tree
-clean. Branch LOCAL-ONLY (`feature/retire-embedded-shims-claude`); develop
+Integration **611 passed / 12 failed / 0 timed out / 18 skipped** (the 12 remaining
+failures are all behind SEPARATE walls; +guards testlateinstproto/testisassignable/
+testvariadiccatchall). Code HEAD **`79141eb`**, tree clean. Branch LOCAL-ONLY (`feature/retire-embedded-shims-claude`); develop
 untouched. MIR fork `5df536f` (pin satisfied). Build current, zero warnings.
-**This session (15) COMPLETED the late-instantiation-prototype plan
-(`docs/plans/2026-06-15-late-instantiation-prototype-plan.md`):** Approach A landed
-(`3591d0b`), Approach B evaluated + DEFERRED (superseded by A, fixes no current
-test). START at §1b for the next wall.
+**This session (15) did TWO things:** (1) COMPLETED the late-instantiation-prototype
+plan (`docs/plans/2026-06-15-late-instantiation-prototype-plan.md`): Approach A
+landed (`3591d0b`), Approach B evaluated + DEFERRED (superseded by A). (2) STARTED
+the **vector cluster (Group 1)** under plan
+`docs/plans/2026-06-15-is-assignable-constructible-intrinsics-plan.md` — cleared
+TWO walls (see §0d). Integration **611** now (was 609). START at §0d for the live
+vector-cluster wall.
+
+## 0d. ★ VECTOR CLUSTER (Group 1) — IN PROGRESS, 2 walls cleared
+Plan `docs/plans/2026-06-15-is-assignable-constructible-intrinsics-plan.md` (its §0
+has the live state). The onion peels in an order DIFFERENT from the plan's original
+guess (is_constructible NOT yet reached). Cleared this session:
+1. **`__is_assignable` intrinsic (`a2f453f`)** — faithful 2-arg intrinsic + per-arg
+   ref/cv capture in BOTH trait eval paths (new `TraitTypeArg`) + faithful
+   deleted-assign detection (new `FuncDef::is_deleted` set only for `= delete`, +
+   `DataDefCLASS::has_deleted_copy_assign` recorded where deleted methods are
+   dropped). 3-oracled tests/testisassignable. Cleared `_ValueType2 undeclared`.
+2. **catch-all `catch(...)` in variadic template bodies (`79141eb`)** — the
+   variadic-template body substitution (parser.cpp ~27490) dropped any
+   non-comma-preceded `...`, eating the `catch(...)` ellipsis -> `catch()` ->
+   "Expected type in catch parameter" (blocked vector::_M_realloc_insert, a variadic
+   member with a `__catch(...)` block). Fix: never drop a `...` directly after `(`.
+   +tests/testvariadiccatchall (3-oracle, parse-only).
+**★ LIVE NEXT WALL** (reducer `tmp/v1.mad` = `vector<int> v; v.push_back(7);`,
+localized via gcc-on-emitted-C on `--emit=c11`): `__enable_if_t<std::__is_bitwise_
+relocatable<int>::value, int*>` is left an OPAQUE INCOMPLETE struct type instead of
+resolving to `int*`. `__is_bitwise_relocatable<_Tp> : is_trivial<_Tp>` (so `::value`
+= is_trivial, which madc HAS) — so the gap is the **`__enable_if_t<bool,T>` ALIAS
+TEMPLATE not resolving** when its non-type bool arg is a derived-trait `::value`
+(needs: fold the inherited `::value`, then resolve the alias to `_Tp*`). Fresh,
+substantial — NOT is_constructible (that's still behind it). RE-DIAGNOSE live.
 
 ## 0b. ★ APPROACH A — late-drained free-fn-template forward proto — DONE (`3591d0b`)
 The SESSION-14 §1b wall. Verify-first gated diag (MADC_DIAG_PROTO in the
@@ -98,18 +124,22 @@ fe3.cpp (valid 3-arg for_each — instantiates, hits the `__is_assignable` wall)
 fe2.cpp (2-arg — g++ rejects).
 
 ## 3. State for the next agent
-- Code HEAD **`2ab2bd4`**, tree clean, **609/12/0/18**, build current+warning-free,
-  MIR pin `5df536f` OK. Session-15 commits: `3591d0b` (Approach A), `2ab2bd4`
-  (regression guard) + docs.
-- DONE: the late-instantiation-prototype plan is COMPLETE (A landed; B evaluated +
-  deferred). The proto/instantiation bug class is closed.
-- **★ NEXT = §1b. The proto plan no longer gates anything.** Highest-leverage
-  remaining slice = the `_ValueType2`/`__is_assignable` arity-2 trait (LARGE,
-  unblocks testvector/testforeachref + the valid-for_each path). Separately, the
-  STALE-API tests (testmap/testsubscript/testmadc_ns/testset/testforeach2) need a
-  test-content decision (migrate to real std API) — surface to the user; NOT a
-  compiler fix. The empty-`_Rb_tree`-dtor SIGSEGV is the next runtime wall for
-  set/map. 3-oracle FIRST on any meaty fix.
+- Code HEAD **`79141eb`** (docs HEAD later), tree clean, **611/12/0/18**, build
+  current+warning-free, MIR pin `5df536f` OK. Session-15 commits: `3591d0b`
+  (late-inst Approach A), `2ab2bd4` (its guard), `a2f453f` (__is_assignable),
+  `79141eb` (catch-all-in-variadic fix) + docs.
+- DONE: late-instantiation-prototype plan COMPLETE (proto/instantiation bug class
+  closed). Vector cluster (Group 1): __is_assignable + catch-all-in-variadic walls
+  cleared (§0d), +2 integration tests.
+- **★ NEXT = §0d live wall: `__enable_if_t<__is_bitwise_relocatable<T>::value, T*>`
+  alias-template resolution** (peeling the vector::push_back onion;
+  `__is_constructible` is still behind it — the plan's original Slice-2 guess was
+  wrong about ordering). Plan: `docs/plans/2026-06-15-is-assignable-constructible-
+  intrinsics-plan.md` (§0 = live state). 3-oracle FIRST.
+- OTHER open (unchanged): STALE-API tests (testmap/subscript/madc_ns/set/foreach2 —
+  test-content decision, NOT a compiler bug; surface to user); empty-`_Rb_tree` dtor
+  SIGSEGV (set/map runtime); `_Tp2 already defined` (set+map same TU). Each SEPARATE
+  from the trait/onion work.
 
 ---
 
