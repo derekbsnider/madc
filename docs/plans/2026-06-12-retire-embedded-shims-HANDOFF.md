@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 10 CLOSE"** block immediately below (current state +
-NEXT), then "SESSION 9 CLOSE" for the prior chronology (parts 2a/2b + sub-gaps).
+then read the **"SESSION 11 CLOSE"** block immediately below (current state +
+NEXT), then "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,93 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 10 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-15
+# ★ SESSION 11 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-15
+
+## 0. Orientation
+Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
+Integration **597 passed / 12 failed / 0 timed out / 18 skipped** (unchanged count, but
+the remaining 12 advanced PAST two more walls this session). Code HEAD **`7a7e715`**,
+tree HEAD same. Branch LOCAL-ONLY (`feature/retire-embedded-shims-claude`); develop
+untouched. MIR fork `5df536f` (pin satisfied). Build current.
+
+## 1. What this session did (2 commits, both zero-regression, both deepest-layer)
+- **`7e77f28`** — `instantiate_template_use` (parser.cpp ~2851): preserve the USE-SITE
+  owner across the partial-spec swap. A nested class template's partial spec is stored
+  globally by simple name in `partial_spec_map[name]`, with `owner_class` frozen to
+  whichever enclosing instance was parsed first (for `allocator_traits::_Diff` that's the
+  **pmr** `allocator_traits<polymorphic_allocator<...>::rebind_alloc>`, NOT the
+  `allocator_traits<X>` at the use site). `td = *spec` let the spec's stale `owner_class`
+  replace the correct one, so the re-parsed body registered under the wrong owner prefix
+  → "template instantiation … did not register". Fix: `DataDefCLASS *use_site_owner =
+  td.owner_class; td = *spec; td.owner_class = use_site_owner;`. **Removed the `_Diff`
+  wall for the WHOLE container cluster (10 of 12 tests advanced past it).** vector<int>
+  was unaffected because its `_Diff` resolves before the pmr instantiations poison the owner.
+- **`7a7e715`** — `TokenTEMPLATE::parse` (parser.cpp ~28546): parse SFINAE-defaulted
+  non-type template parameters of the form `typename enable_if<C,bool>::type = true`. The
+  param-list parser treated every `typename` intro as a TYPE param and read the next ident
+  (`enable_if`) as the param name, then threw "Expecting ',' or '>'" on the `<`. Fix: in
+  the `typename` branch, after reading the name candidate, if it is immediately followed by
+  `<` or `::` it is the head of a qualified/template TYPE (a non-type param's
+  typename-specifier): consume the rest via `consume_template_parameter_type_suffix()`,
+  consume the optional param name, register an anon non-type param. madc evaluates no
+  constraint (no concepts) → parses as if unconstrained. **Removed the param-list wall at
+  `stl_pair.h:574` for map/set/subscript.**
+
+## 2. ★ NEXT — the deep #1 is the `pair`/`_Rb_tree` instantiation ONION (multi-session)
+The remaining 12 are gated behind a STACK of distinct libstdc++ template features. The
+container cluster eagerly instantiates the FULL `pair<const K,V>` class body (incl. private
+nested machinery the program never ODR-uses) and `_Rb_tree`. Current per-test walls (post
+both fixes; ALL re-mapped live at `7a7e715`):
+- **pointer-to-member param type** `int C::*` (3 tests: testmadc_ns, testmap, testsubscript)
+  — error "Failed to find type when parsing function parameters" @ stl_pair.h (stamped :188).
+  ROOT: pair's PRIVATE nested `struct __zero_as_null_pointer_constant` (stl_pair.h:613) has
+  ctor `__zero_as_null_pointer_constant(int __zero_as_null_pointer_constant::*)` — a
+  pointer-to-DATA-member param. madc has no pointer-to-member type. nt that fails = `*`
+  (TokenID 13 = tkMul). Behind it sit the deprecated DR-811 ctors `pair(_U1&&,
+  __zero_as_null_pointer_constant, ...)` (stl_pair.h:636, trailing C-vararg). FIX = real
+  pointer-to-member type (new DataDef category; data-member-ptr is 8 bytes / an offset) —
+  OWN SLICE. 3-oracle gcc/clang first. NOTE the higher-leverage alternative worth weighing:
+  these are un-ODR-used private members of a system-header class; if member-SIGNATURE parse
+  could be deferred/skipped for system-header templates (the BODY deferral already exists,
+  see parser.cpp:2885 comment) it would clear pointer-to-member + deprecated-varargs at once
+  — but that's a broader, riskier change. Pick one deliberately.
+- **`Expecting member name in class definition`** (2 tests: testcontainerdtor, testset) —
+  `_Rb_tree` path (set<int> repro: `#include <set>` + `set<int> s;`). NOT yet diagnosed to
+  the exact construct; add a gated diag at the throw (parser.cpp:21854 / 22017 / 22143) like
+  the DIAG_TP/DIAG_FP pattern below.
+- **`__is_assignable` / `_ValueType2`** (2 tests: testforeachref, testvector) — UNCHANGED
+  from session 10's root-cause: `uninitialized_copy`'s `_GLIBCXX_USE_ASSIGN_FOR_INIT` needs
+  a FAITHFUL `__is_assignable` trait (arity 2). madc has NO parse-time assignment-overload
+  resolver to reuse (assignment validity is deferred to c2mir) → a faithful trait means
+  BUILDING real operator= overload resolution w/ deleted/implicit tracking. Half-faithful is
+  FORBIDDEN (corrupts SFINAE). LARGE; own slice. See session-10 part 6.
+- **`member reference is not a structure or union`** (2 tests: teststringref,
+  testsubscriptmember) @ stl_vector.h:428 — NOT yet diagnosed; reduce + diag.
+- **`expression before '->' must be a pointer`** (2 tests: testsubscriptarrow,
+  testvectorptr) — vector<T*> subscript loses pointer-ness (KNOWN since session 9; the
+  `returns`-strip recurrence — see SESSION 9 notes near testvectorptr L28).
+- **`__ns_std_for_each` MIR-link undefined** (1 test: testforeach2) — a free fn-template
+  (`std::for_each`) instantiated but not emitted/registered for MIR link. Likely the
+  late-free-fn-drain path (cf. session-8 part 18). Separate root.
+
+## 3. Method that worked this session (reuse it)
+Gated diag at the throw, toggled via `OPTIONAL_CPPFLAGS` (the Makefile extra-flags var;
+line 39): `#if MADC_DIAG_X … #endif` printing the offending token's `id()`/`type()`/real
+`file:line:col` + the next ~6 tokens, then **force-recompile** parser (`rm -f obj/parser.o
+obj/pic/parser.o` — a `-D` change alone does NOT retrigger make). This pinpoints the REAL
+header construct behind a use-site-stamped error line. Decode TokenID via include/tokens.h
+(tkBase=0; tkMul/tkStar=13; tkLT=40; tkNS=`::`). Reducers in tmp/: vstr, mii (map<int,int>),
+sii (set<int>) — run with `--std=c++17 --no-embedded-headers`.
+
+## 4. State for the next agent
+- HEAD `7a7e715`, tree clean, 597/12, build current, MIR pin `5df536f` OK.
+- Pick ONE next slice (recommend: decide pointer-to-member-type vs system-header-signature-
+  deferral for the 3-test pair wall; OR diagnose the 2 not-yet-diagnosed walls first since
+  they're cheap and may reveal a shared root). 3-oracle before any meaty fix.
+
+---
+
+# ★ SESSION 10 CLOSE — COLD-START REHYDRATION — 2026-06-15
 
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
