@@ -19,16 +19,21 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
-Integration **607 passed / 12 failed / 0 timed out / 18 skipped** (+testnestedtidbase,
-+testmemberaliastmplmember, +testpseudodtor). Code HEAD **`e4aad35`**, tree clean. Branch
-LOCAL-ONLY (`feature/retire-embedded-shims-claude`); develop untouched. MIR fork `5df536f`
-(pin satisfied). Build current, zero warnings. **This session (14) landed THREE fixes**, each
-clearing a successive PARSE wall in the `<map>`/`<set>` closure (the container onion):
+Integration **609 passed / 12 failed / 0 timed out / 18 skipped** (+testnestedtidbase,
++testmemberaliastmplmember, +testpseudodtor, +testmemberarrowcall, +testretbufmethodinit).
+Code HEAD **`b54c128`**, tree clean. Branch LOCAL-ONLY
+(`feature/retire-embedded-shims-claude`); develop untouched. MIR fork `5df536f` (pin satisfied).
+Build current, zero warnings. **This session (14) landed FIVE fixes**, each clearing a successive
+wall in the `<map>`/`<set>` `_Rb_tree`/`_Node_handle` closure (the container onion):
 (1) nested class with a template-id base (`258da80`, §0b); (2) member alias template used as a
-member type (member-alias fix, §0c); (3) explicit/pseudo destructor call `ptr->~T()` (`e4aad35`,
-§0d). map/set now PARSE the full closure and hit a **c2mir SEMANTIC-check wall** (not a parse
-error) — the ★ NEXT wall, scoped in §1b. START THERE (NB: it's an emission-layer bug, a different
-class than this session's three parse fixes).
+member type (`507c465`, §0c); (3) explicit/pseudo destructor call `ptr->~T()` (`e4aad35`, §0d);
+(4) member-arrow method-call receiver kept `__this->`-qualified (`e772074`, §0e); (5) copy-elided
+object-init from a retbuf method call passes `__this` (`b54c128`, §0f). The first 3 cleared PARSE
+walls; the last 2 cleared **c2mir SEMANTIC-check** walls (emission layer). The set reducer is now
+down to a SINGLE c2mir check error — the ★ NEXT wall, scoped in §1b. **★ METHODOLOGY WIN
+(reuse it): when c2mir's error line is a useless clone-artifact (always the class-def line), run
+`madc --emit=c11 reducer > x.c` then `gcc -std=gnu11 -fsyntax-only -w x.c` — gcc gives PRECISE
+line:col in the emitted C, instantly localizing the bad node.** START at §1b.
 
 ## 0b. ★ NESTED CLASS w/ TEMPLATE-ID BASE — CLEARED (`258da80`)
 The SESSION-13 §1b wall is fixed at the deepest layer. ROOT (confirmed via gated diag, not
@@ -74,32 +79,55 @@ translate_expr) emit the COMPLETE-dtor call on the object (`->`=>lhs ptr, `.`=>&
 trivial/scalar = no-op but the object is still evaluated. Was KG-deferred
 (project_cpp_parser_correctness). +tests/testpseudodtor (3-oracled = `100 5 7`: real dtor runs, scalar no-op).
 
-## 1b. ★★ NEXT WALL — c2mir SEMANTIC-check error on inherited `_M_ptr` (emission layer, NOT parse)
-With the three parse walls cleared, map/set now PARSE the full `<map>`/`<set>` closure and fail in
-**c2mir's check pass** (CIR emission is wrong, not the parse). The set/map reducers
-(`tmp/sii.mad`/`tmp/mii.mad`, `--std=c++17 --no-embedded-headers`) report 4 c2mir check errors, all
-stamped `/usr/include/c++/13/bits/node_handle.h:64:29` (the clone-token-line artifact — line 64 is
-`class _Node_handle_common`):
+## 0e. ★ MEMBER ARROW METHOD-CALL RECEIVER kept `__this->`-qualified — CLEARED (`e772074`)
+The c2mir `undeclared identifier _M_ptr` error: a pointer DATA MEMBER used unqualified as the
+receiver of an arrow method call (`_M_ptr->_M_valptr()` == `this->_M_ptr->_M_valptr()`) emitted the
+receiver as a BARE identifier. ROOT: in the `->` method-call path (parser.cpp ~14803), when lhs is a
+TokenMember (`__this->p`), the code took only `obj_var = &tm->var` (the field `p`) and discarded
+`tm->object` (`__this`); `recv_parent` (the receiver passed to class_this_arg) was set for
+subscript/operator-> but NOT a TokenMember lhs → class_this_arg fell to object_var_addr(p) = bare
+`p`. FIX: `else if (lhs->type()==ttMember) recv_parent = lhs;` so class_this_arg emits the full
+`__this->p` via its parent_expr path. +tests/testmemberarrowcall (=10 10). KNOWN follow-up (no
+consumer): `*member->method()` (deref OF a member-arrow-call) takes a different parse path, NOT yet
+covered.
+
+## 0f. ★ COPY-ELIDED OBJECT-INIT FROM A RETBUF METHOD CALL passes `__this` — CLEARED (`b54c128`)
+The c2mir `too few arguments` error: `T v = obj.m();` where `m()` returns a non-trivial class BY
+VALUE (retbuf ABI) and `obj` is a member object emitted `m(&v)` (retbuf only), dropping `this`.
+ROOT: the copy-elision-into-declared-object NRVO branch (cir_builder ~10360, `T b = makeB()`) was
+written for FREE-function inits — args = [retbuf, build_call_args(explicit-only)]. TokenCallMethod
+derives from TokenCallFunc, so a method-call init matched it but never got its hidden `__this`. FIX:
+in that branch, when the init is a `TokenCallMethod`, append `class_this_arg(...)` between the
+retbuf and build_call_args. +tests/testretbufmethodinit (=5). This is the
+`_Node_handle_common::_M_reset` `_NodeAlloc __alloc = _M_alloc.release();` shape.
+
+## 1b. ★★ NEXT WALL — missing PROTOTYPE for a late-drained free-fn-template instantiation
+After §0e+§0f, the set reducer (`tmp/sii.mad`, `--std=c++17 --no-embedded-headers`) is down to a
+SINGLE c2mir check error. Localized via the **gcc-on-emitted-C** method (§0): `madc --emit=c11
+tmp/sii.mad > tmp/sii.c; gcc -std=gnu11 -fsyntax-only -w tmp/sii.c` →
 ```
-node_handle.h:64:29: too few arguments
-node_handle.h:64:29: undeclared identifier _M_ptr
-node_handle.h:64:29: incompatible argument type for pointer type parameter
-node_handle.h:64:29: invalid type argument of unary *
-c2mir_compile_tree: 4 check errors
+sii.c:909:104: invalid type argument of unary '*' (have 'int')
+sii.c:938:47:  conflicting types for '__ns_std_move__o2'
 ```
-`_M_ptr` is a data member of `_Node_handle_common` (the base). The emitted CIR references it from a
-method body where it is NOT declared/visible — likely a lazy member-body instantiated against a
-`this` whose struct didn't get `_M_ptr` emitted (inherited-member flattening, or the
-`__pointer<_Key>`/`__ptr_rebind` member-type emission). DISTINCT from the parse onion — this is a
-CIR-builder emission bug. METHOD: the use-site line stamping is useless here; instrument c2mir's
-check-error path OR dump the emitted CIR (`--emit=c11` on the reducer, then find the function
-referencing `_M_ptr` and see whether the struct declares it / whether the method's `this` type is
-right). Likely in cir_builder member/struct emission or lazy-member-instantiation. 3-oracle the
-shape first (a derived class whose inherited method body uses a base data member, instantiated
-lazily). gates map/subscript/containerdtor/madc_ns; testset SEPARATE (C++20 `set::contains` @19).
-Other open walls (re-diagnose live): `_ValueType2`/`__is_assignable` arity-2
-(testvector/testforeachref, LARGE); "Missing operand" @:428 (teststringref/testsubscriptmember);
-`rebind<>` @:47 (testsubscriptarrow/testvectorptr); `__ns_std_for_each` MIR-link (testforeach2).
+ROOT: `__ns_std_move__o2` (an overload-disambiguated `std::move` instantiation) is DEFINED (line
+938) and USED (line 909, inside the lazily-materialized `_Optional_alloc::release` body) but has NO
+forward PROTOTYPE before its use → c2mir implicitly declares it `int` (K&R) → `*int` + conflicting
+def. The proto pass (translate_module Pass 0.75) is `referenced_funcs`-driven and runs before the
+late fixpoint that materializes `release` (whose body first references `__ns_std_move__o2`). The
+late proto pass (after the LAST fixpoint, ~cir_builder 11940-12060) is supposed to proto
+late-materialized funcs but MISSES this std::move instantiation (it's emitted via
+`std_free_function_instantiation`/`m_free_fn_inst_by_sym`, ~cir_builder 6584+, not the
+lib_funcs/materialized_funcs path the late proto pass iterates). **SAME CLASS as the
+`__ns_std_for_each` MIR-link failure (testforeach2)** — instantiated free fn-templates not
+proto'd/emitted for definition-before-use. FIX (emission/ordering, HIGHER REGRESSION RISK than the
+parse fixes — validate hard): ensure free-fn-template instantiations reached during the late
+fixpoint get a forward prototype emitted before their use (add their emit symbol to the late proto
+set, or fold `m_free_fn_inst_by_sym` entries into the late proto pass). 3-oracle a reducer first: a
+class whose lazily-materialized method body calls a `std::move`-like free template returning a
+non-trivial class by value. gates map/subscript/containerdtor/madc_ns (+ likely testforeach2).
+testset SEPARATE (C++20 `set::contains` @19). Other open walls (re-diagnose live):
+`_ValueType2`/`__is_assignable` arity-2 (testvector/testforeachref, LARGE); "Missing operand" @:428
+(teststringref/testsubscriptmember); `rebind<>` @:47 (testsubscriptarrow/testvectorptr).
 
 ## 2. Method + reducers (this session)
 3-oracle every fix (g++ AND clang++ + madc; verify VALUES via cout, exit code = RUN-SUCCESS not
@@ -109,26 +137,30 @@ force-recompile; print `tn->file:line:col`+`id()`+next tokens, OR for an express
 operator's `id()`+`cur_func_name`). Decode TokenID via include/tokens.h (tkOpBrc=16, tkBnot=`~`,
 tkDot=35, tkDeRef=`->`=36, tkLT=40). Reducers (tmp/, regenerate; `--std=c++17 --no-embedded-headers`):
 t5/t6/t7 (nested template-id base — PASS); `tmp/mat.cpp` (member-alias member type — PASS);
-`tmp/pdtor.mad`/`tmp/pdtor2.cpp` (pseudo-dtor — PASS); `tmp/sii.mad`/`tmp/mii.mad` (set/map — now
-hit the c2mir `_M_ptr` check wall, §1b). The three committed regression guards: testnestedtidbase,
-testmemberaliastmplmember, testpseudodtor.
+`tmp/pdtor.mad`/`tmp/pdtor2.cpp` (pseudo-dtor — PASS); `tmp/um6.mad` (retbuf-method-init — PASS);
+`tmp/memarrow3.mad` (member-arrow-call — PASS); `tmp/sii.mad`/`tmp/mii.mad` (set/map — now down to
+the SINGLE `__ns_std_move` proto wall, §1b). Five committed regression guards: testnestedtidbase,
+testmemberaliastmplmember, testpseudodtor, testmemberarrowcall, testretbufmethodinit.
+**gcc-on-emitted-C is the key localizer for c2mir-check errors (§0).**
 
 ## 3. State for the next agent
-- Code HEAD **`e4aad35`**, tree clean, **607/12/0/18**, build current+warning-free, MIR pin
-  `5df536f` OK. Session-14 commits: `258da80` (nested template-id base), member-alias fix,
-  `e4aad35` (pseudo-dtor) + this doc.
+- Code HEAD **`b54c128`**, tree clean, **609/12/0/18**, build current+warning-free, MIR pin
+  `5df536f` OK. Session-14 commits: `258da80`, `507c465`, `e4aad35`, `e772074`, `b54c128` (+ docs).
 - DONE: alloc-rebind keystone (S12); NSDMI + ptr-to-member Stage 1 + friend keyword (S13); this
   session — nested template-id base (§0b), member alias template as member type (§0c),
-  explicit/pseudo destructor call (§0d).
-- **★ NEXT = §1b: c2mir SEMANTIC-check wall on inherited `_M_ptr`** (node_handle.h; map/set now
-  PARSE fully, fail in c2mir's check pass). EMISSION-layer bug (cir_builder / lazy-member
-  instantiation), a DIFFERENT class than this session's three parse fixes — use `--emit=c11` on the
-  reducer to inspect the bad CIR, not the gated-throw-diag. Gates map/subscript/containerdtor/madc_ns.
+  explicit/pseudo destructor call (§0d), member-arrow method-call receiver (§0e), copy-elided
+  object-init from a retbuf method call (§0f). The set/map onion went from "Expecting member name"
+  (parse) → through 5 walls → a SINGLE remaining c2mir check error.
+- **★ NEXT = §1b: missing PROTOTYPE for a late-drained free-fn-template instantiation**
+  (`__ns_std_move__o2`). EMISSION/ORDERING bug in translate_module's late proto pass — HIGHER
+  regression risk than the parse fixes, validate hard. SAME class as testforeach2's
+  `__ns_std_for_each` MIR-link → likely a 2-test fix. Localize with gcc-on-emitted-C (§0).
 - OTHER open (re-diagnose live): `_ValueType2`/`__is_assignable` arity-2 (2, LARGE); "Missing
-  operand" @:428 (2); `rebind<>` @:47 (2); for_each MIR-link (1); testset `set::contains` C++20.
-  Ptr-to-member Stage 2 (`.*`/`->*`/`&C::m`) + brace-init NSDMI + the `.~T()` (dot-form, vs the
-  `->~T()` tested) virtual-dispatch corner = no-test-consumer follow-ups. ALSO seen (no consumer):
-  `Outer::Inner` qualified nested-type-name in a declaration — a separate small gap.
+  operand" @:428 (2); `rebind<>` @:47 (2); testset `set::contains` C++20.
+  Ptr-to-member Stage 2 (`.*`/`->*`/`&C::m`) + brace-init NSDMI + `*member->method()` (deref of a
+  member-arrow-call, §0e follow-up) + the `.~T()` dot-form pseudo-dtor virtual-dispatch corner =
+  no-test-consumer follow-ups. ALSO seen (no consumer): `Outer::Inner` qualified nested-type-name
+  in a declaration — a separate small gap.
 
 ---
 
