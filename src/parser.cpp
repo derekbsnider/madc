@@ -14743,7 +14743,33 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			}
 		    }
 		}
-		var = parsed_operator_name ? NULL : resolve_preferred_identifier(ident_tb, expression_head);
+		{   // scoped so `prefer_class_member` is not live at the `ns_resolved` label
+		// In a class method, an unqualified name that is a class MEMBER
+		// (data or static member) outranks a using-directive namespace
+		// symbol: a using-directive's names live at namespace scope, which
+		// [basic.lookup.unqual] searches AFTER block scope and class scope.
+		// Without this, a member named like a C++17 free fn pulled in by
+		// `using namespace std` (`data`/`size`/`begin`/`end`/`swap`/`empty`)
+		// resolved to `std::data` etc. instead of `this->member`. A LOCAL or
+		// PARAMETER of the same name still shadows the member, so defer to the
+		// member block (below, guarded on !var) only when nothing shadows it.
+		// g++ and clang both resolve the member here.
+		bool prefer_class_member = false;
+		if ( !parsed_operator_name
+		  && code && code->method && code->method->owner_class
+		  && (!prevToken() || prevToken()->id() != TokenID::tkNS) )
+		{
+		    std::string mname = member_lookup_name;
+		    DataDefCLASS *mc = code->method->owner_class;
+		    if ( !code->findVariable(mname) && !code->findParameter(mname)
+		      && (mc->m_offset(mname) >= 0
+		       || resolve_class_static_member_type(mc, mname)) )
+			prefer_class_member = true;
+		}
+		var = (parsed_operator_name || prefer_class_member)
+			? NULL
+			: resolve_preferred_identifier(ident_tb, expression_head);
+		}
 		// `this` keyword: inside a class method body it names the hidden
 		// __this parameter (a `ClassName*`). Resolving it here lets
 		// `this->member` / `this.member` / `this->method()` flow through the
