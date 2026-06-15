@@ -1234,6 +1234,14 @@ public:
     bool eval_void_t_detection_slot(const std::string &slot_spelling,
 	    const std::string &concrete_spelling,
 	    const std::map<std::string, DataDef *> &ded, int &score);
+    // Confirm that a dependent member chain `BASE::seg1::seg2::...` (where some
+    // seg names a TEMPLATE member, e.g. `rebind<_Up>`) resolves to a real type —
+    // the part of the __void_t SFINAE probe the plain type-alias walk cannot do.
+    // Builds the qualified-id tokens with deduced params substituted and resolves
+    // via resolve_typename_type_token in an isolated stream. True iff it resolves.
+    bool confirm_dependent_member_type(DataDef *base,
+	    const std::vector<std::string> &segs,
+	    const std::map<std::string, DataDef *> &ded);
     // Constant-fold ONE non-type template argument from its already-collected
     // token vector (+ spelling), WITHOUT touching the live token stream or
     // instantiating anything — a LOCAL cursor only. Recognizes manifest integer/

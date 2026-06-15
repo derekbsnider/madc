@@ -13197,6 +13197,90 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 // Arg shapes madc cannot evaluate (decltype(...), `template rebind<>`) conservatively
 // return false → the empty primary is selected → identical to today's behavior (no
 // regression); this only ADDS matches where detection genuinely succeeds.
+bool Program::confirm_dependent_member_type(DataDef *base,
+	const std::vector<std::string> &segs,
+	const std::map<std::string, DataDef *> &ded)
+{
+    if ( !base )
+	return false;
+    // Build `base->name :: [template] seg<args> :: seg ...` as a token sequence,
+    // substituting any deduced spec param (in `ded`) for its concrete type name,
+    // then resolve it through the real qualified-type machinery. The spelling
+    // renderer glues the `template` disambiguator to the next name
+    // (`templaterebind<_Up>`); strip it and emit a real tkTEMPLATE.
+    std::deque<TokenBase *> seq;
+    seq.push_back(new TokenIdent(base->name));
+    for ( size_t s = 1; s < segs.size(); ++s )
+    {
+	seq.push_back(new TokenNS());
+	std::string seg = segs[s];
+	const std::string tk = "template";
+	if ( seg.size() > tk.size() && seg.compare(0, tk.size(), tk) == 0
+	  && seg.find('<') != std::string::npos )
+	{
+	    seq.push_back(new TokenTEMPLATE());
+	    seg = seg.substr(tk.size());
+	}
+	size_t lt = seg.find('<');
+	if ( lt == std::string::npos )
+	{
+	    seq.push_back(new TokenIdent(seg));
+	    continue;
+	}
+	seq.push_back(new TokenIdent(seg.substr(0, lt).c_str()));
+	seq.push_back(new TokenLT());
+	size_t gt = seg.rfind('>');
+	std::string inner = ( gt != std::string::npos && gt > lt )
+			  ? seg.substr(lt + 1, gt - lt - 1) : std::string();
+	std::vector<std::string> iargs;
+	{
+	    int d = 0; std::string cur;
+	    for ( size_t j = 0; j < inner.size(); ++j )
+	    {
+		char c = inner[j];
+		if ( c == '<' ) { ++d; cur += c; }
+		else if ( c == '>' ) { --d; cur += c; }
+		else if ( c == ',' && d == 0 )
+		{ iargs.push_back(trim_spelling(cur)); cur.clear(); }
+		else cur += c;
+	    }
+	    if ( !trim_spelling(cur).empty() || !iargs.empty() )
+		iargs.push_back(trim_spelling(cur));
+	}
+	for ( size_t a = 0; a < iargs.size(); ++a )
+	{
+	    if ( a ) seq.push_back(new TokenComma());
+	    std::map<std::string, DataDef *>::const_iterator di = ded.find(iargs[a]);
+	    seq.push_back(new TokenIdent(
+		( di != ded.end() && di->second ) ? di->second->name : iargs[a]));
+	}
+	seq.push_back(new TokenGT());
+    }
+    seq.push_back(new TokenSemi());
+
+    // Resolve in an ISOLATED stream (the probe is reached mid-instantiation;
+    // draining the shared stream would desync the suspended parse), restoring the
+    // diagnostics watermark on failure so a SFINAE miss leaves no error trail.
+    std::deque<TokenBase *> saved_tokens = tokens;
+    size_t saved_diag_count = diagnostics.size();
+    Program::ErrorInfo saved_error = last_error;
+    tokens = seq;
+    TokenDataType *resolved = NULL;
+    try
+    {
+	TokenBase *head = nextToken();
+	resolved = resolve_typename_type_token(head, true, NULL);
+    }
+    catch ( ... ) { resolved = NULL; }
+    tokens = saved_tokens;
+    if ( !resolved )
+    {
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
+    }
+    return resolved != NULL;
+}
+
 bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 	const std::string &concrete_spelling,
 	const std::map<std::string, DataDef *> &ded, int &score)
@@ -13254,13 +13338,25 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 	std::map<std::string, DataDef *>::const_iterator pit = ded.find(segs[0]);
 	if ( pit == ded.end() || !pit->second )
 	    return false;
+	// A TEMPLATE member anywhere in the chain (`_Tp::template rebind<_Up>::other`)
+	// is beyond the plain type-alias walk: resolve the whole dependent member
+	// chain through the real machinery (deduced params substituted). This is the
+	// allocator-rebind probe — without it the void_t spec is wrongly rejected for
+	// the primary even when the member type genuinely exists.
+	bool has_tmpl_member = false;
+	for ( size_t s = 1; s < segs.size(); ++s )
+	    if ( segs[s].find('<') != std::string::npos ) { has_tmpl_member = true; break; }
+	if ( has_tmpl_member )
+	{
+	    if ( !confirm_dependent_member_type(pit->second, segs, ded) )
+		return false;                      // member type absent -> SFINAE failure
+	    continue;
+	}
 	DataDefCLASS *cur = dynamic_cast<DataDefCLASS *>(pit->second);
 	for ( size_t s = 1; s < segs.size(); ++s )
 	{
 	    if ( !cur )
 		return false;
-	    if ( segs[s].find('<') != std::string::npos )
-		return false;                      // template member -> too complex to confirm
 	    if ( is_incomplete_class_datadef(cur) )
 		request_template_instantiation_completion(cur->name);
 	    DataDef *m = resolve_class_type_alias(cur, segs[s]);
