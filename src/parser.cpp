@@ -3040,7 +3040,15 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	return NULL;
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 	return NULL;
-    Program::TemplateAliasDef &td = *tdp;
+    // COPY the def by value: find_template_alias returns a pointer into the
+    // template_alias_map vector, and resolving the template arguments below
+    // instantiates other templates/aliases, which call register_template_alias
+    // and can REALLOCATE that vector — dangling a reference. (Symptom: a
+    // member alias template like __conditional<B>::type read back 0 typeparams
+    // after its args resolved, so `type<T,U>` wrongly "expects 0 type
+    // arguments".) The copy is self-contained: typeparams/defaults are value
+    // vectors and target holds cloned token pointers not stored in that vector.
+    Program::TemplateAliasDef td = *tdp;
     if ( td.has_non_type_params )
     {
 	nextToken(); // consume '<'
