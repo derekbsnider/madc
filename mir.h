@@ -334,8 +334,8 @@ typedef struct MIR_func {
   VARR (MIR_var_t) * vars;        /* args and locals but temps */
   VARR (MIR_var_t) * global_vars; /* can be NULL */
   void *machine_code;             /* address of generated machine code or NULL */
-  size_t machine_code_len;        /* length of generated machine code in bytes */
   void *call_addr; /* address to call the function, it can be the same as machine_code */
+  size_t code_len; /* byte length of the generated machine code at machine_code; 0 if not generated */
   void *internal;  /* internal data structure */
   struct MIR_lref_data *first_lref; /* label addr data of the func: defined by module load */
 } *MIR_func_t;

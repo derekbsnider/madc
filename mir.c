@@ -1507,6 +1507,7 @@ static MIR_item_t new_func_arr (MIR_context_t ctx, const char *name, size_t nres
   func->expr_p = func->jret_p = FALSE;
   func->n_inlines = 0;
   func->machine_code = func->call_addr = NULL;
+  func->code_len = 0;
   func->first_lref = NULL;
   func_regs_init (ctx, func);
   for (size_t i = 0; i < nargs; i++) {

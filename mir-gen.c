@@ -9560,7 +9560,7 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
   _MIR_restore_func_insns (ctx, func_item);
   /* ??? We should use atomic here but c2mir does not implement them yet.  */
   func_item->u.func->machine_code = machine_code;
-  func_item->u.func->machine_code_len = code_len;
+  func_item->u.func->code_len = code_len;
   return func_item->addr;
 }
 
@@ -9572,7 +9572,7 @@ void MIR_gen_get_code (MIR_context_t ctx, MIR_item_t func_item,
                        const uint8_t **code_ptr, size_t *code_size) {
   mir_assert (func_item != NULL && func_item->item_type == MIR_func_item);
   *code_ptr = (const uint8_t *) func_item->u.func->machine_code;
-  *code_size = func_item->u.func->machine_code_len;
+  *code_size = func_item->u.func->code_len;
 }
 
 void MIR_gen_set_debug_file (MIR_context_t ctx, FILE *f) {
