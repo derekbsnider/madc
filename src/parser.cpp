@@ -12992,6 +12992,41 @@ static bool split_template_id_spelling(const std::string &s, std::string &outer,
     return true;
 }
 
+// Drop every space from a spelling so two renderings of the same type compare
+// equal regardless of incidental whitespace ("node<int64_t>" vs "node< int64_t >").
+static std::string despace_spelling(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for ( size_t i = 0; i < s.size(); ++i )
+	if ( s[i] != ' ' )
+	    out += s[i];
+    return out;
+}
+
+// Resolve a type-argument SPELLING to its DataDef. resolve_named_datadef handles
+// simple names and already-mangled keys; a template-id spelling ("node<int64_t>")
+// is keyed in struct_map under its MANGLED name, not its canonical spelling, so it
+// is found here by matching canonical_cpp_spelling. Needed when a partial spec's
+// deducible inner param binds to a concrete that is ITSELF a template-id
+// (`__replace_first_arg<C<A>, _Tp>` vs `myalloc<node<long>>` deduces A = node<long>):
+// without this the deduction fails and the spec is wrongly rejected for the primary.
+static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &spelling)
+{
+    if ( DataDef *dd = pgm.resolve_named_datadef(spelling) )
+	return dd;
+    if ( spelling.find('<') == std::string::npos )
+	return NULL;
+    std::string want = despace_spelling(strip_type_namespace(trim_spelling(spelling)));
+    for ( datadef_map_iter it = pgm.struct_map.begin();
+	  it != pgm.struct_map.end(); ++it )
+	if ( it->second && !it->second->canonical_cpp_spelling.empty()
+	  && despace_spelling(strip_type_namespace(it->second->canonical_cpp_spelling))
+	     == want )
+	    return it->second;
+    return NULL;
+}
+
 // Unify a NESTED template-id pattern arg (e.g. `allocator<_Tp>`) against a concrete
 // type spelling (e.g. `std::allocator<char>`), deducing the spec's own type params
 // (_Tp -> char). Handles the namespace qualifier the flat unifier cannot, and
@@ -13043,7 +13078,7 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	    if ( spec_params[k] == pargs[i] ) { is_param = true; break; }
 	if ( is_param )
 	{
-	    DataDef *cd = resolve_named_datadef(cargs[i]);
+	    DataDef *cd = resolve_arg_spelling_datadef(*this, cargs[i]);
 	    if ( !cd ) return false;               // cannot bind -> fall to primary
 	    std::map<std::string, DataDef *>::iterator d = ded.find(pargs[i]);
 	    if ( d != ded.end() && d->second && d->second->name != cd->name )
