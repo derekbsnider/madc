@@ -1,0 +1,38 @@
+// Template-template-parameter partial specialization ([temp.class.spec]): the
+// `__replace_first_arg<_Template<_Up>, _Tp>` -> `_Template<_Tp>` idiom that
+// underlies libstdc++'s allocator rebind. Verified vs g++ AND clang++.
+#include <iostream>
+using namespace std;
+
+template<typename...> using vt_ = void;
+
+// replace_first_arg<C<A>, U> deduces the template-template param C and yields C<U>.
+template<typename T, typename U> struct replace_first_arg;
+template<template<typename> class C, typename A, typename U>
+	struct replace_first_arg<C<A>, U> { using type = C<U>; };
+
+// rebind member-class-template: primary inherits replace_first_arg; a vt_
+// partial spec wins when the arg has its own nested rebind (mirrors __rebind).
+struct base {
+	template<typename Tp, typename Up, typename = void>
+		struct rebind : replace_first_arg<Tp, Up> { };
+	template<typename Tp, typename Up>
+		struct rebind<Tp, Up, vt_<typename Tp::template rebind<Up>::other>>
+		{ using type = typename Tp::template rebind<Up>::other; };
+};
+
+template<typename A, typename U>
+	using alloc_rebind = typename base::template rebind<A, U>::type;
+
+template<typename T> struct box {
+	T val;
+	template<typename U> struct rebind { using other = box<U>; };
+};
+
+int main() {
+	// box has a nested rebind -> the vt_ partial spec selects box<U>.
+	alloc_rebind<box<int>, char> b;
+	b.val = 'Z';
+	cout << "rebind=" << (int)b.val << endl;   // 90
+	return 0;
+}

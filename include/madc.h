@@ -1214,7 +1214,8 @@ public:
 	    const std::vector<std::string> &arg_spellings,
 	    const std::vector<std::vector<TokenBase *>> &arg_tokens_by_slot,
 	    const std::vector<bool> &param_is_type,
-	    std::map<std::string, TokenDataType *> &out_subst);
+	    std::map<std::string, TokenDataType *> &out_subst,
+	    std::map<std::string, std::string> &out_template_subst);
     // Unify a nested template-id pattern arg (e.g. `allocator<_Tp>`) against a
     // concrete type spelling (e.g. `std::allocator<char>`), deducing the spec's
     // type params. Fallback used by match_partial_specialization when the flat
@@ -1222,7 +1223,8 @@ public:
     bool unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	    const std::vector<std::string> &spec_params,
 	    const std::string &concrete_spelling,
-	    std::map<std::string, DataDef *> &ded, int &score);
+	    std::map<std::string, DataDef *> &ded, int &score,
+	    std::map<std::string, std::string> *out_tmpl = NULL);
     // Evaluate a `__void_t<Args...>` detection-idiom partial-spec slot: matches a
     // concrete void IFF every Arg (a `typename PARAM::member` dependent type) resolves
     // after substituting the already-deduced params. The SFINAE half of the std

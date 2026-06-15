@@ -2845,9 +2845,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // caching is unaffected — only the body source + substitution change.
     {
 	std::map<std::string, TokenDataType *> spec_subst;
+	std::map<std::string, std::string> spec_tmpl_subst;
 	if ( Program::TemplateDef *spec = match_partial_specialization(
 		tname, arg_types_by_slot, arg_spellings, arg_tokens_by_slot,
-		td.typeparam_is_type, spec_subst) )
+		td.typeparam_is_type, spec_subst, spec_tmpl_subst) )
 	{
 	    // Keep the USE-SITE owner across the swap. A nested class template's
 	    // partial spec is stored globally by simple name (partial_spec_map[name])
@@ -2861,7 +2862,18 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    td = *spec;
 	    td.owner_class = use_site_owner;
 	    subst = spec_subst;
+	    // A deduced template-template parameter (`__replace_first_arg<_Template<_Up>,
+	    // _Tp>` → _Template=allocator) binds to a TEMPLATE NAME, not a type: route it
+	    // through token_subst so the body's `_Template<_Tp>` clones to `allocator<_Tp>`
+	    // and re-parses as a template-id. (The spec body uses the param as a template.)
 	    token_subst.clear();
+	    for ( std::map<std::string, std::string>::iterator t = spec_tmpl_subst.begin();
+		  t != spec_tmpl_subst.end(); ++t )
+	    {
+		std::vector<TokenBase *> repl;
+		repl.push_back(new TokenIdent(t->second));
+		token_subst[t->first] = repl;
+	    }
 	}
     }
 
@@ -12991,7 +13003,8 @@ static bool split_template_id_spelling(const std::string &s, std::string &outer,
 bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	const std::vector<std::string> &spec_params,
 	const std::string &concrete_spelling,
-	std::map<std::string, DataDef *> &ded, int &score)
+	std::map<std::string, DataDef *> &ded, int &score,
+	std::map<std::string, std::string> *out_tmpl)
 {
     std::string pouter, couter;
     std::vector<std::string> pargs, cargs;
@@ -12999,9 +13012,30 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	return false;
     if ( !split_template_id_spelling(concrete_spelling, couter, cargs) )
 	return false;
-    if ( pouter != couter || pargs.size() != cargs.size() )
+    if ( pargs.size() != cargs.size() )
 	return false;
-    score += 50;   // matching a template-id structure beats a bare-param slot
+    if ( pouter != couter )
+    {
+	// The pattern's outer name may be a TEMPLATE-TEMPLATE PARAMETER of the
+	// spec (`__replace_first_arg<_Template<_Up>, _Tp>` matching the concrete
+	// `allocator<int>` by deducing _Template=allocator) — the allocator-traits
+	// rebind keystone. Deducible only in the partial-spec path (out_tmpl set);
+	// function-template deduction keeps the strict same-name match. Bind the
+	// template-template param to the concrete's outer template, then fall
+	// through to unify the inner args.
+	bool pouter_is_param = false;
+	for ( size_t k = 0; k < spec_params.size(); ++k )
+	    if ( spec_params[k] == pouter ) { pouter_is_param = true; break; }
+	if ( !out_tmpl || !pouter_is_param )
+	    return false;
+	std::map<std::string, std::string>::iterator t = out_tmpl->find(pouter);
+	if ( t != out_tmpl->end() && t->second != couter )
+	    return false;                          // inconsistent deduction
+	(*out_tmpl)[pouter] = couter;
+	score += 40;   // a template-template-param match is slightly less specific
+    }
+    else
+	score += 50;   // matching a template-id structure beats a bare-param slot
     for ( size_t i = 0; i < pargs.size(); ++i )
     {
 	bool is_param = false;
@@ -13019,7 +13053,7 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	}
 	else if ( pargs[i].find('<') != std::string::npos )
 	{
-	    if ( !unify_nested_spec_pattern_arg(pargs[i], spec_params, cargs[i], ded, score) )
+	    if ( !unify_nested_spec_pattern_arg(pargs[i], spec_params, cargs[i], ded, score, out_tmpl) )
 		return false;
 	}
 	else
@@ -13297,7 +13331,8 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	const std::vector<std::string> &arg_spellings,
 	const std::vector<std::vector<TokenBase *>> &arg_tokens_by_slot,
 	const std::vector<bool> &param_is_type,
-	std::map<std::string, TokenDataType *> &out_subst)
+	std::map<std::string, TokenDataType *> &out_subst,
+	std::map<std::string, std::string> &out_template_subst)
 {
     std::map<std::string, std::vector<TemplateDef> >::iterator it =
 	partial_spec_map.find(name);
@@ -13310,12 +13345,14 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
     TemplateDef *best = NULL;
     int best_score = -1;
     std::map<std::string, DataDef *> best_ded;
+    std::map<std::string, std::string> best_tmpl;
     for ( size_t s = 0; s < it->second.size(); ++s )
     {
 	TemplateDef &spec = it->second[s];
 	if ( spec.spec_pattern.size() != arg_spellings.size() )
 	    continue;                                  // pattern arity == primary arity
 	std::map<std::string, DataDef *> ded;
+	std::map<std::string, std::string> tmpl_ded;   // template-template-param deductions
 	int score = 0;
 	bool ok = true;
 	for ( size_t i = 0; i < spec.spec_pattern.size(); ++i )
@@ -13336,12 +13373,22 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	    // `std::allocator<char>`); finally the `__void_t<...>` detection idiom
 	    // (SFINAE: the slot is void IFF its member-type Args exist on the deduced
 	    // params). Detection runs LAST so the earlier slots have populated `ded`.
+	    // The nested-template-id unifier needs the BRACKETED spelling to
+	    // decompose `_Template<_Up>` against the concrete (`allocator<char>`).
+	    // arg_spellings[i] may be a MANGLED form (`myalloc_int32_t`) for an
+	    // already-instantiated arg; the concrete class's canonical_cpp_spelling
+	    // carries the `<...>` structure, so prefer it for that unifier.
+	    std::string nested_concrete =
+		!arg_types_by_slot[i]->definition.canonical_cpp_spelling.empty()
+		? arg_types_by_slot[i]->definition.canonical_cpp_spelling
+		: arg_spellings[i];
 	    if ( !unify_spec_pattern_arg(spec.spec_pattern[i], spec.typeparams,
 					 &arg_types_by_slot[i]->definition,
 					 arg_spellings[i], ded, score)
 	      && !unify_nested_spec_pattern_arg(
 					 pattern_spelling,
-					 spec.typeparams, arg_spellings[i], ded, score)
+					 spec.typeparams, nested_concrete, ded, score,
+					 &tmpl_ded)
 	      && !eval_void_t_detection_slot(
 					 pattern_spelling,
 					 arg_spellings[i], ded, score) )
@@ -13349,10 +13396,12 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	}
 	if ( !ok )
 	    continue;
-	// Every own typeparam of the spec must have been deduced.
+	// Every own typeparam of the spec must have been deduced — as a type
+	// (ded) or, for a template-template parameter, as a template (tmpl_ded).
 	bool all = true;
 	for ( size_t k = 0; k < spec.typeparams.size(); ++k )
-	    if ( !ded.count(spec.typeparams[k]) ) { all = false; break; }
+	    if ( !ded.count(spec.typeparams[k])
+	      && !tmpl_ded.count(spec.typeparams[k]) ) { all = false; break; }
 	if ( !all )
 	    continue;
 	if ( score > best_score )
@@ -13360,6 +13409,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	    best = &spec;
 	    best_score = score;
 	    best_ded = ded;
+	    best_tmpl = tmpl_ded;
 	}
     }
     if ( !best )
@@ -13368,6 +13418,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
     for ( std::map<std::string, DataDef *>::iterator d = best_ded.begin();
 	  d != best_ded.end(); ++d )
 	out_subst[d->first] = new TokenDataType(d->second->name.c_str(), *d->second);
+    out_template_subst = best_tmpl;
     return best;
 }
 
@@ -18289,8 +18340,19 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     {
 	if ( !sdd || pgm.is_c_mode() )
 	    return NULL;
-	if ( sdd->canonical_cpp_spelling.empty() && !pgm.current_namespace().empty() )
-	    sdd->canonical_cpp_spelling = pgm.current_namespace() + "::" + name;
+	if ( sdd->canonical_cpp_spelling.empty() )
+	{
+	    // An instantiated STRUCT template (`myalloc<int>`) must carry its
+	    // bracketed canonical spelling just like an instantiated class
+	    // (mirrors the TokenCLASS path), so partial-spec matching can later
+	    // decompose it (e.g. template-template-param deduction of
+	    // `__replace_first_arg<_Template<_Up>, _Tp>`). Falls back to
+	    // namespace::name for an ordinary (non-instantiated) C++ struct.
+	    if ( !pgm.instantiating_canonical_spelling.empty() )
+		sdd->canonical_cpp_spelling = pgm.instantiating_canonical_spelling;
+	    else if ( !pgm.current_namespace().empty() )
+		sdd->canonical_cpp_spelling = pgm.current_namespace() + "::" + name;
+	}
 	TokenDataType *tdt_ = NULL;
 	datatype_map_iter existing = pgm.datatype_map.find(name);
 	if ( existing != pgm.datatype_map.end()
