@@ -62,8 +62,18 @@ develop untouched. MIR fork `5df536f` (pin satisfied). Build current.
 ## 2. ★ NEXT — the deep #1 is the `pair`/`_Rb_tree` instantiation ONION (multi-session)
 The remaining 12 are gated behind a STACK of distinct libstdc++ template features. The
 container cluster eagerly instantiates the FULL `pair<const K,V>` class body (incl. private
-nested machinery the program never ODR-uses) and `_Rb_tree`. Current per-test walls (post
-both fixes; ALL re-mapped live at `7a7e715`):
+nested machinery the program never ODR-uses) and `_Rb_tree`.
+
+**★ KEYSTONE identified (this turn): the ALLOCATOR-TRAITS / REBIND machinery.** TWO of the
+walls below (set/containerdtor `__alloc_rebind`, and the vector member-ref `_Alloc_traits::
+construct`) trace to the SAME root: `std::allocator_traits<A>` / `__gnu_cxx::__alloc_traits`
+/ `__alloc_rebind` / `rebind_alloc` not resolving correctly. The chain is member-class-
+template `__rebind` + `__void_t` partial-spec (SFINAE) + the allocator's own member template
+`_Tp::template rebind<_Up>::other` + the `_Tp_alloc_type`/`_Alloc_traits` typedef chain.
+Implementing this faithfully is the highest-leverage next slice (unblocks set, map,
+containerdtor, AND the vector member-ref pair) — but it is a multi-feature slice, not a
+one-liner. 3-oracle first. Current per-test walls (re-mapped live; set/vector advanced this
+turn):
 - **pointer-to-member param type** `int C::*` (3 tests: testmadc_ns, testmap, testsubscript)
   — error "Failed to find type when parsing function parameters" @ stl_pair.h (stamped :188).
   ROOT: pair's PRIVATE nested `struct __zero_as_null_pointer_constant` (stl_pair.h:613) has
@@ -77,12 +87,20 @@ both fixes; ALL re-mapped live at `7a7e715`):
   could be deferred/skipped for system-header templates (the BODY deferral already exists,
   see parser.cpp:2885 comment) it would clear pointer-to-member + deprecated-varargs at once
   — but that's a broader, riskier change. Pick one deliberately.
-- **`Expecting ';' after struct member`** (2 tests: testcontainerdtor, testset) — `_Rb_tree`
-  path, now PAST the nested-template member-type wall (fixed by 856b4fc). set<int> repro
-  (`#include <set>` + `set<int> s;`) shows the bare reducer hitting "Expecting type in using
-  alias" at stl_tree.h:64-ish; testset (set<string>) hits "Expecting ';' after struct
-  member". NEXT in the _Rb_tree onion — diagnose with a gated diag at the relevant throw.
-  Likely another nested-template / using-alias-in-template-body construct.
+- **`Expecting type in using alias` / `Expecting ';' after struct member`** (2 tests:
+  testcontainerdtor, testset) — `_Rb_tree`/`_Node_handle` path, now PAST the nested-template
+  member-type wall (856b4fc). DIAGNOSED this turn: the bare set<int> reducer fails in
+  `node_handle.h:64` at `using allocator_type = __alloc_rebind<_NodeAlloc, _Val>;` —
+  `resolve_declared_type_token("__alloc_rebind")` returns NULL. `__alloc_rebind` (a std
+  namespace-scope alias template, alloc_traits.h:93) = `typename
+  __allocator_traits_base::template __rebind<_Alloc,_Up>::type` — and `__rebind`
+  (alloc_traits.h:55-72) is a MEMBER CLASS TEMPLATE with a `__void_t<typename
+  _Tp::template rebind<_Up>::other>` PARTIAL SPECIALIZATION (SFINAE), whose body uses
+  `_Tp::template rebind<_Up>::other` (allocator's own member template). Isolated reducers
+  (ns-alias-tmpl in a class-scope using inside an instantiated template; a plain member
+  alias template `Base::template __rebind<A,U>::type`) BOTH PASS — so the failure is the
+  FULL allocator-rebind SFINAE chain, not the individual pieces. This is the ALLOCATOR-
+  TRAITS/REBIND keystone (see vector member-ref below — SAME root). Deep, multi-feature.
 - **`__is_assignable` / `_ValueType2`** (2 tests: testforeachref, testvector) — UNCHANGED
   from session 10's root-cause: `uninitialized_copy`'s `_GLIBCXX_USE_ASSIGN_FOR_INIT` needs
   a FAITHFUL `__is_assignable` trait (arity 2). madc has NO parse-time assignment-overload
@@ -90,7 +108,16 @@ both fixes; ALL re-mapped live at `7a7e715`):
   BUILDING real operator= overload resolution w/ deleted/implicit tracking. Half-faithful is
   FORBIDDEN (corrupts SFINAE). LARGE; own slice. See session-10 part 6.
 - **`member reference is not a structure or union`** (2 tests: teststringref,
-  testsubscriptmember) @ stl_vector.h:428 — NOT yet diagnosed; reduce + diag.
+  testsubscriptmember) — DIAGNOSED this turn (reducer tmp/vsm.mad: `vector<string> v;
+  v.push_back("hi"); int n = v[0].length();`). Real construct = `_Alloc_traits::construct(
+  this->_M_impl, …)` (stl_vector.h:1286, in push_back/`_M_realloc_insert`). madc resolves
+  the static-call qualifier `_Alloc_traits` to `allocator_traits<…>::rebind_alloc *` (a
+  POINTER to the rebound allocator) and treats `::construct` as `.construct` on it →
+  member-ref-on-non-struct. `_Alloc_traits` SHOULD be `__gnu_cxx::__alloc_traits<
+  _Tp_alloc_type>` (a class with a static `construct`). SAME allocator-traits/rebind root
+  as the set wall — `_Tp_alloc_type`/`_Alloc_traits` are the rebind typedef chain. (vector
+  got further than set only because this is deeper in push_back, not in the type's own
+  using-aliases.) Fixing the allocator-traits/rebind keystone should clear both.
 - **`expression before '->' must be a pointer`** (2 tests: testsubscriptarrow,
   testvectorptr) — vector<T*> subscript loses pointer-ness (KNOWN since session 9; the
   `returns`-strip recurrence — see SESSION 9 notes near testvectorptr L28).
@@ -108,10 +135,15 @@ header construct behind a use-site-stamped error line. Decode TokenID via includ
 sii (set<int>) — run with `--std=c++17 --no-embedded-headers`.
 
 ## 4. State for the next agent
-- Code HEAD `856b4fc` (+ this docs commit), tree clean, 597/12, build current, MIR pin `5df536f` OK.
-- Pick ONE next slice (recommend: decide pointer-to-member-type vs system-header-signature-
-  deferral for the 3-test pair wall; OR diagnose the 2 not-yet-diagnosed walls first since
-  they're cheap and may reveal a shared root). 3-oracle before any meaty fix.
+- Code HEAD `856b4fc` (+ docs commits), tree clean, 597/12, build current, MIR pin `5df536f` OK.
+- The 2 previously-UNDIAG walls are now diagnosed (this turn) and BOTH point at the
+  allocator-traits/rebind KEYSTONE (see §2 callout). RECOMMENDED next slice: the
+  allocator-traits/rebind machinery — it unblocks set/map/containerdtor AND the vector
+  member-ref pair (~4-5 tests), the single highest-leverage target. Multi-feature
+  (member-class-template + `__void_t` partial-spec SFINAE + allocator member `rebind`
+  template + the `_Tp_alloc_type`/`_Alloc_traits` typedef chain) — scope as its own
+  multi-part slice; 3-oracle gcc/clang first. Smaller-bite alternatives: pointer-to-member
+  type (pair, 3 tests, also deep) or the vector<T*> `->` wall (sess9).
 
 ---
 
