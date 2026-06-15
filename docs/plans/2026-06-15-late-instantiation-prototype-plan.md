@@ -1,5 +1,60 @@
 # Plan — forward prototypes for late-drained free-fn-template instantiations
 
+**Status: A DONE + VALIDATED 2026-06-15 (`3591d0b`, guard `2ab2bd4`); B DEFERRED
+(evaluation below — superseded by A, fixes no current test).** Branch
+`feature/retire-embedded-shims-claude` (LOCAL-ONLY). Companion: handoff
+`docs/plans/2026-06-12-retire-embedded-shims-HANDOFF.md`.
+
+## 0. OUTCOME (2026-06-15, SESSION 15)
+
+**Approach A landed (`3591d0b`) — the plan's core deliverable.** Verify-first diag
+confirmed `__ns_std_move__o2` (+ two `_destroy__mti`) drain through the
+pending_funcs loop with `in_materialized=0`, exactly as predicted. Pushing the
+drained TokenFunc into `materialized_funcs` makes Pass 1.95(a) emit its forward
+proto. `tmp/sii.mad` + `tmp/mii.mad` now compile clean; gcc-on-emitted-C clean;
+the full `<set>`/`<map>` `_Rb_tree`/`_Node_handle` closure instantiates.
+**fulltest 609/12/0/18 — ZERO regression.** Regression guard committed
+(`tests/testlateinstproto.mad`, `2ab2bd4`): default-mode `set<int>` — verified the
+emitted C carries the proto (L783) ahead of use (L912) and def (L941).
+
+Walls UNCOVERED by A (each separate, NOT this plan): map/set/subscript/madc_ns now
+PARSE the full closure and advance to (a) stale `ns_stl` API — `.put`/`.get`/
+`.contains` on real `std::map`/`std::set` which have no such members
+(testmap/testsubscript/testmadc_ns); (b) `set::contains` C++20 (testset); (c)
+`Struct '_Tp2' already defined` template-collision when BOTH `<set>` and `<map>`
+are included (testcontainerdtor); (d) **empty-`_Rb_tree` dtor SIGSEGV** at runtime
+when `<iostream>` is also included (a real next wall: `set<int> s; cout<<s.size();`
+prints then crashes in `set_..._dtor`). Bare default-construct (no `<iostream>`)
+runs clean — hence the guard's shape.
+
+**Approach B DEFERRED — the evaluation §4 mandated ("do NOT do B blind"):**
+- After A, the ONLY two `TokenFunc → func_def` sources are BOTH proto-covered:
+  Pass 1 (12235) protos every fn in the entry `funcs` snapshot; Pass 1.95(a)
+  (12376) protos `materialized_funcs` (deferred bodies + A's drained
+  instantiations). **No `func_def` currently lacks a prototype** — B fixes zero
+  current failing tests.
+- **The plan tied B to testforeach2; that link is FALSE (investigated this
+  session).** testforeach2's `extern long __ns_std_for_each()` MIR-undefined is a
+  DIFFERENT class: `std::for_each(names, fn)` is a 2-arg call that **g++ AND clang
+  REJECT** ("no matching function" — real `for_each` is the 3-arg iterator form).
+  madc never instantiates the template; it falls back to an undefined extern. A
+  proto pass (B) operates on INSTANTIATED functions — it cannot touch an extern
+  fallback. PROOF the machinery is sound: the VALID 3-arg `for_each` instantiates
+  as `__ns_std_for_each__o2` WITH a correct forward proto + def (same shape as the
+  `move` fix), then hits the SEPARATE `_ValueType2`/`__is_assignable` arity-2 wall
+  (stl_vector.h:428, the testvector/testforeachref blocker). testforeach2 is a
+  STALE-API test (invalid 2-arg for_each), doubly blocked, by neither A nor B.
+- B's only residual value is structural future-proofing (guarantee a FUTURE
+  `func_def` source gets a proto) at real regression risk (rewrites proto emission
+  for every module). With no current payoff and the plan's explicit "do NOT do B
+  blind", it is deferred. If ever revived, do it as the deduped additive form
+  (track emitted-proto symbols; emit `func_proto` for any `func_def` not yet
+  proto'd) and validate with full gcc-on-emitted-C across the suite + fulltest.
+
+---
+
+(Original recon below, retained for the record.)
+
 **Status: APPROVED 2026-06-15 — do A then B** (user-confirmed: land A first as the
 low-risk targeted fix, then B as the clang-aligned class-killer hardening pass,
 each fully validated under fulltest before the next). Recon done; ready to

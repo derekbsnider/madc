@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 14 CLOSE"** block immediately below (current state +
-NEXT), then "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 15 CLOSE"** block immediately below (current state +
+NEXT), then "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -12,6 +12,104 @@ CLOSE). The per-part STATUS banners are detailed chronology, read only for
 depth. The governing process document is **`madc-header-partition-handoff.md`
 (repo root)** — every decision here must trace to it. Companion memory:
 `project_retire_embedded_shims` + `project_header_partition_architecture`.
+
+---
+
+# ★ SESSION 15 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-15
+
+## 0. Orientation
+Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
+Integration **609 passed / 12 failed / 0 timed out / 18 skipped** (UNCHANGED pass
+count — see §0b for why; +1 committed regression guard testlateinstproto, but the
+12 remaining failures are all behind SEPARATE walls). Code HEAD **`2ab2bd4`**, tree
+clean. Branch LOCAL-ONLY (`feature/retire-embedded-shims-claude`); develop
+untouched. MIR fork `5df536f` (pin satisfied). Build current, zero warnings.
+**This session (15) COMPLETED the late-instantiation-prototype plan
+(`docs/plans/2026-06-15-late-instantiation-prototype-plan.md`):** Approach A landed
+(`3591d0b`), Approach B evaluated + DEFERRED (superseded by A, fixes no current
+test). START at §1b for the next wall.
+
+## 0b. ★ APPROACH A — late-drained free-fn-template forward proto — DONE (`3591d0b`)
+The SESSION-14 §1b wall. Verify-first gated diag (MADC_DIAG_PROTO in the
+pending_funcs drain) CONFIRMED `__ns_std_move__o2` (+ two `_destroy__mti`) drain
+through cir_builder.cpp ~11994-12004 with `in_materialized=0` — exactly the gap.
+FIX (1 line + comment): in that drain loop, after `lib_funcs[key] = ntf;`, also
+`materialized_funcs.push_back(ntf);` so Pass 1.95(a) (~12376) emits its forward
+proto. The `lib_funcs.count(key)` guard makes it at-most-once; the deferred path's
+keys are already in lib_funcs so they short-circuit — no double-push; the
+instantiation symbol is not a funcdef_map key so Pass 0.75 emits no competing
+extern. `tmp/sii.mad`+`tmp/mii.mad` (`--std=c++17 --no-embedded-headers`) compile
+clean; gcc-on-emitted-C clean; the WHOLE `_Rb_tree`/`_Node_handle` closure
+instantiates. **fulltest 609/12 ZERO regression.** Guard `tests/testlateinstproto.mad`
+(`2ab2bd4`, default mode, exit-0: `#include <set>`⏎`set<int> s;` — emitted C shows
+proto L783 ahead of use L912 + def L941). **PASS COUNT UNCHANGED** because the
+tests A advanced (map/set/subscript/madc_ns) hit SEPARATE walls right after the
+proto wall — see §1b.
+
+## 0c. ★ APPROACH B — DEFERRED (superseded by A; plan §4 "do NOT do B blind")
+After A, the ONLY two `TokenFunc→func_def` sources are BOTH proto-covered: Pass 1
+(cir_builder ~12235) protos every fn in the entry `funcs` snapshot; Pass 1.95(a)
+(~12376) protos `materialized_funcs` (deferred bodies + A's drains). **No func_def
+lacks a proto → B fixes zero current tests.** The plan tied B to testforeach2;
+INVESTIGATED + FALSE: testforeach2's `extern long __ns_std_for_each()` MIR-undefined
+is a 2-arg `std::for_each(names, fn)` call that **g++ AND clang REJECT** (real
+for_each is 3-arg iterators) → madc never instantiates it, falls back to an
+undefined extern; a proto pass cannot touch an extern fallback. PROVEN the
+machinery is sound: the VALID 3-arg for_each instantiates as `__ns_std_for_each__o2`
+with a correct proto+def (same shape as the move fix), then hits the SEPARATE
+`_ValueType2`/`__is_assignable` arity-2 wall (stl_vector.h:428). testforeach2 is a
+STALE-API test, doubly blocked, by NEITHER A nor B. B's only residual value =
+structural future-proofing at real regression risk → deferred (revive as the
+deduped additive form if ever needed). Full B evaluation in the plan doc §0.
+
+## 1b. ★★ NEXT WALLS — all SEPARATE from the (now-complete) proto plan
+The 12 failures, re-diagnosed live at HEAD `2ab2bd4`. NONE are proto/instantiation
+gaps — those are closed. Grouped by root:
+- **STALE-API tests (use retired `ns_stl` container methods on REAL std::):**
+  testmap/testsubscript/testmadc_ns use `map::put`/`.get` (real `std::map` has
+  `insert`/`at`/`operator[]`, NO `put`); testset uses `set::contains` (C++20).
+  These tests were written for madc's OLD builtin containers; under real headers
+  they need MIGRATION to real std API (or the test intent re-examined). NOT a
+  compiler bug — a test-content decision. **testforeach2** is the same category
+  (invalid 2-arg `std::for_each`).
+- **`_ValueType2` / `__is_assignable` arity-2 @ stl_vector.h:428 — LARGE
+  (testvector, testforeachref, + the valid-for_each path):** `uninitialized_copy`'s
+  `_GLIBCXX_USE_ASSIGN_FOR_INIT` needs a FAITHFUL arity-2 `__is_assignable` trait;
+  madc has no parse-time assignment-overload resolver (assignment validity is
+  deferred to c2mir). Half-faithful is FORBIDDEN (corrupts SFINAE). Own slice.
+- **empty-`_Rb_tree` dtor SIGSEGV (runtime) — NEW this session:**
+  `set<int> s; cout<<s.size();` (with `<iostream>`) compiles + prints `0` then
+  SIGSEGVs in `set_..._dtor` (the empty-tree destructor walks a null/uninit
+  header). Bare `set<int> s;` (no iostream) runs clean. Real next runtime wall for
+  set/map once their API/parse walls clear.
+- **`Struct '_Tp2' already defined` (testcontainerdtor):** template-instantiation
+  struct-name collision when BOTH `<set>` and `<map>` are included in one TU.
+- **"Missing operand" @:428 (teststringref/testsubscriptmember); `rebind<>` @:47
+  (testsubscriptarrow/testvectorptr):** re-diagnose live (SESSION-14 §1b carry-over).
+
+## 2. Method (this session)
+3-oracle (g++ AND clang++ + madc). Gated-diag method (`#if MADC_DIAG_PROTO` in the
+drain loop, `OPTIONAL_CPPFLAGS=-DMADC_DIAG_PROTO=1`, `rm -f obj/cir_builder.o
+obj/pic/cir_builder.o` to force-recompile). **gcc-on-emitted-C** (`madc --emit=c11
+r > r.c; gcc -std=gnu11 -fsyntax-only -w r.c`) localized A's wall precisely. The
+for_each oracle (`g++ -fsyntax-only` on a 2-arg vs 3-arg `for_each`) proved the
+stale-API diagnosis. Reducers (tmp/, regenerate): sii/mii (set/map — clean post-A),
+fe3.cpp (valid 3-arg for_each — instantiates, hits the `__is_assignable` wall),
+fe2.cpp (2-arg — g++ rejects).
+
+## 3. State for the next agent
+- Code HEAD **`2ab2bd4`**, tree clean, **609/12/0/18**, build current+warning-free,
+  MIR pin `5df536f` OK. Session-15 commits: `3591d0b` (Approach A), `2ab2bd4`
+  (regression guard) + docs.
+- DONE: the late-instantiation-prototype plan is COMPLETE (A landed; B evaluated +
+  deferred). The proto/instantiation bug class is closed.
+- **★ NEXT = §1b. The proto plan no longer gates anything.** Highest-leverage
+  remaining slice = the `_ValueType2`/`__is_assignable` arity-2 trait (LARGE,
+  unblocks testvector/testforeachref + the valid-for_each path). Separately, the
+  STALE-API tests (testmap/testsubscript/testmadc_ns/testset/testforeach2) need a
+  test-content decision (migrate to real std API) — surface to the user; NOT a
+  compiler fix. The empty-`_Rb_tree`-dtor SIGSEGV is the next runtime wall for
+  set/map. 3-oracle FIRST on any meaty fix.
 
 ---
 
