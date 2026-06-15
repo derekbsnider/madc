@@ -1255,6 +1255,17 @@ public:
     // cannot fold with certainty (dependent / value-dependent / unsupported).
     bool fold_nontype_template_arg(const std::vector<TokenBase *> &argtoks,
 				   const std::string &spelling, int64_t &out);
+    // Evaluate a NON-dependent non-type template argument (a `<...>` slot that is
+    // an integral/bool constant expression — `(1==1)`, `is_trivial<int>::value`,
+    // `__is_bitwise_relocatable<T>::value` for concrete T) to its value via the
+    // SAME constant-expression evaluator `static_assert` uses, parsing a clone of
+    // the collected arg tokens in an ISOLATED stream. Returns false (keep the raw
+    // tokens) for anything still dependent / unfoldable. This is the substitution-
+    // time non-type-arg fold (g++ convert_nontype_argument / clang converted-
+    // constant-expression) without which `enable_if<C,T>` never selects its
+    // partial spec unless C is a literal.
+    bool fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
+				   int64_t &out);
     // The canonical, identifier-safe instantiation-key fragment for ONE template
     // argument: a foldable non-type arg renders as its normalized VALUE (so
     // `<true>`, `<1>`, and `<__has_trivial_destructor(int)>` all key identically

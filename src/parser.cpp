@@ -2728,6 +2728,20 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		std::vector<TokenBase *> arg_tokens;
 		sep = collect_template_argument_spelling(at, spelling,
 							 &arg_tokens);
+		// Substitution-time non-type-arg fold: a NON-dependent integral/
+		// bool constant arg (`(1==1)`, `is_trivial<int>::value`,
+		// `__is_bitwise_relocatable<int>::value`) normalizes to its value
+		// so partial-spec selection (`enable_if<true,T>`) and the
+		// instantiation key see a literal — mirrors g++/clang folding every
+		// non-dependent non-type arg. A still-dependent arg fails to fold
+		// and keeps its raw tokens unchanged.
+		int64_t folded_nt = 0;
+		if ( fold_nontype_arg_constant(arg_tokens, folded_nt) )
+		{
+		    arg_tokens.clear();
+		    arg_tokens.push_back(new TokenInt(folded_nt));
+		    spelling = std::to_string(folded_nt);
+		}
 		token_subst[td.typeparams[pi]] = arg_tokens;
 		arg_types_by_slot.push_back(NULL);
 		arg_tokens_by_slot.push_back(arg_tokens);
@@ -2813,10 +2827,24 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	}
 	else
 	{
-	    token_subst[td.typeparams[pi]] = default_tokens;
-	    arg_types_by_slot.push_back(NULL);
-	    arg_tokens_by_slot.push_back(default_tokens);
-	    arg_spellings.push_back(template_tokens_spelling(default_tokens));
+	    // Same substitution-time fold for a non-type DEFAULT argument.
+	    int64_t folded_nt = 0;
+	    if ( fold_nontype_arg_constant(default_tokens, folded_nt) )
+	    {
+		default_tokens.clear();
+		default_tokens.push_back(new TokenInt(folded_nt));
+		token_subst[td.typeparams[pi]] = default_tokens;
+		arg_types_by_slot.push_back(NULL);
+		arg_tokens_by_slot.push_back(default_tokens);
+		arg_spellings.push_back(std::to_string(folded_nt));
+	    }
+	    else
+	    {
+		token_subst[td.typeparams[pi]] = default_tokens;
+		arg_types_by_slot.push_back(NULL);
+		arg_tokens_by_slot.push_back(default_tokens);
+		arg_spellings.push_back(template_tokens_spelling(default_tokens));
+	    }
 	}
 	++pi;
     }
@@ -13704,6 +13732,56 @@ bool Program::fold_nontype_template_arg(const std::vector<TokenBase *> &argtoks,
     if ( eval_local_type_trait(*this, argtoks, i, out) && i == argtoks.size() )
 	return true;
     return false;
+}
+
+bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
+					int64_t &out)
+{
+    if ( argtoks.empty() )
+	return false;
+    // Parse a CLONE of the arg tokens in an isolated stream, so the live parse
+    // (mid template-id collection) is untouched and the recursion this triggers
+    // (a `Trait<int>::value` arg instantiates Trait) is self-contained. Mirror
+    // capture_constant_initializer_value's save/try/restore idiom; require the
+    // whole arg to fold (sentinel reached) so a partial parse can't masquerade.
+    std::deque<TokenBase *> saved_tokens = tokens;
+    size_t saved_diag_count = diagnostics.size();
+    Program::ErrorInfo saved_error = last_error;
+    std::deque<TokenBase *> body;
+    for ( TokenBase *t : argtoks )
+	if ( t )
+	    body.push_back(t->clone());
+    TokenSemi *sentinel = new TokenSemi();
+    body.push_back(sentinel);
+    tokens = body;
+    // A non-constant / still-dependent arg (`N` with N unbound, a pointer non-type
+    // arg) makes parse_constant_integer_expression Throw, and throwbuf::sync()
+    // prints to stderr BEFORE the exception we catch — so a legitimate "keep the
+    // raw tokens" fallback would leak a spurious error. Mute std::cerr for the
+    // speculative parse only; restore + clear its state after.
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(NULL);
+    bool ok = false;
+    try
+    {
+	int64_t v = parse_constant_integer_expression();
+	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	{
+	    out = v;
+	    ok = true;
+	}
+    }
+    catch ( ... ) { ok = false; }
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
+    tokens = saved_tokens;
+    if ( !ok )
+    {
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
+    }
+    return ok;
 }
 
 std::string Program::canonical_arg_key_fragment(

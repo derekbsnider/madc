@@ -1,0 +1,30 @@
+#!/../bin/madc
+// Regression guard: an alias-template-id's NON-TYPE bool argument must be folded
+// even when it is NOT a literal `true`/`false` — a parenthesized constant expr, a
+// class-template `::value`, or a type-trait builtin. Without the substitution-time
+// fold (Program::fold_nontype_arg_constant), `enable_if`'s partial spec is never
+// selected for a non-literal condition, so `enable_if_t<C,T>` resolved to an opaque
+// placeholder (the `__enable_if_t<__is_bitwise_relocatable<int>::value, _Tp*>` wall
+// in vector::push_back -> __relocate_a_1). g++ and clang fold every non-dependent
+// non-type arg; these three lines compile + print 42/3.5/77 on both (verified).
+// Plan: docs/plans/2026-06-15-enable-if-alias-nontype-bool-fold-plan.md.
+#include <iostream>
+using namespace std;
+
+template<bool C, class T> struct en {};
+template<class T> struct en<true, T> { typedef T type; };
+template<bool C, class T> using eif = typename en<C, T>::type;
+
+template<class T> struct big { static const bool value = (sizeof(T) >= 4); };
+
+eif<(1 == 1), int>            a = 42;   // parenthesized constant expr
+eif<big<long>::value, double> b = 3.5;  // class-template ::value
+eif<__is_trivial(int), long>  c = 77;   // type-trait builtin
+
+int main()
+{
+	cout << a << endl;
+	cout << b << endl;
+	cout << c << endl;
+	return 0;
+}
