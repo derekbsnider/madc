@@ -35,6 +35,7 @@ struct MIR_context {
   MIR_alloc_t alloc;
   MIR_code_alloc_t code_alloc;
   int func_redef_permission_p;        /* when true loaded func can be redfined lately */
+  int no_inline_p;                    /* when true MIR_link does not inline calls (e.g. for debug) */
   VARR (size_t) * insn_nops;          /* constant after initialization */
   VARR (MIR_proto_t) * unspec_protos; /* protos of unspec insns (set only during initialization) */
   VARR (char) * temp_string;
@@ -64,6 +65,7 @@ struct MIR_context {
 
 #define error_func ctx->error_func
 #define func_redef_permission_p ctx->func_redef_permission_p
+#define no_inline_p ctx->no_inline_p
 #define unspec_protos ctx->unspec_protos
 #define insn_nops ctx->insn_nops
 #define temp_string ctx->temp_string
@@ -769,6 +771,10 @@ void MIR_set_func_redef_permission (MIR_context_t ctx, int enable_p) {  // ?? at
   func_redef_permission_p = enable_p;
 }
 
+int MIR_get_inline_permission_p (MIR_context_t ctx) { return !no_inline_p; }
+
+void MIR_set_inline_permission (MIR_context_t ctx, int enable_p) { no_inline_p = !enable_p; }
+
 static htab_hash_t item_hash (MIR_item_t it, void *arg MIR_UNUSED) {
   return (htab_hash_t) mir_hash_finish (
     mir_hash_step (mir_hash_step (mir_hash_init (28), (uint64_t) MIR_item_name (NULL, it)),
@@ -844,6 +850,7 @@ MIR_context_t _MIR_init (MIR_alloc_t alloc, MIR_code_alloc_t code_alloc) {
   ctx->alloc = alloc;
   ctx->code_alloc = code_alloc;
   error_func = default_error;
+  no_inline_p = FALSE;
   func_redef_permission_p = FALSE;
   curr_module = NULL;
   curr_func = NULL;
@@ -2200,7 +2207,7 @@ void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_
     for (item = DLIST_HEAD (MIR_item_t, m->items); item != NULL;
          item = DLIST_NEXT (MIR_item_t, item)) {
       if (item->item_type == MIR_func_item && item->data != NULL) {
-        process_inlines (ctx, item);
+        if (!no_inline_p) process_inlines (ctx, item);
         item->data = NULL;
 #if 0
         fprintf (stderr, "+++++ Function after inlining:\n");

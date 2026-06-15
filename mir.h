@@ -578,6 +578,10 @@ extern MIR_alloc_t MIR_get_alloc (MIR_context_t ctx);
 
 extern int MIR_get_func_redef_permission_p (MIR_context_t ctx);
 extern void MIR_set_func_redef_permission (MIR_context_t ctx, int flag_p);
+/* Whether MIR_link inlines calls to small defined functions (default: yes).
+   Disable for debuggable code so each function keeps its own frames/lines. */
+extern int MIR_get_inline_permission_p (MIR_context_t ctx);
+extern void MIR_set_inline_permission (MIR_context_t ctx, int enable_p);
 
 extern MIR_insn_t MIR_new_insn_arr (MIR_context_t ctx, MIR_insn_code_t code, size_t nops,
                                     MIR_op_t *ops);
