@@ -21960,8 +21960,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	else
 	{
 	    // data member
+	    // Reference data member (`T& m;`): lowered to a pointer (DataDefREF
+	    // is-a DataDefPTR, 8 bytes) that auto-derefs on access. It must be
+	    // bound in every constructor's mem-init list (it has no default
+	    // value and cannot be rebound) — the same model as a reference param.
 	    if ( ret_is_ref )
-		pgm.Throw(tn) << "Reference data members (T&) are not supported" << flush;
+		cmember_dd = pgm.getReferenceType(cmember_dd);
 	    // Bit-field member: `unsigned flags : 3;`, comma-separated
 	    // `unsigned a : 3, b : 5;` (parity with TokenSTRUCT::parse; a
 	    // bit-field is never an array). The shared Program::parse_bitfield_width
