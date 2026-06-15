@@ -779,6 +779,15 @@ public:
 				    const std::set<std::string> *skip = NULL);
 	bool class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 				    std::vector<node_t> &out, TokenBase *origin);
+	// Apply C++11 default member initializers (NSDMI: `int x = 5;`) for any
+	// scalar/pointer member not explicitly initialized (not in `skip`). The
+	// receiver is `recv`, accessed `recv->member` when `arrow` (a ctor body's
+	// `__this`) or `recv.member` otherwise (a named local). Object members are
+	// value-initialized by the existing member-construction path, not here.
+	bool emit_member_default_inits(DataDefCLASS *cdd, const char *recv,
+				    bool arrow, std::vector<node_t> &out,
+				    TokenBase *origin,
+				    const std::set<std::string> *skip = NULL);
 	bool class_member_destruct(DataDefCLASS *cdd, std::vector<node_t> &out,
 				   TokenBase *origin);
 	// True when the class has at least one embedded object member needing

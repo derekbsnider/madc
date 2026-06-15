@@ -2063,6 +2063,13 @@ public:
     // integer type `member_dd`; `named` rejects a zero width; `target` supplies
     // the storage-size rule. Shared by the struct and class body parsers.
     size_t parse_bitfield_width(TokenBase *loc, DataDef *member_dd, bool named, DataDefSTRUCT &target);
+    // Capture a C++11 default member initializer (NSDMI: `= expr` / `{...}`) that
+    // begins at `tn` (the token after a data-member declarator), parse it in an
+    // isolated stream, and record it under member name `mname` on `dds`. Returns
+    // the token following the initializer (the `,`/`;`), or `tn` unchanged if `tn`
+    // does not begin an initializer. Shared by the struct and class body parsers.
+    TokenBase *capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dds,
+					   const std::string &mname);
     // Array-dimension classification: decide whether the upcoming `[ … ]`
     // dimension is a VLA (needs a runtime value) or a constant fold.
     // `bracket_dim_needs_runtime_value` is the entry; the other three are its

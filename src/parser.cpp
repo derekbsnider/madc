@@ -18482,6 +18482,73 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
     return false;
 }
 
+// C++11 default member initializer (NSDMI): `int x = 5;`, `T m = T();`, or
+// brace-init `T m{...}`. `tn` is the token following a data-member declarator.
+// If it begins an initializer, capture the balanced init tokens, parse them in
+// an ISOLATED token stream (so the member-body parse does not desync), and record
+// the parsed expression under member name `mname` on `dds` (name-keyed, applied at
+// default construction as `recv.member = expr` for a scalar/pointer member). A
+// brace initializer, or an expression that does not parse (a dependent object
+// value-init in a system header), is left unstored — object members then take the
+// existing value-init construction. Returns the token following the initializer
+// (the `,`/`;`); returns `tn` unchanged when there is no initializer. Shared by
+// TokenSTRUCT::parse and TokenCLASS::parse.
+TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dds,
+						const std::string &mname)
+{
+    if ( !tn || !dds )
+	return tn;
+    // Only equal-init (`= expr`) is captured. Brace-or-equal-init (`m{...}`) is
+    // NOT consumed here: faithfully applying it needs aggregate/value-init
+    // semantics this slice does not model, and silently dropping it would turn a
+    // scalar member into garbage. Leaving `tn` as `{` lets the caller raise the
+    // existing clean parse error rather than mis-initialize — see the brace-init
+    // follow-up noted in the NSDMI handoff.
+    if ( tn->id() != TokenID::tkAssign )
+	return tn;
+    // `= expr` up to the top-level ',' or ';' (nested (), [], {} are balanced so a
+    // braced/parenthesized initializer with commas is captured whole).
+    std::vector<TokenBase *> init_toks;
+    int pd = 0, sd = 0, bd = 0;
+    for (;;)
+    {
+	tn = nextToken();
+	if ( !tn )
+	    Throw << "Unexpected end in member initializer" << flush;
+	TokenID id = tn->id();
+	if ( id == TokenID::tkOpBrk ) ++pd;
+	else if ( id == TokenID::tkClBrk ) --pd;
+	else if ( id == TokenID::tkOpSqr ) ++sd;
+	else if ( id == TokenID::tkClSqr ) --sd;
+	else if ( id == TokenID::tkOpBrc ) ++bd;
+	else if ( id == TokenID::tkClBrc ) --bd;
+	else if ( pd == 0 && sd == 0 && bd == 0
+	       && ( id == TokenID::tkComma || id == TokenID::tkSemi ) )
+	    break;
+	init_toks.push_back(tn->clone());
+    }
+    if ( !init_toks.empty() )
+    {
+	// Parse the captured tokens into an expression in an ISOLATED stream so the
+	// member-body parse does not desync. A scalar/pointer initializer is stored
+	// and applied as `recv.member = expr`; an object value-init (`= T()`) that
+	// does not yield a usable scalar expression is left unstored — object members
+	// take the existing value-init construction.
+	std::deque<TokenBase *> saved_stream = tokens;
+	tokens.clear();
+	for ( TokenBase *t : init_toks )
+	    tokens.push_back(t->clone());
+	tokens.push_back(new TokenSemi());
+	TokenBase *parsed = NULL;
+	try { parsed = parseExpression(nextToken(), true); }
+	catch ( ... ) { parsed = NULL; }
+	tokens = saved_stream;
+	if ( parsed )
+	    dds->member_default_inits[mname] = parsed;
+    }
+    return tn;
+}
+
 TokenBase *TokenSTRUCT::parse(Program &pgm)
 {
     TokenIdent *tag = NULL;
@@ -19502,6 +19569,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			if ( !tn )
 			    pgm.Throw << "Unexpected end after __attribute__ in struct" << flush;
 		    }
+		    // C++11 default member initializer (NSDMI): `int x = 5;` etc.
+		    // (bit-fields cannot carry one — that path `continue`d above).
+		    if ( !dds->members.empty() )
+			tn = pgm.capture_member_default_init(tn, dds,
+				dds->members.back().first);
 		    if ( tn->id() == TokenID::tkComma )
 			continue;
 		    if ( tn->id() != TokenID::tkSemi )
@@ -19577,7 +19649,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		has_object_member = true;
 		break;
 	    }
-	if ( has_object_member && !dynamic_cast<DataDefCLASS *>(dds) ) {
+	// A C++11 default member initializer (`int x = 5;`) also makes a struct
+	// non-trivial: its default constructor must run the in-class initializer.
+	// Even a scalar-only struct earns class-hood from an NSDMI — otherwise it
+	// stays a plain DataDefSTRUCT and never reaches the construction path that
+	// applies the initializer. As narrow as the object-member criterion (only
+	// structs that actually carry an `= init`), so it keeps trivial C structs
+	// untouched.
+	bool has_default_init = !dds->member_default_inits.empty();
+	if ( ( has_object_member || has_default_init ) && !dynamic_cast<DataDefCLASS *>(dds) ) {
 	    DataDefCLASS *ddc = new DataDefCLASS(dds->name, dds->size, dds->rawtype());
 	    static_cast<DataDefSTRUCT &>(*ddc) = *dds; // copy the parsed struct state
 	    if ( was_pre_registered && tag )
@@ -22419,6 +22499,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		<< " (count " << member_count << ", total " << ddc->size << ')' << endl);
 	    skip_member_attributes(); // `int x __attribute__((aligned(8)));`
 	    tn = pgm.nextToken();
+	    // C++11 default member initializer (NSDMI): `int x = 5;`, `T m = T();`.
+	    tn = pgm.capture_member_default_init(tn, ddc, mname);
 		// Additional declarators sharing the base type: `int x, y;`,
 		// `int *p, q;`, `char a[4], b;` — each re-derives pointer level
 		// and array dims from the base type `mtype` (mirrors
@@ -22469,6 +22551,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 				ddc->member_access.back() = access_flags;
 			skip_member_attributes();
 			tn = pgm.nextToken();
+			// NSDMI on a comma-shared declarator: `int x = 1, y = 2;`.
+			tn = pgm.capture_member_default_init(tn, ddc, nmname);
 		}
 	    if ( !tn || tn->id() != TokenID::tkSemi )
 		pgm.Throw(tn) << "Expecting ';' after class member" << flush;

@@ -4146,6 +4146,34 @@ bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 	return any;
 }
 
+bool CirBuilder::emit_member_default_inits(DataDefCLASS *cdd, const char *recv,
+					   bool arrow, std::vector<node_t> &out,
+					   TokenBase *origin,
+					   const std::set<std::string> *skip)
+{
+	if (!cdd || cdd->member_default_inits.empty()) return false;
+	bool any = false;
+	// Declaration order ([class.base.init]p11): iterate the members, not the map.
+	for (const auto &m : cdd->members) {
+		// Object members value-init through the existing member-construction
+		// path; an NSDMI `= T()` on such a member IS that same value-init, so
+		// it carries no translatable scalar initializer here.
+		if (as_class_instance(m.second)) continue;
+		std::map<std::string, TokenBase *>::const_iterator di =
+			cdd->member_default_inits.find(m.first);
+		if (di == cdd->member_default_inits.end() || !di->second) continue;
+		// An explicit ctor member-init / aggregate-init OVERRIDES the NSDMI.
+		if (skip && skip->count(m.first)) continue;
+		node_t fld = node2(arrow ? N_DEREF_FIELD : N_FIELD,
+				   id(recv, origin), id(m.first.c_str(), origin));
+		node_t asgn = node2(N_ASSIGN, fld, translate_expr(di->second), origin);
+		flush_pending_stmts(out);
+		out.push_back(node2(N_EXPR, list(), asgn, origin));
+		any = true;
+	}
+	return any;
+}
+
 bool CirBuilder::class_member_destruct(DataDefCLASS *cdd,
 				       std::vector<node_t> &out, TokenBase *origin)
 {
@@ -10192,9 +10220,19 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			// needs each member constructed.
 			// (Member destruction is via the synthesized dtor referenced by
 			// the cleanup attribute — see class_struct_def / var_decl.)
-			else if (class_has_object_members(cdd))
-				class_instance_member_ctors(v->name.c_str(), cdd,
-							    items, tc);
+			else {
+				if (class_has_object_members(cdd))
+					class_instance_member_ctors(v->name.c_str(), cdd,
+								    items, tc);
+				// C++11 default member initializers on a no-ctor instance
+				// (incl. a scalar-only struct promoted to a class purely
+				// for its NSDMI): `recv.member = init` per declaration order.
+				std::vector<node_t> nsdmi_stmts;
+				if (emit_member_default_inits(cdd, v->name.c_str(), false,
+							      nsdmi_stmts, tc, NULL))
+					for (node_t s : nsdmi_stmts)
+						append(items, s);
+			}
 		}
 	}
 
@@ -10371,32 +10409,46 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					append(items, p);
 				m_pending_stmts.clear();
 				if (cc) append(items, cc);
-				// No user ctor but embedded object members: construct each
-				// member in place. With a
-				// user ctor, the ctor body's prologue constructs them.
-				else if (class_has_object_members(cdcl))
-					class_instance_member_ctors(sdcl->var.name.c_str(),
-								    cdcl, items, sdcl);
-				// No ctor, no object members — a TRIVIAL class/struct with an
-				// initializer (`A z = makeA(9)`, `Point m = mid(a,b)`): emit the
-				// initialization `var = <init>` so the value is actually copied
-				// in. Without this the initializer was dropped and the object
-				// read garbage. A trivial struct has no dtor, so c2mir's native
-				// struct copy is correct (no double-free). (A class WITH object
-				// members needs copy-construction via the __retbuf ABI — handled
-				// by the object-returning-call path, not here.)
-				else if (!ctor_args.empty() && ctor_args[0]) {
-					DataDef *idd = ctor_args[0]->datadef();
-					if (idd && (idd->is_struct() || idd->is_object())
-					    && !idd->is_pointer()) {
-						node_t lhs = id(sdcl->var.name.c_str(), sdcl);
-						node_t rhs = translate_expr(ctor_args[0]);
-						// A sub-call may have queued pending temps; flush first.
-						for (node_t p : m_pending_stmts)
-							append(items, p);
-						m_pending_stmts.clear();
-						node_t asg = node2(N_ASSIGN, lhs, rhs, sdcl);
-						append(items, node2(N_EXPR, list(), asg, sdcl));
+				else {
+					// No user ctor but embedded object members: construct each
+					// member in place. With a
+					// user ctor, the ctor body's prologue constructs them.
+					if (class_has_object_members(cdcl))
+						class_instance_member_ctors(sdcl->var.name.c_str(),
+									    cdcl, items, sdcl);
+					// No ctor, no object members — a TRIVIAL class/struct with an
+					// initializer (`A z = makeA(9)`, `Point m = mid(a,b)`): emit the
+					// initialization `var = <init>` so the value is actually copied
+					// in. Without this the initializer was dropped and the object
+					// read garbage. A trivial struct has no dtor, so c2mir's native
+					// struct copy is correct (no double-free). (A class WITH object
+					// members needs copy-construction via the __retbuf ABI — handled
+					// by the object-returning-call path, not here.)
+					else if (!ctor_args.empty() && ctor_args[0]) {
+						DataDef *idd = ctor_args[0]->datadef();
+						if (idd && (idd->is_struct() || idd->is_object())
+						    && !idd->is_pointer()) {
+							node_t lhs = id(sdcl->var.name.c_str(), sdcl);
+							node_t rhs = translate_expr(ctor_args[0]);
+							// A sub-call may have queued pending temps; flush first.
+							for (node_t p : m_pending_stmts)
+								append(items, p);
+							m_pending_stmts.clear();
+							node_t asg = node2(N_ASSIGN, lhs, rhs, sdcl);
+							append(items, node2(N_EXPR, list(), asg, sdcl));
+						}
+					}
+					// C++11 default member initializers on a DEFAULT-constructed
+					// no-ctor instance (`S s;` — incl. a scalar-only struct promoted
+					// to a class purely for its NSDMI). A whole-object initializer
+					// (the trivial-copy arm) supplies all members, so skip then.
+					if (ctor_args.empty()) {
+						std::vector<node_t> nsdmi_stmts;
+						if (emit_member_default_inits(cdcl,
+								sdcl->var.name.c_str(), false,
+								nsdmi_stmts, sdcl, NULL))
+							for (node_t ns : nsdmi_stmts)
+								append(items, ns);
 					}
 				}
 				// In a try body, also register this object's dtor on the runtime
@@ -10800,6 +10852,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			}
 		if (is_ctor && !delegating_ci)
 			class_ctor_initializer_stmts(ocls, fd, prologue, tf);
+		// C++11 default member initializers (`int x = 5;`): applied for every
+		// member NOT given an explicit ctor member-init, after the ctor-init
+		// list (which overrides them via explicit_member_inits).
+		if (is_ctor && !delegating_ci)
+			emit_member_default_inits(ocls, "__this", true, prologue, tf,
+						  &explicit_member_inits);
 		// Construct embedded object members at ctor entry (after base ctor),
 		// destruct them at dtor exit (before base dtor) — C++ member lifetime.
 		if (is_ctor && !delegating_ci)

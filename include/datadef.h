@@ -330,6 +330,12 @@ public:
     // member_explicit_align map pattern (index-keyed, no parallel-vector burden).
     std::map<size_t, DataDefCLASS *> member_vbase;
     std::map<size_t,size_t> member_explicit_align; // member index -> __attribute__((aligned(N))); absent = natural
+    // C++11 default member initializer (NSDMI): member NAME -> the PARSED init
+    // expression (`int x = 5;` -> TokenInt(5)). Applied at default construction as
+    // `__this->member = expr` for any member not explicitly initialized. Absent =
+    // no in-class initializer (or one that did not parse — object members then take
+    // the existing value-init construction). Name-keyed (survives MI reordering).
+    std::map<std::string, TokenBase *> member_default_inits;
     TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
