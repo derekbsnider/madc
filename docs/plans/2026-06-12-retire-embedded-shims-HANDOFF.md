@@ -285,6 +285,40 @@ member fn tmpl forwarding a class-ref param to a sibling static member tmpl) all
 Both are further allocator_traits/nested-template-instantiation walls. tmp/vint is the
 canonical reducer (NOT sd*/ad*). 3-oracle each new wall vs g++/clang first.
 
+### UPDATE 2026-06-15 (session 10, part 5) — `type<>` wall DOWN @`bb9c64b` (use-after-realloc; zero-regr, still 597/12)
+
+The `type<> expects 0 type argument(s), got 2` wall is CLEARED. ROOT was a dangling
+pointer, NOT a template-param-dropping bug. `instantiate_template_alias_use`
+(parser.cpp:3032) held find_template_alias's result as a REFERENCE
+(`TemplateAliasDef &td = *tdp`); find_template_alias returns a pointer INTO the
+std::vector in template_alias_map. Resolving the alias's template args instantiates
+other templates → register_template_alias → that vector REALLOCATES → the reference
+dangles, and `td.typeparams.size()` read freed memory (0). libstdc++'s
+`__conditional<B>::type<_If,_Else>` (conditional_t / move_if_noexcept, reached by
+vector's _M_realloc_insert) thus saw 0 typeparams. PROOF: dumped the map at the
+failure — the live variant for that owner had 2 typeparams; the held pointer addressed
+a stale reallocated slot. FIX: copy by value (`TemplateAliasDef td = *tdp;`). NOTE the
+sibling `instantiate_template_use` (the CLASS-template path, parser.cpp ~2658) ALREADY
+copies `TemplateDef td = *tdp` by value (comment "only read td") — the alias path was
+the lone divergence. Reducers cond1-4 did NOT repro (top-level use doesn't reallocate
+mid-resolution); needed the real deep chain.
+
+**★ NEXT WALLS (continue #1) — the cluster now SPLITS by element type:**
+- **vector<int>** (tmp/vint, testforeachref): `use of undeclared identifier '_ValueType2'`
+  at `:428` + MIR undefined `vector_int32_t_…__M_realloc_insert`. A libstdc++-internal
+  template typeparam left UNBOUND during member-tmpl/out-of-line monomorphization of
+  `_M_realloc_insert`'s body (sibling of the session-9 `_ValueType1`; see that history).
+  Reduce from tmp/vint.
+- **vector<string>** (testvector, teststringref, testsubscriptmember, testmadc_ns):
+  `allocator_traits<…>::_Diff<…> did not register` at `:105` — this is
+  instantiate_template_use's "did not register" (parser.cpp:3027), NOT the dangling
+  -pointer bug (that path already copies by value). `_Diff` (bits/alloc_traits.h:133-140)
+  is a nested class template with a PARTIAL SPECIALIZATION selected by
+  `__void_t<typename _A2::difference_type>` (SFINAE difference_type probe). Likely root:
+  partial-spec selection (match_partial_specialization) or nested-class-template
+  registration failing for the `_Diff<_Alloc, pointer, void>` instantiation. Reduce a
+  nested class template with a void_t partial spec.
+
 ---
 
 # ★ SESSION 9 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-14
