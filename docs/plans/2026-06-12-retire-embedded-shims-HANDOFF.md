@@ -19,12 +19,29 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
-Integration **597 passed / 12 failed / 0 timed out / 18 skipped** (unchanged count, but
-the remaining 12 advanced PAST three more walls this session). Code HEAD **`856b4fc`**,
-tree HEAD same (+ this docs commit). Branch LOCAL-ONLY (`feature/retire-embedded-shims-claude`);
+Integration **598 passed / 12 failed / 0 timed out / 18 skipped** (+1 new test
+testtmpltmplparam; the 12 advanced PAST several walls this session). Code HEAD **`b934fbe`**,
+tree HEAD same (+ docs commits). Branch LOCAL-ONLY (`feature/retire-embedded-shims-claude`);
 develop untouched. MIR fork `5df536f` (pin satisfied). Build current.
 
-## 1. What this session did (3 commits, all zero-regression, all deepest-layer)
+## 0b. KEYSTONE PROGRESS (b934fbe) — template-template-param partial spec landed
+The allocator-traits/rebind KEYSTONE (§2) needs `__replace_first_arg<_Template<_Up>, _Tp>`
+→ `_Template<_Tp>` (template-template-PARAMETER partial specialization). That feature is now
+IMPLEMENTED + gated (testtmpltmplparam, 3-oracled g++/clang/madc; 4 tmp reducers b5/b6/b10/areb
+pass). Two parts: (1) `unify_nested_spec_pattern_arg` deduces a template-template param `C`
+from the concrete's outer template instead of a literal name match, routing the
+template-NAME binding through `token_subst` (new optional out param; function-template
+deduction path unchanged); (2) instantiated STRUCT templates now carry their bracketed
+`canonical_cpp_spelling` (mirrors TokenCLASS) so the matcher can decompose `myalloc<int>`
+from the mangled `myalloc_int32_t`. **BUT the real set/map chain did NOT advance** — see §2:
+`__alloc_rebind` (the namespace-scope alias template) returns NULL at
+`resolve_declared_type_token` BEFORE the `__rebind` partial-spec match is even reached. So the
+NEXT keystone sub-slice is the `__alloc_rebind` alias-template resolution itself (its body is
+`typename __allocator_traits_base::template __rebind<_Alloc,_Up>::type` — a member-class-
+template-via-`::template` access on a concrete enclosing type). Diagnose why that alias
+resolves to NULL (alias-template lookup, or the `::template __rebind<...>::type` member access).
+
+## 1. What this session did (4 commits, all zero-regression, all deepest-layer)
 - **`7e77f28`** — `instantiate_template_use` (parser.cpp ~2851): preserve the USE-SITE
   owner across the partial-spec swap. A nested class template's partial spec is stored
   globally by simple name in `partial_spec_map[name]`, with `owner_class` frozen to
@@ -135,7 +152,11 @@ header construct behind a use-site-stamped error line. Decode TokenID via includ
 sii (set<int>) — run with `--std=c++17 --no-embedded-headers`.
 
 ## 4. State for the next agent
-- Code HEAD `856b4fc` (+ docs commits), tree clean, 597/12, build current, MIR pin `5df536f` OK.
+- Code HEAD `b934fbe` (+ docs commits), tree clean, 598/12, build current, MIR pin `5df536f` OK.
+- KEYSTONE is PARTIALLY landed (§0b): template-template-param partial spec works (gated by
+  testtmpltmplparam). NEXT keystone sub-slice = the `__alloc_rebind` alias-template resolution
+  (returns NULL upstream of the partial-spec match). 3-oracle first; reducers in tmp/ (b5/b6/
+  b10/areb pass; sii/vsm/vint/vstr still show the real walls).
 - The 2 previously-UNDIAG walls are now diagnosed (this turn) and BOTH point at the
   allocator-traits/rebind KEYSTONE (see §2 callout). RECOMMENDED next slice: the
   allocator-traits/rebind machinery — it unblocks set/map/containerdtor AND the vector
