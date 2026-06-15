@@ -53,21 +53,25 @@ detail in the commit body):
 `int a=1,b=2,c=3;`, pointer `int*p=nullptr;`, ctor-override (`P() {}`=NSDMI vs `P(int a):x(a)`
 overrides x keeps y), and object-member (`int n=3; string s=string(); bool f=false;`).
 
-## 1. ★ NEXT — set/multiset/containerdtor now share map's pointer-to-member wall
-With NSDMI cleared, set advanced from node_handle.h:394 to **stl_pair.h:188 "Failed to find
-type when parsing function parameters"** — the SAME `int C::*` pointer-to-DATA-member wall as
-map/testsubscript (SESSION-11 §2). This is the new shared wall for set/multiset/containerdtor
-AND map/testsubscript:
-- ROOT: pair's PRIVATE nested `struct __zero_as_null_pointer_constant` (stl_pair.h:613) has
-  ctor param `__zero_as_null_pointer_constant(int __z::*)` — a pointer-to-DATA-member. madc has
-  NO pointer-to-member type. The failing token is `*` (tkMul/tkStar=13).
-- FIX = a real pointer-to-member type (new DataDef category; a data-member-ptr is an 8-byte
-  offset). OWN SLICE; 3-oracle gcc/clang FIRST. Higher-leverage alternative worth weighing
-  (SESSION-11 §2): deferring/skipping member-SIGNATURE parse for un-ODR-used private members of
-  system-header templates (the BODY deferral already exists, parser.cpp:2885) would clear
-  pointer-to-member + the deprecated DR-811 C-vararg ctors at once — broader/riskier. Pick one.
-**LIVE wall map of all 12 (re-run at HEAD `789db74` — clusters 3/4 SHIFTED from the
-SESSION-12 doc, verified live):**
+## 1. ★ pointer-to-member STAGE 1 LANDED — the 5 advanced; NEW walls now front them
+The `int C::*` pointer-to-DATA-member type is implemented (Stage 1: the param/ctor-SIGNATURE
+context) — plan `docs/plans/2026-06-15-pointer-to-member-type-plan.md`. `DataDefMemberPtr`
+(8-byte ptrdiff_t offset, Itanium) + a SYNTACTIC `<name>::*` hook at parseFunction's `grabnt`
+(recognized WITHOUT resolving the owner — a class nested in a template, the stl_pair
+`__zero_as_null_pointer_constant` helper, is not in struct_map by simple name; that gating was
+the bug in the first attempt). +tests/testptmtype, 3-oracle g++/clang/madc; fulltest 602→603,
+zero regr. **The deprecated DR-811 C-vararg ctor was NOT the next wall** (the syntactic hook
+consumed the helper ctor cleanly). **NEW walls now front the 5 (these are NOT pointer-to-member
+— re-triage; the variadic-class-template plan may underlie some):**
+- **set:** parses the WHOLE `<set>` header now → fails in its OWN code at testset.mad:19
+  `set::contains` (C++20 member) "Unidentified member 'contains'".
+- **map/subscript/containerdtor/madc_ns:** new shared header wall at **`:102:13` "Expecting
+  member name in class definition"** (deeper in the `<map>`/`_Rb_tree` closure).
+- The bare `set<int>` reducer (tmp/sii.mad) hits `:64 "Missing operand"`.
+Stage 1's typedef / variable-declarator / member-context + the `&C::m` / `.*` / `->*` value
+ops are Stage 2 (no current test consumer — a ptm VALUE is only useful with those); they raise
+a CLEAN parse error today, no silent mis-init. Member-FUNCTION pointers = Stage 3.
+**LIVE wall map of all 12 (re-run at HEAD `789db74`; clusters 1/3/4 move after ptm Stage 1):**
 - **(1) `int C::*` ptr-to-member @ stl_pair.h:188 "Failed to find type" — 5 tests:**
   testset, testmap, testsubscript, testcontainerdtor, testmadc_ns. ★ NEXT (above).
 - **(2) `_ValueType2` / `__is_assignable` arity-2 @ :428 "use of undeclared identifier
@@ -81,23 +85,28 @@ SESSION-12 doc, verified live):**
   `T*` element). NOTE: was the vector<T*>`->` wall in the doc — shifted earlier; re-diagnose.
 - **(5) `__ns_std_for_each` MIR-link undefined — 1 test:** testforeach2 (free fn-template
   instantiated but not emitted for MIR link).
-The allocator-rebind keystone (cracked SESSION 12) + NSDMI are both behind us; pointer-to-member
-(cluster 1) is the next shared count-dropper (gates ≈5 tests).
+(walls 2-5 unchanged: testvector/testforeachref `_ValueType2`; teststringref/testsubscriptmember
+"Missing operand" @:428; testsubscriptarrow/testvectorptr `rebind<>` @:47; testforeach2 MIR-link.)
+The allocator-rebind keystone (SESSION 12) + NSDMI + ptr-to-member-type Stage 1 are all behind us.
 
 ## 2. Method + reducers (this session)
 3-oracle every fix (g++ AND clang++ + madc; verify VALUES via cout, exit code = RUN-SUCCESS not
 main()). Gated-diag method still the tool (`#if MADC_DIAG_X` + `OPTIONAL_CPPFLAGS=-DMADC_DIAG_X=1`
 + `rm -f obj/parser.o obj/pic/parser.o obj/cir_builder.o obj/pic/cir_builder.o`). Reducers (tmp/,
-regenerate; run `--std=c++17 --no-embedded-headers`): `tmp/sii.mad` (set, now at :188 ptr-to-member);
-testnsdmi.mad is the committed NSDMI regression guard. For the next slice reduce the
-pointer-to-member wall from `tmp/mii.mad` (map) or `tmp/sii.mad` (set).
+regenerate; run `--std=c++17 --no-embedded-headers`): `tmp/sii.mad` (set, now at :64 "Missing
+operand"); `tmp/ptm{1,2,3}.cpp` (ptr-to-member: data-type / data-use / member-fn — ptm1 passes,
+ptm2/3 = Stage 2/3). testnsdmi.mad + testptmtype.mad are the committed regression guards.
 
 ## 3. State for the next agent
-- Code HEAD `789db74`, tree clean, 602/12, build current+warning-free, MIR pin `5df536f` OK.
-- NSDMI DONE (§0b); allocator-rebind keystone DONE (SESSION 12). NEXT = the `int C::*`
-  pointer-to-member type — the shared set/map/subscript wall at stl_pair.h:188 (§1). Decide
-  ptr-to-member-type vs system-header-member-signature-deferral; 3-oracle first. Brace-init NSDMI
-  is a documented smaller follow-up. The variadic-class-template plan
+- Code HEAD = the ptr-to-member Stage 1 commit, tree clean, **603/12**, build current+warning-free,
+  MIR pin `5df536f` OK. (HEAD was `789db74` after NSDMI; +ptr-to-member Stage 1 + this doc.)
+- NSDMI DONE (§0b); allocator-rebind keystone DONE (SESSION 12); ptr-to-member-type Stage 1 DONE
+  (§1, plan 2026-06-15-pointer-to-member-type-plan.md). **NEXT = re-triage the NEW walls the 5
+  advanced to** (`:102 "Expecting member name in class definition"` for map/subscript/containerdtor/
+  madc_ns; `set::contains` C++20 member for testset) — these are NOT pointer-to-member. Decide
+  whether to drive those, the `_ValueType2`/`__is_assignable` cluster (2 tests), or ptr-to-member
+  Stage 2 (`.*`/`->*`/`&C::m` — no current test consumer). Brace-init NSDMI is a documented
+  smaller follow-up. The variadic-class-template plan
   (docs/plans/2026-06-15-variadic-class-templates-plan.md) remains the larger variadic-PRIMARY
   effort, still pending and distinct.
 

@@ -76,6 +76,21 @@ LEVELS and is orthogonal; do not overload it. Member pointers are C++-only → g
 
 ## 4. Stages
 
+> **STAGE 1 LANDED** (commit on `feature/retire-embedded-shims-claude`). The
+> param/ctor-SIGNATURE context is done (`DataDefMemberPtr` + a syntactic `<name>::*`
+> hook at `parseFunction`'s `grabnt`, recognized WITHOUT resolving the owner — that is
+> what made the template-nested stl_pair helper work). +tests/testptmtype, 3-oracled.
+> fulltest 602→603, zero regressions. **Result:** all 5 ptm-blocked tests advance past
+> stl_pair.h:188 — testset now parses the whole `<set>` header and reaches its OWN C++20
+> `set::contains` use (testset.mad:19); map/subscript/containerdtor/madc_ns hit a NEW
+> deeper header wall at `:102 "Expecting member name in class definition"`; the bare
+> `set<int>` reducer hits `:64 "Missing operand"`. **No flip yet** (deeper, unrelated
+> walls — the DR-811 vararg ctor did NOT turn out to be the next wall). The typedef /
+> variable-declarator / member contexts still raise a clean parse error ("Expecting
+> identifier after '::'" / "Expecting name in qualified declarator") and move to Stage 2
+> (a pointer-to-member VALUE is only useful with `&C::m`/`.*`). NEXT walls (`:102`,
+> `set::contains`) are NEW features, not pointer-to-member — re-triage before continuing.
+
 ### Stage 1 — data-member-pointer TYPE (unblocks the 5 tests)
 - **Parse** `T C::*` as a pointer-to-member declarator. Hook points:
   - `parse_qualified_declarator_part` (parser.cpp:28438): after a nested-name-specifier `C::`,
