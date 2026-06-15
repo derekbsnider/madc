@@ -46,14 +46,22 @@ guess (is_constructible NOT yet reached). Cleared this session:
    "Expected type in catch parameter" (blocked vector::_M_realloc_insert, a variadic
    member with a `__catch(...)` block). Fix: never drop a `...` directly after `(`.
    +tests/testvariadiccatchall (3-oracle, parse-only).
-**★ LIVE NEXT WALL** (reducer `tmp/v1.mad` = `vector<int> v; v.push_back(7);`,
-localized via gcc-on-emitted-C on `--emit=c11`): `__enable_if_t<std::__is_bitwise_
-relocatable<int>::value, int*>` is left an OPAQUE INCOMPLETE struct type instead of
-resolving to `int*`. `__is_bitwise_relocatable<_Tp> : is_trivial<_Tp>` (so `::value`
-= is_trivial, which madc HAS) — so the gap is the **`__enable_if_t<bool,T>` ALIAS
-TEMPLATE not resolving** when its non-type bool arg is a derived-trait `::value`
-(needs: fold the inherited `::value`, then resolve the alias to `_Tp*`). Fresh,
-substantial — NOT is_constructible (that's still behind it). RE-DIAGNOSE live.
+**★ LIVE NEXT WALL — RECON+3-ORACLE DONE, PLAN READY TO IMPLEMENT:
+`docs/plans/2026-06-15-enable-if-alias-nontype-bool-fold-plan.md`.** Root (isolated,
+not the dependent-substitution I first guessed): the **alias-template-id non-type
+BOOL arg is folded only for a LITERAL `true`/`false`** — a trait `::value` OR even
+`(1==1)` is NOT routed through the full constexpr fold `static_assert` uses, so
+`enable_if_t<C,T>` resolves opaque unless `C` is literal. So
+`__enable_if_t<__is_bitwise_relocatable<int>::value, T*>` (in `__relocate_a_1`'s
+return type) goes opaque. FIX (one slice, SFINAE-hot — validate suite-wide): route
+the alias non-type arg through the existing fold (`fold_nontype_template_arg` /
+`eval_local_type_trait`, parser.cpp ~13540/13628) instead of a literal match;
+site = `instantiate_template_alias_use` non-type-arg path (~3214). The plan has the
+3-oracle reducer table (blit2/bns ok-controls; blit/bdir/bcon/bnst fail-targets; fa
+proves the fold exists), the clang/gcc model, and validation. **SEPARATE orthogonal
+gap found (own follow-up, NOT this slice):** a GLOBAL-scope free fn template call is
+"undeclared" (`tmp/fc.cpp` fails, `tmp/ns1.cpp` namespaced ok) — did not block
+push_back. is_constructible still behind the enable_if_t wall.
 
 ## 0b. ★ APPROACH A — late-drained free-fn-template forward proto — DONE (`3591d0b`)
 The SESSION-14 §1b wall. Verify-first gated diag (MADC_DIAG_PROTO in the
