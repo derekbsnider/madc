@@ -204,6 +204,26 @@ These produce wrong answers or crashes on valid C++. Highest priority.
 > - **P1.1d — catch-clause parser gaps**: `catch(char* m)` (pointer type) doesn't
 >   parse; typed cstr/string catch binding needs parser+binding work (used
 >   `catch(...)` as the interim).
+> - **P1.1e — OBJECT / CLASS-typed exceptions with type-matched, inheritance-aware
+>   catch (THE major remaining exception gap; verified 2026-06-15).** The SJLJ
+>   runtime only carries SCALAR exceptions: `MadcException` is a fixed
+>   `{ int type; int64_t int_val; double double_val; const char *str_val; }` and the
+>   type tag enum is just `INT=1 / DOUBLE=2 / CSTR=3 / ANY=99`. So `throw` of a
+>   user-defined class object or a `std::` exception type — and `catch (const
+>   std::exception &)` / `catch (const MyError &)` / any base-class (inheritance)
+>   match — is NOT supported; catch dispatch is an integer-tag if/else chain
+>   (`cir_builder.cpp` ~9385), not an RTTI/type match. To close it: carry the thrown
+>   OBJECT (a heap/owned copy + its type identity) in the exception state, and make
+>   catch dispatch a type match using the existing RTTI/`is_or_derives_from`
+>   machinery (so a `catch` of a base matches a derived throw), running the matched
+>   handler's binding by reference/value. The cleanup-stack unwind (P1.1c) already
+>   runs dtors on the path; this adds the thrown object's own lifetime + the
+>   type-matched selection. Keep it lowerable to portable C11 (SJLJ stays the
+>   model; the object + a type-id travel in the runtime exception record).
+>   NOTE: P1.1b's MIR `setjmp` frame fault was since root-caused + fixed at the fork
+>   (c2mir auto-local layout sorted by scope DEPTH, not `scope->uid`; fork `01f999b`
+>   + madc `f54df38`) — 5 exception tests pass on MIR-JIT; the `.mir_skip`s there are
+>   stale and can be re-checked.
 
 - **P1.1 — exceptions (try/catch/throw)**. Lower `TokenTRY` to SJLJ as `cir_node`
   in `CirBuilder` (CIR builder currently errors `unhandled expression: TokenTRY`;

@@ -546,12 +546,17 @@ master and unblocks Tracks 3, 5, 6, and AOT.**
 | 2.4 | `new` / `delete` | 1-2 wk | **DONE** (v0.21.0) | [cpp-support.md](cpp-support.md) |
 | 2.5 | Single inheritance | 1-2 wk | **DONE** (v0.21.0) | [cpp-support.md](cpp-support.md) |
 | 2.6 | Virtual functions / vtables | 2-3 wk | **DONE** (v0.21.0) | [cpp-support.md](cpp-support.md) |
-| 2.7 | Exception handling (SJLJ) | 3-4 wk | **DONE** (v0.21.0) — Phase A + B (unwinding) | [cpp-support.md](cpp-support.md) |
+| 2.7 | Exception handling (SJLJ) | 3-4 wk | **Mostly done** (v0.21.0) — Phase A + B (scalar throw/catch + RAII unwind); **object/class-typed catch OPEN** | [cpp-support.md](cpp-support.md) |
 | 2.8 | Quality of life | Ongoing | **Started** — access control, auto token position | [cpp-support.md](cpp-support.md) |
 | 2.9 | Generic extern class ctor/dtor | — | **DONE** (v0.21.0) — replaces per-type switch boilerplate | — |
 | 2.10 | **Single-name local instantiations (flattened→Itanium-mangled)** | 1-2 wk | **Planned** | — |
 
 **2.3 remaining:** pointer-to-const enforcement (`*p` writes), const methods.
+**2.7 remaining:** exceptions are SCALAR-ONLY (int/double/cstr/`catch(...)`).
+Throwing/catching user-class or `std::` exception objects, and inheritance-aware
+`catch (const Base &)` of a derived throw, are unsupported — the SJLJ runtime
+carries no thrown object + catch dispatch is an integer-tag chain, not an RTTI
+type match. Tracked as **P1.1e** in [cpp-support.md](cpp-support.md).
 **2.8 remaining:** enum class, auto type deduction, broader real-iostream
 output replacement, scope-level destruction.
 
