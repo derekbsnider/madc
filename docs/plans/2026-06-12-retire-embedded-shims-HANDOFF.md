@@ -20,11 +20,11 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node→c2mir→MIR).
 Integration **597 passed / 12 failed / 0 timed out / 18 skipped** (unchanged count, but
-the remaining 12 advanced PAST two more walls this session). Code HEAD **`7a7e715`**,
-tree HEAD same. Branch LOCAL-ONLY (`feature/retire-embedded-shims-claude`); develop
-untouched. MIR fork `5df536f` (pin satisfied). Build current.
+the remaining 12 advanced PAST three more walls this session). Code HEAD **`856b4fc`**,
+tree HEAD same (+ this docs commit). Branch LOCAL-ONLY (`feature/retire-embedded-shims-claude`);
+develop untouched. MIR fork `5df536f` (pin satisfied). Build current.
 
-## 1. What this session did (2 commits, both zero-regression, both deepest-layer)
+## 1. What this session did (3 commits, all zero-regression, all deepest-layer)
 - **`7e77f28`** — `instantiate_template_use` (parser.cpp ~2851): preserve the USE-SITE
   owner across the partial-spec swap. A nested class template's partial spec is stored
   globally by simple name in `partial_spec_map[name]`, with `owner_class` frozen to
@@ -46,6 +46,18 @@ untouched. MIR fork `5df536f` (pin satisfied). Build current.
   consume the optional param name, register an anon non-type param. madc evaluates no
   constraint (no concepts) → parses as if unconstrained. **Removed the param-list wall at
   `stl_pair.h:574` for map/set/subscript.**
+- **`856b4fc`** — `resolve_declared_type_token` (parser.cpp ~3708): instantiate a nested
+  class template used UNQUALIFIED as a member type. The `<`-suffix template-id branch
+  called `instantiate_template_id` with `owner_hint=NULL`, which `find_template` matches
+  only against top-level templates (owner_class==NULL) — so `_Rb_tree`'s member
+  `_Rb_tree_impl<_Compare> _M_impl;` (where `_Rb_tree_impl` is a nested `template<typename
+  _Key_compare, bool=…> struct`) was missed; a later branch returned the bare template
+  class with `<…>` unconsumed → "Expecting member name in class definition" on the `<`.
+  Fix: after the NULL-owner attempt, retry `instantiate_template_id` with each active
+  `class_scope_stack` entry (innermost first) as `owner_hint`. Verified via DIAG that
+  `template_map["_Rb_tree_impl"]` holds one variant whose owner IS the instantiated
+  `_Rb_tree` on the scope stack. **Advanced testset/testcontainerdtor** past the member-type
+  wall (now hit "Expecting ';' after struct member" deeper in `_Rb_tree`).
 
 ## 2. ★ NEXT — the deep #1 is the `pair`/`_Rb_tree` instantiation ONION (multi-session)
 The remaining 12 are gated behind a STACK of distinct libstdc++ template features. The
@@ -65,10 +77,12 @@ both fixes; ALL re-mapped live at `7a7e715`):
   could be deferred/skipped for system-header templates (the BODY deferral already exists,
   see parser.cpp:2885 comment) it would clear pointer-to-member + deprecated-varargs at once
   — but that's a broader, riskier change. Pick one deliberately.
-- **`Expecting member name in class definition`** (2 tests: testcontainerdtor, testset) —
-  `_Rb_tree` path (set<int> repro: `#include <set>` + `set<int> s;`). NOT yet diagnosed to
-  the exact construct; add a gated diag at the throw (parser.cpp:21854 / 22017 / 22143) like
-  the DIAG_TP/DIAG_FP pattern below.
+- **`Expecting ';' after struct member`** (2 tests: testcontainerdtor, testset) — `_Rb_tree`
+  path, now PAST the nested-template member-type wall (fixed by 856b4fc). set<int> repro
+  (`#include <set>` + `set<int> s;`) shows the bare reducer hitting "Expecting type in using
+  alias" at stl_tree.h:64-ish; testset (set<string>) hits "Expecting ';' after struct
+  member". NEXT in the _Rb_tree onion — diagnose with a gated diag at the relevant throw.
+  Likely another nested-template / using-alias-in-template-body construct.
 - **`__is_assignable` / `_ValueType2`** (2 tests: testforeachref, testvector) — UNCHANGED
   from session 10's root-cause: `uninitialized_copy`'s `_GLIBCXX_USE_ASSIGN_FOR_INIT` needs
   a FAITHFUL `__is_assignable` trait (arity 2). madc has NO parse-time assignment-overload
@@ -94,7 +108,7 @@ header construct behind a use-site-stamped error line. Decode TokenID via includ
 sii (set<int>) — run with `--std=c++17 --no-embedded-headers`.
 
 ## 4. State for the next agent
-- HEAD `7a7e715`, tree clean, 597/12, build current, MIR pin `5df536f` OK.
+- Code HEAD `856b4fc` (+ this docs commit), tree clean, 597/12, build current, MIR pin `5df536f` OK.
 - Pick ONE next slice (recommend: decide pointer-to-member-type vs system-header-signature-
   deferral for the 3-test pair wall; OR diagnose the 2 not-yet-diagnosed walls first since
   they're cheap and may reveal a shared root). 3-oracle before any meaty fix.
