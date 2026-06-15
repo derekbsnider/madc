@@ -3796,14 +3796,16 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	if ( TokenDataType *inst = instantiate_template_id(tname, tb) )
 	    return resolve_member_chain_or_type(inst, tb,
 						consume_class_member_chain);
-	// Nested class template used UNQUALIFIED inside its enclosing class
-	// (`_Rb_tree_impl<_Compare> _M_impl;` in the _Rb_tree body): the call
-	// above passes owner_hint=NULL, which find_template matches only against
-	// top-level templates, so a nested template is missed and a later branch
-	// returns the bare template class with the '<...>' left unconsumed. Retry
-	// with each active class scope as the owner_hint so the nested template is
-	// found and instantiated.
-	if ( template_map.count(tname) )
+	// Nested class template OR member ALIAS template used UNQUALIFIED inside
+	// its enclosing class (`_Rb_tree_impl<_Compare> _M_impl;` in the _Rb_tree
+	// body; `__pointer<_Key> _M_pkey;` where `template<class _Tp> using
+	// __pointer = ...;` is a member alias template, node_handle.h): the call
+	// above passes owner_hint=NULL, which find_template / find_template_alias
+	// match only against top-level templates, so a member template is missed
+	// and a later branch returns the bare template/alias with the '<...>' left
+	// unconsumed. Retry with each active class scope as the owner_hint so the
+	// member template (class or alias) is found and instantiated.
+	if ( template_map.count(tname) || template_alias_map.count(tname) )
 	    for ( std::vector<DataDefCLASS *>::reverse_iterator si =
 		      class_scope_stack.rbegin();
 		  si != class_scope_stack.rend(); ++si )

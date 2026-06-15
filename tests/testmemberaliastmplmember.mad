@@ -1,0 +1,29 @@
+#!/../bin/madc
+// A class-body MEMBER ALIAS TEMPLATE used UNQUALIFIED as a member's type:
+//   template<typename T> using ptr = wrap<T>;
+//   ptr<K> a;            // member type = member-alias-template-id
+// resolve_declared_type_token must instantiate the alias-use (consuming the
+// `<...>`) via the enclosing class scope, not return the bare alias and leave
+// the `<` to derail the member-name expectation. This is the real libstdc++
+// `std::_Node_handle` shape (`__pointer<_Key> _M_pkey` in bits/node_handle.h,
+// where `template<class _Tp> using __pointer = __ptr_rebind<...>;`).
+#include <iostream>
+using namespace std;
+
+template<typename U> struct wrap { U v; };
+
+template<typename K, typename V>
+struct holder {
+	template<typename T>
+	  using ptr = wrap<T>;
+	ptr<K> a;
+	ptr<V> b;
+	int run() { a.v = 3; b.v = 4; return a.v + b.v; }	// 7
+};
+
+int main()
+{
+	holder<int,int> h;
+	cout << h.run() << endl;
+	return 0;
+}
