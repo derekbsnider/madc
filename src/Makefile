@@ -77,8 +77,23 @@ LIBMADC_STAGE_ROOT ?= /tmp/madc-libstage
 LIBMADC_STAGE_CPP_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_cpp_smoke
 LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 
+# Build the unit-test binaries as part of the DEFAULT build so they can never be
+# stale relative to the library/objects. Previously `all` built only the lib +
+# bin/madc; the test binaries were relinked solely by the `test` target, so
+# running `bin/test_*` directly after a bare `make` silently used a STALE binary
+# (false pass/fail — this cost several phantom-failure debugging detours). The
+# test-binary rule already depends on $(LIBMADC_STATIC), so make relinks each one
+# only when the library actually changed. For a fast lib/madc-only iteration
+# build when you are NOT about to run unit tests, pass BUILD_TESTS=0.
+BUILD_TESTS ?= 1
+ifeq ($(BUILD_TESTS),1)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) ../bin/madc $(LIBMADC_SHARED) $(TESTBINS)
+else
+DEFAULT_TARGETS = $(LIBMADC_STATIC) ../bin/madc $(LIBMADC_SHARED)
+endif
+
 all:
-	$(MAKE) $(LIBMADC_STATIC) ../bin/madc $(LIBMADC_SHARED)
+	$(MAKE) $(DEFAULT_TARGETS)
 
 libmadc:
 	$(MAKE) $(LIBMADC_STATIC) $(LIBMADC_SHARED)
