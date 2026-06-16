@@ -603,6 +603,10 @@ extern void MIR_set_spill_all (MIR_context_t ctx, int enable_p);
    (spill-all mode), set *offset to its frame-pointer-relative byte offset and
    return 1; otherwise return 0.  Valid after the function is generated. */
 extern int MIR_reg_frame_offset (MIR_func_t func, MIR_reg_t reg, int64_t *offset);
+/* Internal hook used by mir-dwarf-gdb to bind GDB-JIT debug objects to a
+   context's lifetime: MIR_finish calls `finish` (if set) to unregister them
+   before freeing the code they describe.  Not for general use. */
+extern void _MIR_set_gdb_jit_finish (MIR_context_t ctx, void (*finish) (MIR_context_t ctx));
 
 extern MIR_insn_t MIR_new_insn_arr (MIR_context_t ctx, MIR_insn_code_t code, size_t nops,
                                     MIR_op_t *ops);

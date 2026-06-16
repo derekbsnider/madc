@@ -25,10 +25,10 @@
          MIR_dwarf_add_var (d, v->name, v->is_param, t, off, deref_p, 0);
      void *buf; size_t size;
      MIR_dwarf_emit (d, &buf, &size);
-     MIR_dwarf_jit_t h = MIR_dwarf_gdb_register (buf, size);  // takes buf
+     MIR_dwarf_gdb_register (ctx, buf, size);  // takes buf; freed by MIR_finish(ctx)
      MIR_dwarf_destroy (d);
      ... run the code ...
-     MIR_dwarf_gdb_unregister (h);  // before freeing the code
+     // MIR_finish (ctx) unregisters and frees the debug object
 
    The frontend should generate debuggable code: optimize level 0,
    MIR_set_inline_permission(ctx,0), and -- for variable inspection --
@@ -117,12 +117,18 @@ extern void MIR_dwarf_add_var (MIR_dwarf_t d, const char *name, int is_param,
 extern int MIR_dwarf_emit (MIR_dwarf_t d, void **buf, size_t *size);
 
 /* --- GDB JIT interface --------------------------------------------------
-   The emitter owns the process-global __jit_debug_descriptor.  Register the
-   object so an attached gdb reads it; the returned handle keeps the buffer
-   alive (ownership transfers) until unregistered.  Unregister before the code
-   the object describes is freed. */
+   Defined in mir-dwarf-gdb.c, which owns the process-global
+   __jit_debug_descriptor.  Register a buffer (from MIR_dwarf_emit, ownership
+   transfers) so an attached gdb reads it.
+
+   ctx ties the registration to a MIR context: MIR_finish(ctx) then unregisters
+   and frees it automatically, since the JIT code it describes is freed there.
+   That is the normal path -- bind to the context that generated the code and
+   never unregister by hand.  Pass ctx == NULL for a manual lifetime, where the
+   returned handle must be given to MIR_dwarf_gdb_unregister before the code is
+   freed.  (The returned handle may be unregistered early in either case.) */
 typedef struct MIR_dwarf_jit_entry *MIR_dwarf_jit_t;
-extern MIR_dwarf_jit_t MIR_dwarf_gdb_register (void *buf, size_t size);
+extern MIR_dwarf_jit_t MIR_dwarf_gdb_register (MIR_context_t ctx, void *buf, size_t size);
 extern void MIR_dwarf_gdb_unregister (MIR_dwarf_jit_t entry);
 
 #ifdef __cplusplus

@@ -503,7 +503,7 @@ static void register_source_debug (MIR_context_t ctx) {
   void *buf;
   size_t size;
 
-  if (c2mir_get_debug_object (ctx, &buf, &size) == 0) MIR_dwarf_gdb_register (buf, size);
+  if (c2mir_get_debug_object (ctx, &buf, &size) == 0) MIR_dwarf_gdb_register (ctx, buf, size);
 }
 
 static int mir_read_func (MIR_context_t ctx MIR_UNUSED) { return t_getc (&curr_input); }

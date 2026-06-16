@@ -9,10 +9,14 @@
    This lives in its own translation unit, separate from the DWARF builder in
    mir-dwarf.c, on purpose: the descriptor is a single process-global symbol
    that gdb looks up by name, so an embedder that already owns its own
-   __jit_debug_descriptor (e.g. a Tcl extension driving its own JIT lifetime)
-   can link the builder + MIR_dwarf_emit without pulling in -- and clashing
-   with -- a second descriptor.  Only consumers that call MIR_dwarf_gdb_register
-   pull this object in. */
+   __jit_debug_descriptor can link the builder + MIR_dwarf_emit without pulling
+   in -- and clashing with -- a second descriptor.  Only consumers that call
+   MIR_dwarf_gdb_register pull this object in.
+
+   Registrations may be bound to a MIR_context_t: MIR_finish then unregisters
+   them automatically (the JIT code they describe is freed there, so the debug
+   info becomes stale).  The binding is installed through a hook on the context
+   (_MIR_set_gdb_jit_finish), so mir.c itself never references this file. */
 
 #include "mir-dwarf.h"
 #include <stdlib.h>
@@ -40,39 +44,95 @@ void __attribute__ ((noinline)) __jit_debug_register_code (void) {
 }
 struct jit_descriptor __jit_debug_descriptor = {1, 0, NULL, NULL};
 
-static pthread_mutex_t mir_dwarf_jit_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* One registration.  The jit_code_entry must be first so a MIR_dwarf_jit_t can
+   be used directly as the descriptor's list node.  ctx (if non-NULL) ties the
+   entry to a context for MIR_finish-time cleanup; reg_* threads all live
+   entries for the context sweep. */
+struct MIR_dwarf_jit_entry {
+  struct jit_code_entry e;
+  MIR_context_t ctx;
+  struct MIR_dwarf_jit_entry *reg_next, *reg_prev;
+};
 
-MIR_dwarf_jit_t MIR_dwarf_gdb_register (void *buf, size_t size) {
-  if (buf == NULL) return NULL;
-  struct jit_code_entry *e = calloc (1, sizeof (struct jit_code_entry));
-  if (e == NULL) return NULL;
-  e->symfile_addr = buf;
-  e->symfile_size = (uint64_t) size;
-  pthread_mutex_lock (&mir_dwarf_jit_mutex);
-  e->prev_entry = NULL;
-  e->next_entry = __jit_debug_descriptor.first_entry;
-  if (__jit_debug_descriptor.first_entry != NULL) __jit_debug_descriptor.first_entry->prev_entry = e;
-  __jit_debug_descriptor.first_entry = e;
-  __jit_debug_descriptor.relevant_entry = e;
+static pthread_mutex_t mir_dwarf_jit_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct MIR_dwarf_jit_entry *mir_dwarf_all_regs; /* every live entry, mutex-protected */
+
+static void mir_dwarf_gdb_ctx_finish (MIR_context_t ctx);
+
+/* Link e into the gdb descriptor and tell gdb (mutex held). */
+static void descr_register (struct MIR_dwarf_jit_entry *r) {
+  r->e.prev_entry = NULL;
+  r->e.next_entry = __jit_debug_descriptor.first_entry;
+  if (__jit_debug_descriptor.first_entry != NULL) __jit_debug_descriptor.first_entry->prev_entry = &r->e;
+  __jit_debug_descriptor.first_entry = &r->e;
+  __jit_debug_descriptor.relevant_entry = &r->e;
   __jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
   __jit_debug_register_code ();
+}
+
+/* Unlink e from the gdb descriptor and tell gdb (mutex held). */
+static void descr_unregister (struct MIR_dwarf_jit_entry *r) {
+  if (r->e.prev_entry != NULL)
+    r->e.prev_entry->next_entry = r->e.next_entry;
+  else
+    __jit_debug_descriptor.first_entry = r->e.next_entry;
+  if (r->e.next_entry != NULL) r->e.next_entry->prev_entry = r->e.prev_entry;
+  __jit_debug_descriptor.relevant_entry = &r->e;
+  __jit_debug_descriptor.action_flag = JIT_UNREGISTER_FN;
+  __jit_debug_register_code ();
+}
+
+/* Remove r from the global registry list (mutex held). */
+static void reg_unlink (struct MIR_dwarf_jit_entry *r) {
+  if (r->reg_prev != NULL)
+    r->reg_prev->reg_next = r->reg_next;
+  else
+    mir_dwarf_all_regs = r->reg_next;
+  if (r->reg_next != NULL) r->reg_next->reg_prev = r->reg_prev;
+}
+
+MIR_dwarf_jit_t MIR_dwarf_gdb_register (MIR_context_t ctx, void *buf, size_t size) {
+  if (buf == NULL) return NULL;
+  struct MIR_dwarf_jit_entry *r = calloc (1, sizeof (struct MIR_dwarf_jit_entry));
+  if (r == NULL) return NULL;
+  r->e.symfile_addr = buf;
+  r->e.symfile_size = (uint64_t) size;
+  r->ctx = ctx;
+  pthread_mutex_lock (&mir_dwarf_jit_mutex);
+  descr_register (r);
+  r->reg_prev = NULL;
+  r->reg_next = mir_dwarf_all_regs;
+  if (mir_dwarf_all_regs != NULL) mir_dwarf_all_regs->reg_prev = r;
+  mir_dwarf_all_regs = r;
   pthread_mutex_unlock (&mir_dwarf_jit_mutex);
-  return (MIR_dwarf_jit_t) e;
+  /* Bind to the context so MIR_finish drops it (idempotent install). */
+  if (ctx != NULL) _MIR_set_gdb_jit_finish (ctx, mir_dwarf_gdb_ctx_finish);
+  return (MIR_dwarf_jit_t) r;
 }
 
 void MIR_dwarf_gdb_unregister (MIR_dwarf_jit_t entry) {
-  struct jit_code_entry *e = (struct jit_code_entry *) entry;
-  if (e == NULL) return;
+  struct MIR_dwarf_jit_entry *r = (struct MIR_dwarf_jit_entry *) entry;
+  if (r == NULL) return;
   pthread_mutex_lock (&mir_dwarf_jit_mutex);
-  if (e->prev_entry != NULL)
-    e->prev_entry->next_entry = e->next_entry;
-  else
-    __jit_debug_descriptor.first_entry = e->next_entry;
-  if (e->next_entry != NULL) e->next_entry->prev_entry = e->prev_entry;
-  __jit_debug_descriptor.relevant_entry = e;
-  __jit_debug_descriptor.action_flag = JIT_UNREGISTER_FN;
-  __jit_debug_register_code ();
+  descr_unregister (r);
+  reg_unlink (r);
   pthread_mutex_unlock (&mir_dwarf_jit_mutex);
-  free ((void *) e->symfile_addr);
-  free (e);
+  free ((void *) r->e.symfile_addr);
+  free (r);
+}
+
+/* Installed on a context by MIR_dwarf_gdb_register; MIR_finish calls it to
+   unregister every debug object bound to that context. */
+static void mir_dwarf_gdb_ctx_finish (MIR_context_t ctx) {
+  pthread_mutex_lock (&mir_dwarf_jit_mutex);
+  struct MIR_dwarf_jit_entry *r = mir_dwarf_all_regs, *next;
+  for (; r != NULL; r = next) {
+    next = r->reg_next;
+    if (r->ctx != ctx) continue;
+    descr_unregister (r);
+    reg_unlink (r);
+    free ((void *) r->e.symfile_addr);
+    free (r);
+  }
+  pthread_mutex_unlock (&mir_dwarf_jit_mutex);
 }
