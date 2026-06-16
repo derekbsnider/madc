@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19e"** block immediately below (current state +
-NEXT), then "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19f"** block immediately below (current state +
+NEXT), then "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,54 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 19e — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+# ★ SESSION 19f — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+
+## 0. Orientation + STATE
+Code HEAD **`3491ee2`** (Makefile fix), tree clean except an untracked
+`mir-debug-support.md` (NOT ours — leave it). Committed tree GREEN: unit 132/0,
+integration 627/7 (the 7 container fails). develop untouched. **A `git stash`
+holds WIP** ("WIP _M_valptr fix …") — see §0b.
+
+## 0a. SHIPPED this session
+- **`b619c68`** `_Tp2` nested-struct collision (map<string,string> after
+  set<string>) — Resolved.
+- **`31def57`** scalar/array `new`/`new T(v)`/`new T[n]` + `delete[]`
+  (+testnewdelete) — audit rows 1+2 Resolved.
+- **`3491ee2`** BUILD FIX: default `make -C src` now relinks `bin/test_*`
+  (`$(TESTBINS)` added to `all`; `BUILD_TESTS=0` opts out). **This fixes a
+  long-standing footgun**: `make -C src` then running `bin/test_*` DIRECTLY used
+  a STALE binary → false pass/fail. It cost real detours THIS session (the
+  _M_valptr fix's unit regression was invisible until the binary was relinked).
+  **Always trust `make -C src test`, not a bare `bin/test_*` after `make`.**
+
+## 0b. LIVE NEXT — `_M_valptr` (map/set), root-caused, fix STASHED
+`map`/`set` `operator[]`/iterator-deref fails "no member named '_M_valptr'".
+ROOT (minimal reducer `tmp/sc2.cpp`): an INLINE `static_cast<Derived*>(base)->m()`
+folds the trailing `->m()` INTO the cast operand (resolved against base, not the
+cast target) — libstdc++'s `_Rb_tree_iterator::operator*` is
+`*static_cast<_Link_type>(_M_node)->_M_valptr()`. Cause: `parse_named_cpp_cast`
+reuses the operand parse that `parseExpr_operatorArm` (~17449) deliberately
+continues into postfix for parenthesized SUB-expressions.
+
+**The fix is in `git stash@{0}`** ("WIP _M_valptr fix"): isolated-stream operand
+parse (balanced `()`, stops at its own `)`) + `parsePostfixChainFrom` on the
+result. It WORKS (sc1/sc2 green; map advances past `_M_valptr` to a "Missing
+operand" wall) BUT has an **order-dependent unit-test leak**: `test_libmadc_program`
+131/1 (a `*string*` case green in isolation). I restored tokens/_cur_token/
+_prv_token/diagnostics/last_error/static-parse-position — leak persists. NEXT:
+either (a) find the remaining leaked global the isolated parse mutates (candidates:
+`compounds`, `class_scope_stack`, `instantiating_*`/parser flags), or (b) DON'T
+isolate — instead gate the ~17449 postfix-continuation OFF for a cast operand via
+a threaded flag (no global-state swap, so no leak). `git stash pop` to resume; see
+audit row 7. Full detail: feature-drops-audit row 7.
+
+## 0c. remaining container fails (full triage in §19e §0b)
+testcontainerdtor(.put invalid-test), testmadc_ns/testsubscript(→_M_valptr),
+testmap/testset(C++20 .contains), testvectorptr/testsubscriptarrow(row6b ptr-elem).
+
+---
+
+# ★ SESSION 19e — COLD-START REHYDRATION — 2026-06-16
 
 ## 0. Orientation + STATE CHANGE
 Code HEAD **`e3cc45a`**, tree clean (after the audit/plan/handoff doc commit on
