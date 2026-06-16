@@ -12173,7 +12173,11 @@ TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
     nextToken();
 
     TokenBase *expr_head = nextToken();
-    TokenBase *expr = parseExpression(expr_head, true, false, true, 1);
+    // cast_operand=true: stop the operand at its own `)` so a trailing
+    // `->m()`/`.m`/`[i]` does NOT fold into the operand (it binds to the cast
+    // result below). Without this the postfix is resolved against the operand's
+    // (source) type — e.g. `_M_valptr` not found on the base node type.
+    TokenBase *expr = parseExpression(expr_head, true, false, true, 1, false, true);
     skip_expression_whitespace();
     TokenBase *close_tb = NULL;
     if ( (curToken() && curToken()->id() == TokenID::tkClBrk)
@@ -12189,7 +12193,11 @@ TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
     tc->file = cast_tb->file;
     tc->line = cast_tb->line;
     tc->column = cast_tb->column;
-    return tc;
+    // A trailing postfix chain (`static_cast<T>(p)->m()`, `.m`, `[i]`) binds to
+    // the cast RESULT — resume it here (the operand parse stopped at our `)`).
+    // A TokenCast carries no backing Variable, so pass NULL (postfix_expr_variable
+    // would return NULL for it anyway, and is defined later in this file).
+    return parsePostfixChainFrom(tc, NULL);
 }
 
 // parse a method call and it's parameters
@@ -16298,7 +16306,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		 std::stack<TokenBase *> &exStack, std::stack<TokenBase *> &opStack,
 		 int &brackets, TokenCpnd *code, bool conditional, bool ternary_branch,
 		 bool stop_on_closing_paren, int initial_brackets, bool push_back_comma,
-		 TokenBase *&result)
+		 TokenBase *&result, bool cast_operand)
 {
     TokenOperator *to = NULL;
     Variable *var = NULL;
@@ -17432,7 +17440,13 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    && exStack.top()->datadef()
 			    && (exStack.top()->datadef()->is_function()
 			     || dynamic_cast<DataDefFPTR *>(exStack.top()->datadef()));
-			bool postfix_follows = next
+			// A named-cast operand (`static_cast<T>(p)`) must STOP at its own closing
+			    // paren so a trailing `->m()`/`.m`/`[i]` binds to the CAST RESULT
+			    // (target type), not folds into the operand (base type).
+			    // parse_named_cpp_cast resumes the postfix chain via
+			    // parsePostfixChainFrom. Drives map/set iterator deref
+			    // `*static_cast<_Link_type>(_M_node)->_M_valptr()`.
+			    bool postfix_follows = !cast_operand && next
 			    && (next->id() == TokenID::tkDot
 			     || next->id() == TokenID::tkDeRef
 			     || next->id() == TokenID::tkOpSqr
@@ -18365,7 +18379,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
 				    bool stop_on_closing_paren, int initial_brackets,
-				    bool push_back_comma)
+				    bool push_back_comma, bool cast_operand)
 {
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
     stack<TokenBase *> exStack;
@@ -18401,7 +18415,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    TokenBase *arm_result = NULL;
 		    ExprStep step = parseExpr_operatorArm(tb, exStack, opStack, brackets, code,
 				conditional, ternary_branch, stop_on_closing_paren, initial_brackets, push_back_comma,
-				arm_result);
+				arm_result, cast_operand);
 		    if ( step == ExprStep::Return ) return arm_result;
 		    if ( step == ExprStep::Continue ) continue;
 		    if ( step == ExprStep::Done ) done = true;

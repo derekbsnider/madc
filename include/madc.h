@@ -2241,7 +2241,8 @@ public:
 			       bool ternary_branch=false,
 			       bool stop_on_closing_paren=false,
 			       int initial_brackets=0,
-			       bool push_back_comma=false);
+			       bool push_back_comma=false,
+			       bool cast_operand=false);
     // Control-flow signal an extracted parseExpression switch-arm handler
     // returns to the shunting-yard loop, one-to-one with the arm's original
     // inline control flow: Break = fall to the per-token epilogue (peek/advance),
@@ -2289,7 +2290,7 @@ public:
 				   bool conditional, bool ternary_branch,
 				   bool stop_on_closing_paren,
 				   int initial_brackets, bool push_back_comma,
-				   TokenBase *&result);
+				   TokenBase *&result, bool cast_operand=false);
     // Old-style (K&R) parameter declarations: detection + parsing of the
     // `int f(a, b) int a; char *b; { … }` form (C only). The detectors peek
     // the stream; parse_old_style_parameter_declaration fills param_types.
