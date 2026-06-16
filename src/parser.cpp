@@ -19755,6 +19755,19 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	std::string scoped = scoped_struct_tag(tag->str);
 	if ( scoped != tag->str && pgm.struct_map.find(tag->str) != pgm.struct_map.end() )
 	    tag_store_key = scoped;
+	// A nested struct defined inside a CLASS body whose bare tag already
+	// exists: qualify by the ENCLOSING CLASS so two instantiations of the
+	// same class template don't collide on a nested tag. libstdc++'s
+	// __aligned_membuf<_Tp> nests `struct _Tp2 { _Tp _M_t; };` purely for an
+	// `alignas(__alignof__(_Tp2::_M_t))` trick; monomorphizing it for both a
+	// set<string> node and a map<string,string> node re-defined `_Tp2` →
+	// "Struct '_Tp2' already defined". The enclosing class is uniquely
+	// (mangle-)named per instantiation, so this disambiguates. (cur_func_name
+	// scoping above handles the function-local case; this is its class twin.)
+	else if ( tag_store_key == tag->str
+	       && pgm.struct_map.find(tag->str) != pgm.struct_map.end()
+	       && !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() )
+	    tag_store_key = pgm.class_scope_stack.back()->name + "::" + tag->str;
     }
     dds->union_layout = is_union;
     if ( is_packed || pgm.pack_stack_top() == 1 )
