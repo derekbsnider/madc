@@ -19,13 +19,15 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node->c2mir->MIR).
-Integration **618 passed / 12 failed / 0 timed out / 18 skipped** (+testsfinaealiasoverload,
-+testeastconst, +testthrowexpr, +testatomics; the 12 = the unchanged container cluster:
-testvector/testvectorptr/testset/teststringref/testsubscript{,arrow,member}/testmap/
-testmadc_ns/testforeach2/testforeachref/testcontainerdtor). Code HEAD **`6b4374e`**, tree
+Integration **619 passed / 12 failed / 0 timed out / 18 skipped** (+testsfinaealiasoverload,
++testeastconst, +testthrowexpr, +testatomics, +testisempty; the 12 = the unchanged container
+cluster: testvector/testvectorptr/testset/teststringref/testsubscript{,arrow,member}/testmap/
+testmadc_ns/testforeach2/testforeachref/testcontainerdtor). Code HEAD **`510e6fe`**, tree
 clean. Branch LOCAL-ONLY; develop untouched. MIR fork `5df536f` (pin satisfied). Build
 current, zero warnings. **This session (19) drove the vector<string> reallocation chain
-through FOUR walls (all committed, each 3-oracle'd, zero-regression):**
+through FOUR walls + one trait (all committed, each 3-oracle'd, zero-regression); testvector
+is NOT yet green — blocked on wall 5 (`_S_use_relocate()` constexpr-fn eval, §0d), a large
+multi-feature campaign:**
 - **`8085bda`** relocate-SFINAE: `enable_if_t<false,T>` now SFINAE-rejected — three coupled
   fixes (§0a).
 - **`2a72933`** East-const member types (`char const*`) + throw-EXPRESSIONS (`(throw X())`,
@@ -76,20 +78,33 @@ calls. <ext/atomicity.h>'s refcount path (mem barriers + __exchange_and_add) nee
 cir_builder lowering (translate_expr ttCallFunc, width-picked from the pointee) + builtin
 registration. +testatomics.
 
-## 0d. ★ LIVE NEXT — wall 5: non-type-arg fold in the __uninitialized_move chain
-testvector still fails: MIR-link `import of undefined item __ns_std___uninitialized_move_if_
-noexcept_a` — its instantiation still THROWS (masked). UNMASKED via temporarily disabling the
-`std::cerr.rdbuf(NULL)` mute in `fold_nontype_arg_constant` (parser.cpp ~14156; gate it behind
-`#if !MADC_DIAG_UNMUTE` to re-diagnose): the single fatal error is **`Expecting integer
-constant expression`** deep in the `__uninitialized_move_if_noexcept_a` -> `__uninitialized_
-copy_a` -> ... instantiation — a NON-TYPE template arg that madc can't fold to a constant but
-must (same family as the a67cc72/`fold_nontype_arg_constant` work + the relocate-SFINAE trait
-fold). REDUCER: `tmp/r20.cpp` (direct `std::__uninitialized_move_if_noexcept_a(buf,buf+3,out,a)`
-call with <memory>+<string>); reproduces. NEXT: re-unmute, pin the exact construct at the
-injected line (likely a trait `::value` / `_S_use_relocate()` / alignment expr used as a
-non-type arg), then extend the non-type fold or the trait eval. 3-ORACLE FIRST; localize with
-the unmute gate + gcc-on-emitted-C. Behind it: likely more chain walls before testvector is
-green. NEVER A SHIM; fix the deepest layer.
+## 0d. wall 5 — `__is_empty` trait CLEARED (`510e6fe`); ★ LIVE NEXT = `_S_use_relocate()` constexpr-fn eval
+Two parts pinned this session (via the gated MADC_DIAG_FNTPLTHROW diag in
+instantiate_fn_template_binding — it prints the throwstream `str()`, bypassing the cerr mute a
+nesting fold sets — plus a temporary `[ICE]` print at the `parse_constant_primary` throw):
+- **`__is_empty` — CLEARED (`510e6fe`):** the gcc-13 trait behind std::is_empty; libstdc++
+  instantiates `is_empty<allocator<T>>` (EBO) in the alloc_traits chain. Added faithfully (class
+  + bare-struct). +testisempty. (NOT the fatal wall, but a real chain gap, now closed.)
+- **★ LIVE NEXT — `_S_use_relocate()`:** testvector's actual blocker. MIR-link `import of
+  undefined item __ns_std___uninitialized_move_if_noexcept_a`; the FNTPLTHROW diag shows that
+  instantiation aborts with `Expecting integer constant expression`, and the `[ICE]` print pins
+  the construct to **`_S_use_relocate` @ stl_vector.h** — the `if _GLIBCXX17_CONSTEXPR
+  (_S_use_relocate())` condition in `vector::_M_realloc_insert` (vector.tcc:478; `__cpp_if_constexpr`
+  IS defined so this is the live form, not the `__bool_constant<_S_use_relocate()>` `#else`).
+  madc's `fold_if_constexpr_condition` (parser.cpp 6804) -> parse_constant_integer_expression ->
+  parse_constant_primary CANNOT fold the **constexpr static-member-function CALL** `_S_use_relocate()`
+  -> ICE -> the dead `__uninitialized_move_if_noexcept_a` branch is never discarded -> undefined
+  import. **This is a SUBSTANTIAL, MULTI-FEATURE constexpr-evaluation campaign, NOT a bounded
+  fix** — `_S_use_relocate()` = `_S_nothrow_relocate(__is_move_insertable<_Tp_alloc_type>{})`,
+  and `_S_nothrow_relocate(true_type)` = `noexcept(std::__relocate_a(...))`. Evaluating it needs
+  ALL of: (a) a constexpr-function-body evaluator (fold a `return <expr>;` body, recursive,
+  with arg binding); (b) `__is_move_insertable` / `__is_constructible` / `is_move_constructible`
+  (madc has NONE of these — verified absent); (c) overload resolution on the tag-type arg
+  (true_type vs false_type) inside the constant fold; (d) `noexcept(expr)` constant evaluation
+  (madc has NONE — verified absent). REDUCER: `tmp/r20.cpp`. **DO NOT SHIM** `_S_use_relocate`
+  to a literal (forbidden, even though the value is `true` here). 3-ORACLE FIRST. Each of (a)-(d)
+  is its own scoped feature; sequence them. Behind this wall: likely MORE chain walls before
+  testvector is green — this is a multi-session campaign, not one fix. NEVER A SHIM; deepest layer.
 
 ---
 
