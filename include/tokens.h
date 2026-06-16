@@ -54,7 +54,13 @@ enum class TokenID {
   tkObjTemp,                  // functional construction temporary: T(args)
   tk3NotEq,                   // !== strict not-equal (STD_MADC dialect)
   tkFRIEND,                   // C++ `friend` declaration specifier
-  tkExplicitDtor              // explicit/pseudo destructor call: obj.~T() / ptr->~T()
+  tkExplicitDtor,             // explicit/pseudo destructor call: obj.~T() / ptr->~T()
+  tkCPPKEYWORD                // generic reserved C++ keyword (version-gated); the
+			      // spelling distinguishes it. Used for reserved words
+			      // that the parser still recognizes by spelling (via
+			      // contextual_identifier_name) rather than a dedicated
+			      // dispatch token — so they are reserved (not bare
+			      // identifiers) without proliferating one class each.
 };
 
 enum class TokenAssoc {
@@ -1070,6 +1076,21 @@ public:
 //  virtual TokenBase *clone(){ return new TokenKeyword(str); }
     virtual TokenBase *clone(){ return this; }
     virtual TokenBase *parse(Program &) { return NULL; }
+};
+
+// A reserved C++ keyword that has no dedicated dispatch token: it is reserved
+// (so it is NOT treated as a bare identifier) but the parser recognizes it by
+// SPELLING (contextual_identifier_name), the same way `sizeof`/`decltype`/the
+// named casts are already handled. One instance per spelling lives in
+// keyword_map; `str` (from TokenIdent) carries the spelling. clone() returns the
+// shared instance, matching every other keyword singleton.
+class TokenCppKeyword: public TokenKeyword
+{
+public:
+    TokenCppKeyword(const char *k) : TokenKeyword(k) {}
+    TokenCppKeyword(const std::string &k) : TokenKeyword(k) {}
+    virtual TokenID id() const { return TokenID::tkCPPKEYWORD; }
+    virtual TokenBase *clone() { return this; }
 };
 
 /*

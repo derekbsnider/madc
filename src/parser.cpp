@@ -6224,9 +6224,9 @@ int64_t Program::parse_constant_primary()
 	return out;
     if ( try_parse_constant_functional_cast(tb, out) )
 	return out;
-    if ( tb && tb->type() == TokenType::ttIdentifier )
+    if ( tb && is_contextual_identifier_token(tb) )
     {
-	std::string name = ((TokenIdent *)tb)->str;
+	std::string name = contextual_identifier_name(tb);
 	bool bool_value = false;
 	if ( is_bool_literal_identifier(name, bool_value) )
 	    return bool_value ? 1 : 0;
@@ -6483,6 +6483,111 @@ int64_t Program::parse_constant_ternary()
 int64_t Program::parse_constant_integer_expression()
 {
     return parse_constant_ternary();
+}
+
+bool Program::fold_if_constexpr_condition(int64_t &out)
+{
+    // Collect the balanced condition tokens (stream is just past the opening `(`),
+    // consuming the matching `)`. Keep them so a non-constant condition can be
+    // pushed back for the runtime-`if` fallback.
+    std::vector<TokenBase *> cond_toks;
+    int depth = 1;
+    TokenBase *t;
+    while ( depth > 0 && (t = nextToken()) )
+    {
+	if ( t->id() == TokenID::tkOpBrk )
+	    ++depth;
+	else if ( t->id() == TokenID::tkClBrk )
+	{
+	    if ( --depth == 0 )
+		break;                 // the matching ')' — consumed, not collected
+	}
+	cond_toks.push_back(t);
+    }
+    if ( depth != 0 )
+    {
+	// Unbalanced — push back what we took and bail to the runtime path.
+	for ( std::vector<TokenBase *>::reverse_iterator it = cond_toks.rbegin();
+	      it != cond_toks.rend(); ++it )
+	    pushToken(*it);
+	return false;
+    }
+
+    // Fold a CLONE in an isolated stream (same idiom as fold_nontype_arg_constant:
+    // muted std::cerr, since a non-constant condition Throws and throwbuf::sync
+    // prints before the exception we catch).
+    std::deque<TokenBase *> saved_tokens = tokens;
+    size_t saved_diag_count = diagnostics.size();
+    Program::ErrorInfo saved_error = last_error;
+    std::deque<TokenBase *> body;
+    for ( TokenBase *ct : cond_toks )
+	body.push_back(ct->clone());
+    body.push_back(new TokenSemi());
+    tokens = body;
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(NULL);
+    bool ok = false;
+    try
+    {
+	int64_t v = parse_constant_integer_expression();
+	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	{
+	    out = v;
+	    ok = true;
+	}
+    }
+    catch ( ... ) { ok = false; }
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
+    tokens = saved_tokens;
+    if ( !ok )
+    {
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
+	// Restore the live stream: condition tokens followed by the ')'.
+	pushToken(new TokenClBrk());
+	for ( std::vector<TokenBase *>::reverse_iterator it = cond_toks.rbegin();
+	      it != cond_toks.rend(); ++it )
+	    pushToken(*it);
+    }
+    return ok;
+}
+
+void Program::skip_discarded_statement()
+{
+    TokenBase *p = peekToken();
+    if ( !p )
+	return;
+    if ( p->id() == TokenID::tkOpBrc )
+    {
+	nextToken();                       // consume '{'
+	int depth = 1;
+	TokenBase *t;
+	while ( depth > 0 && (t = nextToken()) )
+	{
+	    if ( t->id() == TokenID::tkOpBrc ) ++depth;
+	    else if ( t->id() == TokenID::tkClBrc ) --depth;
+	}
+	return;
+    }
+    // A single (non-block) statement: consume through its terminating ';' at
+    // bracket/brace/paren depth 0.
+    int pd = 0, bd = 0, sd = 0;
+    TokenBase *t;
+    while ( (t = peekToken()) )
+    {
+	TokenID id = t->id();
+	if ( id == TokenID::tkSemi && pd == 0 && bd == 0 && sd == 0 )
+	{ nextToken(); break; }
+	nextToken();
+	if ( id == TokenID::tkOpBrk ) ++pd;
+	else if ( id == TokenID::tkClBrk && pd > 0 ) --pd;
+	else if ( id == TokenID::tkOpBrc ) ++bd;
+	else if ( id == TokenID::tkClBrc && bd > 0 ) --bd;
+	else if ( id == TokenID::tkOpSqr ) ++sd;
+	else if ( id == TokenID::tkClSqr && sd > 0 ) --sd;
+    }
 }
 
 static bool constant_initializer_has_runtime_access(Program &pgm)
@@ -21495,9 +21600,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    for (;;)
 	    {
 		TokenBase *kw = pgm.peekToken();
-		if ( kw && kw->type() == TokenType::ttIdentifier )
+		if ( kw && is_contextual_identifier_token(kw) )
 		{
-		    std::string &s = ((TokenIdent *)kw)->str;
+		    std::string s = contextual_identifier_name(kw);
 		    if ( s == "virtual" )   { bvirtual = true;       pgm.nextToken(); continue; }
 		    if ( s == "public" )    { baccess = 0;           pgm.nextToken(); continue; }
 		    if ( s == "protected" ) { baccess = vfPROTECTED; pgm.nextToken(); continue; }
@@ -21993,9 +22098,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	}
 
 	// --- access specifier labels: public: / private: / protected: ---
-	if ( tn->type() == TokenType::ttIdentifier )
+	if ( is_contextual_identifier_token(tn) )
 	{
-	    std::string &label = ((TokenIdent *)tn)->str;
+	    std::string label = contextual_identifier_name(tn);
 	    if ( label == "public" || label == "private" || label == "protected" )
 	    {
 		pgm.nextToken(); // consume the keyword
@@ -22069,9 +22174,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    pgm.Throw(this) << "Unexpected end of input after member specifier" << flush;
 		continue;
 	    }
-	    if ( tn->type() != TokenType::ttIdentifier )
+	    if ( !is_contextual_identifier_token(tn) )
 		break;
-	    std::string spec = ((TokenIdent *)tn)->str;
+	    std::string spec = contextual_identifier_name(tn);
 	    if ( spec == "virtual" )
 	    {
 		pgm.nextToken();
@@ -23123,9 +23228,63 @@ TokenBase *TokenIF::parse(Program &pgm)
 
     DBG(std::cout << std::endl << "TokenIF::parse()" << std::endl);
 
+    // `if constexpr` (C++17): the lexer preserves the `constexpr` (normally an
+    // empty define) only when it directly precedes `(`. If the condition folds to
+    // a constant, emit ONLY the taken branch and SKIP the discarded one without
+    // parsing it — its templated entities must not be instantiated ([stmt.if]/2).
+    bool is_constexpr = false;
+    if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken())
+      && contextual_identifier_name(pgm.peekToken()) == "constexpr" )
+    {
+	pgm.nextToken();        // consume the preserved `constexpr`
+	is_constexpr = true;
+    }
+
     tn = pgm.nextToken();
     if ( !tn || tn->id() != TokenID::tkOpBrk )
 	pgm.Throw(tn ? tn : this) << "expecting ( after if" << flush;
+
+    if ( is_constexpr )
+    {
+	int64_t cval = 0;
+	if ( pgm.fold_if_constexpr_condition(cval) )
+	{
+	    // Normalize to an always-taken `if (1) <live-branch>`: the dead branch
+	    // is token-skipped (never instantiated), so CIR sees only live code.
+	    condition = new TokenInt(1);
+	    if ( cval )
+	    {
+		tn = pgm.nextToken();
+		if ( !(statement = pgm.parseStatement(tn)) )
+		    pgm.Throw(tn) << "Failed to parse if constexpr statement" << flush;
+		while ( (tn = pgm.peekToken()) && tn->id() == TokenID::tkSemi )
+		    pgm.nextToken();
+		if ( tn && tn->id() == TokenID::tkELSE )
+		{
+		    pgm.nextToken();                 // consume `else`
+		    pgm.skip_discarded_statement();  // discard the else branch
+		}
+	    }
+	    else
+	    {
+		pgm.skip_discarded_statement();      // discard the then branch
+		while ( (tn = pgm.peekToken()) && tn->id() == TokenID::tkSemi )
+		    pgm.nextToken();
+		if ( tn && tn->id() == TokenID::tkELSE )
+		{
+		    pgm.nextToken();                 // consume `else`
+		    tn = pgm.nextToken();
+		    if ( !(statement = pgm.parseStatement(tn)) )
+			pgm.Throw(tn) << "Failed to parse if constexpr else statement" << flush;
+		}
+		else
+		    statement = new TokenCpnd();     // no else -> empty live body
+	    }
+	    return this;
+	}
+	// Condition not constant-foldable (genuinely dependent): fall through and
+	// treat as a runtime `if` (no worse than before this feature existed).
+    }
 
     tn = pgm.nextToken();
     if ( !tn )
@@ -23652,6 +23811,11 @@ static bool is_contextual_identifier_token(TokenBase *tb)
 	case TokenID::tkNEW:
 	case TokenID::tkDELETE:
 	case TokenID::tkOPEROVER:
+	// Generic version-gated reserved C++ keyword (tkCPPKEYWORD): the parser
+	// still recognizes these by spelling (e.g. `sizeof`, `explicit`, the
+	// named casts), so they must answer as contextual identifiers — that is
+	// precisely what makes reserving them transparent to existing sites.
+	case TokenID::tkCPPKEYWORD:
 	    return true;
 	default:
 	    return false;
@@ -23680,7 +23844,8 @@ static std::string contextual_identifier_name(TokenBase *tb)
 	|| tb->id() == TokenID::tkTHROW
 	|| tb->id() == TokenID::tkNEW
 	|| tb->id() == TokenID::tkDELETE
-	|| tb->id() == TokenID::tkOPEROVER )
+	|| tb->id() == TokenID::tkOPEROVER
+	|| tb->id() == TokenID::tkCPPKEYWORD )
 	return ((TokenKeyword *)tb)->str;
     return "";
 }
@@ -23837,9 +24002,9 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    base_source_spelling =
 		template_type_arg_spelling((TokenDataType *)tn, "");
     }
-    else if ( tn->type() == TokenType::ttIdentifier )
+    else if ( is_contextual_identifier_token(tn) )
     {
-	std::string tname = ((TokenIdent *)tn)->str;
+	std::string tname = contextual_identifier_name(tn);
 	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	if ( tdmi != pgm.datatype_map.end() )
 	{
@@ -25264,9 +25429,11 @@ TokenBase *TokenMatch::parse(Program &pgm)
 
 static bool is_template_type_param_intro(TokenBase *tb)
 {
+    // `typename` may arrive as a plain identifier (contextual handling) OR, once
+    // reserved, as a tkCPPKEYWORD — both answer via contextual_identifier_name.
     return tb && (tb->id() == TokenID::tkCLASS
-	|| (tb->type() == TokenType::ttIdentifier
-	    && ((TokenIdent *)tb)->str == "typename"));
+	|| (is_contextual_identifier_token(tb)
+	    && contextual_identifier_name(tb) == "typename"));
 }
 
 static bool is_template_param_separator(TokenBase *tb)
@@ -34563,6 +34730,21 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    break;
 
 	case TokenType::ttKeyword:
+	    // A version-gated reserved keyword with no dedicated dispatch token
+	    // (tkCPPKEYWORD) reaches statement position as `static_assert(...)`
+	    // (deferred inside template bodies) or a keyword-led expression
+	    // statement (`sizeof(x);`, `static_cast<T>(e);`). The ttIdentifier arm
+	    // owns those checks but a keyword token never reaches it, so route by
+	    // spelling here, mirroring its tail (parse_static_assert_statement /
+	    // parseExprStmt).
+	    if ( tb->id() == TokenID::tkCPPKEYWORD )
+	    {
+		const std::string &kw = ((TokenIdent *)tb)->str;
+		if ( is_static_assert_identifier(kw) )
+		    return parse_static_assert_statement(tb);
+		resetPrevToken();
+		return parseExprStmt(tb);
+	    }
 	    // `class` is also a madc keyword (OOP class declaration), but C
 	    // codebases (notably SMAUG) use it as a plain identifier for
 	    // struct members / locals (`ch->class`, `int class;`). Treat as

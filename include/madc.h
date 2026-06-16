@@ -1763,6 +1763,13 @@ public:
     // explicit C standards present as plain gcc.
     bool presents_as_cpp() const { return language_std == STD_MADC || is_cpp_mode(); }
     bool auto_includes_enabled() const { return language_std == STD_MADC; }
+    // A C++ reserved keyword introduced in `min_std` is active iff we are in the
+    // madc dialect (reserves the full C++ keyword set) or in an explicit C++ mode
+    // at/after that standard. The C++ enumerators are contiguous and ordered
+    // (CPP98 < CPP03 < ... < CPP26), so the `>=` compare is a pure version floor;
+    // is_cpp_mode() excludes the (lower-valued) C enumerators. NEVER active in C.
+    bool cpp_keyword_active(LanguageStd min_std) const
+    { return language_std == STD_MADC || (is_cpp_mode() && language_std >= min_std); }
     // The __cplusplus value the selected --std= mandates (C++26 uses g++'s
     // provisional 202400L until the standard fixes one).
     const char *cplusplus_value_for_std() const {
@@ -2071,6 +2078,16 @@ public:
     int64_t parse_constant_lor();
     int64_t parse_constant_ternary();
     int64_t parse_constant_integer_expression();
+    // `if constexpr` support (C++17 [stmt.if]/2). The stream is positioned just
+    // AFTER the condition's `(`; collect the balanced condition tokens (consuming
+    // the matching `)`) and fold them to a constant. Returns true + value on a
+    // successful fold; on failure restores the stream (condition tokens + `)` back)
+    // and returns false so the caller falls back to a runtime `if`.
+    bool fold_if_constexpr_condition(int64_t &out);
+    // Skip ONE statement's tokens (a `{...}` block, balanced, or a single statement
+    // through its terminating `;`) WITHOUT parsing — so a discarded `if constexpr`
+    // branch is never instantiated or emitted.
+    void skip_discarded_statement();
     // Speculatively fold a static-member initializer ('=' already consumed) to a
     // constant int, expecting ';'. Consumes the initializer on success, restores
     // and returns false otherwise. See parser.cpp.

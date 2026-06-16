@@ -2116,6 +2116,62 @@ void Program::add_keywords()
 	keyword_map[tkFRIEND.str] = &tkFRIEND;
     }
     keyword_map[tkDEFER.str] = &tkDEFER;
+
+    // Version-gated C++ RESERVED-keyword registry (C++26 and earlier). Each
+    // entry is reserved ONLY in the madc dialect or an explicit C++ mode at/after
+    // its introducing standard (cpp_keyword_active) — NEVER in C. These have no
+    // dedicated dispatch token: the parser already recognizes them by SPELLING
+    // (contextual_identifier_name), and tkCPPKEYWORD is admitted to that helper's
+    // allowlist — so reserving them is transparent to existing parse sites while
+    // preventing their use as bare identifiers.
+    //
+    // ONLY genuine reserved keywords appear here. Contextual identifiers
+    // (`override`, `final`, `module`, `import`, `audit`) are deliberately NOT
+    // reserved (a hard reservation broke 49 tests — see the KG lesson). The
+    // pervasive ignored specifiers `inline` (erased), `noexcept` and `alignas`
+    // (special lexer handling) keep their existing treatment. The erased
+    // specifiers `constexpr`/`consteval`/`constinit` are registered below AFTER
+    // being removed from the erase map, and need decl-specifier consume handling.
+    struct CppReservedKw { const char *kw; LanguageStd min_std; };
+    static const CppReservedKw cpp_reserved[] = {
+	// STAGED — see DESIGN NOTE / the plan. The complete reserved set (below,
+	// commented) is validated-but-not-yet-activated: hard-reserving them is a
+	// genuine multi-site de-shim (every direct `type()==ttIdentifier` check
+	// that must accept the token), and a full activation surfaced 9 regressions
+	// (asm-statement dispatch, the move/forward template-instantiation reparse,
+	// a __x scope-loss, math.h + string operator+ codegen). Activate in
+	// validated slices per docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
+	//   C++98: asm explicit export mutable virtual this typename sizeof
+	//          public private protected typeid true false
+	//          static_cast const_cast reinterpret_cast dynamic_cast
+	//   C++11: decltype alignof nullptr static_assert thread_local
+	// --- C++20 — DEFERRED (NOT yet reserved). madc presents as a C++20+
+	//     dialect to real headers, which use `concept`/`requires` (active
+	//     under __cpp_lib_concepts, e.g. <compare>/<concepts>) and the
+	//     coroutine keywords. madc lacks concept/coroutine PARSING; today it
+	//     SKIPS those declarations via string-gated paths (skip_requires_clause
+	//     &al.). Reserving these as tokens breaks those skip paths, so they
+	//     stay contextual until the skip paths are de-shimmed to accept the
+	//     tokens. Listed here so the registry is COMPLETE/accounted-for:
+	//       char8_t, concept, requires, co_await, co_return, co_yield  (C++20)
+	//     Tracked in docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
+	{ 0,                  STD_CPP98 }
+    };
+    for ( size_t i = 0; i < sizeof(cpp_reserved)/sizeof(cpp_reserved[0]); ++i )
+	if ( cpp_reserved[i].kw
+	  && cpp_keyword_active(cpp_reserved[i].min_std)
+	  && keyword_map.find(cpp_reserved[i].kw) == keyword_map.end() )
+	    keyword_map[cpp_reserved[i].kw] =
+		new TokenCppKeyword(cpp_reserved[i].kw);
+    // DESIGN NOTE: this table is intentionally NOT populated with hard keyword
+    // tokens. madc deliberately handles most C++ keywords as CONTEXTUAL
+    // identifiers recognized by spelling (Cfront-style; see the KG lesson
+    // "Tokenizer remapping for contextual keywords" — a grammar-level hard
+    // reservation caused a 49-test regression). Empirically, reserving e.g.
+    // `typename` as a tkCPPKEYWORD breaks real-header `template<typename ...>`
+    // parsing. Reservation + version-gating must therefore be expressed as a
+    // gated SPELLING predicate consulted by the contextual sites, not as hard
+    // tokens. Tracked in docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
 }
 
 // add static tokens for base data types
