@@ -12042,6 +12042,16 @@ node_t CirBuilder::translate_module(Program *prog)
 	// symbols (c_str/size protocol, dtors) are seen by the Pass-1.9 fixpoint.
 	synth_call_shims(prog, roots, func_def_nodes);
 
+	// Symbols that receive a TYPED forward prototype (Pass 0.75 below, Pass 1,
+	// and the materialized-func protos). A void* extern from need_output_extern
+	// for the SAME symbol — e.g. a mangled-direct `_ZNSaIcEC1ERKS_(void*,void*)`
+	// ctor call emitted inside an instantiated body, while allocator<char>'s
+	// copy-ctor is also a referenced FuncDef getting a typed
+	// `(struct allocator_char*,...)` proto — is a CONFLICTING redeclaration that
+	// c2mir/gcc reject ("incompatible argument type" / "conflicting types"). The
+	// typed proto is canonical; the m_output_externs flushes skip these symbols.
+	std::set<std::string> typed_proto_syms;
+
 	// Pass 0.75: Extern function prototypes — referenced-only (matches c2m,
 	// which only declares what #include pulled in).
 	for (auto &kv : prog->funcdef_map) {
@@ -12163,6 +12173,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		append(proto, ignore());
 		append(proto, ignore());
 		append(top_list, proto);
+		typed_proto_syms.insert(symbol);
 	}
 
 	// Pass 0.78: extern declarations for referenced libc globals.
@@ -12220,8 +12231,17 @@ node_t CirBuilder::translate_module(Program *prog)
 	// lowering SO FAR. Bodies translated by the Pass-1.9 fixpoint re-run
 	// register more entries after this point; the late declaration pass below
 	// Pass 1.9 flushes those (emitted_extern_syms records this batch).
+	// Fold in the Pass 1 user-function proto symbols (keyed by tf->var.name —
+	// exactly what func_proto declares below) so the extern flush also skips a
+	// void* duplicate of a symbol that Pass 1 will type.
+	for (TokenFunc *tf : funcs)
+		if (tf->var.name != "main"
+		 && dynamic_cast<FuncDef *>(tf->var.type))
+			typed_proto_syms.insert(tf->var.name);
+
 	std::set<std::string> emitted_extern_syms;
 	for (auto &kv : m_output_externs) {
+		if (typed_proto_syms.count(kv.first)) continue;
 		append(top_list, kv.second);
 		emitted_extern_syms.insert(kv.first);
 	}
@@ -12371,15 +12391,24 @@ node_t CirBuilder::translate_module(Program *prog)
 	// (which truncates pointer returns and mis-wires struct args — the
 	// __madc_shim string-ctor segfault).
 	// (a) Forward prototypes for fixpoint-materialized bodies: they are not in
-	//     the `funcs` snapshot Pass 1 iterates.
+	//     the `funcs` snapshot Pass 1 iterates. Record their symbols so the
+	//     extern flush below skips any conflicting void* duplicate (same reason
+	//     as proto_func_syms above — a typed proto is canonical).
 	for (TokenFunc *tf : materialized_funcs) {
 		node_t proto = func_proto(tf);
-		if (proto) append(top_list, proto);
+		if (proto) {
+			append(top_list, proto);
+			if (dynamic_cast<FuncDef *>(tf->var.type))
+				typed_proto_syms.insert(tf->var.name);
+		}
 	}
 	// (b) Externs registered (need_output_extern) during fixpoint body
-	//     translation after Pass 0.8 ran.
+	//     translation after Pass 0.8 ran. Skip any symbol that ALSO got a typed
+	//     forward proto (Pass 0.75 / Pass 1 / materialized) — emitting both is a
+	//     conflicting redeclaration c2mir rejects.
 	for (auto &kv : m_output_externs)
-		if (!emitted_extern_syms.count(kv.first))
+		if (!emitted_extern_syms.count(kv.first)
+		 && !typed_proto_syms.count(kv.first))
 			append(top_list, kv.second);
 
 	// Synthesize `void __madc_global_init(void)` — the ONE home for the
