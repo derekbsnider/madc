@@ -2089,6 +2089,12 @@ public:
     int64_t parse_constant_bor();
     int64_t parse_constant_land();
     int64_t parse_constant_lor();
+    // Short-circuit token-skip: consume (without evaluating) the RHS operand of
+    // a `&&`/`||` whose result the LHS already determines. C++ [expr.const]: the
+    // skipped operand need not be a constant expression. stop_at_and=true for a
+    // `&&` RHS (a bor-operand, ends at the next `&&`); false for a `||` RHS (a
+    // land-operand, spans `&&`). Keeps the cursor positioned for the caller.
+    void skip_const_logical_operand(bool stop_at_and);
     int64_t parse_constant_ternary();
     int64_t parse_constant_integer_expression();
     // `if constexpr` support (C++17 [stmt.if]/2). The stream is positioned just

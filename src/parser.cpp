@@ -4664,6 +4664,7 @@ static bool read_constant_integer(Variable *var, int64_t &out)
 	return false;
     switch ( var->type->rawtype() )
     {
+	case DataType::dtBOOL:   out = *((bool *)var->data) ? 1 : 0; return true;
 	case DataType::dtINT8:   out = *((int8_t *)var->data);   return true;
 	case DataType::dtUINT8:  out = *((uint8_t *)var->data);  return true;
 	case DataType::dtINT16:  out = *((int16_t *)var->data);  return true;
@@ -6785,13 +6786,53 @@ int64_t Program::parse_constant_eq()
     return lhs;
 }
 
+// Consume (without evaluating) one RHS operand of a `&&`/`||` whose value the
+// LHS already short-circuits. A token-consuming recursive-descent evaluator MUST
+// still advance past the operand (so the caller lands on the next operator /
+// sentinel), but C++ [expr.const] does NOT require a short-circuited operand to
+// be a constant expression — so `false && <runtime-call>` folds to false instead
+// of throwing. (Previously `lhs = lhs && parse_constant_bor()` relied on C++'s
+// own short-circuit, which SKIPPED the call and left the RHS tokens unconsumed,
+// so a non-type template arg like `__can_memmove && __assignable` never reached
+// its `;` sentinel and the whole fold failed.)
+void Program::skip_const_logical_operand(bool stop_at_and)
+{
+    int depth = 0;
+    while ( TokenBase *t = peekToken() )
+    {
+	TokenID id = (TokenID)t->id();
+	if ( depth == 0 )
+	{
+	    if ( id == TokenID::tkSemi || id == TokenID::tkComma
+	      || id == TokenID::tkClBrk || id == TokenID::tkClSqr
+	      || id == TokenID::tkClBrc || id == TokenID::tkQmark
+	      || id == TokenID::tkColon || id == TokenID::tkLor )
+		return;
+	    if ( stop_at_and && id == TokenID::tkLand )
+		return;
+	}
+	if ( id == TokenID::tkOpBrk || id == TokenID::tkOpSqr
+	  || id == TokenID::tkOpBrc )
+	    ++depth;
+	else if ( id == TokenID::tkClBrk || id == TokenID::tkClSqr
+	       || id == TokenID::tkClBrc )
+	{ if ( depth > 0 ) --depth; }
+	nextToken();
+    }
+}
+
 int64_t Program::parse_constant_land()
 {
     int64_t lhs = parse_constant_bor();
     while ( peekToken() && peekToken()->id() == TokenID::tkLand )
     {
 	nextToken();
-	lhs = lhs && parse_constant_bor();
+	if ( !lhs )
+	{
+	    skip_const_logical_operand(true);   // short-circuit: 0 && X == 0
+	    continue;
+	}
+	lhs = parse_constant_bor() ? 1 : 0;
     }
     return lhs;
 }
@@ -6802,7 +6843,13 @@ int64_t Program::parse_constant_lor()
     while ( peekToken() && peekToken()->id() == TokenID::tkLor )
     {
 	nextToken();
-	lhs = lhs || parse_constant_land();
+	if ( lhs )
+	{
+	    skip_const_logical_operand(false);  // short-circuit: 1 || X == 1
+	    lhs = 1;
+	    continue;
+	}
+	lhs = parse_constant_land() ? 1 : 0;
     }
     return lhs;
 }
@@ -34225,23 +34272,35 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // A `const`-declared scalar integer whose initializer folds at
 	    // parse time gets the VALUE baked into its parse-time buffer:
 	    // C++ makes such a constant an integral constant expression
-	    // (g++ accepts `const int G = 5; int g[G];`), and the constant
-	    // readers (read_constant_integer) read var->data. Without the
-	    // bake a file-scope const's calloc'd buffer reads 0, so the
-	    // array dimension silently became zero. The var->data guard
-	    // limits this to allocated (file-scope/static) storage; locals
-	    // keep the C-canon VLA path. Runtime emission is unchanged —
-	    // the SPEC_DECL initializer above still runs.
-	    if ( (var->flags & vfCONSTDECL) && var->data
+	    // ([expr.const]; g++ accepts `const int G = 5; int g[G];`), and the
+	    // constant readers (read_constant_integer) read var->data. A
+	    // file-scope/static const already owns a calloc'd buffer; a LOCAL
+	    // const has none, so allocate a small parse-time buffer (freed with
+	    // the var via vfALLOC). Baking locals is what lets a non-type
+	    // template argument that names a const local fold — e.g. libstdc++
+	    // `std::__uninitialized_copy<__can_memmove && __assignable>` selects
+	    // the trivial vs per-element specialization by these const bools, so
+	    // without it vector<string> realloc routed string elements through
+	    // the int __do_uninit_copy and corrupted them. Reads still fold to
+	    // the constant in CIR; the SPEC_DECL initializer still runs.
+	    if ( (var->flags & vfCONSTDECL)
 	      && var->type && var->type->is_integer()
 	      && !var->type->is_pointer() )
 	    {
 		TokenAssign *cta = dynamic_cast<TokenAssign *>(td->initialize);
 		int64_t cval = 0;
 		if ( cta && cta->right
-		  && try_eval_known_integer(cta->right, cval)
-		  && var->set(cval) )
-		    var->flags |= vfCONSTBAKED;
+		  && try_eval_known_integer(cta->right, cval) )
+		{
+		    if ( !var->data && var->type->size > 0 )
+		    {
+			var->data = calloc(1, var->type->size);
+			if ( var->data )
+			    var->flags |= vfALLOC;
+		    }
+		    if ( var->data && var->set(cval) )
+			var->flags |= vfCONSTBAKED;
+		}
 	    }
 	}
 	update_pointer_object_size_hints(td->initialize);
