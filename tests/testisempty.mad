@@ -1,0 +1,13 @@
+// __is_empty(T) ([meta.unary.prop]): a non-union class with no non-static data
+// members, no virtuals/virtual-bases, all bases empty. The gcc-13 builtin behind
+// std::is_empty; libstdc++ instantiates is_empty<allocator<T>> for EBO, which
+// <memory>'s allocator_traits chain drags into the vector reallocation path.
+#include <type_traits>
+#include <iostream>
+struct E {};            // empty
+struct NE { int x; };   // non-empty
+int main() {
+  std::cout << std::is_empty<E>::value << std::is_empty<NE>::value
+            << std::is_empty<int>::value << "\n";   // 100
+  return 0;
+}
