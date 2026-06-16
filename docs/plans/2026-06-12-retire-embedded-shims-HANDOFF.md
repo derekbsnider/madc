@@ -20,7 +20,7 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node->c2mir->MIR).
 Integration **613 passed / 12 failed / 0 timed out / 18 skipped** (unchanged baseline —
-the 12 are the container/STALE-API walls). Code HEAD **`5ec4a5a`**, tree clean. Branch
+the 12 are the container/STALE-API walls). Code HEAD **`3069ced`**, tree clean. Branch
 LOCAL-ONLY; develop untouched. MIR fork pin satisfied. Build current, zero warnings.
 **This session (17) drove the C++ keyword-registry to substantial COMPLETION** (the
 SESSION-16 ★NEXT) + a CIR extern-dedup fix, landing 12+ commits, ZERO regression throughout.
@@ -77,7 +77,7 @@ see §0a. The live testvector wall is now a single int↔pointer c2mir error (§
 - Slice 8 char8_t is the only C++20 piece done; concept/requires/co_* remain BLOCKED
   (need the concept/coroutine skip-paths de-shimmed). typename (slice 3) remains DEFERRED.
 
-## 0b. ★ Vector wall — push_back cleared, dedup fixed, ONE c2mir error remains
+## 0b. ★ Vector wall — push_back + dedup + forward-of-object ALL cleared; new wall = undefined _M_realloc_insert
 After slice 5, testvector no longer fails on the undefined
 `__ns_std___uninitialized_move_if_noexcept_a` import (the discarded `if constexpr`
 else-branch). Then the **extern-dedup fix (`5ec4a5a`)** removed a real conflicting-
@@ -88,42 +88,37 @@ mangled-direct ctor call (`_ZNSaIcEC1ERKS_(void*,void*)`) — gcc rejects "confl
 types". Fix = a shared `typed_proto_syms` set (Pass 0.75 + Pass 1 + materialized protos);
 the two `m_output_externs` flushes skip those symbols. Zero-regression; --emit=c11 no
 longer double-declares them.
-**REMAINING (the live testvector wall): ONE c2mir error — PRECISELY LOCALIZED (S17).** It is
-NOT a _Vector_impl layout issue; it is a `std::forward`-of-OBJECT lowering bug at a
-member-template construct call. The emitted C (strip the cin/cout cleanup-externs first —
-`sed -E 's/ __attribute__\(\(cleanup\([^)]*\)\)\)//g'` — because gcc errors on those FIRST and
-masks the real site) shows, inside `allocator_traits<allocator<string>>::construct__mti`:
-```
-__new_allocator_..._construct__mti((__new_allocator*)__a, __p, (*__ns_std_forward__o4((void*)__args)));
-```
-`__ns_std_forward__o4` returns `basic_string*` (a reference), but it is **dereferenced** to a
-VALUE and passed to construct's 3rd param, which is `basic_string*` (the object passed by
-rvalue-ref = pointer in madc's lowering). struct-value→pointer is a c2mir hard error
-("incompatible argument type for pointer type parameter"). For the INT element the same shape
-(`*__ns_std_forward__o2(...)` → int value into `int*` p2) is only a c2mir WARNING ("using
-integer without cast for pointer type parameter"), so int silently miscompiles too. CORRECT:
-`std::forward<T>(args)` passed to a by-ref object param must NOT deref — pass the pointer
-(what `object_arg_addr` line 1072 does for ref-returning calls).
-**VERIFIED (S17): the deref is NOT emitted by the 3 standard arg-coercion paths** — gated
-diag `MADC_DIAG_ARGCOERCE` on cir_builder.cpp:1294 (free-fn), :3786 (method), :3643 (member-
-template extern, void*-cast __this) fired for NONE of the construct calls. So either `callee`
-is NULL at the real lowering site (→ `ref_params` unknown → arg defaults to value/deref) or a
-4TH member-template-instantiation lowering path generates this call. NEXT: find that path
-(grep the `__mti` / member-template-instantiation call emission), ensure the rvalue-ref OBJECT
-param is recognized (callee resolved + ref_params set) so the forward arg flows through
-object_arg_addr (pointer) not translate_expr (deref). Same move/forward-of-object family as
-the typename blocker (slice 3) and testmemtmplpackexpand. The 12 container/STALE-API failures
-are unchanged (§6b: `__is_constructible`, empty-`_Rb_tree` dtor, `_Tp2` dup).
+**FORWARD-OF-OBJECT deref FIXED (`3069ced`).** Root cause (S17, gated-diag verified): a
+member-template instantiation call binds to a declaration-only placeholder with NO
+parameters/ref_params, so in the method-call arg loop (cir_builder.cpp ~3786) `callee`==NULL
+and `pt`==<null>. A reference-returning call arg (`std::forward<Args>(args)`/`std::move`) then
+fell to `else -> translate_expr`, which AUTO-DEREFERENCES the ref-returning call to a VALUE —
+emitting `__new_allocator::construct(__p, *__ns_std_forward__o4((void*)__args))`, a
+basic_string VALUE into a basic_string* param (c2mir hard error; int element = silent
+int↔ptr warning). FIX: in that loop, when `pt` is unknown AND `ref_returning_call_type(arg)`
+is non-NULL, pass via `ref_param_arg_addr` (folds `&(*call)` -> the call's pointer) instead of
+translate_expr. (The diag had guarded on `callee!=NULL` so it first looked like a 4th path;
+re-keying on the ref-returning ARG showed it IS path 3786 with a null callee.)
+**★ NEW LIVE WALL (the live testvector failure now): MIR-link `import of undefined item
+vector<string>::_M_realloc_insert`.** push_back's reallocation path for the STRING element
+type is referenced but never DEFINED (instantiated). For `int` it's defined (if-constexpr
+discarding + the relocate path); for `basic_string` the `_M_realloc_insert` instantiation is
+missing — a late/deferred member-instantiation gap (same family as the §1b late-drain proto
+work). NEXT: trace why `vector<string>::_M_realloc_insert` isn't materialized+lowered (it's
+referenced from push_back; check the pending_funcs / materialize_and_lower drain for the
+string element type vs int). The other §6b container walls (`__is_constructible`,
+empty-`_Rb_tree` dtor, `_Tp2` dup) are still behind the map/set tests.
 
 ## 0c. ★ NEXT
-**★ LIVE NEXT = the testvector `std::forward`-of-object deref (§0b — PRECISELY LOCALIZED)**:
-the construct member-template call passes `*__ns_std_forward__o4(args)` (a VALUE) to a
-`basic_string*` (by-rvalue-ref object) param — struct-value→pointer, c2mir hard error. The
-deref is NOT from the 3 standard arg-coercion paths (verified via MADC_DIAG_ARGCOERCE) →
-find the 4th member-template-instantiation call path (callee likely NULL → ref_params lost),
-make the forward arg flow through `object_arg_addr` (pointer) not `translate_expr` (deref).
-Same forward-of-object family as typename (slice 3) + testmemtmplpackexpand. Drives the
-12-failure metric (testvector/testvectorptr + likely the subscript set).
+**★ LIVE NEXT = undefined `vector<string>::_M_realloc_insert` (MIR-link) — §0b.** After the
+forward-of-object fix (`3069ced`), testvector compiles through c2mir and now fails at
+MIR-link: the string-element push_back reallocation body isn't instantiated/defined (int's
+IS). Trace the pending_funcs / materialize_and_lower drain for `_M_realloc_insert` of the
+basic_string element vs int — a late member-instantiation gap (same family as §1b late-drain
+proto). This is the live testvector/testvectorptr blocker; drives the 12-failure metric.
+Lower-priority registry leftovers (BLOCKED): typename (slice 3, the same forward-of-object
+family — the `3069ced` fix may help; re-test testlateinstproto with typename reserved) and
+concept/co_* (slice 8).
 Registry leftovers (lower priority, both BLOCKED): **typename** (slice 3 — std::move/forward
 late-instantiation reparse fix; clean repro testlateinstproto with typename reserved, NOT
 tmp/fwd.mad which fails baseline) and **concept/requires/co_*** (slice 8 — de-shim the
