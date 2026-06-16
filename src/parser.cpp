@@ -3328,7 +3328,34 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     }
 
     TokenBase *class_kw = nextToken();   // the injected `class` keyword
-    parseKeyword((TokenKeyword *)class_kw); // TokenCLASS::parse → registers DataDefCLASS
+    try
+    {
+	parseKeyword((TokenKeyword *)class_kw); // TokenCLASS::parse → registers DataDefCLASS
+    }
+    catch ( ... )
+    {
+	// EXCEPTION-SAFE RESTORE. parseKeyword swapped `compounds` / class_scope_stack
+	// / cur_func_name / the cpp-struct flags / the instantiating_* stash to a fresh
+	// empty context above. If it THROWS (a benign error during a nested resolution
+	// — e.g. instantiating a conditional_t default — that is caught UPSTREAM), the
+	// restore below would be skipped, leaving `compounds` swapped-out EMPTY. The
+	// caller then parses with no local scope, so its own locals/params vanish: this
+	// is why `__uninitialized_move_if_noexcept_a`'s `__last` param became "undeclared"
+	// (compounds=0) after a prior argument's nested instantiation threw-and-recovered.
+	// Mirror the normal-path restore, then rethrow. (NamespaceScope is already RAII.)
+	if ( pushed_owner_scope && !class_scope_stack.empty()
+	  && class_scope_stack.back() == td.owner_class )
+	    class_scope_stack.pop_back();
+	std::swap(class_scope_stack, saved_class_scope_stack);
+	std::swap(compounds, saved_compounds);
+	cur_func_name = saved_func;
+	class_definition_only = saved_def_only;
+	parsing_cpp_struct_class = saved_cpp_struct_class;
+	parsing_cpp_union_class = saved_cpp_union_class;
+	instantiating_canonical_spelling = saved_canon;
+	instantiating_dependent_surface = saved_dependent_surface;
+	throw;
+    }
 
     if ( pushed_owner_scope
       && !class_scope_stack.empty()
@@ -30256,7 +30283,27 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	}
 
 	TokenBase *spec_kw = pgm.nextToken();
-	pgm.parseKeyword((TokenKeyword *)spec_kw);
+	try
+	{
+	    pgm.parseKeyword((TokenKeyword *)spec_kw);
+	}
+	catch ( ... )
+	{
+	    // EXCEPTION-SAFE RESTORE (see instantiate_template_use): a throw from the
+	    // re-parse (a benign error caught upstream) must not leave `compounds` /
+	    // class_scope_stack / cur_func_name / instantiating_* swapped-out empty,
+	    // or the CALLER's local scope vanishes (compounds=0 -> spurious "undeclared
+	    // identifier" for the caller's own params). Mirror the normal restore + rethrow.
+	    if ( pushed_owner_scope && !pgm.class_scope_stack.empty()
+	      && pgm.class_scope_stack.back() == td.owner_class )
+		pgm.class_scope_stack.pop_back();
+	    std::swap(pgm.class_scope_stack, saved_class_scope_stack);
+	    std::swap(pgm.compounds, saved_compounds);
+	    pgm.cur_func_name = saved_func;
+	    pgm.instantiating_canonical_spelling = saved_canon;
+	    pgm.instantiating_dependent_surface = saved_dependent_surface;
+	    throw;
+	}
 
 	if ( pushed_owner_scope
 	  && !pgm.class_scope_stack.empty()
