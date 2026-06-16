@@ -1,0 +1,23 @@
+// A const-integral LOCAL variable used as a non-type template argument is an
+// integral constant expression (C++ [expr.const]) and must SELECT the matching
+// specialization — not fall back to the primary. This is the libstdc++
+// `std::__uninitialized_copy<__can_memmove && __assignable>` shape that, unfolded,
+// collapsed the int and string vector instantiations into one (corrupting
+// vector<string> on reallocation). Covers: const int, const bool, and a
+// short-circuited `&&` of two const bools (the && RHS need not be foldable here,
+// but both are).
+namespace nn {
+    template<int N>  struct S { static int pick() { return 10; } };
+    template<>       struct S<5> { static int pick() { return 50; } };
+    template<bool B> struct U { static int pick() { return 1; } };
+    template<>       struct U<true> { static int pick() { return 2; } };
+}
+
+int main()
+{
+    const int  n = 5;
+    const bool a = true;
+    const bool b = true;
+    printf("%d %d %d\n", nn::S<n>::pick(), nn::U<a>::pick(), nn::U<a && b>::pick());
+    return 0;
+}
