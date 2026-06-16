@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19f"** block immediately below (current state +
-NEXT), then "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19g"** block immediately below (current state +
+NEXT), then "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,44 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 19f — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+# ★ SESSION 19g — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+
+## 0. Orientation + STATE
+Code HEAD **`ab9d8b8`** (the `_M_valptr` fix). Branch
+`feature/retire-embedded-shims-claude`, push when ready (was synced through
+`992f9c2`). Tree clean except untracked `mir-debug-support.md` (NOT ours — leave
+it). Committed tree GREEN: **unit 132/0, integration 627/7** (same 7 container
+fails). develop untouched. **Stash dropped** — the leaky isolated-parse WIP is
+SUPERSEDED by `ab9d8b8` and gone.
+
+## 0a. SHIPPED this session
+- **`ab9d8b8`** `_M_valptr` cleared at the deepest layer (path b). An inline
+  `static_cast<T>(p)->m()` folded `->m()` into the cast OPERAND (resolved against
+  the source type). Fix: thread a `cast_operand` flag through
+  parseExpression→parseExpr_operatorArm that forces `postfix_follows` false at
+  the operand's own `)`, then resume the postfix chain on the cast RESULT via
+  `parsePostfixChainFrom`. **No global-state swap → no leak** (the blocker that
+  sank the earlier isolated-parse attempt). sc1/sc2 3-oracle green (7/7); unit
+  132/0; fulltest 627/7 unchanged. audit row 7 → Resolved.
+
+## 0b. LIVE NEXT — map/set deeper wall (audit row 7b), then the rest
+With `_M_valptr` gone, `set<string>`+`map<string,string>` (`tmp/tp2.cpp`) now
+fail DEEPER at `bits/stl_map.h:102:13`: "invalid operand types of `||`",
+"incompatible types in assignment to struct/union", "incomplete struct or
+union". Line 102 = `value_type = pair<const _Key,_Tp>` / default `_Alloc`. Looks
+like a `pair`/value_type or trait-`||` instantiation gap (plus the benign
+`stl_tree.h:427` `_S_relocate` pointer/int warnings, row 3). **START HERE for
+map/set** — reducer `tmp/tp2.cpp` (`--std=c++17 --no-embedded-headers`).
+
+## 0c. remaining container fails (7, unchanged count)
+testmadc_ns/testsubscript (map/set → now row 7b), testmap/testset (C++20
+`.contains()` — needs `--std=c++20` + a madc `contains`), testvectorptr/
+testsubscriptarrow (row 6b pointer-element type wall), testcontainerdtor
+(`.put()` invalid-test → rewrite to `dict[k]=v`). Full triage in §19e §0b.
+
+---
+
+# SESSION 19f — COLD-START REHYDRATION — 2026-06-16
 
 ## 0. Orientation + STATE
 Code HEAD **`3491ee2`** (Makefile fix), tree clean except an untracked
