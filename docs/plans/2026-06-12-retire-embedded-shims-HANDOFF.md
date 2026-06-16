@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19c"** block immediately below (current state +
-NEXT), then "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19d"** block immediately below (current state +
+NEXT), then "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,63 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 19c — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+# ★ SESSION 19d — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+
+## 0. Orientation + STATE CHANGE
+Code HEAD **`9630c55`** (+ audit doc commit on top), tree clean, fulltest **626
+passed / 7 failed / 0 timed out / 18 skipped**. **The branch is now PUSHED to
+`origin/feature/retire-embedded-shims-claude`** (upstream tracking set). The old
+"LOCAL-ONLY, never push" rule was a PROOF-OF-CONCEPT-phase constraint (user
+confirmed 2026-06-16); push normally from here. develop still untouched.
+
+## 0a. testvector is GREEN; vector<X> now works for an ARBITRARY class X
+This session closed the vector<string> teardown AND generalized to any element
+type. Four fixes (all committed, each fulltest-gated zero-regression, 3-oracle'd):
+- **`18e2212`** zero-parameter fn template called with EXPLICIT template args
+  (`__check_constructible<V,T>()`): extract_free_signature dropped its
+  `params.empty()→false` reject (+void-filter); rank_fn_overload_candidates skips
+  the body-less placeholder sentinel (a 0-arg call tied its 0-param sig). Cleared
+  the `__ns_std___check_constructible` link wall; testvector compiled+linked+ran.
+- **`e9255b8`** const-integral LOCAL as a non-type template arg
+  (`__uninitialized_copy<__can_memmove && __assignable>`): (1) bake const scalar
+  int/bool locals ([expr.const]) — allocate a parse-time buffer + vfCONSTBAKED;
+  (2) read_constant_integer gained a dtBOOL case; (3) parse_constant_land/lor now
+  short-circuit by CONSUMING the RHS tokens (skip_const_logical_operand) so
+  `0 && <call>` folds to 0. Stopped the int/string `__uninit_copy` collapse →
+  testvector teardown clean.
+- **`4025d5d`** class alignment: compute_layout no longer floors at a hardcoded
+  `maxalign = 8`. Starts at 1, grows to strongest member/base/vptr alignment;
+  vptr size/align from ddVOIDptr (type system, not literal), (v)bases from their
+  own alignment(); new class_align caches the true alignment. `struct W{int a;
+  ~W(){}}` sizeof 24→20 (= g++). (NOT a vtable — non-poly class adds no vptr.)
+- **`9630c55`** loop-body temporaries: `for(...) take(W(i))` hoisted the `W(i)`
+  temporary's construction BEFORE the loop (uninitialized `i`, reused). New
+  translate_loop_body() routes for/while/do/foreach bodies through the existing
+  translate_branch_stmt wrap (stashing the loop's init/cond/incr temps first) so
+  the body temp is reconstructed each iteration.
+Proof: `tmp/vecanyX.mad` (vector<Widget>, a copy-only user class, 6 push_backs
+through reallocations) matches g++/clang. So vector<X> is generic across trivial
+(int) / move-enabled (string) / copy-only-class (Widget) — NOT test-fitted.
+
+## 0b. NEW: feature-drops audit (user-requested, living doc)
+`docs/parity/feature-drops-audit.md` — ledger of constructs madc silently drops /
+rejects / mis-lowers, found incidentally. SEEDED this session: `delete[]` (parsed
+as a lambda), scalar `new int(v)` ("new without a class type"), concrete
+`enable_if<false,T>::type` wrongly accepted (masks negative SFINAE), global-scope
+free-fn-template "undeclared", the dead `_S_relocate` memmove-path c2mir warnings.
+APPEND to it whenever you trip over an out-of-scope wrongness instead of forgetting.
+
+## 0c. LIVE NEXT — the remaining 7 container-cluster fails
+testvector/testfntplexplicitargs/testconstlocalnontype + the 4 prior container
+tests are GREEN. Remaining 7: testcontainerdtor, testmadc_ns, testmap, testset,
+testsubscript, testsubscriptarrow, testvectorptr. Likely a mix (map/set are
+red-black-tree templates; subscript = operator[] paths). Reduce each with a
+3-oracle minimal case at live HEAD; they are NOT necessarily one shared wall now.
+Method: NEVER A SHIM, deepest layer, 3-oracle first, fulltest after every change.
+
+---
+
+# ★ SESSION 19c — COLD-START REHYDRATION — 2026-06-16
 
 ## 0. Orientation + MILESTONE
 Code HEAD **`18e2212`**, tree clean, fulltest **624 passed / 8 failed / 0 timed
