@@ -2141,8 +2141,7 @@ void Program::add_keywords()
 	// (asm-statement dispatch, the move/forward template-instantiation reparse,
 	// a __x scope-loss, math.h + string operator+ codegen). Activate in
 	// validated slices per docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
-	//   C++98: explicit export mutable virtual this typename sizeof
-	//          public private protected typeid true false
+	//   C++98: this typename sizeof typeid true false
 	//          static_cast const_cast reinterpret_cast dynamic_cast
 	//   C++11: decltype alignof nullptr static_assert thread_local
 	// --- C++20 — DEFERRED (NOT yet reserved). madc presents as a C++20+
@@ -2164,6 +2163,22 @@ void Program::add_keywords()
 	// to TokenIdent, works for the keyword token). The GNU spellings
 	// `__asm__`/`__asm` stay contextual (double-underscore impl-reserved).
 	{ "asm",              STD_CPP98 },
+	// Slice 2 (declaration keywords): access specifiers and member/base
+	// specifiers. Every parse site reads them via
+	// is_contextual_identifier_token / contextual_identifier_name (base-spec
+	// virtual/access loop, access-label public/private/protected, the
+	// member-specifier virtual/mutable/explicit loop, and the has-methods
+	// detector) — all already admit tkCPPKEYWORD. `export` has no dedicated
+	// handler (export-template was removed in C++11; C++20 module `export`
+	// does not appear in the classic headers madc parses), so it is reserved
+	// for completeness only.
+	{ "explicit",         STD_CPP98 },
+	{ "mutable",          STD_CPP98 },
+	{ "virtual",          STD_CPP98 },
+	{ "export",           STD_CPP98 },
+	{ "public",           STD_CPP98 },
+	{ "private",          STD_CPP98 },
+	{ "protected",        STD_CPP98 },
 	{ 0,                  STD_CPP98 }
     };
     for ( size_t i = 0; i < sizeof(cpp_reserved)/sizeof(cpp_reserved[0]); ++i )
