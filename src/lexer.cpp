@@ -2203,6 +2203,18 @@ void Program::add_keywords()
 	// by the same is_ignored_cpp_specifier_token path as constexpr.
 	{ "consteval",        STD_CPP20 },
 	{ "constinit",        STD_CPP20 },
+	// Slice 4 (expression keywords) — validating subset first. The named
+	// casts / typeid / decltype / alignof are recognized by spelling in
+	// parse_constant_primary and the expression parser (de-shimmed), and are
+	// implausible as identifiers. `this`, `sizeof`, `nullptr`, `true`,
+	// `false` are staged separately (SESSION-16 §4 flagged semantic regressions).
+	{ "static_cast",      STD_CPP98 },
+	{ "const_cast",       STD_CPP98 },
+	{ "reinterpret_cast", STD_CPP98 },
+	{ "dynamic_cast",     STD_CPP98 },
+	{ "typeid",           STD_CPP98 },
+	{ "decltype",         STD_CPP11 },
+	{ "alignof",          STD_CPP11 },
 	{ 0,                  STD_CPP98 }
     };
     for ( size_t i = 0; i < sizeof(cpp_reserved)/sizeof(cpp_reserved[0]); ++i )
