@@ -20,9 +20,13 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node->c2mir->MIR).
 Integration **613 passed / 12 failed / 0 timed out / 18 skipped** (+testaliasnontypebool).
-Code HEAD **`a67cc72`**, tree clean. Branch LOCAL-ONLY; develop untouched. MIR fork
-`5df536f` (pin satisfied). Build current, zero warnings. **This session (16) cleared
-the enable_if_t/relocatable wall** — the SESSION-15 ★ live wall — with ONE fix.
+Code HEAD **`622a13b`**, tree clean. Branch LOCAL-ONLY; develop untouched. MIR fork
+`5df536f` (pin satisfied). Build current, zero warnings. **This session (16) did TWO
+things:** (1) cleared the enable_if_t/relocatable wall (`a67cc72`, §0d); (2) on a user
+directive, diagnosed the next push_back wall as a MISSING `if constexpr` feature and
+landed the **C++ reserved-keyword registry INFRASTRUCTURE + de-shim groundwork**
+(`622a13b`, §0e) — reservation STAGED (validated, not yet activated), GREEN.
+**★ NEXT = the keyword-registry activation: `docs/plans/2026-06-15-cpp-keyword-registry-plan.md` §0 (Plan of Continuance).**
 
 ## 0d. ★ enable_if_t / non-type bool fold — CLEARED (`a67cc72`)
 Plan `docs/plans/2026-06-15-enable-if-alias-nontype-bool-fold-plan.md` (its §0 = the
@@ -43,17 +47,36 @@ legit fallback would leak a spurious diagnostic).** g++/clang do exactly this
 3-oracle table flips (blit/bdir/bcon resolve; blit2/ddir2 controls hold);
 +testaliasnontypebool (42/3.5/77). fulltest 612->613, ZERO regression.
 
-**★ LIVE NEXT WALL (push_back, peeled one layer):** `tmp/v1.mad`
-(`vector<int> v; v.push_back(7);`, real headers) now fails ONLY with `MIR error:
-import of undefined item __ns_std___uninitialized_move_if_noexcept_a` — a referenced
-free-fn-template instantiation that is never instantiated/emitted (NOT a c2mir check
-error; the parse + emit are clean). Likely the late-instantiation/proto drain OR the
-global-vs-namespaced free-fn-template lookup gap (cf. SESSION-15 §6: a GLOBAL-scope
-free fn template is "undeclared", `tmp/fc.cpp` vs `tmp/ns1.cpp`). Triage that first:
-is `__uninitialized_move_if_noexcept_a` instantiated-but-not-emitted (proto/drain) or
-not-instantiated-at-all (lookup/deduction)? 3-oracle + the emit-c11/gcc localizer.
+## 0e. ★ KEYWORD REGISTRY — INFRASTRUCTURE LANDED, RESERVATION STAGED (`622a13b`)
+The push_back wall (`__ns_std___uninitialized_move_if_noexcept_a` undefined import) was
+DIAGNOSED, not a missing instantiation: it is the DISCARDED `else` branch of an
+`if constexpr (_S_use_relocate())` in vector.tcc `_M_realloc_insert`. madc has NO
+`if constexpr` discarding — `constexpr` is macro-erased (lexer.cpp), so `if constexpr`
+becomes a runtime `if` and BOTH branches are emitted; the dead branch references a
+template g++/clang never instantiate (they DISCARD it, C++17 [stmt.if]/2). 3-oracle
+proven (`tmp/ifcx2.cpp`: madc emits both `taken()`+`discarded()`).
+The faithful fix is `if constexpr` discarding — which needs `constexpr` to be a real
+token. User then directed: reserve ALL C++ reserved keywords (C++98..C++26), version-
+gated, C++-only (contextual words override/final/module/import NOT reserved).
+**LANDED (`622a13b`, inert/green):** `cpp_keyword_active(LanguageStd)` gate;
+`tkCPPKEYWORD`/`TokenCppKeyword`; admitted to `is_contextual_identifier_token`/
+`contextual_identifier_name` (so spelling sites + the parseExpression
+ttKeyword->ttIdentifier fall-through work transparently); staged gated table in
+`add_keywords` (EMPTY, full set in-comment); 6 direct-`ttIdentifier` de-shim sites
+generalized; DORMANT `if constexpr` machinery (`fold_if_constexpr_condition` +
+`skip_discarded_statement` + `TokenIF` is_constexpr branch — activates once `constexpr`
+is reserved). **WHY staged not big-bang:** a full C++98+11 activation regressed 9 tests,
+several SEMANTIC (`__x` scope loss, math.h/string-`operator+` codegen, move/forward
+reparse) — each keyword has a de-shim tail; activate in validated slices.
+**★ NEXT (the Plan of Continuance):**
+`docs/plans/2026-06-15-cpp-keyword-registry-plan.md` §0 — slice order (asm → decl kws →
+typename → expr kws → constexpr[activates if-constexpr → clears the push_back wall] →
+consteval/constinit → alt-token ops → C++20). Companion:
+`docs/plans/2026-06-15-if-constexpr-discarding-plan.md`. Per-slice: build +
+`tmp/capi.mad` + `make -C src fulltest`, zero-regression vs the 12-known baseline
+(`comm -23` fail-sets) before the next slice.
 
-**Separate follow-ups (unchanged, NOT this slice):** §6b false-masking
+**Separate follow-ups (unchanged):** §6b false-masking
 (`enable_if<false,T>::type` wrongly accepted via opaque-member fallback);
 `__is_constructible` intrinsic (still behind the deeper push_back layers);
 empty-`_Rb_tree` dtor SIGSEGV; `_Tp2 already defined` (set+map same TU); STALE-API

@@ -6,6 +6,55 @@ activated) 2026-06-15 (SESSION 16).** Branch `feature/retire-embedded-shims-clau
 accounted for, registered as a version-gated, C++-only token — contextual keywords
 (`override`/`final`/`module`/`import`) stay identifiers (NOT reserved).
 
+## 0. PLAN OF CONTINUANCE (next session — READ FIRST)
+
+**State at handoff:** infrastructure committed `622a13b`, tree GREEN (613/12/0/18,
+zero regression). Reservation table EMPTY/staged. `if constexpr` machinery LANDED but
+DORMANT. Nothing further is committed. Branch LOCAL-ONLY; develop untouched.
+
+**The user's directive:** finish reserving ALL reserved C++ keywords (gated, C++-only).
+This is a bounded, validated slice list — NOT a big-bang (a full activation regressed 9
+tests, §4). Each slice: add table rows → build → `tmp/capi.mad` (the `<string>` closure
+reducer) + `make -C src fulltest` → fix the surfaced direct-`ttIdentifier`/semantic
+sites → **zero regression vs the 12-known baseline before the next slice**. Compare
+fail-sets with `comm -23` against a saved baseline list (the §7 protocol).
+
+**Recommended slice order (each its own commit):**
+1. **asm** (1 known site — the asm statement dispatch is reached only via the
+   ttIdentifier statement arm; route tkCPPKEYWORD asm there, like static_assert).
+   Targets testasmoutputonly, testnestedasmbarrier.
+2. **Declaration keywords** explicit/mutable/virtual/export/public/private/protected —
+   their direct sites are ALREADY de-shimmed (§4 done-list); likely lands clean.
+3. **typename** — needs the `std::move`/`forward` template-instantiation REPARSE path
+   fixed first (it lost the param → `__ns_std_forward` undefined; testmemtmplpackexpand,
+   testlateinstproto). Find the reparse site that re-lexes a body and treats `typename`
+   as ttIdentifier.
+4. **Expression keywords** sizeof/typeid/the casts/decltype/alignof/nullptr/true/false —
+   FIRST investigate the SEMANTIC regressions (testmadceval/testnoautoload `__x` scope
+   loss; testmathh 9 c2mir errors; teststringplus / teststrplusbody_realhdr codegen).
+   These are NOT plain de-shims — a keyword token in a param/body context dropped a
+   binding or mis-lowered. Reduce each before reserving; they may reveal a gap in the
+   contextual fall-through that, once fixed, also simplifies earlier slices.
+5. **constexpr** — reserve it, then the DORMANT `if constexpr` machinery activates
+   (verify with `tmp/ifcx2.cpp`: emits ONLY the taken branch). This CLEARS the
+   `__uninitialized_move_if_noexcept_a` push_back wall (the discarded else-branch),
+   which is the bridge back to the retire-embedded-shims campaign / vector::push_back.
+6. **consteval / constinit** — remove from the define_map erase (lexer.cpp ~1045-1047);
+   add decl-specifier consume handling (they appear like `constexpr`/`static`).
+7. **Alternative-token operators** and/or/not/bitand/... — map spelling→operator token,
+   C++-gated.
+8. **C++20 set** char8_t(datatype)/concept/requires/co_* — LAST; needs the
+   concept/coroutine SKIP paths (`skip_requires_clause` &al.) de-shimmed to accept the
+   tokens (§5). char8_t is just a datatype_map entry (CPP20-gated).
+
+**Caution:** the SEMANTIC regressions (slice 4) are the real risk — budget investigation,
+not just mechanical edits. If a slice's regressions aren't cleanly de-shimmable, leave
+that keyword staged and move on; partial completion is fine (the table documents the rest).
+
+**Bridge back to the campaign:** once slice 5 lands, resume the retire-embedded-shims
+push_back onion (the original `tmp/v1.mad` wall, now cleared past enable_if_t by
+`a67cc72`) — next wall after if-constexpr is whatever v1.mad surfaces.
+
 ## 1. Why this is a multi-session de-shim (not a one-pass change)
 madc deliberately handles most C++ keywords as **contextual identifiers** matched by
 SPELLING (Cfront-style; KG lesson "Tokenizer remapping for contextual keywords" — a
