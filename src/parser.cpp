@@ -32444,18 +32444,25 @@ bool Program::paren_group_is_nonclass_direct_init()
     case TokenType::ttString:
     case TokenType::ttChar:
 	return true; // a literal cannot begin a parameter-declaration
-    case TokenType::ttIdentifier:
-	{
-	    std::string nm = ((TokenIdent *)first)->str;
-	    if ( nm == "this" )
-		return true; // `this->...` — a member-access expression
-	    if ( findVariable(nm) )
-		return true; // an in-scope value (a type would be ttDataType)
-	    return false;
-	}
     default:
-	return false;
+	break;
     }
+    // `this` (a member-access expression) or any in-scope value name — neither
+    // can begin a parameter-declaration, so `T name(<this-or-value>...)` is
+    // direct-init, not a function declaration (most-vexing-parse). Resolve via
+    // the contextual-identifier accessors: `this` is now a reserved C++ keyword
+    // token (tkCPPKEYWORD), not a ttIdentifier, so a raw ttIdentifier cast would
+    // miss it (libstdc++'s `pointer __new_start(this->_M_allocate(__len));` in
+    // vector::_M_realloc_insert).
+    if ( is_contextual_identifier_token(first) )
+    {
+	std::string nm = contextual_identifier_name(first);
+	if ( nm == "this" )
+	    return true;
+	if ( findVariable(nm) )
+	    return true;
+    }
+    return false;
 }
 
 TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
