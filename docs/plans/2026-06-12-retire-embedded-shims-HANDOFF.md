@@ -64,7 +64,12 @@ APPEND to it whenever you trip over an out-of-scope wrongness instead of forgett
 ## 0c. LIVE NEXT — the remaining 7 container-cluster fails
 testvector/testfntplexplicitargs/testconstlocalnontype + the 4 prior container
 tests are GREEN. Remaining 7: testcontainerdtor, testmadc_ns, testmap, testset,
-testsubscript, testsubscriptarrow, testvectorptr. Likely a mix (map/set are
+testsubscript, testsubscriptarrow, testvectorptr.
+**testvectorptr (`vector<T*>`) has a written PLAN: `docs/plans/2026-06-16-fn-template-decl-lifetime-plan.md`** —
+root-caused to a use-after-free of `std::forward`'s retained fn-template decl
+during partial-ordering (token-re-substitution lifetime hazard); clang persistent-
+AST recon + cross-ref to the embedded-AST frontend design (arena/u32-index handles
+= the structural cure). START THERE with Step 0 (ASan on tmp/vp1.mad). Audit row 6. Likely a mix (map/set are
 red-black-tree templates; subscript = operator[] paths). Reduce each with a
 3-oracle minimal case at live HEAD; they are NOT necessarily one shared wall now.
 Method: NEVER A SHIM, deepest layer, 3-oracle first, fulltest after every change.
