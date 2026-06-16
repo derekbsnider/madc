@@ -6801,6 +6801,19 @@ int64_t Program::parse_constant_integer_expression()
     return parse_constant_ternary();
 }
 
+// A streambuf that silently swallows output. The speculative constant-folds below
+// (fold_if_constexpr_condition / fold_nontype_arg_constant) mute std::cerr so a
+// non-constant arg's caught Throw doesn't leak a diagnostic. Muting via
+// rdbuf(NULL) is FRAGILE: a NULL rdbuf makes every insertion set badbit, and a
+// write that reaches the throwstream's exceptions(badbit) during the nested
+// instantiation the fold triggers throws basic_ios::clear — which ABORTS that
+// (legitimate) instantiation instead of merely suppressing a message, and corrupts
+// the real error into a spurious "iostream error". A real swallowing buffer keeps
+// the stream good, so only the intended suppression happens.
+namespace { struct MadcNullStreambuf : std::streambuf {
+    int overflow(int c) override { return c; }   // accept and discard
+}; MadcNullStreambuf g_madc_null_streambuf; }
+
 bool Program::fold_if_constexpr_condition(int64_t &out)
 {
     // Collect the balanced condition tokens (stream is just past the opening `(`),
@@ -6842,7 +6855,7 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
     tokens = body;
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(NULL);
+    std::cerr.rdbuf(&g_madc_null_streambuf);
     bool ok = false;
     try
     {
@@ -14188,7 +14201,7 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
     // speculative parse only; restore + clear its state after.
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(NULL);
+    std::cerr.rdbuf(&g_madc_null_streambuf);
     bool ok = false;
     try
     {

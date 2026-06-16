@@ -976,7 +976,14 @@ public:
     Source *source(Source *s) { return _tbuf.source(s); }
     Source *source(Source &s) { return _tbuf.source(&s); }
     std::string str() const { return _tbuf.str(); }
-    throwstream& operator()(TokenBase *t) { _tbuf.token(t); return *this; }
+    // Reset state + buffer at the START of each error. The stream has
+    // exceptions(badbit); a prior `Throw(..) << .. << flush` leaves badbit set
+    // after it throws, so WITHOUT this clear() the next `Throw(t) << "msg"`
+    // re-throws ios_failure AT THE `<<` (before the message is built) — turning
+    // every error after the first into a spurious "basic_ios::clear: iostream
+    // error" and discarding the real message. str("") drops any stale message.
+    throwstream& operator()(TokenBase *t)
+    { clear(); _tbuf.str(std::string()); _tbuf.token(t); return *this; }
 };
 
 
