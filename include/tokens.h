@@ -1081,16 +1081,26 @@ public:
 // A reserved C++ keyword that has no dedicated dispatch token: it is reserved
 // (so it is NOT treated as a bare identifier) but the parser recognizes it by
 // SPELLING (contextual_identifier_name), the same way `sizeof`/`decltype`/the
-// named casts are already handled. One instance per spelling lives in
-// keyword_map; `str` (from TokenIdent) carries the spelling. clone() returns the
-// shared instance, matching every other keyword singleton.
+// named casts are already handled. A prototype instance per spelling lives in
+// keyword_map; `str` (from TokenIdent) carries the spelling, and `id()` is
+// always tkCPPKEYWORD, so a fresh leaf copy is fully equivalent.
+//
+// clone() MUST return an INDEPENDENT copy (like TokenIdent), NOT the shared
+// keyword_map prototype. The base TokenKeyword::clone() returns `this` to
+// preserve dispatch SUBTYPES (TokenDO/TokenIF/…); TokenCppKeyword has no such
+// subtypes, so `new TokenCppKeyword(str)` reproduces it exactly. Returning the
+// shared prototype aliased every `constexpr`/`sizeof`/… occurrence into ONE
+// mutable object that the lexer then re-stamped per use (line/column/file) and
+// that a retained fn-template decl borrowed — so deleting any one occurrence
+// freed it for ALL borrowers (a use-after-free crashing partial-ordering of
+// std::forward's overloads on `vector<T*>`; see feature-drops-audit row 6).
 class TokenCppKeyword: public TokenKeyword
 {
 public:
     TokenCppKeyword(const char *k) : TokenKeyword(k) {}
     TokenCppKeyword(const std::string &k) : TokenKeyword(k) {}
     virtual TokenID id() const { return TokenID::tkCPPKEYWORD; }
-    virtual TokenBase *clone() { return this; }
+    virtual TokenBase *clone() { return new TokenCppKeyword(str); }
     // Ignored declaration-specifiers (constexpr/consteval/constinit) consume
     // themselves and continue parsing the declaration they qualify; any other
     // reserved keyword reaching here is an expression leader.
