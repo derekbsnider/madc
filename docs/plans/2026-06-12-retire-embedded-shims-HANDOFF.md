@@ -15,6 +15,59 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
+# ★ SESSION 17 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+
+## 0. Orientation
+Same campaign (real glibc+libstdc++ every mode; sole backend cir_node->c2mir->MIR).
+Integration **613 passed / 12 failed / 0 timed out / 18 skipped** (unchanged baseline —
+the 12 are the container/STALE-API walls). Code HEAD **`0d69c79`**, tree clean. Branch
+LOCAL-ONLY; develop untouched. MIR fork pin satisfied. Build current, zero warnings.
+**This session (17) drove the C++ keyword-registry ACTIVATION** (the SESSION-16 ★NEXT),
+landing 5 commits, ZERO regression throughout. The big win: **constexpr is now a real
+token and `if constexpr` discards its dead branch**, which moved the vector wall PAST
+push_back.
+
+## 0a. ★ Keyword-registry slices landed (plan: docs/plans/2026-06-15-cpp-keyword-registry-plan.md §0)
+- **Slice 1 asm** (`94c018c`): reserved CPP98. Extracted the statement-level GNU-asm skip
+  into shared `Program::skip_gnu_asm_statement`, called from both parseStatement arms.
+- **Slice 2 decl keywords** (`f2c9656`): explicit/mutable/virtual/export/public/private/
+  protected reserved CPP98; all sites already de-shimmed (contextual helpers) — clean.
+- **Slice 3 typename** (`5a1c9c5`): INVESTIGATED + DEFERRED (staged, NOT reserved).
+  Regresses the LATE free-fn-template instantiation of std::move/forward —
+  `int&& y=std::move(x)` drops the `(x)` call, emits `&__ns_std_move` (undeclared). Repro
+  **tmp/fwd.mad**. The bug is the move/forward return-type (`typename
+  std::remove_reference<_Tp>::type&&`) instantiation/reparse path, NOT a plain de-shim.
+  Fix that first (testmemtmplpackexpand, testlateinstproto), then reserve.
+- **Slice 5 constexpr** (`5d64f7b`) — THE value slice. constexpr un-erased + reserved CPP11,
+  which ACTIVATES the if-constexpr discard machinery (proven **tmp/ifcxd.mad**: dead branch
+  not compiled). Built the token-aware ignored-decl-specifier skip madc lacked:
+  `is_ignored_cpp_specifier_token` + **`TokenCppKeyword::parse()`** (covers leading
+  `constexpr int g` AND storage-delegated `static constexpr` — both route through
+  parseKeyword; global decls funnel through parseStatement so one fix serves global+local)
+  + the member-specifier loop. Real <string> parses (tmp/capi.mad exit 0).
+- **Slice 6 consteval/constinit** (`0d69c79`): reserved CPP20; zero new de-shim (slice-5
+  skip already covered their spellings) — just un-erase + two table rows.
+
+## 0b. ★ Vector wall MOVED past push_back (capture this)
+After slice 5, `bin/madc tests/testvector.mad` no longer fails on the undefined
+`__ns_std___uninitialized_move_if_noexcept_a` import (the discarded `if constexpr`
+else-branch). It now fails DEEPER at **`/usr/include/c++/13/bits/stl_vector.h:428:54`**
+(the `class vector : protected _Vector_base<_Tp,_Alloc>` base instantiation — 5 c2mir
+check errors: "function return type is incomplete" + int↔pointer confusion). This is the
+new vector wall — orthogonal to the keyword registry. The 12 container/STALE-API failures
+are unchanged (also gated by §6b: `__is_constructible`, empty-`_Rb_tree` dtor, `_Tp2` dup).
+
+## 0c. ★ NEXT
+The registry plan §0 (just updated). Remaining slices: **typename** (after the
+move/forward reparse fix — start at tmp/fwd.mad), **expr keywords** (slice 4 — has SEMANTIC
+regressions per SESSION-16 §0e/§4, investigate first), **alt-token operators** (slice 7),
+**C++20 concept/requires/co_*/char8_t** (slice 8 — de-shim the concept/coroutine skip-paths
+first). OR pivot to the new vector wall (stl_vector.h:428) / the §6b container walls to
+drive the 12 failures down. Per-slice protocol: build + tmp/capi.mad + `make -C src
+fulltest`, zero-regression vs the 12-known baseline before the next.
+
+---
+
 # ★ SESSION 16 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-15
 
 ## 0. Orientation

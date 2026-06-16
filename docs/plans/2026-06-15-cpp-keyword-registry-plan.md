@@ -8,9 +8,40 @@ accounted for, registered as a version-gated, C++-only token — contextual keyw
 
 ## 0. PLAN OF CONTINUANCE (next session — READ FIRST)
 
-**State at handoff:** infrastructure committed `622a13b`, tree GREEN (613/12/0/18,
-zero regression). Reservation table EMPTY/staged. `if constexpr` machinery LANDED but
-DORMANT. Nothing further is committed. Branch LOCAL-ONLY; develop untouched.
+**State after SESSION 17 (2026-06-16):** tree GREEN (613/12/0/18, zero regression).
+Branch LOCAL-ONLY; develop untouched. Committed this session:
+- **Slice 1 (asm)** — `94c018c`. Reserved at CPP98; statement-level GNU-asm skip
+  extracted into the shared `Program::skip_gnu_asm_statement`, called from both the
+  ttIdentifier and ttKeyword parseStatement arms.
+- **Slice 2 (decl keywords)** — `f2c9656`. explicit/mutable/virtual/export/public/
+  private/protected reserved at CPP98; all sites already de-shimmed (contextual helpers).
+- **Slice 3 (typename)** — `5a1c9c5`. INVESTIGATED + DEFERRED (staged, NOT reserved):
+  regresses the late free-fn-template instantiation of std::move/forward
+  (`int&& y=std::move(x)` drops the `(x)` call → undeclared `__ns_std_move`; repro
+  tmp/fwd.mad). Bug is in the move/forward return-type instantiation/reparse path, not
+  a plain de-shim. Fix that first (testmemtmplpackexpand, testlateinstproto), then reserve.
+- **Slice 6 (consteval/constinit)** — `0d69c79`. Reserved at CPP20; zero new de-shim
+  (slice-5 ignored-specifier skip already covered their spellings). Smoke tmp/ceval.mad.
+- **Slice 5 (constexpr + if-constexpr)** — `5d64f7b`. THE value slice: constexpr is now
+  a real tkCPPKEYWORD (CPP11), un-erased, which ACTIVATES the if-constexpr discard
+  machinery (proven by tmp/ifcxd.mad — the dead branch is not compiled). Token-aware
+  ignored-decl-specifier skip added centrally: `is_ignored_cpp_specifier_token` +
+  `TokenCppKeyword::parse()` (covers leading `constexpr int g` AND storage-delegated
+  `static constexpr` via parseKeyword) + the member-specifier loop. Real <string>
+  parses (tmp/capi.mad exit 0). **This moved the vector wall PAST push_back**: testvector
+  now fails at `stl_vector.h:428:54` (the `_Vector_base<_Tp,_Alloc>` base instantiation —
+  incomplete return type + int↔pointer confusion, 5 c2mir check errors), not the old
+  `__uninitialized_move_if_noexcept_a` import. The container tests stay red on this and
+  the other §6b walls (`__is_constructible`, empty-`_Rb_tree` dtor, `_Tp2` dup).
+
+**Remaining slices:** typename (after the move/forward reparse fix — repro tmp/fwd.mad),
+expression keywords (slice 4 — `this`/sizeof/typeid/casts/decltype/alignof/nullptr/true/
+false; SEMANTIC regressions, investigate first), alt-token operators (slice 7), C++20
+concept/requires/co_*/char8_t (slice 8 — needs the concept/coroutine skip-paths de-shimmed
+first). Plus the orthogonal vector wall at stl_vector.h:428 (`_Vector_base` instantiation).
+
+**Prior infrastructure (SESSION 16):** `622a13b` (gate, tkCPPKEYWORD, de-shim groundwork,
+dormant if-constexpr — now active).
 
 **The user's directive:** finish reserving ALL reserved C++ keywords (gated, C++-only).
 This is a bounded, validated slice list — NOT a big-bang (a full activation regressed 9
@@ -20,27 +51,27 @@ sites → **zero regression vs the 12-known baseline before the next slice**. Co
 fail-sets with `comm -23` against a saved baseline list (the §7 protocol).
 
 **Recommended slice order (each its own commit):**
-1. **asm** (1 known site — the asm statement dispatch is reached only via the
-   ttIdentifier statement arm; route tkCPPKEYWORD asm there, like static_assert).
-   Targets testasmoutputonly, testnestedasmbarrier.
-2. **Declaration keywords** explicit/mutable/virtual/export/public/private/protected —
-   their direct sites are ALREADY de-shimmed (§4 done-list); likely lands clean.
-3. **typename** — needs the `std::move`/`forward` template-instantiation REPARSE path
-   fixed first (it lost the param → `__ns_std_forward` undefined; testmemtmplpackexpand,
-   testlateinstproto). Find the reparse site that re-lexes a body and treats `typename`
-   as ttIdentifier.
+1. ✅ DONE (`94c018c`). **asm** — shared `Program::skip_gnu_asm_statement` called from
+   both parseStatement arms.
+2. ✅ DONE (`f2c9656`). **Declaration keywords** explicit/mutable/virtual/export/public/
+   private/protected — all sites already de-shimmed; landed clean.
+3. ⏸ DEFERRED (`5a1c9c5`). **typename** — needs the `std::move`/`forward` template-
+   instantiation REPARSE path fixed first (it drops the call → `__ns_std_move` undeclared;
+   repro tmp/fwd.mad; testmemtmplpackexpand, testlateinstproto). Find the reparse site
+   that mis-handles `typename` in the move/forward return type.
 4. **Expression keywords** sizeof/typeid/the casts/decltype/alignof/nullptr/true/false —
    FIRST investigate the SEMANTIC regressions (testmadceval/testnoautoload `__x` scope
    loss; testmathh 9 c2mir errors; teststringplus / teststrplusbody_realhdr codegen).
    These are NOT plain de-shims — a keyword token in a param/body context dropped a
    binding or mis-lowered. Reduce each before reserving; they may reveal a gap in the
    contextual fall-through that, once fixed, also simplifies earlier slices.
-5. **constexpr** — reserve it, then the DORMANT `if constexpr` machinery activates
-   (verify with `tmp/ifcx2.cpp`: emits ONLY the taken branch). This CLEARS the
-   `__uninitialized_move_if_noexcept_a` push_back wall (the discarded else-branch),
-   which is the bridge back to the retire-embedded-shims campaign / vector::push_back.
-6. **consteval / constinit** — remove from the define_map erase (lexer.cpp ~1045-1047);
-   add decl-specifier consume handling (they appear like `constexpr`/`static`).
+5. ✅ DONE (`5d64f7b`). **constexpr** — un-erased + reserved (CPP11); the if-constexpr
+   discard machinery is now ACTIVE (proven tmp/ifcxd.mad). Token-aware ignored-specifier
+   skip added (`is_ignored_cpp_specifier_token` + `TokenCppKeyword::parse` + member loop).
+   CLEARED the `__uninitialized_move_if_noexcept_a` push_back wall — testvector now fails
+   DEEPER at `stl_vector.h:428:54` (`_Vector_base<_Tp,_Alloc>` base instantiation).
+6. ✅ DONE (`0d69c79`). **consteval / constinit** (CPP20) — un-erased + two table rows;
+   the slice-5 ignored-specifier skip already handled their spellings (zero new de-shim).
 7. **Alternative-token operators** and/or/not/bitand/... — map spelling→operator token,
    C++-gated.
 8. **C++20 set** char8_t(datatype)/concept/requires/co_* — LAST; needs the
