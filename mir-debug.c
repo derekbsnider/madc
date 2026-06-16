@@ -2,9 +2,9 @@
    Copyright (C) 2018-2024 Vladimir Makarov <vmakarov.gcc@gmail.com>.
 */
 
-/* Generic GDB-JIT DWARF debug-object emitter -- see mir-dwarf.h. */
+/* Generic GDB-JIT DWARF debug-object emitter -- see mir-debug.h. */
 
-#include "mir-dwarf.h"
+#include "mir-debug.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -12,7 +12,7 @@
 #if defined(__has_include)
 #if __has_include(<elf.h>)
 #include <elf.h>
-#define MIR_DWARF_HAVE_ELF 1
+#define MIR_DEBUG_HAVE_ELF 1
 #endif
 #endif
 
@@ -138,23 +138,23 @@ enum {
 };
 
 #if defined(__aarch64__)
-#define MIR_DWARF_FP_OP DW_OP_reg29
-#define MIR_DWARF_EM EM_AARCH64
+#define MIR_DEBUG_FP_OP DW_OP_reg29
+#define MIR_DEBUG_EM EM_AARCH64
 #elif defined(__x86_64__)
-#define MIR_DWARF_FP_OP DW_OP_reg6
-#define MIR_DWARF_EM EM_X86_64
+#define MIR_DEBUG_FP_OP DW_OP_reg6
+#define MIR_DEBUG_EM EM_X86_64
 #elif defined(__riscv) && __riscv_xlen == 64
-#define MIR_DWARF_FP_OP DW_OP_reg6 /* not validated; see frontend note */
-#define MIR_DWARF_EM EM_RISCV
+#define MIR_DEBUG_FP_OP DW_OP_reg6 /* not validated; see frontend note */
+#define MIR_DEBUG_EM EM_RISCV
 #elif defined(__powerpc64__)
-#define MIR_DWARF_FP_OP DW_OP_reg6
-#define MIR_DWARF_EM EM_PPC64
+#define MIR_DEBUG_FP_OP DW_OP_reg6
+#define MIR_DEBUG_EM EM_PPC64
 #elif defined(__s390x__)
-#define MIR_DWARF_FP_OP DW_OP_reg6
-#define MIR_DWARF_EM EM_S390
+#define MIR_DEBUG_FP_OP DW_OP_reg6
+#define MIR_DEBUG_EM EM_S390
 #else
-#define MIR_DWARF_FP_OP DW_OP_reg6
-#define MIR_DWARF_EM 0
+#define MIR_DEBUG_FP_OP DW_OP_reg6
+#define MIR_DEBUG_EM 0
 #endif
 
 /* ===== builder state ===================================================== */
@@ -198,7 +198,7 @@ typedef struct {
 #define DEFVEC(T, field)                                                         \
   T *field;                                                                      \
   int n_##field, c_##field
-struct MIR_dwarf {
+struct MIR_debug {
   DEFVEC (char *, files);
   DEFVEC (dwtype_t, types);
   DEFVEC (dwmember_t, members);
@@ -225,9 +225,9 @@ static char *dw_strdup (const char *s) {
   return r;
 }
 
-MIR_dwarf_t MIR_dwarf_init (void) {
-  if (MIR_DWARF_EM == 0) return NULL;
-  MIR_dwarf_t d = calloc (1, sizeof (struct MIR_dwarf));
+MIR_debug_t MIR_debug_init (void) {
+  if (MIR_DEBUG_EM == 0) return NULL;
+  MIR_debug_t d = calloc (1, sizeof (struct MIR_debug));
   if (d == NULL) return NULL;
   /* type 0 == void */
   dwtype_t v = {.kind = DT_VOID, .ref = 0, .count = -1, .first_member = -1, .last_member = -1,
@@ -236,7 +236,7 @@ MIR_dwarf_t MIR_dwarf_init (void) {
   return d;
 }
 
-void MIR_dwarf_destroy (MIR_dwarf_t d) {
+void MIR_debug_destroy (MIR_debug_t d) {
   if (d == NULL) return;
   for (int i = 0; i < d->n_files; i++) free (d->files[i]);
   free (d->files);
@@ -254,7 +254,7 @@ void MIR_dwarf_destroy (MIR_dwarf_t d) {
   free (d);
 }
 
-uint32_t MIR_dwarf_add_file (MIR_dwarf_t d, const char *path) {
+uint32_t MIR_debug_add_file (MIR_debug_t d, const char *path) {
   for (int i = 0; i < d->n_files; i++)
     if (strcmp (d->files[i], path) == 0) return (uint32_t) (i + 1);
   char *s = dw_strdup (path);
@@ -262,13 +262,13 @@ uint32_t MIR_dwarf_add_file (MIR_dwarf_t d, const char *path) {
   return (uint32_t) d->n_files;
 }
 
-static uint32_t new_type (MIR_dwarf_t d, int kind) {
+static uint32_t new_type (MIR_debug_t d, int kind) {
   dwtype_t t = {.kind = kind, .ref = 0, .count = -1, .first_member = -1, .last_member = -1};
   VEC_PUSH (d, types, t);
   return (uint32_t) (d->n_types - 1);
 }
 
-MIR_dwarf_type_t MIR_dwarf_base_type (MIR_dwarf_t d, const char *name, MIR_dwarf_encoding_t enc,
+MIR_debug_type_t MIR_debug_base_type (MIR_debug_t d, const char *name, MIR_debug_encoding_t enc,
                                       int byte_size) {
   static const int map[] = {0, DW_ATE_signed, DW_ATE_unsigned, DW_ATE_float, DW_ATE_boolean,
                             DW_ATE_signed_char, DW_ATE_unsigned_char};
@@ -278,44 +278,44 @@ MIR_dwarf_type_t MIR_dwarf_base_type (MIR_dwarf_t d, const char *name, MIR_dwarf
   d->types[i].name = dw_strdup (name);
   return i;
 }
-MIR_dwarf_type_t MIR_dwarf_pointer_type (MIR_dwarf_t d, MIR_dwarf_type_t pointee) {
+MIR_debug_type_t MIR_debug_pointer_type (MIR_debug_t d, MIR_debug_type_t pointee) {
   uint32_t i = new_type (d, DT_PTR);
   d->types[i].ref = pointee;
   d->types[i].size = sizeof (void *);
   return i;
 }
-MIR_dwarf_type_t MIR_dwarf_array_type (MIR_dwarf_t d, MIR_dwarf_type_t elem, int64_t count) {
+MIR_debug_type_t MIR_debug_array_type (MIR_debug_t d, MIR_debug_type_t elem, int64_t count) {
   uint32_t i = new_type (d, DT_ARRAY);
   d->types[i].ref = elem;
   d->types[i].count = count;
   return i;
 }
-MIR_dwarf_type_t MIR_dwarf_typedef_type (MIR_dwarf_t d, const char *name, MIR_dwarf_type_t ref) {
+MIR_debug_type_t MIR_debug_typedef_type (MIR_debug_t d, const char *name, MIR_debug_type_t ref) {
   uint32_t i = new_type (d, DT_TYPEDEF);
   d->types[i].ref = ref;
   d->types[i].name = dw_strdup (name);
   return i;
 }
-MIR_dwarf_type_t MIR_dwarf_struct_type (MIR_dwarf_t d, const char *name, int64_t byte_size,
+MIR_debug_type_t MIR_debug_struct_type (MIR_debug_t d, const char *name, int64_t byte_size,
                                         int is_union) {
   uint32_t i = new_type (d, is_union ? DT_UNION : DT_STRUCT);
   d->types[i].size = byte_size;
   d->types[i].name = dw_strdup (name);
   return i;
 }
-MIR_dwarf_type_t MIR_dwarf_enum_type (MIR_dwarf_t d, const char *name, int64_t byte_size) {
+MIR_debug_type_t MIR_debug_enum_type (MIR_debug_t d, const char *name, int64_t byte_size) {
   uint32_t i = new_type (d, DT_ENUM);
   d->types[i].size = byte_size;
   d->types[i].name = dw_strdup (name);
   return i;
 }
-MIR_dwarf_type_t MIR_dwarf_func_type (MIR_dwarf_t d, MIR_dwarf_type_t ret_type) {
+MIR_debug_type_t MIR_debug_func_type (MIR_debug_t d, MIR_debug_type_t ret_type) {
   uint32_t i = new_type (d, DT_FUNC);
   d->types[i].ref = ret_type;
   return i;
 }
 
-static void append_member (MIR_dwarf_t d, MIR_dwarf_type_t agg, dwmember_t m) {
+static void append_member (MIR_debug_t d, MIR_debug_type_t agg, dwmember_t m) {
   m.next = -1;
   VEC_PUSH (d, members, m);
   int idx = d->n_members - 1;
@@ -326,27 +326,27 @@ static void append_member (MIR_dwarf_t d, MIR_dwarf_type_t agg, dwmember_t m) {
   d->types[agg].last_member = idx;
 }
 
-void MIR_dwarf_add_member (MIR_dwarf_t d, MIR_dwarf_type_t agg, const char *name,
-                           MIR_dwarf_type_t type, int64_t byte_offset) {
+void MIR_debug_add_member (MIR_debug_t d, MIR_debug_type_t agg, const char *name,
+                           MIR_debug_type_t type, int64_t byte_offset) {
   dwmember_t m = {.name = dw_strdup (name), .type = type, .off = byte_offset};
   append_member (d, agg, m);
 }
-void MIR_dwarf_add_bitfield (MIR_dwarf_t d, MIR_dwarf_type_t agg, const char *name,
-                             MIR_dwarf_type_t type, int64_t bit_offset, int bit_size) {
+void MIR_debug_add_bitfield (MIR_debug_t d, MIR_debug_type_t agg, const char *name,
+                             MIR_debug_type_t type, int64_t bit_offset, int bit_size) {
   dwmember_t m = {.name = dw_strdup (name), .type = type, .bit_off = (int) bit_offset,
                   .bit_size = bit_size};
   append_member (d, agg, m);
 }
-void MIR_dwarf_add_enumerator (MIR_dwarf_t d, MIR_dwarf_type_t en, const char *name, int64_t value) {
+void MIR_debug_add_enumerator (MIR_debug_t d, MIR_debug_type_t en, const char *name, int64_t value) {
   dwmember_t m = {.name = dw_strdup (name), .off = value, .is_enumerator = 1};
   append_member (d, en, m);
 }
-void MIR_dwarf_add_param_type (MIR_dwarf_t d, MIR_dwarf_type_t fn, MIR_dwarf_type_t type) {
+void MIR_debug_add_param_type (MIR_debug_t d, MIR_debug_type_t fn, MIR_debug_type_t type) {
   dwmember_t m = {.type = type};
   append_member (d, fn, m);
 }
 
-void MIR_dwarf_add_func (MIR_dwarf_t d, const char *name, const void *addr, size_t size,
+void MIR_debug_add_func (MIR_debug_t d, const char *name, const void *addr, size_t size,
                          const MIR_line_map_t *line_map, size_t line_map_len) {
   MIR_line_map_t *lm = NULL;
   if (line_map != NULL && line_map_len != 0) {
@@ -359,7 +359,7 @@ void MIR_dwarf_add_func (MIR_dwarf_t d, const char *name, const void *addr, size
   d->cur_func = d->n_funcs - 1;
 }
 
-void MIR_dwarf_add_var (MIR_dwarf_t d, const char *name, int is_param, MIR_dwarf_type_t type,
+void MIR_debug_add_var (MIR_debug_t d, const char *name, int is_param, MIR_debug_type_t type,
                         int64_t fp_offset, int deref_p, uint64_t member_offset) {
   if (d->n_funcs == 0) return;
   dwvar_t v = {.name = dw_strdup (name), .is_param = is_param, .type = type, .fp_offset = fp_offset,
@@ -491,7 +491,7 @@ typedef struct {
   uint32_t target;
 } tfix_t;
 
-static void emit_info (MIR_dwarf_t d, dwbuf_t *b, uint64_t text_base, uint64_t text_size,
+static void emit_info (MIR_debug_t d, dwbuf_t *b, uint64_t text_base, uint64_t text_size,
                        const char *cu_name) {
   size_t unit_len_pos = b->len;
   buf_u32 (b, 0);
@@ -500,7 +500,7 @@ static void emit_info (MIR_dwarf_t d, dwbuf_t *b, uint64_t text_base, uint64_t t
   buf_u32 (b, 0);
   buf_u8 (b, 8);
   buf_uleb (b, A_CU);
-  buf_str (b, "mir-dwarf");
+  buf_str (b, "mir-debug");
   buf_u16 (b, DW_LANG_C99);
   buf_str (b, cu_name ? cu_name : "");
   buf_str (b, "");
@@ -584,7 +584,7 @@ static void emit_info (MIR_dwarf_t d, dwbuf_t *b, uint64_t text_base, uint64_t t
     buf_str (b, fn->name);
     buf_u64 (b, (uint64_t) (uintptr_t) fn->addr);
     buf_u64 (b, (uint64_t) (uintptr_t) fn->addr + fn->size);
-    buf_u8 (b, 1); buf_u8 (b, MIR_DWARF_FP_OP);
+    buf_u8 (b, 1); buf_u8 (b, MIR_DEBUG_FP_OP);
     buf_u8 (b, 1);
     for (int v = fn->first_var; v >= 0; v = d->vars[v].next) {
       dwvar_t *dv = &d->vars[v];
@@ -612,7 +612,7 @@ static void emit_info (MIR_dwarf_t d, dwbuf_t *b, uint64_t text_base, uint64_t t
 #undef REF
 }
 
-static void emit_line (MIR_dwarf_t d, dwbuf_t *b) {
+static void emit_line (MIR_debug_t d, dwbuf_t *b) {
   size_t unit_len_pos = b->len;
   buf_u32 (b, 0);
   size_t after_len = b->len;
@@ -675,11 +675,11 @@ static void emit_line (MIR_dwarf_t d, dwbuf_t *b) {
   memcpy (b->p + unit_len_pos, &unit_len, 4);
 }
 
-#ifdef MIR_DWARF_HAVE_ELF
+#ifdef MIR_DEBUG_HAVE_ELF
 /* One ELF section descriptor for the output object assembler below.  A named
    type (rather than an anonymous struct + typeof) so the file stays compilable
    by C frontends without the GNU typeof extension -- e.g. MIR's own c2m, which
-   builds mir-dwarf.c as part of its self-bootstrap. */
+   builds mir-debug.c as part of its self-bootstrap. */
 typedef struct {
   const char *name;
   uint32_t type, link, info, align;
@@ -688,10 +688,10 @@ typedef struct {
   uint64_t size;
 } dwsec_t;
 
-int MIR_dwarf_emit (MIR_dwarf_t d, void **buf, size_t *size) {
+int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size) {
   if (buf != NULL) *buf = NULL;
   if (size != NULL) *size = 0;
-  if (d == NULL || buf == NULL || size == NULL || MIR_DWARF_EM == 0) return -1;
+  if (d == NULL || buf == NULL || size == NULL || MIR_DEBUG_EM == 0) return -1;
 
   uintptr_t lo = UINTPTR_MAX, hi = 0;
   for (int i = 0; i < d->n_funcs; i++) {
@@ -780,7 +780,7 @@ int MIR_dwarf_emit (MIR_dwarf_t d, void **buf, size_t *size) {
   eh->e_ident[EI_VERSION] = EV_CURRENT;
   eh->e_ident[EI_OSABI] = ELFOSABI_SYSV;
   eh->e_type = ET_REL;
-  eh->e_machine = MIR_DWARF_EM;
+  eh->e_machine = MIR_DEBUG_EM;
   eh->e_version = EV_CURRENT;
   eh->e_shoff = shoff;
   eh->e_ehsize = sizeof (Elf64_Ehdr);
@@ -809,7 +809,7 @@ int MIR_dwarf_emit (MIR_dwarf_t d, void **buf, size_t *size) {
   return 0;
 }
 #else
-int MIR_dwarf_emit (MIR_dwarf_t d MIR_UNUSED, void **buf, size_t *size) {
+int MIR_debug_emit (MIR_debug_t d MIR_UNUSED, void **buf, size_t *size) {
   if (buf != NULL) *buf = NULL;
   if (size != NULL) *size = 0;
   return -1; /* no <elf.h> on this host */
@@ -817,6 +817,6 @@ int MIR_dwarf_emit (MIR_dwarf_t d MIR_UNUSED, void **buf, size_t *size) {
 #endif
 
 /* The GDB JIT interface (the process-global __jit_debug_descriptor and
-   MIR_dwarf_gdb_register/unregister) lives in mir-dwarf-gdb.c -- a separate
+   MIR_debug_gdb_register/unregister) lives in mir-debug-gdb.c -- a separate
    translation unit so embedders that own their own descriptor can link this
-   builder + MIR_dwarf_emit without a second one. */
+   builder + MIR_debug_emit without a second one. */

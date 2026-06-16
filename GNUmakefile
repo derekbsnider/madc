@@ -154,7 +154,7 @@ debug2: $(BUILD_DIR)/libmir.$(LIBSUFF) $(BUILD_DIR)/$(SOLIB) $(EXECUTABLES)
 
 install: $(BUILD_DIR)/libmir.$(LIBSUFF) $(BUILD_DIR)/$(SOLIB) $(EXECUTABLES) | $(PREFIX)/include $(PREFIX)/lib $(PREFIX)/bin
 	install -m a+r $(SRC_DIR)/mir.h $(SRC_DIR)/mir-dlist.h $(SRC_DIR)/mir-varr.h $(SRC_DIR)/mir-htab.h\
-		       $(SRC_DIR)/mir-gen.h $(SRC_DIR)/mir-dwarf.h $(SRC_DIR)/c2mir/c2mir.h $(PREFIX)/include
+		       $(SRC_DIR)/mir-gen.h $(SRC_DIR)/mir-debug.h $(SRC_DIR)/c2mir/c2mir.h $(PREFIX)/include
 	install -m a+r $(BUILD_DIR)/libmir.$(LIBSUFF) $(BUILD_DIR)/$(SOLIB) $(PREFIX)/lib
 ifeq ($(OS),Windows_NT)
 else
@@ -199,7 +199,7 @@ bench: interp-bench gen-bench gen-bench2 io-bench mir2c-bench c2mir-sieve-bench 
 	@echo ==============================Bench is done
 
 # ------------------ MIR --------------------------
-MIR_SRC:=$(SRC_DIR)/mir.c $(SRC_DIR)/mir-gen.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c
+MIR_SRC:=$(SRC_DIR)/mir.c $(SRC_DIR)/mir-gen.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c
 MIR_BUILD:=$(MIR_SRC:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.$(OBJSUFF))
 
 $(BUILD_DIR)/%.$(OBJSUFF): $(SRC_DIR)/%.c | $(BUILD_DIR)
@@ -212,7 +212,7 @@ clean-mir:
 -include $(MIR_BUILD:.$(OBJSUFF)=.d)
 
 # ------------------ LIBMIR -----------------------
-$(BUILD_DIR)/libmir.$(LIBSUFF): $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-dwarf.$(OBJSUFF) $(BUILD_DIR)/mir-dwarf-gdb.$(OBJSUFF) $(BUILD_DIR)/c2mir/c2mir.$(OBJSUFF)
+$(BUILD_DIR)/libmir.$(LIBSUFF): $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(BUILD_DIR)/mir-debug-gdb.$(OBJSUFF) $(BUILD_DIR)/c2mir/c2mir.$(OBJSUFF)
 ifeq ($(CC),cl)
 	lib -nologo $^ -OUT:$@
 else
@@ -220,7 +220,7 @@ else
 endif
 
 # ------------------ LIBMIR SO --------------------
-$(BUILD_DIR)/$(SOLIB): $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-dwarf.$(OBJSUFF) $(BUILD_DIR)/mir-dwarf-gdb.$(OBJSUFF) $(BUILD_DIR)/c2mir/c2mir.$(OBJSUFF)
+$(BUILD_DIR)/$(SOLIB): $(BUILD_DIR)/mir.$(OBJSUFF) $(BUILD_DIR)/mir-gen.$(OBJSUFF) $(BUILD_DIR)/mir-debug.$(OBJSUFF) $(BUILD_DIR)/mir-debug-gdb.$(OBJSUFF) $(BUILD_DIR)/c2mir/c2mir.$(OBJSUFF)
 ifeq ($(CC),cl)
 	$(CC) -nologo -D_USRDLL -D_WINDLL $^ -link -DLL -OUT:$@
 else
@@ -631,73 +631,73 @@ c2mir-bootstrap: c2mir-bootstrap-test c2mir-bootstrap-test0 c2mir-bootstrap-test
 c2mir-bootstrap-test0: $(BUILD_DIR)/c2m$(EXE)
 	$(Q) echo -n +++++++ C2MIR Bootstrap lazy func test with -O0 '... '
 	$(Q) $(BUILD_DIR)/c2m$(EXE) -w $(C2M_BOOTSTRAP_FLAGS) -O0 -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/1o0.bmir
+	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/1o0.bmir
 	$(Q) $(BUILD_DIR)/c2m$(EXE) $(C2M_BOOTSTRAP_FLAGS) -O0 $(BUILD_DIR)/1o0.bmir -el -w $(C2M_BOOTSTRAP_FLAGS) -O0\
 	                    -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-			    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/2o0.bmir
+			    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/2o0.bmir
 	$(Q) cmp  $(BUILD_DIR)/1o0.bmir $(BUILD_DIR)/2o0.bmir && echo Passed || echo FAIL
 	$(Q) rm -rf $(BUILD_DIR)/1o0.bmir $(BUILD_DIR)/2o0.bmir
 
 c2mir-bootstrap-test1: $(BUILD_DIR)/c2m$(EXE)
 	$(Q) echo -n +++++++ C2MIR Bootstrap lazy func test with -O1 '... '
 	$(Q) $(BUILD_DIR)/c2m$(EXE) -w $(C2M_BOOTSTRAP_FLAGS) -O1 -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/1o1.bmir
+	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/1o1.bmir
 	$(Q) $(BUILD_DIR)/c2m$(EXE) $(C2M_BOOTSTRAP_FLAGS) -O1 $(BUILD_DIR)/1o1.bmir -el -w $(C2M_BOOTSTRAP_FLAGS) -O1\
 	                    -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-			    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/2o1.bmir
+			    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/2o1.bmir
 	$(Q) cmp $(BUILD_DIR)/1o1.bmir $(BUILD_DIR)/2o1.bmir && echo Passed || echo FAIL
 	$(Q) rm -rf $(BUILD_DIR)/1o1.bmir $(BUILD_DIR)/2o1.bmir
 
 c2mir-bootstrap-test: $(BUILD_DIR)/c2m$(EXE)
 	$(Q) echo -n +++++++ C2MIR Bootstrap lazy func test with default optimize level '... '
 	$(Q) $(BUILD_DIR)/c2m$(EXE) -w $(C2M_BOOTSTRAP_FLAGS) -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/1o2.bmir
+	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/1o2.bmir
 	$(Q) $(BUILD_DIR)/c2m$(EXE) $(C2M_BOOTSTRAP_FLAGS) $(BUILD_DIR)/1o2.bmir -el -w $(C2M_BOOTSTRAP_FLAGS)\
 	                    -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-			     $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/2o2.bmir
+			     $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/2o2.bmir
 	$(Q) cmp $(BUILD_DIR)/1o2.bmir $(BUILD_DIR)/2o2.bmir && echo Passed || echo FAIL
 	$(Q) rm -rf $(BUILD_DIR)/1o2.bmir $(BUILD_DIR)/2o2.bmir
 
 c2mir-bb-bootstrap-test: $(BUILD_DIR)/c2m$(EXE)
 	$(Q) echo -n +++++++ C2MIR Bootstrap lazy bb test with default optimize level '... '
 	$(Q) $(BUILD_DIR)/c2m$(EXE) -w $(C2M_BOOTSTRAP_FLAGS) -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/1o2.bmir
+	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/1o2.bmir
 	$(Q) $(BUILD_DIR)/c2m$(EXE) $(C2M_BOOTSTRAP_FLAGS) $(BUILD_DIR)/1o2.bmir -p4 -eb -w $(C2M_BOOTSTRAP_FLAGS)\
 	                    -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-			     $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/2o2.bmir
+			     $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/2o2.bmir
 	$(Q) cmp $(BUILD_DIR)/1o2.bmir $(BUILD_DIR)/2o2.bmir && echo Passed || echo FAIL
 	$(Q) rm -rf $(BUILD_DIR)/1o2.bmir $(BUILD_DIR)/2o2.bmir
 
 c2mir-bootstrap-test3: $(BUILD_DIR)/c2m$(EXE)
 	$(Q) echo -n +++++++ C2MIR Bootstrap lazy func test with -O3 '... '
 	$(Q) $(BUILD_DIR)/c2m$(EXE) -w $(C2M_BOOTSTRAP_FLAGS) -O3 -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/1o3.bmir
+	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/1o3.bmir
 	$(Q) $(BUILD_DIR)/c2m$(EXE) $(C2M_BOOTSTRAP_FLAGS) -O3 $(BUILD_DIR)/1o3.bmir -el -w $(C2M_BOOTSTRAP_FLAGS) -O3\
 	                    -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-			    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/2o3.bmir
+			    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/2o3.bmir
 	$(Q) cmp $(BUILD_DIR)/1o3.bmir $(BUILD_DIR)/2o3.bmir && echo Passed || echo FAIL
 	$(Q) rm -rf $(BUILD_DIR)/1o3.bmir $(BUILD_DIR)/2o3.bmir
 
 c2mir-parallel-bootstrap-test: $(BUILD_DIR)/c2m$(EXE)
 	$(Q) echo -n +++++++ C2MIR Parallel Bootstrap Test with default optimize level '... '
 	$(Q) $(BUILD_DIR)/c2m$(EXE) -w -p4 $(C2M_BOOTSTRAP_FLAGS) -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/1p2.bmir
+	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/1p2.bmir
 	$(Q) $(BUILD_DIR)/c2m$(EXE) -p4 $(C2M_BOOTSTRAP_FLAGS) $(BUILD_DIR)/1p2.bmir -eg -w -p4 $(C2M_BOOTSTRAP_FLAGS)\
 	                    -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-			    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/2p2.bmir
+			    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/2p2.bmir
 	$(Q) cmp $(BUILD_DIR)/1p2.bmir $(BUILD_DIR)/2p2.bmir && echo Passed || echo FAIL
 	$(Q) rm -rf $(BUILD_DIR)/1p2.bmir $(BUILD_DIR)/2p2.bmir
 
 c2mir-bootstrap-test4: $(BUILD_DIR)/c2m$(EXE) $(BUILD_DIR)/b2ctab$(EXE)
 	$(Q) echo -n +++++++ C2MIR Bootstrap Test 2 '(usually it takes about 10-20 sec) ... '
 	$(Q) $(BUILD_DIR)/c2m$(EXE) -w $(C2M_BOOTSTRAP_FLAGS) -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/t1.bmir
+	                    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/t1.bmir
 	$(Q) $(BUILD_DIR)/b2ctab$(EXE) < $(BUILD_DIR)/t1.bmir > $(BUILD_DIR)/mir-ctab
 	$(Q) $(COMPILE_AND_LINK) -w $(SRC_DIR)/mir.c $(SRC_DIR)/mir-gen.c $(SRC_DIR)/mir-bin-driver.c\
 	                         $(LDLIBS) -o $(BUILD_DIR)/c2m-test$(EXE)
 	$(Q) $(BUILD_DIR)/c2m-test$(EXE) $(C2M_BOOTSTRAP_FLAGS) -w -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c\
 	                         $(SRC_DIR)/c2mir/c2mir.c $(SRC_DIR)/c2mir/c2mir-driver.c\
-				 $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/t2.bmir
+				 $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/t2.bmir
 	$(Q) cmp $(BUILD_DIR)/t1.bmir $(BUILD_DIR)/t2.bmir && echo Passed || echo FAIL
 	$(Q) rm -rf $(BUILD_DIR)/t1.bmir $(BUILD_DIR)/t2.bmir $(BUILD_DIR)/mir-ctab $(BUILD_DIR)/c2m-test$(EXE)
 
@@ -705,10 +705,10 @@ c2mir-bootstrap-test5: $(BUILD_DIR)/c2m$(EXE)
 	$(Q) echo -n +++++++ C2MIR Bootstrap Interpreter Test '... '
 	$(Q) $(BUILD_DIR)/c2m$(EXE) -w $(C2M_BOOTSTRAP_FLAGS0) -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c\
 	                    $(SRC_DIR)/c2mir/c2mir.c $(SRC_DIR)/c2mir/c2mir-driver.c\
-			    $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/i1.bmir
+			    $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/i1.bmir
 	$(Q) $(BUILD_DIR)/c2m$(EXE) $(C2M_BOOTSTRAP_FLAGS0) $(BUILD_DIR)/i1.bmir -ei -w $(C2M_BOOTSTRAP_FLAGS0)\
 	                    -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-			    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -o $(BUILD_DIR)/i2.bmir
+			    $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -o $(BUILD_DIR)/i2.bmir
 	$(Q) cmp $(BUILD_DIR)/i1.bmir $(BUILD_DIR)/i2.bmir && echo Passed || echo FAIL
 	$(Q) rm -rf $(BUILD_DIR)/i1.bmir $(BUILD_DIR)/i2.bmir
 
@@ -767,7 +767,7 @@ gen-bench2: $(BUILD_DIR)/c2m # Ignore M1 MacOs as it needs another procedure to 
 	    echo === Optimization level $$i:;\
         echo 'int main () {return 0;}' > __a.c;\
 	    time $(BUILD_DIR)/c2m -O$$i -Dx86_64 -I$(SRC_DIR) $(SRC_DIR)/mir-gen.c $(SRC_DIR)/c2mir/c2mir.c\
-	                       $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-dwarf.c $(SRC_DIR)/mir-dwarf-gdb.c -el -i -o __a.bmir < __a.c;\
+	                       $(SRC_DIR)/c2mir/c2mir-driver.c $(SRC_DIR)/mir.c $(SRC_DIR)/mir-debug.c $(SRC_DIR)/mir-debug-gdb.c -el -i -o __a.bmir < __a.c;\
 	    rm -f __a.c __a.bmir;\
 	  done;\
 	fi

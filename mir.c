@@ -62,10 +62,10 @@ struct MIR_context {
   struct interp_ctx *interp_ctx;
   void *setjmp_addr;      /* used in interpreter to call setjmp directly not from a shim and FFI */
   void *wrapper_end_addr; /* used by generator */
-  /* Installed by mir-dwarf-gdb when a GDB-JIT debug object is registered for
+  /* Installed by mir-debug-gdb when a GDB-JIT debug object is registered for
      this context; MIR_finish calls it to unregister those objects (the code
      they describe is freed here).  NULL unless gdb registration is used, so
-     mir.c never references -- and never force-links -- mir-dwarf-gdb. */
+     mir.c never references -- and never force-links -- mir-debug-gdb. */
   void (*gdb_jit_finish) (MIR_context_t ctx);
 };
 
@@ -786,9 +786,9 @@ int MIR_get_spill_all_p (MIR_context_t ctx) { return spill_all_p; }
 
 void MIR_set_spill_all (MIR_context_t ctx, int enable_p) { spill_all_p = enable_p; }
 
-/* Internal: mir-dwarf-gdb installs its per-context unregister sweep here so
+/* Internal: mir-debug-gdb installs its per-context unregister sweep here so
    MIR_finish can drop this context's GDB-JIT debug objects.  Kept as a hook
-   (rather than a direct call) so mir.c does not reference mir-dwarf-gdb, which
+   (rather than a direct call) so mir.c does not reference mir-debug-gdb, which
    would force-link its process-global __jit_debug_descriptor into every build. */
 void _MIR_set_gdb_jit_finish (MIR_context_t ctx, void (*finish) (MIR_context_t ctx)) {
   ctx->gdb_jit_finish = finish;
