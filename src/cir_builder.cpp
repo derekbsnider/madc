@@ -3766,6 +3766,26 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	// Coerce each explicit arg to its declared parameter shape (string object
 	// / numeric reference), mirroring the free-function call path. The
 	// callee's parameter 0 is __this, so explicit arg i maps to parameter i+1.
+	// A madc-instantiated member function template binds the call to the
+	// declaration-only PLACEHOLDER (varargs, no ref_params — its signature is
+	// deliberately left unmutated so the parser's findMethodOverload arity gate
+	// stays correct). For ARGUMENT COERCION we need the instantiated
+	// definition's real parameters + ref_params, resolved via the placeholder's
+	// local_emit_name (the same resolution build_call_args does for the free /
+	// static path). Without this the forwarding-reference pack parameter of
+	// `_M_realloc_insert(iterator, _Args&&... __args)` is read from the
+	// placeholder as a plain by-value pointer, so the reference argument `__x`
+	// is auto-dereferenced to a struct VALUE and passed to the pointer parameter
+	// (c2mir hard error for a class element; int tolerates it as the int<->ptr
+	// warning). The emit `sym` still comes from the placeholder + local_emit_name.
+	FuncDef *arg_callee = callee;
+	if (callee && callee->is_member_template
+	    && !callee->local_emit_name.empty() && m_prog) {
+		if (Variable *iv = m_prog->findVariable(callee->local_emit_name))
+			if (FuncDef *ifd = dynamic_cast<FuncDef *>(iv->type))
+				if (ifd != callee)
+					arg_callee = ifd;
+	}
 	node_t args = list();
 	if (ret_obj)
 		append(args, node1(N_ADDR, id(ret_tmp, origin), origin));
@@ -3773,10 +3793,10 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	for (size_t i = 0; i < tm->parameters.size(); i++) {
 		TokenBase *arg = tm->parameters[i];
 		size_t pi = i + 1;   // +1 to skip __this
-		DataDef *pt = (callee && pi < callee->parameters.size())
-				? callee->parameters[pi] : NULL;
-		bool is_ref_param = callee && pi < callee->ref_params.size()
-				    && callee->ref_params[pi];
+		DataDef *pt = (arg_callee && pi < arg_callee->parameters.size())
+				? arg_callee->parameters[pi] : NULL;
+		bool is_ref_param = arg_callee && pi < arg_callee->ref_params.size()
+				    && arg_callee->ref_params[pi];
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			append(args, object_arg_addr(arg, pc));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
