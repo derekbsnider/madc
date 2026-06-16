@@ -31604,7 +31604,18 @@ paramdecl:
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
-		scope_param_type = param_dd;
+		// A reference parameter lowers to a pointer (vfREFERENCE auto-deref);
+		// the already-declared FuncDef stored the POINTER type. param_dd here
+		// is only the base — the `&` set rtype but, unlike `*`, did not
+		// pointer-ify param_dd. Pointer-ify it (mirroring the non-declared
+		// branch's `getPointerType(&pb->definition)`) so the in-scope param's
+		// type MATCHES its vfREFERENCE flag. Otherwise the CIR deref gate
+		// (vfREFERENCE && type->is_pointer()) misses, and a re-parsed body /
+		// ctor mem-init read of the ref param reads the address, not the
+		// referent (e.g. a member-template ctor's `: first(__a)` stored the
+		// pointer value into the int member → garbage).
+		scope_param_type = (rtype == RefType::rtReference)
+		    ? getPointerType(&pb->definition) : param_dd;
 	    }
 	    else if ( !func->findParameter(pid) )
 	    {
