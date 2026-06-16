@@ -2368,6 +2368,13 @@ public:
 						  TokenBase *tb,
 						  const std::string &ns_hint = std::string(),
 						  DataDefCLASS *owner_hint = NULL);
+    // True iff EVERY collected alias-use argument is non-dependent (concrete):
+    // each non-type arg folds to a constant and each type arg resolves to a
+    // type with no unresolved dependent surface. Lets instantiate_template_alias_use
+    // tell a genuine SFINAE failure (concrete args, absent `::type`) from a
+    // deferred dependent use.
+    bool alias_use_args_all_concrete(const TemplateAliasDef &td,
+			 const std::vector<std::vector<TokenBase *> > &arg_tokens);
     // Resolve a template-id `Name<...>` to its concrete type: an alias template
     // first, then a class template (the order every call site used by hand).
     // Single seam for the namespace hint so qualified uses pick the right

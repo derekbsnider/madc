@@ -3364,6 +3364,62 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     return use_site_type_token((TokenDataType *)now->second, tb);
 }
 
+bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
+		     const std::vector<std::vector<TokenBase *> > &arg_tokens)
+{
+    bool pushed_owner_scope = false;
+    if ( td.owner_class )
+    {
+	class_scope_stack.push_back(td.owner_class);
+	pushed_owner_scope = true;
+    }
+    bool all_concrete = true;
+    for ( size_t i = 0; i < arg_tokens.size() && all_concrete; ++i )
+    {
+	// Default to "type" when the slot kind is unknown (pack tails); a type
+	// arg is the stricter classification (it must RESOLVE non-dependently).
+	bool is_type = i < td.typeparam_is_type.size()
+		     ? td.typeparam_is_type[i] : true;
+	if ( !is_type )
+	{
+	    // A non-type arg is concrete iff it constant-folds; a still-dependent
+	    // arg (`bwr<_Tp>::value` with `_Tp` unbound) Throws and is caught here.
+	    int64_t v = 0;
+	    if ( !fold_nontype_arg_constant(arg_tokens[i], v) )
+		all_concrete = false;
+	    continue;
+	}
+	// A type arg is concrete iff it resolves (in an isolated stream, the same
+	// idiom as the body resolution below) to a type with no unresolved
+	// dependent surface — `NT*` concrete, `_Tp*`/a dependent placeholder not.
+	std::deque<TokenBase *> body;
+	for ( TokenBase *t : arg_tokens[i] )
+	    if ( t )
+		body.push_back(t->clone());
+	body.push_back(new TokenSemi());
+	std::deque<TokenBase *> saved_tokens = tokens;
+	size_t saved_diag_count = diagnostics.size();
+	Program::ErrorInfo saved_error = last_error;
+	tokens = body;
+	TokenDataType *rt = NULL;
+	try
+	{
+	    rt = resolve_declared_type_token(nextToken(), true, true);
+	}
+	catch ( ... ) { rt = NULL; }
+	tokens = saved_tokens;
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
+	if ( !rt || datadef_has_unresolved_dependent_surface(&rt->definition) )
+	    all_concrete = false;
+    }
+    if ( pushed_owner_scope
+      && !class_scope_stack.empty()
+      && class_scope_stack.back() == td.owner_class )
+	class_scope_stack.pop_back();
+    return all_concrete;
+}
+
 TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 						     TokenBase *tb,
 						     const std::string &ns_hint,
@@ -3518,6 +3574,21 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    {
 		diagnostics.resize(saved_diag_count);
 		last_error = saved_error;
+		// A NON-DEPENDENT (concrete-args) alias use whose body failed to
+		// resolve is a genuine SFINAE substitution failure — e.g.
+		// `enable_if_t<false,T>`, where `enable_if<false,T>` has no
+		// `::type`. Return NULL so the enclosing fn-template candidate's
+		// return-type resolution fails and the candidate is discarded
+		// ([temp.deduct]/8), exactly as clang's SubstType returns a null
+		// QualType on the absent-`::type` case. Caching an opaque
+		// placeholder instead (below) masks the failure and made madc
+		// bind the SFINAE-removed overload (the `__relocate_a_1` memmove
+		// overload for a non-trivially-relocatable element). A genuinely
+		// dependent use (an arg still names an unbound template parameter)
+		// keeps the opaque placeholder below — correct for a dependent
+		// surface that resolves later.
+		if ( alias_use_args_all_concrete(td, arg_tokens) )
+		    return NULL;
 	    }
 	    else
 		return use_site_type_token(resolved, tb);
@@ -28063,17 +28134,37 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		 || is_word(inj[head], "static") || is_word(inj[head], "const")
 		 || is_word(inj[head], "volatile")) )
 	    ++head;
-	if ( head < inj.size() && is_word(inj[head], "typename") )
+	bool is_typename = head < inj.size() && is_word(inj[head], "typename");
+	// Also resolve a TEMPLATE-ID return type (an alias or class template-id,
+	// e.g. `__enable_if_t<__is_bitwise_relocatable<_Tp>::value, _Tp*>`) for a
+	// FREE function template: an absent `::type` (the enable_if_t<false,T>
+	// SFINAE case) makes instantiate_template_alias_use return NULL for
+	// concrete args, so resolving it here is NULL -> discard. Restricted to a
+	// free fn (no owner_class): the sandbox below sets up no class scope, and
+	// a member template's return type may name owner-class members.
+	bool is_templateid_ret = !is_typename && !ft.owner_class
+	    && head < inj.size() && inj[head]
+	    && inj[head]->type() == TokenType::ttIdentifier;
+#if MADC_DIAG_SFINAE
+	fprintf(stderr, "[SFINAE-ENTRY] key=%s head=%zu is_typename=%d "
+		"is_templateid_ret=%d head_tok=%s\n", inst_key.c_str(), head,
+		(int)is_typename, (int)is_templateid_ret,
+		(head < inj.size() && inj[head])
+		    ? overload_token_spelling(inj[head]).c_str() : "?");
+#endif
+	if ( is_typename || is_templateid_ret )
 	{
-	    // The return type runs from `typename` to the declarator name
+	    // The return type runs from its first token to the declarator name
 	    // (the identifier directly followed by '(' at angle depth 0).
-	    size_t rt_end = head + 1;
+	    size_t rt_begin = is_typename ? head + 1 : head;
+	    size_t rt_end = rt_begin;
 	    int adepth = 0;
+	    bool saw_angle = false;
 	    for ( ; rt_end < inj.size(); ++rt_end )
 	    {
 		TokenBase *t = inj[rt_end];
 		if ( !t ) continue;
-		if ( t->id() == TokenID::tkLT ) ++adepth;
+		if ( t->id() == TokenID::tkLT ) { ++adepth; saw_angle = true; }
 		else if ( t->id() == TokenID::tkGT && adepth > 0 ) --adepth;
 		else if ( t->id() == TokenID::tkBSR && adepth > 1 ) adepth -= 2;
 		else if ( t->id() == TokenID::tkBSR && adepth == 1 ) adepth = 0;
@@ -28082,19 +28173,36 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		       && inj[rt_end+1]->id() == TokenID::tkOpBrk )
 		    break;
 	    }
-	    if ( rt_end < inj.size() )
+	    // A template-id return type must actually carry a `<...>`; a plain
+	    // typedef-name return (`MyType foo()`) has no SFINAE risk -> skip it
+	    // (a speculative resolve could fail spuriously).
+	    bool do_resolve = is_typename || saw_angle;
+	    if ( rt_end < inj.size() && rt_end > rt_begin && do_resolve )
 	    {
+		// Resolve in the candidate's namespace so an UNQUALIFIED alias/
+		// class name (`enable_if_t<...>`, used unqualified inside its own
+		// namespace) is found — the body parse below establishes the same
+		// scope via its own NamespaceScope (line ~28287).
+		Program::NamespaceScope ns_scope(pgm, ft.ns);
 		size_t sandbox_base = pgm.tokens.size();
 		pgm.pushToken(new TokenSemi());
-		for ( size_t ri = rt_end; ri-- > head + 1; )
+		for ( size_t ri = rt_end; ri-- > rt_begin; )
 		    pgm.pushToken(inj[ri]->clone());
 		bool resolved = false;
 		try
 		{
-		    resolved = pgm.resolve_typename_type_token(
-				   pgm.nextToken(), true, inj[head]) != NULL;
+		    resolved = is_typename
+			? (pgm.resolve_typename_type_token(
+			       pgm.nextToken(), true, inj[head]) != NULL)
+			: (pgm.resolve_declared_type_token(
+			       pgm.nextToken(), true, true) != NULL);
 		}
 		catch ( ... ) { resolved = false; }
+#if MADC_DIAG_SFINAE
+		fprintf(stderr, "[SFINAE-PRECHK] key=%s is_typename=%d "
+			"saw_angle=%d resolved=%d\n", inst_key.c_str(),
+			(int)is_typename, (int)saw_angle, (int)resolved);
+#endif
 		while ( pgm.tokens.size() > sandbox_base )
 		    pgm.nextToken();
 		if ( !resolved )
@@ -28102,6 +28210,13 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    DBG(std::cout << "fn-template " << inst_key
 			<< " discarded: return-type substitution failure (SFINAE)"
 			<< std::endl);
+		    // Release the inst_key reserved above: a SIBLING overload
+		    // (same name, same deduced args, e.g. the COMPLEMENTARY
+		    // enable_if branch) shares this exact key and must be free to
+		    // instantiate under it. Without this, the next candidate's
+		    // memo check at the top short-circuits to "already done" and
+		    // the SFINAE-removed overload silently wins.
+		    pgm.fn_template_instantiated.erase(inst_key);
 		    return false;
 		}
 	    }
