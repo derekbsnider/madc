@@ -8711,7 +8711,19 @@ static inline size_t mi_align_up(size_t sz, size_t a) { return (sz + a - 1) & ~(
 void DataDefCLASS::compute_layout()
 {
     size_t cur = 0;
-    size_t maxalign = 8; // class alignment accumulator (>= pointer align)
+    // Class alignment accumulator. Starts at the natural minimum (1) and grows to
+    // the strongest member / base / vptr alignment — matching gcc/clang. It must
+    // NOT floor at the pointer size: a class whose strongest member is a 4-byte
+    // int (and which has no vptr and no base) is 4-aligned, so
+    // `struct W { int a; ~W(){} };` is sizeof 4, not 8. The vptr/base/vbase bumps
+    // below restore pointer alignment where it is genuinely required.
+    size_t maxalign = 1;
+    // Pointer size/alignment come from the type system (DataDefPTR), NOT a literal
+    // 8 — so a future 32-bit target (north-star multi-target) changes them in ONE
+    // place. A vptr is a pointer; a (v)base subobject is aligned to its OWN
+    // alignment (Itanium ABI), recovered via DataDef::alignment().
+    const size_t ptr_size  = ddVOIDptr.size;
+    const size_t ptr_align = ddVOIDptr.alignment();
 
     // 1. vptr: a class carries a vptr if it has virtual methods OR any (transitive)
     //    virtual base (Itanium: virtual inheritance needs a vptr even with no virtual
@@ -8731,14 +8743,19 @@ void DataDefCLASS::compute_layout()
 	}
     }
     bool own_vptr = needs_vptr && !have_primary;
-    if ( own_vptr ) cur += 8;   // __vptr at 0
+    if ( own_vptr )   // __vptr at 0 — a pointer slot, pointer-aligned
+    { cur += ptr_size; if ( ptr_align > maxalign ) maxalign = ptr_align; }
 
     // 2. non-virtual bases in declaration order (primary first, at 0). A base
     //    contributes its NON-VIRTUAL size (nvsize); its vbases are hoisted.
     for ( auto &bs : bases )
     {
 	if ( bs.is_virtual ) continue;
-	size_t balign = 8;
+	// A base subobject is aligned to the base's OWN alignment (Itanium ABI),
+	// not an assumed pointer alignment — a non-polymorphic POD base aligns to
+	// its strongest member, matching gcc/clang.
+	size_t balign = bs.base->alignment();
+	if ( !balign ) balign = 1;
 	cur = mi_align_up(cur, balign);
 	bs.offset = bs.is_primary ? 0 : cur;
 	if ( bs.is_primary )
@@ -8770,12 +8787,15 @@ void DataDefCLASS::compute_layout()
     size_t end = nvsize;
     for ( DataDefCLASS *vb : vbs )
     {
-	end = mi_align_up(end, 8);
+	size_t vbalign = vb->alignment();
+	if ( !vbalign ) vbalign = 1;
+	end = mi_align_up(end, vbalign);
 	vbase_offset[vb] = end;
 	end += vb->nvsize;        // vbase contributes its non-virtual size
-	if ( 8 > maxalign ) maxalign = 8;
+	if ( vbalign > maxalign ) maxalign = vbalign;
     }
     size = mi_align_up(end, maxalign);
+    class_align = maxalign;   // cache the TRUE class alignment for alignment()
 }
 
 // Rewrite each member's final offset from its origin: own members (origin -1, or

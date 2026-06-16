@@ -772,7 +772,12 @@ public:
     std::vector<DataDefCLASS *> secondary_vptr_owners;
     size_t nvsize;
     size_t own_block_off; // offset where this class's own data members begin
+    size_t class_align = 0; // TRUE class alignment (members + vptr + bases); set by compute_layout. 0 = not yet computed
     bool has_vptr_slot;   // class carries a vptr (virtual methods OR a virtual base); set by compute_layout
+    // A class's alignment is the strongest of its members, bases, and (if
+    // polymorphic) the vptr — computed by compute_layout and cached in
+    // class_align. Until then, fall back to the own-member alignment (max_align).
+    virtual size_t alignment() const { return class_align ? class_align : DataDefSTRUCT::alignment(); }
     bool is_dependent_placeholder; // synthesized unresolved/dependent C++ type
     bool has_dependent_surface; // parsed class whose template args/bases still carry dependent lookup
     bool is_polymorphic() const { return has_vtable; }
