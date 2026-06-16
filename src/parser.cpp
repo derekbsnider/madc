@@ -26612,7 +26612,8 @@ static bool ignored_template_declarator_call_name(const std::string &name)
 
 static DataDef *skipped_template_function_return_type(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
-	const std::string &name);
+	const std::string &name,
+	const std::vector<std::string> *fn_typeparams = NULL);
 static bool skipped_template_function_is_static(
 	const std::vector<TokenBase *> &tokens);
 
@@ -27542,7 +27543,7 @@ static void register_skipped_namespace_template_function(
 	if ( !var )
 	{
 	    DataDef *ret = skipped_template_function_return_type(pgm, NULL, tokens,
-								 name);
+								 name, &typeparams);
 	    var = pgm.addFunction(parse_id,
 		datatype_vec_t{ret ? ret : &ddINT64}, NULL);
 	}
@@ -28538,7 +28539,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	{
 	    method_id = nm;
 	    method_ret = skipped_template_function_return_type(
-			     pgm, ft.owner_class, inj, method_id);
+			     pgm, ft.owner_class, inj, method_id, &ft.typeparams);
 	    method_params_start = nidx + 2;
 	}
 	else
@@ -29329,7 +29330,8 @@ static bool skipped_template_function_is_static(
 
 static DataDef *skipped_template_function_return_type(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
-	const std::string &name)
+	const std::string &name,
+	const std::vector<std::string> *fn_typeparams)
 {
     size_t name_index = tokens.size();
     for ( size_t i = 0; i < tokens.size(); ++i )
@@ -29363,7 +29365,24 @@ static DataDef *skipped_template_function_return_type(
 	     && is_contextual_identifier_token(tokens[rs])
 	     && specifiers.count(contextual_identifier_name(tokens[rs])) )
 	    ++rs;
-	if ( rs < name_index )
+	// Skip resolution when the return type DEPENDS on the function
+	// template's OWN type parameters (e.g. std::make_pair's
+	// `pair<typename __decay_and_strip<_T1>::__type, ...>`): those params are
+	// abstract at registration time, so eager resolution would fail loudly.
+	// A return that depends only on owner/concrete types (e.g.
+	// `_M_insert_unique`'s `pair<..._Rb_tree<...>::iterator, bool>`, resolved
+	// when the OWNER is instantiated) is fine to resolve.
+	bool depends_on_fn_param = false;
+	if ( fn_typeparams && !fn_typeparams->empty() )
+	    for ( size_t i = rs; i < name_index && !depends_on_fn_param; ++i )
+		if ( tokens[i] && is_contextual_identifier_token(tokens[i]) )
+		{
+		    std::string tn = contextual_identifier_name(tokens[i]);
+		    for ( size_t p = 0; p < fn_typeparams->size(); ++p )
+			if ( (*fn_typeparams)[p] == tn )
+			    { depends_on_fn_param = true; break; }
+		}
+	if ( rs < name_index && !depends_on_fn_param )
 	    if ( DataDef *tid = pgm.resolve_type_token_range(tokens, rs, name_index) )
 		return tid;
     }
@@ -29401,7 +29420,8 @@ static void register_skipped_class_template_function(
 	return;
 
     bool is_static = skipped_template_function_is_static(tokens);
-    DataDef *ret = skipped_template_function_return_type(pgm, owner, tokens, name);
+    DataDef *ret = skipped_template_function_return_type(pgm, owner, tokens, name,
+							 &typeparams);
     datatype_vec_t params;
     params.push_back(ret ? ret : &ddINT64);
     if ( !is_static )
