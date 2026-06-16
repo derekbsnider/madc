@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19b CONTINUED"** block immediately below (current state +
-NEXT), then "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19c"** block immediately below (current state +
+NEXT), then "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,89 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 19b CONTINUED — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+# ★ SESSION 19c — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+
+## 0. Orientation + MILESTONE
+Code HEAD **`18e2212`**, tree clean, fulltest **624 passed / 8 failed / 0 timed
+out / 18 skipped** (was 619/12). Branch LOCAL-ONLY; develop untouched. MIR fork
+pin satisfied. **The `__check_constructible` link wall is CLEARED and testvector
+now COMPILES + LINKS + RUNS** — it prints the correct `size: 3 / 10 / 20 / 30`
+(vector<string> construction, reallocation, and iteration all work). It now
+crashes only at TEARDOWN with `munmap_chunk(): invalid pointer` — a distinct,
+deeper RUNTIME wall (§0b). This one fix also turned **4 previously-failing
+container tests GREEN** (teststringref, testsubscriptmember, testforeach2,
+testforeachref) — they were blocked on the same zero-param instantiation gap.
+
+## 0a. The fix (`18e2212`) — zero-parameter function templates (explicit targs)
+A fn template called with EXPLICIT template args and ZERO function params
+(deduction impossible) was neither instantiated nor bound. libstdc++'s
+`__check_constructible<_ValueType,_Tp>()` (is_constructible helper behind
+`uninitialized_copy`, in the vector chain) is exactly this shape →
+`import of undefined item __ns_std___check_constructible`. TWO coupled root
+causes, both fixed at deepest layer:
+1. `extract_free_signature` (parser.cpp ~26978/~27010) rejected ANY
+   zero-parameter signature (`if (params.empty()) return false;`) → the template
+   was never captured into `fn_template_map`/instantiated. Dropped the rejection
+   (operator/manipulator callers re-check `param_spellings.size()` themselves);
+   also filter the `void` pseudo-param so `f(void)` == zero params.
+2. With the body instantiated (`__ns_<fn>__o2`), CIR-time
+   `rank_fn_overload_candidates` (parser.cpp ~8446) still bound the call to the
+   body-less PLACEHOLDER: it is seeded into the overload set only so size>=2
+   triggers ranking, meant to be arity-filtered out — but a ZERO-arg call ties
+   its 0-param signature and (registered first) wins the strict `>` tie. Skip the
+   placeholder sentinel (`"\x01fn-template-placeholder"`) outright in ranking.
++testfntplexplicitargs (default mode, real headers). Reducers tmp/r_a (zero-param
+one-targ), tmp/r_c (zero-param two-targ constexpr) both green; tmp/r_b (one-param)
+no regression.
+
+## 0b. ★ LIVE NEXT — the teardown crash = NON-TYPE TEMPLATE-ARG FOLDING COLLAPSE
+testvector runs then aborts: `munmap_chunk(): invalid pointer` in
+`__ns_std__Destroy__o4` -> free, during the vector<string> destructor.
+**ROOT CAUSE (confirmed by reading --emit=c11):** the STRING
+`__ns_std_uninitialized_copy__o3` routes into
+`__uninitialized_copy___can_memmove____assignable____uninit_copy__mti`, which has
+**`int *` params** and calls **`__ns_std___do_uninit_copy__o2` (the INT one)**.
+The non-type template arg `__can_memmove && __assignable` of
+`std::__uninitialized_copy<__can_memmove && __assignable>::__uninit_copy` is NOT
+folded to a concrete bool, so it keeps the SYMBOLIC canonical spelling
+`__can_memmove____assignable__` — identical for int and string — and the static
+member `__uninit_copy` collapses into ONE shared instance (the INT one, first
+registered). Result: string elements get INT-constructed (4 bytes copied, rest
+garbage; SSO `_M_p` self-pointer not fixed up) -> corrupted string objects ->
+`~basic_string` sees `_M_data() != _M_local_buf` -> frees an interior pointer ->
+`munmap_chunk`. (basic_string is NOT bitwise-relocatable precisely because of the
+SSO self-reference; it MUST be per-element move-constructed.)
+**THE FIX (next session):** fold the `const bool` non-type template argument
+(`__can_memmove && __assignable`, both `const bool` locals initialized from
+constant expressions incl. the now-instantiated `__check_constructible()`==true)
+to a concrete `true`/`false`, so `__uninitialized_copy<true>` (int->std::copy) and
+`__uninitialized_copy<false>` (string->per-element construct) become DISTINCT
+instantiations, and each `__uninit_copy`/`__do_uninit_copy` resolves at its own
+element type. Prior art: research commits `95321bc` (non-type template-arg
+canonicalization: clang model, madc divergence, 202-regression post-mortem, A/B
+design) and `2aaae06` (canonical-forms-on-MC11-IR). START THERE.
+The 8 remaining fails (testvector, testvectorptr, testset, testsubscript,
+testsubscriptarrow, testmap, testmadc_ns, testcontainerdtor) are all very likely
+this ONE wall (all exercise container element relocation/destruction).
+
+## 0c. Method notes (carry forward)
+- 3-ORACLE FIRST (g++/clang/madc); NEVER A SHIM (deepest layer).
+- Wall-audit (carry forward): `bin/madc --emit=c11 tests/testvector.mad > tv.c`;
+  diff extern-declared fn symbols vs defined; filter `^__ns_`. NOTE: with the
+  link wall cleared the audit now shows ZERO undefined `__ns_` imports — the
+  remaining wall is a RUNTIME correctness bug (wrong-overload routing), NOT a
+  missing symbol. The new instrument is reading the emitted C for an instance
+  whose params/callee type don't match its name's element type (the int-vs-string
+  `__uninit_copy__mti` collapse).
+- DBG flags: `make -C src OPTIONAL_CPPFLAGS="-DMADC_DBG_PACK"` (fn-tpl deduce
+  trace, `try_inst`/`extract_free_signature failed`); `-DMADC_DEBUG_FNTPL=1`
+  (overload ranking `FNTPL rank ... WINNER=`). Both `#if`/`#ifdef`-gated; a clean
+  `make -C src` (no flag) must follow to drop them (touch the .cpp — flag change
+  alone doesn't invalidate the .o).
+
+---
+
+# ★ SESSION 19b CONTINUED — COLD-START REHYDRATION — 2026-06-16
 
 ## 0. Orientation + FRAMING CORRECTION
 Code HEAD **`39cb6a9`**, tree clean, fulltest **619 passed / 12 failed / 18 skipped**
