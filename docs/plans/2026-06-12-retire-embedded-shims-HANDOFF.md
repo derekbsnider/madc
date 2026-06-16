@@ -20,11 +20,13 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node->c2mir->MIR).
 Integration **614 passed / 12 failed / 0 timed out / 18 skipped** (+testthisdirectinit;
-the 12 = the container cluster, unchanged fail-set). Code HEAD **`6a78d6f`**, tree clean.
+the 12 = the container cluster, unchanged fail-set). Code HEAD **`c7134ee`**, tree clean.
 Branch LOCAL-ONLY; develop untouched. MIR fork `5df536f` (pin satisfied). Build current,
-zero warnings. **This session (18) CLEARED the `_M_realloc_insert` undefined wall** (the
-SESSION-17 ★ LIVE NEXT) — a single deepest-layer fix that ALSO repaired a slice-4d
-regression. testvector now compiles PAST `_M_realloc_insert` to the next (deeper) walls.
+zero warnings. **This session (18) landed TWO deepest-layer fixes** advancing the vector
+chain: (1) `6a78d6f` CLEARED the `_M_realloc_insert` undefined wall (the SESSION-17 ★ LIVE
+NEXT; root = a slice-4d regression, §0a); (2) `c7134ee` cleared the `_M_realloc_insert__mti`
+arg-coercion mismatch (§0b). testvector now compiles PAST `_M_realloc_insert` to a SINGLE
+remaining wall = the `__enable_if_t<__is_bitwise_relocatable<...>>` relocate SFINAE (§0c).
 
 ## 0a. ★ `_M_realloc_insert` undefined — CLEARED (`6a78d6f`); root was a slice-4d regression
 **The SESSION-17 handoff's "int's _M_realloc_insert IS defined, string's ISN'T" was STALE.**
@@ -49,41 +51,49 @@ SMAUG soak exit 124. **AUDIT NOTE:** other `((TokenIdent*)x)->str=="this"`/`=="<
 sites are latent slice-4d regressions — `this` is now a keyword token everywhere. grep for
 raw string-compares against keyword spellings on a ttIdentifier cast.
 
-## 0b. ★ NEW LIVE WALL (testvector now): non-template-vs-template member overload @ stl_vector.h:428
-After `6a78d6f`, testvector compiles through `_M_realloc_insert` and hits 4 c2mir check
-errors at stl_vector.h:428 (clone-artifact line; localized via gcc-on-emitted-C). TWO distinct
-deeper walls, BOTH pre-existing (documented across S9-S16), now exposed:
-1. **Non-template preferred over template member ([over.match.best]).** `push_back(const
-   value_type& __x)` (stl_vector.h:1292) calls `_M_realloc_insert(end(), __x)`. There are TWO
-   overloads: a NON-TEMPLATE `_M_realloc_insert(iterator, const value_type&)` (decl :1825) and a
-   variadic TEMPLATE `template<typename..._Args> _M_realloc_insert(iterator, _Args&&...)` (:1873).
-   g++/clang pick the NON-TEMPLATE; **madc binds the TEMPLATE** (`..._M_realloc_insert__mti`),
-   whose `_Args&&` forwarding-ref param becomes a pointer, and the call passes `(*__x)` (a VALUE)
-   -> arg-3 mismatch (`basic_string` value vs `basic_string *`; int tolerates it as the int<->ptr
-   warning, string is a HARD c2mir error). FIX shape: in member-overload resolution prefer a
-   viable NON-template `_M_realloc_insert(iterator,const value_type&)` over the variadic template
-   (the [temp.func.order]/[over.match.best] non-template tiebreak — verify madc even registers the
-   non-template overload; if it only sees the template, that's the gap). NOTE: madc also selected
-   `push_back(const value_type&)` for the rvalue `names.push_back("Alice")` where g++ picks
-   `push_back(value_type&&)` -> `emplace_back(std::move(__x))`; a separate push_back rvalue-overload
-   question (may be benign once #1 binds the non-template realloc). 3-ORACLE FIRST.
-2. **`__enable_if_t<__is_bitwise_relocatable<basic_string<...>>::value, T*>` opaque/incomplete**
-   in `__ns_std___relocate_a_1` (return type incomplete + conflicting types). The non-type-bool
-   fold (S16 §0d `a67cc72`) isn't folding `__is_bitwise_relocatable<basic_string>::value` ->
-   `__enable_if_t<...>` stays an opaque struct -> incomplete return type. Re-diagnose: is
-   `__is_bitwise_relocatable` a recognized trait for a class arg? (basic_string IS bitwise-
-   relocatable in libstdc++ via the `__is_bitwise_relocatable` specialization.) Own slice.
+## 0b. ★ `_M_realloc_insert__mti` arg-coercion mismatch — CLEARED (`c7134ee`)
+After `6a78d6f`, testvector hit 4 c2mir check errors @ stl_vector.h:428 (clone-artifact line;
+localize via gcc-on-emitted-C). The FIRST (`incompatible argument type for pointer type
+parameter`) was the `_M_realloc_insert` call passing `(*__x)` (a VALUE) where the instantiated
+`__mti`'s forwarding-ref param is a pointer. **CORRECTION of an earlier mis-diagnosis:** this is
+NOT a non-template-vs-template overload issue — in C++11+ the non-template `_M_realloc_insert(
+iterator, const value_type&)` exists ONLY under `#if __cplusplus < 201103L`; in C++17 the
+variadic TEMPLATE `_M_realloc_insert(iterator, _Args&&...)` (stl_vector.h:1873) is the ONLY
+overload, and g++/clang bind it too. The real bug was pure ARG COERCION: `class_method_call`'s
+arg loop read params/ref_params from the call's bound FuncDef, which for a member-template call
+is the declaration-only PLACEHOLDER (varargs, no ref_params — left unmutated for the parser's
+findMethodOverload arity gate), so the `_Args&&` forwarding-ref param was read as a by-value
+pointer and `__x` (a `const value_type&` = pointer) fell to translate_expr -> auto-deref `(*__x)`
+-> struct VALUE into a pointer param (c2mir hard error for class elem; int = int<->ptr warning).
+FIX: resolve the instantiated def via the placeholder's `local_emit_name` into a loop-local
+`arg_callee` for coercion only — the SAME resolution `build_call_args` does for the free/static
+path (part-24 `5a15685` precedent). No isolated reducer (the `__mti` path only fires for
+monomorphized class-template members -> the real container chain is the only consumer; testvector
+guards it once §0c clears). Gates green, zero-regr (614/12, torture 51, SMAUG 124).
 
-## 0c. ★ NEXT
-**★ LIVE NEXT = the non-template-vs-template `_M_realloc_insert` overload (§0b #1)** — gates
-testvector/testvectorptr (the int<->ptr warning is benign; the string struct-value-to-ptr is the
-hard error). Then §0b #2 (`__is_bitwise_relocatable<basic_string>` enable_if_t fold). 3-oracle
-each; reduce in tmp/ (`--std=c++17 --no-embedded-headers` OR default mode — testvector is the real
-target). Localize c2mir-check errors with gcc-on-emitted-C (`madc --emit=c11 X > X.c`; strip
-cleanup attrs: `sed -E 's/ __attribute__\(\(cleanup\([^)]*\)\)\)//g'`; `gcc -std=gnu11
--fsyntax-only -w X.c`). Per-fix protocol: build + reducer + `make -C src fulltest`, zero-regression
-vs the 12-known baseline. Registry leftovers (lower priority, BLOCKED): typename (slice 3) +
-concept/co_* (slice 8) — see SESSION 17 §0a.
+## 0c. ★ LIVE NEXT = `__enable_if_t<__is_bitwise_relocatable<basic_string>::value, _Tp*>` relocate SFINAE
+testvector now compiles PAST `_M_realloc_insert` to a SINGLE remaining wall (3 c2mir check errors,
+all `__ns_std___relocate_a_1__o3`'s return type opaque/incomplete). FULLY DIAGNOSED:
+`bits/stl_uninitialized.h` has TWO `__relocate_a_1` overloads — the general LOOP one (`:1086`,
+returns `_ForwardIterator`, always viable) and the bitwise-relocatable MEMMOVE one (`:1113`,
+`__enable_if_t<std::__is_bitwise_relocatable<_Tp>::value, _Tp*>`). `__is_bitwise_relocatable<_Tp,
+void> : is_trivial<_Tp>` (`:1082`). For `int`: `is_trivial<int>` = true -> `__enable_if_t<true,
+int*>` -> `int*`, memmove overload selected, folds fine (testvector's int part works). For
+`basic_string`: `is_trivial<basic_string>` = FALSE -> `__enable_if_t<false, _Tp*>` must have NO
+`::type` -> SFINAE-REJECT the memmove overload -> select the LOOP overload (returns `_Tp*`). **madc
+leaves `__is_bitwise_relocatable<basic_string>::value` UNFOLDED** (the emitted opaque struct name
+literally contains `..._is_bitwise_relocatable_basic_string..._value_...`), so `__enable_if_t<...>`
+renders as an incomplete struct return type. TWO coupled pieces: (a) evaluate
+`__is_bitwise_relocatable<basic_string>::value` — a trait whose `::value` is INHERITED from its
+base `is_trivial<_Tp>` (the S16 §0d `a67cc72` fold + the `__is_trivial`/`trait_is_trivial` builtin
+from sub-gap-12 `f120470` exist; the gap is resolving `::value` THROUGH the base-class
+inheritance for a class arg) -> false; (b) when `__enable_if_t<false, _Tp*>` has no `::type`,
+SFINAE-reject the overload instead of rendering opaque (the §6b "enable_if<false,T>::type wrongly
+accepted via opaque-member fallback" follow-up). This is THE testvector/testvectorptr blocker.
+3-ORACLE FIRST; localize with gcc-on-emitted-C (`madc --emit=c11 X > X.c`; strip cleanup attrs
+`sed -E 's/ __attribute__\(\(cleanup\([^)]*\)\)\)//g'`; `gcc -std=gnu11 -fsyntax-only -w X.c`).
+Per-fix: build + reducer + `make -C src fulltest`, zero-regression vs the 12-known baseline.
+Registry leftovers (lower priority, BLOCKED): typename (slice 3) + concept/co_* (slice 8) — S17 §0a.
 
 ---
 
