@@ -2179,6 +2179,17 @@ void Program::add_keywords()
 	{ "public",           STD_CPP98 },
 	{ "private",          STD_CPP98 },
 	{ "protected",        STD_CPP98 },
+	// Slice 3 (typename) — DEFERRED (staged, NOT reserved). Every direct
+	// parse site already reads contextual_identifier_name / TokenIdent::str
+	// (so `template<typename T>` and `typename X::type{...}` are fine), but
+	// reserving it regresses the LATE free-function-template instantiation of
+	// std::move / std::forward: `int&& y = std::move(x)` emits `&__ns_std_move`
+	// with the `(x)` call DROPPED (emitted-C shows `int *y = (&__ns_std_move)`),
+	// i.e. the move/forward template instantiation is not triggered at the call
+	// site. The bug is in the free-fn-template return-type (`typename
+	// std::remove_reference<_Tp>::type&&`) instantiation/reparse path, not a
+	// plain ttIdentifier de-shim. Reproduce with tmp/fwd.mad. Reserve only
+	// after that path is fixed (testmemtmplpackexpand, testlateinstproto).
 	{ 0,                  STD_CPP98 }
     };
     for ( size_t i = 0; i < sizeof(cpp_reserved)/sizeof(cpp_reserved[0]); ++i )
