@@ -20,8 +20,17 @@ Branch LOCAL-ONLY; develop untouched. Committed this session:
   (`int&& y=std::move(x)` drops the `(x)` call → undeclared `__ns_std_move`; repro
   tmp/fwd.mad). Bug is in the move/forward return-type instantiation/reparse path, not
   a plain de-shim. Fix that first (testmemtmplpackexpand, testlateinstproto), then reserve.
+- **Slice 4 (expression keywords)** — landed incrementally, all zero-regression: 4a
+  casts/typeid/decltype/alignof (`a687da9`), 4b true/false/nullptr (`de35b56`), 4c sizeof
+  (`7d6b514`), 4d this (`23fe82e`). The §4 regressions were typename + interactions, not these.
 - **Slice 6 (consteval/constinit)** — `0d69c79`. Reserved at CPP20; zero new de-shim
   (slice-5 ignored-specifier skip already covered their spellings). Smoke tmp/ceval.mad.
+- **Slice 7 (alt-token operators)** — `a391880`. and/or/not/bitand/bitor/xor/compl/not_eq/
+  and_eq/or_eq/xor_eq mapped to the existing operator tokens via new C++-gated
+  `cpp_operator_map`. C-mode safe (`int and=5;` valid in C; <iso646.h> macros if included).
+- **char8_t + char-type gating fix** — `653d007`. char8_t added (CPP20 datatype); fixed the
+  pre-existing UNGATED char16_t/char32_t/wchar_t — now C++ built-in / C header typedef,
+  matching gcc/clang (user-spotted).
 - **Slice 5 (constexpr + if-constexpr)** — `5d64f7b`. THE value slice: constexpr is now
   a real tkCPPKEYWORD (CPP11), un-erased, which ACTIVATES the if-constexpr discard
   machinery (proven by tmp/ifcxd.mad — the dead branch is not compiled). Token-aware
@@ -34,11 +43,19 @@ Branch LOCAL-ONLY; develop untouched. Committed this session:
   `__uninitialized_move_if_noexcept_a` import. The container tests stay red on this and
   the other §6b walls (`__is_constructible`, empty-`_Rb_tree` dtor, `_Tp2` dup).
 
-**Remaining slices:** typename (after the move/forward reparse fix — repro tmp/fwd.mad),
-expression keywords (slice 4 — `this`/sizeof/typeid/casts/decltype/alignof/nullptr/true/
-false; SEMANTIC regressions, investigate first), alt-token operators (slice 7), C++20
-concept/requires/co_*/char8_t (slice 8 — needs the concept/coroutine skip-paths de-shimmed
-first). Plus the orthogonal vector wall at stl_vector.h:428 (`_Vector_base` instantiation).
+**Registry status: substantially COMPLETE.** All reserved keywords that appear in real
+code are now tokens (asm, decl-specifiers, expr keywords, constexpr/consteval/constinit,
+char8_t, alt-token operators). **Only TWO items remain, both BLOCKED on separate work:**
+- **typename** (slice 3) — blocked on the std::move/forward late-instantiation reparse bug
+  (NOTE: tmp/fwd.mad is NOT a clean isolator — it fails even baseline on `int&& y=move(x)`
+  rvalue-ref-to-int lowering; the clean repro is testlateinstproto with typename reserved).
+- **concept/requires/co_await/co_return/co_yield** (slice 8) — madc lacks concept/coroutine
+  PARSING; today it SKIPS them via string-gated paths. Reserving as tokens breaks those
+  skip paths, so de-shim `skip_requires_clause` &al. first.
+
+**Higher-value pivot:** the orthogonal vector wall at `stl_vector.h:428:54` (the
+`_Vector_base<_Tp,_Alloc>` base instantiation — incomplete return type + int↔pointer, 5
+c2mir errors), now the freshest container blocker after constexpr cleared push_back.
 
 **Prior infrastructure (SESSION 16):** `622a13b` (gate, tkCPPKEYWORD, de-shim groundwork,
 dormant if-constexpr — now active).
@@ -59,12 +76,11 @@ fail-sets with `comm -23` against a saved baseline list (the §7 protocol).
    instantiation REPARSE path fixed first (it drops the call → `__ns_std_move` undeclared;
    repro tmp/fwd.mad; testmemtmplpackexpand, testlateinstproto). Find the reparse site
    that mis-handles `typename` in the move/forward return type.
-4. **Expression keywords** sizeof/typeid/the casts/decltype/alignof/nullptr/true/false —
-   FIRST investigate the SEMANTIC regressions (testmadceval/testnoautoload `__x` scope
-   loss; testmathh 9 c2mir errors; teststringplus / teststrplusbody_realhdr codegen).
-   These are NOT plain de-shims — a keyword token in a param/body context dropped a
-   binding or mis-lowered. Reduce each before reserving; they may reveal a gap in the
-   contextual fall-through that, once fixed, also simplifies earlier slices.
+4. ✅ DONE — **Expression keywords**, landed incrementally (per-keyword bisect, all
+   zero-regression): 4a casts/typeid/decltype/alignof (`a687da9`), 4b true/false/nullptr
+   (`de35b56`), 4c sizeof (`7d6b514`), 4d this (`23fe82e`). The SESSION-16 §4 full-
+   activation regressions came from `typename` + multi-keyword interactions, NOT these —
+   each reserved cleanly in isolation.
 5. ✅ DONE (`5d64f7b`). **constexpr** — un-erased + reserved (CPP11); the if-constexpr
    discard machinery is now ACTIVE (proven tmp/ifcxd.mad). Token-aware ignored-specifier
    skip added (`is_ignored_cpp_specifier_token` + `TokenCppKeyword::parse` + member loop).
@@ -72,11 +88,13 @@ fail-sets with `comm -23` against a saved baseline list (the §7 protocol).
    DEEPER at `stl_vector.h:428:54` (`_Vector_base<_Tp,_Alloc>` base instantiation).
 6. ✅ DONE (`0d69c79`). **consteval / constinit** (CPP20) — un-erased + two table rows;
    the slice-5 ignored-specifier skip already handled their spellings (zero new de-shim).
-7. **Alternative-token operators** and/or/not/bitand/... — map spelling→operator token,
-   C++-gated.
-8. **C++20 set** char8_t(datatype)/concept/requires/co_* — LAST; needs the
-   concept/coroutine SKIP paths (`skip_requires_clause` &al.) de-shimmed to accept the
-   tokens (§5). char8_t is just a datatype_map entry (CPP20-gated).
+7. ✅ DONE (`a391880`). **Alternative-token operators** and/or/not/bitand/... — mapped
+   spelling→existing operator token via the new C++-gated `cpp_operator_map` (separate
+   from keyword_map only because operator tokens aren't TokenKeyword*). C-mode safe.
+8. **C++20 set** — PARTIAL. char8_t DONE (`653d007`, datatype, C++-gated — also fixed the
+   pre-existing ungated char16_t/char32_t/wchar_t). REMAINING: concept/requires/co_await/
+   co_return/co_yield — needs the concept/coroutine SKIP paths (`skip_requires_clause`
+   &al.) de-shimmed to accept the tokens first (madc lacks concept/coroutine parsing). DEFER.
 
 **Caution:** the SEMANTIC regressions (slice 4) are the real risk — budget investigation,
 not just mechanical edits. If a slice's regressions aren't cleanly de-shimmable, leave

@@ -20,12 +20,13 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node->c2mir->MIR).
 Integration **613 passed / 12 failed / 0 timed out / 18 skipped** (unchanged baseline —
-the 12 are the container/STALE-API walls). Code HEAD **`0d69c79`**, tree clean. Branch
+the 12 are the container/STALE-API walls). Code HEAD **`a391880`**, tree clean. Branch
 LOCAL-ONLY; develop untouched. MIR fork pin satisfied. Build current, zero warnings.
-**This session (17) drove the C++ keyword-registry ACTIVATION** (the SESSION-16 ★NEXT),
-landing 5 commits, ZERO regression throughout. The big win: **constexpr is now a real
-token and `if constexpr` discards its dead branch**, which moved the vector wall PAST
-push_back.
+**This session (17) drove the C++ keyword-registry to substantial COMPLETION** (the
+SESSION-16 ★NEXT), landing 10 commits, ZERO regression throughout. The big win: **constexpr
+is now a real token and `if constexpr` discards its dead branch**, which moved the vector
+wall PAST push_back. The registry is now done except typename (blocked) and the C++20
+concept/coroutine set (blocked) — see §0a/§0c.
 
 ## 0a. ★ Keyword-registry slices landed (plan: docs/plans/2026-06-15-cpp-keyword-registry-plan.md §0)
 - **Slice 1 asm** (`94c018c`): reserved CPP98. Extracted the statement-level GNU-asm skip
@@ -47,6 +48,21 @@ push_back.
   + the member-specifier loop. Real <string> parses (tmp/capi.mad exit 0).
 - **Slice 6 consteval/constinit** (`0d69c79`): reserved CPP20; zero new de-shim (slice-5
   skip already covered their spellings) — just un-erase + two table rows.
+- **Slice 4 expression keywords**: landed per-keyword (each fulltest-gated, zero regr):
+  4a casts/typeid/decltype/alignof (`a687da9`), 4b true/false/nullptr (`de35b56`), 4c
+  sizeof (`7d6b514`), 4d this (`23fe82e`). The §4 full-activation regressions were
+  `typename` + multi-keyword interactions, NOT these (each clean in isolation).
+- **Slice 7 alt-token operators** (`a391880`): and/or/not/bitand/bitor/xor/compl/not_eq/
+  and_eq/or_eq/xor_eq → existing operator tokens via new C++-gated `cpp_operator_map`
+  (separate from keyword_map only because operator tokens aren't TokenKeyword*). C-mode
+  safe. **NOTE: C and C++ share ONE operator set — these are just word SPELLINGS.**
+- **char8_t + char-type gating fix** (`653d007`, user-spotted): char8_t/char16_t/char32_t/
+  wchar_t are C++ FUNDAMENTAL built-ins but C HEADER TYPEDEFS. madc registered the first
+  three UNGATED (preempting the real header in C mode). Now each is registered as a
+  primitive only via `cpp_keyword_active(introducing-std)`; in C the real <uchar.h>/
+  <stddef.h> typedef supplies them. 3-oracle-verified.
+- Slice 8 char8_t is the only C++20 piece done; concept/requires/co_* remain BLOCKED
+  (need the concept/coroutine skip-paths de-shimmed). typename (slice 3) remains DEFERRED.
 
 ## 0b. ★ Vector wall MOVED past push_back (capture this)
 After slice 5, `bin/madc tests/testvector.mad` no longer fails on the undefined
@@ -58,13 +74,16 @@ new vector wall — orthogonal to the keyword registry. The 12 container/STALE-A
 are unchanged (also gated by §6b: `__is_constructible`, empty-`_Rb_tree` dtor, `_Tp2` dup).
 
 ## 0c. ★ NEXT
-The registry plan §0 (just updated). Remaining slices: **typename** (after the
-move/forward reparse fix — start at tmp/fwd.mad), **expr keywords** (slice 4 — has SEMANTIC
-regressions per SESSION-16 §0e/§4, investigate first), **alt-token operators** (slice 7),
-**C++20 concept/requires/co_*/char8_t** (slice 8 — de-shim the concept/coroutine skip-paths
-first). OR pivot to the new vector wall (stl_vector.h:428) / the §6b container walls to
-drive the 12 failures down. Per-slice protocol: build + tmp/capi.mad + `make -C src
-fulltest`, zero-regression vs the 12-known baseline before the next.
+Registry is substantially complete; only TWO keyword items remain, both BLOCKED on
+separate work: **typename** (slice 3 — needs the std::move/forward late-instantiation
+reparse fix; clean repro is testlateinstproto with typename reserved, NOT tmp/fwd.mad which
+fails baseline on `int&& y=move(x)`) and **concept/requires/co_*** (slice 8 — needs the
+concept/coroutine skip-paths `skip_requires_clause` &al. de-shimmed first). **Recommended
+NEXT = pivot to the campaign metric (drive the 12 failures down):** the new vector wall at
+`stl_vector.h:428:54` (the `_Vector_base<_Tp,_Alloc>` base instantiation — incomplete
+return type + int↔pointer, 5 c2mir errors) and the §6b container walls (`__is_constructible`
+intrinsic, empty-`_Rb_tree` dtor SIGSEGV, `_Tp2` dup). Per-slice/-fix protocol: build +
+tmp/capi.mad + `make -C src fulltest`, zero-regression vs the 12-known baseline.
 
 ---
 
