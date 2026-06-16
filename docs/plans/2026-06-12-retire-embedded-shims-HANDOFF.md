@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 18 CLOSE"** block immediately below (current state +
-NEXT), then "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19 CLOSE"** block immediately below (current state +
+NEXT), then "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -12,6 +12,84 @@ CLOSE). The per-part STATUS banners are detailed chronology, read only for
 depth. The governing process document is **`madc-header-partition-handoff.md`
 (repo root)** — every decision here must trace to it. Companion memory:
 `project_retire_embedded_shims` + `project_header_partition_architecture`.
+
+---
+
+# ★ SESSION 19 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+
+## 0. Orientation
+Same campaign (real glibc+libstdc++ every mode; sole backend cir_node->c2mir->MIR).
+Integration **618 passed / 12 failed / 0 timed out / 18 skipped** (+testsfinaealiasoverload,
++testeastconst, +testthrowexpr, +testatomics; the 12 = the unchanged container cluster:
+testvector/testvectorptr/testset/teststringref/testsubscript{,arrow,member}/testmap/
+testmadc_ns/testforeach2/testforeachref/testcontainerdtor). Code HEAD **`6b4374e`**, tree
+clean. Branch LOCAL-ONLY; develop untouched. MIR fork `5df536f` (pin satisfied). Build
+current, zero warnings. **This session (19) drove the vector<string> reallocation chain
+through FOUR walls (all committed, each 3-oracle'd, zero-regression):**
+- **`8085bda`** relocate-SFINAE: `enable_if_t<false,T>` now SFINAE-rejected — three coupled
+  fixes (§0a).
+- **`2a72933`** East-const member types (`char const*`) + throw-EXPRESSIONS (`(throw X())`,
+  ternary-throw) — parser + CIR (§0b).
+- **`6b4374e`** atomic builtins (`__atomic_thread_fence`/`__atomic_signal_fence`/
+  `__atomic_fetch_add`) lowered to gcc-compiled runtime wrappers (§0c).
+
+## 0a. relocate-SFINAE — CLEARED (`8085bda`)
+`__relocate_a_1`'s memmove overload returns `__enable_if_t<__is_bitwise_relocatable<_Tp>::
+value, _Tp*>`; for a non-trivially-relocatable element (basic_string) that's
+`enable_if_t<false,T>` (no `::type`) and MUST be SFINAE-removed. Three coupled fixes (mirrors
+clang SubstType -> CheckTypenameType -> null QualType -> SFINAE):
+(1) `instantiate_template_alias_use`: on body-resolution failure for a NON-DEPENDENT
+(concrete-args) instantiation, return NULL instead of caching an opaque placeholder. New
+helper `alias_use_args_all_concrete` (every non-type arg folds + every type arg resolves
+non-dependently). This removes the cache-poisoning that made the S18 sandbox-pre-check
+approach unsafe.
+(2) fn-template SFINAE pre-check (instantiate_fn_template_binding ~28137): also resolve a
+TEMPLATE-ID return type (not just `typename`-leading), restricted to FREE fn templates and
+resolved in the candidate's `NamespaceScope` (so unqualified `enable_if_t` resolves).
+(3) On SFINAE discard, **erase the speculatively-reserved `inst_key`** so the sibling
+overload (same name + deduced args, the complementary enable_if branch) can instantiate
+under it — else its top-of-fn memo short-circuits to "already done" and the SFINAE-removed
+overload silently wins. +testsfinaealiasoverload. Gated diag MADC_DIAG_SFINAE.
+
+## 0b. East-const + throw-expressions — CLEARED (`2a72933`)
+Behind relocate-SFINAE, `__uninitialized_move_if_noexcept_a` wouldn't instantiate: its body
+chain reaches <ext/concurrence.h>. Two parse/lowering gaps there:
+- **East-const member types** (`char const* what()`, `int const x`): TokenCLASS::parse consumed
+  cv-quals only AFTER a `*` (West-const); an East cv-qual before the declarator was read as
+  the member name. `__concurrence_lock_error::what()` returns `char const*`. Fix: consume
+  trailing cv-quals on the base type before the declarator. +testeastconst.
+- **throw-EXPRESSIONS** ([expr.throw]): `_GLIBCXX_THROW_OR_ABORT(x)` = `(throw (x))`. madc
+  handled `throw` only as a STATEMENT. Fix (3 parts): parseExpression dispatches a `tkTHROW`
+  primary (guarded out of `.`/`->` member position so `s.throw` stays a C member name —
+  testkeywordsasidents); CIR splits `translate_throw` into `translate_throw_call` (bare CALL =
+  VALUE-expr) + N_EXPR statement wrapper, translate_expr uses the call form (c2mir's N_EXPR is
+  a STATEMENT node w/ no value attr — feeding it as a value operand null-derefs c2mir, gdb-
+  confirmed c2mir.c:10168); ternary throw-branch type-balanced via comma `c ? (throw,x) : x`.
+  +testthrowexpr.
+
+## 0c. Atomic builtins — CLEARED (`6b4374e`)
+GCC inlines `__atomic_*`; they're not real symbols (libatomic only has unprefixed
+`atomic_thread_fence`). c2mir parses them (-fsyntax-only OK) but emits unresolvable external
+calls. <ext/atomicity.h>'s refcount path (mem barriers + __exchange_and_add) needs them. Fix
+(Tier-1, like __builtin_conj): runtime wrappers `__madc_atomic_thread_fence`/`_signal_fence`/
+`_fetch_add_{i,l}` (exception_runtime.cpp, gcc-compiled -> real atomics; dlsym-resolved) +
+cir_builder lowering (translate_expr ttCallFunc, width-picked from the pointee) + builtin
+registration. +testatomics.
+
+## 0d. ★ LIVE NEXT — wall 5: non-type-arg fold in the __uninitialized_move chain
+testvector still fails: MIR-link `import of undefined item __ns_std___uninitialized_move_if_
+noexcept_a` — its instantiation still THROWS (masked). UNMASKED via temporarily disabling the
+`std::cerr.rdbuf(NULL)` mute in `fold_nontype_arg_constant` (parser.cpp ~14156; gate it behind
+`#if !MADC_DIAG_UNMUTE` to re-diagnose): the single fatal error is **`Expecting integer
+constant expression`** deep in the `__uninitialized_move_if_noexcept_a` -> `__uninitialized_
+copy_a` -> ... instantiation — a NON-TYPE template arg that madc can't fold to a constant but
+must (same family as the a67cc72/`fold_nontype_arg_constant` work + the relocate-SFINAE trait
+fold). REDUCER: `tmp/r20.cpp` (direct `std::__uninitialized_move_if_noexcept_a(buf,buf+3,out,a)`
+call with <memory>+<string>); reproduces. NEXT: re-unmute, pin the exact construct at the
+injected line (likely a trait `::value` / `_S_use_relocate()` / alignment expr used as a
+non-type arg), then extend the non-type fold or the trait eval. 3-ORACLE FIRST; localize with
+the unmute gate + gcc-on-emitted-C. Behind it: likely more chain walls before testvector is
+green. NEVER A SHIM; fix the deepest layer.
 
 ---
 
