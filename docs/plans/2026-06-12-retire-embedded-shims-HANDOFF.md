@@ -90,6 +90,29 @@ from sub-gap-12 `f120470` exist; the gap is resolving `::value` THROUGH the base
 inheritance for a class arg) -> false; (b) when `__enable_if_t<false, _Tp*>` has no `::type`,
 SFINAE-reject the overload instead of rendering opaque (the §6b "enable_if<false,T>::type wrongly
 accepted via opaque-member fallback" follow-up). This is THE testvector/testvectorptr blocker.
+**REPRODUCER (3-oracle, headers-free): `tmp/r13.cpp`** — `namespace ns` with `enif`/`enif_t`,
+`ic<bool>`, `istriv<T>:ic<__is_trivial(T)>`, `bwr<T>:istriv<T>`, two complementary overloads
+`enif_t<bwr<T>::value,T*> pick` / `enif_t<!bwr<T>::value,T*> pick`, called with int (trivial) and a
+user-ctor struct NT (non-trivial). g++/clang = `true-branch`/`false-branch`; madc emits the opaque
+`enif_t_bwr_NT___value_NT_` struct return (same shape as the real wall). NOTE the reducer is
+STRICTER than the real case (both overloads are enable_if; the real `__relocate_a_1` LOOP overload
+has a plain return so it always survives — so the real fix only needs the FALSE overload discarded).
+**DEAD END — DO NOT REPEAT (S18, reverted):** extending the fn-template SFINAE pre-check
+(parser.cpp ~28066, currently `typename`-leading-only) to ALSO resolve an alias/class template-id
+return type in the sandbox + discard on `is_incomplete_class_datadef` is UNSAFE:
+`instantiate_template_alias_use` CACHES the opaque placeholder in `datatype_map`/`struct_map`
+(parser.cpp:3549), so the speculative sandbox resolution POISONS the subsequent REAL resolution →
+false positives (broke `enable_if_t<true,int*>`, a VALID case — `tmp/r15.cpp`). The sandbox also
+folds `bwr<int>::value` differently than the live instantiation. **CORRECT DIRECTION (deepest
+layer, multi-session):** fix at the ALIAS level — in `instantiate_template_alias_use`, when the body
+resolution FAILS (parser.cpp ~3517 `resolved==NULL`) for a NON-DEPENDENT (concrete-args)
+instantiation, return NULL (SFINAE substitution failure) instead of creating+caching the opaque
+placeholder (3543-3552). Then `resolve_declared_type_token` of an `enable_if_t<false,T>` return
+yields NULL → the existing fn-template return-resolution discards the candidate (no sandbox, no
+side-effects). CRUX = detecting "non-dependent": the alias args (`bwr<NT>::value` non-type +`NT*`
+type) contain NO unbound template-param / dependent placeholder (the opaque placeholder is CORRECT
+for genuinely dependent uses — don't break those). Behind this wall sits ANOTHER deep one:
+`__uninitialized_move_if_noexcept_a` undefined (the if-constexpr-discard family). Multi-session.
 3-ORACLE FIRST; localize with gcc-on-emitted-C (`madc --emit=c11 X > X.c`; strip cleanup attrs
 `sed -E 's/ __attribute__\(\(cleanup\([^)]*\)\)\)//g'`; `gcc -std=gnu11 -fsyntax-only -w X.c`).
 Per-fix: build + reducer + `make -C src fulltest`, zero-regression vs the 12-known baseline.
