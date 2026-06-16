@@ -20,13 +20,15 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 ## 0. Orientation
 Same campaign (real glibc+libstdc++ every mode; sole backend cir_node->c2mir->MIR).
 Integration **613 passed / 12 failed / 0 timed out / 18 skipped** (unchanged baseline —
-the 12 are the container/STALE-API walls). Code HEAD **`a391880`**, tree clean. Branch
+the 12 are the container/STALE-API walls). Code HEAD **`5ec4a5a`**, tree clean. Branch
 LOCAL-ONLY; develop untouched. MIR fork pin satisfied. Build current, zero warnings.
 **This session (17) drove the C++ keyword-registry to substantial COMPLETION** (the
-SESSION-16 ★NEXT), landing 10 commits, ZERO regression throughout. The big win: **constexpr
-is now a real token and `if constexpr` discards its dead branch**, which moved the vector
-wall PAST push_back. The registry is now done except typename (blocked) and the C++20
-concept/coroutine set (blocked) — see §0a/§0c.
+SESSION-16 ★NEXT) + a CIR extern-dedup fix, landing 12+ commits, ZERO regression throughout.
+Big wins: **constexpr is now a real token and `if constexpr` discards its dead branch**
+(moved the vector wall PAST push_back); the **extern-dedup fix** (`5ec4a5a`) removed a
+conflicting-redeclaration bug; and the **char-type C/C++ gating fix** (user-spotted). The
+registry is done except typename (blocked) and the C++20 concept/coroutine set (blocked) —
+see §0a. The live testvector wall is now a single int↔pointer c2mir error (§0b).
 
 ## 0a. ★ Keyword-registry slices landed (plan: docs/plans/2026-06-15-cpp-keyword-registry-plan.md §0)
 - **Slice 1 asm** (`94c018c`): reserved CPP98. Extracted the statement-level GNU-asm skip
@@ -75,22 +77,43 @@ concept/coroutine set (blocked) — see §0a/§0c.
 - Slice 8 char8_t is the only C++20 piece done; concept/requires/co_* remain BLOCKED
   (need the concept/coroutine skip-paths de-shimmed). typename (slice 3) remains DEFERRED.
 
-## 0b. ★ Vector wall MOVED past push_back (capture this)
-After slice 5, `bin/madc tests/testvector.mad` no longer fails on the undefined
+## 0b. ★ Vector wall — push_back cleared, dedup fixed, ONE c2mir error remains
+After slice 5, testvector no longer fails on the undefined
 `__ns_std___uninitialized_move_if_noexcept_a` import (the discarded `if constexpr`
-else-branch). It now fails DEEPER at **`/usr/include/c++/13/bits/stl_vector.h:428:54`**
-(the `class vector : protected _Vector_base<_Tp,_Alloc>` base instantiation — 5 c2mir
-check errors: "function return type is incomplete" + int↔pointer confusion). This is the
-new vector wall — orthogonal to the keyword registry. The 12 container/STALE-API failures
-are unchanged (also gated by §6b: `__is_constructible`, empty-`_Rb_tree` dtor, `_Tp2` dup).
+else-branch). Then the **extern-dedup fix (`5ec4a5a`)** removed a real conflicting-
+redeclaration bug the further-compiling closure exposed: Pass 0.75 emits a TYPED forward
+proto for a referenced lib FuncDef (`_ZNSaIcEC1ERKS_(struct allocator_char*,...)`) while
+`need_output_extern` emits a void* fallback for the SAME mangled symbol from a
+mangled-direct ctor call (`_ZNSaIcEC1ERKS_(void*,void*)`) — gcc rejects "conflicting
+types". Fix = a shared `typed_proto_syms` set (Pass 0.75 + Pass 1 + materialized protos);
+the two `m_output_externs` flushes skip those symbols. Zero-regression; --emit=c11 no
+longer double-declares them.
+**REMAINING (the live testvector wall): ONE c2mir check error — an int↔pointer mismatch in
+the `_Vector_base<int,std::allocator<int>>` instantiation**, pinned (unhelpfully) to
+`stl_vector.h:428:54` (the vector class source position). c2mir prints the triple "using
+integer without cast for pointer type parameter" / "incompatible argument type for pointer
+type parameter" / "assigning pointer without cast to integer" — a place where a pointer and
+an integer are conflated (suspect the `_Vector_impl_data` union of `_M_end_of_storage`
+(pointer) vs `_M_allocated_capacity` (size_type), or pointer arithmetic in `_M_create`/
+`allocate` mixing size_type and pointer). LOCALIZER NOTE: gcc on --emit=c11 is CONFOUNDED
+here — it first errors on cin/cout `extern ... __attribute__((cleanup(...)))` (cleanup on a
+non-local, which c2mir tolerates but gcc rejects), masking the real int↔pointer site. Find
+the offending CALL in --emit=c11 directly (search the vector ctor / _M_create / allocate
+path for an int arg to a pointer param). The 12 container/STALE-API failures are unchanged
+(also gated by §6b: `__is_constructible`, empty-`_Rb_tree` dtor, `_Tp2` dup).
 
 ## 0c. ★ NEXT
-Registry is substantially complete; only TWO keyword items remain, both BLOCKED on
-separate work: **typename** (slice 3 — needs the std::move/forward late-instantiation
-reparse fix; clean repro is testlateinstproto with typename reserved, NOT tmp/fwd.mad which
-fails baseline on `int&& y=move(x)`) and **concept/requires/co_*** (slice 8 — needs the
-concept/coroutine skip-paths `skip_requires_clause` &al. de-shimmed first). **Recommended
-NEXT = pivot to the campaign metric (drive the 12 failures down):** the new vector wall at
+**★ LIVE NEXT = the testvector int↔pointer c2mir error (§0b)** — the single remaining wall
+on testvector after push_back cleared + dedup fixed. Find the int-arg-to-pointer-param call
+in `--emit=c11 tests/testvector.mad` (vector ctor / `_M_create` / `allocate` path; the gcc
+localizer is confounded by cin/cout cleanup-externs — search the emitted C directly). This
+directly drives the 12-failure metric (testvector/testvectorptr + likely the subscript set).
+Registry leftovers (lower priority, both BLOCKED): **typename** (slice 3 — std::move/forward
+late-instantiation reparse fix; clean repro testlateinstproto with typename reserved, NOT
+tmp/fwd.mad which fails baseline) and **concept/requires/co_*** (slice 8 — de-shim the
+concept/coroutine skip-paths first). Other §6b container walls behind/around the vector one:
+`__is_constructible` intrinsic, empty-`_Rb_tree` dtor SIGSEGV (testmap exits 1 silently),
+`_Tp2` dup. (Superseded earlier text:) the old vector wall at
 `stl_vector.h:428:54` (the `_Vector_base<_Tp,_Alloc>` base instantiation — incomplete
 return type + int↔pointer, 5 c2mir errors) and the §6b container walls (`__is_constructible`
 intrinsic, empty-`_Rb_tree` dtor SIGSEGV, `_Tp2` dup). Per-slice/-fix protocol: build +
