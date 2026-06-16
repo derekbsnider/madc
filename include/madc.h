@@ -1153,6 +1153,12 @@ public:
     ErrorInfo last_error;
     std::vector<Diagnostic> diagnostics;
     keyword_map_t  keyword_map;		// reserved keywords
+    // C++ alternative-token operators (and/or/not/bitand/...): word spellings
+    // that are exact synonyms for symbolic operators ([lex.digraph]). Held
+    // separately from keyword_map because the operator tokens are not
+    // TokenKeyword subclasses. Populated (C++-gated) in add_keywords; looked up
+    // and cloned in _getToken alongside keyword_map.
+    std::map<std::string, TokenBase *> cpp_operator_map;
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     datadef_map_t  struct_map;		// data definitions defined by struct

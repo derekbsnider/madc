@@ -2231,6 +2231,27 @@ void Program::add_keywords()
 	  && keyword_map.find(cpp_reserved[i].kw) == keyword_map.end() )
 	    keyword_map[cpp_reserved[i].kw] =
 		new TokenCppKeyword(cpp_reserved[i].kw);
+
+    // Slice 7 — alternative-token operators ([lex.digraph]). In C++ these are
+    // reserved keywords spelled as words; each is an exact synonym for a
+    // symbolic operator, so map the spelling straight to the operator token
+    // (cloned on lookup at lexer.cpp ~4382, like every keyword). C++98+ /
+    // madc-dialect only (cpp_keyword_active): in C they are NOT keywords —
+    // <iso646.h> defines them as macros, which the real header supplies.
+    if ( cpp_keyword_active(STD_CPP98) )
+    {
+	cpp_operator_map["and"]    = new TokenLand();    // &&
+	cpp_operator_map["or"]     = new TokenLor();     // ||
+	cpp_operator_map["not"]    = new TokenLnot();    // !
+	cpp_operator_map["bitand"] = new TokenBand();    // &
+	cpp_operator_map["bitor"]  = new TokenBor();     // |
+	cpp_operator_map["xor"]    = new TokenXor();     // ^
+	cpp_operator_map["compl"]  = new TokenBnot();    // ~
+	cpp_operator_map["not_eq"] = new TokenNotEq();   // !=
+	cpp_operator_map["and_eq"] = new TokenBandEq();  // &=
+	cpp_operator_map["or_eq"]  = new TokenBorEq();   // |=
+	cpp_operator_map["xor_eq"] = new TokenXorEq();   // ^=
+    }
     // DESIGN NOTE: this table is intentionally NOT populated with hard keyword
     // tokens. madc deliberately handles most C++ keywords as CONTEXTUAL
     // identifiers recognized by spelling (Cfront-style; see the KG lesson
@@ -4381,6 +4402,15 @@ TokenBase *Program::_getToken()
 		}
 		if ( (kmi=keyword_map.find(word)) != keyword_map.end() )
 		    return kmi->second->clone();
+		// C++ alternative-token operators (and/or/not/...): empty in C
+		// mode, so this find is a no-op there.
+		if ( !cpp_operator_map.empty() )
+		{
+		    std::map<std::string, TokenBase *>::iterator oi =
+			cpp_operator_map.find(word);
+		    if ( oi != cpp_operator_map.end() )
+			return oi->second->clone();
+		}
 		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
 		    return bmi->second->clone();
 		if ( auto_include_standard_identifier(word) )
