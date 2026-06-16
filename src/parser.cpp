@@ -4261,6 +4261,43 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
     return new TokenDataType(dd->name.c_str(), *dd);
 }
 
+DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
+					   size_t start, size_t end)
+{
+    if ( start >= end || end > toks.size() )
+	return NULL;
+    // Isolated token stream: swap in [start,end) + a ';' sentinel so the
+    // canonical resolver (template-ids, `std::`, class-scope typedefs) reads
+    // exactly the return type and stops, then restore the live position. The
+    // resolver may instantiate a template-id (idempotent/memoized) — that is
+    // the desired side effect; everything else is local.
+    std::deque<TokenBase *> saved_tokens = tokens;
+    TokenBase *saved_cur = _cur_token;
+    TokenBase *saved_prv = _prv_token;
+    tokens.clear();
+    for ( size_t i = start; i < end; ++i )
+	if ( toks[i] )
+	    tokens.push_back(toks[i]);
+    tokens.push_back(new TokenSemi());
+    _cur_token = NULL;
+    _prv_token = NULL;
+    DataDef *result = NULL;
+    try
+    {
+	TokenDataType *rt = resolve_declared_type_token(nextToken(), true, true);
+	if ( rt )
+	    result = &rt->definition;
+    }
+    catch ( ... )
+    {
+	result = NULL;
+    }
+    tokens = saved_tokens;
+    _cur_token = saved_cur;
+    _prv_token = saved_prv;
+    return result;
+}
+
 static void parse_objtemp_ctor_arguments(Program &pgm, TokenObjTemp *ot,
 					 TokenBase *loc, TokenID close_id,
 					 const char *close_spelling)
@@ -29312,6 +29349,24 @@ static DataDef *skipped_template_function_return_type(
 	"static", "constexpr", "inline", "virtual", "friend", "extern",
 	"typename", "const", "volatile", "auto"
     };
+    // A template-id return type (`pair<iterator, bool> m(...)`) ends in a
+    // closing angle right before the name. The plain backward scan below would
+    // wrongly grab the LAST type INSIDE `<...>` (e.g. `bool`) as the return
+    // type. Resolve the full return-type token range through the canonical
+    // resolver instead (handles nested template-ids, `std::`, class typedefs).
+    if ( name_index > 0 && tokens[name_index - 1]
+      && (tokens[name_index - 1]->id() == TokenID::tkGT
+       || tokens[name_index - 1]->id() == TokenID::tkBSR) )
+    {
+	size_t rs = 0;
+	while ( rs < name_index && tokens[rs]
+	     && is_contextual_identifier_token(tokens[rs])
+	     && specifiers.count(contextual_identifier_name(tokens[rs])) )
+	    ++rs;
+	if ( rs < name_index )
+	    if ( DataDef *tid = pgm.resolve_type_token_range(tokens, rs, name_index) )
+		return tid;
+    }
     for ( size_t i = name_index; i-- > 0; )
     {
 	TokenBase *t = tokens[i];

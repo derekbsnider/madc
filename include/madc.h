@@ -2430,6 +2430,12 @@ public:
 					       bool consume_ns_tokens,
 					       bool allow_lazy_types,
 					       bool consume_class_member_chain = true);
+    // Resolve a TYPE that spans a token RANGE (e.g. a member-template return
+    // type `std::pair<iterator, bool>`) through the canonical type resolver,
+    // in an isolated token stream so the live parse position is untouched.
+    // Returns the resolved DataDef, or NULL when the range is not a type.
+    DataDef *resolve_type_token_range(const std::vector<TokenBase *> &toks,
+				      size_t start, size_t end);
     TokenDataType *resolve_namespaced_type_token(TokenBase *tb, bool consume_tokens);
     // Type-name resolution helpers: look up a named DataDef (struct/typedef/lazy),
     // a current-class type alias, a variable matching a contextual type name, and
