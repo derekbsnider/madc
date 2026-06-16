@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 16 CLOSE"** block immediately below (current state +
-NEXT), then "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 18 CLOSE"** block immediately below (current state +
+NEXT), then "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -12,6 +12,78 @@ CLOSE). The per-part STATUS banners are detailed chronology, read only for
 depth. The governing process document is **`madc-header-partition-handoff.md`
 (repo root)** — every decision here must trace to it. Companion memory:
 `project_retire_embedded_shims` + `project_header_partition_architecture`.
+
+---
+
+# ★ SESSION 18 CLOSE — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+
+## 0. Orientation
+Same campaign (real glibc+libstdc++ every mode; sole backend cir_node->c2mir->MIR).
+Integration **614 passed / 12 failed / 0 timed out / 18 skipped** (+testthisdirectinit;
+the 12 = the container cluster, unchanged fail-set). Code HEAD **`6a78d6f`**, tree clean.
+Branch LOCAL-ONLY; develop untouched. MIR fork `5df536f` (pin satisfied). Build current,
+zero warnings. **This session (18) CLEARED the `_M_realloc_insert` undefined wall** (the
+SESSION-17 ★ LIVE NEXT) — a single deepest-layer fix that ALSO repaired a slice-4d
+regression. testvector now compiles PAST `_M_realloc_insert` to the next (deeper) walls.
+
+## 0a. ★ `_M_realloc_insert` undefined — CLEARED (`6a78d6f`); root was a slice-4d regression
+**The SESSION-17 handoff's "int's _M_realloc_insert IS defined, string's ISN'T" was STALE.**
+Verified live: BOTH int and string fail identically — MIR-link just reports whichever
+undefined import it hits first (string in the full testvector, int in an int-only reducer).
+So it was ONE bug, not an int/string difference. ROOT (gated-diag `MADC_DIAG_REALLOC` +
+`MADC_DBG_PACK`/`MADC_DEBUG_FNTPL`): the per-call member-template instantiation
+(`instantiate_member_fn_template_for_call` -> `try_instantiate_namespace_fn_template`)
+deduces fine (`_Args`=elem) but the BODY parse THROWS (caught silently -> STREAM IMBALANCE
+"leftover inj" -> placeholder kept -> undefined import). The throw = "Failed to find type
+when parsing function parameters" on the token `this`, parsing the local
+`pointer __new_start(this->_M_allocate(__len));` (sub-gap 11 direct-init) inside
+`_M_realloc_insert`'s body. **`paren_group_is_nonclass_direct_init()` matched `this` only as
+a `ttIdentifier`; slice 4d (`23fe82e`) made `this` a reserved keyword (`tkCPPKEYWORD`), so
+the raw `((TokenIdent*)first)->str` cast missed it** -> direct-init not detected ->
+most-vexing-parse -> function decl -> throw. FIX (deepest layer): resolve the first token's
+spelling via `is_contextual_identifier_token`/`contextual_identifier_name` (which admit
+tkCPPKEYWORD) instead of the raw ttIdentifier cast. `!is_c_mode()`-gated call site -> C/K&R
+untouched. +tests/testthisdirectinit (3-oracle g++/clang/madc = 43; `T *p(this->fn());` in a
+method). Gates: integration 613->614 zero-regr, unit all-pass, torture 1571/51 byte-identical,
+SMAUG soak exit 124. **AUDIT NOTE:** other `((TokenIdent*)x)->str=="this"`/`=="<keyword>"`
+sites are latent slice-4d regressions — `this` is now a keyword token everywhere. grep for
+raw string-compares against keyword spellings on a ttIdentifier cast.
+
+## 0b. ★ NEW LIVE WALL (testvector now): non-template-vs-template member overload @ stl_vector.h:428
+After `6a78d6f`, testvector compiles through `_M_realloc_insert` and hits 4 c2mir check
+errors at stl_vector.h:428 (clone-artifact line; localized via gcc-on-emitted-C). TWO distinct
+deeper walls, BOTH pre-existing (documented across S9-S16), now exposed:
+1. **Non-template preferred over template member ([over.match.best]).** `push_back(const
+   value_type& __x)` (stl_vector.h:1292) calls `_M_realloc_insert(end(), __x)`. There are TWO
+   overloads: a NON-TEMPLATE `_M_realloc_insert(iterator, const value_type&)` (decl :1825) and a
+   variadic TEMPLATE `template<typename..._Args> _M_realloc_insert(iterator, _Args&&...)` (:1873).
+   g++/clang pick the NON-TEMPLATE; **madc binds the TEMPLATE** (`..._M_realloc_insert__mti`),
+   whose `_Args&&` forwarding-ref param becomes a pointer, and the call passes `(*__x)` (a VALUE)
+   -> arg-3 mismatch (`basic_string` value vs `basic_string *`; int tolerates it as the int<->ptr
+   warning, string is a HARD c2mir error). FIX shape: in member-overload resolution prefer a
+   viable NON-template `_M_realloc_insert(iterator,const value_type&)` over the variadic template
+   (the [temp.func.order]/[over.match.best] non-template tiebreak — verify madc even registers the
+   non-template overload; if it only sees the template, that's the gap). NOTE: madc also selected
+   `push_back(const value_type&)` for the rvalue `names.push_back("Alice")` where g++ picks
+   `push_back(value_type&&)` -> `emplace_back(std::move(__x))`; a separate push_back rvalue-overload
+   question (may be benign once #1 binds the non-template realloc). 3-ORACLE FIRST.
+2. **`__enable_if_t<__is_bitwise_relocatable<basic_string<...>>::value, T*>` opaque/incomplete**
+   in `__ns_std___relocate_a_1` (return type incomplete + conflicting types). The non-type-bool
+   fold (S16 §0d `a67cc72`) isn't folding `__is_bitwise_relocatable<basic_string>::value` ->
+   `__enable_if_t<...>` stays an opaque struct -> incomplete return type. Re-diagnose: is
+   `__is_bitwise_relocatable` a recognized trait for a class arg? (basic_string IS bitwise-
+   relocatable in libstdc++ via the `__is_bitwise_relocatable` specialization.) Own slice.
+
+## 0c. ★ NEXT
+**★ LIVE NEXT = the non-template-vs-template `_M_realloc_insert` overload (§0b #1)** — gates
+testvector/testvectorptr (the int<->ptr warning is benign; the string struct-value-to-ptr is the
+hard error). Then §0b #2 (`__is_bitwise_relocatable<basic_string>` enable_if_t fold). 3-oracle
+each; reduce in tmp/ (`--std=c++17 --no-embedded-headers` OR default mode — testvector is the real
+target). Localize c2mir-check errors with gcc-on-emitted-C (`madc --emit=c11 X > X.c`; strip
+cleanup attrs: `sed -E 's/ __attribute__\(\(cleanup\([^)]*\)\)\)//g'`; `gcc -std=gnu11
+-fsyntax-only -w X.c`). Per-fix protocol: build + reducer + `make -C src fulltest`, zero-regression
+vs the 12-known baseline. Registry leftovers (lower priority, BLOCKED): typename (slice 3) +
+concept/co_* (slice 8) — see SESSION 17 §0a.
 
 ---
 
