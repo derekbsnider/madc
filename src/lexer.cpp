@@ -2215,6 +2215,10 @@ void Program::add_keywords()
 	{ "typeid",           STD_CPP98 },
 	{ "decltype",         STD_CPP11 },
 	{ "alignof",          STD_CPP11 },
+	// Slice 4b: boolean / pointer literals.
+	{ "true",             STD_CPP98 },
+	{ "false",            STD_CPP98 },
+	{ "nullptr",          STD_CPP11 },
 	{ 0,                  STD_CPP98 }
     };
     for ( size_t i = 0; i < sizeof(cpp_reserved)/sizeof(cpp_reserved[0]); ++i )
