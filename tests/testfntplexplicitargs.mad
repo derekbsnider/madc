@@ -1,0 +1,25 @@
+// A function template called with EXPLICIT template arguments and ZERO
+// function parameters (deduction impossible — args bind it entirely). This is
+// libstdc++'s `__check_constructible<V,T>()` shape (used by uninitialized_copy
+// in the vector<string> reallocation chain). madc must instantiate the body
+// AND bind the call to that instance (not the body-less placeholder).
+namespace nn {
+    template<typename V, typename T>
+    constexpr bool check_con()
+    {
+	return true;
+    }
+    template<typename T>
+    int kind()
+    {
+	return sizeof(T);
+    }
+}
+
+int main()
+{
+    bool b = nn::check_con<int, char>();
+    int k = nn::kind<double>();
+    printf("b=%d k=%d\n", (int)b, k);
+    return 0;
+}

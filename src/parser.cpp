@@ -8445,6 +8445,14 @@ static Variable *rank_fn_overload_candidates(
     int best_score = -1;
     for ( const Program::NamespaceFnOverload &e : cands )
     {
+	// The body-less template placeholder is seeded ONLY so the set has
+	// >= 2 entries and triggers ranking; it is never a real callable. Its
+	// 0-param signature is normally arity-filtered out, but a ZERO-ARGUMENT
+	// call (`__check_constructible<V,T>()`, explicit template args only) ties
+	// its score and — registered first — would win over the real
+	// instantiation, emitting an undefined `__ns_<fn>` import. Skip it.
+	if ( e.param_spelling == "\x01fn-template-placeholder" )
+	    continue;
 	FuncDef *fd = e.var ? dynamic_cast<FuncDef *>(e.var->type) : NULL;
 	if ( !fd )
 	    continue;
@@ -26975,7 +26983,7 @@ static bool extract_free_signature(
 	  && tokens[real_end - 1]->type() == TokenType::ttIdentifier )
 	    --real_end;   // drop the parameter name (type spans > 1 token)
 	std::string sp = serialize_token_range(tokens, pstart, real_end);
-	if ( !sp.empty() )
+	if ( !sp.empty() && sp != "void" )   // `f(void)` == zero params
 	    params.push_back(sp);
     };
     for ( size_t i = lparen + 1; i < tokens.size(); ++i )
@@ -27003,8 +27011,10 @@ static bool extract_free_signature(
 	    pstart = i + 1;
 	}
     }
-    if ( params.empty() )
-	return false;
+    // A zero-parameter function template (resolved entirely by explicit
+    // template arguments — e.g. libstdc++ `__check_constructible<V,T>()`) is
+    // legitimate; do NOT reject empty params. Operator/manipulator callers
+    // re-check param_spellings.size() themselves (>=2 / ==1 / ==2).
     out.ns = pgm.current_namespace();
     out.opname = name;
     out.template_params = typeparams;
