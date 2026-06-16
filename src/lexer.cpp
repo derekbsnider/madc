@@ -2252,6 +2252,7 @@ void Program::add_datatypes()
     static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
     static TokenDataType tkSIZE_T("size_t", ddUINT64);
     static TokenDataType tkWCHAR_T("wchar_t", ddINT32);
+    static TokenDataType tkCHAR8_T("char8_t", ddUINT8);
     static TokenDataType tkCHAR16_T("char16_t", ddUINT16);
     static TokenDataType tkCHAR32_T("char32_t", ddUINT32);
     static TokenDataType tkMAX_ALIGN_T("max_align_t", ddMAX_ALIGN_T);
@@ -2286,9 +2287,22 @@ void Program::add_datatypes()
     datatype_map[tkAUTO.str] = &tkAUTO;
     datatype_map[tkPTRDIFF.str] = &tkPTRDIFF;
     datatype_map[tkSIZE_T.str] = &tkSIZE_T;
-    datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
-    datatype_map[tkCHAR16_T.str] = &tkCHAR16_T;
-    datatype_map[tkCHAR32_T.str] = &tkCHAR32_T;
+    // wchar_t / char8_t / char16_t / char32_t are FUNDAMENTAL built-in types in
+    // C++ (keywords — [basic.fundamental]), but in C they are typedefs supplied
+    // by headers (wchar_t: <stddef.h>/<wchar.h>; char16_t/char32_t: <uchar.h>;
+    // char8_t: <uchar.h> in C23). So register them as primitives ONLY in the
+    // madc dialect or an explicit C++ mode at/after their introducing standard;
+    // in explicit C modes the real header typedef supplies them (retire-
+    // embedded-shims principle — do not preempt the real header).
+    if ( cpp_keyword_active(STD_CPP98) )
+	datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
+    if ( cpp_keyword_active(STD_CPP20) )
+	datatype_map[tkCHAR8_T.str] = &tkCHAR8_T;
+    if ( cpp_keyword_active(STD_CPP11) )
+    {
+	datatype_map[tkCHAR16_T.str] = &tkCHAR16_T;
+	datatype_map[tkCHAR32_T.str] = &tkCHAR32_T;
+    }
     datatype_map[tkMAX_ALIGN_T.str] = &tkMAX_ALIGN_T;
     datatype_map[tkFLOAT32.str] = &tkFLOAT32;
     datatype_map[tkFLOAT64.str] = &tkFLOAT64;
