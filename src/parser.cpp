@@ -25596,6 +25596,20 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	    pgm.Throw(tn) << "'" << class_name << "' is not a class type" << flush;
     }
 
+    // Array new: `new T[n]` — parse the element-count expression. (A new[] has
+    // no constructor-argument list; an init-list `[n]{...}` is a follow-up.)
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+    {
+	pgm.nextToken(); // consume '['
+	array_size = pgm.parseExpression(pgm.nextToken(), true);
+	if ( !array_size )
+	    pgm.Throw(this) << "Failed to parse array size in new[] expression" << flush;
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClSqr )
+	    pgm.Throw(this) << "Expected ] after new[] array size" << flush;
+	pgm.nextToken(); // consume ']'
+	return this;
+    }
+
     // Parse constructor arguments: (arg1, arg2, ...)
     tn = pgm.peekToken();
     if ( tn && tn->id() == TokenID::tkOpBrk )
@@ -25624,6 +25638,22 @@ TokenBase *TokenDELETE::parse(Program &pgm)
     TokenBase *tn = pgm.nextToken();
     if ( !tn )
 	pgm.Throw(this) << "Expected expression after 'delete'" << flush;
+
+    // `delete[] p` (array delete): the `[]` is empty (no size). Consume it and
+    // mark is_array, then parse the operand. Without this the `[` was handed to
+    // the expression parser and mistaken for a lambda capture ("Expecting ( after
+    // lambda"). ([expr.delete]: the bracket pair is part of the delete operator.)
+    if ( tn->id() == TokenID::tkOpSqr )
+    {
+	TokenBase *close = pgm.nextToken();
+	if ( !close || close->id() != TokenID::tkClSqr )
+	    pgm.Throw(close ? close : tn)
+		<< "Expecting ] in array delete (delete[])" << flush;
+	is_array = true;
+	tn = pgm.nextToken();
+	if ( !tn )
+	    pgm.Throw(this) << "Expected expression after 'delete[]'" << flush;
+    }
 
     expr = pgm.parseExpression(tn, true);
     if ( !expr )

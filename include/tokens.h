@@ -1327,7 +1327,8 @@ public:
     // is not a class (string / scalar), with alloc_class still used for classes.
     TokenBase *placement;
     DataDef *alloc_type;
-    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; }
+    TokenBase *array_size;	// `new T[n]` — the element count expr (NULL for scalar new)
+    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; array_size = NULL; }
     virtual TokenID id() const { return TokenID::tkNEW; }
     virtual TokenBase *clone() { return new TokenNEW(); }
     virtual TokenBase *parse(Program &);
@@ -1337,7 +1338,8 @@ class TokenDELETE: public TokenKeyword
 public:
     TokenBase *expr;
     DataDefCLASS *del_class;
-    TokenDELETE() : TokenKeyword("delete") { expr = NULL; del_class = NULL; }
+    bool is_array;	// `delete[]` (array delete) vs scalar `delete`
+    TokenDELETE() : TokenKeyword("delete") { expr = NULL; del_class = NULL; is_array = false; }
     virtual TokenID id() const { return TokenID::tkDELETE; }
     virtual TokenBase *clone() { return new TokenDELETE(); }
     virtual TokenBase *parse(Program &);

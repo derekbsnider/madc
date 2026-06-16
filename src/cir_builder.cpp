@@ -7789,7 +7789,59 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		}
 
 		DataDefCLASS *cdd = tn->alloc_class;
-		if (!cdd) return error_node("new without a class type", tb);
+		if (!cdd) {
+			// Scalar (non-class) new: `new T`, `new T(v)`, `new T[n]`.
+			DataDef *et = tn->alloc_type;
+			if (!et) return error_node("new without a class type", tb);
+			auto t_ptr_type = [&]() -> node_t {
+				return node2(N_TYPE, type_list(et),
+					     node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			};
+			auto t_sizeof = [&]() -> node_t {
+				return node1(N_SIZEOF,
+					node2(N_TYPE, type_list(et),
+					      node2(N_DECL, ignore(), list())), tb);
+			};
+			if (tn->array_size) {
+				// new T[n] -> (T*)calloc((size_t)n, sizeof(T)). calloc value-
+				// zeroes — a safe superset of new[]'s default-init for scalars.
+				need_output_extern("calloc", true,
+					{ { {N_UNSIGNED, N_LONG}, false },
+					  { {N_UNSIGNED, N_LONG}, false } });
+				node_t cargs = list();
+				append(cargs, translate_expr(tn->array_size));
+				append(cargs, t_sizeof());
+				node_t ccall = node2(N_CALL, id("calloc", tb), cargs, tb);
+				return node2(N_CAST, t_ptr_type(), ccall, tb);
+			}
+			// new T / new T(v) -> ({ T *__newN = (T*)malloc(sizeof(T));
+			//                        [*__newN = v;] __newN; })
+			need_output_extern("malloc", true,
+				{ { {N_UNSIGNED, N_LONG}, false } });
+			char stmp[32];
+			snprintf(stmp, sizeof(stmp), "__new%d", m_strtmp_counter++);
+			node_t margs = list();
+			append(margs, t_sizeof());
+			node_t mcall = node2(N_CALL, id("malloc", tb), margs, tb);
+			node_t scast = node2(N_CAST, t_ptr_type(), mcall, tb);
+			node_t sdecl = simple(N_SPEC_DECL);
+			append(sdecl, node1(N_SHARE, type_list(et)));
+			append(sdecl, node2(N_DECL, id(stmp, tb), node1(N_LIST, pointer())));
+			append(sdecl, ignore());
+			append(sdecl, ignore());
+			append(sdecl, scast);
+			node_t sitems = list();
+			append(sitems, sdecl);
+			if (!tn->ctor_args.empty()) {
+				node_t store = node2(N_ASSIGN,
+					node1(N_DEREF, id(stmp, tb), tb),
+					translate_expr(tn->ctor_args[0]), tb);
+				append(sitems, node2(N_EXPR, list(), store, tb));
+			}
+			append(sitems, node2(N_EXPR, list(), id(stmp, tb), tb));
+			return node1(N_STMTEXPR,
+				     node2(N_BLOCK, list(), sitems, tb), tb);
+		}
 		char tmp[32];
 		snprintf(tmp, sizeof(tmp), "__new%d", m_strtmp_counter++);
 		// struct C * type node, reused for the decl and the cast.
@@ -7914,7 +7966,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		// Virtual destructor: dispatch through the vtable D0 (deleting) slot,
 		// which runs the most-derived complete destructor AND frees. No
 		// separate free() — the D0 dtor owns the free.
-		if (cdd && cdd->vtable_slot("~$deleting") >= 0) {
+		if (cdd && !tdl->is_array && cdd->vtable_slot("~$deleting") >= 0) {
 			size_t grp; int slot;
 			cdd->find_vslot("~$deleting", grp, slot);
 			const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[grp];
@@ -7958,7 +8010,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		}
 		node_t ptr = translate_expr(tdl->expr);
 		node_t items = list();
-		if (cdd && cdd->has_user_dtor) {
+		// Array delete of a class with a dtor needs the new[] element-count
+		// cookie to run the dtor per element; madc's `new` allocates a single
+		// object (no array cookie), so for `delete[]` we free only (running a
+		// single dtor on element[0] would be wrong). Trivial element types
+		// (cdd==NULL) free either way. See feature-drops-audit (delete[] row).
+		if (cdd && cdd->has_user_dtor && !tdl->is_array) {
 			std::string dsym = class_complete_dtor_symbol(cdd);
 			referenced_funcs.insert(dsym);
 			node_t dargs = list();
