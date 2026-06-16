@@ -873,6 +873,7 @@ public:
 	// expr — see the c2mir cleanup-scope gotcha). throw -> __madc_throw_*.
 	node_t translate_try(class TokenTRY *tt);
 	node_t translate_throw(class TokenTHROW *th);
+	node_t translate_throw_call(class TokenTHROW *th);
 	int m_try_ctx_counter = 0;
 	// >0 while lowering a try BODY (set around translate_stmt(tt->try_body) in
 	// translate_try). Objects constructed in a try body keep their normal

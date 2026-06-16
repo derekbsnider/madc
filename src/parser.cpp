@@ -18280,6 +18280,28 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( !tb ) { done = true; break; }
 		    continue;
 		}
+		// throw-expression ([expr.throw]) in expression context:
+		// `(throw X())`, `cond ? a : throw e`. libstdc++'s
+		// `_GLIBCXX_THROW_OR_ABORT(x)` expands to `(throw (x))`, so the
+		// `__throw_*` helpers (e.g. __throw_concurrence_lock_error, pulled
+		// in by <memory>'s allocator/uninitialized-copy chain — the vector
+		// reallocation path) reach this. TokenTHROW::parse parses the
+		// operand and consumes a trailing ';' ONLY when present, so it is
+		// safe in expression position (the operand is followed by ')' here).
+		// After `.`/`->`, `throw` is a C member name (`s.throw`, a valid C
+		// identifier — SMAUG/testkeywordsasidents), NOT a throw-expression;
+		// mirror the new-expression guard below and fall through to the
+		// contextual-identifier arm.
+		if ( tb->id() == TokenID::tkTHROW
+		  && (!prevToken()
+		   || (prevToken()->id() != TokenID::tkDot
+		    && prevToken()->id() != TokenID::tkDeRef)) )
+		{
+		    TokenBase *throw_node = ((TokenKeyword *)tb)->parse(*this);
+		    if ( throw_node )
+			exStack.push(throw_node);
+		    break;
+		}
 		// new-expression in expression context. After `.` or `->`, C code
 		// can use `new` as a member name. The new-expression forms:
 		//   new ClassName(args)   -> next token is an identifier
@@ -22857,6 +22879,18 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		}
 		if ( !mtype )
 		    pgm.Throw(type_head) << "Expecting type in class definition" << flush;
+
+	// East-const / -volatile on the base type (`char const *`, `int const x`):
+	// the cv-qualifier trails the type and precedes the declarator. madc tracks
+	// const only in a type's identity (same as the post-`*` skip below and the
+	// fn-template default path), so consume and ignore it here. Without this the
+	// member-name parse below sees `const` where it expects the name — libstdc++'s
+	// `__concurrence_lock_error::what()` returns `char const*`, blocking the whole
+	// <memory> uninitialized-copy chain (vector reallocation).
+	while ( pgm.peekToken()
+	     && (pgm.peekToken()->id() == TokenID::tkCONST
+	      || pgm.peekToken()->id() == TokenID::tkVOLATILE) )
+	    pgm.nextToken();
 
 	// check for pointer declarator(s): type * [*...] member_name
 	DataDef *cmember_dd = &mtype->definition;

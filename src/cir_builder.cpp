@@ -7579,6 +7579,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttChar)
 		return ch(tb->ival(), tb);
 
+	// throw-EXPRESSION ([expr.throw]): `(throw X())`, `cond ? a : throw e`.
+	// translate_throw already returns an N_EXPR wrapping the __madc_throw_*
+	// call (the same node the throw STATEMENT lowers to), so it drops straight
+	// into expression position — control never returns, so its "value" is
+	// unreachable. libstdc++'s _GLIBCXX_THROW_OR_ABORT(x) = `(throw (x))` makes
+	// the __throw_* helpers (allocator/uninitialized-copy chain) reach here.
+	if (TokenTHROW *th = dynamic_cast<TokenTHROW *>(tb))
+		return translate_throw_call(th);
+
 	// dynamic_cast<Tgt*>(e)  (S5c) ->
 	//   (struct Tgt*)__dynamic_cast((void*)e, (void*)_ZTI<src>, (void*)_ZTI<dst>, hint)
 	// libstdc++'s __dynamic_cast reads e's vptr[-1] (the RTTI slot wired in S5b) to
@@ -8108,11 +8117,32 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// Ternary
 	{
 		TokenTerQ *tq = dynamic_cast<TokenTerQ *>(tb);
-		if (tq)
-			return node3(N_COND,
-				translate_expr(tq->condition),
+		if (tq) {
+			node_t cond = translate_expr(tq->condition);
+			// A throw-expression branch ([expr.cond]/2): the conditional's
+			// type is the OTHER (non-throw) branch's; the throw branch is a
+			// void prvalue that never returns. c2mir's N_COND needs both
+			// branches type-compatible, so wrap the throw side in a comma
+			// yielding the other branch's type — `c ? (throw, x) : x`. The
+			// comma's right operand is unreachable at runtime (the throw
+			// transfers control); it only carries the type. Without this the
+			// void-typed N_COND branch null-derefs downstream.
+			bool t_throw = dynamic_cast<TokenTHROW *>(tq->true_expr) != NULL;
+			bool f_throw = dynamic_cast<TokenTHROW *>(tq->false_expr) != NULL;
+			if (t_throw && !f_throw)
+				return node3(N_COND, cond,
+					node2(N_COMMA, translate_expr(tq->true_expr),
+					      translate_expr(tq->false_expr), tb),
+					translate_expr(tq->false_expr), tb);
+			if (f_throw && !t_throw)
+				return node3(N_COND, cond,
+					translate_expr(tq->true_expr),
+					node2(N_COMMA, translate_expr(tq->false_expr),
+					      translate_expr(tq->true_expr), tb), tb);
+			return node3(N_COND, cond,
 				translate_expr(tq->true_expr),
 				translate_expr(tq->false_expr), tb);
+		}
 	}
 
 	// Address-of variable
@@ -9313,14 +9343,21 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 // operand type; bare `throw;` -> __madc_rethrow(). The runtime sets the
 // exception, unwinds the cleanup stack to the active try's mark, and
 // longjmp's to the try's setjmp (or aborts if no try is active).
-node_t CirBuilder::translate_throw(TokenTHROW *th)
+// Build the throw CALL node — a VALUE-expression: `__madc_throw_int/double/cstr(expr)`
+// by the operand type; bare `throw;` -> `__madc_rethrow()`. Returned bare (NOT
+// wrapped in N_EXPR), so it composes as a value — a throw-EXPRESSION operand of a
+// ternary/comma ([expr.throw]). c2mir's N_EXPR is an expression-STATEMENT node with
+// no value attribute; feeding it into a binary/comma/cond operand position
+// null-derefs in c2mir's check() (confirmed via gdb at c2mir.c:10168). translate_throw
+// wraps this for the statement context.
+node_t CirBuilder::translate_throw_call(TokenTHROW *th)
 {
 	if (!th->throw_expr) {
 		// bare `throw;` — rethrow the in-flight exception.
 		need_output_extern("__madc_rethrow", false, {});
 		node_t call = node2(N_CALL, id("__madc_rethrow", th), list(), th);
 		CIR_NODE(call)->synth_from_origin = true;
-		return node2(N_EXPR, list(), call, th);
+		return call;
 	}
 	DataDef *edd = th->throw_expr->datadef();
 	DataType dt = edd ? edd->rawtype() : DataType::dtINT64;
@@ -9344,7 +9381,13 @@ node_t CirBuilder::translate_throw(TokenTHROW *th)
 				       : translate_expr(th->throw_expr));
 	node_t call = node2(N_CALL, id(sym, th), args, th);
 	CIR_NODE(call)->synth_from_origin = true;
-	return node2(N_EXPR, list(), call, th);
+	return call;
+}
+
+// throw STATEMENT lowering: wrap the throw call as an expression-statement (N_EXPR).
+node_t CirBuilder::translate_throw(TokenTHROW *th)
+{
+	return node2(N_EXPR, list(), translate_throw_call(th), th);
 }
 
 // Register a try-body object's destructor on the RUNTIME cleanup stack so it
