@@ -861,6 +861,11 @@ public:
 	// cleaned up at its exit (a compound statement already does this via
 	// translate_block; a bare statement has no scope of its own).
 	node_t translate_branch_stmt(TokenBase *tb);
+	// A loop body's own temporaries must live INSIDE the body so they are
+	// re-constructed each iteration; wraps a non-compound body (reusing
+	// translate_branch_stmt) but stashes the loop's init/cond/incr pending temps
+	// first so only the body's temps are wrapped.
+	node_t translate_loop_body(TokenBase *tb);
 	node_t translate_block(TokenCpnd *tc);
 	node_t translate_return(TokenRETURN *tr);
 	node_t translate_if(TokenIF *ti);

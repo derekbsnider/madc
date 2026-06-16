@@ -9252,6 +9252,23 @@ node_t CirBuilder::translate_branch_stmt(TokenBase *tb)
 	return node2(N_BLOCK, list(), items, tb);
 }
 
+// A loop body's own temporaries (`W(i)` in `for(...) take(W(i));`) must be
+// constructed INSIDE the body so they re-run each iteration. translate_branch_stmt
+// wraps a non-compound body's pending temps into a block — but a loop's init /
+// cond / incr are translated BEFORE the body and may have left their own temps
+// pending; those must NOT be swept into the body wrap (they belong to the
+// enclosing scope, as before). Stash them across the body translation, then
+// restore so the enclosing block still flushes them. (translate_branch_stmt
+// leaves m_pending_stmts empty, so a plain restore is exact.)
+node_t CirBuilder::translate_loop_body(TokenBase *tb)
+{
+	std::vector<node_t> saved;
+	saved.swap(m_pending_stmts);
+	node_t body = translate_branch_stmt(tb);
+	m_pending_stmts = saved;
+	return body;
+}
+
 node_t CirBuilder::translate_if(TokenIF *ti)
 {
 	if (ti->condition_decl) {
@@ -9310,8 +9327,9 @@ node_t CirBuilder::translate_while(TokenBase *tw)
 {
 	TokenWHILE *w = dynamic_cast<TokenWHILE *>(tw);
 	if (!w) return ignore();
-	return node3(N_WHILE, list(), translate_expr(w->condition),
-		     translate_stmt_required(w->statement), tw);
+	node_t cond = translate_expr(w->condition);
+	return node3(N_WHILE, list(), cond,
+		     translate_loop_body(w->statement), tw);
 }
 
 node_t CirBuilder::translate_for(TokenFOR *tf)
@@ -9374,7 +9392,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 	if (tf->increment)
 		for (TokenBase *ex : tf->incr_extras)
 			incr = node2(N_COMMA, incr, translate_expr(ex));
-	node_t body = translate_stmt_required(tf->statement);
+	node_t body = translate_loop_body(tf->statement);
 	return node5(N_FOR, list(), init, cond, incr, body, tf);
 }
 
@@ -9802,7 +9820,7 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 		append(body_items, node2(N_EXPR, list(), assign, fe));
 	}
 
-	node_t user_body = translate_stmt_required(fe->statement);
+	node_t user_body = translate_loop_body(fe->statement);
 	if (user_body) append(body_items, user_body);
 	node_t body = node2(N_BLOCK, list(), body_items, fe);
 
@@ -9902,7 +9920,7 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 		append(body_items, node2(N_EXPR, list(), assign, fe));
 	}
 
-	node_t user_body = translate_stmt_required(fe->statement);
+	node_t user_body = translate_loop_body(fe->statement);
 	if (user_body) append(body_items, user_body);
 	node_t body = node2(N_BLOCK, list(), body_items, fe);
 
@@ -9984,7 +10002,7 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv)
 		append(body_items, node2(N_EXPR, list(), assign, fe));
 	}
 
-	node_t user_body = translate_stmt_required(fe->statement);
+	node_t user_body = translate_loop_body(fe->statement);
 	if (user_body) append(body_items, user_body);
 	node_t body = node2(N_BLOCK, list(), body_items, fe);
 
@@ -9994,7 +10012,7 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv)
 node_t CirBuilder::translate_do(TokenDO *td)
 {
 	return node3(N_DO, list(), translate_expr(td->condition),
-		     translate_stmt_required(td->statement), td);
+		     translate_loop_body(td->statement), td);
 }
 
 node_t CirBuilder::translate_switch(TokenSWITCH *ts)
