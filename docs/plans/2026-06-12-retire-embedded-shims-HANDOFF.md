@@ -34,11 +34,22 @@ concept/coroutine set (blocked) — see §0a/§0c.
 - **Slice 2 decl keywords** (`f2c9656`): explicit/mutable/virtual/export/public/private/
   protected reserved CPP98; all sites already de-shimmed (contextual helpers) — clean.
 - **Slice 3 typename** (`5a1c9c5`): INVESTIGATED + DEFERRED (staged, NOT reserved).
-  Regresses the LATE free-fn-template instantiation of std::move/forward —
-  `int&& y=std::move(x)` drops the `(x)` call, emits `&__ns_std_move` (undeclared). Repro
-  **tmp/fwd.mad**. The bug is the move/forward return-type (`typename
-  std::remove_reference<_Tp>::type&&`) instantiation/reparse path, NOT a plain de-shim.
-  Fix that first (testmemtmplpackexpand, testlateinstproto), then reserve.
+  REFINED SCOPING (S17): reserving typename makes a FREE FUNCTION TEMPLATE that uses
+  std::forward/move fail to register — emit-C of testmemtmplpackexpand (with typename
+  temporarily reserved) shows `extern long __ns_std_forward();` (the implicit-decl
+  fallback) + a call to it, NO definition → "import of undefined item __ns_std_forward".
+  So at the call the template isn't found and an implicit extern is synthesized. The
+  capture/registration path is `skip_template_nonclass_declaration` →
+  `register_skipped_namespace_template_function` (TokenTEMPLATE::parse ~29798/29829);
+  name-extraction (`skipped_template_function_declarator_name_index` ~26265) finds the
+  name before the top-level `(` and looks robust, so suspect the capture token-scan or a
+  ttIdentifier-gated check that a typename keyword token bypasses. **REPRO ONLY in the
+  full test context** — testmemtmplpackexpand (member-template body `sink(std::forward<
+  Args>(args)...)`) or testlateinstproto, WITH typename temporarily reserved. Minimal
+  reducers (tmp/fwd.mad, tmp/tn2.mad) are CONFOUNDED: they fail at BASELINE too — a
+  SEPARATE pre-existing gap (explicit `f<int>(5)` free-fn-template-id calls, and
+  `int&& y=std::move(x)` rvalue-ref-to-int lowering) — so they don't isolate the typename
+  bug. Fix the capture path, then reserve typename (one table row).
 - **Slice 5 constexpr** (`5d64f7b`) — THE value slice. constexpr un-erased + reserved CPP11,
   which ACTIVATES the if-constexpr discard machinery (proven **tmp/ifcxd.mad**: dead branch
   not compiled). Built the token-aware ignored-decl-specifier skip madc lacked:
