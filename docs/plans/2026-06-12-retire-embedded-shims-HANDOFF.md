@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19d"** block immediately below (current state +
-NEXT), then "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19e"** block immediately below (current state +
+NEXT), then "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,54 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 19d — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+# ★ SESSION 19e — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+
+## 0. Orientation + STATE CHANGE
+Code HEAD **`e3cc45a`**, tree clean (after the audit/plan/handoff doc commit on
+top), fulltest **626 / 7 / 0 / 18** — same baseline, ZERO regression. Branch
+pushed to `origin/feature/retire-embedded-shims-claude`. develop untouched.
+
+## 0a. FIXED — the `vector<T*>` compile-time SIGSEGV (audit row 6 → Resolved)
+Executed `docs/plans/2026-06-16-fn-template-decl-lifetime-plan.md`. **Root cause:
+`TokenCppKeyword::clone()` returned `this`** (the shared `keyword_map` prototype),
+so every `constexpr`/`sizeof`/`this`/`nullptr`/named-cast/`decltype` occurrence in
+the parse aliased ONE mutable object. The lexer re-stamps line/col/file onto the
+returned token (push_precompiled_header_tokens, lexer.cpp:2065-2071) → the shared
+prototype got the LAST position written (the impossible `memory_resource.h:539`,
+past that file's 520-line EOF — the tell). A retained fn-template decl borrows its
+tokens (`retain_namespace_fn_template_body: ft.decl = tokens`), so `decl[0]` of any
+`constexpr`-led template (std::forward, advance, crbegin, operator==…) WAS the
+shared prototype; deleting any sibling occurrence freed it for ALL borrowers →
+partial-ordering std::forward's two overloads on a `vector<T*>` element access read
+the freed `decl[0]` (`t->id()` through a stale vtable) → SIGSEGV.
+
+This **explains the keystone mystery** the prior clone-at-registration attempt hit
+(cloning a keyword returned the singleton, so `decl[0]` never changed).
+
+**Fix (`e3cc45a`):** `TokenCppKeyword::clone()` → `new TokenCppKeyword(str)` (leaf
+class, exact reproduction, TokenIdent convention). Base `TokenKeyword::clone()`
+keeps `return this` (dispatch subtypes TokenDO/TokenIF/… would be sliced). This is
+Step-1 option **(c)** — de-alias at the source, deeper than the plan's (a)/(b),
+killing the whole hazard class.
+
+Diagnosis note: **ASan is unusable on this QNAP kernel** (refuses ASan's shadow
+mmap — "Failed to mmap" even with unlimited `ulimit -v` / `setarch -R`). Used `-g`
++ gdb (break at registration, compare `decl[0]` addrs across templates).
+
+## 0b. LIVE NEXT — the remaining 7 (now with row 6b underneath testvectorptr)
+testcontainerdtor, testmadc_ns, testmap, testset, testsubscript, testsubscriptarrow,
+testvectorptr. `vector<T*>` no longer crashes but still does NOT compile — it now
+hits a **pointer-element type-threading wall** (audit **row 6b**): `&a` →
+"lvalue required as unary & operand", `*v[0]` → "invalid type argument of unary *",
+the `int*` element collapsing to integer through the allocator/`__uninitialized_*`/
+`_S_relocate` chain. `testvectorptr` itself (ptr-to-CLASS) also hits "Expecting a
+type argument to rebind<>". Separate, deeper track. map/set are red-black-tree
+templates; subscript = operator[] paths. Reduce each 3-oracle at live HEAD; NOT
+necessarily one shared wall. NEVER A SHIM, deepest layer, fulltest after each.
+
+---
+
+# ★ SESSION 19d — COLD-START REHYDRATION — 2026-06-16
 
 ## 0. Orientation + STATE CHANGE
 Code HEAD **`9630c55`** (+ audit doc commit on top), tree clean, fulltest **626

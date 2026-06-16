@@ -1,10 +1,42 @@
 # Plan — fix the `vector<T*>` crash (fn-template decl token use-after-free), with clang's model as reference
 
-**Status:** plan (for the post-compaction session). **Branch:**
+**Status:** ✅ EXECUTED 2026-06-16 — the crash is FIXED at `e3cc45a`. **Branch:**
 `feature/retire-embedded-shims-claude` (pushed to origin). **Companion:**
-`docs/parity/feature-drops-audit.md` row 6 (the bug),
-`docs/plans/2026-06-13-embedded-ast-frontend-design.md` (the strategic cure),
-handoff `docs/plans/2026-06-12-retire-embedded-shims-HANDOFF.md`.
+`docs/parity/feature-drops-audit.md` (crash → Resolved; the residual vector<T*>
+*type* errors are now row 6b), `docs/plans/2026-06-13-embedded-ast-frontend-design.md`
+(the strategic cure), handoff `docs/plans/2026-06-12-retire-embedded-shims-HANDOFF.md`.
+
+---
+
+## OUTCOME (2026-06-16)
+
+The keystone mystery from §0 ("why did cloning at registration leave `decl[0]`
+at `0x…d79c00`?") is **resolved**: `TokenCppKeyword::clone()` returned `this` —
+the shared `keyword_map` prototype. So (a) cloning a keyword token at
+registration was a no-op (it returned the singleton), and (b) every
+`constexpr`/`sizeof`/`this`/… occurrence in the whole parse aliased ONE mutable
+object that the lexer re-stamped per use (hence the impossible
+`memory_resource.h:539`) and that a retained `ft.decl[0]` borrowed — so deleting
+any sibling occurrence freed it for ALL borrowers.
+
+Diagnosis path (ASan was unusable — this QNAP kernel refuses ASan's shadow mmap;
+used `-g` + gdb instead): broke at `retain_namespace_fn_template_body` and saw
+`forward`/`advance`/`crbegin`/`operator==`/… ALL register `decl[0] ==
+0x555555d79c00` with identical stale `file=memory_resource.h:539` ⇒ a single
+shared object, not per-occurrence tokens. Traced to `clone(){return this}`.
+
+Fix (`e3cc45a`): `TokenCppKeyword::clone()` returns `new TokenCppKeyword(str)`
+(leaf class — exact reproduction; the TokenIdent convention). Base
+`TokenKeyword::clone()` keeps `return this` (dispatch subtypes TokenDO/TokenIF/…
+would be sliced). This was Step-1 option **(c)** — fix the aliasing at its
+source — which is deeper than the plan's (a)/(b) and fixes the whole hazard
+class, not just the ordering reader.
+
+Validation: `tmp/vp1.mad` (`vector<int*>`) no longer SIGSEGVs the compiler;
+fulltest **626/7/0/18**, identical baseline, zero regression (the change touches
+every cpp-keyword). `vector<T*>` still does not COMPILE — it now hits a
+pointer-element type-threading wall (audit **row 6b**), which is a separate,
+deeper track.
 
 ---
 
