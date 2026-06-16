@@ -993,6 +993,204 @@ TokenBase *Program::consume_gnu_asm_label(TokenBase *nt,
     return nt;
 }
 
+// Skip (or lower the recognized copy shapes of) a GNU asm STATEMENT.
+// `tb` is the asm introducer; shared by the ttIdentifier and ttKeyword
+// arms of parseStatement so reserving `asm` as a keyword keeps the skip.
+TokenBase *Program::skip_gnu_asm_statement(TokenBase *tb)
+{
+	    // optional volatile qualifier
+	    if ( peekToken()
+	      && peekToken()->type() == TokenType::ttKeyword
+	      && peekToken()->id() == TokenID::tkVOLATILE )
+		nextToken();
+	    else if ( peekToken() && peekToken()->type() == TokenType::ttIdentifier )
+	    {
+		std::string &q = ((TokenIdent *)peekToken())->str;
+		if ( q == "volatile" || q == "__volatile__" )
+		    nextToken();
+	    }
+	    TokenBase *ob = nextToken();
+	    if ( ob && ob->id() == TokenID::tkOpBrk )
+	    {
+		TokenBase *tmpl = nextToken();
+		bool parsed_simple_copy = false;
+		if ( tmpl && tmpl->type() == TokenType::ttString
+		  && ((TokenStr *)tmpl)->str.empty()
+		  && peekToken() && peekToken()->id() == TokenID::tkColon )
+		{
+		    nextToken(); // ':'
+		    TokenBase *out_c = nextToken();
+		    TokenBase *out_ob = nextToken();
+		    if ( out_c && out_c->type() == TokenType::ttString
+		      && out_ob && out_ob->id() == TokenID::tkOpBrk )
+		    {
+			std::string out_constraint = ((TokenStr *)out_c)->str;
+			if ( out_constraint == "+m" )
+			{
+			    int out_depth = 1;
+			    while ( out_depth > 0 )
+			    {
+				TokenBase *t = nextToken();
+				if ( !t ) break;
+				if ( t->id() == TokenID::tkOpBrk ) ++out_depth;
+				else if ( t->id() == TokenID::tkClBrk ) --out_depth;
+			    }
+			    int asm_depth = 1;
+			    while ( asm_depth > 0 )
+			    {
+				TokenBase *t = nextToken();
+				if ( !t ) break;
+				if ( t->id() == TokenID::tkOpBrk ) ++asm_depth;
+				else if ( t->id() == TokenID::tkClBrk ) --asm_depth;
+			    }
+			    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+				return nextToken();
+			    return tb;
+			}
+			TokenBase *out_tb = nextToken();
+			TokenBase *out_expr = out_tb ? parseExpression(out_tb, true) : NULL;
+			TokenBase *out_cb = nextToken();
+			TokenBase *next_clause = nextToken();
+			if ( out_expr
+			  && out_cb && out_cb->id() == TokenID::tkClBrk
+			  && next_clause && next_clause->id() == TokenID::tkClBrk )
+			{
+			    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+				nextToken();
+			    if ( out_constraint == "+r" )
+				return out_expr;
+			    return tb;
+			}
+			if ( out_expr
+			  && out_cb && out_cb->id() == TokenID::tkClBrk
+			  && next_clause && next_clause->id() == TokenID::tkSemi )
+			{
+			    if ( out_constraint == "+r" )
+				return out_expr;
+			    return next_clause;
+			}
+			TokenBase *in_c = nextToken();
+			TokenBase *in_ob = nextToken();
+			if ( out_expr
+			  && out_cb && out_cb->id() == TokenID::tkClBrk
+			  && next_clause && next_clause->id() == TokenID::tkColon
+			  && in_c && in_c->type() == TokenType::ttString
+			  && in_ob && in_ob->id() == TokenID::tkOpBrk )
+			{
+			    TokenBase *in_tb = nextToken();
+			    TokenBase *in_expr = in_tb ? parseExpression(in_tb, true) : NULL;
+			    TokenBase *in_cb = nextToken();
+			    TokenBase *close = nextToken();
+			    std::string in_constraint = ((TokenStr *)in_c)->str;
+			    // If close is ':' (clobber list), consume
+			    // remaining tokens up to outer ')'.
+			    if ( close && close->id() == TokenID::tkColon )
+			    {
+				int rem = 1;
+				while ( rem > 0 )
+				{
+				    TokenBase *t = nextToken();
+				    if ( !t ) break;
+				    if ( t->id() == TokenID::tkOpBrk ) ++rem;
+				    else if ( t->id() == TokenID::tkClBrk ) --rem;
+				}
+				close = new TokenClBrk();
+			    }
+			    if ( in_expr
+			      && in_cb && in_cb->id() == TokenID::tkClBrk
+			      && close && close->id() == TokenID::tkClBrk
+			      && out_constraint == "=r"
+			      && in_constraint == "0" )
+			    {
+				TokenAssign *assign = new TokenAssign();
+				assign->file = tb->file;
+				assign->line = tb->line;
+				assign->column = tb->column;
+				assign->left = out_expr;
+				assign->right = in_expr;
+				if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+				    nextToken();
+				return assign;
+			    }
+			    if ( in_expr
+			      && in_cb && in_cb->id() == TokenID::tkClBrk
+			      && close && close->id() == TokenID::tkClBrk
+			      && out_constraint == "=m"
+			      && in_constraint == "m" )
+			    {
+				if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+				    return nextToken();
+				return tb;
+			    }
+			    // Unrecognized two-operand asm pattern — consume
+			    // any remaining tokens until the outer asm ')' is
+			    // found, then return as no-op. We track paren
+			    // depth starting from `close` (which may be `,`,
+			    // `:`, or a paren itself).
+			    {
+				int rem = 1; // 1 for the outer '(' consumed at asm entry
+				if ( close && close->id() == TokenID::tkOpBrk ) ++rem;
+				else if ( close && close->id() == TokenID::tkClBrk ) --rem;
+				while ( rem > 0 )
+				{
+				    TokenBase *t = nextToken();
+				    if ( !t ) break;
+				    if ( t->id() == TokenID::tkOpBrk ) ++rem;
+				    else if ( t->id() == TokenID::tkClBrk ) --rem;
+				}
+				parsed_simple_copy = true;
+				if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+				    return nextToken();
+				return tb;
+			    }
+			}
+			// Unrecognized asm pattern — the output operand
+			// was consumed but the remaining clauses don't match
+			// a known shape. Consume any remaining tokens until
+			// the outer asm ')' is balanced. The outer '(' was
+			// consumed at asm entry; out_ob/out_cb cancel; so we
+			// need 1 more ')' to close, adjusted by any parens
+			// in in_c and in_ob.
+			{
+			    int rem = 1; // for the outer '('
+			    if ( in_c && in_c->id() == TokenID::tkOpBrk ) ++rem;
+			    else if ( in_c && in_c->id() == TokenID::tkClBrk ) --rem;
+			    if ( in_ob && in_ob->id() == TokenID::tkOpBrk ) ++rem;
+			    else if ( in_ob && in_ob->id() == TokenID::tkClBrk ) --rem;
+			    while ( rem > 0 )
+			    {
+				TokenBase *t = nextToken();
+				if ( !t ) break;
+				if ( t->id() == TokenID::tkOpBrk ) ++rem;
+				else if ( t->id() == TokenID::tkClBrk ) --rem;
+			    }
+			    parsed_simple_copy = true;
+			    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+				return nextToken();
+			    return tb;
+			}
+		    }
+		}
+		if ( !parsed_simple_copy )
+		{
+		    int depth = 1;
+		    while ( depth > 0 )
+		    {
+			TokenBase *t = nextToken();
+			if ( !t ) break;
+			if ( t->id() == TokenID::tkOpBrk ) ++depth;
+			else if ( t->id() == TokenID::tkClBrk ) --depth;
+		    }
+		}
+	    }
+	    // Return the semicolon as the statement (no-op).
+	    // If the asm is the body of `if (...) asm(...);`, the
+	    // caller needs a non-NULL return.
+	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+		return nextToken();
+	    return tb;
+}
+
 // Skip C23 [[...]] attributes: [[gnu::noipa]], [[nodiscard]], etc.
 // Returns the next meaningful token after any [[...]] sequences.
 void Program::skip_c23_attributes()
@@ -34209,205 +34407,12 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    Throw(tb) << "expected ';' after '__label__' declaration" << flush;
 		return tn;
 	    }
-	    // asm / __asm__ / __asm: skip the entire statement.
-	    // GCC testsuite uses asm("" : ...) as an optimizer barrier;
-	    // madc has no inline assembly support, so consume and discard.
+	    // asm / __asm__ / __asm: skip the entire statement (shared helper;
+	    // also reached from the ttKeyword arm when `asm` is reserved).
 	    {
 		std::string &id = ((TokenIdent *)tb)->str;
 		if ( id == "asm" || id == "__asm__" || id == "__asm" )
-		{
-		    // optional volatile qualifier
-		    if ( peekToken()
-		      && peekToken()->type() == TokenType::ttKeyword
-		      && peekToken()->id() == TokenID::tkVOLATILE )
-			nextToken();
-		    else if ( peekToken() && peekToken()->type() == TokenType::ttIdentifier )
-		    {
-			std::string &q = ((TokenIdent *)peekToken())->str;
-			if ( q == "volatile" || q == "__volatile__" )
-			    nextToken();
-		    }
-		    TokenBase *ob = nextToken();
-		    if ( ob && ob->id() == TokenID::tkOpBrk )
-		    {
-			TokenBase *tmpl = nextToken();
-			bool parsed_simple_copy = false;
-			if ( tmpl && tmpl->type() == TokenType::ttString
-			  && ((TokenStr *)tmpl)->str.empty()
-			  && peekToken() && peekToken()->id() == TokenID::tkColon )
-			{
-			    nextToken(); // ':'
-			    TokenBase *out_c = nextToken();
-			    TokenBase *out_ob = nextToken();
-			    if ( out_c && out_c->type() == TokenType::ttString
-			      && out_ob && out_ob->id() == TokenID::tkOpBrk )
-			    {
-				std::string out_constraint = ((TokenStr *)out_c)->str;
-				if ( out_constraint == "+m" )
-				{
-				    int out_depth = 1;
-				    while ( out_depth > 0 )
-				    {
-					TokenBase *t = nextToken();
-					if ( !t ) break;
-					if ( t->id() == TokenID::tkOpBrk ) ++out_depth;
-					else if ( t->id() == TokenID::tkClBrk ) --out_depth;
-				    }
-				    int asm_depth = 1;
-				    while ( asm_depth > 0 )
-				    {
-					TokenBase *t = nextToken();
-					if ( !t ) break;
-					if ( t->id() == TokenID::tkOpBrk ) ++asm_depth;
-					else if ( t->id() == TokenID::tkClBrk ) --asm_depth;
-				    }
-				    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-					return nextToken();
-				    return tb;
-				}
-				TokenBase *out_tb = nextToken();
-				TokenBase *out_expr = out_tb ? parseExpression(out_tb, true) : NULL;
-				TokenBase *out_cb = nextToken();
-				TokenBase *next_clause = nextToken();
-				if ( out_expr
-				  && out_cb && out_cb->id() == TokenID::tkClBrk
-				  && next_clause && next_clause->id() == TokenID::tkClBrk )
-				{
-				    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-					nextToken();
-				    if ( out_constraint == "+r" )
-					return out_expr;
-				    return tb;
-				}
-				if ( out_expr
-				  && out_cb && out_cb->id() == TokenID::tkClBrk
-				  && next_clause && next_clause->id() == TokenID::tkSemi )
-				{
-				    if ( out_constraint == "+r" )
-					return out_expr;
-				    return next_clause;
-				}
-				TokenBase *in_c = nextToken();
-				TokenBase *in_ob = nextToken();
-				if ( out_expr
-				  && out_cb && out_cb->id() == TokenID::tkClBrk
-				  && next_clause && next_clause->id() == TokenID::tkColon
-				  && in_c && in_c->type() == TokenType::ttString
-				  && in_ob && in_ob->id() == TokenID::tkOpBrk )
-				{
-				    TokenBase *in_tb = nextToken();
-				    TokenBase *in_expr = in_tb ? parseExpression(in_tb, true) : NULL;
-				    TokenBase *in_cb = nextToken();
-				    TokenBase *close = nextToken();
-				    std::string in_constraint = ((TokenStr *)in_c)->str;
-				    // If close is ':' (clobber list), consume
-				    // remaining tokens up to outer ')'.
-				    if ( close && close->id() == TokenID::tkColon )
-				    {
-					int rem = 1;
-					while ( rem > 0 )
-					{
-					    TokenBase *t = nextToken();
-					    if ( !t ) break;
-					    if ( t->id() == TokenID::tkOpBrk ) ++rem;
-					    else if ( t->id() == TokenID::tkClBrk ) --rem;
-					}
-					close = new TokenClBrk();
-				    }
-				    if ( in_expr
-				      && in_cb && in_cb->id() == TokenID::tkClBrk
-				      && close && close->id() == TokenID::tkClBrk
-				      && out_constraint == "=r"
-				      && in_constraint == "0" )
-				    {
-					TokenAssign *assign = new TokenAssign();
-					assign->file = tb->file;
-					assign->line = tb->line;
-					assign->column = tb->column;
-					assign->left = out_expr;
-					assign->right = in_expr;
-					if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-					    nextToken();
-					return assign;
-				    }
-				    if ( in_expr
-				      && in_cb && in_cb->id() == TokenID::tkClBrk
-				      && close && close->id() == TokenID::tkClBrk
-				      && out_constraint == "=m"
-				      && in_constraint == "m" )
-				    {
-					if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-					    return nextToken();
-					return tb;
-				    }
-				    // Unrecognized two-operand asm pattern — consume
-				    // any remaining tokens until the outer asm ')' is
-				    // found, then return as no-op. We track paren
-				    // depth starting from `close` (which may be `,`,
-				    // `:`, or a paren itself).
-				    {
-					int rem = 1; // 1 for the outer '(' consumed at asm entry
-					if ( close && close->id() == TokenID::tkOpBrk ) ++rem;
-					else if ( close && close->id() == TokenID::tkClBrk ) --rem;
-					while ( rem > 0 )
-					{
-					    TokenBase *t = nextToken();
-					    if ( !t ) break;
-					    if ( t->id() == TokenID::tkOpBrk ) ++rem;
-					    else if ( t->id() == TokenID::tkClBrk ) --rem;
-					}
-					parsed_simple_copy = true;
-					if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-					    return nextToken();
-					return tb;
-				    }
-				}
-				// Unrecognized asm pattern — the output operand
-				// was consumed but the remaining clauses don't match
-				// a known shape. Consume any remaining tokens until
-				// the outer asm ')' is balanced. The outer '(' was
-				// consumed at asm entry; out_ob/out_cb cancel; so we
-				// need 1 more ')' to close, adjusted by any parens
-				// in in_c and in_ob.
-				{
-				    int rem = 1; // for the outer '('
-				    if ( in_c && in_c->id() == TokenID::tkOpBrk ) ++rem;
-				    else if ( in_c && in_c->id() == TokenID::tkClBrk ) --rem;
-				    if ( in_ob && in_ob->id() == TokenID::tkOpBrk ) ++rem;
-				    else if ( in_ob && in_ob->id() == TokenID::tkClBrk ) --rem;
-				    while ( rem > 0 )
-				    {
-					TokenBase *t = nextToken();
-					if ( !t ) break;
-					if ( t->id() == TokenID::tkOpBrk ) ++rem;
-					else if ( t->id() == TokenID::tkClBrk ) --rem;
-				    }
-				    parsed_simple_copy = true;
-				    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-					return nextToken();
-				    return tb;
-				}
-			    }
-			}
-			if ( !parsed_simple_copy )
-			{
-			    int depth = 1;
-			    while ( depth > 0 )
-			    {
-				TokenBase *t = nextToken();
-				if ( !t ) break;
-				if ( t->id() == TokenID::tkOpBrk ) ++depth;
-				else if ( t->id() == TokenID::tkClBrk ) --depth;
-			    }
-			}
-		    }
-		    // Return the semicolon as the statement (no-op).
-		    // If the asm is the body of `if (...) asm(...);`, the
-		    // caller needs a non-NULL return.
-		    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-			return nextToken();
-		    return tb;
-		}
+		    return skip_gnu_asm_statement(tb);
 	    }
 	    // check if identifier is a user-defined type (class/struct registered in datatype_map)
 	    {
@@ -34742,6 +34747,8 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		const std::string &kw = ((TokenIdent *)tb)->str;
 		if ( is_static_assert_identifier(kw) )
 		    return parse_static_assert_statement(tb);
+		if ( kw == "asm" || kw == "__asm__" || kw == "__asm" )
+		    return skip_gnu_asm_statement(tb);
 		resetPrevToken();
 		return parseExprStmt(tb);
 	    }

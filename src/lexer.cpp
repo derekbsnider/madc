@@ -2141,7 +2141,7 @@ void Program::add_keywords()
 	// (asm-statement dispatch, the move/forward template-instantiation reparse,
 	// a __x scope-loss, math.h + string operator+ codegen). Activate in
 	// validated slices per docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
-	//   C++98: asm explicit export mutable virtual this typename sizeof
+	//   C++98: explicit export mutable virtual this typename sizeof
 	//          public private protected typeid true false
 	//          static_cast const_cast reinterpret_cast dynamic_cast
 	//   C++11: decltype alignof nullptr static_assert thread_local
@@ -2155,6 +2155,15 @@ void Program::add_keywords()
 	//     tokens. Listed here so the registry is COMPLETE/accounted-for:
 	//       char8_t, concept, requires, co_await, co_return, co_yield  (C++20)
 	//     Tracked in docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
+	//
+	// --- ACTIVATED SLICES (validated, zero-regression) ---
+	// Slice 1 (asm): the standard C++ keyword `asm`. Statement-position
+	// asm is skipped by the shared Program::skip_gnu_asm_statement, reached
+	// from BOTH the ttIdentifier and ttKeyword parseStatement arms; asm
+	// labels on declarations go through consume_gnu_asm_label (dynamic_cast
+	// to TokenIdent, works for the keyword token). The GNU spellings
+	// `__asm__`/`__asm` stay contextual (double-underscore impl-reserved).
+	{ "asm",              STD_CPP98 },
 	{ 0,                  STD_CPP98 }
     };
     for ( size_t i = 0; i < sizeof(cpp_reserved)/sizeof(cpp_reserved[0]); ++i )

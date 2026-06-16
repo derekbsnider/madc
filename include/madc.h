@@ -2454,6 +2454,12 @@ public:
     // position; consumed (and cleared) by the function-declaration parse.
     bool pending_no_strict_aliasing;
     TokenBase *consume_gnu_asm_label(TokenBase *nt, std::string *alias_target);
+    // Skip (or lower the recognized `=r`/`+r`/`+m`/... copy shapes of) a GNU
+    // asm STATEMENT. `tb` is the asm introducer (identifier or reserved
+    // tkCPPKEYWORD spelling). Shared by both the ttIdentifier and ttKeyword
+    // arms of parseStatement so reserving `asm` as a keyword does not lose the
+    // statement-level skip.
+    TokenBase *skip_gnu_asm_statement(TokenBase *tb);
     void skip_c23_attributes();
     size_t parse_gnu_vector_size_attribute();
     void consume_typedef_gnu_attributes(std::string *mode_name = NULL,
