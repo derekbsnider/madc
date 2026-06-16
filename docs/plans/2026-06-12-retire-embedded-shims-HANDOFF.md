@@ -88,26 +88,42 @@ mangled-direct ctor call (`_ZNSaIcEC1ERKS_(void*,void*)`) — gcc rejects "confl
 types". Fix = a shared `typed_proto_syms` set (Pass 0.75 + Pass 1 + materialized protos);
 the two `m_output_externs` flushes skip those symbols. Zero-regression; --emit=c11 no
 longer double-declares them.
-**REMAINING (the live testvector wall): ONE c2mir check error — an int↔pointer mismatch in
-the `_Vector_base<int,std::allocator<int>>` instantiation**, pinned (unhelpfully) to
-`stl_vector.h:428:54` (the vector class source position). c2mir prints the triple "using
-integer without cast for pointer type parameter" / "incompatible argument type for pointer
-type parameter" / "assigning pointer without cast to integer" — a place where a pointer and
-an integer are conflated (suspect the `_Vector_impl_data` union of `_M_end_of_storage`
-(pointer) vs `_M_allocated_capacity` (size_type), or pointer arithmetic in `_M_create`/
-`allocate` mixing size_type and pointer). LOCALIZER NOTE: gcc on --emit=c11 is CONFOUNDED
-here — it first errors on cin/cout `extern ... __attribute__((cleanup(...)))` (cleanup on a
-non-local, which c2mir tolerates but gcc rejects), masking the real int↔pointer site. Find
-the offending CALL in --emit=c11 directly (search the vector ctor / _M_create / allocate
-path for an int arg to a pointer param). The 12 container/STALE-API failures are unchanged
-(also gated by §6b: `__is_constructible`, empty-`_Rb_tree` dtor, `_Tp2` dup).
+**REMAINING (the live testvector wall): ONE c2mir error — PRECISELY LOCALIZED (S17).** It is
+NOT a _Vector_impl layout issue; it is a `std::forward`-of-OBJECT lowering bug at a
+member-template construct call. The emitted C (strip the cin/cout cleanup-externs first —
+`sed -E 's/ __attribute__\(\(cleanup\([^)]*\)\)\)//g'` — because gcc errors on those FIRST and
+masks the real site) shows, inside `allocator_traits<allocator<string>>::construct__mti`:
+```
+__new_allocator_..._construct__mti((__new_allocator*)__a, __p, (*__ns_std_forward__o4((void*)__args)));
+```
+`__ns_std_forward__o4` returns `basic_string*` (a reference), but it is **dereferenced** to a
+VALUE and passed to construct's 3rd param, which is `basic_string*` (the object passed by
+rvalue-ref = pointer in madc's lowering). struct-value→pointer is a c2mir hard error
+("incompatible argument type for pointer type parameter"). For the INT element the same shape
+(`*__ns_std_forward__o2(...)` → int value into `int*` p2) is only a c2mir WARNING ("using
+integer without cast for pointer type parameter"), so int silently miscompiles too. CORRECT:
+`std::forward<T>(args)` passed to a by-ref object param must NOT deref — pass the pointer
+(what `object_arg_addr` line 1072 does for ref-returning calls).
+**VERIFIED (S17): the deref is NOT emitted by the 3 standard arg-coercion paths** — gated
+diag `MADC_DIAG_ARGCOERCE` on cir_builder.cpp:1294 (free-fn), :3786 (method), :3643 (member-
+template extern, void*-cast __this) fired for NONE of the construct calls. So either `callee`
+is NULL at the real lowering site (→ `ref_params` unknown → arg defaults to value/deref) or a
+4TH member-template-instantiation lowering path generates this call. NEXT: find that path
+(grep the `__mti` / member-template-instantiation call emission), ensure the rvalue-ref OBJECT
+param is recognized (callee resolved + ref_params set) so the forward arg flows through
+object_arg_addr (pointer) not translate_expr (deref). Same move/forward-of-object family as
+the typename blocker (slice 3) and testmemtmplpackexpand. The 12 container/STALE-API failures
+are unchanged (§6b: `__is_constructible`, empty-`_Rb_tree` dtor, `_Tp2` dup).
 
 ## 0c. ★ NEXT
-**★ LIVE NEXT = the testvector int↔pointer c2mir error (§0b)** — the single remaining wall
-on testvector after push_back cleared + dedup fixed. Find the int-arg-to-pointer-param call
-in `--emit=c11 tests/testvector.mad` (vector ctor / `_M_create` / `allocate` path; the gcc
-localizer is confounded by cin/cout cleanup-externs — search the emitted C directly). This
-directly drives the 12-failure metric (testvector/testvectorptr + likely the subscript set).
+**★ LIVE NEXT = the testvector `std::forward`-of-object deref (§0b — PRECISELY LOCALIZED)**:
+the construct member-template call passes `*__ns_std_forward__o4(args)` (a VALUE) to a
+`basic_string*` (by-rvalue-ref object) param — struct-value→pointer, c2mir hard error. The
+deref is NOT from the 3 standard arg-coercion paths (verified via MADC_DIAG_ARGCOERCE) →
+find the 4th member-template-instantiation call path (callee likely NULL → ref_params lost),
+make the forward arg flow through `object_arg_addr` (pointer) not `translate_expr` (deref).
+Same forward-of-object family as typename (slice 3) + testmemtmplpackexpand. Drives the
+12-failure metric (testvector/testvectorptr + likely the subscript set).
 Registry leftovers (lower priority, both BLOCKED): **typename** (slice 3 — std::move/forward
 late-instantiation reparse fix; clean repro testlateinstproto with typename reserved, NOT
 tmp/fwd.mad which fails baseline) and **concept/requires/co_*** (slice 8 — de-shim the
