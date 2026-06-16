@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19 CLOSE"** block immediately below (current state +
-NEXT), then "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19b CONTINUED"** block immediately below (current state +
+NEXT), then "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -12,6 +12,81 @@ CLOSE). The per-part STATUS banners are detailed chronology, read only for
 depth. The governing process document is **`madc-header-partition-handoff.md`
 (repo root)** — every decision here must trace to it. Companion memory:
 `project_retire_embedded_shims` + `project_header_partition_architecture`.
+
+---
+
+# ★ SESSION 19b CONTINUED — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+
+## 0. Orientation + FRAMING CORRECTION
+Code HEAD **`39cb6a9`**, tree clean, fulltest **619 passed / 12 failed / 18 skipped**
+(the 12 = unchanged container cluster). Branch LOCAL-ONLY; develop untouched.
+**FRAMING (important, user-corrected): the vector<string> reallocation path is a deep
+INSTANTIATION CHAIN, not a finite set of numbered "walls."** Each fix lets the parser
+reach the next referenced-but-not-yet-instantiated symbol. Do NOT claim "last wall";
+testvector going green is the ONLY completion signal, and the remaining depth is unknown.
+Good news: the last several were the SAME root-cause class (instantiation scope /
+exception-safety), so they fall together; not all are new features.
+
+## 0a. This continuation landed THREE more committed fixes (each fulltest-green, zero-regr):
+- **`510e6fe` __is_empty trait** (gcc-13 `__is_empty`, faithful class+bare-struct; the
+  allocator-EBO `is_empty<allocator<T>>` in the alloc_traits chain). +testisempty.
+- **`ac7bf6b` error-reporting corruption FIX** (HIGH VALUE — had been masking diagnosis
+  ALL session): (1) the shared `Program::Throw` throwstream has exceptions(badbit) and was
+  left dirty after each throw, so the NEXT `Throw(t) << msg` re-threw ios_failure AT THE
+  `<<` — turning every error after the first into a bogus "basic_ios::clear: iostream
+  error" with the real message lost. Fixed by reset (clear()+str("")) in
+  `throwstream::operator()`. (2) the fold cerr-mute used rdbuf(NULL) (sets badbit on every
+  write); replaced with a safe swallowing `MadcNullStreambuf`. Errors now report
+  real message/location. (Keeps gated MADC_DIAG_FNTPLTHROW.)
+- **`39cb6a9` exception-safe scope restore** (THE fix that advanced the chain): the
+  template-instantiation re-parse (`instantiate_template_use` ~3293 + the partial-spec
+  re-parse ~30258) swaps `compounds`/class_scope_stack/cur_func_name/etc. to a fresh EMPTY
+  context, calls `parseKeyword`, restores on the NORMAL path only (no try/catch). A throw
+  from the re-parse (benign, caught upstream) skipped the restore -> `compounds` stayed
+  EMPTY -> the CALLER's locals/params vanished. Confirmed via scope dump: parsing
+  `__uninitialized_move_if_noexcept_a`'s body, after arg1's nested instantiation
+  threw-and-recovered, `compounds=0` so its `__last` param was "undeclared". Fix: try/catch
+  that mirrors the normal restore + rethrows. testvector advanced PAST
+  __uninitialized_move_if_noexcept_a.
+
+## 0b. ★ LIVE NEXT — next chain symbol: `__ns_std___check_constructible` undefined import
+testvector now fails at MIR-link `import of undefined item __ns_std___check_constructible`.
+NOTE: with `39cb6a9`, the gated MADC_DIAG_FNTPLTHROW diag is now SILENT for testvector — so
+`__check_constructible` is NOT a fn-template-body instantiation failure (different class:
+referenced but instantiation not attempted, or a non-fn-template helper). `__check_constructible`
+is libstdc++'s is_constructible helper (`__bool_constant<__is_constructible(_Tp,_Args...)>`
+family) — likely needs the `__is_constructible` intrinsic (madc has __is_assignable but NOT
+__is_constructible — verify) OR its instantiation isn't triggered. NEXT: emit-C
+(`bin/madc --emit=c11 tests/testvector.mad`) and grep for the `extern`-but-undefined
+`__check_constructible` / `__is_constructible` site to see the exact construct + caller.
+
+## 0c. ★ AUDIT how many walls remain (user-requested)
+MADC_DIAG_FNTPLTHROW (gated) lists every fn-template-body instantiation failure in ONE pass
+— but it is INCOMPLETE (misses non-fn-template undefined imports like __check_constructible).
+A COMPLETE audit = enumerate ALL undefined MIR-link imports in one pass. MIR-link currently
+reports only the FIRST. Two ways to build it: (a) `bin/madc --emit=c11 tests/testvector.mad >
+tv.c` then find every symbol that is `extern`-declared / called but never DEFINED in tv.c
+(the full undefined-import set, statically); (b) make the MIR-link loop collect+report all
+undefined imports instead of aborting on the first. (a) is quick and needs no code. DO THIS
+to give a real remaining-wall count before grinding one-at-a-time.
+**AUDIT RESULT (2026-06-16, HEAD 39cb6a9):** ran (a) — `bin/madc --emit=c11
+tests/testvector.mad > tv.c`; diff `extern`-declared fn symbols vs defined ones;
+filter to `^__ns_` (madc's own namespaced instantiations — the `_ZNSt...`/`_Znwm`/
+`__madc_*`/`_ZSt...` undefineds are LEGIT external libstdc++/runtime symbols that
+resolve at JIT-link, NOT walls). Result: **exactly 1 real madc-instantiation wall
+visible right now = `__ns_std___check_constructible`.** (35 of the 36 raw undefineds
+are legit externals.) Caveat: clearing it likely exposes the next chain symbol, so
+"1 visible" is a lower bound on total, but a real bounded snapshot. Re-run the audit
+after each fix to watch the count.
+
+## 0d. Method notes (carry forward)
+- 3-ORACLE FIRST (g++/clang/madc); NEVER A SHIM (deepest layer).
+- Diagnosis is now CLEAN (error-corruption fixed) — trust the error message/location again.
+- gdb works on bin/madc (has symbols): `break throwbuf::sync` / `catch throw` + `bt` pinned
+  the scope bug. Use function-name breakpoints (gdb can't resolve `file.cpp:line` paths here).
+- Reducers r35/36/38/39 did NOT reproduce the scope bug (needed the deep real chain) — the
+  scope dump (findVariable of sibling params + compounds.size at the undeclared throw) was
+  the decisive instrument.
 
 ---
 
