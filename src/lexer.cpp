@@ -1042,14 +1042,12 @@ void Program::_tokenizer_init()
     define_map["inline"] = "";
     define_map["__inline__"] = "";
     define_map["__inline"] = "";
-    // constexpr is a real reserved token (slice 5) so `if constexpr` can
-    // discard its non-taken branch (the dormant TokenIF machinery); it is
-    // consumed as an ignored decl-specifier elsewhere
+    // constexpr (slice 5) / consteval / constinit (slice 6) are real reserved
+    // tokens, no longer erased: constexpr activates the TokenIF `if constexpr`
+    // discard machinery, and all three are consumed as ignored decl-specifiers
     // (TokenCppKeyword::parse / the member-specifier loop /
-    // is_ignored_cpp_specifier_token). consteval/constinit stay erased until
-    // slice 6 wires their (identical) decl-specifier handling.
-    define_map["consteval"] = "";
-    define_map["constinit"] = "";
+    // is_ignored_cpp_specifier_token, which already recognize all three
+    // spellings).
     // noexcept is NOT a plain empty define nor a function-like macro: the
     // macro path splits its argument on top-level commas, and the C
     // preprocessor does not treat <...> as grouping, so a template-id
@@ -2201,6 +2199,10 @@ void Program::add_keywords()
 	// and storage-delegated `static constexpr` / `const constexpr`) and the
 	// member-specifier loop; is_ignored_cpp_specifier_token recognizes it.
 	{ "constexpr",        STD_CPP11 },
+	// Slice 6 (consteval/constinit, C++20): ignored decl-specifiers, handled
+	// by the same is_ignored_cpp_specifier_token path as constexpr.
+	{ "consteval",        STD_CPP20 },
+	{ "constinit",        STD_CPP20 },
 	{ 0,                  STD_CPP98 }
     };
     for ( size_t i = 0; i < sizeof(cpp_reserved)/sizeof(cpp_reserved[0]); ++i )
