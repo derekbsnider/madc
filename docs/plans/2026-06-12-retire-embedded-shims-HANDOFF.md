@@ -49,16 +49,25 @@ Diagnosis note: **ASan is unusable on this QNAP kernel** (refuses ASan's shadow
 mmap — "Failed to mmap" even with unlimited `ulimit -v` / `setarch -R`). Used `-g`
 + gdb (break at registration, compare `decl[0]` addrs across templates).
 
-## 0b. LIVE NEXT — the remaining 7 (now with row 6b underneath testvectorptr)
-testcontainerdtor, testmadc_ns, testmap, testset, testsubscript, testsubscriptarrow,
-testvectorptr. `vector<T*>` no longer crashes but still does NOT compile — it now
-hits a **pointer-element type-threading wall** (audit **row 6b**): `&a` →
-"lvalue required as unary & operand", `*v[0]` → "invalid type argument of unary *",
-the `int*` element collapsing to integer through the allocator/`__uninitialized_*`/
-`_S_relocate` chain. `testvectorptr` itself (ptr-to-CLASS) also hits "Expecting a
-type argument to rebind<>". Separate, deeper track. map/set are red-black-tree
-templates; subscript = operator[] paths. Reduce each 3-oracle at live HEAD; NOT
-necessarily one shared wall. NEVER A SHIM, deepest layer, fulltest after each.
+## 0b. LIVE NEXT — the remaining 7 (UPDATED after b619c68)
+Triaged the 7 into buckets (HEAD @b619c68, fulltest 626/7):
+- **map/set node instantiation** — testmadc_ns, testsubscript (clean std, VALID).
+  FIXED the first wall this session: `b619c68` scopes a nested struct tag by its
+  enclosing class → `map<string,string>` after `set<string>` no longer throws
+  "Struct '_Tp2' already defined" (libstdc++ `__aligned_membuf`'s nested `_Tp2`).
+  **NEXT shared wall = `_M_valptr` (audit row 7):** `static_cast<_Link_type>(_M_node)
+  ->_M_valptr()` in `<bits/stl_tree.h>` errors "no member named '_M_valptr'" — the
+  cast to the DERIVED `_Rb_tree_node<_Val>*` (`_Link_type` typedef) seems to resolve
+  to the BASE `_Rb_tree_node_base` (no `_M_valptr`). Reducer `tmp/tp2.cpp`. START HERE.
+- **C++20 `.contains()`** — testmap, testset. `map/set::contains` is C++20-valid
+  (g++ accepts); needs the test on `--std=c++20` AND a madc `contains` member. The
+  `map<string,int>` node instantiates OK (gets to the `contains` call).
+- **pointer-element type wall (row 6b)** — testvectorptr, testsubscriptarrow:
+  `rebind<>` / `->` -on-pointer; `int*`/`T*` element collapses to integer through
+  the allocator chain. Separate deeper track.
+- **INVALID-TEST (row 8)** — testcontainerdtor uses `dict.put(k,v)` (std::map has no
+  `put`; g++/clang reject). Needs a TEST rewrite to `dict[k]=v`.
+Reduce each 3-oracle at live HEAD. NEVER A SHIM, deepest layer, fulltest after each.
 
 ---
 
