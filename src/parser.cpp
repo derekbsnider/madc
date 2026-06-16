@@ -890,6 +890,19 @@ static bool is_attribute_identifier_token(TokenBase *tb)
     return name == "__attribute__" || name == "__attribute";
 }
 
+// Ignored C++ declaration-specifier keywords. constexpr/consteval/constinit
+// carry no madc codegen (like const/inline) but ARE reserved tokens — so they
+// must be consumed in declaration-specifier position rather than mistaken for
+// a type name. constexpr is the only one currently reserved (tkCPPKEYWORD);
+// consteval/constinit are listed for when slice 6 reserves them.
+static bool is_ignored_cpp_specifier_token(TokenBase *tb)
+{
+    if ( !tb || tb->id() != TokenID::tkCPPKEYWORD )
+	return false;
+    const std::string &s = ((TokenIdent *)tb)->str;
+    return s == "constexpr" || s == "consteval" || s == "constinit";
+}
+
 TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 					 std::set<std::string> *attrs,
 					 std::string *alias_target,
@@ -22399,6 +22412,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    } while ( depth > 0 && pgm.peekToken() );
 		}
 	    }
+	    else if ( spec == "constexpr" || spec == "consteval"
+		   || spec == "constinit" )
+	    {
+		// Ignored declaration-specifiers (no madc codegen) — consume
+		// and continue (`static constexpr int v = ...`).
+		pgm.nextToken();
+	    }
 	    else
 		break;
 	    tn = pgm.peekToken();
@@ -30080,6 +30100,29 @@ TokenBase *Program::parseKeyword(TokenKeyword *tk)
     return tb;
 }
 
+// A reserved C++ keyword with no dedicated dispatch token reaches parse() only
+// as a declaration-specifier delegated by parseStatement's ttKeyword arm or by
+// a preceding storage keyword (TokenSTATIC/CONST/EXTERN::parse, which route a
+// following ttKeyword through parseKeyword).
+TokenBase *TokenCppKeyword::parse(Program &pgm)
+{
+    // constexpr / consteval / constinit: ignored specifiers (no madc codegen,
+    // like const/inline). Consume the specifier and continue parsing the
+    // declaration it qualifies. A parsing_static_decl / parsing_const_decl flag
+    // set by a preceding storage keyword stays in effect across this delegation.
+    if ( is_ignored_cpp_specifier_token(this) )
+    {
+	TokenBase *tn = pgm.nextToken();
+	if ( !tn )
+	    pgm.Throw(this) << "Unexpected end of input after '" << str << "'" << flush;
+	return pgm.parseStatement(tn);
+    }
+    // Any other reserved keyword reaching here is an expression leader
+    // (sizeof, the named casts, ...): route through the expression parser.
+    pgm.resetPrevToken();
+    return pgm.parseExpression(this);
+}
+
 // real parsing happens here, code should not be null
 TokenBase *Program::parseCompound()
 {
@@ -34749,8 +34792,16 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    return parse_static_assert_statement(tb);
 		if ( kw == "asm" || kw == "__asm__" || kw == "__asm" )
 		    return skip_gnu_asm_statement(tb);
-		resetPrevToken();
-		return parseExprStmt(tb);
+		// Ignored declaration-specifiers (constexpr/consteval/constinit)
+		// qualify a declaration: fall through to parseKeyword
+		// (TokenCppKeyword::parse), which consumes the specifier and
+		// continues the declaration. Every other reserved keyword here is
+		// an expression leader (sizeof, the named casts, ...).
+		if ( !is_ignored_cpp_specifier_token(tb) )
+		{
+		    resetPrevToken();
+		    return parseExprStmt(tb);
+		}
 	    }
 	    // `class` is also a madc keyword (OOP class declaration), but C
 	    // codebases (notably SMAUG) use it as a plain identifier for

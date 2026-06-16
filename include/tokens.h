@@ -1091,6 +1091,10 @@ public:
     TokenCppKeyword(const std::string &k) : TokenKeyword(k) {}
     virtual TokenID id() const { return TokenID::tkCPPKEYWORD; }
     virtual TokenBase *clone() { return this; }
+    // Ignored declaration-specifiers (constexpr/consteval/constinit) consume
+    // themselves and continue parsing the declaration they qualify; any other
+    // reserved keyword reaching here is an expression leader.
+    virtual TokenBase *parse(Program &);
 };
 
 /*
