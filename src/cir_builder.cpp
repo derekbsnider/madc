@@ -8807,6 +8807,45 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				return node1(N_BITWISE_NOT,
 					     translate_expr(tcf->parameters[0]), tb);
 			}
+			// __atomic_thread_fence(m) / __atomic_fetch_add(p,v,m): gcc/clang
+			// INLINE these; c2mir emits unresolvable external calls. Lower to
+			// the gcc-compiled madc runtime wrappers (real fence / atomic add).
+			// Tier-1 (madc owns the front end — lowering-vs-raising.md), same
+			// as __builtin_conj above. libstdc++ <ext/atomicity.h> refcount
+			// path (mem barriers + __exchange_and_add) -> the vector chain.
+			if ((tcf->var.name == "__atomic_thread_fence"
+			     || tcf->var.name == "__atomic_signal_fence")
+			    && tcf->parameters.size() == 1) {
+				const char *fsym =
+				    tcf->var.name == "__atomic_signal_fence"
+					? "__madc_atomic_signal_fence"
+					: "__madc_atomic_thread_fence";
+				need_output_extern(fsym, false, { { {N_INT}, false } });
+				node_t a = list();
+				append(a, translate_expr(tcf->parameters[0]));
+				return node2(N_CALL, id(fsym, tb), a, tb);
+			}
+			if (tcf->var.name == "__atomic_fetch_add"
+			    && tcf->parameters.size() == 3) {
+				// Atomic add returning the OLD value. Pick the width-specific
+				// wrapper from the pointee type of `p` (int _Atomic_word is the
+				// common refcount case; long for an 8-byte target).
+				DataDef *pd = tcf->parameters[0]
+					? tcf->parameters[0]->datadef() : NULL;
+				DataDef *pointee = (pd && pd->is_pointer())
+					? static_cast<DataDefPTR *>(pd)->base_type : NULL;
+				bool wide = pointee && pointee->size == 8;
+				const char *sym = wide ? "__madc_atomic_fetch_add_l"
+						       : "__madc_atomic_fetch_add_i";
+				c2mir_node_code_t w = wide ? N_LONG : N_INT;
+				need_output_extern(sym, false,
+					{ { {w}, true }, { {w}, false }, { {N_INT}, false } },
+					{ w });
+				node_t a = list();
+				for (size_t i = 0; i < 3; i++)
+					append(a, translate_expr(tcf->parameters[i]));
+				return node2(N_CALL, id(sym, tb), a, tb);
+			}
 			// __destroy(ptr): compiler intrinsic — destruct the pointed-to
 			// object element. Lowers to the ELEMENT TYPE's class destructor
 			// (external C++ symbol or madc-emitted user-class dtor), or to

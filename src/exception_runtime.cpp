@@ -276,4 +276,21 @@ void __madc_rethrow()
     longjmp(ctx->jbuf, 1);
 }
 
+// ── Atomic builtins ──────────────────────────────────────────────────────────
+// gcc/clang INLINE the `__atomic_*` builtins (they are not real symbols — only
+// the unprefixed C11 `atomic_thread_fence` lives in libatomic). c2mir does not
+// inline them; it emits external calls that fail to link. madc's cir_builder
+// lowers `__atomic_thread_fence` / `__atomic_fetch_add` to these real-symbol
+// wrappers (resolved via dlsym(RTLD_DEFAULT) at MIR-link), implemented here with
+// the genuine builtins — this runtime TU is gcc/clang-compiled, so they become
+// real atomic instructions / fences. libstdc++'s <ext/atomicity.h> refcount path
+// (the read/write memory barriers and __exchange_and_add) reaches them through
+// <memory>, which the vector reallocation chain pulls in.
+void __madc_atomic_thread_fence(int memorder) { __atomic_thread_fence(memorder); }
+void __madc_atomic_signal_fence(int memorder) { __atomic_signal_fence(memorder); }
+int  __madc_atomic_fetch_add_i(int *p, int v, int memorder)
+{ return __atomic_fetch_add(p, v, memorder); }
+long __madc_atomic_fetch_add_l(long *p, long v, int memorder)
+{ return __atomic_fetch_add(p, v, memorder); }
+
 } // extern "C"

@@ -10018,6 +10018,11 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("__builtin_memcpy", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), DataType::dtUINT64}, (fVOIDFUNC)memcpy);
     builtin_registry.add_core_function("__builtin_frame_address", datatype_vec_t{rtPtr(DataType::dtCHAR), DataType::dtINT}, (fVOIDFUNC)NULL);
     builtin_registry.add_core_function("__atomic_fetch_add", datatype_vec_t{DataType::dtINT, rtPtr(DataType::dtVOID), DataType::dtINT, DataType::dtINT}, (fVOIDFUNC)NULL);
+    // __atomic_thread_fence(memorder): gcc/clang-inlined memory fence (no real
+    // symbol). Registered so the call parses; cir_builder lowers it (and
+    // __atomic_fetch_add) to the gcc-compiled __madc_atomic_* runtime wrappers.
+    builtin_registry.add_core_function("__atomic_thread_fence", datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__atomic_signal_fence", datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)NULL);
     // __builtin_va_start(ap): c2mir intrinsic (lowered to MIR_VA_START), no real
     // symbol — register with a NULL pointer like __builtin_frame_address so the
     // call parses; cir_builder emits N_CALL(__builtin_va_start, ap) and c2mir
