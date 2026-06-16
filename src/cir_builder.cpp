@@ -3783,6 +3783,17 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
 			append(args, ref_param_arg_addr(arg));
+		else if (!pt && ref_returning_call_type(arg))
+			// Unresolved callee (a member-template instantiation binds to a
+			// declaration-only placeholder with no parameters/ref_params):
+			// a REFERENCE-returning call argument (std::forward/std::move) is
+			// a reference, so forward the POINTER (its call value already IS
+			// the object/scalar address) rather than auto-dereferencing to a
+			// value — the placeholder param is a forwarding reference, and a
+			// struct VALUE passed to the pointer param is a c2mir hard error
+			// (allocator_traits::construct -> __new_allocator::construct with
+			// `std::forward<Args>(args)` of a string element).
+			append(args, ref_param_arg_addr(arg));
 		else
 			append(args, translate_expr(arg));
 	}
