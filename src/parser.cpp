@@ -13836,6 +13836,7 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
     bool simple = ( i < pat.size() && is_contextual_identifier_token(pat[i]) );
     std::string core;
     int ptr = 0;
+    int ref = 0;   // reference declarator level in the pattern (`_Tp&` / `_Tp&&`)
     if ( simple )
     {
 	core = contextual_identifier_name(pat[i]);
@@ -13843,6 +13844,11 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
 	while ( i < pat.size() )
 	{
 	    if ( pat[i]->id() == TokenID::tkMul ) { ++ptr; ++i; }
+	    // A reference declarator (`&`/`&&`). madc collapses lvalue/rvalue refs
+	    // into one DataDefREF, so both spellings peel one reference level; the
+	    // count just records that the slot is a reference pattern (`_Tp&`).
+	    else if ( pat[i]->id() == TokenID::tkBand
+		   || pat[i]->id() == TokenID::tkLand ) { ref = 1; ++i; }
 	    else if ( is_type_qualifier_token(pat[i]) ) { ++i; }
 	    else { simple = false; break; }   // leftover token => not the simple shape
 	}
@@ -13860,12 +13866,24 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
 	return false;
     }
 
-    // Deducible slot: peel `ptr` pointer levels off the concrete type to recover
-    // what PARAM binds to (pattern `T*` vs concrete `char*` => T = char).
+    // Deducible slot: peel the pattern's declarator structure off the concrete
+    // type to recover what PARAM binds to. The reference (outermost in `_Tp*&` —
+    // a reference cannot be pointed-to, so a ref is always the outer declarator)
+    // is peeled first, then `ptr` pointer levels (pattern `T*` vs concrete
+    // `char*` => T = char). A reference pattern (`_Tp&`) requires the concrete to
+    // actually BE a reference, and the pointer peel rejects references — without
+    // that, since DataDefREF is-a DataDefPTR (is_pointer() is true for a ref), a
+    // `_Tp*` spec would wrongly absorb an `int&` and a `_Tp&` spec would never be
+    // reached (remove_reference<int&>::type was resolving to int& instead of int).
     DataDef *cur = concrete;
+    if ( ref )
+    {
+	if ( !cur || !cur->is_reference() ) return false;
+	cur = ((DataDefPTR *)cur)->base_type;
+    }
     for ( int k = 0; k < ptr; ++k )
     {
-	if ( !cur || !cur->is_pointer() ) return false;
+	if ( !cur || !cur->is_pointer() || cur->is_reference() ) return false;
 	cur = ((DataDefPTR *)cur)->base_type;
     }
     if ( !cur ) return false;
@@ -13873,7 +13891,7 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
     if ( d != ded.end() && d->second && d->second->name != cur->name )
 	return false;                         // inconsistent (e.g. pair<T,T> with T!=T)
     ded[core] = cur;
-    score += ptr + cv;                        // more structure peeled => more specialized
+    score += ptr + ref + cv;                  // more structure peeled => more specialized
     return true;
 }
 

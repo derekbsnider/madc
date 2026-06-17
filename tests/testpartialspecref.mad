@@ -1,0 +1,29 @@
+#!/../bin/madc
+// Reference-declarator partial-specialization selection. A partial spec whose
+// pattern carries a reference declarator (`_Tp&` / `_Tp&&`) must be SELECTED for
+// a reference concrete and bind its param to the referent. The partial-spec
+// unifier previously handled only pointer (`*`) patterns: a `_Tp&` pattern fell
+// through to an exact-spelling compare and never matched, so
+// `remove_reference<int&>::type` resolved to int& (sizeof 8, a ref lowers like a
+// pointer) instead of int (4). And because DataDefREF is-a DataDefPTR
+// (is_pointer() is true for a reference), a `_Tp*` pattern wrongly absorbed a
+// reference concrete. sizeof of the resolved ::type is the oracle; a wrong
+// selection reads the wrong size. Verified identical on g++/clang -std=c++17.
+#include <type_traits>
+#include <cstdio>
+
+template<typename _Tp> struct rr { using type = _Tp; };
+template<typename _Tp> struct rr<_Tp&> { using type = _Tp; };
+template<typename _Tp> struct rr<_Tp*> { using type = _Tp; };
+
+int main()
+{
+	using A = rr<int&>::type;                     // <_Tp&>  -> int    (4)
+	using B = rr<double*>::type;                  // <_Tp*>  -> double (8)
+	using C = rr<char>::type;                     // primary -> char   (1)
+	using S = std::remove_reference<int&>::type;  // real header -> int (4)
+	using T = std::remove_reference<char&>::type; // real header -> char (1)
+	printf("%zu %zu %zu %zu %zu\n",
+	       sizeof(A), sizeof(B), sizeof(C), sizeof(S), sizeof(T));
+	return 0;
+}
