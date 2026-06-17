@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19M"** block immediately below (current state +
-NEXT), then "SESSION 19L" / "SESSION 19k" / "SESSION 19j" / "SESSION 19i" / "SESSION 19h" / "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19N"** block immediately below (current state +
+NEXT), then "SESSION 19M" / "SESSION 19L" / "SESSION 19k" / "SESSION 19j" / "SESSION 19i" / "SESSION 19h" / "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,79 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 19M — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+# ★ SESSION 19N — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+
+## 0. Orientation + STATE
+Code HEAD **`d2fdc02`**, branch `feature/retire-embedded-shims-claude`, all
+PUSHED. Tree clean (untracked `mir-debug-support.md` NOT ours). Committed GREEN:
+unit all-pass, integration **633/7** (same 7 container fails). develop untouched.
+GOAL "clear all set/map walls" (Stop hook).
+
+## 0a. ★★ THE BIG REFRAME this session — the 7 container fails are 7 DISTINCT
+walls, NOT one __is_invocable chain (the §19L/§19M framing was incomplete). Full
+triage (ran each at live HEAD):
+- **testset / testmap** → `set::contains` / `map::contains`. These are **C++20**
+  members (`#if __cplusplus > 201703L` in stl_set.h:763 / stl_map.h). madc
+  defaults to C++17 → CORRECTLY rejected — **VERIFIED PARITY: `g++ -std=c++17`
+  ALSO errors "no member named contains".** NOT a madc bug. Making them pass
+  needs real C++20 support: `--std=c++20` gets past contains then dies on
+  `Unknown namespace 'ranges'` (C++20 <set>/<map> are ranges-constrained). So
+  these are gated behind a C++20-library track (ranges/concepts), NOT a quick fix.
+- **testcontainerdtor** → used `map::put` (NOT a std method at any std — old
+  ns_stl relic). FIXED to `dict[k]=v` (@d2fdc02). Now fails on the __is_invocable
+  chain that `map::operator[]` pulls in (wall f) — stays in the 7 until that lands.
+- **testsubscript** → reaches c2mir, "5 check errors" (emits invalid C — a
+  CODEGEN bug, post-instantiation; deepest layer is cir_builder/emit).
+- **testsubscriptarrow / testvectorptr** → TWO errors each: (1) "Expecting a type
+  argument to rebind<>" (allocator-rebind instantiation; reported at a phantom
+  header line mis-attributed to the .mad), and (2) "expression before '->' must
+  be a pointer" at the real line `w[0]->v` — `vector<A*>::operator[]` should
+  return `A*&` but madc loses the pointer level (the test's own comment: the
+  instantiated `T* data` member with T=A* (i.e. A**) mis-renders). REAL
+  template-instantiation-of-POINTER-element bug. NOTE: minimal `vector<int*>` /
+  `vector<A*>+push_back` did NOT reproduce rebind<> (took a c2mir path instead) —
+  the rebind<> needs the fuller usage; reduce carefully IN DEFAULT MODE (these
+  tests have no .flags → embedded-headers + STD_MADC; reducers MUST match — a
+  `--no-embedded-headers --std=c++17` reducer takes a different path).
+- **testmadc_ns** → `__is_invocable` undeclared + "expected 3 got 2" param count.
+
+  So the goal decomposes into: (A) the __is_invocable chain (containerdtor,
+  testmadc_ns — walls #25/#26/#29 below); (B) vector-of-pointer instantiation +
+  operator-> (testsubscriptarrow, testvectorptr); (C) testsubscript codegen; (D)
+  C++20 library surface = ranges (testset, testmap — biggest, separate track).
+
+## 0b. SHIPPED this session (3 commits, PUSHED, fulltest stayed 633/7 — see also
+§19M's 2 partial-spec fixes @024d8f9/@d321eaf earlier this same session):
+- **@84a03ab** refactor(std): single-source the default C++ bar as a configurable
+  `Program::default_cpp_std` (=STD_CPP17). Was a bare `return "201703L"` literal in
+  cplusplus_value_for_std()'s `default:`. Split into static
+  `cplusplus_value_for(LanguageStd)`; cplusplus_value_for_std() = that of
+  `is_cpp_mode()?language_std:default_cpp_std`. Behavior-neutral (default 201703,
+  c++20 202002). The predefined_macros.cpp __cplusplus literal was ALREADY dead
+  (lexer.cpp:1594 overrides it per-mode). One assignment now raises the default bar.
+- **@d2fdc02** test(testcontainerdtor): map::put → operator[] (correctness; not a
+  green flip).
+
+## 0c. ★ DESIGN THREAD OPEN (user-driven, awaiting user steer) — the C++ std BAR:
+User asked where to set the bar + how to raise it + whether per-FEATURE gating is
+more manageable than a monolithic `--std=` level. My recommendation (in chat, not
+yet a doc): a TWO-AXIS model — (1) `default_cpp_std` = coarse bar madc PRESENTS
+(keep C++17 = last level whose full header surface digests); (2) a feature-macro
+registry = fine axis: madc sets `__cplusplus` per --std= but only advertises the
+`__cpp_lib_*` / `__cpp_*` macros for features it actually supports, so libstdc++'s
+own `#if __cpp_lib_xxx` regions compile-away the surface madc can't handle yet
+(extend the lexer.cpp:1615 hand-set block into a real std-gated registry). Lets
+`--std=c++20` mean "C++20 syntax" while the LIBRARY surface opens feature-by-
+feature (incremental ranges). Serves invariant "no hardcoded standards". DECISION
+PENDING: write this as a docs/plans/ doc now, or after clearing more container
+walls? (I posed this to the user; not yet answered.)
+
+## 0d. remaining container fails (7, unchanged): testcontainerdtor, testmadc_ns,
+testmap, testset, testsubscript, testsubscriptarrow, testvectorptr.
+
+---
+
+# ★ SESSION 19M — 2026-06-17
 
 ## 0. Orientation + STATE
 Code HEAD **`d321eaf`**, branch `feature/retire-embedded-shims-claude`, all
