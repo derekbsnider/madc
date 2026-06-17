@@ -14230,7 +14230,25 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 	    segs.push_back(trim_spelling(cur));
 	}
 	if ( segs.size() < 2 )
+	{
+	    // A bare `PARAM` carrying only declarator suffixes (`_Tp*`, `_Tp&`,
+	    // `_Tp&&`) and no `::member` is a well-formedness probe on the type
+	    // ITSELF, not a member-existence probe: a pointer/reference to a deduced
+	    // type is always a well-formed type. This is the add_pointer idiom
+	    // (`__add_pointer_helper<_Tp, __void_t<_Tp*>>`), whose spec must be
+	    // selected so `add_pointer<int>::type` is int* (not the primary's int).
+	    // Confirm the base param was deduced; that suffices.
+	    std::string base = segs[0];
+	    while ( !base.empty()
+		 && (base[base.size()-1] == '*' || base[base.size()-1] == '&'
+		  || base[base.size()-1] == ' ') )
+		base.erase(base.size() - 1);
+	    base = trim_spelling(base);
+	    std::map<std::string, DataDef *>::const_iterator bit = ded.find(base);
+	    if ( bit != ded.end() && bit->second )
+		continue;                          // well-formed -> detection succeeds
 	    return false;                          // not PARAM::member -> can't confirm
+	}
 	std::map<std::string, DataDef *>::const_iterator pit = ded.find(segs[0]);
 	if ( pit == ded.end() || !pit->second )
 	    return false;
