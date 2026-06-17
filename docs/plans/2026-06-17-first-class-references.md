@@ -106,6 +106,38 @@ fulltest must stay byte-for-byte green through them; that is the regression gate
   partial-spec deduction through it. Delete scattered amps/ref logic.
 - Green; this is where the "20 variations" become one.
 
+## Phase 1 outcome + remaining vector<T*> blocker (recorded 2026-06-17)
+
+Phase 1 landed (commit `474cc2b`), regression-free (633/7/18, emitted C unchanged).
+Verified effects:
+- `vector<A*>` (`tmp/wb1.mad`): c2mir errors 3 → 1. The forwarding-ref `_Args&&` param
+  now renders `A**` (was `A***`) — the lost-reference-flag bug is gone.
+- Isolated `allocator_traits<allocator<A*>>::construct` — copy (`tmp/ac1.cpp`) AND move
+  (`tmp/ac2.cpp`) — compile and run. Hand-rolled `operator[]`/method returning `A*&`
+  + `->` (`tmp/arr1..3.cpp`) all work. So the arrow path and the construct path are fine.
+
+The SINGLE remaining `vector<T*>` blocker is NOT references and NOT the arrow — it is the
+**realloc move chain for a pointer element**:
+- `_M_realloc_insert` instantiates BOTH its relocate branch and its element-move branch
+  (madc does not dead-branch-eliminate the `_S_use_relocate()` `if`), so the move branch
+  is always compiled.
+- The move branch uses `move_iterator<A**>`. `move_iterator::reference` =
+  `iter_rvalue_reference_t<_Iterator>` (C++17: `conditional<is_reference<iterator_traits<
+  A**>::reference>, remove_reference_t<...>&&, ...>` → `A*&&`). madc computes this
+  reference-type chain WRONG for a pointer iterator → `move_iterator<A**>::operator*`
+  has a return-expr/return-type mismatch (warning at `stl_iterator.h:1449`).
+- That feeds the move-context `_S_construct(alloc, A**, A*&&)`, whose
+  `enable_if_t<__and_<__has_construct<...>>::value, void>` then fails to fold → emitted as
+  an incomplete struct → "function return type is incomplete" at `stl_vector.h:428`
+  (the sole remaining c2mir error). NB: the SAME `_S_construct` folds fine in isolation
+  (ac1/ac2) — only the move_iterator-sourced argument breaks it.
+
+So the next work item is the **`move_iterator<ptr>::reference` / `iter_rvalue_reference_t`
+type chain for a pointer iterator** (a trait/typedef-resolution fix), independent of the
+Phase 2–4 reference cleanup. It converges with the SFINAE-engine walls (#22/#26) and the
+`__and_` `decltype(__and_fn(0))` resolution. Reducers: `tmp/wb1.mad` (full),
+`tmp/triv6/7.cpp` (is_trivial OK), `tmp/ac1/ac2.cpp` (construct OK in isolation).
+
 ## Risks & mitigations
 
 - **`ref_params` is load-bearing** for ~25 cir_builder sites. Mitigation: Phase 1 keeps
