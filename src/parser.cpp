@@ -13316,7 +13316,20 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 				 << scope_name << "::'" << flush;
 
 	DataDef *member_dd = NULL;
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT )
+	// `Scope::fn<TArgs>(...)` — explicit template args on a STATIC member
+	// FUNCTION template (e.g. __result_of_other_impl::_S_test<F, Args...>(0)).
+	// `<...>` here is a function template-argument list, NOT a class
+	// template-id: instantiating it as a type returns NULL and
+	// skip_template_id_suffix() would then DISCARD the args, binding the call
+	// to the un-instantiated placeholder (ddINT64 return / undefined symbol).
+	// Leave `<...>` unconsumed so the call site captures it as
+	// explicit_template_args. Restricted to static members so a nested class
+	// template-id (findMethod == NULL) and non-static qualified calls keep
+	// their existing handling.
+	Variable *member_fn = scope->findMethod(member_name);
+	bool member_is_static_fn = member_fn && (member_fn->flags & vfSTATIC);
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT
+	  && !member_is_static_fn )
 	{
 	    if ( TokenDataType *inst =
 		    pgm.instantiate_template_id(member_name, member_tb,
@@ -13342,7 +13355,9 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	    continue;
 	}
 
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+	if ( pgm.peekToken()
+	  && ( pgm.peekToken()->id() == TokenID::tkOpBrk
+	    || ( pgm.peekToken()->id() == TokenID::tkLT && member_is_static_fn ) ) )
 	{
 	    Variable *mvar = scope->findMethod(member_name);
 	    if ( Variable *arity_mvar =
