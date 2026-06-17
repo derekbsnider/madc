@@ -81,6 +81,23 @@ int&>::value`) is STILL madc 0 vs g++ 1. The chain map (probe each as a reducer,
   instantiate the trait and read its REAL `type` typedef, not fall back to the
   bare arg. This is the template-metaprogramming core — size it as a multi-step
   arc, 3-oracle each trait family.
+  ★★ UNIFYING ROOT (diagnosed this session — the single deepest fix under #25,
+  #26, AND set/map): **CLASS-TEMPLATE PARTIAL-SPECIALIZATION SELECTION.** madc
+  falls back to the PRIMARY template instead of matching the most-specialized
+  viable partial spec. Proof from the libstdc++ defs:
+  - `remove_reference<int&>::type` — primary `{using type=_Tp;}` + partial
+    `<_Tp&>{using type=_Tp;}`; madc picks PRIMARY → int& (8), want int (4).
+  - `add_pointer<int>::type` — `__add_pointer_helper<_Tp,void>` primary
+    `{type=_Tp}` + partial `<_Tp,__void_t<_Tp*>>{type=_Tp*}`; madc PRIMARY → int
+    (4), want int* (8).
+  - `__is_invocable_impl<R,void>` (the set/map gate) selects a partial spec on
+    whether R has `::type` — same mechanism.
+  So #26 is really: implement partial-spec selection = match a concrete arg list
+  against each partial spec's pattern, bind the pattern params, SFINAE-check the
+  spec's enable conditions (`__void_t<...>`), pick the most specialized viable
+  one; fall back to primary only if none match. Once that works, the trait
+  `::type` typedefs resolve correctly and the __invoke_result/__is_invocable
+  chain + the `::type` parse (#25) both follow. THIS is the next target.
 - A KNOWN side-issue (not blocking, but will bite set/map): naming the SAME user
   class in BOTH a value and a ref decltype in one TU → c2mir "tag X redeclaration"
   (double class emission in unevaluated context). Single-class / distinct-class
