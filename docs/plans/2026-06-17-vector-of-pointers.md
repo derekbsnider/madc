@@ -69,7 +69,123 @@ Trait chain to make fold reliably:
 - `__and_<_Bn...>` = `decltype(__detail::__and_fn<_Bn...>(0))`.
 - `enable_if_t<bool, T>` = `enable_if<bool,T>::type`.
 
-**Investigation hypotheses (reduce from `tmp/wb1.mad`, 3-oracle each):**
+### ROOT CAUSE CONFIRMED (2026-06-17, hypothesis 1) — on-demand nested member-alias-template expansion
+
+Pinpointed via gated `MADC_DIAG_RET` in `skipped_template_function_return_type`
+(`parser.cpp` ~29667) and a warm/ordering reducer (`tmp/probe_order.mad`):
+
+- `_S_construct`'s return type `_Require<__has_construct<A*,A*>>` resolves (via
+  `skipped_template_function_return_type` → `resolve_type_token_range` →
+  `resolve_declared_type_token`, owner=`allocator_traits<allocator<A*>>` IN scope,
+  ns_depth=1) to the OPAQUE incomplete struct
+  `__enable_if_t___and____has_construct_A__A________value_void`. The tell: in this
+  name `__has_construct<A*,A*>` is left **UNEXPANDED** — the member alias-template
+  never expanded to `__construct_helper<A*,A*>::type` → `true_type` → fold to `void`.
+- ALL isolated reducers FOLD correctly (0 opaque): direct `allocator_traits::construct`
+  (`tmp/ac1.cpp`), hand-rolled member-alias `at<>` (`tmp/probe_member.cpp`), and even
+  nested-via-`relay` (`tmp/probe_nested2.cpp`). So the trait machinery is fine.
+- **The differentiator is INSTANTIATION ORDER.** `tmp/probe_order.mad` — a direct
+  `allocator_traits<allocator<A*>>::construct(al, slot, q)` call placed BEFORE the
+  `vector<A*>` ops — makes the "function return type is incomplete" error VANISH (0
+  c2mir check errors; only a downstream MIR `undeclared func reg fp` remains, a
+  SEPARATE wall). Warming materializes/memoizes `__construct_helper<A*,A*>::type`, so
+  the later realloc-path `_S_construct` return folds. Plain `wb1.mad` (no warm) → 1
+  check error.
+
+So the FIX is on-demand expansion: when resolving the member alias-template-id
+`__has_construct<A*,A*>` (member of the concrete `allocator_traits<allocator<A*>>`),
+instantiate the nested member template FROM THE PRIMARY on demand instead of relying
+on a prior direct use having materialized it. The warm-call is a DIAGNOSTIC only (can't
+inject into user code) — do NOT ship it.
+
+### FULL ROOT CAUSE (2026-06-17, traced end-to-end) — variadic class templates never body-instantiate
+
+The opaque chain bottoms out at ONE cause:
+`__has_construct<A*,A*>` = `typename __construct_helper<A*,A*>::type`. Resolving
+`__construct_helper<A*,A*>` calls `instantiate_template_id` →
+`instantiate_template_use` (`parser.cpp` ~2860). At line **2874**,
+`template_has_parameter_pack(td.typeparam_is_pack)` is TRUE (`__construct_helper<_Tp,
+_Args...>` has the `_Args...` pack), so it short-circuits to
+`instantiate_opaque_template_use` (~2609) — which creates a `is_dependent_placeholder`
+shell with **NO body parse** (line 2683-2691). So `using type = decltype(__test<_Alloc>
+(0))` is never evaluated; `type` is never registered as a `type_aliases` entry. Back in
+`resolve_typename_type_token` (~3963), `resolve_class_type_alias(owner,"type")` returns
+NULL, `class_allows_opaque_member_type` is TRUE (system-header template-id), so line 3965
+`materialize_dependent_member_type` makes `type` the opaque
+`__construct_helper_A__A______type` → the whole `enable_if_t` stays opaque → incomplete.
+
+WHY reducers can't repro: `instantiate_opaque_template_use` fires for EVERY pack
+template, but my hand-rolled reducer classes are NOT `from_system_header`, so they take
+the eager full-instantiation path elsewhere and register `type`. Real `allocator_traits`
+IS a system header → opaque path. (The warm call forces a full direct instantiation that
+registers `type`, hence it "fixes" wb1.)
+
+### FIX DESIGN — real instantiation of CONCRETE-ARG variadic class templates
+
+The body-substitution loop in `instantiate_template_use` (3196-3268) ALREADY expands a
+`pack_subst[name]` (3212-3240). What's missing: (1) the 2874 short-circuit sends packs
+to opaque BEFORE the real path; (2) the arg loop (2911-2968) THROWS at 2913 when args
+exceed typeparams instead of absorbing a trailing pack into `pack_subst`.
+
+Plan:
+1. At 2874, only go opaque when the pack args are genuinely DEPENDENT (or body empty).
+   Cleanest: let the real path handle packs and fall back to opaque if any resolved arg
+   `datadef_has_unresolved_dependent_surface`. (Decide opaque AFTER arg parse.)
+2. In the arg loop, when `pi` reaches the pack index (`first_template_pack_index`),
+   absorb every REMAINING arg into `pack_subst[pack_name]` (as `TokenDataType*` elems)
+   instead of throwing — the body loop already consumes `pack_subst`.
+3. Keep non-type-pack and dependent-pack uses on the opaque path (regression safety:
+   the 2874 short-circuit is load-bearing for dependent variadic uses across the suite).
+4. Gate hard on `make -C src fulltest` (633/7/18) — this touches core template
+   instantiation; lean on the MI/vtable/container tests.
+
+Residual AFTER this lands (already seen in `probe_order` once Wall 1 cleared):
+`stl_vector.h:428:54` "incompatible argument type for pointer type parameter" (warning)
++ MIR `undeclared func reg fp` — the next sub-wall (and Wall 2 prvalue is separate).
+
+### IMPLEMENTATION STATUS (2026-06-17) — WIP in `git stash@{0}`, NOT committed
+
+Implemented the fix design above and it **ELIMINATES Wall 1's incomplete-type error**
+(`stl_vector.h:428 "function return type is incomplete"` is GONE) — verified on
+`tmp/wb1.mad`. The change (in `git stash@{0}`, durable):
+- `include/madc.h`: new `bool allow_variadic_real_inst` Program flag.
+- `parser.cpp` `template_pack_real_instantiable(td)`: concrete trailing-TYPE-pack shape
+  (tests `typeparam_is_type` directly — `has_non_type_params` is a MISNOMER, set true
+  even for a pure type pack, line ~30736).
+- `instantiate_template_use`: short-circuit to opaque is bypassed ONLY when
+  `allow_variadic_real_inst && template_pack_real_instantiable`; flag consumed+cleared so
+  nested body instantiations don't inherit it.
+- arg loop absorbs a trailing type pack into `pack_subst` (clamp `bind_pi` to
+  `pack_index`); default-fill loop treats a reached pack as a valid EMPTY pack;
+  dependent-arg variadic uses still go opaque (pre-change behavior preserved).
+- `resolve_typename_type_token`: scoped-sets the flag around the chain-head
+  `instantiate_template_id` (member-TYPE context only — the constant-fold `__and_::value`
+  path stays opaque, avoiding `__and_`/`tuple` recursive real-inst).
+
+REMAINING (two sub-issues, why it is NOT yet committed — tree must stay green):
+1. **`__construct_helper<A*,A*>::type` decltype not folding to `true_type`.** After
+   real-inst, `__has_construct` resolves to NULL (was the opaque struct) — the
+   `using type = decltype(__test<_Alloc>(0))` overload-SFINAE member parses but doesn't
+   evaluate to `true_type`. So overload-1 `_S_construct` is SFINAE-dropped; need the
+   decltype to actually fold (the `__test<allocator<A*>>(0)` overload pick).
+2. **Stack-overflow recursion**: a deferred lazy body parsed during
+   `CirBuilder::translate_module` real-instantiates a variadic whose alias args recurse
+   unboundedly — `resolve_declared_type_token` ↔ `alias_use_args_all_concrete` ↔
+   `instantiate_template_alias_use`. Needs a recursion-depth/in-progress guard before
+   this is safe. (The `allow_variadic_real_inst` flag tamed the constant-fold `__and_`
+   recursion, but the deferred-lazy-body member-type path still recurses.)
+
+NEXT SESSION: `git stash apply stash@{0}`, then (a) make the decltype `::type` fold to
+`true_type` in the real-instantiated `__construct_helper`, (b) add a recursion guard to
+the alias/typename real-inst path. Reducers all FOLD (system-header-ness is the trigger)
+— iterate on `tmp/wb1.mad` directly with `-DMADC_DIAG_RET` (the gated diags are in the
+stash). Baseline to keep green: 633/7/18.
+
+Residual AFTER Wall 1 (seen in `probe_order`): `stl_vector.h:428:54` "incompatible
+argument type for pointer type parameter" (warning) + MIR `undeclared func reg fp` —
+track as the next sub-wall once Wall 1's on-demand expansion lands.
+
+**Older investigation hypotheses (now subsumed by the confirmed root above; reduce from `tmp/wb1.mad`, 3-oracle each):**
 1. **Instantiation ORDER / caching.** The trait may be evaluated (+memoized) while
    `_Args`/`_Pointer` are still dependent, caching the opaque form; the later concrete use
    reads the cache. ac1 reaches `_S_construct` directly; wb1 reaches it via
