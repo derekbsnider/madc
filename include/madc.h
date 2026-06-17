@@ -1770,6 +1770,17 @@ public:
 	STD_C78, STD_C86, STD_C88, STD_C89, STD_C90, STD_C94, STD_C95, STD_C99, STD_C11, STD_C17, STD_C23,
 	STD_CPP98, STD_CPP03, STD_CPP11, STD_CPP14, STD_CPP17, STD_CPP20, STD_CPP23, STD_CPP26
     } language_std;
+    // The C++ level that plain madc (STD_MADC) — and any non-C++ selection that
+    // still presents as C++ — targets: the single configurable "default bar",
+    // NOT a literal scattered across the predefined-macro table + the
+    // __cplusplus switch. It deliberately LAGS the highest enum value
+    // (STD_CPP26): the enum is what a user MAY request via `--std=`; this is what
+    // gets presented when nothing is requested. Raising the bar madc defaults to
+    // is one assignment here (CLI / embedder can override). See
+    // cplusplus_value_for_std(). The bar is gated low because every step up
+    // forces madc to parse more of the C++20+ system-header surface
+    // (ranges/concepts) — see docs/plans for the raise strategy.
+    LanguageStd default_cpp_std;
     // GNU dialect modifier: `--std=gnuNN` / `--std=gnu++NN` selects the base
     // standard (language_std) WITHOUT strict-ANSI conformance — gcc's actual
     // default dialect is gnu17, not c17. Feature gating stays on
@@ -1818,10 +1829,10 @@ public:
     // is_cpp_mode() excludes the (lower-valued) C enumerators. NEVER active in C.
     bool cpp_keyword_active(LanguageStd min_std) const
     { return language_std == STD_MADC || (is_cpp_mode() && language_std >= min_std); }
-    // The __cplusplus value the selected --std= mandates (C++26 uses g++'s
+    // The __cplusplus value a given C++ LanguageStd mandates (C++26 uses g++'s
     // provisional 202400L until the standard fixes one).
-    const char *cplusplus_value_for_std() const {
-	switch ( language_std ) {
+    static const char *cplusplus_value_for(LanguageStd std) {
+	switch ( std ) {
 	case STD_CPP98: case STD_CPP03: return "199711L";
 	case STD_CPP11: return "201103L";
 	case STD_CPP14: return "201402L";
@@ -1831,6 +1842,12 @@ public:
 	case STD_CPP26: return "202400L";
 	default:        return "201703L";
 	}
+    }
+    // The __cplusplus value the ACTIVE mode presents. An explicit C++ `--std=`
+    // uses that level; STD_MADC (and any non-C++ selection) falls back to the
+    // single configurable `default_cpp_std` bar — no magic literal here.
+    const char *cplusplus_value_for_std() const {
+	return cplusplus_value_for(is_cpp_mode() ? language_std : default_cpp_std);
     }
     bool set_language_standard(const std::string &standard);
     bool set_language_standard_option(const std::string &arg);
