@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19i"** block immediately below (current state +
-NEXT), then "SESSION 19h" / "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19j"** block immediately below (current state +
+NEXT), then "SESSION 19i" / "SESSION 19h" / "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,95 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 19i — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+# ★ SESSION 19j — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+
+## 0. Orientation + STATE
+Code HEAD **`32043a5`**, branch `feature/retire-embedded-shims-claude`, all
+PUSHED. Tree clean (untracked `mir-debug-support.md` is NOT ours — leave it).
+Committed tree GREEN: **unit 132/0, integration 628/7** (+1 vs 19i = the new
+`testfunctorcall`; same 7 container fails). develop untouched. GOAL: "clear all
+set/map walls" (Stop hook) — STILL a MULTI-SESSION template-instantiation-core
+arc. NEXT = task #24 / §0c below (free-fn-template return substitution).
+
+## 0a. SHIPPED this session (2 CODE fixes, PUSHED, 628/7 each) + a major recon correction
+- **`7c33978`** generalize `operator()` dispatch to ANY class-typed receiver
+  node (was: only a named object var). `E(args)` == `E.operator()(args)`
+  ([over.call.object]). Two parts: (1) `operand_object_class(recv_node)` resolves
+  the receiver class across object/reference/member/call-result/operator-result/
+  subscript nodes; named obj/ref var keeps the direct-Variable path, every other
+  node uses a synthetic recv var + parent_expr = node (the ~15285 named-method-
+  on-node machinery), reselect_method_overload re-binds. (2) a fn/method call
+  leaves its result on opStack not exStack (16066/16413) — when `(` immediately
+  follows the call's `)` and the result is a functor class, reduce it onto
+  exStack (the subscript handler's `f()[i]` move @16517, gated to a functor).
+  Fixes reference/member/call-result/decltype-of-concrete-call-result functor
+  calls. Tests: `tests/testfunctorcall.mad`. Reducers op2/op3c/cc1c/cc1d/dc8.
+- **`32043a5`** resolve trailing return type on body-LESS function prototypes
+  (`auto f() -> int;`). parseFunction captured the trailing tokens but only the
+  with-body eager path applied them; the two body-less forward-decl paths
+  returned without resolving → `decltype(f())` saw `auto`/incomplete. Extracted
+  one `resolve_trailing_return()` lambda, called from all three sites (I6).
+  Test `tests/testtrailingreturnproto.mad`. Reducer nnu7. (CONCRETE only — the
+  TEMPLATE trailing case is part of §0b gap B.)
+
+## 0b. ★ CORRECTED ROOT MAP for set/map — supersedes 19i §0b/§0c (clang-confirmed)
+The 19i NEXT (generalize `operator()` — the functor-call-node-receiver plan) is
+DONE (`7c33978`). Re-probing the real chain with a `sizeof` oracle exposed a
+DEEPER, previously-MASKED root: **free function template return-type substitution
+in an unevaluated (`decltype`) context is BROKEN — even for LEADING returns.**
+- PROOF: `tmp/nnsz.cpp` — `sizeof(decltype(nn::myid<int>()))` (where
+  `template<typename T> T myid();`) → **madc 8 (long), g++ 4 (int)**. madc never
+  substitutes `T→int`; it falls back to the **ddINT64 placeholder** (leading
+  return → silently WRONG but COMPILES, which is why `nnu1` looked "OK" — a false
+  positive from only-checking-for-errors) or `auto`/incomplete (trailing → errors).
+- WHY: `try_instantiate_namespace_fn_template` (the instantiation path) is NOT
+  triggered in unevaluated context (confirmed — neither nnu1 nor nnu4 reach it).
+  So the call's return type comes from the registered placeholder, which
+  `skipped_template_function_return_type` computes as ddINT64 (it can't resolve a
+  bare type-param `T` — `T` is NOT in datatype_map at registration; `has_T=0`).
+- CONSEQUENCE for declval: `std::declval<F>()` yields `long`, not `F&&`, so
+  `operand_object_class(declval-call)`=NULL → the (now-working) functor chain
+  never fires → `__invoke_result::type` absent → `__is_invocable`=0 → set/map wall.
+
+Three layers (all clang-confirmed), do in order:
+- **(A) DOMINANT** — free-fn-template return-type substitution at the CALL SITE in
+  unevaluated ctx. Free analogue of last session's
+  `resolve_member_template_call_return_type` (parser.cpp:8675): capture the
+  template's return-type tokens, substitute explicit/deduced targs, resolve, set
+  `TokenCallFunc::return_override`. This alone fixes `decltype(myid<int>())`→int.
+- **(B)** normalize TRAILING return into the return type so `auto dv() -> T` feeds
+  (A). clang does exactly this at parse (`SemaType.cpp:3601-3604` —
+  `GetTypeFromParser(D.getTrailingReturnType())` becomes the fn's return type;
+  leading≡trailing downstream). `skip_template_nonclass_declaration` already
+  collects the `-> T` tokens into `seen`; they're just never moved to the return
+  position. Reducers nnu3/nnu4/nnu6.
+- **(C) declval-specific** — declval's return is `decltype(__declval<_Tp>(0))`: a
+  nested decltype over an OVERLOADED template call (`__declval(int)` vs `(long)`)
+  with a DEFAULT template-arg `_Up = _Tp&&` + reference collapse. Needs
+  decltype-expression evaluation at substitution time. Deepest; after A+B.
+
+CLANG MODEL: deduction computes the function TYPE (return substituted) WITHOUT a
+body, even in unevaluated context — `Sema::FinishTemplateArgumentDeduction` →
+`SubstDecl` on the declaration (decl-only; SFINAE = unevaluated + SFINAETrap).
+NEVER A SHIM (folding declval/__invoke_result to a literal is a shim — the type
+must be derived). 3-oracle (g++ AND clang) every reducer.
+
+## 0c. NEXT (start here) — task #24, layer (A) first
+Implement free-fn-template return-type substitution at the call site in
+unevaluated context (mirror `resolve_member_template_call_return_type`@8675 for
+the namespace/free path; set `return_override` on the TokenCallFunc when it has
+explicit/deduced targs + points to a template placeholder). Verify with
+`tmp/nnsz` (→4), `tmp/nnu1`, then add (B) trailing-normalize for nnu4/nnu3, then
+(C) for declval. Gate: 3-oracle + `make -C src fulltest` 628/7. Re-probe
+ir2/ir3/seti after each. Reducers live in `tmp/` (run with
+`--std=c++17 --no-embedded-headers`).
+
+## 0d. remaining container fails (7, unchanged): testcontainerdtor, testmadc_ns,
+testmap, testset, testsubscript, testsubscriptarrow, testvectorptr.
+
+---
+
+# ★ SESSION 19i — 2026-06-17
 
 ## 0. Orientation + STATE
 Code HEAD **`9a6cc9c`** (docs/plan tip; last CODE fix `07a3b23`), branch
