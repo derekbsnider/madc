@@ -7983,7 +7983,7 @@ DataDefCLASS *Program::operand_object_class(TokenBase *operand)
 	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
 	    return dynamic_cast<DataDefCLASS *>(rp->base_type);
     TokenVar *tv = dynamic_cast<TokenVar *>(operand);
-    if ( tv && (tv->var.flags & vfREFERENCE) )
+    if ( tv && (tv->var.is_reference()) )
 	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tv->var.type) )
 	    return dynamic_cast<DataDefCLASS *>(rp->base_type);
     return NULL;
@@ -12585,7 +12585,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		    if ( !is_arrow )
 		    {
 			if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
-			    if ( ((tv->var.flags & vfREFERENCE) || tv->var.name == "__this")
+			    if ( ((tv->var.is_reference()) || tv->var.name == "__this")
 			      && obj_type && obj_type->is_pointer() )
 			    {
 				DataDefPTR *rp = dynamic_cast<DataDefPTR *>(obj_type);
@@ -15284,7 +15284,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			// `this->member` — unwrap to the class for lookup, keep the
 			// pointer var for codegen. (`this->member` already takes the
 			// arrow path; this clause covers only the dot spelling.)
-			if ( ((tv->var.flags & vfREFERENCE) || tv->var.name == "__this")
+			if ( ((tv->var.is_reference()) || tv->var.name == "__this")
 			  && struct_type && struct_type->is_pointer() )
 			{
 			    DataDefPTR *rp = dynamic_cast<DataDefPTR *>(struct_type);
@@ -24271,9 +24271,8 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
 		if ( range_elem_ref )
 		{
-		    DataDef *ref_ptr = pgm.getPointerType(&dt->definition);
+		    DataDef *ref_ptr = pgm.getReferenceType(&dt->definition);
 		    fe->elemvar = pgm.addVariable(code, *ref_ptr, fe->elemname, 1, NULL, false);
-		    fe->elemvar->flags |= vfREFERENCE;
 		}
 		else
 		    fe->elemvar = pgm.addVariable(code, dt->definition, fe->elemname, 1, NULL, false);
@@ -28017,7 +28016,7 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
     if ( dd->is_reference() )
 	return static_cast<DataDefPTR *>(dd)->base_type;
     TokenVar *tv = dynamic_cast<TokenVar *>(operand);
-    if ( tv && (tv->var.flags & vfREFERENCE) )
+    if ( tv && (tv->var.is_reference()) )
 	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tv->var.type) )
 	    return rp->base_type;
     return dd;
@@ -32313,8 +32312,6 @@ paramdecl:
 	    {
 		Variable *scope_param = new Variable(pid, *scope_param_type, 1, NULL, false);
 		scope_param->flags |= vfPARAM | vfLOCAL;
-		if ( rtype == RefType::rtReference )
-		    scope_param->flags |= vfREFERENCE;
 		if ( param_has_const && rtype == RefType::rtReference )
 		    scope_param->flags |= vfCONSTANT;
 		temp_param_method.parameters.push_back(scope_param);
@@ -32818,8 +32815,6 @@ paramdecl:
 	// typedef's complete definition.
 	if ( (size_t)user_param_index < param_aliases.size() )
 	    v->typedef_name = param_aliases[user_param_index];
-	if ( func->is_ref_param(i) )
-	    v->flags |= vfREFERENCE;
 	if ( (size_t)i < func->const_params.size() && func->const_params[i] )
 	    v->flags |= vfCONSTANT;
 	std::map<std::string, TokenBase *>::iterator pvsi = param_vla_side_effects.find(pname);
@@ -33984,8 +33979,6 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
 	bool alloc = (!code || gotstatic) ? true : false;
 	var = addVariable(code, *auto_decl_type, id, 1, NULL, alloc);
-	if ( ret_is_ref )
-	    var->flags |= vfREFERENCE;
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
 	TokenDecl *td = new TokenDecl(*var);
@@ -34754,8 +34747,6 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    is_shared_global_extern_reference(code, var);
 	if ( gotstatic )
 	    var->flags |= vfSTATIC;
-	if ( ret_is_ref )
-	    var->flags |= vfREFERENCE;
 	// Mark a SCALAR `const`-declared variable so the CIR backend can enforce
 	// read-only-ness (reject assignment to it — P2.4). The variable itself is
 	// const only when const qualifies the VALUE (`const int x`) or is the

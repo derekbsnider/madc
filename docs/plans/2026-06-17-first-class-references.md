@@ -80,8 +80,8 @@ fulltest must stay byte-for-byte green through them; that is the regression gate
 
 ### Phase 2 — Collapse the side-channels onto the type (the cleanup)
 
-EXECUTION STATUS (2026-06-17, HEAD 9f0bd52 — Phase 2c COMPLETE, all green 633/7/18;
-returns_ref flag fully retired. Remaining: 2d (vfREFERENCE) + Phase 4):
+EXECUTION STATUS (2026-06-17 — Phase 2 COMPLETE (2a/2b/2c/2d), all green 633/7/18;
+both side-channels (returns_ref, vfREFERENCE) fully retired. Remaining: Phase 4):
 - **2a DONE** (@fc598e9): all reference PARAMS are DataDefREF (parser + 5 cir_builder
   synth sites via `ref_param_type()`). `FuncDef::is_ref_param(i)` =
   `parameters[i]->is_reference()` is the single source; all ~33 `ref_params[i]` reads
@@ -120,23 +120,18 @@ returns_ref flag fully retired. Remaining: 2d (vfREFERENCE) + Phase 4):
       · `CirBuilder::operand_object_class` unwraps a reference result via class_behind.
       · auto-return deduction reads `return_value_type()` (T*& stays T*).
     fulltest 633/7/18, -Wall clean.
-- **2d TODO — vfREFERENCE collapse.** NOT a pure duplicate (re-investigated 2026-06-17).
-  5 set sites; in 3 the variable's TYPE is already a DataDefREF (flag redundant): scope
-  param (parser 32317, getReferenceType), the param-loop var (32822, type = the DataDefREF
-  param `d`), the decl ref var (34757, getReferenceType). In 2 the flag is LOAD-BEARING —
-  the var is bare-pointer + flag, the deliberate single-indirection `T*&` model:
-    · range-for elem ref (24276): `getPointerType(&dt->definition)` + flag.
-    · auto& var, pointer-deduced branch (33977 `if(!auto_decl_type->is_pointer())` SKIPS
-      wrapping; only the non-pointer branch wraps, via getPointerType at 33980).
-  So collapsing is an R5-sized cascade, NOT a rename: (1) make those 2 sites born as
-  DataDefREF — but that changes `T*&` from one indirection to two (DataDefREF(T*)), so it
-  must thread the SAME consumer cascade R5 hit; (2) migrate the ~38 reads, INCLUDING the
-  CIR deref gate `(vfREFERENCE && type->is_pointer())` → `type->is_reference()` and
-  `operand_value_datadef` (3476, returns base_type for a vfREFERENCE var → must key on
-  is_reference()); (3) delete the flag bit. Do it as its own R-series with keep-flag
-  construction flips first (no-op, fulltest), then the drop. Verify the `T*&` indirection
-  on a focused reducer (`auto& p = some_ptr;`, range-for over `vector<T*>`) under 3-oracle.
-- Then delete now-dead reconstruction branches in `operand_value_datadef`; -Wall clean.
+- **2d DONE** (@a2c253f step1 + step2): vfREFERENCE flag retired; reference-ness lives in
+  the type (`Variable::is_reference()` = `type && type->is_reference()`, the single source).
+  - step1 (@a2c253f + the range-elem fix): every vfREFERENCE variable is born as a
+    DataDefREF. Two sites used `getPointerType` (range-for elem ref; `auto& x = e`); both
+    flipped to `getReferenceType` (representation-preserving — both lower to `T*`), and the
+    `auto&` pointer special-case removed (bind uniformly, no bare-ptr+flag). The other 3
+    set sites already produced DataDefREF. NOTE: getReferenceType(T)/getPointerType(T)
+    lower identically (base+"*"), so the feared `T*&` indirection change did NOT occur —
+    `getReferenceType(T*)` is still `T**`, same as `getPointerType(T*)`.
+  - step2: migrated all ~13 reads (`x.flags & vfREFERENCE` → `x.is_reference()`), deleted
+    all 5 set sites, removed the enum bit (datadef.h, with a retired-bit note). -Wall clean
+    proves no code reference remained. fulltest 633/7/18.
 
 CAVEAT: commit messages must use heredoc `git commit -F -` (NOT `-m "..."` with
 backticks — the shell command-substitutes them).

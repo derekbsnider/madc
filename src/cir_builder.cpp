@@ -597,7 +597,7 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
 			if (tv->var.name.compare(0, 11, "__literal__") == 0)
 				return false;
-			if ((tv->var.flags & vfREFERENCE) && class_behind(tv->var.type))
+			if ((tv->var.is_reference()) && class_behind(tv->var.type))
 				return true;
 			return as_class_instance(tv->var.type) != NULL;
 		}
@@ -1206,7 +1206,7 @@ node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
 		if (as_class_instance(ot->obj_class) == target)
 			return translate_expr(arg);
 	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
-		if ((tv->var.flags & vfREFERENCE) && class_behind(tv->var.type) == target)
+		if ((tv->var.is_reference()) && class_behind(tv->var.type) == target)
 			return translate_expr(arg);
 
 	char name[32];
@@ -3472,7 +3472,7 @@ DataDefCLASS *CirBuilder::operand_object_class(TokenBase *t)
 		if (DataDefCLASS *c = class_behind(dd))
 			return c;
 	if (TokenVar *tv = dynamic_cast<TokenVar *>(t))
-		if (tv->var.flags & vfREFERENCE)
+		if (tv->var.is_reference())
 			return class_behind(tv->var.type);
 	return NULL;
 }
@@ -3486,7 +3486,7 @@ DataDef *CirBuilder::operand_value_datadef(TokenBase *t)
 {
 	if (!t) return NULL;
 	if (TokenVar *tv = dynamic_cast<TokenVar *>(t))
-		if ((tv->var.flags & vfREFERENCE) && tv->var.type)
+		if ((tv->var.is_reference()) && tv->var.type)
 			if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(tv->var.type))
 				return p->base_type;
 	return t->datadef();
@@ -3499,7 +3499,7 @@ DataDef *CirBuilder::operand_value_datadef(TokenBase *t)
 static bool var_is_pointer_stored(const Variable &v)
 {
 	if (v.type && v.type->is_pointer()) return true;
-	if (v.flags & vfREFERENCE) return true;
+	if (v.is_reference()) return true;
 	return false;
 }
 
@@ -4945,7 +4945,7 @@ DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 		// select_operator_overload's overload_arg_datadef — without
 		// it a `const A &p` argument scores as A* and the copy
 		// ctor never matches (A local(p) dropped construction).
-		if ((tv->var.flags & vfREFERENCE) && tv->var.type) {
+		if ((tv->var.is_reference()) && tv->var.type) {
 			if (DataDefCLASS *rc = class_behind(tv->var.type))
 				return rc;
 		}
@@ -5551,7 +5551,7 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 			}
 		}
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
-			if ((tv->var.flags & vfREFERENCE) && tv->var.type) {
+			if ((tv->var.is_reference()) && tv->var.type) {
 				if (DataDefCLASS *rc = class_behind(tv->var.type))
 					return rc;
 			}
@@ -8160,7 +8160,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// set for auto-deref. Every value use of the reference reads
 			// through the pointer: `x` -> `(*x)`. (String references are a
 			// separate object-pointer path handled elsewhere.)
-			if ((tv->var.flags & vfREFERENCE) && tv->var.type
+			if ((tv->var.is_reference()) && tv->var.type
 			    && tv->var.type->is_pointer())
 				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);
 			// GNU nested-function / [&]-lambda capture: an enclosing local/param
@@ -8221,7 +8221,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// vfREFERENCE): the variable's stored VALUE is already the
 			// referent's address, so &ref is just that value — NOT
 			// N_ADDR(slot) (which would yield a T**). (C++ reference semantics.)
-			if (ta->var.flags & vfREFERENCE)
+			if (ta->var.is_reference())
 				return id(var_emit_name(ta->var).c_str(), tb);
 			return node1(N_ADDR, id(var_emit_name(ta->var).c_str(), tb), tb);
 		}
