@@ -24,14 +24,22 @@ GREEN: **unit 132/0, integration 627/7** (same 7 container fails). develop
 untouched. GOAL: "clear all set / map walls" (Stop hook). NOTE: this is a
 MULTI-SESSION template-instantiation-core arc — not closable in one session.
 
-## 0a. SHIPPED this session (1 fix, pushed-pending, 627/7)
+## 0a. SHIPPED this session (2 fixes, PUSHED, 627/7 each)
 - **`6ecb723`** qualified static member-fn-template call with explicit targs
   (`Scope::fn<TArgs>(args)`) was discarding `<TArgs>` (treated as a CLASS
   template-id → skip_template_id_suffix) → bound to the ddINT64 placeholder /
   undefined symbol. Fix: for a static method, leave `<...>` unconsumed so the
   call site captures explicit_template_args + reselect instantiates. Runtime
-  (`tmp/mt2d` now 4) + body-bearing decltype (`tmp/mt2e` now 4) resolve the
-  concrete return type. First wall on set<int>'s __invoke_result path.
+  (`tmp/mt2d` now 4) + body-bearing decltype (`tmp/mt2e` now 4) resolve.
+- **`e28c2c3`** body-less member-fn-template call return type in decltype/
+  unevaluated context collapsed to the ddINT64 placeholder (`tmp/mt2` 8→4).
+  Clang SubstDecl model (return-type ONLY, decoupled from body): retain the
+  dependent return-type tokens (FuncDef::member_template_return_tokens, body-less
+  included, stripping specifier KEYWORD tokens), substitute explicit targs,
+  resolve via resolve_type_token_range (SFINAE trap), set
+  TokenCallFunc::return_override — NO synthetic def, NO emission. (The earlier
+  BLANKET body-instantiation attempt regressed 621/13 — REVERTED; this targeted
+  return-type-only version is clean 627/7.)
 
 ## 0b. ★ CORRECTED ROOT-CAUSE MAP for set<int>/map<int,int> (supersedes 19h §0b)
 The 19h theory (if-constexpr fold = the blocker, audit row 7c) was a DOWNSTREAM
@@ -72,11 +80,24 @@ symptom. Verified this session (reducers in tmp/, all `--std=c++17
   ("Expecting ')' after sizeof type" — general, `tmp/sz1`; decltype works).
 
 ## 0c. NEXT (start here)
-Attack row 7d sub-wall (a) with the TARGETED return-type-only approach (NOT
-blanket retention — that regressed). Then (b) ellipsis SFINAE ranking, then (c)
-declval-functor-call decltype. Each is a real feature; NO SHIMS; 3-oracle;
-fulltest 627/7 after each (the blanket-retention regression proves you MUST
-fulltest before committing any member-template-retention change).
+Sub-wall (a) is DONE for the QUALIFIED call (`e28c2c3`). The REAL `_S_test` is
+called UNQUALIFIED inside `__result_of_impl`'s `typedef decltype(_S_test<F,
+Args...>(0)) type;`, so it does NOT hit the qualified reselect path. NEXT:
+1. **Unqualified member-template call in decltype** — resolve
+   `decltype(_S_test<...>(0))` / `decltype(member_tmpl<targs>(args))` inside a
+   class member typedef (the unqualified analog of `e28c2c3`'s qualified path).
+   `tmp/ir3.cpp` (`__invoke_result<...>::type`) "Expecting ';' after using
+   alias" is the surface; `tmp/ir2.cpp` (`__is_invocable::value` still 0 vs g++ 1).
+2. **(c) `decltype(declval<F>()(declval<Args>()...))`** — the functor-call result
+   type embedded in `_S_test`'s return. madc does `decltype(concrete_functor(
+   args))` (`tmp/dc4` OK) but not via `declval<F>()` (fn-tmpl call; `tmp/dc2`
+   "undeclared identifier 'dv'"; audit row 5 free-fn-tmpl-call).
+3. **(b)** ellipsis SFINAE ranking `_S_test(int)` vs `_S_test(...)` (`tmp/mt1`,
+   madc resolves the right overload but sizes the EMPTY result struct 0 vs g++ 1
+   — a minor empty-struct-sizeof aside, not the SFINAE itself).
+Each is a real feature; NO SHIMS; 3-oracle; fulltest 627/7 after each (the
+blanket-retention regression proves you MUST fulltest before committing any
+member-template change — return_override/return-type-only is the safe pattern).
 
 ## 0c.1 CLANG MODEL for row 7d (recon /workspace/llvm-clang-src, 2026-06-17)
 `Sema::FinishTemplateArgumentDeduction` (clang/lib/Sema/SemaTemplateDeduction.cpp
