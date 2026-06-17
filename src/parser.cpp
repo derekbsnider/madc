@@ -22373,9 +22373,26 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		break;
 	    }
 	    TokenBase *bn = pgm.nextToken();
-	    if ( !bn || !is_contextual_identifier_token(bn) )
+	    // A base inherited from a template type-parameter (`template<class B>
+	    // struct X : B {}`) arrives at instantiation as an already-resolved
+	    // TokenDataType: clone_template_tokens_with_type_subst replaced the
+	    // type-param identifier `B` with the bound type's token. The identifier
+	    // gate below only admits ttIdentifier (and ddARRAY), so admit a
+	    // class/struct-typed ttDataType too — resolve_declared_type_token below
+	    // already accepts a TokenDataType input and yields the concrete base.
+	    bool subst_class_base = false;
+	    if ( bn && bn->type() == TokenType::ttDataType )
+	    {
+		DataDef *bdef = &((TokenDataType *)bn)->definition;
+		subst_class_base = bdef != &ddARRAY
+		    && (dynamic_cast<DataDefCLASS *>(bdef)
+			|| dynamic_cast<DataDefSTRUCT *>(bdef));
+	    }
+	    if ( !bn || (!is_contextual_identifier_token(bn) && !subst_class_base) )
 		pgm.Throw(bn ? bn : this) << "Expected base class name" << flush;
 	    std::string base_name = contextual_identifier_name(bn);
+	    if ( base_name.empty() && subst_class_base )
+		base_name = ((TokenDataType *)bn)->definition.name;
 	    std::string source_base_name = base_name;
 	    bool template_base_syntax =
 		pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT;
