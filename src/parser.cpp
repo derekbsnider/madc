@@ -1637,7 +1637,7 @@ static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 		spelling = fd->param_cpp_spellings[i];
 	    if ( spelling.empty() )
 	    {
-		bool refp = i < fd->ref_params.size() && fd->ref_params[i];
+		bool refp = fd->is_ref_param(i);
 		spelling = cpp_spelling_for_mangle(fd->parameters[i], refp);
 	    }
 	    params.push_back(spelling);
@@ -7568,7 +7568,7 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	    {
 		size_t pi = i + hidden;
 		DataDef *pt = pi < fd->parameters.size() ? fd->parameters[pi] : NULL;
-		bool refp = pi < fd->ref_params.size() && fd->ref_params[pi];
+		bool refp = fd->is_ref_param(pi);
 		s = score_arg_to_param(argtypes[i], pt, refp);
 	    }
 	    if ( s < 0 ) { ok = false; break; }
@@ -7866,7 +7866,7 @@ bool DataDefCLASS::binary_operator_only_takes_nonclass(const std::string &opname
     auto param_is_class = [](FuncDef *fd) -> bool {
 	if ( fd->parameters.size() <= 1 ) return false;
 	DataDef *p1 = fd->parameters[1];
-	bool refp = fd->ref_params.size() > 1 && fd->ref_params[1];
+	bool refp = fd->is_ref_param(1);
 	if ( refp && p1 && p1->is_pointer() )
 	    p1 = static_cast<DataDefPTR *>(p1)->base_type;
 	return p1 && p1->is_object();
@@ -8567,7 +8567,7 @@ static Variable *rank_fn_overload_candidates(
 	bool ok = true;
 	for ( size_t i = 0; i < argtypes.size(); i++ )
 	{
-	    bool refp = i < fd->ref_params.size() && fd->ref_params[i];
+	    bool refp = fd->is_ref_param(i);
 	    bool zlit = zero_args && i < zero_args->size() && (*zero_args)[i];
 	    int s = score_arg_to_param(argtypes[i], fd->parameters[i], refp,
 				       true, zlit);
@@ -25194,7 +25194,9 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    TokenBase *ref_tok = nextToken();
 	    param_is_ref = true;
 	    param_rvalue_ref = ref_tok->id() == TokenID::tkLand;
-	    param_dd = getPointerType(param_dd);
+	    // First-class refs (Phase 2): reference param is a DataDefREF, not a
+	    // plain pointer, so is_reference() is the single source of truth.
+	    param_dd = getReferenceType(param_dd);
 	}
 
 	// Optional parameter name (discard)
@@ -30411,7 +30413,7 @@ static bool function_explicit_params_match(FuncDef *fd,
     for ( size_t i = 0; i < sigs.size(); ++i )
     {
 	size_t pi = i + 1;
-	bool expected_ref = pi < fd->ref_params.size() && fd->ref_params[pi];
+	bool expected_ref = fd->is_ref_param(pi);
 	bool expected_const = pi < fd->const_params.size() && fd->const_params[pi];
 	if ( expected_ref != sigs[i].is_ref )
 	    return false;
@@ -32806,7 +32808,7 @@ paramdecl:
 	// typedef's complete definition.
 	if ( (size_t)user_param_index < param_aliases.size() )
 	    v->typedef_name = param_aliases[user_param_index];
-	if ( (size_t)i < func->ref_params.size() && func->ref_params[i] )
+	if ( func->is_ref_param(i) )
 	    v->flags |= vfREFERENCE;
 	if ( (size_t)i < func->const_params.size() && func->const_params[i] )
 	    v->flags |= vfCONSTANT;

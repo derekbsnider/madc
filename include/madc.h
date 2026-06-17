@@ -78,8 +78,17 @@ public:
     std::string local_emit_name;
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
-    // reference parameter tracking: ref_params[i] == true when parameter i is T&
+    // reference parameter tracking: ref_params[i] == true when parameter i is T&.
+    // LEGACY MIRROR being retired (first-class-references Phase 2): the single
+    // source of truth is parameters[i]->is_reference() (a reference parameter's
+    // type is a DataDefREF). Read via is_ref_param() below, not this vector.
     std::vector<bool> ref_params;
+    // The reference-ness of parameter i, derived from its type. Replaces direct
+    // ref_params[i] reads so reference identity lives in ONE place (the type).
+    bool is_ref_param(size_t i) const {
+	return i < parameters.size() && parameters[i]
+	    && parameters[i]->is_reference();
+    }
     // const parameter tracking: const_params[i] == true when parameter i is const T&
     std::vector<bool> const_params;
     // Canonical C++ spelling of each parameter, captured from the SOURCE TOKENS

@@ -385,6 +385,19 @@ static DataDefCLASS *as_class_instance(DataDef *dd)
 	return as_user_class(dd);
 }
 
+// First-class references (docs/plans/2026-06-17-first-class-references.md Phase 2):
+// a reference parameter's type is a DataDefREF so is_reference() is the single
+// source of truth (replacing the parallel FuncDef::ref_params side-channel). A
+// DataDefREF renders its name as `T*`, so the emitted prototype/ABI is unchanged;
+// class_behind() already unwraps it to the class for dispatch. Used by the
+// cir_builder operator/manipulator instantiation sites that synthesize FuncDefs.
+static DataDef *ref_param_type(DataDef *dd)
+{
+	if (!dd) return dd;
+	if (dd->is_reference()) return dd;
+	return new DataDefREF(*dd);
+}
+
 // c2mir lowers these call names in-place as builtins (it even rejects user
 // declarations of them); never emit an extern prototype for one.
 static bool is_c2mir_builtin_call_name(const std::string &name)
@@ -468,7 +481,7 @@ static void native_func_shape(FuncDef *fd, bool &ret_ptr,
 		ret_ptr = false;
 	if (!fd) return;
 	for (size_t i = 0; i < fd->parameters.size(); i++) {
-		bool refp = i < fd->ref_params.size() && fd->ref_params[i];
+		bool refp = fd->is_ref_param(i);
 		params.push_back(native_param_shape(fd->parameters[i], refp));
 	}
 }
@@ -1295,8 +1308,7 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
 		TokenBase *arg = tcf->parameters[i];
 		DataDef *pt = (callee && i < callee->parameters.size())
 				? callee->parameters[i] : NULL;
-		bool is_ref_param = callee && i < callee->ref_params.size()
-				    && callee->ref_params[i];
+		bool is_ref_param = callee && callee->is_ref_param(i);
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			append(args, object_arg_addr(arg, pc));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
@@ -3640,7 +3652,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 		size_t pi = i + 1;   // +1 to skip __this
 		DataDef *pt = (pi < callee->parameters.size())
 				? callee->parameters[pi] : NULL;
-		bool refp = pi < callee->ref_params.size() && callee->ref_params[pi];
+		bool refp = callee->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, refp)) {
 			eparams.push_back({ {N_VOID}, true });
 			append(args, object_arg_addr(arg, pc));
@@ -3795,8 +3807,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 		size_t pi = i + 1;   // +1 to skip __this
 		DataDef *pt = (arg_callee && pi < arg_callee->parameters.size())
 				? arg_callee->parameters[pi] : NULL;
-		bool is_ref_param = arg_callee && pi < arg_callee->ref_params.size()
-				    && arg_callee->ref_params[pi];
+		bool is_ref_param = arg_callee && arg_callee->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			append(args, object_arg_addr(arg, pc));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
@@ -3907,7 +3918,7 @@ static FuncDef *class_copy_ctor_def(DataDefCLASS *cdd)
 	for (Variable *cv : cdd->ctors) {
 		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
 		if (!fd || fd->parameters.size() < 2) continue;
-		bool refp = fd->ref_params.size() > 1 && fd->ref_params[1];
+		bool refp = fd->is_ref_param(1);
 		DataDef *p1 = fd->parameters[1];
 		DataDef *bind = p1;
 		if (refp && p1 && p1->is_pointer()) {
@@ -3931,7 +3942,7 @@ static FuncDef *class_assign_operator_def(DataDefCLASS *cdd)
 		if (mv->name != opname && mv->name != mangled
 		    && fd->method_display_name != opname)
 			continue;
-		bool refp = fd->ref_params.size() > 1 && fd->ref_params[1];
+		bool refp = fd->is_ref_param(1);
 		DataDef *p1 = fd->parameters[1];
 		DataDef *bind = p1;
 		if (refp && p1 && p1->is_pointer()) {
@@ -4306,8 +4317,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		auto append_ctor_arg = [&](TokenBase *arg, size_t pi) {
 			DataDef *pt = (pi < copy_ctor->parameters.size())
 					? copy_ctor->parameters[pi] : NULL;
-			bool refp = pi < copy_ctor->ref_params.size()
-				    && copy_ctor->ref_params[pi];
+			bool refp = copy_ctor->is_ref_param(pi);
 			if (DataDefCLASS *pc = param_object_class(pt, refp))
 				append(args, object_arg_addr(arg, pc));
 			else if (DataDefCLASS *vc = as_class_instance(pt))
@@ -4331,8 +4341,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 			eparams.push_back({ {N_VOID}, true });   // this
 			for (size_t pi = 1; pi < copy_ctor->parameters.size(); pi++) {
 				DataDef *cpt = copy_ctor->parameters[pi];
-				bool crefp = pi < copy_ctor->ref_params.size()
-					     && copy_ctor->ref_params[pi];
+				bool crefp = copy_ctor->is_ref_param(pi);
 				if (param_object_class(cpt, crefp) || crefp)
 					eparams.push_back({ {N_VOID}, true });
 				else if (cpt && cpt->is_pointer())
@@ -4811,7 +4820,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
 			if (!fd || fd->parameters.size() != 2)   // __this + exactly one
 				continue;
-			bool cref = fd->ref_params.size() > 1 && fd->ref_params[1];
+			bool cref = fd->is_ref_param(1);
 			int s = score_arg_to_param(adc, fd->parameters[1], cref, false,
 						   arg_is_zero_literal);
 			if (s > best)
@@ -4967,7 +4976,7 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			size_t pi = i + 1;   // skip __this
 			DataDef *pt = (pi < fd->parameters.size())
 				    ? fd->parameters[pi] : NULL;
-			bool refp = pi < fd->ref_params.size() && fd->ref_params[pi];
+			bool refp = fd->is_ref_param(pi);
 			DataDef *adc = ctor_arg_datadef(ctor_args[i]);
 			int s = score_arg_to_param(adc, pt, refp, true,
 					is_zero_integer_literal(ctor_args[i]));
@@ -5165,8 +5174,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		size_t pi = i + 1;
 		DataDef *pt = (ctor && pi < ctor->parameters.size())
 				? ctor->parameters[pi] : NULL;
-		bool is_ref_param = ctor && pi < ctor->ref_params.size()
-				    && ctor->ref_params[pi];
+		bool is_ref_param = ctor && ctor->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			explicit_nodes.push_back(object_arg_addr(arg, pc));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
@@ -5210,7 +5218,7 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 	     && ctor->param_defaults[pi]; pi++) {
 		TokenBase *darg = ctor->param_defaults[pi];
 		DataDef *pt = ctor->parameters[pi];
-		bool is_ref_param = pi < ctor->ref_params.size() && ctor->ref_params[pi];
+		bool is_ref_param = ctor->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			append(args, object_arg_addr(darg, pc));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
@@ -5229,7 +5237,7 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 		eparams.push_back({ {N_VOID}, true });
 		for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
 			DataDef *pt = ctor->parameters[pi];
-			bool refp = pi < ctor->ref_params.size() && ctor->ref_params[pi];
+			bool refp = ctor->is_ref_param(pi);
 			if (param_object_class(pt, refp) || refp)
 				eparams.push_back({ {N_VOID}, true });
 			else if (pt && pt->is_pointer())
@@ -5318,8 +5326,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		size_t pi = i + 1;   // skip __this
 		DataDef *pt = (ctor && pi < ctor->parameters.size())
 				? ctor->parameters[pi] : NULL;
-		bool is_ref_param = ctor && pi < ctor->ref_params.size()
-				    && ctor->ref_params[pi];
+		bool is_ref_param = ctor && ctor->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			append(args, object_arg_addr(arg, pc));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
@@ -5337,7 +5344,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	     && ctor->param_defaults[pi]; pi++) {
 		TokenBase *darg = ctor->param_defaults[pi];
 		DataDef *pt = ctor->parameters[pi];
-		bool is_ref_param = pi < ctor->ref_params.size() && ctor->ref_params[pi];
+		bool is_ref_param = ctor->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			append(args, object_arg_addr(darg, pc));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
@@ -5367,7 +5374,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		eparams.push_back({ {N_VOID}, true });   // this
 		for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
 			DataDef *pt = ctor->parameters[pi];
-			bool refp = pi < ctor->ref_params.size() && ctor->ref_params[pi];
+			bool refp = ctor->is_ref_param(pi);
 			if (param_object_class(pt, refp) || refp)
 				eparams.push_back({ {N_VOID}, true });
 			else if (pt && pt->is_pointer())
@@ -5566,7 +5573,7 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 		if (fd->parameters.size() <= 1) continue;
 		DataDef *p1dd = (fd->parameters.size() > 1)
 			      ? fd->parameters[1] : NULL;
-		bool refp = fd->ref_params.size() > 1 && fd->ref_params[1];
+		bool refp = fd->is_ref_param(1);
 		int score = score_arg_to_param(rhs_dd, p1dd, refp);
 		if (score >= 0 && score > best_score) {
 			best_score = score;
@@ -5605,7 +5612,7 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 		if (!any) any = fd;
 		if (fd->parameters.size() <= 1) continue;   // unary
 		DataDef *p1dd = fd->parameters[1];
-		bool refp = fd->ref_params.size() > 1 && fd->ref_params[1];
+		bool refp = fd->is_ref_param(1);
 		int score = score_arg_to_param(rhs_dd, p1dd, refp);
 		if (score >= 0 && score > best_score) {
 			best_score = score;
@@ -6344,8 +6351,8 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	inst->function_display_name = mname;
 	inst->namespace_name = best->ns;
 	if (best_lcls || lcls) {
-		inst->parameters.push_back(best_lcls ? (DataDef *)best_lcls
-						     : (DataDef *)lcls);
+		inst->parameters.push_back(ref_param_type(best_lcls ? (DataDef *)best_lcls
+								    : (DataDef *)lcls));
 		inst->ref_params.push_back(true);
 	} else {
 		// Literal-lhs (Pass 2b): param[0] is the non-class lhs type
@@ -6357,13 +6364,15 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	bool rhs_is_ptr = !best->param_spellings[1].empty()
 			  && best->param_spellings[1].back() == '*';
 	if (best_rcls) {
-		inst->parameters.push_back(best_rcls);
+		inst->parameters.push_back(ref_param_type(best_rcls));
 		inst->ref_params.push_back(true);
 	} else {
-		inst->parameters.push_back(rhs_dd ? rhs_dd : (DataDef *)&ddINT64);
-		inst->ref_params.push_back(!rhs_is_ptr
+		bool rhs_ref = !rhs_is_ptr
 			&& !best->param_spellings[1].empty()
-			&& best->param_spellings[1].back() == '&');
+			&& best->param_spellings[1].back() == '&';
+		DataDef *rhs0 = rhs_dd ? rhs_dd : (DataDef *)&ddINT64;
+		inst->parameters.push_back(rhs_ref ? ref_param_type(rhs0) : rhs0);
+		inst->ref_params.push_back(rhs_ref);
 	}
 	DBG(std::cout << "[W2] instantiate free " << best->ns << "::" << mname
 	    << " -> " << sym << std::endl);
@@ -6385,7 +6394,7 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 	// callee's param[0] is the __this pointer (not a reference param), so
 	// param_object_class yields NULL and the lhs class is used unchanged.
 	DataDef *pt0 = callee->parameters.empty() ? NULL : callee->parameters[0];
-	bool refp0 = !callee->ref_params.empty() && callee->ref_params[0];
+	bool refp0 = callee->is_ref_param(0);
 	DataDefCLASS *lhs_target = param_object_class(pt0, refp0);
 	if (!lhs_target) lhs_target = lcls;
 
@@ -6431,7 +6440,7 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 	}
 	// Single explicit RHS argument, shaped by parameters[1].
 	DataDef *pt = (callee->parameters.size() > 1) ? callee->parameters[1] : NULL;
-	bool refp = callee->ref_params.size() > 1 && callee->ref_params[1];
+	bool refp = callee->is_ref_param(1);
 	if (DataDefCLASS *pc = param_object_class(pt, refp)) {
 		eparams.push_back({ {N_VOID}, true });
 		append(args, object_arg_addr(top->right, pc));
@@ -6525,7 +6534,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 					minst->declaration_only = true;
 					minst->function_display_name = fname;
 					minst->namespace_name = ov.ns;
-					minst->parameters.push_back(scls);
+					minst->parameters.push_back(ref_param_type(scls));
 					minst->ref_params.push_back(true);
 					m_free_fn_inst_by_sym[msym] = minst;
 				}
@@ -6733,7 +6742,8 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 		DataDef *pdd = (is_ref && best_pcls[i])
 			       ? static_cast<DataDef *>(best_pcls[i])
 			       : tcf->parameters[i]->datadef();
-		inst->parameters.push_back(pdd ? pdd : &ddINT64);
+		DataDef *pdd0 = pdd ? pdd : (DataDef *)&ddINT64;
+		inst->parameters.push_back(is_ref ? ref_param_type(pdd0) : pdd0);
 		inst->ref_params.push_back(is_ref);
 	}
 	// Extern proto now (mirrors the class-member emit_symbol binds): ref params
@@ -6850,7 +6860,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	{
 		DataDef *pt = (callee->parameters.size() > 1)
 				? callee->parameters[1] : NULL;
-		bool refp = callee->ref_params.size() > 1 && callee->ref_params[1];
+		bool refp = callee->is_ref_param(1);
 		if (DataDefCLASS *pc = param_object_class(pt, refp))
 			append(args, object_arg_addr(top->right, pc));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
@@ -7136,7 +7146,7 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 	// Index argument (operator[] parameter 1; parameter 0 = __this).
 	DataDef *idx_pt = (callee && callee->parameters.size() > 1)
 			? callee->parameters[1] : NULL;
-	bool refp = callee && callee->ref_params.size() > 1 && callee->ref_params[1];
+	bool refp = callee && callee->is_ref_param(1);
 	if (DataDefCLASS *pc = param_object_class(idx_pt, refp))
 		append(args, object_arg_addr(index, pc));
 	else if (DataDefCLASS *vc = as_class_instance(idx_pt))
@@ -7721,8 +7731,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						size_t pi = i + 1;
 						DataDef *pt = (ctor && pi < ctor->parameters.size())
 								? ctor->parameters[pi] : NULL;
-						bool refp = ctor && pi < ctor->ref_params.size()
-							    && ctor->ref_params[pi];
+						bool refp = ctor && ctor->is_ref_param(pi);
 						if (DataDefCLASS *pc = param_object_class(pt, refp))
 							append(a, object_arg_addr(arg, pc));
 						else if (DataDefCLASS *vc = as_class_instance(pt))
@@ -7739,8 +7748,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						eparams.push_back({ {N_VOID}, true });
 						for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
 							DataDef *pt = ctor->parameters[pi];
-							bool refp = pi < ctor->ref_params.size()
-								    && ctor->ref_params[pi];
+							bool refp = ctor->is_ref_param(pi);
 							if (param_object_class(pt, refp) || refp)
 								eparams.push_back({ {N_VOID}, true });
 							else if (pt && pt->is_pointer())
@@ -7894,8 +7902,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				size_t pi = i + 1;
 				DataDef *pt = (ctor && pi < ctor->parameters.size())
 						? ctor->parameters[pi] : NULL;
-				bool refp = ctor && pi < ctor->ref_params.size()
-					    && ctor->ref_params[pi];
+				bool refp = ctor && ctor->is_ref_param(pi);
 				if (DataDefCLASS *pc = param_object_class(pt, refp))
 					append(cargs, object_arg_addr(arg, pc));
 				else if (DataDefCLASS *vc = as_class_instance(pt))
@@ -7912,8 +7919,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				eparams.push_back({ {N_VOID}, true });
 				for (size_t pi = 1; pi < ctor->parameters.size(); pi++) {
 					DataDef *pt = ctor->parameters[pi];
-					bool refp = pi < ctor->ref_params.size()
-						    && ctor->ref_params[pi];
+					bool refp = ctor->is_ref_param(pi);
 					if (param_object_class(pt, refp) || refp)
 						eparams.push_back({ {N_VOID}, true });
 					else if (pt && pt->is_pointer())
@@ -11378,7 +11384,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	std::vector<ShimSlot> params;
 	for (size_t i = 0; i < fd->parameters.size(); i++) {
 		ShimSlot slot;
-		bool is_ref = i < fd->ref_params.size() && fd->ref_params[i];
+		bool is_ref = fd->is_ref_param(i);
 		if (!classify_param(fd->parameters[i], is_ref, slot)) return NULL;
 		params.push_back(slot);
 	}
