@@ -3460,8 +3460,17 @@ static DataDefCLASS *class_behind(DataDef *dd)
 DataDefCLASS *CirBuilder::operand_object_class(TokenBase *t)
 {
 	if (!t) return NULL;
-	if (DataDefCLASS *c = as_class_instance(t->datadef()))
+	DataDef *dd = t->datadef();
+	if (DataDefCLASS *c = as_class_instance(dd))
 		return c;
+	// A reference-typed result (a DataDefREF — e.g. the result of a T&-returning
+	// operator/method, now that references live in the type) denotes the
+	// referenced class. as_class_instance/as_user_class deliberately answer NULL
+	// for a reference; class_behind unwraps it. This is the single receiver-class
+	// unwrap (first-class refs Phase 2 — replaces the returns_ref flag's role).
+	if (dd && dd->is_reference())
+		if (DataDefCLASS *c = class_behind(dd))
+			return c;
 	if (TokenVar *tv = dynamic_cast<TokenVar *>(t))
 		if (tv->var.flags & vfREFERENCE)
 			return class_behind(tv->var.type);
@@ -6347,7 +6356,6 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 
 	FuncDef *inst = new FuncDef(best_ret_ref ? *as_reference_type(best_retc)
 						 : *(DataDef *)best_retc);
-	inst->returns_ref = best_ret_ref;
 	inst->emit_symbol = sym;
 	inst->declaration_only = true;
 	inst->function_display_name = mname;
@@ -6527,7 +6535,6 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 					minst = msit->second;
 				if (!minst) {
 					minst = new FuncDef(*as_reference_type(scls));
-					minst->returns_ref = true;
 					minst->emit_symbol = msym;
 					minst->declaration_only = true;
 					minst->function_display_name = fname;
@@ -6728,7 +6735,6 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 	if (!ret_dd) return NULL;
 
 	FuncDef *inst = new FuncDef(ret_ref ? *as_reference_type(ret_dd) : *ret_dd);
-	inst->returns_ref = ret_ref;
 	inst->emit_symbol = sym;
 	inst->declaration_only = true;
 	inst->function_display_name = name;

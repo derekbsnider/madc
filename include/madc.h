@@ -52,12 +52,13 @@ public:
     // is a DataDefREF (is_reference() true); use returns_reference() to test it
     // and return_value_type() to get the referent. Read through those accessors,
     // not `returns` directly, so the reference identity lives in ONE place (the
-    // type) — the old parallel `returns_ref` flag is being retired (Phase 2).
+    // type) — first-class refs Phase 2 retired the old parallel returns_ref flag.
     DataDef &returns;
-    // True when the return type is a reference (T& / T&&). During the migration
-    // this also honours the legacy returns_ref flag; once the flag is removed it
-    // is purely returns.is_reference().
-    bool returns_reference() const { return returns.is_reference() || returns_ref; }
+    // True when the return type is a reference (T& / T&&). The reference lives in
+    // the type (returns is a DataDefREF). A T& return is lowered to a by-address
+    // (T*) return at codegen; the call site is an lvalue (assign stores through
+    // it, read derefs it), matching g++.
+    bool returns_reference() const { return returns.is_reference(); }
     // The VALUE type a (possibly reference) return denotes: the referent for a
     // reference return, else the return type itself. Flip-transparent — correct
     // whether `returns` holds the DataDefREF or (legacy) the bare referent.
@@ -137,11 +138,6 @@ public:
 	}
 	return req;
     }
-    // reference return: true when the function returns T& (e.g. T& operator[]).
-    // `returns` stays the base type T; the value is returned BY ADDRESS (a T*),
-    // so the call site is an lvalue (assign stores through it; read derefs it),
-    // matching g++. See cir_builder ref-return lowering.
-    bool returns_ref;
     std::string template_return_param_name;
     int template_return_deduce_arg_index;
     bool template_return_deduce_from_pointer;
@@ -203,7 +199,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -680,8 +676,9 @@ public:
         else if ( DataDef *e = subscript_operator_element_type(o.type) )
             // A class with `T& operator[](...)` (a real madc template container
             // like vector<T>/map<K,V>/set<T>): the element type is the operator[]
-            // return type (the base T — FuncDef::returns strips the reference).
-            // This is what lets `v[i].method()` see a structured element.
+            // return VALUE type (the base T — return_value_type() yields the
+            // referent of a reference return). This is what lets `v[i].method()`
+            // see a structured element.
             _datatype = e;
         else
             _datatype = &ddINT64; // madc array (madc::value): default to int
@@ -703,7 +700,7 @@ public:
 	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 	if ( !fd )
 	    return NULL;
-	return &fd->returns;
+	return &fd->return_value_type();
     }
     virtual TokenType type() const { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }

@@ -14824,6 +14824,19 @@ Program::ExprStep Program::parseExpr_symbolArm(TokenBase *tb,
     return done ? ExprStep::Done : ExprStep::Break;
 }
 
+// A reference type (DataDefREF, e.g. the result of a T&-returning call /
+// operator / subscript) denotes its referent for member-access and receiver-
+// class resolution; unwrap it to the referent. Non-references pass through.
+// First-class refs Phase 2: the reference lives in the type, so a member-access
+// receiver unwraps here instead of consulting a parallel returns_ref flag.
+static DataDef *referent_if_reference(DataDef *dd)
+{
+    if ( dd && dd->is_reference() )
+	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+	    return rp->base_type;
+    return dd;
+}
+
 // ttIdentifier switch-arm of parseExpression (see madc.h for the ExprStep
 // contract). Identifier resolution in expression context: variables,
 // function/method calls, member access, template-ids, qualified names,
@@ -15328,7 +15341,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    // through the TokenSubscriptExpr as parent_expr;
 			    // TokenMember::operand's dot-chain path handles
 			    // [base + idx*shift + offset].
-			    DataDef *elem_type = tse->datadef();
+			    DataDef *elem_type = referent_if_reference(tse->datadef());
 			    if ( !elem_type )
 				Throw(tb) << "subscript expression has no element type" << flush;
 			    tv_var      = new Variable("__sub_expr", *elem_type, 1, NULL, false);
@@ -15359,7 +15372,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    DataDef *ret_type = tcf ? tcf->returns() : NULL;
 				    if ( !ret_type )
 					Throw(tb) << "call has no return type for member access" << flush;
-				    struct_type = ret_type;
+				    struct_type = referent_if_reference(ret_type);
 				    tv_var = new Variable("__call_expr", *struct_type, 1, NULL, false);
 				}
 			else if ( lhs_dot->type() == TokenType::ttOperator
@@ -15374,7 +15387,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    if ( TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(lhs_dot) )
 				op_type = ot->obj_class;
 			    else
-				op_type = lhs_dot->datadef();
+				op_type = referent_if_reference(lhs_dot->datadef());
 			    if ( !op_type || (!op_type->is_object() && !op_type->is_struct()) )
 			    {
 				DBG(std::cerr << "dot rvalue member reject: lhs type="
@@ -21461,13 +21474,12 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 				    || (want_ref && !cur->returns.is_reference())) )
 	    {
 		FuncDef *fresh = clone_funcdef_with_return(cur, returnDecl(*new_ret, want_ref));
-		if ( want_ref )
-		    fresh->returns_ref = true;
 		funcdef_map[body.var->name] = fresh;
 		body.var->type = fresh;
 	    }
-	    else if ( cur && tr_ref )
-		cur->returns_ref = true;
+	    // No else: when the value type already matches and cur is already a
+	    // reference return, there is nothing to do (the reference lives in the
+	    // type — first-class refs Phase 2 retired the returns_ref flag).
 	}
 
 	if ( !body.ctor_init_tokens.empty() )
@@ -23386,8 +23398,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	}
 
 	// Reference return type on a method: `T& method()` / `T& operator[]()`.
-	// Returned by address (a T*); recorded as returns_ref on the FuncDef below
-	// so the call site is an lvalue. Only valid before a method, not a data
+	// ret_is_ref drives the FuncDef return type: parseFunction builds it as a
+	// DataDefREF (the reference lives in the type), and the call site is an
+	// lvalue (returned by address, a T*). Only valid before a method, not a data
 	// member (a `T&` data member is not supported — caught at member parse).
 	bool ret_is_ref = false;
 	if ( pgm.peekToken()
@@ -23462,8 +23475,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.nextToken(); // consume '('
 	    // Alias-spelled reference return (`reference operator[](size_type)` —
 	    // the resolved alias IS char&): recover the reference-ness exactly as
-	    // a literal `&` after the return type would have — returns_ref + the
-	    // referee as the return type.
+	    // a literal `&` after the return type would have. ret_is_ref + the bare
+	    // referee feed parseFunction, which rebuilds the DataDefREF return type
+	    // via returnDecl (the reference ends up in the type, not a flag).
 	    if ( cmember_dd->is_reference() )
 	    {
 		ret_is_ref = true;
@@ -23529,7 +23543,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		mangled = pgm.unique_overload_symbol(mangled);
 		type_overload_disambiguated = true;
 	    }
-	    pgm.parseFunction(*cmember_dd, mangled, ddc, NULL, false,
+	    pgm.parseFunction(*cmember_dd, mangled, ddc, NULL, ret_is_ref,
 			      std::string(), is_static_member);
 	    // find the variable that parseFunction created and add to class methods
 	    Variable *mvar;
@@ -23564,7 +23578,6 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		}
 		if ( FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type) )
 		{
-		    mfd->returns_ref = ret_is_ref;
 		    mfd->method_display_name = mname;
 		    if ( mfd->declaration_only && !mvar->storage_alias_name.empty() )
 			mfd->emit_symbol = mvar->storage_alias_name;
@@ -27988,22 +28001,17 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
 	if ( !tcf->return_override )
 	    if ( FuncDef *rfd = resolved_call_funcdef(tcf) )
 	    {
-		DataDef *r = &rfd->return_value_type();
-		// A reference return modeled as a DataDefREF unwraps to its
-		// referent (the reference's value type).
-		if ( r->is_reference() )
-		    return static_cast<DataDefPTR *>(r)->base_type;
-		// A reference return modeled via the `returns_ref` FLAG stores
-		// the REFERENT directly in `returns` (parseFunction /
-		// trailing-return convention: `int&`->int, `int*&`->int*,
-		// `string&`->string), so `r` ALREADY IS the value type. Do NOT
-		// strip its own pointer level — the old `rp->base_type` turned a
+		// return_value_type() yields the VALUE type a return denotes: the
+		// referent of a reference return (`int&`->int, `int*&`->int*,
+		// `string&`->string), else the type itself. That is exactly the
+		// deduction target. Do NOT strip a further pointer level off it — a
 		// `T*&` return (e.g. `__normal_iterator::base()` returning
-		// `const _Iterator&` with `_Iterator = int*`) into the scalar
-		// `int`, so `T*`/`_InIt` template-argument deduction against it
-		// failed, the param fell back to the `int64_t` default, and the
-		// instantiated `decltype(*__first)` threw "cannot dereference
-		// non-pointer type" deep in the std::vector container chain.
+		// `const _Iterator&` with `_Iterator = int*`) must stay `int*`, else
+		// `T*`/`_InIt` template-argument deduction fails, the param falls back
+		// to the `int64_t` default, and the instantiated `decltype(*__first)`
+		// throws "cannot dereference non-pointer type" deep in the std::vector
+		// container chain.
+		DataDef *r = &rfd->return_value_type();
 		return r;
 	    }
     if ( dd->is_reference() )
@@ -29801,7 +29809,8 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		 && specifiers.count(contextual_identifier_name(ft.decl[rs])) )
 		++rs;
 	// Fold a trailing `&` / `&&` off the end (a reference return collapses to
-	// the referenced type for type identity; record it for returns_ref).
+	// the referenced type for type identity; tr_ref then drives the DataDefREF
+	// return type via returnDecl, so the reference lives in the type).
 	bool tr_ref = false;
 	while ( re > rs && ft.decl[re - 1]
 	     && (ft.decl[re - 1]->id() == TokenID::tkBand
@@ -31548,7 +31557,6 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->param_cpp_spellings = src->param_cpp_spellings;
     f->param_typedef_names = src->param_typedef_names;
     f->param_defaults = src->param_defaults;
-    f->returns_ref = src->returns_reference();
     f->template_return_param_name = src->template_return_param_name;
     f->template_return_deduce_arg_index = src->template_return_deduce_arg_index;
     f->template_return_deduce_from_pointer = src->template_return_deduce_from_pointer;
@@ -31687,7 +31695,6 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	funcdef_map[id] = func;
 	DBG(std::cout << "parseFunction() Added new function declaration type: " << dd.name << " size: " << dd.size << " name: " << id << std::endl);
     }
-    func->returns_ref = return_ref;
     if ( !return_typedef_alias.empty() )
 	func->return_typedef_name = return_typedef_alias;
     // The SOURCE name of a tracked free-function overload (parseDeclaration
@@ -32478,15 +32485,14 @@ paramdecl:
 			 || (want_ref && !func->returns.is_reference())) )
 	{
 	    FuncDef *fresh = clone_funcdef_with_return(func, returnDecl(*new_ret, want_ref));
-	    if ( want_ref )
-		fresh->returns_ref = true;
 	    funcdef_map[id] = fresh;
 	    if ( var )
 		var->type = fresh;
 	    func = fresh;
 	}
-	else if ( tr_ref )
-	    func->returns_ref = true;
+	// No else: when the value type already matches and func is already a
+	// reference return, there is nothing to do — the reference lives in the
+	// type (first-class refs Phase 2 retired the returns_ref flag).
 	trailing_ret_tokens.clear();
     };
 

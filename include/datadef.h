@@ -206,9 +206,10 @@ public:
 	return _type >= 10000 && _type < 20000;
     }
     // True only for DataDefREF: a type that came from a reference spelling
-    // (`typedef T& alias;` / `using alias = T&;`). Lowered as a pointer, but
-    // resolution keeps the reference-ness so consumers (method returns ->
-    // FuncDef::returns_ref) can recover the canonical T&.
+    // (`T&` / `T&&`, `typedef T& alias;`, `using alias = T&;`). Lowered as a
+    // pointer, but the type keeps its reference-ness so consumers recover the
+    // canonical T& — the single source of truth for reference identity (params,
+    // returns, variables all carry it in the type; no parallel flags).
     virtual bool is_reference() const
     {
 	return false;
