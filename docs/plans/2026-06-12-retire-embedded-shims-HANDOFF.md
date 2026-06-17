@@ -86,8 +86,16 @@ Args...>(0)) type;`, so it does NOT hit the qualified reselect path. NEXT:
 1. **Unqualified member-template call in decltype** — resolve
    `decltype(_S_test<...>(0))` / `decltype(member_tmpl<targs>(args))` inside a
    class member typedef (the unqualified analog of `e28c2c3`'s qualified path).
-   `tmp/ir3.cpp` (`__invoke_result<...>::type`) "Expecting ';' after using
-   alias" is the surface; `tmp/ir2.cpp` (`__is_invocable::value` still 0 vs g++ 1).
+   CLEAN REDUCER `tmp/uq1.cpp` (g++=4): `decltype( probe<T>(0) )` in a member
+   typedef of `Resolver<T> : OtherImpl` → madc "use of undeclared identifier
+   'probe'" — the unqualified name (a BASE-class member template) isn't found in
+   expression context, and the `<T>` isn't parsed as explicit fn-template args
+   (the `a<b>(c)` ambiguity). The expression identifier arm must, for an
+   unqualified name that's not a var/global, search the current class scope +
+   bases for a member (template) method, then capture `<...>` + reselect (reuse
+   `e28c2c3`'s return-type-only path). HOT PATH — regression-prone; fulltest each
+   step. `tmp/ir3.cpp` (`__invoke_result<...>::type`) / `tmp/ir2.cpp`
+   (`__is_invocable::value` 0 vs g++ 1) are the real-header surfaces.
 2. **(c) `decltype(declval<F>()(declval<Args>()...))`** — the functor-call result
    type embedded in `_S_test`'s return. madc does `decltype(concrete_functor(
    args))` (`tmp/dc4` OK) but not via `declval<F>()` (fn-tmpl call; `tmp/dc2`
