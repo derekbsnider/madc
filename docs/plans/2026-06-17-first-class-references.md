@@ -88,16 +88,13 @@ fulltest must stay byte-for-byte green through them; that is the regression gate
   (no-parallel-implementations rule).
 - Green; commit per sub-step (small, reversible).
 
-### Phase 3 — Value category on expressions (the *real* forwarding-ref rule)
-- Add `ExprValueKind` to `TokenBase`; set it at producers; read it in the
-  forwarding-ref branch of `fn_template_deduce_param` so an lvalue arg deduces `_Args=A&`
-  and an rvalue deduces `_Args=A`, per [temp.deduct.call]p3 — instead of today's
-  unconditional strip.
-- NOTE: in madc's collapsed-render model lvalue-ref and value emit identically, so this
-  is mostly *correctness/robustness* (right deduced type for traits like
-  `is_constructible`, `__invoke_result`, perfect-forwarding chains), not a new visible
-  behavior for the current suite. **May be staged/deferred** if Phases 1–2 already green
-  the goal and no remaining test needs it — record the gap, don't fake it.
+### Phase 3 — Value category on expressions → EXTRACTED to its own plan
+Moved to `docs/plans/2026-06-17-expr-value-category.md` (user decision 2026-06-17: complete
+ALL of this plan, but Phase 3 is the one genuinely-additive/separable piece — a new
+capability with a conservative default, NOT a half-migration — so it gets its own plan and
+runs LAST, after Phases 2+4 here and after the SFINAE/`vector<T*>` work). It is NOT
+"deferred to later/never": it has its own plan + a concrete start trigger. Execution order
+of THIS plan is therefore **Phase 1 (done) → Phase 2 → Phase 4**.
 
 ### Phase 4 — One collapse, one deduction-adjust (final consolidation)
 - Ensure all reference creation routes through `getReferenceType` (single collapse).
