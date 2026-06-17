@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19j"** block immediately below (current state +
-NEXT), then "SESSION 19i" / "SESSION 19h" / "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19k"** block immediately below (current state +
+NEXT), then "SESSION 19j" / "SESSION 19i" / "SESSION 19h" / "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,61 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 19j — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+# ★ SESSION 19k — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+
+## 0. Orientation + STATE
+Code HEAD **`6584cba`**, branch `feature/retire-embedded-shims-claude`, all
+PUSHED. Tree clean (untracked `mir-debug-support.md` is NOT ours). Committed
+GREEN: **unit 132/0, integration 630/7** (same 7 container fails). develop
+untouched. GOAL "clear all set/map walls" (Stop hook) — multi-session. NEXT =
+task #24 layer C (the precise blocker below).
+
+## 0a. SHIPPED this session (1 code fix, PUSHED, 630/7) — layers A+B of task #24
+- **`6584cba`** substitute explicit template args into a free/namespace
+  function-template call's RETURN TYPE in an unevaluated (decltype) context.
+  New `Program::resolve_namespace_fn_template_call_return_type` (parser.cpp
+  ~29598): locates the template's return-token range — LEADING (`T f()`) OR
+  TRAILING (`auto f() -> T`) — substitutes explicit targs positionally into the
+  type-param tokens, resolves via resolve_type_token_range (own SFINAE trap),
+  sets `TokenCallFunc::return_override` (+returns_ref_override). Wired in
+  parseCallFunc after apply_template_call_return_inference. Body-LESS free
+  templates (declval etc.) were dropped by retain_namespace_fn_template_body;
+  now recorded in a NEW `fn_template_decl_map` (kept OUT of fn_template_map so
+  body-instantiation + the arity-deferral signal are unchanged), read only by
+  the resolver. Free analogue of resolve_member_template_call_return_type
+  (e28c2c3). FIXES: `sizeof(decltype(myid<int>()))` 8→4, trailing
+  `auto dv()->T`/`->T&&`/noexcept. tests/testfntplreturnsubst (leading+trailing).
+
+## 0b. ★ LAYER C — the remaining declval blocker, PRECISELY isolated
+declval's return is `decltype(__declval<_Tp>(0))`. To resolve it the inner call
+`__declval<F>(0)` must be type-evaluated (its `_Tp __declval(long)` overload →
+_Tp=F is enough — operand_object_class unwraps the ref). I attempted: drop the
+decltype-bail in the resolver + substitute the full decltype range + resolve in
+`ft.ns` (NamespaceScope, so unqualified `__declval` = `std::__declval` resolves).
+RESULT — **the decltype OPERAND gets EMITTED/IMPORTED**: resolve_type_token_range
+→ resolve_declared_type_token (parser.cpp:4117, the decltype branch) →
+`parseExpression` → parseCallFunc registers `__declval` as an import →
+`tmp/dv1` "MIR import of undefined item __ns_std___declval" (declval/__declval
+are undefined-BY-DESIGN). **ROOT = madc has NO true unevaluated context**: a
+decltype-operand CALL registers its callee for emission. (REVERTED this attempt;
+A+B committed.)
+- CLEAN FIX (do NOT route the operand through parseExpression — mirror the
+  member machinery e28c2c3 which resolves from TOKENS without emitting): a
+  no-emit recursive evaluator that, for a `decltype(CALL<targs>(args))` return,
+  resolves the inner call's return type via
+  resolve_namespace_fn_template_call_return_type RECURSIVELY (build a synthetic
+  callee+explicit-args binding, not a live parse). Bound the recursion (a guard
+  was already drafted). Then declval<F>()→F → the (working) functor chain fires →
+  __invoke_result::type exists → __is_invocable=1 → set/map advance.
+- Reducers: tmp/dv1, dc7, dc9 (`decltype(std::declval<Cmp&>())` madc 0 g++ 1),
+  dc10, ir2/seti.
+
+## 0c. remaining container fails (7, unchanged): testcontainerdtor, testmadc_ns,
+testmap, testset, testsubscript, testsubscriptarrow, testvectorptr.
+
+---
+
+# ★ SESSION 19j — 2026-06-17
 
 ## 0. Orientation + STATE
 Code HEAD **`32043a5`**, branch `feature/retire-embedded-shims-claude`, all
