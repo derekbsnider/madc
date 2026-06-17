@@ -386,12 +386,13 @@ static DataDefCLASS *as_class_instance(DataDef *dd)
 }
 
 // First-class references (docs/plans/2026-06-17-first-class-references.md Phase 2):
-// a reference parameter's type is a DataDefREF so is_reference() is the single
-// source of truth (replacing the parallel FuncDef::ref_params side-channel). A
-// DataDefREF renders its name as `T*`, so the emitted prototype/ABI is unchanged;
-// class_behind() already unwraps it to the class for dispatch. Used by the
-// cir_builder operator/manipulator instantiation sites that synthesize FuncDefs.
-static DataDef *ref_param_type(DataDef *dd)
+// a reference parameter or return type is a DataDefREF so is_reference() is the
+// single source of truth (replacing the parallel FuncDef::ref_params /
+// returns_ref side-channels). A DataDefREF renders its name as `T*`, so the
+// emitted prototype/ABI is unchanged; class_behind() already unwraps it to the
+// class for dispatch. Used by the cir_builder operator/manipulator instantiation
+// sites that synthesize FuncDefs (both param and return slots).
+static DataDef *as_reference_type(DataDef *dd)
 {
 	if (!dd) return dd;
 	if (dd->is_reference()) return dd;
@@ -6344,14 +6345,15 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 		return sit->second;
 	}
 
-	FuncDef *inst = new FuncDef(*best_retc);
+	FuncDef *inst = new FuncDef(best_ret_ref ? *as_reference_type(best_retc)
+						 : *(DataDef *)best_retc);
 	inst->returns_ref = best_ret_ref;
 	inst->emit_symbol = sym;
 	inst->declaration_only = true;
 	inst->function_display_name = mname;
 	inst->namespace_name = best->ns;
 	if (best_lcls || lcls) {
-		inst->parameters.push_back(ref_param_type(best_lcls ? (DataDef *)best_lcls
+		inst->parameters.push_back(as_reference_type(best_lcls ? (DataDef *)best_lcls
 								    : (DataDef *)lcls));
 	} else {
 		// Literal-lhs (Pass 2b): param[0] is the non-class lhs type
@@ -6362,13 +6364,13 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	bool rhs_is_ptr = !best->param_spellings[1].empty()
 			  && best->param_spellings[1].back() == '*';
 	if (best_rcls) {
-		inst->parameters.push_back(ref_param_type(best_rcls));
+		inst->parameters.push_back(as_reference_type(best_rcls));
 	} else {
 		bool rhs_ref = !rhs_is_ptr
 			&& !best->param_spellings[1].empty()
 			&& best->param_spellings[1].back() == '&';
 		DataDef *rhs0 = rhs_dd ? rhs_dd : (DataDef *)&ddINT64;
-		inst->parameters.push_back(rhs_ref ? ref_param_type(rhs0) : rhs0);
+		inst->parameters.push_back(rhs_ref ? as_reference_type(rhs0) : rhs0);
 	}
 	DBG(std::cout << "[W2] instantiate free " << best->ns << "::" << mname
 	    << " -> " << sym << std::endl);
@@ -6524,13 +6526,13 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 				if (msit != m_free_fn_inst_by_sym.end())
 					minst = msit->second;
 				if (!minst) {
-					minst = new FuncDef(*scls);
+					minst = new FuncDef(*as_reference_type(scls));
 					minst->returns_ref = true;
 					minst->emit_symbol = msym;
 					minst->declaration_only = true;
 					minst->function_display_name = fname;
 					minst->namespace_name = ov.ns;
-					minst->parameters.push_back(ref_param_type(scls));
+					minst->parameters.push_back(as_reference_type(scls));
 					m_free_fn_inst_by_sym[msym] = minst;
 				}
 				DBG(std::cout << "[W2] bind manipulator " << ov.ns << "::"
@@ -6725,7 +6727,7 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 	}
 	if (!ret_dd) return NULL;
 
-	FuncDef *inst = new FuncDef(*ret_dd);
+	FuncDef *inst = new FuncDef(ret_ref ? *as_reference_type(ret_dd) : *ret_dd);
 	inst->returns_ref = ret_ref;
 	inst->emit_symbol = sym;
 	inst->declaration_only = true;
@@ -6738,7 +6740,7 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 			       ? static_cast<DataDef *>(best_pcls[i])
 			       : tcf->parameters[i]->datadef();
 		DataDef *pdd0 = pdd ? pdd : (DataDef *)&ddINT64;
-		inst->parameters.push_back(is_ref ? ref_param_type(pdd0) : pdd0);
+		inst->parameters.push_back(is_ref ? as_reference_type(pdd0) : pdd0);
 	}
 	// Extern proto now (mirrors the class-member emit_symbol binds): ref params
 	// are pointers, a reference return comes back as an address.

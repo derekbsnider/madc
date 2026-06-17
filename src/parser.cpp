@@ -21453,10 +21453,15 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	    }
 	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 		nextToken();
-	    if ( cur && new_ret && &cur->return_value_type() != new_ret )
+	    // Born with the real return type: a DataDefREF for a reference return
+	    // (trailing `&`/`&&` OR cur already returned one) so the reference is
+	    // in the type, not a parallel flag (first-class refs Phase 2 / R5).
+	    bool want_ref = tr_ref || (cur && cur->returns_reference());
+	    if ( cur && new_ret && (&cur->return_value_type() != new_ret
+				    || (want_ref && !cur->returns.is_reference())) )
 	    {
-		FuncDef *fresh = clone_funcdef_with_return(cur, *new_ret);
-		if ( tr_ref )
+		FuncDef *fresh = clone_funcdef_with_return(cur, returnDecl(*new_ret, want_ref));
+		if ( want_ref )
 		    fresh->returns_ref = true;
 		funcdef_map[body.var->name] = fresh;
 		body.var->type = fresh;
@@ -31640,7 +31645,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	// scratch so the body binds those names normally.
 	if ( !func->is_void_params && func->parameters.empty() )
 	{
-	    FuncDef *fresh = new FuncDef(dd);
+	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref));
 	    fresh->return_types = func->return_types;
 	    fresh->return_typedef_name = func->return_typedef_name;
 	    fresh->param_typedef_names = func->param_typedef_names;
@@ -31660,7 +31665,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	if ( &func->return_value_type() != &dd )
 	{
 	    DBG(std::cout << "parseFunction() return type refresh: " << func->return_value_type().name << " → " << dd.name << " for " << id << std::endl);
-	    FuncDef *fresh = new FuncDef(dd);
+	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref));
 	    fresh->parameters   = func->parameters;
 	    fresh->is_varargs   = func->is_varargs;
 	    fresh->is_void_params = func->is_void_params;
@@ -31678,7 +31683,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     }
     else
     {
-	func = new FuncDef(dd);
+	func = new FuncDef(returnDecl(dd, return_ref));
 	funcdef_map[id] = func;
 	DBG(std::cout << "parseFunction() Added new function declaration type: " << dd.name << " size: " << dd.size << " name: " << id << std::endl);
     }
@@ -32463,10 +32468,17 @@ paramdecl:
 	}
 	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	    nextToken();
-	if ( new_ret && &func->return_value_type() != new_ret )
+	// The cloned FuncDef is born with the real return type: a DataDefREF
+	// when the trailing return is a reference OR func already returned one
+	// (so the reference lives in the type, not a parallel flag — R5 can then
+	// drop the flag). Clone when the value type differs OR func must become a
+	// reference but is not yet a real DataDefREF.
+	bool want_ref = tr_ref || func->returns_reference();
+	if ( new_ret && (&func->return_value_type() != new_ret
+			 || (want_ref && !func->returns.is_reference())) )
 	{
-	    FuncDef *fresh = clone_funcdef_with_return(func, *new_ret);
-	    if ( tr_ref )
+	    FuncDef *fresh = clone_funcdef_with_return(func, returnDecl(*new_ret, want_ref));
+	    if ( want_ref )
 		fresh->returns_ref = true;
 	    funcdef_map[id] = fresh;
 	    if ( var )

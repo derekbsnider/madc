@@ -2270,6 +2270,14 @@ public:
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     DataDefPTR *getPointerType(DataDef *base);
     DataDefREF *getReferenceType(DataDef *base);
+    // The return type to CONSTRUCT a FuncDef with: a DataDefREF for a
+    // reference return (routed through getReferenceType — the single
+    // reference-creation/collapse path), else the bare type. Centralizes the
+    // "a reference return is born as a DataDefREF" decision so FuncDef::returns
+    // holds the real reference type, not a bare referent + parallel flag
+    // (first-class refs Phase 2).
+    DataDef &returnDecl(DataDef &dd, bool is_ref)
+	{ return is_ref ? *(DataDef *)getReferenceType(&dd) : dd; }
     // Fold a trailing template-argument declarator suffix (`*`, `&`, `&&`) off the
     // token stream into the argument's type, returning the wrapped type token.
     // One owner of the rule, shared by every template-argument parser — a pointer
