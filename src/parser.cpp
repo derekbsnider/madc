@@ -17303,33 +17303,84 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // Reuses the existing class-method dispatch (TokenCallMethod →
 		    // ClassName__operator()); no parallel codegen (I6).
 		    {
-			TokenVar *obj_call_base = NULL;
-			DataDefCLASS *fcls = NULL;
-			Variable *fmethod = NULL;
+			// P2.1b gap 1 (generalized) — functor call `E(args)` where the
+			// receiver E is ANY class-typed expression node, not just a named
+			// object variable. C++ canon: `E(args)` == `E.operator()(args)`
+			// ([over.call.object] / Sema::BuildCallToObjectOfClassType).
+			// operand_object_class resolves the receiver class uniformly
+			// across object / reference / member / call-result /
+			// operator-result / subscript-result nodes (unwrapping
+			// references). A named object/reference VARIABLE keeps the proven
+			// direct-Variable path; every other value node uses a synthetic
+			// receiver + parent_expr = node — the same machinery that already
+			// drives named-method calls on receiver nodes (~15285). This is
+			// what `__invoke_result`'s `declval<F>()(declval<Args>()...)`
+			// needs: dispatch operator() on a call-result rvalue.
 			std::string functor_name("operator()");
-			// The `(` must IMMEDIATELY follow the object (prevToken is the
-			// object identifier). Unlike member-fptr calls we do NOT gate on
-			// opstack_has_pending_op: in `cout << m(7)` the `<<` is pending but
-			// the `(` still binds to `m` (the just-pushed exStack object), a
-			// tighter call. Immediacy of prevToken is the discriminator.
-			bool paren_follows_object = prev_for_member
-			    && prev_for_member->type() == TokenType::ttIdentifier;
-			if ( !exStack.empty()
-			  && paren_follows_object
-			  && !member_is_assign_lhs
-			  && exStack.top()->type() == TokenType::ttVariable
-			  && (obj_call_base = dynamic_cast<TokenVar *>(exStack.top())) != NULL
-			  && obj_call_base->var.type
-			  && obj_call_base->var.type->is_object()
-			  && (fcls = dynamic_cast<DataDefCLASS *>(obj_call_base->var.type)) != NULL
-			  && (fmethod = fcls->findMethod(functor_name)) != NULL )
+			// A function/method call leaves its result on opStack, not
+			// exStack (16066/16413), so `getcmp()(args)` would find exStack
+			// empty (or holding an unrelated operand). When the `(` immediately
+			// follows that call's closing `)` and the result is a functor-class
+			// object, reduce it onto exStack — exactly the subscript handler's
+			// move for `f()[i]` (~16517), but gated to a functor receiver so
+			// grouping/cast parens are untouched.
 			{
-			    TokenCallMethod *tc = new TokenCallMethod(obj_call_base->var, *fmethod);
+			    bool prev_is_close_paren = prev_for_member
+				&& prev_for_member->id() == TokenID::tkClBrk;
+			    if ( prev_is_close_paren && !opStack.empty()
+			      && (opStack.top()->type() == TokenType::ttCallFunc
+			       || opStack.top()->type() == TokenType::ttCallMethod) )
+			    {
+				DataDefCLASS *rc = operand_object_class(opStack.top());
+				if ( rc && rc->findMethod(functor_name) )
+				{
+				    exStack.push(opStack.top());
+				    opStack.pop();
+				}
+			    }
+			}
+			TokenBase *recv_node = exStack.empty() ? NULL : exStack.top();
+			DataDefCLASS *fcls = recv_node ? operand_object_class(recv_node) : NULL;
+			Variable *fmethod = fcls ? fcls->findMethod(functor_name) : NULL;
+			// The `(` must bind directly to the receiver: prevToken is the
+			// receiver's own last token — its identifier (named obj / member
+			// name), or its closing `)` (call/paren/operator result) or `]`
+			// (subscript result). An intervening operator (e.g. `f() * (x)`)
+			// leaves prevToken as that operator, so the `(` does NOT bind here
+			// and the paren stays a grouping. We do NOT gate on
+			// opstack_has_pending_op: `cout << m(7)` must still bind `(7)` to m
+			// (the just-pushed exStack object), a tighter call.
+			bool paren_binds_to_receiver = prev_for_member
+			    && (prev_for_member->type() == TokenType::ttIdentifier
+			     || prev_for_member->id() == TokenID::tkClBrk
+			     || prev_for_member->id() == TokenID::tkClSqr);
+			if ( fmethod
+			  && paren_binds_to_receiver
+			  && !member_is_assign_lhs )
+			{
+			    // Named object/reference VARIABLE: direct receiver (no
+			    // parent_expr), mirroring named-method-on-variable. Any other
+			    // value node: synthetic receiver var + parent_expr = node,
+			    // materialized at codegen via class_this_arg (no new CIR work).
+			    TokenVar *tv = dynamic_cast<TokenVar *>(recv_node);
+			    Variable *recv_var;
+			    TokenBase *recv_parent = NULL;
+			    if ( tv && recv_node->type() == TokenType::ttVariable )
+				recv_var = &tv->var;
+			    else
+			    {
+				recv_var = new Variable("__functor_expr", *fcls, 1, NULL, false);
+				recv_parent = recv_node;
+			    }
+			    TokenCallMethod *tc = new TokenCallMethod(*recv_var, *fmethod);
+			    if ( recv_parent )
+				tc->parent_expr = recv_parent;
 			    exStack.pop();
 			    tc->file = tb->file;
 			    tc->line = tb->line;
 			    tc->column = tb->column;
 			    tb = parseCallMethod(tc);
+			    tc = reselect_method_overload(tc, *recv_var, fcls, functor_name);
 			    DBG(cout << "functor call through " << fcls->name << "::operator()" << endl);
 			    opStack.push(tc);
 			    if ( tb && tb->id() == TokenID::tkSemi )
