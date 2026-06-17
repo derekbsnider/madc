@@ -63,6 +63,24 @@ int&>::value`) is STILL madc 0 vs g++ 1. The chain map (probe each as a reducer,
   resolution, (b) `__invoke_result` has-a-`::type`-member SFINAE, (c)
   `__is_invocable_impl<R,void>` specialization selection, (d) the
   `if constexpr(__is_invocable<...>{})` fold (old task #22). Reducer tmp/ir2.cpp.
+- ★ KEY FINDING for #25/#26 (probed this session): `Trait<X>::type` member
+  resolution is the real blocker, and it splits two ways by whether madc can
+  instantiate the trait:
+  - SIMPLE traits madc instantiates (add_pointer, remove_reference) PARSE fine in
+    `using R = std::add_pointer<int>::type;` but RESOLVE WRONG — madc returns the
+    bare argument X, ignoring the transform: add_pointer<int>::type→sizeof 4 (want
+    8 = int*), remove_reference<int&>::type→8 (want 4 = int). i.e. `::type` is
+    being read as "the first template arg" instead of the typedef'd member.
+    Reducer tmp/at.cpp (madc "4 8", g++ "8 4").
+  - SFINAE traits madc CANNOT instantiate (__invoke_result) don't even PARSE:
+    instantiate_template_id fails → `::type` left unconsumed → "Expecting ';'
+    after using alias" (parser.cpp:19229, the using-alias RHS resolves the base
+    via resolve_declared_type_token but never consumes a trailing `::type`).
+  So #25 (parse `::type` on a template-id) and #26 (actually instantiate the
+  trait body / its typedef member) are intertwined: a correct fix must
+  instantiate the trait and read its REAL `type` typedef, not fall back to the
+  bare arg. This is the template-metaprogramming core — size it as a multi-step
+  arc, 3-oracle each trait family.
 - A KNOWN side-issue (not blocking, but will bite set/map): naming the SAME user
   class in BOTH a value and a ref decltype in one TU → c2mir "tag X redeclaration"
   (double class emission in unevaluated context). Single-class / distinct-class
