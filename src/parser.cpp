@@ -32238,7 +32238,7 @@ paramdecl:
 		// referent (e.g. a member-template ctor's `: first(__a)` stored the
 		// pointer value into the int member → garbage).
 		scope_param_type = (rtype == RefType::rtReference)
-		    ? getPointerType(&pb->definition) : param_dd;
+		    ? (DataDef *)getReferenceType(&pb->definition) : param_dd;
 	    }
 	    else if ( !func->findParameter(pid) )
 	    {
@@ -32265,7 +32265,7 @@ paramdecl:
 		func->param_typedef_names.push_back(param_alias);
 		if ( rtype == RefType::rtReference )
 		{
-		    DataDef *ref_ptr = getPointerType(&pb->definition);
+		    DataDef *ref_ptr = getReferenceType(&pb->definition);
 		    func->parameters.push_back(ref_ptr);
 		    func->ref_params.push_back(true);
 		    func->const_params.push_back(param_has_const);
@@ -34241,7 +34241,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	{
 	    if ( nt->id() != TokenID::tkAssign )
 		Throw(tb) << "Reference variables must be initialized" << flush;
-	    decl_type = getPointerType(decl_type);
+	    // First-class reference (Phase 1): a reference variable's type is a
+	    // DataDefREF (is_reference() true), not a plain pointer; vfREFERENCE
+	    // stays as a derived mirror. Renders `T*`, so emitted C is unchanged.
+	    decl_type = getReferenceType(decl_type);
 	}
 	// parse brace-enclosed initializer list for fixed-size arrays and structs
 	std::vector<TokenBase *> init_list;
