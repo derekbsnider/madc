@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19k"** block immediately below (current state +
-NEXT), then "SESSION 19j" / "SESSION 19i" / "SESSION 19h" / "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19L"** block immediately below (current state +
+NEXT), then "SESSION 19k" / "SESSION 19j" / "SESSION 19i" / "SESSION 19h" / "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,66 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 19k — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+# ★ SESSION 19L — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+
+## 0. Orientation + STATE
+Code HEAD **`f89088d`**, branch `feature/retire-embedded-shims-claude`, all
+PUSHED. Tree clean (untracked `mir-debug-support.md` is NOT ours). Committed
+GREEN: **unit all-pass, integration 630/7** (same 7 container fails). develop
+untouched. GOAL "clear all set/map walls" (Stop hook) — multi-session.
+**declval (Wall d / task #24) is now DONE end-to-end.** NEXT = task #25 then #26.
+
+## 0a. SHIPPED this session (1 code commit, PUSHED, 630/7) — Wall (d) declval COMPLETE
+- **`f89088d`** declval<T>() now resolves its return TYPE end-to-end in an
+  unevaluated operand (the foundation under __is_invocable / set-map). THREE
+  layers, each the deepest fix:
+  1. **Unevaluated-operand guard** (the deep one): new `Program::
+     unevaluated_operand_depth`, raised (RAII across exceptions) while parsing a
+     `decltype(...)` operand (resolve_declared_type_token decltype branch);
+     parseCallFunc SKIPS instantiate_namespace/member_fn_template_for_call when
+     depth>0. ROOT it fixes: declval is body-less in <type_traits> BUT DEFINED
+     with a `static_assert(..., "declval() must not be used!")` body in
+     <bits/move.h> that calls the declaration-only __declval; madc was
+     INSTANTIATING that body in the decltype operand → emitted `return
+     __declval<_Tp>(0)` → MIR-link "import of undefined __ns_std___declval".
+     C++ never odr-uses an unevaluated operand ([basic.def.odr]) → no body.
+  2. **decltype(__declval<_Tp>(0)) recursion** (layer C of prior A+B): split
+     resolve_namespace_fn_template_call_return_type into key-based core
+     `resolve_fn_template_return_by_key`; a `-> decltype(IDENT<targs>(args))`
+     return now recurses via `resolve_decltype_call_return` (reads SUBSTITUTED
+     TOKENS, never parseExpression — no emit).
+  3. **Reference-targ capture**: capture_call_template_args consumed `*` but
+     bailed on `&`/`&&`; now consumes them (operand_object_class strips refs, so
+     base class identity suffices). declval<Cmp&> / __is_invocable<less<int>&,…>.
+  Verified (sizeof oracle == g++/clang): declval<int>=4, <double>=8, <A>=16,
+  <B&>=1. tests/testdeclvalreturn (4 8 16 1). NOTE the inline form
+  `sizeof(decltype(...))` does NOT parse (separate sizeof-operand-decltype gap) —
+  the test uses `using` aliases.
+
+## 0b. ★ NEXT — the remaining __is_invocable → set/map chain (tasks #25, #26)
+declval is done but ir2 (`std::__is_invocable<less<int>&, const int&, const
+int&>::value`) is STILL madc 0 vs g++ 1. The chain map (probe each as a reducer,
+3-oracle FIRST):
+- **task #25 — Wall (e):** `using R = std::__invoke_result<F,Args...>::type;`
+  fails "Expecting ';' after using alias" — madc can't parse a qualified
+  member-type (`::type`) access on a TEMPLATE-ID in using-alias / decltype
+  operand position. Reducer tmp/ivr.cpp.
+- **task #26 — Wall (f):** the SFINAE chain → bool: (a) `__invoke(...)` return
+  resolution, (b) `__invoke_result` has-a-`::type`-member SFINAE, (c)
+  `__is_invocable_impl<R,void>` specialization selection, (d) the
+  `if constexpr(__is_invocable<...>{})` fold (old task #22). Reducer tmp/ir2.cpp.
+- A KNOWN side-issue (not blocking, but will bite set/map): naming the SAME user
+  class in BOTH a value and a ref decltype in one TU → c2mir "tag X redeclaration"
+  (double class emission in unevaluated context). Single-class / distinct-class
+  reducers are fine (tmp/dref.cpp, tmp/dvtest2.cpp). Library classes (less<int>)
+  are externally-defined so madc never emits them — may not hit set/map.
+
+## 0c. remaining container fails (7, unchanged): testcontainerdtor, testmadc_ns,
+testmap, testset, testsubscript, testsubscriptarrow, testvectorptr.
+
+---
+
+# ★ SESSION 19k — 2026-06-17
 
 ## 0. Orientation + STATE
 Code HEAD **`6584cba`**, branch `feature/retire-embedded-shims-claude`, all
