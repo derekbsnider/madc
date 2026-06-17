@@ -474,9 +474,9 @@ static void native_func_shape(FuncDef *fd, bool &ret_ptr,
 {
 	// A C++ reference return IS an address return (T& comes back as T*),
 	// same as the class-method extern shape.
-	ret_ptr = fd && (fd->returns.is_pointer() || fd->returns_reference());
+	ret_ptr = fd && (fd->return_value_type().is_pointer() || fd->returns_reference());
 	ret_specs = ret_ptr ? std::vector<c2mir_node_code_t>{N_VOID}
-			    : native_scalar_specs(fd ? &fd->returns : NULL);
+			    : native_scalar_specs(fd ? &fd->return_value_type() : NULL);
 	if (ret_specs.empty())
 		ret_ptr = false;
 	if (!fd) return;
@@ -713,7 +713,7 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 	FuncDef *fd = call_target_funcdef(tcf);
 	if (!fd) return NULL;
 	if (fd->returns_reference()) return NULL;
-	DataDefCLASS *cdd = class_return_via_retbuf(&fd->returns);
+	DataDefCLASS *cdd = class_return_via_retbuf(&fd->return_value_type());
 	if (!cdd) return NULL;
 	// A fn-ptr call inherits the retbuf ABI from its rendered target type; a
 	// direct call is gated on m_user_func_names — by the call's RESOLVED emit
@@ -1064,7 +1064,7 @@ DataDef *CirBuilder::ref_returning_call_type(TokenBase *arg)
 	// name another overload's return type. An explicit return_override
 	// still wins (tcf->returns() honors it).
 	DataDef *r = (cfd && cfd->returns_reference() && !tcf->return_override)
-		   ? &cfd->returns : tcf->returns();
+		   ? &cfd->return_value_type() : tcf->returns();
 	if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r))
 		r = rp->base_type ? rp->base_type : r;
 	return r;
@@ -1505,7 +1505,7 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 DataDef *CirBuilder::fnptr_retbuf_type(FuncDef *fd)
 {
 	if (!fd) return NULL;
-	DataDef *ret_dd = &fd->returns;
+	DataDef *ret_dd = &fd->return_value_type();
 	if (ret_dd->is_pointer() || fd->returns_reference() || fd->is_multi_return())
 		return NULL;
 	if (DataDefCLASS *obj = class_return_via_retbuf(ret_dd))
@@ -1580,7 +1580,7 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 
 	// Return-type specs: peel pointer levels, recording the star count so the
 	// stars can be appended as the outermost declarator suffix.
-	DataDef *ret_dd = fd ? &fd->returns : NULL;
+	DataDef *ret_dd = fd ? &fd->return_value_type() : NULL;
 	int ret_stars = 0;
 	while (ret_dd && ret_dd->is_pointer()) {
 		DataDefPTR *p = dynamic_cast<DataDefPTR *>(ret_dd);
@@ -3560,16 +3560,16 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 // void base. `ret_ptr` is out-param.
 static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &ret_ptr)
 {
-	ret_ptr = fd && (fd->returns.is_pointer() || fd->returns_reference());
+	ret_ptr = fd && (fd->return_value_type().is_pointer() || fd->returns_reference());
 	if (ret_ptr) return {};   // void* / char* — base is void, ret_ptr carries the star
-	if (fd && fd->returns.is_integer()) {
+	if (fd && fd->return_value_type().is_integer()) {
 		// An integer return MUST declare a real integer base — a void base drops
 		// the value. length()/size() are `unsigned long` (was wrongly emitted as
 		// void because the old check matched only signed dtINT32/dtINT64); the
 		// comparison family is `int`. Match width + signedness (mirrors
 		// append_type_specs) so the result reads correctly. (embedded-headers:
 		// declare real return types — never let the fallback turn it into void.)
-		switch (fd->returns.rawtype()) {
+		switch (fd->return_value_type().rawtype()) {
 		case DataType::dtBOOL:   return { N_BOOL };
 		case DataType::dtUINT64: return { N_UNSIGNED, N_LONG };
 		case DataType::dtUINT32: return { N_UNSIGNED, N_INT };
@@ -3628,8 +3628,8 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	// result-slot FIRST argument (before __this), void call, and the call
 	// expression is the materialized cleanup-tagged temp's lvalue (g++
 	// canon: get_allocator() receives the sret slot in %rdi, this in %rsi).
-	DataDefCLASS *retc = (!callee->returns_reference() && !callee->returns.is_pointer())
-			     ? class_return_via_retbuf(&callee->returns) : NULL;
+	DataDefCLASS *retc = (!callee->returns_reference() && !callee->return_value_type().is_pointer())
+			     ? class_return_via_retbuf(&callee->return_value_type()) : NULL;
 	char sret_tmp[40] = { 0 };
 	if (retc)
 		object_temp_decl(retc, sret_tmp, sizeof(sret_tmp), origin);
@@ -3679,8 +3679,8 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	if (retc) {
 		ret_ptr = false;
 		ret_specs = { N_VOID };
-	} else if (!callee->returns_reference() && !callee->returns.is_pointer()) {
-		ret_cls = as_class_instance(&callee->returns);
+	} else if (!callee->returns_reference() && !callee->return_value_type().is_pointer()) {
+		ret_cls = as_class_instance(&callee->return_value_type());
 	}
 	need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs, ret_cls);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
@@ -3769,7 +3769,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	// value (`__x.get_allocator() == __a` in real _Vector_base).
 	DataDefCLASS *ret_obj = (callee && !callee->returns_reference()
 				 && !callee->is_multi_return())
-				? class_return_via_retbuf(&callee->returns) : NULL;
+				? class_return_via_retbuf(&callee->return_value_type()) : NULL;
 	char ret_tmp[40] = { 0 };
 	if (ret_obj)
 		object_temp_decl(ret_obj, ret_tmp, sizeof(ret_tmp), origin);
@@ -4860,7 +4860,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			return 4;
 		if (pf->parameters.size() != af->parameters.size()
 		    || pf->is_varargs != af->is_varargs
-		    || pf->returns.rawtype() != af->returns.rawtype())
+		    || pf->return_value_type().rawtype() != af->return_value_type().rawtype())
 			return -1;
 		for (size_t i = 0; i < pf->parameters.size(); i++) {
 			if (!pf->parameters[i] || !af->parameters[i])
@@ -5037,7 +5037,7 @@ node_t CirBuilder::no_ctor_match_error(DataDefCLASS *cdd,
 			a && a->datadef() ? a->datadef()->name.c_str() : "(none)",
 			resolved ? resolved->name.c_str() : "(none)",
 			tcf ? tcf->var.name.c_str() : "(not-call)",
-			cfd ? cfd->returns.name.c_str() : "(no-cfd)",
+			cfd ? cfd->return_value_type().name.c_str() : "(no-cfd)",
 			cfd ? (int)cfd->returns_reference() : -1);
 	}
 	if (cdd)
@@ -5531,7 +5531,7 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 			Variable *omv = ccls ? ccls->findMethod(opname) : NULL;
 			FuncDef *ofd = omv ? dynamic_cast<FuncDef *>(omv->type) : NULL;
 			if (ofd && ofd->returns_reference()) {
-				DataDef *rd = &ofd->returns;
+				DataDef *rd = &ofd->return_value_type();
 				if (rd && rd->is_pointer()) {
 					DataDefPTR *rp = dynamic_cast<DataDefPTR *>(rd);
 					if (rp && rp->base_type)
@@ -6403,8 +6403,8 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 	// guaranteed copy elision when the caller provides the declared
 	// variable as ret_slot; expression contexts materialize a
 	// cleanup-tagged temp and yield its object lvalue).
-	DataDefCLASS *retc = (!callee->returns_reference() && !callee->returns.is_pointer())
-			     ? class_return_via_retbuf(&callee->returns) : NULL;
+	DataDefCLASS *retc = (!callee->returns_reference() && !callee->return_value_type().is_pointer())
+			     ? class_return_via_retbuf(&callee->return_value_type()) : NULL;
 	char objtmp[40] = { 0 };
 	bool slot_consumed = false;
 	if (retc) {
@@ -6769,7 +6769,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		std::string opname = "operator[]";
 		Variable *omv = ccls ? ccls->findMethod(opname) : NULL;
 		FuncDef *ofd = omv ? dynamic_cast<FuncDef *>(omv->type) : NULL;
-		if (ofd) lcls = class_behind(&ofd->returns);
+		if (ofd) lcls = class_behind(&ofd->return_value_type());
 	}
 	if (!lcls) {
 		// `"pre" + s`: a non-class lhs with a CLASS rhs — only the free
@@ -6833,11 +6833,11 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	// __retbuf ABI (hidden return-slot first param) -> pass &__t as that slot and
 	// the void call writes *__retbuf; a TRIVIAL (native struct) return is assigned
 	// into __t. The expression value is then the temp's object lvalue.
-	DataDefCLASS *retc = as_class_instance(&callee->returns);
+	DataDefCLASS *retc = as_class_instance(&callee->return_value_type());
 	bool by_value_object = retc && !callee->returns_reference()
-			       && !callee->returns.is_pointer();
+			       && !callee->return_value_type().is_pointer();
 	bool via_retbuf = by_value_object
-			  && class_return_via_retbuf(&callee->returns) != NULL;
+			  && class_return_via_retbuf(&callee->return_value_type()) != NULL;
 	char objtmp[40] = { 0 };
 	if (by_value_object) {
 		snprintf(objtmp, sizeof(objtmp), "__madc_objtmp_%d", m_strtmp_counter++);
@@ -7201,7 +7201,7 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 	Variable *mv = cls->findMethod(opname);
 	if (!mv) return false;
 	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
-	return callee && class_behind(&callee->returns) != NULL;
+	return callee && class_behind(&callee->return_value_type()) != NULL;
 }
 
 /*static*/ bool CirBuilder::class_array_subscript_is_object(TokenBase *arg)
@@ -7368,7 +7368,7 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
 	if (!fd) return NULL;
 
-	DataDef *ret_dd = &fd->returns;
+	DataDef *ret_dd = &fd->return_value_type();
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 	bool ret_is_ref = fd->returns_reference();   // T& -> returned by address (one more *)
 	int ret_star_depth = dd_peel_pointers(ret_dd);
@@ -7389,8 +7389,8 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 		ret_type = type_list(&ddVOID);
 		ret_decl_stars = 0;
 	} else if (!fd->return_typedef_name.empty()) {
-		ret_type = type_list(&fd->returns, fd->return_typedef_name);
-		ret_decl_stars = explicit_star_count(&fd->returns,
+		ret_type = type_list(&fd->return_value_type(), fd->return_typedef_name);
+		ret_decl_stars = explicit_star_count(&fd->return_value_type(),
 						     fd->return_typedef_name);
 	} else {
 		ret_type = type_list(ret_dd);
@@ -10607,7 +10607,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 								ilcls, iopname, iop->right));
 					}
 					if (iinst && !iinst->returns_reference()
-					    && class_return_via_retbuf(&iinst->returns) == cdcl) {
+					    && class_return_via_retbuf(&iinst->return_value_type()) == cdcl) {
 						node_t slot = node1(N_ADDR,
 							id(sdcl->var.name.c_str(), sdcl),
 							sdcl);
@@ -10770,7 +10770,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	std::vector<TokenCpnd *> saved_defer_scopes;
 	saved_defer_scopes.swap(m_defer_scopes);
 
-	DataDef *ret_dd = &fd->returns;
+	DataDef *ret_dd = &fd->return_value_type();
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 	bool ret_is_ref = fd->returns_reference();   // T& -> returned by address (one more *)
 	int ret_star_depth = dd_peel_pointers(ret_dd);
@@ -10800,8 +10800,8 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	m_cur_func_returns_ref = ret_is_ref;
 	// Track a `Cls *` or `Cls&` return so translate_return can emit a
 	// derived->base adjustment for returned class subobjects.
-	m_cur_func_returns_class_ptr = ret_is_ptr ? pointee_user_class(&fd->returns)
-						  : (ret_is_ref ? as_user_class(&fd->returns)
+	m_cur_func_returns_class_ptr = ret_is_ptr ? pointee_user_class(&fd->return_value_type())
+						  : (ret_is_ref ? as_user_class(&fd->return_value_type())
 								: NULL);
 	// Track the scalar C return type so a gcc-accepted bare `return;` in a
 	// non-void function gets a typed zero (the returned value is indeterminate
@@ -10809,7 +10809,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// address) — a bare return there is already nonsensical and rare.
 	m_cur_func_scalar_ret = (!ret_via_retbuf && !ret_is_ref && !m_cur_func_returns_void
 				 && !ret_is_multi)
-				? &fd->returns : NULL;
+				? &fd->return_value_type() : NULL;
 
 	// Retbuf-returning OR multi-return fn: C return type is `void`.
 	int ret_decl_stars = ret_star_depth;
@@ -10821,11 +10821,11 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		ret_type = type_list(&ddVOID);
 		ret_decl_stars = 0;
 	} else if (!fd->return_typedef_name.empty()) {
-		ret_type = type_list(&fd->returns, fd->return_typedef_name);
-		ret_decl_stars = explicit_star_count(&fd->returns,
+		ret_type = type_list(&fd->return_value_type(), fd->return_typedef_name);
+		ret_decl_stars = explicit_star_count(&fd->return_value_type(),
 						     fd->return_typedef_name);
 		if (!m_cur_func_returns_void) {
-			m_cur_func_ret_spec_dd = &fd->returns;
+			m_cur_func_ret_spec_dd = &fd->return_value_type();
 			m_cur_func_ret_spec_alias = fd->return_typedef_name;
 		}
 	} else {
@@ -11382,7 +11382,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		if (!classify_param(fd->parameters[i], is_ref, slot)) return NULL;
 		params.push_back(slot);
 	}
-	DataDef *rt = &fd->returns;
+	DataDef *rt = &fd->return_value_type();
 	DataDefCLASS *ret_cdd = class_return_via_retbuf(rt);
 	enum { R_VOID, R_BOOL, R_INT, R_REAL, R_CSTR, R_TEXTOBJ, R_INST } rkind;
 	FuncDef *ret_cstr_fd = NULL, *ret_len_fd = NULL;
@@ -12271,7 +12271,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (!referenced_funcs.count(symbol) && !referenced_funcs.count(fname))
 			continue;
 
-		DataDef *ret_dd = &fd->returns;
+		DataDef *ret_dd = &fd->return_value_type();
 		bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 		bool ret_is_ref = fd->returns_reference();
 		int ret_decl_stars = dd_peel_pointers(ret_dd);
@@ -12298,8 +12298,8 @@ node_t CirBuilder::translate_module(Program *prog)
 			// type-spec site, or the extern references an alias the
 			// module never defines ("unknown type string").
 			append(ext_list, id(typedef_emit_name(fd->return_typedef_name,
-							      &fd->returns).c_str()));
-			ret_decl_stars = explicit_star_count(&fd->returns,
+							      &fd->return_value_type()).c_str()));
+			ret_decl_stars = explicit_star_count(&fd->return_value_type(),
 							     fd->return_typedef_name);
 		} else if (ret_dd && (ret_dd->is_struct() || as_class_instance(ret_dd))
 			   && !ret_dd->is_complex()) {

@@ -7669,7 +7669,7 @@ bool DataDef::same_representation(DataDef &d)
 			return af == bf;
 		if ( af == bf )
 			return true;
-		if ( !af->returns.same_representation(bf->returns) )
+		if ( !af->return_value_type().same_representation(bf->return_value_type()) )
 			return false;
 		if ( af->is_varargs != bf->is_varargs )
 			return false;
@@ -7824,7 +7824,7 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 	if ( !fd ) continue;
 	if ( !any ) any = fd;
-	if ( fd->parameters.size() > 1 ) return &fd->returns;
+	if ( fd->parameters.size() > 1 ) return &fd->return_value_type();
     }
     std::string mangled = name + "__" + opname;
     std::string mangled_overload_prefix = mangled + "__o";
@@ -7837,9 +7837,9 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 	if ( !fd ) continue;
 	if ( !any ) any = fd;
-	if ( fd->parameters.size() > 1 ) return &fd->returns;
+	if ( fd->parameters.size() > 1 ) return &fd->return_value_type();
     }
-    if ( any ) return &any->returns;
+    if ( any ) return &any->return_value_type();
     // Multiple/virtual inheritance: the operator may be inherited from ANY direct
     // base, not only the primary. basic_iostream inherits operator<< from its
     // SECOND base (basic_ostream); the first (basic_istream) has none — so a
@@ -7921,12 +7921,12 @@ DataDef *DataDefCLASS::unary_operator_return_type(const std::string &opname,
 	    continue;
 	bool parameterized = fd->parameters.size() > 1;
 	if ( postfix == parameterized )
-	    return &fd->returns;
+	    return &fd->return_value_type();
 	if ( !fallback )
 	    fallback = fd;
     }
     if ( fallback )
-	return &fallback->returns;
+	return &fallback->return_value_type();
     if ( base_class )
 	return base_class->unary_operator_return_type(opname, postfix);
     return NULL;
@@ -21453,7 +21453,7 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	    }
 	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 		nextToken();
-	    if ( cur && new_ret && &cur->returns != new_ret )
+	    if ( cur && new_ret && &cur->return_value_type() != new_ret )
 	    {
 		FuncDef *fresh = clone_funcdef_with_return(cur, *new_ret);
 		if ( tr_ref )
@@ -21565,7 +21565,7 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	    // would have its return silently rewritten to void. A ctor's funcdef
 	    // returns ddVOID, so the defaulted-ctor caller is unchanged.
 	    FuncDef *mfd = dynamic_cast<FuncDef *>(body.var->type);
-	    parseFunction(mfd ? mfd->returns : (DataDef &)ddVOID, parse_id, owner);
+	    parseFunction(mfd ? mfd->return_value_type() : (DataDef &)ddVOID, parse_id, owner);
 	}
 	catch(...)
 	{
@@ -27983,7 +27983,7 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
 	if ( !tcf->return_override )
 	    if ( FuncDef *rfd = resolved_call_funcdef(tcf) )
 	    {
-		DataDef *r = &rfd->returns;
+		DataDef *r = &rfd->return_value_type();
 		// A reference return modeled as a DataDefREF unwraps to its
 		// referent (the reference's value type).
 		if ( r->is_reference() )
@@ -28101,7 +28101,7 @@ static bool fn_template_deduce_fnptr_param(const std::string &spelling,
     std::string tp;
     DataDef *dd = NULL;
     int r = fn_template_deduce_param(spelling.substr(0, p1), typeparams,
-				     &fd->returns, tp, dd);
+				     &fd->return_value_type(), tp, dd);
     if ( r < 0 )
 	return false;
     if ( r == 1 )
@@ -29283,7 +29283,7 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 		return param_cls[i];
 	}
     if ( FuncDef *fd = dynamic_cast<FuncDef *>(callee->type) )
-	return &fd->returns;
+	return &fd->return_value_type();
     return NULL;
 }
 
@@ -31657,9 +31657,9 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	// `bool f()`): FuncDef::returns is a C++ reference and cannot be
 	// reseated, so replace the FuncDef with a fresh one carrying the
 	// correct return type.
-	if ( &func->returns != &dd )
+	if ( &func->return_value_type() != &dd )
 	{
-	    DBG(std::cout << "parseFunction() return type refresh: " << func->returns.name << " → " << dd.name << " for " << id << std::endl);
+	    DBG(std::cout << "parseFunction() return type refresh: " << func->return_value_type().name << " → " << dd.name << " for " << id << std::endl);
 	    FuncDef *fresh = new FuncDef(dd);
 	    fresh->parameters   = func->parameters;
 	    fresh->is_varargs   = func->is_varargs;
@@ -32463,7 +32463,7 @@ paramdecl:
 	}
 	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	    nextToken();
-	if ( new_ret && &func->returns != new_ret )
+	if ( new_ret && &func->return_value_type() != new_ret )
 	{
 	    FuncDef *fresh = clone_funcdef_with_return(func, *new_ret);
 	    if ( tr_ref )
@@ -33138,10 +33138,10 @@ TokenBase *Program::parseLambda()
 	for ( TokenStmt *s : tf->statements )
 	    if ( (deduced = deduce_return_type_from_stmt(s)) )
 		break;
-	if ( deduced && deduced != &func->returns )
+	if ( deduced && deduced != &func->return_value_type() )
 	{
 	    DBG(cout << "parseLambda() deduced return type: "
-		    << func->returns.name << " -> " << deduced->name << endl);
+		    << func->return_value_type().name << " -> " << deduced->name << endl);
 	    FuncDef *fresh = new FuncDef(*deduced);
 	    fresh->parameters		 = func->parameters;
 	    fresh->has_captures		 = func->has_captures;
@@ -35688,7 +35688,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 			if ( func && i < func->return_types.size() )
 			    vtype = func->return_types[i];
 			else if ( func && i == 0 )
-			    vtype = &func->returns;
+			    vtype = &func->return_value_type();
 			bool alloc = (!code) ? true : false;
 			Variable *v = addVariable(code, *vtype, ids[i], 1, NULL, alloc);
 			vars.push_back(v);
