@@ -16259,6 +16259,37 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    return ExprStep::Redo;
 			}
 		    }
+		    // Last resort before "undeclared": an unqualified name that is a
+		    // STATIC member (template) FUNCTION of the current class scope or a
+		    // base — `_S_test<F, Args...>(0)` inside __result_of_impl's decltype
+		    // typedef. C++ unqualified lookup finds the (inherited) member;
+		    // resolve it like the qualified `Scope::fn` path (set qstatic_owner
+		    // so reselect_static_member_overload instantiates / resolves the
+		    // return type) and goto ns_resolved, which captures any explicit
+		    // `<...>` args and builds the call. Gated to a following call /
+		    // template-id AND to an actual static method, so a genuinely-
+		    // undeclared name (or a real `<` comparison) still falls through.
+		    if ( peekToken()
+		      && (peekToken()->id() == TokenID::tkOpBrk
+		       || peekToken()->id() == TokenID::tkLT)
+		      && !class_scope_stack.empty() )
+		    {
+			for ( std::vector<DataDefCLASS *>::reverse_iterator si =
+				  class_scope_stack.rbegin();
+			      si != class_scope_stack.rend(); ++si )
+			{
+			    if ( !*si )
+				continue;
+			    Variable *mvar = (*si)->findMethod(ident_tb->str);
+			    if ( mvar && (mvar->flags & vfSTATIC) )
+			    {
+				var = mvar;
+				qstatic_owner = *si;
+				qstatic_member = ident_tb->str;
+				goto ns_resolved;
+			    }
+			}
+		    }
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ident_tb->str << endl);
 		    { debug_deref_fail(*this, 14255, ident_tb, NULL);
 		    Throw(tb) << "use of undeclared identifier '" << ident_tb->str << '\'' << flush;
