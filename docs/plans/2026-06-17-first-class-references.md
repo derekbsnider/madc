@@ -79,14 +79,49 @@ fulltest must stay byte-for-byte green through them; that is the regression gate
 - This is the phase that satisfies the standing goal. Commit + push.
 
 ### Phase 2 — Collapse the side-channels onto the type (the cleanup)
-- Migrate the ~25 `ref_params[i]` reads + the `vfREFERENCE`/`returns_ref` reads in
-  cir_builder to derive from `param_type->is_reference()` / `returns.is_reference()`.
-- Make `returns_ref` a reference *return type* (`DataDefREF`) rather than a flag +
-  bare-referent convention, OR keep the flag strictly as a cache derived from the type.
-- Delete now-dead reconstruction branches in `operand_value_datadef`. Build with `-Wall`;
-  treat `-Wunused` on the deleted web as the proof the cut was complete
-  (no-parallel-implementations rule).
-- Green; commit per sub-step (small, reversible).
+
+EXECUTION STATUS (2026-06-17, HEAD f3a6041 — clean handoff point, all green 633/7/18):
+- **2a DONE** (@fc598e9): all reference PARAMS are DataDefREF (parser + 5 cir_builder
+  synth sites via `ref_param_type()`). `FuncDef::is_ref_param(i)` =
+  `parameters[i]->is_reference()` is the single source; all ~33 `ref_params[i]` reads
+  migrated to it.
+- **2b DONE** (@4f7bdd8): `ref_params` vector DELETED (decl + 15 push/copy sites). Param
+  ref-ness fully type-driven. (ref_params WAS a real drift hazard — justified.)
+- **2c IN PROGRESS — return references.** User decided (2026-06-17) the ~49 scattered
+  `returns_ref` checks + emission "append a pointer" special-case ARE worth eliminating
+  (a mess, even though returns_ref alone is not a *drift* hazard — `returns` is a
+  non-reseatable `DataDef &` storing the bare referent + flag).
+  - **R1+R2 DONE** (@e9efe96): added `FuncDef::returns_reference()` (=`is_reference()
+    || returns_ref`, flip-transparent) + `return_value_type()` (referent-or-self);
+    migrated all ~49 `returns_ref` READS to `returns_reference()`.
+  - **R3 DONE** (@f3a6041): migrated all FuncDef `->returns` VALUE reads to
+    `return_value_type()`. Non-FuncDef receivers with their own `returns` member —
+    `method`(Method), `reg`(HostCallbackReg), `ret`/`tr`(TokenRETURN), `tcf`
+    (TokenCallFunc) — were compiler-caught and left as `.returns`. NOW no site reads
+    FuncDef::returns directly.
+  - **R4 TODO — the construction flip.** Make a ref-returning FuncDef construct with a
+    DataDefREF: at each ref-return construction, pass `getReferenceType(referent)` as the
+    return type. Sites are where `returns_ref`/`ret_is_ref`/`ret_ref` is known at/near
+    `new FuncDef(retType)`: parser.cpp 31685 (`func=new FuncDef(dd); func->returns_ref=
+    return_ref` → construct `new FuncDef(return_ref?getReferenceType(dd):dd)`), 23562
+    (mfd, ret_is_ref), 21460/21465 (operator synth), 32470/32477 (trailing-return),
+    clone path `clone_funcdef_with_return` (parser ~31546 copies returns_ref); cir_builder
+    6348/6528/6729 synth (wrap best_retc/scls return type when ret_ref). Because ALL
+    readers go through return_value_type()/returns_reference() (flip-transparent), this
+    should be a NO-OP for output — fulltest must stay 633/7/18. Keep the returns_ref flag
+    SET for now (returns_reference() honours both).
+  - **R5 TODO — delete the flag.** Remove `returns_ref` field + all set sites + the
+    `|| returns_ref` in returns_reference() (→ pure `returns.is_reference()`); fix the
+    clone copy `f->returns_ref = src->returns_reference()` (drop it — the DataDefREF
+    return type carries it). Build -Wall (treat -Wunused as proof), fulltest.
+- **2d TODO — vfREFERENCE collapse.** `vfREFERENCE` on a Variable now DUPLICATES
+  `type->is_reference()` (real drift hazard, like ref_params) — collapse it: add a
+  `Variable::is_reference()`-style predicate / route reads to the type, delete the flag.
+  ~38 sites (parser 20 + cir_builder 18). Same accessor+fulltest discipline.
+- Then delete now-dead reconstruction branches in `operand_value_datadef`; -Wall clean.
+
+CAVEAT: commit messages must use heredoc `git commit -F -` (NOT `-m "..."` with
+backticks — the shell command-substitutes them).
 
 ### Phase 3 — Value category on expressions → EXTRACTED to its own plan
 Moved to `docs/plans/2026-06-17-expr-value-category.md` (user decision 2026-06-17: complete
