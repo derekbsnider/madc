@@ -193,7 +193,24 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     // drifted from this backend — e.g. mislowering backward `goto` loops — and
     // a stale unit test pointed at it once hung the suite. One backend, no A/B.)
     CirBuilder *builder = new CirBuilder(c2m);
-    node_t tree = builder->translate_module(prog);
+    // translate_module materializes deferred/lazy template bodies on demand
+    // (parse_deferred_lazy_body). Those re-parses use the parser's Throw
+    // mechanism, which prints the diagnostic to stderr AND throws. An escaping
+    // throw here would terminate the process (uncaught -> std::terminate). Catch
+    // it: the error was already reported, so fail the build cleanly instead.
+    node_t tree = NULL;
+    try {
+	tree = builder->translate_module(prog);
+    } catch (const std::exception &e) {
+	fprintf(stderr, "%s: tree build failed (%s)\n", source_name, e.what());
+	delete builder;
+	return NULL;
+    } catch (...) {
+	fprintf(stderr, "%s: tree build failed (compile error in instantiated template body)\n",
+		source_name);
+	delete builder;
+	return NULL;
+    }
     if (!tree) {
 	fprintf(stderr, "%s: tree build failed\n", source_name);
 	delete builder;
