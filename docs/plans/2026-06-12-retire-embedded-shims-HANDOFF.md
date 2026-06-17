@@ -56,6 +56,31 @@ triage (ran each at live HEAD):
   operator-> (testsubscriptarrow, testvectorptr); (C) testsubscript codegen; (D)
   C++20 library surface = ranges (testset, testmap — biggest, separate track).
 
+## 0a-bis. ★ WALL B FIXED + WALL C RE-DIAGNOSED (CONVERGENCE) — @d9c0154
+- **@d9c0154** fix: confirm_dependent_member_type (the __void_t SFINAE probe for a
+  dependent member type, e.g. `_Tp::template rebind<_Up>::other`) rebuilt the
+  nested template-id emitting each deduced arg as `new TokenIdent(di->second->name)`.
+  A POINTER deduced param has name `A*` — NOT a re-parseable identifier — so
+  re-instantiating `rebind<A*>` failed "Expecting a type argument to rebind<>",
+  blocking vector<A*> and yielding "expression before '->' must be a pointer" on
+  `w[0]->v`. Fix: emit a resolved `TokenDataType(*di->second)` (type carried
+  directly), TokenIdent only for non-deduced. Found via backtrace
+  (match_partial_specialization→eval_void_t_detection_slot→confirm_dependent_member_type).
+- EFFECT: testvectorptr / testsubscriptarrow / testsubscript ALL advance past
+  parse/instantiation to the SAME c2mir layer now. No green flip yet.
+- ★ WALL C RE-DIAGNOSED (the test comment is STALE): the instantiated `T* data`
+  member with T=A* renders CORRECTLY as `struct A **_M_start` (A**), NOT `int*` —
+  that old bug is already fixed. The REAL Wall C: emitted C has
+  `return type is an incomplete type: struct __enable_if_t___and____has_construct_A...value_void`
+  — allocator_traits::_S_construct's return `enable_if_t<__and_<__has_construct<A,
+  A*...>>::value, void>` should FOLD TO void but madc emits an UNDEFINED struct
+  named after the whole unresolved template-id. So Wall C is **SFINAE trait
+  resolution** (enable_if_t + __and_ + __has_construct not folding to ::type=void)
+  — the SAME CORE as Wall A (__is_invocable). The container walls CONVERGE on one
+  engine: class-template trait `::type`/`::value` resolution (enable_if/__and_/
+  __has_construct/__invoke_result/__is_invocable). Reducer tmp/wb1.mad (+ tmp/wb1.c
+  = its --emit=c11; gcc-compile after stripping cleanup-on-extern noise localizes it).
+
 ## 0b. SHIPPED this session (3 commits, PUSHED, fulltest stayed 633/7 — see also
 §19M's 2 partial-spec fixes @024d8f9/@d321eaf earlier this same session):
 - **@84a03ab** refactor(std): single-source the default C++ bar as a configurable
