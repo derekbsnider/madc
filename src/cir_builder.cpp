@@ -6353,26 +6353,22 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	if (best_lcls || lcls) {
 		inst->parameters.push_back(ref_param_type(best_lcls ? (DataDef *)best_lcls
 								    : (DataDef *)lcls));
-		inst->ref_params.push_back(true);
 	} else {
 		// Literal-lhs (Pass 2b): param[0] is the non-class lhs type
 		// itself (a pointer/value, never a reference).
 		DataDef *lhs_dd0 = top->left->datadef();
 		inst->parameters.push_back(lhs_dd0 ? lhs_dd0 : (DataDef *)&ddINT64);
-		inst->ref_params.push_back(false);
 	}
 	bool rhs_is_ptr = !best->param_spellings[1].empty()
 			  && best->param_spellings[1].back() == '*';
 	if (best_rcls) {
 		inst->parameters.push_back(ref_param_type(best_rcls));
-		inst->ref_params.push_back(true);
 	} else {
 		bool rhs_ref = !rhs_is_ptr
 			&& !best->param_spellings[1].empty()
 			&& best->param_spellings[1].back() == '&';
 		DataDef *rhs0 = rhs_dd ? rhs_dd : (DataDef *)&ddINT64;
 		inst->parameters.push_back(rhs_ref ? ref_param_type(rhs0) : rhs0);
-		inst->ref_params.push_back(rhs_ref);
 	}
 	DBG(std::cout << "[W2] instantiate free " << best->ns << "::" << mname
 	    << " -> " << sym << std::endl);
@@ -6535,7 +6531,6 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 					minst->function_display_name = fname;
 					minst->namespace_name = ov.ns;
 					minst->parameters.push_back(ref_param_type(scls));
-					minst->ref_params.push_back(true);
 					m_free_fn_inst_by_sym[msym] = minst;
 				}
 				DBG(std::cout << "[W2] bind manipulator " << ov.ns << "::"
@@ -6744,7 +6739,6 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 			       : tcf->parameters[i]->datadef();
 		DataDef *pdd0 = pdd ? pdd : (DataDef *)&ddINT64;
 		inst->parameters.push_back(is_ref ? ref_param_type(pdd0) : pdd0);
-		inst->ref_params.push_back(is_ref);
 	}
 	// Extern proto now (mirrors the class-member emit_symbol binds): ref params
 	// are pointers, a reference return comes back as an address.

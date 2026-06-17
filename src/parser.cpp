@@ -25119,7 +25119,6 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 		Throw(nt) << "Expecting '...' for variadic parameter" << flush;
 	    func->is_varargs = true;
 	    func->parameters.push_back(&ddINT64);
-	    func->ref_params.push_back(false);
 	    func->const_params.push_back(false);
 	    func->param_cpp_spellings.push_back("");
 	    func->param_typedef_names.push_back("");
@@ -25204,7 +25203,6 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    nextToken();
 
 	func->parameters.push_back(param_dd);
-	func->ref_params.push_back(param_is_ref);
 	func->const_params.push_back(param_leading_const);
 	std::string param_spelling;
 	if ( param_leading_const )
@@ -31541,7 +31539,6 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->captured_vars = src->captured_vars;
     f->local_emit_name = src->local_emit_name;
     f->return_types = src->return_types;
-    f->ref_params = src->ref_params;
     f->const_params = src->const_params;
     f->param_cpp_spellings = src->param_cpp_spellings;
     f->param_typedef_names = src->param_typedef_names;
@@ -31727,7 +31724,6 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    // Without this, a method with a `T&` param mis-flagged __this as the
 	    // reference and left the real param without vfREFERENCE, breaking
 	    // `a.member` member access on a class-reference param.
-	    func->ref_params.push_back(false);
 	    func->const_params.push_back(false);
 	    func->param_cpp_spellings.push_back(""); // hidden __this — excluded from mangling
 	    func->param_typedef_names.push_back("");
@@ -32269,28 +32265,24 @@ paramdecl:
 		{
 		    DataDef *ref_ptr = getReferenceType(&pb->definition);
 		    func->parameters.push_back(ref_ptr);
-		    func->ref_params.push_back(true);
 		    func->const_params.push_back(param_has_const);
 		    scope_param_type = ref_ptr;
 		}
 		else if ( rtype == RefType::rtPointer )
 		{
 		    func->parameters.push_back(param_dd);
-		    func->ref_params.push_back(false);
 		    func->const_params.push_back(false);
 		    scope_param_type = param_dd;
 		}
 		else if ( dynamic_cast<DataDefFPTR *>(param_dd) != NULL )
 		{
 		    func->parameters.push_back(param_dd);
-		    func->ref_params.push_back(false);
 		    func->const_params.push_back(false);
 		    scope_param_type = param_dd;
 		}
 		else
 		{
 		    func->parameters.push_back(&pb->definition);
-		    func->ref_params.push_back(false);
 		    func->const_params.push_back(false);
 		    scope_param_type = &pb->definition;
 		}
@@ -33156,7 +33148,6 @@ TokenBase *Program::parseLambda()
 	    fresh->potential_captures	 = func->potential_captures;
 	    fresh->captures		 = func->captures;
 	    fresh->return_types		 = func->return_types;
-	    fresh->ref_params		 = func->ref_params;
 	    fresh->const_params		 = func->const_params;
 	    fresh->is_varargs		 = func->is_varargs;
 	    fresh->is_void_params	 = func->is_void_params;
