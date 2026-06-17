@@ -79,7 +79,16 @@ symptom. Verified this session (reducers in tmp/, all `--std=c++17
   declarator" — only via `<functional>`); `sizeof(call-expr)` parse
   ("Expecting ')' after sizeof type" — general, `tmp/sz1`; decltype works).
 
-## 0c. NEXT (start here)
+## 0c. NEXT (start here) — CONCRETE PLAN READY
+**→ `docs/plans/2026-06-17-functor-call-node-receiver-plan.md`** is the
+ready-to-implement plan for the next wall (generalize `operator()` dispatch to any
+class-typed receiver NODE — ref/member/call-result — reusing the proven
+`parent_expr` node-receiver method machinery; root cause at parser.cpp ~17305–17339,
+reuse pattern at ~15285–15442, `operand_object_class` for refs, clang
+`BuildCallToObjectOfClassType`). Includes the exact code shape, the careful
+`(`-binds-to-receiver discriminator (§7 — the `f()*(x)` trap), the regression test
+matrix, and the gate. START THERE. Lower-level chronology of the walls below:
+
 Sub-wall (a) is DONE for the QUALIFIED call (`e28c2c3`). The REAL `_S_test` is
 called UNQUALIFIED inside `__result_of_impl`'s `typedef decltype(_S_test<F,
 Args...>(0)) type;`, so it does NOT hit the qualified reselect path. NEXT:
