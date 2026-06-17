@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19g"** block immediately below (current state +
-NEXT), then "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19h"** block immediately below (current state +
+NEXT), then "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,63 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 19g — COLD-START REHYDRATION (READ FIRST) — 2026-06-16
+# ★ SESSION 19h — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+
+## 0. Orientation + STATE
+Code HEAD **`f9c40ff`** + an UNCOMMITTED docs edit (audit+this block). Branch
+`feature/retire-embedded-shims-claude`, pushed through `f9c40ff`. Tree otherwise
+clean (untracked `mir-debug-support.md` is NOT ours — leave it). Committed tree
+GREEN: **unit 132/0, integration 627/7** (same 7 container fails). develop
+untouched. GOAL THIS SESSION: "get set and map working" (Stop hook).
+
+## 0a. SHIPPED this session (5 root-cause fixes, all pushed, all 627/7)
+- **`ab9d8b8`** `_M_valptr` cleared — inline `static_cast<T>(p)->m()` over-consumed
+  the postfix into the cast operand (path b: `cast_operand` flag + resume via
+  parsePostfixChainFrom; no leak).
+- **`aa0fae7`** std::pair member-init stored the POINTER of a reference param into
+  a scalar member (garbage) — parseFunction's `func_already_declared` branch
+  didn't pointer-ify a `&` param's scope type → CIR deref gate missed. KEYSTONE
+  for pair (set/map value_type + insert's pair<iter,bool>).
+- **`7c1bbb4`+`202c4d4`** member-template return type that's a multi-arg
+  template-id (`pair<iterator,bool> _M_insert_unique`) was recorded as the LAST
+  arg (`bool`) → resolve the full return-type range (resolve_type_token_range),
+  GATED to skip DEPENDENT returns (make_pair).
+- **`f9c40ff`** uncaught parser Throw during lazy template-body materialization →
+  SIGABRT; now caught in build_tu_module → clean failure.
+
+Net: std::set<int>/map<int,int> advance PAST all pair-construction walls (3
+distinct fixes) and no longer crash; they now fail cleanly at the next wall.
+
+## 0b. LIVE NEXT — `if constexpr` over a LIBRARY TRAIT (audit row 7c). START HERE.
+`set<int>`/`map<int,int>` reach `_Rb_tree::_S_key`'s
+`if constexpr (__is_invocable<_Compare&, const _Key&, const _Key&>{})`
+(stl_tree.h:770). `fold_if_constexpr_condition` (parser.cpp ~6928) can't evaluate
+a library-trait value `Trait<...>{}` (a `__bool_constant`-derived trait
+value-init'd to bool), so `TokenIF::parse` FALLS BACK to a runtime `if`
+(parser.cpp ~23833) and parses `__is_invocable<...>` in runtime-expression
+context → "use of undeclared identifier '__is_invocable'". The static_assert
+SIBLING at stl_tree.h:764 is correctly deferred (parser.cpp:6294); only the
+`if constexpr` form falls through. inv4 shows madc CAN instantiate
+`std::__is_invocable<...>` qualified, but `Trait<...>{}`→bool in CONSTANT context
+fails ("incompatible types in assignment to an arithmetic type lvalue").
+**FIX (deepest layer, real feature):** make the constant evaluator fold
+`Trait<...>{}` / `Trait<...>::value` for a `bool_constant`-derived trait
+(instantiate, read `value`). Then the inner `is_invocable_v<>` static_assert and
+the `_S_relocate`/`__is_invocable` relocate-path walls follow. THIS IS A
+MULTI-SESSION ARC (template-instantiation-core) — set/map traverse the whole huge
+`_Rb_tree` instantiation. Reducers: `tmp/seti.cpp` (set<int>, fails cleanly now),
+`tmp/inv4.cpp` (`std::__is_invocable<...>{}`→bool), `tmp/inv5.cpp` (eager
+unqualified trait in `namespace std` — WORKS, shows the gap is the lazy/if-constexpr
+path not namespace). Detail: feature-drops-audit row 7c.
+
+## 0c. remaining container fails (7, unchanged count)
+testmadc_ns/testsubscript (map/set → now row 7c), testmap/testset (C++20
+`.contains()` + row 7c), testvectorptr/testsubscriptarrow (row 6b ptr-elem),
+testcontainerdtor (`.put()` invalid-test → rewrite to `dict[k]=v`).
+
+---
+
+# SESSION 19g — COLD-START REHYDRATION — 2026-06-16
 
 ## 0. Orientation + STATE
 Code HEAD **`ab9d8b8`** (the `_M_valptr` fix). Branch
