@@ -56,6 +56,38 @@ triage (ran each at live HEAD):
   operator-> (testsubscriptarrow, testvectorptr); (C) testsubscript codegen; (D)
   C++20 library surface = ranges (testset, testmap — biggest, separate track).
 
+## 0a-ter. ★★★ GOAL set by user: vector<T*> FULLY WORKING — DRILLED TO PRECISE ROOT
+vector<T*> (class OR primitive pointer element) does NOT compile/run (vector<int>
+and vector<string> DO — verified). Yesterday's @50775a8 fixed the A** data-member
+render; today's @d9c0154 fixed rebind/instantiation. Remaining blocker drilled
+all the way down (3-oracle hand-rolled reducers):
+- allocator_traits::_S_construct return `enable_if_t<__and_<__has_construct<...>>::value, void>`
+  stays UNRESOLVED (emitted as an undefined/incomplete struct) → c2mir rejects.
+- enable_if_t folds FINE for a literal/`is_same<>::value` condition (tmp/en7: 4),
+  but NOT for `__and_<...>::value`.
+- Even 1-arg `__and_<true_type>::value` = 0 (want 1). `__and_<_B1>` is `: public _B1`.
+- ★ ROOT (tmp/inh.cpp, tmp/inh2.cpp — g++/clang vs madc): a class template that
+  inherits from a TYPE PARAMETER (`template<typename B> struct X : B {}`) does NOT
+  link the concrete base on instantiation → inherited static `::value` = 0.
+  Concrete base (`struct C : tt {}`) WORKS (8); PARAM base (`X<tt>`) FAILS (0).
+  resolve_class_static_member_const_value (parser.cpp:1924) DOES walk bases — the
+  bases just aren't POPULATED for a param-base instantiation. The base-clause
+  parser (parser.cpp:22355 `if tn->id()==tkColon`) is NOT reached for a param base
+  (no MADC_DEBUG_BASE_CLAUSE trace fires) → X<tt> likely instantiated OPAQUELY
+  (dependent base) / base-clause skipped; a substituted base B→TokenDataType(tt)
+  also fails is_contextual_identifier_token (true only for ttIdentifier/ddARRAY) at
+  22376. FIX DIRECTION: substitute + LINK a template-parameter base at instantiation
+  (parse body, record the concrete base in ddc->bases). THEN __and_/enable_if_t/
+  __has_construct fold, _S_construct return = void.
+- SEPARATE downstream bug also blocking: forwarding-ref `_Args&&` of a POINTER
+  element (A*) renders `A***` in _S_construct vs `A**` in construct (tmp/wb1.c lines
+  3255 vs 3354) → "incompatible argument type for pointer type parameter". Fix after
+  the base-link root.
+- Reducers: tmp/inh.cpp, tmp/inh2.cpp (the root, minimal), tmp/en7.mad, tmp/en9.mad,
+  tmp/wb1.mad (+ wb1.c = --emit=c11). NOTE: probe traits in TYPE position (`using
+  X=...;sizeof`) — inline `::value`/bare `true_type` in a printf arg hit a separate
+  expression-position name-resolution quirk that pollutes probes.
+
 ## 0a-bis. ★ WALL B FIXED + WALL C RE-DIAGNOSED (CONVERGENCE) — @d9c0154
 - **@d9c0154** fix: confirm_dependent_member_type (the __void_t SFINAE probe for a
   dependent member type, e.g. `_Tp::template rebind<_Up>::other`) rebuilt the
