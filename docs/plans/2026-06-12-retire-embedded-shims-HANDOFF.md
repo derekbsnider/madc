@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19h"** block immediately below (current state +
-NEXT), then "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19i"** block immediately below (current state +
+NEXT), then "SESSION 19h" / "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,77 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 19h — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+# ★ SESSION 19i — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+
+## 0. Orientation + STATE
+Code HEAD **`6ecb723`**, branch `feature/retire-embedded-shims-claude`. Tree
+clean (untracked `mir-debug-support.md` is NOT ours — leave it). Committed tree
+GREEN: **unit 132/0, integration 627/7** (same 7 container fails). develop
+untouched. GOAL: "clear all set / map walls" (Stop hook). NOTE: this is a
+MULTI-SESSION template-instantiation-core arc — not closable in one session.
+
+## 0a. SHIPPED this session (1 fix, pushed-pending, 627/7)
+- **`6ecb723`** qualified static member-fn-template call with explicit targs
+  (`Scope::fn<TArgs>(args)`) was discarding `<TArgs>` (treated as a CLASS
+  template-id → skip_template_id_suffix) → bound to the ddINT64 placeholder /
+  undefined symbol. Fix: for a static method, leave `<...>` unconsumed so the
+  call site captures explicit_template_args + reselect instantiates. Runtime
+  (`tmp/mt2d` now 4) + body-bearing decltype (`tmp/mt2e` now 4) resolve the
+  concrete return type. First wall on set<int>'s __invoke_result path.
+
+## 0b. ★ CORRECTED ROOT-CAUSE MAP for set<int>/map<int,int> (supersedes 19h §0b)
+The 19h theory (if-constexpr fold = the blocker, audit row 7c) was a DOWNSTREAM
+symptom. Verified this session (reducers in tmp/, all `--std=c++17
+--no-embedded-headers`; 3-oracle g++/clang):
+- `_Rb_tree::_S_key`'s `if constexpr (__is_invocable<...>{})` falls back to a
+  runtime `if` because the trait can't fold. BUT folding it is NOT a standalone
+  fix: `inv6` shows `__is_invocable<...>::value` already folds to **0 (g++=1)** —
+  WRONG. Folding `{}` to a constant here = a SHIM (knowingly-wrong value). NO.
+- REAL root (audit **row 7d**): `__is_invocable<F,Args...>` derives from
+  `__is_invocable_impl<__invoke_result<F,Args...>, void>::type`. The `__void_t`
+  detection idiom WORKS here (`tmp/vt1b`, `tmp/vt3b` correct), but
+  `__invoke_result<...>::type` won't resolve (`tmp/ir3` "Expecting ';' after
+  using alias"), so the detection sees no `::type` → false_type → value 0.
+- `__invoke_result<...>::type` = `decltype(_S_test<F,Args...>(0))` in
+  `__result_of_other_impl`, viable overload returns
+  `__result_of_success<decltype(declval<F>()(declval<Args>()...)), __invoke_other>`.
+  Sub-walls, dependency order:
+  - **(a)** body-less static member-fn-template return type in unevaluated
+    (decltype) context → ddINT64 placeholder (`tmp/mt2.cpp` madc=8 g++=4). Root:
+    `member_template_decl` retained only for body-bearing templates
+    (parser.cpp ~29501). ATTEMPT THIS SESSION (blanket retain-all) FIXED mt2 but
+    REGRESSED 6 tests (621/13: testforeach2/foreachref/outoflinemembertemplate/
+    stringref/subscriptmember/vector) → REVERTED. CORRECT APPROACH = a
+    return-type-ONLY path (substitute targ binding into the declared return
+    spelling, bind a declaration-only FuncDef; NO generic instantiation),
+    reached only from the decltype/unevaluated call path. The REAL `_S_test`
+    owner is EXTERNAL (bails at parser.cpp:29255) so needs this even more.
+  - **(b)** SFINAE overload selection `_S_test(int)` vs `_S_test(...)`
+    (`tmp/mt1.cpp` madc=0 g++=1) — ellipsis-worst-rank + `__void_t` viability.
+  - **(c)** `decltype(declval<F>()(declval<Args>()...))` — functor-call result
+    type. madc does `decltype(concrete_functor(args))` (`tmp/dc4` OK) but not via
+    `declval<F>()` (a fn-template call; `tmp/dc2` "undeclared identifier 'dv'",
+    related to audit row 5 free-fn-template-call).
+- OFF the set path (don't chase for this goal): `_Nocopy_types`
+  pointer-to-member-fn member parse ("Unsupported parenthesized member
+  declarator" — only via `<functional>`); `sizeof(call-expr)` parse
+  ("Expecting ')' after sizeof type" — general, `tmp/sz1`; decltype works).
+
+## 0c. NEXT (start here)
+Attack row 7d sub-wall (a) with the TARGETED return-type-only approach (NOT
+blanket retention — that regressed). Then (b) ellipsis SFINAE ranking, then (c)
+declval-functor-call decltype. Each is a real feature; NO SHIMS; 3-oracle;
+fulltest 627/7 after each (the blanket-retention regression proves you MUST
+fulltest before committing any member-template-retention change).
+
+## 0d. remaining container fails (7, unchanged)
+testmadc_ns/testsubscript (map/set → row 7d), testmap/testset (C++20
+`.contains()` + row 7d), testvectorptr/testsubscriptarrow (row 6b ptr-elem),
+testcontainerdtor (`.put()` invalid-test → rewrite to `dict[k]=v`).
+
+---
+
+# SESSION 19h — COLD-START REHYDRATION — 2026-06-17
 
 ## 0. Orientation + STATE
 Code HEAD **`f9c40ff`** + an UNCOMMITTED docs edit (audit+this block). Branch
