@@ -13016,7 +13016,7 @@ static bool is_addressable_expression(TokenBase *expr)
     if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr) )
     {
 	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
-	if ( fd && fd->returns_ref )
+	if ( fd && fd->returns_reference() )
 	    return true;
     }
     return dynamic_cast<TokenMember *>(expr)
@@ -31543,7 +31543,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->param_cpp_spellings = src->param_cpp_spellings;
     f->param_typedef_names = src->param_typedef_names;
     f->param_defaults = src->param_defaults;
-    f->returns_ref = src->returns_ref;
+    f->returns_ref = src->returns_reference();
     f->template_return_param_name = src->template_return_param_name;
     f->template_return_deduce_arg_index = src->template_return_deduce_arg_index;
     f->template_return_deduce_from_pointer = src->template_return_deduce_from_pointer;

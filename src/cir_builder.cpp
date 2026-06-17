@@ -474,7 +474,7 @@ static void native_func_shape(FuncDef *fd, bool &ret_ptr,
 {
 	// A C++ reference return IS an address return (T& comes back as T*),
 	// same as the class-method extern shape.
-	ret_ptr = fd && (fd->returns.is_pointer() || fd->returns_ref);
+	ret_ptr = fd && (fd->returns.is_pointer() || fd->returns_reference());
 	ret_specs = ret_ptr ? std::vector<c2mir_node_code_t>{N_VOID}
 			    : native_scalar_specs(fd ? &fd->returns : NULL);
 	if (ret_specs.empty())
@@ -712,7 +712,7 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 	if (!tcf) return NULL;
 	FuncDef *fd = call_target_funcdef(tcf);
 	if (!fd) return NULL;
-	if (fd->returns_ref) return NULL;
+	if (fd->returns_reference()) return NULL;
 	DataDefCLASS *cdd = class_return_via_retbuf(&fd->returns);
 	if (!cdd) return NULL;
 	// A fn-ptr call inherits the retbuf ABI from its rendered target type; a
@@ -1056,14 +1056,14 @@ DataDef *CirBuilder::ref_returning_call_type(TokenBase *arg)
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
 	if (!tcf) return NULL;
 	FuncDef *cfd = call_target_funcdef(tcf);
-	if (!tcf->returns_ref_override && !(cfd && cfd->returns_ref))
+	if (!tcf->returns_ref_override && !(cfd && cfd->returns_reference()))
 		return NULL;
 	// Type by the call_target_funcdef-RESOLVED callee: for a late-bound
 	// overload set the parse-bound var is an arbitrary set member (the
 	// parser defers resolution to CIR), so the token's own returns() can
 	// name another overload's return type. An explicit return_override
 	// still wins (tcf->returns() honors it).
-	DataDef *r = (cfd && cfd->returns_ref && !tcf->return_override)
+	DataDef *r = (cfd && cfd->returns_reference() && !tcf->return_override)
 		   ? &cfd->returns : tcf->returns();
 	if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r))
 		r = rp->base_type ? rp->base_type : r;
@@ -1506,7 +1506,7 @@ DataDef *CirBuilder::fnptr_retbuf_type(FuncDef *fd)
 {
 	if (!fd) return NULL;
 	DataDef *ret_dd = &fd->returns;
-	if (ret_dd->is_pointer() || fd->returns_ref || fd->is_multi_return())
+	if (ret_dd->is_pointer() || fd->returns_reference() || fd->is_multi_return())
 		return NULL;
 	if (DataDefCLASS *obj = class_return_via_retbuf(ret_dd))
 		return (DataDef *)obj;
@@ -3560,7 +3560,7 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 // void base. `ret_ptr` is out-param.
 static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &ret_ptr)
 {
-	ret_ptr = fd && (fd->returns.is_pointer() || fd->returns_ref);
+	ret_ptr = fd && (fd->returns.is_pointer() || fd->returns_reference());
 	if (ret_ptr) return {};   // void* / char* — base is void, ret_ptr carries the star
 	if (fd && fd->returns.is_integer()) {
 		// An integer return MUST declare a real integer base — a void base drops
@@ -3628,7 +3628,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	// result-slot FIRST argument (before __this), void call, and the call
 	// expression is the materialized cleanup-tagged temp's lvalue (g++
 	// canon: get_allocator() receives the sret slot in %rdi, this in %rsi).
-	DataDefCLASS *retc = (!callee->returns_ref && !callee->returns.is_pointer())
+	DataDefCLASS *retc = (!callee->returns_reference() && !callee->returns.is_pointer())
 			     ? class_return_via_retbuf(&callee->returns) : NULL;
 	char sret_tmp[40] = { 0 };
 	if (retc)
@@ -3679,7 +3679,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	if (retc) {
 		ret_ptr = false;
 		ret_specs = { N_VOID };
-	} else if (!callee->returns_ref && !callee->returns.is_pointer()) {
+	} else if (!callee->returns_reference() && !callee->returns.is_pointer()) {
 		ret_cls = as_class_instance(&callee->returns);
 	}
 	need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs, ret_cls);
@@ -3693,7 +3693,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	}
 	// A T&-returning method returns an address; deref so the call expression is
 	// the referenced lvalue, matching the non-external method/operator paths.
-	if (callee && callee->returns_ref)
+	if (callee && callee->returns_reference())
 		return node1(N_DEREF, call, origin);
 	return call;
 }
@@ -3767,7 +3767,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	// lvalue — the method-call mirror of object_call_temp_addr. Without this
 	// the call was emitted bare: one arg short, and non-addressable as a
 	// value (`__x.get_allocator() == __a` in real _Vector_base).
-	DataDefCLASS *ret_obj = (callee && !callee->returns_ref
+	DataDefCLASS *ret_obj = (callee && !callee->returns_reference()
 				 && !callee->is_multi_return())
 				? class_return_via_retbuf(&callee->returns) : NULL;
 	char ret_tmp[40] = { 0 };
@@ -3885,7 +3885,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	}
 	// A T&-returning method returns the address of its result; deref so the
 	// call expression is the referenced lvalue (read: *p; write: *p = rhs).
-	if (callee && callee->returns_ref)
+	if (callee && callee->returns_reference())
 		return node1(N_DEREF, mcall, origin);
 	return mcall;
 }
@@ -5038,7 +5038,7 @@ node_t CirBuilder::no_ctor_match_error(DataDefCLASS *cdd,
 			resolved ? resolved->name.c_str() : "(none)",
 			tcf ? tcf->var.name.c_str() : "(not-call)",
 			cfd ? cfd->returns.name.c_str() : "(no-cfd)",
-			cfd ? (int)cfd->returns_ref : -1);
+			cfd ? (int)cfd->returns_reference() : -1);
 	}
 	if (cdd)
 		for (Variable *cv : cdd->ctors) {
@@ -5530,7 +5530,7 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 			std::string opname = "operator[]";
 			Variable *omv = ccls ? ccls->findMethod(opname) : NULL;
 			FuncDef *ofd = omv ? dynamic_cast<FuncDef *>(omv->type) : NULL;
-			if (ofd && ofd->returns_ref) {
+			if (ofd && ofd->returns_reference()) {
 				DataDef *rd = &ofd->returns;
 				if (rd && rd->is_pointer()) {
 					DataDefPTR *rp = dynamic_cast<DataDefPTR *>(rd);
@@ -6042,7 +6042,7 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 	need_output_extern_unprototyped(sym.c_str(), ret_ptr, ret_specs);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
-	if (callee->returns_ref)
+	if (callee->returns_reference())
 		return node1(N_DEREF, call, origin);
 	return call;
 }
@@ -6403,7 +6403,7 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 	// guaranteed copy elision when the caller provides the declared
 	// variable as ret_slot; expression contexts materialize a
 	// cleanup-tagged temp and yield its object lvalue).
-	DataDefCLASS *retc = (!callee->returns_ref && !callee->returns.is_pointer())
+	DataDefCLASS *retc = (!callee->returns_reference() && !callee->returns.is_pointer())
 			     ? class_return_via_retbuf(&callee->returns) : NULL;
 	char objtmp[40] = { 0 };
 	bool slot_consumed = false;
@@ -6453,7 +6453,7 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 	bool ret_ptr = false;
 	std::vector<c2mir_node_code_t> ret_specs =
 		emit_symbol_ret_specs(callee, ret_ptr);
-	if (callee->returns_ref) {
+	if (callee->returns_reference()) {
 		ret_ptr = true;
 		ret_specs = { N_VOID };
 	}
@@ -6471,7 +6471,7 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 		m_pending_stmts.push_back(node2(N_EXPR, list(), ocall, origin));
 		return id(objtmp, origin);   // materialized object lvalue
 	}
-	if (callee->returns_ref)
+	if (callee->returns_reference())
 		return node1(N_DEREF, ocall, origin);
 	return ocall;
 }
@@ -6834,7 +6834,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	// the void call writes *__retbuf; a TRIVIAL (native struct) return is assigned
 	// into __t. The expression value is then the temp's object lvalue.
 	DataDefCLASS *retc = as_class_instance(&callee->returns);
-	bool by_value_object = retc && !callee->returns_ref
+	bool by_value_object = retc && !callee->returns_reference()
 			       && !callee->returns.is_pointer();
 	bool via_retbuf = by_value_object
 			  && class_return_via_retbuf(&callee->returns) != NULL;
@@ -6876,7 +6876,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		return id(objtmp, origin);   // materialized object lvalue
 	}
 	// T&-returning operator returns an address; deref to the lvalue.
-	if (callee && callee->returns_ref)
+	if (callee && callee->returns_reference())
 		return node1(N_DEREF, ocall, origin);
 	return ocall;
 }
@@ -7087,7 +7087,7 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 	node_t ocall = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 	CIR_NODE(ocall)->synth_from_origin = true;
 	// A T&-returning unary operator returns an address; deref to the lvalue.
-	if (callee->returns_ref)
+	if (callee->returns_reference())
 		return node1(N_DEREF, ocall, origin);
 	return ocall;
 }
@@ -7186,7 +7186,7 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 	FuncDef *callee = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
 	// operator[] conventionally returns T& -> deref to the lvalue so the
 	// result is usable as both an rvalue (read) and an lvalue (`v[i] = x`).
-	if (callee && callee->returns_ref)
+	if (callee && callee->returns_reference())
 		return node1(N_DEREF, call, origin);
 	return call;
 }
@@ -7370,7 +7370,7 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 
 	DataDef *ret_dd = &fd->returns;
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
-	bool ret_is_ref = fd->returns_ref;   // T& -> returned by address (one more *)
+	bool ret_is_ref = fd->returns_reference();   // T& -> returned by address (one more *)
 	int ret_star_depth = dd_peel_pointers(ret_dd);
 
 	// A by-value non-trivial class return uses the __retbuf ABI (void return +
@@ -8315,7 +8315,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					if (addr)
 						// operator[] returns T& -> a pointer; deref to the
 						// element lvalue (mirror of class_subscript_call).
-						return callee->returns_ref
+						return callee->returns_reference()
 						       ? node1(N_DEREF, addr, tb) : addr;
 				}
 			}
@@ -8587,7 +8587,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					append(pargs, integer(0, tb));   // dummy int (postfix marker)
 					node_t pcall = node2(N_CALL, id(sym.c_str(), tb), pargs, tb);
 					CIR_NODE(pcall)->synth_from_origin = true;
-					if (post->returns_ref)
+					if (post->returns_reference())
 						return node1(N_DEREF, pcall, tb);
 					return pcall;
 				}
@@ -9020,7 +9020,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			build_call_args(tcf, args);
 			node_t call = node2(N_CALL, func_id, args, tb);
 			FuncDef *cdf = call_target_funcdef(tcf);
-			if (cdf && cdf->returns_ref)
+			if (cdf && cdf->returns_reference())
 				return node1(N_DEREF, call, tb);
 			return call;
 		}
@@ -9963,7 +9963,7 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 			node_t fill = node2(N_CALL, id(sym.c_str(), fe), a, fe);
 			append(body_items, node2(N_EXPR, list(), fill, fe));
 		} else {
-			node_t elem = opfd && opfd->returns_ref
+			node_t elem = opfd && opfd->returns_reference()
 					? node1(N_DEREF, op_addr(), fe) : op_addr();
 			node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
 					      elem, fe);
@@ -9971,7 +9971,7 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 		}
 	} else {
 		// Scalar element: x = *(c[__fe_i])  (load through the reference).
-		node_t elem = opfd && opfd->returns_ref
+		node_t elem = opfd && opfd->returns_reference()
 				? node1(N_DEREF, op_addr(), fe) : op_addr();
 		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe), elem, fe);
 		append(body_items, node2(N_EXPR, list(), assign, fe));
@@ -10606,7 +10606,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 							select_operator_overload(
 								ilcls, iopname, iop->right));
 					}
-					if (iinst && !iinst->returns_ref
+					if (iinst && !iinst->returns_reference()
 					    && class_return_via_retbuf(&iinst->returns) == cdcl) {
 						node_t slot = node1(N_ADDR,
 							id(sdcl->var.name.c_str(), sdcl),
@@ -10772,7 +10772,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 
 	DataDef *ret_dd = &fd->returns;
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
-	bool ret_is_ref = fd->returns_ref;   // T& -> returned by address (one more *)
+	bool ret_is_ref = fd->returns_reference();   // T& -> returned by address (one more *)
 	int ret_star_depth = dd_peel_pointers(ret_dd);
 
 	// A by-value non-trivial class return uses the struct-return (__retbuf) ABI:
@@ -12273,7 +12273,7 @@ node_t CirBuilder::translate_module(Program *prog)
 
 		DataDef *ret_dd = &fd->returns;
 		bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
-		bool ret_is_ref = fd->returns_ref;
+		bool ret_is_ref = fd->returns_reference();
 		int ret_decl_stars = dd_peel_pointers(ret_dd);
 
 		// A madc-emitted by-value non-trivial class return uses the

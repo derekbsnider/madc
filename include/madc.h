@@ -48,7 +48,24 @@ protected:
 class FuncDef: public DataDef
 {
 public:
+    // The function's return TYPE. With first-class references a reference return
+    // is a DataDefREF (is_reference() true); use returns_reference() to test it
+    // and return_value_type() to get the referent. Read through those accessors,
+    // not `returns` directly, so the reference identity lives in ONE place (the
+    // type) — the old parallel `returns_ref` flag is being retired (Phase 2).
     DataDef &returns;
+    // True when the return type is a reference (T& / T&&). During the migration
+    // this also honours the legacy returns_ref flag; once the flag is removed it
+    // is purely returns.is_reference().
+    bool returns_reference() const { return returns.is_reference() || returns_ref; }
+    // The VALUE type a (possibly reference) return denotes: the referent for a
+    // reference return, else the return type itself. Flip-transparent — correct
+    // whether `returns` holds the DataDefREF or (legacy) the bare referent.
+    DataDef &return_value_type() const {
+	if ( returns.is_reference() )
+	    return *static_cast<DataDefPTR &>(returns).base_type;
+	return returns;
+    }
     std::vector<DataDef *> parameters;
     size_t explicit_alignment;
     // [&] capture support
