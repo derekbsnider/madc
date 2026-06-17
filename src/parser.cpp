@@ -14149,8 +14149,17 @@ bool Program::confirm_dependent_member_type(DataDef *base,
 	{
 	    if ( a ) seq.push_back(new TokenComma());
 	    std::map<std::string, DataDef *>::const_iterator di = ded.find(iargs[a]);
-	    seq.push_back(new TokenIdent(
-		( di != ded.end() && di->second ) ? di->second->name : iargs[a]));
+	    // A deduced arg is emitted as a resolved TokenDataType, NOT a bare
+	    // TokenIdent(name): a pointer/reference/instantiated DataDef has a name
+	    // that is not a re-parseable identifier (`A*`, `vector<int>`), so a
+	    // TokenIdent would fail resolve_declared_type_token when this probe's
+	    // nested template-id (e.g. `rebind<A*>`) is re-instantiated. The
+	    // TokenDataType carries the type directly. Non-deduced names stay textual.
+	    if ( di != ded.end() && di->second )
+		seq.push_back(new TokenDataType(di->second->name.c_str(),
+						*di->second));
+	    else
+		seq.push_back(new TokenIdent(iargs[a]));
 	}
 	seq.push_back(new TokenGT());
     }
