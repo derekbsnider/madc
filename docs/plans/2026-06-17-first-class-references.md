@@ -80,14 +80,15 @@ fulltest must stay byte-for-byte green through them; that is the regression gate
 
 ### Phase 2 — Collapse the side-channels onto the type (the cleanup)
 
-EXECUTION STATUS (2026-06-17, HEAD f3a6041 — clean handoff point, all green 633/7/18):
+EXECUTION STATUS (2026-06-17, HEAD 9f0bd52 — Phase 2c COMPLETE, all green 633/7/18;
+returns_ref flag fully retired. Remaining: 2d (vfREFERENCE) + Phase 4):
 - **2a DONE** (@fc598e9): all reference PARAMS are DataDefREF (parser + 5 cir_builder
   synth sites via `ref_param_type()`). `FuncDef::is_ref_param(i)` =
   `parameters[i]->is_reference()` is the single source; all ~33 `ref_params[i]` reads
   migrated to it.
 - **2b DONE** (@4f7bdd8): `ref_params` vector DELETED (decl + 15 push/copy sites). Param
   ref-ness fully type-driven. (ref_params WAS a real drift hazard — justified.)
-- **2c IN PROGRESS — return references.** User decided (2026-06-17) the ~49 scattered
+- **2c COMPLETE — return references.** User decided (2026-06-17) the ~49 scattered
   `returns_ref` checks + emission "append a pointer" special-case ARE worth eliminating
   (a mess, even though returns_ref alone is not a *drift* hazard — `returns` is a
   non-reseatable `DataDef &` storing the bare referent + flag).
@@ -99,25 +100,42 @@ EXECUTION STATUS (2026-06-17, HEAD f3a6041 — clean handoff point, all green 63
     `method`(Method), `reg`(HostCallbackReg), `ret`/`tr`(TokenRETURN), `tcf`
     (TokenCallFunc) — were compiler-caught and left as `.returns`. NOW no site reads
     FuncDef::returns directly.
-  - **R4 TODO — the construction flip.** Make a ref-returning FuncDef construct with a
-    DataDefREF: at each ref-return construction, pass `getReferenceType(referent)` as the
-    return type. Sites are where `returns_ref`/`ret_is_ref`/`ret_ref` is known at/near
-    `new FuncDef(retType)`: parser.cpp 31685 (`func=new FuncDef(dd); func->returns_ref=
-    return_ref` → construct `new FuncDef(return_ref?getReferenceType(dd):dd)`), 23562
-    (mfd, ret_is_ref), 21460/21465 (operator synth), 32470/32477 (trailing-return),
-    clone path `clone_funcdef_with_return` (parser ~31546 copies returns_ref); cir_builder
-    6348/6528/6729 synth (wrap best_retc/scls return type when ret_ref). Because ALL
-    readers go through return_value_type()/returns_reference() (flip-transparent), this
-    should be a NO-OP for output — fulltest must stay 633/7/18. Keep the returns_ref flag
-    SET for now (returns_reference() honours both).
-  - **R5 TODO — delete the flag.** Remove `returns_ref` field + all set sites + the
-    `|| returns_ref` in returns_reference() (→ pure `returns.is_reference()`); fix the
-    clone copy `f->returns_ref = src->returns_reference()` (drop it — the DataDefREF
-    return type carries it). Build -Wall (treat -Wunused as proof), fulltest.
-- **2d TODO — vfREFERENCE collapse.** `vfREFERENCE` on a Variable now DUPLICATES
-  `type->is_reference()` (real drift hazard, like ref_params) — collapse it: add a
-  `Variable::is_reference()`-style predicate / route reads to the type, delete the flag.
-  ~38 sites (parser 20 + cir_builder 18). Same accessor+fulltest discipline.
+  - **R4 DONE** (@aa522c0): every ref-returning FuncDef is BORN with a DataDefREF return.
+    New helper `Program::returnDecl(dd, is_ref)` (single collapse via getReferenceType).
+    Flipped: parseFunction's 3 constructions; both clone_funcdef_with_return callers
+    (trailing-return + deferred-method analogue, born via returnDecl(*new_ret, want_ref),
+    clone now also fires when ref-ness must change); cir_builder's 3 synth FuncDefs
+    (as_reference_type, renamed from ref_param_type — serves param AND return slots). Flag
+    kept set → pure no-op for readers. fulltest 633/7/18.
+  - **R5 DONE** (@9f0bd52): `returns_ref` field + ctor init + ALL set sites deleted;
+    returns_reference() is pure `returns.is_reference()`. Required ONE real construction
+    flip: TokenCLASS member methods now `parseFunction(..., ret_is_ref, ...)` (was hardcoded
+    `false`) — so alias-spelled `reference operator[]()` is born with a DataDefREF return
+    (23532). Dropping the flag exposed consumers that read raw `returns` as the bare class;
+    fixed at the deepest layer to unwrap uniformly:
+      · `TokenSubscript::subscript_operator_element_type` → `return_value_type()` (the
+        element type is the referent of `T& operator[]`), not `&returns`.
+      · `parseExpr_identifierArm` member-access on an expression result (call / subscript /
+        operator) → new `referent_if_reference()` helper unwraps a DataDefREF receiver.
+      · `CirBuilder::operand_object_class` unwraps a reference result via class_behind.
+      · auto-return deduction reads `return_value_type()` (T*& stays T*).
+    fulltest 633/7/18, -Wall clean.
+- **2d TODO — vfREFERENCE collapse.** NOT a pure duplicate (re-investigated 2026-06-17).
+  5 set sites; in 3 the variable's TYPE is already a DataDefREF (flag redundant): scope
+  param (parser 32317, getReferenceType), the param-loop var (32822, type = the DataDefREF
+  param `d`), the decl ref var (34757, getReferenceType). In 2 the flag is LOAD-BEARING —
+  the var is bare-pointer + flag, the deliberate single-indirection `T*&` model:
+    · range-for elem ref (24276): `getPointerType(&dt->definition)` + flag.
+    · auto& var, pointer-deduced branch (33977 `if(!auto_decl_type->is_pointer())` SKIPS
+      wrapping; only the non-pointer branch wraps, via getPointerType at 33980).
+  So collapsing is an R5-sized cascade, NOT a rename: (1) make those 2 sites born as
+  DataDefREF — but that changes `T*&` from one indirection to two (DataDefREF(T*)), so it
+  must thread the SAME consumer cascade R5 hit; (2) migrate the ~38 reads, INCLUDING the
+  CIR deref gate `(vfREFERENCE && type->is_pointer())` → `type->is_reference()` and
+  `operand_value_datadef` (3476, returns base_type for a vfREFERENCE var → must key on
+  is_reference()); (3) delete the flag bit. Do it as its own R-series with keep-flag
+  construction flips first (no-op, fulltest), then the drop. Verify the `T*&` indirection
+  on a focused reducer (`auto& p = some_ptr;`, range-for over `vector<T*>`) under 3-oracle.
 - Then delete now-dead reconstruction branches in `operand_value_datadef`; -Wall clean.
 
 CAVEAT: commit messages must use heredoc `git commit -F -` (NOT `-m "..."` with
