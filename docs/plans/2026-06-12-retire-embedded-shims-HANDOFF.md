@@ -96,10 +96,27 @@ Args...>(0)) type;`, so it does NOT hit the qualified reselect path. NEXT:
    `e28c2c3`'s return-type-only path). HOT PATH — regression-prone; fulltest each
    step. `tmp/ir3.cpp` (`__invoke_result<...>::type`) / `tmp/ir2.cpp`
    (`__is_invocable::value` 0 vs g++ 1) are the real-header surfaces.
-2. **(c) `decltype(declval<F>()(declval<Args>()...))`** — the functor-call result
-   type embedded in `_S_test`'s return. madc does `decltype(concrete_functor(
-   args))` (`tmp/dc4` OK) but not via `declval<F>()` (fn-tmpl call; `tmp/dc2`
-   "undeclared identifier 'dv'"; audit row 5 free-fn-tmpl-call).
+2. **(c) `decltype(declval<F>()(args))`** — DONE the unqualified call (`07a3b23`,
+   `tmp/uq1`=4). The REMAINING sub-wall (c) is PRECISELY ISOLATED: madc can't
+   compute `operator()`'s return type when invoked on a CALL-RESULT expression.
+   `tmp/dc7.cpp` (g++ exit 0): `decltype( std::declval<Cmp&>()(1,2) )` where
+   `struct Cmp { bool operator()(int,int) const; }` → madc "initialization of
+   incomplete type variable" (T resolved incomplete, not bool). Contrast
+   `tmp/dc4` (`decltype(c(1,2))`, NAMED functor) WORKS. So the gap = resolving
+   `operator()` applied to the result of a call expression (`std::declval<T>()`
+   returns a prvalue T& — madc parses+resolves the declval call now, via the
+   row-5 namespace-fn-template path, but the trailing `(args)` on that result
+   doesn't dispatch `operator()`). `tmp/dc5` (real `std::declval` + `std::less`)
+   = same "incomplete type". CONFIRMED a GENERAL gap (not decltype-specific):
+   `tmp/cc1.cpp` runtime `getcmp()(1,2)` (Cmp-returning fn, then `operator()`)
+   → madc "lvalue required as left operand of assignment" (g++=1). So the fix is
+   in the postfix-chain handling: after a call `()`, when another `(` follows
+   AND the result type is a class with `operator()`, dispatch `operator()` on the
+   call-result (the chained-call / functor-returning-call case). THIS is the
+   next implementable wall on the __invoke_result path. Reducers: `tmp/cc1.cpp`
+   (runtime, simplest), `tmp/dc7.cpp` (decltype + declval), `tmp/dc5.cpp` (real
+   std::declval+less). After (c): __invoke_result::type resolves → __is_invocable
+   value correct → _S_key if-constexpr folds (row 7c) → set<int> advances.
 3. **(b)** ellipsis SFINAE ranking `_S_test(int)` vs `_S_test(...)` (`tmp/mt1`,
    madc resolves the right overload but sizes the EMPTY result struct 0 vs g++ 1
    — a minor empty-struct-sizeof aside, not the SFINAE itself).
