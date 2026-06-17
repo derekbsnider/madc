@@ -165,13 +165,21 @@ public:
     // undefined extern. Empty unless the body was retained.
     std::vector<TokenBase *> member_template_decl;
     DataDef *member_template_owner;
+    // The DEPENDENT return-type token range of a member function template
+    // (the tokens before the declarator name, still naming the template
+    // parameters — e.g. `Succ < T >`). Retained for BOTH body-bearing AND
+    // body-less member templates so a call site can resolve the CONCRETE
+    // return type by substituting the deduced/explicit args into these tokens
+    // WITHOUT instantiating a body (the clang SubstDecl model — see
+    // resolve_member_template_call_return_type). Empty == not a member tmpl.
+    std::vector<TokenBase *> member_template_return_tokens;
     struct CtorInitializer {
 	std::string name;
 	std::vector<TokenBase *> args;
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -1428,6 +1436,15 @@ public:
     // call's extern resolves to the real definition at link. libstdc++-EXPORTED
     // member templates keep the mangled-direct path (member_template_method_call).
     void instantiate_member_fn_template_for_call(TokenCallFunc *tc);
+    // Resolve the CONCRETE return type of a member-function-template call by
+    // substituting the call's explicit/deduced template args into the retained
+    // DEPENDENT return-type tokens (FuncDef::member_template_return_tokens) and
+    // resolving — WITHOUT instantiating a body (the clang SubstDecl model).
+    // Returns the concrete DataDef, or NULL on substitution failure (SFINAE) /
+    // missing data. Used for decltype/unevaluated calls to body-less member
+    // templates whose normal (body) instantiation produced no __mti definition.
+    DataDef *resolve_member_template_call_return_type(class FuncDef *fd,
+		const std::vector<DataDef *> &explicit_targs);
     // Deduce + instantiate a retained free-OPERATOR template body for
     // `lhs <op> rhs` (e.g. operator+(const basic_string&, const _CharT*) —
     // libstdc++ does not export that shape, so the BODY must compile).

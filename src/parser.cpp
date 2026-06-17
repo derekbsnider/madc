@@ -8672,6 +8672,57 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     return tc2;
 }
 
+DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
+		const std::vector<DataDef *> &explicit_targs)
+{
+    if ( !fd || fd->member_template_return_tokens.empty()
+      || fd->template_param_names.empty() )
+	return NULL;
+    // Bind type parameters from the EXPLICIT template args (the common library
+    // shape `_S_test<F, Args...>(0)` is all-explicit). A binding deduced from
+    // the call argument types is a follow-up (sub-wall (c)).
+    std::map<std::string, DataDef *> binding;
+    for ( size_t i = 0; i < explicit_targs.size()
+		     && i < fd->template_param_names.size(); ++i )
+	if ( explicit_targs[i] )
+	    binding[fd->template_param_names[i]] = explicit_targs[i];
+    if ( binding.empty() )
+	return NULL;
+    // Substitute: clone the dependent return-type tokens, replacing each
+    // type-parameter name with the bound type (the clang SubstDecl model,
+    // return-type only — no body instantiation).
+    std::vector<TokenBase *> sub;
+    for ( TokenBase *t : fd->member_template_return_tokens )
+    {
+	if ( t && is_contextual_identifier_token(t) )
+	{
+	    std::map<std::string, DataDef *>::iterator bi =
+		binding.find(contextual_identifier_name(t));
+	    if ( bi != binding.end() && bi->second )
+	    {
+		sub.push_back(new TokenDataType(bi->second->name.c_str(),
+						*bi->second));
+		continue;
+	    }
+	}
+	sub.push_back(t ? t->clone() : NULL);
+    }
+    // Resolve in the owner's class scope (so an owner-scope typedef / member
+    // type in the return resolves). resolve_type_token_range carries its own
+    // SFINAE trap (returns NULL on substitution failure — a non-viable
+    // candidate, not a hard error).
+    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
+    bool pushed_owner = false;
+    if ( owner ) { class_scope_stack.push_back(owner); pushed_owner = true; }
+    DataDef *rt = resolve_type_token_range(sub, 0, sub.size());
+    if ( pushed_owner && !class_scope_stack.empty()
+      && class_scope_stack.back() == owner )
+	class_scope_stack.pop_back();
+    for ( TokenBase *t : sub )
+	delete t;
+    return rt;
+}
+
 TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 		DataDefCLASS *owner, const std::string &member)
 {
@@ -8730,6 +8781,16 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 	    tc3->column = sel->column;
 	    return tc3;
 	}
+	// No __mti definition — a BODY-LESS member template (the
+	// __result_of_other_impl::_S_test shape). Its body can't be instantiated,
+	// but a decltype/unevaluated call only needs the concrete RETURN TYPE.
+	// Resolve it by substituting the explicit template args into the retained
+	// dependent return tokens (clang SubstDecl model, return-type only) and
+	// record it as the call's return_override — no synthetic definition, no
+	// emission. NULL (substitution failure / no targs) leaves the placeholder.
+	if ( DataDef *rt = resolve_member_template_call_return_type(sfd,
+		sel->explicit_template_args) )
+	    sel->return_override = rt;
     }
     return sel;
 }
@@ -29473,6 +29534,37 @@ static void register_skipped_class_template_function(
 	{
 	    fd->template_return_spelling = ret_spelling;
 	    fd->template_param_spellings = param_spellings;
+	    // Retain the DEPENDENT return-type token range [rs, name_idx) — the
+	    // tokens before the declarator name, past any leading specifiers —
+	    // so a body-less call site can resolve the concrete return type by
+	    // substituting the deduced args (resolve_member_template_call_return_type).
+	    static const char *_ret_specs[] = { "static", "constexpr", "inline",
+		"virtual", "friend", "extern", "typename", "const", "volatile" };
+	    size_t rs = 0;
+	    while ( rs < name_idx && tokens[rs] )
+	    {
+		TokenBase *st = tokens[rs];
+		TokenID sid = st->id();
+		// Specifier KEYWORD tokens (static/const/extern/volatile/friend are
+		// keyword IDs, not identifiers) — skip them so the return-type range
+		// starts at the actual type.
+		bool is_spec = sid == TokenID::tkSTATIC || sid == TokenID::tkCONST
+			    || sid == TokenID::tkEXTERN || sid == TokenID::tkVOLATILE
+			    || sid == TokenID::tkFRIEND;
+		if ( !is_spec && is_contextual_identifier_token(st) )
+		{
+		    std::string sn = contextual_identifier_name(st);
+		    for ( const char *s : _ret_specs )
+			if ( sn == s ) { is_spec = true; break; }
+		}
+		if ( !is_spec )
+		    break;
+		++rs;
+	    }
+	    fd->member_template_return_tokens.clear();
+	    for ( size_t i = rs; i < name_idx; ++i )
+		fd->member_template_return_tokens.push_back(
+		    tokens[i] ? tokens[i]->clone() : NULL);
 	}
     }
     Method *md = static_cast<Method *>(var->data);
