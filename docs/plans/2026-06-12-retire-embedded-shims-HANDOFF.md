@@ -2,8 +2,8 @@
 
 **Read this FIRST on resume/post-compaction.** Cold-start brief; assume you
 remember nothing. Run `bash scripts/resume.sh` first (live git/build truth),
-then read the **"SESSION 19L"** block immediately below (current state +
-NEXT), then "SESSION 19k" / "SESSION 19j" / "SESSION 19i" / "SESSION 19h" / "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
+then read the **"SESSION 19M"** block immediately below (current state +
+NEXT), then "SESSION 19L" / "SESSION 19k" / "SESSION 19j" / "SESSION 19i" / "SESSION 19h" / "SESSION 19g" / "SESSION 19f" / "SESSION 19e" / "SESSION 19d" / "SESSION 19c" / "SESSION 19b CONTINUED" / "SESSION 19 CLOSE" / "SESSION 18 CLOSE" / "SESSION 17 CLOSE" / "SESSION 16 CLOSE" / "SESSION 15 CLOSE" / "SESSION 14 CLOSE" / "SESSION 13 CLOSE" / "SESSION 12 CLOSE" / "SESSION 11 CLOSE" / "SESSION 10 CLOSE" / "SESSION 9 CLOSE" for the prior chronology.
 The "SESSION 8 CLOSE" block under it is older chronology (w2a). The
 "SESSION 7 CLOSE" master section further down is the campaign primer
 (partition model, user rulings, verified-working commands, traps) — still
@@ -15,7 +15,79 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 
 ---
 
-# ★ SESSION 19L — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+# ★ SESSION 19M — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
+
+## 0. Orientation + STATE
+Code HEAD **`d321eaf`**, branch `feature/retire-embedded-shims-claude`, all
+PUSHED. Tree clean (untracked `mir-debug-support.md` is NOT ours — leave it).
+Committed GREEN: **unit all-pass, integration 633/7** (same 7 container fails:
+testcontainerdtor, testmadc_ns, testmap, testset, testsubscript,
+testsubscriptarrow, testvectorptr). develop untouched. GOAL "clear all set/map
+walls" (Stop hook) — multi-session. The §19L "UNIFYING ROOT = partial-spec
+selection" framing was REFINED this session: the partial-spec MACHINERY was
+fine; two SPECIFIC gaps in it were the actual bugs (both now FIXED). NEXT = the
+__invoke_result parse walls (g)/(e) below.
+
+## 0a. SHIPPED this session (2 code commits, PUSHED, both 3-oracle verified)
+- **`024d8f9`** — REFERENCE-declarator partial-spec selection. `unify_spec_pattern_arg`
+  matched only POINTER (`*`) declarators in a partial-spec pattern; a `_Tp&` /
+  `_Tp&&` pattern hit the loop `else`→simple=false→fell to an exact-spelling
+  compare (`_Tp&` vs concrete `int32_t*`) and NEVER matched, so the spec was
+  dropped and the PRIMARY instantiated → `remove_reference<int&>::type` = int&
+  (sizeof 8) not int (4). Compounding it: DataDefREF is-a DataDefPTR so
+  `is_pointer()` is TRUE for a ref → a `_Tp*` pattern wrongly ABSORBED a ref
+  concrete (masked the miss when a `<_Tp*>` spec co-existed — rr<int&> matched
+  <_Tp*> by accident). Fix (all in unify_spec_pattern_arg): count `&`/`&&` as a
+  ref level; peel the ref FIRST (refs are always the outer declarator),
+  REQUIRING concrete is_reference; tighten ptr-peel to reject refs
+  (`is_pointer() && !is_reference()`); score += ref. tests/testpartialspecref
+  (`4 8 1 4 1`).
+- **`d321eaf`** — `__void_t<_Tp*>` bare-param SFINAE-detection slot.
+  `eval_void_t_detection_slot` confirmed only `__void_t<PARAM::member>`
+  (member-existence; split at `::`, required >=2 segs). A BARE `__void_t<_Tp*>`
+  (ptr to deduced param, NO `::member`) failed (segs<2) → add_pointer's spec
+  `__add_pointer_helper<_Tp,__void_t<_Tp*>>` lost to primary →
+  `add_pointer<int>::type` = int (4) not int* (8). Fix: a ptr/ref to a deduced
+  type is always a well-formed type — for segs==1, strip trailing `*`/`&`,
+  confirm the base param is in `ded`, accept. tests/testaddpointer (`8 8 8 4`).
+- Both verified g++==clang==madc. fulltest 633/7 (+2 vs 631 baseline:
+  testaddpointer + one trait-dependent test the void_t fix unblocked).
+
+## 0b. ★ NEXT — the __is_invocable → set/map chain (STILL madc 0 vs g++ 1 on ir2)
+The two partial-spec fixes did NOT yet flip `__is_invocable<less<int>&,const
+int&,const int&>::value` (tmp/ir2.cpp). The chain hits TWO DISTINCT PARSE walls
+on the `__invoke_result` path (both separate from partial-spec selection):
+- **Wall (g) — task #29:** `std::invoke_result<less<int>&,...>::type` via the
+  REAL <type_traits>/<functional> → **"Unsupported parenthesized member
+  declarator in struct definition"** (parser.cpp:20634, mirror at 23409 for
+  class). The struct-member parser handles `(*name)(args)` (fnptr member, when
+  the token after `(` is `*`) but THROWS on any other parenthesized declarator.
+  Some libstdc++ struct member on the invoke_result/functional path uses a
+  parenthesized declarator that isn't the `(*name)` shape. Reducer tmp/ivr2.cpp.
+  IDENTIFY the exact member shape (add a gated dump at 20634 of the next ~6
+  tokens) before fixing — could be `R (C::*)(...)` member-fn-ptr, or a
+  redundantly-parenthesized member name `T (x);`.
+- **Wall (e) — task #25 (still open):** `using R = std::invoke_result<int(*)(int),
+  int>::type;` → "Expecting ';' after using alias" — template-id `::type` access
+  in using-alias position when the template ARG is itself a function-pointer
+  TYPE (`int(*)(int)`). Reducer tmp/ivr3.cpp. (The plain `Tmpl<T>::type` using-
+  alias parse now works — proven by testpartialspecref/testaddpointer using
+  exactly that form on real std traits; the residual is fnptr-type args +
+  possibly the SFINAE-trait `::type`.)
+- Then the SFINAE composition (old task #26): `__invoke_result` has-a-`::type`
+  via `decltype(__invoke(declval<F>(), declval<Args>()...))` (functor-call +
+  declval chain — tasks #21/#24 territory, now resolvable per-piece), feeding
+  `__is_invocable_impl<R, void>`'s `__void_t<typename _Result::type>` member-
+  existence slot (eval_void_t_detection_slot ALREADY handles PARAM::member, so
+  once __invoke_result::type exists this slot should fire).
+
+## 0c. remaining container fails (7, unchanged): testcontainerdtor, testmadc_ns,
+testmap, testset, testsubscript, testsubscriptarrow, testvectorptr.
+
+---
+
+# ★ SESSION 19L — 2026-06-17 (superseded by 19M — the partial-spec "unifying
+# root" below was REFINED: machinery was fine, two specific gaps fixed in 19M)
 
 ## 0. Orientation + STATE
 Code HEAD **`f89088d`**, branch `feature/retire-embedded-shims-claude`, all
