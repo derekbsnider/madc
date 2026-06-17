@@ -132,11 +132,57 @@ The SINGLE remaining `vector<T*>` blocker is NOT references and NOT the arrow �
   (the sole remaining c2mir error). NB: the SAME `_S_construct` folds fine in isolation
   (ac1/ac2) — only the move_iterator-sourced argument breaks it.
 
-So the next work item is the **`move_iterator<ptr>::reference` / `iter_rvalue_reference_t`
-type chain for a pointer iterator** (a trait/typedef-resolution fix), independent of the
-Phase 2–4 reference cleanup. It converges with the SFINAE-engine walls (#22/#26) and the
-`__and_` `decltype(__and_fn(0))` resolution. Reducers: `tmp/wb1.mad` (full),
-`tmp/triv6/7.cpp` (is_trivial OK), `tmp/ac1/ac2.cpp` (construct OK in isolation).
+So the next work item is the **`move_iterator<ptr>::reference` type chain for a pointer
+iterator** (a trait/typedef + return-reference fix). It CONVERGES with Phase 2's
+return-reference leg (move_iterator::operator* IS a method returning a reference), and with
+the SFINAE-engine walls (#22/#26) + `__and_`'s `decltype(__and_fn(0))`.
+
+### MOVE_ITERATOR FIX RECIPE (save — concrete, gathered 2026-06-17)
+
+libstdc++ 13, C++17 path (`/usr/include/c++/13/bits/stl_iterator.h`, class `move_iterator`
+~line 1449):
+```
+using __base_ref = typename iterator_traits<_Iterator>::reference;          // 1458
+using reference  = __conditional_t< is_reference<__base_ref>::value,        // 1509-1511
+                                    typename remove_reference<__base_ref>::type&&,
+                                    __base_ref >;
+reference operator*() const { return static_cast<reference>(*_M_current); } // 1560-1565
+pointer   operator->() const { return _M_current; }                        // 1569-1571
+iterator_type base() const { return _M_current; }                          // 1544-1546
+```
+For `_Iterator = A**` (vector<A*> realloc move chain): value_type=`A*`, so
+- `iterator_traits<A**>::reference` = `A*&`  (lvalue ref to the pointer element)
+- `is_reference<A*&>` = true → `reference` = `remove_reference<A*&>::type&&` = **`A*&&`**
+- `operator*` returns `A*&&`; `static_cast<A*&&>(*_M_current)` where `*_M_current` is `A*&`.
+
+SYMPTOM in madc: `move_iterator<A**>::operator*` emits return type `A**` but the return-EXPR
+`static_cast<reference>(*_M_current)` is typed at a different pointer level → warning
+"incompatible return-expr type in function returning a pointer" (`stl_iterator.h:1449`).
+That bad `A*&&` then flows as the arg to the move-context
+`_S_construct(alloc, A**, A*&&)`, whose `enable_if_t<__and_<__has_construct<...>>::value,
+void>` fails to fold → incomplete return struct → the lone "function return type is
+incomplete" (`stl_vector.h:428`). The SAME `_S_construct` folds in isolation (tmp/ac1/ac2)
+— ONLY the move_iterator-sourced argument breaks it.
+
+LIKELY ROOT (verify with 3-oracle reducers, TYPE position):
+1. `iterator_traits<A**>::reference` for a pointer iterator — must be `A*&` (T& of value_type
+   A*), not `A**`. Check the pointer-specialization of iterator_traits.
+2. `remove_reference<A*&>::type` must be `A*` (strip the ref level, NOT the pointer level) —
+   with first-class refs (Phase 1) `A*&` is a DataDefREF(A*) so remove_reference = base_type
+   = A*. Verify it doesn't over-strip to `A`.
+3. `__conditional_t<true, A*&&, ...>` → the `A*&&` arm must build DataDefREF(A*) (rvalue),
+   which is exactly Phase 2's return-reference work — so do Phase 2 first, then re-test.
+4. `operator*` return-expr `static_cast<A*&&>(A*&)` must type as DataDefREF(A*), matching the
+   declared `reference` return.
+
+EXPECT: once function/method RETURN references are first-class (Phase 2) AND
+remove_reference/iterator_traits resolve `A*&`/`A*` correctly for the pointer iterator,
+move_iterator::operator* returns a clean DataDefREF(A*), the move-context _S_construct
+enable_if folds to void, and `tmp/wb1.mad` / testvectorptr / testsubscriptarrow go green.
+
+Reducers: `tmp/wb1.mad` (full vector<A*>), `tmp/triv6/7.cpp` (is_trivial OK),
+`tmp/ac1/ac2.cpp` (construct copy+move OK in isolation), `tmp/arr1-3.cpp` (arrow OK).
+Probe traits in TYPE position only; give reducer virtual methods a body.
 
 ## Risks & mitigations
 
