@@ -33974,11 +33974,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	TokenBase *auto_init_expr = init_expr;
 	if ( ret_is_ref )
 	{
-	    if ( !auto_decl_type->is_pointer() )
-	    {
-		auto_init_expr = reference_bind_address_expr(init_expr, deduced);
-		auto_decl_type = getPointerType(deduced);
-	    }
+	    // `auto& x = e` binds a reference uniformly — the referent is the
+	    // deduced type, the type is a DataDefREF, and the initializer is the
+	    // address of the lvalue `e` (first-class refs: a reference to a pointer
+	    // is modeled like any other reference, no pointer special-case).
+	    auto_init_expr = reference_bind_address_expr(init_expr, deduced);
+	    auto_decl_type = getReferenceType(deduced);
 	}
 
 	bool alloc = (!code || gotstatic) ? true : false;
