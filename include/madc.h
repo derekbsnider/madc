@@ -1416,6 +1416,14 @@ public:
 	    instance_method(false) {}
     };
     std::map<std::string, std::vector<FnTemplateDef>> fn_template_map;
+    // BODY-LESS free/namespace function template declarations (no `{ body }` to
+    // instantiate — e.g. `template<class T> T declval();`), keyed "ns::name".
+    // Kept OUT of fn_template_map (which drives body instantiation + the arity-
+    // deferral signal) so instantiation behavior is unchanged; read ONLY to
+    // form a call's return TYPE by substituting explicit template args into the
+    // declared return (resolve_namespace_fn_template_call_return_type — the
+    // clang deduction-forms-the-function-type-without-a-body model).
+    std::map<std::string, std::vector<FnTemplateDef>> fn_template_decl_map;
     std::set<std::string> fn_template_instantiated;   // "ns::name<t1,t2,...>" memo
     // inst_key -> the overload Variable that instantiation registered, so an
     // operator USE site can call the instantiated definition directly.
@@ -2385,6 +2393,8 @@ public:
 					    std::vector<TokenBase *> *seen = NULL);
     void capture_extern_template_class_instantiation();
     void apply_template_call_return_inference(TokenCallFunc *tc);
+    DataDef *resolve_namespace_fn_template_call_return_type(TokenCallFunc *tc,
+							    bool *ret_ref);
     TokenBase *collect_template_argument_spelling(TokenBase *first,
 						  std::string &spelling,
 						  std::vector<TokenBase *> *tokens_out = NULL);

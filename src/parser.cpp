@@ -12056,6 +12056,22 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 
     apply_template_call_return_inference(tc);
 
+    // Free/namespace function template called with EXPLICIT template args: form
+    // the return type by substituting those args into the template's declared
+    // return (clang's deduction-forms-the-function-TYPE-without-a-body model),
+    // so `decltype(f<T>())` is correct in an unevaluated context instead of the
+    // ddINT64 placeholder. Only when nothing already pinned the return.
+    if ( !tc->return_override && !tc->explicit_template_args.empty() )
+    {
+	bool tr_ref = false;
+	if ( DataDef *rt = resolve_namespace_fn_template_call_return_type(tc, &tr_ref) )
+	{
+	    tc->return_override = rt;
+	    tc->returns_ref_override = tr_ref;
+	    tc->setDataType(rt);
+	}
+    }
+
     // (need check for optional parameters)
     // skip arg count check for dlopen functions (0 declared params = variadic-like)
     {
@@ -27636,8 +27652,6 @@ static bool retain_namespace_fn_template_body(
     for ( size_t i = 0; i < tokens.size(); ++i )
 	if ( tokens[i] && tokens[i]->id() == TokenID::tkOpBrc )
 	{ has_body = true; break; }
-    if ( !has_body )
-	return false;
     Program::FnTemplateDef ft;
     ft.typeparams = typeparams;
     if ( typeparam_defaults ) ft.typeparam_defaults = *typeparam_defaults;
@@ -27645,6 +27659,14 @@ static bool retain_namespace_fn_template_body(
     if ( typeparam_is_pack )  ft.typeparam_is_pack = *typeparam_is_pack;
     ft.decl = tokens;
     ft.ns = pgm.current_namespace();
+    // A body-LESS declaration has no body to instantiate; keep it OUT of
+    // fn_template_map (instantiation + arity-deferral) and record it in
+    // fn_template_decl_map for return-TYPE resolution only.
+    if ( !has_body )
+    {
+	pgm.fn_template_decl_map[pgm.current_namespace() + "::" + name].push_back(ft);
+	return false;
+    }
     pgm.fn_template_map[pgm.current_namespace() + "::" + name].push_back(ft);
     return true;
 }
@@ -29564,6 +29586,160 @@ static DataDef *skipped_template_function_return_type(
 	    return &dmi->second->definition;
     }
     return &ddINT64;
+}
+
+// Resolve the RETURN TYPE of a call to a free/namespace function template with
+// EXPLICIT template arguments, by substituting those args into the template's
+// return-type tokens and resolving — the clang model (FinishTemplateArgument-
+// Deduction -> SubstDecl on the DECLARATION: the function TYPE is formed with
+// args substituted, WITHOUT instantiating a body), used even in an unevaluated
+// (decltype) context. This is the free-function analogue of
+// resolve_member_template_call_return_type: without it a `decltype(f<T>())`
+// reads the registered ddINT64 placeholder (skipped_template_function_return_type
+// can't bind a bare type-param at registration) -> WRONG type (e.g.
+// `decltype(std::declval<int>())` came out `long`, sizeof 8 not 4).
+// Handles a leading (`T f()`) OR trailing (`auto f() -> T`) return; a trailing
+// `-> decltype(...)` (declval's own `decltype(__declval<_Tp>(0))`) is left for a
+// later layer (returns NULL -> caller keeps the placeholder). Sets *ret_ref when
+// the return is an lvalue/rvalue reference (`T&` / `T&&`, ref-collapsed away for
+// type identity). Returns NULL (no override) when nothing resolves.
+DataDef *Program::resolve_namespace_fn_template_call_return_type(
+		TokenCallFunc *tc, bool *ret_ref)
+{
+    if ( ret_ref )
+	*ret_ref = false;
+    if ( !tc || tc->explicit_template_args.empty() )
+	return NULL;
+    FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+    if ( !fd || fd->namespace_name.empty() || fd->function_display_name.empty() )
+	return NULL;
+    std::string key = fd->namespace_name + "::" + fd->function_display_name;
+    // Candidates: body-bearing (fn_template_map) AND body-less (fn_template_decl_map)
+    // free templates of this name — declval and friends are body-less.
+    std::vector<FnTemplateDef *> cands;
+    {
+	std::map<std::string, std::vector<FnTemplateDef>>::iterator mi =
+	    fn_template_map.find(key);
+	if ( mi != fn_template_map.end() )
+	    for ( FnTemplateDef &c : mi->second ) cands.push_back(&c);
+	std::map<std::string, std::vector<FnTemplateDef>>::iterator di =
+	    fn_template_decl_map.find(key);
+	if ( di != fn_template_decl_map.end() )
+	    for ( FnTemplateDef &c : di->second ) cands.push_back(&c);
+    }
+    if ( cands.empty() )
+	return NULL;
+    static const std::set<std::string> specifiers = {
+	"static", "constexpr", "inline", "virtual", "friend", "extern",
+	"typename", "const", "volatile", "auto"
+    };
+    for ( FnTemplateDef *ftp : cands )
+    {
+	FnTemplateDef &ft = *ftp;
+	if ( ft.typeparams.empty()
+	  || tc->explicit_template_args.size() > ft.typeparams.size() )
+	    continue;
+	std::string name = skipped_template_function_declarator_name(ft.decl);
+	if ( name.empty() )
+	    continue;
+	size_t name_index = ft.decl.size();
+	for ( size_t i = 0; i < ft.decl.size(); ++i )
+	    if ( ft.decl[i] && is_skipped_template_function_name(ft.decl[i])
+	      && skipped_template_function_name(ft.decl[i]) == name
+	      && i + 1 < ft.decl.size() && ft.decl[i + 1]
+	      && ft.decl[i + 1]->id() == TokenID::tkOpBrk )
+		{ name_index = i; break; }
+	if ( name_index >= ft.decl.size() )
+	    continue;
+	// Locate the return-type token range [rs, re): trailing (`-> R` after the
+	// param list) takes precedence over the leading position.
+	size_t rs = 0, re = name_index;
+	bool is_trailing = false;
+	if ( name_index + 1 < ft.decl.size() && ft.decl[name_index + 1]
+	  && ft.decl[name_index + 1]->id() == TokenID::tkOpBrk )
+	{
+	    size_t pd = 0, j = name_index + 1;
+	    for ( ; j < ft.decl.size(); ++j )
+	    {
+		if ( !ft.decl[j] ) continue;
+		if ( ft.decl[j]->id() == TokenID::tkOpBrk ) ++pd;
+		else if ( ft.decl[j]->id() == TokenID::tkClBrk && --pd == 0 )
+		    { ++j; break; }
+	    }
+	    while ( j < ft.decl.size() && ft.decl[j]
+		 && ft.decl[j]->id() != TokenID::tkDeRef
+		 && ft.decl[j]->id() != TokenID::tkOpBrc
+		 && ft.decl[j]->id() != TokenID::tkSemi )
+		++j;
+	    if ( j < ft.decl.size() && ft.decl[j]
+	      && ft.decl[j]->id() == TokenID::tkDeRef )
+	    {
+		rs = j + 1;
+		re = ft.decl.size();
+		for ( size_t k = rs; k < ft.decl.size(); ++k )
+		    if ( ft.decl[k] && (ft.decl[k]->id() == TokenID::tkSemi
+				     || ft.decl[k]->id() == TokenID::tkOpBrc) )
+			{ re = k; break; }
+		is_trailing = true;
+	    }
+	}
+	if ( !is_trailing )
+	    while ( rs < re && ft.decl[rs]
+		 && is_contextual_identifier_token(ft.decl[rs])
+		 && specifiers.count(contextual_identifier_name(ft.decl[rs])) )
+		++rs;
+	// Fold a trailing `&` / `&&` off the end (a reference return collapses to
+	// the referenced type for type identity; record it for returns_ref).
+	bool tr_ref = false;
+	while ( re > rs && ft.decl[re - 1]
+	     && (ft.decl[re - 1]->id() == TokenID::tkBand
+	      || ft.decl[re - 1]->id() == TokenID::tkLand) )
+	    { tr_ref = true; --re; }
+	if ( rs >= re )
+	    continue;
+	// A `-> decltype(...)` return (declval's shape) needs decltype-expression
+	// evaluation at substitution time — a later layer. Bail (keep placeholder).
+	if ( ft.decl[rs] && is_contextual_identifier_token(ft.decl[rs])
+	  && contextual_identifier_name(ft.decl[rs]) == "decltype" )
+	    continue;
+	// Bind type parameters positionally from the explicit template arguments.
+	std::map<std::string, DataDef *> binding;
+	for ( size_t i = 0; i < tc->explicit_template_args.size()
+			 && i < ft.typeparams.size(); ++i )
+	    if ( tc->explicit_template_args[i] )
+		binding[ft.typeparams[i]] = tc->explicit_template_args[i];
+	if ( binding.empty() )
+	    continue;
+	// Substitute each type-parameter name with its bound type, then resolve
+	// (resolve_type_token_range carries its own SFINAE trap -> NULL on failure).
+	std::vector<TokenBase *> sub;
+	for ( size_t i = rs; i < re; ++i )
+	{
+	    TokenBase *t = ft.decl[i];
+	    if ( t && is_contextual_identifier_token(t) )
+	    {
+		std::map<std::string, DataDef *>::iterator bi =
+		    binding.find(contextual_identifier_name(t));
+		if ( bi != binding.end() && bi->second )
+		{
+		    sub.push_back(new TokenDataType(bi->second->name.c_str(),
+						    *bi->second));
+		    continue;
+		}
+	    }
+	    sub.push_back(t ? t->clone() : NULL);
+	}
+	DataDef *rt = resolve_type_token_range(sub, 0, sub.size());
+	for ( TokenBase *t : sub )
+	    delete t;
+	if ( rt )
+	{
+	    if ( ret_ref )
+		*ret_ref = tr_ref;
+	    return rt;
+	}
+    }
+    return NULL;
 }
 
 static void register_skipped_class_template_function(

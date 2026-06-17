@@ -1,0 +1,19 @@
+// Free/namespace function template called with EXPLICIT template args must form
+// its return type by substituting those args into the declared return — in an
+// unevaluated (decltype) context, for BOTH a leading (`T f()`) and a trailing
+// (`auto f() -> T`) return. Body-less here (decltype never calls them).
+#include <cstdio>
+
+namespace nn {
+	template<typename T> T pick();            // leading return
+	template<typename T> auto pick2() -> T;   // trailing return
+}
+
+int main()
+{
+	using A = decltype(nn::pick<int>());      // -> int   (size 4)
+	using B = decltype(nn::pick2<double>());  // -> double (size 8)
+	using C = decltype(nn::pick<char>());     // -> char  (size 1)
+	printf("%zu %zu %zu\n", sizeof(A), sizeof(B), sizeof(C));
+	return 0;
+}
