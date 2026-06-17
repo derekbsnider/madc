@@ -32075,6 +32075,56 @@ paramdecl:
 	break;
     }
 
+    // Resolve a captured trailing return type (`-> T` / `-> decltype(...)`) and
+    // adopt it onto func, now that the parameter variables are in scope (so
+    // `-> decltype(__a - __b)` can name them). FuncDef::returns is a reference,
+    // so adopting rebuilds the FuncDef (clone_funcdef_with_return) and re-points
+    // the Variable / funcdef_map. Used by BOTH the body-less forward-declaration
+    // paths AND the with-body eager path below — one implementation (I6). A
+    // body-less prototype (`auto f() -> int;`, `std::declval`) MUST resolve here
+    // too, else its return type stays the `auto` placeholder and every
+    // `decltype(f())` sees an incomplete type.
+    auto resolve_trailing_return = [&]()
+    {
+	if ( trailing_ret_tokens.empty() )
+	    return;
+	std::vector<TokenBase *> trtoks = trailing_ret_tokens;
+	trtoks.push_back(new TokenSemi());
+	for ( std::vector<TokenBase *>::reverse_iterator it = trtoks.rbegin();
+	      it != trtoks.rend(); ++it )
+	    pushToken(*it);
+	TokenBase *rt = nextToken();
+	TokenDataType *rtt = resolve_declared_type_token(rt, true, true);
+	if ( !rtt )
+	    Throw(rt ? rt : nt) << "Could not resolve trailing return type" << flush;
+	DataDef *new_ret = &rtt->definition;
+	bool tr_ref = false;
+	for (;;)
+	{
+	    TokenBase *s = peekToken();
+	    if ( s && s->id() == TokenID::tkMul )
+		{ nextToken(); new_ret = getPointerType(new_ret); continue; }
+	    if ( s && (s->id() == TokenID::tkBand || s->id() == TokenID::tkLand) )
+		{ nextToken(); tr_ref = true; continue; }
+	    break;
+	}
+	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	    nextToken();
+	if ( new_ret && &func->returns != new_ret )
+	{
+	    FuncDef *fresh = clone_funcdef_with_return(func, *new_ret);
+	    if ( tr_ref )
+		fresh->returns_ref = true;
+	    funcdef_map[id] = fresh;
+	    if ( var )
+		var->type = fresh;
+	    func = fresh;
+	}
+	else if ( tr_ref )
+	    func->returns_ref = true;
+	trailing_ret_tokens.clear();
+    };
+
     std::string func_alias_name;
     nt = consume_gnu_asm_label(nt, &func_alias_name);
 
@@ -32082,6 +32132,9 @@ paramdecl:
     // function declarator with the same return type: `void a(), b();`.
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkComma )
     {
+	// A trailing return on a body-less prototype must be adopted before the
+	// declaration is finalized (params still in scope here).
+	resolve_trailing_return();
 	if ( !method )
 	{
 	    method = new Method(*var);
@@ -32150,6 +32203,7 @@ paramdecl:
     // Check again for forward declaration after __attribute__
     if ( nt->id() == TokenID::tkSemi )
     {
+	resolve_trailing_return();
 	method = new Method(*var);
 	var->data = (void *)method;
 	if ( owner_class )
@@ -32427,47 +32481,8 @@ paramdecl:
 
     // Resolve a captured trailing return type now that the parameter variables
     // are in scope (the compound's method is set), so `-> decltype(__a - __b)`
-    // can name them. FuncDef::returns is a reference, so adopting the resolved
-    // type rebuilds the FuncDef (clone_funcdef_with_return) and re-points the
-    // Variable / funcdef_map; the TokenFunc below then sees the real return type.
-    if ( !trailing_ret_tokens.empty() )
-    {
-	trailing_ret_tokens.push_back(new TokenSemi());
-	for ( std::vector<TokenBase *>::reverse_iterator it =
-		  trailing_ret_tokens.rbegin();
-	      it != trailing_ret_tokens.rend(); ++it )
-	    pushToken(*it);
-	TokenBase *rt = nextToken();
-	TokenDataType *rtt = resolve_declared_type_token(rt, true, true);
-	if ( !rtt )
-	    Throw(rt ? rt : nt)
-		<< "Could not resolve trailing return type" << flush;
-	DataDef *new_ret = &rtt->definition;
-	bool tr_ref = false;
-	for (;;)
-	{
-	    TokenBase *s = peekToken();
-	    if ( s && s->id() == TokenID::tkMul )
-		{ nextToken(); new_ret = getPointerType(new_ret); continue; }
-	    if ( s && (s->id() == TokenID::tkBand || s->id() == TokenID::tkLand) )
-		{ nextToken(); tr_ref = true; continue; }
-	    break;
-	}
-	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-	    nextToken();
-	if ( new_ret && &func->returns != new_ret )
-	{
-	    FuncDef *fresh = clone_funcdef_with_return(func, *new_ret);
-	    if ( tr_ref )
-		fresh->returns_ref = true;
-	    funcdef_map[id] = fresh;
-	    if ( var )
-		var->type = fresh;
-	    func = fresh;
-	}
-	else if ( tr_ref )
-	    func->returns_ref = true;
-    }
+    // can name them (same helper the body-less paths use, above).
+    resolve_trailing_return();
 
     TokenFunc *tf = new TokenFunc(*var);
     // Capture the function declaration's source position before
