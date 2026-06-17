@@ -78,6 +78,34 @@ declval-functor-call decltype. Each is a real feature; NO SHIMS; 3-oracle;
 fulltest 627/7 after each (the blanket-retention regression proves you MUST
 fulltest before committing any member-template-retention change).
 
+## 0c.1 CLANG MODEL for row 7d (recon /workspace/llvm-clang-src, 2026-06-17)
+`Sema::FinishTemplateArgumentDeduction` (clang/lib/Sema/SemaTemplateDeduction.cpp
+~3635) is the canonical blueprint. Three load-bearing design facts madc must adopt:
+1. **Return type = SUBSTITUTE deduced/explicit args into the DECLARATION**, not
+   the body: `Specialization = SubstDecl(FunctionTemplate->getTemplatedDecl(),
+   Owner, SubstArgs)`. The substituted FunctionDecl carries the full signature
+   INCLUDING the return type. The body is instantiated LATER, lazily, only on
+   ODR-use. → madc must DECOUPLE return-type resolution from body emission. This
+   is why the blanket-body-retention attempt regressed: it conflated the two.
+   The targeted fix = substitute the targ binding into the declared
+   return-type token range and bind a declaration-only return type; emit nothing.
+2. **SFINAE = unevaluated context + a trap**: `EnterExpressionEvaluationContext
+   Unevaluated` + `SFINAETrap Trap`; a substitution failure returns
+   `TDK_SubstitutionFailure` and the candidate is SILENTLY DROPPED (not a hard
+   error). madc's equivalent: substitute each candidate's signature inside a
+   try/catch that, on throw, drops the candidate instead of erroring. This is
+   exactly `_S_test(int)` (drops if `declval<F>()(...)` is ill-formed) vs
+   `_S_test(...)` (always viable, worst rank).
+3. **decltype return substitution RE-RUNS expression semantic analysis** on the
+   substituted expression (clang TreeTransform RebuildDecltypeType) — i.e.
+   resolve `decltype(declval<F>()(declval<Args>()...))` by overload-resolving
+   `F::operator()` with the substituted arg types. madc already does this for a
+   CONCRETE functor call (`tmp/dc4`); the gap is doing it through the
+   `declval<F>()` fn-template call (sub-wall (c) / audit row 5).
+Net: implement a return-type-ONLY signature substitution (decoupled from body),
+guarded by a SFINAE try/catch, reused by both decltype-of-call and overload
+ranking. Mirror clang's decoupling; do NOT re-attempt blanket body retention.
+
 ## 0d. remaining container fails (7, unchanged)
 testmadc_ns/testsubscript (map/set → row 7d), testmap/testset (C++20
 `.contains()` + row 7d), testvectorptr/testsubscriptarrow (row 6b ptr-elem),
