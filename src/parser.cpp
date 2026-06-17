@@ -4114,7 +4114,16 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	TokenBase *expr_head = nextToken();
 	if ( !expr_head )
 	    Throw(tb) << "Expecting expression in decltype(...)" << flush;
-	TokenBase *expr = parseExpression(expr_head, true);
+	// The decltype operand is UNEVALUATED: entities it names are not ODR-used,
+	// so template-call bodies must not be instantiated (declval's "must not be
+	// used!" body). The depth guard suppresses body instantiation in parseCallFunc
+	// for this operand and every nested call within it; the return type is still
+	// resolved. RAII-restore so an exception mid-parse cannot leave it raised.
+	++unevaluated_operand_depth;
+	TokenBase *expr = NULL;
+	try { expr = parseExpression(expr_head, true); }
+	catch ( ... ) { --unevaluated_operand_depth; throw; }
+	--unevaluated_operand_depth;
 	TokenBase *close = nextToken();
 	if ( !close || close->id() != TokenID::tkClBrk )
 	    Throw(close ? close : tb) << "Expecting ')' after decltype(...)" << flush;
@@ -12042,17 +12051,26 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	tc->parameters.push_back(ctx_token);
     }
 
-    // Namespace function template callee (a body-less placeholder registered
-    // from a skipped template declaration): instantiate the retained template
-    // body for THIS call's argument types. The concrete overload registers in
-    // namespace_fn_overload_sets; call_target_funcdef ranks it at CIR time.
-    instantiate_namespace_fn_template_for_call(tc);
+    // In an UNEVALUATED operand (decltype/sizeof/noexcept) a named entity is not
+    // ODR-used ([basic.def.odr]) — the call forms only a signature, never an
+    // instantiated body. Skipping instantiation here is what makes declval work:
+    // its libstdc++ body ("declval() must not be used!" + a call to the
+    // declaration-only __declval) must never be emitted; only its return type is
+    // needed (resolved below). The return-type inference + resolver still run.
+    if ( unevaluated_operand_depth == 0 )
+    {
+	// Namespace function template callee (a body-less placeholder registered
+	// from a skipped template declaration): instantiate the retained template
+	// body for THIS call's argument types. The concrete overload registers in
+	// namespace_fn_overload_sets; call_target_funcdef ranks it at CIR time.
+	instantiate_namespace_fn_template_for_call(tc);
 
-    // Static member function template of a madc-LOCAL class (e.g.
-    // `_Destroy_aux<true>::__destroy`): instantiate its retained body for THIS
-    // call and alias the definition's symbol to the call's, so the call's
-    // extern resolves to a real definition instead of an undefined import.
-    instantiate_member_fn_template_for_call(tc);
+	// Static member function template of a madc-LOCAL class (e.g.
+	// `_Destroy_aux<true>::__destroy`): instantiate its retained body for THIS
+	// call and alias the definition's symbol to the call's, so the call's
+	// extern resolves to a real definition instead of an undefined import.
+	instantiate_member_fn_template_for_call(tc);
+    }
 
     apply_template_call_return_inference(tc);
 
@@ -26351,6 +26369,14 @@ std::vector<DataDef *> Program::capture_call_template_args()
 	    nextToken();
 	    dd = getPointerType(dd);
 	}
+	// Reference-qualified type argument (`T&`, `T&&` — e.g. declval<Cmp&>,
+	// __is_invocable<less<int>&, ...>): consume the `&`/`&&`. The referenced
+	// type carries the identity that downstream resolution needs (reference
+	// collapse + operand_object_class both reduce `T&`/`T&&` to T's class), so
+	// keep the base DataDef rather than bailing the whole arg list.
+	while ( peekToken() && (peekToken()->id() == TokenID::tkBand
+			     || peekToken()->id() == TokenID::tkLand) )
+	    nextToken();
 	out.push_back(dd);
 	TokenBase *sep = nextToken();
 	if ( !sep )
@@ -29614,6 +29640,23 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
     if ( !fd || fd->namespace_name.empty() || fd->function_display_name.empty() )
 	return NULL;
     std::string key = fd->namespace_name + "::" + fd->function_display_name;
+    return resolve_fn_template_return_by_key(key, tc->explicit_template_args,
+					     ret_ref, 0);
+}
+
+// Core of resolve_namespace_fn_template_call_return_type: resolve "ns::name" +
+// the explicit type args to the template's return DataDef. Called both by the
+// TokenCallFunc entry above AND recursively for a `decltype(inner_call)` return
+// (declval's `decltype(__declval<_Tp>(0))`). `depth` bounds the recursion.
+DataDef *Program::resolve_fn_template_return_by_key(
+		const std::string &key,
+		const std::vector<DataDef *> &explicit_args,
+		bool *ret_ref, int depth)
+{
+    if ( ret_ref )
+	*ret_ref = false;
+    if ( depth > 8 || explicit_args.empty() )
+	return NULL;
     // Candidates: body-bearing (fn_template_map) AND body-less (fn_template_decl_map)
     // free templates of this name — declval and friends are body-less.
     std::vector<FnTemplateDef *> cands;
@@ -29637,7 +29680,7 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
     {
 	FnTemplateDef &ft = *ftp;
 	if ( ft.typeparams.empty()
-	  || tc->explicit_template_args.size() > ft.typeparams.size() )
+	  || explicit_args.size() > ft.typeparams.size() )
 	    continue;
 	std::string name = skipped_template_function_declarator_name(ft.decl);
 	if ( name.empty() )
@@ -29697,17 +29740,12 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
 	    { tr_ref = true; --re; }
 	if ( rs >= re )
 	    continue;
-	// A `-> decltype(...)` return (declval's shape) needs decltype-expression
-	// evaluation at substitution time — a later layer. Bail (keep placeholder).
-	if ( ft.decl[rs] && is_contextual_identifier_token(ft.decl[rs])
-	  && contextual_identifier_name(ft.decl[rs]) == "decltype" )
-	    continue;
 	// Bind type parameters positionally from the explicit template arguments.
 	std::map<std::string, DataDef *> binding;
-	for ( size_t i = 0; i < tc->explicit_template_args.size()
+	for ( size_t i = 0; i < explicit_args.size()
 			 && i < ft.typeparams.size(); ++i )
-	    if ( tc->explicit_template_args[i] )
-		binding[ft.typeparams[i]] = tc->explicit_template_args[i];
+	    if ( explicit_args[i] )
+		binding[ft.typeparams[i]] = explicit_args[i];
 	if ( binding.empty() )
 	    continue;
 	// Substitute each type-parameter name with its bound type, then resolve
@@ -29729,17 +29767,98 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
 	    }
 	    sub.push_back(t ? t->clone() : NULL);
 	}
-	DataDef *rt = resolve_type_token_range(sub, 0, sub.size());
+	// A `-> decltype(inner_call)` return (declval's `decltype(__declval<_Tp>
+	// (0))`): recurse into the inner call's template return type WITHOUT
+	// emitting it. madc has no true unevaluated context, so routing the
+	// operand through parseExpression would register the callee as a MIR
+	// import (declval/__declval are undefined by design). The recursive
+	// resolver reads the substituted decl tokens directly — no emission.
+	DataDef *rt = NULL;
+	bool dt_ref = false;
+	if ( !sub.empty() && sub[0] && is_contextual_identifier_token(sub[0])
+	  && contextual_identifier_name(sub[0]) == "decltype" )
+	    rt = resolve_decltype_call_return(sub, ft.ns, &dt_ref, depth);
+	else
+	    rt = resolve_type_token_range(sub, 0, sub.size());
 	for ( TokenBase *t : sub )
 	    delete t;
 	if ( rt )
 	{
 	    if ( ret_ref )
-		*ret_ref = tr_ref;
+		*ret_ref = tr_ref || dt_ref;
 	    return rt;
 	}
     }
     return NULL;
+}
+
+// Resolve `decltype ( IDENT < targs > ( args ) )` from the already-substituted
+// token vector `sub` (sub[0] == "decltype", verified by the caller). Extracts
+// IDENT and its explicit type args, then recurses into IDENT's template return
+// type in namespace `ns`. No emission — the runtime arg list `( args )` is never
+// resolved, only the `< targs >` type list. Returns NULL when the operand is not
+// a template-id call (out of scope) or nothing resolves.
+DataDef *Program::resolve_decltype_call_return(
+		const std::vector<TokenBase *> &sub,
+		const std::string &ns, bool *ret_ref, int depth)
+{
+    if ( ret_ref )
+	*ret_ref = false;
+    if ( sub.size() < 3 || !sub[1] || sub[1]->id() != TokenID::tkOpBrk )
+	return NULL;
+    // Operand = the content of decltype's parens; find its matching `)`.
+    size_t pd = 0, op_s = 2, op_e = sub.size();
+    for ( size_t i = 1; i < sub.size(); ++i )
+    {
+	if ( !sub[i] ) continue;
+	if ( sub[i]->id() == TokenID::tkOpBrk ) ++pd;
+	else if ( sub[i]->id() == TokenID::tkClBrk && --pd == 0 )
+	    { op_e = i; break; }
+    }
+    if ( op_e <= op_s || !sub[op_s]
+      || !is_contextual_identifier_token(sub[op_s]) )
+	return NULL;
+    std::string inner_name = contextual_identifier_name(sub[op_s]);
+    // A template-id call: IDENT `<` targs `>` `(` args `)`.
+    size_t p = op_s + 1;
+    if ( p >= op_e || !sub[p] || sub[p]->id() != TokenID::tkLT )
+	return NULL;
+    // Match the angle brackets; collect comma-separated type-arg segments.
+    std::vector<DataDef *> inner_args;
+    size_t ad = 0, seg_s = p + 1;
+    for ( size_t q = p; q < op_e; ++q )
+    {
+	if ( !sub[q] ) continue;
+	TokenID id = sub[q]->id();
+	if ( id == TokenID::tkLT )
+	    ++ad;
+	else if ( id == TokenID::tkComma && ad == 1 )
+	{
+	    if ( q > seg_s )
+	    {
+		std::vector<TokenBase *> seg(sub.begin() + seg_s,
+					     sub.begin() + q);
+		if ( DataDef *d = resolve_type_token_range(seg, 0, seg.size()) )
+		    inner_args.push_back(d);
+	    }
+	    seg_s = q + 1;
+	}
+	else if ( id == TokenID::tkGT && --ad == 0 )
+	{
+	    if ( q > seg_s )
+	    {
+		std::vector<TokenBase *> seg(sub.begin() + seg_s,
+					     sub.begin() + q);
+		if ( DataDef *d = resolve_type_token_range(seg, 0, seg.size()) )
+		    inner_args.push_back(d);
+	    }
+	    break;
+	}
+    }
+    if ( inner_args.empty() )
+	return NULL;
+    return resolve_fn_template_return_by_key(ns + "::" + inner_name,
+					     inner_args, ret_ref, depth + 1);
 }
 
 static void register_skipped_class_template_function(

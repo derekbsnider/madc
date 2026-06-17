@@ -1433,6 +1433,16 @@ public:
     // body are consumed unevaluated, exactly like instantiated class-template
     // member bodies (parse_static_assert_statement).
     size_t fn_template_instantiation_depth = 0;
+    // >0 while parsing the operand of an UNEVALUATED context (decltype(...),
+    // sizeof, noexcept). C++ does not ODR-use entities named in an unevaluated
+    // operand ([basic.def.odr]) — so a function-template call there forms only a
+    // signature (its return type, via the resolver), never an instantiated body.
+    // declval is the canonical case: libstdc++ DEFINES it (a static_assert body
+    // "declval() must not be used!" that calls the declaration-only __declval) but
+    // it is only ever named in unevaluated operands, so its body is never emitted.
+    // Instantiating it would import the undefined __declval. Gate body
+    // instantiation on this depth == 0.
+    int unevaluated_operand_depth = 0;
     void instantiate_namespace_fn_template_for_call(TokenCallFunc *tc);
     // A STATIC member function template of a madc-LOCAL class (a monomorphized
     // template instance such as `_Destroy_aux<true>`) is registered
@@ -2395,6 +2405,18 @@ public:
     void apply_template_call_return_inference(TokenCallFunc *tc);
     DataDef *resolve_namespace_fn_template_call_return_type(TokenCallFunc *tc,
 							    bool *ret_ref);
+    // Key-based core of the above: resolve a free/namespace function-template
+    // call's return type from "ns::name" + the explicit type arguments. Called
+    // by the TokenCallFunc entry AND recursively for a `decltype(inner_call)`
+    // return (declval's `decltype(__declval<_Tp>(0))`). `depth` bounds the
+    // recursion. No emission — resolves purely from the retained decl tokens.
+    DataDef *resolve_fn_template_return_by_key(const std::string &key,
+				const std::vector<DataDef *> &explicit_args,
+				bool *ret_ref, int depth);
+    // Resolve `decltype ( IDENT < targs > ( args ) )` (substituted tokens) by
+    // recursing into IDENT's template return type in namespace `ns`. No emit.
+    DataDef *resolve_decltype_call_return(const std::vector<TokenBase *> &sub,
+				const std::string &ns, bool *ret_ref, int depth);
     TokenBase *collect_template_argument_spelling(TokenBase *first,
 						  std::string &spelling,
 						  std::vector<TokenBase *> *tokens_out = NULL);

@@ -1,0 +1,30 @@
+#!/../bin/madc
+// std::declval<T>() return-type resolution in an UNEVALUATED context
+// (Wall (d) / task #24). declval is declared body-less in <type_traits> and
+// DEFINED with a "declval() must not be used!" static_assert body in
+// <bits/move.h> whose body calls the declaration-only __declval. It is only
+// ever named in unevaluated operands (decltype/sizeof/noexcept), so its body
+// must never be instantiated — only its return TYPE is needed.
+//
+// This guards three things end to end:
+//   1. the unevaluated-operand guard (no body instantiation in decltype),
+//   2. free/namespace fn-template return substitution (incl. the recursive
+//      decltype(__declval<_Tp>(0)) form), and
+//   3. reference-qualified explicit template args (declval<B&>).
+// sizeof of the resolved type is the oracle: a silently-wrong resolution
+// (ddINT64 placeholder) would read 8. Verified identical on g++/clang -std=c++17.
+#include <utility>
+#include <cstdio>
+
+struct A { int a; double b; };   // sizeof 16
+struct B { char c; };            // sizeof 1
+
+int main()
+{
+	using Ti = decltype(std::declval<int>());     // int&&    -> 4
+	using Td = decltype(std::declval<double>());   // double&& -> 8
+	using Ta = decltype(std::declval<A>());        // A&&      -> 16
+	using Tb = decltype(std::declval<B&>());       // B&       -> 1
+	printf("%zu %zu %zu %zu\n", sizeof(Ti), sizeof(Td), sizeof(Ta), sizeof(Tb));
+	return 0;
+}
