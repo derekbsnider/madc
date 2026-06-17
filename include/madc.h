@@ -1454,6 +1454,27 @@ public:
     // body are consumed unevaluated, exactly like instantiated class-template
     // member bodies (parse_static_assert_statement).
     size_t fn_template_instantiation_depth = 0;
+    // True only while resolving a qualified member-TYPE chain (`typename X<..>::type`):
+    // a concrete-arg trailing-type-pack class template is then REALLY instantiated
+    // (body parse + member eval) so its member types fold (e.g. `__construct_helper<
+    // _Tp,_Args...>::type` for the vector<T*> SFINAE trait). Elsewhere — notably the
+    // constant-fold path (`__and_<..>::value`) — variadic templates stay opaque, as a
+    // recursive variadic body (`__and_`, `tuple`) would otherwise re-instantiate
+    // unboundedly. Scoped-set around the member-type instantiate_template_id calls.
+    bool allow_variadic_real_inst = false;
+    // Alias-template uses currently being resolved (keyed tname + arg spellings).
+    // Re-entering the SAME key is a resolution CYCLE (a self-referential trait, now
+    // reachable because variadic members really instantiate) — it short-circuits to
+    // the opaque placeholder instead of recursing into a stack overflow. A genuine
+    // (acyclic) deep nest uses distinct keys and resolves normally.
+    std::set<std::string> alias_resolve_in_progress;
+    // Member-fn-template instantiations currently in flight, keyed by LOGICAL identity
+    // (owner + fn name + arg-type spellings), NOT call site. Breaks the allocator
+    // trait cycle construct -> _S_construct -> __has_construct -> __test -> construct:
+    // re-entering the same logical instantiation returns early (the body completes in
+    // the outer frame) instead of recursing into a stack overflow. Call-site keying
+    // (tc->var.name) can't catch this — each cycle hop is a distinct call site.
+    std::set<std::string> member_fn_inst_in_progress;
     // >0 while parsing the operand of an UNEVALUATED context (decltype(...),
     // sizeof, noexcept). C++ does not ODR-use entities named in an unevaluated
     // operand ([basic.def.odr]) — so a function-template call there forms only a

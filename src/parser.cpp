@@ -2524,6 +2524,36 @@ static bool template_has_parameter_pack(const std::vector<bool> &packs)
     return first_template_pack_index(packs) < packs.size();
 }
 
+// A variadic class template is REALLY instantiable (body parse + member evaluation,
+// not just an opaque dependent shell) for concrete args when its only pack is a
+// TRAILING TYPE pack and it carries a parseable body with no non-type params. This is
+// the shape of the SFINAE trait helpers that must fold for `vector<T*>` —
+// `__construct_helper<_Tp, _Args...>` whose `using type = decltype(__test<_Alloc>(0))`
+// member must evaluate. Other variadic shapes (non-type packs, body-less) stay on the
+// opaque path. The actual concreteness of the args is decided AFTER parsing them (a
+// dependent arg falls back to the opaque shell), so this predicate only gates SHAPE.
+static bool template_pack_real_instantiable(const Program::TemplateDef &td)
+{
+    if ( td.body.empty() )
+	return false;
+    size_t n = td.typeparams.size();
+    if ( n == 0 )
+	return false;
+    size_t pack_index = first_template_pack_index(td.typeparam_is_pack);
+    if ( pack_index != n - 1 )
+	return false;	// no pack, or pack is not the LAST parameter
+    // EVERY parameter must be a TYPE parameter — the arg loop only absorbs type args
+    // into pack_subst, and a genuine non-type / template-template param needs the
+    // opaque path. (td.has_non_type_params is a misnomer — it is set true even for a
+    // pure TYPE pack — so test typeparam_is_type directly.)
+    if ( n > td.typeparam_is_type.size() )
+	return false;
+    for ( size_t i = 0; i < n; ++i )
+	if ( !td.typeparam_is_type[i] )
+	    return false;
+    return true;
+}
+
 static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
 	const std::vector<TokenBase *> &src,
 	const std::map<std::string, TokenDataType *> &subst)
@@ -2871,7 +2901,20 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // registration, and a vector reallocation would dangle a live reference.
     // Both this function and instantiate_opaque_template_use only read td.
     Program::TemplateDef td = *tdp;
-    if ( template_has_parameter_pack(td.typeparam_is_pack) )
+    // A variadic template normally stays an opaque dependent shell — EXCEPT a
+    // concrete-arg trailing-type-pack template with a body, which must really
+    // instantiate so its members (e.g. `__construct_helper<_Tp,_Args...>::type =
+    // decltype(...)`) fold. The arg loop below absorbs the trailing pack into
+    // pack_subst; a still-dependent arg falls back to the opaque shell after parsing.
+    // Real-instantiate a variadic template ONLY for a concrete-arg trailing-type-pack
+    // shape AND only while resolving a member-TYPE chain (allow_variadic_real_inst) —
+    // see the flag's declaration. The flag is consumed here, then cleared so nested
+    // instantiations triggered by this body do NOT inherit it (a recursive variadic
+    // body would otherwise re-enter the real path unboundedly).
+    bool pack_real_inst = allow_variadic_real_inst
+		       && template_pack_real_instantiable(td);
+    allow_variadic_real_inst = false;
+    if ( template_has_parameter_pack(td.typeparam_is_pack) && !pack_real_inst )
 	return instantiate_opaque_template_use(td, tname, tb);
     if ( td.has_non_type_params && td.body.empty() )
 	return instantiate_opaque_template_use(td, tname, tb);
@@ -2898,6 +2941,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // in __replace_first_arg): name -> the pack's element type tokens (empty for an
     // empty pack). Expanded in the body loop where `_Types...` appears.
     std::map<std::string, std::vector<TokenDataType *> > pack_subst;
+    // A trailing TYPE pack absorbs every arg from its position onward (see
+    // template_pack_real_instantiable): once `pi` reaches `pack_index`, extra args
+    // keep binding to it via this clamp, accumulating into pack_subst rather than
+    // overflowing the typeparam list.
+    size_t pack_index = first_template_pack_index(td.typeparam_is_pack);
     size_t pi = 0;
     if ( peekToken() && (peekToken()->id() == TokenID::tkGT
 	  || peekToken()->id() == TokenID::tkBSR) )
@@ -2910,12 +2958,22 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     {
 	for (;;)
 	{
-	    if ( pi >= td.typeparams.size() )
-		Throw(tb) << tname << "<> expects " << td.typeparams.size()
-			      << " argument(s)" << flush;
+	    size_t bind_pi = pi;
+	    if ( bind_pi >= td.typeparams.size() )
+	    {
+		// Past the fixed params: a trailing pack keeps absorbing; otherwise
+		// it is a genuine too-many-arguments error.
+		if ( pack_index < td.typeparams.size() )
+		    bind_pi = pack_index;
+		else
+		    Throw(tb) << tname << "<> expects " << td.typeparams.size()
+				  << " argument(s)" << flush;
+	    }
+	    bool bind_is_pack = bind_pi < td.typeparam_is_pack.size()
+			     && td.typeparam_is_pack[bind_pi];
 	    TokenBase *at = nextToken();
 	    TokenBase *sep = NULL;
-	    if ( template_param_expects_type(td.typeparam_is_type, pi) )
+	    if ( template_param_expects_type(td.typeparam_is_type, bind_pi) )
 	    {
 		std::string cv_spelling;
 		at = consume_template_type_arg_qualifiers(at, cv_spelling);
@@ -2928,7 +2986,12 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		type_args.push_back(adt);
 		arg_types_by_slot.push_back(adt);
 		arg_tokens_by_slot.push_back(std::vector<TokenBase *>());
-		subst[td.typeparams[pi]] = adt;
+		// A trailing type pack accumulates its elements (the body loop expands
+		// `_Args...` from pack_subst); a fixed type param binds singly.
+		if ( bind_is_pack )
+		    pack_subst[td.typeparams[bind_pi]].push_back(adt);
+		else
+		    subst[td.typeparams[bind_pi]] = adt;
 		arg_spellings.push_back(template_type_arg_spelling(adt,
 								  cv_spelling));
 		sep = nextToken();
@@ -2970,6 +3033,12 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 
     while ( pi < td.typeparams.size() )
     {
+	// A trailing parameter PACK absorbs zero-or-more args: reaching it with no
+	// remaining args is a valid EMPTY pack (`tuple<>`, `__and_<>`), not a missing
+	// argument. Leave pack_subst without an entry for it (the body loop drops the
+	// preceding `,` and the `...`) and stop default-filling.
+	if ( pi < td.typeparam_is_pack.size() && td.typeparam_is_pack[pi] )
+	    break;
 	if ( pi >= td.typeparam_defaults.size()
 	  || td.typeparam_defaults[pi].empty() )
 	    Throw(tb) << tname << "<> expects " << td.typeparams.size()
@@ -3151,7 +3220,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	if ( td.body.empty() || !is_incomplete_template_class_type(cached) )
 	    return use_site_type_token(cached, tb);
     }
-    if ( td.body.empty() )
+    // A variadic template admitted to the real path (template_pack_real_instantiable)
+    // but instantiated with a STILL-DEPENDENT arg stays an opaque dependent shell —
+    // exactly the pre-change behavior (the 2874 short-circuit sent ALL pack uses here).
+    // Only a fully concrete-arg variadic template proceeds to body parse below.
+    if ( td.body.empty() || (pack_real_inst && dependent_surface) )
     {
 	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
 	fwd->canonical_cpp_spelling = canon;
@@ -3394,6 +3467,12 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
 		     const std::vector<std::vector<TokenBase *> > &arg_tokens)
 {
+    // This is a cheap CONCRETENESS PREDICATE, not the real resolution: it must not
+    // trigger variadic real-instantiation, or the per-arg resolves below cascade
+    // into the alias-use ↔ concreteness-check recursion (stack overflow). The actual
+    // fold happens in the body-resolve of the caller, where the flag is honored.
+    bool saved_vri = allow_variadic_real_inst;
+    allow_variadic_real_inst = false;
     bool pushed_owner_scope = false;
     if ( td.owner_class )
     {
@@ -3444,6 +3523,7 @@ bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
       && !class_scope_stack.empty()
       && class_scope_stack.back() == td.owner_class )
 	class_scope_stack.pop_back();
+    allow_variadic_real_inst = saved_vri;
     return all_concrete;
 }
 
@@ -3533,6 +3613,23 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		return fallback;
 	}
 
+	// Cycle break: re-entering resolution of the SAME alias use (keyed tname +
+	// arg spellings) is a self-referential trait loop — now reachable because a
+	// variadic member really instantiates and its body re-names this alias. The
+	// re-entrant call skips the resolve + concreteness check and falls to the
+	// opaque placeholder, bounding the recursion (the outer resolution proceeds).
+	std::string ip_key = tname + "<";
+	for ( size_t i = 0; i < args.size(); ++i )
+	    ip_key += (i ? "," : "") + args[i];
+	ip_key += ">";
+	struct InProgressGuard {
+	    std::set<std::string> &s; std::string k; bool owned;
+	    InProgressGuard(std::set<std::string> &set, const std::string &key)
+		: s(set), k(key), owned(set.insert(key).second) {}
+	    ~InProgressGuard() { if ( owned ) s.erase(k); }
+	} ip_guard(alias_resolve_in_progress, ip_key);
+	bool ip_reentrant = !ip_guard.owned;
+
 	// Substitute the collected args — type AND non-type, each as its raw
 	// token sequence — into the alias body and resolve, the alias-template
 	// analogue of the type-params-only path below. Without this an alias
@@ -3549,25 +3646,44 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	// makes the recursion self-contained. If resolution fails — a genuinely
 	// dependent use, or an absent `::type` (SFINAE) — fall through to the
 	// opaque placeholder exactly as before.
+	if ( !ip_reentrant )
 	{
 	    std::map<std::string, const std::vector<TokenBase *> *> tok_subst;
+	    std::set<std::string> pack_param_names;
 	    for ( size_t i = 0; i < td.typeparams.size() && i < arg_tokens.size(); ++i )
-		tok_subst[td.typeparams[i]] = &arg_tokens[i];
-	    std::deque<TokenBase *> body;
-	    for ( TokenBase *bt : td.target )
 	    {
-		if ( bt->type() == TokenType::ttIdentifier )
+		tok_subst[td.typeparams[i]] = &arg_tokens[i];
+		if ( i < td.typeparam_is_pack.size() && td.typeparam_is_pack[i] )
+		    pack_param_names.insert(td.typeparams[i]);
+	    }
+	    std::deque<TokenBase *> body;
+	    for ( size_t bi = 0; bi < td.target.size(); ++bi )
+	    {
+		TokenBase *bt = td.target[bi];
+		if ( bt && bt->type() == TokenType::ttIdentifier )
 		{
+		    const std::string &nm = ((TokenIdent *)bt)->str;
 		    std::map<std::string, const std::vector<TokenBase *> *>::iterator si =
-			tok_subst.find(((TokenIdent *)bt)->str);
+			tok_subst.find(nm);
 		    if ( si != tok_subst.end() )
 		    {
 			for ( TokenBase *rt : *si->second )
 			    body.push_back(rt->clone());
+			// A PACK param (`_Args`) in the alias body is followed by a
+			// `...` pack-expansion ellipsis (`__construct_helper<_Tp,
+			// _Args...>`). The arg slot holds the (single) bound element;
+			// drop the trailing `...` so the substituted body is a valid
+			// `<A*, A*>`, not `<A*, A*...>` (which derails arg parsing).
+			if ( pack_param_names.count(nm)
+			  && bi + 3 < td.target.size()
+			  && td.target[bi+1] && td.target[bi+1]->id() == TokenID::tkDot
+			  && td.target[bi+2] && td.target[bi+2]->id() == TokenID::tkDot
+			  && td.target[bi+3] && td.target[bi+3]->id() == TokenID::tkDot )
+			    bi += 3;
 			continue;
 		    }
 		}
-		body.push_back(bt->clone());
+		body.push_back(bt ? bt->clone() : NULL);
 	    }
 	    body.push_back(new TokenSemi());
 
@@ -3883,8 +3999,13 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	{
 	    if ( !*it )
 		continue;
+	    // Member-TYPE chain head: allow a concrete trailing-type-pack template to
+	    // really instantiate so a subsequent `::member` reads an evaluated member.
+	    bool saved_vri = allow_variadic_real_inst;
+	    allow_variadic_real_inst = true;
 	    owner_type = instantiate_template_id(first_name, first,
 						std::string(), *it);
+	    allow_variadic_real_inst = saved_vri;
 	    if ( owner_type )
 		break;
 	}
@@ -4151,14 +4272,21 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	// and a later branch returns the bare template/alias with the '<...>' left
 	// unconsumed. Retry with each active class scope as the owner_hint so the
 	// member template (class or alias) is found and instantiated.
+	// Snapshot the scope pointers: instantiate_template_id below can push the
+	// owner onto class_scope_stack (a real variadic-member instantiation now
+	// does), reallocating the vector and invalidating a live reverse_iterator —
+	// the next deref then segfaults. The DataDefCLASS objects outlive the call,
+	// so a copy of the pointers is safe to iterate.
 	if ( template_map.count(tname) || template_alias_map.count(tname) )
-	    for ( std::vector<DataDefCLASS *>::reverse_iterator si =
-		      class_scope_stack.rbegin();
-		  si != class_scope_stack.rend(); ++si )
+	{
+	    std::vector<DataDefCLASS *> scopes(class_scope_stack.rbegin(),
+					       class_scope_stack.rend());
+	    for ( DataDefCLASS *sc : scopes )
 		if ( TokenDataType *inst =
-			instantiate_template_id(tname, tb, "", *si) )
+			instantiate_template_id(tname, tb, "", sc) )
 		    return resolve_member_chain_or_type(inst, tb,
 							consume_class_member_chain);
+	}
     }
 
     // Unqualified type lookup inside a namespace: C++ searches the enclosing
@@ -6518,7 +6646,15 @@ bool Program::fold_constant_qualified_member(TokenBase *first, int64_t &out)
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT
 	  && (template_map.count(nm) || template_alias_map.count(nm)) )
 	{
-	    if ( TokenDataType *inst = instantiate_template_id(nm, first) )
+	    // Fold a trait's `::value` (e.g. `__and_<__has_construct<...>>::value`):
+	    // let the variadic trait template really instantiate so its `::value`
+	    // member is concrete. The cycle that once made this unsafe is gone now
+	    // that the inner trait (`__has_construct`) folds to a true_type leaf.
+	    bool saved_vri = allow_variadic_real_inst;
+	    allow_variadic_real_inst = true;
+	    TokenDataType *inst = instantiate_template_id(nm, first);
+	    allow_variadic_real_inst = saved_vri;
+	    if ( inst )
 		scope = dynamic_cast<DataDefCLASS *>(&inst->definition);
 	}
 	if ( !scope )
@@ -6557,9 +6693,13 @@ bool Program::fold_constant_qualified_member(TokenBase *first, int64_t &out)
 	DataDefCLASS *seg_scope = NULL;
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
-	    if ( TokenDataType *inst =
+	    bool saved_vri = allow_variadic_real_inst;
+	    allow_variadic_real_inst = true;
+	    TokenDataType *inst =
 		    instantiate_template_id(seg_name, seg, pending_ns,
-					    pending_ns.empty() ? scope : NULL) )
+					    pending_ns.empty() ? scope : NULL);
+	    allow_variadic_real_inst = saved_vri;
+	    if ( inst )
 		seg_scope = dynamic_cast<DataDefCLASS *>(&inst->definition);
 	}
 
@@ -12387,7 +12527,14 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
     // local_emit_name), so the call's extern resolves to a real definition
     // instead of an undefined import. The static analogue runs in parseCallFunc;
     // the qualified-static one in reselect_static_member_overload.
-    instantiate_member_fn_template_for_call(tc);
+    // In an UNEVALUATED operand (decltype/sizeof/noexcept) the call forms only a
+    // SIGNATURE, never an instantiated body ([basic.def.odr]) — matching the static
+    // path's guard above. Without this, a decltype-SFINAE probe like
+    // __construct_helper's `decltype(declval<_Alloc2*>()->construct(...))` would
+    // body-instantiate construct -> _S_construct -> __has_construct, recursing into
+    // a stack overflow. The call's return type is still inferred by the caller.
+    if ( unevaluated_operand_depth == 0 )
+	instantiate_member_fn_template_for_call(tc);
 
     // (need check for optional parameters)
     FuncDef *fd = call_signature_funcdef(tc->var);
@@ -29521,6 +29668,25 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // definition, so its member template body must be instantiated here.
     if ( owner->is_externally_defined() || owner->is_extern_template_instantiated )
 	return;
+
+    // Cycle break (logical-identity keyed): the allocator trait chain
+    // construct -> _S_construct -> __has_construct -> __test -> construct re-requests
+    // the SAME logical instantiation from a DIFFERENT call site, so call-site keying
+    // (inst_name below) can't stop it. Key on owner + fn + arg-type spellings; a
+    // re-entrant request returns early (its body finishes in the outer frame).
+    std::string mfi_key = owner->name + "::" + fd->function_display_name + "(";
+    for ( size_t i = 0; i < tc->parameters.size(); ++i )
+    {
+	DataDef *pdd = tc->parameters[i] ? tc->parameters[i]->datadef() : NULL;
+	mfi_key += (pdd ? pdd->name : std::string("?")) + ",";
+    }
+    mfi_key += ")";
+    if ( !member_fn_inst_in_progress.insert(mfi_key).second )
+	return;	// already instantiating this logical member fn — break the cycle
+    struct MfiGuard {
+	std::set<std::string> &s; std::string k;
+	~MfiGuard() { s.erase(k); }
+    } mfi_guard{ member_fn_inst_in_progress, mfi_key };
 
     // A one-shot free-function template from the retained body: rename the
     // declarator to a unique instantiation symbol (so the parsed function
