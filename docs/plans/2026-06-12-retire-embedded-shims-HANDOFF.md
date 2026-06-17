@@ -18,13 +18,21 @@ depth. The governing process document is **`madc-header-partition-handoff.md`
 # ★ SESSION 19i — COLD-START REHYDRATION (READ FIRST) — 2026-06-17
 
 ## 0. Orientation + STATE
-Code HEAD **`6ecb723`**, branch `feature/retire-embedded-shims-claude`. Tree
-clean (untracked `mir-debug-support.md` is NOT ours — leave it). Committed tree
-GREEN: **unit 132/0, integration 627/7** (same 7 container fails). develop
-untouched. GOAL: "clear all set / map walls" (Stop hook). NOTE: this is a
-MULTI-SESSION template-instantiation-core arc — not closable in one session.
+Code HEAD **`9a6cc9c`** (docs/plan tip; last CODE fix `07a3b23`), branch
+`feature/retire-embedded-shims-claude`, all PUSHED. Tree clean (untracked
+`mir-debug-support.md` is NOT ours — leave it). Committed tree GREEN: **unit
+132/0, integration 627/7** (same 7 container fails). develop untouched. GOAL:
+"clear all set / map walls" (Stop hook). NOTE: this is a MULTI-SESSION
+template-instantiation-core arc — not closable in one session. The
+ready-to-implement NEXT step is **`docs/plans/2026-06-17-functor-call-node-receiver-plan.md`** (see §0c).
 
-## 0a. SHIPPED this session (2 fixes, PUSHED, 627/7 each)
+## 0a. SHIPPED this session (3 CODE fixes, PUSHED, 627/7 each)
+- **`07a3b23`** unqualified static member-fn-template call in expression context
+  (`_S_test<F,Args...>(0)` inside a member typedef) errored "undeclared
+  identifier" — the expr identifier arm never searched class_scope_stack(+bases)
+  and `<...>` wasn't parsed as explicit targs. Fix: last-resort-before-throw, an
+  unqualified name that's a STATIC method of a class in scope resolves like the
+  qualified path (qstatic_owner + goto ns_resolved). `tmp/uq1` 4=g++.
 - **`6ecb723`** qualified static member-fn-template call with explicit targs
   (`Scope::fn<TArgs>(args)`) was discarding `<TArgs>` (treated as a CLASS
   template-id → skip_template_id_suffix) → bound to the ddINT64 placeholder /
