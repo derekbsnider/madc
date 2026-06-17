@@ -385,18 +385,20 @@ static DataDefCLASS *as_class_instance(DataDef *dd)
 	return as_user_class(dd);
 }
 
-// First-class references (docs/plans/2026-06-17-first-class-references.md Phase 2):
+// First-class references (docs/plans/2026-06-17-first-class-references.md):
 // a reference parameter or return type is a DataDefREF so is_reference() is the
-// single source of truth (replacing the parallel FuncDef::ref_params /
-// returns_ref side-channels). A DataDefREF renders its name as `T*`, so the
-// emitted prototype/ABI is unchanged; class_behind() already unwraps it to the
-// class for dispatch. Used by the cir_builder operator/manipulator instantiation
-// sites that synthesize FuncDefs (both param and return slots).
-static DataDef *as_reference_type(DataDef *dd)
+// single source of truth (the parallel FuncDef::ref_params / returns_ref /
+// vfREFERENCE side-channels are all retired). A DataDefREF renders its name as
+// `T*`, so the emitted prototype/ABI is unchanged; class_behind() already unwraps
+// it to the class for dispatch. Used by the operator/manipulator instantiation
+// sites that synthesize FuncDefs (both param and return slots). Phase 4 routes it
+// through the ONE reference-creation/collapse path (Program::getReferenceType).
+DataDef *CirBuilder::as_reference_type(DataDef *dd)
 {
 	if (!dd) return dd;
+	if (m_prog) return m_prog->getReferenceType(dd);
 	if (dd->is_reference()) return dd;
-	return new DataDefREF(*dd);
+	return new DataDefREF(*dd);   // m_prog-less fallback (collapse preserved)
 }
 
 // c2mir lowers these call names in-place as builtins (it even rejects user

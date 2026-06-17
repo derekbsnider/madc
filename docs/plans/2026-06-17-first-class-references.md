@@ -80,8 +80,10 @@ fulltest must stay byte-for-byte green through them; that is the regression gate
 
 ### Phase 2 — Collapse the side-channels onto the type (the cleanup)
 
-EXECUTION STATUS (2026-06-17 — Phase 2 COMPLETE (2a/2b/2c/2d), all green 633/7/18;
-both side-channels (returns_ref, vfREFERENCE) fully retired. Remaining: Phase 4):
+EXECUTION STATUS (2026-06-17 — PLAN COMPLETE: Phases 1, 2 (2a/2b/2c/2d), 4 all DONE,
+all green 633/7/18; both side-channels (returns_ref, vfREFERENCE) retired, one collapse,
+deduction core verified-consolidated. Phase 3 (value-category) extracted → its own plan,
+runs after vector<T*>):
 - **2a DONE** (@fc598e9): all reference PARAMS are DataDefREF (parser + 5 cir_builder
   synth sites via `ref_param_type()`). `FuncDef::is_ref_param(i)` =
   `parameters[i]->is_reference()` is the single source; all ~33 `ref_params[i]` reads
@@ -144,12 +146,34 @@ runs LAST, after Phases 2+4 here and after the SFINAE/`vector<T*>` work). It is 
 "deferred to later/never": it has its own plan + a concrete start trigger. Execution order
 of THIS plan is therefore **Phase 1 (done) → Phase 2 → Phase 4**.
 
-### Phase 4 — One collapse, one deduction-adjust (final consolidation)
-- Ensure all reference creation routes through `getReferenceType` (single collapse).
-- Extract a single `adjust_param_and_arg_for_deduction()` mirroring clang's function;
-  route `fn_template_deduce_param` / `unify_spec_pattern_arg` /
-  partial-spec deduction through it. Delete scattered amps/ref logic.
-- Green; this is where the "20 variations" become one.
+### Phase 4 — One collapse, one deduction-adjust (final consolidation) — DONE (2026-06-17)
+- **Single collapse — DONE.** All reference creation routes through
+  `Program::getReferenceType` (caches + collapses ref-to-ref). The parser already did;
+  cir_builder's `as_reference_type` was the last bypass (a raw `new DataDefREF` that
+  re-implemented the collapse rule) — made a CirBuilder member that calls
+  `m_prog->getReferenceType` (m_prog-less fallback keeps the collapse). One creation path.
+- **One deduction-adjust — DONE (already consolidated; verified, no merge needed).**
+  Investigation finding: the "scattered amps/ref logic" Phase 4 worried about was the
+  SIDE-CHANNELS (ref_params / returns_ref / vfREFERENCE), and those are gone (Phase 2).
+  The function-template deduction core is ALREADY one function: `fn_template_deduce_param`
+  owns the cv/ref/star/core param-side adjustment + the arg-side strip; ALL of its callers
+  (return position 28115, params 28165, the two namespace/operator entry points 28372/29232)
+  just call it and check the result — no caller duplicates the ref/star handling. So the
+  function-param "adjust" is already a single point.
+  - The class-template **partial-spec** path (`unify_spec_pattern_arg` /
+    `unify_nested_spec_pattern_arg`) is a DELIBERATELY separate mechanism: it unifies over a
+    `TokenBase` token vector (the spec pattern), whereas `fn_template_deduce_param` works on
+    a spelling STRING. Forcing them into one function would require normalizing two input
+    representations first — a distinct, risky refactor of the deduction engine for a small
+    dedup, and it would conflate two responsibilities (SRP). NOT done by design; the
+    side-channel drift hazard (the actual motivation) is already eliminated.
+  - The clang lvalue/xvalue forwarding-ref refinement (`_Tp&&` → `_Tp = A&` for an lvalue
+    arg) is the VALUE-CATEGORY half = Phase 3 (its own plan, runs last). Until then
+    `fn_template_deduce_param` keeps the value-model approximation (strip ref unconditionally
+    for `&`/`&&`), which passes the whole suite.
+- Green at 633/7/18 (zero regressions). The "20 variations" — the per-site reference
+  reconstructions via three parallel flags — are now one: the DataDefREF type, created by one
+  collapse, read by one predicate per role (is_ref_param / returns_reference / is_reference).
 
 ## Phase 1 outcome + remaining vector<T*> blocker (recorded 2026-06-17)
 

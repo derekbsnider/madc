@@ -394,6 +394,11 @@ class CirBuilder {
 	// `T*` pointer operand stays NULL: only the reference representation is
 	// transparent (pointer operands keep pointer semantics).
 	DataDefCLASS *operand_object_class(TokenBase *t);
+	// Wrap a type as a reference (DataDefREF), routed through the one
+	// reference-creation/collapse path (Program::getReferenceType — caches +
+	// collapses ref-to-ref). Used by the operator/manipulator instantiation
+	// sites that synthesize FuncDefs. first-class refs Phase 4 "single collapse".
+	DataDef *as_reference_type(DataDef *dd);
 	// The type DOMAIN of an OPERAND's value read — the scalar twin of
 	// operand_object_class: a reference variable (vfREFERENCE, stored as
 	// DataDefPTR(T)) reads as its referee T; everything else is the
