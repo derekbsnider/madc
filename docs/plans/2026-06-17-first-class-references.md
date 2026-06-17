@@ -137,7 +137,32 @@ iterator** (a trait/typedef + return-reference fix). It CONVERGES with Phase 2's
 return-reference leg (move_iterator::operator* IS a method returning a reference), and with
 the SFINAE-engine walls (#22/#26) + `__and_`'s `decltype(__and_fn(0))`.
 
-### MOVE_ITERATOR FIX RECIPE (save — concrete, gathered 2026-06-17)
+### ⚠ CORRECTION (2026-06-17, later): move_iterator is a RED HERRING — real blocker is the SFINAE fold
+
+After saving the move_iterator recipe below, deeper reduction REFUTED it as the root:
+- `tmp/mi1.cpp` — the move_iterator `reference` typedef chain (`iterator_traits<A**>::reference`
+  → `conditional<is_reference<A*&>, remove_reference_t<A*&>&&, ...>` → `A*&&`) + `operator*`,
+  in ISOLATION — **compiles and runs in madc** (prints 7). So the typedef chain is fine.
+- The REAL difference is the `_S_construct` RETURN TYPE folding, context-dependently:
+  - `tmp/ac1.cpp` (works): `_S_construct` returns a concrete `struct A *` — enable_if struct
+    NEVER appears (`grep __enable_if_t___and` = 0).
+  - `tmp/wb1.mad` (fails): `_S_construct` returns `struct __enable_if_t___and____has_construct
+    _A__A________value_void` which is USED but **never defined** (0 definitions) → incomplete
+    type → the lone c2mir error.
+- i.e. the SAME `enable_if_t<__and_<__has_construct<...>>::value, void>` folds to a concrete
+  type in one context and stays an OPAQUE undefined struct in another. The blocker is the
+  **SFINAE trait-fold reliability** (`__and_` = `decltype(__detail::__and_fn<_Bn...>(0))`,
+  `__has_construct` = `decltype(__construct_helper::__test(0))`, `enable_if_t`), NOT
+  references and NOT move_iterator. Converges with walls #22/#26/#34.
+- NEXT (for the vector<T*> phase, AFTER the plan): make `__and_`/`enable_if_t`/`__has_construct`
+  fold reliably to `void` for the pointer-element construct in the full vector context. Find
+  why ac1 folds (to A*, itself suspicious) but wb1 leaves it opaque — likely an
+  instantiation-ORDER / caching issue in the trait engine, or the decltype-overload-SFINAE of
+  `__and_fn`/`__construct_helper::__test` not evaluating in the move/realloc context.
+- The move_iterator recipe below is RETAINED for reference only (the warning at
+  stl_iterator.h:1449 is real but secondary; do not treat it as the root).
+
+### MOVE_ITERATOR FIX RECIPE (SECONDARY — retained; see correction above)
 
 libstdc++ 13, C++17 path (`/usr/include/c++/13/bits/stl_iterator.h`, class `move_iterator`
 ~line 1449):
