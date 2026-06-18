@@ -1235,6 +1235,12 @@ bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
 	// is addressable and not listed here.)
 	if (dynamic_cast<TokenNEW *>(arg))
 		return true;
+	// An address-of expression `&x` yields an address VALUE — a prvalue pointer
+	// (you cannot take `&(&x)`). Binding it to a reference parameter
+	// (vector<int*>::push_back(const int*&) with `&local`) must spill it to an
+	// addressable temp. The parser builds these as TokenAddrOf / TokenAddrExpr.
+	if (dynamic_cast<TokenAddrOf *>(arg) || dynamic_cast<TokenAddrExpr *>(arg))
+		return true;
 	// A by-value-returning call is a prvalue; a reference-returning call is an
 	// lvalue (its result is the referent — addressable).
 	if (t == TokenType::ttCallFunc || t == TokenType::ttCallMethod)
