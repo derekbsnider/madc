@@ -1,0 +1,21 @@
+#!/../bin/madc
+// A using-declaration importing a TEMPLATE member (alias template) from a nested
+// namespace must be ACCEPTED, not throw "is not a member of namespace" — the
+// libstdc++ `using std::__detail::__range_iter_t;` shape (ranges_base.h:93). Before
+// the fix the using-declaration resolver only matched var/type members, so an
+// alias-template member errored.
+#include <cstdio>
+
+namespace inner {
+    template<typename T> using Id = T;
+}
+namespace user {
+    using inner::Id;             // <- must be accepted (this is the fix)
+}
+
+int main()
+{
+    inner::Id<int> v = 42;
+    printf("ut: %d\n", v);       // 42
+    return 0;
+}

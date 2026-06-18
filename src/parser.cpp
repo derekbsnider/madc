@@ -19930,7 +19930,31 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    dti = nti->second.find(member_name);
 	    have_type = dti != nti->second.end();
 	}
-	if ( !have_var && !have_type )
+	// A using-declaration may import a TEMPLATE member — an alias template
+	// (`using std::__detail::__range_iter_t;`, ranges_base.h:93), a class
+	// template, or a variable template — defined in ns_name. madc keys
+	// templates globally by simple name, so the name is already resolvable;
+	// accept the using (no import action needed) rather than erroring.
+	bool have_template = false;
+	{
+	    auto ai = pgm.template_alias_map.find(member_name);
+	    if ( ai != pgm.template_alias_map.end() )
+		for ( size_t i = 0; i < ai->second.size(); ++i )
+		    if ( ai->second[i].defining_namespace == ns_name )
+		    { have_template = true; break; }
+	    if ( !have_template )
+	    {
+		auto ti = pgm.template_map.find(member_name);
+		if ( ti != pgm.template_map.end() )
+		    for ( size_t i = 0; i < ti->second.size(); ++i )
+			if ( ti->second[i].defining_namespace == ns_name )
+			{ have_template = true; break; }
+	    }
+	    if ( !have_template
+	      && pgm.var_template_map.count(ns_name + "::" + member_name) )
+		have_template = true;
+	}
+	if ( !have_var && !have_type && !have_template )
 	    pgm.Throw(tn) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
 	// import into the current namespace, or global scope outside a namespace
 	std::string name = member_name;
