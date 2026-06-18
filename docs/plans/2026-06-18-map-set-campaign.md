@@ -1,5 +1,51 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 11 — VERIFIED per-test wall mapping (CORRECTS earlier assumptions)
+
+Ran each failing test at HEAD (`48dde1e`) and read the FIRST error. The walls are
+NOT distributed as the original diagnosis assumed:
+
+| test | first error at HEAD | blocking wall |
+|------|---------------------|---------------|
+| `testmap`  | `Unidentified member 'contains'` (testmap.mad:25) | **Wall C ONLY** |
+| `testset`  | `Unidentified member 'contains'` (testset.mad:19) | **Wall C ONLY** |
+| `testsubscript`     | `undeclared '_S_key'` (stl_tree.h:427) | **Wall B (3b)** |
+| `testcontainerdtor` | `expected 3 got 2` + `undeclared '_S_key'` (:96/:427) | **Wall B (3b)** |
+| `testmadc_ns`       | `expected 3 got 2` + `undeclared '_S_key'` (:96/:427) | **Wall B (3b)** |
+
+So **Wall B (3b) gates 3 of the 5 tests** (testsubscript, testcontainerdtor,
+testmadc_ns) — landing it could turn 3 green (modulo further sub-walls). **Wall C
+gates the 2 literally-named tests** (testmap, testset). testsubscript reaches
+`_S_key` (not Wall A3 as previously assumed) because `ages["alice"]` (a const-char*
+literal key, vs testmap's string-variable key) drives the operator[]/emplace path
+that pulls `_Rb_tree::_S_key`'s `__is_invocable` static_assert.
+
+**KEY:** `testmap` and `testset` — the literal Stop-hook goal ("set and map
+working") — are blocked ONLY by `contains` (Wall C). Their construction,
+`operator[]`, `insert`, and `size` ALL COMPILE now (after sub-walls 1/3a + the
+prior tuple/pack/ref-member work). So for the two named containers, **Wall B is
+NOT a blocker** — only Wall C is. Wall B (3b, the `_S_test`/`__is_invocable`
+chain I drilled into across this session) blocks ONLY `testcontainerdtor` and
+`testmadc_ns`.
+
+**Wall C is confirmed LARGE and unavoidable for `contains`** (measured, not
+assumed): `contains` is `#if __cplusplus > 201703L`, purely `__cplusplus`-gated
+(NOT `__cpp_lib_*`), so the two-axis model can't expose it. `--std=c++20`
+DOES expose the gate but pulls the full C++20 ranges/concepts surface —
+`echo '#include <map>' | g++ -std=c++20 -E` shows `namespace ranges`,
+`requires`-expressions, `ranges::swap`/`ranges::less`, etc.; madc errors
+"Unknown namespace 'ranges'". So exposing `contains` REQUIRES a real C++20
+ranges/concepts bring-up (its own multi-session track), OR a legitimate
+mechanism to present C++20 to the container headers without the ranges surface
+(no clean one exists today — a single `__cplusplus` value can't separate
+`contains` from ranges). Do NOT hand-roll a `contains` shim (violates
+retire-embedded-shims; the method must come from the real header).
+
+CONSEQUENCE for sequencing: to make the two NAMED containers pass, the priority
+is Wall C (C++20/ranges), not Wall B. Wall B remains the right next step only for
+testcontainerdtor/testmadc_ns. Neither is a single-session item.
+
+
 **Status:** IN PROGRESS — std::tuple + A3.2 + multi-element packs + reference data
 members done; Wall B (`__is_invocable`) underway — 4 layers fixed
 (`integral_constant{}` fold; explicit-pack `_S_test` return type; **sub-wall 1
