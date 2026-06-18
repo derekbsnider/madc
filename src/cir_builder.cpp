@@ -1228,6 +1228,13 @@ bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
 	if (!arg)
 		return false;
 	TokenType t = arg->type();
+	// A `new T(args)` expression lowers to a statement-expression yielding the
+	// allocated pointer — a prvalue, so `&(new T())` is ill-formed. Binding it to
+	// a reference parameter (vector<T*>::push_back(const T*&)) must spill it to an
+	// addressable temp first. (TokenObjTemp already yields an lvalue local, so it
+	// is addressable and not listed here.)
+	if (dynamic_cast<TokenNEW *>(arg))
+		return true;
 	// A by-value-returning call is a prvalue; a reference-returning call is an
 	// lvalue (its result is the referent — addressable).
 	if (t == TokenType::ttCallFunc || t == TokenType::ttCallMethod)
