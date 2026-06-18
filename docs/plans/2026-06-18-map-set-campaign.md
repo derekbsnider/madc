@@ -1,13 +1,63 @@
 # map / set bring-up campaign — diagnosis & plan
 
 **Status:** IN PROGRESS — std::tuple + A3.2 + multi-element packs + reference data
-members done; Wall B (`__is_invocable`) underway — 3 layers fixed
+members done; Wall B (`__is_invocable`) underway — 4 layers fixed
 (`integral_constant{}` fold; explicit-pack `_S_test` return type; **sub-wall 1
-b0574ff — dependent-member-base forwarding traits now real-instantiate**). NEXT =
-sub-wall 3 (Update 9), pinned to parser.cpp:~2970: `__result_of_impl` (non-type
-`bool` params) bails to opaque before its partial spec's `decltype(_S_test<...>(0))
-type` member can compute, leaving `::type` to derail `__invoke_result`'s re-parse.
-map's `_S_key` still blocked; contains (C) still remains (2026-06-18)
+b0574ff** dependent-member-base forwarding traits real-instantiate; **sub-wall 3a
+4911eae** partial specs real-instantiate in member-type context). The whole
+forwarding+partial-spec chain now works; `__invoke_result` resolves its base — but
+to `__failure_type`. NEXT = sub-wall 3b (Update 10): the `_S_test<F,Args...>(0)`
+overload SELECTION picks the `(...)` failure overload because explicit args aren't
+distributed into the success overload's trailing pack. map's `_S_key` still blocked;
+contains (C) still remains (2026-06-18)
+
+## Update 10 — sub-wall 3a LANDED (4911eae); 3b pinned to the `_S_test` overload SELECTION
+
+**Sub-wall 3a DONE — commit `4911eae`, fulltest 641/5 zero regression.** While
+resolving a member-type chain (allow/sticky) and only when a partial spec of the
+name exists, the two opaque bails in instantiate_template_use are deferred so the
+partial-spec match runs. `__result_of_impl<...>` now resolves to its partial spec
+(`__result_of_impl<false,false,_Functor,_ArgTypes...>`) instead of an opaque
+placeholder; its `::type` consumes cleanly (the type_traits:2583 parse derail is
+gone). Verified via WB_DIAG probe: `__invoke_result<Cmp&,...>` now has a real
+**base** — but it is **`__failure_type`** (should be `__result_of_success<bool>`),
+so `__invoke_result::type` is still absent → `__is_invocable` folds false (gracefully).
+
+**So the WHOLE forwarding + partial-spec machinery now works; only the FINAL
+overload pick is wrong.** `__result_of_impl<...>::type =
+decltype(_S_test<_Functor, _ArgTypes...>(0))` selects the FAILURE overload
+(`template<typename...> static __failure_type _S_test(...)`) instead of the SUCCESS
+overload (`template<typename _Fn, typename... _Args> static
+__result_of_success<decltype(declval<_Fn>()(declval<_Args>()...)),__invoke_other>
+_S_test(int)`). ROOT: explicit template args `<Cmp&, const int&, const int&>` (3)
+are NOT distributed into the success overload's trailing `_Args` pack — its template
+is `<_Fn, _Args...>` (2 typeparams, the 2nd a pack), and the arity gate rejects 3
+explicit args, so the success overload is discarded and `_S_test(...)` (which takes
+`<typename...>`) wins → return type `__failure_type`. This is the SAME explicit-pack
+distribution class as aeec6a9, but in the OVERLOAD-SELECTION path, not the
+return-type substitution path aeec6a9 fixed.
+
+**Canonical instance of the gate: `resolve_fn_template_return_by_key`
+(parser.cpp:~30400), line ~30432** — `explicit_args.size() > ft.typeparams.size()`
+→ continue (rejects). The positional binding at ~30495 and the single-name
+substitution at ~30504 likewise lack pack-awareness (port the pack-aware
+binding+expansion already in `resolve_member_template_call_return_type` ~9019-9090:
+fixed params singly + collect pack_elems + expand `pattern...` per element). NOTE
+that fn is for FREE templates; `_S_test` is a MEMBER of the (inherited)
+`__result_of_other_impl`, and the `[WB ovl]` probe in
+`reselect_static_member_overload`'s body-less branch did NOT fire — so the exact
+member-template-in-decltype selection site is a sibling not yet pinned to a line.
+Next session: gdb-break where `__failure_type` is chosen for `_S_test` (set a
+conditional probe in the method-overload selection / decltype-of-member-call path,
+run tmp/invoc2.mad), then apply the pack-aware arity gate + binding + `pattern...`
+expansion there (factor the aeec6a9 pack logic into a shared helper both call). Once
+the success overload wins, `__result_of_impl::type = __result_of_success<bool>` →
+`__invoke_result::type = bool` → `__void_t` true → `__is_invocable` true → `_S_key`
+registers → map (static_assert) + set (insert overload res) advance.
+
+Reducer `tmp/invoc2.mad` (folds false gracefully now). Probes to re-add: WB block in
+`eval_void_t_detection_slot` (dump base_class/bases/aliases + resolve walk) and the
+`[WB inst]` line at instantiate_template_use's pack_real_inst.
 
 ## Update 9 — Wall B sub-wall 1 LANDED (b0574ff); sub-wall 3 pinned at code level
 
