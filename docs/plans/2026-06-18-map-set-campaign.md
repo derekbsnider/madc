@@ -1,5 +1,43 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 22 — gdb on the `iterator_category`/`__clamp_iter_cat` wall: state-dependent qualified-alias-template resolution
+
+gdb (clean debug build) on the `Expecting ';' after using alias` throw
+(parser.cpp:20318) for `iterator_category` pinned the mechanism:
+
+- The FAILING alias `using iterator_category = __detail::__clamp_iter_cat<
+  typename __traits_type::iterator_category, random_access_iterator_tag>`
+  resolves (resolved=1) to **`__cond_value_type_char`** and leaves a trailing
+  **`:: __clamp_iter_cat`** unconsumed → "Expecting ';'".
+- `__detail` is NOT a class-alias (resolve_current_class_type_alias=NULL) nor in
+  datatype_map (count 0). resolve_declared_type_token reaches the `::`-qualifier
+  block (parser.cpp:~4579): it checks `tokens[j+1]==tkLT &&
+  template_declared_in_namespace(member_name, ns_name)`.
+- For the FIRST `iterator_category` instantiation that block FIRES correctly:
+  member_name=`__clamp_iter_cat`, ns_name=`std::__detail`,
+  `instantiate_template_id("__clamp_iter_cat", …, "std::__detail")` returns
+  `iterator_traits_char___iterator_category` and consumes the `<…>` (verified by
+  a manual gdb call → stream left at `;`). So the FIRST one is fine.
+- The FAILING (LATER) instantiation does NOT enter that block (the `::
+  __clamp_iter_cat` is left unconsumed), so it falls through to
+  `resolve_namespaced_type_token` (parser.cpp:~4615), which returns
+  `__cond_value_type_char` consuming only `__detail`.
+
+**So the bug is STATE-DEPENDENT: `template_declared_in_namespace("__clamp_iter_cat",
+"std::__detail")` (or the `ns_name` from `resolve_namespace_name_in_scope`) holds
+for the first reverse_iterator instantiation but FAILS for a later one** — and
+`resolve_namespaced_type_token` then mis-resolves `__detail` to the unrelated
+`__cond_value_type<char>` (a sibling in std::__detail, from the value_type /
+indirectly_readable_traits chain). NEXT (gdb recipe — needs `make clean && make
+debug`): catch the FAILING `iterator_category` (it leaves `::` unconsumed;
+condition a breakpoint at 4593/4615 on the SECOND+ hit, or on
+`template_declared_in_namespace(...)==false` for `__clamp_iter_cat`), find WHY it
+differs between instantiations (registration timing? scope-stack difference?),
+AND separately make `resolve_namespaced_type_token` return NULL rather than
+mis-resolve a namespace qualifier (`__detail`) to a sibling type when the member
+isn't found. NOTE: bin/madc may be `-g -O0` debug during this work; `make clean
+&& make` restores optimized.
+
 ## Update 21 — partial-spec `requires`-constraint NOW EVALUATED (Update-20 fix landed); next wall pinned
 
 **Update-20 fix LANDED (`41cbf56`, fulltest 651/5/0/18 zero regr).** A partial
