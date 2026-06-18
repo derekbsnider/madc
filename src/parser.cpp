@@ -2524,6 +2524,44 @@ static bool template_has_parameter_pack(const std::vector<bool> &packs)
     return first_template_pack_index(packs) < packs.size();
 }
 
+// True when the template's base-specifier is a DEPENDENT MEMBER TYPE — a
+// template-id immediately followed by `::member` in the base clause, i.e.
+// `struct X : public Base<...>::type { }`. This is the non-recursive
+// trait-FORWARDING shape (`__invoke_result : __result_of_impl<...>::type`,
+// `__is_invocable : __is_invocable_impl<...>::type`): the class's entire meaning
+// is the type it inherits, which can only be computed by really instantiating the
+// base template and taking its member. It is distinct from the RECURSIVE bases
+// (`tuple : _Tuple_impl<0, Ts...>`, `__and_ : conditional_t<...>`) whose base is a
+// plain template-id (or alias), NOT a `::member` — so this predicate cleanly
+// selects the forwarding traits without admitting the unbounded recursion the
+// flag-clear at instantiate_template_use guards against. Scans the base-clause
+// region of td.body (everything before the class body's opening `{` at depth 0)
+// for a `>`/`>>` (template-id close) immediately followed by `::`.
+static bool template_base_is_dependent_member(const Program::TemplateDef &td)
+{
+    int depth = 0;
+    for ( size_t i = 0; i + 1 < td.body.size(); ++i )
+    {
+	TokenBase *t = td.body[i];
+	if ( !t )
+	    continue;
+	TokenID id = t->id();
+	if ( id == TokenID::tkOpBrc )
+	{
+	    if ( depth == 0 )
+		return false;          // reached the class body — no dependent-member base
+	    ++depth;
+	}
+	else if ( id == TokenID::tkClBrc )
+	    --depth;
+	else if ( depth == 0
+	       && (id == TokenID::tkGT || id == TokenID::tkBSR)
+	       && td.body[i + 1] && td.body[i + 1]->id() == TokenID::tkNS )
+	    return true;               // `...>::` in the base clause
+    }
+    return false;
+}
+
 // A variadic class template is REALLY instantiable (body parse + member evaluation,
 // not just an opaque dependent shell) for concrete args when its only pack is a
 // TRAILING TYPE pack and it carries a parseable body with no non-type params. This is
@@ -2925,10 +2963,17 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // shape AND only while resolving a member-TYPE chain (allow_variadic_real_inst) —
     // see the flag's declaration. The flag is consumed here, then cleared so nested
     // instantiations triggered by this body do NOT inherit it (a recursive variadic
-    // body would otherwise re-enter the real path unboundedly).
-    bool pack_real_inst = allow_variadic_real_inst
+    // body would otherwise re-enter the real path unboundedly). The STICKY variant
+    // (variadic_real_inst_sticky) survives this clear: it propagates real-instantiation
+    // through a dependent-member-base forwarding chain (`__invoke_result` ->
+    // `__result_of_impl`), bounded by variadic_inst_in_progress (set below).
+    bool pack_real_inst = (allow_variadic_real_inst || variadic_real_inst_sticky)
 		       && template_pack_real_instantiable(td);
     allow_variadic_real_inst = false;
+    // When this real-instantiation forwards through a dependent-member base
+    // (`: Base<...>::type`), keep real-instantiation on for the nested base/arg
+    // resolution during its re-parse so the whole forwarding trait chain folds.
+    bool want_sticky = pack_real_inst && template_base_is_dependent_member(td);
     if ( template_has_parameter_pack(td.typeparam_is_pack) && !pack_real_inst )
 	return instantiate_opaque_template_use(td, tname, tb);
     if ( td.has_non_type_params && td.body.empty() )
@@ -3239,7 +3284,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // but instantiated with a STILL-DEPENDENT arg stays an opaque dependent shell —
     // exactly the pre-change behavior (the 2874 short-circuit sent ALL pack uses here).
     // Only a fully concrete-arg variadic template proceeds to body parse below.
-    if ( td.body.empty() || (pack_real_inst && dependent_surface) )
+    // Re-entering the SAME mangled instantiation while sticky forwarding is active is a
+    // self-referential trait loop → fall to the opaque placeholder to bound recursion.
+    if ( td.body.empty() || (pack_real_inst && dependent_surface)
+      || (want_sticky && variadic_inst_in_progress.count(registered_mangled)) )
     {
 	DataDefCLASS *fwd = new DataDefCLASS(registered_mangled, 0, DataType::dtRESERVED);
 	fwd->canonical_cpp_spelling = canon;
@@ -3472,6 +3520,34 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	class_scope_stack.push_back(td.owner_class);
 	pushed_owner_scope = true;
     }
+
+    // While re-parsing a dependent-member-base forwarding trait, keep variadic
+    // real-instantiation ON (sticky) so the base `Base<...>::type` and any nested
+    // forwarding template in it really instantiate, and register this mangled name
+    // so a self-referential re-entry bounds out to the opaque placeholder. RAII —
+    // restores on both the normal and the catch path below.
+    struct StickyGuard {
+	Program &p; std::string key; bool active; bool saved; bool inserted;
+	StickyGuard(Program &pp, const std::string &k, bool on)
+	    : p(pp), key(k), active(on), saved(pp.variadic_real_inst_sticky),
+	      inserted(false)
+	{
+	    if ( active )
+	    {
+		p.variadic_real_inst_sticky = true;
+		inserted = p.variadic_inst_in_progress.insert(key).second;
+	    }
+	}
+	~StickyGuard()
+	{
+	    if ( active )
+	    {
+		p.variadic_real_inst_sticky = saved;
+		if ( inserted )
+		    p.variadic_inst_in_progress.erase(key);
+	    }
+	}
+    } sticky_guard(*this, registered_mangled, want_sticky);
 
     TokenBase *class_kw = nextToken();   // the injected `class` keyword
     try

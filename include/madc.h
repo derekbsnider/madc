@@ -1462,6 +1462,18 @@ public:
     // recursive variadic body (`__and_`, `tuple`) would otherwise re-instantiate
     // unboundedly. Scoped-set around the member-type instantiate_template_id calls.
     bool allow_variadic_real_inst = false;
+    // STICKY variant of the above: stays on through a real-instantiation SUBTREE
+    // whose root template forwards its meaning through a dependent-member base
+    // (`__invoke_result : __result_of_impl<...>::type`). Unlike allow_variadic_real_inst
+    // (consumed once at each instantiate_template_use entry), this propagates into
+    // nested arg-resolution + base re-parse so the whole forwarding chain
+    // (__is_invocable -> __invoke_result -> __result_of_impl) really instantiates.
+    // Bounded by variadic_inst_in_progress so a recursive body cannot re-enter.
+    bool variadic_real_inst_sticky = false;
+    // Class-template real-instantiations in flight, keyed by mangled name. Re-entering
+    // the same key while variadic_real_inst_sticky is on returns the opaque placeholder
+    // instead of recursing — the recursion bound for the sticky forwarding-trait path.
+    std::set<std::string> variadic_inst_in_progress;
     // Alias-template uses currently being resolved (keyed tname + arg spellings).
     // Re-entering the SAME key is a resolution CYCLE (a self-referential trait, now
     // reachable because variadic members really instantiate) — it short-circuits to
