@@ -35599,9 +35599,23 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		DBG(std::cout << "parseStatement: wrapping type in SIMD(" << attr_vector_bytes << " bytes)" << std::endl);
 		return parseDeclaration(tdt);
 	    }
-	    if ( TokenDataType *resolved =
-		    resolve_declared_type_token(tb, true, true) )
-		tb = resolved;
+	    {
+		// A statement-level variable declaration is a STORAGE/object
+		// context: a concrete-arg variadic template named here (e.g.
+		// `tuple<int> t;`, `V<int> v;`) must be a COMPLETE type, so allow
+		// it to really instantiate rather than stay an opaque member-less
+		// shell. Scoped to this declaration site only — trait/value-fold/
+		// return/param contexts keep the opaque default (real-instantiating
+		// a pure trait like `__or_<...>` exposes its unresolved dependent
+		// base; it is never declared as an object so it never needs this).
+		bool saved_vri = allow_variadic_real_inst;
+		allow_variadic_real_inst = true;
+		TokenDataType *resolved =
+		    resolve_declared_type_token(tb, true, true);
+		allow_variadic_real_inst = saved_vri;
+		if ( resolved )
+		    tb = resolved;
+	    }
 	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") calling parseDeclaration" << std::endl);
 	    return parseDeclaration((TokenDataType *)tb);
 //	    break;
@@ -35706,9 +35720,18 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		datatype_map_iter dmi = datatype_map.find(tname);
 		if ( dmi == datatype_map.end() )
 		{
-			    if ( TokenDataType *resolved =
+			    // Statement-leading template name as a declaration is a
+			    // STORAGE/object context: let a concrete-arg variadic
+			    // template really instantiate (complete type with members)
+			    // instead of an opaque shell. Scoped to this site — see
+			    // the companion note at the ttDataType decl arm above.
+			    bool saved_vri = allow_variadic_real_inst;
+			    allow_variadic_real_inst = true;
+			    TokenDataType *vri_resolved =
 				    resolve_declared_type_token(tb, true,
-								true, false) )
+								true, false);
+			    allow_variadic_real_inst = saved_vri;
+			    if ( TokenDataType *resolved = vri_resolved )
 			    {
 				if ( peekToken() && peekToken()->id() == TokenID::tkNS
 				  && !compounds.empty()

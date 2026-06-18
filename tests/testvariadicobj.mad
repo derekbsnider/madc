@@ -1,0 +1,23 @@
+#!../bin/madc
+// A concrete-arg variadic class template used as a real OBJECT must really
+// instantiate to a COMPLETE type (members + storage), not an opaque member-less
+// shell. Before Wall A1, `h.count` failed with "Unidentified member in
+// 'Holder_int'" because the variable's variadic-template type stayed opaque.
+#include <iostream>
+using namespace std;
+
+template<typename... Ts>
+struct Holder {
+    int count;
+    int first;
+};
+
+int main()
+{
+    Holder<int> h;
+    h.count = 3;
+    h.first = 42;
+    cout << "count: " << h.count << endl;
+    cout << "first: " << h.first << endl;
+    return 0;
+}
