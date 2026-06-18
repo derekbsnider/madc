@@ -1,5 +1,36 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 16 — MILESTONE: `<map>` parses at --std=c++20; `contains` EXPOSED (fix 10)
+
+**Fix 10 (e79f572)** — accept TEMPLATE members in using-declarations. `using
+std::__detail::__range_iter_t;` (ranges_base.h:93) threw "is not a member of
+namespace": the resolver only matched var/type members, never alias/class/variable
+templates. Added those (template_alias_map / template_map / var_template_map by
+defining namespace). **Result: `#include <map> --std=c++20` now PARSES end-to-end
+(exit 0 — only RECOVERED soft constexpr-fold messages print, see below), so
+`map::contains` is EXPOSED.** testmap.mad at `--std=c++20` advances PAST `contains`
+to a NEW wall: `testmap.mad:141 "Expecting type in using alias"` (a template
+using-alias in the contains/ranges region; throw parser.cpp:19815). fulltest 648/5.
+
+**IMPORTANT — the 791/817 "Expecting integer constant expression" messages are
+RECOVERED SOFT ERRORS, not blockers.** capture_constant_initializer_value catches
+the throw and TokenCLASS::parse structurally skips the unfoldable
+`numeric_limits<__max_size_type>::digits10 = static_cast<int>(digits * numbers::ln2
+/ numbers::ln10)` initializer; the message LEAKS to stderr (Throw prints before the
+catch) but the parse CONTINUES. So the FP-constexpr wall (Update 15) is NOT on the
+critical path — do not spend effort folding it; optionally suppress the leaked
+message later (cosmetic). The earlier Update-14/15 framing of 791 as the blocker was
+superseded by running map to completion: the real hard blocker was `__range_iter_t`
+(fix 10), now cleared.
+
+**To actually PASS testmap/testset:** they need `--std=c++20` (for `contains`), so
+once the cascade fully clears (current frontier: the using-alias wall at line 141,
+then map's own instantiation with contains), add a `tests/testmap.flags` /
+`testset.flags` = `--std=c++20` fixture. NEXT: gdb the testmap.mad:141 "Expecting
+type in using alias" throw (parser.cpp:19815) for the real header:line + construct,
+reduce, fix, continue.
+
+
 ## Update 15 — Wall C cascade: 9 fixes landed (fix 9 = var-template in constant ctx)
 
 **Fix 9 (97eef98)** — variable-template use in a CONSTANT expression. The
