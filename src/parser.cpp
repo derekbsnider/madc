@@ -2969,14 +2969,25 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // `__result_of_impl`), bounded by variadic_inst_in_progress (set below).
     bool pack_real_inst = (allow_variadic_real_inst || variadic_real_inst_sticky)
 		       && template_pack_real_instantiable(td);
+    // While resolving a member-TYPE chain (allow/sticky), a PRIMARY with non-type
+    // params (`__result_of_impl<bool,bool,typename,typename...>`) is itself opaque
+    // (template_pack_real_instantiable rejects non-type params), but a PARTIAL SPEC
+    // of it (`__result_of_impl<false,false,_Functor,_ArgTypes...>` — bools concrete,
+    // own params type+pack) IS real-instantiable and carries the meaningful body
+    // (`typedef decltype(_S_test<...>(0)) type;`). Defer the opaque bail so the
+    // partial-spec match below can run and swap to that spec; if none matches, the
+    // primary's empty body falls back to the opaque placeholder downstream (3287).
+    bool try_spec_real_inst = (allow_variadic_real_inst || variadic_real_inst_sticky)
+			   && partial_spec_map.count(tname);
     allow_variadic_real_inst = false;
     // When this real-instantiation forwards through a dependent-member base
     // (`: Base<...>::type`), keep real-instantiation on for the nested base/arg
     // resolution during its re-parse so the whole forwarding trait chain folds.
     bool want_sticky = pack_real_inst && template_base_is_dependent_member(td);
-    if ( template_has_parameter_pack(td.typeparam_is_pack) && !pack_real_inst )
+    if ( template_has_parameter_pack(td.typeparam_is_pack) && !pack_real_inst
+      && !try_spec_real_inst )
 	return instantiate_opaque_template_use(td, tname, tb);
-    if ( td.has_non_type_params && td.body.empty() )
+    if ( td.has_non_type_params && td.body.empty() && !try_spec_real_inst )
 	return instantiate_opaque_template_use(td, tname, tb);
 
     // Parse `< Arg [, Arg ...] >`, resolving type parameters as DataDefs and
