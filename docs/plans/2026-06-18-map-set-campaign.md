@@ -1546,3 +1546,62 @@ as a standalone diagnostics improvement.
 
 Reducers live in `tmp/`: `map_min2.mad`, `set_min.mad`, `var_obj.mad`,
 `memtypedef2.mad` (variadic member-typedef arg), `tup_direct.mad`.
+
+---
+
+## Update 30 (2026-06-18) — Wall B CLEARED (`__is_invocable`) + `__is_pod` builtin added; map/set now blocked on a C++20-header wall set
+
+Three deepest-layer fixes this session (all root-caused via probes on the REAL
+`<type_traits>`/`<map>` parse, gcc-verified, fulltest + torture-failset clean):
+
+1. **`4da86a0` — partial-spec matching absorbs a trailing parameter pack.**
+   `match_partial_specialization` arity-gated on `spec_pattern.size() ==
+   arg_spellings.size()`, wrong when the LAST pattern slot is a pack (`_Types...`).
+   `__result_of_impl<false,false,_Functor,_ArgTypes...>` (4 slots) vs the concrete
+   `<false,false,Cmp*,int*,int*>` (5 args) was arity-rejected → fell to the primary
+   `typedef __failure_type type;` → `__invoke_result` had no `::type` → `__is_invocable`
+   false. Fix: detect a trailing pack slot, relax the gate to `arg_arity >= fixed`,
+   match only the fixed leading slots, absorb the tail into `pack_ded` (consumed by
+   the existing `spec_pack_subst -> pack_subst` body expansion).
+
+2. **`14bdc63` — `resolve_arg_spelling_datadef` resolves `T*`/`T&` pack elements.**
+   The absorbed pack element spelling `"int32_t*"` resolved to NULL (the fn only
+   matched a bare name, else required `<`), so `pack_subst` collapsed to empty, the
+   class body DROPPED `_ArgTypes...`, and `_S_test<Cmp*>(0)` called the comparator's
+   `operator()` with ZERO args ("expected 3 got 1"). Fix: peel trailing `*`/`&`/`&&`
+   + leading cv, resolve the core, re-apply ptr/ref. `tests/testinvocable.mad` added.
+
+   Net: `__is_invocable<F, Args...>` folds true for a callable functor (`Cmp`,
+   `std::less<int>`, `std::less<string>` all verified). **Wall B is cleared.**
+
+3. **`90ad946` — `__is_pod` / `__is_standard_layout` builtin type traits.**
+   `_Rb_tree_impl`'s defaulted `bool = __is_pod(_Key_compare)` (stl_tree.h:660)
+   threw "Expecting integer constant expression" → `_Rb_tree` incomplete → `_S_key`
+   undeclared. Added a faithful `trait_is_standard_layout` (uses the already-tracked
+   `member_access` + `BaseSpec::is_virtual`) and `trait_is_pod = trivial &&
+   standard_layout`. gcc-verified. `tests/testispod.mad` added.
+
+fulltest **655/5/0/18** (the two new tests pass), torture failset **51 unchanged**.
+
+### REMAINING walls for `map<int,int>` at `--std=c++20 --no-embedded-headers`
+Pinned via the WB-const probe on the real parse; these are DISTINCT C++20-header
+walls beyond Wall B (the campaign at c++20 drags in the whole C++20 ranges support):
+
+- **`numbers`/`digits` const-fold (`bits/max_size_type.h:802-804`).** `static
+  constexpr int digits = numeric_limits<_Sp>::digits - 1;` and `digits10 = ... *
+  numbers::ln2 / numbers::ln10` — madc's constant evaluator can't fold
+  `std::numbers::ln2` (constexpr var template) or `numeric_limits<>::digits` in
+  these specializations for `ranges::__detail::__max_size_type/__max_diff_type`.
+- **Non-fn-ptr parenthesized member declarator** (`parser.cpp:21905` /
+  `24730`): a struct member `Type (name)...` whose inner token isn't `*` is
+  rejected; some C++20 header member uses this shape.
+- **`__detail::…` / `is_object` / `__assignable` in constant context** (iterator
+  concepts, stl_iterator.h:141, tuple:746) — concept/requires constant evaluation.
+- **NEGATIVE-case `__is_invocable` (correctness, does NOT block map/set since
+  comparators are always callable):** `__is_invocable<NonCallable, …>` wrongly
+  folds TRUE — the `_S_test(int)` decltype must SFINAE-fail (ill-formed call) and
+  fall to `_S_test(...)` → `__failure_type`. Needs proper SFINAE on member-template
+  decltype-overload fallback. Reducer `tmp/nocall.mad`.
+
+Reducers (run with `--std=c++20 --no-embedded-headers`): `tmp/invoc2.mad`
+(now compiles), `tmp/invocless.mad`, `tmp/mapii.mad`, `tmp/podtest.mad`.
