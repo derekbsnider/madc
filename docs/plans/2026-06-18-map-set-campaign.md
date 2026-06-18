@@ -1,12 +1,69 @@
 # map / set bring-up campaign — diagnosis & plan
 
 **Status:** IN PROGRESS — std::tuple + A3.2 + multi-element packs + reference data
-members done; Wall B (`__is_invocable`) underway — 2 of its layers fixed
-(`integral_constant{}` fold; explicit-pack `_S_test` return type); ROOT CAUSE of
-the remaining FALSE fold now pinned ON THE REAL CHAIN (Update 8): `__invoke_result`
-instantiates as an empty opaque shell, its dependent-member base-specifier never
-resolved → `_Result::type` absent → false_type. 3 ordered sub-walls remain; map's
-`_S_key` still blocked; contains (C) still remains (2026-06-18)
+members done; Wall B (`__is_invocable`) underway — 3 layers fixed
+(`integral_constant{}` fold; explicit-pack `_S_test` return type; **sub-wall 1
+b0574ff — dependent-member-base forwarding traits now real-instantiate**). NEXT =
+sub-wall 3 (Update 9), pinned to parser.cpp:~2970: `__result_of_impl` (non-type
+`bool` params) bails to opaque before its partial spec's `decltype(_S_test<...>(0))
+type` member can compute, leaving `::type` to derail `__invoke_result`'s re-parse.
+map's `_S_key` still blocked; contains (C) still remains (2026-06-18)
+
+## Update 9 — Wall B sub-wall 1 LANDED (b0574ff); sub-wall 3 pinned at code level
+
+**Sub-wall 1 DONE — commit `b0574ff`, fulltest 641/5 zero regression.** Variadic
+forwarding traits whose meaning flows through a dependent-member base-specifier
+(`__invoke_result : __result_of_impl<...>::type`, `__is_invocable :
+__is_invocable_impl<...>::type`) now real-instantiate. Mechanism: a STICKY variant
+of `allow_variadic_real_inst` (`variadic_real_inst_sticky`) that survives the
+per-entry clear at instantiate_template_use and propagates real-instantiation
+through the forwarding chain, turned on ONLY for templates whose base IS a
+`...>::member` (`template_base_is_dependent_member` — cleanly excludes the
+recursive `tuple : _Tuple_impl<...>` / `__and_ : conditional_t<...>` bases), bounded
+by a `variadic_inst_in_progress` cycle guard (RAII around the class re-parse).
+Verified via gdb on the real chain: `__is_invocable` → base `__is_invocable_impl<
+__invoke_result<...>, void>::type` → arg `__invoke_result<Cmp&,...>` now
+real-instantiates (frame 4) instead of going opaque.
+
+**NEXT = sub-wall 3, pinned to ONE line.** `__invoke_result`'s body re-parse now
+throws "Expecting identifier after type" at type_traits:2583 (`>::type`). gdb:
+`parseDeclaration` is reached with the offending token = **`tkNS` (`::`)** — the
+`::type` of `__invoke_result`'s base `: public __result_of_impl<...>::type` was
+left UNCONSUMED, so it derails the class re-parse (TokenCLASS::parse takes the
+"tag already a known type → parseDeclaration" branch at parser.cpp:~23033, then
+chokes on the leading `::`). ROOT: `__result_of_impl<...>` resolves to an OPAQUE
+placeholder with no `type` member, so `resolve_declared_type_token` can't consume
+`::type`.
+
+WHY `__result_of_impl` goes opaque (the exact code site): its PRIMARY
+`template<bool,bool,typename,typename...> struct __result_of_impl;` has NON-TYPE
+(`bool`) params, so `template_pack_real_instantiable` returns false ("every
+parameter must be a type parameter"), and instantiate_template_use bails to
+`instantiate_opaque_template_use` at **parser.cpp:~2970**
+(`template_has_parameter_pack && !pack_real_inst`) — BEFORE the partial-spec match
+at parser.cpp:~3217 can run. So it never reaches its partial spec
+`__result_of_impl<false,false,_Functor,_ArgTypes...>` (whose own params ARE
+type+pack and IS real-instantiable) and never computes that spec's
+`typedef decltype(_S_test<_Functor,_ArgTypes...>(0)) type;`.
+
+Sub-wall 3 fix (two parts, each its own commit + fulltest, sticky-scoped):
+- **3a — reach the partial spec:** under sticky (member-type context), do NOT bail
+  to opaque at ~2970 solely because the PRIMARY has non-type params; let the
+  partial-spec match at ~3217 run, and if a matched spec is itself
+  real-instantiable (type params + trailing pack, the bools concrete in the
+  pattern), proceed to real body parse. Scope tightly (sticky only) to protect
+  testsstream / the trait fold paths.
+- **3b — compute the member typedef:** the matched spec body's
+  `typedef decltype(_S_test<_Functor, _ArgTypes...>(0)) type;` needs the
+  explicit-pack expansion inside a CLASS-template member typedef + the
+  `_S_test(int)` / `_S_test(...)` int-vs-ellipsis SFINAE overload selection
+  (sibling of the aeec6a9 return-type fix, on the member-typedef path). Yields
+  `__result_of_success<bool>` → `__success_type<bool>` → `type=bool`.
+Then `__invoke_result` inherits `type=bool`; `__void_t` detection succeeds;
+`__is_invocable` true; `_S_key` registers; map (static_assert) + set (insert
+overload resolution) advance. Reducer: `tmp/invoc2.mad` (re-add the fprintf probes
+in eval_void_t_detection_slot + instantiate_template_use to watch each layer flip);
+gdb breakpoint at the parseDeclaration throw confirms the `::`-derail.
 
 ## Update 8 — Wall B ROOT CAUSE confirmed ON THE REAL CHAIN (instrumented, not reduced)
 
