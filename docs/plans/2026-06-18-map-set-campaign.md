@@ -1,5 +1,55 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 18 — CONCEPT EVALUATOR LANDED (structural arm + requires-expr); cascade advanced past iterator_concept
+
+Both halves of the C++20 concept-satisfaction evaluator are committed and the
+`reverse_iterator::iterator_concept` wall (the Update-16/17 frontier) is CLEARED:
+
+- **Structural arm** (`ad2fe83`) — concept-id `Name<Args>` used as a non-type
+  bool folds to 0/1 in `parse_constant_primary`: substitute args into the stored
+  `concept_map` constraint, fold recursively in an isolated stream. Nested
+  concept-ids recurse; trait atoms (`derived_from`→`__is_base_of`,
+  `same_as`→`__is_same`, `__is_*`) fold via existing paths; `&&`/`||`
+  short-circuit. Test `testconcepteval`.
+- **requires-expression arm** (THIS commit) — `evaluate_requires_expression_constant`
+  + `constraint_expression_well_formed`. Each parameter is modeled as
+  `std::declval<Type&>()` substituted into the requirement bodies; a requirement
+  is satisfied iff its expression/type/constraint is WELL-FORMED (checked via
+  `parseExpression` in unevaluated context). Handles all four requirement kinds
+  (simple, type, compound `{E}->C`, nested `requires CE`). Test
+  `testrequiresexpr`.
+
+**Verified on the REAL chain (CE_DIAG/UA instrumentation, since removed):**
+`random_access_iterator<map_iter>` folds to **0** (correct — false via the
+strict `derived_from<__iter_concept, random_access_iterator_tag>` conjunct),
+WITHOUT throwing, and `using iterator_concept = __conditional_t<…>` now
+resolves. The diag trace showed `iterator_concept`/`iterator_category`/`type`/
+`value_type`/… all resolving on the first reverse_iterator instantiation.
+
+**KNOWN LIMITATION (documented, NOT a shim):** the requires-expression
+well-formedness check is only as strict as madc's underlying expression/type
+resolver, which currently OVER-ACCEPTS two cases: (a) operators on a class that
+lacks them (`++x` on a type with no `operator++` does not error — verified
+`tmp/incr_check.mad`), and (b) a nonexistent nested member type
+(`typename NoFoo::kind` resolves non-NULL). Member-CALL requirements ARE strict
+(`x.foo()` correctly fails on a type without `foo` — `testrequiresexpr` asserts
+both directions). For the map/set goal this over-acceptance is benign: the
+iterator concepts' decisive conjunct is the strict `derived_from`/`__is_base_of`,
+so `random_access_iterator<map_iter>` folds false regardless of the (lenient)
+requires values. Tightening the resolver (reject operators/member-types that
+don't exist) is a separate follow-up, tracked here — it would make concept
+satisfaction fully precise but is orthogonal to map/set.
+
+**NEW FRONTIER (gdb/UA diag, this session): `using value_type = iter_value_t
+<_Iterator>` resolved=0** on a second reverse_iterator instantiation — i.e.
+`iter_value_t<_Iterator>` (bits/iterator_concepts.h) does not resolve for that
+iterator. This is an ALIAS-TEMPLATE resolution gap (iter_value_t dispatches via
+`indirectly_readable_traits` / `iterator_traits`), NOT a concept-eval gap. NEXT:
+reduce `iter_value_t<It>` for the failing iterator (gdb which `_Iterator`), find
+why the alias-template/its traits don't resolve, fix that bounded gap, continue
+the cascade. Then `tests/testmap.flags`/`testset.flags` = `--std=c++20` once the
+cascade fully clears.
+
 ## Update 17 — concept evaluator DESIGNED + verified; storage foundation committed
 
 Concept storage committed (5fcb35e): madc now captures each concept's constraint

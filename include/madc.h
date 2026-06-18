@@ -2227,6 +2227,21 @@ public:
     void skip_const_logical_operand(bool stop_at_and);
     int64_t parse_constant_ternary();
     int64_t parse_constant_integer_expression();
+    // C++20 requires-expression evaluation (`requires` already consumed by the
+    // caller): parse the optional `(param-list)` then `{ requirement-seq }`,
+    // and return 1 iff every requirement is satisfied. Params are modeled as
+    // `std::declval<Type&>()` values substituted into each requirement; a
+    // requirement's expression is checked WELL-FORMED via parseExpression in
+    // unevaluated context (constraint_expression_well_formed). Used by the
+    // `requires` arm of parse_constant_primary so concept constraints that
+    // contain requires-expressions fold to a constant.
+    int64_t evaluate_requires_expression_constant();
+    // True iff `exprtoks` resolves as a well-formed expression in unevaluated
+    // (decltype-like) context. On success, *out_type (if non-NULL) receives the
+    // expression's DataDef. Isolated stream + muted diagnostics: a SFINAE-style
+    // miss leaves no error trail.
+    bool constraint_expression_well_formed(const std::vector<TokenBase *> &exprtoks,
+					   DataDef **out_type = NULL);
     // `if constexpr` support (C++17 [stmt.if]/2). The stream is positioned just
     // AFTER the condition's `(`; collect the balanced condition tokens (consuming
     // the matching `)`) and fold them to a constant. Returns true + value on a

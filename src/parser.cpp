@@ -6963,6 +6963,11 @@ int64_t Program::parse_constant_primary()
 	    return 0;
 	if ( is_named_cpp_cast(name) )
 	    return parse_constant_named_cpp_cast(tb, name);
+	// C++20 requires-EXPRESSION as a constraint atom (e.g. inside a concept's
+	// constraint `... && requires(_Iter __i) { ++__i; }`). `requires` is already
+	// consumed (it is `tb`); evaluate the requirement-seq's well-formedness.
+	if ( name == "requires" )
+	    return evaluate_requires_expression_constant();
 	// C++14 VARIABLE TEMPLATE in a constant expression: `is_floating_point_v
 	// <double>` (a non-type bool arg — e.g. enable_if's condition in
 	// std::numbers). Substitute the type args into the initializer tokens and
@@ -15005,6 +15010,322 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
 	last_error = saved_error;
     }
     return ok;
+}
+
+// True iff `exprtoks` resolves as a well-formed expression in unevaluated
+// (decltype-like) context. The unevaluated depth suppresses body instantiation
+// (so an ODR-unevaluated call is not compiled), and diagnostics are muted +
+// rewound so a SFINAE-style miss leaves no error trail. On success, *out_type
+// (if non-NULL) receives the expression's DataDef. Isolated stream (same idiom
+// as fold_nontype_arg_constant).
+bool Program::constraint_expression_well_formed(
+	const std::vector<TokenBase *> &exprtoks, DataDef **out_type)
+{
+    if ( out_type )
+	*out_type = NULL;
+    if ( exprtoks.empty() )
+	return false;
+    std::deque<TokenBase *> saved_tokens = tokens;
+    size_t saved_diag_count = diagnostics.size();
+    Program::ErrorInfo saved_error = last_error;
+    std::deque<TokenBase *> body;
+    for ( TokenBase *t : exprtoks )
+	if ( t )
+	    body.push_back(t->clone());
+    body.push_back(new TokenSemi());
+    tokens = body;
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(&g_madc_null_streambuf);
+    ++unevaluated_operand_depth;
+    bool ok = false;
+    try
+    {
+	TokenBase *e = parseExpression(nextToken(), true);
+	DataDef *dd = e ? e->datadef() : NULL;
+	if ( dd )
+	{
+	    ok = true;
+	    if ( out_type )
+		*out_type = dd;
+	}
+    }
+    catch ( ... ) { ok = false; }
+    --unevaluated_operand_depth;
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
+    tokens = saved_tokens;
+    if ( !ok )
+    {
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
+    }
+    return ok;
+}
+
+// C++20 requires-expression evaluation (`requires` already consumed). Grammar:
+// `requires [(param-list)] { requirement-seq }`. Returns 1 iff EVERY requirement
+// is satisfied. Each parameter is modeled as a `std::declval<Type&>()` value
+// substituted into the requirement bodies (a named param — by value or by ref —
+// is an lvalue, hence `Type&`); the param/concept type args are already concrete
+// here (the structural concept arm substituted them before folding). Requirement
+// kinds:
+//   simple    `E ;`                     — E must be well-formed.
+//   type      `typename T ;`            — T must name a valid type.
+//   compound  `{ E } [noexcept] [-> C] ;` — E well-formed, and (if present) the
+//                                          return-type-constraint C<decltype(E)>.
+//   nested    `requires CE ;`           — CE folds to a non-zero constant.
+// The noexcept-specifier is not modeled (madc does not track noexcept-ness); it
+// is skipped — only over-accepting a well-formed-but-throwing expression, which
+// does not arise on the iterator/comparison concept paths this serves.
+int64_t Program::evaluate_requires_expression_constant()
+{
+    std::map<std::string, std::vector<TokenBase *> > psubst;
+
+    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+    {
+	nextToken(); // '('
+	std::vector<TokenBase *> plist;
+	int d = 1;
+	while ( peekToken() )
+	{
+	    TokenID id = (TokenID)peekToken()->id();
+	    if ( id == TokenID::tkOpBrk ) ++d;
+	    else if ( id == TokenID::tkClBrk )
+	    { if ( --d == 0 ) { nextToken(); break; } }
+	    plist.push_back(nextToken());
+	}
+	// Split the param-list by top-level commas, build each declval subst.
+	std::vector<std::vector<TokenBase *> > params;
+	{
+	    std::vector<TokenBase *> cur;
+	    int cd = 0;
+	    for ( TokenBase *t : plist )
+	    {
+		TokenID id = (TokenID)t->id();
+		if ( cd == 0 && id == TokenID::tkComma )
+		{ params.push_back(cur); cur.clear(); continue; }
+		if ( id == TokenID::tkOpBrk || id == TokenID::tkOpSqr
+		  || id == TokenID::tkLT )
+		    ++cd;
+		else if ( id == TokenID::tkClBrk || id == TokenID::tkClSqr
+		       || id == TokenID::tkGT )
+		{ if ( cd > 0 ) --cd; }
+		cur.push_back(t);
+	    }
+	    if ( !cur.empty() )
+		params.push_back(cur);
+	}
+	for ( std::vector<TokenBase *> &p : params )
+	{
+	    int name_idx = -1;
+	    for ( int i = (int)p.size() - 1; i >= 0; --i )
+		if ( p[i] && p[i]->type() == TokenType::ttIdentifier )
+		{ name_idx = i; break; }
+	    if ( name_idx < 1 )
+		continue;   // need a type before the name
+	    std::string pname = ((TokenIdent *)p[name_idx])->str;
+	    bool has_ref = false;
+	    std::vector<TokenBase *> dv;
+	    dv.push_back(new TokenIdent("std"));
+	    dv.push_back(new TokenNS());
+	    dv.push_back(new TokenIdent("declval"));
+	    dv.push_back(new TokenLT());
+	    for ( int i = 0; i < name_idx; ++i )
+	    {
+		dv.push_back(p[i]->clone());
+		if ( p[i]->id() == TokenID::tkBand
+		  || p[i]->id() == TokenID::tkLand )
+		    has_ref = true;
+	    }
+	    if ( !has_ref )
+		dv.push_back(new TokenBand());   // lvalue param -> Type&
+	    dv.push_back(new TokenGT());
+	    dv.push_back(new TokenOpBrk());
+	    dv.push_back(new TokenClBrk());
+	    psubst[pname] = dv;
+	}
+    }
+
+    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrc )
+	Throw(peekToken()) << "Expecting '{' in requires-expression" << flush;
+    nextToken(); // '{'
+
+    // Replace each param-name identifier with its declval token sequence.
+    auto subst = [&](const std::vector<TokenBase *> &src) {
+	std::vector<TokenBase *> out;
+	for ( TokenBase *t : src )
+	{
+	    if ( t && t->type() == TokenType::ttIdentifier )
+	    {
+		std::map<std::string, std::vector<TokenBase *> >::iterator si =
+		    psubst.find(((TokenIdent *)t)->str);
+		if ( si != psubst.end() )
+		{
+		    for ( TokenBase *r : si->second )
+			out.push_back(r->clone());
+		    continue;
+		}
+	    }
+	    out.push_back(t ? t->clone() : NULL);
+	}
+	return out;
+    };
+    // Fold a token sequence as an integer-constant-expression in isolation.
+    auto fold_isolated = [&](const std::vector<TokenBase *> &toks) -> int64_t {
+	if ( toks.empty() )
+	    return 0;
+	std::deque<TokenBase *> saved = tokens;
+	size_t sd = diagnostics.size();
+	Program::ErrorInfo se = last_error;
+	std::deque<TokenBase *> body;
+	for ( TokenBase *t : toks )
+	    if ( t )
+		body.push_back(t->clone());
+	body.push_back(new TokenSemi());
+	tokens = body;
+	std::streambuf *sc = std::cerr.rdbuf();
+	std::ios::iostate ss = std::cerr.rdstate();
+	std::cerr.rdbuf(&g_madc_null_streambuf);
+	int64_t v = 0;
+	bool ok = false;
+	try { v = parse_constant_integer_expression(); ok = true; }
+	catch ( ... ) { ok = false; }
+	std::cerr.rdbuf(sc);
+	std::cerr.clear(ss);
+	tokens = saved;
+	if ( !ok )
+	{ diagnostics.resize(sd); last_error = se; }
+	return ok ? v : 0;
+    };
+    // True iff the type-token sequence names a resolvable type.
+    auto type_resolves = [&](const std::vector<TokenBase *> &ty) -> bool {
+	if ( ty.empty() )
+	    return false;
+	std::deque<TokenBase *> saved = tokens;
+	size_t sd = diagnostics.size();
+	Program::ErrorInfo se = last_error;
+	std::deque<TokenBase *> body;
+	for ( TokenBase *t : ty )
+	    if ( t )
+		body.push_back(t->clone());
+	body.push_back(new TokenSemi());
+	tokens = body;
+	std::streambuf *sc = std::cerr.rdbuf();
+	std::ios::iostate ss = std::cerr.rdstate();
+	std::cerr.rdbuf(&g_madc_null_streambuf);
+	bool ok = false;
+	try
+	{
+	    TokenDataType *t = resolve_declared_type_token(nextToken(), true, true);
+	    ok = ( t != NULL );
+	}
+	catch ( ... ) { ok = false; }
+	std::cerr.rdbuf(sc);
+	std::cerr.clear(ss);
+	tokens = saved;
+	if ( !ok )
+	{ diagnostics.resize(sd); last_error = se; }
+	return ok;
+    };
+
+    bool satisfied = true;
+    while ( peekToken() && peekToken()->id() != TokenID::tkClBrc )
+    {
+	// Collect one requirement up to its terminating ';' (depth 0 over ()[]{}).
+	std::vector<TokenBase *> req;
+	int d = 0;
+	while ( peekToken() )
+	{
+	    TokenID id = (TokenID)peekToken()->id();
+	    if ( d == 0 && id == TokenID::tkSemi ) { nextToken(); break; }
+	    if ( d == 0 && id == TokenID::tkClBrc ) break;
+	    if ( id == TokenID::tkOpBrk || id == TokenID::tkOpSqr
+	      || id == TokenID::tkOpBrc )
+		++d;
+	    else if ( id == TokenID::tkClBrk || id == TokenID::tkClSqr
+		   || id == TokenID::tkClBrc )
+	    { if ( d > 0 ) --d; }
+	    req.push_back(nextToken());
+	}
+	if ( req.empty() )
+	    continue;
+	bool holds = true;
+	TokenBase *first = req[0];
+	if ( is_contextual_identifier_token(first)
+	  && contextual_identifier_name(first) == "requires" )
+	{
+	    std::vector<TokenBase *> c(req.begin() + 1, req.end());
+	    holds = fold_isolated(subst(c)) != 0;
+	}
+	else if ( is_contextual_identifier_token(first)
+	       && contextual_identifier_name(first) == "typename" )
+	{
+	    std::vector<TokenBase *> ty(req.begin() + 1, req.end());
+	    holds = type_resolves(subst(ty));
+	}
+	else if ( first->id() == TokenID::tkOpBrc )
+	{
+	    int bd = 0; size_t close = 0;
+	    for ( size_t i = 0; i < req.size(); ++i )
+	    {
+		if ( req[i]->id() == TokenID::tkOpBrc ) ++bd;
+		else if ( req[i]->id() == TokenID::tkClBrc )
+		{ if ( --bd == 0 ) { close = i; break; } }
+	    }
+	    std::vector<TokenBase *> expr(req.begin() + 1, req.begin() + close);
+	    DataDef *rt = NULL;
+	    holds = constraint_expression_well_formed(subst(expr), &rt);
+	    // Optional `[noexcept] [-> type-constraint]` after the '}'.
+	    size_t k = close + 1;
+	    if ( holds && k < req.size() && is_contextual_identifier_token(req[k])
+	      && contextual_identifier_name(req[k]) == "noexcept" )
+		++k;
+	    if ( holds && rt && k + 1 < req.size()
+	      && req[k]->id() == TokenID::tkDeRef )
+	    {
+		// `{E} -> C<A...>` means `C<decltype((E)), A...>`. Splice the
+		// deduced type as the first concept argument and fold.
+		std::vector<TokenBase *> cc(req.begin() + k + 1, req.end());
+		TokenDataType *rtt = new TokenDataType(rt->name.c_str(), *rt);
+		std::vector<TokenBase *> cid;
+		size_t lt = cc.size();
+		for ( size_t i = 0; i < cc.size(); ++i )
+		    if ( cc[i]->id() == TokenID::tkLT ) { lt = i; break; }
+		if ( lt < cc.size() )
+		{
+		    // C<A...> -> C< rt, A... >
+		    for ( size_t i = 0; i <= lt; ++i )
+			cid.push_back(cc[i]->clone());
+		    cid.push_back(rtt);
+		    if ( lt + 1 < cc.size()
+		      && cc[lt + 1]->id() != TokenID::tkGT )
+			cid.push_back(new TokenComma());
+		    for ( size_t i = lt + 1; i < cc.size(); ++i )
+			cid.push_back(cc[i]->clone());
+		}
+		else
+		{
+		    // bare `C` -> C< rt >
+		    for ( TokenBase *t : cc )
+			cid.push_back(t->clone());
+		    cid.push_back(new TokenLT());
+		    cid.push_back(rtt);
+		    cid.push_back(new TokenGT());
+		}
+		holds = fold_isolated(cid) != 0;
+	    }
+	}
+	else
+	{
+	    holds = constraint_expression_well_formed(subst(req));
+	}
+	if ( !holds )
+	    satisfied = false;   // keep consuming to reach '}'
+    }
+    if ( peekToken() && peekToken()->id() == TokenID::tkClBrc )
+	nextToken(); // '}'
+    return satisfied ? 1 : 0;
 }
 
 std::string Program::canonical_arg_key_fragment(
