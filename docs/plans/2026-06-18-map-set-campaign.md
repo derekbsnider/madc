@@ -93,6 +93,26 @@ compute `::type`, hence `__is_invocable` TRUE, hence _S_key registers and both m
 resolution feature; its own focused effort. (Note: distinct from the deduced-pack
 work already done — here the pack is EXPLICIT in the template-id.)
 
+#### EXACT MECHANISM (traced via SF-DIAG fprintf at the throw, parser.cpp:12653)
+The "expected 3 got 2" is thrown on **`Cmp__operator()`** (nparams=3 = hidden
+`this` + 2 declared, argc=**1**) — NOT on `test`. So `test<Cmp&, const int&, const
+int&>`'s return-type expression `success<decltype(declval<F>()(declval<A>()...))>`
+instantiated with the EXPLICIT pack `A...={const int&, const int&}`, but
+`declval<A>()...` expanded to only **ONE** argument, so the synthesized call
+`declval<Cmp&>()(declval<const int&>())` hit `Cmp::operator()` with 1 arg vs 2.
+ROOT: **explicit template arguments that fill a trailing parameter pack are not
+distributed to the pack.** `test<Cmp&, const int&, const int&>` binds `F=Cmp&` but
+leaves `A` with ≤1 element. (`try_instantiate_namespace_fn_template`'s explicit-arg
+block at parser.cpp:~28509 even REJECTS `explicit_template_args.size() > nonpack`
+at 28507 — but `test` here is resolved via the decltype return-type path, NOT
+try_instantiate, so the fix must reach wherever explicit template args bind to a
+function template's params for return-type/signature computation —
+`resolve_member_template_call_return_type` (parser.cpp:8897) and the explicit-
+template-id instantiation, distributing args beyond the leading non-pack params
+into the pack — mirroring the DEDUCED-pack `pack_elems` distribution already done
+for call args). This is the single concrete fix that unblocks `__invoke_result` →
+`__is_invocable` → both containers. Reducer: tmp/sfinae_ovl.mad (15 lines).
+
 ---
 
 ## Update 4 — multi-element parameter packs DONE (commit 1bbb5b8)
