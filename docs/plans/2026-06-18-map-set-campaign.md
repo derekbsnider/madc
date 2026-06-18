@@ -27,6 +27,19 @@ qualified-alias-template-id arg parsing mishandles a `typename X::Y` argument
 where arg collection stops early, fix. Also still: 1× recovered "undeclared std"
 leak at :141 (cosmetic, parse continues).
 
+UPDATE (reduction tried): the SIMPLE form does NOT reproduce — `tmp/qta.mad`
+(`foo::clamp<typename __traits_type::iterator_category, long>` with
+`__traits_type` a DIRECT typedef to a concrete struct) PASSES. So the wall is
+specific to the REAL chain where `__traits_type = iterator_traits<_Iterator>`
+(a typedef to a TEMPLATE-ID), i.e. `typename iterator_traits<_It>::
+iterator_category` as the alias arg — the qualified member off a template-id
+typedef, likely through the iter_traits selection. Bare `typename Concrete::m`
+works; the gap is `typename (template-id typedef)::m` as a qualified-alias-tmpl
+ARG. NEXT: gdb the real `iterator_category` using-alias resolution (break
+parser.cpp:20318 "Expecting ';' after using alias", inspect what
+resolve_declared_type_token consumed and why it stopped at the inner `::`), or
+build a closer reducer with `__traits_type = some_traits<X>` (template-id typedef).
+
 ## Update 20 — ROOT CAUSE of the current frontier: partial-spec `requires`-constraint is ignored
 
 The Update-19 frontier (`tmp/ic4.mad`) is now root-caused precisely
