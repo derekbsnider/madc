@@ -23985,6 +23985,15 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
 	// expect member name — may be an identifier or 'operator' keyword
 	tn = pgm.nextToken();
+	// A no-op decl-specifier (constexpr/consteval/constinit/inline) may appear
+	// AFTER the return type, before the member name — the decl-specifier-seq is
+	// unordered, so `void constexpr operator=(...)` is valid (uses_allocator.h:81
+	// `struct _Sink { void _GLIBCXX20_CONSTEXPR operator=(const void*){} } _M_a;`).
+	// Skip such specifiers to reach the real name/operator-id.
+	while ( tn && (is_ignored_cpp_specifier_token(tn)
+		    || (is_contextual_identifier_token(tn)
+		     && contextual_identifier_name(tn) == "inline")) )
+	    tn = pgm.nextToken();
 	std::string mname;
 	bool is_operator_method = (tn->id() == TokenID::tkOPEROVER);
 	if ( tn->id() == TokenID::tkOPEROVER )
