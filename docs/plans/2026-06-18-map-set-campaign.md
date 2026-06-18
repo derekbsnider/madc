@@ -1,9 +1,43 @@
 # map / set bring-up campaign — diagnosis & plan
 
 **Status:** IN PROGRESS — std::tuple + A3.2 + multi-element packs + reference data
-members done; map `operator[]` now reaches **Wall B (`__is_invocable`)** via
-`_Rb_tree::_S_key`'s static_assert (the same trait set::insert needs); contains
-(C) still remains (2026-06-18)
+members done; Wall B (`__is_invocable`) underway — 2 of its layers fixed
+(`integral_constant{}` fold; explicit-pack `_S_test` return type), more nested
+layers remain; map's `_S_key` still blocked; contains (C) still remains
+(2026-06-18)
+
+## Update 7 — Wall B: 2 layers fixed; remaining layers mapped
+
+`__is_invocable` is a DEEP NESTED trait; this session fixed two of its layers
+(each general + tested + zero-regression):
+- **`integral_constant{}` fold** (659752e) — `Trait{}`→`value` in constant context.
+- **explicit-pack `_S_test` return type** (aeec6a9) — explicit template args fill a
+  trailing pack; `pattern...` in a member-template return type expands per element.
+  `resolve_member_template_call_return_type`. Test `testexplicitpack.mad`. 641/5.
+
+`__is_invocable<Cmp&,...>{}` still folds to **false** → map's `_S_key` still
+"undeclared". REMAINING `__is_invocable` layers (each a distinct sub-wall, work
+in-to-out from the reducers in `tmp/`):
+1. **`__result_of_impl` member-typedef pack expansion** — `template<typename _Fn,
+   typename..._ArgTypes> struct __result_of_impl<false,false,...> { typedef
+   decltype(_S_test<_Functor,_ArgTypes...>(0)) type; };`. The pack `_ArgTypes...`
+   must expand inside the `_S_test<...>` template-id of a CLASS-template member
+   typedef (the clone-loop / class-instantiation path — distinct from the
+   return-type path just fixed). Reducer: build `tmp/resimpl.mad` faithfully with a
+   `typedef decltype(tester::test<Fn,Args...>(0)) type;` inside a class template
+   (NOT `using R = X<...>::type`, which hits a separate using-alias `::member`
+   parse gap — a reducer artifact, NOT on the real chain which uses typedef +
+   `__void_t<typename _Result::type>` detection).
+2. **`__is_invocable_impl` `__void_t` selection** — `__is_invocable_impl<_Result,
+   void, true, __void_t<typename _Result::type>> : true_type`. madc HAS `__void_t`
+   detection (iterator_traits); verify it selects the true_type partial spec once
+   `_Result::type` (from layer 1) exists.
+3. **`__invoke_result`/`__is_invocable` wrappers** — thin inheriting structs; should
+   fall out once 1+2 work.
+Then `_S_key`'s static_assert is true → `_S_key` registers → both map (static_
+assert) and set::insert (overload resolution) advance. After Wall B: map's
+_Rb_tree insert chain (_M_insert_node/node alloc/_Construct) + Wall C (contains/
+C++20 ranges).
 
 ## Update 5 — reference data members DONE (commit bd9918d)
 
