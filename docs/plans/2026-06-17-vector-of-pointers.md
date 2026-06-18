@@ -1,17 +1,34 @@
 # Plan — get `vector<T*>` fully working
 
-**Status:** active goal (set by user 2026-06-17). Branch
-`feature/retire-embedded-shims-claude`. Task #34. This is the SECOND clause of the /goal
-("complete first-class-references THEN vector<T*>"). First-class-references is now COMPLETE
-(`docs/plans/2026-06-17-first-class-references.md`, Phases 1/2/4 @30236ee) — it was a
-prerequisite but is not sufficient; this plan owns the rest.
+**Status: COMPLETE (2026-06-18).** `vector<A*>` and `vector<int*>` compile and RUN;
+`testvectorptr` and `testsubscriptarrow` pass. fulltest 635/5/18 (was 633/7) — +2,
+zero regressions. Wall 1 fix: `eb578af` (real-instantiate concrete-arg variadic class
+templates + the iterator-invalidation SIGSEGV it exposed). Wall 2 fixes: `5a84c83`
+(`new T()` prvalue spill) + `fcf8adc` (`&x` address-of prvalue spill). Branch
+`feature/retire-embedded-shims-claude`, all pushed.
 
-## Goal
+NOTE on the original `testsubscript` criterion below: `testsubscript` contains NO pointer
+element types — it exercises `map<string,int>`/`map<string,string>`/`vector<string>`. Its
+remaining failure is the **map** wall (`stl_map.h:102 incomplete struct or union`), which
+this plan explicitly scopes to the separate map/set track (see "Relationship to other
+plans"). So it is NOT a vector<T*> item; the "pointer part of testsubscript" was a
+misread of the test's content.
+
+Residual (cosmetic, not a regression): c2mir warns "incompatible pointer type" on a
+derived→base pointer arg through the spilled temp (`vector<A*>` with `new B()`). c2mir is
+strict about ALL struct-pointer conversions; gcc/clang do the implicit upcast silently and
+the program runs correctly. An attempt to upcast the temp to the param's referent type
+ADDED warnings (c2mir flags the explicit upcast-assign too), so the simpler form stands.
+
+This was the SECOND clause of the /goal ("complete first-class-references THEN
+vector<T*>"); first-class-references (`docs/plans/2026-06-17-first-class-references.md`,
+Phases 1/2/4 @30236ee) was the prerequisite.
+
+## Goal (ACHIEVED)
 
 `std::vector<T*>` compiles and runs for both class-pointer (`vector<A*>`) and
-primitive-pointer (`vector<int*>`) element types — `testvectorptr`, `testsubscriptarrow`,
-and the pointer cases in `testsubscript` go green, with no regression to the rest of the
-suite (baseline 633/7/18).
+primitive-pointer (`vector<int*>`) element types — `testvectorptr`, `testsubscriptarrow`
+go green, with no regression to the rest of the suite (baseline 633/7/18 → 635/5/18).
 
 ## Current state (re-verified live, 2026-06-17 @30236ee)
 
