@@ -1,5 +1,45 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 13 — WALL C is an ACTIVE CASCADE now (6 fixes landed), not a deferred unknown
+
+Reframing: testmap/testset are blocked ONLY by `contains` (Update 11), and `contains`
+needs `--std=c++20`, which fails while PARSING the C++20 header surface. That parse
+failure is a CASCADE of bounded, general parser-correctness gaps — each a normal
+C++11/17/20 feature madc simply hadn't implemented — NOT a monolithic "implement
+ranges." This session drove the cascade down fix-by-fix, each committed +
+fulltest-green + zero-regression:
+
+1. **Multi-level `using A::B::C;`** (c73413e) — full `::`-chain; all-but-last =
+   nested namespace path. Was: "'B' is not a member of 'A'".
+2. **Enclosing-scope namespace lookup** (c73413e) — `resolve_source_namespace`
+   walks ancestor scopes, so `ranges::__detail` from inside `std::__detail`
+   resolves to `std::ranges::__detail`.
+3. **Concept-name registration** (6a46af2) — concept defs were parsed-and-discarded;
+   now register an inert dtRESERVED placeholder so `using NS::Concept;` resolves
+   (madc still doesn't EVALUATE concepts).
+4. **C++11 `final` on class/struct heads** (6a46af2) — `struct/class X final {}` was
+   mis-parsed; consume the contextual `final` (guarded by a following `{`/`:`) in
+   both TokenSTRUCT::parse and TokenCLASS::parse.
+5. **Storage specifiers before a post-class-def declarator** (eb3eafa) —
+   `struct X {...} inline constexpr x{};` (the CPO shape); skip
+   inline/constexpr/static/etc. between `}` and the instance name.
+
+Progress through `<bits/iterator_concepts.h>` (`#include <map> --std=c++20`):
+line 616 (using) → 969 (final) → 974 (CPO var) → **header fully parsed**, now into
+the NEXT C++20 header at **line 81:53 "Expecting member name in class definition"**
+(frontier as of eb3eafa). New tests: testusingchain, testfinalclass,
+testinlineconstexprvar. fulltest 643/5 (the 5 = the known map/set tests).
+
+**This means Wall C is tractable incrementally** — keep running
+`./bin/madc --std=c++20 tmp/map_inc.mad` (also tmp/str_inc.mad, tmp/ios_inc.mad),
+take the first error, reduce it to a tiny .mad, fix the bounded gap, fulltest,
+commit, repeat — until `<map>`/`<set>`/`<string>`/`<iostream>` all parse at C++20,
+then `contains` is exposed and testmap/testset can pass (modulo `contains`
+compiling+running, likely trivial: `_M_t.find(k) != end()`). Each fix is a general
+C++-conformance win independent of the container goal. NEXT: reduce the line-81
+"Expecting member name in class definition" wall (identify the header via gdb on the
+throw, or bisect includes) and continue.
+
 ## Update 12 — 3b causal model RESOLVED (clone-time collapse), exact mechanism still 1 layer down
 
 gdb settled the contradiction from Updates 10–11. At `TokenTYPEDEF::parse` for
