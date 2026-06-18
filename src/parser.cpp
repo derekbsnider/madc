@@ -6963,6 +6963,43 @@ int64_t Program::parse_constant_primary()
 	    return 0;
 	if ( is_named_cpp_cast(name) )
 	    return parse_constant_named_cpp_cast(tb, name);
+	// C++14 VARIABLE TEMPLATE in a constant expression: `is_floating_point_v
+	// <double>` (a non-type bool arg — e.g. enable_if's condition in
+	// std::numbers). Substitute the type args into the initializer tokens and
+	// fold them recursively in an isolated stream: the init
+	// `is_floating_point<_Tp>::value` becomes `is_floating_point<double>::value`,
+	// which folds via the normal trait `::value` path. (The parseExpression
+	// use-site resolution does not cover this constant-context path.)
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+	{
+	    std::map<std::string, VarTemplateDef>::iterator vti =
+		var_template_map.find(name);
+	    if ( vti == var_template_map.end() && !current_namespace().empty() )
+		vti = var_template_map.find(current_namespace() + "::" + name);
+	    if ( vti != var_template_map.end() && !vti->second.init.empty() )
+	    {
+		std::vector<DataDef *> targs = capture_call_template_args();
+		std::map<std::string, TokenDataType *> subst;
+		for ( size_t i = 0; i < vti->second.typeparams.size()
+				&& i < targs.size(); ++i )
+		    if ( targs[i] )
+			subst[vti->second.typeparams[i]] =
+			    new TokenDataType(targs[i]->name.c_str(), *targs[i]);
+		std::vector<TokenBase *> sub =
+		    clone_template_tokens_with_type_subst(vti->second.init, subst);
+		if ( !sub.empty() )
+		{
+		    std::deque<TokenBase *> saved = tokens;
+		    tokens.assign(sub.begin(), sub.end());
+		    tokens.push_back(new TokenSemi());
+		    int64_t v = 0;
+		    try { v = parse_constant_integer_expression(); }
+		    catch ( ... ) { tokens = saved; throw; }
+		    tokens = saved;
+		    return v;
+		}
+	    }
+	}
     }
     if ( tb && tb->id() == TokenID::tkNeg )
 	return -parse_constant_primary();
