@@ -6745,6 +6745,28 @@ bool Program::fold_constant_qualified_member(TokenBase *first, int64_t &out)
 	return false;
     if ( !scope && pending_ns.empty() )
 	return false;
+    // `Trait<...>{}` / `Trait{}` (or `()`) value-init in a constant expression is
+    // the std::integral_constant conversion to its `value` — `static_assert(
+    // is_same<int,int>{})`, `__is_invocable<...>{}`, `true_type{}`. Fold to the
+    // scope's (possibly inherited) static `value` member, the same constant the
+    // `::value` form reads. Only EMPTY `{}`/`()` (value-init); a braced
+    // initializer with contents is not a constant trait.
+    if ( scope && tokens.size() >= 2 && tokens[0] && tokens[1]
+      && (tokens[0]->id() == TokenID::tkOpBrc
+       || tokens[0]->id() == TokenID::tkOpBrk) )
+    {
+	TokenID close = tokens[0]->id() == TokenID::tkOpBrc
+		      ? TokenID::tkClBrc : TokenID::tkClBrk;
+	int64_t v = 0;
+	if ( tokens[1]->id() == close
+	  && resolve_class_static_member_const_value(scope, "value", v) )
+	{
+	    nextToken();   // consume the opening { or (
+	    nextToken();   // consume the closing } or )
+	    out = v;
+	    return true;
+	}
+    }
     if ( !peekToken() || peekToken()->id() != TokenID::tkNS )
 	return false;
 
