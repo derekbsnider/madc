@@ -5648,7 +5648,8 @@ static int type_trait_arity(const std::string &name)
 	return 2;
     if ( name == "__is_class" || name == "__is_union" || name == "__is_enum"
       || name == "__has_trivial_destructor" || name == "__is_trivial"
-      || name == "__is_empty" )
+      || name == "__is_empty" || name == "__is_standard_layout"
+      || name == "__is_pod" )
 	return 1;
     return 0;   // not a supported trait
 }
@@ -5753,6 +5754,69 @@ static bool trait_is_trivial(DataDef *dd)
 	if ( c->members[i].second && !trait_is_trivial(c->members[i].second) )
 	    return false;
     return true;
+}
+// __is_standard_layout(T) ([class.prop]): a scalar / pointer / enum is standard-
+// layout; a class is standard-layout iff it has no virtual functions and no virtual
+// bases, all non-static data members share the SAME access control and are each
+// standard-layout, every base class is standard-layout, non-static data members
+// appear in at most ONE class of the hierarchy, and the first member's type is not a
+// base type. The repeated-base-subobject clause ([class.prop] last bullet) is rare
+// and not modeled — conservative-true there only relaxes an EBO optimization, never
+// miscompiles (mirrors trait_is_trivial's documented conservatism). Verified against
+// g++/clang for int/ptr/empty-class (=1) and virtual/mixed-access (=0).
+static bool trait_is_standard_layout(DataDef *dd)
+{
+    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    if ( !s )
+	return true;   // scalar / pointer / enum
+    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd);
+    if ( c && c->is_polymorphic() )
+	return false;   // virtual functions / vptr
+    uint32_t acc0 = 0;
+    bool have_acc = false;
+    for ( size_t i = 0; i < s->members.size(); ++i )
+    {
+	uint32_t a = i < s->member_access.size() ? s->member_access[i] : 0;
+	if ( !have_acc ) { acc0 = a; have_acc = true; }
+	else if ( a != acc0 ) return false;          // mixed access control
+	if ( s->members[i].second && !trait_is_standard_layout(s->members[i].second) )
+	    return false;
+    }
+    if ( c )
+    {
+	bool base_has_members = false;
+	if ( c->base_class )
+	{
+	    if ( !trait_is_standard_layout(c->base_class) ) return false;
+	    if ( !c->base_class->members.empty() ) base_has_members = true;
+	}
+	for ( size_t i = 0; i < c->bases.size(); ++i )
+	{
+	    if ( c->bases[i].is_virtual ) return false;     // virtual base
+	    if ( c->bases[i].base )
+	    {
+		if ( !trait_is_standard_layout(c->bases[i].base) ) return false;
+		if ( !c->bases[i].base->members.empty() ) base_has_members = true;
+	    }
+	}
+	if ( base_has_members && !c->members.empty() )
+	    return false;    // non-static data members in both a base and the derived class
+	if ( !c->members.empty() && c->members[0].second )
+	{
+	    DataDef *fm = c->members[0].second;        // first member's type != a base type
+	    if ( c->base_class && fm == (DataDef *)c->base_class ) return false;
+	    for ( size_t i = 0; i < c->bases.size(); ++i )
+		if ( c->bases[i].base && fm == (DataDef *)c->bases[i].base ) return false;
+	}
+    }
+    return true;
+}
+// __is_pod(T) ([basic.types] pre-C++20; a gcc-13 compiler builtin): POD == trivial
+// AND standard-layout. libstdc++'s _Rb_tree_impl selects an EBO layout via
+// `__is_pod(_Key_compare)` (stl_tree.h), so std::map / std::set need it.
+static bool trait_is_pod(DataDef *dd)
+{
+    return trait_is_trivial(dd) && trait_is_standard_layout(dd);
 }
 // __is_base_of(B, D): true if B and D name the same class, or B is a (direct or
 // indirect) base of class D. Ignores access (matches the intrinsic's semantics —
@@ -5952,6 +6016,10 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	result = trait_has_trivial_destructor(args[0].dd);
     else if ( name == "__is_trivial" )
 	result = trait_is_trivial(args[0].dd);
+    else if ( name == "__is_standard_layout" )
+	result = trait_is_standard_layout(args[0].dd);
+    else if ( name == "__is_pod" )
+	result = trait_is_pod(args[0].dd);
     else if ( name == "__is_assignable" )
     {
 	int s = trait_is_assignable(args[0], args[1]);
@@ -15042,6 +15110,8 @@ static bool eval_local_type_trait(Program &pgm,
     bool r;
     if ( nm == "__has_trivial_destructor" ) r = trait_has_trivial_destructor(targs[0].dd);
     else if ( nm == "__is_trivial" )        r = trait_is_trivial(targs[0].dd);
+    else if ( nm == "__is_standard_layout" ) r = trait_is_standard_layout(targs[0].dd);
+    else if ( nm == "__is_pod" )            r = trait_is_pod(targs[0].dd);
     else if ( nm == "__is_class" )          r = trait_is_class(targs[0].dd);
     else if ( nm == "__is_union" )          r = trait_is_union(targs[0].dd);
     else if ( nm == "__is_empty" )          r = trait_is_empty(targs[0].dd);
