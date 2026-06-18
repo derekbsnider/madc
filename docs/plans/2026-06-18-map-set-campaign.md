@@ -20,18 +20,40 @@ Two reference-data-member bugs (both hit by `_Rb_tree::_Auto_node`'s
 New test `tests/testrefmember.mad`. fulltest 639/5, zero regr. map advanced past
 both _Auto_node walls.
 
-### NEXT WALL = Wall B (`__is_invocable`), now CONFIRMED shared map+set
-`tmp/map_min2.mad` now fails "use of undeclared identifier '_S_key'" — downstream
-of `_Rb_tree::_S_key`'s body NOT registering, because its body holds
+### NEXT WALL = Wall B (`__is_invocable` FOLD), CONFIRMED shared map+set
+`tmp/map_min2.mad` fails "use of undeclared identifier '_S_key'" — downstream of
+`_Rb_tree::_S_key` NOT registering, because its body holds
 `static_assert(__is_invocable<_Compare&, const _Key&, const _Key&>{}, ...)`
-(stl_tree.h:764) and madc cannot fold `__is_invocable` (grep: referenced only in
-a comment, never implemented). `_S_key` is used pervasively in the insert/compare
-path, and set::insert's overload resolution needs the same trait — so Wall B is
-the single shared blocker for BOTH containers now. It is a deep SFINAE trait
-(evaluate "is F callable with Args" — overload-resolution-as-SFINAE → bool),
-comparable to the vector<T*> `__construct_helper` trait engine; its own
-multi-step effort. After it: map's remaining _Rb_tree insert chain + Wall C
-(`contains`, C++20/ranges).
+(stl_tree.h:764) and madc cannot FOLD `__is_invocable` to a constant.
+
+Sharply isolated (next-session start): reducer **`tmp/invoc2.mad`** — just
+`#include <type_traits>` + a user functor `struct Cmp { bool operator()(const
+int&, const int&) const; };` + `static_assert(__is_invocable<Cmp&, const int&,
+const int&>{}, ...)` — fails **"Expecting integer constant expression"** at the
+`{}`. `<type_traits>` parses fine; the wall is purely the trait FOLD.
+- `__is_invocable<_Fn, _Args...> : __is_invocable_impl<__invoke_result<_Fn,
+  _Args...>, void>::type` (type_traits:2989). True iff
+  `__invoke_result<_Fn,_Args...>::type` EXISTS (the `__void_t` detection picks the
+  true_type partial spec at type_traits:2934). madc HAS `__void_t` detection
+  (iterator_traits) — the missing piece is `__invoke_result` computing `::type`,
+  i.e. decltype of the INVOKE expression `declval<_Fn>()(declval<_Args>()...)` via
+  overload resolution on the functor's `operator()`. That overload-resolution-as-
+  SFINAE is the deep core (comparable to the vector<T*> `__construct_helper`
+  engine); a multi-step effort of its own.
+- `_S_key` is used all over the insert/compare path AND set::insert's overload
+  resolution needs the same trait → ONE shared blocker for both containers.
+
+NOT on the critical path (a `<functional>` artifact, do NOT chase for map):
+`tmp/invoc.mad` (which `#include <functional>`) fails earlier on a
+pointer-to-member-function member declarator `void (_Undefined_class::*
+_M_member_pointer)()` in std::function's `_Nocopy_types` (std_function.h:80) —
+TokenSTRUCT::parse handles `T (*p)()` but not `T (C::*p)()`. A real general
+parser gap (worth fixing for std::function someday) but map's `_S_key` path does
+NOT pull std_function, so it is NOT what blocks map. Use `tmp/invoc2.mad` (no
+`<functional>`) as the Wall-B reducer.
+
+After Wall B: map's remaining _Rb_tree insert chain (_M_insert_node body, node
+alloc, _Construct) + Wall C (`contains`, C++20/ranges).
 
 ---
 
