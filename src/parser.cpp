@@ -33827,6 +33827,17 @@ paramdecl:
 		continue;
 	    }
 	    if ( qs == "override" || qs == "final" ) { nt = nextToken(); continue; }
+	    if ( qs == "requires" ) {
+		// C++20 TRAILING requires-clause between the declarator and the
+		// body: `pointer operator->() const requires is_pointer_v<_It>
+		// || requires(const _It i){ i.operator->(); } { ... }`. madc does
+		// not yet constrain overloads on it, so skip the constraint as a
+		// unit (the `requires` keyword `q` is already consumed). Real
+		// trigger: std::reverse_iterator::operator-> at --std=c++20.
+		skip_constraint_expression();
+		nt = nextToken();
+		continue;
+	    }
 	}
 	break;
     }
