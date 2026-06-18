@@ -25198,6 +25198,84 @@ TokenBase *TokenRETURN::parse(Program &pgm)
     return this;
 }
 
+TokenBase *Program::parse_optional_init_statement()
+{
+    // An init-statement is present iff a top-level `;` precedes the matching
+    // `)` (the same separator a for's init clause uses). Detect by scanning the
+    // lookahead with bracket-depth tracking — robust regardless of how the init
+    // clause's own parser stops, unlike inferring it from a stop token after.
+    int depth = 0;
+    bool has_init = false;
+    for ( size_t i = 0; i < tokens.size() && tokens[i]; ++i )
+    {
+	TokenID id = tokens[i]->id();
+	if ( id == TokenID::tkOpBrk || id == TokenID::tkOpSqr
+	  || id == TokenID::tkOpBrc )
+	    ++depth;
+	else if ( id == TokenID::tkClBrk || id == TokenID::tkClSqr
+	       || id == TokenID::tkClBrc )
+	{
+	    if ( depth == 0 ) break;     // hit the closing `)` first
+	    --depth;
+	}
+	else if ( id == TokenID::tkSemi && depth == 0 )
+	{
+	    has_init = true;             // separator before the `)`
+	    break;
+	}
+    }
+    if ( !has_init )
+	return NULL;
+
+    TokenBase *init_stmt = NULL;
+    bool init_const = false;
+    TokenBase *tn = nextToken();
+    if ( tn && tn->id() == TokenID::tkCONST )
+    {
+	init_const = true;
+	tn = nextToken();
+    }
+    if ( !tn )
+	Throw << "Unexpected end of input in init-statement" << flush;
+
+    if ( TokenDataType *init_type = resolve_declared_type_token(tn, true, true) )
+    {
+	bool saved_ic = parsing_const_decl;
+	parsing_const_decl = init_const;
+	try
+	{
+	    init_stmt = parseDeclaration(init_type);
+	}
+	catch(...)
+	{
+	    parsing_const_decl = saved_ic;
+	    throw;
+	}
+	parsing_const_decl = saved_ic;
+    }
+    else
+    {
+	if ( init_const )
+	    Throw(tn) << "expected a type after 'const' in init-statement" << flush;
+	if ( !(init_stmt = parseExpression(tn, true)) )
+	    Throw(tn) << "Failed to parse init-statement" << flush;
+    }
+
+    // Position past the `;` separating the init-statement from the condition.
+    // The init clause's parser may stop just before the `;` (curToken is the
+    // last init token, peek is `;`) or having already consumed it (curToken is
+    // the `;`) — accept both.
+    if ( !curToken() || curToken()->id() != TokenID::tkSemi )
+    {
+	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	    nextToken();
+	else
+	    Throw(curToken() ? curToken() : tn)
+		<< "Expecting ';' after init-statement" << flush;
+    }
+    return init_stmt;
+}
+
 TokenBase *TokenIF::parse(Program &pgm)
 {
     TokenBase *tn;
@@ -25219,6 +25297,9 @@ TokenBase *TokenIF::parse(Program &pgm)
     tn = pgm.nextToken();
     if ( !tn || tn->id() != TokenID::tkOpBrk )
 	pgm.Throw(tn ? tn : this) << "expecting ( after if" << flush;
+
+    // C++17 init-statement: `if (init-statement; condition) ...`.
+    init_stmt = pgm.parse_optional_init_statement();
 
     if ( is_constexpr )
     {
@@ -27241,6 +27322,9 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
     TokenBase *tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkOpBrk )
 	pgm.Throw(tn) << "Expecting ( after switch" << flush;
+
+    // C++17 init-statement: `switch (init-statement; expression) ...`.
+    init_stmt = pgm.parse_optional_init_statement();
 
     // parse expression
     expression = pgm.parseExpression(pgm.nextToken(), true);

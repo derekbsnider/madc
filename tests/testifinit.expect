@@ -1,0 +1,4 @@
+if-decl-true c=7
+if-decl-false c=7
+if-expr x=7
+switch-two s=2

@@ -1,5 +1,55 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 28 — if-condition wall FIXED (C++17 init-statement support for `if` AND `switch`); cascade now at `_S_key` / `_M_at_eof`
+
+**FIXED, fulltest 652/5/0/18 (+1 = new tests/testifinit, ZERO regression; EXE
+path also validated).** The Update-27 frontier — `testmap.mad` under
+`--std=c++20` throwing `Expecting ')' after if condition declaration` — mapped
+(via an `MADC_DBG_IFCOND`-gated probe at the throw) to `system_error:318`:
+
+```cpp
+if (auto __c = __lhs.category() <=> __rhs.category(); __c != 0)
+```
+
+This is the **C++17 init-statement** form (`if (init-statement; condition)`),
+which madc did not support. The old condition-declaration path parsed the init
+clause AS the condition-declaration, then hit `;` where it expected `)`. The
+apparent `if (int c = foo(); cond)` "success" was an ILLUSION — `parseDeclaration`
+stopped with last-consumed = the `)` of `foo()`, which the
+`curToken()->id() != tkClBrk` check mistook for the if's `)`, silently dropping
+the condition (proven by an inverted-condition reducer returning the wrong
+branch).
+
+**Fix (root-cause, deepest layer — 5 files, +142 lines):**
+- New `Program::parse_optional_init_statement()` (parser.cpp, before
+  `TokenIF::parse`): detects a top-level `;` before the matching `)` by a
+  bracket-depth scan of the lookahead (robust regardless of how the init
+  clause's own parser stops), parses the init-statement (simple-declaration or
+  expression-statement), consumes its `;`, and leaves the stream at the
+  condition. ONE implementation, called by both `if` and `switch` — `switch
+  (init; cond)` had the identical gap ([stmt.pre] covers both).
+- `TokenIF` / `TokenSWITCH` gained an `init_stmt` member; `TokenIF::parse` and
+  `TokenSWITCH::parse` call the shared helper right after consuming `(`.
+- `translate_if` / `translate_switch` (cir_builder.cpp) lower
+  `if (init; cond) S else E` to `{ init; if (cond) S else E }` — the
+  init-statement (and its temps) emitted in a wrapping `N_BLOCK` before the
+  conditional, sharing the enclosing scope. `translate_if`'s existing body was
+  split into `translate_if_core`.
+
+Verified against gcc -std=c++17 (decl-init, expr-init `if (x = foo(); x>5)`,
+else-branch sees the init var, `switch (init; expr)`) — byte-identical output.
+New regression test: tests/testifinit.mad (+.expect).
+
+**NEW FRONTIER:** with the if-condition wall gone, `testmap.mad --std=c++20`
+advances to: `use of undeclared identifier '_S_key'` (×1) and
+`'_M_at_eof' is a private member of istreambuf_iterator<…>` (×2, char + wchar_t).
+Plus the pre-existing 3× `Expecting integer constant expression` (iostream
+:791/:817) and the 14× recovered cosmetic `undeclared identifier 'std'` at :141.
+NOTE: under madc's DEFAULT std (`__cplusplus==201703`, C++17), `testmap` fails
+earlier at `map::contains` (a C++20 method gated `#if __cplusplus > 201703L`) —
+so the map/set tests inherently require a C++20 std to exercise `contains` etc.;
+the campaign's reductions run under `--std=c++20`.
+
 ## Update 27 — `ranges::get` wall FIXED (using-decl ns lookup order); cascade now at an if-condition-declaration parse wall
 
 **FIXED (`6456641`, fulltest 651/5/0/18 zero regr).** A `UG`-gated probe at the

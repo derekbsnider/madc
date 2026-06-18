@@ -874,6 +874,7 @@ public:
 	node_t translate_block(TokenCpnd *tc);
 	node_t translate_return(TokenRETURN *tr);
 	node_t translate_if(TokenIF *ti);
+	node_t translate_if_core(TokenIF *ti);
 	node_t translate_while(TokenBase *tw);
 	node_t translate_for(TokenFOR *tf);
 	// SJLJ exception lowering: try/catch -> setjmp on __madc_try_push(&ctx), the

@@ -2188,6 +2188,15 @@ public:
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCallMethod(TokenCallMethod *);
+    // C++17 init-statement, shared by `if` and `switch` ([stmt.pre]): call
+    // immediately after consuming the opening `(`. When a top-level `;`
+    // precedes the matching `)`, parse the init-statement (simple-declaration
+    // or expression-statement), consume its trailing `;`, and leave the stream
+    // positioned at the condition/switch-expression. Returns the parsed
+    // init-statement node, or NULL when no init-statement is present (stream
+    // untouched). The init-statement's declarations share the condition's
+    // enclosing scope.
+    TokenBase *parse_optional_init_statement();
     // Consume the operator symbol token(s) following an `operator` keyword token
     // and return the canonical operator-function-id name ("operator<",
     // "operator()", "operatornew", "operator[]", …). The `operator` token itself

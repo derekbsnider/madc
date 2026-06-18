@@ -9361,6 +9361,26 @@ node_t CirBuilder::translate_loop_body(TokenBase *tb)
 
 node_t CirBuilder::translate_if(TokenIF *ti)
 {
+	// C++17 init-statement: `if (init; cond) S else E` lowers to
+	// `{ init; if (cond) S else E }` — the init-statement (and its temps)
+	// run before the condition and share the same enclosing block scope.
+	if (!ti->init_stmt)
+		return translate_if_core(ti);
+	node_t init = translate_stmt(ti->init_stmt);
+	std::vector<node_t> init_temps;
+	flush_pending_stmts(init_temps);
+	node_t core = translate_if_core(ti);
+	node_t items = list();
+	for (node_t p : init_temps)
+		append(items, p);
+	if (init)
+		append(items, init);
+	append(items, core);
+	return node2(N_BLOCK, list(), items, ti);
+}
+
+node_t CirBuilder::translate_if_core(TokenIF *ti)
+{
 	if (ti->condition_decl) {
 		node_t cond = translate_expr(ti->condition);
 		// Temps materialized by the CONDITION (m_pending_stmts) must be
@@ -10107,6 +10127,17 @@ node_t CirBuilder::translate_do(TokenDO *td)
 
 node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 {
+	// C++17 init-statement: `switch (init; expr)` lowers to
+	// `{ init; switch (expr) {...} }`. Translate the init-statement (and flush
+	// its temps) FIRST so it is emitted before the switch expression, which it
+	// may reference; the wrap is applied at the single return below.
+	node_t init = NULL;
+	std::vector<node_t> init_temps;
+	if (ts->init_stmt) {
+		init = translate_stmt(ts->init_stmt);
+		flush_pending_stmts(init_temps);
+	}
+
 	node_t expr = translate_expr(ts->expression);
 	node_t block_items = list();
 
@@ -10161,7 +10192,16 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 		emit_case(ts->defaultcase, true);
 
 	node_t body = node2(N_BLOCK, list(), block_items);
-	return node3(N_SWITCH, list(), expr, body, ts);
+	node_t sw = node3(N_SWITCH, list(), expr, body, ts);
+	if (!ts->init_stmt)
+		return sw;
+	node_t items = list();
+	for (node_t p : init_temps)
+		append(items, p);
+	if (init)
+		append(items, init);
+	append(items, sw);
+	return node2(N_BLOCK, list(), items, ts);
 }
 
 // rust::match(expr) { p1 | p2 => stmt; _ => stmt; } -> a C switch with an

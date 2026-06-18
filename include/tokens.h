@@ -1206,12 +1206,13 @@ public:
 class TokenSWITCH: public TokenKeyword
 {
 public:
+    TokenBase *init_stmt;                      // C++17 `switch (init; expr)` init-statement (NULL when absent)
     TokenBase *expression;                     // switch(expr)
     std::vector<TokenCASE *> cases;            // case entries
     TokenCASE *defaultcase;                    // default entry (reuses TokenCASE with value=NULL)
     int default_index;                         // source-order position of default among cases (-1 if none)
     std::vector<TokenBase *> pre_case_stmts;   // declarations before the first case label (C allows them)
-    TokenSWITCH() : TokenKeyword("switch"), expression(NULL), defaultcase(NULL), default_index(-1) {}
+    TokenSWITCH() : TokenKeyword("switch"), init_stmt(NULL), expression(NULL), defaultcase(NULL), default_index(-1) {}
     virtual TokenID id() const { return TokenID::tkSWITCH; }
     virtual TokenBase *clone() { return new TokenSWITCH(); }
     virtual TokenBase *parse(Program &);
@@ -1507,11 +1508,15 @@ public:
 class TokenIF: public TokenKeyword
 {
 public:
+    // C++17 init-statement: `if (init-statement; condition) ...`. The
+    // init-statement (a simple-declaration or expression-statement) runs
+    // before the condition and shares its scope; NULL when absent.
+    TokenBase *init_stmt;
     TokenBase *condition;
     TokenBase *condition_decl;
     TokenBase *statement;
     TokenBase *elsestmt;
-    TokenIF() : TokenKeyword("if") { condition = condition_decl = statement = elsestmt = NULL; }
+    TokenIF() : TokenKeyword("if") { init_stmt = condition = condition_decl = statement = elsestmt = NULL; }
     virtual TokenBase *parse(Program &);
     virtual TokenID id() const { return TokenID::tkIF; }
     virtual TokenBase *clone() { return new TokenIF(); }
