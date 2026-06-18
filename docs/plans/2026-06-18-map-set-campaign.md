@@ -1,5 +1,44 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 17 — concept evaluator DESIGNED + verified; storage foundation committed
+
+Concept storage committed (5fcb35e): madc now captures each concept's constraint
+tokens + typeparams in `concept_map` (keyed name and ns::name). The EVALUATOR is
+fully designed and its every mechanism verified this session:
+
+**The structural arm (in parse_constant_primary, beside the fix-9 var-template arm,
+~7001):** when an ident `Name` is in `concept_map` and followed by `<`, capture the
+args (capture_call_template_args), substitute typeparams→args into the stored
+constraint (clone_template_tokens_with_type_subst), and fold it in an ISOLATED
+stream (swap `tokens`, parse_constant_integer_expression, restore) → return 0/1.
+This is ~30 lines, identical in shape to the committed fix-9 var-template arm.
+VERIFIED it suffices for the goal:
+- nested concept-ids recurse (re-enter this same arm);
+- `derived_from<D,B>` IS a concept → recurses to its constraint `__is_base_of(_Base,
+  _Derived)`, a builtin that ALREADY folds in parse_constant_primary (tmp/baseof.mad
+  → `1 0`);
+- `&&`/`||` SHORT-CIRCUIT (parse_constant_land/lor, line ~7232) and
+  skip_const_logical_operand skips balanced `(){}` — so a short-circuited
+  `requires(...){...}` operand is skipped cleanly;
+- so `random_access_iterator<map_iterator>` = `bidirectional_iterator<It>(true) &&
+  derived_from<__iter_concept<It>, random_access_iterator_tag>(FALSE) && …` →
+  short-circuits to **false** at derived_from, requires-expr never reached. CORRECT.
+
+**The one remaining sub-feature = `requires`-expression evaluation** (reached inside
+the input/forward/bidirectional sub-evaluations for map, which are NOT short-
+circuited): evaluate `requires(_Iter __i, …){ ++__i; --__i; *__i; … }` by registering
+the params as concrete-typed locals and checking each requirement's expression is
+WELL-FORMED (try-resolve via parseExpression, catch → unsatisfied). ~80–100 lines,
+touches local-scope setup + expression resolution — delicate, hence a focused effort
+(NOT an optimistic-true stub, which would be a shim). Add it as
+`parse_constant_primary`'s `requires`-arm (`if ident=="requires" → evaluate`).
+
+Once both land: `random_access_iterator<It>` folds correctly → reverse_iterator's
+`iterator_concept` using-alias resolves → testmap.mad compiles further at
+--std=c++20. Then continue the cascade; finally add `tests/testmap.flags` /
+`testset.flags` = `--std=c++20` so the tests run where `contains` is available.
+
+
 ## Update 16 — MILESTONE: `<map>` parses at --std=c++20; `contains` EXPOSED (fix 10)
 
 **Fix 10 (e79f572)** — accept TEMPLATE members in using-declarations. `using
