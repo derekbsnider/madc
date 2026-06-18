@@ -19558,11 +19558,20 @@ TokenBase *TokenUSING::parse(Program &pgm)
     {
 	if ( namespace_exists(name) )
 	    return name;
-	if ( !pgm.current_namespace().empty() )
+	// C++ unqualified namespace lookup walks OUTWARD through enclosing
+	// scopes: from inside `std::__detail`, `ranges::__detail` names
+	// `std::ranges::__detail` (ranges is a sibling under std), not
+	// `std::__detail::ranges::__detail`. Try each ancestor scope prefix.
+	std::string scope = pgm.current_namespace();
+	while ( !scope.empty() )
 	{
-	    std::string nested = pgm.current_namespace() + "::" + name;
-	    if ( namespace_exists(nested) )
-		return nested;
+	    std::string cand = scope + "::" + name;
+	    if ( namespace_exists(cand) )
+		return cand;
+	    size_t pos = scope.rfind("::");
+	    if ( pos == std::string::npos )
+		break;
+	    scope = scope.substr(0, pos);
 	}
 	return "";
     };
@@ -19808,15 +19817,30 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    }
 	    return new TokenTypedefDecl(alias_name, alias_dd);
 	}
-	std::string requested_ns_name = contextual_identifier_name(tn);
-	std::string ns_name = resolve_source_namespace(requested_ns_name);
-	tn = pgm.nextToken(); // should be ::
-	if ( !tn || tn->id() != TokenID::tkNS )
+	// Collect the full qualified chain `A::B::...::member`. All but the LAST
+	// segment form the (possibly NESTED) source namespace path; the last is
+	// the imported member. The single-level case (`using NS::member`) yields
+	// exactly the old behavior. Multi-level (`using ranges::__detail::X`) is
+	// the C++17 shape libstdc++ uses heavily (iterator_concepts.h:616 imports
+	// `ranges::__detail::__is_signed_integer_like` into `std::__detail`).
+	std::vector<std::string> useg;
+	useg.push_back(contextual_identifier_name(tn));
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+	{
+	    pgm.nextToken(); // consume '::'
+	    tn = pgm.nextToken();
+	    std::string seg = using_declaration_name(tn);
+	    if ( seg.empty() )
+		pgm.Throw(tn) << "Expecting member name in using declaration" << flush;
+	    useg.push_back(seg);
+	}
+	if ( useg.size() < 2 )
 	    pgm.Throw(tn) << "Expecting '::' in using declaration" << flush;
-	tn = pgm.nextToken(); // member name
-	std::string member_name = using_declaration_name(tn);
-	if ( member_name.empty() )
-	    pgm.Throw(tn) << "Expecting member name in using declaration" << flush;
+	std::string member_name = useg.back();
+	std::string requested_ns_name = useg[0];
+	for ( size_t i = 1; i + 1 < useg.size(); ++i )
+	    requested_ns_name += "::" + useg[i];
+	std::string ns_name = resolve_source_namespace(requested_ns_name);
 	if ( ns_name.empty() )
 	    pgm.Throw(tn) << "Unknown namespace '" << requested_ns_name << "'" << flush;
 	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
