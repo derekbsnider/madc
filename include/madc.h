@@ -1331,6 +1331,17 @@ public:
 	TemplateAliasDef() : has_non_type_params(false), owner_class(nullptr) {}
     };
     std::map<std::string, std::vector<TemplateAliasDef>> template_alias_map;
+    // C++14 VARIABLE TEMPLATE: `template<...> [inline constexpr] T name = init;`
+    // (std::numbers::e_v, pi_v, …). madc does not model these as first-class
+    // values; it registers the name + typeparams + initializer tokens so a use
+    // `name<Arg>` resolves to its arg-substituted initializer expression (parsed
+    // inline at the use site). Keyed by simple name AND `ns::name`.
+    struct VarTemplateDef {
+	std::vector<std::string> typeparams;
+	std::vector<TokenBase *> init;          // tokens after '=' up to ';'
+	std::string defining_namespace;
+    };
+    std::map<std::string, VarTemplateDef> var_template_map;
     std::vector<TokenBase *> last_skipped_template_decl;
     // The SOURCE name of the tracked free-function overload parseDeclaration
     // is about to hand to parseFunction ("operator<"), stamped on the FuncDef

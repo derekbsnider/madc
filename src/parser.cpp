@@ -16842,6 +16842,40 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    }
 			}
 		    }
+		    // C++14 VARIABLE TEMPLATE use: `name<Args>` (e.g. std::numbers::
+		    // e_v<double>) resolves to its arg-substituted initializer, parsed
+		    // inline. Registered names only, gated on a following `<`.
+		    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+		    {
+			std::map<std::string, VarTemplateDef>::iterator vti =
+			    var_template_map.find(ident_tb->str);
+			if ( vti == var_template_map.end() && !current_namespace().empty() )
+			    vti = var_template_map.find(
+				current_namespace() + "::" + ident_tb->str);
+			if ( vti != var_template_map.end() && !vti->second.init.empty() )
+			{
+			    std::vector<DataDef *> targs = capture_call_template_args();
+			    std::map<std::string, TokenDataType *> subst;
+			    for ( size_t i = 0; i < vti->second.typeparams.size()
+					    && i < targs.size(); ++i )
+				if ( targs[i] )
+				    subst[vti->second.typeparams[i]] =
+					new TokenDataType(targs[i]->name.c_str(),
+							  *targs[i]);
+			    std::vector<TokenBase *> sub =
+				clone_template_tokens_with_type_subst(
+				    vti->second.init, subst);
+			    if ( !sub.empty() )
+			    {
+				for ( std::vector<TokenBase *>::reverse_iterator it =
+					  sub.rbegin();
+				      it != sub.rend(); ++it )
+				    pushToken(*it);
+				tb = nextToken();
+				return ExprStep::Redo;
+			    }
+			}
+		    }
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ident_tb->str << endl);
 		    { debug_deref_fail(*this, 14255, ident_tb, NULL);
 		    Throw(tb) << "use of undeclared identifier '" << ident_tb->str << '\'' << flush;
@@ -27482,6 +27516,56 @@ static std::string skipped_template_function_declarator_name(
     return name;
 }
 
+// C++14 variable template: `[specifiers] TYPE NAME = INIT ;` (NO function
+// `(params)` declarator, NO top-level `::` out-of-line qualifier). Detects this
+// shape in the skipped declaration tokens, returning the NAME (the identifier
+// immediately before the top-level `=`/`;`) and the INIT tokens (after `=`, up
+// to `;`). Used so std::numbers's `e_v`/`pi_v` etc. register and resolve at use.
+static bool skipped_template_variable(
+	const std::vector<TokenBase *> &tokens,
+	std::string &name_out, std::vector<TokenBase *> &init_out)
+{
+    int depth = 0;
+    size_t stop = tokens.size();
+    bool saw_top_paren = false;
+    std::string last_ident;
+    size_t last_ident_idx = tokens.size();
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t ) continue;
+	TokenID id = t->id();
+	if ( id == TokenID::tkLT || id == TokenID::tkOpBrk
+	  || id == TokenID::tkOpSqr || id == TokenID::tkOpBrc )
+	{
+	    if ( depth == 0 && id == TokenID::tkOpBrk )
+		saw_top_paren = true;            // function declarator -> not a variable
+	    ++depth; continue;
+	}
+	if ( id == TokenID::tkGT || id == TokenID::tkClBrk
+	  || id == TokenID::tkClSqr || id == TokenID::tkClBrc )
+	{ if ( depth > 0 ) --depth; continue; }
+	if ( id == TokenID::tkBSR ) { if ( depth >= 2 ) depth -= 2; continue; }
+	if ( depth != 0 ) continue;
+	if ( id == TokenID::tkAssign || id == TokenID::tkSemi ) { stop = i; break; }
+	if ( id == TokenID::tkNS ) return false;     // qualified -> out-of-line member
+	if ( is_contextual_identifier_token(t) )
+	{ last_ident = contextual_identifier_name(t); last_ident_idx = i; }
+    }
+    if ( saw_top_paren || last_ident.empty() || last_ident_idx + 1 != stop )
+	return false;                                // function, or name not before '='/';'
+    name_out = last_ident;
+    init_out.clear();
+    if ( stop < tokens.size() && tokens[stop]
+      && tokens[stop]->id() == TokenID::tkAssign )
+	for ( size_t i = stop + 1; i < tokens.size(); ++i )
+	{
+	    if ( tokens[i] && tokens[i]->id() == TokenID::tkSemi ) break;
+	    if ( tokens[i] ) init_out.push_back(tokens[i]);
+	}
+    return true;
+}
+
 // Extract the MEMBER (inner) template-parameter names + pack-ness from the inner
 // `template<...>` head of an out-of-line member-template definition (the leading
 // `template < ... >` of `template<class U> RET S<T>::f(U){body}`). Used to set the
@@ -31563,6 +31647,27 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.last_skipped_template_decl = skipped_decl;
 	pgm.last_skipped_template_typeparams = typeparams;
 	pgm.last_skipped_template_typeparam_is_pack = typeparam_is_pack;
+	// C++14 VARIABLE TEMPLATE (`template<...> [inline constexpr] T name = init;`):
+	// register the name + typeparams + initializer so a use `name<Arg>` resolves
+	// (std::numbers::e_v/pi_v/…). NOT a function or out-of-line member.
+	{
+	    std::string vt_name;
+	    std::vector<TokenBase *> vt_init;
+	    if ( !pgm.deferred_function_body_sink
+	      && skipped_template_variable(skipped_decl, vt_name, vt_init)
+	      && !vt_init.empty() )
+	    {
+		Program::VarTemplateDef vd;
+		vd.typeparams = typeparams;
+		vd.defining_namespace = pgm.current_namespace();
+		for ( TokenBase *t : vt_init )
+		    vd.init.push_back(t ? t->clone() : NULL);
+		pgm.var_template_map[vt_name] = vd;
+		if ( !pgm.current_namespace().empty() )
+		    pgm.var_template_map[pgm.current_namespace() + "::" + vt_name] = vd;
+		return NULL;
+	    }
+	}
 	// An out-of-line member DEFINITION of a class template
 	// (`template<...> RET Class<args>::member(...) { body }`) is NOT a free
 	// function — capture it keyed by the class so it instantiates as a member

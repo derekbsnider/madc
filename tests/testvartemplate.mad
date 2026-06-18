@@ -1,0 +1,21 @@
+#!/../bin/madc
+// C++14 variable templates: `template<typename T> inline constexpr T name = init;`
+// used as `name<Type>`. The libstdc++ std::numbers shape: a global constexpr
+// initialized from a variable-template instantiation, plus uses in expressions.
+#include <cstdio>
+
+template<typename T> inline constexpr T half_v = (T)0.5;
+
+// global constexpr initialized from a variable-template use (the <numbers> shape:
+// `inline constexpr double e = e_v<double>;`)
+inline constexpr double ghalf = half_v<double>;
+
+int main()
+{
+    double d = half_v<double>;                 // function-body assignment RHS
+    int a = (int)(half_v<double> * 84.0);       // binary-op operand
+    int b = (int)(ghalf * 84.0);                // global value
+    int c = (int)(d * 84.0);
+    printf("vt: %d %d %d\n", a, b, c);          // 42 42 42
+    return 0;
+}
