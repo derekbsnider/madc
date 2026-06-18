@@ -40,15 +40,38 @@ requires values. Tightening the resolver (reject operators/member-types that
 don't exist) is a separate follow-up, tracked here — it would make concept
 satisfaction fully precise but is orthogonal to map/set.
 
-**NEW FRONTIER (gdb/UA diag, this session): `using value_type = iter_value_t
-<_Iterator>` resolved=0** on a second reverse_iterator instantiation — i.e.
-`iter_value_t<_Iterator>` (bits/iterator_concepts.h) does not resolve for that
-iterator. This is an ALIAS-TEMPLATE resolution gap (iter_value_t dispatches via
-`indirectly_readable_traits` / `iterator_traits`), NOT a concept-eval gap. NEXT:
-reduce `iter_value_t<It>` for the failing iterator (gdb which `_Iterator`), find
-why the alias-template/its traits don't resolve, fix that bounded gap, continue
-the cascade. Then `tests/testmap.flags`/`testset.flags` = `--std=c++20` once the
-cascade fully clears.
+**NEW FRONTIER (UA diag, this session — precisely pinned): `using value_type =
+iter_value_t<const_iterator>` resolved=0**, where `const_iterator =
+__gnu_cxx::__normal_iterator<const char*, basic_string<char>>` (the failing
+reverse_iterator is `reverse_iterator<basic_string::const_iterator>`, reached
+during `<string>`/`<iterator>` parse). The NON-const sibling
+`iter_value_t<__normal_iterator<char*>>` resolved=1 in the SAME trace — so the
+gap is specifically the **const-pointer** `__normal_iterator<const char*, …>`.
+The preceding `iterator_concept = __conditional_t<random_access_iterator<
+const_iterator>,…>` resolved=1 (concept eval works); ONLY the `iter_value_t`
+line fails. `iter_value_t<_Tp> = typename __iter_traits<_Tp,
+indirectly_readable_traits<_Tp>>::value_type` (iterator_concepts.h:303) — and
+`__normal_iterator<const char*>` HAS a `::value_type` (= char via
+iterator_traits), so `indirectly_readable_traits`'s `__has_member_value_type`
+partial spec should select. NOTE: concept-constrained partial-spec selection
+ALREADY works in isolation (`tmp/concept_partial.mad` passes), so the gap is
+narrower: either (a) `__normal_iterator<const char*, …>::value_type` doesn't
+resolve in madc (const-pointer template-arg member-typedef instantiation), or
+(b) `__iter_traits`/`remove_cvref_t` mis-handles the const-pointer iterator.
+NEXT: reduce `iter_value_t<__normal_iterator<const char*>>` (or the
+`__normal_iterator<const char*>::value_type` member-typedef directly) at
+--std=c++20, find the bounded gap, fix, continue the cascade. Then
+`tests/testmap.flags`/`testset.flags` = `--std=c++20` once it fully clears.
+SIMPLE REDUCTION DOES NOT REPRODUCE (`tmp/ivt_const.mad`: a hand-rolled
+`iter_traits`-free `ivt<normal_iterator<const char*>>` over a
+`HasVT`-constrained partial spec resolves fine for BOTH char* and const char*).
+So the gap is in the REAL machinery — most likely the `__iter_traits<_Tp,
+Default>` indirection (iterator_concepts.h ~290: it prefers `iterator_traits
+<_Tp>` when user-specialized, else the Default) or the const_iterator's
+instantiation STATE at that point in the <string> parse (forward/incomplete),
+NOT the bare concept-constrained partial-spec selection. gdb the real
+`iter_value_t<const_iterator>` resolution (break the using-alias throw, cond
+alias=="value_type", step into resolve_declared_type_token → __iter_traits).
 
 ## Update 17 — concept evaluator DESIGNED + verified; storage foundation committed
 
