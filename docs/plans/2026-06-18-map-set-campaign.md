@@ -1,5 +1,29 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 27 — `ranges::get` wall FIXED (using-decl ns lookup order); cascade now at an if-condition-declaration parse wall
+
+**FIXED (`6456641`, fulltest 651/5/0/18 zero regr).** A `UG`-gated probe at the
+using-declaration throw (parser.cpp:20438) showed `ns_name='ranges'`,
+`have_var/type/template=0`, BUT `namespace_map["std::ranges"].count("get")==1` —
+i.e. `get` IS in std::ranges; the lookup just used the wrong namespace.
+`resolve_source_namespace` (parser.cpp:20109) checked the BARE name FIRST, and a
+stray empty `namespace_map["ranges"]` shadowed `std::ranges`. Fix: search
+ENCLOSING-scope candidates (`current_ns::name`, innermost-out) BEFORE the
+bare/global fallback — matching C++ unqualified namespace lookup (and the
+function's own documented intent). `using ranges::get;` now resolves to
+`std::ranges`.
+
+**NEW FRONTIER: `testmap.mad:318:57 "Expecting ')' after if condition
+declaration"`** (parser.cpp:25320). An `if (...)` condition is being parsed as a
+DECLARATION (the `condition_declarator_follows()` heuristic at ~25288), then the
+declaration parse doesn't end at `)`. Likely a complex C++ if-condition in the
+ranges/algorithm headers (a call/expression misdetected as a decl, or a C++17
+`if (init; cond)` / structured-binding condition). NEXT: gdb/diag the throw at
+25320 (print the condition tokens / what condition_declarator_follows matched) or
+grep the include path near line 318's header for the `if (...)` form; decide
+whether to tighten the declarator heuristic or handle the init-statement form.
+12× recovered "undeclared std" at :141 still leak (cosmetic).
+
 ## Update 26 — `ranges::get` frontier: `using ranges::get;` at ranges_util.h:780 fails (4 reductions don't reproduce)
 
 The wall is `bits/ranges_util.h:780` — `using ranges::get;` (in `namespace std`,
