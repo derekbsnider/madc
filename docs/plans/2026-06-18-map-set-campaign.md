@@ -1,5 +1,31 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 14 — Wall C cascade: 8 fixes landed; frontier = constexpr folding
+
+Continued driving the cascade (each committed + fulltest-green + zero-regression):
+7. **C++14 variable templates** (249b7a5) — `template<...> [inline constexpr] T
+   name = init;` register (var_template_map) + use-site `name<Arg>` resolves to the
+   arg-substituted initializer (parsed inline). Fixed `<numbers>` e_v/pi_v. New
+   test testvartemplate. (Narrow gap NOT on path: `(int)name<T>` cast-operand use
+   hits a different undeclared-id path.)
+8. **C++20 bit-field default member initializers** (e340f70) — `unsigned m:1 = 0;`
+   skip the `= init` after each width. Fixed `<bits/max_size_type.h>`:428. New test
+   testbitfieldinit.
+
+Progress (`#include <map> --std=c++20`): iterator_concepts.h → uses_allocator.h →
+`<numbers>` → max_size_type.h → now **"Expecting integer constant expression"
+(~line 791, the numeric_limits<__max_size_type/__max_diff_type> constexpr region)**
+(frontier @ e340f70). 8 new conformance tests total. fulltest 647/5.
+
+**NEXT = constexpr-folding wall.** gdb the "Expecting integer constant expression"
+throw (parser.cpp — grep the string) under `--std=c++20 tmp/map_inc.mad` to get the
+REAL header:line (the displayed `tmp/map_inc.mad:791` is the display-file artifact;
+gdb `tn->file/line` gives the truth, as for the earlier walls). Likely a constexpr
+member / non-type value madc can't fold in the `__max_size_type` numeric_limits
+specialization. Reduce, fix the fold, fulltest, commit, continue. The method is
+proven: 8 fixes deep, each a general C++-conformance win, driving toward exposing
+`contains`.
+
 ## Update 13 — WALL C is an ACTIVE CASCADE now (6 fixes landed), not a deferred unknown
 
 Reframing: testmap/testset are blocked ONLY by `contains` (Update 11), and `contains`
