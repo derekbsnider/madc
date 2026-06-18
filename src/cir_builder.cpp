@@ -4205,7 +4205,17 @@ bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 		}
 		if (ci->args.size() != 1 || !ci->args[0])
 			continue;
-		node_t asgn = node2(N_ASSIGN, fld, translate_expr(ci->args[0]), origin);
+		node_t init = translate_expr(ci->args[0]);
+		// A reference member (`T& m`, lowered to a pointer slot) BINDS to its
+		// initializer's address rather than copying a value: `m(e)` means
+		// `m = &e`. translate_expr yields the referent lvalue (e.g. `*x` for a
+		// reference argument), so address-of recovers the pointer (`&*x == x`).
+		// Without this the struct VALUE was stored into the pointer slot
+		// ("incompatible types in assignment to a pointer") — hit by
+		// _Rb_tree::_Auto_node's `_Rb_tree& _M_t` init `_M_t(__t)`.
+		if (m.second && m.second->is_reference())
+			init = node1(N_ADDR, init, origin);
+		node_t asgn = node2(N_ASSIGN, fld, init, origin);
 		flush_pending_stmts(out);
 		out.push_back(node2(N_EXPR, list(), asgn, origin));
 		any = true;

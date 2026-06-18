@@ -15521,6 +15521,23 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			{
 			    tv_var      = &tm->var;
 			    struct_type =  tm->var.type;
+			    // A reference-typed MEMBER (`A& m;` — e.g. _Rb_tree::
+			    // _Auto_node's `_Rb_tree& _M_t`) is lowered to a pointer;
+			    // member access `m.x` is `m->x`, so unwrap struct_type to the
+			    // referent class for member/method lookup while tv_var keeps the
+			    // pointer-typed reference for codegen. Mirrors the ttVariable
+			    // reference clause above — without it `m.field`/`m.method()` on a
+			    // reference member threw "member reference is not a structure or
+			    // union".
+			    if ( tm->var.is_reference()
+			      && struct_type && struct_type->is_pointer() )
+			    {
+				DataDefPTR *rp = dynamic_cast<DataDefPTR *>(struct_type);
+				if ( rp && rp->base_type
+				  && (rp->base_type->is_struct()
+				   || rp->base_type->is_object()) )
+				    struct_type = rp->base_type;
+			    }
 			}
 			else if ( TokenDeref *tdl = dynamic_cast<TokenDeref *>(lhs_dot) )
 			{
