@@ -85,6 +85,24 @@ the success overload wins. Confirmed RULED OUT: reselect_static_member_overload,
 resolve_member_template_call_return_type ([WB rsm]/[WB rmt] silent), and the
 ~4390 decltype-in-type branch (only void* once).
 
+**LEAD (from READING TokenTYPEDEF::parse, verify next session):** that function has
+NO decltype-parse branch — `base_dd` is set ONLY at parser.cpp:25276 (`tn` is a
+`ttDataType`) or 25288 (contextual identifier), each via
+`resolve_declared_type_token`. Since the decltype-in-type branch (~4390) never fires
+for `_S_test`, the `decltype(_S_test<...>(0))` operand was almost certainly
+**pre-resolved to `__failure_type` during INSTANTIATION CLONING** (the wrong
+`_S_test` overload chosen at substitution time), so by the time the typedef is
+parsed, `tn` arrives as an already-resolved `ttDataType(__failure_type)`. If so, the
+3b fix is NOT in TokenTYPEDEF::parse at all — it is in the instantiation-time
+decltype / member-type resolution during `__result_of_impl`'s body clone (where
+`decltype(_S_test<F,Args...>(0))` is evaluated and the `_S_test(int)`-vs-`(...)`
+overload picked). VERIFY: gdb-break parser.cpp:25276 (or 25540 cond __failure_type)
+and inspect whether `tn` is a `ttDataType` named `__failure_type` (→ clone-time
+pre-resolution confirmed) vs a raw `decltype` token; then grep/trace the
+instantiation clone path (instantiate_template_use body loop + any decltype/
+member-type pre-resolution it triggers) for where the `_S_test` overload is selected,
+and apply explicit-pack distribution so the success overload wins.
+
 **(earlier partial-narrowing notes — some superseded by the pin above)**
 - CONFIRMED: the typedef `typedef decltype(_S_test<_Functor,_ArgTypes...>(0)) type;`
   resolves through `TokenTYPEDEF::parse` → `resolve_declared_type_token` decltype
