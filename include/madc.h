@@ -1225,6 +1225,11 @@ public:
 	// For a partial spec: the pattern token sequence per arg slot (e.g. ["T","*"]
 	// for `X<T*>`). Empty for a primary template.
 	std::vector<std::vector<TokenBase *>> spec_pattern;
+	// C++20 requires-clause on a partial spec (`requires C<I>`): cloned
+	// constraint tokens (the `requires` keyword excluded). Empty =
+	// unconstrained. match_partial_specialization folds this (typeparams
+	// substituted) and rejects the candidate when it is false.
+	std::vector<TokenBase *> constraint;
 	TemplateDef() : has_non_type_params(false), owner_class(nullptr),
 			is_partial_specialization(false) {}
     };

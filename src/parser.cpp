@@ -15495,6 +15495,50 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	      && !pack_ded.count(spec.typeparams[k]) ) { all = false; break; }
 	if ( !all )
 	    continue;
+	// C++20: a CONSTRAINED partial spec applies only if its requires-clause is
+	// SATISFIED for the deduced args. Substitute the deductions into the clause
+	// and fold it as a constant (concept-ids resolve via the concept evaluator,
+	// Updates 18-20); reject the candidate on 0/failure. Without this a
+	// same-pattern constrained spec is always applied — `__iter_traits_impl`'s
+	// `requires __primary_traits_iter<_Iter>` and `indirectly_readable_traits`'s
+	// `__has_member_value_type _Tp` were wrongly selected for char* (reducer
+	// tmp/ic7.mad), breaking `__iter_traits<char*>::iterator_concept`.
+	if ( !spec.constraint.empty() )
+	{
+	    std::map<std::string, TokenDataType *> csub;
+	    for ( std::map<std::string, DataDef *>::iterator di = ded.begin();
+		  di != ded.end(); ++di )
+		if ( di->second )
+		    csub[di->first] = new TokenDataType(di->second->name.c_str(),
+							*di->second);
+	    std::vector<TokenBase *> ctoks =
+		clone_template_tokens_with_type_subst(spec.constraint, csub);
+	    bool satisfied = false;
+	    if ( !ctoks.empty() )
+	    {
+		std::deque<TokenBase *> saved = tokens;
+		size_t sd = diagnostics.size();
+		Program::ErrorInfo se = last_error;
+		std::deque<TokenBase *> cbody;
+		for ( TokenBase *t : ctoks )
+		    if ( t )
+			cbody.push_back(t->clone());
+		cbody.push_back(new TokenSemi());
+		tokens = cbody;
+		std::streambuf *sc = std::cerr.rdbuf();
+		std::ios::iostate sst = std::cerr.rdstate();
+		std::cerr.rdbuf(&g_madc_null_streambuf);
+		try { satisfied = parse_constant_integer_expression() != 0; }
+		catch ( ... ) { satisfied = false; }
+		std::cerr.rdbuf(sc);
+		std::cerr.clear(sst);
+		tokens = saved;
+		if ( !satisfied )
+		{ diagnostics.resize(sd); last_error = se; }
+	    }
+	    if ( !satisfied )
+		continue;   // constraint unsatisfied -> this spec does not apply
+	}
 	if ( score > best_score )
 	{
 	    best = &spec;
@@ -32053,11 +32097,30 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     }
 
     // C++20 requires-clause between the template-parameter-list and the
-    // declaration (`template<...> requires C<T> struct X ...`): consume it
-    // so the dispatch below sees the real declaration head. madc does not
-    // evaluate constraints (no concepts); the declaration parses as if
-    // unconstrained.
-    pgm.skip_requires_clause();
+    // declaration (`template<...> requires C<T> struct X ...`): consume it so
+    // the dispatch below sees the real declaration head. CAPTURE the clause
+    // tokens (saved-prefix: skip_requires_clause only pops from the front of
+    // `tokens`, so the consumed tokens are the popped prefix of the snapshot)
+    // for a PARTIAL specialization — match_partial_specialization evaluates it
+    // to decide whether the constrained spec applies (`__iter_traits_impl`'s
+    // `requires __primary_traits_iter<_Iter>`, `indirectly_readable_traits`'s
+    // `__has_member_value_type _Tp`, …). The leading `requires` keyword (index
+    // 0) is dropped. A primary template ignores it.
+    std::vector<TokenBase *> partial_spec_constraint;
+    {
+	std::deque<TokenBase *> before = pgm.tokens;
+	pgm.skip_requires_clause();
+	size_t consumed = before.size() > pgm.tokens.size()
+			? before.size() - pgm.tokens.size() : 0;
+	// Guard: only trust the prefix when `tokens` is still a clean suffix of
+	// the snapshot (no token was pushed back, e.g. a split `>>`).
+	bool clean_suffix = consumed <= before.size()
+			 && pgm.tokens.size() + consumed == before.size();
+	if ( clean_suffix )
+	    for ( size_t i = 1; i < consumed; ++i )
+		if ( before[i] )
+		    partial_spec_constraint.push_back(before[i]->clone());
+    }
 
     // Expect `class|struct Name` then capture through the matching '}'.
     TokenBase *class_kw = pgm.nextToken();
@@ -32355,6 +32418,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	// instantiated now (it instantiates on demand, per concrete use).
 	td.is_partial_specialization = true;
 	td.spec_pattern = spec_pattern_tokens;
+	td.constraint = partial_spec_constraint;   // C++20 requires-clause (may be empty)
 	pgm.partial_spec_map[class_name].push_back(td);
 	return NULL;
     }
