@@ -24,11 +24,26 @@ superseded by running map to completion: the real hard blocker was `__range_iter
 (fix 10), now cleared.
 
 **To actually PASS testmap/testset:** they need `--std=c++20` (for `contains`), so
-once the cascade fully clears (current frontier: the using-alias wall at line 141,
-then map's own instantiation with contains), add a `tests/testmap.flags` /
-`testset.flags` = `--std=c++20` fixture. NEXT: gdb the testmap.mad:141 "Expecting
-type in using alias" throw (parser.cpp:19815) for the real header:line + construct,
-reduce, fix, continue.
+once the cascade fully clears, add a `tests/testmap.flags` / `testset.flags` =
+`--std=c++20` fixture.
+
+**NEXT FRONTIER = CONCEPT EVALUATION (the hard tail — a major C++20 feature, NOT a
+quick syntactic fix).** gdb pinned the testmap.mad:141 wall to
+`<bits/stl_iterator.h>:166`, inside `std::reverse_iterator`'s instantiation:
+`using iterator_concept = __conditional_t<random_access_iterator<_Iterator>,
+random_access_iterator_tag, bidirectional_iterator_tag>;`. The condition
+`random_access_iterator<_Iterator>` is a **C++20 concept used as a bool non-type
+argument** to `__conditional_t`. madc REGISTERS concept names (fix 3) but does NOT
+EVALUATE concept satisfaction (requires-expressions / nested-concept checks), so the
+bool can't fold → the `__conditional_t<...>` target doesn't resolve → "Expecting
+type in using alias". Real concept evaluation is a large feature (evaluate a
+concept's requires-clause for concrete args → true/false). PRAGMATIC INTERIM to keep
+the cascade moving: when `__conditional_t`/`conditional_t`'s bool condition is an
+unevaluable concept-id, pick a branch heuristically — for `random_access_iterator
+<It>` on a map/list iterator the answer is FALSE → `bidirectional_iterator_tag`
+(correct here; would be wrong for vector — so scope/flag it, or evaluate the
+specific iterator concepts properly). This wall warrants a dedicated, careful
+effort rather than the rapid syntactic loop.
 
 
 ## Update 15 — Wall C cascade: 9 fixes landed (fix 9 = var-template in constant ctx)
