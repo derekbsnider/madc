@@ -4048,6 +4048,73 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
       && class_scope_stack.back() == td.owner_class )
 	class_scope_stack.pop_back();
 
+    // FALLBACK: the body failed to resolve in the CALLER's context, but it was
+    // written in the alias's DEFINING namespace and may reference a sibling
+    // member UNQUALIFIED (`getvt = typename midalias<T>::value_type;` where the
+    // sibling alias `midalias` is in the same namespace). When this alias is
+    // reached via a QUALIFIED use from outside (`foo::getvt<X>`) that namespace
+    // is not lexically active, so the sibling was undeclared. Retry ONCE with
+    // the defining namespace activated — strictly additive (only on a prior
+    // failure), so it cannot change any resolution that already succeeded.
+    // Real trigger: the std::__detail `iter_value_t`/`__iter_traits` alias chain
+    // pulled by reverse_iterator at --std=c++20.
+    if ( !resolved && !td.defining_namespace.empty()
+      && current_namespace() != td.defining_namespace )
+    {
+	std::vector<TokenBase *> inj2;
+	for ( TokenBase *bt : td.target )
+	{
+	    if ( bt->type() == TokenType::ttIdentifier )
+	    {
+		const std::string &s = ((TokenIdent *)bt)->str;
+		std::map<std::string, TokenDataType *>::iterator si = subst.find(s);
+		if ( si != subst.end() )
+		{
+		    inj2.push_back(si->second->clone());
+		    continue;
+		}
+	    }
+	    inj2.push_back(bt->clone());
+	}
+	TokenSemi *sentinel2 = new TokenSemi();
+	inj2.push_back(sentinel2);
+	for ( std::vector<TokenBase *>::reverse_iterator it = inj2.rbegin();
+	      it != inj2.rend(); ++it )
+	    pushToken(*it);
+
+	bool po2 = false;
+	if ( td.owner_class )
+	{ class_scope_stack.push_back(td.owner_class); po2 = true; }
+	namespace_stack.push_back(td.defining_namespace);
+
+	TokenBase *head2 = nextToken();
+	try { resolved = resolve_declared_type_token(head2, true, true); }
+	catch ( ... ) { resolved = NULL; }
+
+	if ( !namespace_stack.empty()
+	  && namespace_stack.back() == td.defining_namespace )
+	    namespace_stack.pop_back();
+	if ( po2 && !class_scope_stack.empty()
+	  && class_scope_stack.back() == td.owner_class )
+	    class_scope_stack.pop_back();
+
+	bool hs2 = false;
+	for ( size_t si = 0; si < tokens.size(); ++si )
+	    if ( tokens[si] == sentinel2 ) { hs2 = true; break; }
+	if ( hs2 )
+	{
+	    while ( peekToken() && peekToken() != sentinel2 )
+		nextToken();
+	    if ( peekToken() == sentinel2 )
+		nextToken();
+	}
+	else if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	    nextToken();
+
+	if ( resolved )
+	    return use_site_type_token(resolved, tb);
+    }
+
     if ( !resolved && td.owner_class
       && class_has_unresolved_dependent_surface(td.owner_class) )
     {
