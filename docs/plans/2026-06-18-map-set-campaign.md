@@ -59,6 +59,41 @@ a faithful reducer that reaches the partial-spec body WITH sticky on (the void_t
 detection wrapper) — synthetic `X<...>::member` exprs go OPAQUE (different path) and
 mislead. Deep template-machinery work; multi-step, fulltest-gated for regressions.
 
+**UPDATE 29-B — DEEPER: the REAL-chain root is a MISSING PARTIAL-SPEC REGISTRATION,
+not pack expansion.** A `MADC_DBG_WB` capture probe at the template-body capture site
+(parser.cpp:~32518, removed) dumped EVERY `__result_of_impl` registered while parsing
+real `<type_traits>`: the PRIMARY (`typedef __failure_type type;`, type_traits:2536)
+and TWO partials — `<true,false,_MemPtr,_Arg>` (`: public __result_of_memobj<…>`, 2542)
+and `<false,true,_MemPtr,_Arg,_Args...>` (`: public __result_of_memfun<…>`, 2548). The
+THIRD partial — **`<false,false,_Functor,_ArgTypes...> : private __result_of_other_impl
+{ typedef decltype(_S_test<_Functor,_ArgTypes...>(0)) type; }` (type_traits:2565) — is
+NEVER REGISTERED** (absent from partial_spec_map). So `__result_of_impl<false,false,
+Cmp&,…>` finds no matching spec and falls back to the PRIMARY → `typedef __failure_type
+type;` → `__invoke_result`'s base = `__failure_type` → no `::type` → `__is_invocable`
+false. The two registered specs come BEFORE `struct __result_of_other_impl` (2554); the
+missing one comes AFTER it — so parsing `__result_of_other_impl` (a NON-template struct
+whose two `_S_test` static member-function templates have a `decltype(declval<_Fn>()(
+declval<_Args>()...))` return + a `template<typename...> _S_test(...)` variadic overload)
+likely derails/consumes past the following partial-spec declaration. NO visible parse
+error (invoc2.mad emits only the final `must be invocable`) — a silent skip.
+
+**Synthetic reducers DIVERGE (do NOT chase them):** tmp/roi7.mad reproduces the SHAPE
+(primary + `<true,false>` + `__result_of_other`-style struct + `<false,false,F,A...>`
+spec with a decltype-pack body) but madc REGISTERS all three specs there (WB-cap fires
+3×) and the failure is then the OPAQUE-instantiation path (top-level `X<…>::member`
+doesn't set allow_variadic_real_inst → tag=0), NOT the missing-registration path. So
+roi7 is a DIFFERENT bug. The real-header skip needs the full type_traits context.
+
+**NEXT-SESSION (ordered):** (1) instrument the template-DECLARATION parse entry (where
+`template<…> struct __result_of_impl<pattern>` is recognized and spec_pattern collected,
++ the registration at parser.cpp:32530) — print every `__result_of_impl` spec_pattern
+ATTEMPTED, and whether parsing `__result_of_other_impl`'s `_S_test` overconsumes (the
+variadic `_S_test(...)` + the declval-call decltype return). Pin WHY the 2565 spec decl
+is skipped. (2) Once registered, the SECONDARY bug (roi7: opaque path / pack-body
+expansion) likely also needs the flag-scoping fix above. Both fulltest-gated. Reducers:
+tmp/invoc2.mad (real, folds false), tmp/roi7.mad (shape, opaque-path tag=0),
+tmp/packbind2.mad (forwarded-pack-drops, fwd_pack=0).
+
 ## Update 28 — if-condition wall FIXED (C++17 init-statement support for `if` AND `switch`); cascade now at `_S_key` / `_M_at_eof`
 
 **FIXED, fulltest 652/5/0/18 (+1 = new tests/testifinit, ZERO regression; EXE
