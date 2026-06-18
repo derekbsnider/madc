@@ -1,6 +1,50 @@
 # map / set bring-up campaign — diagnosis & plan
 
-**Status:** IN PROGRESS — std::tuple bring-up done; map operator[] / set insert / contains remain (2026-06-18)
+**Status:** IN PROGRESS — std::tuple bring-up done; A3.2 done; map `operator[]`
+now reaches the `_M_emplace_hint_unique` variadic-member-template wall; set insert
+(B) / contains (C) remain (2026-06-18)
+
+## Update 3 — A3.2 DONE (commit 32d7ccb)
+
+**A3.2** `32d7ccb` — pack-expansion `...` in EXPRESSION context. The orphaned
+`...` was NOT in the clone loop (the base-clause/typedef `_Elements...` ARE
+consumed there). gdb on the live failing call (not the inherited clone position)
+showed it is in the LAZY-INSTANTIATED tuple ctor's mem-initializer list:
+`parse_deferred_lazy_body → parseFunction → parse_ctor_initializer_list`, parsing
+`_Inherited(std::forward<_UElements>(__elements)...)`. The deduced parameter pack
+is materialized as concrete param(s) the pattern already names, but the trailing
+`...` survived; `parseExpression` (conditional) ran the completed operand into the
+`...` as member-access `.` → "Missing operand".
+Fix (deepest correct layer): in `parseExpression`'s post-operand peek, recognize a
+pack-expansion `...` (three dots, via existing `consume_ellipsis()`) — distinct
+from a single `.` member access — consume it and end the expression. General to
+every expression-context pack expansion. `tmp/tup_ref.mad`/`tmp/tup_direct.mad`
+compile+run; fulltest **637/5/0/18**, zero regressions.
+
+### NEXT WALL (precise, next-session start point): map `_M_emplace_hint_unique`
+`tmp/map_min2.mad` now advances PAST the incomplete-struct tuple wall to c2mir
+CHECK errors: "incompatible types in assignment to struct/union" + "incomplete
+struct or union" at the `operator[]` emplace site. Root cause (traced via
+`--emit=c11`): `_M_emplace_hint_unique` appears ONLY at the call site in the
+emitted C — never declared, never defined. It is a **variadic member function
+template** (`stl_tree.h:1086` `template<typename... _Args> iterator
+_M_emplace_hint_unique(const_iterator, _Args&&...)`). madc does not instantiate
+it for the deduced `_Args = {piecewise_construct_t, tuple<const key_type&>,
+tuple<>}`, so the call emits as an undeclared (implicit-int) function → `__i =
+<int>` assigned to the struct iterator `__i` → "incompatible types in assignment
+to struct/union".
+The fix is **variadic member-FUNCTION-template instantiation** (sibling to the
+variadic CLASS-template work A1–A3, and to Wall B's `__is_invocable`): deduce the
+pack from the call args, instantiate + emit the member body (`stl_tree.h:2459+`),
+which then pulls in `_M_get_insert_hint_unique_pos` / `_M_insert_` / node alloc /
+`_Construct` with `piecewise_construct` pair construction. Large; genuinely the
+plan's "emplace/piecewise codegen" sub-wall. Reducer `tmp/map_min2.mad`,
+`--emit=c11` to `tmp/map_min2.c` shows the bare call at the `__i = ..._M_emplace_
+hint_unique(&__this->_M_t, __i, piecewise_construct, __madc_objtmp_6,
+__madc_objtmp_7)` line.
+
+---
+
 
 ## Progress log (2026-06-18)
 
