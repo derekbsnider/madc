@@ -33,6 +33,31 @@ fulltest **637 / 5 / 0 / 18** (the 5 below; +2 new passing tests, zero regr).
 No single wall makes a test pass (each test needs 2+). Next: A3 (expression-
 temporary object-context real-instantiation), then B, then C.
 
+### Update 2 — A3.1 done, map chain advanced (a65d59d)
+- **A3.1** `a65d59d` — real-instantiate variadic templates in CONSTRUCTION
+  expressions (`ns::Tmpl<...>(args)`): parseExpr_identifierArm's ns-qualified
+  template-id arm now peeks past the balanced `<...>` and, if a `(` follows
+  (construction), sets the object-context flag. map's `operator[]` tuple
+  temporary `std::tuple<const key_type&>(__k)` now real-instantiates (was opaque
+  + key_type-textual). fulltest 637/5, zero regr. No standalone test (user-ns
+  construction-expr hits a separate "not a member" wall; std::/map exercises it).
+- map `operator[]` now advances PAST the c2mir incomplete-struct codegen wall to
+  a deeper PARSE wall: instantiating `std::tuple<const key_type&>` (reference
+  element) pulls in pointer_traits, and `_Ptr<...>` (a template with a NON-TYPE
+  arg) hits `fold_nontype_arg_constant` → `parse_constant_integer_expression` →
+  **"Missing operand"** (the 1-token non-type arg isn't a foldable constant —
+  a dependent expr that didn't substitute, or a type-as-non-type-arg). Frontier
+  for A3.2. Then still: `_M_emplace_hint_unique` + `piecewise_construct` codegen.
+
+### Session-end state (2026-06-18)
+6 code commits (A1, A2.1, A2.2, A2.3, A3.1) + 2 doc commits, all pushed, fulltest
+**637/5/0/18**, zero regressions throughout. Real `std::tuple<T>`/`<T1,T2>`
+instantiate+run. The 5 map/set/ns tests remain (each needs 2+ deep walls):
+map → A3.2 (`_Ptr` non-type fold) + tuple-reference-element + emplace/piecewise;
+set → B (`__is_invocable`); both map/set also → C (`contains` needs `ranges`).
+This is a genuine multi-session campaign; the std::tuple foundation is the big
+unlock done here.
+
 ---
 
 **Original diagnosis (2026-06-18)**
