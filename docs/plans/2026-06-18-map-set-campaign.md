@@ -1,9 +1,39 @@
 # map / set bring-up campaign — diagnosis & plan
 
-**Status:** IN PROGRESS — std::tuple bring-up + A3.2 + multi-element parameter
-packs done; map `operator[]` now instantiates the emplace body and reaches the
-`_Rb_tree::_Auto_node::_M_insert` receiver-type wall; set insert (B) / contains
-(C) remain (2026-06-18)
+**Status:** IN PROGRESS — std::tuple + A3.2 + multi-element packs + reference data
+members done; map `operator[]` now reaches **Wall B (`__is_invocable`)** via
+`_Rb_tree::_S_key`'s static_assert (the same trait set::insert needs); contains
+(C) still remains (2026-06-18)
+
+## Update 5 — reference data members DONE (commit bd9918d)
+
+Two reference-data-member bugs (both hit by `_Rb_tree::_Auto_node`'s
+`_Rb_tree& _M_t` member, reproduced by minimal non-template reducers):
+- **Access**: member/method access through a reference member threw "member
+  reference is not a structure or union" — `parseExpr_identifierArm`'s ttMember
+  branch didn't unwrap a reference receiver before the is_struct/is_object check
+  (the ttVariable branch already did). Fixed: mirror the unwrap in ttMember.
+- **Init**: initializing a reference member emitted "incompatible types in
+  assignment to a pointer" — `emit_member_inits` lowered `m(e)` as
+  `m = translate_expr(e)`, but a reference member binds to its initializer's
+  ADDRESS (`m = &e`). Fixed: wrap the init in N_ADDR for reference members.
+New test `tests/testrefmember.mad`. fulltest 639/5, zero regr. map advanced past
+both _Auto_node walls.
+
+### NEXT WALL = Wall B (`__is_invocable`), now CONFIRMED shared map+set
+`tmp/map_min2.mad` now fails "use of undeclared identifier '_S_key'" — downstream
+of `_Rb_tree::_S_key`'s body NOT registering, because its body holds
+`static_assert(__is_invocable<_Compare&, const _Key&, const _Key&>{}, ...)`
+(stl_tree.h:764) and madc cannot fold `__is_invocable` (grep: referenced only in
+a comment, never implemented). `_S_key` is used pervasively in the insert/compare
+path, and set::insert's overload resolution needs the same trait — so Wall B is
+the single shared blocker for BOTH containers now. It is a deep SFINAE trait
+(evaluate "is F callable with Args" — overload-resolution-as-SFINAE → bool),
+comparable to the vector<T*> `__construct_helper` trait engine; its own
+multi-step effort. After it: map's remaining _Rb_tree insert chain + Wall C
+(`contains`, C++20/ranges).
+
+---
 
 ## Update 4 — multi-element parameter packs DONE (commit 1bbb5b8)
 
