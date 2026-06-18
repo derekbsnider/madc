@@ -15285,7 +15285,16 @@ int64_t Program::evaluate_requires_expression_constant()
 	try
 	{
 	    TokenDataType *t = resolve_declared_type_token(nextToken(), true, true);
-	    ok = ( t != NULL );
+	    // Require the WHOLE type to be consumed (sentinel reached). A partial
+	    // resolution masquerading as success is the bug behind a lenient type
+	    // requirement: `typename T::value_type` with T=char* resolves the
+	    // leading `char*` but leaves `::value_type` unconsumed — that is an
+	    // ill-formed type (a pointer has no members), so the requirement is
+	    // UNSATISFIED. Without this, HasVT<char*> wrongly folds true and a
+	    // concept-constrained partial spec (`__iter_traits_impl`) selects the
+	    // wrong arm. The trailing ';' sentinel marks full consumption.
+	    ok = ( t != NULL && peekToken()
+		&& peekToken()->id() == TokenID::tkSemi );
 	}
 	catch ( ... ) { ok = false; }
 	std::cerr.rdbuf(sc);
