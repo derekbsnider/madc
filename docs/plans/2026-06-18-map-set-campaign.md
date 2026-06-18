@@ -59,9 +59,33 @@ Reducer `tmp/invoc2.mad` (folds false gracefully now). Probes to re-add: WB bloc
 `eval_void_t_detection_slot` (dump base_class/bases/aliases + resolve walk) and the
 `[WB inst]` line at instantiate_template_use's pack_real_inst.
 
-**3b route — PARTIALLY narrowed (this session, gdb). Two of the candidate paths
-are confirmed; the exact binding line is NOT yet pinned — do NOT trust the
-process-of-elimination guesses below as final.**
+**3b SYMPTOM SITE PINNED (gdb, verified this session).** A conditional breakpoint
+(`alias=="type" && dd->name=="__failure_type"`) caught the exact write:
+`__result_of_impl_0_0_Cmp__int32_t__int32_t_`'s `type` alias is set to
+**`__failure_type`** at **`TokenTYPEDEF::parse` parser.cpp:25540** (`record_typedef`),
+with `base_dd` resolved just above via `resolve_declared_type_token(tn,true,true)` at
+**~25316** (the typedef's type spec is `decltype(_S_test<_Functor,_ArgTypes...>(0))`).
+Backtrace confirms the full chain: `__is_invocable_impl` → `__invoke_result`
+(instantiate_template_use) → base `__result_of_impl<...>::type`
+(resolve_declared_type_token ~4423) → `__result_of_impl` instantiates → TokenCLASS
+member loop → this typedef. So `decltype(_S_test<Cmp&,const int&,const int&>(0))`
+resolves to `__failure_type` (the `_S_test(...)` failure overload) instead of
+`__result_of_success<bool>` (the `_S_test(int)` success overload).
+SURPRISE / still-open: the `decltype`-in-type branch of resolve_declared_type_token
+(parser.cpp ~4390/4411, `dd=expr->datadef()`) fires only ONCE in the whole run and
+for a `void*` — NOT for this `_S_test` decltype. So `resolve_declared_type_token`
+(called at 25316) resolves this `decltype(_S_test<...>(0))` by some OTHER sub-path
+(NOT the ~4390 parseExpression branch). NEXT-SESSION (exact recipe): gdb-break
+`parser.cpp:25316` conditioned on parsing `__result_of_impl`'s typedef (or break 25540
+on the `__failure_type` condition, then step DOWN/`step` into the 25316
+`resolve_declared_type_token` call) to find which sub-path resolves the `_S_test`
+decltype to `__failure_type`; that sub-path is where the `_S_test(int)`-vs-`(...)`
+overload selection happens and where explicit-pack distribution must be applied so
+the success overload wins. Confirmed RULED OUT: reselect_static_member_overload,
+resolve_member_template_call_return_type ([WB rsm]/[WB rmt] silent), and the
+~4390 decltype-in-type branch (only void* once).
+
+**(earlier partial-narrowing notes — some superseded by the pin above)**
 - CONFIRMED: the typedef `typedef decltype(_S_test<_Functor,_ArgTypes...>(0)) type;`
   resolves through `TokenTYPEDEF::parse` → `resolve_declared_type_token` decltype
   branch (parser.cpp ~4390: `++unevaluated_operand_depth; parseExpression(operand,
