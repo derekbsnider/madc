@@ -3281,8 +3281,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    break;
 	}
     std::vector<TokenBase *> inj;
+    // Indices of trailing `...` tokens (three tkDot) belonging to a pack-
+    // expansion PATTERN (`const _Elements&...`) whose pack we substituted
+    // in place — see the pack_subst handling below. Skipped when reached.
+    std::set<size_t> pack_pattern_skip_dots;
     for ( size_t bi = 0; bi < td.body.size(); ++bi )
     {
+	if ( pack_pattern_skip_dots.count(bi) )
+	    continue;
 	TokenBase *bt = td.body[bi];
 	if ( bt->type() == TokenType::ttIdentifier )
 	{
@@ -3324,6 +3330,44 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		  && td.body[bi+2]->id() == TokenID::tkDot
 		  && td.body[bi+3]->id() == TokenID::tkDot )
 		    bi += 3;   // consume the pack-expansion ellipsis
+		else if ( elems.size() == 1 )
+		{
+		    // Pack expansion PATTERN: the pack name is NOT immediately
+		    // followed by `...` (e.g. `const _Elements&...`), so the single
+		    // element was substituted in place above, leaving the pattern's
+		    // trailing `...` orphaned. Find it (the next three tkDot at the
+		    // pack's own nesting depth, before any `,`/`)`/`;`/`{`) and skip
+		    // it. Single-element only — a multi-arg pack pattern needs the
+		    // pattern REPEATED per element (not yet supported; left to error).
+		    int depth = 0;
+		    for ( size_t j = bi + 1; j + 2 < td.body.size(); ++j )
+		    {
+			TokenID jid = td.body[j]->id();
+			if ( jid == TokenID::tkLT || jid == TokenID::tkOpBrk
+			  || jid == TokenID::tkOpSqr )
+			    ++depth;
+			else if ( jid == TokenID::tkGT || jid == TokenID::tkClBrk
+			  || jid == TokenID::tkClSqr )
+			    --depth;
+			else if ( jid == TokenID::tkBSR )
+			    depth -= 2;
+			else if ( depth <= 0 && jid == TokenID::tkDot
+			  && td.body[j+1]->id() == TokenID::tkDot
+			  && td.body[j+2]->id() == TokenID::tkDot )
+			{
+			    pack_pattern_skip_dots.insert(j);
+			    pack_pattern_skip_dots.insert(j + 1);
+			    pack_pattern_skip_dots.insert(j + 2);
+			    break;
+			}
+			else if ( depth <= 0
+			  && (jid == TokenID::tkComma || jid == TokenID::tkClBrk
+			   || jid == TokenID::tkSemi || jid == TokenID::tkOpBrc) )
+			    break;   // pattern boundary, no `...` found
+			if ( depth < 0 )
+			    break;
+		    }
+		}
 		continue;
 	    }
 	    if ( s == td.class_name )

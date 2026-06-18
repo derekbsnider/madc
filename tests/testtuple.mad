@@ -1,0 +1,22 @@
+#!../bin/madc
+// Real libstdc++ std::tuple must instantiate as an object. The primary template
+// `tuple<_Elements...> : _Tuple_impl<0, _Elements...>` and its constructors use
+// pack-expansion PATTERNS (`const _Elements&...`) and the injected-class-name as
+// a template inside nested template-ids (`_UseOtherCtor<_Tuple, tuple<_Up>>`).
+// Before the Wall A2 fixes the body parse ran away ("Unexpected end of data").
+//
+// Covered: tuple<T> (1-element primary, single-element pack pattern) and
+// tuple<T1,T2> (the hand-written 2-element partial spec). A 3+-element primary
+// needs multi-element pack-pattern REPEAT, not yet supported (map needs only
+// the 1-element + the 0-element spec, so this suffices for the map/set track).
+#include <tuple>
+#include <iostream>
+using namespace std;
+
+int main()
+{
+    tuple<int> t1;
+    tuple<int, int> t2;
+    cout << "tuple ok" << endl;
+    return 0;
+}
