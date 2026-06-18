@@ -1,0 +1,28 @@
+// A friend free function may call PRIVATE METHODS of the befriending class,
+// not just access its private data members. (libstdc++ istreambuf_iterator's
+// C++20 `friend operator==` calls the private `_M_at_eof()` this way.)
+extern "C" int printf(const char *, ...);
+
+struct Sentinel {};
+
+struct Iter
+{
+public:
+	Iter(int n) : _n(n) {}
+	// hidden-friend operator: calls a private METHOD and reads a private member
+	friend bool operator==(const Iter &i, Sentinel)
+	{ return i._at_eof(); }
+private:
+	int _n;
+	bool _at_eof() const { return _n == 0; }
+};
+
+int main()
+{
+	Iter a(0);
+	Iter b(3);
+	Sentinel s;
+	printf("a==s: %d\n", a == s);
+	printf("b==s: %d\n", b == s);
+	return 0;
+}

@@ -13922,13 +13922,15 @@ static std::string member_access_violation(DataDef *owner_type,
 static std::string method_access_violation(DataDef *owner_type,
 					   const Variable *method,
 					   const std::string &display_name,
-					   DataDefCLASS *cur_class)
+					   DataDefCLASS *cur_class,
+					   const std::string &cur_function
+					       = std::string())
 {
     if ( !method )
 	return std::string();
     uint32_t acc = method->flags & (vfPRIVATE | vfPROTECTED);
     return access_flag_violation(acc, dynamic_cast<DataDefCLASS *>(owner_type),
-				 display_name, cur_class);
+				 display_name, cur_class, cur_function);
 }
 
 enum class QualifiedClassExprAction {
@@ -16379,7 +16381,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    DataDefCLASS *cur_class =
 				(code && code->method) ? code->method->owner_class : NULL;
 			    std::string av =
-				method_access_violation(struct_type, var, id, cur_class);
+				method_access_violation(struct_type, var, id, cur_class,
+				    current_function_friend_name(code));
 			    if ( !av.empty() )
 				Throw(tb) << av << flush;
 			}
@@ -16673,7 +16676,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				DataDefCLASS *cur_class =
 				    (code && code->method) ? code->method->owner_class : NULL;
 				std::string av =
-				    method_access_violation(base, var, id, cur_class);
+				    method_access_violation(base, var, id, cur_class,
+					current_function_friend_name(code));
 				if ( !av.empty() )
 				    Throw(tb) << av << flush;
 			    }
