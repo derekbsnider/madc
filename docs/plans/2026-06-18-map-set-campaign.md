@@ -43,6 +43,41 @@ plan's "emplace/piecewise codegen" sub-wall. Reducer `tmp/map_min2.mad`,
 hint_unique(&__this->_M_t, __i, piecewise_construct, __madc_objtmp_6,
 __madc_objtmp_7)` line.
 
+#### PRECISE ROOT CAUSE (traced 2026-06-18, MFI-DIAG instrumentation)
+The emplace call DOES route correctly: `parseExpression`→ method-call resolution →
+`instantiate_member_fn_template_for_call` (parser.cpp:29776). It PASSES every entry
+guard — fd `is_member_template=1`, `member_template_decl` non-empty,
+`member_template_owner` set, `template_param_names`=1 (`_Args`), owner `_Rb_tree<…>`
+NOT externally-defined (ext=0, extinst=0). It then calls
+`try_instantiate_namespace_fn_template` (parser.cpp:28459) with `typeparams=1,
+pack0=1` — and that **returns false**.
+
+`try_instantiate_namespace_fn_template` only supports a trailing parameter pack
+bound to **exactly ONE element** (its own comment, 28463-28464: "one parameter
+pack allowed in the LAST position (bound to exactly one element — `__stoa`'s
+`_Base...` shape)"). The emplace call passes a **3-element** pack
+(`piecewise_construct_t, tuple<const key_type&>, tuple<>`), so the guard at
+**parser.cpp:28496** `if (tc->parameters.size() > ov.param_spellings.size())
+return false;` (4 call args > 2 param spellings `[__pos, _Args&&...__args]`)
+rejects it immediately. The single-element pack binding (28538-28551) likewise
+binds the pack to ONE remaining arg.
+
+So the real next-wall task is **multi-element (N≥2) trailing parameter packs** in
+member-function-template deduction + instantiation:
+1. parser.cpp:28496 — let a trailing pack absorb `args.size() - (nonpack params)`
+   arguments instead of rejecting arg-count > spelling-count.
+2. parser.cpp:28538-28551 — bind the pack to the VECTOR of remaining arg types
+   (not one), like the class-template `pack_subst` does.
+3. Body instantiation — expand each `pattern...` (in args AND mem-init) to N
+   copies with per-element substitution. NOTE: A3.2's `parseExpression`
+   `consume_ellipsis()` only DROPS the `...` (correct for a size-1 collapsed
+   pack); multi-element needs real repetition — the same N-element gap the clone
+   loop has. Decide whether to expand at substitution time (preferred, mirrors
+   `pack_subst` in `instantiate_template_use`) so the body parser sees N concrete
+   args and no `...`.
+Then the downstream `_M_get_insert_hint_unique_pos`/`_M_insert_`/node-alloc/
+`piecewise` pair-construction chain (each likely its own sub-wall).
+
 ---
 
 
