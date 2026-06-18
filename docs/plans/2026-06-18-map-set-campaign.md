@@ -1,5 +1,30 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 12 — 3b causal model RESOLVED (clone-time collapse), exact mechanism still 1 layer down
+
+gdb settled the contradiction from Updates 10–11. At `TokenTYPEDEF::parse` for
+`__result_of_impl_0_0_Cmp__int32_t__int32_t_`'s `type` member, the base type
+**arrives already collapsed to the identifier `__failure_type`** (gdb: base-id at
+parser.cpp:25291 is `__failure_type`, NOT `decltype`; a SEPARATE typedef carries the
+`decltype` base-id and is the lone `void*` the ~4390 branch resolves). Backtrace
+confirms it is inside `__result_of_impl`'s instantiation (instantiate_template_use
+frame). So `decltype(_S_test<_Functor,_ArgTypes...>(0))` is collapsed to
+`__failure_type` DURING `__result_of_impl`'s body instantiation, BEFORE the typedef
+is parsed — and NOT via the `resolve_declared_type_token` ~4390 decltype branch
+(verified: that branch fires once, for `void*`). The clone loop in
+instantiate_template_use (parser.cpp ~3275–3414) does pure token substitution with
+no decltype resolver, so the collapse happens in a decltype-resolution path invoked
+during the instantiation body re-parse that is NEITHER ~4390 NOR
+reselect_static_member_overload NOR resolve_member_template_call_return_type (all
+three verified silent/void* for `_S_test`). NEXT (one more focused step):
+break `parser.cpp:25291` cond `tname=="__failure_type"`, then work BACKWARD (the
+base token is already `__failure_type` here, next token id=60 — decode it) to find
+where, during `__result_of_impl`'s instantiation, `decltype(_S_test<...>(0))` was
+evaluated and the `_S_test(...)` failure overload chosen over `_S_test(int)`. That
+is the 3b fix site; apply explicit-pack distribution so the success overload wins.
+(3b gates testsubscript/testcontainerdtor/testmadc_ns — NOT testmap/testset, which
+need Wall C; see Update 11.)
+
 ## Update 11 — VERIFIED per-test wall mapping (CORRECTS earlier assumptions)
 
 Ran each failing test at HEAD (`48dde1e`) and read the FIRST error. The walls are
