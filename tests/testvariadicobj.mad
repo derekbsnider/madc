@@ -12,6 +12,12 @@ struct Holder {
     int first;
 };
 
+// Forward-declared variadic template: the forward decl registers BOTH a
+// datatype_map placeholder and a template_map entry, so `Bag<int> b;` must
+// still resolve as a template-id (not hand the bare `Bag` to the declarator).
+template<typename... Ts> struct Bag;
+template<typename... Ts> struct Bag { int n; int v; };
+
 int main()
 {
     Holder<int> h;
@@ -19,5 +25,11 @@ int main()
     h.first = 42;
     cout << "count: " << h.count << endl;
     cout << "first: " << h.first << endl;
+
+    Bag<int> b;
+    b.n = 2;
+    b.v = 7;
+    cout << "bag n: " << b.n << endl;
+    cout << "bag v: " << b.v << endl;
     return 0;
 }

@@ -35718,7 +35718,19 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    return parseExprStmt(tb);
 		}
 		datatype_map_iter dmi = datatype_map.find(tname);
-		if ( dmi == datatype_map.end() )
+		// A template-id `Name<...>` must resolve as a template instantiation
+		// even when `Name` ALSO has a datatype_map entry — a forward template
+		// declaration (`template<typename...> class tuple;`) registers BOTH an
+		// incomplete datatype_map placeholder and a template_map entry. Without
+		// this, the known-datatype branch below hands the bare `tuple` to
+		// parseDeclaration with `<int> t` unconsumed ("Expecting identifier
+		// after type" at the `>`). Prefer template-id resolution when a '<'
+		// follows a name that is a template/alias template.
+		bool name_is_template_id = peekToken()
+			&& peekToken()->id() == TokenID::tkLT
+			&& (template_map.count(tname)
+			    || template_alias_map.count(tname));
+		if ( dmi == datatype_map.end() || name_is_template_id )
 		{
 			    // Statement-leading template name as a declaration is a
 			    // STORAGE/object context: let a concrete-arg variadic
