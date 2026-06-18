@@ -24448,11 +24448,20 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     }
 
     // class Name { ... } variable;
-    // class Name { ... } const variable; — cv-qualifiers between the closing
-    // '}' and the declarator are no-ops for madc's type model; skip them
-    // (libstdc++'s `struct _Save_errno {...} const __save_errno;` shape).
+    // class Name { ... } [cv/storage-specifiers] variable; — specifiers between
+    // the closing '}' and the declarator are no-ops for madc's type model; skip
+    // them. cv: libstdc++'s `struct _Save_errno {...} const __save_errno;`.
+    // storage: `struct _Decay_copy final {...} inline constexpr __decay_copy{};`
+    // (iterator_concepts.h) — inline/constexpr/static before the instance name.
     while ( tn && (tn->id() == TokenID::tkCONST
-		|| tn->id() == TokenID::tkVOLATILE) )
+		|| tn->id() == TokenID::tkVOLATILE
+		|| tn->id() == TokenID::tkSTATIC
+		|| is_ignored_cpp_specifier_token(tn)
+		|| (is_contextual_identifier_token(tn)
+		 && (contextual_identifier_name(tn) == "inline"
+		  || contextual_identifier_name(tn) == "static"
+		  || contextual_identifier_name(tn) == "mutable"
+		  || contextual_identifier_name(tn) == "thread_local"))) )
     {
 	pgm.nextToken();
 	tn = pgm.peekToken();
