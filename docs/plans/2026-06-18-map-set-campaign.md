@@ -1,5 +1,32 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 21 — partial-spec `requires`-constraint NOW EVALUATED (Update-20 fix landed); next wall pinned
+
+**Update-20 fix LANDED (`41cbf56`, fulltest 651/5/0/18 zero regr).** A partial
+specialization's C++20 `requires`-clause is now captured on `TemplateDef::constraint`
+(at the template-decl handler, saved-prefix of the tokens skip_requires_clause
+consumes) and EVALUATED in `match_partial_specialization` (substitute the
+deductions, fold via the concept evaluator, reject the candidate when false).
+`tmp/ic7.mad` now selects primary-for-char*/spec-for-WithVT correctly; `ic4`/`ic1`
+pass. Cleared the testmap :505 wall (`__iter_traits<char*>::iterator_concept` —
+`__iter_traits_impl`'s `requires __primary_traits_iter<_Iter>` and
+`indirectly_readable_traits`'s `__has_member_value_type` now select right).
+
+**NEXT WALL (pinned via UA diag): qualified alias-template with a `typename
+T::member` argument.** testmap fails at `using iterator_category =
+__detail::__clamp_iter_cat<typename __traits_type::iterator_category,
+random_access_iterator_tag>;` (stl_iterator.h:~218, testmap.mad:141 attribution).
+UA diag: this alias `resolved=1` but `next='::'` — i.e. the resolver consumed only
+PART of the qualified alias-template-id and left a trailing `::`, then "Expecting
+';' after using alias" (parser.cpp:20318). The `__clamp_iter_cat<…>` is a QUALIFIED
+(`__detail::`) alias-template whose FIRST arg is `typename __traits_type::
+iterator_category` (a typename-qualified dependent member). Hypothesis: the
+qualified-alias-template-id arg parsing mishandles a `typename X::Y` argument
+(stops at the inner `::`). NEXT: reduce `NS::alias<typename T::member, U>` at
+--std=c++20 (mirror tmp/qa3.mad but with a `typename`-qualified first arg), find
+where arg collection stops early, fix. Also still: 1× recovered "undeclared std"
+leak at :141 (cosmetic, parse continues).
+
 ## Update 20 — ROOT CAUSE of the current frontier: partial-spec `requires`-constraint is ignored
 
 The Update-19 frontier (`tmp/ic4.mad`) is now root-caused precisely
