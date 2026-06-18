@@ -2,9 +2,75 @@
 
 **Status:** IN PROGRESS — std::tuple + A3.2 + multi-element packs + reference data
 members done; Wall B (`__is_invocable`) underway — 2 of its layers fixed
-(`integral_constant{}` fold; explicit-pack `_S_test` return type), more nested
-layers remain; map's `_S_key` still blocked; contains (C) still remains
-(2026-06-18)
+(`integral_constant{}` fold; explicit-pack `_S_test` return type); ROOT CAUSE of
+the remaining FALSE fold now pinned ON THE REAL CHAIN (Update 8): `__invoke_result`
+instantiates as an empty opaque shell, its dependent-member base-specifier never
+resolved → `_Result::type` absent → false_type. 3 ordered sub-walls remain; map's
+`_S_key` still blocked; contains (C) still remains (2026-06-18)
+
+## Update 8 — Wall B ROOT CAUSE confirmed ON THE REAL CHAIN (instrumented, not reduced)
+
+Per the Update-7 method warning, this session instrumented the REAL libstdc++
+`__is_invocable` chain (env-gated fprintf, run on `tmp/invoc2.mad`) instead of
+building synthetic reducers. The exact failing layer is now pinned:
+
+**`__invoke_result<Cmp&, const int&, const int&>` instantiates as an EMPTY OPAQUE
+SHELL** — `base_class=(none), bases=0, aliases=0`. Its dependent-member
+base-specifier `: public __result_of_impl<...>::type` is never resolved, so it
+never inherits `type=bool`. Therefore the `__void_t<typename _Result::type>`
+detection slot in `__is_invocable_impl<_Result, void, true, __void_t<...>>` finds
+`_Result::type` **ABSENT** → the true_type partial spec is rejected → the primary
+`false_type` is selected → `__is_invocable` folds **false**. (`__is_invocable`
+ITSELF real-instantiates fine; the empty arg `_Result` is the break.)
+
+Instrumentation that produced this (both removed; tree clean):
+- in `eval_void_t_detection_slot` (parser.cpp ~14595), the `_Result::type` walk:
+  dumped `pit->second` name + its `base_class`/`bases`/`type_aliases`, and each
+  `resolve_class_type_alias(cur, seg)` result. Output:
+  `base=__invoke_result_Cmp__int32_t__int32_t_ … bases=0 aliases=0 … seg 'type' -> (ABSENT)`.
+- in `instantiate_template_use` (parser.cpp ~2929): `pack_real_inst` per template.
+  Output: `__is_invocable pack_real_inst=1`, **`__invoke_result pack_real_inst=0`**.
+
+WHY `__invoke_result` goes opaque: `template_pack_real_instantiable(__invoke_result)`
+returns TRUE (body non-empty — `td.body` holds the whole `class … : base { }`; pack
+is the last param; all params are type params). The block is that
+`allow_variadic_real_inst` is **cleared at parser.cpp:2931** before the NESTED
+arg-instantiation of `__invoke_result` (it is instantiated as the template ARG
+`_Result` of `__is_invocable_impl`, deep inside the outer `__is_invocable` base
+resolution, where the flag is already off).
+
+DIRECTION CONFIRMED + NEXT WALL EXPOSED: forcing the flag on for `__invoke_result`
+(throwaway `WB_FORCE` hack on `tname=="__invoke_result"`) makes it real-instantiate
+and pull `__result_of_impl` — proving base resolution is the right lever — but
+exposes the NEXT layer: the dependent-member base-specifier
+`__result_of_impl< is_member_object_pointer<…>::value,
+is_member_function_pointer<…>::value, _Functor, _ArgTypes... >::type` fails to
+parse/resolve in the instantiation RE-PARSE path (cascades to a param-declarator
+throw at parser.cpp:32731, surfaced at type_traits:2583 `>::type`). NB
+`tmp/basequal.mad` (`struct D : holder<Base>::type`) parses fine at TOP level — the
+gap is the combination: partial-spec template-id + non-type `::value` trait args +
+trailing pack + the instantiation re-parse path.
+
+### ORDERED sub-walls for next session (each its own commit + fulltest, A1-style scoping)
+1. **Scoped real-instantiation of `__invoke_result`-shaped templates** — variadic,
+   value carried by a dependent-member BASE-specifier (not body members). The
+   capability already exists (`template_pack_real_instantiable` is true); the fix is
+   to let `allow_variadic_real_inst` reach this nested arg-instantiation in a
+   member-type-resolution context ONLY (scope like A1 `f40ba5e` so a pure trait /
+   `testsstream` does NOT regress — a blanket flag-drop regressed it before).
+2. **Dependent-member base-specifier resolution** in the instantiation re-parse:
+   `PartialSpecTemplate< nontype::value, nontype::value, Type, Pack... >::type` as a
+   base clause. Compute the two non-type bool args (member-pointer-trait `::value`),
+   match the partial spec, take `::type`.
+3. **`__result_of_impl<false,false,_Functor,_ArgTypes...>` partial-spec member
+   typedef** `typedef decltype(_S_test<_Functor, _ArgTypes...>(0)) type;` — the
+   explicit-pack expansion inside a CLASS-template member typedef (sibling of the
+   aeec6a9 return-type fix, on the class-member-typedef path). Yields
+   `__result_of_success<bool>` → `__success_type<bool>` → `type=bool`.
+Then `__invoke_result` inherits `type=bool`; `__void_t` detection succeeds;
+`__is_invocable` true; `_S_key` registers; both map (static_assert) and set
+(insert overload resolution) advance. Reducer (REAL chain, do NOT synthesize):
+`tmp/invoc2.mad` — re-add the two fprintf probes above to watch each layer flip.
 
 ## Update 7 — Wall B: 2 layers fixed; remaining layers mapped
 
