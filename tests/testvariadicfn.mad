@@ -1,0 +1,34 @@
+#!../bin/madc
+// A variadic MEMBER FUNCTION template instantiated with a MULTI-ELEMENT (N>=2)
+// parameter pack must really monomorphize: the pack declaration `Args... args`
+// expands to N concrete typed parameters, and each `pattern...` expansion in
+// the body (a bare `args...`, a forwarded `std::forward<Args>(args)...`, or a
+// pack after fixed leading params) repeats N times with per-element
+// substitution. Before this support `try_instantiate_namespace_fn_template`
+// only handled a single-element pack, so a 2+-element call emitted an
+// undeclared symbol (MIR "import of undefined item"). This is the machinery
+// std::map::operator[]'s `_M_emplace_hint_unique(__pos, piecewise_construct,
+// tuple<const key&>, tuple<>)` needs.
+#include <cstdio>
+#include <utility>
+
+int add3(int a, int b, int c)        { return a + b + c; }
+int sum4(int a, int b, int c, int d) { return a + b + c + d; }
+
+struct S {
+    // Bare value-pack expansion `add3(args...)`.
+    template<typename... Args> int byval(Args... args) { return add3(args...); }
+    // Forwarded expansion `std::forward<Args>(args)...` (the emplace shape).
+    template<typename... Args> int fwd(Args&&... args) { return add3(std::forward<Args>(args)...); }
+    // A fixed leading parameter followed by a pack: `sum4(first, rest...)`.
+    template<typename... Args> int lead(int first, Args... rest) { return sum4(first, rest...); }
+};
+
+int main()
+{
+    S s;
+    printf("byval: %d\n", s.byval(1, 2, 3));
+    printf("fwd: %d\n", s.fwd(10, 20, 30));
+    printf("lead: %d\n", s.lead(1, 2, 3, 4));
+    return 0;
+}

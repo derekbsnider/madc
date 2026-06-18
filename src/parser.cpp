@@ -28454,7 +28454,8 @@ static bool fn_template_deduce_fnptr_param(const std::string &spelling,
 static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
-	const std::string &pack_param, bool pack_empty, Variable **var_out);
+	const std::string &pack_param, bool pack_empty, Variable **var_out,
+	const std::vector<DataDef *> &pack_elems = std::vector<DataDef *>());
 
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc)
@@ -28493,8 +28494,21 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	DBG_PACK("try_inst %s: extract_free_signature failed\n", key.c_str());
 	return false;
     }
-    if ( tc->parameters.size() > ov.param_spellings.size() )
-	return false;
+    // Without a trailing pack, arity must not exceed the parameter count. WITH a
+    // trailing pack (`_Args&&... __args`), the pack absorbs every argument past the
+    // fixed leading parameters, so MORE arguments than spellings is valid — the
+    // pack just deduces to N elements (multi-element pack; e.g. map::operator[]'s
+    // `_M_emplace_hint_unique(__pos, piecewise_construct, tuple<…>, tuple<>)`).
+    if ( pack_param.empty() )
+    {
+	if ( tc->parameters.size() > ov.param_spellings.size() )
+	    return false;
+    }
+    else if ( tc->parameters.size() + 1 < ov.param_spellings.size() )
+	return false;	// fewer args than the fixed (non-pack) parameters
+    // Element types absorbed by the trailing pack (size 0 = empty pack, 1 = the
+    // legacy single-element path, >=2 = multi-element monomorphization).
+    std::vector<DataDef *> pack_elems;
 #ifdef MADC_DBG_PACK
     for ( size_t i = 0; i < ov.param_spellings.size(); ++i )
 	DBG_PACK("  param[%zu] '%s'\n", i, ov.param_spellings[i].c_str());
@@ -28534,19 +28548,24 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		  << "' arg_dd=" << (arg_dd ? arg_dd->name : "(null)")
 		  << std::endl;
 #endif
-	// Trailing parameter pack (`_Base... __base`): bind the pack to the
-	// one remaining argument's type (the sizes are equal here, so exactly
-	// one argument fills it).
+	// Trailing parameter pack (`_Base... __base`): absorb EVERY remaining
+	// argument (this spelling is the last). One element is the legacy path
+	// (bound via `binding[pack_param]`); two or more drives multi-element
+	// monomorphization through `pack_elems` + the N-copy expansion below.
 	if ( i + 1 == ov.param_spellings.size()
 	  && fn_template_param_is_pack(sp, pack_param) )
 	{
-	    if ( !arg_dd )
-		return false;
-	    DataDef *pd = arg_dd;
-	    if ( pd->is_reference() )
-		pd = static_cast<DataDefPTR *>(pd)->base_type;
-	    if ( binding.find(pack_param) == binding.end() )
-		binding[pack_param] = pd;
+	    for ( size_t a = i; a < tc->parameters.size(); ++a )
+	    {
+		DataDef *adp = pgm.operand_value_datadef(tc->parameters[a]);
+		if ( !adp )
+		    return false;
+		if ( adp->is_reference() )
+		    adp = static_cast<DataDefPTR *>(adp)->base_type;
+		pack_elems.push_back(adp);
+	    }
+	    if ( pack_elems.size() == 1 && binding.find(pack_param) == binding.end() )
+		binding[pack_param] = pack_elems[0];
 	    continue;
 	}
 	// Every template parameter this spelling names is already bound
@@ -28651,7 +28670,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     if ( pack_empty && binding.count(pack_param) )
 	return false;
     return instantiate_fn_template_binding(pgm, ft, key, binding, pack_param,
-					    pack_empty, NULL);
+					    pack_empty, NULL, pack_elems);
 }
 
 // Resolve a fn-template parameter's DEFAULT token run (`R = T*`,
@@ -28741,7 +28760,8 @@ DataDef *Program::resolve_template_param_default_type(
 static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
-	const std::string &pack_param, bool pack_empty, Variable **var_out)
+	const std::string &pack_param, bool pack_empty, Variable **var_out,
+	const std::vector<DataDef *> &pack_elems)
 {
     // Unbound parameters fall back to their template-parameter defaults. The
     // default is a token run: a BASE type (a single token — an already-bound
@@ -28759,8 +28779,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
     {
 	if ( binding.count(ft.typeparams[i]) )
 	    continue;
-	if ( pack_empty && ft.typeparams[i] == pack_param )
-	    continue;	// legitimately unbound — elided below
+	if ( ft.typeparams[i] == pack_param && (pack_empty || pack_elems.size() >= 2) )
+	    continue;	// pack: empty (elided) or multi-element (expanded below) —
+			// never a single `binding` entry, so not "unbound"
 	if ( i < ft.typeparam_defaults.size()
 	  && !ft.typeparam_defaults[i].empty() )
 	{
@@ -28811,6 +28832,12 @@ static bool instantiate_fn_template_binding(Program &pgm,
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
 	inst_key += (binding.count(ft.typeparams[i])
 		     ? binding[ft.typeparams[i]]->name : std::string()) + ",";
+    // A multi-element pack contributes no `binding[pack_param]` entry, so fold its
+    // element types into the key — distinct packs (`<int,int>` vs `<int,char>`)
+    // must NOT collide on the same instantiation.
+    if ( pack_elems.size() >= 2 )
+	for ( size_t e = 0; e < pack_elems.size(); ++e )
+	    inst_key += "@" + (pack_elems[e] ? pack_elems[e]->name : std::string());
     inst_key += ">";
     if ( pgm.fn_template_instantiated.count(inst_key) )
     {
@@ -28838,7 +28865,144 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	subst[b->first] = new TokenDataType(b->second->name.c_str(), *b->second);
     std::vector<TokenBase *> inj;
     std::string pack_value_name;	// the pack's VALUE name (`__base`)
-    for ( size_t i = 0; i < ft.decl.size(); ++i )
+    bool multi_done = false;
+    // MULTI-ELEMENT parameter pack (N>=2) — genuine variadic monomorphization.
+    // The single-element loop below substitutes the pack inline and drops the
+    // `...`; for N>=2 each `pattern...` must be REPEATED N times with the pack
+    // names substituted per element. We leave the pack's TYPE name (`_Args`) and
+    // VALUE name (`__args`) RAW in the forward pass so the pattern (already in
+    // `inj`) still carries them, then on each `...` re-emit N copies.
+    if ( pack_elems.size() >= 2 )
+    {
+	const size_t N = pack_elems.size();
+	// Discover the value-pack name: `_Args [&|&&] ... __args`.
+	std::string value_pack_name;
+	for ( size_t i = 0; i + 1 < ft.decl.size(); ++i )
+	{
+	    if ( !ft.decl[i] || ft.decl[i]->type() != TokenType::ttIdentifier
+	      || ((TokenIdent *)ft.decl[i])->str != pack_param )
+		continue;
+	    size_t k = i + 1;
+	    while ( k < ft.decl.size() && ft.decl[k]
+		 && (ft.decl[k]->id() == TokenID::tkBand
+		     || ft.decl[k]->id() == TokenID::tkLand) )
+		++k;
+	    if ( k + 3 < ft.decl.size()
+	      && ft.decl[k] && ft.decl[k]->id() == TokenID::tkDot
+	      && ft.decl[k+1] && ft.decl[k+1]->id() == TokenID::tkDot
+	      && ft.decl[k+2] && ft.decl[k+2]->id() == TokenID::tkDot
+	      && ft.decl[k+3]
+	      && ft.decl[k+3]->type() == TokenType::ttIdentifier )
+	    {
+		value_pack_name = ((TokenIdent *)ft.decl[k+3])->str;
+		break;
+	    }
+	}
+	// Per-element value name `__args__k`.
+	auto elem_value_name = [&](size_t e) {
+	    return value_pack_name + "__" + std::to_string(e);
+	};
+	// Emit one element of a pattern: clone its tokens, substituting the pack
+	// TYPE name -> the element type and the pack VALUE name -> `__args__e`.
+	auto emit_pattern_element = [&](const std::vector<TokenBase *> &pat, size_t e) {
+	    for ( TokenBase *pt : pat )
+	    {
+		if ( pt && pt->type() == TokenType::ttIdentifier )
+		{
+		    const std::string &pn = ((TokenIdent *)pt)->str;
+		    if ( pn == pack_param )
+		    { inj.push_back(new TokenDataType(pack_elems[e]->name.c_str(), *pack_elems[e])); continue; }
+		    if ( !value_pack_name.empty() && pn == value_pack_name )
+		    { inj.push_back(new TokenIdent(elem_value_name(e).c_str())); continue; }
+		}
+		inj.push_back(pt->clone());
+	    }
+	};
+	for ( size_t i = 0; i < ft.decl.size(); ++i )
+	{
+	    TokenBase *bt = ft.decl[i];
+	    if ( !bt )
+		continue;
+	    // Pack DECLARATION `_Args [&|&&] ... __args`: expand to N typed params
+	    // `T0 [&|&&] __args__0, …, Tn [&|&&] __args__n`.
+	    if ( bt->type() == TokenType::ttIdentifier
+	      && ((TokenIdent *)bt)->str == pack_param )
+	    {
+		std::vector<TokenBase *> refq;
+		size_t k = i + 1;
+		while ( k < ft.decl.size() && ft.decl[k]
+		     && (ft.decl[k]->id() == TokenID::tkBand
+			 || ft.decl[k]->id() == TokenID::tkLand) )
+		{ refq.push_back(ft.decl[k]); ++k; }
+		if ( k + 3 < ft.decl.size()
+		  && ft.decl[k] && ft.decl[k]->id() == TokenID::tkDot
+		  && ft.decl[k+1] && ft.decl[k+1]->id() == TokenID::tkDot
+		  && ft.decl[k+2] && ft.decl[k+2]->id() == TokenID::tkDot
+		  && ft.decl[k+3]
+		  && ft.decl[k+3]->type() == TokenType::ttIdentifier )
+		{
+		    for ( size_t e = 0; e < N; ++e )
+		    {
+			if ( e ) inj.push_back(new TokenComma());
+			inj.push_back(new TokenDataType(pack_elems[e]->name.c_str(), *pack_elems[e]));
+			for ( TokenBase *rq : refq ) inj.push_back(rq->clone());
+			inj.push_back(new TokenIdent(elem_value_name(e).c_str()));
+		    }
+		    i = k + 3;	// consumed _Args [refq] ... __args
+		    continue;
+		}
+	    }
+	    // Pack EXPANSION `pattern...`: the pattern was just appended to `inj`
+	    // (pack names left raw); find its start, lift it out, re-emit N copies.
+	    if ( bt->id() == TokenID::tkDot
+	      && i + 2 < ft.decl.size()
+	      && ft.decl[i+1] && ft.decl[i+1]->id() == TokenID::tkDot
+	      && ft.decl[i+2] && ft.decl[i+2]->id() == TokenID::tkDot
+	      && !( !inj.empty() && inj.back()
+		    && inj.back()->id() == TokenID::tkOpBrk ) )
+	    {
+		// Backward-scan inj for the pattern start (after the nearest `,`
+		// or unmatched opener `(`/`[`/`{` at bracket depth 0).
+		int depth = 0;
+		size_t start = inj.size();
+		for ( size_t j = inj.size(); j-- > 0; )
+		{
+		    TokenID jid = inj[j]->id();
+		    if ( jid == TokenID::tkClBrk || jid == TokenID::tkClSqr
+		      || jid == TokenID::tkClBrc )
+			++depth;
+		    else if ( jid == TokenID::tkOpBrk || jid == TokenID::tkOpSqr
+			   || jid == TokenID::tkOpBrc )
+		    { if ( depth == 0 ) { start = j + 1; break; } --depth; }
+		    else if ( depth == 0 && jid == TokenID::tkComma )
+		    { start = j + 1; break; }
+		    if ( j == 0 ) start = 0;
+		}
+		std::vector<TokenBase *> pat(inj.begin() + start, inj.end());
+		inj.erase(inj.begin() + start, inj.end());
+		for ( size_t e = 0; e < N; ++e )
+		{
+		    if ( e ) inj.push_back(new TokenComma());
+		    emit_pattern_element(pat, e);
+		}
+		for ( TokenBase *pt : pat ) delete pt;
+		i += 2;	// consumed the three dots
+		continue;
+	    }
+	    // Ordinary token: substitute non-pack type params; leave the pack's
+	    // type/value names RAW (the expansion above consumes them).
+	    if ( bt->type() == TokenType::ttIdentifier )
+	    {
+		const std::string &idname = ((TokenIdent *)bt)->str;
+		std::map<std::string, TokenDataType *>::iterator si = subst.find(idname);
+		if ( si != subst.end() && idname != pack_param )
+		{ inj.push_back(si->second->clone()); continue; }
+	    }
+	    inj.push_back(bt->clone());
+	}
+	multi_done = true;
+    }
+    for ( size_t i = 0; !multi_done && i < ft.decl.size(); ++i )
     {
 	TokenBase *bt = ft.decl[i];
 	if ( !bt )
