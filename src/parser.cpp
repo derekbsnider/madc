@@ -7000,6 +7000,46 @@ int64_t Program::parse_constant_primary()
 		}
 	    }
 	}
+	// C++20 CONCEPT used as a non-type bool in a constant expression — e.g.
+	// `__conditional_t<random_access_iterator<It>, ...>`'s condition, or a
+	// `static_assert(Concept<T>)`. Substitute the type args into the stored
+	// constraint and fold it recursively in an ISOLATED stream → 0/1. Nested
+	// concept-ids recurse back into this same arm; trait-based atoms
+	// (`derived_from`→`__is_base_of`, `same_as`→`__is_same`, plain type-trait
+	// builtins) fold via the existing primary paths; `&&`/`||` short-circuit
+	// (parse_constant_land/lor) and `requires`-expressions evaluate via the
+	// requires arm below. Same shape as the C++14 variable-template arm above.
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+	{
+	    std::map<std::string, ConceptDef>::iterator cit =
+		concept_map.find(name);
+	    if ( cit == concept_map.end() && !current_namespace().empty() )
+		cit = concept_map.find(current_namespace() + "::" + name);
+	    if ( cit != concept_map.end() && !cit->second.constraint.empty() )
+	    {
+		std::vector<DataDef *> targs = capture_call_template_args();
+		std::map<std::string, TokenDataType *> subst;
+		for ( size_t i = 0; i < cit->second.typeparams.size()
+				&& i < targs.size(); ++i )
+		    if ( targs[i] )
+			subst[cit->second.typeparams[i]] =
+			    new TokenDataType(targs[i]->name.c_str(), *targs[i]);
+		std::vector<TokenBase *> sub =
+		    clone_template_tokens_with_type_subst(cit->second.constraint,
+							  subst);
+		if ( !sub.empty() )
+		{
+		    std::deque<TokenBase *> saved = tokens;
+		    tokens.assign(sub.begin(), sub.end());
+		    tokens.push_back(new TokenSemi());
+		    int64_t v = 0;
+		    try { v = parse_constant_integer_expression(); }
+		    catch ( ... ) { tokens = saved; throw; }
+		    tokens = saved;
+		    return v ? 1 : 0;
+		}
+	    }
+	}
     }
     if ( tb && tb->id() == TokenID::tkNeg )
 	return -parse_constant_primary();
