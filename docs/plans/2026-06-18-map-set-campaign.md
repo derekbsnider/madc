@@ -17,14 +17,28 @@ Progress (`#include <map> --std=c++20`): iterator_concepts.h → uses_allocator.
 (~line 791, the numeric_limits<__max_size_type/__max_diff_type> constexpr region)**
 (frontier @ e340f70). 8 new conformance tests total. fulltest 647/5.
 
-**NEXT = constexpr-folding wall.** gdb the "Expecting integer constant expression"
-throw (parser.cpp — grep the string) under `--std=c++20 tmp/map_inc.mad` to get the
-REAL header:line (the displayed `tmp/map_inc.mad:791` is the display-file artifact;
-gdb `tn->file/line` gives the truth, as for the earlier walls). Likely a constexpr
-member / non-type value madc can't fold in the `__max_size_type` numeric_limits
-specialization. Reduce, fix the fold, fulltest, commit, continue. The method is
-proven: 8 fixes deep, each a general C++-conformance win, driving toward exposing
-`contains`.
+**NEXT = fix 9, constexpr path for variable-template use. PINNED (gdb):** the wall
+is `<numbers>`:122 `inline constexpr double e = e_v<double>;` — thrown in
+`parse_constant_primary` (parser.cpp:7015), the INTEGER constant-expression parser.
+gdb at the throw: `var_template_map.size()==208` (so `e_v` IS registered by fix 7),
+`current_namespace()=="std::numbers"`. ROOT: fix 7's variable-template use-site
+resolution lives ONLY in `parseExpression` (parseExpr_identifierArm); the constant
+parser `parse_constant_primary` has no var-template arm, so `e_v<double>` there is
+unresolved → "Expecting integer constant expression". CAUTION: standalone reducers
+(tmp/ced_a..d.mad — constexpr double in a namespace + var-template, even with the
+`_Enable_if_floating<T>(literal)L` shape) ALL PASS, because they route the
+initializer through `parseExpression` (fix 7 resolves, value 2). `<numbers>` routes
+the SAME-shaped decl through `parse_constant_primary` instead — so EITHER (a) fix
+the routing (find why a `constexpr double` namespace-scope init goes to the integer
+constant parser for `<numbers>` but not the reducers — gdb the DECLARATION parse,
+not just the throw — then route it through parseExpression so fix 7 handles it
+cleanly, no constant-parser work), OR (b) mirror fix 7 into parse_constant_primary:
+on a registered var-template ident followed by `<args>`, substitute the init and
+fold it — but the init `_Enable_if_floating<double>(2.718L)` is a functional cast
+`TypeId(literal)` the integer constant parser doesn't currently fold, and the value
+is a double the int parser can't represent, so (a) is the cleaner path. The method
+remains proven: 8 Wall-C fixes deep, each a general C++-conformance win, driving
+toward exposing `contains`.
 
 ## Update 13 — WALL C is an ACTIVE CASCADE now (6 fixes landed), not a deferred unknown
 
