@@ -1,5 +1,31 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 26 — `ranges::get` frontier: `using ranges::get;` at ranges_util.h:780 fails (4 reductions don't reproduce)
+
+The wall is `bits/ranges_util.h:780` — `using ranges::get;` (in `namespace std`,
+AFTER `namespace ranges` closes at 777), importing the subrange `get` overloads
+(ranges_util.h:435/445, `template<size_t _Num, …> requires (_Num<2) constexpr auto
+get(const subrange<…>&)`). madc's using-declaration handler (parser.cpp:20438)
+throws "'get' is not a member of namespace 'ranges'" — i.e. neither have_var (a
+function in `namespace_map[ns_name]`) nor have_type nor have_template is set.
+
+FOUR reductions ALL PASS (do NOT reproduce): `tmp/rg1.mad` (`using ranges::get`,
+get = plain fn template in std::ranges), `tmp/rg2.mad` (non-type leading param +
+subrange param), `tmp/rg3.mad` (requires-constrained fn template get). So the
+isolated shape registers fine and `using ranges::get` finds it — the real failure
+is entangled with the full ranges header (like the iterator_category wall was).
+
+NEXT (gdb/diag, needs `make clean && make debug` or an env-gated fprintf at
+parser.cpp:20438): for `member_name=="get"`, print `ns_name` (is it `std::ranges`
+or just `ranges`? the error text says `ranges` — an ns-resolution smell) and
+whether `namespace_map[ns_name].count("get")` / `namespace_datatype_map` /
+template maps hold it. Two likely causes: (a) ns_name isn't resolved to
+`std::ranges` in THIS context (enclosing-scope lookup differs after the long
+ranges parse), or (b) the subrange `get` overloads never registered into
+`namespace_map["std::ranges"]` (a parse/registration gap deeper in the ranges
+body, possibly related to the 8× recovered "undeclared std" at :141). Pin which,
+then fix.
+
 ## Update 25 — iterator_category wall FIXED (base-clause promotion); cascade now at C++20 `ranges::get`
 
 **FIXED (`9fb0e8a`, fulltest 651/5/0/18 zero regr).** The Update-24 root cause is
