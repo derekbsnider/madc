@@ -1,8 +1,48 @@
 # map / set bring-up campaign — diagnosis & plan
 
-**Status:** IN PROGRESS — std::tuple bring-up done; A3.2 done; map `operator[]`
-now reaches the `_M_emplace_hint_unique` variadic-member-template wall; set insert
-(B) / contains (C) remain (2026-06-18)
+**Status:** IN PROGRESS — std::tuple bring-up + A3.2 + multi-element parameter
+packs done; map `operator[]` now instantiates the emplace body and reaches the
+`_Rb_tree::_Auto_node::_M_insert` receiver-type wall; set insert (B) / contains
+(C) remain (2026-06-18)
+
+## Update 4 — multi-element parameter packs DONE (commit 1bbb5b8)
+
+Variadic member function templates with a deduced **N≥2** parameter pack now
+monomorphize. Previously `try_instantiate_namespace_fn_template` only supported a
+single-element trailing pack (arg-count guard at parser.cpp:28496 rejected N≥2),
+so `_M_emplace_hint_unique(__pos, piecewise_construct, tuple<const key&>,
+tuple<>)` emitted an undeclared symbol → c2mir "incompatible types in assignment
+to struct/union".
+Fix: collect every pack-absorbed argument's type into a `pack_elems` vector,
+thread it into `instantiate_fn_template_binding`, and a dedicated N-element
+builder expands the pack DECLARATION `_Args [&|&&]... __args` → N typed params and
+every `pattern...` expansion → N comma-separated copies (pack type name → element
+type, value name → `__args__k`; pattern extent found by backward scan to the
+nearest arg delimiter). Handles bare (`args...`), forwarded
+(`std::forward<Args>(args)...`), and leading-fixed-param (`f(first, rest...)`)
+shapes. New test `tests/testvariadicfn.mad` (byval=6, fwd=60, lead=10).
+fulltest 638/5, zero regr.
+
+### NEXT WALL (precise, next-session start point): `_Auto_node::_M_insert`
+`tmp/map_min2.mad` now advances PAST emplace to a new parse-time error: "member
+reference is not a structure or union" (parser.cpp:15640, `parseExpr_identifierArm`),
+reported at the inherited clone position stl_tree.h:427. Traced via gdb on the
+LIVE failing call: the deferred body being parsed is
+`_Rb_tree<…>::_Auto_node::_M_insert` (the C++17 nested RAII insert helper). The
+failing access is `__t._M_insert_node(...)` where the receiver `__t` (a
+`_Rb_tree&` member of `_Auto_node`) resolves to a **dtRESERVEDptr (10255)
+placeholder** — a pointer to an incomplete/dependent `_Rb_tree`, not the complete
+instantiated class — so `is_struct()`/`is_object()` both fail.
+Next-wall task: when instantiating a NESTED helper class (`_Auto_node`) inside an
+instantiated outer class template (`_Rb_tree<…>`), its member that references the
+enclosing type (`_Rb_tree& __t`) must bind to the COMPLETE instantiated outer
+class, not a dtRESERVEDptr placeholder. Investigate how `_Auto_node`'s `__t`
+member type is resolved during the outer instantiation (likely the enclosing-
+class back-reference isn't mapped to the concrete instantiation). Then the rest
+of the `_Rb_tree` insert chain (`_M_insert_node` body, node alloc, `_Construct`)
+likely each surface further sub-walls — this is a long internal tail.
+
+---
 
 ## Update 3 — A3.2 DONE (commit 32d7ccb)
 
