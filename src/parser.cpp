@@ -8924,24 +8924,97 @@ DataDef *Program::resolve_member_template_call_return_type(FuncDef *fd,
 	return NULL;
     // Bind type parameters from the EXPLICIT template args (the common library
     // shape `_S_test<F, Args...>(0)` is all-explicit). A binding deduced from
-    // the call argument types is a follow-up (sub-wall (c)).
+    // the call argument types is a follow-up (sub-wall (c)). The trailing
+    // parameter may be a PACK (`typename... _Args`): explicit args beyond the
+    // leading fixed params all belong to it — bind the fixed params singly and
+    // collect the pack's elements (the `__invoke_result`/`__result_of` keystone
+    // `_S_test<_Functor, _ArgTypes...>(0)` where _ArgTypes is multi-element).
     std::map<std::string, DataDef *> binding;
-    for ( size_t i = 0; i < explicit_targs.size()
-		     && i < fd->template_param_names.size(); ++i )
-	if ( explicit_targs[i] )
+    std::string pack_name;
+    size_t nfixed = fd->template_param_names.size();
+    if ( fd->template_param_is_pack.size() == fd->template_param_names.size()
+      && !fd->template_param_is_pack.empty()
+      && fd->template_param_is_pack.back() )
+    {
+	pack_name = fd->template_param_names.back();
+	nfixed = fd->template_param_names.size() - 1;
+    }
+    std::vector<DataDef *> pack_elems;
+    for ( size_t i = 0; i < explicit_targs.size(); ++i )
+    {
+	if ( !explicit_targs[i] )
+	    continue;
+	if ( i < nfixed )
 	    binding[fd->template_param_names[i]] = explicit_targs[i];
-    if ( binding.empty() )
+	else if ( !pack_name.empty() )
+	    pack_elems.push_back(explicit_targs[i]);
+    }
+    if ( binding.empty() && pack_elems.empty() )
 	return NULL;
     // Substitute: clone the dependent return-type tokens, replacing each
     // type-parameter name with the bound type (the clang SubstDecl model,
-    // return-type only — no body instantiation).
+    // return-type only — no body instantiation). A pack-expansion `pattern...`
+    // naming the pack (`declval<_ArgTypes>()...`) is repeated once per pack
+    // element with the pack name substituted per element; the pack name itself
+    // is left raw in the forward pass so the just-appended pattern still carries
+    // it, then lifted out and re-emitted on the `...`.
     std::vector<TokenBase *> sub;
-    for ( TokenBase *t : fd->member_template_return_tokens )
+    const std::vector<TokenBase *> &rtoks = fd->member_template_return_tokens;
+    for ( size_t i = 0; i < rtoks.size(); ++i )
     {
+	TokenBase *t = rtoks[i];
+	// Pack-expansion ellipsis: lift the preceding pattern out of `sub` and
+	// re-emit it once per pack element (pack name -> element type).
+	if ( !pack_name.empty() && t && t->id() == TokenID::tkDot
+	  && i + 2 < rtoks.size()
+	  && rtoks[i+1] && rtoks[i+1]->id() == TokenID::tkDot
+	  && rtoks[i+2] && rtoks[i+2]->id() == TokenID::tkDot )
+	{
+	    int depth = 0;
+	    size_t start = sub.size();
+	    for ( size_t j = sub.size(); j-- > 0; )
+	    {
+		TokenID jid = sub[j]->id();
+		if ( jid == TokenID::tkClBrk || jid == TokenID::tkClSqr
+		  || jid == TokenID::tkClBrc )
+		    ++depth;
+		else if ( jid == TokenID::tkOpBrk || jid == TokenID::tkOpSqr
+		       || jid == TokenID::tkOpBrc )
+		{ if ( depth == 0 ) { start = j + 1; break; } --depth; }
+		else if ( depth == 0 && jid == TokenID::tkComma )
+		{ start = j + 1; break; }
+		if ( j == 0 ) start = 0;
+	    }
+	    std::vector<TokenBase *> pat(sub.begin() + start, sub.end());
+	    sub.erase(sub.begin() + start, sub.end());
+	    for ( size_t e = 0; e < pack_elems.size(); ++e )
+	    {
+		if ( e )
+		    sub.push_back(new TokenComma());
+		for ( TokenBase *pt : pat )
+		{
+		    if ( pt && is_contextual_identifier_token(pt)
+		      && contextual_identifier_name(pt) == pack_name )
+			sub.push_back(new TokenDataType(pack_elems[e]->name.c_str(),
+							*pack_elems[e]));
+		    else
+			sub.push_back(pt ? pt->clone() : NULL);
+		}
+	    }
+	    for ( TokenBase *pt : pat )
+		delete pt;
+	    i += 2;
+	    continue;
+	}
 	if ( t && is_contextual_identifier_token(t) )
 	{
-	    std::map<std::string, DataDef *>::iterator bi =
-		binding.find(contextual_identifier_name(t));
+	    std::string tn = contextual_identifier_name(t);
+	    if ( tn == pack_name )   // leave raw for the `...` expansion above
+	    {
+		sub.push_back(t->clone());
+		continue;
+	    }
+	    std::map<std::string, DataDef *>::iterator bi = binding.find(tn);
 	    if ( bi != binding.end() && bi->second )
 	    {
 		sub.push_back(new TokenDataType(bi->second->name.c_str(),
