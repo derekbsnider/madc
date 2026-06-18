@@ -1,5 +1,35 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 23 — `iterator_category` wall narrowed further (open puzzle for a fresh session)
+
+More gdb/diag on the failing `iterator_category` resolution
+(`__detail::__clamp_iter_cat<typename __traits_type::iterator_category,
+random_access_iterator_tag>` → `__cond_value_type_char`, leftover `::
+__clamp_iter_cat`). SOLID new facts:
+- `lazy_resolve_type` is a NULL stub (parser.cpp:11046) — RULED OUT as the source.
+- A `DT_DIAG` env-gated probe at the two bare-`__detail` type-lookup branches
+  (the namespace-scope loop ~4533 and `datatype_map` ~4548) did NOT fire for
+  `__detail` — so `__cond_value_type_char` does NOT come from those branches.
+- The leftover `:: __clamp_iter_cat` means the 4579 `::`-qualifier block AND
+  `resolve_namespaced_type_token` (4615) were NOT the producer either (both
+  CONSUME the `::member` on success).
+- Yet `resolve_declared_type_token` returns `__cond_value_type_char` (non-NULL)
+  consuming only `__detail`. NONE of the obvious branches fit — so the model is
+  incomplete. CANDIDATES not yet instrumented: the `<`-template branch (~4488),
+  `instantiate_template_id(tname)` at ~4573, or `resolve_member_chain_or_type`
+  doing something unexpected with the chain.
+- The FIRST reverse_iterator instantiation resolves correctly (4579 block fires);
+  the FAILING one is a LATER instantiation — STILL state-dependent.
+
+NEXT (fresh session, focused — I hit reasoning fatigue here): instrument
+`resolve_declared_type_token` with an env-gated fprintf at the FUNCTION ENTRY
+(after `tname` is set) AND at EVERY `return` site, gated on `tname=="__detail"`,
+printing a per-branch tag + the returned type name. ONE optimized rebuild then
+`<env>=1 ./bin/madc --std=c++20 --no-embedded-headers tests/testmap.mad` pins the
+exact branch definitively (no more guessing). Then fix that branch to not
+mis-resolve the `__detail` namespace qualifier to the `__cond_value_type<char>`
+sibling, and/or let the correct 4579 `::`-block path win.
+
 ## Update 22 — gdb on the `iterator_category`/`__clamp_iter_cat` wall: state-dependent qualified-alias-template resolution
 
 gdb (clean debug build) on the `Expecting ';' after using alias` throw
