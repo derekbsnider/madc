@@ -1,5 +1,45 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 20 — ROOT CAUSE of the current frontier: partial-spec `requires`-constraint is ignored
+
+The Update-19 frontier (`tmp/ic4.mad`) is now root-caused precisely
+(`tmp/ic7.mad` confirms): **madc does not evaluate the `requires` constraint on
+a partial specialization.** When a partial spec has the SAME argument pattern as
+the primary and differs ONLY by a constraint —
+`template<class I,class T> struct iti{...};` (primary) +
+`template<class I,class T> requires HasVT<I> struct iti<I,T>{...};` (spec) —
+madc always applies the spec, ignoring `HasVT<I>`. `tmp/ic7.mad`:
+`iti<char*,char*>::which` is **2 (spec)** but must be **1 (primary)** because
+`HasVT<char*>` is false. This is exactly libstdc++'s `__iter_traits_impl`
+(`requires __primary_traits_iter<_Iter>`) and `indirectly_readable_traits`
+(`__has_member_value_type _Tp`, …) selection — so `__iter_traits<char*>` picks
+the wrong arm and the trailing `::iterator_concept` then fails.
+
+**FIX RECIPE (next session — bounded, ~3 sites):**
+1. `include/madc.h` — add `std::vector<TokenBase *> constraint;` to
+   `struct TemplateDef` (the requires-clause tokens of a partial spec; empty for
+   unconstrained).
+2. **Capture** the partial-spec's requires-clause instead of discarding it. The
+   template-declaration handler currently calls `skip_requires_clause()` at
+   ~parser.cpp:31663 (between the template-param-list and the `struct`). When the
+   declaration turns out to be a partial specialization, the clause tokens must
+   be CAPTURED (a capturing variant of skip_requires_clause / skip_constraint_
+   expression) and stored on the `TemplateDef` registered at ~32358
+   (`partial_spec_map[class_name].push_back(td)`).
+3. **Evaluate** in `match_partial_specialization` (~15416): after a candidate
+   spec's pattern matches and `out_subst` (typeparam→arg) is built, if
+   `td.constraint` is non-empty, substitute `out_subst` into the constraint
+   (`clone_template_tokens_with_type_subst`) and fold it as a constant in an
+   isolated stream (reuse the concept structural-arm path —
+   `parse_constant_integer_expression`). If it folds to 0, REJECT the candidate
+   (treat as non-matching) so a more-specialized or the primary is chosen.
+   The concept evaluator (Updates 18–19) already folds `HasVT<…>` etc., so step
+   3 is mostly wiring. Verify with `tmp/ic7.mad` (which must become 1/2),
+   `tmp/ic4.mad`, then testmap's :505 wall; fulltest; commit.
+
+This unblocks the `__iter_traits`/`indirectly_readable_traits`/iterator-traits
+selection that the whole reverse_iterator/iterator-concept tail depends on.
+
 ## Update 19 — five C++20 walls cleared; cascade deep in the iterator/concepts surface
 
 This session landed FIVE regression-free fixes (all pushed, fulltest 651/5/0/18
