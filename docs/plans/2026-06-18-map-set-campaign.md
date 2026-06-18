@@ -43,11 +43,35 @@ temporary object-context real-instantiation), then B, then C.
   construction-expr hits a separate "not a member" wall; std::/map exercises it).
 - map `operator[]` now advances PAST the c2mir incomplete-struct codegen wall to
   a deeper PARSE wall: instantiating `std::tuple<const key_type&>` (reference
-  element) pulls in pointer_traits, and `_Ptr<...>` (a template with a NON-TYPE
-  arg) hits `fold_nontype_arg_constant` → `parse_constant_integer_expression` →
-  **"Missing operand"** (the 1-token non-type arg isn't a foldable constant —
-  a dependent expr that didn't substitute, or a type-as-non-type-arg). Frontier
-  for A3.2. Then still: `_M_emplace_hint_unique` + `piecewise_construct` codegen.
+  element). Reduced to `tmp/tup_ref.mad` (`tuple<const string&> t(s);` alone).
+
+### A3.2 PRECISE DIAGNOSIS (next-session start point)
+The error is **"Missing operand"** at the LEFT-operand branch of `popOperator`
+(parser.cpp:~11929) — the failing operator is **`.` (id 35)**, i.e. an orphaned
+pack-expansion **`...`** (three tkDot) reaching the EXPRESSION parser as
+member-access `.` operators with no operand. Backtrace: `parse_namespace_block`
+→ `TokenCppKeyword::parse` (an ignored decl-specifier, e.g. `constexpr`) →
+`parseDeclaration` → `parseExpression` → `popOperator`. So a `constexpr <decl> =
+<expr-with-orphaned-...>` in tuple's instantiation.
+- The `...` is a pack expansion in a NESTED/value context (e.g.
+  `__and_<X<_Elements>...>::value`, or a member-fn-template's own `_UElements...`)
+  that the **class-body clone-loop pack substitution does NOT consume**.
+- Two earlier diagnoses turned out to be RED HERRINGS: (a) an `integral_constant
+  <bool, true>` non-type fold throwing in `parse_constant_primary` (caught
+  internally — `true`/`false` lex as TokenCppKeyword, ttKeyword, not handled by
+  the int-const folder; a real but INERT bug, fix had no observable effect);
+  (b) a `_Ptr<...>` non-type fold in map's deeper chain. The ACTUAL blocker is
+  the orphaned-`...`-in-expression above.
+- A2.3's single-element fix (forward-scan from the pack NAME, class-body clone
+  loop) does NOT reach this `...` — it sits past a closing `>` (negative relative
+  depth) and/or in a different substitution path. A **flag-based** consume (arm
+  when a single-element pack expands in place, drop the next `...`, reset at
+  `;`/`{`/`}`) is more robust for nested patterns IN the clone loop, but did NOT
+  fix tup_ref — confirming this `...` is in ANOTHER path (member-fn-template
+  binding / a `<string>`-pulled construct). Find WHICH substitution emits the
+  `...`: add the [A3-DIAG-L] fprintf at parser.cpp:~11929 (op id/char/pos) +
+  `catch throw` gdb; then consume the `...` where that pack is substituted.
+- Then still: `_M_emplace_hint_unique` + `piecewise_construct` codegen.
 
 ### Session-end state (2026-06-18)
 6 code commits (A1, A2.1, A2.2, A2.3, A3.1) + 2 doc commits, all pushed, fulltest
