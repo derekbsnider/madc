@@ -55,6 +55,44 @@ NOT pull std_function, so it is NOT what blocks map. Use `tmp/invoc2.mad` (no
 After Wall B: map's remaining _Rb_tree insert chain (_M_insert_node body, node
 alloc, _Construct) + Wall C (`contains`, C++20/ranges).
 
+## Update 6 — `integral_constant{}` fold DONE (commit 659752e); Wall B core pinned
+
+**DONE:** `Trait{}`/`Trait()` value-init in a constant expression now folds to the
+trait's static `value` (the integral_constant conversion). Was: only `Trait::value`
+folded; `static_assert(is_same<int,int>{})` / `true_type{}` threw "Expecting integer
+constant expression". Fix in `fold_constant_qualified_member` (after it resolves the
+leading type/template-id to a scope class): empty `{}`/`()` + a (possibly inherited)
+static `value` member → fold to it. Test `tests/testtraitvalue.mad`. fulltest 640/5.
+
+This was the FIRST half of Wall B. `__is_invocable<...>{}` now FOLDS — but to
+**false**, because `__invoke_result<F,Args>::type` isn't computed, so map's
+`_S_key` static_assert fails (still "undeclared _S_key" downstream).
+
+### Wall B DEEP CORE (next-session start) — `_S_test(int)`/`_S_test(...)` SFINAE
+madc CAN already evaluate `decltype(declval<Cmp&>()(declval<const int&>(),
+declval<const int&>()))` → `bool` (reducer tmp/declcall.mad passes). The gap is one
+layer up — `__result_of_other_impl` (type_traits:2554) selects the result via an
+int-vs-ellipsis SFINAE overload pair:
+```
+template<typename _Fn, typename..._Args>
+  static __result_of_success<decltype(declval<_Fn>()(declval<_Args>()...)),…> _S_test(int);
+template<typename...> static __failure_type _S_test(...);
+// __invoke_result::type = decltype(_S_test<_Functor,_ArgTypes...>(0))
+```
+**Minimal reducer `tmp/sfinae_ovl.mad`** (a `success<decltype(...)> test(int)` /
+`failure test(...)` pair + `decltype(test<Cmp&,const int&,const int&>(0))`) fails
+**"Incorrect number of parameters: expected 3 got 2"** — the SAME error the plan
+flagged for set::insert, confirming this overload-resolution gap is the shared
+map+set core. madc mishandles an explicit-template-arg variadic static-member call
+(`test<F, A...>(0)`: F + a 2-element EXPLICIT pack, one `(int)` function param)
+against the `(...)` ellipsis fallback — it conflates the 3 explicit template args
+with function-param arity. Fixing this (explicit-template-arg variadic call + int-
+vs-ellipsis SFINAE tiebreak returning success/failure types) makes `__invoke_result`
+compute `::type`, hence `__is_invocable` TRUE, hence _S_key registers and both map
+(static_assert) and set::insert (overload resolution) advance. Deep overload-
+resolution feature; its own focused effort. (Note: distinct from the deduced-pack
+work already done — here the pack is EXPLICIT in the template-id.)
+
 ---
 
 ## Update 4 — multi-element parameter packs DONE (commit 1bbb5b8)
