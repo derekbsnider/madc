@@ -1,5 +1,64 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 29 — `_M_at_eof` wall FIXED (friend → private METHOD); Wall B (`_S_key`/`__is_invocable`) ROOT PINNED = forwarded class-template pack drops
+
+**TWO commits this session.** (1) `6a029b8` C++17 init-statement (Update 28).
+(2) `58ee962` **friend functions may call private METHODS** — `method_access_violation`
+never received the current function's friend name, so the friend-function grant
+(`function_is_friend_of`/`friend_function_names`) was checked only for DATA-member
+access; a `friend` free fn calling a private METHOD was wrongly rejected. Fix: add
+`cur_function` param to `method_access_violation`, pass
+`current_function_friend_name(code)` at both the `.` and `->` method-call sites.
+Cleared libstdc++ `istreambuf_iterator`'s C++20 `friend operator==` →
+`__i._M_at_eof()` wall. Test tests/testfriendmethod.mad. fulltest 653/5/0/18.
+
+**testmap --std=c++20 now: only `_S_key` (Wall B) remains** (+ recovered cosmetic
+`:141 undeclared std` ×14, `:791/:817 Expecting integer constant expression` ×3).
+
+**WALL B ROOT CAUSE PINNED (verify-over-stale-handoff — Update 10's diagnosis is
+STALE; the minimal `_S_test` overload-selection reducer tmp/stest2.mad now PASSES,
+11+ parser fixes since).** The CURRENT real-chain failure (MADC_DBG_WB probe in
+`eval_void_t_detection_slot`, removed): `__invoke_result<Cmp&,const int&,const int&>`
+is COMPLETE (not an empty shell — Update 9 held) but its **base = `__failure_type`**
+(should be `__result_of_success<bool>`). So `__result_of_impl<false,false,Cmp&,…>::type`
+= `decltype(_S_test<_Functor, _ArgTypes...>(0))` picked the FAILURE overload —
+because the forwarded class-template pack `_ArgTypes...` does NOT expand into the
+inner `_S_test<…>` call, so the success overload `decltype(declval<Cmp&>()(
+declval<_Args>()...))` sees 0 args → ill-formed → SFINAE drops success → `__failure_type`
+→ no `::type` → `__is_invocable` false.
+
+**Minimal reducers (sizeof-/SFINAE-free):** tmp/packbind2.mad — `direct=22`,
+`fwd2_fixed=22` (controls pass), **`fwd_pack=0`** (`template<typename... Args>
+struct fwd { typedef picksecond<Args...> ps; }` — pack forwarded into a member
+typedef's nested template-id expands to EMPTY). tmp/roi6.mad — faithful partial-spec
++ dependent-member-base chain, `tag=0`.
+
+**MECHANISM (MADC_DBG_WB2 probe at the instantiation gate parser.cpp:~2987, removed):**
+`[WB2] inst 'fwd': has_pack=1 allow=0 sticky=0 pack_real_inst=0 try_spec=0
+real_instable=1 -> OPAQUE`. So these variadic templates ARE
+`template_pack_real_instantiable` (real_instable=1) but bail to
+`instantiate_opaque_template_use` (pack dropped) because `allow_variadic_real_inst`/
+`variadic_real_inst_sticky` is NOT set when they instantiate. The flag is set only
+in narrow contexts (member-type-chain head INSIDE class_scope_stack at
+parser.cpp:4237; `::value`-fold; statement-level var-decl). It is NOT set for many
+`Template<args>::member` resolution paths (top-level expr, `resolve_typename_type_token`
+fall-through at 4246, the void_t `_Result::type` walk). **NOTE the real chain has a
+2nd layer:** `__invoke_result` IS real-instantiated (sticky), yet its partial-spec
+BODY `decltype(_S_test<_Functor,_ArgTypes...>(0))` STILL drops `_ArgTypes...` — so
+the partial-spec body token substitution (pack_subst expansion, parser.cpp:3060-3118
++ the decltype/`_S_test` template-arg-list) also fails to expand the forwarded pack.
+
+**NEXT (careful — blanket variadic real-inst REGRESSES testsstream, per vector<T*>
+A1):** the fix is NOT one-line. Two coupled sub-problems: (a) set
+`allow_variadic_real_inst` for `Template<args>::member` resolution wherever the
+template is `pack_real_instantiable` (generalize the 4237 logic beyond class_scope_stack
+— but scoped to avoid the pure-trait `__or_` regression); (b) make the partial-spec
+BODY substitution expand a forwarded trailing pack `_ArgTypes...` inside a nested
+template-id / function-template-call decltype (pack_subst body-loop coverage). Build
+a faithful reducer that reaches the partial-spec body WITH sticky on (the void_t
+detection wrapper) — synthetic `X<...>::member` exprs go OPAQUE (different path) and
+mislead. Deep template-machinery work; multi-step, fulltest-gated for regressions.
+
 ## Update 28 — if-condition wall FIXED (C++17 init-statement support for `if` AND `switch`); cascade now at `_S_key` / `_M_at_eof`
 
 **FIXED, fulltest 652/5/0/18 (+1 = new tests/testifinit, ZERO regression; EXE
