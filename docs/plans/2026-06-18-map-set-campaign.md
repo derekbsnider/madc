@@ -1,5 +1,30 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 15 — Wall C cascade: 9 fixes landed (fix 9 = var-template in constant ctx)
+
+**Fix 9 (97eef98)** — variable-template use in a CONSTANT expression. The
+`<numbers>:122` `inline constexpr double e = e_v<double>;` wall: fix 7 resolved
+`e_v<double>` → `_Enable_if_floating<double>` → `enable_if<is_floating_point_v
+<double>, double>`, and folding enable_if's non-type bool arg `is_floating_point_v
+<double>` (a variable template) threw in `parse_constant_primary` — fix 7's
+use-resolution is only in `parseExpression`. Added a var-template arm to
+parse_constant_primary: substitute the args into the init and fold recursively in
+an isolated stream (`is_floating_point<double>::value` → 1). gdb full-backtrace
+nailed it (frames: parseDeclaration → parseExpression → fix-7 `e_v` →
+`_Enable_if_floating` → `enable_if_t` → `enable_if` → fold_nontype_arg_constant →
+parse_constant_primary throw). New test testvartemplateconst.mad. fulltest 648/5.
+
+Progress (`#include <map> --std=c++20`): iterator_concepts → uses_allocator →
+`<numbers>` (now PARSED) → **next: "Expecting integer constant expression" at
+displayed line 791/817** (a NEW constexpr wall past numbers — likely the
+numeric_limits<__max_size_type/__max_diff_type> constexpr members; gdb the throw
+parser.cpp:7052 for the real header:line, as the displayed file is the artifact).
+9 Wall C fixes deep; 9 new conformance tests this session.
+
+Off-path quirks NOTED (not on the map/set path, do not chase): `is_integral_v`
+folds wrong in constant context; a non-type bool-arg class instantiation
+`Tag<is_floating_point_v<T>>` leaves the member opaque.
+
 ## Update 14 — Wall C cascade: 8 fixes landed; frontier = constexpr folding
 
 Continued driving the cascade (each committed + fulltest-green + zero-regression):
