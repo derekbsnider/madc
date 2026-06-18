@@ -20414,6 +20414,24 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // __attribute__ can also appear after the tag name
     consume_attribute();
 
+    // Optional C++11 `final` after the tag (`struct X final { }` /
+    // `struct X final : Base`). Consume it here so `tn` becomes the body brace
+    // or base-clause colon — otherwise cpp_struct_body_needs_class_parser sees
+    // `final` (not `{`/`:`), declines to delegate, and the body mis-parses
+    // (libstdc++ `struct _Decay_copy final`). `final` is contextual; only
+    // consumed in this class-head position.
+    if ( tn && is_contextual_identifier_token(tn)
+      && contextual_identifier_name(tn) == "final"
+      && pgm.tokens.size() >= 2 && pgm.tokens[1]
+      && (pgm.tokens[1]->id() == TokenID::tkOpBrc
+       || pgm.tokens[1]->id() == TokenID::tkColon) )
+    {
+	pgm.nextToken();           // consume 'final'
+	tn = pgm.peekToken();
+	if ( !tn )
+	    pgm.Throw << "Unexpected end of input after 'final'" << flush;
+    }
+
     // A union with class-only syntax delegates too ([class.union] — a union
     // IS a class; real vector's `union _Storage` has a ctor/dtor/deleted
     // operator=). parsing_cpp_union_class makes the class parser mark the
@@ -22853,6 +22871,24 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    nested_owner_class = pgm.class_scope_stack.back();
 	    tag->str = nested_owner_class->name + "__" + class_source_name;
 	}
+    }
+
+    // Optional C++11 `final` class-virt-specifier after the class-head name:
+    // `class X final { }` / `class X final : Base { }`. `final` is CONTEXTUAL
+    // (a valid identifier elsewhere), so consume it only here — in the class-head
+    // position, immediately before the base clause or the body brace. Without
+    // this, `final` derailed the body parse (members never registered) — it broke
+    // libstdc++'s `struct _Decay_copy final { ... }` (iterator_concepts.h).
+    if ( tn && is_contextual_identifier_token(tn)
+      && contextual_identifier_name(tn) == "final"
+      && pgm.tokens.size() >= 2 && pgm.tokens[1]
+      && (pgm.tokens[1]->id() == TokenID::tkOpBrc
+       || pgm.tokens[1]->id() == TokenID::tkColon) )
+    {
+	pgm.nextToken();           // consume 'final'
+	tn = pgm.peekToken();
+	if ( !tn )
+	    pgm.Throw << "Unexpected end of input after 'final'" << flush;
     }
 
     // --- inheritance: class Derived : [virtual] [access] Base, ... { ... } ---
@@ -31414,6 +31450,17 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     if ( is_contextual_identifier_token(class_kw)
       && contextual_identifier_name(class_kw) == "concept" )
     {
+	// Capture the concept NAME (the token right after `concept`) before
+	// skipping the constraint. madc does not EVALUATE concepts, but the name
+	// must be REGISTERED as a placeholder so qualified references resolve —
+	// a `using NS::ConceptName;` import (libstdc++ does this, e.g.
+	// `using ranges::__detail::__is_signed_integer_like;`) otherwise fails
+	// with "is not a member of namespace". A dtRESERVED placeholder is inert:
+	// concepts only appear in constraint contexts, which madc skips.
+	TokenBase *cname_tok = pgm.peekToken();
+	std::string concept_name = is_contextual_identifier_token(cname_tok)
+				 ? contextual_identifier_name(cname_tok)
+				 : std::string();
 	int paren = 0, square = 0, brace = 0;
 	TokenBase *t;
 	while ( (t = pgm.nextToken()) )
@@ -31427,6 +31474,24 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    else if ( t->id() == TokenID::tkClSqr && square > 0 ) --square;
 	    else if ( t->id() == TokenID::tkOpBrc ) ++brace;
 	    else if ( t->id() == TokenID::tkClBrc && brace > 0 ) --brace;
+	}
+	if ( !concept_name.empty() )
+	{
+	    DataDefCLASS *cdd =
+		new DataDefCLASS(concept_name, 0, DataType::dtRESERVED);
+	    cdd->is_dependent_placeholder = true;
+	    if ( !pgm.current_namespace().empty() )
+		cdd->canonical_cpp_spelling =
+		    pgm.current_namespace() + "::" + concept_name;
+	    TokenDataType *ctdt = new TokenDataType(concept_name.c_str(), *cdd);
+	    if ( pgm.current_namespace().empty() )
+	    {
+		if ( !pgm.datatype_map.count(concept_name) )
+		    pgm.datatype_map[concept_name] = ctdt;
+	    }
+	    else
+		pgm.namespace_datatype_map[pgm.current_namespace()][concept_name]
+		    = ctdt;
 	}
 	return NULL;
     }
