@@ -24188,6 +24188,27 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // validates the integer type and width.
 	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
 	    {
+		// C++20 bit-field default member initializer (`unsigned m:1 = 0;`):
+		// skip `= <init>` to the next top-level ',' or ';' (madc does not
+		// apply it). Returns the delimiter token. Used after each width.
+		auto skip_bitfield_default_init = [&](TokenBase *cur) -> TokenBase * {
+		    if ( !cur || cur->id() != TokenID::tkAssign )
+			return cur;
+		    int d = 0;
+		    TokenBase *t;
+		    while ( (t = pgm.nextToken()) )
+		    {
+			TokenID id = t->id();
+			if ( d == 0 && (id == TokenID::tkSemi
+				     || id == TokenID::tkComma) )
+			    return t;
+			if ( id == TokenID::tkOpBrk || id == TokenID::tkOpSqr
+			  || id == TokenID::tkOpBrc ) ++d;
+			else if ( id == TokenID::tkClBrk || id == TokenID::tkClSqr
+			       || id == TokenID::tkClBrc ) { if ( d > 0 ) --d; }
+		    }
+		    return t;
+		};
 		pgm.nextToken(); // consume ':'
 		size_t bf_width = pgm.parse_bitfield_width(tn, cmember_dd, true, *ddc);
 		ddc->addBitField(mname, *cmember_dd, bf_width);
@@ -24195,6 +24216,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    ddc->member_access.back() = access_flags;
 		skip_member_attributes(); // `int f : 3 __attribute__((packed));`
 		tn = pgm.nextToken();
+		tn = skip_bitfield_default_init(tn);
 		while ( tn && tn->id() == TokenID::tkComma )
 		{
 		    DataDef *bf_dd = &mtype->definition;
@@ -24216,6 +24238,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			ddc->member_access.back() = access_flags;
 		    skip_member_attributes();
 		    tn = pgm.nextToken();
+		    tn = skip_bitfield_default_init(tn);
 		}
 		if ( !tn || tn->id() != TokenID::tkSemi )
 		    pgm.Throw(tn) << "Expecting ';' after class member" << flush;
