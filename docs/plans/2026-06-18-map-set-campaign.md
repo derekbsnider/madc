@@ -59,27 +59,33 @@ Reducer `tmp/invoc2.mad` (folds false gracefully now). Probes to re-add: WB bloc
 `eval_void_t_detection_slot` (dump base_class/bases/aliases + resolve walk) and the
 `[WB inst]` line at instantiate_template_use's pack_real_inst.
 
-**3b route NARROWED (this session, gdb):** the `_S_test<...>(0)` overload is NOT
-selected by `reselect_static_member_overload` nor `resolve_member_template_call_return_type`
-(probes `[WB rsm]`/`[WB rmt]` did NOT fire) — both ruled out. The typedef
-`typedef decltype(_S_test<_Functor,_ArgTypes...>(0)) type;` resolves through
-`TokenTYPEDEF::parse` → `resolve_declared_type_token` decltype branch (parser.cpp
-~4390: `++unevaluated_operand_depth; parseExpression(operand, true)`) → so the
-overload pick happens inside **parseExpression's in-class member-call resolution**
-for the unqualified `_S_test` (found in the inherited `__result_of_other_impl`
-base), and `expr->datadef()` (~4411) is the selected overload's return type =
-`__failure_type`. NOTE `_S_test` does NOT reach the unqualified-static fallback at
-parser.cpp ~16842 either (it's found by the earlier in-class member lookup). So the
-3b fix site is wherever parseExpression binds an unqualified in-class
-member-FUNCTION-TEMPLATE call with explicit template args + a trailing pack: it must
-distribute the explicit args into the pack and prefer the success overload (or, if
-the success overload IS selected, its return-type decltype
-`declval<_Fn>()(declval<_Args>()...)` must expand the pack to N args — the same
-arity issue). Next: gdb-break at parser.cpp ~4411 (the decltype `dd=expr->datadef()`)
-conditioned on the typedef being inside `__result_of_impl`'s instantiation (or step
-into parseExpression from the 4405 call while parsing that typedef) to pin the
-exact member-template-call binding line, then apply the pack-aware
-distribution+expansion (factor the aeec6a9 pack logic into a shared helper).
+**3b route — PARTIALLY narrowed (this session, gdb). Two of the candidate paths
+are confirmed; the exact binding line is NOT yet pinned — do NOT trust the
+process-of-elimination guesses below as final.**
+- CONFIRMED: the typedef `typedef decltype(_S_test<_Functor,_ArgTypes...>(0)) type;`
+  resolves through `TokenTYPEDEF::parse` → `resolve_declared_type_token` decltype
+  branch (parser.cpp ~4390: `++unevaluated_operand_depth; parseExpression(operand,
+  true)`); `expr->datadef()` (~4411) is the resulting type = `__failure_type`.
+- CONFIRMED (probes did not fire on tmp/invoc2.mad): the `_S_test` overload is NOT
+  resolved via `reselect_static_member_overload` NOR
+  `resolve_member_template_call_return_type` (`[WB rsm]`/`[WB rmt]` silent).
+- NOT YET VERIFIED (earlier note over-claimed this): whether `_S_test` reaches the
+  unqualified-static fallback at parser.cpp ~16842. The conditional gdb breakpoint
+  there (cond `ident_tb->str=="_S_test"`) was set but the run was stopped at an
+  UNRELATED earlier decltype typedef before reaching `__result_of_impl`'s typedef —
+  so 16842 is neither confirmed nor ruled out. Re-run gdb with ONLY the 16842
+  (cond _S_test) + the 4405 breakpoints and `continue` through the unrelated
+  type_traits typedefs until the `__result_of_impl` one, to settle it.
+3b fix (once the binding line is pinned): wherever parseExpression binds the
+unqualified in-class member-FUNCTION-TEMPLATE `_S_test` call with explicit template
+args + a trailing pack, it must distribute the explicit args into the pack and
+prefer the success overload (or, if the success overload IS selected, its
+return-type decltype `declval<_Fn>()(declval<_Args>()...)` must expand the pack to N
+args). Method: gdb-break parser.cpp ~4411 (`dd=expr->datadef()`), `continue` past
+the unrelated decltype typedefs until `dd` is `__failure_type` (or step into
+parseExpression from 4405 for the `__result_of_impl` typedef), to pin the exact
+member-template-call binding line; then apply the pack-aware distribution+expansion
+(factor the aeec6a9 pack logic into a shared helper).
 
 ## Update 9 — Wall B sub-wall 1 LANDED (b0574ff); sub-wall 3 pinned at code level
 
