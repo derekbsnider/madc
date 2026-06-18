@@ -15,11 +15,29 @@ nailed it (frames: parseDeclaration → parseExpression → fix-7 `e_v` →
 parse_constant_primary throw). New test testvartemplateconst.mad. fulltest 648/5.
 
 Progress (`#include <map> --std=c++20`): iterator_concepts → uses_allocator →
-`<numbers>` (now PARSED) → **next: "Expecting integer constant expression" at
-displayed line 791/817** (a NEW constexpr wall past numbers — likely the
-numeric_limits<__max_size_type/__max_diff_type> constexpr members; gdb the throw
-parser.cpp:7052 for the real header:line, as the displayed file is the artifact).
-9 Wall C fixes deep; 9 new conformance tests this session.
+`<numbers>` (now PARSED) → **next frontier PINNED (gdb): `<bits/max_size_type.h>`
+:778** `static constexpr int digits10 = static_cast<int>(digits * numbers::ln2 /
+numbers::ln10);` inside `numeric_limits<__max_size_type>`. Thrown in
+parse_constant_named_cpp_cast("static_cast") → parse_constant_integer_expression →
+parse_constant_primary. 9 Wall C fixes deep; 9 new conformance tests this session.
+
+**This wall is QUALITATIVELY HARDER (floating-point / nested-constant folding) —
+flag for a focused effort, not the quick syntactic loop.** The static_cast operand
+`digits * numbers::ln2 / numbers::ln10` folds nested constexpr constants:
+`numbers::ln2`/`ln10` are var-template-backed constexpr DOUBLES (`inline constexpr
+double ln2 = ln2_v<double>;`), and `digits` = `__gnu_cxx::__int_traits<_Sp::__rep>
+::__digits + 1`. madc's constant parser is INTEGER-only — folding doubles to int
+gives 0 and `digits * 0 / 0` would divide-by-zero, so naive int-folding is wrong.
+PLAIN-double reducers (tmp/fpconst.mad, fpconst2.mad: `static_cast<int>(64 *
+n::ln2 / n::ln10)` with `n::ln2 = 0.6931`) do NOT reproduce the throw — they PARSE
+and fail later in c2mir ("initializer ... should be a constant expression"). So the
+throw is specific to `<numbers>`'s var-template-backed `numbers::ln2`/`ln10` or the
+trait-based `digits` not folding. NEXT: gdb the EXACT failing sub-expression at the
+throw (is it `numbers::ln2`, or `digits`/`__int_traits<...>::__digits`?) to decide:
+(a) fold qualified var-template-backed constexpr-double constants (needs FP
+constant values — bigger), or (b) since `digits10` is unused by map/set, a way to
+parse-past an unfoldable constexpr member initializer (best-effort/deferred value)
+without aborting. Likely (b) is the pragmatic path for the cascade.
 
 Off-path quirks NOTED (not on the map/set path, do not chase): `is_integral_v`
 folds wrong in constant context; a non-type bool-arg class instantiation
