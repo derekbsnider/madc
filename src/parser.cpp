@@ -16157,8 +16157,47 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    if ( peekToken() && peekToken()->id() == TokenID::tkLT
 		      && template_declared_in_namespace(member_name, ns_name) )
 		    {
-			if ( TokenDataType *inst =
-				instantiate_template_id(member_name, member_tb, ns_name) )
+			// Construction context? Peek past the balanced `<...>`: a
+			// following `(` means a functional-cast / temporary
+			// construction `Tmpl<...>(args)` — a STORAGE/object context,
+			// so let a concrete-arg variadic template (e.g.
+			// std::tuple<const key_type&>) really instantiate (complete
+			// type, member typedefs resolved) instead of an opaque shell.
+			// A `::` follower (trait `Tmpl<...>::value`) keeps the opaque
+			// default so pure traits aren't forced to materialize.
+			bool is_construction = false;
+			for ( size_t k = 0, d = 0; k < tokens.size(); ++k )
+			{
+			    TokenID kid = tokens[k]->id();
+			    if ( kid == TokenID::tkLT )
+				++d;
+			    else if ( kid == TokenID::tkGT )
+			    {
+				if ( --d == 0 )
+				{
+				    is_construction = k + 1 < tokens.size()
+				      && tokens[k+1]->id() == TokenID::tkOpBrk;
+				    break;
+				}
+			    }
+			    else if ( kid == TokenID::tkBSR )
+			    {
+				d = d > 2 ? d - 2 : 0;
+				if ( d == 0 )
+				{
+				    is_construction = k + 1 < tokens.size()
+				      && tokens[k+1]->id() == TokenID::tkOpBrk;
+				    break;
+				}
+			    }
+			}
+			bool saved_vri = allow_variadic_real_inst;
+			if ( is_construction )
+			    allow_variadic_real_inst = true;
+			TokenDataType *inst =
+				instantiate_template_id(member_name, member_tb, ns_name);
+			allow_variadic_real_inst = saved_vri;
+			if ( inst )
 			    member_dd = &inst->definition;
 		    }
 		    if ( DataDefCLASS *member_scope =
