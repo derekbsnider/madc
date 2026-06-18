@@ -23,12 +23,26 @@ fulltest-green + zero-regression:
 5. **Storage specifiers before a post-class-def declarator** (eb3eafa) —
    `struct X {...} inline constexpr x{};` (the CPO shape); skip
    inline/constexpr/static/etc. between `}` and the instance name.
+6. **Decl-specifier AFTER the return type in a member decl** (84f1560) —
+   `void constexpr operator=(...)` (decl-specifier-seq is unordered); skip the
+   no-op specifier before the member-name read. Fixed uses_allocator.h:81.
 
-Progress through `<bits/iterator_concepts.h>` (`#include <map> --std=c++20`):
-line 616 (using) → 969 (final) → 974 (CPO var) → **header fully parsed**, now into
-the NEXT C++20 header at **line 81:53 "Expecting member name in class definition"**
-(frontier as of eb3eafa). New tests: testusingchain, testfinalclass,
-testinlineconstexprvar. fulltest 643/5 (the 5 = the known map/set tests).
+Progress (`#include <map> --std=c++20`): iterator_concepts.h 616→969→974→done →
+uses_allocator.h:81 (fix 6) → now **`<numbers>`:59 — VARIABLE TEMPLATE**
+`template<typename _Tp> inline constexpr _Tp e_v = _Enable_if_floating<_Tp>(...);`
+(frontier as of 84f1560). New tests: testusingchain, testfinalclass,
+testinlineconstexprvar, testspecifierafterrettype. fulltest 644/5 (5 = known).
+
+**NEXT = fix 7: VARIABLE TEMPLATES (C++14).** madc handles class/function/alias
+templates + concepts, but NOT `template<...> [inline constexpr] T name = init;`
+— so `<numbers>`'s `e_v`/`pi_v`/… never register and `inline constexpr double e =
+e_v<double>;` fails "use of undeclared identifier 'e_v'". This is a larger feature
+than fixes 1–6 (register a variable-template name; resolve `name<Arg>` uses;
+madc need not fully evaluate the initializer). Reproduce: any of tmp/map_inc.mad,
+tmp/str_inc.mad, tmp/ios_inc.mad at `--std=c++20`. The template-decl dispatch is
+~parser.cpp:31403 (`class_kw = nextToken()`; handles concept/using/class/struct —
+add a variable-template arm when what follows the `template<>` is a typed
+declarator with `=`/`;`, not class/struct/concept/using).
 
 **This means Wall C is tractable incrementally** — keep running
 `./bin/madc --std=c++20 tmp/map_inc.mad` (also tmp/str_inc.mad, tmp/ios_inc.mad),
