@@ -1,5 +1,50 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 24 — ROOT CAUSE PINNED: corrupt `namespace_datatype_map["std"]["__detail"]` entry
+
+Env-gated `RD` instrumentation in `resolve_declared_type_token` (entry + every
+candidate return, cond `tname=="__detail"`) pinned it DEFINITIVELY:
+
+```
+[RD ENTRY] tname=__detail next=:: ...
+[RD A_nsloop] scope=std -> __cond_value_type_char
+```
+
+**The failing `iterator_category` resolution of `__detail::__clamp_iter_cat<…>`
+hits the namespace-scope loop (`A_nsloop`, parser.cpp:~4533): it looks up the
+bare qualifier `__detail` in `namespace_datatype_map["std"]` and FINDS a corrupt
+entry `__detail -> __cond_value_type_char`, returns it (via
+resolve_member_chain_or_type, which can't consume `::__clamp_iter_cat` off that
+unrelated type), leaving `:: __clamp_iter_cat` → "Expecting ';'".** This branch
+runs BEFORE the correct 4579 `::`-block, so it preempts the right answer.
+
+STATE-DEPENDENCE EXPLAINED: the corrupt `["std"]["__detail"]` entry does not
+exist when the FIRST `reverse_iterator` resolves (it correctly takes the 4579
+block → `iterator_traits_char___iterator_category`, verified by RD `C_nsblock`).
+The entry is written LATER, during a `__detail::__cond_value_type<…>` /
+`__detail::__iter_value_t<…>` resolution (RD shows those C_nsblock fires); a
+subsequent `iterator_category` then reads the now-corrupt entry.
+
+WRITER not yet caught, but RULED OUT: the instantiation sites (2773/3311/3925 —
+they key by the MANGLED type name in the DEFINING namespace, not `__detail` in
+`std`) and the `using`-declaration import (20272/20276 — RD writer-probe silent).
+Remaining candidate `namespace_datatype_map[...][key]=` sites (key could be
+`__detail`): tag (23669/23823/23839), alias (20375/20861/25885/32584),
+31542/31544, enum (26489/26540), concept (32216). A regex auto-injection to catch
+the writer broke `else if` single-statement bodies — instrument with PROPER
+BRACES, or use a gdb watchpoint.
+
+**FIX (next session): find the site registering the NAMESPACE name `__detail`
+as a type entry (→ a sibling `__cond_value_type<char>`) in
+`namespace_datatype_map["std"]` and stop it** — almost certainly a
+namespace-path-splitting bug where a `std::__detail::X` instantiation/registration
+keys `X`'s result under the qualifier `__detail` in `std` instead of under `X`'s
+mangled name in `std::__detail`. Verify: `tmp/ic4.mad` already passes (the
+partial-spec-constraint fix); the corruption is specific to the real
+`__cond_value_type`/`__iter_value_t` instantiation registering wrongly. Once
+fixed, `__detail::__clamp_iter_cat<…>` resolves via the 4579 block again and the
+iterator_category alias completes. gdb needs `make clean && make debug`.
+
 ## Update 23 — `iterator_category` wall narrowed further (open puzzle for a fresh session)
 
 More gdb/diag on the failing `iterator_category` resolution
