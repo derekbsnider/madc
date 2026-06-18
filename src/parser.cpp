@@ -15440,14 +15440,40 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
     for ( size_t s = 0; s < it->second.size(); ++s )
     {
 	TemplateDef &spec = it->second[s];
-	if ( spec.spec_pattern.size() != arg_spellings.size() )
-	    continue;                                  // pattern arity == primary arity
+	// A trailing parameter-pack slot (`_Types...` as the LAST pattern arg, naming a
+	// declared pack typeparam) absorbs 0+ trailing concrete args into one slot, so
+	// the fixed (non-pack) slot count is one less and the arg arity need only be >=
+	// it. Without this a `<...,_Functor,_ArgTypes...>` spec is wrongly arity-rejected
+	// (4 pattern slots vs 5 concrete args) and instantiation falls to the primary —
+	// exactly what made __result_of_impl<false,false,F,Args...> (the callable case
+	// behind __is_invocable, hence a map/set comparator) resolve to __failure_type.
+	std::string trailing_pack_name;
+	if ( !spec.spec_pattern.empty() )
+	{
+	    std::string last = template_tokens_spelling(spec.spec_pattern.back());
+	    while ( !last.empty() && last.back() == ' ' ) last.pop_back();
+	    if ( last.size() >= 3 && last.compare(last.size() - 3, 3, "...") == 0 )
+	    {
+		std::string base = last.substr(0, last.size() - 3);
+		while ( !base.empty() && base.back() == ' ' ) base.pop_back();
+		for ( size_t k = 0; k < spec.typeparams.size(); ++k )
+		    if ( spec.typeparams[k] == base
+		      && k < spec.typeparam_is_pack.size() && spec.typeparam_is_pack[k] )
+		    { trailing_pack_name = base; break; }
+	    }
+	}
+	size_t fixed_slots = trailing_pack_name.empty() ? spec.spec_pattern.size()
+							: spec.spec_pattern.size() - 1;
+	if ( trailing_pack_name.empty()
+		 ? spec.spec_pattern.size() != arg_spellings.size()
+		 : arg_spellings.size() < fixed_slots )
+	    continue;                                  // arity (pack absorbs the tail)
 	std::map<std::string, DataDef *> ded;
 	std::map<std::string, std::string> tmpl_ded;   // template-template-param deductions
-	std::map<std::string, std::vector<std::string> > pack_ded; // inner trailing-pack deductions
+	std::map<std::string, std::vector<std::string> > pack_ded; // trailing-pack deductions
 	int score = 0;
 	bool ok = true;
-	for ( size_t i = 0; i < spec.spec_pattern.size(); ++i )
+	for ( size_t i = 0; i < fixed_slots; ++i )
 	{
 	    std::string pattern_spelling =
 		template_tokens_spelling(spec.spec_pattern[i]);
@@ -15488,6 +15514,17 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	}
 	if ( !ok )
 	    continue;
+	// Absorb the trailing concrete args into the deduced pack (may be empty —
+	// `<...,Args...>` against an exact-arity use deduces an empty Args). The
+	// element spellings resolve to type tokens at instantiation (caller, the
+	// spec_pack_subst -> pack_subst loop) for `...`-expansion in the body.
+	if ( !trailing_pack_name.empty() )
+	{
+	    std::vector<std::string> elems;
+	    for ( size_t a = fixed_slots; a < arg_spellings.size(); ++a )
+		elems.push_back(arg_spellings[a]);
+	    pack_ded[trailing_pack_name] = elems;
+	}
 	// Every own typeparam of the spec must have been deduced — as a type
 	// (ded) or, for a template-template parameter, as a template (tmpl_ded).
 	bool all = true;
