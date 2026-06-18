@@ -38,7 +38,7 @@ full synthetic shape passes, the wall is entangled with the REAL header chain
 (real `iterator_traits<__normal_iterator<const char*>>::iterator_category`, real
 `derived_from`, real `random_access_iterator_tag`, the iter_traits selection my
 fixes touch). DO NOT re-try black-box reductions — go straight to gdb: debug
-build (`make -C src debug`), break `parser.cpp:20318` ("Expecting ';' after using
+build — NOTE: `make -C src debug` ALONE reuses stale optimized .o files (no symbols; gdb says "No source file named parser.cpp"); you MUST `make -C src clean && make -C src debug` for a debuggable binary, then `make -C src clean && make -C src` to restore optimized — break `parser.cpp:20318` ("Expecting ';' after using
 alias"), conditional on `alias_name=="iterator_category"`, then inspect what
 `resolve_declared_type_token` consumed of `__detail::__clamp_iter_cat<typename
 __traits_type::iterator_category, random_access_iterator_tag>` and WHY it stopped
