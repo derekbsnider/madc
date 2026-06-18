@@ -14522,6 +14522,51 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
 {
     if ( DataDef *dd = pgm.resolve_named_datadef(spelling) )
 	return dd;
+    // Peel trailing declarator suffixes (`int32_t*`, `_Tp&`, `_Tp&&`) and leading
+    // cv-qualifiers, resolve the CORE type, then re-apply pointer/reference.
+    // resolve_named_datadef matches only a bare type name; a pack element absorbed
+    // from a partial-spec arg arrives WITH its suffix (e.g. __result_of_impl<...,
+    // _ArgTypes...> deducing _ArgTypes = [int32_t*, int32_t*]), so without this the
+    // element resolves to NULL and the whole pack collapses to empty — dropping
+    // `_ArgTypes...` from the instantiated body (the __is_invocable / _S_key wall).
+    {
+	std::string core = trim_spelling(spelling);
+	std::vector<char> suffixes;    // outermost-first: '*' ptr, '&' ref (&& folds to ref)
+	for (;;)
+	{
+	    while ( !core.empty() && core.back() == ' ' ) core.pop_back();
+	    if ( !core.empty() && core.back() == '*' )
+	    { core.pop_back(); suffixes.push_back('*'); continue; }
+	    if ( core.size() >= 2 && core.compare(core.size() - 2, 2, "&&") == 0 )
+	    { core.erase(core.size() - 2); suffixes.push_back('&'); continue; }
+	    if ( !core.empty() && core.back() == '&' )
+	    { core.pop_back(); suffixes.push_back('&'); continue; }
+	    break;
+	}
+	while ( !core.empty() && core.back() == ' ' ) core.pop_back();
+	static const char *cv[] = { "const ", "volatile " };
+	for ( bool peeled = true; peeled; )
+	{
+	    peeled = false;
+	    for ( size_t c = 0; c < 2; ++c )
+	    {
+		size_t n = std::string(cv[c]).size();
+		if ( core.compare(0, n, cv[c]) == 0 )
+		{ core = trim_spelling(core.substr(n)); peeled = true; }
+	    }
+	}
+	if ( !suffixes.empty() && !core.empty() && core != trim_spelling(spelling) )
+	    if ( DataDef *base = resolve_arg_spelling_datadef(pgm, core) )
+	    {
+		DataDef *dd = base;
+		// Apply innermost-first (reverse of the outermost-first peel order).
+		for ( size_t i = suffixes.size(); i-- > 0; )
+		    dd = suffixes[i] == '*'
+		       ? static_cast<DataDef *>(pgm.getPointerType(dd))
+		       : static_cast<DataDef *>(pgm.getReferenceType(dd));
+		return dd;
+	    }
+    }
     if ( spelling.find('<') == std::string::npos )
 	return NULL;
     std::string want = despace_spelling(strip_type_namespace(trim_spelling(spelling)));
