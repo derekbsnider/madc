@@ -27,7 +27,26 @@ qualified-alias-template-id arg parsing mishandles a `typename X::Y` argument
 where arg collection stops early, fix. Also still: 1× recovered "undeclared std"
 leak at :141 (cosmetic, parse continues).
 
-UPDATE (reduction tried): the SIMPLE form does NOT reproduce — `tmp/qta.mad`
+UPDATE 2 (reductions EXHAUSTED — gdb required): FOUR synthetic reducers ALL PASS
+and do NOT reproduce, progressively matching the real `__clamp_iter_cat` shape:
+`tmp/qta.mad` (bare `NS::alias<typename Concrete::m, U>`), `tmp/qtb.mad`
+(`__traits_type` = template-id typedef `iterator_traits<It>`), `tmp/qtc.mad`
+(default 3rd param `Otherwise = Cat`, called with 2 args), `tmp/qtd.mad` (FULL
+shape: qualified alias + default param + `typename T::member` arg + concept-
+condition body `condt<derived<Cat,Limit>, Limit, Otherwise>`). Since even the
+full synthetic shape passes, the wall is entangled with the REAL header chain
+(real `iterator_traits<__normal_iterator<const char*>>::iterator_category`, real
+`derived_from`, real `random_access_iterator_tag`, the iter_traits selection my
+fixes touch). DO NOT re-try black-box reductions — go straight to gdb: debug
+build (`make -C src debug`), break `parser.cpp:20318` ("Expecting ';' after using
+alias"), conditional on `alias_name=="iterator_category"`, then inspect what
+`resolve_declared_type_token` consumed of `__detail::__clamp_iter_cat<typename
+__traits_type::iterator_category, random_access_iterator_tag>` and WHY it stopped
+leaving a trailing `::` (UA diag showed resolved=1 next='::'). That pin tells
+whether the leftover `::` is the inner `typename __traits_type::iterator_category`
+or the qualified `__detail::` head.
+
+UPDATE 1 (reduction tried): the SIMPLE form does NOT reproduce — `tmp/qta.mad`
 (`foo::clamp<typename __traits_type::iterator_category, long>` with
 `__traits_type` a DIRECT typedef to a concrete struct) PASSES. So the wall is
 specific to the REAL chain where `__traits_type = iterator_traits<_Iterator>`
