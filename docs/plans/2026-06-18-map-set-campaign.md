@@ -1,6 +1,41 @@
 # map / set bring-up campaign — diagnosis & plan
 
-**Status:** DIAGNOSIS COMPLETE, NOT STARTED (2026-06-18)
+**Status:** IN PROGRESS — std::tuple bring-up done; map operator[] / set insert / contains remain (2026-06-18)
+
+## Progress log (2026-06-18)
+
+Real libstdc++ `std::tuple<T>` / `tuple<T1,T2>` now instantiate and run.
+Commits on `feature/retire-embedded-shims-claude`, each fulltest-green:
+- **A1** `f40ba5e` — concrete variadic templates real-instantiate as OBJECTS
+  (scoped to statement-level var-decl sites; trait/value-fold stay opaque so
+  `__or_` etc. don't force their `auto` base). test `testvariadicobj`.
+- **A2.1** `bdcf504` — resolve forward-declared template-ids at decl sites
+  (`template<...> class tuple;` registers both a datatype_map placeholder AND a
+  template_map entry; prefer template-id resolution when `<` follows).
+- **A2.2** `26656bd` — preserve the leftover `>` when the injected-class-name
+  swallow hits `>>` (`_UseOtherCtor<_Tuple, tuple<_Up>>`). test extended.
+- **A2.3** `b75a2f0` — single-element pack-expansion PATTERNS
+  (`const _Elements&...`). test `testtuple`. Multi-element pattern repeat = gap.
+
+fulltest **637 / 5 / 0 / 18** (the 5 below; +2 new passing tests, zero regr).
+
+### Remaining walls per failing test (re-measured at b75a2f0)
+- `testmap`, `testset` → **Wall C** (`contains`, `__cplusplus>201703L`) FIRST,
+  then map needs A3 / set needs B.
+- `testsubscript` → **Wall A3**: map `operator[]` builds the tuple as an
+  EXPRESSION temporary (`tuple<const key_type&>(__k)`); the statement-decl flag
+  scoping (A1) doesn't reach it, so it stays opaque → c2mir incomplete-struct.
+  Then `_M_emplace_hint_unique` + `piecewise_construct` codegen.
+- `testcontainerdtor`, `testmadc_ns` → **Wall B**: `__is_invocable` /
+  `__invoke_result` SFINAE chain → bool (deep, like the vector<T*> trait
+  engine). "Incorrect number of parameters: expected 3 got 2" pairs with it.
+
+No single wall makes a test pass (each test needs 2+). Next: A3 (expression-
+temporary object-context real-instantiation), then B, then C.
+
+---
+
+**Original diagnosis (2026-06-18)**
 **Branch:** feature/retire-embedded-shims-claude
 **Goal (user contract):** get `std::map` and `std::set` working end-to-end —
 `testmap`, `testset`, `testsubscript`, `testcontainerdtor` pass (and the
