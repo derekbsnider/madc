@@ -1,5 +1,30 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 25 — iterator_category wall FIXED (base-clause promotion); cascade now at C++20 `ranges::get`
+
+**FIXED (`9fb0e8a`, fulltest 651/5/0/18 zero regr).** The Update-24 root cause is
+resolved. The base-specifier handler initialized `base_name` to the FIRST token
+of the base (the namespace QUALIFIER for a qualified base like
+`: __detail::__cond_value_type<_Tp>`), and called
+`promote_struct_base_to_class(base_name, …)` with that stale qualifier BEFORE the
+`base_name = bdt->definition.name;` update on the next line. promote registered
+the qualifier `__detail` into `namespace_datatype_map["std"]`, poisoning it →
+later breaking `__detail::__clamp_iter_cat<…>`. Fix: move the
+`base_name = bdt->definition.name;` adoption BEFORE the promote call
+(parser.cpp:~23524). Found by RD-instrumenting every `namespace_datatype_map`
+write site (braced-block injection) → writer = promote at parser.cpp:31524 ←
+base-clause at ~23525.
+
+**NEW FRONTIER: C++20 `ranges` surface.** testmap now advances to
+`testmap.mad:780:19 'get' is not a member of namespace 'ranges'` (was line 141) —
+i.e. `std::ranges::get` / a `ranges` CPO is referenced but `namespace ranges` is
+not populated with it. This is the ranges bring-up Update 11 anticipated
+("Unknown namespace 'ranges'"). NEXT: determine whether it's a SINGLE missing
+`ranges::get` (bounded — register/lower it) or broad `namespace ranges` support;
+reduce by grepping the map include path for the `ranges::get` use, gdb/diag the
+"not a member of namespace 'ranges'" throw to find the real header:line. The 8×
+recovered "undeclared std" at :141 remain (cosmetic, parse continues).
+
 ## Update 24 — ROOT CAUSE PINNED: corrupt `namespace_datatype_map["std"]["__detail"]` entry
 
 Env-gated `RD` instrumentation in `resolve_declared_type_token` (entry + every
