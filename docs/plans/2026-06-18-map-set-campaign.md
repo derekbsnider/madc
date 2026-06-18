@@ -1,5 +1,51 @@
 # map / set bring-up campaign — diagnosis & plan
 
+## Update 19 — five C++20 walls cleared; cascade deep in the iterator/concepts surface
+
+This session landed FIVE regression-free fixes (all pushed, fulltest 651/5/0/18
+throughout), each clearing one wall of the `--std=c++20 <map>` parse cascade:
+
+1. **Concept structural arm** (`ad2fe83`) — concept-id `Name<Args>` as non-type
+   bool folds 0/1. Test `testconcepteval`.
+2. **requires-expression arm** (`484f04d`) — `evaluate_requires_expression_constant`
+   + `constraint_expression_well_formed`; params modeled as `std::declval<T&>()`,
+   each requirement checked well-formed. Cleared `iterator_concept`/
+   `random_access_iterator`. Test `testrequiresexpr`.
+3. **Qualified-alias-body namespace fallback** (`35f7d54`) — when a qualified
+   `NS::alias<X>`'s body references an unqualified sibling, retry body resolution
+   in the alias's defining namespace (strictly additive, only on prior failure).
+   Cleared `iter_value_t<…>`. Reducer `tmp/qa3.mad`.
+4. **Trailing requires-clause on member fn** (`2b3ad5d`) — skip `requires …`
+   between declarator and body (e.g. `operator->() const requires …`). Reducer
+   `tmp/trc2.mad`.
+5. **Strict type-requirement** (`16b16ac`) — `typename T::m` requires FULL type
+   consumption; `typename char*::value_type` is now correctly ill-formed, so
+   `HasVT<char*>` folds false (was lenient → wrong concept-partial-spec pick).
+   Reducer `tmp/hasvt.mad`; testrequiresexpr strengthened.
+
+**CURRENT FRONTIER (precise, reduced): concept-constrained partial-spec
+`::type::member` chaining.** `tmp/ic4.mad` minimally reproduces. With a
+concept-constrained partial spec
+`template<class I,class T> requires HasVT<I> struct iti<I,T>{using type=T;};`
+(primary `using type = iterator_traits<I>;`), resolving `iti<char*,char*>::type`
+ALONE works (`tmp/ic5.mad` passes → iterator_traits<char*>), but
+`iti<char*,char*>::type::iterator_concept` (one more member hop, in one alias)
+FAILS "Expecting type in using alias". Without the concept spec it works
+(`tmp/ic2.mad`). So a concept-constrained partial-spec instance resolves its
+`::type` but chaining a FURTHER member off that result fails — the `::type`
+result is left dependent/opaque past the first hop. This is the libstdc++
+`__iter_traits<char*>::iterator_concept` line (reverse_iterator's
+`iterator_category`/`__iter_concept`), testmap.mad:505 attribution. NEXT: gdb
+how `iti<…>::type` resolves under a concept-constrained partial spec and why the
+trailing `::iterator_concept` isn't applied to the concrete result.
+
+**ALSO NOTED (cosmetic, recovered — not the blocker): 4× leaked "undeclared
+identifier 'std'" at testmap.mad:141.** The parse RECOVERS (continues to :505),
+so these are leaked-but-caught throws (like the 791/817 soft errors), most
+likely the requires-evaluator's `std::declval` qualified lookup in a fold
+context where `std` is momentarily unresolvable. Benign for the cascade;
+suppress later (or root-cause if it ever becomes load-bearing).
+
 ## Update 18 — CONCEPT EVALUATOR LANDED (structural arm + requires-expr); cascade advanced past iterator_concept
 
 Both halves of the C++20 concept-satisfaction evaluator are committed and the
