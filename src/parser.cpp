@@ -19077,6 +19077,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	}
 	if ( done ) { break; /* prevent eating next token */ }
 	tb = peekToken();
+	// A pack-expansion ellipsis `...` (three consecutive dots) following a
+	// complete operand is the expansion marker, NOT a member access (a single
+	// `.`): `_Inherited(std::forward<_UElements>(__elements)...)`, `f(args...)`.
+	// After instantiation the deduced parameter pack is materialized as
+	// concrete parameter(s) the pattern already names, so the operand just
+	// parsed IS the expansion (a size-1 pack — the std::tuple<const T&> that
+	// map::operator[] builds — yields that one operand). Consume the three
+	// dots and end the expression.
+	if ( tb->id() == TokenID::tkDot && consume_ellipsis() )
+	    break;
 	if ( tb->id() == TokenID::tkClBrk && !brackets )
 	{
 	    DBG(cout << "Hit ), no prior brackets, might be end of function?" << endl);
