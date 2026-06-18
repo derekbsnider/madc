@@ -23521,9 +23521,19 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( TokenDataType *bdt = pgm.resolve_declared_type_token(bn, true, true) )
 	    {
 		bcls = dynamic_cast<DataDefCLASS *>(&bdt->definition);
+		// Adopt the RESOLVED type's name BEFORE promoting. `base_name`
+		// started as the FIRST token of the base-specifier, which for a
+		// QUALIFIED base (`: __detail::__cond_value_type<_Tp>`, the real
+		// indirectly_readable_traits base) is the namespace qualifier
+		// (`__detail`), NOT the type. promote_struct_base_to_class registers
+		// `name` into datatype_map / namespace_datatype_map[current_ns]; the
+		// stale `__detail` poisoned `namespace_datatype_map["std"]["__detail"]`
+		// with the sibling __cond_value_type<char>, later breaking
+		// `__detail::__clamp_iter_cat<…>` (reverse_iterator's iterator_category
+		// alias), which then mis-resolved the bare `__detail` qualifier.
+		base_name = bdt->definition.name;
 		if ( !bcls && !pgm.is_c_mode() )
 		    bcls = pgm.promote_struct_base_to_class(base_name, &bdt->definition);
-		base_name = bdt->definition.name;
 #ifdef MADC_DEBUG_BASE_CLAUSE
 		fprintf(stderr, "[base-clause] '%s' resolved as declared type '%s' bcls=%p next=%d\n",
 			source_base_name.c_str(), base_name.c_str(), (void *)bcls,
