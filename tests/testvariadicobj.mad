@@ -18,6 +18,17 @@ struct Holder {
 template<typename... Ts> struct Bag;
 template<typename... Ts> struct Bag { int n; int v; };
 
+// Injected-class-name used as a template inside a nested template-id whose
+// trailing `>>` also closes the enclosing template-id (`Inner<Self<T>>`): the
+// self-name swallow must re-emit the leftover `>` (mirrors std::tuple's
+// `_UseOtherCtor<_Tuple, tuple<_Up>>`).
+template<typename... E>
+struct Self {
+    template<typename T> struct Inner { int a; };
+    template<typename T> struct Inner<Self<T>> { int b; };
+    int x;
+};
+
 int main()
 {
     Holder<int> h;
@@ -31,5 +42,9 @@ int main()
     b.v = 7;
     cout << "bag n: " << b.n << endl;
     cout << "bag v: " << b.v << endl;
+
+    Self<int> s;
+    s.x = 9;
+    cout << "self x: " << s.x << endl;
     return 0;
 }

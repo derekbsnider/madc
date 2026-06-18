@@ -2587,8 +2587,17 @@ static std::string template_tokens_spelling(
 }
 
 static size_t template_id_suffix_end(
-	const std::vector<TokenBase *> &tokens, size_t lt_index)
+	const std::vector<TokenBase *> &tokens, size_t lt_index,
+	bool *split_gt = NULL)
 {
+    // *split_gt (when provided): set true if the closing token was a `>>`
+    // (tkBSR) that supplied ONE leftover `>` for an ENCLOSING template-id —
+    // i.e. the suffix ended at a `>>` while only one `>` was needed to balance
+    // this `<...>`. The caller that swallows the suffix must then re-emit a
+    // single `>` so the enclosing template-id's close is not lost (the source
+    // `Outer<Inner<_Up>>` lexes the trailing pair as one `>>`).
+    if ( split_gt )
+	*split_gt = false;
     int depth = 0;
     for ( size_t i = lt_index; i < tokens.size(); ++i )
     {
@@ -2612,7 +2621,13 @@ static size_t template_id_suffix_end(
 	    if ( depth > 1 )
 		depth -= 2;
 	    else
+	    {
+		// `>>` closes this `<...>` (depth 1 -> 0) AND leaves a `>` for
+		// the enclosing template-id.
+		if ( split_gt && depth == 1 )
+		    *split_gt = true;
 		depth = 0;
+	    }
 	    if ( depth <= 0 )
 		return i;
 	}
@@ -3332,7 +3347,21 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    inj.push_back(ni);
 		    if ( bi + 1 < td.body.size()
 		      && td.body[bi + 1]->id() == TokenID::tkLT )
-			bi = template_id_suffix_end(td.body, bi + 1);
+		    {
+			// Self-name USED AS A TEMPLATE (`tuple<_Tp>` inside
+			// tuple's body == std::tuple<_Tp>, a DIFFERENT type):
+			// the mangled current-instantiation name does not take
+			// args, so swallow the `<...>`. If the suffix ends at a
+			// `>>` that also closed an ENCLOSING template-id (e.g.
+			// `_UseOtherCtor<_Tuple, tuple<_Up>>`), re-emit the
+			// leftover `>` so the outer template-id stays balanced —
+			// otherwise the spelling scanner runs past it into the
+			// class body.
+			bool split_gt = false;
+			bi = template_id_suffix_end(td.body, bi + 1, &split_gt);
+			if ( split_gt )
+			    inj.push_back(new TokenGT());
+		    }
 		    continue;
 		}
 	    }

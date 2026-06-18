@@ -2,3 +2,4 @@ count: 3
 first: 42
 bag n: 2
 bag v: 7
+self x: 9
