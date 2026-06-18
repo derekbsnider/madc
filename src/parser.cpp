@@ -31649,6 +31649,10 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 				 : std::string();
 	int paren = 0, square = 0, brace = 0;
 	TokenBase *t;
+	// Capture the constraint tokens (after the top-level `=`, up to `;`) for a
+	// future concept-satisfaction evaluator. Storage-only today.
+	std::vector<TokenBase *> constraint;
+	bool past_eq = false;
 	while ( (t = pgm.nextToken()) )
 	{
 	    if ( t->id() == TokenID::tkSemi
@@ -31660,6 +31664,21 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    else if ( t->id() == TokenID::tkClSqr && square > 0 ) --square;
 	    else if ( t->id() == TokenID::tkOpBrc ) ++brace;
 	    else if ( t->id() == TokenID::tkClBrc && brace > 0 ) --brace;
+	    if ( past_eq )
+		constraint.push_back(t->clone());
+	    else if ( t->id() == TokenID::tkAssign
+		   && paren == 0 && square == 0 && brace == 0 )
+		past_eq = true;
+	}
+	if ( !concept_name.empty() && past_eq && !constraint.empty() )
+	{
+	    Program::ConceptDef cd;
+	    cd.typeparams = typeparams;
+	    cd.constraint = constraint;
+	    cd.defining_namespace = pgm.current_namespace();
+	    pgm.concept_map[concept_name] = cd;
+	    if ( !pgm.current_namespace().empty() )
+		pgm.concept_map[pgm.current_namespace() + "::" + concept_name] = cd;
 	}
 	if ( !concept_name.empty() )
 	{

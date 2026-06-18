@@ -1342,6 +1342,19 @@ public:
 	std::string defining_namespace;
     };
     std::map<std::string, VarTemplateDef> var_template_map;
+    // C++20 CONCEPT: `template<...> concept Name = <constraint-expr>;`. madc does
+    // not yet EVALUATE concept satisfaction, but it captures the constraint tokens
+    // (+ typeparams) here so a future evaluator can decide `Name<Args>` by
+    // substituting Args and evaluating the constraint (nested concept-ids,
+    // type-trait `::value`, `derived_from`, requires-expression well-formedness).
+    // Until the evaluator lands this is storage-only (no behavior change). Keyed by
+    // simple name AND `ns::name`.
+    struct ConceptDef {
+	std::vector<std::string> typeparams;
+	std::vector<TokenBase *> constraint;    // tokens after '=' up to ';'
+	std::string defining_namespace;
+    };
+    std::map<std::string, ConceptDef> concept_map;
     std::vector<TokenBase *> last_skipped_template_decl;
     // The SOURCE name of the tracked free-function overload parseDeclaration
     // is about to hand to parseFunction ("operator<"), stamped on the FuncDef
