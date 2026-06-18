@@ -20108,12 +20108,14 @@ TokenBase *TokenUSING::parse(Program &pgm)
     };
     auto resolve_source_namespace = [&](const std::string &name) -> std::string
     {
-	if ( namespace_exists(name) )
-	    return name;
-	// C++ unqualified namespace lookup walks OUTWARD through enclosing
-	// scopes: from inside `std::__detail`, `ranges::__detail` names
-	// `std::ranges::__detail` (ranges is a sibling under std), not
-	// `std::__detail::ranges::__detail`. Try each ancestor scope prefix.
+	// C++ unqualified namespace lookup walks OUTWARD through ENCLOSING
+	// scopes FIRST, then global: from inside `namespace std`, `ranges`
+	// names `std::ranges` (enclosing) EVEN IF a global `::ranges` also
+	// exists. The enclosing search must PRECEDE the bare-name check —
+	// otherwise a stray empty `namespace_map["ranges"]` shadows the real
+	// `std::ranges` and `using ranges::get;` (ranges_util.h:780) throws
+	// "'get' is not a member of namespace 'ranges'" though std::ranges has it.
+	// (Also handles `ranges::__detail` from inside `std::__detail`.)
 	std::string scope = pgm.current_namespace();
 	while ( !scope.empty() )
 	{
@@ -20125,6 +20127,9 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		break;
 	    scope = scope.substr(0, pos);
 	}
+	// Global / already-fully-qualified fallback.
+	if ( namespace_exists(name) )
+	    return name;
 	return "";
     };
     auto using_declaration_name = [&](TokenBase *tok) -> std::string
