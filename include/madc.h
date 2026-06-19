@@ -1615,6 +1615,7 @@ public:
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup
     std::map<DataDef*, DataDefPTR*> ptr_type_cache; // cached pointer-to-T DataDefs
     std::map<DataDef*, DataDefREF*> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
+    std::map<DataDef*, DataDefCONST*> const_type_cache; // cached const-T DataDefs
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
@@ -2372,6 +2373,11 @@ public:
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     DataDefPTR *getPointerType(DataDef *base);
     DataDefREF *getReferenceType(DataDef *base);
+    // const-qualify a type: const T (idempotent — getConstType(const T) == const T).
+    // Cached in const_type_cache. Const has no runtime/ABI effect; this exists for
+    // TYPE IDENTITY (so const T != T survives deduction / instantiation keying).
+    // See docs/plans/2026-06-19-const-qualified-types.md.
+    DataDefCONST *getConstType(DataDef *base);
     // The return type to CONSTRUCT a FuncDef with: a DataDefREF for a
     // reference return (routed through getReferenceType — the single
     // reference-creation/collapse path), else the bare type. Centralizes the

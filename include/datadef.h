@@ -215,6 +215,15 @@ public:
     {
 	return false;
     }
+    // True only for DataDefCONST: a const-qualified type (`const T`). Lowered
+    // identically to T (const has no runtime/ABI effect — same size, DataType,
+    // codegen), but the type keeps its const-ness so type identity and spelling
+    // carry `const` — the single source of truth for const, no parallel flags
+    // (mirrors is_reference()/DataDefREF). See docs/plans/2026-06-19-const-qualified-types.md.
+    virtual bool is_const() const
+    {
+	return false;
+    }
     // True only for DataDefMemberPtr: a C++ pointer-to-member (`T C::*`).
     // Lowered as a scalar (a ptrdiff_t offset for a data member), but distinct
     // from an ordinary pointer so the `.*`/`->*` operators (Stage 2) and
@@ -960,6 +969,31 @@ class DataDefREF : public DataDefPTR
 public:
     DataDefREF(DataDef &base) : DataDefPTR(base) {}
     virtual bool is_reference() const { return true; }
+};
+
+// A const-qualified type (`const T`). IS-A its base's lowering: const has NO
+// runtime/ABI effect, so the size, DataType, and all codegen behaviour are the
+// base's — but is_const() is true so type identity and the rendered name carry
+// `const`, surviving deduction / template-instantiation keying (the missing
+// identity behind map<int,int>'s pair-piecewise-ctor signature mismatch). Every
+// predicate that does not test is_const() FORWARDS to the base, so a consumer
+// that does not care about const treats a DataDefCONST exactly like its base
+// (the DataDefREF discipline). base_type is the unqualified T.
+// See docs/plans/2026-06-19-const-qualified-types.md (Phase 1 = this class).
+class DataDefCONST : public DataDef
+{
+public:
+    DataDef *base_type;
+    DataDefCONST(DataDef &base)
+	: DataDef("const " + base.name, base.size, base.type()), base_type(&base) {}
+    virtual bool is_const() const { return true; }
+    virtual bool is_pointer() const { return base_type->is_pointer(); }
+    virtual bool is_reference() const { return base_type->is_reference(); }
+    virtual bool is_member_pointer() const { return base_type->is_member_pointer(); }
+    virtual bool is_numeric() const { return base_type->is_numeric(); }
+    virtual bool is_integer() const { return base_type->is_integer(); }
+    virtual bool is_unsigned() const { return base_type->is_unsigned(); }
+    virtual size_t alignment() const { return base_type->alignment(); }
 };
 
 // C++ pointer-to-DATA-member `T C::*`. Lowered (Itanium ABI) as a `ptrdiff_t`

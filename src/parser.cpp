@@ -12546,6 +12546,22 @@ DataDefREF *Program::getReferenceType(DataDef *base)
     return ref;
 }
 
+DataDefCONST *Program::getConstType(DataDef *base)
+{
+    // const is idempotent: const(const T) == const T.
+    if ( base->is_const() )
+	return static_cast<DataDefCONST *>(base);
+
+    auto it = const_type_cache.find(base);
+    if ( it != const_type_cache.end() )
+	return it->second;
+
+    DataDefCONST *cst = new DataDefCONST(*base);
+    const_type_cache[base] = cst;
+    DBG(std::cout << "getConstType() created const " << base->name << std::endl);
+    return cst;
+}
+
 TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 						     TokenBase *origin)
 {
