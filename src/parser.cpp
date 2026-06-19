@@ -17403,8 +17403,20 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 
 		    DataDef *member_dd = NULL;
+		    // A FUNCTION template (`std::get<0>(t)`) must NOT be treated as a
+		    // type-template-id here — that path consumes the `<...>` via
+		    // instantiate_template_id, so the explicit args (the non-type `0`)
+		    // never reach the fn-call capture below and try_instantiate can't
+		    // bind them. Leave `<...>` for capture_call_template_args at the
+		    // ns_resolved fn-call path. (A name that is purely a fn template is
+		    // absent from the type-template registries instantiate_template_id
+		    // consults, but is present in fn_template_map.)
+		    bool member_is_fn_template =
+			fn_template_map.find(ns_name + "::" + member_name)
+			    != fn_template_map.end();
 		    if ( peekToken() && peekToken()->id() == TokenID::tkLT
-		      && template_declared_in_namespace(member_name, ns_name) )
+		      && template_declared_in_namespace(member_name, ns_name)
+		      && !member_is_fn_template )
 		    {
 			// Construction context? Peek past the balanced `<...>`: a
 			// following `(` means a functional-cast / temporary
