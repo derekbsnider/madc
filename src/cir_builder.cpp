@@ -11154,6 +11154,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			(is_ctor && fd) ? find_delegating_initializer(ocls, fd)
 					: NULL;
 		if (delegating_ci) {
+#ifdef MADC_DEBUG_CTORINIT
+			fprintf(stderr, "[ctorinit] DELEGATING-EMIT owner=%s fn=%s ci=%s nargs=%zu ninit=%zu\n",
+				ocls->name.c_str(), tf->var.name.c_str(),
+				delegating_ci->name.c_str(), delegating_ci->args.size(),
+				fd->ctor_initializers.size());
+#endif
 			node_t stmt = class_ctor_call_addr(id("__this", tf), ocls,
 							   delegating_ci->args, tf);
 			flush_pending_stmts(prologue);
@@ -11170,6 +11176,11 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			for (size_t bi = 0; bi < ocls->bases.size(); bi++) {
 				if (ocls->bases[bi].is_virtual) continue; // vbases: complete-object site
 				DataDefCLASS *b = ocls->bases[bi].base;
+#ifdef MADC_DEBUG_CTORINIT
+				fprintf(stderr, "[ctorinit] base-construct owner=%s [%zu]=%s (b==owner? %d, has_user_ctor=%d)\n",
+					ocls->name.c_str(), bi, b ? b->name.c_str() : "(null)",
+					(int)(b == ocls), (int)(b && b->has_user_ctor));
+#endif
 				if (const FuncDef::CtorInitializer *ci =
 					find_base_initializer(ocls, b, fd)) {
 					node_t stmt = class_ctor_call_addr(

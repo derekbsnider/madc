@@ -117,10 +117,22 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 
 static void install_crash_handler()
 {
+    // Run the handler on a dedicated alternate stack so a STACK OVERFLOW
+    // (e.g. runaway recursion in JIT'd code) is still catchable+symbolizable —
+    // without SA_ONSTACK the handler would re-fault on the exhausted stack and
+    // the kernel would kill us silently with no backtrace.
+    static char altstack[65536];	// fixed: SIGSTKSZ is non-constant on modern glibc
+    stack_t ss;
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_sp = altstack;
+    ss.ss_size = sizeof(altstack);
+    ss.ss_flags = 0;
+    sigaltstack(&ss, NULL);
+
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = crash_handler;
-    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, NULL);
     sigaction(SIGABRT, &sa, NULL);

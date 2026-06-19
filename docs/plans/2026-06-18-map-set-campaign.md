@@ -2017,3 +2017,82 @@ resolution). Debug recipe: #ifdef MADC_DEBUG_TUPLE prints keyed on tname in
 {tuple,_Tuple_impl,_Head_base} at the gate / opaque-gate / body-parse / post-
 parse (size,members,base). The exploratory patch was reverted but this Update
 records every edit precisely enough to re-apply.
+
+### Update 47 — layer-9 `map<int,int>` segfault ROOT-CAUSED + FIXED: it was INFINITE RECURSION (`_Tuple_impl<0,_Head>` ctor self-delegation), not a wild pointer. Now layer 10 = node-pointer args to the REAL `_Rb_tree_insert_and_rebalance`.
+
+**CORRECTION of the Update 45/46 hypothesis.** The `map<int,int>; m[1]=2`
+runtime crash was NOT (primarily) the node-pointer/base-derived conflation those
+updates chased — it was a **STACK OVERFLOW from infinite recursion**. gdb on the
+crash: `rsp` sat at the exact bottom of the 8 MB `[stack]` mapping and the stack
+was filled with ONE return address repeated every 16 bytes (the recursion
+signature), faulting on a `call *%rax`.
+
+**Tooling (kept — a permanent debugger improvement).** madc's crash handler
+(`src/madc.cpp`) could not run on a stack overflow: no alternate signal stack, so
+it re-faulted on the exhausted stack and the kernel killed us silently with no
+backtrace. Added `sigaltstack` + `SA_ONSTACK` in `install_crash_handler()`. The
+handler now survives the overflow and symbolizes the faulting JIT frame via
+`madc_jit_symbolize` — it named the culprit immediately:
+`_Tuple_impl_0_int32_t____Tuple_impl_0_int32_t_+0x11 [JIT]` (the default ctor of
+`_Tuple_impl<0,const int&>`, recursing at the base-delegation).
+
+**ROOT CAUSE.** `map::operator[]` builds the key via `tuple<const int&>` =
+`_Tuple_impl<0, const int&>` (the PRIMARY `_Tuple_impl<_Idx,_Head,_Tail...>` with
+`_Tail` empty). Its member typedef `typedef _Tuple_impl<_Idx+1, _Tail...>
+_Inherited;` is the EMPTY `_Tuple_impl<1>` recursion-terminator. During
+instantiation the clone-time self-name collapse (instantiate_template_use)
+collapsed `_Tuple_impl<_Idx+1,_Tail...>` in the BODY to the injected-class-name
+and SWALLOWED its `<...>` args — so `_Inherited` resolved to the OWNER itself. The
+ctor mem-init `: _Inherited(), _Base()` then matched `_Inherited` as a DELEGATING
+constructor (`find_delegating_initializer` → owner), emitting a `__this`-on-`__this`
+self-call → infinite recursion → stack overflow. Confirmed with the existing
+`MADC_DEBUG_CTORINIT` instrumentation (added `base-construct` + `DELEGATING-EMIT`
+traces): `DELEGATING-EMIT owner=_Tuple_impl_0_int32_t_ ci=_Inherited` for both the
+default and head-taking ctors (the head ctor likewise never stored its `__head`).
+
+**FIX (`src/parser.cpp`, `instantiate_template_use` clone loop + new static helper
+`self_template_id_keep_distinct`).** Per [temp.local], a self-name template-id is
+the injected-class-name (collapse to the mangled current type) ONLY when its args
+are the template's OWN parameter list. A self-name with DIFFERENT args is a
+distinct specialization. The body now keeps such a self-id DISTINCT (re-instantiate)
+when its args (a) differ from the params and (b) are expressed PURELY in the
+class's own template parameters (concretely substitutable, e.g.
+`_Tuple_impl<_Idx+1,_Tail...>` → `_Tuple_impl<1>`). The true injected-class-name
+(`tuple<_Tp>` == own params) and self-ids referencing an OUTER/dependent name
+(`_UseOtherCtor<_Tuple, tuple<_Up>>`, `_Tuple_impl<_Idx,_UElements...>`) STILL
+collapse — conservative, because re-instantiating a dependent self-id crashes type
+resolution. The base-clause path (`self_template_base`) is unchanged.
+
+Verified: the self-call is GONE; `_Tuple_impl<0,const int&>` now constructs its two
+real bases (`_Tuple_impl<1>` empty terminator + `_Head_base<0,const int&>`); the
+stack overflow is eliminated.
+
+**NEW FRONTIER (layer 10).** With recursion gone, `map<int,int>; m[1]=2` now
+NULL-DEREFS inside the REAL libstdc++ `std::_Rb_tree_insert_and_rebalance`
+(`_ZSt29_Rb_tree_insert_and_rebalance...+0x33`, resolved mangled-direct), called
+from the madc-instantiated `_M_emplace_hint_unique`. This IS the node-pointer
+correctness Update 45/46 flagged: the `_Base_ptr`/`_Link_type` node-pointer args
+(the freshly allocated node / its parent / the header) are wrong-typed or null.
+NEXT: trace the node allocation (`_M_create_node`/`_Auto_node`) + `_M_insert_node`
+args feeding rebalance.
+
+**testtuple regression status.** testtuple was ALREADY red on the wip branch before
+this work (the wip layers 1-9 regressed it, 655/6 per Update 44). With this fix its
+failure mode is `repeated declaration _M_head_impl` on `tuple<int,int>`: the
+MULTI-element `_Tuple_impl<0,int,int>` flattens base `_Tuple_impl<1,int>`'s
+`_M_head_impl` AND `_Head_base<0,int>`'s `_M_head_impl` into one struct (name
+collision). Orthogonal to the map/set goal (map needs only 1- and 0-element
+tuples); a separate sub-task to get testtuple green before the wip→feature squash.
+
+**fulltest (clean build, warning-free): 655 passed, 6 failed, 0 timed out, 18
+skipped** — the 6 fails are EXACTLY the wip baseline (testcontainerdtor,
+testmadc_ns, testmap, testset, testsubscript, testtuple). ZERO new regressions
+from the parser change. gcc-torture is unaffected by construction: the change
+lives entirely inside `instantiate_template_use` (C++ class-template
+instantiation), which C torture tests never invoke — full torture failset-diff
+deferred to the wip→feature squash gate.
+
+NOTE on branch layout: plan Updates 42-46 are DOC-ONLY commits on
+`feature/retire-embedded-shims-claude`; the layer 1-9 CODE (and this Update 47 +
+the fix) live on `wip/tuple-instantiation-claude`. Keeping code+doc together here
+to avoid the cross-branch confusion that produced the Update-46 branch mix-up.

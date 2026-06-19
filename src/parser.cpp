@@ -2774,6 +2774,83 @@ static size_t template_id_suffix_end(
     return lt_index;
 }
 
+// Should the self-name template-id at `tokens[lt_index]` (== `<`), appearing in a
+// class template's BODY, be kept as a DISTINCT specialization (re-instantiated)
+// rather than collapsed to the injected-class-name (the mangled current type)?
+//
+// Per [temp.local], a self-name with the template's OWN parameter list
+// (`tuple<_Tp>` inside `tuple<_Tp>`) IS the injected-class-name and collapses. A
+// self-name with DIFFERENT args is a different specialization. The primary
+// `_Tuple_impl`'s `typedef _Tuple_impl<_Idx+1,_Tail...> _Inherited;` is the empty-
+// tuple recursion terminator (`_Tuple_impl<1>`); collapsing it to self made the
+// ctor's `: _Inherited()` a delegating self-call -> infinite recursion -> stack
+// overflow at run time. So it must stay distinct.
+//
+// But only when the args are CONCRETELY SUBSTITUTABLE — every identifier among
+// them is one of the class template's own parameters (`_Idx`, `_Tail`), so the
+// clone loop's substitution turns them into a real type. A self-name whose args
+// reference an OUTER/dependent name (a member-template parameter, e.g.
+// `_UseOtherCtor<_Tuple, tuple<_Up>>` or `_Tuple_impl<_Idx, _UElements...>`)
+// cannot be instantiated here and must keep the old collapse (re-instantiating a
+// dependent `tuple<_Up>` crashes type resolution). Conservative: anything not
+// provably class-param-only stays collapsed.
+static bool self_template_id_keep_distinct(
+	const Program::TemplateDef &td, const std::vector<TokenBase *> &tokens,
+	size_t lt_index)
+{
+    if ( lt_index >= tokens.size() || tokens[lt_index]->id() != TokenID::tkLT )
+	return false;
+    std::vector<std::vector<TokenBase *> > slots;
+    std::vector<TokenBase *> cur;
+    int depth = 0;
+    for ( size_t i = lt_index + 1; i < tokens.size(); ++i )
+    {
+	TokenID id = tokens[i]->id();
+	if ( depth == 0 && (id == TokenID::tkGT || id == TokenID::tkBSR) )
+	    break;   // close of this `<...>`
+	if ( id == TokenID::tkLT || id == TokenID::tkOpBrk || id == TokenID::tkOpSqr )
+	    ++depth;
+	else if ( id == TokenID::tkGT || id == TokenID::tkClBrk || id == TokenID::tkClSqr )
+	    --depth;
+	else if ( id == TokenID::tkBSR )
+	    depth -= 2;
+	if ( depth == 0 && id == TokenID::tkComma )
+	{ slots.push_back(cur); cur.clear(); continue; }
+	cur.push_back(tokens[i]);
+    }
+    if ( !cur.empty() )
+	slots.push_back(cur);
+    if ( slots.empty() )
+	return false;   // `Self<>` — nothing to instantiate distinctly
+    std::set<std::string> params(td.typeparams.begin(), td.typeparams.end());
+    // (a) Is this the injected-class-name (args == the template's own params)?
+    bool is_current = slots.size() == td.typeparams.size();
+    for ( size_t k = 0; is_current && k < slots.size(); ++k )
+    {
+	const std::vector<TokenBase *> &slot = slots[k];
+	bool is_pack = k < td.typeparam_is_pack.size() && td.typeparam_is_pack[k];
+	if ( slot.empty() || !is_contextual_identifier_token(slot[0])
+	  || contextual_identifier_name(slot[0]) != td.typeparams[k] )
+	    { is_current = false; break; }
+	size_t want = is_pack ? 4 : 1;   // pack: param-name + `...`
+	if ( slot.size() != want
+	  || (is_pack && (slot[1]->id() != TokenID::tkDot
+		       || slot[2]->id() != TokenID::tkDot
+		       || slot[3]->id() != TokenID::tkDot)) )
+	    { is_current = false; break; }
+    }
+    if ( is_current )
+	return false;   // current instantiation -> collapse to injected-class-name
+    // (b) Every identifier among the args must be a class template parameter, so
+    // substitution yields a concrete, instantiable type.
+    for ( const std::vector<TokenBase *> &slot : slots )
+	for ( TokenBase *t : slot )
+	    if ( is_contextual_identifier_token(t)
+	      && !params.count(contextual_identifier_name(t)) )
+		return false;   // references an outer/dependent name -> collapse
+    return true;
+}
+
 TokenBase *Program::consume_template_type_arg_qualifiers(TokenBase *tb,
 						       std::string &spelling)
 {
@@ -3674,11 +3751,26 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    // the mangled self made the class try to inherit from itself
 		    // ("Unknown base class"). In the BODY (method signatures), a self
 		    // template-id stays collapsed as before.
-		    bool self_template_base =
-			bi < body_brace_index
-			&& bi + 1 < td.body.size()
+		    bool self_as_template =
+			bi + 1 < td.body.size()
 			&& td.body[bi + 1]->id() == TokenID::tkLT;
-		    if ( self_template_base )
+		    bool self_template_base =
+			bi < body_brace_index && self_as_template;
+		    // In the BODY, a self-name template-id whose ARGS DIFFER from the
+		    // template's own parameters is a DISTINCT specialization, NOT the
+		    // injected-class-name — keep it distinct so the clone loop
+		    // substitutes its args and it re-instantiates. The primary
+		    // `_Tuple_impl`'s `typedef _Tuple_impl<_Idx+1,_Tail...> _Inherited;`
+		    // (the empty-tuple recursion terminator) MUST resolve to
+		    // `_Tuple_impl<1>`, not collapse to the current instantiation —
+		    // collapsing made its ctor's `: _Inherited()` a delegating
+		    // self-call -> infinite recursion -> stack overflow at run time. The
+		    // true injected-class-name (`tuple<_Tp>` == the template's own
+		    // params) still collapses below.
+		    bool self_template_body_distinct =
+			!self_template_base && self_as_template
+			&& self_template_id_keep_distinct(td, td.body, bi + 1);
+		    if ( self_template_base || self_template_body_distinct )
 		    {
 			inj.push_back(bt->clone());   // keep class_name; args substitute below
 			continue;
