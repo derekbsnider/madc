@@ -1068,8 +1068,16 @@ DataDef *CirBuilder::ref_returning_call_type(TokenBase *arg)
 	// still wins (tcf->returns() honors it).
 	DataDef *r = (cfd && cfd->returns_reference() && !tcf->return_override)
 		   ? &cfd->return_value_type() : tcf->returns();
-	if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r))
-		r = rp->base_type ? rp->base_type : r;
+	// Unwrap EXACTLY ONE reference level. return_value_type() already returned
+	// the referent (no longer a reference); the tcf->returns() fallback may
+	// still be the DataDefREF. Gate the strip on is_reference() — a plain
+	// POINTER referent (the `base*` of `base*&`) must be PRESERVED, not stripped
+	// to its pointee: stripping it made `_M_rightmost()`'s `base*&` resolve to
+	// `base`, one level too deep, so `pair<base*,base*>(const base*&, …)` never
+	// matched (the arg looked like the class, not a `base*`).
+	if (r && r->is_reference())
+		if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r))
+			if (rp->base_type) r = rp->base_type;
 	return r;
 }
 
@@ -4970,9 +4978,18 @@ DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 		// select_operator_overload's overload_arg_datadef — without
 		// it a `const A &p` argument scores as A* and the copy
 		// ctor never matches (A local(p) dropped construction).
-		if ((tv->var.is_reference()) && tv->var.type) {
-			if (DataDefCLASS *rc = class_behind(tv->var.type))
-				return rc;
+		if (tv->var.is_reference() && tv->var.type) {
+			// The reference variable names its REFERENT lvalue for
+			// overload matching — unwrap exactly ONE reference level.
+			// The referent may be a class (A), a pointer (base*), or a
+			// scalar (int); class_behind would dig through a pointer
+			// referent to its class (losing a level) and miss a scalar
+			// referent entirely — leaving a `const int&` arg as `int*`,
+			// so `tuple<const int&>(const int&)` never matched.
+			if (DataDefPTR *rp =
+			    dynamic_cast<DataDefPTR *>(tv->var.type))
+				if (rp->base_type)
+					return rp->base_type;
 		}
 		if (tv->var.is_fixed_array() && tv->var.type && m_prog)
 			return m_prog->getPointerType(tv->var.type);
