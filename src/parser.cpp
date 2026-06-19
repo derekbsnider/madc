@@ -16405,6 +16405,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    && lhs_dot->type() != TokenType::ttCallFunc
 				    && lhs_dot->type() != TokenType::ttCallMethod
 				    && lhs_dot->type() != TokenType::ttOperator   // (a + b).member — operator result object
+				    && lhs_dot->type() != TokenType::ttMultiOp    // (a != b).member etc — multi-symbol operator result object
 				    && lhs_dot->id() != TokenID::tkObjTemp        // T(args).member — functional-ctor temp
 				    && lhs_dot->id() != TokenID::tkTypeid )   // typeid(x).name() (S5d)
 				    Throw(tb) << "member reference is not a structure or union" << flush;
@@ -16535,6 +16536,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    tv_var = new Variable("__call_expr", *struct_type, 1, NULL, false);
 				}
 			else if ( lhs_dot->type() == TokenType::ttOperator
+			       || lhs_dot->type() == TokenType::ttMultiOp
 			       || lhs_dot->id() == TokenID::tkObjTemp )
 			{
 			    // (a + b).member or T(args).member — a class-object rvalue
