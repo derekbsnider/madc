@@ -1699,6 +1699,16 @@ public:
     // Set by the CIR backend (madc_cir.cpp); printed by madc.cpp.
     double _c2mir_seconds = 0.0;
     double _exec_seconds  = 0.0;
+    // --show-stats: template-instantiation time + count, carved out of parse
+    // time. _inst_seconds is depth-guarded (only the OUTERMOST instantiation
+    // subtree accumulates wall time, so nested instantiations are not double
+    // counted; parsing an instantiated body counts as instantiation cost, which
+    // is the point). _inst_count is every instantiation entry (all depths). The
+    // parse time MINUS _inst_seconds is the declaration-parsing share — the
+    // split that bounds how much a pre-parsed header cache could save.
+    double             _inst_seconds = 0.0;
+    unsigned long long _inst_count   = 0;
+    int                _inst_depth   = 0;
     // User-defined function AST nodes, in source order. Parallel to the
     // ast queue. Populated by parseFunction / parseLambda; consumed by
     // Program::compile in a pre-pass to create funcnodes (labels) before

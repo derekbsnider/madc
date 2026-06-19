@@ -30,6 +30,7 @@
 #include <functional>
 #include <queue>
 #include <stack>
+#include <chrono>
 #include "libmadc/program.h"
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 // Temporary fn-template pack diagnostics — enable with
@@ -48,6 +49,35 @@
 #include "ns_common.h"
 
 using namespace std;
+
+// --show-stats: depth-guarded RAII timer for template instantiation. Wrapping
+// every instantiation entry point, it accumulates wall time only for the
+// OUTERMOST instantiation subtree (nested instantiations inc/dec the depth but
+// do not re-start the clock), so the total is not double counted and parsing of
+// an instantiated body is correctly attributed to instantiation. _inst_count is
+// bumped on every entry (all depths). See Program::_inst_seconds.
+namespace {
+struct InstTimer
+{
+    Program &pgm;
+    bool outer;
+    std::chrono::steady_clock::time_point t0;
+    InstTimer(Program &p) : pgm(p)
+    {
+	++pgm._inst_count;
+	outer = (pgm._inst_depth++ == 0);
+	if ( outer )
+	    t0 = std::chrono::steady_clock::now();
+    }
+    ~InstTimer()
+    {
+	if ( outer )
+	    pgm._inst_seconds += std::chrono::duration<double>(
+		std::chrono::steady_clock::now() - t0).count();
+	--pgm._inst_depth;
+    }
+};
+}
 
 extern "C" {
 int64_t __madc_regex_match(void *, void *);
@@ -2995,6 +3025,7 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 						      const std::string &tname,
 						      TokenBase *tb)
 {
+    InstTimer _it(*this);	// --show-stats: instantiation time
     nextToken(); // consume '<'
     expand_integer_pack_template_args();
     std::vector<std::string> args;
@@ -3253,6 +3284,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 					       const std::string &ns_hint,
 					       DataDefCLASS *owner_hint)
 {
+    InstTimer _it(*this);	// --show-stats: instantiation time
     Program::TemplateDef *tdp = find_template(tname, ns_hint, owner_hint);
     if ( !tdp )
 	return NULL;
@@ -4153,6 +4185,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 						     const std::string &ns_hint,
 						     DataDefCLASS *owner_hint)
 {
+    InstTimer _it(*this);	// --show-stats: instantiation time
     Program::TemplateAliasDef *tdp = find_template_alias(tname, ns_hint,
 							 owner_hint);
     if ( !tdp )
@@ -30398,6 +30431,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc)
 {
+    InstTimer _it(pgm);	// --show-stats: instantiation time
     DBG_PACK("try_inst %s args=%zu\n", key.c_str(), tc->parameters.size());
 #ifdef MADC_DEBUG_CTORTMPL
     if ( getenv("MADC_DEBUG_CTORTMPL") && key.find("::get") != std::string::npos )
@@ -32077,6 +32111,7 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 
 void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 {
+    InstTimer _it(*this);	// --show-stats: instantiation time
     if ( !tc )
 	return;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
@@ -32186,6 +32221,7 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 void Program::instantiate_member_ctor_template_for_construction(
 	DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args)
 {
+    InstTimer _it(*this);	// --show-stats: instantiation time
     if ( !cdd )
 	return;
 #ifdef MADC_DEBUG_CTORTMPL

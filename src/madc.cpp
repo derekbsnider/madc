@@ -755,6 +755,9 @@ int main(int argc, char **argv)
 	    double lex_secs   = tok_wall - read_secs;
 	    if ( lex_secs < 0 ) lex_secs = 0;
 	    double parse_secs = _secs(_ps0, _ps1);
+	    double inst_secs  = prog->_inst_seconds;
+	    double decl_secs  = parse_secs - inst_secs;
+	    if ( decl_secs < 0 ) decl_secs = 0;
 	    fprintf(stderr,
 		"[stats] input read .......... %.1f KiB (%llu bytes)\n"
 		"[stats] tokens produced ..... %llu (lexer)\n"
@@ -764,6 +767,8 @@ int main(int argc, char **argv)
 		"[stats] read time ........... %.3f s\n"
 		"[stats] lex time ............ %.3f s  (%.0f tok/s)\n"
 		"[stats] parse time .......... %.3f s  (%.0f tok/s)\n"
+		"[stats]   instantiate ....... %.3f s  (%.0f%% of parse; %llu calls)\n"
+		"[stats]   decl-parse ........ %.3f s  (PCH-cacheable share)\n"
 		"[stats] c2mir compile ....... %.3f s\n"
 		"[stats] execution .......... %.3f s\n",
 		bytes / 1024.0, (unsigned long long)prog->input_bytes(),
@@ -775,6 +780,9 @@ int main(int argc, char **argv)
 		read_secs,
 		lex_secs,   lex_secs   > 0 ? (double)prog->_tok_produced / lex_secs   : 0.0,
 		parse_secs, parse_secs > 0 ? (double)prog->_tok_consumed / parse_secs : 0.0,
+		inst_secs,  parse_secs > 0 ? 100.0 * inst_secs / parse_secs : 0.0,
+		prog->_inst_count,
+		decl_secs,
 		prog->_c2mir_seconds,
 		prog->_exec_seconds);
 	};
