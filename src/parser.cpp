@@ -16656,8 +16656,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				else if ( lhs_dot->id() == TokenID::tkTypeid )
 				    recv_parent = lhs_dot;   // typeid(x).name() (S5d)
 				else if ( lhs_dot->type() == TokenType::ttOperator
+				       || lhs_dot->type() == TokenType::ttMultiOp
 				       || lhs_dot->id() == TokenID::tkObjTemp )
-				    recv_parent = lhs_dot;   // (a + b).method() — operator result object
+				    recv_parent = lhs_dot;   // (a + b).method() / (--it).method() — operator result object
 				else if ( lhs_dot->type() == TokenType::ttMember )
 				    recv_parent = lhs_dot;   // obj.member.method()
 				else if ( lhs_dot->type() == TokenType::ttCallFunc )
@@ -16761,7 +16762,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    bool is_stmt_expr_lhs = (lhs_dot->type() == TokenType::ttCompound);
 			    bool is_callfunc_lhs = (lhs_dot->type() == TokenType::ttCallFunc
 				|| lhs_dot->type() == TokenType::ttCallMethod);
-		    if ( is_derefexpr_lhs || is_compound_lit_lhs || is_stmt_expr_lhs || is_callfunc_lhs )
+		    // An operator-result / functional-construction RVALUE
+		    // (`(a + b).m`, `(--__j)._M_node`, `T(args).m`): the temp is
+		    // materialized at codegen via parent_expr (translate_expr on the
+		    // operator/multiop/objtemp). Without parent_expr the synthetic
+		    // __op_expr receiver leaks as an undeclared identifier. ttMultiOp
+		    // (`--`/`++`/`<=` results) must be wired exactly like ttOperator.
+		    bool is_operator_rvalue_lhs =
+			(lhs_dot->type() == TokenType::ttOperator
+			 || lhs_dot->type() == TokenType::ttMultiOp
+			 || lhs_dot->id() == TokenID::tkObjTemp);
+		    if ( is_derefexpr_lhs || is_compound_lit_lhs || is_stmt_expr_lhs
+		      || is_callfunc_lhs || is_operator_rvalue_lhs )
 			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
 		    else if ( !is_deref_lhs
 		      && (lhs_dot->type() == TokenType::ttMember
