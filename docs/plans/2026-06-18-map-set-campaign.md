@@ -1653,3 +1653,30 @@ with ctor-argument scoring — `score_arg_to_param` (cir_builder.cpp:4815) unwra
 ref PARAM to base but doesn't reconcile a ref-repr POINTER arg against it. Multiple
 distinct ctor shapes → a focused codegen-level effort. Reducer: `tmp/mapii.mad`
 (`map<int,int>; m[1]=2;`), `--std=c++20 --no-embedded-headers`.
+
+### Update 31-B — the CIR ctor frontier is TWO distinct root causes (probed)
+A `MADC_DBG_WB` probe in `select_ctor_overload` (dumping candidate params vs args
+on NO-MATCH) pinned exactly two issues for `map<int,int>; m[1]=2;`:
+
+1. **Implicit copy constructor not matched.** `in_place_t`, `piecewise_construct_t`,
+   `_Rb_tree_iterator<...>`, `pair<...>` are constructed from a SAME-CLASS arg
+   (`args=[in_place_t]` etc.), but the class's only ctors are the default (0 user
+   params) and/or a non-copy ctor — so `select_ctor_overload` finds no match. madc
+   must match (or synthesize) the implicit copy ctor for same-class construction
+   when no explicit copy ctor exists. (Affects the tag-type globals + iterator copies
+   pervasively.)
+
+2. **Reference-to-pointer param unwrap goes one level too deep.**
+   `tuple<const int32_t>` has a forwarding ctor whose param prints as `int32_t*&`
+   and the arg is `int32_t*` (the reference-repr of `const int&`); `pair<node*,node*>`
+   has `node**&` params vs `node**` args. `score_arg_to_param` (cir_builder.cpp:4824)
+   unwraps a ref param via `DataDefPTR::base_type` — stripping `int32_t*`→`int32_t`,
+   one level too far for a reference-TO-pointer. It also does not symmetrically
+   unwrap a reference-repr ARG. Fix likely: unwrap via `referent_if_reference` for
+   BOTH param and arg (first-class-refs DataDefREF), not ad-hoc base_type stripping —
+   but first confirm whether these params/args carry DataDefREF or a DataDefPTR+ref-flag
+   (the probe showed the NAME `int32_t*` + a separate is_ref_param flag, so the repr
+   distinction needs checking before the fix).
+
+Both are needed for map/set. Start with #2 (more contained) using reducer
+`tmp/mapii.mad`; #1 (implicit copy ctor) is the broader one.
