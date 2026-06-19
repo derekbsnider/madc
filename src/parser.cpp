@@ -17531,6 +17531,29 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 		    else
 			var = vmi->second;
+		// Cross-namespace seed clash: namespace_map[ns][name] can hold a
+		// placeholder seed from a DIFFERENT namespace (observed: qualified
+		// std::get resolving to the std::ranges::get niebloid seed). When the
+		// resolved seed's FuncDef namespace_name disagrees with the looked-up
+		// ns_name AND a proper overload set exists for ns::name, rebind to a
+		// SAME-namespace entry from that set so the CIR-time ranker
+		// (call_target_funcdef) selects among the correct overloads.
+		if ( FuncDef *vfd = dynamic_cast<FuncDef *>(var->type) )
+		{
+		    if ( vfd->namespace_name != ns_name )
+		    {
+			std::map<std::string, std::vector<NamespaceFnOverload>>::iterator
+			    osi = namespace_fn_overload_sets.find(ns_name + "::" + member_name);
+			if ( osi != namespace_fn_overload_sets.end() )
+			    for ( size_t ei = 0; ei < osi->second.size(); ++ei )
+			    {
+				Variable *ev = osi->second[ei].var;
+				FuncDef *efd = ev ? dynamic_cast<FuncDef *>(ev->type) : NULL;
+				if ( efd && efd->namespace_name == ns_name )
+				{ var = ev; break; }
+			    }
+		    }
+		}
 #ifdef MADC_DEBUG_GETREG
 		if ( getenv("MADC_DEBUG_GETREG") && member_name == "get" )
 		    fprintf(stderr, "[getreg] RESOLVE %s::get -> var='%s'\n",
