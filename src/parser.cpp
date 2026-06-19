@@ -17531,6 +17531,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 		    else
 			var = vmi->second;
+#ifdef MADC_DEBUG_GETREG
+		if ( getenv("MADC_DEBUG_GETREG") && member_name == "get" )
+		    fprintf(stderr, "[getreg] RESOLVE %s::get -> var='%s'\n",
+			ns_name.c_str(), var ? var->name.c_str() : "(null)");
+#endif
 		    DBG(cout << "parseExpression() resolved " << ns_name << "::" << member_name << endl);
 		    tb = member_tb; // update tb for line/col tracking below
 		    goto ns_resolved;
@@ -29785,6 +29790,15 @@ static void register_skipped_namespace_template_function(
 {
     if ( pgm.current_namespace().empty() )
 	return;
+#ifdef MADC_DEBUG_GETREG
+    if ( getenv("MADC_DEBUG_GETREG") )
+    {
+	std::string nm = skipped_template_function_declarator_name(tokens);
+	if ( nm == "get" )
+	    fprintf(stderr, "[getreg] register ns='%s' name='get' ntoks=%zu\n",
+		pgm.current_namespace().c_str(), tokens.size());
+    }
+#endif
     std::string captured_opname;
     if ( capture_free_operator_overload(pgm, tokens, typeparams,
 					&captured_opname) )
