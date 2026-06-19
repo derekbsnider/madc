@@ -2214,3 +2214,58 @@ This session committed problem 1 + 1b (correct, additive, root-caused; map still
 fails identically at problem 2 — neutral user-level change, but the structural
 prerequisites are now in place). Problems 2/3/4 are each substantial and remain
 for the next session(s).
+
+### Update 50 — layer 11 part 2 (out-of-line piecewise-ctor body ATTACH) FIXED; frontier is now P3 (two-pack deduction), pinned to parser.cpp:30188.
+
+Continues layer 11 (`map<int,int>; m[1]=2` → c2mir "too many arguments" because
+`std::construct_at` binds the 2-arg copy ctor instead of std::pair's piecewise
+member-template ctor).
+
+**P2 FIXED — out-of-line ctor body now attaches.** Both pair piecewise-family OOL
+defs ARE captured (verified): `register_outofline_member_instantiations` finds
+`std::pair` with 2 defs — `def[0]` member_name=`pair` is_member_template=1
+inner_tparams=2 (the piecewise ctor `pair(piecewise_construct_t, tuple<_Args1...>,
+tuple<_Args2...>)`, defined OUT-OF-LINE in `<tuple>`:2248) and `def[1]`
+inner_tparams=4 (the private indexed ctor, tuple:2260). The attach loop matched the
+in-class method by `cfd->method_display_name == def.member_name` (`pair`), but the
+in-class registered member-template ctor's display name is the FULL mangled
+`pair_const_int32_t_int32_t` (post-substitution) → no match → body never attached →
+placeholder search in `instantiate_member_ctor_template_for_construction` skipped it
+(`member_template_decl.empty()`). FIX (parser.cpp ~29018): for a CTOR def
+(`def.member_name == class_name`), match an in-class member-template ctor by
+`method_display_name == ddc->name` and disambiguate the two ctor overloads by
+template-param count (`cfd->template_param_names.size() == def.inner_typeparams.size()`).
+This is the THIRD instance of the same recurring theme (source-name vs
+full-mangled-name for an instantiated class's ctor) — cf. layer-10
+resolve_class_type_alias and layer-11-P1's registration gate. VERIFIED: pair's
+piecewise placeholder is now FOUND (non-null) and its body attached.
+
+**Frontier = P3 (two-pack deduction), PINNED to parser.cpp:30188.** With the body
+attached, `instantiate_member_ctor_template_for_construction` now ATTEMPTS the
+instantiation, but `try_instantiate_namespace_fn_template` returns ok=0 (verified
+trace: `try_instantiate ok=0 inst_name=pair_..._pair_..._o7`). Two reasons, both in
+that function (parser.cpp:30175):
+- It allows AT MOST ONE pack, in LAST position (lines 30186-30190: a pack typeparam
+  with `i+1 != typeparams.size()` → return false). The piecewise ctor has TWO packs
+  (`_Args1`, `_Args2`) → bails at 30188 on `_Args1`.
+- Even past that, its deduction model (30241-30266+) absorbs TRAILING ARGUMENTS into
+  a trailing PACK PARAMETER (`_Args&&... __args`). The piecewise ctor has NO trailing
+  pack param — its 3 fixed params are `(piecewise_construct_t, tuple<_Args1...>,
+  tuple<_Args2...>)` and the packs live inside the class-template-id ARGS of the
+  tuple params. Deducing `_Args1={const int&}` / `_Args2={}` requires matching
+  `tuple<_PackName...>` against the concrete `tuple<const int&>` / `tuple<>` arg type
+  and binding the pack to that template-id's args — a NEW deduction mode the current
+  machinery cannot express.
+
+**P4 (still after P3):** the piecewise body DELEGATES (tuple:2260-2269) to a private
+indexed ctor `first(std::forward<_Args1>(std::get<_Indexes1>(t1))...), second(...)`
+via `_Build_index_tuple<sizeof...(_Args)>::__type()` — needs the
+`_Build_index_tuple`/`_Index_tuple`/`std::get<I>` index-sequence machinery to
+instantiate. Both the indexed ctor's body (def[1], inner_tparams=4) is now attached
+too, so once P3 deduces, P4 is the remaining body-instantiation work.
+
+This session committed P2 (correct OOL-attach structural fix; map still fails
+identically at P3). P3 (multi-pack class-template-id-arg deduction) + P4
+(index-sequence body) are each substantial and remain. DEBUG: MADC_DEBUG_CTORTMPL
+env-gated traces are committed in parser.cpp (TokenNEW; the OOL attach `[ool]`
+dump; instantiate ENTER/placeholder/try_instantiate; register).
