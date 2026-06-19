@@ -2269,3 +2269,113 @@ identically at P3). P3 (multi-pack class-template-id-arg deduction) + P4
 (index-sequence body) are each substantial and remain. DEBUG: MADC_DEBUG_CTORTMPL
 env-gated traces are committed in parser.cpp (TokenNEW; the OOL attach `[ool]`
 dump; instantiate ENTER/placeholder/try_instantiate; register).
+
+### Update 51 — layer 11 P3 (two-pack deduction) DONE; P4 (body expansion) blueprint + the get<I> mis-resolution finding.
+
+**P3 DONE (cb7abbb), verified, fulltest 655/6 zero-regr.** std::pair's piecewise
+ctor now DEDUCES its two template-id packs: `_Args1={int32_t*}` (the `const int&`
+key, ref-as-pointer), `_Args2={}` (empty mapped-tuple). Mechanism: relaxed the
+"pack must be last typeparam" gate to collect ALL pack typeparams; classify each as
+a trailing-direct pack (legacy pack_elems) vs a TEMPLATE-ID pack (`tuple<_Args1...>`)
+captured into `tid_packs` via unify_nested_spec_pattern_arg's out_pack; an empty
+`tuple<>` splits to a lone empty-string arg treated as ZERO elements.
+instantiate_fn_template_binding FAILS CLEANLY when tid_packs is non-empty (P4 not
+done) so nothing else is affected. Detail in the P3 commit message.
+
+**get<I> mis-resolution (found while probing P4, ON the critical path):** a minimal
+`std::get<0>(std::tuple<int>)` reducer (tmp/tupget.mad / tmp/tupget2.mad) binds the
+call to `__ns_std__ranges_get` — i.e. `std::ranges::get` (a body-less void no-arg
+niebloid placeholder) — instead of `std::get<size_t __i>(tuple<_Elements...>&)`
+(stl_tuple.h). Both unqualified (using namespace std) and qualified `std::get<0>`
+hit it -> c2mir "incompatible argument type for arithmetic type parameter". This is
+a namespace/overload-resolution bug for `get<N>` with an explicit NON-TYPE arg
+(std::ranges::get wrongly selected over std::get). It sits DOWNSTREAM of the P4
+pack machinery (get<_Indexes> is used inside the indexed ctor body), so fix it as
+part of P4, not before.
+
+---
+
+P3+P4 IMPLEMENTATION BLUEPRINT (multi-named-pack deduction + index-sequence body)
+for std::pair's piecewise ctor. The machinery audit below is done. (P3 above is
+LANDED; the P3 section here is the original plan, kept for context.)
+
+Goal: `get map working`. The ONLY remaining blocker is std::pair's piecewise
+member-template ctor (layers 9/10/11-P1/P1b/P2 are fixed + committed @a0449a3).
+The instantiation is now ATTEMPTED but `try_instantiate_namespace_fn_template`
+returns ok=0. Audit of the existing machinery (parser.cpp):
+
+WHY single-pack today:
+- Gate (30181-30192): bails (`return false`) if any pack typeparam is not the
+  LAST typeparam. Sets a single `std::string pack_param` = the last pack.
+- Deduction loop (30241-30382): a TRAILING DIRECT param pack (`_Args&&... __args`,
+  detected by `fn_template_param_is_pack`) absorbs trailing args into
+  `pack_elems` (vector<DataDef*>). A TEMPLATE-ID param (`tuple<_Args1...>`) is
+  handled at 30328-30355 via `unify_nested_spec_pattern_arg`, which CAN bind an
+  inner pack to a list — but ONLY if an `out_pack` (map<string,vector<string>>) is
+  passed; the call at 30349 passes NONE, so an inner pack -> `return false`
+  (unify line 15014).
+- `instantiate_fn_template_binding` (30475+): expands exactly ONE pack
+  (`pack_param`/`pack_elems`, value name `__args`), N copies of each `pattern...`
+  (30590+). No support for multiple named packs or `sizeof...`.
+
+The piecewise ctor: typeparams=[_Args1,_Args2] (BOTH packs); params
+`(piecewise_construct_t, tuple<_Args1...>, tuple<_Args2...>)` — NEITHER pack is a
+trailing direct param; both are TEMPLATE-ID packs. Args: `(piecewise_construct_t,
+tuple<const int&>, tuple<>)` -> want _Args1=[const int&], _Args2=[].
+
+#### P3 — deduce the two template-id packs (self-contained, testable, SAFE)
+
+The gate's `return false` at 30188 fires only for templates that today ALSO fail
+(non-last pack), so relaxing it can only turn a clean-fail into success or another
+clean-fail — it cannot break a currently-succeeding instantiation (those have no
+non-last pack). So P3 is low-risk if downstream FAILS CLEANLY for shapes the body
+expansion can't yet handle.
+
+1. Gate: collect ALL pack typeparams into `std::vector<std::string> pack_tps`
+   instead of bailing on non-last. Defer `pack_param` selection to after
+   `extract_free_signature` (need param spellings).
+2. After extract (30211): `pack_param` = the last typeparam IFF it is a pack AND
+   the LAST param spelling satisfies `fn_template_param_is_pack(sp, that)` (a true
+   trailing direct pack). Every OTHER pack typeparam is a TEMPLATE-ID pack -> put in
+   `std::map<std::string,std::vector<DataDef*>> tid_packs` (seed empty).
+3. Deduction loop, template-id branch (30349): pass a local
+   `std::map<std::string,std::vector<std::string>> outpk` to
+   `unify_nested_spec_pattern_arg`. After the loop, resolve each
+   `outpk[name]` spelling list -> `tid_packs[name]` via
+   `resolve_arg_spelling_datadef`. (unify already binds the inner pack to the tail
+   list — verified at parser.cpp:15068-15080.)
+4. Require every pack_tp be bound (pack_param via pack_elems, OR present in
+   tid_packs even if empty). Thread `tid_packs` into
+   `instantiate_fn_template_binding` as a new parameter.
+VERIFY: env-gated trace `tid_packs[_Args1]={const int&}, [_Args2]={}`. fulltest
+must stay 655/6 (clean-fail until P4 lands).
+
+#### P4 — expand named packs + index-sequence in the body (the deep part)
+
+`instantiate_fn_template_binding`: when `tid_packs` non-empty, the body
+   `: pair(__first, __second, _Build_index_tuple<sizeof...(_Args1)>::__type(),
+     _Build_index_tuple<sizeof...(_Args2)>::__type())`
+   delegating to
+   `: first(forward<_Args1>(get<_Indexes1>(t1))...), second(forward<_Args2>(get<_Indexes2>(t2))...)`
+needs:
+- `sizeof...(_PackName)` -> tid_packs[name].size() (fold to an int literal token).
+- `_Build_index_tuple<N>::__type()` -> `_Index_tuple<0,..,N-1>`; `std::get<I>(tuple)`
+  on the concrete tuple. CHECK FIRST whether the existing tuple bring-up already
+  instantiates `std::get<size_t>` + `_Build_index_tuple`/`make_index_sequence`
+  (tuple<T>/<T1,T2> are DONE) — if so, P4 only needs the pack expansion + sizeof...,
+  and the index machinery rides the existing tuple path. If not, that machinery is
+  an additional sub-feature.
+- Generalize the existing N-copy `pattern...` expansion (30590+) from the single
+  `pack_param`/`__args` to ANY named pack in tid_packs, expanding the PARALLEL
+  (_Args, _Indexes) packs in the indexed ctor in lockstep (both have the same N).
+
+RECOMMENDED SEQUENCE next session: (a) land P3 deduction + trace + fulltest
+(commit); (b) probe whether std::get<I>/_Build_index_tuple already instantiate via a
+tiny reducer; (c) implement P4 pack+sizeof... expansion reusing the N-copy path; (d)
+the indexed-ctor parallel-pack expansion; (e) reducer tmp/map_insert.mad to 0 c2mir
+errors, then run it; (f) fulltest + torture failset-diff. Each a commit. testtuple
+(task #3, multi-elt tuple<int,int> _M_head_impl flatten dup) is orthogonal and also
+needed for the wip->feature squash.
+
+DEBUG: MADC_DEBUG_CTORTMPL traces committed in parser.cpp. reducer tmp/map_insert.mad;
+--std=c++20 --no-embedded-headers.
