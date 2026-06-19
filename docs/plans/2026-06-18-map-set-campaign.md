@@ -1777,3 +1777,30 @@ parameter` (many, the pair<base*,base*> construction) and an
 `incompatible return-expr type` warning (node_handle.h:64). Plus the pre-existing
 recovered parse diagnostics (791/817 Expecting-integer-constant-expression, 141
 undeclared-std). Reducer `tmp/mapii.mad --std=c++20 --no-embedded-headers`.
+
+### Update 34 — __op_expr leak FIXED (acb9906); map c2mir errors 6→2. Last 2 = reverse_iterator's std::iterator base-clause `std`.
+
+`acb9906` — wire parent_expr for member access on a ttMultiOp rvalue. The
+d3a6226 ttMultiOp fix added ttMultiOp to the member-access ACCEPT list but not
+to the parent_expr WIRING (both the data-member TokenMember construction and the
+method-call recv_parent list). So `(--__j)._M_node` (the _Rb_tree iterator
+decrement in `_M_get_insert_*_pos`) got no parent_expr and CIR emitted its
+synthetic `__op_expr` receiver as a bare undeclared identifier. Added the
+operator-rvalue cases (ttOperator/ttMultiOp/tkObjTemp) to both wirings.
+`map<int,int>; m[1]=2;` c2mir check errors 6→2; fulltest 656/5/0/18; torture 51.
+
+**LAST 2 c2mir errors localized — `undeclared identifier 'std'` at
+stl_iterator.h:141:69** (found via a throwbuf::sync probe printing the token's
+OWN file, not the source file the printer shows). Line 137-141 is
+`reverse_iterator`'s base-clause `: public iterator<typename
+iterator_traits<_Iterator>::iterator_category, …, …::reference>` — the deprecated
+`std::iterator` base. madc's expression-context identifier resolver fails on
+`std` while processing this base-clause; the Throw is RECOVERED (compilation
+continues to c2mir). NOTE: not yet confirmed whether these 2 recovered parser
+diagnostics ARE the 2 c2mir check errors or independent noise — and reverse_iterator
+may only be instantiated via map's `typedef reverse_iterator<…>` (not actually
+needed for `m[1]=2` codegen). NEXT: confirm the link, then fix the base-clause
+`std`/std::iterator resolution (or suppress the unused reverse_iterator
+instantiation). Reducer tmp/mapii.mad --std=c++20 --no-embedded-headers; probe
+the real token file via throwbuf::sync (the printer shows the SOURCE file, not the
+token's origin header).
