@@ -28282,9 +28282,23 @@ std::vector<DataDef *> Program::capture_call_template_args()
 	std::string cv_spelling;
 	at = consume_template_type_arg_qualifiers(at, cv_spelling);
 	TokenDataType *adt = resolve_declared_type_token(at, true, true);
-	if ( !adt )
-	    return bail();
-	DataDef *dd = &adt->definition;
+	DataDef *dd = NULL;
+	if ( adt )
+	    dd = &adt->definition;
+	else
+	{
+	    // NON-TYPE template argument (`addN<5>`, `get<0>`): not a type, so fold
+	    // it to an integer constant and carry the value as a DataDef whose NAME
+	    // is the decimal spelling. The fn-template binding/substitution path
+	    // detects non-type-ness via the template's typeparam_is_type and emits a
+	    // TokenInt for it. Single-token literal/foldable arg only (a multi-token
+	    // non-type expression remains an opaque bail — future extension).
+	    int64_t ntv = 0;
+	    std::vector<TokenBase *> ntoks; ntoks.push_back(at);
+	    if ( !fold_nontype_arg_constant(ntoks, ntv) )
+		return bail();
+	    dd = new DataDef(std::to_string(ntv), 8, DataType::dtINT64);
+	}
 	while ( peekToken() && peekToken()->id() == TokenID::tkMul )
 	{
 	    nextToken();
@@ -30182,18 +30196,22 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     // (bound to exactly one element — `__stoa`'s `_Base...` shape).
     std::string pack_param;
     std::vector<std::string> pack_tps;	// every pack typeparam (>1 = piecewise-ctor shape)
+    std::set<std::string> nontype_params;	// non-type value params (`template<int N>`)
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
     {
-	if ( i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i] )
+	bool is_type = !(i < ft.typeparam_is_type.size()) || ft.typeparam_is_type[i];
+	bool is_pack = i < ft.typeparam_is_pack.size() && ft.typeparam_is_pack[i];
+	if ( !is_type )
 	{
-#ifdef MADC_DEBUG_CTORTMPL
-	    if ( getenv("MADC_DEBUG_CTORTMPL") && key.find("get") != std::string::npos )
-		fprintf(stderr, "[nontype] BAIL %s: typeparam[%zu]=%s is non-type\n",
-		    key.c_str(), i, ft.typeparams[i].c_str());
-#endif
-	    return false;
+	    // A non-type PACK (`size_t... _Indexes`) is not yet supported — bail.
+	    // A non-type scalar param (`int N`, `size_t __i`) is bound to a VALUE
+	    // (from an explicit arg) and substituted as an integer literal.
+	    if ( is_pack )
+		return false;
+	    nontype_params.insert(ft.typeparams[i]);
+	    continue;
 	}
-	if ( i < ft.typeparam_is_pack.size() && ft.typeparam_is_pack[i] )
+	if ( is_pack )
 	    pack_tps.push_back(ft.typeparams[i]);
     }
     std::string name = skipped_template_function_declarator_name(ft.decl);
@@ -30662,10 +30680,23 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    pre_ovset = oi->second.size();
     }
 
+    // NON-TYPE value params (`template<int N>`): the binding holds a DataDef whose
+    // NAME is the integer spelling; substitute the param name with an integer
+    // LITERAL token in the body (not a TokenDataType, which is a type position).
+    std::set<std::string> nontype_names;
+    for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+	if ( i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i] )
+	    nontype_names.insert(ft.typeparams[i]);
+    std::map<std::string, int64_t> nontype_subst;
     std::map<std::string, TokenDataType *> subst;
     for ( std::map<std::string, DataDef *>::iterator b = binding.begin();
 	  b != binding.end(); ++b )
-	subst[b->first] = new TokenDataType(b->second->name.c_str(), *b->second);
+    {
+	if ( nontype_names.count(b->first) )
+	    nontype_subst[b->first] = b->second ? strtoll(b->second->name.c_str(), NULL, 10) : 0;
+	else
+	    subst[b->first] = new TokenDataType(b->second->name.c_str(), *b->second);
+    }
     std::vector<TokenBase *> inj;
     std::string pack_value_name;	// the pack's VALUE name (`__base`)
     bool multi_done = false;
@@ -30797,6 +30828,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    if ( bt->type() == TokenType::ttIdentifier )
 	    {
 		const std::string &idname = ((TokenIdent *)bt)->str;
+		std::map<std::string, int64_t>::iterator nsi = nontype_subst.find(idname);
+		if ( nsi != nontype_subst.end() )
+		{ inj.push_back(new TokenInt(nsi->second)); continue; }
 		std::map<std::string, TokenDataType *>::iterator si = subst.find(idname);
 		if ( si != subst.end() && idname != pack_param )
 		{ inj.push_back(si->second->clone()); continue; }
@@ -30868,6 +30902,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		}
 		continue;
 	    }
+	    std::map<std::string, int64_t>::iterator nsi =
+		nontype_subst.find(idname);
+	    if ( nsi != nontype_subst.end() )
+	    { inj.push_back(new TokenInt(nsi->second)); continue; }
 	    std::map<std::string, TokenDataType *>::iterator si =
 		subst.find(idname);
 	    if ( si != subst.end() )

@@ -1,0 +1,15 @@
+// Non-type function-template parameters (template<int N>): explicit-arg
+// instantiation binds N to a value and substitutes it in the body.
+#include <cstdio>
+
+namespace mathx {
+    template<int N> int addN(int x) { return x + N; }
+    template<int M> int mulM(int x) { return x * M; }
+}
+
+int main()
+{
+    printf("add=%d\n", mathx::addN<5>(10));   // 15
+    printf("mul=%d\n", mathx::mulM<3>(7));     // 21
+    return 0;
+}
