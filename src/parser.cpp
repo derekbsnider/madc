@@ -1763,6 +1763,13 @@ static DataDef *resolve_class_type_alias(DataDefCLASS *cls, const std::string &n
 {
     if ( !cls )
 	return NULL;
+    // The injected-class-name ([class.pre]/2): within class X, the name X refers
+    // to X itself. A monomorphized class registers its SHORT injected name as a
+    // type-alias, but its identity `name` is the FULL mangled spelling; resolve
+    // that to the class too so a fully-qualified self-reference (e.g. a ctor
+    // symbol `<full>__<full>`) is recognized as the class.
+    if ( cls->name == name )
+	return cls;
     std::map<std::string, DataDef *>::iterator ai = cls->type_aliases.find(name);
     if ( ai != cls->type_aliases.end() )
 	return ai->second;
