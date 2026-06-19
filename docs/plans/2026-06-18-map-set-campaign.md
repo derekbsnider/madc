@@ -2491,3 +2491,23 @@ GCC cp/ + libstdc++-13, grep-verified) RE-SCOPED the remaining work. Key results
   W5 (piecewise→indexed ctor delegation). Each bounded + fulltest-gated.
 THE AUTHORITATIVE CONTRACT for finishing map is
 **docs/plans/2026-06-19-map-instantiation-strategy.md** — read it first.
+
+### Update 55 — W1 DONE (`__integer_pack(N)`, commit d7b121b); W2 is next. Gaps logged in the contract.
+
+W1 of the contract is implemented + committed (d7b121b), fulltest 656/6 (zero
+regressions). New `Program::expand_integer_pack_template_args()` rewrites the live
+token stream between a consumed `<` and its matching close, splicing each
+`__integer_pack(E)...` into literal integer args. Called from
+`instantiate_template_use` + `instantiate_opaque_template_use` (deepest shared
+chokepoint). VERIFIED on map's exact shape (`tmp/w1_bit.mad`):
+`_Build_index_tuple<1>::__type` -> `_Index_tuple<0>`, `<0>::__type` -> `_Index_tuple<>`.
+
+THREE gaps surfaced while testing the `make_index_sequence` WRAPPER API — all OFF
+map's critical path (map uses `_Build_index_tuple` directly with bare-literal
+`_Num`). They are fully documented in the contract's "GAPS FOUND during W1"
+section (GAP-A: `fold_nontype_arg_constant` can't fold `std::size_t(1)`; GAP-B:
+nested unqualified alias lookup lacks a namespace scope in
+`instantiate_template_alias_use`; GAP-C: silent garbage on fold failure). Do NOT
+let them block W2–W5.
+
+NEXT = W2 (non-type parameter packs `size_t... _Indexes` at 0/1 elements).

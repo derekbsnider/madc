@@ -56,6 +56,66 @@
 
 ---
 
+## IMPLEMENTATION LOG (append-only — newest last)
+
+### 2026-06-19 — W1 DONE (commit d7b121b). `__integer_pack(N)` implemented.
+
+DONE: `Program::expand_integer_pack_template_args()` (src/parser.cpp, declared
+include/madc.h). Rewrites the live token stream in place between a just-consumed
+`<` and its matching close, splicing each `__integer_pack(E)...` into literal
+integer args (`0,1,...,N-1`; N==0 -> empty pack + drop adjacent comma). Folds E
+via `fold_nontype_arg_constant`. Called from `instantiate_template_use` and
+`instantiate_opaque_template_use` right after each consumes `<` (the deepest
+shared chokepoint — `__integer_pack` only ever appears as an arg to a CLASS
+template-id like `_Index_tuple<>`/`integer_sequence<>`).
+
+VERIFIED (map's exact shape, `tmp/w1_bit.mad`): `std::_Build_index_tuple<1>::__type`
+-> `_Index_tuple<0>` and `<0>::__type` -> `_Index_tuple<>`, both compile clean.
+Also `std::make_integer_sequence<unsigned long,1>` -> `integer_sequence<unsigned long,0>`.
+fulltest 656/6 (zero regressions).
+
+### GAPS FOUND during W1 (NOT on map's critical path — do NOT let them block W2–W5)
+
+These surfaced while testing the `make_index_sequence` *wrapper* API. Map does
+NOT use that wrapper — map uses `_Build_index_tuple<N>::__type` directly with a
+BARE-LITERAL `_Num` (SETTLED item 3), which W1 already handles. Recorded so a
+future session neither re-discovers them nor mistakes them for map blockers.
+
+- **GAP-A — `fold_nontype_arg_constant` can't fold a qualified-type functional
+  cast `std::size_t(1)`.** EVIDENCE: `std::make_integer_sequence<std::size_t,1>`
+  resolved to the GARBAGE opaque type
+  `integer_sequence_std__size_t___integer_pack_std__size_t_1_____` (the
+  `__integer_pack` left unexpanded because the fold of `std::size_t(1)` returned
+  false). `std::make_integer_sequence<unsigned long,1>` folds fine -> the gap is
+  specifically the QUALIFIED-NAME functional cast `std::size_t(N)`. Fix in
+  `fold_nontype_arg_constant` / `parse_constant_integer_expression`
+  (src/parser.cpp ~15482). Needed for: the public `make_integer_sequence` /
+  `make_index_sequence` API. NOT map.
+
+- **GAP-B — nested UNqualified alias lookup fails inside an alias body.** EVIDENCE:
+  `make_index_sequence<size_t,_Num>` body substitutes to `make_integer_sequence<size_t,1>`,
+  which resolves to NULL — `make_integer_sequence` (unqualified) is never found
+  because `instantiate_template_alias_use`'s body-resolve (src/parser.cpp ~4330)
+  does NOT establish the defining-namespace (`std`) scope, unlike the fn-template
+  path which pushes `NamespaceScope(pgm, ft.ns)`. Fix: wrap the body `nextToken()`
+  / `resolve_declared_type_token` in a `NamespaceScope(*this, td.defining_namespace)`
+  (or `ns_hint`). Needed for: `make_index_sequence`. NOT map.
+
+- **GAP-C — silent garbage on fold failure (low priority).** When `__integer_pack`
+  is present but E does NOT fold, `expand_integer_pack_template_args()` leaves the
+  pattern untouched, so a bogus opaque type carrying `__integer_pack` in its name
+  is produced (see GAP-A symptom) instead of a clean failure. Consider: if the
+  `__integer_pack` head matches but the fold fails, treat it as a hard
+  substitution failure (return the region unchanged is fine for map; only the
+  GAP-A path hits this). Revisit only after GAP-A.
+
+- **NON-GAP (decided): W1 is wired ONLY into the two class-template arg sites.**
+  `__integer_pack` is never an ALIAS argument (it only appears inside a class
+  template-id in the alias BODY), so the alias arg loop intentionally does NOT
+  call the expander. Do not add it there.
+
+---
+
 Result of a recon pass (madc engine + clang Sema + GCC cp/ + libstdc++-13 +
 literature) on *how* to finally compile+run `std::map<int,int>; m[1]=2`. The
 headline: **the remaining work is much smaller and shallower than the
@@ -104,7 +164,8 @@ matching madc already does for vector, plus one new builtin and 0/1-element pack
 
 ## Minimal worklist to a RUNNABLE `map<int,int>` (re-scoped, ordered)
 
-1. **W1 — `__integer_pack(N)` builtin.** A substitution-time pack producer, valid
+1. **W1 — `__integer_pack(N)` builtin. [DONE 2026-06-19, commit d7b121b — see
+   IMPLEMENTATION LOG below.]** A substitution-time pack producer, valid
    ONLY as the entire pattern of a pack expansion (`X<__integer_pack(N)...>`). When N
    folds to a concrete `len ≥ 0`, the expansion yields the constant pack `[0..len-1]`
    (size_t). For map, N ∈ {0,1}. Model: GCC `cp/pt.cc:3846-3912` (`expand_integer_pack`
