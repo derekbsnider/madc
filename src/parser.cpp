@@ -2874,11 +2874,129 @@ TokenBase *Program::consume_template_type_arg_qualifiers(TokenBase *tb,
     return tb;
 }
 
+// GCC's __integer_pack(N) builtin — the libstdc++-13 GCC-path index-sequence
+// primitive (bits/utility.h: make_integer_sequence / _Build_index_tuple). It is
+// valid ONLY as the entire pattern of a template-argument pack expansion
+// `X<... __integer_pack(N)... ...>`; at substitution time (N already a concrete
+// constant) it yields the constant pack [0, 1, ..., N-1] (size_t). This rewrites
+// the live token stream IN PLACE, between a just-consumed `<` and its matching
+// close, splicing each `__integer_pack(E)...` into the literal integer args so
+// the ordinary template-argument loops then collect plain non-type args. Model:
+// GCC cp/pt.cc expand_integer_pack (builds a vec of size_int(i)).
+void Program::expand_integer_pack_template_args()
+{
+    // Bound the rewrite to THIS template-id's argument region: scan to the
+    // angle-depth-0 close so an __integer_pack belonging to an outer/sibling
+    // construct is never touched. `<` is already consumed, so depth starts at 1.
+    // Track paren depth so a `<`/`>` inside `__integer_pack(...)` can't skew it.
+    size_t end = tokens.size();
+    {
+	int adepth = 1, pdepth = 0;
+	for ( size_t i = 0; i < tokens.size(); ++i )
+	{
+	    TokenBase *t = tokens[i];
+	    if ( !t ) continue;
+	    TokenID id = t->id();
+	    if ( id == TokenID::tkOpBrk ) ++pdepth;
+	    else if ( id == TokenID::tkClBrk ) { if ( pdepth > 0 ) --pdepth; }
+	    else if ( pdepth == 0 )
+	    {
+		if ( id == TokenID::tkLT ) ++adepth;
+		else if ( id == TokenID::tkGT ) { if ( --adepth == 0 ) { end = i; break; } }
+		else if ( id == TokenID::tkBSR ) { adepth -= 2; if ( adepth <= 0 ) { end = i; break; } }
+	    }
+	}
+    }
+
+    std::vector<TokenBase *> out;
+    bool changed = false;
+    size_t j = 0;
+    while ( j < end )
+    {
+	TokenBase *t = tokens[j];
+	if ( t && t->type() == TokenType::ttIdentifier
+	  && ((TokenIdent *)t)->str == "__integer_pack"
+	  && j + 1 < end && tokens[j+1]
+	  && tokens[j+1]->id() == TokenID::tkOpBrk )
+	{
+	    // Match the parenthesized argument `( E )`.
+	    int pd = 0;
+	    size_t close_p = j + 1;
+	    for ( ; close_p < end; ++close_p )
+	    {
+		if ( !tokens[close_p] ) continue;
+		TokenID pid = tokens[close_p]->id();
+		if ( pid == TokenID::tkOpBrk ) ++pd;
+		else if ( pid == TokenID::tkClBrk ) { if ( --pd == 0 ) break; }
+	    }
+	    // Require the trailing `...` (three tkDot) within the region; without
+	    // it this is not a pack expansion and is left untouched.
+	    size_t dots = close_p + 1;
+	    bool has_ellipsis = pd == 0 && close_p < end && dots + 2 < end
+		&& tokens[dots]   && tokens[dots]->id()   == TokenID::tkDot
+		&& tokens[dots+1] && tokens[dots+1]->id() == TokenID::tkDot
+		&& tokens[dots+2] && tokens[dots+2]->id() == TokenID::tkDot;
+	    int64_t N = -1;
+	    if ( has_ellipsis )
+	    {
+		std::vector<TokenBase *> inner;	// tokens between '(' and ')'
+		for ( size_t k = j + 2; k < close_p; ++k )
+		    if ( tokens[k] ) inner.push_back(tokens[k]);
+		int64_t v;
+		if ( fold_nontype_arg_constant(inner, v) && v >= 0 )
+		    N = v;
+	    }
+	    if ( N >= 0 )
+	    {
+		// Free the consumed pattern tokens (`__integer_pack ( E ) ...`).
+		for ( size_t k = j; k <= dots + 2; ++k )
+		    delete tokens[k];
+		if ( N == 0 )
+		{
+		    // Empty pack: emit nothing; drop the adjacent separator comma
+		    // (prefer the preceding one already in `out`, else the next).
+		    bool dropped = false;
+		    if ( !out.empty() && out.back()
+		      && out.back()->id() == TokenID::tkComma )
+		    { delete out.back(); out.pop_back(); dropped = true; }
+		    j = dots + 3;
+		    if ( !dropped && j < end && tokens[j]
+		      && tokens[j]->id() == TokenID::tkComma )
+		    { delete tokens[j]; ++j; }
+		    changed = true;
+		    continue;
+		}
+		// N >= 1: emit `0, 1, ..., N-1` (no trailing comma — the caller's
+		// following `,`/`>` is preserved).
+		for ( int64_t e = 0; e < N; ++e )
+		{
+		    if ( e ) out.push_back(new TokenComma());
+		    out.push_back(new TokenInt(e));
+		}
+		j = dots + 3;	// past the three dots
+		changed = true;
+		continue;
+	    }
+	}
+	out.push_back(tokens[j]);
+	++j;
+    }
+
+    if ( changed )
+    {
+	// Carried-over originals live in `out`; erase removes the deque slots
+	// (does not free), then splice the rewritten region back at the front.
+	tokens.erase(tokens.begin(), tokens.begin() + end);
+	tokens.insert(tokens.begin(), out.begin(), out.end());
+    }
+}
+
 TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td,
 						      const std::string &tname,
 						      TokenBase *tb)
 {
     nextToken(); // consume '<'
+    expand_integer_pack_template_args();
     std::vector<std::string> args;
     if ( peekToken() && (peekToken()->id() == TokenID::tkGT
       || peekToken()->id() == TokenID::tkBSR) )
@@ -3180,6 +3298,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // Parse `< Arg [, Arg ...] >`, resolving type parameters as DataDefs and
     // preserving non-type parameters as token sequences for later substitution.
     nextToken(); // consume '<'
+    expand_integer_pack_template_args();
     std::vector<TokenDataType *> type_args;
     std::vector<TokenDataType *> arg_types_by_slot;
     std::vector<std::vector<TokenBase *> > arg_tokens_by_slot;

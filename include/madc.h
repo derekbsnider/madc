@@ -2601,6 +2601,14 @@ public:
     TokenDataType *instantiate_opaque_template_use(TemplateDef &td,
 						   const std::string &tname,
 						   TokenBase *tb);
+    // GCC's __integer_pack(N) builtin (libstdc++-13 GCC-path index-sequence
+    // primitive): valid only as the entire pattern of a template-argument pack
+    // expansion `X<... __integer_pack(N)... ...>`; at substitution time (N a
+    // concrete constant) it yields the pack [0,1,...,N-1]. Rewrites the live
+    // token stream IN PLACE, between a just-consumed `<` and its matching close,
+    // splicing each occurrence into literal integer args so the ordinary
+    // template-argument loops then collect plain non-type args.
+    void expand_integer_pack_template_args();
     TemplateAliasDef *find_template_alias(const std::string &name,
 					  const std::string &ns_hint = std::string(),
 					  DataDefCLASS *owner_hint = NULL);
