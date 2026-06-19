@@ -1920,3 +1920,40 @@ is the same class of variadic-instantiation depth as the vector<T*> wall:
 Each step is regression-prone (the real-inst flags are deliberately narrow) —
 design carefully and run fulltest per step. The `--emit=c11` + `gcc -c` recipe
 (Update 36) localizes the result precisely. Debug recipe preserved in task #4.
+
+### Update 38 — last map error pinpointed to ONE function: non-type partial-spec param deduction.
+
+Drilled the `incomplete struct or union` all the way down (instrumented
+`instantiate_template_use` + `match_partial_specialization`):
+
+`std::tuple<const int&>` → base `std::_Tuple_impl<0, const int&>` → that base
+is a MIXED non-type (`size_t _Idx`) + type-pack template whose real body lives
+in the partial spec `_Tuple_impl<_Idx, _Head, _Tail...>`. The spec is REJECTED
+by `match_partial_specialization` because **`non_type_partial_spec_arg_matches`
+(parser.cpp:15073) cannot DEDUCE a non-type parameter** — it only succeeds when
+the pattern spelling equals the concrete spelling, or when both
+`parse_simple_template_non_type_value` to the same literal. For the `_Idx` slot
+(pattern `_Idx` vs concrete `0`): `"_Idx" != "0"` and
+`parse_simple_template_non_type_value("_Idx")` fails (it is a param name, not a
+literal) → returns false → `ok=false` → the spec is dropped → `_Tuple_impl`
+stays the body-less primary → opaque shell → tuple size 0 → incomplete.
+
+(enable_if/`__result_of_impl` partial specs work because their non-type slots
+hold CONCRETE values (`true`, `false`) in the pattern, not a deduced non-type
+PARAM. `_Tuple_impl` is the first case needing real non-type-param deduction.)
+
+FIX (multi-part, all touching shared partial-spec machinery → regression-prone,
+fulltest each step) — see task #4 for the detailed 5-step plan:
+1. `non_type_partial_spec_arg_matches`: deduce a bare non-type param-name slot.
+2. `match_partial_specialization`: thread + check + return a non-type deduction map.
+3. caller (~3324): apply the non-type deduction into the body subst.
+4. `want_sticky` (3071): engage for a DIRECT variadic-template base, so
+   real-instantiation reaches `_Tuple_impl` during tuple's base-clause parse.
+5. recursive `_Tuple_impl` base layout + size.
+
+This is a focused next-session feature. Session net so far: map c2mir 6→1
+(ea6ffb9 fixed the lvalue/&literal error), remaining error pinpointed to one
+function. (NB: a throwaway probe's arg-print bug — iterating `type_args.size()`,
+which excludes non-type args — briefly suggested the arg loop dropped the pack;
+the mangled name `_Tuple_impl_0_int32_t_` proved both args ARE captured. Index
+`arg_spellings.size()` when printing.)
