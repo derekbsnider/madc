@@ -2615,6 +2615,80 @@ static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
     return out;
 }
 
+// Like clone_template_tokens_with_type_subst, but ALSO expands a trailing pack: a
+// `pack_name` identifier immediately followed by `...` is replaced by the pack's
+// element types comma-separated (an EMPTY pack drops the preceding `,` so
+// `<_Fn, _Args...>` -> `<_Fn>`, never `<_Fn,>`). A bare `pack_name` not followed by
+// `...` falls back to the ordinary 1:1 subst. With an empty pack_name this behaves
+// exactly like clone_template_tokens_with_type_subst.
+static std::vector<TokenBase *> clone_template_tokens_with_pack_subst(
+	const std::vector<TokenBase *> &src,
+	const std::map<std::string, TokenDataType *> &subst,
+	const std::string &pack_name,
+	const std::vector<DataDef *> &pack_elems)
+{
+    std::vector<TokenBase *> out;
+    for ( size_t i = 0; i < src.size(); ++i )
+    {
+	TokenBase *bt = src[i];
+	if ( !pack_name.empty() && bt && bt->type() == TokenType::ttIdentifier
+	  && ((TokenIdent *)bt)->str == pack_name
+	  && i + 3 < src.size()
+	  && src[i+1] && src[i+1]->id() == TokenID::tkDot
+	  && src[i+2] && src[i+2]->id() == TokenID::tkDot
+	  && src[i+3] && src[i+3]->id() == TokenID::tkDot )
+	{
+	    if ( pack_elems.empty() && !out.empty()
+	      && out.back()->id() == TokenID::tkComma )
+	    { delete out.back(); out.pop_back(); }
+	    for ( size_t e = 0; e < pack_elems.size(); ++e )
+	    {
+		if ( e )
+		    out.push_back(new TokenComma());
+		out.push_back(new TokenDataType(pack_elems[e]->name.c_str(),
+						*pack_elems[e]));
+	    }
+	    i += 3;   // consume the `...`
+	    continue;
+	}
+	if ( bt && bt->type() == TokenType::ttIdentifier )
+	{
+	    std::map<std::string, TokenDataType *>::const_iterator si =
+		subst.find(((TokenIdent *)bt)->str);
+	    if ( si != subst.end() )
+	    { out.push_back(si->second->clone()); continue; }
+	}
+	out.push_back(bt ? bt->clone() : NULL);
+    }
+    return out;
+}
+
+// Substitute a variable template's captured type args into its initializer tokens,
+// binding the leading fixed type parameters 1:1 and absorbing any surplus args into
+// a trailing parameter pack (`is_invocable_v<_Fn, _Args...>` etc.). Without the pack
+// path a multi-arg use left `_Args...` unexpanded in the init (`is_invocable<_Fn,
+// int...>`), which then failed to parse — the var-template analogue of the
+// partial-spec / member-fn-template trailing-pack absorption.
+static std::vector<TokenBase *> substitute_var_template_init(
+	const Program::VarTemplateDef &vd, const std::vector<DataDef *> &targs)
+{
+    bool has_pack = !vd.typeparams.empty()
+		 && !vd.typeparam_is_pack.empty() && vd.typeparam_is_pack.back();
+    size_t nfixed = has_pack ? vd.typeparams.size() - 1 : vd.typeparams.size();
+    std::map<std::string, TokenDataType *> subst;
+    for ( size_t i = 0; i < nfixed && i < targs.size(); ++i )
+	if ( targs[i] )
+	    subst[vd.typeparams[i]] =
+		new TokenDataType(targs[i]->name.c_str(), *targs[i]);
+    std::string pack_name = has_pack ? vd.typeparams.back() : std::string();
+    std::vector<DataDef *> pack_elems;
+    if ( has_pack )
+	for ( size_t i = nfixed; i < targs.size(); ++i )
+	    if ( targs[i] )
+		pack_elems.push_back(targs[i]);
+    return clone_template_tokens_with_pack_subst(vd.init, subst, pack_name, pack_elems);
+}
+
 static std::string template_tokens_spelling(
 	const std::vector<TokenBase *> &tokens)
 {
@@ -7119,14 +7193,8 @@ int64_t Program::parse_constant_primary()
 	    if ( vti != var_template_map.end() && !vti->second.init.empty() )
 	    {
 		std::vector<DataDef *> targs = capture_call_template_args();
-		std::map<std::string, TokenDataType *> subst;
-		for ( size_t i = 0; i < vti->second.typeparams.size()
-				&& i < targs.size(); ++i )
-		    if ( targs[i] )
-			subst[vti->second.typeparams[i]] =
-			    new TokenDataType(targs[i]->name.c_str(), *targs[i]);
 		std::vector<TokenBase *> sub =
-		    clone_template_tokens_with_type_subst(vti->second.init, subst);
+		    substitute_var_template_init(vti->second, targs);
 		if ( !sub.empty() )
 		{
 		    std::deque<TokenBase *> saved = tokens;
@@ -17529,16 +17597,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( vti != var_template_map.end() && !vti->second.init.empty() )
 			{
 			    std::vector<DataDef *> targs = capture_call_template_args();
-			    std::map<std::string, TokenDataType *> subst;
-			    for ( size_t i = 0; i < vti->second.typeparams.size()
-					    && i < targs.size(); ++i )
-				if ( targs[i] )
-				    subst[vti->second.typeparams[i]] =
-					new TokenDataType(targs[i]->name.c_str(),
-							  *targs[i]);
 			    std::vector<TokenBase *> sub =
-				clone_template_tokens_with_type_subst(
-				    vti->second.init, subst);
+				substitute_var_template_init(vti->second, targs);
 			    if ( !sub.empty() )
 			    {
 				for ( std::vector<TokenBase *>::reverse_iterator it =
@@ -25468,8 +25528,13 @@ TokenBase *TokenIF::parse(Program &pgm)
 	    if ( cval )
 	    {
 		tn = pgm.nextToken();
-		if ( !(statement = pgm.parseStatement(tn)) )
-		    pgm.Throw(tn) << "Failed to parse if constexpr statement" << flush;
+		statement = pgm.parseStatement(tn);
+		// A NULL return (no exception) is a compile-time-only branch that
+		// produced no runtime node — e.g. a braceless `if constexpr (C)
+		// static_assert(...);` (libstdc++ _Rb_tree::_S_key). A genuine parse
+		// failure throws; a clean NULL is a legitimate empty body.
+		if ( !statement )
+		    statement = new TokenCpnd();
 		while ( (tn = pgm.peekToken()) && tn->id() == TokenID::tkSemi )
 		    pgm.nextToken();
 		if ( tn && tn->id() == TokenID::tkELSE )
@@ -25487,8 +25552,9 @@ TokenBase *TokenIF::parse(Program &pgm)
 		{
 		    pgm.nextToken();                 // consume `else`
 		    tn = pgm.nextToken();
-		    if ( !(statement = pgm.parseStatement(tn)) )
-			pgm.Throw(tn) << "Failed to parse if constexpr else statement" << flush;
+		    statement = pgm.parseStatement(tn);
+		    if ( !statement )                // compile-time-only else branch
+			statement = new TokenCpnd();
 		}
 		else
 		    statement = new TokenCpnd();     // no else -> empty live body
@@ -32517,6 +32583,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    {
 		Program::VarTemplateDef vd;
 		vd.typeparams = typeparams;
+		vd.typeparam_is_pack = typeparam_is_pack;
 		vd.defining_namespace = pgm.current_namespace();
 		for ( TokenBase *t : vt_init )
 		    vd.init.push_back(t ? t->clone() : NULL);

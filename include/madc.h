@@ -1343,6 +1343,7 @@ public:
     // inline at the use site). Keyed by simple name AND `ns::name`.
     struct VarTemplateDef {
 	std::vector<std::string> typeparams;
+	std::vector<bool> typeparam_is_pack;    // parallel to typeparams; last may be a pack
 	std::vector<TokenBase *> init;          // tokens after '=' up to ';'
 	std::string defining_namespace;
     };
