@@ -22724,6 +22724,26 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 		body.method->owner_class->canonical_cpp_spelling;
     }
     NamespaceScope ns_scope(*this, body_namespace);
+    // Parse the body WITH its owner class on the class-scope stack — the invariant
+    // the eager path holds. A deferred/lazy body restored only the NAMESPACE, so an
+    // unqualified STATIC sibling call (`_S_key(__x)` in libstdc++ _Rb_tree, no
+    // `this`) had no class scope to resolve against and was "undeclared". Instance
+    // members resolve via the receiver, which is why this surfaced only for statics.
+    size_t pushed_scope_count = 0;
+    if ( body.method->owner_class )
+    {
+	// Push the full ENCLOSING chain (outermost first) so a nested class's body
+	// resolves unqualified members of its enclosing classes too — e.g.
+	// _Rb_tree::_Auto_node's body calls _Rb_tree::_S_key (a static of the OUTER
+	// class). Eager parsing holds the whole chain on the stack; the deferred path
+	// restored only the namespace, so the chain must be reconstructed here.
+	std::vector<DataDefCLASS *> chain;
+	for ( DataDefCLASS *c = body.method->owner_class; c; c = c->enclosing_class )
+	    chain.push_back(c);
+	for ( size_t i = chain.size(); i-- > 0; )
+	    class_scope_stack.push_back(chain[i]);
+	pushed_scope_count = chain.size();
+    }
     try
     {
 	for ( std::vector<TokenBase *>::reverse_iterator it = body.body_tokens.rbegin();
@@ -22827,10 +22847,14 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     }
     catch(...)
     {
+	for ( size_t i = 0; i < pushed_scope_count && !class_scope_stack.empty(); ++i )
+	    class_scope_stack.pop_back();
 	cur_func_name = saved_func;
 	instantiating_canonical_spelling = saved_canon;
 	throw;
     }
+    for ( size_t i = 0; i < pushed_scope_count && !class_scope_stack.empty(); ++i )
+	class_scope_stack.pop_back();
     cur_func_name = saved_func;
     instantiating_canonical_spelling = saved_canon;
 }
