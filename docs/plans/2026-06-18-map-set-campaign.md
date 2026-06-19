@@ -2475,3 +2475,19 @@ REMAINING blockers to `map<int,int>; m[1]=2` working, in order:
 
 Each a commit + fulltest + torture failset-diff. Reducers: tmp/tupget.mad (get),
 tmp/nsnontype.mad (non-type, GREEN now), tmp/map_insert.mad (map).
+
+### Update 54 — RESEARCH RESET → authoritative contract is docs/plans/2026-06-19-map-instantiation-strategy.md
+
+After landing get-resolution a/b + non-type fn-template params + 0/1-element tid-pack
+expansion (commits c362649/716d267/7468067), a recon pass (madc engine + clang Sema +
+GCC cp/ + libstdc++-13, grep-verified) RE-SCOPED the remaining work. Key results:
+- The live builtin lever is GCC's **`__integer_pack`** (NOT __make_integer_seq /
+  __type_pack_element — those are Clang-path, dead in libstdc++-13).
+- `map<int,int>` hits ONLY depth-≤1 base cases (_Nth_type<0/1> explicit specs;
+  _Tuple_impl<0,X> terminal spec; get<0> no tail walk; _Build_index_tuple non-recursive;
+  __integer_pack only N∈{0,1}; indexed-ctor pack expansion is single-element).
+- Re-scoped worklist W1 (__integer_pack builtin) · W2 (non-type packs at 0/1) ·
+  W3 (single-element parallel pack expansion) · W4 (std::get<0> body, the live wall) ·
+  W5 (piecewise→indexed ctor delegation). Each bounded + fulltest-gated.
+THE AUTHORITATIVE CONTRACT for finishing map is
+**docs/plans/2026-06-19-map-instantiation-strategy.md** — read it first.
