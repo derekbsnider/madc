@@ -30185,7 +30185,14 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
     {
 	if ( i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i] )
+	{
+#ifdef MADC_DEBUG_CTORTMPL
+	    if ( getenv("MADC_DEBUG_CTORTMPL") && key.find("get") != std::string::npos )
+		fprintf(stderr, "[nontype] BAIL %s: typeparam[%zu]=%s is non-type\n",
+		    key.c_str(), i, ft.typeparams[i].c_str());
+#endif
 	    return false;
+	}
 	if ( i < ft.typeparam_is_pack.size() && ft.typeparam_is_pack[i] )
 	    pack_tps.push_back(ft.typeparams[i]);
     }
