@@ -235,6 +235,69 @@ The empty-tuple naming split (`tuple__empty_pack` from W1's N=0 path vs `tuple` 
 the value `tuple<>`) is a THIRD identity mismatch in the same signature — unify the
 empty-`tuple<>` instantiation name too.
 
+### 2026-06-19 — SUB-WALLS A+B CLEARED; W2 wall = indexed-ctor delegation. (commits 83c6e7a, 5a18b97)
+
+DONE this session (all fulltest 656/6, on wip/tuple-instantiation-claude):
+  - 83c6e7a: empty-tuple identity unify (UNCONDITIONAL — dropped opaque path's
+    `__empty_pack` suffix so `tuple<>` is ONE type) + const-qualified deduction
+    (GATED `FEATURE_CONST_TYPES`: resolve_arg_spelling_datadef re-applies a peeled
+    leading `const` via getConstType). The THIRD identity mismatch (empty-tuple)
+    AND sub-wall B's const half are both fixed.
+  - 5a18b97: `sizeof...(pack)` folds to the pack's element count in
+    instantiate_fn_template_binding (was substituting the pack NAME inside the
+    sizeof). `sizeof` is a CONTEXTUAL-identifier keyword — match via
+    is_contextual_identifier_token, not a bare ttIdentifier compare.
+
+RESULT (flag-on, verified by --emit=c11 + the [ctortmpl] trace): the pair
+piecewise ctor `__o7` now has `tuple_const_int32_t_` params, HAS A BODY, and the
+construct_at call SELECTS `__o7` (no longer the bare copy-ctor "too many
+arguments"). Sub-walls A and B are CLEARED.
+
+**CRITICAL BUILD GOTCHA (cost a full mis-diagnosis this session):** `make` does
+NOT track `OPTIONAL_CPPFLAGS` changes, so a flag-on rebuild reuses a STALE
+`parser.o` compiled WITHOUT `-DFEATURE_CONST_TYPES`. ALWAYS `touch src/parser.cpp`
+before `make -C src OPTIONAL_CPPFLAGS=-DFEATURE_CONST_TYPES`. Verify with
+`strings bin/madc | grep -c "ctortmpl] ENTER"` (needs `-DMADC_DEBUG_CTORTMPL` too)
+or by emitting C and checking `__o7`'s param is `tuple_const_int32_t_`, not
+`tuple_int32_t_`.
+
+**THE W2 WALL (pinned, evidence in the [ctortmpl] trace):** the private INDEXED
+ctor `pair(tuple<_Args1...>&, tuple<_Args2...>&, _Index_tuple<_Indexes1...>,
+_Index_tuple<_Indexes2...>)` (stl_pair.h:235, body tuple:2260) is REGISTERED
+(trace: `REGISTER owner=pair_const_int32_t_int32_t ... has_body=0 tparams=4`) but
+NEVER INSTANTIATED: the trace shows `ENTER cdd=pair_const_int32_t_int32_t nargs=3`
+(piecewise → __o7, ok=1) but NO `nargs=4` ENTER. `__o7`'s body delegation
+`: pair(__first, __second, _Build_index_tuple<1>::__type(),
+_Build_index_tuple<0>::__type())` is DROPPED (emitted `__o7` body is empty `{}`),
+so the 4-arg indexed ctor is never built. At CIR time the 4-arg call fails:
+`no matching constructor for call to pair_const_int32_t_int32_t(tuple_const_int32_t_,
+tuple, _Index_tuple_0, _Index_tuple)` (stl_map.h:102).
+
+W2 worklist (in order):
+  1. The delegating-ctor MEM-INITIALIZER `: pair(...)` in __o7's body must trigger
+     `instantiate_member_ctor_template_for_construction` for the indexed ctor (the
+     placement-`new` path triggers it for the piecewise ctor at parser.cpp ~5188;
+     the mem-init delegation parse — parse_ctor_initializer_list, parser.cpp:23200,
+     + how ctor_initializers compile — does NOT). Find where ctor_initializers
+     resolve their target ctor and add the member-ctor-template instantiation
+     trigger there.
+  2. NON-TYPE parameter pack deduction: deduce `_Indexes1`/`_Indexes2` (size_t
+     packs) from `_Index_tuple<_Indexes1...>` vs `_Index_tuple<0>`/`_Index_tuple<>`.
+     Mirror the TYPE tid-pack code (tidpack_one/tidpack_empty_names) for a
+     NON-TYPE pack: bind to a list of integer values, substitute as TokenInt.
+  3. The body `first(std::forward<_Args1>(std::get<_Indexes1>(__tuple1))...)`:
+     single-element parallel expansion of `_Args1`+`_Indexes1` (W3) + `std::get<0>`
+     (W4). For map both packs are length 0/1, so no N-way machinery.
+
+**PREREQUISITE for map to compile in the DEFAULT build:** the const fix is GATED
+`FEATURE_CONST_TYPES`. map can only compile once that gate is removed — i.e. the
+const-qualified-types campaign Phases 3-4 (THREAD const through every naming/
+instantiation path so `tuple<const int&>` names consistently everywhere, +
+const-transparency sweep) land and fulltest stays 656/6 with the gate OFF. See
+docs/plans/2026-06-19-const-qualified-types.md. So the map-completion path is now:
+(const Phases 3-4 → make default) ‖ (W2 indexed-ctor delegation) → (W3/W4 get<0>)
+→ (W5 wire-up).
+
 ### GAPS FOUND during W1 (NOT on map's critical path — do NOT let them block W2–W5)
 
 These surfaced while testing the `make_index_sequence` *wrapper* API. Map does
