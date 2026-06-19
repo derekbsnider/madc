@@ -1,5 +1,53 @@
 # Map instantiation strategy — research-driven reset (2026-06-19)
 
+> **THIS IS A CONTRACT, NOT A SUGGESTION.** It is the output of a completed,
+> grep-verified recon (madc engine + Clang Sema + GCC `cp/` + libstdc++-13 +
+> literature). If you are reading this after a compaction/new session: the
+> decisions in "SETTLED" below are CLOSED — do NOT re-investigate, re-derive, or
+> "reconsider a better approach." VERIFY the factual build state at HEAD if you
+> wish, but do NOT re-open settled decisions. Re-litigating them wasted days.
+> Execute W1→W5 in order. (See memory: feedback_handoff_not_open_to_interpretation.)
+
+## SETTLED — DO NOT RE-LITIGATE (each line + the evidence that closed it)
+
+1. **The new builtin to implement is GCC's `__integer_pack`. Implement IT.**
+   DO NOT implement `__make_integer_seq` or `__type_pack_element` as the path to
+   map. EVIDENCE: `grep` of `/usr/include/c++/13` — `__type_pack_element` appears
+   NOWHERE; `__make_integer_seq` is gated `#if __has_builtin(__make_integer_seq)`
+   (Clang-only; false for madc). libstdc++-13's `_Build_index_tuple`
+   (bits/utility.h:154) uses `_Index_tuple<__integer_pack(_Num)...>` on the GCC
+   path madc takes. `__type_pack_element`/`__make_integer_seq` would be DEAD CODE
+   here. (They are fine as optional forward-compat later; NOT on this path.)
+
+2. **DO NOT rewrite or re-architect the instantiation engine.** madc's
+   instantiate-real-libstdc++ approach is SOUND. EVIDENCE: the entire remaining
+   `map<int,int>` chain is depth ≤ 1 (item 3) — ordinary single-step specialization
+   madc already does for `vector`. The "days of grinding" were SCOPE
+   MIS-ESTIMATION (reasoning about general `tuple<A,B,C,…>`), not a wrong design.
+
+3. **`map<int,int>` hits ONLY depth-≤1 tuple base cases. Do NOT build general
+   recursive tuple machinery to finish map.** EVIDENCE (libstdc++-13 line refs):
+   `_Nth_type<0/1,…>` are explicit specializations (utility.h:235/241 — the `_Np-3`
+   recursion starts at I≥3, never reached); `_Tuple_impl<0,X>` is the terminal
+   single-element spec (tuple:489, no `_Inherited`); `get<0>` resolves by
+   overload+base-convert (no tail walk, tuple:1785); `_Build_index_tuple` is
+   non-recursive (utility.h:154); `__integer_pack` is called only with N∈{0,1};
+   the indexed-ctor pack expansion is a SINGLE element (key) + an EMPTY one (value).
+
+4. **The build/regression gate is fulltest 656/6.** DO NOT commit any W-step
+   without `make -C src fulltest` == 656 passed / 6 failed (the 6 known fails). Flags
+   for all map work: `--std=c++20 --no-embedded-headers`.
+
+## OPEN (genuinely undecided — these you MAY investigate)
+
+- W4: whether `std::get<0>` fails at the alias-return SFINAE (parser.cpp ~31084
+  `is_templateid_ret`) or the body parse — PIN it with `tmp/tupget2.mad` +
+  `MADC_DEBUG_CTORTMPL` before editing.
+- Whether the get<0>/get<1> multi-value symbol collision is on map's path (probably
+  NOT — the map key-tuple is 1-element, so only get<0> is used; confirm at W5).
+
+---
+
 Result of a recon pass (madc engine + clang Sema + GCC cp/ + libstdc++-13 +
 literature) on *how* to finally compile+run `std::map<int,int>; m[1]=2`. The
 headline: **the remaining work is much smaller and shallower than the
