@@ -1605,3 +1605,51 @@ walls beyond Wall B (the campaign at c++20 drags in the whole C++20 ranges suppo
 
 Reducers (run with `--std=c++20 --no-embedded-headers`): `tmp/invoc2.mad`
 (now compiles), `tmp/invocless.mad`, `tmp/mapii.mad`, `tmp/podtest.mad`.
+
+---
+
+## Update 31 (2026-06-19) — map PARSE phase fully cleared (Wall B `_S_key` RESOLVED); now at CIR codegen ctor-resolution
+
+Four more deepest-layer fixes (all probed on the REAL `<map>`/`<type_traits>`
+parse, gcc-verified, fulltest + torture-failset clean, pushed). `map<int,int>`
+(`m[1]=2`) now parses end-to-end and reaches CIR codegen.
+
+1. **`0db5133` — variable-template trailing parameter pack.** The var-template
+   use-site arms substituted typeparams 1:1, so `is_invocable_v<_Fn, _Args...>`
+   left `_Args...` unexpanded → `is_invocable<_Fn, int...>` → "Expecting ',' or
+   '>'". Added `VarTemplateDef::typeparam_is_pack` + `substitute_var_template_init`
+   + `clone_template_tokens_with_pack_subst` (4th trailing-pack-absorption site).
+2. **`0db5133` — braceless `if constexpr (C) static_assert(...);`.**
+   `parse_static_assert_statement` returns NULL on success (compile-time, no
+   node); the if-constexpr taken/else branch treated NULL as a parse failure.
+   Exactly `_S_key`'s shape (stl_tree.h:770). A clean NULL is now an empty branch.
+3. **`8f03905` — deferred method body restores the full ENCLOSING class scope.**
+   THE Wall B resolution. A lazily-materialized body restored only the namespace,
+   not `class_scope_stack`. `_Rb_tree::_Auto_node`'s body calls `_Rb_tree::_S_key`
+   (an OUTER-class static, no `this`); with no class scope it was "undeclared
+   '_S_key'". Fix: walk `owner_class->enclosing_class` and push the whole chain.
+4. **`d3a6226` — member access on a `ttMultiOp` result.** The `.`/`->` arm
+   accepted `ttOperator` objects but not its sibling `ttMultiOp` (`!=`, `<=>`,
+   overloaded `operator*`/`++` …). `__j._M_node` on an iterator from a multi-op
+   was rejected; now treated identically to `ttOperator`.
+
+CORRECTS the earlier "missing partial-spec registration" and pack-drop
+hypotheses — Wall B was a chain of: arity gate (Update 30) → arg-spelling NULL
+(Update 30) → __is_pod builtin (Update 30) → var-template pack → if-constexpr
+NULL → **deferred-body enclosing scope** (the keystone) → ttMultiOp member access.
+
+fulltest **656/5/0/18**, torture failset **51 unchanged** throughout.
+
+### NEW FRONTIER — CIR codegen constructor overload resolution (reference-repr)
+`map<int,int>` now fails at CIR build (`cir_builder.cpp` select_ctor_overload →
+score_arg_to_param), NOT parse:
+- `cir error: no matching constructor for call to 'tuple<const int32_t>(int32_t*)'`
+  (map::operator[]'s `std::tuple<const key_type&>(__k)`) — a reference-repr'd
+  `int*` arg must bind a `const int&` param.
+- `pair<_Rb_tree_node_base*, _Rb_tree_node_base*>(node**, node**)` (×2 shapes).
+- `_Auto_node(_Rb_tree&...)` no matching ctor.
+These are the reference-as-pointer representation (first-class refs) interacting
+with ctor-argument scoring — `score_arg_to_param` (cir_builder.cpp:4815) unwraps a
+ref PARAM to base but doesn't reconcile a ref-repr POINTER arg against it. Multiple
+distinct ctor shapes → a focused codegen-level effort. Reducer: `tmp/mapii.mad`
+(`map<int,int>; m[1]=2;`), `--std=c++20 --no-embedded-headers`.
