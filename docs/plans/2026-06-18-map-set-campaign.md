@@ -2438,3 +2438,40 @@ std::get<I> green on tmp/tupget.mad (commit). (4) _Build_index_tuple/_Index_tupl
 a commit + fulltest + torture failset-diff. Status this session: layers 9/10 +
 11-P1/P1b/P2/P3 committed (wip @8ea563e); P3 deduces pair's two type-packs; the
 non-type keystone blocks the rest.
+
+### Update 53 — NON-TYPE FUNCTION-TEMPLATE PARAMS LANDED (06307e2, the map keystone, single-value); next blockers enumerated.
+
+Non-type fn-template params (`template<int N>`) now work end-to-end for the
+explicit-arg single-value case (commit 06307e2, +test testnontypetmpl, fulltest
+656/6 zero-regr). capture_call_template_args folds a non-type int arg into a
+value-named DataDef; the instantiation gate accepts a non-type SCALAR param;
+instantiate_fn_template_binding substitutes it as a `new TokenInt(value)` (via a
+nontype_subst map keyed off ft.typeparam_is_type). Verified: foo::addN<5>(10)->15.
+
+REMAINING blockers to `map<int,int>; m[1]=2` working, in order:
+1. **get name-resolution** (tmp/tupget.mad still fails identically): `std::get<0>(tuple)`
+   resolves the NAME to std::ranges::get (a body-less void niebloid -> c2mir
+   "incompatible argument type"), NOT std::get<size_t __i>(tuple&) (stl_tuple.h).
+   Non-type support did NOT fix this — get<0> never reaches try_instantiate for
+   std::get because the call binds ranges::get first. Fix candidate selection so
+   std::get wins for a tuple arg (ranges::get<_Num>(range) should reject the tuple).
+2. **multi-value symbol identity + call resolution** (the testnontypetmpl follow-on):
+   addN<5> and addN<100> have IDENTICAL signatures int(int) -> overload-numbering
+   gives both `__ns_..._addN__o2` -> "Repeated item declaration". Needs (a) a
+   per-non-type-value emit symbol (rename the instantiated declarator to incorporate
+   the value, like the member-ctor unique_overload_symbol path), AND (b) call
+   resolution that picks the instance by the non-type explicit arg (a call can't
+   distinguish by signature alone — the member-template `__mti` alias is the model).
+   REQUIRED for map: the piecewise indexed ctor calls get<0> AND get<1>.
+3. **non-type size_t... PACKS** (the gate still bails on a non-type pack): the
+   piecewise indexed ctor (tuple:2260) has `size_t... _Indexes1/_Indexes2` +
+   `_Build_index_tuple<sizeof...(_Args)>::__type()`.
+4. **std::get body**: pulls __get_helper<__i> + __tuple_element_t<__i,...> +
+   _Tuple_impl _M_head/_M_tail recursion (more non-type instantiation).
+5. **P4 piecewise body expansion** (P3 already deduces _Args1/_Args2 into tid_packs):
+   fold sizeof...(_Args), _Build_index_tuple<N>::__type() -> _Index_tuple<0..N-1>,
+   delegate to the indexed ctor; body first(forward<_Args1>(get<_Indexes1>(t1))...).
+6. tmp/map_insert.mad -> 0 c2mir errors -> RUN.
+
+Each a commit + fulltest + torture failset-diff. Reducers: tmp/tupget.mad (get),
+tmp/nsnontype.mad (non-type, GREEN now), tmp/map_insert.mad (map).
