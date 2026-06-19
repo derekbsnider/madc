@@ -2096,3 +2096,45 @@ NOTE on branch layout: plan Updates 42-46 are DOC-ONLY commits on
 `feature/retire-embedded-shims-claude`; the layer 1-9 CODE (and this Update 47 +
 the fix) live on `wip/tuple-instantiation-claude`. Keeping code+doc together here
 to avoid the cross-branch confusion that produced the Update-46 branch mix-up.
+
+### Update 48 — layer 10 ROOT-CAUSED: `_Auto_node`'s variadic member-template ctor is an EMPTY STUB (node never allocated).
+
+With the layer-9 recursion fixed (Update 47), `map<int,int>; m[1]=2` null-derefs
+inside the REAL libstdc++ `std::_Rb_tree_insert_and_rebalance` (+0x33), called from
+the madc `_M_insert_node`. The rebalance call args are structurally correct
+(`insert_left, (_Rb_tree_node_base*)__z, __p, &_M_header`) — the fault is that
+`__z` (the new node) is NULL.
+
+`__z` = the `_Auto_node`'s `_M_node`. The `_Auto_node` ctor body in the emitted C
+is **EMPTY**:
+
+```c
+void ..._Auto_node___Rb_tree..._Auto_node(_Auto_node *__this, _Rb_tree *__t,
+        piecewise_construct_t *, tuple_const_int32_t_ *, tuple *) {
+}
+```
+
+It should be the variadic member-template ctor's mem-init list:
+
+```cpp
+template<typename... _Args>
+  _Auto_node(_Rb_tree& __t, _Args&&... __args)
+  : _M_t(__t),
+    _M_node(__t._M_create_node(std::forward<_Args>(__args)...))   // allocate
+  { }
+```
+
+So `_M_node` is never assigned (stays 0) -> `__z` is null -> rebalance null-deref.
+This is the prior handoff's "last blocker": `_Auto_node`'s VARIADIC MEMBER-TEMPLATE
+CTOR (stl_tree.h:~1635, constructed at ~2434 in `_M_emplace_hint_unique`) is
+registered but its body/mem-init list is never instantiated — emitted as a stub.
+(NOT the node-pointer/base-derived type conflation Updates 45/46 theorized; that
+theory is superseded.)
+
+FIX (next session): instantiate the variadic member-template ctor's mem-init list
+at the construction site — deduce `_Args` from the construction args, fill
+`_M_t(__t)` and `_M_node = __t._M_create_node(std::forward<_Args>(__args)...)`.
+This mirrors the 2-part plan in claude_status.json's layer-8 note (Part B: the
+object-decl ctor-construction path must deduce the pack + instantiate a concrete
+member-template ctor, like instantiate_member_fn_template_for_call does for calls).
+Deep template-instantiation work, fulltest-gated.
