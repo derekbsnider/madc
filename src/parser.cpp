@@ -28816,12 +28816,24 @@ void Program::register_outofline_member_instantiations(
 	return;
     std::map<std::string, std::vector<OutOfLineMemberDef> >::iterator it =
 	out_of_line_member_defs.find(defining_namespace + "::" + class_name);
+#ifdef MADC_DEBUG_TUPLE
+    if ( getenv("MADC_DEBUG_TUPLE") && class_name.find("Rb_tree") != std::string::npos )
+	fprintf(stderr, "[OOL] class=%s::%s defs=%d\n", defining_namespace.c_str(),
+		class_name.c_str(),
+		it == out_of_line_member_defs.end() ? -1 : (int)it->second.size());
+#endif
     if ( it == out_of_line_member_defs.end() )
 	return;
     for ( size_t di = 0; di < it->second.size(); ++di )
     {
 	OutOfLineMemberDef &def = it->second[di];
 	Variable *mvar = ddc->findMethod(def.member_name);
+#ifdef MADC_DEBUG_TUPLE
+	if ( getenv("MADC_DEBUG_TUPLE") && def.member_name.find("lower_bound") != std::string::npos )
+	    fprintf(stderr, "[OOL] member=%s mvar=%d data=%d already_deferred=%d\n",
+		    def.member_name.c_str(), (int)(mvar != NULL),
+		    (int)(mvar && mvar->data), (int)(mvar && deferred_lazy_bodies.count(mvar->name)));
+#endif
 	if ( !mvar || !mvar->data )
 	    continue;	// no in-class declaration to attach the body to
 	// Already materialized (a re-instantiation, or an overload already bound)?
