@@ -1517,6 +1517,10 @@ public:
     // the outer frame) instead of recursing into a stack overflow. Call-site keying
     // (tc->var.name) can't catch this — each cycle hop is a distinct call site.
     std::set<std::string> member_fn_inst_in_progress;
+    // Memoize member-ctor-template instantiations (keyed class + arg-type
+    // spellings) so a repeated construction shape instantiates the ctor once;
+    // doubles as the recursion guard for the construct -> forward -> construct chain.
+    std::set<std::string> member_ctor_inst_done;
     // >0 while parsing the operand of an UNEVALUATED context (decltype(...),
     // sizeof, noexcept). C++ does not ODR-use entities named in an unevaluated
     // operand ([basic.def.odr]) — so a function-template call there forms only a
@@ -1538,6 +1542,19 @@ public:
     // call's extern resolves to the real definition at link. libstdc++-EXPORTED
     // member templates keep the mangled-direct path (member_template_method_call).
     void instantiate_member_fn_template_for_call(TokenCallFunc *tc);
+    // A member-template CONSTRUCTOR whose parameters use the template pack
+    // (`template<class... A> C(B&, A&&...)`, e.g. libstdc++'s _Rb_tree::_Auto_node)
+    // is registered declaration-only as a ctor (register_skipped_class_template_function)
+    // with its body retained. A construction site `C v(args...)` is an object
+    // declaration, NOT a call, so the call-only instantiate_member_fn_template_for_call
+    // hook never fires. Given the construction's arg tokens, deduce the ctor's
+    // template params, instantiate the retained body under a CONCRETE ctor symbol
+    // (the ClassName__ClassName__oN scheme — so the mem-initializer list parses and
+    // it is recognized as a ctor), and register that instantiation as a real ctor of
+    // `cdd` so select_ctor_overload binds it. Idempotent / memoized per (class, arg
+    // types). No-op when `cdd` has no member-template ctor.
+    void instantiate_member_ctor_template_for_construction(
+		DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args);
     // Resolve the CONCRETE return type of a member-function-template call by
     // substituting the call's explicit/deduced template args into the retained
     // DEPENDENT return-type tokens (FuncDef::member_template_return_tokens) and

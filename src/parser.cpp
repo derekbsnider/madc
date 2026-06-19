@@ -4798,6 +4798,7 @@ TokenObjTemp *Program::try_parse_functional_ctor(TokenBase *name_tb)
 	TokenObjTemp *ot = new TokenObjTemp(cdd);
 	ot->file = name_tb->file; ot->line = name_tb->line; ot->column = name_tb->column;
 	parse_objtemp_ctor_arguments(*this, ot, name_tb, close_id, close_spelling);
+	instantiate_member_ctor_template_for_construction(cdd, ot->ctor_args);
 	return ot;
 }
 
@@ -4826,6 +4827,7 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
 	ot->line = type_tb->line;
 	ot->column = type_tb->column;
 	parse_objtemp_ctor_arguments(*this, ot, type_tb, close_id, close_spelling);
+	instantiate_member_ctor_template_for_construction(cdd, ot->ctor_args);
 	return ot;
     }
 
@@ -22960,7 +22962,9 @@ static void register_skipped_friend_type(
 static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
-	uint32_t access_flags);
+	uint32_t access_flags, const std::string &ctor_source_name = std::string());
+static bool vector_contains_variable(const std::vector<Variable *> &vars,
+				     Variable *needle);
 static bool find_free_operator_declarator(
 	const std::vector<TokenBase *> &tokens, std::string &opname_out,
 	size_t &oper_idx_out, size_t &lparen_out);
@@ -24247,7 +24251,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		else
 		    register_skipped_class_template_function(
 			pgm, ddc, skipped_decl,
-			pgm.last_skipped_template_typeparams, access_flags);
+			pgm.last_skipped_template_typeparams, access_flags,
+			constructor_source_name);
 		pgm.last_skipped_template_decl.clear();
 		pgm.last_skipped_template_typeparams.clear();
 	    }
@@ -31318,6 +31323,136 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	fd->local_emit_name = inst_name;
 }
 
+void Program::instantiate_member_ctor_template_for_construction(
+	DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args)
+{
+    if ( !cdd )
+	return;
+    // A libstdc++-EXPORTED class binds mangled-direct; only a madc-LOCAL
+    // monomorphized class needs its retained ctor body instantiated here.
+    if ( cdd->is_externally_defined() || cdd->is_extern_template_instantiated )
+	return;
+    // Find a member-template CONSTRUCTOR placeholder among the class's ctors
+    // (registered with its body retained by register_skipped_class_template_function).
+    FuncDef *fd = NULL;
+    Variable *placeholder = NULL;
+    for ( Variable *cv : cdd->ctors )
+    {
+	FuncDef *cfd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+	if ( cfd && cfd->is_member_template
+	  && !cfd->member_template_decl.empty()
+	  && cfd->member_template_owner == cdd
+	  && !cfd->template_param_names.empty() )
+	{
+	    fd = cfd;
+	    placeholder = cv;
+	    break;
+	}
+    }
+    if ( !fd || !placeholder )
+	return;
+
+    // Memoize / break the construct -> forward -> construct recursion: key on the
+    // class + each argument's value type.
+    std::string key = cdd->name + "::ctor(";
+    for ( TokenBase *a : ctor_args )
+    {
+	DataDef *adp = a ? operand_value_datadef(a) : NULL;
+	key += (adp ? adp->name : std::string("?")) + ",";
+    }
+    key += ")";
+    if ( !member_ctor_inst_done.insert(key).second )
+	return;	// already instantiated (or instantiating) this construction shape
+
+    // Build the free-fn-template descriptor from the retained ctor decl, dropping
+    // `static`/`explicit`, and rename the declarator to a CONCRETE ctor symbol.
+    // The ClassName__ClassName__oN scheme makes parseFunction parse the
+    // mem-initializer list and treat the body as a constructor; instance_method
+    // gives it the hidden __this (the object under construction).
+    FnTemplateDef ft;
+    ft.typeparams = fd->template_param_names;
+    ft.typeparam_is_type.assign(ft.typeparams.size(), true);
+    if ( fd->template_param_is_pack.size() == ft.typeparams.size() )
+	ft.typeparam_is_pack = fd->template_param_is_pack;
+    else
+	ft.typeparam_is_pack.assign(ft.typeparams.size(), false);
+    ft.ns = std::string();
+    ft.owner_class = cdd;
+    ft.instance_method = true;
+
+    std::string ctor_decl_name =
+	skipped_template_function_declarator_name(fd->member_template_decl);
+    std::string inst_name = unique_overload_symbol(cdd->name + "__" + cdd->name);
+    for ( size_t i = 0; i < fd->member_template_decl.size(); ++i )
+    {
+	TokenBase *t = fd->member_template_decl[i];
+	if ( t && (t->id() == TokenID::tkSTATIC
+		|| (t->type() == TokenType::ttIdentifier
+		    && (static_cast<TokenIdent *>(t)->str == "static"
+		     || static_cast<TokenIdent *>(t)->str == "explicit"))) )
+	    continue;
+	ft.decl.push_back(t ? t->clone() : NULL);
+    }
+    size_t ni = skipped_template_function_declarator_name_index(ft.decl, NULL);
+    if ( ni >= ft.decl.size() || !ft.decl[ni] )
+	return;
+    {
+	TokenBase *old = ft.decl[ni];
+	TokenBase *ren = new TokenIdent(inst_name.c_str());
+	ren->file = old->file;
+	ren->line = old->line;
+	ren->column = old->column;
+	ft.decl[ni] = ren;
+    }
+    // A constructor declarator has NO return type, but the shared free-fn-template
+    // signature extractor (extract_free_signature) requires a non-empty return
+    // range before the name. Synthesize a `void` return immediately before the
+    // declarator — harmless for a ctor (it returns nothing), and the
+    // ClassName__ClassName__oN id still drives the ctor / mem-initializer parse.
+    {
+	TokenDataType *vret = new TokenDataType("void", ddVOID);
+	if ( ft.decl[ni] )
+	{
+	    vret->file = ft.decl[ni]->file;
+	    vret->line = ft.decl[ni]->line;
+	    vret->column = ft.decl[ni]->column;
+	}
+	ft.decl.insert(ft.decl.begin() + ni, vret);
+    }
+
+    // Deduce + instantiate via the shared free-fn-template machinery, driven by a
+    // synthetic call carrying the construction arguments (it reads only
+    // parameters / explicit_template_args for deduction). The placeholder's type
+    // is the ctor FuncDef, so TokenCallFunc's constructor is satisfied. The
+    // synthetic call BORROWS the caller-owned arg tokens; clear before it dies so
+    // its (default) destruction never reaches them.
+    TokenCallFunc synth(*placeholder);
+    synth.parameters = ctor_args;
+    bool ok = try_instantiate_namespace_fn_template(*this, ft, inst_name, &synth);
+    synth.parameters.clear();
+    if ( !ok )
+	return;
+
+    // Register the concrete instantiation as a real ctor of cdd: its parameters
+    // are the deduced concrete signature (__this + substituted ctor params), so
+    // select_ctor_overload scores and binds it; local_emit_name makes the
+    // construction call the emitted definition symbol.
+    Variable *inst_var = tkProgram ? tkProgram->findVariable(inst_name) : NULL;
+    if ( !inst_var )
+	inst_var = findVariable(inst_name);
+    if ( !inst_var )
+	return;
+    FuncDef *inst_fd = dynamic_cast<FuncDef *>(inst_var->type);
+    if ( inst_fd )
+    {
+	if ( inst_fd->local_emit_name.empty() )
+	    inst_fd->local_emit_name = inst_name;
+	inst_fd->method_display_name = ctor_decl_name;
+    }
+    if ( !vector_contains_variable(cdd->ctors, inst_var) )
+	cdd->ctors.push_back(inst_var);
+}
+
 static bool skipped_template_function_is_static(
 	const std::vector<TokenBase *> &tokens)
 {
@@ -31666,7 +31801,7 @@ DataDef *Program::resolve_decltype_call_return(
 static void register_skipped_class_template_function(
 	Program &pgm, DataDefCLASS *owner, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams,
-	uint32_t access_flags)
+	uint32_t access_flags, const std::string &ctor_source_name)
 {
     if ( !owner )
 	return;
@@ -31755,6 +31890,20 @@ static void register_skipped_class_template_function(
 	var->flags |= access_flags;
     owner->methods.push_back(var);
     owner->method_map[name] = var;
+    // A member template CONSTRUCTOR (declarator names the class's ctor) whose
+    // parameters USE the template pack is not handled by the defaulted-ctor
+    // path; it lands here. Register it as a ctor too so construction sites can
+    // discover and instantiate it (instantiate_member_ctor_template_for_construction).
+    // The varargs declaration-only placeholder is harmless in select_ctor_overload
+    // — its tiny arity (placeholder params = [ret, this, varargs-marker]) fails the
+    // `args > pn` arity gate; the concrete per-arg instantiation is what binds.
+    if ( fd && fd->is_member_template && !ctor_source_name.empty()
+      && name == ctor_source_name )
+    {
+	if ( !vector_contains_variable(owner->ctors, var) )
+	    owner->ctors.push_back(var);
+	owner->has_user_ctor = true;
+    }
 
     // Retain the body of a body-bearing member function template so an ODR-use
     // call site can instantiate it locally (instantiate_member_fn_template_for_call)
@@ -35942,6 +36091,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
 		Throw(tb) << "Expected ')' after constructor arguments" << flush;
 	    nextToken(); // consume ')'
+	    // A member-template constructor (e.g. _Rb_tree::_Auto_node's variadic
+	    // ctor) is registered declaration-only; deduce + instantiate the concrete
+	    // ctor for THESE argument types so select_ctor_overload can bind it.
+	    instantiate_member_ctor_template_for_construction(ddc, td->ctor_args);
 	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 		nextToken(); // consume ';'
 	    else if ( peekToken() && peekToken()->id() == TokenID::tkComma )
