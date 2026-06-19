@@ -1839,3 +1839,45 @@ Probe: re-add the cerr-muting-aware backtrace in throwbuf::sync (lexer.cpp:5407)
 + `#include <execinfo.h>`; build with `CXXFLAGS="-std=c++11 -Wall -g -O0"` for
 symbols; gate on `getenv("MADC_DBG_STD")`. Reducer `tmp/itonly.mad` (just
 `#include <iterator>`), `--std=c++20 --no-embedded-headers`.
+
+### Update 36 — CORRECTION (Update 35 was WRONG) + lvalue error fixed (ea6ffb9); map c2mir 2→1.
+
+Update 35's claim — "the 2 c2mir check errors ARE the 2 `undeclared identifier
+'std'` errors" — is **FALSE**. Verified at live HEAD: `tmp/itonly.mad`
+(`#include <iterator>`) **exits 0** while printing the *identical* `undeclared
+identifier 'std'` noise. So that "std" output is RECOVERED parser noise, not a
+fatal error. (Root of the noise, for the record: the alias
+`iter_reference_t = decltype(*std::declval<It&>())` — the deref-operand path in
+`parseExpr_operatorArm` routes `*std::declval<…>()` to `parseExpression(std)`
+instead of the namespace-aware `parsePostfixChain`, so `std::declval<It&>()`
+[note the explicit template args] isn't resolved as a qualified call. It's
+caught at `instantiate_template_alias_use`'s try/catch and recovered to the
+opaque placeholder; harmless. Lower priority — cosmetic.)
+
+The REAL 2 fatal c2mir errors for `map<int,int>; m[1]=2;` (found by emitting
+`--emit=c11` and compiling the C with **gcc -c**, which is stricter than c2mir
+and names them precisely):
+
+1. **`lvalue required as unary '&' operand`** (mapii.mad:3) — `m[1]` bound the
+   prvalue literal `1` to `operator[](const key_type&)` and madc emitted
+   `operator_lb_rb(&m, &1)` — the address of a literal. **FIXED in ea6ffb9**:
+   `class_subscript_addr_on` (cir_builder.cpp:7198) now routes the reference
+   index through `ref_param_arg_addr` (the existing helper that materializes a
+   temp for non-addressable rvalues), so it emits `&__madc_objtmp_N`. c2mir
+   errors **2→1**. fulltest 656/5/0/18, zero regr.
+
+2. **`incomplete struct or union`** (stl_map.h:102 per c2mir; gcc localizes it
+   to `storage size of '__madc_objtmp_5' isn't known`) — `std::tuple<const int&>`
+   (emitted name `tuple_const_int32_t_`, from `forward_as_tuple(__k)` inside
+   `operator[]`) is referenced as a local but its struct body is NEVER emitted:
+   the variadic `tuple` class template stays an opaque body-less shell for the
+   `<const int&>` arg. **This is the same wall the vector<T*> work cleared**
+   (eb578af: `allow_variadic_real_inst` for concrete trailing-pack class
+   templates). NEXT = extend that real-instantiation to `tuple<const int&>`.
+
+METHOD LESSON: `--emit=c11` + `gcc -c` on the emitted C is the fastest way to
+get *precise, well-located* error messages for a JIT-path c2mir failure — gcc is
+stricter and labels the exact incomplete type / bad operand, where c2mir only
+says "incomplete struct or union" at a misleading location. (Also surfaced a
+gcc-strict-only duplicate/conflicting proto for the `_Auto_node` variadic ctor +
+`_M_emplace_hint_unique` that c2mir tolerates — separate cleanup, not gating.)
