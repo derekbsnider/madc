@@ -2379,3 +2379,62 @@ needed for the wip->feature squash.
 
 DEBUG: MADC_DEBUG_CTORTMPL traces committed in parser.cpp. reducer tmp/map_insert.mad;
 --std=c++20 --no-embedded-headers.
+
+### Update 52 — KEYSTONE isolated to a 2-line reducer: NON-TYPE function-template parameters. tmp/nsnontype.mad (expect 15) is the exact next-session target; full mechanism below.
+
+`get map working` is gated on the same keystone for the whole remaining chain
+(P4 piecewise body, get<I>, _Build_index_tuple): madc does not support NON-TYPE
+function-template parameters.
+
+ISOLATED REDUCER (no tuple/pair machinery — pure non-type fn template):
+  tmp/nsnontype.mad:
+    namespace foo { template<int N> int addN(int x) { return x + N; } }
+    int main() { return foo::addN<5>(10); }   // EXPECT 15
+  Today: `MIR error: import of undefined item __ns_foo_addN` — the call resolves to
+  the template but it is NEVER INSTANTIATED, so the definition symbol is undefined.
+  CONTROL (works, exit 0): foo::idfn<int>(10) with `template<typename T> T idfn(T)`.
+  (NOTE: GLOBAL/file-scope fn templates don't resolve at all — `addN<5>` unqualified
+  gives "undeclared identifier"; only NAMESPACE + member fn templates work. std::get
+  is a namespace template, so the namespace reducer is the right shape.)
+
+TWO COUPLED GAPS (verified live):
+1. CAPTURE — `capture_call_template_args` (parser.cpp:28244) resolves each arg via
+   `resolve_declared_type_token`; a numeric arg (`5`) returns NULL -> `bail()` drops
+   the ENTIRE arg list. So `addN<5>` captures NO explicit args and the value 5 is
+   lost. Must: on a non-type arg, fold it (the class-template path already has
+   `Program::fold_nontype_arg_constant(argtoks, out)` — reuse it) and carry the
+   value. explicit_template_args is `vector<DataDef*>` (type-only) — needs a parallel
+   value channel (e.g. a `vector<...>` of {is_type, DataDef* | int64 value} on
+   TokenCallFunc, threaded into try_instantiate). Mirror how the CLASS path carries
+   non-type args as SPELLINGS (unify_nested_spec_pattern_arg treats them as literal
+   slots, parser.cpp:15063).
+2. INSTANTIATE — `try_instantiate_namespace_fn_template` (parser.cpp:30187) REJECTS
+   any non-type typeparam outright (`!typeparam_is_type[i] -> return false`). Must:
+   bind the non-type param to its VALUE (from the captured explicit arg or deduced),
+   include the value in `inst_key` (so addN<5> != addN<6>), and in
+   `instantiate_fn_template_binding` substitute the param name in the body with an
+   INTEGER-LITERAL token (`new TokenInt(value)`, tokens.h:930) instead of the
+   `new TokenDataType(...)` used for type params (the subst loop at parser.cpp:30871
+   + the multi-element loop at 30797). Add a `nontype_subst` map<string,int64>
+   threaded alongside `subst`.
+
+ONCE non-type fn templates work, the chain continues:
+- `get` name resolution: even with non-type support, `std::get<0>(tuple)` currently
+  resolves the NAME to std::ranges::get (a body-less void niebloid). Fix candidate
+  selection so std::get<size_t __i>(tuple&) is chosen (and ranges::get<_Num>(range)
+  is rejected on the tuple arg). reducer tmp/tupget.mad.
+- std::get body pulls __get_helper<__i> + __tuple_element_t<__i,...> + _Tuple_impl
+  _M_head/_M_tail recursion (more non-type instantiation).
+- P4 piecewise body: substitute _Args1/_Args2 (P3 already deduces them into
+  tid_packs), fold sizeof...(_Args), instantiate _Build_index_tuple<N>::__type() ->
+  _Index_tuple<0..N-1>, delegate to the private indexed ctor whose FOUR packs include
+  non-type size_t... index packs (now expressible once non-type packs work), body
+  `first(forward<_Args1>(get<_Indexes1>(t1))...), second(...)`.
+
+SEQUENCE next session: (1) non-type fn template params end-to-end, GREEN on
+tmp/nsnontype.mad (commit). (2) non-type PACKS (size_t...). (3) get name-resolution +
+std::get<I> green on tmp/tupget.mad (commit). (4) _Build_index_tuple/_Index_tuple.
+(5) P4 piecewise+indexed body. (6) tmp/map_insert.mad -> 0 c2mir errors -> RUN. Each
+a commit + fulltest + torture failset-diff. Status this session: layers 9/10 +
+11-P1/P1b/P2/P3 committed (wip @8ea563e); P3 deduces pair's two type-packs; the
+non-type keystone blocks the rest.
