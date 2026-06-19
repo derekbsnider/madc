@@ -22750,6 +22750,29 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 	return;
     if ( !fd->emit_symbol.empty() )
 	return;
+    // A member madc will INSTANTIATE from a captured out-of-line definition
+    // (`Class<T>::member(...) {...}` in the header — e.g. _Rb_tree::_M_lower_bound,
+    // defined out-of-line in stl_tree.h) must NOT bind to the external Itanium
+    // symbol: madc provides the body under the member's own madc emit name, and
+    // register_outofline_member_instantiations attaches it. Binding it external
+    // here makes every call site reference an undefined import the linker has no
+    // definition for (the body is madc-emitted, not libstdc++-exported). Skip ONLY
+    // for a class madc instantiates itself — a genuinely library-provided class
+    // (extern-template-declared, or vtable-owned externally-defined) keeps the
+    // Itanium binding so it links against libstdc++.
+    if ( !ddc->is_extern_template_instantiated && !ddc->is_externally_defined() )
+    {
+	size_t lt = ddc->canonical_cpp_spelling.find('<');
+	std::string tmpl_key = lt == std::string::npos
+	    ? ddc->canonical_cpp_spelling
+	    : ddc->canonical_cpp_spelling.substr(0, lt);
+	std::map<std::string, std::vector<OutOfLineMemberDef> >::iterator oit =
+	    out_of_line_member_defs.find(tmpl_key);
+	if ( oit != out_of_line_member_defs.end() )
+	    for ( size_t oi = 0; oi < oit->second.size(); ++oi )
+		if ( oit->second[oi].member_name == mname )
+		    return;   // madc-instantiated out-of-line; leave emit_symbol unset
+    }
     // Parameter spellings, captured at parse time, EXCLUDING the hidden __this
     // (slot 0). These carry pointee-const / `&` / template structure the DataDef
     // alone loses, so the symbol matches the C++ ABI exactly (PKc, not Pc).
@@ -28818,16 +28841,69 @@ void Program::register_outofline_member_instantiations(
 	out_of_line_member_defs.find(defining_namespace + "::" + class_name);
 #ifdef MADC_DEBUG_TUPLE
     if ( getenv("MADC_DEBUG_TUPLE") && class_name.find("Rb_tree") != std::string::npos )
+    {
 	fprintf(stderr, "[OOL] class=%s::%s defs=%d\n", defining_namespace.c_str(),
 		class_name.c_str(),
 		it == out_of_line_member_defs.end() ? -1 : (int)it->second.size());
+	for ( Variable *mv : ddc->methods )
+	    if ( mv && mv->name.find("lower_bound") != std::string::npos )
+	    {
+		FuncDef *f = dynamic_cast<FuncDef *>(mv->type);
+		fprintf(stderr, "[OOL-ovl] name='%s' const=%d nparams=%zu emit_sym='%s' local_emit='%s'\n",
+			mv->name.c_str(), f ? (int)f->is_const_method : -1,
+			f ? f->parameters.size() : (size_t)0,
+			f ? f->emit_symbol.c_str() : "?",
+			f ? f->local_emit_name.c_str() : "?");
+	    }
+    }
 #endif
     if ( it == out_of_line_member_defs.end() )
 	return;
+    // True if the out-of-line declarator is a `const` member (`...) const {`):
+    // the `const` qualifier sits at paren-depth 0 after the LAST param-list `)`
+    // and before the body `{`. Disambiguates const vs non-const overloads of the
+    // same member (std::_Rb_tree::_M_lower_bound has both).
+    auto def_is_const_member = [](const std::vector<TokenBase *> &decl) -> bool {
+	int depth = 0; size_t last_close = decl.size();
+	for ( size_t i = 0; i < decl.size(); ++i )
+	{
+	    TokenBase *t = decl[i]; if ( !t ) continue;
+	    TokenID id = t->id();
+	    if ( id == TokenID::tkOpBrk ) ++depth;
+	    else if ( id == TokenID::tkClBrk ) { if ( depth > 0 ) { --depth; if ( depth == 0 ) last_close = i; } }
+	    else if ( depth == 0 && id == TokenID::tkOpBrc ) break;
+	}
+	if ( last_close == decl.size() ) return false;
+	for ( size_t i = last_close + 1; i < decl.size(); ++i )
+	{
+	    TokenBase *t = decl[i]; if ( !t ) continue;
+	    if ( t->id() == TokenID::tkOpBrc ) break;
+	    if ( t->id() == TokenID::tkCONST ) return true;
+	}
+	return false;
+    };
     for ( size_t di = 0; di < it->second.size(); ++di )
     {
 	OutOfLineMemberDef &def = it->second[di];
-	Variable *mvar = ddc->findMethod(def.member_name);
+	// OVERLOAD-AWARE attach: findMethod() returns only ONE overload (via
+	// method_map), so a member with const + non-const overloads (_M_lower_bound)
+	// would attach BOTH out-of-line bodies to that single overload and leave the
+	// other an undefined import. Pick the overload whose const-ness matches THIS
+	// def (and that has no body yet); fall back to findMethod for the common
+	// non-overloaded member.
+	bool def_const = def_is_const_member(def.decl);
+	Variable *mvar = NULL;
+	for ( Variable *cand : ddc->methods )
+	{
+	    if ( !cand || !cand->data ) continue;
+	    FuncDef *cfd = dynamic_cast<FuncDef *>(cand->type);
+	    if ( !cfd || cfd->method_display_name != def.member_name ) continue;
+	    if ( cfd->is_const_method != def_const ) continue;
+	    if ( deferred_lazy_bodies.count(cand->name) ) continue;
+	    mvar = cand; break;
+	}
+	if ( !mvar )
+	    mvar = ddc->findMethod(def.member_name);
 #ifdef MADC_DEBUG_TUPLE
 	if ( getenv("MADC_DEBUG_TUPLE") && def.member_name.find("lower_bound") != std::string::npos )
 	    fprintf(stderr, "[OOL] member=%s mvar=%d data=%d already_deferred=%d\n",
