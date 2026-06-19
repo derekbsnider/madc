@@ -7,6 +7,14 @@
 > "reconsider a better approach." VERIFY the factual build state at HEAD if you
 > wish, but do NOT re-open settled decisions. Re-litigating them wasted days.
 > Execute W1→W5 in order. (See memory: feedback_handoff_not_open_to_interpretation.)
+>
+> **COURSE-CORRECTION CLAUSE (settled ≠ immutable).** A SETTLED decision MAY be
+> overturned — but ONLY when you have CONCLUSIVE EVIDENCE it is wrong (a failing
+> reproducer, a grep/file:line that contradicts the stated evidence, a build/test
+> result), NOT a hunch, preference, or "I think there's a cleaner way." If you
+> overturn one: (a) state the conclusive evidence, (b) write the justification into
+> THIS doc (amend the SETTLED line, don't silently diverge), (c) then proceed. The
+> bar is "disproven by evidence," not "reconsidered." Absent that bar, execute as written.
 
 ## SETTLED — DO NOT RE-LITIGATE (each line + the evidence that closed it)
 
