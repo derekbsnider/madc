@@ -2562,6 +2562,33 @@ static bool template_base_is_dependent_member(const Program::TemplateDef &td)
     return false;
 }
 
+// A class template whose BASE CLAUSE names a template-id base (`: public
+// Base<...>`). When the template itself is being really instantiated, its base
+// must instantiate too — and a variadic / partial-spec base (std::tuple's
+// `_Tuple_impl<_Idx, _Elements...>`) only really instantiates while variadic
+// real-instantiation is active. So a true result keeps real-instantiation
+// STICKY through the body re-parse (the base resolves with the flag on),
+// bounded by variadic_inst_in_progress. Detects a `<` after the base-intro `:`
+// and before the class body `{` (depth 0).
+static bool template_base_clause_has_template_id(const Program::TemplateDef &td)
+{
+    bool in_base_clause = false;
+    for ( size_t i = 0; i < td.body.size(); ++i )
+    {
+	TokenBase *t = td.body[i];
+	if ( !t )
+	    continue;
+	TokenID id = t->id();
+	if ( id == TokenID::tkOpBrc )
+	    return false;              // reached the class body — no template-id base
+	if ( id == TokenID::tkColon )
+	    in_base_clause = true;
+	else if ( in_base_clause && id == TokenID::tkLT )
+	    return true;               // `: ... Name< ...` template-id base
+    }
+    return false;
+}
+
 // A variadic class template is REALLY instantiable (body parse + member evaluation,
 // not just an opaque dependent shell) for concrete args when its only pack is a
 // TRAILING TYPE pack and it carries a parseable body with no non-type params. This is
@@ -3057,7 +3084,9 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // When this real-instantiation forwards through a dependent-member base
     // (`: Base<...>::type`), keep real-instantiation on for the nested base/arg
     // resolution during its re-parse so the whole forwarding trait chain folds.
-    bool want_sticky = pack_real_inst && template_base_is_dependent_member(td);
+    bool want_sticky = pack_real_inst
+		    && (template_base_is_dependent_member(td)
+		     || template_base_clause_has_template_id(td));
     if ( template_has_parameter_pack(td.typeparam_is_pack) && !pack_real_inst
       && !try_spec_real_inst )
 	return instantiate_opaque_template_use(td, tname, tb);
@@ -3308,9 +3337,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	std::map<std::string, TokenDataType *> spec_subst;
 	std::map<std::string, std::string> spec_tmpl_subst;
 	std::map<std::string, std::vector<std::string> > spec_pack_subst;
+	std::map<std::string, std::vector<TokenBase *> > spec_nontype_subst;
 	if ( Program::TemplateDef *spec = match_partial_specialization(
 		tname, arg_types_by_slot, arg_spellings, arg_tokens_by_slot,
-		td.typeparam_is_type, spec_subst, spec_tmpl_subst, spec_pack_subst) )
+		td.typeparam_is_type, spec_subst, spec_tmpl_subst, spec_pack_subst,
+		spec_nontype_subst) )
 	{
 	    // Keep the USE-SITE owner across the swap. A nested class template's
 	    // partial spec is stored globally by simple name (partial_spec_map[name])
@@ -3324,6 +3355,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    td = *spec;
 	    td.owner_class = use_site_owner;
 	    subst = spec_subst;
+	    // The matched SPEC carries the real base clause (the primary that drove
+	    // want_sticky above was a body-less forward decl). Recompute sticky from
+	    // the spec body so a template-id base (`_Tuple_impl<_Idx+1, _Tail...>`,
+	    // `_Head_base<_Idx, _Head>`) keeps variadic real-instantiation ON while
+	    // THIS spec body re-parses — otherwise those bases fall back to opaque
+	    // shells and the instantiated class has no storage (size 0).
+	    want_sticky = template_base_is_dependent_member(td)
+		       || template_base_clause_has_template_id(td);
 	    // A deduced template-template parameter (`__replace_first_arg<_Template<_Up>,
 	    // _Tp>` → _Template=allocator) binds to a TEMPLATE NAME, not a type: route it
 	    // through token_subst so the body's `_Template<_Tp>` clones to `allocator<_Tp>`
@@ -3335,6 +3374,19 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		std::vector<TokenBase *> repl;
 		repl.push_back(new TokenIdent(t->second));
 		token_subst[t->first] = repl;
+	    }
+	    // A deduced NON-TYPE param (`_Idx` of `_Tuple_impl<_Idx,_Head,_Tail...>`)
+	    // binds to the concrete value tokens; route through token_subst so the
+	    // body's `_Idx` (and computed forms like `_Idx + 1`) clone to the literal
+	    // and fold. Without this a non-type-param partial spec never specialized.
+	    for ( std::map<std::string, std::vector<TokenBase *> >::iterator n =
+		      spec_nontype_subst.begin(); n != spec_nontype_subst.end(); ++n )
+	    {
+		std::vector<TokenBase *> repl;
+		for ( TokenBase *t : n->second )
+		    if ( t )
+			repl.push_back(t->clone());
+		token_subst[n->first] = repl;
 	    }
 	    // A deduced trailing pack (`_Types...`) binds to the absorbed concrete
 	    // args; resolve each element spelling to its type token for body
@@ -3414,6 +3466,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    break;
 	}
     std::vector<TokenBase *> inj;
+    // Index of the class-body opener `{` (first top-level brace). A self-name
+    // BEFORE it sits in the base clause; AFTER it, in the body. Used to keep a
+    // recursive self-template BASE (`_Tuple_impl<_Idx+1,_Tail...>`) a distinct
+    // template-id instead of collapsing it to the injected-class-name.
+    size_t body_brace_index = td.body.size();
+    for ( size_t fb = 0; fb < td.body.size(); ++fb )
+	if ( td.body[fb] && td.body[fb]->id() == TokenID::tkOpBrc )
+	{ body_brace_index = fb; break; }
     // Indices of trailing `...` tokens (three tkDot) belonging to a pack-
     // expansion PATTERN (`const _Elements&...`) whose pack we substituted
     // in place — see the pack_subst handling below. Skipped when reached.
@@ -3446,6 +3506,58 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		// (so `C<_Up, _Types...>` -> `C<_Up>`, never `C<_Up,>`). The
 		// trailing `...` (three tkDot) in the body is then consumed.
 		const std::vector<TokenDataType *> &elems = pki->second;
+		// EMPTY function-PARAMETER pack with a declarator suffix
+		// (`const _Tail&... __tail`): the pack name is followed by cv/ref/ptr
+		// tokens THEN `...`. The whole parameter — leading cv already in
+		// `inj`, its separating comma, the suffix, the `...`, and the param
+		// name — must vanish (`(const _Head& h, const _Tail&... t)` ->
+		// `(const _Head& h)`). The generic comma-drop below only handles an
+		// immediately-preceding comma, so handle the suffixed pattern here.
+		if ( elems.empty() )
+		{
+		    size_t pj = bi + 1;
+		    while ( pj < td.body.size() && td.body[pj]
+		      && (td.body[pj]->id() == TokenID::tkBand
+		       || td.body[pj]->id() == TokenID::tkLand
+		       || td.body[pj]->id() == TokenID::tkMul
+		       || td.body[pj]->id() == TokenID::tkCONST
+		       || td.body[pj]->id() == TokenID::tkVOLATILE) )
+			++pj;
+		    bool param_pack = pj > bi + 1 && pj + 2 < td.body.size()
+			&& td.body[pj] && td.body[pj]->id() == TokenID::tkDot
+			&& td.body[pj+1] && td.body[pj+1]->id() == TokenID::tkDot
+			&& td.body[pj+2] && td.body[pj+2]->id() == TokenID::tkDot;
+		    if ( param_pack )
+		    {
+			while ( !inj.empty()
+			  && (inj.back()->id() == TokenID::tkCONST
+			   || inj.back()->id() == TokenID::tkVOLATILE) )
+			{ delete inj.back(); inj.pop_back(); }
+			bool popped_comma = false;
+			if ( !inj.empty() && inj.back()->id() == TokenID::tkComma )
+			{ delete inj.back(); inj.pop_back(); popped_comma = true; }
+			size_t pk = pj + 3;
+			int pdepth = 0;
+			while ( pk < td.body.size() && td.body[pk] )
+			{
+			    TokenID kid = td.body[pk]->id();
+			    if ( kid == TokenID::tkOpBrk || kid == TokenID::tkLT )
+				++pdepth;
+			    else if ( kid == TokenID::tkClBrk )
+			    { if ( pdepth == 0 ) break; --pdepth; }
+			    else if ( kid == TokenID::tkGT && pdepth > 0 )
+				--pdepth;
+			    else if ( pdepth == 0 && kid == TokenID::tkComma )
+			    { if ( !popped_comma ) ++pk; break; }
+			    else if ( pdepth == 0
+			      && (kid == TokenID::tkSemi || kid == TokenID::tkClBrc) )
+				break;
+			    ++pk;
+			}
+			bi = pk - 1;   // loop ++bi resumes after the elided param
+			continue;
+		    }
+		}
 		if ( elems.empty() && !inj.empty()
 		  && inj.back()->id() == TokenID::tkComma )
 		{
@@ -3519,6 +3631,25 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		       != td.defining_namespace;
 		if ( !foreign_qualified )
 		{
+		    // A self-name USED AS A TEMPLATE in the BASE CLAUSE
+		    // (`_Tuple_impl<_Idx+1, _Tail...>` as a base of
+		    // `_Tuple_impl<_Idx,_Head,_Tail...>`) is a DISTINCT specialization
+		    // the class inherits — NOT the injected-class-name. Keep the name
+		    // and its `<...>` so the surrounding clone loop substitutes the
+		    // args (`_Idx+1`->`0+1`, `_Tail...` expands) and it re-parses as a
+		    // fresh template-id, instantiating the right base. Collapsing it to
+		    // the mangled self made the class try to inherit from itself
+		    // ("Unknown base class"). In the BODY (method signatures), a self
+		    // template-id stays collapsed as before.
+		    bool self_template_base =
+			bi < body_brace_index
+			&& bi + 1 < td.body.size()
+			&& td.body[bi + 1]->id() == TokenID::tkLT;
+		    if ( self_template_base )
+		    {
+			inj.push_back(bt->clone());   // keep class_name; args substitute below
+			continue;
+		    }
 		    TokenIdent *ni = (TokenIdent *)bt->clone();
 		    ni->str = mangled;
 		    inj.push_back(ni);
@@ -15607,7 +15738,8 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	const std::vector<bool> &param_is_type,
 	std::map<std::string, TokenDataType *> &out_subst,
 	std::map<std::string, std::string> &out_template_subst,
-	std::map<std::string, std::vector<std::string> > &out_pack_subst)
+	std::map<std::string, std::vector<std::string> > &out_pack_subst,
+	std::map<std::string, std::vector<TokenBase *> > &out_nontype_subst)
 {
     std::map<std::string, std::vector<TemplateDef> >::iterator it =
 	partial_spec_map.find(name);
@@ -15622,6 +15754,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
     std::map<std::string, DataDef *> best_ded;
     std::map<std::string, std::string> best_tmpl;
     std::map<std::string, std::vector<std::string> > best_pack;
+    std::map<std::string, std::vector<TokenBase *> > best_nontype;
     for ( size_t s = 0; s < it->second.size(); ++s )
     {
 	TemplateDef &spec = it->second[s];
@@ -15656,6 +15789,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	std::map<std::string, DataDef *> ded;
 	std::map<std::string, std::string> tmpl_ded;   // template-template-param deductions
 	std::map<std::string, std::vector<std::string> > pack_ded; // trailing-pack deductions
+	std::map<std::string, std::vector<TokenBase *> > nontype_ded; // non-type-param deductions
 	int score = 0;
 	bool ok = true;
 	for ( size_t i = 0; i < fixed_slots; ++i )
@@ -15664,6 +15798,29 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 		template_tokens_spelling(spec.spec_pattern[i]);
 	    if ( !template_param_expects_type(param_is_type, i) )
 	    {
+		// A bare non-type PARAM of the spec (`_Idx` in `_Tuple_impl<_Idx,
+		// _Head, _Tail...>`) is DEDUCED from the concrete value, not matched
+		// against a fixed literal. Record the concrete arg's tokens so the
+		// body specializes (`_Idx` -> `0`) and the "all deduced" check below
+		// is satisfied. A concrete-valued non-type pattern (`enable_if<true,
+		// T>`) names no param and falls through to the literal matcher.
+		std::string ptrim = trim_spelling(pattern_spelling);
+		int nt_param = -1;
+		for ( size_t k = 0; k < spec.typeparams.size(); ++k )
+		    if ( spec.typeparams[k] == ptrim
+		      && k < spec.typeparam_is_type.size()
+		      && !spec.typeparam_is_type[k] )
+		    { nt_param = (int)k; break; }
+		if ( nt_param >= 0 )
+		{
+		    std::vector<TokenBase *> toks;
+		    for ( TokenBase *t : arg_tokens_by_slot[i] )
+			if ( t )
+			    toks.push_back(t->clone());
+		    nontype_ded[ptrim] = toks;
+		    score += 10;   // deduced param: less specialized than an exact value (20)
+		    continue;
+		}
 		if ( !non_type_partial_spec_arg_matches(*this,
 			    spec.spec_pattern[i], arg_tokens_by_slot[i],
 			    pattern_spelling, arg_spellings[i], score) )
@@ -15716,7 +15873,8 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	for ( size_t k = 0; k < spec.typeparams.size(); ++k )
 	    if ( !ded.count(spec.typeparams[k])
 	      && !tmpl_ded.count(spec.typeparams[k])
-	      && !pack_ded.count(spec.typeparams[k]) ) { all = false; break; }
+	      && !pack_ded.count(spec.typeparams[k])
+	      && !nontype_ded.count(spec.typeparams[k]) ) { all = false; break; }
 	if ( !all )
 	    continue;
 	// C++20: a CONSTRAINED partial spec applies only if its requires-clause is
@@ -15770,6 +15928,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	    best_ded = ded;
 	    best_tmpl = tmpl_ded;
 	    best_pack = pack_ded;
+	    best_nontype = nontype_ded;
 	}
     }
     if ( !best )
@@ -15780,6 +15939,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	out_subst[d->first] = new TokenDataType(d->second->name.c_str(), *d->second);
     out_template_subst = best_tmpl;
     out_pack_subst = best_pack;
+    out_nontype_subst = best_nontype;
     return best;
 }
 
@@ -33900,6 +34060,18 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    else
 	    {
 		DBG(std::cerr << "parseFunction() params: failed to obtain basetype" << std::endl);
+#ifdef MADC_DEBUG_TUPLE
+		if ( getenv("MADC_DEBUG_TUPLE") )
+		{
+		    fprintf(stderr, "[L5] nt type=%d id=%d spell='%s' file=%s:%d  cur_func=%s  next3=",
+			    (int)nt->type(), (int)nt->id(),
+			    is_contextual_identifier_token(nt) ? contextual_identifier_name(nt).c_str() : "?",
+			    nt->file ? nt->file : "?", (int)nt->line, cur_func_name.c_str());
+		    for ( int z = 0; z < 4 && z < (int)tokens.size(); ++z )
+			fprintf(stderr, "[%s]", template_token_fragment(tokens[z]).c_str());
+		    fprintf(stderr, "\n");
+		}
+#endif
 		Throw(nt) << "Failed to find type when parsing function parameters" << flush;
 	    }
 	}

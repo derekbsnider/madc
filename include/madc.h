@@ -1268,7 +1268,8 @@ public:
 	    const std::vector<bool> &param_is_type,
 	    std::map<std::string, TokenDataType *> &out_subst,
 	    std::map<std::string, std::string> &out_template_subst,
-	    std::map<std::string, std::vector<std::string> > &out_pack_subst);
+	    std::map<std::string, std::vector<std::string> > &out_pack_subst,
+	    std::map<std::string, std::vector<TokenBase *> > &out_nontype_subst);
     // Unify a nested template-id pattern arg (e.g. `allocator<_Tp>`) against a
     // concrete type spelling (e.g. `std::allocator<char>`), deducing the spec's
     // type params. Fallback used by match_partial_specialization when the flat
