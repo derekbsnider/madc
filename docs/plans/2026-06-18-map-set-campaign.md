@@ -1804,3 +1804,38 @@ needed for `m[1]=2` codegen). NEXT: confirm the link, then fix the base-clause
 instantiation). Reducer tmp/mapii.mad --std=c++20 --no-embedded-headers; probe
 the real token file via throwbuf::sync (the printer shows the SOURCE file, not the
 token's origin header).
+
+### Update 35 — CORRECTION + precise localization of the last 2 errors: alias-template instantiation, NOT base-clause.
+
+A backtrace probe in `throwbuf::sync` (filtering OUT muted constraint-eval frames
+— `constraint_expression_well_formed` / `evaluate_requires_expression_constant`
+mute cerr + catch, so they don't leak) pinned the TWO non-muted `undeclared
+identifier 'std'` errors to:
+
+`TokenUSING::parse → resolve_declared_type_token → instantiate_template_id →
+instantiate_template_alias_use → resolve_declared_type_token → parseExpression →
+parseExpr_operatorArm` — where bare `std` fails to resolve.
+
+So the real blocker is an **alias-template instantiation** (`using` alias in the
+C++20 `<iterator>` machinery, parsed at `#include <iterator>` — a clean
+deterministic reducer `tmp/itonly.mad`, NOT instantiation-specific): while
+resolving the alias's TARGET type, `resolve_declared_type_token` invokes
+`parseExpression`, whose operator arm sees `std` (of a `std::X` in the target) as
+a bare operand and throws "undeclared identifier 'std'". NOT muted (in_constraint=0)
+→ prints + leaves an error node → the 2 c2mir check errors. (Update 34's
+"reverse_iterator base-clause" guess was the misattributed token location
+stl_iterator.h:141:69, corrected here by the backtrace.)
+
+CONFIRMED: the 2 c2mir check errors ARE these 2 `std` errors (the only ERRORS;
+everything else from c2mir is a tolerated warning). So fixing `std::` resolution
+in the alias-template target parse should let `map<int,int>; m[1]=2;` compile.
+
+NEXT: in `instantiate_template_alias_use` (parser.cpp:3764) the alias TARGET is
+resolved via `resolve_declared_type_token`→`parseExpression` in an isolated token
+stream; `std` (the top-level namespace) is not recognized there — likely the
+namespace-scope (`std::`) handling in `parseExpr_operatorArm` isn't engaging in
+that context (it treats `std` as a value identifier before consuming the `::`).
+Probe: re-add the cerr-muting-aware backtrace in throwbuf::sync (lexer.cpp:5407)
++ `#include <execinfo.h>`; build with `CXXFLAGS="-std=c++11 -Wall -g -O0"` for
+symbols; gate on `getenv("MADC_DBG_STD")`. Reducer `tmp/itonly.mad` (just
+`#include <iterator>`), `--std=c++20 --no-embedded-headers`.
