@@ -12743,6 +12743,22 @@ node_t CirBuilder::translate_module(Program *prog)
 				      node4(N_FUNC_DEF, iret, idecl, list(), ibody));
 	}
 
+	// Pass 1.97: struct definitions for classes instantiated LATE — during the
+	// lazy-body reachability fixpoint (Pass 0.7x / 1.9). A deferred member body
+	// re-parsed there (map::operator[], _M_emplace_hint_unique) can instantiate
+	// NEW class templates (std::tuple<const int&> -> _Tuple_impl<...> ->
+	// _Head_base<...>) that did NOT exist at Pass 0.5's struct sweep (12074), so
+	// their definitions were never emitted and a by-value local of one is an
+	// "incomplete struct". Sweep struct_map once more, emitting any class not yet
+	// emitted (deps-first, deduped via the same sets). Appended to top_list BEFORE
+	// the function bodies below, so the complete type precedes its use.
+	for (auto &kv : prog->struct_map) {
+		DataDefCLASS *cdd = as_user_class(kv.second);
+		if (!cdd) continue;
+		emit_class_struct_with_deps(cdd, top_list, emitted_structs,
+					    emitted_classes, emitting_classes);
+	}
+
 	// Pass 2: Function definitions (translated above).
 	for (node_t fd : func_def_nodes)
 		append(top_list, fd);
