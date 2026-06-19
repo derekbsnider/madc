@@ -7196,7 +7196,12 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 	else if (DataDefCLASS *vc = as_class_instance(idx_pt))
 		append(args, object_arg_value(index, vc));
 	else if (refp)
-		append(args, node1(N_ADDR, translate_expr(index), index));
+		// A scalar reference parameter (`operator[](const key_type& k)`):
+		// an lvalue index folds to `&index`, but a prvalue index (a literal
+		// `m[1]`, an arithmetic result) is non-addressable — `&1` is ill-formed.
+		// ref_param_arg_addr materializes a temp for those, exactly as every
+		// other reference-argument site does, instead of taking `&<literal>`.
+		append(args, ref_param_arg_addr(index));
 	else
 		append(args, translate_expr(index));
 
