@@ -27772,6 +27772,22 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	pgm.nextToken(); // consume ')'
     }
 
+    // A member-template constructor (e.g. std::pair's piecewise ctor
+    // `pair(piecewise_construct_t, tuple<_Args1...>, tuple<_Args2...>)`, reached
+    // via `::new(loc) _Tp(forward(args)...)` inside std::construct_at) is
+    // registered declaration-only; deduce + instantiate the concrete ctor for
+    // THESE argument types so select_ctor_overload can bind it instead of falling
+    // back to the copy ctor. Mirrors the variable-decl / functional-cast sites.
+    if ( alloc_class )
+    {
+#ifdef MADC_DEBUG_CTORTMPL
+	if ( getenv("MADC_DEBUG_CTORTMPL") )
+	    fprintf(stderr, "[ctortmpl] TokenNEW alloc_class=%s nargs=%zu\n",
+		alloc_class->name.c_str(), ctor_args.size());
+#endif
+	pgm.instantiate_member_ctor_template_for_construction(alloc_class, ctor_args);
+    }
+
     return this;
 }
 
@@ -31720,6 +31736,12 @@ void Program::instantiate_member_ctor_template_for_construction(
 {
     if ( !cdd )
 	return;
+#ifdef MADC_DEBUG_CTORTMPL
+    bool dbg_ct = getenv("MADC_DEBUG_CTORTMPL") && cdd->name.find("pair") != std::string::npos;
+    if ( dbg_ct ) fprintf(stderr, "[ctortmpl] ENTER cdd=%s nargs=%zu ext=%d extinst=%d ctors=%zu\n",
+	cdd->name.c_str(), ctor_args.size(), (int)cdd->is_externally_defined(),
+	(int)cdd->is_extern_template_instantiated, cdd->ctors.size());
+#endif
     // A libstdc++-EXPORTED class binds mangled-direct; only a madc-LOCAL
     // monomorphized class needs its retained ctor body instantiated here.
     if ( cdd->is_externally_defined() || cdd->is_extern_template_instantiated )
@@ -31741,6 +31763,9 @@ void Program::instantiate_member_ctor_template_for_construction(
 	    break;
 	}
     }
+#ifdef MADC_DEBUG_CTORTMPL
+    if ( dbg_ct ) fprintf(stderr, "[ctortmpl] placeholder=%p fd=%p\n", (void*)placeholder, (void*)fd);
+#endif
     if ( !fd || !placeholder )
 	return;
 
@@ -32273,6 +32298,15 @@ static void register_skipped_class_template_function(
 		    tokens[i] ? tokens[i]->clone() : NULL);
 	}
     }
+#ifdef MADC_DEBUG_CTORTMPL
+    if ( getenv("MADC_DEBUG_CTORTMPL") && owner->name.find("pair") != std::string::npos )
+    {
+	bool hb = false;
+	for ( TokenBase *t : tokens ) if ( t && t->id() == TokenID::tkOpBrc ) { hb = true; break; }
+	fprintf(stderr, "[ctortmpl] REGISTER owner=%s name=%s ctor_src=%s has_body=%d tparams=%zu\n",
+	    owner->name.c_str(), name.c_str(), ctor_source_name.c_str(), (int)hb, typeparams.size());
+    }
+#endif
     Method *md = static_cast<Method *>(var->data);
     if ( md && !is_static )
 	md->owner_class = owner;
@@ -32289,8 +32323,14 @@ static void register_skipped_class_template_function(
     // The varargs declaration-only placeholder is harmless in select_ctor_overload
     // — its tiny arity (placeholder params = [ret, this, varargs-marker]) fails the
     // `args > pn` arity gate; the concrete per-arg instantiation is what binds.
-    if ( fd && fd->is_member_template && !ctor_source_name.empty()
-      && name == ctor_source_name )
+    // The declarator name matches the constructor either by its ORIGINAL source
+    // spelling (`pair`) or — after a class-template instantiation substitutes the
+    // injected-class-name in the body — by the owner's FULL mangled name
+    // (`pair_const_int32_t_int32_t`). Accept both so an instantiated class's
+    // member-template ctor (e.g. std::pair's piecewise ctor) is still discovered.
+    if ( fd && fd->is_member_template
+      && ((!ctor_source_name.empty() && name == ctor_source_name)
+	  || name == owner->name) )
     {
 	if ( !vector_contains_variable(owner->ctors, var) )
 	    owner->ctors.push_back(var);
