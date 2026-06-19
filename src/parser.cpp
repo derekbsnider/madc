@@ -3039,9 +3039,14 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 	args.push_back(spelling);
     }
 
+    // Key an empty variadic instantiation (`tuple<>`) under the SAME bare name the
+    // real-instantiation path (instantiate_template_use, via
+    // template_instantiation_key_head) uses — NOT a `__empty_pack`-suffixed variant.
+    // A distinct suffix split one logical type `tuple<>` into two structs (`tuple`
+    // vs `tuple__empty_pack`), so the pair piecewise ctor's deduced empty value-tuple
+    // param did not match the call's `tuple<>` argument — map<int,int> sub-wall B's
+    // third identity mismatch. With the same key, datatype_map.find reuses one type.
     std::string mangled = tname;
-    if ( has_pack && args.empty() )
-	mangled += "__empty_pack";
     std::string canon;
     if ( td.owner_class )
     {
@@ -15081,6 +15086,7 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
 	}
 	while ( !core.empty() && core.back() == ' ' ) core.pop_back();
 	static const char *cv[] = { "const ", "volatile " };
+	bool had_const = false;
 	for ( bool peeled = true; peeled; )
 	{
 	    peeled = false;
@@ -15088,13 +15094,30 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
 	    {
 		size_t n = std::string(cv[c]).size();
 		if ( core.compare(0, n, cv[c]) == 0 )
-		{ core = trim_spelling(core.substr(n)); peeled = true; }
+		{
+		    if ( c == 0 ) had_const = true;
+		    core = trim_spelling(core.substr(n)); peeled = true;
+		}
 	    }
 	}
+#ifndef FEATURE_CONST_TYPES
+	(void)had_const;
+#endif
 	if ( !suffixes.empty() && !core.empty() && core != trim_spelling(spelling) )
 	    if ( DataDef *base = resolve_arg_spelling_datadef(pgm, core) )
 	    {
 		DataDef *dd = base;
+#ifdef FEATURE_CONST_TYPES
+		// Re-apply a peeled leading `const` onto the (innermost) referent so
+		// `const int&` deduces to ref-to-const-int, not bare int&. Preserving
+		// the const-qualified type identity through template deduction lets a
+		// re-instantiated `tuple<_Args1...>` name itself `tuple<const int&>` and
+		// match the call argument's type — the gating fix for map<int,int>'s
+		// pair-piecewise-ctor signature mismatch (sub-wall B). See
+		// docs/plans/2026-06-19-const-qualified-types.md (Phase 2/3).
+		if ( had_const )
+		    dd = pgm.getConstType(dd);
+#endif
 		// Apply innermost-first (reverse of the outermost-first peel order).
 		for ( size_t i = suffixes.size(); i-- > 0; )
 		    dd = suffixes[i] == '*'
