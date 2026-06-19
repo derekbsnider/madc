@@ -1738,3 +1738,42 @@ DESIGN (two parts, both needed):
   hook. Reducer: `tmp/mapii.mad` (`map<int,int>; m[1]=2;`), `--std=c++20
   --no-embedded-headers`. Probe: rebuild cir_builder.o with
   `OPTIONAL_CPPFLAGS=-DMADC_DEBUG_CTORINIT`.
+
+### Update 33 — variadic member-template CTOR instantiation LANDED (99f089b); map clears CIR, now at c2mir.
+
+The last CIR ctor blocker (Update 32) is fixed. `_Auto_node`'s variadic
+member-template ctor (`template<class... A> _Auto_node(_Rb_tree&, A&&...)`,
+stl_tree.h:1635, constructed at :2434 in `_M_emplace_hint_unique`) is now
+instantiated on demand.
+
+**Two parts (one commit, 99f089b):**
+1. `register_skipped_class_template_function` now also pushes the placeholder to
+   `owner->ctors` (+ `has_user_ctor`) when the declarator names the ctor — a
+   member-template ctor that USES its pack lands here (the defaulted-ctor path
+   bails on pack-using declarators). The varargs declaration-only placeholder is
+   harmless in `select_ctor_overload` (its tiny arity fails the `args > pn` gate).
+2. New `Program::instantiate_member_ctor_template_for_construction(cdd, ctor_args)`
+   — deduces the ctor's template params from the construction args and
+   instantiates the retained body under a CONCRETE ctor symbol
+   (`ClassName__ClassName__oN`, so the mem-init list parses + it is recognized as
+   a ctor), then registers that instantiation as a real ctor. Reuses the shared
+   free-fn-template machinery via a synthetic `TokenCallFunc` carrying the args; a
+   `void` return is synthesized before the declarator (ctors have none, but
+   `extract_free_signature` requires one — that was the first try_instantiate=0).
+   Memoized per (class, arg types) → also breaks the construct→forward→construct
+   recursion. Wired into all 3 construction parse paths (the local-var `TokenDecl`
+   form + both `TokenObjTemp` functional-construction forms).
+
+`map<int,int>; m[1]=2;` now passes the madc CIR gate (0 untranslatable, was 1)
+and reaches **c2mir**. fulltest 656/5/0/18 (zero regr); torture failset 51 unchanged.
+
+**NEXT FRONTIER — c2mir check errors (6).** The dominant one: `undeclared
+identifier __op_expr` (×2, stl_tree.h:427:18). `__op_expr` is the synthetic
+rvalue-member-access receiver (parser.cpp:16563 / 12605) for member access on an
+operator / functional-construction temp; its `parent_expr` materialization is not
+reaching the c2mir tree in `_M_get_insert_*_pos`'s pair-returning member access
+(NOT the _Auto_node ctor). Also: `incompatible argument type for pointer type
+parameter` (many, the pair<base*,base*> construction) and an
+`incompatible return-expr type` warning (node_handle.h:64). Plus the pre-existing
+recovered parse diagnostics (791/817 Expecting-integer-constant-expression, 141
+undeclared-std). Reducer `tmp/mapii.mad --std=c++20 --no-embedded-headers`.
