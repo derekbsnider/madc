@@ -1680,3 +1680,61 @@ on NO-MATCH) pinned exactly two issues for `map<int,int>; m[1]=2;`:
 
 Both are needed for map/set. Start with #2 (more contained) using reducer
 `tmp/mapii.mad`; #1 (implicit copy ctor) is the broader one.
+
+### Update 32 — CIR ctor frontier: reference-unwrap FIXED (6ffabf2); 5→1 ctor errors. Last blocker = variadic member-template ctor.
+
+The "two root causes" of Update 31-B were really ONE defect: the constructor
+ARGUMENT side unwrapped references inconsistently with the parameter side
+(`score_arg_to_param` unwraps a `T&` param to its referent T, line 4824).
+
+**`6ffabf2` — ctor-arg reference unwrap is exactly one level.** Two spots:
+- `ref_returning_call_type` (cir_builder.cpp:1069) DOUBLE-unwrapped: `cfd->
+  return_value_type()` already returns the referent, then an unconditional
+  `rp->base_type` strip removed a second level — a `base*&`-returning call
+  (`_M_rightmost`) resolved to `base` instead of `base*`. Gated the strip on
+  `r->is_reference()` (preserve a pointer referent).
+- `ctor_arg_datadef` TokenVar branch (cir_builder.cpp:4978) unwrapped only
+  CLASS references (via `class_behind`, which digs through a pointer to the
+  class), leaving a scalar `const int&` arg as `int*`. Replaced with a single
+  reference-level unwrap (`DataDefREF::base_type`) for ANY referent.
+
+Probed live on the real `<map>` parse with `-DMADC_DEBUG_CTORINIT`. Cleared
+4 of 5: `tuple<const int&>(const int&)` and ALL THREE `pair<base*,base*>`
+shapes (the `int` first-arg was a null-pointer literal, binds via the
+zero-literal rule). fulltest 656/5/0/18 (zero regression); gcc.c-torture
+failset 51 names UNCHANGED (C has no class ctors — this path is C++-only).
+
+**LAST blocker (1/5) — `_Auto_node` variadic member-template ctor never
+instantiated.** stl_tree.h:1635 `template<typename... _Args> _Auto_node(
+_Rb_tree& __t, _Args&&... __args)`, constructed at stl_tree.h:2434 inside
+`_M_emplace_hint_unique` with `_Args = {piecewise_construct_t,
+tuple<const int&>, tuple<>}`. The probe shows `_Auto_node` has nctors=1 (only
+the implicit copy/move ctor `o2(_Auto_node*)`); the variadic ctor is absent
+from `cdd->ctors`. ROOT (parser): a member template ctor whose params USE the
+template pack is NOT handled by `try_parse_defaulted_member_template_constructor`
+(parser.cpp:23538 bails when the declarator uses any template-param name — it
+only takes the degenerate "params are concrete" case). It instead falls to
+`register_skipped_class_template_function` (parser.cpp:31666), which registers
+it as a member-template METHOD named `_Auto_node` (is_member_template, retained
+body) in `owner->methods`/`method_map` — but **never pushes it to
+`owner->ctors`**, so `select_ctor_overload` (which iterates `cdd->ctors`) can't
+see it.
+
+DESIGN (two parts, both needed):
+- **Part A (parse, contained):** in `register_skipped_class_template_function`,
+  when the declarator name equals the class's constructor name, also push the
+  var to `owner->ctors` and set `has_user_ctor`. Makes the variadic ctor
+  discoverable as a ctor.
+- **Part B (construction-site instantiation):** an object declaration
+  `_Auto_node __z(args…)` is NOT a `TokenCallFunc`, so the existing
+  `instantiate_member_fn_template_for_call` hook (call-only) never fires.
+  Need to: at the construction site (parse time — the enclosing
+  `_M_emplace_hint_unique` deferred body is instantiated with concrete `_Args`,
+  so the construction args' types ARE known), detect that the only viable ctor
+  is a variadic member-template ctor, deduce the pack from the construction
+  args, instantiate a concrete ctor (mirror `instantiate_member_fn_template_for_call`,
+  which already honors `template_param_is_pack`), add it to `ctors`, and select
+  it. Find the object-decl ctor-construction parse path first; that is Part B's
+  hook. Reducer: `tmp/mapii.mad` (`map<int,int>; m[1]=2;`), `--std=c++20
+  --no-embedded-headers`. Probe: rebuild cir_builder.o with
+  `OPTIONAL_CPPFLAGS=-DMADC_DEBUG_CTORINIT`.
