@@ -55,11 +55,11 @@ the *pointee/referent* the way C++ means it — the parser decides which by wher
 
 ## Phases (each ends GREEN: `make -C src fulltest` == 656/6, then commit)
 
-- **Phase 1 — FOUNDATION (additive, no behavior change).** Add `DataDefCONST`
+- **Phase 1 — FOUNDATION (additive, no behavior change). ✅ DONE @ d100143**
+  (fulltest 656/6, pushed on wip/tuple-instantiation-claude). Added `DataDefCONST`
   (datadef.h), `DataDef::is_const()` virtual (default false), `Program::getConstType`
-  + `const_type_cache`. Nothing constructs a `DataDefCONST` yet → identical behavior,
-  fulltest unchanged. Commit. **[this is the only phase budgeted for the current
-  session; 2–5 are a multi-session campaign.]**
+  + `const_type_cache` (parser.cpp). Nothing constructs a `DataDefCONST` yet →
+  identical behavior. DO NOT redo this phase. Resume at Phase 2.
 
 - **Phase 2 — PRODUCE at the const-on-a-type sites.** Where the parser consumes a
   leading/trailing `const` on a TYPE (the 56 `tkCONST` sites in parser.cpp — audit
