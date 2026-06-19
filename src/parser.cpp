@@ -23247,6 +23247,20 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
 	    break;
 	Throw(nt) << "Expecting ',' or function body after constructor initializer" << flush;
     }
+    // A delegating / base-class initializer `Name(args)` constructs an object of
+    // type Name. If Name is a class with a member-template constructor — e.g.
+    // std::pair's piecewise ctor delegating to its private INDEXED ctor
+    // `: pair(__first, __second, _Build_index_tuple<...>::__type(), ...)` — that
+    // ctor must be INSTANTIATED now, at parse time, exactly like the placement-new
+    // construction path (TokenNEW). Without it the delegating call resolves to no
+    // ctor at CIR time ("no matching constructor"). A member initializer's name is
+    // not a class, so resolve_named_datadef yields a non-class and it is skipped;
+    // instantiate_member_ctor_template_for_construction is idempotent and a fast
+    // no-op for a class with no member-template ctor (map<int,int> W2).
+    for ( const FuncDef::CtorInitializer &ci : func->ctor_initializers )
+	if ( DataDef *dd = resolve_named_datadef(ci.name) )
+	    if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd) )
+		instantiate_member_ctor_template_for_construction(cls, ci.args);
     return nt;
 }
 
