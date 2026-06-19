@@ -30170,7 +30170,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
 	const std::string &pack_param, bool pack_empty, Variable **var_out,
-	const std::vector<DataDef *> &pack_elems = std::vector<DataDef *>());
+	const std::vector<DataDef *> &pack_elems = std::vector<DataDef *>(),
+	const std::map<std::string, std::vector<DataDef *> > &tid_packs
+	    = std::map<std::string, std::vector<DataDef *> >());
 
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc)
@@ -30179,16 +30181,13 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     // Type parameters only; one parameter pack allowed in the LAST position
     // (bound to exactly one element — `__stoa`'s `_Base...` shape).
     std::string pack_param;
+    std::vector<std::string> pack_tps;	// every pack typeparam (>1 = piecewise-ctor shape)
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
     {
 	if ( i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i] )
 	    return false;
 	if ( i < ft.typeparam_is_pack.size() && ft.typeparam_is_pack[i] )
-	{
-	    if ( i + 1 != ft.typeparams.size() )
-		return false;
-	    pack_param = ft.typeparams[i];
-	}
+	    pack_tps.push_back(ft.typeparams[i]);
     }
     std::string name = skipped_template_function_declarator_name(ft.decl);
     if ( name.empty() )
@@ -30208,6 +30207,23 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     {
 	DBG_PACK("try_inst %s: extract_free_signature failed\n", key.c_str());
 	return false;
+    }
+    // Classify each pack typeparam now that the parameter spellings are known.
+    // A TRAILING DIRECT param pack (`_Args&&... __args` — the last param spelling
+    // IS the pack) drives the legacy pack_elems trailing-absorption. A pack that
+    // appears only INSIDE a template-id parameter (`tuple<_Args1...>`) is a
+    // TEMPLATE-ID pack, deduced structurally via unify_nested_spec_pattern_arg into
+    // tid_packs (name -> element types). std::pair's piecewise ctor has TWO
+    // template-id packs (_Args1/_Args2) and NO trailing direct pack — the shape the
+    // old "pack must be last typeparam" gate rejected.
+    std::map<std::string, std::vector<DataDef *> > tid_packs;
+    for ( size_t p = 0; p < pack_tps.size(); ++p )
+    {
+	if ( pack_param.empty() && !ov.param_spellings.empty()
+	  && fn_template_param_is_pack(ov.param_spellings.back(), pack_tps[p]) )
+	    pack_param = pack_tps[p];	// trailing direct pack (legacy path)
+	else
+	    tid_packs[pack_tps[p]];	// template-id pack; seed empty (may stay empty, e.g. tuple<>)
     }
     // Without a trailing pack, arity must not exceed the parameter count. WITH a
     // trailing pack (`_Args&&... __args`), the pack absorbs every argument past the
@@ -30345,11 +30361,52 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		    : (arg_dd ? cpp_spelling_for_mangle(arg_dd, false)
 			      : std::string());
 		int sc = 0;
+		std::map<std::string, std::vector<std::string> > outpk;
 		bool uok = !concrete.empty()
 		  && pgm.unify_nested_spec_pattern_arg(core, ft.typeparams,
-						       concrete, binding, sc);
+						       concrete, binding, sc,
+						       NULL, &outpk);
+#ifdef MADC_DEBUG_CTORTMPL
+		if ( getenv("MADC_DEBUG_CTORTMPL") && !tid_packs.empty() )
+		    fprintf(stderr, "[tidpack] %s param[%zu] core='%s' concrete='%s' uok=%d outpk=%zu\n",
+			key.c_str(), i, core.c_str(), concrete.c_str(), (int)uok, outpk.size());
+#endif
 		if ( uok )
+		{
+		    // Resolve any inner-pack bindings (`tuple<_Args1...>` vs the
+		    // concrete `tuple<const int&>`) into tid_packs element-type lists.
+		    for ( std::map<std::string, std::vector<std::string> >::iterator
+			    pk = outpk.begin(); pk != outpk.end(); ++pk )
+		    {
+			if ( !tid_packs.count(pk->first) )
+			    continue;	// not one of THIS template's packs
+			std::vector<DataDef *> elems;
+			bool resolved = true;
+			for ( size_t e = 0; e < pk->second.size(); ++e )
+			{
+			    // An empty template-arg list (`tuple<>`) splits to a single
+			    // empty-string "arg" — that means the pack is EMPTY (zero
+			    // elements), not one unresolvable element.
+			    std::string es = pk->second[e];
+			    while ( !es.empty() && (es.front() == ' ' || es.back() == ' ') )
+				es = es.front() == ' ' ? es.substr(1) : es.substr(0, es.size() - 1);
+			    if ( es.empty() )
+				continue;
+			    DataDef *ed = resolve_arg_spelling_datadef(pgm, es);
+#ifdef MADC_DEBUG_CTORTMPL
+			    if ( getenv("MADC_DEBUG_CTORTMPL") )
+				fprintf(stderr, "[tidpack]   resolve '%s' -> %s\n",
+				    es.c_str(), ed ? ed->name.c_str() : "(null)");
+#endif
+			    if ( !ed ) { resolved = false; break; }
+			    elems.push_back(ed);
+			}
+			if ( !resolved )
+			    return false;
+			tid_packs[pk->first] = elems;
+		    }
 		    continue;
+		}
 		return false;	// template-id param the argument can't match
 	    }
 	}
@@ -30384,8 +30441,22 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     // saying empty while a trailing argument filled the pack is a mismatch).
     if ( pack_empty && binding.count(pack_param) )
 	return false;
+#ifdef MADC_DEBUG_CTORTMPL
+    if ( getenv("MADC_DEBUG_CTORTMPL") && !tid_packs.empty() )
+    {
+	fprintf(stderr, "[tidpack] %s:", key.c_str());
+	for ( std::map<std::string, std::vector<DataDef *> >::iterator t = tid_packs.begin(); t != tid_packs.end(); ++t )
+	{
+	    fprintf(stderr, " %s={", t->first.c_str());
+	    for ( size_t e = 0; e < t->second.size(); ++e )
+		fprintf(stderr, "%s%s", e ? "," : "", t->second[e] ? t->second[e]->name.c_str() : "?");
+	    fprintf(stderr, "}");
+	}
+	fprintf(stderr, "\n");
+    }
+#endif
     return instantiate_fn_template_binding(pgm, ft, key, binding, pack_param,
-					    pack_empty, NULL, pack_elems);
+					    pack_empty, NULL, pack_elems, tid_packs);
 }
 
 // Resolve a fn-template parameter's DEFAULT token run (`R = T*`,
@@ -30476,8 +30547,18 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
 	const std::string &pack_param, bool pack_empty, Variable **var_out,
-	const std::vector<DataDef *> &pack_elems)
+	const std::vector<DataDef *> &pack_elems,
+	const std::map<std::string, std::vector<DataDef *> > &tid_packs)
 {
+    // Template-id parameter packs (std::pair's piecewise ctor `_Args1`/`_Args2`,
+    // deduced from `tuple<_Args1...>` args) need body expansion (sizeof..., the
+    // _Build_index_tuple/get<I> delegating body) that this single-trailing-pack
+    // path does not yet implement — P4 in plan Update 51. Until then, FAIL CLEANLY
+    // (no malformed instantiation emitted) so the call falls back exactly as
+    // before P3 wired the deduction. P3's value: the deduction now succeeds and is
+    // verifiable; P4 replaces this guard with real expansion.
+    if ( !tid_packs.empty() )
+	return false;
     // Unbound parameters fall back to their template-parameter defaults. The
     // default is a token run: a BASE type (a single token — an already-bound
     // parameter name `_Ret = _TRet`, or a concrete `ttDataType`) optionally
