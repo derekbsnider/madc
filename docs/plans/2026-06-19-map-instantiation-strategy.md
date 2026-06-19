@@ -202,6 +202,39 @@ ORDER TO FIX: A and B are independent and BOTH required (B makes the call select
 indexed ctor (`_Build_index_tuple<...>::__type()` + `get<_Indexes>`) is the
 remaining W2/W3/W4 work inside the (now-attached) body.
 
+#### 2026-06-19 — B's ROOT is structural: madc has no const-qualified type identity.
+
+Mechanism of the call-site fallback CONFIRMED by reasoning + grep: the emitted call
+uses the BARE `ClassName__ClassName` name with 3 args, but the only bare ctor (the
+copy ctor) takes 1 arg — so `select_ctor_overload` (cir_builder.cpp:5029) did NOT
+match it by arity; it REJECTED `__o7` (signature `(tuple<int>, tuple__empty_pack)`
+vs call `(tuple<const int&>, tuple)`) and returned NULL, and the construction fell
+back to emitting the convention name. So **B (signature parity) is the gating fix
+for call-site selection.**
+
+ROOT of B: `grep` of include/madc.h shows madc has `getReferenceType`/`DataDefREF`
+but NO `getConstType`/`DataDefCONST` — `is_const` exists ONLY in the parse-time
+`ParsedParamSig`, not as a DataDef. So `const int` is NOT a distinct type from
+`int` in madc's type system. Tuple instantiations get distinct names
+(`tuple_const_int32_t_` vs `tuple_int32_t_`) only because `const` rides in the
+INSTANTIATION-KEY SPELLING; but `resolve_arg_spelling_datadef` (parser.cpp:15041)
+deliberately PEELS cv-qualifiers (15067-15077) and returns a DataDef that has lost
+the `const`, so when `tuple<_Args1...>` re-instantiates from that DataDef it names
+itself WITHOUT const -> mismatch.
+
+TWO fix options for B (decide next session):
+  (1) NARROW: carry the deduced pack element's full SPELLING (incl. `const`) so the
+      downstream `tuple<_Args1...>` instantiation keys/names with `const int&` and
+      matches the call arg. Localized to the tid-pack deduction + the place that
+      re-instantiates `tuple<_Args1...>`. Lower risk, possibly fragile.
+  (2) STRUCTURAL: add const-qualified type identity to madc (a `DataDefCONST` or a
+      const flag in the type key, mirroring `DataDefREF`). Correct + reusable but a
+      large change touching the type system broadly. This is the same class of work
+      as the first-class-references campaign ([[project_retire_embedded_shims]]).
+The empty-tuple naming split (`tuple__empty_pack` from W1's N=0 path vs `tuple` from
+the value `tuple<>`) is a THIRD identity mismatch in the same signature — unify the
+empty-`tuple<>` instantiation name too.
+
 ### GAPS FOUND during W1 (NOT on map's critical path — do NOT let them block W2–W5)
 
 These surfaced while testing the `make_index_sequence` *wrapper* API. Map does
