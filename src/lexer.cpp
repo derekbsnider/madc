@@ -24,12 +24,30 @@
 #include <queue>
 #include <stack>
 #include <functional>
+#include <chrono>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_pch.h"
+
+// --show-stats: RAII accumulator for time spent loading source into the lex
+// stream (file read / embedded-header copy). Adds its lifetime, in seconds, to
+// the referenced accumulator on scope exit.
+namespace {
+struct ReadTimer
+{
+    double &acc;
+    std::chrono::steady_clock::time_point t0;
+    ReadTimer(double &a) : acc(a), t0(std::chrono::steady_clock::now()) {}
+    ~ReadTimer()
+    {
+	acc += std::chrono::duration<double>(
+	    std::chrono::steady_clock::now() - t0).count();
+    }
+};
+}
 
 // From precompiled_headers.cpp (generated)
 struct PrecompiledHeader { const uint8_t *data; size_t size; };
@@ -746,7 +764,8 @@ void Program::inject_pending_auto_includes()
 	    suppress_auto_include_scan = true;
 	    source = Source();
 	    source.fname(header.c_str());
-	    source.str(*embedded);
+	    { ReadTimer _rt(_read_seconds); source.str(*embedded); }
+	    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
 	    TokenBase *itb;
 	    const char *interned = intern_file(header);
 	    while ( (itb = getRealToken()) )
@@ -982,6 +1001,7 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
 	delete tb;
 	return;
     }
+    ++_tok_produced;	// --show-stats: a real stream token emitted by the lexer
     tokens.push_back(tb);
 }
 
@@ -2665,7 +2685,8 @@ TokenBase *Program::_getToken()
 			    suppress_auto_include_scan = true;
 			    source = Source();
 			    source.fname(incfile.c_str());
-			    source.str(*embedded);
+			    { ReadTimer _rt(_read_seconds); source.str(*embedded); }
+			    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
 			    TokenBase *itb;
 			    const char *_interned1 = intern_file(incfile);
 			    while ( (itb = getRealToken()) )
@@ -2707,7 +2728,13 @@ TokenBase *Program::_getToken()
 			Throw << "Failed to open include file: " << full_path.c_str() << flush;
 		    }
 		    source.fname(full_path.c_str());
-		    source.copybuf(incf.rdbuf());
+		    {
+			ReadTimer _rt(_read_seconds);
+			incf.seekg(0, std::ios::end);	// --show-stats: filesystem header bytes
+			if ( incf.tellg() > 0 ) _input_bytes += (size_t)incf.tellg();
+			incf.seekg(0);
+			source.copybuf(incf.rdbuf());
+		    }
 		    TokenBase *itb;
 		    const char *_interned2 = intern_file(full_path);
 		    while ( (itb = getRealToken()) )
@@ -5498,7 +5525,13 @@ TokenProgram *Program::tokenize(const char *fname)
     _tokenizer_init();
 
     source.fname(fname);
-    source.copybuf(file.rdbuf());
+    {
+	ReadTimer _rt(_read_seconds);
+	file.seekg(0, std::ios::end);	// --show-stats: main source-file bytes
+	if ( file.tellg() > 0 ) _input_bytes += (size_t)file.tellg();
+	file.seekg(0);
+	source.copybuf(file.rdbuf());
+    }
     Throw.source(source);
 
     try
@@ -5565,7 +5598,8 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
     _tokenizer_init();
 
     source.fname(fname);
-    source.str(source_text);
+    { ReadTimer _rt(_read_seconds); source.str(source_text); }
+    _input_bytes += source_text.size();	// --show-stats: load_buffer main-source bytes
     Throw.source(source);
 
     try

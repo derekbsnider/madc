@@ -85,6 +85,11 @@ public:
     int line;
     int column;
     std::streampos pos;
+    // Diagnostic: how many times the parser has CONSUMED this token via
+    // nextToken() (a re-read > 1 means backtracking / pushback re-lexing /
+    // template re-instantiation touched the same token object). Reported in
+    // aggregate by --show-stats; otherwise just one uint per token.
+    uint32_t read_count;
     // Leading trivia (whitespace + comments) preserved before this token, for
     // byte-faithful source reconstruction. Populated only in full-fidelity mode
     // (Program::keep_trivia); empty in lean/batch mode (zero cost there).
@@ -95,8 +100,8 @@ public:
     static const char *_parse_file;
     static int _parse_line;
     static int _parse_column;
-    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; }
-    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; }
+    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
+    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
     virtual ~TokenBase() {}
     virtual TokenBase *clone() { return new TokenBase(_token); }
     virtual void set(int64_t c) { _token = c; }

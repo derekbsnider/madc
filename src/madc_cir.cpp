@@ -22,6 +22,7 @@
 #include <stdarg.h>
 #include <setjmp.h>
 #include <dlfcn.h>
+#include <chrono>
 
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -247,7 +248,12 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 	return NULL;
     }
 
-    if (!cir_compile(ctx, c2m, tree, source_name)) {
+    auto _c2m_t0 = std::chrono::steady_clock::now();	// --show-stats: c2mir compile
+    bool _c2m_ok = cir_compile(ctx, c2m, tree, source_name);
+    if (prog)
+	prog->_c2mir_seconds += std::chrono::duration<double>(
+	    std::chrono::steady_clock::now() - _c2m_t0).count();
+    if (!_c2m_ok) {
 	fprintf(stderr, "%s: cir_compile failed\n", source_name);
 	delete builder;
 	return NULL;
@@ -387,14 +393,18 @@ void *CirJitSession::data_address(const char *emitted_name)
     return NULL;
 }
 
-int CirJitSession::run_main(int argc, char **argv, bool *ok)
+int CirJitSession::run_main(int argc, char **argv, bool *ok, double *out_secs)
 {
     void *code = function_code("main");
     if (ok) *ok = (code != NULL);
     if (!code) return -1;
     // Expose the module to the crash handler for JIT symbolization.
     g_jit_module = mod;
+    auto _ex_t0 = std::chrono::steady_clock::now();	// --show-stats: execution
     int result = ((int (*)(int, char **))code)(argc, argv);
+    if (out_secs)
+	*out_secs = std::chrono::duration<double>(
+	    std::chrono::steady_clock::now() - _ex_t0).count();
     g_jit_module = NULL;
     return result;
 }
@@ -410,7 +420,7 @@ int madc_cir_execute(Program *prog, const char *source_name,
 	return stop ? 0 : -1;
 
     bool ok = false;
-    int result = session.run_main(user_argc, user_argv, &ok);
+    int result = session.run_main(user_argc, user_argv, &ok, &prog->_exec_seconds);
     if (!ok) {
 	fprintf(stderr, "madc_cir_execute: main() not found\n");
 	return -1;

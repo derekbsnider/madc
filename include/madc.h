@@ -1679,6 +1679,26 @@ public:
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
     std::deque<TokenBase *> tokens;	// parsed token queue
     std::deque<TokenBase *> injected_tokens; // synthetic lexer output for lowered directives
+    // --show-stats: token-stream traffic counters (diagnostic only).
+    unsigned long long _tok_produced = 0; // tokens emitted into the stream by the lexer
+    unsigned long long _tok_consumed = 0; // nextToken() advances (incl. re-reads on backtrack)
+    unsigned long long _tok_reread   = 0; // distinct token objects consumed >1x
+    uint32_t           _tok_max_reads = 0; // highest read_count seen on a single token
+    // --show-stats: total source bytes the lexer read — main file + every header
+    // (embedded + filesystem #include) + load_buffer input. Accumulated on the
+    // Program (NOT on Source: each #include uses a throwaway Source that is
+    // discarded on restore, so a per-Source counter would be lost).
+    unsigned long long _input_bytes = 0;
+    size_t input_bytes() const { return (size_t)_input_bytes; }
+    // --show-stats: wall time (seconds) spent loading source into the lex stream
+    // (file I/O via copybuf + embedded-header str()). Lexing time is then the
+    // tokenize() wall time minus this; measured by the caller (madc.cpp).
+    double _read_seconds = 0.0;
+    // --show-stats: c2mir compile time (cir_node tree -> MIR module) and the JIT
+    // execution wall time (the main() call, incl. lazy MIR_gen of called fns).
+    // Set by the CIR backend (madc_cir.cpp); printed by madc.cpp.
+    double _c2mir_seconds = 0.0;
+    double _exec_seconds  = 0.0;
     // User-defined function AST nodes, in source order. Parallel to the
     // ast queue. Populated by parseFunction / parseLambda; consumed by
     // Program::compile in a pre-pass to create funcnodes (labels) before
@@ -2187,6 +2207,11 @@ public:
 	tokens.pop_front();
 	// Update global parse position so newly created tokens inherit it
 	if ( _cur_token ) {
+	    ++_tok_consumed;
+	    if ( ++_cur_token->read_count == 2 )
+		++_tok_reread;
+	    if ( _cur_token->read_count > _tok_max_reads )
+		_tok_max_reads = _cur_token->read_count;
 	    TokenBase::_parse_file   = _cur_token->file;
 	    TokenBase::_parse_line   = _cur_token->line;
 	    TokenBase::_parse_column = _cur_token->column;
