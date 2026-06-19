@@ -3478,6 +3478,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // expansion PATTERN (`const _Elements&...`) whose pack we substituted
     // in place — see the pack_subst handling below. Skipped when reached.
     std::set<size_t> pack_pattern_skip_dots;
+    // Function-parameter names whose pack was EMPTY and elided (`const _Tail&...
+    // __tail` with empty _Tail): a later VALUE pack-expansion `__tail...` in the
+    // ctor body / mem-init (`_Inherited(__tail...)`) must also vanish, else the
+    // elided name is "undeclared". Recorded by the empty-param-pack elision.
+    std::set<std::string> empty_value_pack_names;
     for ( size_t bi = 0; bi < td.body.size(); ++bi )
     {
 	if ( pack_pattern_skip_dots.count(bi) )
@@ -3486,6 +3491,27 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	if ( bt->type() == TokenType::ttIdentifier )
 	{
 	    const std::string &s = ((TokenIdent *)bt)->str;
+	    // VALUE pack-expansion of an elided EMPTY parameter pack: `__tail...`
+	    // in `_Inherited(__tail...)` must vanish (the param `__tail` was elided
+	    // for the empty pack). Drop `__tail` + `...` and balance one separating
+	    // comma (preceding if present, else a following one) so the call's
+	    // argument list stays well-formed (`_Inherited(__tail...)` ->
+	    // `_Inherited()`, `f(a, __tail...)` -> `f(a)`).
+	    if ( empty_value_pack_names.count(s)
+	      && bi + 3 < td.body.size()
+	      && td.body[bi+1] && td.body[bi+1]->id() == TokenID::tkDot
+	      && td.body[bi+2] && td.body[bi+2]->id() == TokenID::tkDot
+	      && td.body[bi+3] && td.body[bi+3]->id() == TokenID::tkDot )
+	    {
+		bool dropped = false;
+		if ( !inj.empty() && inj.back()->id() == TokenID::tkComma )
+		{ delete inj.back(); inj.pop_back(); dropped = true; }
+		bi += 3;   // consume `__tail` (current) + the three dots
+		if ( !dropped && bi + 1 < td.body.size()
+		  && td.body[bi+1] && td.body[bi+1]->id() == TokenID::tkComma )
+		    ++bi;  // consume a following comma instead
+		continue;
+	    }
 	    std::map<std::string, TokenDataType *>::iterator si = subst.find(s);
 	    if ( si != subst.end() ) { inj.push_back(si->second->clone()); continue; }
 	    std::map<std::string, std::vector<TokenBase *> >::iterator nti =
@@ -3529,6 +3555,13 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 			&& td.body[pj+2] && td.body[pj+2]->id() == TokenID::tkDot;
 		    if ( param_pack )
 		    {
+			// Record the elided parameter name (`__tail`, the first
+			// identifier after the `...`) so its VALUE pack-expansion
+			// `__tail...` in the body / mem-init is elided too.
+			if ( pj + 3 < td.body.size() && td.body[pj+3]
+			  && is_contextual_identifier_token(td.body[pj+3]) )
+			    empty_value_pack_names.insert(
+				contextual_identifier_name(td.body[pj+3]));
 			while ( !inj.empty()
 			  && (inj.back()->id() == TokenID::tkCONST
 			   || inj.back()->id() == TokenID::tkVOLATILE) )

@@ -12072,6 +12072,19 @@ node_t CirBuilder::translate_module(Program *prog)
 	// member class's struct to be complete first, so emission walks those
 	// dependencies before appending the owner.
 	for (auto &kv : prog->struct_map) {
+#ifdef MADC_DEBUG_TUPLE
+		if (getenv("MADC_DEBUG_TUPLE")
+		 && (kv.first.find("tuple") != std::string::npos
+		  || kv.first.find("Tuple_impl") != std::string::npos
+		  || kv.first.find("Head_base") != std::string::npos)) {
+			DataDefCLASS *c2 = dynamic_cast<DataDefCLASS *>(kv.second);
+			fprintf(stderr, "[EMIT] key='%s' as_user=%d base=%d raw=%d ref=%d members=%zu size=%ld dep_ph=%d\n",
+				kv.first.c_str(), (int)(as_user_class(kv.second) != NULL),
+				c2 ? (int)c2->basetype() : -1, c2 ? (int)c2->rawtype() : -1,
+				c2 ? (int)c2->reftype() : -1, c2 ? c2->members.size() : (size_t)0,
+				c2 ? (long)c2->size : -1L, c2 ? (int)c2->is_dependent_placeholder : -1);
+		}
+#endif
 		DataDefCLASS *cdd = as_user_class(kv.second);
 		if (!cdd) continue;
 		emit_class_struct_with_deps(cdd, top_list, emitted_structs,
