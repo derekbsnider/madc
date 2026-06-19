@@ -146,12 +146,61 @@ value-construction (W1 handles the TYPE; verify the `()` call), (c) the non-type
 in the indexed ctor body (W4).
 
 TWO observations to verify while fixing:
-- The pair ctor templates REGISTER with `has_body=0` (parser.cpp:32680 debug) —
-  confirm whether the piecewise/indexed ctor BODIES are actually retained; if
-  not, that alone explains ok=0 (no body to instantiate).
+- The pair ctor templates REGISTER with `has_body=0` (parser.cpp:32680 debug =
+  "no `{` in the registered token range"). EXPLAINED: in `<bits/stl_pair.h>` the
+  piecewise + indexed ctors are DECLARED in-class (body-less); their bodies are
+  OUT-OF-LINE member-template definitions
+  (`pair<_T1,_T2>::pair(piecewise_construct_t, tuple<_Args1...> __first,
+  tuple<_Args2...> __second) : pair(__first,__second,
+  _Build_index_tuple<sizeof...(_Args1)>::__type(), ...) { }`). So instantiating
+  from the in-class DECLARATION gives a body-less ctor — the out-of-line body
+  must be matched + attached via `register_outofline_member_instantiations` (the
+  P2 machinery, parser.cpp ~29018). STRONG LEAD: the ok=0 is likely the
+  out-of-line piecewise-ctor body NOT being matched/attached to this
+  `_Args1={int32_t*},_Args2={}` instantiation (cf. the prior "layer 8 out-of-line
+  multi-overload attach" work). Check that path FIRST.
 - Deduction yielded `_Args1={int32_t*}` — the `const` on the `const int&` key was
   DROPPED (`[tidpack] resolve 'const int32_t*' -> int32_t*`). Verify this does not
   break correctness of the stored key type (likely benign repr, but check).
+
+### 2026-06-19 — FIX #1: tid-pack-bound typeparams no longer bail (ok=0 -> ok=1). Two new sub-walls.
+
+ROOT CAUSE of the ok=0 FOUND + FIXED (parser.cpp ~30789, in `instantiate_fn_template_binding`):
+the "unbound parameter" loop skipped only `binding` + `pack_param`, NOT typeparams
+bound via `tid_packs`. The pair piecewise ctor's `_Args1`/`_Args2` are bound as
+template-id packs (in `tidpack_one`/`tidpack_empty_names`), NOT in `binding` — so
+they looked "unbound", had no default, and the whole instantiation returned false.
+FIX: skip a typeparam that is in `tidpack_one` or `tidpack_empty_names` (it IS
+bound; the body loop substitutes it). RESULT: `try_instantiate ok=1`,
+`FNTPL inst ...__o7 ok` — the piecewise ctor body now parses. fulltest 656/6 (zero
+regressions). Committed.
+
+This UNCOVERED the next two sub-walls (map still fails; now 3 c2mir errors). Both
+in the emitted C (`tmp/mapii2.c`), confirmed by gcc -c:
+
+- **SUB-WALL A — the piecewise ctor `__o7` is DECLARED but NEVER DEFINED.** The
+  in-class declaration instantiates (a prototype `void
+  pair..._pair..._o7(pair*, piecewise_construct_t, tuple_int32_t_, tuple__empty_pack);`)
+  but no `{ body }` is emitted — the OUT-OF-LINE piecewise-ctor body is not
+  matched/attached to this instantiation. This is the `register_outofline_member_instantiations`
+  (parser.cpp ~29018) path from earlier "layer 8/11 out-of-line attach" work; it is
+  not firing for `__o7`. FIX HERE NEXT.
+- **SUB-WALL B — const/ref dropped from the key, so the call doesn't select `__o7`.**
+  The call site (`__ns_std_construct_at__o2`) still emits the BARE copy-ctor symbol
+  `pair..._pair...(location, fwd(a0), fwd(a1), fwd(a2))` (4 args -> "too many
+  arguments") instead of `__o7`, because `__o7`'s param is `struct tuple_int32_t_`
+  (`tuple<int>` — const+ref stripped) while the call passes `struct tuple_const_int32_t_`
+  (`tuple<const int&>`). Signature mismatch -> overload resolution falls back to the
+  copy ctor. The strip is in the tid-pack element resolution
+  (parser.cpp ~30594, `resolve_arg_spelling_datadef("const int32_t*") -> int32_t*`
+  drops `const`; the tuple-instantiation naming then also drops the pointer:
+  `tuple<int&>` -> `tuple_int32_t_`). _Args1 must stay `const int&` so `__o7`'s
+  tuple param matches the call's `tuple<const int&>`.
+
+ORDER TO FIX: A and B are independent and BOTH required (B makes the call select
+`__o7`; A gives `__o7` a body). After both, the `__o7` body's delegation to the
+indexed ctor (`_Build_index_tuple<...>::__type()` + `get<_Indexes>`) is the
+remaining W2/W3/W4 work inside the (now-attached) body.
 
 ### GAPS FOUND during W1 (NOT on map's critical path — do NOT let them block W2–W5)
 

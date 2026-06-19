@@ -30789,6 +30789,14 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	if ( ft.typeparams[i] == pack_param && (pack_empty || pack_elems.size() >= 2) )
 	    continue;	// pack: empty (elided) or multi-element (expanded below) —
 			// never a single `binding` entry, so not "unbound"
+	if ( tidpack_one.count(ft.typeparams[i])
+	  || tidpack_empty_names.count(ft.typeparams[i]) )
+	    continue;	// bound as a template-id pack (deduced from a `tuple<_Args...>`
+			// argument — std::pair's piecewise `_Args1`/`_Args2`); it is
+			// NOT in `binding` but IS bound, and the body loop below
+			// substitutes/expands it. Without this skip a tid-pack-bound
+			// typeparam looked "unbound" -> no default -> the whole
+			// instantiation bailed (the pair piecewise ctor: ok=0).
 	if ( i < ft.typeparam_defaults.size()
 	  && !ft.typeparam_defaults[i].empty() )
 	{
