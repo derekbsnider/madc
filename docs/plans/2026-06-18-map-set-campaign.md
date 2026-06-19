@@ -1881,3 +1881,42 @@ stricter and labels the exact incomplete type / bad operand, where c2mir only
 says "incomplete struct or union" at a misleading location. (Also surfaced a
 gcc-strict-only duplicate/conflicting proto for the `_Auto_node` variadic ctor +
 `_M_emplace_hint_unique` that c2mir tolerates — separate cleanup, not gating.)
+
+### Update 37 — remaining map blocker fully root-caused: std::tuple<const int&>'s _Tuple_impl base needs mixed non-type+type-pack partial-spec real-instantiation.
+
+Instrumented `instantiate_template_use` (gate flags + parsed args + post-parse
+class size/members/base; #ifdef MADC_DEBUG_TUPLE). Findings for `map<int,int>;
+m[1]=2` (HEAD ea6ffb9, c2mir at 1 error):
+
+- `std::tuple<const int&>` (emit name `tuple_const_int32_t_`, from
+  `forward_as_tuple(__k)`) IS real-instantiated (pack_real_inst=1, registered,
+  dep_ph=0) — NOT opaque. But it has **size=0, 0 direct members, ONE base
+  `_Tuple_impl_0_int32_t_`**. The size-0 base is the incompleteness.
+- That base is `std::_Tuple_impl<0, const int&>` — a MIXED **non-type**
+  (`size_t _Idx`) + trailing **type-pack** template whose real body lives in a
+  PARTIAL SPECIALIZATION `_Tuple_impl<_Idx, _Head, _Tail...>`. At its
+  instantiation point (resolving tuple's base clause):
+  - `pack_real_inst=0` — `template_pack_real_instantiable` rejects it for the
+    non-type `_Idx` param; it must use the partial-spec path
+    (`try_spec_real_inst = (allow_vri||sticky) && partial_spec_map.count`).
+  - Even forcing sticky ON through tuple's body (broadened
+    `want_sticky=pack_real_inst` probe), `_Tuple_impl` stayed **OPAQUE**: its
+    primary is a body-less forward decl (`body_empty=1`), and the arg loop
+    captured only `<0>` — it **DROPPED the `int32_t*` type-pack element** — so
+    the partial spec never real-instantiated.
+
+So the remaining work is SUBSTANTIAL (a proper feature, not a one-liner), and
+is the same class of variadic-instantiation depth as the vector<T*> wall:
+1. Arg loop must absorb a trailing TYPE pack alongside a leading NON-TYPE arg
+   (`_Tuple_impl<0, const int&>` → _Idx=0, pack={const int&}).
+2. Match + real-instantiate the `_Tuple_impl<_Idx,_Head,_Tail...>` PARTIAL SPEC
+   body for a mixed non-type/type-pack shape.
+3. Recursive base layout: `_Tuple_impl<0,H,T...> : _Tuple_impl<1,T...>,
+   _Head_base<0,H>` — instantiate the chain + compute size.
+4. Likely also make `want_sticky` engage for a DIRECT variadic-template base
+   (currently only dependent-member `…>::` bases), so the base clause of a
+   real-instantiated variadic template propagates real-instantiation.
+
+Each step is regression-prone (the real-inst flags are deliberately narrow) —
+design carefully and run fulltest per step. The `--emit=c11` + `gcc -c` recipe
+(Update 36) localizes the result precisely. Debug recipe preserved in task #4.
