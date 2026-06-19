@@ -28997,9 +28997,18 @@ void Program::register_outofline_member_instantiations(
 	}
 	return false;
     };
+#ifdef MADC_DEBUG_CTORTMPL
+    bool dbg_ool = getenv("MADC_DEBUG_CTORTMPL") && class_name.find("pair") != std::string::npos;
+    if ( dbg_ool ) fprintf(stderr, "[ool] class=%s::%s ndefs=%zu\n",
+	defining_namespace.c_str(), class_name.c_str(), it->second.size());
+#endif
     for ( size_t di = 0; di < it->second.size(); ++di )
     {
 	OutOfLineMemberDef &def = it->second[di];
+#ifdef MADC_DEBUG_CTORTMPL
+	if ( dbg_ool ) fprintf(stderr, "[ool]   def[%zu] member_name=%s is_member_template=%d inner_tparams=%zu\n",
+	    di, def.member_name.c_str(), (int)def.is_member_template, def.inner_typeparams.size());
+#endif
 	// OVERLOAD-AWARE attach: findMethod() returns only ONE overload (via
 	// method_map), so a member with const + non-const overloads (_M_lower_bound)
 	// would attach BOTH out-of-line bodies to that single overload and leave the
@@ -29007,17 +29016,37 @@ void Program::register_outofline_member_instantiations(
 	// def (and that has no body yet); fall back to findMethod for the common
 	// non-overloaded member.
 	bool def_const = def_is_const_member(def.decl);
+	// A CONSTRUCTOR out-of-line def names the class (`pair<T1,T2>::pair`), so
+	// def.member_name is the SOURCE class spelling (== class_name). The in-class
+	// registered member-template ctor's method_display_name is the FULL mangled
+	// name (== ddc->name) after class-template instantiation substituted the
+	// injected-class-name — so it can't match def.member_name by string. Match it
+	// by ctor-ness instead, and disambiguate sibling ctor overloads (pair's
+	// piecewise 2-pack vs the private indexed 4-param ctor) by template-param count.
+	bool def_is_ctor = (def.member_name == class_name);
 	Variable *mvar = NULL;
 	for ( Variable *cand : ddc->methods )
 	{
 	    if ( !cand || !cand->data ) continue;
 	    FuncDef *cfd = dynamic_cast<FuncDef *>(cand->type);
-	    if ( !cfd || cfd->method_display_name != def.member_name ) continue;
-	    if ( cfd->is_const_method != def_const ) continue;
+	    if ( !cfd ) continue;
+	    if ( def_is_ctor )
+	    {
+		if ( !cfd->is_member_template
+		  || cfd->method_display_name != ddc->name
+		  || cfd->template_param_names.size() != def.inner_typeparams.size()
+		  || !cfd->member_template_decl.empty() )
+		    continue;
+	    }
+	    else
+	    {
+		if ( cfd->method_display_name != def.member_name ) continue;
+		if ( cfd->is_const_method != def_const ) continue;
+	    }
 	    if ( deferred_lazy_bodies.count(cand->name) ) continue;
 	    mvar = cand; break;
 	}
-	if ( !mvar )
+	if ( !mvar && !def_is_ctor )
 	    mvar = ddc->findMethod(def.member_name);
 #ifdef MADC_DEBUG_TUPLE
 	if ( getenv("MADC_DEBUG_TUPLE") && def.member_name.find("lower_bound") != std::string::npos )
@@ -31847,6 +31876,9 @@ void Program::instantiate_member_ctor_template_for_construction(
     synth.parameters = ctor_args;
     bool ok = try_instantiate_namespace_fn_template(*this, ft, inst_name, &synth);
     synth.parameters.clear();
+#ifdef MADC_DEBUG_CTORTMPL
+    if ( dbg_ct ) fprintf(stderr, "[ctortmpl] try_instantiate ok=%d inst_name=%s\n", (int)ok, inst_name.c_str());
+#endif
     if ( !ok )
 	return;
 
