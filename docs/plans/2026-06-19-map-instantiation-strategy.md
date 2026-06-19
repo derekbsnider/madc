@@ -118,10 +118,40 @@ errors). Localize: `bin/madc --emit=c11 ... tmp/mapii.mad > tmp/mapii.c` then
 "conflicting types" from an EMIT-only struct-tag forward-decl ORDERING quirk —
 `struct tuple_const_int32_t_` first appears inside a parameter list before its
 file-scope definition; that quirk is NOT the c2mir blocker, only the
-"too many arguments" pair-ctor one is). Next session: trace how a ctor call
-inside an instantiated template body selects+names+instantiates its ctor
-overload (start: the construct_at body emission, the `ClassName__ClassName` ctor
-naming, and `instantiate_member_ctor_template_for_construction`).
+"too many arguments" pair-ctor one is).
+
+#### REFINED (same day, with `MADC_DEBUG_CTORTMPL=1` — supersedes "never instantiated")
+
+`instantiate_member_ctor_template_for_construction` (parser.cpp:32105) IS called
+for the bare `pair_const_int32_t_int32_t` with `nargs=3` (the piecewise call),
+finds the placeholder + ctor FuncDef, and DEDUCTION SUCCEEDS for both packs:
+```
+[ctortmpl] ENTER cdd=pair_const_int32_t_int32_t nargs=3 ... ctors=4
+[tidpack] ...__o7 param[1] core='tuple<_Args1...>' concrete='std::tuple<const int32_t*>' uok=1 outpk=1
+[tidpack] ...__o7 param[2] core='tuple<_Args2...>' concrete='std::tuple<>'           uok=1 outpk=1
+[tidpack] ...__o7: _Args1={int32_t*} _Args2={}
+[ctortmpl] try_instantiate ok=0 inst_name=...__pair..._o7
+```
+So the wall is NOT selection/deduction — it is **`try_instantiate_namespace_fn_template`
+returning ok=0 AFTER successful deduction**, i.e. `instantiate_fn_template_binding`
+fails on the piecewise ctor BODY. That body is exactly W4+W5:
+`: pair(__first, __second, _Build_index_tuple<sizeof...(_Args1)>::__type(),
+_Build_index_tuple<sizeof...(_Args2)>::__type())` delegating to the private
+indexed ctor `first(get<_Indexes1>(t1)...)`. To resume: rebuild with
+`OPTIONAL_CPPFLAGS=-DMADC_DEBUG_CTORTMPL` (and add a localized print/trace inside
+`instantiate_fn_template_binding`) to pin WHICH step of that body fails — the
+candidates are (a) `sizeof...(_Args1/2)`->1/0 count, (b) `_Build_index_tuple<N>::__type()`
+value-construction (W1 handles the TYPE; verify the `()` call), (c) the non-type
+`_Indexes` pack substitution in the delegated indexed ctor (W2), (d) `std::get<0>`
+in the indexed ctor body (W4).
+
+TWO observations to verify while fixing:
+- The pair ctor templates REGISTER with `has_body=0` (parser.cpp:32680 debug) —
+  confirm whether the piecewise/indexed ctor BODIES are actually retained; if
+  not, that alone explains ok=0 (no body to instantiate).
+- Deduction yielded `_Args1={int32_t*}` — the `const` on the `const int&` key was
+  DROPPED (`[tidpack] resolve 'const int32_t*' -> int32_t*`). Verify this does not
+  break correctness of the stored key type (likely benign repr, but check).
 
 ### GAPS FOUND during W1 (NOT on map's critical path — do NOT let them block W2–W5)
 
