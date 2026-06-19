@@ -1957,3 +1957,63 @@ function. (NB: a throwaway probe's arg-print bug — iterating `type_args.size()
 which excludes non-type args — briefly suggested the arg loop dropped the pack;
 the mangled name `_Tuple_impl_0_int32_t_` proved both args ARE captured. Index
 `arg_spellings.size()` when printing.)
+
+### Update 39 — tuple<const int&> instantiation: full path mapped (4 layers), but REVERTED (regressed testtuple.mad). Roadmap for next session.
+
+Implemented and tested the variadic/partial-spec instantiation needed for
+`std::_Tuple_impl<0, const int&>` (tuple<const int&>'s base). It DROVE map's
+c2mir errors to 0 (the `incomplete struct` disappeared) and the frontier moved
+4 layers deep into the recursive hierarchy — but it **regressed
+testtuple.mad** (fulltest 655/6 vs baseline 656/5), so it was **reverted**
+(HEAD back at the clean committed state; ea6ffb9's lvalue fix retained). The
+changes are correct-DIRECTION but not correct-as-is. Precise roadmap:
+
+The recursion is `tuple<const int&>` → base `_Tuple_impl<0, const int&>` →
+bases `_Tuple_impl<1>` (empty tail) + `_Head_base<0, const int&>` (stores the
+element). Four fixes, each unblocking the next layer (ALL needed together):
+
+1. **Non-type partial-spec param DEDUCTION** — `_Tuple_impl`'s real body is the
+   partial spec `_Tuple_impl<_Idx, _Head, _Tail...>`;
+   `non_type_partial_spec_arg_matches` (parser.cpp:15073) only matched CONCRETE
+   non-type values, never DEDUCED a non-type param (`_Idx`). Fix: in
+   `match_partial_specialization`, when a non-type slot's pattern is a bare
+   non-type spec typeparam, record the concrete arg tokens into a new
+   `nontype_ded` map; add it to the "all typeparams deduced" check; thread a new
+   out-param `out_nontype_subst` (also update the header decl + the single call
+   site ~3311) and apply it into `token_subst` in the caller (~3374) so the body
+   specializes (`_Idx`->`0`, and `_Idx+1` folds).
+2. **want_sticky from the SPEC body** — `want_sticky` (3071) was computed from
+   the body-less PRIMARY (no base clause) → false, so the spec body re-parsed
+   without sticky and its bases went opaque. Fix: recompute `want_sticky` right
+   after the spec swap (`td = *spec`, ~3368) from the spec's body.
+3. **want_sticky for a DIRECT template-id base** — new predicate
+   `template_base_clause_has_template_id(td)` (a `<` after the base-intro `:`
+   before the body `{`); OR it into `want_sticky` so real-instantiation stays on
+   for a variadic/partial-spec base (`_Tuple_impl<...>`), not only
+   dependent-member `…>::` bases.
+4. **Recursive self-template BASE kept distinct** — the self-name rename loop
+   (~3580) collapsed `_Tuple_impl<_Idx+1,_Tail...>` (a DIFFERENT specialization)
+   into the mangled self → "Unknown base class". Fix: precompute
+   `body_brace_index` (first top-level `{`); when the self-name is in the BASE
+   CLAUSE (`bi < body_brace_index`) and followed by `<`, emit the class_name
+   as-is and DON'T swallow the `<...>` — let the clone loop substitute the args
+   so it re-parses as a fresh template-id (instantiates the right base). Body
+   self-template-ids stay collapsed as before.
+
+With all four, `_Head_base_0_int32_t__0` registered as a complete CLASS (size 8,
+1 member — the element), `_Tuple_impl_1` went opaque (correct empty tail base),
+and the remaining error became `Failed to find type when parsing function
+parameters` inside `_Tuple_impl<0,...>`'s body — i.e. LAYER 5: `_Tuple_impl`'s
+MEMBER FUNCTIONS (ctors / `_M_head` / `_M_tail`, signatures involving the pack
+and `_Head`/`_Tail`) don't all resolve. That member-set instantiation is the
+next layer.
+
+WHY REVERTED: regressed testtuple.mad. The likely culprit is fix #4 (changing
+self-template-base handling) or #3 (broadening want_sticky) altering an existing
+tuple instantiation path. NEXT SESSION: re-apply the four fixes, then (a) narrow
+#3/#4 until testtuple.mad passes again (diff the testtuple emission before/after
+each fix to find which one breaks it), (b) tackle layer 5 (member-fn param
+resolution). Debug recipe: #ifdef MADC_DEBUG_TUPLE prints keyed on tname in
+{tuple,_Tuple_impl,_Head_base} at the gate / opaque-gate / body-parse / post-
+parse (size,members,base). The exploratory patch was reverted but this Update
+records every edit precisely enough to re-apply.
