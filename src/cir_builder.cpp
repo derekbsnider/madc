@@ -1279,13 +1279,23 @@ bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
 	return false;
 }
 
-node_t CirBuilder::ref_param_arg_addr(TokenBase *arg)
+node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent)
 {
 	DataDef *vt = arg ? arg->datadef() : NULL;
 	if (vt && expr_is_nonaddressable_rvalue(arg)) {
+		// The reference binds to the PARAMETER's referent type, and the rvalue
+		// is converted to it ([dcl.init.ref]). When the referent differs from the
+		// arg's own type — a `0`/null literal bound to a pointer `_Base_ptr&`
+		// (std::_Rb_tree's `_Res(__j._M_node, 0)`), where the arg is `int` but the
+		// referent is `_Rb_tree_node_base*` — the temp MUST be the referent type,
+		// or `&temp` is a too-narrow `int*` (4 bytes) where the callee reads a
+		// pointer (8 bytes) -> garbage high bits -> runtime corruption. Use the
+		// referent when given and it differs; otherwise the arg's own type.
+		DataDef *tmp_type = (expected_referent && expected_referent != vt)
+				  ? expected_referent : vt;
 		char name[32];
 		snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
-		Variable *tmp = new Variable(name, *vt, 1, NULL, false);
+		Variable *tmp = new Variable(name, *tmp_type, 1, NULL, false);
 		tmp->flags |= vfLOCAL;
 		m_pending_stmts.push_back(var_decl(tmp, arg));
 		node_t assign = node2(N_ASSIGN, id(name, arg), translate_expr(arg), arg);
@@ -1293,6 +1303,17 @@ node_t CirBuilder::ref_param_arg_addr(TokenBase *arg)
 		return node1(N_ADDR, id(name, arg), arg);
 	}
 	return node1(N_ADDR, translate_expr(arg), arg);
+}
+
+// The referent type a reference parameter binds to (for ref_param_arg_addr temp
+// typing): a reference DataDef (DataDefREF IS-A DataDefPTR) carries its referent
+// as base_type. NULL for a non-reference / unknown param.
+static DataDef *ref_param_referent(DataDef *pt)
+{
+	if (!pt || !pt->is_reference())
+		return NULL;
+	DataDefPTR *rp = dynamic_cast<DataDefPTR *>(pt);
+	return rp ? rp->base_type : NULL;
 }
 
 // Translate a call's explicit arguments into `args`, coercing object
@@ -5276,7 +5297,7 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(darg, vc));
 		else if (is_ref_param)
-			append(args, ref_param_arg_addr(darg));
+			append(args, ref_param_arg_addr(darg, ref_param_referent(pt)));
 		else
 			append(args, translate_expr(darg));
 	}
@@ -5384,7 +5405,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
-			append(args, ref_param_arg_addr(arg));
+			append(args, ref_param_arg_addr(arg, ref_param_referent(pt)));
 		else
 			append(args, translate_expr(arg));
 	}
@@ -5402,7 +5423,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(darg, vc));
 		else if (is_ref_param)
-			append(args, ref_param_arg_addr(darg));
+			append(args, ref_param_arg_addr(darg, ref_param_referent(pt)));
 		else
 			append(args, translate_expr(darg));
 	}
