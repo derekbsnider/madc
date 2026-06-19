@@ -2138,3 +2138,79 @@ This mirrors the 2-part plan in claude_status.json's layer-8 note (Part B: the
 object-decl ctor-construction path must deduce the pack + instantiate a concrete
 member-template ctor, like instantiate_member_fn_template_for_call does for calls).
 Deep template-instantiation work, fulltest-gated.
+
+### Update 49 — layer 10 FIXED (map node now allocated) + layer 11 (pair piecewise ctor) ROOT-CAUSED into 4 sub-problems; problem 1 (ctor registration) FIXED.
+
+**Layer 10 FIXED (committed c9adf96).** The `map<int,int>; m[1]=2` runtime
+null-deref was the `_Auto_node` ctor emitted as an EMPTY stub — `_M_node` never
+allocated → null node → null-deref in the real `_Rb_tree_insert_and_rebalance`.
+Root cause: a NAMING mismatch. `instantiate_member_ctor_template_for_construction`
+names the instantiated ctor `<full-class>__<full-class>`, but the ctor-mem-init
+parse gate (parseFunction, tkColon) only recognized a ctor whose tail resolves as
+a TYPE-ALIAS to the owner. A monomorphized class registers only its SHORT
+injected name as an alias, not its full mangled identity `name`, so
+`resolve_class_type_alias` returned NULL → the mem-init list was consumed without
+parsing → empty body. FIX (deepest layer): `resolve_class_type_alias` now
+resolves a class's OWN `name` to itself (the injected-class-name, [class.pre]/2).
+The ctor now emits `_M_node = _M_create_node__mti(...)`; the node is allocated and
+the crash is gone. fulltest 655/6 (exact wip baseline, ZERO regressions).
+
+**Layer 11 — pair piecewise member-template ctor.** With the node allocated,
+`map<int,int>; m[1]=2` now hits a c2mir compile error (`too many arguments` at
+stl_map.h:102). Root cause: `std::construct_at`'s body
+`::new(loc) _Tp(forward(args)...)` calls the pair ctor with 4 args
+(`this, piecewise_construct_t, tuple<const int&>, tuple<>`) but binds the 2-arg
+COPY ctor `pair(const pair&)` — the pair PIECEWISE member-template ctor
+`pair(piecewise_construct_t, tuple<_Args1...>, tuple<_Args2...>)` was never
+instantiated. Decomposed into 4 sub-problems:
+
+- **Problem 1 — ctor not registered (FIXED this session).** On instantiating
+  `pair<const int,int>`, the ctor declarator name is substituted to the full
+  mangled `pair_const_int32_t_int32_t`, but `register_skipped_class_template_function`
+  only added a member-template ctor to `owner->ctors` when
+  `name == ctor_source_name` (`pair`). Mismatch → not registered → construction
+  sites couldn't discover it. FIX (mirror of layer 10): accept
+  `name == owner->name` (the post-substitution injected-class-name) too. Verified:
+  pair's ctors 2 → 4 (both the tparams=2 converting ctor and the tparams=4
+  piecewise ctor now registered).
+
+- **Problem 1b — placement-new construction site (FIXED this session).**
+  `TokenNEW::parse` (which lowers `::new(loc) T(args)` inside construct_at) was the
+  one construction site NOT calling
+  `instantiate_member_ctor_template_for_construction`. Added the call (mirrors the
+  variable-decl + functional-cast sites). Now fires with
+  `alloc_class=pair_const_int32_t_int32_t nargs=3`.
+
+- **Problem 2 — out-of-line body not attached (REMAINS).** The piecewise ctor is
+  DECLARED in-class (stl_pair.h:200-202) but DEFINED out-of-line IN `<tuple>`
+  (tuple:2248-2258), a TWO-LEVEL template head
+  (`template<class _T1,_T2> template<typename... _Args1,_Args2> pair<_T1,_T2>::pair(...)`).
+  So in-class `register_skipped_class_template_function` retains no body
+  (`has_body=0`) → `member_template_decl.empty()` → the placeholder search in
+  `instantiate_member_ctor_template_for_construction` skips it (`placeholder=nil`).
+  The out-of-line attach machinery (`register_outofline_member_instantiations`,
+  parser.cpp ~29080-29112) DOES handle two-level member-template heads, but matches
+  the in-class method by `cfd->method_display_name == def.member_name`; the ctor's
+  display name is the full mangled name while the OOL def's member_name is `pair`
+  — a THIRD name mismatch to resolve (and confirm the ctor's OOL def is captured
+  at all).
+
+- **Problem 3 — two-pack deduction (REMAINS).** `instantiate_member_ctor_template_for_construction`
+  → `try_instantiate_namespace_fn_template` deduces a single trailing pack
+  (`_Args&&...`). The piecewise ctor has TWO packs (`_Args1...`, `_Args2...`)
+  deduced from the TEMPLATE ARGUMENTS of `tuple<_Args1...>` / `tuple<_Args2...>`
+  parameters matched against `tuple<const int&>` / `tuple<>` — nested
+  class-template-id-arg pack deduction, not yet supported.
+
+- **Problem 4 — piecewise body instantiation (REMAINS).** The out-of-line body
+  DELEGATES to a private indexed ctor (tuple:2260-2269)
+  `pair(tuple<_Args1...>&, tuple<_Args2...>&, _Index_tuple<_Indexes1...>, _Index_tuple<_Indexes2...>)`
+  via `_Build_index_tuple<sizeof...(_Args1)>::__type()`, whose body is
+  `first(std::forward<_Args1>(std::get<_Indexes1>(t1))...), second(...)`. Needs the
+  `_Build_index_tuple`/`_Index_tuple`/`std::get<I>` index-sequence machinery to
+  instantiate — a deep chain of its own.
+
+This session committed problem 1 + 1b (correct, additive, root-caused; map still
+fails identically at problem 2 — neutral user-level change, but the structural
+prerequisites are now in place). Problems 2/3/4 are each substantial and remain
+for the next session(s).
