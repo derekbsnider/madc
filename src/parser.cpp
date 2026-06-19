@@ -31077,6 +31077,40 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	TokenBase *bt = ft.decl[i];
 	if ( !bt )
 	    continue;
+	// `sizeof...(pack)` -> the pack's element COUNT (a non-type integer
+	// constant), substituted BEFORE the per-identifier substitution below
+	// (which would otherwise replace the pack name INSIDE the sizeof with its
+	// element type, yielding the un-foldable `sizeof...(const int&)`). The pack
+	// is a template-id pack (`_Args1`/`_Args2` deduced from a `tuple<_Args...>`
+	// argument — std::pair's piecewise ctor: count 0/1) or the regular type
+	// pack (pack_elems / pack_empty). This feeds `_Build_index_tuple<
+	// sizeof...(_Args1)>::__type()` in the piecewise->indexed ctor delegation.
+	if ( is_contextual_identifier_token(bt)
+	  && contextual_identifier_name(bt) == "sizeof"
+	  && i + 6 < ft.decl.size()
+	  && ft.decl[i+1] && ft.decl[i+1]->id() == TokenID::tkDot
+	  && ft.decl[i+2] && ft.decl[i+2]->id() == TokenID::tkDot
+	  && ft.decl[i+3] && ft.decl[i+3]->id() == TokenID::tkDot
+	  && ft.decl[i+4] && ft.decl[i+4]->id() == TokenID::tkOpBrk
+	  && ft.decl[i+5] && ft.decl[i+5]->type() == TokenType::ttIdentifier
+	  && ft.decl[i+6] && ft.decl[i+6]->id() == TokenID::tkClBrk )
+	{
+	    const std::string &pn = ((TokenIdent *)ft.decl[i+5])->str;
+	    int64_t cnt = -1;
+	    if ( tidpack_one.count(pn) )
+		cnt = 1;
+	    else if ( tidpack_empty_names.count(pn) )
+		cnt = 0;
+	    else if ( !pack_param.empty() && pn == pack_param )
+		cnt = pack_empty ? 0
+		    : (int64_t)(pack_elems.empty() ? 1 : pack_elems.size());
+	    if ( cnt >= 0 )
+	    {
+		inj.push_back(new TokenInt(cnt));
+		i += 6;	// consumed `sizeof` `...` `(` name `)`
+		continue;
+	    }
+	}
 	// Pattern pack-expansion ellipsis (`std::forward<Args>(args)...`,
 	// `g<Args>(args)...`): the pattern's tokens are substituted inline by
 	// the loop above (type pack `Args` -> bound type via `subst`, value pack
