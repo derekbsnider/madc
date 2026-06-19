@@ -30241,6 +30241,12 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc)
 {
     DBG_PACK("try_inst %s args=%zu\n", key.c_str(), tc->parameters.size());
+#ifdef MADC_DEBUG_CTORTMPL
+    if ( getenv("MADC_DEBUG_CTORTMPL") && key.find("::get") != std::string::npos )
+	fprintf(stderr, "[getinst] try_inst key=%s nargs=%zu nexpl=%zu ntparams=%zu\n",
+	    key.c_str(), tc->parameters.size(), tc->explicit_template_args.size(),
+	    ft.typeparams.size());
+#endif
     // Type parameters only; one parameter pack allowed in the LAST position
     // (bound to exactly one element — `__stoa`'s `_Base...` shape).
     std::string pack_param;
@@ -30624,15 +30630,27 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	const std::vector<DataDef *> &pack_elems,
 	const std::map<std::string, std::vector<DataDef *> > &tid_packs)
 {
-    // Template-id parameter packs (std::pair's piecewise ctor `_Args1`/`_Args2`,
-    // deduced from `tuple<_Args1...>` args) need body expansion (sizeof..., the
-    // _Build_index_tuple/get<I> delegating body) that this single-trailing-pack
-    // path does not yet implement — P4 in plan Update 51. Until then, FAIL CLEANLY
-    // (no malformed instantiation emitted) so the call falls back exactly as
-    // before P3 wired the deduction. P3's value: the deduction now succeeds and is
-    // verifiable; P4 replaces this guard with real expansion.
-    if ( !tid_packs.empty() )
-	return false;
+    // Template-id parameter packs (deduced from `tuple<_Args1...>` args — std::get's
+    // `_Elements`, std::pair's piecewise `_Args1`/`_Args2`). Supported for the 0- and
+    // 1-element cases (map uses tuple<const key&> and tuple<>; std::get<0> on a
+    // 1-tuple): a 1-element pack substitutes its name like a type param and the
+    // trailing `...` is dropped; a 0-element pack elides `name...` (+ a preceding
+    // comma). A MULTI-element template-id pack (tuple<int,int>) needs the N-copy
+    // expansion — not yet implemented, so FAIL CLEANLY (the call falls back).
+    std::set<std::string> tidpack_empty_names;
+    std::map<std::string, DataDef *> tidpack_one;	// name -> sole element type
+    for ( std::map<std::string, std::vector<DataDef *> >::const_iterator
+	    t = tid_packs.begin(); t != tid_packs.end(); ++t )
+    {
+	if ( t->second.size() > 1 )
+	    return false;	// multi-element template-id pack: future N-copy expansion
+	if ( t->second.empty() )
+	    tidpack_empty_names.insert(t->first);
+	else if ( t->second[0] )
+	    tidpack_one[t->first] = t->second[0];
+	else
+	    return false;
+    }
     // Unbound parameters fall back to their template-parameter defaults. The
     // default is a token run: a BASE type (a single token — an already-bound
     // parameter name `_Ret = _TRet`, or a concrete `ttDataType`) optionally
@@ -30950,6 +30968,36 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    ++i;
 		}
 		continue;
+	    }
+	    // Template-id parameter pack (0/1-element): a 1-element pack
+	    // (`tuple<_Elements...>`, _Elements={int}) emits its sole element type
+	    // and drops the trailing `...` -> `tuple<int>`; a 0-element pack
+	    // (`tuple<_Args2...>`) elides the name + `...` (+ preceding comma) ->
+	    // `tuple<>`.
+	    {
+		std::map<std::string, DataDef *>::iterator toi =
+		    tidpack_one.find(idname);
+		bool tp_empty = tidpack_empty_names.count(idname) != 0;
+		if ( toi != tidpack_one.end() || tp_empty )
+		{
+		    if ( tp_empty && !inj.empty() && inj.back()
+		      && inj.back()->id() == TokenID::tkComma )
+		    { delete inj.back(); inj.pop_back(); }
+		    if ( toi != tidpack_one.end() && toi->second )
+			inj.push_back(new TokenDataType(
+			    toi->second->name.c_str(), *toi->second));
+		    size_t k = i + 1;
+		    while ( k < ft.decl.size() && ft.decl[k]
+			 && (ft.decl[k]->id() == TokenID::tkBand
+			     || ft.decl[k]->id() == TokenID::tkLand) )
+			++k;
+		    if ( k + 2 < ft.decl.size()
+		      && ft.decl[k]   && ft.decl[k]->id() == TokenID::tkDot
+		      && ft.decl[k+1] && ft.decl[k+1]->id() == TokenID::tkDot
+		      && ft.decl[k+2] && ft.decl[k+2]->id() == TokenID::tkDot )
+			i = k + 2;	// consumed `...`
+		    continue;
+		}
 	    }
 	    std::map<std::string, int64_t>::iterator nsi =
 		nontype_subst.find(idname);
