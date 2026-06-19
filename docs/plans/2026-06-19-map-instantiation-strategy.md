@@ -74,6 +74,55 @@ VERIFIED (map's exact shape, `tmp/w1_bit.mad`): `std::_Build_index_tuple<1>::__t
 Also `std::make_integer_sequence<unsigned long,1>` -> `integer_sequence<unsigned long,0>`.
 fulltest 656/6 (zero regressions).
 
+### 2026-06-19 — NEXT WALL PINNED (post-W1, `tmp/mapii.mad` = `map<int,int> m; m[1]=2`).
+
+With W1 in, `map<int,int>; m[1]=2` now parses ALL THE WAY THROUGH to c2mir
+(huge progress — pre-W1 it died early at the integer_pack wall). The remaining
+blocker is now localized to ONE root cause, confirmed by BOTH c2mir and gcc-on-
+emitted-C (the `--emit=c11` + `gcc -c` method):
+
+  - c2mir: `bits/stl_map.h:102:13: too many arguments` (2 check errors; the
+    other is a node_handle.h return-type WARNING, not fatal).
+  - gcc on `tmp/mapii.c`: `too many arguments to function
+    'pair_const_int32_t_int32_t__pair_const_int32_t_int32_t'` (the pair ctor),
+    + `incompatible type for argument 2`.
+
+ROOT CAUSE (pinned, evidence in the emitted C `tmp/mapii.c`): **the pair
+PIECEWISE variadic constructor template is never instantiated.** The symbol
+`pair_const_int32_t_int32_t__pair_const_int32_t_int32_t` is emitted ONLY as the
+2-param COPY ctor `pair(const pair&)` (decl @ tmp/mapii.c:918: `(pair*, pair*)`),
+but `std::construct_at`'s body calls it with FOUR args — `(location,
+piecewise_construct_t, tuple<const int>, tuple<>)` (@ tmp/mapii.c:1777, inside
+`__ns_std_construct_at__o2`). So the call `pair(piecewise_construct, t1, t2)`
+mis-resolves to the copy-ctor symbol. There is NO 4-param (3-arg+this) piecewise
+ctor definition anywhere in the emitted C (`grep -c pair..._pair...` = 2: one
+copy-ctor decl + one call).
+
+The needed work (this IS the heart of W4+W5, reached earlier than the worklist
+implied — W2/W3 non-type-pack pieces did not block first):
+  1. Overload resolution for the ctor call `pair(piecewise_construct_t,
+     tuple<const int>&, tuple<>&)` inside the instantiated `construct_at` body
+     must SELECT the variadic piecewise ctor template (not the copy ctor).
+  2. Instantiate that ctor template with `_Args1={const int}`, `_Args2={}`,
+     under a DISTINCT mangled symbol from the copy ctor (today they collide on
+     the bare `ClassName__ClassName` name).
+  3. Its body delegates to the private indexed ctor
+     `pair(tuple&, tuple&, _Index_tuple<_Indexes1...>, _Index_tuple<_Indexes2...>)`
+     -> `first(get<_Indexes1>(t1)...)` — which is where W2 (non-type pack
+     `_Indexes1={0}`/`_Indexes2={}`), W3 (1-element expansion) and W4
+     (`std::get<0>` body) actually get exercised.
+
+REPRODUCE: `bin/madc --std=c++20 --no-embedded-headers tmp/mapii.mad` (2 c2mir
+errors). Localize: `bin/madc --emit=c11 ... tmp/mapii.mad > tmp/mapii.c` then
+`gcc -c -o /dev/null tmp/mapii.c 2>&1 | grep error:` (16 errors; most are
+"conflicting types" from an EMIT-only struct-tag forward-decl ORDERING quirk —
+`struct tuple_const_int32_t_` first appears inside a parameter list before its
+file-scope definition; that quirk is NOT the c2mir blocker, only the
+"too many arguments" pair-ctor one is). Next session: trace how a ctor call
+inside an instantiated template body selects+names+instantiates its ctor
+overload (start: the construct_at body emission, the `ClassName__ClassName` ctor
+naming, and `instantiate_member_ctor_template_for_construction`).
+
 ### GAPS FOUND during W1 (NOT on map's critical path — do NOT let them block W2–W5)
 
 These surfaced while testing the `make_index_sequence` *wrapper* API. Map does
