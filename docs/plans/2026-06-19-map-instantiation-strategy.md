@@ -1359,3 +1359,23 @@ instantiation context so `tuple_element<0,tuple<const int&>>::type` → `const i
 and ensure the reference→value init derefs. Reducer: build flag-on, `--emit=c11 tmp/mapii.mad`,
 grep `__ns_std_get__o2` — its return must be `int*`, not `type*`. This is the final RUN-half
 blocker; COMPILE half done (54ff562).
+
+### 2026-06-20 (RUNTIME — corrected reducer; use PRINTF not exit codes)
+
+CORRECTION (exit-code-based reducers misled me — use printf):
+- `tmp/tv.mad`: `std::tuple<int> t(7); printf("%d", std::get<0>(t))` → **7. tuple<int> WORKS.**
+- `tmp/te_direct.mad`: `std::tuple<const int&> t(k=7); …::type r = std::get<0>(t); printf("%d", r)`
+  → **r=1 (WRONG, should be 7). The REFERENCE element is mishandled.**
+So the bug is REFERENCE-ELEMENT specific (NOT general tuple, NOT deferred-context — both
+earlier framings were wrong): `std::get<0>(std::tuple<const int&>)` returns garbage because
+`tuple_element<0, std::tuple<const int&>>::type` resolves to the `type` fallback (get's
+emitted return is `type *__ns_std_get__o2(...)`, vs `int*` for the working tuple<int> case).
+This is exactly the W4b "tuple_element ::type for a reference element → `type` fallback"
+wall (UPDATE 56–59), now with a CLEAN eager reducer:
+  WALL  tmp/te_direct.mad  (tuple<const int&> → r=1)
+  CTRL  tmp/tv.mad         (tuple<int>       → 7)
+map's operator[] builds `forward_as_tuple(key)` = `tuple<const int&>`, so the pair's `first`
+gets that garbage → heap corruption → teardown abort. FIX te_direct (tuple_element-of-
+reference `::type` → `const int&`→int*, and the ref deref into the value) and map RUN follows.
+Both flag-on (-DFEATURE_DERIVED_TO_BASE_DEDUCTION -DFEATURE_CONST_TYPES). COMPILE half of W5
+remains DONE (54ff562); this reference-element resolution is the RUN half.
