@@ -32758,6 +32758,32 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		binding[ft.typeparams[i]] = explicit_args[i];
 	if ( binding.empty() )
 	    continue;
+	// A return type that references a template parameter NOT bound by the
+	// explicit arguments cannot be resolved from explicit args alone — it
+	// depends on a parameter that must be DEDUCED from the call arguments.
+	// std::get<0> is the motivating case: BOTH overloads' returns
+	// (`tuple_element<_Int, pair<_Tp1,_Tp2>>::type` and
+	// `__tuple_element_t<__i, tuple<_Elements...>>`) reference a deduced
+	// param (_Tp1/_Tp2 resp. _Elements), so binding from `<0>` alone yields
+	// an OPAQUE incomplete type. Skip such a candidate; with no candidate
+	// resolvable the caller returns NULL and defers to full instantiation
+	// (try_instantiate_namespace_fn_template), which deduces from the args
+	// and selects the viable overload (rejecting pair<> against a tuple<>).
+	{
+	    bool return_has_unbound_tp = false;
+	    for ( size_t i = rs; i < re && !return_has_unbound_tp; ++i )
+	    {
+		TokenBase *t = ft.decl[i];
+		if ( !t || !is_contextual_identifier_token(t) )
+		    continue;
+		const std::string nm = contextual_identifier_name(t);
+		for ( size_t tj = 0; tj < ft.typeparams.size(); ++tj )
+		    if ( ft.typeparams[tj] == nm && !binding.count(nm) )
+		    { return_has_unbound_tp = true; break; }
+	    }
+	    if ( return_has_unbound_tp )
+		continue;
+	}
 	// Substitute each type-parameter name with its bound type, then resolve
 	// (resolve_type_token_range carries its own SFINAE trap -> NULL on failure).
 	std::vector<TokenBase *> sub;
