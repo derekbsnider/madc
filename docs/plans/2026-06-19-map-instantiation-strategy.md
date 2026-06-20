@@ -1613,6 +1613,37 @@ REFINEMENT (the correct Layer 2 fix — two candidate approaches, pick after ver
   placeholder — THEN compare to te_lval (concrete). Only once the real path is mapped should a fix be
   attempted. The naive resolve-site vri changes perturb a path that isn't the one in play.
 
+  ATTEMPT 5 (path-mapping diagnostic — the useful one). Added entry traces to
+  instantiate_template_id / instantiate_template_use / instantiate_opaque_template_use (filtered to
+  `Nth_type`/`tuple_element`). FINDINGS:
+  - BASELINE (no code change), te_lval AND tv show the SAME single sequence:
+    `tid tuple_element vri=1 → USE tuple_element vri=1 → tid _Nth_type vri=1 → tid _Nth_type vri=0 →
+     USE _Nth_type vri=0 → OPAQUE _Nth_type vri=0`. So the real `_Nth_type` instantiation reaches
+    `instantiate_template_use`/`_opaque` via the resolve_typename FALLBACK with **vri=0** (the
+    class-scope loop's first `tid _Nth_type vri=1` returns NULL — _Nth_type is not a class member —
+    so it falls through to the fallback which does NOT set vri). The first `tid _Nth_type vri=1` is
+    the class-scope-loop probe (NULL); the `vri=0` one is the fallback that actually instantiates.
+  - With ATTEMPT-1 re-applied (vri at the fallback) + the traces: **NO trace fires at all** and the
+    error "Expecting type in using alias" @tuple:1782 appears. ⇒ attempt-1's vri breaks the `<tuple>`
+    HEADER parse (tuple_element's `using type = typename _Nth_type<__i,_Types...>::type` is resolved
+    EAGERLY at definition time with DEPENDENT __i/_Types; vri makes that dependent resolution fail),
+    aborting before main — which is why no main-level instantiation traces fire.
+  ⇒ CONFIRMED ROOT + WALL: the `_Nth_type<...>::type` resolution happens BOTH (i) eagerly at <tuple>
+  definition parse with DEPENDENT args (must yield a dependent placeholder — today's vri=0 fallback
+  does this correctly) AND (ii) at the CONCRETE instantiation (`_Nth_type<0,const int&>`, must
+  real-instantiate to get `type`=const int&, but today's vri=0 fallback leaves it OPAQUE → the bug).
+  Same code site (resolve_typename fallback), opposite required behavior, discriminated only by
+  arg-concreteness — which isn't known at that site. THE FIX is NOT at the resolve site. It must be
+  inside the instantiation engine: when `instantiate_opaque_template_use` (or the early-bail path in
+  `instantiate_template_use`) has PARSED its args and finds them CONCRETE (no `...`, every type-slot
+  resolves, every non-type-slot constant-folds) AND a partial spec matches AND the spec has a body,
+  real-instantiate that spec body in place (register `using type`); else keep today's placeholder.
+  This makes concreteness drive the decision AFTER arg-parse (where it's known) and needs NO
+  resolve-site flag. It overlaps FINAL-2's "empty-primary-with-spec completion" (which regressed when
+  done as BLANKET empty-body completion) — the difference is it must be PARTIAL-SPEC-MATCH-driven and
+  concrete-args-gated. This is the precise, bounded next implementation; verify nestnth2 r=7,
+  te_lval/te_direct r=7, tv get0=7, default fulltest 656/6, then Layer 3.
+
 **LAYER 3 (anticipated, not yet reached) — reference→value lowering in pair construction.** Once
 Layer 2 lands (te_direct → r=7), map's `pair::first(get<0>(forward_as_tuple(key)))` must DEREF the
 returned reference into the `const int` value (the handoff's gdb finding: node value@+32 held the
