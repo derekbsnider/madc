@@ -1014,3 +1014,37 @@ in an instantiated fn lowering to integer; exposed in getline/basic_istream& →
 testfstream/testloop) is fixed. So the live worklist is: isolate+fix bug-2 → un-gate
 derived-to-base → getref green → re-check mapii's 3 c2mir errors (stl_map.h:102 struct-arg
 + 2× incomplete struct).
+
+### 2026-06-20 (later, cont.) — map's 3 c2mir errors RELIABLY narrowed to bug B (empty-pack pair indexed ctor); emit-c is a dead-end diagnostic here
+
+Localized the 3 mapii flag-on c2mir errors (stl_map.h:102 incompatible-arg-for-struct/union
++ 2× incomplete struct) to **bug B — the empty-pack pair indexed ctor** (`_Args2={}`,
+`_Indexes2={}`), corroborated three independent ways:
+- emit-c shows a leaked `struct _Tp2 { pair _M_t; }` (pair's 2nd param unsubstituted; def
+  + empty dtor only, never an arg) — a botched instantiation symptom in the pair-ctor area.
+- The pair indexed ctor `__o8` takes the index tuples BY VALUE:
+  `__o8(pair*, tuple_const_int32_t_* __tuple1, struct tuple* __tuple2, _Index_tuple_0, _Index_tuple)`.
+  `__tuple2` is the EMPTY `tuple<>` (the mapped-value piecewise arg) and the 5th param is the
+  EMPTY `_Index_tuple<>` — i.e. the empty-pack `second(std::forward<_Args2>(std::get<_Indexes2>(__tuple2))...)`
+  must collapse to `second()` (default-construct the mapped int). That empty-expansion is the defect.
+- Matches the original W3/bug-B prediction (empty-pack `name(pattern...)` → `name()`).
+
+**DEAD-END WARNING for the next session — do NOT re-run emit-c+gcc here.** `--emit=c11` on
+mapii is NOT faithful to the c2mir tree at this layer: gcc on tmp/mapii_flagon.c reports a
+DIFFERENT error set (a cascade of "conflicting types" for __o8/_M_create_node/etc. + one
+"formal parameter N is incomplete") than c2mir's actual errors — those are emission artifacts
+(duplicate/inconsistent forward-decls in the rendered C), not the tree defect. Both empty
+structs (`struct tuple {}` @823, `struct _Index_tuple {}`) ARE emitted complete, so the
+"incomplete" gcc sees is an artifact too. The ONLY reliable localizer is **c2mir-tree
+instrumentation**: temporarily print the tag name at c2mir.c:11960 ("incomplete struct or
+union") and the arg/param type tags at c2mir.c:8473 ("incompatible argument type for
+struct/union type parameter"), rebuild libmir + relink madc flag-on, run mapii, then REVERT
+the fork edit. (I drafted that c2mir.c:11960 diagnostic this session but reverted it rather
+than rebuild the pinned libmir.a in place — do it against a throwaway libmir copy, or accept
+the in-place rebuild + restore from the pin.)
+
+NEXT (precise): fix the empty-pack expansion of `second(...)` (and the empty `_Index_tuple<>`
+by-value param threading) in the pair indexed-ctor instantiation — the empty `name(pattern...)`
+must lower to `name()` with the empty `tuple<>`/`_Index_tuple<>` consistently complete. This is
+the sibling of bug A (which dropped the pattern-`...` for the NON-empty single-element pack);
+bug B is the ZERO-element case for a whole `name(pattern...)` member-init.
