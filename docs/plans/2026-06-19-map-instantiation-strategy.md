@@ -1836,3 +1836,24 @@ documented above), NOT the dtor. Default fulltest regression: <pending>.
 **NEXT for map RUN:** the insert path — `operator[]` piecewise pair construction at stl_map.h:102
 ("too many arguments" = wrong instantiation arity in the pair/tuple_element/get chain). That is the
 W2/W4/Layer-2 track already mapped in the earlier entries.
+
+### 2026-06-20 (session 2 cont.) — INSERT next-step precisely located (after the dtor fix). `m[1]=2` fails at the piecewise-pair ctor call.
+With the dtor crash fixed, `tmp/mapii.mad` (`map<int,int> m; m[1]=2;`) compiles past the dtor and
+fails with 2 c2mir check errors at `stl_map.h:102` ("too many arguments" — PRE-EXISTING, also
+present at b690ead, NOT caused by the dtor fix). Located in the emitted C (tmp/mapii.c):
+- `__ns_std_construct_at__o2` (line ~1796) calls:
+  `pair_const_int32_t_int32_t__pair_const_int32_t_int32_t(location, *fwd(piecewise),
+   *fwd(tuple_const_int32_t_), *fwd(tuple))` — 4 args.
+- The DEFINED pair piecewise ctor (line ~1254) is
+  `pair_const_int32_t_int32_t__pair_const_int32_t_int32_t__o7(pair*, piecewise_construct_t,
+   struct tuple_int32_t_ __first, struct tuple __second)`.
+TWO mismatches (both the W2/W4/Layer-2 piecewise-pair + tuple<const int&> track):
+  (a) the CALL targets `...__pair...` (no `__o7` overload suffix) while the DEF is `...__o7` → the
+      call resolves to an UNDECLARED symbol → implicit-int proto → "too many arguments". The
+      ctor-call symbol generation must match the instantiated ctor's emit symbol (`__o7`).
+  (b) the def's `__first` param is `tuple_int32_t_` (tuple<int>) but the call passes
+      `tuple_const_int32_t_` (tuple<const int&>) — the const-ref element deduction
+      (tuple_element/_Nth_type Layer-2) still mis-instantiates the first tuple as tuple<int>.
+NEXT for map RUN: fix the piecewise-pair ctor call-symbol match (a) and the tuple<const int&>
+first-arg instantiation (b). This is the existing W2/W4 track (UPDATE 53-65), now isolated to the
+construct_at→pair-ctor call.
