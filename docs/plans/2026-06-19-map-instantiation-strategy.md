@@ -973,3 +973,44 @@ pack-substitution + uneval, now fixed); packget.mad / deleg.mad hit OTHER unsupp
 Built-in trace flags for this area (add to OPTIONAL_CPPFLAGS, then set the env var):
 `MADC_DEBUG_CTORTMPL` (=1: `[tidpack]`, `[getinst]`), `MADC_DEBUG_GETREG` (=1: `[getreg]`
 register/RESOLVE), `MADC_DEBUG_NS_RESOLVE`, `MADC_DEBUG_FNTPL`(+`MADC_DEBUG_FNTPL_DUMP=<key>`).
+
+### 2026-06-20 (later) — parser-side noise CLEARED; bug-1 of W4b part(b) is ALREADY FIXED (stale-handoff correction)
+
+Commit 9c6f820 (zero regression: default fulltest **656 passed / 6 failed / 0 timed
+out / 18 skipped** — the same 6 known map-cluster tests) — two parser fixes that were
+emitting spurious stderr into `mapii.mad`'s output and masking the real c2mir blocker:
+
+1. **Deref of a namespace-qualified call (`*ns::f()`).** Was throwing "undeclared
+   identifier 'ns'": the unary-`*` operand guard in `parseExpr_operatorArm` took the
+   simple-variable path because its exclusion list (tkOpBrk/tkDeRef/tkDot/tkOpSqr)
+   omitted the scope token **tkNS**. Added tkNS at both deref-operand guard sites
+   (single-level ~19953, multi-level-inner ~20194); `*ns::...` now falls through to the
+   general qualified-expression parse (the final-else `parseExpression`). This is the
+   libstdc++ `iter_reference_t = decltype(*std::declval<_Tp&>())` alias-instantiation
+   path — the source of mapii's 2× visible "undeclared identifier 'std'".
+   KNOWN LIMITATION (pre-existing, shared with the `*tfunc<T>()` unbounded fallback at
+   ~20357): `*ns::f() <binop> …` over-consumes (parses `*(ns::f() binop …)`); the map
+   path (`*std::declval<_Tp&>()`, no trailing binop) is correct. Bound it later via the
+   same fix that would bound the template-fn fallback.
+2. **`capture_constant_initializer_value` cerr leak.** A dependent `static constexpr`
+   member (libstdc++ `value = static_cast<…>(…)`) makes the speculative constant-fold
+   Throw; the catch restores state but `throwbuf::sync()` printed to stderr first. Muted
+   std::cerr around the speculative parse (same idiom as `fold_nontype_arg_constant` /
+   `constraint_expression_well_formed`). Source of mapii's 3× "Expecting integer
+   constant expression".
+
+**STALE-HANDOFF CORRECTION (verified at HEAD, default build):** bug-1 of W4b part(b)
+— *"ref-var-init from a ref-returning call: `int& r = b.get();` emits `int *r =
+&Box…get;` (address-of-FUNCTION) → SEGFAULT"* — **is ALREADY FIXED.** `tmp/refcollapse.mad`
+now runs and prints `r=7 / k=99`; emit-c is `int *r = (&(*Box_int32_t___get((&b))));`
+(proper call+deref+address). Do not re-chase it.
+
+**REMAINING map blocker (unchanged, now cleanly isolated):** `tmp/getref.mad`
+(`int x = std::get<0>(std::tuple<const int&>)`) still fails on the DEFAULT build:
+"lvalue required as unary & operand" + "returning integer without cast for pointer
+result" (1 c2mir err). With `-DFEATURE_DERIVED_TO_BASE_DEDUCTION` the get-chain deduces
+(__get_helper via derived-to-base) — but that flag stays gated until **bug-2** (ref-return
+in an instantiated fn lowering to integer; exposed in getline/basic_istream& →
+testfstream/testloop) is fixed. So the live worklist is: isolate+fix bug-2 → un-gate
+derived-to-base → getref green → re-check mapii's 3 c2mir errors (stl_map.h:102 struct-arg
++ 2× incomplete struct).
