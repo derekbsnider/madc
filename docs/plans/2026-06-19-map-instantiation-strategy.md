@@ -564,3 +564,31 @@ NEXT (W4b worklist):
   NOTE the const fix is still GATED (FEATURE_CONST_TYPES); map's DEFAULT-build
   completion still also needs const Phases 3-4. BUILD: always `touch src/parser.cpp`
   (and src/cir_builder.cpp if its flags change) before a flag-on rebuild.
+
+### 2026-06-20 (W4b part a) — scalar reference-member value-read deref FIXED (@db71765)
+
+W4b splits into sub-layers. Part (a) DONE @db71765 (fulltest 656/6/0, zero regr):
+the reference-MEMBER value read had no is_reference()->N_DEREF arm (the reference
+VARIABLE read has one at cir_builder.cpp ~8231; the member site was a
+never-migrated first-class-refs value-lowering site — plan 2026-06-17 L57-60 keeps
+value-lowering per-site in cir_builder keyed on is_reference()). A scalar reference
+member thus read as the raw pointer `this->m`; returning it from a T&-returning fn
+took `&(this->m)` = T** (std::tuple<const int&>'s _Head_base::_M_head_impl). Fix:
+deref a SCALAR reference member on read (referent is_numeric()||is_pointer()),
+EXCLUDING aggregates (struct&/class& use the object-access '->' path -> would
+double-deref). KEY: test the REFERENT's scalar-ness, NOT class-ness — a ref to a
+plain `struct A` (no object members) is a DataDefSTRUCT, class_behind()=NULL (the
+testrefmember regression my first 2 attempts caused). Reducers: tmp/refmem.mad
+(PASSES), tests/testrefmember.mad (PASSES, b:42 outer:10).
+
+REMAINING **W4b part (b)** — tmp/getref.mad STILL fails: "lvalue required as unary &
+operand" + "returning integer without cast for pointer result" at std::get<0>(t).
+This is the INSTANTIATED get/__get_helper/_M_head chain's reference-return
+recognition (NOT the member read part a fixed). Hypothesis: the instantiated
+__ns_std_get__o2 (and __get_helper/_M_head instances) lose returns_reference()
+through the deferred-instantiation re-parse — suspect the return
+`__tuple_element_t<0,tuple<const int&>>&` alias resolution dropping/mis-collapsing
+the `&`. NEXT: trace returns_reference() on each instantiated fn in the chain
+(MADC_DEBUG_CTORTMPL getinst), find where the `&` is lost, fix in
+try_instantiate_namespace_fn_template's return-type build. getref.mad is the
+reducer (default build reproduces it — no flags needed).
