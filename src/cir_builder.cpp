@@ -8520,7 +8520,37 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					return error_node("'->' applied to a non-pointer "
 						"struct value (use '.')", tb);
 			}
-			return node2(code, obj, member, tb);
+			node_t fld = node2(code, obj, member, tb);
+			// A SCALAR reference MEMBER (`int& m`, lowered to a pointer slot)
+			// denotes its REFERENT lvalue in every value use — read through the
+			// pointer (`this->m` -> `*this->m`), exactly like a scalar reference
+			// variable/parameter (the is_reference() arm in the variable read
+			// above). Without this, returning a scalar reference member from a
+			// T&-returning function took `&(this->m)` — a T** where T* was
+			// expected ("incompatible return-expr type in function returning a
+			// pointer"; std::tuple<const int&>'s _Head_base::_M_head_impl).
+			// A CLASS reference member (`A& a`, the _Auto_node `_Rb_tree& _M_t`
+			// shape) is EXCLUDED: its member/method access (`a.v` / `a.f()`)
+			// already resolves through the referent via the ptr_like -> '->'
+			// path, so a read-deref here would double-dereference (testrefmember).
+			// Deref ONLY a SCALAR reference member (`int& m`, `T*& m`) read as
+			// a value: its referent lowers to a register value, so the value use
+			// reads through the pointer (`this->m` -> `*this->m`), mirroring the
+			// scalar reference-variable arm above. An AGGREGATE reference member
+			// (`struct&`/`class&`) is EXCLUDED — its member/method access
+			// (`a.v` / `a.f()`) already unwraps the pointer via the ptr_like ->
+			// '->' path, so a read-deref here would double-dereference. Test the
+			// REFERENT's scalar-ness directly, not class-ness: a reference to a
+			// plain `struct A` (no object members) is a DataDefSTRUCT, for which
+			// class_behind() answers NULL (testrefmember's `A& a`).
+			DataDef *referent = NULL;
+			if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tm->var.type))
+				referent = rp->base_type;
+			bool referent_scalar = referent
+				&& (referent->is_numeric() || referent->is_pointer());
+			if (tm->var.is_reference() && referent_scalar)
+				return node1(N_DEREF, fld, tb);
+			return fld;
 		}
 	}
 
