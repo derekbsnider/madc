@@ -29093,18 +29093,26 @@ static bool skipped_template_variable(
 // `= default`; an unnamed param is skipped (rare in member templates).
 static void extract_inner_template_typeparams(
 	const std::vector<TokenBase *> &decl,
-	std::vector<std::string> &names, std::vector<bool> &is_pack)
+	std::vector<std::string> &names, std::vector<bool> &is_pack,
+	std::vector<bool> &is_type)
 {
     if ( decl.size() < 2 || !decl[0] || decl[0]->id() != TokenID::tkTEMPLATE
       || !decl[1] || decl[1]->id() != TokenID::tkLT )
 	return;
     size_t close = template_id_suffix_end(decl, 1);
     int depth = 0;
-    bool before_eq = true, saw_dots = false;
+    bool before_eq = true, saw_dots = false, saw_typename = false;
     std::string last;
     auto flush = [&]() {
-	if ( !last.empty() ) { names.push_back(last); is_pack.push_back(saw_dots); }
-	last.clear(); before_eq = true; saw_dots = false;
+	if ( !last.empty() )
+	{
+	    names.push_back(last);
+	    is_pack.push_back(saw_dots);
+	    // A param introduced by `typename`/`class` is a TYPE param; one
+	    // introduced by a type-name (`size_t`, `int`, …) is a NON-TYPE param.
+	    is_type.push_back(saw_typename);
+	}
+	last.clear(); before_eq = true; saw_dots = false; saw_typename = false;
     };
     for ( size_t i = 2; i < close; ++i )
     {
@@ -29120,7 +29128,7 @@ static void extract_inner_template_typeparams(
 	if ( is_contextual_identifier_token(t) )
 	{
 	    std::string s = contextual_identifier_name(t);
-	    if ( s == "class" || s == "typename" ) continue;
+	    if ( s == "class" || s == "typename" ) { saw_typename = true; continue; }
 	    last = s;
 	}
     }
@@ -29397,6 +29405,7 @@ void Program::register_outofline_member_instantiations(
 	    {
 		mfd->template_param_names = def.inner_typeparams;
 		mfd->template_param_is_pack = def.inner_is_pack;
+		mfd->template_param_is_type = def.inner_is_type;
 	    }
 	    continue;
 	}
@@ -32346,10 +32355,42 @@ void Program::instantiate_member_ctor_template_for_construction(
     // monomorphized class needs its retained ctor body instantiated here.
     if ( cdd->is_externally_defined() || cdd->is_extern_template_instantiated )
 	return;
+    // Count the FUNCTION parameters of a member-template ctor from its retained
+    // decl (top-level commas between the declarator '(' and ')', `<...>` nested).
+    // std::pair registers TWO member-template ctors — the piecewise (3 params) and
+    // the private indexed (4 params); the right one is chosen by matching this
+    // count to the construction's argument count.
+    auto member_ctor_param_count = [](const std::vector<TokenBase *> &decl) -> int {
+	size_t ni = skipped_template_function_declarator_name_index(decl, NULL);
+	if ( ni >= decl.size() ) return -1;
+	size_t op = ni + 1;
+	while ( op < decl.size()
+	     && !(decl[op] && decl[op]->id() == TokenID::tkOpBrk) )
+	    ++op;
+	if ( op >= decl.size() ) return -1;
+	int adepth = 0, cnt = 0; bool any = false;
+	for ( size_t i = op + 1; i < decl.size(); ++i )
+	{
+	    TokenBase *t = decl[i]; if ( !t ) continue;
+	    TokenID id = t->id();
+	    if ( id == TokenID::tkClBrk && adepth == 0 ) break;	// end of param list
+	    if ( id == TokenID::tkLT ) { ++adepth; any = true; continue; }
+	    if ( id == TokenID::tkGT ) { if ( adepth > 0 ) --adepth; continue; }
+	    if ( id == TokenID::tkBSR ) { adepth -= 2; if ( adepth < 0 ) adepth = 0; continue; }
+	    if ( adepth == 0 && id == TokenID::tkComma ) { ++cnt; continue; }
+	    any = true;
+	}
+	return any ? cnt + 1 : 0;
+    };
     // Find a member-template CONSTRUCTOR placeholder among the class's ctors
     // (registered with its body retained by register_skipped_class_template_function).
+    // Prefer the OVERLOAD whose function-param count matches the construction's
+    // argument count (pair's piecewise 3-param vs indexed 4-param ctor); fall back
+    // to the first member-template ctor when none matches by arity.
     FuncDef *fd = NULL;
     Variable *placeholder = NULL;
+    FuncDef *fd_fallback = NULL;
+    Variable *ph_fallback = NULL;
     for ( Variable *cv : cdd->ctors )
     {
 	FuncDef *cfd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
@@ -32358,11 +32399,17 @@ void Program::instantiate_member_ctor_template_for_construction(
 	  && cfd->member_template_owner == cdd
 	  && !cfd->template_param_names.empty() )
 	{
-	    fd = cfd;
-	    placeholder = cv;
-	    break;
+	    if ( !ph_fallback ) { fd_fallback = cfd; ph_fallback = cv; }
+	    if ( member_ctor_param_count(cfd->member_template_decl)
+		 == (int)ctor_args.size() )
+	    {
+		fd = cfd;
+		placeholder = cv;
+		break;
+	    }
 	}
     }
+    if ( !fd ) { fd = fd_fallback; placeholder = ph_fallback; }
 #ifdef MADC_DEBUG_CTORTMPL
     if ( dbg_ct ) fprintf(stderr, "[ctortmpl] placeholder=%p fd=%p\n", (void*)placeholder, (void*)fd);
 #endif
@@ -32388,7 +32435,13 @@ void Program::instantiate_member_ctor_template_for_construction(
     // gives it the hidden __this (the object under construction).
     FnTemplateDef ft;
     ft.typeparams = fd->template_param_names;
-    ft.typeparam_is_type.assign(ft.typeparams.size(), true);
+    // Per-param type-ness from the captured template head (a member-template ctor
+    // with non-type packs — std::pair's indexed ctor `size_t... _Indexes` — must
+    // NOT mark every param type); fall back to all-type for older registrations.
+    if ( fd->template_param_is_type.size() == ft.typeparams.size() )
+	ft.typeparam_is_type = fd->template_param_is_type;
+    else
+	ft.typeparam_is_type.assign(ft.typeparams.size(), true);
     if ( fd->template_param_is_pack.size() == ft.typeparams.size() )
 	ft.typeparam_is_pack = fd->template_param_is_pack;
     else
@@ -33822,7 +33875,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    d.is_member_template = ool_is_member_template;
 	    if ( ool_is_member_template )
 		extract_inner_template_typeparams(skipped_decl,
-						  d.inner_typeparams, d.inner_is_pack);
+						  d.inner_typeparams, d.inner_is_pack,
+						  d.inner_is_type);
 	    for ( size_t i = 0; i < skipped_decl.size(); ++i )
 		d.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone() : NULL);
 	    pgm.out_of_line_member_defs[pgm.current_namespace() + "::" + ool_class]

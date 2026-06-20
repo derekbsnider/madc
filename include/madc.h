@@ -175,6 +175,11 @@ public:
     // (allocator_traits::construct) instantiates its `_Args...` correctly.
     // Empty == none-are-packs (back-compat for older registrations).
     std::vector<bool> template_param_is_pack;
+    // Type-ness per template_param_names entry (false = a NON-TYPE param such as
+    // `size_t... _Indexes`). Empty == all-are-type (back-compat). Needed so a
+    // member-template ctor with non-type packs (std::pair's indexed ctor)
+    // instantiates with the correct typeparam_is_type classification.
+    std::vector<bool> template_param_is_type;
     std::string template_return_spelling;
     std::vector<std::string> template_param_spellings;
     // For a STATIC member function template of a madc-LOCAL (monomorphized,
@@ -1772,6 +1777,7 @@ public:
 	bool is_member_template = false;
 	std::vector<std::string> inner_typeparams;
 	std::vector<bool> inner_is_pack;
+	std::vector<bool> inner_is_type;	// false = non-type param (`size_t... _Indexes`)
     };
     std::map<std::string, std::vector<OutOfLineMemberDef>> out_of_line_member_defs;
     void register_outofline_member_instantiations(
