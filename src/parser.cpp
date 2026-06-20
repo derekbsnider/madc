@@ -31708,6 +31708,16 @@ static bool instantiate_fn_template_binding(Program &pgm,
     Program::LinkageSpec saved_linkage = pgm.current_linkage;
     Program::NamespaceScope ns_scope(pgm, ft.ns);
     pgm.current_linkage = Program::LinkageSpec::Cpp;
+    // A template-body parse is a fresh EVALUATION context: instantiating a
+    // specialization's definition ODR-uses its callees ([temp.inst]) regardless
+    // of whether the triggering use sat in an unevaluated operand (decltype /
+    // speculative type deduction). The enclosing unevaluated_operand_depth must
+    // NOT leak into the body, or parseCallFunc's depth==0 gate would suppress the
+    // body's nested fn-template instantiations (e.g. std::pair's indexed ctor
+    // delegated from `map<int,int>` never instantiating `std::get<0>`). Reset to
+    // 0 for the body; restore after, like the sibling scope/linkage state above.
+    int saved_uneval = pgm.unevaluated_operand_depth;
+    pgm.unevaluated_operand_depth = 0;
 
     bool ok = true;
     ++pgm.fn_template_instantiation_depth;
@@ -31765,6 +31775,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
     std::swap(pgm.compounds, saved_compounds);
     pgm.cur_func_name = saved_func;
     pgm.current_linkage = saved_linkage;
+    pgm.unevaluated_operand_depth = saved_uneval;
 #if MADC_DEBUG_FNTPL
     std::cerr << "FNTPL inst " << inst_key
 	      << (ok ? " ok" : " FAILED (placeholder kept)") << std::endl;

@@ -816,3 +816,62 @@ STEP 2 — resume the map W5 CORE (the actual unblock; see the entry just above 
 
 This session's PUSHED commits: 954742a (derived-to-base GATED), 6d95bc3 (ref-init bug-1 →
 getref runs x=7), a13c6c7 (doc). Memory: project_map_set_campaign.md UPDATE 58 + 59.
+
+---
+
+### STEP 2 ✅ ROOT-CAUSED + FIXED (2026-06-20) — uneval-depth leak suppressed nested instantiation
+
+The W5-core hypothesis (above) was WRONG about the mechanism — it is NOT a `<0>`-capture
+gap. SYSTEMATIC-DEBUGGING (built-in traces `MADC_DEBUG_CTORTMPL` + `MADC_DEBUG_GETREG`,
+flag-on build) proved, step by step on tmp/mapii.mad:
+- The substituted `__o8` body IS correct: `first(std::forward<const int32_t*>(std::get<#61>
+  (__tuple1)))` (`#61` = `overload_token_spelling` of the injected `TokenInt(0)`). Deduction
+  is correct: `_Args1={const int32_t*}` (= const int&), `_Indexes1={0}` (`[tidpack]` dump).
+- `std::get` resolved fine in the body (`[getreg] RESOLVE std::get -> __ns_std_get`), captured
+  its explicit arg (`[nsres] ntargs=1 peek=(`), reached the call-build (`[bcf]`) — but with
+  **`uneval=1`**. The two increment sites of `unevaluated_operand_depth` are decltype (4964)
+  and the speculative type-deducer (15855), both RAII-balanced; the `__o8` body INHERITED
+  depth 1 from the (unevaluated) context that triggered the pair-ctor instantiation.
+- parseCallFunc's instantiation gate is `if (unevaluated_operand_depth == 0)` (parser.cpp
+  13186). With depth 1 it SKIPPED `instantiate_namespace_fn_template_for_call` → `std::get<0>`
+  never instantiated → bound the `long __ns_std_get()` fallback (forward also skipped, but it
+  resolved to an already-existing overload so it didn't error — get NEEDED a fresh inst).
+
+**FIX (deepest layer, UNCONDITIONAL, parser.cpp instantiate_fn_template_binding ~31711):**
+a template-body parse is a fresh EVALUATION context ([temp.inst] — an instantiated definition
+ODR-uses its callees regardless of the triggering use's unevaluated-ness). SAVE + reset
+`unevaluated_operand_depth = 0` around the body parse, RESTORE after — exactly like the
+sibling state already saved there (compounds / class_scope_stack / cur_func_name /
+current_linkage). It cannot cause EXTRA instantiations (the depth==0 gate at the call site
+still decides WHETHER to instantiate; this only governs the body of an already-decided one).
+
+RESULT: `std::get<0>` now instantiates (`getinst` 0 → 33; emitted C has a real
+`type *__ns_std_get__o2(struct tuple_const_int32_t_ *)` with a body). map c2mir errors **5 → 4**.
+Fulltest **656/6/0 — ZERO regression**. Committed unconditionally (not flag-gated).
+
+### REMAINING map<int,int> layers (next, in order) — STILL `--std=c++20 --no-embedded-headers`
++ flags `-DFEATURE_DERIVED_TO_BASE_DEDUCTION -DFEATURE_CONST_TYPES` (touch src/parser.cpp first):
+1. **`first` forward→tuple-temp.** Emitted `__o8` still does: build a `tuple<const int>` temp
+   `__madc_objtmp_35` from `*__ns_std_get__o2(__tuple1)` (a const int), then
+   `first = *__ns_std_forward__o3(&objtmp35)` where `forward__o3` is `forward<tuple<const int>>`.
+   So `std::forward<const int32_t*>(...)` mis-resolves to `forward<tuple<const int>>` + wraps the
+   const-int into a tuple. Expected (gcc): `forward<const int&>(const int&) -> const int&`,
+   `first(const int) = const int&`, NO temp. Investigate forward's explicit-arg
+   (`<const int32_t*>` injected TokenDataType) resolution in the instantiated body.
+2. **bug B — empty-pack `second`.** `_Args2={}`, `_Indexes2={}`; the 0-element expansion of
+   `second(std::forward<_Args2>(std::get<_Indexes2>(__tuple2))...)` must collapse to `second()`
+   (default-construct the mapped `int`). Emitted instead: `second = *forward__o5(&*get__o2(
+   __tuple2))` with `__tuple2 : tuple<>` — a type mismatch (get__o2 wants tuple<const int>*).
+   This is the empty-pack pattern-drop (sibling to bug A but for the WHOLE `name(pattern...)`).
+3. **"undeclared identifier 'std'" (2×, location 141:69, injected-token loc unreliable).** NOT
+   from parsePostfixChain 13681 (traced — did not fire). Re-locate among 13990/14341/19990/
+   20061/20171/20246 once 1+2 are fixed (may be a cascade of 1/2).
+
+Reducers (tmp/, gitignored, run WITH the two flags): mapii.mad (target); WORKING controls
+memget.mad / memfwdget.mad (freshly-lexed nested get instantiates fine — proves the bug was
+pack-substitution + uneval, now fixed); packget.mad / deleg.mad hit OTHER unsupported gaps
+(two-pack ctor selection, make_index_sequence) — not faithful, don't chase them.
+
+Built-in trace flags for this area (add to OPTIONAL_CPPFLAGS, then set the env var):
+`MADC_DEBUG_CTORTMPL` (=1: `[tidpack]`, `[getinst]`), `MADC_DEBUG_GETREG` (=1: `[getreg]`
+register/RESOLVE), `MADC_DEBUG_NS_RESOLVE`, `MADC_DEBUG_FNTPL`(+`MADC_DEBUG_FNTPL_DUMP=<key>`).
