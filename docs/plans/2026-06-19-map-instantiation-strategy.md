@@ -851,13 +851,30 @@ Fulltest **656/6/0 — ZERO regression**. Committed unconditionally (not flag-ga
 
 ### REMAINING map<int,int> layers (next, in order) — STILL `--std=c++20 --no-embedded-headers`
 + flags `-DFEATURE_DERIVED_TO_BASE_DEDUCTION -DFEATURE_CONST_TYPES` (touch src/parser.cpp first):
-1. **`first` forward→tuple-temp.** Emitted `__o8` still does: build a `tuple<const int>` temp
-   `__madc_objtmp_35` from `*__ns_std_get__o2(__tuple1)` (a const int), then
-   `first = *__ns_std_forward__o3(&objtmp35)` where `forward__o3` is `forward<tuple<const int>>`.
-   So `std::forward<const int32_t*>(...)` mis-resolves to `forward<tuple<const int>>` + wraps the
-   const-int into a tuple. Expected (gcc): `forward<const int&>(const int&) -> const int&`,
-   `first(const int) = const int&`, NO temp. Investigate forward's explicit-arg
-   (`<const int32_t*>` injected TokenDataType) resolution in the instantiated body.
+1. **`get<0>` RETURN TYPE resolves to the `type` fallback (the real root of the `first`
+   breakage).** Emitted: `type *__ns_std_get__o2(struct tuple_const_int32_t_ *)` where
+   `typedef char type;` (mapii.c line ~30) is madc's UNRESOLVED-type fallback. get<0> on
+   `tuple<const int&>` must return `const int&` (rendered `const int32_t*`), not `type`/char.
+   Its body is `return &*__ns_std___get_helper__o2(__t)` and `__get_helper__o2` returns `int**`
+   — so the chain `std::get -> __get_helper -> _Tuple_impl::_M_head` loses the type. Because the
+   return is `type`(char), the enclosing `first(std::forward<const int32_t*>(get<0>(__tuple1)))`
+   can't bind forward<const int&> to a `type` arg, so forward mis-resolves to the EXISTING
+   `forward__o3` (= `forward<tuple<const int>>`, from the outer piecewise path) and madc wraps
+   the value into a `tuple<const int>` temp `__madc_objtmp_35`, then `first = *forward__o3(&tmp)`.
+   IMPORTANT: the WORKING control tmp/getref.c has the SAME `type*` get return — it only
+   "works" (x=7) by luck (deref of a char* over a small int). So FIX get<0>'s return-type
+   resolution; the forward mis-resolution + tuple temp are a downstream cascade that should
+   vanish once get returns `const int&`. EXACT chain (libstdc++-13 /usr/include/c++/13/tuple
+   :1802): `std::get<__i>(tuple<_Elements...>&)` returns `__tuple_element_t<__i,
+   tuple<_Elements...>>&`. `__tuple_element_t` is an ALIAS template = `typename
+   tuple_element<__i, _Tp>::type`. So the instantiated return must resolve
+   `__tuple_element_t<0, tuple<const int&>>&` → `tuple_element<0, tuple<const int&>>::type` (=
+   `const int&`) → ref-collapse `const int& &` = `const int&`. madc's fn-template
+   return-type computation (`skipped_template_function_return_type`) is producing the `type`
+   fallback instead — i.e. it is NOT resolving the dependent alias-template + class-template
+   `::type` member with the substituted non-type index `__i=0` and type-pack `_Elements`.
+   That is the deepest-layer fix for layer 1. Compare against gcc's
+   `std::get<0>(std::tuple<const int&>)` → `const int&`.
 2. **bug B — empty-pack `second`.** `_Args2={}`, `_Indexes2={}`; the 0-element expansion of
    `second(std::forward<_Args2>(std::get<_Indexes2>(__tuple2))...)` must collapse to `second()`
    (default-construct the mapped `int`). Emitted instead: `second = *forward__o5(&*get__o2(
