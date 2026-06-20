@@ -1264,3 +1264,43 @@ full regression):
      deferred bodies parsed before Pass 0.75; = option 2).
 Option 1 is the most general. bug A + uneval + ref-collapse + bug B remain DONE; this single
 cir_builder ordering fix is all that blocks `map<int,int>`.
+
+### 2026-06-20 (★ MILESTONE) — map<int,int> COMPILES (0 c2mir errors). W5 COMPILE half DONE. Runtime: 2 further layers found.
+
+**COMPILE FIXED (commit 54ff562 + fork 824c7c86, MIR_COMMIT→824c7c8; fulltest 656/6/0/18
+ZERO regr).** The last 3 c2mir errors were a CirBuilder PASS-ORDERING bug (all the
+UPDATE-60..FINAL-5 "instantiation-identity"/completeness framings were wrong): `_Index_tuple<0>`
+IS registered + emitted COMPLETE by Pass 1.97, but appended to top_list TAIL — AFTER the
+Pass-0.75/1/1.95 fn prototypes that take it BY VALUE. c2mir reads top-decls in order → incomplete
+by-value param in a proto before its def. FIX: anchor the last EARLY struct def (end of Pass 0.5);
+Pass 1.97 emits late structs into a temp list + splices them in right after that anchor (after early
+structs, before protos) via two new c2mir helpers `c2mir_op_tail`/`c2mir_op_splice_after`.
+
+**RUNTIME (map<int,int> `m[1]=2` compiles to 0 c2mir errors but ABORTS at runtime; empty
+`map<int,int> m;` compiles+RUNS clean).** Two further layers, BOTH downstream of compile:
+
+1. **operator delete overload mis-resolution (latent; NOT the active blocker).** g++ (CANON)
+   DEFINES `__cpp_sized_deallocation` by default in C++14+ (`g++ -std=c++17/20 -dM -E` confirms;
+   clang++ does NOT). madc matches g++ (the predefined-macros generator captures it) — CORRECT,
+   keep it. But madc then mis-resolves libstdc++ `__new_allocator::deallocate`'s sized
+   `::operator delete(__p, __n*sizeof(_Tp))` (a `size_t` 2nd arg) to the ALIGNED overload
+   `operator delete(void*, std::align_val_t)` (`_ZdlPvSt11align_val_t`) instead of the sized
+   `operator delete(void*, size_t)` (`_ZdlPvm`). [Removing the macro "fixes" the symptom but
+   DIVERGES from g++ canon → rejected as a shortcut.] Fix the overload ranking:
+   `align_val_t` (an `enum class : size_t`) must NOT match a `size_t` arg better-or-equal than
+   `size_t` itself. NOTE this is NOT the active crash — see (2).
+
+2. **★ THE active runtime blocker: _Rb_tree node-pointer / tree-structure corruption.** Even with
+   the plain `operator delete(__p)` path (macro removed), `m[1]=2` STILL aborts: munmap_chunk
+   "invalid pointer" in `_M_drop_node` (mapii) / SIGSEGV @0x8 in `map::~map`→_Rb_tree teardown
+   (mapread). So the freed/traversed NODE POINTER is wrong, independent of operator delete. The
+   insert path (`operator[]`→`_M_emplace_hint_unique`→`_M_create_node`(`_Znwm`)+`_M_insert_node`
+   →`_Rb_tree_insert_and_rebalance`) leaves the tree links corrupt → teardown derefs/frees garbage.
+   Tied to the lingering c2mir WARNINGS: stl_tree.h:427 "incompatible argument type for pointer
+   type parameter" (×many), stl_map.h:102:13 "incompatible pointer types of argument and
+   parameter"/"...return-expr", node_handle.h:64 "incompatible return-expr type" — the broad
+   reference-as-pointer / node-base-vs-node pointer coercions (the W4b / "Layer 10" family).
+   JIT'd code (no source gdb; emit-c isn't gcc-compilable here due to conflicting-types artifacts),
+   so debug by instrumenting the node alloc/insert/erase pointer flow (print node ptrs) or by
+   chasing each "incompatible pointer types" warning to the wrong-typed argument. This is the final
+   map<int,int> step (RUN half of W5).
