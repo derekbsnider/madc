@@ -12152,6 +12152,13 @@ node_t CirBuilder::translate_module(Program *prog)
 		emit_class_struct_with_deps(cdd, top_list, emitted_structs,
 					    emitted_classes, emitting_classes);
 	}
+	// Anchor: the last EARLY struct definition. Late-instantiated struct defs
+	// (Pass 1.97) are spliced in right AFTER this point — i.e. after all early
+	// structs (so their by-value deps on early structs stay defined-before-use)
+	// but BEFORE the function prototypes (Pass 0.75/1/1.95) that take those late
+	// structs by value (else c2mir sees an incomplete by-value param in a proto
+	// emitted before the late definition — map<int,int>'s `_Index_tuple<0>`).
+	node_t late_struct_anchor = c2mir_op_tail(c2m, top_list);
 
 	// Collect user function names. Stored as a member too, so the body
 	// translation (below) can tell a madc-compiled function (whose by-value
@@ -12812,14 +12819,23 @@ node_t CirBuilder::translate_module(Program *prog)
 	// _Head_base<...>) that did NOT exist at Pass 0.5's struct sweep (12074), so
 	// their definitions were never emitted and a by-value local of one is an
 	// "incomplete struct". Sweep struct_map once more, emitting any class not yet
-	// emitted (deps-first, deduped via the same sets). Appended to top_list BEFORE
-	// the function bodies below, so the complete type precedes its use.
+	// emitted (deps-first, deduped via the same sets). Emit into a TEMP list, then
+	// splice it in right after the EARLY struct defs (late_struct_anchor) — BEFORE
+	// the function prototypes (Pass 0.75/1/1.95) that take these late structs BY
+	// VALUE. A plain append-to-tail placed the definition AFTER such a proto, so
+	// c2mir saw an incomplete by-value param (map<int,int>'s `_Index_tuple<0>` param
+	// of pair's indexed ctor → "incomplete struct or union" + "incompatible argument
+	// type for struct/union type parameter"). Splicing after the early structs keeps
+	// deps-first order (late structs' by-value deps on early structs stay
+	// defined-before-use).
+	node_t late_struct_list = list();
 	for (auto &kv : prog->struct_map) {
 		DataDefCLASS *cdd = as_user_class(kv.second);
 		if (!cdd) continue;
-		emit_class_struct_with_deps(cdd, top_list, emitted_structs,
+		emit_class_struct_with_deps(cdd, late_struct_list, emitted_structs,
 					    emitted_classes, emitting_classes);
 	}
+	c2mir_op_splice_after(c2m, top_list, late_struct_anchor, late_struct_list);
 
 	// Pass 2: Function definitions (translated above).
 	for (node_t fd : func_def_nodes)
