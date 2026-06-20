@@ -1644,6 +1644,24 @@ REFINEMENT (the correct Layer 2 fix — two candidate approaches, pick after ver
   concrete-args-gated. This is the precise, bounded next implementation; verify nestnth2 r=7,
   te_lval/te_direct r=7, tv get0=7, default fulltest 656/6, then Layer 3.
 
+ATTEMPT 6 (the gate — IMPLEMENTED behind FEATURE_OPAQUE_SPEC_COMPLETE, then REVERTED) — added a
+CONSERVATIVE non-mutating peek `peek_template_args_clearly_concrete()` (pgm.tokens[0]==`<`; returns
+true ONLY if every arg is a literal / builtin ttDataType / registered type-template-namespace name
+AND there is NO `...` — any unregistered identifier or `...` ⇒ false) and gated the two early opaque
+bails (parser.cpp ~3374/3377) with `partial_spec_map.count(tname) && peek_..concrete()`. RESULT:
+**nestnth2 → r=7**, BUT real `<tuple>` (tv/te_lval/getref_p) errors "Expecting type in using alias"
+@tuple:1782. DEEPER WALL EXPOSED: admitting the CONCRETE `tuple_element<0,tuple<int>>` to real-inst
+makes its BODY parse — `using type = typename _Nth_type<__i,_Types...>::type` — and THAT body
+real-instantiation resolves to NULL. The opaque path "worked" only by NEVER parsing tuple_element's
+body (get<0>'s value path didn't need ::type concrete for a non-ref element). ⇒ Layer 2 is NOT just
+routing: REAL-INSTANTIATING the libstdc++ `tuple_element`→`_Nth_type` chained `using type = typename
+Inner<...>::type` member-alias body is itself broken. nestnth2 works because it lacks the non-type
+leading index on the OUTER level. REVISED FIX SCOPE: the gate (attempt 6) is correct & needed, but
+must be paired with making that chained member-alias body real-instantiate. FIRST reduce the body
+failure with a zero-libstdc++ TWO-LEVEL chain mirroring tuple_element→_Nth_type EXACTLY (non-type
+leading index on BOTH levels + `using type = typename Inner<I,Elts...>::type` forwarding). Multi-step
+engine task. Default baseline 656/6/0/18 never touched (all six attempts gated/reverted).
+
 **LAYER 3 (anticipated, not yet reached) — reference→value lowering in pair construction.** Once
 Layer 2 lands (te_direct → r=7), map's `pair::first(get<0>(forward_as_tuple(key)))` must DEREF the
 returned reference into the `const int` value (the handoff's gdb finding: node value@+32 held the
