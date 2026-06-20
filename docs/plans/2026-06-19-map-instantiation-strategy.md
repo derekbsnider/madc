@@ -1048,3 +1048,53 @@ by-value param threading) in the pair indexed-ctor instantiation — the empty `
 must lower to `name()` with the empty `tuple<>`/`_Index_tuple<>` consistently complete. This is
 the sibling of bug A (which dropped the pattern-`...` for the NON-empty single-element pack);
 bug B is the ZERO-element case for a whole `name(pattern...)` member-init.
+
+### 2026-06-20 (FINAL this session) — bug B FIXED; map's last 3 c2mir errors RELIABLY root-caused (via c2mir-tree instrumentation) to a DUPLICATE/incomplete `_Index_tuple<0>` instantiation. The `_Tp2`/empty-`tuple<>` emit-c signals were RED HERRINGS.
+
+**Bug B FIXED (commit 8b6c7ab, zero regression 656/6/0/18):** a 0-element pack
+expansion of a COMPLEX pattern (`second(std::forward<_Args2>(std::get<_Indexes2>
+(__t2))...)`, `_Args2`/`_Indexes2` empty) now elides the WHOLE pattern → `second()`
+(emits `__this->second = 0;`), instead of the malformed `second(forward<>(get<>()))`.
+instantiate_fn_template_binding: track per-pattern empty/non-empty tid-pack substitution
+since the last `...`; at the pattern-`...` drop, if empty-only, walk `inj` back (paren-
+balanced) to the pattern's `(` (kept) / leading `,` (removed) and truncate.
+
+**THE LAST 3 c2mir ERRORS — RELIABLY ROOT-CAUSED (do NOT trust emit-c here).**
+Instrumented c2mir.c (temporary fprintf at :11960 "incomplete struct or union" and
+:8473 "incompatible argument type for struct/union type parameter"; rebuilt libmir.a
+via `make -f GNUmakefile libmir.a`, ran mapii flag-on, then REVERTED + rebuilt clean).
+The diagnostic output:
+```
+MADC_DBG struct-arg mismatch code=65(N_CALL) left='_Index_tuple_0' right(mode=4)='_Index_tuple_0'
+MADC_DBG incomplete struct: mode=4(TM_STRUCT) tag='_Index_tuple_0'   (×2)
+```
+So all 3 errors are about **`_Index_tuple_0` (= `std::_Index_tuple<0>`)** — NOT `_Tp2`,
+NOT the empty `tuple<>` (those emit-c signals were artifacts; emit-c collapses two
+distinct same-named DataDefs into one printed `struct _Index_tuple_0 {}`). c2mir's tree
+has **TWO incompatible `_Index_tuple<0>` types**: one COMPLETE (the
+`_Build_index_tuple<1>::__type()` temp `__madc_objtmp_33` built in the `__o7` body) and
+one INCOMPLETE (the pair indexed-ctor `__o8`'s parameter type
+`_Index_tuple<_Indexes1...>`, `_Indexes1={0}`). The `__o7`→`__o8` call passes the
+complete one to a param typed as the incomplete one → "incompatible argument type" +
+the param/temp are "incomplete struct" ×2.
+
+ROOT (high-confidence): `_Index_tuple<0>` is instantiated from TWO syntactic origins
+that don't share the instantiation cache (datatype_map keyed by `registered_mangled`,
+parser.cpp ~3677): the `__o8` PARAM type `_Index_tuple<_Indexes1...>` is instantiated as
+an INCOMPLETE dependent placeholder (parser.cpp ~3690-3704) DURING the ctor-signature
+parse while `_Indexes1` is still an unbound non-type pack, and it is never completed/
+superseded when the concrete `_Index_tuple<0>` (the complete `_Build_index_tuple::__type`
+result) is later instantiated — OR the two get different mangled names (the non-type
+`0` mangles differently between the param-pack path and the `__integer_pack`/`__type`
+path), so the cache never dedupes them.
+
+NEXT (map's final step — focused): make the two `_Index_tuple<0>` instantiations resolve
+to ONE complete DataDef. Confirm the two `registered_mangled` strings (add a temp trace
+at parser.cpp:3677 keyed on a name containing "_Index_tuple") — if they DIFFER, fix the
+non-type-pack param-type mangling to match the `__type`/`__integer_pack` path; if they
+MATCH, make the later complete instantiation REPLACE the incomplete placeholder in
+datatype_map (the cache-check at 3681 already falls through when the cached type
+`is_incomplete_template_class_type` + body non-empty — verify that fall-through actually
+re-registers the COMPLETE type under the same key rather than minting a second DataDef).
+This is the last bug for `map<int,int>` (W5 core); bug A + uneval + ref-collapse + bug B
+are all done.
