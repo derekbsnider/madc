@@ -849,7 +849,31 @@ RESULT: `std::get<0>` now instantiates (`getinst` 0 → 33; emitted C has a real
 `type *__ns_std_get__o2(struct tuple_const_int32_t_ *)` with a body). map c2mir errors **5 → 4**.
 Fulltest **656/6/0 — ZERO regression**. Committed unconditionally (not flag-gated).
 
-### REMAINING map<int,int> layers (next, in order) — STILL `--std=c++20 --no-embedded-headers`
+### ⚠️ CORRECTION (2026-06-20, later) — item 1 below is SUPERSEDED; `tuple_element::type` RESOLVES FINE
+The emit-c-based "layer 1" analysis (item 1 + the LAYER-1 NARROWED block) was chasing an
+**emission artifact, NOT the tree bug.** PROVED via a trace in `resolve_class_type_alias`:
+`C<std::tuple<int>>::type` (reducer ps3) and `D<nn::Box<int>>::type` (ps5) BOTH resolve
+correctly to `int` (`found=1`, the `type` alias IS registered on the instantiated class — TYPEDEF
+trace confirms `cls=C_std__tuple_int_ dd=int`). The `typedef char type;` + bare `type` in `--emit=c11`
+output is a SEPARATE real bug: parsing `<tuple>`/`<compare>` registers a **namespace-scope**
+`using type = …` (in `std::__cmp_cat`) into the GLOBAL `user_typedef_names` (parser.cpp ~21233 /
+~26908 take the class-scope-empty branch for a namespace-scope alias), so the emitter renders ANY
+`type`-named type as the bare `type` + a char fallback. ps5 avoids it only because it doesn't
+`#include <tuple>`. → **Two takeaways: (A) `--emit=c11` is UNRELIABLE for judging instantiated
+types while `<tuple>` is included — use the JIT/tree (c2mir errors) instead. (B) a genuine,
+separable bug worth its own fix: a namespace-scope `using X = …;` must NOT pollute the global
+`user_typedef_names` (it is qualified-only); this corrupts `--emit=c11` output (a first-class
+output per backend-strategy).** Reducers ps1–ps6 reproduce the EMIT artifact, not the map tree bug.
+
+**ACTUAL remaining map JIT blocker (tree-level, from `bin/madc … tmp/mapii.mad` WITHOUT --emit):**
+4 c2mir check errors at `/usr/include/c++/13/bits/stl_map.h:102` —
+`incompatible types in assignment to an arithmetic type lvalue` + `incompatible argument type
+for struct/union type parameter` (+ a node_handle.h:64 warning). stl_map.h:102 is `operator[]`'s
+piecewise-construct/emplace path. Investigate on the TREE (the `first`(int) = struct assignment
+is real in the tree, not just emit) — do NOT trust `--emit=c11` here. Also still: "undeclared
+identifier 'std'" (2×) on the JIT path. NEXT SESSION START THERE, not on item 1.
+
+### REMAINING map<int,int> layers (SUPERSEDED emit-c analysis — see CORRECTION above)
 + flags `-DFEATURE_DERIVED_TO_BASE_DEDUCTION -DFEATURE_CONST_TYPES` (touch src/parser.cpp first):
 1. **`get<0>` RETURN TYPE resolves to the `type` fallback (the real root of the `first`
    breakage).** Emitted: `type *__ns_std_get__o2(struct tuple_const_int32_t_ *)` where
@@ -875,6 +899,31 @@ Fulltest **656/6/0 — ZERO regression**. Committed unconditionally (not flag-ga
    `::type` member with the substituted non-type index `__i=0` and type-pack `_Elements`.
    That is the deepest-layer fix for layer 1. Compare against gcc's
    `std::get<0>(std::tuple<const int&>)` → `const int&`.
+
+   **LAYER-1 NARROWED TO A PRECISE ROOT (2026-06-20, systematic-debug w/ MADC_DEBUG_PSPEC
+   traces I added then removed; reducers tmp/ps3.mad..ps6.mad).** The failure is NOT
+   get-specific and NOT the alias chain per se — it is `tuple_element<I, std::tuple<...>>::type`
+   resolving to the `type` (char) fallback. Reduced to a one-template partial spec:
+   `template<typename T> struct C; template<typename H> struct C<std::tuple<H>>{typedef H type;};`
+   then `C<std::tuple<int>>::type` → FAILS (emits `typedef char type;`). The DISCRIMINATOR
+   (ps3 fails / ps5 works): the nested partial-spec arg is **std::tuple** specifically.
+   - `B<std::tuple<H,R...>>` (ps2), `C<std::tuple<H>>` (ps3, no pack), `E2<tuple<H,R...>>`
+     (ps6, unqualified via using) — ALL FAIL.
+   - `A<0,H>` (ps1, non-type-0 + plain type), `D<Box<H,R...>>` (ps4, user variadic + pack),
+     `D<nn::Box<H,R...>>` (ps5, qualified user template) — ALL WORK.
+   So it is NOT the pack, NOT non-type, NOT qualification — it is std::tuple as the nested
+   concrete arg. PROVED via traces that the two cases are IDENTICAL through the whole
+   instantiation: match_partial_specialization SELECTS the spec for BOTH (`nest=1`); both reach
+   the REAL body-parse (`opaque=0`, not the dependent-shell branch); both have `dep_surf=1`,
+   `pack_real_inst=0`; both deduce `subst H=int`; both emit an EMPTY struct (typedefs aren't C
+   struct fields). The ONLY divergence is the post-instantiation **`::type` member-type lookup**:
+   `D<nn::Box<int>>::type` resolves to int, `C<std::tuple<int>>::type` resolves to the char
+   fallback. NEXT: trace the use-site qualified-type resolution of `C<std::tuple<int>>::type`
+   (how the instantiated class's `type` type-alias is registered during the spec body parse and
+   looked up afterward) — the std::tuple arg makes that lookup miss where a plain user template
+   hits. Suspect the instantiation KEY/mangling for a std::tuple-arg'd template differs between
+   the body-parse registration and the use-site `::type` lookup (std::tuple<int>'s use-site
+   spelling/mangled fragment vs the canonical used at instantiation). Reducers ps1–ps6 in tmp/.
 2. **bug B — empty-pack `second`.** `_Args2={}`, `_Indexes2={}`; the 0-element expansion of
    `second(std::forward<_Args2>(std::get<_Indexes2>(__tuple2))...)` must collapse to `second()`
    (default-construct the mapped `int`). Emitted instead: `second = *forward__o5(&*get__o2(
