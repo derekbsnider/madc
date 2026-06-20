@@ -36716,6 +36716,26 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 	return NULL;
     DataDefPTR *ptr_type = getPointerType(referent_type
 					      ? referent_type : expr->datadef());
+    // A reference-returning CALL (`b.get()`, `std::get<0>(t)`) already yields the
+    // referent's ADDRESS — its result type is a DataDefREF (== T*). It must be
+    // routed through the lvalue / TokenAddrExpr path (the CIR builder auto-derefs a
+    // ref-returning call, and the N_ADDR cancels that, leaving the call-result
+    // pointer = the bound reference). Without this it falls into the TokenVar
+    // branch below — a call token DERIVES FROM TokenVar (TokenCallFunc : TokenVar,
+    // TokenCallMethod : TokenMember : TokenCallFunc) — which would wrongly take the
+    // address of the callee FUNCTION (`&Box__get`) instead of the call result. A
+    // plain reference VARIABLE / reference MEMBER read is NOT a call (its var.type
+    // is not a FuncDef), so it keeps its existing TokenAddrOf / TokenAddrExpr path.
+    {
+	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr);
+	FuncDef *cfd = tcf ? dynamic_cast<FuncDef *>(tcf->var.type) : NULL;
+	if ( cfd && cfd->returns_reference() )
+	{
+	    TokenAddrExpr *addr = new TokenAddrExpr(expr, ptr_type);
+	    copy_token_location(addr, expr);
+	    return addr;
+	}
+    }
     if ( TokenTerQ *tt = dynamic_cast<TokenTerQ *>(expr) )
     {
 	TokenTerQ *bound = new TokenTerQ();
