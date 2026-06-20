@@ -266,6 +266,11 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 	return NULL;
     }
 
+    // Debug: MADC_DUMP_MIR=1 dumps the textual MIR (proto/func signatures) to
+    // stderr before link/run — for inspecting generated function ABI.
+    if (getenv("MADC_DUMP_MIR"))
+	MIR_output(ctx, stderr);
+
     out_builder = builder;
     return mod;
 }

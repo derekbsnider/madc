@@ -1979,7 +1979,11 @@ void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 					append(specs, simple(params[i].specs[j]));
 			}
 			node_t pdecl_list = list();
-			if (params[i].ptr && !params[i].cls)
+			// A pointer level applies to scalar params AND to a class/struct
+			// param when ptr is set (`struct X *` — e.g. a typed forward proto
+			// for an in-module member/base dtor `void d(struct X *)`). cls with
+			// ptr=false stays by-value (the default for native_param_shape).
+			if (params[i].ptr)
 				append(pdecl_list, pointer());
 			node_t pdecl = node2(N_DECL, ignore(), pdecl_list);
 			append(param_list, node2(N_TYPE, specs, pdecl));
@@ -4296,10 +4300,20 @@ bool CirBuilder::class_member_destruct(DataDefCLASS *cdd,
 			FuncDef *dt = dynamic_cast<FuncDef *>(dv->type);
 			external = dt && !dt->emit_symbol.empty();
 		}
-		if (external)
+		if (external) {
 			need_output_extern(sym.c_str(), false, { { {N_VOID}, true } });
-		else
+		} else {
 			referenced_funcs.insert(sym);
+			// Emit a TYPED forward prototype `void sym(struct mc *)` for the
+			// in-module member dtor. Without a forward proto, an aggregate dtor
+			// emitted before the member dtor's definition calls it as an
+			// implicit-int K&R variadic function — which mis-wires the `this`
+			// argument (ABI mismatch: a non-variadic 1-arg callee reads `this`
+			// from the wrong place) → null-`this` deref in the member dtor (the
+			// std::map/std::set `_Rb_tree` empty-container dtor SIGSEGV@0x8). The
+			// proto matches the definition's param type, so no conflicting-types.
+			need_output_extern(sym.c_str(), false, { { {}, true, mc } });
+		}
 		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
 				   id(m.first.c_str(), origin));
 		node_t addr = node1(N_ADDR, fld, origin);
@@ -12704,7 +12718,24 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (emitted_synth_dtors.count(cdd)) continue;
 		emitted_synth_dtors.insert(cdd);
 		node_t dd = synth_dtor_def(cdd);
-		if (dd) append(top_list, dd);
+		if (dd) {
+			// The synth dtor body calls its members' dtors. Those calls need a
+			// forward prototype BEFORE this definition, or c2mir treats them as
+			// implicit-int K&R variadic functions — mis-wiring the `this` arg
+			// (ABI mismatch) → null-`this` deref in the member dtor (the
+			// std::map/std::set `_Rb_tree` empty-container dtor SIGSEGV@0x8).
+			// class_member_destruct queued typed `void d(struct M *)` protos into
+			// m_output_externs (added AFTER the Pass-0.8 flush, so not yet
+			// emitted); flush the new ones here, ahead of the definition that
+			// references them.
+			for (auto &kv : m_output_externs) {
+				if (emitted_extern_syms.count(kv.first)) continue;
+				if (typed_proto_syms.count(kv.first)) continue;
+				append(top_list, kv.second);
+				emitted_extern_syms.insert(kv.first);
+			}
+			append(top_list, dd);
+		}
 	}
 
 	// Pass 1.7: complete-object destructors for classes with virtual bases. The
@@ -12854,11 +12885,23 @@ node_t CirBuilder::translate_module(Program *prog)
 // node iterates its u.ops children. Every node in a CirBuilder tree is an
 // arena-allocated cir_node, so CIR_NODE() is always valid here.
 
-static void cir_dump_node(FILE *f, node_t n, int indent)
+static void cir_dump_node(FILE *f, node_t n, int indent, std::set<node_t> *seen)
 {
 	if (!n) return;
+	// Cycle / shared-subtree guard: a CIR tree is a DAG (SHARE nodes point at
+	// shared subtrees, and some library types — e.g. __max_size_type — form
+	// genuine cycles, sometimes via lazily-generated distinct nodes). Re-descending
+	// loops forever, so (a) print a node only once and mark later occurrences, and
+	// (b) hard-cap recursion depth as a backstop against lazily-generated chains.
+	if (indent > 800) {
+		for (int i = 0; i < 80 && i < indent; i++) fputc(' ', f);
+		fprintf(f, "<max depth>\n");
+		return;
+	}
+	bool already = seen && !seen->insert(n).second;
 	for (int i = 0; i < indent; i++) fputc(' ', f);
 	fprintf(f, "%s", c2mir_node_code_name((c2mir_node_code_t)n->code));
+	if (already) { fprintf(f, " <shared, dumped above>\n"); return; }
 
 	switch (n->code) {
 	case N_I: case N_L:  fprintf(f, " %lld", (long long)n->u.l); break;
@@ -12887,15 +12930,16 @@ static void cir_dump_node(FILE *f, node_t n, int indent)
 		for (int i = 0; ; i++) {
 			node_t op = c2mir_node_op(n, i);
 			if (!op) break;
-			cir_dump_node(f, op, indent + 2);
+			cir_dump_node(f, op, indent + 2, seen);
 		}
 	}
 }
 
 void cir_dump_nodes(FILE *f, node_t tree)
 {
+	std::set<node_t> seen;
 	fprintf(f, "=== CIR NODE TREE (+madc) ===\n");
-	cir_dump_node(f, tree, 0);
+	cir_dump_node(f, tree, 0, &seen);
 	fprintf(f, "=== END CIR NODE TREE ===\n");
 }
 

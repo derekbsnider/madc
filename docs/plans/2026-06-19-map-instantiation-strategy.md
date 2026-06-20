@@ -1802,3 +1802,37 @@ Systematic-debugging pass on the empty-container dtor crash (task #7). Findings,
   default ctor's member-init calls only when the class is "directly needed"; an INTERMEDIATE class
   reached only as a subobject doesn't get its member-ctor calls injected. Fix: make implicit
   default-ctor synthesis recursive through subobject classes. Reducer tmp/bisect.mad.
+
+### 2026-06-20 (session 2 cont.) — ★★★ EMPTY-CONTAINER DTOR CRASH **FIXED** (the null-`this`): synth aggregate dtor called its member dtor with no forward proto → implicit-variadic K&R call → ABI mismatch.
+Continued from the localization above (lowering correct, bug in tree→MIR). Used a new
+`MADC_DUMP_MIR=1` hook (MIR_output of the textual MIR before run; added to madc_cir.cpp) +
+gdb disasm to pin it:
+- gdb: the dtor reads `this` from **rcx** (SysV 4th arg reg) while the caller passes it in
+  **rdi** (1st) — `rdi`=valid `&obj`, `rcx`=0 → null `this` → deref `_M_parent`@+8 = SIGSEGV@0x8.
+- MIR dump: `set_dtor` calls `_Rb_tree_dtor` via `call proto0, _Rb_tree_dtor, i_0, U_1`, and
+  `proto0: proto i32, ...` — the **implicit-int variadic** prototype (the undeclared-function
+  fallback). The void `_Rb_tree_dtor(this)` got the implicit variadic ABI → `this` mis-placed.
+ROOT CAUSE (ordering): the member-dtor-chaining call in `CirBuilder::class_member_destruct`
+(non-external branch) only did `referenced_funcs.insert(sym)` — NO typed forward prototype. And
+Pass 0.75 (typed protos for referenced funcs) runs BEFORE Pass 1.6 (synth aggregate dtor defs),
+which is when the synth dtor first *references* the member dtor — so the member dtor (an
+instantiated `_Rb_tree` dtor) never got a forward proto before the `set_dtor` definition that
+calls it → c2mir parsed the call as implicit-int variadic. This is the documented
+"implicit-int K&R call → struct args mis-wire" failure mode (cir_builder.cpp ~12304).
+FIX (cir_builder.cpp, UNCONDITIONAL — not flag-gated):
+  1. `class_member_destruct` non-external branch now emits a typed `void d(struct M *)` forward
+     proto via `need_output_extern(sym, false, {{{}, true, mc}})` (matches the in-module def, so
+     no conflicting-types).
+  2. `need_output_extern` honors `ptr` when `cls` is set → emits `struct X *` (was: cls forced
+     by-value). Safe: every existing cls caller passes ptr=false (native_param_shape).
+  3. Pass 1.6 flushes newly-added `m_output_externs` protos to top_list BEFORE each synth dtor
+     definition (they're added after the Pass-0.8 flush, so otherwise emitted too late).
+Also: `MADC_DUMP_MIR` debug hook (madc_cir.cpp) + `cir_dump_nodes` cycle/depth guard.
+VERIFIED (flag-on): tmp/{setempty,mapempty,wrapmap,mapsize,mapbe}.mad all run CLEAN (were
+SIGSEGV@0x8). `map<int,int> m; m[1]=2;` (tmp/mapii.mad) now COMPILES past the dtor and fails only
+at the SEPARATE insert/pair layer: `stl_map.h:102 too many arguments` + `incompatible argument
+type for pointer type parameter` — the piecewise-pair/tuple_element W2/W4 wall (the Layer-2 work
+documented above), NOT the dtor. Default fulltest regression: <pending>.
+**NEXT for map RUN:** the insert path — `operator[]` piecewise pair construction at stl_map.h:102
+("too many arguments" = wrong instantiation arity in the pair/tuple_element/get chain). That is the
+W2/W4/Layer-2 track already mapped in the earlier entries.
