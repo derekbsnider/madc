@@ -1098,3 +1098,23 @@ datatype_map (the cache-check at 3681 already falls through when the cached type
 re-registers the COMPLETE type under the same key rather than minting a second DataDef).
 This is the last bug for `map<int,int>` (W5 core); bug A + uneval + ref-collapse + bug B
 are all done.
+
+### 2026-06-20 (final, cont.) — the `_Index_tuple<0>` dedup is NOT at instantiate_template_use@3677 (verified by trace); two creation paths to reconcile
+
+Added a temp trace at the instantiate_template_use cache check (parser.cpp:3677,
+`datatype_map.find(registered_mangled)`, gated MADC_DBG_IDXT, reverted) — it did NOT
+fire for any `_Index_tuple` instantiation on mapii flag-on. So `_Index_tuple<0>` is NOT
+created/deduped through that standard template-use cache; do not look there.
+
+The two `_Index_tuple<0>` DataDefs come from these paths (next session: instrument
+each, compare the resulting DataDef identity + completeness):
+- `_Build_index_tuple<1>::__type()` in the pair piecewise→indexed ctor mem-init
+  delegation — resolved around parser.cpp:23397 (the `: pair(__first, __second,
+  _Build_index_tuple<...>::__type(), ...)` handling) → the COMPLETE `_Index_tuple<0>`
+  temp. Likely via a member-alias/`__type` resolution (resolve_class_type_alias /
+  instantiate_template_alias_use) + the `__integer_pack` expansion (parser.cpp:2931).
+- the pair indexed-ctor `__o8` PARAMETER type `_Index_tuple<_Indexes1...>` (non-type
+  pack {0}) — the non-type-pack deduction/substitution around parser.cpp:30672/31525 →
+  the INCOMPLETE copy.
+FIX: make both resolve to one complete DataDef (shared cache key, or have the complete
+instantiation supersede the param-type placeholder). This is the last bug for map<int,int>.
