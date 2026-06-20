@@ -1597,6 +1597,22 @@ REFINEMENT (the correct Layer 2 fix — two candidate approaches, pick after ver
   te_direct r=7, tv get0=7, default fulltest 656/6, THEN Layer 3. This is per systematic-debugging
   Phase 4.5 (3 fixes failed ⇒ the approach, not the spot, is wrong) — do it as a scoped design pass.
 
+  ATTEMPT 4 (diagnostic only, reverted) — re-applied resolve_typename 4785 vri + a trace at the
+  ~3711 bail gated on `tname.find("Nth_type")`. The trace **did NOT fire** for the failing tv/te_lval
+  (dependent `_Nth_type` during the tuple_element DEFINITION parse), yet the "Expecting type in using
+  alias" error still appeared. ⇒ The dependent `_Nth_type<__i,_Types...>` resolution does NOT reach
+  `instantiate_template_use`'s 3711 — so my control-flow model is WRONG about where/how it's
+  instantiated (it is NOT the resolve_typename→fallback→instantiate_template_use path I assumed; it
+  may go through `instantiate_opaque_template_use` directly, or a member-alias body path that never
+  re-instantiates _Nth_type, or resolve_declared_type_token via a different branch). MANDATORY FIRST
+  STEP next session BEFORE any fix: MAP THE ACTUAL PATH — add an entry trace to BOTH
+  `instantiate_template_use` AND `instantiate_opaque_template_use` (print tname + a backtrace marker)
+  and to resolve_typename_type_token / resolve_declared_type_token / the using-alias resolver
+  (parser.cpp 21214), run tv.mad (the dependent, currently-WORKING-without-changes baseline) to learn
+  exactly which function instantiates `_Nth_type` and resolves its `::type` to the dependent
+  placeholder — THEN compare to te_lval (concrete). Only once the real path is mapped should a fix be
+  attempted. The naive resolve-site vri changes perturb a path that isn't the one in play.
+
 **LAYER 3 (anticipated, not yet reached) — reference→value lowering in pair construction.** Once
 Layer 2 lands (te_direct → r=7), map's `pair::first(get<0>(forward_as_tuple(key)))` must DEREF the
 returned reference into the `const int` value (the handoff's gdb finding: node value@+32 held the
