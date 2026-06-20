@@ -1118,3 +1118,54 @@ each, compare the resulting DataDef identity + completeness):
   the INCOMPLETE copy.
 FIX: make both resolve to one complete DataDef (shared cache key, or have the complete
 instantiation supersede the param-type placeholder). This is the last bug for map<int,int>.
+
+### 2026-06-20 (FINAL-2) — empty-struct completion attempt: necessary insight, NOT sufficient; the `_Index_tuple<0>` dedup is ARCHITECTURAL (instantiation identity). Reverted; bug B + parser fixes stay.
+
+Pinned the incomplete-`_Index_tuple<0>` creation precisely (gdb on the DataDefSTRUCT ctor):
+it's made an INCOMPLETE dependent placeholder in **`instantiate_opaque_template_use`
+(parser.cpp ~3129)**, reached via the opaque routing at **3353-3355** — `_Index_tuple`
+is variadic (non-type pack `size_t... _Indexes`), `template_pack_real_instantiable`
+rejects non-type packs, so it never real-instantiates even with a concrete `<0>`. Both
+`_Index_tuple` (empty pack, from a typedef in a template DEF) and `_Index_tuple_0`
+(concrete, from a `using` alias) are created there once each (DataDefSTRUCT `(n,s,d)`
+incomplete-path; the member-path ctor never fires; `TokenDataType::definition` is a
+shared `DataDef&`, so clones share one DataDef).
+
+ATTEMPTED FIX (reverted): in instantiate_opaque_template_use, when the body is an empty
+`{ }` (tkOpBrc directly followed by tkClBrc) AND args are concrete (no `...`) AND the
+template has NO partial spec, create a COMPLETE struct (`is_complete=true; finalize()`)
+instead of a placeholder. Findings from 3 iterations:
+1. **Unguarded → SIGSEGV.** Completing `_Nth_type<0,const int&>` (whose PRIMARY body is
+   empty but whose partial SPECS supply `using type = ...`) drops its `::type`, so
+   `tuple_element`'s `using type = typename _Nth_type<…>::type` resolves NULL →
+   "Expecting type in using alias" Throw → a dangling `struct_map` entry → crash in
+   `CirBuilder::translate_module` / `as_user_class` (cir_builder.cpp:375, NULL vtable).
+   → Guard added: skip templates with `partial_spec_map.count(tname)`. (`typename` IS
+   handled — resolve_declared_type_token:4994 → resolve_typename_type_token; the NULL
+   came from `_Nth_type::type`, not the `typename` keyword.)
+2. **Concrete-args guard** (`arg.find("...")==npos`) added so a dependent
+   `_Index_tuple<_Indexes...>` (template-DEF parse) stays a placeholder.
+3. **Guarded → back to 3 c2mir errors (NO crash).** Trace confirmed `_Index_tuple`
+   and `_Index_tuple_0` BOTH hit the completion (empty_body=1 concrete=1 has_spec=0),
+   yet c2mir STILL reports `_Index_tuple_0` incomplete. So setting `is_complete=true +
+   finalize()` on the shared DataDef did NOT make the cir/c2mir emission treat it as a
+   complete struct. ⇒ EITHER (a) the cir_builder's empty-struct completeness signal is
+   something OTHER than `is_complete` (an empty completed struct may still emit as a
+   forward `struct X;` because it has 0 members), OR (b) the `__o8` param-type
+   `_Index_tuple_0` is a SECOND DataDef created via a path that is NOT the opaque ctor
+   and NOT the member ctor (a DataDefCLASS COPY — untraced), so it never shares the
+   completion. The c2mir diag `struct-arg mismatch left='_Index_tuple_0'
+   right='_Index_tuple_0'` (same name, different type) supports (b).
+
+NEXT (architectural, the real last step): reconcile `_Index_tuple<0>` to ONE complete
+DataDef across creation paths. Two concrete sub-investigations:
+  (i) Why `is_complete=true`+`finalize()` on the opaque struct doesn't yield a complete
+      c2mir struct — inspect CirBuilder's struct-decl emission for a 0-member completed
+      struct (does it emit a body `{}` or a forward decl?). Likely the real lever: make
+      a spec-less, concrete, empty-body variadic instantiation emit a complete `{}`.
+  (ii) Trace the DataDefCLASS COPY constructor for "Index_tuple" (the untraced path) to
+      find the second representation and dedupe it against the opaque cache key.
+This needs dedicated design + full regression (completing empty-primary-with-spec
+templates regresses `_Nth_type`/`tuple_element` — the guard is mandatory). bug A +
+uneval + ref-collapse + bug B remain DONE; this single instantiation-identity bug is all
+that blocks `map<int,int>`.
