@@ -1169,3 +1169,34 @@ This needs dedicated design + full regression (completing empty-primary-with-spe
 templates regresses `_Nth_type`/`tuple_element` — the guard is mandatory). bug A +
 uneval + ref-collapse + bug B remain DONE; this single instantiation-identity bug is all
 that blocks `map<int,int>`.
+
+### 2026-06-20 (FINAL-3) — SHARPEST root-cause: `_Index_tuple<0>` is NEVER in struct_map at emission ⇒ no definition emitted ⇒ c2mir "incomplete". Only the empty-pack `_Index_tuple<>` is registered.
+
+Used the existing CirBuilder Pass-0.5 emission trace (MADC_DEBUG_TUPLE, extended to
+"Index_tuple", then reverted). At c2mir-tree emission, iterating `prog->struct_map`, the
+ONLY `_Index_tuple*` key present is the empty-pack **`_Index_tuple`**:
+`[EMIT] key='_Index_tuple' as_user=1 base=3(btClass) raw=255(dtRESERVED) ref=1(rtValue)
+members=0 size=0 dep_ph=1`. **`_Index_tuple_0` is NOT a struct_map key at emission** —
+so its `struct _Index_tuple_0 {}` definition is never emitted, yet `__o8`'s param
+(`_Index_tuple<_Indexes1...>`→`_Index_tuple<0>`) and the `__o7` temp both reference it →
+c2mir "incomplete struct or union" (×2) + the same-tag "struct-arg mismatch" (the
+referenced-but-undefined `_Index_tuple_0` vs anything). (emit-c TEXT renders a `{}` for
+it — the emit-c and c2mir-NODE paths diverge; trust the c2mir node path.)
+
+So the precise gap: the `_Index_tuple<0>` DataDef referenced by `__o8`'s param is created
+but NOT registered in `struct_map` (the empty-pack `_Index_tuple<>` IS). Most likely the
+`__o8` param-type resolution inside `instantiate_fn_template_binding` resolves
+`_Index_tuple<0>` via a path that does NOT go through `instantiate_opaque_template_use`'s
+`struct_map[mangled]=fwd` (or it's created in a speculative/deferred context whose
+struct_map insert is rolled back while the DataDef pointer escapes into the persistent
+param type). `is_complete`/`finalize()` on the opaque-cached struct (FINAL-2) couldn't
+help because that's a DIFFERENT object from the param's unregistered one.
+
+NEXT (precise, the last map step): gdb-break the `DataDefSTRUCT`/`DataDefCLASS` ctor for
+`n=="_Index_tuple_0"` on the CURRENT default build and read the creation stack — it will
+show the `__o8` param-type resolution path. Ensure that path registers
+`_Index_tuple<0>` in `struct_map` (and emits it as a complete empty `{}` struct, with the
+mandatory "no partial spec" guard so `_Nth_type`/`tuple_element` are untouched), OR
+canonicalizes the param type to the same DataDef the `_Build_index_tuple::__type()` temp
+uses. This is an instantiation-REGISTRATION fix (architectural), needs full regression.
+bug A + uneval + ref-collapse + bug B remain DONE.
