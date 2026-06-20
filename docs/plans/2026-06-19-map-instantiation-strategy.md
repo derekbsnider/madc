@@ -1444,3 +1444,69 @@ only te_direct/te_aliasref =1 it implicates the `tuple_element::type` resolution
 the warning is at `_M_head`'s return. (3) make the reference-member read context-aware (no deref
 when the consumer wants the reference). Reducers tmp/te_ref|te_direct|te_aliasref|getref.mad,
 flag-on, PRINTF (exit codes mislead).
+
+### 2026-06-20 (resume cont.) — bug#2 RE-ROOT-CAUSED bottom-up via zero-libstdc++ reducers. NOT reference-collapse in `_M_head`. It is a 2+ LAYER template-resolution chain. Layer 1 (variadic concrete-ref ARG SPELLING) FIXED.
+
+The "_M_head reference-collapse" hypothesis above was WRONG (getref_p `int x = std::get<0>(tuple<const int&>)` RUNS x=7 — get<0> returns the correct reference; the value-read deref already works). The real defect is UPSTREAM of get, in resolving the variable's declared type `tuple_element<0,tuple<const int&>>::type`, which falls to the `type` FALLBACK so the var's initializer is silently DROPPED (`type r;` no init → r=uninitialized garbage; confirmed at TREE level: k=42 → r=1, r does NOT track k). Discriminator (all flag-on, PRINTF):
+- getref_p `int x = get<0>(t)` → **x=7** (value-init works; get is fine)
+- te_direct `tuple_element<0,tuple<const int&>>::type r = get<0>(t)` → **r=1** (init dropped)
+- te_lval  `tuple_element<…>::type r = k` (plain lvalue init, NO get) → **r=41** (init dropped — so NOT a get bug)
+- tv `tuple<int>` get → 7;  ps1–ps6 (tuple<int> value element, `= 9`) → all 9
+
+**ZERO-libstdc++ reduction** (the key): `template<typename...E> struct V{}; template<typename T> struct C; template<typename H> struct C<V<H>>{typedef int type;}; C<V<const int&>>::type r=5;`
+- `C<V<const int&>>::type` → PARSE ERROR "Expecting identifier after type"  (tmp/vmatch.mad)
+- `C<W<const int&>>::type` (W non-variadic) → WORKS r=5  (tmp/wmatch.mad)
+- `C<V<int>>::type` (value element) → WORKS  (tmp/vval.mad)
+- `C<V<const int&>>` alone, no `::type` → OK  (tmp/vnotype.mad)
+So the trigger is exactly **variadic-inner-template + reference element + `::type`**. tmp/vref.mad,
+vmatch.mad, wmatch.mad, vval.mad, vnotype.mad, wref.mad (gitignored).
+
+**LAYER 1 — variadic concrete-ref ARG SPELLING (FIXED, commit pending regression).** Traced
+`unify_nested_spec_pattern_arg`: the concrete spelling of the variadic `V<const int&>` was
+`V<constint&>` (NO space — `carg[0]='constint&'`) vs the non-variadic `W<const int32_t&>`. ROOT:
+`instantiate_opaque_template_use` (the variadic/pack path, parser.cpp ~3053) builds its arg
+spelling via `collect_template_argument_spelling` → raw `template_token_fragment` concat with NO
+spaces (`const`+`int`+`&`=`constint&`), bypassing `template_type_arg_spelling` (the real path,
+which yields `const int32_t&`). `resolve_arg_spelling_datadef("constint&")` can't peel `const `
+(no space) → NULL → H deduction fails → partial spec REJECTED → C falls to the incomplete PRIMARY
+→ no `type` alias → `::type` chain (parseDeclaration 36917) fails → "Expecting identifier". FIX
+(parser.cpp collect_template_argument_spelling ~2407): insert a space between two adjacent WORD
+fragments (`const`+`int`→`const int`; `::`/`<`/`&`/`*`/`,` untouched). sanitize/despace normalize
+it away for mangled keys + canonical compares (no key churn within a path). RESULT: vmatch→r=5,
+vref→r=7 (were parse errors); te_lval's concrete is now `std::tuple<const int&>` (round-trips);
+**map<int,int> now PARSES through to runtime** (was a parse-level failure). DEFAULT regression
+running (b91ql0m4n) to gate the commit.
+
+**LAYER 2 — `_Nth_type<0,const int&>` instantiates OPAQUE (no `type` alias). STILL OPEN — the map RUN blocker.** With Layer 1 in, te_lval's `tuple_element<0,tuple<const int&>>` DOES match its
+spec and instantiate; `resolve_class_type_alias` trace:
+```
+_Nth_type_0_const_int_                    find type -> <MISS> (n_aliases=0)   <-- empty opaque shell
+tuple_element_0_std__tuple_const_int__    find type -> _Nth_type_0_const_int___type   <-- placeholder
+```
+So `tuple_element<…>::type` = `_Nth_type<0,const int&>::type`, but `_Nth_type<0,const int&>`
+instantiated as an EMPTY opaque placeholder (n_aliases=0) — its partial spec `_Nth_type<0,_Tp0,
+_Rest...>{using type=_Tp0;}` body was never parsed → `::type` MISS → tuple_element's `type` stays
+the unresolved placeholder → the `type` (char) fallback → var-init dropped. `_Nth_type` is variadic
+(pack `_Rest`) + has a non-type leading param (`size_t _Np`), so it routes to
+`instantiate_opaque_template_use` UNLESS `allow_variadic_real_inst`/`try_spec_real_inst` is set
+(parser.cpp ~3360-3383). `resolve_typename_type_token` (4770-4774) DOES set the flag around the
+head instantiate, so `typename _Nth_type<0,const int&>::type` SHOULD real-instantiate the spec —
+but the trace shows it didn't (opaque, n_aliases=0). NEXT (flag-on instrumentation, blocked by the
+running regression): trace `instantiate_opaque_template_use` entry for tname=`_Nth_type` printing
+`allow_variadic_real_inst`/`variadic_real_inst_sticky`/`try_spec_real_inst` + whether
+`match_partial_specialization` is reached, to learn WHY `_Nth_type<0,const int&>` bails opaque
+despite resolve_typename_type_token's flag. Candidates: (a) tuple_element's `using type = typename
+_Nth_type<__i,_Types...>::type` body is parsed via a path that does NOT go through
+resolve_typename_type_token (so the flag isn't set when _Nth_type instantiates); (b) the spec
+match for non-type `0` + empty-pack `_Rest` still bails to opaque; (c) the flag is cleared (3372)
+before _Nth_type and not re-set. Reducer to isolate WITHOUT libstdc++: a user `template<size_t N,
+typename...Ts> struct Nth; template<typename T0,typename...R> struct Nth<0,T0,R...>{using type=T0;};`
+inside another template's `using type = typename Nth<I,Ts...>::type;` — does the NESTED-in-body
+Nth real-instantiate? (nth.mad — Nth used DIRECTLY at top level — already works r=7; the gap is
+NESTED in a `using type=` member-alias body.)
+
+**LAYER 3 (anticipated, not yet reached) — reference→value lowering in pair construction.** Once
+Layer 2 lands (te_direct → r=7), map's `pair::first(get<0>(forward_as_tuple(key)))` must DEREF the
+returned reference into the `const int` value (the handoff's gdb finding: node value@+32 held the
+reference POINTER, not the int → heap corruption → teardown munmap abort). Re-verify with mapii.mad
++ gdb on `_Rb_tree_insert_and_rebalance` after Layer 2.

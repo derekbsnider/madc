@@ -2404,7 +2404,28 @@ TokenBase *Program::collect_template_argument_spelling(TokenBase *first,
 	    t = nextToken();
 	    continue;
 	}
-	spelling += template_token_fragment(t);
+	{
+	    // Separate two adjacent WORD fragments (`const`+`int`, `unsigned`+`long`)
+	    // with a space so a multi-word type argument spells `const int&`, not the
+	    // unparseable `constint&`. Without it the canonical_cpp_spelling of an
+	    // opaque/variadic instantiation (e.g. `tuple<const int&>`, a pack template)
+	    // does NOT round-trip through resolve_arg_spelling_datadef — `const ` can't
+	    // be peeled off `constint`, so partial-spec deduction of the element type
+	    // fails and the spec is wrongly rejected for the primary (map<int,int>'s
+	    // `tuple_element<0, tuple<const int&>>::type`). Only inserted between two
+	    // identifier/keyword chars; `::`, `<`, `&`, `*`, `,` keep tight (sanitize/
+	    // despace normalize the space away for mangled keys and canonical compares).
+	    std::string frag = template_token_fragment(t);
+	    if ( !spelling.empty() && !frag.empty() )
+	    {
+		char prev = spelling.back(), cur = frag[0];
+		bool prev_word = isalnum((unsigned char)prev) || prev == '_';
+		bool cur_word = isalnum((unsigned char)cur) || cur == '_';
+		if ( prev_word && cur_word )
+		    spelling += ' ';
+	    }
+	    spelling += frag;
+	}
 	if ( tokens_out )
 	    tokens_out->push_back(t->clone());
 	if ( t->id() == TokenID::tkLT )
