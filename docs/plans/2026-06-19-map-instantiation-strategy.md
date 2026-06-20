@@ -1857,3 +1857,20 @@ TWO mismatches (both the W2/W4/Layer-2 piecewise-pair + tuple<const int&> track)
 NEXT for map RUN: fix the piecewise-pair ctor call-symbol match (a) and the tuple<const int&>
 first-arg instantiation (b). This is the existing W2/W4 track (UPDATE 53-65), now isolated to the
 construct_at→pair-ctor call.
+
+### 2026-06-20 (session 2 cont.) — INSERT root-cause REFINED: construct_at resolves the pair ctor to the COPY ctor, not the piecewise ctor.
+Sharper than the entry above. The three pair ctor symbols in tmp/mapii.c:
+- `pair..._pair...(pair *p0, pair *p1)` — the COPY ctor (2 params, bare name, line ~981).
+- `pair..._pair...__o7(pair*, piecewise_construct_t, tuple<int> __first, tuple __second)` — the
+  PIECEWISE ctor (line ~1254).
+- `pair..._pair...__o8(pair*, tuple<int>*, tuple*, _Index_tuple_0, _Index_tuple)` — the indexed
+  delegating ctor (line ~1253).
+`__ns_std_construct_at__o2` (line ~1796) emits `pair..._pair...(location, *fwd(piecewise),
+*fwd(tuple<const int&>), *fwd(tuple<>))` — i.e. it calls the **bare COPY-ctor symbol with 4
+arguments** → c2mir "too many arguments" (4 vs the copy ctor's 2). So `std::construct_at`'s
+`::new(p) pair(forward<Args>(args)...)` did NOT resolve to the piecewise ctor (`__o7`); the ctor
+overload-resolution in the instantiated construct_at body picked (or defaulted to) the copy ctor's
+bare symbol. NEXT (insert): make the placement-new/ctor call inside an instantiated std::construct_at
+resolve `pair(piecewise_construct_t, tuple, tuple)` to the piecewise ctor `__o7` (overload by the
+forwarded arg types), AND instantiate `__o7`'s first tuple param as tuple<const int&> not tuple<int>.
+This is the core W2/W4 piecewise-pair work.
