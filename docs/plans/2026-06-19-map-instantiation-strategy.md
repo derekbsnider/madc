@@ -1336,3 +1336,26 @@ This is the broad W4b reference-lowering work (task #5), now pinpointed to the p
 value-construction in map's operator[]. Reducer: tmp/mapii.mad (gdb break the real
 _Rb_tree_insert_and_rebalance, `x/5gx` the node — value@+32 should be {1,2}). The COMPILE
 half of W5 is DONE (committed 54ff562); this reference-deref is the RUN half.
+
+### 2026-06-20 (RUNTIME — deepest root: get__o2 returns the `type` FALLBACK in the map context)
+
+Emit-c (flag-on) smoking gun: in map's deferred pair-indexed-ctor body, the instantiated
+`std::get<0>` is `type *__ns_std_get__o2(struct tuple_const_int32_t_ *)` — return type is the
+UNRESOLVED `type` fallback (char), NOT `const int&` (→ `int*`). `__o8` does
+`__this->first = *__ns_std_forward__o5(&*__ns_std_get__o2(__tuple1))` (forward__o5 is
+`int*(int*)`). With get mis-typed `type*` and the chain mishandled, `first` (const int) ends
+up holding the reference POINTER (gdb: node value@+32 = ~node+48, an address) instead of the
+int 1 → heap overflow → teardown free aborts.
+
+So the deepest cause is **tuple_element<0, tuple<const int&>>::type resolving to the `type`
+fallback specifically in map's DEFERRED-body instantiation context** — the standalone
+reducer `getref.mad` (`int x = std::get<0>(tuple<const int&>)`) resolves it correctly
+(returns int*, runs x=7), but the map path's get__o2 (instantiated lazily inside the pair
+indexed ctor during the CIR reachability fixpoint) loses that resolution and falls to
+`type`. This is the W4b ref-element/tuple_element chain in a deferred context. FIX directions:
+ensure the deferred instantiation of `std::get<__i>(tuple<_Elements...>&)`'s return alias
+`__tuple_element_t<__i,tuple<_Elements...>>` resolves the same as the eager path (carry the
+instantiation context so `tuple_element<0,tuple<const int&>>::type` → `const int&` → int*),
+and ensure the reference→value init derefs. Reducer: build flag-on, `--emit=c11 tmp/mapii.mad`,
+grep `__ns_std_get__o2` — its return must be `int*`, not `type*`. This is the final RUN-half
+blocker; COMPILE half done (54ff562).
