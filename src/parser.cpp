@@ -2308,6 +2308,30 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
     if ( adt->str == "wchar_t" || adt->str == "char16_t"
       || adt->str == "char32_t" )
 	return cv_spelling + adt->str;
+#ifdef FEATURE_CONST_TYPES
+    // A REFERENCE template argument (`tuple<const int&>`) must render with `&`,
+    // NOT the ref-as-pointer `*` form. madc lowers references to pointers
+    // (DataDefREF IS-A DataDefPTR), so a reference's name/canonical spelling is
+    // the `*`-form — which is IDENTICAL to a real pointer's. Baking that into an
+    // instantiation's canonical_cpp_spelling LOSES the reference identity: when
+    // that spelling is later re-resolved during deduction
+    // (split_template_id_spelling -> resolve_arg_spelling_datadef), `const int32_t*`
+    // rebuilds a PLAIN POINTER, so the library's `_Head&` (std::get/__get_helper's
+    // return, _Head = const int&) double-wraps to `const int**` -> c2mir "incompatible
+    // return-expr type in function returning a pointer" -> undefined __ns_std_get
+    // (map<int,int>'s `tuple<const key_type&>` get<0>). Render `referent&` so the
+    // canonical spelling round-trips back to a DataDefREF, where getReferenceType's
+    // reference collapsing ([dcl.ref]p6) then yields the single reference. The
+    // referent keeps its own cv (`const int` -> `const int&`).
+    if ( adt->definition.is_reference() )
+	if ( DataDefPTR *r = dynamic_cast<DataDefPTR *>(&adt->definition) )
+	    if ( r->base_type )
+	    {
+		const std::string &rs = r->base_type->canonical_cpp_spelling;
+		return cv_spelling
+		     + (rs.empty() ? r->base_type->name : rs) + "&";
+	    }
+#endif
     const std::string &cs = adt->definition.canonical_cpp_spelling;
     return cv_spelling + (cs.empty() ? adt->definition.name : cs);
 }
