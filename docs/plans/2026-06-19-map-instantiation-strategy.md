@@ -695,3 +695,124 @@ STILL OPEN:
     FEATURE_DERIVED_TO_BASE_DEDUCTION still requires testfstream/testloop green → fix
     bug 2 first. Reducers to extend toward getline: returning a reference to a CLASS
     object (not scalar) from an instantiated fn; returning *this / a ref PARAMETER.
+
+### 2026-06-20 (map 5-error layer ROOT-CAUSED via emit-c11 + gcc) — non-type-pack index NOT substituted into the nested `std::get<_Indexes1>` in the pair indexed-ctor body.
+
+Localized the map<int,int> 5 c2mir errors (both flags) by emitting `--emit=c11`
+(tmp/mapii.c) and compiling with gcc (precise line numbers; c2mir's stl_map.h:102 is
+coarse). gcc points at the pair indexed-ctor `__o8` body:
+```c
+void pair_..._o8(struct pair_... *__this, struct tuple_const_int32_t_ *__tuple1, ...) {
+  struct tuple_const_int32_t_ __madc_objtmp_35;
+  tuple_const_int32_t___tuple_..._o5((&__madc_objtmp_35), __ns_std_get((*__tuple1)));
+  (__this->first = (*__ns_std_forward__o3((void *)(&__madc_objtmp_35))));   // <-- int = tuple  ERROR
+  ...
+}
+extern long __ns_std_get();                                  // get<0> NEVER instantiated
+struct tuple_const_int32_t_ *__ns_std_forward__o3(struct tuple_const_int32_t_ *);  // forward<TUPLE>, not <const int&>
+```
+This is libstdc++'s `first(std::forward<_Args1>(std::get<_Indexes1>(__tuple1))...)`
+(tuple:2265). ROOT (single cause, cascades): the NON-TYPE pack `_Indexes1={0}` is NOT
+substituted as `std::get`'s explicit template argument — the emitted call is
+`__ns_std_get((*__tuple1))` with NO `<0>`, so get is never instantiated (falls to the
+generic `long __ns_std_get()` stub). Downstream: `std::forward<_Args1>` then deduces
+its type from get's (wrong, whole-tuple) result → `forward<tuple_const_int32_t_>`, a
+tuple temp `__madc_objtmp_35` is constructed, and it is assigned to `first` (an int) →
+"incompatible types in assignment to an arithmetic type lvalue" (×2 for first+second) +
+"incomplete struct or union" (×2). NOTE this is NOT bug-2 (ref-return) and NOT
+derived-to-base — standalone `std::get<0>(t)` instantiates fine (getref runs x=7); it is
+specifically **non-type-pack index substitution into a NESTED template-id call inside a
+pack expansion** (`get<_Indexes1>` where `_Indexes1` is a non-type pack `{0}`).
+
+NEXT (map W5): in the indexed-ctor body substitution (instantiate_fn_template_binding /
+the member-ctor instantiation path that emits `__o8`), when expanding
+`std::forward<_Args1>(std::get<_Indexes1>(__tuple1))...`, substitute the non-type pack
+element `_Indexes1[k]` as `std::get`'s explicit template-arg `<0>` so get<0> instantiates
+(then forward deduces `const int&`, and `first(const int&)`→int via the value deref that
+already works). The 1-element expansion count is already correct (single `first=...`); it
+is the per-element NON-TYPE template-arg substitution into the nested call that is
+dropped. Reducer: tmp/mapii.c (emitted) lines ~1804-1810; tmp/mapii.mad both flags.
+
+### 2026-06-20 (map W5 refined — substitution CORRECT; real blocker = nested `std::get<0>` not instantiated in the re-parsed member-ctor body)
+
+Dumped the SUBSTITUTED indexed-ctor `__o8` body (MADC_DEBUG_CTORTMPL [o8body] probe,
+now removed). Deduction AND substitution are CORRECT:
+```
+: first ( std::forward < const int32_t* > ( std::get < 0 > ( __tuple1 ) ) ... ) ,
+  second ( std::forward < > ( std::get < > ( __tuple2 ) ) ... )
+```
+(`_Args1`→`const int32_t*`, `_Indexes1`→`0` — the `#61` the probe printed is just
+overload_token_spelling rendering TokenInt(0) by its token-id; value IS 0.)
+
+Found + FIXED a real sub-bug along the way (bug A, parser.cpp instantiate_fn_template_
+binding): the pattern-`...`-drop was gated on `!pack_param.empty()` (a trailing DIRECT
+pack), so a pack expansion over only TEMPLATE-ID packs (`forward<_Args1>(get<_Indexes1>
+(t1))...` — the pair indexed ctor has NO direct pack_param) left a STRAY `...` after the
+substituted pattern. Relaxed the gate with `has_tidpacks` (any tidpack_one/empty or
+nontype variant). The `...` is now correctly dropped.
+
+BUT map STILL fails identically — bug A is necessary-not-sufficient. The EMITTED C body
+(tmp/mapii.c ~1806) is UNCHANGED: `__ns_std_get((*__tuple1))` with NO `<0>` and get
+declared `extern long __ns_std_get()` — i.e. **the nested `std::get<0>(__tuple1)` in the
+re-parsed `__o8` body never instantiates get<0>; it binds the implicit `long` dlsym
+fallback.** Cascade: forward then deduces the whole-TUPLE type, a `tuple<const int32_t*>`
+temp is constructed, and it is assigned to `first` (an int) → the 5 c2mir errors.
+Standalone `std::get<0>(t)` DOES instantiate (getref runs x=7) — so the bug is
+specifically a NESTED template-id call inside an INSTANTIATED member-ctor body not
+triggering its own instantiation (and/or the injected `< TokenInt(0) >` explicit
+template-arg not being captured on re-parse).
+
+REAL NEXT (map W5 core): make the re-parse/instantiation of the member-ctor body
+instantiate nested template-id calls (`std::get<0>(__tuple1)`) — capture the injected
+`<0>` as the call's explicit_template_args and trigger get<0> instantiation, instead of
+falling to the `long __ns_std_get()` implicit. Then forward<const int*> deduces correctly
+and `first(const int&)`→int. (Could NOT isolate with a user FREE fn template — those hit a
+separate "undeclared identifier" call-resolution wall: tmp/nestget.mad, tmp/identref.mad.
+The map path is a MEMBER template via instantiate_member_ctor_template_for_construction →
+try_instantiate_namespace_fn_template → instantiate_fn_template_binding.) ALSO still
+open: bug B (0-element tid-pack: `second(forward<>(get<>(t2)))` should elide the whole
+pattern element → `second()`), and the non-fatal "Expecting integer constant expression"
+noise from the <tuple> header instantiation.
+
+### ⚡ POST-COMPACTION IMMEDIATE ACTIONS (2026-06-20, mid-task — read FIRST)
+
+State at compaction: branch wip/tuple-instantiation-claude, last PUSHED commit a13c6c7.
+UNCOMMITTED in working tree (survives compaction): **bug A** in src/parser.cpp
+(instantiate_fn_template_binding — a `has_tidpacks` flag + relaxing the pattern-`...`-drop
+gate from `!pack_param.empty()` to `(!pack_param.empty() || has_tidpacks)`; ~8 lines) PLUS
+this doc's edits. No debug cruft remains (verified: git diff src/parser.cpp shows only the
+has_tidpacks change). `mir-debug-support.md` is UNTRACKED and NOT ours — never `git add`
+it; stage explicitly.
+
+A background fulltest (default build, bug A active) was RUNNING at compaction; collect its
+result from `/tmp/claude-1001/-workspace-madc/<session>/tasks/b3d9tb2in.output` if present,
+ELSE just re-run `make -C src fulltest` (deterministic, ~10 min; cap it). Expected baseline
+= **656 passed / 6 failed / 0 timed out** (same 6: testcontainerdtor, testmadc_ns, testmap,
+testset, testsubscript, testtuple).
+
+STEP 1 — ✅ DONE (2026-06-20). Fulltest after compaction = **656 passed / 6 failed / 0
+  timed out** (zero regression; same 6 baseline fails). bug A committed + pushed. The
+  gate-relax dropped no `...` any other tid-pack body needed.
+
+STEP 2 — resume the map W5 CORE (the actual unblock; see the entry just above this one):
+  **nested `std::get<0>(__tuple1)` in the re-parsed pair indexed-ctor `__o8` body does NOT
+  instantiate get<0>** — it binds the implicit `long __ns_std_get()` fallback, so forward
+  deduces the whole tuple, a tuple temp is built, and it's assigned to `first` (int) → the 5
+  c2mir errors at stl_map.h:102. The substituted body is already CORRECT
+  (`first(std::forward<const int32_t*>(std::get<0>(__tuple1)))`). Fix: when the member-ctor
+  body is re-parsed/instantiated (instantiate_member_ctor_template_for_construction →
+  try_instantiate_namespace_fn_template → instantiate_fn_template_binding), the nested
+  `std::get<0>(...)` must capture the injected `<0>` as explicit_template_args and trigger
+  get<0> instantiation. Standalone `std::get<0>(t)` works (tmp/getref.mad → x=7); the gap is
+  the NESTED-in-instantiated-body call. Build flag-on:
+  `touch src/parser.cpp; make -C src OPTIONAL_CPPFLAGS="-DFEATURE_DERIVED_TO_BASE_DEDUCTION -DFEATURE_CONST_TYPES"`.
+  Reducers (tmp/, gitignored): mapii.mad (the target), getref.mad (works), refcollapse.mad
+  (bug-1, works). Localize via `--emit=c11 tmp/mapii.mad > tmp/mapii.c; gcc -std=c11 -c
+  tmp/mapii.c` (gcc gives precise lines; the bad assignment is the `first = tuple` at the
+  emitted `__o8`). NOTE the free-fn-template reducer route (tmp/nestget.mad) hits a SEPARATE
+  "undeclared identifier" wall — stay on the member-template path.
+  Also still open after that: bug B (0-element pack `second(forward<>(get<>(t2)))` →
+  `second()`), then bug-2 (getline ref-return) to un-gate FEATURE_DERIVED_TO_BASE_DEDUCTION.
+
+This session's PUSHED commits: 954742a (derived-to-base GATED), 6d95bc3 (ref-init bug-1 →
+getref runs x=7), a13c6c7 (doc). Memory: project_map_set_campaign.md UPDATE 58 + 59.

@@ -31299,6 +31299,13 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	}
 	multi_done = true;
     }
+    // A pattern pack-expansion `PATTERN...` over TEMPLATE-ID packs (`_Args1`,
+    // `_Indexes1` — std::pair's indexed ctor `first(forward<_Args1>(get<_Indexes1>
+    // (__t1))...)`) has NO trailing-direct pack_param, so the `...`-drop below
+    // (gated on pack_param) was skipped, leaving a stray `...` after the
+    // substituted pattern. Allow the drop when ANY template-id pack is in play.
+    const bool has_tidpacks = !tidpack_one.empty() || !tidpack_empty_names.empty()
+			   || !nontype_tidpack_one.empty() || !nontype_tidpack_empty.empty();
     for ( size_t i = 0; !multi_done && i < ft.decl.size(); ++i )
     {
 	TokenBase *bt = ft.decl[i];
@@ -31347,7 +31354,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	// bare pack name (`args...`/`Args...`/`Args&&...`); a `...` that follows
 	// a parenthesized/closing-token pattern reaches here instead. A genuine
 	// C varargs `, ...` follows a comma (emitted) and is preserved.
-	if ( !pack_param.empty()
+	if ( (!pack_param.empty() || has_tidpacks)
 	  && bt->id() == TokenID::tkDot
 	  && i + 2 < ft.decl.size()
 	  && ft.decl[i+1] && ft.decl[i+1]->id() == TokenID::tkDot
