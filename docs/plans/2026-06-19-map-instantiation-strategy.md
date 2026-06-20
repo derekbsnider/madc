@@ -592,3 +592,68 @@ the `&`. NEXT: trace returns_reference() on each instantiated fn in the chain
 (MADC_DEBUG_CTORTMPL getinst), find where the `&` is lost, fix in
 try_instantiate_namespace_fn_template's return-type build. getref.mad is the
 reducer (default build reproduces it — no flags needed).
+
+### 2026-06-20 (W4b part b investigation) — REAL root is derived-to-base deduction + a BROAD reference-LOWERING gap (NOT "returns_reference lost"). Derived-to-base GATED behind FEATURE_DERIVED_TO_BASE_DEDUCTION (default OFF); part-b reframed as the prerequisite.
+
+Systematic instrumentation CORRECTED the part-(b) hypothesis above. Two distinct
+findings, both evidence-backed:
+
+**(1) The `std::get<0>` wall was a DEDUCTION miss, not a lowering miss.**
+`std::get<0>(tuple<const int&>)`'s body calls `std::__get_helper<0>(__t)`. `__t` is
+`tuple<const int*>&` but `__get_helper`'s parameter is `_Tuple_impl<__i,_Head,
+_Tail...>&` — and `tuple` DERIVES FROM `_Tuple_impl<0,...>`. So deducing __get_helper
+requires **derived-to-base deduction** ([temp.deduct.call]/4), which madc's
+`unify_nested_spec_pattern_arg` did NOT do (it failed at the arity check: pattern
+`_Tuple_impl<__i,_Head,...>` has ≥2 fixed args vs the derived `tuple<...>` 1 arg).
+FIX (implemented, ~40 lines, parser.cpp): after the two splits, when `pouter !=
+couter` and it's not a template-template-param case, resolve the concrete to its
+DataDefCLASS, walk its base chain (`base_spelling_for_template`) for a base whose
+template outer == the pattern's, and re-unify against that base subobject. PLUS:
+accept an integer-literal NON-TYPE index slot (`_Tuple_impl<0,...>`'s leading `0`)
+instead of trying to resolve `0` as a type (the scalar non-type param is bound via
+explicit args at the try_instantiate layer). With this, `__get_helper` deduces
+(uok=1) and **tmp/getref.mad COMPILES and returns the CORRECT value (x=7)**.
+map<int,int> advances PAST the get-overload wall to the 5 stl_map.h:102 errors.
+
+**(2) `returns_reference()` is PRESERVED — the doc's part-(b) hypothesis was WRONG.**
+Probe (MADC_DBG_RETREF in cir_builder func_def): the instantiated `Box<int&>::get`
+has `returns.name='int32_t*' returns_ref=1`. The reference-ness survives the
+re-parse. The real defect is in reference-LOWERING, and it is BROADER than the get
+chain — at least two distinct bugs, BOTH reproduce WITHOUT derived-to-base:
+  - **ref-var-init from a ref-returning call**: `int& r = b.get();` emits
+    `int *r = &Box_int32_t___get;` (address-of-FUNCTION, no call) -> SEGFAULT.
+    Reducer tmp/refcollapse.mad. NOTE the SAME call works as a value read
+    (`int x = b.get()` -> 7) and as an lvalue write (`b.get() = 99` -> k=99); ONLY
+    reference-variable BINDING mis-lowers.
+  - **ref-return in an instantiated fn**: getline's reference return lowers to an
+    integer ("returning integer without cast for pointer result" +
+    "lvalue required as unary & operand"). This is what derived-to-base newly
+    EXPOSES in getline (basic_istream& return) -> the testfstream/testloop
+    regression below.
+
+**Why derived-to-base can't land yet (gated):** enabling it routes getline /
+std::forward / get reference-returning instantiations through bug (2), regressing
+testfstream + testloop (fulltest 656/6 -> 654/8). Confirmed by bisect: `MADC_NO_D2B`
+build -> testfstream GREEN. So derived-to-base is CORRECT but its prerequisite is the
+reference-lowering fix. It is committed GATED behind FEATURE_DERIVED_TO_BASE_DEDUCTION
+(default OFF -> default build stays 656/6); the helper + unifier branch + non-type
+slot are all under the ifdef. Build flag-on: `touch src/parser.cpp` then
+`make -C src OPTIONAL_CPPFLAGS=-DFEATURE_DERIVED_TO_BASE_DEDUCTION` (map also needs
+-DFEATURE_CONST_TYPES).
+
+**NEXT (reframed W4b part b) — fix reference-LOWERING first, THEN un-gate
+derived-to-base:**
+  1. Fix `int& r = <ref-returning call>` (tmp/refcollapse.mad): the reference-var
+     initializer takes `&` of the function symbol instead of using the call result
+     (the call result is ALREADY the pointer/address for a ref-returning call). The
+     value-read and lvalue-write paths already handle this correctly — mirror them
+     in the reference-binding init path.
+  2. Fix ref-return lowering in instantiated reference-returning fns (getline path:
+     "returning integer without cast for pointer result").
+  3. Re-run the full set: tmp/refcollapse.mad, tmp/getref.mad, tmp/mapii.mad
+     (flag-on), then `make -C src fulltest` with FEATURE_DERIVED_TO_BASE_DEDUCTION ON
+     -> testfstream/testloop must stay GREEN. Then flip the flag default-on (or
+     delete the gate) and re-run the default fulltest.
+  These are real C++ reference-correctness bugs, independently valuable, and the
+  gate to map<int,int>. Reducers live in tmp/ (gitignored): refcollapse.mad,
+  getref.mad, getref2.mad, mapii.mad — run with --std=c++17/c++20 --no-embedded-headers.

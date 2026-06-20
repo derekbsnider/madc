@@ -15171,6 +15171,54 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
     return NULL;
 }
 
+#ifdef FEATURE_DERIVED_TO_BASE_DEDUCTION
+// [temp.deduct.call]/4 derived-to-base: when a template-id PARAMETER pattern
+// (`_Tuple_impl<__i,_Head,_Tail...>&`) is matched against an argument whose class
+// DERIVES from a specialization of that template (`tuple<_Elements...>` publicly
+// inherits `_Tuple_impl<0,_Elements...>`), deduction matches the base subobject.
+// Walk the concrete class's base chain for the (first) base whose canonical
+// spelling's outer template name == want_outer; return that base's canonical
+// spelling so the caller can re-unify the pattern against it. Empty if none
+// (deduction then fails, exactly as before this path existed).
+//
+// GATED: this is correct + needed for map<int,int> (std::get<0> -> __get_helper,
+// whose `_Tuple_impl<...>&` param binds a `tuple<...>&` arg via derived-to-base),
+// but it newly routes reference-returning instantiations (getline, std::forward)
+// through madc's unfinished reference-LOWERING (W4b part b: `int& r = call()`
+// emits `&function`; a ref-return in an instantiated fn lowers to an integer).
+// Enabling it regresses testfstream/testloop. TRIGGER to enable by default: fix
+// the reference-lowering bugs in docs/plans/2026-06-19-map-instantiation-strategy.md
+// (W4b part b). Reducers: tmp/refcollapse.mad, tmp/getref.mad.
+static std::string base_spelling_for_template(DataDefCLASS *cls,
+	const std::string &want_outer)
+{
+    if ( !cls )
+	return std::string();
+    std::vector<DataDefCLASS *> direct;
+    if ( cls->base_class )
+	direct.push_back(cls->base_class);
+    for ( size_t i = 0; i < cls->bases.size(); ++i )
+	if ( cls->bases[i].base )
+	    direct.push_back(cls->bases[i].base);
+    for ( size_t i = 0; i < direct.size(); ++i )
+    {
+	DataDefCLASS *b = direct[i];
+	if ( !b->canonical_cpp_spelling.empty() )
+	{
+	    std::string bo;
+	    std::vector<std::string> ba;
+	    if ( split_template_id_spelling(b->canonical_cpp_spelling, bo, ba)
+	      && bo == strip_type_namespace(want_outer) )
+		return b->canonical_cpp_spelling;
+	}
+	std::string deep = base_spelling_for_template(b, want_outer);
+	if ( !deep.empty() )
+	    return deep;
+    }
+    return std::string();
+}
+#endif // FEATURE_DERIVED_TO_BASE_DEDUCTION
+
 // Unify a NESTED template-id pattern arg (e.g. `allocator<_Tp>`) against a concrete
 // type spelling (e.g. `std::allocator<char>`), deducing the spec's own type params
 // (_Tp -> char). Handles the namespace qualifier the flat unifier cannot, and
@@ -15192,6 +15240,33 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	return false;
     if ( !split_template_id_spelling(concrete_spelling, couter, cargs) )
 	return false;
+    // [temp.deduct.call]/4 derived-to-base: the pattern names a concrete template
+    // (`_Tuple_impl`) the argument's class (`tuple<int*>`) doesn't directly
+    // specialize, but DERIVES from a specialization of (tuple inherits
+    // _Tuple_impl<0,int*>). This must be tried BEFORE the arity check below — the
+    // derived template and its base have different arity (tuple<T> has 1 arg, its
+    // base _Tuple_impl<0,T> has 2). The template-template-PARAMETER case (pouter is
+    // a spec param, out_tmpl set — the allocator-rebind keystone) keeps same-arity
+    // matching and is handled in the `pouter != couter` block further down.
+    if ( pouter != couter )
+    {
+	bool pouter_is_param = false;
+	for ( size_t k = 0; k < spec_params.size(); ++k )
+	    if ( spec_params[k] == pouter ) { pouter_is_param = true; break; }
+	if ( !out_tmpl || !pouter_is_param )
+	{
+#ifdef FEATURE_DERIVED_TO_BASE_DEDUCTION
+	    DataDef *cd = resolve_arg_spelling_datadef(*this, concrete_spelling);
+	    DataDefCLASS *ccls = dynamic_cast<DataDefCLASS *>(cd);
+	    std::string bs = ccls ? base_spelling_for_template(ccls, pouter)
+				  : std::string();
+	    if ( !bs.empty() )
+		return unify_nested_spec_pattern_arg(pat_spelling, spec_params,
+			bs, ded, score, out_tmpl, out_pack);
+#endif
+	    return false;	// no matching base subobject -> deduction fails
+	}
+    }
     // A trailing parameter pack in the pattern's inner args (`_SomeTemplate<_Tp,
     // _Types...>`, the real libstdc++ __replace_first_arg) absorbs the remaining
     // concrete args (0+). Detect it here: the last inner pattern arg ends with the
@@ -15237,6 +15312,28 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	if ( is_param )
 	{
 	    DataDef *cd = resolve_arg_spelling_datadef(*this, cargs[i]);
+#ifdef FEATURE_DERIVED_TO_BASE_DEDUCTION
+	    if ( !cd )
+	    {
+		// NON-TYPE param slot: the concrete arg is an integer VALUE, not a
+		// type (`_Tuple_impl<0,_Head,_Tail...>` — the leading `0` binds the
+		// non-type index `__i`). The scalar non-type param is bound via the
+		// call's explicit template args at the try_instantiate layer; `ded`
+		// only carries types, so here we just confirm the structural match.
+		// A non-integer unresolvable spelling is a genuine deduction miss.
+		std::string es = trim_spelling(cargs[i]);
+		char *endp = NULL;
+		if ( !es.empty() )
+		    strtoll(es.c_str(), &endp, 0);
+		while ( endp && (*endp == 'u' || *endp == 'U'
+			     || *endp == 'l' || *endp == 'L') )
+		    ++endp;
+		if ( es.empty() || !endp || *endp != '\0' )
+		    return false;          // not an integer literal -> fall to primary
+		score += 1;
+		continue;
+	    }
+#endif
 	    if ( !cd ) return false;               // cannot bind -> fall to primary
 	    std::map<std::string, DataDef *>::iterator d = ded.find(pargs[i]);
 	    if ( d != ded.end() && d->second && d->second->name != cd->name )
