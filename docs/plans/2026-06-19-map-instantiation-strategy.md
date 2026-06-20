@@ -1505,6 +1505,98 @@ inside another template's `using type = typename Nth<I,Ts...>::type;` — does t
 Nth real-instantiate? (nth.mad — Nth used DIRECTLY at top level — already works r=7; the gap is
 NESTED in a `using type=` member-alias body.)
 
+#### LAYER 2 ROOT CONFIRMED + a working-but-UNSAFE fix (reverted). Refinement needed.
+ZERO-libstdc++ reducer: **tmp/nestnth2.mad** (`template<unsigned long N,typename...Ts> struct Nth;
+template<typename T0,typename...R> struct Nth<0,T0,R...>{typedef T0 type;}; template<typename...Es>
+struct Wrap2{}; template<typename H,typename...R> struct Wrap<Wrap2<H,R...>>{typedef typename
+Nth<0,H,R...>::type type;}; Wrap<Wrap2<const int&>>::type r=k;`) → r=garbage (init dropped),
+reproduces Layer 2 with no libstdc++.
+
+ROOT (traced, gated MADC_DBG_BUG2, reverted): candidate (a) CONFIRMED — `_Nth_type<0,const int&>`
+(and user `Nth<0,const int&>`) is resolved through `resolve_typename_type_token` but via the
+**4785 fallback** (`resolve_declared_type_token`), NOT the class-scope loop (4768). The loop only
+looks up class MEMBERS, so a NAMESPACE/global template (`_Nth_type`, user `Nth`) returns
+loop_owner=NULL **with the `<` intact** (trace: `rtt head='Nth' css=1 loop_owner=NULL peek=tkLT`),
+and the fallback resolves it with `allow_variadic_real_inst=0` → opaque shell, no `type`
+(trace: `inst tname='Nth' vri=0 ... has_pack=1 try_spec=0` → opaque bail at parser.cpp ~3374).
+
+WORKING-BUT-UNSAFE FIX (tested, then REVERTED — do NOT re-apply as-is): wrap the 4785 fallback
+`resolve_declared_type_token(first,...)` with `allow_variadic_real_inst=true` when `first` is a
+template-id head (`is_contextual_identifier_token(first) && peek==tkLT`). RESULT: **nestnth2 → r=7
+(Layer 2 fixed for the user case)**, BUT it REGRESSED the real `<tuple>` parse: `tv` (tuple<int>),
+te_lval, getref_p ALL began failing "Expecting type in using alias" at /usr/include/c++/13/tuple:1782
+(the `using type = typename _Nth_type<__i,_Types...>::type` in tuple_element's DEFINITION). Cause:
+the fix sets vri even when the template-id args are **DEPENDENT** (`_Nth_type<__i,_Types...>` during
+the tuple_element *definition* parse, __i/_Types unbound) — vri makes `try_spec_real_inst` true
+(parser.cpp 3365, partial_spec_map has `_Nth_type`), which apparently routes the dependent-args case
+to NULL instead of the opaque placeholder (3711 `td.body.empty()||(pack_real_inst&&dependent_surface)`
+should bail to placeholder, but with a spec swap (3640) td.body becomes non-empty → it proceeds and
+fails on dependent subst). The fix is UNCONDITIONAL so it would break the DEFAULT build's `<tuple>` too.
+
+REFINEMENT (the correct Layer 2 fix — two candidate approaches, pick after verifying):
+  (1) GATE on concrete args: set vri at the 4785 fallback ONLY when the upcoming `<...>` args are
+      NON-dependent (no token names an in-scope template parameter). Needs a "template-id args are
+      concrete" predicate at the resolve site (the active class-template params aren't in a single
+      handy set — FuncDef.template_param_names is per-fn; class-template def params need locating).
+  (2) DEEPER (preferred, per fix-at-deepest-layer): make `instantiate_template_use` return the
+      opaque placeholder for DEPENDENT args even when a partial spec "matched" — i.e. at ~3711 the
+      `td.body.empty()` bail must also fire when `dependent_surface` is true regardless of the spec
+      swap (a dependent-arg instantiation must NEVER real-instantiate a spec body). Then vri can be
+      set unconditionally at the 4785 fallback (concrete → real-inst, dependent → placeholder), and
+      the regression vanishes. Verify: nestnth2 r=7 AND tv/te_lval/getref_p parse clean AND default
+      fulltest 656/6. This is the precise next step; reducers tmp/nestnth2.mad (must→7),
+      tmp/tv.mad (must stay get0=7), tmp/te_lval.mad/te_direct.mad (the goal). NOTE even after Layer 2,
+      Layer 3 (reference→value deref in pair construction) likely remains for map RUN.
+
+  ATTEMPT 2 RESULT (tried + REVERTED — both changes together): resolve_typename 4785-fallback vri
+  (unconditional) + a NARROW bail at parser.cpp ~3711 `|| (try_spec_real_inst && dependent_surface)`
+  (so a dependent-arg instantiation reached via vri/try_spec stays a placeholder). This made it
+  WORSE: nestnth2 began erroring "Expecting identifier after type" AND tv/te_lval still errored
+  "Expecting type in using alias" @tuple:1782. LESSON: the dependent-arg `_Nth_type<__i,_Types...>`
+  path (parsed for EVERY `#include <tuple>`, concrete or not — the tuple_element DEFINITION body)
+  previously produced a usable DEPENDENT `::type` placeholder (tv worked, get0=7); routing it through
+  vri → my new placeholder bail changed HOW the placeholder is created, and its subsequent `::type`
+  resolution (`resolve_class_type_alias` MISS → `materialize_dependent_member_type`) then returns
+  NULL → "Expecting type in using alias". So the real fix must (i) leave the DEPENDENT-args
+  `_Nth_type<__i,_Types...>::type` placeholder path EXACTLY as today (do not reroute it), and
+  (ii) make ONLY the CONCRETE-args `_Nth_type<0,const int&>` (during the tuple_element
+  INSTANTIATION body re-parse) real-instantiate its spec. The discriminator (dependent_surface) is
+  only known AFTER arg-parse inside instantiate_template_use; but resolve_typename's fallback sets
+  vri BEFORE that. A correct fix likely belongs INSIDE instantiate_template_use: when args are
+  CONCRETE and a partial spec matches and the spec has a body, real-instantiate it REGARDLESS of the
+  vri flag (drop the flag dependence for the concrete-spec case), so the resolve-site flag plumbing
+  is unnecessary and the dependent path is untouched. That is the recommended next attempt — but it
+  overlaps the FINAL-2 "empty-primary-with-spec completion" work (which regressed when unguarded), so
+  it needs the partial_spec_map guard + careful full regression. Tree left at fd106c7 (Layer 1
+  committed; Layer 2 NOT attempted in the committed tree). Reducers in tmp/ (gitignored).
+
+  ATTEMPT 3 RESULT (tried + REVERTED) — deferred the EARLY opaque bails (parser.cpp ~3374/3377) when
+  `partial_spec_map.count(tname)` (NO resolve_typename change), so a concrete-arg spec'd template
+  reaches the spec-match + real-inst and a dependent one bails at the ~3711 `dependent_surface`
+  placeholder. RESULT: **nestnth2 → r=7** (Layer 2 fixed for the user case!), BUT tv/te_lval still
+  errored "Expecting type in using alias" @tuple:1782. DISCRIMINATOR PINNED: nestnth2's `Nth<0,H,R...>`
+  has a CONCRETE leading non-type (`0`); the real `_Nth_type<__i,_Types...>` (tuple_element DEFINITION
+  body) has a DEPENDENT non-type (`__i`). Routing a DEPENDENT-NON-TYPE instantiation through the main
+  path (instead of `instantiate_opaque_template_use`) breaks its `::type` placeholder resolution —
+  `_Nth_type<__i,_Types...>`'s `::type` must stay the opaque dependent-member placeholder it is today.
+
+  ⚠️ ARCHITECTURAL WALL (3 attempts, all the same root): the opaque-vs-real decision must keep
+  DEPENDENT-arg instantiations on `instantiate_opaque_template_use` (their `::type` placeholder is
+  load-bearing for the tuple_element DEFINITION parse) while routing only CONCRETE-arg instantiations
+  to spec-real-inst — but ARG CONCRETENESS (`dependent_surface`) is only known AFTER the arg parse
+  INSIDE `instantiate_template_use`, whereas the early opaque bails (3374/3377) and the resolve-site
+  vri plumbing both act BEFORE that. Every attempt that moves the decision earlier (vri at the resolve
+  fallback; deferring the early bail) drags dependent args onto the main path and breaks their `::type`
+  placeholder. THE CORRECT FIX (next session, fresh context — a real design task, NOT a quick patch):
+  make `instantiate_opaque_template_use` itself, AFTER it has parsed its args and found them CONCRETE
+  (no `...`, all resolvable) AND a partial spec matches AND the spec has a body, real-instantiate that
+  spec body in place (register the `using type` alias) — i.e. the placeholder path gains a
+  "concrete-args ⇒ complete via matched spec" branch. This is the FINAL-2 "empty-primary-with-spec
+  completion" idea but driven by a PARTIAL-SPEC MATCH (not blanket empty-body completion, which
+  regressed), guarded so dependent/no-match uses stay placeholders. Verify: nestnth2 r=7, te_lval/
+  te_direct r=7, tv get0=7, default fulltest 656/6, THEN Layer 3. This is per systematic-debugging
+  Phase 4.5 (3 fixes failed ⇒ the approach, not the spot, is wrong) — do it as a scoped design pass.
+
 **LAYER 3 (anticipated, not yet reached) — reference→value lowering in pair construction.** Once
 Layer 2 lands (te_direct → r=7), map's `pair::first(get<0>(forward_as_tuple(key)))` must DEREF the
 returned reference into the `const int` value (the handoff's gdb finding: node value@+32 held the
