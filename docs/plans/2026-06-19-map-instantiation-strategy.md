@@ -1223,3 +1223,44 @@ on the param-type build in instantiate_fn_template_binding) to find the clone si
 it reuse the registered type. With the param and the `_Build_index_tuple::__type()` temp
 both pointing at the one registered (and completed-empty, FINAL-2 spec-guarded) DataDef,
 map<int,int>'s last 3 c2mir errors clear. Architectural (identity), needs full regression.
+
+### 2026-06-20 (FINAL-5) — DECISIVE: the bug is cir_builder PASS-ORDERING. `_Index_tuple_0` IS registered + IS emitted complete by Pass 1.97 — but AFTER the early protos that use it by value.
+
+Traced the full path (MADC_DBG_IDXT in instantiate_opaque_template_use + CirBuilder Pass 0.5
+and Pass 1.97, all reverted). Definitive facts:
+- `_Index_tuple_0` IS created via instantiate_opaque_template_use and IS in `struct_map`
+  (`struct_map.count("_Index_tuple_0")==1` at Pass 1.97). struct_map is NEVER erased.
+- It is NOT present at Pass 0.5's struct sweep (early) — it's instantiated LATE, during the
+  deferred-lazy-body reachability fixpoint (the `__o7`/`__o8` pair-ctor bodies).
+- **Pass 1.97 (cir_builder.cpp:12808) DOES emit its complete definition** (`as_user=1`,
+  not-yet-emitted → `class_struct_def` → empty `struct _Index_tuple_0 {}`; a 0-member class
+  emits a COMPLETE empty body, not a forward decl).
+- BUT `__o8`'s prototype is emitted in **Pass 0.75 (extern protos, ~12413-12533)** —
+  FAR earlier than Pass 1.97 — with `_Index_tuple_0` as a BY-VALUE param (`__o8(...,
+  struct _Index_tuple_0 p3, struct _Index_tuple p4)`; emit-c line ~918). So in the c2mir
+  top-decl stream the order is: [proto with by-value `_Index_tuple_0` param] … [struct
+  `_Index_tuple_0 {}` definition] … [bodies]. c2mir processes in order ⇒ the by-value
+  incomplete-struct param in the early proto + the `__o7`→`__o8` call (whose arg/param
+  struct types don't reconcile) → "incomplete struct or union" ×2 + "incompatible argument
+  type for struct/union type parameter". The completion attempts (FINAL-2) couldn't help
+  because the struct WAS already complete-at-definition — the def is just too LATE.
+
+So the real fix is **pass-ordering**: a late-instantiated struct's DEFINITION must precede
+the (early) function prototype that takes it by value. Candidate fixes (each needs design +
+full regression):
+  1. Front-insert the Pass-1.97 late struct defs at the HEAD of `top_list` (before all
+     protos). Needs a c2mir prepend (fork: add `c2mir_op_prepend` mirroring
+     `c2mir_op_append`) and must preserve deps-first order WITHIN the late batch (prepend
+     the batch as a unit). Safe for the map index-tuples (leaves / self-contained
+     _Tuple_impl+_Head_base cluster; their only "members" are pointers/refs, no by-value
+     dep on an already-emitted EARLY struct). Verify no by-value early-struct dep before
+     generalizing.
+  2. Eagerly instantiate the index-sequence types (`_Build_index_tuple<N>::__type`,
+     `_Index_tuple<...>`) BEFORE Pass 0.75 so they're in struct_map for Pass 0.5 — defeats
+     laziness; narrower.
+  3. When emitting a proto with a by-value struct param whose def isn't emitted yet, hoist
+     emit_class_struct_with_deps for that param's class first (only works if the struct is
+     already in struct_map at proto time — it is NOT for the late case, so this needs the
+     deferred bodies parsed before Pass 0.75; = option 2).
+Option 1 is the most general. bug A + uneval + ref-collapse + bug B remain DONE; this single
+cir_builder ordering fix is all that blocks `map<int,int>`.
