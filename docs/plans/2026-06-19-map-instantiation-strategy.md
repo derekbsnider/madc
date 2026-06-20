@@ -1727,3 +1727,78 @@ AND at a1d11d3 (before this session's Layer-1 spelling fix fd106c7) — so the e
 `x/6gx` the `_Rb_tree_header`/`_M_impl` after construction — confirm `_M_parent==0`,
 `_M_left==_M_right==&_M_header`, `_M_node_count==0`. Find which field is wrong → trace to the
 node-base init/layout. This is more fundamental than (and gates) the insert/pair-value work.
+
+### 2026-06-20 (session 2) — ★★★ RUNTIME CRASH FULLY LOCALIZED: null `this` in the `_Rb_tree` DTOR tree; LOWERING IS CORRECT (gcc runs the emit-C); bug is in madc's cir_node TREE→c2mir→MIR (JIT) path, NOT lowering, NOT c2mir-codegen-of-correct-C.
+Systematic-debugging pass on the empty-container dtor crash (task #7). Findings, each with a reducer:
+
+**1. The crash is `_Rb_tree`-GENERAL and DTOR-side, even for an EMPTY container; pre-existing.**
+   - `std::map<int,int> m;` (no insert) AND `std::set<int> s;` (no insert) BOTH SIGSEGV @0x8 in
+     `*_dtor+0x43 [JIT]`. Reducers tmp/mapempty.mad, tmp/setempty.mad.
+   - Reproduced at a1d11d3 (before this session's fixes) ⇒ pre-existing, not a regression.
+
+**2. The object is CORRECTLY CONSTRUCTED — this is NOT a ctor/`_M_header`-layout bug.**
+   - tmp/mapsize.mad: `m.size()==0`, `m.empty()==1`. tmp/mapbe.mad: `m.begin()==m.end()` → `1`
+     (so `_M_reset` ran: `_M_parent==0`, `_M_left==_M_right==&_M_header`). The ctor is fine.
+   - SUPERSEDES the prior "REPRIORITIZE"/`_Rb_tree_header` init hypothesis — the header IS reset.
+
+**3. The crash is a NULL `this` (gdb ground truth).** `gdb -batch` on bin/madc + mapempty:
+   faulting insn `mov (%rax),%rax` with `rax=0x8`; preceding `mov 0x80(%rsp),%rax; add $0x8,%rax`,
+   and `[rsp+0x80]==0`. That is `((_Rb_tree*)NULL)->_M_impl._M_header._M_parent` (`_M_parent`@+8 of a
+   flattened, EBO-collapsed `_Rb_tree_impl`; `_M_impl`@0, `_M_header`@0). The `_Rb_tree*`/`this`
+   threaded into the dtor chain (`_dtor → _Rb_tree_dtor(&this->_M_t) → _M_erase(this,_M_begin(this)) →
+   _M_begin → _M_mbegin → this->_M_impl._M_header._M_parent`) is **NULL**.
+
+**4. heap `new`/`delete` WORKS; only STACK cleanup + member-dtor-chaining crash.**
+   - tmp/mapdtor.mad: `new map<int,int>()` + `delete` → "ctor ok"/"dtor ok" (delete passes the
+     pointer *value*; works). (Note `new T()` calloc-ZEROES, so even a no-op dtor is safe there.)
+   - tmp/wrapmap.mad: `struct W{ map<int,int> m; ~W(){...} }` — inside `~W` `&m` is valid and
+     `size==0`, but the next injected member-dtor `map_dtor(&w.m)` crashes null. Bare `map m;`
+     (cleanup) crashes too. Both paths pass `&object`.
+
+**5. NOT reproducible with equivalent user/simple-template code (all pass, correct `this`):**
+   simple struct cleanup (tmp/cleanptr.mad), template-class cleanup (tmp/tmpldtor.mad), 2-level
+   nested member-dtor (tmp/nestdtor.mad), base-class member access in dtor (tmp/ebodtor.mad),
+   template-method-chain in dtor (tmp/tmplmethod.mad), and a hand-written **map-shaped** dtor chain
+   with `=default` ctors `~Tree(){ erase(begin()); } begin()→mbegin()→this->impl.header.parent`
+   (tmp/dtornull.mad). EVERY one threads `this` correctly and does NOT crash.
+
+**6. ★ THE LOCALIZATION — lowering is CORRECT; bug is in the TREE/MIR path:**
+   - `bin/madc --emit=c11 tmp/setempty.mad > tmp/setempty.c`; `gcc -w setempty.c -lstdc++` → runs
+     clean, `size=0`, exit 0. So the C madc LOWERS to is correct (set_dtor/_Rb_tree_dtor/_M_begin/
+     _M_mbegin all thread `this` correctly in the rendered text).
+   - The SAME program under madc's JIT crashes (null this). ⇒ the defect is in madc's cir_node
+     TREE → c2mir → MIR (JIT) path, which DIVERGES from the rendered emit-C text.
+   - CONFIRMED divergence: feeding the emit-C TEXT back to standalone `/usr/local/bin/c2m` yields
+     syntax/incomplete-type errors (line 605 struct, incomplete `_M_rep`, etc.) — so emit-C text is
+     NOT a faithful serialization of the internal tree (rendered with fixups). The internal tree is
+     what MIR compiles and what crashes; emit-C cannot be used to inspect it.
+   - ⇒ NOT a lowering bug, NOT a c2mir-miscompiles-correct-C bug. It is CirBuilder building the
+     `_Rb_tree` dtor invocation tree (the `this`/first-arg operand of the dtor or a nested method
+     call in the chain) as NULL for HEADER-INSTANTIATED template dtors invoked via cleanup /
+     member-dtor-chaining (but NOT via `delete`).
+
+**NEXT SESSION — start here (concrete):**
+  - Need a NO-EXECUTE tree dump: `--dump-nodes`/`--dump-cir`/`--dump-cir-checked` currently EXECUTE
+    the program (so they abort on the crash before flushing). Add a dump-then-exit path (or fflush
+    the dump before run), then DIFF the checked tree of the crashing `set`/`map` dtor invocation
+    against the working hand-written tmp/dtornull.mad — look at the `this`/first-arg operand of the
+    `_Rb_tree`-dtor call (and the cleanup-handler registration node) for a null/missing operand.
+  - Suspects, in order: (a) the cleanup-attribute handler node for a header-instantiated template
+    dtor passes a null/wrong object operand at the TREE level (delete works because it passes a
+    pointer value, not an address-of node); (b) c2mir MUTATES the tree during compile (per KG
+    IDE-modes note) and the mutation nulls the dtor `this` — compare --dump-cir vs
+    --dump-cir-checked; (c) the member-dtor-chaining injection for a header-instantiated member type
+    computes `&this->member` from a null base.
+  - Reducers (flag-on -DFEATURE_CONST_TYPES -DFEATURE_DERIVED_TO_BASE_DEDUCTION, --std=c++20
+    --no-embedded-headers): CRASH = tmp/{mapempty,setempty,wrapmap}.mad; WORK (controls) =
+    tmp/{dtornull,tmplmethod,nestdtor,cleanptr,tmpldtor}.mad; gcc-OK = tmp/setempty.c.
+
+**BONUS — separate real bug found (NOT the map crash, but genuine; document/fix independently):**
+  A 3-level **purely-implicit** default-ctor chain fails to construct the innermost member.
+  tmp/bisect.mad: `Outer1{Impl impl}`/`Outer2{Impl impl;~Outer2(){}}` (2-level) → `Impl()` runs,
+  `c=0`; but `Outer3{Mid m}` / `Outer4{MidD m;~Outer4(){}}` (3-level, `Mid{Impl impl}`) → `Impl()`
+  does NOT run, `c=garbage`. `= default` ctors at every level FIX it (tmp/defctor.mad → `c=0`), which
+  is why real map (uses `=default`) does NOT hit this. So: madc synthesizes a class's implicit
+  default ctor's member-init calls only when the class is "directly needed"; an INTERMEDIATE class
+  reached only as a subobject doesn't get its member-ctor calls injected. Fix: make implicit
+  default-ctor synthesis recursive through subobject classes. Reducer tmp/bisect.mad.
