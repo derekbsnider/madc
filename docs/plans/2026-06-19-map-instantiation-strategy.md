@@ -499,3 +499,68 @@ if ever wanted). Do NOT gate on them.
 - madc engine: instantiate_fn_template_binding + try_instantiate_namespace_fn_template
   (src/parser.cpp), the just-landed non-type (`nontype_subst`) + 0/1-element tid-pack
   (`tidpack_one`/`tidpack_empty_names`) code; instantiate_template_id / alias resolution.
+
+### 2026-06-20 (later) — W4 COMPLETE (get<0> overload now correct). NEW LAYER: tuple<reference> get reference-collapse.
+
+DONE (commit e8305a2; fulltest 656 passed / 6 failed / 0 timed out — same known map
+cluster, ZERO regression):
+  - resolve_fn_template_return_by_key (parser.cpp ~32759) now SKIPS any candidate
+    whose return type references a template parameter NOT bound by the explicit
+    template args. A return that depends on a DEDUCED param cannot be resolved from
+    explicit args alone (binding `<0>` only). Previously it returned the FIRST such
+    candidate with an opaque/incomplete return type — for `std::get<0>(tuple<const
+    int&>)` that was the PAIR overload `get<_Int>(pair<_Tp1,_Tp2>&)` whose return
+    `tuple_element<_Int,pair<_Tp1,_Tp2>>::type` resolved to the opaque
+    `tuple_element<0,pair<_Tp1,_Tp2>>` (W4 wall). With no candidate resolvable from
+    explicit args, the resolver returns NULL and the call DEFERS to full instantiation
+    (try_instantiate_namespace_fn_template), which deduces _Elements from the arg and
+    correctly rejects pair<> vs a tuple<> arg (unify uok=0) -> selects the tuple
+    get<__i>(tuple<_Elements...>&).
+
+VERIFIED: the W4 error `no matching constructor for call to
+'tuple(tuple_element_0_pair__Tp1__Tp2_)'` is GONE; map<int,int> now compiles PAST the
+get<0> wall, through pair piecewise+indexed ctor instantiation (both `first` and
+`second` member-inits succeed), into a deeper c2mir type-check layer.
+
+**THE NEW LAYER (W4b — tuple<reference> get reference-collapse):** map's
+`operator[]` builds `tuple<const int&>` (the key, via forward_as_tuple) and the
+indexed ctor does `first(std::forward<_Args1>(std::get<_Indexes1>(__tuple1))...)`.
+`std::get<0>(tuple<const int&>)` is mis-instantiated: c2mir reports (JIT path)
+5 check errors at stl_map.h:102 — "incompatible types in assignment to an arithmetic
+type lvalue" (x2), "incomplete struct or union" (x2), "incompatible argument type for
+struct/union type parameter" (x1).
+
+TIGHT REDUCER (no map needed — a general tuple<reference>+get bug):
+  tmp/getref.mad:
+    #include <tuple>
+    int main(){ int k=7; std::tuple<const int&> t(k); int x=std::get<0>(t); return x; }
+  --std=c++20 --no-embedded-headers ->
+    "tmp/getref.mad:5:26: lvalue required as unary & operand" +
+    "returning integer without cast for pointer result"; 1 c2mir check error.
+
+ROOT (hypothesis, well-evidenced): reference-COLLAPSE is mishandled in the
+instantiated get<0>/_Tuple_impl/_Head_base chain. For element `const int&`,
+`_Head_base<0, const int&>::_M_head_impl` is `const int&` (modeled as a pointer
+`int *` — CORRECT). `_M_head()` returns `_Head&` = `const int& &` = `const int&`
+(collapse), so it must return the pointer AS-IS (the reference). But madc's
+instantiated body returns the int VALUE (auto-deref'd the reference member) where the
+function's pointer/reference return type is expected ("returning integer without cast
+for pointer result"), and the caller then takes `&` of that non-lvalue ("lvalue
+required as unary & operand"). Localized site for the consuming side:
+class_ctor_initializer_stmts (cir_builder.cpp ~4237-4250) value-inits a member from
+a reference-returning call and relies on translate_expr AUTO-DEREF (cir_builder.cpp
+~1057 ref_returning_call_type / ~1100) — which works for a plain reference-returning
+fn (tmp/refinit.mad PASSES) but NOT for the instantiated get<0> whose return
+reference-ness is evidently lost/mismodeled through the deferred-instantiation path.
+
+NEXT (W4b worklist):
+  1. Pin whether the instantiated `__ns_std_get__o2` has returns_reference()==true
+     (its return `__tuple_element_t<0,tuple<const int&>>&` must resolve to a reference,
+     NOT a value). The `__tuple_element_t` ALIAS resolution (-> `_Nth_type<0,const
+     int&>::type` = `const int&`) is the suspect — if it drops the `&`, fix there.
+  2. Then the _M_head reference-collapse: a `_Head&` return where `_Head` is itself a
+     reference must return the stored pointer, not deref to the value.
+  3. Re-run tmp/getref.mad to 0 errors, then tmp/mapii.mad.
+  NOTE the const fix is still GATED (FEATURE_CONST_TYPES); map's DEFAULT-build
+  completion still also needs const Phases 3-4. BUILD: always `touch src/parser.cpp`
+  (and src/cir_builder.cpp if its flags change) before a flag-on rebuild.
