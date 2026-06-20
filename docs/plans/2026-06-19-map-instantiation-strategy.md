@@ -1667,3 +1667,63 @@ Layer 2 lands (te_direct → r=7), map's `pair::first(get<0>(forward_as_tuple(ke
 returned reference into the `const int` value (the handoff's gdb finding: node value@+32 held the
 reference POINTER, not the int → heap corruption → teardown munmap abort). Re-verify with mapii.mad
 + gdb on `_Rb_tree_insert_and_rebalance` after Layer 2.
+
+### 2026-06-20 (handoff prep) — ★ REFRAME: at CURRENT HEAD the map VALUE/get path appears CORRECT in emitted C; the runtime crash is likely the SEPARATE `_Rb_tree` node-pointer COERCION (stl_tree.h:427), NOT the tuple_element/_Nth_type Layer-2/Layer-3 chain. MUST gdb-verify.
+Examined `bin/madc --emit=c11 tmp/mapii.mad` (`map<int,int> m; m[1]=2;`) at HEAD f913abe (flag-on).
+mapii COMPILES (warnings only, 0 c2mir errors) and aborts at RUNTIME in the map DTOR/teardown
+(`munmap_chunk: invalid pointer`; the read-back reducer tmp/mapval.mad SIGSEGVs @0x8 in
+`map..._dtor`). KEY NEW EVIDENCE — the pair-construction VALUE path in the emitted C looks RIGHT now
+(post Layer-1 + @7a95e79), CONTRADICTING the older "first = a pointer" gdb framing (that gdb was an
+EARLIER state):
+- `struct pair_const_int32_t_int32_t { int first; int second; }` (first is an int value).
+- `_Head_base..._M_head_impl` is `int *` (the reference `&k`); `_Head_base/_Tuple_impl::_M_head`,
+  `__get_helper__o2`, all return `int *` (= `&k`, the collapsed reference). `forward__o5` is
+  `int *(int *)`. So the indexed-ctor body `__this->first = *forward__o5(&*get__o2(__tuple1))`
+  computes `*(&k)` = the int. (get__o2's DECLARED return is still the `type` fallback `type*`, but the
+  underlying pointer is &k and forward is correctly int*, so the *value* deref yields the int — the
+  `type*` is a cosmetic mis-annotation here, NOT a value corruption.)
+⇒ So map's RUNTIME crash is probably NOT the pair value. The prime suspect is the **`_Rb_tree`
+node-pointer coercion**: 10× `stl_tree.h:427:18 incompatible argument type for pointer type
+parameter` + `stl_map.h:102 incompatible pointer types of argument/parameter` + `node_handle.h:64
+incompatible return-expr type in function returning a pointer`. These are `_Rb_tree_node_base*` vs
+`_Rb_tree_node<_Val>*` (derived node) coercions in the insert/rebalance/erase path — a wrong-typed
+node pointer corrupts the tree links → teardown `_M_erase`/`_M_drop_node` frees/derefs garbage
+(munmap / SIGSEGV@0x8). This is the **"Layer 10" node-pointer family** (task #2), a DIFFERENT and
+likely MORE TRACTABLE track than the deep tuple_element/_Nth_type Layer-2 engine work.
+**NEXT SESSION — REPRIORITIZE (do this BEFORE the Layer-2 engine project):**
+  1. gdb-VERIFY at HEAD: break the real `_ZSt29_Rb_tree_insert_and_rebalance...` (it has debug info),
+     `x/6gx` the new node — is value@+32 actually `{key=1}` (int) or a pointer? This settles whether
+     the value path is truly fixed (emitted-C suggests yes) or still wrong.
+  2. If value OK → chase the `stl_tree.h:427` node-pointer coercion: emit-c the insert/rebalance/
+     `_M_insert_node`/`_M_get_insert_unique_pos` path, find where a `_Rb_tree_node_base*` is passed/
+     returned where a `_Rb_tree_node<pair>*` (or vice-versa) is expected, and fix the node-pointer
+     up/down-cast lowering (the derived-node `static_cast<_Link_type>` / `_S_left`/`_S_right` casts).
+  3. Only if (1) shows the value is still a pointer → resume Layer 2 (tuple_element/_Nth_type body
+     real-inst) per the attempts above.
+Reducers: tmp/mapii.mad (target), tmp/mapval.mad (read-back, SIGSEGV@0x8 in dtor), tmp/mapempty.mad.
+Flag-on -DFEATURE_CONST_TYPES -DFEATURE_DERIVED_TO_BASE_DEDUCTION; emit-c is OK for STRUCTURE here but
+gdb-confirm runtime values (emit-c warned unreliable for some type judgments).
+
+### 2026-06-20 (handoff prep, CORRECTION) — ★★ the crash is in the map DTOR even for an EMPTY map (zero inserts); it is NOT insert-specific, and it is PRE-EXISTING (not a regression).
+CORRECTS the entry directly above. I claimed `tmp/mapempty.mad` (`map<int,int> m;` with NO insert)
+"RUNS clean" — that is FALSE. mapempty.mad **SIGSEGVs at address 0x8** in
+`map_..._dtor+0x43 [JIT]`, the SAME crash as the read-back reducer. Verified at BOTH HEAD f913abe
+AND at a1d11d3 (before this session's Layer-1 spelling fix fd106c7) — so the empty-map dtor crash is
+**pre-existing**, not introduced by any commit this session.
+**Consequences for the next session (supersedes the "REPRIORITIZE" plan above):**
+- The runtime crash is NOT in `m[1]=2` insert, NOT in the pair value, NOT in tuple_element/_Nth_type.
+  It is in map **construction and/or destruction of an empty tree**. The pair-value/get path may well
+  be correct (emitted-C evidence above still stands) but it is not what crashes first.
+- SIGSEGV @0x8 = deref of a near-null pointer (struct field at offset 8 of a NULL base). In an empty
+  `_Rb_tree`, the dtor does `_M_erase(_M_begin())` where `_M_begin() = _M_root()` should be NULL for
+  an empty tree; if the header/sentinel node (`_Rb_tree_header::_M_header`) is mis-initialized (so
+  `_M_root()`/`_M_node._M_parent` is garbage instead of 0), `_M_erase` recurses into `_S_left(garbage)`
+  → load at offset 8 of garbage → SIGSEGV@0x8. So the prime suspect is **`_Rb_tree_header` /
+  `_Rb_tree_node_base` initialization or the empty-tree `_M_erase` traversal**, i.e. whether the
+  default-constructed map's header links (`_M_left=_M_right=&_M_header`, `_M_parent=0`,
+  `_M_node_count=0`) are laid out and set correctly — likely tied to the same `_Rb_tree_node_base*` vs
+  `_Rb_tree_node<_Val>*` node-pointer coercion family (stl_tree.h:427 warnings).
+**NEXT SESSION — start here:** gdb `map<int,int> m;` (no insert), break at the JIT'd map ctor and dtor,
+`x/6gx` the `_Rb_tree_header`/`_M_impl` after construction — confirm `_M_parent==0`,
+`_M_left==_M_right==&_M_header`, `_M_node_count==0`. Find which field is wrong → trace to the
+node-base init/layout. This is more fundamental than (and gates) the insert/pair-value work.
