@@ -19813,6 +19813,34 @@ node_t c2mir_op_append (c2m_ctx_t c2m_ctx, node_t n, node_t child) {
   return op_append (c2m_ctx, n, child);
 }
 
+/* The last child of a list node `n` (its op-list tail), or NULL if empty.
+   Used by the madc CIR builder to anchor a later mid-list splice. */
+node_t c2mir_op_tail (c2m_ctx_t c2m_ctx, node_t n) {
+  (void) c2m_ctx;
+  return NL_TAIL (n->u.ops);
+}
+
+/* Move every child of `src` into `dst`'s op-list, in order, immediately after
+   node `after` (after==NULL ⇒ at the head). `src` is emptied. Lets the CIR
+   builder emit late-instantiated struct definitions into a temp list, then
+   splice them in right after the early struct definitions (before the function
+   prototypes that take those structs by value). */
+node_t c2mir_op_splice_after (c2m_ctx_t c2m_ctx, node_t dst, node_t after, node_t src) {
+  node_t e, next;
+  (void) c2m_ctx;
+  for (e = NL_HEAD (src->u.ops); e != NULL; e = next) {
+    next = NL_NEXT (e);
+    NL_REMOVE (src->u.ops, e);
+    if (after == NULL) {
+      NL_PREPEND (dst->u.ops, e);
+    } else {
+      DLIST_INSERT_AFTER (node_t, dst->u.ops, after, e);
+    }
+    after = e;
+  }
+  return dst;
+}
+
 node_t c2mir_new_i_node (c2m_ctx_t c2m_ctx, long val, c2mir_pos_t pos) {
   pos_t p = {pos.fname, pos.lno, pos.ln_pos};
   return new_i_node (c2m_ctx, val, p);

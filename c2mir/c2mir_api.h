@@ -45,6 +45,8 @@ node_t c2mir_new_node3 (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc, node_t op1, nod
 node_t c2mir_new_node4 (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc, node_t op1, node_t op2, node_t op3, node_t op4);
 node_t c2mir_new_node5 (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc, node_t op1, node_t op2, node_t op3, node_t op4, node_t op5);
 node_t c2mir_op_append (c2m_ctx_t c2m_ctx, node_t n, node_t child);
+node_t c2mir_op_tail (c2m_ctx_t c2m_ctx, node_t n);
+node_t c2mir_op_splice_after (c2m_ctx_t c2m_ctx, node_t dst, node_t after, node_t src);
 
 /* Literal nodes */
 node_t c2mir_new_i_node (c2m_ctx_t c2m_ctx, long val, c2mir_pos_t pos);
