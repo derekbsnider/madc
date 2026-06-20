@@ -1200,3 +1200,26 @@ mandatory "no partial spec" guard so `_Nth_type`/`tuple_element` are untouched),
 canonicalizes the param type to the same DataDef the `_Build_index_tuple::__type()` temp
 uses. This is an instantiation-REGISTRATION fix (architectural), needs full regression.
 bug A + uneval + ref-collapse + bug B remain DONE.
+
+### 2026-06-20 (FINAL-4) — rollback RULED OUT ⇒ `__o8`'s param references a SECOND, unregistered `_Index_tuple_0` DataDef (a copy). Confirmed by elimination.
+
+`grep` confirms `struct_map` (and `datatype_map`) are NEVER erased/saved/restored/swapped
+anywhere in parser.cpp — so the `_Index_tuple_0` registered by
+`instantiate_opaque_template_use` (`struct_map[mangled]=fwd`) cannot disappear. Yet
+emission (Pass 0.5 iterating `prog->struct_map`) shows NO `_Index_tuple_0` key. The only
+consistent explanation: `__o8`'s param type references a DIFFERENT `_Index_tuple_0`
+DataDef object than the registered one — a SECOND DataDef that was never put in struct_map.
+The `DataDefSTRUCT` ctor trace fired exactly once for `_Index_tuple_0` (the registered
+opaque one), so the second object is NOT made via a DataDefSTRUCT/CLASS ctor → it is a
+**default DataDefCLASS COPY** produced while cloning the fn-template declarator/param types
+during `instantiate_fn_template_binding` (the `__o8` indexed-ctor instantiation).
+
+THE FIX (precise, last map step): when `instantiate_fn_template_binding` materializes the
+instantiated function's PARAM types, a class/struct param type must REFERENCE the
+registered `struct_map` DataDef (resolve the substituted `_Index_tuple<0>` spelling
+through `instantiate_template_id`/`resolve_declared_type_token` so it hits the opaque
+cache), NOT carry a copied DataDef. Trace: add a temp copy-ctor to DataDefCLASS (or break
+on the param-type build in instantiate_fn_template_binding) to find the clone site; make
+it reuse the registered type. With the param and the `_Build_index_tuple::__type()` temp
+both pointing at the one registered (and completed-empty, FINAL-2 spec-guarded) DataDef,
+map<int,int>'s last 3 c2mir errors clear. Architectural (identity), needs full regression.
