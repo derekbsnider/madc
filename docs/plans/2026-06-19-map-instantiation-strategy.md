@@ -298,6 +298,44 @@ docs/plans/2026-06-19-const-qualified-types.md. So the map-completion path is no
 (const Phases 3-4 → make default) ‖ (W2 indexed-ctor delegation) → (W3/W4 get<0>)
 → (W5 wire-up).
 
+### 2026-06-20 — W2 COMPLETE (indexed ctor deduces end-to-end). W4 = std::get<0>/tuple_element.
+
+DONE (commits 4b1aa57, 9b90d04, 247fee1; all fulltest 656/6, zero regr):
+  - 4b1aa57: a delegating/base ctor mem-init `: Name(args)` triggers
+    instantiate_member_ctor_template_for_construction (parse_ctor_initializer_list)
+    — the `nargs=4` indexed-ctor delegation is now REACHED (was absent).
+  - 9b90d04: NON-TYPE template-id parameter packs (`size_t... _Indexes`) in the
+    fn-template engine — classification no longer bails, deduction folds elements
+    to int64 (tid_packs_nontype), body substitution emits TokenInt + drops `...`,
+    inst_key keys by value. Mirrors the TYPE tid-pack machinery.
+  - 247fee1: (A) member-ctor overload selected by ARITY (count function params of
+    each candidate; piecewise=3 vs indexed=4) — was always the first ctor; (B)
+    capture per-param type-ness (FuncDef::template_param_is_type +
+    OutOfLineMemberDef::inner_is_type via extract_inner_template_typeparams: a
+    param introduced by typename/class is TYPE, by a type-name is NON-TYPE) so the
+    indexed ctor's `_Indexes` reach the non-type engine (was hardcoded all-type).
+
+VERIFIED ([ctortmpl] trace, flag-on): indexed ctor __o8 deduces ALL four packs —
+`param[0] tuple<_Args1...> vs tuple<const int32_t*> uok=1` (resolve
+'const int32_t*' -> const int32_t*, const PRESERVED), `param[1] tuple<_Args2...>
+vs tuple<> uok=1`, `param[2] _Index_tuple<_Indexes1...> vs _Index_tuple<0> uok=1`
+(NON-TYPE pack), `param[3] _Index_tuple<_Indexes2...> vs _Index_tuple<> uok=1` —
+and its body instantiates.
+
+**THE W4 WALL (new):** `cir error: no matching constructor for call to
+'tuple(tuple_element_0_pair__Tp1__Tp2_)' @stl_map.h:102:13`. The indexed ctor body
+`first(std::forward<_Args1>(std::get<_Indexes1>(__tuple1))...)` now runs;
+`std::get<0>(tuple<const int&>)` / its `tuple_element` resolution produces
+`tuple_element<0, pair<_Tp1,_Tp2>>` with UNSUBSTITUTED class params `_Tp1/_Tp2`
+(note: pair, not tuple — suspect the wrong tuple_element specialization or a
+get<>(pair) path). W4 worklist (the OPEN item from SETTLED): pin via emit-c11 +
+gcc whether get<0> resolves the alias-return `__tuple_element_t<0, tuple<X>>`
+(parser.cpp ~is_templateid_ret) or the body `__get_helper<0>` / `_Tuple_impl<0,X>`
+terminal; reducer tmp/tupget2.mad + MADC_DEBUG_CTORTMPL. Then W5 (the delegation is
+already wired). NOTE the const fix is still GATED — map's default-build completion
+still also needs const Phases 3-4 (remove the FEATURE_CONST_TYPES gate).
+BUILD: ALWAYS `touch src/parser.cpp` before flag-on rebuilds (make ignores OPTIONAL_CPPFLAGS).
+
 ### GAPS FOUND during W1 (NOT on map's critical path — do NOT let them block W2–W5)
 
 These surfaced while testing the `make_index_sequence` *wrapper* API. Map does
