@@ -8150,16 +8150,32 @@ bool Program::capture_constant_initializer_value(int64_t &out)
     auto saved_tokens = tokens;
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
+    // A non-constant / still-dependent initializer (a dependent `static constexpr`
+    // member like libstdc++'s `value = static_cast<...>(...)`) makes
+    // parse_constant_integer_expression Throw, and throwbuf::sync() prints to stderr
+    // BEFORE the exception we catch — so this legitimate "skip the non-constant
+    // initializer" fallback would leak a spurious error. Mute std::cerr for the
+    // speculative parse only; restore + clear its state after. (Same idiom as
+    // fold_nontype_arg_constant / constraint_expression_well_formed.)
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(&g_madc_null_streambuf);
+    bool ok = false;
+    int64_t v = 0;
     try
     {
-	int64_t v = parse_constant_integer_expression();
+	v = parse_constant_integer_expression();
 	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-	{
-	    out = v;
-	    return true;            // keep the consumed position (stream at ';')
-	}
+	    ok = true;
     }
-    catch ( ... ) { }
+    catch ( ... ) { ok = false; }
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
+    if ( ok )
+    {
+	out = v;
+	return true;                // keep the consumed position (stream at ';')
+    }
     tokens = saved_tokens;
     diagnostics.resize(saved_diag_count);
     last_error = saved_error;
@@ -19937,6 +19953,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    && (peekToken()->id() == TokenID::tkOpBrk
 				     || peekToken()->id() == TokenID::tkDeRef
 				     || peekToken()->id() == TokenID::tkDot
+				     || peekToken()->id() == TokenID::tkNS
 				     || peekToken()->id() == TokenID::tkOpSqr)) )
 				{
 				    std::string dname = ((TokenIdent *)deref_tb)->str;
@@ -20177,6 +20194,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					    && (peekToken()->id() == TokenID::tkOpBrk
 					     || peekToken()->id() == TokenID::tkDeRef
 					     || peekToken()->id() == TokenID::tkDot
+					     || peekToken()->id() == TokenID::tkNS
 					     || peekToken()->id() == TokenID::tkOpSqr)) )
 				    {
 					std::string inner_name = ((TokenIdent *)inner_tb)->str;
