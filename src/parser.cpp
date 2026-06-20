@@ -30440,7 +30440,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	const std::string &pack_param, bool pack_empty, Variable **var_out,
 	const std::vector<DataDef *> &pack_elems = std::vector<DataDef *>(),
 	const std::map<std::string, std::vector<DataDef *> > &tid_packs
-	    = std::map<std::string, std::vector<DataDef *> >());
+	    = std::map<std::string, std::vector<DataDef *> >(),
+	const std::map<std::string, std::vector<int64_t> > &tid_packs_nontype
+	    = std::map<std::string, std::vector<int64_t> >());
 
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc)
@@ -30456,7 +30458,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     // Type parameters only; one parameter pack allowed in the LAST position
     // (bound to exactly one element — `__stoa`'s `_Base...` shape).
     std::string pack_param;
-    std::vector<std::string> pack_tps;	// every pack typeparam (>1 = piecewise-ctor shape)
+    std::vector<std::string> pack_tps;	// every TYPE pack typeparam (>1 = piecewise-ctor shape)
+    std::vector<std::string> nontype_pack_tps;	// non-type packs (`size_t... _Indexes`)
     std::set<std::string> nontype_params;	// non-type value params (`template<int N>`)
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
     {
@@ -30464,12 +30467,14 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	bool is_pack = i < ft.typeparam_is_pack.size() && ft.typeparam_is_pack[i];
 	if ( !is_type )
 	{
-	    // A non-type PACK (`size_t... _Indexes`) is not yet supported — bail.
-	    // A non-type scalar param (`int N`, `size_t __i`) is bound to a VALUE
-	    // (from an explicit arg) and substituted as an integer literal.
+	    // A non-type PACK (`size_t... _Indexes`) deduced from a template-id
+	    // arg (`_Index_tuple<_Indexes...>`) is bound to a list of integer
+	    // VALUES (tid_packs_nontype). A non-type scalar param (`int N`,
+	    // `size_t __i`) is bound to a single VALUE from an explicit arg.
 	    if ( is_pack )
-		return false;
-	    nontype_params.insert(ft.typeparams[i]);
+		nontype_pack_tps.push_back(ft.typeparams[i]);
+	    else
+		nontype_params.insert(ft.typeparams[i]);
 	    continue;
 	}
 	if ( is_pack )
@@ -30510,6 +30515,18 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    pack_param = pack_tps[p];	// trailing direct pack (legacy path)
 	else
 	    tid_packs[pack_tps[p]];	// template-id pack; seed empty (may stay empty, e.g. tuple<>)
+    }
+    // Non-type packs deduced from a template-id arg (`_Index_tuple<_Indexes1...>`
+    // vs `_Index_tuple<0>`) -> name -> list of integer values. std::pair's indexed
+    // ctor has TWO (`_Indexes1`/`_Indexes2`). A trailing-DIRECT non-type pack
+    // (`int... Ns` as the last param) is not yet supported.
+    std::map<std::string, std::vector<int64_t> > tid_packs_nontype;
+    for ( size_t p = 0; p < nontype_pack_tps.size(); ++p )
+    {
+	if ( !ov.param_spellings.empty()
+	  && fn_template_param_is_pack(ov.param_spellings.back(), nontype_pack_tps[p]) )
+	    return false;	// trailing-direct non-type pack: unsupported
+	tid_packs_nontype[nontype_pack_tps[p]];	// template-id non-type pack; seed empty
     }
     // Without a trailing pack, arity must not exceed the parameter count. WITH a
     // trailing pack (`_Args&&... __args`), the pack absorbs every argument past the
@@ -30664,6 +30681,34 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		    for ( std::map<std::string, std::vector<std::string> >::iterator
 			    pk = outpk.begin(); pk != outpk.end(); ++pk )
 		    {
+			// A NON-TYPE pack (`_Indexes...` from `_Index_tuple<0>`):
+			// each element is an integer VALUE — fold the spelling to
+			// int64 into tid_packs_nontype (not a type via resolve).
+			if ( tid_packs_nontype.count(pk->first) )
+			{
+			    std::vector<int64_t> vals;
+			    bool resolved = true;
+			    for ( size_t e = 0; e < pk->second.size(); ++e )
+			    {
+				std::string es = pk->second[e];
+				while ( !es.empty() && (es.front() == ' ' || es.back() == ' ') )
+				    es = es.front() == ' ' ? es.substr(1) : es.substr(0, es.size() - 1);
+				if ( es.empty() )
+				    continue;	// empty pack (`_Index_tuple<>`)
+				char *endp = NULL;
+				long long v = strtoll(es.c_str(), &endp, 0);
+				while ( endp && (*endp == 'u' || *endp == 'U'
+					     || *endp == 'l' || *endp == 'L') )
+				    ++endp;
+				if ( !endp || *endp != '\0' )
+				{ resolved = false; break; }	// not an integer literal
+				vals.push_back((int64_t)v);
+			    }
+			    if ( !resolved )
+				return false;
+			    tid_packs_nontype[pk->first] = vals;
+			    continue;
+			}
 			if ( !tid_packs.count(pk->first) )
 			    continue;	// not one of THIS template's packs
 			std::vector<DataDef *> elems;
@@ -30742,7 +30787,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     }
 #endif
     return instantiate_fn_template_binding(pgm, ft, key, binding, pack_param,
-					    pack_empty, NULL, pack_elems, tid_packs);
+					    pack_empty, NULL, pack_elems, tid_packs,
+					    tid_packs_nontype);
 }
 
 // Resolve a fn-template parameter's DEFAULT token run (`R = T*`,
@@ -30834,7 +30880,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	std::map<std::string, DataDef *> &binding,
 	const std::string &pack_param, bool pack_empty, Variable **var_out,
 	const std::vector<DataDef *> &pack_elems,
-	const std::map<std::string, std::vector<DataDef *> > &tid_packs)
+	const std::map<std::string, std::vector<DataDef *> > &tid_packs,
+	const std::map<std::string, std::vector<int64_t> > &tid_packs_nontype)
 {
     // Template-id parameter packs (deduced from `tuple<_Args1...>` args — std::get's
     // `_Elements`, std::pair's piecewise `_Args1`/`_Args2`). Supported for the 0- and
@@ -30857,6 +30904,21 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	else
 	    return false;
     }
+    // Same 0/1-element handling for NON-TYPE template-id packs (`_Indexes...`):
+    // a 1-element pack substitutes its sole integer value (as a TokenInt) and
+    // drops the `...`; a 0-element pack elides `name...` (+ preceding comma).
+    std::set<std::string> nontype_tidpack_empty;
+    std::map<std::string, int64_t> nontype_tidpack_one;	// name -> sole value
+    for ( std::map<std::string, std::vector<int64_t> >::const_iterator
+	    t = tid_packs_nontype.begin(); t != tid_packs_nontype.end(); ++t )
+    {
+	if ( t->second.size() > 1 )
+	    return false;	// multi-element non-type pack: future N-copy expansion
+	if ( t->second.empty() )
+	    nontype_tidpack_empty.insert(t->first);
+	else
+	    nontype_tidpack_one[t->first] = t->second[0];
+    }
     // Unbound parameters fall back to their template-parameter defaults. The
     // default is a token run: a BASE type (a single token — an already-bound
     // parameter name `_Ret = _TRet`, or a concrete `ttDataType`) optionally
@@ -30877,9 +30939,12 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    continue;	// pack: empty (elided) or multi-element (expanded below) —
 			// never a single `binding` entry, so not "unbound"
 	if ( tidpack_one.count(ft.typeparams[i])
-	  || tidpack_empty_names.count(ft.typeparams[i]) )
+	  || tidpack_empty_names.count(ft.typeparams[i])
+	  || nontype_tidpack_one.count(ft.typeparams[i])
+	  || nontype_tidpack_empty.count(ft.typeparams[i]) )
 	    continue;	// bound as a template-id pack (deduced from a `tuple<_Args...>`
-			// argument — std::pair's piecewise `_Args1`/`_Args2`); it is
+			// argument — std::pair's piecewise `_Args1`/`_Args2`, or the
+			// indexed ctor's non-type `_Indexes1`/`_Indexes2`); it is
 			// NOT in `binding` but IS bound, and the body loop below
 			// substitutes/expands it. Without this skip a tid-pack-bound
 			// typeparam looked "unbound" -> no default -> the whole
@@ -30940,6 +31005,14 @@ static bool instantiate_fn_template_binding(Program &pgm,
     if ( pack_elems.size() >= 2 )
 	for ( size_t e = 0; e < pack_elems.size(); ++e )
 	    inst_key += "@" + (pack_elems[e] ? pack_elems[e]->name : std::string());
+    // Non-type tid-pack VALUES are a distinct instantiation axis (`_Indexes={0}`
+    // vs `{1}`) with no `binding` entry — fold them in so they don't collide.
+    for ( std::map<std::string, int64_t>::const_iterator
+	    t = nontype_tidpack_one.begin(); t != nontype_tidpack_one.end(); ++t )
+	inst_key += "#" + t->first + "=" + std::to_string(t->second);
+    for ( std::set<std::string>::const_iterator
+	    t = nontype_tidpack_empty.begin(); t != nontype_tidpack_empty.end(); ++t )
+	inst_key += "#" + *t + "={}";
     inst_key += ">";
     if ( pgm.fn_template_instantiated.count(inst_key) )
     {
@@ -31145,9 +31218,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	{
 	    const std::string &pn = ((TokenIdent *)ft.decl[i+5])->str;
 	    int64_t cnt = -1;
-	    if ( tidpack_one.count(pn) )
+	    if ( tidpack_one.count(pn) || nontype_tidpack_one.count(pn) )
 		cnt = 1;
-	    else if ( tidpack_empty_names.count(pn) )
+	    else if ( tidpack_empty_names.count(pn) || nontype_tidpack_empty.count(pn) )
 		cnt = 0;
 	    else if ( !pack_param.empty() && pn == pack_param )
 		cnt = pack_empty ? 0
@@ -31239,6 +31312,31 @@ static bool instantiate_fn_template_binding(Program &pgm,
 			 && (ft.decl[k]->id() == TokenID::tkBand
 			     || ft.decl[k]->id() == TokenID::tkLand) )
 			++k;
+		    if ( k + 2 < ft.decl.size()
+		      && ft.decl[k]   && ft.decl[k]->id() == TokenID::tkDot
+		      && ft.decl[k+1] && ft.decl[k+1]->id() == TokenID::tkDot
+		      && ft.decl[k+2] && ft.decl[k+2]->id() == TokenID::tkDot )
+			i = k + 2;	// consumed `...`
+		    continue;
+		}
+	    }
+	    // Non-type template-id pack (0/1-element): a 1-element pack
+	    // (`_Index_tuple<_Indexes1...>`, _Indexes1={0}) emits its sole integer
+	    // VALUE as a TokenInt and drops the `...`; a 0-element pack elides the
+	    // name + `...` (+ preceding comma) -> `_Index_tuple<>`. The indexed-ctor
+	    // delegation `get<_Indexes1>(__t1)...` (W2).
+	    {
+		std::map<std::string, int64_t>::iterator noi =
+		    nontype_tidpack_one.find(idname);
+		bool np_empty = nontype_tidpack_empty.count(idname) != 0;
+		if ( noi != nontype_tidpack_one.end() || np_empty )
+		{
+		    if ( np_empty && !inj.empty() && inj.back()
+		      && inj.back()->id() == TokenID::tkComma )
+		    { delete inj.back(); inj.pop_back(); }
+		    if ( noi != nontype_tidpack_one.end() )
+			inj.push_back(new TokenInt(noi->second));
+		    size_t k = i + 1;
 		    if ( k + 2 < ft.decl.size()
 		      && ft.decl[k]   && ft.decl[k]->id() == TokenID::tkDot
 		      && ft.decl[k+1] && ft.decl[k+1]->id() == TokenID::tkDot
