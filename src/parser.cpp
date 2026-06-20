@@ -31348,6 +31348,15 @@ static bool instantiate_fn_template_binding(Program &pgm,
     // substituted pattern. Allow the drop when ANY template-id pack is in play.
     const bool has_tidpacks = !tidpack_one.empty() || !tidpack_empty_names.empty()
 			   || !nontype_tidpack_one.empty() || !nontype_tidpack_empty.empty();
+    // bug B (0-element pack expansion of a COMPLEX pattern): a pack expansion
+    // `name(forward<_Args2>(get<_Indexes2>(__t2))...)` whose tid-packs are ALL
+    // empty must elide the WHOLE pattern -> `name()` (zero args), not leave the
+    // malformed substituted `forward<>(get<>(__t2))`. Track per-pattern whether
+    // an empty / non-empty tid-pack was substituted since the last `...`; at the
+    // pattern-`...` drop, if empty-only, truncate `inj` back to the pattern's
+    // opening `(` (or the `,` separating it from a prior argument).
+    bool patt_empty_pack = false;	// an empty tid-pack was elided in this pattern
+    bool patt_nonempty_pack = false;	// a non-empty tid-pack element was emitted
     for ( size_t i = 0; !multi_done && i < ft.decl.size(); ++i )
     {
 	TokenBase *bt = ft.decl[i];
@@ -31411,6 +31420,33 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	  && !( !inj.empty() && inj.back()
 		&& inj.back()->id() == TokenID::tkOpBrk ) )
 	{
+	    // bug B: if this pattern's tid-packs were ALL empty (0-element), the
+	    // substituted pattern is a malformed `forward<>(get<>(__t))` — elide
+	    // the WHOLE pattern to zero args. Walk `inj` back, balancing parens,
+	    // to the pattern's opening `(` (kept) or its leading `,` (removed).
+	    if ( patt_empty_pack && !patt_nonempty_pack )
+	    {
+		int depth = 0;
+		size_t cut = inj.size();	// truncate point (exclusive)
+		while ( cut > 0 )
+		{
+		    TokenBase *pt = inj[cut - 1];
+		    if ( pt && pt->id() == TokenID::tkClBrk )
+			++depth;
+		    else if ( pt && pt->id() == TokenID::tkOpBrk )
+		    {
+			if ( depth == 0 )
+			    break;		// pattern's own `(` — keep it
+			--depth;
+		    }
+		    else if ( pt && pt->id() == TokenID::tkComma && depth == 0 )
+		    { --cut; break; }		// leading `,` — drop it too
+		    --cut;
+		}
+		while ( inj.size() > cut )
+		{ delete inj.back(); inj.pop_back(); }
+	    }
+	    patt_empty_pack = patt_nonempty_pack = false;
 	    i += 2;	// drop the three-dot pack-expansion ellipsis
 	    continue;
 	}
@@ -31456,12 +31492,16 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		bool tp_empty = tidpack_empty_names.count(idname) != 0;
 		if ( toi != tidpack_one.end() || tp_empty )
 		{
+		    if ( tp_empty ) patt_empty_pack = true;
 		    if ( tp_empty && !inj.empty() && inj.back()
 		      && inj.back()->id() == TokenID::tkComma )
 		    { delete inj.back(); inj.pop_back(); }
 		    if ( toi != tidpack_one.end() && toi->second )
+		    {
 			inj.push_back(new TokenDataType(
 			    toi->second->name.c_str(), *toi->second));
+			patt_nonempty_pack = true;
+		    }
 		    size_t k = i + 1;
 		    while ( k < ft.decl.size() && ft.decl[k]
 			 && (ft.decl[k]->id() == TokenID::tkBand
@@ -31471,7 +31511,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		      && ft.decl[k]   && ft.decl[k]->id() == TokenID::tkDot
 		      && ft.decl[k+1] && ft.decl[k+1]->id() == TokenID::tkDot
 		      && ft.decl[k+2] && ft.decl[k+2]->id() == TokenID::tkDot )
-			i = k + 2;	// consumed `...`
+		    { i = k + 2;	// consumed an INLINE `...` (e.g. `tuple<_Args...>`)
+		      patt_empty_pack = patt_nonempty_pack = false; }
 		    continue;
 		}
 	    }
@@ -31486,17 +31527,19 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		bool np_empty = nontype_tidpack_empty.count(idname) != 0;
 		if ( noi != nontype_tidpack_one.end() || np_empty )
 		{
+		    if ( np_empty ) patt_empty_pack = true;
 		    if ( np_empty && !inj.empty() && inj.back()
 		      && inj.back()->id() == TokenID::tkComma )
 		    { delete inj.back(); inj.pop_back(); }
 		    if ( noi != nontype_tidpack_one.end() )
-			inj.push_back(new TokenInt(noi->second));
+		    { inj.push_back(new TokenInt(noi->second)); patt_nonempty_pack = true; }
 		    size_t k = i + 1;
 		    if ( k + 2 < ft.decl.size()
 		      && ft.decl[k]   && ft.decl[k]->id() == TokenID::tkDot
 		      && ft.decl[k+1] && ft.decl[k+1]->id() == TokenID::tkDot
 		      && ft.decl[k+2] && ft.decl[k+2]->id() == TokenID::tkDot )
-			i = k + 2;	// consumed `...`
+		    { i = k + 2;	// consumed an INLINE `...`
+		      patt_empty_pack = patt_nonempty_pack = false; }
 		    continue;
 		}
 	    }
