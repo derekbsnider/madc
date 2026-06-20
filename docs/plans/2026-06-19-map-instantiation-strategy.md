@@ -873,6 +873,38 @@ piecewise-construct/emplace path. Investigate on the TREE (the `first`(int) = st
 is real in the tree, not just emit) — do NOT trust `--emit=c11` here. Also still: "undeclared
 identifier 'std'" (2×) on the JIT path. NEXT SESSION START THERE, not on item 1.
 
+### ✅ REFERENCE-COLLAPSING FIX landed (2026-06-20, @7a95e79) — map 4 → 3; `first=tuple` gone
+RECON (clang cross-ref `/workspace/llvm-clang-src`): the faithful JIT reducer is
+**tmp/te_ref.mad** (`const int& r = std::get<0>(std::tuple<const int&>)`); the non-ref twin
+`tuple<int>` works. ROOT: madc lowers refs to pointers (DataDefREF IS-A DataDefPTR), so a ref's
+canonical spelling is the `*`-form, IDENTICAL to a real pointer's. `template_type_arg_spelling`
+baked that into instantiations' `canonical_cpp_spelling` (`tuple<const int&>` → `tuple<const
+int32_t*>`); the tid-pack deduction round-trips the element through that spelling
+(`split_template_id_spelling`→`resolve_arg_spelling_datadef`) and rebuilds a PLAIN POINTER, losing
+the `DataDefREF`. So libstdc++'s `_Head&` (`__get_helper`'s return, `_Head`=`const int&`)
+double-wrapped to `const int**` → c2mir return-type mismatch → undefined `__ns_std_get`. **FIX
+(@7a95e79, parser.cpp template_type_arg_spelling, gated FEATURE_CONST_TYPES):** render a reference
+arg as `referent&`, so the canonical spelling round-trips back to a `DataDefREF` where
+`getReferenceType`'s existing collapsing ([dcl.ref]p6) yields the single ref. CLANG PARALLEL:
+clang keeps the ref in the QualType (`LValueReferenceType`) and `BuildReferenceType`
+(SemaType.cpp:2256, [dcl.ref]p6) collapses STRUCTURALLY — never via a string. RESULT: `__get_helper`
+now `int*` (was `int**`); the `first=tuple` *"assignment to an arithmetic lvalue"* error is GONE;
+map 4 → 3; fulltest 656/6/0 zero regr (gated).
+
+REMAINING map errors (3, flag-on): (a) `stl_map.h:102:0 incompatible argument type for
+struct/union type parameter`; (b) JIT `undeclared identifier 'std'` (2×). Plus the std::get
+`const-ref` reducer (te_ref) still not fully green: `get`'s DECLARED return
+`__tuple_element_t<0, tuple<const int&>>` still resolves to the `type` fallback (warning
+"incompatible pointer types of return-expr and function result"). The `type`(char) here is NOT the
+`user_typedef_names` pollution — that was TESTED (gated user_typedef_names to file/block scope at
+the 3 insert sites) and REVERTED: it changed te_aliasref `r=1`→garbage but did NOT fix te_ref or
+reduce map (still 3), so it is a separate emit-only concern, NOT this blocker. The real next layer
+is **the `__tuple_element_t<I, tuple<…>>` ALIAS / `tuple_element<0, tuple<const int&>>::type`
+resolution for a REFERENCE element** (non-ref `tuple<int>` resolves fine; ref → the `type`
+fallback). Reducer te_ref.mad / te_aliasref.mad (both wrong-value). Investigate
+instantiate_template_alias_use + the `tuple_element` partial-spec `typedef _Head type` when
+`_Head` is a `DataDefREF`. (Own-template reducers psref.mad diverge — use te_ref/te_aliasref.)
+
 ### REMAINING map<int,int> layers (SUPERSEDED emit-c analysis — see CORRECTION above)
 + flags `-DFEATURE_DERIVED_TO_BASE_DEDUCTION -DFEATURE_CONST_TYPES` (touch src/parser.cpp first):
 1. **`get<0>` RETURN TYPE resolves to the `type` fallback (the real root of the `first`
