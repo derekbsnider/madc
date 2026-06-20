@@ -1874,3 +1874,33 @@ bare symbol. NEXT (insert): make the placement-new/ctor call inside an instantia
 resolve `pair(piecewise_construct_t, tuple, tuple)` to the piecewise ctor `__o7` (overload by the
 forwarded arg types), AND instantiate `__o7`'s first tuple param as tuple<const int&> not tuple<int>.
 This is the core W2/W4 piecewise-pair work.
+
+### 2026-06-20 (session 2 cont.) — INSERT COMPILE root-caused (const-ref pack element has EMPTY canonical); a BROAD fix WORKS for map but REGRESSES the baseline (11 timeouts) → REVERTED. Narrow fix needed.
+ROOT CAUSE of the stl_map.h:102 "too many arguments" (the pair piecewise ctor mismatch): the pair
+piecewise ctor's `_Args1` pack was DEDUCED correctly as `const int32_t&` (verified via a
+MADC_DBG_TIDPACK trace), but when that captured spelling was re-resolved to a DataDef via
+`resolve_arg_spelling_datadef('const int32_t&')`, the result (getReferenceType(getConstType(int)),
+a CACHED DataDef) had an **EMPTY `canonical_cpp_spelling`**. The downstream re-instantiation that
+renders this pack element into the ctor's `tuple<_Args1...>` param then loses the const/ref and
+collapses `const int&` → `int`, so the instantiated piecewise ctor `__o7` takes `tuple<int>` not
+`tuple<const int&>` → the 3-arg piecewise call doesn't match it → overload resolution falls back to
+the copy ctor → "too many arguments".
+ATTEMPTED FIX (parser.cpp resolve_arg_spelling_datadef): after re-applying the peeled const +
+pointer/ref suffixes, set the result DataDef's `canonical_cpp_spelling` to the reconstructed
+spelling (`const <core>&`). VERIFIED IT WORKS FOR MAP: `map<int,int> m; m[1]=2;` then COMPILES +
+RUNS; insert+read+update execute (tmp/maprun.mad `m[1]=99 m[5]=50`). **BUT it REGRESSED the default
+fulltest: 645/6/11/18 (was 656/6/0/18) — 11 TIMEOUTS** (testforeachref, testvectorptr, testinclude,
+testretbufmethodinit, …). Cause: it MUTATES the SHARED CACHED const/ref/ptr DataDefs'
+canonical_cpp_spelling globally, which changes type spelling everywhere and sends vector<T*>/ref
+instantiation into infinite loops. **REVERTED** (parser.cpp back to HEAD 7d9927d; baseline restored,
+those tests pass again).
+NARROW FIX DIRECTION (next): do NOT mutate the shared cache. Fix the DOWNSTREAM rendering — when a
+const/ref/ptr DataDef with an empty canonical is rendered into a template-id arg spelling (the
+tuple<_Args1...> substitution in instantiate_fn_template_binding), reconstruct `const base&` from
+the DataDef's base+qualifiers locally instead of falling back to rawtype `int`. Locate that
+substitution site and fix it there, or carry the captured pack SPELLING ('const int32_t&') through
+to the substitution rather than round-tripping spelling→DataDef→spelling.
+ALSO FOUND (separate, surfaces once compile works): the `_Rb_tree` RUNTIME semantics are buggy —
+tmp/mapuniq.mad: `m[1]=10` then read `m[1]=0` (value lost) while `m[2]=20` reads OK, and `m[1]=99`
+INSERTS A DUPLICATE (size 2→3 same key). operator[]'s find/lower_bound + returned value-reference
+`(*__i).second` are unstable (W4b reference-lowering + stl_tree.h:427 node-pointer-coercion). W2/W3.
