@@ -1379,3 +1379,30 @@ gets that garbage → heap corruption → teardown abort. FIX te_direct (tuple_e
 reference `::type` → `const int&`→int*, and the ref deref into the value) and map RUN follows.
 Both flag-on (-DFEATURE_DERIVED_TO_BASE_DEDUCTION -DFEATURE_CONST_TYPES). COMPILE half of W5
 remains DONE (54ff562); this reference-element resolution is the RUN half.
+
+### 2026-06-20 (RUNTIME — MAXIMALLY ISOLATED to a 2-line reducer: typedef/alias-to-reference var init misses the address-bind)
+
+Drilled the map runtime crash all the way down (printf-based reducers; exit codes mislead):
+- `tmp/tv.mad`  `std::tuple<int> t(7); get<0>` → 7 (tuple VALUE works)
+- `tmp/te_direct.mad` `std::tuple<const int&>` get → garbage (reference element)
+- `tmp/nth.mad`  user `template<...> struct Nth<0,T0,R...>{typedef T0 type;}; Nth<0,const int&>::type r=k;`
+  → SIGSEGV — reproduces with NO libstdc++/tuple/map.
+- **`tmp/tdref.mad` (THE reducer, 2 lines, no templates):**
+  `typedef const int& cref; int k=7; cref r = k; printf("%d", r);`
+  emits `cref r = k; … (*r)` — i.e. value-assign `= k`, NOT reference-bind `= &k`.
+  Control `const int& r = k;` (plain, `&`-token) correctly emits `int *r = (&k);` and runs.
+
+ROOT (precise): a variable whose declared type is a TYPEDEF/ALIAS resolving to a reference
+(`cref`, or a member `typedef T0 type` with T0 a reference, e.g. _Nth_type/tuple_element) is
+recognized as a reference on USE (emits `*r`) but its INITIALIZER is NOT address-bound —
+emits `r = k` instead of `r = &k`. So the reference-bind-at-init is keyed on the `&`
+declarator TOKEN, not on the resolved TYPE's is_reference(). map's operator[] uses
+`std::get<0>(forward_as_tuple(key))` whose result type is exactly such an alias-reference, so
+pair::first binds the value (an address) wrong → heap corruption → teardown abort.
+
+FIX (next session — the RUN half of W5, a tiny reducer to iterate on): in the variable
+INITIALIZER lowering, address-bind when the var's TYPE is_reference() (DataDefREF), not only
+when the declarator had an `&` token. Verify with tdref.mad (`= &k`, runs) → nth.mad →
+te_direct.mad → mapii.mad, then full regression (656/6). This touches the reference-lowering
+(W4b) so it's regression-gated; the 2-line reducer makes it fast + safe to land. COMPILE half
+of W5 DONE (54ff562); this is the last RUN-half bug.
