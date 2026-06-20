@@ -36987,6 +36987,25 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	nextToken();
 	ret_is_ref = true;
     }
+    // A typedef/alias whose RESOLVED type is itself a reference (`typedef const int&
+    // cref; cref r = k;` — and the member-typedef case `typedef T0 type;` with T0 a
+    // reference, e.g. _Nth_type/tuple_element `::type` for std::get of a reference
+    // element) has NO `&` declarator TOKEN, but the variable is still a reference: its
+    // initializer must be ADDRESS-bound (`r = &k`), not value-assigned (`r = k`), and
+    // its type is a DataDefREF. Drive the SAME ret_is_ref path by peeling the alias to
+    // its referent so getReferenceType(referent) + reference_bind_address_expr run
+    // exactly as the `&`-token case. (No `&` token AND not already handled = the gap
+    // that left map's `std::get<0>(tuple<const int&>)` value bound by address-as-value.)
+    else if ( !ret_is_ref && !saw_pointer_decl && decl_type && decl_type->is_reference() )
+    {
+	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(decl_type) )
+	    if ( rp->base_type )
+	    {
+		ret_is_ref = true;
+		decl_type = rp->base_type;	// referent — getReferenceType rebuilds the ref
+		decl_typedef_alias.clear();	// emit the lowered reference, not the alias name
+	    }
+    }
 
     if ( !peekToken() )
 	Throw(tb) << "Unexpected end of data: Expecting identifier after type" << flush;

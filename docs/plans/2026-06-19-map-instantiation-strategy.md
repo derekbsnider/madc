@@ -1406,3 +1406,41 @@ when the declarator had an `&` token. Verify with tdref.mad (`= &k`, runs) → n
 te_direct.mad → mapii.mad, then full regression (656/6). This touches the reference-lowering
 (W4b) so it's regression-gated; the 2-line reducer makes it fast + safe to land. COMPILE half
 of W5 DONE (54ff562); this is the last RUN-half bug.
+
+### 2026-06-20 (resume) — bug#1 patch VERIFIED flag-on (prior "breaks control" call was a flags-OFF artifact); bug#2 refined to reference-COLLAPSE in `_M_head`'s return (part-a collision)
+
+Re-applied docs/plans/2026-06-20-varinit-reference-fix.patch and BUILT FLAG-ON
+(`-DFEATURE_CONST_TYPES -DFEATURE_DERIVED_TO_BASE_DEDUCTION`; the patch is unconditional).
+Walked the handoff's ladder flag-on:
+- tdref → r=7, nth → r=7 (bug#1 FIXED, as documented)
+- **tv (control) → get0=7** — the control STILL WORKS. (An earlier same-session conclusion
+  that "the patch breaks the control" was measured on a flags-OFF build, where tv.mad ALREADY
+  fails at HEAD because the get-chain needs the flags — INVALID per `reducers-need-flags`. The
+  patch does NOT regress tv flag-on.)
+- te_direct → r=1 (STILL WRONG) — bug#2, INDEPENDENT of the patch (flag-on te_direct is r=1
+  with AND without it; the patch only touches tdref/nth, which have no get()).
+bug#1 is sound; gating it on the DEFAULT full regression (unconditional change) before commit.
+
+**bug#2 REFINED ROOT (hypothesis, source+clang grounded — VERIFY before fixing):** the libstdc++-13
+chain (utility.h:234, tuple:1778/1782/1802, :176-240) for `std::get<0>(tuple<const int&>&)`:
+`get` returns `__tuple_element_t<0,tuple<const int&>>&` = `tuple_element<…>::type &` =
+`_Nth_type<0,const int&>::type &` = `const int& &` = **`const int&`** (DOUBLE collapse — the
+element is itself a reference). Body → `_Tuple_impl<0,const int&>::_M_head(__t)` → `_Head_base<0,
+const int&,false>::_M_head(__b){ return __b._M_head_impl; }` where `_Head _M_head_impl` is
+`const int&` (madc: `int*` slot storing `&k`) and the return `_Head&`=`const int&` (collapse).
+So `return __b._M_head_impl` must return the STORED POINTER `&k` AS-IS (collapsed reference) —
+NOT deref to the int, NOT take its address. CLANG (canon, SemaType.cpp:2262 BuildReferenceType):
+`LValueRef = SpelledAsLValue || T->getAs<LValueReferenceType>()` — building a ref over an
+already-ref type is idempotent (single lvalue ref, never ref-to-ref). madc's getReferenceType
+already collapses at the TYPE level (@7a95e79); the defect is VALUE LOWERING.
+SUSPECT: W4b part-a (@db71765) unconditionally derefs a scalar reference MEMBER on read; that is
+WRONG when the member is returned/bound AS the collapsed reference — it yields the int value
+where the `int*` (collapsed ref) is expected ("returning integer without cast for pointer result"
+— the exact warning te_direct emits). part-a must deref only in a VALUE context, not when the
+reference itself is wanted (reference-return / reference-bind / collapsed-ref). NEXT (verify, then
+fix): (1) discriminator — run te_ref (explicit `const int&`) vs te_direct (`::type`) vs
+te_aliasref (`_t`) flag-on; if te_ref also =1 the bug is the ref-return value-path generally, if
+only te_direct/te_aliasref =1 it implicates the `tuple_element::type` resolution too. (2) confirm
+the warning is at `_M_head`'s return. (3) make the reference-member read context-aware (no deref
+when the consumer wants the reference). Reducers tmp/te_ref|te_direct|te_aliasref|getref.mad,
+flag-on, PRINTF (exit codes mislead).
