@@ -657,3 +657,41 @@ derived-to-base:**
   These are real C++ reference-correctness bugs, independently valuable, and the
   gate to map<int,int>. Reducers live in tmp/ (gitignored): refcollapse.mad,
   getref.mad, getref2.mad, mapii.mad — run with --std=c++17/c++20 --no-embedded-headers.
+
+### 2026-06-20 (W4b part b — bug 1 of 2 FIXED @6d95bc3; getref now COMPILES+RUNS)
+
+DONE @6d95bc3 (unconditional, fulltest 656/6/0 zero regr): `int& r = <ref-returning
+call>` no longer emits `&function`. ROOT: reference_bind_address_expr wrapped the RHS
+in TokenAddrOf and took the address of the callee FUNCTION, because a call token
+DERIVES FROM TokenVar (TokenCallFunc:TokenVar; TokenCallMethod:TokenMember:
+TokenCallFunc) so the `dynamic_cast<TokenVar*>` matched the call. FIX: detect a
+reference-returning call (callee FuncDef returns_reference()) BEFORE the TokenVar
+branch and route it through TokenAddrExpr — the CIR builder auto-derefs a ref-returning
+call and the N_ADDR cancels that, leaving the call-result pointer. A plain ref var / ref
+member read is NOT a call (var.type not a FuncDef) → keeps its prior path. Reducer
+tmp/refcollapse.mad: r=7, write-through k=99, no segfault.
+
+MILESTONE — with FEATURE_DERIVED_TO_BASE_DEDUCTION + FEATURE_CONST_TYPES, the bug-1 fix
+ALSO cleared getref's hard error: **tmp/getref.mad (std::get<0>(tuple<const int&>))
+COMPILES + RUNS, x=7** (the "lvalue required as unary & operand" was bug 1). getref2.mad
+prints x=7. (Residual NON-FATAL noise in getref: "Expecting integer constant expression"
+at instantiated-body lines + an "incompatible return-expr type in function returning a
+pointer" warning — both non-fatal, EXIT 0.)
+
+STILL OPEN:
+  - **map<int,int>** (tmp/mapii.mad, both flags): STILL 5 c2mir check errors at
+    stl_map.h:102 (incompatible types in assignment to an arithmetic type lvalue x2;
+    incomplete struct or union x2; +1) PLUS madc-side "Expecting integer constant
+    expression" (instantiated body) + "undeclared identifier 'std'" at the call line.
+    This is a DEEPER, map-SPECIFIC layer (pair piecewise→indexed ctor / const value_type
+    member assignment), BEYOND getref — getref passing did NOT make map pass. NEXT map
+    target.
+  - **bug 2 (getline ref-return)**: testfstream STILL fails with D2B on
+    ("returning integer without cast for pointer result" + "lvalue required as unary &
+    operand", 1 check error); the bug-1 fix did NOT help it. NOT yet isolated — the
+    obvious reducers PASS: tmp/headref.mad (static method returning a ref member of a
+    ref param → H&, H=int&) runs correctly (y=7, k=55), and tmp/refcollapse.mad too. So
+    bug 2 is a MORE SPECIFIC construct in the getline/istream& instantiation. Un-gating
+    FEATURE_DERIVED_TO_BASE_DEDUCTION still requires testfstream/testloop green → fix
+    bug 2 first. Reducers to extend toward getline: returning a reference to a CLASS
+    object (not scalar) from an instantiated fn; returning *this / a ref PARAMETER.
