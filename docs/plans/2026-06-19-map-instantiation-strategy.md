@@ -1304,3 +1304,35 @@ structs, before protos) via two new c2mir helpers `c2mir_op_tail`/`c2mir_op_spli
    so debug by instrumenting the node alloc/insert/erase pointer flow (print node ptrs) or by
    chasing each "incompatible pointer types" warning to the wrong-typed argument. This is the final
    map<int,int> step (RUN half of W5).
+
+### 2026-06-20 (RUNTIME root-caused via gdb) — the crash is the pair VALUE getting a reference-POINTER, not the int (W4b reference-lowering), NOT node alloc/free.
+
+gdb on the REAL libstdc++ `_Rb_tree_insert_and_rebalance` (a .so symbol with debug info —
+the JIT'd code calls it, so it's breakable even without madc source symbols) gave runtime
+visibility. Findings for `map<int,int> m; m[1]=2;`:
+- Insert/rebalance is STRUCTURALLY CORRECT: new node @0x…ddd830, rebalance sets
+  color, _M_parent=header, _M_left=_M_right=0. The tree is a valid single node.
+- The NODE VALUE is WRONG. Node layout (40B): [color@0, parent@8, left@16, right@24,
+  pair value@32]. The value word @32 = `0x0000555555ddd860` — a POINTER (≈node+48), NOT
+  `{key=1, val=2}` (which would be `0x0000000200000001`). It does NOT change after the
+  `=2` assignment. So `m[1]=2` constructs the pair's `first` (const int) from the
+  reference `const int&` returned by `std::get<0>(forward_as_tuple(1))` by storing the
+  REFERENCE POINTER, not the dereferenced int. Writing an 8-byte pointer into the 8-byte
+  `pair<const int,int>` value (and likely past the 40B node) corrupts the adjacent heap
+  chunk header → teardown's `free(node)` aborts with munmap_chunk "invalid pointer"
+  (and the mapread variant SIGSEGVs traversing the corrupted node).
+- So this is NOT the node alloc/free chain and NOT the operator-delete overload — it is
+  the **reference-as-pointer LOWERING** (W4b part b / task #5): the pair piecewise→indexed
+  ctor's `first(std::forward<const int&>(std::get<_Indexes1>(__tuple1))...)` keeps the
+  reference as a pointer where a VALUE init is required. (emit-c shows `first =
+  *forward(&*get(t))` — a deref — but at runtime `first` holds the pointer, so the deref
+  is a no-op / the get/forward chain yields the address, not the referent. The
+  reference-collapse compile fix made `get` return `int*`; the VALUE consumer must deref
+  it.)
+
+NEXT (map RUN, final step): fix the reference→value lowering so initializing a non-reference
+member/temp from a reference-typed (DataDefREF, pointer-modeled) source DEREFERENCES it.
+This is the broad W4b reference-lowering work (task #5), now pinpointed to the pair
+value-construction in map's operator[]. Reducer: tmp/mapii.mad (gdb break the real
+_Rb_tree_insert_and_rebalance, `x/5gx` the node — value@+32 should be {1,2}). The COMPILE
+half of W5 is DONE (committed 54ff562); this reference-deref is the RUN half.
