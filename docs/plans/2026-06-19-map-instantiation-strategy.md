@@ -2538,3 +2538,61 @@ reduce a variadic member template `construct(_Link* node, _Args&&... args)` that
 forwards to `node->valptr()` + an allocator-like construct, and trace the
 `__mti` instantiation. b4_a's free-function-template "undeclared identifier"
 (`tmp/b4_a.mad`) is ALSO a separate (free-template registration) gap, unrelated.
+
+### 2026-06-22 (cont. 4) — set-wall BUG-5c FIXED (retbuf-method ref-arg off-by-one); BUG-6 pinned
+
+BUG-5c — FIXED (commit pending fulltest/torture gate). `set<int>` insert+find now
+COMPILES AND RUNS (`tmp/b5_set.mad` prints `yes`). The SIGSEGV (addr 0x3/0x5) in
+`_Rb_tree::_M_construct_node__mti` was a DOWNSTREAM symptom; the real bug was at
+the CALL into `_M_insert_unique__mti` from `set::insert`.
+- ROOT CAUSE (cir_builder.cpp): the copy-elision / NRVO init path for
+  `T v = obj.m(args)` where `m` returns a non-trivial class BY VALUE (the
+  __retbuf ABI) — cir_builder.cpp ~10970-11005 — prepends `&v` (retbuf) and the
+  method's `__this`, then delegates the EXPLICIT args to `build_call_args`.
+  But `build_call_args` (the FREE/STATIC-function arg builder) maps explicit arg
+  `i` to `callee->parameters[i]` with NO offset, while a METHOD's
+  `parameters[0]` is the hidden `__this`. So explicit arg 0 was coerced against
+  `__this` (a plain pointer, `is_ref_param`==false) instead of the real
+  reference parameter — the reference materialization was skipped and the arg
+  was passed as a VALUE where the `int*` (lowered `const value_type&` /
+  forwarding-ref) parameter expected a pointer. c2mir's "using integer without
+  cast for pointer type parameter" warning; at runtime the int (e.g. 42==0x2a)
+  is dereferenced as an address -> SIGSEGV. (The regular method-call arg loop at
+  ~4061 already used `pi = i + 1` to skip __this; only the copy-elision path was
+  wrong.)
+- FIX: add an explicit `size_t param_base = 0` to `build_call_args` (the index in
+  `callee->parameters` of the first explicit user arg). Per-arg coercion uses
+  `pi = i + param_base` for both the type AND `is_ref_param`. The method
+  copy-elision caller passes `param_base = 1` (skip __this); free/static callers
+  keep 0. Deepest-layer fix — corrects the indexing at the single shared
+  arg-coercion chokepoint, no symptom shim.
+- REDUCTION LADDER (each `tmp/`): b5_fwd (in-class fwd-ref, WORKS) -> ... ->
+  b5_min (plain function + retbuf + const-ref + prvalue, WORKS — only 1 hidden
+  param) -> b5_min2 (METHOD + retbuf + __this + const-ref + prvalue, CRASHES) —
+  the minimal trigger is two leading hidden params (retbuf + __this). Regression
+  test `tests/testretbufrefarg.mad` (header-free; runs on the default path):
+  exercises BOTH a prvalue (`make(105)`) and an lvalue (`make(n)`) bound to a
+  `const int&` parameter of a retbuf-returning method.
+- VERIFIED: b5_min2/b5_fwd6/b5_set all pass; testretbufrefarg prints `105 1` /
+  `107 1`.
+
+BUG-6 — PINNED, fix NOT written (the NEXT set-wall blocker for STRING-element
+containers). After bug-5c, `testsubscript` / `testcontainerdtor` / `testmadc_ns`
+(all use `map<string,int>` + `map<string,string>` / `set<string>`) now fail with
+`MIR fatal error: Repeated item declaration _Tp2___dtor`.
+- `_Tp2` is the nested helper struct inside `__gnu_cxx::__aligned_buffer<_Tp>`
+  (`/usr/include/c++/13/ext/aligned_buffer.h:54`: `struct _Tp2 { _Tp _M_t; };`,
+  used ONLY in `alignas(__alignof__(_Tp2::_M_t))`). madc instantiates a CONCRETE
+  `_Tp2` per `__aligned_membuf<X>` instantiation but does NOT uniquify the nested
+  type's name by its enclosing instantiation — so `__aligned_membuf<pair<const
+  string,int>>::_Tp2` and `__aligned_membuf<pair<const string,string>>::_Tp2`
+  both emit a bare `_Tp2___dtor`, colliding in the MIR module.
+- TWO things to decide at fix time: (a) nested types defined inside a class
+  template must get instantiation-unique emitted names (qualified by the
+  enclosing concrete instantiation), and/or (b) `_Tp2` is never destructed as an
+  object (only `alignof`'d) so a dtor should not be emitted for it at all. (a) is
+  the general correctness fix; (b) may be a cheaper guard. NEXT: reduce two
+  distinct `__aligned_buffer<A>` / `<B>` instantiations in one TU and trace where
+  the nested-type emit name is chosen.
+- testset's remaining red is UNRELATED to bug-6: it uses C++20 `names.contains()`
+  (testset.mad:19) — convert to C++17 `find/end` once the container path is green.

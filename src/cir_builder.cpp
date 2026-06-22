@@ -1383,7 +1383,8 @@ static DataDef *ref_param_referent(DataDef *pt)
 // Translate a call's explicit arguments into `args`, coercing object
 // parameters and numeric reference parameters. Does NOT inject hidden params
 // (__this / __retbuf).
-void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
+void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
+				 size_t param_base)
 {
 	// Resolve the callee signature for both direct calls (FuncDef) AND indirect
 	// calls through a function pointer / lambda variable (DataDefFPTR -> target).
@@ -1415,9 +1416,15 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
 		nargs = 1;
 	for (size_t i = 0; i < nargs; i++) {
 		TokenBase *arg = tcf->parameters[i];
-		DataDef *pt = (callee && i < callee->parameters.size())
-				? callee->parameters[i] : NULL;
-		bool is_ref_param = callee && callee->is_ref_param(i);
+		// Explicit user arg i maps to the callee's parameter (i + param_base):
+		// param_base skips leading hidden params the caller injected separately
+		// (the method __this), so reference / object coercion reads the RIGHT
+		// formal. Without it a method's __this slot (param 0) is read for arg 0
+		// and a reference parameter is mis-lowered to a by-value argument.
+		size_t pi = i + param_base;
+		DataDef *pt = (callee && pi < callee->parameters.size())
+				? callee->parameters[pi] : NULL;
+		bool is_ref_param = callee && callee->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			append(args, object_arg_addr(arg, pc));
 		else if (DataDefCLASS *vc = as_class_instance(pt))
@@ -10985,15 +10992,20 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					// copy-elided call drops `this` (`m(&v)` instead of
 					// `m(&v, &__this->obj)`) -> c2mir "too few arguments". The
 					// free-function case (itcf not a TokenMember) is unchanged.
+					bool imeth_call = false;
 					if (TokenCallMethod *imeth =
 					    dynamic_cast<TokenCallMethod *>(itcf)) {
 						DataDefCLASS *rc = NULL;
 						node_t this_arg =
 							class_this_arg(imeth, rc, sdcl);
-						if (this_arg)
+						if (this_arg) {
 							append(cargs, this_arg);
+							imeth_call = true;
+						}
 					}
-					build_call_args(itcf, cargs);
+					// A method callee's parameters[0] is the hidden __this
+					// (injected above); explicit args start at parameter 1.
+					build_call_args(itcf, cargs, imeth_call ? 1 : 0);
 					node_t icall = node2(N_CALL,
 						id(isym.c_str(), sdcl), cargs, sdcl);
 					CIR_NODE(icall)->synth_from_origin = true;

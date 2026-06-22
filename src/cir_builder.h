@@ -327,7 +327,13 @@ class CirBuilder {
 	// Translate a TokenCallFunc's explicit arguments into `args` (a LIST node),
 	// applying object / numeric-reference parameter coercion. Shared by the
 	// normal call path and by-value object-return temp materialization.
-	void build_call_args(class TokenCallFunc *tcf, node_t args);
+	// `param_base` is the index in the callee's `parameters` of the FIRST
+	// explicit user argument: 0 for a free/static function, 1 for a method
+	// (whose `parameters[0]` is the hidden __this). The caller injects __this
+	// itself; without the right base the per-arg coercion reads the wrong
+	// formal (e.g. __this) and a reference param is mis-lowered to a value.
+	void build_call_args(class TokenCallFunc *tcf, node_t args,
+			     size_t param_base = 0);
 	// Words of opaque storage for a runtime-object class that has a concrete ABI
 	// size but no madc data members. 0 for an ordinary user class.
 	size_t object_class_words(DataDefCLASS *cdd) const;
