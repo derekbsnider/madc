@@ -2669,3 +2669,22 @@ emits the string-temp (the converting ctor, like object_arg_value/object temp)
 AND adds the resolved overload symbol to referenced_funcs so its body emits.
 testsubscript's `basic_string...__o15` is the ctor-side mirror (a string ctor
 overload referenced via implicit conversion, body not emitted).
+
+CRUCIAL REFINEMENT (emitted-C evidence — this narrows the fix target): the
+failing `__o5` call is MALFORMED, not merely missing its body. In the WORKING
+lvalue case the const-ref `set::insert` overload emits a BARE symbol (no `__o`
+suffix) with a FULL definition and is called `_insert((&retbuf), (&s), (&t))` —
+3 args: retbuf, this, &string. In the FAILING literal case the call is
+`_insert__o5((&names), "Alice")` — only TWO args: this + the RAW `const char*`,
+with NO retbuf (even though insert returns `pair<...>` via the retbuf ABI) and no
+string-temp. So the rvalue overload was resolved to a SYMBOL (`__o5`) but never
+bound to a parsed/emitted FuncDef: the call was lowered by a GENERIC fallback
+path (no retbuf injection, no class-param conversion, no `referenced_funcs`
+registration). The real defect is in the OVERLOAD RESOLUTION / method binding
+(parser findMethodOverload selecting `insert(value_type&&)` for a const-char* arg
+via the implicit string conversion) returning a half-bound result — fix there so
+the selected overload is a fully-resolved FuncDef (correct retbuf/this/by-ref
+arg shape AND body emission), OR is rejected in favor of a binding that
+materializes the converting temporary first. Start by tracing how `__o5` is
+chosen vs the bare const-ref overload (overload-disambiguator assignment +
+whether the rvalue overload's FuncDef reaches the CIR call-lowering at all).
