@@ -8,6 +8,15 @@
 (real-header parsing, shim retirement, the develop→master CIR-parity gate). Do not
 start building it before Phase 0 passes and the correctness gate is met.
 
+> **DEFERRED 2026-06-22.** The forest is **on hold** behind a "make the core
+> front-end fast (do what g++ does)" track. Reason: a g++ comparison on
+> `testsubscript` showed madc ~7× slower at the *same* parse work, and the forest
+> only removes re-parsing the *stdlib* — project code still rides the slow parser.
+> First make the parser itself fast (string-identity → typeid, flat token buffer,
+> instantiate-without-reparse, arena, and — checked first — building madc `-O2`
+> instead of the current `-O0`). Then the forest stacks on top. See the
+> front-end-performance track (separate plan).
+
 ---
 
 ## Relationship to existing docs (read, do not duplicate)
