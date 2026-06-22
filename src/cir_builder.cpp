@@ -1406,7 +1406,7 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 	// pointer parameter.
 	if (callee && callee->is_member_template
 	    && !callee->local_emit_name.empty() && m_prog) {
-		if (Variable *iv = m_prog->findVariable(callee->local_emit_name))
+		if (Variable *iv = m_prog->findVariable(callee->local_emit_name))  // allowed-exception: lookup key, not symbol build
 			if (FuncDef *ifd = dynamic_cast<FuncDef *>(iv->type))
 				if (ifd != callee)
 					callee = ifd;
@@ -4054,7 +4054,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	FuncDef *arg_callee = callee;
 	if (callee && callee->is_member_template
 	    && !callee->local_emit_name.empty() && m_prog) {
-		if (Variable *iv = m_prog->findVariable(callee->local_emit_name))
+		if (Variable *iv = m_prog->findVariable(callee->local_emit_name))  // allowed-exception: lookup key, not symbol build
 			if (FuncDef *ifd = dynamic_cast<FuncDef *>(iv->type))
 				if (ifd != callee)
 					arg_callee = ifd;

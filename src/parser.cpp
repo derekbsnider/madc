@@ -29761,7 +29761,7 @@ void Program::register_outofline_member_instantiations(
 			mv->name.c_str(), f ? (int)f->is_const_method : -1,
 			f ? f->parameters.size() : (size_t)0,
 			f ? f->emit_symbol.c_str() : "?",
-			f ? f->local_emit_name.c_str() : "?");
+			f ? f->local_emit_name.c_str() : "?");  // allowed-exception: debug print, not symbol build
 	    }
     }
 #endif
@@ -32922,7 +32922,7 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 		      << " decl=" << (fd ? fd->member_template_decl.size() : 0)
 		      << " owner=" << (fd && fd->member_template_owner ? 1 : 0)
 		      << " tparams=" << (fd ? fd->template_param_names.size() : 0)
-		      << " local=" << (fd ? fd->local_emit_name : std::string())
+		      << " local=" << (fd ? fd->local_emit_name : std::string())  // allowed-exception: debug print, not symbol build
 		      << " emit=" << (fd ? fd->emit_symbol : std::string())
 		      << " argc=" << tc->parameters.size()
 		      << std::endl;
@@ -33053,7 +33053,7 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 #if MADC_DEBUG_FNTPL
     if ( dbg_mti )
 	std::cerr << "FNTPL mti alias var=" << tc->var.name
-		  << " local=" << fd->local_emit_name << std::endl;
+		  << " local=" << fd->local_emit_name << std::endl;  // allowed-exception: debug print, not symbol build
 #endif
 }
 
@@ -35452,7 +35452,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->potential_captures = src->potential_captures;
     f->captures = src->captures;
     f->captured_vars = src->captured_vars;
-    f->local_emit_name = src->local_emit_name;
+    f->local_emit_name = src->local_emit_name;  // allowed-exception: field copy (clone), not symbol build
     f->return_types = src->return_types;
     f->const_params = src->const_params;
     f->param_cpp_spellings = src->param_cpp_spellings;

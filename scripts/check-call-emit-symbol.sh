@@ -15,9 +15,18 @@
 #   - a `.empty()` predicate (writer guards, the capture-decay structural check)
 #   - the LHS of an assignment `local_emit_name = ...` (the parser/CIR writers)
 #   - a comment
+#   - a read that does NOT build a symbol (a lookup key, a debug print, a
+#     field-to-field copy), explicitly opted out with a trailing
+#     `// allowed-exception: <reason>` marker on the SAME line
 # A bare value-read anywhere else means a new site is deriving the symbol by
 # hand instead of delegating to call_emit_symbol — exactly the drift we forbid.
 # New call sites MUST call call_emit_symbol(v, fd) or call_emit_symbol(fd, def).
+#
+# The `allowed-exception` marker is per-line and auditable: `grep allowed-exception
+# src/*.cpp` lists every exemption and its stated reason. The gate stays strict —
+# a NEW symbol-building read with no marker still fails. A marker is justified ONLY
+# when the read provably does not construct an emitted symbol; if in doubt, route
+# through call_emit_symbol instead of marking.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -28,6 +37,7 @@ bad=$(awk '
   /std::string[[:space:]]+CirBuilder::call_emit_symbol\(/ { infn=1 }
   infn && /^}/ { infn=0; next }
   {
+    if ($0 ~ /allowed-exception/) next      # audited per-line opt-out (see header)
     line=$0
     sub(/\/\/.*/, "", line)                 # strip // line comments
     if (line !~ /local_emit_name/) next
