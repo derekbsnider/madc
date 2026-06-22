@@ -11,14 +11,18 @@
 > alloc=)` (3 params, allocator defaulted) was skipped → const char*→string
 > scored −1 → the proper insert overloads were rejected and a template insert
 > wildcard-matched; fix accepts ctors callable with one explicit arg; cleared
-> `testset`). **bug-7b remains** (`testsubscript`): MIR `import of undefined
-> item basic_string…__o15` in the **piecewise-pair** construction — one
-> `pair<const string,string>` piecewise ctor instantiation materializes an
-> intermediate string via a bodyless madc-emitted `__o15` while the parallel
-> instantiation uses the mangled-direct real copy ctor; the same
-> `construct_at`/piecewise-pair wall flagged pre-session (commits `7d9927d`/
-> `5b67643`). See `docs/plans/2026-06-19-map-instantiation-strategy.md`
-> (2026-06-22 cont. 6). **bug-5c @ `bc7693d`** (`set<int>` SIGSEGV: the
+> `testset`). **bug-7b remains** (`testsubscript`, sole red): MIR `import of
+> undefined item basic_string…__o15`. Investigation complete — the earlier
+> piecewise/`std::forward` reference-loss guess was **disproven** by an
+> `MADC_DBG_O15` probe. `__o15` is a 1-arg basic_string ctor emitted to
+> materialize a `std::string` temp from `*std::get<I>(__tuple1)` with no body,
+> because **`std::get<I>(tuple<…>)`'s return type is unresolved** (null datadef)
+> there, so ctor selection can't match the mangled-direct copy ctor and emits an
+> unbacked madc-local symbol — a `std::get`/tuple return-type resolution gap
+> (`get<0>`/`_Nth_type` family), **not** a `std::forward` issue. Fix is
+> post-compaction work — see
+> `docs/plans/2026-06-19-map-instantiation-strategy.md` (**cont. 7**, which
+> supersedes cont. 5/6). **bug-5c @ `bc7693d`** (`set<int>` SIGSEGV: the
 > copy-elision/NRVO init path for a retbuf-returning method delegated explicit
 > args to `build_call_args` with no `__this` offset → a reference arg coerced
 > against `__this`, passed as a value where an `int*` was expected → int-as-

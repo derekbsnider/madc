@@ -2780,3 +2780,76 @@ turns on the `*get(tuple1)` arg shape (deref vs forward) routing one path
 through a converting-ctor temp and the other through the mangled copy ctor.
 SUBSTANTIAL piecewise-pair cycle, separate from bugs 5c/6/7a — the LAST set-wall
 red. map<string,string> + map<string,int> both hit it via operator[].
+
+### 2026-06-22 (cont. 7) — BUG-7b INVESTIGATION COMPLETE (handoff for the fix; earlier hypothesis CORRECTED)
+
+>> THIS SECTION SUPERSEDES the bug-7b fix-direction guesses in cont. 5 and cont.
+>> 6. Those said "piecewise-pair / std::forward reference-loss". That hypothesis
+>> was DISPROVEN by instrumentation (below). Do NOT chase std::forward.
+
+DEFINITIVE ROOT CAUSE (confirmed by an MADC_DBG_O15 probe in object_arg_addr's
+materializing tail, cir_builder.cpp ~1247, run on tests/testsubscript.mad):
+
+The undefined symbol `basic_string..._basic_string..._o15` is a basic_string
+CONSTRUCTOR overload that object_arg_addr's materializing tail emits (via
+class_ctor_call) to build a `std::string` TEMP, but whose body is never emitted.
+The probe at the materializing tail showed:
+- The const char* literal conversions (`ages["alice"]`, `names.push_back("hello")`,
+  etc.) materialize via ctor `__o9` = `basic_string(char* __s, allocator* __a)` —
+  and `__o9` IS emitted WITH a body (tsub_emit.c:4740). Those WORK. (This is the
+  bug-7a converting ctor — 2 params, allocator defaulted — now correctly found.)
+- The FAILING `__o15` is a ONE-arg basic_string ctor selected to materialize a
+  temp from `*std::get<_Indexes1>(__tuple1)` (a string), inside the piecewise-pair
+  delegated ctor __o20. Call: `__o15(&objtmp_94, *get(tuple1))`. NO body emitted.
+- CRUCIAL: at that materialization the arg's datadef was NULL (`arg_dd=0`) — i.e.
+  `std::get<_Indexes1>(__tuple1)`'s return type is UNRESOLVED in this context. The
+  plain copy ctor IS available mangled-direct (`_ZNSt..C1ERKS4_`, used 5x in the
+  same emit), but because the get-result type is unknown, ctor selection cannot
+  match the mangled copy ctor and instead emits an unbacked madc-local `__o15`.
+
+So bug-7b is a `std::get` / tuple RETURN-TYPE RESOLUTION gap (the get<0>/_Nth_type
+family from topic-file UPDATE 57-59), NOT a std::forward reference-loss and NOT a
+piecewise-pair-specific bug. The piecewise ctor is just the context where an
+unresolved-typed `std::get` result feeds a string temp materialization.
+
+WHY the two pairs differ (pair<const string,int> WORKS, pair<const string,string>
+FAILS): in the int-pair __o20 the `first` member-init arg stayed the resolved
+`forward(get(tuple1))` call chain (object_arg_addr line ~1153 ref-bind path) and
+bound directly via the mangled copy ctor; in the string-pair __o20 the get result
+reached object_arg_addr as an unresolved-type value (arg_dd=0) and fell to the
+materializing tail -> bodyless __o15. The difference is which instantiation
+resolves `std::get<_Indexes1>(tuple<...>)`'s return type; for the string-valued
+tuple element it comes back unresolved.
+
+FIX PLAN (post-compaction session — DO THIS):
+1. REPRODUCE: `tmp/b6_real.mad` (set<string>+map<string,string>) and
+   tests/testsubscript.mad both hit it; flags = none (default path) OR
+   `--std=c++17 --no-embedded-headers`. Confirm at live HEAD first (b5698d7+).
+2. RE-INSTRUMENT if needed: re-add the MADC_DBG_O15 probe (see git history of this
+   investigation — it printed target/argtype/var/vartype/is_obj_val/arg_dd right
+   before the object_arg_addr materializing tail at cir_builder.cpp ~1247). The
+   probe is REMOVED from the tree; recreate it. Confirm arg_dd=0 (null) for the
+   `*get(tuple1)` materialization in the string-pair __o20.
+3. ROOT-FIX (deepest layer): make `std::get<I>(tuple<_Elements...>)` resolve its
+   return type (a reference to the I-th element) in this instantiation context, so
+   `*get(tuple1)` has a basic_string datadef. With the type resolved, object_arg_addr
+   binds the get reference directly to the mangled-direct copy ctor (line ~1153)
+   like the int-pair — the bodyless __o15 disappears. Look at how get<>/tuple
+   element types are resolved (parser: the _Nth_type / tuple-get return-type path,
+   topic UPDATE 57-59; and cir_builder ref_returning_call_type / call_target_funcdef
+   for the get call). The get return type is null specifically when the tuple
+   element is a class type (string) reached through the piecewise _Index_tuple
+   expansion.
+4. FALLBACK (if the get-type fix is too broad): in object_arg_addr's materializing
+   tail, when the selected ctor is a copy/move of a MANGLED-DIRECT class, emit the
+   mangled-direct ctor symbol (the class's real Itanium C1 symbol) instead of a
+   madc-local __o<N> — but this is a SHIM; prefer the type-resolution root fix.
+5. VALIDATE: testsubscript green -> set wall FULLY cleared (0 reds). fulltest
+   (expect 669/0/0/18), gcc torture failset byte-identical to the 51-name baseline,
+   SMAUG soak. THEN batch the push + README/CHANGELOG/ROADMAP (set-wall complete).
+
+STATE AT HANDOFF: develop @ (the doc commit after b5698d7), local NOT pushed.
+bugs 1-6 + 7a fixed+committed; testsubscript is the SOLE red, on bug-7b above.
+fulltest 668/1/0/18, torture byte-identical to baseline. The probe is removed;
+tree clean. tmp/ reducers gitignored — recreate b6_real.mad / b7_lit.mad per the
+descriptions in cont. 4/5/6.
