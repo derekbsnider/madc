@@ -1,19 +1,27 @@
 # Test Status
 
-> **Current WIP (2026-06-22, `wip/tuple-instantiation-claude` @ `2bd68f6`
-> plus local C++17 map/tuple fixes):** last default-build fulltest before the
-> latest `map<string,int>` fix was
-> **658 passed, 5 failed, 0 timed out, 18 skipped** with the known branch reds only:
-> `testcontainerdtor`, `testmadc_ns`, `testmap`, `testset`, and
-> `testsubscript`; this count is now stale for `testmap`, which passes focused
-> validation. Recovered regressions from the interrupted handoff:
-> `testforeach2`, new `teststdmapint`, and `testtuple` are green; focused
-> `testfstream` and `testloop` remain green. `teststdmapint` pins
-> `std::map<int,int>` insert/update through real libstdc++ headers under
-> `--std=c++17 --no-embedded-headers`. `tests/testmap.mad` is also C++17-first
-> now: it uses `find/end` instead of C++20 `contains`, and focused
-> validation now passes for `std::map<std::string,int>` after the anonymous
-> aggregate layout fix below. The former
+> **Current WIP (2026-06-22, `wip/map-cxx17-salvage-codex` @ `3534b44`
+> plus local recovery fixes):** the previous dirty session is preserved at
+> `failed/2026-06-22-map-cxx17-attempt-codex` commit `3534b44`; live work
+> continues on the salvage branch with dirty fixes in `include/datatokens.h`,
+> `src/parser.cpp`, and `src/cir_builder.cpp`. Focused C++17 map validation is
+> green: `teststdmapint` pins `std::map<int,int>` insert/update through real
+> libstdc++ headers under `--std=c++17 --no-embedded-headers`, and
+> `tests/testmap.mad` uses C++17 `find/end` rather than C++20 `contains` and
+> passes for `std::map<std::string,int>`. Recovered regressions from the
+> interrupted handoff: `testforeach2`, `testtuple`, `testfstream`, `testloop`,
+> `testmadcevalexpr`, `testmadcevalexprctx`, and `testmadcevalexprtyped` are
+> green. C++20 canaries `testcompare_realhdr`, `testspaceship_realhdr`,
+> `testdefaultedcmp_realhdr`, `testrewritten_realhdr`, and `testinvocable`
+> are also green under per-test `--std=c++20 --no-embedded-headers` flags.
+> Latest fulltest attempts are noisy under the runner's default 5-second
+> per-test integration cap on this host: run 1 reported
+> **657 passed, 4 failed, 2 timed out, 18 skipped**; run 2 reported
+> **650 passed, 3 failed, 10 timed out, 18 skipped** with shifting unrelated
+> timeouts. Isolated timeout candidates pass sequentially under the default
+> cap, so the stable functional red list is now `testcontainerdtor`,
+> `testmadc_ns`, `testset`, and `testsubscript`; `testmap` is no longer in the
+> focused failure set. The former
 > `FEATURE_CONST_TYPES` and `FEATURE_DERIVED_TO_BASE_DEDUCTION` paths are now
 > default after external-method typed-return/ref-argument lowering fixed the
 > historical stream/string regressions. Remaining diagnostics: non-fatal
@@ -31,12 +39,11 @@
 > `tests/testmap.mad` shows `_M_local_buf`/`_M_allocated_capacity` inside an
 > anonymous union; `tests/teststdmapint.mad` and `tests/testmap.mad` both pass.
 > Focused regressions `tests/testtuple.mad`, `tests/testforeach2.mad`,
-> `tests/testfstream.mad`, and `tests/testloop.mad` also pass after this fix.
-> Fulltest was not rerun after this local fix, so the 658/5/0/18 count above is
-> still the last branch fulltest and is stale for `testmap`.
-> Revalidated after a clean non-debug rebuild; `tests/testmathh.timeout` keeps
-> that passing math-header test off the default 5-second wall cap. gcc.c-torture
-> and SMAUG were not rerun in this WIP validation.
+> `tests/testfstream.mad`, `tests/testloop.mad`, and the eval-expression
+> regressions also pass after this fix. Revalidated after a clean non-debug
+> rebuild; `tests/testmathh.timeout` keeps that passing math-header test off
+> the default 5-second wall cap. gcc.c-torture and SMAUG were not rerun in this
+> WIP validation.
 >
 > **Previous (2026-06-11, `feature/strict-equality-claude` @ `1ffbc8c`
 > — `===`/`!==` strict equality, STD_MADC dialect):** fulltest

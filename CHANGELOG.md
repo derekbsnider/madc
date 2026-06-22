@@ -41,6 +41,14 @@
   anonymous union, not sequential fields), preventing `std::pair`/`_Rb_tree`
   storage overflow and making the C++17 `tests/testmap.mad`
   `std::map<std::string,int>` canary pass in focused validation.
+- Preserved scoped enum constant types and exact object identity in overload
+  scoring. The enum fix keeps C++20 `<compare>` category constructors from
+  seeing scoped enumerators as plain `int`, and the object-identity fix lets the
+  public `madc::array`/`madc::value` object bind `array&` parameters so
+  `madc::eval_expression_ctx(std::string&, const char*, array&)` no longer
+  falls back to the `double&` overload. Focused map, tuple/stream/loop, eval,
+  and C++20 comparison canaries pass; fulltest reruns still show the known
+  branch reds plus load-sensitive 5-second-cap timeouts on this host.
 - Added `tests/testmathh.timeout` after a clean revalidation showed
   `testmathh` is a passing test that can sit too close to the runner's
   default 5-second wall cap under full-suite load.

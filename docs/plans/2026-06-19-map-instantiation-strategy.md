@@ -2224,5 +2224,59 @@ Remaining open work:
   for `testmap`.
 - Non-fatal libstdc++ `stl_tree.h` pointer-type warnings remain in the map
   path.
-- `tmp/te_direct.mad` still has the separate direct `std::get<0>(t)`
-  declaration-initializer issue where emitted C loses the suffixed call.
+
+### 2026-06-22 Codex salvage continuation — C++20 enum and eval overload regressions recovered
+
+The broad previous dirty state was preserved at
+`failed/2026-06-22-map-cxx17-attempt-codex` commit `3534b44`; live work
+continued on `wip/map-cxx17-salvage-codex` from that state rather than
+destructively reverting.
+
+Root causes fixed:
+- C++20 `<compare>` regressions came from scoped enum constants being registered
+  as `ddINT` even though their enum tag DataDef existed. `std::__cmp_cat`
+  constructors then saw `int` where they needed the scoped enum type.
+- `madc::eval_expression_ctx(std::string&, const char*, array&)` fell back to
+  the `double&` overload because overload scoring stripped `array&` to
+  `ddARRAY`, then only recognized exact `DataDefCLASS` object matches. The
+  public `madc::array`/`madc::value` object is `ddARRAY`, not `DataDefCLASS`.
+
+Fixes:
+- Scoped enumerators now keep the enum DataDef, and `Variable::set`/`cmp`/`get`
+  can store and read enum-backed integer constants.
+- `score_arg_to_param` now ranks exact same-object DataDefs as exact matches
+  before falling through to user-class identity, so `ddARRAY` binds `array&`
+  generically.
+
+Focused validation:
+- `make -C src` passed.
+- C++17 map canaries passed:
+  `tests/testmap.mad` and `tests/teststdmapint.mad` under
+  `--std=c++17 --no-embedded-headers`.
+- C++20 comparison canaries passed:
+  `tests/testcompare_realhdr.mad`, `tests/testspaceship_realhdr.mad`,
+  `tests/testdefaultedcmp_realhdr.mad`, `tests/testrewritten_realhdr.mad`, and
+  `tests/testinvocable.mad` under `--std=c++20 --no-embedded-headers`.
+- Regression canaries passed:
+  `tests/testtuple.mad`, `tests/testforeach2.mad`, `tests/testfstream.mad`,
+  `tests/testloop.mad`, `tests/testifconstexpr.mad`,
+  `tests/testmadcevalexpr.mad`, `tests/testmadcevalexprctx.mad`, and
+  `tests/testmadcevalexprtyped.mad`.
+- `--emit=c11 tests/testmadcevalexprctx.mad` now emits the
+  `std::string& eval_expression_ctx` symbol for render calls, not the double
+  reference fallback.
+
+Fulltest status:
+- First rerun: `657 passed, 4 failed, 2 timed out, 18 skipped`.
+- Second rerun: `650 passed, 3 failed, 10 timed out, 18 skipped`.
+- The timeout set shifted across unrelated tests; isolated timeout candidates
+  pass sequentially under the runner's default 5-second cap. Treat this as host
+  load/cap instability unless a timeout reproduces focused.
+- Stable functional reds are now `testcontainerdtor`, `testmadc_ns`, `testset`,
+  and `testsubscript`. `testmap` is no longer in the focused red set.
+
+Remaining open work:
+- Non-fatal libstdc++ `stl_tree.h` pointer-type warnings remain in the map
+  path.
+- `tmp/te_direct.mad` still has the direct `std::get` declaration-initializer
+  overload-suffix/call-loss issue.

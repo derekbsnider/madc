@@ -57,17 +57,17 @@ high-level" — the answer is both.**
   Class-(b) GNU extensions (14 tests) are roadmap items, not gate blockers.
   The clean `develop` rebuild emits no compiler warnings. The class-(a)
   failures are the active CIR coverage worklist — see Track 1.3.
-- **C++17 real-header `std::map` / tuple WIP branch (2026-06-22,
-  `wip/tuple-instantiation-claude` @ `2bd68f6` plus local fixes):** default-build
-  fulltest before the latest `map<string,int>` fix was
-  **658 passed, 5 failed, 0 timed out, 18 skipped**. The failures in that run
-  were the known branch reds: `testcontainerdtor`, `testmadc_ns`, `testmap`,
-  `testset`, and `testsubscript`; this count is now stale for `testmap`, which
-  passes focused validation. The interrupted handoff regressions are recovered:
-  `testforeach2`, `testtuple`, `testfstream`, `testloop`, and new
-  `teststdmapint` are green. Map bring-up is deliberately C++17-first:
-  `testmap` uses `find/end` rather than C++20 `contains`, and map canary flags
-  are `--std=c++17 --no-embedded-headers`. The local fixes keep body-bearing `void` std
+- **C++17 real-header `std::map` / tuple salvage branch (2026-06-22,
+  `wip/map-cxx17-salvage-codex` @ `3534b44` plus local fixes):** the previous
+  dirty session is preserved at `failed/2026-06-22-map-cxx17-attempt-codex`
+  commit `3534b44`; live work continues on the salvage branch. Map bring-up is
+  deliberately C++17-first: `testmap` uses `find/end` rather than C++20
+  `contains`, and map canary flags are `--std=c++17 --no-embedded-headers`.
+  Focused `testmap` and `teststdmapint` pass. The interrupted handoff
+  regressions are recovered: `testforeach2`, `testtuple`, `testfstream`,
+  `testloop`, `testmadcevalexpr`, `testmadcevalexprctx`, and
+  `testmadcevalexprtyped` are green. C++20 comparison canaries remain green
+  under per-test C++20 flags. The local fixes keep body-bearing `void` std
   function templates (`std::_Destroy`, `std::destroy_at`) on the real-header
   body-instantiation path and disambiguate duplicate flattened member C field
   names. The const/reference template-argument spelling and derived-to-base
@@ -84,8 +84,17 @@ high-level" — the answer is both.**
   `DataDefSTRUCT` records anonymous struct/union groups and CIR emits unnamed
   anonymous aggregate members, so libstdc++ `std::basic_string` keeps its
   `_M_local_buf`/`_M_allocated_capacity` anonymous union instead of flattening
-  them as sequential fields. Remaining work: rerun fulltest, retire the broader
-  map/set/container branch reds, fix `tmp/te_direct.mad`'s direct `std::get`
+  them as sequential fields. Latest salvage fixes recover C++20 `<compare>`
+  constructor binding by preserving scoped enum constant DataDefENUM storage,
+  and recover eval render overloads by letting exact object identity bind
+  `madc::array`/`madc::value` to `array&`. Fulltest was rerun twice but is noisy
+  under the runner's default 5-second per-test cap on this host: one run reported
+  **657 passed, 4 failed, 2 timed out, 18 skipped** and another reported
+  **650 passed, 3 failed, 10 timed out, 18 skipped** with shifting unrelated
+  timeouts; isolated timeout candidates pass sequentially under the default cap.
+  Stable functional reds are now `testcontainerdtor`, `testmadc_ns`, `testset`,
+  and `testsubscript`. Remaining work: retire the broader map/set/container
+  branch reds, fix `tmp/te_direct.mad`'s direct `std::get`
   declaration-initializer call loss, and clean up non-fatal libstdc++
   pointer-type diagnostics in the map path.
 - **C++ model — proven on the old backend, being re-established on CIR:**
