@@ -2,10 +2,11 @@
 
 CC ?= clang
 CXX ?= clang++
-# Default to -O2: the front-end is allocation/copy-bound (see
-# docs/plans/2026-06-22-front-end-performance-plan.md, P0) and -O2 is a free
-# ~1.74x on a stdlib-heavy compile. Use the `debug` target for -O0 -g.
-CXXFLAGS ?= -std=c++11 -Wall -O2
+# NOTE: temporarily back to -O0 while debugging a front-end parse-time
+# pathology (P1) — clean callgrind/gdb attribution needs -O0. Restore the
+# -O2 default (P0, docs/plans/2026-06-22-front-end-performance-plan.md) once
+# the parse perf is understood.
+CXXFLAGS ?= -std=c++11 -Wall -O0
 PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
 AR ?= ar
 ARFLAGS ?= rcs
