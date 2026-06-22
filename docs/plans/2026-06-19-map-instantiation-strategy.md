@@ -2853,3 +2853,52 @@ bugs 1-6 + 7a fixed+committed; testsubscript is the SOLE red, on bug-7b above.
 fulltest 668/1/0/18, torture byte-identical to baseline. The probe is removed;
 tree clean. tmp/ reducers gitignored — recreate b6_real.mad / b7_lit.mad per the
 descriptions in cont. 4/5/6.
+
+### 2026-06-22 (cont. 8) — BUG-7b FIXED. SET WALL CLEARED (0 reds). Root cause CORRECTED again.
+
+>> cont. 7's characterization ("std::get's return type unresolved, arg_dd=0") was
+>> the SYMPTOM, not the mechanism. The real root cause, found by instrumentation
+>> at live HEAD, is below. cont. 7's FIX PLAN step 3 (resolve get<I>(tuple) return
+>> type) was aimed at the wrong layer — the get instantiation was ALREADY correct.
+
+ACTUAL ROOT CAUSE (instrumented, confirmed):
+- testsubscript fails ONLY when TWO `pair<const string,V>` instantiations coexist
+  (e.g. map<string,int> AND map<string,string>); either map ALONE compiles+runs.
+  Minimal reducer: tmp/sub_both.mad (both maps) fails; sub_si/sub_ss (one each) pass.
+- The failing `__o15` is a bodyless 1-arg basic_string ctor that object_arg_addr's
+  materializing tail (cir_builder.cpp ~1270) emits to build the `first` member of
+  the piecewise pair from `std::get<0>(tuple<string&&>)`. It falls to the tail
+  (instead of the ref-bind fast path at ~1153) because ref_returning_call_type
+  returned a DataDef NAMED "0".
+- ref_returning_call_type: `call_target_funcdef(tcf)` returns the CORRECT get
+  instantiation (ret = `const basic_string&`). But the result type came from the
+  `tcf->returns()` FALLBACK, not cfd, because the call carried a parse-time
+  `return_override` whose type was the bogus "0", and the guard
+  `(!return_override || cfd != raw_fd)` chose the override (cfd == raw_fd here).
+- WHERE "0" came from: parser.cpp `resolve_fn_template_return_by_key` (called from
+  ~line 13507 to set return_override on a template-id call with explicit args).
+  std::get has TWO overloads: by-INDEX `get<size_t __i, _Elements...>` and by-TYPE
+  `get<typename _Tp, _Types...>`. For `get<0>`:
+    - by-index: return `__tuple_element_t<__i, tuple<_Elements...>>` references the
+      UNBOUND pack `_Elements` -> correctly skipped (return_has_unbound_tp).
+    - by-type: binds `_Tp` (a TYPE param) to the explicit NON-TYPE arg `0` (carried
+      as a DataDef named "0" by capture_call_template_args, parser.cpp:29033),
+      yielding return type `_Tp&` = "0&". NO kind check -> this bogus candidate won.
+  This only surfaces with two maps because of instantiation/registration ordering
+  that exposes the by-type candidate to the return-type resolver for the 2nd pair.
+
+THE FIX (deepest layer, parser.cpp `resolve_fn_template_return_by_key`):
+- New `datadef_is_nontype_constant(dd)` helper: a folded non-type arg is an
+  integer-constant DataDef whose name is its decimal spelling (numeric name);
+  genuine type args are never bare integers.
+- In the positional explicit-arg binding loop: a non-type VALUE arg bound to a
+  TYPE template parameter (`ft.typeparam_is_type[i]`) is a substitution failure
+  ([temp.arg.nontype]) -> skip the candidate. This removes the by-type get<>
+  overload for `get<0>`, leaving NO resolvable candidate -> returns NULL -> no
+  bogus return_override -> ref_returning_call_type uses cfd's correct return.
+- One-spot change; matches clang/gcc overload-removal-by-kind-mismatch.
+
+VALIDATION: testsubscript GREEN, exact .expect match. sub_both/sub_rev exit 0.
+fulltest <RESULT PENDING>; gcc torture failset <PENDING>. Set wall = 0 reds.
+Probes removed, clean rebuild. tmp/ reducers (sub_both/sub_si/sub_ss/sub_lit/
+sub_rev) gitignored.

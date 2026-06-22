@@ -33373,6 +33373,26 @@ static DataDef *skipped_template_function_return_type(
     return &ddINT64;
 }
 
+// A non-type template ARGUMENT folded by capture_call_template_args is carried
+// as an integer-constant DataDef whose name is its decimal spelling (e.g.
+// `std::get<0>` -> a DataDef named "0"). Such a value argument can bind ONLY to
+// a NON-TYPE template parameter; binding it to a TYPE parameter is a
+// substitution failure ([temp.arg.nontype]) that removes that candidate from
+// the overload set. A genuine type argument is never spelled as a bare integer,
+// so the numeric-name test exactly identifies the folded non-type constants.
+static bool datadef_is_nontype_constant(const DataDef *dd)
+{
+    if ( !dd || dd->name.empty() )
+	return false;
+    size_t i = (dd->name[0] == '-') ? 1 : 0;
+    if ( i >= dd->name.size() )
+	return false;
+    for ( ; i < dd->name.size(); ++i )
+	if ( !isdigit((unsigned char)dd->name[i]) )
+	    return false;
+    return true;
+}
+
 // Resolve the RETURN TYPE of a call to a free/namespace function template with
 // EXPLICIT template arguments, by substituting those args into the template's
 // return-type tokens and resolving — the clang model (FinishTemplateArgument-
@@ -33501,12 +33521,26 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	if ( rs >= re )
 	    continue;
 	// Bind type parameters positionally from the explicit template arguments.
+	// A non-type VALUE argument (`std::get<0>`'s "0") bound to a TYPE parameter
+	// is a substitution failure: it must not pin a return type. Without this the
+	// by-type `get<_Tp>(tuple<_Types...>&)` overload bound `_Tp` = "0" and named
+	// the return type "0" (a bogus DataDef), which then leaked into the call's
+	// return_override and broke ref-binding of std::get results in the piecewise
+	// pair ctor (map<K,string>::operator[]). Skip such a kind-mismatched candidate
+	// so the viable by-INDEX overload (or full instantiation) supplies the type.
 	std::map<std::string, DataDef *> binding;
+	bool kind_mismatch = false;
 	for ( size_t i = 0; i < explicit_args.size()
 			 && i < ft.typeparams.size(); ++i )
 	    if ( explicit_args[i] )
+	    {
+		bool tp_is_type = i >= ft.typeparam_is_type.size()
+			       || ft.typeparam_is_type[i];
+		if ( tp_is_type && datadef_is_nontype_constant(explicit_args[i]) )
+		    { kind_mismatch = true; break; }
 		binding[ft.typeparams[i]] = explicit_args[i];
-	if ( binding.empty() )
+	    }
+	if ( kind_mismatch || binding.empty() )
 	    continue;
 	// A return type that references a template parameter NOT bound by the
 	// explicit arguments cannot be resolved from explicit args alone — it
