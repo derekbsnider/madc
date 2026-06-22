@@ -3066,8 +3066,7 @@ void Program::expand_integer_pack_template_args()
     {
 	// Carried-over originals live in `out`; erase removes the deque slots
 	// (does not free), then splice the rewritten region back at the front.
-	tokens.erase(tokens.begin(), tokens.begin() + end);
-	tokens.insert(tokens.begin(), out.begin(), out.end());
+	tokens.splice_front(end, out);
     }
 }
 
@@ -7160,15 +7159,15 @@ TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
     if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	return NULL;
 
-    auto it = tokens.begin();
-    if ( it == tokens.end() || (*it)->id() != TokenID::tkOpBrk )
+    size_t ix = 0;
+    if ( ix >= tokens.size() || tokens[ix]->id() != TokenID::tkOpBrk )
 	return NULL;
-    ++it;
-    if ( it == tokens.end() )
+    ++ix;
+    if ( ix >= tokens.size() )
 	return NULL;
 
     DataDef *dd = NULL;
-    TokenBase *type_tb = *it;
+    TokenBase *type_tb = tokens[ix];
     if ( type_tb->type() == TokenType::ttDataType )
 	dd = &((TokenDataType *)type_tb)->definition;
     else if ( type_tb->type() == TokenType::ttIdentifier )
@@ -7180,10 +7179,10 @@ TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
     else if ( type_tb->type() == TokenType::ttKeyword
 	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
     {
-	++it;
-	if ( it == tokens.end() || !is_contextual_identifier_token(*it) )
+	++ix;
+	if ( ix >= tokens.size() || !is_contextual_identifier_token(tokens[ix]) )
 	    return NULL;
-	dd = resolve_named_datadef(contextual_identifier_name(*it));
+	dd = resolve_named_datadef(contextual_identifier_name(tokens[ix]));
     }
     if ( !is_runtime_sized_type(dd) )
 	return NULL;
@@ -8373,9 +8372,9 @@ bool Program::bracket_dim_uses_runtime_value(
 					   const std::set<std::string> *runtime_names)
 {
     int depth = 1;
-    for ( auto it = tokens.begin(); it != tokens.end() && depth > 0; ++it )
+    for ( size_t ix = 0; ix < tokens.size() && depth > 0; ++ix )
     {
-	TokenBase *t = *it;
+	TokenBase *t = tokens[ix];
 	if ( t->id() == TokenID::tkOpSqr ) { ++depth; continue; }
 	if ( t->id() == TokenID::tkClSqr ) { --depth; continue; }
 	if ( t->id() == TokenID::tkSemi || t->id() == TokenID::tkOpBrc ) break;
@@ -8411,9 +8410,9 @@ bool Program::bracket_dim_uses_runtime_value(
 bool Program::bracket_dim_has_constant_fold_query()
 {
     int depth = 1;
-    for ( auto it = tokens.begin(); it != tokens.end() && depth > 0; ++it )
+    for ( size_t ix = 0; ix < tokens.size() && depth > 0; ++ix )
     {
-	TokenBase *t = *it;
+	TokenBase *t = tokens[ix];
 	if ( t->id() == TokenID::tkOpSqr ) { ++depth; continue; }
 	if ( t->id() == TokenID::tkClSqr ) { --depth; continue; }
 	if ( depth != 1 )
@@ -37379,21 +37378,20 @@ static DataDef *peel_carray_dimensions(DataDef *base_type,
 // scope here; only the unambiguous `{`-body definition is detected.)
 bool Program::paren_group_is_function_def()
 {
-    auto it = tokens.begin();
-    if ( it == tokens.end() || (*it)->id() != TokenID::tkOpBrk )
+    if ( tokens.empty() || tokens[0]->id() != TokenID::tkOpBrk )
 	return false;
     int depth = 0;
-    for ( ; it != tokens.end(); ++it )
+    for ( size_t ix = 0; ix < tokens.size(); ++ix )
     {
-	TokenID id = (*it)->id();
+	TokenID id = tokens[ix]->id();
 	if ( id == TokenID::tkOpBrk ) { ++depth; continue; }
 	if ( id == TokenID::tkClBrk )
 	{
 	    if ( --depth == 0 )
 	    {
-		++it; // token after the matching ')'
-		return it != tokens.end()
-		    && (*it)->id() == TokenID::tkOpBrc;
+		++ix; // token after the matching ')'
+		return ix < tokens.size()
+		    && tokens[ix]->id() == TokenID::tkOpBrc;
 	    }
 	}
     }

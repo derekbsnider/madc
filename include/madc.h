@@ -1071,70 +1071,116 @@ struct ParsedParamSig
 // ---------------------------------------------------------------------------
 class TokenStream
 {
-    // STEP 1 (current): a thin wrapper over a std::deque, behaving EXACTLY like
-    // the original token deque. Every method maps 1:1 to the old deque op, so a
-    // green fulltest proves the ~74 call-site rewrites are behavior-neutral
-    // BEFORE the implementation changes. STEP 2 swaps _dq for the flat arena +
-    // cursor described above, changing ONLY these method bodies.
-    std::deque<TokenBase *> _dq;
+    // STEP 2: the flat arena + cursor. _buf is the contiguous token table;
+    // _cursor is the read position; _pushback is a small LIFO of injected
+    // tokens. Logical sequence = reverse(_pushback) ++ _buf[_cursor..]. Backtrack
+    // is a cursor rewind (savepos/restore copies {cursor, pushback}, never the
+    // buffer) — that is the ~43%-inclusive deque copy the profile flagged.
+    // (Step 1 proved the call sites behavior-neutral with a deque underneath;
+    // this step changes ONLY these method bodies.)
+    std::vector<TokenBase *> _buf;
+    size_t			_cursor;
+    std::vector<TokenBase *> _pushback;
 public:
-    TokenStream() {}
+    TokenStream() : _cursor(0) {}
     TokenStream(const TokenStream &) = delete;
     TokenStream &operator=(const TokenStream &) = delete;
 
-    // -- lexer production / size / front / consume / inject --
-    void push_back(TokenBase *t) { _dq.push_back(t); }
-    TokenBase *back() const { return _dq.back(); }
-    bool empty() const { return _dq.empty(); }
-    size_t size() const { return _dq.size(); }
-    TokenBase *front() const { return _dq.empty() ? NULL : _dq.front(); }
-    void pop_front() { _dq.pop_front(); }
-    void push_front(TokenBase *t) { _dq.push_front(t); }
-    TokenBase *operator[](size_t i) const { return _dq[i]; }
+    // -- lexer production (append; valid at any cursor — see P2 note above) --
+    void push_back(TokenBase *t) { _buf.push_back(t); }
+    TokenBase *back() const { return _buf.back(); }
 
-    // -- backtrack: save = copy the remaining stream (the old `saved = tokens`) --
-    struct Pos { std::deque<TokenBase *> dq; };
-    Pos savepos() const { Pos p; p.dq = _dq; return p; }
-    void restore(const Pos &p) { _dq = p.dq; }
+    // -- size / emptiness over the logical remaining sequence --
+    bool empty() const { return _pushback.empty() && _cursor >= _buf.size(); }
+    size_t size() const { return _pushback.size() + (_buf.size() - _cursor); }
+
+    // -- front / consume / inject (parser hot path) --
+    TokenBase *front() const
+    {
+	if ( !_pushback.empty() ) return _pushback.back();
+	return _cursor < _buf.size() ? _buf[_cursor] : NULL;
+    }
+    void pop_front()
+    {
+	if ( !_pushback.empty() ) { _pushback.pop_back(); return; }
+	++_cursor;
+    }
+    void push_front(TokenBase *t) { _pushback.push_back(t); }
+
+    // -- random access from the logical front (lookahead / introspection) --
+    TokenBase *operator[](size_t i) const
+    {
+	size_t pb = _pushback.size();
+	if ( i < pb ) return _pushback[pb - 1 - i];
+	return _buf[_cursor + (i - pb)];
+    }
+
+    // -- backtrack: save/restore is {cursor, pushback} — NEVER the buffer --
+    struct Pos { size_t cursor; std::vector<TokenBase *> pushback; };
+    Pos savepos() const { Pos p; p.cursor = _cursor; p.pushback = _pushback; return p; }
+    void restore(const Pos &p) { _cursor = p.cursor; _pushback = p.pushback; }
     // Sugar so the original `tokens = saved` restore idiom reads unchanged.
     TokenStream &operator=(const Pos &p) { restore(p); return *this; }
 
-    // -- sub-stream: install `seq`, returning the prior stream; swap_back
-    //    restores it. Models the old `saved = tokens; tokens = body; tokens = saved;`. --
-    struct State { std::deque<TokenBase *> dq; };
+    // -- sub-stream: install `seq` as the active buffer (moved), returning the
+    //    prior state (moved); swap_back restores it. No copy. Models the old
+    //    `saved = tokens; tokens = body; ...; tokens = saved;` idiom. --
+    struct State { std::vector<TokenBase *> buf; size_t cursor; std::vector<TokenBase *> pushback; };
     State swap_in(std::vector<TokenBase *> seq)
     {
-	State prev; prev.dq.swap(_dq);
-	_dq.assign(seq.begin(), seq.end());
+	State prev;
+	prev.buf.swap(_buf); prev.cursor = _cursor; prev.pushback.swap(_pushback);
+	_buf = std::move(seq); _cursor = 0; _pushback.clear();
 	return prev;
     }
-    void swap_back(State prev) { _dq.swap(prev.dq); }
+    void swap_back(State prev)
+    {
+	_buf.swap(prev.buf); _cursor = prev.cursor; _pushback.swap(prev.pushback);
+    }
     // Sugar so the body-replace restore `tokens = saved` reads unchanged too
     // (mirrors operator=(Pos)); consumes the saved State.
     TokenStream &operator=(State &s) { swap_back(std::move(s)); return *this; }
 
-    // -- lexer reorder support (auto-include) --
-    typedef std::deque<TokenBase *>::iterator iterator;
-    typedef std::deque<TokenBase *>::const_iterator const_iterator;
-    typedef std::deque<TokenBase *>::reverse_iterator reverse_iterator;
-    typedef std::deque<TokenBase *>::const_reverse_iterator const_reverse_iterator;
-    iterator begin() { return _dq.begin(); }
-    iterator end()   { return _dq.end(); }
-    const_iterator begin() const { return _dq.begin(); }
-    const_iterator end()   const { return _dq.end(); }
-    reverse_iterator rbegin() { return _dq.rbegin(); }
-    reverse_iterator rend()   { return _dq.rend(); }
-    const_reverse_iterator rbegin() const { return _dq.rbegin(); }
-    const_reverse_iterator rend()   const { return _dq.rend(); }
-    iterator erase(iterator a, iterator b) { return _dq.erase(a, b); }
-    template<class It> iterator insert(iterator pos, It a, It b) { return _dq.insert(pos, a, b); }
-    // The old `tokens.swap(rewritten)` (rewritten now a vector, discarded after).
-    void swap(std::vector<TokenBase *> &other) { _dq.assign(other.begin(), other.end()); other.clear(); }
+    // -- replace the next `remove` LOGICAL tokens at the front with `ins`:
+    //    drain the pushback then advance the cursor, then inject `ins` reversed
+    //    so ins[0] is read first. Cursor-aware front splice. --
+    void splice_front(size_t remove, const std::vector<TokenBase *> &ins)
+    {
+	while ( remove && !_pushback.empty() ) { _pushback.pop_back(); --remove; }
+	_cursor += remove;
+	for ( size_t i = ins.size(); i > 0; --i )
+	    _pushback.push_back(ins[i - 1]);
+    }
+
+    // -- lexer reorder support (auto-include; runs at _cursor==0, _pushback
+    //    empty — P2's pull-based lexer revisits this so it only touches
+    //    un-consumed tokens) --
+    typedef std::vector<TokenBase *>::iterator iterator;
+    typedef std::vector<TokenBase *>::const_iterator const_iterator;
+    typedef std::vector<TokenBase *>::reverse_iterator reverse_iterator;
+    typedef std::vector<TokenBase *>::const_reverse_iterator const_reverse_iterator;
+    iterator begin() { return _buf.begin(); }
+    iterator end()   { return _buf.end(); }
+    const_iterator begin() const { return _buf.begin(); }
+    const_iterator end()   const { return _buf.end(); }
+    reverse_iterator rbegin() { return _buf.rbegin(); }
+    reverse_iterator rend()   { return _buf.rend(); }
+    const_reverse_iterator rbegin() const { return _buf.rbegin(); }
+    const_reverse_iterator rend()   const { return _buf.rend(); }
+    iterator erase(iterator a, iterator b) { return _buf.erase(a, b); }
+    template<class It> iterator insert(iterator pos, It a, It b) { return _buf.insert(pos, a, b); }
+    void swap(std::vector<TokenBase *> &other) { _buf.swap(other); }
 
     // -- logical remaining sequence, copied flat (rare paths only) --
     std::vector<TokenBase *> logical_snapshot() const
     {
-	return std::vector<TokenBase *>(_dq.begin(), _dq.end());
+	std::vector<TokenBase *> out;
+	out.reserve(size());
+	for ( size_t i = _pushback.size(); i > 0; --i )
+	    out.push_back(_pushback[i - 1]);
+	for ( size_t i = _cursor; i < _buf.size(); ++i )
+	    out.push_back(_buf[i]);
+	return out;
     }
 };
 
