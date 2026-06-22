@@ -47,10 +47,10 @@ int main()
         map<string, string> dict;
         string k = "one";
         string v = "first-value-long-enough-to-heap-allocate-xxxxxxxxxxxxxxxxx";
-        dict.put(k, v);
+        dict[k] = v;
         k = "two";
         v = "second-value-long-enough-to-heap-allocate-xxxxxxxxxxxxxxxxx";
-        dict.put(k, v);
+        dict[k] = v;
         cout << "map size: " << dict.size() << endl;
     }
 

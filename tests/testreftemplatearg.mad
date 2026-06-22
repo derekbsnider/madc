@@ -1,0 +1,23 @@
+// A reference-qualified TYPE is a valid template argument (`Tmpl<int&>`,
+// `Tmpl<T&&>`), folded into the arg type like the pointer case (one shared
+// fold_template_arg_declarator). Exposed by libstdc++ move_iterator::reference
+// (a conditional_t whose true branch is `remove_reference_t<__base_ref>&&`).
+// Exercised via a reference-RETURN type (the shape move_iterator uses) so it
+// both compiles and behaves.
+#include <type_traits>
+#include <stdio.h>
+
+template<typename T>
+struct Box {
+	T v;
+	std::conditional_t<true, T&, T> get() { return v; }   // returns T&
+};
+
+int main()
+{
+	Box<int> b;
+	b.v = 5;
+	b.get() = 9;            // reference return aliases b.v
+	printf("v=%d\n", b.v);
+	return b.v == 9 ? 0 : 1;
+}

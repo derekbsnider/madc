@@ -1,0 +1,18 @@
+// A trailing return type on a body-LESS prototype (`auto f() -> T;`) must be
+// resolved so decltype(f()) sees the real type, not the `auto` placeholder.
+// The prototype is declared first; its return type is queried via decltype
+// before any definition is seen, so only the body-less path can supply it.
+#include <cstdio>
+
+auto add(int a, int b) -> int;          // body-less prototype
+auto pick() -> double;                   // body-less prototype, different type
+
+int main()
+{
+	using TI = decltype(add(2, 3));  // must be int
+	using TD = decltype(pick());     // must be double
+	TI i = 40;
+	TD d = 2.5;
+	printf("%d %.1f\n", i, d);
+	return 0;
+}

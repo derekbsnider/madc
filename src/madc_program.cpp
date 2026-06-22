@@ -357,7 +357,7 @@ bool text_list_contains(const std::vector<std::string> &items, const std::string
 std::vector<expression_function_spec> expression_header_function_specs(const std::string &header);
 std::vector<std::string> expression_allowed_function_names(const expression_policy &policy);
 std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBase *> &tokens,
-							 const std::vector<std::string> &exclude_files);
+							 const std::string &source_file);
 void append_unique_strings(std::vector<std::string> &dst,
 			   const std::vector<std::string> &src);
 std::vector<std::string> expand_header_symbol_groups(const std::vector<std::string> &headers);
@@ -586,9 +586,10 @@ bool register_expression_header_functions(Program &pgm,
 bool validate_expression_function_policy(Program &pgm,
 					 const expression_policy &policy,
 					 const std::deque<TokenBase *> &tokens,
+					 const std::string &source_file,
 					 const std::string &display_file)
 {
-    std::vector<std::string> calls = collect_expression_token_calls(tokens, policy.allowed_headers);
+    std::vector<std::string> calls = collect_expression_token_calls(tokens, source_file);
     if ( calls.empty() )
 	return true;
     if ( !policy.allow_function_calls )
@@ -999,10 +1000,62 @@ bool source_contains_explicit_eval_entry(const std::string &source)
 std::string build_eval_body_wrapper_source(const std::string &source,
 					   const char *return_type)
 {
+    // Split into lines, retaining each line's trailing '\n'.
+    std::vector<std::string> lines;
+    for ( size_t i = 0, n = source.size(); i < n; )
+    {
+	size_t eol = source.find('\n', i);
+	size_t end = (eol == std::string::npos) ? n : eol + 1;
+	lines.push_back(source.substr(i, end - i));
+	i = end;
+    }
+
+    // Hoist the CONTIGUOUS leading run of preprocessor directives (blank lines
+    // allowed) out of the wrapper FUNCTION BODY to file scope. A `#include`
+    // left inside the body inlines the header's declarations as function-local
+    // statements — e.g. <math.h> pulls <cmath>'s `namespace std`, whose
+    // std-typed parameters then fail to resolve at function-body scope
+    // ("Failed to find type 'std'"). Only the leading run is moved (the
+    // conventional includes-at-top form), so code order is preserved and a
+    // mid-body #if/#endif block is left untouched. Backslash-continued
+    // directive lines are kept whole.
+    auto first_nonws = [](const std::string &s) -> int {
+	for ( size_t j = 0; j < s.size(); ++j )
+	    if ( s[j] != ' ' && s[j] != '\t' && s[j] != '\r' && s[j] != '\n' )
+		return (unsigned char)s[j];
+	return -1;	// blank line
+    };
+    auto continues = [](const std::string &s) -> bool {
+	size_t j = s.find_last_not_of("\r\n");
+	return j != std::string::npos && s[j] == '\\';
+    };
+    std::string preamble, body;
+    size_t k = 0;
+    for ( ; k < lines.size(); ++k )
+    {
+	int c = first_nonws(lines[k]);
+	if ( c == '#' )
+	{
+	    preamble += lines[k];
+	    while ( continues(lines[k]) && k + 1 < lines.size() )
+		preamble += lines[++k];
+	    continue;
+	}
+	if ( c == -1 )		// blank line within the leading run
+	{
+	    preamble += lines[k];
+	    continue;
+	}
+	break;			// first real code line — the rest is the body
+    }
+    for ( ; k < lines.size(); ++k )
+	body += lines[k];
+
     std::ostringstream wrapped;
-    wrapped << return_type << " " << eval_entry_name() << "() {\n"
-	    << source;
-    if ( source.empty() || source[source.size() - 1] != '\n' )
+    wrapped << preamble
+	    << return_type << " " << eval_entry_name() << "() {\n"
+	    << body;
+    if ( body.empty() || body[body.size() - 1] != '\n' )
 	wrapped << "\n";
     wrapped << "}\n";
     return wrapped.str();
@@ -1321,7 +1374,7 @@ bool validate_expression_ast_call(const expression_policy &policy,
 }
 
 std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBase *> &tokens,
-							 const std::vector<std::string> &exclude_files)
+							 const std::string &source_file)
 {
     std::vector<std::string> calls;
     for ( std::size_t i = 0; i < tokens.size(); ++i )
@@ -1329,15 +1382,17 @@ std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBa
 	TokenBase *tb = tokens[i];
 	if ( !tb || tb->type() != TokenType::ttIdentifier )
 	    continue;
-	// Tokens expanded from a policy-allowed #include (e.g. the embedded
-	// math.h declarations) are NOT user input: a prototype
-	// `float sinf(float);` would otherwise read as a call to sinf and
-	// poison the allowlist check. The policy validates the USER
-	// EXPRESSION's tokens only, so skip tokens whose source file is one
-	// of the policy headers themselves. (Matching the user's display
-	// file instead would drop user tokens whenever tokenization ran
-	// under a temp path — the host eval_expression flow.)
-	if ( tb->file && text_list_contains(exclude_files, tb->file) )
+	// The policy validates the USER EXPRESSION's tokens only. The eval TU
+	// is synthesized (policy #includes + the expression) and tokenized
+	// from ONE source file; the expression's tokens carry exactly that
+	// file, while every #include'd token — the real header and its whole
+	// transitive closure (/usr/include/math.h, bits/*.h, …) — carries its
+	// own header path. Keep only tokens from the tokenized source file.
+	// (The old policy-header-name EXCLUDE list matched the embedded-era
+	// literal "math.h" token files but not real header paths, and never
+	// covered transitive includes — real <math.h>'s `decltype (…)` and
+	// `__iseqsig (…)` then poisoned the allowlist check.)
+	if ( !tb->file || source_file != tb->file )
 	    continue;
 	if ( i + 1 >= tokens.size() || !tokens[i + 1] || tokens[i + 1]->id() != TokenID::tkOpBrk )
 	    continue;
@@ -3116,9 +3171,10 @@ struct program::impl
     }
 
     bool validate_expression_function_policy(const std::deque<TokenBase *> &tokens,
+					    const std::string &source_file,
 					    const std::string &display_file)
     {
-	std::vector<std::string> calls = collect_expression_token_calls(tokens, current_expression_policy.allowed_headers);
+	std::vector<std::string> calls = collect_expression_token_calls(tokens, source_file);
 	if ( calls.empty() )
 	    return true;
 	if ( !current_expression_policy.allow_function_calls )
@@ -3234,7 +3290,7 @@ struct program::impl
 	    return false;
 	}
 
-	if ( !validate_expression_function_policy(pgm->tokens,
+	if ( !validate_expression_function_policy(pgm->tokens, path,
 						 display_file.empty() ? path : display_file) )
 	    return false;
 	if ( !register_expression_header_functions(display_file.empty() ? path : display_file) )
@@ -4427,7 +4483,9 @@ bool internal_program_runtime_eval_expression(::Program &self,
 	copy_program_public_error(self, child);
 	return false;
     }
-    if ( !validate_expression_function_policy(child, policy, child.tokens, display_name) )
+    if ( !validate_expression_function_policy(child, policy, child.tokens,
+					      display_name.empty() ? "<memory>" : display_name,
+					      display_name) )
     {
 	copy_program_public_error(self, child);
 	return false;

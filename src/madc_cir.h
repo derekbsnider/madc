@@ -66,7 +66,9 @@ public:
 
     // Generate and run main(argc, argv); returns main's return value.
     // `ok` (when non-null) reports whether main was found and invoked.
-    int run_main(int argc, char **argv, bool *ok = 0);
+    // `out_secs` (when non-null) receives the execution wall time in seconds
+    // (the main() call itself, incl. lazy MIR_gen of functions it calls).
+    int run_main(int argc, char **argv, bool *ok = 0, double *out_secs = 0);
 
 private:
     MIR_context_t ctx;

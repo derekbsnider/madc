@@ -177,6 +177,10 @@ static std::string operator_code(const std::string &op)
 	if (op == "&")  return "an";
 	if (op == "|")  return "or";
 	if (op == "^")  return "eo";
+	if (op == "new")      return "nw";
+	if (op == "new[]")    return "na";
+	if (op == "delete")   return "dl";
+	if (op == "delete[]") return "da";
 	return "";
 }
 
@@ -579,6 +583,23 @@ public:
 	                                   const std::vector<std::string> &params)
 	{
 		reset();
+		// GLOBAL-scope function: _Z<name><params> with no N..E nesting.
+		// An operator name encodes as its Itanium operator-name code —
+		// ::operator new(size_t) is _Znwm, sized ::operator delete is
+		// _ZdlPvm (the libstdc++ allocation-operator exports).
+		if (qualifiers.empty()) {
+			std::string code;
+			if (name.compare(0, 8, "operator") == 0)
+				code = operator_code(name.substr(8));
+			std::string out = "_Z" + (code.empty() ? source_name(name)
+			                                       : code);
+			if (params.empty())
+				out += "v";
+			else
+				for (const auto &p : params)
+					out += encode_type(parse_param_type(p));
+			return out;
+		}
 		// A function directly in namespace std is an Itanium <unscoped-name>
 		// using the St abbreviation (_ZSt<name>…), NOT a nested-name
 		// (_ZNSt<name>E…). libstdc++ exports e.g. std::terminate() as

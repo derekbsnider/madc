@@ -238,6 +238,51 @@ Gates (round 2): MIR `make test` exit 0 with the three new regression tests coun
 (1124/2248 interp, 1128/2256 gen), fulltest 572/0/0/18, torture O1 failset
 byte-identical, **O2 still = O1 byte-identical** (parity preserved), SMAUG soak green.
 
+## Upstream activity sweep + PR #437/#438/#439/#440 adoption (2026-06-13, round 3)
+
+cyanogilvie opened a burst of PRs against frozen upstream on 2026-06-11/12; four
+adopted onto fork `develop` (pin bumped `545ad46` → `5df536f`).
+
+- **#438 — x86-64 va_start offsets for functions with block args. ADOPTED — genuine
+  live bug in OUR generator.** va_start re-derived the named args' reg/stack layout
+  with its own scan that disagreed with the prologue walk in 3 ways (reg-passed BLK
+  args uncounted into gp/fp_offset; every block added to the overflow displacement
+  without 8-byte rounding; fp exhaustion checked `gp_offset >= 176`). A struct param
+  before `...` made `va_arg` read the named struct's register-save slot as a vararg.
+  Verified via the 3-way oracle: reducer `tmp/w13_vastruct.mad` returned `60/3.0/3018`
+  on `MIR_gen` (and stock `c2m -eg`) vs gcc/`-ei` `330/3.8/3018`; fixed after adoption.
+  Conflicted with our existing `VA_BLOCK_ARG` named-arg scan (resolved: the PR's
+  prologue-totals approach SUPERSEDES our hand-rolled scan — fewer moving parts).
+  Pinned by `tests/testvastruct.mad`. ALSO fixed **`pr117432.c`** in gcc-torture
+  (varargs `long long`/`int` tag) — failset 52 → 51, a strict improvement.
+- **#437 — aarch64 bb-thunk x9 clobber + contiguous code-holder reservation.
+  ADOPTED with an x86-64 refinement.** The aarch64 x9-thunk fix is inert on x86-64.
+  The shared `mir.c` 128MB code-holder reservation regressed `20040811-1.c` (a
+  leaky-VLA torture case — see the madc VLA-backward-goto gap) into an OOM SIGSEGV on
+  a memory-pressured host: the reservation subtracts 128MB of commit headroom from the
+  jitted program's own ~2GB-peak heap. **Refinement (fork commit `5df536f`, proposed
+  back upstream):** skip the reservation on x86-64 — its `rel32` direct branches reach
+  ±2GB, so scattered code holders stay in range without it (the reservation only helps
+  reach-limited targets like aarch64 ±128MB). Other arches keep it unchanged.
+- **#439 — C23 paramless variadic (`int f(...)`). ADOPTED.** Front-end check removal
+  only; the backend already supported it (register save areas key on `vararg_p`, not
+  `nargs`). No current madc surface needs it; on the C23 arc, trivially safe.
+- **#440 — block-arg copy clobbering caller-saved regs (aarch64/riscv64/s390x/ppc64).
+  ADOPTED, inert on x86-64.** c2mir lowers big aggregates itself and never emits >2
+  qword block call args, so only direct MIR-API users on those arches hit it; kept for
+  future targets.
+
+Not adopted this round: **#435** (musl/Alpine test-harness — not our build),
+**#405/#383/#341/etc.** (embedding-API / older, not relevant). The remaining
+non-adopted older PRs from the 2026-06-11 sweep are unchanged.
+
+Gates (round 3): fork `make c2mir-test` exit 0 (incl. bootstrap lazy-bb); madc
+fulltest 556/27 (failure list byte-identical, +`testvastruct`), unit 10/10 binaries
+green, gcc-torture **1571 passed, failset 51 names** (`pr117432.c` fixed by #438,
+ZERO regressions; `20040811-1.c` restored by the x86-64 reservation arch-gate),
+SMAUG `--project` soak green. Baseline `docs/parity/torture-failset-current.txt`
+updated 52 → 51.
+
 ## Open threads (the actually-valuable derived work)
 
 1. ~~**Make madc-O2 viable**~~ **DONE 2026-06-11** (see the O2-viability campaign above):

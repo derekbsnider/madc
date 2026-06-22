@@ -51,6 +51,52 @@ inline node_t op(node_t n, int i) { return c2mir_node_op(n, i); }
 void emit(FILE *f, node_t n, CirEmitLang lang);
 void emit_initializer(FILE *f, node_t n, CirEmitLang lang);
 
+// Emit an identifier with every non-C-identifier byte flattened to a
+// deterministic mnemonic. Method symbols carry C++ operator spellings
+// (`Cls__operator++_un`, `operator[]__o5`, `operator""s`): the JIT path
+// feeds c2mir the tree directly, where an N_ID is an opaque string and any
+// byte is legal — but RENDERED C is re-lexed, so raw spellings break every
+// C toolchain on the emitted text. Per-byte mapping (Itanium-style
+// mnemonics) keeps definition and use sites consistent by construction;
+// names that are already valid C pass through byte-identical.
+void emit_safe_ident(FILE *f, const char *s)
+{
+	for (const char *p = s ? s : ""; *p; p++) {
+		unsigned char c = (unsigned char)*p;
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		    || (c >= '0' && c <= '9') || c == '_') {
+			fputc(c, f);
+			continue;
+		}
+		const char *m;
+		switch (c) {
+		case '+': m = "_pl"; break;
+		case '-': m = "_mi"; break;
+		case '*': m = "_ml"; break;
+		case '/': m = "_dv"; break;
+		case '%': m = "_rm"; break;
+		case '[': m = "_lb"; break;
+		case ']': m = "_rb"; break;
+		case '<': m = "_lt"; break;
+		case '>': m = "_gt"; break;
+		case '=': m = "_eq"; break;
+		case '!': m = "_nt"; break;
+		case '&': m = "_an"; break;
+		case '|': m = "_or"; break;
+		case '^': m = "_eo"; break;
+		case '~': m = "_co"; break;
+		case '(': m = "_lp"; break;
+		case ')': m = "_rp"; break;
+		case '"': m = "_qu"; break;
+		case ',': m = "_cm"; break;
+		case ' ': m = "_sp"; break;
+		default:  m = NULL; break;
+		}
+		if (m) fputs(m, f);
+		else fprintf(f, "_x%02x", c);
+	}
+}
+
 // Emit each operand of `n` starting at `from`, separated by `sep`.
 void emit_seq(FILE *f, node_t n, CirEmitLang lang, int from, const char *sep)
 {
@@ -184,6 +230,15 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		// (named). A parameter declarator carries no trailing ';', so emit
 		// the SPEC_DECL specs + declarator directly rather than via the
 		// statement-context N_SPEC_DECL case.
+		// A DOTS-ONLY list (the unknown-signature extern shape the JIT
+		// tree carries for dlsym-resolved calls) renders as `()` — C
+		// requires a named parameter before `...`, and an empty list
+		// declares the same "unspecified arguments" contract.
+		if (op(op(n, 0), 0) && op(op(n, 0), 0)->code == N_DOTS
+		    && !op(op(n, 0), 1)) {
+			fputc(')', f);
+			break;
+		}
 		for (int i = 0; ; i++) {
 			node_t p = op(op(n, 0), i);
 			if (!p) break;
@@ -547,7 +602,7 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		emit(f, op(n, 2), lang);
 		fputc(')', f);
 		break;
-	case N_ID:   fputs(n->u.s.s ? n->u.s.s : "", f); break;
+	case N_ID:   emit_safe_ident(f, n->u.s.s); break;
 	case N_STR16: case N_STR32: break; // wide strings: not supported (see c11-transpiler rule)
 	case N_I:
 	case N_L:    fprintf(f, "%lld", (long long)n->u.l); break;

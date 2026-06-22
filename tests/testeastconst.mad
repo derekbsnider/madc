@@ -1,0 +1,14 @@
+// East-const (`char const*`, `int const x`) in class member declarations: the
+// cv-qualifier trails the base type and precedes the declarator. libstdc++'s
+// `__concurrence_lock_error::what()` returns `char const*` — parsing it gates
+// the whole <memory> uninitialized-copy chain (vector reallocation).
+#include <iostream>
+struct S {
+  char const* what() const { return "east-const"; }
+  int const x = 5;
+};
+int main() {
+  S s;
+  std::cout << s.what() << " " << s.x << "\n";
+  return 0;
+}

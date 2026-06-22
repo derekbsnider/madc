@@ -3,13 +3,14 @@
 #include <map>
 #include <string>
 using namespace std;
+
 int main()
 {
     map<string, int> ages;
     string key = "Alice";
-    ages.put(key, 30);
+    ages[key] = 30;
     key = "Bob";
-    ages.put(key, 25);
+    ages[key] = 25;
 
     int sz;
     sz = ages.size();
@@ -17,16 +18,16 @@ int main()
 
     key = "Alice";
     int age;
-    age = ages.get(key);
+    age = ages[key];
     cout << "Alice: " << age << endl;
 
     int found;
     key = "Bob";
-    found = ages.contains(key);
+    found = ages.find(key) != ages.end();
     cout << "has Bob: " << found << endl;
 
     key = "Charlie";
-    found = ages.contains(key);
+    found = ages.find(key) != ages.end();
     cout << "has Charlie: " << found << endl;
 
     return 0;

@@ -1,0 +1,17 @@
+// Function-template partial ordering ([temp.func.order]): when several same-name
+// function templates all deduce for a call, the MOST SPECIALIZED is selected.
+// `pick(T*)` is more specialized than `pick(T)`, so a pointer argument must bind
+// it (g++/clang both print POINTER). Before partial ordering madc took the
+// first-registered candidate that deduced (GENERAL).
+#include <cstdio>
+namespace ns {
+    template<typename T> void pick(T)  { printf("GENERAL\n"); }
+    template<typename T> void pick(T*) { printf("POINTER\n"); }
+}
+int main()
+{
+    int x = 0;
+    ns::pick(&x);   // -> POINTER (more specialized), not GENERAL
+    printf("done\n");
+    return 0;
+}

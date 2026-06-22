@@ -1,0 +1,26 @@
+// SFINAE on an alias-template return type selects the complementary overload.
+//
+// `enif_t<C,T>` = `typename enif<C,T>::type`; `enif<false,T>` has no `::type`,
+// so for a non-trivially-"relocatable" type the `enif_t<bwr<T>::value,T*>`
+// overload is removed by substitution failure ([temp.deduct]/8) and the
+// complementary `enif_t<!bwr<T>::value,T*>` overload binds instead. This is
+// the libstdc++ `__relocate_a_1` memmove-vs-loop shape that gates vector.
+#include <iostream>
+namespace ns {
+  template<bool B, typename T> struct enif {};
+  template<typename T> struct enif<true, T> { typedef T type; };
+  template<bool B, typename T> using enif_t = typename enif<B, T>::type;
+  template<bool V> struct ic { static const bool value = V; };
+  template<typename T> struct istriv : ic<__is_trivial(T)> {};
+  template<typename T> struct bwr : istriv<T> {};
+  template<typename T> enif_t<bwr<T>::value, T*>  pick(T* p)
+  { std::cout << "true-branch\n"; return p; }
+  template<typename T> enif_t<!bwr<T>::value, T*> pick(T* p)
+  { std::cout << "false-branch\n"; return p; }
+}
+struct NT { NT(){} ~NT(){} int x; };   // user ctor/dtor -> non-trivial
+int main() {
+  int i = 5;  ns::pick(&i);    // trivial     -> true-branch
+  NT n;       ns::pick(&n);    // non-trivial -> false-branch
+  return 0;
+}

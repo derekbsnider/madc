@@ -22,6 +22,7 @@
 #include <stdarg.h>
 #include <setjmp.h>
 #include <dlfcn.h>
+#include <chrono>
 
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -193,7 +194,24 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     // drifted from this backend — e.g. mislowering backward `goto` loops — and
     // a stale unit test pointed at it once hung the suite. One backend, no A/B.)
     CirBuilder *builder = new CirBuilder(c2m);
-    node_t tree = builder->translate_module(prog);
+    // translate_module materializes deferred/lazy template bodies on demand
+    // (parse_deferred_lazy_body). Those re-parses use the parser's Throw
+    // mechanism, which prints the diagnostic to stderr AND throws. An escaping
+    // throw here would terminate the process (uncaught -> std::terminate). Catch
+    // it: the error was already reported, so fail the build cleanly instead.
+    node_t tree = NULL;
+    try {
+	tree = builder->translate_module(prog);
+    } catch (const std::exception &e) {
+	fprintf(stderr, "%s: tree build failed (%s)\n", source_name, e.what());
+	delete builder;
+	return NULL;
+    } catch (...) {
+	fprintf(stderr, "%s: tree build failed (compile error in instantiated template body)\n",
+		source_name);
+	delete builder;
+	return NULL;
+    }
     if (!tree) {
 	fprintf(stderr, "%s: tree build failed\n", source_name);
 	delete builder;
@@ -230,7 +248,12 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 	return NULL;
     }
 
-    if (!cir_compile(ctx, c2m, tree, source_name)) {
+    auto _c2m_t0 = std::chrono::steady_clock::now();	// --show-stats: c2mir compile
+    bool _c2m_ok = cir_compile(ctx, c2m, tree, source_name);
+    if (prog)
+	prog->_c2mir_seconds += std::chrono::duration<double>(
+	    std::chrono::steady_clock::now() - _c2m_t0).count();
+    if (!_c2m_ok) {
 	fprintf(stderr, "%s: cir_compile failed\n", source_name);
 	delete builder;
 	return NULL;
@@ -242,6 +265,11 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 	delete builder;
 	return NULL;
     }
+
+    // Debug: MADC_DUMP_MIR=1 dumps the textual MIR (proto/func signatures) to
+    // stderr before link/run — for inspecting generated function ABI.
+    if (getenv("MADC_DUMP_MIR"))
+	MIR_output(ctx, stderr);
 
     out_builder = builder;
     return mod;
@@ -370,14 +398,18 @@ void *CirJitSession::data_address(const char *emitted_name)
     return NULL;
 }
 
-int CirJitSession::run_main(int argc, char **argv, bool *ok)
+int CirJitSession::run_main(int argc, char **argv, bool *ok, double *out_secs)
 {
     void *code = function_code("main");
     if (ok) *ok = (code != NULL);
     if (!code) return -1;
     // Expose the module to the crash handler for JIT symbolization.
     g_jit_module = mod;
+    auto _ex_t0 = std::chrono::steady_clock::now();	// --show-stats: execution
     int result = ((int (*)(int, char **))code)(argc, argv);
+    if (out_secs)
+	*out_secs = std::chrono::duration<double>(
+	    std::chrono::steady_clock::now() - _ex_t0).count();
     g_jit_module = NULL;
     return result;
 }
@@ -393,7 +425,7 @@ int madc_cir_execute(Program *prog, const char *source_name,
 	return stop ? 0 : -1;
 
     bool ok = false;
-    int result = session.run_main(user_argc, user_argv, &ok);
+    int result = session.run_main(user_argc, user_argv, &ok, &prog->_exec_seconds);
     if (!ok) {
 	fprintf(stderr, "madc_cir_execute: main() not found\n");
 	return -1;
@@ -450,9 +482,11 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		if (!tu.std_option.empty())
 			prog->set_language_standard_option("--std=" + tu.std_option);
 		else if (is_c_source_file(tu.file))
-			// No explicit -std and a .c file → compile as C (like
-			// gcc/clang), so C++ keywords stay usable as C identifiers.
-			prog->set_language_standard_option("--std=c89");
+			// No explicit -std and a .c file → gcc's actual default C
+			// dialect, gnu17 (C17 base + GNU, no __STRICT_ANSI__) — so
+			// C++ keywords stay usable as C identifiers AND glibc's
+			// feature gates (timercmp, strdup, …) match plain gcc.
+			prog->set_language_standard_option("--std=gnu17");
 
 		TokenProgram *tp = prog->tokenize(tu.file.c_str());
 		if (!tp) {

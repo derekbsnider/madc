@@ -1,0 +1,30 @@
+#include <iostream>
+#include <type_traits>
+using namespace std;
+
+// Regression: libstdc++ __invoke_result / __result_of_impl<false,false,F,Args...>
+// — the CALLABLE partial spec whose trailing parameter pack absorbs the argument
+// types. Two bugs made __is_invocable always fold false for a multi-arg functor:
+//   1) match_partial_specialization arity-rejected the trailing-pack spec.
+//   2) resolve_arg_spelling_datadef returned NULL for a `T*`/`T&` pack element,
+//      collapsing the absorbed pack to empty.
+// This is the keystone behind std::map / std::set's _Rb_tree::_S_key static_assert
+// (`__is_invocable<_Compare&, const _Key&, const _Key&>`).
+//
+// NOTE (known follow-up, NOT asserted here): the NEGATIVE case — a non-callable
+// type reporting NON-invocable — still needs proper SFINAE on the _S_test decltype
+// overload fallback, so it is intentionally not checked. map/set comparators are
+// always callable, so this gap does not block them.
+
+struct Cmp2 { bool operator()(const int &, const int &) const; };
+struct Cmp1 { bool operator()(const int &) const; };
+
+int main()
+{
+	static_assert(__is_invocable<Cmp2 &, const int &, const int &>{},
+		      "two-argument functor must be invocable");   // 2-element pack
+	static_assert(__is_invocable<Cmp1 &, const int &>{},
+		      "one-argument functor must be invocable");    // 1-element pack
+	cout << "invocable ok" << endl;
+	return 0;
+}

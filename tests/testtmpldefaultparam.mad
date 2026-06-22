@@ -1,0 +1,25 @@
+#!../bin/madc
+// Defaulted template TYPE parameter whose default is a declarator on an
+// earlier parameter: `template<typename T, typename R = T*>`. The return
+// type R must be evaluated from its default (T substituted, the `*` folded)
+// at instantiation. Before the fix the multi-token default `T*` was not
+// resolved, R fell back to the int64_t default, and the call emitted an
+// undefined import. This is the std-library shape behind
+// __make_move_if_noexcept_iterator's pointer-returning iterator default.
+#include <iostream>
+using namespace std;
+
+namespace nn {
+    template<typename T, typename R = T*>
+    R addr_of(T* p) { return (R)p; }    // R defaults to T*
+}
+
+int main()
+{
+    int a[3] = {11, 22, 33};
+    int *p = nn::addr_of(a + 0);        // R = int*
+    cout << *p << endl;                 // 11
+    int *q = nn::addr_of(a + 2);        // R = int*
+    cout << *q << endl;                 // 33
+    return 0;
+}

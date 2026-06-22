@@ -1,0 +1,35 @@
+#!../bin/madc
+// std::transform with a FUNCTION argument. Exercises [temp.deduct.call]
+// argument decay in namespace-fn-template deduction AND in the call-site
+// overload binding:
+//   - function-to-pointer: the unary-operation type parameter deduces from
+//     the function `dbl`, which DECAYS to a pointer-to-function. Without it
+//     `dbl` bound to the bare FuncDef and emitted an incomplete, non-callable
+//     `void __op` parameter.
+//   - array-to-pointer ([conv.array]): a BARE C-array argument (`a`, `b`)
+//     decays to `int*`. Without it the iterator parameter deduced from `a`
+//     as the array type and the body's `*__first` hit "cannot dereference
+//     non-pointer type"; and at the call site the bare array typed as the
+//     element `int`, so the call fell back to the declaration-only
+//     placeholder and emitted an undefined `__ns_std_transform` import.
+#include <iostream>
+#include <algorithm>
+using namespace std;
+
+int dbl(int x) { return x * 2; }
+
+int main()
+{
+    int a[4] = {1, 2, 3, 4};
+    int b[4] = {0, 0, 0, 0};
+    int c[4] = {0, 0, 0, 0};
+    transform(a + 0, a + 4, b + 0, dbl);   // iterators as pointer expressions
+    transform(a, a + 4, c, dbl);            // BARE arrays decay to int*
+    for (int i = 0; i < 4; i++)
+        cout << b[i] << " ";
+    cout << endl;                           // 2 4 6 8
+    for (int i = 0; i < 4; i++)
+        cout << c[i] << " ";
+    cout << endl;                           // 2 4 6 8
+    return 0;
+}

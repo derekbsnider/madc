@@ -137,6 +137,13 @@ class CirBuilder {
 	// flushes this buffer ahead of each statement. Mirrors the old transpiler's
 	// emit_ns_arg statement-level temp construction.
 	std::vector<node_t> m_pending_stmts;
+	// Splice m_pending_stmts into `out` (preserving order) and clear it.
+	// For statement-list builders that run OUTSIDE translate_block's
+	// statement loop (ctor/dtor prologue + epilogue synthesis): a temp
+	// materialized while building a prologue statement must be emitted
+	// into the same prologue, before its consumer — without this it
+	// leaked into the NEXT translated function's body.
+	void flush_pending_stmts(std::vector<node_t> &out);
 	int m_strtmp_counter = 0;
 	// File-scope class-instance globals lower to opaque
 	// struct storage at file scope plus a constructor call that must run before
@@ -212,8 +219,10 @@ class CirBuilder {
 	// Build one N_MEMBER node for a struct/union member (shared by struct_def
 	// and the inline-struct path in typedef_decl).
 	node_t member_node(const memberpair_t &m, DataDefSTRUCT *owner = NULL);
+	node_t anonymous_aggregate_member_node(DataDefSTRUCT *anon);
 
-	// Build the N_LIST of N_MEMBER nodes for an anonymous aggregate's body.
+	// Build the N_LIST of N_MEMBER nodes for an aggregate body, preserving
+	// anonymous nested aggregate groups as unnamed STRUCT/UNION members.
 	node_t anon_members_list(DataDefSTRUCT *anon);
 	// Build the inline type-spec for an anonymous aggregate: a one-element
 	// LIST holding STRUCT/UNION(IGNORE-tag, members). An anonymous aggregate
@@ -266,6 +275,10 @@ class CirBuilder {
 	// A CALL to a madc-COMPILED function returning a non-trivial class by value
 	// (one routed through the __retbuf ABI). Returns the class, or NULL.
 	DataDefCLASS *object_returning_call_class(TokenBase *arg);
+	// The referenced type of a REFERENCE-returning call argument
+	// (std::move(x), a T&/T&& method) — the pointer representation
+	// unwrapped; NULL when arg is not a ref-returning call.
+	DataDef *ref_returning_call_type(TokenBase *arg);
 	// The class that, returned by value, must use the __retbuf ABI (a
 	// non-trivial class needing a dtor). NULL for trivial structs (native
 	// struct return). See cir_builder.cpp.
@@ -337,6 +350,20 @@ class CirBuilder {
 	// materialized into a scope-local temporary first.
 	node_t object_arg_value(TokenBase *arg, DataDefCLASS *target);
 
+	// Address of an argument bound to a NON-class reference parameter
+	// (`const T&`, T scalar/pointer). An lvalue passes by address directly; a
+	// prvalue (a by-value call result, a post-increment, a builtin
+	// arithmetic result — `_M_current++`, `it.base() - n`) is not addressable,
+	// so it is materialized into a scope-lived temp whose address is passed
+	// ([class.temporary]: binding a const ref to a prvalue).
+	node_t ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent = NULL);
+	// True for the argument forms that are unambiguously prvalues and therefore
+	// not addressable: a by-value-returning call, a postfix ++/--, a builtin
+	// binary arithmetic/bitwise result, or a literal. Conservative by design —
+	// it only flags forms that `&expr` already rejects, so lvalue arguments keep
+	// the existing direct-address lowering untouched.
+	bool expr_is_nonaddressable_rvalue(TokenBase *arg);
+
 	// ---- madc array (`array`, a madc::value) object lowering ----
 	// Same opaque-object model as other runtime objects; array arguments are
 	// always passed by pointer and the long[] buffer name decays to that pointer
@@ -369,6 +396,11 @@ class CirBuilder {
 	// `T*` pointer operand stays NULL: only the reference representation is
 	// transparent (pointer operands keep pointer semantics).
 	DataDefCLASS *operand_object_class(TokenBase *t);
+	// Wrap a type as a reference (DataDefREF), routed through the one
+	// reference-creation/collapse path (Program::getReferenceType — caches +
+	// collapses ref-to-ref). Used by the operator/manipulator instantiation
+	// sites that synthesize FuncDefs. first-class refs Phase 4 "single collapse".
+	DataDef *as_reference_type(DataDef *dd);
 	// The type DOMAIN of an OPERAND's value read — the scalar twin of
 	// operand_object_class: a reference variable (vfREFERENCE, stored as
 	// DataDefPTR(T)) reads as its referee T; everything else is the
@@ -502,15 +534,38 @@ public:
 
 	// ---- Output (Phase-2) ----
 	// A param of an output extern: its type-spec node codes + whether it is a pointer.
-	struct ExternParam { std::vector<c2mir_node_code_t> specs; bool ptr; };
+	// A parameter shape for an emitted extern prototype. `cls` (when
+	// non-null) means a by-VALUE struct/union param of that class — its
+	// tag is emitted via class_tag_ref and `specs`/`ptr` are ignored
+	// (a by-value libstdc++ iterator/value_type arg, e.g. vector's
+	// _M_fill_insert(__normal_iterator, ...)). Otherwise it's a scalar
+	// (`specs`) optionally one pointer level (`ptr`). NO default member
+	// initializer — that would make ExternParam a non-aggregate under
+	// C++11 and break every `{ {specs}, ptr }` braced init; trailing
+	// `cls` is value-initialized to null by those two-field inits.
+	struct ExternParam {
+		std::vector<c2mir_node_code_t> specs;
+		bool ptr;
+		class DataDefCLASS *cls;
+	};
 	// Record (once) an extern proto for an output runtime/libstdc++ symbol.
 	// ret_ptr=true -> returns void*, else void. ret_specs overrides the
 	// return base type when non-empty (e.g. {N_LONG} for a long-returning
 	// runtime fn); empty means the default base type N_VOID.
+	// `ret_cls` (when non-null) declares the return type as that class's
+	// struct/union tag — for a method/function that returns a trivially-copyable
+	// class BY VALUE (register-returned, no retbuf). It takes precedence over
+	// ret_specs/ret_ptr (a by-value struct return is neither a scalar base nor a
+	// pointer). `ret_dd` (when non-null) declares the concrete return DataDef,
+	// including pointer/reference stars, so typed pointer returns such as char*
+	// do not collapse to void*. Mirrors ExternParam::cls for by-value class
+	// parameters.
 	void need_output_extern(const char *symbol, bool ret_ptr,
 				const std::vector<ExternParam> &params,
 				const std::vector<c2mir_node_code_t> &ret_specs
-					= std::vector<c2mir_node_code_t>());
+					= std::vector<c2mir_node_code_t>(),
+				class DataDefCLASS *ret_cls = NULL,
+				class DataDef *ret_dd = NULL);
 	void need_output_extern_unprototyped(const char *symbol, bool ret_ptr,
 				const std::vector<c2mir_node_code_t> &ret_specs
 					= std::vector<c2mir_node_code_t>());
@@ -613,6 +668,27 @@ public:
 	node_t no_ctor_match_error(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
+	// IMPLICIT COPY CONSTRUCTOR fallback ([class.copy.ctor]), shared by
+	// both ctor-call builders' no-match tails: a same-class single argument
+	// selects the implicitly-declared copy ctor; for a trivially-copyable
+	// class that is a member-wise bit copy — a struct assignment into
+	// `dst_lvalue`. NULL when the fallback does not apply.
+	node_t try_implicit_copy_construct(node_t dst_lvalue, DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin);
+	// Recursive trivial-copyability ([class.prop] subset): no own user
+	// dtor, no user copy ctor, no vtable, members/bases recursively so.
+	bool class_trivially_copyable(DataDefCLASS *cdd);
+	bool class_trivially_copyable(DataDefCLASS *cdd,
+			       std::set<DataDefCLASS *> &seen);
+	// The class/type a ctor argument expression denotes for overload
+	// matching (resolved callee returns, reference unwrap, array decay) —
+	// shared by select_ctor_overload and try_implicit_copy_construct.
+	DataDef *ctor_arg_datadef(TokenBase *arg);
+	// Aggregate tag-REFERENCE node (`struct X` / `union X` per the
+	// definition's union_layout) — every reference site must agree with
+	// the definition's kind or c2mir rejects the tag.
+	node_t class_tag_ref(DataDef *dd, TokenBase *origin = NULL);
 	// Select the ctor overload of `cdd` matching the initializer arguments by
 	// generic overload scoring. NULL when no overload set is recorded.
 	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,
@@ -714,6 +790,15 @@ public:
 				    const std::set<std::string> *skip = NULL);
 	bool class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 				    std::vector<node_t> &out, TokenBase *origin);
+	// Apply C++11 default member initializers (NSDMI: `int x = 5;`) for any
+	// scalar/pointer member not explicitly initialized (not in `skip`). The
+	// receiver is `recv`, accessed `recv->member` when `arrow` (a ctor body's
+	// `__this`) or `recv.member` otherwise (a named local). Object members are
+	// value-initialized by the existing member-construction path, not here.
+	bool emit_member_default_inits(DataDefCLASS *cdd, const char *recv,
+				    bool arrow, std::vector<node_t> &out,
+				    TokenBase *origin,
+				    const std::set<std::string> *skip = NULL);
 	bool class_member_destruct(DataDefCLASS *cdd, std::vector<node_t> &out,
 				   TokenBase *origin);
 	// True when the class has at least one embedded object member needing
@@ -729,10 +814,19 @@ public:
 	// True when a class needs an (implicit) destructor: it has a user dtor,
 	// embedded object members, or a base class that needs one.
 	bool class_needs_dtor(DataDefCLASS *cdd);
-	// True only when THIS class wrote its own ~Cls() (method_map["~Cls"]).
-	// has_user_dtor is inherited (a derived class with a non-trivial base also
-	// sets it), so it cannot gate synthesis: a class with a non-trivial base but
-	// no OWN dtor still needs a synthesized Cls___dtor chaining to the base.
+	// The class's OWN destructor method (the one it wrote itself), or NULL.
+	// Found name-independently: the method_map carries a "~"-prefixed key for
+	// every reachable dtor (own + inherited via the base-merge at parser.cpp
+	// ~20600), but ONLY own methods are in cdd->methods — inherited entries are
+	// copied into method_map alone. So the own dtor is the "~"-keyed entry whose
+	// Variable is also in cdd->methods. Keyed on the source tag ("~Inner"), NOT
+	// on cdd->name, so it survives a nested/instantiated class whose composed
+	// name (Outer_int32_t__Inner) differs from its tag (Inner).
+	Variable *class_own_dtor(DataDefCLASS *cdd);
+	// True only when THIS class wrote its own ~Cls(). has_user_dtor is inherited
+	// (a derived class with a non-trivial base also sets it), so it cannot gate
+	// synthesis: a class with a non-trivial base but no OWN dtor still needs a
+	// synthesized Cls___dtor chaining to the base.
 	bool class_has_own_user_dtor(DataDefCLASS *cdd);
 	// The destructor symbol used as the cleanup function for a class
 	// instance (ClassName___dtor) — whether user-written or synthesized.
@@ -772,9 +866,21 @@ public:
 	// an empty `;` (correctly dropped inside a block); a required slot
 	// must instead receive c2mir's empty-statement node, EXPR(LIST,IGNORE).
 	node_t translate_stmt_required(TokenBase *tb);
+	// Translate a single (possibly non-compound) controlled statement — an
+	// if/else branch or a loop body — scoping any temporaries it materializes
+	// into a wrapping block so they are declared before the statement and
+	// cleaned up at its exit (a compound statement already does this via
+	// translate_block; a bare statement has no scope of its own).
+	node_t translate_branch_stmt(TokenBase *tb);
+	// A loop body's own temporaries must live INSIDE the body so they are
+	// re-constructed each iteration; wraps a non-compound body (reusing
+	// translate_branch_stmt) but stashes the loop's init/cond/incr pending temps
+	// first so only the body's temps are wrapped.
+	node_t translate_loop_body(TokenBase *tb);
 	node_t translate_block(TokenCpnd *tc);
 	node_t translate_return(TokenRETURN *tr);
 	node_t translate_if(TokenIF *ti);
+	node_t translate_if_core(TokenIF *ti);
 	node_t translate_while(TokenBase *tw);
 	node_t translate_for(TokenFOR *tf);
 	// SJLJ exception lowering: try/catch -> setjmp on __madc_try_push(&ctx), the
@@ -784,6 +890,7 @@ public:
 	// expr — see the c2mir cleanup-scope gotcha). throw -> __madc_throw_*.
 	node_t translate_try(class TokenTRY *tt);
 	node_t translate_throw(class TokenTHROW *th);
+	node_t translate_throw_call(class TokenTHROW *th);
 	int m_try_ctx_counter = 0;
 	// >0 while lowering a try BODY (set around translate_stmt(tt->try_body) in
 	// translate_try). Objects constructed in a try body keep their normal

@@ -117,10 +117,22 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 
 static void install_crash_handler()
 {
+    // Run the handler on a dedicated alternate stack so a STACK OVERFLOW
+    // (e.g. runaway recursion in JIT'd code) is still catchable+symbolizable —
+    // without SA_ONSTACK the handler would re-fault on the exhausted stack and
+    // the kernel would kill us silently with no backtrace.
+    static char altstack[65536];	// fixed: SIGSTKSZ is non-constant on modern glibc
+    stack_t ss;
+    memset(&ss, 0, sizeof(ss));
+    ss.ss_sp = altstack;
+    ss.ss_size = sizeof(altstack);
+    ss.ss_flags = 0;
+    sigaltstack(&ss, NULL);
+
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = crash_handler;
-    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, NULL);
     sigaction(SIGABRT, &sa, NULL);
@@ -406,6 +418,8 @@ static void print_usage(const char *prog)
 "  --dump-cir | --dump-nodes | --dump-cir-checked   dump the cir_node tree\n"
 "\n"
 "Misc:\n"
+"  --show-stats            print input/token/timing stats (read, lex, parse,\n"
+"                          c2mir, execute) to stderr after the run\n"
 "  -v, --verbose           verbose / debug output\n"
 "  -h, -?, --help          show this help\n"
 "\n"
@@ -440,6 +454,7 @@ int main(int argc, char **argv)
     const char *project_manifest = NULL;  // --project <compile_commands.json>
     std::vector<std::string> link_libs;   // -l<name>: dlopen lib<name>.so (RTLD_GLOBAL)
     bool show_help = false;               // --help / -h / -?
+    bool show_stats = false;               // --show-stats: print input/token traffic counters
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -523,6 +538,9 @@ int main(int argc, char **argv)
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-source") == 0) {
             dump_source = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--show-stats") == 0) {
+            show_stats = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "-E") == 0) {
             // -E: preprocess only — expand #include/#define/macros and print the
@@ -700,8 +718,11 @@ int main(int argc, char **argv)
     {
 	if ( dump_source )
 	    prog->keep_trivia = true;   // preserve whitespace/comments for round-trip
+	struct timeval _tk0, _tk1;     // --show-stats: tokenize (read+lex) wall time
+	gettimeofday(&_tk0, NULL);
 	if ( !(tp=prog->tokenize(argv[filearg])) )
 	    return 0;
+	gettimeofday(&_tk1, NULL);
 
 	if ( dump_source )
 	{
@@ -711,8 +732,66 @@ int main(int argc, char **argv)
 
 	// CIR pipeline: madc parse → CIR translate → c2mir compile → MIR execute.
 	// This is the sole backend; the asmjit JIT codegen path was removed.
-	if ( !prog->parse(tp) )
+	struct timeval _ps0, _ps1;     // --show-stats: parse wall time
+	gettimeofday(&_ps0, NULL);
+	bool parse_ok = prog->parse(tp);
+	gettimeofday(&_ps1, NULL);
+
+	// --show-stats: report input volume, token-stream traffic, and phase timing
+	// (read / lex / parse / c2mir-compile / execution, with tokens-per-second).
+	// Defined as a lambda and called at every exit (failed parse, --emit, after
+	// execute) so the c2mir + execution timers — populated only by the run path
+	// — are included when available and 0 otherwise. A stuck/expensive
+	// instantiation is exactly when these numbers matter, so print on failure too.
+	auto print_stats = [&]() {
+	    if ( !show_stats )
+		return;
+	    auto _secs = [](const timeval &a, const timeval &b) {
+		return (b.tv_sec - a.tv_sec) + (b.tv_usec - a.tv_usec) / 1e6;
+	    };
+	    double bytes      = (double)prog->input_bytes();
+	    double tok_wall   = _secs(_tk0, _tk1);
+	    double read_secs  = prog->_read_seconds;
+	    double lex_secs   = tok_wall - read_secs;
+	    if ( lex_secs < 0 ) lex_secs = 0;
+	    double parse_secs = _secs(_ps0, _ps1);
+	    double inst_secs  = prog->_inst_seconds;
+	    double decl_secs  = parse_secs - inst_secs;
+	    if ( decl_secs < 0 ) decl_secs = 0;
+	    fprintf(stderr,
+		"[stats] input read .......... %.1f KiB (%llu bytes)\n"
+		"[stats] tokens produced ..... %llu (lexer)\n"
+		"[stats] tokens consumed ..... %llu (parser; %.2fx produced)\n"
+		"[stats] tokens re-read (>1x) . %llu   max reads/token: %u\n"
+		"[stats] avg bytes/token ..... %.2f\n"
+		"[stats] read time ........... %.3f s\n"
+		"[stats] lex time ............ %.3f s  (%.0f tok/s)\n"
+		"[stats] parse time .......... %.3f s  (%.0f tok/s)\n"
+		"[stats]   instantiate ....... %.3f s  (%.0f%% of parse; %llu calls)\n"
+		"[stats]   decl-parse ........ %.3f s  (PCH-cacheable share)\n"
+		"[stats] c2mir compile ....... %.3f s\n"
+		"[stats] execution .......... %.3f s\n",
+		bytes / 1024.0, (unsigned long long)prog->input_bytes(),
+		prog->_tok_produced,
+		prog->_tok_consumed,
+		prog->_tok_produced ? (double)prog->_tok_consumed / (double)prog->_tok_produced : 0.0,
+		prog->_tok_reread, prog->_tok_max_reads,
+		prog->_tok_produced ? bytes / (double)prog->_tok_produced : 0.0,
+		read_secs,
+		lex_secs,   lex_secs   > 0 ? (double)prog->_tok_produced / lex_secs   : 0.0,
+		parse_secs, parse_secs > 0 ? (double)prog->_tok_consumed / parse_secs : 0.0,
+		inst_secs,  parse_secs > 0 ? 100.0 * inst_secs / parse_secs : 0.0,
+		prog->_inst_count,
+		decl_secs,
+		prog->_c2mir_seconds,
+		prog->_exec_seconds);
+	};
+
+	if ( !parse_ok )
+	{
+	    print_stats();
 	    return 1;
+	}
 
 	prog->script_argc = argc - filearg;
 	prog->script_argv = argv + filearg;
@@ -720,7 +799,11 @@ int main(int argc, char **argv)
 
 	// --emit=c11|mc11: render the cir_node tree as C source; do not run.
 	if (do_emit)
-		return madc_cir_emit(prog.get(), argv[filearg], stdout, emit_lang);
+	{
+	    int erc = madc_cir_emit(prog.get(), argv[filearg], stdout, emit_lang);
+	    print_stats();
+	    return erc;
+	}
 
 	struct timeval before, after;
 	gettimeofday(&before, NULL);
@@ -729,6 +812,7 @@ int main(int argc, char **argv)
 				      dump_cir, dump_nodes, dump_checked);
 	gettimeofday(&after, NULL);
 	DBG(std::cout << "CIR elapsed time: " << time_diff(before, after) << std::endl);
+	print_stats();
 	return (result < 0) ? 1 : 0;
     }
     std::cout << "Usage: madc [-v|--verbose] [-E] [--finstrument-functions] [-fno-builtin-name] <file.mad>" << std::endl;

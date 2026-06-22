@@ -90,7 +90,8 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			  vfPROTECTED	= 8192, // variable is a protected class member
 			  vfADDRTAKEN	=16384, // variable needs stable stack storage for &
 			  vfEXTERN	=32768, // extern declaration placeholder
-			  vfREFERENCE	=65536, // reference parameter (T&): auto-deref on access
+			  // bit 65536 retired: reference-ness now lives in the type
+			  // (DataDefREF / Variable::is_reference()) — first-class refs Phase 2
 			  vfCONSTDECL  =131072, // `const`-DECLARED var (vfCONSTANT for write
 			                        // enforcement) whose value is NOT set() into
 			                        // data — so it must NOT be read-fold-substituted
@@ -206,10 +207,28 @@ public:
 	return _type >= 10000 && _type < 20000;
     }
     // True only for DataDefREF: a type that came from a reference spelling
-    // (`typedef T& alias;` / `using alias = T&;`). Lowered as a pointer, but
-    // resolution keeps the reference-ness so consumers (method returns ->
-    // FuncDef::returns_ref) can recover the canonical T&.
+    // (`T&` / `T&&`, `typedef T& alias;`, `using alias = T&;`). Lowered as a
+    // pointer, but the type keeps its reference-ness so consumers recover the
+    // canonical T& — the single source of truth for reference identity (params,
+    // returns, variables all carry it in the type; no parallel flags).
     virtual bool is_reference() const
+    {
+	return false;
+    }
+    // True only for DataDefCONST: a const-qualified type (`const T`). Lowered
+    // identically to T (const has no runtime/ABI effect — same size, DataType,
+    // codegen), but the type keeps its const-ness so type identity and spelling
+    // carry `const` — the single source of truth for const, no parallel flags
+    // (mirrors is_reference()/DataDefREF). See docs/plans/2026-06-19-const-qualified-types.md.
+    virtual bool is_const() const
+    {
+	return false;
+    }
+    // True only for DataDefMemberPtr: a C++ pointer-to-member (`T C::*`).
+    // Lowered as a scalar (a ptrdiff_t offset for a data member), but distinct
+    // from an ordinary pointer so the `.*`/`->*` operators (Stage 2) and
+    // overload resolution can recover the member-pointer-ness.
+    virtual bool is_member_pointer() const
     {
 	return false;
     }
@@ -323,6 +342,20 @@ public:
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
     std::vector<uint32_t> member_access;	// per-member access flags (0=public, vfPRIVATE, vfPROTECTED)
     std::vector<int> member_origin;	// per-member: base index it came from, or -1 = own (MI flatten)
+    struct AnonymousAggregateInfo
+    {
+	size_t first_member;
+	size_t member_count;
+	const DataDefSTRUCT *aggregate;
+	size_t offset;
+	AnonymousAggregateInfo()
+	    : first_member(0), member_count(0), aggregate(NULL), offset(0) {}
+	AnonymousAggregateInfo(size_t first, size_t count,
+			       const DataDefSTRUCT *agg, size_t off)
+	    : first_member(first), member_count(count), aggregate(agg),
+	      offset(off) {}
+    };
+    std::vector<AnonymousAggregateInfo> anonymous_aggregates;
     // Member index -> the VIRTUAL base it belongs to (direct or transitive). A
     // shared virtual base is flattened ONCE (by vbase closure), and its members
     // resolve their final offset against vbase_offset[that base], NOT a per-path
@@ -330,6 +363,12 @@ public:
     // member_explicit_align map pattern (index-keyed, no parallel-vector burden).
     std::map<size_t, DataDefCLASS *> member_vbase;
     std::map<size_t,size_t> member_explicit_align; // member index -> __attribute__((aligned(N))); absent = natural
+    // C++11 default member initializer (NSDMI): member NAME -> the PARSED init
+    // expression (`int x = 5;` -> TokenInt(5)). Applied at default construction as
+    // `__this->member = expr` for any member not explicitly initialized. Absent =
+    // no in-class initializer (or one that did not parse — object members then take
+    // the existing value-init construction). Name-keyed (survives MI reordering).
+    std::map<std::string, TokenBase *> member_default_inits;
     TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
@@ -357,6 +396,15 @@ public:
 	if ( natural == 0 ) natural = 1;
 	if ( pack == 0 ) return natural;              // C ABI default
 	return pack < natural ? pack : natural;       // #pragma pack(N) caps alignment
+    }
+
+    size_t field_storage_size(const DataDef &dd) const
+    {
+	const DataDefSTRUCT *s = dynamic_cast<const DataDefSTRUCT *>(&dd);
+	if ( dd.size == 0 && s && s->is_complete
+	  && dd.basetype() == BaseType::btClass )
+	    return 1;
+	return dd.size;
     }
 
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
@@ -433,7 +481,7 @@ public:
 	    member_dims.push_back(dims ? *dims : std::vector<carray_dim_t>());
 	    member_count_exprs.push_back(count_expr);
 	    member_access.push_back(0);
-	    size_t member_size = count_expr ? 0 : (dd.size * cnt);
+	    size_t member_size = count_expr ? 0 : (field_storage_size(dd) * cnt);
 	    if ( member_size > size ) size = member_size;
 	    return;
 	}
@@ -448,7 +496,7 @@ public:
 	member_count_exprs.push_back(count_expr);
 	member_access.push_back(0);
 	if ( !count_expr )
-	    size += dd.size * cnt;
+	    size += field_storage_size(dd) * cnt;
     }
     size_t bitfield_storage_size(const DataDef &dd) const
     {
@@ -534,6 +582,7 @@ public:
 	endBitFieldRun();
 	size_t fa = field_align(agg);
 	size_t base_offset = union_layout ? 0 : align_up(size, fa);
+	size_t first_member = members.size();
 	if ( fa > max_align ) max_align = fa;
 	for ( size_t i = 0; i < agg.members.size(); ++i )
 	{
@@ -560,6 +609,9 @@ public:
 	}
 	else
 	    size = end;
+	if ( agg.members.size() > 0 )
+	    anonymous_aggregates.push_back(AnonymousAggregateInfo(
+		first_member, agg.members.size(), &agg, base_offset));
     }
     // round struct size up to its overall alignment (for arrays of structs)
     void finalize()
@@ -720,6 +772,10 @@ class DataDefCLASS: public DataDefSTRUCT
 public:
     std::vector<Variable *> methods;
     std::vector<Variable *> staticconst;
+    // A user `operator=` declared `= delete` is dropped from `methods` (like every
+    // defaulted/deleted special member). Record the fact so __is_assignable can
+    // report the class as NOT copy-assignable (a wrong "true" would corrupt SFINAE).
+    bool has_deleted_copy_assign = false;
     std::map<std::string, Variable *> method_map; // unmangled name -> method variable
     std::map<std::string, DataDef *> type_aliases; // class-scope typedef/using aliases
     std::vector<std::string> friend_class_names; // class names granted friend access
@@ -754,7 +810,12 @@ public:
     std::vector<DataDefCLASS *> secondary_vptr_owners;
     size_t nvsize;
     size_t own_block_off; // offset where this class's own data members begin
+    size_t class_align = 0; // TRUE class alignment (members + vptr + bases); set by compute_layout. 0 = not yet computed
     bool has_vptr_slot;   // class carries a vptr (virtual methods OR a virtual base); set by compute_layout
+    // A class's alignment is the strongest of its members, bases, and (if
+    // polymorphic) the vptr — computed by compute_layout and cached in
+    // class_align. Until then, fall back to the own-member alignment (max_align).
+    virtual size_t alignment() const { return class_align ? class_align : DataDefSTRUCT::alignment(); }
     bool is_dependent_placeholder; // synthesized unresolved/dependent C++ type
     bool has_dependent_surface; // parsed class whose template args/bases still carry dependent lookup
     bool is_polymorphic() const { return has_vtable; }
@@ -797,10 +858,10 @@ public:
 			      // instantiation: libstdc++ exports ALL its members out-of-line
 			      // (C1/D1/methods), so madc binds them to the real mangled
 			      // symbols instead of emitting bodies — even for a NON-polymorphic
-			      // class (basic_string<char>) that is_externally_defined() (which
-			      // requires a vtable) does not cover. The data-driven signal that
-			      // distinguishes basic_string<char> (exported) from vector<int>
-			      // (inline-only, NOT exported) — never a name test.
+			      // class that is_externally_defined() (which requires a vtable)
+			      // does not cover. The data-driven signal distinguishes exported
+			      // template instantiations from inline-only local instantiations
+			      // — never a name test.
     int vtable_slot(const std::string &name) const {
 	for ( size_t i = 0; i < vtable_slots.size(); ++i )
 	    if ( vtable_slots[i] == name ) return (int)i;
@@ -864,6 +925,13 @@ public:
     // Prefers a parameterized (binary) overload; searches the unmangled name then
     // the mangled ClassName__operatorX family, then the base chain. NULL if none.
     DataDef *binary_operator_return_type(const std::string &opname);
+    // True iff this class declares at least one binary `opname` member AND every
+    // such member's explicit parameter is a NON-class (arithmetic/pointer) type —
+    // i.e. no member can bind a class-object rhs. The iterator signature
+    // (`operator-(difference_type)` only) where `iter - iter` must instead bind
+    // the free cross-type operator template. Members taking a class parameter
+    // make this false (they own the expression by normal overload rules).
+    bool binary_operator_only_takes_nonclass(const std::string &opname);
     // Return type of a unary operator method (`operator-`, `operator!`,
     // `operator++`, etc.). `postfix` selects the parameterized postfix form for
     // ++/-- and the nullary form otherwise.
@@ -917,7 +985,7 @@ public:
 };
 
 // A reference type produced by alias resolution (`typedef T& alias;` /
-// `using alias = T&;` — e.g. basic_string::reference == char&). An alias is
+// `using alias = T&;`). An alias is
 // a type, not a spelling: the resolved type must carry the reference
 // qualifier itself so it survives alias-chain hops. IS-A DataDefPTR (same
 // name, size, DataType) because madc lowers T& as T*; everything that does
@@ -928,6 +996,62 @@ class DataDefREF : public DataDefPTR
 public:
     DataDefREF(DataDef &base) : DataDefPTR(base) {}
     virtual bool is_reference() const { return true; }
+};
+
+// A const-qualified type (`const T`). IS-A its base's lowering: const has NO
+// runtime/ABI effect, so the size, DataType, and all codegen behaviour are the
+// base's — but is_const() is true so type identity and the rendered name carry
+// `const`, surviving deduction / template-instantiation keying (the missing
+// identity behind map<int,int>'s pair-piecewise-ctor signature mismatch). Every
+// predicate that does not test is_const() FORWARDS to the base, so a consumer
+// that does not care about const treats a DataDefCONST exactly like its base
+// (the DataDefREF discipline). base_type is the unqualified T.
+// See docs/plans/2026-06-19-const-qualified-types.md (Phase 1 = this class).
+class DataDefCONST : public DataDef
+{
+public:
+    DataDef *base_type;
+    DataDefCONST(DataDef &base)
+	: DataDef("const " + base.name, base.size, base.type()), base_type(&base) {}
+    virtual BaseType basetype() const { return base_type->basetype(); }
+    virtual DataType rawtype() const { return base_type->rawtype(); }
+    virtual RefType reftype() const { return base_type->reftype(); }
+    virtual bool is_const() const { return true; }
+    virtual bool is_complex() const { return base_type->is_complex(); }
+    virtual bool is_pointer() const { return base_type->is_pointer(); }
+    virtual bool is_reference() const { return base_type->is_reference(); }
+    virtual bool is_member_pointer() const { return base_type->is_member_pointer(); }
+    virtual bool is_struct() const { return base_type->is_struct(); }
+    virtual bool is_object() const { return base_type->is_object(); }
+    virtual bool is_function() const { return base_type->is_function(); }
+    virtual bool is_numeric() const { return base_type->is_numeric(); }
+    virtual bool is_integer() const { return base_type->is_integer(); }
+    virtual bool is_real() const { return base_type->is_real(); }
+    virtual bool is_simd() const { return base_type->is_simd(); }
+    virtual bool is_unsigned() const { return base_type->is_unsigned(); }
+    virtual size_t alignment() const { return base_type->alignment(); }
+};
+
+// C++ pointer-to-DATA-member `T C::*`. Lowered (Itanium ABI) as a `ptrdiff_t`
+// byte offset into the object — 8 bytes, an integer scalar for codegen — so it
+// is a `dtINT64`-typed DataDef. Kept as its own class (NOT a plain integer) so
+// `is_member_pointer()` is true and the `.*`/`->*` operators + overload
+// resolution (Stage 2) can recover the owning class and member type. The null
+// member pointer is -1 (a 0 offset is a valid first member). `owner_class` is the
+// `C`; `member_type` is the pointee `T`. Member-FUNCTION pointers (a 16-byte
+// `{ptr, this-adjust}` struct) are a separate, later representation.
+class DataDefMemberPtr : public DataDef
+{
+public:
+    DataDef *owner_class;        // the `C` in `T C::*` (NULL if unresolved at parse)
+    std::string owner_name;      // the spelled owner (e.g. a nested-in-template class)
+    DataDef *member_type;        // the pointee/member type `T`
+    DataDefMemberPtr(DataDef *owner, const std::string &owner_nm, DataDef &member)
+	: DataDef(member.name + " " + owner_nm + "::*", 8, DataType::dtINT64),
+	  owner_class(owner), owner_name(owner_nm), member_type(&member) {}
+    virtual bool is_numeric() const { return true; }
+    virtual bool is_integer() const { return true; }
+    virtual bool is_member_pointer() const { return true; }
 };
 
 class DataDefCArray : public DataDef

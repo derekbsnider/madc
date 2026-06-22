@@ -1,0 +1,23 @@
+#!/../bin/madc
+// Regression guard for the __is_assignable compiler intrinsic (Slice 1 of
+// docs/plans/2026-06-15-is-assignable-constructible-intrinsics-plan.md).
+//
+// __is_assignable(To, From) ::= is `declval<To>() = declval<From>()` well-formed.
+// A 2-arg compiler intrinsic on both g++ and clang (libstdc++'s
+// std::is_assignable wraps it); ref- and cv-qualification on the operands is
+// load-bearing. These static_asserts pass identically on g++ -std=c++17 and
+// clang++ -std=c++17 (verified). The deleted case is faithful via the new
+// FuncDef::is_deleted flag + DataDefCLASS::has_deleted_copy_assign.
+struct OK {};
+struct NoAssign { NoAssign& operator=(const NoAssign&) = delete; };
+
+static_assert(__is_assignable(int&, int),               "scalar lvalue is assignable");
+static_assert(!__is_assignable(const int&, int),        "const lvalue is not assignable");
+static_assert(!__is_assignable(int, int),               "scalar prvalue is not assignable");
+static_assert(__is_assignable(OK&, const OK&),          "implicit copy-assign is available");
+static_assert(!__is_assignable(NoAssign&, const NoAssign&), "deleted copy-assign");
+
+int main()
+{
+	return 0;
+}

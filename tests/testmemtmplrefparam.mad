@@ -1,0 +1,17 @@
+#!/../bin/madc
+// A REFERENCE parameter in an instantiated static member function template must
+// be passed BY ADDRESS at the call site (the call binds to the instantiated
+// definition's real signature, not the varargs placeholder).
+#include <iostream>
+using namespace std;
+struct C {
+    template<typename U>
+    static void set(int& a, U* p) { *p = a; }
+};
+int main()
+{
+    int a = 77, x = 0;
+    C::set(a, &x);            // a passed by ref; *p = a -> x = 77
+    cout << "x=" << x << endl;
+    return 0;
+}

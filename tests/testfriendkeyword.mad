@@ -1,0 +1,29 @@
+#!/../bin/madc
+// `friend` is a real keyword (tkFRIEND), not a string-matched identifier.
+// Exercises a friend class declaration and a friend function declaration,
+// both granting access to a private member.
+#include <iostream>
+using namespace std;
+
+class Secret {
+	int val;
+public:
+	Secret(int v) : val(v) {}
+	friend class Reader;             // friend class declaration
+	friend int peek(const Secret &); // friend function declaration
+};
+
+class Reader {
+public:
+	int read(const Secret &s) { return s.val; } // private access via friendship
+};
+
+int peek(const Secret &s) { return s.val; }      // private access via friendship
+
+int main()
+{
+	Secret s(42);
+	Reader r;
+	cout << r.read(s) << " " << peek(s) << endl;
+	return 0;
+}

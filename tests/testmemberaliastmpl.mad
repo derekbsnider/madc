@@ -1,0 +1,39 @@
+#!../bin/madc
+// Member alias template accessed via a qualified name with arguments:
+//   Owner<...>::type<A,B>   (and the `::template type<...>` disambiguator).
+// This is libstdc++'s __conditional shape (type_traits: __conditional<C> holds
+// `template<class,class> using type = ...;`, and __conditional_t =
+//  typename __conditional<C>::template type<If,El>). Before the fix the
+// DECLARATION and TYPEDEF contexts could not resolve a member-alias-template-id
+// (the non-consuming peek helper bailed on the trailing `<`, and the chain
+// probe rejected alias templates); only the typename-in-alias path worked.
+#include <iostream>
+using namespace std;
+
+template<bool>
+struct Sel {
+    template<typename A, typename> using type = A;   // primary: first
+};
+template<>
+struct Sel<false> {
+    template<typename, typename B> using type = B;   // false: second
+};
+
+// alias template using the `::template type<...>` disambiguator
+template<bool C, typename If, typename El>
+using sel_t = typename Sel<C>::template type<If, El>;
+
+int main()
+{
+    // declaration context
+    Sel<true>::type<int,double>  a = 7;     // -> int
+    Sel<false>::type<int,double> b = 3.5;   // -> double
+    // typedef context
+    typedef Sel<false>::type<int,double> Bd;
+    Bd c = 9.5;                             // -> double
+    // through an alias template (typename + ::template)
+    sel_t<true,int,double>  d = 4;          // -> int
+    sel_t<false,int,double> e = 6.5;        // -> double
+    cout << a << " " << b << " " << c << " " << d << " " << e << endl;
+    return 0;
+}

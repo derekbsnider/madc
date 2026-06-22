@@ -211,10 +211,10 @@ int main(void)
 	return Path(tmp.name)
 
 
-def run_one(path, madc, timeout):
+def run_one(path, madc, timeout, std):
 	temp_source = builtin_multifile_source(path)
 	input_path = temp_source if temp_source else path
-	madc_args = madc_args_from_directives(path)
+	madc_args = (["--std=" + std] if std else []) + madc_args_from_directives(path)
 	try:
 		completed = subprocess.run(
 			[str(madc)] + madc_args + [str(input_path)],
@@ -280,6 +280,13 @@ def parse_args(argv):
 	parser.add_argument("--root", default=str(root / "gcc_testsuite"), help="GCC testsuite root")
 	parser.add_argument("--madc", default=str(root / "bin" / "madc"), help="madc binary")
 	parser.add_argument("--timeout", type=float, default=5.0, help="seconds per test")
+	parser.add_argument(
+		"--std",
+		default="c17",
+		help="--std= passed to madc for every test (gcc.c-torture is C-era "
+		"code — K&R/implicit-int recovery only exists under --std=c78..c17); "
+		"pass an empty string to run under the madc-dialect default",
+	)
 	parser.add_argument("--limit", type=int, default=0, help="limit discovered tests")
 	parser.add_argument("--verbose", action="store_true", help="print passing tests and diagnostics")
 	parser.add_argument(
@@ -343,7 +350,7 @@ def main(argv):
 			if reason:
 				result = Result(test, "SKIP", reason)
 			else:
-				result = run_one(test, madc, args.timeout)
+				result = run_one(test, madc, args.timeout, args.std)
 		counts[result.status] = counts.get(result.status, 0) + 1
 		print_result(result, args.verbose)
 

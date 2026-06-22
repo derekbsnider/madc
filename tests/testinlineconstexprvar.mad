@@ -1,0 +1,17 @@
+#!/../bin/madc
+// Storage specifiers between a class definition's closing '}' and the instance
+// declarator: `struct X {...} inline constexpr x{};` — the libstdc++ stateless
+// customization-point-object shape (`struct _Decay_copy final {...} inline
+// constexpr __decay_copy{};` in <bits/iterator_concepts.h>). The empty `{}`
+// default-inits; the object is usable as a functor.
+#include <cstdio>
+
+struct Doubler {
+    int apply(int n) const { return n * 2; }
+} inline constexpr doubler{};
+
+int main()
+{
+    printf("cpo: %d\n", doubler.apply(21));   // 42 (no instance state used)
+    return 0;
+}

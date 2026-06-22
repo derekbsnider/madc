@@ -24,12 +24,30 @@
 #include <queue>
 #include <stack>
 #include <functional>
+#include <chrono>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_pch.h"
+
+// --show-stats: RAII accumulator for time spent loading source into the lex
+// stream (file read / embedded-header copy). Adds its lifetime, in seconds, to
+// the referenced accumulator on scope exit.
+namespace {
+struct ReadTimer
+{
+    double &acc;
+    std::chrono::steady_clock::time_point t0;
+    ReadTimer(double &a) : acc(a), t0(std::chrono::steady_clock::now()) {}
+    ~ReadTimer()
+    {
+	acc += std::chrono::duration<double>(
+	    std::chrono::steady_clock::now() - t0).count();
+    }
+};
+}
 
 // From precompiled_headers.cpp (generated)
 struct PrecompiledHeader { const uint8_t *data; size_t size; };
@@ -312,7 +330,8 @@ static bool next_source_word_is(Source &source, const char *match)
     while ( source.good() )
     {
 	int c = source.peek();
-	if ( c == ' ' || c == '\t' || c == '\n' || c == '\r' )
+	if ( c == ' ' || c == '\t' || c == '\n' || c == '\r'
+	  || c == '\f' || c == '\v' )
 	    consumed += (char)source.get();
 	else
 	    break;
@@ -745,7 +764,8 @@ void Program::inject_pending_auto_includes()
 	    suppress_auto_include_scan = true;
 	    source = Source();
 	    source.fname(header.c_str());
-	    source.str(*embedded);
+	    { ReadTimer _rt(_read_seconds); source.str(*embedded); }
+	    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
 	    TokenBase *itb;
 	    const char *interned = intern_file(header);
 	    while ( (itb = getRealToken()) )
@@ -925,6 +945,7 @@ TokenEXTERN	tkEXTERN;
 TokenRESTRICT	tkRESTRICT;
 TokenVOLATILE	tkVOLATILE;
 TokenUSING	tkUSING;
+TokenFRIEND	tkFRIEND;
 TokenNAMESPACE	tkNAMESPACE;
 TokenPREFER	tkPREFER;
 TokenDEFER	tkDEFER;
@@ -980,6 +1001,7 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
 	delete tb;
 	return;
     }
+    ++_tok_produced;	// --show-stats: a real stream token emitted by the lexer
     tokens.push_back(tb);
 }
 
@@ -991,6 +1013,26 @@ struct MadcPredefFunc { const char *name; const char *params; const char *body; 
 // the PIE binary free of text relocations (see gen_predefined_macros.sh).
 extern const MadcPredefObj  *madc_predefined_objects();
 extern const MadcPredefFunc *madc_predefined_functions();
+
+// Captured-predefine names that exist only in g++'s C++ modes (the capture
+// runs g++; `gcc -std=cNN -dM` defines none of these). Skipped when the
+// selected mode does not present as C++ — diff of `g++ -x c++ -dM` vs
+// `gcc -std=c17 -dM` plus the __cpp_* feature-test family.
+static bool predefine_is_cpp_only(const char *name)
+{
+    if ( strncmp(name, "__cpp_", 6) == 0 )
+	return true;
+    static const char *const cpp_only[] = {
+	"__cplusplus", "__GNUG__", "_GNU_SOURCE", "__DEPRECATED",
+	"__EXCEPTIONS", "__GLIBCXX_BITSIZE_INT_N_0", "__GLIBCXX_TYPE_INT_N_0",
+	"__GXX_EXPERIMENTAL_CXX0X__", "__GXX_RTTI", "__GXX_WEAK__",
+	"__STDCPP_DEFAULT_NEW_ALIGNMENT__", "__STDCPP_THREADS__", NULL
+    };
+    for ( int i = 0; cpp_only[i]; ++i )
+	if ( strcmp(name, cpp_only[i]) == 0 )
+	    return true;
+    return false;
+}
 
 void Program::_tokenizer_init()
 {
@@ -1006,6 +1048,7 @@ void Program::_tokenizer_init()
     _include_stdio = false;
     _include_string = false;
     included_files.clear();
+    include_guard_by_file.clear();
     pending_auto_include_headers.clear();
     pending_auto_include_identifiers.clear();
     suppress_auto_include_scan = false;
@@ -1019,9 +1062,12 @@ void Program::_tokenizer_init()
     define_map["inline"] = "";
     define_map["__inline__"] = "";
     define_map["__inline"] = "";
-    define_map["constexpr"] = "";
-    define_map["consteval"] = "";
-    define_map["constinit"] = "";
+    // constexpr (slice 5) / consteval / constinit (slice 6) are real reserved
+    // tokens, no longer erased: constexpr activates the TokenIF `if constexpr`
+    // discard machinery, and all three are consumed as ignored decl-specifiers
+    // (TokenCppKeyword::parse / the member-specifier loop /
+    // is_ignored_cpp_specifier_token, which already recognize all three
+    // spellings).
     // noexcept is NOT a plain empty define nor a function-like macro: the
     // macro path splits its argument on top-level commas, and the C
     // preprocessor does not treat <...> as grouping, so a template-id
@@ -1029,9 +1075,13 @@ void Program::_tokenizer_init()
     // would split into two macro arguments ("Too many parameters"). It is
     // stripped by balanced-paren consumption in getToken() instead.
     define_map["__extension__"] = "";
-    // _Alignas(N) is a C11 keyword — consume like __attribute__
-    // The lexer handles it by stripping the specifier and its parens.
+    // _Alignas(N) (C11) / alignas(N) (C++11) are alignment specifiers — consume
+    // like __attribute__. The lexer strips the specifier and its parens (or, when
+    // the argument names a layout attribute, preserves it for the parser). Both
+    // spellings map to the same path; libstdc++ uses the bare `alignas` keyword
+    // (e.g. __aligned_membuf's `alignas(__alignof__(_Tp)) unsigned char ...`).
     define_map["_Alignas"] = "__attribute__";
+    define_map["alignas"] = "__attribute__";
     define_map["__restrict"] = "";
     define_map["__restrict__"] = "";
     define_map["__signed__"] = "signed";
@@ -1286,6 +1336,61 @@ void Program::_tokenizer_init()
 	m.body = "((void)(__addr))";
 	macro_map["__builtin_prefetch"] = m;
     }
+    // FP classification builtins (type-generic compiler magic; real <math.h>
+    // C++ regions call them directly). Lowered Tier-1 onto the REAL glibc
+    // classification exports (__fpclassify*/__isnan*/__isinf*/__signbit*/
+    // __finite*), dispatched by sizeof — float subnormals would misclassify
+    // if promoted through a double-only helper. Statement-expr keeps the
+    // operand single-evaluation, matching the builtin's contract.
+    {
+	MacroDef m;
+	m.params = {"__a", "__b", "__c", "__d", "__e", "__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "int __madc_fc = (sizeof(__madc_fcx) == 4 ? __fpclassifyf(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __fpclassify(__madc_fcx) "
+		 ": __fpclassifyl(__madc_fcx)); "
+		 "__madc_fc == FP_NAN ? (__a) : __madc_fc == FP_INFINITE ? (__b) "
+		 ": __madc_fc == FP_NORMAL ? (__c) : __madc_fc == FP_SUBNORMAL ? (__d) : (__e); })";
+	macro_map["__builtin_fpclassify"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "sizeof(__madc_fcx) == 4 ? __isnanf(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __isnan(__madc_fcx) : __isnanl(__madc_fcx); })";
+	macro_map["__builtin_isnan"] = m;
+    }
+    {
+	// __isinf* return the SIGN (+1/-1) for infinities, 0 otherwise —
+	// exactly __builtin_isinf_sign's contract.
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "sizeof(__madc_fcx) == 4 ? __isinff(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __isinf(__madc_fcx) : __isinfl(__madc_fcx); })";
+	macro_map["__builtin_isinf_sign"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "sizeof(__madc_fcx) == 4 ? __finitef(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __finite(__madc_fcx) : __finitel(__madc_fcx); })";
+	macro_map["__builtin_isfinite"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "({ __typeof__(__x) __madc_fcx = (__x); "
+		 "int __madc_fc = (sizeof(__madc_fcx) == 4 ? __fpclassifyf(__madc_fcx) "
+		 ": sizeof(__madc_fcx) == 8 ? __fpclassify(__madc_fcx) "
+		 ": __fpclassifyl(__madc_fcx)); __madc_fc == FP_NORMAL; })";
+	macro_map["__builtin_isnormal"] = m;
+    }
+    // (The IEEE quiet-comparison builtin family — isgreater/isless/
+    // isunordered/… — is defined further below; quiet `<`/`>` are already
+    // their correct lowering.)
     // __builtin_constant_p(expr) — always return 0 (not a constant)
     {
 	MacroDef m;
@@ -1483,13 +1588,21 @@ void Program::_tokenizer_init()
     // Predefined compiler macros captured at build time (gen_predefined_macros.sh).
     // Seeded AFTER the hand-set builtins (so the real toolchain values win) and
     // BEFORE -D (so -D can override, matching gcc). Real system headers branch on
-    // these. __cplusplus / __GNUG__ are C++-only: seed them ONLY in an explicit
-    // C++ std, never in C mode or the STD_MADC default — so the bulk of tests (and
-    // C code's `#ifdef __cplusplus`) are unaffected.
+    // these. C++-only macros follow presents_as_cpp(): the madc dialect and
+    // every explicit C++ std impersonate g++ (so real libstdc++ headers parse);
+    // explicit C modes stay plain gcc — the capture ran g++, but `gcc -std=cNN
+    // -dM` defines NONE of these, and real glibc headers branch on them
+    // (_GNU_SOURCE selects the transparent-union __SOCKADDR_ARG bind/accept
+    // signatures; C code's `#ifdef __cplusplus` regions must stay off).
     for ( const MadcPredefObj *o = madc_predefined_objects(); o->name; ++o )
     {
-	if ( !is_cpp_mode()
-	  && (strcmp(o->name, "__cplusplus") == 0 || strcmp(o->name, "__GNUG__") == 0) )
+	if ( !presents_as_cpp() && predefine_is_cpp_only(o->name) )
+	    continue;
+	// The capture ran a STRICT-std g++; strictness follows the SELECTED
+	// mode (gcc parity: plain gcc/g++ default to the gnu dialects and
+	// define no __STRICT_ANSI__ — glibc's features.h would otherwise
+	// suppress _DEFAULT_SOURCE and hide timercmp-class declarations).
+	if ( strcmp(o->name, "__STRICT_ANSI__") == 0 && !strict_ansi_mode() )
 	    continue;
 	// __cplusplus tracks the SELECTED --std=, not the value captured at
 	// build time (the capture ran the host g++ at one fixed std; a pinned
@@ -1502,6 +1615,15 @@ void Program::_tokenizer_init()
 	    continue;
 	}
 	define_map[o->name] = o->value;
+    }
+    // C modes define __STDC_VERSION__ per the selected standard (gcc parity;
+    // the g++-run capture cannot supply it, and glibc gates its C99/C11
+    // surfaces — __USE_ISOC99/__USE_ISOC11 — on it). c89/c90 predate the
+    // macro and leave it undefined, like gcc -std=c89.
+    if ( is_c_mode() )
+    {
+	if ( const char *sv = stdc_version_for_std() )
+	    define_map["__STDC_VERSION__"] = sv;
     }
     // Compiler feature-test macros madc provides itself, gated by the std
     // floor (the build-time capture can't know them — they describe THIS
@@ -1715,6 +1837,113 @@ std::string Program::resolve_include_next_path(const std::string &incfile)
     return incfile; // not found — will fail at open
 }
 
+// Detect the classic include guard of a header file: the first significant
+// line is `#ifndef NAME` (or `#if !defined(NAME)`) and its matching `#endif`
+// closes the file with nothing significant after it. Returns the guard macro
+// name, or "" when the file is NOT fully guard-wrapped (e.g. glibc's
+// bits/mathcalls.h, which is INTENTIONALLY included multiple times with a
+// different _Mdouble_ each pass).
+static std::string detect_include_guard(const std::string &file_path)
+{
+    std::ifstream in(file_path.c_str());
+    if ( !in )
+	return std::string();
+    std::string guard;
+    int depth = 0;
+    bool seen_open = false;     // saw the opening #ifndef
+    bool closed = false;        // matching #endif reached (depth back to 0)
+    bool in_block_comment = false;
+    std::string line;
+    while ( std::getline(in, line) )
+    {
+	// Fold line continuations so a split directive reads whole.
+	while ( !line.empty() && line.back() == '\\' && in )
+	{
+	    std::string cont;
+	    if ( !std::getline(in, cont) )
+		break;
+	    line.pop_back();
+	    line += cont;
+	}
+	// Strip comments for significance testing.
+	std::string sig;
+	for ( size_t i = 0; i < line.size(); ++i )
+	{
+	    if ( in_block_comment )
+	    {
+		if ( line[i] == '*' && i + 1 < line.size() && line[i+1] == '/' )
+		{ in_block_comment = false; ++i; }
+		continue;
+	    }
+	    if ( line[i] == '/' && i + 1 < line.size() && line[i+1] == '*' )
+	    { in_block_comment = true; ++i; continue; }
+	    if ( line[i] == '/' && i + 1 < line.size() && line[i+1] == '/' )
+		break;
+	    sig += line[i];
+	}
+	size_t p = sig.find_first_not_of(" \t");
+	if ( p == std::string::npos )
+	    continue;
+	if ( closed )
+	    return std::string();   // significant content after the guard's #endif
+	if ( sig[p] != '#' )
+	{
+	    if ( !seen_open )
+		return std::string();   // code before any guard
+	    continue;
+	}
+	++p;
+	while ( p < sig.size() && (sig[p] == ' ' || sig[p] == '\t') ) ++p;
+	std::string dir;
+	while ( p < sig.size() && (isalpha((unsigned char)sig[p]) || sig[p] == '_') )
+	    dir += sig[p++];
+	if ( !seen_open )
+	{
+	    std::string name;
+	    if ( dir == "ifndef" )
+	    {
+		while ( p < sig.size() && (sig[p] == ' ' || sig[p] == '\t') ) ++p;
+		while ( p < sig.size() && (isalnum((unsigned char)sig[p]) || sig[p] == '_') )
+		    name += sig[p++];
+	    }
+	    else if ( dir == "if" )
+	    {
+		// `#if !defined(NAME)` / `#if !defined NAME` (whole condition)
+		std::string rest = sig.substr(p);
+		size_t b = rest.find_first_not_of(" \t");
+		if ( b != std::string::npos && rest[b] == '!' )
+		{
+		    size_t d = rest.find("defined", b);
+		    if ( d != std::string::npos )
+		    {
+			d += 7;
+			while ( d < rest.size() && (rest[d]==' '||rest[d]=='\t'||rest[d]=='(') ) ++d;
+			while ( d < rest.size() && (isalnum((unsigned char)rest[d]) || rest[d]=='_') )
+			    name += rest[d++];
+			while ( d < rest.size() && (rest[d]==' '||rest[d]=='\t'||rest[d]==')') ) ++d;
+			if ( d < rest.size() )
+			    name.clear();   // trailing condition — not a pure guard
+		    }
+		}
+	    }
+	    if ( name.empty() )
+		return std::string();
+	    guard = name;
+	    seen_open = true;
+	    depth = 1;
+	    continue;
+	}
+	if ( dir == "if" || dir == "ifdef" || dir == "ifndef" )
+	    ++depth;
+	else if ( dir == "endif" )
+	{
+	    if ( --depth == 0 )
+		closed = true;
+	}
+    }
+    return (seen_open && closed) ? guard : std::string();
+}
+
 bool Program::should_tokenize_include(const std::string &path)
 {
     std::string canonical = path;
@@ -1727,10 +1956,43 @@ bool Program::should_tokenize_include(const std::string &path)
 	    free(rp);
 	}
     }
-    if ( include_already_seen(canonical) )
-	return false;
-    included_files[canonical] = true;
-    return true;
+    if ( !path.empty() && path[0] == '<' )
+    {
+	// Named (embedded/PCH) include keys: blanket once-only — the baked
+	// sets assume single inclusion and the surviving embedded headers
+	// carry no #ifndef guards of their own.
+	if ( include_already_seen(canonical) )
+	    return false;
+	included_files[canonical] = true;
+	return true;
+    }
+    // User ("...") includes keep madc's dialect require-once semantics
+    // (pinned by tests/testincludeonce.mad). SYSTEM headers get gcc's
+    // multiple-include semantics below — they are written for gcc and
+    // rely on it (bits/mathcalls.h).
+    if ( !is_system_header_path(canonical.c_str()) )
+    {
+	if ( include_already_seen(canonical) )
+	    return false;
+	included_files[canonical] = true;
+	return true;
+    }
+    // System headers: gcc's multiple-include optimization. Skip a
+    // repeat inclusion ONLY when the file is fully wrapped in an include
+    // guard whose macro is (still) defined. A guard-less header (glibc's
+    // bits/mathcalls.h, multi-included with a different _Mdouble_ per
+    // pass) is re-tokenized every time, exactly like gcc.
+    auto gi = include_guard_by_file.find(canonical);
+    if ( gi == include_guard_by_file.end() )
+    {
+	include_guard_by_file[canonical] = detect_include_guard(canonical);
+	return true;
+    }
+    const std::string &guard = gi->second;
+    if ( guard.empty() )
+	return true;
+    return define_map.find(guard) == define_map.end()
+	&& macro_map.find(guard) == macro_map.end();
 }
 
 static bool file_exists(const std::string &path)
@@ -1874,8 +2136,151 @@ void Program::add_keywords()
 	keyword_map[tkTEMPLATE.str] = &tkTEMPLATE;
 	keyword_map[tkNEW.str] = &tkNEW;
 	keyword_map[tkDELETE.str] = &tkDELETE;
+	keyword_map[tkFRIEND.str] = &tkFRIEND;
     }
     keyword_map[tkDEFER.str] = &tkDEFER;
+
+    // Version-gated C++ RESERVED-keyword registry (C++26 and earlier). Each
+    // entry is reserved ONLY in the madc dialect or an explicit C++ mode at/after
+    // its introducing standard (cpp_keyword_active) — NEVER in C. These have no
+    // dedicated dispatch token: the parser already recognizes them by SPELLING
+    // (contextual_identifier_name), and tkCPPKEYWORD is admitted to that helper's
+    // allowlist — so reserving them is transparent to existing parse sites while
+    // preventing their use as bare identifiers.
+    //
+    // ONLY genuine reserved keywords appear here. Contextual identifiers
+    // (`override`, `final`, `module`, `import`, `audit`) are deliberately NOT
+    // reserved (a hard reservation broke 49 tests — see the KG lesson). The
+    // pervasive ignored specifiers `inline` (erased), `noexcept` and `alignas`
+    // (special lexer handling) keep their existing treatment. The erased
+    // specifiers `constexpr`/`consteval`/`constinit` are registered below AFTER
+    // being removed from the erase map, and need decl-specifier consume handling.
+    struct CppReservedKw { const char *kw; LanguageStd min_std; };
+    static const CppReservedKw cpp_reserved[] = {
+	// STAGED — see DESIGN NOTE / the plan. The complete reserved set (below,
+	// commented) is validated-but-not-yet-activated: hard-reserving them is a
+	// genuine multi-site de-shim (every direct `type()==ttIdentifier` check
+	// that must accept the token), and a full activation surfaced 9 regressions
+	// (asm-statement dispatch, the move/forward template-instantiation reparse,
+	// a __x scope-loss, math.h + string operator+ codegen). Activate in
+	// validated slices per docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
+	//   C++98: this typename sizeof typeid true false
+	//          static_cast const_cast reinterpret_cast dynamic_cast
+	//   C++11: decltype alignof nullptr static_assert thread_local
+	// --- C++20 — DEFERRED (NOT yet reserved). madc presents as a C++20+
+	//     dialect to real headers, which use `concept`/`requires` (active
+	//     under __cpp_lib_concepts, e.g. <compare>/<concepts>) and the
+	//     coroutine keywords. madc lacks concept/coroutine PARSING; today it
+	//     SKIPS those declarations via string-gated paths (skip_requires_clause
+	//     &al.). Reserving these as tokens breaks those skip paths, so they
+	//     stay contextual until the skip paths are de-shimmed to accept the
+	//     tokens. Listed here so the registry is COMPLETE/accounted-for:
+	//       char8_t, concept, requires, co_await, co_return, co_yield  (C++20)
+	//     Tracked in docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
+	//
+	// --- ACTIVATED SLICES (validated, zero-regression) ---
+	// Slice 1 (asm): the standard C++ keyword `asm`. Statement-position
+	// asm is skipped by the shared Program::skip_gnu_asm_statement, reached
+	// from BOTH the ttIdentifier and ttKeyword parseStatement arms; asm
+	// labels on declarations go through consume_gnu_asm_label (dynamic_cast
+	// to TokenIdent, works for the keyword token). The GNU spellings
+	// `__asm__`/`__asm` stay contextual (double-underscore impl-reserved).
+	{ "asm",              STD_CPP98 },
+	// Slice 2 (declaration keywords): access specifiers and member/base
+	// specifiers. Every parse site reads them via
+	// is_contextual_identifier_token / contextual_identifier_name (base-spec
+	// virtual/access loop, access-label public/private/protected, the
+	// member-specifier virtual/mutable/explicit loop, and the has-methods
+	// detector) — all already admit tkCPPKEYWORD. `export` has no dedicated
+	// handler (export-template was removed in C++11; C++20 module `export`
+	// does not appear in the classic headers madc parses), so it is reserved
+	// for completeness only.
+	{ "explicit",         STD_CPP98 },
+	{ "mutable",          STD_CPP98 },
+	{ "virtual",          STD_CPP98 },
+	{ "export",           STD_CPP98 },
+	{ "public",           STD_CPP98 },
+	{ "private",          STD_CPP98 },
+	{ "protected",        STD_CPP98 },
+	// Slice 3 (typename) — DEFERRED (staged, NOT reserved). Every direct
+	// parse site already reads contextual_identifier_name / TokenIdent::str
+	// (so `template<typename T>` and `typename X::type{...}` are fine), but
+	// reserving it regresses the LATE free-function-template instantiation of
+	// std::move / std::forward: `int&& y = std::move(x)` emits `&__ns_std_move`
+	// with the `(x)` call DROPPED (emitted-C shows `int *y = (&__ns_std_move)`),
+	// i.e. the move/forward template instantiation is not triggered at the call
+	// site. The bug is in the free-fn-template return-type (`typename
+	// std::remove_reference<_Tp>::type&&`) instantiation/reparse path, not a
+	// plain ttIdentifier de-shim. Reproduce with tmp/fwd.mad. Reserve only
+	// after that path is fixed (testmemtmplpackexpand, testlateinstproto).
+	// Slice 5 (constexpr): a real tkCPPKEYWORD (no longer erased) so the
+	// dormant TokenIF `if constexpr` discard machinery activates. As an
+	// ignored decl-specifier it is consumed by TokenCppKeyword::parse (leading
+	// and storage-delegated `static constexpr` / `const constexpr`) and the
+	// member-specifier loop; is_ignored_cpp_specifier_token recognizes it.
+	{ "constexpr",        STD_CPP11 },
+	// Slice 6 (consteval/constinit, C++20): ignored decl-specifiers, handled
+	// by the same is_ignored_cpp_specifier_token path as constexpr.
+	{ "consteval",        STD_CPP20 },
+	{ "constinit",        STD_CPP20 },
+	// Slice 4 (expression keywords) — validating subset first. The named
+	// casts / typeid / decltype / alignof are recognized by spelling in
+	// parse_constant_primary and the expression parser (de-shimmed), and are
+	// implausible as identifiers. `this`, `sizeof`, `nullptr`, `true`,
+	// `false` are staged separately (SESSION-16 §4 flagged semantic regressions).
+	{ "static_cast",      STD_CPP98 },
+	{ "const_cast",       STD_CPP98 },
+	{ "reinterpret_cast", STD_CPP98 },
+	{ "dynamic_cast",     STD_CPP98 },
+	{ "typeid",           STD_CPP98 },
+	{ "decltype",         STD_CPP11 },
+	{ "alignof",          STD_CPP11 },
+	// Slice 4b: boolean / pointer literals.
+	{ "true",             STD_CPP98 },
+	{ "false",            STD_CPP98 },
+	{ "nullptr",          STD_CPP11 },
+	// Slice 4c: sizeof (bisecting — SESSION-16 §4 flagged the expr-keyword set).
+	{ "sizeof",           STD_CPP98 },
+	// Slice 4d: this (bisecting — madc models the receiver as __this).
+	{ "this",             STD_CPP98 },
+	{ 0,                  STD_CPP98 }
+    };
+    for ( size_t i = 0; i < sizeof(cpp_reserved)/sizeof(cpp_reserved[0]); ++i )
+	if ( cpp_reserved[i].kw
+	  && cpp_keyword_active(cpp_reserved[i].min_std)
+	  && keyword_map.find(cpp_reserved[i].kw) == keyword_map.end() )
+	    keyword_map[cpp_reserved[i].kw] =
+		new TokenCppKeyword(cpp_reserved[i].kw);
+
+    // Slice 7 — alternative-token operators ([lex.digraph]). In C++ these are
+    // reserved keywords spelled as words; each is an exact synonym for a
+    // symbolic operator, so map the spelling straight to the operator token
+    // (cloned on lookup at lexer.cpp ~4382, like every keyword). C++98+ /
+    // madc-dialect only (cpp_keyword_active): in C they are NOT keywords —
+    // <iso646.h> defines them as macros, which the real header supplies.
+    if ( cpp_keyword_active(STD_CPP98) )
+    {
+	cpp_operator_map["and"]    = new TokenLand();    // &&
+	cpp_operator_map["or"]     = new TokenLor();     // ||
+	cpp_operator_map["not"]    = new TokenLnot();    // !
+	cpp_operator_map["bitand"] = new TokenBand();    // &
+	cpp_operator_map["bitor"]  = new TokenBor();     // |
+	cpp_operator_map["xor"]    = new TokenXor();     // ^
+	cpp_operator_map["compl"]  = new TokenBnot();    // ~
+	cpp_operator_map["not_eq"] = new TokenNotEq();   // !=
+	cpp_operator_map["and_eq"] = new TokenBandEq();  // &=
+	cpp_operator_map["or_eq"]  = new TokenBorEq();   // |=
+	cpp_operator_map["xor_eq"] = new TokenXorEq();   // ^=
+    }
+    // DESIGN NOTE: this table is intentionally NOT populated with hard keyword
+    // tokens. madc deliberately handles most C++ keywords as CONTEXTUAL
+    // identifiers recognized by spelling (Cfront-style; see the KG lesson
+    // "Tokenizer remapping for contextual keywords" — a grammar-level hard
+    // reservation caused a 49-test regression). Empirically, reserving e.g.
+    // `typename` as a tkCPPKEYWORD breaks real-header `template<typename ...>`
+    // parsing. Reservation + version-gating must therefore be expressed as a
+    // gated SPELLING predicate consulted by the contextual sites, not as hard
+    // tokens. Tracked in docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
 }
 
 // add static tokens for base data types
@@ -1888,6 +2293,7 @@ void Program::add_datatypes()
     static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
     static TokenDataType tkSIZE_T("size_t", ddUINT64);
     static TokenDataType tkWCHAR_T("wchar_t", ddINT32);
+    static TokenDataType tkCHAR8_T("char8_t", ddUINT8);
     static TokenDataType tkCHAR16_T("char16_t", ddUINT16);
     static TokenDataType tkCHAR32_T("char32_t", ddUINT32);
     static TokenDataType tkMAX_ALIGN_T("max_align_t", ddMAX_ALIGN_T);
@@ -1922,9 +2328,22 @@ void Program::add_datatypes()
     datatype_map[tkAUTO.str] = &tkAUTO;
     datatype_map[tkPTRDIFF.str] = &tkPTRDIFF;
     datatype_map[tkSIZE_T.str] = &tkSIZE_T;
-    datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
-    datatype_map[tkCHAR16_T.str] = &tkCHAR16_T;
-    datatype_map[tkCHAR32_T.str] = &tkCHAR32_T;
+    // wchar_t / char8_t / char16_t / char32_t are FUNDAMENTAL built-in types in
+    // C++ (keywords — [basic.fundamental]), but in C they are typedefs supplied
+    // by headers (wchar_t: <stddef.h>/<wchar.h>; char16_t/char32_t: <uchar.h>;
+    // char8_t: <uchar.h> in C23). So register them as primitives ONLY in the
+    // madc dialect or an explicit C++ mode at/after their introducing standard;
+    // in explicit C modes the real header typedef supplies them (retire-
+    // embedded-shims principle — do not preempt the real header).
+    if ( cpp_keyword_active(STD_CPP98) )
+	datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
+    if ( cpp_keyword_active(STD_CPP20) )
+	datatype_map[tkCHAR8_T.str] = &tkCHAR8_T;
+    if ( cpp_keyword_active(STD_CPP11) )
+    {
+	datatype_map[tkCHAR16_T.str] = &tkCHAR16_T;
+	datatype_map[tkCHAR32_T.str] = &tkCHAR32_T;
+    }
     datatype_map[tkMAX_ALIGN_T.str] = &tkMAX_ALIGN_T;
     datatype_map[tkFLOAT32.str] = &tkFLOAT32;
     datatype_map[tkFLOAT64.str] = &tkFLOAT64;
@@ -2017,9 +2436,16 @@ TokenBase *Program::_getToken()
     if ( ch == -1 ) { return NULL; }  // EOF after last char (no trailing newline)
     switch( ch )
     {
+	// Form feed and vertical tab are whitespace (C11 5.4 / [lex.charset]).
+	// glibc headers use lone ^L page separators (regex.h, bits/mman*.h);
+	// falling through to the char-token default desynced the whole
+	// following parse ("unexpected token type 10" — the wall-4 family).
 	case ' ':
+	case '\f':
+	case '\v':
 	    cnt = 1;
-	    while ( source.peek() == ' ' )
+	    while ( source.peek() == ' ' || source.peek() == '\f'
+		 || source.peek() == '\v' )
 	    {
 		++cnt;
 		source.get();
@@ -2178,7 +2604,10 @@ TokenBase *Program::_getToken()
 			source.get(); // consume closing delimiter
 		    // angle-bracket includes: prefer real precompiled headers, then
 		    // text-embedded compatibility headers, then filesystem source.
-		    if ( is_system )
+		    // #include_next is POSITIONAL (continue the path search after
+		    // the current header's dir) — it must never resolve through
+		    // the named PCH/embedded caches, only the filesystem walk.
+		    if ( is_system && !is_include_next )
 		    {
 			if ( !suppress_auto_include_scan
 			  && pending_auto_include_headers.count(incfile) )
@@ -2187,14 +2616,32 @@ TokenBase *Program::_getToken()
 				<< "> deferred to auto-include prelude" << std::endl);
 			    return getToken();
 			}
+			// The NAME-level once-only key gates ONLY the named
+			// PCH/embedded resolutions (their baked token sets assume
+			// single inclusion and carry no #ifndef guards). A
+			// filesystem-resolved header must NOT be deduped by name:
+			// its dedup is the guard-aware full-path check below, so a
+			// deliberately guard-less header (bits/mathcalls.h, multi-
+			// included with a different _Mdouble_ per pass) re-tokenizes.
 			std::string include_key = "<" + incfile + ">";
-			if ( !should_tokenize_include(include_key) )
+			bool name_already_included = include_already_seen(include_key);
+			bool resolves_named = false;
+			std::string pch_path;
+			if ( find_filesystem_precompiled_header(*this, incfile, true, pch_path) )
+			    resolves_named = true;
+			else if ( find_precompiled_header(incfile) )
+			    resolves_named = true;
+			else if ( find_embedded_header(incfile)
+			       && is_embedded_header_allowed(incfile) )
+			    resolves_named = true;
+			if ( resolves_named && name_already_included )
 			{
 			    DBG(std::cout << "#include <" << incfile << "> skipped (already included)" << std::endl);
 			    return getToken();
 			}
-			std::string pch_path;
-			if ( find_filesystem_precompiled_header(*this, incfile, true, pch_path) )
+			if ( resolves_named )
+			    should_tokenize_include(include_key);   // record the name
+			if ( !pch_path.empty() )
 			{
 			    DBG(std::cout << "#include <" << incfile << "> (precompiled file "
 				<< pch_path << ")" << std::endl);
@@ -2238,7 +2685,8 @@ TokenBase *Program::_getToken()
 			    suppress_auto_include_scan = true;
 			    source = Source();
 			    source.fname(incfile.c_str());
-			    source.str(*embedded);
+			    { ReadTimer _rt(_read_seconds); source.str(*embedded); }
+			    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
 			    TokenBase *itb;
 			    const char *_interned1 = intern_file(incfile);
 			    while ( (itb = getRealToken()) )
@@ -2280,7 +2728,13 @@ TokenBase *Program::_getToken()
 			Throw << "Failed to open include file: " << full_path.c_str() << flush;
 		    }
 		    source.fname(full_path.c_str());
-		    source.copybuf(incf.rdbuf());
+		    {
+			ReadTimer _rt(_read_seconds);
+			incf.seekg(0, std::ios::end);	// --show-stats: filesystem header bytes
+			if ( incf.tellg() > 0 ) _input_bytes += (size_t)incf.tellg();
+			incf.seekg(0);
+			source.copybuf(incf.rdbuf());
+		    }
 		    TokenBase *itb;
 		    const char *_interned2 = intern_file(full_path);
 		    while ( (itb = getRealToken()) )
@@ -3975,6 +4429,15 @@ TokenBase *Program::_getToken()
 		}
 		if ( (kmi=keyword_map.find(word)) != keyword_map.end() )
 		    return kmi->second->clone();
+		// C++ alternative-token operators (and/or/not/...): empty in C
+		// mode, so this find is a no-op there.
+		if ( !cpp_operator_map.empty() )
+		{
+		    std::map<std::string, TokenBase *>::iterator oi =
+			cpp_operator_map.find(word);
+		    if ( oi != cpp_operator_map.end() )
+			return oi->second->clone();
+		}
 		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
 		    return bmi->second->clone();
 		if ( auto_include_standard_identifier(word) )
@@ -4137,9 +4600,91 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    }
 	    else if ( macro_map.count(word) > 0 )
 	    {
-		// Function-like macro without args in #if context → treat as defined (1)
-		out += "1";
-		changed = true;
+		// Function-like macro: expand a real invocation by collecting
+		// its balanced argument list from the expression text and
+		// substituting parameters into the body (the standard requires
+		// full macro expansion in #if). Replacing the call with a bare
+		// "1" left the argument list behind as garbage tokens —
+		// `__GNUC_PREREQ (7, 0) && !defined X` became `1 (7, 0) && …`,
+		// derailing the evaluator so the defined-operator tail
+		// produced the wrong branch (glibc's floatn-common.h
+		// __HAVE_FLOATN_NOT_TYPEDEF condition).
+		size_t j = i;
+		while ( j < expr.size() && (expr[j] == ' ' || expr[j] == '\t') )
+		    ++j;
+		if ( j < expr.size() && expr[j] == '(' )
+		{
+		    const MacroDef &m = macro_map[word];
+		    std::vector<std::string> margs;
+		    std::string marg;
+		    int mdepth = 0;
+		    ++j; // consume '('
+		    for ( ; j < expr.size(); ++j )
+		    {
+			char mc = expr[j];
+			if ( mc == '(' ) { ++mdepth; marg += mc; }
+			else if ( mc == ')' )
+			{
+			    if ( mdepth == 0 ) { ++j; break; }
+			    --mdepth; marg += mc;
+			}
+			else if ( mc == ',' && mdepth == 0 )
+			{ margs.push_back(marg); marg.clear(); }
+			else marg += mc;
+		    }
+		    if ( !marg.empty() || !margs.empty() )
+			margs.push_back(marg);
+		    auto trim = [](std::string &s) {
+			while ( !s.empty() && (s.front()==' '||s.front()=='\t') ) s.erase(s.begin());
+			while ( !s.empty() && (s.back()==' '||s.back()=='\t') ) s.pop_back();
+		    };
+		    for ( auto &a : margs ) trim(a);
+		    // Substitute params in a single pass over the body so an
+		    // argument matching a later parameter name isn't cascaded.
+		    const std::string &body = m.body;
+		    std::string expanded;
+		    size_t b = 0;
+		    while ( b < body.size() )
+		    {
+			if ( !isalpha((unsigned char)body[b]) && body[b] != '_' )
+			{ expanded += body[b++]; continue; }
+			std::string bw;
+			while ( b < body.size()
+			     && (isalnum((unsigned char)body[b]) || body[b] == '_') )
+			    bw += body[b++];
+			bool subst = false;
+			for ( size_t pi2 = 0; pi2 < m.params.size(); ++pi2 )
+			    if ( bw == m.params[pi2] )
+			    {
+				expanded += pi2 < margs.size() ? margs[pi2] : "";
+				subst = true;
+				break;
+			    }
+			if ( !subst && m.variadic
+			  && (bw == "__VA_ARGS__"
+			      || (!m.variadic_param.empty() && bw == m.variadic_param)) )
+			{
+			    for ( size_t va = m.params.size(); va < margs.size(); ++va )
+			    {
+				if ( va > m.params.size() ) expanded += ", ";
+				expanded += margs[va];
+			    }
+			    subst = true;
+			}
+			if ( !subst )
+			    expanded += bw;
+		    }
+		    out += "(" + expanded + ")";
+		    i = j;
+		    changed = true;
+		}
+		else
+		{
+		    // Function-like macro name with NO argument list: keep the
+		    // historical behavior (treated as 1 in #if context).
+		    out += "1";
+		    changed = true;
+		}
 	    }
 	    else
 		out += word; // leave as-is (will become 0 in the evaluator)
@@ -4980,7 +5525,13 @@ TokenProgram *Program::tokenize(const char *fname)
     _tokenizer_init();
 
     source.fname(fname);
-    source.copybuf(file.rdbuf());
+    {
+	ReadTimer _rt(_read_seconds);
+	file.seekg(0, std::ios::end);	// --show-stats: main source-file bytes
+	if ( file.tellg() > 0 ) _input_bytes += (size_t)file.tellg();
+	file.seekg(0);
+	source.copybuf(file.rdbuf());
+    }
     Throw.source(source);
 
     try
@@ -5047,7 +5598,8 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
     _tokenizer_init();
 
     source.fname(fname);
-    source.str(source_text);
+    { ReadTimer _rt(_read_seconds); source.str(source_text); }
+    _input_bytes += source_text.size();	// --show-stats: load_buffer main-source bytes
     Throw.source(source);
 
     try

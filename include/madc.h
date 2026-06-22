@@ -48,7 +48,25 @@ protected:
 class FuncDef: public DataDef
 {
 public:
+    // The function's return TYPE. With first-class references a reference return
+    // is a DataDefREF (is_reference() true); use returns_reference() to test it
+    // and return_value_type() to get the referent. Read through those accessors,
+    // not `returns` directly, so the reference identity lives in ONE place (the
+    // type) — first-class refs Phase 2 retired the old parallel returns_ref flag.
     DataDef &returns;
+    // True when the return type is a reference (T& / T&&). The reference lives in
+    // the type (returns is a DataDefREF). A T& return is lowered to a by-address
+    // (T*) return at codegen; the call site is an lvalue (assign stores through
+    // it, read derefs it), matching g++.
+    bool returns_reference() const { return returns.is_reference(); }
+    // The VALUE type a (possibly reference) return denotes: the referent for a
+    // reference return, else the return type itself. Flip-transparent — correct
+    // whether `returns` holds the DataDefREF or (legacy) the bare referent.
+    DataDef &return_value_type() const {
+	if ( returns.is_reference() )
+	    return *static_cast<DataDefPTR &>(returns).base_type;
+	return returns;
+    }
     std::vector<DataDef *> parameters;
     size_t explicit_alignment;
     // [&] capture support
@@ -78,8 +96,15 @@ public:
     std::string local_emit_name;
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
-    // reference parameter tracking: ref_params[i] == true when parameter i is T&
-    std::vector<bool> ref_params;
+    // Reference-ness of parameter i, derived from its type: a reference parameter
+    // is a DataDefREF (is_reference() true). This is the SINGLE source of truth —
+    // the old parallel `ref_params` flag vector was retired (first-class-references
+    // Phase 2). A DataDefREF renders its name as `T*`, so the emitted ABI is
+    // unchanged; class_behind() unwraps it for dispatch.
+    bool is_ref_param(size_t i) const {
+	return i < parameters.size() && parameters[i]
+	    && parameters[i]->is_reference();
+    }
     // const parameter tracking: const_params[i] == true when parameter i is const T&
     std::vector<bool> const_params;
     // Canonical C++ spelling of each parameter, captured from the SOURCE TOKENS
@@ -113,11 +138,6 @@ public:
 	}
 	return req;
     }
-    // reference return: true when the function returns T& (e.g. T& operator[]).
-    // `returns` stays the base type T; the value is returned BY ADDRESS (a T*),
-    // so the call site is an lvalue (assign stores through it; read derefs it),
-    // matching g++. See cir_builder ref-return lowering.
-    bool returns_ref;
     std::string template_return_param_name;
     int template_return_deduce_arg_index;
     bool template_return_deduce_from_pointer;
@@ -150,15 +170,41 @@ public:
     // template specializations.
     bool is_member_template;
     std::vector<std::string> template_param_names;
+    // Pack-ness per template_param_names entry (a `typename... _Args` parameter
+    // pack vs a plain `typename _Up`). Needed so a variadic member template
+    // (allocator_traits::construct) instantiates its `_Args...` correctly.
+    // Empty == none-are-packs (back-compat for older registrations).
+    std::vector<bool> template_param_is_pack;
+    // Type-ness per template_param_names entry (false = a NON-TYPE param such as
+    // `size_t... _Indexes`). Empty == all-are-type (back-compat). Needed so a
+    // member-template ctor with non-type packs (std::pair's indexed ctor)
+    // instantiates with the correct typeparam_is_type classification.
+    std::vector<bool> template_param_is_type;
     std::string template_return_spelling;
     std::vector<std::string> template_param_spellings;
+    // For a STATIC member function template of a madc-LOCAL (monomorphized,
+    // not libstdc++-exported) class, the retained body declaration tokens
+    // (declarator + params + `{ ... }`, WITHOUT the `template<...>` header) and
+    // the owning class. A call site instantiates the body on ODR-use
+    // (instantiate_member_fn_template_for_call) instead of leaving a bare
+    // undefined extern. Empty unless the body was retained.
+    std::vector<TokenBase *> member_template_decl;
+    DataDef *member_template_owner;
+    // The DEPENDENT return-type token range of a member function template
+    // (the tokens before the declarator name, still naming the template
+    // parameters — e.g. `Succ < T >`). Retained for BOTH body-bearing AND
+    // body-less member templates so a call site can resolve the CONCRETE
+    // return type by substituting the deduced/explicit args into these tokens
+    // WITHOUT instantiating a body (the clang SubstDecl model — see
+    // resolve_member_template_call_return_type). Empty == not a member tmpl.
+    std::vector<TokenBase *> member_template_return_tokens;
     struct CtorInitializer {
 	std::string name;
 	std::vector<TokenBase *> args;
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), returns_ref(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_return_spelling(), template_param_spellings(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -183,6 +229,11 @@ public:
     // These are not bodyless shared-library declarations and must not be bound
     // as external symbols just because the class has canonical C++ spelling.
     bool defaulted_or_deleted;
+    // True ONLY for `= delete` (a SUBSET of defaulted_or_deleted, which also
+    // covers `= default`). Distinguished because faithful `__is_assignable` /
+    // `__is_constructible` must treat a deleted special member as "not
+    // assignable / not constructible" while a defaulted one is available.
+    bool is_deleted;
     // True for C++ pure virtual declarations (`= 0`). They have no body but
     // still participate in method lookup and vtable layout.
     bool pure_virtual;
@@ -630,8 +681,9 @@ public:
         else if ( DataDef *e = subscript_operator_element_type(o.type) )
             // A class with `T& operator[](...)` (a real madc template container
             // like vector<T>/map<K,V>/set<T>): the element type is the operator[]
-            // return type (the base T — FuncDef::returns strips the reference).
-            // This is what lets `v[i].method()` see a structured element.
+            // return VALUE type (the base T — return_value_type() yields the
+            // referent of a reference return). This is what lets `v[i].method()`
+            // see a structured element.
             _datatype = e;
         else
             _datatype = &ddINT64; // madc array (madc::value): default to int
@@ -653,7 +705,7 @@ public:
 	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 	if ( !fd )
 	    return NULL;
-	return &fd->returns;
+	return &fd->return_value_type();
     }
     virtual TokenType type() const { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }
@@ -958,7 +1010,14 @@ public:
     Source *source(Source *s) { return _tbuf.source(s); }
     Source *source(Source &s) { return _tbuf.source(&s); }
     std::string str() const { return _tbuf.str(); }
-    throwstream& operator()(TokenBase *t) { _tbuf.token(t); return *this; }
+    // Reset state + buffer at the START of each error. The stream has
+    // exceptions(badbit); a prior `Throw(..) << .. << flush` leaves badbit set
+    // after it throws, so WITHOUT this clear() the next `Throw(t) << "msg"`
+    // re-throws ios_failure AT THE `<<` (before the message is built) — turning
+    // every error after the first into a spurious "basic_ios::clear: iostream
+    // error" and discarding the real message. str("") drops any stale message.
+    throwstream& operator()(TokenBase *t)
+    { clear(); _tbuf.str(std::string()); _tbuf.token(t); return *this; }
 };
 
 
@@ -1135,6 +1194,12 @@ public:
     ErrorInfo last_error;
     std::vector<Diagnostic> diagnostics;
     keyword_map_t  keyword_map;		// reserved keywords
+    // C++ alternative-token operators (and/or/not/bitand/...): word spellings
+    // that are exact synonyms for symbolic operators ([lex.digraph]). Held
+    // separately from keyword_map because the operator tokens are not
+    // TokenKeyword subclasses. Populated (C++-gated) in add_keywords; looked up
+    // and cloned in _getToken alongside keyword_map.
+    std::map<std::string, TokenBase *> cpp_operator_map;
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     datadef_map_t  struct_map;		// data definitions defined by struct
@@ -1165,6 +1230,11 @@ public:
 	// For a partial spec: the pattern token sequence per arg slot (e.g. ["T","*"]
 	// for `X<T*>`). Empty for a primary template.
 	std::vector<std::vector<TokenBase *>> spec_pattern;
+	// C++20 requires-clause on a partial spec (`requires C<I>`): cloned
+	// constraint tokens (the `requires` keyword excluded). Empty =
+	// unconstrained. match_partial_specialization folds this (typeparams
+	// substituted) and rejects the candidate when it is false.
+	std::vector<TokenBase *> constraint;
 	TemplateDef() : has_non_type_params(false), owner_class(nullptr),
 			is_partial_specialization(false) {}
     };
@@ -1201,7 +1271,10 @@ public:
 	    const std::vector<std::string> &arg_spellings,
 	    const std::vector<std::vector<TokenBase *>> &arg_tokens_by_slot,
 	    const std::vector<bool> &param_is_type,
-	    std::map<std::string, TokenDataType *> &out_subst);
+	    std::map<std::string, TokenDataType *> &out_subst,
+	    std::map<std::string, std::string> &out_template_subst,
+	    std::map<std::string, std::vector<std::string> > &out_pack_subst,
+	    std::map<std::string, std::vector<TokenBase *> > &out_nontype_subst);
     // Unify a nested template-id pattern arg (e.g. `allocator<_Tp>`) against a
     // concrete type spelling (e.g. `std::allocator<char>`), deducing the spec's
     // type params. Fallback used by match_partial_specialization when the flat
@@ -1209,7 +1282,9 @@ public:
     bool unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	    const std::vector<std::string> &spec_params,
 	    const std::string &concrete_spelling,
-	    std::map<std::string, DataDef *> &ded, int &score);
+	    std::map<std::string, DataDef *> &ded, int &score,
+	    std::map<std::string, std::string> *out_tmpl = NULL,
+	    std::map<std::string, std::vector<std::string> > *out_pack = NULL);
     // Evaluate a `__void_t<Args...>` detection-idiom partial-spec slot: matches a
     // concrete void IFF every Arg (a `typename PARAM::member` dependent type) resolves
     // after substituting the already-deduced params. The SFINAE half of the std
@@ -1217,6 +1292,43 @@ public:
     bool eval_void_t_detection_slot(const std::string &slot_spelling,
 	    const std::string &concrete_spelling,
 	    const std::map<std::string, DataDef *> &ded, int &score);
+    // Confirm that a dependent member chain `BASE::seg1::seg2::...` (where some
+    // seg names a TEMPLATE member, e.g. `rebind<_Up>`) resolves to a real type —
+    // the part of the __void_t SFINAE probe the plain type-alias walk cannot do.
+    // Builds the qualified-id tokens with deduced params substituted and resolves
+    // via resolve_typename_type_token in an isolated stream. True iff it resolves.
+    bool confirm_dependent_member_type(DataDef *base,
+	    const std::vector<std::string> &segs,
+	    const std::map<std::string, DataDef *> &ded);
+    // Constant-fold ONE non-type template argument from its already-collected
+    // token vector (+ spelling), WITHOUT touching the live token stream or
+    // instantiating anything — a LOCAL cursor only. Recognizes manifest integer/
+    // bool literals and the type-trait builtins (`__has_trivial_destructor(T)`,
+    // `__is_same(A,B)`, …). Returns false (→ keep the spelling) for any form it
+    // cannot fold with certainty (dependent / value-dependent / unsupported).
+    bool fold_nontype_template_arg(const std::vector<TokenBase *> &argtoks,
+				   const std::string &spelling, int64_t &out);
+    // Evaluate a NON-dependent non-type template argument (a `<...>` slot that is
+    // an integral/bool constant expression — `(1==1)`, `is_trivial<int>::value`,
+    // `__is_bitwise_relocatable<T>::value` for concrete T) to its value via the
+    // SAME constant-expression evaluator `static_assert` uses, parsing a clone of
+    // the collected arg tokens in an ISOLATED stream. Returns false (keep the raw
+    // tokens) for anything still dependent / unfoldable. This is the substitution-
+    // time non-type-arg fold (g++ convert_nontype_argument / clang converted-
+    // constant-expression) without which `enable_if<C,T>` never selects its
+    // partial spec unless C is a literal.
+    bool fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
+				   int64_t &out);
+    // The canonical, identifier-safe instantiation-key fragment for ONE template
+    // argument: a foldable non-type arg renders as its normalized VALUE (so
+    // `<true>`, `<1>`, and `<__has_trivial_destructor(int)>` all key identically
+    // and select the matching specialization), else the sanitized spelling
+    // (byte-identical to the legacy behavior). EVERY template-instantiation
+    // key-build site routes through this so keys agree corpus-wide — the
+    // canonical-forms discipline (docs/plans/2026-06-13-canonical-forms-on-mc11ir-sketch.md);
+    // canonicalizing at only SOME sites shatters identity (the 202-regression).
+    std::string canonical_arg_key_fragment(const std::vector<TokenBase *> &argtoks,
+					   const std::string &spelling);
 	struct TemplateAliasDef {
 	    std::vector<std::string> typeparams;
 	    std::vector<std::vector<TokenBase *>> typeparam_defaults;
@@ -1230,6 +1342,31 @@ public:
 	TemplateAliasDef() : has_non_type_params(false), owner_class(nullptr) {}
     };
     std::map<std::string, std::vector<TemplateAliasDef>> template_alias_map;
+    // C++14 VARIABLE TEMPLATE: `template<...> [inline constexpr] T name = init;`
+    // (std::numbers::e_v, pi_v, …). madc does not model these as first-class
+    // values; it registers the name + typeparams + initializer tokens so a use
+    // `name<Arg>` resolves to its arg-substituted initializer expression (parsed
+    // inline at the use site). Keyed by simple name AND `ns::name`.
+    struct VarTemplateDef {
+	std::vector<std::string> typeparams;
+	std::vector<bool> typeparam_is_pack;    // parallel to typeparams; last may be a pack
+	std::vector<TokenBase *> init;          // tokens after '=' up to ';'
+	std::string defining_namespace;
+    };
+    std::map<std::string, VarTemplateDef> var_template_map;
+    // C++20 CONCEPT: `template<...> concept Name = <constraint-expr>;`. madc does
+    // not yet EVALUATE concept satisfaction, but it captures the constraint tokens
+    // (+ typeparams) here so a future evaluator can decide `Name<Args>` by
+    // substituting Args and evaluating the constraint (nested concept-ids,
+    // type-trait `::value`, `derived_from`, requires-expression well-formedness).
+    // Until the evaluator lands this is storage-only (no behavior change). Keyed by
+    // simple name AND `ns::name`.
+    struct ConceptDef {
+	std::vector<std::string> typeparams;
+	std::vector<TokenBase *> constraint;    // tokens after '=' up to ';'
+	std::string defining_namespace;
+    };
+    std::map<std::string, ConceptDef> concept_map;
     std::vector<TokenBase *> last_skipped_template_decl;
     // The SOURCE name of the tracked free-function overload parseDeclaration
     // is about to hand to parseFunction ("operator<"), stamped on the FuncDef
@@ -1237,6 +1374,10 @@ public:
     // display names mid-body). Cleared after the parseFunction call.
     std::string pending_function_display_name;
     std::vector<std::string> last_skipped_template_typeparams;
+    // Pack-ness of last_skipped_template_typeparams (parallel vector), so a
+    // skipped member template's variadic typeparam (`typename... _Args`) is
+    // preserved through register_skipped_class_template_function.
+    std::vector<bool> last_skipped_template_typeparam_is_pack;
     // W2 (retire-std-hardcoding-design): non-member operator overload candidates
     // declared at namespace scope (e.g. std::operator<<). Member-operator
     // resolution already exists (class_operator_call); these let `obj << x`
@@ -1260,8 +1401,8 @@ public:
     // __ns_<ns>_<name> wrapper path (which is correct only for madc's own polyglot
     // namespaces). See itanium_mangle_std_free_template + project_cpp_mangled_direct.
     std::vector<FreeOperatorOverload> free_function_overloads;
-    // NON-template C++ namespace free-function overload sets (e.g. the nine
-    // inline `std::to_string(...)` definitions in <bits/basic_string.h>).
+    // NON-template C++ namespace free-function overload sets (e.g. the inline
+    // standard-library conversion helpers).
     // Each overload parses into its OWN Variable/FuncDef under a unique
     // internal symbol (unique_overload_symbol); this registry — keyed
     // "ns::name" — lets the call site enumerate and rank them by arg types
@@ -1271,14 +1412,20 @@ public:
     // from a NEW overload (mint a fresh symbol).
     struct NamespaceFnOverload {
 	std::string param_spelling;
+	std::vector<std::string> template_arg_names;
 	Variable *var;
     };
     std::map<std::string, std::vector<NamespaceFnOverload>> namespace_fn_overload_sets;
     // Rank ns::name's parsed overloads against the call's arg types; returns
     // the winning Variable, or NULL when no set (or no viable overload) exists.
+    // `zero_args` (parallel to argtypes, optional) marks literal-0 arguments —
+    // the null-pointer-constant rule ([conv.ptr]) must survive the re-rank
+    // (global ::operator== sets rank here too: testfreeop's `a == 0`).
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
-					       const std::vector<const DataDef *> &argtypes);
+					       const std::vector<const DataDef *> &argtypes,
+					       const std::vector<bool> *zero_args = NULL,
+					       const std::vector<DataDef *> *explicit_template_args = NULL);
     // A parsed CONCRETE free-operator function viable for the operand types:
     // ranks the union of every "::"+opname-suffixed overload set (all
     // namespaces + the global "" key). NULL when none binds. `zero_args`
@@ -1311,8 +1458,31 @@ public:
 	std::vector<bool> typeparam_is_pack;
 	std::vector<TokenBase *> decl;
 	std::string ns;
+	// Owner class for a MEMBER function template being instantiated: pushed
+	// on class_scope_stack during the body parse so the params/body resolve
+	// class-scope members ([basic.scope.class]). NULL for free/namespace fn
+	// templates. (No default initializer — keeps the aggregate-init shape.)
+	DataDefCLASS *owner_class;
+	// INSTANCE (non-static) member function template: the instantiated body
+	// is parsed AS A METHOD of owner_class (hidden `__this`, member access),
+	// not as a free function — the clang/gcc model (a member fn template is
+	// instantiated as a CXXMethodDecl of the class; static-ness is just a
+	// flag). False for free/namespace templates AND for STATIC member
+	// templates (those stay on the free-function parse).
+	bool instance_method;
+	FnTemplateDef() : typeparams(), typeparam_defaults(), typeparam_is_type(),
+	    typeparam_is_pack(), decl(), ns(), owner_class(NULL),
+	    instance_method(false) {}
     };
     std::map<std::string, std::vector<FnTemplateDef>> fn_template_map;
+    // BODY-LESS free/namespace function template declarations (no `{ body }` to
+    // instantiate — e.g. `template<class T> T declval();`), keyed "ns::name".
+    // Kept OUT of fn_template_map (which drives body instantiation + the arity-
+    // deferral signal) so instantiation behavior is unchanged; read ONLY to
+    // form a call's return TYPE by substituting explicit template args into the
+    // declared return (resolve_namespace_fn_template_call_return_type — the
+    // clang deduction-forms-the-function-type-without-a-body model).
+    std::map<std::string, std::vector<FnTemplateDef>> fn_template_decl_map;
     std::set<std::string> fn_template_instantiated;   // "ns::name<t1,t2,...>" memo
     // inst_key -> the overload Variable that instantiation registered, so an
     // operator USE site can call the instantiated definition directly.
@@ -1322,10 +1492,89 @@ public:
     // body are consumed unevaluated, exactly like instantiated class-template
     // member bodies (parse_static_assert_statement).
     size_t fn_template_instantiation_depth = 0;
+    // True only while resolving a qualified member-TYPE chain (`typename X<..>::type`):
+    // a concrete-arg trailing-type-pack class template is then REALLY instantiated
+    // (body parse + member eval) so its member types fold (e.g. `__construct_helper<
+    // _Tp,_Args...>::type` for the vector<T*> SFINAE trait). Elsewhere — notably the
+    // constant-fold path (`__and_<..>::value`) — variadic templates stay opaque, as a
+    // recursive variadic body (`__and_`, `tuple`) would otherwise re-instantiate
+    // unboundedly. Scoped-set around the member-type instantiate_template_id calls.
+    bool allow_variadic_real_inst = false;
+    // STICKY variant of the above: stays on through a real-instantiation SUBTREE
+    // whose root template forwards its meaning through a dependent-member base
+    // (`__invoke_result : __result_of_impl<...>::type`). Unlike allow_variadic_real_inst
+    // (consumed once at each instantiate_template_use entry), this propagates into
+    // nested arg-resolution + base re-parse so the whole forwarding chain
+    // (__is_invocable -> __invoke_result -> __result_of_impl) really instantiates.
+    // Bounded by variadic_inst_in_progress so a recursive body cannot re-enter.
+    bool variadic_real_inst_sticky = false;
+    // Class-template real-instantiations in flight, keyed by mangled name. Re-entering
+    // the same key while variadic_real_inst_sticky is on returns the opaque placeholder
+    // instead of recursing — the recursion bound for the sticky forwarding-trait path.
+    std::set<std::string> variadic_inst_in_progress;
+    // Alias-template uses currently being resolved (keyed tname + arg spellings).
+    // Re-entering the SAME key is a resolution CYCLE (a self-referential trait, now
+    // reachable because variadic members really instantiate) — it short-circuits to
+    // the opaque placeholder instead of recursing into a stack overflow. A genuine
+    // (acyclic) deep nest uses distinct keys and resolves normally.
+    std::set<std::string> alias_resolve_in_progress;
+    // Member-fn-template instantiations currently in flight, keyed by LOGICAL identity
+    // (owner + fn name + arg-type spellings), NOT call site. Breaks the allocator
+    // trait cycle construct -> _S_construct -> __has_construct -> __test -> construct:
+    // re-entering the same logical instantiation returns early (the body completes in
+    // the outer frame) instead of recursing into a stack overflow. Call-site keying
+    // (tc->var.name) can't catch this — each cycle hop is a distinct call site.
+    std::set<std::string> member_fn_inst_in_progress;
+    // Memoize member-ctor-template instantiations (keyed class + arg-type
+    // spellings) so a repeated construction shape instantiates the ctor once;
+    // doubles as the recursion guard for the construct -> forward -> construct chain.
+    std::set<std::string> member_ctor_inst_done;
+    // >0 while parsing the operand of an UNEVALUATED context (decltype(...),
+    // sizeof, noexcept). C++ does not ODR-use entities named in an unevaluated
+    // operand ([basic.def.odr]) — so a function-template call there forms only a
+    // signature (its return type, via the resolver), never an instantiated body.
+    // declval is the canonical case: libstdc++ DEFINES it (a static_assert body
+    // "declval() must not be used!" that calls the declaration-only __declval) but
+    // it is only ever named in unevaluated operands, so its body is never emitted.
+    // Instantiating it would import the undefined __declval. Gate body
+    // instantiation on this depth == 0.
+    int unevaluated_operand_depth = 0;
     void instantiate_namespace_fn_template_for_call(TokenCallFunc *tc);
+    // A STATIC member function template of a madc-LOCAL class (a monomorphized
+    // template instance such as `_Destroy_aux<true>`) is registered
+    // declaration-only with its body retained on the FuncDef
+    // (register_skipped_class_template_function). When such a callee is called,
+    // deduce its template params from the call's args, instantiate the retained
+    // body via the shared free-fn-template machinery, and alias the instantiated
+    // definition's emitted symbol (local_emit_name) to the call's symbol so the
+    // call's extern resolves to the real definition at link. libstdc++-EXPORTED
+    // member templates keep the mangled-direct path (member_template_method_call).
+    void instantiate_member_fn_template_for_call(TokenCallFunc *tc);
+    // A member-template CONSTRUCTOR whose parameters use the template pack
+    // (`template<class... A> C(B&, A&&...)`, e.g. libstdc++'s _Rb_tree::_Auto_node)
+    // is registered declaration-only as a ctor (register_skipped_class_template_function)
+    // with its body retained. A construction site `C v(args...)` is an object
+    // declaration, NOT a call, so the call-only instantiate_member_fn_template_for_call
+    // hook never fires. Given the construction's arg tokens, deduce the ctor's
+    // template params, instantiate the retained body under a CONCRETE ctor symbol
+    // (the ClassName__ClassName__oN scheme — so the mem-initializer list parses and
+    // it is recognized as a ctor), and register that instantiation as a real ctor of
+    // `cdd` so select_ctor_overload binds it. Idempotent / memoized per (class, arg
+    // types). No-op when `cdd` has no member-template ctor.
+    void instantiate_member_ctor_template_for_construction(
+		DataDefCLASS *cdd, const std::vector<TokenBase *> &ctor_args);
+    // Resolve the CONCRETE return type of a member-function-template call by
+    // substituting the call's explicit/deduced template args into the retained
+    // DEPENDENT return-type tokens (FuncDef::member_template_return_tokens) and
+    // resolving — WITHOUT instantiating a body (the clang SubstDecl model).
+    // Returns the concrete DataDef, or NULL on substitution failure (SFINAE) /
+    // missing data. Used for decltype/unevaluated calls to body-less member
+    // templates whose normal (body) instantiation produced no __mti definition.
+    DataDef *resolve_member_template_call_return_type(class FuncDef *fd,
+		const std::vector<DataDef *> &explicit_targs);
     // Deduce + instantiate a retained free-OPERATOR template body for
-    // `lhs <op> rhs` (e.g. operator+(const basic_string&, const _CharT*) —
-    // libstdc++ does not export that shape, so the BODY must compile).
+    // `lhs <op> rhs` cases whose operator body must be instantiated because no
+    // exported library symbol covers that operand shape.
     // Returns the deduced return class; *callee_out = the registered overload.
     DataDef *instantiate_free_operator_template(const std::string &opname,
 						TokenBase *lhs, TokenBase *rhs,
@@ -1340,6 +1589,8 @@ public:
     // ==, relationals via (x <=> y) @ 0. Consulted only after every direct
     // candidate set missed.
     TokenBase *rewritten_operator_candidate(class TokenOperator *to);
+    // madc strict-equality === domain rule: lower `x === y` to `x == y`.
+    TokenBase *lower_strict_equality_domain_rule(class TokenOperator *to);
     // The std comparison-category class a builtin <=> yields
     // ([expr.spaceship]); NULL when <compare> has not been parsed.
     DataDef *comparison_category_class(class TokenOperator *to);
@@ -1371,12 +1622,33 @@ public:
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup
     std::map<DataDef*, DataDefPTR*> ptr_type_cache; // cached pointer-to-T DataDefs
     std::map<DataDef*, DataDefREF*> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
+    std::map<DataDef*, DataDefCONST*> const_type_cache; // cached const-T DataDefs
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
     namespace_datatype_map_t namespace_datatype_map; // namespace-owned type names
     std::map<std::string, std::vector<std::string>> inline_namespace_children;
-    std::string current_namespace;	// active namespace for resolution (set by ns:: prefix)
+    // Lexical namespace context. Each entry is the FULL active namespace
+    // ("std::__cxx11"); back() is the active one (empty stack = global scope).
+    // The idiomatic twin of class_scope_stack: a vector (not std::stack) so
+    // the enclosing-chain walk stays possible. Mutate ONLY via NamespaceScope.
+    std::vector<std::string> namespace_stack;
+    const std::string &current_namespace() const
+    {
+	static const std::string global_scope;
+	return namespace_stack.empty() ? global_scope : namespace_stack.back();
+    }
+    // RAII guard for namespace_stack — exception-safe by construction.
+    class NamespaceScope
+    {
+	Program &pgm;
+	NamespaceScope(const NamespaceScope &);
+	NamespaceScope &operator=(const NamespaceScope &);
+    public:
+	NamespaceScope(Program &p, const std::string &ns) : pgm(p)
+	{ pgm.namespace_stack.push_back(ns); }
+	~NamespaceScope() { pgm.namespace_stack.pop_back(); }
+    };
     // Canonical C++ spelling of the template-id being instantiated right now,
     // stashed by instantiate_template_use around the class re-parse so
     // TokenCLASS::parse can record it on the new DataDefCLASS for bodyless C++
@@ -1405,11 +1677,45 @@ public:
     void add_include_dir(const std::string &dir);	// normalize (trailing '/') + append to include_paths
     void add_cli_define(const std::string &def);	// split NAME[=VALUE] (bare => "1") into cli_defines
     std::map<std::string, bool> included_files;	// #include files already tokenized (require_once semantics)
+    // realpath -> detected include-guard macro ("" = guard-less, always
+    // re-tokenize). Drives gcc's multiple-include optimization in
+    // should_tokenize_include.
+    std::map<std::string, std::string> include_guard_by_file;
     std::stack<bool> ifdef_stack;	// conditional compilation state stack
     std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
     std::deque<TokenBase *> tokens;	// parsed token queue
     std::deque<TokenBase *> injected_tokens; // synthetic lexer output for lowered directives
+    // --show-stats: token-stream traffic counters (diagnostic only).
+    unsigned long long _tok_produced = 0; // tokens emitted into the stream by the lexer
+    unsigned long long _tok_consumed = 0; // nextToken() advances (incl. re-reads on backtrack)
+    unsigned long long _tok_reread   = 0; // distinct token objects consumed >1x
+    uint32_t           _tok_max_reads = 0; // highest read_count seen on a single token
+    // --show-stats: total source bytes the lexer read — main file + every header
+    // (embedded + filesystem #include) + load_buffer input. Accumulated on the
+    // Program (NOT on Source: each #include uses a throwaway Source that is
+    // discarded on restore, so a per-Source counter would be lost).
+    unsigned long long _input_bytes = 0;
+    size_t input_bytes() const { return (size_t)_input_bytes; }
+    // --show-stats: wall time (seconds) spent loading source into the lex stream
+    // (file I/O via copybuf + embedded-header str()). Lexing time is then the
+    // tokenize() wall time minus this; measured by the caller (madc.cpp).
+    double _read_seconds = 0.0;
+    // --show-stats: c2mir compile time (cir_node tree -> MIR module) and the JIT
+    // execution wall time (the main() call, incl. lazy MIR_gen of called fns).
+    // Set by the CIR backend (madc_cir.cpp); printed by madc.cpp.
+    double _c2mir_seconds = 0.0;
+    double _exec_seconds  = 0.0;
+    // --show-stats: template-instantiation time + count, carved out of parse
+    // time. _inst_seconds is depth-guarded (only the OUTERMOST instantiation
+    // subtree accumulates wall time, so nested instantiations are not double
+    // counted; parsing an instantiated body counts as instantiation cost, which
+    // is the point). _inst_count is every instantiation entry (all depths). The
+    // parse time MINUS _inst_seconds is the declaration-parsing share — the
+    // split that bounds how much a pre-parsed header cache could save.
+    double             _inst_seconds = 0.0;
+    unsigned long long _inst_count   = 0;
+    int                _inst_depth   = 0;
     // User-defined function AST nodes, in source order. Parallel to the
     // ast queue. Populated by parseFunction / parseLambda; consumed by
     // Program::compile in a pre-pass to create funcnodes (labels) before
@@ -1420,6 +1726,15 @@ public:
 	Method *method;
 	std::vector<TokenBase *> body_tokens;
 	std::vector<TokenBase *> definition_tokens;
+	// A captured trailing return type (`-> T`) of an `auto`-return method,
+	// resolved when the deferred body materializes (parameters back in scope).
+	std::vector<TokenBase *> trailing_ret_tokens;
+	// A constructor's mem-initializer-list tokens (after ':', before the
+	// body '{'), parsed at class COMPLETION like the body — initializer
+	// ARGUMENTS are complete-class context ([class.base.init]): real
+	// _Vector_base's `: _M_impl(..., std::move(__x._M_impl))` names a
+	// member declared after the constructor.
+	std::vector<TokenBase *> ctor_init_tokens;
 	bool full_definition;
 	const char *file;
 	int line;
@@ -1427,16 +1742,83 @@ public:
 	DeferredFunctionBody() : var(NULL), method(NULL), full_definition(false), file(NULL), line(0), column(0) {}
     };
     std::vector<DeferredFunctionBody> *deferred_function_body_sink;
+    // Mem-initializer tokens captured for the NEXT enqueue_deferred_function_body
+    // (set by parseFunction's ':' arm when a class-body ctor defers).
+    std::vector<TokenBase *> pending_deferred_ctor_inits;
+    TokenBase *parse_ctor_initializer_list(FuncDef *func);
     // Lazy member-function-body instantiation ([temp.inst] conformance): for a
     // system-header class (typically a template instantiation), member-function
     // BODIES are NOT parsed at class-completion time — they are stashed here,
     // keyed by emit symbol (var->name), and parsed only when ODR-used. This
     // mirrors g++ (a class instantiation instantiates declarations, not member
-    // definitions) and dissolves walls in unused inline bodies (e.g.
-    // basic_string::_M_local_data). The cir_builder reachability fixpoint
+    // definitions) and dissolves walls in unused inline bodies. The cir_builder
+    // reachability fixpoint
     // materializes a deferred body the moment its symbol enters referenced_funcs.
     std::map<std::string, DeferredFunctionBody> deferred_lazy_bodies;
+    // Out-of-line member DEFINITIONS of a class template
+    // (`template<class T> RET ClassName<T>::member(params){body}` — the bits/*.tcc
+    // shape, e.g. std::vector::_M_realloc_insert). A class instantiation re-parses
+    // only the class BODY (in-class member defs); an out-of-line def is a separate
+    // top-level template, so its body was never captured -> "import of undefined
+    // item". Captured at parse time keyed by "<defining-ns>::<class-name>"; when
+    // ClassName<Args> is monomorphized, each captured def is substituted with the
+    // concrete args and registered as a full_definition deferred_lazy_body keyed by
+    // the instantiated member's emit symbol, so the body materializes on ODR-use
+    // ([temp.inst]p2) exactly like an in-class-defined member (lazy, not eager —
+    // unused out-of-line members never instantiate).
+    struct OutOfLineMemberDef {
+	std::string member_name;
+	std::vector<std::string> typeparams;	// CLASS (outer) type-params
+	std::vector<TokenBase *> decl;	// full decl incl body, owned clones
+	// An out-of-line member TEMPLATE (`template<class T> template<class U>
+	// RET S<T>::f(U){body}`, two-level head — e.g. vector::_M_realloc_insert's
+	// C++11 variadic form) attaches its body to the monomorphized member as a
+	// member_template_decl, instantiated per-call by the sub-gap-5 path; a plain
+	// member def becomes a deferred (ODR-use-lazy) full body. inner_typeparams /
+	// inner_is_pack are the MEMBER (inner) template parameters.
+	bool is_member_template = false;
+	std::vector<std::string> inner_typeparams;
+	std::vector<bool> inner_is_pack;
+	std::vector<bool> inner_is_type;	// false = non-type param (`size_t... _Indexes`)
+    };
+    std::map<std::string, std::vector<OutOfLineMemberDef>> out_of_line_member_defs;
+    struct OutOfLineMemberInstantiation {
+	std::string registered_mangled;
+	std::vector<TokenDataType *> arg_types_by_slot;
+	std::vector<std::vector<TokenBase *> > arg_tokens_by_slot;
+    };
+    std::map<std::string, std::vector<OutOfLineMemberInstantiation> >
+	out_of_line_member_instantiations;
+    void register_outofline_member_instantiations(
+	const std::string &class_name, const std::string &defining_namespace,
+	const std::string &registered_mangled, DataDefCLASS *ddc,
+	const std::vector<TokenDataType *> &arg_types_by_slot,
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot);
     bool parsing_cpp_struct_class;
+    // Set by TokenSTRUCT::parse when delegating a UNION with class-only syntax
+    // to the class parser ([class.union]); TokenCLASS::parse consumes it and
+    // marks the DataDefCLASS union_layout.
+    bool parsing_cpp_union_class = false;
+    // Statement-level qualified-call (`php::foo(args);`): the CALLEE namespace
+    // override for HEAD resolution only ([basic.lookup] — the qualification
+    // applies to the called name, not the arguments). Deliberately NOT part of
+    // namespace_stack (it is a qualification override, not lexical scope):
+    // active_cpp_lookup_namespace() consults it first, and parseCallFunc /
+    // parseCallMethod clear it before the argument loop so arguments resolve
+    // in the lexical namespace. Set/restored only via QualifiedCalleeScope.
+    std::string stmt_callee_namespace;
+    class QualifiedCalleeScope
+    {
+	Program &pgm;
+	std::string saved;
+	QualifiedCalleeScope(const QualifiedCalleeScope &);
+	QualifiedCalleeScope &operator=(const QualifiedCalleeScope &);
+    public:
+	QualifiedCalleeScope(Program &p, const std::string &ns)
+	    : pgm(p), saved(p.stmt_callee_namespace)
+	{ pgm.stmt_callee_namespace = ns; }
+	~QualifiedCalleeScope() { pgm.stmt_callee_namespace = saved; }
+    };
     // When set, TokenCLASS::parse parses and registers the class/struct
     // DEFINITION only and returns at the closing '}', WITHOUT consuming a
     // trailing instance declarator. Used when a method-bearing struct is
@@ -1536,13 +1918,69 @@ public:
 	STD_C78, STD_C86, STD_C88, STD_C89, STD_C90, STD_C94, STD_C95, STD_C99, STD_C11, STD_C17, STD_C23,
 	STD_CPP98, STD_CPP03, STD_CPP11, STD_CPP14, STD_CPP17, STD_CPP20, STD_CPP23, STD_CPP26
     } language_std;
+    // The C++ level that plain madc (STD_MADC) — and any non-C++ selection that
+    // still presents as C++ — targets: the single configurable "default bar",
+    // NOT a literal scattered across the predefined-macro table + the
+    // __cplusplus switch. It deliberately LAGS the highest enum value
+    // (STD_CPP26): the enum is what a user MAY request via `--std=`; this is what
+    // gets presented when nothing is requested. Raising the bar madc defaults to
+    // is one assignment here (CLI / embedder can override). See
+    // cplusplus_value_for_std(). The bar is gated low because every step up
+    // forces madc to parse more of the C++20+ system-header surface
+    // (ranges/concepts) — see docs/plans for the raise strategy.
+    LanguageStd default_cpp_std;
+    // GNU dialect modifier: `--std=gnuNN` / `--std=gnu++NN` selects the base
+    // standard (language_std) WITHOUT strict-ANSI conformance — gcc's actual
+    // default dialect is gnu17, not c17. Feature gating stays on
+    // language_std; this flag only controls strictness presentation.
+    bool gnu_dialect;
     bool is_c_mode() const { return language_std >= STD_C89 && language_std <= STD_C23; }
     bool is_cpp_mode() const { return language_std >= STD_CPP98 && language_std <= STD_CPP26; }
-    bool auto_includes_enabled() const { return language_std == STD_MADC; }
-    // The __cplusplus value the selected --std= mandates (C++26 uses g++'s
-    // provisional 202400L until the standard fixes one).
-    const char *cplusplus_value_for_std() const {
+    // gcc parity for C modes: -std=cNN defines __STRICT_ANSI__, -std=gnuNN
+    // (gcc's default dialect) does not — real glibc headers branch on it
+    // (features.h suppresses _DEFAULT_SOURCE under strict ANSI, hiding
+    // timercmp/strdup-class declarations SMAUG needs).
+    // KNOWN DIVERGENCE: STD_MADC and the C++ modes keep the captured strict
+    // presentation even though plain g++ (gnu++17) is non-strict — lifting
+    // it opens glibc's `!__STRICT_ANSI__` float regions (__HAVE_FLOAT128 →
+    // __float128/_FloatN declarations) that madc cannot type yet. Lift once
+    // __float128/_FloatN land (the __int128 P0 track's float sibling).
+    bool strict_ansi_mode() const
+    { return !(is_c_mode() && gnu_dialect); }
+    // The __STDC_VERSION__ value a C mode mandates (gcc parity; c89/c90
+    // predate the macro — NULL = leave undefined, like gcc -std=c89).
+    const char *stdc_version_for_std() const {
 	switch ( language_std ) {
+	case STD_C94: case STD_C95: return "199409L";
+	case STD_C99: return "199901L";
+	case STD_C11: return "201112L";
+	case STD_C17: return "201710L";
+	case STD_C23: return "202311L";
+	default:      return (const char *)0;
+	}
+    }
+    // K&R-era recovery (old-style parameter declarations, file-scope
+    // implicit-int definitions) is admitted ONLY under an explicit C
+    // standard that predates C23 (which removed them) — never in the
+    // madc dialect or any C++ mode.
+    bool knr_supported() const { return language_std >= STD_C78 && language_std < STD_C23; }
+    // The madc dialect is a C++ superset: like every explicit C++ mode it
+    // presents to system headers as g++ (__cplusplus/__GNUG__ defined), so
+    // the REAL glibc/libstdc++ headers configure their C++ surface. Only
+    // explicit C standards present as plain gcc.
+    bool presents_as_cpp() const { return language_std == STD_MADC || is_cpp_mode(); }
+    bool auto_includes_enabled() const { return language_std == STD_MADC; }
+    // A C++ reserved keyword introduced in `min_std` is active iff we are in the
+    // madc dialect (reserves the full C++ keyword set) or in an explicit C++ mode
+    // at/after that standard. The C++ enumerators are contiguous and ordered
+    // (CPP98 < CPP03 < ... < CPP26), so the `>=` compare is a pure version floor;
+    // is_cpp_mode() excludes the (lower-valued) C enumerators. NEVER active in C.
+    bool cpp_keyword_active(LanguageStd min_std) const
+    { return language_std == STD_MADC || (is_cpp_mode() && language_std >= min_std); }
+    // The __cplusplus value a given C++ LanguageStd mandates (C++26 uses g++'s
+    // provisional 202400L until the standard fixes one).
+    static const char *cplusplus_value_for(LanguageStd std) {
+	switch ( std ) {
 	case STD_CPP98: case STD_CPP03: return "199711L";
 	case STD_CPP11: return "201103L";
 	case STD_CPP14: return "201402L";
@@ -1552,6 +1990,12 @@ public:
 	case STD_CPP26: return "202400L";
 	default:        return "201703L";
 	}
+    }
+    // The __cplusplus value the ACTIVE mode presents. An explicit C++ `--std=`
+    // uses that level; STD_MADC (and any non-C++ selection) falls back to the
+    // single configurable `default_cpp_std` bar — no magic literal here.
+    const char *cplusplus_value_for_std() const {
+	return cplusplus_value_for(is_cpp_mode() ? language_std : default_cpp_std);
     }
     bool set_language_standard(const std::string &standard);
     bool set_language_standard_option(const std::string &arg);
@@ -1788,6 +2232,11 @@ public:
 	tokens.pop_front();
 	// Update global parse position so newly created tokens inherit it
 	if ( _cur_token ) {
+	    ++_tok_consumed;
+	    if ( ++_cur_token->read_count == 2 )
+		++_tok_reread;
+	    if ( _cur_token->read_count > _tok_max_reads )
+		_tok_max_reads = _cur_token->read_count;
 	    TokenBase::_parse_file   = _cur_token->file;
 	    TokenBase::_parse_line   = _cur_token->line;
 	    TokenBase::_parse_column = _cur_token->column;
@@ -1809,6 +2258,15 @@ public:
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCallMethod(TokenCallMethod *);
+    // C++17 init-statement, shared by `if` and `switch` ([stmt.pre]): call
+    // immediately after consuming the opening `(`. When a top-level `;`
+    // precedes the matching `)`, parse the init-statement (simple-declaration
+    // or expression-statement), consume its trailing `;`, and leave the stream
+    // positioned at the condition/switch-expression. Returns the parsed
+    // init-statement node, or NULL when no init-statement is present (stream
+    // untouched). The init-statement's declarations share the condition's
+    // enclosing scope.
+    TokenBase *parse_optional_init_statement();
     // Consume the operator symbol token(s) following an `operator` keyword token
     // and return the canonical operator-function-id name ("operator<",
     // "operator()", "operatornew", "operator[]", …). The `operator` token itself
@@ -1845,8 +2303,39 @@ public:
     int64_t parse_constant_bor();
     int64_t parse_constant_land();
     int64_t parse_constant_lor();
+    // Short-circuit token-skip: consume (without evaluating) the RHS operand of
+    // a `&&`/`||` whose result the LHS already determines. C++ [expr.const]: the
+    // skipped operand need not be a constant expression. stop_at_and=true for a
+    // `&&` RHS (a bor-operand, ends at the next `&&`); false for a `||` RHS (a
+    // land-operand, spans `&&`). Keeps the cursor positioned for the caller.
+    void skip_const_logical_operand(bool stop_at_and);
     int64_t parse_constant_ternary();
     int64_t parse_constant_integer_expression();
+    // C++20 requires-expression evaluation (`requires` already consumed by the
+    // caller): parse the optional `(param-list)` then `{ requirement-seq }`,
+    // and return 1 iff every requirement is satisfied. Params are modeled as
+    // `std::declval<Type&>()` values substituted into each requirement; a
+    // requirement's expression is checked WELL-FORMED via parseExpression in
+    // unevaluated context (constraint_expression_well_formed). Used by the
+    // `requires` arm of parse_constant_primary so concept constraints that
+    // contain requires-expressions fold to a constant.
+    int64_t evaluate_requires_expression_constant();
+    // True iff `exprtoks` resolves as a well-formed expression in unevaluated
+    // (decltype-like) context. On success, *out_type (if non-NULL) receives the
+    // expression's DataDef. Isolated stream + muted diagnostics: a SFINAE-style
+    // miss leaves no error trail.
+    bool constraint_expression_well_formed(const std::vector<TokenBase *> &exprtoks,
+					   DataDef **out_type = NULL);
+    // `if constexpr` support (C++17 [stmt.if]/2). The stream is positioned just
+    // AFTER the condition's `(`; collect the balanced condition tokens (consuming
+    // the matching `)`) and fold them to a constant. Returns true + value on a
+    // successful fold; on failure restores the stream (condition tokens + `)` back)
+    // and returns false so the caller falls back to a runtime `if`.
+    bool fold_if_constexpr_condition(int64_t &out);
+    // Skip ONE statement's tokens (a `{...}` block, balanced, or a single statement
+    // through its terminating `;`) WITHOUT parsing — so a discarded `if constexpr`
+    // branch is never instantiated or emitted.
+    void skip_discarded_statement();
     // Speculatively fold a static-member initializer ('=' already consumed) to a
     // constant int, expecting ';'. Consumes the initializer on success, restores
     // and returns false otherwise. See parser.cpp.
@@ -1855,6 +2344,13 @@ public:
     // integer type `member_dd`; `named` rejects a zero width; `target` supplies
     // the storage-size rule. Shared by the struct and class body parsers.
     size_t parse_bitfield_width(TokenBase *loc, DataDef *member_dd, bool named, DataDefSTRUCT &target);
+    // Capture a C++11 default member initializer (NSDMI: `= expr` / `{...}`) that
+    // begins at `tn` (the token after a data-member declarator), parse it in an
+    // isolated stream, and record it under member name `mname` on `dds`. Returns
+    // the token following the initializer (the `,`/`;`), or `tn` unchanged if `tn`
+    // does not begin an initializer. Shared by the struct and class body parsers.
+    TokenBase *capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dds,
+					   const std::string &mname);
     // Array-dimension classification: decide whether the upcoming `[ … ]`
     // dimension is a VLA (needs a runtime value) or a constant fold.
     // `bracket_dim_needs_runtime_value` is the entry; the other three are its
@@ -1873,18 +2369,44 @@ public:
     // bound to the winning overload (same parameters / parent_expr / position).
     class TokenCallMethod *reselect_method_overload(class TokenCallMethod *tc,
 		Variable &recv, class DataDefCLASS *cls, const std::string &id);
+    // Static-member-call analogue of reselect_method_overload: a qualified
+    // static call (`Owner::m(args)`) resolves its callee by name+arity BEFORE
+    // the args are parsed, so once the arg types are known reselect the overload
+    // by [over.match] + [temp.func.order] (findMethodOverload's partial-order
+    // tiebreak). Returns a NEW TokenCallFunc bound to the better overload (with
+    // the member-template instantiation hooks re-run on it) when one is found,
+    // else the original `tc`.
+    class TokenCallFunc *reselect_static_member_overload(class TokenCallFunc *tc,
+		class DataDefCLASS *owner, const std::string &member);
     // The class-object DataDef an operand expression DENOTES for operator /
     // overload resolution: its datadef's class, or — for a reference-typed
     // expression / a REFERENCE variable (`const A &p`, vfREFERENCE stored as
     // DataDefPTR(A)) — the referenced class. A plain `A*` pointer operand
     // stays NULL: only the reference representation is transparent here.
     class DataDefCLASS *operand_object_class(TokenBase *operand);
+    // The VALUE view of an operand's type (reference expression / vfREFERENCE
+    // variable -> the referenced type) for deduction and overload ranking.
+    // A CALL operand types by its RESOLVED callee's return — see
+    // resolved_call_funcdef.
+    DataDef *operand_value_datadef(TokenBase *operand);
+    // The RESOLVED callee of a call token whose parse-bound Variable may be an
+    // arbitrary member of a late-bound namespace overload set (overloads /
+    // fn-template instantiations register after the call site parses). Re-ranks
+    // the set with the call's argument value types; the parse-side mirror of
+    // CirBuilder::call_target_funcdef. Returns the bound FuncDef when no set
+    // applies; sets *no_winner when a set applies but no candidate is viable.
+    FuncDef *resolved_call_funcdef(class TokenCallFunc *tc,
+				   bool *no_winner = NULL);
     // Type an operator expression on a class-object operand with the operator's
     // return type (Part A of generic operator-overload support). No-op unless the
     // left operand is a class object declaring the matching binary operator, or
     // (W2) a captured FREE namespace operator on the operand classes returns a
     // class by value (std::operator+ on strings).
     void resolve_object_operator_type(class TokenOperator *to);
+    // Array-to-pointer decay ([conv.array]) for an operator operand: returns the
+    // decayed `element *` type for a fixed-array variable / array member /
+    // array-typed expression, else NULL. See parser.cpp.
+    DataDef *array_decay_pointer(TokenBase *operand);
     // The return CLASS of a captured FREE namespace binary operator on class
     // operands whose return is a class BY VALUE deducing to one of the operand
     // classes. Structural template-head check only — full deduction, overload
@@ -1901,6 +2423,33 @@ public:
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     DataDefPTR *getPointerType(DataDef *base);
     DataDefREF *getReferenceType(DataDef *base);
+    // const-qualify a type: const T (idempotent — getConstType(const T) == const T).
+    // Cached in const_type_cache. Const has no runtime/ABI effect; this exists for
+    // TYPE IDENTITY (so const T != T survives deduction / instantiation keying).
+    // See docs/plans/2026-06-19-const-qualified-types.md.
+    DataDefCONST *getConstType(DataDef *base);
+    // The return type to CONSTRUCT a FuncDef with: a DataDefREF for a
+    // reference return (routed through getReferenceType — the single
+    // reference-creation/collapse path), else the bare type. Centralizes the
+    // "a reference return is born as a DataDefREF" decision so FuncDef::returns
+    // holds the real reference type, not a bare referent + parallel flag
+    // (first-class refs Phase 2).
+    DataDef &returnDecl(DataDef &dd, bool is_ref)
+	{ return is_ref ? *(DataDef *)getReferenceType(&dd) : dd; }
+    // Fold a trailing template-argument declarator suffix (`*`, `&`, `&&`) off the
+    // token stream into the argument's type, returning the wrapped type token.
+    // One owner of the rule, shared by every template-argument parser — a pointer
+    // OR reference type is a valid template argument (`Vec<T*>`,
+    // `conditional<b, int&, long>`, `__conditional_t<…, remove_reference_t<R>&&, …>`).
+    TokenDataType *fold_template_arg_declarator(TokenDataType *adt, TokenBase *origin);
+    // Resolve a fn-template parameter's DEFAULT token run to a concrete type,
+    // substituting the already-bound type parameters in, then resolving in an
+    // isolated token stream (handles trait-expression / template-id defaults like
+    // `R = __conditional_t<...>`). Returns NULL for a still-dependent default.
+    DataDef *resolve_template_param_default_type(
+		const std::vector<TokenBase *> &default_tokens,
+		const std::map<std::string, DataDef *> &binding,
+		DataDefCLASS *owner);
     // Consume a declarator's pointer-star run: a sequence of `*` interleaved with
     // cv-qualifiers (const/volatile/restrict). Each `*` on a NON-fn-ptr base wraps
     // `dd` via getPointerType (the type reflects the indirection); a DataDefFPTR
@@ -1916,11 +2465,26 @@ public:
     // function-pointer typedefs. Builds a FuncDef with the given return type.
     // Parameter names are accepted but discarded. Stops after consuming ')'.
     FuncDef *parseFnPtrParams(DataDef &returns);
+    // The FuncDef giving a CALL's signature: the variable's own FuncDef, or
+    // the target signature behind a function-pointer type (DataDefFPTR).
+    // NULL when the variable isn't callable-typed. Parse-time twin of the CIR
+    // builder's call_target_funcdef — never blind-cast var.type to FuncDef
+    // (a fn-ptr call's DataDefFPTR read as FuncDef is UB: SMAUG's
+    // `(*skill->spell_fun)(...)` arity check read garbage).
+    static FuncDef *call_signature_funcdef(const Variable &var);
+    // Function-pointer MEMBER declarator tail: parses `name ) ( params )`
+    // after the leading `RET ( *` was consumed; returns the DataDefFPTR and
+    // sets mname. Shared by the top-level and nested-aggregate struct member
+    // parsers (e.g. glibc sigevent's `void (*_function)(__sigval_t);` inside
+    // an anonymous union).
+    DataDefFPTR *parse_fnptr_member_tail(DataDef &returns, std::string &mname,
+					 TokenBase *open_tok);
     TokenBase *parseExpression(TokenBase *, bool conditional=false,
 			       bool ternary_branch=false,
 			       bool stop_on_closing_paren=false,
 			       int initial_brackets=0,
-			       bool push_back_comma=false);
+			       bool push_back_comma=false,
+			       bool cast_operand=false);
     // Control-flow signal an extracted parseExpression switch-arm handler
     // returns to the shunting-yard loop, one-to-one with the arm's original
     // inline control flow: Break = fall to the per-token epilogue (peek/advance),
@@ -1968,7 +2532,7 @@ public:
 				   bool conditional, bool ternary_branch,
 				   bool stop_on_closing_paren,
 				   int initial_brackets, bool push_back_comma,
-				   TokenBase *&result);
+				   TokenBase *&result, bool cast_operand=false);
     // Old-style (K&R) parameter declarations: detection + parsing of the
     // `int f(a, b) int a; char *b; { … }` form (C only). The detectors peek
     // the stream; parse_old_style_parameter_declaration fills param_types.
@@ -2046,6 +2610,20 @@ public:
 					    std::vector<TokenBase *> *seen = NULL);
     void capture_extern_template_class_instantiation();
     void apply_template_call_return_inference(TokenCallFunc *tc);
+    DataDef *resolve_namespace_fn_template_call_return_type(TokenCallFunc *tc,
+							    bool *ret_ref);
+    // Key-based core of the above: resolve a free/namespace function-template
+    // call's return type from "ns::name" + the explicit type arguments. Called
+    // by the TokenCallFunc entry AND recursively for a `decltype(inner_call)`
+    // return (declval's `decltype(__declval<_Tp>(0))`). `depth` bounds the
+    // recursion. No emission — resolves purely from the retained decl tokens.
+    DataDef *resolve_fn_template_return_by_key(const std::string &key,
+				const std::vector<DataDef *> &explicit_args,
+				bool *ret_ref, int depth);
+    // Resolve `decltype ( IDENT < targs > ( args ) )` (substituted tokens) by
+    // recursing into IDENT's template return type in namespace `ns`. No emit.
+    DataDef *resolve_decltype_call_return(const std::vector<TokenBase *> &sub,
+				const std::string &ns, bool *ret_ref, int depth);
     TokenBase *collect_template_argument_spelling(TokenBase *first,
 						  std::string &spelling,
 						  std::vector<TokenBase *> *tokens_out = NULL);
@@ -2060,6 +2638,13 @@ public:
 						  TokenBase *tb,
 						  const std::string &ns_hint = std::string(),
 						  DataDefCLASS *owner_hint = NULL);
+    // True iff EVERY collected alias-use argument is non-dependent (concrete):
+    // each non-type arg folds to a constant and each type arg resolves to a
+    // type with no unresolved dependent surface. Lets instantiate_template_alias_use
+    // tell a genuine SFINAE failure (concrete args, absent `::type`) from a
+    // deferred dependent use.
+    bool alias_use_args_all_concrete(const TemplateAliasDef &td,
+			 const std::vector<std::vector<TokenBase *> > &arg_tokens);
     // Resolve a template-id `Name<...>` to its concrete type: an alias template
     // first, then a class template (the order every call site used by hand).
     // Single seam for the namespace hint so qualified uses pick the right
@@ -2072,6 +2657,14 @@ public:
     TokenDataType *instantiate_opaque_template_use(TemplateDef &td,
 						   const std::string &tname,
 						   TokenBase *tb);
+    // GCC's __integer_pack(N) builtin (libstdc++-13 GCC-path index-sequence
+    // primitive): valid only as the entire pattern of a template-argument pack
+    // expansion `X<... __integer_pack(N)... ...>`; at substitution time (N a
+    // concrete constant) it yields the pack [0,1,...,N-1]. Rewrites the live
+    // token stream IN PLACE, between a just-consumed `<` and its matching close,
+    // splicing each occurrence into literal integer args so the ordinary
+    // template-argument loops then collect plain non-type args.
+    void expand_integer_pack_template_args();
     TemplateAliasDef *find_template_alias(const std::string &name,
 					  const std::string &ns_hint = std::string(),
 					  DataDefCLASS *owner_hint = NULL);
@@ -2094,15 +2687,25 @@ public:
 					       TokenBase *typename_tb);
     TokenDataType *resolve_class_member_type_chain(DataDefCLASS *owner,
 						   TokenBase *owner_tb);
+    TokenDataType *resolve_member_chain_or_type(TokenDataType *type_tok,
+						TokenBase *tb,
+						bool consume_class_member_chain);
     TokenDataType *resolve_declared_type_token(TokenBase *tb,
 					       bool consume_ns_tokens,
 					       bool allow_lazy_types,
 					       bool consume_class_member_chain = true);
+    // Resolve a TYPE that spans a token RANGE (e.g. a member-template return
+    // type `std::pair<iterator, bool>`) through the canonical type resolver,
+    // in an isolated token stream so the live parse position is untouched.
+    // Returns the resolved DataDef, or NULL when the range is not a type.
+    DataDef *resolve_type_token_range(const std::vector<TokenBase *> &toks,
+				      size_t start, size_t end);
     TokenDataType *resolve_namespaced_type_token(TokenBase *tb, bool consume_tokens);
     // Type-name resolution helpers: look up a named DataDef (struct/typedef/lazy),
     // a current-class type alias, a variable matching a contextual type name, and
     // the class scope an expression name resolves to.
     DataDef *resolve_named_datadef(const std::string &name);
+    bool typedef_alias_matches_datadef(const std::string &alias, DataDef *dd);
     DataDef *resolve_current_class_type_alias(const std::string &name);
     bool resolve_current_class_static_member_const_value(const std::string &name, int64_t &out);
     bool fold_constant_qualified_member(TokenBase *first, int64_t &out);
@@ -2125,7 +2728,8 @@ public:
     std::string unique_overload_symbol(std::string base);
     std::vector<TokenBase *> collect_compound_body_tokens(TokenBase *open);
     void enqueue_deferred_function_body(Variable *var,
-					Method *method, TokenBase *open);
+					Method *method, TokenBase *open,
+					const std::vector<TokenBase *> *trailing_ret = NULL);
     void parse_deferred_function_body(DeferredFunctionBody &body);
     void parse_deferred_function_bodies(std::vector<DeferredFunctionBody> &bodies);
     // Lazy member-function-body instantiation: parse a single deferred body by
@@ -2148,6 +2752,12 @@ public:
     // position; consumed (and cleared) by the function-declaration parse.
     bool pending_no_strict_aliasing;
     TokenBase *consume_gnu_asm_label(TokenBase *nt, std::string *alias_target);
+    // Skip (or lower the recognized `=r`/`+r`/`+m`/... copy shapes of) a GNU
+    // asm STATEMENT. `tb` is the asm introducer (identifier or reserved
+    // tkCPPKEYWORD spelling). Shared by both the ttIdentifier and ttKeyword
+    // arms of parseStatement so reserving `asm` as a keyword does not lose the
+    // statement-level skip.
+    TokenBase *skip_gnu_asm_statement(TokenBase *tb);
     void skip_c23_attributes();
     size_t parse_gnu_vector_size_attribute();
     void consume_typedef_gnu_attributes(std::string *mode_name = NULL,
@@ -2198,6 +2808,7 @@ public:
     bool is_shared_global_extern_reference(TokenCpnd *code, Variable *var);
     bool next_parenthesized_type_is_compound_literal();
     bool paren_group_is_function_def();
+    bool paren_group_is_nonclass_direct_init();
     bool parse_array_designator_initializer(TokenBase *&next_init,
 					    size_t &first_index, size_t &last_index);
     bool parse_builtin_types_compatible_operand(TokenBase *type_tb,

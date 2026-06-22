@@ -1,0 +1,19 @@
+#include <stdio.h>
+
+// Companion to testpredefmacros: under an explicit C standard madc presents
+// to system headers as plain gcc — __cplusplus/__GNUG__ must NOT be defined
+// (C code's `#ifdef __cplusplus` regions stay off).
+int main(void)
+{
+#ifdef __cplusplus
+	printf("cplusplus (unexpected under --std=c17)\n");
+#else
+	printf("no cplusplus\n");
+#endif
+#ifdef __GNUG__
+	printf("GNUG (unexpected under --std=c17)\n");
+#else
+	printf("no GNUG\n");
+#endif
+	return 0;
+}

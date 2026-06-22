@@ -1,0 +1,20 @@
+#!/../bin/madc
+// A GLOBALLY-qualified placement-new expression `::new(addr) T(args)` — a
+// leading `::` selects the global operator new ([expr.new]). The leading-`::`
+// expression parser treated `new` as an identifier after `::` ("use of
+// undeclared identifier 'new'"); it now delegates to the new keyword's parse,
+// exactly like the unqualified form. This is what libstdc++'s allocator /
+// __new_allocator::construct emit: `::new((void*)__p) _Up(args...)` — the link
+// in the std::vector<int>::push_back chain this unblocks.
+// (Heap `::new T` and class placement-new assignment are pre-existing CIR
+// limitations shared with the unqualified forms — off this fix.)
+#include <new>
+#include <iostream>
+using namespace std;
+int main()
+{
+    int buf = 0;
+    int* p = ::new(&buf) int(42);     // global-qualified scalar placement new
+    cout << "v=" << *p << endl;
+    return 0;
+}

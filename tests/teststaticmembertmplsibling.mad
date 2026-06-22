@@ -1,0 +1,22 @@
+#!../bin/madc
+// A STATIC member function template, when instantiated, must resolve unqualified
+// references to SIBLING members of its own class ([basic.lookup.unqual]: class
+// scope is in effect inside a static member). This is the libstdc++ shape
+// allocator_traits::destroy -> calls sibling static _S_destroy(__a,__p,0)
+// unqualified. Before the fix a static member template was instantiated as a
+// FREE function (no owner scope), so the sibling call was "undeclared".
+#include <iostream>
+using namespace std;
+
+struct C {
+    static int base(int x) { return x * 10; }                 // non-template sibling
+    template<typename T> static T scale(T x) { return x + 1; } // template sibling
+    // template CALLER referencing both a non-template and a template sibling:
+    template<typename T> static T run(T x) { return base(x) + scale(x); }
+};
+
+int main()
+{
+    cout << C::run<int>(3) << endl;   // base(3)=30 + scale(3)=4 => 34
+    return 0;
+}

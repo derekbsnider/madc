@@ -1,0 +1,27 @@
+#!/../bin/madc
+// A pointer DATA MEMBER used unqualified as the receiver of an arrow method
+// call (`p->valptr()` inside a method == `this->p->valptr()`) must keep its
+// `__this->` qualifier — the member-arrow-call receiver previously emitted the
+// bare field name and c2mir reported "undeclared identifier". This is the
+// libstdc++ `_Rb_tree::_M_destroy_node` / `_Node_handle_common::_M_reset`
+// shape (`_AllocTraits::destroy(alloc, _M_ptr->_M_valptr())`).
+#include <iostream>
+int g_sum = 0;
+struct Node { int val; int* valptr() { return &val; } void bump() { val += 1; } };
+struct Holder {
+    Node* p;
+    void run() {
+        int* q = p->valptr();    // member receiver in an assignment-init
+        *q = 9;
+        p->bump();               // member receiver as a statement
+        int* r = p->valptr();    // again, as a plain argument target
+        g_sum += *r;
+    }
+};
+int main(){
+    Node n; n.val = 0;
+    Holder h; h.p = &n;
+    h.run();
+    std::cout << g_sum << " " << n.val << std::endl;   // 10 10
+    return 0;
+}

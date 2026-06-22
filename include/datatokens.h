@@ -86,6 +86,11 @@ public:
    ~Variable();
     inline bool is_vla() const { return vla_size_expr != nullptr; }
     inline bool is_fixed_array() const { return (flags & vfFIXEDARRAY) != 0; }
+    // A reference variable (`T& r`, `auto& x`, a `T&` parameter, a `for(T& v:c)`
+    // loop var): its type is a DataDefREF. The single source of truth for
+    // reference-ness — first-class refs Phase 2 retired the parallel vfREFERENCE
+    // flag. The value auto-derefs on access; the slot holds the referent address.
+    inline bool is_reference() const { return type && type->is_reference(); }
     inline bool has_aot_data() const { return aot_data_offset != (size_t)-1; }
     inline bool has_aot_cstr() const { return aot_cstr_offset != (size_t)-1; }
     inline size_t total_elements() const {
@@ -119,6 +124,7 @@ public:
 	else if (type == &ddUINT64) *((uint64_t *)data) = c;
 	else if (type == &ddFLOAT)  *((float *)data) = c;
 	else if (type == &ddDOUBLE) *((double *)data) = c;
+	else if (dynamic_cast<DataDefENUM *>(type)) *((int32_t *)data) = c;
 	else 	     { return false; }
 	return true;
     }
@@ -140,6 +146,7 @@ public:
 	if (type == &ddUINT64) return *((uint64_t *)data) == static_cast<uint64_t>(c);
 	if (type == &ddFLOAT)  return *((float *)data) == c;
 	if (type == &ddDOUBLE) return *((double *)data) == c;
+	if (dynamic_cast<DataDefENUM *>(type)) return *((int32_t *)data) == c;
 	return 0;
     }
     int cmp(std::string &s)
@@ -206,6 +213,7 @@ public:
 	else if (type == &ddUINT64) return *((uint64_t *)data);
 	else if (type == &ddFLOAT)  return *((float *)data);
 	else if (type == &ddDOUBLE) return *((double *)data);
+	else if (dynamic_cast<DataDefENUM *>(type)) return *((int32_t *)data);
 	return true;
     }
 };

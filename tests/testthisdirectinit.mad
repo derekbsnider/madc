@@ -1,0 +1,25 @@
+// Regression: direct-initialization of a non-class local from a `this->` member
+// call inside a method — `T *p(this->fn());` / `T v(this->fn());`. `this` is a
+// reserved C++ keyword token (tkCPPKEYWORD), so paren_group_is_nonclass_direct_init
+// must resolve it via the contextual-identifier accessors, not a raw ttIdentifier
+// cast — else the declaration is mis-parsed as a function (most-vexing-parse) and
+// `this` hits "Failed to find type when parsing function parameters". This is the
+// libstdc++ `pointer __new_start(this->_M_allocate(__len));` shape in
+// vector::_M_realloc_insert.
+#include <iostream>
+struct Pool {
+    int base;
+    Pool(int b) : base(b) {}
+    int alloc(int n) { return base + n; }
+    int *alloc_ptr(int n) { static int s; s = base * n; return &s; }
+    int grow(int n) {
+        int *p(this->alloc_ptr(n));
+        int v(this->alloc(n));
+        return *p + v;
+    }
+};
+int main() {
+    Pool pool(10);
+    std::cout << pool.grow(3) << std::endl;
+    return 0;
+}

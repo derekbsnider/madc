@@ -52,7 +52,15 @@ enum class TokenID {
   tkUNION, tkNEW, tkDELETE,
   tkDynamicCast, tkTypeid,    // RTTI (S5): dynamic_cast<T*>(e), typeid(e|T)
   tkObjTemp,                  // functional construction temporary: T(args)
-  tk3NotEq                    // !== strict not-equal (STD_MADC dialect)
+  tk3NotEq,                   // !== strict not-equal (STD_MADC dialect)
+  tkFRIEND,                   // C++ `friend` declaration specifier
+  tkExplicitDtor,             // explicit/pseudo destructor call: obj.~T() / ptr->~T()
+  tkCPPKEYWORD                // generic reserved C++ keyword (version-gated); the
+			      // spelling distinguishes it. Used for reserved words
+			      // that the parser still recognizes by spelling (via
+			      // contextual_identifier_name) rather than a dedicated
+			      // dispatch token — so they are reserved (not bare
+			      // identifiers) without proliferating one class each.
 };
 
 enum class TokenAssoc {
@@ -77,6 +85,11 @@ public:
     int line;
     int column;
     std::streampos pos;
+    // Diagnostic: how many times the parser has CONSUMED this token via
+    // nextToken() (a re-read > 1 means backtracking / pushback re-lexing /
+    // template re-instantiation touched the same token object). Reported in
+    // aggregate by --show-stats; otherwise just one uint per token.
+    uint32_t read_count;
     // Leading trivia (whitespace + comments) preserved before this token, for
     // byte-faithful source reconstruction. Populated only in full-fidelity mode
     // (Program::keep_trivia); empty in lean/batch mode (zero cost there).
@@ -87,8 +100,8 @@ public:
     static const char *_parse_file;
     static int _parse_line;
     static int _parse_column;
-    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; }
-    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; }
+    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
+    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
     virtual ~TokenBase() {}
     virtual TokenBase *clone() { return new TokenBase(_token); }
     virtual void set(int64_t c) { _token = c; }
@@ -1070,6 +1083,35 @@ public:
     virtual TokenBase *parse(Program &) { return NULL; }
 };
 
+// A reserved C++ keyword that has no dedicated dispatch token: it is reserved
+// (so it is NOT treated as a bare identifier) but the parser recognizes it by
+// SPELLING (contextual_identifier_name), the same way `sizeof`/`decltype`/the
+// named casts are already handled. A prototype instance per spelling lives in
+// keyword_map; `str` (from TokenIdent) carries the spelling, and `id()` is
+// always tkCPPKEYWORD, so a fresh leaf copy is fully equivalent.
+//
+// clone() MUST return an INDEPENDENT copy (like TokenIdent), NOT the shared
+// keyword_map prototype. The base TokenKeyword::clone() returns `this` to
+// preserve dispatch SUBTYPES (TokenDO/TokenIF/…); TokenCppKeyword has no such
+// subtypes, so `new TokenCppKeyword(str)` reproduces it exactly. Returning the
+// shared prototype aliased every `constexpr`/`sizeof`/… occurrence into ONE
+// mutable object that the lexer then re-stamped per use (line/column/file) and
+// that a retained fn-template decl borrowed — so deleting any one occurrence
+// freed it for ALL borrowers (a use-after-free crashing partial-ordering of
+// std::forward's overloads on `vector<T*>`; see feature-drops-audit row 6).
+class TokenCppKeyword: public TokenKeyword
+{
+public:
+    TokenCppKeyword(const char *k) : TokenKeyword(k) {}
+    TokenCppKeyword(const std::string &k) : TokenKeyword(k) {}
+    virtual TokenID id() const { return TokenID::tkCPPKEYWORD; }
+    virtual TokenBase *clone() { return new TokenCppKeyword(str); }
+    // Ignored declaration-specifiers (constexpr/consteval/constinit) consume
+    // themselves and continue parsing the declaration they qualify; any other
+    // reserved keyword reaching here is an expression leader.
+    virtual TokenBase *parse(Program &);
+};
+
 /*
 32 C keywords needed:
 auto         double      int        struct
@@ -1169,12 +1211,13 @@ public:
 class TokenSWITCH: public TokenKeyword
 {
 public:
+    TokenBase *init_stmt;                      // C++17 `switch (init; expr)` init-statement (NULL when absent)
     TokenBase *expression;                     // switch(expr)
     std::vector<TokenCASE *> cases;            // case entries
     TokenCASE *defaultcase;                    // default entry (reuses TokenCASE with value=NULL)
     int default_index;                         // source-order position of default among cases (-1 if none)
     std::vector<TokenBase *> pre_case_stmts;   // declarations before the first case label (C allows them)
-    TokenSWITCH() : TokenKeyword("switch"), expression(NULL), defaultcase(NULL), default_index(-1) {}
+    TokenSWITCH() : TokenKeyword("switch"), init_stmt(NULL), expression(NULL), defaultcase(NULL), default_index(-1) {}
     virtual TokenID id() const { return TokenID::tkSWITCH; }
     virtual TokenBase *clone() { return new TokenSWITCH(); }
     virtual TokenBase *parse(Program &);
@@ -1205,6 +1248,18 @@ public:
     TokenUSING() : TokenKeyword("using") {}
     virtual TokenID id() const { return TokenID::tkUSING; }
     virtual TokenBase *clone() { return (TokenBase*)new TokenUSING(); }
+    virtual TokenBase *parse(Program &);
+};
+
+// C++ `friend` declaration specifier. Only valid leading a member declaration
+// inside a class/struct body (the struct/class member parsers intercept it on
+// the tkFRIEND token); a standalone parse is a misplaced-friend error.
+class TokenFRIEND: public TokenKeyword
+{
+public:
+    TokenFRIEND() : TokenKeyword("friend") {}
+    virtual TokenID id() const { return TokenID::tkFRIEND; }
+    virtual TokenBase *clone() { return (TokenBase*)new TokenFRIEND(); }
     virtual TokenBase *parse(Program &);
 };
 
@@ -1278,7 +1333,8 @@ public:
     // is not a class (string / scalar), with alloc_class still used for classes.
     TokenBase *placement;
     DataDef *alloc_type;
-    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; }
+    TokenBase *array_size;	// `new T[n]` — the element count expr (NULL for scalar new)
+    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; array_size = NULL; }
     virtual TokenID id() const { return TokenID::tkNEW; }
     virtual TokenBase *clone() { return new TokenNEW(); }
     virtual TokenBase *parse(Program &);
@@ -1288,7 +1344,8 @@ class TokenDELETE: public TokenKeyword
 public:
     TokenBase *expr;
     DataDefCLASS *del_class;
-    TokenDELETE() : TokenKeyword("delete") { expr = NULL; del_class = NULL; }
+    bool is_array;	// `delete[]` (array delete) vs scalar `delete`
+    TokenDELETE() : TokenKeyword("delete") { expr = NULL; del_class = NULL; is_array = false; }
     virtual TokenID id() const { return TokenID::tkDELETE; }
     virtual TokenBase *clone() { return new TokenDELETE(); }
     virtual TokenBase *parse(Program &);
@@ -1309,6 +1366,25 @@ public:
     virtual TokenID id() const { return TokenID::tkObjTemp; }
     virtual DataDef *datadef() const { return (DataDef *)obj_class; }
     virtual TokenBase *clone() { return new TokenObjTemp(*this); }
+};
+
+// Explicit / pseudo destructor call: `obj.~T()` or `ptr->~T()`. Built by the
+// expression parser when a `~` follows a `.`/`->`. `obj` is the lhs expression
+// (an object for `.`, a pointer for `->`); `dtor_class` is the named type when
+// it is a class with a destructor, NULL for a trivial/scalar type (then the
+// call is a no-op — `obj` is still evaluated for side effects). CirBuilder
+// emits the complete-destructor call (no free, unlike `delete`).
+class TokenExplicitDtor: public TokenBase
+{
+public:
+    TokenBase *obj;
+    DataDefCLASS *dtor_class;
+    bool is_arrow;
+    TokenExplicitDtor(TokenBase *o, DataDefCLASS *c, bool arrow)
+	: TokenBase(), obj(o), dtor_class(c), is_arrow(arrow) { _datatype = &ddVOID; }
+    virtual TokenID id() const { return TokenID::tkExplicitDtor; }
+    virtual DataDef *datadef() const { return &ddVOID; }
+    virtual TokenBase *clone() { return new TokenExplicitDtor(*this); }
 };
 
 class TokenSTRUCT: public TokenKeyword
@@ -1437,11 +1513,15 @@ public:
 class TokenIF: public TokenKeyword
 {
 public:
+    // C++17 init-statement: `if (init-statement; condition) ...`. The
+    // init-statement (a simple-declaration or expression-statement) runs
+    // before the condition and shares its scope; NULL when absent.
+    TokenBase *init_stmt;
     TokenBase *condition;
     TokenBase *condition_decl;
     TokenBase *statement;
     TokenBase *elsestmt;
-    TokenIF() : TokenKeyword("if") { condition = condition_decl = statement = elsestmt = NULL; }
+    TokenIF() : TokenKeyword("if") { init_stmt = condition = condition_decl = statement = elsestmt = NULL; }
     virtual TokenBase *parse(Program &);
     virtual TokenID id() const { return TokenID::tkIF; }
     virtual TokenBase *clone() { return new TokenIF(); }

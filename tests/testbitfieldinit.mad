@@ -1,0 +1,17 @@
+#!/../bin/madc
+// C++20 bit-field default member initializers: `unsigned m:1 = 0;` and
+// comma-separated `unsigned b:3 = 5, c:4 = 0;` (libstdc++ __max_size_type's
+// `unsigned _M_msb:1 = 0;`). madc parses+skips the initializer (does not apply it).
+#include <cstdio>
+struct Flags {
+    unsigned a : 1 = 0;
+    unsigned b : 3 = 5, c : 4 = 0;
+    int payload;
+};
+int main()
+{
+    Flags f;
+    f.payload = 42;
+    printf("bf: %d\n", f.payload);
+    return 0;
+}

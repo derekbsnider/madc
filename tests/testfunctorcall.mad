@@ -1,0 +1,24 @@
+// operator() dispatch on every class-typed receiver form:
+// named object, reference, data member, and a call-result rvalue.
+#include <cstdio>
+
+struct Add {
+	int operator()(int a, int b) const { return a + b; }
+};
+struct Box { Add op; };
+Add makeAdd() { return Add(); }
+
+int main()
+{
+	Add a;
+	Add &r = a;
+	Box b;
+	printf("%d\n", a(1, 2));        // named object   -> 3
+	printf("%d\n", r(3, 4));        // reference       -> 7
+	printf("%d\n", b.op(5, 6));     // data member     -> 11
+	printf("%d\n", makeAdd()(7, 8));// call-result     -> 15
+	int s;
+	s = makeAdd()(20, 22);          // call-result, assignment -> 42
+	printf("%d\n", s);
+	return 0;
+}

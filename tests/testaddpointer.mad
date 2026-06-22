@@ -1,0 +1,23 @@
+#!/../bin/madc
+// __void_t<_Tp*> SFINAE-detection partial-spec slot. add_pointer is
+// `__add_pointer_helper<_Tp, __void_t<_Tp*>>` (a partial spec) over a primary
+// `__add_pointer_helper<_Tp, void>{ type = _Tp; }`. Selecting the spec yields
+// type = _Tp*. The void_t detection slot evaluator only confirmed
+// `__void_t<PARAM::member>` (member-existence probes); a bare `__void_t<_Tp*>`
+// (pointer to the deduced param, no `::member`) was rejected, so the primary
+// was chosen and `add_pointer<int>::type` resolved to int (4) instead of int*
+// (8). A pointer/reference to a deduced type is always a well-formed type.
+// sizeof of the resolved ::type is the oracle; verified identical on
+// g++/clang -std=c++17.
+#include <type_traits>
+#include <cstdio>
+
+int main()
+{
+	using P = std::add_pointer<int>::type;      // int*    -> 8
+	using Q = std::add_pointer<char>::type;     // char*   -> 8
+	using R = std::add_pointer<double>::type;   // double* -> 8
+	using S = std::remove_pointer<int*>::type;  // int     -> 4
+	printf("%zu %zu %zu %zu\n", sizeof(P), sizeof(Q), sizeof(R), sizeof(S));
+	return 0;
+}

@@ -1,0 +1,23 @@
+#!/../bin/madc
+// C++11 `final` class-virt-specifier on struct and class heads, with members
+// and a member function template inside (the libstdc++ `struct _Decay_copy
+// final { template<...> operator()... }` shape from <bits/iterator_concepts.h>).
+#include <cstdio>
+
+struct Sf final {
+    int x;
+    template<typename T> int widen(T t) const { return (int)t + x; }
+};
+
+class Cf final {
+public:
+    int y;
+};
+
+int main()
+{
+    Sf s; s.x = 10;
+    Cf c; c.y = 32;
+    printf("final: %d\n", s.widen(5) + c.y);   // (5+10)+32 = 47
+    return 0;
+}

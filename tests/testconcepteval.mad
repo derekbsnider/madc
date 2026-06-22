@@ -1,0 +1,20 @@
+#!/../bin/madc
+// C++20 concept satisfaction folded as a constant (structural arm: trait atoms,
+// nested concept-ids, conjunction, short-circuit). No requires-expressions here.
+#include <cstdio>
+struct Base {};
+struct Derived : Base {};
+struct Other {};
+template<typename T> concept Classy = __is_class(T);
+template<typename D, typename B> concept DerivedFrom = __is_base_of(B, D);
+template<typename T> concept GoodBase = Classy<T> && DerivedFrom<T, Base>;
+int main()
+{
+    static_assert(Classy<Base>, "Base is a class");
+    static_assert(!Classy<int>, "int is not a class");
+    static_assert(GoodBase<Derived>, "Derived is a class derived from Base");
+    static_assert(!GoodBase<Other>, "Other not derived from Base");
+    static_assert(!GoodBase<int>, "int short-circuits at Classy");
+    printf("concepts ok\n");
+    return 0;
+}

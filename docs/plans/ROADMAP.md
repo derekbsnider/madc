@@ -1,6 +1,7 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-06-11 (v0.29.0).
+Master plan linking all workstreams. Updated 2026-06-22 (v0.29.0 +
+`wip/tuple-instantiation-claude` C++17 map handoff).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -56,6 +57,46 @@ high-level" — the answer is both.**
   Class-(b) GNU extensions (14 tests) are roadmap items, not gate blockers.
   The clean `develop` rebuild emits no compiler warnings. The class-(a)
   failures are the active CIR coverage worklist — see Track 1.3.
+- **C++17 real-header `std::map` / tuple salvage branch (2026-06-22,
+  `wip/map-cxx17-salvage-codex` @ `3534b44` plus local fixes):** the previous
+  dirty session is preserved at `failed/2026-06-22-map-cxx17-attempt-codex`
+  commit `3534b44`; live work continues on the salvage branch. Map bring-up is
+  deliberately C++17-first: `testmap` uses `find/end` rather than C++20
+  `contains`, and map canary flags are `--std=c++17 --no-embedded-headers`.
+  Focused `testmap` and `teststdmapint` pass. The interrupted handoff
+  regressions are recovered: `testforeach2`, `testtuple`, `testfstream`,
+  `testloop`, `testmadcevalexpr`, `testmadcevalexprctx`, and
+  `testmadcevalexprtyped` are green. C++20 comparison canaries remain green
+  under per-test C++20 flags. The local fixes keep body-bearing `void` std
+  function templates (`std::_Destroy`, `std::destroy_at`) on the real-header
+  body-instantiation path and disambiguate duplicate flattened member C field
+  names. The const/reference template-argument spelling and derived-to-base
+  nested-template deduction fixes are now enabled by default after external
+  method declarations gained typed pointer returns and scalar-reference argument
+  addressing. Latest local handoff fixes generic explicit-template overload
+  selection for namespace calls such as `std::forward<T>` and const-qualified
+  class/struct visibility in CIR emission. The previous `std::get` scoped-alias
+  wall is now fixed generically with same-DataDef typedef-alias preservation and
+  concrete partial-specialization completion from the opaque template path. The
+  later undefined local `basic_string...__o15` wrapper was moved forward by
+  generic CIR reference-return/constructor-argument handling. Focused
+  `testmap` now passes after a generic anonymous aggregate layout fix:
+  `DataDefSTRUCT` records anonymous struct/union groups and CIR emits unnamed
+  anonymous aggregate members, so libstdc++ `std::basic_string` keeps its
+  `_M_local_buf`/`_M_allocated_capacity` anonymous union instead of flattening
+  them as sequential fields. Latest salvage fixes recover C++20 `<compare>`
+  constructor binding by preserving scoped enum constant DataDefENUM storage,
+  and recover eval render overloads by letting exact object identity bind
+  `madc::array`/`madc::value` to `array&`. Fulltest was rerun twice but is noisy
+  under the runner's default 5-second per-test cap on this host: one run reported
+  **657 passed, 4 failed, 2 timed out, 18 skipped** and another reported
+  **650 passed, 3 failed, 10 timed out, 18 skipped** with shifting unrelated
+  timeouts; isolated timeout candidates pass sequentially under the default cap.
+  Stable functional reds are now `testcontainerdtor`, `testmadc_ns`, `testset`,
+  and `testsubscript`. Remaining work: retire the broader map/set/container
+  branch reds, fix `tmp/te_direct.mad`'s direct `std::get`
+  declaration-initializer call loss, and clean up non-fatal libstdc++
+  pointer-type diagnostics in the map path.
 - **C++ model — proven on the old backend, being re-established on CIR:**
   ctors/dtors, operator overloading, references, `new`/`delete`, single
   inheritance, vtables, SJLJ exceptions + unwinding, access control, const
@@ -546,13 +587,40 @@ master and unblocks Tracks 3, 5, 6, and AOT.**
 | 2.4 | `new` / `delete` | 1-2 wk | **DONE** (v0.21.0) | [cpp-support.md](cpp-support.md) |
 | 2.5 | Single inheritance | 1-2 wk | **DONE** (v0.21.0) | [cpp-support.md](cpp-support.md) |
 | 2.6 | Virtual functions / vtables | 2-3 wk | **DONE** (v0.21.0) | [cpp-support.md](cpp-support.md) |
-| 2.7 | Exception handling (SJLJ) | 3-4 wk | **DONE** (v0.21.0) — Phase A + B (unwinding) | [cpp-support.md](cpp-support.md) |
+| 2.7 | Exception handling (SJLJ) | 3-4 wk | **Mostly done** (v0.21.0) — Phase A + B (scalar throw/catch + RAII unwind); **object/class-typed catch OPEN** | [cpp-support.md](cpp-support.md) |
 | 2.8 | Quality of life | Ongoing | **Started** — access control, auto token position | [cpp-support.md](cpp-support.md) |
 | 2.9 | Generic extern class ctor/dtor | — | **DONE** (v0.21.0) — replaces per-type switch boilerplate | — |
+| 2.10 | **Single-name local instantiations (flattened→Itanium-mangled)** | 1-2 wk | **Planned** | — |
 
 **2.3 remaining:** pointer-to-const enforcement (`*p` writes), const methods.
+**2.7 remaining:** exceptions are SCALAR-ONLY (int/double/cstr/`catch(...)`).
+Throwing/catching user-class or `std::` exception objects, and inheritance-aware
+`catch (const Base &)` of a derived throw, are unsupported — the SJLJ runtime
+carries no thrown object + catch dispatch is an integer-tag chain, not an RTTI
+type match. Tracked as **P1.1e** in [cpp-support.md](cpp-support.md).
 **2.8 remaining:** enum class, auto type deduction, broader real-iostream
 output replacement, scope-level destruction.
+
+**2.10 — name every madc-local template instantiation by its Itanium mangled
+name, retiring the flattened-key scheme.** Today madc carries TWO naming schemes
+for the same entity: libstdc++-exported symbols are referenced mangled-direct
+(`_ZNSt6vectorIiSaIiEE…`, via `madc_mangle`), while madc-monomorphized local
+bodies (class-template instances like `vector<int>` + nested types, free-fn-
+template instances `__ns_std__Destroy`/`__addressof`, member-template instances)
+get flattened keys (`vector_int32_t_std__allocator_int32_t_…`). Carrying two
+names for one entity is a standing source of confusion and drift (the mangler
+should be the single name source). Unifying on the mangled name everywhere
+(symbol table, emitted C, call sites, struct tags) gives: (a) `--emit=c11`
+diffability against g++; (b) **free linker dedup** — a local instantiation whose
+mangled name coincides with a libstdc++ weak export ODR-merges automatically, so
+the "exported vs inline-only" decision disappears (always mangle; emit a body
+only when nothing else defines it). **Cost/risk:** mangler completeness —
+correct Itanium for nested types, member templates, and substitution compression
+(`S_`/`S0_`); a wrong name becomes a link error or a silent wrong-symbol bind, so
+migrate one category at a time behind the full gate. The member-template
+convergence (Phase 2.10's first consumer — emit a local body under the mangled
+name `itanium_mangle_member_template_sub` already computes when the owner is
+local/not-exported) establishes the pattern.
 
 **Dependencies:** All met. 2.1-2.7 complete.
 

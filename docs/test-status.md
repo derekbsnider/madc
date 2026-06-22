@@ -1,6 +1,51 @@
 # Test Status
 
-> **Current (2026-06-11, `feature/strict-equality-claude` @ `1ffbc8c`
+> **Current WIP (2026-06-22, `wip/map-cxx17-salvage-codex` @ `3534b44`
+> plus local recovery fixes):** the previous dirty session is preserved at
+> `failed/2026-06-22-map-cxx17-attempt-codex` commit `3534b44`; live work
+> continues on the salvage branch with dirty fixes in `include/datatokens.h`,
+> `src/parser.cpp`, and `src/cir_builder.cpp`. Focused C++17 map validation is
+> green: `teststdmapint` pins `std::map<int,int>` insert/update through real
+> libstdc++ headers under `--std=c++17 --no-embedded-headers`, and
+> `tests/testmap.mad` uses C++17 `find/end` rather than C++20 `contains` and
+> passes for `std::map<std::string,int>`. Recovered regressions from the
+> interrupted handoff: `testforeach2`, `testtuple`, `testfstream`, `testloop`,
+> `testmadcevalexpr`, `testmadcevalexprctx`, and `testmadcevalexprtyped` are
+> green. C++20 canaries `testcompare_realhdr`, `testspaceship_realhdr`,
+> `testdefaultedcmp_realhdr`, `testrewritten_realhdr`, and `testinvocable`
+> are also green under per-test `--std=c++20 --no-embedded-headers` flags.
+> Latest fulltest attempts are noisy under the runner's default 5-second
+> per-test integration cap on this host: run 1 reported
+> **657 passed, 4 failed, 2 timed out, 18 skipped**; run 2 reported
+> **650 passed, 3 failed, 10 timed out, 18 skipped** with shifting unrelated
+> timeouts. Isolated timeout candidates pass sequentially under the default
+> cap, so the stable functional red list is now `testcontainerdtor`,
+> `testmadc_ns`, `testset`, and `testsubscript`; `testmap` is no longer in the
+> focused failure set. The former
+> `FEATURE_CONST_TYPES` and `FEATURE_DERIVED_TO_BASE_DEDUCTION` paths are now
+> default after external-method typed-return/ref-argument lowering fixed the
+> historical stream/string regressions. Remaining diagnostics: non-fatal
+> libstdc++ `stl_tree`/`stl_map` pointer-type warnings. Latest local handoff
+> update: the previous `std::get` scoped-alias blocker is fixed generically
+> through same-DataDef typedef-alias preservation plus concrete partial-spec
+> completion from the opaque template path; `_Nth_type`/tuple reducers and
+> `teststdmapint` pass. The later undefined `basic_string...__o15` wrapper was
+> moved forward by generic CIR reference-return/constructor-argument handling.
+> The remaining runtime corruption was caused by flattening libstdc++ anonymous
+> union members in `std::basic_string` as sequential fields, inflating the
+> string layout and overflowing pair/tree storage. `DataDefSTRUCT` now records
+> anonymous aggregate groups and CIR emits unnamed anonymous struct/union
+> members, preserving the ABI layout. `make -C src` passed; `--emit=c11` for
+> `tests/testmap.mad` shows `_M_local_buf`/`_M_allocated_capacity` inside an
+> anonymous union; `tests/teststdmapint.mad` and `tests/testmap.mad` both pass.
+> Focused regressions `tests/testtuple.mad`, `tests/testforeach2.mad`,
+> `tests/testfstream.mad`, `tests/testloop.mad`, and the eval-expression
+> regressions also pass after this fix. Revalidated after a clean non-debug
+> rebuild; `tests/testmathh.timeout` keeps that passing math-header test off
+> the default 5-second wall cap. gcc.c-torture and SMAUG were not rerun in this
+> WIP validation.
+>
+> **Previous (2026-06-11, `feature/strict-equality-claude` @ `1ffbc8c`
 > — `===`/`!==` strict equality, STD_MADC dialect):** fulltest
 > **577 passed, 0 failed, 0 timed out, 18 skipped** (make exit 0, both
 > check gates GREEN, clean rebuild zero warnings). New operators:

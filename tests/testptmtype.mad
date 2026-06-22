@@ -1,0 +1,30 @@
+#!/../bin/madc
+// Stage 1 of pointer-to-member support: a pointer-to-DATA-member type `T C::*`
+// parses in a function/constructor SIGNATURE (the construct that blocked
+// std::pair — bits/stl_pair.h's __zero_as_null_pointer_constant(int C::*)).
+// Declaring the type is what Stage 1 guarantees; taking `&C::m` and using `.*`
+// is Stage 2.
+#include <iostream>
+using namespace std;
+
+struct C { int x; int y; };
+
+// A free function and a constructor each taking a pointer-to-data-member param,
+// plus the self-referential form the standard library uses.
+int sink(int C::*pm);
+struct Holder {
+	Holder(int C::*) {}
+	Holder() {}
+};
+struct SelfRef {
+	SelfRef(int SelfRef::*) {}
+	SelfRef() {}
+};
+
+int main()
+{
+	Holder h;
+	SelfRef s;
+	cout << "ptm-type ok" << endl;
+	return 0;
+}

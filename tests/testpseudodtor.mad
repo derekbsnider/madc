@@ -1,0 +1,30 @@
+#!/../bin/madc
+// Explicit / pseudo destructor call `ptr->~T()`. The expression parser
+// recognizes a `~` after `.`/`->` and synthesizes a TokenExplicitDtor: for a
+// class with a (possibly implicit) destructor it emits the complete-destructor
+// call (no free, unlike `delete`); for a trivial/scalar type it is a no-op but
+// still evaluates the object. This is the real libstdc++ shape
+// `__new_allocator::destroy` (`__p->~_Up();`, bits/new_allocator.h:198), used
+// by allocator_traits/container element destruction.
+#include <iostream>
+using namespace std;
+
+int g_destroyed = 0;
+struct Thing { int v; ~Thing(){ g_destroyed += 100; } };
+typedef int Int;
+
+template<typename U> struct mgr {
+	void destroy(U* p) { p->~U(); }
+};
+
+int main()
+{
+	Thing t; t.v = 5;
+	mgr<Thing> m;
+	m.destroy(&t);		// explicit dtor runs -> g_destroyed += 100
+	mgr<Int> mi;
+	int n = 7;
+	mi.destroy(&n);		// pseudo-dtor on a scalar typedef -> no-op
+	cout << g_destroyed << " " << t.v << " " << n << endl;	// 100 5 7
+	return 0;
+}
