@@ -5097,7 +5097,18 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		int best = -1;
 		for (Variable *cv : pc->ctors) {
 			FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
-			if (!fd || fd->parameters.size() != 2)   // __this + exactly one
+			// A converting ctor must be CALLABLE WITH ONE explicit argument:
+			// __this + at least one user param, and every user param after the
+			// first must be DEFAULTED. The bare `== 2` test missed converting
+			// ctors with trailing defaulted params — e.g. real libstdc++
+			// `basic_string(const char*, const _Alloc& = _Alloc())` has 3
+			// parameters (__this + const char* + defaulted allocator), so a
+			// `const char*` argument scored -1 against a `std::string` parameter,
+			// the proper set::insert(const string&)/(string&&) overloads were
+			// rejected, and a template insert wildcard-matched instead (the
+			// undefined `_insert__o5` import — set-wall bug-7).
+			if (!fd || fd->parameters.size() < 2
+			    || fd->required_param_count() > 2)
 				continue;
 			bool cref = fd->is_ref_param(1);
 			int s = score_arg_to_param(adc, fd->parameters[1], cref, false,

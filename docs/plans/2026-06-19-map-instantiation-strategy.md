@@ -2716,3 +2716,42 @@ PRECISE ENTRY POINTS (verified this session):
   fix (ii) is the faithful path: select `&&`, materialize the `string("Alice")`
   temporary, bind it to the rvalue-ref param, and emit the body. madc currently
   reaches the `&&` symbol but drops the temp + body.
+
+### 2026-06-22 (cont. 6) — set-wall BUG-7a FIXED (UDC ctor scan missed defaulted-param ctors); BUG-7b pinned (testsubscript)
+
+BUG-7a FIXED (commit pending). Instrumenting findMethodOverload + score_arg_to_param
+on tmp/b7_lit.mad cracked it: for `set<string>::insert("Alice")` the non-template
+`insert(const string&)` / `insert(string&&)` overloads were REJECTED (score -1)
+and a 1-param member-template insert wildcard-matched as `__o5` (the undefined
+import). The rejection traced to score_arg_to_param's user-defined-conversion
+ctor scan (cir_builder.cpp ~5098): it only considered ctors with EXACTLY 2
+parameters (`__this` + one). Real libstdc++ `basic_string(const char* __s, const
+_Alloc& __a = _Alloc())` has THREE parameters (__this + const char* + a DEFAULTED
+allocator), so the converting ctor was skipped, `const char*` -> `std::string`
+scored -1, and the proper insert overloads died.
+- FIX (cir_builder.cpp): the UDC ctor scan now accepts any ctor CALLABLE WITH ONE
+  explicit arg — `parameters.size() >= 2 && required_param_count() <= 2` (params
+  after the first are defaulted) — and scores the arg against parameters[1].
+  Deepest-layer fix at the single shared ranking function; no symptom shim.
+- VERIFIED: b7_lit prints 1; testset.mad PASSES (size: 2 / has Bob: 1 / has
+  Charlie: 0). fulltest 668/1/0/18 (was 667/2) — only testsubscript remains,
+  zero regressions. (torture gate pending at write time.)
+
+BUG-7b — PINNED (testsubscript, the LAST set-wall red). With bug-7a in, the
+converting ctor is now correctly SELECTED, so testsubscript advances from the
+`set::insert__o5` family to `MIR error: import of undefined item
+basic_string..._basic_string..._o15` — a specific basic_string CONSTRUCTOR
+overload (#15) is referenced (the implicit `const char*` -> `std::string`
+conversion, e.g. `ages["alice"]` / `names.push_back("hello")` /
+`map<string,string> dict[k]=v`) but its BODY is never emitted into the module.
+This is the CTOR-side mirror of bug-7 (selection now works; emission of the
+SELECTED converting-ctor overload does not). NOTE testset's insert conversion
+emits its string ctor fine — so the gap is specific to which ctor overload /
+which call context testsubscript hits (operator[] key conversion and/or
+vector<string>::push_back(const char*)). NEXT: `--emit=c11` testsubscript, locate
+the `_basic_string..._o15` decl with no definition, identify which basic_string
+ctor overload #15 is (registration order) and which call site references it, and
+trace why that overload's body is not scheduled for emission (referenced_funcs
+registration of the converting-ctor symbol vs the emitted ctor-body symbol —
+likely an `__o<N>` suffix mismatch between the call's converting-ctor symbol and
+the emitted ctor definition, the ctor-side analogue of the method case).
