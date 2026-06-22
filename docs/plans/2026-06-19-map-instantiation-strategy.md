@@ -2640,8 +2640,32 @@ A specific method/ctor OVERLOAD is REFERENCED (the call site emits the
 `..._o<N>` symbol) but its BODY is never emitted into the MIR module — so MIR
 import fails at link. (claude_status notes the `basic_string...__o15` wrapper was
 "moved forward by generic CIR reference-return/constructor handling" — same
-family.) NEXT: `--emit=c11` testset, find the `_insert__o5` decl with no
-definition, and trace why that overload's body is skipped (overload-disambiguator
-`__o<N>` numbering mismatch between the referenced call symbol and the emitted
-definition symbol is the prime suspect — the call picks `__o5`/`__o15` but the
-body is emitted under a different suffix or not at all).
+family.)
+
+ISOLATED (3-line reducers, recreate; tmp/ gitignored). For `set<string>`:
+- `s.insert("Alice")` (const char* literal) -> FAILS: `_insert__o5` undefined.
+  The emitted call is `set_..._insert__o5((&s), "Alice")` — note the raw
+  `const char*` arg is passed straight through; NO `std::string` temporary is
+  materialized for the `value_type&&` / `const value_type&` parameter.
+- `s.insert(t)` where `t` is a `std::string` LVALUE -> WORKS (prints size). The
+  emit has NO `set::insert__o<N>` symbol at all — set::insert resolves/inlines
+  straight to `_M_insert_unique__mti`.
+- `s.insert(std::string("Alice"))` (EXPLICIT string temporary) -> WORKS.
+
+So bug-7 is the IMPLICIT `const char*` -> `std::string` conversion at a header
+method-call ARGUMENT. When the arg already IS the parameter's class type (lvalue
+or explicit temp) madc inlines set::insert through to `_M_insert_unique`. When
+the arg needs a user-defined conversion to bind the class-typed parameter, madc
+instead emits a CALL to the method's `__o<N>` wrapper but (a) does NOT construct
+the implicit string temporary (passes the raw const char*) and (b) does NOT
+emit/schedule that wrapper's body. The two symptoms share one cause: the
+conversion-requiring overload binding takes a fallback path that neither
+materializes the conversion nor registers the overload body for emission.
+NEXT: find where a class-typed method PARAMETER bound from a convertible scalar/
+pointer arg is handled in the method-call arg build (class_method_call ~3955 /
+build_call_args param_object_class branch) — compare the inline-able no-conversion
+path vs the `__o<N>`-wrapper-call fallback, and ensure the conversion path both
+emits the string-temp (the converting ctor, like object_arg_value/object temp)
+AND adds the resolved overload symbol to referenced_funcs so its body emits.
+testsubscript's `basic_string...__o15` is the ctor-side mirror (a string ctor
+overload referenced via implicit conversion, body not emitted).

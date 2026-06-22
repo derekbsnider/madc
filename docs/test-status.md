@@ -1,11 +1,27 @@
 # Test Status
 
-> **Current (2026-06-22, `develop` @ `c781287`, local — NOT pushed):** the
+> **Current (2026-06-22, `develop` @ `9e959fd`, local — NOT pushed):** the
 > C++17 real-header container campaign was merged into `develop` via `--no-ff`.
-> Fulltest **663 passed, 4 failed, 0 timed out, 18 skipped**. The 4 reds
-> (`testcontainerdtor`, `testmadc_ns`, `testset`, `testsubscript`) are the
-> "set wall" — a STACK of bugs; bugs 1–4 FIXED + committed this session, bug-5c
-> remains. **bug-1 @ `cbd693a`** (call `(` after a substituted type-param
+> Fulltest **667 passed, 2 failed, 0 timed out, 18 skipped**. The remaining 2
+> reds (`testset`, `testsubscript`) are the last layer of the "set wall"
+> (bug-7). The set wall is a STACK of bugs; **bugs 1–6 FIXED + committed**,
+> bug-7 remains. **bug-5c @ `bc7693d`** (`set<int>` SIGSEGV: the
+> copy-elision/NRVO init path for a retbuf-returning method delegated explicit
+> args to `build_call_args` with no `__this` offset → a reference arg coerced
+> against `__this`, passed as a value where an `int*` was expected → int-as-
+> address deref; fix adds `param_base` to `build_call_args`; test
+> `testretbufrefarg`). **bug-6 @ `9e959fd`** (`set<string>`+`map<string,
+> string>` → MIR `Repeated item declaration _Tp2___dtor`: the nested
+> `__aligned_membuf<_Tp>::_Tp2` had its store key enclosing-qualified but
+> `dds->name` left bare so both emitted the same dtor; fix renames the emitted
+> identity; cleared `testcontainerdtor` + `testmadc_ns`; `testset.mad` converted
+> off C++20 `contains` to C++17 find/end). **bug-7 remains** (`testset`/
+> `testsubscript`): MIR `import of undefined item ..._o<N>` — an implicit
+> `const char*`→`std::string` conversion at a header method-call argument emits
+> a `__o<N>` wrapper call but neither materializes the string temporary nor
+> emits the wrapper body; see
+> `docs/plans/2026-06-19-map-instantiation-strategy.md` (2026-06-22 cont. 5).
+> Earlier this session: bugs 1–4. **bug-1 @ `cbd693a`** (call `(` after a substituted type-param
 > misparsed as a cast; test `testfunctorctorarg`). **bug-2 @ `94d0798`**
 > (`return` skipped the implicit converting-ctor on a trivially-copyable
 > by-value class return; test `testreturnconvctor`). **bug-3 @ `7d53ed1`**
