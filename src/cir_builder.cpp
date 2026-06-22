@@ -468,6 +468,10 @@ static DataDefCLASS *param_object_class(DataDef *dd, bool refp)
 static bool same_object_class(const DataDef *a, const DataDef *b)
 {
 	if (!a || !b) return false;
+	a = unqualified_type(a);
+	b = unqualified_type(b);
+	if (a == b && a->is_object() && b->is_object())
+		return true;
 	const DataDefCLASS *ac = as_user_class(a);
 	const DataDefCLASS *bc = as_user_class(b);
 	return ac && bc && ac == bc;
