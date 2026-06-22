@@ -196,7 +196,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.27.0, develop + the template-instantiation branch): 561 integration/unit tests pass (0 failing, 18 skipped); gcc.c-torture 1567 of 1652 in-scope (95.0%) — promote gate = all 41 remaining standard-C failures fixed (≥1608), 33 gcc-only/torture-only tests formally skipped per [`docs/parity/failset-classification.md`](docs/parity/failset-classification.md). `std::string` is a real C++ class and `std::vector`/`map`/`set` are real `#include`-defined `std::` templates (the legacy `dtSTRING`/`tkSTRING`/`tkVECTOR`/`ns_stl` shortcuts are retired). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.30.0, develop): 669 integration/unit tests pass (0 failing, 0 timed out, 18 skipped); gcc.c-torture failset byte-identical to the 51-name baseline — promote gate = all remaining standard-C failures fixed, 33 gcc-only/torture-only tests formally skipped per [`docs/parity/failset-classification.md`](docs/parity/failset-classification.md). `std::string` is a real C++ class and `std::vector`/`map`/`set` are real `#include`-defined `std::` templates consumed from unmodified libstdc++ (the legacy `dtSTRING`/`tkSTRING`/`tkVECTOR`/`ns_stl` shortcuts are retired) — real `std::set`/`std::map` including `std::map<std::string,std::string>` compile and run on the default C++17 path. SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -262,17 +262,17 @@ user-signed failset classification audit
 are roadmap items, not gate blockers. In-process `eval`/exec runs on the CIR
 JIT (`CirJitSession`); the REPL and native AOT output remain deferred.
 
-**Branch state:** `develop` carries v0.29.0 (CIR backend). `master` still holds
+**Branch state:** `develop` carries v0.30.0 (CIR backend). `master` still holds
 the v0.24.0 asmjit/Gecko backend at full C89 coverage (419 pass / 0 fail) —
 develop is **not** promoted to master until the CIR path reaches feature parity.
 
 ### Recent Releases
 
+- **v0.30.0** — Set wall cleared: real-libstdc++ `std::set`/`std::map` (incl. `std::map<std::string,std::string>`) compile and run on the default C++17 path (eight container bugs fixed); real 16-byte `__int128`; embedded-header-forest plan; fulltest 669/0/0/18, torture failset byte-identical to baseline
 - **v0.29.0** — Backend correctness: MIR-gen O2 = O1 torture parity (five c2mir/MIR bugs root-caused + fixed); fork synced with upstream PRs #430/#432/#433/#434, pinned @ 9ab36fb
 - **v0.28.0** — C++20 `<=>` track complete (real `<compare>`, rewritten candidates, `= default` synthesis); template-instantiation batch; one `madc::value` + call-site scope capture; promote gate re-defined; fulltest 572/0
 - **v0.27.0** — All integration reds green (547/0); alias-spelled reference returns; namespace fn-template body instantiation (real-header to_string/stoi); [namespace.udir] call resolution; fortify chk builtins
 - **v0.26.0** — Real-header C++: libstdc++ string/iostream/getline mangled-direct; call-symbol unification + gate; `--project` driver; ≤16-byte SIMD; VLAs; multi-return
-- **v0.25.0** — CIR sole backend; SMAUG 1.8 boots, runs, and is playable (serpent fight); integration 316→325
 
 ## Roadmap
 

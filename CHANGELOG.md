@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+## [v0.30.0] — 2026-06-22
+
+Set wall cleared: real-libstdc++ `std::set`/`std::map` fully working on the
+default C++17 path, plus real 16-byte `__int128` end-to-end (P0 wide-integer
+track) and the measurement-gated embedded-header-forest plan.
+
+### Set wall cleared — real-libstdc++ `std::set` / `std::map` (C++17 default path)
+
+- The `std::set`/`std::map` "set wall" — a stack of eight root-cause bugs blocking
+  real libstdc++ ordered containers — is fully cleared. `std::set<int>`/`<string>`
+  and `std::map<K,V>` including `std::map<std::string,std::string>` compile and run
+  on the default real-header path; `testset`, `testmap`, `testsubscript`,
+  `testcontainerdtor`, and `testmadc_ns` are all green.
+- Final bug (7b): `std::get<0>`'s non-type argument `0` was binding to the TYPE
+  parameter of the by-type `std::get` overload, naming the return type `"0"` and
+  breaking `std::get` reference-binding in the piecewise `std::pair` constructor of
+  `map<K,std::string>::operator[]` (undefined `basic_string…__o15` at MIR link). It
+  surfaced only when two `pair<const std::string,V>` instantiations coexist. Fixed
+  at the deepest layer: a non-type value argument cannot bind to a type template
+  parameter (`[temp.arg.nontype]` substitution failure → candidate removed),
+  matching clang/gcc overload resolution.
+- fulltest is now **669 passed, 0 failed, 0 timed out, 18 skipped** (supersedes the
+  658/5 WIP figures below); the gcc.c-torture failset is byte-identical to the
+  51-name baseline; zero regressions.
+- Refined the `call-emit-symbol` drift gate with an audited
+  `// allowed-exception: <reason>` per-line opt-out, so `make fulltest` exits 0
+  while the gate stays strict (a new symbol-building read with no marker still
+  fails). Marked the six pre-existing non-symbol-building reads (debug prints,
+  lookup keys, a clone field-copy).
+- Added the measurement-gated **embedded header forest** execution plan
+  (`docs/plans/2026-06-22-embedded-header-forest-execution-plan.md`). `--show-stats`
+  on a real C++ compile shows parse is ~78% of wall and ~1.9 s of decl-parse is a
+  fixed header re-parse tax paid every compile — the target a save-state-after-parse
+  AST forest amortizes to a load.
+
 ### C++ real-header `std::map` / tuple WIP rehydration
 
 - Recovered the interrupted `wip/tuple-instantiation-claude` handoff and fixed

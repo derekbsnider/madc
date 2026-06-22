@@ -1,28 +1,26 @@
 # Test Status
 
-> **Current (2026-06-22, `develop` @ `b5698d7`, local — NOT pushed):** the
-> C++17 real-header container campaign was merged into `develop` via `--no-ff`.
-> Fulltest **668 passed, 1 failed, 0 timed out, 18 skipped**. The single
-> remaining red (`testsubscript`) is the last layer of the "set wall" (bug-7b).
-> The set wall is a STACK of bugs; **bugs 1–6 + 7a FIXED + committed**, bug-7b
-> remains. **bug-7a @ `b5698d7`** (`set<string>::insert("lit")` → undefined
-> `_insert__o5`: `score_arg_to_param`'s user-defined-conversion ctor scan only
-> accepted ctors with exactly 2 params, so real `basic_string(const char*,
-> alloc=)` (3 params, allocator defaulted) was skipped → const char*→string
-> scored −1 → the proper insert overloads were rejected and a template insert
-> wildcard-matched; fix accepts ctors callable with one explicit arg; cleared
-> `testset`). **bug-7b remains** (`testsubscript`, sole red): MIR `import of
-> undefined item basic_string…__o15`. Investigation complete — the earlier
-> piecewise/`std::forward` reference-loss guess was **disproven** by an
-> `MADC_DBG_O15` probe. `__o15` is a 1-arg basic_string ctor emitted to
-> materialize a `std::string` temp from `*std::get<I>(__tuple1)` with no body,
-> because **`std::get<I>(tuple<…>)`'s return type is unresolved** (null datadef)
-> there, so ctor selection can't match the mangled-direct copy ctor and emits an
-> unbacked madc-local symbol — a `std::get`/tuple return-type resolution gap
-> (`get<0>`/`_Nth_type` family), **not** a `std::forward` issue. Fix is
-> post-compaction work — see
-> `docs/plans/2026-06-19-map-instantiation-strategy.md` (**cont. 7**, which
-> supersedes cont. 5/6). **bug-5c @ `bc7693d`** (`set<int>` SIGSEGV: the
+> **Current (2026-06-22, `develop`, v0.30.0 — set wall CLEARED, pushed to
+> origin/develop):** Fulltest **669 passed, 0 failed, 0 timed out, 18 skipped**
+> (exit 0, both check gates GREEN); gcc.c-torture failset byte-identical to the
+> 51-name baseline; zero regressions. The `std::set`/`std::map` "set wall" — a
+> STACK of eight root-cause container bugs — is **fully cleared** on the default
+> C++17 real-header path; `testset`, `testmap`, `testsubscript`,
+> `testcontainerdtor`, `testmadc_ns` all green. **bug-7b @ `da96d7a`** (the final
+> red, `testsubscript`): the earlier cont. 7 "`std::get` return-type unresolved"
+> reading was the SYMPTOM — the get instantiation was already correct. Real cause:
+> `resolve_fn_template_return_by_key` bound `std::get<0>`'s non-type arg `0` to the
+> TYPE parameter of the by-type `std::get` overload, naming the return type `"0"`,
+> which leaked into the call's parse-time `return_override` and broke `std::get`
+> ref-binding in the piecewise pair ctor of `map<K,string>::operator[]` (undefined
+> `basic_string…__o15`); surfaced only when two `pair<const string,V>`
+> instantiations coexist. Fix (deepest layer): a non-type value arg cannot bind to
+> a TYPE template parameter (`[temp.arg.nontype]` substitution failure → candidate
+> removed), via `datadef_is_nontype_constant`. Drift gate refined with an audited
+> `// allowed-exception` opt-out (`24e8125`) so `make fulltest` exits 0. Full
+> trail: `docs/plans/2026-06-19-map-instantiation-strategy.md` (**cont. 8**,
+> supersedes cont. 5/6/7). **bug-7a @ `b5698d7`** (`set<string>::insert("lit")`
+> UDC ctor scan; cleared `testset`). **bug-5c @ `bc7693d`** (`set<int>` SIGSEGV: the
 > copy-elision/NRVO init path for a retbuf-returning method delegated explicit
 > args to `build_call_args` with no `__this` offset → a reference arg coerced
 > against `__this`, passed as a value where an `int*` was expected → int-as-

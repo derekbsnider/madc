@@ -1,7 +1,7 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-06-22 (v0.29.0 +
-`wip/tuple-instantiation-claude` C++17 map handoff).
+Master plan linking all workstreams. Updated 2026-06-22 (v0.30.0 — set wall
+cleared: real-libstdc++ `std::set`/`std::map` working on the default C++17 path).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -27,11 +27,15 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Version:** `0.29.0` (per `VERSION`) — released on `develop` (CIR backend);
-  the backend-correctness release (MIR-gen `-O2` = `-O1` torture parity, 1567
-  byte-identical — five c2mir/MIR bugs root-caused and fixed; fork synced with
-  upstream PRs #430/#432/#433/#434, pinned @ `9ab36fb`). v0.28.0 (same day)
-  was the C++20 `<=>` compliance-track-complete release.
+- **Version:** `0.30.0` (per `VERSION`) — released on `develop` (CIR backend);
+  the **set-wall** release: real-libstdc++ `std::set`/`std::map` (incl.
+  `std::map<std::string,std::string>`) compile and run on the default C++17
+  real-header path, eight root-cause container bugs cleared, fulltest
+  **669 passed / 0 failed / 0 timed out / 18 skipped**, gcc.c-torture failset
+  byte-identical to the 51-name baseline. Also lands real 16-byte `__int128`
+  (P0 wide-integer track) and the measurement-gated embedded-header-forest plan.
+  v0.29.0 was the backend-correctness release (MIR-gen `-O2` = `-O1` torture
+  parity, fork pinned @ `9ab36fb`).
   `master` still holds the v0.24.0 asmjit/Gecko backend at full C89 coverage;
   develop is **not** promoted to master until the CIR path reaches feature
   parity.
