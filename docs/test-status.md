@@ -1,6 +1,20 @@
 # Test Status
 
-> **Current WIP (2026-06-22, `wip/map-cxx17-salvage-codex` @ `3534b44`
+> **Current (2026-06-22, `develop` @ `cbd693a`, local — NOT pushed):** the
+> C++17 real-header container campaign (`wip/map-cxx17-salvage-codex`, 515
+> commits) was merged into `develop` via `--no-ff`. Baseline fulltest
+> **660 passed, 4 failed, 0 timed out, 18 skipped**. The 4 reds
+> (`testcontainerdtor`, `testmadc_ns`, `testset`, `testsubscript`) are all the
+> "set wall" — MULTIPLE bugs. **set-wall bug-1 FIXED @ `cbd693a`** (a call `(`
+> followed by a substituted class-template type parameter was misparsed as a
+> cast — `paren_opens_call_on_receiver`; regression test
+> `tests/testfunctorctorarg.mad`); gcc torture non-timeout failset
+> byte-identical to the 51-name baseline (zero regressions). **set-wall bug-2
+> root-caused** (a `return` doesn't apply an implicit converting-constructor
+> conversion) — fix not yet written; see
+> `docs/plans/2026-06-19-map-instantiation-strategy.md` (2026-06-22 section).
+>
+> **Prior WIP (2026-06-22, `wip/map-cxx17-salvage-codex` @ `3534b44`
 > plus local recovery fixes):** the previous dirty session is preserved at
 > `failed/2026-06-22-map-cxx17-attempt-codex` commit `3534b44`; live work
 > continues on the salvage branch with dirty fixes in `include/datatokens.h`,

@@ -2280,3 +2280,84 @@ Remaining open work:
   path.
 - `tmp/te_direct.mad` still has the direct `std::get` declaration-initializer
   overload-suffix/call-loss issue.
+
+### 2026-06-22 — C++17 container campaign MERGED to develop + set-wall bug-1 FIXED, bug-2 ROOT-CAUSED (HANDOFF)
+
+SETTLED / DO NOT RE-LITIGATE:
+- The C++17 container campaign branch `wip/map-cxx17-salvage-codex` was merged
+  into `develop` via `--no-ff` (commit on develop, baseline fulltest
+  **660/4/0/18**). develop is **local, NOT pushed**. The merge was a deliberate
+  decision to end the 10-day / 515-commit divergence; develop intentionally
+  carries 4 known reds, all from the same "set wall".
+- The "set wall" is **MULTIPLE bugs**, not one. Do not treat `testset`/
+  `testsubscript`/`testcontainerdtor`/`testmadc_ns` as a single fix.
+
+DONE THIS SESSION (committed on develop):
+- Two salvage fixes (scoped-enum DataDefENUM typing; exact same-object overload
+  scoring) — commits `b922be7`, `7c0a7c1`.
+- **set-wall BUG-1 FIXED @ `cbd693a`**: a call whose `(` is immediately
+  followed by a *substituted class-template type parameter* (a pre-resolved
+  `TokenDataType`) was misparsed as a C-style cast `(Type)expr`, stealing the
+  call's argument list and dropping arguments → "Incorrect number of
+  parameters: expected N got N-1". This is `std::_Rb_tree::_M_insert_`'s
+  `_M_impl._M_key_compare(_KeyOfValue()(__v), _S_key(__p))` (set's `_KeyOfValue`
+  = `_Identity`). FIX: `Program::paren_opens_call_on_receiver()`
+  (parser.cpp ~5354) — when the `(` binds (prevToken is the receiver's
+  identifier/`)`/`]`) to a callable already on exStack (functor-class object
+  with `operator()`, or a function/fn-ptr var), the cast/compound-literal
+  detection in `parseExpr_operatorArm` (the `tb->id()==tkOpBrk` block, the
+  `if (peek1 && !paren_opens_call_on_receiver(exStack))` guard ~parser.cpp
+  19035) is skipped so the call paths run. Regression test
+  `tests/testfunctorctorarg.mad` (default path). Verified: fulltest 660/4/0/18
+  (+1 for the test); gcc torture non-timeout failset byte-identical to the
+  51-name baseline (the 5 memcpy/memclr "new" entries were 5.0s TIMEOUTS =
+  host-load noise, NOT regressions — pure-C tests the fix cannot touch).
+
+NEXT — set-wall BUG-2 (ROOT-CAUSED, fix NOT yet written):
+- ROOT CAUSE: a `return` statement does NOT apply an implicit user-defined
+  conversion (a converting constructor) when the returned expression's type
+  differs from the function's return type. Standard return-value
+  copy-initialization ([stmt.return]/[dcl.init]). c2mir then rejects the tree:
+  "incompatible return-expr type in function returning a struct/union"
+  (c2mir.c:8476 — c2mir is RIGHT; madc emitted the wrong-typed return).
+- 6-LINE REDUCER (default path, no flags needed):
+    struct A { int v; };
+    struct B { int v; B():v(0){} B(const A& a):v(a.v){} };
+    B make(A a) { return a; }          // FAILS: implicit A->B ctor not applied
+    int main(){ A a; a.v=42; B b=make(a); printf("%d\n",b.v); return 0; }
+  Control `return B(a);` (explicit) WORKS → prints 42. So the conversion
+  machinery EXISTS (functional construction / assignment / param-init all use
+  it); `return` just doesn't invoke it.
+- In std::set this is `iterator find(const key_type&){ return _M_t.find(__x); }`
+  where set's `iterator` = `_Rep_type::const_iterator` but `_M_t.find` returns
+  the tree's non-const `iterator` — implicit iterator->const_iterator
+  conversion on return is dropped. The downstream "invalid types of comparison
+  operands" on `s.find(x) != s.end()` is a CONSEQUENCE (find() returns the
+  wrong type, so no matching operator!=); fixing the return conversion should
+  fix both.
+- FIX LOCUS: madc, where `return expr;` is typed against the function return
+  type. Parser side preferred (where TokenObjTemp / converting-ctor machinery
+  lives) — mirror how assignment/parameter-init apply a converting ctor, and
+  insert the same construction when return-expr type != return type and a
+  converting ctor exists. CirBuilder::translate_return is at
+  cir_builder.cpp:9490; the return-type plumbing is around cir_builder.cpp:7710
+  / 11210 (return_value_type/return_typedef_name). Reducer to drive TDD:
+  `tmp/b2_min.mad` (recreate from the 6 lines above — tmp/ is gitignored).
+- VALIDATION GATES (return stmts are everywhere — regression-sensitive):
+  (1) the 6-line reducer prints 42; (2) probe `set<int>`/`set<string>`
+  find/end compiles+runs under `--std=c++17 --no-embedded-headers`;
+  (3) `make -C src fulltest` zero new reds; (4) FULL `scripts/run_gcc_testsuite.py`
+  diff vs `docs/parity/torture-failset-current.txt` (51) — non-timeout set must
+  be byte-identical; memcpy-a*/memclr 5.0s timeouts are load noise, ignore.
+
+AFTER BUG-2 (to turn tests green):
+- `testset.mad` uses C++20 `set::contains` — convert to C++17 `find/end` (or
+  `count`), per user direction (same recipe as `testmap.mad`). Decide whether
+  testset/testsubscript/testcontainerdtor/testmadc_ns get
+  `.flags = --std=c++17 --no-embedded-headers` (real-header path, matches the
+  shim-retirement direction) or must work on the default embedded path.
+  `testmadc_ns` mixes `php::count` + `std::` — verify `--no-embedded-headers`
+  doesn't disturb php:: before routing it that way.
+
+MIRROR SYNC DEBT: develop not pushed; claude_status.json head=cbd693a updated;
+README/CHANGELOG not yet updated for bug-1 (batch at set-wall completion).
