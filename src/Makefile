@@ -2,7 +2,10 @@
 
 CC ?= clang
 CXX ?= clang++
-CXXFLAGS ?= -std=c++11 -Wall
+# Default to -O2: the front-end is allocation/copy-bound (see
+# docs/plans/2026-06-22-front-end-performance-plan.md, P0) and -O2 is a free
+# ~1.74x on a stdlib-heavy compile. Use the `debug` target for -O0 -g.
+CXXFLAGS ?= -std=c++11 -Wall -O2
 PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
 AR ?= ar
 ARFLAGS ?= rcs
