@@ -1902,7 +1902,7 @@ static DataDef *resolve_class_static_member_type(DataDefCLASS *cls, const std::s
 }
 
 static bool peek_class_member_type_chain(DataDefCLASS *owner,
-					 const std::deque<TokenBase *> &tokens,
+					 const TokenStream &tokens,
 					 size_t start_index,
 					 DataDef *&out,
 					 size_t &consume_count,
@@ -4313,22 +4313,21 @@ bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
 	// A type arg is concrete iff it resolves (in an isolated stream, the same
 	// idiom as the body resolution below) to a type with no unresolved
 	// dependent surface — `NT*` concrete, `_Tp*`/a dependent placeholder not.
-	std::deque<TokenBase *> body;
+	std::vector<TokenBase *> body;
 	for ( TokenBase *t : arg_tokens[i] )
 	    if ( t )
 		body.push_back(t->clone());
 	body.push_back(new TokenSemi());
-	std::deque<TokenBase *> saved_tokens = tokens;
 	size_t saved_diag_count = diagnostics.size();
 	Program::ErrorInfo saved_error = last_error;
-	tokens = body;
+	TokenStream::State saved_tokens = tokens.swap_in(std::move(body));
 	TokenDataType *rt = NULL;
 	try
 	{
 	    rt = resolve_declared_type_token(nextToken(), true, true);
 	}
 	catch ( ... ) { rt = NULL; }
-	tokens = saved_tokens;
+	tokens.swap_back(std::move(saved_tokens));
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
 	if ( !rt || datadef_has_unresolved_dependent_surface(&rt->definition) )
@@ -4472,7 +4471,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		if ( i < td.typeparam_is_pack.size() && td.typeparam_is_pack[i] )
 		    pack_param_names.insert(td.typeparams[i]);
 	    }
-	    std::deque<TokenBase *> body;
+	    std::vector<TokenBase *> body;
 	    for ( size_t bi = 0; bi < td.target.size(); ++bi )
 	    {
 		TokenBase *bt = td.target[bi];
@@ -4503,10 +4502,9 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    }
 	    body.push_back(new TokenSemi());
 
-	    std::deque<TokenBase *> saved_tokens = tokens;
 	    size_t saved_diag_count = diagnostics.size();
 	    Program::ErrorInfo saved_error = last_error;
-	    tokens = body;
+	    TokenStream::State saved_tokens = tokens.swap_in(std::move(body));
 
 	    bool pushed_owner_scope = false;
 	    if ( td.owner_class )
@@ -4528,7 +4526,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	      && class_scope_stack.back() == td.owner_class )
 		class_scope_stack.pop_back();
 
-	    tokens = saved_tokens;
+	    tokens.swap_back(std::move(saved_tokens));
 	    if ( !resolved )
 	    {
 		diagnostics.resize(saved_diag_count);
@@ -5291,14 +5289,14 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
     // exactly the return type and stops, then restore the live position. The
     // resolver may instantiate a template-id (idempotent/memoized) — that is
     // the desired side effect; everything else is local.
-    std::deque<TokenBase *> saved_tokens = tokens;
-    TokenBase *saved_cur = _cur_token;
-    TokenBase *saved_prv = _prv_token;
-    tokens.clear();
+    std::vector<TokenBase *> seq;
     for ( size_t i = start; i < end; ++i )
 	if ( toks[i] )
-	    tokens.push_back(toks[i]);
-    tokens.push_back(new TokenSemi());
+	    seq.push_back(toks[i]);
+    seq.push_back(new TokenSemi());
+    TokenBase *saved_cur = _cur_token;
+    TokenBase *saved_prv = _prv_token;
+    TokenStream::State saved_tokens = tokens.swap_in(std::move(seq));
     _cur_token = NULL;
     _prv_token = NULL;
     DataDef *result = NULL;
@@ -5312,7 +5310,7 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
     {
 	result = NULL;
     }
-    tokens = saved_tokens;
+    tokens.swap_back(std::move(saved_tokens));
     _cur_token = saved_cur;
     _prv_token = saved_prv;
     return result;
@@ -5844,7 +5842,7 @@ bool Program::resolve_integer_constant(TokenBase *tb, int64_t &out)
     // token chain when this narrow enum lookup does not resolve.
     if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	std::deque<TokenBase *> saved_tokens = tokens;
+	TokenStream::Pos saved_tokens = tokens.savepos();
 	TokenBase *saved_cur = _cur_token;
 	TokenBase *saved_prv = _prv_token;
 	namespace_map_t::iterator nsi = namespace_map.find(name);
@@ -7504,7 +7502,7 @@ void Program::consume_class_static_assert_declaration(TokenBase *tb)
 
 bool Program::try_parse_constant_offsetof_address(int64_t &out)
 {
-    auto saved_tokens = tokens;
+    auto saved_tokens = tokens.savepos();
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
 
@@ -7812,13 +7810,12 @@ int64_t Program::parse_constant_primary()
 		    substitute_var_template_init(vti->second, targs);
 		if ( !sub.empty() )
 		{
-		    std::deque<TokenBase *> saved = tokens;
-		    tokens.assign(sub.begin(), sub.end());
-		    tokens.push_back(new TokenSemi());
+		    sub.push_back(new TokenSemi());
+		    TokenStream::State saved = tokens.swap_in(std::move(sub));
 		    int64_t v = 0;
 		    try { v = parse_constant_integer_expression(); }
-		    catch ( ... ) { tokens = saved; throw; }
-		    tokens = saved;
+		    catch ( ... ) { tokens.swap_back(std::move(saved)); throw; }
+		    tokens.swap_back(std::move(saved));
 		    return v;
 		}
 	    }
@@ -7852,13 +7849,12 @@ int64_t Program::parse_constant_primary()
 							  subst);
 		if ( !sub.empty() )
 		{
-		    std::deque<TokenBase *> saved = tokens;
-		    tokens.assign(sub.begin(), sub.end());
-		    tokens.push_back(new TokenSemi());
+		    sub.push_back(new TokenSemi());
+		    TokenStream::State saved = tokens.swap_in(std::move(sub));
 		    int64_t v = 0;
 		    try { v = parse_constant_integer_expression(); }
-		    catch ( ... ) { tokens = saved; throw; }
-		    tokens = saved;
+		    catch ( ... ) { tokens.swap_back(std::move(saved)); throw; }
+		    tokens.swap_back(std::move(saved));
 		    return v ? 1 : 0;
 		}
 	    }
@@ -8187,14 +8183,13 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
     // Fold a CLONE in an isolated stream (same idiom as fold_nontype_arg_constant:
     // muted std::cerr, since a non-constant condition Throws and throwbuf::sync
     // prints before the exception we catch).
-    std::deque<TokenBase *> saved_tokens = tokens;
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
-    std::deque<TokenBase *> body;
+    std::vector<TokenBase *> body;
     for ( TokenBase *ct : cond_toks )
 	body.push_back(ct->clone());
     body.push_back(new TokenSemi());
-    tokens = body;
+    TokenStream::State saved_tokens = tokens.swap_in(std::move(body));
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
     std::cerr.rdbuf(&g_madc_null_streambuf);
@@ -8316,7 +8311,7 @@ bool Program::capture_constant_initializer_value(int64_t &out)
 {
     if ( constant_initializer_has_runtime_access(*this) )
 	return false;
-    auto saved_tokens = tokens;
+    auto saved_tokens = tokens.savepos();
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
     // A non-constant / still-dependent initializer (a dependent `static constexpr`
@@ -8353,7 +8348,7 @@ bool Program::capture_constant_initializer_value(int64_t &out)
 
 bool Program::bracket_dim_constant_expression_parses()
 {
-    auto saved_tokens = tokens;
+    auto saved_tokens = tokens.savepos();
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
     try
@@ -15644,7 +15639,7 @@ bool Program::confirm_dependent_member_type(DataDef *base,
     // then resolve it through the real qualified-type machinery. The spelling
     // renderer glues the `template` disambiguator to the next name
     // (`templaterebind<_Up>`); strip it and emit a real tkTEMPLATE.
-    std::deque<TokenBase *> seq;
+    std::vector<TokenBase *> seq;
     seq.push_back(new TokenIdent(base->name));
     for ( size_t s = 1; s < segs.size(); ++s )
     {
@@ -15706,10 +15701,10 @@ bool Program::confirm_dependent_member_type(DataDef *base,
     // Resolve in an ISOLATED stream (the probe is reached mid-instantiation;
     // draining the shared stream would desync the suspended parse), restoring the
     // diagnostics watermark on failure so a SFINAE miss leaves no error trail.
-    std::deque<TokenBase *> saved_tokens = tokens;
+    TokenStream::State saved_tokens;
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
-    tokens = seq;
+    saved_tokens = tokens.swap_in(std::move(seq));
     TokenDataType *resolved = NULL;
     try
     {
@@ -16028,16 +16023,16 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
     // (a `Trait<int>::value` arg instantiates Trait) is self-contained. Mirror
     // capture_constant_initializer_value's save/try/restore idiom; require the
     // whole arg to fold (sentinel reached) so a partial parse can't masquerade.
-    std::deque<TokenBase *> saved_tokens = tokens;
+    TokenStream::State saved_tokens;
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
-    std::deque<TokenBase *> body;
+    std::vector<TokenBase *> body;
     for ( TokenBase *t : argtoks )
 	if ( t )
 	    body.push_back(t->clone());
     TokenSemi *sentinel = new TokenSemi();
     body.push_back(sentinel);
-    tokens = body;
+    saved_tokens = tokens.swap_in(std::move(body));
     // A non-constant / still-dependent arg (`N` with N unbound, a pointer non-type
     // arg) makes parse_constant_integer_expression Throw, and throwbuf::sync()
     // prints to stderr BEFORE the exception we catch — so a legitimate "keep the
@@ -16081,15 +16076,15 @@ bool Program::constraint_expression_well_formed(
 	*out_type = NULL;
     if ( exprtoks.empty() )
 	return false;
-    std::deque<TokenBase *> saved_tokens = tokens;
+    TokenStream::State saved_tokens;
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
-    std::deque<TokenBase *> body;
+    std::vector<TokenBase *> body;
     for ( TokenBase *t : exprtoks )
 	if ( t )
 	    body.push_back(t->clone());
     body.push_back(new TokenSemi());
-    tokens = body;
+    saved_tokens = tokens.swap_in(std::move(body));
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
     std::cerr.rdbuf(&g_madc_null_streambuf);
@@ -16231,15 +16226,15 @@ int64_t Program::evaluate_requires_expression_constant()
     auto fold_isolated = [&](const std::vector<TokenBase *> &toks) -> int64_t {
 	if ( toks.empty() )
 	    return 0;
-	std::deque<TokenBase *> saved = tokens;
+	TokenStream::State saved;
 	size_t sd = diagnostics.size();
 	Program::ErrorInfo se = last_error;
-	std::deque<TokenBase *> body;
+	std::vector<TokenBase *> body;
 	for ( TokenBase *t : toks )
 	    if ( t )
 		body.push_back(t->clone());
 	body.push_back(new TokenSemi());
-	tokens = body;
+	saved = tokens.swap_in(std::move(body));
 	std::streambuf *sc = std::cerr.rdbuf();
 	std::ios::iostate ss = std::cerr.rdstate();
 	std::cerr.rdbuf(&g_madc_null_streambuf);
@@ -16249,7 +16244,7 @@ int64_t Program::evaluate_requires_expression_constant()
 	catch ( ... ) { ok = false; }
 	std::cerr.rdbuf(sc);
 	std::cerr.clear(ss);
-	tokens = saved;
+	tokens.swap_back(std::move(saved));
 	if ( !ok )
 	{ diagnostics.resize(sd); last_error = se; }
 	return ok ? v : 0;
@@ -16258,15 +16253,15 @@ int64_t Program::evaluate_requires_expression_constant()
     auto type_resolves = [&](const std::vector<TokenBase *> &ty) -> bool {
 	if ( ty.empty() )
 	    return false;
-	std::deque<TokenBase *> saved = tokens;
+	TokenStream::State saved;
 	size_t sd = diagnostics.size();
 	Program::ErrorInfo se = last_error;
-	std::deque<TokenBase *> body;
+	std::vector<TokenBase *> body;
 	for ( TokenBase *t : ty )
 	    if ( t )
 		body.push_back(t->clone());
 	body.push_back(new TokenSemi());
-	tokens = body;
+	saved = tokens.swap_in(std::move(body));
 	std::streambuf *sc = std::cerr.rdbuf();
 	std::ios::iostate ss = std::cerr.rdstate();
 	std::cerr.rdbuf(&g_madc_null_streambuf);
@@ -16288,7 +16283,7 @@ int64_t Program::evaluate_requires_expression_constant()
 	catch ( ... ) { ok = false; }
 	std::cerr.rdbuf(sc);
 	std::cerr.clear(ss);
-	tokens = saved;
+	tokens.swap_back(std::move(saved));
 	if ( !ok )
 	{ diagnostics.resize(sd); last_error = se; }
 	return ok;
@@ -16569,15 +16564,15 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	    bool satisfied = false;
 	    if ( !ctoks.empty() )
 	    {
-		std::deque<TokenBase *> saved = tokens;
+		TokenStream::State saved;
 		size_t sd = diagnostics.size();
 		Program::ErrorInfo se = last_error;
-		std::deque<TokenBase *> cbody;
+		std::vector<TokenBase *> cbody;
 		for ( TokenBase *t : ctoks )
 		    if ( t )
 			cbody.push_back(t->clone());
 		cbody.push_back(new TokenSemi());
-		tokens = cbody;
+		saved = tokens.swap_in(std::move(cbody));
 		std::streambuf *sc = std::cerr.rdbuf();
 		std::ios::iostate sst = std::cerr.rdstate();
 		std::cerr.rdbuf(&g_madc_null_streambuf);
@@ -16585,7 +16580,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 		catch ( ... ) { satisfied = false; }
 		std::cerr.rdbuf(sc);
 		std::cerr.clear(sst);
-		tokens = saved;
+		tokens.swap_back(std::move(saved));
 		if ( !satisfied )
 		{ diagnostics.resize(sd); last_error = se; }
 	    }
@@ -16823,7 +16818,7 @@ static DataDef *referent_if_reference(DataDef *dd)
 }
 
 static TokenBase *peek_after_balanced_template_id_from(
-	const std::deque<TokenBase *> &tokens, size_t lt_index)
+	const TokenStream &tokens, size_t lt_index)
 {
     if ( lt_index >= tokens.size() || !tokens[lt_index]
       || tokens[lt_index]->id() != TokenID::tkLT )
@@ -16853,7 +16848,7 @@ static TokenBase *peek_after_balanced_template_id_from(
 }
 
 static TokenBase *peek_after_balanced_template_id(
-	const std::deque<TokenBase *> &tokens)
+	const TokenStream &tokens)
 {
     return peek_after_balanced_template_id_from(tokens, 0);
 }
@@ -21711,7 +21706,7 @@ static DataDefSTRUCT *new_anon_struct(size_t size = 0)
     return dds;
 }
 
-static TokenBase *next_significant_token(const std::deque<TokenBase *> &tokens,
+static TokenBase *next_significant_token(const TokenStream &tokens,
 					 size_t start)
 {
     for ( size_t i = start; i < tokens.size(); ++i )
@@ -21963,15 +21958,15 @@ TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dd
 	// and applied as `recv.member = expr`; an object value-init (`= T()`) that
 	// does not yield a usable scalar expression is left unstored — object members
 	// take the existing value-init construction.
-	std::deque<TokenBase *> saved_stream = tokens;
-	tokens.clear();
+	std::vector<TokenBase *> seq;
 	for ( TokenBase *t : init_toks )
-	    tokens.push_back(t->clone());
-	tokens.push_back(new TokenSemi());
+	    seq.push_back(t->clone());
+	seq.push_back(new TokenSemi());
+	TokenStream::State saved_stream = tokens.swap_in(std::move(seq));
 	TokenBase *parsed = NULL;
 	try { parsed = parseExpression(nextToken(), true); }
 	catch ( ... ) { parsed = NULL; }
-	tokens = saved_stream;
+	tokens.swap_back(std::move(saved_stream));
 	if ( parsed )
 	    dds->member_default_inits[mname] = parsed;
     }
@@ -23926,7 +23921,7 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	DataDefCLASS *owner = body.method ? body.method->owner_class : NULL;
 	if ( !body.var || !owner )
 	    return NULL;
-	std::deque<TokenBase *> saved_tokens = tokens;
+	TokenStream::Pos saved_tokens = tokens.savepos();
 	TokenBase *saved_prv = _prv_token;
 	TokenBase *saved_cur = _cur_token;
 	std::string saved_func = cur_func_name;
@@ -24270,7 +24265,7 @@ static bool member_template_param_intro(TokenBase *t)
     return n == "typename" || n == "class";
 }
 
-static bool token_is_ellipsis_at(const std::deque<TokenBase *> &toks,
+static bool token_is_ellipsis_at(const TokenStream &toks,
 				 size_t i, size_t end)
 {
     return i + 2 < end
@@ -24279,7 +24274,7 @@ static bool token_is_ellipsis_at(const std::deque<TokenBase *> &toks,
 	&& toks[i + 2] && toks[i + 2]->id() == TokenID::tkDot;
 }
 
-static bool template_list_close_index(const std::deque<TokenBase *> &toks,
+static bool template_list_close_index(const TokenStream &toks,
 				      size_t lt_idx, size_t &close_idx)
 {
     if ( lt_idx >= toks.size() || !toks[lt_idx]
@@ -24316,7 +24311,7 @@ static bool template_list_close_index(const std::deque<TokenBase *> &toks,
 }
 
 static bool template_param_slice_has_default(
-	const std::deque<TokenBase *> &toks, size_t begin, size_t end)
+	const TokenStream &toks, size_t begin, size_t end)
 {
     int angle = 0;
     int paren = 0;
@@ -24348,7 +24343,7 @@ static bool template_param_slice_has_default(
 }
 
 static std::string template_param_name_from_slice(
-	const std::deque<TokenBase *> &toks, size_t begin, size_t end)
+	const TokenStream &toks, size_t begin, size_t end)
 {
     while ( begin < end && !toks[begin] )
 	++begin;
@@ -24401,7 +24396,7 @@ static std::string template_param_name_from_slice(
 }
 
 static bool collect_defaulted_template_param_names(
-	const std::deque<TokenBase *> &toks, size_t begin, size_t end,
+	const TokenStream &toks, size_t begin, size_t end,
 	std::set<std::string> &names)
 {
     size_t param_begin = begin;
@@ -24448,7 +24443,7 @@ static bool collect_defaulted_template_param_names(
     return true;
 }
 
-static size_t member_template_decl_end(const std::deque<TokenBase *> &toks,
+static size_t member_template_decl_end(const TokenStream &toks,
 				       size_t start)
 {
     int angle = 0;
@@ -24495,7 +24490,7 @@ static size_t member_template_decl_end(const std::deque<TokenBase *> &toks,
     return toks.size();
 }
 
-static bool token_range_uses_any_name(const std::deque<TokenBase *> &toks,
+static bool token_range_uses_any_name(const TokenStream &toks,
 				      size_t begin, size_t end,
 				      const std::set<std::string> &names)
 {
@@ -24509,7 +24504,7 @@ static bool token_range_uses_any_name(const std::deque<TokenBase *> &toks,
 }
 
 static bool find_defaulted_member_template_ctor_name(
-	const std::deque<TokenBase *> &toks, size_t begin, size_t end,
+	const TokenStream &toks, size_t begin, size_t end,
 	const std::string &class_source_name,
 	const std::string &constructor_source_name,
 	size_t &name_idx)
@@ -24531,7 +24526,7 @@ static bool find_defaulted_member_template_ctor_name(
     return false;
 }
 
-static bool paren_close_index(const std::deque<TokenBase *> &toks,
+static bool paren_close_index(const TokenStream &toks,
 			      size_t open_idx, size_t &close_idx)
 {
     if ( open_idx >= toks.size() || !toks[open_idx]
@@ -24605,22 +24600,21 @@ static bool try_parse_defaulted_member_template_constructor(
 	    definition_tokens.push_back(pgm.tokens[i]
 					? pgm.tokens[i]->clone() : NULL);
 
-    std::deque<TokenBase *> saved_tokens = pgm.tokens;
-    std::deque<TokenBase *> signature_tokens;
+    std::vector<TokenBase *> signature_tokens;
     for ( size_t i = open_idx + 1; i <= param_close_idx; ++i )
 	signature_tokens.push_back(pgm.tokens[i]);
     signature_tokens.push_back(new TokenSemi());
-    pgm.tokens = signature_tokens;
+    TokenStream::State saved_tokens = pgm.tokens.swap_in(std::move(signature_tokens));
     try
     {
 	pgm.parseFunction(ddVOID, mangled, ddc);
     }
     catch(...)
     {
-	pgm.tokens = saved_tokens;
+	pgm.tokens.swap_back(std::move(saved_tokens));
 	throw;
     }
-    pgm.tokens = saved_tokens;
+    pgm.tokens.swap_back(std::move(saved_tokens));
     pgm.skip_template_nonclass_declaration(pgm.nextToken());
 
     Variable *mvar = pgm.tkProgram ? pgm.tkProgram->findVariable(mangled) : NULL;
@@ -31390,7 +31384,7 @@ DataDef *Program::resolve_template_param_default_type(
 {
     if ( default_tokens.empty() )
 	return NULL;
-    std::deque<TokenBase *> body;
+    std::vector<TokenBase *> body;
     for ( TokenBase *bt : default_tokens )
     {
 	if ( bt && bt->type() == TokenType::ttIdentifier )
@@ -31408,10 +31402,10 @@ DataDef *Program::resolve_template_param_default_type(
     }
     body.push_back(new TokenSemi());
 
-    std::deque<TokenBase *> saved_tokens = tokens;
+    TokenStream::State saved_tokens;
     size_t saved_diag_count = diagnostics.size();
     ErrorInfo saved_error = last_error;
-    tokens = body;
+    saved_tokens = tokens.swap_in(std::move(body));
 
     bool pushed_owner = false;
     if ( owner )
@@ -34522,7 +34516,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     // 0) is dropped. A primary template ignores it.
     std::vector<TokenBase *> partial_spec_constraint;
     {
-	std::deque<TokenBase *> before = pgm.tokens;
+	std::vector<TokenBase *> before = pgm.tokens.logical_snapshot();
 	pgm.skip_requires_clause();
 	size_t consumed = before.size() > pgm.tokens.size()
 			? before.size() - pgm.tokens.size() : 0;

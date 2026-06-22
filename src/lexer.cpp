@@ -555,7 +555,7 @@ static std::vector<std::string> ordered_auto_include_headers(const std::set<std:
     return ordered;
 }
 
-static size_t auto_include_insertion_index(const std::deque<TokenBase *> &tokens,
+static size_t auto_include_insertion_index(const TokenStream &tokens,
 					   size_t limit,
 					   const char *source_name)
 {
@@ -596,8 +596,7 @@ bool Program::auto_include_standard_identifier(const std::string &word)
     // defining the identifier, not using the standard header surface.
     // Auto-including here injects the embedded header in the middle of
     // the declarator and leaves a duplicate alias token behind.
-    for ( std::deque<TokenBase *>::reverse_iterator it = tokens.rbegin();
-	  it != tokens.rend(); ++it )
+    for ( auto it = tokens.rbegin(); it != tokens.rend(); ++it )
     {
 	TokenBase *t = *it;
 	TokenID tid = t->id();
@@ -672,7 +671,7 @@ void Program::expand_pending_auto_include_macros(size_t original_start)
     if ( pending_auto_include_identifiers.empty() )
 	return;
 
-    std::deque<TokenBase *> rewritten;
+    std::vector<TokenBase *> rewritten;
     for ( size_t i = 0; i < tokens.size(); ++i )
     {
 	TokenBase *tb = tokens[i];
@@ -799,7 +798,7 @@ void Program::inject_pending_auto_includes()
 // declarator and the parse fails. Skips pointer decorators; stops at
 // the first non-`*` token and classifies it as type / qualifier /
 // typedef-identifier (→ decl head) or anything else (→ not decl head).
-static bool looks_like_decl_head(const std::deque<TokenBase *> &tokens)
+static bool looks_like_decl_head(const TokenStream &tokens)
 {
     for ( auto it = tokens.rbegin(); it != tokens.rend(); ++it )
     {

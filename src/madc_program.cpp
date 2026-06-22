@@ -356,7 +356,7 @@ struct expression_function_spec
 bool text_list_contains(const std::vector<std::string> &items, const std::string &value);
 std::vector<expression_function_spec> expression_header_function_specs(const std::string &header);
 std::vector<std::string> expression_allowed_function_names(const expression_policy &policy);
-std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBase *> &tokens,
+std::vector<std::string> collect_expression_token_calls(const TokenStream &tokens,
 							 const std::string &source_file);
 void append_unique_strings(std::vector<std::string> &dst,
 			   const std::vector<std::string> &src);
@@ -585,7 +585,7 @@ bool register_expression_header_functions(Program &pgm,
 
 bool validate_expression_function_policy(Program &pgm,
 					 const expression_policy &policy,
-					 const std::deque<TokenBase *> &tokens,
+					 const TokenStream &tokens,
 					 const std::string &source_file,
 					 const std::string &display_file)
 {
@@ -1373,7 +1373,7 @@ bool validate_expression_ast_call(const expression_policy &policy,
     return validate_expression_ast_list(call->parameters, policy, reason);
 }
 
-std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBase *> &tokens,
+std::vector<std::string> collect_expression_token_calls(const TokenStream &tokens,
 							 const std::string &source_file)
 {
     std::vector<std::string> calls;
@@ -3170,7 +3170,7 @@ struct program::impl
 	return true;
     }
 
-    bool validate_expression_function_policy(const std::deque<TokenBase *> &tokens,
+    bool validate_expression_function_policy(const TokenStream &tokens,
 					    const std::string &source_file,
 					    const std::string &display_file)
     {

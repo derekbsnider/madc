@@ -291,7 +291,7 @@ static DataDef *builtin_datadef_from_spelling(const std::string &s)
 
 // --- Serialization ---
 
-bool serialize_tokens(const std::deque<TokenBase *> &tokens,
+bool serialize_tokens(const TokenStream &tokens,
 		      std::vector<uint8_t> &out)
 {
     out.clear();
@@ -540,7 +540,7 @@ bool decompress(const uint8_t *in, size_t in_len,
 // --- File I/O ---
 
 bool write_madh(const char *path,
-		const std::deque<TokenBase *> &tokens,
+		const TokenStream &tokens,
 		uint64_t source_hash,
 		PchCompression method)
 {

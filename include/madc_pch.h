@@ -15,6 +15,10 @@
 #include <deque>
 
 class TokenBase;
+class TokenStream;	// parser token stream (defined in madc.h); the
+			// write side serializes it directly — see madc.cpp
+			// PCH-write. The read side fills local std::deque
+			// buffers that are then pushed into the live stream.
 
 // .madh file header (28 bytes)
 struct MadhHeader
@@ -52,7 +56,7 @@ namespace madc_pch {
 static const uint16_t FORMAT_VERSION = 1;
 
 // Serialize a token stream to a binary buffer (uncompressed)
-bool serialize_tokens(const std::deque<TokenBase *> &tokens,
+bool serialize_tokens(const TokenStream &tokens,
 		      std::vector<uint8_t> &out);
 
 // Deserialize a binary buffer back to a token stream
@@ -72,7 +76,7 @@ bool decompress(const uint8_t *in, size_t in_len,
 
 // Write a complete .madh file
 bool write_madh(const char *path,
-		const std::deque<TokenBase *> &tokens,
+		const TokenStream &tokens,
 		uint64_t source_hash,
 		PchCompression method = PchCompression::Zlib);
 

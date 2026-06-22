@@ -1035,6 +1035,109 @@ struct ParsedParamSig
     ParsedParamSig() : base(NULL), is_ref(false), is_const(false), pointer_depth(0) {}
 };
 
+// ---------------------------------------------------------------------------
+// TokenStream — the parser's token feed.
+//
+// P1 of the front-end-performance plan
+// (docs/plans/2026-06-22-front-end-performance-plan.md). Replaces the old
+// `std::deque<TokenBase *>` with a flat, contiguous buffer + an integer read
+// cursor, so the hot operations are O(1) index moves with no allocation:
+//   - consume (nextToken)    -> ++_cursor
+//   - peek    (peekToken)    -> _buf[_cursor]
+//   - backtrack save/restore -> copy {cursor, pushback}, NOT the whole stream.
+//        This is the ~43%-inclusive `std::deque` copy-ctor the profile flagged
+//        (`saved = tokens` / `tokens = saved`); it is now an int + a tiny vec.
+//   - inject  (pushToken)    -> a small LIFO pushback stack, read before _buf.
+//   - sub-stream (tokens=body) -> swap_in/swap_back, by MOVE (no copy).
+//
+// The logical token sequence is:   reverse(_pushback) ++ _buf[_cursor .. end].
+// Every accessor honours that, so a pushed-back token is seen at the front and
+// by index exactly as `push_front` into the old deque was.
+//
+// Copy is DELETED on purpose: every old `deque` copy site must be rewritten to
+// one of the cheap primitives above; the compiler enumerates them.
+//
+// PULL-BASED-LEXER (P2) COMPATIBILITY — this IS the arena P2 appends into:
+//   * Production is `push_back`, valid at ANY cursor position. P2 makes the
+//     lexer produce on demand and `push_back` into this same `_buf` while the
+//     parser cursors forward; consumed tokens stay in `_buf` for re-read, so
+//     backtrack remains index-rewind. P1 and P2 are complementary by design.
+//   * `nextToken()` (in Program) is the single consume chokepoint; P2 replaces
+//     its end-of-stream throw with "pull one token from the lexer and append".
+//   * The ONE place that assumes a fully-pre-lexed buffer is the auto-include
+//     reorder (begin/end/rbegin/erase/insert/swap over the whole `_buf` while
+//     `_cursor==0`). That is P2's revisit point — under pull-based it must only
+//     touch un-consumed tokens. P1 keeps it as-is (full-tokenize, cursor==0).
+// ---------------------------------------------------------------------------
+class TokenStream
+{
+    // STEP 1 (current): a thin wrapper over a std::deque, behaving EXACTLY like
+    // the original token deque. Every method maps 1:1 to the old deque op, so a
+    // green fulltest proves the ~74 call-site rewrites are behavior-neutral
+    // BEFORE the implementation changes. STEP 2 swaps _dq for the flat arena +
+    // cursor described above, changing ONLY these method bodies.
+    std::deque<TokenBase *> _dq;
+public:
+    TokenStream() {}
+    TokenStream(const TokenStream &) = delete;
+    TokenStream &operator=(const TokenStream &) = delete;
+
+    // -- lexer production / size / front / consume / inject --
+    void push_back(TokenBase *t) { _dq.push_back(t); }
+    TokenBase *back() const { return _dq.back(); }
+    bool empty() const { return _dq.empty(); }
+    size_t size() const { return _dq.size(); }
+    TokenBase *front() const { return _dq.empty() ? NULL : _dq.front(); }
+    void pop_front() { _dq.pop_front(); }
+    void push_front(TokenBase *t) { _dq.push_front(t); }
+    TokenBase *operator[](size_t i) const { return _dq[i]; }
+
+    // -- backtrack: save = copy the remaining stream (the old `saved = tokens`) --
+    struct Pos { std::deque<TokenBase *> dq; };
+    Pos savepos() const { Pos p; p.dq = _dq; return p; }
+    void restore(const Pos &p) { _dq = p.dq; }
+    // Sugar so the original `tokens = saved` restore idiom reads unchanged.
+    TokenStream &operator=(const Pos &p) { restore(p); return *this; }
+
+    // -- sub-stream: install `seq`, returning the prior stream; swap_back
+    //    restores it. Models the old `saved = tokens; tokens = body; tokens = saved;`. --
+    struct State { std::deque<TokenBase *> dq; };
+    State swap_in(std::vector<TokenBase *> seq)
+    {
+	State prev; prev.dq.swap(_dq);
+	_dq.assign(seq.begin(), seq.end());
+	return prev;
+    }
+    void swap_back(State prev) { _dq.swap(prev.dq); }
+    // Sugar so the body-replace restore `tokens = saved` reads unchanged too
+    // (mirrors operator=(Pos)); consumes the saved State.
+    TokenStream &operator=(State &s) { swap_back(std::move(s)); return *this; }
+
+    // -- lexer reorder support (auto-include) --
+    typedef std::deque<TokenBase *>::iterator iterator;
+    typedef std::deque<TokenBase *>::const_iterator const_iterator;
+    typedef std::deque<TokenBase *>::reverse_iterator reverse_iterator;
+    typedef std::deque<TokenBase *>::const_reverse_iterator const_reverse_iterator;
+    iterator begin() { return _dq.begin(); }
+    iterator end()   { return _dq.end(); }
+    const_iterator begin() const { return _dq.begin(); }
+    const_iterator end()   const { return _dq.end(); }
+    reverse_iterator rbegin() { return _dq.rbegin(); }
+    reverse_iterator rend()   { return _dq.rend(); }
+    const_reverse_iterator rbegin() const { return _dq.rbegin(); }
+    const_reverse_iterator rend()   const { return _dq.rend(); }
+    iterator erase(iterator a, iterator b) { return _dq.erase(a, b); }
+    template<class It> iterator insert(iterator pos, It a, It b) { return _dq.insert(pos, a, b); }
+    // The old `tokens.swap(rewritten)` (rewritten now a vector, discarded after).
+    void swap(std::vector<TokenBase *> &other) { _dq.assign(other.begin(), other.end()); other.clear(); }
+
+    // -- logical remaining sequence, copied flat (rare paths only) --
+    std::vector<TokenBase *> logical_snapshot() const
+    {
+	return std::vector<TokenBase *>(_dq.begin(), _dq.end());
+    }
+};
+
 // program class, keep things somewhat contained
 class Program
 {
@@ -1684,7 +1787,7 @@ public:
     std::stack<bool> ifdef_stack;	// conditional compilation state stack
     std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
-    std::deque<TokenBase *> tokens;	// parsed token queue
+    TokenStream tokens;			// parsed token stream (flat arena + cursor; P1)
     std::deque<TokenBase *> injected_tokens; // synthetic lexer output for lowered directives
     // --show-stats: token-stream traffic counters (diagnostic only).
     unsigned long long _tok_produced = 0; // tokens emitted into the stream by the lexer
