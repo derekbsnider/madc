@@ -2688,3 +2688,31 @@ arg shape AND body emission), OR is rejected in favor of a binding that
 materializes the converting temporary first. Start by tracing how `__o5` is
 chosen vs the bare const-ref overload (overload-disambiguator assignment +
 whether the rvalue overload's FuncDef reaches the CIR call-lowering at all).
+
+PRECISE ENTRY POINTS (verified this session):
+- `DataDefCLASS::findMethodOverload` (parser.cpp:8752) ranks same-name overloads
+  via `score_arg_to_param` (cir_builder.cpp:5061, `allow_udc` defaults TRUE).
+  A const char* arg vs a `std::string` class param scores 2 (user-defined
+  conversion through the `string(const char*)` ctor) — for BOTH `insert(const
+  value_type&)` AND `insert(value_type&&)`. That is a TIE at 2; the non-template
+  tiebreak (8849) only reorders member templates, so the FIRST-registered
+  overload (`const value_type&`, declared first in stl_set.h:511) SHOULD win and
+  emit the bare `_insert`. Yet the const-char* case selects `__o5` and emits a
+  MALFORMED call (no retbuf, raw const char*). So FIRST INSTRUMENT
+  findMethodOverload (MADC_DBG) on `tmp/b7_lit.mad` to see whether it (a) returns
+  the `&&` overload (tie mis-resolved), or (b) returns NULL and a FALLBACK path
+  emits the guessed `__o5`. The string-arg cases (b7_lv lvalue, b7_tmp explicit
+  `std::string("Alice")` prvalue) BOTH bind the bare const-ref `_insert` (full
+  3-arg retbuf/this/&string call + body) and WORK — so the divergence is solely
+  the const-char* arg type, and the fix must make that arg either (i) bind the
+  same const-ref overload after materializing the string temp, or (ii) bind the
+  `&&` overload with a fully-resolved FuncDef + retbuf + the converting temp.
+- Cross-check clang Sema (`/workspace/llvm-clang-src`, `lib/Sema/SemaOverload.cpp`
+  — `TryUserDefinedConversion` / `CompareImplicitConversionSequences` /
+  `CompareStandardConversionSequences`): for `insert("Alice")` clang forms ONE
+  user-defined conversion to `std::string` (a prvalue), then prefers
+  `insert(value_type&&)` over `insert(const value_type&)` (rvalue binds an
+  rvalue-ref better). So the C++-correct pick IS the `&&` overload — meaning
+  fix (ii) is the faithful path: select `&&`, materialize the `string("Alice")`
+  temporary, bind it to the rvalue-ref param, and emit the body. madc currently
+  reaches the `&&` symbol but drops the temp + body.
