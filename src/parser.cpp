@@ -9753,7 +9753,24 @@ std::string Program::peek_param_list_spelling()
 	    break;
 	if ( !spelling.empty() )
 	    spelling += ' ';
-	spelling += overload_token_spelling(t);
+	// Overload IDENTITY must be by RESOLVED type, not surface text. A
+	// parameter named through a class-scope typedef (`_Self`, a nested
+	// `iterator`, ...) spells identically across DIFFERENT classes — e.g.
+	// `_Rb_tree_iterator`'s and `_Rb_tree_const_iterator`'s hidden-friend
+	// `operator!=(const _Self&, const _Self&)` both read `_Self`. Comparing
+	// raw spellings then merges the two as one overload (the second reuses
+	// the first's symbol), so the const-iterator's `!=` is lost and
+	// `s.find(x) != s.end()` falls back to a raw struct `!=`. Canonicalize a
+	// current-class-scope alias to its resolved type's unique name so the two
+	// stay DISTINCT overloads. Only inside a class scope (friend/member parse);
+	// the plain namespace-function path is untouched.
+	std::string tok_sp;
+	if ( !class_scope_stack.empty()
+	  && (t->type() == TokenType::ttIdentifier
+	   || t->type() == TokenType::ttDataType) )
+	    if ( DataDef *al = resolve_current_class_type_alias(((TokenIdent *)t)->str) )
+		tok_sp = al->name;
+	spelling += tok_sp.empty() ? overload_token_spelling(t) : tok_sp;
     }
     for ( size_t i = recorded.size(); i-- > 0; )
 	pushToken(recorded[i]);

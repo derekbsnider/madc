@@ -2425,5 +2425,55 @@ the const-iterator's in-class FRIEND `operator!=` is never dispatched.
 VALIDATION GATES already MET for bug-2: 6-line reducer (`tmp/b2_min.mad`) prints
 42; non-trivial/dtor variant (retbuf path) prints 42; copy-init + param-init
 unaffected; fulltest 661/4/0/18 zero new reds (the 4 are the known set wall);
-torture diff vs the 51-name baseline IN PROGRESS (the fix cannot touch pure-C
-returns — guard requires a user class).
+torture diff vs the 51-name baseline byte-identical (the 5 memcpy-a*/memclr
+entries are 5.0s host-load timeouts, not regressions). bug-2 COMMITTED @ 94d0798.
+
+### 2026-06-22 (cont. 2) — set-wall BUG-3 FIXED; BUG-4 PINNED to set::insert pair-ctor arg
+
+BUG-3 — FIXED (commit pending torture-gate; fulltest 662/4/0/18 ZERO regr).
+- The earlier "MECHANISM" note above was on the right track but the precise
+  cause was found by instrumentation, NOT a `_Self` type-RESOLUTION failure:
+  the probe showed `_Self` resolves CORRECTLY per class scope (CIter↔CIter,
+  RIter↔RIter; it is NOT in the global datatype_map). The real cause is overload
+  IDENTITY: `peek_param_list_spelling()` builds the overload-dedup key from the
+  RAW parameter TEXT, so both `_Rb_tree_iterator`'s and `_Rb_tree_const_iterator`'s
+  hidden-friend `operator!=(const _Self&, const _Self&)` spell IDENTICALLY
+  (`_Self`). The global-operator dedup (parser.cpp ~38990: `if
+  (ovset[i].param_spelling == ns_overload_spelling) same = ...`) then treats the
+  second as a RE-DECLARATION of the first — it reuses the first's symbol and the
+  two collapse to ONE overload (`find_free_operator_function` saw n=1, should be
+  2). The const-iterator's `!=` is lost; `s.find(x) != s.end()` falls back to a
+  raw c2mir struct `!=` ("invalid types of comparison operands").
+- FIX (parser.cpp `peek_param_list_spelling`): when inside a class scope
+  (`class_scope_stack` non-empty — the friend/member parse), canonicalize a
+  parameter token that names a current-class-scope alias to its RESOLVED type's
+  unique name (`resolve_current_class_type_alias(tok)->name`) before appending
+  to the identity spelling. Two classes' identically-spelled `_Self` params then
+  get DISTINCT identities and stay separate overloads. Strictly SPLITS
+  wrongly-merged overloads (consistent same-scope resolution → cannot cause a
+  false NON-merge); plain namespace-function overloading is untouched
+  (class_scope_stack empty). Regression test `tests/testfriendopself.mad`.
+- VERIFIED: `b3_C` reducer now prints `ne`; `b3_distinct` (distinct alias names —
+  the discriminating control) still `ne`; real `set<int>` find/end COMPILES AND
+  RUNS (`tmp/set_findonly.mad` prints `no`). fulltest 662/4/0/18 (+1 test; same 4
+  set-wall reds).
+
+BUG-4 — PINNED, fix NOT written. `set<int>` (with insert) still red: 2 c2mir
+errors at stl_set.h:96 ("incompatible types in assignment to struct/union" +
+"... to a pointer"). PINNED via `--emit=c11` (`tmp/seti_emit2.c`):
+`set::insert` does `return std::pair<iterator,bool>(__p.first, __p.second)`
+where set's `iterator` == `const_iterator` (`_Rb_tree_const_iterator<int>`) but
+`__p.first` is the tree's NON-const `_Rb_tree_iterator<int>`. The emitted pair
+ctor call passes `&__p.first` (an `_Rb_tree_iterator*`) RAW (cast to void*) into
+the ctor's `const _Rb_tree_const_iterator&` parameter — the iterator->const_iterator
+converting ctor is NOT applied to the pair ctor's FIRST ARGUMENT. So bug-4 is an
+ARGUMENT copy-init conversion gap in the functional-construction / ctor-arg path
+(object_arg_addr should materialize a converting temp for an arg whose class !=
+the param's class via a converting ctor, but here it binds the address raw).
+NEXT: trace why object_arg_addr (cir_builder.cpp ~1141) does not materialize a
+converting temp when the pair ctor's param is `const const_iterator&` and the arg
+is an `iterator` lvalue (`__p.first`). Likely the param is seen through pair's
+`const _T1&` template param (param_object_class not recognizing the instantiated
+const_iterator), OR the TokenObjTemp functional-construction arg path bypasses
+object_arg_addr. Reducer to build: a `pair<CIter,bool>(rIterLvalue, b)` where CIter
+converts from RIter — minimal version of the set::insert return.
