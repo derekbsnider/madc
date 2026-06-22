@@ -219,8 +219,10 @@ class CirBuilder {
 	// Build one N_MEMBER node for a struct/union member (shared by struct_def
 	// and the inline-struct path in typedef_decl).
 	node_t member_node(const memberpair_t &m, DataDefSTRUCT *owner = NULL);
+	node_t anonymous_aggregate_member_node(DataDefSTRUCT *anon);
 
-	// Build the N_LIST of N_MEMBER nodes for an anonymous aggregate's body.
+	// Build the N_LIST of N_MEMBER nodes for an aggregate body, preserving
+	// anonymous nested aggregate groups as unnamed STRUCT/UNION members.
 	node_t anon_members_list(DataDefSTRUCT *anon);
 	// Build the inline type-spec for an anonymous aggregate: a one-element
 	// LIST holding STRUCT/UNION(IGNORE-tag, members). An anonymous aggregate
@@ -554,12 +556,16 @@ public:
 	// struct/union tag — for a method/function that returns a trivially-copyable
 	// class BY VALUE (register-returned, no retbuf). It takes precedence over
 	// ret_specs/ret_ptr (a by-value struct return is neither a scalar base nor a
-	// pointer). Mirrors ExternParam::cls for by-value class parameters.
+	// pointer). `ret_dd` (when non-null) declares the concrete return DataDef,
+	// including pointer/reference stars, so typed pointer returns such as char*
+	// do not collapse to void*. Mirrors ExternParam::cls for by-value class
+	// parameters.
 	void need_output_extern(const char *symbol, bool ret_ptr,
 				const std::vector<ExternParam> &params,
 				const std::vector<c2mir_node_code_t> &ret_specs
 					= std::vector<c2mir_node_code_t>(),
-				class DataDefCLASS *ret_cls = NULL);
+				class DataDefCLASS *ret_cls = NULL,
+				class DataDef *ret_dd = NULL);
 	void need_output_extern_unprototyped(const char *symbol, bool ret_ptr,
 				const std::vector<c2mir_node_code_t> &ret_specs
 					= std::vector<c2mir_node_code_t>());

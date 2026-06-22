@@ -1,6 +1,7 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-06-11 (v0.29.0).
+Master plan linking all workstreams. Updated 2026-06-22 (v0.29.0 +
+`wip/tuple-instantiation-claude` C++17 map handoff).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -56,6 +57,37 @@ high-level" — the answer is both.**
   Class-(b) GNU extensions (14 tests) are roadmap items, not gate blockers.
   The clean `develop` rebuild emits no compiler warnings. The class-(a)
   failures are the active CIR coverage worklist — see Track 1.3.
+- **C++17 real-header `std::map` / tuple WIP branch (2026-06-22,
+  `wip/tuple-instantiation-claude` @ `2bd68f6` plus local fixes):** default-build
+  fulltest before the latest `map<string,int>` fix was
+  **658 passed, 5 failed, 0 timed out, 18 skipped**. The failures in that run
+  were the known branch reds: `testcontainerdtor`, `testmadc_ns`, `testmap`,
+  `testset`, and `testsubscript`; this count is now stale for `testmap`, which
+  passes focused validation. The interrupted handoff regressions are recovered:
+  `testforeach2`, `testtuple`, `testfstream`, `testloop`, and new
+  `teststdmapint` are green. Map bring-up is deliberately C++17-first:
+  `testmap` uses `find/end` rather than C++20 `contains`, and map canary flags
+  are `--std=c++17 --no-embedded-headers`. The local fixes keep body-bearing `void` std
+  function templates (`std::_Destroy`, `std::destroy_at`) on the real-header
+  body-instantiation path and disambiguate duplicate flattened member C field
+  names. The const/reference template-argument spelling and derived-to-base
+  nested-template deduction fixes are now enabled by default after external
+  method declarations gained typed pointer returns and scalar-reference argument
+  addressing. Latest local handoff fixes generic explicit-template overload
+  selection for namespace calls such as `std::forward<T>` and const-qualified
+  class/struct visibility in CIR emission. The previous `std::get` scoped-alias
+  wall is now fixed generically with same-DataDef typedef-alias preservation and
+  concrete partial-specialization completion from the opaque template path. The
+  later undefined local `basic_string...__o15` wrapper was moved forward by
+  generic CIR reference-return/constructor-argument handling. Focused
+  `testmap` now passes after a generic anonymous aggregate layout fix:
+  `DataDefSTRUCT` records anonymous struct/union groups and CIR emits unnamed
+  anonymous aggregate members, so libstdc++ `std::basic_string` keeps its
+  `_M_local_buf`/`_M_allocated_capacity` anonymous union instead of flattening
+  them as sequential fields. Remaining work: rerun fulltest, retire the broader
+  map/set/container branch reds, fix `tmp/te_direct.mad`'s direct `std::get`
+  declaration-initializer call loss, and clean up non-fatal libstdc++
+  pointer-type diagnostics in the map path.
 - **C++ model — proven on the old backend, being re-established on CIR:**
   ctors/dtors, operator overloading, references, `new`/`delete`, single
   inheritance, vtables, SJLJ exceptions + unwinding, access control, const

@@ -1,6 +1,44 @@
 # Test Status
 
-> **Current (2026-06-11, `feature/strict-equality-claude` @ `1ffbc8c`
+> **Current WIP (2026-06-22, `wip/tuple-instantiation-claude` @ `2bd68f6`
+> plus local C++17 map/tuple fixes):** last default-build fulltest before the
+> latest `map<string,int>` fix was
+> **658 passed, 5 failed, 0 timed out, 18 skipped** with the known branch reds only:
+> `testcontainerdtor`, `testmadc_ns`, `testmap`, `testset`, and
+> `testsubscript`; this count is now stale for `testmap`, which passes focused
+> validation. Recovered regressions from the interrupted handoff:
+> `testforeach2`, new `teststdmapint`, and `testtuple` are green; focused
+> `testfstream` and `testloop` remain green. `teststdmapint` pins
+> `std::map<int,int>` insert/update through real libstdc++ headers under
+> `--std=c++17 --no-embedded-headers`. `tests/testmap.mad` is also C++17-first
+> now: it uses `find/end` instead of C++20 `contains`, and focused
+> validation now passes for `std::map<std::string,int>` after the anonymous
+> aggregate layout fix below. The former
+> `FEATURE_CONST_TYPES` and `FEATURE_DERIVED_TO_BASE_DEDUCTION` paths are now
+> default after external-method typed-return/ref-argument lowering fixed the
+> historical stream/string regressions. Remaining diagnostics: non-fatal
+> libstdc++ `stl_tree`/`stl_map` pointer-type warnings. Latest local handoff
+> update: the previous `std::get` scoped-alias blocker is fixed generically
+> through same-DataDef typedef-alias preservation plus concrete partial-spec
+> completion from the opaque template path; `_Nth_type`/tuple reducers and
+> `teststdmapint` pass. The later undefined `basic_string...__o15` wrapper was
+> moved forward by generic CIR reference-return/constructor-argument handling.
+> The remaining runtime corruption was caused by flattening libstdc++ anonymous
+> union members in `std::basic_string` as sequential fields, inflating the
+> string layout and overflowing pair/tree storage. `DataDefSTRUCT` now records
+> anonymous aggregate groups and CIR emits unnamed anonymous struct/union
+> members, preserving the ABI layout. `make -C src` passed; `--emit=c11` for
+> `tests/testmap.mad` shows `_M_local_buf`/`_M_allocated_capacity` inside an
+> anonymous union; `tests/teststdmapint.mad` and `tests/testmap.mad` both pass.
+> Focused regressions `tests/testtuple.mad`, `tests/testforeach2.mad`,
+> `tests/testfstream.mad`, and `tests/testloop.mad` also pass after this fix.
+> Fulltest was not rerun after this local fix, so the 658/5/0/18 count above is
+> still the last branch fulltest and is stale for `testmap`.
+> Revalidated after a clean non-debug rebuild; `tests/testmathh.timeout` keeps
+> that passing math-header test off the default 5-second wall cap. gcc.c-torture
+> and SMAUG were not rerun in this WIP validation.
+>
+> **Previous (2026-06-11, `feature/strict-equality-claude` @ `1ffbc8c`
 > — `===`/`!==` strict equality, STD_MADC dialect):** fulltest
 > **577 passed, 0 failed, 0 timed out, 18 skipped** (make exit 0, both
 > check gates GREEN, clean rebuild zero warnings). New operators:

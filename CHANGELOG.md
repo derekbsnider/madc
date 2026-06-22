@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+### C++ real-header `std::map` / tuple WIP rehydration
+
+- Recovered the interrupted `wip/tuple-instantiation-claude` handoff and fixed
+  the new regressions it exposed: body-bearing `void` std function templates
+  such as `std::_Destroy` and C++20 `std::destroy_at` now stay on the local
+  real-header template-body instantiation path instead of becoming undefined
+  mangled imports, while flattened C++ class emission now disambiguates
+  duplicate inherited C field names such as `_M_head_impl`.
+- Added `tests/teststdmapint.mad` as a real-libstdc++ `std::map<int,int>`
+  insert/update canary. WIP branch validation in the default build is now
+  **658 passed, 5 failed, 0 timed out, 18 skipped**; the remaining failures
+  are the known branch reds (`testcontainerdtor`, `testmadc_ns`, `testmap`,
+  `testset`, `testsubscript`). Non-fatal libstdc++ pointer-type diagnostics
+  remain in the map path.
+- Promoted the const/reference template-argument spelling and derived-to-base
+  nested-template deduction paths out of feature guards. External libstdc++
+  method declarations now preserve typed pointer returns and pass scalar
+  reference parameters by address, which keeps the stream/string focused tests
+  green while `std::map<int,int>` works without optional compiler flags.
+- Fixed the generic namespace-template overload path so explicit template
+  arguments are retained on instantiated overload records and calls such as
+  `std::forward<T>` do not reuse the wrong specialization. Const-qualified
+  class/struct DataDefs now remain structurally visible to overload ranking and
+  CIR extern/tag rendering. The current `testmap` blocker is narrower:
+  `std::get` still preserves a class-scope alias named `type` by spelling only,
+  colliding with an unrelated global typedef in emitted C.
+- Switched the map canaries back to the achievable C++17 target: `testmap` now
+  uses `find/end` instead of C++20 `contains`, and the map flags use
+  `--std=c++17 --no-embedded-headers`. The scoped-alias blocker above is now
+  fixed generically with same-DataDef typedef-alias preservation and concrete
+  partial-specialization completion from the opaque template path. The later
+  undefined local `basic_string...__o15` wrapper was moved forward by generic
+  CIR reference-return/constructor-argument handling.
+- Preserved anonymous struct/union layout through `DataDefSTRUCT` metadata and
+  CIR unnamed anonymous aggregate emission. This fixes the `std::basic_string`
+  layout used by libstdc++ (`_M_local_buf` and `_M_allocated_capacity` are an
+  anonymous union, not sequential fields), preventing `std::pair`/`_Rb_tree`
+  storage overflow and making the C++17 `tests/testmap.mad`
+  `std::map<std::string,int>` canary pass in focused validation.
+- Added `tests/testmathh.timeout` after a clean revalidation showed
+  `testmathh` is a passing test that can sit too close to the runner's
+  default 5-second wall cap under full-suite load.
+
 ### Real `__int128` / `unsigned __int128` (P0 wide-integer track, slices 1+1.5)
 
 - **`__int128` is a real 16-byte type** (SysV alignment 16) end-to-end:

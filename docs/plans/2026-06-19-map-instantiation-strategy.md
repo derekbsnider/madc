@@ -1904,3 +1904,325 @@ ALSO FOUND (separate, surfaces once compile works): the `_Rb_tree` RUNTIME seman
 tmp/mapuniq.mad: `m[1]=10` then read `m[1]=0` (value lost) while `m[2]=20` reads OK, and `m[1]=99`
 INSERTS A DUPLICATE (size 2→3 same key). operator[]'s find/lower_bound + returned value-reference
 `(*__i).second` are unstable (W4b reference-lowering + stl_tree.h:427 node-pointer-coercion). W2/W3.
+
+### 2026-06-20 (Codex handoff) — local narrow pack-spelling fix applied; empty-class layout fixed; remaining failure is MIR/runtime, not lowered C
+
+Branch/state: `wip/tuple-instantiation-claude` at `2bd68f6`. Uncommitted tracked edits:
+`src/parser.cpp`, `include/datadef.h`, `src/cir_builder.cpp`. Pre-existing untracked
+`mir-debug-support.md` is still not ours. MIR fork is `/workspace/mir` at `824c7c86`;
+`MIR_COMMIT` in madc is `824c7c8`.
+
+What changed locally:
+- Replaced the broad `resolve_arg_spelling_datadef()` cache mutation with a narrow
+  pack-spelling carry. `try_instantiate_namespace_fn_template()` now records
+  `tid_pack_spellings`, and `instantiate_fn_template_binding()` uses the captured
+  source spelling for one-element template-id packs when injecting `TokenDataType`.
+  This preserves `const int&` for `tuple<_Args1...>` without mutating shared
+  cached `DataDef` canonical spelling.
+- Fixed empty C++ class storage/layout at the type/layout layer. Complete empty
+  classes now have size 1 as objects/members; empty bases still use EBO. `addMember()`
+  accounts for empty class member storage, and `CirBuilder::object_class_words()`
+  avoids rendering a complete size-1 empty class as an opaque long-word object.
+  This makes emitted `_Rb_tree_impl` match GCC's shape: the empty comparator occupies
+  a byte plus padding, and `_M_header` is at offset 8, not offset 0.
+
+Validation run with `OPTIONAL_CPPFLAGS="-DFEATURE_CONST_TYPES -DFEATURE_DERIVED_TO_BASE_DEDUCTION"`:
+- Build succeeded.
+- `tmp/mapempty.mad` now runs: `empty ok`.
+- `tmp/mapii.mad` compiles/runs with warnings only.
+- `tmp/maprun.mad` still has wrong semantics under madc/MIR:
+  `m[1]=99 m[5]=50 size=3` (GCC/clang oracle is size 2).
+- `tmp/mapuniq.mad` still shows the duplicate/update bug:
+  `two distinct: size=2 m[1]=0 m[2]=20`, then `after update m[1]: size=3 m[1]=99`.
+- Controls still pass: `tmp/tv.mad -> get0=7`, `tmp/tdref.mad -> r=7`.
+
+Important diagnostic result: the exact emitted C for `tmp/maprun.mad` compiled and
+ran correctly under GCC:
+`gcc -w -x c -std=gnu11 -c tmp/maprun_current.c -o tmp/maprun_current.o`;
+`g++ tmp/maprun_current.o lib/libmadc.a /workspace/mir/libmir.a -ldl -lz -lm -lpthread -o tmp/maprun_current_gcc`;
+`tmp/maprun_current_gcc -> m[1]=99 m[5]=50 size=2`.
+So the current wrong `size=3` behavior is NOT in the lowered C text. The remaining
+gap is in the internal tree -> c2mir/MIR execution path.
+
+Current hypothesis for the next session: focus on the `_Rb_tree` insert/search
+runtime path, not the pair/tuple compile path. The emitted algorithms are structurally
+close to libstdc++ and native GCC runs them correctly, while madc/MIR does not. The
+remaining warnings are the strong lead:
+`bits/stl_tree.h:427 incompatible argument type for pointer type parameter`,
+`bits/stl_map.h:102 incompatible pointer types`, and `node_handle.h:64 incompatible
+return-expr type`. Re-check `_M_get_insert_unique_pos`, `_M_insert_node`,
+`_S_key`, `_S_left/_S_right`, and the `_Rb_tree_insert_and_rebalance` call in the
+internal c2mir/MIR path. A quick bool-call suspicion was tested only partially:
+internal c2m `_Bool` calls passed; the external-call test was not completed.
+
+Full regression status: `make -C src fulltest` was NOT rerun after these uncommitted
+changes. The last committed baseline remains the prior `656/6/0/18`.
+
+### 2026-06-21 (Codex rehydration/fixup) — prior handoff recovered; regressions fixed; fulltest back to known 5 reds
+
+Branch/state: `wip/tuple-instantiation-claude` at `2bd68f6`, upstream synced. The tree
+is intentionally still dirty with the local map work in `src/parser.cpp`,
+`include/datadef.h`, `src/cir_builder.cpp`, status/docs mirrors, and new
+`tests/teststdmapint.{mad,flags,expect}`. `mir-debug-support.md` remains pre-existing
+untracked work and is not ours.
+
+Rehydration findings:
+- Git history since `731d0eb` is mostly plan/root-cause notes; the last source commit is
+  `f2a0f27` (typed forward prototypes for empty map/set member dtors). The prior session's
+  actual code edits were uncommitted.
+- The previous handoff text had been appended here and partly mirrored into
+  `claude_status.json`, but the KG lookup by `id` missed it because the KG node exists by
+  `name=session_2026_06_20_codex_map_runtime_handoff` with nil `id`.
+- The user-provided later transcript was newer than that handoff: fulltest had found a
+  `testforeach2` regression after the handoff text claimed fulltest had not been rerun.
+
+Regression fixes applied on top of the dirty local work:
+- `testforeach2` failed with MIR undefined import
+  `_ZSt8_DestroyIPNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES5_EvT_S7_RSaIT0_E`.
+  Root cause: the dirty `std_free_function_instantiation()` path externalized body-bearing
+  `void` libstdc++ function templates. Those are header bodies madc must instantiate locally,
+  not exported libstdc++ symbols. Fix: when `fn_template_map` has a retained body and the
+  selected template returns `void`, return NULL from the mangled-direct path so the existing
+  local overload-instantiation/ranking path emits the body. This also fixed the true
+  runner-order C++20 `teststdmapint` failure on `std::destroy_at`.
+- `testtuple` failed with c2mir repeated declaration `_M_head_impl`. Root cause: flattened
+  C++ base/member emission can put inherited base members and own members with the same C++
+  name into one C struct. Fix: class struct emission now synthesizes unique C field names for
+  duplicate flattened members, preferring an own member's source name when it hides inherited
+  fields. Layout offsets and DataDefs are unchanged.
+
+Focused validation after fixes:
+- `bin/madc tests/testforeach2.mad` -> prints Alice/Bob/Charlie and lambda greetings; warning
+  at line 21 remains.
+- `bin/madc tests/testfstream.mad --std=c++17 --no-embedded-headers` -> expected file IO,
+  `to_string: 42`, `stoi: 12345`, `strlen: 5`.
+- `bin/madc tests/testloop.mad` -> `line1`, `line2`, `line3`, `lines: 3`.
+- `bin/madc tests/testtuple.mad` -> `tuple ok`.
+- `bin/madc --std=c++20 --no-embedded-headers tests/teststdmapint.mad` -> expected:
+  `two distinct: size=2 m[1]=10 m[2]=20`, `after update: size=2 m[1]=99`.
+
+Full validation:
+- `timeout 1800 make -C src fulltest 'OPTIONAL_CPPFLAGS=-DFEATURE_CONST_TYPES -DFEATURE_DERIVED_TO_BASE_DEDUCTION'`
+  -> `658 passed, 5 failed, 0 timed out, 18 skipped`.
+- The 5 failures are the known branch reds:
+  `testcontainerdtor`, `testmadc_ns`, `testmap`, `testset`, `testsubscript`.
+- `testforeach2`, `teststdmapint`, and `testtuple` did not fail in the final fulltest.
+- Follow-up rehydration sanity pass found the local binary had been left with
+  `MADC_DEBUG_CTORINIT`; after `make -C src clean` and a normal feature-flag rebuild,
+  focused checks stayed green. One fulltest run exposed `testmathh` as a passing test
+  close to the default 5-second runner cap (`657 passed, 4 failed, 2 timed out,
+  18 skipped`, with `testmathh` the only unexpected timeout). Added
+  `tests/testmathh.timeout` and reran fulltest: `658 passed, 5 failed, 0 timed out,
+  18 skipped`, with only the known branch reds above.
+
+Remaining open work:
+- The real-header `std::map<int,int>` canary now passes, but the broader existing branch reds
+  still cover the map/set/container destructor surfaces.
+- Pointer-type diagnostics remain in the map path:
+  `bits/stl_tree.h:427`, `bits/stl_map.h:102`, and `bits/node_handle.h:64`.
+- A proper future cleanup should capture function explicit-instantiation declarations
+  (`extern template ... f(...)`) as data. That would let mangled-direct selection use the real
+  libstdc++ export signal instead of the current conservative "retained body + void => local"
+  rule, while preserving the externally-instantiated `std::getline<char>` path.
+
+### 2026-06-21 Codex default-build promotion
+
+The remaining feature-gate blockers were not in the parser-specific map path. The
+flag-on build still broke string/stream focused tests because external libstdc++
+method declarations erased typed pointer returns to `void *` and treated scalar
+reference parameters as ordinary pointer parameters. Concrete failure:
+`basic_string::_M_data()` emitted as `void *` and `_M_create(size_type&, size_type)`
+received `__capacity` instead of `&__capacity`, producing the
+`basic_string.h:87` c2mir incomplete-pointer error in `testforeach2`,
+`testfstream`, and `testloop`.
+
+Fixes applied:
+- `CirBuilder::need_output_extern()` can now receive a concrete return `DataDef`
+  and renders its pointer/reference stars, so `_M_data()` emits as `char *`
+  instead of `void *`.
+- `emit_symbol_method_call()` now routes scalar reference params through
+  `ref_param_arg_addr()`, so `_M_create(size_type&, size_type)` receives an
+  address.
+- Parser gates `FEATURE_CONST_TYPES` and `FEATURE_DERIVED_TO_BASE_DEDUCTION`
+  were removed. Const/reference template-argument spelling and
+  [temp.deduct.call]/4 derived-to-base nested-template deduction are default
+  behavior now.
+
+Default-build focused validation:
+- `bin/madc --std=c++20 --no-embedded-headers tests/teststdmapint.mad` -> expected
+  two-line map insert/update output.
+- `bin/madc tests/testtuple.mad` -> `tuple ok`.
+- `bin/madc tests/testforeach2.mad` -> expected names/greetings; existing warning
+  at line 21 remains.
+- `bin/madc --std=c++17 --no-embedded-headers tests/testfstream.mad` -> expected
+  file/string output.
+- `bin/madc --std=c++17 --no-embedded-headers tests/testloop.mad` -> `lines: 3`.
+- `bin/test_libmadc_program --test-case="madc C API can compile and call scalar and string results"`
+  -> 1 passed.
+
+Default-build full validation:
+- `make -C src fulltest` -> `658 passed, 5 failed, 0 timed out, 18 skipped`.
+- The 5 failures remain the known branch reds:
+  `testcontainerdtor`, `testmadc_ns`, `testmap`, `testset`, `testsubscript`.
+
+Remaining open work is unchanged: retire the broader map/set/container branch reds
+and clean up the non-fatal libstdc++ pointer-type diagnostics in the map path.
+
+### 2026-06-21 Codex handoff — `std::forward` fixed; scoped alias blocker remains
+
+Branch/state: `wip/tuple-instantiation-claude` at `2bd68f6`, with the expected
+dirty local map/tuple work. The debug-only instrumentation added during the
+investigation was removed before handoff. No parser hardcoding for
+`basic_string` was found or added; the new fixes are in generic namespace
+overload, const-qualified type, and CIR rendering paths.
+
+Fixes applied after the default-build promotion:
+- Namespace function overload records now retain explicit template-argument
+  spellings, and namespace overload lookup filters by those spellings. This
+  prevents memoized calls such as `std::forward<T>` from reusing the wrong
+  specialization.
+- `DataDefCONST` now forwards structural predicates to its base type, and CIR
+  type recovery unwraps const-qualified class/struct DataDefs before class-tag
+  rendering and extern signature rendering.
+- `std::forward<const ...>` now emits matching `struct basic_string... *`
+  prototypes/definitions instead of the previous mismatched type path.
+
+Validation/state:
+- `make -C src` passed after the final debug-instrumentation cleanup and
+  handoff/status edits.
+- `bin/madc --std=c++20 --no-embedded-headers --emit=c11 tests/testmap.mad`
+  succeeds.
+- `bin/madc --std=c++20 --no-embedded-headers tests/testmap.mad` still fails
+  in c2mir with the known `stl_map.h:102` lvalue/return warning cluster after
+  repeated `stl_tree.h:427` pointer-parameter warnings.
+- Fulltest was not rerun after this final cleanup/handoff pass; the last full
+  validation for this branch remains the default-build `658 passed, 5 failed,
+  0 timed out, 18 skipped` run described above.
+
+Active blocker:
+- `std::get` return alias preservation is still wrong in the real map path.
+  The emitted C has a concrete helper returning `struct basic_string... *`, but
+  `std::get__o2` keeps `return_typedef_name = "type"`, colliding with an
+  unrelated global `typedef char type;`, so CIR emits `type *` / `char *`.
+- Strong root-cause lead: `parseDeclaration` preserves `decl_typedef_alias`
+  when `user_typedef_names.count(tb->str)` is true. For class-scope aliases
+  named `type`, spelling alone is insufficient; it can match an unrelated
+  global typedef. Replace these raw alias-spelling checks with a scoped helper
+  that verifies the alias resolves to the same `DataDef` at the correct scope.
+  Start at the return-declaration path around the raw `tb->str == "type"` /
+  `user_typedef_names.count(tb->str)` preservation site, then sweep the other
+  raw `user_typedef_names` alias-preservation checks.
+
+Next validation after the alias fix: rebuild with `make -C src`, rerun
+`--emit=c11 tests/testmap.mad`, rerun `tests/testmap.mad`, then rerun the
+focused canaries (`teststdmapint`, `testtuple`, `testforeach2`, `testfstream`,
+`testloop`) before another capped `make -C src fulltest`.
+
+### 2026-06-22 Codex handoff — C++17 map target; alias wall moved forward
+
+Course correction: map bring-up is C++17-first. Do not lean on C++20
+`std::map::contains` for this branch. `tests/testmap.mad` now checks membership
+with `find(key) != end()`, and both map canaries use
+`--std=c++17 --no-embedded-headers`.
+
+What changed since the previous handoff:
+- Added `Program::typedef_alias_matches_datadef(alias, dd)` and replaced the
+  raw alias-preservation checks that could keep a same-spelled unrelated typedef.
+  This fixes the prior class-scope `type` vs global `typedef char type` wall
+  generically, by identity rather than spelling.
+- `instantiate_opaque_template_use` now detects when concrete arguments select a
+  body-bearing partial specialization and replays through the real instantiation
+  path. This completes the `_Nth_type<0, ...>` / nested alias cases that were
+  previously left as opaque shells.
+- The non-type argument probe in that helper is deliberately lexical (`tkInt`
+  only) before constant folding so dependent names such as `__i` in headers do
+  not get speculatively evaluated while still dependent.
+
+Focused reducer state:
+- `tmp/nestnth2.mad` -> `r=7`.
+- `tmp/twolevel_nth.mad` -> `r=7`; GCC and clang accept the reducer.
+- `tmp/twolevel_nth_using.mad` -> `r=7`; GCC and clang accept the reducer.
+- `tmp/tv.mad` -> `get0=7`.
+- `tmp/te_lval.mad` -> `r=7`.
+- `tmp/te_direct.mad` still has a separate direct `std::get<0>(t)` declaration
+  initializer issue: emitted C assigns `int *r = (&__ns_std_get);` instead of
+  calling the selected suffixed overload.
+
+Focused test state:
+- `make -C src` passed.
+- `timeout 180 bin/madc tests/teststdmapint.mad` passed under its C++17 flags,
+  with the expected size/update output and existing non-fatal `stl_tree.h:427`
+  pointer warnings.
+- `timeout 180 bin/madc tests/testmap.mad` now gets past the old
+  `_Nth_type`/`std::get` alias blocker and fails later:
+  `MIR error: import of undefined item
+  basic_string_char_std__char_traits_char__std__allocator_char___basic_string_char_std__char_traits_char__std__allocator_char___o15`.
+
+Current root-cause lead:
+- The emitted C for `testmap` has a correct concrete `std::get` helper returning
+  `struct basic_string... *`.
+- The failing pair indexed ctor still materializes:
+  `__madc_objtmp_41` from `(*__ns_std_get__o2(__tuple1))`, calls the local
+  wrapper `basic_string...__o15((&__madc_objtmp_41), ...)`, then forwards
+  `__madc_objtmp_41` into the exported libstdc++ copy ctor.
+- This points at CIR constructor-argument shaping, not parser alias resolution:
+  inspect `object_arg_addr`, `ref_returning_call_type`, `class_ctor_call_addr`,
+  and the parser-side return-reference annotation for namespace function
+  templates. The fix should make `std::forward(std::get(...))` bind the
+  reference-returning call directly or select the external copy ctor, without
+  materializing a local undefined `basic_string` wrapper.
+
+Next validation: rebuild with `make -C src`, rerun `tests/teststdmapint.mad` and
+`tests/testmap.mad`, inspect `--emit=c11 tests/testmap.mad` around the pair
+indexed ctor, then run the focused regressions (`testtuple`, `testforeach2`,
+`testfstream`, `testloop`) before a capped `make -C src fulltest`.
+
+### 2026-06-22 Codex continuation — anonymous aggregate layout fixed; `testmap` passes
+
+Course correction after the `basic_string...__o15` wall: the undefined local
+wrapper was not the final runtime root cause. Generic CIR reference-return /
+constructor-argument handling moved that failure forward, then the
+`std::map<std::string,int>` path corrupted tree storage at runtime.
+
+Root cause:
+- libstdc++ `std::basic_string` stores `_M_local_buf` and
+  `_M_allocated_capacity` in an anonymous union.
+- madc's class/struct emission flattened anonymous aggregate members as if they
+  were sequential fields.
+- That made the generated `basic_string` layout too large for the ABI. In the
+  pair indexed ctor path, `std::pair<const std::string,int>` overflowed the
+  `_Rb_tree_node` raw storage when writing `second`.
+
+Fix:
+- `DataDefSTRUCT` now records anonymous aggregate groups in
+  `anonymous_aggregates` when `addAnonymousAggregate` flattens the semantic
+  lookup surface.
+- CIR struct/class member emission reconstitutes those groups as unnamed
+  anonymous aggregate members instead of emitting each flattened child member at
+  top level.
+- The emitted C for `std::basic_string` now preserves the anonymous union:
+  `_M_local_buf[16]` and `_M_allocated_capacity` share storage.
+
+Focused validation:
+- `make -C src` passed.
+- `timeout 180 bin/madc --emit=c11 --std=c++17 --no-embedded-headers tmp/mapstr_noprint.mad`
+  passed; the emitted C shows the preserved anonymous union.
+- `timeout 180 bin/madc --emit=c11 tests/testmap.mad` passed; emitted C shows
+  the same fixed `basic_string` layout.
+- `timeout 180 bin/madc --std=c++17 --no-embedded-headers tmp/mapstr_noprint.mad`
+  passed.
+- `timeout 180 bin/madc tests/teststdmapint.mad` passed with expected
+  size/update output.
+- `timeout 180 bin/madc tests/testmap.mad` passed with expected
+  size/Alice/Bob/Charlie output.
+- Focused regressions passed: `tests/testtuple.mad`, `tests/testforeach2.mad`,
+  `tests/testfstream.mad`, and `tests/testloop.mad`.
+
+Remaining open work:
+- Fulltest was not rerun after this fix; the last branch fulltest remains
+  `658 passed, 5 failed, 0 timed out, 18 skipped`, and that count is now stale
+  for `testmap`.
+- Non-fatal libstdc++ `stl_tree.h` pointer-type warnings remain in the map
+  path.
+- `tmp/te_direct.mad` still has the separate direct `std::get<0>(t)`
+  declaration-initializer issue where emitted C loses the suffixed call.

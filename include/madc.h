@@ -1401,8 +1401,8 @@ public:
     // __ns_<ns>_<name> wrapper path (which is correct only for madc's own polyglot
     // namespaces). See itanium_mangle_std_free_template + project_cpp_mangled_direct.
     std::vector<FreeOperatorOverload> free_function_overloads;
-    // NON-template C++ namespace free-function overload sets (e.g. the nine
-    // inline `std::to_string(...)` definitions in <bits/basic_string.h>).
+    // NON-template C++ namespace free-function overload sets (e.g. the inline
+    // standard-library conversion helpers).
     // Each overload parses into its OWN Variable/FuncDef under a unique
     // internal symbol (unique_overload_symbol); this registry — keyed
     // "ns::name" — lets the call site enumerate and rank them by arg types
@@ -1412,6 +1412,7 @@ public:
     // from a NEW overload (mint a fresh symbol).
     struct NamespaceFnOverload {
 	std::string param_spelling;
+	std::vector<std::string> template_arg_names;
 	Variable *var;
     };
     std::map<std::string, std::vector<NamespaceFnOverload>> namespace_fn_overload_sets;
@@ -1423,7 +1424,8 @@ public:
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
 					       const std::vector<const DataDef *> &argtypes,
-					       const std::vector<bool> *zero_args = NULL);
+					       const std::vector<bool> *zero_args = NULL,
+					       const std::vector<DataDef *> *explicit_template_args = NULL);
     // A parsed CONCRETE free-operator function viable for the operand types:
     // ranks the union of every "::"+opname-suffixed overload set (all
     // namespaces + the global "" key). NULL when none binds. `zero_args`
@@ -1571,8 +1573,8 @@ public:
     DataDef *resolve_member_template_call_return_type(class FuncDef *fd,
 		const std::vector<DataDef *> &explicit_targs);
     // Deduce + instantiate a retained free-OPERATOR template body for
-    // `lhs <op> rhs` (e.g. operator+(const basic_string&, const _CharT*) —
-    // libstdc++ does not export that shape, so the BODY must compile).
+    // `lhs <op> rhs` cases whose operator body must be instantiated because no
+    // exported library symbol covers that operand shape.
     // Returns the deduced return class; *callee_out = the registered overload.
     DataDef *instantiate_free_operator_template(const std::string &opname,
 						TokenBase *lhs, TokenBase *rhs,
@@ -1749,8 +1751,8 @@ public:
     // BODIES are NOT parsed at class-completion time — they are stashed here,
     // keyed by emit symbol (var->name), and parsed only when ODR-used. This
     // mirrors g++ (a class instantiation instantiates declarations, not member
-    // definitions) and dissolves walls in unused inline bodies (e.g.
-    // basic_string::_M_local_data). The cir_builder reachability fixpoint
+    // definitions) and dissolves walls in unused inline bodies. The cir_builder
+    // reachability fixpoint
     // materializes a deferred body the moment its symbol enters referenced_funcs.
     std::map<std::string, DeferredFunctionBody> deferred_lazy_bodies;
     // Out-of-line member DEFINITIONS of a class template
@@ -1780,6 +1782,13 @@ public:
 	std::vector<bool> inner_is_type;	// false = non-type param (`size_t... _Indexes`)
     };
     std::map<std::string, std::vector<OutOfLineMemberDef>> out_of_line_member_defs;
+    struct OutOfLineMemberInstantiation {
+	std::string registered_mangled;
+	std::vector<TokenDataType *> arg_types_by_slot;
+	std::vector<std::vector<TokenBase *> > arg_tokens_by_slot;
+    };
+    std::map<std::string, std::vector<OutOfLineMemberInstantiation> >
+	out_of_line_member_instantiations;
     void register_outofline_member_instantiations(
 	const std::string &class_name, const std::string &defining_namespace,
 	const std::string &registered_mangled, DataDefCLASS *ddc,
@@ -2696,6 +2705,7 @@ public:
     // a current-class type alias, a variable matching a contextual type name, and
     // the class scope an expression name resolves to.
     DataDef *resolve_named_datadef(const std::string &name);
+    bool typedef_alias_matches_datadef(const std::string &alias, DataDef *dd);
     DataDef *resolve_current_class_type_alias(const std::string &name);
     bool resolve_current_class_static_member_const_value(const std::string &name, int64_t &out);
     bool fold_constant_qualified_member(TokenBase *first, int64_t &out);

@@ -3,6 +3,7 @@
 #include <map>
 #include <string>
 using namespace std;
+
 int main()
 {
     map<string, int> ages;
@@ -22,11 +23,11 @@ int main()
 
     int found;
     key = "Bob";
-    found = ages.contains(key);
+    found = ages.find(key) != ages.end();
     cout << "has Bob: " << found << endl;
 
     key = "Charlie";
-    found = ages.contains(key);
+    found = ages.find(key) != ages.end();
     cout << "has Charlie: " << found << endl;
 
     return 0;

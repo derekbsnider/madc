@@ -342,6 +342,20 @@ public:
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
     std::vector<uint32_t> member_access;	// per-member access flags (0=public, vfPRIVATE, vfPROTECTED)
     std::vector<int> member_origin;	// per-member: base index it came from, or -1 = own (MI flatten)
+    struct AnonymousAggregateInfo
+    {
+	size_t first_member;
+	size_t member_count;
+	const DataDefSTRUCT *aggregate;
+	size_t offset;
+	AnonymousAggregateInfo()
+	    : first_member(0), member_count(0), aggregate(NULL), offset(0) {}
+	AnonymousAggregateInfo(size_t first, size_t count,
+			       const DataDefSTRUCT *agg, size_t off)
+	    : first_member(first), member_count(count), aggregate(agg),
+	      offset(off) {}
+    };
+    std::vector<AnonymousAggregateInfo> anonymous_aggregates;
     // Member index -> the VIRTUAL base it belongs to (direct or transitive). A
     // shared virtual base is flattened ONCE (by vbase closure), and its members
     // resolve their final offset against vbase_offset[that base], NOT a per-path
@@ -382,6 +396,15 @@ public:
 	if ( natural == 0 ) natural = 1;
 	if ( pack == 0 ) return natural;              // C ABI default
 	return pack < natural ? pack : natural;       // #pragma pack(N) caps alignment
+    }
+
+    size_t field_storage_size(const DataDef &dd) const
+    {
+	const DataDefSTRUCT *s = dynamic_cast<const DataDefSTRUCT *>(&dd);
+	if ( dd.size == 0 && s && s->is_complete
+	  && dd.basetype() == BaseType::btClass )
+	    return 1;
+	return dd.size;
     }
 
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
@@ -458,7 +481,7 @@ public:
 	    member_dims.push_back(dims ? *dims : std::vector<carray_dim_t>());
 	    member_count_exprs.push_back(count_expr);
 	    member_access.push_back(0);
-	    size_t member_size = count_expr ? 0 : (dd.size * cnt);
+	    size_t member_size = count_expr ? 0 : (field_storage_size(dd) * cnt);
 	    if ( member_size > size ) size = member_size;
 	    return;
 	}
@@ -473,7 +496,7 @@ public:
 	member_count_exprs.push_back(count_expr);
 	member_access.push_back(0);
 	if ( !count_expr )
-	    size += dd.size * cnt;
+	    size += field_storage_size(dd) * cnt;
     }
     size_t bitfield_storage_size(const DataDef &dd) const
     {
@@ -559,6 +582,7 @@ public:
 	endBitFieldRun();
 	size_t fa = field_align(agg);
 	size_t base_offset = union_layout ? 0 : align_up(size, fa);
+	size_t first_member = members.size();
 	if ( fa > max_align ) max_align = fa;
 	for ( size_t i = 0; i < agg.members.size(); ++i )
 	{
@@ -585,6 +609,9 @@ public:
 	}
 	else
 	    size = end;
+	if ( agg.members.size() > 0 )
+	    anonymous_aggregates.push_back(AnonymousAggregateInfo(
+		first_member, agg.members.size(), &agg, base_offset));
     }
     // round struct size up to its overall alignment (for arrays of structs)
     void finalize()
@@ -831,10 +858,10 @@ public:
 			      // instantiation: libstdc++ exports ALL its members out-of-line
 			      // (C1/D1/methods), so madc binds them to the real mangled
 			      // symbols instead of emitting bodies — even for a NON-polymorphic
-			      // class (basic_string<char>) that is_externally_defined() (which
-			      // requires a vtable) does not cover. The data-driven signal that
-			      // distinguishes basic_string<char> (exported) from vector<int>
-			      // (inline-only, NOT exported) — never a name test.
+			      // class that is_externally_defined() (which requires a vtable)
+			      // does not cover. The data-driven signal distinguishes exported
+			      // template instantiations from inline-only local instantiations
+			      // — never a name test.
     int vtable_slot(const std::string &name) const {
 	for ( size_t i = 0; i < vtable_slots.size(); ++i )
 	    if ( vtable_slots[i] == name ) return (int)i;
@@ -958,7 +985,7 @@ public:
 };
 
 // A reference type produced by alias resolution (`typedef T& alias;` /
-// `using alias = T&;` — e.g. basic_string::reference == char&). An alias is
+// `using alias = T&;`). An alias is
 // a type, not a spelling: the resolved type must carry the reference
 // qualifier itself so it survives alias-chain hops. IS-A DataDefPTR (same
 // name, size, DataType) because madc lowers T& as T*; everything that does
@@ -986,12 +1013,21 @@ public:
     DataDef *base_type;
     DataDefCONST(DataDef &base)
 	: DataDef("const " + base.name, base.size, base.type()), base_type(&base) {}
+    virtual BaseType basetype() const { return base_type->basetype(); }
+    virtual DataType rawtype() const { return base_type->rawtype(); }
+    virtual RefType reftype() const { return base_type->reftype(); }
     virtual bool is_const() const { return true; }
+    virtual bool is_complex() const { return base_type->is_complex(); }
     virtual bool is_pointer() const { return base_type->is_pointer(); }
     virtual bool is_reference() const { return base_type->is_reference(); }
     virtual bool is_member_pointer() const { return base_type->is_member_pointer(); }
+    virtual bool is_struct() const { return base_type->is_struct(); }
+    virtual bool is_object() const { return base_type->is_object(); }
+    virtual bool is_function() const { return base_type->is_function(); }
     virtual bool is_numeric() const { return base_type->is_numeric(); }
     virtual bool is_integer() const { return base_type->is_integer(); }
+    virtual bool is_real() const { return base_type->is_real(); }
+    virtual bool is_simd() const { return base_type->is_simd(); }
     virtual bool is_unsigned() const { return base_type->is_unsigned(); }
     virtual size_t alignment() const { return base_type->alignment(); }
 };
