@@ -2755,3 +2755,28 @@ trace why that overload's body is not scheduled for emission (referenced_funcs
 registration of the converting-ctor symbol vs the emitted ctor-body symbol —
 likely an `__o<N>` suffix mismatch between the call's converting-ctor symbol and
 the emitted ctor definition, the ctor-side analogue of the method case).
+
+BUG-7b REFINED (emitted-C evidence, tmp/tsub_emit.c). `__o15` appears EXACTLY
+ONCE — a lone CALL in the PIECEWISE-PAIR construction, no decl/def. Two pair
+piecewise ctors are instantiated for `pair<const string, string>`:
+- `pair...__o19` constructs `pair.first` DIRECTLY via the MANGLED-DIRECT real
+  libstdc++ copy ctor (`_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEC1ERKS4_`)
+  on `forward(get(tuple1))` — WORKS.
+- `pair...__o20` instead materializes an INTERMEDIATE temp
+  `__madc_objtmp_94 = basic_string...__o15(*get(tuple1))` (a MADC-emitted ctor
+  symbol, NO body) then copies that into `pair.first`. The bodyless `__o15` is
+  the failure.
+So bug-7b lives in the piecewise-pair member construction (std::pair(
+piecewise_construct, tuple, tuple) -> construct each member from std::get<I>):
+one pair-ctor instantiation (__o20) lowers the member-construct through a
+madc-emitted basic_string ctor __o15 that is never defined, while the parallel
+instantiation (__o19) correctly uses the mangled-direct real copy ctor. This is
+the SAME construct_at / piecewise-pair wall the pre-session commits flagged
+(7d9927d "construct_at resolves pair ctor to COPY ctor not piecewise", 5b67643
+"piecewise-pair ctor call mismatch"). FIX DIRECTION: route __o20's member
+construction through the SAME mangled-direct real ctor path as __o19 (no madc
+__o15 intermediate), OR emit the selected __o15 body. The divergence likely
+turns on the `*get(tuple1)` arg shape (deref vs forward) routing one path
+through a converting-ctor temp and the other through the mangled copy ctor.
+SUBSTANTIAL piecewise-pair cycle, separate from bugs 5c/6/7a — the LAST set-wall
+red. map<string,string> + map<string,int> both hit it via operator[].

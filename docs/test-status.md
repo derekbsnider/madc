@@ -1,11 +1,24 @@
 # Test Status
 
-> **Current (2026-06-22, `develop` @ `9e959fd`, local — NOT pushed):** the
+> **Current (2026-06-22, `develop` @ `b5698d7`, local — NOT pushed):** the
 > C++17 real-header container campaign was merged into `develop` via `--no-ff`.
-> Fulltest **667 passed, 2 failed, 0 timed out, 18 skipped**. The remaining 2
-> reds (`testset`, `testsubscript`) are the last layer of the "set wall"
-> (bug-7). The set wall is a STACK of bugs; **bugs 1–6 FIXED + committed**,
-> bug-7 remains. **bug-5c @ `bc7693d`** (`set<int>` SIGSEGV: the
+> Fulltest **668 passed, 1 failed, 0 timed out, 18 skipped**. The single
+> remaining red (`testsubscript`) is the last layer of the "set wall" (bug-7b).
+> The set wall is a STACK of bugs; **bugs 1–6 + 7a FIXED + committed**, bug-7b
+> remains. **bug-7a @ `b5698d7`** (`set<string>::insert("lit")` → undefined
+> `_insert__o5`: `score_arg_to_param`'s user-defined-conversion ctor scan only
+> accepted ctors with exactly 2 params, so real `basic_string(const char*,
+> alloc=)` (3 params, allocator defaulted) was skipped → const char*→string
+> scored −1 → the proper insert overloads were rejected and a template insert
+> wildcard-matched; fix accepts ctors callable with one explicit arg; cleared
+> `testset`). **bug-7b remains** (`testsubscript`): MIR `import of undefined
+> item basic_string…__o15` in the **piecewise-pair** construction — one
+> `pair<const string,string>` piecewise ctor instantiation materializes an
+> intermediate string via a bodyless madc-emitted `__o15` while the parallel
+> instantiation uses the mangled-direct real copy ctor; the same
+> `construct_at`/piecewise-pair wall flagged pre-session (commits `7d9927d`/
+> `5b67643`). See `docs/plans/2026-06-19-map-instantiation-strategy.md`
+> (2026-06-22 cont. 6). **bug-5c @ `bc7693d`** (`set<int>` SIGSEGV: the
 > copy-elision/NRVO init path for a retbuf-returning method delegated explicit
 > args to `build_call_args` with no `__this` offset → a reference arg coerced
 > against `__this`, passed as a value where an `int*` was expected → int-as-
