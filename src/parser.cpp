@@ -22350,7 +22350,19 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	else if ( tag_store_key == tag->str
 	       && pgm.struct_map.find(tag->str) != pgm.struct_map.end()
 	       && !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() )
+	{
 	    tag_store_key = pgm.class_scope_stack.back()->name + "::" + tag->str;
+	    // The EMITTED identity (struct tag + the `<name>___dtor` cleanup
+	    // symbol) derives from dds->name, NOT the store key. Qualifying only
+	    // the store key leaves both instantiations' nested struct named the
+	    // bare tag, so both emit the SAME `_Tp2___dtor` -> "MIR fatal error:
+	    // Repeated item declaration _Tp2___dtor" (set<string> + map<string,
+	    // string> in one TU). Rename the emitted identity too, with a C-valid
+	    // enclosing-qualified name (the store key's `::` is not a legal C
+	    // identifier). Parse-time `_Tp2::_M_t` resolution uses the store key,
+	    // not dds->name, so the rename is transparent to lookups.
+	    dds->name = pgm.class_scope_stack.back()->name + "__" + tag->str;
+	}
     }
     dds->union_layout = is_union;
     if ( is_packed || pgm.pack_stack_top() == 1 )

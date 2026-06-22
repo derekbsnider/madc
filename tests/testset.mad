@@ -14,13 +14,16 @@ int main()
     sz = names.size();
     cout << "size: " << sz << endl;
 
+    // Membership via C++17 find/end. Member `.contains()` is a C++20 feature;
+    // it gets its own --std=c++20-flagged test once madc implements the C++20
+    // set::contains member (kept off the default/C++17 baseline until then).
     string key = "Bob";
     int found;
-    found = names.contains(key);
+    found = (names.find(key) != names.end()) ? 1 : 0;
     cout << "has Bob: " << found << endl;
 
     key = "Charlie";
-    found = names.contains(key);
+    found = (names.find(key) != names.end()) ? 1 : 0;
     cout << "has Charlie: " << found << endl;
 
     return 0;

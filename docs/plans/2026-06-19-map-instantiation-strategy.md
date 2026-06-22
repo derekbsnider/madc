@@ -2596,3 +2596,52 @@ containers). After bug-5c, `testsubscript` / `testcontainerdtor` / `testmadc_ns`
   the nested-type emit name is chosen.
 - testset's remaining red is UNRELATED to bug-6: it uses C++20 `names.contains()`
   (testset.mad:19) — convert to C++17 `find/end` once the container path is green.
+
+### 2026-06-22 (cont. 5) — set-wall BUG-6 FIXED (nested-type dtor-symbol collision); testset converted; BUG-7 pinned
+
+BUG-6 — FIXED (commit pending). `set<string>` + `map<string,string>` in one TU
+gave `MIR fatal error: Repeated item declaration _Tp2___dtor`. `_Tp2` is the
+nested helper struct inside `__gnu_cxx::__aligned_membuf<_Tp>`
+(`ext/aligned_buffer.h:54`: `struct _Tp2 { _Tp _M_t; };`).
+- ROOT CAUSE (parser.cpp ~22341): an EXISTING fix already qualified the nested
+  struct's STORE KEY by the enclosing class (`Enclosing::_Tp2`) so the 2nd
+  instantiation doesn't "Struct already defined". But it left `dds->name` as the
+  bare tag `_Tp2`, and `class_dtor_symbol` (cir_builder.cpp:4796) emits
+  `cdd->name + "___dtor"` — so BOTH `__aligned_membuf<string>::_Tp2` and
+  `__aligned_membuf<pair<const string,string>>::_Tp2` emitted the SAME
+  `_Tp2___dtor`. Collision in the MIR module.
+- FIX (parser.cpp, same branch): when the store key is enclosing-qualified, also
+  rename the EMITTED identity `dds->name` to a C-valid enclosing-qualified name
+  (`class_scope_stack.back()->name + "__" + tag`). Parse-time `_Tp2::_M_t`
+  resolution uses the store key (not dds->name), so the rename is transparent to
+  lookups; only the emitted struct tag + dtor symbol change, and each
+  instantiation's dtor is now unique. (The FIRST instantiation keeps the bare
+  name; only 2nd+ collide, exactly when the qualification branch fires.)
+- REDUCER: `tmp/b6_real.mad` (`set<string>` + `map<string,string>`) — recreate;
+  tmp/ gitignored. (Hand-written `Buf<A>/Buf<B>` reducers hit an EARLIER parse
+  variant "Struct 'Inner' already defined" / "nested type as member type" — a
+  different parser limit on the hand-written instantiation path, NOT the MIR-time
+  bug; use the real-header reducer to pin bug-6.)
+- VERIFIED: b6_real compiles; `testcontainerdtor` + `testmadc_ns` now PASS (both
+  use `set<string>`/`map<string,string>`). fulltest 667/2/0/18 (was 665/4) zero
+  regressions; gcc torture summary byte-identical to baseline (the fixed branch
+  only fires for nested-struct redefinition in a class scope — inert for C
+  torture). testset.mad converted: C++20 `names.contains(key)` -> C++17
+  `(names.find(key) != names.end()) ? 1 : 0` (member `.contains()` deferred to a
+  future --std=c++20-flagged test).
+
+BUG-7 — PINNED, fix NOT written (the LAST set-wall reds: testset + testsubscript).
+Both now fail with `MIR error: import of undefined item ..._o<N>`:
+- testset: `set_<string,...>__insert__o5` (an undefined `set::insert` overload
+  wrapper).
+- testsubscript: `basic_string_<...>__basic_string_<...>__o15` (an undefined
+  `basic_string` CONSTRUCTOR overload wrapper #15).
+A specific method/ctor OVERLOAD is REFERENCED (the call site emits the
+`..._o<N>` symbol) but its BODY is never emitted into the MIR module — so MIR
+import fails at link. (claude_status notes the `basic_string...__o15` wrapper was
+"moved forward by generic CIR reference-return/constructor handling" — same
+family.) NEXT: `--emit=c11` testset, find the `_insert__o5` decl with no
+definition, and trace why that overload's body is skipped (overload-disambiguator
+`__o<N>` numbering mismatch between the referenced call symbol and the emitted
+definition symbol is the prime suspect — the call picks `__o5`/`__o15` but the
+body is emitted under a different suffix or not at all).
