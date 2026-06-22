@@ -5341,6 +5341,37 @@ static void parse_objtemp_ctor_arguments(Program &pgm, TokenObjTemp *ot,
 // function/variable references (resolved earlier in parseExpression) are untouched.
 // Returns NULL when it is not a functional construction. General C++ feature; no
 // per-class machinery (works for any class, incl. header-defined std:: classes).
+// True when the `(` about to be parsed opens a CALL on a callable receiver
+// already sitting on exStack — a functor-class object (declares operator()) or
+// a function/function-pointer variable — that the `(` binds to directly
+// (prevToken is the receiver's own last token: its identifier, or the `)`/`]`
+// closing a call/subscript result). In that case `call(Type(...), ...)` is an
+// argument list whose first argument is a functional construction, NOT a
+// C-style cast `(Type)expr`. Without this guard, a first argument whose leading
+// token is a TYPE (e.g. a substituted class template type parameter,
+// `_KeyOfValue()(__v)` in std::_Rb_tree::_M_insert_) steals the `(` for the
+// cast/compound-literal path, which drops the temp and the trailing arguments.
+bool Program::paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack)
+{
+	if ( exStack.empty() )
+		return false;
+	TokenBase *pv = prevToken();
+	if ( !pv
+	  || (pv->type() != TokenType::ttIdentifier
+	   && pv->id() != TokenID::tkClBrk
+	   && pv->id() != TokenID::tkClSqr) )
+		return false;
+	TokenBase *recv = exStack.top();
+	std::string op_call("operator()");
+	DataDefCLASS *rc = operand_object_class(recv);
+	if ( rc && rc->findMethod(op_call) )
+		return true;
+	TokenVar *rv = dynamic_cast<TokenVar *>(recv);
+	if ( rv && rv->var.type && rv->var.type->is_function() )
+		return true;
+	return false;
+}
+
 TokenObjTemp *Program::try_parse_functional_ctor(TokenBase *name_tb)
 {
 	std::string name = contextual_identifier_name(name_tb);
@@ -18990,7 +19021,13 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    std::string cast_typedef_name;
 		    TokenBase *cast_qualifier = NULL;
 		    size_t cast_qualified_extra_tokens = 0;
-		    if ( peek1 )
+		    // When this `(` opens a call on a callable receiver already on
+		    // exStack, it is an argument list, not a `(TYPE)expr` cast — even
+		    // if the first argument begins with a type token (a functional
+		    // construction). Skip cast/compound-literal detection and fall
+		    // through to the call-handling paths below. (See
+		    // paren_opens_call_on_receiver — std::set's _M_insert_ regression.)
+		    if ( peek1 && !paren_opens_call_on_receiver(exStack) )
 		    {
 			if ( peek1->id() == TokenID::tkCONST
 			  || peek1->id() == TokenID::tkVOLATILE )

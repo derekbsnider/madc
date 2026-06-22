@@ -2802,6 +2802,7 @@ public:
     TokenBase *skip_expression_whitespace();
     TokenCASE *parse_switch_label(TokenSWITCH *sw, TokenBase *tn);
     TokenObjTemp *try_parse_functional_ctor(TokenBase *name_tb);
+    bool paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack);
     Variable *resolve_c_identifier(TokenIdent *ident_tb, bool expression_head);
     bool datatype_statement_starts_functional_expr();
     bool datatype_statement_starts_qualified_expr();
