@@ -70,6 +70,16 @@ class CirBuilder {
 	// double-free the shared string buffer at both scope exits). A TRIVIAL struct
 	// keeps c2mir's native struct return (no dtor -> bit-copy is safe).
 	DataDefCLASS *m_cur_func_returns_object = NULL;
+	// Non-NULL while translating the body of a function that returns a
+	// TRIVIALLY-COPYABLE class (no dtor -> c2mir's native struct return, NOT
+	// the __retbuf ABI above) BY VALUE. Lets translate_return apply an implicit
+	// converting constructor for return-value copy-initialization when the
+	// returned expression's class differs from the return class
+	// ([stmt.return]/[dcl.init]) — e.g. std::set's `iterator find(){ return
+	// _M_t.find(x); }`, where the tree's `iterator` converts to set's
+	// `const_iterator`. The non-trivial (__retbuf) path already applies the
+	// converting ctor via class_copy_construct_into_retbuf's overload selection.
+	DataDefCLASS *m_cur_func_returns_value_class = NULL;
 	// Returned user-class while translating the body of a function returning a
 	// `Cls *` or `Cls&`, else NULL. Lets translate_return emit the derived->base
 	// adjustment for pointer and reference returns.

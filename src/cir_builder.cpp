@@ -9551,6 +9551,41 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		append(items, node2(N_RETURN, list(), ignore(), tr));
 		return node2(N_BLOCK, list(), items, tr);
 	}
+	// Return-value copy-initialization ([stmt.return]/[dcl.init]): a function
+	// returning a class BY VALUE via c2mir's native struct return (trivially
+	// copyable — the non-trivial case took the __retbuf arm above) whose
+	// `return expr;` operand is a DIFFERENT class (or a scalar) accepted by a
+	// converting constructor must construct the result object via that ctor,
+	// not emit the raw (wrong-typed) expression. Mirrors object_arg_value's
+	// parameter copy-initialization. This is std::set's
+	// `iterator find(){ return _M_t.find(x); }` (tree `iterator` ->
+	// `const_iterator`); without it c2mir rejects "incompatible return-expr
+	// type in function returning a struct/union".
+	if (m_cur_func_returns_value_class && tr->returns) {
+		DataDefCLASS *rc = m_cur_func_returns_value_class;
+		DataDefCLASS *ec = operand_object_class(tr->returns);
+		if (ec != rc) {
+			std::vector<TokenBase *> ctor_args;
+			ctor_args.push_back(tr->returns);
+			if (select_ctor_overload(rc, ctor_args)) {
+				char name[32];
+				snprintf(name, sizeof(name), "__madc_retconv_%d",
+					 m_strtmp_counter++);
+				Variable *tmp = new Variable(name, *rc, 1, NULL, false);
+				tmp->flags |= vfLOCAL;
+				m_pending_stmts.push_back(var_decl(tmp, tr));
+				node_t cc = class_ctor_call(tmp, rc, ctor_args, tr);
+				if (cc) m_pending_stmts.push_back(cc);
+				node_t items = list();
+				for (node_t p : m_pending_stmts)
+					append(items, p);
+				m_pending_stmts.clear();
+				append_deferred_stmts(items, 0);
+				append(items, node2(N_RETURN, list(), id(name, tr), tr));
+				return node2(N_BLOCK, list(), items, tr);
+			}
+		}
+	}
 	node_t expr = tr->returns ? translate_expr(tr->returns) : ignore();
 	// A bare `return;` in a non-void function: gcc (gnu89/c11) warns but accepts
 	// it, returning an indeterminate value. c2mir requires a value, so emit a
@@ -11170,6 +11205,14 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				? class_return_via_retbuf(ret_dd) : NULL;
 	m_cur_func_returns_object = ret_obj;
 	bool ret_via_retbuf = ret_obj != NULL;
+	// A by-VALUE class return that uses c2mir's NATIVE struct return (trivially
+	// copyable: no retbuf). translate_return must still apply an implicit
+	// converting constructor when `return expr;`'s class differs from the return
+	// class (return-value copy-initialization). The retbuf path handles the
+	// non-trivial case; this covers the trivially-copyable one.
+	m_cur_func_returns_value_class = (!ret_is_ptr && !ret_is_ref
+					  && !fd->is_multi_return() && !ret_via_retbuf)
+					 ? as_class_instance(ret_dd) : NULL;
 	DataDef *retbuf_dd = (DataDef *)ret_obj;
 	// Multi-return (`return a, b;`): C return type void + a hidden `long *__retbuf`
 	// first param; translate_return stores each value to __retbuf[i].

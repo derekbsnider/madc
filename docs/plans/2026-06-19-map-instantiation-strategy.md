@@ -2361,3 +2361,69 @@ AFTER BUG-2 (to turn tests green):
 
 MIRROR SYNC DEBT: develop not pushed; claude_status.json head=cbd693a updated;
 README/CHANGELOG not yet updated for bug-1 (batch at set-wall completion).
+
+### 2026-06-22 (cont.) — set-wall BUG-2 FIXED; BUG-3 root-caused to a 35-line reducer
+
+SETTLED / DO NOT RE-LITIGATE:
+- BUG-2 (return-value converting-ctor) is FIXED and verified. The earlier
+  hypothesis "fixing the return conversion fixes BOTH find's type AND the
+  `find()!=end()` comparison" was WRONG: bug-2 fixes find's RETURNED TYPE
+  (CIR/c2mir level); the comparison is a SEPARATE parse-time operator-dispatch
+  bug (BUG-3). The set wall is (at least) THREE bugs.
+
+BUG-2 — FIXED (commit pending torture-gate; fulltest 661/4/0/18 ZERO regr):
+- ROOT CAUSE refined: the NON-trivial (`__retbuf`) class-return path ALREADY
+  applied the converting ctor (via `class_copy_construct_into_retbuf`'s
+  `select_ctor_overload`). The bug was ONLY the TRIVIALLY-COPYABLE class return
+  that uses c2mir's NATIVE struct return — `translate_return` emitted the raw,
+  wrong-typed expression there.
+- FIX (cir_builder.cpp): new member `m_cur_func_returns_value_class`, set in
+  `func_def` to `as_class_instance(ret_dd)` when the fn returns a class BY VALUE
+  and NOT via retbuf/ptr/ref/multi. In `translate_return`, BEFORE the plain
+  `translate_expr`, when `operand_object_class(tr->returns) != rc` and
+  `select_ctor_overload(rc, {expr})` finds a ctor, materialize a temp of the
+  return class constructed from the expr (mirrors `object_arg_value`) and return
+  it. Guard via `operand_object_class` (unwraps refs, leaves plain ptr/scalar
+  NULL) so a `T*`/scalar return is NOT misfired on. Pure-C returns never enter
+  (guard needs a user class). Regression test `tests/testreturnconvctor.mad`.
+- VERIFIED in the REAL `set::find` emit (`--emit=c11`): find now gets the tree's
+  `_Rb_tree_iterator`, runs the `_Rb_tree_const_iterator(const iterator&)`
+  converting ctor, returns the `const_iterator`. Exactly right.
+
+BUG-3 — ROOT-CAUSED, fix NOT written. `set<int>` STILL red after bug-2 because
+`s.find(x) != s.end()` lowers to a RAW c2mir `!=` between two
+`_Rb_tree_const_iterator` structs ("invalid types of comparison operands") —
+the const-iterator's in-class FRIEND `operator!=` is never dispatched.
+- 35-LINE REDUCER: `tmp/b3_C.mad` (recreate; tmp/ gitignored). Two class
+  templates each with `typedef Self _Self;` and `_Self`-spelled in-class friend
+  `operator==`/`operator!=`, where the const-iterator converts from the
+  iterator and a Box returns them through a `_Rep_type::const_iterator` typedef.
+  TRIGGER ISOLATED by bisection (b3_A works, b3_B works, b3_C fails): the bug
+  fires only when BOTH classes in the chain spell their friend operators via a
+  per-class `_Self` typedef. `b3_min`/`b3_min2` (single class, `_Self` or direct)
+  both PASS — it is the MULTI-class `_Self` collision, not `_Self` alone.
+- MECHANISM (parser.cpp): member `operator!=` lookup fails (it's a friend), so
+  dispatch falls to `lower_free_operator_to_call` →
+  `free_binary_operator_return_class` (line ~9619) which structurally CANNOT
+  resolve a `bool`-returning operator (it only returns when `rethead` equals an
+  operand class head — a class-by-value-returning op like `operator+`; for
+  `bool` it returns NULL), then `find_free_operator_function` /
+  `instantiate_free_operator_template` (line ~9417/9429) must find/instantiate
+  the hoisted friend. For the iterator's `operator==` this WORKS (tree-internal
+  code instantiated it). For the const-iterator's `_Self`-spelled friend `!=` it
+  FAILS — the `_Self` parameter spelling apparently mis-resolves / collides with
+  the other class's `_Self` during hoisted-friend registration
+  (`parse_hoisted_friend_operator`, `register_skipped_friend_type`,
+  `hoisted_friend_operator_defs`, friend_function_names — parser.cpp ~24165,
+  ~25295-25330). NEXT: instrument `find_free_operator_function` /
+  `instantiate_free_operator_template` for `operator!=` on b3_C to see whether
+  the friend was registered with an unresolved/wrong `_Self` param type.
+- LIKELY BUG-4 (after bug-3): the string-set + insert path shows
+  "incompatible types in assignment to struct/union" at stl_set.h:96 (the
+  `pair<const_iterator,bool>` insert return). Separate; revisit once bug-3 lands.
+
+VALIDATION GATES already MET for bug-2: 6-line reducer (`tmp/b2_min.mad`) prints
+42; non-trivial/dtor variant (retbuf path) prints 42; copy-init + param-init
+unaffected; fulltest 661/4/0/18 zero new reds (the 4 are the known set wall);
+torture diff vs the 51-name baseline IN PROGRESS (the fix cannot touch pure-C
+returns — guard requires a user class).
