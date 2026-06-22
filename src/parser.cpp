@@ -29462,6 +29462,30 @@ static size_t skipped_template_function_declarator_name_index(
 	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
+	// operator-function-id declarator (`operator()`, `operator[]`,
+	// `operator==`, …): the operator-id IS the declarator name and the
+	// parameter-list `(` follows it. The generic "name token before a
+	// top-level `(`" rule below misses it because operator()'s own `()`
+	// (operator[]'s `[]`) sits between the `operator` keyword and the param
+	// list, so the param `(` is preceded by `)`/`]`, not a name — leaving a
+	// member operator template (e.g. a functor's `operator()`) unregistered.
+	if ( d.top() && token_is_operator_id_start(t) )
+	{
+	    size_t span = operator_id_token_span(tokens, i);
+	    if ( span && i + span < tokens.size() && tokens[i + span]
+	      && tokens[i + span]->id() == TokenID::tkOpBrk )
+	    {
+		if ( name_out )
+		{
+		    std::string nm("operator");
+		    for ( size_t k = i + 1; k < i + span; ++k )
+			if ( tokens[k] )
+			    nm += template_token_fragment(tokens[k]);
+		    *name_out = nm;
+		}
+		return i;
+	    }
+	}
 	// function declarator: a top-level '(' preceded by a name token marks
 	// the declarator name at i-1.
 	if ( t->id() == TokenID::tkOpBrk && d.top() && i > 0 )
@@ -29489,6 +29513,25 @@ static std::string skipped_template_function_declarator_name(
     std::string name;
     skipped_template_function_declarator_name_index(tokens, &name);
     return name;
+}
+
+// The index of the parameter-list `(` that FOLLOWS the declarator name at
+// name_idx. For a plain identifier name it is name_idx+1; for an
+// operator-function-id (`operator()` / `operator[]` / `operator==` / …) it is
+// name_idx + the operator-id's token span, so operator()'s own `()` (or
+// operator[]'s `[]`) is NOT mistaken for the parameter list.
+static size_t skipped_template_function_param_lparen(
+	const std::vector<TokenBase *> &tokens, size_t name_idx)
+{
+    if ( name_idx >= tokens.size() || !tokens[name_idx] )
+	return tokens.size();
+    if ( token_is_operator_id_start(tokens[name_idx]) )
+    {
+	size_t span = operator_id_token_span(tokens, name_idx);
+	if ( span )
+	    return name_idx + span;
+    }
+    return name_idx + 1;
 }
 
 // C++14 variable template: `[specifiers] TYPE NAME = INIT ;` (NO function
@@ -32948,7 +32991,22 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	ren->file = old->file;
 	ren->line = old->line;
 	ren->column = old->column;
+	// An operator-function-id declarator (`operator()`, `operator[]`,
+	// `operator==`, …) is a MULTI-token name (the `operator` keyword plus
+	// its symbol). Replace the WHOLE span with the single renamed identifier
+	// — replacing only the `operator` token would leave the trailing
+	// `()`/`[]`/symbol as a spurious empty declarator that fails to parse.
+	size_t span = 1;
+	if ( token_is_operator_id_start(old) )
+	{
+	    size_t s = operator_id_token_span(ft.decl, name_idx);
+	    if ( s )
+		span = s;
+	}
 	ft.decl[name_idx] = ren;
+	if ( span > 1 )
+	    ft.decl.erase(ft.decl.begin() + name_idx + 1,
+			  ft.decl.begin() + name_idx + span);
     }
 
     std::string key = inst_name;
@@ -33177,7 +33235,17 @@ void Program::instantiate_member_ctor_template_for_construction(
 static bool skipped_template_function_is_static(
 	const std::vector<TokenBase *> &tokens)
 {
-    for ( size_t i = 0; i < tokens.size(); ++i )
+    // The `static` STORAGE specifier is part of the declaration HEADER — it
+    // precedes the declarator-name's parameter list. Scanning the whole token
+    // run (including the body) wrongly reported a method static when its BODY
+    // declared a `static` LOCAL (`{ static Node n; ... }`), dropping the hidden
+    // `__this` from the instantiated method. Limit the scan to before the
+    // parameter-list `(`.
+    size_t name_idx = skipped_template_function_declarator_name_index(tokens, NULL);
+    size_t limit = skipped_template_function_param_lparen(tokens, name_idx);
+    if ( limit > tokens.size() )
+	limit = tokens.size();
+    for ( size_t i = 0; i < limit; ++i )
     {
 	TokenBase *t = tokens[i];
 	if ( !t )
@@ -33249,24 +33317,46 @@ static DataDef *skipped_template_function_return_type(
 	    if ( DataDef *tid = pgm.resolve_type_token_range(tokens, rs, name_index) )
 		return tid;
     }
+    // Pointer-declarator stars between the base type and the name
+    // (`Node * make`, `T ** f`): count them backward and fold getPointerType
+    // onto the base, else a pointer return collapses to the base by-value type
+    // (dropping the `*`) — which made a pointer-returning member template
+    // (e.g. a functor's `_Link_type operator()(...)`) emit a by-value struct
+    // return and lose its hidden `__this`.
+    size_t stars = 0;
     for ( size_t i = name_index; i-- > 0; )
     {
 	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
+	if ( t->type() != TokenType::ttDataType
+	  && !is_contextual_identifier_token(t)
+	  && (char)t->get() == '*' )
+	{ ++stars; continue; }
+	DataDef *base = NULL;
 	if ( t->type() == TokenType::ttDataType )
-	    return &static_cast<TokenDataType *>(t)->definition;
-	if ( !is_contextual_identifier_token(t) )
+	    base = &static_cast<TokenDataType *>(t)->definition;
+	else if ( is_contextual_identifier_token(t) )
+	{
+	    std::string tname = contextual_identifier_name(t);
+	    if ( specifiers.count(tname) )
+		continue;
+	    if ( owner )
+		base = resolve_class_type_alias(owner, tname);
+	    if ( !base )
+	    {
+		datatype_map_iter dmi = pgm.datatype_map.find(tname);
+		if ( dmi != pgm.datatype_map.end() )
+		    base = &dmi->second->definition;
+	    }
+	    if ( !base )
+		continue;
+	}
+	else
 	    continue;
-	std::string tname = contextual_identifier_name(t);
-	if ( specifiers.count(tname) )
-	    continue;
-	if ( owner )
-	    if ( DataDef *alias = resolve_class_type_alias(owner, tname) )
-		return alias;
-	datatype_map_iter dmi = pgm.datatype_map.find(tname);
-	if ( dmi != pgm.datatype_map.end() )
-	    return &dmi->second->definition;
+	for ( size_t s = 0; s < stars; ++s )
+	    base = pgm.getPointerType(base);
+	return base;
     }
     return &ddINT64;
 }
@@ -33587,11 +33677,12 @@ static void register_skipped_class_template_function(
 	std::vector<std::string> param_spellings;
 	size_t name_idx = skipped_template_function_declarator_name_index(tokens,
 									  NULL);
-	if ( name_idx < tokens.size() && name_idx + 1 < tokens.size()
-	  && tokens[name_idx + 1]
-	  && tokens[name_idx + 1]->id() == TokenID::tkOpBrk
+	size_t lparen = skipped_template_function_param_lparen(tokens, name_idx);
+	if ( name_idx < tokens.size() && lparen < tokens.size()
+	  && tokens[lparen]
+	  && tokens[lparen]->id() == TokenID::tkOpBrk
 	  && skipped_template_function_signature_spellings(
-		tokens, name_idx, name_idx + 1, ret_spelling, param_spellings) )
+		tokens, name_idx, lparen, ret_spelling, param_spellings) )
 	{
 	    fd->template_return_spelling = ret_spelling;
 	    fd->template_param_spellings = param_spellings;

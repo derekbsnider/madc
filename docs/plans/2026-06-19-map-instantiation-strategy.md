@@ -2491,3 +2491,50 @@ functor VARIABLE `__node_gen` mistaken for a TYPE → functional-construction
 - This is the LAST known set-wall blocker for `set<int>` find+insert. After it,
   re-check `testset.mad` (convert C++20 `contains`->C++17 find/end), then the 4
   reds' `.flags` routing.
+
+### 2026-06-22 (cont. 3) — set-wall BUG-4 FIXED (functor template operator()); BUG-5c remains
+
+BUG-4 was MIS-CHARACTERIZED earlier as "pair conversion". The real bug:
+`_Rb_tree::_M_insert_`'s `__node_gen(forward(__v))` is a FUNCTOR `operator()`
+call (`__node_gen` is a `_NodeGen&` = `_Alloc_node&` whose `operator()` is a
+member TEMPLATE). madc never registered/dispatched a TEMPLATE `operator()`, so
+the call fell through to a bogus assignment `*gen = v`. Root-caused to a 9-line
+reducer (`tmp/b4_f.mad`) and FIXED — it took FIVE sub-fixes, all in parser.cpp,
+all verified (tests `testfunctortmploperator.mad`, `testmembertmplptrret.mad`):
+  1. `skipped_template_function_declarator_name_index` — recognize an
+     operator-function-id declarator (`operator()`/`operator[]`/`operator==`):
+     the operator-id IS the name, the param-list `(` follows it (operator()'s
+     own `()` sits between the `operator` keyword and the params). Without this
+     `register_skipped_class_template_function` bailed (empty name) so the
+     template operator() was never a method -> findMethod("operator()") failed
+     -> functor-call path skipped -> `g(args)` mis-lowered to `g = args`.
+  2. New helper `skipped_template_function_param_lparen` — the param-list `(`
+     is `name_idx + operator_id_span` for an operator-id (not `name_idx+1`); used
+     so signature/return-spelling extraction reads the REAL params (was reading
+     operator()'s own `()` -> 0 param spellings -> deduction failed).
+  3. `instantiate_member_fn_template_for_call` rename — replace the WHOLE
+     operator-id span with the unique `__mti` ident (was replacing only the
+     `operator` token, leaving `()` as a spurious empty declarator -> parse fail).
+  4. `skipped_template_function_return_type` — fold trailing pointer `*`s onto
+     the base (getPointerType). A POINTER return (`_Link_type`/`Node*`) was
+     collapsing to the base by-value type, which gave the instantiated method a
+     by-value struct return and (cascading) dropped its hidden `__this`.
+  5. `skipped_template_function_is_static` — scan only the declaration HEADER
+     (before the param-list `(`), not the body. A `static` LOCAL in the body
+     (`{ static Node n; ... }`) was wrongly marking the method static, dropping
+     `__this` from the instantiated method — which broke the functor call (the
+     functor dispatch always passes `__this`) with "too many arguments".
+All functor reducers pass: b4_f/b4_e/b4_b/b4_ptr/b4_named/b4_core/b4_int2/b4_g.
+
+BUG-5c — REMAINS (the set<int> runtime blocker now). After bug-4, `set<int>`
+COMPILES but SIGSEGVs at runtime (address 0x3) in
+`_Rb_tree::_M_construct_node__mti` (a VARIADIC member template). Source
+(stl_tree.h:592): `get_allocator().construct(__node->_M_valptr(),
+std::forward<_Args>(__args)...)` — a variadic-member-template + allocator
+`construct` chain. The crash on a tiny address = a null/garbage pointer
+(likely `__node`/`_M_valptr()` or the variadic forwarding mis-instantiated).
+This is a SEPARATE variadic-member-template/allocator bug, not bug-4. NEXT:
+reduce a variadic member template `construct(_Link* node, _Args&&... args)` that
+forwards to `node->valptr()` + an allocator-like construct, and trace the
+`__mti` instantiation. b4_a's free-function-template "undeclared identifier"
+(`tmp/b4_a.mad`) is ALSO a separate (free-template registration) gap, unrelated.
