@@ -124,6 +124,7 @@ public:
 	else if (type == &ddUINT64) *((uint64_t *)data) = c;
 	else if (type == &ddFLOAT)  *((float *)data) = c;
 	else if (type == &ddDOUBLE) *((double *)data) = c;
+	else if (dynamic_cast<DataDefENUM *>(type)) *((int32_t *)data) = c;
 	else 	     { return false; }
 	return true;
     }
@@ -145,6 +146,7 @@ public:
 	if (type == &ddUINT64) return *((uint64_t *)data) == static_cast<uint64_t>(c);
 	if (type == &ddFLOAT)  return *((float *)data) == c;
 	if (type == &ddDOUBLE) return *((double *)data) == c;
+	if (dynamic_cast<DataDefENUM *>(type)) return *((int32_t *)data) == c;
 	return 0;
     }
     int cmp(std::string &s)
@@ -211,6 +213,7 @@ public:
 	else if (type == &ddUINT64) return *((uint64_t *)data);
 	else if (type == &ddFLOAT)  return *((float *)data);
 	else if (type == &ddDOUBLE) return *((double *)data);
+	else if (dynamic_cast<DataDefENUM *>(type)) return *((int32_t *)data);
 	return true;
     }
 };

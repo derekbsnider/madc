@@ -27821,9 +27821,10 @@ TokenBase *TokenENUM::parse(Program &pgm)
     // In C++/madc mode, an enum tag is injected as a type name in the current
     // scope. C keeps the `enum Tag` spelling and does not get a bare `Tag`
     // typedef here.
+    DataDef *enum_dd = NULL;
     if ( !enum_tag.empty() && (scoped || !pgm.is_c_mode()) )
     {
-	DataDef *enum_dd = new DataDefENUM(enum_tag);
+	enum_dd = new DataDefENUM(enum_tag);
 	if ( !pgm.class_scope_stack.empty() )
 	{
 	    DataDefCLASS *owner = pgm.class_scope_stack.back();
@@ -27877,7 +27878,8 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	{
 	    // Scoped: a standalone constant Variable kept ONLY in the tag's
 	    // pseudo-namespace, so bare `name` does not resolve globally.
-	    Variable *evar = new Variable(name, ddINT, 1, NULL, true);
+	    Variable *evar = new Variable(name, enum_dd ? *enum_dd : ddINT,
+					  1, NULL, true);
 	    evar->set(val);
 	    evar->makeconstant();
 	    (*scope_ns)[name] = evar;
