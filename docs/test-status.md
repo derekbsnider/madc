@@ -1,18 +1,25 @@
 # Test Status
 
-> **Current (2026-06-22, `develop` @ `cbd693a`, local — NOT pushed):** the
-> C++17 real-header container campaign (`wip/map-cxx17-salvage-codex`, 515
-> commits) was merged into `develop` via `--no-ff`. Baseline fulltest
-> **660 passed, 4 failed, 0 timed out, 18 skipped**. The 4 reds
+> **Current (2026-06-22, `develop` @ `7d53ed1`, local — NOT pushed):** the
+> C++17 real-header container campaign was merged into `develop` via `--no-ff`.
+> Fulltest **662 passed, 4 failed, 0 timed out, 18 skipped**. The 4 reds
 > (`testcontainerdtor`, `testmadc_ns`, `testset`, `testsubscript`) are all the
-> "set wall" — MULTIPLE bugs. **set-wall bug-1 FIXED @ `cbd693a`** (a call `(`
-> followed by a substituted class-template type parameter was misparsed as a
-> cast — `paren_opens_call_on_receiver`; regression test
-> `tests/testfunctorctorarg.mad`); gcc torture non-timeout failset
-> byte-identical to the 51-name baseline (zero regressions). **set-wall bug-2
-> root-caused** (a `return` doesn't apply an implicit converting-constructor
-> conversion) — fix not yet written; see
-> `docs/plans/2026-06-19-map-instantiation-strategy.md` (2026-06-22 section).
+> "set wall" — FOUR distinct bugs; three FIXED + committed this session, the
+> 4th root-caused. **bug-1 FIXED @ `cbd693a`** (call `(` after a substituted
+> type-param misparsed as a cast — `paren_opens_call_on_receiver`; test
+> `tests/testfunctorctorarg.mad`). **bug-2 FIXED @ `94d0798`** (`return` skipped
+> the implicit converting-ctor on a trivially-copyable by-value class return —
+> `m_cur_func_returns_value_class`; test `tests/testreturnconvctor.mad`).
+> **bug-3 FIXED @ `7d53ed1`** (two classes' hidden-friend operators sharing a
+> `_Self` typedef collapsed to one overload because identity used raw param
+> text — `peek_param_list_spelling` canonicalizes a class-scope alias to its
+> resolved type; test `tests/testfriendopself.mad`). With bug-3, real
+> `set<int>` find/end compiles and runs. **bug-4 PINNED, not fixed**:
+> `_Rb_tree::_M_insert_`'s `__node_gen(forward(__v))` (functor `operator()` call
+> via a reference-to-functor param) is mis-lowered to an assignment — a BUG-1
+> cousin; see `docs/plans/2026-06-19-map-instantiation-strategy.md` (2026-06-22
+> cont. 2). gcc torture non-timeout failset byte-identical to the 51-name
+> baseline across all three fixes (zero regressions).
 >
 > **Prior WIP (2026-06-22, `wip/map-cxx17-salvage-codex` @ `3534b44`
 > plus local recovery fixes):** the previous dirty session is preserved at

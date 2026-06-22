@@ -2458,22 +2458,36 @@ BUG-3 — FIXED (commit pending torture-gate; fulltest 662/4/0/18 ZERO regr).
   RUNS (`tmp/set_findonly.mad` prints `no`). fulltest 662/4/0/18 (+1 test; same 4
   set-wall reds).
 
-BUG-4 — PINNED, fix NOT written. `set<int>` (with insert) still red: 2 c2mir
-errors at stl_set.h:96 ("incompatible types in assignment to struct/union" +
-"... to a pointer"). PINNED via `--emit=c11` (`tmp/seti_emit2.c`):
-`set::insert` does `return std::pair<iterator,bool>(__p.first, __p.second)`
-where set's `iterator` == `const_iterator` (`_Rb_tree_const_iterator<int>`) but
-`__p.first` is the tree's NON-const `_Rb_tree_iterator<int>`. The emitted pair
-ctor call passes `&__p.first` (an `_Rb_tree_iterator*`) RAW (cast to void*) into
-the ctor's `const _Rb_tree_const_iterator&` parameter — the iterator->const_iterator
-converting ctor is NOT applied to the pair ctor's FIRST ARGUMENT. So bug-4 is an
-ARGUMENT copy-init conversion gap in the functional-construction / ctor-arg path
-(object_arg_addr should materialize a converting temp for an arg whose class !=
-the param's class via a converting ctor, but here it binds the address raw).
-NEXT: trace why object_arg_addr (cir_builder.cpp ~1141) does not materialize a
-converting temp when the pair ctor's param is `const const_iterator&` and the arg
-is an `iterator` lvalue (`__p.first`). Likely the param is seen through pair's
-`const _T1&` template param (param_object_class not recognizing the instantiated
-const_iterator), OR the TokenObjTemp functional-construction arg path bypasses
-object_arg_addr. Reducer to build: a `pair<CIter,bool>(rIterLvalue, b)` where CIter
-converts from RIter — minimal version of the set::insert return.
+BUG-4 — PINNED to the REAL failing construct, fix NOT written. `set<int>` (with
+insert) still red: 2 c2mir errors reported at stl_set.h:96. My FIRST hypothesis
+(pair<const_iterator,bool> arg conversion) was WRONG — that path's emitted
+`(void*)(&__p.first)` raw-member bind is c2mir-ACCEPTED (the void* cast masks it;
+`tmp/b4_min2.mad` reproduces the identical emit and RUNS fine). The ACTUAL error
+was localized by compiling the `--emit=c11` output (`tmp/seti_emit2.c`) with
+`gcc -fsyntax-only`: emitted line ~1543, in `_Rb_tree::_M_insert_` (real source
+stl_tree.h:1831):
+    _Link_type __z = __node_gen(_GLIBCXX_FORWARD(_Arg, __v));
+`__node_gen` is a `_NodeGen&` (== `_Alloc_node&`) FUNCTOR reference parameter;
+`__node_gen(forward(__v))` is a functor `operator()` CALL. madc MIS-LOWERED it to
+an ASSIGNMENT:
+    struct _Rb_tree_node_int32_t *__z = ((*__node_gen) = (*__ns_std_forward__o2(&*__v)));
+i.e. it constructed/assigned an `_Alloc_node` from the forward() result instead
+of CALLING `__node_gen.operator()(...)` — gcc: "incompatible types when assigning
+to type '..._Alloc_node' from type 'int'". So the functor `operator()` was NOT
+dispatched; the `identifier(args)` was misparsed (a cousin of BUG-1 — likely the
+functor VARIABLE `__node_gen` mistaken for a TYPE → functional-construction
+`_Alloc_node(forward(__v))`).
+- REDUCER STATUS: a SIMPLE non-template functor call via a reference param WORKS
+  (`tmp/b4_functor2.mad`: `int doit(int v, Gen& gen){ return gen(v); }` -> 105).
+  The TEMPLATE-member version (`tmp/b4_functor.mad`: `template<class NG> int
+  doit(int v, NG& gen){ return gen(v); }`) FAILS differently ("use of undeclared
+  identifier 'doit'") — so the trigger needs the template-member + forwarding-ref
+  (`_Arg&& __v` + `std::forward`) context, not the bare functor-via-ref. NEXT:
+  build a reducer with a template member `operator()`-functor-ref call whose arg
+  is `std::forward<...>(v)`, then trace the parse of `gen(forward(v))` inside a
+  template-member body (is `gen` mis-classified as a type? does the
+  forwarding-ref arg derail the call-vs-construction disambiguation that BUG-1's
+  `paren_opens_call_on_receiver` was meant to settle?).
+- This is the LAST known set-wall blocker for `set<int>` find+insert. After it,
+  re-check `testset.mad` (convert C++20 `contains`->C++17 find/end), then the 4
+  reds' `.flags` routing.
