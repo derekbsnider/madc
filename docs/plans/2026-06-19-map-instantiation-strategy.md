@@ -2899,6 +2899,26 @@ THE FIX (deepest layer, parser.cpp `resolve_fn_template_return_by_key`):
 - One-spot change; matches clang/gcc overload-removal-by-kind-mismatch.
 
 VALIDATION: testsubscript GREEN, exact .expect match. sub_both/sub_rev exit 0.
-fulltest <RESULT PENDING>; gcc torture failset <PENDING>. Set wall = 0 reds.
+fulltest 669 passed / 0 failed / 0 timed out / 18 skipped (set-wall TESTS = 0 reds).
+gcc torture 51 non-timeout failures, BYTE-IDENTICAL to the baseline (5 host-load
+timeouts memclr/memcpy-a* excluded). Zero regressions. Committed @ da96d7a.
 Probes removed, clean rebuild. tmp/ reducers (sub_both/sub_si/sub_ss/sub_lit/
 sub_rev) gitignored.
+
+OUTSTANDING (pre-existing, NOT bug-7b, blocks a clean `make fulltest` exit 0):
+the `call-emit-symbol` drift gate (scripts/check-call-emit-symbol.sh, added
+4517ab9) now reports 6 raw `local_emit_name` value-reads (target 0) and exits 1.
+ALL 6 are in committed HEAD (mid-June commits 06-14/15/16), NONE from bug-7b, and
+all are FALSE POSITIVES vs the gate's documented intent ("read as a value, i.e.
+used to BUILD A SYMBOL"): 3 are debug prints (parser.cpp ~29764/32925/33056,
+inside #if/dbg_ blocks), 2 are name LOOKUPS (cir_builder.cpp 1409/4057,
+findVariable(callee->local_emit_name) — metadata resolution, comment explicitly
+says "emit symbol still comes from placeholder + local_emit_name"), 1 is a
+field-COPY RHS (parser.cpp 35455, f->local_emit_name = src->local_emit_name in a
+clone). None construct an emitted symbol. They were MASKED the whole set-wall
+campaign because testsubscript kept `make` red; clearing it exposed them.
+DECISION PENDING (user owns this drift invariant): refine the gate to its stated
+intent (recommended — exempt lookup-key / debug-print / field-copy reads, e.g.
+via a narrow `// drift-ok:<reason>` opt-out marker so new symbol-building sites
+still fail) vs refactor the 6 benign sites. README/CHANGELOG/ROADMAP + the batch
+push are HELD until this is resolved (true set-wall completion).
