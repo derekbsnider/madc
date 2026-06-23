@@ -16828,6 +16828,16 @@ static TokenBase *peek_after_balanced_template_id_from(
 	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
+	// A balanced template-id (`Name<...>`) cannot span a statement or
+	// block boundary: `;`, `{`, `}` never appear inside a template
+	// argument list. Hitting one means the leading `<` was a less-than
+	// operator, not a template bracket. Bail now so a comparison like
+	// `i < n` does not scan to end-of-stream (that scan, run once per
+	// `<` across the file, is O(n^2)).
+	if ( t->id() == TokenID::tkSemi
+	  || t->id() == TokenID::tkOpBrc
+	  || t->id() == TokenID::tkClBrc )
+	    return NULL;
 	if ( t->id() == TokenID::tkLT )
 	    ++depth;
 	else if ( t->id() == TokenID::tkGT )
@@ -16854,6 +16864,12 @@ static TokenBase *peek_after_balanced_template_id(
 
 static bool template_id_is_type_expression_context(Program &pgm)
 {
+    // C-mode disable: template-ids are a C++ (C++98+) construct. In a C dialect
+    // there are no templates, so a `<` is always less-than — never run the
+    // balanced-template-id scan. Deepest shared layer: every caller is covered.
+    // (`cpp_keyword_active` is true for the madc default and C++ floors only.)
+    if ( !pgm.cpp_keyword_active(Program::STD_CPP98) )
+	return false;
     TokenBase *after = peek_after_balanced_template_id(pgm.tokens);
     return after
 	&& (after->id() == TokenID::tkOpBrk
@@ -16911,10 +16927,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.push(ti);
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
+		// Context-gate: only attempt the (potentially long) balanced-
+		// template-id lookahead when the identifier actually NAMES a
+		// template — that is the precondition for `<` to open a template
+		// argument list. The cheap name lookup gates the expensive scan,
+		// so a plain `ident < expr` comparison never scans. (`&&` is
+		// order-free here — both operands are pure predicates.)
 		if ( peekToken() && peekToken()->id() == TokenID::tkLT
-		  && template_id_is_type_expression_context(*this)
 		  && (find_template(ident_tb->str)
-		   || find_template_alias(ident_tb->str)) )
+		   || find_template_alias(ident_tb->str))
+		  && template_id_is_type_expression_context(*this) )
 		{
 		    if ( TokenDataType *inst =
 			    instantiate_template_id(ident_tb->str, ident_tb) )
@@ -19121,7 +19143,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			{
 			    std::string tname = ((TokenIdent *)peek1)->str;
 			    bool template_ctor_grouping = false;
-			    if ( tokens.size() > 1 && tokens[1]
+			    // C-mode disable + context-gate: a `Name<...>(...)`
+			    // template constructor-cast exists only in C++
+			    // (templates are C++98+) and only when `tname` names a
+			    // template. Else `<` is less-than — skip the balanced-
+			    // template-id scan (it would run to end-of-stream here).
+			    if ( cpp_keyword_active(Program::STD_CPP98)
+			      && (find_template(tname) || find_template_alias(tname))
+			      && tokens.size() > 1 && tokens[1]
 			      && tokens[1]->id() == TokenID::tkLT )
 			    {
 				TokenBase *after_tid =

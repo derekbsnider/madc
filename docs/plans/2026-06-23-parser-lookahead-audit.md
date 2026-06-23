@@ -1,0 +1,123 @@
+# Parser unbounded-lookahead audit — O(n²) gotcha log
+
+**Date opened:** 2026-06-23
+**Branch:** `feature/front-end-performance-claude`
+**Status:** LIVING LOG. Append as cases are found/fixed.
+
+## The bug class
+
+A parse-time helper that **scans forward over the token stream** and, on a common
+or failure path, **runs to the end of the stream** instead of bailing early. When
+such a helper is invoked **once per token / per declaration / per `<`** (an O(n)
+frequency), the unbounded scan makes parsing **O(n²)**.
+
+The tell in a profile: one `peek_*` / `*_index` / `*_from` helper with a huge
+**self** cost, and the per-token accessors it calls (`TokenX::id()`) clustered
+right under it.
+
+### Why this hides
+
+- It is invisible on small inputs and ordinary tests — only macro-/comparison-
+  heavy or very large bodies expose it (e.g. gcc.c-torture `memcpy-a*`, `memclr`).
+- `tokens` may be the **whole program stream** OR a **small spliced-in local
+  stream** (`swap_in`). The same `for (i…; i < tokens.size(); ++i)` is harmless on
+  a 30-token local stream and catastrophic on the 324K-token program stream. **You
+  must know which `tokens` is at each site.**
+
+## Trigger (standing rule)
+
+**Whenever a test compiles slower than gcc, callgrind it.** GCC is the
+performance baseline, not just the codegen baseline (`.claude/rules/gcc-parity.md`).
+`scripts/perf_vs_gcc.sh <file> [--std=STD]` times madc's front-end vs `gcc -O0 -c`,
+prints the ratio, and **auto-callgrinds** when madc is slower than the threshold,
+emitting the top self-cost madc functions — the culprit list. New entries in this
+log start there.
+
+The **frame of reference is recorded once**: gcc (and tinycc, the floor) are timed
+the first time a `(file, std)` is seen and stored in `docs/parity/perf-baseline.tsv`;
+later runs reuse the recorded numbers and only re-time **madc** (the thing that
+changes). Re-measure the reference with `--refresh` after a host/toolchain change.
+This keeps the loop fast and the ratio stable across runs.
+
+## Detection methodology (reuse this)
+
+1. Reproduce with `--show-stats`; confirm the cost is **parse** (not lex / c2mir /
+   instantiate) and note `tokens re-read` (rules in/out the clone path).
+2. Build a **macro-free reducer** that mirrors the body shape and scale it
+   (×256/512/1024). Confirm parse time ~4× per doubling = O(n²) (tok/s halves).
+3. `valgrind --tool=callgrind` at small N; `callgrind_annotate --inclusive=no`.
+   The top **self**-cost madc function is the culprit.
+4. Fix at the **deepest layer**: bound the scan to where the construct can
+   legitimately end (statement/block/paren/bracket delimiters), or gate the scan
+   behind a cheap O(1) predicate so it never runs on the common path.
+5. Gate: fulltest green + gcc-torture failset == baseline + (if emit touched)
+   `--emit=c11` byte-identical + re-time the reducer (must be linear).
+
+## Cases
+
+### #1 — `peek_after_balanced_template_id_from` (FIXED 2026-06-23)
+- **File:** `src/parser.cpp` (~16819). Call sites: `template_id_is_type_expression_context`
+  (expr parse, per identifier-before-`<`) and the cast-detection path (~19128).
+- **Cause:** invoked on every `ident <` in expression context to skip a *template-id*
+  `Name<…>`. For a less-than comparison (`i < n`) there is **no matching `>`**, so
+  `for (i=lt_index; i<tokens.size(); ++i)` scanned to **end of the whole program**,
+  returned NULL after O(n) work. Once per `<` across the file → **O(n²)**.
+- **Evidence:** callgrind 37.5% self in this one function (10× the next). memcpy-a1
+  parse 27.18 s; reducers 0.28/1.20/4.98 s at N=256/512/1024 (4.2× per doubling).
+- **Fix (deepest layer):** a balanced template-id can never span `;` / `{` / `}`.
+  Bail (return NULL) on those — bounds each scan to the current statement → O(n).
+- **Result:** memcpy-a1 parse **27.18 s → 0.598 s** (45×); reducers linear
+  (~500K tok/s flat across N). tinycc compiles the same in 0.05 s; gcc -O0 3.58 s.
+
+## Audit worklist — forward scans over the token stream (triage pending)
+
+Seed list = every `for (… < tokens.size(); …)` in `src/parser.cpp` (2026-06-23).
+**Each needs the same two questions:** (a) is `tokens` here the live program stream
+or a small spliced-in local stream? (b) how often is this site invoked — O(1)
+per-construct, or O(n) per-token/per-decl? Only (live stream) × (O(n) frequency) ×
+(scans to end on a common path) = a BUG-B-class O(n²). Triage; don't mass-rewrite.
+
+Sites (line numbers at 2026-06-23 HEAD; will drift — re-grep):
+`2828, 2893, 2975, 4683, 4755, 8375, 8413, 13278, 16826 (#1 FIXED), 17966 (capped
+ui<10 — safe), 18040, 21721, 21765, 21821, 21893, 23502, 24030, 24065, 26496,
+29347, 29392, 29475, 29566, 29594, 30087, 30253, 30311 (i<end — bounded), 30356,
+30394, 30480, 30537, 30580, 33283, 33839, 33846, 34008, 34032 (i+k<…, k<n —
+bounded), 35109, 37394, 39296`.
+
+Obviously-bounded ones (small explicit cap, or `i < end` local range) are noted
+inline and can be skipped. The rest are unknown until the two questions are
+answered. Prefer to confirm with a reducer + callgrind before "fixing" — a scan on
+a small local stream is not a bug, and changing it adds risk for no gain.
+
+## Principle — C++-only checks must be context-gated AND C-mode-disabled
+
+A C++ disambiguation (template-id peek, most-vexing-parse probe, `<` =
+less-than-vs-angle-bracket, `>>` split, etc.) must satisfy BOTH before it runs:
+
+1. **Context-gate — only fire where the construct is possible.** Gate the
+   expensive work behind the cheap O(1) precondition that the construct could even
+   apply (e.g. *the identifier names a template* → `find_template` /
+   `find_template_alias` before the template-id scan). A bare `<` after an
+   ordinary identifier is less-than; do not scan to prove it.
+2. **C-mode disable — no C++ checks in C.** Gate behind the `--std=` floor via
+   `Program::cpp_keyword_active(min_std)` (true for `STD_MADC` or
+   `is_cpp_mode() && std >= min_std`). Templates are C++98, so
+   `cpp_keyword_active(STD_CPP98)`. In `--std=c*` the check is a no-op.
+   - Note: a **standalone `.c`** file defaults to **STD_MADC** (C++ active), so the
+     context-gate (#1) is the load-bearing one there; the C-mode gate covers the
+     explicit `--std=c*` paths (e.g. gcc.c-torture runs under `--std=c17`).
+
+Put the C-mode gate at the **deepest shared helper** (e.g. inside
+`template_id_is_type_expression_context`) so no caller can forget it; put the
+context-gate at the **call site** (it needs the identifier). This is the
+`--std=` gatekeeping rule (`docs/plans/...std-enum...`, KG
+`std_enum_gatekeeping`) applied to *parse-time disambiguation*, not just keywords.
+
+When auditing the worklist below, add these as a third and fourth triage question:
+(c) is this check C++-only? If so, is it C-mode-disabled? (d) is it gated by the
+cheap precondition, or does it do the expensive work first?
+
+## Related
+- Macro token blow-up (324K tokens) is a *different* axis — see P5 in
+  `docs/plans/2026-06-22-front-end-performance-plan.md` (macros as high-level
+  nodes). Interning (P3) makes the cheap O(1) gates in step 4 even cheaper.
