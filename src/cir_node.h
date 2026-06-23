@@ -47,12 +47,14 @@ struct cir_node {
 	struct node base;           // offset 0 — c2mir-compatible layout
 
 	// --- madc extension fields (invisible to c2mir) ---
-	// `origin` is the SINGLE SOURCE OF TRUTH for this node's source position
-	// and provenance. The source position is a DERIVED VIEW (src_file()/
-	// src_line()/src_column() below) — never stored as independent absolute
-	// truth on the node, so switching the token layer to relative positions
-	// later needs no change here. NULL for synthetic nodes (no position).
-	TokenBase   *origin;        // originating madc token (NULL for synthetic)
+	// `origin_id` is the SINGLE SOURCE OF TRUTH for this node's source position
+	// and provenance: a stable TokenArena slot-id (0 = synthetic / no origin),
+	// NOT a raw pointer — so the node link to the token layer is an INDEX,
+	// serializable to disk (part of "all pointer classes become indices"). The
+	// source position is a DERIVED VIEW (src_file()/src_line()/src_column()
+	// below, which resolve the id via madc_token_for_slot) — never stored as
+	// independent absolute truth on the node.
+	uint32_t     origin_id;     // originating madc token's arena slot-id (0 = synthetic)
 	DataDef     *datadef;       // madc type info (NULL if not type-related)
 	const char  *typedef_name;  // source typedef alias (e.g. "EXT_BV"), NULL if none
 	const char  *error_msg;     // non-NULL: error/incomplete node; a tree that

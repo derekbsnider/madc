@@ -40,6 +40,7 @@
 
 #include "datadef.h"
 #include "tokens.h"
+#include "token_arena.h"
 #include "datatokens.h"
 #include "madc.h"
 #include "cir_builder.h"
@@ -54,9 +55,9 @@ extern thread_local bool madc_verbose;
 // Derived source position: a node's position IS its origin token's position
 // (the single source of truth). No absolute offset is stored on the node, so a
 // future switch to relative token positions changes only the token layer.
-const char *cir_node::src_file()   const { return origin ? origin->file   : NULL; }
-int         cir_node::src_line()   const { return origin ? origin->line   : 0; }
-int         cir_node::src_column() const { return origin ? origin->column : 0; }
+const char *cir_node::src_file()   const { TokenBase *o = madc_token_for_slot(origin_id); return o ? o->file   : NULL; }
+int         cir_node::src_line()   const { TokenBase *o = madc_token_for_slot(origin_id); return o ? o->line   : 0; }
+int         cir_node::src_column() const { TokenBase *o = madc_token_for_slot(origin_id); return o ? o->column : 0; }
 
 // -----------------------------------------------------------------------
 // CirBuilder core
@@ -73,7 +74,7 @@ cir_node *CirBuilder::make(c2mir_node_code_t code, TokenBase *origin)
 	cn->base.attr = NULL;
 	c2mir_init_node_ops((node_t)cn);
 
-	cn->origin = origin;
+	cn->origin_id = madc_slot_id_for(origin);   // stable arena slot-id (0 if synthetic)
 	cn->datadef = NULL;
 	cn->typedef_name = NULL;
 	cn->src_lang = cslC;  // default; caller can override
@@ -10739,7 +10740,7 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 		bool class_alias = as_user_class(ttd_base) != NULL;
 		node_t n = typedef_decl(ttd->alias, ttd->target_type,
 					no_emitted_structs, class_alias);
-		if (n) { CIR_NODE(n)->origin = ttd; set_pos(CIR_NODE(n), ttd); }
+		if (n) { CIR_NODE(n)->origin_id = madc_slot_id_for(ttd); set_pos(CIR_NODE(n), ttd); }
 		return n;
 	  } }
 
@@ -12332,7 +12333,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (td.origin) {
 			// The origin token is the position source of truth; the node's
 			// src_*() derive from it. Also feed c2mir's absolute store.
-			cn->origin = td.origin;
+			cn->origin_id = madc_slot_id_for(td.origin);
 			set_pos(cn, td.origin->file, td.origin->line, td.origin->column);
 		} else if (td.file) {
 			// No origin token captured (rare typedef variants): feed c2mir's
