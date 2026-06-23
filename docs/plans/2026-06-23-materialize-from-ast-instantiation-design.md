@@ -101,6 +101,36 @@ gcc `IDENTIFIER_NODE`, clang `IdentifierInfo*`, tinycc `TokenSym` int id — all
 pointer/int equality. madc has `StringPool` (token-level); extend it so AST/`DataDef` names carry
 `spelling_id`, not `std::string` — this pays off heavily inside the substitution walk.
 
+## STEP 0 — PROFILE RESULTS (callgrind testsubscript, -O0, 2026-06-23) — measure-first CORRECTED both narratives
+**Ir inclusive:** `parse` 54.5% · **lexing (`tokenize`/`_getToken`) ~45%** · **`instantiate_template_use`
+29.6%** · `parseFunction` 18.5% · **`findVariable` (name lookup) 7.3%**.
+**Top self-cost (-O0):** `Source::get` 3.6%, `_getToken` 3.4%, `Source::peek` 2.8%,
+**`std::string::operator+=(char)` 2.7%** (identifiers built char-by-char!), `detect_include_guard`
+2.1%, `Source::good/eof` ~2.7%, **`TokenArena` `vector<Chunk>` accessors ~6% combined**, string
+`compare`/`==`/`memcmp`/`strlen` ~5%.
+
+**RANKING FROM DATA (this supersedes both unranked narratives):**
+1. **Lexing ~45% Ir — biggest single cost, and char-by-char.** `Source::get`/`peek` per char +
+   `std::string::operator+=(char)` per identifier char. Fix = tinycc L1/L2: scan the identifier
+   SPAN off the flat buffer with `isidnum_table`, intern `[start,len)` directly — no per-char
+   method call, no `std::string` growth. (Most concentrated; the span-scan is -O-INDEPENDENT.)
+2. **Instantiation ~30% Ir (`instantiate_template_use`) — SPREAD (no hot self-fn) = re-parse "death
+   by a thousand cuts."** Attacked by ELIMINATION = materialize-from-AST (T1-T7). CONFIRMS the
+   primary lever.
+3. **Name lookup ~7-12% (`findVariable` 7.3% + string-key ops ~5%) — REAL but THIRD, NOT "most of
+   the 4×."** The external review's RANK was wrong (measure-first earned its keep); C1/C2/C3 are a
+   secondary win, do after #1/#2.
+Bonus: `TokenArena::alloc()` ~6% -O0 cost in `_chunks.back()`/`end()`/iterator — cheap raw-pointer-
+to-current-chunk fix (mostly inlines at -O2). `detect_include_guard` 2.1% self — glance at it.
+
+**CAVEAT — this is -O0; -O2 is the honest ranking.** -O0 inflates the trivial accessors dominating
+the self-list (`string::size`, `vector::empty`, `Source::good/eof`, iterator ctors, arena vector
+ops) — they inline to nothing at -O2, which is how g++ (a -O2 binary) runs. The -O2 picture will
+shrink lexer-accessor share and RAISE instantiation/findVariable relative weight. **TODO: rebuild
+at -O2 and re-profile to lock the final lever ranking** before implementing. The -O0 view is
+directionally right on the CONCENTRATED costs (lexer char-loop, arena alloc) and on the inclusive
+phase split (lex/instantiate/findVariable), which is enough to confirm levers #1-#3 and their kind.
+
 ## STEP 0 — PROFILE FIRST (the ranking gate; do BEFORE any implementation)
 **Two analyses agree on the costs but not on the rank, and BOTH say measure.** Our `--show-stats`
 shows instantiation = 87% of parse (the re-parse). An external cross-check (claude.ai, 2026-06-23,
