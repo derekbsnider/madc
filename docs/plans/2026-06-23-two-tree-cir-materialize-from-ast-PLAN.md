@@ -13,6 +13,53 @@ rests on; read it first).
 
 ---
 
+## 0. RESUME — START HERE (post-compaction; read this section first)
+
+**HEAD:** `139b5bd` on `feature/front-end-performance-claude`. Working tree clean
+(only the untracked `mir-debug-support.md` — not ours; leave it).
+
+**SETTLED — do not re-litigate (design owner, 2026-06-23):**
+1. Token-arena **2.2a / 2.2b / 2.3-step1 (rec-completion)** are DONE + gated +
+   committed (`341dc5a`, `03ba2a8`, `c76e59a`). Token-arena **2.3 step 2/3
+   (scratch-token re-parse isolation) is CANCELLED** — wrong layer; g++ doesn't
+   re-parse.
+2. Adopt the **g++ template model** (VERIFIED against gcc/cp/pt.cc + c2mir — see the
+   NOTES doc): two cir_node trees — immutable **Tree-1** (saved patterns + header
+   corpus = the forest; the copy source; never to c2mir) and mutable **Tree-2**
+   (per-TU, → c2mir; built by `tsubst` = copy + substitute; NEVER re-parse).
+3. **c2mir mutates ONLY the node_t base** it understands; `cir_node` extension fields
+   (incl. a Tree-1 back-ref, like `origin_id`) are invisible to it ⇒ Tree-2's node_t
+   structure must be PRIVATE per instantiation, while the back-ref to immutable Tree-1
+   rides safely in the extension. "Some ROM, some RAM."
+4. **Pull-based / lazy lexing: CONSIDERED, DEFERRED BY DESIGN — do NOT build it now.**
+   It is NOT a g++-parity gap (g++ eager-buffers the whole TU too; clang is the lazy
+   one). It is a localized later change — `TokenStream`'s documented "P2-compat" note:
+   the parser already consumes via a pull interface (`front()`/`pop_front()`), so only
+   the buffer-FILL timing would change (cursor, backtrack, immutable records all
+   unchanged). The two-tree architecture (reusable immutable tree + incremental
+   mutable tree) is the real IDE foundation AND the parity win — lazy lexing is at most
+   a later responsiveness refinement, added only if a concrete IDE scenario demands it.
+
+**NEXT ACTION (first code slice) = Phase 1 `copy_cir_subtree`** (details in §Phase 1 +
+the recipe under §"Phase 0 — RESULTS"). It is independent of the dependent-type gap,
+zero behavior change, and the foundation every later phase sits on. Steps:
+1. Add a `cir_node` extension field for the Tree-1 back-ref (a `uint32` index — the
+   tree-level analogue of `origin_id`).
+2. Implement `copy_cir_subtree(node)` per the Phase-0 recipe: fresh `uid`
+   (`c2mir_next_uid`), `c2mir_init_node_ops`, re-intern strings (`c2mir_uniq_str`),
+   copy `code`/`u`/`datadef`/`origin_id`/etc., recurse children over the `base.ops`
+   DLIST, append via `c2mir_op_append`; do NOT copy `attr`/`error_msg`; record the
+   source-node back-ref.
+3. Prove it: compile a deep-copy of a plain (non-template) function's body instead of
+   the original — `--emit=c11` and execution byte-identical.
+4. GATE (§8): `fulltest` 669/0/0/18 + torture 51-name byte-identical (0 timeouts) +
+   `--emit=c11` byte-identical vs the prior commit (build a worktree at the prior HEAD
+   for the diff). Commit.
+Then Phase 1.5 (template-param placeholder DataDef) → Phase 2 (Tree-1) → Phase 3+
+(`tsubst`). Gate every commit; never perf-gate.
+
+---
+
 ## 1. THE GOAL (one sentence)
 
 Stop re-parsing template bodies per instantiation; instead parse each body once
