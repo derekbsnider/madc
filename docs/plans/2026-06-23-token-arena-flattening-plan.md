@@ -5,6 +5,48 @@
 **Status:** PLAN (execution not started). This is the real P1 + P3 + P4 of
 `docs/plans/2026-06-22-front-end-performance-plan.md`, made concrete.
 
+## ARCHITECTURE — SETTLED (design owner, 2026-06-23). Do not re-scope.
+
+The flat arena is **ONLY for lexing — the tokens.** It is NOT a de-polymorphization
+of the whole parser (an earlier draft of this plan wrongly estimated "~480 .str +
+thousands of ->id()/->type()" by conflating the lexer-token representation with the
+parser's AST — that estimate is WRONG and is struck).
+
+- **Lexer →** a flat POD token arena: `std::vector<TokenRec>`, each token addressed
+  by a `uint32_t` **slot-id**. Flat, reserve()'d, serializable to disk.
+- **Parser →** still builds the **`cir_node` AST tree** (the MC11-IR), exactly as
+  today in nature. It reads token data from the arena by slot-id.
+- **Each `cir_node` carries a `uint32_t[]` of arena slot-ids** for its originating
+  tokens. THAT is the MC11-IR "carries its originating tokens + source positions" —
+  realized as slot-ids into the flat arena, NOT `TokenBase *` pointers. Provenance
+  (file/line/col) lives in the arena `TokenRec`, looked up by slot-id.
+
+So the scope is: (a) lexer emits `TokenRec`s into the arena; (b) the cir_node ↔
+token linkage becomes `uint32_t[]` slot-ids instead of `TokenBase *`. The parser's
+internal working set is an implementation detail — it reads `TokenRec` by slot-id;
+it does NOT require rewriting every `->id()` call as a precondition.
+
+### The AST is ALSO a contiguous serializable block (2026-06-23, design owner)
+
+The `cir_node` AST tree must itself live in a **contiguous arena** so the whole IR
+serializes to disk (the embedded-header forest / on-disk PCH —
+`[[project_embedded_header_forest]]`, `docs/plans/2026-06-22-embedded-header-forest-execution-plan.md`).
+So there are **TWO serializable blocks**: the token arena AND the cir_node arena.
+For that, every pointer in a `cir_node` becomes an index/id:
+- **children / operands →** `uint32_t` index into the cir_node arena (not pointers).
+- **originating tokens →** `uint32_t[]` slot-ids into the token arena.
+- **types →** **type-id** into the segmented type table
+  (`[[project_type_table_value_abi]]`, `docs/plans/2026-06-12-type-table-value-abi-design.md`),
+  not `DataDef *`.
+All three pointer classes become indices ⇒ the IR is `memcpy`-to-disk /
+`mmap`-from-disk.
+
+**Tension to resolve (not a blocker):** `cir_node` *derives from* c2mir's `node_t`,
+whose operands are a **pointer-linked DLIST** (`NL_HEAD`/`NL_NEXT`). The contiguous
+index form is the *serialized* representation; feeding c2mir relocates indices →
+`node_t` pointers on load (pointer fix-up, or `node_t` views over the arena).
+Design this with the forest plan, since it is that plan's keystone.
+
 ## The problem (why the current "arena" is not done)
 
 P1 as landed made the token stream a `TokenStream` wrapping
@@ -60,18 +102,15 @@ arena — tokens stay polymorphic heap objects, the stream stays `vector<TokenBa
 (the 47% malloc is an -O2 figure). It was reverted. Lesson: an allocator optimizes
 the *current* model; the flat arena *replaces* it — don't conflate them.
 
-**Measured refactor surface (why this is multi-session, not a slice):**
-- **~480 `.str` / `->str`** sites (interning surface — `TokenIdent::str` must become
-  a spelling id, since `std::string` members block a POD record).
-- **thousands of virtual `->id()` / `->type()`** calls (de-polymorphization surface —
-  "serializable" REQUIRES no vtables, so identity must become a `kind` field read).
-- **53 `delete tb`** sites (ownership web — a value-arena frees en masse, so these
-  become no-ops/removed).
-
-Key point: "stream not pointers" alone is cheap (index indirection), but
-**"serializable to disk" forces de-polymorphization**, which is the expensive part.
-There is no incremental quick win; the staged plan below is the real path, and
-each stage is substantial.
+**CORRECTED (2026-06-23):** the estimate below was WRONG — it assumed the whole
+parser must de-polymorphize (conflating lexer tokens with the parser's AST). Per
+the SETTLED architecture at the top, the AST is `cir_node` (carrying `uint32_t[]`
+slot-ids), and only the LEXER token representation flattens. The `~480 .str` and
+`thousands of ->id()/->type()` figures do NOT gate this work and are struck.
+~~Measured refactor surface … "serializable to disk" forces de-polymorphization …~~
+What remains true and useful from the trace: there are **53 `delete tb`** sites
+(token ownership) to reconcile when tokens become arena slots rather than
+individually-owned heap objects.
 
 ## Phase 0 finding (2) — reuse what exists (3R credo)
 
