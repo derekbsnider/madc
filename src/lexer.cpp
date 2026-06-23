@@ -4461,7 +4461,7 @@ TokenBase *Program::_getToken()
 		if ( auto_include_standard_identifier(word) )
 		    return getToken();
 		TokenIdent *ti = new TokenIdent(word);
-		ti->spelling_id = sid;   // already interned above; skip re-intern in getToken()
+		ti->rec.spelling_id = sid;   // already interned above; skip re-intern in getToken()
 		return ti;
 	    }
 	    return new TokenChar(ch);
@@ -5157,8 +5157,8 @@ TokenBase *Program::getToken()
     // skipped, so no shared prototype is mutated. `str` stays authoritative until
     // the map re-key (step 3) and per-token-string drop (step 4).
     if ( tb && tb->type() == TokenType::ttIdentifier
-	 && ((TokenIdent *)tb)->spelling_id == 0 )
-	((TokenIdent *)tb)->spelling_id = strpool.intern(((TokenIdent *)tb)->str);
+	 && tb->rec.spelling_id == 0 )
+	tb->rec.spelling_id = strpool.intern(((TokenIdent *)tb)->str);
 
     DBG(if (tb) printt(tb));
     return tb;

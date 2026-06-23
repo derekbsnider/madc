@@ -74,6 +74,20 @@ typedef enum : uint16_t { tfBRACKETED	=    1,
 			  tfOVERLOADED  =    2,
 			} tokflag_t;
 
+// TokenRec — the flat, POD, serializable per-token DATA record (Phase 2 of
+// docs/plans/2026-06-23-p1-token-arena-implementation-plan.md). Held by
+// COMPOSITION on TokenBase (the diamond virtual inheritance — TokenVar/TokenCpnd
+// vbase — rules out a base-class TokenRec; Phase 0.3). Fields migrate here one
+// per commit; the end state is that ALL of a token's serializable data lives in
+// `rec`, so the live tree can be dumped/mmapped and the polymorphic shell rebuilt
+// by `kind` (Phase 3). Migrated so far: spelling_id.
+// TODO (later Phase 2 steps): kind, flags, value (_token), line, column,
+// type_id (replaces DataDef*), file_id (replaces const char*),
+// first_child/child_count (replaces the per-subclass vector<TokenBase*>).
+struct TokenRec {
+    uint32_t spelling_id = 0;	// -> Program::strpool (0 = none / not interned)
+};
+
 class TokenBase
 {
 protected:
@@ -86,6 +100,8 @@ public:
     int line;
     int column;
     std::streampos pos;
+    // Flat POD data record (Phase 2). See TokenRec above.
+    TokenRec rec;
     // Diagnostic: how many times the parser has CONSUMED this token via
     // nextToken() (a re-read > 1 means backtracking / pushback re-lexing /
     // template re-instantiation touched the same token object). Reported in
@@ -1042,17 +1058,15 @@ class TokenIdent: public TokenBase
 {
 public:
     std::string str;
-    // Interned-spelling handle into Program::strpool (0 = not interned yet).
-    // Additive (P0 step 2): set in Program::getToken() for ttIdentifier tokens
-    // and carried through clone(); `str` remains the source of truth until the
-    // map re-key (step 3) and per-token-string drop (step 4) consume it.
-    uint32_t spelling_id = 0;
+    // Interned-spelling handle now lives on the base record (rec.spelling_id).
+    // `str` remains the source of truth until the per-token-string drop
+    // (interning step 4) consumes it.
     TokenIdent() { _datatype = &ddCHARptr; }
     TokenIdent(std::string &s) { str = s; _datatype = &ddCHARptr; }
     TokenIdent(const char *s)  { str = s; _datatype = &ddCHARptr; }
     virtual TokenType type() const { return TokenType::ttIdentifier; }
     virtual TokenID   id()   const { return TokenID::tkIdent; }
-    virtual TokenBase *clone()     { TokenIdent *t = new TokenIdent(str); t->spelling_id = spelling_id; return t; }
+    virtual TokenBase *clone()     { TokenIdent *t = new TokenIdent(str); t->rec.spelling_id = rec.spelling_id; return t; }
     virtual void setDataType(DataDef *d) { if (d) _datatype = d; }
 };
 
