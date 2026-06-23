@@ -2,7 +2,47 @@
 
 **Date:** 2026-06-23
 **Branch:** `feature/front-end-performance-claude`
-**Status:** PLAN (execution not started). This is the real P1 + P3 + P4 of
+**Status:** EXECUTION NOTES — SUBORDINATE to the pre-existing authoritative designs.
+Do NOT treat this as a competing plan.
+
+## THIS IS NOT THE AUTHORITATIVE ARENA PLAN — read these first
+
+The full arena/serialization design already exists and supersedes any re-derivation
+here. This doc only holds 2026-06-23 execution findings (the BUG B + consumed_since
+O(n²) fixes, the reverted pool detour, the 53-`delete` ownership trace) mapped onto
+those phases:
+
+- **`docs/plans/2026-06-13-embedded-ast-frontend-design.md`** — the ARCHITECTURE:
+  append-only token array + rewind cursor; **cir_node = arena + `u32` index handles,
+  no internal pointers** ("the single decision"); interned type/identifier IDs by
+  index; side-car tables keyed by node index; segmented mmap / zero-copy on-disk.
+- **`docs/plans/2026-06-09-frontend-representation-refactor.md`** — the PHASED plan
+  (critical path P0→P3→P4→P5; P1 independent; **P2 polymorphism-collapse FENCED**):
+  - **P0** — value/intern pools + **string/identifier interning, shared by tokens
+    and AST** (value-pool half landed for `__int128`; the string-intern half is open).
+  - **P1** — flat token scan buffer (flat value-record buffer + index cursor). The
+    *cursor* half landed (TokenStream); the *value-record* half is open = the "still
+    pointers" gap.
+  - **P2** — polymorphism collapse (1577 `->id()`/388 `->type()`/574 `dynamic_cast`).
+    **FENCED — default do NOT do.** (My earlier "must de-polymorphize" estimate was
+    this fenced phase; struck.)
+  - **P3** — `uid`-keyed side-arrays + serialization-ready cir_node (= the
+    contiguous serializable AST). **P4** — serialize/mmap the cir_node forest.
+- Type identity substrate: `docs/plans/2026-06-12-type-table-value-abi-design.md`
+  (segmented `uint32` type-id table). Forest: `[[project_embedded_header_forest]]`.
+
+**Mapping of this session's "arena" work to the above:** the slot-id / contiguous-IR
+model I described = P1 (token value-records) + P3 (uid-handle cir_node) + P0
+(interned ids). The identifier-interning task = **P0 string interning**. Implement
+against the designs above, reusing the `uint32`-handle scheme and the segmented
+append-only index space — NOT a new mechanism.
+
+---
+
+(Original draft below — kept for the execution findings; the architecture is
+governed by the docs above, not by this section.)
+
+**Date:** 2026-06-23 · the real P1 + P3 + P4 of
 `docs/plans/2026-06-22-front-end-performance-plan.md`, made concrete.
 
 ## ARCHITECTURE — SETTLED (design owner, 2026-06-23). Do not re-scope.
