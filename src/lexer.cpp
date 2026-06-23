@@ -682,12 +682,12 @@ void Program::expand_pending_auto_include_macros(size_t original_start)
 	    TokenIdent *ident = (TokenIdent *)tb;
 	    if ( pending_auto_include_identifiers.count(ident->str) )
 	    {
-		std::map<std::string, std::string>::iterator di =
+		InternKeyedMap<std::string>::iterator di =
 		    define_map.find(ident->str);
 		if ( di != define_map.end() )
 		{
 		    std::vector<TokenBase *> repl =
-			tokenize_auto_include_define(di->second, tb);
+			tokenize_auto_include_define(*di, tb);
 		    rewritten.insert(rewritten.end(), repl.begin(), repl.end());
 		    continue;
 		}
@@ -1035,6 +1035,14 @@ static bool predefine_is_cpp_only(const char *name)
 
 void Program::_tokenizer_init()
 {
+    // Bind the interned-spelling maps to this Program's StringPool BEFORE any
+    // insert (add_keywords / add_datatypes / the predefined define_map below) so
+    // their string-keyed inserts intern correctly; hot lookups in _getToken pass a
+    // pre-computed spelling_id (uint32) instead of comparing strings.
+    keyword_map.set_pool(&strpool);
+    cpp_operator_map.set_pool(&strpool);
+    define_map.set_pool(&strpool);
+    macro_map.set_pool(&strpool);
 
     tkProgram = NULL;
     tkFunction = NULL;
@@ -2072,7 +2080,7 @@ static bool push_precompiled_header_tokens(Program &pgm,
 	    TokenBase *replacement = NULL;
 	    keyword_map_iter ki = pgm.keyword_map.find(ident->str);
 	    if ( ki != pgm.keyword_map.end() )
-		replacement = ki->second->clone();
+		replacement = (*ki)->clone();
 	    else
 	    {
 		datatype_map_iter di = pgm.datatype_map.find(ident->str);
@@ -3066,7 +3074,7 @@ TokenBase *Program::_getToken()
 				if ( is_push )
 				{
 				    auto it = define_map.find(mname);
-				    std::string val = (it != define_map.end()) ? it->second : std::string("\x01");
+				    std::string val = (it != define_map.end()) ? *it : std::string("\x01");
 				    _macro_save_stack[mname].push(val);
 				    DBG(std::cout << "#pragma push_macro(\"" << mname << "\") saved=\"" << val << "\"" << std::endl);
 				}
@@ -3705,20 +3713,31 @@ TokenBase *Program::_getToken()
 	    {
 		word = "";
 		word += ch;
+		// Fold the spelling hash WHILE reading the identifier (tinycc model)
+		// so intern() below doesn't re-walk the bytes for the hash.
+		uint32_t whash = StringPool::hash_step(StringPool::hash_init(), (unsigned char)ch);
 
 		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
-		    word += source.get();
+		{
+		    int wc = source.get();
+		    word += (char)wc;
+		    whash = StringPool::hash_step(whash, (unsigned char)wc);
+		}
 		if ( word == "L" && source.good()
 		  && (source.peek() == '"' || source.peek() == '\'') )
 		    return read_wide_literal(source);
+		// Intern the spelling ONCE (with the pre-folded hash); reuse the id
+		// for every per-word map probe below (macro/define/keyword/cpp-operator)
+		// — a flat sid-indexed array access, no string compare, no tree.
+		uint32_t sid = strpool.intern(word.data(), (uint32_t)word.size(), whash);
 		// function-like macro expansion: NAME(args) or NAME (args)
 		// Suppressed when the preceding tokens form a declaration /
 		// definition head (`void bug(const char *, ...)` must not
 		// be eaten by a prior `#define bug(...) ((void)0)`).
-		if ( macro_map.count(word) && !source.macro_disabled(word)
+		if ( macro_map.count(sid) && !source.macro_disabled(word)
 		     && consume_macro_call_open(source) )
 		{
-		    MacroDef &macro = macro_map[word];
+		    MacroDef &macro = macro_map[sid];
 		    // read actual arguments (handling nested parens and strings)
 		    std::vector<std::string> args;
 		    std::string arg;
@@ -4173,12 +4192,12 @@ TokenBase *Program::_getToken()
 		    return getToken();
 		}
 			// #define substitution: inject the define value into the source stream
-			if ( define_map.count(word) && !source.macro_disabled(word) )
+			if ( define_map.count(sid) && !source.macro_disabled(word) )
 			{
 			    if ( word == "inline"
 			      && next_source_word_is(source, "namespace") )
 				return new TokenIdent(word);
-			    std::string &val = define_map[word];
+			    std::string &val = define_map[sid];
 			    if ( !val.empty() )
 			    {
 			// Builtin libc aliases such as __builtin_strcmp -> strcmp
@@ -4426,22 +4445,24 @@ TokenBase *Program::_getToken()
 			    break;
 		    }
 		}
-		if ( (kmi=keyword_map.find(word)) != keyword_map.end() )
-		    return kmi->second->clone();
+		if ( (kmi=keyword_map.find(sid)) != keyword_map.end() )
+		    return (*kmi)->clone();
 		// C++ alternative-token operators (and/or/not/...): empty in C
 		// mode, so this find is a no-op there.
 		if ( !cpp_operator_map.empty() )
 		{
-		    std::map<std::string, TokenBase *>::iterator oi =
-			cpp_operator_map.find(word);
+		    InternKeyedMap<TokenBase *>::iterator oi =
+			cpp_operator_map.find(sid);
 		    if ( oi != cpp_operator_map.end() )
-			return oi->second->clone();
+			return (*oi)->clone();
 		}
 		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
 		    return bmi->second->clone();
 		if ( auto_include_standard_identifier(word) )
 		    return getToken();
-		return new TokenIdent(word);
+		TokenIdent *ti = new TokenIdent(word);
+		ti->spelling_id = sid;   // already interned above; skip re-intern in getToken()
+		return ti;
 	    }
 	    return new TokenChar(ch);
 	// end switch
@@ -4594,7 +4615,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    auto it = define_map.find(word);
 	    if ( it != define_map.end() )
 	    {
-		out += it->second.empty() ? "1" : it->second;
+		out += it->empty() ? "1" : *it;
 		changed = true;
 	    }
 	    else if ( macro_map.count(word) > 0 )
@@ -4879,8 +4900,8 @@ bool Program::evaluateIfCondition()
 	    auto it = define_map.find(word);
 	    if ( it != define_map.end() )
 	    {
-		if ( !it->second.empty() )
-		    return strtoll(it->second.c_str(), NULL, 0);
+		if ( !it->empty() )
+		    return strtoll(it->c_str(), NULL, 0);
 		return 1;
 	    }
 	    if ( macro_map.count(word) > 0 )
@@ -5135,7 +5156,8 @@ TokenBase *Program::getToken()
     // keywords (shared keyword_map prototypes) and string/comment trivia are
     // skipped, so no shared prototype is mutated. `str` stays authoritative until
     // the map re-key (step 3) and per-token-string drop (step 4).
-    if ( tb && tb->type() == TokenType::ttIdentifier )
+    if ( tb && tb->type() == TokenType::ttIdentifier
+	 && ((TokenIdent *)tb)->spelling_id == 0 )
 	((TokenIdent *)tb)->spelling_id = strpool.intern(((TokenIdent *)tb)->str);
 
     DBG(if (tb) printt(tb));

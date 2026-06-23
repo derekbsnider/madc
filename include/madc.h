@@ -757,7 +757,7 @@ public:
 typedef void (*fVOIDFUNC)(void);
 
 // maps
-typedef std::map<std::string, TokenKeyword *> keyword_map_t;
+typedef InternKeyedMap<TokenKeyword *> keyword_map_t;
 typedef std::map<std::string, TokenDataType *> datatype_map_t;
 typedef std::map<std::string, DataDef *> datadef_map_t;
 typedef std::map<std::string, FuncDef *> funcdef_map_t;
@@ -766,7 +766,7 @@ typedef std::map<std::string, variable_map_t> namespace_map_t;
 typedef std::map<std::string, datatype_map_t> namespace_datatype_map_t;
 
 // map-iterators
-typedef std::map<std::string, TokenKeyword *>::iterator keyword_map_iter;
+typedef keyword_map_t::iterator keyword_map_iter;
 typedef std::map<std::string, TokenDataType *>::iterator datatype_map_iter;
 typedef std::map<std::string, DataDef *>::iterator datadef_map_iter;
 typedef std::map<std::string, FuncDef *>::iterator funcdef_map_iter;
@@ -1358,7 +1358,7 @@ public:
     // separately from keyword_map because the operator tokens are not
     // TokenKeyword subclasses. Populated (C++-gated) in add_keywords; looked up
     // and cloned in _getToken alongside keyword_map.
-    std::map<std::string, TokenBase *> cpp_operator_map;
+    InternKeyedMap<TokenBase *> cpp_operator_map;
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     datadef_map_t  struct_map;		// data definitions defined by struct
@@ -1824,11 +1824,11 @@ public:
 	std::string variadic_param;       // GNU named varargs parameter (`args...`)
 	std::string body;                 // body template with param names as placeholders
     };
-    std::map<std::string, MacroDef> macro_map;	// function-like macros
+    InternKeyedMap<MacroDef> macro_map;	// function-like macros (key = interned spelling-id)
     enum LazyKind { lkVariable = 1, lkFunction = 2, lkType = 3, lkStruct = 4 };
     struct LazyEntry { int header; LazyKind kind; };
     std::map<std::string, LazyEntry> lazy_map;	// deferred symbol registration
-    std::map<std::string, std::string> define_map;	// #define name value
+    InternKeyedMap<std::string> define_map;	// #define name value (key = interned spelling-id)
     std::set<std::string> disabled_builtin_names;	// -fno-builtin-foo from CLI/tests
     std::map<std::string, std::stack<std::string>> _macro_save_stack; // #pragma push_macro / pop_macro
     std::vector<std::string> include_paths;	// -I include search paths (for #include "file.h")

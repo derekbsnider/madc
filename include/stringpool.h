@@ -5,6 +5,7 @@
 #include <cstring>
 #include <vector>
 #include <string>
+#include <map>
 
 // stringpool.h — arena-model interned string table; backing store for TokenRec.spelling_id
 // and every interned name (sibling of the segmented type table). Index-linked, NOT
@@ -27,14 +28,6 @@ class StringPool
     std::vector<uint32_t> _buckets;   // power-of-two; head entry-index or NIL
     enum : uint32_t { NIL = 0xffffffffu };  // enum (prvalue) → no ODR definition needed
 
-    // tinycc TOK_HASH_FUNC, init 1.
-    static uint32_t hash_bytes(const char *s, uint32_t len)
-    {
-	uint32_t h = 1;
-	for ( uint32_t i = 0; i < len; ++i )
-	    h = h + (h << 5) + (h >> 27) + (unsigned char)s[i];
-	return h;
-    }
     void rehash(size_t nbuckets)
     {
 	_buckets.assign(nbuckets, NIL);
@@ -67,11 +60,24 @@ public:
 	if ( nb > _buckets.size() ) { if ( _entries.size() <= 1 ) _buckets.assign(nb, NIL); else rehash(nb); }
     }
 
-    // Intern bytes -> stable id (dedups). Empty -> id 0.
-    uint32_t intern(const char *s, uint32_t len)
+    // tinycc TOK_HASH_FUNC (init 1). Exposed as init + per-char step so the lexer
+    // can fold the hash WHILE it reads an identifier — no second byte-pass at
+    // intern(). hash_bytes() must stay identical to folding step() over the bytes.
+    static uint32_t hash_init()                        { return 1; }
+    static uint32_t hash_step(uint32_t h, unsigned char c) { return h + (h << 5) + (h >> 27) + c; }
+    static uint32_t hash_bytes(const char *s, uint32_t len)
+    {
+	uint32_t h = hash_init();
+	for ( uint32_t i = 0; i < len; ++i )
+	    h = hash_step(h, (unsigned char)s[i]);
+	return h;
+    }
+
+    // Intern bytes -> stable id (dedups). Empty -> id 0. The 3-arg form takes a
+    // PRECOMPUTED hash (folded during lexing) so the bytes are walked once.
+    uint32_t intern(const char *s, uint32_t len, uint32_t h)
     {
 	if ( len == 0 ) return 0;
-	uint32_t h = hash_bytes(s, len);
 	uint32_t mask = (uint32_t)_buckets.size() - 1;
 	uint32_t b = h & mask;
 	for ( uint32_t i = _buckets[b]; i != NIL; i = _entries[i].next )
@@ -95,6 +101,7 @@ public:
 	_buckets[b] = id;
 	return id;
     }
+    uint32_t intern(const char *s, uint32_t len) { return len ? intern(s, len, hash_bytes(s, len)) : 0; }
     uint32_t intern(const std::string &s) { return intern(s.data(), (uint32_t)s.size()); }
     uint32_t intern(const char *s)        { return intern(s, (uint32_t)strlen(s)); }
 
@@ -102,6 +109,66 @@ public:
     uint32_t    length(uint32_t id) const { return _entries[id].len; }
     std::string str(uint32_t id)    const { return std::string(c_str(id), length(id)); }
     size_t      count()             const { return _entries.size() - 1; } // excl. id 0
+};
+
+// Map keyed by interned spelling-id. A drop-in for std::map<std::string,V> on the
+// hot lexer maps (keyword/define/macro/cpp-operator): the STRING overloads intern
+// the key so every existing insert / cold-path call site compiles unchanged, while
+// the hot lookups pass a PRE-COMPUTED spelling_id (uint32) and skip the
+// std::less<string> tree-walk entirely (callgrind: that comparator was 6.7% incl /
+// 4.2M calls — docs/plans/2026-06-23-arena-interning-HANDOFF.md). The pool pointer
+// is bound once in Program::_tokenizer_init() before any use.
+template<class V>
+class InternKeyedMap
+{
+    std::vector<int32_t> _slot;   // indexed by spelling-id: index into _vals, or -1
+    std::vector<V>       _vals;   // dense value pool (only real entries)
+    StringPool          *_pool = nullptr;
+    size_t               _live = 0;
+public:
+    typedef V *iterator;          // find() returns a pointer to the value, NULL = absent
+    void set_pool(StringPool *p) { _pool = p; }
+
+    // uint32 (hot) — O(1) flat array index; no tree, no node alloc, no compare
+    V *find(uint32_t id)
+    {
+	if ( id < _slot.size() && _slot[id] >= 0 ) return &_vals[(size_t)_slot[id]];
+	return nullptr;
+    }
+    size_t count(uint32_t id) const
+    {
+	return ( id < _slot.size() && _slot[id] >= 0 ) ? 1 : 0;
+    }
+    V &operator[](uint32_t id)
+    {
+	if ( id >= _slot.size() ) _slot.resize(id + 1, -1);
+	if ( _slot[id] < 0 ) { _slot[id] = (int32_t)_vals.size(); _vals.emplace_back(); ++_live; }
+	return _vals[(size_t)_slot[id]];
+    }
+    size_t erase(uint32_t id)
+    {
+	if ( id < _slot.size() && _slot[id] >= 0 )
+	{
+	    _vals[(size_t)_slot[id]] = V();  // tombstone the value; pool slot is left (erase is rare)
+	    _slot[id] = -1;
+	    --_live;
+	    return 1;
+	}
+	return 0;
+    }
+
+    // string overloads — intern the key; keep every existing insert / cold call site working
+    V     *find(const std::string &k)        { return find(_pool->intern(k)); }
+    size_t count(const std::string &k)       { return count(_pool->intern(k)); }
+    V     &operator[](const std::string &k)  { return (*this)[_pool->intern(k)]; }
+    size_t erase(const std::string &k)       { return erase(_pool->intern(k)); }
+
+    // find() returns NULL for "not found"; end() is provided so legacy
+    // `find(x) != m.end()` call sites keep compiling (end() == nullptr).
+    iterator end() { return nullptr; }
+    bool   empty() const { return _live == 0; }
+    size_t size()  const { return _live; }
+    void   clear()       { _slot.clear(); _vals.clear(); _live = 0; }
 };
 
 #endif
