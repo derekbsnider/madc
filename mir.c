@@ -3670,9 +3670,42 @@ static void make_one_ret (MIR_context_t ctx, MIR_item_t func_item) {
   if (VARR_LENGTH (MIR_insn_t, ret_insns) == 0) return; /* jcall/jret func */
   last_ret_insn = VARR_LAST (MIR_insn_t, ret_insns);
   VARR_TRUNC (MIR_op_t, ret_ops, 0);
+  /* Multi-result returns need fresh canonical regs, not regs borrowed from one branch.  */
   if (VARR_LENGTH (MIR_insn_t, ret_insns) > 1) {
     ret_label = MIR_new_label (ctx);
-    MIR_insert_insn_before (ctx, func_item, last_ret_insn, ret_label);
+    for (i = 0; i < func->nres; i++) {
+      mov_code = get_type_move_code (res_types[i]);
+      ret_reg = _MIR_new_temp_reg (ctx, mov_code == MIR_MOV ? MIR_T_I64 : res_types[i], func);
+      VARR_PUSH (MIR_op_t, ret_ops, MIR_new_reg_op (ctx, ret_reg));
+    }
+    for (i = 0; i < VARR_LENGTH (MIR_insn_t, ret_insns); i++) {
+      insn = VARR_GET (MIR_insn_t, ret_insns, i);
+      mir_assert (insn->code == MIR_RET || func->nres == MIR_insn_nops (ctx, insn));
+      for (j = 0; j < func->nres; j++) {
+        MIR_op_t src_op = insn->ops[j];
+        ret_reg_op = VARR_GET (MIR_op_t, ret_ops, j);
+        switch (res_types[j]) {
+        case MIR_T_I8: ext_code = MIR_EXT8; break;
+        case MIR_T_U8: ext_code = MIR_UEXT8; break;
+        case MIR_T_I16: ext_code = MIR_EXT16; break;
+        case MIR_T_U16: ext_code = MIR_UEXT16; break;
+        case MIR_T_I32: ext_code = MIR_EXT32; break;
+        case MIR_T_U32: ext_code = MIR_UEXT32; break;
+        default: ext_code = MIR_INVALID_INSN; break;
+        }
+        mov_code = ext_code == MIR_INVALID_INSN ? get_type_move_code (res_types[j]) : ext_code;
+        MIR_insert_insn_before (ctx, func_item, insn, MIR_new_insn (ctx, mov_code, ret_reg_op,
+                                                                    src_op));
+      }
+      MIR_insert_insn_before (ctx, func_item, insn,
+                              MIR_new_insn (ctx, MIR_JMP, MIR_new_label_op (ctx, ret_label)));
+      MIR_remove_insn (ctx, func_item, insn);
+    }
+    MIR_append_insn (ctx, func_item, ret_label);
+    MIR_append_insn (ctx, func_item,
+                     MIR_new_insn_arr (ctx, MIR_RET, VARR_LENGTH (MIR_op_t, ret_ops),
+                                       VARR_ADDR (MIR_op_t, ret_ops)));
+    return;
   }
   for (i = 0; i < func->nres; i++) { /* generate ext insn before last ret */
     ret_reg_op = last_ret_insn->ops[i];
