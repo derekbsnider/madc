@@ -86,6 +86,9 @@ typedef enum : uint16_t { tfBRACKETED	=    1,
 // first_child/child_count (replaces the per-subclass vector<TokenBase*>).
 struct TokenRec {
     uint32_t spelling_id = 0;	// -> Program::strpool (0 = none / not interned)
+    uint32_t slot_id = 0;	// -> TokenArena slot registry (0 = unassigned); the
+				// token's stable identity for child / serialization
+				// links (replaces raw TokenBase* in id-vectors).
 };
 
 class TokenBase

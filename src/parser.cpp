@@ -113,6 +113,27 @@ void TokenBase::operator delete(void *)
 {
 }
 
+// Lazy idempotent slot-id stamp: returns t's stable arena id, assigning one on
+// first reference. Caches the id in t->rec.slot_id so a token has exactly one
+// id. The id<->pointer bridge for the flat id-vectors that replace
+// vector<TokenBase*> (children, macro/template bodies; serialization).
+uint32_t madc_slot_id_for(TokenBase *t)
+{
+    if ( !t )
+	return 0;
+    if ( t->rec.slot_id )
+	return t->rec.slot_id;
+    if ( !_madc_tok_arena )
+	_madc_tok_arena = new TokenArena();
+    t->rec.slot_id = _madc_tok_arena->register_slot(t);
+    return t->rec.slot_id;
+}
+
+TokenBase *madc_token_for_slot(uint32_t id)
+{
+    return _madc_tok_arena ? _madc_tok_arena->slot(id) : (TokenBase *)0;
+}
+
 static size_t find_struct_member_index(DataDefSTRUCT *sdd, const std::string &field_name);
 
 namespace madc {
