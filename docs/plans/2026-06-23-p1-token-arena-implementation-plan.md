@@ -1,10 +1,56 @@
 # P1 token arena — IMPLEMENTATION PLAN + CONTINUATION CONTRACT
 
-**Date:** 2026-06-23 · **Branch:** `feature/front-end-performance-claude` · **HEAD at write:** `7d6bc31`
-**Read this BEFORE acting. Imperative, not advisory.** §1 (MENTAL MODEL) was **corrected
-2026-06-23** after the design owner caught a two-population conflation — it now matches the
-three authoritative docs it cites. Build against §1; do not re-introduce the struck framing
-(token "children", the no-clone "mutation blocker" — see §1f).
+**Date:** 2026-06-23 · **Branch:** `feature/front-end-performance-claude` · **HEAD at write:** `2a7868c`
+
+> ⛔ **DISTRUST THE /compact AUTO-SUMMARY.** It has been WRONG about this exact work — it said
+> "slab arena" (it is a **variable-size bump** arena) and "modest ~3-5%" (Phase 1 is **~0% at
+> -O0**, by design). If anything you "remember" from a summary conflicts with this doc, the
+> doc wins. **Do not act on the summary. Answer the READ-CHECK below (from §1) before editing.**
+
+## READ-CHECK — answer ALL of these OUT LOUD in your first post-compaction message, BEFORE any edit
+If your answer differs from the one given, STOP and read §1 fully — you have drifted. These ARE
+the load-bearing disambiguations past sessions got wrong.
+
+1. **How many token populations, and what is each?** → **pop-1** = LEXER tokens (Ident/Int/
+   Real/Str/operators/punctuation) — a **linear stream**, target form = flat POD `TokenRec`,
+   **immutable once lexed**. **pop-2** = PARSER-built AST nodes (`TokenOperator` `left`/`right`,
+   `Ternary`, `Case`, `Assign`, `Var`…) — the tree, **stay polymorphic objects**.
+2. **Do pop-1 tokens have children?** → **NO.** Linear stream. Trees belong to pop-2 + cir_node.
+3. **Where do `parent`/`left`/`right` live, and when are they written?** → On **pop-2 AST objects**,
+   written **fresh during parse** (`new TokenAssign` → `lhs->parent = assign`). **NOT** on shared
+   pop-1 tokens.
+4. **Is no-clone macro/template substitution blocked by mutation?** → **NO.** Pop-1 records are
+   immutable, so sharing them by slot-id across instantiations is safe. (The "mutation blocker"
+   was a STRUCK conflation — see §1f.)
+5. **Arena cell model?** → **variable-size bump** (each token exactly `sizeof(T)`, 16-aligned),
+   chunks never relocate, **no per-token free**. NOT fixed cells, NOT a freelist.
+6. **Phase-1 -O0 speedup?** → **~0%, EXPECTED.** Phase 1 is the FOUNDATION, not a perf win.
+   **Never perf-gate** any phase; gate = fulltest + byte-identical output only.
+7. **Are `type_id`/`file_id` a live-rep change now?** → **NO.** Serialize-time derivations
+   (Phase 3). The live rep keeps `_datatype`/`file`; the Phase-3 pre-dump pass writes the indices.
+8. **Is whole-parser de-polymorphization in scope?** → **NO.** That is **P2, FENCED.** Only the
+   pop-1 lexer stream flattens; pop-2 AST stays objects.
+9. **The three `uint32` index spaces?** → **token slot-id** (TokenRec arena) · **cir_node index**
+   (cir_node arena — a SEPARATE P3 track) · **type-id** (segmented type table).
+10. **What is DONE and what is NEXT?** → DONE: Phase 0 audit `ca898e1`, Phase 1 bump arena
+    `e8861ac`, `TokenRec`+`spelling_id` `8bb60a2`, indexable arena/slot registry `45d2b88`,
+    `cir_node::origin`→slot-id `617a5fa`, plan corrected `2a7868c`. **NEXT = Phase 2 step 2**:
+    lexer emits pop-1 `TokenRec`s + the stream becomes a `vector<uint32_t>` id-stream +
+    materialize shells on demand (reuse `pch.cpp`'s `TokenID→new TokenX`).
+
+## GLOSSARY (load-bearing terms — fixed definitions, do not re-interpret)
+- **pop-1 / lexer token** — a lexed token; a linear-stream element; target = flat POD `TokenRec`;
+  immutable once lexed.
+- **pop-2 / AST node** — a parser-built node (`TokenOperator`, `Ternary`, `Case`, `Assign`,
+  `Var`…); carries tree pointers (`parent`/`left`/`right`); stays a polymorphic object (P2 fenced).
+- **slot-id** — a `uint32` index into the token (`TokenRec`) arena; a token's stable identity for
+  id-streams/id-vectors and for `cir_node::origin_id`.
+- **identity** — `kind` (the `TokenID` enum) + `spelling_id` (StringPool). Shared, interned,
+  immutable. (== the "prototype" layer.)
+- **occurrence** — the per-lex `TokenRec` data (`line`/`column`/`value`). Not shared.
+- **`TokenRec`** — the flat POD record for ONE pop-1 token. **No children.**
+- **id-stream / id-vector** — a `vector<uint32_t>` of slot-ids: the lexer token stream, or a
+  substituted macro/template body.
 
 ---
 
