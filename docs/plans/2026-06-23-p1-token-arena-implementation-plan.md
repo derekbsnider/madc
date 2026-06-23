@@ -188,14 +188,34 @@ Consequence for a PERF track:
 
 Revised step list:
   1. `spelling_id` — DONE @8bb60a2 (TokenRec introduced; field migrated onto the base record).
-  2. **(was 4) children → slot-ids — the live-rep work, the next step.** Prereq: make the
-     arena INDEXABLE (stable uint32 slot-id ↔ TokenBase*). Then convert the per-subclass
-     `vector<TokenBase*>` children to arena slot-id ranges (`first_child`/`child_count`),
-     and convert the macro/template substitution loops to build id-vectors (no clone()).
+  1b. indexable arena (slot-id ↔ token bridge) — DONE @45d2b88 (`TokenRec.slot_id`,
+     `TokenArena` slot registry, `madc_slot_id_for`/`madc_token_for_slot`, test_token_arena).
+  1c. `cir_node::origin` → `origin_id` (slot-id) — DONE @617a5fa. First id-vector consumer +
+     first of "all pointer classes become indices". READ-ONLY provenance ⇒ safe (no mutation
+     of the referenced token). Proved the slot registry under production load (669 compiles).
+  2. **children → slot-ids + no-clone substitution — THE deep step. BLOCKED on an
+     architectural sub-project (see audit below).** Converting the macro/template body
+     vectors to shared id-vectors is the ~43% instantiate-cost win, but it is NOT a simple
+     field swap.
   3. `type_id`, `file_id` — RELOCATED to Phase 3 (dump-time materialization, below). The
      live rep keeps `_datatype`/`file`; the serializer writes the indices.
 - Gate per sub-step: fulltest green + `--emit=c11` byte-identical (data moved, emission
   must not change).
+
+**MUTATION-SAFETY AUDIT (2026-06-23, gating step 2) — CONCLUSION: no-clone needs
+identity/occurrence separation.** The parser builds the parse tree by MUTATING consumed
+tokens in place: `parent =` (25 sites — `lhs->parent = assign`, `expr->parent = assign`,
+`ret_value->parent = ret`, parser.cpp:14360/14361/14369…) and the operator `left`/`right`
+pointers. (`setDataType` — 37 sites — mostly targets parser-synthesized temporaries `ti`/
+`np`/`zero`, NOT body tokens; `read_count` is a harmless diagnostic.) Today `clone()` is
+what makes this safe: each macro/template instantiation re-parses INDEPENDENT cloned tokens,
+so the in-place `parent`/`left`/`right` mutation can't collide. To drop the clone and SHARE
+body tokens across instantiations, that mutable tree-structure state (`parent`/`left`/
+`right`) must move OFF the shared token identity and INTO per-occurrence storage (the
+identity-vs-occurrence split the flattening plan names). That is a substantial sub-project
+spanning the ~25 `parent=` sites, the operator child pointers, and the substitution
+machinery — sequence it on its own; do NOT attempt it as a single commit. Until it lands,
+`clone()` (now arena-cheap, Phase 1) stays.
 
 **Phase 3 — serialization (ties to the embedded-header forest, NOT a perf item).**
 - **Pre-dump materialization pass (the relocated Phase-2 steps 2/3):** walk the tree with
