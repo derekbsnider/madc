@@ -15,8 +15,20 @@ rests on; read it first).
 
 ## 0. RESUME — START HERE (post-compaction; read this section first)
 
-**HEAD:** `139b5bd` on `feature/front-end-performance-claude`. Working tree clean
-(only the untracked `mir-debug-support.md` — not ours; leave it).
+**HEAD:** `c409786` on `feature/front-end-performance-claude`. Working tree clean
+(only the untracked `mir-debug-support.md` — not ours; leave it). Fork
+`/workspace/mir` @ `d3a5cced` on origin/develop; `MIR_COMMIT` = `d3a5cce`.
+
+**✅ PHASE 1 DONE (`c409786`, 2026-06-23).** `CirBuilder::copy_cir_subtree`
+(`src/cir_builder.cpp`) + `cir_node.tree1_origin` back-ref + env-gated proof hook
+`MADC_XTEST_CIR_COPY` (`src/madc_cir.cpp`). Fork side (pushed): `9d573993` c2mir
+O(1) `c2mir_node_first_op`/`next_op`; `d3a5cced` a pre-existing multi-RET `mir.c`
+bugfix the baseline depended on (pin gap closed). GATE GREEN: fulltest 669/0/0/18
+flag-off AND flag-on; torture failset byte-identical to the 51-name baseline (0
+timeouts); `--emit=c11` byte-identical flag-off-vs-on across 12 diverse TUs.
+LESSON: a copy must preserve `error_msg` (a BUILD-time madc field, unlike c2mir's
+per-compile `attr`) — dropping it silently defeats the `cir_report_errors` gate.
+**NEXT = Phase 1.5 (template-param placeholder DataDef).**
 
 **SETTLED — do not re-litigate (design owner, 2026-06-23):**
 1. Token-arena **2.2a / 2.2b / 2.3-step1 (rec-completion)** are DONE + gated +
@@ -185,7 +197,7 @@ helpers tolerate and that `tsubst` substitutes — sits between the copy primiti
 pattern-lowering (Phase 2). Phase 1 (`copy_cir_subtree` on a CONCRETE tree) is independent of
 this gap, so it remains the correct safe first slice.
 
-**Phase 1 — cir_node deep-copy primitive (`tsubst` core, no substitution yet).**
+**Phase 1 — cir_node deep-copy primitive (`tsubst` core, no substitution yet). — DONE 2026-06-23 (`c409786`).**
 - `copy_cir_subtree(node)` → a tree of FRESH nodes with a fresh node_t base
   (node_t `attr`/c2mir state cleared, children rebuilt as fresh node_t links so
   c2mir traverses only private node_t's), `origin_id` preserved, and a NEW extension
