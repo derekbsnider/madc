@@ -43,6 +43,7 @@
 #endif
 #include "datadef.h"
 #include "tokens.h"
+#include "token_arena.h"
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_mangle.h"
@@ -89,6 +90,28 @@ void *__madc_regex_replace(void *, void *, void *, void *);
 const char *TokenBase::_parse_file = NULL;
 int TokenBase::_parse_line = 0;
 int TokenBase::_parse_column = 0;
+
+// ---- Token arena (Phase 1) ------------------------------------------------
+// Every `new TokenX(...)` and every TokenBase::clone() routes here via the
+// inherited operator new below. Process-lifetime, never reset in Phase 1
+// (see token_arena.h for the lifecycle rationale). Lazily created and
+// intentionally never deleted — its memory is reclaimed by the OS at exit,
+// matching the pre-arena model where the token stream was never freed.
+static TokenArena *_madc_tok_arena = NULL;
+
+void *TokenBase::operator new(std::size_t sz)
+{
+    if ( !_madc_tok_arena )
+	_madc_tok_arena = new TokenArena();
+    return _madc_tok_arena->alloc(sz);
+}
+
+// No-op: tokens are never individually freed. The virtual destructor still
+// runs (a `delete tok` frees that token's std::string members); only the
+// arena cell is left in place, reclaimed when the arena is dropped.
+void TokenBase::operator delete(void *)
+{
+}
 
 static size_t find_struct_member_index(DataDefSTRUCT *sdd, const std::string &field_name);
 

@@ -7,6 +7,7 @@
 #define __TOKENS_H 1
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <vector>
 #include <ios>
@@ -103,6 +104,13 @@ public:
     TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
     TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
     virtual ~TokenBase() {}
+    // Every token (and every clone()) allocates from the per-process TokenArena
+    // (token_arena.h). operator delete is a no-op: tokens are never individually
+    // freed — a `delete tok` still runs the virtual destructor (freeing that
+    // token's std::string members) but the arena cell is reclaimed only when the
+    // arena is dropped. See docs/plans/2026-06-23-p1-token-arena-implementation-plan.md.
+    static void *operator new(std::size_t sz);
+    static void  operator delete(void *p);
     virtual TokenBase *clone() { return new TokenBase(_token); }
     virtual void set(int64_t c) { _token = c; }
     virtual void setDataType(DataDef *d) { if (d) _datatype = d; }
