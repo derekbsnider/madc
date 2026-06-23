@@ -29,6 +29,28 @@ A flat POD arena cleanly serves (1). (2) and (3) are what keep objects alive. So
 the refactor is **staged**: flatten the lexer stream first; let the parser
 materialize the (fewer, longer-lived) objects it needs from arena entries.
 
+## Phase 0 finding (2026-06-23) — two populations; flatten only one
+
+The 115 `Token*` subclasses split into two populations, and only the first needs
+the arena:
+1. **Lexer tokens** — `Space`/`Tab`/`EOL` (`int cnt`), `Ident` (`std::string str`),
+   `Int` (int64 value + `source_text`), `Real` (`double _val` + `source_text`),
+   `String` (`str` + `wide`), operators + punctuation (no payload). These are the
+   324K-token bulk and the per-token-`new` cost → flatten to POD `TokenRec`.
+2. **Parser-built AST nodes** — `Operator` (`left`/`right`), `Ternary`
+   (`condition`/`true_expr`/`false_expr`), `Case` (`value`/`range_high`), `Try`
+   (`try_body`), `Throw` (`throw_expr`), switch `init_stmt`, `Goto`/`Label`
+   (`target`/`labeled`/`indirect_target`), plus annotation fields
+   (`resolved_type`, `target_type`, `query_type`). These carry child `TokenBase*`
+   and **are the parse tree** — constructed during parse, not lexed. **They stay
+   objects.**
+
+So the arena targets population (1); the AST (2) remains pointer-linked nodes
+materialized during parse. `TokenRec` only needs to encode population-(1) payloads
+(cnt / spelling-id / int64-or-double value / source_text-id). This bounds Phase 1
+to the lexer stream and the macro/template substitution loops (which clone
+population-(1) tokens) — NOT the AST.
+
 ## Target representation
 
 - **Arena** = `std::vector<TokenRec>` of POD records, bump-appended, never freed
