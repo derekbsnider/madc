@@ -330,19 +330,33 @@ flattening plan describes. Pop-2 AST construction stays exactly as today (object
   is INFORMATIONAL only — record numbers, never gate a phase on them (§5).
 - Memory: `project_frontend_performance.md` is the active-track file; keep it synced.
 
-## 5. ROI — the payoff is SERIALIZATION, not -O0 speed (do not oversell, do not perf-gate)
-DIRECTIVE (user, 2026-06-23): implement the FULL plan (1→2→3) through serialization. Do NOT
-gate any phase on a perf number; the gate is correctness + byte-identical output.
-- Phase 1 (arena under polymorphic tokens) shows **~0% at -O0** — MEASURED and reverted once
-  as a standalone slice (`fc59be0`). That is EXPECTED. Phase 1 is the FOUNDATION (a stable,
-  never-relocate arena) the later phases require, not a speed win. Keep it; do not re-debate.
-- The REAL driver is the flat, serializable POD `TokenRec` arena for the **pop-1 lexer stream**
-  (Phases 2-3): lexer emits records + `vector<uint32_t>` id-stream + materialize-on-demand
-  shells; no-clone id-vector substitution; then dump/`mmap`+rebuild-by-`kind`. THIS is the
-  forest/PCH keystone (`docs/plans/2026-06-22-embedded-header-forest-execution-plan.md`). NOTE:
-  this is NOT whole-parser de-polymorphization — that is P2, FENCED (the "thousands of `->id()`
-  / ~480 `.str`" figures applied to that fenced collapse and are STRUCK; see the flattening
-  plan). Pop-2 AST stays objects. It is multi-session; that is accepted, not a reason to stop.
+## 5. PRIORITY ORDER — parity with g++ FIRST (real efficiency), THEN forest goes BELOW it
+GOAL (user, 2026-06-23): madc must **lex+parse+instantiate FASTER than g++**. Measured frame:
+g++ does `testsubscript` (parse+sema+instantiate, **stdlib from scratch, no caching**) in
+**~0.5 s**; madc ~2.0 s (**~4×**). g++'s 0.5 s already includes parsing `<map>`/`<vector>`/
+`<string>` every run — so "match g++" means doing the SAME from-scratch work in the same time;
+the forest then takes madc BELOW g++ by not re-parsing the stdlib. Ordering of wins:
+
+1. **PRIMARY — stop re-parsing to instantiate (materialize-from-AST). THE parity lever.**
+   87% of madc's parse time is template instantiation, and madc **RE-PARSES the body tokens per
+   instantiation**: `instantiate_template_use` (parser.cpp:3469) copies `TemplateDef.body`
+   (a `vector<TokenBase*>` — TOKENS, not a parsed tree), substitutes into those tokens, splices
+   them into the stream, and runs the parser AGAIN; sema is entangled in that re-parse.
+   g++/clang parse each body ONCE to an AST and instantiate by **copy + substitute** (`tsubst` /
+   `TreeTransform`), never re-parsing. This is the structural 4×. It is **forest-INDEPENDENT**
+   (pure in-memory; helps live project templates) and generalizes the landed lazy-body work
+   (today *defers* the parse → target *copy the parsed tree, never re-parse*). Design doc:
+   `docs/plans/2026-06-23-materialize-from-ast-instantiation-design.md`.
+2. **SECONDARY — flat representation (THIS plan: arena / `TokenRec` / interning / no-clone).**
+   Constant-factor (~1.5×). Makes lexing fast AND makes "copy + substitute" cheap (a `cir_node`
+   arena with `uint32` handles + `type_id`s turns substitution into an index remap, not a
+   re-parse). It is the SUBSTRATE for #1 and #3 — necessary, not sufficient alone.
+3. **THEN — forest (pre-parsed stdlib, Phase 3 serialization).** Amortizes the stdlib parse
+   across runs → BELOW g++. Only worth it AFTER parsing is efficient (caching a slow front end
+   still loses on cold runs). NOT "the payoff" — the THIRD win.
+
+Phase 1 (~0% at -O0, `fc59be0`) is FOUNDATION, expected, not a speed claim. Gate = correctness
++ byte-identical; never perf-gate a phase. P2 whole-parser de-polymorphization stays FENCED.
 
 ## 6. Rehydrate
 `scripts/resume.sh`; **read §1 (MENTAL MODEL) FULLY** — it is the part that has tripped up
@@ -354,3 +368,9 @@ past sessions (the two-population conflation). Then `git log --oneline -10` to c
 factory). Then step 3 (no-clone id-vector substitution — SAFE, §1f). Correctness gate only.
 Implement the FULL plan; do NOT re-introduce the struck "children→slot-ids" / "mutation
 blocker" framing.
+
+**BIGGER PICTURE (do not lose at compaction):** this token-arena plan is the SECONDARY
+(constant-factor + substrate) lever per §5. The PRIMARY parity lever — the one that closes the
+~4× vs g++ — is **materialize-from-AST instantiation (stop re-parsing template bodies)**, its
+own design at `docs/plans/2026-06-23-materialize-from-ast-instantiation-design.md`. The forest
+(pre-parsed stdlib) is the THIRD win (below g++). Priority order: §5.
