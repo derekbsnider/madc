@@ -19899,27 +19899,46 @@ const char *c2mir_node_code_name (c2mir_node_code_t code) {
   return get_node_name ((node_code_t) code);
 }
 
+/* TRUE for a leaf node — one that carries a scalar in the union rather than an
+   op-list. Reading u.ops on such a node would alias the stored scalar. Interior
+   nodes (> N_ID) own ops. The complex-constant nodes (N_CF/N_CD/N_CLD) are also
+   leaves — they carry the imaginary value in u.f/u.d/u.ld — but their code is
+   numerically > N_ID (they were appended after the declarator codes), so the
+   plain `<= N_ID` test misclassifies them as interior and reinterprets the
+   stored double as a DLIST head (a self-aliasing cycle / garbage pointer).
+   Treat them as the leaves they are. SINGLE SOURCE OF TRUTH for the leaf test
+   shared by the external operand accessors below. */
+static int ext_node_is_leaf (node_t n) {
+  return n->code <= N_ID || n->code == N_CF || n->code == N_CD || n->code == N_CLD;
+}
+
 /* Public i-th operand accessor, for external AST walkers. Returns NULL
    past the end. (DLIST accessor functions for node_t are generated inside
    c2mir.c and are not visible to external translation units.) */
 node_t c2mir_node_op (node_t n, int i) {
   node_t op;
   if (n == NULL || i < 0) return NULL;
-  /* Leaf nodes (<= N_ID) carry a scalar in the union, not an op-list;
-     reading u.ops would alias that scalar.  Interior nodes (> N_ID) own ops.
-     The complex-constant nodes (N_CF/N_CD/N_CLD) are also leaves — they carry
-     the imaginary value in u.f/u.d/u.ld — but their code is numerically > N_ID
-     (they were appended after the declarator codes), so the plain `<= N_ID`
-     test misclassifies them as interior and reinterprets the stored double as
-     a DLIST head (a self-aliasing cycle / garbage pointer). Treat them as the
-     leaves they are. */
-  if (n->code <= N_ID || n->code == N_CF || n->code == N_CD || n->code == N_CLD)
-    return NULL;
+  if (ext_node_is_leaf (n)) return NULL;
   /* Bounds-safe walk: return NULL past the end rather than dereferencing
      NL_NEXT(NULL) (get_op() is unguarded and is for internal callers that
      know the operand count). */
   for (op = NL_HEAD (n->u.ops); i > 0 && op != NULL; i--) op = NL_NEXT (op);
   return op;
+}
+
+/* O(1) forward iteration over a node's operands — for external deep-copy /
+   walkers that would otherwise pay O(n^2) for a repeated-index c2mir_node_op
+   walk. c2mir_node_first_op returns the first operand (NULL for a leaf or an
+   empty interior); c2mir_node_next_op returns the next sibling (NULL past the
+   end). Together they walk the op-list once, left to right. The DLIST accessor
+   macros (NL_HEAD/NL_NEXT) are internal to c2mir.c, hence these thin wrappers. */
+node_t c2mir_node_first_op (node_t n) {
+  if (n == NULL || ext_node_is_leaf (n)) return NULL;
+  return NL_HEAD (n->u.ops);
+}
+
+node_t c2mir_node_next_op (node_t op) {
+  return op == NULL ? NULL : NL_NEXT (op);
 }
 
 void c2mir_init_node_ops (node_t n) {

@@ -76,6 +76,13 @@ const char *c2mir_node_code_name (c2mir_node_code_t code);
    AST walkers that can't see c2mir's generated DLIST accessors. */
 node_t c2mir_node_op (node_t n, int i);
 
+/* O(1) forward operand iteration, for external deep-copy / walkers that
+   would pay O(n^2) for a repeated-index c2mir_node_op walk.
+   c2mir_node_first_op: first operand, NULL for a leaf or empty interior.
+   c2mir_node_next_op:  next sibling, NULL past the end. */
+node_t c2mir_node_first_op (node_t n);
+node_t c2mir_node_next_op (node_t op);
+
 /* Initialize the DLIST ops field of an externally-allocated node.
    Must be called before appending children. */
 void c2mir_init_node_ops (node_t n);
