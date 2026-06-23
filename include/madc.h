@@ -1860,6 +1860,10 @@ public:
     // (file I/O via copybuf + embedded-header str()). Lexing time is then the
     // tokenize() wall time minus this; measured by the caller (madc.cpp).
     double _read_seconds = 0.0;
+    // --show-stats: CIR build time (madc AST -> cir_node tree via
+    // CirBuilder::translate_module, incl. on-demand lazy template-body
+    // materialization) — the phase BETWEEN parse and c2mir. Set by madc_cir.cpp.
+    double _cir_build_seconds = 0.0;
     // --show-stats: c2mir compile time (cir_node tree -> MIR module) and the JIT
     // execution wall time (the main() call, incl. lazy MIR_gen of called fns).
     // Set by the CIR backend (madc_cir.cpp); printed by madc.cpp.

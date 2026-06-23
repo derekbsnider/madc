@@ -200,6 +200,7 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     // throw here would terminate the process (uncaught -> std::terminate). Catch
     // it: the error was already reported, so fail the build cleanly instead.
     node_t tree = NULL;
+    auto _cir_t0 = std::chrono::steady_clock::now();	// --show-stats: CIR build
     try {
 	tree = builder->translate_module(prog);
     } catch (const std::exception &e) {
@@ -212,6 +213,9 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 	delete builder;
 	return NULL;
     }
+    if (prog)
+	prog->_cir_build_seconds += std::chrono::duration<double>(
+	    std::chrono::steady_clock::now() - _cir_t0).count();
     if (!tree) {
 	fprintf(stderr, "%s: tree build failed\n", source_name);
 	delete builder;

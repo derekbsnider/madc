@@ -429,6 +429,12 @@ static void print_usage(const char *prog)
 
 int main(int argc, char **argv)
 {
+    // --show-stats: earliest in-process timestamp, so the phase breakdown can
+    // reconcile to a measured in-process total (the only part main() can see;
+    // pre-main dynamic-load/static-init and post-exit teardown are outside it).
+    struct timeval _t_main;
+    gettimeofday(&_t_main, NULL);
+
     install_crash_handler();
     install_resource_guards();
 
@@ -758,6 +764,22 @@ int main(int argc, char **argv)
 	    double inst_secs  = prog->_inst_seconds;
 	    double decl_secs  = parse_secs - inst_secs;
 	    if ( decl_secs < 0 ) decl_secs = 0;
+	    double cir_secs   = prog->_cir_build_seconds;
+	    double c2mir_secs = prog->_c2mir_seconds;
+	    double exec_secs  = prog->_exec_seconds;
+	    // Reconcile to a measured in-process total. The named phases are the
+	    // instrumented ones; "other" absorbs the un-instrumented in-process work
+	    // (arg parse, Program/engine setup, MIR module link, between-phase gaps).
+	    // accounted + other == total (in-process) by construction. The remaining
+	    // gap to `time(1)`'s `real` is pre-main load + post-exit teardown, which
+	    // main() cannot self-measure.
+	    struct timeval _t_now;
+	    gettimeofday(&_t_now, NULL);
+	    double total_secs = _secs(_t_main, _t_now);
+	    double accounted  = read_secs + lex_secs + parse_secs + cir_secs
+			      + c2mir_secs + exec_secs;
+	    double other_secs = total_secs - accounted;
+	    if ( other_secs < 0 ) other_secs = 0;
 	    fprintf(stderr,
 		"[stats] input read .......... %.1f KiB (%llu bytes)\n"
 		"[stats] tokens produced ..... %llu (lexer)\n"
@@ -769,8 +791,11 @@ int main(int argc, char **argv)
 		"[stats] parse time .......... %.3f s  (%.0f tok/s)\n"
 		"[stats]   instantiate ....... %.3f s  (%.0f%% of parse; %llu calls)\n"
 		"[stats]   decl-parse ........ %.3f s  (PCH-cacheable share)\n"
+		"[stats] cir build ........... %.3f s  (AST -> cir_node)\n"
 		"[stats] c2mir compile ....... %.3f s\n"
-		"[stats] execution .......... %.3f s\n",
+		"[stats] execution .......... %.3f s\n"
+		"[stats] other (setup/link) .. %.3f s  (un-instrumented in-process)\n"
+		"[stats] total (in-process) .. %.3f s  (excl. pre-main load + teardown)\n",
 		bytes / 1024.0, (unsigned long long)prog->input_bytes(),
 		prog->_tok_produced,
 		prog->_tok_consumed,
@@ -783,8 +808,11 @@ int main(int argc, char **argv)
 		inst_secs,  parse_secs > 0 ? 100.0 * inst_secs / parse_secs : 0.0,
 		prog->_inst_count,
 		decl_secs,
-		prog->_c2mir_seconds,
-		prog->_exec_seconds);
+		cir_secs,
+		c2mir_secs,
+		exec_secs,
+		other_secs,
+		total_secs);
 	};
 
 	if ( !parse_ok )
