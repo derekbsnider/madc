@@ -1,6 +1,6 @@
 # Design — instantiate templates by AST-copy+substitute, NOT by re-parsing (the parity lever)
 
-**Date:** 2026-06-23 · **Branch:** `feature/front-end-performance-claude` · **Status:** DESIGN (recon in progress)
+**Date:** 2026-06-23 · **Branch:** `feature/front-end-performance-claude` · **Status:** DESIGN (recon COMPLETE — gcc/clang/tinycc; ready to sequence)
 
 > GOAL (user): madc must **lex+parse+instantiate FASTER than g++**. g++ does `testsubscript`
 > (parse+sema+instantiate, stdlib from scratch) in ~0.5 s; madc ~2.0 s (~4×). This lever is the
@@ -41,7 +41,7 @@
 - Lazy path: `deferred_lazy_bodies` + `parse_deferred_lazy_body` + `materialize_and_lower`
   (cir_builder.cpp:12649) — DEFERS body parse to ODR-use, but still **re-parses** when triggered.
 
-## Target model (parse-once, copy+substitute) — to be detailed from recon
+## Target model (parse-once, copy+substitute) — VALIDATED by gcc+clang recon (see RECON RESULTS)
 1. **Parse the body once → a parameterized pattern.** Template params are placeholder nodes
    (type-param → a type-ref placeholder; non-type → a value placeholder). Dependent constructs
    are marked, their resolution deferred. (This is the syntactic/sema split.)
@@ -52,16 +52,48 @@
 3. **Memoize by `(template, canonical-arg-env)`** — replace the fragile mangled-name+completeness
    heuristic with a canonicalized env key so `vector<int>` instantiates exactly once.
 
-## RECON IN PROGRESS (2026-06-23) — three background agents; fill this section on return
-- **GCC** (`/workspace/gcc`, `gcc/cp/pt.cc`): how `tsubst`/`instantiate_template`/`instantiate_decl`
-  substitute into saved GENERIC trees; dependent split (`processing_template_decl`,
-  `dependent_type_p`); spec hash tables. → techniques: _TBD_.
-- **Clang** (`/workspace/llvm-clang-src`, `lib/Sema/SemaTemplateInstantiate*.cpp`): the
-  `TreeTransform`/`TemplateInstantiator` rebuild-by-transform; `TypeDependent`/`ValueDependent`
-  bits; specialization FoldingSets. → techniques: _TBD_.
-- **tinycc** (`/workspace/tinycc`, `tccpp.c`): token = int id in a flat stream; `TokenSym`
-  interning; macro body = saved token-id sequence replayed without re-lex (the closest analogue
-  to cheap body reuse); `isidnum_table` lex hot loop. → techniques: _TBD_.
+## RECON RESULTS (2026-06-23) — gcc, clang, tinycc all agree on the model
+
+**Convergent verdict:** gcc and clang both store the template body as a **fully-parsed AST**
+(gcc `DECL_SAVED_TREE` on the template's result decl, cp-tree.h:5563; clang
+`PatternDecl->getBody()` → `Stmt*`) and instantiate by **transform-and-substitute over that AST**
+(gcc `tsubst_stmt`/`tsubst_expr`, pt.cc:19604/21386; clang `SubstStmt` → `TreeTransform`,
+SemaTemplateInstantiate.cpp:4091). **Neither ever re-lexes or re-parses a body per instantiation.**
+Both keep a token buffer for inline member bodies ONLY until the class closes, then parse once to
+AST and discard the tokens (gcc `cp_parser_save_member_function_body` parser.cc:36757; clang
+`LateParsedTemplate` SemaTemplate.cpp:11593). This is exactly madc's target.
+
+### Core template techniques (gcc + clang), each mapped to madc
+| # | Technique | gcc | clang | madc action |
+|---|---|---|---|---|
+| T1 | **Body parsed once → AST stored on the template** | `DECL_SAVED_TREE` (pt.cc:28709) | `getBody()`→`Stmt*` (SemaTI-Decl.cpp:4936) | Store the parsed `cir_node`/parse-subtree on the template `DataDef`; STOP storing only `TemplateDef.body` tokens for re-parse |
+| T2 | **Substitute by `(depth,index)` array lookup — NOT by name** | `TMPL_ARG(args,level,idx)`; params carry `TEMPLATE_PARM_LEVEL/IDX` (pt.cc:17264) | `MultiLevelTemplateArgumentList(depth,pos)` (Template.h:76); `TransformTemplateTypeParmType` (SemaTI.cpp:1436) | Tag every param-ref node with `(depth,idx)`; substitution = `args[depth][idx]`. **Replaces madc's substitute-by-matching-param-name-in-tokens.** O(1) per ref |
+| T3 | **Copy-if-changed walk + dependence short-circuit** | dependent flags `TYPE_DEPENDENT_P` cached (pt.cc:29649) | `TreeTransform` returns original node if no child changed (TreeTransform.h:7567); `AlreadyTransformed` skips non-instantiation-dependent subtrees (SemaTI.cpp:1585) | Add `is_instantiation_dependent` bit to the node, set bottom-up at parse; the instantiation walk SKIPS non-dependent subtrees (returns the shared node) ⇒ **O(n_dependent), not O(n_body)** |
+| T4 | **Memoize by (template, canonical args), pre-hashed, checked FIRST** | `decl/type_specializations` spec_entry w/ cached hash (pt.cc:121,1272) | `FoldingSetVector<…SpecializationInfo>` + `Profile()` (DeclTemplate.h:986) | Replace the fragile `datatype_map[mangled]`+`is_incomplete_*` heuristic (parser.cpp:3307-3330) with `map<(tmpl*, canonical-arg-fingerprint) → DataDef*>` checked before ANY work |
+| T5 | **Two-phase: resolve non-dependent at parse, dependent at instantiate** | `processing_template_decl` counter (pt.cc:758) | dependence bits computed bottom-up (DependenceFlags.h; ComputeDependence.cpp) | A "in-template-body" parse mode that defers dependent name/overload resolution but resolves+shares non-dependent names once |
+| T6 | **Per-instantiation local map: pattern param-decl → concrete** | `local_specializations` hash_map (pt.cc:89) | `LocalInstantiationScope` (Template.h:365) | Scoped map `pattern-param DataDef* → concrete DataDef*` for the clone walk |
+| T7 | **Lazy body instantiation** (layout eager, bodies deferred to ODR-use) | `instantiate_decl` deferral (pt.cc:28760) | `PendingInstantiations` queue (SemaTI-Decl.cpp:4956) | madc already has `deferred_lazy_bodies`/`materialize_and_lower` — keep, but make it materialize from AST, not re-parse |
+
+### Lex / representation techniques (tinycc) — the SECONDARY lever (token-arena plan)
+| # | Technique | tinycc | madc action |
+|---|---|---|---|
+| L1 | **Saved token sequence = flat `int[]`, replayed by pointer-advance (NO re-LEX)** | `TokenString`/`begin_macro`/`macro_ptr` (tccpp.c:1053); inline fn bodies use the SAME path (tccgen.c:8648) | madc's `vector<uint32_t>` id-stream (token-arena Phase 3). **One mechanism for macros AND inline bodies.** NOTE: this removes re-LEX (macros); templates additionally remove re-PARSE via T1-T6 |
+| L2 | **Branch-free char classification** | `isidnum_table[257]` bitmask IS_ID/IS_NUM/IS_SPC (tccpp.c:51) | Replace `isalpha`/`isdigit` in the lexer hot loop with a 257-byte table; byte-load + AND |
+| L3 | **Direct-index macro/define lookup** | `table_ident[tok-TOK_IDENT]->sym_define` O(1) (tccpp.c:1274) | madc's sid-indexed `InternKeyedMap` already matches; store the macro-def pointer keyed by sid (no hash) |
+| L4 | **Hash-during-scan, intern once** | rolling hash inline in `next_nomacro` (tccpp.c:2675) | madc ALREADY does this (incremental hash @7d6bc31) — validated |
+| L5 | **Slab/bump alloc; token = small id+value, not an object** | `toksym_alloc`/`tokstr_alloc` (tccpp.c:138); `int tok`+`CValue` | madc's `TokenArena` (Phase 1) + flat `TokenRec` already match |
+
+### The two "no re-work" mechanisms are DISTINCT — madc needs BOTH
+- **Macros + inline function bodies → no re-LEX** (tinycc L1): replay a saved id-stream *through the
+  parser*. = token-arena Phase 3 (id-vector substitution).
+- **Templates → no re-PARSE** (gcc/clang T1-T6): transform an already-parsed AST; the parser never
+  runs again. = THIS design.
+
+### Interning the NAME INTO THE AST (cross-cutting, all three)
+gcc `IDENTIFIER_NODE`, clang `IdentifierInfo*`, tinycc `TokenSym` int id — all use the interned id
+**as the name stored in the AST/decl**, so every name comparison in the instantiation machinery is
+pointer/int equality. madc has `StringPool` (token-level); extend it so AST/`DataDef` names carry
+`spelling_id`, not `std::string` — this pays off heavily inside the substitution walk.
 
 ## Sequencing & non-goals
 - This is PRIMARY (parity), but it sits ON the flat-representation substrate (token-arena plan #2)
