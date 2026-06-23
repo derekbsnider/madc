@@ -92,9 +92,12 @@ fi
 
 # --- madc front-end (always re-timed): parse + c2mir from --show-stats ---
 stats="$( ( ulimit -t 300; timeout 300 "$MADC" "${madc_std[@]}" --show-stats -I"$incdir" "$file" ) 2>&1 )"
-parse="$(printf '%s\n' "$stats" | awk '/parse time/    {print $4; exit}')"
-c2mir="$(printf '%s\n' "$stats" | awk '/c2mir compile/ {print $4; exit}')"
-toks="$(printf '%s\n'  "$stats" | awk '/tokens produced/{print $4; exit}')"
+# The stats lines have a dotted leader ("parse time ...... 0.598 s"), so pick the
+# FIRST numeric field, not a fixed column.
+firstnum='{for(i=1;i<=NF;i++) if($i ~ /^[0-9]/){print $i; exit}}'
+parse="$(printf '%s\n' "$stats" | awk "/parse time/    $firstnum")"
+c2mir="$(printf '%s\n' "$stats" | awk "/c2mir compile/ $firstnum")"
+toks="$(printf '%s\n'  "$stats" | awk "/tokens produced/$firstnum")"
 parse="${parse:-0}"; c2mir="${c2mir:-0}"
 madc_fe="$(awk -v p="$parse" -v c="$c2mir" 'BEGIN{printf "%.3f", p + c}')"
 ratio="$(awk -v m="$madc_fe" -v g="${gcc_real:-0}" 'BEGIN{ if (g+0==0) print "inf"; else printf "%.2f", m/g }')"
