@@ -3717,6 +3717,17 @@ TokenBase *Program::_getToken()
 		// so intern() below doesn't re-walk the bytes for the hash.
 		uint32_t whash = StringPool::hash_step(StringPool::hash_init(), (unsigned char)ch);
 
+		// Fast path: scan the identifier-continuation SPAN straight off the
+		// flat buffer (one append + a contiguous hash fold) instead of
+		// per-char get()/peek() + std::string growth. Falls through to the
+		// char loop below for the pushback (macro) and line-splice remainder.
+		const char *idspan; size_t idlen;
+		if ( source.fast_ident_span(idspan, idlen) )
+		{
+		    word.append(idspan, idlen);
+		    for ( size_t k = 0; k < idlen; ++k )
+			whash = StringPool::hash_step(whash, (unsigned char)idspan[k]);
+		}
 		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 		{
 		    int wc = source.get();

@@ -7,6 +7,7 @@
 #define __MADC_H 1
 
 #include <cstdint>
+#include <cctype>
 #include <fstream>
 #include <functional>
 #include <istream>
@@ -956,6 +957,33 @@ public:
 	    _gpos = saved;
 	}
 	return ch;
+    }
+    // Fast-path identifier-continuation scan (perf lever, 2026-06-23). When NOT
+    // inside a pushback/macro expansion, scan the maximal identifier-continuation
+    // run directly off the flat buffer and hand it back as a [base,len) span,
+    // advancing the cursor + column in ONE step — replacing the per-char
+    // get()/peek() (with their pushback/line-splice branches) and the char-by-char
+    // std::string growth on the hot path. Returns false when a pushback frame is
+    // active (the caller's char loop handles macro-expanded text). A line-splice
+    // mid-run stops the span at the '\\' (not an identifier char); the caller's
+    // char loop then reads the spliced remainder (peek()/get() resolve the splice).
+    // The classification is the SAME `isalnum||'_'` as the slow loop, so the two
+    // paths are byte-identical. `len` may be 0 (1-char identifier, or an immediate
+    // splice) — still a valid fast-path result; the caller's loop continues.
+    bool fast_ident_span(const char *&base, size_t &len)
+    {
+	if ( !_pushback.empty() ) return false;
+	size_t start = _gpos;
+	while ( _gpos < _buf.size() )
+	{
+	    unsigned char c = (unsigned char)_buf[_gpos];
+	    if ( c == '_' || isalnum(c) ) ++_gpos;
+	    else break;
+	}
+	len = _gpos - start;
+	base = _buf.data() + start;
+	_column += (int)len;
+	return true;
     }
     bool getline(std::string &s)
     {
