@@ -17,6 +17,7 @@
 #include <ostream>
 #include <sstream>
 #include <deque>
+#include <iterator>
 #include <set>
 #include <stack>
 #include <vector>
@@ -1105,6 +1106,13 @@ struct ParsedParamSig
 //     lexer produce on demand and `push_back` into this same `_buf` while the
 //     parser cursors forward; consumed tokens stay in `_buf` for re-read, so
 //     backtrack remains index-rewind. P1 and P2 are complementary by design.
+//
+// STEP 2.2b: `_buf` now stores uint32 SLOT-IDS (not TokenBase*). The public API
+// is unchanged — it materializes the shell via the arena slot registry at the
+// boundary (front/operator[]/back/iterators), and push_back/swap_in register the
+// slot-id (madc_slot_id_for). `_pushback` stays TokenBase* (a small transient
+// injection LIFO). Shells persist (transitional, plan §1e); the registry is the
+// cache. See docs/plans/2026-06-23-p1-token-arena-implementation-plan.md Phase 2.
 //   * `nextToken()` (in Program) is the single consume chokepoint; P2 replaces
 //     its end-of-stream throw with "pull one token from the lexer and append".
 //   * The ONE place that assumes a fully-pre-lexed buffer is the auto-include
@@ -1112,6 +1120,12 @@ struct ParsedParamSig
 //     `_cursor==0`). That is P2's revisit point — under pull-based it must only
 //     touch un-consumed tokens. P1 keeps it as-is (full-tokenize, cursor==0).
 // ---------------------------------------------------------------------------
+// Token-arena slot registry bridge (defined in parser.cpp; also declared in
+// token_arena.h). Forward-declared here so TokenStream's inline accessors can
+// map slot-id <-> TokenBase* without pulling the whole arena header.
+uint32_t   madc_slot_id_for(TokenBase *t);
+TokenBase *madc_token_for_slot(uint32_t id);
+
 class TokenStream
 {
     // STEP 2: the flat arena + cursor. _buf is the contiguous token table;
@@ -1121,17 +1135,17 @@ class TokenStream
     // buffer) — that is the ~43%-inclusive deque copy the profile flagged.
     // (Step 1 proved the call sites behavior-neutral with a deque underneath;
     // this step changes ONLY these method bodies.)
-    std::vector<TokenBase *> _buf;
+    std::vector<uint32_t>	_buf;	  // slot-ids (2.2b) — materialized at boundary
     size_t			_cursor;
-    std::vector<TokenBase *> _pushback;
+    std::vector<TokenBase *> _pushback;	  // transient injection LIFO (stays pointers)
 public:
     TokenStream() : _cursor(0) {}
     TokenStream(const TokenStream &) = delete;
     TokenStream &operator=(const TokenStream &) = delete;
 
     // -- lexer production (append; valid at any cursor — see P2 note above) --
-    void push_back(TokenBase *t) { _buf.push_back(t); }
-    TokenBase *back() const { return _buf.back(); }
+    void push_back(TokenBase *t) { _buf.push_back(madc_slot_id_for(t)); }
+    TokenBase *back() const { return madc_token_for_slot(_buf.back()); }
 
     // -- size / emptiness over the logical remaining sequence --
     bool empty() const { return _pushback.empty() && _cursor >= _buf.size(); }
@@ -1141,7 +1155,7 @@ public:
     TokenBase *front() const
     {
 	if ( !_pushback.empty() ) return _pushback.back();
-	return _cursor < _buf.size() ? _buf[_cursor] : NULL;
+	return _cursor < _buf.size() ? madc_token_for_slot(_buf[_cursor]) : NULL;
     }
     void pop_front()
     {
@@ -1155,7 +1169,7 @@ public:
     {
 	size_t pb = _pushback.size();
 	if ( i < pb ) return _pushback[pb - 1 - i];
-	return _buf[_cursor + (i - pb)];
+	return madc_token_for_slot(_buf[_cursor + (i - pb)]);
     }
 
     // -- backtrack: save/restore is {cursor, pushback} — NEVER the buffer --
@@ -1168,12 +1182,14 @@ public:
     // -- sub-stream: install `seq` as the active buffer (moved), returning the
     //    prior state (moved); swap_back restores it. No copy. Models the old
     //    `saved = tokens; tokens = body; ...; tokens = saved;` idiom. --
-    struct State { std::vector<TokenBase *> buf; size_t cursor; std::vector<TokenBase *> pushback; };
+    struct State { std::vector<uint32_t> buf; size_t cursor; std::vector<TokenBase *> pushback; };
     State swap_in(std::vector<TokenBase *> seq)
     {
 	State prev;
 	prev.buf.swap(_buf); prev.cursor = _cursor; prev.pushback.swap(_pushback);
-	_buf = std::move(seq); _cursor = 0; _pushback.clear();
+	_buf.clear(); _buf.reserve(seq.size());
+	for ( TokenBase *t : seq ) _buf.push_back(madc_slot_id_for(t));
+	_cursor = 0; _pushback.clear();
 	return prev;
     }
     void swap_back(State prev)
@@ -1198,21 +1214,56 @@ public:
     // -- lexer reorder support (auto-include; runs at _cursor==0, _pushback
     //    empty — P2's pull-based lexer revisits this so it only touches
     //    un-consumed tokens) --
-    typedef std::vector<TokenBase *>::iterator iterator;
-    typedef std::vector<TokenBase *>::const_iterator const_iterator;
-    typedef std::vector<TokenBase *>::reverse_iterator reverse_iterator;
-    typedef std::vector<TokenBase *>::const_reverse_iterator const_reverse_iterator;
-    iterator begin() { return _buf.begin(); }
-    iterator end()   { return _buf.end(); }
-    const_iterator begin() const { return _buf.begin(); }
-    const_iterator end()   const { return _buf.end(); }
-    reverse_iterator rbegin() { return _buf.rbegin(); }
-    reverse_iterator rend()   { return _buf.rend(); }
-    const_reverse_iterator rbegin() const { return _buf.rbegin(); }
-    const_reverse_iterator rend()   const { return _buf.rend(); }
-    iterator erase(iterator a, iterator b) { return _buf.erase(a, b); }
-    template<class It> iterator insert(iterator pos, It a, It b) { return _buf.insert(pos, a, b); }
-    void swap(std::vector<TokenBase *> &other) { _buf.swap(other); }
+    // Materializing READ iterator over the slot-id buffer: dereferences a slot-id
+    // to its TokenBase* via the registry, so the read-only scans over the stream
+    // (`for (TokenBase *t : tokens)`, reverse decl-head walks) are unchanged.
+    // Buffer MUTATION goes through the explicit id-level helpers below — never
+    // through iterators (2.2b removed the vector<TokenBase*> erase/insert/swap).
+    class const_iterator
+    {
+	const uint32_t *_p;
+    public:
+	typedef std::ptrdiff_t difference_type;
+	typedef TokenBase *value_type;
+	typedef TokenBase *reference;
+	typedef void pointer;
+	typedef std::random_access_iterator_tag iterator_category;
+	const_iterator(const uint32_t *p = NULL) : _p(p) {}
+	TokenBase *operator*() const { return madc_token_for_slot(*_p); }
+	const_iterator &operator++() { ++_p; return *this; }
+	const_iterator &operator--() { --_p; return *this; }
+	const_iterator operator++(int) { const_iterator t(*this); ++_p; return t; }
+	const_iterator operator--(int) { const_iterator t(*this); --_p; return t; }
+	const_iterator &operator+=(difference_type d) { _p += d; return *this; }
+	const_iterator operator+(difference_type d) const { return const_iterator(_p + d); }
+	const_iterator operator-(difference_type d) const { return const_iterator(_p - d); }
+	difference_type operator-(const const_iterator &o) const { return _p - o._p; }
+	bool operator==(const const_iterator &o) const { return _p == o._p; }
+	bool operator!=(const const_iterator &o) const { return _p != o._p; }
+    };
+    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+    const_iterator begin() const { return const_iterator(_buf.data()); }
+    const_iterator end()   const { return const_iterator(_buf.data() + _buf.size()); }
+    const_reverse_iterator rbegin() const { return const_reverse_iterator(end()); }
+    const_reverse_iterator rend()   const { return const_reverse_iterator(begin()); }
+
+    // id-level buffer mutation (auto-include reorder; runs at cursor==0, pushback
+    // empty). Replaces the former vector<TokenBase*> swap / erase+insert idiom.
+    void assign_ids_from(std::vector<TokenBase *> &toks)
+    {
+	_buf.clear();
+	_buf.reserve(toks.size());
+	for ( TokenBase *t : toks )
+	    _buf.push_back(madc_slot_id_for(t));
+    }
+    void move_tail_to(size_t from, size_t insert_at)
+    {
+	if ( from >= _buf.size() || insert_at > from )
+	    return;
+	std::vector<uint32_t> tail(_buf.begin() + from, _buf.end());
+	_buf.erase(_buf.begin() + from, _buf.end());
+	_buf.insert(_buf.begin() + insert_at, tail.begin(), tail.end());
+    }
 
     // -- tokens popped from the logical FRONT since `before` (callers that only
     //    pop the front, e.g. skip_requires_clause), reconstructed WITHOUT copying
@@ -1227,7 +1278,7 @@ public:
 	for ( size_t i = before.pushback.size(); i > _pushback.size(); --i )
 	    out.push_back(before.pushback[i - 1]);
 	for ( size_t i = before.cursor; i < _cursor; ++i )
-	    out.push_back(_buf[i]);
+	    out.push_back(madc_token_for_slot(_buf[i]));
 	return out;
     }
 };

@@ -696,7 +696,7 @@ void Program::expand_pending_auto_include_macros(size_t original_start)
 	rewritten.push_back(tb);
     }
 
-    tokens.swap(rewritten);
+    tokens.assign_ids_from(rewritten);
     pending_auto_include_identifiers.clear();
 }
 
@@ -780,11 +780,11 @@ void Program::inject_pending_auto_includes()
 
     if ( tokens.size() > include_start )
     {
-	std::vector<TokenBase *> included(tokens.begin() + include_start,
-					 tokens.end());
-	tokens.erase(tokens.begin() + include_start, tokens.end());
-	tokens.insert(tokens.begin() + insert_at, included.begin(), included.end());
-	expand_pending_auto_include_macros(insert_at + included.size());
+	// Move the just-appended auto-include token range [include_start, end)
+	// to insert_at (id-level; runs at cursor==0, pushback empty).
+	size_t tail_len = tokens.size() - include_start;
+	tokens.move_tail_to(include_start, insert_at);
+	expand_pending_auto_include_macros(insert_at + tail_len);
     }
     else
 	expand_pending_auto_include_macros(insert_at);
