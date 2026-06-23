@@ -125,11 +125,35 @@ to-current-chunk fix (mostly inlines at -O2). `detect_include_guard` 2.1% self �
 
 **CAVEAT — this is -O0; -O2 is the honest ranking.** -O0 inflates the trivial accessors dominating
 the self-list (`string::size`, `vector::empty`, `Source::good/eof`, iterator ctors, arena vector
-ops) — they inline to nothing at -O2, which is how g++ (a -O2 binary) runs. The -O2 picture will
-shrink lexer-accessor share and RAISE instantiation/findVariable relative weight. **TODO: rebuild
-at -O2 and re-profile to lock the final lever ranking** before implementing. The -O0 view is
-directionally right on the CONCENTRATED costs (lexer char-loop, arena alloc) and on the inclusive
-phase split (lex/instantiate/findVariable), which is enough to confirm levers #1-#3 and their kind.
+ops) — they inline to nothing at -O2, which is how g++ (a -O2 binary) runs. **-O2 re-profile DONE
+(see "PROFILE RESULTS AT -O2" below):** it confirmed the ranking, shrank the accessor noise to
+reveal ~40% of instructions are `std::string`+`std::map`+`malloc` machinery, and RAISED
+`findVariable` 7.3%→12.2% (interning is a heavier lever at ship config than -O0 showed).
+
+## STEP 0 — PROFILE RESULTS AT -O2 (the ship config; 2026-06-23) — confirms "remove the machinery"
+Total Ir 2.19B (vs 4.06B at -O0 — ~half inlines away). With accessor noise gone, the residual IS
+the C++ machinery, in the THREE categories the architectural principle names:
+- **malloc/free ~15% self** (`_int_free` 4.7, `malloc` 3.7, `_int_malloc` 3.5, `free` 2.1,
+  `operator new` 1.2) — biggest category; `std::string`-per-token + node alloc.
+- **`std::string` churn ~11%** (`despace_spelling` 3.2 ⟵ single-fn hotspot, `push_back(char)` 2.5,
+  `memcpy` 2.6, `_M_construct`/`_M_assign`/`_M_append` ~2.8).
+- **string compare+hash ~15%** (`__memcmp` 5.5, `operator==(string,char*)` 1.9, `_Hash_bytes` 2.8,
+  `_Rb_tree<string>::find` ×2 ~1.8 incl. `datatype_map`, `strcmp`/`strlen` ~3).
+- Lexer char loop `Source::get` 5.1 + `_getToken` 4.0 — REAL at -O2. `dynamic_cast` 1.8 +
+  MIR/c2mir backend ~2 — confirmed NON-priorities. `TokenBase::operator new` 1.3 (arena now cheap;
+  the -O0 ~6% `vector<Chunk>` overhead inlined away as predicted).
+⇒ ~40% of -O2 instructions are `std::string`+`std::map`+`malloc` machinery. REMOVE it (flat buffer +
+interned `[start,len)` spans + id-keyed lookups), don't tune it.
+
+**-O2 inclusive phase split** (refines, doesn't change, the -O0 ranking): `parse` 36.6%,
+`parseFunction` 30.0%, lexing ~30%, `instantiate_template_use` 28.7%, **`translate_module` (CIR
+build) 20.0%** (materialize lambda 14.7%), **`findVariable` 12.2%**. TWO refinements:
+1. **`findVariable` ROSE 7.3%(-O0) → 12.2%(-O2)** — name lookup matters MORE at ship config; lever
+   C2 (intern ALL lookups, incl. sema `_Rb_tree<string>` like `datatype_map`) is HEAVIER than -O0
+   implied. (External review was directionally right at -O2.)
+2. **CIR build 20% inclusive** — newly visible; part of the gate (lex+parse+**cir-build**); keep on radar.
+Artifacts: `scratchpad/cg_O2.out`, `cg_O2_self.txt`, `cg_O2_incl.txt`. NOTE: bin/madc is now -O2;
+rebuild -O0 (`make -C src`) when resuming dev if the -O0 default is wanted.
 
 ## STEP 0 — PROFILE FIRST (the ranking gate; do BEFORE any implementation)
 **Two analyses agree on the costs but not on the rank, and BOTH say measure.** Our `--show-stats`
