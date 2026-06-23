@@ -1,9 +1,10 @@
 # P1 token arena — IMPLEMENTATION PLAN + CONTINUATION CONTRACT
 
 **Date:** 2026-06-23 · **Branch:** `feature/front-end-performance-claude` · **HEAD at write:** `7d6bc31`
-**Read this BEFORE acting. Imperative, not advisory. Do not re-scope, re-derive, or
-re-litigate the design in §1 — it was reached after auditing the real code and it
-resolves the polymorphism fence the earlier contract worried about.**
+**Read this BEFORE acting. Imperative, not advisory.** §1 (MENTAL MODEL) was **corrected
+2026-06-23** after the design owner caught a two-population conflation — it now matches the
+three authoritative docs it cites. Build against §1; do not re-introduce the struck framing
+(token "children", the no-clone "mutation blocker" — see §1f).
 
 ---
 
@@ -47,57 +48,96 @@ not exist yet — building it is THIS plan.
 - **326 `dynamic_cast<TokenX*>`** sites across src (TokenVar 61, TokenMember 29, …).
 - `compile()`/`operand()` (asmjit-era) appear REMOVED — only `parse()` + data accessors
   remain virtual. CONFIRM in Phase 0.
-- Consequence: a *pure* flat POD `vector<TokenRec>` with switch-dispatch would be a
-  **parser rearchitecture** (115 parse methods + 326 casts). That is the FENCED change.
-  **This plan does NOT do that.** See §1.
+- Consequence: collapsing the WHOLE token hierarchy to a flat POD + switch-dispatch (incl.
+  the pop-2 AST nodes' `parse()`/`dynamic_cast`) would be a **parser rearchitecture** (115
+  parse methods + 326 casts) = **P2 polymorphism collapse, FENCED.** This plan does NOT do
+  that. The flat `TokenRec` arena is for **pop-1 LEXER tokens only** (a linear stream); pop-2
+  AST nodes stay objects. See §1 (the two-population model — the thing that disambiguates this).
 
 ---
 
-## 1. THE DESIGN — data/behavior split (SETTLED; this is the spine)
+## 1. MENTAL MODEL — read this WHOLE section before touching token code
 
-Split the token's **data** (flat POD `TokenRec`) from its **behavior** (the polymorphic
-`TokenBase` shell). Keep every virtual `parse()` and every `dynamic_cast` working — the
-live object stays a real polymorphic `TokenBase`. Only move the *data* into a flat record
-and the *storage* into a stable arena. This respects the fence (no polymorphism collapse,
-zero `parse()`/`dynamic_cast` rewrites) AND yields a flat, serializable data array.
+**This plan is SUBORDINATE to three authoritative designs. Do not re-derive; build against them:**
+- `docs/plans/2026-06-13-embedded-ast-frontend-design.md` — the architecture (§2: cir_node =
+  arena + u32 index handles; the interned string/identifier table = the `TokenRec.spelling_id`
+  backing store, index-linked).
+- `docs/plans/2026-06-09-frontend-representation-refactor.md` — the phased plan **P0–P5**
+  (P0 value/intern pools; **P1 flat token scan buffer**; **P2 polymorphism collapse = FENCED**;
+  P3 uid side-arrays + serializable cir_node; P4 forest serialize; P5 modules).
+- `docs/plans/2026-06-23-token-arena-flattening-plan.md` — the execution notes + the **two-
+  population** finding.
 
+### 1a. TWO TOKEN POPULATIONS — never conflate them
+- **Pop-1 = LEXER tokens** (`Ident`, `Int`, `Real`, `Str`, operators, punctuation — the ~324K
+  bulk). A **LINEAR STREAM**, not a tree. **They have NO children.** Flatten to a flat **POD
+  `TokenRec`** in an arena; the stream is a `vector<uint32_t>` of slot-ids; backtrack = cursor
+  rewind. **Pop-1 records are IMMUTABLE once lexed.**
+- **Pop-2 = PARSER-built AST nodes** (`TokenOperator` with `left`/`right`, `TokenTernary`,
+  `TokenCase`, `TokenTry`, `TokenAssign`, `TokenVar`, …). Constructed DURING parse, carry the
+  tree pointers (`parent`/`left`/`right`), and **STAY OBJECTS** (P2 collapse is FENCED). These
+  are NOT lexed and do NOT go in the TokenRec arena.
+
+### 1b. THREE index spaces (all `uint32`, all segmented append-only — same pattern)
+- **token slot-id** → index into the pop-1 `TokenRec` arena. Used by the lexer id-stream AND by
+  `cir_node` to point at its originating token (DONE: `cir_node::origin_id`).
+- **cir_node index** → index into the cir_node arena (P3/P4 — a SEPARATE track; cir_node children
+  become these, NOT token slot-ids).
+- **type-id** → into the segmented type table (`docs/plans/2026-06-12-type-table-value-abi-design.md`).
+
+### 1c. IDENTITY vs OCCURRENCE (the prototype/instance split — design owner's framing)
+- **Identity** (shared, immutable, interned): `kind` (the `TokenID` enum value) + `spelling_id`
+  (StringPool). This is the "prototype" space — fixed tokens are identified by their `TokenID`;
+  identifiers by their interned spelling. Shared across every use; never mutated.
+- **Occurrence** (per-lex, not shared): the `TokenRec` itself — `file_id`/`line`/`column` and the
+  literal `value`. Today `clone()` conflates identity and occurrence; the flat model separates them.
+
+### 1d. The flat pop-1 record — NO children (linear stream)
 ```cpp
-struct TokenRec {                 // POD: every field an int/index — dumpable/mmappable
-    uint16_t kind;                // which subclass (drives dispatch + shell rebuild on load)
-    uint16_t flags;
-    int64_t  value;               // ival / char code / token code
-    uint32_t spelling_id;         // -> StringPool            (DONE: interning)
-    uint32_t type_id;             // -> segmented type table  (replaces DataDef*)
-    uint32_t file_id;             // -> interned files        (replaces const char*)
-    int32_t  line, column;
-    uint32_t first_child, child_count;  // -> arena slot-ids  (replaces vector<TokenBase*>)
-    // small union for the few subclasses with extra scalar data (e.g. TokenReal double)
+struct TokenRec {                 // POD, trivially copyable, NO pointers — dumpable/mmappable
+    uint16_t kind;                // TokenID — the identity (drives shell rebuild on load)
+    uint16_t flags;               // tokflag_t
+    uint32_t spelling_id;         // -> StringPool (identity)        DONE
+    uint32_t slot_id;             // this record's own arena id      DONE
+    uint32_t type_id;             // -> segmented type table (Phase 3 dump-time materialization)
+    uint32_t file_id;             // -> interned files       (Phase 3 dump-time materialization)
+    int32_t  line, column;        // occurrence/provenance — PER record, not re-stamped
+    int64_t  value;               // _token / ival / char code; >64-bit -> value-pool handle (P0)
+    // NO first_child/child_count — pop-1 is a LINEAR STREAM. Trees are pop-2 (objects) and
+    // cir_node (its own arena/index space). A wide-value/double side-table is a P0 concern.
 };
 ```
 
-- The **shell** (`TokenBase` + 115 subclasses) holds behavior, reads/writes data through
-  its `TokenRec`. `->id()`,`->type()`,`->parse()`,`dynamic_cast<TokenX*>` all UNCHANGED.
-- **Live storage = stable bump arena**: chunked, **chunks never relocate** so raw
-  `TokenBase*` (held by `cir_node`, `parent`, children vectors) stay valid. One big alloc
-  instead of ~100K `new`s. `clone()` = bump alloc + record copy. THIS is the perf win.
-  **NOTE (Phase 0 refinement):** allocation is **VARIABLE-SIZE** (exactly `sizeof(T)`,
-  aligned), NOT fixed `sizeof(largest)` cells — the user's "no per-token deletion" rule
-  removes the only reason for uniform cells (freelist interchange). See §2 Phase 0 RESULTS.
-- **Serialization (later)**: once `TokenRec` is fully POD, dump `TokenRec[]` + string/type
-  pools; on load `mmap` the records and **rebuild shells by `kind`** (placement-new the
-  right subclass per cell). The vtable ptr is the only non-serializable thing and it is
-  reconstructed from `kind`, never stored.
+### 1e. Transitional mechanism vs end state
+- **End state (per the authoritative docs):** the lexer emits POD `TokenRec`s into the arena and
+  the stream is a `vector<uint32_t>`; the parser **materializes a `TokenBase` shell on demand**
+  (reuse `src/pch.cpp`'s `TokenID → new TokenX` factory) only where it needs an object (a pop-2
+  AST node, or a `_datatype` annotation). Pop-2 AST stays objects. cir_node flattens separately.
+- **Transitional (where we are now):** the shell `TokenBase` stays polymorphic and carries the
+  `TokenRec` as a member (`rec`). Fields migrate onto `rec` additively; allocations route through
+  the bump arena (Phase 1). This is a valid path toward the end state, but it is NOT the end state —
+  do not mistake "shell + rec member" for the final POD-records-with-materialize-on-demand model.
 
 **Rejected alternatives (do not revisit):**
-- *Pure flat POD + switch dispatch* — the parser rearchitecture (115 parse + 326 casts). Fenced.
-- *Freelist `operator new` pool on TokenBase* — built and REVERTED this campaign (no -O0
-  win; optimizes the pointer-object model). The arena here is a **bump/slab** (no per-alloc
-  bookkeeping, bulk free, stable chunks), NOT a freelist pool.
+- *Pure flat POD + switch dispatch for the WHOLE parser* — that is P2 polymorphism collapse
+  (1577 `->id()`, 574 `dynamic_cast`, etc.). **FENCED.** Pop-2 AST stays objects.
+- *Freelist `operator new` pool on TokenBase* — built and REVERTED (no -O0 win). The Phase-1 arena
+  is a **bump** (stable chunks, bulk free), NOT a freelist, and is FOUNDATION not a perf play.
 
-**Hard invariant: POINTER STABILITY.** `cir_node`, `TokenBase::parent`, and every
-`vector<TokenBase*>` hold raw pointers to token objects. The arena MUST NOT relocate a
-live cell. Use chunked storage (vector of fixed chunks; never move a chunk), NEVER a
-single reallocating `vector<cell>`.
+### 1f. CONFLATIONS TO AVOID (caught 2026-06-23 — do not repeat)
+1. **`parent`/`left`/`right` are POP-2 fields**, written during AST construction on freshly-built
+   objects (e.g. parser.cpp:14354-14361 `new TokenAssign` then `lhs->parent = assign`). They are
+   NOT mutations of shared pop-1 lexed tokens. ⇒ id-vector substitution sharing pop-1 records is
+   SAFE; there is **no** occurrence/identity-surgery blocker (the earlier "mutation blocker" was this
+   conflation — STRUCK).
+2. **`TokenRec` has NO children.** Giving a linear-stream record `first_child`/`child_count` (an
+   earlier draft did) conflates pop-1 with pop-2/cir_node. STRUCK.
+3. **"children→slot-ids" is NOT a token-arena step.** cir_node children → cir_node-arena indices is
+   P3 (a separate track). Pop-2 AST children stay pointers (FENCED). Pop-1 has no children.
+
+**Hard invariant: POINTER STABILITY (transitional).** While shells are live objects, `cir_node`,
+`TokenBase::parent`, and pop-2 `vector<TokenBase*>` hold raw pointers. The bump arena MUST NOT
+relocate a live cell — chunked storage, never a reallocating `vector<cell>`.
 
 ---
 
@@ -167,55 +207,47 @@ into the arena it is there permanently").** This SUPERSEDES the "fixed-size cell
   nothing `delete`s a token (Phase 0 inventory: lexer.cpp:1000, parser.cpp:3033/3045 →
   these become no-ops once tokens are arena-allocated).
 
-**Phase 2 — introduce `TokenRec` as the shell's data member; flatten fields incrementally.**
-Each field its own commit, fulltest between.
+**Phase 2 — flatten the POP-1 LEXER STREAM (per §1; this is representation-refactor P1).**
+The goal is NOT "flatten every token field" — it is: the lexer emits POD `TokenRec`s into the
+arena and the stream becomes a `vector<uint32_t>` of slot-ids; pop-2 AST stays objects.
+Each step its own commit, fulltest + `--emit=c11` byte-identical between.
 
-**REORDER (decided 2026-06-23, user: "order is not as important as ensuring the plan is
-executed to completion"; HEAD @8bb60a2). Rationale grounded in the audited type table.**
-The segmented type table is already BIDIRECTIONAL — `DataDef::type_id` (plain field,
-no `Program` needed), forward `Program::type_id_for(dd)`, reverse `Program::type_from_id(id)`
-(parser.cpp:8995-9067). So a token's type/file are ALREADY recoverable as stable indices.
-Consequence for a PERF track:
-  - `type_id`/`file_id` are **serialize-time derivations**, NOT live-rep changes. Keep
-    `_datatype` (one pointer deref, no `Program`) and `file` as the SHELL's live resolved
-    values (the data/behavior split: shell holds live pointers, record holds indices). A
-    pre-dump pass materializes `tok->rec.type_id = type_id_for(tok->_datatype)` etc. with
-    `Program` in scope. Ripping `_datatype` reads out into `type_from_id` lookups would ADD
-    hot-path indirection + force `Program`-threading into `datadef()`/`setDataType()` for
-    ZERO benefit before serialization — wrong for this track. → these MOVE to Phase 3.
-  - The genuine Phase-2 LIVE-REP change is children→slot-ids, AND it is the high-value one
-    (enables no-clone id-vector substitution → retires the 109 `clone()` sites). Do it next.
+`type_id`/`file_id` are **serialize-time derivations, NOT live-rep changes** (RELOCATED to
+Phase 3). The type table is already bidirectional — `DataDef::type_id` (plain field),
+`Program::type_id_for(dd)`, `Program::type_from_id(id)` (parser.cpp:8995-9067) — so a token's
+type/file are already recoverable as indices. Keep `_datatype`/`file` as the shell's live
+resolved values; a Phase-3 pre-dump pass writes `rec.type_id`/`rec.file_id` with `Program` in
+scope. Routing live reads through `type_from_id` would add hot-path indirection + force
+`Program`-threading into `datadef()`/`setDataType()` for ZERO benefit before serialization.
 
-Revised step list:
-  1. `spelling_id` — DONE @8bb60a2 (TokenRec introduced; field migrated onto the base record).
+Step list:
+  1. `spelling_id` — DONE @8bb60a2 (TokenRec introduced as a shell member; identity field migrated).
   1b. indexable arena (slot-id ↔ token bridge) — DONE @45d2b88 (`TokenRec.slot_id`,
      `TokenArena` slot registry, `madc_slot_id_for`/`madc_token_for_slot`, test_token_arena).
-  1c. `cir_node::origin` → `origin_id` (slot-id) — DONE @617a5fa. First id-vector consumer +
-     first of "all pointer classes become indices". READ-ONLY provenance ⇒ safe (no mutation
-     of the referenced token). Proved the slot registry under production load (669 compiles).
-  2. **children → slot-ids + no-clone substitution — THE deep step. BLOCKED on an
-     architectural sub-project (see audit below).** Converting the macro/template body
-     vectors to shared id-vectors is the ~43% instantiate-cost win, but it is NOT a simple
-     field swap.
-  3. `type_id`, `file_id` — RELOCATED to Phase 3 (dump-time materialization, below). The
-     live rep keeps `_datatype`/`file`; the serializer writes the indices.
-- Gate per sub-step: fulltest green + `--emit=c11` byte-identical (data moved, emission
-  must not change).
+  1c. `cir_node::origin` → `origin_id` (slot-id) — DONE @617a5fa. First "pointer class → index"
+     conversion; READ-ONLY provenance ⇒ safe. Proved the registry under load (669 compiles).
+  2. **Lexer emits pop-1 `TokenRec`s + the stream becomes `vector<uint32_t>` (the P1 win).**
+     Per the flattening plan's two-step seam: route lexer construction through a factory while
+     behavior is identical, validate, THEN have the factory append a `TokenRec` and let the
+     parser **materialize a `TokenBase` shell on demand** (reuse `src/pch.cpp`'s `TokenID→new
+     TokenX`) where it actually needs an object. Kills the per-token `new` on the lex path.
+  3. **No-clone macro/template substitution.** Substitution builds a NEW `vector<uint32_t>`
+     with substituted slot-ids; unchanged pop-1 records are reused BY ID (shared). **SAFE — see
+     audit below: pop-1 records are immutable.** Retires the clone() on these paths (the ~43%
+     instantiate cost). Provenance (line/col) is per pop-1 record (the definition's position).
 
-**MUTATION-SAFETY AUDIT (2026-06-23, gating step 2) — CONCLUSION: no-clone needs
-identity/occurrence separation.** The parser builds the parse tree by MUTATING consumed
-tokens in place: `parent =` (25 sites — `lhs->parent = assign`, `expr->parent = assign`,
-`ret_value->parent = ret`, parser.cpp:14360/14361/14369…) and the operator `left`/`right`
-pointers. (`setDataType` — 37 sites — mostly targets parser-synthesized temporaries `ti`/
-`np`/`zero`, NOT body tokens; `read_count` is a harmless diagnostic.) Today `clone()` is
-what makes this safe: each macro/template instantiation re-parses INDEPENDENT cloned tokens,
-so the in-place `parent`/`left`/`right` mutation can't collide. To drop the clone and SHARE
-body tokens across instantiations, that mutable tree-structure state (`parent`/`left`/
-`right`) must move OFF the shared token identity and INTO per-occurrence storage (the
-identity-vs-occurrence split the flattening plan names). That is a substantial sub-project
-spanning the ~25 `parent=` sites, the operator child pointers, and the substitution
-machinery — sequence it on its own; do NOT attempt it as a single commit. Until it lands,
-`clone()` (now arena-cheap, Phase 1) stays.
+**MUTATION-SAFETY AUDIT (2026-06-23) — CONCLUSION: no-clone substitution IS safe; no blocker.**
+(An earlier version of this section concluded the opposite — that was a CONFLATION of pop-1 and
+pop-2, now corrected; see §1f.) The `parent =`/`left =`/`right =` writes the audit found are on
+**POP-2 AST objects built fresh during parse** — e.g. parser.cpp:14354-14361 does `new
+TokenAssign` / `new TokenVar` then `lhs->parent = assign`, wiring brand-new nodes. They are NOT
+mutations of the pop-1 lexed tokens that substitution shares. Pop-1 `TokenRec`s carry only
+identity (kind/spelling_id) + occurrence (line/col/value) and are **immutable once lexed**, so
+two instantiations referencing the same pop-1 slot-id cannot collide. (`setDataType`'s 37 sites
+likewise mostly target parser-synthesized temporaries; `read_count` is a harmless diagnostic.)
+So id-vector substitution needs NO identity/occurrence surgery on the AST — it is the
+straightforward "build a new id-vector, reuse unchanged ids, swap substituted ids" the
+flattening plan describes. Pop-2 AST construction stays exactly as today (objects, FENCED).
 
 **Phase 3 — serialization (ties to the embedded-header forest, NOT a perf item).**
 - **Pre-dump materialization pass (the relocated Phase-2 steps 2/3):** walk the tree with
@@ -233,7 +265,7 @@ machinery — sequence it on its own; do NOT attempt it as a single commit. Unti
 - `docs/plans/2026-06-13-embedded-ast-frontend-design.md` — arena + u32 index handles,
   cir_node backbone, segmented mmap. THE architecture.
 - `docs/plans/2026-06-12-type-table-value-abi-design.md` — segmented `u32` type-id table
-  (the `type_id` source in Phase 2.2).
+  (the `type_id` source for the Phase-3 dump-time materialization).
 - `docs/plans/2026-06-09-frontend-representation-refactor.md` — phased P0..P5 ordering.
 - `docs/plans/2026-06-23-arena-interning-HANDOFF.md` — the interning contract (P0 steps;
   step 4 = drop per-token `std::string str` once readers use `spelling(spelling_id)` —
@@ -258,15 +290,21 @@ gate any phase on a perf number; the gate is correctness + byte-identical output
 - Phase 1 (arena under polymorphic tokens) shows **~0% at -O0** — MEASURED and reverted once
   as a standalone slice (`fc59be0`). That is EXPECTED. Phase 1 is the FOUNDATION (a stable,
   never-relocate arena) the later phases require, not a speed win. Keep it; do not re-debate.
-- The REAL driver is the flat, serializable `TokenRec` (Phases 2-3): de-polymorphization
-  (vtable → `kind`; thousands of `->id()`/`->type()` sites), `str`→`spelling_id` (~480
-  sites), then dump/`mmap`+rebuild-by-`kind`. THIS is the forest/PCH keystone
-  (`docs/plans/2026-06-22-embedded-header-forest-execution-plan.md`). It is multi-session;
-  that is accepted, not a reason to stop short.
+- The REAL driver is the flat, serializable POD `TokenRec` arena for the **pop-1 lexer stream**
+  (Phases 2-3): lexer emits records + `vector<uint32_t>` id-stream + materialize-on-demand
+  shells; no-clone id-vector substitution; then dump/`mmap`+rebuild-by-`kind`. THIS is the
+  forest/PCH keystone (`docs/plans/2026-06-22-embedded-header-forest-execution-plan.md`). NOTE:
+  this is NOT whole-parser de-polymorphization — that is P2, FENCED (the "thousands of `->id()`
+  / ~480 `.str`" figures applied to that fenced collapse and are STRUCK; see the flattening
+  plan). Pop-2 AST stays objects. It is multi-session; that is accepted, not a reason to stop.
 
 ## 6. Rehydrate
-`scripts/resume.sh`; read THIS file fully; `git log --oneline -8` to confirm HEAD.
-**Phase 0 is DONE (results in §2, committed `ca898e1`). Current work = Phase 1** (variable-
-size bump arena, routed via `TokenBase::operator new`/`delete` into a per-compile current
-arena — routes every `new TokenX` AND every `clone()` with zero call-site changes; bulk
-reset, no per-token free). Implement the FULL plan through Phase 3; correctness gate only.
+`scripts/resume.sh`; **read §1 (MENTAL MODEL) FULLY** — it is the part that has tripped up
+past sessions (the two-population conflation). Then `git log --oneline -10` to confirm HEAD.
+**DONE:** Phase 0 audit (`ca898e1`), Phase 1 bump arena (`e8861ac`), TokenRec + spelling_id
+(`8bb60a2`), indexable arena / slot registry (`45d2b88`), `cir_node::origin`→slot-id
+(`617a5fa`). **CURRENT WORK = Phase 2 step 2** — flatten the pop-1 lexer stream (lexer emits
+`TokenRec`s + `vector<uint32_t>` id-stream + materialize-on-demand shells via pch.cpp's
+factory). Then step 3 (no-clone id-vector substitution — SAFE, §1f). Correctness gate only.
+Implement the FULL plan; do NOT re-introduce the struck "children→slot-ids" / "mutation
+blocker" framing.
