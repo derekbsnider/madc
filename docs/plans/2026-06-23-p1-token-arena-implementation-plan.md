@@ -168,18 +168,40 @@ into the arena it is there permanently").** This SUPERSEDES the "fixed-size cell
   these become no-ops once tokens are arena-allocated).
 
 **Phase 2 — introduce `TokenRec` as the shell's data member; flatten fields incrementally.**
-Each field its own commit, fulltest between. ORDER:
-  1. `spelling_id` — already on `TokenIdent`; generalize into `TokenRec` (DONE-ish).
-  2. `type_id` — replace `DataDef* _datatype` reads via the segmented type table
-     (`docs/plans/2026-06-12-type-table-value-abi-design.md`). Keep `DataDef*` resolvable
-     from `type_id` during transition.
-  3. `file_id` — replace `const char* file` with an index into `interned_files`.
-  4. `first_child`/`child_count` — convert the per-subclass `vector<TokenBase*>` children
-     to arena slot-id ranges. (Biggest sub-step; shrinks fat cells.)
+Each field its own commit, fulltest between.
+
+**REORDER (decided 2026-06-23, user: "order is not as important as ensuring the plan is
+executed to completion"; HEAD @8bb60a2). Rationale grounded in the audited type table.**
+The segmented type table is already BIDIRECTIONAL — `DataDef::type_id` (plain field,
+no `Program` needed), forward `Program::type_id_for(dd)`, reverse `Program::type_from_id(id)`
+(parser.cpp:8995-9067). So a token's type/file are ALREADY recoverable as stable indices.
+Consequence for a PERF track:
+  - `type_id`/`file_id` are **serialize-time derivations**, NOT live-rep changes. Keep
+    `_datatype` (one pointer deref, no `Program`) and `file` as the SHELL's live resolved
+    values (the data/behavior split: shell holds live pointers, record holds indices). A
+    pre-dump pass materializes `tok->rec.type_id = type_id_for(tok->_datatype)` etc. with
+    `Program` in scope. Ripping `_datatype` reads out into `type_from_id` lookups would ADD
+    hot-path indirection + force `Program`-threading into `datadef()`/`setDataType()` for
+    ZERO benefit before serialization — wrong for this track. → these MOVE to Phase 3.
+  - The genuine Phase-2 LIVE-REP change is children→slot-ids, AND it is the high-value one
+    (enables no-clone id-vector substitution → retires the 109 `clone()` sites). Do it next.
+
+Revised step list:
+  1. `spelling_id` — DONE @8bb60a2 (TokenRec introduced; field migrated onto the base record).
+  2. **(was 4) children → slot-ids — the live-rep work, the next step.** Prereq: make the
+     arena INDEXABLE (stable uint32 slot-id ↔ TokenBase*). Then convert the per-subclass
+     `vector<TokenBase*>` children to arena slot-id ranges (`first_child`/`child_count`),
+     and convert the macro/template substitution loops to build id-vectors (no clone()).
+  3. `type_id`, `file_id` — RELOCATED to Phase 3 (dump-time materialization, below). The
+     live rep keeps `_datatype`/`file`; the serializer writes the indices.
 - Gate per sub-step: fulltest green + `--emit=c11` byte-identical (data moved, emission
   must not change).
 
 **Phase 3 — serialization (ties to the embedded-header forest, NOT a perf item).**
+- **Pre-dump materialization pass (the relocated Phase-2 steps 2/3):** walk the tree with
+  `Program` in scope and write each `TokenRec`'s index fields from the shell's live values —
+  `rec.type_id = type_id_for(tok->_datatype)`, `rec.file_id = intern(tok->file)`. The live
+  rep is unchanged; only the on-disk record is fully index-based.
 - Dump `TokenRec[]` + `StringPool` + type table + file table; on load mmap + rebuild
   shells by `kind`. This is the forest/PCH keystone
   (`docs/plans/2026-06-22-embedded-header-forest-execution-plan.md`,
