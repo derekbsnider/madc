@@ -1,4 +1,4 @@
-// Unit tests for string_pool.h: the arena-model interned string table (the
+// Unit tests for stringpool.h: the arena-model interned string table (the
 // backing store for TokenRec.spelling_id). Verifies dedup, distinctness, the
 // str()/c_str() roundtrip, the reserved empty id, and growth/rehash integrity.
 
@@ -11,7 +11,7 @@ thread_local bool madc_verbose = false;
 #include <cstdio>
 #include <string>
 #include <vector>
-#include "string_pool.h"
+#include "stringpool.h"
 
 TEST_CASE("intern dedups and assigns stable ids")
 {

@@ -5130,6 +5130,14 @@ TokenBase *Program::getToken()
 {
     TokenBase *tb = _getToken();
 
+    // P0 step 2 (additive): intern every identifier spelling into strpool and
+    // stamp the token's spelling_id. ttIdentifier selects bare identifiers only —
+    // keywords (shared keyword_map prototypes) and string/comment trivia are
+    // skipped, so no shared prototype is mutated. `str` stays authoritative until
+    // the map re-key (step 3) and per-token-string drop (step 4).
+    if ( tb && tb->type() == TokenType::ttIdentifier )
+	((TokenIdent *)tb)->spelling_id = strpool.intern(((TokenIdent *)tb)->str);
+
     DBG(if (tb) printt(tb));
     return tb;
 }

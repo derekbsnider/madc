@@ -1,12 +1,12 @@
-#ifndef __STRING_POOL_H
-#define __STRING_POOL_H 1
+#ifndef __STRINGPOOL_H
+#define __STRINGPOOL_H 1
 
 #include <cstdint>
 #include <cstring>
 #include <vector>
 #include <string>
 
-// Arena-model interned string table — the backing store for TokenRec.spelling_id
+// stringpool.h — arena-model interned string table; backing store for TokenRec.spelling_id
 // and every interned name (sibling of the segmented type table). Index-linked, NOT
 // pointer-chained, so the three blocks (byte arena, entry arena, bucket array)
 // serialize / mmap-in-place with zero fixup (the cir_node-backbone discipline in

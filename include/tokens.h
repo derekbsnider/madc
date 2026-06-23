@@ -1034,12 +1034,17 @@ class TokenIdent: public TokenBase
 {
 public:
     std::string str;
+    // Interned-spelling handle into Program::strpool (0 = not interned yet).
+    // Additive (P0 step 2): set in Program::getToken() for ttIdentifier tokens
+    // and carried through clone(); `str` remains the source of truth until the
+    // map re-key (step 3) and per-token-string drop (step 4) consume it.
+    uint32_t spelling_id = 0;
     TokenIdent() { _datatype = &ddCHARptr; }
     TokenIdent(std::string &s) { str = s; _datatype = &ddCHARptr; }
     TokenIdent(const char *s)  { str = s; _datatype = &ddCHARptr; }
     virtual TokenType type() const { return TokenType::ttIdentifier; }
     virtual TokenID   id()   const { return TokenID::tkIdent; }
-    virtual TokenBase *clone()     { return new TokenIdent(str); }
+    virtual TokenBase *clone()     { TokenIdent *t = new TokenIdent(str); t->spelling_id = spelling_id; return t; }
     virtual void setDataType(DataDef *d) { if (d) _datatype = d; }
 };
 

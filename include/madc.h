@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "libmadc/value.h"
+#include "stringpool.h"
 
 class Method;
 class Program;
@@ -2055,6 +2056,14 @@ public:
 	return interned_files.emplace(s).first->c_str();
     }
     std::set<std::string> interned_files;	// stable token file names (never cleared)
+
+    // Interned identifier-spelling table (arena-model hashstr; see
+    // include/stringpool.h and docs/plans/2026-06-23-arena-interning-HANDOFF.md).
+    // P0 step 2: getToken() interns each ttIdentifier spelling -> uint32 id on the
+    // token. Steps 3/4 re-key the hot string maps and drop the per-token string.
+    StringPool strpool;
+    uint32_t   intern_spelling(const std::string &s) { return strpool.intern(s); }
+    const char *spelling(uint32_t id) const { return strpool.c_str(id); }
 
     enum class LinkageSpec { Cpp, C };
     LinkageSpec current_linkage = LinkageSpec::Cpp;

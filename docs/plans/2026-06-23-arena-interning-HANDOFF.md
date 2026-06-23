@@ -39,7 +39,7 @@ and the corrections below are hard-won — honor them.**
 6. **String dedup = a purpose-built arena-model hashstr table, NOT
    `std::unordered_map<std::string,…>`** (a std::map re-allocates each key string,
    defeating the dedup-malloc win). It must be index-linked (not pointer-chained)
-   so it mmaps zero-copy. Built: `include/string_pool.h` (algorithm = tinycc
+   so it mmaps zero-copy. Built: `include/stringpool.h` (algorithm = tinycc
    `TokenSym` / SMAUG `hashstr`, indices not pointers).
 
 ---
@@ -57,7 +57,7 @@ and the corrections below are hard-won — honor them.**
   memcpy-a1 27s→0.6s (45×); memcpy-a* now pass torture**
 
 **UNCOMMITTED at handoff (commit these next — see §2 step 1):**
-- `include/string_pool.h` — the StringPool (sanity-tested: dedup + 5000-entry
+- `include/stringpool.h` — the StringPool (sanity-tested: dedup + 5000-entry
   growth/distinctness pass via a scratch test; NOT yet a doctest, NOT yet wired).
 - `docs/plans/2026-06-13-embedded-ast-frontend-design.md` — added the arena-model
   intern-table structure to §2.
@@ -73,11 +73,11 @@ and the corrections below are hard-won — honor them.**
 fulltest-green before the next)
 
 **Step 1 — land StringPool (DO FIRST).**
-- Add a doctest unit test `tests/unit/test_string_pool.cpp` (dedup → same id;
+- Add a doctest unit test `tests/unit/test_stringpool.cpp` (dedup → same id;
   distinct → distinct ids; `str()` roundtrip; empty→0; 5000-entry growth/rehash
   integrity; `count()`). Wire it into `src/Makefile`'s unit-test list (copy an
   existing `test_*` entry pattern; it needs no `dd*` globals — header-only).
-- Commit `include/string_pool.h` + the test + the design-doc edit + this contract.
+- Commit `include/stringpool.h` + the test + the design-doc edit + this contract.
 - Gate: `make -C src test` green.
 
 **Step 2 — intern identifiers at the lexer (additive, keep `.str`).**
