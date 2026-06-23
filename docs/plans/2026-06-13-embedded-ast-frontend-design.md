@@ -49,6 +49,20 @@ backend sees only explicit, typed nodes. This keeps c2mir genuinely language-bli
 - **Interned type table**, referenced by index. `_Complex` and `vector_size` SIMD
   types are type-table entries, *not* node flags. Vector ops stay ordinary typed
   binary/unary nodes over vector-typed operands — no special SIMD node kinds.
+- **Interned string/identifier table = an arena-model hash table** (the backing
+  store for `TokenRec.spelling_id` and every interned name; sibling of the type
+  table). To be `mmap`-in-place zero-copy (§4/§9) it is **index-linked, not
+  pointer-chained** — three contiguous blocks: (1) a **byte arena** (spelling bytes,
+  append-only); (2) an **entry arena** `{ u32 byte_off, u32 len, u32 hash, u32 next }`
+  where the **`id` IS the entry index** and `next` chains collisions **by index**;
+  (3) a power-of-two **bucket array** of `u32` head-indices. `intern(bytes)→u32`
+  dedups on insert; `hash` stored inline rejects probes before touching bytes.
+  Algorithm = tinycc `TokenSym`/SMAUG `hashstr`, but index-based so it serializes
+  with zero fixup. Segmented per §5: the embedded snapshot ships a **frozen** byte+
+  entry+bucket segment owning an id range; the TU **appends entries above** and
+  resolves misses against a TU-private bucket extension (keeps the embedded block
+  zero-copy). Buckets are derived: a decompress-to-arena segment may rebuild them
+  at load instead of storing them.
 - **Builder discipline.** The shared builder only permits typed, semantically-valid
   construction. Each `LangDescriptor`'s lowering owns its own desugaring, so
   per-language quirks cannot leak into the backbone or the backend.
