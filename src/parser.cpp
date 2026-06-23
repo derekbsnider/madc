@@ -10555,12 +10555,20 @@ Variable *TokenCpnd::findParameter(std::string &id)
 }
 
 // recursively search for local variables up the codeblock
-Variable *TokenCpnd::findVariable(std::string &id)
+// Intern the query name ONCE, then walk the scope chain by the integer sid.
+Variable *TokenCpnd::findVariable(const StringPool &sp, std::string &id)
+{
+    return findVariable(sp, sp.intern(id), id);
+}
+
+Variable *TokenCpnd::findVariable(const StringPool &sp, uint32_t qsid, std::string &id)
 {
     DBG(cout << "TokenCpnd::findVariable(" << id << ") method: " << (method ? method->returns.name : "NULL") << endl);
     // Absorb any newly-appended variables into the O(1) index (first-wins via
     // emplace, matching the old front-to-back linear scan). A shrink (the single
-    // erase site) is detected and forces a rebuild.
+    // erase site) is detected and forces a rebuild. Keys are interned spelling_ids:
+    // the variable's name is interned once when it is first absorbed; the query was
+    // interned once at the walk entry — no per-level std::string re-hash.
     if ( var_indexed > variables.size() )
     {
 	var_index.clear();
@@ -10568,11 +10576,11 @@ Variable *TokenCpnd::findVariable(std::string &id)
     }
     for ( ; var_indexed < variables.size(); ++var_indexed )
 	if ( variables[var_indexed] )
-	    var_index.emplace(variables[var_indexed]->name, variables[var_indexed]);
-    std::unordered_map<std::string, Variable *>::iterator it = var_index.find(id);
+	    var_index.emplace(sp.intern(variables[var_indexed]->name), variables[var_indexed]);
+    std::unordered_map<uint32_t, Variable *>::iterator it = var_index.find(qsid);
     Variable *res = (it != var_index.end()) ? it->second : NULL;
     // A Variable's `name` can be MUTATED after it is appended (operator arity
-    // disambiguation renames a same-name overload). The cached key then goes
+    // disambiguation renames a same-name overload). The cached sid then goes
     // stale: a lookup of the OLD name would falsely hit the renamed var, or a
     // lookup of the NEW name would falsely miss. Detect staleness — a hit whose
     // CURRENT name no longer matches — and rebuild the index from current names,
@@ -10584,14 +10592,14 @@ Variable *TokenCpnd::findVariable(std::string &id)
 	var_indexed = 0;
 	for ( ; var_indexed < variables.size(); ++var_indexed )
 	    if ( variables[var_indexed] )
-		var_index.emplace(variables[var_indexed]->name, variables[var_indexed]);
-	it = var_index.find(id);
+		var_index.emplace(sp.intern(variables[var_indexed]->name), variables[var_indexed]);
+	it = var_index.find(qsid);
 	res = (it != var_index.end()) ? it->second : NULL;
     }
     if ( res )
 	return res;
     if ( parent )
-	return parent->findVariable(id);
+	return parent->findVariable(sp, qsid, id);
 
     return NULL;
 }
@@ -12181,7 +12189,7 @@ Variable *Program::runtime_eval_scope_target(Variable *var) const
 	return var;
 
     std::string lookup = target_name;
-    Variable *mapped = tkProgram ? tkProgram->findVariable(lookup) : NULL;
+    Variable *mapped = tkProgram ? tkProgram->findVariable(strpool, lookup) : NULL;
     return mapped ? mapped : var;
 }
 
@@ -12295,10 +12303,13 @@ Variable *Program::findVariable(TokenCpnd *code, std::string &id)
 {
     Variable *var;
     const char *debug_var = ::getenv("MADC_DEBUG_AOT_VAR");
+    // Intern the query name ONCE; the same sid probes every scope (local chain +
+    // global) without re-hashing the std::string per level (C2).
+    uint32_t qsid = strpool.intern(id);
 
     if ( code )
     {
-	if ( (var=code->findVariable(id)) )
+	if ( (var=code->findVariable(strpool, qsid, id)) )
 	{
 	    if ( debug_var && id == debug_var )
 		std::fprintf(stderr,
@@ -12311,7 +12322,7 @@ Variable *Program::findVariable(TokenCpnd *code, std::string &id)
 	if ( (var=code->findParameter(id)) )
 	    return var;
     }
-    if ( !(var=tkProgram->findVariable(id)) )
+    if ( !(var=tkProgram->findVariable(strpool, qsid, id)) )
     {
 	DBG(std::cout << "Program::findVariable(code, " << id << ") not found" << std::endl);
 	return NULL;
@@ -12339,7 +12350,7 @@ Variable *Program::findVariable(std::string &s)
     if ( code /*&& code->type() != TokenType::ttProgram*/ )
 	return findVariable(code, s);
 
-    if ( !(var=tkProgram->findVariable(s)) )
+    if ( !(var=tkProgram->findVariable(strpool, s)) )
     {
 	DBG(std::cout << "Program::findVariable(" << s << ") not found" << std::endl);
 	return NULL;
@@ -12692,7 +12703,7 @@ Variable *Program::addLiteral(std::string &s)
     string id = "__literal__";
     id.append(s);
 
-    if ( (var=tkProgram->findVariable(id)) )
+    if ( (var=tkProgram->findVariable(strpool, id)) )
 	return var;
 
     // A bare string literal has type `const char *` (C/C++ canon: a `char[]`
@@ -12719,7 +12730,7 @@ Variable *Program::addWideLiteral(std::string &s)
     string id = "__wliteral__";
     id.append(s);
 
-    if ( (var=tkProgram->findVariable(id)) )
+    if ( (var=tkProgram->findVariable(strpool, id)) )
 	return var;
 
     size_t chars = s.size() / 4;
@@ -12761,7 +12772,7 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 	// global instead of the local shadow.
 	if ( parsing_extern_decl )
 	{
-	    Variable *global_var = tkProgram->findVariable(id);
+	    Variable *global_var = tkProgram->findVariable(strpool, id);
 	    if ( global_var )
 	    {
 		// If the current block's own variables already include this
@@ -12805,7 +12816,7 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 	DBG(std::cout << "Data address: " << (uint64_t)var->data << std::endl);
 	return var;
     }
-    if ( (var=tkProgram->findVariable(id)) )
+    if ( (var=tkProgram->findVariable(strpool, id)) )
     {
 	if ( var->flags & vfEXTERN )
 	{
@@ -12854,7 +12865,7 @@ Variable *Program::resolve_global_storage_variable(Variable *var) const
 	 && !seen.count(resolved) )
     {
 	seen.insert(resolved);
-	Variable *target = tkProgram->findVariable(resolved->storage_alias_name);
+	Variable *target = tkProgram->findVariable(strpool, resolved->storage_alias_name);
 	if ( !target || target == resolved )
 	    break;
 	resolved = target;
@@ -13062,7 +13073,7 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     }
 
     // check if this variable was already defined
-    if ( (var=tkProgram->findVariable(id)) )
+    if ( (var=tkProgram->findVariable(strpool, id)) )
     {
 	method = (Method *)var->data;
     }
@@ -18304,7 +18315,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		{
 		    std::string mname = member_lookup_name;
 		    DataDefCLASS *mc = code->method->owner_class;
-		    if ( !code->findVariable(mname) && !code->findParameter(mname)
+		    if ( !code->findVariable(strpool, mname) && !code->findParameter(mname)
 		      && (mc->m_offset(mname) >= 0
 		       || resolve_class_static_member_type(mc, mname)) )
 			prefer_class_member = true;
@@ -20851,7 +20862,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    }
 		    else
 		    {
-			var = tkProgram ? tkProgram->findVariable(gname) : NULL;
+			var = tkProgram ? tkProgram->findVariable(strpool, gname) : NULL;
 			if ( !var )
 			    var = lazy_resolve(gname);
 			if ( !var && is_dynamic_symbol_fallback_enabled()
@@ -24689,7 +24700,7 @@ static bool try_parse_defaulted_member_template_constructor(
     pgm.tokens.swap_back(std::move(saved_tokens));
     pgm.skip_template_nonclass_declaration(pgm.nextToken());
 
-    Variable *mvar = pgm.tkProgram ? pgm.tkProgram->findVariable(mangled) : NULL;
+    Variable *mvar = pgm.tkProgram ? pgm.tkProgram->findVariable(pgm.strpool, mangled) : NULL;
     if ( !mvar )
 	return true;
     FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type);
@@ -25500,7 +25511,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    DBG(cout << "TokenCLASS::parse() parsing destructor " << mangled << endl);
 	    pgm.parseFunction(ddVOID, mangled, ddc);
 	    Variable *mvar;
-	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
+	    if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
 	    {
 		FuncDef *dfd = dynamic_cast<FuncDef *>(mvar->type);
 		if ( !dfd || !dfd->defaulted_or_deleted )
@@ -25554,7 +25565,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		DBG(cout << "TokenCLASS::parse() parsing constructor " << mangled << endl);
 		pgm.parseFunction(ddVOID, mangled, ddc);
 		Variable *mvar;
-		if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
+		if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
 		{
 		    FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type);
 		    if ( !cfd || !cfd->defaulted_or_deleted )
@@ -25616,7 +25627,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    std::string mangled = pgm.unique_overload_symbol(tag->str + "__operator_conv");
 	    pgm.parseFunction(*conv_ret, mangled, ddc);
 	    Variable *mvar;
-	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
+	    if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
 	    {
 		FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type);
 		if ( !cfd || !cfd->defaulted_or_deleted )
@@ -26025,7 +26036,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			      std::string(), is_static_member);
 	    // find the variable that parseFunction created and add to class methods
 	    Variable *mvar;
-	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
+	    if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
 	    {
 		FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type);
 		if ( mfd && mfd->defaulted_or_deleted )
@@ -30719,7 +30730,7 @@ static void register_skipped_namespace_template_function(
     if ( !var )
     {
 	std::string parse_id = namespace_function_symbol(pgm.current_namespace(), name);
-	var = pgm.tkProgram ? pgm.tkProgram->findVariable(parse_id) : NULL;
+	var = pgm.tkProgram ? pgm.tkProgram->findVariable(pgm.strpool, parse_id) : NULL;
 	if ( !var )
 	{
 	    DataDef *ret = skipped_template_function_return_type(pgm, NULL, tokens,
@@ -33294,7 +33305,7 @@ void Program::instantiate_member_ctor_template_for_construction(
     // are the deduced concrete signature (__this + substituted ctor params), so
     // select_ctor_overload scores and binds it; local_emit_name makes the
     // construction call the emitted definition symbol.
-    Variable *inst_var = tkProgram ? tkProgram->findVariable(inst_name) : NULL;
+    Variable *inst_var = tkProgram ? tkProgram->findVariable(strpool, inst_name) : NULL;
     if ( !inst_var )
 	inst_var = findVariable(inst_name);
     if ( !inst_var )
@@ -34393,7 +34404,7 @@ bool Program::parse_qualified_special_member_definition(TokenBase *first_tb)
     }
 
     parseFunction(ddVOID, parse_id, owner);
-    mvar = tkProgram ? tkProgram->findVariable(parse_id) : NULL;
+    mvar = tkProgram ? tkProgram->findVariable(strpool, parse_id) : NULL;
     if ( mvar )
     {
 	FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
@@ -36351,7 +36362,7 @@ paramdecl:
 
     Method *method;
 
-    if ( (var=tkProgram->findVariable(id)) )
+    if ( (var=tkProgram->findVariable(strpool, id)) )
     {
 	var->type = func;
 	method = (Method *)var->data;
@@ -39226,7 +39237,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
     if ( qualified_owner_class && !qualified_member_name.empty() )
     {
-	Variable *mvar = tkProgram ? tkProgram->findVariable(parse_id) : NULL;
+	Variable *mvar = tkProgram ? tkProgram->findVariable(strpool, parse_id) : NULL;
 	if ( mvar )
 	{
 	    FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
@@ -39243,7 +39254,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
     if ( namespace_function || ns_overload_tracked )
     {
-	Variable *ns_var = tkProgram ? tkProgram->findVariable(parse_id) : NULL;
+	Variable *ns_var = tkProgram ? tkProgram->findVariable(strpool, parse_id) : NULL;
 #if MADC_DEBUG_FNTPL
 	if ( parse_id.find("__stoa") != std::string::npos )
 	    std::cerr << "FNTPL ovset-push parse_id=" << parse_id

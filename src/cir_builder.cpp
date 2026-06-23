@@ -11835,7 +11835,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	// findVariable); methods/lambdas/locals are not.
 	{
 		std::string lookup = fvar->name;
-		Variable *gv = prog->tkProgram ? prog->tkProgram->findVariable(lookup) : NULL;
+		Variable *gv = prog->tkProgram ? prog->tkProgram->findVariable(prog->strpool, lookup) : NULL;
 		if (gv != fvar) return NULL;
 	}
 
@@ -12128,7 +12128,7 @@ void CirBuilder::synth_call_shims(Program *prog,
 	for (const Program::HostCallbackReg &reg : prog->host_callback_regs) {
 		std::string lookup = reg.name;
 		Variable *fv = prog->tkProgram
-			       ? prog->tkProgram->findVariable(lookup) : NULL;
+			       ? prog->tkProgram->findVariable(prog->strpool, lookup) : NULL;
 		if (!fv) continue;
 		node_t shim = synth_call_shim_var(prog, fv);
 		if (shim) func_def_nodes.push_back(shim);
@@ -12753,7 +12753,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		// instantiated definition ("incompatible types of ... declarations").
 		if (fd->is_member_template) continue;
 		std::string lookup_name = fname;
-		Variable *fvar = prog->tkProgram ? prog->tkProgram->findVariable(lookup_name) : NULL;
+		Variable *fvar = prog->tkProgram ? prog->tkProgram->findVariable(prog->strpool, lookup_name) : NULL;
 		std::string symbol = fvar ? func_emit_name(*fvar, fd) : fname;
 		std::map<std::string, TokenFunc *>::iterator lfi = lib_funcs.find(symbol);
 		if (lfi != lib_funcs.end() && lfi->second) {

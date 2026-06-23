@@ -327,7 +327,13 @@ public:
     // first-wins (emplace) to match the old front-to-back scan. `variables` is
     // append-only during parse; the one erase site (foreach-catch lowering) resets
     // the index, and a shrink is detected defensively below.
-    std::unordered_map<std::string, Variable *> var_index;
+    // Keyed by interned spelling_id (StringPool), NOT std::string: the query name
+    // is interned ONCE at the scope-walk entry and the integer sid is probed at
+    // every scope level, instead of re-hashing the std::string per level up the
+    // parent chain (C2 — "intern the name into the lookup"; findVariable was
+    // ~12% of -O2 front-end time). Same sid <=> same string (intern dedups), so
+    // the mapping is exact; first-wins via emplace, matching the old scan.
+    std::unordered_map<uint32_t, Variable *> var_index;
     size_t var_indexed = 0;
     std::vector<TokenStmt *> statements;
     std::vector<TokenBase *> deferred;   // defer statements (compiled in LIFO at scope exit)
@@ -343,7 +349,11 @@ public:
     }
     Variable *getParameter(unsigned int);
     Variable *findParameter(std::string &s);
-    Variable *findVariable(std::string &);
+    // Walk this scope chain for `id`. The (StringPool&, std::string&) entry interns
+    // the query ONCE; the inner overload takes the pre-interned sid and recurses up
+    // `parent` probing the sid-keyed index at each level (no per-level re-hash).
+    Variable *findVariable(const StringPool &sp, std::string &id);
+    Variable *findVariable(const StringPool &sp, uint32_t qsid, std::string &id);
 };
 
 class TokenFunc: public TokenVar, public TokenCpnd

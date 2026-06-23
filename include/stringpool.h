@@ -23,12 +23,16 @@
 class StringPool
 {
     struct Entry { uint32_t off; uint32_t len; uint32_t hash; uint32_t next; };
-    std::vector<char>     _bytes;     // spelling bytes, append-only ('\0' separated)
-    std::vector<Entry>    _entries;   // id == index; id 0 = empty
-    std::vector<uint32_t> _buckets;   // power-of-two; head entry-index or NIL
+    // `mutable`: interning is a memoizing dedup cache — it adds a spelling but does
+    // not change any OBSERVABLE pool state (same bytes -> same id, before and after).
+    // So intern() is logically const and callable from const contexts (e.g. the
+    // const Program::runtime_eval_scope_target name-lookup helpers).
+    mutable std::vector<char>     _bytes;     // spelling bytes, append-only ('\0' separated)
+    mutable std::vector<Entry>    _entries;   // id == index; id 0 = empty
+    mutable std::vector<uint32_t> _buckets;   // power-of-two; head entry-index or NIL
     enum : uint32_t { NIL = 0xffffffffu };  // enum (prvalue) → no ODR definition needed
 
-    void rehash(size_t nbuckets)
+    void rehash(size_t nbuckets) const
     {
 	_buckets.assign(nbuckets, NIL);
 	uint32_t mask = (uint32_t)nbuckets - 1;
@@ -75,7 +79,7 @@ public:
 
     // Intern bytes -> stable id (dedups). Empty -> id 0. The 3-arg form takes a
     // PRECOMPUTED hash (folded during lexing) so the bytes are walked once.
-    uint32_t intern(const char *s, uint32_t len, uint32_t h)
+    uint32_t intern(const char *s, uint32_t len, uint32_t h) const
     {
 	if ( len == 0 ) return 0;
 	uint32_t mask = (uint32_t)_buckets.size() - 1;
@@ -101,9 +105,9 @@ public:
 	_buckets[b] = id;
 	return id;
     }
-    uint32_t intern(const char *s, uint32_t len) { return len ? intern(s, len, hash_bytes(s, len)) : 0; }
-    uint32_t intern(const std::string &s) { return intern(s.data(), (uint32_t)s.size()); }
-    uint32_t intern(const char *s)        { return intern(s, (uint32_t)strlen(s)); }
+    uint32_t intern(const char *s, uint32_t len) const { return len ? intern(s, len, hash_bytes(s, len)) : 0; }
+    uint32_t intern(const std::string &s) const { return intern(s.data(), (uint32_t)s.size()); }
+    uint32_t intern(const char *s)        const { return intern(s, (uint32_t)strlen(s)); }
 
     const char *c_str(uint32_t id)  const { return &_bytes[_entries[id].off]; }
     uint32_t    length(uint32_t id) const { return _entries[id].len; }
