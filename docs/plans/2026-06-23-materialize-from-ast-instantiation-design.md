@@ -2,11 +2,17 @@
 
 **Date:** 2026-06-23 · **Branch:** `feature/front-end-performance-claude` · **Status:** DESIGN (recon COMPLETE — gcc/clang/tinycc; ready to sequence)
 
-> GOAL (user): madc must **lex+parse+instantiate FASTER than g++**. g++ does `testsubscript`
-> (parse+sema+instantiate, stdlib from scratch) in ~0.5 s; madc ~2.0 s (~4×). This lever is the
-> PRIMARY one that closes the structural 4× — see the priority order in
-> `docs/plans/2026-06-23-p1-token-arena-implementation-plan.md` §5. Forest is a LATER, separate
-> win (it goes BELOW g++ by skipping the stdlib parse); it does NOT substitute for this.
+> GOAL (user): madc must **lex+parse+instantiate FASTER than g++**. This lever is the PRIMARY
+> one that closes the structural 4× — see the priority order in
+> `docs/plans/2026-06-23-p1-token-arena-implementation-plan.md` §5.
+>
+> **SUCCESS METRIC (user, exact):** `madc(lex + parse + cir-build) ≤ g++ -fsyntax-only -O0`
+> (at minimum MEET; ideally BEAT). It is the front-end-to-front-end comparison: madc's three
+> `--show-stats` phases **lex + parse + cir build**, vs g++ `-fsyntax-only` (no codegen) — so
+> c2mir-compile and execution are EXCLUDED. Measured baseline (`testsubscript`): madc
+> 0.46+1.10+0.38 = **1.94 s** vs g++ **0.50 s** (~3.9× to close). HOW: T1-T6 + lex L2-L5 get to
+> MEET (from-scratch parity); the **forest** (skip stdlib parse) gets to BEAT. Re-measure with
+> `--show-stats` (sum the three phase lines) vs `g++ -fsyntax-only -O0` on the same TU, idle box.
 
 ## READ-CHECK (answer before acting)
 1. Why is madc ~4× g++ on `testsubscript`? → **87% of parse is template instantiation**, and madc

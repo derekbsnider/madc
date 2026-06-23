@@ -331,9 +331,13 @@ flattening plan describes. Pop-2 AST construction stays exactly as today (object
 - Memory: `project_frontend_performance.md` is the active-track file; keep it synced.
 
 ## 5. PRIORITY ORDER — parity with g++ FIRST (real efficiency), THEN forest goes BELOW it
-GOAL (user, 2026-06-23): madc must **lex+parse+instantiate FASTER than g++**. Measured frame:
-g++ does `testsubscript` (parse+sema+instantiate, **stdlib from scratch, no caching**) in
-**~0.5 s**; madc ~2.0 s (**~4×**). g++'s 0.5 s already includes parsing `<map>`/`<vector>`/
+GOAL (user, 2026-06-23): madc must **lex+parse+instantiate FASTER than g++**. **EXACT SUCCESS
+METRIC:** `madc(lex + parse + cir-build) ≤ g++ -fsyntax-only -O0` (at minimum MEET; ideally
+BEAT) — the front-end-only comparison (sum the three `--show-stats` phase lines; EXCLUDES
+c2mir-compile + execution, matching `-fsyntax-only`). Measured frame: madc lex 0.46 + parse 1.10
++ cir 0.38 = **1.94 s** vs g++ `-fsyntax-only` **0.50 s** (~3.9× to close). g++'s 0.5 s parses
+the stdlib from scratch too — so MEET = same from-scratch work (T1-T6 + lex), BEAT = the forest
+(skip stdlib parse). g++'s 0.5 s already includes parsing `<map>`/`<vector>`/
 `<string>` every run — so "match g++" means doing the SAME from-scratch work in the same time;
 the forest then takes madc BELOW g++ by not re-parsing the stdlib. Ordering of wins:
 
