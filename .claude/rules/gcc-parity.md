@@ -10,6 +10,11 @@
   shape preserves madc semantics and reduces special-case machinery.
 - If madc intentionally diverges from GCC, document the reason in the
   commit or relevant docs before merging.
+- GCC is also the PERFORMANCE baseline. When madc's compile/front-end time
+  exceeds GCC's on a test, treat it as a pathology signal and callgrind it —
+  do not let it slide. Use `scripts/perf_vs_gcc.sh <file>` (auto-callgrinds
+  when madc is slower than the threshold); log findings in
+  `docs/plans/2026-06-23-parser-lookahead-audit.md`.
 - See `.claude/rules/gcc-methodology.md` for the full methodology:
   compare-before-changing, fix-at-deepest-layer, operator
   self-determination, think-first principles.

@@ -122,6 +122,21 @@ source-stack template for the ~95 injection sites (82 `pushToken` + 8
 *(This is P1 of `2026-06-09-frontend-representation-refactor.md`, re-confirmed as
 the #1 lever by the profile.)*
 
+**Concrete target representation (sharpened 2026-06-23):** the stream is a
+`std::vector<uint32_t>` of **token ids into a shared arena/intern table**, NOT a
+`vector<TokenBase*>` of per-token heap objects (today) and NOT duplicated objects.
+This is where P1 (arena), P3 (interning → the ids), and P4 (no-clone) converge.
+It forces — and benefits from — separating two things `TokenBase` currently
+conflates:
+- **Identity** (kind + spelling) → the interned id (4 bytes, shared).
+- **Occurrence / provenance** (file/line/col) → per-*slot* in the stream (tinycc's
+  interleaved `TOK_LINENUM` markers, or a parallel array), NOT baked into a
+  duplicated object.
+Coexistence path: the *stream* becomes ids while the *parse tree* still
+materializes `TokenBase` objects from the referenced arena tokens (the tree's
+`left`/`right` and the MC11-IR attachment keep working). The big refactor; own
+phased plan.
+
 ### P2 — Flat-buffer lexer (the ~10% lever)
 Replace `std::istream`-based `Source::get()/peek()` (the per-call `sentry`) with
 the TCC model: read the file once (or `mmap`) into a sentinel-terminated `char`
@@ -145,14 +160,61 @@ intern pool are the two "stop allocating" levers).
 ### P4 — Stop cloning tokens to instantiate (the no-reparse lever)
 Today instantiation clones the template's tokens and re-parses (the
 `_Deque_base` ctor/dtor churn in the profile + the 1.49 s `instantiate` bucket).
-Move toward copy-the-`cir_node`-subtree-and-substitute (no reparse). Folds into
-P1's allocation win *and* the algorithmic gap. (Full form is the forest's
-`(node,env)` memo; the no-reparse mechanic is worth landing independently.)
+**Measured 2026-06-23: `TokenBase::clone()` has 109 call sites (src/*.cpp), almost
+all in the template-instantiation / macro-substitution machinery
+(`parser.cpp` ~2400–4800).** Each is a polymorphic heap `new` that duplicates a
+token *object* — the substituted-then-reparsed body. Two moves:
+- **Interim (cheap, with P1):** instantiation builds a `vector<uint32_t>` of arena
+  ids with the type-param ids substituted — copying 4-byte ids, not cloning
+  objects. Provenance is a per-slot field, not a re-stamped object (this also
+  fixes the `clone()` file/line/col misfiling bug documented at
+  `parser.cpp:3829`, where instantiated `std::vector` bodies were wrongly
+  classified non-system-header and parsed eagerly).
+- **Full:** copy-the-`cir_node`-subtree-and-substitute (no reparse at all).
+Folds into P1's allocation win *and* the algorithmic gap. (Full form is the
+forest's `(node,env)` memo; the no-reparse mechanic is worth landing independently.)
+
+### P5 — Macros as high-level nodes (pre-tokenized, non-materializing expansion)
+**Added 2026-06-23 (tinycc recon).** Today macro expansion happens at *lex* time
+by **string substitution + re-lexing the body into fresh persistent `TokenBase`
+objects** (`MacroDef.body` is a `std::string`; `define_map` is
+`map<string,string>`). On `memcpy-a1` that turns 88 macro slots into **324K
+persistent tokens** (9.3 KiB source → 324K tokens). It is also a **fidelity
+loss**: the invocation (`MEMCPY_DEFINE_ONE(1,0,5)`) is consumed and replaced by
+its expansion, so the IR can only attach the *expanded* tokens — reverse-render
+would emit the expansion, not the call.
+
+Adopt the **tinycc mechanism** (`tccpp.c`: pre-tokenized body `int[]` per
+`#define`; `begin_macro`/`next`/`end_macro` stream the expansion through a macro
+stack the consumer pulls from; `##`/`#` operate on tokens; `define_find` is an
+O(1) interned-id array index):
+- **Pre-tokenize each macro body once** — `MacroDef.body` / `define_map` value
+  becomes a token vector, not a re-lexed string. Kills per-expansion re-lex.
+- **Stream the expansion; don't materialize it into the persistent stream** —
+  the parser pulls tokens through a macro-source stack; tokens become real
+  `TokenBase` objects **only when the parser actually builds a node from them**,
+  with the **macro invocation attached as provenance** (tinycc tracks the macro
+  source line; madc attaches the invocation token + its file/line/col).
+
+This is **orthogonal to the MC11-IR invariant — it serves it.** The retained
+**high-level** form becomes the *unexpanded macro invocation* (which we currently
+lose); the expansion is the *lowered* view c2mir consumes. That is exactly the IR's
+"both high-level AND lowered by construction" duality (`.claude/rules/mc11-ir.md`)
+applied to macros. We do NOT adopt tinycc's throwaway-int *token stream* (our
+tokens double as the parse subtree the IR attaches) — that is the only narrow
+exclusion.
+
+**Open design point (verify, don't assume):** provenance + source positions for
+nodes built *inside* an expansion. Materialize-on-build + attach-invocation is the
+intended answer; nail it down before building. Pairs with P3 (interning gives the
+O(1) `define_find`). Designed-but-not-yet-built; same representation/interning track.
 
 ### NON-goals
 - Table-driven LR parser (above).
 - Polymorphism-collapse *for speed* (0.36%).
 - The embedded-header forest (deferred behind this track).
+- tinycc's throwaway-int token **stream** (tokens double as the parse subtree —
+  see P5; we take tinycc's interning + macro mechanism, not its ephemeral tokens).
 
 ---
 

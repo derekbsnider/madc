@@ -63,11 +63,12 @@ for t in tests/*.mad; do
     flags=()
     [ -f "$flags_file" ] && read -r -a flags < "$flags_file"
     [ -f "$argv_file" ] && read -r -a args < "$argv_file"
-    # Per-test wall-clock cap (seconds); default 5. A `.timeout` fixture overrides
+    # Per-test wall-clock cap (seconds); default 10. A `.timeout` fixture overrides
     # it for tests that legitimately need longer — e.g. a real-libstdc++-header
-    # compile (no PCH yet) parses the full <iostream> closure. Generic filename
-    # convention, never a per-test branch in the runner.
-    tmo=5
+    # compile (no PCH yet) parses the full <iostream> closure. The default build
+    # is -O0 (optimization is a last-lap switch), so header-heavy compiles need
+    # headroom. Generic filename convention, never a per-test branch in the runner.
+    tmo=10
     [ -f "$timeout_file" ] && read -r tmo < "$timeout_file"
 
     if [ -f "$expect_err_file" ]; then

@@ -2,10 +2,11 @@
 
 CC ?= clang
 CXX ?= clang++
-# NOTE: temporarily back to -O0 while debugging a front-end parse-time
-# pathology (P1) — clean callgrind/gdb attribution needs -O0. Restore the
-# -O2 default (P0, docs/plans/2026-06-22-front-end-performance-plan.md) once
-# the parse perf is understood.
+# Default to -O0 during development: optimize madc's *algorithms* first, and
+# keep the binary unoptimized so profiling/gdb attribution is honest. The -O2
+# default (P0, docs/plans/2026-06-22-front-end-performance-plan.md — a free
+# ~1.74x) is a last-lap switch, flipped only once the front-end is doing the
+# work properly. Use the `debug` target for -O0 -g.
 CXXFLAGS ?= -std=c++11 -Wall -O0
 PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
 AR ?= ar
