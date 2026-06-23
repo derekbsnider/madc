@@ -339,7 +339,22 @@ c2mir-compile + execution, matching `-fsyntax-only`). Measured frame: madc lex 0
 the stdlib from scratch too — so MEET = same from-scratch work (T1-T6 + lex), BEAT = the forest
 (skip stdlib parse). g++'s 0.5 s already includes parsing `<map>`/`<vector>`/
 `<string>` every run — so "match g++" means doing the SAME from-scratch work in the same time;
-the forest then takes madc BELOW g++ by not re-parsing the stdlib. Ordering of wins:
+the forest then takes madc BELOW g++ by not re-parsing the stdlib.
+
+**ARCHITECTURAL PRINCIPLE (user, 2026-06-23): REMOVE the C++ convenience machinery on the hot
+path — do NOT merely optimize it, and do NOT rely on -O2 to inline it away.** The Step-0 profile
+confirms the cost IS the machinery; the verb is REPLACE, not tune:
+- **iostream / `std::string`-per-token → flat `char*` buffer + raw scan.** Don't speed up
+  `Source::get` / `std::string::operator+=(char)` — eliminate them: scan the identifier SPAN in
+  the buffer, intern `[start,len)` directly. (C++23 itself retreated to `cstdio`; don't fight iostream.)
+- **ALL string lookups → ONE interned/deduped/hashed table** (`spelling_id`/atom), EVERYWHERE —
+  lexer maps, sema maps (`lazy_map`/`type_aliases`/`datatype_map`/namespace), AND names stored in
+  the AST/`DataDef`. This DEMOTES C1 (`std::map`→`unordered_map`): that only makes the string-key
+  machinery faster; the goal is to REMOVE string keys (= C2). C1 is a stopgap at most.
+- **Eliminate re-parsing → materialize-from-AST** (the primary lever).
+-O2 is a sanity check on the split, not a decision input — "remove the machinery" stands regardless.
+
+Ordering of wins:
 
 1. **PRIMARY — stop re-parsing to instantiate (materialize-from-AST). THE parity lever.**
    87% of madc's parse time is template instantiation, and madc **RE-PARSES the body tokens per
