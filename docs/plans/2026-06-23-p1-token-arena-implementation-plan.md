@@ -77,10 +77,12 @@ struct TokenRec {                 // POD: every field an int/index — dumpable/
 
 - The **shell** (`TokenBase` + 115 subclasses) holds behavior, reads/writes data through
   its `TokenRec`. `->id()`,`->type()`,`->parse()`,`dynamic_cast<TokenX*>` all UNCHANGED.
-- **Live storage = stable slab arena**: fixed-size cells (`sizeof(largest shell)`),
-  chunked, **chunks never relocate** so raw `TokenBase*` (held by `cir_node`, `parent`,
-  children vectors) stay valid. One big alloc instead of ~100K `new`s. `clone()` = bump
-  alloc + record copy. THIS is the perf win.
+- **Live storage = stable bump arena**: chunked, **chunks never relocate** so raw
+  `TokenBase*` (held by `cir_node`, `parent`, children vectors) stay valid. One big alloc
+  instead of ~100K `new`s. `clone()` = bump alloc + record copy. THIS is the perf win.
+  **NOTE (Phase 0 refinement):** allocation is **VARIABLE-SIZE** (exactly `sizeof(T)`,
+  aligned), NOT fixed `sizeof(largest)` cells — the user's "no per-token deletion" rule
+  removes the only reason for uniform cells (freelist interchange). See §2 Phase 0 RESULTS.
 - **Serialization (later)**: once `TokenRec` is fully POD, dump `TokenRec[]` + string/type
   pools; on load `mmap` the records and **rebuild shells by `kind`** (placement-new the
   right subclass per cell). The vtable ptr is the only non-serializable thing and it is
@@ -110,6 +112,42 @@ single reallocating `vector<cell>`.
   `std::vector<TokenBase*>` members in madc.h) — these are the pointer-stability clients.
 - Confirm token DESTRUCTION model: where are tokens freed today? (If never individually
   freed → arena bulk-free is a clean drop-in. If freed individually → audit those sites.)
+
+**Phase 0 — RESULTS (2026-06-23, HEAD `9c9e7e2`). AUDIT DONE. Cleared to start Phase 1.**
+- **0.1 virtuals:** `compile()`/`operand()` CONFIRMED removed (only matches are member
+  vars `TokenDynamicCast::operand`/`TokenTypeid::operand` + a comment). Live virtuals:
+  `~`,`clone`,`set`,`setDataType`,`setFlag`,`is_*`,`inc/dec`,`get/ival/dval`,`argc`,
+  `type`,`id`,`datatype`,`datadef`,`associativity`,`parse(Program&)` (+ operator-only:
+  `precedence`,`ioperate`,`foperate`,`assoc`).
+- **0.2 sizeof (clang++ -std=c++11, via tmp/sizeof_probe.cpp):** base 112. Lexer hot-path
+  cluster **112–168** (TokenSymbol/Char/Stmt 112, TokenOperator/Primary 136, TokenInt 144,
+  TokenIdent/Str/Keyword 152, TokenMultiOp 168). Parser-synth fat **176–368** (StructLit
+  176, Decl 192, CallFunc 216, Member/CallMethod 240, Cpnd 312, Func 328, Program 368).
+  Max 368 = TokenProgram (≈singleton). Spread base→max = 3.3×.
+- **0.3 inheritance:** DIAMOND virtual inheritance — `TokenBase ←virtual← TokenVar`
+  (datatokens.h:222) and `←virtual← TokenCpnd` (madc.h:315); `TokenFunc : TokenVar,
+  TokenCpnd` joins. Shells carry vtable + vbase ptrs ⇒ `TokenRec` MUST be a **data member
+  (composition), not a base**. (Confirms §2 Phase 2; no plan change.)
+- **0.4 pointer-stability clients (raw `TokenBase*` held long-term):** `cir_node`,
+  `TokenBase::parent`, `TokenStream::_buf`/`_pushback`, `_prv_token`/`_cur_token`, ~15
+  `std::vector<TokenBase*>` members (body, deferred, parameters, init_list, ctor_args,
+  inits, args, member_template_decl/return_tokens, spec_pattern, constraint, …), and
+  per-subclass `expr`/`index`/`base_expr`/`parent_expr`. ⇒ chunked, never-relocate. HOLDS.
+- **0.5 destruction model:** tokens mostly NOT individually freed (live for the compile;
+  arena-friendly). Only 3 explicit `delete` sites — lexer.cpp:1000 (adjacent string-literal
+  merge frees the absorbed token), parser.cpp:3033 & 3045 (`__integer_pack` expansion frees
+  consumed pattern tokens) — plus 2 commented-out "delete tb?" (parser.cpp:17593, 20113).
+
+**Phase 0 → DESIGN REFINEMENT (user directive 2026-06-23: "no deletion — once a token goes
+into the arena it is there permanently").** This SUPERSEDES the "fixed-size cells
+(`sizeof(largest)`=368)" wording in §1:
+- The arena is a **VARIABLE-SIZE BUMP allocator**: allocate exactly `sizeof(T)` (8/16-aligned),
+  bump, NEVER reclaim a single token, bulk-free the whole chunk set at `reset()`. Uniform
+  cells were only needed for a freelist (interchangeable freed cells); with no individual
+  free they are pure waste (368-cell vs 152 ident ≈ 2.3× bloat over ~100K tokens). Variable
+  bump is both denser AND simpler (no cell-size constant, no size-class routing).
+- The 3 `delete` sites become no-ops once their tokens are arena-allocated (absorbed/consumed
+  tokens simply remain in the arena until reset). Retire them in Phase 1 alongside routing.
 
 **Phase 1 — stable slab arena under the existing polymorphic tokens (THE perf win).**
 - Add a `TokenArena` (chunked bump allocator; fixed cell size = max token `sizeof`;
