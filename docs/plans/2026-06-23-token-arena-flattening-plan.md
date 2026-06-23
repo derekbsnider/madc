@@ -51,6 +51,28 @@ materialized during parse. `TokenRec` only needs to encode population-(1) payloa
 to the lexer stream and the macro/template substitution loops (which clone
 population-(1) tokens) — NOT the AST.
 
+## Phase 0 finding (3) — measured scope + a detour to NOT repeat
+
+**Detour (2026-06-23, reverted):** a class-specific pool allocator for `TokenBase`
+(`operator new/delete` over bump chunks) was built and measured. It is NOT the
+arena — tokens stay polymorphic heap objects, the stream stays `vector<TokenBase*>`
+(pointers), nothing becomes flat/serializable. A/B at -O0: **no measurable win**
+(the 47% malloc is an -O2 figure). It was reverted. Lesson: an allocator optimizes
+the *current* model; the flat arena *replaces* it — don't conflate them.
+
+**Measured refactor surface (why this is multi-session, not a slice):**
+- **~480 `.str` / `->str`** sites (interning surface — `TokenIdent::str` must become
+  a spelling id, since `std::string` members block a POD record).
+- **thousands of virtual `->id()` / `->type()`** calls (de-polymorphization surface —
+  "serializable" REQUIRES no vtables, so identity must become a `kind` field read).
+- **53 `delete tb`** sites (ownership web — a value-arena frees en masse, so these
+  become no-ops/removed).
+
+Key point: "stream not pointers" alone is cheap (index indirection), but
+**"serializable to disk" forces de-polymorphization**, which is the expensive part.
+There is no incremental quick win; the staged plan below is the real path, and
+each stage is substantial.
+
 ## Phase 0 finding (2) — reuse what exists (3R credo)
 
 - **Materializer already exists:** `src/pch.cpp` has a `TokenID → new TokenX`
