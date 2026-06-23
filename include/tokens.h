@@ -80,15 +80,27 @@ typedef enum : uint16_t { tfBRACKETED	=    1,
 // vbase — rules out a base-class TokenRec; Phase 0.3). Fields migrate here one
 // per commit; the end state is that ALL of a token's serializable data lives in
 // `rec`, so the live tree can be dumped/mmapped and the polymorphic shell rebuilt
-// by `kind` (Phase 3). Migrated so far: spelling_id.
-// TODO (later Phase 2 steps): kind, flags, value (_token), line, column,
-// type_id (replaces DataDef*), file_id (replaces const char*),
-// first_child/child_count (replaces the per-subclass vector<TokenBase*>).
-struct TokenRec {
-    uint32_t spelling_id = 0;	// -> Program::strpool (0 = none / not interned)
+// by `kind` (the ROM the mutable pop-2 parse node references by slot-id).
+// Populated for every lexed pop-1 token by Program::finalize_pop1_rec (step 1 of
+// the no-clone split): kind, value, spelling_id, line/column, file_id. `type_id`
+// is resolved lazily at materialize time (type_id_for assigns), NOT stamped here.
+// pop-1 has NO children — it is a linear stream; trees are pop-2 (mutable).
+struct TokenRec {				// trivially copyable (scalars only)
+    uint16_t kind = 0;		// TokenID — the identity; drives shell rebuild
+    uint16_t flags = 0;		// tokflag_t (reserved — immutable lex flags)
+    uint32_t spelling_id = 0;	// -> Program::strpool (0 = none / not interned):
+				// identifier/keyword name, string/comment bytes,
+				// or datatype spelling — the string payload.
     uint32_t slot_id = 0;	// -> TokenArena slot registry (0 = unassigned); the
 				// token's stable identity for child / serialization
 				// links (replaces raw TokenBase* in id-vectors).
+    uint32_t type_id = 0;	// -> type table (reserved; resolved at materialize
+				// time, NOT here — type_id_for() assigns lazily).
+    uint32_t file_id = 0;	// -> Program::strpool (interned filename); provenance
+    int32_t  line = 0;		// provenance — PER record (the lex occurrence)
+    int32_t  column = 0;
+    int64_t  value = 0;		// _token / char code / double-bits (by kind);
+				// >64-bit literals -> value-pool handle (P0, later).
 };
 
 class TokenBase

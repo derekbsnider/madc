@@ -975,6 +975,36 @@ TokenLPSTR	tkLPSTR;
 TokenAUTO	tkAUTO;
 
 
+// Fill the immutable (ROM) TokenRec from the now-formed pop-1 shell, so a fresh
+// mutable (RAM) shell can be rebuilt from the rec alone (no-clone split, step 1).
+// Provenance (file/line/column) and the ident spelling_id are already stamped by
+// the time a token reaches the stream (getRealToken / getToken / the tokenize
+// loop), so this just snapshots them into the POD record.
+void Program::finalize_pop1_rec(TokenBase *tb)
+{
+    TokenRec &r = tb->rec;
+    r.kind = (uint16_t)tb->id();
+    if ( tb->is_real() )
+    {
+	double d = tb->dval();
+	memcpy(&r.value, &d, sizeof(d));	// store the double's bits
+    }
+    else
+	r.value = tb->get();			// _token / char code / int value
+    // String payload: identifiers are already interned in getToken(); string /
+    // comment / datatype tokens (all TokenIdent-derived) carry their bytes in str.
+    if ( r.spelling_id == 0 )
+    {
+	TokenType tt = tb->type();
+	if ( tt == TokenType::ttString || tt == TokenType::ttComment
+	  || tt == TokenType::ttDataType || tt == TokenType::ttIdentifier )
+	    r.spelling_id = strpool.intern(((TokenIdent *)tb)->str);
+    }
+    r.line = (int32_t)tb->line;
+    r.column = (int32_t)tb->column;
+    r.file_id = tb->file ? strpool.intern(tb->file) : 0;
+}
+
 void Program::push_token_with_literal_concat(TokenBase *tb)
 {
     if ( tb->type() == TokenType::ttString
@@ -997,10 +1027,14 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
 	}
 	else
 	    prev->str += next->str;
+	// the merged literal lives in `prev` (already in the stream); refresh its
+	// rec spelling to the concatenated bytes so its ROM stays self-describing.
+	prev->rec.spelling_id = strpool.intern(prev->str);
 	delete tb;
 	return;
     }
     ++_tok_produced;	// --show-stats: a real stream token emitted by the lexer
+    finalize_pop1_rec(tb);
     tokens.push_back(tb);
 }
 

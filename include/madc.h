@@ -1435,6 +1435,11 @@ protected:
     TokenBase *make_tab(int cnt);                              // TokenTab
     TokenBase *make_eol(int cnt);                              // TokenEOL
     TokenBase *read_wide_literal();   // wide string/char literal -> pop-1 token
+    // Fill the immutable (ROM) TokenRec of a lexed pop-1 token from the formed
+    // shell — kind/value/spelling/provenance — so a fresh mutable (RAM) shell
+    // can later be rebuilt from the rec alone (the no-clone substitution split,
+    // step 1). type_id is resolved lazily at materialize time, not here.
+    void finalize_pop1_rec(TokenBase *tb);
     TokenBase *_getToken();
     TokenBase *skipConditionalBlock();
     bool evaluateIfCondition();
