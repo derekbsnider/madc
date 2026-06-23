@@ -136,7 +136,10 @@ struct Reader
     }
 };
 
-static TokenBase *token_from_id(TokenID ti)
+// Materialize a payload-free TokenBase shell from its TokenID. Shared with the
+// lexer pop-1 token factory (Program::make_token) so there is ONE
+// materialize-from-kind switch — see docs/plans/2026-06-23-token-arena-*.
+TokenBase *token_from_id(TokenID ti)
 {
     switch ( ti )
     {

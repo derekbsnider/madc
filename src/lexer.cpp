@@ -218,7 +218,7 @@ static std::string narrow_string_as_wide(const std::string &narrow)
     return out;
 }
 
-static TokenBase *read_wide_literal(Source &source)
+TokenBase *Program::read_wide_literal()
 {
     char quote = source.get();
     int row = source.line();
@@ -246,7 +246,7 @@ static TokenBase *read_wide_literal(Source &source)
 	    throw "Unterminated wide string";
 	}
 	source.get();
-	return new TokenStr(bytes, true);
+	return make_str(bytes, true);
     }
 
     uint32_t cp = 0;
@@ -268,7 +268,7 @@ static TokenBase *read_wide_literal(Source &source)
 	throw "Unterminated wide character literal";
     }
     source.get();
-    TokenInt *ti = new TokenInt((int64_t)cp);
+    TokenInt *ti = (TokenInt *)make_int((int64_t)cp);
     ti->setDataType(&ddINT32);
     return ti;
 }
@@ -2408,6 +2408,65 @@ static void skip_directive_line_tail(Source &source)
     }
 }
 
+// === pop-1 lexer-token factory (token-arena Phase 2 seam, step 2.2a) ===
+// Single construction point for every lexed (pop-1) token. 2.2a is
+// behavior-identical: still heap-`new`s and returns a TokenBase*, no
+// representation change. 2.2b makes these append a POD TokenRec to the arena
+// and return a slot-id-backed shell. Payload-free kinds delegate to the shared
+// madc_pch::token_from_id switch (ONE materialize-from-kind table); payload
+// kinds construct directly. See docs/plans/2026-06-23-p1-token-arena-*.
+TokenBase *Program::make_token(TokenID kind)
+{
+    TokenBase *tb = madc_pch::token_from_id(kind);
+    // token_from_id materializes whitespace with count 1; the lexer never
+    // routes Space/Tab/EOL here (they carry a count -> make_space/tab/eol).
+    return tb;
+}
+
+TokenBase *Program::make_ident(const std::string &spelling)
+{
+    return new TokenIdent(spelling.c_str());
+}
+
+TokenBase *Program::make_int(int64_t value)
+{
+    return new TokenInt(value);
+}
+
+TokenBase *Program::make_int(int64_t value, const std::string &src)
+{
+    return new TokenInt(value, src);
+}
+
+TokenBase *Program::make_real(double value)
+{
+    return new TokenReal(value);
+}
+
+TokenBase *Program::make_str(const std::string &bytes, bool wide)
+{
+    return new TokenStr(bytes, wide);
+}
+
+TokenBase *Program::make_char(int code)
+{
+    return new TokenChar(code);
+}
+
+TokenBase *Program::make_datatype(const char *name, DataDef &dd)
+{
+    return new TokenDataType(name, dd);
+}
+
+TokenBase *Program::make_rem(const std::string &text)
+{
+    return new TokenREM(text);
+}
+
+TokenBase *Program::make_space(int cnt) { return new TokenSpace(cnt); }
+TokenBase *Program::make_tab(int cnt)   { return new TokenTab(cnt); }
+TokenBase *Program::make_eol(int cnt)   { return new TokenEOL(cnt); }
+
 // lex and return the next token from the data stream
 // TODO: replace top switch with direct dispatch
 //       also likely better to replace istream stuff
@@ -2459,7 +2518,7 @@ TokenBase *Program::_getToken()
 		if ( !source.good() || source.eof() )
 		    break;
 	    }
-	    return new TokenSpace(cnt);
+	    return make_space(cnt);
 	case '\t':
 	    cnt = 1;
 	    while ( source.peek() == '\t' )
@@ -2469,7 +2528,7 @@ TokenBase *Program::_getToken()
 		if ( !source.good() || source.eof() )
 		    break;
 	    }
-	    return new TokenTab(cnt);
+	    return make_tab(cnt);
 	case '\r':
 	    source.get();
 	case '\n':
@@ -2482,7 +2541,7 @@ TokenBase *Program::_getToken()
 		if ( !source.good() || source.eof() )
 		    break;
 	    }
-	    return new TokenEOL(cnt);
+	    return make_eol(cnt);
 	case '=':
 	    if (source.peek() == '=')
 	    {
@@ -2491,31 +2550,31 @@ TokenBase *Program::_getToken()
 		// std floor the sequence lexes as == then = — C/C++ sources
 		// keep their conforming syntax error.
 		if (source.peek() == '=' && language_std == STD_MADC)
-		    { source.get(); return new Token3Eq; }		// ===
-		return new TokenEquals;					// ==
+		    { source.get(); return make_token(TokenID::tk3Eq); }		// ===
+		return make_token(TokenID::tkEquals);					// ==
 	    }
-	    if (source.peek() == '>') { source.get(); return new TokenFatArrow; } // =>
-	    return new TokenAssign;					// =
+	    if (source.peek() == '>') { source.get(); return make_token(TokenID::tkFatArrow); } // =>
+	    return make_token(TokenID::tkAssign);					// =
 	case '+':
-	    if (source.peek() == '+') { source.get(); return new TokenInc;   }   // ++
-	    if (source.peek() == '=') { source.get(); return new TokenAddEq; }   // +=
-	    return new TokenAdd;					// +
+	    if (source.peek() == '+') { source.get(); return make_token(TokenID::tkInc);   }   // ++
+	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkAddEq); }   // +=
+	    return make_token(TokenID::tkPlus);					// +
 	case '-':
-	    if (source.peek() == '-') { source.get(); return new TokenDec;   }   // --
-	    if (source.peek() == '=') { source.get(); return new TokenSubEq; }   // -=
-	    if (source.peek() == '>') { source.get(); return new TokenDeRef; }   // ->
-	    return new TokenNeg;					// -
-	case '*': if (source.peek() != '=') return new TokenMul;		// *
-	     source.get(); return new TokenMulEq;				// *=
+	    if (source.peek() == '-') { source.get(); return make_token(TokenID::tkDec);   }   // --
+	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkSubEq); }   // -=
+	    if (source.peek() == '>') { source.get(); return make_token(TokenID::tkDeRef); }   // ->
+	    return make_token(TokenID::tkNeg);					// -
+	case '*': if (source.peek() != '=') return make_token(TokenID::tkMul);		// *
+	     source.get(); return make_token(TokenID::tkMulEq);				// *=
 	case '/':
-	    if (source.peek() == '=') { source.get(); return new TokenDivEq; }   // /=
+	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkDivEq); }   // /=
 	    if (source.peek() == '/')					// //
 	    {
 		source.get();
 		word = "//";
 		while ( source.good() && !source.eof() && source.peek() != '\r' && source.peek() != '\n' )
 		    word += source.get();
-		return new TokenREM(word);
+		return make_rem(word);
 	    }
 	    if (source.peek() == '*')					// /*
 	    {
@@ -2532,10 +2591,10 @@ TokenBase *Program::_getToken()
 		    }
 		    word += ch;
 		}
-		return new TokenREM(word);
+		return make_rem(word);
 	    }
-	    return new TokenDiv;
-	case '\\': return new TokenBslsh;
+	    return make_token(TokenID::tkSlash);
+	case '\\': return make_token(TokenID::tkBslsh);
 	case '#': // #! is a special comment style for shell script execution
 	    if ( source.peek() == '!' )
 	    {
@@ -2572,7 +2631,7 @@ TokenBase *Program::_getToken()
 			}
 		    }
 		}
-		return new TokenREM(word);
+		return make_rem(word);
 	    }
 	    while ( source.peek() == ' ' || source.peek() == '\t' )
 		source.get();
@@ -3118,25 +3177,25 @@ TokenBase *Program::_getToken()
 				source.get();
 			}
 
-			TokenBase *tb = new TokenPREFER();
+			TokenBase *tb = make_token(TokenID::tkPREFER);
 			tb->line = pragma_line;
 			tb->column = pragma_col;
 			injected_tokens.push_back(tb);
 			for ( size_t i = 0; i < order.size(); ++i )
 			{
-			    TokenIdent *ti = new TokenIdent(order[i]);
+			    TokenIdent *ti = (TokenIdent *)make_ident(order[i]);
 			    ti->line = pragma_line;
 			    ti->column = pragma_col;
 			    injected_tokens.push_back(ti);
 			    if ( i + 1 < order.size() )
 			    {
-				tb = new TokenComma();
+				tb = make_token(TokenID::tkComma);
 				tb->line = pragma_line;
 				tb->column = pragma_col;
 				injected_tokens.push_back(tb);
 			    }
 			}
-			tb = new TokenSemi();
+			tb = make_token(TokenID::tkSemi);
 			tb->line = pragma_line;
 			tb->column = pragma_col;
 			injected_tokens.push_back(tb);
@@ -3151,11 +3210,11 @@ TokenBase *Program::_getToken()
 		}
 	    }
 	    DBG(std::cout << "# fell through to TokenHash, peek=" << (int)source.peek() << " file=" << source.fname() << std::endl);
-	    return new TokenHash;
-	case '{': return new TokenOpBrc;
-	case '}': return new TokenClBrc;
-	case '(': return new TokenOpBrk;
-	case ')': return new TokenClBrk;
+	    return make_token(TokenID::tkHash);
+	case '{': return make_token(TokenID::tkOpBrc);
+	case '}': return make_token(TokenID::tkClBrc);
+	case '(': return make_token(TokenID::tkOpBrk);
+	case ')': return make_token(TokenID::tkClBrk);
 	case '[':
 	    // C23 [[attribute]] syntax: consume [[...]] and skip
 	    if ( source.peek() == '[' )
@@ -3173,35 +3232,35 @@ TokenBase *Program::_getToken()
 		}
 		return getToken();
 	    }
-	    return new TokenOpSqr;
-	case ']': return new TokenClSqr;
-	case '~': return new TokenBnot;
-	case '!': if (source.peek() != '=') return new TokenLnot;		// !
+	    return make_token(TokenID::tkOpSqr);
+	case ']': return make_token(TokenID::tkClSqr);
+	case '~': return make_token(TokenID::tkBnot);
+	case '!': if (source.peek() != '=') return make_token(TokenID::tkLnot);		// !
 	    source.get();
 	    // !== is the madc dialect's strict not-equal; below the floor it
 	    // lexes as != then = (conforming syntax error).
 	    if (source.peek() == '=' && language_std == STD_MADC)
-		{ source.get(); return new Token3NotEq; }		// !==
-	    return new TokenNotEq;					// !=
+		{ source.get(); return make_token(TokenID::tk3NotEq); }		// !==
+	    return make_token(TokenID::tkNotEq);					// !=
 	case '&':
-	    if (source.peek() == '&') { source.get(); return new TokenLand;   }  // &&
-	    if (source.peek() == '=') { source.get(); return new TokenBandEq; }  // &=
-	    return new TokenBand;					// &
+	    if (source.peek() == '&') { source.get(); return make_token(TokenID::tkLand);   }  // &&
+	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkBandEq); }  // &=
+	    return make_token(TokenID::tkBand);					// &
 	case '|':
-	    if (source.peek() == '|') { source.get(); return new TokenLor;    }  // ||
-	    if (source.peek() == '=') { source.get(); return new TokenBorEq;  }  // |=
-	    return new TokenBor;					// |
-	case '%': if (source.peek() != '=') return new TokenMod;		// %
-	    source.get(); return new TokenModEq;				// %=
-	case '^': if (source.peek() != '=') return new TokenXor;		// ^
-	     source.get(); return new TokenXorEq;				// ^=
-	case '?': return new TokenTerQ;					// ?
+	    if (source.peek() == '|') { source.get(); return make_token(TokenID::tkLor);    }  // ||
+	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkBorEq);  }  // |=
+	    return make_token(TokenID::tkBor);					// |
+	case '%': if (source.peek() != '=') return make_token(TokenID::tkMod);		// %
+	    source.get(); return make_token(TokenID::tkModEq);				// %=
+	case '^': if (source.peek() != '=') return make_token(TokenID::tkXor);		// ^
+	     source.get(); return make_token(TokenID::tkXorEq);				// ^=
+	case '?': return make_token(TokenID::tkQmark);					// ?
 	case ':':
-	    if (source.peek() == ':') { source.get(); return new TokenNS; }   // ::
-	    if (source.peek() == '=') { source.get(); return new TokenColEq; } // :=
-	    return new TokenTerC;                                               // :
-	case ';': return new TokenSemi;					// ,
-	case ',': return new TokenComma;				// .
+	    if (source.peek() == ':') { source.get(); return make_token(TokenID::tkNS); }   // ::
+	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkColEq); } // :=
+	    return make_token(TokenID::tkColon);                                               // :
+	case ';': return make_token(TokenID::tkSemi);					// ,
+	case ',': return make_token(TokenID::tkComma);				// .
 	case '.':
 	    // Leading-dot float literal: `.4`, `.25f`, etc. are valid C
 	    // shorthand for `0.4`, `0.25f`. The lexer used to tokenize
@@ -3238,9 +3297,9 @@ TokenBase *Program::_getToken()
 		    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
 			source.get();
 		}
-		return new TokenReal(num);
+		return make_real(num);
 	    }
-	    return new TokenDot;
+	    return make_token(TokenID::tkDot);
 	case '"':
 	    word = "";
 	    row = source.line();
@@ -3302,7 +3361,7 @@ TokenBase *Program::_getToken()
 		Throw << "Unterminated string" << flush;
 	    }
 	    source.get();
-	    return new TokenStr(word);
+	    return make_str(word);
 	case '\'':
 	    word = "";
 	    row = source.line();
@@ -3362,7 +3421,7 @@ TokenBase *Program::_getToken()
 		Throw << "Unterminated string" << flush;
 	    }
 	    source.get();
-	    return new TokenChar(word[0]);
+	    return make_char(word[0]);
 	case '<':
 	    if (source.peek() == '=')
 	    {
@@ -3372,25 +3431,25 @@ TokenBase *Program::_getToken()
 		// to contain the characters keep their old meaning.
 		if (source.peek() == '>'
 		 && (language_std == STD_MADC || language_std >= STD_CPP20))
-		    { source.get(); return new Token3Way; }		  // <=>
-		return new TokenLE;					  // <=
+		    { source.get(); return make_token(TokenID::tk3Way); }		  // <=>
+		return make_token(TokenID::tkLE);					  // <=
 	    }
 	    if (source.peek() == '<')
 	    {
 		source.get();
-		if (source.peek() == '=') { source.get(); return new TokenBSLEq; } // <<=
-		return new TokenBSL;					  // <<
+		if (source.peek() == '=') { source.get(); return make_token(TokenID::tkBSLEq); } // <<=
+		return make_token(TokenID::tkBSL);					  // <<
 	    }
-	    return new TokenLT;						  // <
+	    return make_token(TokenID::tkLT);						  // <
 	case '>':
-	    if (source.peek() == '=')     { source.get(); return new TokenGE;  }	  // >=
+	    if (source.peek() == '=')     { source.get(); return make_token(TokenID::tkGE);  }	  // >=
 	    if (source.peek() == '>')
 	    {
 		source.get();
-		if (source.peek() == '=') { source.get(); return new TokenBSREq; } // >>=
-		return new TokenBSR;					  // >>
+		if (source.peek() == '=') { source.get(); return make_token(TokenID::tkBSREq); } // >>=
+		return make_token(TokenID::tkBSR);					  // >>
 	    }
-	    return new TokenGT;						  // >
+	    return make_token(TokenID::tkGT);						  // >
 	default:
 	    if ( isdigit(ch) )
 	    {
@@ -3466,7 +3525,7 @@ TokenBase *Program::_getToken()
 		{
 		    int64_t bv = read_binary_literal(source);
 		    eat_int_suffix();
-		    TokenInt *ti = new TokenInt(bv);
+		    TokenInt *ti = (TokenInt *)make_int(bv);
 		    { DataDef *st = resolve_int_suffix_type(bv, true); if (st) ti->setDataType(st); }
 		    // binary prefix source_text not critical for macro round-trip
 		    return ti;
@@ -3536,7 +3595,7 @@ TokenBase *Program::_getToken()
 		    }
 		    if ( eat_imag_suffix() )
 		    {
-			TokenReal *tr = new TokenReal(strtod(lit_text.c_str(), NULL));
+			TokenReal *tr = (TokenReal *)make_real(strtod(lit_text.c_str(), NULL));
 			char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
 			tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
 			// Preserve full literal text with imaginary suffix for transpiler
@@ -3547,7 +3606,7 @@ TokenBase *Program::_getToken()
 			return tr;
 		    }
 		    {
-			TokenReal *tr = new TokenReal(strtod(lit_text.c_str(), NULL));
+			TokenReal *tr = (TokenReal *)make_real(strtod(lit_text.c_str(), NULL));
 			if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
 			    tr->setDataType(&ddFLOAT);
 			return tr;
@@ -3555,7 +3614,7 @@ TokenBase *Program::_getToken()
 		    }
 		    eat_int_suffix();
 		    {
-			TokenInt *ti = new TokenInt((int64_t)hv);
+			TokenInt *ti = (TokenInt *)make_int((int64_t)hv);
 			ti->source_text = lit_text;
 			{ DataDef *st = resolve_int_suffix_type((int64_t)hv, true); if (st) ti->setDataType(st); }
 			return ti;
@@ -3620,7 +3679,7 @@ TokenBase *Program::_getToken()
 			double num = strtod(lit_text.c_str(), NULL);
 			if ( eat_imag_suffix() )
 			{
-			    TokenReal *tr = new TokenReal(num);
+			    TokenReal *tr = (TokenReal *)make_real(num);
 			    char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
 			    tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
 			    std::string full = lit_text;
@@ -3629,17 +3688,17 @@ TokenBase *Program::_getToken()
 			    tr->source_text = full;
 			    return tr;
 			}
-			return new TokenReal(num);
+			return make_real(num);
 		    }
 		    if ( eat_imag_suffix() )
 		    {
-			TokenInt *ti = new TokenInt(v);
+			TokenInt *ti = (TokenInt *)make_int(v);
 			ti->source_text = lit_text;
 			ti->setDataType(get_complex_compat_type(&ddINT64));
 			return ti;
 		    }
 		    eat_int_suffix();
-		    TokenInt *ti = new TokenInt(v);
+		    TokenInt *ti = (TokenInt *)make_int(v);
 		    ti->source_text = lit_text;
 		    { DataDef *st = resolve_int_suffix_type(v, is_octal); if (st) ti->setDataType(st); }
 		    return ti;
@@ -3689,7 +3748,7 @@ TokenBase *Program::_getToken()
 		double num = strtod(lit_text.c_str(), NULL);
 		if ( eat_imag_suffix() )
 		{
-		    TokenReal *tr = new TokenReal(num);
+		    TokenReal *tr = (TokenReal *)make_real(num);
 		    char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
 		    tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
 		    std::string full = lit_text;
@@ -3699,7 +3758,7 @@ TokenBase *Program::_getToken()
 		    return tr;
 		}
 		{
-		    TokenReal *tr = new TokenReal(num);
+		    TokenReal *tr = (TokenReal *)make_real(num);
 		    // Record a single-precision type for an `f`/`F`-suffixed literal so
 		    // its width survives into c2mir (it self-determines arithmetic type).
 		    // Without this `1.0f` lowered as a double, which silently widened
@@ -3736,7 +3795,7 @@ TokenBase *Program::_getToken()
 		}
 		if ( word == "L" && source.good()
 		  && (source.peek() == '"' || source.peek() == '\'') )
-		    return read_wide_literal(source);
+		    return read_wide_literal();
 		// Intern the spelling ONCE (with the pre-folded hash); reuse the id
 		// for every per-word map probe below (macro/define/keyword/cpp-operator)
 		// — a flat sid-indexed array access, no string compare, no tree.
@@ -3963,7 +4022,7 @@ TokenBase *Program::_getToken()
 			}
 			tail += ")";
 			source.pushback(tail);
-			return new TokenIdent(word);
+			return make_ident(word);
 		    }
 		    // substitute params in body — single pass over the
 		    // original body so an argument that happens to match a
@@ -4207,7 +4266,7 @@ TokenBase *Program::_getToken()
 			{
 			    if ( word == "inline"
 			      && next_source_word_is(source, "namespace") )
-				return new TokenIdent(word);
+				return make_ident(word);
 			    std::string &val = define_map[sid];
 			    if ( !val.empty() )
 			    {
@@ -4218,7 +4277,7 @@ TokenBase *Program::_getToken()
 			if ( word.compare(0, 10, "__builtin_") == 0
 			  && is_identifier_spelling(val)
 			  && !builtin_alias_needs_retokenize(word, val) )
-			    return new TokenIdent(val);
+			    return make_ident(val);
 			source.pushback_macro(val, word);
 			return getToken(); // re-tokenize the substituted text
 		    }
@@ -4249,7 +4308,7 @@ TokenBase *Program::_getToken()
 		// is known.
 		if ( word == "__FUNCTION__" || word == "__func__"
 		  || word == "__PRETTY_FUNCTION__" )
-		    return new TokenIdent(word);
+		    return make_ident(word);
 		// noexcept / noexcept(expr): madc ignores exception
 		// specifications. Strip the optional (...) by BALANCED parens
 		// — NOT via a function-like macro, whose comma-splitting breaks
@@ -4299,7 +4358,7 @@ TokenBase *Program::_getToken()
 		      || gnu_attribute_text_has_name(attr_text, "optimize") )
 		    {
 			source.pushback(attr_text);
-			return new TokenIdent(word);
+			return make_ident(word);
 		    }
 		    return getToken();
 		}
@@ -4381,73 +4440,73 @@ TokenBase *Program::_getToken()
 			    if ( counter & TS_COMPLEX )
 			    {
 				DataDef *complex_dd = get_complex_compat_type(&ddDOUBLE);
-				return new TokenDataType(complex_dd->name.c_str(), *complex_dd);
+				return make_datatype(complex_dd->name.c_str(), *complex_dd);
 			    }
 			    break;
 			case TS_CHAR:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddCHAR); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("char", ddCHAR);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddCHAR); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("char", ddCHAR);
 			case TS_SIGNED + TS_CHAR:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT8); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("signed char", ddINT8);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT8); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("signed char", ddINT8);
 			case TS_UNSIGNED + TS_CHAR:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT8); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("unsigned char", ddUINT8);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT8); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned char", ddUINT8);
 			case TS_SHORT:
 			case TS_SHORT + TS_INT:
 			case TS_SIGNED + TS_SHORT:
 			case TS_SIGNED + TS_SHORT + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT16); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("short", ddINT16);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT16); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("short", ddINT16);
 			case TS_UNSIGNED + TS_SHORT:
 			case TS_UNSIGNED + TS_SHORT + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT16); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("unsigned short", ddUINT16);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT16); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned short", ddUINT16);
 			case TS_INT:
 			case TS_SIGNED:
 			case TS_SIGNED + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT32); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("int", ddINT32);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT32); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("int", ddINT32);
 			case TS_UNSIGNED:
 			case TS_UNSIGNED + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT32); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("unsigned int", ddUINT32);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT32); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned int", ddUINT32);
 			case TS_LONG:
 			case TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG:
 			case TS_SIGNED + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("long", ddINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("long", ddINT64);
 			case TS_UNSIGNED + TS_LONG:
 			case TS_UNSIGNED + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("unsigned long", ddUINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned long", ddUINT64);
 			case TS_LONG + TS_LONG:
 			case TS_LONG + TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG + TS_LONG:
 			case TS_SIGNED + TS_LONG + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("long long", ddINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("long long", ddINT64);
 			case TS_UNSIGNED + TS_LONG + TS_LONG:
 			case TS_UNSIGNED + TS_LONG + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("unsigned long long", ddUINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned long long", ddUINT64);
 			case TS_INT128:
 			case TS_SIGNED + TS_INT128:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("__int128", ddINT128);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("__int128", ddINT128);
 			case TS_UNSIGNED + TS_INT128:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("unsigned __int128", ddUINT128);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned __int128", ddUINT128);
 			case TS_FLOAT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddFLOAT); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("float", ddFLOAT);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddFLOAT); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("float", ddFLOAT);
 			case TS_DOUBLE:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("double", ddDOUBLE);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("double", ddDOUBLE);
 			case TS_LONG + TS_DOUBLE:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return new TokenDataType(dd->name.c_str(), *dd); }
-			    return new TokenDataType("long double", ddDOUBLE);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("long double", ddDOUBLE);
 			default:
 			    // Unrecognized combination — push back consumed words
 			    // in reverse and fall through to identifier/keyword lookup.
@@ -4471,11 +4530,11 @@ TokenBase *Program::_getToken()
 		    return bmi->second->clone();
 		if ( auto_include_standard_identifier(word) )
 		    return getToken();
-		TokenIdent *ti = new TokenIdent(word);
+		TokenIdent *ti = (TokenIdent *)make_ident(word);
 		ti->rec.spelling_id = sid;   // already interned above; skip re-intern in getToken()
 		return ti;
 	    }
-	    return new TokenChar(ch);
+	    return make_char(ch);
 	// end switch
     }
 

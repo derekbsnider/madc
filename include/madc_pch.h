@@ -15,6 +15,8 @@
 #include <deque>
 
 class TokenBase;
+enum class TokenID : int;	// full definition in tokens.h; opaque here so
+				// the pop-1 token factory can reuse token_from_id
 class TokenStream;	// parser token stream (defined in madc.h); the
 			// write side serializes it directly — see madc.cpp
 			// PCH-write. The read side fills local std::deque
@@ -54,6 +56,11 @@ namespace madc_pch {
 
 // Current format version
 static const uint16_t FORMAT_VERSION = 1;
+
+// Materialize a payload-free TokenBase shell from its TokenID (operators,
+// punctuation, keywords). Returns NULL for payload-bearing or unknown kinds.
+// Reused by the lexer pop-1 token factory so kind->shell lives in ONE place.
+TokenBase *token_from_id(TokenID ti);
 
 // Serialize a token stream to a binary buffer (uncompressed)
 bool serialize_tokens(const TokenStream &tokens,

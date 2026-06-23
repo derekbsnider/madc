@@ -1362,6 +1362,28 @@ public:
     };
 
 protected:
+    // === pop-1 lexer-token factory (token-arena Phase 2 seam, step 2.2a) ===
+    // ONE construction point for every lexed (pop-1) token, so the lexer no
+    // longer scatters `new TokenX` across ~130 sites. In 2.2a this is
+    // behavior-identical: each call still heap-`new`s a TokenBase and returns
+    // it (NO representation change). Step 2.2b makes the factory append a POD
+    // TokenRec to the arena and hand back a slot-id-backed shell.
+    // Payload-free kinds (operators/punctuation/keywords) delegate to the
+    // shared madc_pch::token_from_id switch; payload kinds construct directly.
+    // See docs/plans/2026-06-23-p1-token-arena-implementation-plan.md.
+    TokenBase *make_token(TokenID kind);                       // payload-free
+    TokenBase *make_ident(const std::string &spelling);        // TokenIdent
+    TokenBase *make_int(int64_t value);                        // TokenInt
+    TokenBase *make_int(int64_t value, const std::string &src);// TokenInt + text
+    TokenBase *make_real(double value);                        // TokenReal
+    TokenBase *make_str(const std::string &bytes, bool wide = false); // TokenStr
+    TokenBase *make_char(int code);                            // TokenChar
+    TokenBase *make_datatype(const char *name, DataDef &dd);   // TokenDataType
+    TokenBase *make_rem(const std::string &text);              // TokenREM
+    TokenBase *make_space(int cnt);                            // TokenSpace
+    TokenBase *make_tab(int cnt);                              // TokenTab
+    TokenBase *make_eol(int cnt);                              // TokenEOL
+    TokenBase *read_wide_literal();   // wide string/char literal -> pop-1 token
     TokenBase *_getToken();
     TokenBase *skipConditionalBlock();
     bool evaluateIfCondition();
