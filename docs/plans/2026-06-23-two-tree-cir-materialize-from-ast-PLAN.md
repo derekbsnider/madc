@@ -94,12 +94,49 @@ path as the fallback until tree-`tsubst` subsumes it.
 
 ## 6. PHASES (each phase = several gated commits; gate = §8)
 
-**Phase 0 — audit the instantiation/cir seam (recon, no code).**
-- Map `instantiate_template_use` → where the cir_node tree is built from the
-  instantiated parse tree (`cir_builder.cpp`). Identify the seam where a tree-level
-  instantiation would hook in.
-- Decide the placeholder representation for a dependent param in a `cir_node`
-  pattern (a `DataDef` template-param kind + a node marker). Record here.
+**Phase 0 — audit the instantiation/cir seam (recon, no code). — DONE 2026-06-23.**
+
+RESULTS (audited; file:line evidence):
+- **cir build is post-parse, not a token re-walk.** `CirBuilder::translate_module(Program*)`
+  (`cir_builder.cpp:12256`, called from `madc_cir.cpp:205`) consumes the fully-parsed
+  `Program`: `prog->pending_funcs` (each a `TokenFunc`, which IS-A `TokenCpnd` with
+  `statements`/`variables`) + `prog->top_decls`. Per function: `func_def(tf)` →
+  `translate_block((TokenCpnd*)tf)` (`cir_builder.cpp:11384`) lowers the PARSED body to
+  cir_node. User bodies are eager `TokenCpnd`; system-header bodies are deferred raw
+  token vectors (`DeferredFunctionBody.body_tokens`) re-parsed on demand.
+- **Instantiation today is token-level clone + RE-PARSE** (`instantiate_template_use`,
+  `parser.cpp:3469`): `TemplateDef.body` is a frozen `vector<TokenBase*>`; it clones the
+  tokens substituting param-name `TokenIdent`s → concrete `TokenDataType` clones, splices
+  into the parse stream, and RE-PARSES (`TokenCLASS::parse` / `parseFunction`), producing a
+  `DataDefCLASS` / `TokenFunc` in `pending_funcs`. **cir_nodes are built LATER** in
+  `translate_module`, from those concrete parsed structures — never during the re-parse.
+  Fn templates: `try_instantiate_namespace_fn_template` (`parser.cpp:31102`), same pattern.
+- **copy_cir_subtree recipe (Phase 1):** per node — `arena.alloc()`; copy
+  `base.code`/`base.u`/`origin_id`/`datadef`/`typedef_name`/`src_lang`/`synth_from_origin`;
+  assign a FRESH `uid` (`c2mir_next_uid` — uids must be unique per c2m ctx); call
+  `c2mir_init_node_ops()`; recurse children over the `base.ops` DLIST (`NL_HEAD`/`NL_NEXT`)
+  and re-`c2mir_op_append` each copy; re-intern any `base.u.s.s` string via
+  `c2mir_uniq_str`. Do NOT copy `attr` or `error_msg` (post-check artifacts). Builders to
+  mirror: `CirBuilder::make` (`cir_builder.cpp:69`), `append` (:316), `node1..4` (:321-358).
+
+**THE CRUX GAP (decides the placeholder representation):** there is **no `DataDefTemplateParam`
+/ `dtDEPENDENT`** — madc never represents `T` as a typed placeholder. In a template body `T`
+is a bare `TokenIdent("T")`, replaced at the TOKEN level *before* the parser sees it. The only
+dependent concept is `DataDefCLASS::is_dependent_placeholder` (`datadef.h:819`) for unresolved
+instantiation RESULTS, not for `T` itself; fn templates keep `FuncDef::template_param_names` as
+strings (`madc.h:175`). ⇒ A cir_node PATTERN containing `T` cannot be lowered today —
+`translate_expr` would call `dd->size()`/`rawtype()` on `T` and crash/mis-lower.
+
+**SEAM:** `CirBuilder::func_def(tf)` at the `translate_block` call (`cir_builder.cpp:11384`) is
+where a body becomes cir_node — the point to (cache-miss) build & cache Tree-1, or (cache-hit)
+copy+substitute into Tree-2. `tf->var.type` (`FuncDef*`) carries the template identity to key
+the cache. But this REQUIRES the placeholder infrastructure first.
+
+**Sequencing consequence (folded into the phases below):** a NEW prerequisite phase —
+**Phase 1.5: a `DataDef` template-parameter placeholder** that `cir_builder` + the type-lowering
+helpers tolerate and that `tsubst` substitutes — sits between the copy primitive (Phase 1) and
+pattern-lowering (Phase 2). Phase 1 (`copy_cir_subtree` on a CONCRETE tree) is independent of
+this gap, so it remains the correct safe first slice.
 
 **Phase 1 — cir_node deep-copy primitive (`tsubst` core, no substitution yet).**
 - `copy_cir_subtree(node)` → a tree of FRESH nodes with a fresh node_t base
@@ -114,6 +151,15 @@ path as the fallback until tree-`tsubst` subsumes it.
   can be a pointer; design it as an index.
 - Prove it: copy a normal (non-template) function's cir_node subtree, compile the
   copy instead of the original, byte-identical output. Gated.
+
+**Phase 1.5 — template-parameter placeholder DataDef (NEW prerequisite; Phase 0 finding).**
+- Introduce a `DataDef` kind representing an unresolved template parameter `T`
+  (a real placeholder, not a string). Make the type-lowering helpers
+  (`size()`/`rawtype()`/`is_*`/`datadef()` users in `cir_builder.cpp` and the
+  parse-time type resolvers) TOLERATE it without crashing — a pattern containing
+  `T` must lower to a cir_node tree with `T` marked, deferred.
+- This is the deep/broad core (the thing token-level substitution let madc skip).
+  Build it incrementally: first just enough for one scalar type param.
 
 **Phase 2 — parse a template pattern to an immutable Tree-1 cir_node.**
 - On a template definition, build a `cir_node` PATTERN with dependent params as

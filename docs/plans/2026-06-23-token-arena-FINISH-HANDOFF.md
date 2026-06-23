@@ -2,6 +2,25 @@
 
 **Date:** 2026-06-23 · **Branch:** `feature/front-end-performance-claude` · **HEAD at write:** `c117e41`
 
+> ⛔⛔ **SUPERSEDED IN PART (design owner, 2026-06-23). READ THIS FIRST.**
+> Token-arena **2.2a / 2.2b / 2.3-step1(rec-completion) are DONE + gated + committed**
+> (`341dc5a`, `03ba2a8`, `c76e59a`). **Step 2.3's scratch-token re-parse isolation is
+> CANCELLED** — recon of g++ + c2mir (see below) showed it optimizes the re-parse g++
+> does NOT do. The work PIVOTED to the **g++ model at the cir_node TREE level**:
+> **GOVERNING PLAN = `docs/plans/2026-06-23-two-tree-cir-materialize-from-ast-PLAN.md`**
+> (+ verified cross-checks in `...-two-tree-cir-architecture-NOTES.md`). Two cir_node
+> trees — immutable Tree-1 (parsed patterns + header corpus = the forest, the copy
+> source) and mutable Tree-2 (per-TU, →c2mir, built by `tsubst` = copy+substitute,
+> never re-parse). VERIFIED: g++ does exactly this (tsubst over DECL_SAVED_TREE,
+> copy_node); c2mir mutates only the node_t base it understands, so cir_node extension
+> fields (incl. a Tree-1 back-ref) are invisible/safe.
+> **PHASE 0 AUDIT DONE (2026-06-23)** — results in the PLAN doc's "Phase 0 — RESULTS".
+> Crux finding: madc has NO `T`-as-placeholder DataDef (it substitutes at the token
+> level pre-parse) → a NEW Phase 1.5 (template-param placeholder DataDef) is the deep
+> prerequisite. **NEXT (code, next session) = PLAN Phase 1 (`copy_cir_subtree`), the
+> safe first slice.** The token-arena steps below (2.2/2.3) are HISTORY now; do not
+> resume them — follow the two-tree PLAN.
+
 > ⛔ **DISTRUST THE /compact AUTO-SUMMARY.** It has been WRONG about this work before
 > ("slab"→**variable-size bump**; "~3-5%"→**~0% at -O0, by design**). If anything you "remember"
 > conflicts with THIS doc or the two docs it subordinates to, the docs win. Answer the READ-CHECK
