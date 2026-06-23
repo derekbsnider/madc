@@ -222,6 +222,16 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 	return NULL;
     }
 
+    // Phase-1 proof hook (two-tree / materialize-from-AST): when
+    // MADC_XTEST_CIR_COPY is set, compile a DEEP COPY of the whole module tree
+    // instead of the original — exercising copy_cir_subtree across the entire
+    // suite. The validity gate, c2mir compile, and --emit=c11 below then all run
+    // on the copy; byte-identical output proves the copy is faithful. Env-gated,
+    // off by default, not user-facing (an xtest hook, like the dump_* flags).
+    static const bool xtest_cir_copy = getenv("MADC_XTEST_CIR_COPY") != NULL;
+    if (xtest_cir_copy)
+	tree = builder->copy_cir_subtree(CIR_NODE(tree))->as_node();
+
     if (dump_nodes)
 	cir_dump_nodes(stderr, tree);
 

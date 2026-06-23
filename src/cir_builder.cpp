@@ -369,6 +369,66 @@ node_t CirBuilder::node5(c2mir_node_code_t code, node_t op1, node_t op2, node_t 
 }
 
 // -----------------------------------------------------------------------
+// Tree copy (two-tree / materialize-from-AST, Phase 1)
+// -----------------------------------------------------------------------
+// Deep-copy a concrete cir_node subtree into fresh arena nodes — the `tsubst`
+// core, no substitution yet. Contract is documented on the declaration in
+// cir_builder.h. This is the safe-for-c2mir private materialization: c2mir
+// mutates `attr` on every node_t it compiles, so each copied node owns a fresh
+// node_t base (fresh uid, attr cleared, a private ops list).
+cir_node *CirBuilder::copy_cir_subtree(cir_node *src)
+{
+	if (!src)
+		return NULL;
+
+	cir_node *dst = arena.alloc();           // zeroed (error_msg/tree1_origin NULL)
+	dst->base.code = src->base.code;
+	dst->base.uid  = c2mir_next_uid(c2m);    // uids must be unique per c2m ctx
+	dst->base.attr = NULL;                   // sema is recomputed on the copy
+
+	// Children. c2mir_node_first_op returns NULL for a leaf OR an empty interior;
+	// in both cases copying the union wholesale is correct — a leaf's scalar
+	// payload (incl. an interned string pointer, valid for this c2m context's
+	// lifetime) is reproduced exactly, and an empty interior's {head,tail} =
+	// {NULL,NULL} IS an initialized empty ops list. A non-empty interior takes
+	// the recursive branch and never copies the (self-aliasing) union.
+	node_t child0 = c2mir_node_first_op(src->as_node());
+	if (child0 == NULL) {
+		dst->base.u = src->base.u;
+	} else {
+		c2mir_init_node_ops(dst->as_node());
+		for (node_t c = child0; c != NULL; c = c2mir_node_next_op(c))
+			c2mir_op_append(c2m, dst->as_node(),
+					copy_cir_subtree(CIR_NODE(c))->as_node());
+	}
+
+	// madc extension fields (invisible to c2mir). The heavy type info is
+	// REFERENCED, not duplicated — datadef/typedef_name/error_msg are
+	// arena/Program-owned and share the source's lifetime (Tree-1 == ROM). Every
+	// build-time madc field is preserved so the copy is a faithful twin; ONLY
+	// c2mir's `attr` (cleared above) is dropped, because it is c2mir's per-compile
+	// post-check scratch, recomputed when the copy is checked. In particular
+	// error_msg MUST be carried over: it marks an untranslatable node, and
+	// cir_report_errors rejects any tree containing one before c2mir sees it —
+	// dropping it would silently defeat that gate.
+	dst->origin_id         = src->origin_id;
+	dst->datadef           = src->datadef;
+	dst->typedef_name      = src->typedef_name;
+	dst->error_msg         = src->error_msg;
+	dst->src_lang          = src->src_lang;
+	dst->synth_from_origin = src->synth_from_origin;
+	dst->tree1_origin      = src;            // provenance back-ref
+
+	// Mirror the source's c2mir position into node_positions for the fresh uid
+	// (derived from the shared origin token, so identical to the source). Guard
+	// on origin_id, matching make()'s "only when there is an origin".
+	if (src->origin_id)
+		set_pos(dst, src->src_file(), src->src_line(), src->src_column());
+
+	return dst;
+}
+
+// -----------------------------------------------------------------------
 // Type builders
 // -----------------------------------------------------------------------
 

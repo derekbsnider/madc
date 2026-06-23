@@ -66,6 +66,15 @@ struct cir_node {
 				    // renderer emits the origin ONCE and suppresses these.
 	uint8_t      _pad[6];       // alignment padding
 
+	// Tree-1 back-reference: the immutable source node this node was COPIED
+	// from (the tree-level analogue of `origin_id`, which links DOWN to a
+	// token). Set by copy_cir_subtree; NULL for an originally-built node.
+	// Invisible to c2mir (an extension field), so a mutable Tree-2 node may
+	// safely point at its immutable Tree-1 source while c2mir compiles it.
+	// A POINTER for now; it becomes a uint32 cir-arena slot-id (serializable,
+	// like origin_id) once the indexable cir_node arena lands (forest phase).
+	struct cir_node *tree1_origin;
+
 	// Cast to node_t for c2mir API calls
 	node_t as_node() { return (node_t)&base; }
 

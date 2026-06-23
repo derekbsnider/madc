@@ -946,6 +946,20 @@ public:
 
 	// ---- Top-level module translation ----
 	node_t translate_module(Program *prog);
+
+	// ---- Tree copy (two-tree / materialize-from-AST, Phase 1) ----
+	// Deep-copy a cir_node subtree into FRESH arena nodes — the `tsubst` core
+	// (no substitution yet). Each copy gets a fresh node_t base (fresh uid,
+	// attr=NULL, a private ops list rebuilt by recursion) so c2mir's in-place
+	// `attr` mutation never touches a shared/immutable node; the madc extension
+	// fields (origin_id, datadef, typedef_name, error_msg, src_lang,
+	// synth_from_origin) are carried over, and `tree1_origin` records the source
+	// node. ONLY c2mir's `attr` (per-compile post-check scratch) is dropped —
+	// every build-time madc field is preserved. Leaf scalars (and their interned
+	// payloads, valid for the c2mir context's lifetime) ride in the copied union.
+	// This is the safe-for-c2mir private materialization every later phase builds
+	// on. See docs/plans/2026-06-23-two-tree-cir-materialize-from-ast-PLAN.md.
+	cir_node *copy_cir_subtree(cir_node *src);
 };
 
 // Dump the cir_node tree (our own walker, not c2mir's): node types,
