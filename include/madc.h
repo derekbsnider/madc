@@ -1171,14 +1171,19 @@ public:
     template<class It> iterator insert(iterator pos, It a, It b) { return _buf.insert(pos, a, b); }
     void swap(std::vector<TokenBase *> &other) { _buf.swap(other); }
 
-    // -- logical remaining sequence, copied flat (rare paths only) --
-    std::vector<TokenBase *> logical_snapshot() const
+    // -- tokens popped from the logical FRONT since `before` (callers that only
+    //    pop the front, e.g. skip_requires_clause), reconstructed WITHOUT copying
+    //    the whole stream: the popped pushback entries (LIFO — logical front is
+    //    the back of the vector) then the _buf range the cursor advanced over.
+    //    Cost is O(consumed), not O(stream). Replaces a former full-stream
+    //    logical_snapshot() copy that made per-`template<>` parsing O(n^2)
+    //    (snapshot × every template declaration). --
+    std::vector<TokenBase *> consumed_since(const Pos &before) const
     {
 	std::vector<TokenBase *> out;
-	out.reserve(size());
-	for ( size_t i = _pushback.size(); i > 0; --i )
-	    out.push_back(_pushback[i - 1]);
-	for ( size_t i = _cursor; i < _buf.size(); ++i )
+	for ( size_t i = before.pushback.size(); i > _pushback.size(); --i )
+	    out.push_back(before.pushback[i - 1]);
+	for ( size_t i = before.cursor; i < _cursor; ++i )
 	    out.push_back(_buf[i]);
 	return out;
     }

@@ -34544,18 +34544,24 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     // 0) is dropped. A primary template ignores it.
     std::vector<TokenBase *> partial_spec_constraint;
     {
-	std::vector<TokenBase *> before = pgm.tokens.logical_snapshot();
+	// Capture the requires-clause tokens skip_requires_clause() pops, WITHOUT
+	// copying the whole stream (the old logical_snapshot() did, once per
+	// `template<>` — O(templates × tokens), ~50% of a libstdc++-header parse).
+	// savepos() is O(pushback) (≈O(1)); consumed_since() reconstructs only the
+	// popped prefix.
+	TokenStream::Pos before = pgm.tokens.savepos();
+	size_t before_size = pgm.tokens.size();
 	pgm.skip_requires_clause();
-	size_t consumed = before.size() > pgm.tokens.size()
-			? before.size() - pgm.tokens.size() : 0;
-	// Guard: only trust the prefix when `tokens` is still a clean suffix of
-	// the snapshot (no token was pushed back, e.g. a split `>>`).
-	bool clean_suffix = consumed <= before.size()
-			 && pgm.tokens.size() + consumed == before.size();
-	if ( clean_suffix )
-	    for ( size_t i = 1; i < consumed; ++i )
-		if ( before[i] )
-		    partial_spec_constraint.push_back(before[i]->clone());
+	size_t consumed = before_size > pgm.tokens.size()
+			? before_size - pgm.tokens.size() : 0;
+	std::vector<TokenBase *> popped = pgm.tokens.consumed_since(before);
+	// Guard: only trust the prefix when the front was popped cleanly (no token
+	// pushed back, e.g. a split `>>`) — then the reconstructed count matches the
+	// logical size delta. The leading `requires` keyword (index 0) is dropped.
+	if ( popped.size() == consumed )
+	    for ( size_t i = 1; i < popped.size(); ++i )
+		if ( popped[i] )
+		    partial_spec_constraint.push_back(popped[i]->clone());
     }
 
     // Expect `class|struct Name` then capture through the matching '}'.

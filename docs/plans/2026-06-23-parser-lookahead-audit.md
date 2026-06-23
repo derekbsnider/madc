@@ -69,6 +69,26 @@ This keeps the loop fast and the ratio stable across runs.
 - **Result:** memcpy-a1 parse **27.18 s → 0.598 s** (45×); reducers linear
   (~500K tok/s flat across N). tinycc compiles the same in 0.05 s; gcc -O0 3.58 s.
 
+### #2 — `logical_snapshot()` whole-stream copy per `template<>` (FIXED 2026-06-23)
+- **File:** `include/madc.h` `TokenStream::logical_snapshot()`; sole caller
+  `src/parser.cpp` (template-declaration parse, ~34547).
+- **Cause:** to capture the requires-clause prefix that `skip_requires_clause()`
+  pops, the code snapshotted the **entire** logical token stream (a
+  `vector<TokenBase*>` of every remaining token) and diffed sizes — **once per
+  `template<>` declaration**. libstdc++ headers have hundreds/thousands of
+  templates × a large stream ⇒ O(templates × tokens) = O(n²). (Pre-existing: the
+  pre-P1 deque code copied the whole stream the same way; P1 preserved it as
+  `logical_snapshot`. Not a P1 regression.)
+- **Found by:** the perf-parity rule — testsubscript was 8.5s vs g++ ~0.9s;
+  callgrind showed ~50% self+inclusive in `logical_snapshot` + the
+  `vector<TokenBase*>` push_back/size/[]/grow it drove.
+- **Fix (deepest layer):** `TokenStream::consumed_since(Pos)` reconstructs ONLY the
+  popped front prefix (popped pushback entries + the `_buf` range the cursor
+  advanced over) — O(consumed), not O(stream). `savepos()` is O(pushback)≈O(1).
+  `logical_snapshot()` deleted (no other caller).
+- **Result:** testsubscript parse **7.59s → 1.06s (7.1×)**, total 8.49s → 2.17s.
+  tok/s 53K → 377K. fulltest unchanged.
+
 ## Audit worklist — forward scans over the token stream (triage pending)
 
 Seed list = every `for (… < tokens.size(); …)` in `src/parser.cpp` (2026-06-23).
