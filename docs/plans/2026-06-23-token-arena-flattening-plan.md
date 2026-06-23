@@ -1,0 +1,100 @@
+# Token arena flattening — from `vector<TokenBase*>` to a flat POD arena
+
+**Date:** 2026-06-23
+**Branch:** `feature/front-end-performance-claude`
+**Status:** PLAN (execution not started). This is the real P1 + P3 + P4 of
+`docs/plans/2026-06-22-front-end-performance-plan.md`, made concrete.
+
+## The problem (why the current "arena" is not done)
+
+P1 as landed made the token stream a `TokenStream` wrapping
+`std::vector<TokenBase *>` — a contiguous vector **of pointers** to individually
+heap-`new`'d **polymorphic** token objects. That is NOT the P1 target:
+- still a per-token `new` (the ~47% malloc the profile blamed),
+- not POD (vtable + `std::string leading_trivia` + `DataDef *` per token),
+- **not serializable to disk** (pointers + vtables don't serialize) — and we want
+  to persist the arena (token forest / PCH-on-disk).
+
+## Why it is not a trivial swap — `TokenBase` is triple-duty
+
+`include/tokens.h:76` — each `TokenBase` is simultaneously:
+1. a **lexer token** (`_token`, subclass payload: `cnt` / `str` / int/real value),
+2. a **parse-tree node** (`parent`, and `TokenOperator::left/right` build the
+   expression tree the compiler walks),
+3. an **IR annotation carrier** (`_datatype` resolved during parse; the MC11-IR
+   `cir_node` attaches the originating `TokenBase` + subtree; `read_count`,
+   `leading_trivia`, file/line/col/pos).
+
+A flat POD arena cleanly serves (1). (2) and (3) are what keep objects alive. So
+the refactor is **staged**: flatten the lexer stream first; let the parser
+materialize the (fewer, longer-lived) objects it needs from arena entries.
+
+## Target representation
+
+- **Arena** = `std::vector<TokenRec>` of POD records, bump-appended, never freed
+  per-token. Serializable. Roughly:
+  ```
+  struct TokenRec {        // POD, trivially copyable, no pointers
+      uint16_t kind;       // TokenID
+      uint16_t flags;      // tokflag_t
+      uint32_t spelling;   // interned id (0 = none) — P3
+      uint32_t file_id;    // interned filename id (not a char*)
+      uint32_t line, col;  // occurrence/provenance — PER SLOT, not re-stamped
+      int64_t  value;      // _token / ival; reinterpreted for real/char
+  };
+  ```
+  (Exact field set TBD in Phase 1; `value` may need a side-table for doubles /
+  long strings / wide payloads — design against the real subclass payloads.)
+- **Stream + instantiations** = `std::vector<uint32_t>` of arena indices (ids).
+  Backtrack = index rewind (already true). Macro/template substitution builds a
+  new id-vector with substituted ids — **no `clone()` of objects** (109 sites today).
+- **Identity vs occurrence**, separated (today `clone()` conflates them, and that
+  conflation is already a bug — `parser.cpp:3829` provenance misfiling):
+  - identity (kind + spelling) → interned, shared, in the arena/intern pool;
+  - occurrence (file/line/col) → per **slot** (its own arena record, or
+    tinycc-style interleaved `TOK_LINENUM` markers in the id-stream).
+
+## Phases (each: fulltest green + torture failset == baseline + --emit=c11
+byte-identical + perf re-measure via `scripts/perf_vs_gcc.sh`)
+
+- **Phase 0 — recon + baseline.** Enumerate every `TokenBase` subclass and its
+  payload (what a `TokenRec` must hold); map the 109 `clone()` sites and the
+  ~95 injection sites; record `perf_vs_gcc.sh` numbers for testsubscript/testmap
+  + memcpy-a1 as the before-picture. Decide the `value`/payload side-table shape.
+- **Phase 1 — POD lexer arena behind the current API.** Lexer appends `TokenRec`s
+  to the arena; the stream becomes `vector<uint32_t>`. Keep `TokenBase` objects by
+  **materializing on demand** from a record when the parser actually needs an
+  object (parse-tree node / `_datatype` annotation). Two-step seam method (as P1
+  step 1): introduce the record+id path while behavior is identical, validate,
+  then flip the lexer to fill records. Kills the per-token `new` on the lex path.
+- **Phase 2 — interning (P3).** Spellings/filenames → `uint32_t` ids; identifier
+  compare and `define_find`/typedef/template lookups become id/array-index, not
+  `std::map<string>`. Folds the macro `define_map`/`macro_map` keys to ids.
+- **Phase 3 — no-clone instantiation/macro (P4 + P5).** Template instantiation and
+  macro expansion build substituted **id-vectors** instead of cloning objects;
+  provenance is per-slot. Retire the 109 `clone()` sites on these paths. This is
+  where the ~43% deque-copy/instantiate cost dies.
+- **Phase 4 — serialization.** Dump/load the arena (+ intern pool) to disk — the
+  token-forest / on-disk PCH the embedded-header-forest track wants
+  (`docs/plans/2026-06-22-embedded-header-forest-execution-plan.md`).
+
+## Hard constraints (do not violate)
+
+- **MC11-IR invariant** (`.claude/rules/mc11-ir.md`): `cir_node` must still reach
+  its originating tokens + parse subtree + file/line/col. The arena records (by
+  id) + materialized parse-tree objects satisfy this; provenance moves to the slot.
+- **No parallel implementations** (`.claude/rules/no-parallel-implementations.md`):
+  the seam is two-step (old path replaced, not kept alongside); no `MADC_*_OLD`
+  left as dead code.
+- **Coexistence, not big-bang:** the *stream* becomes ids while the *parse tree*
+  stays objects materialized from the arena — they are not in tension.
+
+## Open questions to settle in Phase 0 (verify, don't assume)
+
+- Payload for wide values (double, long double, long string literals, `__int128`):
+  inline a union in `TokenRec`, or an index into a side-table? (tinycc inlines
+  CValue words after the tok id in its int-stream — consider the analogue.)
+- Where exactly the parser needs a live object vs. can read a record (audit the
+  `->id()/->type()/->str/->datadef()` hot accessors; many can read the record).
+- Lifetime of materialized parse-tree objects vs. the arena (arena outlives them;
+  nodes reference arena ids for provenance).
