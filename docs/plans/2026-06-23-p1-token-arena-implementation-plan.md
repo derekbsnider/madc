@@ -157,11 +157,15 @@ into the arena it is there permanently").** This SUPERSEDES the "fixed-size cell
   hot path (`_getToken`'s `new TokenIdent` etc.), then the parser's synthetic tokens.
 - Keep `TokenBase*` everywhere — NO call-site/dispatch changes. `clone()` allocates from
   the arena.
-- Gate: fulltest 669/0/0/18; torture byte-identical; `--emit=c11` byte-identical;
-  callgrind perf-oracle (malloc/`_int_malloc`/`_int_free` share drops; confirm the token
-  ctors are now arena bump-allocs). Expect modest -O0 (~3-5%), more at -O2.
+- **Gate = CORRECTNESS ONLY (no perf gate — see below):** fulltest 669/0/0/18; torture
+  byte-identical; `--emit=c11` byte-identical. Callgrind is INFORMATIONAL, not a gate.
+  Per `fc59be0`, the arena under polymorphic tokens shows ~0% at -O0 — that is EXPECTED
+  and NOT a failure; this phase is the structural FOUNDATION for the flatten/serialize
+  payoff in Phases 2-3, not a standalone -O0 speedup. Do not stop or re-evaluate on the
+  flat -O0 number; proceed through the full plan.
 - NOTE the destruction change: tokens now die with the arena, not via `delete`. Make sure
-  nothing `delete`s a token (Phase 0 inventory).
+  nothing `delete`s a token (Phase 0 inventory: lexer.cpp:1000, parser.cpp:3033/3045 →
+  these become no-ops once tokens are arena-allocated).
 
 **Phase 2 — introduce `TokenRec` as the shell's data member; flatten fields incrementally.**
 Each field its own commit, fulltest between. ORDER:
@@ -202,20 +206,25 @@ Each field its own commit, fulltest between. ORDER:
 - `-O0` is the dev default (optimization = last lap; -O2 re-measure is a valid task to
   cash structural wins). Test cap 10s. One heavy job at a time; cap every run
   `( ulimit -t N; timeout M … )`. No poll-loop sleeps. Background long builds/tests.
-- `make -C src fulltest` after every change. Perf-oracle: re-callgrind testmap and confirm
-  the targeted cost center dropped (`scripts/perf_vs_gcc.sh`, baseline in
-  `docs/parity/perf-baseline.tsv`).
+- `make -C src fulltest` after every change (CORRECTNESS gate). Callgrind/`perf_vs_gcc.sh`
+  is INFORMATIONAL only — record numbers, never gate a phase on them (§5).
 - Memory: `project_frontend_performance.md` is the active-track file; keep it synced.
 
-## 5. HONEST ROI (do not oversell)
-P1's *raw -O0 speed* payoff is **modest** (~3-5%): the big deque-copy is already gone, and
-the malloc share at -O0 is ~7.5% with tokens only a fraction. It is bigger at -O2. The
-REAL driver for the flat `TokenRec` is **serialization** (the forest/PCH/mmap keystone),
-not front-end speed. Phase 1 (slab arena) is the self-contained perf slice; Phases 2-3 are
-the serialization investment. If the user wants a quick perf check instead, the highest-
-value cheap move is **re-measure at -O2** to cash P2+interning (they compound under
-inlining) before committing to Phases 2-3.
+## 5. ROI — the payoff is SERIALIZATION, not -O0 speed (do not oversell, do not perf-gate)
+DIRECTIVE (user, 2026-06-23): implement the FULL plan (1→2→3) through serialization. Do NOT
+gate any phase on a perf number; the gate is correctness + byte-identical output.
+- Phase 1 (arena under polymorphic tokens) shows **~0% at -O0** — MEASURED and reverted once
+  as a standalone slice (`fc59be0`). That is EXPECTED. Phase 1 is the FOUNDATION (a stable,
+  never-relocate arena) the later phases require, not a speed win. Keep it; do not re-debate.
+- The REAL driver is the flat, serializable `TokenRec` (Phases 2-3): de-polymorphization
+  (vtable → `kind`; thousands of `->id()`/`->type()` sites), `str`→`spelling_id` (~480
+  sites), then dump/`mmap`+rebuild-by-`kind`. THIS is the forest/PCH keystone
+  (`docs/plans/2026-06-22-embedded-header-forest-execution-plan.md`). It is multi-session;
+  that is accepted, not a reason to stop short.
 
 ## 6. Rehydrate
-`scripts/resume.sh`; read THIS file fully; `git log --oneline -8` to confirm HEAD;
-then start at Phase 0. Do not begin Phase 1 edits before the Phase 0 audit numbers are in.
+`scripts/resume.sh`; read THIS file fully; `git log --oneline -8` to confirm HEAD.
+**Phase 0 is DONE (results in §2, committed `ca898e1`). Current work = Phase 1** (variable-
+size bump arena, routed via `TokenBase::operator new`/`delete` into a per-compile current
+arena — routes every `new TokenX` AND every `clone()` with zero call-site changes; bulk
+reset, no per-token free). Implement the FULL plan through Phase 3; correctness gate only.
