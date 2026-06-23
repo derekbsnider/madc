@@ -101,7 +101,40 @@ gcc `IDENTIFIER_NODE`, clang `IdentifierInfo*`, tinycc `TokenSym` int id — all
 pointer/int equality. madc has `StringPool` (token-level); extend it so AST/`DataDef` names carry
 `spelling_id`, not `std::string` — this pays off heavily inside the substitution walk.
 
+## STEP 0 — PROFILE FIRST (the ranking gate; do BEFORE any implementation)
+**Two analyses agree on the costs but not on the rank, and BOTH say measure.** Our `--show-stats`
+shows instantiation = 87% of parse (the re-parse). An external cross-check (claude.ai, 2026-06-23,
+reasoning from code structure — UNMEASURED) attributes "most of the 4×" to **name lookup**: bare
+`std::string` identifiers (no interning) + ~170 string-keyed `std::map` (RB-tree) sema tables +
+`findVariable` re-hashing the same name up the scope chain. These are NOT in conflict — the
+**re-parse INVOKES the string-keyed lookups repeatedly**; materialize-from-AST removes the
+re-invocation (T3/T5), interning makes the residual lookups cheap. They compound. What we LACK is
+function-level attribution. So:
+- **Step 0 = callgrind a representative TU (`testsubscript`), record top self-cost frames.** It
+  decides the ORDER: if `std::map::find`/`std::string::compare`/`findVariable` dominate → do the
+  interning + `unordered_map` levers first (cheaper, helps even pre-materialize); if parser
+  recursive-descent / cir-build dominate → materialize-from-AST first. Fix the table that is
+  actually hot, not all 170.
+
+### Cross-checked constant-factor levers (the SECONDARY lever, beyond tinycc L1-L5)
+The external review correctly flags that our interning so far is LEXER-side; the SEMA tables are
+still string-keyed `std::map`. Confirmed in-code. Levers, cheap→deep:
+- **C1 (cheap, low-risk):** mechanically convert proven-hot `std::map<std::string,…>` sema tables
+  (`lazy_map`, `type_aliases`, `static_member_types`, namespace maps) → `unordered_map`. Keeps the
+  string-key model (no call-site refactor); kills the RB-tree char-compares. Do only the
+  profile-proven-hot ones.
+- **C2 (the real fix, = the cross-cutting "intern the name INTO the AST"):** key the sema maps on
+  `spelling_id`/atom, not `std::string`. Give `Variable`/`DataDef` an atom field. Stage: intern at
+  lex (DONE: StringPool), migrate hottest sema tables first. This is the g++/clang model.
+- **C3:** `findVariable` parent-chain — compute the name's atom/hash ONCE, pass it up the scope
+  chain instead of re-hashing per level (deep scope chains in template code).
+- **C4 (SUPERSEDED by T2):** the per-instantiation string-keyed subst map is REAL —
+  `parser.cpp:3942` (`std::map<std::string,…> subst; … subst.find(s)` per param ref). T2 (substitute
+  by `(depth,index)` array lookup) eliminates the map entirely — strictly better than re-keying it.
+
 ## Sequencing & non-goals
+- Step 0 (profile) FIRST — rank the levers above (C1-C3 + materialize-from-AST T1-T7) by measured
+  payoff. Do not implement on either narrative alone.
 - This is PRIMARY (parity), but it sits ON the flat-representation substrate (token-arena plan #2)
   for the cheap version. Build the substrate far enough that `cir_node` subtrees clone+remap
   cheaply, then convert instantiation from re-parse to copy+substitute.
