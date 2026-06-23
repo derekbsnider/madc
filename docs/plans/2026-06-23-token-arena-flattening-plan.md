@@ -51,6 +51,23 @@ materialized during parse. `TokenRec` only needs to encode population-(1) payloa
 to the lexer stream and the macro/template substitution loops (which clone
 population-(1) tokens) — NOT the AST.
 
+## Phase 0 finding (2) — reuse what exists (3R credo)
+
+- **Materializer already exists:** `src/pch.cpp` has a `TokenID → new TokenX`
+  factory switch (~line 150+, used by PCH deserialize). That IS the
+  "materialize a `TokenBase` from a `TokenRec.kind`" the arena needs — reuse it,
+  do not write a parallel one.
+- **Flat encoding already exists:** `serialize_tokens` / `write_madh` (pch.cpp)
+  already encode the token stream to a flat byte form for `.madh` PCH. The
+  `TokenRec` layout should converge with (or become) that encoding, so the arena
+  and the on-disk forest (Phase 4) share ONE format.
+- **Construction surface:** 129 `new Token*` sites in `src/lexer.cpp` (33
+  `TokenDataType`, then `Ident`/`Int`/`Real`/`Str`/`Char` payload-bearing; the
+  rest payload-free operators/punctuation). The two-step seam for Phase 1:
+  route construction through a single factory (payload-free ones via the existing
+  `token_from_id(kind)`), validate behavior-identical, THEN make the factory
+  append a `TokenRec` + return a materialized/lazy object.
+
 ## Target representation
 
 - **Arena** = `std::vector<TokenRec>` of POD records, bump-appended, never freed
