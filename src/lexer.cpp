@@ -5403,7 +5403,6 @@ void Source::showerror(int row, int col)
 	    term_columns = atoi(env_columns);
 	else
 	    term_columns = 80;
-	_ss.clear();
 
 	if ( !row || !col )
 	{
@@ -5411,10 +5410,10 @@ void Source::showerror(int row, int col)
 	    col = column();
 	}
 
+	// Flat-buffer rewind: reset the read cursor to the start and re-scan
+	// forward to the error line (was _ss.seekg(0) on the old stringstream).
 	_cr = _lf = 0;
-	_ss.seekg(0, _ss.beg);
-	if ( !_ss.good() )
-	    std::cerr << " seekfail";
+	_gpos = 0;
 
 	while ( peek() != -1 )
 	{

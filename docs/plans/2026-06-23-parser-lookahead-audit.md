@@ -141,3 +141,33 @@ cheap precondition, or does it do the expensive work first?
 - Macro token blow-up (324K tokens) is a *different* axis — see P5 in
   `docs/plans/2026-06-22-front-end-performance-plan.md` (macros as high-level
   nodes). Interning (P3) makes the cheap O(1) gates in step 4 even cheaper.
+
+## Post-O(n²) profile — 2026-06-23 (container tests are no longer pathological)
+
+After BUG B (template-id scan) and the `consumed_since` fix, `testmap` /
+`testtuple` / `testtemplatecontainer` have **no remaining O(n²)** — the largest
+single self-cost is 3.86% (callgrind of `testmap`, real-header `--std=c++17
+--no-embedded-headers`). The two big algorithmic wins (45×, 7.1×) are banked;
+what's left is **broad constant-factor**, ranked:
+
+| Bucket | ~self-cost | What | Lever |
+|---|---|---|---|
+| istream lexer | ~20–25% | `istream::sentry/get/peek` + `Source::get/peek/good/eof` + `string += char` (token text built one char at a time) | **P2 buffered char lexer** |
+| string-keyed maps | ~7–8% | per-token `keyword_map`/`define_map`/`macro_map`/`datatype_map` lookups; `std::less<string>` is 6.7% inclusive / 4.2M calls; `_getToken` drives ~2M of them | **P0 interning** (intern-once → integer keys) |
+| malloc | ~5–6% | token / per-token `std::string` alloc | P1 token arena |
+
+**Decision (user, 2026-06-23): take P2 (buffered lexer) next** — biggest measured
+lever, self-contained, independent of interning, and the canonical tinycc lesson.
+Note on interning: converting one map in isolation is ~net-neutral (a string-tree
+walk becomes a hash+dedup). The win only lands when the lexer computes the
+`spelling_id` **once per word** and *every* per-token lookup reuses it — so P0
+step 3/4 must be done as a coordinated intern-once-reuse change, not one map at a
+time. The macro maps also carry 100+ predefined insert sites to re-key.
+
+### P2 implementation (in progress)
+`Source` backed by `std::stringstream _ss` → flat `std::string _buf` + `size_t
+_gpos` cursor (the whole input is already in memory; the istream sentry/locale
+overhead was pure waste). `get/peek/good/eof/getline/showerror` become index ops;
+public contract (pushback frames, line-splice, line/column, move-assignment for
+the per-`#include` fresh-Source swap) preserved. Gate: fulltest 669/0/0/18 +
+torture byte-identical + re-callgrind to confirm the istream bucket collapsed.

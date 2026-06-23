@@ -817,11 +817,16 @@ protected:
 	bool recount = true;   // false: text was already read once; re-reading
 			       // it must not re-advance the column counter
     };
-    std::stringstream _ss;
+    // Flat in-memory source buffer + read cursor. The entire input (file or
+    // string) is slurped ONCE into _buf; get()/peek()/good()/eof() are then
+    // plain index ops — no per-char std::istream sentry/locale overhead. The old
+    // std::stringstream backing made istream::sentry/get/peek + Source::get/peek
+    // the dominant lex self-cost in callgrind (P2 perf lever, 2026-06-23).
+    std::string _buf;			// entire source text
+    size_t _gpos = 0;			// read cursor into _buf
     std::string _pushback;		// pushback buffer for #define substitution
     std::deque<PushbackFrame> _pushback_frames;
     int _lf, _cr, _column;
-    std::streampos _pos;
     std::string _fname;
     void add_pushback_frame(const std::string &s, const std::string &disabled_macro,
 			    bool recount = true)
@@ -835,12 +840,12 @@ protected:
 	_pushback_frames.push_front(frame);
     }
 public:
-    Source() { _lf = 0; _cr = 0; _column = 0; _pos = 0; }
+    Source() { _lf = 0; _cr = 0; _column = 0; }
     const char *fname() const { return _fname.c_str(); }
     const char *fname(const char *s)  { _fname = s; return _fname.c_str(); }
     const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
-    void copybuf(std::streambuf *sb)  { _ss << sb;  }
-    void str(const std::string &s) { _ss.str(s); }
+    void copybuf(std::streambuf *sb)  { std::ostringstream tmp; tmp << sb; _buf = tmp.str(); _gpos = 0; }
+    void str(const std::string &s) { _buf = s; _gpos = 0; }
     void pushback(const std::string &s) { _pushback = s + _pushback; add_pushback_frame(s, ""); }
     // Push back text that was ALREADY read (lexer lookahead/backtrack). Those
     // source characters were already counted on the first read, so re-reading
@@ -863,8 +868,8 @@ public:
     // A runaway recursive macro grows this without bound; the lexer guards on
     // it to fail with a clean diagnostic instead of crashing the stack.
     size_t pushback_depth() const { return _pushback_frames.size(); }
-    bool good() { return !_pushback.empty() || _ss.good(); }
-    bool eof()  { return _pushback.empty() && _ss.eof(); }
+    bool good() { return !_pushback.empty() || _gpos < _buf.size(); }
+    bool eof()  { return _pushback.empty() && _gpos >= _buf.size(); }
     int line()  { if ( _lf > _cr ) return _lf+1; return _cr+1; }
     int column(){ return _column ? _column : 1; }
     int get()
@@ -896,29 +901,29 @@ public:
 	// them so a later, independent use of the same macro can expand again.
 	if ( !_pushback_frames.empty() )
 	    _pushback_frames.clear();
-	int ch = _ss.get();
-	if ( ch == -1 ) { return -1; }
+	if ( _gpos >= _buf.size() ) return -1;
+	int ch = (unsigned char)_buf[_gpos++];
 	// C line splice: backslash + optional trailing whitespace + newline
 	if ( ch == '\\' )
 	{
-	    std::streampos splice_start = _ss.tellg();
+	    size_t splice_start = _gpos;
 	    // skip optional trailing spaces/tabs after backslash
-	    while ( _ss.peek() == ' ' || _ss.peek() == '\t' )
-		_ss.get();
-	    int next = _ss.peek();
+	    while ( _gpos < _buf.size() && (_buf[_gpos] == ' ' || _buf[_gpos] == '\t') )
+		++_gpos;
+	    int next = _gpos < _buf.size() ? (unsigned char)_buf[_gpos] : -1;
 	    if ( next == '\n' || next == '\r' )
 	    {
-		_ss.get();
-		if ( next == '\r' && _ss.peek() == '\n' )
-		    _ss.get();
-		++_lf; _column = 0; _pos = _ss.tellg();
+		++_gpos;
+		if ( next == '\r' && _gpos < _buf.size() && _buf[_gpos] == '\n' )
+		    ++_gpos;
+		++_lf; _column = 0;
 		return get(); // recurse to get next real char
 	    }
 	    // not a line splice — rewind
-	    _ss.seekg(splice_start);
+	    _gpos = splice_start;
 	}
-	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; _pos = _ss.tellg(); }
-	else if ( ch == '\r' ) { ++_cr; _column = 0; _pos = _ss.tellg(); }
+	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; }
+	else if ( ch == '\r' ) { ++_cr; _column = 0; }
 	else { ++_column; }
 	return ch;
     }
@@ -926,47 +931,46 @@ public:
     {
 	if ( !_pushback.empty() )
 	    return (unsigned char)_pushback[0];
+	if ( _gpos >= _buf.size() ) return -1;
 	// C line splice: skip backslash + optional whitespace + newline in peek
-	int ch = _ss.peek();
+	int ch = (unsigned char)_buf[_gpos];
 	if ( ch == '\\' )
 	{
-	    std::streampos saved = _ss.tellg();
-	    _ss.get(); // consume '\'
+	    size_t saved = _gpos;
+	    ++_gpos; // consume '\'
 	    // skip optional trailing spaces/tabs
-	    while ( _ss.peek() == ' ' || _ss.peek() == '\t' )
-		_ss.get();
-	    int next = _ss.peek();
+	    while ( _gpos < _buf.size() && (_buf[_gpos] == ' ' || _buf[_gpos] == '\t') )
+		++_gpos;
+	    int next = _gpos < _buf.size() ? (unsigned char)_buf[_gpos] : -1;
 	    if ( next == '\n' || next == '\r' )
 	    {
 		// There IS a line splice — consume it and peek the real char
-		_ss.get();
-		if ( next == '\r' && _ss.peek() == '\n' )
-		    _ss.get();
+		++_gpos;
+		if ( next == '\r' && _gpos < _buf.size() && _buf[_gpos] == '\n' )
+		    ++_gpos;
 		++_lf; _column = 0;
-		ch = _ss.peek();
-		_pos = _ss.tellg();
+		ch = _gpos < _buf.size() ? (unsigned char)_buf[_gpos] : -1;
 		return ch;
 	    }
 	    // Not a line splice — rewind
-	    _ss.seekg(saved);
+	    _gpos = saved;
 	}
 	return ch;
     }
     bool getline(std::string &s)
     {
-	int ch;
+	int ch = -1;
 	s.clear();
-	while ( _ss.good() && !_ss.eof() && (ch=_ss.get()) != -1 && ch != '\r' && ch != '\n' )
-	    s += ch;
-	if ( ch == -1 ) { return !s.empty(); }
-	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; _pos = _ss.tellg(); }
-	else if ( ch == '\r' ) { ++_cr; _column = 0; _pos = _ss.tellg(); }
-	else { ++_column; }
-	if ( _ss.peek() == '\n' )
+	while ( _gpos < _buf.size() && (ch=(unsigned char)_buf[_gpos]) != '\r' && ch != '\n' )
+	{ s += (char)ch; ++_gpos; }
+	if ( _gpos >= _buf.size() ) { return !s.empty(); }
+	++_gpos; // consume the \r or \n terminator
+	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; }
+	else if ( ch == '\r' ) { ++_cr; _column = 0; }
+	if ( _gpos < _buf.size() && _buf[_gpos] == '\n' )
 	{
-	    _ss.get();
+	    ++_gpos;
 	    ++_lf;
-	    _pos = _ss.tellg();
 	}
 	return !s.empty();
     }
