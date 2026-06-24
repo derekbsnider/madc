@@ -404,6 +404,42 @@ static DataDef *subst_datadef(Program *prog, DataDef *dd,
 	return dd;
 }
 
+// Recover a {placeholder -> concrete} binding from a recipe parameter type
+// `pdd` (which may wrap the placeholder in ptr/ref/const layers) and the
+// matching concrete instance parameter type `cdd`, peeling both in lockstep.
+// This mirrors subst_datadef's layer set: it binds the BARE placeholder to the
+// correspondingly-peeled concrete, so subst_datadef can rebuild T*/T&/const T
+// on the body nodes from that bare binding. A layer mismatch (the concrete does
+// not mirror the recipe's structure) recovers nothing for that parameter, so
+// the caller falls back to re-parse rather than bind a wrong type.
+static void recover_param_binding(DataDef *pdd, DataDef *cdd,
+				  std::map<DataDef *, DataDef *> &binding)
+{
+	if (!pdd || !cdd)
+		return;
+	if (pdd->is_template_param()) {
+		binding[pdd] = cdd;
+		return;
+	}
+	// DataDefREF derives from DataDefPTR — test the ref subclass first.
+	if (DataDefREF *rp = dynamic_cast<DataDefREF *>(pdd)) {
+		if (DataDefREF *rc = dynamic_cast<DataDefREF *>(cdd))
+			recover_param_binding(rp->base_type, rc->base_type, binding);
+		return;
+	}
+	if (DataDefPTR *pp = dynamic_cast<DataDefPTR *>(pdd)) {
+		DataDefPTR *pc = dynamic_cast<DataDefPTR *>(cdd);
+		if (pc && !dynamic_cast<DataDefREF *>(cdd))
+			recover_param_binding(pp->base_type, pc->base_type, binding);
+		return;
+	}
+	if (DataDefCONST *cp = dynamic_cast<DataDefCONST *>(pdd)) {
+		if (DataDefCONST *cc = dynamic_cast<DataDefCONST *>(cdd))
+			recover_param_binding(cp->base_type, cc->base_type, binding);
+		return;
+	}
+}
+
 // Deep-copy a concrete cir_node subtree into fresh arena nodes — the `tsubst`
 // core. Contract is documented on the declaration in cir_builder.h. This is the
 // safe-for-c2mir private materialization: c2mir mutates `attr` on every node_t
@@ -11401,9 +11437,9 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 
 	// Recover {placeholder -> concrete} by aligning the recipe's placeholder
 	// params (interned DataDefTemplateParam, shared with the body nodes) with
-	// this instance's concrete params, index-wise. Scalar slice: the bare type
-	// param appearing as a parameter type. Derived (T*/T&) and body-only T widen
-	// in later commits.
+	// this instance's concrete params, index-wise. recover_param_binding peels
+	// ptr/ref/const layers in lockstep, so a bare `T`, a `T*`, a `T&`, and a
+	// `const T` param all recover the same bare-placeholder binding.
 	std::map<DataDef *, DataDef *> binding;
 	if (recipe->method) {
 		size_t n = recipe->method->parameters.size();
@@ -11411,10 +11447,8 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 			n = fd->parameters.size();
 		for (size_t i = 0; i < n; i++) {
 			Variable *rp = recipe->method->parameters[i];
-			DataDef *pdd = rp ? rp->type : NULL;
-			DataDef *cdd = fd->parameters[i];
-			if (pdd && pdd->is_template_param() && cdd)
-				binding[pdd] = cdd;
+			recover_param_binding(rp ? rp->type : NULL,
+					      fd->parameters[i], binding);
 		}
 	}
 	if (binding.empty())

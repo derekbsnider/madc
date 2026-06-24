@@ -72,11 +72,23 @@ Validation for the local update:
 - GDB breakpoint confirmed `CirBuilder::tsubst_cir` is reached from
   `CirBuilder::tsubst_method_body` for the marker reducer, proving this is not silent fallback.
 
-THEN the later widening (PLAN §11.5c / §Phase 4, one construct per gated commit): ptr/ref
-params (`subst_datadef` peeling already handles the datadef side; extend the binding recovery
-in `tsubst_method_body` to peel pdd/cdd to the base placeholder); dependent return type
-(relax `tsubst_eligible`); typeless placeholder + ADL bit; real `is_type_dependent`. The
-re-parse deletion (Phase 5) waits for full coverage.
+✅ **PHASE 4 — construct 1 DONE (ptr/ref/const params).** The binding RECOVERY now peels
+`T*` / `T&` / `const T` param layers in lockstep with the concrete instance param, binding the
+BARE placeholder (so `subst_datadef`'s existing peel rebuilds the derived type on body nodes).
+New file-static `recover_param_binding` (cir_builder.cpp, beside `subst_datadef`) replaces the
+scalar-only inline loop in `tsubst_method_body`; the old `is_template_param()` case is its
+recursion base. A layer mismatch recovers nothing → safe re-parse fallback. VERIFIED: a
+temporary `[TSUBST] … recovered N binding(s)` trace showed `T*`/`T&`/`const T&` go 0→1 binding
+(fire tsubst, not silent fallback); trace removed. test_cir 60/60 (new derived-type case pins
+`T*`→`int*`, `T&`→`int&`, Tree-1 immutability). Reducers `tmp/tsubst_{ptr,ref,constref}.mad`
+run 2/4/6 and emit byte-identical flag-off vs flag-on. Torture byte-identical BY CONSTRUCTION
+(all new code behind the `MADC_XTEST_DEP_PARSE` env gate — production never reaches it).
+
+THEN the remaining widening (PLAN §11.5c / §Phase 4, one construct per gated commit):
+dependent return type (relax `tsubst_eligible`); non-type params; member-of-dependent access
+(`T::x`); typeless placeholder + ADL bit; real `is_type_dependent`. The re-parse deletion
+(Phase 5 = g++ lex/parse/sema parity) waits for full coverage; Phase 6 (serialize Tree-1 /
+header-forest) waits for Phase 5 (user directive 2026-06-24).
 
 ## 1. GOAL (one sentence)
 

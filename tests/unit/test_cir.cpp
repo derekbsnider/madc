@@ -871,6 +871,55 @@ TEST_CASE("CIR: tsubst_cir substitutes a template-parameter placeholder") {
     MIR_finish(mir_ctx);
 }
 
+// Two-tree Phase 4 (widening): tsubst peels ptr/ref layers around a placeholder.
+// A body node whose madc type is `T*` (resp. `T&`) must substitute to `int*`
+// (resp. `int&`) — the substitution side that recover_param_binding's lockstep
+// peel feeds for a `T*`/`T&` parameter. Tree-1 stays untouched.
+TEST_CASE("CIR: tsubst peels ptr/ref layers around a template parameter") {
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	auto prog = std::make_shared<Program>();
+	CirBuilder builder(c2m);
+	builder.translate_module(prog.get());	// primes m_prog (the type-builder owner)
+
+	DataDefTemplateParam T("T", 0);
+	DataDef *ptrT = prog->getPointerType(&T);
+	DataDef *refT = prog->getReferenceType(&T);
+	DataDef *ptrInt = prog->getPointerType(&ddINT);
+	DataDef *refInt = prog->getReferenceType(&ddINT);
+
+	node_t pleaf = builder.id("p");
+	CIR_NODE(pleaf)->datadef = ptrT;
+	node_t rleaf = builder.id("r");
+	CIR_NODE(rleaf)->datadef = refT;
+	node_t pattern = builder.node2(N_COMMA, pleaf, rleaf);
+
+	std::map<DataDef *, DataDef *> subst;
+	subst[&T] = &ddINT;
+
+	cir_node *copy = builder.tsubst_cir(CIR_NODE(pattern), subst);
+	REQUIRE(copy != nullptr);
+
+	// T* -> int*, T& -> int& on the copy; the layers are rebuilt, not the bare T.
+	node_t cp = c2mir_node_first_op(copy->as_node());
+	REQUIRE(cp != nullptr);
+	node_t cr = c2mir_node_next_op(cp);
+	REQUIRE(cr != nullptr);
+	CHECK(CIR_NODE(cp)->datadef == ptrInt);
+	CHECK(CIR_NODE(cr)->datadef == refInt);
+
+	// Tree-1 immutability: the originals still carry T* / T&.
+	CHECK(CIR_NODE(pleaf)->datadef == ptrT);
+	CHECK(CIR_NODE(rleaf)->datadef == refT);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+}
+
 // Two-tree Phase 3 (widening): a DEFERRED TYPE-SPEC MARKER in a Tree-1 pattern —
 // an N_IGNORE node carrying a template-parameter placeholder, left by
 // append_type_specs in pattern mode where `T` is used as a TYPE (a `(T)x` cast,
