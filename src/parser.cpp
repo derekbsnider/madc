@@ -33095,17 +33095,37 @@ bool Program::tsubst_eligible(FuncDef *fd)
     if ( !fd->template_param_is_pack.empty() && fd->template_param_is_pack[0] )
 	return false;
     const std::string &T = fd->template_param_names[0];
-    // A BARE-placeholder return type (`T f(...)`) is COVERED: the return type lives in
-    // the concrete shell (resolved on the normal parse path); the recipe parse passes
-    // the placeholder return type to parseFunction (which tolerates it), and tsubst
-    // substitutes the BODY via the param binding. The bare case = the return-token
-    // stream is exactly the single identifier T. A NON-bare dependent return (`T*`,
-    // `T&`, `vector<T>`, `T::type`) is NOT yet covered — reject it via the token scan.
-    bool ret_is_bare_param =
-	fd->member_template_return_tokens.size() == 1
-	&& fd->member_template_return_tokens[0]
-	&& contextual_identifier_name(fd->member_template_return_tokens[0]) == T;
-    if ( !ret_is_bare_param )
+    // A dependent return type that is the bare param T optionally wrapped in POINTER
+    // layers (`T`, `T*`, `T**`) is COVERED: the return type lives in the concrete shell
+    // (resolved on the normal parse path — hybrid B), the recipe parse passes the
+    // placeholder return type to parseFunction (which tolerates it), and tsubst
+    // substitutes the BODY via the param binding (subst_datadef rebuilds the pointer
+    // layers). Detected on the return-token stream: exactly one identifier (== T), every
+    // other token a `*` (tkStar). A `<` (template-id, `vector<T>`), a `::` (dependent
+    // name, `T::type`), or a second identifier is NOT yet covered — reject via the token
+    // scan. REFERENCE returns (`T&`/`const T&`) are deliberately NOT covered here: a
+    // reference-returning member-template instantiation hits a SEPARATE pre-existing bug
+    // (the instance symbol is left undeclared at the call site — fails flag-off too, so
+    // unrelated to tsubst); revisit once that is fixed.
+    bool ret_is_T_wrapped = !fd->member_template_return_tokens.empty();
+    size_t ret_idents = 0;
+    for ( size_t i = 0; ret_is_T_wrapped
+		     && i < fd->member_template_return_tokens.size(); ++i )
+    {
+	TokenBase *rt = fd->member_template_return_tokens[i];
+	if ( !rt ) { ret_is_T_wrapped = false; break; }
+	std::string nm = contextual_identifier_name(rt);
+	if ( !nm.empty() )
+	{
+	    if ( nm != T ) { ret_is_T_wrapped = false; break; }
+	    ++ret_idents;
+	}
+	else if ( rt->id() != TokenID::tkStar )
+	    { ret_is_T_wrapped = false; break; }
+    }
+    if ( ret_idents != 1 )
+	ret_is_T_wrapped = false;
+    if ( !ret_is_T_wrapped )
 	for ( size_t i = 0; i < fd->member_template_return_tokens.size(); ++i )
 	    if ( fd->member_template_return_tokens[i]
 	      && contextual_identifier_name(fd->member_template_return_tokens[i]) == T )

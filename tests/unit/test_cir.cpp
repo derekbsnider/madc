@@ -827,19 +827,21 @@ TEST_CASE("CIR: dependent pattern parse accepts template params in type position
     CHECK(patterns == 2);
 }
 
-// Two-tree Phase 4 (widening): a BARE-placeholder dependent return type
-// (`T echo(T v)`) is tsubst-eligible — build_dependent_pattern captures a recipe.
-// A NON-bare dependent return (`T* addr(T v)`) is NOT yet covered and must be
-// rejected (no recipe -> safe re-parse fallback), so exactly one pattern is built.
-TEST_CASE("CIR: bare-T dependent return is eligible, T* return is not") {
+// Two-tree Phase 4 (widening): a dependent return that is the bare param T wrapped in
+// POINTER layers (`T echo(T v)`, `T* addr(T* p)`) is tsubst-eligible —
+// build_dependent_pattern captures a recipe. A REFERENCE return (`T& ref(T& r)`) is NOT
+// yet covered (a separate pre-existing ref-return-instance bug), so it is rejected; with
+// echo + addr eligible and ref not, exactly two patterns are built.
+TEST_CASE("CIR: bare-T and T* dependent returns are eligible, T& return is not") {
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(
 	"struct Holder {\n"
 	"    int member;\n"
 	"    template<class T> T echo(T v) { return v; }\n"
-	"    template<class T> T* addr(T v) { member = (int)v; return (T*)0; }\n"
+	"    template<class T> T* addr(T* p) { return p; }\n"
+	"    template<class T> T& ref(T& r) { return r; }\n"
 	"};\n"
-	"int main() { Holder h; h.echo(7); h.addr(5); return h.member; }\n",
+	"int main() { Holder h; int x = 1; h.echo(7); h.addr(&x); h.ref(x); return h.member; }\n",
 	"<dependent-return-test>");
     REQUIRE(tp != nullptr);
 
@@ -854,7 +856,7 @@ TEST_CASE("CIR: bare-T dependent return is eligible, T* return is not") {
     REQUIRE(ok);
 
     size_t patterns = 0;
-    bool echo_has_pattern = false, addr_has_pattern = false;
+    bool echo_has_pattern = false, addr_has_pattern = false, ref_has_pattern = false;
     for ( funcdef_map_iter it = prog->funcdef_map.begin();
 	  it != prog->funcdef_map.end(); ++it )
 	if ( it->second && it->second->dependent_pattern ) {
@@ -863,10 +865,13 @@ TEST_CASE("CIR: bare-T dependent return is eligible, T* return is not") {
 		echo_has_pattern = true;
 	    if ( it->first.find("addr") != std::string::npos )
 		addr_has_pattern = true;
+	    if ( it->first.find("ref") != std::string::npos )
+		ref_has_pattern = true;
 	}
-    CHECK(patterns == 1);
+    CHECK(patterns == 2);
     CHECK(echo_has_pattern);
-    CHECK(!addr_has_pattern);
+    CHECK(addr_has_pattern);
+    CHECK(!ref_has_pattern);
 }
 
 // Two-tree Phase 3: tsubst_cir = copy_cir_subtree + substitute template-parameter

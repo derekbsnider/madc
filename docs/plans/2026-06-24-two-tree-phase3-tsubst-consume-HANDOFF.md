@@ -101,9 +101,25 @@ with the `[TSUBST]` trace, NOT byte-identical alone. A NON-bare dependent return
 CONSTRUCTION (`tsubst_eligible`'s only caller is `build_dependent_pattern`, gated behind
 `MADC_XTEST_DEP_PARSE`).
 
+✅ **PHASE 4 — construct 3 DONE (POINTER dependent return `T*`).** `tsubst_eligible` now
+also accepts a return that is the bare param T wrapped in POINTER layers (`T`, `T*`, `T**`).
+Detected on the return-token stream (recon via a temporary `[RETTOK]` dump: `id=60`=ident,
+`id=13`=`tkStar`, `id=24`=`tkBand`; `const` is NOT in these tokens): exactly one identifier
+(== T), every other token a `*` (`tkStar`). A `<` (template-id `vector<T>`), `::` (`T::type`),
+or a second identifier stays REJECTED. VERIFIED (trace, not byte-identical alone): `T* passthru(T* p)`
+fires (1 binding), runs 42, byte-identical; `vector<T>` return does NOT fire. test_cir 61/61
+(updated case: `echo` bare-T + `addr` `T*` both eligible, `ref` `T&` not). Reducers
+`tmp/tsubst_retptr2.mad` (42) + `tmp/tsubst_retptr.mad` (7) byte-identical. Torture byte-identical
+BY CONSTRUCTION (gated). ⚠️ REFERENCE returns (`T&`/`const T&`) are deliberately EXCLUDED:
+`tmp/tsubst_retref.mad` / `tsubst_retcref.mad` fail to compile **flag-off too** ("undeclared
+identifier `Holder__passref`" + "lvalue required") — a SEPARATE pre-existing
+ref-return-member-template instance-symbol bug, NOT tsubst. Revisit `T&` returns after that bug
+is fixed (it's a call-site/instantiation-naming issue, a different track).
+
 THEN the remaining widening (PLAN §11.5c / §Phase 4, one construct per gated commit):
-non-type params; non-bare dependent return (`T*`/`T&`/`vector<T>`); member-of-dependent access
-(`T::x`); template-id (`Foo<T>`); typeless placeholder + ADL bit; real `is_type_dependent`. The
+non-type params; reference dependent return (`T&` — blocked on the pre-existing ref-return bug
+above); template-id return/body (`vector<T>`, `Foo<T>`); member-of-dependent access (`T::x`);
+typeless placeholder + ADL bit; real `is_type_dependent`. The
 re-parse deletion (Phase 5 = g++ lex/parse/sema parity) waits for full coverage; Phase 6
 (serialize Tree-1 / header-forest) waits for Phase 5 (user directive 2026-06-24).
 
