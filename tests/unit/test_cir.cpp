@@ -796,3 +796,47 @@ TEST_CASE("CIR: scoped template-parameter registry resolves T to its placeholder
     CHECK(prog->resolve_template_param("T") == nullptr);
     CHECK(prog->resolve_current_class_type_alias("T") == nullptr);
 }
+
+// Two-tree Phase 3: tsubst_cir = copy_cir_subtree + substitute template-parameter
+// placeholders with concrete types. The saved pattern (Tree-1) is left untouched;
+// the returned copy (Tree-2) carries the concrete type. Drives the scalar case
+// (T -> int) directly. Derived-layer peeling (T*/T&/const T) widens later.
+TEST_CASE("CIR: tsubst_cir substitutes a template-parameter placeholder") {
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+
+	DataDefTemplateParam T("T", 0);
+
+	// A tiny pattern: an interior node with one child id whose madc type is the
+	// placeholder T.
+	node_t leaf = builder.id("v");
+	CIR_NODE(leaf)->datadef = &T;
+	node_t pattern = builder.node1(N_ADDR, leaf);
+
+	std::map<DataDef *, DataDef *> subst;
+	subst[&T] = &ddINT;
+
+	cir_node *copy = builder.tsubst_cir(CIR_NODE(pattern), subst);
+	REQUIRE(copy != nullptr);
+
+	// The copy is a fresh node distinct from the source, back-linked to Tree-1.
+	CHECK(copy != CIR_NODE(pattern));
+	CHECK(copy->tree1_origin == CIR_NODE(pattern));
+
+	// The copied child's placeholder datadef is substituted to the concrete int.
+	node_t copied_leaf = c2mir_node_first_op(copy->as_node());
+	REQUIRE(copied_leaf != nullptr);
+	CHECK(CIR_NODE(copied_leaf)->datadef == &ddINT);
+
+	// The ORIGINAL pattern is untouched (Tree-1 immutability): its child still
+	// carries the placeholder.
+	CHECK(CIR_NODE(leaf)->datadef == &T);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+}

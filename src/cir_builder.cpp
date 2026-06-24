@@ -371,12 +371,47 @@ node_t CirBuilder::node5(c2mir_node_code_t code, node_t op1, node_t op2, node_t 
 // -----------------------------------------------------------------------
 // Tree copy (two-tree / materialize-from-AST, Phase 1)
 // -----------------------------------------------------------------------
+// Substitute template-parameter placeholders in a datadef (two-tree Phase 3,
+// the `tsubst` TYPE half). A DataDefTemplateParam that appears directly, or
+// under pointer / reference / const layers, is replaced by its concrete type
+// from `subst`; derived layers are rebuilt through the canonical builders
+// (getPointerType / getReferenceType / getConstType) so type identity and
+// caching are preserved. Returns `dd` unchanged when no placeholder is involved
+// (the common case). DataDefREF IS-A DataDefPTR, so it is tested first.
+static DataDef *subst_datadef(Program *prog, DataDef *dd,
+			      const std::map<DataDef *, DataDef *> &subst)
+{
+	if (!dd)
+		return dd;
+	std::map<DataDef *, DataDef *>::const_iterator it = subst.find(dd);
+	if (it != subst.end())
+		return it->second;
+	if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd)) {
+		DataDef *nb = subst_datadef(prog, rd->base_type, subst);
+		return (prog && nb != rd->base_type)
+			   ? (DataDef *)prog->getReferenceType(nb) : dd;
+	}
+	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) {
+		DataDef *nb = subst_datadef(prog, pd->base_type, subst);
+		return (prog && nb != pd->base_type)
+			   ? (DataDef *)prog->getPointerType(nb) : dd;
+	}
+	if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd)) {
+		DataDef *nb = subst_datadef(prog, cd->base_type, subst);
+		return (prog && nb != cd->base_type)
+			   ? (DataDef *)prog->getConstType(nb) : dd;
+	}
+	return dd;
+}
+
 // Deep-copy a concrete cir_node subtree into fresh arena nodes — the `tsubst`
-// core, no substitution yet. Contract is documented on the declaration in
-// cir_builder.h. This is the safe-for-c2mir private materialization: c2mir
-// mutates `attr` on every node_t it compiles, so each copied node owns a fresh
-// node_t base (fresh uid, attr cleared, a private ops list).
-cir_node *CirBuilder::copy_cir_subtree(cir_node *src)
+// core. Contract is documented on the declaration in cir_builder.h. This is the
+// safe-for-c2mir private materialization: c2mir mutates `attr` on every node_t
+// it compiles, so each copied node owns a fresh node_t base (fresh uid, attr
+// cleared, a private ops list). When `subst` is non-NULL the copy also
+// substitutes template-parameter placeholders in each node's datadef (Phase 3).
+cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
+				       const std::map<DataDef *, DataDef *> *subst)
 {
 	if (!src)
 		return NULL;
@@ -399,7 +434,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src)
 		c2mir_init_node_ops(dst->as_node());
 		for (node_t c = child0; c != NULL; c = c2mir_node_next_op(c))
 			c2mir_op_append(c2m, dst->as_node(),
-					copy_cir_subtree(CIR_NODE(c))->as_node());
+					copy_cir_subtree(CIR_NODE(c), subst)->as_node());
 	}
 
 	// madc extension fields (invisible to c2mir). The heavy type info is
@@ -412,7 +447,13 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src)
 	// cir_report_errors rejects any tree containing one before c2mir sees it —
 	// dropping it would silently defeat that gate.
 	dst->origin_id         = src->origin_id;
-	dst->datadef           = src->datadef;
+	// datadef: in a tsubst copy (`subst` active) rewrite a template-parameter
+	// placeholder to its concrete type; otherwise carry the source's type by
+	// reference (Tree-1 == ROM, shared lifetime). subst==NULL => byte-identical
+	// to the pre-Phase-3 behaviour.
+	dst->datadef           = (subst && src->datadef)
+				     ? subst_datadef(m_prog, src->datadef, *subst)
+				     : src->datadef;
 	dst->typedef_name      = src->typedef_name;
 	dst->error_msg         = src->error_msg;
 	dst->src_lang          = src->src_lang;
@@ -426,6 +467,16 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src)
 		set_pos(dst, src->src_file(), src->src_line(), src->src_column());
 
 	return dst;
+}
+
+// `tsubst` proper (two-tree Phase 3): copy the immutable Tree-1 subtree into a
+// fresh Tree-2 subtree, substituting template-parameter placeholders with the
+// concrete types in `subst`. The saved pattern is left untouched (g++'s tsubst
+// over DECL_SAVED_TREE). See the declaration in cir_builder.h.
+cir_node *CirBuilder::tsubst_cir(cir_node *src,
+				 const std::map<DataDef *, DataDef *> &subst)
+{
+	return copy_cir_subtree(src, &subst);
 }
 
 // -----------------------------------------------------------------------

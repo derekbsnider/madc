@@ -959,7 +959,23 @@ public:
 	// payloads, valid for the c2mir context's lifetime) ride in the copied union.
 	// This is the safe-for-c2mir private materialization every later phase builds
 	// on. See docs/plans/2026-06-23-two-tree-cir-materialize-from-ast-PLAN.md.
-	cir_node *copy_cir_subtree(cir_node *src);
+	//
+	// `subst` (when non-NULL) turns the copy into a `tsubst`: any node whose
+	// `datadef` is a template-parameter placeholder (DataDefTemplateParam),
+	// directly or under pointer / reference / const layers, is rewritten to the
+	// concrete type the map binds it to. A plain copy passes NULL and is
+	// byte-identical to the pre-Phase-3 behaviour.
+	cir_node *copy_cir_subtree(cir_node *src,
+				   const std::map<DataDef *, DataDef *> *subst = nullptr);
+
+	// `tsubst` proper (two-tree Phase 3): copy an immutable Tree-1 subtree into a
+	// fresh per-instantiation Tree-2 subtree AND substitute its template-parameter
+	// placeholders with concrete types (`subst`: placeholder DataDef* -> concrete
+	// DataDef*). This is g++'s `tsubst` over `DECL_SAVED_TREE`: the saved pattern
+	// is never mutated; every instantiation gets its own substituted copy that
+	// c2mir then compiles. Thin wrapper over copy_cir_subtree.
+	cir_node *tsubst_cir(cir_node *src,
+			     const std::map<DataDef *, DataDef *> &subst);
 };
 
 // Dump the cir_node tree (our own walker, not c2mir's): node types,
