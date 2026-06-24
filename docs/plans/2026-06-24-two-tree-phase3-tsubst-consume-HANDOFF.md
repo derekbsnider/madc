@@ -9,14 +9,15 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 
 ## 0. STATE (verify, do not trust blindly — run `scripts/resume.sh`)
 
-⏳ **KG SYNC DEBT (2026-06-24 — FalkorDB unreachable this session: `falkordb` has no
-DNS entry, local `:6379` refused; `scripts/kg_query.sh` failed concretely).** When the
-KG is reachable, reconcile `madc-knowledge` to match this doc + `claude_status.json`:
-two-tree **Phase 3 COMPLETE**; **Phase 4 constructs 1–4 landed** (ptr/ref/const params
-`b5e9d86`; bare-T return `6117ccd`; pointer return `c5adec2`; multiple type params +
-completeness guard `2204d19`); **data-grounded next targets** measured (pack 87 dominant
-> template-id 14) → next two design-level steps = cir-node **pack expansion** and
-**direct type-arg binding** (capture resolved args out of
+✅ **KG SYNCED (2026-06-24).** FalkorDB was briefly unreachable mid-session; once back,
+`madc-knowledge` was reconciled via `scripts/kg_query.sh`: Feature
+`two_tree_tsubst_instantiation` (status in_progress) + Session
+`session_2026_06_24_two_tree_phase4`, linked `LANDED` + `IMPLEMENTS_DECISION
+→ cir_c2mir_backend_adr`. Captures: two-tree **Phase 3 COMPLETE**; **Phase 4 constructs
+1–4 landed** (ptr/ref/const params `b5e9d86`; bare-T return `6117ccd`; pointer return
+`c5adec2`; multiple type params + completeness guard `2204d19`); **data-grounded next
+targets** (pack 87 dominant > template-id 14) → next two design-level steps = cir-node
+**pack expansion** and **direct type-arg binding** (capture resolved args out of
 `try_instantiate_namespace_fn_template`, retire `recover_param_binding`). All gated
 flag-off AND flag-on 669/0/0/18; torture byte-identical by construction (env-gated).
 
