@@ -33088,13 +33088,23 @@ bool Program::tsubst_eligible(FuncDef *fd)
     if ( !fd || !fd->is_member_template || fd->member_template_decl.empty()
       || !fd->member_template_owner )
 	return false;
-    if ( fd->template_param_names.size() != 1 )
+    size_t np = fd->template_param_names.size();
+    if ( np < 1 )
 	return false;
-    if ( !fd->template_param_is_type.empty() && !fd->template_param_is_type[0] )
-	return false;
-    if ( !fd->template_param_is_pack.empty() && fd->template_param_is_pack[0] )
-	return false;
-    const std::string &T = fd->template_param_names[0];
+    // Every parameter must be a plain TYPE param: reject a NON-TYPE param (needs value
+    // substitution, not yet built) or a pack. Check ALL indices — a mixed list like
+    // <class A, int N> must not slip through a [0]-only check.
+    for ( size_t i = 0; i < np; ++i )
+    {
+	if ( i < fd->template_param_is_type.size() && !fd->template_param_is_type[i] )
+	    return false;
+	if ( i < fd->template_param_is_pack.size() && fd->template_param_is_pack[i] )
+	    return false;
+    }
+    // Param-name membership (>=1 type param, e.g. <class A, class B>): the dependent
+    // return / body scans below test against ANY param name, not just the first.
+    std::set<std::string> pnames(fd->template_param_names.begin(),
+				 fd->template_param_names.end());
     // A dependent return type that is the bare param T optionally wrapped in POINTER
     // layers (`T`, `T*`, `T**`) is COVERED: the return type lives in the concrete shell
     // (resolved on the normal parse path — hybrid B), the recipe parse passes the
@@ -33117,7 +33127,7 @@ bool Program::tsubst_eligible(FuncDef *fd)
 	std::string nm = contextual_identifier_name(rt);
 	if ( !nm.empty() )
 	{
-	    if ( nm != T ) { ret_is_T_wrapped = false; break; }
+	    if ( !pnames.count(nm) ) { ret_is_T_wrapped = false; break; }
 	    ++ret_idents;
 	}
 	else if ( rt->id() != TokenID::tkStar )
@@ -33128,9 +33138,11 @@ bool Program::tsubst_eligible(FuncDef *fd)
     if ( !ret_is_T_wrapped )
 	for ( size_t i = 0; i < fd->member_template_return_tokens.size(); ++i )
 	    if ( fd->member_template_return_tokens[i]
-	      && contextual_identifier_name(fd->member_template_return_tokens[i]) == T )
+	      && pnames.count(contextual_identifier_name(
+				  fd->member_template_return_tokens[i])) )
 		return false;
-    // Body/param scan: any template-id (`<`) or `T::` dependent lookup disqualifies.
+    // Body/param scan: any template-id (`<`) or `P::` dependent lookup (P a param)
+    // disqualifies.
     const std::vector<TokenBase *> &d = fd->member_template_decl;
     for ( size_t i = 0; i < d.size(); ++i )
     {
@@ -33139,7 +33151,7 @@ bool Program::tsubst_eligible(FuncDef *fd)
 	    continue;
 	if ( t->id() == TokenID::tkLT )
 	    return false;
-	if ( contextual_identifier_name(t) == T
+	if ( pnames.count(contextual_identifier_name(t))
 	  && i + 1 < d.size() && d[i + 1] && d[i + 1]->id() == TokenID::tkNS )
 	    return false;
     }

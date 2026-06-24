@@ -11451,8 +11451,14 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 					      fd->parameters[i], binding);
 		}
 	}
-	if (binding.empty())
-		return NULL;	// no placeholder recovered -> not a covered case yet
+	// COMPLETENESS: every template parameter must be recovered from the signature.
+	// A PARTIAL binding (some params bound, some not — common for a multi-param std
+	// method where a param appears only in the body, not as a parameter type) would
+	// leave UNSUBSTITUTED placeholders in the tsubst'd body and emit wrong code that
+	// no error node catches. If any param is unbound, fall back to re-parse.
+	size_t need = source ? source->template_param_names.size() : 0;
+	if (binding.empty() || binding.size() < need)
+		return NULL;
 
 	node_t result = tsubst_cir(pattern, binding)->as_node();
 	// A type-spec marker that tsubst could not expand (unbound, or a concrete

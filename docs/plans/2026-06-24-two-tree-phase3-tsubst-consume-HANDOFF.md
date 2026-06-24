@@ -116,12 +116,34 @@ identifier `Holder__passref`" + "lvalue required") — a SEPARATE pre-existing
 ref-return-member-template instance-symbol bug, NOT tsubst. Revisit `T&` returns after that bug
 is fixed (it's a call-site/instantiation-naming issue, a different track).
 
+✅ **PHASE 4 — construct 4 DONE (MULTIPLE type params).** `tsubst_eligible` now accepts a
+member template with ≥1 type param (was hard-capped at exactly 1). The `is_type`/`is_pack`
+checks were generalized from index `[0]` to ALL indices (so a mixed `<class A, int N>` cannot
+slip through), and the return / body `T`-scans now test a param-name SET (`pnames`) rather than
+a single `T`. `recover_param_binding` already builds one binding per param.
+VERIFIED (trace): `template<class A, class B> void set2(A a, B b)` fires with **2 bindings**
+(runs 7, byte-identical); single-param `echo` still fires (1 binding). test_cir 62/62 (new case:
+`set2` + `echo` both eligible, 2 patterns). Torture byte-identical BY CONSTRUCTION (gated).
+🛠 **COMPLETENESS GUARD (the flag-on gate caught a real bug — do not remove):** multi-param
+first crashed 10 flag-on tests (incl. `testvectorptr`). Cause: a real multi-param std method
+where a type param appears only in the BODY (not as a parameter type) recovered a PARTIAL
+binding (non-empty), so tsubst fired leaving UNSUBSTITUTED placeholders → wrong code no error
+node caught. Fix (`tsubst_method_body`, deepest layer): require
+`binding.size() >= source->template_param_names.size()` — every param recovered from the
+signature, else fall back to re-parse. Single-param behavior unchanged (need=1 == old
+binding.empty check).
+⚠️ NON-TYPE params stay rejected (correct — they need value substitution, not built); they also
+can't currently be exercised end-to-end because the explicit non-type member-template call
+syntax (`f<int,5>(...)`) fails to PARSE (a separate pre-existing gap — see `tmp/tsubst_mixed.mad`).
+
 THEN the remaining widening (PLAN §11.5c / §Phase 4, one construct per gated commit):
-non-type params; reference dependent return (`T&` — blocked on the pre-existing ref-return bug
-above); template-id return/body (`vector<T>`, `Foo<T>`); member-of-dependent access (`T::x`);
-typeless placeholder + ADL bit; real `is_type_dependent`. The
-re-parse deletion (Phase 5 = g++ lex/parse/sema parity) waits for full coverage; Phase 6
-(serialize Tree-1 / header-forest) waits for Phase 5 (user directive 2026-06-24).
+non-type params (needs a VALUE-placeholder + value substitution — a NEW mechanism, the biggest
+remaining lift, ALSO blocked on the explicit `f<int,5>` call-parse gap); reference dependent
+return (`T&` — blocked on the pre-existing ref-return instance bug); template-id return/body
+(`vector<T>`, `Foo<T>`); member-of-dependent access (`T::x`); typeless placeholder + ADL bit;
+real `is_type_dependent`. The re-parse deletion (Phase 5 = g++ lex/parse/sema parity) waits for
+full coverage; Phase 6 (serialize Tree-1 / header-forest) waits for Phase 5 (user directive
+2026-06-24).
 
 ## 1. GOAL (one sentence)
 

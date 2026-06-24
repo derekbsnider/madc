@@ -874,6 +874,48 @@ TEST_CASE("CIR: bare-T and T* dependent returns are eligible, T& return is not")
     CHECK(!ref_has_pattern);
 }
 
+// Two-tree Phase 4 (widening): a member template with MULTIPLE type params
+// (`template<class A, class B> void set2(A a, B b)`) is tsubst-eligible —
+// recover_param_binding builds one binding per param. A single-param template stays
+// eligible too, so both build recipes (two patterns).
+TEST_CASE("CIR: a multi-type-param member template is tsubst-eligible") {
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(
+	"struct Holder {\n"
+	"    int member;\n"
+	"    template<class A, class B> void set2(A a, B b) { member = (int)a + (int)b; }\n"
+	"    template<class T> T echo(T v) { return v; }\n"
+	"};\n"
+	"int main() { Holder h; h.set2(3, 4); h.echo(7); return h.member; }\n",
+	"<multi-param-test>");
+    REQUIRE(tp != nullptr);
+
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+    bool ok = prog->parse(tp);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    REQUIRE(ok);
+
+    size_t patterns = 0;
+    bool set2_has_pattern = false, echo_has_pattern = false;
+    for ( funcdef_map_iter it = prog->funcdef_map.begin();
+	  it != prog->funcdef_map.end(); ++it )
+	if ( it->second && it->second->dependent_pattern ) {
+	    ++patterns;
+	    if ( it->first.find("set2") != std::string::npos )
+		set2_has_pattern = true;
+	    if ( it->first.find("echo") != std::string::npos )
+		echo_has_pattern = true;
+	}
+    CHECK(patterns == 2);
+    CHECK(set2_has_pattern);
+    CHECK(echo_has_pattern);
+}
+
 // Two-tree Phase 3: tsubst_cir = copy_cir_subtree + substitute template-parameter
 // placeholders with concrete types. The saved pattern (Tree-1) is left untouched;
 // the returned copy (Tree-2) carries the concrete type. Drives the scalar case
