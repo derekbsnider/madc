@@ -433,6 +433,12 @@ class CirBuilder {
 	// the source template FuncDef. The pattern lives in this builder's arena
 	// (immutable Tree-1), never freed mid-compile.
 	std::map<class FuncDef *, cir_node *> m_tsubst_body_patterns;
+	// True while cir-building a Tree-1 recipe pattern: a template-parameter
+	// placeholder reaching type lowering is left as a deferred type-spec MARKER
+	// (the g++ TEMPLATE_TYPE_PARM-in-the-saved-tree model) instead of erroring,
+	// so tsubst can expand it to the concrete type per instantiation. False
+	// everywhere else (a stray placeholder at type lowering stays a hard error).
+	bool m_tsubst_pattern_mode = false;
 	// Build a concrete instantiated member-template method's BODY by tsubst of
 	// its source template's Tree-1 recipe (instead of lowering the re-parsed
 	// body — hybrid B keeps the concrete signature/shell on the parse path).

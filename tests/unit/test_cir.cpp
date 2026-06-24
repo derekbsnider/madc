@@ -840,3 +840,52 @@ TEST_CASE("CIR: tsubst_cir substitutes a template-parameter placeholder") {
     c2mir_finish(mir_ctx);
     MIR_finish(mir_ctx);
 }
+
+// Two-tree Phase 3 (widening): a DEFERRED TYPE-SPEC MARKER in a Tree-1 pattern —
+// an N_IGNORE node carrying a template-parameter placeholder, left by
+// append_type_specs in pattern mode where `T` is used as a TYPE (a `(T)x` cast,
+// a `T tmp;` local) — is expanded by tsubst to the CONCRETE type's specs, using
+// the same append_type_specs the re-parse path uses (so the result is identical).
+TEST_CASE("CIR: tsubst expands a deferred type-spec marker to the concrete specs") {
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+
+	DataDefTemplateParam T("T", 0);
+
+	// A spec list holding a single deferred marker (the shape append_type_specs
+	// emits for a placeholder in pattern mode).
+	node_t specs = builder.list();
+	node_t marker = builder.ignore();
+	CIR_NODE(marker)->datadef = &T;
+	builder.append(specs, marker);
+
+	std::map<DataDef *, DataDef *> subst;
+	subst[&T] = &ddINT;
+
+	cir_node *copy = builder.tsubst_cir(CIR_NODE(specs), subst);
+	REQUIRE(copy != nullptr);
+	CHECK(cir_tree_has_error(copy->as_node()) == false);
+
+	// The marker expanded to whatever append_type_specs(int) yields — compare
+	// codes node-for-node so the test is robust to int's exact spec node code.
+	node_t ref = builder.list();
+	builder.append_type_specs(ref, &ddINT);
+
+	node_t got = c2mir_node_first_op(copy->as_node());
+	node_t want = c2mir_node_first_op(ref);
+	REQUIRE(got != nullptr);
+	REQUIRE(want != nullptr);
+	CHECK(got->code == want->code);            // e.g. N_INT, not the N_IGNORE marker
+	CHECK(got->code != N_IGNORE);
+	// single-node scalar spec: no trailing extra nodes beyond the reference's.
+	CHECK((c2mir_node_next_op(got) == nullptr) ==
+	      (c2mir_node_next_op(want) == nullptr));
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+}

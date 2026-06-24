@@ -432,9 +432,28 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		dst->base.u = src->base.u;
 	} else {
 		c2mir_init_node_ops(dst->as_node());
-		for (node_t c = child0; c != NULL; c = c2mir_node_next_op(c))
+		for (node_t c = child0; c != NULL; c = c2mir_node_next_op(c)) {
+			cir_node *cc = CIR_NODE(c);
+			// A deferred placeholder type-spec MARKER (N_IGNORE carrying a
+			// template-parameter datadef, left by append_type_specs in pattern
+			// mode): expand it IN PLACE to the concrete type's specs via
+			// append_type_specs — the SAME lowering the re-parse path uses, so the
+			// substituted tree is byte-identical. Unbound -> an error node so the
+			// caller falls back to re-parse. Only in a tsubst copy (`subst`).
+			if (subst && cc->base.code == N_IGNORE && cc->datadef
+			    && cc->datadef->is_template_param()) {
+				std::map<DataDef *, DataDef *>::const_iterator mi =
+					subst->find(cc->datadef);
+				if (mi != subst->end() && mi->second)
+					append_type_specs(dst->as_node(), mi->second);
+				else
+					append(dst->as_node(), error_node(
+						"tsubst: unbound template parameter in type marker"));
+				continue;
+			}
 			c2mir_op_append(c2m, dst->as_node(),
-					copy_cir_subtree(CIR_NODE(c), subst)->as_node());
+					copy_cir_subtree(cc, subst)->as_node());
+		}
 	}
 
 	// madc extension fields (invisible to c2mir). The heavy type info is
@@ -669,6 +688,18 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	// gate rejects the tree LOUDLY, rather than silently mis-lowering `T` to the
 	// N_VOID its dtVOID rawtype would otherwise select. (two-tree Phase 1.5.)
 	if (dd->is_template_param()) {
+		if (m_tsubst_pattern_mode) {
+			// Building a Tree-1 recipe pattern: leave the placeholder as a
+			// deferred type-spec MARKER — an N_IGNORE node carrying the
+			// placeholder datadef — that tsubst expands to the concrete type's
+			// specs per instantiation (g++'s TEMPLATE_TYPE_PARM in the saved
+			// tree). The pattern is NEVER compiled directly, so the marker never
+			// reaches c2mir un-substituted.
+			node_t m = ignore();
+			CIR_NODE(m)->datadef = dd;
+			append(lst, m);
+			return;
+		}
 		append(lst, error_node(
 			("unsubstituted template parameter '" + dd->name
 			 + "' reached type lowering").c_str()));
@@ -11350,14 +11381,15 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 	std::map<FuncDef *, cir_node *>::iterator pi =
 		m_tsubst_body_patterns.find(source);
 	if (pi == m_tsubst_body_patterns.end()) {
+		// Build in pattern mode so a placeholder TYPE (a body cast `(U)x`, a local
+		// `U tmp;`) becomes a deferred type-spec marker rather than an error;
+		// tsubst expands the marker to the concrete type per instantiation. A
+		// pattern that still carries a genuine error node (some other unsupported
+		// construct) is rejected -> memo NULL -> fall back to re-parse.
+		bool saved_mode = m_tsubst_pattern_mode;
+		m_tsubst_pattern_mode = true;
 		node_t pat = translate_block((TokenCpnd *)recipe);
-		// A pattern that lowered a placeholder TYPE (e.g. a body cast `(U)x`, a
-		// local `U tmp;`) carries an error node from the append_type_specs guard:
-		// tsubst's datadef substitution rewrites a node's `datadef`, not the
-		// already-emitted type-spec child nodes, so that body shape is NOT yet
-		// covered. Memo NULL and fall back to re-parse (the conservative
-		// capability gate). Widened in a later commit by substituting the
-		// placeholder before type lowering.
+		m_tsubst_pattern_mode = saved_mode;
 		if (pat && cir_tree_has_error(pat))
 			pat = NULL;
 		m_tsubst_body_patterns[source] = pat ? CIR_NODE(pat) : NULL;
@@ -11388,7 +11420,12 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 	if (binding.empty())
 		return NULL;	// no placeholder recovered -> not a covered case yet
 
-	return tsubst_cir(pattern, binding)->as_node();
+	node_t result = tsubst_cir(pattern, binding)->as_node();
+	// A type-spec marker that tsubst could not expand (unbound, or a concrete
+	// type append_type_specs can't render here) left an error node -> fall back.
+	if (cir_tree_has_error(result))
+		return NULL;
+	return result;
 }
 
 node_t CirBuilder::func_def(TokenFunc *tf)
