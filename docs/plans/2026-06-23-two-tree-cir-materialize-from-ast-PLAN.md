@@ -27,9 +27,12 @@ guard turns a stray placeholder into an error node (a Phase 2/3 substitution-bug
 trap). Purely ADDITIVE — constructed nowhere in production yet (Phase 2 is its first
 producer), so emit is byte-identical by construction. GATE GREEN: build clean,
 fulltest 669/0/0/18, torture byte-identical (0 timeouts); unit tests `test_datadef`
-(type + predicates) + `test_cir` (guard). **NEXT = Phase 2 (parse a template
-definition into an immutable Tree-1 cir_node pattern, dependent params as these
-placeholders).**
+(type + predicates) + `test_cir` (guard). **NEXT = Phase 2 — DESIGN IS DRAFTED in
+§11 (settled direction = hybrid B: concrete shell at parse, tsubst the member
+BODIES at cir-build). Before writing code, ANSWER the §11.5 OPEN questions
+(chiefly: the 2a one-time dependent-body parse — how to bind a param name to a
+`DataDefTemplateParam` without disturbing eager type resolution). Do that with a
+fresh budget.**
 
 **✅ PHASE 1 DONE (`c409786`, 2026-06-23).** `CirBuilder::copy_cir_subtree`
 (`src/cir_builder.cpp`) + `cir_node.tree1_origin` back-ref + env-gated proof hook
@@ -236,6 +239,9 @@ this gap, so it remains the correct safe first slice.
 - On a template definition, build a `cir_node` PATTERN with dependent params as
   placeholders (no instantiation). Mark it immutable (Tree-1). Start with the
   simplest case (a class template, one type param, scalar members).
+- **SEE §11 (DESIGN ANALYSIS).** Settled direction = hybrid B (concrete shell at
+  parse, tsubst the member BODIES at cir-build). §11.5 lists OPEN questions to
+  answer BEFORE coding the 2a dependent-body parse.
 
 **Phase 3 — instantiate by tree-`tsubst` for the simplest case.**
 - `tsubst_cir(pattern, args)` = `copy_cir_subtree` + replace placeholder params
@@ -255,6 +261,89 @@ gate stays green.
 (Tree-1 + token records + pools); on load, mmap and instantiate against it without
 re-parsing the stdlib. This is the "below g++" win and reuses the now-immutable
 Tree-1. (Folds in the embedded-header-forest track.)
+
+## 11. PHASE 2 — DESIGN ANALYSIS (recon 2026-06-23; settled vs OPEN)
+
+Recon of the live machinery, written before Phase 2 code so the next session
+executes a decision instead of re-deriving it. **Phases 1 + 1.5 are the
+foundation this rests on.**
+
+### 11.1 The live machinery (grounded, file:line)
+- **`Program::TemplateDef`** (`include/madc.h:1494`): `typeparams` (names, e.g.
+  `["T"]`), `body` = a CLONED token vector (`class Name { ... }`), namespace,
+  owner, partial-spec pattern/constraint. Registered at template-definition parse.
+- **Instantiation = token clone + RE-PARSE, at PARSE time**
+  (`Program::instantiate_template_use`, `parser.cpp:3469`): find the `TemplateDef`,
+  parse `<args>`, build `subst` (param-name → concrete `TokenDataType`), clone the
+  body tokens substituting params, **splice into the token stream and RE-PARSE**
+  via the class parser → a concrete `DataDefCLASS` (cached in `datatype_map` by a
+  mangled key) + member `TokenFunc`s in `pending_funcs`. Re-parse happens once per
+  UNIQUE arg set; it is the ~87%-of-parse cost.
+- **cir is built LATER**, post-parse, from those concrete structures
+  (`translate_module` → `func_def` → `translate_block`, `cir_builder.cpp:11384`).
+
+### 11.2 THE CORE TENSION (the reason Phase 2 is "the hard part")
+g++ has ONE tree (parse == sema == codegen input), so "instantiate at the tree
+level" is well-defined. madc SPLITS it: **parse** (tokens → `TokenBase`/`DataDef`,
+types resolved eagerly) THEN **cir-build** (post-parse → `cir_node`). But a
+concrete type is needed **at parse time**: after `Box<int> b;` the parser must
+already know `b`'s members/layout (`b.x` offset) and method signatures (`b.get()`)
+to keep parsing. So instantiation **cannot** be fully deferred to cir-build
+without breaking parse-time member resolution. The cir-level `tsubst` (Phase 3)
+therefore cannot, by itself, replace the parse-time re-parse — something must still
+hand the parser a concrete class shell.
+
+### 11.3 Resolution options (with tradeoffs)
+- **(A) Full cir-level deferral** — instantiation produces only a dependent
+  placeholder at parse time; the real struct + bodies are tsubst'd at cir-build.
+  ✗ Breaks parse-time member/layout resolution (11.2). Rejected for the general
+  case; only viable for entities never inspected during later parsing.
+- **(B) Hybrid: concrete SHELL at parse, tsubst the BODIES at cir-build
+  (RECOMMENDED).** Keep producing the concrete `DataDefCLASS` (members/layout/
+  signatures) at parse time — cheap relative to bodies — so parsing is unaffected.
+  Parse each member-function BODY **once** into an immutable Tree-1 cir pattern
+  (params as `DataDefTemplateParam`), and at cir-build instantiate each concrete
+  method's body by `tsubst_cir(pattern, args)` (Phase 1 `copy_cir_subtree` +
+  placeholder→concrete) INSTEAD of re-parsing the body tokens. Targets the actual
+  87% (bodies), preserves correctness, and the re-parse fallback stays for any
+  body the pattern path can't yet handle. The shell parse can later be made
+  copy-based too (a follow-on), but bodies are where the win is.
+- **(C) Two parsed-structure layer** — copy the parsed `TokenFunc`/`DataDefCLASS`
+  structure + substitute at PARSE time (no re-parse, no cir change). Plausible but
+  duplicates the tsubst machinery at the TokenBase layer and does NOT advance the
+  cir_node two-tree (Tree-1 serialization / forest) goal. Deferred.
+
+### 11.4 RECOMMENDED first slice (smallest end-to-end win)
+For the simplest case — a class template, one type param, **scalar** members, and
+**one member function** whose body uses `T` only in resolvable scalar positions:
+1. At template definition, parse each member-function body ONCE with the param
+   bound to a `DataDefTemplateParam` (the 2a "dependent parse" — the parser change:
+   bind the param NAME to the placeholder DataDef instead of requiring a concrete
+   substitution). Produce a per-method **Tree-1 cir pattern** (cir-build that
+   dependent body; `append_type_specs` already guards stray placeholders).
+2. Keep the concrete shell (members/layout/signatures) on the existing parse path.
+3. At cir-build of a concrete instantiation's method, if a Tree-1 pattern exists
+   for it, `tsubst_cir(pattern, {T→concrete})` → Tree-2 body instead of lowering
+   the re-parsed body. Capability-gated; else fall back.
+4. Gate (§8). Coexist with re-parse (deletion trigger = §5).
+
+### 11.5 OPEN questions (resolve with fresh budget, before coding 2a)
+- **2a parser change** — exactly where/how to bind a template param NAME to a
+  `DataDefTemplateParam` during a one-time dependent body parse, WITHOUT disturbing
+  the eager type resolution every non-template parse relies on. This is the deepest
+  unknown; scope it first (likely a parse-mode flag scoped to template-body parse).
+- **Pattern cache** — key (FuncDef/template identity + member) and where the Tree-1
+  cir pattern is stored/owned (CirBuilder arena vs a Program-level pattern cache;
+  must outlive per-TU Tree-2 builds).
+- **Capability predicate** — "can tsubst handle this pattern?" (drives B's
+  fallback). Start: scalar-only `T`, no dependent name lookup, no nested templates.
+- **Where cir-build instantiates** — `func_def`'s `translate_block` call is the
+  seam (Phase 0), but a per-method pattern needs the concrete method ↔ pattern
+  link; confirm how a concrete instantiated `TokenFunc` can find its pattern.
+
+**Status: 11.2–11.4 are the SETTLED direction (hybrid B, bodies-first). 11.5 are
+OPEN and must be answered before writing 2a.** Do NOT attempt full cir-level
+deferral (A) or the parse-layer copy (C) without re-opening this analysis.
 
 ## 7. FIRST SLICE (start here)
 
