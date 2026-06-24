@@ -27,12 +27,14 @@ guard turns a stray placeholder into an error node (a Phase 2/3 substitution-bug
 trap). Purely ADDITIVE — constructed nowhere in production yet (Phase 2 is its first
 producer), so emit is byte-identical by construction. GATE GREEN: build clean,
 fulltest 669/0/0/18, torture byte-identical (0 timeouts); unit tests `test_datadef`
-(type + predicates) + `test_cir` (guard). **NEXT = Phase 2 — DESIGN IS DRAFTED in
-§11 (settled direction = hybrid B: concrete shell at parse, tsubst the member
-BODIES at cir-build). Before writing code, ANSWER the §11.5 OPEN questions
-(chiefly: the 2a one-time dependent-body parse — how to bind a param name to a
-`DataDefTemplateParam` without disturbing eager type resolution). Do that with a
-fresh budget.**
+(type + predicates) + `test_cir` (guard). **NEXT = Phase 2 — DESIGN DRAFTED in §11.
+Settled direction = hybrid B (concrete shell at parse, tsubst member BODIES at
+cir-build). The 2a intercept is now SETTLED too (§11.5a): scoped registration of
+each param name as a `DataDefTemplateParam` so the existing `datatype_map.find`
+path resolves `T` — NO resolver rewrite. FIRST STEP (cheap, do first): the §11.5a
+verification probe — confirm `TokenIdent`→type promotion is parse-time via
+`datatype_map` (so scoped registration suffices). THEN code 2a; §11.5b lists the
+remaining OPEN items (pattern cache, capability predicate, method↔pattern link).**
 
 **✅ PHASE 1 DONE (`c409786`, 2026-06-23).** `CirBuilder::copy_cir_subtree`
 (`src/cir_builder.cpp`) + `cir_node.tree1_origin` back-ref + env-gated proof hook
@@ -327,11 +329,36 @@ For the simplest case — a class template, one type param, **scalar** members, 
    the re-parsed body. Capability-gated; else fall back.
 4. Gate (§8). Coexist with re-parse (deletion trigger = §5).
 
-### 11.5 OPEN questions (resolve with fresh budget, before coding 2a)
-- **2a parser change** — exactly where/how to bind a template param NAME to a
-  `DataDefTemplateParam` during a one-time dependent body parse, WITHOUT disturbing
-  the eager type resolution every non-template parse relies on. This is the deepest
-  unknown; scope it first (likely a parse-mode flag scoped to template-body parse).
+### 11.5a 2a INTERCEPT — recon answer (was the deepest unknown; now SETTLED mechanism)
+Recon (2026-06-23) of the type-name gate downgraded this from "deepest unknown" to
+a concrete, low-invasiveness plan:
+- **Type-ness is gated at PARSE time through `datatype_map.find(name)`** (+ `struct_map`,
+  `lazy_resolve_type`, `resolve_current_class_type_alias`) — e.g.
+  `resolve_expression_class_scope` (`parser.cpp:2094`) and the declaration-parse
+  type checks. A bare identifier becomes a type (and `T value;` becomes a member
+  DECL rather than an expression) iff one of these resolves it.
+- **A template body is stored as CLONED tokens** captured at definition (`parser.cpp`
+  ~4362/4529/4544), where `T` is a `TokenIdent` (T was not a type yet). Today
+  instantiation REPLACES that `TokenIdent` with a concrete `TokenDataType` before
+  re-parsing. The 2a dependent parse instead does NOT substitute.
+- **SETTLED mechanism:** for the one-time dependent body parse, register each
+  template param name as a `DataDefTemplateParam` in a **scoped** type registry
+  (push before the body parse, pop after) so the EXISTING `datatype_map.find` path
+  resolves `T` to the placeholder with **NO resolver rewrite** — precisely "without
+  disturbing eager type resolution" (the lookup code is unchanged; only the scoped
+  registry content differs during the dependent parse). madc already carries
+  scoped template parse-mode state to model this scope:
+  `instantiating_canonical_spelling`, `fn_template_instantiation_depth`, the
+  `compounds` stack, `class_scope_stack`, `parsing_template_instantiated_member_body()`
+  (`parser.cpp:7421`).
+- **ONE verification before coding** (the only residual unknown here): confirm that
+  `TokenIdent`→type promotion happens at PARSE time via the `datatype_map` lookups
+  above (so a scoped registration suffices), and that NO separate LEXER-side
+  type-promotion froze `T` as a non-type token at capture in a way the parser
+  cannot re-promote. (The substitution-then-reparse model implies parse-time
+  promotion, but verify directly with a 2-line probe before relying on it.)
+
+### 11.5b OPEN questions (resolve with fresh budget, before/while coding 2a)
 - **Pattern cache** — key (FuncDef/template identity + member) and where the Tree-1
   cir pattern is stored/owned (CirBuilder arena vs a Program-level pattern cache;
   must outlive per-TU Tree-2 builds).
