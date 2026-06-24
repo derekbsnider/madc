@@ -427,6 +427,19 @@ class CirBuilder {
 	void set_pos(cir_node *cn, const char *file, int line, int col);
 	void set_pos(cir_node *cn, TokenBase *tb);
 
+	// Two-tree Phase 3: memoized Tree-1 body cir pattern per SOURCE member
+	// template — built ONCE from FuncDef::dependent_pattern (the recipe),
+	// copied+substituted into a fresh Tree-2 body per instantiation. Keyed by
+	// the source template FuncDef. The pattern lives in this builder's arena
+	// (immutable Tree-1), never freed mid-compile.
+	std::map<class FuncDef *, cir_node *> m_tsubst_body_patterns;
+	// Build a concrete instantiated member-template method's BODY by tsubst of
+	// its source template's Tree-1 recipe (instead of lowering the re-parsed
+	// body — hybrid B keeps the concrete signature/shell on the parse path).
+	// Returns NULL when this is not a covered method, so the caller falls back
+	// to translate_block. Capability + MADC_XTEST_DEP_PARSE gated.
+	node_t tsubst_method_body(class TokenFunc *tf, class FuncDef *fd);
+
 public:
 	CirBuilder(c2m_ctx_t c2m_ctx);
 	~CirBuilder();

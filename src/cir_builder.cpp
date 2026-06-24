@@ -11327,6 +11327,70 @@ bool CirBuilder::note_capture(Variable *v)
 // Function definition
 // -----------------------------------------------------------------------
 
+// Two-tree Phase 3: build a concrete instantiated member-template method's BODY
+// by tsubst of its source template's Tree-1 recipe — g++'s instantiate_body
+// (tsubst_stmt over DECL_SAVED_TREE), instead of lowering the re-parsed body.
+// The concrete signature/shell stays on the existing parse path (hybrid B).
+// Returns NULL for anything not yet covered, so func_def falls back to
+// translate_block (the re-parse path stays the fallback per PLAN §5). Gated by
+// MADC_XTEST_DEP_PARSE so the production default is byte-identical.
+node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
+{
+	if (!getenv("MADC_XTEST_DEP_PARSE"))
+		return NULL;
+	FuncDef *source = fd ? fd->tsubst_source : NULL;
+	if (!source || !source->dependent_pattern)
+		return NULL;
+	TokenFunc *recipe = source->dependent_pattern;
+
+	// Build the recipe body cir ONCE into an immutable Tree-1 pattern, memoized
+	// on the source template; later instantiations only copy+substitute it. The
+	// recipe is a method of the same owner class, so it lowers in this concrete
+	// method's already-set-up context (same `__this`, same member layout).
+	std::map<FuncDef *, cir_node *>::iterator pi =
+		m_tsubst_body_patterns.find(source);
+	if (pi == m_tsubst_body_patterns.end()) {
+		node_t pat = translate_block((TokenCpnd *)recipe);
+		// A pattern that lowered a placeholder TYPE (e.g. a body cast `(U)x`, a
+		// local `U tmp;`) carries an error node from the append_type_specs guard:
+		// tsubst's datadef substitution rewrites a node's `datadef`, not the
+		// already-emitted type-spec child nodes, so that body shape is NOT yet
+		// covered. Memo NULL and fall back to re-parse (the conservative
+		// capability gate). Widened in a later commit by substituting the
+		// placeholder before type lowering.
+		if (pat && cir_tree_has_error(pat))
+			pat = NULL;
+		m_tsubst_body_patterns[source] = pat ? CIR_NODE(pat) : NULL;
+		pi = m_tsubst_body_patterns.find(source);
+	}
+	cir_node *pattern = pi->second;
+	if (!pattern)
+		return NULL;
+
+	// Recover {placeholder -> concrete} by aligning the recipe's placeholder
+	// params (interned DataDefTemplateParam, shared with the body nodes) with
+	// this instance's concrete params, index-wise. Scalar slice: the bare type
+	// param appearing as a parameter type. Derived (T*/T&) and body-only T widen
+	// in later commits.
+	std::map<DataDef *, DataDef *> binding;
+	if (recipe->method) {
+		size_t n = recipe->method->parameters.size();
+		if (n > fd->parameters.size())
+			n = fd->parameters.size();
+		for (size_t i = 0; i < n; i++) {
+			Variable *rp = recipe->method->parameters[i];
+			DataDef *pdd = rp ? rp->type : NULL;
+			DataDef *cdd = fd->parameters[i];
+			if (pdd && pdd->is_template_param() && cdd)
+				binding[pdd] = cdd;
+		}
+	}
+	if (binding.empty())
+		return NULL;	// no placeholder recovered -> not a covered case yet
+
+	return tsubst_cir(pattern, binding)->as_node();
+}
+
 node_t CirBuilder::func_def(TokenFunc *tf)
 {
 	FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
@@ -11506,7 +11570,13 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		append(decl_list, pointer());
 
 	node_t decl = node2(N_DECL, func_id, decl_list);
-	node_t body = translate_block((TokenCpnd *)tf);
+	// Two-tree Phase 3: a covered instantiated member-template method builds its
+	// body by tsubst of the Tree-1 recipe (no body re-parse); everything else
+	// falls back to lowering the parsed body. tsubst_method_body returns NULL
+	// unless the capability + MADC_XTEST_DEP_PARSE gate is satisfied.
+	node_t body = tsubst_method_body(tf, fd);
+	if (!body)
+		body = translate_block((TokenCpnd *)tf);
 
 	// C99 VLA-parameter bound side effects: a parameter array bound such as
 	// `int a[i++]` must have its bound expression evaluated on function entry
