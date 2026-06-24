@@ -136,14 +136,42 @@ binding.empty check).
 can't currently be exercised end-to-end because the explicit non-type member-template call
 syntax (`f<int,5>(...)`) fails to PARSE (a separate pre-existing gap — see `tmp/tsubst_mixed.mad`).
 
-THEN the remaining widening (PLAN §11.5c / §Phase 4, one construct per gated commit):
-non-type params (needs a VALUE-placeholder + value substitution — a NEW mechanism, the biggest
-remaining lift, ALSO blocked on the explicit `f<int,5>` call-parse gap); reference dependent
-return (`T&` — blocked on the pre-existing ref-return instance bug); template-id return/body
-(`vector<T>`, `Foo<T>`); member-of-dependent access (`T::x`); typeless placeholder + ADL bit;
-real `is_type_dependent`. The re-parse deletion (Phase 5 = g++ lex/parse/sema parity) waits for
-full coverage; Phase 6 (serialize Tree-1 / header-forest) waits for Phase 5 (user directive
-2026-06-24).
+📊 **DATA-GROUNDED NEXT TARGETS (measured 2026-06-24, not guessed).** A temporary
+reason-tagged `tsubst_eligible` (env `MADC_XTEST_ELIG`, since reverted) was run flag-on over the
+container/template corpus (testvector, testvectorptr, testmap, testset, teststdmapint,
+testtemplatecontainer, testcontainerdtor, testoutoflinemembertemplate, testmadc_ns,
+testnestedtemplatedtor). Rejection tally:
+- **`pack` 87** — DOMINANT (~58%). Variadic templates (emplace, `make_*`, forwarding ctors).
+- `OK` 47 — already eligible.
+- `template-id-or-lt` 14 — a body/return `<` (a real `Foo<T>` template-id OR a `<` comparison;
+  the scan can't tell them apart — conservatively rejects both).
+- `nontype` / `dep-return` / `dep-name` — ~0 in this corpus (rare; don't prioritize).
+⇒ The CHEAP relaxations are EXHAUSTED (params, ptr/ref returns, multi-param — all landed). The
+next two are DESIGN-LEVEL (traced 2026-06-24, both confirmed NOT a gate relaxation):
+
+1. **PACKS (do first — dominant).** The existing pack machinery (`pack_subst`,
+   `first_template_pack_index`, the `pack_name...` token splice ~parser.cpp:2815) is ALL
+   TOKEN-LEVEL — it serves the RE-PARSE path (splice N tokens, then parse). The tsubst path
+   operates on the already-built cir tree, so it needs cir-node **PACK EXPANSION**: one recipe
+   node carrying `args...` expands to N nodes by the instantiation's concrete pack arity — g++'s
+   `tsubst_pack_expansion`. New mechanism (node fan-out, not just datadef swap). Multi-commit.
+2. **DIRECT TYPE-ARG BINDING (prerequisite cleanup — do alongside).** Today the binding is
+   REVERSE-ENGINEERED from signature param positions (`recover_param_binding`), which is why a
+   body-only param can't bind and the completeness guard has to bail. g++ feeds tsubst the arg
+   list directly. The resolved concrete type args are computed INSIDE
+   `try_instantiate_namespace_fn_template` (from deduction/explicit args on `tc`) but are NOT
+   stored — `FnTemplateDef` (madc.h:1746) carries only param NAMES/flags. FIX: capture the
+   resolved `std::vector<DataDef*>` (param-index order) onto the instance `FuncDef` beside
+   `tsubst_source`, and bind from it directly in `tsubst_method_body` — subsumes
+   `recover_param_binding`, covers body-only params, makes the completeness guard trivially hold.
+
+Lower priority / blocked: template-id body/return (`vector<T>`, `Foo<T>` — 14; needs
+dependent-template-id handling, AND disambiguating `<` template-id from `<` comparison);
+reference dependent return (`T&` — blocked on the pre-existing ref-return instance bug);
+non-type params (value substitution + blocked on the `f<int,5>` call-parse gap); `T::x`;
+typeless placeholder + ADL; real `is_type_dependent`. The re-parse deletion (Phase 5 = g++
+lex/parse/sema parity) waits for full coverage; Phase 6 (serialize Tree-1 / header-forest) waits
+for Phase 5 (user directive 2026-06-24).
 
 ## 1. GOAL (one sentence)
 
