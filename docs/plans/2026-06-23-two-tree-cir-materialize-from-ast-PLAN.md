@@ -396,19 +396,51 @@ a concrete, low-invasiveness plan:
   existence proofs (class-scoped aliases + typedef both promote a mid-parse name to
   a type at parse time); no separate probe needed.
 
-### 11.5b OPEN questions (resolve with fresh budget, before/while coding 2a)
-- **Pattern cache** — key (FuncDef/template identity + member) and where the Tree-1
-  cir pattern is stored/owned (CirBuilder arena vs a Program-level pattern cache;
-  must outlive per-TU Tree-2 builds).
-- **Capability predicate** — "can tsubst handle this pattern?" (drives B's
-  fallback). Start: scalar-only `T`, no dependent name lookup, no nested templates.
-- **Where cir-build instantiates** — `func_def`'s `translate_block` call is the
-  seam (Phase 0), but a per-method pattern needs the concrete method ↔ pattern
-  link; confirm how a concrete instantiated `TokenFunc` can find its pattern.
+### 11.5b — RESOLVED (recon 2026-06-24, grounded in file:line; commit-1 registry landed)
+The scoped param path (§11.5a) is BUILT (`b35cef2`). The three remaining items are now
+SETTLED — execute, do not re-derive:
 
-**Status: 11.2–11.4 are the SETTLED direction (hybrid B, bodies-first). 11.5 are
-OPEN and must be answered before writing 2a.** Do NOT attempt full cir-level
-deferral (A) or the parse-layer copy (C) without re-opening this analysis.
+- **THE ARCHITECTURAL SPLIT (decides everything below): the dependent body parse runs
+  at PARSE time; the Tree-1 *cir* pattern is built at CIR-BUILD time.** `translate_block`
+  (cir_builder.cpp:11458, inside `func_def`) runs ONLY from `translate_module` — never
+  during the definition parse. So a Tree-1 pattern exists in TWO stages:
+  (1) a dependent PARSE-TREE pattern (`TokenFunc`/`TokenCpnd` whose `T` resolved to a
+  `DataDefTemplateParam` via a pushed `TemplateParamScope`), produced ONCE at parse time
+  and stored; (2) the dependent parse-tree is cir-built ONCE into the immutable Tree-1
+  cir pattern at cir-build time; (3) Phase 3 `tsubst_cir` copy+substitutes that cir
+  pattern per concrete instantiation at the 11458 seam. The dependent parse MUST run in
+  full isolation — the `instantiate_template_use` save/restore model (parser.cpp:4178+:
+  swap `compounds`/`class_scope_stack`/`cur_func_name`, RAII restore, exception-safe) —
+  so producing a pattern has no side effects on the existing path.
+
+- **Pattern cache (was: key + ownership).** REUSE existing FuncDef provenance, do NOT
+  invent a parallel store. Member-fn templates already carry `member_template_decl`
+  (raw tokens) + `member_template_owner` + `template_param_names`/`_is_pack`/`_is_type`
+  (madc.h:175-196): attach the dependent parse-tree pattern + a cir-pattern slot HERE on
+  the FuncDef (Program lifetime). Class templates: a per-(TemplateDef, member) cache
+  keyed by the member's identity. The CIR pattern itself lives in the CirBuilder Tree-1
+  arena — built once, never freed mid-compile, shared across per-TU Tree-2 builds (it IS
+  immutable Tree-1). The FuncDef pointer itself is the natural key for member-fn templates.
+
+- **Capability predicate (`tsubst_eligible`).** Conservative; false → existing re-parse
+  fallback (no behavior change). TRUE only for: exactly one template param, all type-
+  params (`template_param_is_type` all true), no packs (`template_param_is_pack` all
+  false), and a body using `T` only in scalar positions — NO dependent name lookup
+  (`T::x`), NO nested template-id (`Foo<T>`), NO `sizeof...`. A token-scan of the body
+  rejects the disqualifying constructs. Widen one construct per Phase-4 commit.
+
+- **Method↔pattern link.** Member-fn templates: the instantiated FuncDef is produced
+  from `member_template_decl` — record the SOURCE template FuncDef (identity) on the
+  instantiated FuncDef so the 11458 seam finds the pattern + the concrete type args.
+  Class templates: the instantiated `DataDefCLASS` records its `TemplateDef` identity +
+  arg list (mangled key already exists); each member maps by name/index to its pattern.
+
+**Status: 11.2–11.4 SETTLED (hybrid B, bodies-first); 11.5a + 11.5b SETTLED + grounded.
+Commit-1 (scoped registry) DONE. NEXT commit = the dependent body parse producing a
+stored parse-tree pattern (parse side, isolated, capability-gated, INERT — nothing
+consumes it yet → byte-identical), THEN cir-build it to a Tree-1 cir pattern, THEN
+Phase 3 tsubst at 11458.** Do NOT attempt full cir-level deferral (A) or the parse-layer
+copy (C) without re-opening this analysis.
 
 ## 7. FIRST SLICE (start here)
 
