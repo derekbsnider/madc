@@ -610,6 +610,20 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 {
 	if (!dd) { append(lst, simple(N_INT)); return; }
 
+	// An UNRESOLVED template parameter must never reach type lowering: a
+	// pattern containing `T` is Tree-1 only, and tsubst replaces `T` with the
+	// concrete argument before the per-TU tree is built. If one arrives here it
+	// means a not-yet-substituted placeholder leaked into the c2mir-bound tree
+	// (a Phase 2/3 substitution bug). Emit an error node so the cir_report_errors
+	// gate rejects the tree LOUDLY, rather than silently mis-lowering `T` to the
+	// N_VOID its dtVOID rawtype would otherwise select. (two-tree Phase 1.5.)
+	if (dd->is_template_param()) {
+		append(lst, error_node(
+			("unsubstituted template parameter '" + dd->name
+			 + "' reached type lowering").c_str()));
+		return;
+	}
+
 	// SIMD/vector type: emit the ELEMENT type's specs followed by a vector_size
 	// N_ATTR placed DIRECTLY in the spec-qual list. c2mir's type-spec checker
 	// skips N_ATTR in the normal spec loop and then runs apply_vector_attr_list

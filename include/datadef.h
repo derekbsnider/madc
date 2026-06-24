@@ -34,7 +34,13 @@ class TokenBase;
 // (gcc.c-torture largesizeofquery) — never store a dim in a 32-bit type.
 typedef uint64_t carray_dim_t;
 
-enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass     };
+enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass,
+				// An unresolved template parameter `T` (DataDefTemplateParam).
+				// Append-only: never renumber. is_numeric/is_integer/is_real
+				// gate on btSimple and is_struct/is_object/is_function on their
+				// own basetypes, so a btTemplateParam answers false to all of
+				// them without any per-predicate change.
+				btTemplateParam };
 enum class RefType  : uint8_t { rtNone, rtValue, rtPointer, rtReference  };
 
 enum class DataType : uint16_t {
@@ -221,6 +227,18 @@ public:
     // carry `const` — the single source of truth for const, no parallel flags
     // (mirrors is_reference()/DataDefREF). See docs/plans/2026-06-19-const-qualified-types.md.
     virtual bool is_const() const
+    {
+	return false;
+    }
+    // True only for DataDefTemplateParam: an UNRESOLVED template parameter `T`
+    // in a not-yet-instantiated template pattern (two-tree / materialize-from-AST
+    // Phase 1.5). A real typed placeholder — NOT the bare TokenIdent the parser
+    // substitutes at the token level today, and distinct from
+    // DataDefCLASS::is_dependent_placeholder (which marks a dependent class
+    // RESULT like `Box<T>`, not the param itself). tsubst replaces it with the
+    // concrete argument type per instantiation; until then it must never reach
+    // c2mir (the append_type_specs guard rejects it via an error node).
+    virtual bool is_template_param() const
     {
 	return false;
     }
@@ -1196,6 +1214,35 @@ public:
     DataDefAUTO() : DataDef("auto", 0, DataType::dtVOID) {}
 };
 extern DataDefAUTO ddAUTO;
+
+// An UNRESOLVED template type parameter `T` in a not-yet-instantiated template
+// pattern — the typed placeholder the two-tree / materialize-from-AST design
+// needs (docs/plans/2026-06-23-two-tree-cir-materialize-from-ast-PLAN.md, Phase
+// 1.5). Today madc has no such type: a template body's `T` is a bare
+// TokenIdent that the parser substitutes for a concrete TokenDataType BEFORE
+// parsing, so a parsed pattern can never contain `T`. Representing `T` as a real
+// type is the prerequisite for parsing a body ONCE into an immutable Tree-1
+// pattern and instantiating by tsubst (copy + substitute) instead of re-parsing.
+//
+// It carries the spelled name (DataDef::name, e.g. "T") and param_index — the
+// 0-based position in the template's parameter list — which tsubst uses to pick
+// the concrete argument to substitute. Size 0 and DataType dtVOID: it has no
+// real layout. basetype() is btTemplateParam so every inherited is_*() predicate
+// answers false (it is not numeric/integer/real/pointer/struct/object/function);
+// is_template_param() is the single discriminator consumers test (the
+// DataDefREF/DataDefCONST discipline — identity lives in the type, no parallel
+// flags). A pattern containing one is Tree-1 only and must be substituted before
+// it can be lowered/compiled; append_type_specs rejects a stray one via an error
+// node so an un-substituted placeholder surfaces loudly rather than mis-lowering.
+class DataDefTemplateParam: public DataDef
+{
+public:
+    unsigned param_index;   // 0-based position in the template parameter list
+    DataDefTemplateParam(const std::string &nm, unsigned idx)
+	: DataDef(nm, 0, DataType::dtVOID), param_index(idx) {}
+    virtual BaseType basetype() const { return BaseType::btTemplateParam; }
+    virtual bool is_template_param() const { return true; }
+};
 
 // Type table identity layer — slot <-> global-primitive mapping (the single
 // source of truth; defined in src/parser.cpp next to same_representation).

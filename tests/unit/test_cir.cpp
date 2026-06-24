@@ -717,3 +717,29 @@ TEST_CASE("CirJitSession resolves global data addresses by name") {
     CHECK(*(int *)z == 0);
     CHECK(session.data_address("no_such_global") == (void *)NULL);
 }
+
+// two-tree Phase 1.5: a stray, un-substituted template parameter must NOT
+// silently mis-lower. append_type_specs turns it into an error node so the
+// cir_report_errors gate rejects the tree (a Phase 2/3 substitution-bug guard).
+TEST_CASE("CIR: unsubstituted template parameter lowers to an error node") {
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	DataDefTemplateParam tparam("T", 0);
+	node_t lst = builder.type_list(&tparam);
+	REQUIRE(lst != nullptr);
+	// The placeholder reached lowering -> the spec list carries an error node.
+	CHECK(cir_tree_has_error(lst));
+
+	// A concrete type on the same path stays clean (the guard is specific).
+	node_t ok = builder.type_list(&ddINT);
+	REQUIRE(ok != nullptr);
+	CHECK_FALSE(cir_tree_has_error(ok));
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+}

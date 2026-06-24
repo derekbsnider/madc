@@ -1592,3 +1592,49 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(pgm.type_id_for((DataDef *)NULL) == MADC_TYPEID_INVALID);
     }
 }
+
+TEST_SUITE("DataDefTemplateParam (unresolved template parameter T)") {
+    TEST_CASE("identity: is_template_param true, every other predicate false") {
+        DataDefTemplateParam t("T", 0);
+
+        CHECK(t.is_template_param());
+        CHECK(t.basetype() == BaseType::btTemplateParam);
+        CHECK(t.name == "T");
+        CHECK(t.param_index == 0u);
+        CHECK(t.size == 0u);
+        CHECK(t.rawtype() == DataType::dtVOID);
+        CHECK(t.reftype() == RefType::rtValue);
+
+        // A placeholder is none of these — the inherited predicates must all
+        // answer false so type-system consumers tolerate it without crashing
+        // or mis-classifying it.
+        CHECK_FALSE(t.is_numeric());
+        CHECK_FALSE(t.is_integer());
+        CHECK_FALSE(t.is_real());
+        CHECK_FALSE(t.is_unsigned());
+        CHECK_FALSE(t.is_pointer());
+        CHECK_FALSE(t.is_reference());
+        CHECK_FALSE(t.is_const());
+        CHECK_FALSE(t.is_struct());
+        CHECK_FALSE(t.is_object());
+        CHECK_FALSE(t.is_function());
+        CHECK_FALSE(t.is_complex());
+        CHECK_FALSE(t.is_simd());
+        CHECK_FALSE(t.is_member_pointer());
+    }
+
+    TEST_CASE("param_index carries the parameter position") {
+        DataDefTemplateParam t0("T", 0);
+        DataDefTemplateParam t1("U", 1);
+        DataDefTemplateParam t2("V", 7);
+        CHECK(t0.param_index == 0u);
+        CHECK(t1.param_index == 1u);
+        CHECK(t2.param_index == 7u);
+        CHECK(t1.name == "U");
+    }
+
+    TEST_CASE("a non-placeholder type answers is_template_param false") {
+        CHECK_FALSE(ddINT.is_template_param());
+        CHECK_FALSE(ddCHAR.is_template_param());
+    }
+}
