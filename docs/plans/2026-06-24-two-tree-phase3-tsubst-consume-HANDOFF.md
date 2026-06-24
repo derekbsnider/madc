@@ -18,13 +18,37 @@ DONE + gated + committed on this branch:
   placeholder and captures it as **`FuncDef::dependent_pattern`** (a TokenFunc parse-tree
   RECIPE), removing it from `pending_funcs`. `dependent_parse_in_progress` gates the
   instantiation entry points so nested calls don't eagerly instantiate.
-- **(this session)** widening step 1: the per-call dependence test
+- **`20bbf92`** widening step 1: the per-call dependence test
   (`call_involves_placeholder` / `datadef_involves_placeholder`, parser.cpp) replaced the
   global bail — the instantiation entry points now defer ONLY genuinely type-dependent
   calls (g++'s `any_type_dependent_arguments_p` analogue, pt.cc:30555).
+- **✅ PHASE 3 FIRST SLICE DONE — the recipe is now CONSUMED (3 commits):**
+  - **`e4dda75`** `tsubst_cir` core: `copy_cir_subtree` gains an optional
+    `{placeholder→concrete}` map (default NULL = byte-identical); `subst_datadef` rewrites a
+    `DataDefTemplateParam` directly or under ptr/ref/const layers via the canonical builders.
+  - **`6c301f9`** `FuncDef::tsubst_source`: a concrete instance links back to its SOURCE
+    member template (stamped in `instantiate_member_fn_template_for_call`).
+  - **`2bf8696`** the SEAM (`func_def`, cir_builder.cpp): `tsubst_method_body` builds a
+    covered method's BODY by `tsubst_cir` of the recipe (cir-built ONCE into a memoized
+    Tree-1 pattern, `m_tsubst_body_patterns`) instead of `translate_block`. Binding recovered
+    by aligning recipe placeholder params with the instance's concrete params. CONSERVATIVE
+    capability gate: if the pattern build trips the `append_type_specs` guard (a body cast
+    `(U)x` / local `U tmp;` lowers a placeholder TYPE → error node), memo NULL and FALL BACK
+    to re-parse (not yet covered). Hybrid B: concrete signature/shell stays on the parse path;
+    re-parse stays the fallback (PLAN §5).
 
-The producer runs ONLY behind env hook **`MADC_XTEST_DEP_PARSE`** (off by default). The
-recipe is **INERT** — consumed by nobody. Phase 3 makes it consumed.
+Producer + consumption run ONLY behind env hook **`MADC_XTEST_DEP_PARSE`** (off by default →
+production byte-identical). VALIDATED firing (not silent fallback): `Holder::set<int>` and
+`testoutoflinemembertemplate::store<int>` build bodies by tsubst, BYTE-IDENTICAL emit to
+re-parse; `add<int>` (casts to U) falls back. Gate: build clean; fulltest flag-OFF AND
+flag-ON 669/0/0/18; --emit=c11 byte-identical; torture flag-off byte-identical by construction.
+
+NEXT (widening, PLAN §11.5c / §Phase 4, one construct per gated commit): cover a body that
+lowers a placeholder TYPE by substituting BEFORE `append_type_specs` (so `(U)x`/`U tmp;`
+tsubst instead of falling back) — i.e. teach the pattern build to carry a substitutable type
+marker, OR run the substitution in the pattern-build pass. Then ptr/ref params, then the
+later §11.5c items (typeless placeholder + ADL bit; real `is_type_dependent`). The re-parse
+deletion (Phase 5) waits for full coverage.
 
 ## 1. GOAL (one sentence)
 
