@@ -48,19 +48,29 @@ production byte-identical). VALIDATED firing (not silent fallback): `Holder::set
 re-parse. Gate every commit: build clean; fulltest flag-OFF AND flag-ON 669/0/0/18; --emit=c11
 byte-identical; torture flag-off byte-identical by construction.
 
-⛔ **NEXT BLOCKER (the real next slice) — the DEPENDENT-PARSE-of-`T`-as-a-TYPE gap.** The
-marker (emission + expansion) is built + the expansion unit-tested, BUT it cannot fire
-end-to-end yet: `build_dependent_pattern`'s dependent PARSE THROWS (std::exception, caught →
-recipe NULL) the moment the body uses `T` as a TYPE — a `(T)x` cast or a `T tmp;` local
-(confirmed: `set` is eligible, parse throws; only bodies that use `T` purely as a VALUE, e.g.
-`member = (int)v;`, produce a recipe today). So the marker EMISSION branch (`append_type_specs`
-pattern mode) is currently unreached on the corpus. FIX = make the dependent parse tolerate a
-template-parameter placeholder in TYPE position (cast target, local decl type): find what
-throws in `parseFunction` on `(T)`/`T tmp` with `T` = `DataDefTemplateParam` (likely
-size()/rawtype()/conversion-check on the placeholder), and make that path placeholder-tolerant
-(it only needs to record the type as the placeholder, not size/convert it). Reducer:
-`tmp/tsubst_marker.mad` (`template<class T> void set(T v){ member=(int)(T)v+1; }`) — currently
-falls back; after the fix it must tsubst + emit byte-identical (proves the marker emission).
+✅ **2026-06-24 LOCAL CODEX UPDATE — DEPENDENT-PARSE-of-`T`-as-a-TYPE gap RESOLVED
+(uncommitted).** Root cause was C-style cast disambiguation in `Program::parseExpr_operatorArm`:
+identifier cast heads only checked `datatype_map` / `struct_map`, so `(T)v` fell through as a
+parenthesized expression and reported `T` as an undeclared identifier before the dependent
+recipe could reach the type-spec marker. The parser now also consults
+`resolve_current_class_type_alias`, which reaches the scoped `DataDefTemplateParam` registry,
+for cast heads, cast-token consumption, and nested-cast lookahead. This records the placeholder
+type without asking for concrete size/rawtype/conversion. `T tmp` locals were already accepted
+through the declared-type path; regression coverage now pins both `member = (int)(T)v + 1;`
+and `T tmp = v; member = (int)tmp + 1;` in dependent pattern parse.
+
+Validation for the local update:
+- `make -C src` green.
+- `bin/test_cir` green: 59 test cases, 739 assertions, 4 skipped.
+- `make -C src fulltest` green: 669 passed, 0 failed, 0 timed out, 18 skipped.
+- `env MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` green: 669 passed, 0 failed,
+  0 timed out, 18 skipped.
+- Focused reducers: `tmp/tsubst_marker.mad`, `tmp/tsubst_scalar.mad`,
+  `tmp/tsubst_local.mad` clean.
+- `--emit=c11` flag-off vs flag-on output byte-identical for marker/local reducers; no raw
+  `T`, `tsubst:`, or `unbound template` markers in emitted C.
+- GDB breakpoint confirmed `CirBuilder::tsubst_cir` is reached from
+  `CirBuilder::tsubst_method_body` for the marker reducer, proving this is not silent fallback.
 
 THEN the later widening (PLAN §11.5c / §Phase 4, one construct per gated commit): ptr/ref
 params (`subst_datadef` peeling already handles the datadef side; extend the binding recovery

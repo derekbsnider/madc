@@ -797,6 +797,36 @@ TEST_CASE("CIR: scoped template-parameter registry resolves T to its placeholder
     CHECK(prog->resolve_current_class_type_alias("T") == nullptr);
 }
 
+TEST_CASE("CIR: dependent pattern parse accepts template params in type positions") {
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(
+	"struct Holder {\n"
+	"    int member;\n"
+	"    template<class T> void cast_set(T v) { member = (int)(T)v + 1; }\n"
+	"    template<class T> void local_set(T v) { T tmp = v; member = (int)tmp + 1; }\n"
+	"};\n"
+	"int main() { Holder h; h.cast_set(9); h.local_set(10); return h.member; }\n",
+	"<dependent-pattern-test>");
+    REQUIRE(tp != nullptr);
+
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+    bool ok = prog->parse(tp);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    REQUIRE(ok);
+
+    size_t patterns = 0;
+    for ( funcdef_map_iter it = prog->funcdef_map.begin();
+	  it != prog->funcdef_map.end(); ++it )
+	if ( it->second && it->second->dependent_pattern )
+	    ++patterns;
+    CHECK(patterns == 2);
+}
+
 // Two-tree Phase 3: tsubst_cir = copy_cir_subtree + substitute template-parameter
 // placeholders with concrete types. The saved pattern (Tree-1) is left untouched;
 // the returned copy (Tree-2) carries the concrete type. Drives the scalar case

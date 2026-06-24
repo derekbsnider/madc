@@ -19280,6 +19280,13 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					cast_dd = NULL;
 				}
 			    }
+			    if ( !cast_dd )
+			    {
+				cast_dd = resolve_current_class_type_alias(tname);
+				if ( cast_dd
+				  && typedef_alias_matches_datadef(tname, cast_dd) )
+				    cast_typedef_name = tname;
+			    }
 			}
 		    }
 		    if ( !cast_dd && cast_qualifier )
@@ -19294,7 +19301,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				nextToken();
 			}
 			else if ( peekToken() && (peekToken()->type() == TokenType::ttDataType
-			       ||  (peekToken()->type() == TokenType::ttIdentifier && datatype_map.count(((TokenIdent *)peekToken())->str))) )
+			       ||  (peekToken()->type() == TokenType::ttIdentifier
+				    && (datatype_map.count(((TokenIdent *)peekToken())->str)
+				     || resolve_current_class_type_alias(((TokenIdent *)peekToken())->str)))) )
 			    nextToken();
 			// consume pointer stars (skip const/restrict qualifiers)
 			while ( peekToken()
@@ -19582,7 +19591,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					|| inner_peek->id() == TokenID::tkCONST
 					|| (inner_peek->type() == TokenType::ttIdentifier
 					    && (datatype_map.count(((TokenIdent *)inner_peek)->str)
-						|| struct_map.count(((TokenIdent *)inner_peek)->str))));
+						|| struct_map.count(((TokenIdent *)inner_peek)->str)
+						|| resolve_current_class_type_alias(((TokenIdent *)inner_peek)->str))));
 				if ( inner_is_cast )
 				{
 				    // Push `(` back — parseExpression will handle it
