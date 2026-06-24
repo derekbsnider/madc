@@ -15,18 +15,21 @@ rests on; read it first).
 
 ## 0. RESUME — START HERE (post-compaction; read this section first)
 
-**HEAD:** `2bf8696` on `feature/front-end-performance-claude`. Working tree clean
-(only the untracked `mir-debug-support.md` — not ours; leave it). Fork
+**HEAD:** `2459a7e` on `feature/front-end-performance-claude` (+ a docs commit). Working tree
+clean (only the untracked `mir-debug-support.md` — not ours; leave it). Fork
 `/workspace/mir` @ `d3a5cced` on origin/develop; `MIR_COMMIT` = `d3a5cce`.
 
-**✅ PHASE 3 FIRST SLICE DONE (2026-06-24) — the recipe is CONSUMED by tsubst.** Three gated
-commits: `e4dda75` (tsubst_cir core), `6c301f9` (FuncDef::tsubst_source instance→source link),
-`2bf8696` (the func_def seam: a covered method's BODY built by tsubst of the memoized Tree-1
-recipe pattern, conservative capability gate falls back to re-parse if the pattern lowers a
-placeholder TYPE). g++'s instantiate_body shape on our arena. Validated firing + byte-identical
-(Holder::set, testoutoflinemembertemplate::store). Behind MADC_XTEST_DEP_PARSE (prod
-byte-identical). Gate green flag-off AND flag-on 669/0/0/18. **FULL detail + NEXT (widening)
-in the handoff §0:** `docs/plans/2026-06-24-two-tree-phase3-tsubst-consume-HANDOFF.md`.
+**✅ PHASE 3 FIRST SLICE + MARKER WIDENING DONE (2026-06-24) — the recipe is CONSUMED by
+tsubst.** Four gated commits: `e4dda75` (tsubst_cir core), `6c301f9` (FuncDef::tsubst_source
+instance→source link), `2bf8696` (the func_def seam: a covered method's BODY built by tsubst
+of the memoized Tree-1 recipe pattern), `2459a7e` (deferred type-spec MARKER so a body using
+`T` as a TYPE can tsubst — expansion unit-tested). g++'s instantiate_body / TEMPLATE_TYPE_PARM
+shape on our arena. Validated firing + byte-identical (Holder::set, testoutoflinemembertemplate
+::store). Behind MADC_XTEST_DEP_PARSE (prod byte-identical). Gate green flag-off AND flag-on
+669/0/0/18 every commit. **⛔ NEXT BLOCKER = the dependent-PARSE-of-`T`-as-a-type gap**
+(`build_dependent_pattern` throws on a `(T)x` cast / `T tmp;` local, so the marker can't fire
+end-to-end yet). **FULL detail + the fix + reducer in the handoff §0:**
+`docs/plans/2026-06-24-two-tree-phase3-tsubst-consume-HANDOFF.md`.
 
 **✅ PHASE 2 — COMMIT 1 DONE (`b35cef2`, 2026-06-24): the scoped template-param
 registry.** The 2a foundation (PLAN §11.5a): `Program::template_param_scopes` (a

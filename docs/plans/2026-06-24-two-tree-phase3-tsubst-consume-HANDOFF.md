@@ -36,19 +36,37 @@ DONE + gated + committed on this branch:
     `(U)x` / local `U tmp;` lowers a placeholder TYPE → error node), memo NULL and FALL BACK
     to re-parse (not yet covered). Hybrid B: concrete signature/shell stays on the parse path;
     re-parse stays the fallback (PLAN §5).
+  - **`2459a7e`** WIDENING — deferred type-spec MARKER (g++ TEMPLATE_TYPE_PARM-in-saved-tree):
+    in pattern mode `append_type_specs` leaves a placeholder used as a TYPE (`(T)x`, `T tmp;`)
+    as an N_IGNORE marker carrying the placeholder datadef (instead of erroring); tsubst
+    EXPANDS it to the concrete specs via the SAME `append_type_specs` (byte-identical), or an
+    error node → fall back. Unit-tested (expansion: test_cir 58/0).
 
 Producer + consumption run ONLY behind env hook **`MADC_XTEST_DEP_PARSE`** (off by default →
 production byte-identical). VALIDATED firing (not silent fallback): `Holder::set<int>` and
 `testoutoflinemembertemplate::store<int>` build bodies by tsubst, BYTE-IDENTICAL emit to
-re-parse; `add<int>` (casts to U) falls back. Gate: build clean; fulltest flag-OFF AND
-flag-ON 669/0/0/18; --emit=c11 byte-identical; torture flag-off byte-identical by construction.
+re-parse. Gate every commit: build clean; fulltest flag-OFF AND flag-ON 669/0/0/18; --emit=c11
+byte-identical; torture flag-off byte-identical by construction.
 
-NEXT (widening, PLAN §11.5c / §Phase 4, one construct per gated commit): cover a body that
-lowers a placeholder TYPE by substituting BEFORE `append_type_specs` (so `(U)x`/`U tmp;`
-tsubst instead of falling back) — i.e. teach the pattern build to carry a substitutable type
-marker, OR run the substitution in the pattern-build pass. Then ptr/ref params, then the
-later §11.5c items (typeless placeholder + ADL bit; real `is_type_dependent`). The re-parse
-deletion (Phase 5) waits for full coverage.
+⛔ **NEXT BLOCKER (the real next slice) — the DEPENDENT-PARSE-of-`T`-as-a-TYPE gap.** The
+marker (emission + expansion) is built + the expansion unit-tested, BUT it cannot fire
+end-to-end yet: `build_dependent_pattern`'s dependent PARSE THROWS (std::exception, caught →
+recipe NULL) the moment the body uses `T` as a TYPE — a `(T)x` cast or a `T tmp;` local
+(confirmed: `set` is eligible, parse throws; only bodies that use `T` purely as a VALUE, e.g.
+`member = (int)v;`, produce a recipe today). So the marker EMISSION branch (`append_type_specs`
+pattern mode) is currently unreached on the corpus. FIX = make the dependent parse tolerate a
+template-parameter placeholder in TYPE position (cast target, local decl type): find what
+throws in `parseFunction` on `(T)`/`T tmp` with `T` = `DataDefTemplateParam` (likely
+size()/rawtype()/conversion-check on the placeholder), and make that path placeholder-tolerant
+(it only needs to record the type as the placeholder, not size/convert it). Reducer:
+`tmp/tsubst_marker.mad` (`template<class T> void set(T v){ member=(int)(T)v+1; }`) — currently
+falls back; after the fix it must tsubst + emit byte-identical (proves the marker emission).
+
+THEN the later widening (PLAN §11.5c / §Phase 4, one construct per gated commit): ptr/ref
+params (`subst_datadef` peeling already handles the datadef side; extend the binding recovery
+in `tsubst_method_body` to peel pdd/cdd to the base placeholder); dependent return type
+(relax `tsubst_eligible`); typeless placeholder + ADL bit; real `is_type_dependent`. The
+re-parse deletion (Phase 5) waits for full coverage.
 
 ## 1. GOAL (one sentence)
 
