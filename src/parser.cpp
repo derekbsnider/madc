@@ -2032,8 +2032,46 @@ static bool resolve_class_static_member_const_value(DataDefCLASS *cls,
     return false;
 }
 
+// get-or-create the placeholder DataDef for template parameter `name` at 0-based
+// `index`. Pooled by (name, index) and owned by template_param_pool for the
+// Program's lifetime (same never-freed convention as ptr_type_cache), so a Tree-1
+// pattern that references it outlives the per-TU TemplateParamScope frame.
+DataDefTemplateParam *Program::intern_template_param(const std::string &name,
+						     unsigned index)
+{
+    for ( size_t i = 0; i < template_param_pool.size(); ++i )
+	if ( template_param_pool[i]->param_index == index
+	  && template_param_pool[i]->name == name )
+	    return template_param_pool[i];
+    DataDefTemplateParam *tp = new DataDefTemplateParam(name, index);
+    template_param_pool.push_back(tp);
+    return tp;
+}
+
+// resolve `name` to an active template-parameter placeholder (innermost frame
+// first). Returns NULL — the common case — when no dependent-body frame is active,
+// keeping the consult below O(1) on the non-template path.
+DataDef *Program::resolve_template_param(const std::string &name)
+{
+    for ( std::vector<std::map<std::string, DataDef *> >::reverse_iterator it =
+	      template_param_scopes.rbegin();
+	  it != template_param_scopes.rend(); ++it )
+    {
+	std::map<std::string, DataDef *>::iterator mi = it->find(name);
+	if ( mi != it->end() )
+	    return mi->second;
+    }
+    return NULL;
+}
+
 DataDef *Program::resolve_current_class_type_alias(const std::string &name)
 {
+    // Two-tree Phase 2 / 2a: during a DEPENDENT template-body parse, the template's
+    // own parameters (`T`) resolve to their placeholder FIRST, ahead of any class
+    // scope. Inert (no active frame) in every other parse, so this is byte-identical
+    // until 2a pushes a TemplateParamScope.
+    if ( DataDef *tp = resolve_template_param(name) )
+	return tp;
     for ( std::vector<DataDefCLASS *>::reverse_iterator it =
 	      class_scope_stack.rbegin();
 	  it != class_scope_stack.rend(); ++it )

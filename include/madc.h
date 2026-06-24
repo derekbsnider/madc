@@ -32,6 +32,7 @@ class TokenBase;
 class TokenSWITCH;
 struct DelimDepth;	// parser-internal balanced-delimiter depth (parser.cpp)
 class TokenCASE;
+class DataDefTemplateParam;	// typed template-parameter placeholder (datadef.h)
 
 class MadcTeeBuf : public std::streambuf
 {
@@ -1895,6 +1896,22 @@ public:
     std::set<std::string> template_completion_requested;    // mangled template aliases that should be completed when body appears
     std::set<std::string> template_instantiated;           // mangled names done
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup
+    // Scoped template-parameter registry (two-tree Phase 2 / 2a). A stack of
+    // {param-name -> DataDefTemplateParam*} frames, pushed (via TemplateParamScope)
+    // for the duration of a DEPENDENT template-body parse so a bare `T` resolves to
+    // its placeholder through the EXISTING scoped type path
+    // (resolve_current_class_type_alias) — NO change to datatype_map, NO new branch
+    // in the general type lookup. Empty in every non-dependent parse, so behavior is
+    // byte-identical until 2a pushes a frame. Placeholders are owned by
+    // template_param_pool (Program lifetime, same never-freed-on-exit convention as
+    // ptr_type_cache) so a Tree-1 pattern referencing one outlives the per-TU frame.
+    std::vector<std::map<std::string, DataDef *>> template_param_scopes;
+    std::vector<DataDefTemplateParam *> template_param_pool;
+    // get-or-create a placeholder for parameter `name` at 0-based `index`.
+    DataDefTemplateParam *intern_template_param(const std::string &name, unsigned index);
+    // resolve `name` to an active template-parameter placeholder, innermost frame
+    // first; NULL if no frame is active or the name is not a parameter.
+    DataDef *resolve_template_param(const std::string &name);
     std::map<DataDef*, DataDefPTR*> ptr_type_cache; // cached pointer-to-T DataDefs
     std::map<DataDef*, DataDefREF*> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
     std::map<DataDef*, DataDefCONST*> const_type_cache; // cached const-T DataDefs
@@ -1923,6 +1940,25 @@ public:
 	NamespaceScope(Program &p, const std::string &ns) : pgm(p)
 	{ pgm.namespace_stack.push_back(ns); }
 	~NamespaceScope() { pgm.namespace_stack.pop_back(); }
+    };
+    // RAII guard for template_param_scopes — exception-safe by construction (the
+    // idiomatic twin of NamespaceScope). Pushes one {param-name -> placeholder}
+    // frame for the duration of a dependent template-body parse; pops on exit.
+    class TemplateParamScope
+    {
+	Program &pgm;
+	TemplateParamScope(const TemplateParamScope &);
+	TemplateParamScope &operator=(const TemplateParamScope &);
+    public:
+	TemplateParamScope(Program &p, const std::vector<std::string> &names) : pgm(p)
+	{
+	    std::map<std::string, DataDef *> frame;
+	    for ( size_t i = 0; i < names.size(); ++i )
+		if ( !names[i].empty() )
+		    frame[names[i]] = pgm.intern_template_param(names[i], (unsigned)i);
+	    pgm.template_param_scopes.push_back(frame);
+	}
+	~TemplateParamScope() { pgm.template_param_scopes.pop_back(); }
     };
     // Canonical C++ spelling of the template-id being instantiated right now,
     // stashed by instantiate_template_use around the class re-parse so

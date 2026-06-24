@@ -743,3 +743,56 @@ TEST_CASE("CIR: unsubstituted template parameter lowers to an error node") {
     c2mir_finish(mir_ctx);
     MIR_finish(mir_ctx);
 }
+
+// Two-tree Phase 2 / 2a: a dependent template-body parse resolves the template's
+// own parameters to their placeholder through the EXISTING scoped type path. The
+// registry is inert (empty stack) outside such a parse, so the common path is
+// unchanged; here we drive it directly to prove the resolution + scoping.
+TEST_CASE("CIR: scoped template-parameter registry resolves T to its placeholder") {
+    auto prog = std::make_shared<Program>();
+
+    // No active frame: a name is not a template parameter, and the scoped class
+    // resolver (which now consults the registry first) still answers NULL.
+    CHECK(prog->resolve_template_param("T") == nullptr);
+    CHECK(prog->resolve_current_class_type_alias("T") == nullptr);
+
+    {
+	std::vector<std::string> params;
+	params.push_back("T");
+	params.push_back("U");
+	Program::TemplateParamScope scope(*prog, params);
+
+	DataDef *t = prog->resolve_template_param("T");
+	DataDef *u = prog->resolve_template_param("U");
+	REQUIRE(t != nullptr);
+	REQUIRE(u != nullptr);
+	CHECK(t->is_template_param());
+	CHECK(u->is_template_param());
+	CHECK(((DataDefTemplateParam *)t)->param_index == 0u);
+	CHECK(((DataDefTemplateParam *)u)->param_index == 1u);
+
+	// resolve_current_class_type_alias routes through the registry FIRST.
+	CHECK(prog->resolve_current_class_type_alias("T") == t);
+	// a non-parameter name still does not resolve as a type here.
+	CHECK(prog->resolve_template_param("NotAParam") == nullptr);
+
+	{
+	    // a nested frame shadows the outer one for a repeated name, while the
+	    // outer-only name stays visible through it.
+	    std::vector<std::string> inner_params;
+	    inner_params.push_back("T");
+	    Program::TemplateParamScope inner(*prog, inner_params);
+	    DataDef *t2 = prog->resolve_template_param("T");
+	    REQUIRE(t2 != nullptr);
+	    CHECK(t2->is_template_param());
+	    CHECK(prog->resolve_template_param("U") == u);
+	}
+
+	// inner frame popped: T resolves to the outer placeholder again.
+	CHECK(prog->resolve_template_param("T") == t);
+    }
+
+    // scope exited: no frame, nothing resolves.
+    CHECK(prog->resolve_template_param("T") == nullptr);
+    CHECK(prog->resolve_current_class_type_alias("T") == nullptr);
+}
