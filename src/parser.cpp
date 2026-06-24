@@ -31137,14 +31137,56 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	const std::map<std::string, std::vector<int64_t> > &tid_packs_nontype
 	    = std::map<std::string, std::vector<int64_t> >());
 
+// Two-tree Phase 2 (PLAN §11.5c, widening step 1): does a type involve an unbound
+// template parameter (a DataDefTemplateParam placeholder)? Peels ptr / ref / const
+// layers (DataDefREF is-a DataDefPTR). The g++ `dependent_type_p` analogue, scalar
+// scope — a class instantiated WITH a placeholder arg (Foo<T>) is not detected here
+// (those bodies are excluded by tsubst_eligible's template-id reject).
+static bool datadef_involves_placeholder(DataDef *dd)
+{
+    for ( int guard = 0; dd && guard < 8; ++guard )
+    {
+	if ( dd->is_template_param() )
+	    return true;
+	if ( DataDefCONST *c = dynamic_cast<DataDefCONST *>(dd) )
+	    { dd = c->base_type; continue; }
+	if ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd) )
+	    { dd = p->base_type; continue; }
+	break;
+    }
+    return false;
+}
+
+// Two-tree Phase 2 (PLAN §11.5c, widening step 1): is THIS call type-dependent — i.e.
+// does any argument's type involve a template-parameter placeholder? The
+// `any_type_dependent_arguments_p` (pt.cc:30555) analogue. Only such calls are
+// deferred during a dependent parse; a non-dependent call (`cout << "x"`, a
+// fixed-type helper) is instantiated eagerly at definition time, matching g++'s
+// per-node dependence (NOT a global "defer everything in a template" mode).
+static bool call_involves_placeholder(TokenCallFunc *tc)
+{
+    if ( !tc )
+	return false;
+    for ( size_t i = 0; i < tc->parameters.size(); ++i )
+    {
+	TokenBase *a = tc->parameters[i];
+	if ( a && datadef_involves_placeholder(a->datadef()) )
+	    return true;
+    }
+    return false;
+}
+
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc)
 {
     InstTimer _it(pgm);	// --show-stats: instantiation time
-    // Two-tree Phase 2 (PLAN §11.5c): defer nested fn-template instantiation while a
-    // dependent body is being parsed — leave the call dependent rather than baking
-    // the param placeholder in as a concrete arg.
-    if ( pgm.dependent_parse_in_progress )
+    // Two-tree Phase 2 (PLAN §11.5c, widening step 1): defer this fn-template
+    // instantiation only when, inside a dependent body parse, the call is genuinely
+    // type-dependent (an arg involves a template-parameter placeholder) — leave it
+    // dependent rather than baking the placeholder in. A non-dependent call is still
+    // instantiated eagerly at definition time (g++ per-node dependence, NOT a global
+    // defer-everything mode).
+    if ( pgm.dependent_parse_in_progress && call_involves_placeholder(tc) )
 	return false;
     DBG_PACK("try_inst %s args=%zu\n", key.c_str(), tc->parameters.size());
 #ifdef MADC_DEBUG_CTORTMPL
@@ -33162,11 +33204,13 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     InstTimer _it(*this);	// --show-stats: instantiation time
     if ( !tc )
 	return;
-    // Two-tree Phase 2 (PLAN §11.5c): DEFER nested instantiation while a dependent
-    // body is being parsed — the call stays bound to its body-less placeholder
-    // (dependent) instead of instantiating with the param PLACEHOLDER as a concrete
-    // arg (the leak an unguarded dependent parse caused).
-    if ( dependent_parse_in_progress )
+    // Two-tree Phase 2 (PLAN §11.5c, widening step 1): DEFER this member-template
+    // instantiation only when, inside a dependent body parse, the call is genuinely
+    // type-dependent (an arg involves a template-parameter placeholder) — it stays
+    // bound to its body-less placeholder (dependent) instead of instantiating with the
+    // param PLACEHOLDER as a concrete arg. A non-dependent member call is instantiated
+    // eagerly at definition time (g++ per-node dependence, not a global defer mode).
+    if ( dependent_parse_in_progress && call_involves_placeholder(tc) )
 	return;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
 #if MADC_DEBUG_FNTPL
