@@ -29,12 +29,16 @@ producer), so emit is byte-identical by construction. GATE GREEN: build clean,
 fulltest 669/0/0/18, torture byte-identical (0 timeouts); unit tests `test_datadef`
 (type + predicates) + `test_cir` (guard). **NEXT = Phase 2 — DESIGN DRAFTED in §11.
 Settled direction = hybrid B (concrete shell at parse, tsubst member BODIES at
-cir-build). The 2a intercept is now SETTLED too (§11.5a): scoped registration of
-each param name as a `DataDefTemplateParam` so the existing `datatype_map.find`
-path resolves `T` — NO resolver rewrite. FIRST STEP (cheap, do first): the §11.5a
-verification probe — confirm `TokenIdent`→type promotion is parse-time via
-`datatype_map` (so scoped registration suffices). THEN code 2a; §11.5b lists the
-remaining OPEN items (pattern cache, capability predicate, method↔pattern link).**
+cir-build). The 2a intercept is SETTLED AND its mechanism is VERIFIED against existing
+infrastructure (§11.5a): parse-time scoped type-name resolution already exists —
+`resolve_current_class_type_alias` (parser.cpp:2035) over a push/pop'd
+`class_scope_stack`, consulted BEFORE `datatype_map`, and already pushed during
+template body parse (madc.h:1737). 2a = resolve the active template's params to
+their `DataDefTemplateParam` through THAT path (no resolver rewrite, no datatype_map
+change). FIRST STEP = code 2a (the one-time dependent body parse + param→placeholder
+via the scoped path), build the Tree-1 body pattern, then Phase 3 tsubst. §11.5b
+lists the remaining OPEN items (pattern cache, capability predicate, method↔pattern
+link) — answer while coding, not before.**
 
 **✅ PHASE 1 DONE (`c409786`, 2026-06-23).** `CirBuilder::copy_cir_subtree`
 (`src/cir_builder.cpp`) + `cir_node.tree1_origin` back-ref + env-gated proof hook
@@ -351,12 +355,26 @@ a concrete, low-invasiveness plan:
   `instantiating_canonical_spelling`, `fn_template_instantiation_depth`, the
   `compounds` stack, `class_scope_stack`, `parsing_template_instantiated_member_body()`
   (`parser.cpp:7421`).
-- **ONE verification before coding** (the only residual unknown here): confirm that
-  `TokenIdent`→type promotion happens at PARSE time via the `datatype_map` lookups
-  above (so a scoped registration suffices), and that NO separate LEXER-side
-  type-promotion froze `T` as a non-type token at capture in a way the parser
-  cannot re-promote. (The substitution-then-reparse model implies parse-time
-  promotion, but verify directly with a 2-line probe before relying on it.)
+- **VERIFIED — the scoped parse-time path already exists (existence proof, recon
+  2026-06-23):** parse-time, scoped type-name resolution is not hypothetical —
+  `resolve_current_class_type_alias` (`parser.cpp:2035`) walks a **push/pop'd
+  `class_scope_stack`** (`madc.h:1897`) via `resolve_class_type_alias` and is
+  consulted FIRST in `resolve_expression_class_scope` (`parser.cpp:2088`), BEFORE
+  the global `datatype_map`. So a name can be made to resolve to a type for the
+  duration of a scope and then vanish — exactly the 2a requirement. And the scope
+  is ALREADY pushed during template body parse: `FnTemplateDef.owner_class`
+  (`madc.h:1737`) "pushed on class_scope_stack during the body parse so the
+  params/body resolve." (`typedef` is the simpler proof that a mid-parse-registered
+  name is promoted to a type at its use site.)
+- **2a wiring (concrete):** attach the active template's params to this existing
+  scoped resolution — either resolve a param name to its `DataDefTemplateParam`
+  inside `resolve_current_class_type_alias`/`resolve_class_type_alias` when an
+  active-template-params scope is on the stack, OR push a sibling scoped
+  param-name→placeholder registry consulted alongside `class_scope_stack`. NO new
+  resolver branch in the general type lookup, NO change to `datatype_map`
+  resolution. The residual TokenIdent→type-promotion question is ANSWERED by these
+  existence proofs (class-scoped aliases + typedef both promote a mid-parse name to
+  a type at parse time); no separate probe needed.
 
 ### 11.5b OPEN questions (resolve with fresh budget, before/while coding 2a)
 - **Pattern cache** — key (FuncDef/template identity + member) and where the Tree-1
