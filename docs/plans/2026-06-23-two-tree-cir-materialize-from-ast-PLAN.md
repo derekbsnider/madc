@@ -15,9 +15,21 @@ rests on; read it first).
 
 ## 0. RESUME — START HERE (post-compaction; read this section first)
 
-**HEAD:** `c409786` on `feature/front-end-performance-claude`. Working tree clean
+**HEAD:** `396b3c9` on `feature/front-end-performance-claude`. Working tree clean
 (only the untracked `mir-debug-support.md` — not ours; leave it). Fork
 `/workspace/mir` @ `d3a5cced` on origin/develop; `MIR_COMMIT` = `d3a5cce`.
+
+**✅ PHASE 1.5 DONE (`396b3c9`, 2026-06-23).** `DataDefTemplateParam` (include/datadef.h)
+— the typed `T` placeholder: `BaseType::btTemplateParam` (append-only) + `name` +
+`param_index`; `is_template_param()` is the single discriminator (DataDefREF/CONST
+discipline); every other `is_*()` answers false by construction. `append_type_specs`
+guard turns a stray placeholder into an error node (a Phase 2/3 substitution-bug
+trap). Purely ADDITIVE — constructed nowhere in production yet (Phase 2 is its first
+producer), so emit is byte-identical by construction. GATE GREEN: build clean,
+fulltest 669/0/0/18, torture byte-identical (0 timeouts); unit tests `test_datadef`
+(type + predicates) + `test_cir` (guard). **NEXT = Phase 2 (parse a template
+definition into an immutable Tree-1 cir_node pattern, dependent params as these
+placeholders).**
 
 **✅ PHASE 1 DONE (`c409786`, 2026-06-23).** `CirBuilder::copy_cir_subtree`
 (`src/cir_builder.cpp`) + `cir_node.tree1_origin` back-ref + env-gated proof hook
@@ -28,7 +40,7 @@ flag-off AND flag-on; torture failset byte-identical to the 51-name baseline (0
 timeouts); `--emit=c11` byte-identical flag-off-vs-on across 12 diverse TUs.
 LESSON: a copy must preserve `error_msg` (a BUILD-time madc field, unlike c2mir's
 per-compile `attr`) — dropping it silently defeats the `cir_report_errors` gate.
-**NEXT = Phase 1.5 (template-param placeholder DataDef).**
+(Phase 1.5 followed — see the block above; current NEXT is Phase 2.)
 
 **SETTLED — do not re-litigate (design owner, 2026-06-23):**
 1. Token-arena **2.2a / 2.2b / 2.3-step1 (rec-completion)** are DONE + gated +
@@ -211,7 +223,7 @@ this gap, so it remains the correct safe first slice.
 - Prove it: copy a normal (non-template) function's cir_node subtree, compile the
   copy instead of the original, byte-identical output. Gated.
 
-**Phase 1.5 — template-parameter placeholder DataDef (NEW prerequisite; Phase 0 finding).**
+**Phase 1.5 — template-parameter placeholder DataDef (NEW prerequisite; Phase 0 finding). — DONE 2026-06-23 (`396b3c9`).**
 - Introduce a `DataDef` kind representing an unresolved template parameter `T`
   (a real placeholder, not a string). Make the type-lowering helpers
   (`size()`/`rawtype()`/`is_*`/`datadef()` users in `cir_builder.cpp` and the
