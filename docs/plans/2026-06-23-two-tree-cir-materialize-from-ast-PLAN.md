@@ -44,14 +44,24 @@ with the param placeholder as a concrete arg (the leak an unguarded parse caused
 657/12). Producer runs only behind env hook `MADC_XTEST_DEP_PARSE`; recipe consumed by
 nobody yet. GATE GREEN: build clean; fulltest flag-OFF **AND flag-ON 669/0/0/18**
 (full isolation); torture byte-identical (33c+18r, 0 timeouts); --emit=c11 clean.
-**NEXT (per §11.5c, gcc-grounded recon): the global defer flag is a SCALAR-SLICE crutch
-(g++ computes dependence PER-NODE; a non-dependent op like `cout<<"x"` inside a
-dependent body must instantiate eagerly). Safe now ONLY because the recipe is inert.
-BEFORE Phase 3 consumes recipes: (1) replace the global gate with a PER-CALL dependence
-test (`any_type_dependent_arguments_p` analogue, pt.cc:30555); (2) typeless placeholder
-+ ADL bit; (3) real `is_type_dependent` + tsubst re-resolution via the normal resolver.
-THEN cir-build the recipe to a Tree-1 cir pattern, THEN Phase 3 tsubst at
-cir_builder.cpp:11458. Re-use the env-gated flag-on byte-identical harness.**
+**✅ §11.5c WIDENING STEP 1 DONE (`20bbf92`, 2026-06-24): the per-call dependence test.**
+`call_involves_placeholder` / `datadef_involves_placeholder` (parser.cpp) replaced the
+global bail at both instantiation entry points — they now defer ONLY genuinely
+type-dependent calls (g++'s `any_type_dependent_arguments_p`, pt.cc:30555), so a
+non-dependent op (`cout<<"x"`) inside a dependent body instantiates eagerly as g++ does.
+`dependent_parse_in_progress` is now purely the "in a dependent parse" gate. GATE GREEN:
+fulltest flag-OFF AND flag-ON 669/0/0/18; torture/emit byte-identical (production path
+unreachable-changed). Soundness gated now; precision validated at Phase 3.
+**NEXT = PHASE 3 — CONSUME the recipe (tsubst). FULL imperative handoff:
+`docs/plans/2026-06-24-two-tree-phase3-tsubst-consume-HANDOFF.md`.** In short: cir-build
+the recipe (FuncDef::dependent_pattern) → Tree-1 cir pattern (fuse build+substitute so a
+placeholder never reaches `append_type_specs`); `tsubst_cir(pattern,{T→concrete})` reusing
+`copy_cir_subtree` (cir_builder.cpp:379) + placeholder→concrete (incl ptr/ref); wire at the
+`func_def`→`translate_block` seam (cir_builder.cpp:11458) for covered methods + re-parse
+fallback; method↔pattern link via the instantiation path. CRUX RISK: first slice where
+output changes → `--emit=c11` byte-identical means tsubst output == re-parse output for
+covered methods — go SCALAR-FIRST. Remaining §11.5c widening (typeless placeholder + ADL
+bit; real `is_type_dependent` + tsubst re-resolution) comes AFTER scalar consumption.**
 
 **✅ PHASE 1.5 DONE (`396b3c9`, 2026-06-23).** `DataDefTemplateParam` (include/datadef.h)
 — the typed `T` placeholder: `BaseType::btTemplateParam` (append-only) + `name` +
