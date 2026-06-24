@@ -31141,6 +31141,11 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc)
 {
     InstTimer _it(pgm);	// --show-stats: instantiation time
+    // Two-tree Phase 2 (PLAN §11.5c): defer nested fn-template instantiation while a
+    // dependent body is being parsed — leave the call dependent rather than baking
+    // the param placeholder in as a concrete arg.
+    if ( pgm.dependent_parse_in_progress )
+	return false;
     DBG_PACK("try_inst %s args=%zu\n", key.c_str(), tc->parameters.size());
 #ifdef MADC_DEBUG_CTORTMPL
     if ( getenv("MADC_DEBUG_CTORTMPL") && key.find("::get") != std::string::npos )
@@ -33019,10 +33024,149 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	    return;
 }
 
+// Two-tree Phase 2 — capability predicate. See the madc.h declaration. Slice 1 =
+// a member function template with exactly one TYPE param (no pack), a NON-DEPENDENT
+// return type (passed straight to parseFunction), and a body/params using the param
+// only in scalar positions — no dependent name lookup (`T::x`) and no template-id
+// (`Foo<T>`). Widen one construct per Phase-4 commit. (Note: a body can still issue
+// argument-deduced nested template calls that no token-scan catches — those are
+// handled by suppressing eager instantiation during the parse, not by this scan.)
+bool Program::tsubst_eligible(FuncDef *fd)
+{
+    if ( !fd || !fd->is_member_template || fd->member_template_decl.empty()
+      || !fd->member_template_owner )
+	return false;
+    if ( fd->template_param_names.size() != 1 )
+	return false;
+    if ( !fd->template_param_is_type.empty() && !fd->template_param_is_type[0] )
+	return false;
+    if ( !fd->template_param_is_pack.empty() && fd->template_param_is_pack[0] )
+	return false;
+    const std::string &T = fd->template_param_names[0];
+    // Reject a DEPENDENT return type (return naming the param) — slice 1 passes the
+    // resolved return type directly to parseFunction.
+    if ( fd->return_value_type().is_template_param() )
+	return false;
+    for ( size_t i = 0; i < fd->member_template_return_tokens.size(); ++i )
+	if ( fd->member_template_return_tokens[i]
+	  && contextual_identifier_name(fd->member_template_return_tokens[i]) == T )
+	    return false;
+    // Body/param scan: any template-id (`<`) or `T::` dependent lookup disqualifies.
+    const std::vector<TokenBase *> &d = fd->member_template_decl;
+    for ( size_t i = 0; i < d.size(); ++i )
+    {
+	TokenBase *t = d[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkLT )
+	    return false;
+	if ( contextual_identifier_name(t) == T
+	  && i + 1 < d.size() && d[i + 1] && d[i + 1]->id() == TokenID::tkNS )
+	    return false;
+    }
+    return true;
+}
+
+// Two-tree Phase 2 — parse a member function template's retained body ONCE with its
+// param bound to a DataDefTemplateParam placeholder, capturing the resulting
+// TokenFunc as fd->dependent_pattern (a Tree-1 RECIPE) and removing it from
+// pending_funcs. See the madc.h declaration for the full contract. Isolation =
+// the parse_deferred_lazy_body save/restore model; dependent_parse_in_progress is
+// set across the parse so the instantiation entry points DEFER (do not eagerly fire)
+// any param-dependent nested call, leaving it dependent in the recipe (PLAN §11.5c).
+TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
+{
+    if ( !tsubst_eligible(fd) )
+	return NULL;
+    DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
+    if ( !owner )
+	return NULL;
+    const std::vector<TokenBase *> &decl = fd->member_template_decl;
+    // definition_tokens = everything AFTER the declarator '(' (params + body) — the
+    // shape parseFunction consumes (name + return type passed separately).
+    size_t ni = skipped_template_function_declarator_name_index(decl, NULL);
+    if ( ni >= decl.size() )
+	return NULL;
+    size_t op = ni + 1;
+    while ( op < decl.size() && !(decl[op] && decl[op]->id() == TokenID::tkOpBrk) )
+	++op;
+    if ( op >= decl.size() )
+	return NULL;
+    std::vector<TokenBase *> def_tokens;
+    for ( size_t i = op + 1; i < decl.size(); ++i )
+	def_tokens.push_back(decl[i] ? decl[i]->clone() : NULL);
+    if ( def_tokens.empty() )
+	return NULL;
+
+    static size_t pat_counter = 0;
+    std::string parse_id = fd->name + "__pat" + std::to_string(pat_counter++);
+
+    size_t before = pending_funcs.size();
+    TokenStream::Pos saved_tokens = tokens.savepos();
+    TokenBase *saved_prv = _prv_token;
+    TokenBase *saved_cur = _cur_token;
+    std::string saved_func = cur_func_name;
+    std::string saved_canon = instantiating_canonical_spelling;
+    bool saved_dep_parse = dependent_parse_in_progress;
+
+    for ( std::vector<TokenBase *>::reverse_iterator it = def_tokens.rbegin();
+	  it != def_tokens.rend(); ++it )
+	pushToken(*it);
+    cur_func_name = parse_id;
+    std::string method_namespace =
+	namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling);
+    NamespaceScope ns_scope(*this, method_namespace.empty()
+				    ? current_namespace() : method_namespace);
+    if ( owner->canonical_cpp_spelling.find('<') != std::string::npos )
+	instantiating_canonical_spelling = owner->canonical_cpp_spelling;
+    TemplateParamScope param_scope(*this, fd->template_param_names);
+    dependent_parse_in_progress = true;
+
+    try
+    {
+	parseFunction(fd->return_value_type(), parse_id, owner);
+    }
+    catch ( ... )
+    {
+	tokens = saved_tokens;
+	_prv_token = saved_prv;
+	_cur_token = saved_cur;
+	cur_func_name = saved_func;
+	instantiating_canonical_spelling = saved_canon;
+	dependent_parse_in_progress = saved_dep_parse;
+	if ( pending_funcs.size() > before )
+	    pending_funcs.resize(before);
+	funcdef_map.erase(parse_id);
+	return NULL;
+    }
+    tokens = saved_tokens;
+    _prv_token = saved_prv;
+    _cur_token = saved_cur;
+    cur_func_name = saved_func;
+    instantiating_canonical_spelling = saved_canon;
+    dependent_parse_in_progress = saved_dep_parse;
+
+    TokenFunc *pattern = NULL;
+    if ( pending_funcs.size() > before )
+    {
+	pattern = dynamic_cast<TokenFunc *>(pending_funcs.back());
+	pending_funcs.resize(before);	// a recipe, not a pending function
+    }
+    funcdef_map.erase(parse_id);	// undo parseFunction's registration
+    fd->dependent_pattern = pattern;
+    return pattern;
+}
+
 void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 {
     InstTimer _it(*this);	// --show-stats: instantiation time
     if ( !tc )
+	return;
+    // Two-tree Phase 2 (PLAN §11.5c): DEFER nested instantiation while a dependent
+    // body is being parsed — the call stays bound to its body-less placeholder
+    // (dependent) instead of instantiating with the param PLACEHOLDER as a concrete
+    // arg (the leak an unguarded dependent parse caused).
+    if ( dependent_parse_in_progress )
 	return;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
 #if MADC_DEBUG_FNTPL
@@ -33049,6 +33193,15 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
     if ( !owner )
 	return;
+    // Two-tree Phase 2 (INERT proof hook): when MADC_XTEST_DEP_PARSE is set, build
+    // the dependent Tree-1 recipe for this member template ONCE (capability-gated;
+    // stored on fd->dependent_pattern, consumed by nobody yet). Off by default, so
+    // the production path is byte-identical; flag-ON exercises build_dependent_pattern
+    // on real templates and the byte-identical gate then PROVES the (now instantiation-
+    // suppressed) dependent parse has no observable side effects. Replaced by a real
+    // producer once Phase 3 tsubst consumes the recipe.
+    if ( !fd->dependent_pattern && getenv("MADC_XTEST_DEP_PARSE") )
+	build_dependent_pattern(fd);
     // A retained member-template BODY is instantiated at the ODR-use site even
     // when the owner class itself is externally provided. An explicit class
     // instantiation exports non-template members, not arbitrary member-template

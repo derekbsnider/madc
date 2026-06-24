@@ -32,6 +32,7 @@ class TokenBase;
 class TokenSWITCH;
 struct DelimDepth;	// parser-internal balanced-delimiter depth (parser.cpp)
 class TokenCASE;
+class TokenFunc;
 class DataDefTemplateParam;	// typed template-parameter placeholder (datadef.h)
 
 class MadcTeeBuf : public std::streambuf
@@ -202,13 +203,21 @@ public:
     // WITHOUT instantiating a body (the clang SubstDecl model — see
     // resolve_member_template_call_return_type). Empty == not a member tmpl.
     std::vector<TokenBase *> member_template_return_tokens;
+    // Two-tree Phase 2: the DEPENDENT parse-tree pattern for this template's body
+    // — a TokenFunc parsed ONCE with the template params bound to
+    // DataDefTemplateParam placeholders (via build_dependent_pattern), with eager
+    // nested instantiation SUPPRESSED so dependent calls stay dependent. NULL until
+    // produced; the immutable Tree-1 RECIPE that cir-build lowers to a cir pattern
+    // and Phase 3 tsubst copies+substitutes per instantiation. Removed from
+    // pending_funcs at capture so it never reaches cir-build/emit on its own.
+    TokenFunc *dependent_pattern;
     struct CtorInitializer {
 	std::string name;
 	std::vector<TokenBase *> args;
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), dependent_pattern(NULL), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -1912,6 +1921,27 @@ public:
     // resolve `name` to an active template-parameter placeholder, innermost frame
     // first; NULL if no frame is active or the name is not a parameter.
     DataDef *resolve_template_param(const std::string &name);
+    // Two-tree Phase 2 — TRUE while build_dependent_pattern is parsing a dependent
+    // body. The template-instantiation entry points bail when this is set, so a
+    // param-dependent call/construction in the body is left DEPENDENT (bound to its
+    // body-less placeholder) instead of being eagerly instantiated with the param
+    // PLACEHOLDER as a concrete arg — the leak that an unguarded dependent parse
+    // caused (PLAN §11.5c). The g++ defer-instantiation model, scoped to the parse.
+    // In-class initialized (kept out of the ctor init lists to avoid -Wreorder).
+    bool dependent_parse_in_progress = false;
+    // Two-tree Phase 2: capability predicate — true only for the conservative
+    // first-slice shape the dependent-parse / tsubst path handles (one TYPE param,
+    // no pack, NON-DEPENDENT return, body uses `T` only in scalar positions). False
+    // routes to the existing re-parse instantiation (no behavior change).
+    bool tsubst_eligible(FuncDef *fd);
+    // Two-tree Phase 2: parse a member function template's retained body ONCE with
+    // its param bound to a DataDefTemplateParam placeholder (a TemplateParamScope
+    // pushed for the parse + eager instantiation suppressed via
+    // dependent_parse_in_progress), capture the resulting TokenFunc as
+    // fd->dependent_pattern, and remove it from pending_funcs (a Tree-1 RECIPE, not a
+    // real function). Fully isolated (the parse_deferred_lazy_body save/restore
+    // model). Returns the captured pattern, or NULL if ineligible / nothing parsed.
+    TokenFunc *build_dependent_pattern(FuncDef *fd);
     std::map<DataDef*, DataDefPTR*> ptr_type_cache; // cached pointer-to-T DataDefs
     std::map<DataDef*, DataDefREF*> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
     std::map<DataDef*, DataDefCONST*> const_type_cache; // cached const-T DataDefs

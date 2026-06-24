@@ -439,43 +439,60 @@ SETTLED — execute, do not re-derive:
   Class templates: the instantiated `DataDefCLASS` records its `TemplateDef` identity +
   arg list (mangled key already exists); each member maps by name/index to its pattern.
 
-### 11.5c — CRITICAL FINDING (2026-06-24, EMPIRICAL): the side-parse producer is unsound; the real blocker is the missing DEPENDENT-CONTEXT defer mode
-A full `build_dependent_pattern` was implemented and exercised behind an env-gated
-proof hook (`MADC_XTEST_DEP_PARSE`) on the live suite. Mechanism was correct
-(parse-capture modeled on `parse_deferred_lazy_body`: snapshot `pending_funcs`/parse
-state, push body tokens, push `TemplateParamScope`, `parseFunction` with a throwaway
-name, capture `pending_funcs.back()`, pop it off, erase the throwaway `funcdef_map`
-entry). **But flag-ON the suite went 669/0 → 657/12** (testsubscriptmember, testvector,
-testvectorptr, …) with **`cir error: unsubstituted template parameter '_Up' reached
-type lowering`** (the Phase 1.5 guard firing on the REAL compile).
+### 11.5c — the side-parse producer + the DEPENDENT-CONTEXT defer (RESOLVED for the scalar slice; widening path is g++-grounded)
+`build_dependent_pattern` parse-captures a member-template body ONCE (modeled on
+`parse_deferred_lazy_body`: snapshot `pending_funcs`/parse state, push body tokens, push
+`TemplateParamScope`, `parseFunction` with a throwaway name, capture `pending_funcs.back()`,
+pop it off, erase the throwaway `funcdef_map` entry). The Tree-1 RECIPE is stored on
+`FuncDef::dependent_pattern`.
 
-ROOT CAUSE (deepest layer, not a cleanup miss): **parsing a template body in madc
-EAGERLY INSTANTIATES the templates that body uses** (nested `construct`/`_S_construct`/
-operator calls). During a dependent parse those nested instantiations bind the param
-PLACEHOLDER (`_Up`) as their concrete arg and register under THEIR OWN names (not the
-throwaway), so they survive the throwaway/`pending_funcs` cleanup and leak placeholder-
-typed nodes into the real compile. **madc has no dependent-context "defer instantiation"
-mode** (the g++ model: inside a template body, dependent names/calls are NOT instantiated
-until the enclosing template is). No static token-scan can soundly prevent this — even
-`member = v` can instantiate `operator=`. So the side-parse approach **cannot be made
-sound by narrowing `tsubst_eligible`**; the producer code was REVERTED (kept only the
-correct, consulted scoped registry from commit 1).
+**Blocker hit + FIXED.** An UNGUARDED dependent parse went flag-ON 669/0 → 657/12 with
+`unsubstituted template parameter '_Up' reached type lowering`: parsing a body in madc
+EAGERLY INSTANTIATES the templates it uses (nested `construct`/operator/`_M_realloc_insert`
+calls), binding the param PLACEHOLDER as a concrete arg and registering under THEIR names
+(leaking past the throwaway cleanup). **FIX = a `dependent_parse_in_progress` suppression
+guard**: set across the dependent parse; the instantiation entry points
+(`instantiate_member_fn_template_for_call`, `try_instantiate_namespace_fn_template`) bail
+when it is set, so a nested call stays bound to its body-less placeholder (dependent)
+instead of instantiating. **Flag-ON the FULL suite is now 669/0/0/18** — complete isolation;
+the 3 previously-leaking tests pass. Producer + guard are committed; flag-OFF is
+byte-identical (the guard branch is never taken, `build_dependent_pattern` is uncalled).
 
-**REVISED NEXT STEP (supersedes 11.5b "NEXT"): build the dependent-context defer mode
-FIRST.** While a `TemplateParamScope` is active (a dependent parse), template-dependent
-operations — a call whose callee/args involve a param, member access on a param-typed
-object, operator use on param-typed operands — must be parsed to a DEPENDENT node and
-NOT eagerly instantiated/resolved (g++'s `type_dependent_expression_p` / deferred
-`tsubst`). Only THEN can a body be dependent-parsed into a clean Tree-1 recipe. This is
-the core of §4 ("representing dependent constructs"). Scope it as its own slice; the
-parse-capture mechanism above is correct and reusable ONCE instantiation is deferred.
-The proof harness (env-gated hook + flag-on byte-identical gate) is the right validator —
-re-use it: the defer mode is done when flag-ON the suite stays 669/0/0/18.
+**RECON (gcc + clang, 2026-06-24) — the global flag is a SCALAR-ONLY crutch; here is the
+correct primitive.** g++ has NO "defer mode": dependence is computed PER-NODE from operand
+types (`type_dependent_expression_p`, pt.cc:30086); `processing_template_decl` is only a
+gate ("in a template at all?"). A dependent call becomes a TYPELESS placeholder node
+(`build_min_nt_call_vec`, semantics.cc:3370) — no overload res, no instantiation; an ADL-
+wanted bit is stashed (`KOENIG_LOOKUP_P`). `tsubst_expr` CALL_EXPR (pt.cc:22158) later re-
+runs the SAME `finish_call_expr` (pt.cc:22515) on now-concrete args — one resolver, two
+phases. Clang names the breaking case: in `add(T x,int y)`, `x+y` is dependent but `y` is
+NOT — a non-dependent sub-expression inside a dependent body must be bound/instantiated
+EAGERLY at definition (two-phase lookup). **Our global bail-ALL flag suppresses those too**
+→ it is sound ONLY for bodies with no non-dependent instantiation-triggering op (scalar T,
+no `cout<<"x"`, no fixed-type helper/`vec.size()`). That is "essentially every real STL
+member body" the moment we widen. **Why it's safe NOW: the recipe is INERT** (consumed by
+nobody) — a mis-deferred non-dependent call is thrown away; the real compile uses the
+untouched re-parse path. The time bomb detonates only when **Phase 3 CONSUMES** the recipe.
 
-**Status: 11.2–11.4 SETTLED (hybrid B, bodies-first); 11.5a + 11.5b SETTLED + grounded;
-11.5c = EMPIRICAL BLOCKER found + approach corrected.** Commit-1 (scoped registry) DONE
-and is the valid foundation. Do NOT re-attempt the eager side-parse; do NOT attempt full
-cir-level deferral (A) or the parse-layer copy (C) without re-opening this analysis.
+**WIDENING PATH (do BEFORE Phase 3 consumes recipes from non-trivial bodies):**
+1. Replace the global gate with a PER-CALL dependence test — bail only if the call's
+   callee/args actually involve the placeholder type (the `any_type_dependent_arguments_p`
+   analogue, pt.cc:30555); keep `dependent_parse_in_progress` purely as the "in a dependent
+   body" gate. Same code shape, one loop. Fixes the `cout<<"literal"` / non-dependent-call
+   class.
+2. Make a deferred call a TYPELESS placeholder (madc analogue of `unknown_type_node`) +
+   record an ADL-wanted bit, instead of binding to a body-less concrete decl.
+3. Build a real `is_type_dependent(expr)` predicate from operand types; at tsubst, re-run
+   the NORMAL call-resolution entry point on concrete args (reuse, don't fork) — retires
+   the flag. This IS §4's "representing dependent constructs," now g++-grounded.
+
+**Status: 11.2–11.4 SETTLED (hybrid B); 11.5a/11.5b SETTLED + grounded; 11.5c = producer +
+scalar-slice defer DONE & gated, widening path g++-grounded.** Commit-1 (registry) + the
+producer (capability-gated, inert, suppression-guarded) are the foundation. NEXT real work =
+the per-call dependence test (widening step 1) THEN cir-build the recipe to a Tree-1 cir
+pattern THEN Phase 3 tsubst at cir_builder.cpp:11458. Re-use the env-gated flag-on
+byte-identical harness as the validator. Do NOT attempt full cir-level deferral (A) or the
+parse-layer copy (C) without re-opening this analysis.
 
 ## 7. FIRST SLICE (start here)
 
