@@ -33367,6 +33367,17 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	std::cerr << "FNTPL mti alias var=" << tc->var.name
 		  << " local=" << fd->local_emit_name << std::endl;  // allowed-exception: debug print, not symbol build
 #endif
+    // Two-tree Phase 3 (capability-gated): when this member template has a Tree-1
+    // recipe (built above under MADC_XTEST_DEP_PARSE), link the freshly-parsed
+    // CONCRETE instance back to its SOURCE template so the cir-build seam can
+    // instantiate the body by tsubst of the recipe instead of lowering the
+    // re-parsed body. INERT until the seam consumes it; off by default.
+    if ( fd->dependent_pattern )
+    {
+	funcdef_map_t::iterator ii = funcdef_map.find(inst_name);
+	if ( ii != funcdef_map.end() && ii->second )
+	    ii->second->tsubst_source = fd;
+    }
 }
 
 void Program::instantiate_member_ctor_template_for_construction(
