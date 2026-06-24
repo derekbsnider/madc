@@ -32,16 +32,26 @@ with NO datatype_map change and NO resolver rewrite. Purely ADDITIVE + INERT
 stack always empty → `resolve_template_param` always NULL → consult branch never
 taken → emit byte-identical by construction, the Phase 1.5 class). GATE GREEN: build
 clean; fulltest 669/0/0/18 + drift gates; torture byte-identical to 51-name baseline
-(33c+18r, 0 timeouts); --emit=c11 clean across diverse TUs. **NEXT — REVISED by §11.5c (EMPIRICAL, 2026-06-24): build the DEPENDENT-CONTEXT
-DEFER MODE first.** An eager side-parse producer (`build_dependent_pattern`) was
-implemented + proof-hooked and REVERTED: flag-ON the suite went 657/12 with
-`unsubstituted template parameter '_Up' reached type lowering` because parsing a
-dependent body EAGERLY INSTANTIATES the templates it uses, leaking placeholders. madc
-lacks g++'s dependent-context (defer instantiation of param-dependent calls/member-
-access/operators while a `TemplateParamScope` is active). That defer mode is the real
-Phase 2 work and the prerequisite for any dependent body parse — SEE §11.5c. The
-parse-capture mechanism + the env-gated flag-on byte-identical proof harness are correct
-and reusable once instantiation is deferred. Commit-1 (scoped registry) stands.**
+(33c+18r, 0 timeouts); --emit=c11 clean across diverse TUs. **✅ PHASE 2 — PRODUCER + DEFER GUARD DONE (`2104299`, 2026-06-24).**
+`build_dependent_pattern` parses a member-fn-template body ONCE with its param →
+`DataDefTemplateParam` placeholder, captures the TokenFunc as
+`FuncDef::dependent_pattern` (a Tree-1 RECIPE), removes it from `pending_funcs`.
+Capability-gated by `tsubst_eligible` (one type param, no pack, non-dependent return,
+no template-id/`T::`). THE KEY PIECE = a `dependent_parse_in_progress` guard: the
+instantiation entry points bail while a dependent body is parsing, so a nested call
+stays DEPENDENT (bound to its body-less placeholder) instead of eagerly instantiating
+with the param placeholder as a concrete arg (the leak an unguarded parse caused:
+657/12). Producer runs only behind env hook `MADC_XTEST_DEP_PARSE`; recipe consumed by
+nobody yet. GATE GREEN: build clean; fulltest flag-OFF **AND flag-ON 669/0/0/18**
+(full isolation); torture byte-identical (33c+18r, 0 timeouts); --emit=c11 clean.
+**NEXT (per §11.5c, gcc-grounded recon): the global defer flag is a SCALAR-SLICE crutch
+(g++ computes dependence PER-NODE; a non-dependent op like `cout<<"x"` inside a
+dependent body must instantiate eagerly). Safe now ONLY because the recipe is inert.
+BEFORE Phase 3 consumes recipes: (1) replace the global gate with a PER-CALL dependence
+test (`any_type_dependent_arguments_p` analogue, pt.cc:30555); (2) typeless placeholder
++ ADL bit; (3) real `is_type_dependent` + tsubst re-resolution via the normal resolver.
+THEN cir-build the recipe to a Tree-1 cir pattern, THEN Phase 3 tsubst at
+cir_builder.cpp:11458. Re-use the env-gated flag-on byte-identical harness.**
 
 **✅ PHASE 1.5 DONE (`396b3c9`, 2026-06-23).** `DataDefTemplateParam` (include/datadef.h)
 — the typed `T` placeholder: `BaseType::btTemplateParam` (append-only) + `name` +
