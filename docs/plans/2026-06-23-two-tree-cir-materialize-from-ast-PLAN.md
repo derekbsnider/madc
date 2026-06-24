@@ -15,9 +15,29 @@ rests on; read it first).
 
 ## 0. RESUME — START HERE (post-compaction; read this section first)
 
-**HEAD:** `396b3c9` on `feature/front-end-performance-claude`. Working tree clean
+**HEAD:** `b35cef2` on `feature/front-end-performance-claude`. Working tree clean
 (only the untracked `mir-debug-support.md` — not ours; leave it). Fork
 `/workspace/mir` @ `d3a5cced` on origin/develop; `MIR_COMMIT` = `d3a5cce`.
+
+**✅ PHASE 2 — COMMIT 1 DONE (`b35cef2`, 2026-06-24): the scoped template-param
+registry.** The 2a foundation (PLAN §11.5a): `Program::template_param_scopes` (a
+stack of {param-name → `DataDefTemplateParam*`} frames) + RAII `TemplateParamScope`
+guard (twin of `NamespaceScope`) + `intern_template_param` (pooled by (name,index),
+owned by `template_param_pool` for Program lifetime, ptr_type_cache convention) +
+`resolve_template_param` (innermost-first; O(1) when no frame). `resolve_current_class_type_alias`
+consults the registry FIRST — single-point injection covering all 7 callers, so a
+param `T` is visible as a type everywhere a class-scope type name already resolves,
+with NO datatype_map change and NO resolver rewrite. Purely ADDITIVE + INERT
+(`TemplateParamScope` constructed nowhere in src/ — only the unit test; production
+stack always empty → `resolve_template_param` always NULL → consult branch never
+taken → emit byte-identical by construction, the Phase 1.5 class). GATE GREEN: build
+clean; fulltest 669/0/0/18 + drift gates; torture byte-identical to 51-name baseline
+(33c+18r, 0 timeouts); --emit=c11 clean across diverse TUs. **NEXT = Phase 2 commit 2
+— wire 2a: push a `TemplateParamScope` for the active template's params during a
+one-time DEPENDENT body parse (so `T value;` parses with `T` = placeholder), then
+cir-build that dependent body into a per-method immutable Tree-1 pattern. §11.5b
+OPEN items now in play: pattern cache key/ownership, scalar-only capability
+predicate, concrete-method↔pattern link at the func_def/translate_block seam.**
 
 **✅ PHASE 1.5 DONE (`396b3c9`, 2026-06-23).** `DataDefTemplateParam` (include/datadef.h)
 — the typed `T` placeholder: `BaseType::btTemplateParam` (append-only) + `name` +
