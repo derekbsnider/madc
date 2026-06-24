@@ -84,11 +84,28 @@ temporary `[TSUBST] … recovered N binding(s)` trace showed `T*`/`T&`/`const T&
 run 2/4/6 and emit byte-identical flag-off vs flag-on. Torture byte-identical BY CONSTRUCTION
 (all new code behind the `MADC_XTEST_DEP_PARSE` env gate — production never reaches it).
 
+✅ **PHASE 4 — construct 2 DONE (bare-`T` dependent return type).** `tsubst_eligible`
+(parser.cpp) now ACCEPTS a member template whose return type is the bare placeholder
+(`T echo(T v)`). The return type lives in the concrete SHELL (resolved on the normal parse
+path — hybrid B); the recipe parse passes the placeholder return type to `parseFunction`
+(which already tolerates it — NO parser change needed), and tsubst substitutes the BODY via
+the param binding. KEY TRAP avoided: `return_value_type().is_template_param()` is FALSE for a
+bare-`T` return (it is a return TOKEN naming T, not a `DataDefTemplateParam`), and
+byte-identical emit MASKS a silent re-parse fallback — so the gate discriminates the bare case
+at the TOKEN level (return-token stream == the single identifier `T`) and firing was reproven
+with the `[TSUBST]` trace, NOT byte-identical alone. A NON-bare dependent return (`T*`, `T&`,
+`vector<T>`, `T::type`) stays REJECTED (token scan) → re-parse fallback. VERIFIED: trace shows
+`echo`/`twice` fire (1 binding), `addr` (T* return) does NOT fire. test_cir 61/61 (new case:
+`echo` eligible via funcdef_map key, `T*` `addr` rejected, exactly 1 pattern). Reducers
+`tmp/tsubst_{retdep,retdep2,retptr}.mad` run 8/14/7 byte-identical. Torture byte-identical BY
+CONSTRUCTION (`tsubst_eligible`'s only caller is `build_dependent_pattern`, gated behind
+`MADC_XTEST_DEP_PARSE`).
+
 THEN the remaining widening (PLAN §11.5c / §Phase 4, one construct per gated commit):
-dependent return type (relax `tsubst_eligible`); non-type params; member-of-dependent access
-(`T::x`); typeless placeholder + ADL bit; real `is_type_dependent`. The re-parse deletion
-(Phase 5 = g++ lex/parse/sema parity) waits for full coverage; Phase 6 (serialize Tree-1 /
-header-forest) waits for Phase 5 (user directive 2026-06-24).
+non-type params; non-bare dependent return (`T*`/`T&`/`vector<T>`); member-of-dependent access
+(`T::x`); template-id (`Foo<T>`); typeless placeholder + ADL bit; real `is_type_dependent`. The
+re-parse deletion (Phase 5 = g++ lex/parse/sema parity) waits for full coverage; Phase 6
+(serialize Tree-1 / header-forest) waits for Phase 5 (user directive 2026-06-24).
 
 ## 1. GOAL (one sentence)
 

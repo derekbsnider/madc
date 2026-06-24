@@ -827,6 +827,48 @@ TEST_CASE("CIR: dependent pattern parse accepts template params in type position
     CHECK(patterns == 2);
 }
 
+// Two-tree Phase 4 (widening): a BARE-placeholder dependent return type
+// (`T echo(T v)`) is tsubst-eligible — build_dependent_pattern captures a recipe.
+// A NON-bare dependent return (`T* addr(T v)`) is NOT yet covered and must be
+// rejected (no recipe -> safe re-parse fallback), so exactly one pattern is built.
+TEST_CASE("CIR: bare-T dependent return is eligible, T* return is not") {
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(
+	"struct Holder {\n"
+	"    int member;\n"
+	"    template<class T> T echo(T v) { return v; }\n"
+	"    template<class T> T* addr(T v) { member = (int)v; return (T*)0; }\n"
+	"};\n"
+	"int main() { Holder h; h.echo(7); h.addr(5); return h.member; }\n",
+	"<dependent-return-test>");
+    REQUIRE(tp != nullptr);
+
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+    bool ok = prog->parse(tp);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    REQUIRE(ok);
+
+    size_t patterns = 0;
+    bool echo_has_pattern = false, addr_has_pattern = false;
+    for ( funcdef_map_iter it = prog->funcdef_map.begin();
+	  it != prog->funcdef_map.end(); ++it )
+	if ( it->second && it->second->dependent_pattern ) {
+	    ++patterns;
+	    if ( it->first.find("echo") != std::string::npos )
+		echo_has_pattern = true;
+	    if ( it->first.find("addr") != std::string::npos )
+		addr_has_pattern = true;
+	}
+    CHECK(patterns == 1);
+    CHECK(echo_has_pattern);
+    CHECK(!addr_has_pattern);
+}
+
 // Two-tree Phase 3: tsubst_cir = copy_cir_subtree + substitute template-parameter
 // placeholders with concrete types. The saved pattern (Tree-1) is left untouched;
 // the returned copy (Tree-2) carries the concrete type. Drives the scalar case

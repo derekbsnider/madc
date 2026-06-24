@@ -33095,14 +33095,21 @@ bool Program::tsubst_eligible(FuncDef *fd)
     if ( !fd->template_param_is_pack.empty() && fd->template_param_is_pack[0] )
 	return false;
     const std::string &T = fd->template_param_names[0];
-    // Reject a DEPENDENT return type (return naming the param) — slice 1 passes the
-    // resolved return type directly to parseFunction.
-    if ( fd->return_value_type().is_template_param() )
-	return false;
-    for ( size_t i = 0; i < fd->member_template_return_tokens.size(); ++i )
-	if ( fd->member_template_return_tokens[i]
-	  && contextual_identifier_name(fd->member_template_return_tokens[i]) == T )
-	    return false;
+    // A BARE-placeholder return type (`T f(...)`) is COVERED: the return type lives in
+    // the concrete shell (resolved on the normal parse path); the recipe parse passes
+    // the placeholder return type to parseFunction (which tolerates it), and tsubst
+    // substitutes the BODY via the param binding. The bare case = the return-token
+    // stream is exactly the single identifier T. A NON-bare dependent return (`T*`,
+    // `T&`, `vector<T>`, `T::type`) is NOT yet covered — reject it via the token scan.
+    bool ret_is_bare_param =
+	fd->member_template_return_tokens.size() == 1
+	&& fd->member_template_return_tokens[0]
+	&& contextual_identifier_name(fd->member_template_return_tokens[0]) == T;
+    if ( !ret_is_bare_param )
+	for ( size_t i = 0; i < fd->member_template_return_tokens.size(); ++i )
+	    if ( fd->member_template_return_tokens[i]
+	      && contextual_identifier_name(fd->member_template_return_tokens[i]) == T )
+		return false;
     // Body/param scan: any template-id (`<`) or `T::` dependent lookup disqualifies.
     const std::vector<TokenBase *> &d = fd->member_template_decl;
     for ( size_t i = 0; i < d.size(); ++i )
