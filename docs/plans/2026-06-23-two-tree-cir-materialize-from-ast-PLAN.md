@@ -15,6 +15,34 @@ rests on; read it first).
 
 ## 0. RESUME — START HERE (post-compaction; read this section first)
 
+**✅ 2026-06-25 — STEP-C SPINE LANDED (`is_type_dependent`); nested-instantiation pinned.**
+The generic per-node type-dependence predicate (§11.5c step 3 spine) is COMMITTED
+(`62409d08`): `is_type_dependent(TokenBase*)` = the `type_dependent_expression_p`
+(gcc/cp/pt.cc:30357) analogue — node-datadef-involves-placeholder + pack-expansion +
+recursive-call shortcuts; `call_involves_placeholder` now wraps it. Gate GREEN flag-off
+AND flag-on 669/0/0/18. GCC recon CONFIRMED the model end-to-end: a dependent call is left
+unresolved at parse with the ADL bit stashed (`KOENIG_LOOKUP_P`), and tsubst re-runs the
+SAME resolver (`finish_call_expr`) on substituted args — one resolver, two phases
+(pt.cc:22158).
+
+RETIRING the `std::forward`/`std::move` name-match (`identity_forwarding_operand`, the
+Rule-#7 violation introduced in `f167fbdc`) is BLOCKED on ONE capability: the tsubst/copy
+path must INSTANTIATE nested fn-templates, not just resolve existing overloads. Pinned
+precisely: drop the name-match → the forward call lowers via `copy_expr_under` →
+`rewrite_copied_dependent_call_id` (cir_builder.cpp:659) re-resolves via
+`find_namespace_function_overload`, which RESOLVES but does NOT INSTANTIATE `forward<Item>`
+→ `tsubst: unresolved dependent call` → method falls back (tree1_copies 0). The name-match
+peel had hidden this by never lowering the forward call. Attempted fix (WIP patch
+`tmp/stepC-nested-instantiation-wip.patch`): call
+`instantiate_namespace_fn_template_for_call(&synth)` with the substituted explicit args —
+it reaches the miss with CORRECT inputs (`ns=std name=forward explicit=[Item] at=[Item]`)
+but instantiation declines (`winner=nil`), LIKELY because the synth borrows the pattern's
+PLACEHOLDER-typed params (confusing deduction). NEXT for THIS piece: give synth
+CONCRETE-typed params (the substituted `at` types) + a parser-side probe of
+`try_instantiate`. Multi-cycle parser-internals work — run it as its own focused effort,
+NOT a quick slice. Meanwhile keep deleting `tsubst_eligible` catalog entries via slices
+that don't need nested instantiation.
+
 **HEAD:** `feature/front-end-performance-claude` after the direct type-arg binding,
 type-pack metadata capture, direct value/ref/expression/forwarding-call/constructor
 pack fan-out, covered system-header placement-new scalar/class `_Up` slices, and the
