@@ -70,12 +70,19 @@ high-level" — the answer is both.**
   Validation is green both
   flag-off and flag-on at **669 passed / 0 failed / 0 timed out / 18 skipped**;
   `test_cir` is **79 test cases / 977 assertions / 4 skipped**. Phase 4 is
-  roughly **65% implemented** by coverage weight, not session count. Remaining
-  design-level blocker before deleting the re-parse fallback: broader CIR pack
-  expansion for system-header forwarding/destructor patterns, class-valued
-  placement-new constructor argument packs that need real reference-forwarding or
-  object-address lowering, broader system-header nested/dependent calls, and
-  dependent/template-id body surfaces.
+  roughly **65% implemented** by coverage weight, not session count.
+  **2026-06-25:** the generic `is_type_dependent` predicate (the
+  `type_dependent_expression_p` / pt.cc:30357 analogue) landed and is COMMITTED
+  (`62409d08`, green both gates) — the step-C spine the per-construct
+  `tsubst_eligible` catalog retires onto; the trajectory now pivots from growing
+  that catalog to the generic resolver-reentry. **Keystone blocker** before
+  deleting the re-parse fallback (handoff §8): the tsubst/copy path must
+  INSTANTIATE nested function templates, not just resolve existing overloads
+  (g++'s `tsubst → finish_call_expr`). That one capability dissolves the
+  `std::forward`/`std::move` callee-name match, the system-header dependent-call
+  bail, and the remaining catalog entries (system-header forwarding/destructor
+  packs, class-valued placement-new argument packs, broader nested/dependent
+  calls, template-id body surfaces).
 - **Backend:** `madc parser → cir_node (MC11-IR) → c2mir → MIR` is the **sole**
   backend. The asmjit JIT and the Gecko parser/MIR-transpiler were both removed
   (commits `42e9b6e`, `64f44b3`). There is no `--backend=jit`; `--backend=mir`

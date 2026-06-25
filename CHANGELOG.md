@@ -4,6 +4,19 @@
 
 ### Two-tree tsubst widening
 
+- Added the generic `is_type_dependent` predicate — the step-C spine and the
+  `type_dependent_expression_p` (gcc/cp/pt.cc:30357) analogue: an expression is
+  type-dependent iff its type involves a template-parameter placeholder, with
+  structural shortcuts for nodes whose datadef is not yet meaningful (a pack
+  expansion is always dependent; a call is dependent iff any argument or its
+  result type is). `call_involves_placeholder` now wraps it. This is the
+  programmatic primitive the per-construct `tsubst_eligible` token-scan catalog
+  retires onto. Green flag-off AND flag-on (669/0/0/18).
+- Identified and fully scoped (handoff §8) the keystone capability that retires
+  the `std::forward`/`std::move` callee-name match, the system-header
+  dependent-call bail, and the `tsubst_eligible` catalog: the tsubst/copy path
+  must INSTANTIATE nested function templates, not merely resolve existing
+  overloads — g++'s `tsubst → finish_call_expr` (one resolver, two phases).
 - Implemented direct TYPE template-argument binding for the env-gated two-tree
   member-template body path. Concrete instantiated `FuncDef`s now retain
   `tsubst_type_args` in source template-parameter order, so CIR tsubst consumes
