@@ -21,12 +21,16 @@ prerequisite cleanup. The local Codex update below completes direct type-arg bin
 later local Codex updates also capture TYPE-pack metadata and implement direct
 value/ref/expression/forwarding-call/constructor pack call-argument fan-out slices, then
 admit the first covered system-header placement-new body, scalar `_Up` constructed-type
-slice, and simple class `_Up` placement-new slice. The remaining
+slice, simple class `_Up` placement-new slice, and direct `__destroy(T*)` helper slice.
+The direct helper path emits a deferred Tree-1 marker for template-parameter pointees
+and lowers the concrete class destructor/no-op after substitution; split system-header/user
+parses now also reattach existing builtin/intrinsic `FuncDef`s to the active
+`TokenProgram` so recipe capture can resolve compiler intrinsics. The remaining
 design-level target is broader cir-node **pack expansion** (`tsubst_pack_expansion`
 analogue) for real system-header forwarding/destructor patterns, class-valued constructor
 argument packs, dependent nested calls, and template-id body surfaces. All
 gated flag-off AND flag-on 669/0/0/18; torture byte-identical by construction (env-gated);
-`test_cir` is now 73/892/4.
+`test_cir` is now 74/909/4.
 
 
 DONE + gated + committed on this branch:
@@ -313,6 +317,34 @@ doctest green (1 test / 14 assertions); `bin/test_cir` and
 `MADC_XTEST_DEP_PARSE=1 bin/test_cir` both 73 test cases / 892 assertions / 4 skipped;
 `make -C src fulltest` 669/0/0/18; `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh`
 669/0/0/18.
+
+✅ **2026-06-25 LOCAL CODEX UPDATE — DIRECT `__destroy(T*)` HELPER TSUBST
+DONE.** Direct compiler-intrinsic destructor helpers in retained template bodies now
+have a Tree-1 path. In CIR pattern mode, `__destroy(p)` where `p` has a
+template-parameter pointee type emits a deferred marker instead of inspecting the
+placeholder pointee too early. During `copy_cir_subtree`, tsubst substitutes the
+pointer element type, lowers class pointees to the concrete complete destructor call,
+and lowers scalar/pointer pointees to a no-op expression. Broader system-header
+destructor-pack/member-template surfaces such as `_Destroy_aux::__destroy` still stay
+on the parsed-body fallback.
+
+The slice also fixed a producer-layer multi-buffer lookup issue: `_parser_init`
+re-runs builtin registration per parse, but `addFunction()` previously returned early
+when `funcdef_map` already had a shared `FuncDef`, leaving later `TokenProgram`s
+without a function variable for compiler intrinsics. It now reattaches the existing
+`FuncDef` to the active `TokenProgram` when needed, so split system-header/user parses
+can capture `__destroy(p)` during dependent recipe construction without creating a
+parallel implementation.
+
+Unit coverage pins a synthetic system-header `Cleaner::clean(T*) { __destroy(p); }`
+body, verifies the source template has a dependent recipe, verifies the concrete
+instance links to that source, requires Tree-1 copies, and runs a class destructor
+side effect returning 7. Validation: `make -C src` green; focused direct-destroy
+doctest green (1 test / 17 assertions); `bin/test_cir` and
+`MADC_XTEST_DEP_PARSE=1 bin/test_cir` both 74 test cases / 909 assertions / 4 skipped;
+`MADC_XTEST_DEP_PARSE=1 bin/madc tests/testcontainerdtor.mad` exits 0 with known
+non-fatal diagnostics; `make -C src fulltest` 669/0/0/18;
+`MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` 669/0/0/18.
 
 ✅ **2026-06-24 LOCAL CODEX UPDATE — CONSTRUCTOR VALUE-PACK FAN-OUT DONE
 (uncommitted).** Member-template constructor instantiation now participates in the same

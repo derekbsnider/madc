@@ -55,10 +55,14 @@ high-level" — the answer is both.**
   member-template constructors to the same Tree-1 tsubst path, and admit covered
   system-header placement-new bodies including scalar `_Up` construction and
   simple class `_Up` construction with scalar/pointer constructor pack elements
-  in allocator-style `new ((void*)p) _Up(std::forward<Args>(args)...)`.
+  in allocator-style `new ((void*)p) _Up(std::forward<Args>(args)...)`. The
+  current slice also covers direct `__destroy(T*)` helper bodies by deferring
+  pointee-class inspection until after substitution, and fixes multi-buffer
+  builtin/intrinsic lookup so split system-header/user parses can capture those
+  helpers as Tree-1 recipes.
   Validation is green both
   flag-off and flag-on at **669 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **73 test cases / 892 assertions / 4 skipped**. Remaining
+  `test_cir` is **74 test cases / 909 assertions / 4 skipped**. Remaining
   design-level blocker before deleting the re-parse fallback: broader CIR pack
   expansion for system-header forwarding/destructor patterns, class-valued
   placement-new constructor argument packs, dependent nested calls, and

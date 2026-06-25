@@ -1,14 +1,14 @@
 # Test Status
 
 > **Local branch update (2026-06-25, `feature/front-end-performance-claude` @
-> class-up-placement-new slice with two-tree direct type-arg binding and direct
+> direct-destroy-helper slice with two-tree direct type-arg binding and direct
 > value/ref/expression/forwarding-call/constructor pack fan-out plus covered
 > system-header placement-new pack fan-out and simple class `_Up` placement-new
-> tsubst):** fulltest
+> tsubst plus direct `__destroy(T*)` helper tsubst):** fulltest
 > **669 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
 > GREEN). The env-gated tsubst path is also green:
 > `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` reports **669/0/0/18**.
-> `bin/test_cir` reports **73 test cases, 892 assertions, 4 skipped** after
+> `bin/test_cir` reports **74 test cases, 909 assertions, 4 skipped** after
 > adding coverage for direct `tsubst_type_args` binding of a body-only template
 > parameter and direct `tsubst_type_arg_packs` capture for a variadic member
 > template, plus direct CIR fan-out for value-pack call arguments like
@@ -19,7 +19,9 @@
 > constructors like `Holder(Args... args) { member = sink(args...); }`, plus
 > system-header placement-new pack bodies, scalar `_Up` lowering, and simple
 > class `_Up` lowering with scalar/pointer constructor pack elements for
-> allocator-style `new ((void*)p) _Up(std::forward<Args>(args)...)`.
+> allocator-style `new ((void*)p) _Up(std::forward<Args>(args)...)`, plus
+> direct `__destroy(T*)` helpers that defer pointee inspection until after
+> substitution and lower class pointees to the concrete destructor.
 > Broader system-header forwarding/destructor pack surfaces, class-valued
 > placement-new constructor argument packs, dependent nested calls, and
 > template-id body/return surfaces remain on the re-parse fallback.

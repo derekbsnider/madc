@@ -52,11 +52,20 @@
   `_Up` construction when the constructor pack elements are scalar/pointer-like.
   After substitution, the marker reuses the existing class placement-new lowering;
   class-valued constructor argument packs still fall back to the parsed body.
+- Added direct `__destroy(T*)` tsubst lowering for retained template bodies. The
+  Tree-1 recipe now emits a deferred marker when the pointee is a template
+  parameter; after substitution the copy path lowers class pointees to the
+  concrete destructor and scalar/pointer pointees to a no-op.
+- Fixed multi-buffer builtin/intrinsic registration by reattaching an existing
+  shared `FuncDef` to the active `TokenProgram` when a later parse needs the
+  same function variable. This lets split system-header/user parses capture
+  compiler-intrinsic calls such as `__destroy(p)` during dependent recipe
+  parsing.
 - Kept ordinary reference-parameter bodies, dependent nested calls, broader
   system-header forwarding/destructor packs, class-valued placement-new
   constructor argument packs, and template-id body/return surfaces on the
   re-parse fallback until those constructs are widened. The flag-on tsubst gate
-  and normal fulltest both remain 669/0/0/18; `test_cir` is 73 test cases / 892
+  and normal fulltest both remain 669/0/0/18; `test_cir` is 74 test cases / 909
   assertions / 4 skipped.
 
 ## [v0.30.0] — 2026-06-22

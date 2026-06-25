@@ -484,6 +484,16 @@ static DataDefTemplateParam *template_param_in_pack_pattern(TokenBase *tb)
 	return NULL;
 }
 
+static bool tsubst_destroy_call_has_template_pointee(TokenCallFunc *tc)
+{
+	if (!tc || tc->var.name != "__destroy" || tc->parameters.size() != 1)
+		return false;
+	TokenBase *arg = tc->parameters[0];
+	DataDef *argdd = arg ? arg->datadef() : NULL;
+	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(argdd);
+	return pdd && template_param_under_type_layers(pdd->base_type);
+}
+
 static std::string pack_value_name_in_pattern(TokenBase *tb,
 					      unsigned pack_index)
 {
@@ -569,6 +579,7 @@ static bool cir_id_spells(cir_node *n, const char *name)
 	    && strcmp(n->base.u.s.s, name) == 0;
 }
 
+static DataDefCLASS *as_class_instance(DataDef *dd);
 static bool tsubst_is_class_object_arg(DataDef *dd);
 
 void CirBuilder::rename_copied_pack_value_id(cir_node *src, cir_node *dst)
@@ -726,6 +737,27 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				return CIR_NODE(error_node(
 					"tsubst: failed to lower placement new"));
 			return copy_cir_subtree(CIR_NODE(lowered_tree), subst);
+		}
+		TokenCallFunc *tc =
+			dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
+		if (tsubst_destroy_call_has_template_pointee(tc)) {
+			DataDef *concrete_arg = subst_datadef(m_prog, src->datadef, *subst);
+			DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(concrete_arg);
+			DataDef *elem = pdd ? pdd->base_type : NULL;
+			if (!elem || template_param_under_type_layers(elem))
+				return CIR_NODE(error_node(
+					"tsubst: unbound __destroy element type"));
+			DataDefCLASS *ecls = as_class_instance(elem);
+			if (!ecls || !class_needs_dtor(ecls))
+				return CIR_NODE(integer(0, tc));
+			std::string dsym = class_complete_dtor_symbol(ecls);
+			referenced_funcs.insert(dsym);
+			need_output_extern(dsym.c_str(), false,
+					   { { {N_VOID}, true } });
+			node_t a = list();
+			append(a, node2(N_CAST, void_ptr_type(),
+					translate_expr(tc->parameters[0]), tc));
+			return CIR_NODE(node2(N_CALL, id(dsym.c_str(), tc), a, tc));
 		}
 	}
 
@@ -9845,6 +9877,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (tcf->var.name == "__destroy" && tcf->parameters.size() == 1) {
 				TokenBase *parg = tcf->parameters[0];
 				DataDef *argdd = parg ? parg->datadef() : NULL;
+				if (m_tsubst_pattern_mode
+				    && tsubst_destroy_call_has_template_pointee(tcf)) {
+					cir_node *marker = make(N_IGNORE, tb);
+					marker->datadef = argdd;
+					return marker->as_node();
+				}
 				DataDef *elem = NULL;
 				if (DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(argdd))
 					elem = pdd->base_type;
@@ -11837,10 +11875,11 @@ static bool tsubst_pattern_has_dependent_call(TokenBase *tb)
 	}
 	if (TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb)) {
 		// __destroy(ptr) lowers by inspecting the concrete pointee class at
-		// CIR time. A saved template-body recipe still has placeholder
-		// pointee types, so keep destructor helpers on the parsed-body path.
+		// CIR time. Direct placeholder-pointee helpers are represented by a
+		// deferred marker in the Tree-1 recipe; broader destructor helper
+		// shapes stay on the parsed-body path.
 		if (tc->var.name == "__destroy")
-			return true;
+			return !tsubst_destroy_call_has_template_pointee(tc);
 		if (FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type))
 			if (!fd->function_display_name.empty())
 				return true;

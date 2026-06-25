@@ -11828,7 +11828,7 @@ void Program::add_core_functions()
 	if ( var && it->id == "__builtin_va_start" )
 	{
 	    FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
-	    if ( fd )
+	    if ( fd && !fd->is_varargs )
 	    {
 		fd->is_varargs = true;
 		fd->parameters.push_back(&ddINT64);
@@ -13004,6 +13004,7 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     FuncDef *func;
     Variable *var;
     DataDef *dd;
+    Method *method;
 
     auto resolve_data_type = [this](const typespec_t &spec) -> DataDef *
     {
@@ -13064,10 +13065,30 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	}
     };
 
-    // may have already been declared
+    // May have already been declared on a previous parse. FuncDefs are shared
+    // across the Program, but each active TokenProgram still needs a Variable
+    // so unqualified lookup can see builtins/intrinsics in multi-buffer tests
+    // and included-header style parses.
     if ( !isMethod && (fmi=funcdef_map.find(id)) != funcdef_map.end() )
     {
 	DBG(std::cout << "addFunction() already declared: " << id << std::endl);
+	if ( tkProgram && !(var=tkProgram->findVariable(strpool, id)) )
+	{
+	    func = fmi->second;
+	    var = addVariable(NULL, *func, id, false);
+	    method = new Method(*var);
+	    var->data = (void *)method;
+	    method->x86code = (void *)extfunc;
+	    if ( extfunc )
+	    {
+		Dl_info _dli;
+		if ( dladdr((void *)extfunc, &_dli) && _dli.dli_sname && _dli.dli_sname[0] )
+		    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.dli_sname;
+		else
+		    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
+	    }
+	    return var;
+	}
 	return NULL;
     }
 
@@ -13090,8 +13111,6 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	func->param_typedef_names.push_back("");
     }
     DBG(std::cout << endl);
-
-    Method *method;
 
     if ( isMethod )
     {

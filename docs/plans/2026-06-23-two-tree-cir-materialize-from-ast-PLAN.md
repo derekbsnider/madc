@@ -15,13 +15,11 @@ rests on; read it first).
 
 ## 0. RESUME — START HERE (post-compaction; read this section first)
 
-**HEAD:** `eea23f3` on `feature/front-end-performance-claude`, plus local Codex
-worktree edits for direct type-arg binding, type-pack metadata capture,
-direct value/ref/expression/forwarding-call/constructor pack fan-out, and covered
-system-header placement-new scalar `_Up` pack fan-out. Working tree is intentionally dirty in
-`include/madc.h`, `src/parser.cpp`, `src/cir_builder.cpp`, `src/cir_builder.h`,
-`src/cir_node.h`, and `tests/unit/test_cir.cpp`; unrelated untracked
-`mir-debug-support.md` is not ours.
+**HEAD:** `feature/front-end-performance-claude` after the direct type-arg binding,
+type-pack metadata capture, direct value/ref/expression/forwarding-call/constructor
+pack fan-out, covered system-header placement-new scalar/class `_Up` slices, and the
+direct `__destroy(T*)` helper slice. The only known unrelated local file during this
+handoff is untracked `mir-debug-support.md`; it is not ours.
 Fork `/workspace/mir` @ `d3a5cced` on origin/develop; `MIR_COMMIT` = `d3a5cce`.
 
 **✅ 2026-06-24 LOCAL CODEX UPDATE — DIRECT TYPE-ARG BINDING DONE (uncommitted).**
@@ -57,7 +55,13 @@ after type substitution, so allocator-style `new ((void*)p)
 _Up(std::forward<Args>(args)...)` can tsubst for scalar/pointer `_Up`. The latest
 slice extends that deferred constructed-type path to simple class `_Up` placement
 construction when the constructor pack elements are scalar/pointer-like; class-valued
-constructor argument packs still fall back. Validation: `bin/test_cir` 73 test cases / 892 assertions / 4 skipped,
+constructor argument packs still fall back. The current slice covers direct
+`__destroy(T*)` helpers by emitting a Tree-1 deferred marker for template-parameter
+pointees, then lowering class pointees to the concrete destructor and scalar/pointer
+pointees to no-op after substitution. It also fixes multi-buffer builtin/intrinsic
+registration by reattaching an existing shared `FuncDef` to the active `TokenProgram`,
+so split system-header/user parses can capture compiler-intrinsic helper calls during
+recipe construction. Validation: `bin/test_cir` 74 test cases / 909 assertions / 4 skipped,
 `make -C src fulltest` 669/0/0/18, and `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh`
 669/0/0/18. **Current next blocker: broader CIR pack expansion for real system-header
 forwarding/destructor pack patterns, class-valued constructor argument packs,

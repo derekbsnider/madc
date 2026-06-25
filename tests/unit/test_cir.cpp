@@ -1374,6 +1374,82 @@ TEST_CASE("CIR: tsubst lowers system-header class placement-new template type") 
     CHECK(got == 34);
 }
 
+// `__destroy(T*)` must not be lowered while T is still a placeholder in the
+// retained recipe; the concrete pointee class is known only after tsubst.
+TEST_CASE("CIR: tsubst lowers direct dependent destroy helper") {
+    const char *header_source =
+	"struct Box {\n"
+	"    int* p;\n"
+	"    Box(int* q) { p = q; }\n"
+	"    ~Box() { *p = *p + 7; }\n"
+	"};\n"
+	"struct Cleaner {\n"
+	"    template<class T> void clean(T* p) { __destroy(p); }\n"
+	"};\n";
+    const char *main_source =
+	"int main() { int x = 0; Box* b = new Box(&x); Cleaner c; c.clean(b); return x; }\n";
+    const char *run_source =
+	"struct Box {\n"
+	"    int* p;\n"
+	"    Box(int* q) { p = q; }\n"
+	"    ~Box() { *p = *p + 7; }\n"
+	"};\n"
+	"struct Cleaner {\n"
+	"    template<class T> void clean(T* p) { __destroy(p); }\n"
+	"};\n"
+	"int main() { int x = 0; Box* b = new Box(&x); Cleaner c; c.clean(b); return x; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/stl_construct.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(main_source, "<destroy-helper-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    FuncDef *source = NULL;
+    FuncDef *instance = NULL;
+    for ( funcdef_map_iter it = prog->funcdef_map.begin();
+	  it != prog->funcdef_map.end(); ++it )
+    {
+	FuncDef *fd = it->second;
+	if ( !fd )
+	    continue;
+	if ( fd->dependent_pattern
+	  && fd->method_display_name == "clean" )
+	    source = fd;
+	if ( fd->tsubst_source
+	  && fd->tsubst_source->method_display_name == "clean" )
+	    instance = fd;
+    }
+    REQUIRE(source != NULL);
+    REQUIRE(instance != NULL);
+    CHECK(instance->tsubst_source == source);
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(run_source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 7);
+}
+
 // Two-tree pack expansion: reference parameter packs have already lowered value
 // reads through the reference pointer in the Tree-1 recipe. They can therefore
 // use the same direct fan-out and args -> args__N rename as by-value packs.
