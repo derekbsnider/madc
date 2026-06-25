@@ -1,13 +1,14 @@
 # Test Status
 
-> **Local branch update (2026-06-24, `feature/front-end-performance-claude` @
-> `eea23f3` plus uncommitted two-tree direct type-arg binding and direct
+> **Local branch update (2026-06-25, `feature/front-end-performance-claude` @
+> class-up-placement-new slice with two-tree direct type-arg binding and direct
 > value/ref/expression/forwarding-call/constructor pack fan-out plus covered
-> system-header placement-new pack fan-out):** fulltest
+> system-header placement-new pack fan-out and simple class `_Up` placement-new
+> tsubst):** fulltest
 > **669 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
 > GREEN). The env-gated tsubst path is also green:
 > `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` reports **669/0/0/18**.
-> `bin/test_cir` reports **72 test cases, 878 assertions, 4 skipped** after
+> `bin/test_cir` reports **73 test cases, 892 assertions, 4 skipped** after
 > adding coverage for direct `tsubst_type_args` binding of a body-only template
 > parameter and direct `tsubst_type_arg_packs` capture for a variadic member
 > template, plus direct CIR fan-out for value-pack call arguments like
@@ -16,11 +17,12 @@
 > `sink((args + 1)...)`, plus the first forwarding-call pack pattern
 > `sink(std::forward<Args>(args)...)`, plus covered local member-template
 > constructors like `Holder(Args... args) { member = sink(args...); }`, plus
-> system-header placement-new pack bodies and scalar `_Up` lowering for
+> system-header placement-new pack bodies, scalar `_Up` lowering, and simple
+> class `_Up` lowering with scalar/pointer constructor pack elements for
 > allocator-style `new ((void*)p) _Up(std::forward<Args>(args)...)`.
-> Broader system-header forwarding/destructor pack surfaces, class `_Up`
-> placement-new construction, dependent nested calls, and template-id
-> body/return surfaces remain on the re-parse fallback.
+> Broader system-header forwarding/destructor pack surfaces, class-valued
+> placement-new constructor argument packs, dependent nested calls, and
+> template-id body/return surfaces remain on the re-parse fallback.
 >
 > **Current (2026-06-22, `develop`, v0.30.0 — set wall CLEARED, pushed to
 > origin/develop):** Fulltest **669 passed, 0 failed, 0 timed out, 18 skipped**

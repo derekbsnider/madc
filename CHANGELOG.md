@@ -47,13 +47,16 @@
   lowering until `_Up` is substituted, then emits scalar assignment for
   concrete scalar/pointer `_Up`; singleton pack expansion outside an argument
   list keeps the original value-pack parameter name instead of inventing
-  `args__0`. Class `_Up` object construction deliberately remains on fallback
-  until the class placement-new lowering is covered.
+  `args__0`.
+- Extended the deferred constructed-type placement-new path to simple class
+  `_Up` construction when the constructor pack elements are scalar/pointer-like.
+  After substitution, the marker reuses the existing class placement-new lowering;
+  class-valued constructor argument packs still fall back to the parsed body.
 - Kept ordinary reference-parameter bodies, dependent nested calls, broader
-  system-header forwarding/destructor packs, class `_Up` placement-new
-  construction, and template-id body/return surfaces on the re-parse fallback
-  until those constructs are widened. The flag-on tsubst gate and normal
-  fulltest both remain 669/0/0/18; `test_cir` is 72 test cases / 878
+  system-header forwarding/destructor packs, class-valued placement-new
+  constructor argument packs, and template-id body/return surfaces on the
+  re-parse fallback until those constructs are widened. The flag-on tsubst gate
+  and normal fulltest both remain 669/0/0/18; `test_cir` is 73 test cases / 892
   assertions / 4 skipped.
 
 ## [v0.30.0] — 2026-06-22

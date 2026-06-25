@@ -54,13 +54,15 @@ like `Holder(Args... args) { member = sink(args...); }` now fan out by CIR tsubs
 of relying only on re-parse. The current local slice admits structurally covered
 system-header placement-new pack bodies and defers scalar `_Up` lowering until
 after type substitution, so allocator-style `new ((void*)p)
-_Up(std::forward<Args>(args)...)` can tsubst for scalar/pointer `_Up`; class
-`_Up` still falls back. Validation: `bin/test_cir` 72 test cases / 878 assertions / 4 skipped,
+_Up(std::forward<Args>(args)...)` can tsubst for scalar/pointer `_Up`. The latest
+slice extends that deferred constructed-type path to simple class `_Up` placement
+construction when the constructor pack elements are scalar/pointer-like; class-valued
+constructor argument packs still fall back. Validation: `bin/test_cir` 73 test cases / 892 assertions / 4 skipped,
 `make -C src fulltest` 669/0/0/18, and `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh`
 669/0/0/18. **Current next blocker: broader CIR pack expansion for real system-header
-forwarding/destructor pack patterns, class `_Up` placement-new object construction,
-nested/dependent re-resolution, and template-id body/return surfaces; Phase 5 delete-reparse
-remains gated on full coverage.**
+forwarding/destructor pack patterns, class-valued constructor argument packs,
+nested/dependent re-resolution, and template-id body/return surfaces; Phase 5
+delete-reparse remains gated on full coverage.**
 
 **✅ PHASE 3 FIRST SLICE + MARKER WIDENING DONE (2026-06-24) — the recipe is CONSUMED by
 tsubst.** Four gated commits: `e4dda75` (tsubst_cir core), `6c301f9` (FuncDef::tsubst_source

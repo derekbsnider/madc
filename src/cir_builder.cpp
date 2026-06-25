@@ -569,6 +569,8 @@ static bool cir_id_spells(cir_node *n, const char *name)
 	    && strcmp(n->base.u.s.s, name) == 0;
 }
 
+static bool tsubst_is_class_object_arg(DataDef *dd);
+
 void CirBuilder::rename_copied_pack_value_id(cir_node *src, cir_node *dst)
 {
 	if (m_tsubst_copy_pack_index < 0 || !m_tsubst_copy_pack_value_name)
@@ -667,9 +669,46 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			if (!concrete || template_param_under_type_layers(concrete))
 				return CIR_NODE(error_node(
 					"tsubst: unbound placement-new constructed type"));
-			if (dynamic_cast<DataDefCLASS *>(concrete))
-				return CIR_NODE(error_node(
-					"tsubst: class placement new from template type"));
+			DataDefCLASS *concrete_class =
+				dynamic_cast<DataDefCLASS *>(concrete);
+			if (concrete_class) {
+				bool unsupported_class_arg = false;
+				for (TokenBase *arg : tn->ctor_args) {
+					if (TokenPackExpansion *pe =
+						    dynamic_cast<TokenPackExpansion *>(arg)) {
+						DataDefTemplateParam *tp = pe->pattern
+							? template_param_in_pack_pattern(pe->pattern)
+							: NULL;
+						if (!tp || !m_tsubst_active_type_arg_packs
+						    || tp->param_index
+						       >= m_tsubst_active_type_arg_packs->size()) {
+							unsupported_class_arg = true;
+							break;
+						}
+						const std::vector<DataDef *> &elems =
+							(*m_tsubst_active_type_arg_packs)
+								[tp->param_index];
+						for (DataDef *elem : elems)
+							if (tsubst_is_class_object_arg(elem)) {
+								unsupported_class_arg = true;
+								break;
+							}
+						if (unsupported_class_arg)
+							break;
+						continue;
+					}
+					DataDef *arg_dd = arg
+						? subst_datadef(m_prog, arg->datadef(), *subst)
+						: NULL;
+					if (tsubst_is_class_object_arg(arg_dd)) {
+						unsupported_class_arg = true;
+						break;
+					}
+				}
+				if (unsupported_class_arg)
+					return CIR_NODE(error_node(
+						"tsubst: class placement-new object argument pack"));
+			}
 			TokenNEW lowered;
 			lowered.file = tn->file;
 			lowered.line = tn->line;
@@ -677,7 +716,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			lowered.placement = tn->placement;
 			lowered.ctor_args = tn->ctor_args;
 			lowered.array_size = tn->array_size;
-			lowered.alloc_class = dynamic_cast<DataDefCLASS *>(concrete);
+			lowered.alloc_class = concrete_class;
 			lowered.alloc_type = lowered.alloc_class ? NULL : concrete;
 			bool saved_mode = m_tsubst_pattern_mode;
 			m_tsubst_pattern_mode = false;
@@ -895,6 +934,17 @@ static bool same_enum_type(const DataDefENUM *a, const DataDefENUM *b)
 static DataDefCLASS *as_class_instance(DataDef *dd)
 {
 	return as_user_class(dd);
+}
+
+static bool tsubst_is_class_object_arg(DataDef *dd)
+{
+	if (!dd)
+		return false;
+	if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
+		return as_class_instance(rd->base_type) != NULL;
+	if (dd->is_pointer())
+		return false;
+	return as_class_instance(dd) != NULL;
 }
 
 // First-class references (docs/plans/2026-06-17-first-class-references.md):

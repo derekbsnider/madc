@@ -39,7 +39,7 @@ high-level" — the answer is both.**
   `master` still holds the v0.24.0 asmjit/Gecko backend at full C89 coverage;
   develop is **not** promoted to master until the CIR path reaches feature
   parity.
-- **Two-tree front-end performance work (local branch, 2026-06-24):** Phase 3
+- **Two-tree front-end performance work (local branch, 2026-06-25):** Phase 3
   tsubst consumption and Phase 4 scalar widening are env-gated behind
   `MADC_XTEST_DEP_PARSE`. The local branch now records direct parser-resolved
   TYPE template args on concrete member-template `FuncDef`s (`tsubst_type_args`)
@@ -53,15 +53,16 @@ high-level" — the answer is both.**
   simple forwarding-call pattern `sink(std::forward<Args>(args)...)`, re-resolve
   copied callee ids from concrete explicit template args, link covered
   member-template constructors to the same Tree-1 tsubst path, and admit covered
-  system-header placement-new bodies including scalar `_Up` construction in
-  allocator-style `new ((void*)p) _Up(std::forward<Args>(args)...)`. Validation is
-  green both
+  system-header placement-new bodies including scalar `_Up` construction and
+  simple class `_Up` construction with scalar/pointer constructor pack elements
+  in allocator-style `new ((void*)p) _Up(std::forward<Args>(args)...)`.
+  Validation is green both
   flag-off and flag-on at **669 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **72 test cases / 878 assertions / 4 skipped**. Remaining
+  `test_cir` is **73 test cases / 892 assertions / 4 skipped**. Remaining
   design-level blocker before deleting the re-parse fallback: broader CIR pack
-  expansion for system-header forwarding/destructor patterns, class `_Up`
-  placement-new construction, dependent nested calls, and dependent/template-id
-  body surfaces.
+  expansion for system-header forwarding/destructor patterns, class-valued
+  placement-new constructor argument packs, dependent nested calls, and
+  dependent/template-id body surfaces.
 - **Backend:** `madc parser → cir_node (MC11-IR) → c2mir → MIR` is the **sole**
   backend. The asmjit JIT and the Gecko parser/MIR-transpiler were both removed
   (commits `42e9b6e`, `64f44b3`). There is no `--backend=jit`; `--backend=mir`

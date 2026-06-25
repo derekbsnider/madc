@@ -1311,6 +1311,69 @@ TEST_CASE("CIR: tsubst lowers system-header scalar placement-new template type")
     CHECK(got == 42);
 }
 
+// Class `_Up` placement construction uses the same deferred constructed-type
+// marker as scalar `_Up`, but after substitution it must run the existing class
+// placement-new lowering instead of falling back to the re-parsed body.
+TEST_CASE("CIR: tsubst lowers system-header class placement-new template type") {
+    const char *header_source =
+	"namespace std {\n"
+	"    template<class T> T forward(T v) { return v; }\n"
+	"}\n"
+	"struct Box {\n"
+	"    int x;\n"
+	"    Box(int a, int b) { x = a * 10 + b; }\n"
+	"};\n"
+	"struct Maker {\n"
+	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
+	"};\n";
+    const char *main_source =
+	"int main() { Box b(0, 0); Maker m; m.make(&b, 3, 4); return b.x; }\n";
+    const char *run_source =
+	"namespace std {\n"
+	"    template<class T> T forward(T v) { return v; }\n"
+	"}\n"
+	"struct Box {\n"
+	"    int x;\n"
+	"    Box(int a, int b) { x = a * 10 + b; }\n"
+	"};\n"
+	"struct Maker {\n"
+	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
+	"};\n"
+	"int main() { Box b(0, 0); Maker m; m.make(&b, 3, 4); return b.x; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/new_allocator.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(main_source, "<pack-new-class-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(run_source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 34);
+}
+
 // Two-tree pack expansion: reference parameter packs have already lowered value
 // reads through the reference pointer in the Tree-1 recipe. They can therefore
 // use the same direct fan-out and args -> args__N rename as by-value packs.

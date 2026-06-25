@@ -20,13 +20,13 @@ were pack 87 dominant > template-id 14, with direct type-arg binding called out 
 prerequisite cleanup. The local Codex update below completes direct type-arg binding; the
 later local Codex updates also capture TYPE-pack metadata and implement direct
 value/ref/expression/forwarding-call/constructor pack call-argument fan-out slices, then
-admit the first covered system-header placement-new body and scalar `_Up` constructed-type
-slice. The remaining
+admit the first covered system-header placement-new body, scalar `_Up` constructed-type
+slice, and simple class `_Up` placement-new slice. The remaining
 design-level target is broader cir-node **pack expansion** (`tsubst_pack_expansion`
-analogue) for real system-header forwarding/destructor patterns, class `_Up` placement-new
-object construction, dependent nested calls, and template-id body surfaces. All
+analogue) for real system-header forwarding/destructor patterns, class-valued constructor
+argument packs, dependent nested calls, and template-id body surfaces. All
 gated flag-off AND flag-on 669/0/0/18; torture byte-identical by construction (env-gated);
-`test_cir` is now 72/878/4.
+`test_cir` is now 73/892/4.
 
 
 DONE + gated + committed on this branch:
@@ -280,8 +280,9 @@ or pointer `_Up` placement construction through the existing placement-new path.
 Pack expansion outside an `N_LIST` is accepted only for singleton packs, which
 matches scalar constructor assignment; singleton value-pack copies keep the
 original parameter name (`args`) instead of renaming to a non-existent
-`args__0`. Class `_Up` placement construction deliberately returns an error
-marker and falls back to re-parse until object-construction lowering is covered.
+`args__0`. Class `_Up` placement construction with class-valued constructor
+argument packs deliberately returns an error marker and falls back to re-parse
+until object-argument pack lowering is covered.
 Unit coverage pins both a simulated system-header placement-new pack body and
 an allocator-style scalar `_Up` reducer returning 42.
 
@@ -295,6 +296,22 @@ assertions for placement-new subset); pack subsets green flag-off and flag-on
 `testmemtmplpackexpand`); `bin/test_cir` and `MADC_XTEST_DEP_PARSE=1
 bin/test_cir` both 72 test cases / 878 assertions / 4 skipped; `make -C src
 fulltest` 669/0/0/18; `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh`
+669/0/0/18.
+
+✅ **2026-06-25 LOCAL CODEX UPDATE — SIMPLE CLASS `_Up` PLACEMENT-NEW
+TSUBST DONE.** The deferred constructed-type marker path now also admits class
+`_Up` placement construction when the constructor pack elements are scalar/pointer-like.
+After substituting `_Up`, `copy_cir_subtree` re-lowers the retained `TokenNEW`
+through the existing class placement-new constructor path instead of forcing
+fallback. A guard keeps class-valued constructor argument packs on the parsed-body
+fallback; the first unrestricted attempt regressed real-header container canaries
+through recursive object-argument lowering, so this slice deliberately covers the
+simple scalar-argument class case only. Unit coverage pins a system-header-shaped
+`new ((void*)p) Up(std::forward<Args>(args)...)` constructing `Box(int,int)` and
+requires Tree-1 copies. Validation: `make -C src` green; focused class placement-new
+doctest green (1 test / 14 assertions); `bin/test_cir` and
+`MADC_XTEST_DEP_PARSE=1 bin/test_cir` both 73 test cases / 892 assertions / 4 skipped;
+`make -C src fulltest` 669/0/0/18; `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh`
 669/0/0/18.
 
 ✅ **2026-06-24 LOCAL CODEX UPDATE — CONSTRUCTOR VALUE-PACK FAN-OUT DONE
@@ -339,10 +356,10 @@ remaining next target is DESIGN-LEVEL (traced
    now has node fan-out slices for direct value/ref `args...`, direct expression patterns
    like `(args + 1)...`, the first local forwarding-call pattern
    (`std::forward<Args>(args)...` as a direct call argument), and a covered local
-   constructor value-pack pattern, plus covered system-header scalar placement-new
-   construction, but broader cir-node **PACK EXPANSION** remains: real system-header
-   forwarding/destructor pack patterns, class `_Up` placement-new construction,
-   nested/dependent re-resolution, and the rest of g++'s
+   constructor value-pack pattern, plus covered system-header scalar/pointer and
+   simple class `_Up` placement-new construction, but broader cir-node **PACK
+   EXPANSION** remains: real system-header forwarding/destructor pack patterns,
+   class-valued constructor argument packs, nested/dependent re-resolution, and the rest of g++'s
    `tsubst_pack_expansion` surface. Multi-commit.
 
 Lower priority / blocked: template-id body/return (`vector<T>`, `Foo<T>` — 14; needs
