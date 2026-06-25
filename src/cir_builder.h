@@ -1004,8 +1004,8 @@ public:
 	cir_node *tsubst_cir(cir_node *src,
 			     const std::map<DataDef *, DataDef *> &subst);
 	void rename_copied_pack_value_id(cir_node *src, cir_node *dst);
-	void rewrite_copied_pack_call_id(cir_node *src, cir_node *dst,
-					 const std::map<DataDef *, DataDef *> *subst);
+	void rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
+					      const std::map<DataDef *, DataDef *> *subst);
 };
 
 // Dump the cir_node tree (our own walker, not c2mir's): node types,

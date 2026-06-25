@@ -18,8 +18,9 @@ rests on; read it first).
 **HEAD:** `feature/front-end-performance-claude` after the direct type-arg binding,
 type-pack metadata capture, direct value/ref/expression/forwarding-call/constructor
 pack fan-out, covered system-header placement-new scalar/class `_Up` slices, and the
-direct `__destroy(T*)` helper slice. The only known unrelated local file during this
-handoff is untracked `mir-debug-support.md`; it is not ours.
+direct `__destroy(T*)` helper slice, plus local non-pack nested namespace-call tsubst.
+The only known unrelated local file during this handoff is untracked
+`mir-debug-support.md`; it is not ours.
 Fork `/workspace/mir` @ `d3a5cced` on origin/develop; `MIR_COMMIT` = `d3a5cce`.
 
 **✅ 2026-06-24 LOCAL CODEX UPDATE — DIRECT TYPE-ARG BINDING DONE (uncommitted).**
@@ -63,10 +64,17 @@ registration by reattaching an existing shared `FuncDef` to the active `TokenPro
 so split system-header/user parses can capture compiler-intrinsic helper calls during
 recipe construction. Validation: `bin/test_cir` 74 test cases / 909 assertions / 4 skipped,
 `make -C src fulltest` 669/0/0/18, and `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh`
-669/0/0/18. **Current next blocker: broader CIR pack expansion for real system-header
-forwarding/destructor pack patterns, class-valued constructor argument packs,
-nested/dependent re-resolution, and template-id body/return surfaces; Phase 5
-delete-reparse remains gated on full coverage.**
+669/0/0/18. The latest local slice extends copied dependent-call re-resolution to local
+non-pack namespace function-template calls nested inside covered member-template bodies,
+such as `sink(nn::ident(v))`: the copy path substitutes the argument types and reuses the
+normal namespace overload resolver for the callee id, while non-pack system-header
+dependent calls deliberately mark the copy unsupported so the parsed-body fallback stays
+active. Validation after that slice: `bin/test_cir` 75 test cases / 921 assertions /
+4 skipped, `make -C src fulltest` 669/0/0/18, and `MADC_XTEST_DEP_PARSE=1 bash
+scripts/run_tests.sh` 669/0/0/18. **Current next blocker: broader CIR pack expansion for
+real system-header forwarding/destructor pack patterns, class-valued constructor argument
+packs, broader system-header nested/dependent calls, and template-id body/return surfaces;
+Phase 5 delete-reparse remains gated on full coverage.**
 
 **✅ PHASE 3 FIRST SLICE + MARKER WIDENING DONE (2026-06-24) — the recipe is CONSUMED by
 tsubst.** Four gated commits: `e4dda75` (tsubst_cir core), `6c301f9` (FuncDef::tsubst_source

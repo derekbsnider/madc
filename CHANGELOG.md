@@ -61,11 +61,16 @@
   same function variable. This lets split system-header/user parses capture
   compiler-intrinsic calls such as `__destroy(p)` during dependent recipe
   parsing.
-- Kept ordinary reference-parameter bodies, dependent nested calls, broader
-  system-header forwarding/destructor packs, class-valued placement-new
+- Extended copied dependent-call re-resolution to local non-pack namespace
+  function-template calls nested inside covered member-template bodies, such as
+  `sink(nn::ident(v))`. The copy path substitutes the argument types, reuses the
+  normal namespace overload resolver for the callee id, and keeps non-pack
+  system-header dependent calls on the parsed-body fallback.
+- Kept ordinary reference-parameter bodies, broader system-header
+  forwarding/destructor and nested/dependent calls, class-valued placement-new
   constructor argument packs, and template-id body/return surfaces on the
   re-parse fallback until those constructs are widened. The flag-on tsubst gate
-  and normal fulltest both remain 669/0/0/18; `test_cir` is 74 test cases / 909
+  and normal fulltest both remain 669/0/0/18; `test_cir` is 75 test cases / 921
   assertions / 4 skipped.
 
 ## [v0.30.0] — 2026-06-22

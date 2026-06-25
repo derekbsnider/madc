@@ -28,9 +28,10 @@ parses now also reattach existing builtin/intrinsic `FuncDef`s to the active
 `TokenProgram` so recipe capture can resolve compiler intrinsics. The remaining
 design-level target is broader cir-node **pack expansion** (`tsubst_pack_expansion`
 analogue) for real system-header forwarding/destructor patterns, class-valued constructor
-argument packs, dependent nested calls, and template-id body surfaces. All
-gated flag-off AND flag-on 669/0/0/18; torture byte-identical by construction (env-gated);
-`test_cir` is now 74/909/4.
+argument packs, broader system-header nested/dependent calls, and template-id body surfaces.
+The latest local slice also covers local non-pack nested namespace function-template calls
+such as `sink(nn::ident(v))`; all gated flag-off AND flag-on 669/0/0/18; torture
+byte-identical by construction (env-gated); `test_cir` is now 75/921/4.
 
 
 DONE + gated + committed on this branch:
@@ -346,6 +347,28 @@ doctest green (1 test / 17 assertions); `bin/test_cir` and
 non-fatal diagnostics; `make -C src fulltest` 669/0/0/18;
 `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` 669/0/0/18.
 
+✅ **2026-06-25 LOCAL CODEX UPDATE — LOCAL NESTED NAMESPACE-CALL TSUBST
+DONE.** Copied dependent-call re-resolution now covers the first non-pack nested
+call shape in a retained member-template body: a local namespace function-template call
+such as `sink(nn::ident(v))`, where `ident` depends on the member-template type parameter
+but is not itself a pack expansion. The old pack-only call-id rewriter is now a
+dependent-call rewriter: it substitutes explicit/argument DataDefs, then reuses the normal
+`find_namespace_function_overload` path to choose the concrete callee symbol for the copied
+Tree-2 node. The dependent-call eligibility scan admits only this re-resolvable namespace
+call shape; member calls and unknown dependent expressions still fall back. Non-pack
+system-header dependent calls deliberately mark the copied node unsupported so
+`tsubst_method_body` falls back to the parsed body; pack-expanded system-header calls remain
+covered by the existing placement-new path.
+
+Unit coverage pins `template<class T> int nested(T v) { return sink(nn::ident(v)); }`,
+requires Tree-1 copies, and returns 42. Validation: `make -C src` green; focused nested
+doctest green (3 tests / 35 assertions); pack subset green flag-off and flag-on (8 tests /
+98 assertions); `bin/test_cir` and `MADC_XTEST_DEP_PARSE=1 bin/test_cir` both 75 test cases /
+921 assertions / 4 skipped; previously failing broad-guard canaries
+(`testcontainerdtor`, `testvector`, `teststringref`, `testforeachref`) exit 0 under
+`MADC_XTEST_DEP_PARSE=1`; `make -C src fulltest` 669/0/0/18; `MADC_XTEST_DEP_PARSE=1 bash
+scripts/run_tests.sh` 669/0/0/18; `jq empty claude_status.json`; `git diff --check` clean.
+
 ✅ **2026-06-24 LOCAL CODEX UPDATE — CONSTRUCTOR VALUE-PACK FAN-OUT DONE
 (uncommitted).** Member-template constructor instantiation now participates in the same
 two-tree metadata path as member functions: under `MADC_XTEST_DEP_PARSE` it builds the
@@ -378,7 +401,8 @@ testnestedtemplatedtor). Rejection tally:
 direct type-arg binding, direct type-pack metadata, direct value-pack fan-out, direct
 reference-pack fan-out, direct expression-pattern pack fan-out, first forwarding-call pack
 fan-out, covered local constructor value-pack fan-out, and covered system-header scalar
-placement-new pack fan-out — all landed locally). The
+placement-new pack fan-out, direct destroy helper tsubst, and local nested namespace-call
+tsubst — all landed locally). The
 remaining next target is DESIGN-LEVEL (traced
 2026-06-24, confirmed NOT a gate relaxation):
 
@@ -391,8 +415,8 @@ remaining next target is DESIGN-LEVEL (traced
    constructor value-pack pattern, plus covered system-header scalar/pointer and
    simple class `_Up` placement-new construction, but broader cir-node **PACK
    EXPANSION** remains: real system-header forwarding/destructor pack patterns,
-   class-valued constructor argument packs, nested/dependent re-resolution, and the rest of g++'s
-   `tsubst_pack_expansion` surface. Multi-commit.
+   class-valued constructor argument packs, broader system-header nested/dependent
+   re-resolution, and the rest of g++'s `tsubst_pack_expansion` surface. Multi-commit.
 
 Lower priority / blocked: template-id body/return (`vector<T>`, `Foo<T>` — 14; needs
 dependent-template-id handling, AND disambiguating `<` template-id from `<` comparison);

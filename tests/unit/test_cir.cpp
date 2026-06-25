@@ -1146,6 +1146,50 @@ TEST_CASE("CIR: tsubst fans out forwarding call-pack arguments") {
     CHECK(got == 34);
 }
 
+// Two-tree dependent-call widening: a non-pack namespace function-template call
+// nested inside an otherwise covered member-template body should be re-resolved
+// from the substituted argument types instead of forcing re-parse. Explicit
+// `ident<T>` template-id calls are a separate later body-surface slice.
+TEST_CASE("CIR: tsubst re-resolves nested dependent namespace calls") {
+    const char *source =
+	"namespace nn {\n"
+	"    template<class T> T ident(T v) { return v; }\n"
+	"}\n"
+	"int sink(int v) { return v + 5; }\n"
+	"struct Holder {\n"
+	"    template<class T> int nested(T v) { return sink(nn::ident(v)); }\n"
+	"};\n"
+	"int main() { Holder h; return h.nested(37); }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<nested-dependent-call-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 42);
+}
+
 // Two-tree pack expansion: allocator-style placement construction uses the same
 // forwarding-call pack, but as constructor arguments to `new ((void*)p) T(...)`
 // rather than as ordinary function-call arguments.

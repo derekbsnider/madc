@@ -602,20 +602,26 @@ void CirBuilder::rename_copied_pack_value_id(cir_node *src, cir_node *dst)
 	dst->base.u.s.len = nm.size() + 1;
 }
 
-void CirBuilder::rewrite_copied_pack_call_id(cir_node *src, cir_node *dst,
-					     const std::map<DataDef *, DataDef *> *subst)
+static bool tsubst_call_can_rewrite_after_subst(TokenCallFunc *tcf)
 {
-	if (!subst || m_tsubst_copy_pack_index < 0 || !m_prog)
+	if (!tcf)
+		return false;
+	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
+	return fd && !fd->function_display_name.empty();
+}
+
+void CirBuilder::rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
+						  const std::map<DataDef *, DataDef *> *subst)
+{
+	if (!subst || !m_prog)
 		return;
 	if (!src || !dst || src->base.code != N_ID || src->origin_id == 0)
 		return;
 	TokenCallFunc *tcf =
 		dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
-	if (!tcf)
+	if (!tsubst_call_can_rewrite_after_subst(tcf))
 		return;
 	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
-	if (!fd || fd->function_display_name.empty())
-		return;
 
 	std::vector<DataDef *> explicit_args;
 	explicit_args.reserve(tcf->explicit_template_args.size());
@@ -641,6 +647,11 @@ void CirBuilder::rewrite_copied_pack_call_id(cir_node *src, cir_node *dst,
 	}
 	if (!changed)
 		return;
+	if (m_tsubst_copy_pack_index < 0 && tcf->file
+	    && m_prog->is_system_header_path(tcf->file)) {
+		dst->error_msg = "tsubst: system-header dependent call";
+		return;
+	}
 
 	Variable *winner = m_prog->find_namespace_function_overload(
 		fd->namespace_name, fd->function_display_name, at, &zeros,
@@ -883,7 +894,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 	dst->tsubst_pack_value_name = src->tsubst_pack_value_name;
 	if (m_tsubst_copy_pack_index >= 0)
 		dst->tsubst_pack_expand = false;
-	rewrite_copied_pack_call_id(src, dst, subst);
+	rewrite_copied_dependent_call_id(src, dst, subst);
 
 	// Mirror the source's c2mir position into node_positions for the fresh uid
 	// (derived from the shared origin token, so identical to the source). Guard
@@ -11880,10 +11891,13 @@ static bool tsubst_pattern_has_dependent_call(TokenBase *tb)
 		// shapes stay on the parsed-body path.
 		if (tc->var.name == "__destroy")
 			return !tsubst_destroy_call_has_template_pointee(tc);
+		bool call_rewrite =
+			tsubst_call_can_rewrite_after_subst(tc);
 		if (FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type))
-			if (!fd->function_display_name.empty())
+			if (!fd->function_display_name.empty() && !call_rewrite)
 				return true;
-		if (tsubst_datadef_involves_template_param(tc->datadef()))
+		if (!call_rewrite
+		    && tsubst_datadef_involves_template_param(tc->datadef()))
 			return true;
 		for (size_t i = 0; i < tc->parameters.size(); ++i) {
 			TokenBase *p = tc->parameters[i];
@@ -11895,9 +11909,14 @@ static bool tsubst_pattern_has_dependent_call(TokenBase *tb)
 					return true;
 				continue;
 			}
-			if (p && tsubst_datadef_involves_template_param(p->datadef()))
-				return true;
 			if (tsubst_pattern_has_dependent_call(p))
+				return true;
+			bool param_rewrite = false;
+			if (TokenCallFunc *pc = dynamic_cast<TokenCallFunc *>(p))
+				param_rewrite =
+					tsubst_call_can_rewrite_after_subst(pc);
+			if (p && !call_rewrite && !param_rewrite
+			    && tsubst_datadef_involves_template_param(p->datadef()))
 				return true;
 		}
 		if (tc->src_node && tsubst_pattern_has_dependent_call(tc->src_node))

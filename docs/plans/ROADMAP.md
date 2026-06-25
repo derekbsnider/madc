@@ -59,13 +59,16 @@ high-level" — the answer is both.**
   current slice also covers direct `__destroy(T*)` helper bodies by deferring
   pointee-class inspection until after substitution, and fixes multi-buffer
   builtin/intrinsic lookup so split system-header/user parses can capture those
-  helpers as Tree-1 recipes.
+  helpers as Tree-1 recipes. The latest slice covers local non-pack nested
+  namespace function-template calls such as `sink(nn::ident(v))` by re-resolving
+  copied callee ids from substituted argument types, while non-pack system-header
+  dependent calls still fall back.
   Validation is green both
   flag-off and flag-on at **669 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **74 test cases / 909 assertions / 4 skipped**. Remaining
+  `test_cir` is **75 test cases / 921 assertions / 4 skipped**. Remaining
   design-level blocker before deleting the re-parse fallback: broader CIR pack
   expansion for system-header forwarding/destructor patterns, class-valued
-  placement-new constructor argument packs, dependent nested calls, and
+  placement-new constructor argument packs, broader system-header nested/dependent calls, and
   dependent/template-id body surfaces.
 - **Backend:** `madc parser → cir_node (MC11-IR) → c2mir → MIR` is the **sole**
   backend. The asmjit JIT and the Gecko parser/MIR-transpiler were both removed
