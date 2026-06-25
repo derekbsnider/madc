@@ -730,19 +730,19 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						const std::vector<DataDef *> &elems =
 							(*m_tsubst_active_type_arg_packs)
 								[tp->param_index];
-						for (DataDef *elem : elems) {
+						for (size_t e = 0; e < elems.size(); ++e) {
+							DataDef *elem = elems[e];
 							if (!tsubst_is_class_object_arg(elem))
 								continue;
 							FuncDef *ctor = selected_placement_ctor();
-							size_t pi = ai + 1;
+							size_t pi = ai + 1 + e;
 							DataDef *pt = (ctor && pi < ctor->parameters.size())
 									? ctor->parameters[pi] : NULL;
 							bool refp = ctor && ctor->is_ref_param(pi);
-							// Only the singleton by-value object case can reuse the
-							// existing marked-expression fan-out. Reference/object-
-							// address packs need per-element object_arg_addr lowering.
-							if (elems.size() == 1
-							    && !elem->is_reference()
+							// By-value object params can reuse marked-expression
+							// fan-out. Reference/object-address packs need
+							// per-element object_arg_addr lowering.
+							if (!elem->is_reference()
 							    && !refp
 							    && as_class_instance(pt))
 								continue;

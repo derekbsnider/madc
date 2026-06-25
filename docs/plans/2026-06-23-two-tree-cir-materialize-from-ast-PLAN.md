@@ -19,8 +19,8 @@ rests on; read it first).
 type-pack metadata capture, direct value/ref/expression/forwarding-call/constructor
 pack fan-out, covered system-header placement-new scalar/class `_Up` slices, and the
 direct `__destroy(T*)` helper slice, plus local non-pack nested namespace-call tsubst
-and the singleton by-value class-object placement-new constructor-pack slice. The only
-known unrelated local file during this handoff is untracked
+and the by-value class-object placement-new constructor-pack slices. The only known
+unrelated local file during this handoff is untracked
 `mir-debug-support.md`; it is not ours.
 Fork `/workspace/mir` @ `d3a5cced` on origin/develop; `MIR_COMMIT` = `d3a5cce`.
 
@@ -57,8 +57,10 @@ after type substitution, so allocator-style `new ((void*)p)
 _Up(std::forward<Args>(args)...)` can tsubst for scalar/pointer `_Up`. The latest
 slice extends that deferred constructed-type path to simple class `_Up` placement
 construction when the constructor pack elements are scalar/pointer-like. A later
-slice admits singleton by-value class-object constructor packs while multi-element
-class-object packs and class-reference packs still fall back. The current slice covers direct
+slice admits singleton by-value class-object constructor packs, and a follow-up admits
+multi-element by-value class-object packs by checking each expanded pack element against
+its corresponding constructor parameter. Class-reference/object-address packs still fall
+back. The direct-destroy slice covers direct
 `__destroy(T*)` helpers by emitting a Tree-1 deferred marker for template-parameter
 pointees, then lowering class pointees to the concrete destructor and scalar/pointer
 pointees to no-op after substitution. It also fixes multi-buffer builtin/intrinsic
@@ -79,11 +81,14 @@ pack expression marked until copy-time substitution so the class object argument
 renamed and re-resolved inside the instantiated body; validation after that slice:
 `bin/test_cir` 76 test cases / 935 assertions / 4 skipped, `make -C src fulltest`
 669/0/0/18, and `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` 669/0/0/18.
+The latest local slice extends this to multi-element by-value class-object
+constructor packs such as `PairBox(Item, Item)`, with validation after that slice:
+`bin/test_cir` 77 test cases / 949 assertions / 4 skipped, `make -C src fulltest`
+669/0/0/18, and `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` 669/0/0/18.
 **Current next blocker: broader CIR pack expansion for real system-header
-forwarding/destructor pack patterns, multi-element/class-reference placement-new
-constructor argument packs, broader system-header nested/dependent calls, and
-template-id body/return surfaces; Phase 5 delete-reparse remains gated on full
-coverage.**
+forwarding/destructor pack patterns, class-reference/object-address placement-new
+constructor argument packs, broader system-header nested/dependent calls, and template-id
+body/return surfaces; Phase 5 delete-reparse remains gated on full coverage.**
 
 **✅ PHASE 3 FIRST SLICE + MARKER WIDENING DONE (2026-06-24) — the recipe is CONSUMED by
 tsubst.** Four gated commits: `e4dda75` (tsubst_cir core), `6c301f9` (FuncDef::tsubst_source

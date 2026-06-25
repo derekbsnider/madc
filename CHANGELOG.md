@@ -71,14 +71,19 @@
   as allocator-style `new ((void*)p) Up(std::forward<Args>(args)...)` where
   `Up`'s constructor takes one class object by value. The object pack stays as a
   marked expression until copy-time substitution so parameter renaming and callee
-  re-resolution happen inside the instantiated body; multi-element class-object
-  packs and class-reference packs still fall back.
+  re-resolution happen inside the instantiated body. This first guard still left
+  multi-element class-object packs and class-reference packs on the fallback.
+- Extended that by-value class-object placement-new pack path to multi-element
+  packs by checking each expanded element against its corresponding constructor
+  parameter, covering shapes like `PairBox(Item, Item)`. Class-reference and
+  object-address packs still fall back until they get per-element address
+  lowering.
 - Kept ordinary reference-parameter bodies, broader system-header
   forwarding/destructor and nested/dependent calls, class-valued placement-new
-  constructor argument packs beyond the singleton by-value case, and template-id
-  body/return surfaces on the re-parse fallback until those constructs are
-  widened. The flag-on tsubst gate and normal fulltest both remain 669/0/0/18;
-  `test_cir` is 76 test cases / 935
+  constructor argument packs that need class-reference/object-address lowering,
+  and template-id body/return surfaces on the re-parse fallback until those
+  constructs are widened. The flag-on tsubst gate and normal fulltest both
+  remain 669/0/0/18; `test_cir` is 77 test cases / 949
   assertions / 4 skipped.
 
 ## [v0.30.0] — 2026-06-22
