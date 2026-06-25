@@ -31351,23 +31351,36 @@ static bool datadef_involves_placeholder(DataDef *dd)
     return false;
 }
 
-// Two-tree Phase 2 (PLAN §11.5c, widening step 1): is THIS call type-dependent — i.e.
-// does any argument's type involve a template-parameter placeholder? The
-// `any_type_dependent_arguments_p` (pt.cc:30555) analogue. Only such calls are
-// deferred during a dependent parse; a non-dependent call (`cout << "x"`, a
-// fixed-type helper) is instantiated eagerly at definition time, matching g++'s
-// per-node dependence (NOT a global "defer everything in a template" mode).
+// Two-tree (PLAN §11.5c step 3): generic per-node type-dependence — the
+// `type_dependent_expression_p` (gcc/cp/pt.cc:30357) analogue. An expression is
+// type-dependent iff its type involves a template-parameter placeholder
+// (datadef_involves_placeholder is g++'s dependent_type_p), with structural
+// shortcuts for nodes whose datadef is not meaningful yet: a pack expansion
+// `expr...` is always dependent (pt.cc:30284, on its arity at least), and a call
+// is dependent iff ANY argument is (recursively) or its own result type is. This
+// is the spine both the parse-time defer decision and (later, step 3) the tsubst
+// resolver re-entry consult, so the per-construct token scans retire onto it.
+static bool is_type_dependent(TokenBase *expr)
+{
+	if ( !expr )
+		return false;
+	if ( TokenPackExpansion *pe = dynamic_cast<TokenPackExpansion *>(expr) )
+		return pe->pattern ? is_type_dependent(pe->pattern) : true;
+	if ( TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(expr) )
+		for ( size_t i = 0; i < tc->parameters.size(); ++i )
+			if ( is_type_dependent(tc->parameters[i]) )
+				return true;
+	// General fall-through (pt.cc:30357): the node's own type is dependent.
+	return datadef_involves_placeholder(expr->datadef());
+}
+
+// Is THIS call type-dependent (and so deferred during a dependent parse)? A thin
+// wrapper over is_type_dependent; a non-dependent call (`cout << "x"`, a
+// fixed-type helper) still instantiates eagerly at definition time, matching
+// g++'s per-node dependence (NOT a global "defer everything in a template" mode).
 static bool call_involves_placeholder(TokenCallFunc *tc)
 {
-    if ( !tc )
-	return false;
-    for ( size_t i = 0; i < tc->parameters.size(); ++i )
-    {
-	TokenBase *a = tc->parameters[i];
-	if ( a && datadef_involves_placeholder(a->datadef()) )
-	    return true;
-    }
-    return false;
+	return is_type_dependent(tc);
 }
 
 static bool try_instantiate_namespace_fn_template(Program &pgm,
