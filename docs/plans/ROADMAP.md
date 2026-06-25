@@ -63,16 +63,17 @@ high-level" — the answer is both.**
   namespace function-template calls such as `sink(nn::ident(v))` by re-resolving
   copied callee ids from substituted argument types, and covers by-value
   class-object constructor packs inside allocator-style placement-new bodies,
-  including singleton and multi-element packs, while non-pack system-header
-  dependent calls still fall back.
+  including singleton and multi-element packs, and the first value-returning
+  class-reference constructor-pack shape, while non-pack system-header dependent
+  calls still fall back.
   Validation is green both
   flag-off and flag-on at **669 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **77 test cases / 949 assertions / 4 skipped**. Remaining
+  `test_cir` is **78 test cases / 963 assertions / 4 skipped**. Remaining
   design-level blocker before deleting the re-parse fallback: broader CIR pack
   expansion for system-header forwarding/destructor patterns, class-valued
-  placement-new constructor argument packs that need class-reference/object-address
-  lowering, broader system-header nested/dependent calls, and dependent/template-id
-  body surfaces.
+  placement-new constructor argument packs that need real reference-forwarding or
+  object-address lowering, broader system-header nested/dependent calls, and
+  dependent/template-id body surfaces.
 - **Backend:** `madc parser → cir_node (MC11-IR) → c2mir → MIR` is the **sole**
   backend. The asmjit JIT and the Gecko parser/MIR-transpiler were both removed
   (commits `42e9b6e`, `64f44b3`). There is no `--backend=jit`; `--backend=mir`

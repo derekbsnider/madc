@@ -78,12 +78,19 @@
   parameter, covering shapes like `PairBox(Item, Item)`. Class-reference and
   object-address packs still fall back until they get per-element address
   lowering.
+- Added the first class-reference placement-new constructor-pack slice for
+  value-returning forwarded class objects that bind to reference constructor
+  parameters, such as `PairRef(const Item&, const Item&)`. The tsubst path now
+  fans out those pack elements, copies each expression under the concrete pack
+  substitution, and keeps any needed class-object temporaries inside the copied
+  placement-new statement expression. Real reference-returning `std::forward`
+  and broader object-address packs still fall back.
 - Kept ordinary reference-parameter bodies, broader system-header
   forwarding/destructor and nested/dependent calls, class-valued placement-new
-  constructor argument packs that need class-reference/object-address lowering,
-  and template-id body/return surfaces on the re-parse fallback until those
+  constructor argument packs that need real reference-forwarding/object-address
+  lowering, and template-id body/return surfaces on the re-parse fallback until those
   constructs are widened. The flag-on tsubst gate and normal fulltest both
-  remain 669/0/0/18; `test_cir` is 77 test cases / 949
+  remain 669/0/0/18; `test_cir` is 78 test cases / 963
   assertions / 4 skipped.
 
 ## [v0.30.0] — 2026-06-22

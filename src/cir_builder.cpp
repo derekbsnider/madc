@@ -580,6 +580,8 @@ static bool cir_id_spells(cir_node *n, const char *name)
 }
 
 static DataDefCLASS *as_class_instance(DataDef *dd);
+static DataDefCLASS *param_object_class(DataDef *dd, bool refp);
+static DataDef *ref_param_referent(DataDef *pt);
 static bool tsubst_is_class_object_arg(DataDef *dd);
 
 void CirBuilder::rename_copied_pack_value_id(cir_node *src, cir_node *dst)
@@ -693,6 +695,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					"tsubst: unbound placement-new constructed type"));
 			DataDefCLASS *concrete_class =
 				dynamic_cast<DataDefCLASS *>(concrete);
+			bool manual_class_pack_lowering = false;
 			if (concrete_class) {
 				bool unsupported_class_arg = false;
 				FuncDef *placement_ctor = NULL;
@@ -739,11 +742,24 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 							DataDef *pt = (ctor && pi < ctor->parameters.size())
 									? ctor->parameters[pi] : NULL;
 							bool refp = ctor && ctor->is_ref_param(pi);
+							if (DataDefCLASS *pc =
+								    param_object_class(pt, refp)) {
+								if (expr_is_nonaddressable_rvalue(pe->pattern)
+								    && !class_trivially_copyable(pc)) {
+									unsupported_class_arg = true;
+									break;
+								}
+								if (expr_is_nonaddressable_rvalue(pe->pattern)
+								    && class_trivially_copyable(pc)) {
+									manual_class_pack_lowering = true;
+									continue;
+								}
+								unsupported_class_arg = true;
+								break;
+							}
 							// By-value object params can reuse marked-expression
-							// fan-out. Reference/object-address packs need
-							// per-element object_arg_addr lowering.
+							// fan-out.
 							if (!elem->is_reference()
-							    && !refp
 							    && as_class_instance(pt))
 								continue;
 							unsupported_class_arg = true;
@@ -764,6 +780,202 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				if (unsupported_class_arg)
 					return CIR_NODE(error_node(
 						"tsubst: class placement-new object argument pack"));
+				if (manual_class_pack_lowering) {
+					FuncDef *ctor = selected_placement_ctor();
+					if (!ctor)
+						return CIR_NODE(error_node(
+							"tsubst: unresolved placement-new ctor"));
+
+					std::vector<node_t> prefix_items;
+					auto copy_node_under = [&](node_t raw,
+								   const std::map<DataDef *, DataDef *> &smap,
+								   int pack_index,
+								   size_t pack_elem,
+								   const char *pack_name) -> node_t {
+						if (!raw)
+							return error_node(
+								"tsubst: missing placement-new pack expr");
+						int saved_index = m_tsubst_copy_pack_index;
+						size_t saved_elem = m_tsubst_copy_pack_elem;
+						const char *saved_name =
+							m_tsubst_copy_pack_value_name;
+						m_tsubst_copy_pack_index = pack_index;
+						m_tsubst_copy_pack_elem = pack_elem;
+						m_tsubst_copy_pack_value_name = pack_name;
+						cir_node *copied =
+							copy_cir_subtree(CIR_NODE(raw), &smap);
+						m_tsubst_copy_pack_index = saved_index;
+						m_tsubst_copy_pack_elem = saved_elem;
+						m_tsubst_copy_pack_value_name = saved_name;
+						return copied ? copied->as_node()
+							      : error_node(
+								      "tsubst: failed placement-new pack copy");
+					};
+					auto copy_expr_under = [&](TokenBase *expr,
+								   const std::map<DataDef *, DataDef *> &smap,
+								   int pack_index,
+								   size_t pack_elem,
+								   const char *pack_name) -> node_t {
+						std::vector<node_t> saved_pending =
+							m_pending_stmts;
+						m_pending_stmts.clear();
+						node_t raw = translate_expr(expr);
+						std::vector<node_t> pending =
+							m_pending_stmts;
+						m_pending_stmts = saved_pending;
+						for (node_t p : pending)
+							prefix_items.push_back(copy_node_under(
+								p, smap, pack_index, pack_elem,
+								pack_name));
+						return copy_node_under(raw, smap, pack_index,
+								       pack_elem, pack_name);
+					};
+					auto void_addr_of = [&](node_t value,
+								TokenBase *origin) -> node_t {
+						return node2(N_CAST, void_ptr_type(),
+							     node1(N_ADDR, value, origin),
+							     origin);
+					};
+					auto temp_addr_from_value = [&](DataDefCLASS *target,
+									node_t value,
+									TokenBase *origin) -> node_t {
+						if (!target || !class_trivially_copyable(target))
+							return error_node(
+								"tsubst: non-trivial placement-new pack temp");
+						char name[40];
+						snprintf(name, sizeof(name), "__madc_objtmp_%d",
+							 m_strtmp_counter++);
+						Variable *tmp = new Variable(name, *target, 1,
+									     NULL, false);
+						tmp->flags |= vfLOCAL;
+						prefix_items.push_back(var_decl(tmp, origin));
+						node_t assign = node2(N_ASSIGN, id(name, origin),
+								      value, origin);
+						prefix_items.push_back(node2(N_EXPR, list(),
+									     assign, origin));
+						return object_addr(name, origin);
+					};
+					auto explicit_arg_node =
+						[&](TokenBase *arg, DataDef *pt, bool refp,
+						    const std::map<DataDef *, DataDef *> &smap,
+						    int pack_index, size_t pack_elem,
+						    const char *pack_name) -> node_t {
+						if (DataDefCLASS *pc = param_object_class(pt, refp)) {
+							node_t value = copy_expr_under(arg, smap,
+										      pack_index,
+										      pack_elem,
+										      pack_name);
+							if (expr_is_nonaddressable_rvalue(arg))
+								return temp_addr_from_value(pc, value, arg);
+							return void_addr_of(value, arg);
+						}
+						if (as_class_instance(pt))
+							return copy_expr_under(arg, smap, pack_index,
+									       pack_elem, pack_name);
+						if (refp) {
+							node_t value = copy_expr_under(arg, smap,
+										      pack_index,
+										      pack_elem,
+										      pack_name);
+							if (expr_is_nonaddressable_rvalue(arg)) {
+								char name[40];
+								snprintf(name, sizeof(name),
+									 "__madc_objtmp_%d",
+									 m_strtmp_counter++);
+								DataDef *rt = ref_param_referent(pt);
+								DataDef *vt = arg ? subst_datadef(
+									m_prog, arg->datadef(), smap) : NULL;
+								DataDef *tmp_type =
+									(rt && rt != vt) ? rt : vt;
+								if (!tmp_type)
+									tmp_type = &ddINT64;
+								Variable *tmp = new Variable(
+									name, *tmp_type, 1, NULL, false);
+								tmp->flags |= vfLOCAL;
+								prefix_items.push_back(var_decl(tmp, arg));
+								node_t assign = node2(N_ASSIGN,
+									id(name, arg), value, arg);
+								prefix_items.push_back(node2(N_EXPR,
+									list(), assign, arg));
+								return node1(N_ADDR, id(name, arg), arg);
+							}
+							return node1(N_ADDR, value, arg);
+						}
+						return copy_expr_under(arg, smap, pack_index,
+								       pack_elem, pack_name);
+					};
+
+					std::vector<node_t> explicit_nodes;
+					for (size_t ai = 0; ai < tn->ctor_args.size(); ++ai) {
+						TokenBase *arg = tn->ctor_args[ai];
+						if (TokenPackExpansion *pe =
+							    dynamic_cast<TokenPackExpansion *>(arg)) {
+							DataDefTemplateParam *tp = pe->pattern
+								? template_param_in_pack_pattern(pe->pattern)
+								: NULL;
+							if (!tp || !m_tsubst_active_type_arg_packs
+							    || tp->param_index
+							       >= m_tsubst_active_type_arg_packs->size()) {
+								explicit_nodes.push_back(error_node(
+									"tsubst: missing placement-new pack"));
+								continue;
+							}
+							std::map<unsigned, DataDef *>::iterator pmi =
+								m_tsubst_active_pack_params.find(
+									tp->param_index);
+							if (pmi == m_tsubst_active_pack_params.end()
+							    || !pmi->second) {
+								explicit_nodes.push_back(error_node(
+									"tsubst: missing placement-new pack param"));
+								continue;
+							}
+							const std::vector<DataDef *> &elems =
+								(*m_tsubst_active_type_arg_packs)
+									[tp->param_index];
+							std::string value_name =
+								pack_value_name_in_pattern(
+									pe->pattern, tp->param_index);
+							for (size_t e = 0; e < elems.size(); ++e) {
+								std::map<DataDef *, DataDef *> elem_subst =
+									*subst;
+								elem_subst[pmi->second] = elems[e];
+								size_t pi = ai + 1 + e;
+								DataDef *pt =
+									(ctor && pi < ctor->parameters.size())
+										? ctor->parameters[pi] : NULL;
+								bool refp = ctor && ctor->is_ref_param(pi);
+								explicit_nodes.push_back(explicit_arg_node(
+									pe->pattern, pt, refp, elem_subst,
+									(int)tp->param_index, e,
+									value_name.empty()
+										? NULL : value_name.c_str()));
+							}
+							continue;
+						}
+						size_t pi = ai + 1;
+						DataDef *pt = (ctor && pi < ctor->parameters.size())
+								? ctor->parameters[pi] : NULL;
+						bool refp = ctor && ctor->is_ref_param(pi);
+						explicit_nodes.push_back(explicit_arg_node(
+							arg, pt, refp, *subst, -1, 0, NULL));
+					}
+					auto copy_placement_addr = [&]() -> node_t {
+						node_t raw = translate_expr(tn->placement);
+						return copy_node_under(raw, *subst, -1, 0, NULL);
+					};
+					node_t construct = ctor_call_assemble(
+						copy_placement_addr(), concrete_class, ctor,
+						explicit_nodes, tn);
+					node_t items = list();
+					for (node_t p : prefix_items)
+						append(items, p);
+					if (construct)
+						append(items, construct);
+					append(items, node2(N_EXPR, list(),
+							    copy_placement_addr(), tn));
+					return CIR_NODE(node1(N_STMTEXPR,
+						node2(N_BLOCK, list(), items, tn), tn));
+				}
 			}
 			TokenNEW lowered;
 			lowered.file = tn->file;

@@ -28,14 +28,15 @@ parses now also reattach existing builtin/intrinsic `FuncDef`s to the active
 `TokenProgram` so recipe capture can resolve compiler intrinsics. The remaining
 design-level target is broader cir-node **pack expansion** (`tsubst_pack_expansion`
 analogue) for real system-header forwarding/destructor patterns, class-valued constructor
-argument packs that need class-reference/object-address lowering, broader system-header
+argument packs that need real reference-forwarding/object-address lowering, broader system-header
 nested/dependent calls, and template-id body surfaces.
 The latest local slice also covers local non-pack nested namespace function-template calls
 such as `sink(nn::ident(v))`, and the follow-up covers singleton by-value class-object
 constructor packs in allocator-style placement-new bodies, then multi-element by-value
-class-object constructor packs such as `PairBox(Item, Item)`; all gated flag-off AND
+class-object constructor packs such as `PairBox(Item, Item)`, then value-returning
+class-reference constructor packs such as `PairRef(const Item&, const Item&)`; all gated flag-off AND
 flag-on 669/0/0/18; torture byte-identical by construction (env-gated); `test_cir` is
-now 77/949/4.
+now 78/963/4.
 
 
 DONE + gated + committed on this branch:
@@ -415,6 +416,31 @@ real-header canaries (`testcontainerdtor`, `testvector`, `teststringref`,
 `make -C src fulltest` 669/0/0/18; `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh`
 669/0/0/18.
 
+✅ **2026-06-25 LOCAL CODEX UPDATE — VALUE-RETURNING CLASS-REFERENCE
+PLACEMENT-NEW PACK TSUBST DONE.** The deferred `_Up` placement-new path now admits the
+first class-reference constructor-pack case: value-returning forwarded class objects that
+bind to reference constructor parameters, such as `PairRef(const Item&, const Item&)`.
+The copied Tree-2 lowering fans out the pack, copies each forwarded expression under its
+concrete pack-element substitution, and keeps any required class-object temporary
+declaration/assignment inside the placement-new statement expression. Real
+reference-returning `std::forward` and broader object-address system-header packs still
+fall back, after a canary caught that admitting those too early recurses through
+placeholder-token object-address lowering.
+
+Unit coverage pins a synthetic system-header `Maker::make<Up, Args...>` body with
+`PairRef(const Item&, const Item&)` construction, requires Tree-1 copies, and returns 34.
+GCC reference check: `g++ -S -fverbose-asm -O0 tmp/tsubst_ref_class_ctor_pack.cpp -o
+tmp/tsubst_ref_class_ctor_pack.s` shows the canonical real-`std::forward` path passes
+addresses of the function parameters to `PairRef`. Validation: `make -C src` green;
+focused value-returning doctest green flag-off and flag-on (1 test / 14 assertions);
+placement-new subset green flag-off and flag-on (7 tests / 96 assertions); pack subset
+green flag-off and flag-on (11 tests / 140 assertions); `bin/test_cir` and
+`MADC_XTEST_DEP_PARSE=1 bin/test_cir` both 78 test cases / 963 assertions / 4 skipped;
+real-header canaries (`testcontainerdtor`, `testvector`, `teststringref`,
+`testforeachref`, `testvectorptr`) exit 0 under `MADC_XTEST_DEP_PARSE=1`;
+`make -C src fulltest` 669/0/0/18; `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh`
+669/0/0/18.
+
 ✅ **2026-06-24 LOCAL CODEX UPDATE — CONSTRUCTOR VALUE-PACK FAN-OUT DONE
 (uncommitted).** Member-template constructor instantiation now participates in the same
 two-tree metadata path as member functions: under `MADC_XTEST_DEP_PARSE` it builds the
@@ -461,8 +487,9 @@ remaining next target is DESIGN-LEVEL (traced
    constructor value-pack pattern, plus covered system-header scalar/pointer and
    simple class `_Up` placement-new construction, but broader cir-node **PACK
    EXPANSION** remains: real system-header forwarding/destructor pack patterns,
-   class-reference/object-address constructor argument packs, broader system-header
-   nested/dependent re-resolution, and the rest of g++'s `tsubst_pack_expansion` surface.
+   real reference-forwarding/object-address constructor argument packs, broader
+   system-header nested/dependent re-resolution, and the rest of g++'s
+   `tsubst_pack_expansion` surface.
    Multi-commit.
 
 Lower priority / blocked: template-id body/return (`vector<T>`, `Foo<T>` — 14; needs

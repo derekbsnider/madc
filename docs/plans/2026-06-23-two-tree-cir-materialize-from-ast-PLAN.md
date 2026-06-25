@@ -59,8 +59,10 @@ slice extends that deferred constructed-type path to simple class `_Up` placemen
 construction when the constructor pack elements are scalar/pointer-like. A later
 slice admits singleton by-value class-object constructor packs, and a follow-up admits
 multi-element by-value class-object packs by checking each expanded pack element against
-its corresponding constructor parameter. Class-reference/object-address packs still fall
-back. The direct-destroy slice covers direct
+its corresponding constructor parameter. The next slice admits value-returning forwarded
+class objects that bind to reference constructor parameters by materializing their temps
+inside the copied placement-new statement expression; real reference-forwarding and
+object-address packs still fall back. The direct-destroy slice covers direct
 `__destroy(T*)` helpers by emitting a Tree-1 deferred marker for template-parameter
 pointees, then lowering class pointees to the concrete destructor and scalar/pointer
 pointees to no-op after substitution. It also fixes multi-buffer builtin/intrinsic
@@ -85,10 +87,16 @@ The latest local slice extends this to multi-element by-value class-object
 constructor packs such as `PairBox(Item, Item)`, with validation after that slice:
 `bin/test_cir` 77 test cases / 949 assertions / 4 skipped, `make -C src fulltest`
 669/0/0/18, and `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` 669/0/0/18.
+The latest local slice covers value-returning forwarded class objects bound to
+reference constructor parameters such as `PairRef(const Item&, const Item&)`,
+with validation after that slice: `bin/test_cir` 78 test cases / 963 assertions /
+4 skipped, `make -C src fulltest` 669/0/0/18, and `MADC_XTEST_DEP_PARSE=1 bash
+scripts/run_tests.sh` 669/0/0/18.
 **Current next blocker: broader CIR pack expansion for real system-header
-forwarding/destructor pack patterns, class-reference/object-address placement-new
-constructor argument packs, broader system-header nested/dependent calls, and template-id
-body/return surfaces; Phase 5 delete-reparse remains gated on full coverage.**
+forwarding/destructor pack patterns, real reference-forwarding/object-address
+placement-new constructor argument packs, broader system-header nested/dependent calls,
+and template-id body/return surfaces; Phase 5 delete-reparse remains gated on full
+coverage.**
 
 **✅ PHASE 3 FIRST SLICE + MARKER WIDENING DONE (2026-06-24) — the recipe is CONSUMED by
 tsubst.** Four gated commits: `e4dda75` (tsubst_cir core), `6c301f9` (FuncDef::tsubst_source

@@ -1561,6 +1561,78 @@ TEST_CASE("CIR: tsubst lowers multi-element class-object placement-new packs") {
     CHECK(got == 34);
 }
 
+// Value-returning forwarded class objects bound to reference constructor
+// parameters need object-address lowering per expanded pack element; the temp
+// materialization must stay inside the copied placement expression, not leak
+// into the caller that instantiated the template.
+TEST_CASE("CIR: tsubst lowers value-returning class-reference placement-new packs") {
+    const char *header_source =
+	"namespace std {\n"
+	"    template<class T> T forward(T v) { return v; }\n"
+	"}\n"
+	"struct Item {\n"
+	"    int x;\n"
+	"    Item(int v) { x = v; }\n"
+	"};\n"
+	"struct PairRef {\n"
+	"    int x;\n"
+	"    PairRef(const Item& a, const Item& b) { x = a.x * 10 + b.x; }\n"
+	"};\n"
+	"struct Maker {\n"
+	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
+	"};\n";
+    const char *main_source =
+	"int main() { Item zero(0); PairRef box(zero, zero); Maker m; Item a(3); Item b(4); m.make(&box, a, b); return box.x; }\n";
+    const char *run_source =
+	"namespace std {\n"
+	"    template<class T> T forward(T v) { return v; }\n"
+	"}\n"
+	"struct Item {\n"
+	"    int x;\n"
+	"    Item(int v) { x = v; }\n"
+	"};\n"
+	"struct PairRef {\n"
+	"    int x;\n"
+	"    PairRef(const Item& a, const Item& b) { x = a.x * 10 + b.x; }\n"
+	"};\n"
+	"struct Maker {\n"
+	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
+	"};\n"
+	"int main() { Item zero(0); PairRef box(zero, zero); Maker m; Item a(3); Item b(4); m.make(&box, a, b); return box.x; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/new_allocator.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(main_source, "<pack-new-class-ref-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(run_source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 34);
+}
+
 // `__destroy(T*)` must not be lowered while T is still a placeholder in the
 // retained recipe; the concrete pointee class is known only after tsubst.
 TEST_CASE("CIR: tsubst lowers direct dependent destroy helper") {

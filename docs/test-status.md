@@ -1,7 +1,7 @@
 # Test Status
 
 > **Local branch update (2026-06-25, `feature/front-end-performance-claude` @
-> multi-element class-object placement-new pack slice with two-tree direct type-arg binding and direct
+> value-returning class-reference placement-new pack slice with two-tree direct type-arg binding and direct
 > value/ref/expression/forwarding-call/constructor pack fan-out plus covered
 > system-header placement-new pack fan-out and simple class `_Up` placement-new
 > tsubst plus direct `__destroy(T*)` helper tsubst and local non-pack nested
@@ -9,7 +9,7 @@
 > **669 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
 > GREEN). The env-gated tsubst path is also green:
 > `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` reports **669/0/0/18**.
-> `bin/test_cir` reports **77 test cases, 949 assertions, 4 skipped** after
+> `bin/test_cir` reports **78 test cases, 963 assertions, 4 skipped** after
 > adding coverage for direct `tsubst_type_args` binding of a body-only template
 > parameter and direct `tsubst_type_arg_packs` capture for a variadic member
 > template, plus direct CIR fan-out for value-pack call arguments like
@@ -26,10 +26,11 @@
 > non-pack nested namespace calls such as `sink(nn::ident(v))` whose copied
 > callee ids re-resolve from substituted argument types, plus by-value
 > class-object constructor packs such as `Box(Item)` and `PairBox(Item, Item)` inside
-> allocator-style placement-new bodies.
+> allocator-style placement-new bodies, plus value-returning forwarded class objects
+> bound to reference constructor parameters such as `PairRef(const Item&, const Item&)`.
 > Broader system-header forwarding/destructor pack surfaces, class-valued
-> placement-new constructor argument packs that need class-reference/object-address
-> lowering, broader system-header nested/dependent calls, and template-id
+> placement-new constructor argument packs that need real reference-forwarding or
+> object-address lowering, broader system-header nested/dependent calls, and template-id
 > body/return surfaces remain on the re-parse fallback.
 >
 > **Current (2026-06-22, `develop`, v0.30.0 — set wall CLEARED, pushed to
