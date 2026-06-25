@@ -11,11 +11,13 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 
 ➡️ **NEXT WORK after the 2026-06-25 Codex update:** retire the remaining system-header
 dependent-call bail and `tsubst_eligible` catalog one construct at a time. Step A
-(generic `is_type_dependent`) is committed (`62409d08`), and the §8 local keystone
-(nested fn-template INSTANTIATION in the copy path) is now landed in the working tree.
-The still-open surfaces are real system-header forwarding/destructor/object-address
-packs and template-id body/return surfaces. Last committed HEAD in this handoff lineage:
-`e5d086dc`; current branch carries local uncommitted code/status changes.
+(generic `is_type_dependent`) is committed (`62409d08`), the §8 local keystone
+(nested fn-template INSTANTIATION in the copy path) is committed (`8ede28a5`), and
+this follow-up admits the first non-pack system-header dependent-call slice:
+non-reserved simple scalar/pointer calls with concrete substituted args/return and
+materializable callees. The still-open surfaces are reserved implementation helpers,
+real system-header forwarding/destructor/object-address packs, and template-id
+body/return surfaces.
 
 ✅ **KG SYNCED (2026-06-24).** FalkorDB was briefly unreachable mid-session; once back,
 `madc-knowledge` was reconciled via `scripts/kg_query.sh`: Feature
@@ -44,9 +46,31 @@ constructor packs in allocator-style placement-new bodies, then multi-element by
 class-object constructor packs such as `PairBox(Item, Item)`, then value-returning
 class-reference constructor packs such as `PairRef(const Item&, const Item&)`, then local
 reference-returning identity-forwarded class-reference packs where `Args&...` is passed
-through `std::forward<Args>(args)...`; all gated flag-off AND flag-on 669/0/0/18;
-torture byte-identical by construction (env-gated); `test_cir` is now 79/977/4.
-Rough Phase 4 implementation estimate is now 65% by coverage weight, not session count.
+through `std::forward<Args>(args)...`, then the first non-reserved simple
+system-header dependent-call slice; all gated flag-off AND flag-on 669/0/0/18;
+torture byte-identical by construction (env-gated); `test_cir` is now 80/991/4.
+Rough Phase 4 implementation estimate is now 71% by coverage weight, not session count.
+
+✅ **2026-06-25 LOCAL CODEX UPDATE — NON-RESERVED SYSTEM-HEADER SCALAR
+DEPENDENT CALLS.** `resolve_copied_dependent_call` now admits the first non-pack
+system-header dependent-call shape instead of treating every system-header call
+as a hard fallback: the callee name must not be an implementation-reserved `__*`
+helper, every substituted explicit template arg and runtime arg must be a concrete
+non-class scalar/pointer shape, the substituted return must be scalar/pointer/void,
+and the resolved/instantiated callee must have a materializable body or real
+external symbol. A synthetic system-header `nn::ident<T>(T)` body now stays on
+the Tree-1 tsubst path.
+
+The guard remains deliberately conservative. A broader scalar/pointer admission
+let real libstdc++ `std::__do_uninit_copy` through and reproduced the known
+undefined-helper canary failure, so reserved implementation helpers still fall
+back with the rest of the real system-header forwarding/destructor/object-address
+surface. Validation: focused flag-on doctest green (1 test / 14 assertions);
+flag-on `bin/test_cir` green (80 tests / 991 assertions / 4 skipped); real-header
+canaries green under `MADC_XTEST_DEP_PARSE=1` (`testcontainerdtor`,
+`testforeachref`, `testmadc_ns`, `testsubscript`, `testvector`);
+`MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` green 669/0/0/18; `make -C src
+fulltest` green 669/0/0/18 with both check gates green.
 
 ✅ **2026-06-25 LOCAL CODEX UPDATE — LOCAL REFERENCE-FORWARDED CLASS-REFERENCE
 PLACEMENT-NEW PACKS.** The tsubst placement-new pack path now covers local retained

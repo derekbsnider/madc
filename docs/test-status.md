@@ -1,15 +1,15 @@
 # Test Status
 
 > **Local branch update (2026-06-25, `feature/front-end-performance-claude` @
-> local reference-forwarded class-reference placement-new pack slice with two-tree direct type-arg binding and direct
+> non-reserved simple system-header dependent-call slice with two-tree direct type-arg binding and direct
 > value/ref/expression/forwarding-call/constructor pack fan-out plus covered
 > system-header placement-new pack fan-out and simple class `_Up` placement-new
 > tsubst plus direct `__destroy(T*)` helper tsubst and local non-pack nested
-> namespace-call tsubst):** fulltest
+> namespace-call tsubst plus nested function-template instantiation):** fulltest
 > **669 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
 > GREEN). The env-gated tsubst path is also green:
 > `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` reports **669/0/0/18**.
-> `bin/test_cir` reports **79 test cases, 977 assertions, 4 skipped** after
+> `bin/test_cir` reports **80 test cases, 991 assertions, 4 skipped** after
 > adding coverage for direct `tsubst_type_args` binding of a body-only template
 > parameter and direct `tsubst_type_arg_packs` capture for a variadic member
 > template, plus direct CIR fan-out for value-pack call arguments like
@@ -30,9 +30,12 @@
 > bound to reference constructor parameters such as `PairRef(const Item&, const Item&)`,
 > plus local reference-returning identity-forwarding constructor packs that pass
 > `Args&...` through `std::forward<Args>(args)...` and bind to class-reference
-> constructor parameters.
-> Phase 4 is now tracked at roughly **65% implemented** by coverage weight.
-> Broader system-header forwarding/destructor pack surfaces, class-valued
+> constructor parameters, plus non-reserved simple system-header dependent calls
+> whose substituted args/return are concrete non-class scalar/pointer/void shapes
+> and whose resolved callees have a materializable body or external symbol.
+> Phase 4 is now tracked at roughly **71% implemented** by coverage weight.
+> Reserved implementation-helper calls, broader system-header forwarding/destructor
+> pack surfaces, class-valued
 > placement-new constructor argument packs that need real reference-forwarding or
 > object-address lowering, broader system-header nested/dependent calls, and template-id
 > body/return surfaces remain on the re-parse fallback.

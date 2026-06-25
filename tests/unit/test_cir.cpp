@@ -1190,6 +1190,62 @@ TEST_CASE("CIR: tsubst re-resolves nested dependent namespace calls") {
     CHECK(got == 42);
 }
 
+// System-header dependent calls stay guarded except for non-reserved simple
+// scalar/pointer calls whose substituted argument and return types are concrete
+// non-class shapes. This pins the first non-pack system-header resolver slice
+// without admitting the broader implementation-helper/object-address cases.
+TEST_CASE("CIR: tsubst re-resolves scalar system-header dependent namespace calls") {
+    const char *header_source =
+	"namespace nn {\n"
+	"    template<class T> T ident(T v) { return v; }\n"
+	"}\n"
+	"struct Holder {\n"
+	"    template<class T> int nested(T v) { return nn::ident(v) + 5; }\n"
+	"};\n";
+    const char *main_source =
+	"int main() { Holder h; return h.nested(37); }\n";
+    const char *run_source =
+	"namespace nn {\n"
+	"    template<class T> T ident(T v) { return v; }\n"
+	"}\n"
+	"struct Holder {\n"
+	"    template<class T> int nested(T v) { return nn::ident(v) + 5; }\n"
+	"};\n"
+	"int main() { Holder h; return h.nested(37); }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/scalar_call.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(main_source, "<system-header-nested-call-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(run_source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 42);
+}
+
 // Two-tree pack expansion: allocator-style placement construction uses the same
 // forwarding-call pack, but as constructor arguments to `new ((void*)p) T(...)`
 // rather than as ordinary function-call arguments.

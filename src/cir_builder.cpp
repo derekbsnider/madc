@@ -657,6 +657,50 @@ static DataDef *tsubst_overload_arg_type(DataDef *dd)
 	return dd;
 }
 
+static bool tsubst_system_header_simple_call_type(DataDef *dd)
+{
+	for (int guard = 0; dd && guard < 8; ++guard) {
+		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
+			{ dd = cd->base_type; continue; }
+		if (template_param_under_type_layers(dd))
+			return false;
+		if (dd->is_reference())
+			return false;
+		if (as_class_instance(dd) || dd->is_struct())
+			return false;
+		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+			{ dd = pd->base_type; continue; }
+		return dd->rawtype() == DataType::dtVOID || dd->is_numeric();
+	}
+	return false;
+}
+
+static bool tsubst_reserved_implementation_identifier(const std::string &name)
+{
+	return name.size() >= 2 && name[0] == '_' && name[1] == '_';
+}
+
+static bool tsubst_system_header_simple_dependent_call(
+	Program *prog, FuncDef *fd, const std::map<DataDef *, DataDef *> &subst,
+	const std::vector<DataDef *> &explicit_args,
+	const std::vector<DataDef *> &concrete_param_types)
+{
+	if (!fd)
+		return false;
+	std::string display = fd->function_display_name.empty()
+			    ? fd->name : fd->function_display_name;
+	if (tsubst_reserved_implementation_identifier(display))
+		return false;
+	for (DataDef *arg : explicit_args)
+		if (!tsubst_system_header_simple_call_type(arg))
+			return false;
+	for (DataDef *pt : concrete_param_types)
+		if (!tsubst_system_header_simple_call_type(pt))
+			return false;
+	DataDef *ret = subst_datadef(prog, &fd->returns, subst);
+	return tsubst_system_header_simple_call_type(ret);
+}
+
 static TokenVar *tsubst_concrete_arg_token(DataDef *dd, size_t index,
 					   TokenBase *origin)
 {
@@ -724,8 +768,11 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		*changed_out = changed;
 	if (!changed)
 		return NULL;
-	if (m_tsubst_copy_pack_index < 0 && tcf->file
-	    && m_prog->is_system_header_path(tcf->file)) {
+	bool system_header_call = m_tsubst_copy_pack_index < 0 && tcf->file
+			       && m_prog->is_system_header_path(tcf->file);
+	if (system_header_call
+	    && !tsubst_system_header_simple_dependent_call(
+		    m_prog, fd, *subst, explicit_args, concrete_param_types)) {
 		if (error_out)
 			*error_out = "tsubst: system-header dependent call";
 		return NULL;
@@ -753,6 +800,29 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		if (error_out)
 			*error_out = "tsubst: unresolved dependent call";
 		return NULL;
+	}
+	if (system_header_call) {
+		FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
+		std::string sym = func_emit_name(*winner, wfd);
+		bool body_available = m_prog->has_deferred_lazy_body(sym);
+		if (!body_available && wfd && !wfd->emit_symbol.empty())
+			body_available = external_symbol_available(wfd->emit_symbol);
+		if (!body_available) {
+			for (TokenBase *pb : m_prog->pending_funcs) {
+				TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
+				FuncDef *tfd = tf
+					? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+				if (tf && func_emit_name(tf->var, tfd) == sym) {
+					body_available = true;
+					break;
+				}
+			}
+		}
+		if (!body_available) {
+			if (error_out)
+				*error_out = "tsubst: system-header dependent call";
+			return NULL;
+		}
 	}
 	return winner;
 }
