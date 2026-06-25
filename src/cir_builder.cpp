@@ -579,27 +579,46 @@ static bool cir_id_spells(cir_node *n, const char *name)
 	    && strcmp(n->base.u.s.s, name) == 0;
 }
 
+static bool node_is_deref_of_id(node_t n, const char *name)
+{
+	if (!n || n->code != N_DEREF)
+		return false;
+	node_t op = c2mir_node_first_op(n);
+	return cir_id_spells(CIR_NODE(op), name);
+}
+
 static DataDefCLASS *as_class_instance(DataDef *dd);
 static DataDefCLASS *param_object_class(DataDef *dd, bool refp);
 static DataDef *ref_param_referent(DataDef *pt);
 static bool tsubst_is_class_object_arg(DataDef *dd);
-static TokenBase *identity_forwarding_operand(TokenBase *arg);
 
-void CirBuilder::rename_copied_pack_value_id(cir_node *src, cir_node *dst)
+std::string CirBuilder::copied_pack_value_name(const char *name) const
 {
+	if (!name)
+		return std::string();
 	if (m_tsubst_copy_pack_index < 0 || !m_tsubst_copy_pack_value_name)
-		return;
-	if (!cir_id_spells(src, m_tsubst_copy_pack_value_name))
-		return;
+		return std::string(name);
+	if (strcmp(name, m_tsubst_copy_pack_value_name) != 0)
+		return std::string(name);
 	bool multi = true;
 	if (m_tsubst_active_type_arg_packs
 	    && (size_t)m_tsubst_copy_pack_index
 	       < m_tsubst_active_type_arg_packs->size())
 		multi = (*m_tsubst_active_type_arg_packs)
 			[(size_t)m_tsubst_copy_pack_index].size() > 1;
-	std::string nm = std::string(m_tsubst_copy_pack_value_name);
+	std::string nm = std::string(name);
 	if (multi)
 		nm += "__" + std::to_string(m_tsubst_copy_pack_elem);
+	return nm;
+}
+
+void CirBuilder::rename_copied_pack_value_id(cir_node *src, cir_node *dst)
+{
+	if (!src || !dst || src->base.code != N_ID || !src->base.u.s.s)
+		return;
+	std::string nm = copied_pack_value_name(src->base.u.s.s);
+	if (nm == src->base.u.s.s)
+		return;
 	const char *interned = c2mir_uniq_str(c2m, nm.c_str(), nm.size() + 1);
 	dst->base.u.s.s = interned;
 	dst->base.u.s.len = nm.size() + 1;
@@ -613,17 +632,62 @@ static bool tsubst_call_can_rewrite_after_subst(TokenCallFunc *tcf)
 	return fd && !fd->function_display_name.empty();
 }
 
-void CirBuilder::rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
-						  const std::map<DataDef *, DataDef *> *subst)
+node_t CirBuilder::copied_reference_slot_arg(TokenBase *arg, node_t src_arg,
+					     DataDef *formal, bool refp)
 {
+	TokenVar *tv = dynamic_cast<TokenVar *>(arg);
+	if (!tv || !tv->var.is_reference() || !tv->var.type || !refp)
+		return NULL;
+	if (!template_param_under_type_layers(tv->var.type))
+		return NULL;
+	if (!node_is_deref_of_id(src_arg, tv->var.name.c_str()))
+		return NULL;
+	std::string nm = copied_pack_value_name(tv->var.name.c_str());
+	node_t slot = id(nm.c_str(), arg);
+	if (formal && formal->is_pointer())
+		return node2(N_CAST, ptr_type_node(formal), slot, arg);
+	return slot;
+}
+
+static DataDef *tsubst_overload_arg_type(DataDef *dd)
+{
+	if (dd && dd->is_reference())
+		if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd))
+			return rp->base_type;
+	return dd;
+}
+
+static TokenVar *tsubst_concrete_arg_token(DataDef *dd, size_t index,
+					   TokenBase *origin)
+{
+	if (!dd)
+		dd = &ddVOID;
+	std::string name = "__madc_tsubst_arg" + std::to_string(index);
+	Variable *v = new Variable(name, *dd, 1, NULL, false);
+	TokenVar *tv = new TokenVar(*v);
+	if (origin) {
+		tv->file = origin->file;
+		tv->line = origin->line;
+		tv->column = origin->column;
+	}
+	return tv;
+}
+
+Variable *CirBuilder::resolve_copied_dependent_call(
+	TokenCallFunc *tcf, const std::map<DataDef *, DataDef *> *subst,
+	bool *changed_out, std::vector<DataDef *> *concrete_param_types_out,
+	std::string *error_out)
+{
+	if (changed_out)
+		*changed_out = false;
+	if (concrete_param_types_out)
+		concrete_param_types_out->clear();
+	if (error_out)
+		error_out->clear();
 	if (!subst || !m_prog)
-		return;
-	if (!src || !dst || src->base.code != N_ID || src->origin_id == 0)
-		return;
-	TokenCallFunc *tcf =
-		dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
+		return NULL;
 	if (!tsubst_call_can_rewrite_after_subst(tcf))
-		return;
+		return NULL;
 	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
 
 	std::vector<DataDef *> explicit_args;
@@ -637,30 +701,79 @@ void CirBuilder::rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
 	}
 
 	std::vector<const DataDef *> at;
+	std::vector<DataDef *> concrete_param_types;
+	std::vector<TokenBase *> param_origins;
 	std::vector<bool> zeros;
 	at.reserve(tcf->parameters.size());
+	concrete_param_types.reserve(tcf->parameters.size());
+	param_origins.reserve(tcf->parameters.size());
 	zeros.reserve(tcf->parameters.size());
 	for (TokenBase *p : tcf->parameters) {
 		DataDef *pdd = p ? p->datadef() : NULL;
 		DataDef *sdd = subst_datadef(m_prog, pdd, *subst);
-		at.push_back(sdd);
+		at.push_back(tsubst_overload_arg_type(sdd));
+		concrete_param_types.push_back(sdd);
+		param_origins.push_back(p);
 		zeros.push_back(is_zero_integer_literal(p));
 		if (sdd != pdd)
 			changed = true;
 	}
+	if (concrete_param_types_out)
+		*concrete_param_types_out = concrete_param_types;
+	if (changed_out)
+		*changed_out = changed;
 	if (!changed)
-		return;
+		return NULL;
 	if (m_tsubst_copy_pack_index < 0 && tcf->file
 	    && m_prog->is_system_header_path(tcf->file)) {
-		dst->error_msg = "tsubst: system-header dependent call";
-		return;
+		if (error_out)
+			*error_out = "tsubst: system-header dependent call";
+		return NULL;
 	}
 
 	Variable *winner = m_prog->find_namespace_function_overload(
 		fd->namespace_name, fd->function_display_name, at, &zeros,
 		&explicit_args);
 	if (!winner) {
-		dst->error_msg = "tsubst: unresolved dependent call";
+		TokenCallFunc synth(tcf->var);
+		synth.explicit_template_args = explicit_args;
+		synth.file = tcf->file;
+		synth.line = tcf->line;
+		synth.column = tcf->column;
+		synth.parameters.reserve(concrete_param_types.size());
+		for (size_t i = 0; i < concrete_param_types.size(); ++i)
+			synth.parameters.push_back(tsubst_concrete_arg_token(
+				concrete_param_types[i], i, param_origins[i]));
+		m_prog->instantiate_namespace_fn_template_for_call(&synth);
+		winner = m_prog->find_namespace_function_overload(
+			fd->namespace_name, fd->function_display_name, at, &zeros,
+			&explicit_args);
+	}
+	if (!winner) {
+		if (error_out)
+			*error_out = "tsubst: unresolved dependent call";
+		return NULL;
+	}
+	return winner;
+}
+
+void CirBuilder::rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
+						  const std::map<DataDef *, DataDef *> *subst)
+{
+	if (!src || !dst || src->base.code != N_ID || src->origin_id == 0)
+		return;
+	TokenCallFunc *tcf =
+		dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
+	bool changed = false;
+	std::string err;
+	Variable *winner = resolve_copied_dependent_call(tcf, subst, &changed,
+							 NULL, &err);
+	if (!changed)
+		return;
+	if (!winner) {
+		dst->error_msg = err.empty()
+			       ? "tsubst: unresolved dependent call"
+			       : arena.intern(err.c_str());
 		return;
 	}
 	FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
@@ -866,21 +979,18 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						    int pack_index, size_t pack_elem,
 						    const char *pack_name) -> node_t {
 						if (DataDefCLASS *pc = param_object_class(pt, refp)) {
-							TokenBase *addr_arg =
-								(ref_returning_call_type(arg))
-								? identity_forwarding_operand(arg)
-								: NULL;
-							TokenBase *source_arg =
-								addr_arg ? addr_arg : arg;
-							node_t value = copy_expr_under(source_arg, smap,
+							node_t value = copy_expr_under(arg, smap,
 										      pack_index,
 										      pack_elem,
 										      pack_name);
-							if (!addr_arg
+							if (ref_returning_call_type(arg)
+							    && value && value->code == N_CALL)
+								value = node1(N_DEREF, value, arg);
+							if (!ref_returning_call_type(arg)
 							    && expr_is_nonaddressable_rvalue(arg))
 								return temp_addr_from_value(pc, value,
 												    arg);
-							return void_addr_of(value, source_arg);
+							return void_addr_of(value, arg);
 						}
 						if (as_class_instance(pt))
 							return copy_expr_under(arg, smap, pack_index,
@@ -1031,6 +1141,53 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		}
 	}
 
+	if (subst && src->base.code == N_CALL && src->origin_id) {
+		TokenCallFunc *tcf =
+			dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
+		bool changed = false;
+		std::vector<DataDef *> concrete_param_types;
+		std::string err;
+		Variable *winner = resolve_copied_dependent_call(
+			tcf, subst, &changed, &concrete_param_types, &err);
+		if (changed) {
+			if (!winner)
+				return CIR_NODE(error_node(
+					err.empty()
+					? "tsubst: unresolved dependent call"
+					: err.c_str(), tcf));
+			FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
+			std::string sym = func_emit_name(*winner, wfd);
+			if (sym.empty())
+				return CIR_NODE(error_node(
+					"tsubst: unresolved dependent call symbol",
+					tcf));
+			node_t src_args = c2mir_node_op(src->as_node(), 1);
+			node_t args = list();
+			size_t i = 0;
+			for (node_t a = src_args ? c2mir_node_first_op(src_args) : NULL;
+			     a != NULL; a = c2mir_node_next_op(a), ++i) {
+				TokenBase *arg = (i < tcf->parameters.size())
+					       ? tcf->parameters[i] : NULL;
+				DataDef *pt = (wfd && i < wfd->parameters.size())
+					    ? wfd->parameters[i] : NULL;
+				bool refp = wfd && wfd->is_ref_param(i);
+				node_t rewritten =
+					copied_reference_slot_arg(arg, a, pt, refp);
+				append(args, rewritten ? rewritten
+					: copy_cir_subtree(CIR_NODE(a), subst)->as_node());
+			}
+			node_t call = node2(N_CALL, id(sym.c_str(), tcf), args, tcf);
+			CIR_NODE(call)->tree1_origin = src;
+			if (wfd && wfd->returns_reference()
+			    && !m_tsubst_copy_under_deref) {
+				node_t deref = node1(N_DEREF, call, tcf);
+				CIR_NODE(deref)->tree1_origin = src;
+				return CIR_NODE(deref);
+			}
+			return CIR_NODE(call);
+		}
+	}
+
 	cir_node *dst = arena.alloc();           // zeroed (error_msg/tree1_origin NULL)
 	dst->base.code = src->base.code;
 	dst->base.uid  = c2mir_next_uid(c2m);    // uids must be unique per c2m ctx
@@ -1121,8 +1278,11 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						"tsubst: unbound template parameter in type marker"));
 				continue;
 			}
-			c2mir_op_append(c2m, dst->as_node(),
-					copy_cir_subtree(cc, subst)->as_node());
+			bool saved_under_deref = m_tsubst_copy_under_deref;
+			m_tsubst_copy_under_deref = src->base.code == N_DEREF;
+			cir_node *copied = copy_cir_subtree(cc, subst);
+			m_tsubst_copy_under_deref = saved_under_deref;
+			c2mir_op_append(c2m, dst->as_node(), copied->as_node());
 		}
 	}
 
@@ -2227,21 +2387,6 @@ static DataDef *ref_param_referent(DataDef *pt)
 		return NULL;
 	DataDefPTR *rp = dynamic_cast<DataDefPTR *>(pt);
 	return rp ? rp->base_type : NULL;
-}
-
-static TokenBase *identity_forwarding_operand(TokenBase *arg)
-{
-	TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(arg);
-	if (!tc || tc->parameters.size() != 1)
-		return NULL;
-	FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
-	if (!fd || fd->namespace_name != "std")
-		return NULL;
-	const std::string &name = fd->function_display_name.empty()
-				? tc->var.name : fd->function_display_name;
-	if (name != "forward" && name != "move")
-		return NULL;
-	return tc->parameters[0];
 }
 
 // Translate a call's explicit arguments into `args`, coercing object
@@ -12445,18 +12590,21 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 	int saved_copy_index = m_tsubst_copy_pack_index;
 	size_t saved_copy_elem = m_tsubst_copy_pack_elem;
 	const char *saved_copy_name = m_tsubst_copy_pack_value_name;
+	bool saved_under_deref = m_tsubst_copy_under_deref;
 	m_tsubst_active_type_arg_packs =
 		has_pack ? &fd->tsubst_type_arg_packs : NULL;
 	m_tsubst_active_pack_params = pack_params;
 	m_tsubst_copy_pack_index = -1;
 	m_tsubst_copy_pack_elem = 0;
 	m_tsubst_copy_pack_value_name = NULL;
+	m_tsubst_copy_under_deref = false;
 	node_t result = tsubst_cir(pattern, binding)->as_node();
 	m_tsubst_active_type_arg_packs = saved_packs;
 	m_tsubst_active_pack_params = saved_pack_params;
 	m_tsubst_copy_pack_index = saved_copy_index;
 	m_tsubst_copy_pack_elem = saved_copy_elem;
 	m_tsubst_copy_pack_value_name = saved_copy_name;
+	m_tsubst_copy_under_deref = saved_under_deref;
 	// A type-spec marker that tsubst could not expand (unbound, or a concrete
 	// type append_type_specs can't render here) left an error node -> fall back.
 	if (cir_tree_has_error(result))

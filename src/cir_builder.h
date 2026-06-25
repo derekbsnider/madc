@@ -447,6 +447,7 @@ class CirBuilder {
 	int m_tsubst_copy_pack_index = -1;
 	size_t m_tsubst_copy_pack_elem = 0;
 	const char *m_tsubst_copy_pack_value_name = NULL;
+	bool m_tsubst_copy_under_deref = false;
 	// Build a concrete instantiated member-template method's BODY by tsubst of
 	// its source template's Tree-1 recipe (instead of lowering the re-parsed
 	// body — hybrid B keeps the concrete signature/shell on the parse path).
@@ -1003,6 +1004,15 @@ public:
 	// c2mir then compiles. Thin wrapper over copy_cir_subtree.
 	cir_node *tsubst_cir(cir_node *src,
 			     const std::map<DataDef *, DataDef *> &subst);
+	std::string copied_pack_value_name(const char *name) const;
+	node_t copied_reference_slot_arg(class TokenBase *arg, node_t src_arg,
+					 DataDef *formal, bool refp);
+	class Variable *resolve_copied_dependent_call(
+		class TokenCallFunc *tcf,
+		const std::map<DataDef *, DataDef *> *subst,
+		bool *changed_out = nullptr,
+		std::vector<DataDef *> *concrete_param_types = nullptr,
+		std::string *error_out = nullptr);
 	void rename_copied_pack_value_id(cir_node *src, cir_node *dst);
 	void rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
 					      const std::map<DataDef *, DataDef *> *subst);

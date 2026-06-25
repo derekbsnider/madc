@@ -9,10 +9,13 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 
 ## 0. STATE (verify, do not trust blindly — run `scripts/resume.sh`)
 
-➡️ **NEXT WORK (2026-06-25) IS §8 — read it first.** Step A (generic `is_type_dependent`)
-is committed (`62409d08`); the keystone remaining is nested fn-template INSTANTIATION in
-the copy path. The precise root cause, the WIP patch to resume from, the fix, and the
-build/probe gotchas are all in **§8**. HEAD: `33bee94d` (docs); tree clean.
+➡️ **NEXT WORK after the 2026-06-25 Codex update:** retire the remaining system-header
+dependent-call bail and `tsubst_eligible` catalog one construct at a time. Step A
+(generic `is_type_dependent`) is committed (`62409d08`), and the §8 local keystone
+(nested fn-template INSTANTIATION in the copy path) is now landed in the working tree.
+The still-open surfaces are real system-header forwarding/destructor/object-address
+packs and template-id body/return surfaces. Last committed HEAD in this handoff lineage:
+`e5d086dc`; current branch carries local uncommitted code/status changes.
 
 ✅ **KG SYNCED (2026-06-24).** FalkorDB was briefly unreachable mid-session; once back,
 `madc-knowledge` was reconciled via `scripts/kg_query.sh`: Feature
@@ -74,6 +77,32 @@ Validation for this local update:
   `testvector`, `teststringref`, `testforeachref`, `testvectorptr`.
 - `make -C src fulltest` green: 669 passed / 0 failed / 0 timed out / 18 skipped.
 - `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` green: 669/0/0/18.
+
+✅ **2026-06-25 LOCAL CODEX UPDATE — NESTED FUNCTION-TEMPLATE INSTANTIATION KEYSTONE.**
+The tsubst/copy path now instantiates missing local nested namespace function templates
+instead of merely re-resolving already-existing overloads. Copied dependent `N_CALL` and
+callee-id paths share `resolve_copied_dependent_call`: substituted explicit args and
+argument types drive normal overload lookup first, then a concrete-typed synthetic call
+instantiates the missing namespace function-template specialization on miss.
+
+Reference-forwarding pack operands are rebuilt against the concrete callee. When the new
+callee takes a reference, copied argument lowering rewrites `DEREF ID args` back to the
+stored concrete pointer slot (`args`, `args__N`) before call emission; reference-returning
+nested calls are deref-wrapped only when the source call was not already under a source
+dereference. The previous local `std::forward`/`std::move` name peel is removed.
+
+Validation for this local update:
+- `make -C src ../bin/test_cir` green.
+- `make -C src ../bin/madc` green.
+- Flag-on focused `bin/test_cir -tc "*reference-forwarded*"` green: 79 test cases /
+  977 assertions / 4 skipped.
+- Flag-on direct canaries green: `testcontainerdtor`, `testforeachref`, `testmadc_ns`,
+  `testsubscript`, `testsubscriptarrow`, `testvector`, `testvectorptr`,
+  `testmemtmplpackexpand`, `testvariadicfn`.
+- `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` green: 669 passed / 0 failed /
+  0 timed out / 18 skipped.
+- `make -C src fulltest` green: 669 passed / 0 failed / 0 timed out / 18 skipped;
+  both check gates green.
 
 
 DONE + gated + committed on this branch:
@@ -616,35 +645,35 @@ method and diffing emitted C tsubst-vs-reparse on JUST that method before wideni
 1. typeless placeholder for a deferred call (madc `unknown_type_node` analogue) + ADL bit.
 2. real `is_type_dependent(expr)` predicate from operand types — **DONE 2026-06-25
    (`62409d08`)**; at tsubst re-run the NORMAL call-resolution entry on concrete args
-   (reuse, don't fork) — **see §8: re-resolution exists but must INSTANTIATE, not just
-   resolve.**
+   (reuse, don't fork) — **§8 local instantiation-on-miss is now landed; remaining work is
+   retiring the system-header bail and catalog entries deliberately.**
 3. then dependent member access (`T::x`), template-ids (`Foo<T>`), packs — one per commit,
    each relaxing a `tsubst_eligible` constraint with the gate green.
 
-## 8. KEYSTONE NEXT-WORK — nested fn-template INSTANTIATION in the copy path (2026-06-25)
+## 8. COMPLETED KEYSTONE NOTES — nested fn-template INSTANTIATION in the copy path (2026-06-25)
 
-THE one capability that retires the most hardcoding. The `std::forward`/`std::move`
-name-match, the system-header dependent-call bail (`cir_builder.cpp:653`), AND the
-`tsubst_eligible` catalog entries that mirror it ALL exist for ONE reason: the tsubst/copy
-path can RESOLVE existing overloads but cannot INSTANTIATE a nested fn-template on demand.
-Build that and they dissolve. This is exactly g++'s `tsubst → finish_call_expr` (it
-instantiates, not just resolves; pt.cc:22158, `finish_call_expr` semantics.cc:3315).
+This was the capability that retired the local `std::forward`/`std::move` name-match:
+the tsubst/copy path can now RESOLVE existing overloads and INSTANTIATE a nested
+fn-template on demand for local copied dependent calls. The system-header dependent-call
+bail (`cir_builder.cpp:653`) and the `tsubst_eligible` catalog entries that mirror it
+remain until the real system-header forwarding/destructor/object-address cases are
+widened under the same validation. This is the g++ `tsubst → finish_call_expr` model
+(it instantiates, not just resolves; pt.cc:22158, `finish_call_expr` semantics.cc:3315).
 
 ### 8.1 SETTLED — do not re-litigate
 - Step A (generic `is_type_dependent`, the `type_dependent_expression_p`/pt.cc:30357
   analogue) is DONE + committed (`62409d08`). KEEP IT; `call_involves_placeholder` wraps it.
-- The name-match (`identity_forwarding_operand`) is a Rule-#7 violation. Retire it via the
-  STRUCTURAL path (`ref_returning_call_type` + `void_addr_of`, the `object_arg_addr`
-  cir_builder.cpp:1997 shape) — do NOT restore it as a "fix." The blocker is instantiation
-  (§8.3), not the structural addressing (which the probe proved works: `ref_ret=1`,
-  `val_err=(none)`).
+- The old name-match (`identity_forwarding_operand`) was a Rule-#7 violation and is now
+  removed. Keep the structural path (`ref_returning_call_type` + `void_addr_of`, the
+  `object_arg_addr` cir_builder.cpp:1997 shape); do NOT restore callee-name peeling as a
+  "fix."
 - The system-header bail (`cir_builder.cpp:653-656`) is LOAD-BEARING BY DESIGN — added in
   `e93b31a1` alongside the re-resolution to EXCLUDE system-header dependent calls that need
-  instantiation. Do NOT remove it until instantiation lands.
-- Nested instantiation IS required; there is NO shallow slice that avoids it (verified
+  wider validation. Do NOT remove it merely because local nested instantiation landed.
+- Nested instantiation WAS required; there was NO shallow slice that avoided it (verified
   2026-06-25 from the bail's provenance — the catalog mirrors this exact gap).
 
-### 8.2 START FROM the WIP patch
+### 8.2 HISTORICAL WIP patch
 `tmp/stepC-nested-instantiation-wip.patch` (against `62409d08`) already: (a) removes the
 name-match (helper + fwd decl + the `explicit_arg_node` peel → structural
 `copy_expr_under(arg)` + `(!ref_returning && nonaddressable ? temp_addr_from_value :
@@ -679,7 +708,8 @@ template_for_call(&synth)` registers `forward<Item>` and the re-resolve succeeds
 - POC test `CIR: tsubst lowers reference-forwarded class-reference placement-new packs`
   (test_cir.cpp:1640) must pass VIA tsubst: `cir_count_tree1_copies(tree) > 0` AND `got==34`.
 - fulltest flag-off AND flag-on (`MADC_XTEST_DEP_PARSE=1`) 669/0/0/18; `test_cir` green.
-- Strip all probes; delete `identity_forwarding_operand` for good.
+- 2026-06-25 local update satisfied this gate, stripped probes, and deleted
+  `identity_forwarding_operand` for good.
 
 ### 8.6 THEN (follow-on slices, each its own gated commit)
 Once instantiation works: retire the system-header bail (653-656) and the matching

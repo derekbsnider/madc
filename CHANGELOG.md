@@ -12,11 +12,14 @@
   result type is). `call_involves_placeholder` now wraps it. This is the
   programmatic primitive the per-construct `tsubst_eligible` token-scan catalog
   retires onto. Green flag-off AND flag-on (669/0/0/18).
-- Identified and fully scoped (handoff §8) the keystone capability that retires
-  the `std::forward`/`std::move` callee-name match, the system-header
-  dependent-call bail, and the `tsubst_eligible` catalog: the tsubst/copy path
-  must INSTANTIATE nested function templates, not merely resolve existing
-  overloads — g++'s `tsubst → finish_call_expr` (one resolver, two phases).
+- Implemented the local nested function-template instantiation keystone for the
+  tsubst/copy path. Copied dependent calls now substitute explicit template args
+  and argument types, instantiate missing namespace function-template overloads
+  with concrete-typed synthetic params, rebuild the copied call against the
+  concrete callee, and preserve reference-return semantics without double
+  derefing. This retires the local `std::forward`/`std::move` callee-name peel;
+  system-header dependent-call bails and final `tsubst_eligible` catalog deletion
+  remain follow-on widening work.
 - Implemented direct TYPE template-argument binding for the env-gated two-tree
   member-template body path. Concrete instantiated `FuncDef`s now retain
   `tsubst_type_args` in source template-parameter order, so CIR tsubst consumes
@@ -80,6 +83,15 @@
   `sink(nn::ident(v))`. The copy path substitutes the argument types, reuses the
   normal namespace overload resolver for the callee id, and keeps non-pack
   system-header dependent calls on the parsed-body fallback.
+- Extended that copied dependent-call path from re-resolution-only to local
+  instantiation-on-miss. When a copied nested call names a dependent namespace
+  function template such as `std::forward<Item>`, the tsubst copy path now
+  synthesizes concrete-typed call parameters, instantiates the missing overload,
+  rewrites copied reference-slot arguments back to the concrete pack pointer
+  slots, and uses a source-deref context guard for reference-returning callees.
+  The scalar forwarded-pack canaries (`testmemtmplpackexpand`,
+  `testvariadicfn`) and the local reference-forwarded class-reference
+  placement-new pack test stay green under `MADC_XTEST_DEP_PARSE`.
 - Admitted singleton by-value class-object placement-new constructor packs, such
   as allocator-style `new ((void*)p) Up(std::forward<Args>(args)...)` where
   `Up`'s constructor takes one class object by value. The object pack stays as a
@@ -102,16 +114,18 @@
   constructor-pack slice. Local retained recipes that pass `Args&...` through an
   identity `std::forward<Args>(args)...` / `std::move(args)...` and bind to
   class-reference constructor parameters now copy/address the concrete pack
-  operand per element. Real system-header reference-forwarding and broader
-  object-address packs still fall back after canary validation showed those need
-  a wider, separate lowering.
+  operand per element through the generic copied dependent-call instantiation
+  path, not a callee-name special case. Real system-header reference-forwarding
+  and broader object-address packs still fall back after canary validation showed
+  those need a wider, separate lowering.
 - Kept ordinary reference-parameter bodies, broader system-header
-  forwarding/destructor and nested/dependent calls, class-valued placement-new
-  constructor argument packs that need real reference-forwarding/object-address
-  lowering, and template-id body/return surfaces on the re-parse fallback until those
+  forwarding/destructor and dependent calls behind the system-header bail,
+  class-valued placement-new constructor argument packs that need real
+  reference-forwarding/object-address lowering, and template-id body/return
+  surfaces on the re-parse fallback until those
   constructs are widened. The flag-on tsubst gate and normal fulltest both
   remain 669/0/0/18; `test_cir` is 79 test cases / 977
-  assertions / 4 skipped. Phase 4 is now tracked at roughly 65% implemented by
+  assertions / 4 skipped. Phase 4 is now tracked at roughly 70% implemented by
   coverage weight, not session count.
 
 ## [v0.30.0] — 2026-06-22
