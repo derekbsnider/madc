@@ -9,6 +9,11 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 
 ## 0. STATE (verify, do not trust blindly — run `scripts/resume.sh`)
 
+➡️ **NEXT WORK (2026-06-25) IS §8 — read it first.** Step A (generic `is_type_dependent`)
+is committed (`62409d08`); the keystone remaining is nested fn-template INSTANTIATION in
+the copy path. The precise root cause, the WIP patch to resume from, the fix, and the
+build/probe gotchas are all in **§8**. HEAD: `33bee94d` (docs); tree clean.
+
 ✅ **KG SYNCED (2026-06-24).** FalkorDB was briefly unreachable mid-session; once back,
 `madc-knowledge` was reconciled via `scripts/kg_query.sh`: Feature
 `two_tree_tsubst_instantiation` (status in_progress) + Session
@@ -609,7 +614,89 @@ method and diffing emitted C tsubst-vs-reparse on JUST that method before wideni
 
 ## 7. WIDENING BACKLOG (after scalar consumption works) — PLAN §11.5c
 1. typeless placeholder for a deferred call (madc `unknown_type_node` analogue) + ADL bit.
-2. real `is_type_dependent(expr)` predicate from operand types; at tsubst re-run the NORMAL
-   call-resolution entry on concrete args (reuse, don't fork) — retires the flag.
+2. real `is_type_dependent(expr)` predicate from operand types — **DONE 2026-06-25
+   (`62409d08`)**; at tsubst re-run the NORMAL call-resolution entry on concrete args
+   (reuse, don't fork) — **see §8: re-resolution exists but must INSTANTIATE, not just
+   resolve.**
 3. then dependent member access (`T::x`), template-ids (`Foo<T>`), packs — one per commit,
    each relaxing a `tsubst_eligible` constraint with the gate green.
+
+## 8. KEYSTONE NEXT-WORK — nested fn-template INSTANTIATION in the copy path (2026-06-25)
+
+THE one capability that retires the most hardcoding. The `std::forward`/`std::move`
+name-match, the system-header dependent-call bail (`cir_builder.cpp:653`), AND the
+`tsubst_eligible` catalog entries that mirror it ALL exist for ONE reason: the tsubst/copy
+path can RESOLVE existing overloads but cannot INSTANTIATE a nested fn-template on demand.
+Build that and they dissolve. This is exactly g++'s `tsubst → finish_call_expr` (it
+instantiates, not just resolves; pt.cc:22158, `finish_call_expr` semantics.cc:3315).
+
+### 8.1 SETTLED — do not re-litigate
+- Step A (generic `is_type_dependent`, the `type_dependent_expression_p`/pt.cc:30357
+  analogue) is DONE + committed (`62409d08`). KEEP IT; `call_involves_placeholder` wraps it.
+- The name-match (`identity_forwarding_operand`) is a Rule-#7 violation. Retire it via the
+  STRUCTURAL path (`ref_returning_call_type` + `void_addr_of`, the `object_arg_addr`
+  cir_builder.cpp:1997 shape) — do NOT restore it as a "fix." The blocker is instantiation
+  (§8.3), not the structural addressing (which the probe proved works: `ref_ret=1`,
+  `val_err=(none)`).
+- The system-header bail (`cir_builder.cpp:653-656`) is LOAD-BEARING BY DESIGN — added in
+  `e93b31a1` alongside the re-resolution to EXCLUDE system-header dependent calls that need
+  instantiation. Do NOT remove it until instantiation lands.
+- Nested instantiation IS required; there is NO shallow slice that avoids it (verified
+  2026-06-25 from the bail's provenance — the catalog mirrors this exact gap).
+
+### 8.2 START FROM the WIP patch
+`tmp/stepC-nested-instantiation-wip.patch` (against `62409d08`) already: (a) removes the
+name-match (helper + fwd decl + the `explicit_arg_node` peel → structural
+`copy_expr_under(arg)` + `(!ref_returning && nonaddressable ? temp_addr_from_value :
+void_addr_of)`); (b) in `rewrite_copied_dependent_call_id` (cir_builder.cpp:659), on a
+`find_namespace_function_overload` miss, synthesizes `TokenCallFunc synth(tcf->var)`, sets
+`synth.explicit_template_args = explicit_args` (substituted), calls
+`m_prog->instantiate_namespace_fn_template_for_call(&synth)`, then re-resolves. It also
+carries `[FWD2]` fprintf probes — STRIP THEM. Apply with `git apply`, or re-derive from here.
+
+### 8.3 THE BUG IN THE WIP + THE FIX (root cause, pinned)
+The WIP reaches the miss with CORRECT inputs (probe: `ns=std name=forward explicit=[Item]
+at=[Item]`) but instantiation DECLINES — `winner=nil` after the call — because the synth
+borrows the PATTERN's parameters, which are still PLACEHOLDER-typed (`Args`), so
+`try_instantiate_namespace_fn_template`'s deduction is confused.
+**FIX:** give the synth CONCRETE-typed parameters matching the substituted arg types `at`
+(already computed at cir_builder.cpp:639-650). Build parameter tokens whose `datadef()`
+returns `at[i]` — investigate the lightest token type for this (a `TokenVar` over a
+throwaway `Variable` of that type, or another token that overrides `datadef()`; see the
+`datadef()` overrides in `include/madc.h` ~539-635). Then `instantiate_namespace_fn_
+template_for_call(&synth)` registers `forward<Item>` and the re-resolve succeeds.
+
+### 8.4 VERIFY (parser-internals; SLOW recompiles — batch probes)
+- Probe `try_instantiate_namespace_fn_template` (parser.cpp:31386) to confirm WHY it
+  declines with placeholder params and that concrete params fix it.
+- Confirm the 2nd `find_namespace_function_overload(at, &explicit_args)` MATCHES
+  `forward<Item>` (arg `Item` vs param `Item&`; the matcher handles value→ref — the
+  re-parse path resolves it, so this should too).
+- The instantiated body IS compiled by `translate_module`'s `pending_funcs` drain
+  (cir_builder.cpp:13947) — confirmed, no extra wiring needed.
+
+### 8.5 GATE (per slice; never perf-gate)
+- POC test `CIR: tsubst lowers reference-forwarded class-reference placement-new packs`
+  (test_cir.cpp:1640) must pass VIA tsubst: `cir_count_tree1_copies(tree) > 0` AND `got==34`.
+- fulltest flag-off AND flag-on (`MADC_XTEST_DEP_PARSE=1`) 669/0/0/18; `test_cir` green.
+- Strip all probes; delete `identity_forwarding_operand` for good.
+
+### 8.6 THEN (follow-on slices, each its own gated commit)
+Once instantiation works: retire the system-header bail (653-656) and the matching
+`tsubst_eligible` catalog entries (parser.cpp:33386) ONE per commit — each previously-
+excluded construct now re-resolves+instantiates; `-Wunused-function` confirms dead catalog.
+
+### 8.7 BUILD/PROBE GOTCHAS (each cost real cycles 2026-06-25 — heed them)
+- NEVER pipe `make` through `tail`/`head`: it MASKS compile errors AND makes a background
+  task report exit 0 (the pipe's code, not make's). Verify:
+  `make -C src ../bin/test_cir 2>&1 | grep -iE 'error:|Error [0-9]'` (empty = clean).
+- STALE TEST BINARIES: `make -C src` rebuilds `bin/madc` but NOT `bin/test_cir`. Use
+  `make -C src ../bin/test_cir`, then VERIFY the rebuild took: `strings bin/test_cir |
+  grep -c <probe-string>` (0 ⇒ stale, the `.o` didn't recompile — chase why).
+- `node_t` vs `cir_node`: a copied `value` is `node_t` (struct node) → use `value->code`;
+  `error_msg` is a `cir_node` EXTENSION → `CIR_NODE(value)->error_msg`.
+- Best "why did it fall back" probe: `cir_report_errors(stderr, result)` at
+  cir_builder.cpp:12455 — prints every error node with message + source location.
+- `DBG()` is thread-dead in cir_builder worker threads — use raw `fprintf(stderr,...)`.
+- Run ONE unit test: `LD_LIBRARY_PATH="lib:/usr/local/lib:$LD_LIBRARY_PATH" bin/test_cir
+  -tc="<exact test-case name>"`.
