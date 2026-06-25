@@ -59,16 +59,18 @@ high-level" — the answer is both.**
   current slice also covers direct `__destroy(T*)` helper bodies by deferring
   pointee-class inspection until after substitution, and fixes multi-buffer
   builtin/intrinsic lookup so split system-header/user parses can capture those
-  helpers as Tree-1 recipes. The latest slice covers local non-pack nested
-  namespace function-template calls such as `sink(nn::ident(v))` by re-resolving
-  copied callee ids from substituted argument types, and covers by-value
-  class-object constructor packs inside allocator-style placement-new bodies,
-  including singleton and multi-element packs, and the first value-returning
-  class-reference constructor-pack shape, while non-pack system-header dependent
-  calls still fall back.
+  helpers as Tree-1 recipes. Recent slices cover local non-pack nested namespace
+  function-template calls such as `sink(nn::ident(v))` by re-resolving copied
+  callee ids from substituted argument types, by-value class-object constructor
+  packs inside allocator-style placement-new bodies, including singleton and
+  multi-element packs, value-returning class-reference constructor-pack shapes,
+  and local reference-returning identity-forwarding class-reference constructor
+  packs. Non-pack system-header dependent calls and real system-header
+  reference-forwarding/object-address packs still fall back.
   Validation is green both
   flag-off and flag-on at **669 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **78 test cases / 963 assertions / 4 skipped**. Remaining
+  `test_cir` is **79 test cases / 977 assertions / 4 skipped**. Phase 4 is
+  roughly **65% implemented** by coverage weight, not session count. Remaining
   design-level blocker before deleting the re-parse fallback: broader CIR pack
   expansion for system-header forwarding/destructor patterns, class-valued
   placement-new constructor argument packs that need real reference-forwarding or

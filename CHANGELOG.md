@@ -85,13 +85,21 @@
   substitution, and keeps any needed class-object temporaries inside the copied
   placement-new statement expression. Real reference-returning `std::forward`
   and broader object-address packs still fall back.
+- Added the first local reference-forwarded class-reference placement-new
+  constructor-pack slice. Local retained recipes that pass `Args&...` through an
+  identity `std::forward<Args>(args)...` / `std::move(args)...` and bind to
+  class-reference constructor parameters now copy/address the concrete pack
+  operand per element. Real system-header reference-forwarding and broader
+  object-address packs still fall back after canary validation showed those need
+  a wider, separate lowering.
 - Kept ordinary reference-parameter bodies, broader system-header
   forwarding/destructor and nested/dependent calls, class-valued placement-new
   constructor argument packs that need real reference-forwarding/object-address
   lowering, and template-id body/return surfaces on the re-parse fallback until those
   constructs are widened. The flag-on tsubst gate and normal fulltest both
-  remain 669/0/0/18; `test_cir` is 78 test cases / 963
-  assertions / 4 skipped.
+  remain 669/0/0/18; `test_cir` is 79 test cases / 977
+  assertions / 4 skipped. Phase 4 is now tracked at roughly 65% implemented by
+  coverage weight, not session count.
 
 ## [v0.30.0] — 2026-06-22
 

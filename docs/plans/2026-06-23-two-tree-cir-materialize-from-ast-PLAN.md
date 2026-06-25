@@ -18,8 +18,10 @@ rests on; read it first).
 **HEAD:** `feature/front-end-performance-claude` after the direct type-arg binding,
 type-pack metadata capture, direct value/ref/expression/forwarding-call/constructor
 pack fan-out, covered system-header placement-new scalar/class `_Up` slices, and the
-direct `__destroy(T*)` helper slice, plus local non-pack nested namespace-call tsubst
-and the by-value class-object placement-new constructor-pack slices. The only known
+direct `__destroy(T*)` helper slice, plus local non-pack nested namespace-call tsubst,
+by-value class-object placement-new constructor-pack slices, value-returning
+class-reference placement-new constructor packs, and local reference-forwarded
+class-reference placement-new constructor packs. The only known
 unrelated local file during this handoff is untracked
 `mir-debug-support.md`; it is not ours.
 Fork `/workspace/mir` @ `d3a5cced` on origin/develop; `MIR_COMMIT` = `d3a5cce`.
@@ -92,6 +94,19 @@ reference constructor parameters such as `PairRef(const Item&, const Item&)`,
 with validation after that slice: `bin/test_cir` 78 test cases / 963 assertions /
 4 skipped, `make -C src fulltest` 669/0/0/18, and `MADC_XTEST_DEP_PARSE=1 bash
 scripts/run_tests.sh` 669/0/0/18.
+The latest local slice covers reference-returning identity-forwarded class objects
+in local retained placement-new recipes, such as `Args&...` forwarded through
+`std::forward<Args>(args)...` into class-reference constructor parameters. The
+copy path peels the identity forwarding call and address-takes the concrete pack
+operand per element, while real system-header reference-forwarding/object-address
+packs remain on the fallback after canary validation caught broader regressions.
+Validation after that slice: `bin/test_cir` 79 test cases / 977 assertions /
+4 skipped, `make -C src fulltest` 669/0/0/18, and `MADC_XTEST_DEP_PARSE=1 bash
+scripts/run_tests.sh` 669/0/0/18.
+Rough Phase 4 implementation estimate: 65% by coverage weight, not session count;
+the remaining ~35% is mostly real system-header forwarding/destructor packs,
+object-address/reference-forwarding placement-new packs, broader nested dependent
+calls, and template-id body/return surfaces.
 **Current next blocker: broader CIR pack expansion for real system-header
 forwarding/destructor pack patterns, real reference-forwarding/object-address
 placement-new constructor argument packs, broader system-header nested/dependent calls,

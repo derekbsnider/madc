@@ -1,7 +1,7 @@
 # Test Status
 
 > **Local branch update (2026-06-25, `feature/front-end-performance-claude` @
-> value-returning class-reference placement-new pack slice with two-tree direct type-arg binding and direct
+> local reference-forwarded class-reference placement-new pack slice with two-tree direct type-arg binding and direct
 > value/ref/expression/forwarding-call/constructor pack fan-out plus covered
 > system-header placement-new pack fan-out and simple class `_Up` placement-new
 > tsubst plus direct `__destroy(T*)` helper tsubst and local non-pack nested
@@ -9,7 +9,7 @@
 > **669 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
 > GREEN). The env-gated tsubst path is also green:
 > `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` reports **669/0/0/18**.
-> `bin/test_cir` reports **78 test cases, 963 assertions, 4 skipped** after
+> `bin/test_cir` reports **79 test cases, 977 assertions, 4 skipped** after
 > adding coverage for direct `tsubst_type_args` binding of a body-only template
 > parameter and direct `tsubst_type_arg_packs` capture for a variadic member
 > template, plus direct CIR fan-out for value-pack call arguments like
@@ -27,7 +27,11 @@
 > callee ids re-resolve from substituted argument types, plus by-value
 > class-object constructor packs such as `Box(Item)` and `PairBox(Item, Item)` inside
 > allocator-style placement-new bodies, plus value-returning forwarded class objects
-> bound to reference constructor parameters such as `PairRef(const Item&, const Item&)`.
+> bound to reference constructor parameters such as `PairRef(const Item&, const Item&)`,
+> plus local reference-returning identity-forwarding constructor packs that pass
+> `Args&...` through `std::forward<Args>(args)...` and bind to class-reference
+> constructor parameters.
+> Phase 4 is now tracked at roughly **65% implemented** by coverage weight.
 > Broader system-header forwarding/destructor pack surfaces, class-valued
 > placement-new constructor argument packs that need real reference-forwarding or
 > object-address lowering, broader system-header nested/dependent calls, and template-id

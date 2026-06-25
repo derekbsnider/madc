@@ -583,6 +583,7 @@ static DataDefCLASS *as_class_instance(DataDef *dd);
 static DataDefCLASS *param_object_class(DataDef *dd, bool refp);
 static DataDef *ref_param_referent(DataDef *pt);
 static bool tsubst_is_class_object_arg(DataDef *dd);
+static TokenBase *identity_forwarding_operand(TokenBase *arg);
 
 void CirBuilder::rename_copied_pack_value_id(cir_node *src, cir_node *dst)
 {
@@ -744,18 +745,22 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 							bool refp = ctor && ctor->is_ref_param(pi);
 							if (DataDefCLASS *pc =
 								    param_object_class(pt, refp)) {
-								if (expr_is_nonaddressable_rvalue(pe->pattern)
-								    && !class_trivially_copyable(pc)) {
-									unsupported_class_arg = true;
-									break;
-								}
-								if (expr_is_nonaddressable_rvalue(pe->pattern)
-								    && class_trivially_copyable(pc)) {
+								if (expr_is_nonaddressable_rvalue(pe->pattern)) {
+									if (!class_trivially_copyable(pc)) {
+										unsupported_class_arg = true;
+										break;
+									}
 									manual_class_pack_lowering = true;
 									continue;
 								}
-								unsupported_class_arg = true;
-								break;
+								if (pe->pattern && pe->pattern->file && m_prog
+								    && m_prog->is_system_header_path(
+									    pe->pattern->file)) {
+									unsupported_class_arg = true;
+									break;
+								}
+								manual_class_pack_lowering = true;
+								continue;
 							}
 							// By-value object params can reuse marked-expression
 							// fan-out.
@@ -861,13 +866,21 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						    int pack_index, size_t pack_elem,
 						    const char *pack_name) -> node_t {
 						if (DataDefCLASS *pc = param_object_class(pt, refp)) {
-							node_t value = copy_expr_under(arg, smap,
+							TokenBase *addr_arg =
+								(ref_returning_call_type(arg))
+								? identity_forwarding_operand(arg)
+								: NULL;
+							TokenBase *source_arg =
+								addr_arg ? addr_arg : arg;
+							node_t value = copy_expr_under(source_arg, smap,
 										      pack_index,
 										      pack_elem,
 										      pack_name);
-							if (expr_is_nonaddressable_rvalue(arg))
-								return temp_addr_from_value(pc, value, arg);
-							return void_addr_of(value, arg);
+							if (!addr_arg
+							    && expr_is_nonaddressable_rvalue(arg))
+								return temp_addr_from_value(pc, value,
+												    arg);
+							return void_addr_of(value, source_arg);
 						}
 						if (as_class_instance(pt))
 							return copy_expr_under(arg, smap, pack_index,
@@ -2214,6 +2227,21 @@ static DataDef *ref_param_referent(DataDef *pt)
 		return NULL;
 	DataDefPTR *rp = dynamic_cast<DataDefPTR *>(pt);
 	return rp ? rp->base_type : NULL;
+}
+
+static TokenBase *identity_forwarding_operand(TokenBase *arg)
+{
+	TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(arg);
+	if (!tc || tc->parameters.size() != 1)
+		return NULL;
+	FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+	if (!fd || fd->namespace_name != "std")
+		return NULL;
+	const std::string &name = fd->function_display_name.empty()
+				? tc->var.name : fd->function_display_name;
+	if (name != "forward" && name != "move")
+		return NULL;
+	return tc->parameters[0];
 }
 
 // Translate a call's explicit arguments into `args`, coercing object

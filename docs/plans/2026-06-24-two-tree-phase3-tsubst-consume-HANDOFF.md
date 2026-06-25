@@ -34,9 +34,41 @@ The latest local slice also covers local non-pack nested namespace function-temp
 such as `sink(nn::ident(v))`, and the follow-up covers singleton by-value class-object
 constructor packs in allocator-style placement-new bodies, then multi-element by-value
 class-object constructor packs such as `PairBox(Item, Item)`, then value-returning
-class-reference constructor packs such as `PairRef(const Item&, const Item&)`; all gated flag-off AND
-flag-on 669/0/0/18; torture byte-identical by construction (env-gated); `test_cir` is
-now 78/963/4.
+class-reference constructor packs such as `PairRef(const Item&, const Item&)`, then local
+reference-returning identity-forwarded class-reference packs where `Args&...` is passed
+through `std::forward<Args>(args)...`; all gated flag-off AND flag-on 669/0/0/18;
+torture byte-identical by construction (env-gated); `test_cir` is now 79/977/4.
+Rough Phase 4 implementation estimate is now 65% by coverage weight, not session count.
+
+✅ **2026-06-25 LOCAL CODEX UPDATE — LOCAL REFERENCE-FORWARDED CLASS-REFERENCE
+PLACEMENT-NEW PACKS.** The tsubst placement-new pack path now covers local retained
+recipes where class objects are passed by reference through an identity
+`std::forward<Args>(args)...` / `std::move(args)...` wrapper into class-reference
+constructor parameters. During copied argument construction, the lowering peels that
+identity forwarding call, copies the concrete pack operand, and address-takes the operand
+per element instead of copying/addressing the forwarding call itself. This keeps the temp
+scope inside the copied placement expression for value-returning class objects and uses
+the original object address for reference-returning local forwarding.
+
+The guard is deliberately narrow: if the pack-expansion pattern comes from a system
+header, real reference-forwarding/object-address packs still fall back to the parsed-body
+path. A broader attempt to admit system-header object-address forwarding caused real-header
+canary output regressions (`testcontainerdtor`, `testforeach2`, `testset`,
+`teststringref`, `testsubscript`, `testsubscriptmember`), so the safe next slice is a
+separate real system-header forwarding/object-address expansion pass rather than relaxing
+this local guard.
+
+Validation for this local update:
+- `g++ -S -fverbose-asm -O0` and `clang++ -S -fverbose-asm -O0` reference reducers checked.
+- `make -C src` green.
+- Focused flag-off/flag-on new test green: 1 test / 14 assertions.
+- Placement-new subset flag-off/flag-on green: 8 tests / 110 assertions / 75 skipped.
+- Pack subset flag-off/flag-on green: 12 tests / 154 assertions / 71 skipped.
+- `bin/test_cir` flag-off/flag-on green: 79 tests / 977 assertions / 4 skipped.
+- Real-header canaries green under `MADC_XTEST_DEP_PARSE=1`: `testcontainerdtor`,
+  `testvector`, `teststringref`, `testforeachref`, `testvectorptr`.
+- `make -C src fulltest` green: 669 passed / 0 failed / 0 timed out / 18 skipped.
+- `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` green: 669/0/0/18.
 
 
 DONE + gated + committed on this branch:
