@@ -10023,6 +10023,7 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     {
 	selected = new TokenCallMethod(recv, *ov);
 	selected->parameters = tc->parameters;
+	selected->explicit_template_args = tc->explicit_template_args;
 	selected->parent_expr = tc->parent_expr;
 	selected->file = tc->file;
 	selected->line = tc->line;
@@ -13447,6 +13448,38 @@ static TokenInt *make_dependent_call_placeholder(TokenBase *at)
     return ti;
 }
 
+static TokenPackExpansion *make_pack_expansion_pattern(TokenBase *pat,
+						       TokenBase *ellipsis)
+{
+    TokenPackExpansion *pe = new TokenPackExpansion(pat);
+    if ( ellipsis )
+    {
+	pe->file = ellipsis->file;
+	pe->line = ellipsis->line;
+	pe->column = ellipsis->column;
+    }
+    return pe;
+}
+
+static bool token_tree_has_pack_expansion(TokenBase *tb)
+{
+    if ( !tb )
+	return false;
+    if ( dynamic_cast<TokenPackExpansion *>(tb) )
+	return true;
+    if ( TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb) )
+    {
+	for ( TokenBase *p : tc->parameters )
+	    if ( token_tree_has_pack_expansion(p) )
+		return true;
+	return token_tree_has_pack_expansion(tc->src_node);
+    }
+    if ( TokenOperator *op = dynamic_cast<TokenOperator *>(tb) )
+	return token_tree_has_pack_expansion(op->left)
+	    || token_tree_has_pack_expansion(op->right);
+    return false;
+}
+
 // parse a function call and it's parameters
 // parameters are individually parsed by parseExpression
 // returns ending token
@@ -13465,6 +13498,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 #endif
     int brackets = 1;
     size_t paramcnt = 0;
+    bool saw_pack_expansion_arg = false;
 
     while ( brackets )
     {
@@ -13500,6 +13534,8 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	stmt_callee_namespace.clear();
 	tb = parseExpression(tb, true);
 	if ( !tb ) { break; }
+	if ( token_tree_has_pack_expansion(tb) )
+	    saw_pack_expansion_arg = true;
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
 	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
@@ -13581,13 +13617,17 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     // (need check for optional parameters)
     // skip arg count check for dlopen functions (0 declared params = variadic-like)
     {
+	bool dependent_pack_call =
+	    dependent_parse_in_progress
+	    && (saw_pack_expansion_arg || token_tree_has_pack_expansion(tc));
 	// function pointer variable: type is DataDefFPTR, get target FuncDef
 	if ( tc->var.type->is_function() && tc->var.type->is_numeric() )
 	{
 	    DataDefFPTR *fptr = static_cast<DataDefFPTR *>(tc->var.type);
 	    FuncDef *fd = fptr->target;
 	    // K&R: empty param list (not void) accepts any number of args
-	    if ( !(fd->parameters.empty() && !fd->is_void_params) )
+	    if ( !dependent_pack_call
+	      && !(fd->parameters.empty() && !fd->is_void_params) )
 	    {
 		// Capture params (nested fn / [&] lambda) live only in the CIR
 		// lowering, not fd->parameters — user arity is the full count.
@@ -13635,12 +13675,13 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 			break;
 		}
 	    }
-	    // In C, f() with no params accepts any number of arguments (K&R style).
-	    // Only f(void) means exactly zero. Skip the check for empty-param functions.
-	    // Allocation operators have multiple standard overloads collapsed onto one
-	    // name (see is_overloaded_allocation_operator), so their arity is not fixed.
-	    if ( !late_bound_no_winner
-	      && !(fd->parameters.empty() && !fd->is_void_params)
+	// In C, f() with no params accepts any number of arguments (K&R style).
+	// Only f(void) means exactly zero. Skip the check for empty-param functions.
+	// Allocation operators have multiple standard overloads collapsed onto one
+	// name (see is_overloaded_allocation_operator), so their arity is not fixed.
+	if ( !late_bound_no_winner
+	  && !dependent_pack_call
+	  && !(fd->parameters.empty() && !fd->is_void_params)
 	      && !is_overloaded_allocation_operator(tc->var.name) )
 	    {
 		size_t expected = fd->parameters.size()
@@ -14092,11 +14133,16 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		    if ( !obj_type || (!obj_type->is_struct() && !obj_type->is_object()) )
 			Throw(mtb) << "member reference type is not a structure or union" << flush;
 		    if ( obj_type->is_object()
-		      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		      && peekToken()
+		      && (peekToken()->id() == TokenID::tkOpBrk
+		       || peekToken()->id() == TokenID::tkLT) )
 		    {
 			DataDefCLASS *method_cls = (DataDefCLASS *)obj_type;
-			Variable *mvar =
-			    find_method_by_callable_arity(method_cls, mname,
+			bool explicit_targs_follow =
+			    peekToken()->id() == TokenID::tkLT;
+			Variable *mvar = explicit_targs_follow
+			    ? NULL
+			    : find_method_by_callable_arity(method_cls, mname,
 				count_queued_call_arguments(), false);
 			if ( !mvar )
 			    mvar = method_cls->findMethod(mname);
@@ -14120,10 +14166,14 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 			    TokenCallMethod *tc = new TokenCallMethod(*recv_var, *mvar);
 			    if ( recv_parent )
 				tc->parent_expr = recv_parent;
+			    if ( explicit_targs_follow )
+				tc->explicit_template_args = capture_call_template_args();
 			    TokenBase *open = nextToken();
 			    tc->file = open->file;
 			    tc->line = open->line;
 			    tc->column = open->column;
+			    if ( open->id() != TokenID::tkOpBrk )
+				Throw(open) << "expected '(' after explicit template arguments" << flush;
 			    parseCallMethod(tc);
 			    tc = reselect_method_overload(tc, *recv_var, method_cls, mname);
 			    result = tc;
@@ -17594,11 +17644,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			struct_type->is_object() ? (DataDefCLASS *)struct_type : NULL;
 		    if ( method_cls )
 		    {
+			bool explicit_targs_follow = peekToken()
+			    && peekToken()->id() == TokenID::tkLT;
 			bool call_follows = peekToken()
-			    && peekToken()->id() == TokenID::tkOpBrk;
+			    && (peekToken()->id() == TokenID::tkOpBrk
+			     || explicit_targs_follow);
 			var = call_follows
-			    ? find_method_by_callable_arity(method_cls, id,
+			    ? (explicit_targs_follow ? NULL
+			       : find_method_by_callable_arity(method_cls, id,
 				count_queued_call_arguments(), false)
+			      )
 			    : method_cls->findMethod(id);
 			if ( !var && call_follows )
 			    var = method_cls->findMethod(id);
@@ -17620,11 +17675,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( var->flags & vfSTATIC )
 			{
 			    TokenCallFunc *tc = new TokenCallFunc(*var);
+			    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+				tc->explicit_template_args = capture_call_template_args();
 			    tb = nextToken();
 			    tc->line = tb->line;
 			    tc->column = tb->column;
 			    if ( tb->id() == TokenID::tkOpBrk )
 				tb = parseCallFunc(tc);
+			    else if ( !tc->explicit_template_args.empty() )
+				Throw(tb) << "expected '(' after explicit template arguments" << flush;
 			    std::vector<const DataDef *> at;
 			    for ( TokenBase *p : tc->parameters )
 				at.push_back(p ? p->datadef() : NULL);
@@ -17633,6 +17692,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				{
 				    TokenCallFunc *tc2 = new TokenCallFunc(*ov);
 				    tc2->parameters = tc->parameters;
+				    tc2->explicit_template_args = tc->explicit_template_args;
 				    tc2->file = tc->file;
 				    tc2->line = tc->line;
 				    tc2->column = tc->column;
@@ -17677,6 +17737,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			TokenCallMethod *tc = new TokenCallMethod(*tv_var, *var);
 			if ( recv_parent )
 			    tc->parent_expr = recv_parent;
+			if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+			    tc->explicit_template_args = capture_call_template_args();
 			tb = nextToken();
 			tc->line = tb->line;
 			tc->column = tb->column;
@@ -17687,6 +17749,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    tb = parseCallMethod(tc);
 			    DBG(cout << "parseCallMethod returned with token " << (char)tb->get() << endl);
 			}
+			else if ( !tc->explicit_template_args.empty() )
+			    Throw(tb) << "expected '(' after explicit template arguments" << flush;
 			// Now that the argument types are known, re-bind to the
 			// overload they actually select (findMethod above took the
 			// first by-name match).
@@ -18804,6 +18868,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 					qstatic_owner, qstatic_member);
 			    var = &tc->var;
 			}
+		    }
+		    if ( peekToken() && peekToken()->id() == TokenID::tkDot
+		      && consume_ellipsis() )
+		    {
+			if ( dependent_parse_in_progress )
+			    exStack.push(make_pack_expansion_pattern(tc, tb));
+			else
+			    exStack.push(tc);
+			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    DBG(cout << "Pushing found function call: " << var->name << "() onto opStack" << endl);
 		    opStack.push(tc);
@@ -21152,7 +21225,15 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	// map::operator[] builds — yields that one operand). Consume the three
 	// dots and end the expression.
 	if ( tb->id() == TokenID::tkDot && consume_ellipsis() )
+	{
+	    if ( dependent_parse_in_progress && !exStack.empty() )
+	    {
+		TokenBase *pat = exStack.top();
+		exStack.pop();
+		exStack.push(make_pack_expansion_pattern(pat, tb));
+	    }
 	    break;
+	}
 	if ( tb->id() == TokenID::tkClBrk && !brackets )
 	{
 	    DBG(cout << "Hit ), no prior brackets, might be end of function?" << endl);
@@ -31145,7 +31226,91 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	const std::map<std::string, std::vector<std::string> > &tid_pack_spellings
 	    = std::map<std::string, std::vector<std::string> >(),
 	const std::map<std::string, std::vector<int64_t> > &tid_packs_nontype
-	    = std::map<std::string, std::vector<int64_t> >());
+	    = std::map<std::string, std::vector<int64_t> >(),
+	std::vector<DataDef *> *type_args_out = NULL,
+	std::vector<std::vector<DataDef *> > *type_arg_packs_out = NULL);
+
+// Build the direct tsubst argument vectors in template-parameter order. This is
+// deliberately parser-owned: explicit args, deduction, defaults, and pack
+// absorption all settle in instantiate_fn_template_binding, and CIR must consume
+// that result instead of reverse-engineering it from rewritten signatures.
+static bool collect_ordered_type_arg_bindings(
+	const Program::FnTemplateDef &ft,
+	const std::map<std::string, DataDef *> &binding,
+	const std::string &pack_param,
+	bool pack_empty,
+	const std::vector<DataDef *> &pack_elems,
+	const std::map<std::string, std::vector<DataDef *> > &tid_packs,
+	std::vector<DataDef *> &type_args_out,
+	std::vector<std::vector<DataDef *> > *type_arg_packs_out)
+{
+    type_args_out.clear();
+    if ( type_arg_packs_out )
+    {
+	type_arg_packs_out->clear();
+	type_arg_packs_out->resize(ft.typeparams.size());
+    }
+    for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+    {
+	bool is_type = !(i < ft.typeparam_is_type.size()) || ft.typeparam_is_type[i];
+	bool is_pack = i < ft.typeparam_is_pack.size() && ft.typeparam_is_pack[i];
+	if ( !is_type )
+	    goto fail;
+	if ( is_pack )
+	{
+	    std::vector<DataDef *> elems;
+	    if ( ft.typeparams[i] == pack_param )
+	    {
+		if ( pack_empty )
+		    elems.clear();
+		else if ( !pack_elems.empty() )
+		    elems = pack_elems;
+		else
+		{
+		    std::map<std::string, DataDef *>::const_iterator bi =
+			binding.find(ft.typeparams[i]);
+		    if ( bi != binding.end() && bi->second )
+			elems.push_back(bi->second);
+		    else
+			goto fail;
+		}
+	    }
+	    else
+	    {
+		std::map<std::string, std::vector<DataDef *> >::const_iterator pi =
+		    tid_packs.find(ft.typeparams[i]);
+		if ( pi != tid_packs.end() )
+		    elems = pi->second;
+		else
+		{
+		    std::map<std::string, DataDef *>::const_iterator bi =
+			binding.find(ft.typeparams[i]);
+		    if ( bi != binding.end() && bi->second )
+			elems.push_back(bi->second);
+		    else
+			goto fail;
+		}
+	    }
+	    for ( size_t e = 0; e < elems.size(); ++e )
+		if ( !elems[e] )
+		    goto fail;
+	    if ( type_arg_packs_out )
+		(*type_arg_packs_out)[i] = elems;
+	    continue;
+	}
+	std::map<std::string, DataDef *>::const_iterator bi =
+	    binding.find(ft.typeparams[i]);
+	if ( bi == binding.end() || !bi->second )
+	    goto fail;
+	type_args_out.push_back(bi->second);
+    }
+    return true;
+fail:
+    type_args_out.clear();
+    if ( type_arg_packs_out )
+	type_arg_packs_out->clear();
+    return false;
+}
 
 // Two-tree Phase 2 (PLAN §11.5c, widening step 1): does a type involve an unbound
 // template parameter (a DataDefTemplateParam placeholder)? Peels ptr / ref / const
@@ -31187,9 +31352,15 @@ static bool call_involves_placeholder(TokenCallFunc *tc)
 }
 
 static bool try_instantiate_namespace_fn_template(Program &pgm,
-	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc)
+	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc,
+	std::vector<DataDef *> *type_args_out = NULL,
+	std::vector<std::vector<DataDef *> > *type_arg_packs_out = NULL)
 {
     InstTimer _it(pgm);	// --show-stats: instantiation time
+    if ( type_args_out )
+	type_args_out->clear();
+    if ( type_arg_packs_out )
+	type_arg_packs_out->clear();
     // Two-tree Phase 2 (PLAN §11.5c, widening step 1): defer this fn-template
     // instantiation only when, inside a dependent body parse, the call is genuinely
     // type-dependent (an arg involves a template-parameter placeholder) — leave it
@@ -31542,7 +31713,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 #endif
     return instantiate_fn_template_binding(pgm, ft, key, binding, pack_param,
 					    pack_empty, NULL, pack_elems, tid_packs,
-					    tid_pack_spellings, tid_packs_nontype);
+					    tid_pack_spellings, tid_packs_nontype,
+					    type_args_out, type_arg_packs_out);
 }
 
 // Resolve a fn-template parameter's DEFAULT token run (`R = T*`,
@@ -31636,7 +31808,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	const std::vector<DataDef *> &pack_elems,
 	const std::map<std::string, std::vector<DataDef *> > &tid_packs,
 	const std::map<std::string, std::vector<std::string> > &tid_pack_spellings,
-	const std::map<std::string, std::vector<int64_t> > &tid_packs_nontype)
+	const std::map<std::string, std::vector<int64_t> > &tid_packs_nontype,
+	std::vector<DataDef *> *type_args_out,
+	std::vector<std::vector<DataDef *> > *type_arg_packs_out)
 {
     // Template-id parameter packs (deduced from `tuple<_Args1...>` args — std::get's
     // `_Elements`, std::pair's piecewise `_Args1`/`_Args2`). Supported for the 0- and
@@ -31778,6 +31952,14 @@ static bool instantiate_fn_template_binding(Program &pgm,
     inst_key += ">";
     if ( pgm.fn_template_instantiated.count(inst_key) )
     {
+	if ( type_args_out || type_arg_packs_out )
+	{
+	    std::vector<DataDef *> scratch;
+	    std::vector<DataDef *> &out = type_args_out ? *type_args_out : scratch;
+	    collect_ordered_type_arg_bindings(ft, binding, pack_param, pack_empty,
+					      pack_elems, tid_packs, out,
+					      type_arg_packs_out);
+	}
 	if ( var_out )
 	{
 	    std::map<std::string, Variable *>::iterator vi =
@@ -32487,6 +32669,24 @@ static bool instantiate_fn_template_binding(Program &pgm,
 #endif
     DBG(std::cout << "fn-template instantiation " << inst_key
 	<< (ok ? " ok" : " FAILED (placeholder kept)") << std::endl);
+    if ( type_args_out || type_arg_packs_out )
+    {
+	if ( ok )
+	{
+	    std::vector<DataDef *> scratch;
+	    std::vector<DataDef *> &out = type_args_out ? *type_args_out : scratch;
+	    collect_ordered_type_arg_bindings(ft, binding, pack_param, pack_empty,
+					      pack_elems, tid_packs, out,
+					      type_arg_packs_out);
+	}
+	else
+	{
+	    if ( type_args_out )
+		type_args_out->clear();
+	    if ( type_arg_packs_out )
+		type_arg_packs_out->clear();
+	}
+    }
     if ( ok )
     {
 	// The parsed definition appended its overload entry under `key` —
@@ -33076,6 +33276,87 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	    return;
 }
 
+static bool tsubst_three_dots_at(const std::vector<TokenBase *> &v, size_t i)
+{
+    return i + 2 < v.size()
+	&& v[i] && v[i]->id() == TokenID::tkDot
+	&& v[i + 1] && v[i + 1]->id() == TokenID::tkDot
+	&& v[i + 2] && v[i + 2]->id() == TokenID::tkDot;
+}
+
+static size_t tsubst_matching_close(const std::vector<TokenBase *> &v,
+				    size_t open, TokenID open_id,
+				    TokenID close_id)
+{
+    int depth = 0;
+    for ( size_t i = open; i < v.size(); ++i )
+    {
+	TokenBase *t = v[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == open_id )
+	    ++depth;
+	else if ( t->id() == close_id )
+	{
+	    --depth;
+	    if ( depth == 0 )
+		return i;
+	}
+    }
+    return v.size();
+}
+
+static bool tsubst_range_has_pack_expansion(
+	const std::vector<TokenBase *> &v, size_t begin, size_t end)
+{
+    if ( end > v.size() )
+	end = v.size();
+    for ( size_t i = begin; i + 2 < end; ++i )
+	if ( tsubst_three_dots_at(v, i) )
+	    return true;
+    return false;
+}
+
+static bool tsubst_has_placement_new_ctor_pack_expansion(FuncDef *fd)
+{
+    if ( !fd )
+	return false;
+    const std::vector<TokenBase *> &d = fd->member_template_decl;
+    for ( size_t i = 0; i < d.size(); ++i )
+    {
+	TokenBase *t = d[i];
+	if ( !t || t->id() != TokenID::tkNEW )
+	    continue;
+	size_t placement_open = i + 1;
+	if ( placement_open >= d.size() || !d[placement_open]
+	  || d[placement_open]->id() != TokenID::tkOpBrk )
+	    continue;
+	size_t placement_close = tsubst_matching_close(
+	    d, placement_open, TokenID::tkOpBrk, TokenID::tkClBrk);
+	if ( placement_close >= d.size() )
+	    continue;
+	for ( size_t k = placement_close + 1; k < d.size(); ++k )
+	{
+	    if ( !d[k] )
+		continue;
+	    if ( d[k]->id() == TokenID::tkSemi
+	      || d[k]->id() == TokenID::tkOpBrc
+	      || d[k]->id() == TokenID::tkClBrc )
+		break;
+	    if ( d[k]->id() != TokenID::tkOpBrk )
+		continue;
+	    size_t args_close = tsubst_matching_close(
+		d, k, TokenID::tkOpBrk, TokenID::tkClBrk);
+	    if ( args_close >= d.size() )
+		break;
+	    if ( tsubst_range_has_pack_expansion(d, k + 1, args_close) )
+		return true;
+	    k = args_close;
+	}
+    }
+    return false;
+}
+
 // Two-tree Phase 2 — capability predicate. See the madc.h declaration. Slice 1 =
 // a member function template with exactly one TYPE param (no pack), a NON-DEPENDENT
 // return type (passed straight to parseFunction), and a body/params using the param
@@ -33091,16 +33372,19 @@ bool Program::tsubst_eligible(FuncDef *fd)
     size_t np = fd->template_param_names.size();
     if ( np < 1 )
 	return false;
-    // Every parameter must be a plain TYPE param: reject a NON-TYPE param (needs value
-    // substitution, not yet built) or a pack. Check ALL indices — a mixed list like
-    // <class A, int N> must not slip through a [0]-only check.
+    // Every parameter must be a TYPE param. Permit at most one TYPE pack in this
+    // slice; NON-TYPE params/packs still need value substitution and stay on the
+    // re-parse fallback.
+    size_t pack_count = 0;
     for ( size_t i = 0; i < np; ++i )
     {
 	if ( i < fd->template_param_is_type.size() && !fd->template_param_is_type[i] )
 	    return false;
 	if ( i < fd->template_param_is_pack.size() && fd->template_param_is_pack[i] )
-	    return false;
+	    ++pack_count;
     }
+    if ( pack_count > 1 )
+	return false;
     // Param-name membership (>=1 type param, e.g. <class A, class B>): the dependent
     // return / body scans below test against ANY param name, not just the first.
     std::set<std::string> pnames(fd->template_param_names.begin(),
@@ -33141,21 +33425,113 @@ bool Program::tsubst_eligible(FuncDef *fd)
 	      && pnames.count(contextual_identifier_name(
 				  fd->member_template_return_tokens[i])) )
 		return false;
+    bool has_pack_expansion = false;
+    for ( size_t i = 0; i + 2 < fd->member_template_decl.size(); ++i )
+	if ( fd->member_template_decl[i]
+	  && fd->member_template_decl[i]->id() == TokenID::tkDot
+	  && fd->member_template_decl[i + 1]
+	  && fd->member_template_decl[i + 1]->id() == TokenID::tkDot
+	  && fd->member_template_decl[i + 2]
+	  && fd->member_template_decl[i + 2]->id() == TokenID::tkDot )
+	    { has_pack_expansion = true; break; }
+    bool template_pack_body_from_system_header = false;
+    if ( pack_count == 1 && has_pack_expansion )
+	for ( size_t i = 0; i < fd->member_template_decl.size(); ++i )
+	{
+	    TokenBase *t = fd->member_template_decl[i];
+	    if ( !t )
+		continue;
+	    if ( t->id() == TokenID::tkLT )
+	    {
+		for ( size_t j = 0; j < fd->member_template_decl.size(); ++j )
+		    if ( fd->member_template_decl[j]
+		      && fd->member_template_decl[j]->file )
+		    {
+			template_pack_body_from_system_header =
+			    is_system_header_path(fd->member_template_decl[j]->file);
+			break;
+		    }
+		break;
+	    }
+	}
+    bool covered_system_header_pack_template_id_body =
+	template_pack_body_from_system_header
+	&& tsubst_has_placement_new_ctor_pack_expansion(fd);
     // Body/param scan: any template-id (`<`) or `P::` dependent lookup (P a param)
-    // disqualifies.
+    // disqualifies, except the current pack-expansion widening slice admits a
+    // single TYPE-pack body when it is already structurally covered by CIR pack
+    // fan-out. System-header template-id pack bodies are admitted only for the
+    // placement-new constructor-argument shape (`new((void*)p) T(args...)`) used
+    // by allocator construction; broader destructor / nested-call surfaces stay
+    // on the parsed-body fallback until covered deliberately.
     const std::vector<TokenBase *> &d = fd->member_template_decl;
     for ( size_t i = 0; i < d.size(); ++i )
     {
 	TokenBase *t = d[i];
 	if ( !t )
 	    continue;
-	if ( t->id() == TokenID::tkLT )
+	if ( t->id() == TokenID::tkLT
+	  && !(pack_count == 1 && has_pack_expansion
+	       && (!template_pack_body_from_system_header
+		   || covered_system_header_pack_template_id_body)) )
 	    return false;
 	if ( pnames.count(contextual_identifier_name(t))
 	  && i + 1 < d.size() && d[i + 1] && d[i + 1]->id() == TokenID::tkNS )
 	    return false;
     }
     return true;
+}
+
+static bool tsubst_pack_param_token(TokenBase *t, const std::set<std::string> &packs)
+{
+    return t && packs.count(contextual_identifier_name(t)) != 0;
+}
+
+static void tsubst_drop_pack_decl_ellipsis(FuncDef *fd,
+					   std::vector<TokenBase *> &def_tokens)
+{
+    if ( !fd || fd->template_param_names.empty() )
+	return;
+    std::set<std::string> packs;
+    for ( size_t i = 0; i < fd->template_param_names.size(); ++i )
+	if ( i < fd->template_param_is_pack.size()
+	  && fd->template_param_is_pack[i]
+	  && (i >= fd->template_param_is_type.size()
+	      || fd->template_param_is_type[i]) )
+	    packs.insert(fd->template_param_names[i]);
+    if ( packs.empty() )
+	return;
+    int paren = 0, square = 0, brace = 0;
+    for ( size_t i = 0; i < def_tokens.size(); ++i )
+    {
+	TokenBase *t = def_tokens[i];
+	if ( !t )
+	    continue;
+	if ( paren == 0 && square == 0 && brace == 0
+	  && t->id() == TokenID::tkClBrk )
+	    break;	// end of the function declarator's parameter list
+	if ( paren == 0 && square == 0 && brace == 0
+	  && tsubst_pack_param_token(t, packs) )
+	{
+	    size_t k = i + 1;
+	    while ( k < def_tokens.size() && def_tokens[k]
+		 && (def_tokens[k]->id() == TokenID::tkBand
+		     || def_tokens[k]->id() == TokenID::tkLand) )
+		++k;
+	    if ( tsubst_three_dots_at(def_tokens, k) )
+	    {
+		def_tokens.erase(def_tokens.begin() + k,
+				 def_tokens.begin() + k + 3);
+		continue;
+	    }
+	}
+	if ( t->id() == TokenID::tkOpBrk ) ++paren;
+	else if ( t->id() == TokenID::tkClBrk && paren > 0 ) --paren;
+	else if ( t->id() == TokenID::tkOpSqr ) ++square;
+	else if ( t->id() == TokenID::tkClSqr && square > 0 ) --square;
+	else if ( t->id() == TokenID::tkOpBrc ) ++brace;
+	else if ( t->id() == TokenID::tkClBrc && brace > 0 ) --brace;
+    }
 }
 
 // Two-tree Phase 2 — parse a member function template's retained body ONCE with its
@@ -33186,6 +33562,7 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     std::vector<TokenBase *> def_tokens;
     for ( size_t i = op + 1; i < decl.size(); ++i )
 	def_tokens.push_back(decl[i] ? decl[i]->clone() : NULL);
+    tsubst_drop_pack_decl_ellipsis(fd, def_tokens);
     if ( def_tokens.empty() )
 	return NULL;
 
@@ -33394,7 +33771,11 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // `static` specifier was dropped above, so re-derive from the retained decl.
     ft.instance_method =
 	!skipped_template_function_is_static(fd->member_template_decl);
-    bool ok = try_instantiate_namespace_fn_template(*this, ft, key, tc);
+    std::vector<DataDef *> concrete_type_args;
+    std::vector<std::vector<DataDef *> > concrete_type_arg_packs;
+    bool ok = try_instantiate_namespace_fn_template(*this, ft, key, tc,
+						    &concrete_type_args,
+						    &concrete_type_arg_packs);
 #if MADC_DEBUG_FNTPL
     if ( dbg_mti )
 	std::cerr << "FNTPL mti try var=" << tc->var.name
@@ -33416,16 +33797,20 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	std::cerr << "FNTPL mti alias var=" << tc->var.name
 		  << " local=" << fd->local_emit_name << std::endl;  // allowed-exception: debug print, not symbol build
 #endif
-    // Two-tree Phase 3 (capability-gated): when this member template has a Tree-1
-    // recipe (built above under MADC_XTEST_DEP_PARSE), link the freshly-parsed
-    // CONCRETE instance back to its SOURCE template so the cir-build seam can
-    // instantiate the body by tsubst of the recipe instead of lowering the
-    // re-parsed body. INERT until the seam consumes it; off by default.
-    if ( fd->dependent_pattern )
+    // Two-tree Phase 3/4 metadata: link the freshly-parsed CONCRETE instance back
+    // to its SOURCE template and carry the parser-settled type args / type-pack
+    // args. tsubst_method_body still requires a dependent_pattern before it can
+    // consume this; recording it for currently-fallback pack templates gives the
+    // future CIR pack-expansion path real arity + element types to consume.
+    if ( getenv("MADC_XTEST_DEP_PARSE") || fd->dependent_pattern )
     {
 	funcdef_map_t::iterator ii = funcdef_map.find(inst_name);
 	if ( ii != funcdef_map.end() && ii->second )
+	{
 	    ii->second->tsubst_source = fd;
+	    ii->second->tsubst_type_args = concrete_type_args;
+	    ii->second->tsubst_type_arg_packs = concrete_type_arg_packs;
+	}
     }
 }
 
@@ -33505,6 +33890,8 @@ void Program::instantiate_member_ctor_template_for_construction(
 #endif
     if ( !fd || !placeholder )
 	return;
+    if ( !fd->dependent_pattern && getenv("MADC_XTEST_DEP_PARSE") )
+	build_dependent_pattern(fd);
 
     // Memoize / break the construct -> forward -> construct recursion: key on the
     // class + each argument's value type.
@@ -33588,7 +33975,11 @@ void Program::instantiate_member_ctor_template_for_construction(
     // its (default) destruction never reaches them.
     TokenCallFunc synth(*placeholder);
     synth.parameters = ctor_args;
-    bool ok = try_instantiate_namespace_fn_template(*this, ft, inst_name, &synth);
+    std::vector<DataDef *> concrete_type_args;
+    std::vector<std::vector<DataDef *> > concrete_type_arg_packs;
+    bool ok = try_instantiate_namespace_fn_template(*this, ft, inst_name, &synth,
+						    &concrete_type_args,
+						    &concrete_type_arg_packs);
     synth.parameters.clear();
 #ifdef MADC_DEBUG_CTORTMPL
     if ( dbg_ct ) fprintf(stderr, "[ctortmpl] try_instantiate ok=%d inst_name=%s\n", (int)ok, inst_name.c_str());
@@ -33611,6 +34002,12 @@ void Program::instantiate_member_ctor_template_for_construction(
 	if ( inst_fd->local_emit_name.empty() )
 	    inst_fd->local_emit_name = inst_name;
 	inst_fd->method_display_name = ctor_decl_name;
+	if ( getenv("MADC_XTEST_DEP_PARSE") || fd->dependent_pattern )
+	{
+	    inst_fd->tsubst_source = fd;
+	    inst_fd->tsubst_type_args = concrete_type_args;
+	    inst_fd->tsubst_type_arg_packs = concrete_type_arg_packs;
+	}
     }
     if ( !vector_contains_variable(cdd->ctors, inst_var) )
 	cdd->ctors.push_back(inst_var);
@@ -35850,10 +36247,16 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->is_member_template = src->is_member_template;
     f->template_param_names = src->template_param_names;
     f->template_param_is_pack = src->template_param_is_pack;
+    f->template_param_is_type = src->template_param_is_type;
     f->template_return_spelling = src->template_return_spelling;
     f->template_param_spellings = src->template_param_spellings;
     f->member_template_decl = src->member_template_decl;
     f->member_template_owner = src->member_template_owner;
+    f->member_template_return_tokens = src->member_template_return_tokens;
+    f->dependent_pattern = src->dependent_pattern;
+    f->tsubst_source = src->tsubst_source;
+    f->tsubst_type_args = src->tsubst_type_args;
+    f->tsubst_type_arg_packs = src->tsubst_type_arg_packs;
     f->ctor_initializers = src->ctor_initializers;
     f->is_varargs = src->is_varargs;
     f->is_void_params = src->is_void_params;

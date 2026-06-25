@@ -404,40 +404,247 @@ static DataDef *subst_datadef(Program *prog, DataDef *dd,
 	return dd;
 }
 
-// Recover a {placeholder -> concrete} binding from a recipe parameter type
-// `pdd` (which may wrap the placeholder in ptr/ref/const layers) and the
-// matching concrete instance parameter type `cdd`, peeling both in lockstep.
-// This mirrors subst_datadef's layer set: it binds the BARE placeholder to the
-// correspondingly-peeled concrete, so subst_datadef can rebuild T*/T&/const T
-// on the body nodes from that bare binding. A layer mismatch (the concrete does
-// not mirror the recipe's structure) recovers nothing for that parameter, so
-// the caller falls back to re-parse rather than bind a wrong type.
-static void recover_param_binding(DataDef *pdd, DataDef *cdd,
-				  std::map<DataDef *, DataDef *> &binding)
+static DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
 {
-	if (!pdd || !cdd)
+	for (int guard = 0; dd && guard < 8; ++guard) {
+		if (DataDefTemplateParam *tp =
+			    dynamic_cast<DataDefTemplateParam *>(dd))
+			return tp;
+		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
+			{ dd = cd->base_type; continue; }
+		if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
+			{ dd = rd->base_type; continue; }
+		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+			{ dd = pd->base_type; continue; }
+		break;
+	}
+	return NULL;
+}
+
+static DataDefTemplateParam *template_param_in_pack_pattern(TokenBase *tb)
+{
+	if (!tb)
+		return NULL;
+	if (DataDefTemplateParam *tp =
+		    template_param_under_type_layers(tb->datadef()))
+		return tp;
+	if (TokenPackExpansion *pe = dynamic_cast<TokenPackExpansion *>(tb))
+		return template_param_in_pack_pattern(pe->pattern);
+	if (TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb)) {
+		for (TokenBase *p : tc->parameters)
+			if (DataDefTemplateParam *tp =
+				    template_param_in_pack_pattern(p))
+				return tp;
+		if (DataDefTemplateParam *tp =
+			    template_param_in_pack_pattern(tc->src_node))
+			return tp;
+		if (TokenMember *tm = dynamic_cast<TokenMember *>(tc))
+			return template_param_in_pack_pattern(tm->parent_expr);
+		return NULL;
+	}
+	if (TokenOperator *op = dynamic_cast<TokenOperator *>(tb)) {
+		if (DataDefTemplateParam *tp =
+			    template_param_in_pack_pattern(op->left))
+			return tp;
+		if (DataDefTemplateParam *tp =
+			    template_param_in_pack_pattern(op->right))
+			return tp;
+		if (TokenTerQ *tq = dynamic_cast<TokenTerQ *>(op)) {
+			if (DataDefTemplateParam *tp =
+				    template_param_in_pack_pattern(tq->condition))
+				return tp;
+			if (DataDefTemplateParam *tp =
+				    template_param_in_pack_pattern(tq->true_expr))
+				return tp;
+			return template_param_in_pack_pattern(tq->false_expr);
+		}
+		return NULL;
+	}
+	if (TokenCast *tc = dynamic_cast<TokenCast *>(tb))
+		return template_param_in_pack_pattern(tc->expr);
+	if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(tb))
+		return template_param_in_pack_pattern(ta->expr);
+	if (TokenDerefExpr *td = dynamic_cast<TokenDerefExpr *>(tb))
+		return template_param_in_pack_pattern(td->expr);
+	if (TokenSubscriptExpr *ts = dynamic_cast<TokenSubscriptExpr *>(tb)) {
+		if (DataDefTemplateParam *tp =
+			    template_param_in_pack_pattern(ts->base_expr))
+			return tp;
+		return template_param_in_pack_pattern(ts->index);
+	}
+	if (TokenSubscript *ts = dynamic_cast<TokenSubscript *>(tb)) {
+		if (DataDefTemplateParam *tp =
+			    template_param_in_pack_pattern(ts->index))
+			return tp;
+		for (TokenBase *e : ts->extra_indices)
+			if (DataDefTemplateParam *tp =
+				    template_param_in_pack_pattern(e))
+				return tp;
+	}
+	return NULL;
+}
+
+static std::string pack_value_name_in_pattern(TokenBase *tb,
+					      unsigned pack_index)
+{
+	if (!tb)
+		return std::string();
+	if (TokenPackExpansion *pe = dynamic_cast<TokenPackExpansion *>(tb))
+		return pack_value_name_in_pattern(pe->pattern, pack_index);
+	if (TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb)) {
+		for (TokenBase *p : tc->parameters) {
+			std::string n = pack_value_name_in_pattern(p, pack_index);
+			if (!n.empty())
+				return n;
+		}
+		std::string n = pack_value_name_in_pattern(tc->src_node,
+							   pack_index);
+		if (!n.empty())
+			return n;
+		if (TokenMember *tm = dynamic_cast<TokenMember *>(tc))
+			return pack_value_name_in_pattern(tm->parent_expr,
+							  pack_index);
+		return std::string();
+	}
+	if (tb->type() == TokenType::ttVariable) {
+		DataDefTemplateParam *tp =
+			template_param_under_type_layers(tb->datadef());
+		if (tp && tp->param_index == pack_index) {
+			if (TokenVar *tv = dynamic_cast<TokenVar *>(tb))
+				return tv->var.name;
+			if (TokenIdent *ti = dynamic_cast<TokenIdent *>(tb))
+				return ti->str;
+		}
+	}
+	if (TokenOperator *op = dynamic_cast<TokenOperator *>(tb)) {
+		std::string n = pack_value_name_in_pattern(op->left,
+							   pack_index);
+		if (!n.empty())
+			return n;
+		n = pack_value_name_in_pattern(op->right, pack_index);
+		if (!n.empty())
+			return n;
+		if (TokenTerQ *tq = dynamic_cast<TokenTerQ *>(op)) {
+			n = pack_value_name_in_pattern(tq->condition, pack_index);
+			if (!n.empty())
+				return n;
+			n = pack_value_name_in_pattern(tq->true_expr, pack_index);
+			if (!n.empty())
+				return n;
+			return pack_value_name_in_pattern(tq->false_expr,
+							  pack_index);
+		}
+		return std::string();
+	}
+	if (TokenCast *tc = dynamic_cast<TokenCast *>(tb))
+		return pack_value_name_in_pattern(tc->expr, pack_index);
+	if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(tb))
+		return pack_value_name_in_pattern(ta->expr, pack_index);
+	if (TokenDerefExpr *td = dynamic_cast<TokenDerefExpr *>(tb))
+		return pack_value_name_in_pattern(td->expr, pack_index);
+	if (TokenSubscriptExpr *ts = dynamic_cast<TokenSubscriptExpr *>(tb)) {
+		std::string n = pack_value_name_in_pattern(ts->base_expr,
+							   pack_index);
+		if (!n.empty())
+			return n;
+		return pack_value_name_in_pattern(ts->index, pack_index);
+	}
+	if (TokenSubscript *ts = dynamic_cast<TokenSubscript *>(tb)) {
+		std::string n = pack_value_name_in_pattern(ts->index,
+							   pack_index);
+		if (!n.empty())
+			return n;
+		for (TokenBase *e : ts->extra_indices) {
+			n = pack_value_name_in_pattern(e, pack_index);
+			if (!n.empty())
+				return n;
+		}
+	}
+	return std::string();
+}
+
+static bool cir_id_spells(cir_node *n, const char *name)
+{
+	return n && name && n->base.code == N_ID && n->base.u.s.s
+	    && strcmp(n->base.u.s.s, name) == 0;
+}
+
+void CirBuilder::rename_copied_pack_value_id(cir_node *src, cir_node *dst)
+{
+	if (m_tsubst_copy_pack_index < 0 || !m_tsubst_copy_pack_value_name)
 		return;
-	if (pdd->is_template_param()) {
-		binding[pdd] = cdd;
+	if (!cir_id_spells(src, m_tsubst_copy_pack_value_name))
+		return;
+	bool multi = true;
+	if (m_tsubst_active_type_arg_packs
+	    && (size_t)m_tsubst_copy_pack_index
+	       < m_tsubst_active_type_arg_packs->size())
+		multi = (*m_tsubst_active_type_arg_packs)
+			[(size_t)m_tsubst_copy_pack_index].size() > 1;
+	std::string nm = std::string(m_tsubst_copy_pack_value_name);
+	if (multi)
+		nm += "__" + std::to_string(m_tsubst_copy_pack_elem);
+	const char *interned = c2mir_uniq_str(c2m, nm.c_str(), nm.size() + 1);
+	dst->base.u.s.s = interned;
+	dst->base.u.s.len = nm.size() + 1;
+}
+
+void CirBuilder::rewrite_copied_pack_call_id(cir_node *src, cir_node *dst,
+					     const std::map<DataDef *, DataDef *> *subst)
+{
+	if (!subst || m_tsubst_copy_pack_index < 0 || !m_prog)
+		return;
+	if (!src || !dst || src->base.code != N_ID || src->origin_id == 0)
+		return;
+	TokenCallFunc *tcf =
+		dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
+	if (!tcf)
+		return;
+	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
+	if (!fd || fd->function_display_name.empty())
+		return;
+
+	std::vector<DataDef *> explicit_args;
+	explicit_args.reserve(tcf->explicit_template_args.size());
+	bool changed = false;
+	for (DataDef *arg : tcf->explicit_template_args) {
+		DataDef *sarg = subst_datadef(m_prog, arg, *subst);
+		explicit_args.push_back(sarg);
+		if (sarg != arg)
+			changed = true;
+	}
+
+	std::vector<const DataDef *> at;
+	std::vector<bool> zeros;
+	at.reserve(tcf->parameters.size());
+	zeros.reserve(tcf->parameters.size());
+	for (TokenBase *p : tcf->parameters) {
+		DataDef *pdd = p ? p->datadef() : NULL;
+		DataDef *sdd = subst_datadef(m_prog, pdd, *subst);
+		at.push_back(sdd);
+		zeros.push_back(is_zero_integer_literal(p));
+		if (sdd != pdd)
+			changed = true;
+	}
+	if (!changed)
+		return;
+
+	Variable *winner = m_prog->find_namespace_function_overload(
+		fd->namespace_name, fd->function_display_name, at, &zeros,
+		&explicit_args);
+	if (!winner) {
+		dst->error_msg = "tsubst: unresolved dependent call";
 		return;
 	}
-	// DataDefREF derives from DataDefPTR — test the ref subclass first.
-	if (DataDefREF *rp = dynamic_cast<DataDefREF *>(pdd)) {
-		if (DataDefREF *rc = dynamic_cast<DataDefREF *>(cdd))
-			recover_param_binding(rp->base_type, rc->base_type, binding);
+	FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
+	std::string sym = func_emit_name(*winner, wfd);
+	if (sym.empty()) {
+		dst->error_msg = "tsubst: unresolved dependent call symbol";
 		return;
 	}
-	if (DataDefPTR *pp = dynamic_cast<DataDefPTR *>(pdd)) {
-		DataDefPTR *pc = dynamic_cast<DataDefPTR *>(cdd);
-		if (pc && !dynamic_cast<DataDefREF *>(cdd))
-			recover_param_binding(pp->base_type, pc->base_type, binding);
-		return;
-	}
-	if (DataDefCONST *cp = dynamic_cast<DataDefCONST *>(pdd)) {
-		if (DataDefCONST *cc = dynamic_cast<DataDefCONST *>(cdd))
-			recover_param_binding(cp->base_type, cc->base_type, binding);
-		return;
-	}
+	const char *interned = c2mir_uniq_str(c2m, sym.c_str(), sym.size() + 1);
+	dst->base.u.s.s = interned;
+	dst->base.u.s.len = sym.size() + 1;
 }
 
 // Deep-copy a concrete cir_node subtree into fresh arena nodes — the `tsubst`
@@ -451,6 +658,37 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 {
 	if (!src)
 		return NULL;
+	if (subst && src->base.code == N_IGNORE && src->datadef
+	    && template_param_under_type_layers(src->datadef) && src->origin_id) {
+		TokenNEW *tn =
+			dynamic_cast<TokenNEW *>(madc_token_for_slot(src->origin_id));
+		if (tn && tn->placement) {
+			DataDef *concrete = subst_datadef(m_prog, src->datadef, *subst);
+			if (!concrete || template_param_under_type_layers(concrete))
+				return CIR_NODE(error_node(
+					"tsubst: unbound placement-new constructed type"));
+			if (dynamic_cast<DataDefCLASS *>(concrete))
+				return CIR_NODE(error_node(
+					"tsubst: class placement new from template type"));
+			TokenNEW lowered;
+			lowered.file = tn->file;
+			lowered.line = tn->line;
+			lowered.column = tn->column;
+			lowered.placement = tn->placement;
+			lowered.ctor_args = tn->ctor_args;
+			lowered.array_size = tn->array_size;
+			lowered.alloc_class = dynamic_cast<DataDefCLASS *>(concrete);
+			lowered.alloc_type = lowered.alloc_class ? NULL : concrete;
+			bool saved_mode = m_tsubst_pattern_mode;
+			m_tsubst_pattern_mode = false;
+			node_t lowered_tree = translate_expr(&lowered);
+			m_tsubst_pattern_mode = saved_mode;
+			if (!lowered_tree)
+				return CIR_NODE(error_node(
+					"tsubst: failed to lower placement new"));
+			return copy_cir_subtree(CIR_NODE(lowered_tree), subst);
+		}
+	}
 
 	cir_node *dst = arena.alloc();           // zeroed (error_msg/tree1_origin NULL)
 	dst->base.code = src->base.code;
@@ -466,10 +704,63 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 	node_t child0 = c2mir_node_first_op(src->as_node());
 	if (child0 == NULL) {
 		dst->base.u = src->base.u;
+		rename_copied_pack_value_id(src, dst);
 	} else {
 		c2mir_init_node_ops(dst->as_node());
 		for (node_t c = child0; c != NULL; c = c2mir_node_next_op(c)) {
 			cir_node *cc = CIR_NODE(c);
+			if (subst && cc->tsubst_pack_expand
+			    && m_tsubst_copy_pack_index < 0) {
+				if (!m_tsubst_active_type_arg_packs
+				    || cc->tsubst_pack_index
+				       >= m_tsubst_active_type_arg_packs->size()) {
+					append(dst->as_node(), error_node(
+						"tsubst: missing type argument pack"));
+					continue;
+				}
+				std::map<unsigned, DataDef *>::iterator pmi =
+					m_tsubst_active_pack_params.find(
+						cc->tsubst_pack_index);
+				if (pmi == m_tsubst_active_pack_params.end()
+				    || !pmi->second) {
+					append(dst->as_node(), error_node(
+						"tsubst: missing pack parameter"));
+					continue;
+				}
+				const std::vector<DataDef *> &elems =
+					(*m_tsubst_active_type_arg_packs)
+						[cc->tsubst_pack_index];
+				if (dst->base.code != N_LIST && elems.size() != 1) {
+					append(dst->as_node(), error_node(
+						"tsubst: pack expansion outside list"));
+					continue;
+				}
+				for (size_t e = 0; e < elems.size(); ++e) {
+					if (!elems[e]) {
+						append(dst->as_node(), error_node(
+							"tsubst: null pack element"));
+						continue;
+					}
+					std::map<DataDef *, DataDef *> elem_subst = *subst;
+					elem_subst[pmi->second] = elems[e];
+					int saved_index = m_tsubst_copy_pack_index;
+					size_t saved_elem = m_tsubst_copy_pack_elem;
+					const char *saved_name =
+						m_tsubst_copy_pack_value_name;
+					m_tsubst_copy_pack_index =
+						(int)cc->tsubst_pack_index;
+					m_tsubst_copy_pack_elem = e;
+					m_tsubst_copy_pack_value_name =
+						cc->tsubst_pack_value_name;
+					cir_node *fan = copy_cir_subtree(cc, &elem_subst);
+					m_tsubst_copy_pack_index = saved_index;
+					m_tsubst_copy_pack_elem = saved_elem;
+					m_tsubst_copy_pack_value_name = saved_name;
+					if (fan)
+						append(dst->as_node(), fan->as_node());
+				}
+				continue;
+			}
 			// A deferred placeholder type-spec MARKER (N_IGNORE carrying a
 			// template-parameter datadef, left by append_type_specs in pattern
 			// mode): expand it IN PLACE to the concrete type's specs via
@@ -477,7 +768,9 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			// substituted tree is byte-identical. Unbound -> an error node so the
 			// caller falls back to re-parse. Only in a tsubst copy (`subst`).
 			if (subst && cc->base.code == N_IGNORE && cc->datadef
-			    && cc->datadef->is_template_param()) {
+			    && cc->datadef->is_template_param()
+			    && !dynamic_cast<TokenNEW *>(
+				    madc_token_for_slot(cc->origin_id))) {
 				std::map<DataDef *, DataDef *>::const_iterator mi =
 					subst->find(cc->datadef);
 				if (mi != subst->end() && mi->second)
@@ -514,6 +807,12 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 	dst->src_lang          = src->src_lang;
 	dst->synth_from_origin = src->synth_from_origin;
 	dst->tree1_origin      = src;            // provenance back-ref
+	dst->tsubst_pack_expand = src->tsubst_pack_expand;
+	dst->tsubst_pack_index = src->tsubst_pack_index;
+	dst->tsubst_pack_value_name = src->tsubst_pack_value_name;
+	if (m_tsubst_copy_pack_index >= 0)
+		dst->tsubst_pack_expand = false;
+	rewrite_copied_pack_call_id(src, dst, subst);
 
 	// Mirror the source's c2mir position into node_positions for the fresh uid
 	// (derived from the shared origin token, so identical to the source). Guard
@@ -8113,6 +8412,24 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttChar)
 		return ch(tb->ival(), tb);
 
+	if (TokenPackExpansion *tpe = dynamic_cast<TokenPackExpansion *>(tb)) {
+		node_t n = translate_expr(tpe->pattern);
+		cir_node *cn = CIR_NODE(n);
+		DataDefTemplateParam *tp = tpe->pattern
+			? template_param_in_pack_pattern(tpe->pattern)
+			: NULL;
+		if (!tp)
+			return error_node("pack expansion without template pack", tb);
+		cn->tsubst_pack_expand = true;
+		cn->tsubst_pack_index = tp->param_index;
+		std::string value_name =
+			pack_value_name_in_pattern(tpe->pattern, tp->param_index);
+		if (!value_name.empty())
+			cn->tsubst_pack_value_name =
+				arena.intern(value_name.c_str());
+		return n;
+	}
+
 	// throw-EXPRESSION ([expr.throw]): `(throw X())`, `cond ? a : throw e`.
 	// translate_throw already returns an N_EXPR wrapping the __madc_throw_*
 	// call (the same node the throw STATEMENT lowers to), so it drops straight
@@ -8227,6 +8544,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		return id(otname, tb);
 	}
 	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb)) {
+		if (m_tsubst_pattern_mode && tn->placement && tn->alloc_type
+		    && template_param_under_type_layers(tn->alloc_type)) {
+			cir_node *marker = make(N_IGNORE, tb);
+			marker->datadef = tn->alloc_type;
+			return marker->as_node();
+		}
 		// -------- Placement new: `new (addr) T(args)` --------
 		// Construct at the given address, no allocation. The placement
 		// address is already T* (e.g. &data[len] where data is T*), so the
@@ -11401,6 +11724,246 @@ bool CirBuilder::note_capture(Variable *v)
 // Returns NULL for anything not yet covered, so func_def falls back to
 // translate_block (the re-parse path stays the fallback per PLAN §5). Gated by
 // MADC_XTEST_DEP_PARSE so the production default is byte-identical.
+static bool tsubst_reference_param_is_type_pack(FuncDef *metadata_fd, DataDef *dd)
+{
+	if (!metadata_fd || !dd || !dd->is_reference())
+		return false;
+	DataDefREF *rd = dynamic_cast<DataDefREF *>(dd);
+	if (!rd || !rd->base_type)
+		return false;
+	DataDef *base = rd->base_type;
+	if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(base))
+		base = cd->base_type;
+	DataDefTemplateParam *tp = dynamic_cast<DataDefTemplateParam *>(base);
+	if (!tp)
+		return false;
+	return tp->param_index < metadata_fd->template_param_is_pack.size()
+	    && metadata_fd->template_param_is_pack[tp->param_index]
+	    && (tp->param_index >= metadata_fd->template_param_is_type.size()
+		|| metadata_fd->template_param_is_type[tp->param_index]);
+}
+
+static bool tsubst_body_has_unsupported_reference_param(FuncDef *fd,
+						       FuncDef *metadata_fd = NULL)
+{
+	if (!fd)
+		return false;
+	if (!metadata_fd)
+		metadata_fd = fd;
+	for (size_t i = 0; i < fd->parameters.size(); ++i)
+		if (fd->parameters[i] && fd->parameters[i]->is_reference()
+		    && !tsubst_reference_param_is_type_pack(metadata_fd,
+							    fd->parameters[i]))
+			return true;
+	return false;
+}
+
+static bool tsubst_datadef_involves_template_param(DataDef *dd)
+{
+	if (!dd)
+		return false;
+	if (dd->is_template_param())
+		return true;
+	if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
+		return tsubst_datadef_involves_template_param(rd->base_type);
+	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+		return tsubst_datadef_involves_template_param(pd->base_type);
+	if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
+		return tsubst_datadef_involves_template_param(cd->base_type);
+	return false;
+}
+
+static bool tsubst_pattern_has_dependent_call(TokenBase *tb)
+{
+	if (!tb)
+		return false;
+	if (TokenPackExpansion *pe = dynamic_cast<TokenPackExpansion *>(tb)) {
+		if (!pe->pattern)
+			return false;
+		if (dynamic_cast<TokenVar *>(pe->pattern)
+		    || dynamic_cast<TokenIdent *>(pe->pattern))
+			return false;
+		return tsubst_pattern_has_dependent_call(pe->pattern);
+	}
+	if (TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb)) {
+		// __destroy(ptr) lowers by inspecting the concrete pointee class at
+		// CIR time. A saved template-body recipe still has placeholder
+		// pointee types, so keep destructor helpers on the parsed-body path.
+		if (tc->var.name == "__destroy")
+			return true;
+		if (FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type))
+			if (!fd->function_display_name.empty())
+				return true;
+		if (tsubst_datadef_involves_template_param(tc->datadef()))
+			return true;
+		for (size_t i = 0; i < tc->parameters.size(); ++i) {
+			TokenBase *p = tc->parameters[i];
+			if (TokenPackExpansion *pe =
+				    dynamic_cast<TokenPackExpansion *>(p)) {
+				if (dynamic_cast<TokenCallFunc *>(pe->pattern))
+					continue;
+				if (tsubst_pattern_has_dependent_call(pe))
+					return true;
+				continue;
+			}
+			if (p && tsubst_datadef_involves_template_param(p->datadef()))
+				return true;
+			if (tsubst_pattern_has_dependent_call(p))
+				return true;
+		}
+		if (tc->src_node && tsubst_pattern_has_dependent_call(tc->src_node))
+			return true;
+		if (TokenMember *tm = dynamic_cast<TokenMember *>(tc))
+			if (tsubst_pattern_has_dependent_call(tm->parent_expr))
+				return true;
+		return false;
+	}
+	if (TokenCpnd *cp = dynamic_cast<TokenCpnd *>(tb)) {
+		for (TokenStmt *s : cp->statements)
+			if (tsubst_pattern_has_dependent_call(s))
+				return true;
+		for (TokenBase *d : cp->deferred)
+			if (tsubst_pattern_has_dependent_call(d))
+				return true;
+	}
+	if (TokenDecl *td = dynamic_cast<TokenDecl *>(tb)) {
+		if (tsubst_pattern_has_dependent_call(td->initialize))
+			return true;
+		for (TokenBase *i : td->init_list)
+			if (tsubst_pattern_has_dependent_call(i))
+				return true;
+		for (TokenBase *a : td->ctor_args)
+			if (tsubst_pattern_has_dependent_call(a))
+				return true;
+	}
+	if (TokenOperator *op = dynamic_cast<TokenOperator *>(tb)) {
+		if (TokenTerQ *tq = dynamic_cast<TokenTerQ *>(op)) {
+			if (tsubst_pattern_has_dependent_call(tq->condition)
+			    || tsubst_pattern_has_dependent_call(tq->true_expr)
+			    || tsubst_pattern_has_dependent_call(tq->false_expr))
+				return true;
+		}
+		if (tsubst_pattern_has_dependent_call(op->left)
+		    || tsubst_pattern_has_dependent_call(op->right))
+			return true;
+	}
+	if (TokenRETURN *tr = dynamic_cast<TokenRETURN *>(tb)) {
+		if (tsubst_pattern_has_dependent_call(tr->returns))
+			return true;
+		for (TokenBase *r : tr->return_exprs)
+			if (tsubst_pattern_has_dependent_call(r))
+				return true;
+	}
+	if (TokenSubscript *ts = dynamic_cast<TokenSubscript *>(tb)) {
+		if (tsubst_pattern_has_dependent_call(ts->index))
+			return true;
+		for (TokenBase *e : ts->extra_indices)
+			if (tsubst_pattern_has_dependent_call(e))
+				return true;
+	}
+	if (TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tb))
+		if (tsubst_pattern_has_dependent_call(tse->base_expr)
+		    || tsubst_pattern_has_dependent_call(tse->index))
+			return true;
+	if (TokenCast *tc = dynamic_cast<TokenCast *>(tb))
+		if (tsubst_pattern_has_dependent_call(tc->expr))
+			return true;
+	if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(tb))
+		if (tsubst_pattern_has_dependent_call(ta->expr))
+			return true;
+	if (TokenDerefExpr *td = dynamic_cast<TokenDerefExpr *>(tb))
+		if (tsubst_pattern_has_dependent_call(td->expr))
+			return true;
+	if (TokenComplexPart *tcp = dynamic_cast<TokenComplexPart *>(tb))
+		if (tsubst_pattern_has_dependent_call(tcp->expr))
+			return true;
+	if (TokenStructLit *tsl = dynamic_cast<TokenStructLit *>(tb))
+		for (TokenBase *i : tsl->inits)
+			if (tsubst_pattern_has_dependent_call(i))
+				return true;
+	if (TokenObjTemp *tot = dynamic_cast<TokenObjTemp *>(tb))
+		for (TokenBase *a : tot->ctor_args)
+			if (tsubst_pattern_has_dependent_call(a))
+				return true;
+	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb)) {
+		if (tsubst_pattern_has_dependent_call(tn->placement)
+		    || tsubst_pattern_has_dependent_call(tn->array_size))
+			return true;
+		for (TokenBase *a : tn->ctor_args)
+			if (tsubst_pattern_has_dependent_call(a))
+				return true;
+	}
+	if (TokenDELETE *td = dynamic_cast<TokenDELETE *>(tb))
+		if (tsubst_pattern_has_dependent_call(td->expr))
+			return true;
+	if (TokenIF *ti = dynamic_cast<TokenIF *>(tb))
+		return tsubst_pattern_has_dependent_call(ti->init_stmt)
+		    || tsubst_pattern_has_dependent_call(ti->condition)
+		    || tsubst_pattern_has_dependent_call(ti->condition_decl)
+		    || tsubst_pattern_has_dependent_call(ti->statement)
+		    || tsubst_pattern_has_dependent_call(ti->elsestmt);
+	if (TokenDO *tdo = dynamic_cast<TokenDO *>(tb))
+		return tsubst_pattern_has_dependent_call(tdo->statement)
+		    || tsubst_pattern_has_dependent_call(tdo->condition);
+	if (TokenWHILE *tw = dynamic_cast<TokenWHILE *>(tb))
+		return tsubst_pattern_has_dependent_call(tw->condition)
+		    || tsubst_pattern_has_dependent_call(tw->statement);
+	if (TokenFOR *tf = dynamic_cast<TokenFOR *>(tb)) {
+		if (tsubst_pattern_has_dependent_call(tf->initialize)
+		    || tsubst_pattern_has_dependent_call(tf->condition)
+		    || tsubst_pattern_has_dependent_call(tf->increment)
+		    || tsubst_pattern_has_dependent_call(tf->statement))
+			return true;
+		for (TokenBase *e : tf->init_extras)
+			if (tsubst_pattern_has_dependent_call(e))
+				return true;
+		for (TokenBase *e : tf->incr_extras)
+			if (tsubst_pattern_has_dependent_call(e))
+				return true;
+	}
+	if (TokenFOREACH *tf = dynamic_cast<TokenFOREACH *>(tb))
+		return tsubst_pattern_has_dependent_call(tf->container)
+		    || tsubst_pattern_has_dependent_call(tf->statement);
+	if (TokenCASE *tc = dynamic_cast<TokenCASE *>(tb)) {
+		if (tsubst_pattern_has_dependent_call(tc->value)
+		    || tsubst_pattern_has_dependent_call(tc->range_high))
+			return true;
+		for (TokenBase *s : tc->statements)
+			if (tsubst_pattern_has_dependent_call(s))
+				return true;
+	}
+	if (TokenSWITCH *ts = dynamic_cast<TokenSWITCH *>(tb)) {
+		if (tsubst_pattern_has_dependent_call(ts->init_stmt)
+		    || tsubst_pattern_has_dependent_call(ts->expression))
+			return true;
+		for (TokenBase *s : ts->pre_case_stmts)
+			if (tsubst_pattern_has_dependent_call(s))
+				return true;
+		for (TokenCASE *c : ts->cases)
+			if (tsubst_pattern_has_dependent_call(c))
+				return true;
+		if (tsubst_pattern_has_dependent_call(ts->defaultcase))
+			return true;
+	}
+	if (TokenTRY *tt = dynamic_cast<TokenTRY *>(tb)) {
+		if (tsubst_pattern_has_dependent_call(tt->try_body))
+			return true;
+		for (TokenBase *b : tt->catch_bodies)
+			if (tsubst_pattern_has_dependent_call(b))
+				return true;
+	}
+	if (TokenTHROW *tt = dynamic_cast<TokenTHROW *>(tb))
+		if (tsubst_pattern_has_dependent_call(tt->throw_expr))
+			return true;
+	if (TokenLabel *tl = dynamic_cast<TokenLabel *>(tb))
+		if (tsubst_pattern_has_dependent_call(tl->labeled))
+			return true;
+	if (TokenExplicitDtor *td = dynamic_cast<TokenExplicitDtor *>(tb))
+		if (tsubst_pattern_has_dependent_call(td->obj))
+			return true;
+	return false;
+}
+
 node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 {
 	if (!getenv("MADC_XTEST_DEP_PARSE"))
@@ -11408,7 +11971,22 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 	FuncDef *source = fd ? fd->tsubst_source : NULL;
 	if (!source || !source->dependent_pattern)
 		return NULL;
+	// libstdc++'s _Destroy_aux<...>::__destroy depends on iterator
+	// dereference and concrete destructor lowering. The parsed-body
+	// fallback already handles it; keep this pack-expansion slice off it.
+	if (source->method_display_name == "__destroy")
+		return NULL;
 	TokenFunc *recipe = source->dependent_pattern;
+	FuncDef *recipe_fd = dynamic_cast<FuncDef *>(recipe->var.type);
+	// Ordinary reference-parameter VALUE reads stay on the parsed-body fallback.
+	// Reference parameter packs are narrower: the Tree-1 recipe has already
+	// lowered each value read through the reference pointer, so pack fan-out only
+	// needs the same element substitution and ID rename as by-value packs.
+	if (tsubst_body_has_unsupported_reference_param(source)
+	    || tsubst_body_has_unsupported_reference_param(recipe_fd, source))
+		return NULL;
+	if (tsubst_pattern_has_dependent_call(recipe))
+		return NULL;
 
 	// Build the recipe body cir ONCE into an immutable Tree-1 pattern, memoized
 	// on the source template; later instantiations only copy+substitute it. The
@@ -11423,9 +12001,11 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 		// pattern that still carries a genuine error node (some other unsupported
 		// construct) is rejected -> memo NULL -> fall back to re-parse.
 		bool saved_mode = m_tsubst_pattern_mode;
+		std::set<std::string> saved_refs = referenced_funcs;
 		m_tsubst_pattern_mode = true;
 		node_t pat = translate_block((TokenCpnd *)recipe);
 		m_tsubst_pattern_mode = saved_mode;
+		referenced_funcs = saved_refs;
 		if (pat && cir_tree_has_error(pat))
 			pat = NULL;
 		m_tsubst_body_patterns[source] = pat ? CIR_NODE(pat) : NULL;
@@ -11435,32 +12015,61 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 	if (!pattern)
 		return NULL;
 
-	// Recover {placeholder -> concrete} by aligning the recipe's placeholder
-	// params (interned DataDefTemplateParam, shared with the body nodes) with
-	// this instance's concrete params, index-wise. recover_param_binding peels
-	// ptr/ref/const layers in lockstep, so a bare `T`, a `T*`, a `T&`, and a
-	// `const T` param all recover the same bare-placeholder binding.
-	std::map<DataDef *, DataDef *> binding;
-	if (recipe->method) {
-		size_t n = recipe->method->parameters.size();
-		if (n > fd->parameters.size())
-			n = fd->parameters.size();
-		for (size_t i = 0; i < n; i++) {
-			Variable *rp = recipe->method->parameters[i];
-			recover_param_binding(rp ? rp->type : NULL,
-					      fd->parameters[i], binding);
-		}
-	}
-	// COMPLETENESS: every template parameter must be recovered from the signature.
-	// A PARTIAL binding (some params bound, some not — common for a multi-param std
-	// method where a param appears only in the body, not as a parameter type) would
-	// leave UNSUBSTITUTED placeholders in the tsubst'd body and emit wrong code that
-	// no error node catches. If any param is unbound, fall back to re-parse.
 	size_t need = source ? source->template_param_names.size() : 0;
-	if (binding.empty() || binding.size() < need)
+	// Bind {placeholder -> concrete} directly from the parser-owned template
+	// argument vectors. Scalars live in tsubst_type_args in non-pack order; type
+	// packs live in the parallel tsubst_type_arg_packs slots. This is the
+	// g++/clang shape: deduction/defaulting computes args once, then tsubst
+	// consumes them by parameter index. Reconstructing the binding from the
+	// instantiated signature loses body-only params and pack arity.
+	if (!m_prog || need == 0)
+		return NULL;
+	std::map<DataDef *, DataDef *> binding;
+	std::map<unsigned, DataDef *> pack_params;
+	size_t scalar_pos = 0;
+	bool has_pack = false;
+	for (size_t i = 0; i < need; ++i) {
+		DataDefTemplateParam *param =
+			m_prog->intern_template_param(source->template_param_names[i],
+						      (unsigned)i);
+		if (!param)
+			return NULL;
+		bool is_pack = i < source->template_param_is_pack.size()
+			    && source->template_param_is_pack[i];
+		if (is_pack) {
+			if (fd->tsubst_type_arg_packs.size() <= i)
+				return NULL;
+			pack_params[(unsigned)i] = param;
+			has_pack = true;
+			continue;
+		}
+		if (scalar_pos >= fd->tsubst_type_args.size()
+		    || !fd->tsubst_type_args[scalar_pos])
+			return NULL;
+		binding[param] = fd->tsubst_type_args[scalar_pos++];
+	}
+	if (scalar_pos != fd->tsubst_type_args.size())
 		return NULL;
 
+	const std::vector<std::vector<DataDef *> > *saved_packs =
+		m_tsubst_active_type_arg_packs;
+	std::map<unsigned, DataDef *> saved_pack_params =
+		m_tsubst_active_pack_params;
+	int saved_copy_index = m_tsubst_copy_pack_index;
+	size_t saved_copy_elem = m_tsubst_copy_pack_elem;
+	const char *saved_copy_name = m_tsubst_copy_pack_value_name;
+	m_tsubst_active_type_arg_packs =
+		has_pack ? &fd->tsubst_type_arg_packs : NULL;
+	m_tsubst_active_pack_params = pack_params;
+	m_tsubst_copy_pack_index = -1;
+	m_tsubst_copy_pack_elem = 0;
+	m_tsubst_copy_pack_value_name = NULL;
 	node_t result = tsubst_cir(pattern, binding)->as_node();
+	m_tsubst_active_type_arg_packs = saved_packs;
+	m_tsubst_active_pack_params = saved_pack_params;
+	m_tsubst_copy_pack_index = saved_copy_index;
+	m_tsubst_copy_pack_elem = saved_copy_elem;
+	m_tsubst_copy_pack_value_name = saved_copy_name;
 	// A type-spec marker that tsubst could not expand (unbound, or a concrete
 	// type append_type_specs can't render here) left an error node -> fall back.
 	if (cir_tree_has_error(result))

@@ -439,6 +439,14 @@ class CirBuilder {
 	// so tsubst can expand it to the concrete type per instantiation. False
 	// everywhere else (a stray placeholder at type lowering stays a hard error).
 	bool m_tsubst_pattern_mode = false;
+	// Active during tsubst body copy when the concrete member-template instance
+	// carries type argument packs. Keys are template parameter indices; values
+	// are the DataDefTemplateParam placeholders used in the saved Tree-1 recipe.
+	const std::vector<std::vector<DataDef *> > *m_tsubst_active_type_arg_packs = NULL;
+	std::map<unsigned, DataDef *> m_tsubst_active_pack_params;
+	int m_tsubst_copy_pack_index = -1;
+	size_t m_tsubst_copy_pack_elem = 0;
+	const char *m_tsubst_copy_pack_value_name = NULL;
 	// Build a concrete instantiated member-template method's BODY by tsubst of
 	// its source template's Tree-1 recipe (instead of lowering the re-parsed
 	// body — hybrid B keeps the concrete signature/shell on the parse path).
@@ -995,6 +1003,9 @@ public:
 	// c2mir then compiles. Thin wrapper over copy_cir_subtree.
 	cir_node *tsubst_cir(cir_node *src,
 			     const std::map<DataDef *, DataDef *> &subst);
+	void rename_copied_pack_value_id(cir_node *src, cir_node *dst);
+	void rewrite_copied_pack_call_id(cir_node *src, cir_node *dst,
+					 const std::map<DataDef *, DataDef *> *subst);
 };
 
 // Dump the cir_node tree (our own walker, not c2mir's): node types,

@@ -2,6 +2,60 @@
 
 ## [Unreleased]
 
+### Two-tree tsubst widening
+
+- Implemented direct TYPE template-argument binding for the env-gated two-tree
+  member-template body path. Concrete instantiated `FuncDef`s now retain
+  `tsubst_type_args` in source template-parameter order, so CIR tsubst consumes
+  the parser's resolved arg vector directly instead of recovering bindings from
+  the concrete signature. This covers body-only type parameters and retires
+  `recover_param_binding`.
+- Captured TYPE parameter-pack elements in `FuncDef::tsubst_type_arg_packs`,
+  parallel to source template-parameter order, giving CIR fan-out durable pack
+  arity and element types to consume.
+- Implemented the first actual CIR pack fan-out slice for direct value-pack
+  call arguments such as `sink(args...)`. The dependent parse records `expr...`
+  as `TokenPackExpansion`; the CIR recipe carries a pack marker; `tsubst_cir`
+  fans out list children using `tsubst_type_arg_packs` and renames direct value
+  pack ids like `args` to the concrete `args__N` parameters. Broader complex
+  pack patterns remain on the re-parse fallback.
+- Extended direct pack fan-out to reference parameter packs such as
+  `Args&... args` when the body expands the pack directly (`sink(args...)`).
+  `TokenPackExpansion` now finds the template pack under reference/const/pointer
+  type layers, and the tsubst fallback guard admits reference params only when
+  they are sourced from a TYPE pack.
+- Extended direct pack fan-out to direct expression-pattern packs such as
+  `sink((args + 1)...)`. `TokenPackExpansion` now discovers the template pack
+  and value-pack name inside the pattern tree, so `copy_cir_subtree` can clone
+  the expression once per concrete pack element and rename the inner `args`
+  leaves to `args__N`.
+- Extended pack fan-out to the first forwarding-call pattern:
+  `sink(std::forward<Args>(args)...)`. Dependent parse now wraps function-call
+  `expr...` forms as `TokenPackExpansion`; copied pack elements re-resolve the
+  dependent callee id from the concrete explicit template args and renamed
+  `args__N` parameter type. System-header template-id pack bodies stay on the
+  parsed-body fallback until broader constructor/destructor pack surfaces are
+  covered.
+- Extended the same direct value-pack fan-out to covered member-template
+  constructors. Constructor instantiation now builds the env-gated dependent
+  recipe, carries the parser-settled type/pack argument vectors onto the
+  concrete constructor `FuncDef`, and lets CIR tsubst copy local constructor
+  bodies such as `Holder(Args... args) { member = sink(args...); }`.
+- Admitted the first covered system-header placement-new pack bodies and lowered
+  scalar allocator-style constructed template types. A retained body shaped like
+  `new ((void*)p) _Up(std::forward<Args>(args)...)` now defers placement-new
+  lowering until `_Up` is substituted, then emits scalar assignment for
+  concrete scalar/pointer `_Up`; singleton pack expansion outside an argument
+  list keeps the original value-pack parameter name instead of inventing
+  `args__0`. Class `_Up` object construction deliberately remains on fallback
+  until the class placement-new lowering is covered.
+- Kept ordinary reference-parameter bodies, dependent nested calls, broader
+  system-header forwarding/destructor packs, class `_Up` placement-new
+  construction, and template-id body/return surfaces on the re-parse fallback
+  until those constructs are widened. The flag-on tsubst gate and normal
+  fulltest both remain 669/0/0/18; `test_cir` is 72 test cases / 878
+  assertions / 4 skipped.
+
 ## [v0.30.0] — 2026-06-22
 
 Set wall cleared: real-libstdc++ `std::set`/`std::map` fully working on the

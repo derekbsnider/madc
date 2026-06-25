@@ -133,6 +133,15 @@ static int64_t cir_run(const char *source) {
     return result;
 }
 
+static size_t cir_count_tree1_copies(node_t n) {
+    if (!n)
+	return 0;
+    size_t count = CIR_NODE(n)->tree1_origin ? 1 : 0;
+    for (node_t c = c2mir_node_first_op(n); c != NULL; c = c2mir_node_next_op(c))
+	count += cir_count_tree1_copies(c);
+    return count;
+}
+
 static bool parse_accepts_with_std(Program::LanguageStd language_std,
 				   const char *source) {
     auto prog = std::make_shared<Program>();
@@ -875,9 +884,8 @@ TEST_CASE("CIR: bare-T and T* dependent returns are eligible, T& return is not")
 }
 
 // Two-tree Phase 4 (widening): a member template with MULTIPLE type params
-// (`template<class A, class B> void set2(A a, B b)`) is tsubst-eligible —
-// recover_param_binding builds one binding per param. A single-param template stays
-// eligible too, so both build recipes (two patterns).
+// (`template<class A, class B> void set2(A a, B b)`) is tsubst-eligible. A
+// single-param template stays eligible too, so both build recipes (two patterns).
 TEST_CASE("CIR: a multi-type-param member template is tsubst-eligible") {
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(
@@ -914,6 +922,474 @@ TEST_CASE("CIR: a multi-type-param member template is tsubst-eligible") {
     CHECK(patterns == 2);
     CHECK(set2_has_pattern);
     CHECK(echo_has_pattern);
+}
+
+// Two-tree direct type-arg binding: the concrete instantiated FuncDef records the
+// parser's deduced/explicit type arguments in template-param order. This covers a
+// param that appears only inside the body; signature-based recovery cannot bind it.
+TEST_CASE("CIR: direct tsubst args cover a body-only template parameter") {
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(
+	"struct Holder {\n"
+	"    int member;\n"
+	"    template<class T> void body_only(int x) { T tmp = (T)x; member = (int)tmp; }\n"
+	"};\n"
+	"int main() { Holder h; h.body_only<int>(7); return h.member; }\n",
+	"<body-only-type-arg-test>");
+    REQUIRE(tp != nullptr);
+
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+    bool ok = prog->parse(tp);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    REQUIRE(ok);
+
+    FuncDef *source = NULL;
+    FuncDef *instance = NULL;
+    for ( funcdef_map_iter it = prog->funcdef_map.begin();
+	  it != prog->funcdef_map.end(); ++it )
+    {
+	FuncDef *fd = it->second;
+	if ( !fd )
+	    continue;
+	if ( fd->dependent_pattern
+	  && it->first.find("body_only") != std::string::npos )
+	    source = fd;
+	if ( fd->tsubst_source
+	  && fd->tsubst_source->method_display_name == "body_only" )
+	    instance = fd;
+    }
+    REQUIRE(source != NULL);
+    REQUIRE(instance != NULL);
+    CHECK(instance->tsubst_source == source);
+    REQUIRE(instance->tsubst_type_args.size() == 1);
+    REQUIRE(instance->tsubst_type_args[0] != NULL);
+    CHECK(instance->tsubst_type_args[0]->rawtype() == DataType::dtINT32);
+}
+
+// Two-tree pack prerequisite: the parser already deduces concrete pack element
+// types for the re-parse path. Preserve those as durable instance metadata so
+// CIR pack expansion can later fan out the Tree-1 pattern by real arity/types.
+TEST_CASE("CIR: direct tsubst args record member-template type packs") {
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(
+	"struct Holder {\n"
+	"    int member;\n"
+	"    template<class... Args> void pack_body(Args... args) { member = 3; }\n"
+	"};\n"
+	"int main() { Holder h; h.pack_body(1, 2); return h.member; }\n",
+	"<pack-type-arg-test>");
+    REQUIRE(tp != nullptr);
+
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+    bool ok = prog->parse(tp);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    REQUIRE(ok);
+
+    FuncDef *source = NULL;
+    FuncDef *instance = NULL;
+    for ( funcdef_map_iter it = prog->funcdef_map.begin();
+	  it != prog->funcdef_map.end(); ++it )
+    {
+	FuncDef *fd = it->second;
+	if ( !fd )
+	    continue;
+	if ( fd->is_member_template
+	  && fd->method_display_name == "pack_body" )
+	    source = fd;
+	if ( fd->tsubst_source
+	  && fd->tsubst_source->method_display_name == "pack_body" )
+	    instance = fd;
+    }
+    REQUIRE(source != NULL);
+    REQUIRE(instance != NULL);
+    CHECK(instance->tsubst_source == source);
+    CHECK(instance->tsubst_type_args.empty());
+    REQUIRE(instance->tsubst_type_arg_packs.size() == 1);
+    REQUIRE(instance->tsubst_type_arg_packs[0].size() == 2);
+    REQUIRE(instance->tsubst_type_arg_packs[0][0] != NULL);
+    REQUIRE(instance->tsubst_type_arg_packs[0][1] != NULL);
+    CHECK(instance->tsubst_type_arg_packs[0][0]->rawtype() == DataType::dtINT32);
+    CHECK(instance->tsubst_type_arg_packs[0][1]->rawtype() == DataType::dtINT32);
+}
+
+// Two-tree pack expansion: a saved Tree-1 body containing a direct value-pack
+// expansion in a call argument list (`sink(args...)`) is copied by CIR tsubst
+// into one argument node per concrete pack element.
+TEST_CASE("CIR: tsubst fans out direct value-pack call arguments") {
+    const char *source =
+	"int sink(int a, int b) { return a * 10 + b; }\n"
+	"struct Holder {\n"
+	"    template<class... Args> int pack_call(Args... args) { return sink(args...); }\n"
+	"};\n"
+	"int main() { Holder h; return h.pack_call(3, 4); }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<pack-fanout-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 34);
+}
+
+// Two-tree pack expansion: the expansion marker can sit on a larger expression
+// tree, not only on a bare pack id. The copied expression must still rename the
+// value-pack leaves per concrete element.
+TEST_CASE("CIR: tsubst fans out expression-pack call arguments") {
+    const char *source =
+	"int sink(int a, int b) { return a * 10 + b; }\n"
+	"struct Holder {\n"
+	"    template<class... Args> int pack_expr(Args... args) { return sink((args + 1)...); }\n"
+	"};\n"
+	"int main() { Holder h; return h.pack_expr(3, 4); }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<pack-expr-fanout-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 45);
+}
+
+// Two-tree pack expansion: a pack-expanded dependent call such as
+// `std::forward<Args>(args)...` must clone the call once per concrete pack
+// element, re-resolve the copied callee id to the concrete specialization, and
+// rename the value-pack argument leaves.
+TEST_CASE("CIR: tsubst fans out forwarding call-pack arguments") {
+    const char *source =
+	"int sink(int a, int b) { return a * 10 + b; }\n"
+	"namespace std {\n"
+	"    template<class T> T forward(T v) { return v; }\n"
+	"}\n"
+	"struct Holder {\n"
+	"    template<class... Args> int pack_forward(Args... args) { return sink(std::forward<Args>(args)...); }\n"
+	"};\n"
+	"int main() { Holder h; return h.pack_forward(3, 4); }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<pack-forward-fanout-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 34);
+}
+
+// Two-tree pack expansion: allocator-style placement construction uses the same
+// forwarding-call pack, but as constructor arguments to `new ((void*)p) T(...)`
+// rather than as ordinary function-call arguments.
+TEST_CASE("CIR: tsubst fans out placement-new constructor pack arguments") {
+    const char *source =
+	"namespace std {\n"
+	"    template<class T> T forward(T v) { return v; }\n"
+	"}\n"
+	"struct Box {\n"
+	"    int x;\n"
+	"    Box(int a, int b) { x = a * 10 + b; }\n"
+	"};\n"
+	"struct Maker {\n"
+	"    template<class... Args> void make(Box* p, Args... args) { new ((void*)p) Box(std::forward<Args>(args)...); }\n"
+	"};\n"
+	"int main() { Box b(0, 0); Maker m; m.make(&b, 3, 4); return b.x; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<pack-new-fanout-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 34);
+}
+
+// The same placement-new pack shape must not be excluded merely because the
+// retained template body came from a system-header path; this is the
+// `__new_allocator::construct` / `std::_Construct` shape.
+TEST_CASE("CIR: tsubst admits system-header placement-new pack bodies") {
+    const char *header_source =
+	"namespace std {\n"
+	"    template<class T> T forward(T v) { return v; }\n"
+	"}\n"
+	"struct Box {\n"
+	"    int x;\n"
+	"    Box(int a, int b) { x = a * 10 + b; }\n"
+	"};\n"
+	"struct Maker {\n"
+	"    template<class... Args> void make(Box* p, Args... args) { new ((void*)p) Box(std::forward<Args>(args)...); }\n"
+	"};\n";
+    const char *main_source =
+	"int main() { Box b(0, 0); Maker m; m.make(&b, 3, 4); return b.x; }\n";
+    const char *run_source =
+	"namespace std {\n"
+	"    template<class T> T forward(T v) { return v; }\n"
+	"}\n"
+	"struct Box {\n"
+	"    int x;\n"
+	"    Box(int a, int b) { x = a * 10 + b; }\n"
+	"};\n"
+	"struct Maker {\n"
+	"    template<class... Args> void make(Box* p, Args... args) { new ((void*)p) Box(std::forward<Args>(args)...); }\n"
+	"};\n"
+	"int main() { Box b(0, 0); Maker m; m.make(&b, 3, 4); return b.x; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/new_allocator.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(main_source, "<pack-new-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(run_source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 34);
+}
+
+// Real allocator construction spells the constructed type itself as a template
+// parameter (`_Up`). For scalar/pointer `_Up`, tsubst can lower after substituting
+// the concrete type; a singleton pack in assignment position becomes that one
+// constructor argument.
+TEST_CASE("CIR: tsubst lowers system-header scalar placement-new template type") {
+    const char *header_source =
+	"namespace std {\n"
+	"    template<class T> T forward(T v) { return v; }\n"
+	"}\n"
+	"struct Maker {\n"
+	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
+	"};\n";
+    const char *main_source =
+	"int main() { int x = 0; Maker m; m.make(&x, 42); return x; }\n";
+    const char *run_source =
+	"namespace std {\n"
+	"    template<class T> T forward(T v) { return v; }\n"
+	"}\n"
+	"struct Maker {\n"
+	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
+	"};\n"
+	"int main() { int x = 0; Maker m; m.make(&x, 42); return x; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/new_allocator.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(main_source, "<pack-new-scalar-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(run_source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 42);
+}
+
+// Two-tree pack expansion: reference parameter packs have already lowered value
+// reads through the reference pointer in the Tree-1 recipe. They can therefore
+// use the same direct fan-out and args -> args__N rename as by-value packs.
+TEST_CASE("CIR: tsubst fans out direct reference-pack call arguments") {
+    const char *source =
+	"int sink(int a, int b) { return a * 10 + b; }\n"
+	"struct Holder {\n"
+	"    template<class... Args> int pack_ref(Args&... args) { return sink(args...); }\n"
+	"};\n"
+	"int main() { Holder h; int a = 3; int b = 4; return h.pack_ref(a, b); }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<pack-ref-fanout-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 34);
+}
+
+// Two-tree pack expansion: member-template constructors use the same retained
+// body + concrete pack metadata model as member functions. A covered ctor body
+// should therefore be copied from Tree-1 instead of only relying on re-parse.
+TEST_CASE("CIR: tsubst fans out constructor value-pack call arguments") {
+    const char *source =
+	"int sink(int a, int b) { return a * 10 + b; }\n"
+	"struct Holder {\n"
+	"    int member;\n"
+	"    template<class... Args> Holder(Args... args) { member = sink(args...); }\n"
+	"};\n"
+	"int main() { Holder h(3, 4); return h.member; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<pack-ctor-fanout-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 34);
 }
 
 // Two-tree Phase 3: tsubst_cir = copy_cir_subtree + substitute template-parameter
@@ -962,8 +1438,7 @@ TEST_CASE("CIR: tsubst_cir substitutes a template-parameter placeholder") {
 
 // Two-tree Phase 4 (widening): tsubst peels ptr/ref layers around a placeholder.
 // A body node whose madc type is `T*` (resp. `T&`) must substitute to `int*`
-// (resp. `int&`) — the substitution side that recover_param_binding's lockstep
-// peel feeds for a `T*`/`T&` parameter. Tree-1 stays untouched.
+// (resp. `int&`) from the same bare `T -> int` binding. Tree-1 stays untouched.
 TEST_CASE("CIR: tsubst peels ptr/ref layers around a template parameter") {
     MIR_context_t mir_ctx = MIR_init();
     c2mir_init(mir_ctx);

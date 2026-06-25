@@ -15,9 +15,52 @@ rests on; read it first).
 
 ## 0. RESUME — START HERE (post-compaction; read this section first)
 
-**HEAD:** `2459a7e` on `feature/front-end-performance-claude` (+ a docs commit). Working tree
-clean (only the untracked `mir-debug-support.md` — not ours; leave it). Fork
-`/workspace/mir` @ `d3a5cced` on origin/develop; `MIR_COMMIT` = `d3a5cce`.
+**HEAD:** `eea23f3` on `feature/front-end-performance-claude`, plus local Codex
+worktree edits for direct type-arg binding, type-pack metadata capture,
+direct value/ref/expression/forwarding-call/constructor pack fan-out, and covered
+system-header placement-new scalar `_Up` pack fan-out. Working tree is intentionally dirty in
+`include/madc.h`, `src/parser.cpp`, `src/cir_builder.cpp`, `src/cir_builder.h`,
+`src/cir_node.h`, and `tests/unit/test_cir.cpp`; unrelated untracked
+`mir-debug-support.md` is not ours.
+Fork `/workspace/mir` @ `d3a5cced` on origin/develop; `MIR_COMMIT` = `d3a5cce`.
+
+**✅ 2026-06-24 LOCAL CODEX UPDATE — DIRECT TYPE-ARG BINDING DONE (uncommitted).**
+Concrete member-template instances now record parser-resolved TYPE template args in
+`FuncDef::tsubst_type_args`, in source `template_param_names` order, beside
+`tsubst_source`. `try_instantiate_namespace_fn_template` / `instantiate_fn_template_binding`
+fill the vector after explicit args, deduction, and defaults settle; `tsubst_method_body`
+binds placeholders from that vector directly, retiring `recover_param_binding`. This is the
+g++/clang shape: saved tree plus explicit arg list, not reverse-engineering from the
+concrete signature. New coverage pins a body-only template parameter (`T tmp = (T)x`) that
+signature recovery could not bind. Conservative fallbacks keep reference-parameter bodies
+and dependent nested calls on the existing re-parse path until those constructs are widened.
+Follow-up local update also records concrete TYPE parameter-pack elements in
+`FuncDef::tsubst_type_arg_packs`, parallel to source `template_param_names`, so CIR pack
+expansion will have real pack arity and element types instead of reading token-expanded
+reparse output. Later local slices implement direct value/ref/expression/forwarding-call pack call-argument
+fan-out (`sink(args...)` from both `Args... args` and `Args&... args`, plus
+`sink((args + 1)...)` and `sink(std::forward<Args>(args)...)`): dependent parse captures
+`expr...` as `TokenPackExpansion`, including function-call `expr...` forms; the recipe marks
+the generated CIR node with pack metadata; `TokenPackExpansion` peels reference/const/pointer
+type layers and expression subtrees to find the pack marker/value name; `copy_cir_subtree`
+expands marked list children using `tsubst_type_arg_packs`, renames direct value-pack ids such
+as `args` to `args__N`, and re-resolves copied dependent callee ids from concrete explicit
+template args. The reference-param fallback guard now admits only TYPE-pack reference params,
+evaluated against source template metadata for recipe FuncDefs, while system-header template-id
+pack bodies stay on parsed-body fallback until broader constructor/destructor pack surfaces are
+covered. The next local slice links covered member-template constructors to the same
+Tree-1 recipe + parser-owned type/pack argument metadata path, so local constructor bodies
+like `Holder(Args... args) { member = sink(args...); }` now fan out by CIR tsubst instead
+of relying only on re-parse. The current local slice admits structurally covered
+system-header placement-new pack bodies and defers scalar `_Up` lowering until
+after type substitution, so allocator-style `new ((void*)p)
+_Up(std::forward<Args>(args)...)` can tsubst for scalar/pointer `_Up`; class
+`_Up` still falls back. Validation: `bin/test_cir` 72 test cases / 878 assertions / 4 skipped,
+`make -C src fulltest` 669/0/0/18, and `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh`
+669/0/0/18. **Current next blocker: broader CIR pack expansion for real system-header
+forwarding/destructor pack patterns, class `_Up` placement-new object construction,
+nested/dependent re-resolution, and template-id body/return surfaces; Phase 5 delete-reparse
+remains gated on full coverage.**
 
 **✅ PHASE 3 FIRST SLICE + MARKER WIDENING DONE (2026-06-24) — the recipe is CONSUMED by
 tsubst.** Four gated commits: `e4dda75` (tsubst_cir core), `6c301f9` (FuncDef::tsubst_source
@@ -26,9 +69,11 @@ of the memoized Tree-1 recipe pattern), `2459a7e` (deferred type-spec MARKER so 
 `T` as a TYPE can tsubst — expansion unit-tested). g++'s instantiate_body / TEMPLATE_TYPE_PARM
 shape on our arena. Validated firing + byte-identical (Holder::set, testoutoflinemembertemplate
 ::store). Behind MADC_XTEST_DEP_PARSE (prod byte-identical). Gate green flag-off AND flag-on
-669/0/0/18 every commit. **⛔ NEXT BLOCKER = the dependent-PARSE-of-`T`-as-a-type gap**
-(`build_dependent_pattern` throws on a `(T)x` cast / `T tmp;` local, so the marker can't fire
-end-to-end yet). **FULL detail + the fix + reducer in the handoff §0:**
+669/0/0/18 every commit. The dependent-PARSE-of-`T`-as-a-type gap was later
+resolved in the handoff §0 local update; the direct value/ref/expression-pack fan-out slices
+and first forwarding-call pack fan-out slice are also local, and the current blocker is the
+broader system-header/dependent-call pack/template-id expansion set.
+**FULL detail + the fix + reducer in the handoff §0:**
 `docs/plans/2026-06-24-two-tree-phase3-tsubst-consume-HANDOFF.md`.
 
 **✅ PHASE 2 — COMMIT 1 DONE (`b35cef2`, 2026-06-24): the scoped template-param

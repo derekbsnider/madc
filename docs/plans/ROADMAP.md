@@ -39,6 +39,29 @@ high-level" — the answer is both.**
   `master` still holds the v0.24.0 asmjit/Gecko backend at full C89 coverage;
   develop is **not** promoted to master until the CIR path reaches feature
   parity.
+- **Two-tree front-end performance work (local branch, 2026-06-24):** Phase 3
+  tsubst consumption and Phase 4 scalar widening are env-gated behind
+  `MADC_XTEST_DEP_PARSE`. The local branch now records direct parser-resolved
+  TYPE template args on concrete member-template `FuncDef`s (`tsubst_type_args`)
+  and CIR consumes those args directly, retiring signature-based binding recovery
+  and covering body-only type params. It also records direct TYPE parameter-pack
+  elements in `tsubst_type_arg_packs`, and the first CIR fan-out slices now handle
+  direct value-pack call arguments such as `sink(args...)` plus direct
+  reference-pack call arguments such as `Args&... args` / `sink(args...)` and
+  direct expression-pattern packs such as `sink((args + 1)...)` by expanding
+  marked list children during `tsubst_cir`. Follow-up pack slices handle the
+  simple forwarding-call pattern `sink(std::forward<Args>(args)...)`, re-resolve
+  copied callee ids from concrete explicit template args, link covered
+  member-template constructors to the same Tree-1 tsubst path, and admit covered
+  system-header placement-new bodies including scalar `_Up` construction in
+  allocator-style `new ((void*)p) _Up(std::forward<Args>(args)...)`. Validation is
+  green both
+  flag-off and flag-on at **669 passed / 0 failed / 0 timed out / 18 skipped**;
+  `test_cir` is **72 test cases / 878 assertions / 4 skipped**. Remaining
+  design-level blocker before deleting the re-parse fallback: broader CIR pack
+  expansion for system-header forwarding/destructor patterns, class `_Up`
+  placement-new construction, dependent nested calls, and dependent/template-id
+  body surfaces.
 - **Backend:** `madc parser → cir_node (MC11-IR) → c2mir → MIR` is the **sole**
   backend. The asmjit JIT and the Gecko parser/MIR-transpiler were both removed
   (commits `42e9b6e`, `64f44b3`). There is no `--backend=jit`; `--backend=mir`

@@ -15,11 +15,18 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 `session_2026_06_24_two_tree_phase4`, linked `LANDED` + `IMPLEMENTS_DECISION
 → cir_c2mir_backend_adr`. Captures: two-tree **Phase 3 COMPLETE**; **Phase 4 constructs
 1–4 landed** (ptr/ref/const params `b5e9d86`; bare-T return `6117ccd`; pointer return
-`c5adec2`; multiple type params + completeness guard `2204d19`); **data-grounded next
-targets** (pack 87 dominant > template-id 14) → next two design-level steps = cir-node
-**pack expansion** and **direct type-arg binding** (capture resolved args out of
-`try_instantiate_namespace_fn_template`, retire `recover_param_binding`). All gated
-flag-off AND flag-on 669/0/0/18; torture byte-identical by construction (env-gated).
+`c5adec2`; multiple type params + completeness guard `2204d19`); measured next targets
+were pack 87 dominant > template-id 14, with direct type-arg binding called out as the
+prerequisite cleanup. The local Codex update below completes direct type-arg binding; the
+later local Codex updates also capture TYPE-pack metadata and implement direct
+value/ref/expression/forwarding-call/constructor pack call-argument fan-out slices, then
+admit the first covered system-header placement-new body and scalar `_Up` constructed-type
+slice. The remaining
+design-level target is broader cir-node **pack expansion** (`tsubst_pack_expansion`
+analogue) for real system-header forwarding/destructor patterns, class `_Up` placement-new
+object construction, dependent nested calls, and template-id body surfaces. All
+gated flag-off AND flag-on 669/0/0/18; torture byte-identical by construction (env-gated);
+`test_cir` is now 72/878/4.
 
 
 DONE + gated + committed on this branch:
@@ -149,6 +156,165 @@ binding.empty check).
 can't currently be exercised end-to-end because the explicit non-type member-template call
 syntax (`f<int,5>(...)`) fails to PARSE (a separate pre-existing gap — see `tmp/tsubst_mixed.mad`).
 
+✅ **2026-06-24 LOCAL CODEX UPDATE — DIRECT TYPE-ARG BINDING DONE (uncommitted).**
+Concrete instantiated member-template `FuncDef`s now carry `tsubst_type_args`, a parser-owned
+vector of resolved TYPE template arguments in `tsubst_source->template_param_names` order.
+The vector is filled from `try_instantiate_namespace_fn_template` /
+`instantiate_fn_template_binding` after explicit args, deduction, and defaults settle, then
+stored beside `tsubst_source` in `instantiate_member_fn_template_for_call`. CIR
+`tsubst_method_body` now builds `{DataDefTemplateParam* -> concrete DataDef*}` directly from
+that vector via `Program::intern_template_param`, so `recover_param_binding` is retired.
+This matches g++/clang's saved-tree-plus-args model and covers body-only type params that
+cannot be recovered from a signature. New regression: `Holder::body_only<int>(7)` records
+`int` in `tsubst_type_args` even though `T` appears only as `T tmp = (T)x` in the body.
+
+The direct-binding slice exposed unsupported bodies that signature recovery had previously
+kept on fallback. Two conservative guards restore correctness until widened deliberately:
+reference-parameter bodies stay on re-parse fallback because value reads need the parsed
+parameter variable metadata, and recipes containing dependent nested calls stay on fallback
+because call re-resolution after substitution is not implemented yet. The flag-on gate caught
+both classes (`testmemtmplrefparam` and the vector/subscript family); both gates are green now.
+Validation: `bin/test_cir` 63 test cases / 766 assertions / 4 skipped; `make -C src fulltest`
+669/0/0/18; `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` 669/0/0/18; `git diff --check`
+clean. KG synced: Feature `two_tree_tsubst_instantiation` now records direct type-arg binding
+as done locally and Session `session_2026_06_24_two_tree_direct_type_args_codex` is linked via
+`LANDED`.
+
+✅ **2026-06-24 LOCAL CODEX UPDATE — TYPE-PACK ARG METADATA CAPTURED (uncommitted).**
+The parser instantiation path now also records concrete TYPE parameter-pack elements on the
+instantiated `FuncDef` in `tsubst_type_arg_packs`, parallel to
+`tsubst_source->template_param_names`: non-pack slots are empty; pack slots hold deduced
+element `DataDef*`s in expansion order. `collect_ordered_type_arg_bindings` captures both
+ordinary type args and pack slots from the same place the re-parse path already computes them
+(`pack_param`/`pack_elems` and supported 0/1-element template-id packs). This does **not**
+claim CIR fan-out is implemented yet; it removes the missing-data blocker so the future
+`tsubst_pack_expansion` analogue has real arity and element types without inspecting
+token-expanded reparse output. Unit coverage pins `template<class... Args> void pack_body(Args... args)`
+called as `pack_body(1, 2)`: the concrete instance links to its source and records one pack
+slot with two `int` elements. That slice validated at `bin/test_cir` 64 test cases / 778 assertions /
+4 skipped; `make -C src fulltest` 669/0/0/18; `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh`
+669/0/0/18; focused env-gated variadic reducer clean; `git diff --check` clean. KG synced:
+Feature `two_tree_tsubst_instantiation` now records type-pack metadata capture and Session
+`session_2026_06_24_two_tree_direct_pack_args_codex` is linked via `LANDED`.
+
+✅ **2026-06-24 LOCAL CODEX UPDATE — DIRECT VALUE-PACK FAN-OUT DONE (uncommitted).**
+The tsubst path now handles the first actual CIR pack expansion shape: direct value-pack
+call arguments such as `sink(args...)` in a member-template body with `Args... args`.
+During dependent parse, `expr...` becomes `TokenPackExpansion`; CIR translation lowers the
+inner expression once and tags the resulting `cir_node` with the source pack index and direct
+value-pack name. During `copy_cir_subtree`, a marked child under an `N_LIST` fans out by the
+instantiated `FuncDef::tsubst_type_arg_packs` slot, augments the active substitution map with
+the concrete pack element type, and renames direct value-pack ids from `args` to `args__0`,
+`args__1`, etc. Empty packs emit no list children. Complex pack patterns, forwarding forms,
+ordinary reference-parameter bodies, dependent nested calls, and template-id body/return
+surfaces still fall back.
+Unit coverage pins `template<class... Args> int pack_call(Args... args) { return sink(args...); }`
+called as `pack_call(3, 4)`: it fires tsubst instead of silent re-parse fallback and returns
+34. Validation: `bin/test_cir` 65 test cases / 790 assertions / 4 skipped; `make -C src`
+green; `make -C src fulltest` 669/0/0/18; `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh`
+669/0/0/18; `git diff --check` clean. KG synced: Feature
+`two_tree_tsubst_instantiation` now records direct value-pack fan-out and Session
+`session_2026_06_24_two_tree_direct_value_pack_fanout_codex` is linked via `LANDED`.
+
+✅ **2026-06-24 LOCAL CODEX UPDATE — DIRECT REFERENCE-PACK FAN-OUT DONE
+(uncommitted).** The direct pack fan-out path now also covers reference parameter packs such
+as `template<class... Args> int pack_ref(Args&... args) { return sink(args...); }`. The missing
+piece was not list expansion itself; `TokenPackExpansion` was looking only for a bare
+`DataDefTemplateParam`, while `Args&... args` presents as `DataDefREF(DataDefTemplateParam)`.
+CIR lowering now peels reference/const/pointer type layers to discover the underlying TYPE
+pack marker. The re-parse fallback guard was narrowed too: ordinary reference-parameter bodies
+still fall back, but reference params whose referent is a TYPE parameter pack are admitted, and
+recipe `FuncDef`s are checked against source template metadata because the recipe shell does
+not carry the pack metadata itself. Unit coverage pins `Args&... args` plus `sink(args...)`,
+requires Tree-1 copies, and returns 34. Validation: `make -C src` green; `bin/test_cir` 66 test
+cases / 802 assertions / 4 skipped; focused `MADC_XTEST_DEP_PARSE=1 bin/test_cir` green; related
+canaries (`testmemtmplrefparam`, `testmemtmplfwdrefpack`, `testmemtmplpackexpand`,
+`testvariadicfn`) green; `make -C src fulltest` 669/0/0/18; `MADC_XTEST_DEP_PARSE=1 bash
+scripts/run_tests.sh` 669/0/0/18; `git diff --check` clean. KG synced: Feature
+`two_tree_tsubst_instantiation` now records direct reference-pack fan-out and Session
+`session_2026_06_24_two_tree_direct_reference_pack_fanout_codex` is linked via `LANDED`.
+
+✅ **2026-06-24 LOCAL CODEX UPDATE — DIRECT EXPRESSION-PACK FAN-OUT DONE
+(uncommitted).** The direct pack fan-out path now covers expression-pattern packs that do not
+need call re-resolution, such as `sink((args + 1)...)`. The missing piece was metadata
+discovery: the `TokenPackExpansion` root for `(args + 1)...` is the translated binary
+expression, not the pack variable itself, so the earlier direct-id path could not find the pack
+marker or value name. CIR lowering now recursively discovers the TYPE pack marker and direct
+value-pack name inside the pattern tree, then reuses the existing `copy_cir_subtree` fan-out to
+clone the expression once per concrete pack element and rename inner `args` leaves to
+`args__N`. Unit coverage requires Tree-1 copies for `sink((args + 1)...)` and returns 45.
+Validation: `make -C src` green; focused `bin/test_cir --test-case=*expression-pack*` green;
+pack subset `bin/test_cir --test-case=*pack*` green; `bin/test_cir` and
+`MADC_XTEST_DEP_PARSE=1 bin/test_cir` both 67 test cases / 814 assertions / 4 skipped; related
+flag-on reducers/canaries (`tmp/tsubst_pack_expr.mad`, `tmp/tsubst_pack_ref.mad`,
+`tests/testvariadicfn.mad`) green; `make -C src fulltest` 669/0/0/18 with both gates green;
+`MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` 669/0/0/18.
+
+✅ **2026-06-24 LOCAL CODEX UPDATE — FIRST FORWARDING-CALL PACK FAN-OUT DONE
+(uncommitted).** The pack fan-out path now covers the first dependent-call pattern:
+`sink(std::forward<Args>(args)...)`. The parser now wraps function-call `expr...` forms as
+`TokenPackExpansion` during dependent parse instead of returning before the generic
+ellipsis wrapper. CIR copy still fans out one marked list child per concrete pack element,
+but copied call-id leaves now re-resolve through the normal namespace overload machinery
+using the concrete explicit template args and substituted parameter types, so placeholder
+`std::forward<Args>` ids become the concrete specialization symbol for each cloned argument.
+Pattern-build side effects in real libstdc++ constructor/destructor helpers were avoided by
+keeping system-header template-id pack bodies on the parsed-body fallback until those broader
+surfaces are explicitly covered. Unit coverage pins a local `std::forward<T>(T)` reducer,
+requires Tree-1 copies for `sink(std::forward<Args>(args)...)`, and returns 34. Validation:
+`make -C src` green; pack subset `bin/test_cir --test-case=*pack*` 5/60 green;
+`bin/test_cir` and `MADC_XTEST_DEP_PARSE=1 bin/test_cir` both 68 test cases / 826 assertions
+/ 4 skipped; previous flag-on failure canaries (`testcontainerdtor`, `testforeachref`,
+`testvectorptr`) pass; `make -C src fulltest` 669/0/0/18 with both gates green;
+`MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` 669/0/0/18; `jq empty
+claude_status.json` and `git diff --check` clean.
+
+✅ **2026-06-24 LOCAL CODEX UPDATE — SYSTEM-HEADER SCALAR PLACEMENT-NEW PACK
+SLICE DONE (uncommitted).** The system-header fallback guard now admits the
+structurally covered placement-new constructor-pack body shape, rather than
+rejecting every template-id pack body from a system-header path. In CIR pattern
+mode, placement-new whose constructed type is still a template parameter (for
+example allocator `_Up`) leaves a marker instead of lowering too early; during
+`copy_cir_subtree`, tsubst substitutes that constructed type and lowers scalar
+or pointer `_Up` placement construction through the existing placement-new path.
+Pack expansion outside an `N_LIST` is accepted only for singleton packs, which
+matches scalar constructor assignment; singleton value-pack copies keep the
+original parameter name (`args`) instead of renaming to a non-existent
+`args__0`. Class `_Up` placement construction deliberately returns an error
+marker and falls back to re-parse until object-construction lowering is covered.
+Unit coverage pins both a simulated system-header placement-new pack body and
+an allocator-style scalar `_Up` reducer returning 42.
+
+Validation: `make -C src` green; `MADC_XTEST_DEP_PARSE=1 bin/madc --emit=c11
+tmp/tsubst_pack_new_scalar.mad` emits `__ns_std_forward__o2(args)` (not
+`args__0`); focused scalar/placement-new doctests green (3 tests / 40
+assertions for placement-new subset); pack subsets green flag-off and flag-on
+(8 tests / 98 assertions); canaries green under `MADC_XTEST_DEP_PARSE=1`
+(`testcontainerdtor` exits 0 with known non-fatal diagnostics, plus
+`testvectorptr`, `testplacementnew*`, `testvariadicfn`, `testforeachref`,
+`testmemtmplpackexpand`); `bin/test_cir` and `MADC_XTEST_DEP_PARSE=1
+bin/test_cir` both 72 test cases / 878 assertions / 4 skipped; `make -C src
+fulltest` 669/0/0/18; `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh`
+669/0/0/18.
+
+✅ **2026-06-24 LOCAL CODEX UPDATE — CONSTRUCTOR VALUE-PACK FAN-OUT DONE
+(uncommitted).** Member-template constructor instantiation now participates in the same
+two-tree metadata path as member functions: under `MADC_XTEST_DEP_PARSE` it builds the
+dependent recipe, captures parser-settled TYPE args and TYPE-pack arg vectors from
+`try_instantiate_namespace_fn_template`, and stamps the concrete constructor `FuncDef` with
+`tsubst_source`, `tsubst_type_args`, and `tsubst_type_arg_packs`. CIR `tsubst_method_body`
+can therefore copy a covered local constructor body from Tree-1 and fan out direct
+value-pack arguments, e.g. `Holder(Args... args) { member = sink(args...); }`, instead of
+only relying on the re-parsed constructor body. Real system-header constructor/destructor
+pack surfaces with template-id bodies remain on the conservative fallback. Validation:
+`make -C src` green; `MADC_XTEST_DEP_PARSE=1 bin/test_cir --test-case=*constructor*` green;
+pack subset `bin/test_cir --test-case=*pack*` and flag-on pack subset both 6/72 green;
+`bin/test_cir` and `MADC_XTEST_DEP_PARSE=1 bin/test_cir` both 69 test cases / 838 assertions
+/ 4 skipped; related flag-on canaries (`testcontainerdtor`, `testforeachref`,
+`testvectorptr`, `testvariadicfn`) exit 0; `make -C src fulltest` 669/0/0/18;
+`MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` 669/0/0/18; `jq empty
+claude_status.json` and `git diff --check` clean.
+
 📊 **DATA-GROUNDED NEXT TARGETS (measured 2026-06-24, not guessed).** A temporary
 reason-tagged `tsubst_eligible` (env `MADC_XTEST_ELIG`, since reverted) was run flag-on over the
 container/template corpus (testvector, testvectorptr, testmap, testset, teststdmapint,
@@ -159,24 +325,25 @@ testnestedtemplatedtor). Rejection tally:
 - `template-id-or-lt` 14 — a body/return `<` (a real `Foo<T>` template-id OR a `<` comparison;
   the scan can't tell them apart — conservatively rejects both).
 - `nontype` / `dep-return` / `dep-name` — ~0 in this corpus (rare; don't prioritize).
-⇒ The CHEAP relaxations are EXHAUSTED (params, ptr/ref returns, multi-param — all landed). The
-next two are DESIGN-LEVEL (traced 2026-06-24, both confirmed NOT a gate relaxation):
+⇒ The CHEAP relaxations / prerequisites are EXHAUSTED (params, ptr/ref returns, multi-param,
+direct type-arg binding, direct type-pack metadata, direct value-pack fan-out, direct
+reference-pack fan-out, direct expression-pattern pack fan-out, first forwarding-call pack
+fan-out, covered local constructor value-pack fan-out, and covered system-header scalar
+placement-new pack fan-out — all landed locally). The
+remaining next target is DESIGN-LEVEL (traced
+2026-06-24, confirmed NOT a gate relaxation):
 
-1. **PACKS (do first — dominant).** The existing pack machinery (`pack_subst`,
+1. **PACKS (keep first — dominant).** The existing pack machinery (`pack_subst`,
    `first_template_pack_index`, the `pack_name...` token splice ~parser.cpp:2815) is ALL
    TOKEN-LEVEL — it serves the RE-PARSE path (splice N tokens, then parse). The tsubst path
-   operates on the already-built cir tree, so it needs cir-node **PACK EXPANSION**: one recipe
-   node carrying `args...` expands to N nodes by the instantiation's concrete pack arity — g++'s
-   `tsubst_pack_expansion`. New mechanism (node fan-out, not just datadef swap). Multi-commit.
-2. **DIRECT TYPE-ARG BINDING (prerequisite cleanup — do alongside).** Today the binding is
-   REVERSE-ENGINEERED from signature param positions (`recover_param_binding`), which is why a
-   body-only param can't bind and the completeness guard has to bail. g++ feeds tsubst the arg
-   list directly. The resolved concrete type args are computed INSIDE
-   `try_instantiate_namespace_fn_template` (from deduction/explicit args on `tc`) but are NOT
-   stored — `FnTemplateDef` (madc.h:1746) carries only param NAMES/flags. FIX: capture the
-   resolved `std::vector<DataDef*>` (param-index order) onto the instance `FuncDef` beside
-   `tsubst_source`, and bind from it directly in `tsubst_method_body` — subsumes
-   `recover_param_binding`, covers body-only params, makes the completeness guard trivially hold.
+   now has node fan-out slices for direct value/ref `args...`, direct expression patterns
+   like `(args + 1)...`, the first local forwarding-call pattern
+   (`std::forward<Args>(args)...` as a direct call argument), and a covered local
+   constructor value-pack pattern, plus covered system-header scalar placement-new
+   construction, but broader cir-node **PACK EXPANSION** remains: real system-header
+   forwarding/destructor pack patterns, class `_Up` placement-new construction,
+   nested/dependent re-resolution, and the rest of g++'s
+   `tsubst_pack_expansion` surface. Multi-commit.
 
 Lower priority / blocked: template-id body/return (`vector<T>`, `Foo<T>` — 14; needs
 dependent-template-id handling, AND disambiguating `<` template-id from `<` comparison);

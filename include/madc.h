@@ -215,16 +215,28 @@ public:
     // SOURCE member-template FuncDef this instance was produced from (the one
     // carrying dependent_pattern, the Tree-1 recipe). NULL for an ordinary
     // function. Set in instantiate_member_fn_template_for_call so the cir-build
-    // seam can find the recipe + recover the concrete type args (by aligning the
-    // recipe's placeholder params with this instance's concrete params).
+    // seam can find the recipe.
     FuncDef *tsubst_source;
+    // Concrete TYPE template arguments for the instantiated member-template
+    // method, in tsubst_source->template_param_names order. These are captured
+    // where deduction/defaulting actually happens (the parser's fn-template
+    // instantiation path) and consumed by CIR tsubst directly, matching g++'s
+    // "saved tree + args" model. Empty means not recorded / not tsubst-covered.
+    std::vector<DataDef *> tsubst_type_args;
+    // Concrete TYPE parameter-pack arguments for the instantiated
+    // member-template method, parallel to tsubst_source->template_param_names:
+    // non-pack slots are empty; a pack slot contains its deduced element types
+    // in expansion order. This is the argument-pack half of the g++ saved-tree
+    // + args model, captured now so CIR pack expansion can consume real arity
+    // and element types instead of re-deriving them from rewritten tokens.
+    std::vector<std::vector<DataDef *> > tsubst_type_arg_packs;
     struct CtorInitializer {
 	std::string name;
 	std::vector<TokenBase *> args;
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), dependent_pattern(NULL), tsubst_source(NULL), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -464,6 +476,32 @@ public:
     DataDef *array_elem_dd = nullptr;
     TokenStructLit() {}
     virtual TokenType type() const { return TokenType::ttStructLit; }
+};
+
+// Tree-1 marker for a C++ pack expansion pattern (`expr...`) captured during a
+// dependent template-body parse. Normal concrete instantiation paths rewrite
+// packs before parsing; this wrapper exists only so CIR tsubst can fan out the
+// saved pattern by the already-deduced pack arity.
+class TokenPackExpansion: public TokenBase
+{
+public:
+    TokenBase *pattern;
+    TokenPackExpansion(TokenBase *p = NULL) : TokenBase(), pattern(p)
+    {
+	if (p) _datatype = p->datadef();
+    }
+    virtual DataDef *datadef() const override
+    {
+	return pattern ? pattern->datadef() : TokenBase::datadef();
+    }
+    virtual TokenBase *clone() override
+    {
+	TokenPackExpansion *t = new TokenPackExpansion(pattern ? pattern->clone() : NULL);
+	t->file = file;
+	t->line = line;
+	t->column = column;
+	return t;
+    }
 };
 
 class TokenCallFunc: public TokenVar

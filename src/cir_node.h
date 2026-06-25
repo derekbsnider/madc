@@ -75,6 +75,14 @@ struct cir_node {
 	// like origin_id) once the indexable cir_node arena lands (forest phase).
 	struct cir_node *tree1_origin;
 
+	// Two-tree tsubst marker: this node is the pattern operand of a C++ pack
+	// expansion (`expr...`) in a saved Tree-1 body. c2mir ignores these fields;
+	// CirBuilder::copy_cir_subtree consumes them by repeating this subtree into
+	// the parent list using the concrete FuncDef::tsubst_type_arg_packs entry.
+	bool         tsubst_pack_expand;
+	uint32_t     tsubst_pack_index;
+	const char  *tsubst_pack_value_name;
+
 	// Cast to node_t for c2mir API calls
 	node_t as_node() { return (node_t)&base; }
 
