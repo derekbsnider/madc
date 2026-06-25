@@ -1,7 +1,7 @@
 # Test Status
 
 > **Local branch update (2026-06-25, `feature/front-end-performance-claude` @
-> nested-call slice with two-tree direct type-arg binding and direct
+> singleton class-object placement-new pack slice with two-tree direct type-arg binding and direct
 > value/ref/expression/forwarding-call/constructor pack fan-out plus covered
 > system-header placement-new pack fan-out and simple class `_Up` placement-new
 > tsubst plus direct `__destroy(T*)` helper tsubst and local non-pack nested
@@ -9,7 +9,7 @@
 > **669 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
 > GREEN). The env-gated tsubst path is also green:
 > `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` reports **669/0/0/18**.
-> `bin/test_cir` reports **75 test cases, 921 assertions, 4 skipped** after
+> `bin/test_cir` reports **76 test cases, 935 assertions, 4 skipped** after
 > adding coverage for direct `tsubst_type_args` binding of a body-only template
 > parameter and direct `tsubst_type_arg_packs` capture for a variadic member
 > template, plus direct CIR fan-out for value-pack call arguments like
@@ -24,10 +24,13 @@
 > direct `__destroy(T*)` helpers that defer pointee inspection until after
 > substitution and lower class pointees to the concrete destructor, plus local
 > non-pack nested namespace calls such as `sink(nn::ident(v))` whose copied
-> callee ids re-resolve from substituted argument types.
+> callee ids re-resolve from substituted argument types, plus singleton
+> by-value class-object constructor packs such as `Box(Item)` inside
+> allocator-style placement-new bodies.
 > Broader system-header forwarding/destructor pack surfaces, class-valued
-> placement-new constructor argument packs, broader system-header nested/dependent
-> calls, and template-id body/return surfaces remain on the re-parse fallback.
+> placement-new constructor argument packs beyond the singleton by-value case,
+> broader system-header nested/dependent calls, and template-id body/return
+> surfaces remain on the re-parse fallback.
 >
 > **Current (2026-06-22, `develop`, v0.30.0 — set wall CLEARED, pushed to
 > origin/develop):** Fulltest **669 passed, 0 failed, 0 timed out, 18 skipped**

@@ -1418,6 +1418,78 @@ TEST_CASE("CIR: tsubst lowers system-header class placement-new template type") 
     CHECK(got == 34);
 }
 
+// A singleton class object in the forwarded constructor pack must stay as the
+// marked pack expression until copy-time substitution. Materializing it before
+// tsubst loses the renamed parameter and leaks the temp declaration outside the
+// instantiated body.
+TEST_CASE("CIR: tsubst lowers singleton class-object placement-new packs") {
+    const char *header_source =
+	"namespace std {\n"
+	"    template<class T> T forward(T v) { return v; }\n"
+	"}\n"
+	"struct Item {\n"
+	"    int x;\n"
+	"    Item(int v) { x = v; }\n"
+	"};\n"
+	"struct Box {\n"
+	"    int x;\n"
+	"    Box(Item i) { x = i.x + 5; }\n"
+	"};\n"
+	"struct Maker {\n"
+	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
+	"};\n";
+    const char *main_source =
+	"int main() { Item zero(0); Box b(zero); Maker m; Item it(37); m.make(&b, it); return b.x; }\n";
+    const char *run_source =
+	"namespace std {\n"
+	"    template<class T> T forward(T v) { return v; }\n"
+	"}\n"
+	"struct Item {\n"
+	"    int x;\n"
+	"    Item(int v) { x = v; }\n"
+	"};\n"
+	"struct Box {\n"
+	"    int x;\n"
+	"    Box(Item i) { x = i.x + 5; }\n"
+	"};\n"
+	"struct Maker {\n"
+	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
+	"};\n"
+	"int main() { Item zero(0); Box b(zero); Maker m; Item it(37); m.make(&b, it); return b.x; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/new_allocator.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(main_source, "<pack-new-class-object-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(run_source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 42);
+}
+
 // `__destroy(T*)` must not be lowered while T is still a placeholder in the
 // retained recipe; the concrete pointee class is known only after tsubst.
 TEST_CASE("CIR: tsubst lowers direct dependent destroy helper") {

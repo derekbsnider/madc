@@ -695,7 +695,27 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				dynamic_cast<DataDefCLASS *>(concrete);
 			if (concrete_class) {
 				bool unsupported_class_arg = false;
-				for (TokenBase *arg : tn->ctor_args) {
+				FuncDef *placement_ctor = NULL;
+				bool placement_ctor_checked = false;
+				auto selected_placement_ctor = [&]() -> FuncDef * {
+					if (!placement_ctor_checked) {
+						placement_ctor = select_ctor_overload(
+							concrete_class, tn->ctor_args);
+						if (!placement_ctor) {
+							auto it = concrete_class->method_map.find(
+								concrete_class->name);
+							if (it != concrete_class->method_map.end()
+							    && it->second)
+								placement_ctor =
+									dynamic_cast<FuncDef *>(
+										it->second->type);
+						}
+						placement_ctor_checked = true;
+					}
+					return placement_ctor;
+				};
+				for (size_t ai = 0; ai < tn->ctor_args.size(); ++ai) {
+					TokenBase *arg = tn->ctor_args[ai];
 					if (TokenPackExpansion *pe =
 						    dynamic_cast<TokenPackExpansion *>(arg)) {
 						DataDefTemplateParam *tp = pe->pattern
@@ -710,11 +730,25 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						const std::vector<DataDef *> &elems =
 							(*m_tsubst_active_type_arg_packs)
 								[tp->param_index];
-						for (DataDef *elem : elems)
-							if (tsubst_is_class_object_arg(elem)) {
-								unsupported_class_arg = true;
-								break;
-							}
+						for (DataDef *elem : elems) {
+							if (!tsubst_is_class_object_arg(elem))
+								continue;
+							FuncDef *ctor = selected_placement_ctor();
+							size_t pi = ai + 1;
+							DataDef *pt = (ctor && pi < ctor->parameters.size())
+									? ctor->parameters[pi] : NULL;
+							bool refp = ctor && ctor->is_ref_param(pi);
+							// Only the singleton by-value object case can reuse the
+							// existing marked-expression fan-out. Reference/object-
+							// address packs need per-element object_arg_addr lowering.
+							if (elems.size() == 1
+							    && !elem->is_reference()
+							    && !refp
+							    && as_class_instance(pt))
+								continue;
+							unsupported_class_arg = true;
+							break;
+						}
 						if (unsupported_class_arg)
 							break;
 						continue;
@@ -1848,6 +1882,11 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
 {
 	if (!target)
+		return translate_expr(arg);
+	// Keep class-valued pack expansions as marked expressions until tsubst can
+	// substitute and rename the concrete pack element.
+	if (dynamic_cast<TokenPackExpansion *>(arg)
+	    && template_param_in_pack_pattern(arg))
 		return translate_expr(arg);
 	DataDefCLASS *arg_class = as_class_instance(arg ? arg->datadef() : NULL);
 	if (arg_class == target)

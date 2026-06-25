@@ -51,7 +51,8 @@
 - Extended the deferred constructed-type placement-new path to simple class
   `_Up` construction when the constructor pack elements are scalar/pointer-like.
   After substitution, the marker reuses the existing class placement-new lowering;
-  class-valued constructor argument packs still fall back to the parsed body.
+  broader class-valued constructor argument packs stay on the parsed-body
+  fallback until widened deliberately.
 - Added direct `__destroy(T*)` tsubst lowering for retained template bodies. The
   Tree-1 recipe now emits a deferred marker when the pointee is a template
   parameter; after substitution the copy path lowers class pointees to the
@@ -66,11 +67,18 @@
   `sink(nn::ident(v))`. The copy path substitutes the argument types, reuses the
   normal namespace overload resolver for the callee id, and keeps non-pack
   system-header dependent calls on the parsed-body fallback.
+- Admitted singleton by-value class-object placement-new constructor packs, such
+  as allocator-style `new ((void*)p) Up(std::forward<Args>(args)...)` where
+  `Up`'s constructor takes one class object by value. The object pack stays as a
+  marked expression until copy-time substitution so parameter renaming and callee
+  re-resolution happen inside the instantiated body; multi-element class-object
+  packs and class-reference packs still fall back.
 - Kept ordinary reference-parameter bodies, broader system-header
   forwarding/destructor and nested/dependent calls, class-valued placement-new
-  constructor argument packs, and template-id body/return surfaces on the
-  re-parse fallback until those constructs are widened. The flag-on tsubst gate
-  and normal fulltest both remain 669/0/0/18; `test_cir` is 75 test cases / 921
+  constructor argument packs beyond the singleton by-value case, and template-id
+  body/return surfaces on the re-parse fallback until those constructs are
+  widened. The flag-on tsubst gate and normal fulltest both remain 669/0/0/18;
+  `test_cir` is 76 test cases / 935
   assertions / 4 skipped.
 
 ## [v0.30.0] — 2026-06-22
