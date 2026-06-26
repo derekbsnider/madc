@@ -36,6 +36,17 @@ before attempting object-address forwarding. Keep the per-element resolver/retur
 for object-reference placements; broader destructor/dependent-call packs and template-id
 body/return surfaces still fall back. Do not attempt all shapes at once.
 
+**ATTEMPTED NEXT (Codex, 2026-06-26):** a minimal `_Destroy_aux`-style probe needs a pointer
+parameter pack (`Args*... ps`) so the existing `__destroy(T*)` Tree-1 marker still sees a
+pointer-to-template-pointee. That syntax currently parser-crashes before CIR tsubst
+(`tmp/destroy_pack_probe.mad`; ignored scratch). A value pack of pointer arguments
+(`Args... ps`) parses, but it loses the pointer-to-template-pointee shape and would not prove
+the destructor marker path. Do **not** fix this by relaxing
+`if (source->method_display_name == "__destroy") return NULL;`; first either teach the parser
+the pointer-parameter-pack spelling safely, or find a real-header destructor body whose retained
+Tree-1 shape already carries a direct `__destroy(T*)` marker without iterator/object-address
+lowering.
+
 **⚠️ THE TRAP — read before coding:** a NAIVE relax of the :931 guard already regressed six
 real-header canaries: `testcontainerdtor`, `testforeach2`, `testset`, `teststringref`,
 `testsubscript`, `testsubscriptmember`. This needs a REAL expansion pass, NOT a guard relax.
