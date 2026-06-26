@@ -78,12 +78,16 @@ high-level" — the answer is both.**
   ordinary call path. Real system-header reference-forwarding/object-address
   packs now have the first direct placement-new aperture: each expanded nested
   call must resolve through `resolve_copied_dependent_call` and return the
-  same/derived class expected by the constructor reference parameter. Broader
-  system-header forwarding/destructor/object-address packs still fall back.
+  same/derived class expected by the constructor reference parameter. The next
+  forwarding aperture also admits a different returned class when the target
+  reference class has a single-argument converting constructor for it and the
+  copied body materializes the converted target temp before the outer
+  constructor call. Broader system-header destructor/object-address packs still
+  fall back.
   Validation is green both
   flag-off and flag-on at **669 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **81 test cases / 1004 assertions / 4 skipped**. Phase 4 is
-  roughly **73% implemented** by coverage weight, not session count.
+  `test_cir` is **82 test cases / 1014 assertions / 4 skipped**. Phase 4 is
+  roughly **74% implemented** by coverage weight, not session count.
   **2026-06-25:** the generic `is_type_dependent` predicate (the
   `type_dependent_expression_p` / pt.cc:30357 analogue) landed and is COMMITTED
   (`62409d08`, green both gates) — the step-C spine the per-construct
@@ -94,9 +98,9 @@ high-level" — the answer is both.**
   `std::forward`/`std::move` callee-name match is removed. Next work before
   deleting the re-parse fallback is to retire the remaining system-header
   dependent-call bail and catalog entries one construct at a time: real
-  system-header forwarding/destructor packs, class-valued placement-new argument
-  packs beyond the direct returned-class aperture, broader
-  dependent-call packs, and template-id body surfaces.
+  system-header destructor packs, class-valued placement-new argument packs
+  beyond the direct/converted returned-class apertures, object-address
+  forwarding last, broader dependent-call packs, and template-id body surfaces.
 - **Backend:** `madc parser → cir_node (MC11-IR) → c2mir → MIR` is the **sole**
   backend. The asmjit JIT and the Gecko parser/MIR-transpiler were both removed
   (commits `42e9b6e`, `64f44b3`). There is no `--backend=jit`; `--backend=mir`

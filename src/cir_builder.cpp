@@ -19,6 +19,7 @@
 #include <iostream>
 #include <sstream>
 #include <fstream>
+#include <functional>
 #include <stdint.h>
 #include <setjmp.h>
 #include <dlfcn.h>
@@ -694,6 +695,58 @@ static bool tsubst_system_header_simple_dependent_call(
 	return tsubst_system_header_simple_call_type(ret);
 }
 
+static DataDefCLASS *class_arg_type(DataDef *dd)
+{
+	DataDefCLASS *c = as_class_instance(dd);
+	if (!c)
+		c = class_behind(dd);
+	return c;
+}
+
+static FuncDef *single_arg_conversion_ctor(DataDefCLASS *target,
+					   DataDef *source)
+{
+	if (!target || !source)
+		return NULL;
+	DataDefCLASS *source_class = class_arg_type(source);
+	if (!source_class || source_class == target
+	    || source_class->is_or_derives_from(target))
+		return NULL;
+	FuncDef *best = NULL;
+	int best_score = -1;
+	for (Variable *cv : target->ctors) {
+		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+		if (!fd || fd->parameters.size() < 2
+		    || fd->required_param_count() > 2)
+			continue;
+		DataDef *pt = fd->parameters[1];
+		bool refp = fd->is_ref_param(1);
+		int score = score_arg_to_param(source, pt, refp, false, false);
+		if (score > best_score) {
+			best_score = score;
+			best = fd;
+		}
+	}
+	return best_score >= 0 ? best : NULL;
+}
+
+static bool ref_return_class_can_bind(DataDefCLASS *target,
+				      DataDef *returned_type)
+{
+	DataDefCLASS *rc = class_arg_type(returned_type);
+	if (!target || !rc)
+		return false;
+	return rc == target || rc->is_or_derives_from(target)
+	    || single_arg_conversion_ctor(target, returned_type) != NULL;
+}
+
+static bool ref_return_class_binds_direct(DataDefCLASS *target,
+					  DataDef *returned_type)
+{
+	DataDefCLASS *rc = class_arg_type(returned_type);
+	return target && rc && (rc == target || rc->is_or_derives_from(target));
+}
+
 static TokenVar *tsubst_concrete_arg_token(DataDef *dd, size_t index,
 					   TokenBase *origin)
 {
@@ -858,10 +911,7 @@ bool CirBuilder::system_header_pack_element_call_resolves(
 	if (!wfd || !wfd->returns_reference())
 		return false;
 	DataDef *ret = &wfd->return_value_type();
-	DataDefCLASS *rc = as_class_instance(ret);
-	if (!rc)
-		rc = class_behind(ret);
-	return rc && (rc == target || rc->is_or_derives_from(target));
+	return ref_return_class_can_bind(target, ret);
 }
 
 void CirBuilder::rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
@@ -1083,21 +1133,52 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 									     assign, origin));
 						return object_addr(name, origin);
 					};
-					auto explicit_arg_node =
+					std::function<node_t(
+						TokenBase *, DataDef *, bool,
+						const std::map<DataDef *, DataDef *> &,
+						int, size_t, const char *)> explicit_arg_node;
+					explicit_arg_node =
 						[&](TokenBase *arg, DataDef *pt, bool refp,
 						    const std::map<DataDef *, DataDef *> &smap,
 						    int pack_index, size_t pack_elem,
 						    const char *pack_name) -> node_t {
 						if (DataDefCLASS *pc = param_object_class(pt, refp)) {
+							DataDef *rt = ref_returning_call_type(arg);
+							DataDef *srt = rt
+								? subst_datadef(m_prog, rt, smap) : NULL;
+							if (rt && !ref_return_class_binds_direct(pc, srt)) {
+								FuncDef *conv =
+									single_arg_conversion_ctor(pc, srt);
+								if (conv && conv->parameters.size() >= 2) {
+									char name[40];
+									snprintf(name, sizeof(name),
+										 "__madc_objtmp_%d",
+										 m_strtmp_counter++);
+									Variable *tmp = new Variable(
+										name, *pc, 1, NULL, false);
+									tmp->flags |= vfLOCAL;
+									prefix_items.push_back(var_decl(tmp, arg));
+									std::vector<node_t> cnodes;
+									DataDef *cpt = conv->parameters[1];
+									bool crefp = conv->is_ref_param(1);
+									cnodes.push_back(explicit_arg_node(
+										arg, cpt, crefp, smap,
+										pack_index, pack_elem, pack_name));
+									node_t cc = ctor_call_assemble(
+										node1(N_ADDR, id(name, arg), arg),
+										pc, conv, cnodes, arg);
+									if (cc)
+										prefix_items.push_back(cc);
+									return object_addr(name, arg);
+								}
+							}
 							node_t value = copy_expr_under(arg, smap,
 										      pack_index,
 										      pack_elem,
 										      pack_name);
-							if (ref_returning_call_type(arg)
-							    && value && value->code == N_CALL)
+							if (rt && value && value->code == N_CALL)
 								value = node1(N_DEREF, value, arg);
-							if (!ref_returning_call_type(arg)
-							    && expr_is_nonaddressable_rvalue(arg))
+							if (!rt && expr_is_nonaddressable_rvalue(arg))
 								return temp_addr_from_value(pc, value,
 												    arg);
 							return void_addr_of(value, arg);

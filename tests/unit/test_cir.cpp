@@ -1803,6 +1803,55 @@ TEST_CASE("CIR: tsubst lowers system-header reference-forwarded placement-new pa
     CHECK(got == 34);
 }
 
+// A system-header forwarding pack may return a different class than the
+// constructor reference parameter expects when the target class has a
+// converting constructor. This keeps the guarded copied-call requirement, but
+// materializes the converted target temporary before the placement-new ctor.
+TEST_CASE("CIR: tsubst lowers system-header converted reference-forwarded placement-new packs") {
+    const char *header_source =
+	"namespace std {\n"
+	"    template<class T> T& forward(T& v) { return v; }\n"
+	"}\n"
+	"struct Item {\n"
+	"    int x;\n"
+	"    Item(int v) { x = v; }\n"
+	"};\n"
+	"struct Wrap {\n"
+	"    int x;\n"
+	"    Wrap(const Item& i) { x = i.x + 10; }\n"
+	"};\n"
+	"struct PairWrap {\n"
+	"    int x;\n"
+	"    PairWrap(const Wrap& a, const Wrap& b) { x = a.x * 10 + b.x; }\n"
+	"};\n"
+	"struct Maker {\n"
+	"    template<class Up, class... Args> void make(Up* p, Args&... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
+	"};\n";
+    const char *main_source =
+	"int main() { Item zero(0); Wrap wz(zero); PairWrap box(wz, wz); Maker m; Item a(2); Item b(5); m.make(&box, a, b); return box.x; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/new_allocator.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(
+	main_source, "<pack-new-system-converted-ref-forward-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    size_t tree1_copies = 0;
+    int64_t got = cir_run_program(prog.get(), &tree1_copies);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(tree1_copies > 0);
+    CHECK(got == 135);
+}
+
 // `__destroy(T*)` must not be lowered while T is still a placeholder in the
 // retained recipe; the concrete pointee class is known only after tsubst.
 TEST_CASE("CIR: tsubst lowers direct dependent destroy helper") {

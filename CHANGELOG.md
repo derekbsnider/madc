@@ -134,14 +134,22 @@
   constructor reference parameter expects; other system-header pack shapes keep
   the parsed-body fallback. `test_cir` now pins the split system-header body
   with `cir_count_tree1_copies > 0` and the correct runtime value.
+- Widened that guarded system-header forwarding aperture to constructor
+  conversions. If the nested copied call returns a different class reference,
+  the pack body may still tsubst when the constructor reference target has a
+  single-argument converting constructor for that returned class; the manual
+  placement-new pack lowering now materializes the converted target temporary
+  before passing its address to the outer constructor. The new `test_cir` split
+  header case proves `cir_count_tree1_copies > 0` and the converted runtime
+  value.
 - Kept ordinary reference-parameter bodies, broader system-header
-  forwarding/destructor and dependent calls behind the system-header bail,
-  class-valued placement-new constructor argument packs beyond the direct
-  reference-return-to-target-class aperture, and template-id body/return
+  destructor/object-address and dependent calls behind the system-header bail,
+  class-valued placement-new constructor argument packs beyond the
+  reference-return direct/converted apertures, and template-id body/return
   surfaces on the re-parse fallback until those
   constructs are widened. The flag-on tsubst gate and normal fulltest both
-  remain 669/0/0/18; `test_cir` is 81 test cases / 1004
-  assertions / 4 skipped. Phase 4 is now tracked at roughly 73% implemented by
+  remain 669/0/0/18; `test_cir` is 82 test cases / 1014
+  assertions / 4 skipped. Phase 4 is now tracked at roughly 74% implemented by
   coverage weight, not session count.
 
 ## [v0.30.0] — 2026-06-22

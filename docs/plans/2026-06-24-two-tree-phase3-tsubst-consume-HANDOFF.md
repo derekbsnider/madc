@@ -12,10 +12,9 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 ➡️ **START HERE — next Codex session (2026-06-26). Read THIS block; you do NOT need the
 narrative below it to begin.**
 
-**TRUSTABLE CHECKPOINT:** HEAD at the direct system-header reference-forwarded placement-new
+**TRUSTABLE CHECKPOINT:** HEAD at the converted system-header reference-forwarded placement-new
 pack slice, working tree clean after commit. Gate GREEN both halves (verified 2026-06-26):
-`make -C src fulltest` 669/0/0/18 + drift gates; `MADC_XTEST_DEP_PARSE=1 bash
-scripts/run_tests.sh` 669/0/0/18; `test_cir` 81/1004/4. Phase 4 ≈73% by coverage weight.
+`make -C src fulltest` 669/0/0/18 + drift gates; `env MADC_XTEST_DEP_PARSE=1 make -C src fulltest` 669/0/0/18; `test_cir` 82/1014/4. Phase 4 ≈74% by coverage weight.
 Trust this commit — verify with `git log -1` + a smoke test, not a full rehydration.
 
 **JUST LANDED:** the first direct SYSTEM-HEADER reference-forwarded placement-new pack body.
@@ -24,18 +23,24 @@ one element only when its nested call reuses **`resolve_copied_dependent_call`**
 and the resolved reference return is the same/derived class that the constructor reference
 parameter expects. The test is `CIR: tsubst lowers system-header reference-forwarded
 placement-new packs` and proves `cir_count_tree1_copies > 0` plus value `34`.
+The follow-up widened that same guarded aperture to constructor conversions: when the copied
+nested call returns a different class reference, the pack body may still tsubst if the target
+reference class has a single-argument converting constructor; the emitter materializes the
+converted target temp before the outer placement-new constructor. The test is `CIR: tsubst
+lowers system-header converted reference-forwarded placement-new packs` and proves
+`cir_count_tree1_copies > 0` plus value `135`.
 
 **NEXT SLICE — biggest remaining lever (packs dominate, ~87:14 vs template-id):** continue
-real SYSTEM-HEADER forwarding / destructor / object-address **pack** expansion through tsubst
-(the `tsubst_pack_expansion` analogue), one tractable body at a time. Keep the new per-element
-resolver/return-class guard for object-reference placements; broader destructor/dependent-call
-packs and template-id body/return surfaces still fall back. Do not attempt all shapes at once.
+real SYSTEM-HEADER destructor **pack** expansion through tsubst (`_Destroy` / `_Destroy_aux`)
+before attempting object-address forwarding. Keep the per-element resolver/return-class guard
+for object-reference placements; broader destructor/dependent-call packs and template-id
+body/return surfaces still fall back. Do not attempt all shapes at once.
 
 **⚠️ THE TRAP — read before coding:** a NAIVE relax of the :931 guard already regressed six
 real-header canaries: `testcontainerdtor`, `testforeach2`, `testset`, `teststringref`,
 `testsubscript`, `testsubscriptmember`. This needs a REAL expansion pass, NOT a guard relax.
-Gate all six flag-on every iteration. Object-address broadening beyond the direct returned-class
-aperture remains the riskiest shape — leave wider variants for last.
+Gate all six flag-on every iteration. Object-address broadening beyond the direct/converted
+returned-class apertures remains the riskiest shape — leave wider variants for last.
 
 **SETTLED — do not re-litigate:** the keystone IS the instantiation lever (reuse, don't
 reinvent); the `std::forward`/`std::move` name-match is GONE — do NOT reintroduce callee-name
@@ -55,9 +60,9 @@ we are flying blind on whether tsubst is actually faster; that is Claude's task,
 grind. The still-open surfaces after this slice: template-id body/return, broader dependent
 calls, then the shell-copy follow-on for FULL re-parse deletion.
 
-✅ **KG CURRENT (2026-06-26):** Feature `two_tree_tsubst_instantiation` `phase4_estimate_percent=73`,
-`updated=2026-06-26`; session nodes through the 2026-06-26 system-header reference-forwarded
-pack slice are present.
+✅ **KG CURRENT (2026-06-26):** Feature `two_tree_tsubst_instantiation` `phase4_estimate_percent=74`,
+`updated=2026-06-26`; session nodes through the 2026-06-26 converted system-header
+reference-forwarded pack slice are present.
 (Original sync note below.)
 
 ✅ **KG SYNCED (2026-06-24).** FalkorDB was briefly unreachable mid-session; once back,

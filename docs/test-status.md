@@ -1,7 +1,7 @@
 # Test Status
 
 > **Local branch update (2026-06-26, `feature/front-end-performance-claude` @
-> direct system-header reference-forwarded placement-new pack slice,
+> converted system-header reference-forwarded placement-new pack slice,
 > including the earlier reserved scalar/pointer helper call widening,
 > with two-tree direct type-arg binding and direct
 > value/ref/expression/forwarding-call/constructor pack fan-out plus covered
@@ -10,8 +10,8 @@
 > namespace-call tsubst plus nested function-template instantiation):** fulltest
 > **669 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
 > GREEN). The env-gated tsubst path is also green:
-> `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` reports **669/0/0/18**.
-> `bin/test_cir` reports **81 test cases, 1004 assertions, 4 skipped** after
+> `MADC_XTEST_DEP_PARSE=1 make -C src fulltest` reports **669/0/0/18**.
+> `bin/test_cir` reports **82 test cases, 1014 assertions, 4 skipped** after
 > adding coverage for direct `tsubst_type_args` binding of a body-only template
 > parameter and direct `tsubst_type_arg_packs` capture for a variadic member
 > template, plus direct CIR fan-out for value-pack call arguments like
@@ -39,11 +39,15 @@
 > body emission, plus direct system-header reference-forwarded placement-new
 > constructor packs whose per-element nested call resolves through
 > `resolve_copied_dependent_call` and returns the same/derived class expected by
-> the constructor reference parameter. Phase 4 is now tracked at roughly **73%
-> implemented** by coverage weight. Broader system-header forwarding/destructor
-> pack surfaces, class-valued placement-new constructor argument packs beyond
-> that direct returned-class aperture, broader system-header nested/dependent
-> calls, and template-id body/return surfaces remain on the re-parse fallback.
+> the constructor reference parameter, plus converted system-header
+> reference-forwarded placement-new packs where that returned class is accepted
+> by the target's single-argument converting constructor and a target temp is
+> materialized before the outer constructor call. Phase 4 is now tracked at
+> roughly **74% implemented** by coverage weight. Broader system-header
+> destructor/object-address pack surfaces, class-valued placement-new
+> constructor argument packs beyond those direct/converted apertures, broader
+> system-header nested/dependent calls, and template-id body/return surfaces
+> remain on the re-parse fallback.
 >
 > **Current (2026-06-22, `develop`, v0.30.0 — set wall CLEARED, pushed to
 > origin/develop):** Fulltest **669 passed, 0 failed, 0 timed out, 18 skipped**
