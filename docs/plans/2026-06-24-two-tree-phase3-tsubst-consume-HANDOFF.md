@@ -9,16 +9,61 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 
 ## 0. STATE (verify, do not trust blindly — run `scripts/resume.sh`)
 
-➡️ **START HERE — next Codex session (2026-06-26). Read THIS block; you do NOT need the
-narrative below it to begin.**
+➡️ **START HERE — next Codex session (2026-06-26). The direction CHANGED; this block
+SUPERSEDES the pack-coverage NEXT-SLICE text below it.**
 
-**TRUSTABLE CHECKPOINT:** HEAD at the direct `std::move<Args>(args)...` forwarding-pack
-coverage slice after the guarded direct `_Destroy_aux`/member-template `__destroy` marker
-slice, pointer-parameter-pack expansion slice, parser robustness slice, and converted
-system-header reference-forwarded placement-new pack slice, working tree clean after commit.
-Gate GREEN both halves (verified 2026-06-26):
-`make -C src fulltest` 670/0/0/18 + drift gates; `env MADC_XTEST_DEP_PARSE=1 make -C src fulltest` 670/0/0/18; `test_cir` 85/1055/4. Phase 4 ≈74% by coverage weight.
-Trust this commit — verify with `git log -1` + a smoke test, not a full rehydration.
+**TRUSTABLE CHECKPOINT:** HEAD `d2b4d397`, tree clean. Gate GREEN both halves at -O0
+(verified 2026-06-26): `make -C src fulltest` 670/0/0/18 + drift gates; flag-on
+(`MADC_XTEST_DEP_PARSE=1`) 670/0/0/18; `test_cir` 85/1055/4. Verify with `git log -1` + a
+smoke test, not a full rehydration.
+
+**⚡ PERF REPRIORITIZATION (profiled 2026-06-26 — read before grinding more coverage):**
+- **madc -O2 ≈ g++ PARITY.** `testsubscript` compiles in **0.800s at -O2** vs g++ **0.796s**
+  (full `-O0 -c`) / 0.581s (`-fsyntax-only`). The scary "≈4× slower than gcc" was an
+  artifact of profiling the **-O0 dev build** (3.1× slower than -O2, by design). Perf is NOT
+  a crisis — madc is already at gcc parity on the optimized build.
+- **tsubst currently gives ZERO benefit — slightly NEGATIVE.** flag-on vs flag-off at -O2:
+  testsubscript 0.800→0.810, testset 0.507→0.519, testvector 0.540→0.558. It does not
+  *engage* on real STL (a COVERAGE fact, `-O`-independent); the recipe-build overhead costs
+  more than the (nonexistent) savings. **No re-parsing of headers happens** — madc reads the
+  2.4MB closure 1.00× (include-once works). The dominant -O0 costs were header lex (48.5%) +
+  interning *volume* + instantiation (~30%); at -O2 instantiate is only ~0.32s.
+- **CONSEQUENCE:** tsubst only earns its keep once it ENGAGES (instantiation lever) and via
+  the **header-forest** (its Tree-1 is the forest foundation; the forest skips the 48.5%
+  header lex + ~2800 header-triggered instantiations — the way to go BELOW g++). Both are
+  *future* wins; neither is a current speedup.
+
+**🛠 BUILD CONVENTION (serial builds are the 10+ min cause):** ALWAYS build with
+**`make -j4 -C src`** (parallel across 4 cores). ⚠️ **Do NOT set `CXX="ccache clang++"`** —
+ccache is installed but wrapping `$CXX` corrupts `gen_sys_includes.sh`'s compiler probe →
+`Failed to open include file: iostream` (verified 2026-06-26). Wiring ccache *gen-safely*
+(compile-only, so `-O0↔-O2` flips become cache hits) is a worthwhile FOLLOW-UP but is not done
+— `-j4` alone is the current safe win. **Measure perf ONLY at -O2**
+(`make -j4 -C src CXXFLAGS="-std=c++11 -Wall -O2"`) via `--show-stats`; **NEVER treat -O0
+timings as the perf baseline** (~3× inflated by design).
+
+**NEXT ROUND — make tsubst EARN its keep (not catalog-padding). Each its own gated commit;
+queue form, grind until budget-low or a wall:**
+  1. **Add a tsubst ENGAGEMENT counter** to `--show-stats`: tsubst-path vs re-parse-fallback
+     instantiation counts. Without it we can't see whether coverage is converting re-parse →
+     tsubst. (This is the missing instrument — do it first.)
+  2. **Profile `testsubscript`'s fallbacks** — dump which of its instantiations take the
+     re-parse path, rank by frequency.
+  3. **Cover the top real fallback patterns** — so engagement (and the counter) actually
+     rises on a real workload, not just synthetic test_cir cases.
+  4. **SUCCESS = MEASURABLE at -O2:** tsubst-engaged count UP and `testsubscript` instantiate
+     time DOWN (flag-on now *faster* than flag-off, not slower). That is the bar — "another
+     covered construct" with no measured movement does NOT count.
+
+**SETTLED — do not re-litigate:** the keystone `resolve_copied_dependent_call` is the
+instantiation lever (reuse, don't reinvent); `std::forward`/`std::move` name-match is GONE —
+no callee-name matching (Rule #7); the parser crash fix + `testdependentparseerror.expect_err`
+stay; hybrid B stands; perf is judged at -O2 only.
+
+**GATE (per slice):** `make -j4 -C src fulltest` 670/0/0/18 + flag-on
+(`MADC_XTEST_DEP_PARSE=1`) + the six canaries green + a proving `test_cir`. Build hygiene:
+never pipe `make` through `tail`/`head` (masks errors); confirm `bin/test_cir` relinked
+(`strings | grep <probe>`).
 
 **JUST LANDED:** direct `std::move<Args>(args)...` forwarding-pack coverage, guarded direct
 `_Destroy_aux`/member-template `__destroy` marker tsubst, Fix #1 pointer-parameter-pack
