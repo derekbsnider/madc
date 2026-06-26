@@ -790,6 +790,7 @@ int main(int argc, char **argv)
 		"[stats] lex time ............ %.3f s  (%.0f tok/s)\n"
 		"[stats] parse time .......... %.3f s  (%.0f tok/s)\n"
 		"[stats]   instantiate ....... %.3f s  (%.0f%% of parse; %llu calls)\n"
+		"[stats]   tsubst bodies ..... %llu hit / %llu fallback\n"
 		"[stats]   decl-parse ........ %.3f s  (PCH-cacheable share)\n"
 		"[stats] cir build ........... %.3f s  (AST -> cir_node)\n"
 		"[stats] c2mir compile ....... %.3f s\n"
@@ -807,6 +808,8 @@ int main(int argc, char **argv)
 		parse_secs, parse_secs > 0 ? (double)prog->_tok_consumed / parse_secs : 0.0,
 		inst_secs,  parse_secs > 0 ? 100.0 * inst_secs / parse_secs : 0.0,
 		prog->_inst_count,
+		prog->_tsubst_body_hits,
+		prog->_tsubst_body_fallbacks,
 		decl_secs,
 		cir_secs,
 		c2mir_secs,

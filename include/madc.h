@@ -2106,6 +2106,12 @@ public:
     double             _inst_seconds = 0.0;
     unsigned long long _inst_count   = 0;
     int                _inst_depth   = 0;
+    // --show-stats: env-gated two-tree body-instantiation engagement. A
+    // tsubst "hit" means CIR built the concrete body from the retained Tree-1
+    // recipe. A fallback means an instantiated member-template body had tsubst
+    // metadata but still used the parsed concrete body.
+    unsigned long long _tsubst_body_hits = 0;
+    unsigned long long _tsubst_body_fallbacks = 0;
     // User-defined function AST nodes, in source order. Parallel to the
     // ast queue. Populated by parseFunction / parseLambda; consumed by
     // Program::compile in a pre-pass to create funcnodes (labels) before

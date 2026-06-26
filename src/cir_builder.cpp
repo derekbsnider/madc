@@ -13144,6 +13144,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// falls back to lowering the parsed body. tsubst_method_body returns NULL
 	// unless the capability + MADC_XTEST_DEP_PARSE gate is satisfied.
 	node_t body = tsubst_method_body(tf, fd);
+	if (m_prog && fd->tsubst_source) {
+		if (body)
+			++m_prog->_tsubst_body_hits;
+		else
+			++m_prog->_tsubst_body_fallbacks;
+	}
 	if (!body)
 		body = translate_block((TokenCpnd *)tf);
 

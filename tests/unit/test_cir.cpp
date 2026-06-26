@@ -979,6 +979,35 @@ TEST_CASE("CIR: direct tsubst args cover a body-only template parameter") {
     CHECK(instance->tsubst_type_args[0]->rawtype() == DataType::dtINT32);
 }
 
+// --show-stats uses these counters to show whether instantiated member-template
+// bodies actually used the Tree-1 tsubst path or fell back to the parsed body.
+TEST_CASE("CIR: tsubst engagement counters split hits and fallbacks") {
+    const char *source =
+	"struct Holder {\n"
+	"    template<class T> int hit(T v) { return v + 1; }\n"
+	"    template<class T> int ref_fallback(T& v) { return v + 2; }\n"
+	"};\n"
+	"int main() { Holder h; int x = 5; return h.hit(3) * 10 + h.ref_fallback(x); }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<tsubst-engagement-stats-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    size_t tree1_copies = 0;
+    int64_t got = cir_run_program(prog.get(), &tree1_copies);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 47);
+    CHECK(tree1_copies > 0);
+    CHECK(prog->_tsubst_body_hits >= 1);
+    CHECK(prog->_tsubst_body_fallbacks >= 1);
+}
+
 // Two-tree pack prerequisite: the parser already deduces concrete pack element
 // types for the re-parse path. Preserve those as durable instance metadata so
 // CIR pack expansion can later fan out the Tree-1 pattern by real arity/types.

@@ -4,6 +4,16 @@
 
 ### Two-tree tsubst widening
 
+- Added a `--show-stats` engagement counter for env-gated two-tree
+  member-template body instantiation. The stats output now reports
+  `tsubst bodies ..... H hit / F fallback`, where a hit means CIR built the
+  concrete body from retained Tree-1 tsubst metadata and a fallback means the
+  instantiated body had that metadata but still lowered the parsed concrete
+  body. Current `testsubscript` smoke under `MADC_XTEST_DEP_PARSE=1` reports
+  **6 hit / 29 fallback**, giving the next profiling slice a real workload
+  baseline. Added `test_cir` coverage proving both sides of the counter; normal
+  and `MADC_XTEST_DEP_PARSE=1` fulltest remain 670/0/0/18, with `test_cir`
+  now 86/1065/4.
 - Added coverage for another direct forwarding-call pack spelling:
   `std::move<Args>(args)...`. This proves the copied dependent-call fan-out is
   structural rather than a `std::forward` name case; the callee re-resolves

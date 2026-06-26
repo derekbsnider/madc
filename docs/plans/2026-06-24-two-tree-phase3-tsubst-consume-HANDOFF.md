@@ -12,10 +12,10 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 ➡️ **START HERE — next Codex session (2026-06-26). The direction CHANGED; this block
 SUPERSEDES the pack-coverage NEXT-SLICE text below it.**
 
-**TRUSTABLE CHECKPOINT:** HEAD `d2b4d397`, tree clean. Gate GREEN both halves at -O0
-(verified 2026-06-26): `make -C src fulltest` 670/0/0/18 + drift gates; flag-on
-(`MADC_XTEST_DEP_PARSE=1`) 670/0/0/18; `test_cir` 85/1055/4. Verify with `git log -1` + a
-smoke test, not a full rehydration.
+**TRUSTABLE PRE-ROUND CHECKPOINT:** HEAD `26dd26f4`, tree clean. Gate GREEN both
+halves at -O0 (verified 2026-06-26): `make -j4 -C src fulltest` 670/0/0/18 +
+drift gates; flag-on (`MADC_XTEST_DEP_PARSE=1`) 670/0/0/18; `test_cir`
+85/1055/4. Verify with `git log -1` + a smoke test, not a full rehydration.
 
 **⚡ PERF REPRIORITIZATION (profiled 2026-06-26 — read before grinding more coverage):**
 - **madc -O2 ≈ g++ PARITY.** `testsubscript` compiles in **0.800s at -O2** vs g++ **0.796s**
@@ -44,9 +44,16 @@ timings as the perf baseline** (~3× inflated by design).
 
 **NEXT ROUND — make tsubst EARN its keep (not catalog-padding). Each its own gated commit;
 queue form, grind until budget-low or a wall:**
-  1. **Add a tsubst ENGAGEMENT counter** to `--show-stats`: tsubst-path vs re-parse-fallback
-     instantiation counts. Without it we can't see whether coverage is converting re-parse →
-     tsubst. (This is the missing instrument — do it first.)
+  1. ✅ **ENGAGEMENT COUNTER LANDED (Codex, 2026-06-26):** `--show-stats` now
+     reports member-template body engagement as `tsubst bodies ..... H hit / F
+     fallback`. A hit means CIR built the concrete body from retained Tree-1
+     tsubst metadata; a fallback means the instantiated body had that metadata
+     but still lowered the parsed concrete body. Current `testsubscript` smoke
+     under `MADC_XTEST_DEP_PARSE=1` reports **6 hit / 29 fallback**, confirming
+     the coverage gap is measurable. Proving test:
+     `CIR: tsubst engagement counters split hits and fallbacks`. Gates:
+     fulltest flag-off and flag-on 670/0/0/18; `test_cir` 86/1065/4; six
+     flag-on canaries green.
   2. **Profile `testsubscript`'s fallbacks** — dump which of its instantiations take the
      re-parse path, rank by frequency.
   3. **Cover the top real fallback patterns** — so engagement (and the counter) actually
@@ -64,6 +71,11 @@ stay; hybrid B stands; perf is judged at -O2 only.
 (`MADC_XTEST_DEP_PARSE=1`) + the six canaries green + a proving `test_cir`. Build hygiene:
 never pipe `make` through `tail`/`head` (masks errors); confirm `bin/test_cir` relinked
 (`strings | grep <probe>`).
+
+**LATEST PERF-ROUND SLICE:** the engagement counter is the only landed perf-round
+code so far. It is instrumentation, not a claimed speedup. Next commit should add
+fallback-profile output/ranking for `testsubscript` and use the new counter to
+verify that covered real patterns increase hits before judging -O2 time.
 
 **JUST LANDED:** direct `std::move<Args>(args)...` forwarding-pack coverage, guarded direct
 `_Destroy_aux`/member-template `__destroy` marker tsubst, Fix #1 pointer-parameter-pack
@@ -181,7 +193,9 @@ calls, then the shell-copy follow-on for FULL re-parse deletion.
 ✅ **KG CURRENT (2026-06-26):** Feature `two_tree_tsubst_instantiation` `phase4_estimate_percent=74`,
 `updated=2026-06-26`; session notes through the pointer-parameter-pack expansion and guarded
 direct `_Destroy_aux`/member-template `__destroy` marker slice plus direct
-`std::move<Args>(args)...` forwarding-pack coverage are present.
+`std::move<Args>(args)...` forwarding-pack coverage are present. The perf-round
+engagement-counter slice adds `--show-stats` hit/fallback body counts and pins
+the current `testsubscript` baseline at 6 hit / 29 fallback.
 (Original sync note below.)
 
 ✅ **KG SYNCED (2026-06-24).** FalkorDB was briefly unreachable mid-session; once back,
