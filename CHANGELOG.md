@@ -4,15 +4,21 @@
 
 ### Two-tree tsubst widening
 
+- Added coverage for another direct forwarding-call pack spelling:
+  `std::move<Args>(args)...`. This proves the copied dependent-call fan-out is
+  structural rather than a `std::forward` name case; the callee re-resolves
+  through the same Tree-1 tsubst path and returns 34. Normal and
+  `MADC_XTEST_DEP_PARSE=1` fulltest remain 670/0/0/18, with `test_cir` now
+  85/1055/4.
 - Admitted the first `_Destroy_aux`-style member-template body named
   `__destroy` onto the env-gated Tree-1 tsubst path only when the retained body
   itself contains a direct `__destroy(T*)` compiler-intrinsic marker. This keeps
   iterator/object-address destructor forms on the fallback while letting direct
   marker bodies substitute the concrete pointee and lower to the class
   destructor/no-op path. Added `test_cir` coverage proving the member body is
-  copied (`cir_count_tree1_copies > 0`) and runs a destructor side effect;
-  normal and `MADC_XTEST_DEP_PARSE=1` fulltest remain 670/0/0/18, with
-  `test_cir` now 84/1043/4.
+  copied (`cir_count_tree1_copies > 0`) and runs a destructor side effect; at
+  that slice normal and `MADC_XTEST_DEP_PARSE=1` fulltest remained 670/0/0/18,
+  with `test_cir` at 84/1043/4.
 - Added pointer-parameter-pack call expansion for direct packs such as
   `Args*... ps`. Function-template deduction now recognizes pointer-qualified
   trailing packs and binds the pack element to the pointee type, while the

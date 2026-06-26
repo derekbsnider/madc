@@ -1154,6 +1154,49 @@ TEST_CASE("CIR: tsubst fans out forwarding call-pack arguments") {
     CHECK(got == 34);
 }
 
+// The forwarding-call pack path is structural: another dependent template-id
+// callee with the same direct pack shape must re-resolve through the same copied
+// call path, without a callee-name special case.
+TEST_CASE("CIR: tsubst fans out move call-pack arguments") {
+    const char *source =
+	"int sink(int a, int b) { return a * 10 + b; }\n"
+	"namespace std {\n"
+	"    template<class T> T move(T v) { return v; }\n"
+	"}\n"
+	"struct Holder {\n"
+	"    template<class... Args> int pack_move(Args... args) { return sink(std::move<Args>(args)...); }\n"
+	"};\n"
+	"int main() { Holder h; return h.pack_move(3, 4); }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<pack-move-fanout-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 34);
+}
+
 // Two-tree dependent-call widening: a non-pack namespace function-template call
 // nested inside an otherwise covered member-template body should be re-resolved
 // from the substituted argument types instead of forcing re-parse. Explicit

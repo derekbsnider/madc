@@ -12,17 +12,22 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 ➡️ **START HERE — next Codex session (2026-06-26). Read THIS block; you do NOT need the
 narrative below it to begin.**
 
-**TRUSTABLE CHECKPOINT:** HEAD at the guarded direct `_Destroy_aux`/member-template
-`__destroy` marker slice after the pointer-parameter-pack expansion slice, parser robustness
-slice, and converted system-header reference-forwarded placement-new pack slice, working tree
-clean after commit.
+**TRUSTABLE CHECKPOINT:** HEAD at the direct `std::move<Args>(args)...` forwarding-pack
+coverage slice after the guarded direct `_Destroy_aux`/member-template `__destroy` marker
+slice, pointer-parameter-pack expansion slice, parser robustness slice, and converted
+system-header reference-forwarded placement-new pack slice, working tree clean after commit.
 Gate GREEN both halves (verified 2026-06-26):
-`make -C src fulltest` 670/0/0/18 + drift gates; `env MADC_XTEST_DEP_PARSE=1 make -C src fulltest` 670/0/0/18; `test_cir` 84/1043/4. Phase 4 ≈74% by coverage weight.
+`make -C src fulltest` 670/0/0/18 + drift gates; `env MADC_XTEST_DEP_PARSE=1 make -C src fulltest` 670/0/0/18; `test_cir` 85/1055/4. Phase 4 ≈74% by coverage weight.
 Trust this commit — verify with `git log -1` + a smoke test, not a full rehydration.
 
-**JUST LANDED:** guarded direct `_Destroy_aux`/member-template `__destroy` marker tsubst,
-Fix #1 pointer-parameter-pack expansion, Fix #2 parser robustness, and the earlier first
-direct SYSTEM-HEADER reference-forwarded placement-new pack body.
+**JUST LANDED:** direct `std::move<Args>(args)...` forwarding-pack coverage, guarded direct
+`_Destroy_aux`/member-template `__destroy` marker tsubst, Fix #1 pointer-parameter-pack
+expansion, Fix #2 parser robustness, and the earlier first direct SYSTEM-HEADER
+reference-forwarded placement-new pack body.
+The `std::move` forwarding-pack proof is coverage-only: the existing copied dependent-call
+path is structural, re-resolves the concrete template-id callee exactly like
+`std::forward<Args>(args)...`, requires Tree-1 copies, and returns 34. Do not add
+callee-name cases.
 The `__destroy`-named member-template guard now admits Tree-1 body copying only when the
 retained body itself contains a direct compiler-intrinsic `__destroy(T*)` marker. That marker
 already substitutes the concrete pointee and lowers class pointees to the concrete destructor
@@ -70,7 +75,12 @@ genuinely-hard wall, then record findings and stop:
      only when the retained body itself contains a direct `__destroy(T*)` marker. Proving
      test: `CIR: tsubst lowers direct destroy-aux member body`; gates fulltest flag-off and
      flag-on 670/0/0/18; `test_cir` 84/1043/4; six flag-on canaries green.
-  4. **Resume the pack backlog NEXT:** more forwarding variants, broader destructor iterator
+  4. ✅ **FORWARDING VARIANT COVERAGE LANDED (Codex, 2026-06-26):**
+     direct `std::move<Args>(args)...` call-pack fan-out uses the same structural copied
+     dependent-call path as `std::forward`, proving there is no callee-name special case.
+     Proving test: `CIR: tsubst fans out move call-pack arguments`; gates fulltest flag-off
+     and flag-on 670/0/0/18; `test_cir` 85/1055/4; six flag-on canaries green.
+  5. **Resume the pack backlog NEXT:** more forwarding variants, broader destructor iterator
      forms only after their marker/lowering shape is real, then template-id body/return;
      object-address forwarding LAST. Keep the per-element resolver/return-class guard.
 Do not attempt all shapes at once.
@@ -125,7 +135,8 @@ calls, then the shell-copy follow-on for FULL re-parse deletion.
 
 ✅ **KG CURRENT (2026-06-26):** Feature `two_tree_tsubst_instantiation` `phase4_estimate_percent=74`,
 `updated=2026-06-26`; session notes through the pointer-parameter-pack expansion and guarded
-direct `_Destroy_aux`/member-template `__destroy` marker slice are present.
+direct `_Destroy_aux`/member-template `__destroy` marker slice plus direct
+`std::move<Args>(args)...` forwarding-pack coverage are present.
 (Original sync note below.)
 
 ✅ **KG SYNCED (2026-06-24).** FalkorDB was briefly unreachable mid-session; once back,

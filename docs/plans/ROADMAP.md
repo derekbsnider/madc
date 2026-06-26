@@ -50,7 +50,8 @@ high-level" — the answer is both.**
   reference-pack call arguments such as `Args&... args` / `sink(args...)` and
   direct expression-pattern packs such as `sink((args + 1)...)` by expanding
   marked list children during `tsubst_cir`. Follow-up pack slices handle the
-  simple forwarding-call pattern `sink(std::forward<Args>(args)...)`, re-resolve
+  simple forwarding-call pattern `sink(std::forward<Args>(args)...)`, cover the
+  same structural path for `sink(std::move<Args>(args)...)`, re-resolve
   copied callee ids from concrete explicit template args, link covered
   member-template constructors to the same Tree-1 tsubst path, and admit covered
   system-header placement-new bodies including scalar `_Up` construction and
@@ -98,7 +99,7 @@ high-level" — the answer is both.**
   still fall back.
   Validation is green both
   flag-off and flag-on at **670 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **84 test cases / 1043 assertions / 4 skipped**. Phase 4 is
+  `test_cir` is **85 test cases / 1055 assertions / 4 skipped**. Phase 4 is
   roughly **74% implemented** by coverage weight, not session count.
   **2026-06-25:** the generic `is_type_dependent` predicate (the
   `type_dependent_expression_p` / pt.cc:30357 analogue) landed and is COMMITTED
