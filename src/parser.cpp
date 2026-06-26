@@ -30955,11 +30955,11 @@ static bool fn_template_word_is_cv(const std::string &w)
 	|| w == "typename" || w == "struct" || w == "class";
 }
 
-// True when a parameter SPELLING is a parameter-pack expansion of `pack`
-// (`_Base ...`, optionally cv-qualified). Stars/references on a pack are not
-// supported shapes.
-static bool fn_template_param_is_pack(const std::string &spelling,
-				      const std::string &pack)
+// True when a parameter SPELLING is a direct parameter-pack expansion of `pack`
+// (`_Base...`, `_Base&...`, `_Base*...`, optionally cv-qualified).
+static bool fn_template_param_pack_shape(const std::string &spelling,
+					 const std::string &pack,
+					 size_t *stars_out)
 {
     if ( pack.empty() )
 	return false;
@@ -30967,12 +30967,14 @@ static bool fn_template_param_is_pack(const std::string &spelling,
     fn_template_split_words(spelling, words);
     std::string core;
     size_t dots = 0;
+    size_t stars = 0;
     for ( size_t i = 0; i < words.size(); ++i )
     {
 	const std::string &w = words[i];
 	if ( fn_template_word_is_cv(w) )
 	    continue;
 	if ( w == "." ) { ++dots; continue; }
+	if ( w == "*" ) { ++stars; continue; }
 	// A reference-qualified pack (`_Args&... __a`, forwarding-ref
 	// `_Args&&... __a`) is still a pack of `_Args`; the bound element type
 	// strips the reference at the binding site (pd->is_reference()).
@@ -30982,7 +30984,39 @@ static bool fn_template_param_is_pack(const std::string &spelling,
 	    return false;
 	core = w;
     }
-    return dots == 3 && core == pack;
+    if ( dots != 3 || core != pack )
+	return false;
+    if ( stars_out )
+	*stars_out = stars;
+    return true;
+}
+
+static bool fn_template_param_is_pack(const std::string &spelling,
+				      const std::string &pack)
+{
+    return fn_template_param_pack_shape(spelling, pack, NULL);
+}
+
+static DataDef *fn_template_pack_arg_element(const std::string &spelling,
+					     const std::string &pack,
+					     DataDef *arg_dd)
+{
+    if ( !arg_dd )
+	return NULL;
+    size_t stars = 0;
+    if ( !fn_template_param_pack_shape(spelling, pack, &stars) )
+	return NULL;
+    DataDef *dd = arg_dd;
+    if ( dd->is_reference() )
+	dd = static_cast<DataDefPTR *>(dd)->base_type;
+    for ( size_t i = 0; i < stars; ++i )
+    {
+	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	if ( !p || !p->base_type )
+	    return NULL;
+	dd = p->base_type;
+    }
+    return dd;
 }
 
 // The VALUE view of a call operand's type for template-argument deduction
@@ -31546,10 +31580,9 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    for ( size_t a = i; a < tc->parameters.size(); ++a )
 	    {
 		DataDef *adp = pgm.operand_value_datadef(tc->parameters[a]);
+		adp = fn_template_pack_arg_element(sp, pack_param, adp);
 		if ( !adp )
 		    return false;
-		if ( adp->is_reference() )
-		    adp = static_cast<DataDefPTR *>(adp)->base_type;
 		pack_elems.push_back(adp);
 	    }
 	    if ( pack_elems.size() == 1 && binding.find(pack_param) == binding.end() )
@@ -31833,6 +31866,8 @@ DataDef *Program::resolve_template_param_default_type(
 // concrete namespace function (it registers in namespace_fn_overload_sets
 // under `key`), the memoized inst_key dedupes. *var_out (optional) receives
 // the overload Variable the instantiation registered — the call target.
+static bool tsubst_pack_decl_suffix_token(TokenBase *t);
+
 static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
@@ -32039,7 +32074,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
     if ( pack_elems.size() >= 2 )
     {
 	const size_t N = pack_elems.size();
-	// Discover the value-pack name: `_Args [&|&&] ... __args`.
+	// Discover the value-pack name: `_Args [decl-suffix] ... __args`.
 	std::string value_pack_name;
 	for ( size_t i = 0; i + 1 < ft.decl.size(); ++i )
 	{
@@ -32048,8 +32083,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		continue;
 	    size_t k = i + 1;
 	    while ( k < ft.decl.size() && ft.decl[k]
-		 && (ft.decl[k]->id() == TokenID::tkBand
-		     || ft.decl[k]->id() == TokenID::tkLand) )
+		 && tsubst_pack_decl_suffix_token(ft.decl[k]) )
 		++k;
 	    if ( k + 3 < ft.decl.size()
 	      && ft.decl[k] && ft.decl[k]->id() == TokenID::tkDot
@@ -32087,17 +32121,16 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    TokenBase *bt = ft.decl[i];
 	    if ( !bt )
 		continue;
-	    // Pack DECLARATION `_Args [&|&&] ... __args`: expand to N typed params
-	    // `T0 [&|&&] __args__0, …, Tn [&|&&] __args__n`.
+	    // Pack DECLARATION `_Args [decl-suffix] ... __args`: expand to N
+	    // typed params `T0 [decl-suffix] __args__0, ...`.
 	    if ( bt->type() == TokenType::ttIdentifier
 	      && ((TokenIdent *)bt)->str == pack_param )
 	    {
-		std::vector<TokenBase *> refq;
+		std::vector<TokenBase *> decl_suffix;
 		size_t k = i + 1;
 		while ( k < ft.decl.size() && ft.decl[k]
-		     && (ft.decl[k]->id() == TokenID::tkBand
-			 || ft.decl[k]->id() == TokenID::tkLand) )
-		{ refq.push_back(ft.decl[k]); ++k; }
+		     && tsubst_pack_decl_suffix_token(ft.decl[k]) )
+		{ decl_suffix.push_back(ft.decl[k]); ++k; }
 		if ( k + 3 < ft.decl.size()
 		  && ft.decl[k] && ft.decl[k]->id() == TokenID::tkDot
 		  && ft.decl[k+1] && ft.decl[k+1]->id() == TokenID::tkDot
@@ -32109,10 +32142,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    {
 			if ( e ) inj.push_back(new TokenComma());
 			inj.push_back(new TokenDataType(pack_elems[e]->name.c_str(), *pack_elems[e]));
-			for ( TokenBase *rq : refq ) inj.push_back(rq->clone());
+			for ( TokenBase *sfx : decl_suffix ) inj.push_back(sfx->clone());
 			inj.push_back(new TokenIdent(elem_value_name(e).c_str()));
 		    }
-		    i = k + 3;	// consumed _Args [refq] ... __args
+		    i = k + 3;	// consumed _Args [decl-suffix] ... __args
 		    continue;
 		}
 	    }
@@ -32391,15 +32424,15 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    // `__base...` (value expansion) both expand to the single bound
 	    // element — drop the `...` (three tkDot tokens). Real C varargs
 	    // (`, ...`) follow a comma, never an identifier, and survive.
-	    // Reference-qualified pack (`_Base&&...`/`_Base&...`): copy through
-	    // the `&`/`&&` then drop the `...` (a plain pack leaves k at i+1).
+	    // Declarator-qualified pack (`_Base*...`/`_Base&&...`/`_Base&...`):
+	    // copy through the suffix then drop the `...` (a plain pack leaves
+	    // k at i+1).
 	    // C varargs (`, ...`) follow a comma, never an identifier, survive.
 	    if ( !pack_param.empty() )
 	    {
 		size_t k = i + 1;
 		while ( k < ft.decl.size() && ft.decl[k]
-		     && (ft.decl[k]->id() == TokenID::tkBand
-			 || ft.decl[k]->id() == TokenID::tkLand) )
+		     && tsubst_pack_decl_suffix_token(ft.decl[k]) )
 		{
 		    inj.push_back(ft.decl[k]->clone());
 		    ++k;
@@ -32408,9 +32441,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		  && ft.decl[k]   && ft.decl[k]->id() == TokenID::tkDot
 		  && ft.decl[k+1] && ft.decl[k+1]->id() == TokenID::tkDot
 		  && ft.decl[k+2] && ft.decl[k+2]->id() == TokenID::tkDot )
-		    i = k + 2;	// consumed ref-quals + the three dots
+		    i = k + 2;	// consumed decl suffix + the three dots
 		else
-		    while ( k > i + 1 )	// no `...`: undo the ref copy-through
+		    while ( k > i + 1 )	// no `...`: undo the suffix copy-through
 		    {
 			delete inj.back();
 			inj.pop_back();
@@ -33519,6 +33552,19 @@ static bool tsubst_pack_param_token(TokenBase *t, const std::set<std::string> &p
     return t && packs.count(contextual_identifier_name(t)) != 0;
 }
 
+static bool tsubst_pack_decl_suffix_token(TokenBase *t)
+{
+    if ( !t )
+	return false;
+    TokenID id = t->id();
+    return id == TokenID::tkMul
+	|| id == TokenID::tkBand
+	|| id == TokenID::tkLand
+	|| id == TokenID::tkCONST
+	|| id == TokenID::tkVOLATILE
+	|| is_restrict_token(t);
+}
+
 static void tsubst_drop_pack_decl_ellipsis(FuncDef *fd,
 					   std::vector<TokenBase *> &def_tokens)
 {
@@ -33547,8 +33593,7 @@ static void tsubst_drop_pack_decl_ellipsis(FuncDef *fd,
 	{
 	    size_t k = i + 1;
 	    while ( k < def_tokens.size() && def_tokens[k]
-		 && (def_tokens[k]->id() == TokenID::tkBand
-		     || def_tokens[k]->id() == TokenID::tkLand) )
+		 && tsubst_pack_decl_suffix_token(def_tokens[k]) )
 		++k;
 	    if ( tsubst_three_dots_at(def_tokens, k) )
 	    {

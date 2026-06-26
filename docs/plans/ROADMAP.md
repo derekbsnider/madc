@@ -82,14 +82,18 @@ high-level" — the answer is both.**
   forwarding aperture also admits a different returned class when the target
   reference class has a single-argument converting constructor for it and the
   copied body materializes the converted target temp before the outer
-  constructor call. Broader system-header destructor/object-address packs still
-  fall back. A 2026-06-26 robustness slice also balances `parseFunction`'s
-  temporary parameter compound scope on dependent-pattern parse errors, so
-  malformed retained member-template pack declarators report cleanly instead of
-  leaving a dangling `compounds` entry.
+  constructor call. A 2026-06-26 robustness slice also balances
+  `parseFunction`'s temporary parameter compound scope on dependent-pattern
+  parse errors, so malformed retained member-template pack declarators report
+  cleanly instead of leaving a dangling `compounds` entry. The follow-up
+  pointer-parameter-pack slice teaches deduction and substitution the direct
+  `Args*... ps` spelling, binding `Args` to each pointee type and fanning out
+  the declaration as `T0* ps__0, T1* ps__1`; the scratch destructor-pack probe
+  now parses and runs under `MADC_XTEST_DEP_PARSE`. Broader system-header
+  destructor/object-address packs still fall back.
   Validation is green both
   flag-off and flag-on at **670 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **82 test cases / 1014 assertions / 4 skipped**. Phase 4 is
+  `test_cir` is **83 test cases / 1026 assertions / 4 skipped**. Phase 4 is
   roughly **74% implemented** by coverage weight, not session count.
   **2026-06-25:** the generic `is_type_dependent` predicate (the
   `type_dependent_expression_p` / pt.cc:30357 analogue) landed and is COMMITTED

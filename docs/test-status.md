@@ -8,16 +8,18 @@
 > system-header placement-new pack fan-out and simple class `_Up` placement-new
 > tsubst plus direct `__destroy(T*)` helper tsubst and local non-pack nested
 > namespace-call tsubst plus nested function-template instantiation, plus
-> dependent-parse-error scope balancing):** fulltest
+> dependent-parse-error scope balancing and pointer-parameter-pack call
+> expansion):** fulltest
 > **670 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
 > GREEN). The env-gated tsubst path is also green:
 > `MADC_XTEST_DEP_PARSE=1 make -C src fulltest` reports **670/0/0/18**.
-> `bin/test_cir` reports **82 test cases, 1014 assertions, 4 skipped** after
+> `bin/test_cir` reports **83 test cases, 1026 assertions, 4 skipped** after
 > adding coverage for direct `tsubst_type_args` binding of a body-only template
 > parameter and direct `tsubst_type_arg_packs` capture for a variadic member
 > template, plus direct CIR fan-out for value-pack call arguments like
 > `sink(args...)` and reference-pack call arguments like
-> `Args&... args` / `sink(args...)`, and expression-pattern packs like
+> `Args&... args` / `sink(args...)`, pointer-pack call arguments like
+> `Args*... ps` / `sink(ps...)`, and expression-pattern packs like
 > `sink((args + 1)...)`, plus the first forwarding-call pack pattern
 > `sink(std::forward<Args>(args)...)`, plus covered local member-template
 > constructors like `Holder(Args... args) { member = sink(args...); }`, plus

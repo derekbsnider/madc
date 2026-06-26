@@ -1968,6 +1968,46 @@ TEST_CASE("CIR: tsubst fans out direct reference-pack call arguments") {
     CHECK(got == 34);
 }
 
+// Two-tree pack expansion: pointer parameter packs use the same declaration
+// fan-out as references, but the declarator suffix must stay attached to every
+// generated parameter (`Args*... ps` -> `T0* ps__0, T1* ps__1`).
+TEST_CASE("CIR: tsubst fans out direct pointer-pack call arguments") {
+    const char *source =
+	"int sink(int *a, int *b) { return *a * 10 + *b; }\n"
+	"struct Holder {\n"
+	"    template<class... Args> int pack_ptr(Args*... ps) { return sink(ps...); }\n"
+	"};\n"
+	"int main() { Holder h; int a = 3; int b = 4; return h.pack_ptr(&a, &b); }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<pack-ptr-fanout-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(source);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 34);
+}
+
 // Two-tree pack expansion: member-template constructors use the same retained
 // body + concrete pack metadata model as member functions. A covered ctor body
 // should therefore be copied from Tree-1 instead of only relying on re-parse.

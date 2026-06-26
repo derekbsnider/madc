@@ -4,6 +4,14 @@
 
 ### Two-tree tsubst widening
 
+- Added pointer-parameter-pack call expansion for direct packs such as
+  `Args*... ps`. Function-template deduction now recognizes pointer-qualified
+  trailing packs and binds the pack element to the pointee type, while the
+  retained declaration/body substitution keeps the pointer suffix attached to
+  every generated parameter (`T0* ps__0, T1* ps__1`). Added `test_cir`
+  coverage proving the env-gated Tree-1 path fans out `sink(ps...)` and runs to
+  34; normal and `MADC_XTEST_DEP_PARSE=1` fulltest remain 670/0/0/18, with
+  `test_cir` now 83/1026/4.
 - Hardened env-gated dependent-pattern parse failure handling. `parseFunction`
   now exception-safely balances its temporary parameter compound scope, so a
   malformed retained member-template parameter list cannot leave a dangling

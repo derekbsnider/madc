@@ -12,14 +12,21 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 ➡️ **START HERE — next Codex session (2026-06-26). Read THIS block; you do NOT need the
 narrative below it to begin.**
 
-**TRUSTABLE CHECKPOINT:** HEAD at the parser robustness slice after the converted
-system-header reference-forwarded placement-new pack slice, working tree clean after commit.
+**TRUSTABLE CHECKPOINT:** HEAD at the pointer-parameter-pack expansion slice after the
+parser robustness slice and the converted system-header reference-forwarded placement-new
+pack slice, working tree clean after commit.
 Gate GREEN both halves (verified 2026-06-26):
-`make -C src fulltest` 670/0/0/18 + drift gates; `env MADC_XTEST_DEP_PARSE=1 make -C src fulltest` 670/0/0/18; `test_cir` 82/1014/4. Phase 4 ≈74% by coverage weight.
+`make -C src fulltest` 670/0/0/18 + drift gates; `env MADC_XTEST_DEP_PARSE=1 make -C src fulltest` 670/0/0/18; `test_cir` 83/1026/4. Phase 4 ≈74% by coverage weight.
 Trust this commit — verify with `git log -1` + a smoke test, not a full rehydration.
 
-**JUST LANDED:** Fix #2 parser robustness plus the earlier first direct SYSTEM-HEADER
-reference-forwarded placement-new pack body.
+**JUST LANDED:** Fix #1 pointer-parameter-pack expansion plus Fix #2 parser robustness
+and the earlier first direct SYSTEM-HEADER reference-forwarded placement-new pack body.
+Function-template deduction now recognizes direct pointer-qualified packs such as
+`Args*... ps`, binds `Args` to each pointee type, and the substituted declaration keeps
+the pointer suffix attached to every generated parameter (`T0* ps__0, T1* ps__1`). The
+proving test is `CIR: tsubst fans out direct pointer-pack call arguments`; it runs under
+`MADC_XTEST_DEP_PARSE=1`, requires Tree-1 copies, and returns 34. The original scratch
+repro `tmp/destroy_pack_probe.mad` now exits 0 under the flag.
 The old `is_system_header_path(pe->pattern->file) → unsupported_class_arg` guard now admits
 one element only when its nested call reuses **`resolve_copied_dependent_call`** (`8ede28a5`)
 and the resolved reference return is the same/derived class that the constructor reference
@@ -32,9 +39,9 @@ converted target temp before the outer placement-new constructor. The test is `C
 lowers system-header converted reference-forwarded placement-new packs` and proves
 `cir_count_tree1_copies > 0` plus value `135`.
 
-**NEXT SLICE — FIX THE PARSER CRASH FIRST, then resume packs (Codex, 2026-06-26).** The
-destructor-pack slice is BLOCKED on the `Args*... ps` parser crash diagnosed in the ROOT-CAUSE
-block above. Ordered queue — each its own clean gated commit; keep going until budget-low or a
+**NEXT SLICE — land destructor packs (Codex, 2026-06-26).** The
+destructor-pack slice was blocked on the `Args*... ps` parser crash diagnosed in the ROOT-CAUSE
+block above; that blocker is now cleared. Ordered queue — each its own clean gated commit; keep going until budget-low or a
 genuinely-hard wall, then record findings and stop:
   1. ✅ **FIX #2 (robustness, priority) LANDED (Codex, 2026-06-26):** `parseFunction`
      now exception-safely balances its temporary parameter compound scope, so the
@@ -43,9 +50,12 @@ genuinely-hard wall, then record findings and stop:
      Regression: `tests/testdependentparseerror.mad` + `.expect_err`. Gates:
      fulltest flag-off and flag-on 670/0/0/18; `test_cir` 82/1014/4; six
      flag-on canaries green.
-  2. **FIX #1 (feature; NEXT):** support pointer-parameter-pack call expansion (`Args*... ps`) so it
-     stops mis-parsing ("Expecting identifier after type").
-  3. **LAND the destructor-pack tsubst slice** now unblocked (`_Destroy`/`_Destroy_aux`),
+  2. ✅ **FIX #1 (feature) LANDED (Codex, 2026-06-26):** pointer-parameter-pack
+     call expansion (`Args*... ps`) now works through direct pack deduction and
+     token fan-out. Proving test: `CIR: tsubst fans out direct pointer-pack call
+     arguments`; gates fulltest flag-off and flag-on 670/0/0/18; `test_cir`
+     83/1026/4; six flag-on canaries green.
+  3. **LAND the destructor-pack tsubst slice NEXT** now unblocked (`_Destroy`/`_Destroy_aux`),
      keeping the `__destroy` guard honest — no relax until the marker shape is genuinely real.
   4. **Resume the pack backlog:** more forwarding variants, then template-id body/return;
      object-address forwarding LAST. Keep the per-element resolver/return-class guard.
@@ -91,7 +101,7 @@ bail stays for genuinely-unsupported shapes — this slice MOVES one class onto 
 each slice clean + gated; keep mirrors (handoff/status/CHANGELOG/KG) in agreement.
 
 **GATE (per slice):** `make -C src fulltest` 670/0/0/18 + the six canaries green under
-`MADC_XTEST_DEP_PARSE=1` + a new `test_cir` case proving the covered system-header pack goes
+`MADC_XTEST_DEP_PARSE=1` + a new `test_cir` case proving the covered pack goes
 through tsubst (`cir_count_tree1_copies > 0` AND correct runtime value). Build hygiene: NEVER
 pipe `make` through `tail`/`head` (masks errors, fakes exit 0); after editing
 `cir_builder.cpp` run `make -C src ../bin/test_cir` and confirm the relink took
