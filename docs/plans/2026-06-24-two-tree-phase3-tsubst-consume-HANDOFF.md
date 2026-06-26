@@ -30,11 +30,22 @@ converted target temp before the outer placement-new constructor. The test is `C
 lowers system-header converted reference-forwarded placement-new packs` and proves
 `cir_count_tree1_copies > 0` plus value `135`.
 
-**NEXT SLICE — biggest remaining lever (packs dominate, ~87:14 vs template-id):** continue
-real SYSTEM-HEADER destructor **pack** expansion through tsubst (`_Destroy` / `_Destroy_aux`)
-before attempting object-address forwarding. Keep the per-element resolver/return-class guard
-for object-reference placements; broader destructor/dependent-call packs and template-id
-body/return surfaces still fall back. Do not attempt all shapes at once.
+**NEXT SLICE — FIX THE PARSER CRASH FIRST, then resume packs (Codex, 2026-06-26).** The
+destructor-pack slice is BLOCKED on the `Args*... ps` parser crash diagnosed in the ROOT-CAUSE
+block above. Ordered queue — each its own clean gated commit; keep going until budget-low or a
+genuinely-hard wall, then record findings and stop:
+  1. **FIX #2 (robustness, priority):** a parse error must NOT SIGSEGV. Balance `compounds` on
+     the mis-parse error-recovery path (RAII/save-restore) so no stale scope entry dangles in
+     `active_cpp_lookup_namespace` (parser.cpp:12547-48). Confirm the unbalanced push in a `-g`
+     build; repro `tmp/destroy_pack_probe.mad`. Add a `.expect_err` test proving the bad input
+     reports cleanly (nonzero exit, NO crash).
+  2. **FIX #1 (feature):** support pointer-parameter-pack call expansion (`Args*... ps`) so it
+     stops mis-parsing ("Expecting identifier after type").
+  3. **LAND the destructor-pack tsubst slice** now unblocked (`_Destroy`/`_Destroy_aux`),
+     keeping the `__destroy` guard honest — no relax until the marker shape is genuinely real.
+  4. **Resume the pack backlog:** more forwarding variants, then template-id body/return;
+     object-address forwarding LAST. Keep the per-element resolver/return-class guard.
+Do not attempt all shapes at once.
 
 **ATTEMPTED NEXT (Codex, 2026-06-26):** a minimal `_Destroy_aux`-style probe needs a pointer
 parameter pack (`Args*... ps`) so the existing `__destroy(T*)` Tree-1 marker still sees a
@@ -46,6 +57,22 @@ the destructor marker path. Do **not** fix this by relaxing
 the pointer-parameter-pack spelling safely, or find a real-header destructor body whose retained
 Tree-1 shape already carries a direct `__destroy(T*)` marker without iterator/object-address
 lowering.
+
+**↳ ROOT-CAUSE (Claude, gdb+valgrind, 2026-06-26).** `Args*... ps` is actually TWO bugs:
+(1) **Parse-grammar gap** — the pointer-parameter-pack *call-site expansion* mis-parses
+("Expecting identifier after type" at the call, e.g. `d.destroy_all(a, b)`). The bare
+declaration parses fine (value- AND pointer-pack decls both exit 0); only the call expansion
+breaks. (2) **Robustness bug (the actual crash)** — that parse error SIGSEGVs instead of
+reporting cleanly. valgrind: invalid read on RECLAIMED STACK (1944 bytes below SP). gdb: the
+fatal read is `compounds.top()->method->owner_class->canonical_cpp_spelling` in
+`active_cpp_lookup_namespace` (parser.cpp:12547-48) during a LATER identifier resolution —
+`compounds.top()` is a STALE member-template compound left on the scope stack by the
+mis-parse's error recovery (we are parsing `main`, a free fn, which should bail at :12545 with
+no `owner_class`). **FIX #2 (priority; contained; decoupled from the feature):** balance
+`compounds` on the error-recovery path (RAII/save-restore) so a parse error NEVER leaves a
+dangling scope entry — madc must not crash on a parse error. **FIX #1 (feature; the real
+unblock):** support pointer-param-pack call expansion. Confirm the exact unbalanced push in a
+`-g` build; repro = `tmp/destroy_pack_probe.mad` (scratch).
 
 **⚠️ THE TRAP — read before coding:** a NAIVE relax of the :931 guard already regressed six
 real-header canaries: `testcontainerdtor`, `testforeach2`, `testset`, `teststringref`,
