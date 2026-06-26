@@ -591,6 +591,7 @@ static DataDefCLASS *as_class_instance(DataDef *dd);
 static DataDefCLASS *param_object_class(DataDef *dd, bool refp);
 static DataDef *ref_param_referent(DataDef *pt);
 static bool tsubst_is_class_object_arg(DataDef *dd);
+static bool is_c2mir_builtin_call_name(const std::string &name);
 
 std::string CirBuilder::copied_pack_value_name(const char *name) const
 {
@@ -675,21 +676,12 @@ static bool tsubst_system_header_simple_call_type(DataDef *dd)
 	return false;
 }
 
-static bool tsubst_reserved_implementation_identifier(const std::string &name)
-{
-	return name.size() >= 2 && name[0] == '_' && name[1] == '_';
-}
-
 static bool tsubst_system_header_simple_dependent_call(
 	Program *prog, FuncDef *fd, const std::map<DataDef *, DataDef *> &subst,
 	const std::vector<DataDef *> &explicit_args,
 	const std::vector<DataDef *> &concrete_param_types)
 {
 	if (!fd)
-		return false;
-	std::string display = fd->function_display_name.empty()
-			    ? fd->name : fd->function_display_name;
-	if (tsubst_reserved_implementation_identifier(display))
 		return false;
 	for (DataDef *arg : explicit_args)
 		if (!tsubst_system_header_simple_call_type(arg))
@@ -1231,6 +1223,8 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				return CIR_NODE(error_node(
 					"tsubst: unresolved dependent call symbol",
 					tcf));
+			if (!is_c2mir_builtin_call_name(tcf->var.name))
+				referenced_funcs.insert(sym);
 			node_t src_args = c2mir_node_op(src->as_node(), 1);
 			node_t args = list();
 			size_t i = 0;

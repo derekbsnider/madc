@@ -78,13 +78,10 @@ extern "C" bool cir_test_bool_false(void) {
 	return false;
 }
 
-// Helper: tokenize+parse source, translate to CIR, compile+run, return result
-static int64_t cir_run(const char *source) {
-    auto prog = std::make_shared<Program>();
-    TokenProgram *tp = prog->tokenize_buffer(source, "<test>");
-    REQUIRE(tp != nullptr);
-    REQUIRE(prog->parse(tp));
+static size_t cir_count_tree1_copies(node_t n);
 
+// Helper: translate an already-parsed Program to CIR, compile+run, return result.
+static int64_t cir_run_program(Program *prog, size_t *tree1_copies = NULL) {
     MIR_context_t mir_ctx = MIR_init();
     c2mir_init(mir_ctx);
     c2m_ctx_t c2m = cir_init(mir_ctx);
@@ -97,8 +94,10 @@ static int64_t cir_run(const char *source) {
     // loop, which hung this harness under MIR_interp). The builder owns its node
     // arena and must outlive cir_compile(), so it stays in scope until return.
     CirBuilder builder(c2m);
-    node_t tree = builder.translate_module(prog.get());
+    node_t tree = builder.translate_module(prog);
     REQUIRE(tree != nullptr);
+    if (tree1_copies)
+	*tree1_copies = cir_count_tree1_copies(tree);
 
     int ok = cir_compile(mir_ctx, c2m, tree, "test_mod");
     REQUIRE(ok == 1);
@@ -131,6 +130,15 @@ static int64_t cir_run(const char *source) {
     c2mir_finish(mir_ctx);
     MIR_finish(mir_ctx);
     return result;
+}
+
+// Helper: tokenize+parse source, translate to CIR, compile+run, return result
+static int64_t cir_run(const char *source) {
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    return cir_run_program(prog.get());
 }
 
 static size_t cir_count_tree1_copies(node_t n) {
@@ -1190,26 +1198,26 @@ TEST_CASE("CIR: tsubst re-resolves nested dependent namespace calls") {
     CHECK(got == 42);
 }
 
-// System-header dependent calls stay guarded except for non-reserved simple
-// scalar/pointer calls whose substituted argument and return types are concrete
-// non-class shapes. This pins the first non-pack system-header resolver slice
-// without admitting the broader implementation-helper/object-address cases.
+// System-header dependent calls stay guarded to simple scalar/pointer calls
+// whose substituted argument and return types are concrete non-class shapes.
+// This pins the reserved-helper slice without admitting broader object-address
+// cases.
 TEST_CASE("CIR: tsubst re-resolves scalar system-header dependent namespace calls") {
     const char *header_source =
 	"namespace nn {\n"
-	"    template<class T> T ident(T v) { return v; }\n"
+	"    template<class T> T __ident(T v) { return v; }\n"
 	"}\n"
 	"struct Holder {\n"
-	"    template<class T> int nested(T v) { return nn::ident(v) + 5; }\n"
+	"    template<class T> int nested(T v) { return nn::__ident(v) + 5; }\n"
 	"};\n";
     const char *main_source =
 	"int main() { Holder h; return h.nested(37); }\n";
     const char *run_source =
 	"namespace nn {\n"
-	"    template<class T> T ident(T v) { return v; }\n"
+	"    template<class T> T __ident(T v) { return v; }\n"
 	"}\n"
 	"struct Holder {\n"
-	"    template<class T> int nested(T v) { return nn::ident(v) + 5; }\n"
+	"    template<class T> int nested(T v) { return nn::__ident(v) + 5; }\n"
 	"};\n"
 	"int main() { Holder h; return h.nested(37); }\n";
     const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
@@ -1224,21 +1232,10 @@ TEST_CASE("CIR: tsubst re-resolves scalar system-header dependent namespace call
     TokenProgram *tp = prog->tokenize_buffer(main_source, "<system-header-nested-call-user>");
     REQUIRE(tp != nullptr);
     REQUIRE(prog->parse(tp));
-    MIR_context_t mir_ctx = MIR_init();
-    c2mir_init(mir_ctx);
-    c2m_ctx_t c2m = cir_init(mir_ctx);
-    REQUIRE(c2m != nullptr);
-    {
-	CirBuilder builder(c2m);
-	node_t tree = builder.translate_module(prog.get());
-	REQUIRE(tree != nullptr);
-	CHECK(cir_count_tree1_copies(tree) > 0);
-    }
-    cir_finish(c2m);
-    c2mir_finish(mir_ctx);
-    MIR_finish(mir_ctx);
-
-    int64_t got = cir_run(run_source);
+    size_t tree1_copies = 0;
+    int64_t got = cir_run_program(prog.get(), &tree1_copies);
+    CHECK(tree1_copies > 0);
+    CHECK(cir_run(run_source) == 42);
     if ( old_env )
 	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
     else

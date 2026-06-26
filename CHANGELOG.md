@@ -118,22 +118,23 @@
   path, not a callee-name special case. Real system-header reference-forwarding
   and broader object-address packs still fall back after canary validation showed
   those need a wider, separate lowering.
-- Admitted the first non-pack system-header dependent-call slice. Copied
-  dependent calls from system-header recipes now re-resolve when the callee name
-  is not an implementation-reserved `__*` helper, every substituted explicit
-  template arg and runtime arg is a concrete non-class scalar/pointer shape, the
+- Admitted simple system-header scalar/pointer dependent calls, including
+  implementation-reserved `__*` helper names. Copied dependent calls from
+  system-header recipes now re-resolve when every substituted explicit template
+  arg and runtime arg is a concrete non-class scalar/pointer shape, the
   substituted return is scalar/pointer/void, and the resolved callee has a
-  materializable body or external symbol. Reserved helpers such as
-  `__do_uninit_copy`, real forwarding/destructor/object-address packs, and
-  template-id body surfaces still fall back.
+  materializable body or external symbol. Copied calls also mark the resolved
+  callee reachable so lazy system-header body emission follows the ordinary
+  call path. Real forwarding/destructor/object-address packs and template-id
+  body surfaces still fall back.
 - Kept ordinary reference-parameter bodies, broader system-header
   forwarding/destructor and dependent calls behind the system-header bail,
   class-valued placement-new constructor argument packs that need real
   reference-forwarding/object-address lowering, and template-id body/return
   surfaces on the re-parse fallback until those
   constructs are widened. The flag-on tsubst gate and normal fulltest both
-  remain 669/0/0/18; `test_cir` is 80 test cases / 991
-  assertions / 4 skipped. Phase 4 is now tracked at roughly 71% implemented by
+  remain 669/0/0/18; `test_cir` is 80 test cases / 994
+  assertions / 4 skipped. Phase 4 is now tracked at roughly 72% implemented by
   coverage weight, not session count.
 
 ## [v0.30.0] — 2026-06-22

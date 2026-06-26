@@ -71,14 +71,16 @@ high-level" — the answer is both.**
   concrete-typed synthetic params, rebuilds the copied call against the concrete
   callee, and rewrites copied reference-slot arguments back to the concrete pack
   pointer slots. The first non-pack system-header dependent-call slice now admits
-  non-reserved simple scalar/pointer calls only when the substituted args/return
-  are concrete non-class shapes and the resolved callee has a materializable body
-  or external symbol. Reserved implementation helpers and real system-header
-  reference-forwarding/object-address packs still fall back.
+  simple scalar/pointer calls, including reserved `__*` helper names, only when
+  the substituted args/return are concrete non-class shapes and the resolved
+  callee has a materializable body or external symbol; copied calls mark the
+  resolved callee reachable so lazy system-header body emission follows the
+  ordinary call path. Real system-header reference-forwarding/object-address
+  packs still fall back.
   Validation is green both
   flag-off and flag-on at **669 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **80 test cases / 991 assertions / 4 skipped**. Phase 4 is
-  roughly **71% implemented** by coverage weight, not session count.
+  `test_cir` is **80 test cases / 994 assertions / 4 skipped**. Phase 4 is
+  roughly **72% implemented** by coverage weight, not session count.
   **2026-06-25:** the generic `is_type_dependent` predicate (the
   `type_dependent_expression_p` / pt.cc:30357 analogue) landed and is COMMITTED
   (`62409d08`, green both gates) — the step-C spine the per-construct
@@ -88,11 +90,10 @@ high-level" — the answer is both.**
   overloads (g++'s `tsubst → finish_call_expr` model), and the local
   `std::forward`/`std::move` callee-name match is removed. Next work before
   deleting the re-parse fallback is to retire the remaining system-header
-  dependent-call bail and catalog entries one construct at a time: reserved
-  implementation-helper calls, real system-header forwarding/destructor packs,
-  class-valued placement-new argument packs that need real reference-forwarding/
-  object-address lowering, broader dependent-call packs, and template-id body
-  surfaces.
+  dependent-call bail and catalog entries one construct at a time: real
+  system-header forwarding/destructor packs, class-valued placement-new argument
+  packs that need real reference-forwarding/object-address lowering, broader
+  dependent-call packs, and template-id body surfaces.
 - **Backend:** `madc parser → cir_node (MC11-IR) → c2mir → MIR` is the **sole**
   backend. The asmjit JIT and the Gecko parser/MIR-transpiler were both removed
   (commits `42e9b6e`, `64f44b3`). There is no `--backend=jit`; `--backend=mir`
