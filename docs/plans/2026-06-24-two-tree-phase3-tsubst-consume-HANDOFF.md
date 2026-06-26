@@ -36,12 +36,27 @@ takes the separate `TokenAddrOf` path, not this value-read). NOTE the documented
 fallback") is now obsolete for non-dependent refs — they tsubst correctly; the comment should
 be updated when that guard is next touched.
 
-**NEXT (Codex): the -O2 measurement (now unblocked — 670 is restored).** Build
-`make -j4 -C src CXXFLAGS="-std=c++11 -Wall -O2"`, then `MADC_XTEST_DEP_PARSE=1 bin/madc
---show-stats tests/testsubscript.mad`: confirm engaged=16 and read the instantiate time vs
-flag-off. Per the standing perf finding tsubst may still be net-neutral at -O2 until the
-header-forest lands (recipe-build overhead) — that's expected; the point of 3.5 was to make the
-16 hits CORRECT so the lever is real. Then resume coverage of the next ranked fallback shapes.
+**-O2 MEASUREMENT — DONE (Claude 2026-06-26, with the correct 16 hits). Result: tsubst is
+NET-NEUTRAL at -O2 even at 16 correct hits — confirmed, NOT a speedup.** 5-run totals on
+testsubscript: flag-OFF mean ≈ **0.893 s** (0.868–0.938), flag-ON mean ≈ **0.915 s**
+(0.888–0.937). Run-to-run variance (~70 ms) EXCEEDS the between-mode delta (~22 ms), so the
+single-run "flag-on faster" impression (0.929 vs a 0.987 outlier) was NOISE; if anything flag-on
+is marginally slower (recipe-build overhead ≈ instantiation savings). Per-test scaling at -O2
+(single run, indicative): testsubscript 16 hit → ~neutral; testvector 8 hit → ~neutral; testset
+3 hit → flag-on SLOWER (overhead dominates at low hit count). **This is the SECOND independent
+confirmation** (first was pre-fix at lower engagement) that tsubst coverage does NOT buy compile
+speed at -O2. **Strategic consequence (do not re-litigate): more tsubst coverage is for
+CORRECTNESS + header-forest readiness, NOT a -O2 speedup. The header-forest is the perf lever**
+(skips the 48.5% header lex + ~2800 header-triggered instantiations — see
+`project_embedded_header_forest`). The 3.5 fix was still REQUIRED — the 16 hits had to be
+correct before the lever is real — but it doesn't move the perf needle by itself.
+
+**NEXT (Codex), options — pick by goal:** (a) **For perf** → pivot to the header-forest track
+(its Tree-1 foundation is exactly this tsubst machinery; that's where -O2 goes below g++).
+(b) **For coverage/correctness breadth** → resume the next ranked fallback shapes
+(`_Destroy_aux::__destroy`, `_Rb_tree` node/emplace helpers, `vector::_M_realloc_insert`), but
+log it as correctness/forest-readiness work, NOT a claimed speedup (the -O2 data says it won't
+be). Either way, gate every commit at flag-off AND flag-on 670/0/0/18 + six canaries.
 
 ---
 📋 **HISTORICAL — `bb44557c` ROUND RESULT (the regression 3.5 fixed; kept for context).** DO step 3.5 BEFORE any new coverage. **(SUPERSEDED by ✅ above — 3.5 is done.)**
