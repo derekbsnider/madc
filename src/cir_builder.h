@@ -21,6 +21,7 @@ struct memberpair_t;
 class TokenFunc;
 class TokenCpnd;
 class TokenBase;
+class TokenPackExpansion;
 class TokenIF;
 class TokenFOR;
 class TokenDO;
@@ -30,6 +31,7 @@ class TokenRETURN;
 class TokenOperator;
 class Variable;
 class DataDef;
+class DataDefTemplateParam;
 class DataDefSTRUCT;
 class FuncDef;
 class Method;
@@ -1013,6 +1015,13 @@ public:
 		bool *changed_out = nullptr,
 		std::vector<DataDef *> *concrete_param_types = nullptr,
 		std::string *error_out = nullptr);
+	bool system_header_pack_element_call_resolves(
+		class TokenPackExpansion *pe,
+		const std::map<DataDef *, DataDef *> &subst,
+		class DataDefTemplateParam *tp,
+		DataDef *elem,
+		size_t elem_index,
+		class DataDefCLASS *target);
 	void rename_copied_pack_value_id(cir_node *src, cir_node *dst);
 	void rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
 					      const std::map<DataDef *, DataDef *> *subst);

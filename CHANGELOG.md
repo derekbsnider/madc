@@ -127,14 +127,21 @@
   callee reachable so lazy system-header body emission follows the ordinary
   call path. Real forwarding/destructor/object-address packs and template-id
   body surfaces still fall back.
+- Admitted the first direct system-header reference-forwarded placement-new
+  pack body. The system-header object-address guard now expands a pack element
+  only when its nested call resolves through `resolve_copied_dependent_call`
+  and the resolved reference return is the same/derived class that the
+  constructor reference parameter expects; other system-header pack shapes keep
+  the parsed-body fallback. `test_cir` now pins the split system-header body
+  with `cir_count_tree1_copies > 0` and the correct runtime value.
 - Kept ordinary reference-parameter bodies, broader system-header
   forwarding/destructor and dependent calls behind the system-header bail,
-  class-valued placement-new constructor argument packs that need real
-  reference-forwarding/object-address lowering, and template-id body/return
+  class-valued placement-new constructor argument packs beyond the direct
+  reference-return-to-target-class aperture, and template-id body/return
   surfaces on the re-parse fallback until those
   constructs are widened. The flag-on tsubst gate and normal fulltest both
-  remain 669/0/0/18; `test_cir` is 80 test cases / 994
-  assertions / 4 skipped. Phase 4 is now tracked at roughly 72% implemented by
+  remain 669/0/0/18; `test_cir` is 81 test cases / 1004
+  assertions / 4 skipped. Phase 4 is now tracked at roughly 73% implemented by
   coverage weight, not session count.
 
 ## [v0.30.0] — 2026-06-22

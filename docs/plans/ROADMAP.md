@@ -39,7 +39,7 @@ high-level" — the answer is both.**
   `master` still holds the v0.24.0 asmjit/Gecko backend at full C89 coverage;
   develop is **not** promoted to master until the CIR path reaches feature
   parity.
-- **Two-tree front-end performance work (local branch, 2026-06-25):** Phase 3
+- **Two-tree front-end performance work (local branch, 2026-06-26):** Phase 3
   tsubst consumption and Phase 4 scalar widening are env-gated behind
   `MADC_XTEST_DEP_PARSE`. The local branch now records direct parser-resolved
   TYPE template args on concrete member-template `FuncDef`s (`tsubst_type_args`)
@@ -76,11 +76,14 @@ high-level" — the answer is both.**
   callee has a materializable body or external symbol; copied calls mark the
   resolved callee reachable so lazy system-header body emission follows the
   ordinary call path. Real system-header reference-forwarding/object-address
-  packs still fall back.
+  packs now have the first direct placement-new aperture: each expanded nested
+  call must resolve through `resolve_copied_dependent_call` and return the
+  same/derived class expected by the constructor reference parameter. Broader
+  system-header forwarding/destructor/object-address packs still fall back.
   Validation is green both
   flag-off and flag-on at **669 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **80 test cases / 994 assertions / 4 skipped**. Phase 4 is
-  roughly **72% implemented** by coverage weight, not session count.
+  `test_cir` is **81 test cases / 1004 assertions / 4 skipped**. Phase 4 is
+  roughly **73% implemented** by coverage weight, not session count.
   **2026-06-25:** the generic `is_type_dependent` predicate (the
   `type_dependent_expression_p` / pt.cc:30357 analogue) landed and is COMMITTED
   (`62409d08`, green both gates) — the step-C spine the per-construct
@@ -92,7 +95,7 @@ high-level" — the answer is both.**
   deleting the re-parse fallback is to retire the remaining system-header
   dependent-call bail and catalog entries one construct at a time: real
   system-header forwarding/destructor packs, class-valued placement-new argument
-  packs that need real reference-forwarding/object-address lowering, broader
+  packs beyond the direct returned-class aperture, broader
   dependent-call packs, and template-id body surfaces.
 - **Backend:** `madc parser → cir_node (MC11-IR) → c2mir → MIR` is the **sole**
   backend. The asmjit JIT and the Gecko parser/MIR-transpiler were both removed

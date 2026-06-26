@@ -1,7 +1,8 @@
 # Test Status
 
-> **Local branch update (2026-06-25, `feature/front-end-performance-claude` @
-> simple system-header dependent-call slice, including reserved scalar/pointer helpers,
+> **Local branch update (2026-06-26, `feature/front-end-performance-claude` @
+> direct system-header reference-forwarded placement-new pack slice,
+> including the earlier reserved scalar/pointer helper call widening,
 > with two-tree direct type-arg binding and direct
 > value/ref/expression/forwarding-call/constructor pack fan-out plus covered
 > system-header placement-new pack fan-out and simple class `_Up` placement-new
@@ -10,7 +11,7 @@
 > **669 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
 > GREEN). The env-gated tsubst path is also green:
 > `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` reports **669/0/0/18**.
-> `bin/test_cir` reports **80 test cases, 994 assertions, 4 skipped** after
+> `bin/test_cir` reports **81 test cases, 1004 assertions, 4 skipped** after
 > adding coverage for direct `tsubst_type_args` binding of a body-only template
 > parameter and direct `tsubst_type_arg_packs` capture for a variadic member
 > template, plus direct CIR fan-out for value-pack call arguments like
@@ -35,12 +36,14 @@
 > whose substituted args/return are concrete non-class scalar/pointer/void shapes
 > and whose resolved callees have a materializable body or external symbol,
 > including reserved `__*` helper names and copied-call reachability for lazy
-> body emission. Phase 4 is now tracked at roughly **72% implemented** by
-> coverage weight. Broader system-header forwarding/destructor pack surfaces,
-> class-valued
-> placement-new constructor argument packs that need real reference-forwarding or
-> object-address lowering, broader system-header nested/dependent calls, and template-id
-> body/return surfaces remain on the re-parse fallback.
+> body emission, plus direct system-header reference-forwarded placement-new
+> constructor packs whose per-element nested call resolves through
+> `resolve_copied_dependent_call` and returns the same/derived class expected by
+> the constructor reference parameter. Phase 4 is now tracked at roughly **73%
+> implemented** by coverage weight. Broader system-header forwarding/destructor
+> pack surfaces, class-valued placement-new constructor argument packs beyond
+> that direct returned-class aperture, broader system-header nested/dependent
+> calls, and template-id body/return surfaces remain on the re-parse fallback.
 >
 > **Current (2026-06-22, `develop`, v0.30.0 — set wall CLEARED, pushed to
 > origin/develop):** Fulltest **669 passed, 0 failed, 0 timed out, 18 skipped**

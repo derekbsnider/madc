@@ -588,6 +588,7 @@ static bool node_is_deref_of_id(node_t n, const char *name)
 }
 
 static DataDefCLASS *as_class_instance(DataDef *dd);
+static DataDefCLASS *class_behind(DataDef *dd);
 static DataDefCLASS *param_object_class(DataDef *dd, bool refp);
 static DataDef *ref_param_referent(DataDef *pt);
 static bool tsubst_is_class_object_arg(DataDef *dd);
@@ -819,6 +820,50 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	return winner;
 }
 
+bool CirBuilder::system_header_pack_element_call_resolves(
+	TokenPackExpansion *pe, const std::map<DataDef *, DataDef *> &subst,
+	DataDefTemplateParam *tp, DataDef *elem, size_t elem_index,
+	DataDefCLASS *target)
+{
+	if (!pe || !pe->pattern || !tp || !elem || !target || !m_prog)
+		return false;
+	TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(pe->pattern);
+	if (!call)
+		return false;
+	std::map<unsigned, DataDef *>::iterator pmi =
+		m_tsubst_active_pack_params.find(tp->param_index);
+	if (pmi == m_tsubst_active_pack_params.end() || !pmi->second)
+		return false;
+	std::string value_name =
+		pack_value_name_in_pattern(pe->pattern, tp->param_index);
+	std::map<DataDef *, DataDef *> elem_subst = subst;
+	elem_subst[pmi->second] = elem;
+	int saved_index = m_tsubst_copy_pack_index;
+	size_t saved_elem = m_tsubst_copy_pack_elem;
+	const char *saved_name = m_tsubst_copy_pack_value_name;
+	m_tsubst_copy_pack_index = (int)tp->param_index;
+	m_tsubst_copy_pack_elem = elem_index;
+	m_tsubst_copy_pack_value_name =
+		value_name.empty() ? NULL : value_name.c_str();
+	bool changed = false;
+	std::string err;
+	Variable *winner = resolve_copied_dependent_call(
+		call, &elem_subst, &changed, NULL, &err);
+	m_tsubst_copy_pack_index = saved_index;
+	m_tsubst_copy_pack_elem = saved_elem;
+	m_tsubst_copy_pack_value_name = saved_name;
+	if (!changed || !winner)
+		return false;
+	FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
+	if (!wfd || !wfd->returns_reference())
+		return false;
+	DataDef *ret = &wfd->return_value_type();
+	DataDefCLASS *rc = as_class_instance(ret);
+	if (!rc)
+		rc = class_behind(ret);
+	return rc && (rc == target || rc->is_or_derives_from(target));
+}
+
 void CirBuilder::rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
 						  const std::map<DataDef *, DataDef *> *subst)
 {
@@ -931,8 +976,11 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 								if (pe->pattern && pe->pattern->file && m_prog
 								    && m_prog->is_system_header_path(
 									    pe->pattern->file)) {
-									unsupported_class_arg = true;
-									break;
+									if (!system_header_pack_element_call_resolves(
+										    pe, *subst, tp, elem, e, pc)) {
+										unsupported_class_arg = true;
+										break;
+									}
 								}
 								manual_class_pack_lowering = true;
 								continue;
