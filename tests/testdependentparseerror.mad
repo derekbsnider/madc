@@ -1,0 +1,10 @@
+struct Broken {
+    template<class... Args>
+    static void bad(Args + ... ps) { }
+};
+
+int main() {
+    Broken b;
+    b.bad(1, 2);
+    return 0;
+}

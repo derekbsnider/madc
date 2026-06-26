@@ -36476,6 +36476,26 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     TokenCpnd *param_scope = compounds.empty() ? NULL : compounds.top();
     if ( param_scope )
 	param_scope->method = &temp_param_method;
+    bool param_scope_active = param_scope != NULL;
+    struct ParamScopeGuard {
+	Program &pgm;
+	TokenCpnd *scope;
+	bool &active;
+	ParamScopeGuard(Program &p, TokenCpnd *s, bool &a)
+	    : pgm(p), scope(s), active(a) {}
+	~ParamScopeGuard()
+	{
+	    if ( active && !pgm.compounds.empty()
+	      && pgm.compounds.top() == scope )
+		pgm.popCompound();
+	}
+    } param_scope_guard(*this, param_scope, param_scope_active);
+    auto pop_param_scope = [&]() {
+	if ( param_scope_active && !compounds.empty()
+	  && compounds.top() == param_scope )
+	    popCompound();
+	param_scope_active = false;
+    };
 
     // look for parameters
     while ( (nt=nextToken()) && nt->id() != TokenID::tkClBrk )
@@ -37275,19 +37295,16 @@ paramdecl:
 		pushToken(open);
 		pushToken(next);
 		TokenDataType tdt(next_return->name.c_str(), *next_return);
-		if ( !compounds.empty() && compounds.top() == param_scope )
-		    popCompound();
+		pop_param_scope();
 		parseDeclaration(&tdt);
 		return;
 	    }
-	    if ( !compounds.empty() && compounds.top() == param_scope )
-		popCompound();
+	    pop_param_scope();
 	    parseFunction(*next_return, next_id, owner_class, multi_ret,
 			  false, return_typedef_alias, static_class_method);
 	    return;
 	}
-	if ( !compounds.empty() && compounds.top() == param_scope )
-	    popCompound();
+	pop_param_scope();
 	return;
     }
 
@@ -37316,8 +37333,7 @@ paramdecl:
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
-	if ( !compounds.empty() && compounds.top() == param_scope )
-	    popCompound();
+	pop_param_scope();
 	return;
     }
 
@@ -37364,8 +37380,7 @@ paramdecl:
 	    func->defaulted_or_deleted = !pure_virtual;
 	    func->is_deleted = explicitly_deleted;
 	    func->pure_virtual = pure_virtual;
-	    if ( !compounds.empty() && compounds.top() == param_scope )
-		popCompound();
+	    pop_param_scope();
 	    return;
 	}
     }
@@ -37478,8 +37493,7 @@ paramdecl:
 	    Throw << "Unexpected end of input in constructor initializer list" << flush;
     }
 
-    if ( !compounds.empty() && compounds.top() == param_scope )
-	popCompound();
+    pop_param_scope();
 
     func->declaration_only = false;
     func->emit_symbol.clear();

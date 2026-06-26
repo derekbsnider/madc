@@ -7,10 +7,11 @@
 > value/ref/expression/forwarding-call/constructor pack fan-out plus covered
 > system-header placement-new pack fan-out and simple class `_Up` placement-new
 > tsubst plus direct `__destroy(T*)` helper tsubst and local non-pack nested
-> namespace-call tsubst plus nested function-template instantiation):** fulltest
-> **669 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
+> namespace-call tsubst plus nested function-template instantiation, plus
+> dependent-parse-error scope balancing):** fulltest
+> **670 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
 > GREEN). The env-gated tsubst path is also green:
-> `MADC_XTEST_DEP_PARSE=1 make -C src fulltest` reports **669/0/0/18**.
+> `MADC_XTEST_DEP_PARSE=1 make -C src fulltest` reports **670/0/0/18**.
 > `bin/test_cir` reports **82 test cases, 1014 assertions, 4 skipped** after
 > adding coverage for direct `tsubst_type_args` binding of a body-only template
 > parameter and direct `tsubst_type_arg_packs` capture for a variadic member
@@ -42,7 +43,10 @@
 > the constructor reference parameter, plus converted system-header
 > reference-forwarded placement-new packs where that returned class is accepted
 > by the target's single-argument converting constructor and a target temp is
-> materialized before the outer constructor call. Phase 4 is now tracked at
+> materialized before the outer constructor call. The latest robustness slice
+> also adds `tests/testdependentparseerror.mad`, proving an env-gated dependent
+> parse error balances the temporary parameter compound scope and exits
+> nonzero without SIGSEGV. Phase 4 is now tracked at
 > roughly **74% implemented** by coverage weight. Broader system-header
 > destructor/object-address pack surfaces, class-valued placement-new
 > constructor argument packs beyond those direct/converted apertures, broader

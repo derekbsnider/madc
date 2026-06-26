@@ -12,12 +12,14 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 ➡️ **START HERE — next Codex session (2026-06-26). Read THIS block; you do NOT need the
 narrative below it to begin.**
 
-**TRUSTABLE CHECKPOINT:** HEAD at the converted system-header reference-forwarded placement-new
-pack slice, working tree clean after commit. Gate GREEN both halves (verified 2026-06-26):
-`make -C src fulltest` 669/0/0/18 + drift gates; `env MADC_XTEST_DEP_PARSE=1 make -C src fulltest` 669/0/0/18; `test_cir` 82/1014/4. Phase 4 ≈74% by coverage weight.
+**TRUSTABLE CHECKPOINT:** HEAD at the parser robustness slice after the converted
+system-header reference-forwarded placement-new pack slice, working tree clean after commit.
+Gate GREEN both halves (verified 2026-06-26):
+`make -C src fulltest` 670/0/0/18 + drift gates; `env MADC_XTEST_DEP_PARSE=1 make -C src fulltest` 670/0/0/18; `test_cir` 82/1014/4. Phase 4 ≈74% by coverage weight.
 Trust this commit — verify with `git log -1` + a smoke test, not a full rehydration.
 
-**JUST LANDED:** the first direct SYSTEM-HEADER reference-forwarded placement-new pack body.
+**JUST LANDED:** Fix #2 parser robustness plus the earlier first direct SYSTEM-HEADER
+reference-forwarded placement-new pack body.
 The old `is_system_header_path(pe->pattern->file) → unsupported_class_arg` guard now admits
 one element only when its nested call reuses **`resolve_copied_dependent_call`** (`8ede28a5`)
 and the resolved reference return is the same/derived class that the constructor reference
@@ -34,12 +36,14 @@ lowers system-header converted reference-forwarded placement-new packs` and prov
 destructor-pack slice is BLOCKED on the `Args*... ps` parser crash diagnosed in the ROOT-CAUSE
 block above. Ordered queue — each its own clean gated commit; keep going until budget-low or a
 genuinely-hard wall, then record findings and stop:
-  1. **FIX #2 (robustness, priority):** a parse error must NOT SIGSEGV. Balance `compounds` on
-     the mis-parse error-recovery path (RAII/save-restore) so no stale scope entry dangles in
-     `active_cpp_lookup_namespace` (parser.cpp:12547-48). Confirm the unbalanced push in a `-g`
-     build; repro `tmp/destroy_pack_probe.mad`. Add a `.expect_err` test proving the bad input
-     reports cleanly (nonzero exit, NO crash).
-  2. **FIX #1 (feature):** support pointer-parameter-pack call expansion (`Args*... ps`) so it
+  1. ✅ **FIX #2 (robustness, priority) LANDED (Codex, 2026-06-26):** `parseFunction`
+     now exception-safely balances its temporary parameter compound scope, so the
+     env-gated dependent parse error no longer leaves a stale `compounds` entry
+     whose stack-local `Method` later SIGSEGVs in `active_cpp_lookup_namespace`.
+     Regression: `tests/testdependentparseerror.mad` + `.expect_err`. Gates:
+     fulltest flag-off and flag-on 670/0/0/18; `test_cir` 82/1014/4; six
+     flag-on canaries green.
+  2. **FIX #1 (feature; NEXT):** support pointer-parameter-pack call expansion (`Args*... ps`) so it
      stops mis-parsing ("Expecting identifier after type").
   3. **LAND the destructor-pack tsubst slice** now unblocked (`_Destroy`/`_Destroy_aux`),
      keeping the `__destroy` guard honest — no relax until the marker shape is genuinely real.
@@ -86,7 +90,7 @@ matching (Rule #7); Hybrid B stands (shell at parse, BODIES via tsubst); the sys
 bail stays for genuinely-unsupported shapes — this slice MOVES one class onto tsubst; commit
 each slice clean + gated; keep mirrors (handoff/status/CHANGELOG/KG) in agreement.
 
-**GATE (per slice):** `make -C src fulltest` 669/0/0/18 + the six canaries green under
+**GATE (per slice):** `make -C src fulltest` 670/0/0/18 + the six canaries green under
 `MADC_XTEST_DEP_PARSE=1` + a new `test_cir` case proving the covered system-header pack goes
 through tsubst (`cir_count_tree1_copies > 0` AND correct runtime value). Build hygiene: NEVER
 pipe `make` through `tail`/`head` (masks errors, fakes exit 0); after editing

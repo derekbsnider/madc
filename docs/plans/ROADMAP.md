@@ -83,9 +83,12 @@ high-level" — the answer is both.**
   reference class has a single-argument converting constructor for it and the
   copied body materializes the converted target temp before the outer
   constructor call. Broader system-header destructor/object-address packs still
-  fall back.
+  fall back. A 2026-06-26 robustness slice also balances `parseFunction`'s
+  temporary parameter compound scope on dependent-pattern parse errors, so
+  malformed retained member-template pack declarators report cleanly instead of
+  leaving a dangling `compounds` entry.
   Validation is green both
-  flag-off and flag-on at **669 passed / 0 failed / 0 timed out / 18 skipped**;
+  flag-off and flag-on at **670 passed / 0 failed / 0 timed out / 18 skipped**;
   `test_cir` is **82 test cases / 1014 assertions / 4 skipped**. Phase 4 is
   roughly **74% implemented** by coverage weight, not session count.
   **2026-06-25:** the generic `is_type_dependent` predicate (the

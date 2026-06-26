@@ -4,6 +4,13 @@
 
 ### Two-tree tsubst widening
 
+- Hardened env-gated dependent-pattern parse failure handling. `parseFunction`
+  now exception-safely balances its temporary parameter compound scope, so a
+  malformed retained member-template parameter list cannot leave a dangling
+  `compounds` entry whose stack-local `Method` later SIGSEGVs in
+  `active_cpp_lookup_namespace`. Added `tests/testdependentparseerror.mad` with
+  `.expect_err` coverage; normal and `MADC_XTEST_DEP_PARSE=1` fulltest are now
+  670/0/0/18.
 - Added the generic `is_type_dependent` predicate — the step-C spine and the
   `type_dependent_expression_p` (gcc/cp/pt.cc:30357) analogue: an expression is
   type-dependent iff its type involves a template-parameter placeholder, with
