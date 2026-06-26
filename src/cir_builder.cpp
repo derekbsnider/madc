@@ -9957,6 +9957,26 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if ((tv->var.is_reference()) && tv->var.type
 			    && tv->var.type->is_pointer())
 				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);
+			// Two-tree tsubst: while building a dependent-pattern body
+			// (m_tsubst_pattern_mode), the body-bound TokenVar may have lost the
+			// reference wrapper the method's PARAMETER still carries — the
+			// dependent parse binds the body identifier to a non-reference
+			// Variable while the recipe FuncDef records the param as a DataDefREF.
+			// Without the deref a value-read of a reference parameter (`*p = a`
+			// where `a` is `int& a`) emits the bare pointer id, so the
+			// instantiated body becomes `*p = a` (pointer-into-int) instead of
+			// `*p = *a`. Consult the current method's real parameter list (the
+			// same source of truth arg_spelling uses in member_template_method_call)
+			// and deref a value-read of a by-reference parameter.
+			if (m_tsubst_pattern_mode && m_cur_method
+			    && !tv->var.is_reference()) {
+				for (Variable *pv : m_cur_method->parameters)
+					if (pv && pv->is_reference()
+					    && pv->type && pv->type->is_pointer()
+					    && pv->name == tv->var.name)
+						return node1(N_DEREF,
+							id(tv->var.name.c_str(), tb), tb);
+			}
 			// GNU nested-function / [&]-lambda capture: an enclosing local/param
 			// the body reads is captured by reference, lowered to a hidden
 			// pointer parameter `T *name`. The value read is `(*name)`.

@@ -12,6 +12,111 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 ➡️ **START HERE — next Codex session (2026-06-26). The direction CHANGED; this block
 SUPERSEDES the pack-coverage NEXT-SLICE text below it.**
 
+---
+✅ **STEP 3.5 RESOLVED — `41ab550b` "fix(cir): deref reference-param value reads in tsubst dependent-pattern body" (Claude 2026-06-26). Regression fixed ADDITIVELY; Codex's `bb44557c` gains fully preserved.**
+
+The `bb44557c` flag-on regression (3 tests garbage) is FIXED. **Both gates now 670/0/0/18
+(flag-off AND `MADC_XTEST_DEP_PARSE=1`), six canaries green, `test_cir` all pass, zero new
+warnings — AND engagement stays 16 hit / 19 fallback (Codex's gains kept).** `testmemtmpl{refparam,fwdrefpack,typedefparam}` → `x=77` flag-on.
+
+THE FIX (`src/cir_builder.cpp`, the reference value-read at the `// A numeric reference
+parameter` comment, ~line 9957): while building a dependent-pattern body
+(`m_tsubst_pattern_mode`), the body-bound `TokenVar` for a reference parameter has LOST the
+`DataDefREF` wrapper (the dependent parse binds the body identifier to a non-reference
+Variable, even though the recipe FuncDef still records the param type as a reference —
+*verified: `recipe_fd` param is_ref=1 while the body var is_ref=0*). So the normal
+reference-read deref (`is_reference() && type->is_pointer()` → `*name`) never fired, and the
+body emitted bare `a` → instantiated body `*p = a` (pointer-into-int) instead of `*p = *a`. The
+fix adds a SECOND condition right after the normal one: in pattern mode, if the body var is not
+itself a reference but matches (by name) a by-reference PARAMETER of `m_cur_method`
+(`pv->is_reference() && pv->type->is_pointer()`), deref it. This is the same param source of
+truth `arg_spelling` uses in `member_template_method_call`. Address-of (`&a`) is unaffected (it
+takes the separate `TokenAddrOf` path, not this value-read). NOTE the documented contract at
+`tsubst_method_body` (~13103, "ordinary reference-parameter VALUE reads stay on the parsed-body
+fallback") is now obsolete for non-dependent refs — they tsubst correctly; the comment should
+be updated when that guard is next touched.
+
+**NEXT (Codex): the -O2 measurement (now unblocked — 670 is restored).** Build
+`make -j4 -C src CXXFLAGS="-std=c++11 -Wall -O2"`, then `MADC_XTEST_DEP_PARSE=1 bin/madc
+--show-stats tests/testsubscript.mad`: confirm engaged=16 and read the instantiate time vs
+flag-off. Per the standing perf finding tsubst may still be net-neutral at -O2 until the
+header-forest lands (recipe-build overhead) — that's expected; the point of 3.5 was to make the
+16 hits CORRECT so the lever is real. Then resume coverage of the next ranked fallback shapes.
+
+---
+📋 **HISTORICAL — `bb44557c` ROUND RESULT (the regression 3.5 fixed; kept for context).** DO step 3.5 BEFORE any new coverage. **(SUPERSEDED by ✅ above — 3.5 is done.)**
+
+Codex landed the step-3 allocator-cluster work as `bb44557c` (extends the GENERIC tsubst
+machinery — `resolve_copied_dependent_call`, `copy_cir_subtree`, `tsubst_method_body`,
+`tsubst_call_can_rewrite_after_subst`, `pack_value_name_in_pattern`; +40 unit-test lines.
+Hardcoding scan CLEAN — no callee-name `== "construct"` matching). Then it walled.
+
+- ✅ **Coverage lever moved (bar half 1 MET):** flag-on `testsubscript` tsubst engagement
+  **`6 hit / 29 fallback` → `16 hit / 19 fallback`** (more than doubled hits). The approach
+  works — it really engages the allocator cluster.
+- ❌ **But it REGRESSED 3 flag-on tests → gate FAILS (flag-on 667/3, not 670).** Root cause:
+  the newly-engaged tsubst now reaches member-template **reference-parameter** cases that
+  previously *fell back* to re-parse (correct). The tsubst'd body treats a **reference param
+  as a raw integer** → garbage. Signature (all 3 want `x=77`):
+  - `testmemtmplrefparam` — flag-off `x=77` ✅ / flag-on `x=1287181984` ❌ (warns at 14:17:
+    `assigning pointer without cast to integer`)
+  - `testmemtmplfwdrefpack` — flag-off `x=77` ✅ / flag-on `x=1278305456` ❌
+  - `testmemtmpltypedefparam` — flag-off `x=77` ✅ / flag-on garbage ❌
+- ✅ **Production UNAFFECTED:** flag-OFF (the default `bin/madc` path) is clean **670/0/0/18**.
+  The regression is confined to the opt-in `MADC_XTEST_DEP_PARSE=1` path. `make -j4 -C src`
+  builds clean; `test_cir` 87/1078/4.
+
+**🔬 ROOT CAUSE — FULLY DIAGNOSED & VERIFIED (Claude 2026-06-26, via emit-c diff + instrumented
+probes). This is a one-line bug; Codex implements the fix.**
+
+The instantiated SIGNATURE is correct in both modes (`void C__set__mti(int *a, int *p)` — the
+`int& a`→`int *a` lowering is fine). The bug is in the **body**, confirmed by `--emit=c11`:
+- flag-OFF (re-parse, correct): body is `((*p) = (*a));` — reference param `a` is DEREFERENCED.
+- flag-ON (tsubst hit, broken): body is `((*p) = a);` — `a` (the `int*` ref slot) is NOT
+  dereferenced → assigns the pointer into `int *p`'s target → c2mir "pointer without cast to
+  integer" + garbage.
+
+WHY: the normal value-read of a reference variable dereferences at **`cir_builder.cpp:10007`**
+(`if (tv->var.is_reference() && tv->var.type->is_pointer()) return N_DEREF(id(name))`). An
+instrumented probe at that line shows, for the body read of `a`:
+- flag-OFF: `is_ref=1 type_is_ptr=1 → DEREF` (re-parse binds `a` as a reference) → `*a` ✅
+- flag-ON pattern build (`m_tsubst_pattern_mode=1`): `is_ref=0 type_is_ptr=0 → bare` → `a` ❌
+
+So **the tsubst dependent pattern binds a NON-dependent reference parameter (`int& a`) as a
+NON-reference variable** (`is_reference()==false`); the deref at :10007 never fires, the pattern
+emits the bare pointer id, the copy preserves it. The pattern is built in
+`build_dependent_pattern` (parser.cpp ~33712) via `parseFunction(..., dependent_parse_in_progress=true)`
+— that dependent parse drops the reference-ness of a non-dependent ref param.
+
+WHY only non-dependent refs (and why the 16 allocator hits are fine): the allocator
+forwarding-ref args (`Args&&...`, and the ref-returning `std::forward`/`std::move` shapes) are
+lowered by the SEPARATE pack / `ref_returning_call_type` / `ref_param_arg_addr` machinery that
+already derefs explicitly. Only a PLAIN value-read of a non-dependent reference (`*p = a`) hits
+the unhandled :10007 gap.
+
+**STEP 3.5 (do FIRST, gated): make the tsubst body deref a reference-parameter read — restore
+flag-on 670 while KEEPING engagement = 16.** Recommended fix layer (deepest, no special-case):
+make `build_dependent_pattern`/`parseFunction`'s dependent parse declare a non-dependent
+reference param so `Variable::is_reference()` is TRUE in the pattern — then the existing
+`cir_builder.cpp:10007` deref handles it automatically and the copy preserves it. Alternative
+(if the parser layer proves too entangled): in the tsubst copy path, when copying an `N_ID`
+that names a reference parameter of the INSTANTIATED FuncDef, wrap it in `N_DEREF`. Prefer the
+pattern-fidelity fix.
+
+**⚠️ DO NOT "fix" by tightening `tsubst_body_has_unsupported_reference_param` to reject
+non-dependent refs (the obvious-looking gate-around). VERIFIED 2026-06-26: removing bb44557c's
+`&& tsubst_datadef_involves_template_param(...)` qualifier there fixes the 3 tests BUT drops
+testsubscript engagement `16 → 6` — that guard loosening is load-bearing for the allocator
+gains (their non-dependent refs DO lower correctly via the pack/ref machinery). The guard is
+RIGHT to admit them; the gap is specifically the plain value-read deref above.**
+
+**This round's MEASURED bar status:** engagement UP ✅ / correctness regressed ❌ / -O2 timing
+NOT measured (skipped — disqualified at the correctness gate; measure only after 3.5 restores
+670). So `bb44557c` is a correct-direction WIP, not a landable result. Tree is at `bb44557c`
+(16 hits, gate red flag-on) — Claude restored it clean after the investigation; no WIP left.
+
+---
+
 **TRUSTABLE CHECKPOINT:** HEAD `915923f7` (steps 1–2 below LANDED: engagement counter +
 ranked fallback profile; the step-3 coverage attempt was reverted this round). Tree clean.
 Gate GREEN both halves at -O0 (re-verified by Claude 2026-06-26): `make -j4 -C src fulltest`
@@ -68,13 +173,16 @@ queue form, grind until budget-low or a wall:**
      `CIR: tsubst engagement counters split hits and fallbacks`; gates fulltest
      flag-off and flag-on 670/0/0/18; `test_cir` 86/1067/4; six flag-on
      canaries green.
-  3. **← YOU ARE HERE. Cover the top real fallback patterns** — so engagement (and the
-     counter) rises on a real workload, not just synthetic test_cir cases. **Start with the
-     allocator construct/destroy cluster** (`allocator_traits::construct`/`destroy` +
-     `__new_allocator::construct` = ~11 of the 29 testsubscript fallbacks). ⚠️ A first attempt
-     at this cluster was started and **REVERTED** this round — it's the hard real-system-header
-     instantiation (the actual wall the whole campaign has been circling). Expect it to take
-     more than one attempt; keep each gated commit small.
+  3. 🟡 **WIP-LANDED (not gate-passing) as `bb44557c`.** Covered the allocator construct/destroy
+     cluster (`allocator_traits::construct`/`destroy` + `__new_allocator::construct`); engagement
+     rose **6→16 hits** on real `testsubscript`. BUT it over-reached into member-template
+     reference-param cases and regressed 3 flag-on tests (see 🔴 ROUND RESULT block at top).
+     **→ DO step 3.5 (ref-param deref fix) BEFORE any further coverage.**
+  3.5. **← YOU ARE HERE. Fix ref-param deref in the tsubst'd body** so `bb44557c`'s 16 hits are
+     all correct: restore flag-on 670/0/0/18 (the 3 `testmemtmpl{refparam,fwdrefpack,typedefparam}`
+     tests back to `x=77`) while keeping engagement ≥16. Deepest-layer fix — dereference the
+     referent on reference-param access; do NOT exclude ref-param cases from engagement. Details
+     + signature in the 🔴 ROUND RESULT block at the top of §0.
   4. **SUCCESS = MEASURABLE at -O2:** tsubst-engaged count UP and `testsubscript` instantiate
      time DOWN (flag-on now *faster* than flag-off, not slower). That is the bar — "another
      covered construct" with no measured movement does NOT count.
