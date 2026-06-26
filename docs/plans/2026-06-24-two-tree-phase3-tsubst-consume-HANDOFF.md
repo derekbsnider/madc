@@ -12,10 +12,11 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 ➡️ **START HERE — next Codex session (2026-06-26). The direction CHANGED; this block
 SUPERSEDES the pack-coverage NEXT-SLICE text below it.**
 
-**TRUSTABLE PRE-ROUND CHECKPOINT:** HEAD `26dd26f4`, tree clean. Gate GREEN both
-halves at -O0 (verified 2026-06-26): `make -j4 -C src fulltest` 670/0/0/18 +
-drift gates; flag-on (`MADC_XTEST_DEP_PARSE=1`) 670/0/0/18; `test_cir`
-85/1055/4. Verify with `git log -1` + a smoke test, not a full rehydration.
+**TRUSTABLE CHECKPOINT:** HEAD `915923f7` (steps 1–2 below LANDED: engagement counter +
+ranked fallback profile; the step-3 coverage attempt was reverted this round). Tree clean.
+Gate GREEN both halves at -O0 (re-verified by Claude 2026-06-26): `make -j4 -C src fulltest`
+670/0/0/18 + drift gates; flag-on (`MADC_XTEST_DEP_PARSE=1`) 670/0/0/18; `test_cir` 86/1067/4.
+Verify with `git log -1` + a smoke test, not a full rehydration.
 
 **⚡ PERF REPRIORITIZATION (profiled 2026-06-26 — read before grinding more coverage):**
 - **madc -O2 ≈ g++ PARITY.** `testsubscript` compiles in **0.800s at -O2** vs g++ **0.796s**
@@ -67,8 +68,13 @@ queue form, grind until budget-low or a wall:**
      `CIR: tsubst engagement counters split hits and fallbacks`; gates fulltest
      flag-off and flag-on 670/0/0/18; `test_cir` 86/1067/4; six flag-on
      canaries green.
-  3. **Cover the top real fallback patterns** — so engagement (and the counter) actually
-     rises on a real workload, not just synthetic test_cir cases.
+  3. **← YOU ARE HERE. Cover the top real fallback patterns** — so engagement (and the
+     counter) rises on a real workload, not just synthetic test_cir cases. **Start with the
+     allocator construct/destroy cluster** (`allocator_traits::construct`/`destroy` +
+     `__new_allocator::construct` = ~11 of the 29 testsubscript fallbacks). ⚠️ A first attempt
+     at this cluster was started and **REVERTED** this round — it's the hard real-system-header
+     instantiation (the actual wall the whole campaign has been circling). Expect it to take
+     more than one attempt; keep each gated commit small.
   4. **SUCCESS = MEASURABLE at -O2:** tsubst-engaged count UP and `testsubscript` instantiate
      time DOWN (flag-on now *faster* than flag-off, not slower). That is the bar — "another
      covered construct" with no measured movement does NOT count.

@@ -676,6 +676,7 @@ master and unblocks Tracks 3, 5, 6, and AOT.**
 | 2.8 | Quality of life | Ongoing | **Started** — access control, auto token position | [cpp-support.md](cpp-support.md) |
 | 2.9 | Generic extern class ctor/dtor | — | **DONE** (v0.21.0) — replaces per-type switch boilerplate | — |
 | 2.10 | **Single-name local instantiations (flattened→Itanium-mangled)** | 1-2 wk | **Planned** | — |
+| 2.11 | **Self-host: madc compiles its own C++11 source** (ultimate dogfood) | large | **Planned (2026-06-26)** — feature audit done | failure-driven `selfhost` harness |
 
 **2.3 remaining:** pointer-to-const enforcement (`*p` writes), const methods.
 **2.7 remaining:** exceptions are SCALAR-ONLY (int/double/cstr/`catch(...)`).
@@ -685,6 +686,16 @@ carries no thrown object + catch dispatch is an integer-tag chain, not an RTTI
 type match. Tracked as **P1.1e** in [cpp-support.md](cpp-support.md).
 **2.8 remaining:** enum class, auto type deduction, broader real-iostream
 output replacement, scope-level destruction.
+**2.11 — Self-hosting (the ultimate dogfood test).** Audit (2026-06-26) of madc's own
+`src/`+`include/` C++11: heavy templates/variadics, `dynamic_cast` (871), range-for (386),
+lambdas (158), `std::move`, decltype, full STL (vector/map/set **+ stack/queue/deque/list**),
+streams (sstream/fstream), `<algorithm>` (`std::sort` w/ lambda comparators), `<functional>`
+(`std::function`×16), `unique_ptr`×32. Real pure-virtual/abstract = **0 uses** (not a blocker).
+Gaps to build, hardest-first: **`std::function`** (type erasure over lambdas) → **`unique_ptr`**
+(move-only RAII) → **`<algorithm>`** over iterators → **stack/queue/deque/list** → full
+**stringstream/fstream** classes → decltype/alias-template/enum-class/`=default`/`=delete`
+coverage. First step = a failure-driven `selfhost` harness: run madc (parse/sema) on each
+src/include file, pass/fail → the empirical gap list; climb smallest TU → `parser.cpp`.
 
 **2.10 — name every madc-local template instantiation by its Itanium mangled
 name, retiring the flattened-key scheme.** Today madc carries TWO naming schemes
