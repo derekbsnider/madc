@@ -4,14 +4,23 @@
 
 ### Two-tree tsubst widening
 
+- Admitted the first `_Destroy_aux`-style member-template body named
+  `__destroy` onto the env-gated Tree-1 tsubst path only when the retained body
+  itself contains a direct `__destroy(T*)` compiler-intrinsic marker. This keeps
+  iterator/object-address destructor forms on the fallback while letting direct
+  marker bodies substitute the concrete pointee and lower to the class
+  destructor/no-op path. Added `test_cir` coverage proving the member body is
+  copied (`cir_count_tree1_copies > 0`) and runs a destructor side effect;
+  normal and `MADC_XTEST_DEP_PARSE=1` fulltest remain 670/0/0/18, with
+  `test_cir` now 84/1043/4.
 - Added pointer-parameter-pack call expansion for direct packs such as
   `Args*... ps`. Function-template deduction now recognizes pointer-qualified
   trailing packs and binds the pack element to the pointee type, while the
   retained declaration/body substitution keeps the pointer suffix attached to
   every generated parameter (`T0* ps__0, T1* ps__1`). Added `test_cir`
   coverage proving the env-gated Tree-1 path fans out `sink(ps...)` and runs to
-  34; normal and `MADC_XTEST_DEP_PARSE=1` fulltest remain 670/0/0/18, with
-  `test_cir` now 83/1026/4.
+  34; at that slice normal and `MADC_XTEST_DEP_PARSE=1` fulltest remained
+  670/0/0/18, with `test_cir` at 83/1026/4.
 - Hardened env-gated dependent-pattern parse failure handling. `parseFunction`
   now exception-safely balances its temporary parameter compound scope, so a
   malformed retained member-template parameter list cannot leave a dangling

@@ -89,11 +89,16 @@ high-level" — the answer is both.**
   pointer-parameter-pack slice teaches deduction and substitution the direct
   `Args*... ps` spelling, binding `Args` to each pointee type and fanning out
   the declaration as `T0* ps__0, T1* ps__1`; the scratch destructor-pack probe
-  now parses and runs under `MADC_XTEST_DEP_PARSE`. Broader system-header
-  destructor/object-address packs still fall back.
+  now parses and runs under `MADC_XTEST_DEP_PARSE`. The follow-up
+  destructor-pack slice admits `_Destroy_aux`-style member-template bodies named
+  `__destroy` only when the retained body itself contains a direct
+  `__destroy(T*)` marker, so concrete pointee substitution can reuse the
+  existing destructor/no-op lowering while iterator/object-address destructor
+  forms still fall back. Broader system-header destructor/object-address packs
+  still fall back.
   Validation is green both
   flag-off and flag-on at **670 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **83 test cases / 1026 assertions / 4 skipped**. Phase 4 is
+  `test_cir` is **84 test cases / 1043 assertions / 4 skipped**. Phase 4 is
   roughly **74% implemented** by coverage weight, not session count.
   **2026-06-25:** the generic `is_type_dependent` predicate (the
   `type_dependent_expression_p` / pt.cc:30357 analogue) landed and is COMMITTED

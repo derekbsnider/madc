@@ -12489,6 +12489,160 @@ static bool tsubst_datadef_involves_template_param(DataDef *dd)
 	return false;
 }
 
+static bool tsubst_pattern_has_destroy_template_pointee(TokenBase *tb)
+{
+	if (!tb)
+		return false;
+	if (TokenPackExpansion *pe = dynamic_cast<TokenPackExpansion *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(pe->pattern);
+	if (TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb)) {
+		if (tsubst_destroy_call_has_template_pointee(tc))
+			return true;
+		for (TokenBase *p : tc->parameters)
+			if (tsubst_pattern_has_destroy_template_pointee(p))
+				return true;
+		if (TokenMember *tm = dynamic_cast<TokenMember *>(tc))
+			if (tsubst_pattern_has_destroy_template_pointee(tm->parent_expr))
+				return true;
+		return false;
+	}
+	if (TokenCpnd *cp = dynamic_cast<TokenCpnd *>(tb)) {
+		for (TokenStmt *s : cp->statements)
+			if (tsubst_pattern_has_destroy_template_pointee(s))
+				return true;
+		for (TokenBase *d : cp->deferred)
+			if (tsubst_pattern_has_destroy_template_pointee(d))
+				return true;
+	}
+	if (TokenDecl *td = dynamic_cast<TokenDecl *>(tb)) {
+		if (tsubst_pattern_has_destroy_template_pointee(td->initialize))
+			return true;
+		for (TokenBase *i : td->init_list)
+			if (tsubst_pattern_has_destroy_template_pointee(i))
+				return true;
+		for (TokenBase *a : td->ctor_args)
+			if (tsubst_pattern_has_destroy_template_pointee(a))
+				return true;
+	}
+	if (TokenOperator *op = dynamic_cast<TokenOperator *>(tb)) {
+		if (TokenTerQ *tq = dynamic_cast<TokenTerQ *>(op)) {
+			if (tsubst_pattern_has_destroy_template_pointee(tq->condition)
+			    || tsubst_pattern_has_destroy_template_pointee(tq->true_expr)
+			    || tsubst_pattern_has_destroy_template_pointee(tq->false_expr))
+				return true;
+		}
+		if (tsubst_pattern_has_destroy_template_pointee(op->left)
+		    || tsubst_pattern_has_destroy_template_pointee(op->right))
+			return true;
+	}
+	if (TokenRETURN *tr = dynamic_cast<TokenRETURN *>(tb)) {
+		if (tsubst_pattern_has_destroy_template_pointee(tr->returns))
+			return true;
+		for (TokenBase *r : tr->return_exprs)
+			if (tsubst_pattern_has_destroy_template_pointee(r))
+				return true;
+	}
+	if (TokenSubscript *ts = dynamic_cast<TokenSubscript *>(tb)) {
+		if (tsubst_pattern_has_destroy_template_pointee(ts->index))
+			return true;
+		for (TokenBase *e : ts->extra_indices)
+			if (tsubst_pattern_has_destroy_template_pointee(e))
+				return true;
+	}
+	if (TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(tse->base_expr)
+		    || tsubst_pattern_has_destroy_template_pointee(tse->index);
+	if (TokenCast *tc = dynamic_cast<TokenCast *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(tc->expr);
+	if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(ta->expr);
+	if (TokenDerefExpr *td = dynamic_cast<TokenDerefExpr *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(td->expr);
+	if (TokenComplexPart *tcp = dynamic_cast<TokenComplexPart *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(tcp->expr);
+	if (TokenStructLit *tsl = dynamic_cast<TokenStructLit *>(tb))
+		for (TokenBase *i : tsl->inits)
+			if (tsubst_pattern_has_destroy_template_pointee(i))
+				return true;
+	if (TokenObjTemp *tot = dynamic_cast<TokenObjTemp *>(tb))
+		for (TokenBase *a : tot->ctor_args)
+			if (tsubst_pattern_has_destroy_template_pointee(a))
+				return true;
+	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb)) {
+		if (tsubst_pattern_has_destroy_template_pointee(tn->placement)
+		    || tsubst_pattern_has_destroy_template_pointee(tn->array_size))
+			return true;
+		for (TokenBase *a : tn->ctor_args)
+			if (tsubst_pattern_has_destroy_template_pointee(a))
+				return true;
+	}
+	if (TokenDELETE *td = dynamic_cast<TokenDELETE *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(td->expr);
+	if (TokenIF *ti = dynamic_cast<TokenIF *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(ti->init_stmt)
+		    || tsubst_pattern_has_destroy_template_pointee(ti->condition)
+		    || tsubst_pattern_has_destroy_template_pointee(ti->condition_decl)
+		    || tsubst_pattern_has_destroy_template_pointee(ti->statement)
+		    || tsubst_pattern_has_destroy_template_pointee(ti->elsestmt);
+	if (TokenDO *tdo = dynamic_cast<TokenDO *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(tdo->statement)
+		    || tsubst_pattern_has_destroy_template_pointee(tdo->condition);
+	if (TokenWHILE *tw = dynamic_cast<TokenWHILE *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(tw->condition)
+		    || tsubst_pattern_has_destroy_template_pointee(tw->statement);
+	if (TokenFOR *tf = dynamic_cast<TokenFOR *>(tb)) {
+		if (tsubst_pattern_has_destroy_template_pointee(tf->initialize)
+		    || tsubst_pattern_has_destroy_template_pointee(tf->condition)
+		    || tsubst_pattern_has_destroy_template_pointee(tf->increment)
+		    || tsubst_pattern_has_destroy_template_pointee(tf->statement))
+			return true;
+		for (TokenBase *e : tf->init_extras)
+			if (tsubst_pattern_has_destroy_template_pointee(e))
+				return true;
+		for (TokenBase *e : tf->incr_extras)
+			if (tsubst_pattern_has_destroy_template_pointee(e))
+				return true;
+	}
+	if (TokenFOREACH *tf = dynamic_cast<TokenFOREACH *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(tf->container)
+		    || tsubst_pattern_has_destroy_template_pointee(tf->statement);
+	if (TokenCASE *tc = dynamic_cast<TokenCASE *>(tb)) {
+		if (tsubst_pattern_has_destroy_template_pointee(tc->value)
+		    || tsubst_pattern_has_destroy_template_pointee(tc->range_high))
+			return true;
+		for (TokenBase *s : tc->statements)
+			if (tsubst_pattern_has_destroy_template_pointee(s))
+				return true;
+	}
+	if (TokenSWITCH *ts = dynamic_cast<TokenSWITCH *>(tb)) {
+		if (tsubst_pattern_has_destroy_template_pointee(ts->init_stmt)
+		    || tsubst_pattern_has_destroy_template_pointee(ts->expression))
+			return true;
+		for (TokenBase *s : ts->pre_case_stmts)
+			if (tsubst_pattern_has_destroy_template_pointee(s))
+				return true;
+		for (TokenCASE *c : ts->cases)
+			if (tsubst_pattern_has_destroy_template_pointee(c))
+				return true;
+		if (tsubst_pattern_has_destroy_template_pointee(ts->defaultcase))
+			return true;
+	}
+	if (TokenTRY *tt = dynamic_cast<TokenTRY *>(tb)) {
+		if (tsubst_pattern_has_destroy_template_pointee(tt->try_body))
+			return true;
+		for (TokenBase *b : tt->catch_bodies)
+			if (tsubst_pattern_has_destroy_template_pointee(b))
+				return true;
+	}
+	if (TokenTHROW *tt = dynamic_cast<TokenTHROW *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(tt->throw_expr);
+	if (TokenLabel *tl = dynamic_cast<TokenLabel *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(tl->labeled);
+	if (TokenExplicitDtor *td = dynamic_cast<TokenExplicitDtor *>(tb))
+		return tsubst_pattern_has_destroy_template_pointee(td->obj);
+	return false;
+}
+
 static bool tsubst_pattern_has_dependent_call(TokenBase *tb)
 {
 	if (!tb)
@@ -12696,12 +12850,13 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 	FuncDef *source = fd ? fd->tsubst_source : NULL;
 	if (!source || !source->dependent_pattern)
 		return NULL;
-	// libstdc++'s _Destroy_aux<...>::__destroy depends on iterator
-	// dereference and concrete destructor lowering. The parsed-body
-	// fallback already handles it; keep this pack-expansion slice off it.
-	if (source->method_display_name == "__destroy")
-		return NULL;
 	TokenFunc *recipe = source->dependent_pattern;
+	// libstdc++'s _Destroy_aux<...>::__destroy is only safe on Tree-1 when
+	// the retained body already contains a direct `__destroy(T*)` marker.
+	// Iterator/object-address forms still fall back until widened deliberately.
+	if (source->method_display_name == "__destroy"
+	    && !tsubst_pattern_has_destroy_template_pointee(recipe))
+		return NULL;
 	FuncDef *recipe_fd = dynamic_cast<FuncDef *>(recipe->var.type);
 	// Ordinary reference-parameter VALUE reads stay on the parsed-body fallback.
 	// Reference parameter packs are narrower: the Tree-1 recipe has already

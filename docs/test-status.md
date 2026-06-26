@@ -9,11 +9,12 @@
 > tsubst plus direct `__destroy(T*)` helper tsubst and local non-pack nested
 > namespace-call tsubst plus nested function-template instantiation, plus
 > dependent-parse-error scope balancing and pointer-parameter-pack call
-> expansion):** fulltest
+> expansion plus guarded direct `_Destroy_aux`/member-template `__destroy`
+> tsubst):** fulltest
 > **670 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
 > GREEN). The env-gated tsubst path is also green:
 > `MADC_XTEST_DEP_PARSE=1 make -C src fulltest` reports **670/0/0/18**.
-> `bin/test_cir` reports **83 test cases, 1026 assertions, 4 skipped** after
+> `bin/test_cir` reports **84 test cases, 1043 assertions, 4 skipped** after
 > adding coverage for direct `tsubst_type_args` binding of a body-only template
 > parameter and direct `tsubst_type_arg_packs` capture for a variadic member
 > template, plus direct CIR fan-out for value-pack call arguments like
@@ -27,7 +28,9 @@
 > class `_Up` lowering with scalar/pointer constructor pack elements for
 > allocator-style `new ((void*)p) _Up(std::forward<Args>(args)...)`, plus
 > direct `__destroy(T*)` helpers that defer pointee inspection until after
-> substitution and lower class pointees to the concrete destructor, plus local
+> substitution and lower class pointees to the concrete destructor, plus guarded
+> member-template bodies named `__destroy` whose retained body itself contains a
+> direct `__destroy(T*)` marker, plus local
 > non-pack nested namespace calls such as `sink(nn::ident(v))` whose copied
 > callee ids re-resolve from substituted argument types, plus by-value
 > class-object constructor packs such as `Box(Item)` and `PairBox(Item, Item)` inside

@@ -1928,6 +1928,75 @@ TEST_CASE("CIR: tsubst lowers direct dependent destroy helper") {
     CHECK(got == 7);
 }
 
+// A member template named `__destroy` is the _Destroy_aux guard shape. It is
+// safe to copy only when the retained body contains direct compiler intrinsic
+// destroy markers, so the concrete pointee class is known at tsubst time.
+TEST_CASE("CIR: tsubst lowers direct destroy-aux member body") {
+    const char *header_source =
+	"struct Box {\n"
+	"    int* p;\n"
+	"    Box(int* q) { p = q; }\n"
+	"    ~Box() { *p = *p + 7; }\n"
+	"};\n"
+	"struct DestroyAux {\n"
+	"    template<class T> static void __destroy(T* p) { ::__destroy(p); }\n"
+	"};\n"
+	"";
+    const char *main_source =
+	"int main() { int x = 0; Box* b = new Box(&x); DestroyAux d; d.__destroy(b); return x; }\n";
+    std::string run_source = std::string(header_source) + main_source;
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/stl_construct.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(main_source, "<destroy-aux-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    FuncDef *source_fd = NULL;
+    FuncDef *instance = NULL;
+    for ( funcdef_map_iter it = prog->funcdef_map.begin();
+	  it != prog->funcdef_map.end(); ++it )
+    {
+	FuncDef *fd = it->second;
+	if ( !fd )
+	    continue;
+	if ( fd->dependent_pattern
+	  && fd->method_display_name == "__destroy" )
+	    source_fd = fd;
+	if ( fd->tsubst_source
+	  && fd->tsubst_source->method_display_name == "__destroy" )
+	    instance = fd;
+    }
+    REQUIRE(source_fd != NULL);
+    REQUIRE(instance != NULL);
+    CHECK(instance->tsubst_source == source_fd);
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+
+    int64_t got = cir_run(run_source.c_str());
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 7);
+}
+
 // Two-tree pack expansion: reference parameter packs have already lowered value
 // reads through the reference pointer in the Tree-1 recipe. They can therefore
 // use the same direct fan-out and args -> args__N rename as by-value packs.

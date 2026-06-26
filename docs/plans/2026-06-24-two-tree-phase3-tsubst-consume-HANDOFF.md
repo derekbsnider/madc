@@ -12,15 +12,24 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 ➡️ **START HERE — next Codex session (2026-06-26). Read THIS block; you do NOT need the
 narrative below it to begin.**
 
-**TRUSTABLE CHECKPOINT:** HEAD at the pointer-parameter-pack expansion slice after the
-parser robustness slice and the converted system-header reference-forwarded placement-new
-pack slice, working tree clean after commit.
+**TRUSTABLE CHECKPOINT:** HEAD at the guarded direct `_Destroy_aux`/member-template
+`__destroy` marker slice after the pointer-parameter-pack expansion slice, parser robustness
+slice, and converted system-header reference-forwarded placement-new pack slice, working tree
+clean after commit.
 Gate GREEN both halves (verified 2026-06-26):
-`make -C src fulltest` 670/0/0/18 + drift gates; `env MADC_XTEST_DEP_PARSE=1 make -C src fulltest` 670/0/0/18; `test_cir` 83/1026/4. Phase 4 ≈74% by coverage weight.
+`make -C src fulltest` 670/0/0/18 + drift gates; `env MADC_XTEST_DEP_PARSE=1 make -C src fulltest` 670/0/0/18; `test_cir` 84/1043/4. Phase 4 ≈74% by coverage weight.
 Trust this commit — verify with `git log -1` + a smoke test, not a full rehydration.
 
-**JUST LANDED:** Fix #1 pointer-parameter-pack expansion plus Fix #2 parser robustness
-and the earlier first direct SYSTEM-HEADER reference-forwarded placement-new pack body.
+**JUST LANDED:** guarded direct `_Destroy_aux`/member-template `__destroy` marker tsubst,
+Fix #1 pointer-parameter-pack expansion, Fix #2 parser robustness, and the earlier first
+direct SYSTEM-HEADER reference-forwarded placement-new pack body.
+The `__destroy`-named member-template guard now admits Tree-1 body copying only when the
+retained body itself contains a direct compiler-intrinsic `__destroy(T*)` marker. That marker
+already substitutes the concrete pointee and lowers class pointees to the concrete destructor
+and scalar/pointer pointees to a no-op. Iterator/object-address destructor forms still fall
+back; do not broaden them until their marker/lowering shape is real. The proving test is
+`CIR: tsubst lowers direct destroy-aux member body`; it runs under
+`MADC_XTEST_DEP_PARSE=1`, requires Tree-1 copies, and returns 7.
 Function-template deduction now recognizes direct pointer-qualified packs such as
 `Args*... ps`, binds `Args` to each pointee type, and the substituted declaration keeps
 the pointer suffix attached to every generated parameter (`T0* ps__0, T1* ps__1`). The
@@ -39,9 +48,10 @@ converted target temp before the outer placement-new constructor. The test is `C
 lowers system-header converted reference-forwarded placement-new packs` and proves
 `cir_count_tree1_copies > 0` plus value `135`.
 
-**NEXT SLICE — land destructor packs (Codex, 2026-06-26).** The
+**NEXT SLICE — widen remaining pack backlog (Codex, 2026-06-26).** The
 destructor-pack slice was blocked on the `Args*... ps` parser crash diagnosed in the ROOT-CAUSE
-block above; that blocker is now cleared. Ordered queue — each its own clean gated commit; keep going until budget-low or a
+block above; that blocker is now cleared and the first direct-marker `_Destroy_aux` member
+body is landed. Ordered queue — each its own clean gated commit; keep going until budget-low or a
 genuinely-hard wall, then record findings and stop:
   1. ✅ **FIX #2 (robustness, priority) LANDED (Codex, 2026-06-26):** `parseFunction`
      now exception-safely balances its temporary parameter compound scope, so the
@@ -55,22 +65,23 @@ genuinely-hard wall, then record findings and stop:
      token fan-out. Proving test: `CIR: tsubst fans out direct pointer-pack call
      arguments`; gates fulltest flag-off and flag-on 670/0/0/18; `test_cir`
      83/1026/4; six flag-on canaries green.
-  3. **LAND the destructor-pack tsubst slice NEXT** now unblocked (`_Destroy`/`_Destroy_aux`),
-     keeping the `__destroy` guard honest — no relax until the marker shape is genuinely real.
-  4. **Resume the pack backlog:** more forwarding variants, then template-id body/return;
+  3. ✅ **DIRECT DESTRUCTOR-MARKER SLICE LANDED (Codex, 2026-06-26):**
+     `_Destroy_aux`-style member-template bodies named `__destroy` now use Tree-1 tsubst
+     only when the retained body itself contains a direct `__destroy(T*)` marker. Proving
+     test: `CIR: tsubst lowers direct destroy-aux member body`; gates fulltest flag-off and
+     flag-on 670/0/0/18; `test_cir` 84/1043/4; six flag-on canaries green.
+  4. **Resume the pack backlog NEXT:** more forwarding variants, broader destructor iterator
+     forms only after their marker/lowering shape is real, then template-id body/return;
      object-address forwarding LAST. Keep the per-element resolver/return-class guard.
 Do not attempt all shapes at once.
 
-**ATTEMPTED NEXT (Codex, 2026-06-26):** a minimal `_Destroy_aux`-style probe needs a pointer
-parameter pack (`Args*... ps`) so the existing `__destroy(T*)` Tree-1 marker still sees a
-pointer-to-template-pointee. That syntax currently parser-crashes before CIR tsubst
-(`tmp/destroy_pack_probe.mad`; ignored scratch). A value pack of pointer arguments
-(`Args... ps`) parses, but it loses the pointer-to-template-pointee shape and would not prove
-the destructor marker path. Do **not** fix this by relaxing
-`if (source->method_display_name == "__destroy") return NULL;`; first either teach the parser
-the pointer-parameter-pack spelling safely, or find a real-header destructor body whose retained
-Tree-1 shape already carries a direct `__destroy(T*)` marker without iterator/object-address
-lowering.
+**RESOLVED BLOCKER (Codex, 2026-06-26):** the minimal `_Destroy_aux`-style probe needed a
+pointer parameter pack (`Args*... ps`) so the existing `__destroy(T*)` Tree-1 marker still
+sees a pointer-to-template-pointee. The parser now handles that spelling safely, and the
+direct-marker `__destroy` member body is admitted without relaxing the broader guard. A value
+pack of pointer arguments (`Args... ps`) still is not an equivalent proof because it loses the
+pointer-to-template-pointee shape. Do **not** use this landed slice as permission to admit
+iterator/object-address destructor bodies; those need their own real marker/lowering shape.
 
 **↳ ROOT-CAUSE (Claude, gdb+valgrind, 2026-06-26).** `Args*... ps` is actually TWO bugs:
 (1) **Parse-grammar gap** — the pointer-parameter-pack *call-site expansion* mis-parses
@@ -113,8 +124,8 @@ grind. The still-open surfaces after this slice: template-id body/return, broade
 calls, then the shell-copy follow-on for FULL re-parse deletion.
 
 ✅ **KG CURRENT (2026-06-26):** Feature `two_tree_tsubst_instantiation` `phase4_estimate_percent=74`,
-`updated=2026-06-26`; session nodes through the 2026-06-26 converted system-header
-reference-forwarded pack slice are present.
+`updated=2026-06-26`; session notes through the pointer-parameter-pack expansion and guarded
+direct `_Destroy_aux`/member-template `__destroy` marker slice are present.
 (Original sync note below.)
 
 ✅ **KG SYNCED (2026-06-24).** FalkorDB was briefly unreachable mid-session; once back,
