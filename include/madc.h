@@ -2112,6 +2112,12 @@ public:
     // metadata but still used the parsed concrete body.
     unsigned long long _tsubst_body_hits = 0;
     unsigned long long _tsubst_body_fallbacks = 0;
+    struct TsubstBodyProfile {
+	unsigned long long count;
+	std::string sample;
+	TsubstBodyProfile() : count(0), sample() {}
+    };
+    std::map<std::string, TsubstBodyProfile> _tsubst_body_fallback_profile;
     // User-defined function AST nodes, in source order. Parallel to the
     // ast queue. Populated by parseFunction / parseLambda; consumed by
     // Program::compile in a pre-pass to create funcnodes (labels) before

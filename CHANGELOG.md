@@ -4,6 +4,17 @@
 
 ### Two-tree tsubst widening
 
+- Extended the `--show-stats` tsubst body counter with a ranked fallback profile
+  grouped by retained source-template shape, with one concrete emitted-symbol
+  sample for drill-down. A clean `-O2` build now profiles `testsubscript` under
+  `MADC_XTEST_DEP_PARSE=1` at **6 hit / 29 fallback**, total **0.804 s** with
+  **0.327 s** in instantiation; the top real fallbacks are
+  `std::allocator_traits::construct<_Up,_Args...>` (4),
+  `std::allocator_traits::destroy<_Up>` (4), and
+  `std::__new_allocator::construct<_Up,_Args...>` (3). Added unit coverage
+  proving the profile sums to the fallback counter and carries a concrete
+  sample. Normal and `MADC_XTEST_DEP_PARSE=1` fulltest remain 670/0/0/18, with
+  `test_cir` now 86/1067/4.
 - Added a `--show-stats` engagement counter for env-gated two-tree
   member-template body instantiation. The stats output now reports
   `tsubst bodies ..... H hit / F fallback`, where a hit means CIR built the

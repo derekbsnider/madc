@@ -1006,6 +1006,17 @@ TEST_CASE("CIR: tsubst engagement counters split hits and fallbacks") {
     CHECK(tree1_copies > 0);
     CHECK(prog->_tsubst_body_hits >= 1);
     CHECK(prog->_tsubst_body_fallbacks >= 1);
+    unsigned long long profiled = 0;
+    bool saw_ref_fallback = false;
+    for (std::map<std::string, Program::TsubstBodyProfile>::const_iterator it =
+	     prog->_tsubst_body_fallback_profile.begin();
+	 it != prog->_tsubst_body_fallback_profile.end(); ++it) {
+	profiled += it->second.count;
+	if (it->first.find("ref_fallback") != std::string::npos)
+	    saw_ref_fallback = !it->second.sample.empty();
+    }
+    CHECK(profiled == prog->_tsubst_body_fallbacks);
+    CHECK(saw_ref_fallback);
 }
 
 // Two-tree pack prerequisite: the parser already deduces concrete pack element

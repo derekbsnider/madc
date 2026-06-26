@@ -11,12 +11,12 @@
 > dependent-parse-error scope balancing and pointer-parameter-pack call
 > expansion plus guarded direct `_Destroy_aux`/member-template `__destroy`
 > tsubst plus direct `std::move<Args>(args)...` forwarding-pack coverage plus
-> the `--show-stats` tsubst engagement counter):**
+> the `--show-stats` tsubst engagement counter and ranked fallback profile):**
 > fulltest
 > **670 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
 > GREEN). The env-gated tsubst path is also green:
 > `MADC_XTEST_DEP_PARSE=1 make -C src fulltest` reports **670/0/0/18**.
-> `bin/test_cir` reports **86 test cases, 1065 assertions, 4 skipped** after
+> `bin/test_cir` reports **86 test cases, 1067 assertions, 4 skipped** after
 > adding coverage for direct `tsubst_type_args` binding of a body-only template
 > parameter and direct `tsubst_type_arg_packs` capture for a variadic member
 > template, plus direct CIR fan-out for value-pack call arguments like
@@ -54,7 +54,13 @@
 > materialized before the outer constructor call, plus `--show-stats` tsubst
 > body engagement counters proving real workload visibility of hit/fallback
 > split (`testsubscript` currently reports 6 hit / 29 fallback under
-> `MADC_XTEST_DEP_PARSE=1`). The latest robustness slice also adds
+> `MADC_XTEST_DEP_PARSE=1`) and a ranked fallback profile. Clean `-O2`
+> `testsubscript` profiling ranks the top real fallback shapes as
+> `std::allocator_traits::construct<_Up,_Args...>` (4),
+> `std::allocator_traits::destroy<_Up>` (4), and
+> `std::__new_allocator::construct<_Up,_Args...>` (3), with instantiate time
+> 0.327 s and total in-process time 0.804 s on this host. The latest robustness
+> slice also adds
 > `tests/testdependentparseerror.mad`, proving an env-gated dependent parse
 > error balances the temporary parameter compound scope and exits nonzero
 > without SIGSEGV. Phase 4 is now tracked at

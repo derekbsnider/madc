@@ -54,8 +54,19 @@ queue form, grind until budget-low or a wall:**
      `CIR: tsubst engagement counters split hits and fallbacks`. Gates:
      fulltest flag-off and flag-on 670/0/0/18; `test_cir` 86/1065/4; six
      flag-on canaries green.
-  2. **Profile `testsubscript`'s fallbacks** — dump which of its instantiations take the
-     re-parse path, rank by frequency.
+  2. ✅ **FALLBACK PROFILE LANDED (Codex, 2026-06-26):** `--show-stats` now
+     prints `tsubst fallback profile (ranked)` grouped by retained
+     source-template shape, with a concrete emitted-symbol sample per row. Clean
+     `-O2` profile for flag-on `testsubscript`: 6 hit / 29 fallback, total
+     0.804 s, instantiate 0.327 s. Top ranked fallbacks:
+     `std::allocator_traits::construct<_Up,_Args...>` (4),
+     `std::allocator_traits::destroy<_Up>` (4),
+     `std::__new_allocator::construct<_Up,_Args...>` (3), then
+     `_Destroy_aux::__destroy`, `_Rb_tree` node/emplace helpers, and
+     `std::vector::_M_realloc_insert` at 2 each. Proving test extends
+     `CIR: tsubst engagement counters split hits and fallbacks`; gates fulltest
+     flag-off and flag-on 670/0/0/18; `test_cir` 86/1067/4; six flag-on
+     canaries green.
   3. **Cover the top real fallback patterns** — so engagement (and the counter) actually
      rises on a real workload, not just synthetic test_cir cases.
   4. **SUCCESS = MEASURABLE at -O2:** tsubst-engaged count UP and `testsubscript` instantiate
@@ -72,10 +83,10 @@ stay; hybrid B stands; perf is judged at -O2 only.
 never pipe `make` through `tail`/`head` (masks errors); confirm `bin/test_cir` relinked
 (`strings | grep <probe>`).
 
-**LATEST PERF-ROUND SLICE:** the engagement counter is the only landed perf-round
-code so far. It is instrumentation, not a claimed speedup. Next commit should add
-fallback-profile output/ranking for `testsubscript` and use the new counter to
-verify that covered real patterns increase hits before judging -O2 time.
+**LATEST PERF-ROUND SLICE:** engagement and fallback-profile instrumentation are
+landed. This is profiling, not a claimed speedup. Next commit should cover the
+top real fallback shape(s), starting with the allocator `construct`/`destroy`
+cluster, and use the counter to prove hits rise before judging -O2 time.
 
 **JUST LANDED:** direct `std::move<Args>(args)...` forwarding-pack coverage, guarded direct
 `_Destroy_aux`/member-template `__destroy` marker tsubst, Fix #1 pointer-parameter-pack
@@ -195,7 +206,9 @@ calls, then the shell-copy follow-on for FULL re-parse deletion.
 direct `_Destroy_aux`/member-template `__destroy` marker slice plus direct
 `std::move<Args>(args)...` forwarding-pack coverage are present. The perf-round
 engagement-counter slice adds `--show-stats` hit/fallback body counts and pins
-the current `testsubscript` baseline at 6 hit / 29 fallback.
+the current `testsubscript` baseline at 6 hit / 29 fallback. The fallback
+profile slice ranks the current top real patterns as allocator_traits
+construct/destroy (4 each) and __new_allocator construct (3).
 (Original sync note below.)
 
 ✅ **KG SYNCED (2026-06-24).** FalkorDB was briefly unreachable mid-session; once back,

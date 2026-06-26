@@ -97,12 +97,15 @@ high-level" — the answer is both.**
   existing destructor/no-op lowering while iterator/object-address destructor
   forms still fall back. The current perf-round instrument adds
   `--show-stats` body engagement counts (`H hit / F fallback`) so real workload
-  coverage can be ranked before further widening; `testsubscript` currently
-  reports 6 hit / 29 fallback under `MADC_XTEST_DEP_PARSE=1`. Broader
-  system-header destructor/object-address packs still fall back.
+  coverage can be ranked before further widening; a clean `-O2` `testsubscript`
+  run currently reports 6 hit / 29 fallback and ranks the top real fallback
+  shapes as `std::allocator_traits::construct<_Up,_Args...>` (4),
+  `std::allocator_traits::destroy<_Up>` (4), and
+  `std::__new_allocator::construct<_Up,_Args...>` (3). Broader system-header
+  destructor/object-address packs still fall back.
   Validation is green both
   flag-off and flag-on at **670 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **86 test cases / 1065 assertions / 4 skipped**. Phase 4 is
+  `test_cir` is **86 test cases / 1067 assertions / 4 skipped**. Phase 4 is
   roughly **74% implemented** by coverage weight, not session count.
   **2026-06-25:** the generic `is_type_dependent` predicate (the
   `type_dependent_expression_p` / pt.cc:30357 analogue) landed and is COMMITTED

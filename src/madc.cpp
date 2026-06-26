@@ -15,6 +15,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <algorithm>
 #include <map>
 #include <list>
 #include <vector>
@@ -816,6 +817,28 @@ int main(int argc, char **argv)
 		exec_secs,
 		other_secs,
 		total_secs);
+	    if ( !prog->_tsubst_body_fallback_profile.empty() )
+	    {
+		std::vector<std::pair<std::string, Program::TsubstBodyProfile> > rows;
+		for (std::map<std::string, Program::TsubstBodyProfile>::const_iterator it =
+			 prog->_tsubst_body_fallback_profile.begin();
+		     it != prog->_tsubst_body_fallback_profile.end(); ++it)
+		    rows.push_back(*it);
+		std::sort(rows.begin(), rows.end(),
+			  [](const std::pair<std::string, Program::TsubstBodyProfile> &a,
+			     const std::pair<std::string, Program::TsubstBodyProfile> &b) {
+			      if (a.second.count != b.second.count)
+				  return a.second.count > b.second.count;
+			      return a.first < b.first;
+			  });
+		fprintf(stderr, "[stats]   tsubst fallback profile (ranked):\n");
+		for (size_t i = 0; i < rows.size(); ++i)
+		    fprintf(stderr, "[stats]     %zu. %llu x %s  sample=%s\n",
+			    i + 1,
+			    rows[i].second.count,
+			    rows[i].first.c_str(),
+			    rows[i].second.sample.c_str());
+	    }
 	};
 
 	if ( !parse_ok )

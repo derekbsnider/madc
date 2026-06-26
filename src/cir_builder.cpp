@@ -12960,6 +12960,50 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 	return result;
 }
 
+static std::string tsubst_profile_template_key(FuncDef *source)
+{
+	if (!source)
+		return "<unknown-template>";
+	std::ostringstream out;
+	if (source->member_template_owner) {
+		std::string owner = source->member_template_owner->canonical_cpp_spelling.empty()
+				  ? source->member_template_owner->name
+				  : source->member_template_owner->canonical_cpp_spelling;
+		size_t lt = owner.find('<');
+		if (lt != std::string::npos)
+			owner = owner.substr(0, lt);
+		if (!owner.empty())
+			out << owner << "::";
+	}
+	if (!source->method_display_name.empty())
+		out << source->method_display_name;
+	else if (!source->function_display_name.empty())
+		out << source->function_display_name;
+	else
+		out << "<anonymous>";
+	if (!source->template_param_names.empty()) {
+		out << "<";
+		for (size_t i = 0; i < source->template_param_names.size(); ++i) {
+			if (i)
+				out << ",";
+			bool is_pack = i < source->template_param_is_pack.size()
+				    && source->template_param_is_pack[i];
+			out << source->template_param_names[i];
+			if (is_pack)
+				out << "...";
+		}
+		out << ">";
+	}
+	return out.str();
+}
+
+static std::string tsubst_profile_concrete_sample(TokenFunc *tf, FuncDef *fd)
+{
+	if (tf && !tf->var.name.empty())
+		return tf->var.name;
+	return "<unknown-instantiation>";
+}
+
 node_t CirBuilder::func_def(TokenFunc *tf)
 {
 	FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
@@ -13147,8 +13191,16 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	if (m_prog && fd->tsubst_source) {
 		if (body)
 			++m_prog->_tsubst_body_hits;
-		else
+		else {
 			++m_prog->_tsubst_body_fallbacks;
+			std::string key =
+				tsubst_profile_template_key(fd->tsubst_source);
+			Program::TsubstBodyProfile &entry =
+				m_prog->_tsubst_body_fallback_profile[key];
+			++entry.count;
+			if (entry.sample.empty())
+				entry.sample = tsubst_profile_concrete_sample(tf, fd);
+		}
 	}
 	if (!body)
 		body = translate_block((TokenCpnd *)tf);
