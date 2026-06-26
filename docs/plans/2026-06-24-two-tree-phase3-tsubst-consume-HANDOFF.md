@@ -13,7 +13,7 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 SUPERSEDES the pack-coverage NEXT-SLICE text below it.**
 
 ---
-✅ **STEP 3.5 RESOLVED — `41ab550b` "fix(cir): deref reference-param value reads in tsubst dependent-pattern body" (Claude 2026-06-26). Regression fixed ADDITIVELY; Codex's `bb44557c` gains fully preserved.**
+✅ **STEP 3.5 RESOLVED — `3d18eed7` "fix(cir): deref reference-param value reads in tsubst dependent-pattern body" (Claude 2026-06-26). Regression fixed ADDITIVELY; Codex's `bb44557c` gains fully preserved.**
 
 The `bb44557c` flag-on regression (3 tests garbage) is FIXED. **Both gates now 670/0/0/18
 (flag-off AND `MADC_XTEST_DEP_PARSE=1`), six canaries green, `test_cir` all pass, zero new
