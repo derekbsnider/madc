@@ -9,15 +9,50 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 
 ## 0. STATE (verify, do not trust blindly — run `scripts/resume.sh`)
 
-➡️ **NEXT WORK after the 2026-06-25 Codex update:** retire the remaining system-header
-dependent-call bail and `tsubst_eligible` catalog one construct at a time. Step A
-(generic `is_type_dependent`) is committed (`62409d08`), the §8 local keystone
-(nested fn-template INSTANTIATION in the copy path) is committed (`8ede28a5`), and
-this follow-up admits the first non-pack system-header dependent-call slice:
-simple scalar/pointer calls, including reserved `__*` helper names, with concrete
-substituted args/return, materializable callees, and copied-call reachability for
-lazy body emission. The still-open surfaces are real system-header forwarding/
-destructor/object-address packs and template-id body/return surfaces.
+➡️ **START HERE — next Codex session (2026-06-26). Read THIS block; you do NOT need the
+narrative below it to begin.**
+
+**TRUSTABLE CHECKPOINT:** HEAD `19b95f95`, working tree clean. Gate GREEN both halves
+(verified 2026-06-26): `make -C src fulltest` 669/0/0/18 + drift gates; `MADC_XTEST_DEP_PARSE=1
+bash scripts/run_tests.sh` 669/0/0/18; `test_cir` 80/994/4. Phase 4 ≈72% by coverage weight.
+Trust this commit — verify with `git log -1` + a smoke test, not a full rehydration.
+
+**NEXT SLICE — biggest remaining lever (packs dominate, ~87:14 vs template-id):** real
+SYSTEM-HEADER forwarding / destructor / object-address **pack** expansion through tsubst (the
+`tsubst_pack_expansion` analogue). LOCAL packs already work; SYSTEM-HEADER packs still fall
+back at the guard **`cir_builder.cpp:931-936`** (`is_system_header_path(pe->pattern->file) →
+unsupported_class_arg`). Replace that fall-back with a real per-element expansion that REUSES
+the keystone **`resolve_copied_dependent_call`** (`8ede28a5`) to instantiate each pack
+element's nested forwarding/destructor call. Start with ONE tractable system-header pack body
+— this is multi-slice; do not attempt all shapes at once.
+
+**⚠️ THE TRAP — read before coding:** a NAIVE relax of the :931 guard already regressed six
+real-header canaries: `testcontainerdtor`, `testforeach2`, `testset`, `teststringref`,
+`testsubscript`, `testsubscriptmember`. This needs a REAL expansion pass, NOT a guard relax.
+Gate all six flag-on every iteration. Object-address forwarding is the riskiest shape — leave
+it for last.
+
+**SETTLED — do not re-litigate:** the keystone IS the instantiation lever (reuse, don't
+reinvent); the `std::forward`/`std::move` name-match is GONE — do NOT reintroduce callee-name
+matching (Rule #7); Hybrid B stands (shell at parse, BODIES via tsubst); the system-header
+bail stays for genuinely-unsupported shapes — this slice MOVES one class onto tsubst; commit
+each slice clean + gated; keep mirrors (handoff/status/CHANGELOG/KG) in agreement.
+
+**GATE (per slice):** `make -C src fulltest` 669/0/0/18 + the six canaries green under
+`MADC_XTEST_DEP_PARSE=1` + a new `test_cir` case proving the covered system-header pack goes
+through tsubst (`cir_count_tree1_copies > 0` AND correct runtime value). Build hygiene: NEVER
+pipe `make` through `tail`/`head` (masks errors, fakes exit 0); after editing
+`cir_builder.cpp` run `make -C src ../bin/test_cir` and confirm the relink took
+(`strings bin/test_cir | grep -c <probe>` — 0 means stale).
+
+**NOT this session (Claude handles separately):** the flag-on-vs-flag-off perf MEASUREMENT —
+we are flying blind on whether tsubst is actually faster; that is Claude's task, not a Codex
+grind. The still-open surfaces after this slice: template-id body/return, broader dependent
+calls, then the shell-copy follow-on for FULL re-parse deletion.
+
+✅ **KG CURRENT (2026-06-26):** Feature `two_tree_tsubst_instantiation` `phase4_estimate_percent=72`,
+`updated=2026-06-26`; session nodes through the 2026-06-25 system-header slices are present.
+(Original sync note below.)
 
 ✅ **KG SYNCED (2026-06-24).** FalkorDB was briefly unreachable mid-session; once back,
 `madc-knowledge` was reconciled via `scripts/kg_query.sh`: Feature
