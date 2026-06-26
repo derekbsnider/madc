@@ -1326,6 +1326,46 @@ TEST_CASE("CIR: tsubst re-resolves scalar system-header dependent namespace call
     CHECK(got == 42);
 }
 
+// Real libstdc++ allocator_traits construction forwards a type pack through a
+// dependent member-template call (`a.construct(p, forward<Args>(args)...)`).
+// The copied call resolver must expand the pack before overload selection;
+// otherwise allocator_traits::construct falls back and the hit counter stays at
+// the old profile.
+TEST_CASE("CIR: tsubst re-resolves libstdc++ allocator_traits forwarding member-pack calls") {
+    const char *source =
+	"#include <memory>\n"
+	"int main()\n"
+	"{\n"
+	"    std::allocator<int> a;\n"
+	"    int x = 0;\n"
+	"    std::allocator_traits<std::allocator<int>>::construct(a, &x, 34);\n"
+	"    std::allocator_traits<std::allocator<int>>::destroy(a, &x);\n"
+	"    return x;\n"
+	"}\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(
+	source, "<allocator-traits-member-pack-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+
+    size_t tree1_copies = 0;
+    int64_t got = cir_run_program(prog.get(), &tree1_copies);
+    CHECK(tree1_copies > 0);
+    CHECK(prog->_tsubst_body_hits >= 4);
+    CHECK(prog->_tsubst_body_fallbacks == 0);
+    CHECK(prog->_tsubst_body_fallback_profile.empty());
+    CHECK(got == 34);
+
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+}
+
 // Two-tree pack expansion: allocator-style placement construction uses the same
 // forwarding-call pack, but as constructor arguments to `new ((void*)p) T(...)`
 // rather than as ordinary function-call arguments.

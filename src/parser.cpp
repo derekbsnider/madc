@@ -33422,6 +33422,38 @@ static bool tsubst_has_placement_new_ctor_pack_expansion(FuncDef *fd)
     return false;
 }
 
+static bool tsubst_has_member_call_pack_expansion(FuncDef *fd)
+{
+    if ( !fd )
+	return false;
+    const std::vector<TokenBase *> &d = fd->member_template_decl;
+    for ( size_t i = 0; i < d.size(); ++i )
+    {
+	TokenBase *t = d[i];
+	if ( !t || (t->id() != TokenID::tkDot
+		 && t->id() != TokenID::tkDeRef) )
+	    continue;
+	size_t call_open = i + 1;
+	while ( call_open < d.size() && d[call_open]
+	     && d[call_open]->id() != TokenID::tkOpBrk
+	     && d[call_open]->id() != TokenID::tkSemi
+	     && d[call_open]->id() != TokenID::tkOpBrc
+	     && d[call_open]->id() != TokenID::tkClBrc )
+	    ++call_open;
+	if ( call_open >= d.size() || !d[call_open]
+	  || d[call_open]->id() != TokenID::tkOpBrk )
+	    continue;
+	size_t call_close = tsubst_matching_close(
+	    d, call_open, TokenID::tkOpBrk, TokenID::tkClBrk);
+	if ( call_close >= d.size() )
+	    continue;
+	if ( tsubst_range_has_pack_expansion(d, call_open + 1, call_close) )
+	    return true;
+	i = call_close;
+    }
+    return false;
+}
+
 // Two-tree Phase 2 — capability predicate. See the madc.h declaration. Slice 1 =
 // a member function template with exactly one TYPE param (no pack), a NON-DEPENDENT
 // return type (passed straight to parseFunction), and a body/params using the param
@@ -33521,14 +33553,16 @@ bool Program::tsubst_eligible(FuncDef *fd)
 	}
     bool covered_system_header_pack_template_id_body =
 	template_pack_body_from_system_header
-	&& tsubst_has_placement_new_ctor_pack_expansion(fd);
+	&& (tsubst_has_placement_new_ctor_pack_expansion(fd)
+	    || tsubst_has_member_call_pack_expansion(fd));
     // Body/param scan: any template-id (`<`) or `P::` dependent lookup (P a param)
     // disqualifies, except the current pack-expansion widening slice admits a
     // single TYPE-pack body when it is already structurally covered by CIR pack
     // fan-out. System-header template-id pack bodies are admitted only for the
-    // placement-new constructor-argument shape (`new((void*)p) T(args...)`) used
-    // by allocator construction; broader destructor / nested-call surfaces stay
-    // on the parsed-body fallback until covered deliberately.
+    // placement-new constructor-argument shape (`new((void*)p) T(args...)`) and
+    // the allocator-traits forwarding member-call shape (`obj.method(args...)`);
+    // broader destructor / nested-call surfaces stay on the parsed-body fallback
+    // until covered deliberately.
     const std::vector<TokenBase *> &d = fd->member_template_decl;
     for ( size_t i = 0; i < d.size(); ++i )
     {
@@ -33667,11 +33701,24 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     TemplateParamScope param_scope(*this, fd->template_param_names);
     dependent_parse_in_progress = true;
 
+    size_t saved_diag_count = diagnostics.size();
+    ErrorInfo saved_error = last_error;
+    std::streambuf *saved_cerr = std::cerr.rdbuf();
+    std::ios::iostate saved_cerr_state = std::cerr.rdstate();
+    std::cerr.rdbuf(&g_madc_null_streambuf);
+    bool parsed_pattern = false;
     try
     {
 	parseFunction(fd->return_value_type(), parse_id, owner);
+	parsed_pattern = true;
     }
-    catch ( ... )
+    catch ( ... ) { parsed_pattern = false; }
+    std::cerr.rdbuf(saved_cerr);
+    std::cerr.clear(saved_cerr_state);
+    diagnostics.resize(saved_diag_count);
+    last_error = saved_error;
+
+    if ( !parsed_pattern )
     {
 	tokens = saved_tokens;
 	_prv_token = saved_prv;
