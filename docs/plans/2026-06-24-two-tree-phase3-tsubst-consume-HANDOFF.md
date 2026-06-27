@@ -52,10 +52,27 @@ CORRECTNESS + header-forest readiness, NOT a -O2 speedup. The header-forest is t
 correct before the lever is real — but it doesn't move the perf needle by itself.
 
 ═══════════════════════════════════════════════════════════════════════════
-▶▶▶ NEXT CODEX SLICE — START HERE (set up by Claude 2026-06-27). ONE target, imperative.
+✅ ALLOCATOR CLUSTER DONE + VERIFIED (Codex `9118d9bc` + `8824d37b`, verified by Claude 2026-06-27).
 ═══════════════════════════════════════════════════════════════════════════
+Codex covered `__new_allocator::construct` (`9118d9bc`) and `_Destroy_aux::__destroy`
+(`8824d37b`). VERIFIED: both gates **670/0/0/18** (flag-off AND `MADC_XTEST_DEP_PARSE=1`), six
+canaries green, `test_cir` pass, zero warnings, engagement **16 → 21 hit / 14 fallback** (target
+met). No net-new callee-name hardcoding (the `"__destroy"` count is unchanged at 4 — existing
+handling refactored; `inline_builtin_kind=="destroy"` uses the pre-existing string builtin-kind
+field — note: that field being `std::string` not an enum is pre-existing debt, eventual cleanup).
 
-**DO THIS: finish the allocator construct/destroy cluster bb44557c started** — cover the two
+**NEXT — DECISION POINT (cluster milestone; confirm direction with the user before grinding):**
+The top fallback cluster is now the **`_Rb_tree` node family** — `_M_construct_node`,
+`_M_create_node`, `_M_emplace_hint_unique` (6× in testsubscript, the map/set node machinery),
+then `vector::_M_realloc_insert` (2×), `basic_string::_M_construct` (1×),
+`__uninitialized_copy::__uninit_copy` (1×), pair piecewise ctors (4×). Covering the `_Rb_tree`
+family would push 21 → ~27. ALTERNATIVE: pivot to the header-forest (the real -O2 lever; this
+coverage is forest-readiness, NOT a measured speedup). Refresh profile:
+`MADC_XTEST_DEP_PARSE=1 bin/madc --show-stats tests/testsubscript.mad | grep -A12 'fallback profile'`.
+Gate/hygiene/3.5-lesson below still apply to any coverage slice.
+
+--- (the executed directive, kept for the recipe/gate it documents) ---
+**DID THIS: finish the allocator construct/destroy cluster bb44557c started** — cover the two
 nested shapes that still fall back, the direct continuation of your own last commit:
   1. `std::__new_allocator::construct<_Up,_Args...>`  (rank #1, 3× in testsubscript) — the
      nested placement-new pack call under `allocator_traits::construct` (which you already made
