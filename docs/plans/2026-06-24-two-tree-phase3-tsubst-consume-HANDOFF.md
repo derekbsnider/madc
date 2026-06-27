@@ -37,14 +37,43 @@ transitively constructs a node, so they all hit this recursion. `_M_create_node`
 the unqualified-call-pack eligibility extension and is the smallest body — but its tsubst
 re-resolves/instantiates `_M_construct_node`, whose construction triggers the recursion.
 
-**VERDICT (Phase-4.5 — stop widening the gate; fix the deeper bug first):** the
-`class_ctor_call ⇄ object_arg_addr` recursion is the **KEYSTONE** for the `_Rb_tree` cluster. Fix
-it FIRST (a tsubst-mode base case / guard in `object_arg_addr`, modeled on the existing
-`rvalue_call` guard — needs a concrete-type backtrace at the recursion point to get the guard
-right), THEN the unqualified-call-pack eligibility extension (already drafted/validated-as-far-as-
-the-crash; re-derive `tsubst_has_unqualified_call_pack_expansion`) becomes safe and lands
-`_M_create_node` (+ likely the cluster). The eligibility extension WITHOUT the recursion fix is
-unsafe (SIGSEGV) — do not re-attempt it first.
+**ROOT CAUSE — GDB+trace CONFIRMED (Claude 2026-06-27).** Minimal repro:
+`tmp/vec_recurse.mad` = `vector<string>; push_back("a"); push_back("b");` SIGSEGVs with the
+eligibility extension (`vector<int>` does NOT — needs CLASS elements). Instrumented
+`object_arg_addr`'s materializing tail (the `MADC_TRACE_OAA` trace, since reverted) shows the
+invariant cycle:
+```
+[OAA] depth=5+ pattern_mode=1 target=allocator<char> arg_type=0 arg_dd=_Args   (repeats forever)
+```
+i.e. in **pattern mode**, `object_arg_addr(arg=`_Args` template-param placeholder, target=concrete
+`allocator<char>`)` is reached. Because `arg` is DEPENDENT, `as_class_instance(arg->datadef())`
+is NULL → none of object_arg_addr's direct-bind guards fire → it materializes a temp and calls
+`class_ctor_call(tmp, allocator<char>, {_Args})`; overload resolution CANNOT reject candidates for
+an unknown arg type, so it picks `allocator<char>`'s copy ctor (param `const allocator<char>&`) →
+`object_arg_addr(_Args, allocator<char>)` again → ∞. (The lead-in: depth 4 constructs `string`
+from `_Args`, matching a `string(…, const allocator&)` ctor → drops to constructing the allocator
+param from `_Args`.)
+
+**THE REAL FIX IS NOT A GUARD — it is pattern-mode CONSTRUCTION DEFERRAL.** The crash is a
+symptom; the root cause is that pattern-mode lowering EAGERLY resolves overloads + lowers an
+object construction whose arg is still dependent — semantically impossible (the arg type is
+unknown). Pattern mode already defers dependent CALLS (`tsubst_pattern_has_dependent_call` +
+the marker/`resolve_copied_dependent_call` path). The missing analogue: defer dependent
+CONSTRUCTIONS. **Concrete fix path (reuse existing machinery):** a constructor IS a call
+(`Class__Class(this, args)`) — when `class_ctor_call`/`object_arg_addr` would lower a construction
+from a dependent arg in pattern mode, emit a DEFERRED-CONSTRUCTION marker (analogous to the
+dependent-call marker) that `copy_cir_subtree`/tsubst re-lowers once the concrete target+arg types
+are substituted (re-invoke `class_ctor_call` with concrete types). This is a real new mechanism
+(Codex-grade, hot/fragile construction path — needs checkpoints + full 670 gate per slice), NOT a
+few-line guard.
+
+**VERDICT (Phase-4.5 — architectural, hand off the deep fix):** the keystone for the `_Rb_tree`
+AND `vector`-element clusters is **pattern-mode construction deferral** (above). A mere recursion
+guard (dependent-arg construction → error-node fallback) only converts crash→graceful-fallback
+(no hits, and only reachable via the eligibility extension which yields no hits) — symptom
+suppression, NOT committed. The eligibility extension (`tsubst_has_unqualified_call_pack_expansion`,
+re-derive from this round) lands ONLY AFTER construction deferral works. Do NOT re-attempt the
+eligibility widening before the deferral — it SIGSEGVs (proven twice this round).
 
 ---
 ✅ **SLICE LANDED — `1d69ee40` "feat(cir): tsubst re-resolves system-header free-function dependent calls" (Claude 2026-06-27). The FIRST §11.5c copy-path widening — system-header dependent calls now re-resolve like local ones.**
