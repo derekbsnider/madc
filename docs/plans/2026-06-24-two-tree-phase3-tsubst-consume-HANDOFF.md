@@ -51,12 +51,51 @@ CORRECTNESS + header-forest readiness, NOT a -O2 speedup. The header-forest is t
 `project_embedded_header_forest`). The 3.5 fix was still REQUIRED — the 16 hits had to be
 correct before the lever is real — but it doesn't move the perf needle by itself.
 
-**NEXT (Codex), options — pick by goal:** (a) **For perf** → pivot to the header-forest track
-(its Tree-1 foundation is exactly this tsubst machinery; that's where -O2 goes below g++).
-(b) **For coverage/correctness breadth** → resume the next ranked fallback shapes
-(`_Destroy_aux::__destroy`, `_Rb_tree` node/emplace helpers, `vector::_M_realloc_insert`), but
-log it as correctness/forest-readiness work, NOT a claimed speedup (the -O2 data says it won't
-be). Either way, gate every commit at flag-off AND flag-on 670/0/0/18 + six canaries.
+═══════════════════════════════════════════════════════════════════════════
+▶▶▶ NEXT CODEX SLICE — START HERE (set up by Claude 2026-06-27). ONE target, imperative.
+═══════════════════════════════════════════════════════════════════════════
+
+**DO THIS: finish the allocator construct/destroy cluster bb44557c started** — cover the two
+nested shapes that still fall back, the direct continuation of your own last commit:
+  1. `std::__new_allocator::construct<_Up,_Args...>`  (rank #1, 3× in testsubscript) — the
+     nested placement-new pack call under `allocator_traits::construct` (which you already made
+     a hit). Same shape family as bb44557c; reuse that machinery.
+  2. `std::_Destroy_aux::__destroy<_ForwardIterator>`  (rank #2, 2×) — the destroy side of the
+     cluster (note tsubst_method_body already has a `__destroy` direct-marker guard at ~13099).
+
+Target: push flag-on testsubscript engagement **16 → ~21 hits**. Do `__new_allocator::construct`
+FIRST as its own gated commit, then `_Destroy_aux::__destroy`. STOP after the cluster — do NOT
+start the `_Rb_tree` node family (#3-5) or `_M_realloc_insert` (#6) in the same slice.
+
+**CURRENT RANKED FALLBACKS (flag-on testsubscript, post-3.5, 19 total):**
+`1. 3× __new_allocator::construct<_Up,_Args...>` · `2. 2× _Destroy_aux::__destroy<_ForwardIterator>`
+· `3-5. 6× _Rb_tree::{_M_construct_node,_M_create_node,_M_emplace_hint_unique}` ·
+`6. 2× vector::_M_realloc_insert` · `7+. basic_string::_M_construct, pair piecewise ctors`.
+(Refresh: `MADC_XTEST_DEP_PARSE=1 bin/madc --show-stats tests/testsubscript.mad | grep -A20 'fallback profile'`.)
+
+**⚠️ HEED THE 3.5 LESSON (the bug you'd otherwise hit):** a tsubst body that VALUE-READS a
+reference parameter must DEREFERENCE it — the dependent pattern binds a ref param as a
+NON-reference Variable, so the deref doesn't happen automatically. Claude added a pattern-mode
+fallback at `cir_builder.cpp` (the reference value-read, `// A numeric reference parameter`
+comment ~line 9957) that consults `m_cur_method`'s real params. If a newly-covered shape reads a
+ref param in a way that path doesn't catch, you'll get `*p = a` / "pointer without cast to
+integer" / garbage — verify with `--emit=c11` (correct = the read is `(*a)` not bare `a`).
+
+**GATE (every commit):** build clean (`make -j4 -C src`, no warnings); `make -j4 -C src fulltest`
+**670/0/0/18** flag-off AND `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` 670/0/0/18; six
+canaries (testcontainerdtor testforeach2 testset teststringref testsubscript testsubscriptmember)
+green flag-on; engagement count NOT regressed (≥16, rising toward ~21); no callee-name `== "..."`
+hardcoding (Rule #7). NOTE: this is **correctness/forest-readiness coverage, NOT a -O2 speedup**
+(measured net-neutral — see the -O2 block above); log it as such, don't claim perf.
+
+**Build hygiene:** `make -j4 -C src` (serial=10min); never `CXX="ccache clang++"` (breaks
+gen_sys_includes); never pipe `make` through `tail`/`head` (masks errors → false exit 0); measure
+perf only at -O2; dev binary stays -O0.
+
+**STRATEGIC NOTE (not this slice):** the header-forest is the real PERF lever (-O2 below g++) and
+its Tree-1 foundation IS this tsubst machinery — so this coverage work is forest-readiness. When
+the cluster's done, the forest is the bigger pivot to discuss with the user.
+═══════════════════════════════════════════════════════════════════════════
 
 ---
 📋 **HISTORICAL — `bb44557c` ROUND RESULT (the regression 3.5 fixed; kept for context).** DO step 3.5 BEFORE any new coverage. **(SUPERSEDED by ✅ above — 3.5 is done.)**
