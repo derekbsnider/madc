@@ -748,41 +748,6 @@ static DataDef *tsubst_overload_arg_type(DataDef *dd)
 	return dd;
 }
 
-static bool tsubst_system_header_simple_call_type(DataDef *dd)
-{
-	for (int guard = 0; dd && guard < 8; ++guard) {
-		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
-			{ dd = cd->base_type; continue; }
-		if (template_param_under_type_layers(dd))
-			return false;
-		if (dd->is_reference())
-			return false;
-		if (as_class_instance(dd) || dd->is_struct())
-			return false;
-		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
-			{ dd = pd->base_type; continue; }
-		return dd->rawtype() == DataType::dtVOID || dd->is_numeric();
-	}
-	return false;
-}
-
-static bool tsubst_system_header_simple_dependent_call(
-	Program *prog, FuncDef *fd, const std::map<DataDef *, DataDef *> &subst,
-	const std::vector<DataDef *> &explicit_args,
-	const std::vector<DataDef *> &concrete_param_types)
-{
-	if (!fd)
-		return false;
-	for (DataDef *arg : explicit_args)
-		if (!tsubst_system_header_simple_call_type(arg))
-			return false;
-	for (DataDef *pt : concrete_param_types)
-		if (!tsubst_system_header_simple_call_type(pt))
-			return false;
-	DataDef *ret = subst_datadef(prog, &fd->returns, subst);
-	return tsubst_system_header_simple_call_type(ret);
-}
-
 static DataDefCLASS *class_arg_type(DataDef *dd)
 {
 	DataDefCLASS *c = as_class_instance(dd);
@@ -1018,15 +983,17 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		return winner;
 	}
 
+	// A system-header free-function dependent call re-resolves on the
+	// substituted (concrete) argument types exactly like a local one — the
+	// SAME find_namespace_function_overload + instantiate-on-miss path. The
+	// post-resolve body-availability check below is the safety net: a call
+	// that re-resolves but has no materializable body still falls back. (This
+	// retired the earlier "simple scalar/pointer types only" pre-gate, which
+	// needlessly rejected calls with class-pointer/reference args — e.g.
+	// std::__do_uninit_copy(basic_string*, ...) — that resolve+instantiate fine.
+	// g++ shape: tsubst re-runs finish_call_expr on substituted args.)
 	bool system_header_call = m_tsubst_copy_pack_index < 0 && tcf->file
 			       && m_prog->is_system_header_path(tcf->file);
-	if (system_header_call
-	    && !tsubst_system_header_simple_dependent_call(
-		    m_prog, fd, *subst, explicit_args, concrete_param_types)) {
-		if (error_out)
-			*error_out = "tsubst: system-header dependent call";
-		return NULL;
-	}
 
 	Variable *winner = m_prog->find_namespace_function_overload(
 		fd->namespace_name, fd->function_display_name, at, &zeros,
