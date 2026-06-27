@@ -110,6 +110,27 @@ the current **21 hit / 14 fallback** baseline. **Do NOT touch the `_Rb_tree` map
 or hardcoding callee names. If a shape hides a rebind/owner-substitution issue like map-node did, BAIL
 to the re-parse fallback and record it.
 
+═══════════════════════════════════════════════════════════════════════════
+⛳ PIVOT TRIGGER (Claude + user, 2026-06-27) — READ BEFORE GRINDING THE TAIL.
+═══════════════════════════════════════════════════════════════════════════
+After the easy allocator cluster (landed, 21 hits), the next two shapes BOTH hit the SAME class of
+wall — the retained-body copy can't rematerialize a nested dependent thing:
+  · `_Rb_tree` map-node → rebound allocator type (`rebind_alloc<_Rb_tree_node<_Val>>`) not resolved.
+  · `vector::_M_realloc_insert` → nested free-operator body (`__gnu_cxx::operator-`) not materialized.
+Both are EXACTLY what the generic §11.5c re-resolve (re-run the normal resolver on substituted args)
+handles natively, and §11.5c is what retires re-parse. So **the catalog approach is hitting its
+structural limit on the hard tail.**
+
+**THE RULE: `basic_string::_M_construct` is the THIRD probe. If it ALSO walls on a
+rematerialization/owner-substitution issue (nested dependent type/body the copy can't reproduce) —
+STOP cataloging. Do NOT attempt `__uninitialized_copy` or the pair ctors. Instead PIVOT to the
+generic §11.5c re-resolve track** (§7 WIDENING BACKLOG below: typeless dependent-call placeholder +
+ADL bit + real `is_type_dependent` + tsubst re-resolve via the normal resolver). The three deferred
+shapes (map-node, vector, +this) become its first regression targets. If `_M_construct` instead
+lands CLEANLY (it may — char buffer, no allocator/iterator games), bank it and the pair/uninit_copy
+tail stays catalogable; reassess the pivot when the next wall appears. Either way, report which
+branch happened so the user can confirm the track switch.
+
 **CURRENT RANKED FALLBACKS (flag-on testsubscript, 14 total):**
 `1-3. 6× _Rb_tree::{_M_construct_node,_M_create_node,_M_emplace_hint_unique}` (DEFERRED — rebind) ·
 `4. 2× vector::_M_realloc_insert` (DEFERRED — copied free-operator body materialization gap) ·
