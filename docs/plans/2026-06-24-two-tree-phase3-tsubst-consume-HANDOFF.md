@@ -61,15 +61,34 @@ met). No net-new callee-name hardcoding (the `"__destroy"` count is unchanged at
 handling refactored; `inline_builtin_kind=="destroy"` uses the pre-existing string builtin-kind
 field — note: that field being `std::string` not an enum is pre-existing debt, eventual cleanup).
 
-**NEXT — DECISION POINT (cluster milestone; confirm direction with the user before grinding):**
-The top fallback cluster is now the **`_Rb_tree` node family** — `_M_construct_node`,
-`_M_create_node`, `_M_emplace_hint_unique` (6× in testsubscript, the map/set node machinery),
-then `vector::_M_realloc_insert` (2×), `basic_string::_M_construct` (1×),
-`__uninitialized_copy::__uninit_copy` (1×), pair piecewise ctors (4×). Covering the `_Rb_tree`
-family would push 21 → ~27. ALTERNATIVE: pivot to the header-forest (the real -O2 lever; this
-coverage is forest-readiness, NOT a measured speedup). Refresh profile:
-`MADC_XTEST_DEP_PARSE=1 bin/madc --show-stats tests/testsubscript.mad | grep -A12 'fallback profile'`.
-Gate/hygiene/3.5-lesson below still apply to any coverage slice.
+═══════════════════════════════════════════════════════════════════════════
+▶▶▶ NEXT CODEX SLICE — START HERE (user confirmed 2026-06-27: keep working the trees). ONE target.
+═══════════════════════════════════════════════════════════════════════════
+
+**DO THIS: cover the `_Rb_tree` node family** — the map/set node-creation/insertion machinery,
+now the top fallback cluster (6× in testsubscript). Three related shapes, INNERMOST FIRST (they
+nest: `_M_emplace_hint_unique` → `_M_create_node` → `_M_construct_node` → the allocator
+`construct` you already made a hit):
+  1. `std::_Rb_tree::_M_construct_node<_Args...>`  (2×) — builds the node; calls allocator
+     `construct` (now a hit), so this is the closest layer to what's already covered.
+  2. `std::_Rb_tree::_M_create_node<_Args...>`  (2×) — allocates + constructs the node.
+  3. `std::_Rb_tree::_M_emplace_hint_unique<_Args...>`  (2×) — the insertion driver.
+
+Each its own gated commit, innermost first. Target: flag-on testsubscript engagement
+**21 → ~27 hits**. STOP after the `_Rb_tree` family — do NOT also take `vector::_M_realloc_insert`
+(2×, rank #4) or the pair piecewise ctors in this slice.
+
+**⚠️ EXPECT THIS TO BE GNARLIER than the allocator cluster** — the node type is the full map node
+(`std::pair<const string,int>` element, `_Select1st`, `_Rb_tree` with comparator + allocator
+template args), and these bodies nest several pack expansions. It may take more than one attempt
+per shape; keep each gated commit SMALL and bail to the re-parse fallback (return NULL from
+tsubst_method_body) rather than emitting a wrong body if a sub-shape isn't cleanly coverable yet.
+
+**CURRENT RANKED FALLBACKS (flag-on testsubscript, post-allocator-cluster, 14 total):**
+`1-3. 6× _Rb_tree::{_M_construct_node,_M_create_node,_M_emplace_hint_unique}` ·
+`4. 2× vector::_M_realloc_insert` · `5. 1× basic_string::_M_construct` ·
+`6. 1× __uninitialized_copy::__uninit_copy` · `7-10. 4× pair piecewise ctors`.
+(Refresh: `MADC_XTEST_DEP_PARSE=1 bin/madc --show-stats tests/testsubscript.mad | grep -A12 'fallback profile'`.)
 
 --- (the executed directive, kept for the recipe/gate it documents) ---
 **DID THIS: finish the allocator construct/destroy cluster bb44557c started** — cover the two
