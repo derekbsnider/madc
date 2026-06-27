@@ -93,6 +93,45 @@ static void *cir_import_resolver(const char *name)
     return addr;
 }
 
+// Diagnostic: report every MIR import that no loaded module defines and the
+// resolver can't satisfy — i.e. the symbols MIR_link will reject as "import of
+// undefined item". MIR aborts on the FIRST such item and truncates its (huge,
+// mangled) name in the error, so this lists ALL of them, untruncated. Invoked
+// from the link-error handler. This is the missing MIR-side visibility: a
+// tsubst body that references an un-instantiated/un-emitted symbol shows up here
+// by exact name, turning "guess and rebuild" into a targeted fix.
+static void cir_dump_undefined_imports(MIR_context_t ctx)
+{
+    DLIST (MIR_module_t) *mods = MIR_get_module_list(ctx);
+    if (!mods) return;
+    std::set<std::string> defined;
+    for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *mods); m;
+	 m = DLIST_NEXT(MIR_module_t, m))
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it)) {
+	    switch (it->item_type) {
+	    case MIR_func_item: case MIR_data_item: case MIR_ref_data_item:
+	    case MIR_lref_data_item: case MIR_expr_data_item: case MIR_bss_item:
+		if (const char *nm = MIR_item_name(ctx, it)) defined.insert(nm);
+		break;
+	    default: break;
+	    }
+	}
+    std::set<std::string> reported;
+    for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *mods); m;
+	 m = DLIST_NEXT(MIR_module_t, m))
+	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	     it = DLIST_NEXT(MIR_item_t, it)) {
+	    if (it->item_type != MIR_import_item || !it->u.import_id) continue;
+	    std::string nm = it->u.import_id;
+	    if (defined.count(nm) || reported.count(nm)) continue;
+	    if (cir_import_resolver(nm.c_str())) continue;   // dlsym/host-resolvable
+	    reported.insert(nm);
+	    fprintf(stderr, "  undefined MIR import: %s\n", nm.c_str());
+	}
+    fprintf(stderr, "  [%zu undefined import(s) total]\n", reported.size());
+}
+
 // -----------------------------------------------------------------------
 // MIR fatal-error containment
 // -----------------------------------------------------------------------
@@ -352,8 +391,11 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     if (setjmp(cir_mir_error_jmp)) {
 	// A MIR fatal (e.g. "import of undefined item") longjmp'd back here.
 	cir_mir_error_armed = false;
-	cir_active_host_regs = NULL;
 	fprintf(stderr, "%s: MIR error: %s\n", source_name, cir_mir_error_text);
+	// MIR aborts on the first undefined import and truncates its name; list
+	// them all, untruncated (host-regs still set for accurate resolution).
+	cir_dump_undefined_imports(ctx);
+	cir_active_host_regs = NULL;
 	teardown();
 	return false;
     }
