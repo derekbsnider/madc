@@ -62,32 +62,47 @@ handling refactored; `inline_builtin_kind=="destroy"` uses the pre-existing stri
 field — note: that field being `std::string` not an enum is pre-existing debt, eventual cleanup).
 
 ═══════════════════════════════════════════════════════════════════════════
-▶▶▶ NEXT CODEX SLICE — START HERE (user confirmed 2026-06-27: keep working the trees). ONE target.
+🔴 `_Rb_tree` MAP-NODE FAMILY DEFERRED — allocator REBIND needs the generic path, not retained-body copy.
+═══════════════════════════════════════════════════════════════════════════
+Codex attempted `_M_construct_node` (2026-06-27) and **correctly BAILED rather than commit a wrong
+body** (unsafe attempt saved at `tmp/rbtree-current-unsafe-attempt.patch`; tree left clean). ROOT
+CAUSE (Codex found, Claude confirmed): **allocator rebind.** `std::map<string,int>` rebinds its
+allocator from `allocator<pair<const string,int>>` (element) to `allocator<_Rb_tree_node<pair<…>>>`
+(node) via `rebind_alloc<_Rb_tree_node<_Val>>`; `_M_construct_node` constructs into that REBOUND
+node allocator. The retained-body tsubst substituted the ELEMENT allocator's value type (`pair`)
+where the NODE type (`_Rb_tree_node<pair>`) was needed → copied body called
+`__new_allocator<pair>::construct` instead of `__new_allocator<_Rb_tree_node<pair>>::construct` →
+c2mir hard error at `stl_map.h:102`. Enabling it moved 21→23 hit but emitted bad C.
+
+**DECISION (Claude + user, 2026-06-27): DO NOT hand-patch rebind into the copy path.** Resolving
+`rebind_alloc<...>` per instantiation inside the retained-body copy = implementing rebind-metafunction
+resolution in tsubst = building a piece of the generic resolver anyway; a shortcut version is a
+shape-specific rebind hack at the wrong layer (Rule #2/#7 violation). The map-node family is gated
+on EXACTLY the generic §11.5c re-resolve (re-run the normal resolver on substituted args, which
+resolves rebind natively) — it is the concrete motivating case for that work, and that path is what
+retires re-parse. **So map-node waits for §11.5c; do not catalog it via retained-body copy.**
+
+═══════════════════════════════════════════════════════════════════════════
+▶▶▶ NEXT CODEX SLICE — START HERE (set up by Claude 2026-06-27). ONE target, route around the wall.
 ═══════════════════════════════════════════════════════════════════════════
 
-**DO THIS: cover the `_Rb_tree` node family** — the map/set node-creation/insertion machinery,
-now the top fallback cluster (6× in testsubscript). Three related shapes, INNERMOST FIRST (they
-nest: `_M_emplace_hint_unique` → `_M_create_node` → `_M_construct_node` → the allocator
-`construct` you already made a hit):
-  1. `std::_Rb_tree::_M_construct_node<_Args...>`  (2×) — builds the node; calls allocator
-     `construct` (now a hit), so this is the closest layer to what's already covered.
-  2. `std::_Rb_tree::_M_create_node<_Args...>`  (2×) — allocates + constructs the node.
-  3. `std::_Rb_tree::_M_emplace_hint_unique<_Args...>`  (2×) — the insertion driver.
+**DO THIS: cover the two tractable NON-rebind fallbacks** (they construct into the MATCHING
+allocator — no rebind problem, unlike map-node):
+  1. `std::vector::_M_realloc_insert<_Args...>`  (2×) — `vector<int>` constructs into
+     `allocator<int>`; element type == allocator value type, no rebind.
+  2. `std::__cxx11::basic_string::_M_construct<_InIterator>`  (1×) — string builds its char
+     buffer; no allocator-rebind-to-a-node-type.
 
-Each its own gated commit, innermost first. Target: flag-on testsubscript engagement
-**21 → ~27 hits**. STOP after the `_Rb_tree` family — do NOT also take `vector::_M_realloc_insert`
-(2×, rank #4) or the pair piecewise ctors in this slice.
+Each its own gated commit. Target: flag-on testsubscript engagement **21 → ~24 hits**.
+**Do NOT touch the `_Rb_tree` map-node family** (deferred above — allocator rebind, needs §11.5c)
+or `__uninitialized_copy::__uninit_copy` (check it for a rebind/owner dependency first; if it has
+one, defer it too). If a shape you pick turns out to hide a rebind/owner-substitution issue like
+map-node did, BAIL to the re-parse fallback and record it — do not patch the owner type.
 
-**⚠️ EXPECT THIS TO BE GNARLIER than the allocator cluster** — the node type is the full map node
-(`std::pair<const string,int>` element, `_Select1st`, `_Rb_tree` with comparator + allocator
-template args), and these bodies nest several pack expansions. It may take more than one attempt
-per shape; keep each gated commit SMALL and bail to the re-parse fallback (return NULL from
-tsubst_method_body) rather than emitting a wrong body if a sub-shape isn't cleanly coverable yet.
-
-**CURRENT RANKED FALLBACKS (flag-on testsubscript, post-allocator-cluster, 14 total):**
-`1-3. 6× _Rb_tree::{_M_construct_node,_M_create_node,_M_emplace_hint_unique}` ·
-`4. 2× vector::_M_realloc_insert` · `5. 1× basic_string::_M_construct` ·
-`6. 1× __uninitialized_copy::__uninit_copy` · `7-10. 4× pair piecewise ctors`.
+**CURRENT RANKED FALLBACKS (flag-on testsubscript, 14 total):**
+`1-3. 6× _Rb_tree::{_M_construct_node,_M_create_node,_M_emplace_hint_unique}` (DEFERRED — rebind) ·
+`4. 2× vector::_M_realloc_insert` (← take this) · `5. 1× basic_string::_M_construct` (← and this) ·
+`6. 1× __uninitialized_copy::__uninit_copy` (vet for rebind) · `7-10. 4× pair piecewise ctors`.
 (Refresh: `MADC_XTEST_DEP_PARSE=1 bin/madc --show-stats tests/testsubscript.mad | grep -A12 'fallback profile'`.)
 
 --- (the executed directive, kept for the recipe/gate it documents) ---
