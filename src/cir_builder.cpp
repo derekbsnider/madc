@@ -2714,6 +2714,19 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 		return node2(N_CAST, void_ptr_type(),
 			     node1(N_ADDR, translate_expr(arg), arg), arg);
 
+	// Pattern-mode construction deferral: an `arg` whose type is still a template
+	// parameter (`_Args` etc.) cannot be materialized into a concrete `target`
+	// temp here — overload resolution can't reject candidates for an unknown arg
+	// type, so it picks target's copy ctor (param `target&`) and re-enters
+	// object_arg_addr(arg, target) forever (the class_ctor_call<->object_arg_addr
+	// recursion). This is the construction-level analogue of
+	// tsubst_pattern_has_dependent_call: a dependent-arg construction is not
+	// lowerable in the recipe — reject the pattern so the body falls back to the
+	// parsed concrete body (where arg's type is known). See the keystone analysis
+	// in 2026-06-24-two-tree-phase3-tsubst-consume-HANDOFF.md §0.
+	if (m_tsubst_pattern_mode && arg
+	    && template_param_under_type_layers(arg->datadef()))
+		return error_node("tsubst: dependent-arg object construction", arg);
 	char name[32];
 	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
 	Variable *tmp = new Variable(name, *target, 1, NULL, false);
@@ -2751,6 +2764,12 @@ node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
 		if ((tv->var.is_reference()) && class_behind(tv->var.type) == target)
 			return translate_expr(arg);
 
+	// Pattern-mode construction deferral (see object_arg_addr): a dependent-typed
+	// arg cannot be materialized into a concrete `target` temp in the recipe —
+	// reject the pattern so the body falls back to its parsed concrete form.
+	if (m_tsubst_pattern_mode && arg
+	    && template_param_under_type_layers(arg->datadef()))
+		return error_node("tsubst: dependent-arg object value", arg);
 	char name[32];
 	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
 	Variable *tmp = new Variable(name, *target, 1, NULL, false);
