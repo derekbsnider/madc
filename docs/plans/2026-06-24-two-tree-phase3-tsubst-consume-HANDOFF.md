@@ -83,26 +83,39 @@ resolves rebind natively) — it is the concrete motivating case for that work, 
 retires re-parse. **So map-node waits for §11.5c; do not catalog it via retained-body copy.**
 
 ═══════════════════════════════════════════════════════════════════════════
-▶▶▶ NEXT CODEX SLICE — START HERE (set up by Claude 2026-06-27). ONE target, route around the wall.
+▶▶▶ NEXT CODEX SLICE — START HERE (updated by Codex 2026-06-27). ONE target, route around the wall.
 ═══════════════════════════════════════════════════════════════════════════
 
-**DO THIS: cover the two tractable NON-rebind fallbacks** (they construct into the MATCHING
-allocator — no rebind problem, unlike map-node):
-  1. `std::vector::_M_realloc_insert<_Args...>`  (2×) — `vector<int>` constructs into
-     `allocator<int>`; element type == allocator value type, no rebind.
-  2. `std::__cxx11::basic_string::_M_construct<_InIterator>`  (1×) — string builds its char
-     buffer; no allocator-rebind-to-a-node-type.
+**VECTOR PROBE RESULT — DEFER `std::vector::_M_realloc_insert<_Args...>` for now.**
+Codex probed the scalar `vector<int>` form on 2026-06-27 and correctly reverted the attempt. The
+shape is not blocked by allocator rebind (unlike `_Rb_tree`), but the retained-body copy reaches
+lowered direct calls to the free `__gnu_cxx::operator-` normal-iterator helper. Replaying ordinary
+copied direct-call reachability fixed the earlier missing-prototype/c2mir errors, but the concrete
+operator body was still not materialized in the copied-body path (`__ns___gnu_cxx_operator_mi`
+remained an undefined import; no matching pending `TokenFunc` body). Do **not** admit vector via a
+scalar owner/value-type guard until copied/lowered free-operator calls can generically rematerialize
+retained operator bodies, or until broader §11.5c resolver re-entry handles it.
 
-Each its own gated commit. Target: flag-on testsubscript engagement **21 → ~24 hits**.
-**Do NOT touch the `_Rb_tree` map-node family** (deferred above — allocator rebind, needs §11.5c)
-or `__uninitialized_copy::__uninit_copy` (check it for a rebind/owner dependency first; if it has
-one, defer it too). If a shape you pick turns out to hide a rebind/owner-substitution issue like
-map-node did, BAIL to the re-parse fallback and record it — do not patch the owner type.
+**DO THIS NEXT: cover the next tractable NON-rebind fallback first:**
+  1. `std::__cxx11::basic_string::_M_construct<_InIterator>` (1×) — string builds its char buffer;
+     no allocator-rebind-to-a-node-type known yet, but still inspect owner/value substitution before
+     admitting it.
+  2. Then vet `__uninitialized_copy::__uninit_copy` (1×) for owner/rebind dependency. If it has one,
+     defer it too.
+  3. Then consider the pair piecewise ctors (4×), one clean gated slice at a time.
+
+Each real coverage commit needs its own gate. Target: flag-on testsubscript engagement rises above
+the current **21 hit / 14 fallback** baseline. **Do NOT touch the `_Rb_tree` map-node family**
+(deferred above — allocator rebind, needs §11.5c) and do not re-admit vector by patching owner types
+or hardcoding callee names. If a shape hides a rebind/owner-substitution issue like map-node did, BAIL
+to the re-parse fallback and record it.
 
 **CURRENT RANKED FALLBACKS (flag-on testsubscript, 14 total):**
 `1-3. 6× _Rb_tree::{_M_construct_node,_M_create_node,_M_emplace_hint_unique}` (DEFERRED — rebind) ·
-`4. 2× vector::_M_realloc_insert` (← take this) · `5. 1× basic_string::_M_construct` (← and this) ·
-`6. 1× __uninitialized_copy::__uninit_copy` (vet for rebind) · `7-10. 4× pair piecewise ctors`.
+`4. 2× vector::_M_realloc_insert` (DEFERRED — copied free-operator body materialization gap) ·
+`5. 1× basic_string::_M_construct` (← take this next) ·
+`6. 1× __uninitialized_copy::__uninit_copy` (vet for rebind/owner dependency) ·
+`7-10. 4× pair piecewise ctors`.
 (Refresh: `MADC_XTEST_DEP_PARSE=1 bin/madc --show-stats tests/testsubscript.mad | grep -A12 'fallback profile'`.)
 
 --- (the executed directive, kept for the recipe/gate it documents) ---

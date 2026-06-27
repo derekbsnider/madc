@@ -97,13 +97,16 @@ high-level" — the answer is both.**
   existing destructor/no-op lowering while iterator/object-address destructor
   forms still fall back. The current perf-round instrument adds
   `--show-stats` body engagement counts (`H hit / F fallback`) so real workload
-  coverage can be ranked before further widening; a clean `-O2` `testsubscript`
-  run currently reports 6 hit / 29 fallback and ranks the top real fallback
-  shapes as `std::allocator_traits::construct<_Up,_Args...>` (4),
-  `std::allocator_traits::destroy<_Up>` (4), and
-  `std::__new_allocator::construct<_Up,_Args...>` (3). Broader system-header
-  destructor/object-address packs still fall back.
-  Validation is green both
+  coverage can be ranked before further widening. The allocator construct/destroy
+  cluster then moved flag-on `testsubscript` to **21 hit / 14 fallback**. The
+  next attempted `std::vector::_M_realloc_insert<_Args...>` probe is deferred:
+  its copied retained body reaches lowered `__gnu_cxx::operator-` calls, but the
+  concrete free-operator body is not materialized in the copied-body path
+  (`__ns___gnu_cxx_operator_mi` would remain undefined if admitted). The next
+  tractable target is `std::__cxx11::basic_string::_M_construct<_InIterator>`,
+  followed by a vetted `__uninitialized_copy`/pair-ctor pass. Broader
+  system-header destructor/object-address packs still fall back.
+  Validation at the committed checkpoint is green both
   flag-off and flag-on at **670 passed / 0 failed / 0 timed out / 18 skipped**;
   `test_cir` is **86 test cases / 1067 assertions / 4 skipped**. Phase 4 is
   roughly **74% implemented** by coverage weight, not session count.
