@@ -12,6 +12,13 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 ➡️ **START HERE — next Codex session (2026-06-27). The direction CHANGED; this block
 SUPERSEDES the pack-coverage NEXT-SLICE text below it.**
 
+📋 **For the CONTAINER-CONSTRUCTION cluster (the dominant remaining fallbacks — `_Rb_tree::*`,
+`vector::_M_realloc_insert`, etc.), the comprehensive execution plan is now its own doc:
+`docs/plans/2026-06-27-tsubst-construction-deferral-PLAN.md`** — full madc machinery map + gcc
+two-phase model + GDB-confirmed root cause + the 4-capability wall stack + an ordered A→B→C→D slice
+plan with gates. Read it before touching the cluster. The 🔴 blocks below are the condensed
+history; that doc is the executable plan.
+
 ---
 🔴 **KEYSTONE WALL FOUND — the `_Rb_tree` eligibility cluster is blocked by a pre-existing ctor-lowering infinite recursion (Claude 2026-06-27, investigated + reverted; NO code change landed this round).**
 
