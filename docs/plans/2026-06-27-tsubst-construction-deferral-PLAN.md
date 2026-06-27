@@ -1,8 +1,15 @@
-# Two-Tree Phase 4 — tsubst Construction-Deferral & the Container-Construction Wall Stack
+# tsubst Construction Re-Resolve (KIND 4) + the shared re-resolve machinery
+
+> **READ FIRST: `2026-06-27-two-tree-end-state-and-reparse-deprecation.md` is the strategic plan.**
+> This doc is the *implementation reference* for it — the machinery map (current file:line), the
+> gcc citations, and the construction root-cause/reducers. The "wall stack" below is **NOT a
+> catalog to grind shape-by-shape**; the items are the generic resolution KINDS (1–4 + the
+> dependence router) from the strategic plan. Build kinds generically; never key a fix on a
+> template/callee name (Rule #7 — that name-keying is what exploded Phase 4).
 
 **Date:** 2026-06-27 · **Branch:** `feature/front-end-performance-claude`
+**Strategic plan:** `2026-06-27-two-tree-end-state-and-reparse-deprecation.md` (the g++ parse-once model)
 **Parent handoff:** `2026-06-24-two-tree-phase3-tsubst-consume-HANDOFF.md` (§0 🔴 block)
-**Governing plan:** `2026-06-23-two-tree-cir-materialize-from-ast-PLAN.md` (§11.5c)
 
 This is the **comprehensive, self-contained** execution reference for making the STL
 container *node-construction* member-template bodies (`_Rb_tree::*`, `vector::_M_realloc_insert`,
