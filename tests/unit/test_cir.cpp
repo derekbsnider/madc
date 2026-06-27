@@ -1926,6 +1926,51 @@ TEST_CASE("CIR: tsubst lowers system-header reference-forwarded placement-new pa
     CHECK(got == 34);
 }
 
+// Reference-returning system-header packs bound to by-value class parameters
+// need the copied reference slot dereferenced per element. This is the generic
+// `pair(piecewise_construct, tuple..., tuple...)` allocator construction shape:
+// the callee takes class values while the forwarded pack leaves are references.
+TEST_CASE("CIR: tsubst lowers system-header reference-forwarded class-value placement-new packs") {
+    const char *header_source =
+	"namespace std {\n"
+	"    template<class T> T& forward(T& v) { return v; }\n"
+	"}\n"
+	"struct Item {\n"
+	"    int x;\n"
+	"    Item(int v) { x = v; }\n"
+	"};\n"
+	"struct PairBox {\n"
+	"    int x;\n"
+	"    PairBox(Item a, Item b) { x = a.x * 10 + b.x; }\n"
+	"};\n"
+	"struct Maker {\n"
+	"    template<class Up, class... Args> void make(Up* p, Args&... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
+	"};\n";
+    const char *main_source =
+	"int main() { Item zero(0); PairBox box(zero, zero); Maker m; Item a(3); Item b(4); m.make(&box, a, b); return box.x; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/new_allocator.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(
+	main_source, "<pack-new-system-ref-forward-class-value-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    size_t tree1_copies = 0;
+    int64_t got = cir_run_program(prog.get(), &tree1_copies);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(tree1_copies > 0);
+    CHECK(got == 34);
+}
+
 // A system-header forwarding pack may return a different class than the
 // constructor reference parameter expects when the target class has a
 // converting constructor. This keeps the guarded copied-call requirement, but

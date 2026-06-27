@@ -1152,19 +1152,45 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				dynamic_cast<DataDefCLASS *>(concrete);
 			bool manual_class_pack_lowering = false;
 			if (concrete_class) {
-				if (tsubst_args_have_pack_expansion(tn->ctor_args)
-				    && (concrete_class->is_externally_defined()
-					|| concrete_class->is_extern_template_instantiated
-					|| class_has_object_members(concrete_class)))
-					return CIR_NODE(error_node(
-						"tsubst: external placement-new class pack"));
 				bool unsupported_class_arg = false;
 				FuncDef *placement_ctor = NULL;
 				bool placement_ctor_checked = false;
+				std::vector<TokenBase *> expanded_ctor_args;
+				bool expanded_ctor_args_checked = false;
+				auto placement_ctor_args = [&]() -> const std::vector<TokenBase *> & {
+					if (expanded_ctor_args_checked)
+						return expanded_ctor_args;
+					expanded_ctor_args_checked = true;
+					for (size_t ai = 0; ai < tn->ctor_args.size(); ++ai) {
+						TokenBase *arg = tn->ctor_args[ai];
+						if (TokenPackExpansion *pe =
+							    dynamic_cast<TokenPackExpansion *>(arg)) {
+							DataDefTemplateParam *tp = pe->pattern
+								? template_param_in_pack_pattern(pe->pattern)
+								: NULL;
+							if (tp && m_tsubst_active_type_arg_packs
+							    && tp->param_index
+							       < m_tsubst_active_type_arg_packs->size()) {
+								const std::vector<DataDef *> &elems =
+									(*m_tsubst_active_type_arg_packs)
+										[tp->param_index];
+								for (DataDef *elem : elems)
+									expanded_ctor_args.push_back(
+										tsubst_concrete_arg_token(
+											elem,
+											expanded_ctor_args.size(),
+											pe->pattern));
+								continue;
+							}
+						}
+						expanded_ctor_args.push_back(arg);
+					}
+					return expanded_ctor_args;
+				};
 				auto selected_placement_ctor = [&]() -> FuncDef * {
 					if (!placement_ctor_checked) {
 						placement_ctor = select_ctor_overload(
-							concrete_class, tn->ctor_args);
+							concrete_class, placement_ctor_args());
 						if (!placement_ctor) {
 							auto it = concrete_class->method_map.find(
 								concrete_class->name);
@@ -1178,6 +1204,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					}
 					return placement_ctor;
 				};
+				size_t concrete_arg_pos = 0;
 				for (size_t ai = 0; ai < tn->ctor_args.size(); ++ai) {
 					TokenBase *arg = tn->ctor_args[ai];
 					if (TokenPackExpansion *pe =
@@ -1196,10 +1223,11 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 								[tp->param_index];
 						for (size_t e = 0; e < elems.size(); ++e) {
 							DataDef *elem = elems[e];
+							size_t pi = concrete_arg_pos + 1;
+							++concrete_arg_pos;
 							if (!tsubst_is_class_object_arg(elem))
 								continue;
 							FuncDef *ctor = selected_placement_ctor();
-							size_t pi = ai + 1 + e;
 							DataDef *pt = (ctor && pi < ctor->parameters.size())
 									? ctor->parameters[pi] : NULL;
 							bool refp = ctor && ctor->is_ref_param(pi);
@@ -1226,10 +1254,16 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 								continue;
 							}
 							// By-value object params can reuse marked-expression
-							// fan-out.
+							// fan-out for simple local cases, but real
+							// system-header constructor packs need the same
+							// copied-argument path as reference-bound object
+							// params so ordinary temp construction does not
+							// recurse through the unresolved pack expression.
 							if (!elem->is_reference()
-							    && as_class_instance(pt))
+							    && as_class_instance(pt)) {
+								manual_class_pack_lowering = true;
 								continue;
+							}
 							unsupported_class_arg = true;
 							break;
 						}
@@ -1237,6 +1271,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 							break;
 						continue;
 					}
+					++concrete_arg_pos;
 					DataDef *arg_dd = arg
 						? subst_datadef(m_prog, arg->datadef(), *subst)
 						: NULL;
@@ -1326,6 +1361,26 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 									     assign, origin));
 						return object_addr(name, origin);
 					};
+					auto copied_pack_id_node = [&](const char *pack_name,
+								       int pack_index,
+								       size_t pack_elem,
+								       TokenBase *origin,
+								       DataDef *dd) -> node_t {
+						int saved_index = m_tsubst_copy_pack_index;
+						size_t saved_elem = m_tsubst_copy_pack_elem;
+						const char *saved_name =
+							m_tsubst_copy_pack_value_name;
+						m_tsubst_copy_pack_index = pack_index;
+						m_tsubst_copy_pack_elem = pack_elem;
+						m_tsubst_copy_pack_value_name = pack_name;
+						std::string nm = copied_pack_value_name(pack_name);
+						m_tsubst_copy_pack_index = saved_index;
+						m_tsubst_copy_pack_elem = saved_elem;
+						m_tsubst_copy_pack_value_name = saved_name;
+						node_t n = id(nm.c_str(), origin);
+						CIR_NODE(n)->datadef = dd;
+						return n;
+					};
 					std::function<node_t(
 						TokenBase *, DataDef *, bool,
 						const std::map<DataDef *, DataDef *> &,
@@ -1365,6 +1420,12 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 									return object_addr(name, arg);
 								}
 							}
+							if (rt && pack_name)
+								return node2(N_CAST, void_ptr_type(),
+									copied_pack_id_node(pack_name,
+										pack_index, pack_elem,
+										arg, srt),
+									arg);
 							node_t value = copy_expr_under(arg, smap,
 										      pack_index,
 										      pack_elem,
@@ -1376,9 +1437,22 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 												    arg);
 							return void_addr_of(value, arg);
 						}
-						if (as_class_instance(pt))
+						if (as_class_instance(pt)) {
+							DataDef *rt = ref_returning_call_type(arg);
+							if (rt && pack_name) {
+								DataDef *srt =
+									subst_datadef(m_prog, rt, smap);
+								node_t slot = copied_pack_id_node(
+									pack_name, pack_index, pack_elem,
+									arg, srt);
+								node_t value = node1(N_DEREF,
+									slot, arg);
+								CIR_NODE(value)->datadef = srt;
+								return value;
+							}
 							return copy_expr_under(arg, smap, pack_index,
 									       pack_elem, pack_name);
+						}
 						if (refp) {
 							node_t value = copy_expr_under(arg, smap,
 										      pack_index,
@@ -1413,6 +1487,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					};
 
 					std::vector<node_t> explicit_nodes;
+					concrete_arg_pos = 0;
 					for (size_t ai = 0; ai < tn->ctor_args.size(); ++ai) {
 						TokenBase *arg = tn->ctor_args[ai];
 						if (TokenPackExpansion *pe =
@@ -1446,7 +1521,8 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 								std::map<DataDef *, DataDef *> elem_subst =
 									*subst;
 								elem_subst[pmi->second] = elems[e];
-								size_t pi = ai + 1 + e;
+								size_t pi = concrete_arg_pos + 1;
+								++concrete_arg_pos;
 								DataDef *pt =
 									(ctor && pi < ctor->parameters.size())
 										? ctor->parameters[pi] : NULL;
@@ -1459,7 +1535,8 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 							}
 							continue;
 						}
-						size_t pi = ai + 1;
+						size_t pi = concrete_arg_pos + 1;
+						++concrete_arg_pos;
 						DataDef *pt = (ctor && pi < ctor->parameters.size())
 								? ctor->parameters[pi] : NULL;
 						bool refp = ctor && ctor->is_ref_param(pi);
