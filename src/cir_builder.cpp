@@ -538,6 +538,30 @@ static bool tsubst_destroy_call_has_template_pointee(TokenCallFunc *tc)
 	return pdd && template_param_under_type_layers(pdd->base_type);
 }
 
+static bool tsubst_inline_destroy_call(TokenCallFunc *tc)
+{
+	if (!tc || tc->parameters.size() != 1)
+		return false;
+	FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+	return fd && fd->inline_builtin_kind == "destroy";
+}
+
+static bool tsubst_destroy_marker_call(TokenCallFunc *tc)
+{
+	return tsubst_destroy_call_has_template_pointee(tc)
+	    || tsubst_inline_destroy_call(tc);
+}
+
+static DataDef *tsubst_destroy_marker_datadef(TokenBase *arg, DataDef *argdd)
+{
+	DataDef *marker_dd = argdd;
+	if (!template_param_under_type_layers(marker_dd)) {
+		if (DataDefTemplateParam *tp = template_param_in_pack_pattern(arg))
+			marker_dd = tp;
+	}
+	return template_param_under_type_layers(marker_dd) ? marker_dd : NULL;
+}
+
 static std::string pack_value_name_in_pattern(TokenBase *tb,
 					      unsigned pack_index)
 {
@@ -1586,7 +1610,12 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		}
 		TokenCallFunc *tc =
 			dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
-		if (tsubst_destroy_call_has_template_pointee(tc)) {
+		bool destroy_marker = tsubst_destroy_marker_call(tc);
+		if (!destroy_marker && tc && tc->parameters.size() == 1) {
+			FuncDef *fd = call_target_funcdef(tc);
+			destroy_marker = fd && fd->inline_builtin_kind == "destroy";
+		}
+		if (destroy_marker) {
 			DataDef *concrete_arg = subst_datadef(m_prog, src->datadef, *subst);
 			DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(concrete_arg);
 			DataDef *elem = pdd ? pdd->base_type : NULL;
@@ -10754,6 +10783,41 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			    && tcf->parameters.size() == 1) {
 				return node1(N_ADDR, translate_expr(tcf->parameters[0]), tb);
 			}
+			auto lower_destroy_arg = [&](TokenBase *parg,
+						     bool allow_deferred_marker) -> node_t {
+				DataDef *argdd = parg ? parg->datadef() : NULL;
+				if (allow_deferred_marker && m_tsubst_pattern_mode) {
+					DataDef *marker_dd =
+						tsubst_destroy_marker_datadef(parg, argdd);
+					if (marker_dd) {
+						cir_node *marker = make(N_IGNORE, tb);
+						marker->datadef = marker_dd;
+						return marker->as_node();
+					}
+				}
+				DataDef *elem = NULL;
+				if (DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(argdd))
+					elem = pdd->base_type;
+				DataDefCLASS *ecls = as_class_instance(elem);
+				// Scalar / pointer / dtor-less element: emit nothing.
+				// A bare `0` keeps the expression-statement valid and
+				// is discarded (the call is evaluated for effect only).
+				if (!ecls || !class_needs_dtor(ecls))
+					return integer(0, tb);
+				// dtor_sym((void*)(ptr)) — the dtor takes only `this`,
+				// matching its `void (*)(T*)` shape (delete uses the same).
+				std::string dsym = class_complete_dtor_symbol(ecls);
+				referenced_funcs.insert(dsym);
+				need_output_extern(dsym.c_str(), false,
+						   { { {N_VOID}, true } });
+				node_t a = list();
+				append(a, node2(N_CAST, void_ptr_type(),
+						translate_expr(parg), tb));
+				return node2(N_CALL, id(dsym.c_str(), tb), a, tb);
+			};
+			if (inline_fd && inline_fd->inline_builtin_kind == "destroy"
+			    && tcf->parameters.size() == 1)
+				return lower_destroy_arg(tcf->parameters[0], true);
 			// __madc_{add,sub,mul}_overflow[_p]: choose the width/signedness-
 			// specific helper from the destination operand's type (the lexer
 			// only emitted the long-width generic, which mis-detects overflow
@@ -10838,35 +10902,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// elements. The argument
 			// keeps its original (uncoerced) type, so `data + i` reports the
 			// real `T*`; the pointed-to T is base_type of that DataDefPTR.
-			if (tcf->var.name == "__destroy" && tcf->parameters.size() == 1) {
-				TokenBase *parg = tcf->parameters[0];
-				DataDef *argdd = parg ? parg->datadef() : NULL;
-				if (m_tsubst_pattern_mode
-				    && tsubst_destroy_call_has_template_pointee(tcf)) {
-					cir_node *marker = make(N_IGNORE, tb);
-					marker->datadef = argdd;
-					return marker->as_node();
-				}
-				DataDef *elem = NULL;
-				if (DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(argdd))
-					elem = pdd->base_type;
-				DataDefCLASS *ecls = as_class_instance(elem);
-				// Scalar / pointer / dtor-less element: emit nothing.
-				// A bare `0` keeps the expression-statement valid and
-				// is discarded (the call is evaluated for effect only).
-				if (!ecls || !class_needs_dtor(ecls))
-					return integer(0, tb);
-				// dtor_sym((void*)(ptr)) — the dtor takes only `this`,
-				// matching its `void (*)(T*)` shape (delete uses the same).
-				std::string dsym = class_complete_dtor_symbol(ecls);
-				referenced_funcs.insert(dsym);
-				need_output_extern(dsym.c_str(), false,
-						   { { {N_VOID}, true } });
-				node_t a = list();
-				append(a, node2(N_CAST, void_ptr_type(),
-						translate_expr(parg), tb));
-				return node2(N_CALL, id(dsym.c_str(), tb), a, tb);
-			}
+			if (tcf->var.name == "__destroy" && tcf->parameters.size() == 1)
+				return lower_destroy_arg(tcf->parameters[0], true);
 			const char *rt = builtin_output_runtime(tcf->var.name);
 			if (rt[0]) {
 				static const std::map<std::string, ExternParam> sigs = {
@@ -12982,6 +13019,140 @@ static bool tsubst_pattern_has_destroy_template_pointee(TokenBase *tb)
 	return false;
 }
 
+static const char *tsubst_plain_var_name(TokenBase *tb)
+{
+	if (!tb)
+		return NULL;
+	if (tb->type() == TokenType::ttVariable) {
+		if (TokenVar *tv = dynamic_cast<TokenVar *>(tb))
+			return tv->var.name.c_str();
+	}
+	if (TokenIdent *ti = dynamic_cast<TokenIdent *>(tb))
+		return ti->str.c_str();
+	return NULL;
+}
+
+static bool tsubst_name_is(TokenBase *tb, const std::string &name)
+{
+	const char *n = tsubst_plain_var_name(tb);
+	return n && n[0] && name == n;
+}
+
+static bool tsubst_pattern_mentions_deref_of_name(TokenBase *tb,
+						  const std::string &name)
+{
+	if (!tb || name.empty())
+		return false;
+	if (TokenDeref *td = dynamic_cast<TokenDeref *>(tb))
+		return td->var.name == name;
+	if (TokenDerefExpr *td = dynamic_cast<TokenDerefExpr *>(tb))
+		return tsubst_name_is(td->expr, name)
+		    || tsubst_pattern_mentions_deref_of_name(td->expr, name);
+	if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(tb))
+		return tsubst_pattern_mentions_deref_of_name(ta->expr, name);
+	if (TokenCast *tc = dynamic_cast<TokenCast *>(tb))
+		return tsubst_pattern_mentions_deref_of_name(tc->expr, name);
+	if (TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb)) {
+		for (TokenBase *p : tc->parameters)
+			if (tsubst_pattern_mentions_deref_of_name(p, name))
+				return true;
+		if (tsubst_pattern_mentions_deref_of_name(tc->src_node, name))
+			return true;
+		if (TokenMember *tm = dynamic_cast<TokenMember *>(tc))
+			return tsubst_pattern_mentions_deref_of_name(
+				tm->parent_expr, name);
+		return false;
+	}
+	if (TokenOperator *op = dynamic_cast<TokenOperator *>(tb)) {
+		if (tsubst_pattern_mentions_deref_of_name(op->left, name)
+		    || tsubst_pattern_mentions_deref_of_name(op->right, name))
+			return true;
+		if (TokenTerQ *tq = dynamic_cast<TokenTerQ *>(op))
+			return tsubst_pattern_mentions_deref_of_name(
+				tq->condition, name)
+			    || tsubst_pattern_mentions_deref_of_name(
+				tq->true_expr, name)
+			    || tsubst_pattern_mentions_deref_of_name(
+				tq->false_expr, name);
+	}
+	if (TokenCpnd *cp = dynamic_cast<TokenCpnd *>(tb)) {
+		for (TokenStmt *s : cp->statements)
+			if (tsubst_pattern_mentions_deref_of_name(s, name))
+				return true;
+		for (TokenBase *d : cp->deferred)
+			if (tsubst_pattern_mentions_deref_of_name(d, name))
+				return true;
+	}
+	return false;
+}
+
+static bool tsubst_call_uses_deref_of_name(TokenBase *tb,
+					   const std::string &name)
+{
+	if (!tb || name.empty())
+		return false;
+	if (TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb)) {
+		for (TokenBase *p : tc->parameters)
+			if (tsubst_pattern_mentions_deref_of_name(p, name))
+				return true;
+		if (TokenMember *tm = dynamic_cast<TokenMember *>(tc))
+			if (tsubst_pattern_mentions_deref_of_name(tm->parent_expr,
+								  name))
+				return true;
+	}
+	if (TokenCpnd *cp = dynamic_cast<TokenCpnd *>(tb)) {
+		for (TokenStmt *s : cp->statements)
+			if (tsubst_call_uses_deref_of_name(s, name))
+				return true;
+		for (TokenBase *d : cp->deferred)
+			if (tsubst_call_uses_deref_of_name(d, name))
+				return true;
+	}
+	return false;
+}
+
+static bool tsubst_pattern_has_destroy_iterator_loop(TokenBase *tb)
+{
+	if (!tb)
+		return false;
+	if (TokenCpnd *cp = dynamic_cast<TokenCpnd *>(tb)) {
+		for (TokenStmt *s : cp->statements)
+			if (tsubst_pattern_has_destroy_iterator_loop(s))
+				return true;
+		for (TokenBase *d : cp->deferred)
+			if (tsubst_pattern_has_destroy_iterator_loop(d))
+				return true;
+		return false;
+	}
+	TokenFOR *tf = dynamic_cast<TokenFOR *>(tb);
+	if (!tf)
+		return false;
+	if (tf->initialize || !tf->init_extras.empty()
+	    || !tf->incr_extras.empty())
+		return false;
+	TokenNotEq *ne = dynamic_cast<TokenNotEq *>(tf->condition);
+	TokenInc *inc = dynamic_cast<TokenInc *>(tf->increment);
+	if (!ne || !inc || !ne->left || !ne->right)
+		return false;
+	const char *first = tsubst_plain_var_name(ne->left);
+	const char *last = tsubst_plain_var_name(ne->right);
+	if (!first || !last || strcmp(first, last) == 0)
+		return false;
+	TokenBase *inc_operand = inc->left ? inc->left : inc->right;
+	if (!tsubst_name_is(inc_operand, first))
+		return false;
+	if (!tsubst_datadef_involves_template_param(ne->left->datadef())
+	    || !tsubst_datadef_involves_template_param(ne->right->datadef()))
+		return false;
+	return tsubst_call_uses_deref_of_name(tf->statement, first);
+}
+
+static bool tsubst_pattern_is_empty_body(TokenBase *tb)
+{
+	TokenCpnd *cp = dynamic_cast<TokenCpnd *>(tb);
+	return cp && cp->statements.empty() && cp->deferred.empty();
+}
+
 static bool tsubst_pattern_has_dependent_call(TokenBase *tb)
 {
 	if (!tb)
@@ -13190,11 +13361,13 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 	if (!source || !source->dependent_pattern)
 		return NULL;
 	TokenFunc *recipe = source->dependent_pattern;
-	// libstdc++'s _Destroy_aux<...>::__destroy is only safe on Tree-1 when
-	// the retained body already contains a direct `__destroy(T*)` marker.
-	// Iterator/object-address forms still fall back until widened deliberately.
+	// Destroy helpers are safe on Tree-1 when the retained body either already
+	// contains a direct `__destroy(T*)` marker or is the structural iterator
+	// loop that destroys `addressof(*it)` while walking `[first,last)`.
 	if (source->method_display_name == "__destroy"
-	    && !tsubst_pattern_has_destroy_template_pointee(recipe))
+	    && !tsubst_pattern_has_destroy_template_pointee(recipe)
+	    && !tsubst_pattern_has_destroy_iterator_loop(recipe)
+	    && !tsubst_pattern_is_empty_body(recipe))
 		return NULL;
 	FuncDef *recipe_fd = dynamic_cast<FuncDef *>(recipe->var.type);
 	// Ordinary reference-parameter VALUE reads stay on the parsed-body fallback.

@@ -1788,6 +1788,7 @@ public:
 	std::vector<bool> typeparam_is_pack;
 	std::vector<TokenBase *> decl;
 	std::string ns;
+	std::string inline_builtin_kind;
 	// Owner class for a MEMBER function template being instantiated: pushed
 	// on class_scope_stack during the body parse so the params/body resolve
 	// class-scope members ([basic.scope.class]). NULL for free/namespace fn
@@ -1801,8 +1802,8 @@ public:
 	// templates (those stay on the free-function parse).
 	bool instance_method;
 	FnTemplateDef() : typeparams(), typeparam_defaults(), typeparam_is_type(),
-	    typeparam_is_pack(), decl(), ns(), owner_class(NULL),
-	    instance_method(false) {}
+	    typeparam_is_pack(), decl(), ns(), inline_builtin_kind(),
+	    owner_class(NULL), instance_method(false) {}
     };
     std::map<std::string, std::vector<FnTemplateDef>> fn_template_map;
     // BODY-LESS free/namespace function template declarations (no `{ body }` to

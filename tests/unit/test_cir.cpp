@@ -2165,6 +2165,127 @@ TEST_CASE("CIR: tsubst lowers direct destroy-aux member body") {
     CHECK(got == 7);
 }
 
+// The libstdc++ `_Destroy_aux<false>::__destroy` body walks an iterator range
+// and calls `_Destroy(addressof(*it))`. Tree-1 must recognize that structural
+// shape and defer the concrete pointee destructor until iterator substitution.
+TEST_CASE("CIR: tsubst lowers destroy-aux iterator loop body") {
+    const char *header_source =
+	"namespace std {\n"
+	"    template<class T> T* __addressof(T& r) { return __builtin_addressof(r); }\n"
+	"    template<class T> void _Destroy(T* p) { ::__destroy(p); }\n"
+	"}\n"
+	"struct DestroyAux {\n"
+	"    template<class It> static void __destroy(It first, It last) {\n"
+	"        for (; first != last; ++first)\n"
+	"            std::_Destroy(std::__addressof(*first));\n"
+	"    }\n"
+	"};\n";
+    const char *main_source =
+	"struct Box {\n"
+	"    int* p;\n"
+	"    Box(int* q) { p = q; }\n"
+	"    ~Box() { *p = *p + 7; }\n"
+	"};\n"
+	"int main() { int x = 0; Box* b = new Box(&x); DestroyAux d; d.__destroy(b, b + 1); return x; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/stl_construct.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(main_source, "<destroy-aux-loop-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    FuncDef *source_fd = NULL;
+    FuncDef *instance = NULL;
+    for ( funcdef_map_iter it = prog->funcdef_map.begin();
+	  it != prog->funcdef_map.end(); ++it )
+    {
+	FuncDef *fd = it->second;
+	if ( !fd )
+	    continue;
+	if ( fd->dependent_pattern
+	  && fd->method_display_name == "__destroy" )
+	    source_fd = fd;
+	if ( fd->tsubst_source
+	  && fd->tsubst_source->method_display_name == "__destroy" )
+	    instance = fd;
+    }
+    REQUIRE(source_fd != NULL);
+    REQUIRE(instance != NULL);
+    CHECK(instance->tsubst_source == source_fd);
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    {
+	CirBuilder builder(c2m);
+	node_t tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_count_tree1_copies(tree) > 0);
+    }
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+}
+
+// `_Destroy_aux<true>::__destroy` is the scalar no-op specialization. Its empty
+// retained body is safe to copy because there are no dependent reads or calls to
+// resolve after substitution.
+TEST_CASE("CIR: tsubst lowers empty destroy-aux body") {
+    const char *header_source =
+	"struct DestroyAuxNoop {\n"
+	"    template<class It> static void __destroy(It first, It last) { }\n"
+	"};\n";
+    const char *main_source =
+	"int main() { int arr[1]; DestroyAuxNoop d; d.__destroy(arr, arr + 1); return 0; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/stl_construct.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(main_source, "<destroy-aux-empty-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    FuncDef *source_fd = NULL;
+    FuncDef *instance = NULL;
+    for ( funcdef_map_iter it = prog->funcdef_map.begin();
+	  it != prog->funcdef_map.end(); ++it )
+    {
+	FuncDef *fd = it->second;
+	if ( !fd )
+	    continue;
+	if ( fd->dependent_pattern
+	  && fd->method_display_name == "__destroy" )
+	    source_fd = fd;
+	if ( fd->tsubst_source
+	  && fd->tsubst_source->method_display_name == "__destroy" )
+	    instance = fd;
+    }
+    REQUIRE(source_fd != NULL);
+    REQUIRE(instance != NULL);
+    CHECK(instance->tsubst_source == source_fd);
+    size_t tree1_copies = 0;
+    int64_t got = cir_run_program(prog.get(), &tree1_copies);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(tree1_copies > 0);
+    CHECK(got == 0);
+}
+
 // Two-tree pack expansion: reference parameter packs have already lowered value
 // reads through the reference pointer in the Tree-1 recipe. They can therefore
 // use the same direct fan-out and args -> args__N rename as by-value packs.

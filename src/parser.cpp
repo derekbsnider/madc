@@ -3415,6 +3415,8 @@ static bool datadef_has_unresolved_dependent_surface(DataDef *dd)
 {
     if ( !dd )
 	return false;
+    if ( dd->is_template_param() )
+	return true;
     if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd) )
 	return class_has_unresolved_dependent_surface(cls);
     if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
@@ -14350,6 +14352,8 @@ TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 	    dtype = inner_expr->datadef();
 	if ( !dtype || !dtype->is_pointer() )
 	{
+	    if ( DataDef *dep_base = dependent_deref_result_type(dtype) )
+		return new TokenDerefExpr(inner_expr, dep_base);
 	    debug_deref_fail(*this, 1, deref_tb, dtype);
 	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 	}
@@ -14390,6 +14394,8 @@ TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 	    if ( TokenMember *tm = dynamic_cast<TokenMember *>(pointer_expr) )
 		if ( tm->is_fixed_array_member() )
 		    return new TokenDerefExpr(pointer_expr, dtype);
+	    if ( DataDef *dep_base = dependent_deref_result_type(dtype) )
+		return new TokenDerefExpr(pointer_expr, dep_base);
 	    debug_deref_fail(*this, 3, deref_tb, dtype);
 	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 	}
@@ -14407,6 +14413,9 @@ TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
     DataDef *base = deref_type_for_variable(var);
     if ( !base )
     {
+	base = dependent_deref_result_type(var->type);
+	if ( base )
+	    return new TokenDeref(*var, base);
 	debug_deref_fail(*this, 4, deref_tb, var->type);
 	Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
     }
@@ -30742,6 +30751,31 @@ static bool skipped_template_body_returns_inline_addressof(
     return false;
 }
 
+static bool skipped_template_body_is_inline_destroy(
+	const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams)
+{
+    std::set<std::string> pnames(typeparams.begin(), typeparams.end());
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    continue;
+	if ( is_contextual_identifier_token(t)
+	  && contextual_identifier_name(t) == "__destroy"
+	  && i + 1 < tokens.size() && tokens[i + 1]
+	  && tokens[i + 1]->id() == TokenID::tkOpBrk )
+	    return true;
+	if ( t->id() == TokenID::tkDeRef
+	  && i + 2 < tokens.size()
+	  && tokens[i + 1] && tokens[i + 1]->id() == TokenID::tkBnot
+	  && tokens[i + 2] && is_contextual_identifier_token(tokens[i + 2])
+	  && pnames.count(contextual_identifier_name(tokens[i + 2])) )
+	    return true;
+    }
+    return false;
+}
+
 // Capture a NAMED (non-operator) free-function template signature from a REAL
 // system header (libstdc++) into pgm.free_function_overloads, so the call site
 // can bind it MANGLED-DIRECT to the real Itanium symbol instead of the
@@ -30809,6 +30843,10 @@ static bool retain_namespace_fn_template_body(
     if ( typeparam_is_pack )  ft.typeparam_is_pack = *typeparam_is_pack;
     ft.decl = tokens;
     ft.ns = pgm.current_namespace();
+    if ( skipped_template_body_returns_inline_addressof(pgm, tokens) )
+	ft.inline_builtin_kind = "addressof";
+    else if ( skipped_template_body_is_inline_destroy(tokens, typeparams) )
+	ft.inline_builtin_kind = "destroy";
     // A body-LESS declaration has no body to instantiate; keep it OUT of
     // fn_template_map (instantiation + arity-deferral) and record it in
     // fn_template_decl_map for return-TYPE resolution only.
@@ -30896,6 +30934,8 @@ static void register_skipped_namespace_template_function(
 	    record_skipped_template_return_pattern(fd, tokens, typeparams, name);
 	    if ( skipped_template_body_returns_inline_addressof(pgm, tokens) )
 		fd->inline_builtin_kind = "addressof";
+	    else if ( skipped_template_body_is_inline_destroy(tokens, typeparams) )
+		fd->inline_builtin_kind = "destroy";
 	}
 	ns[name] = var;
 	ns.erase(parse_id);
@@ -32762,6 +32802,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	  && oi->second.size() > pre_ovset && oi->second.back().var )
 	{
 	    Program::NamespaceFnOverload &ne = oi->second.back();
+	    if ( !ft.inline_builtin_kind.empty() )
+		if ( FuncDef *nfd = dynamic_cast<FuncDef *>(ne.var->type) )
+		    nfd->inline_builtin_kind = ft.inline_builtin_kind;
 	    ne.template_arg_names.clear();
 	    for ( size_t ti = 0; ti < ft.typeparams.size(); ++ti )
 	    {
