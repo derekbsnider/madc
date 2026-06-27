@@ -75,6 +75,35 @@ suppression, NOT committed. The eligibility extension (`tsubst_has_unqualified_c
 re-derive from this round) lands ONLY AFTER construction deferral works. Do NOT re-attempt the
 eligibility widening before the deferral — it SIGSEGVs (proven twice this round).
 
+**▶ UPDATE 2 — construction-deferral GUARD built + validated; it exposed the NEXT walls (Claude 2026-06-27, "take it as far as you can"; reverted to clean, NO code landed).** WIP saved at
+`tmp/construction-deferral-guard-WIP.patch` (93 lines: the eligibility extension +
+`tsubst_has_unqualified_call_pack_expansion`, and the guard in `object_arg_addr`/`object_arg_value`:
+`if (m_tsubst_pattern_mode && arg && template_param_under_type_layers(arg->datadef())) return
+error_node(...)`). RESULT:
+- ✅ **The guard FIXES the recursion** — SIGSEGV gone (was exit 139 → now no crash); **testset
+  compiles CLEAN (exit 0)**. The guard is correct: a dependent-arg construction is not lowerable
+  in the recipe, so it falls back (construction-level analogue of `tsubst_pattern_has_dependent_call`).
+- ❌ **But the bodies then hit the NEXT walls as undefined-symbol MIR errors** (exit 1, not crash):
+  `vector::_M_realloc_insert` → `MIR error: import of undefined item __ns___gnu_cxx_operator_mi`
+  (the **ADL free-operator `__gnu_cxx::operator-`** in iterator pointer subtraction);
+  `map`/`_Rb_tree` → `import of undefined item _Rb_tree_…` (the **rebind/`_Rb_tree`-node
+  instantiation symbol**, not emitted). These are NOT cir errors (only MIR catches them), so they
+  break the compile instead of falling back — which REGRESSES map/vector (clean baseline compiles
+  them via re-parse). So the eligibility extension + guard is still UNSAFE to land as-is.
+
+**THE FULL WALL STACK for the cluster (each a deep, separate capability — this is why it's not a
+bounded slice):** (1) pattern-mode construction deferral [guard fixes the recursion sub-problem;
+real deferral-to-hit still needed], (2) **ADL free-operator resolution+emission** (`__gnu_cxx::operator-`
+on concrete iterator args — see the gcc recon: `lookup_arg_dependent`/`add_operator_candidates`
+with saved phase-1 lookups), (3) **rebind/`_Rb_tree` node-type symbol emission** (`subst_datadef`
+dependent member-type resolution, `make_typename_type`→`lookup_member`), (4) **undefined-symbol-aware
+fallback** (tsubst emits an N_ID to a symbol that won't be defined; `cir_tree_has_error` doesn't
+catch it → MIR does → broken compile instead of fallback). NEXT IMPLEMENTER: apply the WIP patch,
+then tackle (2)/(3)/(4) — likely (4) first (make the extension SAFE: detect un-emittable symbol
+refs in the tsubst'd tree → error-node → fallback), which de-risks (2)/(3). The system-header
+free-call re-resolve (`1d69ee40`) is the model for (2): route the operator through
+`resolve_copied_dependent_call` so its body-availability check fires.
+
 ---
 ✅ **SLICE LANDED — `1d69ee40` "feat(cir): tsubst re-resolves system-header free-function dependent calls" (Claude 2026-06-27). The FIRST §11.5c copy-path widening — system-header dependent calls now re-resolve like local ones.**
 
