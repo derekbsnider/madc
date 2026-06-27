@@ -13,6 +13,37 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 SUPERSEDES the pack-coverage NEXT-SLICE text below it.**
 
 ---
+✅ **SLICE LANDED — `1d69ee40` "feat(cir): tsubst re-resolves system-header free-function dependent calls" (Claude 2026-06-27). The FIRST §11.5c copy-path widening — system-header dependent calls now re-resolve like local ones.**
+
+Retired the "simple scalar/pointer types only" pre-resolve gate in
+`resolve_copied_dependent_call` (cir_builder.cpp). It was conservative scaffolding from
+before the nested-instantiation keystone landed; it rejected system-header free-fn dependent
+calls with class-pointer args (e.g. `std::__do_uninit_copy(basic_string*, ...)`) even though
+they re-resolve+instantiate fine. Now they go through the SAME
+`find_namespace_function_overload` + instantiate-on-miss path as local calls, with the
+existing **post-resolve body-availability check as the safety net** (re-resolves but no
+materializable body ⇒ still falls back). Deleted the two now-dead helpers. **This is the g++
+shape** (tsubst re-runs finish_call_expr on substituted args).
+
+- **Engagement: testsubscript 21→22, testvector 11→12** (`std::__uninitialized_copy::__uninit_copy`
+  now a HIT). testset/testmap unchanged (their remaining fallbacks are eligibility-gated `_Rb_tree`).
+- **Gates:** flag-on integration **670/0/0/18** (runtime correctness of the newly-covered method),
+  flag-off fulltest **670/0/0/18** + drift gates green, torture byte-identical BY CONSTRUCTION
+  (flag-on-only change), no new warnings.
+- **Method:** root-caused by a `MADC_TRACE_SHC` bypass experiment (since reverted) that proved
+  both `__do_uninit_copy` calls re-resolve to a winner with `body_available=1`. The `--emit`
+  flag-on-vs-flag-off divergences are PRE-EXISTING renderer artifacts (the self-ref
+  `construct(construct,…)` appears in *unaffected* testmap too) — not this change.
+- **Cosmetic debt:** tsubst of `__uninit_copy` emits one dangling, unused
+  `struct _ForwardIterator__deref {}` in `--emit=c11` (vestigial type-spec, never referenced;
+  no MIR/JIT effect). A derived-type substitution leaves a vestigial spec — clean up later.
+
+**What this proves for the campaign:** the §11.5c generic re-resolve spine works for
+system-header free calls — the post-resolve body-availability check is a sufficient safety net,
+so the pre-filter was removable. The NEXT walls are the **eligibility-gated** shapes below
+(`_Rb_tree` static-member-call cluster, etc.) — those never reach this copy path yet.
+
+---
 🔬 **DATA-GROUNDED RETARGET — `6570a849` "diag(tsubst): self-diagnosing fallback worklist" (Claude 2026-06-27). READ THIS BEFORE PICKING A SLICE — it corrects where the walls actually are.**
 
 `--show-stats` now prints WHY each shape falls back (a `reason` per fallback +
