@@ -9,8 +9,86 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 
 ## 0. STATE (verify, do not trust blindly — run `scripts/resume.sh`)
 
-➡️ **START HERE — next Codex session (2026-06-26). The direction CHANGED; this block
+➡️ **START HERE — next Codex session (2026-06-27). The direction CHANGED; this block
 SUPERSEDES the pack-coverage NEXT-SLICE text below it.**
+
+---
+🔬 **DATA-GROUNDED RETARGET — `6570a849` "diag(tsubst): self-diagnosing fallback worklist" (Claude 2026-06-27). READ THIS BEFORE PICKING A SLICE — it corrects where the walls actually are.**
+
+`--show-stats` now prints WHY each shape falls back (a `reason` per fallback +
+the rejecting `tsubst_eligible` clause). Run any container test flag-on to get
+the live worklist:
+```
+MADC_XTEST_DEP_PARSE=1 bin/madc --show-stats tests/testsubscript.mad 2>&1 | grep '\[why:'
+```
+
+**THE FINDING (overturns the "pivot to §11.5c copy path" framing for 9/10 shapes):**
+The remaining container fallbacks are rejected at **`tsubst_eligible`** (parser),
+BEFORE any recipe is built — they NEVER reach the §11.5c copy/re-resolve path.
+Diagnosed breakdown (testsubscript/testset/testmap/testvector, 2026-06-27):
+- **`template-id '<' in body`** (~80% — dominant): `_Rb_tree::_M_construct_node`,
+  `_M_create_node`, `_M_emplace_hint_unique`, `_M_insert_`, `_M_insert_unique`,
+  `_Alloc_node::operator()`, `vector::_M_realloc_insert`, `basic_string::_M_construct`.
+- **`>1 pack param`** + **`non-type template param`**: the `std::pair` piecewise
+  ctors (`<_Args1...,_Args2...>` and the `_Indexes...` index-pack variants).
+- **`tsubst: system-header dependent call`**: ONLY `__uninit_copy` reaches the copy path.
+
+**THE `<` IS NOT ONE THING (read bodies before touching the gate):** the eligibility
+gate rejects ANY `<`, but the `<` tokens are three different things —
+  (a) CONCRETE class-param template-ids: `_Rb_tree_node<_Val>` (`_Val` is the
+      enclosing _Rb_tree CLASS param, already concrete at instantiation — NOT the
+      method's `_Args`). SAFE to admit: g++ treats a template-id as dependent only
+      if it involves the *method's own* template params.
+  (b) CASTS: `static_cast<size_type>` in `basic_string::_M_construct`. SAFE.
+  (c) GENUINE method-param-dependent template-ids / forwarding packs inside `::`
+      static calls: `_Alloc_traits::construct(..., std::forward<_Args>(args)...)`.
+      THE REAL WALL.
+**There is NO cheap gate win:** every shape that would pass a refined gate then hits
+a deeper capability wall behind it (static dependent member call `_Alloc_traits::construct`;
+`std::distance` dependent call; the local RAII `_Guard` struct in `_M_construct`; allocator
+rebind). The gate's `<` rejection is a *proxy* for these missing capabilities — loosening it
+alone just moves the reason downstream (now visible via the new diagnostics), it does NOT
+add hits.
+
+**PER-REASON-CLASS SLICE PLAN (highest-leverage first; each its own gated commit, §5 gate):**
+1. **`_Rb_tree` node family (6 shapes — biggest cluster, map/set/subscript).** Core wall =
+   the `_Alloc_traits::construct(_M_get_Node_allocator(), p, std::forward<_Args>(args)...)`
+   **static dependent member call** (`::`, not `.`/`->`) carrying a forwarding pack, plus
+   `_Rb_tree_node<_Val>` placement-new (class-param template-id). Needs: (i) extend the
+   eligibility pack exception to admit `::` static-member-call-with-pack (today
+   `tsubst_has_member_call_pack_expansion` only matches `.`/`->`); (ii) a copy-path
+   static-member `Class::method` re-resolve branch (the unsafe patch `tmp/rbtree-current-unsafe-attempt.patch`
+   lines 96-158 sketched this — Codex deemed it unsafe; re-derive cleanly, do NOT just apply).
+   The callee `__new_allocator::construct` is ALREADY covered (allocator cluster) — this is
+   wiring the CALLER. g++ model: `finish_call_expr` re-resolves the qualified static call on
+   substituted args (recon: semantics.cc:3315 / call.cc).
+2. **Allocator rebind** (`_M_get_node`/`_Rb_tree_node<_Val>` allocation) — dependent
+   member-TYPE resolution `__alloc_traits<_Alloc>::rebind_alloc<_Rb_tree_node<_Val>>`.
+   `subst_datadef` (cir_builder.cpp:425) handles ONLY ref/ptr/const layers + direct map hits;
+   it has NO dependent-qualified-member-type resolution. g++ does this via
+   `make_typename_type → lookup_member` once the scope is concrete (recon: decl.cc:5020,
+   pt.cc TYPENAME_TYPE @17707). Add the analogue to `subst_datadef`.
+3. **`basic_string::_M_construct<_InIterator>`** (all 4 tests). Walls: cast-`<` gate +
+   `std::distance` dependent call + local RAII `_Guard` struct (a local class def in a body —
+   a genuinely new CIR feature). Lower priority — the local class is hard and it's 1 hit/test.
+4. **`vector::_M_realloc_insert` + `__uninit_copy`** — free operator `__gnu_cxx::operator-`
+   found via ADL on the iterator arg type. madc's `find_namespace_function_overload` uses a
+   FIXED namespace; ADL needs lookup in the ARG types' namespace. g++: `lookup_arg_dependent`
+   on concrete args (recon: name-lookup.cc:1778, call.cc:7113 add_operator_candidates with
+   saved phase-1 lookups). `__uninit_copy` is the one shape already IN the copy path (bails
+   "system-header dependent call") — good first ADL target.
+5. **`pair` piecewise ctors** — two packs + non-type `_Indexes` index-sequence packs. Needs
+   multi-pack + non-type-pack support. Hardest; defer.
+
+**SAFETY for all of the above:** the `MADC_XTEST_DEP_PARSE` env-gate makes every slice
+production-safe by construction (flag-off = byte-identical re-parse). The flag-on byte-identical
+gate + error-node/parse-fail fallback catch any miscompile. So slices can be attempted
+incrementally without risking production.
+
+**Claude's note (coordinator):** this is uniformly deep multi-cycle capability work — handed to
+Codex as the implementation grind. The diagnostics (`[why: ...]`) are the steering instrument:
+after each slice, the freed shapes' reasons move downstream, naming the next wall. Drive the
+ranked `[why:]` list down.
 
 ---
 ✅ **STEP 3.5 RESOLVED — `3d18eed7` "fix(cir): deref reference-param value reads in tsubst dependent-pattern body" (Claude 2026-06-26). Regression fixed ADDITIVELY; Codex's `bb44557c` gains fully preserved.**
