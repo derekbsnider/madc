@@ -1045,4 +1045,9 @@ int cir_report_errors(FILE *f, node_t tree);
 // resolve-failure string that caused a tsubst pattern copy to be rejected.
 const char *cir_first_error_msg(node_t tree);
 
+// Collect every N_CALL callee symbol in the tree into `out`. Used to re-record
+// the concrete callees of a tsubst-copied body as ODR-used (referenced_funcs)
+// so the translate_module drain materializes their deferred-lazy definitions.
+void cir_collect_call_callees(node_t tree, std::set<std::string> &out);
+
 #endif // __CIR_BUILDER_H

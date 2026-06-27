@@ -10600,6 +10600,25 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				}
 			}
 
+			// Pattern-mode operator deferral: while building a Tree-1 recipe,
+			// a binary operator on a CLASS/object operand (e.g. iterator
+			// `__finish - __start`) would instantiate a free operator
+			// (std_free_operator_instantiation) — a declaration-only FuncDef
+			// side-effect that PERSISTS and poisons the parsed-body fallback
+			// (the re-parse then finds the signature and never emits the body →
+			// MIR "undefined import"). Defer it: emit an error node so the body
+			// falls back cleanly with no instantiation side-effect. A landed
+			// operator re-resolve KIND will make it a hit instead. (Assignment
+			// is handled separately above; scalar operands don't reach a class
+			// operator so they fall through to the builtin op below.)
+			if (m_tsubst_pattern_mode && !is_assign_op(tb->id())) {
+				DataDef *ld = top->left ? top->left->datadef() : NULL;
+				DataDef *rd = top->right ? top->right->datadef() : NULL;
+				if (as_class_instance(ld) || class_behind(ld)
+				    || as_class_instance(rd) || class_behind(rd))
+					return error_node(
+						"tsubst: class operator in pattern (deferred)", tb);
+			}
 			// Operator overloading on a class lvalue: `c <op> rhs` where c's
 			// class defines `operator<op>` lowers to the operator call. For
 			// header-declared external classes this uses the mangled C++ symbol
@@ -13480,6 +13499,17 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	m_tsubst_copy_pack_elem = 0;
 	m_tsubst_copy_pack_value_name = NULL;
 	m_tsubst_copy_under_deref = false;
+	// Snapshot referenced_funcs: the instantiation copy below inserts callee
+	// symbols as it builds. If this body ultimately FALLS BACK (a post-copy
+	// bail), those inserts must be undone — otherwise a fallen-back body leaves
+	// un-emittable symbols (e.g. __gnu_cxx::operator-) recorded as ODR-used, and
+	// MIR-link reports an undefined import even though the body re-parsed
+	// cleanly. On a hit we keep them. (bail_restore unwinds before falling back.)
+	std::set<std::string> saved_ref_funcs = referenced_funcs;
+	auto bail_restore = [&](const char *why) -> node_t {
+		referenced_funcs = saved_ref_funcs;
+		return bail(why);
+	};
 	node_t result = NULL;
 	{
 		TsubstSpeculativeDiagnostics diag(m_prog);
@@ -13500,10 +13530,47 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	// A type-spec marker that tsubst could not expand (unbound, or a concrete
 	// type append_type_specs can't render here) left an error node -> fall back.
 	if (!result)
-		return bail("substitute produced no tree");
+		return bail_restore("substitute produced no tree");
 	if (cir_tree_has_error(result)) {
 		const char *m = cir_first_error_msg(result);
-		return bail(m ? m : "substitute error");
+		return bail_restore(m ? m : "substitute error");
+	}
+	// Record the tsubst body's concrete callees as ODR-used AND verify each is
+	// emittable. The copy path doesn't re-run the normal call lowering that
+	// records callees, so without this the translate_module drain never
+	// materializes their deferred-lazy definitions (e.g. _Rb_tree::_M_get_node)
+	// → MIR-link "undefined import". Recording an emittable callee fixes that.
+	// But a callee with NO definition source (e.g. an un-instantiated free
+	// operator __gnu_cxx::operator-) cannot be satisfied — emitting a dangling
+	// reference would fail the link, so the body is not yet safely tsubst-able:
+	// fall back to the parsed concrete body (the completeness check). A landed
+	// operator/member re-resolve KIND will make such a callee emittable and the
+	// body becomes a hit then.
+	{
+		std::set<std::string> callees;
+		cir_collect_call_callees(result, callees);
+		auto emittable = [&](const std::string &s) -> bool {
+			if (is_c2mir_builtin_call_name(s)) return true;
+			if (m_prog->has_deferred_lazy_body(s)) return true;
+			if (external_symbol_available(s)) return true;
+			for (TokenBase *pb : m_prog->pending_funcs) {
+				TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
+				FuncDef *tfd = tf ? dynamic_cast<FuncDef *>(tf->var.type)
+						  : NULL;
+				// A declaration-only FuncDef in pending_funcs (e.g. an
+				// instantiated free operator/std::move signature with no
+				// body) is NOT a definition — matching it here is what
+				// false-passed __gnu_cxx::operator-. Require a real body.
+				if (tf && tfd && !tfd->declaration_only
+				    && func_emit_name(tf->var, tfd) == s) return true;
+			}
+			return false;
+		};
+		for (const std::string &s : callees) {
+			if (!emittable(s))
+				return bail_restore("tsubst body calls un-emittable symbol");
+			referenced_funcs.insert(s);
+		}
 	}
 	return result;
 }
@@ -15667,4 +15734,26 @@ const char *cir_first_error_msg(node_t n)
 		}
 	}
 	return NULL;
+}
+
+// Collect the callee symbol of every N_CALL in the tree (child 0 = the callee
+// N_ID). A tsubst-copied body references concrete callees (e.g. _M_get_node)
+// without re-running the normal call lowering that records them as ODR-used, so
+// the translate_module drain — which only materializes a deferred-lazy body when
+// its symbol is in referenced_funcs — never emits them, and MIR-link reports an
+// undefined import. Re-record them here.
+void cir_collect_call_callees(node_t n, std::set<std::string> &out)
+{
+	if (!n) return;
+	if (n->code == N_CALL) {
+		node_t callee = c2mir_node_op(n, 0);
+		if (callee && callee->code == N_ID && callee->u.s.s)
+			out.insert(callee->u.s.s);
+	}
+	if (n->code > N_ID)
+		for (int i = 0; ; i++) {
+			node_t op = c2mir_node_op(n, i);
+			if (!op) break;
+			cir_collect_call_callees(op, out);
+		}
 }
