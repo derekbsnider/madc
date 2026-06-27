@@ -13,6 +13,40 @@ real win (a template method instantiated by copy+substitute instead of re-parse)
 SUPERSEDES the pack-coverage NEXT-SLICE text below it.**
 
 ---
+🔴 **KEYSTONE WALL FOUND — the `_Rb_tree` eligibility cluster is blocked by a pre-existing ctor-lowering infinite recursion (Claude 2026-06-27, investigated + reverted; NO code change landed this round).**
+
+Attempted to widen `tsubst_eligible`'s `template-id '<' in body` gate for the `_Rb_tree`
+family. Two approaches, BOTH crash with **SIGSEGV via infinite recursion**
+`class_ctor_call ⇄ object_arg_addr`:
+- Blanket `<`-gate bypass (`MADC_TRY_WIDE_ELIG` experiment) → testsubscript/testset/testvector
+  SIGSEGV; testmap survived (`_M_create_node` became a HIT, others → "no matching constructor").
+- Precise extension (new `tsubst_has_unqualified_call_pack_expansion` admitting only
+  unqualified-member-call-with-pack bodies like `_M_create_node`) → STILL SIGSEGV in 3/4. Reverted.
+
+**ROOT CAUSE (structural, located — `src/cir_builder.cpp:2717-2726`):** `object_arg_addr`'s
+materializing tail creates a temp of `target` and constructs it via `class_ctor_call(tmp,
+target, {arg})`; `class_ctor_call` re-enters `object_arg_addr` for the ctor's parameter. In
+tsubst-pattern-mode there is **no terminating base case** for a node-construction arg → infinite
+recursion. This is the SAME recursion class the comments at cir_builder.cpp:2698-2707 already
+fixed for external-sret copy-ctor const-ref params (the `rvalue_call` guard) — the tsubst case is
+a NEW, unguarded instance.
+
+**WHY IT BLOCKS THE WHOLE CLUSTER:** every `_Rb_tree` shape (`_M_create_node`,
+`_M_construct_node`, `_M_emplace_hint_unique`, `_M_insert_*`, `_Alloc_node::operator()`)
+transitively constructs a node, so they all hit this recursion. `_M_create_node` IS admittable by
+the unqualified-call-pack eligibility extension and is the smallest body — but its tsubst
+re-resolves/instantiates `_M_construct_node`, whose construction triggers the recursion.
+
+**VERDICT (Phase-4.5 — stop widening the gate; fix the deeper bug first):** the
+`class_ctor_call ⇄ object_arg_addr` recursion is the **KEYSTONE** for the `_Rb_tree` cluster. Fix
+it FIRST (a tsubst-mode base case / guard in `object_arg_addr`, modeled on the existing
+`rvalue_call` guard — needs a concrete-type backtrace at the recursion point to get the guard
+right), THEN the unqualified-call-pack eligibility extension (already drafted/validated-as-far-as-
+the-crash; re-derive `tsubst_has_unqualified_call_pack_expansion`) becomes safe and lands
+`_M_create_node` (+ likely the cluster). The eligibility extension WITHOUT the recursion fix is
+unsafe (SIGSEGV) — do not re-attempt it first.
+
+---
 ✅ **SLICE LANDED — `1d69ee40` "feat(cir): tsubst re-resolves system-header free-function dependent calls" (Claude 2026-06-27). The FIRST §11.5c copy-path widening — system-header dependent calls now re-resolve like local ones.**
 
 Retired the "simple scalar/pointer types only" pre-resolve gate in
