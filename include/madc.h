@@ -1979,7 +1979,7 @@ public:
     // first-slice shape the dependent-parse / tsubst path handles (one TYPE param,
     // no pack, NON-DEPENDENT return, body uses `T` only in scalar positions). False
     // routes to the existing re-parse instantiation (no behavior change).
-    bool tsubst_eligible(FuncDef *fd);
+    bool tsubst_eligible(FuncDef *fd, const char **why = NULL);
     // Two-tree Phase 2: parse a member function template's retained body ONCE with
     // its param bound to a DataDefTemplateParam placeholder (a TemplateParamScope
     // pushed for the parse + eager instantiation suppressed via
@@ -2116,7 +2116,8 @@ public:
     struct TsubstBodyProfile {
 	unsigned long long count;
 	std::string sample;
-	TsubstBodyProfile() : count(0), sample() {}
+	std::string reason;	// why this template shape fell back (first seen)
+	TsubstBodyProfile() : count(0), sample(), reason() {}
     };
     std::map<std::string, TsubstBodyProfile> _tsubst_body_fallback_profile;
     // User-defined function AST nodes, in source order. Parallel to the

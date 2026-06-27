@@ -33504,14 +33504,17 @@ static bool tsubst_has_member_call_pack_expansion(FuncDef *fd)
 // (`Foo<T>`). Widen one construct per Phase-4 commit. (Note: a body can still issue
 // argument-deduced nested template calls that no token-scan catches — those are
 // handled by suppressing eager instantiation during the parse, not by this scan.)
-bool Program::tsubst_eligible(FuncDef *fd)
+bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 {
+    // Record which clause rejected (surfaced in --show-stats); harmless no-op
+    // when why==NULL. Keeps the fallback worklist self-diagnosing.
+    auto no = [&](const char *r) -> bool { if ( why ) *why = r; return false; };
     if ( !fd || !fd->is_member_template || fd->member_template_decl.empty()
       || !fd->member_template_owner )
-	return false;
+	return no("not a member template");
     size_t np = fd->template_param_names.size();
     if ( np < 1 )
-	return false;
+	return no("no type params");
     // Every parameter must be a TYPE param. Permit at most one TYPE pack in this
     // slice; NON-TYPE params/packs still need value substitution and stay on the
     // re-parse fallback.
@@ -33519,12 +33522,12 @@ bool Program::tsubst_eligible(FuncDef *fd)
     for ( size_t i = 0; i < np; ++i )
     {
 	if ( i < fd->template_param_is_type.size() && !fd->template_param_is_type[i] )
-	    return false;
+	    return no("non-type template param");
 	if ( i < fd->template_param_is_pack.size() && fd->template_param_is_pack[i] )
 	    ++pack_count;
     }
     if ( pack_count > 1 )
-	return false;
+	return no(">1 pack param");
     // Param-name membership (>=1 type param, e.g. <class A, class B>): the dependent
     // return / body scans below test against ANY param name, not just the first.
     std::set<std::string> pnames(fd->template_param_names.begin(),
@@ -33564,7 +33567,7 @@ bool Program::tsubst_eligible(FuncDef *fd)
 	    if ( fd->member_template_return_tokens[i]
 	      && pnames.count(contextual_identifier_name(
 				  fd->member_template_return_tokens[i])) )
-		return false;
+		return no("dependent return type (not T/T*)");
     bool has_pack_expansion = false;
     for ( size_t i = 0; i + 2 < fd->member_template_decl.size(); ++i )
 	if ( fd->member_template_decl[i]
@@ -33616,10 +33619,10 @@ bool Program::tsubst_eligible(FuncDef *fd)
 	  && !(pack_count == 1 && has_pack_expansion
 	       && (!template_pack_body_from_system_header
 		   || covered_system_header_pack_template_id_body)) )
-	    return false;
+	    return no("template-id '<' in body");
 	if ( pnames.count(contextual_identifier_name(t))
 	  && i + 1 < d.size() && d[i + 1] && d[i + 1]->id() == TokenID::tkNS )
-	    return false;
+	    return no("dependent name P:: in body");
     }
     return true;
 }

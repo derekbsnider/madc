@@ -455,7 +455,8 @@ class CirBuilder {
 	// body — hybrid B keeps the concrete signature/shell on the parse path).
 	// Returns NULL when this is not a covered method, so the caller falls back
 	// to translate_block. Capability + MADC_XTEST_DEP_PARSE gated.
-	node_t tsubst_method_body(class TokenFunc *tf, class FuncDef *fd);
+	node_t tsubst_method_body(class TokenFunc *tf, class FuncDef *fd,
+				  const char **reason_out = NULL);
 
 public:
 	CirBuilder(c2m_ctx_t c2m_ctx);
@@ -1039,5 +1040,9 @@ bool cir_tree_has_error(node_t tree);
 // Walk the tree and print every error node (@file:line:column + message) to f;
 // returns the number of error nodes found. Used to gate compilation.
 int cir_report_errors(FILE *f, node_t tree);
+
+// First error_msg in the tree (pre-order), or NULL. Surfaces the per-call
+// resolve-failure string that caused a tsubst pattern copy to be rejected.
+const char *cir_first_error_msg(node_t tree);
 
 #endif // __CIR_BUILDER_H

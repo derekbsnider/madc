@@ -13353,13 +13353,31 @@ static bool tsubst_pattern_has_dependent_call(TokenBase *tb)
 	return false;
 }
 
-node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
+node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
+				      const char **reason_out)
 {
+	// Record WHY a covered-shaped method fell back, so the --show-stats
+	// fallback profile is a self-diagnosing worklist (the campaign drives
+	// these reasons down one at a time). Default reason: a true fall-through.
+	auto bail = [&](const char *why) -> node_t {
+		if (reason_out)
+			*reason_out = why;
+		return NULL;
+	};
 	if (!getenv("MADC_XTEST_DEP_PARSE"))
 		return NULL;
 	FuncDef *source = fd ? fd->tsubst_source : NULL;
-	if (!source || !source->dependent_pattern)
-		return NULL;
+	if (!source)
+		return bail("no tsubst source");
+	if (!source->dependent_pattern) {
+		// Distinguish "the eligibility gate rejected this shape" (and WHICH
+		// clause) from "eligible but the recipe re-parse failed". This makes
+		// the --show-stats worklist name the exact gate to widen next.
+		const char *elig = NULL;
+		if (m_prog && !m_prog->tsubst_eligible(source, &elig))
+			return bail(elig ? elig : "ineligible");
+		return bail("recipe parse failed");
+	}
 	TokenFunc *recipe = source->dependent_pattern;
 	// Destroy helpers are safe on Tree-1 when the retained body either already
 	// contains a direct `__destroy(T*)` marker or is the structural iterator
@@ -13368,7 +13386,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 	    && !tsubst_pattern_has_destroy_template_pointee(recipe)
 	    && !tsubst_pattern_has_destroy_iterator_loop(recipe)
 	    && !tsubst_pattern_is_empty_body(recipe))
-		return NULL;
+		return bail("destroy-helper guard");
 	FuncDef *recipe_fd = dynamic_cast<FuncDef *>(recipe->var.type);
 	// Ordinary reference-parameter VALUE reads stay on the parsed-body fallback.
 	// Reference parameter packs are narrower: the Tree-1 recipe has already
@@ -13376,9 +13394,9 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 	// needs the same element substitution and ID rename as by-value packs.
 	if (tsubst_body_has_unsupported_reference_param(source)
 	    || tsubst_body_has_unsupported_reference_param(recipe_fd, source))
-		return NULL;
+		return bail("reference-param value-read");
 	if (tsubst_pattern_has_dependent_call(recipe))
-		return NULL;
+		return bail("dependent system-header call (scan)");
 
 	// Build the recipe body cir ONCE into an immutable Tree-1 pattern, memoized
 	// on the source template; later instantiations only copy+substitute it. The
@@ -13407,14 +13425,23 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 		}
 		m_tsubst_pattern_mode = saved_mode;
 		referenced_funcs = saved_refs;
-		if (pat && cir_tree_has_error(pat))
+		const char *pat_err = NULL;
+		if (pat && cir_tree_has_error(pat)) {
+			// The first error in the copied pattern names the exact
+			// sub-call/type the recipe could not resolve (e.g. a
+			// "tsubst: system-header dependent call" from a nested
+			// member call). Surface it so the worklist is specific.
+			pat_err = cir_first_error_msg(pat);
 			pat = NULL;
+		}
 		m_tsubst_body_patterns[source] = pat ? CIR_NODE(pat) : NULL;
 		pi = m_tsubst_body_patterns.find(source);
+		if (!pat)
+			return bail(pat_err ? pat_err : "pattern build error");
 	}
 	cir_node *pattern = pi->second;
 	if (!pattern)
-		return NULL;
+		return bail("pattern build error (memoized)");
 
 	size_t need = source ? source->template_param_names.size() : 0;
 	// Bind {placeholder -> concrete} directly from the parser-owned template
@@ -13424,7 +13451,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 	// consumes them by parameter index. Reconstructing the binding from the
 	// instantiated signature loses body-only params and pack arity.
 	if (!m_prog || need == 0)
-		return NULL;
+		return bail("no template params");
 	std::map<DataDef *, DataDef *> binding;
 	std::map<unsigned, DataDef *> pack_params;
 	size_t scalar_pos = 0;
@@ -13434,23 +13461,23 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 			m_prog->intern_template_param(source->template_param_names[i],
 						      (unsigned)i);
 		if (!param)
-			return NULL;
+			return bail("param intern failure");
 		bool is_pack = i < source->template_param_is_pack.size()
 			    && source->template_param_is_pack[i];
 		if (is_pack) {
 			if (fd->tsubst_type_arg_packs.size() <= i)
-				return NULL;
+				return bail("missing pack type-args");
 			pack_params[(unsigned)i] = param;
 			has_pack = true;
 			continue;
 		}
 		if (scalar_pos >= fd->tsubst_type_args.size()
 		    || !fd->tsubst_type_args[scalar_pos])
-			return NULL;
+			return bail("missing scalar type-args");
 		binding[param] = fd->tsubst_type_args[scalar_pos++];
 	}
 	if (scalar_pos != fd->tsubst_type_args.size())
-		return NULL;
+		return bail("type-arg arity mismatch");
 
 	const std::vector<std::vector<DataDef *> > *saved_packs =
 		m_tsubst_active_type_arg_packs;
@@ -13486,8 +13513,12 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd)
 	m_tsubst_copy_under_deref = saved_under_deref;
 	// A type-spec marker that tsubst could not expand (unbound, or a concrete
 	// type append_type_specs can't render here) left an error node -> fall back.
-	if (!result || cir_tree_has_error(result))
-		return NULL;
+	if (!result)
+		return bail("substitute produced no tree");
+	if (cir_tree_has_error(result)) {
+		const char *m = cir_first_error_msg(result);
+		return bail(m ? m : "substitute error");
+	}
 	return result;
 }
 
@@ -13718,7 +13749,8 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// body by tsubst of the Tree-1 recipe (no body re-parse); everything else
 	// falls back to lowering the parsed body. tsubst_method_body returns NULL
 	// unless the capability + MADC_XTEST_DEP_PARSE gate is satisfied.
-	node_t body = tsubst_method_body(tf, fd);
+	const char *tsubst_reason = NULL;
+	node_t body = tsubst_method_body(tf, fd, &tsubst_reason);
 	if (m_prog && fd->tsubst_source) {
 		if (body)
 			++m_prog->_tsubst_body_hits;
@@ -13731,6 +13763,8 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			++entry.count;
 			if (entry.sample.empty())
 				entry.sample = tsubst_profile_concrete_sample(tf, fd);
+			if (entry.reason.empty() && tsubst_reason)
+				entry.reason = tsubst_reason;
 		}
 	}
 	if (!body)
@@ -15630,3 +15664,21 @@ static int cir_walk_errors(FILE *f, node_t n, bool report)
 
 bool cir_tree_has_error(node_t tree) { return cir_walk_errors(NULL, tree, false) > 0; }
 int  cir_report_errors(FILE *f, node_t tree) { return cir_walk_errors(f, tree, true); }
+
+// First error_msg in the tree (pre-order), or NULL. Used to surface WHY a
+// tsubst pattern copy was rejected (the per-call resolve failure string) in the
+// --show-stats fallback profile, so the worklist is self-diagnosing.
+const char *cir_first_error_msg(node_t n)
+{
+	if (!n) return NULL;
+	cir_node *cn = CIR_NODE(n);
+	if (cn->error_msg) return cn->error_msg;
+	if (n->code > N_ID) {
+		for (int i = 0; ; i++) {
+			node_t op = c2mir_node_op(n, i);
+			if (!op) break;
+			if (const char *m = cir_first_error_msg(op)) return m;
+		}
+	}
+	return NULL;
+}

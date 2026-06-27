@@ -833,10 +833,12 @@ int main(int argc, char **argv)
 			  });
 		fprintf(stderr, "[stats]   tsubst fallback profile (ranked):\n");
 		for (size_t i = 0; i < rows.size(); ++i)
-		    fprintf(stderr, "[stats]     %zu. %llu x %s  sample=%s\n",
+		    fprintf(stderr, "[stats]     %zu. %llu x %s  [why: %s]  sample=%s\n",
 			    i + 1,
 			    rows[i].second.count,
 			    rows[i].first.c_str(),
+			    rows[i].second.reason.empty()
+				? "?" : rows[i].second.reason.c_str(),
 			    rows[i].second.sample.c_str());
 	    }
 	};
