@@ -2738,6 +2738,28 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	if (!target)
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
 
+	if (m_tsubst_pattern_mode) {
+		if (TokenPackExpansion *pe = dynamic_cast<TokenPackExpansion *>(arg)) {
+			DataDefTemplateParam *tp = pe->pattern
+				? template_param_in_pack_pattern(pe->pattern) : NULL;
+			std::string value_name = tp
+				? pack_value_name_in_pattern(pe->pattern, tp->param_index)
+				: std::string();
+			if (tp && !value_name.empty()
+			    && ref_returning_call_type(pe->pattern)) {
+				node_t slot = id(value_name.c_str(), arg);
+				CIR_NODE(slot)->datadef = pe->pattern->datadef();
+				node_t marker = node2(N_CAST, void_ptr_type(), slot, arg);
+				cir_node *cn = CIR_NODE(marker);
+				cn->tsubst_pack_expand = true;
+				cn->tsubst_pack_index = tp->param_index;
+				cn->tsubst_pack_value_name =
+					arena.intern(value_name.c_str());
+				return marker;
+			}
+		}
+	}
+
 	// A REFERENCE-returning call (std::move(x), a T&/T&& method): the call
 	// VALUE already is the referenced object's address. Bind it directly
 	// (with the base-subobject offset for a derived->base upcast) — the
@@ -7841,6 +7863,20 @@ static bool w2_datadef_involves_template_param(DataDef *dd)
 	return false;
 }
 
+static bool w2_is_lvalue_ref_spelling(const std::string &p)
+{
+	return p.size() >= 2 && p.back() == '&' && p[p.size() - 2] != '&';
+}
+
+static bool w2_is_scalar_return_datadef(DataDef *dd)
+{
+	if (!dd || dd->is_reference())
+		return false;
+	if (as_class_instance(dd) || dd->is_struct())
+		return false;
+	return true;
+}
+
 // Deduce-match ONE template-id parameter spelling against an argument class
 // (its self or a non-virtual base): bind each template-param position to the
 // class's concrete arg, require concrete positions to match, and keep the
@@ -8093,6 +8129,7 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	auto mit = m_free_op_inst_by_call.find(top);
 	if (mit != m_free_op_inst_by_call.end()) return mit->second;
 	m_free_op_inst_by_call[top] = NULL;   // negative-cache; success overwrites
+	m_free_op_body_by_call[top] = NULL;
 
 	// lhs class candidates: self AND non-virtual bases, most-derived first
 	// (a free operator taking a BASE stream binds a derived lhs).
@@ -8138,6 +8175,7 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	DataDefCLASS *best_rcls = NULL;          // matched rhs (base) class, or NULL
 	DataDefCLASS *best_retc = NULL;          // return class
 	bool best_ret_ref = false;
+	Variable *best_body_var = NULL;          // local retained-template body
 
 	// Pass 1 — the reference-returning stream shape. param[0] deduces
 	// against the lhs class; param[1] matches the rhs exactly OR is a
@@ -8322,6 +8360,78 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 			best_retc = cr;
 			best_ret_ref = false;
 		}
+	}
+	// Pass 3 — scalar-returning free operators on class operands. Iterator
+	// arithmetic/comparison templates take class operands by lvalue reference
+	// but return a scalar (`difference_type`, `bool`, ...), so they are neither
+	// stream refs (Pass 1) nor by-value class returns (Pass 2). These inline
+	// templates need a real local body, not a bodyless external import.
+	if (!best && lcls && as_class_instance(rhs_dd))
+	{
+		DataDefCLASS *rcls = as_class_instance(rhs_dd);
+		for (const Program::FreeOperatorOverload &ov : m_prog->free_operator_overloads)
+		{
+			if (ov.opname != mname || ov.param_spellings.size() != 2) continue;
+			const std::string &rspell = ov.return_spelling;
+			if (rspell.empty() || rspell.back() == '&')
+				continue;
+			if (!w2_is_lvalue_ref_spelling(ov.param_spellings[0])
+			    || !w2_is_lvalue_ref_spelling(ov.param_spellings[1]))
+				continue;
+			std::map<std::string, std::string> binding;
+			size_t loff = 0, roff = 0, retoff = 0;
+			std::string qh0, qh1, qhr;
+			DataDefCLASS *c0 = NULL, *c1 = NULL, *cr = NULL;
+			if (!deduce_param_against_class(ov.param_spellings[0], lcls,
+					ov.template_params, binding, loff, qh0, &c0))
+				continue;
+			if (!deduce_param_against_class(ov.param_spellings[1], rcls,
+					ov.template_params, binding, roff, qh1, &c1))
+				continue;
+			std::vector<std::string> targs;
+			if (!targs_from_binding(ov, binding, targs)) continue;
+			if (best && ov.template_params.size() >= best->template_params.size())
+				continue;
+			std::map<std::string, std::string> b2 = binding;
+			(void)deduce_param_against_class(rspell, c0 ? c0 : lcls,
+					ov.template_params, b2, retoff, qhr, &cr);
+			auto qp = [&](const std::string &sp, const std::string &qh) {
+				return substitute_tparams(requalify_head(sp, qh),
+							  ov.template_params);
+			};
+			best = &ov;
+			best_targs = targs;
+			best_ret_spell = qp(rspell, qhr);
+			best_params.clear();
+			best_params.push_back(qp(ov.param_spellings[0], qh0));
+			best_params.push_back(qp(ov.param_spellings[1], qh1));
+			best_lcls = c0;
+			best_rcls = c1 ? c1 : rcls;
+			best_retc = NULL;
+			best_ret_ref = false;
+		}
+		if (best)
+		{
+			Variable *callee = NULL;
+			DataDef *ret = m_prog->instantiate_free_operator_template(
+				mname, top->left, top->right, &callee);
+			if (!callee || !w2_is_scalar_return_datadef(ret))
+				best = NULL;
+			else
+				best_body_var = callee;
+		}
+	}
+	if (best && best_body_var)
+	{
+		FuncDef *inst = dynamic_cast<FuncDef *>(best_body_var->type);
+		if (!inst)
+			return NULL;
+		DBG(std::cout << "[W2] instantiate free-body " << best->ns
+		    << "::" << mname << " -> " << best_body_var->name
+		    << std::endl);
+		m_free_op_body_by_call[top] = best_body_var;
+		m_free_op_inst_by_call[top] = inst;
+		return inst;
 	}
 	if (!best || !best_retc) return NULL;
 
@@ -8544,6 +8654,16 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	FuncDef *inst = std_free_operator_instantiation(top, lcls, mname,
 							member_callee);
 	if (!inst) return NULL;
+	auto bit = m_free_op_body_by_call.find(top);
+	if (bit != m_free_op_body_by_call.end() && bit->second) {
+		TokenCallFunc *tc = new TokenCallFunc(*bit->second);
+		tc->file = top->file;
+		tc->line = top->line;
+		tc->column = top->column;
+		tc->parameters.push_back(top->left);
+		tc->parameters.push_back(top->right);
+		return translate_expr(tc);
+	}
 	return class_operator_external_call(top, lcls, inst, origin);
 }
 
@@ -10791,10 +10911,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// resolved by kind (member, external, or retained free-template body)
 			// have already returned.
 			if (m_tsubst_pattern_mode && !is_assign_op(tb->id())) {
-				DataDef *ld = top->left ? top->left->datadef() : NULL;
-				DataDef *rd = top->right ? top->right->datadef() : NULL;
-				if (as_class_instance(ld) || class_behind(ld)
-				    || as_class_instance(rd) || class_behind(rd))
+				if (operand_object_class(top->left)
+				    || operand_object_class(top->right))
 					return error_node(
 						"tsubst: unresolved class operator in pattern",
 						tb);

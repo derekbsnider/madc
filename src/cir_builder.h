@@ -499,6 +499,7 @@ public:
 	std::map<class TokenCallFunc *, class FuncDef *> m_free_fn_inst_by_call;
 	std::map<std::string, class FuncDef *> m_free_fn_inst_by_sym;
 	std::map<class TokenOperator *, class FuncDef *> m_free_op_inst_by_call;
+	std::map<class TokenOperator *, class Variable *> m_free_op_body_by_call;
 	node_t integer(long val, TokenBase *origin = NULL);
 	// Type-aware integer literal: pick the c2mir literal node code
 	// (N_I/N_U/N_L/N_UL) from the literal's own DataDef so a suffixed
