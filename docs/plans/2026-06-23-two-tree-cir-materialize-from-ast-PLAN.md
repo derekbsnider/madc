@@ -15,6 +15,42 @@ rests on; read it first).
 
 ## 0. RESUME — START HERE (post-compaction; read this section first)
 
+**🎯 2026-06-28 — DOMINANT REMAINING WALL PINNED: local classes in member-template bodies (Claude).**
+The easy clusters are done (suite burndown **172 hit / 93 fallback = 64%** at `64fc880d`; allocator
+construct/destroy, scalar free-operator [Kind 2 `fef9b3a0`], dependent member call [Kind 3
+`bf1b66b9`], synth-dtor completeness [`64fc880d`] all landed via the mature §11.5c generic
+re-resolve). The remaining 93 are the HARD TAIL, and **the single biggest lever is local classes**:
+of the 70 `template-id '<' in body` fallbacks, the bulk are `basic_string::_M_construct`'s local
+RAII `struct _Guard`; the `_Rb_tree::_M_emplace_hint_unique` construction bail is its `_Auto_node`
+local guard; etc.
+
+**MINIMAL REDUCER (isolated, 12 lines): `tmp/localclass_tsubst.mad`** — a member template
+`template<class U> U pick(U x){ struct Guard{U v;}; Guard g; g.v=x; return g.v; }`. flag-off → `r=77`
+✅; flag-on → `cir error: unsubstituted template parameter 'U' reached type lowering`, body falls back
+(0 hit / 1 fallback).
+
+**ROOT CAUSE (confirmed):** a local class defined in a dependent member-template body is registered
+as a GLOBAL `DataDefCLASS` and emitted by the Pass-1 struct emitter `class_struct_def`
+(`cir_builder.cpp:5236`) → `class_member_list` → `append_type_specs` on member `U v` while
+`m_tsubst_pattern_mode` is FALSE → the error branch at `cir_builder.cpp:2192` fires (the pattern-mode
+MARKER path at :2180 that handles a placeholder is NOT reached, because struct emission runs outside
+the pattern translate). So the local class leaks into global struct emission with placeholder members
+instead of being captured in the template pattern.
+
+**THE FIX (two halves — generic→Tree-1, typed→Tree-2, the g++ model for a local class in a template):**
+1. **Tree-1 (capture generic):** a local class in a dependent body must NOT be globally registered/
+   emitted as-is. Capture its definition in the template pattern (members keep placeholder types).
+2. **Tree-2 (materialize concrete):** per instantiation, substitute the local class's member types
+   (`U`→concrete), register a fresh concrete local class (unique name), emit its special members
+   (its dtor was the `64fc880d` synth-dtor case), and retarget body references (`Guard g`, `g.v`,
+   the `_Guard`/`_Auto_node` ctor calls) to the concrete class. g++ treats a local class in a
+   template as dependent — instantiated WITH the enclosing template.
+This is a real multi-cycle capability (local-class-in-template), NOT a gate tweak. It is the dominant
+burndown lever. **DO NOT** re-attempt admitting these via `tsubst_eligible` loosening — proven a
+no-op + breakage (stash `off-plan eligibility-gate detour`, 2026-06-28); the gate is a proxy, the
+capability above is the real work.
+
+
 **✅ 2026-06-25 — STEP-C SPINE LANDED (`is_type_dependent`); nested-instantiation pinned.**
 The generic per-node type-dependence predicate (§11.5c step 3 spine) is COMMITTED
 (`62409d08`): `is_type_dependent(TokenBase*)` = the `type_dependent_expression_p`
