@@ -6521,6 +6521,17 @@ void CirBuilder::class_copy_assign_from_addr(DataDefCLASS *cdd, TokenBase *lhs,
 	class_copy_assign_members(cdd, lname, rname, out, origin);
 }
 
+// A class for which Pass 1.6 synthesizes the base destructor (Cls___dtor):
+// non-trivial (needs a dtor), no user-written dtor, and not a libstdc++-owned
+// (externally-defined) class. The single source of truth shared by the Pass-1.6
+// emission loop and the tsubst completeness check, so "this dtor symbol is
+// emittable" and "Pass 1.6 will emit it" can never drift apart.
+bool CirBuilder::class_gets_synth_dtor(DataDefCLASS *cdd)
+{
+	return cdd && !class_has_own_user_dtor(cdd) && class_needs_dtor(cdd)
+	    && !cdd->is_externally_defined();
+}
+
 std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
 {
 	if (!cdd) return std::string();
@@ -13900,10 +13911,25 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	{
 		std::set<std::string> callees;
 		cir_collect_call_callees(result, callees);
+		// Pass 1.6 synthesizes destructors for synth-eligible classes and emits
+		// them DIRECTLY into the module (not as pending_funcs FuncDefs), so the
+		// pending-funcs scan below cannot see them. Pre-collect their base dtor
+		// symbols using the SAME predicate Pass 1.6 uses (class_gets_synth_dtor),
+		// so a tsubst'd pseudo-destructor call (e.g. __new_allocator::destroy<T>
+		// -> T::~T) recognizes the dtor as emittable instead of falling back.
+		// Lockstep: only symbols Pass 1.6 will actually emit are admitted here, so
+		// no dangling reference can result.
+		std::set<std::string> synth_dtor_syms;
+		for (auto &kv : m_prog->struct_map) {
+			DataDefCLASS *cdd = as_user_class(kv.second);
+			if (class_gets_synth_dtor(cdd))
+				synth_dtor_syms.insert(class_dtor_symbol(cdd));
+		}
 		auto emittable = [&](const std::string &s) -> bool {
 			if (is_c2mir_builtin_call_name(s)) return true;
 			if (m_prog->has_deferred_lazy_body(s)) return true;
 			if (external_symbol_available(s)) return true;
+			if (synth_dtor_syms.count(s)) return true;
 			for (TokenBase *pb : m_prog->pending_funcs) {
 				TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
 				FuncDef *tfd = tf ? dynamic_cast<FuncDef *>(tf->var.type)
@@ -15854,14 +15880,14 @@ node_t CirBuilder::translate_module(Program *prog)
 	std::set<DataDefCLASS *> emitted_synth_dtors;
 	for (auto &kv : prog->struct_map) {
 		DataDefCLASS *cdd = as_user_class(kv.second);
-		if (!cdd || class_has_own_user_dtor(cdd) || !class_needs_dtor(cdd)) continue;
-		// An externally-defined (libstdc++-owned) class's dtor lives in the .so;
-		// synthesizing a parallel Cls___dtor here both duplicates it and injects
-		// member-dtor cleanup for the library's internal members (e.g. the
-		// __cow_string _M_msg of the std exception classes, whose dtor libstdc++
-		// does not export) -> a dangling reference. Skip; complete-object
-		// destruction of such an object references the real dtor symbol instead.
-		if (cdd->is_externally_defined()) continue;
+		// class_gets_synth_dtor folds: non-NULL, no user dtor, needs a dtor, and
+		// NOT externally-defined. An externally-defined (libstdc++-owned) class's
+		// dtor lives in the .so; synthesizing a parallel Cls___dtor here both
+		// duplicates it and injects member-dtor cleanup for the library's internal
+		// members (e.g. the __cow_string _M_msg of the std exception classes, whose
+		// dtor libstdc++ does not export) -> a dangling reference. Skipping it means
+		// complete-object destruction references the real dtor symbol instead.
+		if (!class_gets_synth_dtor(cdd)) continue;
 		if (emitted_synth_dtors.count(cdd)) continue;
 		emitted_synth_dtors.insert(cdd);
 		node_t dd = synth_dtor_def(cdd);

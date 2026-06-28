@@ -876,6 +876,8 @@ public:
 	// synthesis: a class with a non-trivial base but no OWN dtor still needs a
 	// synthesized Cls___dtor chaining to the base.
 	bool class_has_own_user_dtor(DataDefCLASS *cdd);
+	// True iff Pass 1.6 synthesizes a base dtor (Cls___dtor) for this class.
+	bool class_gets_synth_dtor(DataDefCLASS *cdd);
 	// The destructor symbol used as the cleanup function for a class
 	// instance (ClassName___dtor) — whether user-written or synthesized.
 	std::string class_dtor_symbol(DataDefCLASS *cdd);
