@@ -1010,6 +1010,9 @@ public:
 	std::string copied_pack_value_name(const char *name) const;
 	node_t copied_reference_slot_arg(class TokenBase *arg, node_t src_arg,
 					 DataDef *formal, bool refp);
+	node_t copied_call_arg_for_formal(class TokenBase *arg, node_t src_arg,
+					 DataDef *formal, bool refp,
+					 const std::map<DataDef *, DataDef *> *subst);
 	class Variable *resolve_copied_dependent_call(
 		class TokenCallFunc *tcf,
 		const std::map<DataDef *, DataDef *> *subst,

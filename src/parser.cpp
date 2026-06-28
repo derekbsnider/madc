@@ -31908,6 +31908,30 @@ DataDef *Program::resolve_template_param_default_type(
 // the overload Variable the instantiation registered — the call target.
 static bool tsubst_pack_decl_suffix_token(TokenBase *t);
 
+static bool instantiated_template_var_has_pending_body(Program &pgm,
+	Variable *v)
+{
+    if ( !v )
+	return false;
+    FuncDef *fd = dynamic_cast<FuncDef *>(v->type);
+    if ( !fd || fd->declaration_only )
+	return false;
+    if ( !fd->emit_symbol.empty() )
+	return true;
+    for ( TokenBase *pb : pgm.pending_funcs )
+    {
+	TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
+	FuncDef *tfd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+	if ( !tf || !tfd || tfd->declaration_only )
+	    continue;
+	if ( &tf->var == v || tfd == fd )
+	    return true;
+	if ( tf->var.name == v->name )
+	    return true;
+    }
+    return false;
+}
+
 static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
@@ -32059,25 +32083,41 @@ static bool instantiate_fn_template_binding(Program &pgm,
     inst_key += ">";
     if ( pgm.fn_template_instantiated.count(inst_key) )
     {
-	if ( type_args_out || type_arg_packs_out )
+	std::map<std::string, Variable *>::iterator vi =
+	    pgm.fn_template_instantiated_vars.find(inst_key);
+	bool missing_var_memo = var_out
+	    && vi == pgm.fn_template_instantiated_vars.end();
+	bool stale_body_memo = vi != pgm.fn_template_instantiated_vars.end()
+	    && !instantiated_template_var_has_pending_body(pgm, vi->second);
+	if ( missing_var_memo || stale_body_memo )
 	{
-	    std::vector<DataDef *> scratch;
-	    std::vector<DataDef *> &out = type_args_out ? *type_args_out : scratch;
-	    collect_ordered_type_arg_bindings(ft, binding, pack_param, pack_empty,
-					      pack_elems, tid_packs, out,
-					      type_arg_packs_out);
-	}
-	if ( var_out )
-	{
-	    std::map<std::string, Variable *>::iterator vi =
-		pgm.fn_template_instantiated_vars.find(inst_key);
+	    pgm.fn_template_instantiated.erase(inst_key);
 	    if ( vi != pgm.fn_template_instantiated_vars.end() )
-		*var_out = vi->second;
+		pgm.fn_template_instantiated_vars.erase(vi);
 	}
-	return true;
+	else
+	{
+	    if ( type_args_out || type_arg_packs_out )
+	    {
+		std::vector<DataDef *> scratch;
+		std::vector<DataDef *> &out = type_args_out ? *type_args_out : scratch;
+		collect_ordered_type_arg_bindings(ft, binding, pack_param, pack_empty,
+						  pack_elems, tid_packs, out,
+						  type_arg_packs_out);
+	    }
+	    if ( var_out )
+	    {
+		std::map<std::string, Variable *>::iterator vi =
+		    pgm.fn_template_instantiated_vars.find(inst_key);
+		if ( vi != pgm.fn_template_instantiated_vars.end() )
+		    *var_out = vi->second;
+	    }
+	    return true;
+	}
     }
     pgm.fn_template_instantiated.insert(inst_key);
     size_t pre_ovset = 0;
+    size_t pre_pending = pgm.pending_funcs.size();
     {
 	std::map<std::string, std::vector<Program::NamespaceFnOverload>>::iterator
 	    oi = pgm.namespace_fn_overload_sets.find(key);
@@ -32794,6 +32834,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
     }
     if ( ok )
     {
+	Variable *instantiated_var = NULL;
 	// The parsed definition appended its overload entry under `key` —
 	// remember its Variable so operator USE sites can call it.
 	std::map<std::string, std::vector<Program::NamespaceFnOverload>>::iterator
@@ -32805,6 +32846,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    if ( !ft.inline_builtin_kind.empty() )
 		if ( FuncDef *nfd = dynamic_cast<FuncDef *>(ne.var->type) )
 		    nfd->inline_builtin_kind = ft.inline_builtin_kind;
+	    instantiated_var = ne.var;
 	    ne.template_arg_names.clear();
 	    for ( size_t ti = 0; ti < ft.typeparams.size(); ++ti )
 	    {
@@ -32826,9 +32868,28 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		else
 		    ne.template_arg_names.push_back(std::string());
 	    }
-	    pgm.fn_template_instantiated_vars[inst_key] = ne.var;
+	}
+	if ( !instantiated_var && var_out )
+	{
+	    for ( size_t pi = pgm.pending_funcs.size(); pi-- > pre_pending; )
+	    {
+		TokenFunc *tf = dynamic_cast<TokenFunc *>(pgm.pending_funcs[pi]);
+		FuncDef *pfd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+		if ( !tf || !pfd || pfd->declaration_only )
+		    continue;
+		if ( pfd->namespace_name + "::" + pfd->function_display_name != key )
+		    continue;
+		if ( !ft.inline_builtin_kind.empty() )
+		    pfd->inline_builtin_kind = ft.inline_builtin_kind;
+		instantiated_var = &tf->var;
+		break;
+	    }
+	}
+	if ( instantiated_var )
+	{
+	    pgm.fn_template_instantiated_vars[inst_key] = instantiated_var;
 	    if ( var_out )
-		*var_out = ne.var;
+		*var_out = instantiated_var;
 	}
     }
     return ok;
@@ -33497,6 +33558,35 @@ static bool tsubst_has_member_call_pack_expansion(FuncDef *fd)
     return false;
 }
 
+static bool tsubst_has_unqualified_call_pack_expansion(FuncDef *fd)
+{
+    if ( !fd )
+	return false;
+    const std::vector<TokenBase *> &d = fd->member_template_decl;
+    for ( size_t i = 0; i + 1 < d.size(); ++i )
+    {
+	TokenBase *t = d[i];
+	if ( !t || t->type() != TokenType::ttIdentifier )
+	    continue;
+	if ( !d[i + 1] || d[i + 1]->id() != TokenID::tkOpBrk )
+	    continue;
+	if ( i > 0 && d[i - 1]
+	  && (d[i - 1]->id() == TokenID::tkDot
+	      || d[i - 1]->id() == TokenID::tkDeRef
+	      || d[i - 1]->id() == TokenID::tkNS) )
+	    continue;
+	size_t open = i + 1;
+	size_t close = tsubst_matching_close(d, open, TokenID::tkOpBrk,
+					     TokenID::tkClBrk);
+	if ( close >= d.size() )
+	    continue;
+	if ( tsubst_range_has_pack_expansion(d, open + 1, close) )
+	    return true;
+	i = close;
+    }
+    return false;
+}
+
 // Two-tree Phase 2 — capability predicate. See the madc.h declaration. Slice 1 =
 // a member function template with exactly one TYPE param (no pack), a NON-DEPENDENT
 // return type (passed straight to parseFunction), and a body/params using the param
@@ -33600,7 +33690,8 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
     bool covered_system_header_pack_template_id_body =
 	template_pack_body_from_system_header
 	&& (tsubst_has_placement_new_ctor_pack_expansion(fd)
-	    || tsubst_has_member_call_pack_expansion(fd));
+	    || tsubst_has_member_call_pack_expansion(fd)
+	    || tsubst_has_unqualified_call_pack_expansion(fd));
     // Body/param scan: any template-id (`<`) or `P::` dependent lookup (P a param)
     // disqualifies, except the current pack-expansion widening slice admits a
     // single TYPE-pack body when it is already structurally covered by CIR pack

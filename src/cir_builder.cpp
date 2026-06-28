@@ -740,6 +740,71 @@ node_t CirBuilder::copied_reference_slot_arg(TokenBase *arg, node_t src_arg,
 	return slot;
 }
 
+node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
+					     DataDef *formal, bool refp,
+					     const std::map<DataDef *, DataDef *> *subst)
+{
+	if (node_t rewritten = copied_reference_slot_arg(arg, src_arg, formal, refp))
+		return rewritten;
+	cir_node *copied = copy_cir_subtree(CIR_NODE(src_arg), subst);
+	if (!copied)
+		return NULL;
+	node_t out = copied->as_node();
+	if (refp && formal && formal->is_pointer())
+		return node2(N_CAST, ptr_type_node(formal), out, arg);
+	return out;
+}
+
+static bool pending_function_body_available(CirBuilder *cb, Program *prog,
+					    const std::string &sym)
+{
+	if (!cb || !prog || sym.empty())
+		return false;
+	for (TokenBase *pb : prog->pending_funcs) {
+		TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
+		FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+		if (tf && fd && !fd->declaration_only
+		    && (tf->var.name == sym || cb->func_emit_name(tf->var, fd) == sym))
+			return true;
+	}
+	return false;
+}
+
+static TokenFunc *find_ast_function_body(CirBuilder *cb, Program *prog,
+					 const std::string &sym)
+{
+	if (!cb || !prog || sym.empty())
+		return NULL;
+	std::queue<TokenBase *> q = prog->ast;
+	while (!q.empty()) {
+		TokenBase *tb = q.front();
+		q.pop();
+		TokenFunc *tf = dynamic_cast<TokenFunc *>(tb);
+		FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+		if (tf && fd && !tf->is_overridden && !fd->declaration_only
+		    && (tf->var.name == sym || cb->func_emit_name(tf->var, fd) == sym))
+			return tf;
+	}
+	return NULL;
+}
+
+static bool requeue_tsubst_instance_body(CirBuilder *cb, Program *prog, Variable &var,
+					 FuncDef *fd)
+{
+	if (!cb || !prog || !fd || !fd->tsubst_source)
+		return false;
+	std::string sym = cb->func_emit_name(var, fd);
+	if (sym.empty())
+		return false;
+	if (pending_function_body_available(cb, prog, sym))
+		return true;
+	TokenFunc *tf = find_ast_function_body(cb, prog, sym);
+	if (!tf)
+		return false;
+	prog->pending_funcs.push_back(tf);
+	return true;
+}
+
 static DataDef *tsubst_overload_arg_type(DataDef *dd)
 {
 	if (dd && dd->is_reference())
@@ -829,8 +894,15 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		error_out->clear();
 	if (!subst || !m_prog)
 		return NULL;
-	if (!tsubst_call_can_rewrite_after_subst(tcf))
+	bool system_header_call = m_tsubst_copy_pack_index < 0 && tcf && tcf->file
+			       && m_prog->is_system_header_path(tcf->file);
+	if (!tsubst_call_can_rewrite_after_subst(tcf)) {
+		FuncDef *dfd = tcf ? dynamic_cast<FuncDef *>(tcf->var.type) : NULL;
+		if (system_header_call && dfd
+		    && requeue_tsubst_instance_body(this, m_prog, tcf->var, dfd))
+			referenced_funcs.insert(func_emit_name(tcf->var, dfd));
 		return NULL;
+	}
 	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
 
 	std::vector<DataDef *> explicit_args;
@@ -912,12 +984,12 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	}
 	if (concrete_param_types_out)
 		*concrete_param_types_out = concrete_param_types;
-	if (changed_out)
-		*changed_out = changed;
-	if (!changed)
+	if (!changed && !system_header_call)
 		return NULL;
 
 	if (TokenMember *tm = dynamic_cast<TokenMember *>(tcf)) {
+		if (changed_out)
+			*changed_out = changed;
 		DataDef *recv_type = tm->parent_expr
 				     ? tm->parent_expr->datadef()
 				     : tm->object.type;
@@ -992,13 +1064,7 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	// needlessly rejected calls with class-pointer/reference args — e.g.
 	// std::__do_uninit_copy(basic_string*, ...) — that resolve+instantiate fine.
 	// g++ shape: tsubst re-runs finish_call_expr on substituted args.)
-	bool system_header_call = m_tsubst_copy_pack_index < 0 && tcf->file
-			       && m_prog->is_system_header_path(tcf->file);
-
-	Variable *winner = m_prog->find_namespace_function_overload(
-		fd->namespace_name, fd->function_display_name, at, &zeros,
-		&explicit_args);
-	if (!winner) {
+	auto instantiate_concrete_call = [&]() {
 		TokenCallFunc synth(tcf->var);
 		synth.explicit_template_args = explicit_args;
 		synth.file = tcf->file;
@@ -1009,19 +1075,11 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 			synth.parameters.push_back(tsubst_concrete_arg_token(
 				concrete_param_types[i], i, param_origins[i]));
 		m_prog->instantiate_namespace_fn_template_for_call(&synth);
-		winner = m_prog->find_namespace_function_overload(
-			fd->namespace_name, fd->function_display_name, at, &zeros,
-			&explicit_args);
-	}
-	if (!winner) {
-		if (error_out)
-			*error_out = "tsubst: unresolved dependent call";
-		return NULL;
-	}
-	if (system_header_call) {
-		FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
-		std::string sym = func_emit_name(*winner, wfd);
-		bool body_available = m_prog->has_deferred_lazy_body(sym);
+	};
+	auto body_available_for = [&](Variable *v) -> bool {
+		FuncDef *wfd = v ? dynamic_cast<FuncDef *>(v->type) : NULL;
+		std::string sym = v ? func_emit_name(*v, wfd) : std::string();
+		bool body_available = !sym.empty() && m_prog->has_deferred_lazy_body(sym);
 		if (!body_available && wfd && !wfd->emit_symbol.empty())
 			body_available = external_symbol_available(wfd->emit_symbol);
 		if (!body_available) {
@@ -1035,11 +1093,72 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 				}
 			}
 		}
-		if (!body_available) {
+		return body_available;
+	};
+	auto instantiate_concrete_operator_call = [&]() -> Variable * {
+		if (fd->function_display_name.compare(0, 8, "operator") != 0
+		    || tcf->parameters.size() != 2)
+			return NULL;
+		DataDef *ld = m_prog->free_operator_arg_datadef(tcf->parameters[0]);
+		DataDef *rd = m_prog->free_operator_arg_datadef(tcf->parameters[1]);
+		ld = subst_datadef(m_prog, ld, *subst);
+		rd = subst_datadef(m_prog, rd, *subst);
+		if (!ld || !rd || template_param_under_type_layers(ld)
+		    || template_param_under_type_layers(rd))
+			return NULL;
+		TokenVar *lhs = tsubst_concrete_arg_token(ld, 0,
+							  tcf->parameters[0]);
+		TokenVar *rhs = tsubst_concrete_arg_token(rd, 1,
+							  tcf->parameters[1]);
+		Variable *op_callee = NULL;
+		if (!m_prog->instantiate_free_operator_template(
+			    fd->function_display_name, lhs, rhs, &op_callee))
+			return NULL;
+		return op_callee;
+	};
+
+	Variable *winner = m_prog->find_namespace_function_overload(
+		fd->namespace_name, fd->function_display_name, at, &zeros,
+		&explicit_args);
+	if (!winner) {
+		instantiate_concrete_call();
+		winner = m_prog->find_namespace_function_overload(
+			fd->namespace_name, fd->function_display_name, at, &zeros,
+			&explicit_args);
+	} else {
+		if (system_header_call && !body_available_for(winner)) {
+			Variable *inst = instantiate_concrete_operator_call();
+			if (!inst || !body_available_for(inst)) {
+				instantiate_concrete_call();
+				inst = m_prog->find_namespace_function_overload(
+					fd->namespace_name,
+					fd->function_display_name,
+					at, &zeros, &explicit_args);
+			}
+			if (inst)
+				winner = inst;
+		}
+	}
+	if (!winner) {
+		if (error_out)
+			*error_out = "tsubst: unresolved dependent call";
+		return NULL;
+	}
+	if (system_header_call) {
+		if (!body_available_for(winner)) {
 			if (error_out)
 				*error_out = "tsubst: system-header dependent call";
 			return NULL;
 		}
+	}
+	if (changed_out) {
+		FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
+		std::string old_sym = func_emit_name(tcf->var, fd);
+		std::string new_sym = func_emit_name(*winner, wfd);
+		bool system_operator_call = system_header_call
+			&& fd->function_display_name.compare(0, 8, "operator") == 0;
+		*changed_out = changed || old_sym != new_sym
+			       || system_operator_call;
 	}
 	return winner;
 }
@@ -1638,9 +1757,13 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					    ? wfd->parameters[i] : NULL;
 				bool refp = wfd && wfd->is_ref_param(i);
 				node_t rewritten =
-					copied_reference_slot_arg(arg, a, pt, refp);
-				append(args, rewritten ? rewritten
-					: copy_cir_subtree(CIR_NODE(a), subst)->as_node());
+					copied_call_arg_for_formal(arg, a, pt,
+								   refp, subst);
+				if (!rewritten)
+					return CIR_NODE(error_node(
+						"tsubst: failed dependent call arg copy",
+						tcf));
+				append(args, rewritten);
 			}
 			node_t call = node2(N_CALL, id(sym.c_str(), tcf), args, tcf);
 			CIR_NODE(call)->tree1_origin = src;
@@ -7473,7 +7596,11 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 		return best;
 	}
 	if (any && !rhs_dd) return any;
-	// Fall back to the keyed lookup (method_map under the unmangled name).
+	if (rhs_dd)
+		return NULL;
+	// Fall back to the keyed lookup (method_map under the unmangled name) only
+	// when the RHS shape is unknown; a known RHS with no scored match is not a
+	// viable member candidate.
 	std::string key = mname;
 	Variable *mv = cls->findMethod(key);
 	return mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
@@ -7694,6 +7821,24 @@ static bool targs_from_binding(const Program::FreeOperatorOverload &ov,
 		targs.push_back(it->second);
 	}
 	return true;
+}
+
+static bool w2_datadef_involves_template_param(DataDef *dd)
+{
+	for (int guard = 0; dd && guard < 16; ++guard) {
+		if (dd->is_template_param())
+			return true;
+		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd)) {
+			dd = cd->base_type;
+			continue;
+		}
+		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) {
+			dd = pd->base_type;
+			continue;
+		}
+		break;
+	}
+	return false;
 }
 
 // Deduce-match ONE template-id parameter spelling against an argument class
@@ -8620,6 +8765,28 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 				       const char *opsym_override)
 {
 	if (!top || !top->left || !top->right) return NULL;
+	auto free_operator_body_call = [&](const std::string &mname) -> node_t {
+		if (!m_prog)
+			return NULL;
+		DataDef *ld = m_prog->free_operator_arg_datadef(top->left);
+		DataDef *rd = m_prog->free_operator_arg_datadef(top->right);
+		if (w2_datadef_involves_template_param(ld)
+		    || w2_datadef_involves_template_param(rd))
+			return NULL;
+		Variable *callee = NULL;
+		if (!m_prog->instantiate_free_operator_template(mname, top->left,
+								top->right,
+								&callee)
+		    || !callee)
+			return NULL;
+		TokenCallFunc *tc = new TokenCallFunc(*callee);
+		tc->file = top->file;
+		tc->line = top->line;
+		tc->column = top->column;
+		tc->parameters.push_back(top->left);
+		tc->parameters.push_back(top->right);
+		return translate_expr(tc);
+	};
 	// The operator LHS must be a class object lvalue (or a reference to one),
 	// not a pointer to one: `T s; s = x` is operator=, but `T *p; p = ...`
 	// is a plain pointer assignment. operand_object_class resolves the class
@@ -8640,8 +8807,12 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		const char *opsym0 = opsym_override ? opsym_override
 						    : binop_overload_symbol(top->id());
 		if (!opsym0[0]) return NULL;
-		return try_free_operator_call(top, NULL,
-			std::string("operator") + opsym0, NULL, origin);
+		std::string mname0 = std::string("operator") + opsym0;
+		if (node_t freecall = try_free_operator_call(top, NULL,
+							     mname0, NULL,
+							     origin))
+			return freecall;
+		return free_operator_body_call(mname0);
 	}
 	const char *opsym = opsym_override ? opsym_override
 					   : binop_overload_symbol(top->id());
@@ -8657,6 +8828,10 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	// conversion). If so, bind it mangled-direct instead.
 	if (node_t freecall = try_free_operator_call(top, lcls, mname, callee, origin))
 		return freecall;
+	if (!callee || (operand_object_class(top->right)
+			&& lcls->binary_operator_only_takes_nonclass(mname)))
+		if (node_t freebody = free_operator_body_call(mname))
+			return freebody;
 	if (!callee) return NULL;
 
 	// A class-bound external operator names its real symbol via emit_symbol and
@@ -10600,25 +10775,6 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				}
 			}
 
-			// Pattern-mode operator deferral: while building a Tree-1 recipe,
-			// a binary operator on a CLASS/object operand (e.g. iterator
-			// `__finish - __start`) would instantiate a free operator
-			// (std_free_operator_instantiation) — a declaration-only FuncDef
-			// side-effect that PERSISTS and poisons the parsed-body fallback
-			// (the re-parse then finds the signature and never emits the body →
-			// MIR "undefined import"). Defer it: emit an error node so the body
-			// falls back cleanly with no instantiation side-effect. A landed
-			// operator re-resolve KIND will make it a hit instead. (Assignment
-			// is handled separately above; scalar operands don't reach a class
-			// operator so they fall through to the builtin op below.)
-			if (m_tsubst_pattern_mode && !is_assign_op(tb->id())) {
-				DataDef *ld = top->left ? top->left->datadef() : NULL;
-				DataDef *rd = top->right ? top->right->datadef() : NULL;
-				if (as_class_instance(ld) || class_behind(ld)
-				    || as_class_instance(rd) || class_behind(rd))
-					return error_node(
-						"tsubst: class operator in pattern (deferred)", tb);
-			}
 			// Operator overloading on a class lvalue: `c <op> rhs` where c's
 			// class defines `operator<op>` lowers to the operator call. For
 			// header-declared external classes this uses the mangled C++ symbol
@@ -10627,6 +10783,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			{
 				node_t ov = class_operator_call(top, tb);
 				if (ov) return ov;
+			}
+			// Pattern-mode operator deferral: if generic operator resolution
+			// above cannot materialize a class/operator call, keep the Tree-1
+			// recipe incomplete and fall back rather than emitting a builtin
+			// operation on an object representation. Operators that can be
+			// resolved by kind (member, external, or retained free-template body)
+			// have already returned.
+			if (m_tsubst_pattern_mode && !is_assign_op(tb->id())) {
+				DataDef *ld = top->left ? top->left->datadef() : NULL;
+				DataDef *rd = top->right ? top->right->datadef() : NULL;
+				if (as_class_instance(ld) || class_behind(ld)
+				    || as_class_instance(rd) || class_behind(rd))
+					return error_node(
+						"tsubst: unresolved class operator in pattern",
+						tb);
 			}
 
 			// Implicit memberwise copy-ASSIGNMENT for a NON-TRIVIAL class
@@ -15139,6 +15310,56 @@ node_t CirBuilder::translate_module(Program *prog)
 				materialized_funcs.push_back(ntf);
 				m_materialized_lib_syms.insert(ntf->var.name);
 				if (nfd) m_materialized_lib_syms.insert(key);
+				grew = true;
+			}
+			// A concrete function-template instantiation can be parsed during a
+			// speculative Tree-1 pattern build, then removed from pending_funcs
+			// when that speculative parse rolls back. The Variable/FuncDef entry
+			// still records `tsubst_source`, and calls may ODR-use the concrete
+			// symbol later. Fold those already-parsed AST bodies back into the
+			// same reachable-library pipeline instead of leaving only an extern.
+			for (auto &kv : prog->funcdef_map) {
+				const std::string &fname = kv.first;
+				FuncDef *nfd = kv.second;
+				if (!nfd || !nfd->tsubst_source)
+					continue;
+				std::string lookup = fname;
+				Variable *nvar = prog->tkProgram
+					? prog->tkProgram->findVariable(prog->strpool, lookup)
+					: NULL;
+				if (!nvar)
+					nvar = prog->findVariable(lookup);
+				std::string sym = nvar ? func_emit_name(*nvar, nfd) : fname;
+				if (!referenced_funcs.count(sym)
+				    && !referenced_funcs.count(fname))
+					continue;
+				TokenFunc *ntf = find_ast_function_body(this, prog, sym);
+				if (!ntf && sym != fname)
+					ntf = find_ast_function_body(this, prog, fname);
+				if (!ntf || ntf->is_overridden)
+					continue;
+				if (!prog->is_system_header_path(ntf->file))
+					continue;
+				bool already_queued = false;
+				for (auto &lf : lib_funcs)
+					if (lf.second == ntf) {
+						already_queued = true;
+						break;
+					}
+				if (already_queued)
+					continue;
+				FuncDef *tf_fd = dynamic_cast<FuncDef *>(ntf->var.type);
+				std::string key = tf_fd ? func_emit_name(ntf->var, tf_fd)
+							: ntf->var.name;
+				if (key.empty())
+					key = sym;
+				if (lib_funcs.count(key))
+					continue;
+				lib_funcs[key] = ntf;
+				materialized_funcs.push_back(ntf);
+				m_materialized_lib_syms.insert(ntf->var.name);
+				if (tf_fd)
+					m_materialized_lib_syms.insert(key);
 				grew = true;
 			}
 			for (auto &kv : lib_funcs) {
