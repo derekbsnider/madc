@@ -1533,6 +1533,7 @@ public:
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     datadef_map_t  struct_map;		// data definitions defined by struct
+    std::map<std::string, DataDefSTRUCT *> tsubst_local_aggregate_map;
     // Type table identity layer — project segment (madc_typeid.h; design
     // docs/plans/2026-06-12-type-table-value-abi-design.md §2). Holds every
     // non-primitive DataDef this Program has been asked an id for; index i

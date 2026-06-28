@@ -423,6 +423,266 @@ node_t CirBuilder::node5(c2mir_node_code_t code, node_t op1, node_t op2, node_t 
 // caching are preserved. Returns `dd` unchanged when no placeholder is involved
 // (the common case). DataDefREF IS-A DataDefPTR, so it is tested first.
 static DataDef *subst_datadef(Program *prog, DataDef *dd,
+			      const std::map<DataDef *, DataDef *> &subst);
+
+static DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
+{
+	for (int guard = 0; dd && guard < 8; ++guard) {
+		if (DataDefTemplateParam *tp =
+			    dynamic_cast<DataDefTemplateParam *>(dd))
+			return tp;
+		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
+			{ dd = cd->base_type; continue; }
+		if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
+			{ dd = rd->base_type; continue; }
+		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+			{ dd = pd->base_type; continue; }
+		if (DataDefCArray *ad = dynamic_cast<DataDefCArray *>(dd))
+			{ dd = ad->element_type; continue; }
+		break;
+	}
+	return NULL;
+}
+
+// A class with a member whose type is (or wraps) a template parameter — i.e. a
+// LOCAL class defined in a dependent member-template body (`struct Guard { U v; };`,
+// _M_construct's _Guard, _Rb_tree's _Auto_node). It is a Tree-1 pattern artifact:
+// emitting it globally would lower its placeholder member and hit the
+// "unsubstituted template parameter" error. Per instantiation a CONCRETE clone is
+// materialized (subst_datadef) and emitted instead. (g++ treats a local class in a
+// template as dependent — instantiated WITH the enclosing template.)
+static bool struct_has_dependent_member(DataDefSTRUCT *sdd)
+{
+	if (!sdd)
+		return false;
+	for (auto &m : sdd->members)
+		if (template_param_under_type_layers(m.second))
+			return true;
+	return false;
+}
+
+static std::string tsubst_datadef_key(DataDef *dd,
+				      const std::map<DataDef *, DataDef *> &subst,
+				      std::set<DataDef *> &seen)
+{
+	if (!dd)
+		return "<null>";
+	std::map<DataDef *, DataDef *>::const_iterator it = subst.find(dd);
+	if (it != subst.end())
+		return tsubst_datadef_key(it->second, subst, seen);
+	if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
+		return "ref(" + tsubst_datadef_key(rd->base_type, subst, seen) + ")";
+	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+		return "ptr(" + tsubst_datadef_key(pd->base_type, subst, seen) + ")";
+	if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
+		return "const(" + tsubst_datadef_key(cd->base_type, subst, seen) + ")";
+	if (DataDefCArray *ad = dynamic_cast<DataDefCArray *>(dd)) {
+		std::ostringstream os;
+		os << "arr[" << ad->count << "]("
+		   << tsubst_datadef_key(ad->element_type, subst, seen) << ")";
+		return os.str();
+	}
+	if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd)) {
+		if (struct_has_dependent_member(sdd) && seen.insert(dd).second) {
+			std::ostringstream os;
+			os << "agg@" << dd << ":" << sdd->name << "{";
+			for (size_t i = 0; i < sdd->members.size(); ++i) {
+				if (i) os << ",";
+				os << sdd->members[i].first << ":"
+				   << tsubst_datadef_key(sdd->members[i].second,
+							 subst, seen);
+			}
+			os << "}";
+			seen.erase(dd);
+			return os.str();
+		}
+	}
+	return dd->name;
+}
+
+static std::string tsubst_local_aggregate_key(
+	DataDefSTRUCT *sdd, const std::map<DataDef *, DataDef *> &subst)
+{
+	std::set<DataDef *> seen;
+	return tsubst_datadef_key(sdd, subst, seen);
+}
+
+static std::string sanitize_c_identifier(const std::string &s)
+{
+	std::string out;
+	for (char ch : s) {
+		if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+		    || (ch >= '0' && ch <= '9') || ch == '_')
+			out.push_back(ch);
+		else
+			out.push_back('_');
+	}
+	if (out.empty() || !((out[0] >= 'a' && out[0] <= 'z')
+			 || (out[0] >= 'A' && out[0] <= 'Z')
+			 || out[0] == '_'))
+		out.insert(out.begin(), '_');
+	return out;
+}
+
+static std::string tsubst_local_aggregate_name(
+	Program *prog, DataDefSTRUCT *sdd, const std::string &key)
+{
+	unsigned long h = 5381;
+	for (char ch : key)
+		h = ((h << 5) + h) ^ (unsigned char)ch;
+	std::ostringstream os;
+	os << sanitize_c_identifier(sdd && !sdd->name.empty()
+				    ? sdd->name : std::string("__local"))
+	   << "__tsubst_" << std::hex << h;
+	std::string base = os.str();
+	std::string name = base;
+	for (unsigned n = 2; prog && prog->struct_map.count(name); ++n) {
+		std::ostringstream alt;
+		alt << base << "_" << n;
+		name = alt.str();
+	}
+	return name;
+}
+
+static bool tsubst_local_class_clone_supported(DataDefCLASS *cdd)
+{
+	if (!cdd)
+		return true;
+	if (!cdd->methods.empty() || !cdd->ctors.empty()
+	    || !cdd->staticconst.empty() || !cdd->method_map.empty()
+	    || !cdd->bases.empty() || cdd->base_class
+	    || cdd->has_user_ctor || cdd->has_user_dtor
+	    || cdd->has_vtable || cdd->has_vptr_slot
+	    || cdd->extern_ctor || cdd->extern_dtor)
+		return false;
+	return true;
+}
+
+static bool clone_local_aggregate_members(
+	Program *prog, DataDefSTRUCT *src, DataDefSTRUCT *dst,
+	const std::map<DataDef *, DataDef *> &subst)
+{
+	if (!src || !dst)
+		return false;
+	if (src->has_anon_aggregate || src->has_runtime_size())
+		return false;
+
+	dst->canonical_cpp_spelling = dst->name;
+	dst->runtime_size_expr = NULL;
+	dst->pack = src->pack;
+	dst->tag_explicit_align = src->tag_explicit_align;
+	dst->union_layout = src->union_layout;
+	dst->is_complete = true;
+	dst->is_anonymous = false;
+	dst->reverse_scalar_storage = src->reverse_scalar_storage;
+
+	bool substituted_object_member = false;
+	for (size_t i = 0; i < src->members.size(); ++i) {
+		const memberpair_t &m = src->members[i];
+		DataDef *mt = subst_datadef(prog, m.second, subst);
+		if (!mt || template_param_under_type_layers(mt))
+			return false;
+		if (DataDefSTRUCT *ms = dynamic_cast<DataDefSTRUCT *>(mt))
+			if (struct_has_dependent_member(ms))
+				return false;
+		if (mt != m.second && mt->is_object() && !mt->is_pointer())
+			substituted_object_member = true;
+
+		size_t cnt = i < src->member_counts.size()
+			   ? src->member_counts[i] : 1;
+		TokenBase *count_expr = i < src->member_count_exprs.size()
+				      ? src->member_count_exprs[i] : NULL;
+		if (count_expr)
+			return false;
+		bool is_array = i < src->member_array_flags.size()
+			      ? src->member_array_flags[i] : false;
+		const std::vector<carray_dim_t> *dims = NULL;
+		if (i < src->member_dims.size() && !src->member_dims[i].empty())
+			dims = &src->member_dims[i];
+
+		const DataDefSTRUCT::BitFieldInfo *bf =
+			i < src->member_bitfields.size()
+			? &src->member_bitfields[i] : NULL;
+		if (bf && bf->is_bitfield)
+			dst->addBitField(m.first, *mt, bf->bit_width);
+		else
+			dst->addMember(m.first, *mt, cnt, NULL, is_array, dims);
+		if (dst->members.empty())
+			return false;
+		dst->members.back().typedef_name =
+			(mt == m.second) ? m.typedef_name : std::string();
+		dst->members.back().origin = m.origin;
+		size_t di = dst->members.size() - 1;
+		if (i < src->member_access.size()) {
+			if (dst->member_access.size() <= di)
+				dst->member_access.resize(di + 1, 0);
+			dst->member_access[di] = src->member_access[i];
+		}
+		if (i < src->member_origin.size()) {
+			if (dst->member_origin.size() <= di)
+				dst->member_origin.resize(di + 1, -1);
+			dst->member_origin[di] = src->member_origin[i];
+		}
+		std::map<size_t, size_t>::const_iterator ai =
+			src->member_explicit_align.find(i);
+		if (ai != src->member_explicit_align.end())
+			dst->apply_member_alignment(ai->second);
+		std::map<std::string, TokenBase *>::const_iterator dii =
+			src->member_default_inits.find(m.first);
+		if (dii != src->member_default_inits.end())
+			dst->member_default_inits[m.first] = dii->second;
+	}
+
+	if (!dynamic_cast<DataDefCLASS *>(src) && substituted_object_member)
+		return false;
+	if (src->tag_explicit_align > dst->max_align)
+		dst->max_align = src->tag_explicit_align;
+	if (src->reverse_scalar_storage)
+		dst->setReverseScalarStorage(true);
+	return true;
+}
+
+static DataDefSTRUCT *materialize_local_aggregate_datadef(
+	Program *prog, DataDefSTRUCT *sdd,
+	const std::map<DataDef *, DataDef *> &subst)
+{
+	if (!prog || !sdd || !struct_has_dependent_member(sdd))
+		return sdd;
+	std::string key = tsubst_local_aggregate_key(sdd, subst);
+	std::map<std::string, DataDefSTRUCT *>::iterator mi =
+		prog->tsubst_local_aggregate_map.find(key);
+	if (mi != prog->tsubst_local_aggregate_map.end())
+		return mi->second;
+
+	DataDefCLASS *src_class = dynamic_cast<DataDefCLASS *>(sdd);
+	if (!tsubst_local_class_clone_supported(src_class))
+		return NULL;
+
+	std::string name = tsubst_local_aggregate_name(prog, sdd, key);
+	DataDefSTRUCT *clone = src_class
+		? (DataDefSTRUCT *)new DataDefCLASS(name, 0, src_class->rawtype())
+		: new DataDefSTRUCT(name, 0, sdd->rawtype());
+	if (!clone_local_aggregate_members(prog, sdd, clone, subst))
+		return NULL;
+
+	if (DataDefCLASS *clone_class = dynamic_cast<DataDefCLASS *>(clone)) {
+		clone_class->member_origin.resize(clone_class->members.size(), -1);
+		clone_class->compute_layout();
+		clone_class->apply_member_layout();
+		clone_class->build_vtable_groups();
+		clone_class->is_complete = true;
+	} else {
+		clone->finalize();
+	}
+
+	prog->struct_map[clone->name] = clone;
+	prog->datatype_map[clone->name] =
+		new TokenDataType(clone->name.c_str(), *clone);
+	prog->tsubst_local_aggregate_map[key] = clone;
+	return clone;
+}
+
+static DataDef *subst_datadef(Program *prog, DataDef *dd,
 			      const std::map<DataDef *, DataDef *> &subst)
 {
 	if (!dd)
@@ -445,41 +705,21 @@ static DataDef *subst_datadef(Program *prog, DataDef *dd,
 		return (prog && nb != cd->base_type)
 			   ? (DataDef *)prog->getConstType(nb) : dd;
 	}
-	return dd;
-}
-
-static DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
-{
-	for (int guard = 0; dd && guard < 8; ++guard) {
-		if (DataDefTemplateParam *tp =
-			    dynamic_cast<DataDefTemplateParam *>(dd))
-			return tp;
-		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
-			{ dd = cd->base_type; continue; }
-		if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
-			{ dd = rd->base_type; continue; }
-		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
-			{ dd = pd->base_type; continue; }
-		break;
+	if (DataDefCArray *ad = dynamic_cast<DataDefCArray *>(dd)) {
+		DataDef *nb = subst_datadef(prog, ad->element_type, subst);
+		if (nb != ad->element_type)
+			return new DataDefCArray(*nb, nb->name, ad->count,
+						 ad->count_expr);
+		return dd;
 	}
-	return NULL;
-}
-
-// A class with a member whose type is (or wraps) a template parameter — i.e. a
-// LOCAL class defined in a dependent member-template body (`struct Guard { U v; };`,
-// _M_construct's _Guard, _Rb_tree's _Auto_node). It is a Tree-1 pattern artifact:
-// emitting it globally would lower its placeholder member and hit the
-// "unsubstituted template parameter" error. Per instantiation a CONCRETE clone is
-// materialized (subst_datadef) and emitted instead. (g++ treats a local class in a
-// template as dependent — instantiated WITH the enclosing template.)
-static bool struct_has_dependent_member(DataDefSTRUCT *sdd)
-{
-	if (!sdd)
-		return false;
-	for (auto &m : sdd->members)
-		if (template_param_under_type_layers(m.second))
-			return true;
-	return false;
+	if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd)) {
+		if (struct_has_dependent_member(sdd)) {
+			DataDefSTRUCT *clone =
+				materialize_local_aggregate_datadef(prog, sdd, subst);
+			return clone ? (DataDef *)clone : dd;
+		}
+	}
+	return dd;
 }
 
 static DataDefTemplateParam *template_param_in_pack_pattern(TokenBase *tb)
@@ -1925,16 +2165,38 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			// substituted tree is byte-identical. Unbound -> an error node so the
 			// caller falls back to re-parse. Only in a tsubst copy (`subst`).
 			if (subst && cc->base.code == N_IGNORE && cc->datadef
-			    && cc->datadef->is_template_param()
 			    && !dynamic_cast<TokenNEW *>(
 				    madc_token_for_slot(cc->origin_id))) {
-				std::map<DataDef *, DataDef *>::const_iterator mi =
-					subst->find(cc->datadef);
-				if (mi != subst->end() && mi->second)
-					append_type_specs(dst->as_node(), mi->second);
-				else
+				DataDefSTRUCT *marker_sdd =
+					dynamic_cast<DataDefSTRUCT *>(cc->datadef);
+				bool aggregate_marker =
+					marker_sdd && struct_has_dependent_member(marker_sdd);
+				if (!cc->datadef->is_template_param()
+				    && !aggregate_marker) {
+					cir_node *copied = copy_cir_subtree(cc, subst);
+					c2mir_op_append(c2m, dst->as_node(),
+							 copied->as_node());
+					continue;
+				}
+				DataDef *concrete =
+					subst_datadef(m_prog, cc->datadef, *subst);
+				DataDefSTRUCT *concrete_sdd =
+					dynamic_cast<DataDefSTRUCT *>(concrete);
+				if (!concrete
+				    || concrete == cc->datadef
+				    || concrete->is_template_param()
+				    || (concrete_sdd
+					&& struct_has_dependent_member(concrete_sdd))) {
 					append(dst->as_node(), error_node(
-						"tsubst: unbound template parameter in type marker"));
+						aggregate_marker
+						? "tsubst: unsupported dependent local aggregate type marker"
+						: "tsubst: unbound template parameter in type marker"));
+				} else {
+					node_t specs = type_list(concrete);
+					for (node_t sp = c2mir_node_first_op(specs);
+					     sp != NULL; sp = c2mir_node_next_op(sp))
+						append(dst->as_node(), sp);
+				}
 				continue;
 			}
 			bool saved_under_deref = m_tsubst_copy_under_deref;
@@ -3305,6 +3567,12 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 	if (dd && (dd->is_struct() || as_class_instance(dd)) && !dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(unqualified_type(dd));
 		if (sdd) {
+			if (m_tsubst_pattern_mode && struct_has_dependent_member(sdd)) {
+				node_t marker = ignore();
+				CIR_NODE(marker)->datadef = sdd;
+				append(lst, marker);
+				return lst;
+			}
 			// Tag kind MUST match the definition (struct vs union), or
 			// c2mir rejects it ("kind of tag X unmatched"). A union-typed
 			// reference emits N_UNION.
@@ -13555,6 +13823,9 @@ static bool tsubst_pattern_has_dependent_call(TokenBase *tb)
 			return false;
 		return tsubst_pattern_has_dependent_call(pe->pattern);
 	}
+	if (tb->type() == TokenType::ttMember)
+		if (TokenMember *tm = dynamic_cast<TokenMember *>(tb))
+			return tsubst_pattern_has_dependent_call(tm->parent_expr);
 	if (TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb)) {
 		// __destroy(ptr) lowers by inspecting the concrete pointee class at
 		// CIR time. Direct placeholder-pointee helpers are represented by a
@@ -16061,10 +16332,16 @@ node_t CirBuilder::translate_module(Program *prog)
 	// defined-before-use).
 	node_t late_struct_list = list();
 	for (auto &kv : prog->struct_map) {
-		DataDefCLASS *cdd = as_user_class(kv.second);
-		if (!cdd) continue;
-		emit_class_struct_with_deps(cdd, late_struct_list, emitted_structs,
-					    emitted_classes, emitting_classes);
+		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(kv.second);
+		if (!sdd) continue;
+		if (DataDefCLASS *cdd = as_user_class(sdd))
+			emit_class_struct_with_deps(cdd, late_struct_list,
+						    emitted_structs, emitted_classes,
+						    emitting_classes);
+		else
+			emit_struct_with_deps(sdd, late_struct_list,
+					      emitted_structs, emitted_classes,
+					      emitting_classes);
 	}
 	c2mir_op_splice_after(c2m, top_list, late_struct_anchor, late_struct_list);
 
