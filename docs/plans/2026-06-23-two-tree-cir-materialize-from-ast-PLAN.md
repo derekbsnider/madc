@@ -58,6 +58,18 @@ at the 3 struct-emission sites. Gates green (flag-off + flag-on 670/0/0/18, burn
 172/93 — it removes the error-class; bodies still fall back cleanly). Reducer `tmp/localclass_tsubst.mad`
 now `r=77` with no error (was: error).
 
+**✅✅ MATERIALIZE HALF LANDED + VERIFIED (Codex `4d954145` + `c15f2e15`, 2026-06-28) — THE WALL CRACKED.**
+Two gated commits: `4d954145` "tsubst dependent local aggregate bodies" (A scan-relax + B materialize
+concrete clone), `c15f2e15` "re-resolve copied member-template placeholders". Independently verified by
+Claude (all 5 gates): reducer `tmp/localclass_tsubst.mad` flag-on = **HIT** (`r=77`, `1 hit / 0 fallback`,
+`Box::pick<U>` gone from `[why:]`); flag-off `make -C src fulltest` **670/0/0/18** + both drift gates GREEN;
+flag-on `run_tests.sh` **670/0/0/18**; suite burndown **172/93 → 175/90 (66%)** (fallback DROPPED, never
+rose); no callee/class-NAME hardcoding (diff scan empty, Rule #7 clean); torture byte-identical by the
+env-gate (Codex failset diff empty). `_Rb_tree::_M_create_node` moved fallback→hit (testset 6/4).
+**▶ NEXT:** the harder real bodies — `basic_string::_M_construct`'s `_Guard` (has ctor/dtor, not a plain
+aggregate) and `_Rb_tree::_M_emplace_hint_unique`'s `_Auto_node` — still on fallback; the aggregate
+materialize is the foundation they build on. Drive the remaining 90 down per-KIND.
+
 **▶ NEXT — the MATERIALIZE half (A+B must land TOGETHER; (A) alone regresses):**
 - **(A) admit the body past the scan.** `tsubst_pattern_has_dependent_call` (`cir_builder.cpp:13546`)
   over-flags: `g.v` is a `TokenMember` (derives from `TokenCallFunc`), so its placeholder-typed
