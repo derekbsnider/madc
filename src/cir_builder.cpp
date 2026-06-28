@@ -465,6 +465,23 @@ static DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
 	return NULL;
 }
 
+// A class with a member whose type is (or wraps) a template parameter — i.e. a
+// LOCAL class defined in a dependent member-template body (`struct Guard { U v; };`,
+// _M_construct's _Guard, _Rb_tree's _Auto_node). It is a Tree-1 pattern artifact:
+// emitting it globally would lower its placeholder member and hit the
+// "unsubstituted template parameter" error. Per instantiation a CONCRETE clone is
+// materialized (subst_datadef) and emitted instead. (g++ treats a local class in a
+// template as dependent — instantiated WITH the enclosing template.)
+static bool struct_has_dependent_member(DataDefSTRUCT *sdd)
+{
+	if (!sdd)
+		return false;
+	for (auto &m : sdd->members)
+		if (template_param_under_type_layers(m.second))
+			return true;
+	return false;
+}
+
 static DataDefTemplateParam *template_param_in_pack_pattern(TokenBase *tb)
 {
 	if (!tb)
@@ -5293,6 +5310,9 @@ void CirBuilder::emit_struct_with_deps(
 {
 	if (!sdd || !sdd->is_complete)
 		return;
+	// A generic dependent local struct (placeholder members) is a Tree-1 pattern
+	// artifact — never emitted globally; its concrete per-instantiation clone is.
+	if (struct_has_dependent_member(sdd)) return;
 	// A class member routes through the class path (vtable/ctor machinery).
 	if (DataDefCLASS *c = as_user_class(sdd)) {
 		emit_class_struct_with_deps(c, top_list, emitted_structs,
@@ -5340,6 +5360,9 @@ void CirBuilder::emit_class_struct_with_deps(
 	std::set<DataDefCLASS *> &emitting_classes)
 {
 	if (!cdd) return;
+	// A generic dependent local class (placeholder members) is a Tree-1 pattern
+	// artifact — never emitted globally; its concrete per-instantiation clone is.
+	if (struct_has_dependent_member(cdd)) return;
 	if (emitted_classes.count(cdd) || emitted_structs.count(cdd->name))
 		return;
 	if (emitting_classes.count(cdd))
@@ -15214,7 +15237,11 @@ node_t CirBuilder::translate_module(Program *prog)
 		case Program::DeclKind::dkStruct:
 		case Program::DeclKind::dkUnion: {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(td.dd);
-			if (sdd && sdd->is_complete && !emitted_structs.count(sdd->name)) {
+			// A generic dependent local struct (placeholder members) is a Tree-1
+			// pattern artifact — skip global emission; the concrete per-
+			// instantiation clone is emitted instead.
+			if (sdd && sdd->is_complete && !emitted_structs.count(sdd->name)
+			    && !struct_has_dependent_member(sdd)) {
 				emit_class_member_deps(sdd, top_list, emitted_structs,
 						       emitted_classes, emitting_classes);
 				emitted_structs.insert(sdd->name);
