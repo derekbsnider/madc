@@ -85,3 +85,58 @@ Each kind: its own gated commit; `[why:]` shrinks by a class each time.
 - **Forest** (parse-once for the HEADER closure — the compile-speed perf track, ~1.9 s/compile):
   `2026-06-22-embedded-header-forest-execution-plan.md`. **Separate and uncoupled** — prereqs are
   headers-parse-cleanly + typeids, not this. Lands on its own schedule.
+
+---
+
+## Deprecating re-parse: how we get there + how we track it (2026-06-28)
+
+**The law** is now codified: `.claude/rules/parse-once.md` (+ reasoning in
+`docs/rules/parse-once.md`). New C++ support resolves on the parse-once generic
+spine; re-parse is a transitional fallback slated for deletion. Every change
+moves the suite-wide `[why:]` fallback count down or flat, never up.
+
+### The tracking metric — `scripts/tsubst_burndown.sh`
+Runs the whole suite under `MADC_XTEST_DEP_PARSE=1 --show-stats` and aggregates
+suite-wide tsubst HIT vs FALLBACK + the distinct `[why:]` reason-classes. The
+FALLBACK total is the distance-to-goal; the `[why:]` tally is the ranked KIND
+worklist. 0 fallback → flip the default → delete re-parse.
+
+### Baseline (HEAD `fef9b3a0`, 2026-06-28)
+```
+total HIT               : 161
+total FALLBACK (reparse): 104
+HIT rate                : 60%
+```
+KIND worklist, ranked (the data REORDERS priorities — aim by frequency):
+```
+ 70  [why: template-id '<' in body]            <-- DOMINANT (67% of all fallbacks)
+  7  [why: tsubst body calls un-emittable symbol]
+  6  [why: non-type template param]
+  6  [why: >1 pack param]
+  3  [why: unresolved dependent member call]   <-- Kind 3 (allocator_traits::destroy handoff)
+  5  [why: no matching constructor for _Rb_tree...]  (3+1+1 — Kind 4 construction)
+  1  [why: reference-param value-read]
+  1  [why: recipe parse failed]
+```
+
+### What the data says
+- **`template-id '<' in body` (70×) is the single biggest lever** — knocking out
+  that one KIND drops fallback 104 → ~34 (hit rate 60% → ~83%). It is a
+  `tsubst_eligible` gate rejection that fans into sub-cases: concrete class-param
+  id (safe to admit), `static_cast<>` (safe), and the genuine wall —
+  method-param dependent template-id + forwarding-pack in a `::`-qualified static
+  call (`_Alloc_traits::construct(std::forward<_Args>...)`). Refining the gate
+  admits the safe cases; the wall needs the dependent member-type/rebind KIND.
+- The queued **Kind-3 `allocator_traits::destroy` handoff** is valid and finishes
+  `testvector`, but is a small lever (≈3×). After it lands, the strategic next
+  target is the **template-id-in-body class**, not more small KINDs.
+- Construction (`_Rb_tree ... no matching constructor`, ≈5×) is Kind 4.
+
+### Sequence toward burndown = 0
+1. Kind 3 dependent-member-call (queued — finishes vector). 
+2. **template-id-in-body class** (the 70× lever — gate refinement + dependent
+   member-type/rebind KIND). Biggest single drop.
+3. construction KIND (`_Rb_tree` ctor selection, non-type params, packs).
+4. mop-up (`un-emittable symbol` completeness, `reference-param value-read`,
+   `recipe parse failed`).
+Re-run `scripts/tsubst_burndown.sh` after each to confirm monotonic descent.

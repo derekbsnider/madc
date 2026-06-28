@@ -276,6 +276,7 @@ no matter how small.
 | [cpp-first-api.md](.claude/rules/cpp-first-api.md) |  20 | Design embedding and `libmadc` APIs as C++ first; keep C shims thin and late; extern-C exports are the C-host API only — script-facing namespace publics resolve mangled-direct |
 | [helper-methods.md](.claude/rules/helper-methods.md) |  12 | Extract ad-hoc checks into named helpers      |
 | [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
+| [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
 | [code-style.md](.claude/rules/code-style.md)     |     9 | C++11, tabs, header guards, naming             |
 | [enum-over-strings.md](.claude/rules/enum-over-strings.md) | 15 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
 
@@ -311,10 +312,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **27 rules, 709 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~362 lines** — loaded by Claude via
+- **28 rules, 741 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~363 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1080 lines.**
+- **Grand total loaded by Claude Code per turn: ~1113 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the
