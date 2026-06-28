@@ -544,14 +544,73 @@ static std::string tsubst_local_aggregate_name(
 	return name;
 }
 
-static bool tsubst_local_class_clone_supported(DataDefCLASS *cdd)
+static Variable *tsubst_local_class_own_dtor(DataDefCLASS *cdd)
+{
+	if (!cdd)
+		return NULL;
+	for (auto &kv : cdd->method_map) {
+		if (kv.first.empty() || kv.first[0] != '~' || !kv.second)
+			continue;
+		if (std::find(cdd->methods.begin(), cdd->methods.end(), kv.second)
+		    != cdd->methods.end())
+			return kv.second;
+	}
+	return NULL;
+}
+
+static bool tsubst_local_function_body_empty(Program *prog, Variable *var)
+{
+	if (!prog || !var)
+		return false;
+	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
+	if (!fd || fd->declaration_only || fd->defaulted_or_deleted)
+		return false;
+	auto matches_empty_body = [&](TokenFunc *tf) {
+		if (!tf || tf->is_overridden)
+			return false;
+		FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
+		return tfd == fd && tf->statements.empty()
+		    && tf->deferred.empty();
+	};
+	for (TokenBase *pb : prog->pending_funcs) {
+		if (matches_empty_body(dynamic_cast<TokenFunc *>(pb)))
+			return true;
+	}
+	std::queue<TokenBase *> q = prog->ast;
+	while (!q.empty()) {
+		TokenBase *tb = q.front();
+		q.pop();
+		if (matches_empty_body(dynamic_cast<TokenFunc *>(tb)))
+			return true;
+	}
+	return false;
+}
+
+static bool tsubst_local_class_has_only_empty_dtor(Program *prog,
+						  DataDefCLASS *cdd)
+{
+	if (!prog || !cdd || !cdd->has_user_dtor)
+		return false;
+	if (cdd->methods.size() != 1 || cdd->method_map.size() != 1)
+		return false;
+	Variable *dtor = tsubst_local_class_own_dtor(cdd);
+	if (!dtor || cdd->methods[0] != dtor)
+		return false;
+	return tsubst_local_function_body_empty(prog, dtor);
+}
+
+static bool tsubst_local_class_clone_supported(Program *prog, DataDefCLASS *cdd)
 {
 	if (!cdd)
 		return true;
-	if (!cdd->methods.empty() || !cdd->ctors.empty()
-	    || !cdd->staticconst.empty() || !cdd->method_map.empty()
+	bool only_empty_dtor =
+		tsubst_local_class_has_only_empty_dtor(prog, cdd);
+	if ((!cdd->methods.empty() && !only_empty_dtor) || !cdd->ctors.empty()
+	    || !cdd->staticconst.empty()
+	    || (!cdd->method_map.empty() && !only_empty_dtor)
 	    || !cdd->bases.empty() || cdd->base_class
-	    || cdd->has_user_ctor || cdd->has_user_dtor
+	    || cdd->has_user_ctor
+	    || (cdd->has_user_dtor && !only_empty_dtor)
 	    || cdd->has_vtable || cdd->has_vptr_slot
 	    || cdd->extern_ctor || cdd->extern_dtor)
 		return false;
@@ -655,7 +714,7 @@ static DataDefSTRUCT *materialize_local_aggregate_datadef(
 		return mi->second;
 
 	DataDefCLASS *src_class = dynamic_cast<DataDefCLASS *>(sdd);
-	if (!tsubst_local_class_clone_supported(src_class))
+	if (!tsubst_local_class_clone_supported(prog, src_class))
 		return NULL;
 
 	std::string name = tsubst_local_aggregate_name(prog, sdd, key);
@@ -920,6 +979,21 @@ static bool cir_id_spells(cir_node *n, const char *name)
 {
 	return n && name && n->base.code == N_ID && n->base.u.s.s
 	    && strcmp(n->base.u.s.s, name) == 0;
+}
+
+static bool attr_list_has_cleanup(node_t attrs)
+{
+	if (!attrs || attrs->code != N_LIST)
+		return false;
+	for (node_t a = c2mir_node_first_op(attrs); a;
+	     a = c2mir_node_next_op(a)) {
+		if (!a || a->code != N_ATTR)
+			continue;
+		node_t name = c2mir_node_op(a, 0);
+		if (cir_id_spells(CIR_NODE(name), "cleanup"))
+			return true;
+	}
+	return false;
 }
 
 static bool node_is_deref_of_id(node_t n, const char *name)
@@ -2191,8 +2265,39 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		rename_copied_pack_value_id(src, dst);
 	} else {
 		c2mir_init_node_ops(dst->as_node());
-		for (node_t c = child0; c != NULL; c = c2mir_node_next_op(c)) {
+		size_t child_index = 0;
+		for (node_t c = child0; c != NULL;
+		     c = c2mir_node_next_op(c), ++child_index) {
 			cir_node *cc = CIR_NODE(c);
+			if (subst && src->base.code == N_SPEC_DECL
+			    && child_index == 2 && src->datadef
+			    && attr_list_has_cleanup(c)) {
+				DataDef *concrete =
+					subst_datadef(m_prog, src->datadef, *subst);
+				DataDefCLASS *cdd = as_class_instance(concrete);
+				if (cdd) {
+					if (class_needs_dtor(cdd)) {
+						std::string dtor_sym =
+							class_complete_dtor_symbol(cdd);
+						referenced_funcs.insert(dtor_sym);
+						node_t attr_args = list();
+						append(attr_args,
+						       id(dtor_sym.c_str(),
+							  madc_token_for_slot(src->origin_id)));
+						node_t attrs = list();
+						append(attrs, node2(N_ATTR,
+							id("cleanup",
+							   madc_token_for_slot(src->origin_id)),
+							attr_args,
+							madc_token_for_slot(src->origin_id)));
+						c2mir_op_append(c2m, dst->as_node(), attrs);
+					} else {
+						c2mir_op_append(c2m, dst->as_node(),
+								ignore());
+					}
+					continue;
+				}
+			}
 			if (subst && cc->tsubst_pack_expand
 			    && m_tsubst_copy_pack_index < 0) {
 				if (!m_tsubst_active_type_arg_packs
@@ -4694,6 +4799,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	}
 
 	node_t spec_decl = simple(N_SPEC_DECL);
+	CIR_NODE(spec_decl)->datadef = base_dd;
 	append(spec_decl, share);
 	append(spec_decl, var_decl_node);
 	// A class instance with a user destructor gets RAII via the cleanup

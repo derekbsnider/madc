@@ -2372,6 +2372,40 @@ TEST_CASE("CIR: tsubst rematerializes nested dependent explicit destructor") {
     CHECK(got == 7);
 }
 
+TEST_CASE("CIR: tsubst materializes dependent local class with empty destructor") {
+    const char *source =
+	"struct LocalDtorBox {\n"
+	"    template<class U> U pick(U x) {\n"
+	"        struct Guard { U v; ~Guard() {} };\n"
+	"        Guard g;\n"
+	"        g.v = x;\n"
+	"        return g.v;\n"
+	"    }\n"
+	"};\n"
+	"int main() { LocalDtorBox b; return b.pick(77); }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source,
+	"<local-class-empty-dtor-tsubst>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+
+    size_t tree1_copies = 0;
+    int64_t got = cir_run_program(prog.get(), &tree1_copies);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(tree1_copies > 0);
+    CHECK(prog->_tsubst_body_hits >= 1);
+    CHECK(prog->_tsubst_body_fallbacks == 0);
+    CHECK(prog->_tsubst_body_fallback_profile.empty());
+    CHECK(got == 77);
+}
+
 // Two-tree pack expansion: reference parameter packs have already lowered value
 // reads through the reference pointer in the Tree-1 recipe. They can therefore
 // use the same direct fan-out and args -> args__N rename as by-value packs.
