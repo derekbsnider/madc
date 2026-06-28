@@ -562,6 +562,14 @@ static DataDef *tsubst_destroy_marker_datadef(TokenBase *arg, DataDef *argdd)
 	return template_param_under_type_layers(marker_dd) ? marker_dd : NULL;
 }
 
+static DataDef *tsubst_explicit_dtor_marker_datadef(TokenExplicitDtor *td)
+{
+	if (!td || td->dtor_class || !td->obj)
+		return NULL;
+	DataDef *objdd = td->obj->datadef();
+	return template_param_under_type_layers(objdd) ? objdd : NULL;
+}
+
 static std::string pack_value_name_in_pattern(TokenBase *tb,
 					      unsigned pack_index)
 {
@@ -905,6 +913,32 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	}
 	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
 
+	auto concrete_member_template_instance = [&](Variable *v,
+						     FuncDef *vfd) -> Variable * {
+		if (!v || !vfd || vfd->local_emit_name.empty() || !m_prog)
+			return v;
+		Variable *iv = m_prog->findVariable(vfd->local_emit_name);  // allowed-exception: lookup key, not symbol build
+		FuncDef *ifd = iv ? dynamic_cast<FuncDef *>(iv->type) : NULL;
+		return ifd ? iv : v;
+	};
+	auto body_available_for = [&](Variable *v) -> bool {
+		FuncDef *wfd = v ? dynamic_cast<FuncDef *>(v->type) : NULL;
+		std::string sym = v ? func_emit_name(*v, wfd) : std::string();
+		if (sym.empty())
+			return false;
+		bool body_available = m_prog->has_deferred_lazy_body(sym);
+		if (!body_available && wfd && !wfd->emit_symbol.empty())
+			body_available = external_symbol_available(wfd->emit_symbol);
+		if (!body_available)
+			body_available = pending_function_body_available(this,
+									  m_prog,
+									  sym);
+		if (!body_available && wfd && wfd->tsubst_source)
+			body_available = requeue_tsubst_instance_body(this, m_prog,
+								      *v, wfd);
+		return body_available;
+	};
+
 	std::vector<DataDef *> explicit_args;
 	explicit_args.reserve(tcf->explicit_template_args.size());
 	bool changed = false;
@@ -1032,27 +1066,21 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 						param_origins[i]));
 			m_prog->instantiate_member_fn_template_for_call(&synth);
 		}
-		std::string sym = func_emit_name(*winner, wfd);
-		bool body_available = m_prog->has_deferred_lazy_body(sym);
-		if (!body_available && wfd && !wfd->emit_symbol.empty())
-			body_available = external_symbol_available(wfd->emit_symbol);
-		if (!body_available) {
-			for (TokenBase *pb : m_prog->pending_funcs) {
-				TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
-				FuncDef *tfd = tf
-					? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
-				if (tf && func_emit_name(tf->var, tfd) == sym) {
-					body_available = true;
-					break;
-				}
-			}
-		}
-		if (!body_available) {
+		Variable *body_winner =
+			concrete_member_template_instance(winner, wfd);
+		FuncDef *body_fd = body_winner
+			? dynamic_cast<FuncDef *>(body_winner->type) : NULL;
+		if (!body_available_for(body_winner)) {
 			if (error_out)
 				*error_out = "tsubst: unresolved dependent member body";
 			return NULL;
 		}
-		return winner;
+		if (changed_out) {
+			std::string old_sym = func_emit_name(tcf->var, fd);
+			std::string new_sym = func_emit_name(*body_winner, body_fd);
+			*changed_out = changed || old_sym != new_sym;
+		}
+		return body_winner;
 	}
 
 	// A system-header free-function dependent call re-resolves on the
@@ -1075,25 +1103,6 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 			synth.parameters.push_back(tsubst_concrete_arg_token(
 				concrete_param_types[i], i, param_origins[i]));
 		m_prog->instantiate_namespace_fn_template_for_call(&synth);
-	};
-	auto body_available_for = [&](Variable *v) -> bool {
-		FuncDef *wfd = v ? dynamic_cast<FuncDef *>(v->type) : NULL;
-		std::string sym = v ? func_emit_name(*v, wfd) : std::string();
-		bool body_available = !sym.empty() && m_prog->has_deferred_lazy_body(sym);
-		if (!body_available && wfd && !wfd->emit_symbol.empty())
-			body_available = external_symbol_available(wfd->emit_symbol);
-		if (!body_available) {
-			for (TokenBase *pb : m_prog->pending_funcs) {
-				TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
-				FuncDef *tfd = tf
-					? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
-				if (tf && func_emit_name(tf->var, tfd) == sym) {
-					body_available = true;
-					break;
-				}
-			}
-		}
-		return body_available;
 	};
 	auto instantiate_concrete_operator_call = [&]() -> Variable * {
 		if (fd->function_display_name.compare(0, 8, "operator") != 0
@@ -1211,6 +1220,10 @@ void CirBuilder::rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
 		return;
 	TokenCallFunc *tcf =
 		dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
+	FuncDef *oldfd = tcf ? dynamic_cast<FuncDef *>(tcf->var.type) : NULL;
+	std::string old_sym = tcf ? func_emit_name(tcf->var, oldfd) : std::string();
+	if (old_sym.empty() || !cir_id_spells(src, old_sym.c_str()))
+		return;
 	bool changed = false;
 	std::string err;
 	Variable *winner = resolve_copied_dependent_call(tcf, subst, &changed,
@@ -1696,6 +1709,46 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		}
 		TokenCallFunc *tc =
 			dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
+		TokenExplicitDtor *td =
+			dynamic_cast<TokenExplicitDtor *>(madc_token_for_slot(src->origin_id));
+		if (td && tsubst_explicit_dtor_marker_datadef(td)) {
+			DataDef *concrete_obj =
+				subst_datadef(m_prog, src->datadef, *subst);
+			DataDef *elem = concrete_obj;
+			if (td->is_arrow) {
+				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(concrete_obj);
+				elem = pdd ? pdd->base_type : NULL;
+			}
+			if (!elem || template_param_under_type_layers(elem))
+				return CIR_NODE(error_node(
+					"tsubst: unbound explicit destructor type"));
+			std::set<std::string> saved_refs = referenced_funcs;
+			node_t raw_obj = translate_expr(td->obj);
+			referenced_funcs = saved_refs;
+			cir_node *copied_obj =
+				copy_cir_subtree(CIR_NODE(raw_obj), subst);
+			node_t obj_ptr = copied_obj ? copied_obj->as_node() : NULL;
+			if (!obj_ptr)
+				return CIR_NODE(error_node(
+					"tsubst: missing explicit destructor object"));
+			if (!td->is_arrow)
+				obj_ptr = node1(N_ADDR, obj_ptr, td);
+			DataDefCLASS *ecls = as_class_instance(elem);
+			if (!ecls || !class_needs_dtor(ecls)) {
+				node_t items = list();
+				append(items, node2(N_EXPR, list(), obj_ptr, td));
+				append(items, node2(N_EXPR, list(), integer(0, td), td));
+				return CIR_NODE(node1(N_STMTEXPR,
+					node2(N_BLOCK, list(), items, td), td));
+			}
+			std::string dsym = class_complete_dtor_symbol(ecls);
+			referenced_funcs.insert(dsym);
+			need_output_extern(dsym.c_str(), false,
+					   { { {N_VOID}, true } });
+			node_t a = list();
+			append(a, node2(N_CAST, void_ptr_type(), obj_ptr, td));
+			return CIR_NODE(node2(N_CALL, id(dsym.c_str(), td), a, td));
+		}
 		bool destroy_marker = tsubst_destroy_marker_call(tc);
 		if (!destroy_marker && tc && tc->parameters.size() == 1) {
 			FuncDef *fd = call_target_funcdef(tc);
@@ -10232,6 +10285,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// (class_needs_dtor false) or scalar (dtor_class NULL), it is a no-op — but
 	// the object expression is still evaluated for side effects. Void-valued.
 	if (TokenExplicitDtor *ted = dynamic_cast<TokenExplicitDtor *>(tb)) {
+		if (m_tsubst_pattern_mode) {
+			if (DataDef *marker_dd =
+				    tsubst_explicit_dtor_marker_datadef(ted)) {
+				cir_node *marker = make(N_IGNORE, tb);
+				marker->datadef = marker_dd;
+				return marker->as_node();
+			}
+		}
 		DataDefCLASS *cdd = ted->dtor_class;
 		node_t obj_ptr = ted->is_arrow
 			? translate_expr(ted->obj)
@@ -13309,7 +13370,8 @@ static bool tsubst_pattern_has_destroy_template_pointee(TokenBase *tb)
 	if (TokenLabel *tl = dynamic_cast<TokenLabel *>(tb))
 		return tsubst_pattern_has_destroy_template_pointee(tl->labeled);
 	if (TokenExplicitDtor *td = dynamic_cast<TokenExplicitDtor *>(tb))
-		return tsubst_pattern_has_destroy_template_pointee(td->obj);
+		return tsubst_explicit_dtor_marker_datadef(td)
+		    || tsubst_pattern_has_destroy_template_pointee(td->obj);
 	return false;
 }
 

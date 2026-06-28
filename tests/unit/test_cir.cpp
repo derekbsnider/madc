@@ -2286,6 +2286,92 @@ TEST_CASE("CIR: tsubst lowers empty destroy-aux body") {
     CHECK(got == 0);
 }
 
+// A copied dependent body can contain a member-template call whose receiver is
+// concrete only after the outer template args are substituted. Re-resolve that
+// nested member call, instantiate its retained body, and bind the copied call to
+// the concrete definition instead of falling back to the parsed body.
+TEST_CASE("CIR: tsubst instantiates nested dependent member-template body") {
+    const char *header_source =
+	"struct InnerMemberBody {\n"
+	"    template<class U> void inner_apply(U* p) { *p = *p + 5; }\n"
+	"};\n"
+	"struct OuterMemberBody {\n"
+	"    template<class U> void outer_apply(InnerMemberBody& a, U* p) { a.inner_apply(p); }\n"
+	"};\n";
+    const char *main_source =
+	"int main() { int x = 7; InnerMemberBody a; OuterMemberBody o; o.outer_apply(a, &x); return x; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/nested_member_body.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(main_source,
+	"<nested-member-body-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+
+    size_t tree1_copies = 0;
+    int64_t got = cir_run_program(prog.get(), &tree1_copies);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(tree1_copies > 0);
+    CHECK(prog->_tsubst_body_hits >= 2);
+    CHECK(prog->_tsubst_body_fallbacks == 0);
+    CHECK(prog->_tsubst_body_fallback_profile.empty());
+    CHECK(got == 12);
+}
+
+// A copied nested member-template body can itself be only a dependent explicit
+// destructor. After substitution, scalar U remains a no-op while class U must
+// call the concrete complete destructor.
+TEST_CASE("CIR: tsubst rematerializes nested dependent explicit destructor") {
+    const char *header_source =
+	"struct NestedDtorInner {\n"
+	"    template<class U> void inner_destroy(U* p) { p->~U(); }\n"
+	"};\n"
+	"struct NestedDtorOuter {\n"
+	"    template<class U> void outer_destroy(NestedDtorInner& a, U* p) { a.inner_destroy(p); }\n"
+	"};\n";
+    const char *main_source =
+	"struct NestedDtorBox {\n"
+	"    int* p;\n"
+	"    NestedDtorBox(int* q) { p = q; }\n"
+	"    ~NestedDtorBox() { *p = *p + 7; }\n"
+	"};\n"
+	"int main() { int x = 0; NestedDtorBox* b = new NestedDtorBox(&x); NestedDtorInner a; NestedDtorOuter o; o.outer_destroy(a, b); return x; }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *hdr = prog->tokenize_buffer(
+	header_source, "/usr/include/c++/13/bits/nested_member_dtor.h");
+    REQUIRE(hdr != nullptr);
+    REQUIRE(prog->parse(hdr));
+    TokenProgram *tp = prog->tokenize_buffer(main_source,
+	"<nested-member-dtor-user>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+
+    size_t tree1_copies = 0;
+    int64_t got = cir_run_program(prog.get(), &tree1_copies);
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(tree1_copies > 0);
+    CHECK(prog->_tsubst_body_hits >= 2);
+    CHECK(prog->_tsubst_body_fallbacks == 0);
+    CHECK(prog->_tsubst_body_fallback_profile.empty());
+    CHECK(got == 7);
+}
+
 // Two-tree pack expansion: reference parameter packs have already lowered value
 // reads through the reference pointer in the Tree-1 recipe. They can therefore
 // use the same direct fan-out and args -> args__N rename as by-value packs.

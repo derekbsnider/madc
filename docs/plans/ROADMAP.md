@@ -99,16 +99,18 @@ high-level" — the answer is both.**
   `--show-stats` body engagement counts (`H hit / F fallback`) so real workload
   coverage can be ranked before further widening. The allocator construct/destroy
   cluster then moved flag-on `testsubscript` to **21 hit / 14 fallback**. The
-  next attempted `std::vector::_M_realloc_insert<_Args...>` probe is deferred:
-  its copied retained body reaches lowered `__gnu_cxx::operator-` calls, but the
-  concrete free-operator body is not materialized in the copied-body path
-  (`__ns___gnu_cxx_operator_mi` would remain undefined if admitted). The next
-  tractable target is `std::__cxx11::basic_string::_M_construct<_InIterator>`,
-  followed by a vetted `__uninitialized_copy`/pair-ctor pass. Broader
+  follow-up vector slices materialized copied scalar free-operator bodies and
+  dependent nested member-template bodies: `std::allocator_traits::destroy<_Up>`
+  now re-resolves its inner member-template call, instantiates the concrete body,
+  and rematerializes dependent explicit destructors after substitution. Flag-on
+  `tests/testvector.mad` now reports **14 hit / 1 fallback**; the only remaining
+  vector fallback is `std::__cxx11::basic_string::_M_construct<_InIterator>`
+  (`template-id '<' in body`). That `_M_construct` shape is the next tractable
+  target, followed by a vetted `__uninitialized_copy`/pair-ctor pass. Broader
   system-header destructor/object-address packs still fall back.
   Validation at the committed checkpoint is green both
   flag-off and flag-on at **670 passed / 0 failed / 0 timed out / 18 skipped**;
-  `test_cir` is **86 test cases / 1067 assertions / 4 skipped**. Phase 4 is
+  `test_cir` is **92 test cases / 1137 assertions / 4 skipped**. Phase 4 is
   roughly **74% implemented** by coverage weight, not session count.
   **2026-06-25:** the generic `is_type_dependent` predicate (the
   `type_dependent_expression_p` / pt.cc:30357 analogue) landed and is COMMITTED

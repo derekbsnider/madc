@@ -1,5 +1,24 @@
 # Test Status
 
+> **Local branch update (2026-06-28, `feature/front-end-performance-claude` @
+> Kind 3 dependent-member body tsubst slice):** fulltest
+> **670 passed, 0 failed, 0 timed out, 18 skipped** (exit 0, both check gates
+> GREEN). The env-gated path is also green:
+> `MADC_XTEST_DEP_PARSE=1 bash scripts/run_tests.sh` reports **670/0/0/18**.
+> `bin/test_cir` reports **92 test cases, 1137 assertions, 4 skipped** after
+> adding nested dependent member-template body coverage and dependent explicit
+> destructor rematerialization coverage. `MADC_XTEST_DEP_PARSE=1 bin/madc
+> --show-stats tests/testvector.mad` now reports **14 hit / 1 fallback**;
+> `std::allocator_traits::destroy<_Up>` is gone from the fallback profile and
+> the remaining vector fallback is the out-of-scope
+> `std::__cxx11::basic_string::_M_construct<_InIterator>` template-id body
+> shape. The C11 spot-check confirms allocator-traits destroy passes the
+> allocator reference receiver as `__a`, not a rewritten callee symbol, and
+> `__new_allocator<basic_string>::destroy` calls the real `basic_string` D1
+> destructor. gcc.c-torture remains byte-identical to
+> `docs/parity/torture-failset-current.txt`: **1571 passed, 33 compile-failed,
+> 18 runtime-failed, 0 timed out, 63 skipped**, 51-name failset.
+>
 > **Local branch update (2026-06-26, `feature/front-end-performance-claude` @
 > converted system-header reference-forwarded placement-new pack slice,
 > including the earlier reserved scalar/pointer helper call widening,

@@ -4,6 +4,23 @@
 
 ### Two-tree tsubst widening
 
+- Landed the generic Kind 3 dependent-member body slice for copied
+  member-template calls. A retained body such as `a.inner(p)` now re-resolves
+  the member template after substitution, instantiates its concrete retained
+  body, and binds the copied call to that emittable definition without callee
+  name hardcoding. Dependent explicit destructors such as `p->~U()` now defer
+  trivial-vs-nontrivial lowering until `U` is concrete, so scalar elements stay
+  no-op and class elements call the concrete complete destructor. The copied
+  callee-id rewrite was also narrowed to the original callee symbol, preventing
+  member-call receiver ids from being rewritten to the callee symbol in C11
+  output. Under `MADC_XTEST_DEP_PARSE=1`, `tests/testvector.mad` moves from
+  12 hit / 3 fallback to **14 hit / 1 fallback**; `std::allocator_traits::destroy<_Up>`
+  is gone from the fallback profile and only the out-of-scope
+  `basic_string::_M_construct<_InIterator>` shape remains. This is a
+  correctness / forest-readiness widening, not a speedup gate. Validation:
+  flag-off fulltest **670/0/0/18**, flag-on `run_tests.sh` **670/0/0/18**,
+  drift gates green, torture failset byte-identical. `test_cir` is now
+  **92/1137/4**.
 - Extended the `--show-stats` tsubst body counter with a ranked fallback profile
   grouped by retained source-template shape, with one concrete emitted-symbol
   sample for drill-down. A clean `-O2` build now profiles `testsubscript` under
