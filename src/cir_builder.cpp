@@ -1113,6 +1113,57 @@ static FuncDef *single_arg_conversion_ctor(DataDefCLASS *target,
 	return best_score >= 0 ? best : NULL;
 }
 
+static std::string method_candidate_display_name(Variable *v, FuncDef *fd)
+{
+	if (fd && !fd->method_display_name.empty())
+		return fd->method_display_name;
+	if (fd && !fd->function_display_name.empty())
+		return fd->function_display_name;
+	return v ? v->name : std::string();
+}
+
+static size_t method_hidden_param_count(Variable *v, FuncDef *fd,
+					DataDefCLASS *receiver)
+{
+	if (!v || !fd || (v->flags & vfSTATIC))
+		return 0;
+	Method *md = static_cast<Method *>(v->data);
+	if (md && md->owner_class)
+		return 1;
+	if (!receiver || fd->parameters.empty())
+		return 0;
+	DataDefCLASS *owner = class_behind(fd->parameters[0]);
+	if (!owner)
+		return 0;
+	return receiver == owner || receiver->is_or_derives_from(owner)
+		? 1 : 0;
+}
+
+static bool method_body_matches_args(Variable *v, FuncDef *fd,
+				     DataDefCLASS *receiver,
+				     const std::vector<const DataDef *> &argtypes)
+{
+	if (!v || !fd)
+		return false;
+	size_t hidden = method_hidden_param_count(v, fd, receiver);
+	size_t pn = fd->parameters.size() >= hidden
+		  ? fd->parameters.size() - hidden : 0;
+	bool varargs = fd->is_varargs && pn > 0;
+	size_t fixed = varargs ? pn - 1 : pn;
+	if ((!varargs && pn != argtypes.size())
+	    || (varargs && argtypes.size() < fixed))
+		return false;
+	for (size_t i = 0; i < fixed; ++i) {
+		size_t pi = i + hidden;
+		DataDef *pt = pi < fd->parameters.size()
+			    ? fd->parameters[pi] : NULL;
+		bool refp = fd->is_ref_param(pi);
+		if (score_arg_to_param(argtypes[i], pt, refp) < 0)
+			return false;
+	}
+	return true;
+}
+
 static bool ref_return_class_can_bind(DataDefCLASS *target,
 				      DataDef *returned_type)
 {
@@ -1301,6 +1352,42 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		for (DataDef *pt : concrete_param_types)
 			mat.push_back(tsubst_overload_arg_type(pt));
 		Variable *winner = recv_class->findMethodOverload(mname, mat);
+		if (!winner) {
+			for (Variable *mv : recv_class->methods) {
+				FuncDef *mfd = mv
+					? dynamic_cast<FuncDef *>(mv->type) : NULL;
+				if (!mfd || !mfd->is_member_template
+				    || !mfd->declaration_only
+				    || method_candidate_display_name(mv, mfd) != mname)
+					continue;
+				Variable synth_recv("__madc_tsubst_recv",
+						    *recv_type, 1,
+						    NULL, false);
+				TokenCallMethod synth(synth_recv, *mv);
+				synth.explicit_template_args = explicit_args;
+				synth.file = tcf->file;
+				synth.line = tcf->line;
+				synth.column = tcf->column;
+				synth.parameters.reserve(concrete_param_types.size());
+				for (size_t i = 0; i < concrete_param_types.size(); ++i)
+					synth.parameters.push_back(
+						tsubst_concrete_arg_token(
+							concrete_param_types[i], i,
+							param_origins[i]));
+				m_prog->instantiate_member_fn_template_for_call(&synth);
+				Variable *body =
+					concrete_member_template_instance(mv, mfd);
+				FuncDef *bfd = body
+					? dynamic_cast<FuncDef *>(body->type) : NULL;
+				if (body && body != mv && bfd
+				    && method_body_matches_args(body, bfd,
+								recv_class, mat)
+				    && body_available_for(body)) {
+					winner = mv;
+					break;
+				}
+			}
+		}
 		if (!winner) {
 			if (error_out)
 				*error_out = "tsubst: unresolved dependent member call";
