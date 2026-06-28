@@ -7721,7 +7721,10 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		else if (is_ref_param)
 			explicit_nodes.push_back(ref_param_arg_addr(arg, ref_param_referent(pt)));
 		else
-			explicit_nodes.push_back(translate_expr(arg));
+			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
+			// make the implicit upcast explicit so c2mir does not warn
+			// (mirrors the general call path's argument coercion).
+			explicit_nodes.push_back(upcast_class_ptr(translate_expr(arg), pt, arg, arg));
 	}
 	return ctor_call_assemble(this_addr, cdd, ctor, explicit_nodes, origin);
 }
@@ -7873,7 +7876,10 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		else if (is_ref_param)
 			append(args, ref_param_arg_addr(arg, ref_param_referent(pt)));
 		else
-			append(args, translate_expr(arg));
+			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
+			// make the implicit upcast explicit so c2mir does not warn
+			// (mirrors the general call path's argument coercion).
+			append(args, upcast_class_ptr(translate_expr(arg), pt, arg, arg));
 	}
 	// C++ default arguments: fill omitted trailing parameters from their default
 	// expressions (param_defaults is index-aligned with parameters). Same arg
