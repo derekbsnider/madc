@@ -50,6 +50,30 @@ burndown lever. **DO NOT** re-attempt admitting these via `tsubst_eligible` loos
 no-op + breakage (stash `off-plan eligibility-gate detour`, 2026-06-28); the gate is a proxy, the
 capability above is the real work.
 
+**✅ FOUNDATION LANDED `20b41381` (Tree-1-capture half):** a generic dependent local class is no
+longer emitted globally. The real error path (found via gdb abort-backtrace, NOT the dep-walk
+emitters): `translate_module` Pass-0 source-order `struct_def(sdd)` at `cir_builder.cpp:~15249`
+lowered the placeholder member. New predicate `struct_has_dependent_member(DataDefSTRUCT*)` skips it
+at the 3 struct-emission sites. Gates green (flag-off + flag-on 670/0/0/18, burndown unchanged
+172/93 — it removes the error-class; bodies still fall back cleanly). Reducer `tmp/localclass_tsubst.mad`
+now `r=77` with no error (was: error).
+
+**▶ NEXT — the MATERIALIZE half (A+B must land TOGETHER; (A) alone regresses):**
+- **(A) admit the body past the scan.** `tsubst_pattern_has_dependent_call` (`cir_builder.cpp:13546`)
+  over-flags: `g.v` is a `TokenMember` (derives from `TokenCallFunc`), so its placeholder-typed
+  datadef trips `tsubst_datadef_involves_template_param(tc->datadef()) → return true`. A dependent
+  member-FIELD access (not a method call) must NOT bail — tsubst substitutes it. Distinguish
+  field-access TokenMember from a real dependent call here.
+- **(B) materialize the concrete local class in Tree-2.** When tsubst copies the pattern, the local
+  class def node + its references (`Guard g;` decl type, `g.v` member access class) must retarget to
+  a per-instantiation CONCRETE clone: clone the DataDefSTRUCT/CLASS, `subst_datadef` each member type
+  (U→concrete), unique name, `finalize()` layout, register, emit via the **late-struct splice**
+  (`late_struct_anchor`, `cir_builder.cpp:~15309` — the existing hook for structs instantiated during
+  body translation). Memoize per (generic-class, binding).
+- TEST: `tmp/localclass_tsubst.mad` flag-on → `r=77` as a HIT (not fallback). Then the real bodies
+  (`_M_construct` _Guard, `_M_emplace_hint_unique` _Auto_node) move from fallback toward hit. Gate
+  every step (flag-off + flag-on 670, burndown DOWN, no name hardcoding).
+
 
 **✅ 2026-06-25 — STEP-C SPINE LANDED (`is_type_dependent`); nested-instantiation pinned.**
 The generic per-node type-dependence predicate (§11.5c step 3 spine) is COMMITTED
