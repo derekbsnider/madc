@@ -8317,6 +8317,13 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 			if ((tv->var.is_reference()) && tv->var.type) {
 				if (DataDefCLASS *rc = class_behind(tv->var.type))
 					return rc;
+				// A SCALAR reference (`int &r`): a reference IS its referent for
+				// overload resolution ([over.match]), so score by the referent
+				// type — not the reference's pointer repr (DataDefREF == `int *`),
+				// which would match operator<<(const void*) and print `cout << r`
+				// as a pointer (`0x5`) with an int-to-pointer warning.
+				if (DataDef *referent = ref_param_referent(tv->var.type))
+					return referent;
 			}
 			if (tv->var.is_fixed_array() && tv->var.type && m_prog)
 				return m_prog->getPointerType(tv->var.type);
