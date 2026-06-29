@@ -13150,18 +13150,34 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 	// previously the first non-return/break statement was sent to
 	// translate_expr, which mis-flagged `if`/`for`/`while` inside a case as
 	// "unhandled expression" (679 such nodes in SMAUG's switch-heavy interp).
+	// A statement may carry several labels (`case A: case B: stmt;`); the
+	// N_LIST holds them all. `case LOW ... HIGH:` is a GNU extension c2mir
+	// only accepts with a warning, so madc OWNS its lowering: expand it to
+	// individual C11 labels `case LOW: case LOW+1: ... case HIGH:`. The bounds
+	// are integer constant expressions folded by the parser (TokenInt), so the
+	// expansion is exact and the emitted C is strict C11 (no extension note).
+	const int64_t kMaxCaseRangeExpansion = 4096;
 	auto emit_case = [&](TokenCASE *tc, bool is_default) {
-		node_t label;
+		node_t labels = list();
 		if (is_default) {
-			label = simple(N_DEFAULT);
+			append(labels, simple(N_DEFAULT));
 		} else if (tc->range_high) {
-			// GNU case range: `case LOW ... HIGH:` -> N_CASE(low, high).
-			label = node2(N_CASE, translate_expr(tc->value),
-				      translate_expr(tc->range_high), tc);
+			int64_t lo = tc->value->ival();
+			int64_t hi = tc->range_high->ival();
+			// Bound the expansion: an absurd range (or an inverted one) keeps
+			// the GNU N_CASE(low, high) form rather than materializing billions
+			// of labels. Such ranges do not occur in practice.
+			if (hi < lo || (hi - lo) >= kMaxCaseRangeExpansion) {
+				append(labels, node2(N_CASE, translate_expr(tc->value),
+						     translate_expr(tc->range_high), tc));
+			} else {
+				for (int64_t v = lo; v <= hi; v++)
+					append(labels, node1(N_CASE, integer((long)v, tc), tc));
+			}
 		} else {
-			label = node1(N_CASE, translate_expr(tc->value), tc);
+			append(labels, node1(N_CASE, translate_expr(tc->value), tc));
 		}
-		append(block_items, node2(N_EXPR, node1(N_LIST, label), integer(0)));
+		append(block_items, node2(N_EXPR, labels, integer(0)));
 		for (size_t si = 0; si < tc->statements.size(); si++) {
 			node_t s = translate_stmt(tc->statements[si]);
 			if (s) append(block_items, s);
