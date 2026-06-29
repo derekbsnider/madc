@@ -3324,6 +3324,25 @@ node_t CirBuilder::object_var_void_addr(const Variable &v, TokenBase *origin)
 	return cast;
 }
 
+// The hidden capture-parameter type for a [&]-captured (or GNU-nested-fn-captured)
+// variable. Capture-by-reference passes a pointer to the enclosing variable's
+// storage. A REFERENCE variable is already stored as a pointer to its referent,
+// so its capture parameter is a plain pointer to that referent (`int *` for
+// `int &`), and the call site forwards the stored pointer VALUE rather than its
+// address. Every other variable is captured as `T *` (a pointer to its storage),
+// with the call site forwarding `&var`. All three synthesis sites
+// (func_def / func_proto / fnptr_func_node) MUST use this so the definition,
+// prototype, and fn-ptr type agree.
+static DataDef *capture_param_type(const Variable *cv)
+{
+	if (!cv || !cv->type)
+		return NULL;
+	if (cv->type->is_reference())
+		if (DataDef *referent = ref_param_referent(cv->type))
+			return new DataDefPTR(*referent);
+	return new DataDefPTR(*cv->type);
+}
+
 // Coerce an object argument with a c_str() method to const char*.
 node_t CirBuilder::object_cstr_arg(TokenBase *arg)
 {
@@ -3772,12 +3791,18 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 	// appended. The captured Variable is in scope at this call site (the call
 	// lives in the defining function). If THIS function also captured that same
 	// variable (nested-in-nested), forward its capture pointer param directly
-	// (it already holds &var); otherwise take its address here.
+	// (it already holds &var); otherwise take its address here. A captured
+	// REFERENCE variable is itself stored as a pointer to its referent, so we
+	// forward that stored pointer VALUE (the referent's address) — matching the
+	// `referent *` capture parameter from capture_param_type — rather than &var,
+	// which would be a pointer-to-the-reference-slot of the wrong type.
 	if (callee && !callee->captured_vars.empty()) {
 		for (Variable *cv : callee->captured_vars) {
 			if (!cv) continue;
 			if (m_cur_captured_fd && m_cur_capture_set.count(cv)) {
 				note_capture(cv);
+				append(args, id(cv->name.c_str(), tcf));
+			} else if (cv->type && cv->type->is_reference()) {
 				append(args, id(cv->name.c_str(), tcf));
 			} else {
 				append(args, node1(N_ADDR, id(cv->name.c_str(), tcf), tcf));
@@ -4003,7 +4028,7 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 	if (has_capture_params)
 		for (Variable *cv : fd->captured_vars) {
 			if (!cv) continue;
-			DataDef *capt_ptr = new DataDefPTR(*cv->type);
+			DataDef *capt_ptr = capture_param_type(cv);
 			append(param_list, param_decl(capt_ptr, "", std::string()));
 		}
 	if (fd->is_varargs)
@@ -6106,6 +6131,16 @@ node_t CirBuilder::object_var_addr(const Variable &v, TokenBase *origin)
 {
 	std::string emitted = var_emit_name(v);
 	node_t base = id(emitted.c_str(), origin);
+	// GNU nested-function / [&]-lambda capture of a class object: the hidden
+	// capture parameter is a `Class *name` that ALREADY holds the enclosing
+	// object's address (capture-by-reference). Inside the body the variable is
+	// pointer-stored, exactly like the value-read deref path (see the TokenVar
+	// chokepoint in translate_expr). Record the capture so func_def synthesizes
+	// the parameter, and return the pointer itself — NOT &name (which would be
+	// `Class **`). Without this, a captured object used by address (`cout << msg`,
+	// `msg.method()`) emitted `&msg` referencing an undeclared outer name.
+	if (note_capture(const_cast<Variable *>(&v)))
+		return base;
 	return var_is_pointer_stored(v) ? base : node1(N_ADDR, base, origin);
 }
 
@@ -10356,7 +10391,7 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	if (fd->has_captures)
 		for (Variable *cv : fd->captured_vars) {
 			if (!cv) continue;
-			DataDef *capt_ptr = new DataDefPTR(*cv->type);
+			DataDef *capt_ptr = capture_param_type(cv);
 			append(param_list, param_decl(capt_ptr, cv->name.c_str(),
 						      std::string()));
 		}
@@ -11111,8 +11146,18 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// through the pointer: `x` -> `(*x)`. (String references are a
 			// separate object-pointer path handled elsewhere.)
 			if ((tv->var.is_reference()) && tv->var.type
-			    && tv->var.type->is_pointer())
+			    && tv->var.type->is_pointer()) {
+				// A [&]-captured reference: the hidden capture parameter is a
+				// `referent *` already holding the same address the reference
+				// stores (capture_param_type), so `(*name)` reads the referent
+				// unchanged. Record the capture (so the parameter is synthesized
+				// and the call site forwards the reference's pointer value); this
+				// must run BEFORE the early return, or the reference path would
+				// bypass note_capture and the captured reference would be left
+				// undeclared in the body.
+				note_capture(&tv->var);
 				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);
+			}
 			// Two-tree tsubst: while building a dependent-pattern body
 			// (m_tsubst_pattern_mode), the body-bound TokenVar may have lost the
 			// reference wrapper the method's PARAMETER still carries — the
@@ -14989,7 +15034,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	if (fd->has_captures) {
 		for (Variable *cv : fd->captured_vars) {
 			if (!cv) continue;
-			DataDef *capt_ptr = new DataDefPTR(*cv->type);
+			DataDef *capt_ptr = capture_param_type(cv);
 			append(param_list, param_decl(capt_ptr, cv->name.c_str(),
 						      std::string()));
 		}

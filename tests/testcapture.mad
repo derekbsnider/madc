@@ -29,5 +29,17 @@ int main()
     };
     greet();                   // hello
 
+    // Capture a reference variable by reference: the closure modifies the
+    // referent through the captured reference; the change is visible via the
+    // underlying object.
+    int base = 100;
+    int &ref = base;
+    auto bump = [&]() {
+        ref = ref + 5;
+    };
+    bump();
+    bump();
+    cout << base << endl;      // 110
+
     return 0;
 }
