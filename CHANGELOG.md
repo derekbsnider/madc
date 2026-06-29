@@ -2,6 +2,55 @@
 
 ## [Unreleased]
 
+### madc::dis substrate — first primitives (development-substrate vision, rung 1)
+
+- Recorded the **development-substrate north-star vision**
+  (`docs/plans/2026-06-29-madc-development-substrate-vision.md`): standardized
+  `madc::dis` in-memory primitives → generic `madc::dat` (parse, emit) drivers →
+  one dual-fidelity MC11-IR graph → past/present/future tenses → agentic
+  development via MCP (the codebase as a live queryable object, source-on-disk a
+  projection) → federation across the tool ecosystem (GitHub/Jira/Notion/IDE/LLM/
+  human). Each rung pays for itself; the grounded first step is the `madc::dis`
+  primitives, dogfooded by the compiler.
+- Began implementing `madc::dis`. Two foundational catalog primitives landed as
+  clean re-homes of proven compiler-internal code, each behind a documented
+  interface + catalog note, with zero behavior change:
+  - **`madc::dis::intern_table`** (`include/madcdis/intern_table.h`) — the interned
+    string table (was `StringPool`), with `madc::dis::intern_keyed_map<V>`. The
+    `stringpool.h` shim was added then retired; all call sites name the primitive
+    directly. Non-counted/permanent variant; refcounted + frozen/mmap variants slot
+    in behind the same interface later.
+  - **`madc::dis::arena`** (`include/madcdis/arena.h`) — the bump allocator,
+    factored out of `TokenArena` free of any `TokenBase` coupling. `TokenArena` now
+    HAS-A `madc::dis::arena` and keeps only the token slot registry (the id↔pointer
+    bridge); its public API is unchanged. Sets the template: the primitive stays
+    general, the compiler consumes it.
+  Next: the segmented `u32` type-id table as the third primitive (design+build, not
+  a re-home — `datatype_map` is still string-keyed).
+
+### Lambda `[&]` capture of class objects and references; two pre-existing fixes
+
+- **`[&]`-capture completeness** (`cir`): a captured variable used by *address*
+  (a class object via `object_var_addr` — `cout << msg`, `msg.method()`) or a
+  captured *reference* (`int &r`) was never recorded as a capture, so no hidden
+  pointer parameter was synthesized and the lambda body referenced an undeclared
+  outer name. Fixed at the chokepoints: `object_var_addr` records the capture and
+  returns the capture pointer directly; a shared `capture_param_type()` gives a
+  reference's capture parameter a referent-pointer shape at all three synthesis
+  sites; the call site forwards a reference's stored pointer value. `testcapture`
+  dropped its `.mir_skip` (now compiles and runs) and gained a reference-capture
+  case.
+- **Static function-pointer mistaken for a static method** (`cir`, pre-existing):
+  the static-member overload re-rank guard matched any `vfSTATIC` variable,
+  including a file-scope `static double (*fp)(float)`, then dereferenced its `data`
+  as a bogus `Method *` → SIGSEGV. Restricted to `FuncDef`-typed callees.
+  gcc.c-torture `func-ptr-1.c` restored; failset back to byte-identical baseline.
+- **`cout << ref_to_int` selected `operator<<(const void*)`** (`cir`, pre-existing):
+  an `int &` operand was scored by its pointer repr in `select_operator_overload`,
+  matching the `void*` overload (printed `0x5`, warned). A scalar reference now
+  scores by its referent ([over.match]); reference-to-pointer still scores as a
+  pointer. `+ tests/testrefstream`.
+
 ### c2mir compile-warning elimination (97 → 0, suite-wide)
 
 - Drove the c2mir compile-warning count across the whole `tests/*.mad` suite
