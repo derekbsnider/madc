@@ -1062,6 +1062,8 @@ static bool tsubst_call_has_pack_expansion_arg(TokenCallFunc *tcf)
 	return false;
 }
 
+static const DataDefCLASS *class_pointer_pointee(const DataDef *dd);
+
 node_t CirBuilder::copied_reference_slot_arg(TokenBase *arg, node_t src_arg,
 					     DataDef *formal, bool refp)
 {
@@ -1089,6 +1091,27 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 	if (!copied)
 		return NULL;
 	node_t out = copied->as_node();
+	// A Tree-1 member call may have lowered a reference receiver as `&a` while
+	// its type was still dependent. After substitution the copied `a` can be the
+	// stored object pointer itself (`Inner& a` lowers as `Inner *a`), so the
+	// hidden `this` formal wants `a`, not `&a`.
+	if (formal && formal->is_pointer()) {
+		cir_node *on = CIR_NODE(out);
+		node_t inner = (on && on->base.code == N_ADDR)
+			     ? c2mir_node_first_op(out) : NULL;
+		cir_node *in = inner ? CIR_NODE(inner) : NULL;
+		DataDef *inner_dd = in ? in->datadef : NULL;
+		if (in && in->origin_id)
+			if (TokenVar *tv = dynamic_cast<TokenVar *>(
+				    madc_token_for_slot(in->origin_id)))
+				if (tv->var.is_reference() && tv->var.type)
+					inner_dd = tv->var.type;
+		const DataDefCLASS *fc = class_pointer_pointee(formal);
+		const DataDefCLASS *ic = class_pointer_pointee(inner_dd);
+		if (fc && ic && (ic == fc || ic->is_or_derives_from(fc)))
+			return inner_dd == formal ? inner
+				: node2(N_CAST, ptr_type_node(formal), inner, arg);
+	}
 	if (refp && formal && formal->is_pointer())
 		return node2(N_CAST, ptr_type_node(formal), out, arg);
 	return out;
@@ -2248,6 +2271,34 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		}
 	}
 
+	if (subst && src->base.code == N_ADDR && m_tsubst_copy_pack_index < 0) {
+		TokenMember *tm = src->origin_id
+			? dynamic_cast<TokenMember *>(madc_token_for_slot(src->origin_id))
+			: NULL;
+		node_t inner = c2mir_node_first_op(src->as_node());
+		if (tm && !tm->parent_expr && tm->object.is_reference()
+		    && inner && cir_id_spells(CIR_NODE(inner),
+					     tm->object.name.c_str())) {
+			cir_node *copied = copy_cir_subtree(CIR_NODE(inner), subst);
+			if (!copied)
+				return NULL;
+			return copied;
+		}
+		if (inner && m_cur_method) {
+			for (Variable *pv : m_cur_method->parameters) {
+				if (pv && pv->is_reference()
+				    && cir_id_spells(CIR_NODE(inner),
+						     pv->name.c_str())) {
+					cir_node *copied =
+						copy_cir_subtree(CIR_NODE(inner), subst);
+					if (!copied)
+						return NULL;
+					return copied;
+				}
+			}
+		}
+	}
+
 	cir_node *dst = arena.alloc();           // zeroed (error_msg/tree1_origin NULL)
 	dst->base.code = src->base.code;
 	dst->base.uid  = c2mir_next_uid(c2m);    // uids must be unique per c2m ctx
@@ -2568,6 +2619,15 @@ static bool same_object_class(const DataDef *a, const DataDef *b)
 	return ac && bc && ac == bc;
 }
 
+static const DataDefCLASS *class_pointer_pointee(const DataDef *dd)
+{
+	dd = unqualified_type(dd);
+	const DataDefPTR *ptr = dynamic_cast<const DataDefPTR *>(dd);
+	if (!ptr || !ptr->base_type)
+		return NULL;
+	return as_user_class(ptr->base_type);
+}
+
 static std::vector<c2mir_node_code_t> native_scalar_specs(DataDef *dd)
 {
 	if (!dd) return {N_LONG};
@@ -2797,9 +2857,14 @@ static FuncDef *call_target_funcdef_raw(TokenCallFunc *tcf)
 // emit_symbol) is seen consistently by all of them. Discovery is pure data: a
 // namespace function with captured free_function_overloads deduces and binds;
 // everything else resolves as declared (no name-prefix gates).
-FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
+Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 {
+	if (fd_out)
+		*fd_out = NULL;
+	if (!tcf)
+		return NULL;
 	FuncDef *fd = call_target_funcdef_raw(tcf);
+	Variable *callee_var = &tcf->var;
 #if MADC_DEBUG_FNTPL
 	if (tcf && tcf->var.name.compare(0, 5, "__ns_") == 0)
 		fprintf(stderr, "FNTPL gate var=%s fd=%d ns='%s' disp='%s'\n",
@@ -2807,6 +2872,40 @@ FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
 			fd ? fd->namespace_name.c_str() : "",
 			fd ? fd->function_display_name.c_str() : "");
 #endif
+	if (!fd) {
+		if (fd_out)
+			*fd_out = fd;
+		return callee_var;
+	}
+
+	// Static member calls parsed before a template body is substituted can keep
+	// the arity-selected overload while their argument tokens later acquire a
+	// more precise type (e.g. `_Rb_tree::_S_key(_Base_ptr)` vs
+	// `_S_key(_Link_type)`). Re-rank non-template static member overloads here,
+	// using the same DataDefCLASS::findMethodOverload scorer the parser uses, so
+	// the selected symbol and the selected parameter types stay in sync.
+	if (m_prog && (callee_var->flags & vfSTATIC) && !fd->is_member_template) {
+		Method *md = (Method *)callee_var->data;
+		DataDefCLASS *owner = md ? md->owner_class : NULL;
+		std::string mname = method_candidate_display_name(callee_var, fd);
+		if (owner && !mname.empty()) {
+			std::vector<const DataDef *> at;
+			at.reserve(tcf->parameters.size());
+			for (TokenBase *p : tcf->parameters) {
+				DataDef *adp = m_prog->array_decay_pointer(p);
+				at.push_back(adp ? adp
+						 : m_prog->operand_value_datadef(p));
+			}
+			if (Variable *winner = owner->findMethodOverload(mname, at)) {
+				FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
+				if (wfd && (winner->flags & vfSTATIC)) {
+					callee_var = winner;
+					fd = wfd;
+				}
+			}
+		}
+	}
+
 	// namespace_name may be EMPTY: tracked global-scope operator overload
 	// sets (::operator new/delete) key as "::name" and rank identically.
 	if (fd && !fd->function_display_name.empty()) {
@@ -2817,7 +2916,9 @@ FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
 					tcf->var.name.c_str(),
 					inst->emit_symbol.c_str());
 #endif
-			return inst;
+			if (fd_out)
+				*fd_out = inst;
+			return callee_var;
 		}
 #if MADC_DEBUG_FNTPL
 		if (tcf && tcf->var.name.compare(0, 5, "__ns_") == 0)
@@ -2861,11 +2962,33 @@ FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
 			if (Variable *w = m_prog->find_namespace_function_overload(
 					fd->namespace_name, fd->function_display_name,
 					at, &zeros, &tcf->explicit_template_args))
-				if (FuncDef *wfd = dynamic_cast<FuncDef *>(w->type))
-					return wfd;
+				if (FuncDef *wfd = dynamic_cast<FuncDef *>(w->type)) {
+					if (fd_out)
+						*fd_out = wfd;
+					return w;
+				}
 		}
 	}
+	if (fd_out)
+		*fd_out = fd;
+	return callee_var;
+}
+
+FuncDef *CirBuilder::call_target_funcdef(TokenCallFunc *tcf)
+{
+	FuncDef *fd = NULL;
+	call_target_variable(tcf, &fd);
 	return fd;
+}
+
+std::string CirBuilder::call_target_emit_name(TokenCallFunc *tcf,
+					      FuncDef **fd_out)
+{
+	FuncDef *fd = NULL;
+	Variable *v = call_target_variable(tcf, &fd);
+	if (fd_out)
+		*fd_out = fd;
+	return v ? func_emit_name(*v, fd) : std::string();
 }
 
 // A CALL to a madc-COMPILED function returning a non-trivial class by value.
@@ -2880,7 +3003,8 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 		return ot->obj_class;
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
 	if (!tcf) return NULL;
-	FuncDef *fd = call_target_funcdef(tcf);
+	FuncDef *fd = NULL;
+	std::string sym = call_target_emit_name(tcf, &fd);
 	if (!fd) return NULL;
 	if (fd->returns_reference()) return NULL;
 	DataDefCLASS *cdd = class_return_via_retbuf(&fd->return_value_type());
@@ -2893,7 +3017,6 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 	// is actually emitted.
 	if (dynamic_cast<DataDefFPTR *>(tcf->var.type))
 		return cdd;
-	std::string sym = func_emit_name(tcf->var, fd);
 	// A deferred lazy body ([temp.inst]) materializes as a madc-emitted
 	// definition (retbuf ABI) once referenced — classify it that way both
 	// BEFORE materialization (still in deferred_lazy_bodies) and AFTER
@@ -3506,18 +3629,41 @@ bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
 	return false;
 }
 
-node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent)
+static bool class_pointer_reference_conversion(DataDef *arg_type,
+					       DataDef *referent_type)
+{
+	if (!arg_type || !referent_type || arg_type == referent_type)
+		return false;
+	const DataDefCLASS *ac = class_pointer_pointee(arg_type);
+	const DataDefCLASS *rc = class_pointer_pointee(referent_type);
+	return ac && rc && ac != rc && ac->is_or_derives_from(rc);
+}
+
+static bool const_ref_param(FuncDef *fd, size_t i)
+{
+	return fd && fd->is_ref_param(i) && i < fd->const_params.size()
+	    && fd->const_params[i];
+}
+
+node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent,
+				      bool allow_converted_temp)
 {
 	DataDef *vt = arg ? arg->datadef() : NULL;
-	if (vt && expr_is_nonaddressable_rvalue(arg)) {
+	bool needs_converted_temp = allow_converted_temp
+	    && class_pointer_reference_conversion(vt, expected_referent);
+	if (vt && (expr_is_nonaddressable_rvalue(arg) || needs_converted_temp)) {
 		// The reference binds to the PARAMETER's referent type, and the rvalue
 		// is converted to it ([dcl.init.ref]). When the referent differs from the
 		// arg's own type — a `0`/null literal bound to a pointer `_Base_ptr&`
 		// (std::_Rb_tree's `_Res(__j._M_node, 0)`), where the arg is `int` but the
 		// referent is `_Rb_tree_node_base*` — the temp MUST be the referent type,
 		// or `&temp` is a too-narrow `int*` (4 bytes) where the callee reads a
-		// pointer (8 bytes) -> garbage high bits -> runtime corruption. Use the
-		// referent when given and it differs; otherwise the arg's own type.
+		// pointer (8 bytes) -> garbage high bits -> runtime corruption. The
+		// same materialization is required for an addressable lvalue that binds
+		// to a const reference through a derived-pointer-to-base-pointer
+		// conversion: `&derived_ptr` is `Derived **`, not the `_Base_ptr *` the
+		// callee reads. Use the referent when given and it differs; otherwise the
+		// arg's own type.
 		DataDef *tmp_type = (expected_referent && expected_referent != vt)
 				  ? expected_referent : vt;
 		char name[32];
@@ -3525,7 +3671,10 @@ node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent
 		Variable *tmp = new Variable(name, *tmp_type, 1, NULL, false);
 		tmp->flags |= vfLOCAL;
 		m_pending_stmts.push_back(var_decl(tmp, arg));
-		node_t assign = node2(N_ASSIGN, id(name, arg), translate_expr(arg), arg);
+		node_t rhs = translate_expr(arg);
+		if (needs_converted_temp)
+			rhs = upcast_class_ptr(rhs, tmp_type, arg, arg);
+		node_t assign = node2(N_ASSIGN, id(name, arg), rhs, arg);
 		m_pending_stmts.push_back(node2(N_EXPR, list(), assign, arg));
 		return node1(N_ADDR, id(name, arg), arg);
 	}
@@ -3554,7 +3703,7 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 		// Without the fptr fallback, a by-value object parameter of a lambda is
 		// invisible here, so a convertible literal/scalar argument is passed raw
 		// instead of being materialized into a class temporary.
-	FuncDef *callee = call_target_funcdef(tcf);
+		FuncDef *callee = call_target_funcdef(tcf);
 	// A madc-instantiated member function template: the call token is bound to
 	// the declaration-only placeholder (its var is a non-rebindable reference);
 	// instantiate_member_fn_template_for_call recorded the instantiated
@@ -3597,7 +3746,8 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 			// pointer, so pass the argument's address. An lvalue translates
 			// normally (a vfREFERENCE arg re-derefs to its own pointer, and
 			// &(*p) folds to p); a prvalue arg is materialized into a temp.
-			append(args, ref_param_arg_addr(arg, ref_param_referent(pt)));
+			append(args, ref_param_arg_addr(arg, ref_param_referent(pt),
+							const_ref_param(callee, pi)));
 		else if (is_char_pointer(pt) && is_class_object_value(arg))
 			append(args, object_cstr_arg(arg));
 		else if (is_size1_pointer(pt) && is_class_object_value(arg))
@@ -3672,8 +3822,8 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 	object_temp_decl(cdd, name, sizeof(name), origin);
 
 	if (tcf) {
-		FuncDef *cdf = call_target_funcdef(tcf);
-		std::string sym = func_emit_name(tcf->var, cdf);
+		FuncDef *cdf = NULL;
+		std::string sym = call_target_emit_name(tcf, &cdf);
 		referenced_funcs.insert(sym);
 		node_t cargs = list();
 		append(cargs, node1(N_ADDR, id(name, origin), origin));   // __retbuf = &__t
@@ -4017,8 +4167,8 @@ node_t CirBuilder::multi_return_unpack(TokenAssign *as, TokenBase *origin)
 
 	// f(__mret_K, args...);  — __retbuf passed first. build_call_args may queue
 	// arg temps to m_pending_stmts; they land after bufdecl and before the call.
-	FuncDef *cdf = call_target_funcdef(tcf);
-	std::string sym = func_emit_name(tcf->var, cdf);
+	FuncDef *cdf = NULL;
+	std::string sym = call_target_emit_name(tcf, &cdf);
 	referenced_funcs.insert(sym);
 	node_t cargs = list();
 	append(cargs, id(nm, origin));
@@ -6094,7 +6244,8 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 			append(args, object_arg_value(arg, vc));
 		} else if (refp) {
 			eparams.push_back(native_param_shape(pt, true));
-			append(args, ref_param_arg_addr(arg, ref_param_referent(pt)));
+			append(args, ref_param_arg_addr(arg, ref_param_referent(pt),
+							const_ref_param(callee, pi)));
 		} else if (pt && pt->is_pointer()) {
 			eparams.push_back(native_param_shape(pt, false));
 			append(args, translate_expr(arg));
@@ -6177,6 +6328,15 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 				node2(N_ADD, charp, integer((long)boff), origin),
 				origin);
 		}
+		// Cast even when the base subobject starts at offset 0: the C ABI
+		// prototype still expects the inherited method's owner pointer type
+		// (`__new_allocator<T>*`), not the derived receiver type
+		// (`allocator<T>*`).
+		this_arg = node2(N_CAST,
+			node2(N_TYPE,
+			      node1(N_LIST, class_tag_ref(owner)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			this_arg, origin);
 	}
 
 	if (m_tsubst_pattern_mode && callee && callee->is_member_template
@@ -6220,17 +6380,6 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 			return mt;
 	if (callee && !callee->emit_symbol.empty())
 		return emit_symbol_method_call(tm, callee, sym, this_arg, origin);
-
-	// madc-emitted inherited method: the byte adjustment above already selected
-	// the owner subobject; cast to the owner-class pointer type so the body
-	// reads/writes its own struct layout.
-	if (owner && owner != recv_class) {
-		this_arg = node2(N_CAST,
-			node2(N_TYPE,
-			      node1(N_LIST, class_tag_ref(owner)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-			this_arg, origin);
-	}
 
 	// A method returning a NON-TRIVIAL class by value uses the __retbuf ABI
 	// (func_def / func_proto / fnptr_decl_pieces all lower the signature with
@@ -6286,7 +6435,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
-			append(args, ref_param_arg_addr(arg, ref_param_referent(pt)));
+			append(args, ref_param_arg_addr(arg, ref_param_referent(pt),
+							const_ref_param(arg_callee, pi)));
 		else if (!pt && ref_returning_call_type(arg))
 			// Unresolved callee (a member-template instantiation binds to a
 			// declaration-only placeholder with no parameters/ref_params):
@@ -6816,7 +6966,8 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 			else if (DataDefCLASS *vc = as_class_instance(pt))
 				append(args, object_arg_value(arg, vc));
 			else if (refp)
-				append(args, ref_param_arg_addr(arg, ref_param_referent(pt)));
+				append(args, ref_param_arg_addr(arg, ref_param_referent(pt),
+								const_ref_param(copy_ctor, pi)));
 			else
 				append(args, translate_expr(arg));
 		};
@@ -7404,8 +7555,16 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	bool p_ptr = pdc->is_pointer(), a_ptr = adc->is_pointer();
 	bool p_num = pdc->is_numeric(), a_num = adc->is_numeric();
 	if (p_ptr || a_ptr) {
-		if (p_ptr && a_ptr)
+		if (p_ptr && a_ptr) {
+			const DataDefCLASS *ac = class_pointer_pointee(adc);
+			const DataDefCLASS *pc = class_pointer_pointee(pdc);
+			if (ac && pc) {
+				if (ac == pc)
+					return 5;
+				return ac->is_or_derives_from(pc) ? 4 : -1;
+			}
 			return adc->rawtype() == pdc->rawtype() ? 5 : 4;
+		}
 		// A null-pointer constant (integer literal 0) binds any pointer
 		// parameter — a standard conversion ([conv.ptr]), ranked below a
 		// pointer argument but above a user-defined conversion.
@@ -7719,7 +7878,8 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			explicit_nodes.push_back(object_arg_value(arg, vc));
 		else if (is_ref_param)
-			explicit_nodes.push_back(ref_param_arg_addr(arg, ref_param_referent(pt)));
+			explicit_nodes.push_back(ref_param_arg_addr(arg,
+				ref_param_referent(pt), const_ref_param(ctor, pi)));
 		else
 			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
 			// make the implicit upcast explicit so c2mir does not warn
@@ -7766,7 +7926,8 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(darg, vc));
 		else if (is_ref_param)
-			append(args, ref_param_arg_addr(darg, ref_param_referent(pt)));
+			append(args, ref_param_arg_addr(darg, ref_param_referent(pt),
+							const_ref_param(ctor, pi)));
 		else
 			append(args, translate_expr(darg));
 	}
@@ -7874,7 +8035,8 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		} else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
-			append(args, ref_param_arg_addr(arg, ref_param_referent(pt)));
+			append(args, ref_param_arg_addr(arg, ref_param_referent(pt),
+							const_ref_param(ctor, pi)));
 		else
 			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
 			// make the implicit upcast explicit so c2mir does not warn
@@ -7895,7 +8057,8 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		else if (DataDefCLASS *vc = as_class_instance(pt))
 			append(args, object_arg_value(darg, vc));
 		else if (is_ref_param)
-			append(args, ref_param_arg_addr(darg, ref_param_referent(pt)));
+			append(args, ref_param_arg_addr(darg, ref_param_referent(pt),
+							const_ref_param(ctor, pi)));
 		else
 			append(args, translate_expr(darg));
 	}
@@ -9862,7 +10025,8 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 		// `m[1]`, an arithmetic result) is non-addressable — `&1` is ill-formed.
 		// ref_param_arg_addr materializes a temp for those, exactly as every
 		// other reference-argument site does, instead of taking `&<literal>`.
-		append(args, ref_param_arg_addr(index, ref_param_referent(idx_pt)));
+		append(args, ref_param_arg_addr(index, ref_param_referent(idx_pt),
+						const_ref_param(callee, 1)));
 	else
 		append(args, translate_expr(index));
 
@@ -10474,7 +10638,9 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						else if (DataDefCLASS *vc = as_class_instance(pt))
 							append(a, object_arg_value(arg, vc));
 						else if (refp)
-							append(a, ref_param_arg_addr(arg, ref_param_referent(pt)));
+							append(a, ref_param_arg_addr(arg,
+								ref_param_referent(pt),
+								const_ref_param(ctor, pi)));
 						else
 							append(a, translate_expr(arg));
 					}
@@ -10645,7 +10811,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				else if (DataDefCLASS *vc = as_class_instance(pt))
 					append(cargs, object_arg_value(arg, vc));
 				else if (refp)
-					append(cargs, ref_param_arg_addr(arg, ref_param_referent(pt)));
+					append(cargs, ref_param_arg_addr(arg,
+						ref_param_referent(pt), const_ref_param(ctor, pi)));
 				else
 					append(cargs, translate_expr(arg));
 			}
@@ -11801,8 +11968,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// source-named alias, but the function is HOISTED to a unique
 				// top-level symbol — emit that hoisted name (FuncDef::
 				// local_emit_name), not the source name.
-				FuncDef *cdf = call_target_funcdef(tcf);
-				std::string callee_name = func_emit_name(tcf->var, cdf);
+				FuncDef *cdf = NULL;
+				std::string callee_name = call_target_emit_name(tcf, &cdf);
 				Method *native_method = (Method *)tcf->var.data;
 				if (tcf->var.name == "system" && cdf
 				    && native_method && native_method->x86code && m_prog) {
@@ -13451,8 +13618,8 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				    && object_returning_call_class(ctor_args[0]) == cdcl) {
 					TokenCallFunc *itcf =
 						dynamic_cast<TokenCallFunc *>(ctor_args[0]);
-					FuncDef *ifd = call_target_funcdef(itcf);
-					std::string isym = func_emit_name(itcf->var, ifd);
+					FuncDef *ifd = NULL;
+					std::string isym = call_target_emit_name(itcf, &ifd);
 					referenced_funcs.insert(isym);
 					node_t cargs = list();
 					append(cargs, node1(N_ADDR,

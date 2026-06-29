@@ -374,7 +374,9 @@ class CirBuilder {
 	// arithmetic result — `_M_current++`, `it.base() - n`) is not addressable,
 	// so it is materialized into a scope-lived temp whose address is passed
 	// ([class.temporary]: binding a const ref to a prvalue).
-	node_t ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent = NULL);
+	node_t ref_param_arg_addr(TokenBase *arg,
+				  DataDef *expected_referent = NULL,
+				  bool allow_converted_temp = false);
 	// True for the argument forms that are unambiguously prvalues and therefore
 	// not addressable: a by-value-returning call, a postfix ++/--, a builtin
 	// binary arithmetic/bitwise result, or a literal. Conservative by design —
@@ -493,7 +495,11 @@ public:
 	// instantiated FuncDef (std:: free-function template bound mangled-direct
 	// via emit_symbol) so arg emission, retbuf classification, and callee
 	// naming all see the same instantiation.
+	class Variable *call_target_variable(class TokenCallFunc *tcf,
+					     class FuncDef **fd_out = NULL);
 	class FuncDef *call_target_funcdef(class TokenCallFunc *tcf);
+	std::string call_target_emit_name(class TokenCallFunc *tcf,
+					  class FuncDef **fd_out = NULL);
 	// std:: free-function template instantiations: one FuncDef per mangled
 	// symbol, plus a per-call memo (NULL = checked, not such a call).
 	std::map<class TokenCallFunc *, class FuncDef *> m_free_fn_inst_by_call;
