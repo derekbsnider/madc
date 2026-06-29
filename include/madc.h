@@ -384,6 +384,13 @@ public:
     // `parent` probing the sid-keyed index at each level (no per-level re-hash).
     Variable *findVariable(const StringPool &sp, std::string &id);
     Variable *findVariable(const StringPool &sp, uint32_t qsid, std::string &id);
+    // Single-level lookup in THIS scope only (no parent walk).
+    Variable *findVariableThisScope(const StringPool &sp, uint32_t qsid,
+				    std::string &id);
+    // Function-local lookup: walk THIS scope chain up to (but not into) the
+    // program/global scope. A name found here is a parameter or block local,
+    // which in C++ unqualified lookup shadows any same-named namespace member.
+    Variable *findVariableLocal(const StringPool &sp, std::string &id);
 };
 
 class TokenFunc: public TokenVar, public TokenCpnd

@@ -5812,10 +5812,27 @@ Variable *Program::resolve_c_identifier(TokenIdent *ident_tb, bool expression_he
 
 	if ( expression_head )
 	{
-	    std::string lookup_ns = active_cpp_lookup_namespace();
-	    if ( !lookup_ns.empty() )
-		var = find_namespace_member_in_scope_chain(lookup_ns,
-							   ident_tb->str);
+	    // C++ unqualified lookup: a function parameter or block local shadows a
+	    // same-named namespace member. Check the function-local scope BEFORE the
+	    // namespace so e.g. `perl::substr`'s `length` parameter is not resolved to
+	    // the `perl::length` function, or `ruby::delete`'s `chars` parameter to the
+	    // `ruby::chars` function (emitting a function pointer where a value is
+	    // expected). The namespace still precedes the GLOBAL scope below, so an
+	    // unqualified `index` inside `namespace perl` still binds to perl::index,
+	    // not the global C `index`. Skipped for an explicit `ns::member` qualifier
+	    // (stmt_callee_namespace set) — that names the namespace and must not be
+	    // shadowed by a local.
+	    TokenCpnd *code = stmt_callee_namespace.empty() && !compounds.empty()
+			    ? compounds.top() : NULL;
+	    if ( code )
+		var = code->findVariableLocal(strpool, ident_tb->str);
+	    if ( !var )
+	    {
+		std::string lookup_ns = active_cpp_lookup_namespace();
+		if ( !lookup_ns.empty() )
+		    var = find_namespace_member_in_scope_chain(lookup_ns,
+							       ident_tb->str);
+	    }
 	}
 	if ( !var )
 	    var = findVariable(ident_tb->str);
@@ -10602,9 +10619,9 @@ Variable *TokenCpnd::findVariable(const StringPool &sp, std::string &id)
     return findVariable(sp, sp.intern(id), id);
 }
 
-Variable *TokenCpnd::findVariable(const StringPool &sp, uint32_t qsid, std::string &id)
+Variable *TokenCpnd::findVariableThisScope(const StringPool &sp, uint32_t qsid,
+					   std::string &id)
 {
-    DBG(cout << "TokenCpnd::findVariable(" << id << ") method: " << (method ? method->returns.name : "NULL") << endl);
     // Absorb any newly-appended variables into the O(1) index (first-wins via
     // emplace, matching the old front-to-back linear scan). A shrink (the single
     // erase site) is detected and forces a rebuild. Keys are interned spelling_ids:
@@ -10637,11 +10654,34 @@ Variable *TokenCpnd::findVariable(const StringPool &sp, uint32_t qsid, std::stri
 	it = var_index.find(qsid);
 	res = (it != var_index.end()) ? it->second : NULL;
     }
-    if ( res )
+    return res;
+}
+
+Variable *TokenCpnd::findVariable(const StringPool &sp, uint32_t qsid, std::string &id)
+{
+    DBG(cout << "TokenCpnd::findVariable(" << id << ") method: " << (method ? method->returns.name : "NULL") << endl);
+    if ( Variable *res = findVariableThisScope(sp, qsid, id) )
 	return res;
     if ( parent )
 	return parent->findVariable(sp, qsid, id);
 
+    return NULL;
+}
+
+Variable *TokenCpnd::findVariableLocal(const StringPool &sp, std::string &id)
+{
+    uint32_t qsid = sp.intern(id);
+    // Walk the scope chain but stop at the program/global scope: a hit here is a
+    // function parameter or block local, which shadows any namespace member. Block
+    // locals live in each compound's `variables`; parameters live in the
+    // function-body compound's `method->parameters` (findParameter).
+    for ( TokenCpnd *c = this; c && c->type() != TokenType::ttProgram; c = c->parent )
+    {
+	if ( Variable *res = c->findVariableThisScope(sp, qsid, id) )
+	    return res;
+	if ( Variable *res = c->findParameter(id) )
+	    return res;
+    }
     return NULL;
 }
 
@@ -12601,6 +12641,24 @@ Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expre
 
     if ( expression_head )
     {
+	// C++ unqualified lookup: a function parameter or block local shadows any
+	// same-named namespace member. Check the function-local scope BEFORE the
+	// namespace (this is the entry resolver; resolve_c_identifier below applies
+	// the same rule for direct callers). Without this, e.g. `perl::substr`'s
+	// `length` parameter resolves to the `perl::length` function. The namespace
+	// still precedes the global scope, so `index` inside `namespace perl` binds
+	// to perl::index, not the global C `index`. This applies ONLY to an
+	// UNQUALIFIED name (the namespace comes from the enclosing scope): an explicit
+	// `ns::member` qualifier (stmt_callee_namespace set) names the namespace
+	// directly and must NOT be shadowed by a local — `ruby::chars(chars, s)` calls
+	// ruby::chars even though a local `chars` array is in scope.
+	TokenCpnd *code = stmt_callee_namespace.empty() && !compounds.empty()
+			? compounds.top() : NULL;
+	if ( code )
+	{
+	    Variable *lv = code->findVariableLocal(strpool, ident_tb->str);
+	    if ( lv ) return lv;
+	}
 	std::string lookup_ns = active_cpp_lookup_namespace();
 	if ( !lookup_ns.empty() )
 	{
