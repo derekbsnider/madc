@@ -13029,6 +13029,25 @@ DataDefCONST *Program::getConstType(DataDef *base)
     return cst;
 }
 
+uint32_t Program::derived_type_id(DerivedKind kind, uint32_t operand_id)
+{
+    // Boundary adapter: name the operand by id, obtain the canonical derived
+    // DataDef through the compiler's own cache (one source of truth), stamp it.
+    DataDef *operand = type_from_id(operand_id);
+    if ( !operand )
+	return MADC_TYPEID_INVALID;
+
+    DataDef *derived;
+    switch ( kind )
+    {
+	case DerivedKind::dkPointer:   derived = getPointerType(operand);   break;
+	case DerivedKind::dkReference: derived = getReferenceType(operand); break;
+	case DerivedKind::dkConst:     derived = getConstType(operand);     break;
+	default:                       return MADC_TYPEID_INVALID;
+    }
+    return type_id_for(derived);
+}
+
 TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 						     TokenBase *origin)
 {

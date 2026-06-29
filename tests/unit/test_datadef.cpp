@@ -1611,6 +1611,47 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(pgm.type_from_id(MADC_TYPEID_PROJECT_BASE + 99) == (DataDef *)NULL);
         CHECK(pgm.type_id_for((DataDef *)NULL) == MADC_TYPEID_INVALID);
     }
+
+    TEST_CASE("derived-type id API: pointer/reference/const round-trip + idempotent") {
+        Program pgm;
+        madc_stamp_primitive_type_ids();
+
+        uint32_t int_id = pgm.type_id_for(&ddINT);
+        CHECK(int_id == MADC_TYPEID_INT);
+
+        // pointer-to(int): idempotent, reverse-resolves to the canonical
+        // DataDefPTR — the SAME object the compiler's getPointerType returns.
+        uint32_t p1 = pgm.derived_type_id(DerivedKind::dkPointer, int_id);
+        uint32_t p2 = pgm.derived_type_id(DerivedKind::dkPointer, int_id);
+        CHECK(p1 != MADC_TYPEID_INVALID);
+        CHECK(p1 == p2);                                       // idempotent
+        DataDef *pd = pgm.type_from_id(p1);
+        CHECK(pd != (DataDef *)NULL);
+        CHECK(pd->is_pointer());
+        CHECK(pd == pgm.getPointerType(&ddINT));               // one source of truth
+        // int* is the well-known global ddINTptr — a primitive slot, not a
+        // freshly-minted project id.
+        CHECK(pd == &ddINTptr);
+        CHECK(p1 == MADC_TYPEID_INT_PTR);
+
+        // reference-to(int) and const(int): idempotent, canonical
+        uint32_t r1 = pgm.derived_type_id(DerivedKind::dkReference, int_id);
+        CHECK(r1 == pgm.derived_type_id(DerivedKind::dkReference, int_id));
+        CHECK(pgm.type_from_id(r1) == (DataDef *)pgm.getReferenceType(&ddINT));
+
+        uint32_t c1 = pgm.derived_type_id(DerivedKind::dkConst, int_id);
+        CHECK(c1 == pgm.derived_type_id(DerivedKind::dkConst, int_id));
+        CHECK(pgm.type_from_id(c1) == (DataDef *)pgm.getConstType(&ddINT));
+
+        // distinct kinds yield distinct ids
+        CHECK(p1 != r1);
+        CHECK(r1 != c1);
+        CHECK(p1 != c1);
+
+        // unknown operand id -> invalid
+        CHECK(pgm.derived_type_id(DerivedKind::dkPointer,
+                                  MADC_TYPEID_PROJECT_BASE + 999) == MADC_TYPEID_INVALID);
+    }
 }
 
 TEST_SUITE("DataDefTemplateParam (unresolved template parameter T)") {

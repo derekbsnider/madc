@@ -43,6 +43,14 @@ enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass,
 				btTemplateParam };
 enum class RefType  : uint8_t { rtNone, rtValue, rtPointer, rtReference  };
 
+// Kind of a unary derived type, for the id-addressable derived-type API
+// (Program::derived_type_id). Pointer / reference / const are the unary
+// derivations madc memoizes today (getPointerType / getReferenceType /
+// getConstType). Append-only: array / fn join when their creators are
+// id-routed (no getArrayType exists yet). See
+// docs/plans/2026-06-12-type-table-value-abi-design.md §2.
+enum class DerivedKind : uint8_t { dkPointer, dkReference, dkConst };
+
 enum class DataType : uint16_t {
 	// Simple data types
 	dtVOID, dtBOOL, dtUINT8, dtBYTE=dtUINT8,  dtINT8, dtCHAR = dtINT8,

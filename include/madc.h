@@ -2853,6 +2853,18 @@ public:
     // TYPE IDENTITY (so const T != T survives deduction / instantiation keying).
     // See docs/plans/2026-06-19-const-qualified-types.md.
     DataDefCONST *getConstType(DataDef *base);
+    // Id-addressable derived-type API — the boundary adapter for the type table
+    // (design docs/plans/2026-06-12-type-table-value-abi-design.md §2/§6.1).
+    // "pointer-to(id)" / "reference-to(id)" / "const(id)" resolved by typeid:
+    // operand_id names the operand DataDef (via type_from_id); the canonical
+    // derived DataDef is obtained through the SAME getPointerType /
+    // getReferenceType / getConstType cache the compiler uses, then stamped via
+    // type_id_for. ONE source of truth — compiler internals keep using DataDef*;
+    // this converts only at the boundary (serialization / the value ABI /
+    // position-independent pools, where a DataDef* cannot live). Idempotent:
+    // same (kind, operand_id) -> same derived id. MADC_TYPEID_INVALID for an
+    // unknown operand id.
+    uint32_t derived_type_id(DerivedKind kind, uint32_t operand_id);
     // The return type to CONSTRUCT a FuncDef with: a DataDefREF for a
     // reference return (routed through getReferenceType — the single
     // reference-creation/collapse path), else the bare type. Centralizes the
