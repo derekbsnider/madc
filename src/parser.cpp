@@ -10761,14 +10761,18 @@ void *madc_getenv(void *result, void *name)
     return result;
 }
 
-const char *madc_get_argv(int64_t argv_ptr, int64_t index)
+const char *madc_get_argv(void *argv_ptr, int64_t index)
 {
     char **argv = (char **)argv_ptr;
     return argv[index];
 }
 
-// Extern "C" wrapper so transpiled code (c2mir) can resolve get_argv via dlsym
-extern "C" const char *get_argv(int64_t argv_ptr, int64_t index)
+// Extern "C" wrapper so transpiled code (c2mir) can resolve get_argv via dlsym.
+// Takes the argv array as a `void *` (it is a pointer it reinterprets, NOT an
+// integer) so a `char **` argument converts implicitly — passing it to the old
+// int64 parameter warned ("using pointer without cast for integer type
+// parameter").
+extern "C" const char *get_argv(void *argv_ptr, int64_t index)
 {
     return madc_get_argv(argv_ptr, index);
 }
@@ -11838,7 +11842,7 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("copysignl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double,long double))copysignl);
     builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_system);
     builtin_registry.add_process_function("getenv", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)__madc_getenv);
-    builtin_registry.add_process_function("get_argv", datatype_vec_t{DataType::dtCHARptr, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
+    builtin_registry.add_process_function("get_argv", datatype_vec_t{DataType::dtCHARptr, rtPtr(DataType::dtVOID), DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
     builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_setenv);
     builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_unsetenv);
     builtin_registry.add_process_function("__errno_location", datatype_vec_t{rtPtr(DataType::dtINT32)}, (fVOIDFUNC)__errno_location);
