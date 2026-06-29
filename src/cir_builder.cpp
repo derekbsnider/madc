@@ -2884,7 +2884,14 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 	// `_S_key(_Link_type)`). Re-rank non-template static member overloads here,
 	// using the same DataDefCLASS::findMethodOverload scorer the parser uses, so
 	// the selected symbol and the selected parameter types stay in sync.
-	if (m_prog && (callee_var->flags & vfSTATIC) && !fd->is_member_template) {
+	// GUARD: a static-STORAGE variable that is merely callable — e.g. a file-scope
+	// `static double (*fp)(float)` function pointer — also carries vfSTATIC, but
+	// its `data` is NOT a Method (only a real function/method variable, whose
+	// `type` IS a FuncDef, stores a Method there). Without the FuncDef-type check,
+	// `(Method *)callee_var->data` reads garbage and `md->owner_class` segfaults
+	// (gcc.c-torture func-ptr-1.c: a call through a static function pointer).
+	if (m_prog && (callee_var->flags & vfSTATIC) && !fd->is_member_template
+	    && dynamic_cast<FuncDef *>(callee_var->type)) {
 		Method *md = (Method *)callee_var->data;
 		DataDefCLASS *owner = md ? md->owner_class : NULL;
 		std::string mname = method_candidate_display_name(callee_var, fd);
