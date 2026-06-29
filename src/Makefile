@@ -175,6 +175,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) test
 	@cd .. && bash scripts/run_tests.sh
 	@cd .. && bash scripts/check-no-std-hardcoding.sh
 	@cd .. && bash scripts/check-call-emit-symbol.sh
+	@cd .. && bash scripts/warn_census.sh --check
 
 # CIR renderer fidelity gate over the whole corpus (diagnostic; localizes
 # missing renderer constructs and gcc-vs-emitted asm divergences).

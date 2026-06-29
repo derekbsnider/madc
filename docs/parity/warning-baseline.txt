@@ -1,0 +1,27 @@
+# c2mir warning ratchet baseline.
+# Format: <count> <tests/*.mad basename>
+# Missing tests default to 0 allowed warnings, so new tests cannot introduce
+# warnings silently. Lower counts in the SAME commit that fixes a warning class.
+# The end state is an all-zero baseline. Enforced by scripts/warn_census.sh --check
+# (wired into `make -C src fulltest`).
+# Current total: 29 warnings across 19 tests (2026-06-29, after c3514126 cleared
+# the _Rb_tree pointer-fidelity cluster, 97 -> 29).
+3 testvectorptr.mad
+3 teststructinterop.mad
+2 testcaserange.mad
+2 testfinstrumentfunctions.mad
+2 testlang.mad
+2 testreturnfndecay.mad
+2 testrubycharsshadow.mad
+2 teststruct.mad
+1 testargv.mad
+1 testbuiltinframeaddress.mad
+1 testcapture.mad
+1 testfnptrcast.mad
+1 testfnptrderefcall2.mad
+1 testfnptrvarargs.mad
+1 testforeach2.mad
+1 testkrfnptrvarargs.mad
+1 testperl.mad
+1 testprefer.mad
+1 testregex.mad
