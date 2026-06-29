@@ -15389,8 +15389,17 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		rkind = R_VOID;
 	} else if (rt->type() == DataType::dtCHARptr) {
 		rkind = R_CSTR;
-	} else if (as_class_instance(rt) || rt->is_pointer() || rt->is_simd()) {
-		return NULL;	// trivial-class / pointer / SIMD returns: not marshalled yet
+	} else if (as_class_instance(rt) || rt->is_pointer() || rt->is_simd()
+		   || dynamic_cast<DataDefFPTR *>(rt)) {
+		// trivial-class / pointer / SIMD returns: not marshalled yet. A
+		// function-pointer return is the same case as a fn-ptr parameter
+		// (classify_param): DataDefFPTR reports dtINT64/is_integer() and not
+		// is_pointer(), so without this bail a fn-ptr-returning function (e.g.
+		// `DO_FUN *pick_void(int)`) fell to R_INT and the shim passed the
+		// returned pointer to madc_value_set_integer ("using pointer without
+		// cast for integer type parameter"). A callable cannot cross the value
+		// ABI -> no shim.
+		return NULL;
 	} else if (rt->type() == DataType::dtBOOL) {
 		rkind = R_BOOL;
 	} else if (rt->is_integer()) {
