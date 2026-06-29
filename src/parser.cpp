@@ -11783,6 +11783,13 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("putchar", datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
     builtin_registry.add_core_function("__builtin_memcpy", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), DataType::dtUINT64}, (fVOIDFUNC)memcpy);
     builtin_registry.add_core_function("__builtin_frame_address", datatype_vec_t{rtPtr(DataType::dtCHAR), DataType::dtINT}, (fVOIDFUNC)NULL);
+    // The lexer rewrites `__builtin_frame_address` -> `__madc_builtin_frame_address`
+    // (the real va_helpers symbol, returning void*) via define_map, so the parser
+    // only ever sees the renamed name. Register THAT name too with its real void*
+    // return; otherwise the call is an unknown function defaulting to a `long`
+    // return, and the emitted `extern long __madc_builtin_frame_address()` assigns
+    // a long to a pointer ("using integer without cast for pointer type parameter").
+    builtin_registry.add_core_function("__madc_builtin_frame_address", datatype_vec_t{rtPtr(DataType::dtVOID), DataType::dtINT}, (fVOIDFUNC)NULL);
     builtin_registry.add_core_function("__atomic_fetch_add", datatype_vec_t{DataType::dtINT, rtPtr(DataType::dtVOID), DataType::dtINT, DataType::dtINT}, (fVOIDFUNC)NULL);
     // __atomic_thread_fence(memorder): gcc/clang-inlined memory fence (no real
     // symbol). Registered so the call parses; cir_builder lowers it (and
