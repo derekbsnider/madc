@@ -24,6 +24,8 @@
 
 #include "libmadc/value.h"
 #include "madcdis/intern_table.h"
+#include "madcdis/id_table.h"		// madc::dis::id_table — segmented stable-id registry
+#include "madc_typeid.h"		// MADC_TYPEID_PROJECT_BASE (the project segment base)
 
 class Method;
 class Program;
@@ -1545,9 +1547,12 @@ public:
     // docs/plans/2026-06-12-type-table-value-abi-design.md §2). Holds every
     // non-primitive DataDef this Program has been asked an id for; index i
     // <=> typeid MADC_TYPEID_PROJECT_BASE + i. Lazy registration order is
-    // ask order (deterministic per compilation). Pointers, NOT values:
-    // DataDef is polymorphic and ids must survive growth.
-    std::vector<DataDef *> project_types;
+    // ask order (deterministic per compilation). The madc::dis::id_table
+    // primitive owns this segment's storage (stable ids over the project base,
+    // pointers not values — DataDef is polymorphic and ids survive growth);
+    // type_id_for/type_from_id own the id policy (the dd->type_id memo + the
+    // primitive/system/project segment dispatch).
+    madc::dis::id_table<DataDef> project_types{MADC_TYPEID_PROJECT_BASE};
     uint32_t type_id_for(DataDef *dd);	// THE lazy-stamp chokepoint
     DataDef *type_from_id(uint32_t id);	// segment-dispatching reverse lookup
     // Captured `template<typename T> class Name {...}` definitions for
