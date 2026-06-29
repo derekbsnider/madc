@@ -33,8 +33,10 @@ int main()
     else                    printf("tv_usec in range: 0\n");
     free(tv);
 
-    // fd_set + FD_* macros
-    struct fd_set rfds;
+    // fd_set + FD_* macros. `fd_set` is an anonymous-struct typedef in glibc
+    // (no `struct fd_set` tag — `struct fd_set` is an incomplete type that gcc
+    // rejects, "storage size isn't known"), so name it through the typedef.
+    fd_set rfds;
     FD_ZERO(&rfds);
     FD_SET(0, &rfds);
     FD_SET(5, &rfds);
