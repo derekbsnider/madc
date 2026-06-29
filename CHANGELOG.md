@@ -25,8 +25,27 @@
     HAS-A `madc::dis::arena` and keeps only the token slot registry (the id↔pointer
     bridge); its public API is unchanged. Sets the template: the primitive stays
     general, the compiler consumes it.
-  Next: the segmented `u32` type-id table as the third primitive (design+build, not
-  a re-home — `datatype_map` is still string-keyed).
+  - **`madc::dis::id_table`** (`include/madcdis/id_table.h`) — the segmented
+    stable-id↔object* registry (the "growing tail over a fixed base" half of a
+    segmented id space): `vector<T*>` (polymorphic-safe, pointer-stable),
+    append-only, `add`/`get`/`base`/`size`. Factored out of the type-table
+    identity layer's project segment: `Program::project_types` is now an
+    `id_table<DataDef>`, and `type_id_for`/`type_from_id` keep only id policy
+    (the `dd->type_id` memo + primitive/system/project segment dispatch) and
+    delegate storage. The value ABI's cell pools and `madc::dat` serialization
+    will instantiate it over their own bases (a stable integer id is what
+    position-independent pools and serialized type-refs need, where a `DataDef*`
+    cannot live).
+- Completed the type-table identity layer with the **id-addressable derived-type
+  API** (`Program::derived_type_id`, design §6.1): "pointer-to(id)" /
+  "reference-to(id)" / "const(id)" resolved by typeid, obtaining the canonical
+  derived `DataDef` through the same `getPointerType`/`getReferenceType`/
+  `getConstType` cache the compiler uses (one source of truth; the hot path is
+  untouched), then stamping it. Compiler internals keep using `DataDef*`; this
+  converts only at the boundary. Enables — does not perform — the later
+  tag-arithmetic retirement campaign.
+  Next: `datatype_map` (still string-keyed) re-key is a separate later
+  perf-consumer slice riding `intern_table`, not on the vision's critical path.
 
 ### Lambda `[&]` capture of class objects and references; two pre-existing fixes
 
