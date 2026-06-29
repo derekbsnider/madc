@@ -3976,7 +3976,15 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 	size_t nparam = fd->parameters.size();
 	if (fd->is_varargs && nparam > 0) nparam--;  // drop the synthetic vararg slot
 
-	if (nparam == 0) {
+	// A capturing nested fn / [&] lambda gains hidden `T *name` capture params
+	// (FuncDef::captured_vars) that func_def/func_proto append to the emitted
+	// signature. The fn-ptr TYPE must include them too, or a capturing lambda
+	// assigned to a fn-ptr variable mismatches: `void (*add)(int) = __lambda`
+	// where the lambda is `void(int, int *total)` warned ("incompatible types in
+	// assignment to a pointer"). Kept in lock-step with func_proto.
+	bool has_capture_params = fd->has_captures && !fd->captured_vars.empty();
+
+	if (nparam == 0 && !has_capture_params) {
 		if (fd->is_void_params && !retbuf_dd) {
 			node_t void_spec = node1(N_LIST, simple(N_VOID));
 			node_t void_decl = node2(N_DECL, ignore(), list());
@@ -3992,6 +4000,12 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 						      ptypedef));
 		}
 	}
+	if (has_capture_params)
+		for (Variable *cv : fd->captured_vars) {
+			if (!cv) continue;
+			DataDef *capt_ptr = new DataDefPTR(*cv->type);
+			append(param_list, param_decl(capt_ptr, "", std::string()));
+		}
 	if (fd->is_varargs)
 		append(param_list, simple(N_DOTS));
 	return node1(N_FUNC, param_list);

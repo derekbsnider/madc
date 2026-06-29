@@ -4,7 +4,7 @@
 # warnings silently. Lower counts in the SAME commit that fixes a warning class.
 # The end state is an all-zero baseline. Enforced by scripts/warn_census.sh --check
 # (wired into `make -C src fulltest`).
-# Current total: 2 warnings across 2 tests (2026-06-29). History: c3514126
+# Current total: 1 warning across 1 test (2026-06-29). History: c3514126
 # cleared the _Rb_tree pointer-fidelity cluster (97 -> 29); Class 3 case-range
 # lowering cleared testcaserange (29 -> 27); derived->base spill upcast cleared
 # testvectorptr (27 -> 24); local-shadows-namespace name resolution cleared the
@@ -22,6 +22,13 @@
 # removed the legacy built-in `ddTESTSTRUCT` and defined the struct in
 # teststruct.mad (it used the undefined built-in, which gcc rejects) (5 -> 3);
 # get_argv now takes `void *` (the pointer it reinterprets) instead of int64,
-# so a char** argument converts cleanly — testargv (3 -> 2).
-1 testcapture.mad
+# so a char** argument converts cleanly — testargv (3 -> 2); fnptr_func_node now
+# includes a capturing lambda's hidden capture params in its fn-ptr TYPE (so
+# `void (*add)(int) = lambda` matched the `void(int,int*)` lambda) — testcapture
+# (2 -> 1). NOTE: testcapture still does NOT compile — a SEPARATE pre-existing
+# bug (a std::string captured by reference, `[&]{ cout << msg; }`, is not
+# detected so `msg` is undeclared in the lambda body); that is a compile ERROR,
+# not a warning, and is covered by testcapture.mir_skip. Only testforeach2's one
+# warning remains (a fn-ptr-returning instantiated for_each renders its return
+# type as `long`; needs a function-returning-fn-ptr declarator in func_def).
 1 testforeach2.mad
