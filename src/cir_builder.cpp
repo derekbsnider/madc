@@ -11468,6 +11468,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				return translate_expr(tc->expr);
 			if (DataDefCLASS *cast_class = as_class_instance(cast_dd))
 				return object_arg_value(tc->expr, cast_class);
+			// Function-pointer cast `(RET (*)(params)) expr` (qsort comparator,
+			// atexit handler, ...). The generic scalar/pointer path below renders
+			// a DataDefFPTR via type_list as a bare `long`, so the cast emitted as
+			// `(long)expr` — an integer passed to a pointer parameter. Build the
+			// real `RET (*)(params)` type node from the target signature instead.
+			if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(cast_dd)) {
+				node_t fspec = list();
+				node_t fdecl_list = list();
+				fnptr_decl_pieces(fp->target, true, fspec, fdecl_list,
+						  std::vector<carray_dim_t>());
+				node_t type_node = node2(N_TYPE, fspec,
+					node2(N_DECL, ignore(), fdecl_list));
+				return node2(N_CAST, type_node,
+					     translate_expr(tc->expr), tb);
+			}
 			bool cast_is_ptr = cast_dd && cast_dd->is_pointer();
 			// Peel ALL pointer levels and emit that many '*' — a `(char **)`
 			// cast must not collapse to `(char *)` (which mismatches a char**
