@@ -4,10 +4,10 @@
 # warnings silently. Lower counts in the SAME commit that fixes a warning class.
 # The end state is an all-zero baseline. Enforced by scripts/warn_census.sh --check
 # (wired into `make -C src fulltest`).
-# Current total: 27 warnings across 18 tests (2026-06-29). History: c3514126
+# Current total: 24 warnings across 17 tests (2026-06-29). History: c3514126
 # cleared the _Rb_tree pointer-fidelity cluster (97 -> 29); Class 3 case-range
-# lowering cleared testcaserange (29 -> 27).
-3 testvectorptr.mad
+# lowering cleared testcaserange (29 -> 27); derived->base spill upcast cleared
+# testvectorptr (27 -> 24).
 3 teststructinterop.mad
 2 testfinstrumentfunctions.mad
 2 testlang.mad

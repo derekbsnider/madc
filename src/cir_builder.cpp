@@ -3672,8 +3672,17 @@ node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent
 		tmp->flags |= vfLOCAL;
 		m_pending_stmts.push_back(var_decl(tmp, arg));
 		node_t rhs = translate_expr(arg);
-		if (needs_converted_temp)
-			rhs = upcast_class_ptr(rhs, tmp_type, arg, arg);
+		// When the temp is a base-class pointer and the value is a derived-class
+		// pointer, make the derived->base conversion explicit (c2mir warns on an
+		// implicit pointer-type change in the assignment). This is unconditional:
+		// a prvalue spilled via expr_is_nonaddressable_rvalue (e.g.
+		// `push_back(new B())` into vector<A*>, selecting the `A*&&` move overload
+		// — a NON-const ref, so needs_converted_temp is false) reaches here with
+		// tmp_type = base-pointer referent and the value a derived pointer, and
+		// still needs the cast. upcast_class_ptr reads the derived class from the
+		// expression itself (TokenNEW::alloc_class — NOT arg->datadef(), which is
+		// a generic char* for `new`) and is a no-op when no upcast applies.
+		rhs = upcast_class_ptr(rhs, tmp_type, arg, arg);
 		node_t assign = node2(N_ASSIGN, id(name, arg), rhs, arg);
 		m_pending_stmts.push_back(node2(N_EXPR, list(), assign, arg));
 		return node1(N_ADDR, id(name, arg), arg);
