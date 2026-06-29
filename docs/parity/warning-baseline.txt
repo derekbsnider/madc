@@ -30,5 +30,11 @@
 # detected so `msg` is undeclared in the lambda body); that is a compile ERROR,
 # not a warning, and is covered by testcapture.mir_skip. Only testforeach2's one
 # warning remains (a fn-ptr-returning instantiated for_each renders its return
-# type as `long`; needs a function-returning-fn-ptr declarator in func_def).
-1 testforeach2.mad
+# type as `long`); a function-returning-fn-ptr declarator in func_def/func_proto
+# now emits `RET (*f(params))(fp-params)` — testforeach2 (1 -> 0).
+#
+# *** END STATE REACHED: 0 warnings across the whole tests/*.mad suite. ***
+# Every test now compiles warning-free on the flag-off (production) path. This
+# baseline file holds NO per-test entries, so ANY test that emits even one c2mir
+# compile warning fails `scripts/warn_census.sh --check` (and `make -C src
+# fulltest`). Keep it that way — fix the warning, never add an entry here.

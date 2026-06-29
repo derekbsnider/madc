@@ -10286,10 +10286,20 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	DataDef *retbuf_dd = (DataDef *)ret_obj;
 	bool ret_is_multi = fd->is_multi_return();   // void ret + `long *__retbuf` first param
 
+	// Function returning a function pointer — `RET (*f(params))(fp-params)`.
+	// Mirror func_def (see the comment there): type_list would render the
+	// DataDefFPTR return as a bare `long`. Kept in lock-step with func_def.
+	DataDefFPTR *ret_fnptr = (!ret_via_retbuf && !ret_is_multi && !ret_is_ref
+				 && fd->return_typedef_name.empty())
+				? dynamic_cast<DataDefFPTR *>(ret_dd) : NULL;
+
 	int ret_decl_stars = ret_star_depth;
 	node_t ret_type = NULL;
 	if (ret_via_retbuf || ret_is_multi) {
 		ret_type = type_list(&ddVOID);
+		ret_decl_stars = 0;
+	} else if (ret_fnptr) {
+		ret_type = list();   // spec filled by fnptr_decl_pieces at decl_list
 		ret_decl_stars = 0;
 	} else if (!fd->return_typedef_name.empty()) {
 		ret_type = type_list(&fd->return_value_type(), fd->return_typedef_name);
@@ -10358,12 +10368,19 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	node_t func_id = id(tf->var.name.c_str(), tf);
 	node_t decl_list = list();
 	append(decl_list, func_inner);
-	for (int rs = 0; rs < ret_decl_stars; rs++)
-		append(decl_list, pointer());
-	// T&-returning method: returned by address (one extra pointer level), so
-	// the prototype matches the definition and call sites can deref.
-	if (ret_is_ref)
-		append(decl_list, pointer());
+	if (ret_fnptr) {
+		// `RET (*f(params))(fp-params)`: append the `*(fp-params)` suffix and
+		// fill ret_type with the pointed-to function's return-type specs.
+		fnptr_decl_pieces(ret_fnptr->target, true, ret_type, decl_list,
+				  std::vector<carray_dim_t>());
+	} else {
+		for (int rs = 0; rs < ret_decl_stars; rs++)
+			append(decl_list, pointer());
+		// T&-returning method: returned by address (one extra pointer level), so
+		// the prototype matches the definition and call sites can deref.
+		if (ret_is_ref)
+			append(decl_list, pointer());
+	}
 
 	node_t decl = node2(N_DECL, func_id, decl_list);
 
@@ -14773,6 +14790,17 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				 && !ret_is_multi)
 				? &fd->return_value_type() : NULL;
 
+	// A function whose return type is a function pointer — `RET (*f(params))
+	// (fp-params)` (e.g. an instantiated std::for_each returning its functor
+	// when the functor is a fn-ptr). type_list renders a DataDefFPTR as a bare
+	// `long`, which made `return <fn-ptr>;` warn ("returning pointer without
+	// cast for integer result"). Emit the real declarator instead: the spec is
+	// the pointed-to function's RETURN type and the `(*)(fp-params)` suffix wraps
+	// the function declarator (built by fnptr_decl_pieces at the decl_list below).
+	DataDefFPTR *ret_fnptr = (!ret_via_retbuf && !ret_is_multi && !ret_is_ref
+				 && fd->return_typedef_name.empty())
+				? dynamic_cast<DataDefFPTR *>(ret_dd) : NULL;
+
 	// Retbuf-returning OR multi-return fn: C return type is `void`.
 	int ret_decl_stars = ret_star_depth;
 	node_t ret_type = NULL;
@@ -14781,6 +14809,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	m_cur_func_ret_stars = 0;
 	if (ret_via_retbuf || ret_is_multi) {
 		ret_type = type_list(&ddVOID);
+		ret_decl_stars = 0;
+	} else if (ret_fnptr) {
+		// Spec filled by fnptr_decl_pieces (with the suffix) at decl_list build.
+		ret_type = list();
 		ret_decl_stars = 0;
 	} else if (!fd->return_typedef_name.empty()) {
 		ret_type = type_list(&fd->return_value_type(), fd->return_typedef_name);
@@ -14881,12 +14913,20 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	node_t func_id = id(tf->var.name.c_str(), tf);
 	node_t decl_list = list();
 	append(decl_list, func_inner);
-	for (int rs = 0; rs < ret_decl_stars; rs++)
-		append(decl_list, pointer());
-	// A T&-returning method returns by address: one extra pointer level (so
-	// `int&`->`int*`, `char*&`->`char**`). Matches g++'s reference ABI.
-	if (ret_is_ref)
-		append(decl_list, pointer());
+	if (ret_fnptr) {
+		// Function returning a fn-ptr: append the `*(fp-params)` suffix after
+		// the function declarator and fill ret_type with the pointed-to
+		// function's return-type specs. `RET (*f(params))(fp-params)`.
+		fnptr_decl_pieces(ret_fnptr->target, true, ret_type, decl_list,
+				  std::vector<carray_dim_t>());
+	} else {
+		for (int rs = 0; rs < ret_decl_stars; rs++)
+			append(decl_list, pointer());
+		// A T&-returning method returns by address: one extra pointer level (so
+		// `int&`->`int*`, `char*&`->`char**`). Matches g++'s reference ABI.
+		if (ret_is_ref)
+			append(decl_list, pointer());
+	}
 
 	node_t decl = node2(N_DECL, func_id, decl_list);
 	// Two-tree Phase 3: a covered instantiated member-template method builds its
