@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### c2mir compile-warning elimination (97 → 0, suite-wide)
+
+- Drove the c2mir compile-warning count across the whole `tests/*.mad` suite
+  to **zero** on the flag-off (production) path, and wired a ratchet gate
+  (`scripts/warn_census.sh --check` in `make -C src fulltest`, baseline
+  `docs/parity/warning-baseline.txt`) so any new c2mir warning fails the suite.
+  The baseline now holds NO per-test entries — keep it that way; fix the
+  warning, never add an entry. Each fix was a deepest-layer root-cause fix
+  (no shims, no `#pragma`, no per-callee/class-name hardcoding), with the
+  baseline lowered in the same gated commit, fulltest GREEN, and the
+  gcc.c-torture failset byte-identical. The dominant family was
+  `DataDefFPTR` rendering as `long`: a function-pointer DataDef reports
+  `dtINT64`/`is_integer()` and does not answer `is_pointer()`, so it slipped
+  past pointer checks at four distinct sites — fn-ptr **casts** (was
+  `(long)fn`), host-call shim **params** and **returns** (now rejected as
+  unmarshallable), and **function-returning-fn-ptr** return-type declarators
+  (now emit `RET (*f(params))(fp-params)`). Other roots: case-range labels
+  lowered to individual C11 `N_CASE` labels; derived→base upcast in the
+  ref-argument spill (reads `TokenNEW::alloc_class`); C++ unqualified name
+  lookup fixed so a function-local name shadows a same-named namespace member
+  (gated on no explicit qualifier); `__madc_builtin_frame_address` registered
+  with its real `void *` return; `get_argv` takes `void *` instead of an
+  int64-reinterpret; and a capturing lambda's hidden capture params now appear
+  in its fn-ptr TYPE node. GCC-canon also caught two **non-conforming tests**
+  (gcc rejects the anonymous-typedef `struct fd_set` and the undefined
+  `struct teststruct`) — fixed by making the tests conforming and removing the
+  legacy built-in `ddTESTSTRUCT`, not by adding madc shims. Known residual
+  (NOT a warning): `testcapture` still fails to *compile* due to a separate
+  pre-existing bug — a `std::string` captured by reference is not detected by
+  `note_capture`, so the captured name is undeclared in the lambda body; it is
+  a compile error covered by `testcapture.mir_skip`, deferred as deep CIR work.
+
 ### Two-tree tsubst widening
 
 - Landed the generic Kind 3 dependent-member body slice for copied
