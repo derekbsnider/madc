@@ -4,7 +4,7 @@
 # warnings silently. Lower counts in the SAME commit that fixes a warning class.
 # The end state is an all-zero baseline. Enforced by scripts/warn_census.sh --check
 # (wired into `make -C src fulltest`).
-# Current total: 10 warnings across 6 tests (2026-06-29). History: c3514126
+# Current total: 8 warnings across 5 tests (2026-06-29). History: c3514126
 # cleared the _Rb_tree pointer-fidelity cluster (97 -> 29); Class 3 case-range
 # lowering cleared testcaserange (29 -> 27); derived->base spill upcast cleared
 # testvectorptr (27 -> 24); local-shadows-namespace name resolution cleared the
@@ -14,9 +14,10 @@
 # unmarshallable, clearing testfnptrderefcall2/testfnptrvarargs/
 # testkrfnptrvarargs (16 -> 13); __madc_builtin_frame_address registered with
 # its real void* return cleared testbuiltinframeaddress (13 -> 12); shim return
-# classifier rejects fn-ptr returns, clearing testreturnfndecay (12 -> 10).
+# classifier rejects fn-ptr returns, clearing testreturnfndecay (12 -> 10); the
+# fn-ptr cast fix (6818e40b) also cleared testfinstrumentfunctions's
+# `(void(*)())fn` cast (was `(long)fn`), tightened here (10 -> 8).
 3 teststructinterop.mad
-2 testfinstrumentfunctions.mad
 2 teststruct.mad
 1 testargv.mad
 1 testcapture.mad
