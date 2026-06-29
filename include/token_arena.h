@@ -32,58 +32,35 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#include <new>
 #include <vector>
+#include "madcdis/arena.h"	// the generic bump-allocator primitive (madc::dis::arena)
 
 class TokenBase;	// slot registry maps stable uint32 ids <-> token pointers
 
+// TokenArena is the TOKEN-SPECIFIC consumer of the generic madc::dis::arena
+// primitive: it HAS-A bump allocator (for TokenBase storage, via
+// TokenBase::operator new) and adds the token slot registry on top. The
+// allocator itself carries no TokenBase coupling — that lives here, where it
+// belongs (the substrate primitive stays general; the compiler's id<->pointer
+// bridge is a consumer). See docs/plans/2026-06-29-madc-development-substrate-vision.md.
 class TokenArena
 {
-    struct Chunk { char *base; size_t used; size_t cap; };
-    std::vector<Chunk> _chunks;
+    madc::dis::arena _arena;	// the generic bump allocator (drop-all, stable pointers)
     // Slot registry: stable uint32 slot-id -> TokenBase*. A token is registered
     // lazily (first time it is referenced by id — slot_id_for), so the registry
     // holds only id-referenced tokens. _slots[0] is a reserved NULL sentinel
-    // (id 0 == "no token"). Pointers index into never-relocated chunks, so they
-    // stay valid for the arena's life. The flat id-vectors that replace
-    // vector<TokenBase*> (children, macro/template bodies) hold these ids.
+    // (id 0 == "no token"). Pointers index into the arena's never-relocated
+    // chunks, so they stay valid for the arena's life. The flat id-vectors that
+    // replace vector<TokenBase*> (children, macro/template bodies) hold these ids.
     std::vector<TokenBase *> _slots;
-    size_t _default_cap;
-    size_t _total;		// total bytes handed out (stat / --show-stats)
-    size_t _count;		// number of tokens allocated (stat)
-
-    void add_chunk(size_t need)
-    {
-	size_t cap = need > _default_cap ? need : _default_cap;
-	char *base = (char *)::malloc(cap);
-	if ( !base )
-	    throw std::bad_alloc();
-	Chunk c; c.base = base; c.used = 0; c.cap = cap;
-	_chunks.push_back(c);
-    }
 public:
-    explicit TokenArena(size_t chunk_bytes = (size_t)1 << 20)
-	: _default_cap(chunk_bytes), _total(0), _count(0) {}
-    ~TokenArena() { for ( size_t i = 0; i < _chunks.size(); ++i ) ::free(_chunks[i].base); }
+    explicit TokenArena(size_t chunk_bytes = (size_t)1 << 20) : _arena(chunk_bytes) {}
 
-    // bump-allocate sz bytes (16-aligned), from the current chunk or a fresh one.
-    void *alloc(size_t sz)
-    {
-	sz = (sz + 15) & ~(size_t)15;
-	if ( _chunks.empty() || _chunks.back().used + sz > _chunks.back().cap )
-	    add_chunk(sz);
-	Chunk &c = _chunks.back();
-	void *p = c.base + c.used;
-	c.used += sz;
-	_total += sz;
-	++_count;
-	return p;
-    }
-
-    size_t bytes()  const { return _total; }
-    size_t count()  const { return _count; }
-    size_t chunks() const { return _chunks.size(); }
+    // Token allocation + the --show-stats trio delegate to the generic arena.
+    void  *alloc(size_t sz) { return _arena.alloc(sz); }
+    size_t bytes()  const { return _arena.bytes(); }
+    size_t count()  const { return _arena.count(); }
+    size_t chunks() const { return _arena.chunks(); }
 
     // Slot registry. register_slot assigns the next stable id to t (the [0]
     // sentinel is reserved on first use). slot() maps an id back to its token
