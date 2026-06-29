@@ -15331,7 +15331,15 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 			return true;
 		}
 		if (pt->type() == DataType::dtCHARptr) { out.kind = ShimSlot::K_CSTR; return true; }
-		if (pt->is_pointer() || pt->is_simd()) return false;
+		// A function pointer is not host-marshallable through the madc_value
+		// integer ABI (a host cannot hand a callable across the value boundary).
+		// DataDefFPTR reports dtINT64/is_integer() and does NOT answer
+		// is_pointer(), so without this it slipped past the pointer bail into
+		// K_INT and the shim passed a raw `long` to the fn-ptr parameter
+		// ("using integer without cast for pointer type parameter"). Treat it
+		// like any other pointer param: unmarshallable -> no shim.
+		if (pt->is_pointer() || pt->is_simd() || dynamic_cast<DataDefFPTR *>(pt))
+			return false;
 		if (pt->type() == DataType::dtBOOL)   { out.kind = ShimSlot::K_BOOL; return true; }
 		if (pt->is_integer())                 { out.kind = ShimSlot::K_INT;  return true; }
 		if (pt->is_real())                    { out.kind = ShimSlot::K_REAL; return true; }

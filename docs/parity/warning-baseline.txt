@@ -4,14 +4,15 @@
 # warnings silently. Lower counts in the SAME commit that fixes a warning class.
 # The end state is an all-zero baseline. Enforced by scripts/warn_census.sh --check
 # (wired into `make -C src fulltest`).
-# Current total: 16 warnings across 11 tests (2026-06-29). History: c3514126
+# Current total: 13 warnings across 8 tests (2026-06-29). History: c3514126
 # cleared the _Rb_tree pointer-fidelity cluster (97 -> 29); Class 3 case-range
 # lowering cleared testcaserange (29 -> 27); derived->base spill upcast cleared
 # testvectorptr (27 -> 24); local-shadows-namespace name resolution cleared the
 # ns_perl/ns_ruby wrapper clusters — testperl/testprefer/testregex/testlang/
 # testrubycharsshadow (24 -> 17); function-pointer cast type node cleared
-# testfnptrcast (17 -> 16). testkrfnptrvarargs/testfnptrvarargs are a SEPARATE
-# fn-ptr-varargs-call root cause (still open).
+# testfnptrcast (17 -> 16); shim classifier rejects fn-ptr params as
+# unmarshallable, clearing testfnptrderefcall2/testfnptrvarargs/
+# testkrfnptrvarargs (16 -> 13).
 3 teststructinterop.mad
 2 testfinstrumentfunctions.mad
 2 testreturnfndecay.mad
@@ -19,7 +20,4 @@
 1 testargv.mad
 1 testbuiltinframeaddress.mad
 1 testcapture.mad
-1 testfnptrderefcall2.mad
-1 testfnptrvarargs.mad
 1 testforeach2.mad
-1 testkrfnptrvarargs.mad
