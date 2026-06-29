@@ -10613,12 +10613,12 @@ Variable *TokenCpnd::findParameter(std::string &id)
 
 // recursively search for local variables up the codeblock
 // Intern the query name ONCE, then walk the scope chain by the integer sid.
-Variable *TokenCpnd::findVariable(const StringPool &sp, std::string &id)
+Variable *TokenCpnd::findVariable(const madc::dis::intern_table &sp, std::string &id)
 {
     return findVariable(sp, sp.intern(id), id);
 }
 
-Variable *TokenCpnd::findVariableThisScope(const StringPool &sp, uint32_t qsid,
+Variable *TokenCpnd::findVariableThisScope(const madc::dis::intern_table &sp, uint32_t qsid,
 					   std::string &id)
 {
     // Absorb any newly-appended variables into the O(1) index (first-wins via
@@ -10656,7 +10656,7 @@ Variable *TokenCpnd::findVariableThisScope(const StringPool &sp, uint32_t qsid,
     return res;
 }
 
-Variable *TokenCpnd::findVariable(const StringPool &sp, uint32_t qsid, std::string &id)
+Variable *TokenCpnd::findVariable(const madc::dis::intern_table &sp, uint32_t qsid, std::string &id)
 {
     DBG(cout << "TokenCpnd::findVariable(" << id << ") method: " << (method ? method->returns.name : "NULL") << endl);
     if ( Variable *res = findVariableThisScope(sp, qsid, id) )
@@ -10667,7 +10667,7 @@ Variable *TokenCpnd::findVariable(const StringPool &sp, uint32_t qsid, std::stri
     return NULL;
 }
 
-Variable *TokenCpnd::findVariableLocal(const StringPool &sp, std::string &id)
+Variable *TokenCpnd::findVariableLocal(const madc::dis::intern_table &sp, std::string &id)
 {
     uint32_t qsid = sp.intern(id);
     // Walk the scope chain but stop at the program/global scope: a hit here is a

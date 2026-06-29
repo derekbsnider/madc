@@ -1,6 +1,7 @@
-// Unit tests for stringpool.h: the arena-model interned string table (the
-// backing store for TokenRec.spelling_id). Verifies dedup, distinctness, the
-// str()/c_str() roundtrip, the reserved empty id, and growth/rehash integrity.
+// Unit tests for madc::dis::intern_table (madcdis/intern_table.h): the
+// arena-model interned string table (the backing store for TokenRec.spelling_id).
+// Verifies dedup, distinctness, the str()/c_str() roundtrip, the reserved empty
+// id, and growth/rehash integrity.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
@@ -11,11 +12,11 @@ thread_local bool madc_verbose = false;
 #include <cstdio>
 #include <string>
 #include <vector>
-#include "stringpool.h"
+#include "madcdis/intern_table.h"
 
 TEST_CASE("intern dedups and assigns stable ids")
 {
-    StringPool p;
+    madc::dis::intern_table p;
     uint32_t a = p.intern("vector");
     uint32_t b = p.intern("vector");   // same spelling -> same id
     uint32_t c = p.intern("map");
@@ -29,14 +30,14 @@ TEST_CASE("intern dedups and assigns stable ids")
 
 TEST_CASE("empty string is the reserved id 0")
 {
-    StringPool p;
+    madc::dis::intern_table p;
     CHECK(p.intern("") == 0u);
     CHECK(p.intern(std::string()) == 0u);
 }
 
 TEST_CASE("embedded NUL bytes are honored by length, not strlen")
 {
-    StringPool p;
+    madc::dis::intern_table p;
     uint32_t a = p.intern("ab\0cd", 5);
     uint32_t b = p.intern("ab\0ce", 5);
     CHECK(a != b);
@@ -46,7 +47,7 @@ TEST_CASE("embedded NUL bytes are honored by length, not strlen")
 
 TEST_CASE("growth/rehash preserves ids and dedup across many entries")
 {
-    StringPool p;
+    madc::dis::intern_table p;
     const int N = 5000;
     std::vector<uint32_t> ids;
     char buf[32];
@@ -60,7 +61,7 @@ TEST_CASE("growth/rehash preserves ids and dedup across many entries")
 
 TEST_CASE("reserve does not change ids")
 {
-    StringPool p;
+    madc::dis::intern_table p;
     uint32_t a = p.intern("alpha");
     p.reserve(1u << 20, 1u << 16);
     CHECK(p.intern("alpha") == a);

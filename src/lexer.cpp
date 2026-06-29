@@ -682,7 +682,7 @@ void Program::expand_pending_auto_include_macros(size_t original_start)
 	    TokenIdent *ident = (TokenIdent *)tb;
 	    if ( pending_auto_include_identifiers.count(ident->str) )
 	    {
-		InternKeyedMap<std::string>::iterator di =
+		madc::dis::intern_keyed_map<std::string>::iterator di =
 		    define_map.find(ident->str);
 		if ( di != define_map.end() )
 		{
@@ -1069,7 +1069,7 @@ static bool predefine_is_cpp_only(const char *name)
 
 void Program::_tokenizer_init()
 {
-    // Bind the interned-spelling maps to this Program's StringPool BEFORE any
+    // Bind the interned-spelling maps to this Program's intern_table BEFORE any
     // insert (add_keywords / add_datatypes / the predefined define_map below) so
     // their string-keyed inserts intern correctly; hot lookups in _getToken pass a
     // pre-computed spelling_id (uint32) instead of comparing strings.
@@ -3807,7 +3807,7 @@ TokenBase *Program::_getToken()
 		word += ch;
 		// Fold the spelling hash WHILE reading the identifier (tinycc model)
 		// so intern() below doesn't re-walk the bytes for the hash.
-		uint32_t whash = StringPool::hash_step(StringPool::hash_init(), (unsigned char)ch);
+		uint32_t whash = madc::dis::intern_table::hash_step(madc::dis::intern_table::hash_init(), (unsigned char)ch);
 
 		// Fast path: scan the identifier-continuation SPAN straight off the
 		// flat buffer (one append + a contiguous hash fold) instead of
@@ -3818,13 +3818,13 @@ TokenBase *Program::_getToken()
 		{
 		    word.append(idspan, idlen);
 		    for ( size_t k = 0; k < idlen; ++k )
-			whash = StringPool::hash_step(whash, (unsigned char)idspan[k]);
+			whash = madc::dis::intern_table::hash_step(whash, (unsigned char)idspan[k]);
 		}
 		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 		{
 		    int wc = source.get();
 		    word += (char)wc;
-		    whash = StringPool::hash_step(whash, (unsigned char)wc);
+		    whash = madc::dis::intern_table::hash_step(whash, (unsigned char)wc);
 		}
 		if ( word == "L" && source.good()
 		  && (source.peek() == '"' || source.peek() == '\'') )
@@ -4554,7 +4554,7 @@ TokenBase *Program::_getToken()
 		// mode, so this find is a no-op there.
 		if ( !cpp_operator_map.empty() )
 		{
-		    InternKeyedMap<TokenBase *>::iterator oi =
+		    madc::dis::intern_keyed_map<TokenBase *>::iterator oi =
 			cpp_operator_map.find(sid);
 		    if ( oi != cpp_operator_map.end() )
 			return (*oi)->clone();

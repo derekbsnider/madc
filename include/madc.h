@@ -23,7 +23,7 @@
 #include <vector>
 
 #include "libmadc/value.h"
-#include "stringpool.h"
+#include "madcdis/intern_table.h"
 
 class Method;
 class Program;
@@ -357,7 +357,7 @@ public:
     // first-wins (emplace) to match the old front-to-back scan. `variables` is
     // append-only during parse; the one erase site (foreach-catch lowering) resets
     // the index, and a shrink is detected defensively below.
-    // Keyed by interned spelling_id (StringPool), NOT std::string: the query name
+    // Keyed by interned spelling_id (madc::dis::intern_table), NOT std::string: the query name
     // is interned ONCE at the scope-walk entry and the integer sid is probed at
     // every scope level, instead of re-hashing the std::string per level up the
     // parent chain (C2 — "intern the name into the lookup"; findVariable was
@@ -379,18 +379,18 @@ public:
     }
     Variable *getParameter(unsigned int);
     Variable *findParameter(std::string &s);
-    // Walk this scope chain for `id`. The (StringPool&, std::string&) entry interns
+    // Walk this scope chain for `id`. The (intern_table&, std::string&) entry interns
     // the query ONCE; the inner overload takes the pre-interned sid and recurses up
     // `parent` probing the sid-keyed index at each level (no per-level re-hash).
-    Variable *findVariable(const StringPool &sp, std::string &id);
-    Variable *findVariable(const StringPool &sp, uint32_t qsid, std::string &id);
+    Variable *findVariable(const madc::dis::intern_table &sp, std::string &id);
+    Variable *findVariable(const madc::dis::intern_table &sp, uint32_t qsid, std::string &id);
     // Single-level lookup in THIS scope only (no parent walk).
-    Variable *findVariableThisScope(const StringPool &sp, uint32_t qsid,
+    Variable *findVariableThisScope(const madc::dis::intern_table &sp, uint32_t qsid,
 				    std::string &id);
     // Function-local lookup: walk THIS scope chain up to (but not into) the
     // program/global scope. A name found here is a parameter or block local,
     // which in C++ unqualified lookup shadows any same-named namespace member.
-    Variable *findVariableLocal(const StringPool &sp, std::string &id);
+    Variable *findVariableLocal(const madc::dis::intern_table &sp, std::string &id);
 };
 
 class TokenFunc: public TokenVar, public TokenCpnd
@@ -831,7 +831,7 @@ public:
 typedef void (*fVOIDFUNC)(void);
 
 // maps
-typedef InternKeyedMap<TokenKeyword *> keyword_map_t;
+typedef madc::dis::intern_keyed_map<TokenKeyword *> keyword_map_t;
 typedef std::map<std::string, TokenDataType *> datatype_map_t;
 typedef std::map<std::string, DataDef *> datadef_map_t;
 typedef std::map<std::string, FuncDef *> funcdef_map_t;
@@ -1536,7 +1536,7 @@ public:
     // separately from keyword_map because the operator tokens are not
     // TokenKeyword subclasses. Populated (C++-gated) in add_keywords; looked up
     // and cloned in _getToken alongside keyword_map.
-    InternKeyedMap<TokenBase *> cpp_operator_map;
+    madc::dis::intern_keyed_map<TokenBase *> cpp_operator_map;
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     datadef_map_t  struct_map;		// data definitions defined by struct
@@ -2060,11 +2060,11 @@ public:
 	std::string variadic_param;       // GNU named varargs parameter (`args...`)
 	std::string body;                 // body template with param names as placeholders
     };
-    InternKeyedMap<MacroDef> macro_map;	// function-like macros (key = interned spelling-id)
+    madc::dis::intern_keyed_map<MacroDef> macro_map;	// function-like macros (key = interned spelling-id)
     enum LazyKind { lkVariable = 1, lkFunction = 2, lkType = 3, lkStruct = 4 };
     struct LazyEntry { int header; LazyKind kind; };
     std::map<std::string, LazyEntry> lazy_map;	// deferred symbol registration
-    InternKeyedMap<std::string> define_map;	// #define name value (key = interned spelling-id)
+    madc::dis::intern_keyed_map<std::string> define_map;	// #define name value (key = interned spelling-id)
     std::set<std::string> disabled_builtin_names;	// -fno-builtin-foo from CLI/tests
     std::map<std::string, std::stack<std::string>> _macro_save_stack; // #pragma push_macro / pop_macro
     std::vector<std::string> include_paths;	// -I include search paths (for #include "file.h")
@@ -2318,7 +2318,7 @@ public:
     // include/stringpool.h and docs/plans/2026-06-23-arena-interning-HANDOFF.md).
     // P0 step 2: getToken() interns each ttIdentifier spelling -> uint32 id on the
     // token. Steps 3/4 re-key the hot string maps and drop the per-token string.
-    StringPool strpool;
+    madc::dis::intern_table strpool;
     uint32_t   intern_spelling(const std::string &s) { return strpool.intern(s); }
     const char *spelling(uint32_t id) const { return strpool.c_str(id); }
 
