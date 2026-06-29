@@ -28,6 +28,26 @@ thread_local bool madc_verbose = false;
 
 // Global instances are defined in parser.cpp (linked via TESTOBJ)
 
+// Local DataDefSTRUCT fixture for the struct tests. This used to be the
+// compiler-global `ddTESTSTRUCT` built-in (removed as legacy cruft — the
+// teststruct.mad integration test now defines its own struct); the unit tests
+// only need a representative struct to exercise DataDefSTRUCT, so build one
+// here. A function-local static (not a file-scope global) so it is constructed
+// on first use — after the `ddCHARptr`/`ddINT`/`ddUINT8` globals it references
+// (defined in parser.cpp, a different TU) are initialized — avoiding a
+// static-init-order crash.
+static DataDefSTRUCT &test_struct()
+{
+	static DataDefSTRUCT s("teststruct",
+	{
+		{"name", &ddCHARptr},
+		{"id",   &ddINT},
+		{"age",  &ddUINT8},
+		{"sex",  &ddUINT8}
+	});
+	return s;
+}
+
 TEST_SUITE("DataType enum") {
     TEST_CASE("primitive types have expected values") {
         CHECK((int)DataType::dtVOID == 0);
@@ -109,9 +129,9 @@ TEST_SUITE("DataDef type queries") {
     }
 
     TEST_CASE("struct type has btStruct basetype") {
-        CHECK(ddTESTSTRUCT.basetype() == BaseType::btStruct);
-        CHECK(ddTESTSTRUCT.is_struct());
-        CHECK(!ddTESTSTRUCT.is_numeric());
+        CHECK(test_struct().basetype() == BaseType::btStruct);
+        CHECK(test_struct().is_struct());
+        CHECK(!test_struct().is_numeric());
     }
 
     TEST_CASE("rawtype strips pointer and reference variants") {
@@ -139,30 +159,30 @@ TEST_SUITE("DataDef type queries") {
 
 TEST_SUITE("DataDefSTRUCT") {
     TEST_CASE("teststruct has expected members and size") {
-        CHECK(ddTESTSTRUCT.members.size() == 4);
-        CHECK(ddTESTSTRUCT.members[0].first == "name");
-        CHECK(ddTESTSTRUCT.members[1].first == "id");
-        CHECK(ddTESTSTRUCT.members[2].first == "age");
-        CHECK(ddTESTSTRUCT.members[3].first == "sex");
+        CHECK(test_struct().members.size() == 4);
+        CHECK(test_struct().members[0].first == "name");
+        CHECK(test_struct().members[1].first == "id");
+        CHECK(test_struct().members[2].first == "age");
+        CHECK(test_struct().members[3].first == "sex");
     }
 
     TEST_CASE("member offsets are sequential") {
         std::string name_s = "name", id_s = "id", age_s = "age";
-        CHECK(ddTESTSTRUCT.m_offset(name_s) == 0);
-        CHECK(ddTESTSTRUCT.m_offset(id_s) == (ssize_t)sizeof(char *));
-        CHECK(ddTESTSTRUCT.m_offset(age_s) == (ssize_t)(sizeof(char *) + 4));
+        CHECK(test_struct().m_offset(name_s) == 0);
+        CHECK(test_struct().m_offset(id_s) == (ssize_t)sizeof(char *));
+        CHECK(test_struct().m_offset(age_s) == (ssize_t)(sizeof(char *) + 4));
     }
 
     TEST_CASE("m_type returns correct DataDef pointer") {
         std::string id_s = "id";
-        DataDef *t = ddTESTSTRUCT.m_type(id_s);
+        DataDef *t = test_struct().m_type(id_s);
         CHECK(t != nullptr);
         CHECK(t->is_integer());
     }
 
     TEST_CASE("m_offset returns -1 for unknown member") {
         std::string unknown = "nonexistent";
-        CHECK(ddTESTSTRUCT.m_offset(unknown) == -1);
+        CHECK(test_struct().m_offset(unknown) == -1);
     }
 }
 

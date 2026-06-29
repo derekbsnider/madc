@@ -4,7 +4,7 @@
 # warnings silently. Lower counts in the SAME commit that fixes a warning class.
 # The end state is an all-zero baseline. Enforced by scripts/warn_census.sh --check
 # (wired into `make -C src fulltest`).
-# Current total: 5 warnings across 4 tests (2026-06-29). History: c3514126
+# Current total: 3 warnings across 3 tests (2026-06-29). History: c3514126
 # cleared the _Rb_tree pointer-fidelity cluster (97 -> 29); Class 3 case-range
 # lowering cleared testcaserange (29 -> 27); derived->base spill upcast cleared
 # testvectorptr (27 -> 24); local-shadows-namespace name resolution cleared the
@@ -18,8 +18,9 @@
 # fn-ptr cast fix (6818e40b) also cleared testfinstrumentfunctions's
 # `(void(*)())fn` cast (was `(long)fn`), tightened here (10 -> 8); teststructinterop
 # used the invalid `struct fd_set` (gcc rejects it — fd_set is an anonymous-struct
-# typedef with no tag), fixed to the conforming `fd_set` typedef (8 -> 5).
-2 teststruct.mad
+# typedef with no tag), fixed to the conforming `fd_set` typedef (8 -> 5);
+# removed the legacy built-in `ddTESTSTRUCT` and defined the struct in
+# teststruct.mad (it used the undefined built-in, which gcc rejects) (5 -> 3).
 1 testargv.mad
 1 testcapture.mad
 1 testforeach2.mad

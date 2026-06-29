@@ -1096,7 +1096,6 @@ void Program::_tokenizer_init()
     pending_no_strict_aliasing = false;
     add_keywords();
     add_datatypes();
-    struct_map["teststruct"] = &ddTESTSTRUCT;
 
     // Ignored C storage hints. Type qualifiers are real tokens so
     // macro token-pasting can still see their spelling.

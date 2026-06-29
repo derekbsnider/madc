@@ -1193,19 +1193,6 @@ extern DataDefLPSTR ddLPSTR;
 extern DataDefPTR ddVOIDptr, ddCHARptr, ddINTptr, ddINT32ptr;
 extern DataDefARRAY ddARRAY;
 
-#if 1
-class DataDefTEST:      public DataDefSTRUCT { public: DataDefTEST():
-	DataDefSTRUCT("teststruct",
-	{
-		{"name", &ddCHARptr},
-		{"id",   &ddINT},
-		{"age",  &ddUINT8},
-		{"sex",  &ddUINT8}
-	}) {}
-};
-
-extern DataDefTEST ddTESTSTRUCT;
-#endif
 
 // auto type placeholder
 class DataDefAUTO: public DataDef

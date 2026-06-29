@@ -8604,7 +8604,6 @@ DataDefARRAY ddARRAY;
 DataDefLPSTR ddLPSTR;
 DataDefPTR ddVOIDptr(ddVOID), ddCHARptr(ddCHAR), ddINTptr(ddINT), ddINT32ptr(ddINT32);
 DataDefAUTO ddAUTO;
-DataDefTEST ddTESTSTRUCT;
 
 struct DataDefMAXAlignTInit
 {
