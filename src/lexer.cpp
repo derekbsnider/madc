@@ -1077,6 +1077,9 @@ void Program::_tokenizer_init()
     cpp_operator_map.set_pool(&strpool);
     define_map.set_pool(&strpool);
     macro_map.set_pool(&strpool);
+    // datatype_map uses a DEDICATED dense pool (not strpool): type names are a
+    // small domain, so a private pool keeps its intern_keyed_map _slot tight.
+    datatype_map.set_pool(&type_name_pool);
 
     tkProgram = NULL;
     tkFunction = NULL;
@@ -2116,9 +2119,9 @@ static bool push_precompiled_header_tokens(Program &pgm,
 		replacement = (*ki)->clone();
 	    else
 	    {
-		datatype_map_iter di = pgm.datatype_map.find(ident->str);
+		flat_datatype_map_iter di = pgm.datatype_map.find(ident->str);
 		if ( di != pgm.datatype_map.end() )
-		    replacement = di->second->clone();
+		    replacement = (*di)->clone();
 	    }
 	    if ( replacement )
 	    {
@@ -2507,7 +2510,7 @@ TokenBase *Program::make_eol(int cnt)   { return new TokenEOL(cnt); }
 TokenBase *Program::_getToken()
 {
     keyword_map_iter kmi;
-    datatype_map_iter bmi;
+    flat_datatype_map_iter bmi = nullptr;
     string word;
     int ch, cnt, row, col;
 
@@ -4560,7 +4563,7 @@ TokenBase *Program::_getToken()
 			return (*oi)->clone();
 		}
 		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
-		    return bmi->second->clone();
+		    return (*bmi)->clone();
 		if ( auto_include_standard_identifier(word) )
 		    return getToken();
 		TokenIdent *ti = (TokenIdent *)make_ident(word);

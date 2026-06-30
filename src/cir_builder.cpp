@@ -4114,12 +4114,12 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 int CirBuilder::fnptr_alias_stars(const std::string &alias)
 {
 	if (alias.empty() || !m_prog) return 1;
-	datatype_map_iter it = m_prog->datatype_map.find(alias);
-	if (it == m_prog->datatype_map.end() || !it->second) return 1;
+	flat_datatype_map_iter it = m_prog->datatype_map.find(alias);
+	if (it == m_prog->datatype_map.end() || !*it) return 1;
 	// A Form-2 pointer-to-function typedef already carries the pointer (0
 	// extra stars); a Form-1 function typedef does not, so a fn-ptr use of
 	// the alias needs one explicit `*`.
-	if (DataDefFPTR *afp = dynamic_cast<DataDefFPTR *>(&it->second->definition))
+	if (DataDefFPTR *afp = dynamic_cast<DataDefFPTR *>(&(*it)->definition))
 		return afp->ptr_syntax ? 0 : 1;
 	return 1;
 }
@@ -4814,10 +4814,10 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// array-of-pointer-to-typedef'd-array (pr98366/strlen-4 family).
 		size_t skip_tail = 0;
 		if (!is_ptr && !v->typedef_name.empty() && m_prog) {
-			datatype_map_iter it = m_prog->datatype_map.find(v->typedef_name);
-			if (it != m_prog->datatype_map.end() && it->second) {
+			flat_datatype_map_iter it = m_prog->datatype_map.find(v->typedef_name);
+			if (it != m_prog->datatype_map.end() && *it) {
 				std::vector<carray_dim_t> tdims;
-				peel_carray_dims(&it->second->definition, tdims);
+				peel_carray_dims(&(*it)->definition, tdims);
 				skip_tail = tdims.size();
 			}
 		}
@@ -5085,11 +5085,11 @@ int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias
 	if (m_prog) {
 		// Resolve the alias to the typedef's own DataDef so its base pointer
 		// depth can be subtracted from the usage-site total.
-		datatype_map_iter it = m_prog->datatype_map.find(alias);
-		if (it != m_prog->datatype_map.end() && it->second) {
-			base_depth = dd_ptr_depth(&it->second->definition);
+		flat_datatype_map_iter it = m_prog->datatype_map.find(alias);
+		if (it != m_prog->datatype_map.end() && *it) {
+			base_depth = dd_ptr_depth(&(*it)->definition);
 			fnptr_alias = (dynamic_cast<DataDefFPTR *>(
-					&it->second->definition) != NULL);
+					&(*it)->definition) != NULL);
 		}
 	}
 	int stars = full_depth - base_depth;

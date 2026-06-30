@@ -1779,9 +1779,9 @@ DataDef *Program::resolve_named_datadef(const std::string &name)
     if ( dmi != struct_map.end() )
 	return dmi->second;
 
-    datatype_map_iter bmi = datatype_map.find(name);
+    flat_datatype_map_iter bmi = datatype_map.find(name);
     if ( bmi != datatype_map.end() )
-	return &bmi->second->definition;
+	return &(*bmi)->definition;
 
     if ( name == "void" ) return &ddVOID;
     if ( name == "bool" || name == "_Bool" ) return &ddBOOL;
@@ -2129,9 +2129,9 @@ DataDefCLASS *Program::resolve_expression_class_scope(const std::string &name)
 	dd = resolve_class_type_alias(compounds.top()->method->owner_class, name);
     if ( !dd )
     {
-	datatype_map_iter dti = datatype_map.find(name);
+	flat_datatype_map_iter dti = datatype_map.find(name);
 	if ( dti != datatype_map.end() )
-	    dd = &dti->second->definition;
+	    dd = &(*dti)->definition;
     }
     if ( !dd )
     {
@@ -3327,9 +3327,9 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 	    return real;
     }
 
-    datatype_map_iter have = datatype_map.find(mangled);
+    flat_datatype_map_iter have = datatype_map.find(mangled);
     if ( have != datatype_map.end() )
-	return use_site_type_token((TokenDataType *)have->second, tb);
+	return use_site_type_token((TokenDataType *)(*have), tb);
 
     DataDefCLASS *fwd = new DataDefCLASS(mangled, 0, DataType::dtRESERVED);
     fwd->is_dependent_placeholder = true;
@@ -3432,9 +3432,9 @@ DataDefCLASS *Program::materialize_dependent_member_type(DataDefCLASS *owner,
     if ( !owner || member_name.empty() )
 	return NULL;
     std::string dep_name = owner->name + "__" + sanitize_template_fragment(member_name);
-    datatype_map_iter have = datatype_map.find(dep_name);
+    flat_datatype_map_iter have = datatype_map.find(dep_name);
     if ( have != datatype_map.end() )
-	return dynamic_cast<DataDefCLASS *>(&have->second->definition);
+	return dynamic_cast<DataDefCLASS *>(&(*have)->definition);
 
     DataDefCLASS *dep = new DataDefCLASS(dep_name, 0, DataType::dtRESERVED);
     dep->is_dependent_placeholder = true;
@@ -3451,9 +3451,9 @@ DataDefCLASS *Program::materialize_opaque_class_type(const std::string &name,
 {
     if ( name.empty() )
 	return NULL;
-    datatype_map_iter have = datatype_map.find(name);
+    flat_datatype_map_iter have = datatype_map.find(name);
     if ( have != datatype_map.end() )
-	return dynamic_cast<DataDefCLASS *>(&have->second->definition);
+	return dynamic_cast<DataDefCLASS *>(&(*have)->definition);
 
     DataDefCLASS *dep = new DataDefCLASS(name, 0, DataType::dtRESERVED);
     dep->is_dependent_placeholder = true;
@@ -3877,10 +3877,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     }
 
     // Already instantiated? Return a use-site clone of the cached type.
-    datatype_map_iter have = datatype_map.find(registered_mangled);
+    flat_datatype_map_iter have = datatype_map.find(registered_mangled);
     if ( have != datatype_map.end() )
     {
-	TokenDataType *cached = (TokenDataType *)have->second;
+	TokenDataType *cached = (TokenDataType *)(*have);
 	if ( td.body.empty() || !is_incomplete_template_class_type(cached) )
 	    return use_site_type_token(cached, tb);
     }
@@ -4355,11 +4355,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    arg_types_by_slot, arg_tokens_by_slot);
     }
 
-    datatype_map_iter now = datatype_map.find(registered_mangled);
+    flat_datatype_map_iter now = datatype_map.find(registered_mangled);
     if ( now == datatype_map.end() )
 	Throw(tb) << "internal: template instantiation " << registered_mangled << " did not register" << flush;
     DBG(std::cout << "instantiate_template_use(): instantiated " << registered_mangled << std::endl);
-    return use_site_type_token((TokenDataType *)now->second, tb);
+    return use_site_type_token((TokenDataType *)(*now), tb);
 }
 
 bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
@@ -4647,9 +4647,9 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	}
 	canon += ">";
 
-	datatype_map_iter have = datatype_map.find(mangled);
+	flat_datatype_map_iter have = datatype_map.find(mangled);
 	if ( have != datatype_map.end() )
-	    return use_site_type_token((TokenDataType *)have->second, tb);
+	    return use_site_type_token((TokenDataType *)(*have), tb);
 
 	DataDefCLASS *fwd = new DataDefCLASS(mangled, 0, DataType::dtRESERVED);
 	fwd->is_dependent_placeholder = true;
@@ -4894,9 +4894,9 @@ void Program::complete_pending_template_instantiations(const std::string &class_
     std::vector<Program::PendingTemplateInstantiation> pending = pi->second;
     for ( size_t i = 0; i < pending.size(); ++i )
     {
-	datatype_map_iter have = datatype_map.find(pending[i].mangled_name);
+	flat_datatype_map_iter have = datatype_map.find(pending[i].mangled_name);
 	if ( have == datatype_map.end()
-	  || !is_incomplete_template_class_type((TokenDataType *)have->second) )
+	  || !is_incomplete_template_class_type((TokenDataType *)(*have)) )
 	    continue;
 	if ( template_completion_requested.find(pending[i].mangled_name)
 	  == template_completion_requested.end() )
@@ -4984,9 +4984,9 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
     if ( is_incomplete_class_datadef(owner) )
     {
 	request_template_instantiation_completion(owner->name);
-	datatype_map_iter refreshed = datatype_map.find(owner->name);
+	flat_datatype_map_iter refreshed = datatype_map.find(owner->name);
 	if ( refreshed != datatype_map.end() )
-	    owner = dynamic_cast<DataDefCLASS *>(&refreshed->second->definition);
+	    owner = dynamic_cast<DataDefCLASS *>(&(*refreshed)->definition);
 	if ( !owner )
 	    return NULL;
     }
@@ -4996,9 +4996,9 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 	if ( is_incomplete_class_datadef(owner) )
 	{
 	    request_template_instantiation_completion(owner->name);
-	    datatype_map_iter refreshed = datatype_map.find(owner->name);
+	    flat_datatype_map_iter refreshed = datatype_map.find(owner->name);
 	    if ( refreshed != datatype_map.end() )
-		owner = dynamic_cast<DataDefCLASS *>(&refreshed->second->definition);
+		owner = dynamic_cast<DataDefCLASS *>(&(*refreshed)->definition);
 	    if ( !owner )
 		return NULL;
 	}
@@ -5053,9 +5053,9 @@ TokenDataType *Program::resolve_class_member_type_chain(DataDefCLASS *owner,
 	if ( is_incomplete_class_datadef(owner) )
 	{
 	    request_template_instantiation_completion(owner->name);
-	    datatype_map_iter refreshed = datatype_map.find(owner->name);
+	    flat_datatype_map_iter refreshed = datatype_map.find(owner->name);
 	    if ( refreshed != datatype_map.end() )
-		owner = dynamic_cast<DataDefCLASS *>(&refreshed->second->definition);
+		owner = dynamic_cast<DataDefCLASS *>(&(*refreshed)->definition);
 	    if ( !owner )
 		return NULL;
 	}
@@ -5282,7 +5282,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	}
     }
 
-    datatype_map_iter dmi = datatype_map.find(tname);
+    flat_datatype_map_iter dmi = datatype_map.find(tname);
     if ( dmi != datatype_map.end() )
     {
 	// dmi->second is the shared prototype token created at the typedef's
@@ -5290,7 +5290,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	// stamped with this use-site token's position, so a typedef'd-type
 	// usage (and any diagnostic or CIR node derived from it) maps to the
 	// use site rather than the typedef definition.
-	TokenDataType *use = (TokenDataType *)dmi->second->clone();
+	TokenDataType *use = (TokenDataType *)(*dmi)->clone();
 	use->file   = tb->file;
 	use->line   = tb->line;
 	use->column = tb->column;
@@ -5468,9 +5468,9 @@ TokenObjTemp *Program::try_parse_functional_ctor(TokenBase *name_tb)
 	}
 	else
 	{
-		datatype_map_iter dmi = datatype_map.find(name);
+		flat_datatype_map_iter dmi = datatype_map.find(name);
 		if ( dmi != datatype_map.end() )
-			cdd = dynamic_cast<DataDefCLASS *>(&dmi->second->definition);
+			cdd = dynamic_cast<DataDefCLASS *>(&(*dmi)->definition);
 		if ( !cdd )
 		{
 			datadef_map_iter sdmi = struct_map.find(name);
@@ -7741,9 +7741,9 @@ bool Program::fold_constant_qualified_member(TokenBase *first, int64_t &out)
 	}
 	if ( !scope )
 	{
-	    datatype_map_iter di = datatype_map.find(nm);
+	    flat_datatype_map_iter di = datatype_map.find(nm);
 	    if ( di != datatype_map.end() )
-		scope = dynamic_cast<DataDefCLASS *>(&di->second->definition);
+		scope = dynamic_cast<DataDefCLASS *>(&(*di)->definition);
 	}
 	if ( !scope && (namespace_map.count(nm) || namespace_datatype_map.count(nm)) )
 	    pending_ns = nm;
@@ -16172,10 +16172,10 @@ static bool read_local_type_arg(Program &pgm,
 	dd = &((TokenDataType *)t)->definition;
     else if ( is_contextual_identifier_token(t) )
     {
-	datatype_map_iter it =
+	flat_datatype_map_iter it =
 	    pgm.datatype_map.find(contextual_identifier_name(t));
-	if ( it != pgm.datatype_map.end() && it->second )
-	    dd = &it->second->definition;
+	if ( it != pgm.datatype_map.end() && *it )
+	    dd = &(*it)->definition;
     }
     if ( !dd )
 	return false;
@@ -17386,9 +17386,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // datatype_map under its bare name (header-defined classes are not
 		    // namespace-keyed); fall back to the std namespace map.
 		    DataDef *tinfo = NULL;
-		    datatype_map_iter gdti = datatype_map.find("type_info");
+		    flat_datatype_map_iter gdti = datatype_map.find("type_info");
 		    if ( gdti != datatype_map.end() )
-			tinfo = &gdti->second->definition;
+			tinfo = &(*gdti)->definition;
 		    if ( !tinfo )
 		    {
 			namespace_datatype_map_t::iterator nti = namespace_datatype_map.find("std");
@@ -17493,9 +17493,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    else if ( type_tb->type() == TokenType::ttIdentifier )
 		    {
 			std::string tname = ((TokenIdent *)type_tb)->str;
-			datatype_map_iter tdmi = datatype_map.find(tname);
+			flat_datatype_map_iter tdmi = datatype_map.find(tname);
 			if ( tdmi != datatype_map.end() )
-			    target_dd = &tdmi->second->definition;
+			    target_dd = &(*tdmi)->definition;
 			if ( !target_dd )
 			{
 			    datadef_map_iter sdmi = struct_map.find(tname);
@@ -18744,11 +18744,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // the same shape as the template-id branch above.
 		    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		    {
-			datatype_map_iter dmi = datatype_map.find(ident_tb->str);
+			flat_datatype_map_iter dmi = datatype_map.find(ident_tb->str);
 			if ( dmi != datatype_map.end() )
 			{
 			    TokenDataType *use =
-				(TokenDataType *)dmi->second->clone();
+				(TokenDataType *)(*dmi)->clone();
 			    use->file   = ident_tb->file;
 			    use->line   = ident_tb->line;
 			    use->column = ident_tb->column;
@@ -19433,10 +19433,10 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    && (after_tid->id() == TokenID::tkOpBrk
 				     || after_tid->id() == TokenID::tkOpBrc);
 			    }
-			    datatype_map_iter tdmi = datatype_map.find(tname);
+			    flat_datatype_map_iter tdmi = datatype_map.find(tname);
 			    if ( !template_ctor_grouping && tdmi != datatype_map.end() )
 			    {
-				cast_dd = &tdmi->second->definition;
+				cast_dd = &(*tdmi)->definition;
 				if ( typedef_alias_matches_datadef(tname, cast_dd) )
 				    cast_typedef_name = tname;
 				if ( tokens.size() > 1
@@ -21726,7 +21726,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    source_ns += parts[i];
 	}
 	Variable *v = NULL;
-	datatype_map_iter dti = pgm.datatype_map.end();
+	flat_datatype_map_iter dti = pgm.datatype_map.end();
 	datatype_map_t::iterator ns_dti;
 	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.end();
 	if ( source_ns.empty() )
@@ -21760,7 +21760,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    if ( v )
 		pgm.namespace_map[pgm.current_namespace()][name] = v;
 	    if ( source_ns.empty() && dti != pgm.datatype_map.end() )
-		pgm.namespace_datatype_map[pgm.current_namespace()][name] = dti->second;
+		pgm.namespace_datatype_map[pgm.current_namespace()][name] = (*dti);
 	    else if ( !source_ns.empty()
 		   && nti != pgm.namespace_datatype_map.end()
 		   && ns_dti != nti->second.end() )
@@ -21771,7 +21771,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    if ( v && !pgm.findVariable(name) )
 		import_namespace_member(name, v);
 	    if ( source_ns.empty() && dti != pgm.datatype_map.end() )
-		import_namespace_type(name, dti->second);
+		import_namespace_type(name, (*dti));
 	    else if ( !source_ns.empty()
 		   && nti != pgm.namespace_datatype_map.end()
 		   && ns_dti != nti->second.end() )
@@ -22302,7 +22302,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	|| (pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false);
     bool is_union = id() == TokenID::tkUNION;
     const char *aggregate_kw = is_union ? "union" : "struct";
-    datatype_map_iter bmi; // TokenDataType map
+    flat_datatype_map_iter bmi; // TokenDataType map
     datadef_map_iter dmi;  // DataDef map
 
     DBG(std::cout << std::endl << "TokenSTRUCT::parse() top" << std::endl);
@@ -22386,10 +22386,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		sdd->canonical_cpp_spelling = pgm.current_namespace() + "::" + name;
 	}
 	TokenDataType *tdt_ = NULL;
-	datatype_map_iter existing = pgm.datatype_map.find(name);
+	flat_datatype_map_iter existing = pgm.datatype_map.find(name);
 	if ( existing != pgm.datatype_map.end()
-	  && &existing->second->definition == sdd )
-	    tdt_ = existing->second;
+	  && &(*existing)->definition == sdd )
+	    tdt_ = (*existing);
 	else
 	{
 	    tdt_ = new TokenDataType(name.c_str(), *sdd);
@@ -22613,7 +22613,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    {
 		// C allows identical typedef redeclarations — silently accept
 		// when the alias maps to the same underlying type.
-		DataDef *existing = &bmi->second->definition;
+		DataDef *existing = &(*bmi)->definition;
 		if ( existing == alias_dd
 		  || (existing->is_pointer() && alias_dd->is_pointer()
 		      && existing->rawtype() == alias_dd->rawtype()) )
@@ -22736,11 +22736,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	else if ( tn->type() == TokenType::ttIdentifier )
 	{
 	    std::string tname = ((TokenIdent *)tn)->str;
-	    datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	    flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	    if ( tdmi != pgm.datatype_map.end() )
 	    {
 		pgm.nextToken(); // consume the identifier
-		mtype = tdmi->second;
+		mtype = (*tdmi);
 	    }
 		    else
 		    {
@@ -22803,11 +22803,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    else if ( tn->type() == TokenType::ttIdentifier )
 		    {
 			std::string tname = ((TokenIdent *)tn)->str;
-			datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+			flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 			if ( tdmi == pgm.datatype_map.end() )
 			    pgm.Throw(tn) << "Expecting type in anonymous struct definition, got '" << tname << "'" << flush;
 			pgm.nextToken();
-			inner_type = tdmi->second;
+			inner_type = (*tdmi);
 		    }
 		    else if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkUNION )
 		    {
@@ -23540,7 +23540,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		pgm.consume_typedef_gnu_attributes();
 		bmi = pgm.datatype_map.find(alias->str);
 	    if ( bmi != pgm.datatype_map.end() && pgm.compounds.empty()
-	      && &bmi->second->definition != alias_dd )
+	      && &(*bmi)->definition != alias_dd )
 		pgm.Throw(tn) << "Identifier '" << alias->str << "' already defined" << flush;
 	    tdt = new TokenDataType(alias->str.c_str(), *alias_dd);
 	    pgm.datatype_map[alias->str] = tdt;
@@ -24991,7 +24991,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     pgm.parsing_cpp_union_class = false;
     bool do_typedef = pgm.parsing_typedef_decl
 	|| (pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false);
-    datatype_map_iter bmi;
+    flat_datatype_map_iter bmi;
     datadef_map_iter dmi;
 
     DBG(std::cout << std::endl << "TokenCLASS::parse() top" << std::endl);
@@ -25223,11 +25223,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.Throw(tn) << "Expecting class name" << flush;
 	if ( (dmi=pgm.struct_map.find(tag->str)) == pgm.struct_map.end() )
 	{
-	    datatype_map_iter existing_type = pgm.datatype_map.find(tag->str);
+	    flat_datatype_map_iter existing_type = pgm.datatype_map.find(tag->str);
 	    if ( existing_type != pgm.datatype_map.end()
-	      && dynamic_cast<DataDefCLASS *>(&existing_type->second->definition) )
+	      && dynamic_cast<DataDefCLASS *>(&(*existing_type)->definition) )
 	    {
-		pgm.struct_map[tag->str] = &existing_type->second->definition;
+		pgm.struct_map[tag->str] = &(*existing_type)->definition;
 		dmi = pgm.struct_map.find(tag->str);
 	    }
 	}
@@ -25418,15 +25418,15 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     }
     else
     {
-	datatype_map_iter existing_type = pgm.datatype_map.find(tag->str);
+	flat_datatype_map_iter existing_type = pgm.datatype_map.find(tag->str);
 	if ( existing_type == pgm.datatype_map.end()
-	  || &existing_type->second->definition != ddc )
+	  || &(*existing_type)->definition != ddc )
 	{
 	    tdt = new TokenDataType(tag->str.c_str(), *ddc);
 	    pgm.datatype_map[tag->str] = tdt;
 	}
 	else
-	    tdt = existing_type->second;
+	    tdt = (*existing_type);
 	if ( nested_owner_class )
 	    nested_owner_class->type_aliases[class_source_name] = ddc;
 	if ( !pgm.current_namespace().empty() )
@@ -27423,11 +27423,11 @@ TokenBase *TokenREGISTER::parse(Program &pgm)
 		dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
 	    return decl;
 	}
-	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	if ( tdmi != pgm.datatype_map.end() )
 	{
 	    pgm.nextToken();
-	    TokenBase *decl = pgm.parseDeclaration(tdmi->second);
+	    TokenBase *decl = pgm.parseDeclaration((*tdmi));
 	    if ( decl && decl->type() == TokenType::ttDeclare )
 		dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
 	    return decl;
@@ -27665,7 +27665,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     else if ( is_contextual_identifier_token(tn) )
     {
 	std::string tname = contextual_identifier_name(tn);
-	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	if ( tdmi != pgm.datatype_map.end() )
 	{
 	    pgm.nextToken();
@@ -27676,9 +27676,9 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    }
 	    else
 	    {
-		base_dd = &tdmi->second->definition;
+		base_dd = &(*tdmi)->definition;
 		base_source_spelling =
-		    template_type_arg_spelling(tdmi->second, "");
+		    template_type_arg_spelling((*tdmi), "");
 	    }
 	}
 	else
@@ -28183,12 +28183,12 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    // plain (`enum Color col;` after the definition keeps the enum's
 	    // type domain; === depends on it). A plain tag only resolves to an
 	    // actual enum type; only a genuine forward reference decays to int.
-	    datatype_map_iter dti = pgm.datatype_map.find(enum_tag);
+	    flat_datatype_map_iter dti = pgm.datatype_map.find(enum_tag);
 	    if ( dti != pgm.datatype_map.end()
 	      && (scoped
-	       || dynamic_cast<DataDefENUM *>(&dti->second->definition)) )
+	       || dynamic_cast<DataDefENUM *>(&(*dti)->definition)) )
 	    {
-		pgm.pushToken(dti->second);
+		pgm.pushToken((*dti));
 		return NULL;
 	    }
 	    pgm.pushToken(new TokenDataType("int", ddINT));
@@ -28332,12 +28332,12 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 	    }
 	    else
 	    {
-	    datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	    flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	    if ( tdmi != pgm.datatype_map.end() )
 	    {
 		TokenBase *type_tb = pgm.nextToken();
 		TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
-		result = pgm.parseDeclaration(dt ? dt : tdmi->second, true);
+		result = pgm.parseDeclaration(dt ? dt : (*tdmi), true);
 	    }
 	    else
 	    {
@@ -28485,13 +28485,13 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	    }
 	    else
 	    {
-	    datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	    flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	    if ( tdmi != pgm.datatype_map.end() )
 	    {
 		handled = true;
 		TokenBase *type_tb = pgm.nextToken();
 		TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
-		result = pgm.parseDeclaration(dt ? dt : tdmi->second);
+		result = pgm.parseDeclaration(dt ? dt : (*tdmi));
 	    }
 	    }
 	}
@@ -28531,12 +28531,12 @@ TokenBase *TokenRESTRICT::parse(Program &pgm)
 	    pgm.nextToken();
 	    return pgm.parseDeclaration(pgm.parse_typeof_datatype(tn));
 	}
-	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	if ( tdmi != pgm.datatype_map.end() )
 	{
 	    TokenBase *type_tb = pgm.nextToken();
 	    TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
-	    return pgm.parseDeclaration(dt ? dt : tdmi->second);
+	    return pgm.parseDeclaration(dt ? dt : (*tdmi));
 	}
     }
     pgm.Throw(tn) << "Expecting type after 'restrict'" << flush;
@@ -28565,12 +28565,12 @@ TokenBase *TokenVOLATILE::parse(Program &pgm)
 	    pgm.nextToken();
 	    return pgm.parseDeclaration(pgm.parse_typeof_datatype(tn));
 	}
-	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	if ( tdmi != pgm.datatype_map.end() )
 	{
 	    TokenBase *type_tb = pgm.nextToken();
 	    TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
-	    return pgm.parseDeclaration(dt ? dt : tdmi->second);
+	    return pgm.parseDeclaration(dt ? dt : (*tdmi));
 	}
     }
     pgm.Throw(tn) << "Expecting type after 'volatile'" << flush;
@@ -33042,8 +33042,8 @@ static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
 		    return di->second;
 	    }
 	}
-	datatype_map_iter di = pgm.datatype_map.find(head);
-	return di != pgm.datatype_map.end() ? di->second : NULL;
+	flat_datatype_map_iter di = pgm.datatype_map.find(head);
+	return di != pgm.datatype_map.end() ? (*di) : NULL;
     }
     std::string outer;
     std::vector<std::string> args;
@@ -34467,9 +34467,9 @@ static DataDef *skipped_template_function_return_type(
 		base = resolve_class_type_alias(owner, tname);
 	    if ( !base )
 	    {
-		datatype_map_iter dmi = pgm.datatype_map.find(tname);
+		flat_datatype_map_iter dmi = pgm.datatype_map.find(tname);
 		if ( dmi != pgm.datatype_map.end() )
-		    base = &dmi->second->definition;
+		    base = &(*dmi)->definition;
 	    }
 	    if ( !base )
 		continue;
@@ -36022,10 +36022,10 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		    specialization_arg_spellings[i]);
 	    std::string legacy_registered = td.owner_class
 		? td.owner_class->name + "__" + legacy_mangled : legacy_mangled;
-	    datatype_map_iter li = pgm.datatype_map.find(legacy_registered);
+	    flat_datatype_map_iter li = pgm.datatype_map.find(legacy_registered);
 	    if ( legacy_registered != registered_mangled
 	      && li != pgm.datatype_map.end()
-	      && is_incomplete_template_class_type((TokenDataType *)li->second) )
+	      && is_incomplete_template_class_type((TokenDataType *)(*li)) )
 	    {
 		alias_key = registered_mangled;
 		mangled = legacy_mangled;
@@ -36109,13 +36109,13 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	// holders resolve to the same DataDefCLASS.
 	if ( !alias_key.empty() )
 	{
-	    datatype_map_iter ri = pgm.datatype_map.find(registered_mangled);
+	    flat_datatype_map_iter ri = pgm.datatype_map.find(registered_mangled);
 	    if ( ri != pgm.datatype_map.end() )
 	    {
-		pgm.datatype_map[alias_key] = ri->second;
+		pgm.datatype_map[alias_key] = (*ri);
 		if ( !td.defining_namespace.empty() )
 		    pgm.namespace_datatype_map[td.defining_namespace][alias_key] =
-			(TokenDataType *)ri->second;
+			(TokenDataType *)(*ri);
 	    }
 	    datadef_map_iter si = pgm.struct_map.find(registered_mangled);
 	    if ( si != pgm.struct_map.end() )
@@ -36350,9 +36350,9 @@ DataDef *Program::parse_old_style_parameter_base(TokenBase *&nt)
     if ( nt->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)nt)->str;
-	datatype_map_iter tdmi = datatype_map.find(tname);
+	flat_datatype_map_iter tdmi = datatype_map.find(tname);
 	if ( tdmi != datatype_map.end() )
-	    return &tdmi->second->definition;
+	    return &(*tdmi)->definition;
     }
 
     Throw(nt) << "Expecting type in K&R parameter declaration" << flush;
@@ -40674,7 +40674,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    resetPrevToken();
 		    return parseExprStmt(tb);
 		}
-		datatype_map_iter dmi = datatype_map.find(tname);
+		flat_datatype_map_iter dmi = datatype_map.find(tname);
 		// A template-id `Name<...>` must resolve as a template instantiation
 		// even when `Name` ALSO has a datatype_map entry — a forward template
 		// declaration (`template<typename...> class tuple;`) registers BOTH an
@@ -40766,7 +40766,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 			return parseExprStmt(tb);
 		    }
 		    DBG(std::cout << "parseStatement() identifier is a registered type, calling parseDeclaration" << std::endl);
-		    return parseDeclaration(use_site_type_token(dmi->second, tb));
+		    return parseDeclaration(use_site_type_token((*dmi), tb));
 		}
 	    }
 	    // namespace resolution: set current namespace and re-enter parseStatement

@@ -834,6 +834,14 @@ typedef void (*fVOIDFUNC)(void);
 
 // maps
 typedef madc::dis::intern_keyed_map<TokenKeyword *> keyword_map_t;
+// The flat (current-scope) type-name map is interned: O(1) id-keyed lookup over
+// a DEDICATED dense type-name pool (Program::type_name_pool), not the global
+// strpool — type names are a tiny domain, so a dense pool keeps the
+// intern_keyed_map _slot array small (sharing strpool would size it to the
+// global spelling-id max). The namespace-owned inner maps keep std::string keys
+// (datatype_map_t below) because they are enumerated by key; only the flat map
+// is hot enough to intern. See docs/plans/2026-06-12-type-table-value-abi-design.md.
+typedef madc::dis::intern_keyed_map<TokenDataType *> flat_datatype_map_t;
 typedef std::map<std::string, TokenDataType *> datatype_map_t;
 typedef std::map<std::string, DataDef *> datadef_map_t;
 typedef std::map<std::string, FuncDef *> funcdef_map_t;
@@ -843,6 +851,7 @@ typedef std::map<std::string, datatype_map_t> namespace_datatype_map_t;
 
 // map-iterators
 typedef keyword_map_t::iterator keyword_map_iter;
+typedef flat_datatype_map_t::iterator flat_datatype_map_iter;	// TokenDataType ** (NULL = absent)
 typedef std::map<std::string, TokenDataType *>::iterator datatype_map_iter;
 typedef std::map<std::string, DataDef *>::iterator datadef_map_iter;
 typedef std::map<std::string, FuncDef *>::iterator funcdef_map_iter;
@@ -1539,7 +1548,8 @@ public:
     // TokenKeyword subclasses. Populated (C++-gated) in add_keywords; looked up
     // and cloned in _getToken alongside keyword_map.
     madc::dis::intern_keyed_map<TokenBase *> cpp_operator_map;
-    datatype_map_t datatype_map;	// TokenDataType map
+    madc::dis::intern_table type_name_pool;	// dedicated dense pool for flat type-name keys
+    flat_datatype_map_t datatype_map;	// TokenDataType map (interned, keyed via type_name_pool)
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     datadef_map_t  struct_map;		// data definitions defined by struct
     std::map<std::string, DataDefSTRUCT *> tsubst_local_aggregate_map;
