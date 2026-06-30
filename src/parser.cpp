@@ -8601,6 +8601,10 @@ DataDefFLOAT ddFLOAT;
 DataDefDOUBLE ddDOUBLE;
 DataDefSTRUCT ddMAX_ALIGN_T("max_align_t", 0);
 DataDefARRAY ddARRAY;
+// Out-of-line (ddCHAR is declared above; DataDefLPSTR IS-A DataDefPTR now). Keep
+// the "LPSTR" name the plain-tag definition carried (DataDefPTR's ctor would name
+// it "char*"); _type/size are identical to the old rtPtr(dtCHAR) form.
+DataDefLPSTR::DataDefLPSTR() : DataDefPTR(ddCHAR) { name = "LPSTR"; }
 DataDefLPSTR ddLPSTR;
 DataDefPTR ddVOIDptr(ddVOID), ddCHARptr(ddCHAR), ddINTptr(ddINT), ddINT32ptr(ddINT32);
 DataDefAUTO ddAUTO;

@@ -995,7 +995,6 @@ class DataDefUINT128:   public DataDef { public:
 	virtual size_t alignment() const { return 16; } };
 class DataDefFLOAT:     public DataDef { public: DataDefFLOAT() :  DataDef("float", 4,    DataType::dtFLOAT) {} };
 class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("double", 8,   DataType::dtDOUBLE) {} };
-class DataDefLPSTR:     public DataDef { public: DataDefLPSTR():   DataDef("LPSTR", sizeof(char *), rtPtr(DataType::dtCHAR)) {} };
 
 // generic pointer-to-type — tracks what the pointer points to
 // pointers are 64-bit integers at the ABI level (stored in Gp registers)
@@ -1018,6 +1017,14 @@ public:
     virtual RefType reftype() const { return RefType::rtPointer; }
     virtual DataType rawtype() const { return base_type ? base_type->rawtype() : DataType::dtVOID; }
 };
+
+// LPSTR is `char *`. It IS-A DataDefPTR(ddCHAR) — a structural pointer with a
+// real base_type — not a plain DataDef carrying a bare dtCHARptr tag (that was a
+// member of the plain-tag population the tag-arithmetic retirement is removing).
+// Keeps its own object identity + name + pinned typeid slot (MADC_TYPEID_LPSTR);
+// the ctor is out-of-line (parser.cpp) because the ddCHAR instance is declared
+// later in this header. Constructed after ddCHAR (parser.cpp init order).
+class DataDefLPSTR : public DataDefPTR { public: DataDefLPSTR(); };
 
 // A reference type produced by alias resolution (`typedef T& alias;` /
 // `using alias = T&;`). An alias is
