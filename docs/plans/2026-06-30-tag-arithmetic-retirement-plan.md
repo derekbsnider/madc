@@ -174,6 +174,50 @@ standalone bug-fix where the site means "is this a reference" (not "what band"),
 the two such sites in `same_representation` (parser 9054/9056) are Cluster B and stay
 coupled. Remaining consumer surface (14) is therefore the core-session worklist.
 
+## Core-removal endgame — investigation 2026-06-30 (DE-RISKED, smaller than feared)
+
+Deep read of the actual code shrank the endgame and ordered it into safe gated steps:
+- **`setRef()` is DEAD** — zero live callers (one commented-out line at
+  parser.cpp:37004). No live in-place tag mutation to chase.
+- **Plain-tag (non-`DataDefPTR`) populations are just two vestigial globals:**
+  `DataDefLPSTR` (a `char*` named "LPSTR", ~5 use sites) and `ddVOIDref` (one `void&`
+  for the `MADC_TYPEID_VOID_REF` typeid slot, one reader). Everything else pointer/
+  reference is already a structural `DataDefPTR`/`REF` object.
+- **`reftype()` readers are all benign:** `same_representation` (parser 9054/9056,
+  guarded by `!ap` so a `DataDefREF` — which IS-A `DataDefPTR` — never reaches it;
+  caught by the `ap && bp` base_type recursion at 9041), `as_user_class` (cir_builder
+  2527/2537 — a `DataDefREF` fails the `btClass` gate at 2526 first, and with
+  `setRef` dead no class is ref-tagged in place, so these are dead-defensive), and one
+  logging line (16105, cosmetic). So `reftype()` is barely load-bearing.
+- **`same_representation` is built around exact tag corners** (the comment at
+  9043-9051 spells out the T** = 20000+x reuse and the bare-ref-tag-on-plain-DataDef
+  case) — it is rewritten WITH the tag drop, last.
+- **Subtlety — `is_numeric()`/`is_integer()` read `_type` directly** (`< dtRESERVED`/
+  `< dtFLOAT`), so a plain tagged `char*` (`ddLPSTR`, `_type`=10003) reports
+  `is_numeric()==false` TODAY; converting it to `DataDefPTR` flips that to true (a
+  defensible consistency fix, but a behavior CHANGE — gate it, don't call it
+  identical). `type()==dtCHARptr` consumers likewise can't move to
+  `is_pointer() && rawtype()==dtCHAR` faithfully (matches `char**`); the faithful form
+  needs `base_type` pointee inspection, which is why `ddLPSTR` must become structural
+  first.
+
+### Ordered, gated step plan (each build+fulltest+torture-byte-identical)
+1. **Structural `reftype()`/`rawtype()` overrides on `DataDefPTR`/`REF`** — DONE this
+   session. Verified behavior-identical at all readers; mirrors `DataDefCONST`. The
+   structural objects stop reading the `_type` band for ref/raw classification.
+2. **Eliminate `ddLPSTR`'s plain-tag `char*`** — make it a `DataDefPTR(ddCHAR)` (needs
+   moving its class def after `DataDefPTR` + an out-of-line ctor since `ddCHAR`'s
+   instance is declared later). Accept/validate the `is_numeric` flip. Then every
+   `char*` has a `base_type`.
+3. **Migrate `type()==dtCHARptr` consumers** → `is_pointer()` + `base_type` pointee
+   check (behavior-identical with the tag still present; lowers the consumer metric).
+4. **`ddVOIDref` typeid slot + `dtARRAYref` (cir 4277) + the dead reftype guards** —
+   convert/retire structurally.
+5. **Drop the tag:** remove `rtPtr`/`rtRef` from the `DataDefPTR`/`REF`/`LPSTR` ctors,
+   rewrite `same_representation`'s tag tail (Cluster B), delete the `dt*ptr`/`dt*ref`
+   enum ranges + `rt*` macros; `-Wall -Wunused` confirms the cut; flip the gate to a
+   finish-line check.
+
 ## Guardrails
 
 - Structural-first: a derivation question is `is_pointer()`/`is_reference()`/

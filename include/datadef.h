@@ -1008,6 +1008,15 @@ public:
     virtual bool is_pointer() const { return true; }
     virtual bool is_numeric() const { return true; }
     virtual bool is_integer() const { return true; }
+    // Classify STRUCTURALLY, not from the _type tag-band (mirrors DataDefCONST,
+    // which already forwards these to base_type). A pointer's reftype is
+    // rtPointer by construction; its rawtype is the pointee's rawtype (so T**
+    // recurses to the innermost scalar, matching the historical one-subtraction
+    // tag behaviour). Part of retiring the +10000/+20000 tag encoding: the
+    // structural object stops depending on the offset math
+    // (docs/plans/2026-06-30-tag-arithmetic-retirement-plan.md).
+    virtual RefType reftype() const { return RefType::rtPointer; }
+    virtual DataType rawtype() const { return base_type ? base_type->rawtype() : DataType::dtVOID; }
 };
 
 // A reference type produced by alias resolution (`typedef T& alias;` /
@@ -1022,6 +1031,13 @@ class DataDefREF : public DataDefPTR
 public:
     DataDefREF(DataDef &base) : DataDefPTR(base) {}
     virtual bool is_reference() const { return true; }
+    // A reference's reftype is rtReference — STRUCTURAL, overriding DataDefPTR's
+    // rtPointer. (Historically a DataDefREF's _type sat in the POINTER band
+    // because the ctor chains through DataDefPTR/rtPtr, so the inherited tag
+    // reftype() reported rtPointer while is_reference() said true — the "three
+    // encodings" disagreement. This override makes the two agree. rawtype()
+    // is inherited from DataDefPTR (base_type->rawtype()), unchanged.)
+    virtual RefType reftype() const { return RefType::rtReference; }
 };
 
 // A const-qualified type (`const T`). IS-A its base's lowering: const has NO
