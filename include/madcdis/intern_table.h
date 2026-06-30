@@ -154,6 +154,19 @@ public:
     typedef V *iterator;          // find() returns a pointer to the value, NULL = absent
     void set_pool(intern_table *p) { _pool = p; }
 
+    // Pre-size the dense storage. Reserving the value pool up front means it
+    // does not relocate as entries are added, so a value held by reference or
+    // pointer across an insert stays valid (the vector-storage analogue of
+    // std::map's stable nodes). `max_id` pre-grows the slot array so early
+    // operator[] calls don't resize it either. Cheap single allocation vs the
+    // incremental-realloc / per-node-malloc the std::map shapes paid.
+    void reserve(size_t nvals, uint32_t max_id = 0)
+    {
+	_vals.reserve(nvals);
+	if ( max_id && (size_t)max_id + 1 > _slot.size() )
+	    _slot.resize((size_t)max_id + 1, -1);
+    }
+
     // uint32 (hot) — O(1) flat array index; no tree, no node alloc, no compare
     V *find(uint32_t id)
     {

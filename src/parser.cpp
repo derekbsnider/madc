@@ -2208,8 +2208,8 @@ TokenDataType *Program::resolve_namespaced_type_token(TokenBase *tb, bool consum
 	member_name = contextual_identifier_name(member_tb);
     else
 	return NULL;
-    datatype_map_iter dti = nti->second.find(member_name);
-    if ( dti == nti->second.end() )
+    datatype_map_iter dti = nti->find(member_name);
+    if ( dti == nti->end() )
 	return NULL;
 
     if ( consume_tokens )
@@ -5266,8 +5266,8 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 		namespace_datatype_map.find(scope);
 	    if ( nti != namespace_datatype_map.end() )
 	    {
-		datatype_map_iter ndmi = nti->second.find(tname);
-		if ( ndmi != nti->second.end() )
+		datatype_map_iter ndmi = nti->find(tname);
+		if ( ndmi != nti->end() )
 		{
 		    TokenDataType *use = (TokenDataType *)ndmi->second->clone();
 		    use->file   = tb->file;
@@ -7819,8 +7819,8 @@ bool Program::fold_constant_qualified_member(TokenBase *first, int64_t &out)
 			namespace_datatype_map.find(pending_ns);
 		    if ( ni != namespace_datatype_map.end() )
 		    {
-			datatype_map_iter di = ni->second.find(seg_name);
-			if ( di != ni->second.end() )
+			datatype_map_iter di = ni->find(seg_name);
+			if ( di != ni->end() )
 			    seg_scope = dynamic_cast<DataDefCLASS *>(
 				&di->second->definition);
 		    }
@@ -9323,9 +9323,9 @@ DataDef *Program::comparison_category_class(TokenOperator *to)
     namespace_datatype_map_t::iterator ni = namespace_datatype_map.find("std");
     if ( ni == namespace_datatype_map.end() )
 	return NULL;
-    datatype_map_iter di = ni->second.find(floating ? "partial_ordering"
+    datatype_map_iter di = ni->find(floating ? "partial_ordering"
 						     : "strong_ordering");
-    if ( di == ni->second.end() || !di->second )
+    if ( di == ni->end() || !di->second )
 	return NULL;
     return &di->second->definition;
 }
@@ -17368,8 +17368,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			namespace_datatype_map_t::iterator nti = namespace_datatype_map.find("std");
 			if ( nti != namespace_datatype_map.end() )
 			{
-			    datatype_map_iter dti = nti->second.find("type_info");
-			    if ( dti != nti->second.end() )
+			    datatype_map_iter dti = nti->find("type_info");
+			    if ( dti != nti->end() )
 				tinfo = &dti->second->definition;
 			}
 		    }
@@ -18349,8 +18349,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
 		    if ( nti != namespace_datatype_map.end() )
 		    {
-			datatype_map_iter dti = nti->second.find(member_name);
-			if ( dti != nti->second.end() )
+			datatype_map_iter dti = nti->find(member_name);
+			if ( dti != nti->end() )
 			{
 			    DataDef *ns_member_dd = &dti->second->definition;
 			    if ( DataDefCLASS *member_scope =
@@ -21417,15 +21417,21 @@ void Program::mirror_inline_namespace_into_parent(const std::string &parent_ns,
     if ( !parent_ns.empty() )
     {
 	datatype_map_t &parent_types = namespace_datatype_map[parent_ns];
-	for ( datatype_map_iter it = child_types->second.begin();
-	      it != child_types->second.end(); ++it )
+	// operator[] above can grow the intern_keyed_map value vector and
+	// invalidate the child_types pointer (vector storage, not std::map's
+	// stable nodes); re-fetch it before iterating. parent_types is a
+	// reference into the same vector but only gets inserted INTO below (no
+	// further outer growth), so it stays valid.
+	child_types = namespace_datatype_map.find(inline_ns);
+	for ( datatype_map_iter it = child_types->begin();
+	      it != child_types->end(); ++it )
 	    if ( parent_types.find(it->first) == parent_types.end() )
 		parent_types[it->first] = it->second;
     }
     else
     {
-	for ( datatype_map_iter it = child_types->second.begin();
-	      it != child_types->second.end(); ++it )
+	for ( datatype_map_iter it = child_types->begin();
+	      it != child_types->end(); ++it )
 	    if ( datatype_map.find(it->first) == datatype_map.end() )
 		datatype_map[it->first] = it->second;
     }
@@ -21663,7 +21669,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	}
 	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns_name);
 	if ( nti != pgm.namespace_datatype_map.end() )
-	    for ( datatype_map_iter dti = nti->second.begin(); dti != nti->second.end(); ++dti )
+	    for ( datatype_map_iter dti = nti->begin(); dti != nti->end(); ++dti )
 		import_namespace_type(dti->first, dti->second);
 	// expect semicolon
 	tn = pgm.nextToken();
@@ -21718,12 +21724,12 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    }
 	    nti = pgm.namespace_datatype_map.find(source_ns);
 	    if ( nti != pgm.namespace_datatype_map.end() )
-		ns_dti = nti->second.find(name);
+		ns_dti = nti->find(name);
 	}
 	bool have_type = source_ns.empty()
 		       ? (dti != pgm.datatype_map.end())
 		       : (nti != pgm.namespace_datatype_map.end()
-			  && ns_dti != nti->second.end());
+			  && ns_dti != nti->end());
 	if ( !v && !have_type )
 	    pgm.Throw(member) << "'" << name << "' is not a declaration in '"
 			      << (source_ns.empty() ? std::string("::") : source_ns)
@@ -21736,7 +21742,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		pgm.namespace_datatype_map[pgm.current_namespace()][name] = (*dti);
 	    else if ( !source_ns.empty()
 		   && nti != pgm.namespace_datatype_map.end()
-		   && ns_dti != nti->second.end() )
+		   && ns_dti != nti->end() )
 		pgm.namespace_datatype_map[pgm.current_namespace()][name] = ns_dti->second;
 	}
 	else
@@ -21747,7 +21753,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		import_namespace_type(name, (*dti));
 	    else if ( !source_ns.empty()
 		   && nti != pgm.namespace_datatype_map.end()
-		   && ns_dti != nti->second.end() )
+		   && ns_dti != nti->end() )
 		import_namespace_type(name, ns_dti->second);
 	}
 	tn = pgm.nextToken();
@@ -21890,8 +21896,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	bool have_type = false;
 	if ( nti != pgm.namespace_datatype_map.end() )
 	{
-	    dti = nti->second.find(member_name);
-	    have_type = dti != nti->second.end();
+	    dti = nti->find(member_name);
+	    have_type = dti != nti->end();
 	}
 	// A using-declaration may import a TEMPLATE member — an alias template
 	// (`using std::__detail::__range_iter_t;`, ranges_base.h:93), a class
@@ -24413,9 +24419,9 @@ static bool synthesize_defaulted_comparison(
 	    pgm.namespace_datatype_map.find("std");
 	if ( ni == pgm.namespace_datatype_map.end() )
 	    return false;	// no parsed <compare> — cannot synthesize
-	datatype_map_iter di = ni->second.find(floating ? "partial_ordering"
+	datatype_map_iter di = ni->find(floating ? "partial_ordering"
 						       : "strong_ordering");
-	if ( di == ni->second.end() || !di->second )
+	if ( di == ni->end() || !di->second )
 	    return false;
 	ret_tdt = (TokenDataType *)di->second->clone();
     }
@@ -33010,8 +33016,8 @@ static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
 		pgm.namespace_datatype_map.find(ns);
 	    if ( ni != pgm.namespace_datatype_map.end() )
 	    {
-		datatype_map_iter di = ni->second.find(head);
-		if ( di != ni->second.end() )
+		datatype_map_iter di = ni->find(head);
+		if ( di != ni->end() )
 		    return di->second;
 	    }
 	}
@@ -34977,8 +34983,8 @@ DataDefCLASS *Program::resolve_qualified_class_owner(const std::vector<std::stri
 	namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
 	if ( nti != namespace_datatype_map.end() )
 	{
-	    datatype_map_iter dti = nti->second.find(class_name);
-	    if ( dti != nti->second.end() )
+	    datatype_map_iter dti = nti->find(class_name);
+	    if ( dti != nti->end() )
 		return dynamic_cast<DataDefCLASS *>(&dti->second->definition);
 	}
     }
@@ -34988,8 +34994,8 @@ DataDefCLASS *Program::resolve_qualified_class_owner(const std::vector<std::stri
 	namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(current_namespace());
 	if ( nti != namespace_datatype_map.end() )
 	{
-	    datatype_map_iter dti = nti->second.find(class_name);
-	    if ( dti != nti->second.end() )
+	    datatype_map_iter dti = nti->find(class_name);
+	    if ( dti != nti->end() )
 		return dynamic_cast<DataDefCLASS *>(&dti->second->definition);
 	}
     }
@@ -35213,8 +35219,8 @@ DataDef *Program::resolve_param_type_from_tokens(const std::vector<TokenBase *> 
 	namespace_datatype_map_t::iterator nti = namespace_datatype_map.find(ns_name);
 	if ( nti != namespace_datatype_map.end() )
 	{
-	    datatype_map_iter dti = nti->second.find(parts.back());
-	    if ( dti != nti->second.end() )
+	    datatype_map_iter dti = nti->find(parts.back());
+	    if ( dti != nti->end() )
 		return &dti->second->definition;
 	}
     }

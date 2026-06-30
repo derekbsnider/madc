@@ -847,7 +847,14 @@ typedef std::map<std::string, DataDef *> datadef_map_t;
 typedef std::map<std::string, FuncDef *> funcdef_map_t;
 typedef std::map<std::string, Variable *> variable_map_t;
 typedef std::map<std::string, variable_map_t> namespace_map_t;
-typedef std::map<std::string, datatype_map_t> namespace_datatype_map_t;
+// Outer map (namespace -> inner type-name map) on the substrate primitive,
+// keyed via Program::namespace_name_pool. `::iterator` is datatype_map_t* now
+// (find() returns a pointer to the inner map; end()==nullptr). The INNER
+// datatype_map_t stays std::map because it is enumerated by key. NOTE: the
+// inner maps live in the primitive's value VECTOR, so an outer operator[]
+// insert can relocate them — a held outer pointer must be re-fetched after an
+// insert; inner iterators survive (std::map move-construction keeps nodes).
+typedef madc::dis::intern_keyed_map<datatype_map_t> namespace_datatype_map_t;
 
 // map-iterators
 typedef keyword_map_t::iterator keyword_map_iter;
@@ -1555,6 +1562,8 @@ public:
     // intern_keyed_map's _slot array stays sized to the small template-name set,
     // not the full identifier population (the type_name_pool discipline).
     madc::dis::intern_table template_name_pool;
+    // Dedicated dense pool for namespace-name keys of namespace_datatype_map.
+    madc::dis::intern_table namespace_name_pool;
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     datadef_map_t  struct_map;		// data definitions defined by struct
     std::map<std::string, DataDefSTRUCT *> tsubst_local_aggregate_map;

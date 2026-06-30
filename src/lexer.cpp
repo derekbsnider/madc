@@ -1089,6 +1089,21 @@ void Program::_tokenizer_init()
     fn_template_decl_map.set_pool(&template_name_pool);
     fn_template_instantiated_vars.set_pool(&template_name_pool);
     fn_template_map.set_pool(&template_name_pool);
+    namespace_datatype_map.set_pool(&namespace_name_pool);
+    // Pre-size the value pools so they don't relocate as entries are added: a
+    // single allocation instead of incremental growth, and — for
+    // namespace_datatype_map, whose values are inner maps held by pointer
+    // across inserts — it keeps those pointers stable (the std::map-node
+    // analogue). Sizes are headroom for typical programs; growth past them is
+    // still correct (find()-after-insert re-fetches where it matters).
+    namespace_datatype_map.reserve(32);
+    template_map.reserve(64);
+    template_alias_map.reserve(32);
+    partial_spec_map.reserve(32);
+    var_template_map.reserve(32);
+    fn_template_map.reserve(64);
+    fn_template_decl_map.reserve(32);
+    fn_template_instantiated_vars.reserve(64);
 
     tkProgram = NULL;
     tkFunction = NULL;
