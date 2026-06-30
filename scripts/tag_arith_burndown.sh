@@ -25,7 +25,7 @@ cd "$(dirname "$0")/.."
 
 BASELINE_FILE="docs/parity/tag-arith-baseline.txt"
 
-# External worklist = rt{Ptr,Ref,DePtr,DeRef} construction sites + raw
+# Metric 1 — RAW-TAG worklist = rt{Ptr,Ref,DePtr,DeRef} construction sites + raw
 # literal-tag (10000/20000) comparisons, anywhere EXCEPT the core (datadef.h),
 # the macro definitions, and vendored third-party headers.
 hits=$( { grep -rnE 'rtPtr\(|rtRef\(|rtDePtr\(|rtDeRef\(' src/ include/ \
@@ -38,24 +38,59 @@ hits=$( { grep -rnE 'rtPtr\(|rtRef\(|rtDePtr\(|rtDeRef\(' src/ include/ \
         | sort -u )
 n=$( printf '%s' "$hits" | grep -c . )
 
-echo "tag-arithmetic burndown: $n external raw-tag site(s) remain (target 0)"
+# Metric 2 — CONSUMER surface = sites that READ the offset indirectly and so
+# break the moment the +10000/+20000 tag is dropped from the accessors, but are
+# INVISIBLE to the rt*-only count above: dt*ptr/dt*ref NAMED-constant uses
+# (type()==dtCHARptr, switch cases, signature literals) + reftype() band-reads.
+# These migrate to representation-agnostic predicates (is_pointer()/is_reference()
+# /rawtype()) ahead of the core flip — behavior-preserving for BOTH the structural
+# DataDefPTR objects and the plain tagged DataDefs (the predicates already answer
+# correctly for both today). Same exclusions; rawtype()-stripped values never
+# equal a tag so they don't count.
+chits=$( { grep -rnE 'dt[A-Za-z0-9]+(ptr|ref)\b' src/ include/ ;
+           grep -rnE '\breftype[[:space:]]*\([[:space:]]*\)' src/ include/ ; } \
+        | grep -vE '^include/datadef\.h:' \
+        | grep -vE '^include/doctest\.h:' \
+        | grep -vE '^include/json\.hpp:' \
+        | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+        | grep -vE 'rawtype' \
+        | sort -u )
+cn=$( printf '%s' "$chits" | grep -c . )
+
+echo "tag-arithmetic burndown: $n raw-tag site(s) + $cn consumer site(s) remain (target 0/0)"
 
 if [ "${1:-}" = "--check" ]; then
-  base=$( [ -f "$BASELINE_FILE" ] && head -n1 "$BASELINE_FILE" | tr -dc '0-9' || echo 0 )
-  echo "baseline: $base"
+  # Baseline file: the first two number-only lines are metric 1 then metric 2.
+  mapfile -t nums < <( [ -f "$BASELINE_FILE" ] && grep -E '^[0-9]+$' "$BASELINE_FILE" )
+  base=${nums[0]:-0}
+  cbase=${nums[1]:-0}
+  echo "baseline: raw-tag=$base consumer=$cbase"
+  rc=0
   if [ "$n" -gt "$base" ]; then
-    echo "RED — tag-arithmetic site count rose above baseline ($n > $base)."
+    echo "RED — raw-tag site count rose above baseline ($n > $base)."
     echo "Migrate the new site onto structural queries / derived_type_id, or it is a regression."
     printf '%s\n' "$hits" | sed 's/^/  /' | head -40
-    exit 1
-  fi
-  if [ "$n" -lt "$base" ]; then
-    echo "PROGRESS — count below baseline ($n < $base); lower $BASELINE_FILE to $n in this commit."
+    rc=1
+  elif [ "$n" -lt "$base" ]; then
+    echo "PROGRESS — raw-tag below baseline ($n < $base); lower line 1 of $BASELINE_FILE to $n in this commit."
   else
-    echo "GREEN — at baseline ($n)."
+    echo "GREEN — raw-tag at baseline ($n)."
   fi
-  exit 0
+  if [ "$cn" -gt "$cbase" ]; then
+    echo "RED — consumer site count rose above baseline ($cn > $cbase)."
+    echo "Rewrite the new site with is_pointer()/is_reference()/rawtype(), not a dt*ptr/dt*ref constant or reftype() band-read."
+    printf '%s\n' "$chits" | sed 's/^/  /' | head -40
+    rc=1
+  elif [ "$cn" -lt "$cbase" ]; then
+    echo "PROGRESS — consumer below baseline ($cn < $cbase); lower line 2 of $BASELINE_FILE to $cn in this commit."
+  else
+    echo "GREEN — consumer at baseline ($cn)."
+  fi
+  exit $rc
 fi
 
-# Default: report the sites (the working worklist).
+# Default: report both worklists.
+echo "--- raw-tag sites ---"
 printf '%s\n' "$hits" | sed 's/^/  /'
+echo "--- consumer sites ---"
+printf '%s\n' "$chits" | sed 's/^/  /'

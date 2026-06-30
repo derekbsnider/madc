@@ -1,15 +1,29 @@
 3
+17
 # tag-arithmetic retirement burndown baseline (scripts/tag_arith_burndown.sh --check).
-# Count of EXTERNAL raw-tag sites (rtPtr/rtRef/rtDePtr/rtDeRef construction +
-# raw 10000/20000 comparisons) outside the core encoding in include/datadef.h.
-# Lower this number in the SAME commit that migrates a site. When it reaches 0,
-# a final commit removes the core encoding from datadef.h and this gate becomes
-# a finish-line check. Plan: docs/plans/2026-06-30-tag-arithmetic-retirement-plan.md
+# The first two number-only lines are the two ratcheted metrics:
+#   line 1 = RAW-TAG sites: rtPtr/rtRef/rtDePtr/rtDeRef construction + raw
+#            10000/20000 comparisons, outside the core encoding (include/datadef.h).
+#   line 2 = CONSUMER sites: dt*ptr/dt*ref named-constant uses (type()==dtCHARptr,
+#            switch cases, signature literals) + reftype() band-reads — the sites
+#            that READ the offset indirectly and break when it is dropped, but are
+#            invisible to the raw-tag count. Migrate to is_pointer()/is_reference()/
+#            rawtype() (representation-agnostic; correct for both the structural
+#            DataDefPTR objects and the plain tagged DataDefs today).
+# Lower the relevant line in the SAME commit that migrates a site; the gate fails
+# if either count RISES. When BOTH reach 0, a final commit removes the core
+# encoding from datadef.h (the enum dt*ptr/dt*ref ranges + rt* macros + the offset
+# math in the accessors) and this gate becomes a finish-line check.
+# Plan: docs/plans/2026-06-30-tag-arithmetic-retirement-plan.md
 #
-# 25 (2026-06-30, Phase 0): initial baseline.
-# 3  (2026-06-30, Cluster A done): the 18 builtin-signature rtPtr() sites
-#    migrated to ptr_of(ddX) (structural DataDef + RefType, resolved via
-#    getPointerType — representation-identical to the dtXptr tag). Remaining 3 =
-#    Cluster B (same_representation: rtDeRef @ 9055/9057, raw >= 20000 @ 13127),
-#    the === comparator built around the tag encoding's corner cases — coupled to
-#    the final core-removal phase (it compares tag-only types), NOT independent.
+# RAW-TAG history:
+#   25 (2026-06-30, Phase 0): initial baseline.
+#   3  (2026-06-30, Cluster A done): the 18 builtin-signature rtPtr() sites
+#      migrated to ptr_of(ddX) (structural, resolved via getPointerType —
+#      representation-identical to the dtXptr tag). Remaining 3 = Cluster B
+#      (same_representation: rtDeRef @ 9055/9057, raw >= 20000 @ 13127), coupled to
+#      the core-removal phase (compares tag-only types), NOT independent.
+# CONSUMER history:
+#   17 (2026-06-30): initial measurement of the consumer surface. Includes 3 missed
+#      Cluster-A signature literals (madc_program 416/417, parser 11838 use the
+#      named constant dtCHARptr inside datatype_vec_t{} rather than rtPtr(dtCHAR)).

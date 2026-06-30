@@ -1,6 +1,9 @@
 # Tag-arithmetic retirement — plan
 
-**Status:** Phase 0 + Cluster A done. Burndown gate live; **baseline 3** (was 25).
+**Status:** Phase 0 + Cluster A done; gate extended to two metrics. Burndown live;
+**baselines raw-tag=3** (was 25), **consumer=17** (new; the offset-reading surface the
+rt*-only count missed). Incremental consumer migration confirmed viable (see
+"Investigation 2026-06-30" below) — migrate ahead of the small atomic core flip.
 Cluster A (the 18 builtin-signature `rtPtr(dtX)` sites) migrated to `ptr_of(ddX)` —
 structural `DataDef` + `RefType`, resolved through `getPointerType`, proven
 representation-identical to the `dtXptr` tag (both `resolve_data_type` paths
@@ -109,6 +112,45 @@ So the realistic distance-to-core is ~30 consumer sites + the 3 Cluster B + the
 core edit (ctors/accessors/enum/macros) — not 3. The "baseline 3" reflects only the
 explicit `rt*` arithmetic; treat the core flip as its own session and re-measure
 with the extended gate first.
+
+## Investigation 2026-06-30 — base `is_pointer()` is tag-aware; incremental migration IS viable
+
+Settled the recorded first-action question (is base `DataDef::is_pointer()` tag-aware
+or structural → incremental-vs-atomic). Answer: **tag-aware at the base, structurally
+overridden on `DataDefPTR`.** Two populations coexist:
+- **(a) structural objects** — `DataDefPTR`/`DataDefREF` override `is_pointer()`→true
+  but their ctor ALSO sets `_type = rtPtr(base.type())` (the `+10000` offset). e.g.
+  `ddCHARptr = DataDefPTR(ddCHAR)`.
+- **(b) plain tagged** — a plain `DataDef` whose pointer-ness comes ONLY from the
+  base tag-aware `is_pointer()` (`_type>=10000 && <20000`). e.g. `DataDefLPSTR`
+  (datadef.h:998, `rtPtr(dtCHAR)`).
+
+Decisive consequence: the **predicates** (`is_pointer()`/`is_reference()`/`rawtype()`)
+already answer correctly for BOTH populations today. So consumer migration is
+**behavior-preserving and can run AHEAD of the core flip**, in small gated commits:
+- `type() == dtCHARptr` → `is_pointer() && rawtype()==dtCHAR` — invariant across the
+  flip (`DataDefPTR::rawtype()` returns `dtCHAR` before and after, since the offset it
+  strips today simply won't be there to strip after).
+- `reftype() == rtReference` → `is_reference()` — strictly a **bug-fix**: a
+  `DataDefREF` reports `reftype()==rtPointer` today (its ctor chains `DataDefPTR`/
+  `rtPtr`), the "three encodings" disagreement; `is_reference()` is the correct SoT.
+
+Only the core edit is atomic, and it is small/self-contained in datadef.h: drop
+`rtPtr` from the `DataDefPTR` ctor + `DataDefLPSTR`, add structural `reftype()`/
+`setRef()` overrides on `DataDefPTR`(→rtPointer)/`DataDefREF`(→rtReference), delete the
+enum ranges + macros, rewrite `same_representation`'s tail (Cluster B) — `-Wunused`
+confirms. Refined sequencing: **migrate the ~30 consumers to predicate form first
+(lower-risk, each behavior-preserving), then the atomic core flip last.**
+
+**Gate extended (this commit).** `tag_arith_burndown.sh` now tracks TWO ratcheted
+metrics (baseline file = first two number-only lines): line 1 = raw-tag sites (3),
+line 2 = consumer surface (17 — `dt*ptr/dt*ref` named-constant uses + `reftype()`
+band-reads). The consumer count is invisible to the rt*-only metric and includes **3
+missed Cluster-A signature literals** (`madc_program.cpp:416/417`, `parser.cpp:11838`
+use the named constant `dtCHARptr` inside `datatype_vec_t{}` rather than
+`rtPtr(dtCHAR)`) — immediately migratable to `ptr_of(ddCHAR)`. NEXT migration step:
+those 3 literals → `ptr_of(ddCHAR)` (consumer 17→14), then the predicate-equivalent
+`type()==dtCHARptr` / `reftype()==rtReference` consumers, each lowering line 2.
 
 ## Guardrails
 
