@@ -1833,7 +1833,7 @@ public:
 	    typeparam_is_pack(), decl(), ns(), inline_builtin_kind(),
 	    owner_class(NULL), instance_method(false) {}
     };
-    std::map<std::string, std::vector<FnTemplateDef>> fn_template_map;
+    madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_map; // keyed via template_name_pool (enumerated via for_each)
     // BODY-LESS free/namespace function template declarations (no `{ body }` to
     // instantiate — e.g. `template<class T> T declval();`), keyed "ns::name".
     // Kept OUT of fn_template_map (which drives body instantiation + the arity-

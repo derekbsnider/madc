@@ -1088,6 +1088,7 @@ void Program::_tokenizer_init()
     var_template_map.set_pool(&template_name_pool);
     fn_template_decl_map.set_pool(&template_name_pool);
     fn_template_instantiated_vars.set_pool(&template_name_pool);
+    fn_template_map.set_pool(&template_name_pool);
 
     tkProgram = NULL;
     tkFunction = NULL;

@@ -33297,23 +33297,24 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
 	TokenBase *lhs, TokenBase *rhs, Variable **callee_out)
 {
     const std::string suffix = "::" + opname;
-    for ( std::map<std::string, std::vector<FnTemplateDef>>::iterator mi =
-	      fn_template_map.begin(); mi != fn_template_map.end(); ++mi )
-    {
-	const std::string &key = mi->first;
-	if ( key.size() <= suffix.size()
-	  || key.compare(key.size() - suffix.size(), suffix.size(), suffix) )
-	    continue;
+    DataDef *result = NULL;
+    fn_template_map.for_each(
+	[&]( const char *key_c, std::vector<FnTemplateDef> &vec ) -> bool {
+	    std::string key(key_c);
+	    if ( key.size() <= suffix.size()
+	      || key.compare(key.size() - suffix.size(), suffix.size(), suffix) )
+		return false;
 #ifdef MADC_DBG_QCALL
-	fprintf(stderr, "[FREEOP] key %s candidates=%zu\n", key.c_str(),
-		mi->second.size());
+	    fprintf(stderr, "[FREEOP] key %s candidates=%zu\n", key.c_str(),
+		    vec.size());
 #endif
-	for ( size_t vi = 0; vi < mi->second.size(); ++vi )
-	    if ( DataDef *ret = try_instantiate_free_operator_template(
-		    *this, mi->second[vi], key, opname, lhs, rhs, callee_out) )
-		return ret;
-    }
-    return NULL;
+	    for ( size_t vi = 0; vi < vec.size(); ++vi )
+		if ( DataDef *ret = try_instantiate_free_operator_template(
+			*this, vec[vi], key, opname, lhs, rhs, callee_out) )
+		{ result = ret; return true; }
+	    return false;
+	});
+    return result;
 }
 
 // --- Function-template partial ordering ([temp.func.order]) ----------------
@@ -33475,18 +33476,17 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
     if ( !fd
       || fd->namespace_name.empty() || fd->function_display_name.empty() )
 	return;
-    std::map<std::string, std::vector<FnTemplateDef>>::iterator mi =
-	fn_template_map.find(fd->namespace_name + "::"
-			     + fd->function_display_name);
+    std::string fn_key = fd->namespace_name + "::" + fd->function_display_name;
+    std::vector<FnTemplateDef> *mi = fn_template_map.find(fn_key);
     if ( mi == fn_template_map.end() )
 	return;
     // Order candidates most-specialized first ([temp.func.order]) so the
     // first-viable selection below picks the most specialized overload that
     // deduces. Incomparable candidates keep registration order.
     std::vector<Program::FnTemplateDef *> order;
-    for ( size_t vi = 0; vi < mi->second.size(); ++vi )
+    for ( size_t vi = 0; vi < mi->size(); ++vi )
     {
-	Program::FnTemplateDef *cand = &mi->second[vi];
+	Program::FnTemplateDef *cand = &(*mi)[vi];
 	size_t pos = order.size();
 	for ( size_t j = 0; j < order.size(); ++j )
 	    if ( po_more_specialized(*this, *cand, *order[j]) )
@@ -33494,7 +33494,7 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	order.insert(order.begin() + pos, cand);
     }
     for ( Program::FnTemplateDef *cand : order )
-	if ( try_instantiate_namespace_fn_template(*this, *cand, mi->first, tc) )
+	if ( try_instantiate_namespace_fn_template(*this, *cand, fn_key, tc) )
 	    return;
 }
 
@@ -34523,10 +34523,10 @@ DataDef *Program::resolve_fn_template_return_by_key(
     // free templates of this name — declval and friends are body-less.
     std::vector<FnTemplateDef *> cands;
     {
-	std::map<std::string, std::vector<FnTemplateDef>>::iterator mi =
+	std::vector<FnTemplateDef> *mi =
 	    fn_template_map.find(key);
 	if ( mi != fn_template_map.end() )
-	    for ( FnTemplateDef &c : mi->second ) cands.push_back(&c);
+	    for ( FnTemplateDef &c : *mi ) cands.push_back(&c);
 	std::vector<FnTemplateDef> *di =
 	    fn_template_decl_map.find(key);
 	if ( di != fn_template_decl_map.end() )

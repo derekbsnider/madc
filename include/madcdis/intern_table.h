@@ -188,6 +188,22 @@ public:
     V     &operator[](const std::string &k)  { return (*this)[_pool->intern(k)]; }
     size_t erase(const std::string &k)       { return erase(_pool->intern(k)); }
 
+    // Enumerate live entries: fn(const char *key, V &value) for each present
+    // key, in ascending spelling-id order. Returning true from fn stops early
+    // (so a search can break on the first hit). The key string is recovered
+    // from the bound pool — valid for the duration of the callback (do not
+    // intern() into this pool during enumeration). This is what lets a
+    // key-iterating consumer (e.g. a "::op" suffix scan) move off std::map
+    // without losing key access.
+    template<class Fn>
+    void for_each(Fn fn)
+    {
+	for ( uint32_t id = 0; id < _slot.size(); ++id )
+	    if ( _slot[id] >= 0 )
+		if ( fn(_pool->c_str(id), _vals[(size_t)_slot[id]]) )
+		    return;
+    }
+
     // find() returns NULL for "not found"; end() is provided so legacy
     // `find(x) != m.end()` call sites keep compiling (end() == nullptr).
     iterator end() { return nullptr; }
