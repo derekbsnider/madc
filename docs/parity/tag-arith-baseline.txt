@@ -1,5 +1,5 @@
 3
-17
+14
 # tag-arithmetic retirement burndown baseline (scripts/tag_arith_burndown.sh --check).
 # The first two number-only lines are the two ratcheted metrics:
 #   line 1 = RAW-TAG sites: rtPtr/rtRef/rtDePtr/rtDeRef construction + raw
@@ -27,3 +27,7 @@
 #   17 (2026-06-30): initial measurement of the consumer surface. Includes 3 missed
 #      Cluster-A signature literals (madc_program 416/417, parser 11838 use the
 #      named constant dtCHARptr inside datatype_vec_t{} rather than rtPtr(dtCHAR)).
+#   14 (2026-06-30): the 3 missed Cluster-A signature literals migrated to
+#      ptr_of(ddCHAR) (resolve_data_type -> getPointerType(ddCHAR) == ddCHARptr,
+#      representation-identical to the dtCHARptr tag). strcmp's two char* params +
+#      get_argv's char* return. Behavior-identical; torture byte-identical.

@@ -413,8 +413,8 @@ Variable *ensure_expression_strcmp(Program &pgm)
     if ( !sym )
 	return NULL;
     // signed int return — embedded-headers.md comparison-family rule
-    return pgm.addFunction(id, datatype_vec_t{DataType::dtINT, DataType::dtCHARptr,
-					      DataType::dtCHARptr}, (fVOIDFUNC)sym);
+    return pgm.addFunction(id, datatype_vec_t{DataType::dtINT, ptr_of(ddCHAR),
+					      ptr_of(ddCHAR)}, (fVOIDFUNC)sym);
 }
 
 // The expression DSL compares string operands by VALUE (spec:

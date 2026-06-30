@@ -11835,7 +11835,7 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("copysignl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double,long double))copysignl);
     builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_system);
     builtin_registry.add_process_function("getenv", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)__madc_getenv);
-    builtin_registry.add_process_function("get_argv", datatype_vec_t{DataType::dtCHARptr, ptr_of(ddVOID), DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
+    builtin_registry.add_process_function("get_argv", datatype_vec_t{ptr_of(ddCHAR), ptr_of(ddVOID), DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
     builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_setenv);
     builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_unsetenv);
     builtin_registry.add_process_function("__errno_location", datatype_vec_t{ptr_of(ddINT32)}, (fVOIDFUNC)__errno_location);
