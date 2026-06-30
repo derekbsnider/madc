@@ -44,8 +44,16 @@
   untouched), then stamping it. Compiler internals keep using `DataDef*`; this
   converts only at the boundary. Enables — does not perform — the later
   tag-arithmetic retirement campaign.
-  Next: `datatype_map` (still string-keyed) re-key is a separate later
-  perf-consumer slice riding `intern_table`, not on the vision's critical path.
+- **Re-keyed the flat `datatype_map`** (the current-scope type-name map, the last
+  big string-keyed hot map) onto `madc::dis::intern_keyed_map<TokenDataType*>`:
+  O(1) id-keyed lookup over a DEDICATED dense `Program::type_name_pool` (not the
+  global `strpool` — type names are a tiny domain, so a private pool keeps the
+  `_slot` array tight and avoids a memory regression). `datatype_map` is now a
+  consumer of the `intern_table` primitive, and type-name identity is
+  id-addressable. The namespace-owned inner maps stay `std::map` (enumerated by
+  key). Conversion was build-enforced (50 sites across lexer/parser/cir_builder:
+  `it->second` → `*it`, mirroring the `keyword_map` idiom); inserts and
+  `find()!=end()` tests were unchanged.
 
 ### Lambda `[&]` capture of class objects and references; two pre-existing fixes
 
