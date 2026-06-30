@@ -1,6 +1,12 @@
 # Tag-arithmetic retirement — plan
 
-**Status:** Phase 0 landed (this commit). Burndown gate live; baseline 25.
+**Status:** Phase 0 + Cluster A done. Burndown gate live; **baseline 3** (was 25).
+Cluster A (the 18 builtin-signature `rtPtr(dtX)` sites) migrated to `ptr_of(ddX)` —
+structural `DataDef` + `RefType`, resolved through `getPointerType`, proven
+representation-identical to the `dtXptr` tag (both `resolve_data_type` paths
+converge on the same `ddXptr` global). Remaining 3 = Cluster B (the
+`same_representation` comparator), which is coupled to the final core-removal phase
+(it compares tag-only types) and is NOT independent — see the corrected analysis below.
 **Origin:** `docs/plans/2026-06-12-type-table-value-abi-design.md` §1 (motivation),
 §6.4 ("Tag-arithmetic retirement: migrate `rawtype()`/tag-range consumers onto
 derived-type entries. Big blast radius; needs its own gate (count drops, like
@@ -47,15 +53,22 @@ method calls that STAY; they get reimplemented structurally (traverse `base_type
 in the final phase, not migrated per-site. The actual external worklist is the
 **raw tag arithmetic**: 25 sites, ALL in `src/parser.cpp`:
 
-- **Cluster A — builtin-signature registration (~18 sites, ~11773–12073).**
-  `rtPtr(DataType::dtCHAR)` etc. build `datatype_vec_t` (`vector<DataType>`)
-  signatures for builtin/host functions. The registry is itself tag-based; these
-  migrate when the registry's parameter types become structural (DataDef*-based,
-  e.g. `ddCHARptr`/`getPointerType`) instead of `DataType` tags. This is the
-  biggest single sub-task.
-- **Cluster B — strict-equality / strip (3 sites).** `rtDeRef` at 9055/9057 and the
-  raw `>= 20000` compare at 13127, in `same_representation`-style tag logic →
-  use `is_reference()`/`reftype()`/`rawtype()` (the methods) instead of literal math.
+- **Cluster A — builtin-signature registration (~18 sites, ~11773–12073). DONE.**
+  `rtPtr(DataType::dtCHAR)` etc. built `datatype_vec_t` signatures for builtin/host
+  functions. `datatype_vec_t` is `vector<typespec_t>`, and `typespec_t` already had
+  a structural `DataDef* + RefType` form with a `ptr_of(DataDef&)` helper — so each
+  `rtPtr(dtX)` became `ptr_of(ddX)`. `resolve_data_type` resolves `ptr_of` via
+  `getPointerType(spec.dd)`, the SAME `ddXptr` the tag path resolves to → exact, no
+  behavior change (torture byte-identical). The 2 host-callback locals widened from
+  `DataType` to `typespec_t`.
+- **Cluster B — `same_representation` (3 sites: `rtDeRef` 9055/9057, raw `>= 20000`
+  13127). DEFERRED to the core phase.** CORRECTED ANALYSIS: this is NOT an
+  independent early consumer. By the time control reaches the tag tail (9052+),
+  references-as-instances are stripped and `DataDefPTR` pairs handled structurally;
+  what remains are **plain `DataDef`s whose only representation IS the tag** (no
+  `base_type` to recurse). So the comparison is inherently tag-based **until those
+  types stop carrying tags** — i.e. until the core encoding is removed. Rewrite
+  `same_representation`'s tail AS PART OF the final phase, not before.
 
 **Core (NOT counted; removed LAST):** the `dt*ptr=10000`/`dt*ref=20000` enum ranges,
 the `rt{Ptr,Ref,DePtr,DeRef}` macros, and the offset math in the
@@ -70,15 +83,17 @@ the encoding; they go in the final phase once the external count is 0.
   `make -C src fulltest`.
 - Each migration commit lowers the baseline in the SAME commit, stays
   fulltest-green / census-0 / **torture byte-identical** to the 51-name baseline.
-- Phases (each its own gated commit, smallest-safe-cluster first):
-  1. **Cluster B** (3 sites) — pure method substitution, low risk; warms up the gate.
-  2. **Cluster A** — make the builtin/host registry parameter types structural
-     (DataDef*), so `rtPtr(dtX)` → the canonical pointer DataDef. May split across
-     several commits (core/process/dlfcn/host-callback groups).
-  3. **Final** — external count 0 → reimplement the `DataDefPTR`/`DataDefREF` ctors
-     and base accessors structurally (drop the `_type` offset), delete the enum
-     ranges + `rt*` macros, let `-Wall -Wunused` confirm the cut; flip the gate to a
-     finish-line check.
+- Phases (each its own gated commit):
+  1. **Cluster A — DONE** (baseline 25 → 3). `rtPtr(dtX)` → `ptr_of(ddX)` across the
+     builtin/host signatures; representation-identical via `getPointerType`.
+  2. **Final / core phase** (baseline 3 → 0 and beyond). Reimplement the
+     `DataDefPTR`/`DataDefREF` ctors + base accessors structurally (drop the `_type`
+     offset so `is_pointer`/`reftype` are purely structural and tag-only pointer/ref
+     types no longer exist), rewrite `same_representation`'s tag tail (Cluster B) to
+     compare structurally, delete the `dt*ptr`/`dt*ref` enum ranges + `rt*` macros,
+     and let `-Wall -Wunused` confirm the cut. Flip the gate to a finish-line check.
+     This is one coupled phase because Cluster B only becomes well-defined once the
+     tag-only types are gone — sequence carefully, lean on torture + the `===` suite.
 
 ## Guardrails
 

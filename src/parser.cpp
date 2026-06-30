@@ -11770,23 +11770,23 @@ void Program::populate_builtin_registry()
     if ( builtin_registry.defaults_loaded )
 	return;
 
-    builtin_registry.add_core_function("puts",	 datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)puts);
-    builtin_registry.add_core_function("printstr", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("puts",	 datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR)}, (fVOIDFUNC)puts);
+    builtin_registry.add_core_function("printstr", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR)}, (fVOIDFUNC)NULL);
     builtin_registry.add_core_function("puti",	 datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)printinteger);
     builtin_registry.add_core_function("putu",	 datatype_vec_t{DataType::dtVOID, DataType::dtUINT64}, (fVOIDFUNC)printuinteger);
     builtin_registry.add_core_function("putd",	 datatype_vec_t{DataType::dtVOID, DataType::dtDOUBLE}, (fVOIDFUNC)printdouble);
     builtin_registry.add_core_function("putf",	 datatype_vec_t{DataType::dtVOID, DataType::dtFLOAT}, (fVOIDFUNC)printfloat);
     builtin_registry.add_core_function("putchar", datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
-    builtin_registry.add_core_function("__builtin_memcpy", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), DataType::dtUINT64}, (fVOIDFUNC)memcpy);
-    builtin_registry.add_core_function("__builtin_frame_address", datatype_vec_t{rtPtr(DataType::dtCHAR), DataType::dtINT}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__builtin_memcpy", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddVOID), DataType::dtUINT64}, (fVOIDFUNC)memcpy);
+    builtin_registry.add_core_function("__builtin_frame_address", datatype_vec_t{ptr_of(ddCHAR), DataType::dtINT}, (fVOIDFUNC)NULL);
     // The lexer rewrites `__builtin_frame_address` -> `__madc_builtin_frame_address`
     // (the real va_helpers symbol, returning void*) via define_map, so the parser
     // only ever sees the renamed name. Register THAT name too with its real void*
     // return; otherwise the call is an unknown function defaulting to a `long`
     // return, and the emitted `extern long __madc_builtin_frame_address()` assigns
     // a long to a pointer ("using integer without cast for pointer type parameter").
-    builtin_registry.add_core_function("__madc_builtin_frame_address", datatype_vec_t{rtPtr(DataType::dtVOID), DataType::dtINT}, (fVOIDFUNC)NULL);
-    builtin_registry.add_core_function("__atomic_fetch_add", datatype_vec_t{DataType::dtINT, rtPtr(DataType::dtVOID), DataType::dtINT, DataType::dtINT}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__madc_builtin_frame_address", datatype_vec_t{ptr_of(ddVOID), DataType::dtINT}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__atomic_fetch_add", datatype_vec_t{DataType::dtINT, ptr_of(ddVOID), DataType::dtINT, DataType::dtINT}, (fVOIDFUNC)NULL);
     // __atomic_thread_fence(memorder): gcc/clang-inlined memory fence (no real
     // symbol). Registered so the call parses; cir_builder lowers it (and
     // __atomic_fetch_add) to the gcc-compiled __madc_atomic_* runtime wrappers.
@@ -11796,7 +11796,7 @@ void Program::populate_builtin_registry()
     // symbol — register with a NULL pointer like __builtin_frame_address so the
     // call parses; cir_builder emits N_CALL(__builtin_va_start, ap) and c2mir
     // intrinsic-lowers it. The arg is the user's va_list (array -> pointer).
-    builtin_registry.add_core_function("__builtin_va_start", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVOID)}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__builtin_va_start", datatype_vec_t{DataType::dtVOID, ptr_of(ddVOID)}, (fVOIDFUNC)NULL);
     // __builtin_add/sub/mul_overflow(a, b, res_ptr): c2mir builtins, lowered
     // in-place at every width incl. __int128. Registered with ZERO declared
     // params (variadic convention) so the arguments reach the CIR call with
@@ -11810,7 +11810,7 @@ void Program::populate_builtin_registry()
     // lvalue reaches the CIR call untouched; NULL pointer: no real symbol.
     // cir_builder lowers the call to N_ADDR (see translate_expr ttCallFunc).
     // Real libstdc++ bodies call it directly when their templates are instantiated.
-    builtin_registry.add_core_function("__builtin_addressof", datatype_vec_t{rtPtr(DataType::dtVOID)}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__builtin_addressof", datatype_vec_t{ptr_of(ddVOID)}, (fVOIDFUNC)NULL);
     // __destroy(ptr): compiler intrinsic that destructs the pointed-to object.
     // No real symbol (NULL pointer, like __builtin_va_start) — the parser
     // accepts the call and cir_builder lowers it to the element type's class
@@ -11818,11 +11818,11 @@ void Program::populate_builtin_registry()
     // nothing for a scalar/pointer element type. Used by header templates to
     // destruct live elements before free(); generic and element-type-driven.
     // See CirBuilder::translate_expr's __destroy handling.
-    builtin_registry.add_core_function("__destroy", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVOID)}, (fVOIDFUNC)NULL);
+    builtin_registry.add_core_function("__destroy", datatype_vec_t{DataType::dtVOID, ptr_of(ddVOID)}, (fVOIDFUNC)NULL);
     // alloca() is a compiler intrinsic, not a real libc function.
     // Map to malloc for now (true stack alloca needs JIT intrinsic support).
-    builtin_registry.add_core_function("alloca", datatype_vec_t{rtPtr(DataType::dtVOID), DataType::dtUINT64}, (fVOIDFUNC)malloc);
-    builtin_registry.add_core_function("__builtin_memset", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), DataType::dtINT, DataType::dtUINT64}, (fVOIDFUNC)memset);
+    builtin_registry.add_core_function("alloca", datatype_vec_t{ptr_of(ddVOID), DataType::dtUINT64}, (fVOIDFUNC)malloc);
+    builtin_registry.add_core_function("__builtin_memset", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), DataType::dtINT, DataType::dtUINT64}, (fVOIDFUNC)memset);
     // copysign family: GCC provides these as always-available builtins (no
     // <math.h> required). The lexer maps __builtin_copysign* -> the bare libm
     // name, but without an <math.h> include the bare name would resolve via the
@@ -11833,15 +11833,15 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("copysign",  datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double,double))copysign);
     builtin_registry.add_core_function("copysignf", datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float,float))copysignf);
     builtin_registry.add_core_function("copysignl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double,long double))copysignl);
-    builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_system);
-    builtin_registry.add_process_function("getenv", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)__madc_getenv);
-    builtin_registry.add_process_function("get_argv", datatype_vec_t{DataType::dtCHARptr, rtPtr(DataType::dtVOID), DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
-    builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_setenv);
-    builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_unsetenv);
-    builtin_registry.add_process_function("__errno_location", datatype_vec_t{rtPtr(DataType::dtINT32)}, (fVOIDFUNC)__errno_location);
+    builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_system);
+    builtin_registry.add_process_function("getenv", datatype_vec_t{ptr_of(ddVOID), ptr_of(ddVOID), ptr_of(ddCHAR)}, (fVOIDFUNC)__madc_getenv);
+    builtin_registry.add_process_function("get_argv", datatype_vec_t{DataType::dtCHARptr, ptr_of(ddVOID), DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
+    builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR), ptr_of(ddCHAR)}, (fVOIDFUNC)madc_setenv);
+    builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_unsetenv);
+    builtin_registry.add_process_function("__errno_location", datatype_vec_t{ptr_of(ddINT32)}, (fVOIDFUNC)__errno_location);
 
-    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_dlopen);
-    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{DataType::dtINT64, DataType::dtINT64, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_dlsym);
+    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlopen);
+    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{DataType::dtINT64, DataType::dtINT64, ptr_of(ddCHAR)}, (fVOIDFUNC)madc_dlsym);
     builtin_registry.add_dlfcn_function("dlclose", datatype_vec_t{DataType::dtVOID, DataType::dtINT64}, (fVOIDFUNC)madc_dlclose);
     builtin_registry.add_dlfcn_function("dlcall", datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)NULL);
 
@@ -12036,8 +12036,8 @@ void Program::add_madc_namespace()
 {
     variable_map_t &madc_ns = namespace_map["madc"];
     Variable *var;
-    DataType objp = rtPtr(DataType::dtVOID);
-    DataType cstr = rtPtr(DataType::dtCHAR);
+    typespec_t objp = ptr_of(ddVOID);
+    typespec_t cstr = ptr_of(ddCHAR);
 
     // register array type as madc::array
     std::string id = "__madc_array";
@@ -12070,7 +12070,7 @@ void Program::add_host_callbacks()
 	    case HostCallbackReg::K_BOOL: return DataType::dtBOOL;
 	    case HostCallbackReg::K_INT:  return DataType::dtINT64;
 	    case HostCallbackReg::K_REAL: return DataType::dtDOUBLE;
-	    case HostCallbackReg::K_CSTR: return rtPtr(DataType::dtCHAR);
+	    case HostCallbackReg::K_CSTR: return ptr_of(ddCHAR);
 	    default:                      return DataType::dtVOID;
 	}
     };
