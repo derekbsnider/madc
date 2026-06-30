@@ -18,6 +18,20 @@
   `getPointerType` to the SAME `ddXptr` global the tag resolved to — representation-
   identical, torture byte-identical). Baseline 25 → 3; the remaining 3
   (`same_representation`) are coupled to the final core-removal phase.
+- **Gate extended to a second metric:** the rt*-only count missed sites that READ
+  the offset indirectly (`type()==dtCHARptr`, switch cases, signature literals,
+  `reftype()` band-reads) and break when the tag is dropped. Added a ratcheted
+  **consumer-surface** metric (baseline 14), tracked as line 2 of the baseline file.
+  It surfaced **3 missed Cluster-A signature literals** (`strcmp`'s two `char*`
+  params, `get_argv`'s `char*` return) that used the `dtCHARptr` constant rather than
+  `rtPtr(dtCHAR)` — migrated to `ptr_of(ddCHAR)` (consumer 17 → 14, behavior-identical).
+- **Investigation:** base `DataDef::is_pointer()` is tag-aware but structurally
+  overridden on `DataDefPTR`, so the predicates already answer correctly for both the
+  structural and plain-tagged populations. The `type()==dt*ptr/ref` *equality*
+  consumers nonetheless can't be migrated faithfully in isolation (the non-nesting tag
+  overflows `char**` into the ref band, so `is_pointer() && rawtype()==dtCHAR` would
+  newly match `char**`; the plain-tagged population has no `base_type` to inspect) —
+  so they, with Cluster B, move WITH the atomic core flip, not ahead of it.
 
 ### madc::dis substrate — first primitives (development-substrate vision, rung 1)
 
