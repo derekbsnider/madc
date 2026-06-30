@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Tag-arithmetic retirement — campaign started + Cluster A
+
+- Began retiring the `DataType` tag-range encoding of pointer/reference derivation
+  (base+10000 = ptr, base+20000 = ref), a non-nesting "bit trick" that collides
+  across its fixed bands and duplicates the `DataDefPTR`/`REF`/`CONST` object graph
+  + the typeid table (design §6.4; enabled by `id_table` + `derived_type_id`).
+- **Phase 0 (gate):** `scripts/tag_arith_burndown.sh` counts the external raw-tag
+  worklist and `--check` ratchets `docs/parity/tag-arith-baseline.txt` (fails on a
+  rise); wired into `make -C src fulltest`. Plan + measured scope:
+  `docs/plans/2026-06-30-tag-arithmetic-retirement-plan.md`. Baseline 25.
+- **Cluster A:** the 18 builtin/host-function signature sites moved off
+  `rtPtr(DataType::dtX)` onto the structural `ptr_of(ddX)` form (`typespec_t` already
+  carried a `DataDef* + RefType` representation; `resolve_data_type` resolves it via
+  `getPointerType` to the SAME `ddXptr` global the tag resolved to — representation-
+  identical, torture byte-identical). Baseline 25 → 3; the remaining 3
+  (`same_representation`) are coupled to the final core-removal phase.
+
 ### madc::dis substrate — first primitives (development-substrate vision, rung 1)
 
 - Recorded the **development-substrate north-star vision**

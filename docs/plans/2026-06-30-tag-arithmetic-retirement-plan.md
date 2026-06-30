@@ -95,6 +95,21 @@ the encoding; they go in the final phase once the external count is 0.
      This is one coupled phase because Cluster B only becomes well-defined once the
      tag-only types are gone — sequence carefully, lean on torture + the `===` suite.
 
+## Endgame surface (measured 2026-06-30) — the burndown UNDER-counts it
+
+The `--check` gate counts only `rt*` construction + literal `10000/20000`. It does
+NOT count consumers that read the offset through `type()`/`reftype()`, which ALSO
+break the moment a `DataDefPTR`'s `_type` stops carrying the +10000 offset. Before
+the core flips, extend the gate to count these, then migrate them:
+- **~13 `dt*ptr`/`dt*ref` named-constant uses** in src (mostly `dtCHARptr`) — code
+  that names the encoding directly (`type() == dtCHARptr`, signature literals).
+- **~7 `reftype()` consumer sites** + **~6 `type() == dt*ptr/ref` comparisons** —
+  classification that must become `is_pointer()`/`is_reference()`/structural.
+So the realistic distance-to-core is ~30 consumer sites + the 3 Cluster B + the
+core edit (ctors/accessors/enum/macros) — not 3. The "baseline 3" reflects only the
+explicit `rt*` arithmetic; treat the core flip as its own session and re-measure
+with the extended gate first.
+
 ## Guardrails
 
 - Structural-first: a derivation question is `is_pointer()`/`is_reference()`/
