@@ -142,15 +142,37 @@ enum ranges + macros, rewrite `same_representation`'s tail (Cluster B) — `-Wun
 confirms. Refined sequencing: **migrate the ~30 consumers to predicate form first
 (lower-risk, each behavior-preserving), then the atomic core flip last.**
 
-**Gate extended (this commit).** `tag_arith_burndown.sh` now tracks TWO ratcheted
+**Gate extended (`2f64ded1`).** `tag_arith_burndown.sh` now tracks TWO ratcheted
 metrics (baseline file = first two number-only lines): line 1 = raw-tag sites (3),
 line 2 = consumer surface (17 — `dt*ptr/dt*ref` named-constant uses + `reftype()`
-band-reads). The consumer count is invisible to the rt*-only metric and includes **3
+band-reads). The consumer count is invisible to the rt*-only metric and surfaced **3
 missed Cluster-A signature literals** (`madc_program.cpp:416/417`, `parser.cpp:11838`
-use the named constant `dtCHARptr` inside `datatype_vec_t{}` rather than
-`rtPtr(dtCHAR)`) — immediately migratable to `ptr_of(ddCHAR)`. NEXT migration step:
-those 3 literals → `ptr_of(ddCHAR)` (consumer 17→14), then the predicate-equivalent
-`type()==dtCHARptr` / `reftype()==rtReference` consumers, each lowering line 2.
+used the named constant `dtCHARptr` inside `datatype_vec_t{}` rather than
+`rtPtr(dtCHAR)`). **Migrated `fd179ced`:** those 3 → `ptr_of(ddCHAR)` (consumer
+17→14). Safe because a signature literal is a pure type-IDENTITY declaration —
+`ptr_of(ddCHAR)` resolves via `getPointerType(ddCHAR)` to the SAME `ddCHARptr` the
+tag produced, exactly. All gates green, torture byte-identical.
+
+### CORRECTION — the equality consumers are NOT a trivial mechanical rewrite
+
+The optimistic `type()==dtCHARptr` → `is_pointer() && rawtype()==dtCHAR` rewrite is
+**not equivalent**, because the tag can't nest. `char**` is
+`DataDefPTR(DataDefPTR(char))`, whose ctor computes `rtPtr(dtCHARptr)` =
+`dtCHARptr + 10000` — overflowing into the *reference* band (20000+). So `rawtype()`
+strips 20000 → `dtCHAR`, and `is_pointer()` (the `DataDefPTR` override) returns true,
+so the rewrite would **newly match `char**`**, which the exact `type()==dtCHARptr`
+(precisely `10000+x`) does not. The faithful structural form needs pointee inspection
+(`is_pointer() && base_type->rawtype()==dtCHAR && !base_type->is_pointer()`), but the
+plain-tagged population (b) DataDefs (e.g. `DataDefLPSTR`) carry **no `base_type`** —
+their pointer-ness is the bare tag. So the equality consumers genuinely cannot be
+migrated faithfully in isolation: their exact semantics depend on the tag's
+single-level corner behavior, which only becomes well-defined once the structural
+graph is the sole representation. **Confirms the plan:** the `type()==dt*ptr/ref`
+equality consumers + the `reftype()` band-reads move WITH the core flip (alongside
+Cluster B), NOT ahead of it. `reftype()==rtReference` → `is_reference()` IS a safe
+standalone bug-fix where the site means "is this a reference" (not "what band"), but
+the two such sites in `same_representation` (parser 9054/9056) are Cluster B and stay
+coupled. Remaining consumer surface (14) is therefore the core-session worklist.
 
 ## Guardrails
 
