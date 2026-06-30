@@ -1080,6 +1080,9 @@ void Program::_tokenizer_init()
     // datatype_map uses a DEDICATED dense pool (not strpool): type names are a
     // small domain, so a private pool keeps its intern_keyed_map _slot tight.
     datatype_map.set_pool(&type_name_pool);
+    // Template-family maps share a dedicated dense template-name pool (same
+    // _slot-sizing discipline as datatype_map; rung-1 substrate consolidation).
+    partial_spec_map.set_pool(&template_name_pool);
 
     tkProgram = NULL;
     tkFunction = NULL;

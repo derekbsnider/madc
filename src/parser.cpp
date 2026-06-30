@@ -16632,8 +16632,7 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
 	std::map<std::string, std::vector<std::string> > &out_pack_subst,
 	std::map<std::string, std::vector<TokenBase *> > &out_nontype_subst)
 {
-    std::map<std::string, std::vector<TemplateDef> >::iterator it =
-	partial_spec_map.find(name);
+    std::vector<TemplateDef> *it = partial_spec_map.find(name);
     if ( it == partial_spec_map.end() )
 	return NULL;
     if ( arg_types_by_slot.size() != arg_spellings.size()
@@ -16646,9 +16645,9 @@ Program::TemplateDef *Program::match_partial_specialization(const std::string &n
     std::map<std::string, std::string> best_tmpl;
     std::map<std::string, std::vector<std::string> > best_pack;
     std::map<std::string, std::vector<TokenBase *> > best_nontype;
-    for ( size_t s = 0; s < it->second.size(); ++s )
+    for ( size_t s = 0; s < it->size(); ++s )
     {
-	TemplateDef &spec = it->second[s];
+	TemplateDef &spec = (*it)[s];
 	// A trailing parameter-pack slot (`_Types...` as the LAST pattern arg, naming a
 	// declared pack typeparam) absorbs 0+ trailing concrete args into one slot, so
 	// the fixed (non-pack) slot count is one less and the arg arity need only be >=

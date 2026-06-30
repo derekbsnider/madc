@@ -1550,6 +1550,11 @@ public:
     madc::dis::intern_keyed_map<TokenBase *> cpp_operator_map;
     madc::dis::intern_table type_name_pool;	// dedicated dense pool for flat type-name keys
     flat_datatype_map_t datatype_map;	// TokenDataType map (interned, keyed via type_name_pool)
+    // Dedicated dense pool for the template-name domain (template/partial-spec/
+    // alias/var-template/fn-template map keys). Separate from strpool so each
+    // intern_keyed_map's _slot array stays sized to the small template-name set,
+    // not the full identifier population (the type_name_pool discipline).
+    madc::dis::intern_table template_name_pool;
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     datadef_map_t  struct_map;		// data definitions defined by struct
     std::map<std::string, DataDefSTRUCT *> tsubst_local_aggregate_map;
@@ -1615,7 +1620,7 @@ public:
     // Partial specializations (template<class T> struct X<T*> {...}), keyed by bare
     // class name. Kept OUT of template_map (its same-namespace merge would clobber
     // the primary). Selected at instantiation by most-specialized pattern unification.
-    std::map<std::string, std::vector<TemplateDef>> partial_spec_map;
+    madc::dis::intern_keyed_map<std::vector<TemplateDef>> partial_spec_map; // keyed via template_name_pool
     // Choose the most-specialized partial spec of `name` whose pattern unifies with
     // the concrete arguments. Type slots deduce into out_subst; non-type slots must
     // fold to the same constant value. Returns NULL to fall back to the primary.
