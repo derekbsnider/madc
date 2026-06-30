@@ -11113,7 +11113,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// contract, so bake it: fold the read to a string literal.
 			if (tv->var.is_constant() && tv->var.data
 			    && !(tv->var.flags & vfCONSTDECL) && tv->var.type
-			    && tv->var.type->type() == DataType::dtCHARptr) {
+			    && tv->var.type->is_cstr()) {
 				const char *text = *(const char **)tv->var.data;
 				if (text)
 					return str(text, strlen(text) + 1, tb);
@@ -15411,7 +15411,7 @@ FuncDef *class_text_ctor(DataDefCLASS *cdd)
 		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
 		if (!fd || fd->parameters.size() < 2) continue;
 		DataDef *p1 = fd->parameters[1];
-		if (p1 && p1->type() == DataType::dtCHARptr
+		if (p1 && p1->is_cstr()
 		    && fd->required_param_count() <= 2)
 			return fd;
 	}
@@ -15443,7 +15443,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 			}
 			return true;
 		}
-		if (pt->type() == DataType::dtCHARptr) { out.kind = ShimSlot::K_CSTR; return true; }
+		if (pt->is_cstr()) { out.kind = ShimSlot::K_CSTR; return true; }
 		// A function pointer is not host-marshallable through the madc_value
 		// integer ABI (a host cannot hand a callable across the value boundary).
 		// DataDefFPTR reports dtINT64/is_integer() and does NOT answer
@@ -15500,7 +15500,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		rkind = (ret_cstr_fd && ret_len_fd) ? R_TEXTOBJ : R_INST;
 	} else if (!rt || rt->type() == DataType::dtVOID) {
 		rkind = R_VOID;
-	} else if (rt->type() == DataType::dtCHARptr) {
+	} else if (rt->is_cstr()) {
 		rkind = R_CSTR;
 	} else if (as_class_instance(rt) || rt->is_pointer() || rt->is_simd()
 		   || dynamic_cast<DataDefFPTR *>(rt)) {

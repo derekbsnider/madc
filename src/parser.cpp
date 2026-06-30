@@ -19267,7 +19267,6 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    && comma_fixed_array->var.is_fixed_array()
 			    && comma_fixed_array->var.type;
 			if ( dd && (dd->is_pointer()
-			  || dd->type() == DataType::dtCHARptr
 			  || comma_returns_fixed_array) )
 			{
 			    TokenBase *base_expr = exStack.top();

@@ -401,7 +401,7 @@ bool is_expression_compare_token(TokenID id)
 bool expression_operand_is_string(TokenBase *tb)
 {
     DataDef *dd = tb ? tb->datadef() : NULL;
-    return dd && dd->type() == DataType::dtCHARptr;
+    return dd && dd->is_cstr();
 }
 
 Variable *ensure_expression_strcmp(Program &pgm)
@@ -2183,6 +2183,16 @@ bool native_type_from_datadef(DataDef *type, program::native_type &out)
     if ( !type )
 	return false;
 
+    // C string before the integer fallback below: a char* is a DataDefPTR,
+    // which reports is_integer() (pointers are integers at the ABI), so it must
+    // be classified as c_string first. Structural is_cstr() replaces the old
+    // `case dtCHARptr` (tag-arithmetic retirement).
+    if ( type->is_cstr() )
+    {
+	out = program::native_type::c_string;
+	return true;
+    }
+
     switch ( type->type() )
     {
 	case DataType::dtVOID:
@@ -2190,9 +2200,6 @@ bool native_type_from_datadef(DataDef *type, program::native_type &out)
 	    return true;
 	case DataType::dtBOOL:
 	    out = program::native_type::boolean;
-	    return true;
-	case DataType::dtCHARptr:
-	    out = program::native_type::c_string;
 	    return true;
 	default:
 	    break;

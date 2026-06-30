@@ -238,6 +238,13 @@ public:
     {
 	return false;
     }
+    // True iff this is a C string: a pointer whose immediate pointee is a char
+    // scalar (modulo const at either level) — char*, const char*, char* const,
+    // char& (a reference lowers as the pointer). EXCLUDES char** and other
+    // pointers. The STRUCTURAL replacement for the old `type() == dtCHARptr` tag
+    // comparison (tag-arithmetic retirement). Non-virtual; defined out-of-line
+    // below because it needs the complete DataDefPTR / DataDefCONST types.
+    bool is_cstr() const;
     // True only for DataDefTemplateParam: an UNRESOLVED template parameter `T`
     // in a not-yet-instantiated template pattern (two-tree / materialize-from-AST
     // Phase 1.5). A real typed placeholder — NOT the bare TokenIdent the parser
@@ -1080,6 +1087,24 @@ public:
     virtual bool is_unsigned() const { return base_type->is_unsigned(); }
     virtual size_t alignment() const { return base_type->alignment(); }
 };
+
+// is_cstr() — declared in DataDef above; defined here where DataDefPTR /
+// DataDefCONST are complete. Strip a top-level const (char* const), require a
+// pointer, then require the immediate pointee to be a char scalar (its rawtype
+// unwraps an inner const for const char*; !is_pointer() excludes char**).
+// Value-equivalent to the historical `type() == dtCHARptr` for every type, and
+// independent of the +10000 tag (so it survives the tag's removal).
+inline bool DataDef::is_cstr() const
+{
+    const DataDef *d = this;
+    if ( const DataDefCONST *cd = dynamic_cast<const DataDefCONST *>(d) )
+	d = cd->base_type ? cd->base_type : d;
+    const DataDefPTR *p = dynamic_cast<const DataDefPTR *>(d);
+    if ( !p || !p->base_type )
+	return false;
+    return p->base_type->rawtype() == DataType::dtCHAR
+	&& !p->base_type->is_pointer();
+}
 
 // C++ pointer-to-DATA-member `T C::*`. Lowered (Itanium ABI) as a `ptrdiff_t`
 // byte offset into the object — 8 bytes, an integer scalar for codegen — so it

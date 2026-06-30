@@ -1446,6 +1446,38 @@ TEST_SUITE("DataDef::same_representation (=== type-domain identity)") {
         CHECK(!pp.same_representation(pc));
         CHECK(pp.same_representation(pp2));    // identical char** chains
     }
+    TEST_CASE("is_cstr(): structural char* detection == old type()==dtCHARptr") {
+        DataDef ch("char", 1, DataType::dtCHAR);
+        DataDef i32("int", 4, DataType::dtINT32);
+        DataDefPTR pc(ch);                              // char*
+        DataDefPTR pp(static_cast<DataDef &>(pc));      // char**
+        DataDefCONST cc(ch);                            // const char
+        DataDefPTR pcc(static_cast<DataDef &>(cc));     // const char*
+        DataDefCONST ccp(static_cast<DataDef &>(pc));   // char* const
+        DataDefPTR pi(i32);                             // int*
+        DataDefPTR pv(ddVOID);                          // void*
+        DataDefREF rc(ch);                              // char& (lowers as char*)
+        // Matches char* and its const-qualified variants; a reference lowers as
+        // the pointer so it matches too (preserving the old tag behaviour).
+        CHECK(pc.is_cstr());
+        CHECK(pcc.is_cstr());
+        CHECK(ccp.is_cstr());
+        CHECK(rc.is_cstr());
+        // Excludes non-pointers, char**, and other pointer types.
+        CHECK(!ch.is_cstr());
+        CHECK(!pp.is_cstr());
+        CHECK(!pi.is_cstr());
+        CHECK(!pv.is_cstr());
+        // Value-equivalent to the retired `type() == dtCHARptr` tag compare for
+        // every case (the migration's invariant).
+        CHECK(pc.is_cstr()  == (pc.type()  == DataType::dtCHARptr));
+        CHECK(pp.is_cstr()  == (pp.type()  == DataType::dtCHARptr));
+        CHECK(pcc.is_cstr() == (pcc.type() == DataType::dtCHARptr));
+        CHECK(ccp.is_cstr() == (ccp.type() == DataType::dtCHARptr));
+        CHECK(rc.is_cstr()  == (rc.type()  == DataType::dtCHARptr));
+        CHECK(pi.is_cstr()  == (pi.type()  == DataType::dtCHARptr));
+        CHECK(pv.is_cstr()  == (pv.type()  == DataType::dtCHARptr));
+    }
     TEST_CASE("function signatures: return + params + varargs; fptr targets") {
         DataDef i32("int", 4, DataType::dtINT32);
         DataDef u32("uint32_t", 4, DataType::dtUINT32);

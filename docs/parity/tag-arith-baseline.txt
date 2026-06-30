@@ -1,5 +1,5 @@
 3
-14
+7
 # tag-arithmetic retirement burndown baseline (scripts/tag_arith_burndown.sh --check).
 # The first two number-only lines are the two ratcheted metrics:
 #   line 1 = RAW-TAG sites: rtPtr/rtRef/rtDePtr/rtDeRef construction + raw
@@ -31,3 +31,12 @@
 #      ptr_of(ddCHAR) (resolve_data_type -> getPointerType(ddCHAR) == ddCHARptr,
 #      representation-identical to the dtCHARptr tag). strcmp's two char* params +
 #      get_argv's char* return. Behavior-identical; torture byte-identical.
+#   7  (2026-06-30, core step 3): the 6 `type()==dtCHARptr` cstr consumers migrated
+#      to the new structural DataDef::is_cstr() (cir_builder 11116/15414/15446/
+#      15503, madc_program 404 + the 2194 switch case pulled ahead of is_integer),
+#      and parser 19266's `|| type()==dtCHARptr` deleted (redundant — is_pointer()
+#      already covers every char*). is_cstr() is value-equivalent to the tag
+#      compare for all types and survives the tag drop. Remaining 7 = reftype()
+#      readers (cir 2527/2537 dead guards, 16105 logging, parser 9058/9060 Cluster
+#      B) + dtARRAYref (cir 4277) + the dtCHARptr return-type PRODUCER (parser
+#      12236) — all handled in the core-flip step.
