@@ -46,9 +46,15 @@
     redundant `|| type()==dtCHARptr` in the subscript path deleted. Consumer metric
     14 → 7. Unit-test pins `is_cstr() == (type()==dtCHARptr)` across char*/const
     char*/char* const/char&/char**/int*/void*.
-  - Remaining (the atomic flip, next): convert `ddVOIDref` → `DataDefREF`, handle
-    `dtARRAYref` + the `dtCHARptr` return-type producer, rewrite `same_representation`'s
-    tag tail, drop the `+10000`/`+20000` offsets, delete the enum ranges + `rt*` macros.
+  - **Flip groundwork:** cleared the last two non-`reftype()` consumers
+    (`dynamic_symbol_fallback_return_type` → `typespec_t`/`ptr_of(ddCHAR)`; deleted a
+    dead `|| dtARRAYref` arm — `rawtype()` always strips the band). Consumer metric
+    7 → 5 (all remaining are `reftype()` readers). Wrote the turnkey flip recipe into
+    the plan and confirmed no plain-tag pointer DataDef survives in `src/` besides
+    `DataDefPTR` + the soon-converted `DataDefVOIDref`.
+  - Remaining (the atomic flip, next, now turnkey): convert `ddVOIDref` → `DataDefREF`,
+    rewrite `same_representation`'s tag tail structurally, drop the `+10000`/`+20000`
+    offsets from the ctors, delete the enum ranges + `rt*` macros (`-Wunused` confirms).
 
 ### madc::dis substrate — first primitives (development-substrate vision, rung 1)
 
