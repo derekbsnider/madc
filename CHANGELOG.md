@@ -32,6 +32,23 @@
   overflows `char**` into the ref band, so `is_pointer() && rawtype()==dtCHAR` would
   newly match `char**`; the plain-tagged population has no `base_type` to inspect) —
   so they, with Cluster B, move WITH the atomic core flip, not ahead of it.
+- **Core-removal endgame de-risked + started** (`setRef` found dead; only `ddLPSTR`
+  + `ddVOIDref` were plain-tag; `reftype()` readers all guarded/dead/cosmetic). Three
+  gated, behavior-identical, torture-byte-identical steps landed:
+  - **Step 1:** structural `reftype()`/`rawtype()` overrides on `DataDefPTR`/`REF`
+    (mirroring `DataDefCONST`) — the structural objects stop reading the `_type` band;
+    `DataDefREF` now reports `reftype()==rtReference`, resolving the "three encodings"
+    disagreement (verified invisible at all readers).
+  - **Step 2:** `ddLPSTR` is now a structural `DataDefPTR(ddCHAR)` (was a plain
+    `DataDef` carrying a bare `dtCHARptr` tag), so every `char*` has a `base_type`.
+  - **Step 3:** new `DataDef::is_cstr()` (structural, value-equivalent to the old
+    `type()==dtCHARptr` and tag-independent) replaces the 6 cstr consumers; the
+    redundant `|| type()==dtCHARptr` in the subscript path deleted. Consumer metric
+    14 → 7. Unit-test pins `is_cstr() == (type()==dtCHARptr)` across char*/const
+    char*/char* const/char&/char**/int*/void*.
+  - Remaining (the atomic flip, next): convert `ddVOIDref` → `DataDefREF`, handle
+    `dtARRAYref` + the `dtCHARptr` return-type producer, rewrite `same_representation`'s
+    tag tail, drop the `+10000`/`+20000` offsets, delete the enum ranges + `rt*` macros.
 
 ### madc::dis substrate — first primitives (development-substrate vision, rung 1)
 
