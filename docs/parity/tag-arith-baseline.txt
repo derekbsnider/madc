@@ -1,0 +1,12 @@
+25
+# tag-arithmetic retirement burndown baseline (scripts/tag_arith_burndown.sh --check).
+# Count of EXTERNAL raw-tag sites (rtPtr/rtRef/rtDePtr/rtDeRef construction +
+# raw 10000/20000 comparisons) outside the core encoding in include/datadef.h.
+# Lower this number in the SAME commit that migrates a site. When it reaches 0,
+# a final commit removes the core encoding from datadef.h and this gate becomes
+# a finish-line check. Plan: docs/plans/2026-06-30-tag-arithmetic-retirement-plan.md
+#
+# Baseline 25 (2026-06-30): all in src/parser.cpp —
+#   ~18 builtin-signature registrations (datatype_vec_t tag-vectors, lines ~11773-12073)
+#    2 strict-equality strip sites (rtDeRef, 9055/9057)
+#    1 raw range compare (13127, >= 20000)
