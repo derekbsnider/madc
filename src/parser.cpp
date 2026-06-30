@@ -4166,7 +4166,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 			continue;
 		    }
 		    TokenIdent *ni = (TokenIdent *)bt->clone();
-		    ni->str = mangled;
+		    set_token_spelling(ni, mangled);
 		    inj.push_back(ni);
 		    if ( bi + 1 < td.body.size()
 		      && td.body[bi + 1]->id() == TokenID::tkLT )
@@ -10603,6 +10603,13 @@ Variable *TokenCpnd::findParameter(std::string &id)
 Variable *TokenCpnd::findVariable(const madc::dis::intern_table &sp, std::string &id)
 {
     return findVariable(sp, sp.intern(id), id);
+}
+
+void Program::set_token_spelling(TokenIdent *t, const std::string &s)
+{
+    if ( !t ) return;
+    t->str = s;
+    t->rec.spelling_id = strpool.intern(s);
 }
 
 Variable *TokenCpnd::findVariableThisScope(const madc::dis::intern_table &sp, uint32_t qsid,
@@ -25026,14 +25033,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 				   << join_scope_parts(owner_parts, owner_parts.size())
 				   << "'" << flush;
 		class_source_name = qparts.back();
-		tag->str = nested_owner_class->name + "__" + class_source_name;
+		pgm.set_token_spelling(tag, nested_owner_class->name + "__" + class_source_name);
 		qualified_class_name = true;
 	    }
 	}
 	if ( !qualified_class_name && !pgm.class_scope_stack.empty() )
 	{
 	    nested_owner_class = pgm.class_scope_stack.back();
-	    tag->str = nested_owner_class->name + "__" + class_source_name;
+	    pgm.set_token_spelling(tag, nested_owner_class->name + "__" + class_source_name);
 	}
     }
 
@@ -30220,7 +30227,7 @@ void Program::register_outofline_member_instantiations(
 		if ( s == class_name )
 		{
 		    TokenIdent *ren = (TokenIdent *)bt->clone();
-		    ren->str = registered_mangled;
+		    set_token_spelling(ren, registered_mangled);
 		    sub.push_back(ren);
 		    if ( bi + 1 < def.decl.size() && def.decl[bi + 1]
 		      && def.decl[bi + 1]->id() == TokenID::tkLT )
@@ -36026,7 +36033,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    if ( bi == 1 && bt && bt->type() == TokenType::ttIdentifier )
 	    {
 		TokenIdent *ni = (TokenIdent *)bt->clone();
-		ni->str = mangled;
+		pgm.set_token_spelling(ni, mangled);
 		inj.push_back(ni);
 		continue;
 	    }

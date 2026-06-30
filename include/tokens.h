@@ -1079,6 +1079,17 @@ public:
     TokenIdent() { _datatype = &ddCHARptr; }
     TokenIdent(std::string &s) { str = s; _datatype = &ddCHARptr; }
     TokenIdent(const char *s)  { str = s; _datatype = &ddCHARptr; }
+    // Spelling accessors (interning Step 4). These are the migration target for
+    // every `.str` READ: callers move to spelling()/spelling_is()/spelling_empty()
+    // while the `std::string str` member still backs them, so the conversion is a
+    // pure rename with no behavior change. The final tranche re-points these at the
+    // interned pool (Program::strpool via rec.spelling_id) and drops `str`; the
+    // ~490 call sites stay untouched because only the accessor body changes.
+    // const char* (not const string&) is the eventual pool-backed return type.
+    const char *spelling() const            { return str.c_str(); }
+    bool spelling_is(const char *s) const   { return str == s; }
+    bool spelling_empty() const             { return str.empty(); }
+    size_t spelling_len() const             { return str.size(); }
     virtual TokenType type() const { return TokenType::ttIdentifier; }
     virtual TokenID   id()   const { return TokenID::tkIdent; }
     virtual TokenBase *clone()     { TokenIdent *t = new TokenIdent(str); t->rec.spelling_id = rec.spelling_id; return t; }

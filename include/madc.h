@@ -2357,6 +2357,12 @@ public:
     madc::dis::intern_table strpool;
     uint32_t   intern_spelling(const std::string &s) { return strpool.intern(s); }
     const char *spelling(uint32_t id) const { return strpool.c_str(id); }
+    // Re-spell a token (interning Step 4): the single write path for the handful
+    // of sites that RENAME an identifier/type token (operator-arity disambiguation,
+    // mangled-name rewrites). Keeps the interned rec.spelling_id in sync with the
+    // new bytes — the bare `t->str = x` rewrites left spelling_id stale. Defined in
+    // parser.cpp (needs the full TokenIdent type).
+    void set_token_spelling(class TokenIdent *t, const std::string &s);
 
     enum class LinkageSpec { Cpp, C };
     LinkageSpec current_linkage = LinkageSpec::Cpp;
