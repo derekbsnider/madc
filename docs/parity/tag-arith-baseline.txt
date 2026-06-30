@@ -1,5 +1,5 @@
 3
-7
+5
 # tag-arithmetic retirement burndown baseline (scripts/tag_arith_burndown.sh --check).
 # The first two number-only lines are the two ratcheted metrics:
 #   line 1 = RAW-TAG sites: rtPtr/rtRef/rtDePtr/rtDeRef construction + raw
@@ -40,3 +40,11 @@
 #      readers (cir 2527/2537 dead guards, 16105 logging, parser 9058/9060 Cluster
 #      B) + dtARRAYref (cir 4277) + the dtCHARptr return-type PRODUCER (parser
 #      12236) — all handled in the core-flip step.
+#   5  (2026-06-30, flip groundwork): the last two NON-reftype consumers cleared.
+#      parser 12236 producer -> returns typespec_t, char* via ptr_of(ddCHAR)
+#      (behavior-identical, like Cluster A). cir 4277 `|| dtARRAYref` deleted as
+#      DEAD (rawtype() always strips the band, never returns a 20000+ value). The
+#      remaining 5 are ALL reftype() readers: cir 16109 (logging), cir 2527/2537
+#      (dead-defensive guards), parser 9058/9060 (same_representation Cluster B) —
+#      handled by the flip (structural reftype on the plain types + Cluster B
+#      rewrite). The raw-tag metric's 3 are the same_representation tag tail.

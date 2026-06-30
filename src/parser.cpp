@@ -12222,7 +12222,13 @@ bool Program::is_dynamic_symbol_allowed(const std::string &name) const
 // `(e) ? (void)0 : (printf(...), abort())` then trips c2mir's
 // "incompatible types in true and false parts of cond-expression". Map the
 // known void-returning ones to dtVOID so the prototype matches GCC/libc.
-static DataType dynamic_symbol_fallback_return_type(const std::string &name)
+// Returns a typespec_t (DataDef*+RefType or a bare DataType) so the char*
+// case names the pointer STRUCTURALLY via ptr_of(ddCHAR) — resolved through
+// getPointerType to the same ddCHARptr the dtCHARptr tag produced — rather than
+// the +10000 tag (tag-arithmetic retirement). The 5 call sites wrap the result
+// in datatype_vec_t{...}, whose element type is typespec_t, so they are
+// unaffected.
+static typespec_t dynamic_symbol_fallback_return_type(const std::string &name)
 {
     static const std::set<std::string> cstr_returners = {
 	"asctime", "ctime"
@@ -12233,7 +12239,7 @@ static DataType dynamic_symbol_fallback_return_type(const std::string &name)
 	"__assert_fail", "__assert", "__assert_perror_fail"
     };
     if ( cstr_returners.count(name) )
-	return DataType::dtCHARptr;
+	return ptr_of(ddCHAR);
     if ( void_returners.count(name) )
 	return DataType::dtVOID;
     return DataType::dtINT64;

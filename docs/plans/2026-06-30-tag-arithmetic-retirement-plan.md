@@ -218,6 +218,68 @@ Deep read of the actual code shrank the endgame and ordered it into safe gated s
    enum ranges + `rt*` macros; `-Wall -Wunused` confirms the cut; flip the gate to a
    finish-line check.
 
+## TURNKEY FLIP RECIPE (designed 2026-06-30; groundwork left it copy-paste)
+
+After core steps 1-3 + the flip groundwork (consumer metric at 5, all reftype()
+readers; raw-tag at 3, all the `same_representation` tail), the atomic flip is a
+single gated commit. Ordered edits:
+
+1. **Convert `ddVOIDref` to a structural reference.** `DataDefVOIDref`
+   (datadef.h:974) is the LAST plain-tag global (a `void&`, plain `DataDef` with
+   `_type=dtVOIDref`, is_reference()==false). Make it derive from `DataDefREF`:
+   `class DataDefVOIDref : public DataDefREF { public: DataDefVOIDref(); };` with an
+   out-of-line ctor in parser.cpp (after `ddVOID`, before `ddVOIDref` at 8584):
+   `DataDefVOIDref::DataDefVOIDref() : DataDefREF(ddVOID) { name = "void&"; }`. Now
+   is_reference()==true, reftype()==rtReference (the step-1 override), and the
+   `same_representation` ref-strip at 8979 handles it. NOTE: this changes its
+   type() (dtVOIDref→dtVOIDptr while the tag still exists, then →dtVOID after the
+   offset drop) and is_reference() (false→true) — check the MADC_TYPEID_VOID_REF
+   slot test in test_datadef.cpp (it pins slot→global identity, not type(), so it
+   should be fine, but confirm).
+
+2. **Rewrite `same_representation`'s tag tail** (parser.cpp 9043-9063) — replace
+   the whole `DataType atag/btag … return atag==btag` block (incl. the now-dead
+   `!ap && reftype()==rtReference` fallback, dead once ddVOIDref is a real
+   reference) with the structural form:
+   ```cpp
+   // Both are btSimple and NOT both DataDefPTR (a pointer pair was handled
+   // above); references already stripped. Pointer-ness must agree — a lone
+   // pointer differs from a scalar — then the scalar DataType tags match exactly.
+   if ( a->is_pointer() != b->is_pointer() )
+       return false;
+   return a->type() == b->type();
+   ```
+   This is correct BOTH before and after the offset drop (verified: char*-vs-char
+   rejected by the is_pointer guard; int-vs-int by type()==; ptr-pairs already
+   handled at 9041; void&-vs-void by the ref-strip once ddVOIDref is a reference).
+   Removes all 3 raw-tag sites + the 2 Cluster-B reftype readers.
+
+3. **Clean the dead reftype guards** (cir_builder 2527/2537, `as_user_class`): with
+   setRef dead and no class ever ref-tagged in place, a class DataDef never has
+   reftype()==rtReference — the guard is dead-defensive. Either delete it or
+   leave it (it compiles fine post-flip since reftype() still exists structurally);
+   the logging read at 16109 is cosmetic and can keep `(int)reftype()`.
+
+4. **Drop the offset from the ctors.** `DataDefPTR` ctor (datadef.h:1006):
+   `rtPtr(base.type())` → `base.type()`. `DataDefREF` inherits (its reftype()
+   override already returns rtReference structurally; rawtype() inherited). After
+   this, char* and char& both have type()==dtCHAR, distinguished only by
+   is_reference()/reftype() — the structural objects are now the SOLE truth.
+
+5. **Delete the encoding.** Remove the `dt*ptr` (datadef.h:70-77) and `dt*ref`
+   (80-87) enum ranges, the `rt{Ptr,Ref,DePtr,DeRef}` macros (119-122), and make
+   the base `is_pointer()`/`rawtype()`/`reftype()`/`setRef()` bodies structural
+   (is_pointer→false at base, rawtype→(DataType)_type, reftype→rtValue, setRef→
+   gone since dead). `-Wall -Wunused` confirms nothing else referenced them.
+
+6. **Flip the gate** to a finish-line check (counts must be 0; assert stays 0).
+
+WATCH-OUTS: (a) confirm NO plain-tag pointer DataDef survives besides DataDefPTR
+(grep `rtPtr(`/`dt*ptr` construction outside DataDefPTR) — ddLPSTR is done; (b)
+base is_pointer() (`_type>=10000`) goes always-false after the drop, correct since
+only DataDefPTR marks pointers; (c) run the `===` (spaceship/strict-eq) suite +
+torture; the failset MUST stay byte-identical to the 51-name baseline.
+
 ## Guardrails
 
 - Structural-first: a derivation question is `is_pointer()`/`is_reference()`/

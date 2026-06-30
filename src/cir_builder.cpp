@@ -4273,8 +4273,12 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 	// access inside the callee remains typed; references are already pointer
 	// DataDefs by the time they reach this emitter.
 	if (ptype) {
+		// rawtype() always strips the pointer/reference band, so it never
+		// returns a dtARRAYref (20000+) value — the old `|| dtARRAYref` arm
+		// was dead. An array reference reduces to dtARRAY here (tag-arith
+		// retirement: stop naming the ref-band tag).
 		DataType pdt = ptype->rawtype();
-		if (pdt == DataType::dtARRAY || pdt == DataType::dtARRAYref) {
+		if (pdt == DataType::dtARRAY) {
 			node_t pspec = list();
 			append(pspec, simple(N_VOID));
 			node_t pdecl_list = list();
