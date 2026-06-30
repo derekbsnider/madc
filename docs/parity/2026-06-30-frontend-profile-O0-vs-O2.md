@@ -120,11 +120,29 @@ the 72%-instantiation cost, and the rolling-hash (lexer-only) does not cover it.
 - **`.str` malloc ~0.7%** at -O2 — confirms the Step-4 perf payoff is ~1%, architectural-only.
 
 ## Updated priority (honest -O2, shipping-level)
-1. **Variable scope lookup (~9.4%)** — make `findVariableThisScope`/`findVariable` a pure
-   id-indexed lookup (drop the string-compare scan). Biggest single madc-side win. NEW.
-2. **`finalize_pop1_rec` file_id re-intern (~part of 3.99%)** — cache file_id per file. Cheap.
-3. **Instantiation (72% of parse, opt-invariant)** — the dominant structural lever
+1. ✅ **DONE (commit 5739e624)** — Variable scope lookup re-hash + finalize file_id re-hash.
+   `Variable::name_sid` cache (findVariableThisScope absorbs without re-interning names) +
+   single-entry file_id cache in finalize_pop1_rec. Deterministic callgrind below.
+2. **Instantiation (72% of parse, opt-invariant)** — the dominant structural lever
    (embedded-header-forest / instantiation caching). Largest but biggest project.
-4. **Residual std::map/set<string> re-key (~1.4%)** — finish the rung-1 re-key campaign.
-5. **`intern_table` over-reservation** — right-size the small dedicated pools. Cheap.
-6. **`.str`-drop (rung-1 Step 4, ~1%)** — do for architecture (POD tokens / find(id)), not perf.
+3. **Residual std::map/set<string> re-key (~1.4%)** — finish the rung-1 re-key campaign.
+4. **`intern_table` over-reservation** — right-size the small dedicated pools. Cheap.
+5. **`.str`-drop (rung-1 Step 4, ~1%)** — do for architecture (POD tokens / find(id)), not perf.
+
+## RESULT — name_sid + file_id cache (commit 5739e624)
+Deterministic callgrind, small reducer (`#include <map>` + trivial main), -O0:
+
+| metric | baseline 6ac620af | fixed 5739e624 | delta |
+|--------|------------------:|---------------:|-------|
+| total instructions | 1,773,514,596 | 1,657,116,820 | **-116.4M (-6.6%)** |
+| `hash_step` | 85.6M (4.83%) | 32.6M (1.97%) | **-62%** |
+| `hash_bytes` | 64.5M (3.64%) | 21.9M (1.32%) | **-66%** |
+
+Hashing total 150M -> 54.5M insns (~64% cut). Wall-clock parse delta on testmap is
+within this host's ~3% jitter (alternating A/B: baseline ~0.927s vs fixed ~0.918s),
+so the **instruction count is the load-bearing measurement**, not wall-clock.
+Gates: fulltest 673/0/0/16; 0 warnings; tag-arith 0/0; torture failset == 51-name baseline.
+
+NOTE method: build pre-change binary in a `git worktree` at the baseline commit, callgrind
+BOTH on the same input; Ir counts are deterministic (no host noise). -O0 full-parse callgrind
+exceeds the sandbox CPU cgroup → use a SMALL reducer (the delta is still exact).
