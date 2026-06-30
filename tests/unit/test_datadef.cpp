@@ -56,25 +56,12 @@ TEST_SUITE("DataType enum") {
         CHECK(DataType::dtCHAR == DataType::dtINT8);
     }
 
-    TEST_CASE("pointer variants are base + 10000") {
-        CHECK((uint32_t)DataType::dtINTptr == (uint32_t)DataType::dtINT + 10000);
-        CHECK((uint32_t)DataType::dtARRAYptr == (uint32_t)DataType::dtARRAY + 10000);
-    }
-
-    TEST_CASE("reference variants are base + 20000") {
-        CHECK((uint32_t)DataType::dtINTref == (uint32_t)DataType::dtINT + 20000);
-        CHECK((uint32_t)DataType::dtARRAYref == (uint32_t)DataType::dtARRAY + 20000);
-    }
-
-    TEST_CASE("rtPtr/rtDePtr macros are inverses") {
-        DataType t = DataType::dtINT32;
-        CHECK(rtDePtr(rtPtr(t)) == t);
-    }
-
-    TEST_CASE("rtRef/rtDeRef macros are inverses") {
-        DataType t = DataType::dtINT32;
-        CHECK(rtDeRef(rtRef(t)) == t);
-    }
+    // The pointer/reference tag-arithmetic cases (dt*ptr == base+10000,
+    // dt*ref == base+20000, and the rtPtr/rtRef/rtDePtr/rtDeRef macro
+    // inverses) were removed with the encoding itself (tag-arithmetic
+    // retirement). Derivation is now the DataDefPTR/DataDefREF/DataDefCONST
+    // object graph — see the is_cstr() and DataDefPTR/REF suites and
+    // is_pointer()/is_reference()/rawtype() for the structural contract.
 }
 
 TEST_SUITE("varflag_t") {
@@ -134,12 +121,16 @@ TEST_SUITE("DataDef type queries") {
         CHECK(!test_struct().is_numeric());
     }
 
-    TEST_CASE("rawtype strips pointer and reference variants") {
-        DataType ptr_int = rtPtr(DataType::dtINT);
-        DataType ref_int = rtRef(DataType::dtINT);
-        CHECK(DataDef::rawtype(ptr_int) == DataType::dtINT);
-        CHECK(DataDef::rawtype(ref_int) == DataType::dtINT);
-        CHECK(DataDef::rawtype(DataType::dtINT) == DataType::dtINT);
+    TEST_CASE("rawtype strips pointer and reference derivation (structural)") {
+        // Derivation is the object graph now (no tag bands / rt* macros):
+        // DataDefPTR/REF forward rawtype() to base_type.
+        DataDefPTR ptr_int(ddINT);   // int*
+        DataDefREF ref_int(ddINT);   // int&
+        CHECK(ptr_int.rawtype() == DataType::dtINT);
+        CHECK(ref_int.rawtype() == DataType::dtINT);
+        CHECK(ddINT.rawtype()   == DataType::dtINT);
+        CHECK(ptr_int.is_pointer());
+        CHECK(ref_int.is_reference());
     }
 
     TEST_CASE("reftype detection") {
@@ -1426,10 +1417,11 @@ TEST_SUITE("DataDef::same_representation (=== type-domain identity)") {
         CHECK(!pi.same_representation(i32));   // ptr vs non-ptr
         CHECK(ri.same_representation(i32));    // T& reads as T
     }
-    TEST_CASE("double pointers: ptr-over-ptr tag is NOT a bare reference tag") {
-        // DataDefPTR over a pointer reuses the 20000+x tag range (rtPtr of a
-        // 10000+x pointee) — numerically the bare-ref-tag band. The ref strip
-        // must never apply to a DataDefPTR, or char** collapses to char.
+    TEST_CASE("double pointers: char** is structurally distinct from char and char*") {
+        // char** = DataDefPTR(DataDefPTR(char)). With the tag encoding retired,
+        // same_representation recurses on base_type, so the old numeric-band
+        // collision (char**'s tag landing in the bare-reference range) is gone —
+        // the distinction is purely structural now.
         // The wraps go through DataDef& (as the parser does via DataDef*) —
         // DataDefPTR(pc) directly would pick the COPY ctor, not a wrap.
         DataDef ch("char", 1, DataType::dtCHAR);
@@ -1437,16 +1429,15 @@ TEST_SUITE("DataDef::same_representation (=== type-domain identity)") {
         DataDefPTR pp(static_cast<DataDef &>(pc));      // char**
         DataDefPTR pc2(ch);
         DataDefPTR pp2(static_cast<DataDef &>(pc2));    // an identical char**
-        // Pin the colliding construction: the char** tag is rtPtr of char*'s
-        // 10000+x tag, i.e. the 20000+x bare-reference band.
-        CHECK((uint32_t)pp.type() == (uint32_t)pc.type() + 10000);
+        CHECK(pp.is_pointer());
+        CHECK(pp.rawtype() == DataType::dtCHAR);        // recurses to the scalar
         CHECK(!pp.same_representation(ch));    // char** vs char
         CHECK(!ch.same_representation(pp));
         CHECK(!pc.same_representation(pp));    // char* vs char**
         CHECK(!pp.same_representation(pc));
         CHECK(pp.same_representation(pp2));    // identical char** chains
     }
-    TEST_CASE("is_cstr(): structural char* detection == old type()==dtCHARptr") {
+    TEST_CASE("is_cstr(): structural char* detection (char*, const char*, char&)") {
         DataDef ch("char", 1, DataType::dtCHAR);
         DataDef i32("int", 4, DataType::dtINT32);
         DataDefPTR pc(ch);                              // char*
@@ -1468,15 +1459,9 @@ TEST_SUITE("DataDef::same_representation (=== type-domain identity)") {
         CHECK(!pp.is_cstr());
         CHECK(!pi.is_cstr());
         CHECK(!pv.is_cstr());
-        // Value-equivalent to the retired `type() == dtCHARptr` tag compare for
-        // every case (the migration's invariant).
-        CHECK(pc.is_cstr()  == (pc.type()  == DataType::dtCHARptr));
-        CHECK(pp.is_cstr()  == (pp.type()  == DataType::dtCHARptr));
-        CHECK(pcc.is_cstr() == (pcc.type() == DataType::dtCHARptr));
-        CHECK(ccp.is_cstr() == (ccp.type() == DataType::dtCHARptr));
-        CHECK(rc.is_cstr()  == (rc.type()  == DataType::dtCHARptr));
-        CHECK(pi.is_cstr()  == (pi.type()  == DataType::dtCHARptr));
-        CHECK(pv.is_cstr()  == (pv.type()  == DataType::dtCHARptr));
+        // (The old `is_cstr() == (type() == dtCHARptr)` cross-checks were
+        // removed with the dtCHARptr tag itself — the explicit expected values
+        // above ARE the structural contract that replaced the tag compare.)
     }
     TEST_CASE("function signatures: return + params + varargs; fptr targets") {
         DataDef i32("int", 4, DataType::dtINT32);

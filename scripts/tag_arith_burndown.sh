@@ -11,10 +11,14 @@
 # (DataDefPTR/REF/CONST) + the typeid table. This gate counts the EXTERNAL
 # consumers that still do raw tag arithmetic — the worklist to migrate onto
 # structural queries (is_pointer/is_reference/base_type/getPointerType) and the
-# id-addressable derived-type API (Program::derived_type_id). When this reaches
-# 0, a final commit removes the core encoding from datadef.h (the enum ranges +
-# rtPtr/rtRef macros + the offset math in the accessors) and this gate flips to
-# a finish-line check.
+# id-addressable derived-type API (Program::derived_type_id).
+#
+# STATUS: the encoding has been REMOVED (atomic core flip, 2026-06-30) — the
+# enum dt*ptr/dt*ref ranges, the rt{Ptr,Ref,DePtr,DeRef} macros, and the offset
+# math in the accessors are gone. Both baselines are 0, so this is now a
+# FINISH-LINE CHECK: any new raw tag-arithmetic or dt*ptr/dt*ref/reftype()
+# consumer is a regression. Keep it at 0/0 — derive types via the object graph
+# and derived_type_id, never a +10000/20000 tag.
 #
 # CORE (datadef.h: the enum dt*ptr/dt*ref ranges, the rt{Ptr,Ref,DePtr,DeRef}
 # macros, and the accessor bodies that implement them) is the ENCODING itself —

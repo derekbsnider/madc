@@ -8605,6 +8605,9 @@ DataDefARRAY ddARRAY;
 // the "LPSTR" name the plain-tag definition carried (DataDefPTR's ctor would name
 // it "char*"); _type/size are identical to the old rtPtr(dtCHAR) form.
 DataDefLPSTR::DataDefLPSTR() : DataDefPTR(ddCHAR) { name = "LPSTR"; }
+// void& is a structural reference to void (was a bare dtVOIDref tag). ddVOID
+// is defined just above ddVOIDref, so the global init order is satisfied.
+DataDefVOIDref::DataDefVOIDref() : DataDefREF(ddVOID) { name = "void&"; }
 DataDefLPSTR ddLPSTR;
 DataDefPTR ddVOIDptr(ddVOID), ddCHARptr(ddCHAR), ddINTptr(ddINT), ddINT32ptr(ddINT32);
 DataDefAUTO ddAUTO;
@@ -9044,27 +9047,14 @@ bool DataDef::same_representation(DataDef &d)
 	DataDefPTR *bp = dynamic_cast<DataDefPTR *>(b);
 	if ( ap && bp )
 		return ap->base_type->same_representation(*bp->base_type);
-	// References have a SECOND encoding besides DataDefREF (stripped above):
-	// a bare ref TAG (reftype() == rtReference) on a PLAIN DataDef, with no
-	// referee instance to chase. === reads rvalues, so strip the ref offset
-	// (rtDeRef) BEFORE the pointer-ness comparison — a bare ref tag over a
-	// pointer tag (_type 30000+x) reports is_pointer()==false until
-	// normalized. The pointer offset (10000) is representational and stays.
-	// Never strip a DataDefPTR: a pointer-over-pointer wrap reuses the
-	// 20000+x tag range (rtPtr of a 10000+x pointee), so its reftype() reads
-	// rtReference — stripping would collapse T** into T.
-	DataType atag = a->type();
-	DataType btag = b->type();
-	if ( !ap && a->reftype() == RefType::rtReference )
-		atag = rtDeRef(atag);
-	if ( !bp && b->reftype() == RefType::rtReference )
-		btag = rtDeRef(btag);
-	// Pointer-ness must agree, compared on the ref-stripped tags:
-	// rawtype(tag) != tag <=> the stripped tag carries the pointer offset.
-	if ( (rawtype(atag) != atag) != (rawtype(btag) != btag) )
+	// Both are btSimple and NOT both DataDefPTR (a pointer pair was handled
+	// above); references were already stripped at the top. Pointer-ness must
+	// agree — a lone pointer differs from a scalar — then the underlying scalar
+	// tags must match exactly. (Structural: the old bare-ref-tag / rtDeRef
+	// fallback is dead now that ddVOIDref is a real DataDefREF, stripped above.)
+	if ( a->is_pointer() != b->is_pointer() )
 		return false;
-	// Simple scalars (and same-tag builtin pointers): exact tag equality.
-	return atag == btag;
+	return a->type() == b->type();
 }
 
 // --- Type table (typeid) identity layer ----------------------------------
@@ -13110,35 +13100,10 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	    if ( spec.ref == RefType::rtReference ) return spec.dd;
 	    return spec.dd;
 	}
+	// A bare DataType scalar (no derivation). Banded ptr/ref tags no longer
+	// exist — a derived type arrives via spec.dd (ptr_of/ref_of) above — so this
+	// only maps the simple scalars.
 	DataType dt = spec.dt;
-	if ( DataDef::rawtype(dt) != dt )
-	{
-	    DataType raw = DataDef::rawtype(dt);
-	    DataDef *base = NULL;
-	    switch(raw)
-	    {
-		default:		   base = NULL;		break;
-		case DataType::dtVOID:   base = &ddVOID;	break;
-		case DataType::dtCHAR:   base = &ddCHAR;	break;
-		case DataType::dtBOOL:   base = &ddBOOL;	break;
-		case DataType::dtUINT8:  base = &ddUINT8;	break;
-		case DataType::dtINT16:  base = &ddINT16;	break;
-		case DataType::dtUINT16: base = &ddUINT16;	break;
-		case DataType::dtINT32:  base = &ddINT32;	break;
-		case DataType::dtUINT32: base = &ddUINT32;	break;
-		case DataType::dtINT64:  base = &ddINT64;	break;
-		case DataType::dtUINT64: base = &ddUINT64;	break;
-		case DataType::dtARRAY:  base = &ddARRAY;	break;
-		case DataType::dtFLOAT:  base = &ddFLOAT;	break;
-		case DataType::dtDOUBLE: base = &ddDOUBLE;	break;
-	    }
-	    if ( !base )
-		return &ddVOID;
-	    if ( static_cast<uint32_t>(dt) >= 20000 )
-		return base;
-	    return getPointerType(base);
-	}
-
 	switch(dt)
 	{
 	    default:	 	  return &ddVOID;

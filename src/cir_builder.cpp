@@ -2524,7 +2524,7 @@ static DataDefCLASS *as_user_class(DataDef *dd)
 	dd = unqualified_type(dd);
 	if (!dd) return NULL;
 	if (dd->basetype() != BaseType::btClass) return NULL;
-	if (dd->reftype() == RefType::rtReference) return NULL;
+	if (dd->is_reference()) return NULL;
 	if (dd->rawtype() != DataType::dtRESERVED) return NULL;
 	return dynamic_cast<DataDefCLASS *>(dd);
 }
@@ -2534,7 +2534,7 @@ static const DataDefCLASS *as_user_class(const DataDef *dd)
 	dd = unqualified_type(dd);
 	if (!dd) return NULL;
 	if (dd->basetype() != BaseType::btClass) return NULL;
-	if (dd->reftype() == RefType::rtReference) return NULL;
+	if (dd->is_reference()) return NULL;
 	if (dd->rawtype() != DataType::dtRESERVED) return NULL;
 	return dynamic_cast<const DataDefCLASS *>(dd);
 }
@@ -15502,7 +15502,10 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		ret_len_fd = class_method_def(ret_cdd, "size");
 		if (!ret_len_fd) ret_len_fd = class_method_def(ret_cdd, "length");
 		rkind = (ret_cstr_fd && ret_len_fd) ? R_TEXTOBJ : R_INST;
-	} else if (!rt || rt->type() == DataType::dtVOID) {
+	} else if (!rt || (rt->type() == DataType::dtVOID && !rt->is_pointer())) {
+		// Structural: a void* is a DataDefPTR whose type() is now dtVOID (the
+		// derivation moved off the tag), so guard with !is_pointer() — a void*
+		// return is not R_VOID; it falls to the pointer bail below (no shim).
 		rkind = R_VOID;
 	} else if (rt->is_cstr()) {
 		rkind = R_CSTR;
@@ -16106,7 +16109,7 @@ node_t CirBuilder::translate_module(Program *prog)
 			fprintf(stderr, "[EMIT] key='%s' as_user=%d base=%d raw=%d ref=%d members=%zu size=%ld dep_ph=%d\n",
 				kv.first.c_str(), (int)(as_user_class(kv.second) != NULL),
 				c2 ? (int)c2->basetype() : -1, c2 ? (int)c2->rawtype() : -1,
-				c2 ? (int)c2->reftype() : -1, c2 ? c2->members.size() : (size_t)0,
+				c2 ? (int)c2->is_reference() : -1, c2 ? c2->members.size() : (size_t)0,
 				c2 ? (long)c2->size : -1L, c2 ? (int)c2->is_dependent_placeholder : -1);
 		}
 #endif

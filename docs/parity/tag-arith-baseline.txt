@@ -1,5 +1,5 @@
-3
-5
+0
+0
 # tag-arithmetic retirement burndown baseline (scripts/tag_arith_burndown.sh --check).
 # The first two number-only lines are the two ratcheted metrics:
 #   line 1 = RAW-TAG sites: rtPtr/rtRef/rtDePtr/rtDeRef construction + raw
@@ -48,3 +48,14 @@
 #      (dead-defensive guards), parser 9058/9060 (same_representation Cluster B) —
 #      handled by the flip (structural reftype on the plain types + Cluster B
 #      rewrite). The raw-tag metric's 3 are the same_representation tag tail.
+#   0 / 0 (2026-06-30, ATOMIC CORE FLIP): the encoding is GONE. datadef.h dropped
+#      the dt*ptr/dt*ref enum bands, the rt{None,Val,Ptr,Ref,DePtr,DeRef} macros,
+#      the static rawtype(DataType) overload + setRef(), and made the base
+#      is_pointer()/rawtype()/reftype() bodies structural; DataDefPTR's ctor no
+#      longer adds +10000. ddVOIDref (the last plain-tag global) became a real
+#      DataDefREF(ddVOID). same_representation's tag tail is now is_pointer()/
+#      type(); resolve_data_type's dead banded-tag branch was deleted. Two extra
+#      pointer-guards were needed because a pointer's type() is now its pointee
+#      scalar: cir synth_call_shim_var (void* return no longer aliases dtVOID) and
+#      native_type_from_datadef (pointers bail to integer before the scalar
+#      switch). This gate is now a FINISH-LINE check: both metrics must stay 0.

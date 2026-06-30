@@ -2193,6 +2193,17 @@ bool native_type_from_datadef(DataDef *type, program::native_type &out)
 	return true;
     }
 
+    // Any other pointer marshals as an integer (the ABI view). Structural guard
+    // BEFORE the scalar switch: a pointer's type() is now its pointee scalar
+    // (the +10000 tag is retired), so e.g. a void* would otherwise match
+    // `case dtVOID` and a bool* `case dtBOOL`. is_pointer() keeps them integers,
+    // exactly as the old dt*ptr tag did (it fell through to is_integer()).
+    if ( type->is_pointer() )
+    {
+	out = program::native_type::integer;
+	return true;
+    }
+
     switch ( type->type() )
     {
 	case DataType::dtVOID:

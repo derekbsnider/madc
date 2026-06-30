@@ -65,26 +65,13 @@ enum class DataType : uint16_t {
 	dtINT128, dtUINT128, dtRESERVED = 255,
 	dtMUTEX = 256, dtTHREAD, dtTHISTHREAD,
 	dtARRAY,
-
-	// rtPointer variants
-	dtVOIDptr = 10000, dtBOOLptr, dtUINT8ptr, dtBYTEptr=dtUINT8ptr, dtINT8ptr, dtCHARptr = dtINT8ptr,
-	dtUINT16ptr, dtINT16ptr, dtSHORTptr=dtINT16ptr, dtUINT24ptr, dtINT24ptr,
-	dtUINT32ptr, dtINT32ptr, dtUINT64ptr, dtINT64ptr, dtINTptr=dtINT32ptr,
-	dtFLOATptr, dtFLOAT32ptr=dtFLOATptr, dtDOUBLEptr, dtDOUBLE64ptr=dtDOUBLEptr,
-	dtLDOUBLEptr, dtDOUBLE80ptr=dtLDOUBLEptr, dtSIMDptr,
-	dtINT128ptr, dtUINT128ptr, dtRESERVEDptr = 10255,
-	dtMUTEXptr = 10256, dtTHREADptr, dtTHISTHREADptr,
-	dtARRAYptr,
-
-	// rtReference variants
-	dtVOIDref = 20000, dtBOOLref, dtUINT8ref, dtBYTEref=dtUINT8ref, dtINT8ref, dtCHARref = dtINT8ref,
-	dtUINT16ref, dtINT16ref, dtSHORTref=dtINT16ref, dtUINT24ref, dtINT24ref,
-	dtUINT32ref, dtINT32ref, dtUINT64ref, dtINT64ref, dtINTref=dtINT32ref,
-	dtFLOATref, dtFLOAT32ref=dtFLOATref, dtDOUBLEref, dtDOUBLE64ref=dtDOUBLEref,
-	dtLDOUBLEref, dtDOUBLE80ref=dtLDOUBLEref, dtSIMDref,
-	dtINT128ref, dtUINT128ref, dtRESERVEDref = 20255,
-	dtMUTEXref = 20256, dtTHREADref, dtTHISTHREADref,
-	dtARRAYref,
+		// Pointer/reference DERIVATION is no longer a numeric band on this
+		// enum (the retired dt*ptr=+10000 / dt*ref=+20000 ranges). Derived
+		// types ARE the structural object graph — DataDefPTR / DataDefREF /
+		// DataDefCONST (with base_type) plus the typeid table. Ask
+		// is_pointer() / is_reference() / base_type / Program::derived_type_id,
+		// never tag arithmetic.
+		// (tag-arithmetic retirement: docs/plans/2026-06-30-tag-arithmetic-retirement-plan.md)
 };
 
 // Variable flags
@@ -114,12 +101,9 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // integral constant expression; read-fold OK
 			} varflag_t;
 
-#define rtNone(x) 0
-#define rtVal(x) (x)
-#define rtPtr(x) (DataType)((uint32_t)x+10000)
-#define rtRef(x) (DataType)((uint32_t)x+20000)
-#define rtDePtr(x) (DataType)((uint32_t)x-10000)
-#define rtDeRef(x) (DataType)((uint32_t)x-20000)
+// The rt{None,Val,Ptr,Ref,DePtr,DeRef} tag-arithmetic macros are retired:
+// pointer/reference derivation is the DataDefPTR/REF/CONST object graph, not
+// a +/-10000/20000 offset on the DataType tag (tag-arithmetic retirement).
 
 class DataDef
 {
@@ -218,7 +202,9 @@ public:
     }
     virtual bool is_pointer() const
     {
-	return _type >= 10000 && _type < 20000;
+	// Structural: only DataDefPTR (and DataDefCONST forwarding to it) is a
+	// pointer. The +10000 tag band is retired; a plain DataDef never is.
+	return false;
     }
     // True only for DataDefREF: a type that came from a reference spelling
     // (`T&` / `T&&`, `typedef T& alias;`, `using alias = T&;`). Lowered as a
@@ -302,30 +288,19 @@ public:
     }
     virtual DataType type() const { return (DataType)_type; }
     virtual BaseType basetype() const { return BaseType::btSimple; }
-    static inline DataType rawtype(DataType dt)
+    // Strip pointer/reference derivation down to the underlying scalar tag.
+    // A plain DataDef IS its scalar; DataDefPTR/REF override to forward to
+    // base_type. (The old static band-subtraction overload and the +/-10000
+    // setRef() are gone — derivation lives in the object graph now.)
+    virtual DataType rawtype()  const
     {
-	if ((uint32_t)dt >= 20000) { return (DataType)((uint32_t)dt-20000); }
-	if ((uint32_t)dt >= 10000) { return (DataType)((uint32_t)dt-10000); }
-	return dt;
-    }
-    virtual DataType rawtype()  const 
-    {
-	if (_type >= 20000) { return (DataType)(_type-20000); }
-	if (_type >= 10000) { return (DataType)(_type-10000); }
 	return (DataType)_type;
     }
+    // Derivation kind. Structural: a plain DataDef is a value; DataDefPTR ->
+    // rtPointer, DataDefREF -> rtReference, DataDefCONST forwards to base.
     virtual RefType reftype()  const
     {
-	if (_type >= 20000) { return RefType::rtReference; }
-	if (_type >= 10000) { return RefType::rtPointer;   }
 	return RefType::rtValue;
-    }
-    virtual void setRef(RefType rt)
-    {
-	/**/ if (_type >= 20000) { if (rt==RefType::rtReference) return; _type -= 20000; }
-	else if (_type >= 10000) { if (rt==RefType::rtPointer)   return; _type -= 10000; }
-	if ( rt == RefType::rtReference ) { _type += 20000; return; }
-	if ( rt == RefType::rtPointer )   { _type += 10000; return; }
     }
 };
 
@@ -978,7 +953,6 @@ typedef DataDefCLASS DDClass;
 
 // data definitions of default base types
 class DataDefVOID:      public DataDef { public: DataDefVOID() :   DataDef("void", 0,     DataType::dtVOID) {} };
-class DataDefVOIDref:   public DataDef { public: DataDefVOIDref(): DataDef("void&", 0,    DataType::dtVOIDref) {} };
 class DataDefBOOL:      public DataDef { public: DataDefBOOL() :   DataDef("bool", 1,     DataType::dtBOOL) {} };
 class DataDefCHAR:      public DataDef { public: DataDefCHAR() :   DataDef("char", 1,     DataType::dtCHAR) {} };
 class DataDefINT:       public DataDef { public: DataDefINT()  :   DataDef("int",  4,     DataType::dtINT) {} };
@@ -1010,7 +984,7 @@ class DataDefPTR : public DataDef
 public:
     DataDef *base_type;  // what this pointer points to
     DataDefPTR(DataDef &base)
-	: DataDef(base.name + "*", 8, rtPtr(base.type())), base_type(&base) {}
+	: DataDef(base.name + "*", 8, base.type()), base_type(&base) {}
     virtual bool is_pointer() const { return true; }
     virtual bool is_numeric() const { return true; }
     virtual bool is_integer() const { return true; }
@@ -1053,6 +1027,13 @@ public:
     // is inherited from DataDefPTR (base_type->rawtype()), unchanged.)
     virtual RefType reftype() const { return RefType::rtReference; }
 };
+
+// `void&` — the reference-slot placeholder for MADC_TYPEID_VOID_REF. IS-A
+// DataDefREF(ddVOID): was the LAST plain-tag global (a bare dtVOIDref tag) the
+// tag-arithmetic retirement removes. Out-of-line ctor (parser.cpp) because
+// ddVOID is declared later. is_reference() is now true, so same_representation
+// strips it like any reference.
+class DataDefVOIDref: public DataDefREF { public: DataDefVOIDref(); };
 
 // A const-qualified type (`const T`). IS-A its base's lowering: const has NO
 // runtime/ABI effect, so the size, DataType, and all codegen behaviour are the
