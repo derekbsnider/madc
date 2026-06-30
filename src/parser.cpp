@@ -10619,8 +10619,12 @@ Variable *TokenCpnd::findVariableThisScope(const madc::dis::intern_table &sp, ui
 	var_indexed = 0;
     }
     for ( ; var_indexed < variables.size(); ++var_indexed )
-	if ( variables[var_indexed] )
-	    var_index.emplace(sp.intern(variables[var_indexed]->name), variables[var_indexed]);
+	if ( Variable *v = variables[var_indexed] )
+	{
+	    if ( !v->name_sid )		// intern the name ONCE, then reuse the cached id
+		v->name_sid = sp.intern(v->name);
+	    var_index.emplace(v->name_sid, v);
+	}
     std::unordered_map<uint32_t, Variable *>::iterator it = var_index.find(qsid);
     Variable *res = (it != var_index.end()) ? it->second : NULL;
     // A Variable's `name` can be MUTATED after it is appended (operator arity
@@ -10635,8 +10639,11 @@ Variable *TokenCpnd::findVariableThisScope(const madc::dis::intern_table &sp, ui
 	var_index.clear();
 	var_indexed = 0;
 	for ( ; var_indexed < variables.size(); ++var_indexed )
-	    if ( variables[var_indexed] )
-		var_index.emplace(sp.intern(variables[var_indexed]->name), variables[var_indexed]);
+	    if ( Variable *v = variables[var_indexed] )
+	    {
+		v->name_sid = sp.intern(v->name);	// force-refresh: a rename invalidated the cache
+		var_index.emplace(v->name_sid, v);
+	    }
 	it = var_index.find(qsid);
 	res = (it != var_index.end()) ? it->second : NULL;
     }

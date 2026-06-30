@@ -2342,6 +2342,13 @@ public:
 	return interned_files.emplace(s).first->c_str();
     }
     std::set<std::string> interned_files;	// stable token file names (never cleared)
+    // Single-entry cache for finalize_pop1_rec's per-token file_id intern. Tokens
+    // are finalized in stream order, so consecutive tokens almost always share the
+    // same (stable, intern_file'd) file pointer — caching the last (ptr -> id) skips
+    // re-hashing the filename for every one of ~144K tokens. Correct regardless of
+    // pointer stability: a miss just re-interns (intern dedups to the same id).
+    const char *_finalize_last_file = nullptr;
+    uint32_t    _finalize_last_file_id = 0;
 
     // Interned identifier-spelling table (arena-model hashstr; see
     // include/stringpool.h and docs/plans/2026-06-23-arena-interning-HANDOFF.md).

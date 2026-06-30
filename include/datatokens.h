@@ -55,6 +55,13 @@ class Variable
 {
 public:
     std::string name;
+    // Cached interned spelling-id of `name` (Program::strpool), 0 = not yet
+    // interned / invalidated. Lets TokenCpnd::findVariableThisScope index the
+    // scope by id without re-hashing the name on every absorption (the per-
+    // instantiation scope rebuild was re-interning every name — see
+    // docs/parity/2026-06-30-frontend-profile-O0-vs-O2.md). A rename is picked
+    // up by the staleness-rebuild path, which force-refreshes this field.
+    uint32_t name_sid = 0;
     DataDef *type;
     void *data;
     size_t aot_data_offset;

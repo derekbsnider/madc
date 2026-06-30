@@ -1002,7 +1002,17 @@ void Program::finalize_pop1_rec(TokenBase *tb)
     }
     r.line = (int32_t)tb->line;
     r.column = (int32_t)tb->column;
-    r.file_id = tb->file ? strpool.intern(tb->file) : 0;
+    if ( tb->file )
+    {
+	if ( tb->file != _finalize_last_file )		// almost always the same file as the prior token
+	{
+	    _finalize_last_file = tb->file;
+	    _finalize_last_file_id = strpool.intern(tb->file);
+	}
+	r.file_id = _finalize_last_file_id;
+    }
+    else
+	r.file_id = 0;
 }
 
 void Program::push_token_with_literal_concat(TokenBase *tb)
