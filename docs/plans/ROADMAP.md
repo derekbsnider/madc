@@ -1,7 +1,8 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-06-22 (v0.30.0 — set wall
-cleared: real-libstdc++ `std::set`/`std::map` working on the default C++17 path).
+Master plan linking all workstreams. Updated 2026-06-30 (v0.31.0 — tag-arithmetic
+type encoding retired; `madc::dis` substrate primitives; `-O2` default front-end
+speedup; c2mir warnings 97 → 0).
 
 **Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
 the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
@@ -27,15 +28,18 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Version:** `0.30.0` (per `VERSION`) — released on `develop` (CIR backend);
-  the **set-wall** release: real-libstdc++ `std::set`/`std::map` (incl.
-  `std::map<std::string,std::string>`) compile and run on the default C++17
-  real-header path, eight root-cause container bugs cleared, fulltest
-  **669 passed / 0 failed / 0 timed out / 18 skipped**, gcc.c-torture failset
-  byte-identical to the 51-name baseline. Also lands real 16-byte `__int128`
-  (P0 wide-integer track) and the measurement-gated embedded-header-forest plan.
-  v0.29.0 was the backend-correctness release (MIR-gen `-O2` = `-O1` torture
-  parity, fork pinned @ `9ab36fb`).
+- **Version:** `0.31.0` (per `VERSION`) — released on `develop` (CIR backend);
+  the **tag-arithmetic-retirement** release: the `DataType` pointer/reference
+  tag-range encoding (`base+10000`/`base+20000`) is removed — derivation lives
+  entirely in the `DataDefPTR`/`DataDefREF`/`DataDefCONST` object graph + the
+  typeid table, queried structurally. Also lands the first `madc::dis`
+  development-substrate primitives (intern_table, arena, id_table) with the
+  `datatype_map` re-keyed onto interned ids, `-O2` as the default build
+  (~1.74× faster front-end), and the c2mir compile-warning surface at zero
+  suite-wide. fulltest **673 passed / 0 failed / 0 timed out / 16 skipped**,
+  gcc.c-torture failset byte-identical to the 51-name baseline. v0.30.0 was the
+  **set-wall** release (real-libstdc++ `std::set`/`std::map` on the default
+  C++17 path, eight container bugs cleared, real 16-byte `__int128`).
   `master` still holds the v0.24.0 asmjit/Gecko backend at full C89 coverage;
   develop is **not** promoted to master until the CIR path reaches feature
   parity.

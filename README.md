@@ -262,17 +262,28 @@ user-signed failset classification audit
 are roadmap items, not gate blockers. In-process `eval`/exec runs on the CIR
 JIT (`CirJitSession`); the REPL and native AOT output remain deferred.
 
-**Branch state:** `develop` carries v0.30.0 (CIR backend). `master` still holds
+**Branch state:** `develop` carries v0.31.0 (CIR backend). `master` still holds
 the v0.24.0 asmjit/Gecko backend at full C89 coverage (419 pass / 0 fail) —
 develop is **not** promoted to master until the CIR path reaches feature parity.
 
+### Current Release
+
+**v0.31.0** retires the legacy tag-arithmetic type encoding — pointer/reference
+derivation now lives entirely in the `DataDefPTR`/`DataDefREF`/`DataDefCONST`
+object graph plus the typeid table, queried structurally (no `base+10000`/
+`base+20000` bit trick). It also lands the first `madc::dis` development-substrate
+primitives (intern_table, arena, id_table) with the `datatype_map` re-keyed onto
+interned ids, makes `-O2` the default build (~1.74× faster front-end), and brings
+the c2mir compile-warning surface to zero suite-wide. fulltest 673/0/0/16; torture
+failset byte-identical to the 51-name baseline.
+
 ### Recent Releases
 
+- **v0.31.0** — Tag-arithmetic encoding retired (structural derivation only); `madc::dis` substrate primitives + `datatype_map` re-key; `-O2` default front-end speedup; c2mir warnings 97 → 0; lambda `[&]` capture; fulltest 673/0/0/16
 - **v0.30.0** — Set wall cleared: real-libstdc++ `std::set`/`std::map` (incl. `std::map<std::string,std::string>`) compile and run on the default C++17 path (eight container bugs fixed); real 16-byte `__int128`; embedded-header-forest plan; fulltest 669/0/0/18, torture failset byte-identical to baseline
 - **v0.29.0** — Backend correctness: MIR-gen O2 = O1 torture parity (five c2mir/MIR bugs root-caused + fixed); fork synced with upstream PRs #430/#432/#433/#434, pinned @ 9ab36fb
 - **v0.28.0** — C++20 `<=>` track complete (real `<compare>`, rewritten candidates, `= default` synthesis); template-instantiation batch; one `madc::value` + call-site scope capture; promote gate re-defined; fulltest 572/0
 - **v0.27.0** — All integration reds green (547/0); alias-spelled reference returns; namespace fn-template body instantiation (real-header to_string/stoi); [namespace.udir] call resolution; fortify chk builtins
-- **v0.26.0** — Real-header C++: libstdc++ string/iostream/getline mangled-direct; call-symbol unification + gate; `--project` driver; ≤16-byte SIMD; VLAs; multi-return
 
 ## Roadmap
 

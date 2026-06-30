@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v0.31.0] — 2026-06-30
+
+Front-end performance track + the tag-arithmetic encoding retired: pointer/
+reference derivation now lives entirely in the `DataDefPTR`/`REF`/`CONST`
+object graph and the `madc::dis` substrate primitives (intern_table, arena,
+id_table) are factored out, with the `datatype_map` re-keyed onto interned ids.
+
 ### Tag-arithmetic retirement — COMPLETE (encoding removed)
 
 - Began retiring the `DataType` tag-range encoding of pointer/reference derivation
