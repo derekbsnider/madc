@@ -2444,9 +2444,9 @@ static std::string template_instantiation_key_head(
 	Program &pgm, const std::string &tname,
 	const std::string &defining_namespace)
 {
-    std::map<std::string, std::vector<Program::TemplateDef>>::iterator g =
+    std::vector<Program::TemplateDef> *g =
 	pgm.template_map.find(tname);
-    if ( g != pgm.template_map.end() && g->second.size() > 1
+    if ( g != pgm.template_map.end() && g->size() > 1
       && !defining_namespace.empty() )
 	return sanitize_template_fragment(defining_namespace) + "__" + tname;
     return tname;
@@ -2610,15 +2610,15 @@ static Program::TemplateAliasDef *find_template_alias_in_class_tree(
 	return NULL;
     seen->insert(owner);
 
-    std::map<std::string, std::vector<Program::TemplateAliasDef>>::iterator it =
+    std::vector<Program::TemplateAliasDef> *it =
 	pgm.template_alias_map.find(name);
     if ( it != pgm.template_alias_map.end() )
-	for ( size_t i = 0; i < it->second.size(); ++i )
-	    if ( it->second[i].owner_class == owner )
+	for ( size_t i = 0; i < it->size(); ++i )
+	    if ( (*it)[i].owner_class == owner )
 	    {
 		if ( matched_owner )
 		    *matched_owner = owner;
-		return &it->second[i];
+		return &(*it)[i];
 	    }
 
     for ( size_t i = 0; i < owner->bases.size(); ++i )
@@ -7899,15 +7899,15 @@ int64_t Program::parse_constant_primary()
 	// use-site resolution does not cover this constant-context path.)
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
-	    std::map<std::string, VarTemplateDef>::iterator vti =
+	    VarTemplateDef *vti =
 		var_template_map.find(name);
 	    if ( vti == var_template_map.end() && !current_namespace().empty() )
 		vti = var_template_map.find(current_namespace() + "::" + name);
-	    if ( vti != var_template_map.end() && !vti->second.init.empty() )
+	    if ( vti != var_template_map.end() && !vti->init.empty() )
 	    {
 		std::vector<DataDef *> targs = capture_call_template_args();
 		std::vector<TokenBase *> sub =
-		    substitute_var_template_init(vti->second, targs);
+		    substitute_var_template_init(*vti, targs);
 		if ( !sub.empty() )
 		{
 		    sub.push_back(new TokenSemi());
@@ -15202,11 +15202,11 @@ Program::TemplateDef *Program::find_template(const std::string &name,
 					     const std::string &ns_hint,
 					     DataDefCLASS *owner_hint)
 {
-    std::map<std::string, std::vector<Program::TemplateDef>>::iterator g =
+    std::vector<Program::TemplateDef> *g =
 	template_map.find(name);
-    if ( g == template_map.end() || g->second.empty() )
+    if ( g == template_map.end() || g->empty() )
 	return NULL;
-    std::vector<Program::TemplateDef> &variants = g->second;
+    std::vector<Program::TemplateDef> &variants = *g;
 
     if ( !ns_hint.empty() )
     {
@@ -15264,11 +15264,11 @@ Program::TemplateAliasDef *Program::find_template_alias(const std::string &name,
 							const std::string &ns_hint,
 							DataDefCLASS *owner_hint)
 {
-    std::map<std::string, std::vector<Program::TemplateAliasDef>>::iterator g =
+    std::vector<Program::TemplateAliasDef> *g =
 	template_alias_map.find(name);
-    if ( g == template_alias_map.end() || g->second.empty() )
+    if ( g == template_alias_map.end() || g->empty() )
 	return NULL;
-    std::vector<Program::TemplateAliasDef> &variants = g->second;
+    std::vector<Program::TemplateAliasDef> &variants = *g;
 
     if ( !ns_hint.empty() )
     {
@@ -15340,13 +15340,13 @@ Program::TemplateAliasDef *Program::find_template_alias(const std::string &name,
 
 Program::TemplateDef *Program::template_with_body(const std::string &name)
 {
-    std::map<std::string, std::vector<Program::TemplateDef>>::iterator g =
+    std::vector<Program::TemplateDef> *g =
 	template_map.find(name);
     if ( g == template_map.end() )
 	return NULL;
-    for ( size_t i = 0; i < g->second.size(); ++i )
-	if ( !g->second[i].body.empty() )
-	    return &g->second[i];
+    for ( size_t i = 0; i < g->size(); ++i )
+	if ( !(*g)[i].body.empty() )
+	    return &(*g)[i];
     return NULL;
 }
 
@@ -18798,16 +18798,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // inline. Registered names only, gated on a following `<`.
 		    if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 		    {
-			std::map<std::string, VarTemplateDef>::iterator vti =
+			VarTemplateDef *vti =
 			    var_template_map.find(ident_tb->str);
 			if ( vti == var_template_map.end() && !current_namespace().empty() )
 			    vti = var_template_map.find(
 				current_namespace() + "::" + ident_tb->str);
-			if ( vti != var_template_map.end() && !vti->second.init.empty() )
+			if ( vti != var_template_map.end() && !vti->init.empty() )
 			{
 			    std::vector<DataDef *> targs = capture_call_template_args();
 			    std::vector<TokenBase *> sub =
-				substitute_var_template_init(vti->second, targs);
+				substitute_var_template_init(*vti, targs);
 			    if ( !sub.empty() )
 			    {
 				for ( std::vector<TokenBase *>::reverse_iterator it =
@@ -21902,15 +21902,15 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	{
 	    auto ai = pgm.template_alias_map.find(member_name);
 	    if ( ai != pgm.template_alias_map.end() )
-		for ( size_t i = 0; i < ai->second.size(); ++i )
-		    if ( ai->second[i].defining_namespace == ns_name )
+		for ( size_t i = 0; i < ai->size(); ++i )
+		    if ( (*ai)[i].defining_namespace == ns_name )
 		    { have_template = true; break; }
 	    if ( !have_template )
 	    {
 		auto ti = pgm.template_map.find(member_name);
 		if ( ti != pgm.template_map.end() )
-		    for ( size_t i = 0; i < ti->second.size(); ++i )
-			if ( ti->second[i].defining_namespace == ns_name )
+		    for ( size_t i = 0; i < ti->size(); ++i )
+			if ( (*ti)[i].defining_namespace == ns_name )
 			{ have_template = true; break; }
 	    }
 	    if ( !have_template
@@ -32136,17 +32136,17 @@ static bool instantiate_fn_template_binding(Program &pgm,
     inst_key += ">";
     if ( pgm.fn_template_instantiated.count(inst_key) )
     {
-	std::map<std::string, Variable *>::iterator vi =
+	Variable **vi =
 	    pgm.fn_template_instantiated_vars.find(inst_key);
 	bool missing_var_memo = var_out
 	    && vi == pgm.fn_template_instantiated_vars.end();
 	bool stale_body_memo = vi != pgm.fn_template_instantiated_vars.end()
-	    && !instantiated_template_var_has_pending_body(pgm, vi->second);
+	    && !instantiated_template_var_has_pending_body(pgm, *vi);
 	if ( missing_var_memo || stale_body_memo )
 	{
 	    pgm.fn_template_instantiated.erase(inst_key);
 	    if ( vi != pgm.fn_template_instantiated_vars.end() )
-		pgm.fn_template_instantiated_vars.erase(vi);
+		pgm.fn_template_instantiated_vars.erase(inst_key);
 	}
 	else
 	{
@@ -32160,10 +32160,10 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    }
 	    if ( var_out )
 	    {
-		std::map<std::string, Variable *>::iterator vi =
+		Variable **vi =
 		    pgm.fn_template_instantiated_vars.find(inst_key);
 		if ( vi != pgm.fn_template_instantiated_vars.end() )
-		    *var_out = vi->second;
+		    *var_out = *vi;
 	    }
 	    return true;
 	}
@@ -34527,10 +34527,10 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	    fn_template_map.find(key);
 	if ( mi != fn_template_map.end() )
 	    for ( FnTemplateDef &c : mi->second ) cands.push_back(&c);
-	std::map<std::string, std::vector<FnTemplateDef>>::iterator di =
+	std::vector<FnTemplateDef> *di =
 	    fn_template_decl_map.find(key);
 	if ( di != fn_template_decl_map.end() )
-	    for ( FnTemplateDef &c : di->second ) cands.push_back(&c);
+	    for ( FnTemplateDef &c : *di ) cands.push_back(&c);
     }
     if ( cands.empty() )
 	return NULL;

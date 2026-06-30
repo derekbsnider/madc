@@ -1083,6 +1083,11 @@ void Program::_tokenizer_init()
     // Template-family maps share a dedicated dense template-name pool (same
     // _slot-sizing discipline as datatype_map; rung-1 substrate consolidation).
     partial_spec_map.set_pool(&template_name_pool);
+    template_map.set_pool(&template_name_pool);
+    template_alias_map.set_pool(&template_name_pool);
+    var_template_map.set_pool(&template_name_pool);
+    fn_template_decl_map.set_pool(&template_name_pool);
+    fn_template_instantiated_vars.set_pool(&template_name_pool);
 
     tkProgram = NULL;
     tkFunction = NULL;

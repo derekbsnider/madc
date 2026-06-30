@@ -1602,7 +1602,7 @@ public:
     // per-namespace variants, disambiguated by TemplateDef::defining_namespace.
     // All selection goes through find_template() so the no-collision case keeps
     // exactly the old single-entry behavior.
-    std::map<std::string, std::vector<TemplateDef>> template_map; // name -> variants
+    madc::dis::intern_keyed_map<std::vector<TemplateDef>> template_map; // name -> variants (keyed via template_name_pool)
     // Select a template variant. owner_hint scopes nested member templates
     // (e.g. allocator<T>::rebind<U>); NULL selects namespace/global templates.
     // ns_hint != "" => exact defining_namespace match (or NULL); ns_hint == ""
@@ -1699,7 +1699,7 @@ public:
 	DataDefCLASS *owner_class;
 	TemplateAliasDef() : has_non_type_params(false), owner_class(nullptr) {}
     };
-    std::map<std::string, std::vector<TemplateAliasDef>> template_alias_map;
+    madc::dis::intern_keyed_map<std::vector<TemplateAliasDef>> template_alias_map; // keyed via template_name_pool
     // C++14 VARIABLE TEMPLATE: `template<...> [inline constexpr] T name = init;`
     // (std::numbers::e_v, pi_v, …). madc does not model these as first-class
     // values; it registers the name + typeparams + initializer tokens so a use
@@ -1711,7 +1711,7 @@ public:
 	std::vector<TokenBase *> init;          // tokens after '=' up to ';'
 	std::string defining_namespace;
     };
-    std::map<std::string, VarTemplateDef> var_template_map;
+    madc::dis::intern_keyed_map<VarTemplateDef> var_template_map; // keyed via template_name_pool
     // C++20 CONCEPT: `template<...> concept Name = <constraint-expr>;`. madc does
     // not yet EVALUATE concept satisfaction, but it captures the constraint tokens
     // (+ typeparams) here so a future evaluator can decide `Name<Args>` by
@@ -1841,11 +1841,11 @@ public:
     // form a call's return TYPE by substituting explicit template args into the
     // declared return (resolve_namespace_fn_template_call_return_type — the
     // clang deduction-forms-the-function-type-without-a-body model).
-    std::map<std::string, std::vector<FnTemplateDef>> fn_template_decl_map;
+    madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_decl_map; // keyed via template_name_pool
     std::set<std::string> fn_template_instantiated;   // "ns::name<t1,t2,...>" memo
     // inst_key -> the overload Variable that instantiation registered, so an
     // operator USE site can call the instantiated definition directly.
-    std::map<std::string, Variable *> fn_template_instantiated_vars;
+    madc::dis::intern_keyed_map<Variable *> fn_template_instantiated_vars; // keyed via template_name_pool
     // > 0 while re-parsing an instantiated function-template body (nesting =
     // instantiation triggering instantiation). static_asserts inside such a
     // body are consumed unevaluated, exactly like instantiated class-template
