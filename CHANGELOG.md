@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-### Tag-arithmetic retirement — campaign started + Cluster A
+### Tag-arithmetic retirement — COMPLETE (encoding removed)
 
 - Began retiring the `DataType` tag-range encoding of pointer/reference derivation
   (base+10000 = ptr, base+20000 = ref), a non-nesting "bit trick" that collides
@@ -52,9 +52,19 @@
     7 → 5 (all remaining are `reftype()` readers). Wrote the turnkey flip recipe into
     the plan and confirmed no plain-tag pointer DataDef survives in `src/` besides
     `DataDefPTR` + the soon-converted `DataDefVOIDref`.
-  - Remaining (the atomic flip, next, now turnkey): convert `ddVOIDref` → `DataDefREF`,
-    rewrite `same_representation`'s tag tail structurally, drop the `+10000`/`+20000`
-    offsets from the ctors, delete the enum ranges + `rt*` macros (`-Wunused` confirms).
+  - **Atomic core flip (DONE — encoding removed):** deleted the `dt*ptr`/`dt*ref`
+    enum ranges, the `rt{None,Val,Ptr,Ref,DePtr,DeRef}` macros, the static
+    `rawtype(DataType)` overload, and `setRef()`; made the base
+    `is_pointer()`/`rawtype()`/`reftype()` structural; dropped the `+10000` offset
+    from `DataDefPTR`'s ctor; converted `ddVOIDref` to a real `DataDefREF(ddVOID)`;
+    collapsed `same_representation`'s tag tail to `is_pointer()`/`type()` and deleted
+    `resolve_data_type`'s dead banded-tag branch. Two pointer-guards added because a
+    pointer's `type()` is now its pointee scalar: the shim classifier's `void*` return
+    no longer aliases `dtVOID`, and `native_type_from_datadef` bails pointers to integer
+    before the scalar switch. **Consumer + raw-tag metrics 5/3 → 0/0**; the gate is now
+    a finish-line check. Build 0-warn, fulltest 673/0/0/16, torture byte-identical to
+    the 51-name baseline. Pointer/reference derivation now lives ENTIRELY in the
+    `DataDefPTR`/`REF`/`CONST` object graph + the typeid table.
 
 ### madc::dis substrate — first primitives (development-substrate vision, rung 1)
 

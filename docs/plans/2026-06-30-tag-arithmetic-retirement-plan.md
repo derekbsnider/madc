@@ -218,7 +218,21 @@ Deep read of the actual code shrank the endgame and ordered it into safe gated s
    enum ranges + `rt*` macros; `-Wall -Wunused` confirms the cut; flip the gate to a
    finish-line check.
 
-## TURNKEY FLIP RECIPE (designed 2026-06-30; groundwork left it copy-paste)
+## TURNKEY FLIP RECIPE — ✅ EXECUTED @ 69e5d2b3 (2026-06-30)
+
+The flip landed exactly as recipe'd, plus two pointer-guards the recipe's
+blast-radius note implied but did not enumerate: a pointer's `type()` is now its
+pointee scalar, so (1) the shim classifier's `void*` return path was guarded with
+`!is_pointer()` so it no longer aliases `case dtVOID` (R_VOID), and (2)
+`native_type_from_datadef` now bails pointers to `integer` BEFORE the scalar
+switch (else `void*`→dtVOID and `bool*`→dtBOOL would mis-classify). Unit tests
+that encoded the tag (base+10000/+20000, rt* inverses, the char**-tag pin, the
+`is_cstr()==type()==dtCHARptr` cross-checks) were removed; the structural
+assertions remain. Gate metrics 5/3 → 0/0 (now a finish-line check). Build
+0-warn, fulltest 673/0/0/16, torture byte-identical to the 51-name baseline.
+
+### Recipe as designed (for reference)
+
 
 After core steps 1-3 + the flip groundwork (consumer metric at 5, all reftype()
 readers; raw-tag at 3, all the `same_representation` tail), the atomic flip is a
