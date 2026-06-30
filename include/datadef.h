@@ -919,7 +919,7 @@ public:
 	  has_dependent_surface(false), vtable(NULL), has_vtable(false),
 	  from_system_header(false), is_extern_template_instantiated(false) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
-    Variable *findMethod(std::string &s);
+    Variable *findMethod(const std::string &s);
     // Among the same-name method overloads (this class + base chain), pick the
     // one whose parameter types best match `argtypes` (overload resolution by
     // argument type). Returns NULL when no same-name method exists; falls back

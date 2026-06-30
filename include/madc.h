@@ -239,7 +239,7 @@ public:
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
     FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
-    DataDef *findParameter(std::string &);
+    DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
     bool is_varargs;  // function declared with ... (variadic)
@@ -324,8 +324,8 @@ public:
     class DataDefCLASS *owner_class; // non-null when this is a class method
     Method(Variable &v) : returns(v), x86code(NULL), env_param(NULL), owner_class(NULL) {}
     Variable *getParameter(unsigned int i) { if ( i >= parameters.size() ) return NULL; return parameters[i]; }
-    Variable *findParameter(std::string &);
-    Variable *findVariable(std::string &);
+    Variable *findParameter(const std::string &);
+    Variable *findVariable(const std::string &);
 };
 
 
@@ -380,19 +380,19 @@ public:
 	return dd ? dd : &ddVOID;
     }
     Variable *getParameter(unsigned int);
-    Variable *findParameter(std::string &s);
+    Variable *findParameter(const std::string &s);
     // Walk this scope chain for `id`. The (intern_table&, std::string&) entry interns
     // the query ONCE; the inner overload takes the pre-interned sid and recurses up
     // `parent` probing the sid-keyed index at each level (no per-level re-hash).
-    Variable *findVariable(const madc::dis::intern_table &sp, std::string &id);
-    Variable *findVariable(const madc::dis::intern_table &sp, uint32_t qsid, std::string &id);
+    Variable *findVariable(const madc::dis::intern_table &sp, const std::string &id);
+    Variable *findVariable(const madc::dis::intern_table &sp, uint32_t qsid, const std::string &id);
     // Single-level lookup in THIS scope only (no parent walk).
     Variable *findVariableThisScope(const madc::dis::intern_table &sp, uint32_t qsid,
-				    std::string &id);
+				    const std::string &id);
     // Function-local lookup: walk THIS scope chain up to (but not into) the
     // program/global scope. A name found here is a parameter or block local,
     // which in C++ unqualified lookup shadows any same-named namespace member.
-    Variable *findVariableLocal(const madc::dis::intern_table &sp, std::string &id);
+    Variable *findVariableLocal(const madc::dis::intern_table &sp, const std::string &id);
 };
 
 class TokenFunc: public TokenVar, public TokenCpnd
@@ -3351,17 +3351,17 @@ public:
 
     // data management
     DataDef *findType(std::string &);
-    Variable *addVariable(TokenCpnd *, DataDef &, std::string &, int c=1, void *init=NULL, bool alloc=true);
+    Variable *addVariable(TokenCpnd *, DataDef &, const std::string &, int c=1, void *init=NULL, bool alloc=true);
     Variable *resolve_global_storage_variable(Variable *var) const;
     Variable *addGlobal(DataDef &d, std::string str, int c=1, void *init=NULL)
     {
 	return addVariable(NULL, d, str, c, init, true);
     }
-    Variable *findVariable(TokenCpnd *, std::string &);
-    Variable *findVariable(std::string &);
-    Variable *addLiteral(std::string &);
-    Variable *addWideLiteral(std::string &);
-//  Method *findMethod(std::string &);
+    Variable *findVariable(TokenCpnd *, const std::string &);
+    Variable *findVariable(const std::string &);
+    Variable *addLiteral(const std::string &);
+    Variable *addWideLiteral(const std::string &);
+//  Method *findMethod(const std::string &);
 };
 
 class MadcEngine
