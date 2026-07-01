@@ -129,6 +129,27 @@ the 72%-instantiation cost, and the rolling-hash (lexer-only) does not cover it.
 4. **`intern_table` over-reservation** — right-size the small dedicated pools. Cheap.
 5. **`.str`-drop (rung-1 Step 4, ~1%)** — do for architecture (POD tokens / find(id)), not perf.
 
+## RESULT — Step 4 complete: TokenIdent::str dropped (commit d706c521)
+Rung-1 interning Step 4 done in gated tranches (T1 f98772ae, T2 679c3045,
+T3 53578349, T-final-A fd540cab, T-final-B d706c521). Bare identifier tokens no
+longer carry a per-token `std::string`; spelling lives in the interned pool
+(rec.spelling_id via TokenBase::_active_strpool). Content/alias subclasses
+(TokenStr/TokenREM/TokenKeyword/TokenDataType) retain their own `str` + override
+the virtual spelling().
+
+Deterministic callgrind, small reducer (`#include <map>`), -O0, cumulative since
+baseline 6ac620af (includes name_sid/file_id + Step 4):
+
+| metric | baseline 6ac620af | rung-1-complete d706c521 | delta |
+|--------|------------------:|-------------------------:|-------|
+| total instructions | 1,773,514,596 | 1,714,854,313 | **-3.3%** |
+| madc `_M_construct<char*>` (token std::string ctors) | 9.26M (0.52%) | 5.27M (0.31%) | **-43%** |
+| `basic_string::_M_construct` Guard ctor+dtor (madc) | 3.54M | 1.96M | -45% |
+
+Bare identifiers (the most numerous token) went from a 32-byte std::string + heap
+buffer to a 4-byte interned id. Residual `_M_construct` is content-subclass str +
+other std::string usage. Gates: fulltest 673/0/0/16; torture == 51 baseline.
+
 ## RESULT — name_sid + file_id cache (commit 5739e624)
 Deterministic callgrind, small reducer (`#include <map>` + trivial main), -O0:
 
