@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include <ios>
+#include "madcdis/intern_table.h"
 
 // forward declaration
 class Program;
@@ -132,6 +133,11 @@ public:
     static const char *_parse_file;
     static int _parse_line;
     static int _parse_column;
+    // Active interned-spelling pool for spelling() (interning Step 4). Bound to the
+    // currently-processing Program's strpool at lex/parse entry (compile is
+    // sequential per-Program, incl. --project per-TU). Lets the arg-less spelling()
+    // accessor resolve rec.spelling_id -> bytes without a Program* on every token.
+    static madc::dis::intern_table *_active_strpool;
     TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
     TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
     virtual ~TokenBase() {}
@@ -1086,10 +1092,19 @@ public:
     // interned pool (Program::strpool via rec.spelling_id) and drops `str`; the
     // ~490 call sites stay untouched because only the accessor body changes.
     // const char* (not const string&) is the eventual pool-backed return type.
-    const char *spelling() const            { return str.c_str(); }
-    bool spelling_is(const char *s) const   { return str == s; }
-    bool spelling_empty() const             { return str.empty(); }
-    size_t spelling_len() const             { return str.size(); }
+    // Interned bytes when this token carries a spelling_id and a pool is bound;
+    // else the backing `str` (synthetic/un-interned tokens, and content subclasses
+    // in Step B). Interned identifier spellings are NUL-free, so const char* is safe.
+    const char *spelling() const {
+	return (rec.spelling_id && _active_strpool)
+	    ? _active_strpool->c_str(rec.spelling_id) : str.c_str();
+    }
+    bool spelling_is(const char *s) const   { return !std::strcmp(spelling(), s); }
+    bool spelling_empty() const             { return !*spelling(); }
+    size_t spelling_len() const {
+	return (rec.spelling_id && _active_strpool)
+	    ? _active_strpool->length(rec.spelling_id) : str.size();
+    }
     virtual TokenType type() const { return TokenType::ttIdentifier; }
     virtual TokenID   id()   const { return TokenID::tkIdent; }
     virtual TokenBase *clone()     { TokenIdent *t = new TokenIdent(str); t->rec.spelling_id = rec.spelling_id; return t; }

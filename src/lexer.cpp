@@ -1083,6 +1083,9 @@ void Program::_tokenizer_init()
     // insert (add_keywords / add_datatypes / the predefined define_map below) so
     // their string-keyed inserts intern correctly; hot lookups in _getToken pass a
     // pre-computed spelling_id (uint32) instead of comparing strings.
+    // Bind the active pool for TokenIdent::spelling() (interning Step 4). Compile is
+    // sequential per-Program, so the currently-initializing Program owns the accessor.
+    TokenBase::_active_strpool = &strpool;
     keyword_map.set_pool(&strpool);
     cpp_operator_map.set_pool(&strpool);
     define_map.set_pool(&strpool);
@@ -2495,7 +2498,9 @@ TokenBase *Program::make_token(TokenID kind)
 
 TokenBase *Program::make_ident(const std::string &spelling)
 {
-    return new TokenIdent(spelling.c_str());
+    TokenIdent *t = new TokenIdent(spelling.c_str());
+    t->rec.spelling_id = strpool.intern(spelling);	// interned at creation (Step 4)
+    return t;
 }
 
 TokenBase *Program::make_int(int64_t value)
@@ -2525,7 +2530,9 @@ TokenBase *Program::make_char(int code)
 
 TokenBase *Program::make_datatype(const char *name, DataDef &dd)
 {
-    return new TokenDataType(name, dd);
+    TokenDataType *t = new TokenDataType(name, dd);
+    t->rec.spelling_id = strpool.intern(name);		// interned at creation (Step 4)
+    return t;
 }
 
 TokenBase *Program::make_rem(const std::string &text)

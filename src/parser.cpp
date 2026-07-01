@@ -90,6 +90,7 @@ void *__madc_regex_replace(void *, void *, void *, void *);
 const char *TokenBase::_parse_file = NULL;
 int TokenBase::_parse_line = 0;
 int TokenBase::_parse_column = 0;
+madc::dis::intern_table *TokenBase::_active_strpool = NULL;
 
 // ---- Token arena (Phase 1) ------------------------------------------------
 // Every `new TokenX(...)` and every TokenBase::clone() routes here via the
@@ -12094,6 +12095,7 @@ void Program::add_host_callbacks()
 
 void Program::_parser_init()
 {
+    TokenBase::_active_strpool = &strpool;	// interning Step 4: this Program owns spelling()
     ensure_registration_config();
     add_functions();
     add_globals();
