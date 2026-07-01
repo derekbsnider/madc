@@ -2078,6 +2078,14 @@ public:
     // TokenCLASS::parse can record it on the new DataDefCLASS for bodyless C++
     // method binding.
     std::string instantiating_canonical_spelling;
+    // The spelling above belongs ONLY to the class the instantiation is
+    // creating — a top-level (class-scope) definition. A class/struct defined
+    // at FUNCTION-LOCAL (block) scope while the flag is set is a LOCAL class
+    // ([class.local]) and must never take the template-id as its own canonical
+    // spelling: a pattern-local `_Guard` stamped with `basic_string<...>`
+    // aliased the enclosing class in every canonical-spelling type resolution.
+    bool instantiating_spelling_applies_here() const
+    { return !instantiating_canonical_spelling.empty() && compounds.empty(); }
     bool instantiating_dependent_surface;
     bool parsing_defaulted_member_template_constructor;
     std::vector<std::string> namespace_preference; // ordered namespace lookup; "c" means normal lexical/global resolution

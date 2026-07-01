@@ -1,5 +1,44 @@
 # tsubst 2B completion — HANDOFF for fresh context (2026-07-01)
 
+> ## ✅ 2B COMPLETE (2026-07-01, same day) — READ THIS FIRST
+>
+> The classifier landed together with the REAL root-cause fix. **§2's "ctor-context
+> receiver/arg swap" theory below is WRONG** — kept only as the historical trail.
+> The actual mechanism, proven by an abort-trap backtrace + probes:
+>
+> 1. Once the classifier makes the basic_string iterator-range ctor tsubst-eligible,
+>    its Tree-1 **pattern parse** (`…__o9____pat47`) re-parses the ctor body, which
+>    (via the inline `_M_construct` chain) parses the local `struct _Guard` at
+>    FUNCTION-LOCAL scope while `Program::instantiating_canonical_spelling` still
+>    holds the enclosing instantiation's spelling.
+> 2. `TokenCLASS::parse` (and the `TokenSTRUCT` mirror) stamped that spelling onto
+>    the new class unconditionally → the pattern-local `_Guard` got
+>    `canonical_cpp_spelling = "std::__cxx11::basic_string<char,…>"`.
+> 3. `resolve_arg_spelling_datadef`'s canonical-spelling struct_map scan then
+>    resolved the basic_string template-id to `_Guard` (key `_Guard` sorts before
+>    `basic_string…`), so pair's piecewise-ctor `_Args1` pack deduced to
+>    `const _Guard*`, `std::forward<const _Guard&>` was instantiated (`__o5`), and
+>    map's `first(std::forward<_Args1>(get<0>(…)))` member-init lowered as
+>    `basic_string(const _Guard*)` — the §2 error. Not a receiver swap at all: the
+>    ARGUMENT's type was corrupted at parse-time deduction.
+>
+> **The fix (deepest layer, `Program::instantiating_spelling_applies_here()`):** a
+> class/struct DEFINED at function-local (block) scope is a LOCAL class
+> ([class.local]) and never takes the instantiating template-id as its canonical
+> spelling — gate the stamp on `compounds.empty()` at both TokenCLASS/TokenSTRUCT
+> sites. The local class falls to the namespace fallback (`std::__cxx11::_Guard`),
+> which cannot collide in the template-id canonical scan.
+>
+> **Results:** classifier + fix, all gates green — fulltest 674/0/0/16 exit 0;
+> flag-on gate PROGRESS on ALL SIX container tests (testset 7/3, testmap 8/3,
+> testvector 15/0, testsubscript 29/6, testcontainerdtor 27/6, testmadc_ns 27/6;
+> baseline bumped); suite burndown **176/90 (66%) → 237/29 (89%)**, the
+> `template-id '<' in body` class 70 → 9. The residual flag-on warnings
+> ("incompatible argument type for pointer type parameter", basic_string.h:87 /
+> reducer :31) are the PRE-EXISTING concrete-Guard-ctor `this`-capture mistyping
+> (§B), a separate track. Remaining top `[why:]` classes: template-id-in-body 9,
+> non-type template param 6, >1 pack param 6, `_Auto_node`/`_Rb_tree` no-ctor-match 5.
+
 **Objective:** complete step-2 **Piece 2B** — land the comparison-`<` `tsubst_eligible`
 classifier so the burndown improves, WITHOUT breaking the map/container tests.
 

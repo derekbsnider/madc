@@ -6,10 +6,13 @@
 #   docs/plans/2026-07-01-tsubst-kind3-wip-verification-FINDINGS.md
 # Baseline recorded at HEAD 114d81b8 (v0.32.0), 2026-07-01.
 # testlocalclassraii bumped 0/1 -> 1/0 by the step-2 2A local-class call-rebind.
-testset 6 4
-testmap 7 4
-testvector 14 1
-testsubscript 28 7
-testcontainerdtor 26 7
-testmadc_ns 26 7
+# All container tests bumped +1 hit / -1 fallback by step-2 2B (comparison-`<`
+# classifier + the local-class canonical-spelling fix): the basic_string
+# iterator-range ctor is now a tsubst hit.
+testset 7 3
+testmap 8 3
+testvector 15 0
+testsubscript 29 6
+testcontainerdtor 27 6
+testmadc_ns 27 6
 testlocalclassraii 1 0

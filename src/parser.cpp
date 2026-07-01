@@ -22376,7 +22376,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // decompose it (e.g. template-template-param deduction of
 	    // `__replace_first_arg<_Template<_Up>, _Tp>`). Falls back to
 	    // namespace::name for an ordinary (non-instantiated) C++ struct.
-	    if ( !pgm.instantiating_canonical_spelling.empty() )
+	    if ( pgm.instantiating_spelling_applies_here() )
 		sdd->canonical_cpp_spelling = pgm.instantiating_canonical_spelling;
 	    else if ( !pgm.current_namespace().empty() )
 		sdd->canonical_cpp_spelling = pgm.current_namespace() + "::" + name;
@@ -25370,7 +25370,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	ddc->canonical_cpp_spelling = owner_spelling + "::" + class_source_name;
 	ddc->enclosing_class = nested_owner_class;
     }
-    else if ( !pgm.instantiating_canonical_spelling.empty() )
+    else if ( pgm.instantiating_spelling_applies_here() )
 	ddc->canonical_cpp_spelling = pgm.instantiating_canonical_spelling;
     else if ( ddc->canonical_cpp_spelling.empty() && !pgm.current_namespace().empty() )
 	ddc->canonical_cpp_spelling = pgm.current_namespace() + "::" + tag->spelling();
@@ -33670,6 +33670,45 @@ static bool tsubst_has_unqualified_call_pack_expansion(FuncDef *fd)
 // (`Foo<T>`). Widen one construct per Phase-4 commit. (Note: a body can still issue
 // argument-deduced nested template calls that no token-scan catches — those are
 // handled by suppressing eager instantiation during the parse, not by this scan.)
+// A `<` in a member-template body normally disqualifies it from parse-once tsubst
+// (a template-id like `vector<T>` needs dependent substitution the token scan
+// cannot vet). EXCEPTION: a C++ named/RTTI cast (`static_cast<size_type>(...)`,
+// the sole `<` in basic_string::_M_construct) whose type-arg is CONCRETE — no
+// template-param name and no nested `<` inside the `<...>` span. Such a cast type
+// resolves in the concrete method's context at recipe build (hybrid B), so the
+// body is safely copyable. Deliberately NARROW: any nested `<` or a param name in
+// the span (e.g. `static_cast<vector<T>>`, a dependent `conditional<...>::type`
+// base) keeps the body on the re-parse fallback — the WIDE admit-all broke on
+// exactly those dependent template-ids.
+static bool tsubst_lt_opens_concrete_cast(const std::vector<TokenBase *> &d,
+					   size_t i,
+					   const std::set<std::string> &pnames)
+{
+    if ( i == 0 || i + 1 >= d.size() )
+	return false;
+    TokenBase *prev = d[i - 1];
+    if ( !prev )
+	return false;
+    bool is_cast = is_named_cpp_cast(contextual_identifier_name(prev))
+		 || prev->id() == TokenID::tkDynamicCast;
+    if ( !is_cast )
+	return false;
+    // Walk the `<...>` span; reject a nested `<` or any template-param name.
+    for ( size_t j = i + 1; j < d.size(); ++j )
+    {
+	TokenBase *t = d[j];
+	if ( !t )
+	    return false;
+	if ( t->id() == TokenID::tkGT )
+	    return j > i + 1;           // non-empty concrete type -> admit
+	if ( t->id() == TokenID::tkLT )
+	    return false;               // nested template-id -> dependent, reject
+	if ( pnames.count(contextual_identifier_name(t)) )
+	    return false;               // depends on a template param -> reject
+    }
+    return false;
+}
+
 bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 {
     // Record which clause rejected (surfaced in --show-stats); harmless no-op
@@ -33782,7 +33821,18 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 	TokenBase *t = d[i];
 	if ( !t )
 	    continue;
+	// A `tkLT` only disqualifies when it actually OPENS A TEMPLATE-ID — i.e. the
+	// `<...>` is balanced (a matching unparenthesized `>` closes it). A `<` with
+	// NO balanced close is the less-than OPERATOR (`__len < __capacity` in
+	// _M_construct) and is always safe to copy. `template_id_suffix_end` returns
+	// the close index for a real template-id, or `i` unchanged when there is none.
+	// This errs SAFELY: a comparison mis-read as a template-id only stays on the
+	// fallback; a dependent template-id is never admitted (the WIDE-gate failure).
+	// A balanced template-id is still admitted only for a CONCRETE named/RTTI cast
+	// (`static_cast<size_type>`) or the pre-existing pack-expansion carve-out.
 	if ( t->id() == TokenID::tkLT
+	  && template_id_suffix_end(d, i) != i
+	  && !tsubst_lt_opens_concrete_cast(d, i, pnames)
 	  && !(pack_count == 1 && has_pack_expansion
 	       && (!template_pack_body_from_system_header
 		   || covered_system_header_pack_template_id_body)) )
