@@ -225,11 +225,38 @@ One of them tsubst-mis-resolves the const-pair element construction and emits a
 local-class-dtor `this`-capture finding — surfaced only once the body becomes a hit.
 The flag-on gate correctly REDs on it (it RUNS the tests).
 
-**NEXT for 2B:** fix the const-`pair<const K,V>` construction-tsubst bug FIRST (the
-`_Auto_node`/`__new_allocator`/`allocator_traits` bodies emitting `basic_string(_Guard*)`),
-THEN re-apply the saved classifier patch — it is correct and gives the set/vector wins
-immediately, and the map wins once construction is fixed. Do NOT re-apply the classifier
-before the construction fix (it hard-breaks 4 tests). **CAUTION (still valid):** never
+**★ DEFINITIVE ROOT CAUSE (2026-07-01, traced to the exact call) — the blocker is the
+FORWARDING-PACK CONSTRUCTION WALL, not a gate issue:**
+- Suite-wide burndown baseline (2A): **176 hit / 90 fallback = 66%**; `template-id '<' in
+  body` is **70 of 90** (78%) — 2B's target.
+- The ONLY comparison-`<` body 2B admits in these tests is **`_M_construct` itself**
+  (`__len < __capacity`, a METHOD not a ctor) — exactly the desired win; it RUNS CLEAN in
+  set/vector. There is **NO gate-level dodge**: admitting `_M_construct` makes it emittable,
+  which cascades — the `basic_string` range ctor (already eligible, only gated by
+  `_M_construct`'s emittability) also becomes a hit, feeding the map's node construction.
+- The fatal call, traced via `call_target_funcdef`: the arg to `basic_string(const _Guard*)`
+  is **`std::forward`** (`fdn='forward' ns='std'`, callvar `__ns_std_forward__o4`). So the
+  pair ctor's `first(std::forward<_U1>(x))` gets **`_U1 = _Guard`**. The `_Args` pack
+  forwarded through `_Auto_node(_Args&&...)` → `allocator_traits::construct(...,
+  forward<_Args>(args)...)` → `pair(_U1&&,_U2&&)` is NOT substituted (the `_Auto_node(...,
+  _Args*)` NO-MATCH — present under 2A too, but there NON-FATAL/discarded). With `_Args`
+  unsubstituted, `_U1` falls back to the most-recently-registered type = `_Guard` (created
+  when `_M_construct` became a hit). Under 2A `_M_construct` re-parses, timing differs, and
+  it resolves correctly.
+- CONCLUSION: this is the **forwarding-pack-in-static-call KIND** (named in
+  `project_reparse_deprecation`). It must be fixed BEFORE 2B can land. Fixing it = proper
+  `_Args` pack substitution through the `allocator_traits::construct`/`_Auto_node`/pair
+  chain so `std::forward<_Args>` expands to the concrete arg types (not a "current type"
+  fallback). A distinct major KIND — likely a hard-wall grind (see
+  `reference_agent_tooling_division`). g++ semantics: each `forward<_Ui>(arg_i)` binds
+  `_Ui` from the corresponding deduced pack element; madc must carry the deduced pack
+  element types down the construction chain.
+
+**NEXT for 2B:** fix the forwarding-pack construction wall FIRST (above), THEN re-apply the
+saved classifier patch (`tmp/2b-comparison-lt-gate-BACKUP.patch`) — it is correct and gives
+the set/vector wins immediately, and the map wins once the pack wall is fixed. Do NOT
+re-apply the classifier before the pack-wall fix (it hard-breaks testmap/testsubscript/
+testcontainerdtor/testmadc_ns). **CAUTION (still valid):** never
 widen to admit a balanced/dependent template-id — the WIDE admit-all broke the compile via
 `__and_ : conditional<...>::type` (templateid-gate-insight §4b); the classifier's
 "reject any balanced `<...>` except a concrete cast" rule is what keeps that safe.
