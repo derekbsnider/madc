@@ -225,8 +225,40 @@ One of them tsubst-mis-resolves the const-pair element construction and emits a
 local-class-dtor `this`-capture finding — surfaced only once the body becomes a hit.
 The flag-on gate correctly REDs on it (it RUNS the tests).
 
-**★ DEFINITIVE ROOT CAUSE (2026-07-01, traced to the exact call) — the blocker is the
-FORWARDING-PACK CONSTRUCTION WALL, not a gate issue:**
+**★★ REFINED ROOT CAUSE (2026-07-01, second deeper pass) — it is the REAL `_Guard`'s
+ENCLOSING-PRIVATE access + const-pair construction, and `_M_construct`-as-a-hit is the
+trigger (NOT the range-ctor cascade):**
+- Disproved the cascade theory: adding a structural CONSTRUCTOR-template exclusion to
+  `tsubst_eligible` (reject when the placeholder Variable is in `owner->ctors`) removed the
+  range-ctor hit, but testmap STILL fails with the SAME 7/4 counts — so **`_M_construct`
+  itself being a hit breaks the map**, independent of the range ctor. (set/vector still win
+  7/3, 15/0 and run clean — the win and the map break are the SAME `_M_construct` hit,
+  inseparable at the gate.)
+- The reducer's `_Guard` called a PUBLIC `reset()`; the REAL `_Guard` dtor does
+  `_M_guarded->_M_dispose()` — a PRIVATE member of the enclosing `basic_string`, and its
+  member is `basic_string* _M_guarded`. Toggling the 2A remap (env `MADC_NO_2A_REMAP`)
+  swaps the failure mode, proving both heads are the real-`_Guard` handling:
+    - 2A remap ON  → `cir error: no matching constructor 'basic_string(const _Guard*)'`.
+    - 2A remap OFF → `error: '_M_dispose' is a private member of 'basic_string'` (the
+      pattern `_Guard` lacks the enclosing-scope access a real local class has).
+- So the fix is: make the tsubst'd/materialized local class behave as a true local class of
+  its enclosing scope — (a) it has ACCESS to enclosing privates (`_M_dispose`), and (b) its
+  `basic_string*` member + ctor/dtor calls type correctly so no `basic_string(_Guard*)`
+  construction is synthesized. This is an EXTENSION of 2A (local-class-in-tsubst) to the
+  real `_Guard` shape, entangled with the const-`pair<const K,V>` construction path — NOT a
+  generic pack-substitution rewrite as first thought. RULED OUT as the entry point (both
+  probed clean): the recorded pack args (`instantiate_member_fn_template_for_call`
+  `concrete_type_arg_packs`) and the pair-construction key
+  (`instantiate_member_ctor_template_for_construction` ctor_args). The `_Guard` enters
+  elsewhere in the tsubst-hit lowering — start the next pass by dumping `_M_construct`'s
+  tsubst'd body cir (it IS the hit) and following where its `_Guard` ctor/dtor + `_M_guarded`
+  member get typed. Reproduce: `git apply tmp/2b-comparison-lt-gate-BACKUP.patch` then
+  `MADC_XTEST_DEP_PARSE=1 bin/madc tests/testmap.mad` (add `MADC_NO_2A_REMAP=1` to see the
+  access-control head).
+
+**★ EARLIER ROOT CAUSE (2026-07-01, first pass — partially superseded by the REFINED one
+above; the `most-recently-registered type` claim was a hypothesis, the private-access
+finding above is the confirmed mechanism):**
 - Suite-wide burndown baseline (2A): **176 hit / 90 fallback = 66%**; `template-id '<' in
   body` is **70 of 90** (78%) — 2B's target.
 - The ONLY comparison-`<` body 2B admits in these tests is **`_M_construct` itself**
