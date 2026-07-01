@@ -11,3 +11,4 @@ testvector 14 1
 testsubscript 28 7
 testcontainerdtor 26 7
 testmadc_ns 26 7
+testlocalclassraii 0 1
