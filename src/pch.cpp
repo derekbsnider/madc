@@ -354,7 +354,7 @@ bool serialize_tokens(const TokenStream &tokens,
 	{
 	    TokenIdent *ti_tok = dynamic_cast<TokenIdent *>(tb);
 	    write_u8(out, (uint8_t)PchValueType::String);
-	    write_str(out, ti_tok ? ti_tok->str : "");
+	    write_str(out, ti_tok ? ti_tok->spelling() : "");
 	    break;
 	}
 	case TokenType::ttKeyword:
@@ -365,7 +365,7 @@ bool serialize_tokens(const TokenStream &tokens,
 	    if ( TokenIdent *ki = dynamic_cast<TokenIdent *>(tb) )
 	    {
 		write_u8(out, (uint8_t)PchValueType::String);
-		write_str(out, ki->str);
+		write_str(out, ki->spelling());
 	    }
 	    else
 	    {

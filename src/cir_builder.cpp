@@ -11074,7 +11074,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	// String literal
 	if (tb->type() == TokenType::ttString) {
-		TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
+		TokenStr *ti = dynamic_cast<TokenStr *>(tb);
 		if (ti)
 			return str(ti->str.c_str(), ti->str.size() + 1, tb);
 	}

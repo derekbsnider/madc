@@ -991,14 +991,18 @@ void Program::finalize_pop1_rec(TokenBase *tb)
     }
     else
 	r.value = tb->get();			// _token / char code / int value
-    // String payload: identifiers are already interned in getToken(); string /
-    // comment / datatype tokens (all TokenIdent-derived) carry their bytes in str.
+    // String payload (interning Step 4): identifiers/datatypes are interned at
+    // creation (make_ident/make_datatype/the TokenIdent ctors). Only the CONTENT
+    // subclasses retain a `str`, and only they need a fallback intern here (they
+    // may be mutated after construction — e.g. wide-string conversion), so the POD
+    // spelling_id reflects the final bytes (NUL-preserving via the std::string overload).
     if ( r.spelling_id == 0 )
     {
 	TokenType tt = tb->type();
-	if ( tt == TokenType::ttString || tt == TokenType::ttComment
-	  || tt == TokenType::ttDataType || tt == TokenType::ttIdentifier )
-	    r.spelling_id = strpool.intern(((TokenIdent *)tb)->str);
+	if ( tt == TokenType::ttString )
+	    r.spelling_id = strpool.intern(((TokenStr *)tb)->str);
+	else if ( tt == TokenType::ttComment )
+	    r.spelling_id = strpool.intern(((TokenREM *)tb)->str);
     }
     r.line = (int32_t)tb->line;
     r.column = (int32_t)tb->column;
@@ -4153,7 +4157,7 @@ TokenBase *Program::_getToken()
 				    expanded_arg += ((TokenMultiOp *)at)->str; break;
 				case TokenType::ttString:
 				    expanded_arg += '"';
-				    expanded_arg += ((TokenIdent *)at)->str;
+				    expanded_arg += ((TokenIdent *)at)->spelling();
 				    expanded_arg += '"';
 				    break;
 				case TokenType::ttChar:
@@ -5298,15 +5302,9 @@ TokenBase *Program::getToken()
 {
     TokenBase *tb = _getToken();
 
-    // P0 step 2 (additive): intern every identifier spelling into strpool and
-    // stamp the token's spelling_id. ttIdentifier selects bare identifiers only —
-    // keywords (shared keyword_map prototypes) and string/comment trivia are
-    // skipped, so no shared prototype is mutated. `str` stays authoritative until
-    // the map re-key (step 3) and per-token-string drop (step 4).
-    if ( tb && tb->type() == TokenType::ttIdentifier
-	 && tb->rec.spelling_id == 0 )
-	tb->rec.spelling_id = strpool.intern(((TokenIdent *)tb)->str);
-
+    // Step 4: identifier spelling_id is now interned AT CREATION (make_ident and
+    // the TokenIdent ctors), so the old getToken() stamp-from-str fallback is gone
+    // along with the per-token `str`.
     DBG(if (tb) printt(tb));
     return tb;
 }
@@ -5338,7 +5336,7 @@ static std::string trivia_text(TokenBase *tb)
 	case TokenType::ttSpace:   return std::string(((TokenSpace *)tb)->cnt, ' ');
 	case TokenType::ttTab:     return std::string(((TokenTab *)tb)->cnt, '\t');
 	case TokenType::ttEOL:     return std::string(((TokenEOL *)tb)->cnt, '\n');
-	case TokenType::ttComment: return ((TokenIdent *)tb)->str;
+	case TokenType::ttComment: return ((TokenREM *)tb)->str;
 	default:                   return std::string();
     }
 }
@@ -5501,7 +5499,7 @@ void Program::printt(TokenBase *tb)
 		std::cout << "\e[1;32m";
 	    else
 		std::cout << "REM::";
-	    std::cout << ((TokenIdent *)tb)->str;
+	    std::cout << ((TokenIdent *)tb)->spelling();
 	    if ( colors ) { std::cout << "\e[m"; }
 	    break;
 	case TokenType::ttString:
@@ -5509,7 +5507,7 @@ void Program::printt(TokenBase *tb)
 		std::cout << "\e[0;36m";
 	    else
 		std::cout << "STR::";
-	    std::cout << '"' << ((TokenIdent *)tb)->str << '"';
+	    std::cout << '"' << ((TokenIdent *)tb)->spelling() << '"';
 	    if ( colors ) { std::cout << "\e[m"; }
 	    break;
 	case TokenType::ttChar:

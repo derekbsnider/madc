@@ -11,8 +11,15 @@
 class TokenDataType: public TokenIdent
 {
 public:
+    // `str` retained (interning Step 4): a datatype token's SPELLING can differ from
+    // its DataDef name (e.g. `_Bool` vs bool, `wchar_t`, `size_t`), and these tokens
+    // are static/shared across Programs, so the spelling can't come from a per-Program
+    // pool. Kept here (like TokenKeyword); spelling() overrides the pool path.
+    std::string str;
     DataDef &definition;
-    TokenDataType(const char *k, DataDef &d) : TokenIdent(k), definition(d) {}
+    TokenDataType(const char *k, DataDef &d) : TokenIdent(k), str(k ? k : ""), definition(d) {}
+    virtual const char *spelling() const override { return str.c_str(); }
+    virtual size_t spelling_len() const override { return str.size(); }
     virtual TokenType type() const { return TokenType::ttDataType; }
     virtual TokenBase *clone() { return new TokenDataType(str.c_str(), definition); }
 };

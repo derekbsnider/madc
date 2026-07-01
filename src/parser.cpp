@@ -10609,7 +10609,8 @@ Variable *TokenCpnd::findVariable(const madc::dis::intern_table &sp, const std::
 void Program::set_token_spelling(TokenIdent *t, const std::string &s)
 {
     if ( !t ) return;
-    t->str = s;
+    // Step 4: re-spelling an identifier/type token = re-intern -> new spelling_id;
+    // spelling() then resolves the new bytes from the pool (no per-token str).
     t->rec.spelling_id = strpool.intern(s);
 }
 

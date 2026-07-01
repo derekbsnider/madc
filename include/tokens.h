@@ -1078,47 +1078,45 @@ public:
 class TokenIdent: public TokenBase
 {
 public:
-    std::string str;
-    // Interned-spelling handle now lives on the base record (rec.spelling_id).
-    // `str` remains the source of truth until the per-token-string drop
-    // (interning step 4) consumes it.
+    // Interning Step 4: the per-token `std::string str` is GONE from the identifier
+    // base. The spelling lives in the interned pool (rec.spelling_id, resolved via
+    // _active_strpool). The ctors intern at construction so every `new TokenIdent(name)`
+    // call site keeps working untouched. Content subclasses (TokenStr/TokenREM/
+    // TokenKeyword) reintroduce their own `str` and override spelling() — their bytes
+    // are mutable/large/embedded-NUL and are NOT identifier spellings.
     TokenIdent() { _datatype = &ddCHARptr; }
-    TokenIdent(std::string &s) { str = s; _datatype = &ddCHARptr; }
-    TokenIdent(const char *s)  { str = s; _datatype = &ddCHARptr; }
-    // Spelling accessors (interning Step 4). These are the migration target for
-    // every `.str` READ: callers move to spelling()/spelling_is()/spelling_empty()
-    // while the `std::string str` member still backs them, so the conversion is a
-    // pure rename with no behavior change. The final tranche re-points these at the
-    // interned pool (Program::strpool via rec.spelling_id) and drops `str`; the
-    // ~490 call sites stay untouched because only the accessor body changes.
-    // const char* (not const string&) is the eventual pool-backed return type.
-    // Interned bytes when this token carries a spelling_id and a pool is bound;
-    // else the backing `str` (synthetic/un-interned tokens, and content subclasses
-    // in Step B). Interned identifier spellings are NUL-free, so const char* is safe.
-    const char *spelling() const {
-	return (rec.spelling_id && _active_strpool)
-	    ? _active_strpool->c_str(rec.spelling_id) : str.c_str();
+    TokenIdent(const std::string &s) { _datatype = &ddCHARptr; if (_active_strpool) rec.spelling_id = _active_strpool->intern(s); }
+    TokenIdent(const char *s)        { _datatype = &ddCHARptr; if (_active_strpool && s) rec.spelling_id = _active_strpool->intern(s); }
+    // The spelling accessor: interned bytes for this token's spelling_id. VIRTUAL so
+    // content subclasses return their retained `str` (NUL-safe) instead of the pool.
+    virtual const char *spelling() const {
+	return (rec.spelling_id && _active_strpool) ? _active_strpool->c_str(rec.spelling_id) : "";
     }
     bool spelling_is(const char *s) const   { return !std::strcmp(spelling(), s); }
     bool spelling_empty() const             { return !*spelling(); }
-    size_t spelling_len() const {
-	return (rec.spelling_id && _active_strpool)
-	    ? _active_strpool->length(rec.spelling_id) : str.size();
+    virtual size_t spelling_len() const {
+	return (rec.spelling_id && _active_strpool) ? _active_strpool->length(rec.spelling_id) : 0;
     }
     virtual TokenType type() const { return TokenType::ttIdentifier; }
     virtual TokenID   id()   const { return TokenID::tkIdent; }
-    virtual TokenBase *clone()     { TokenIdent *t = new TokenIdent(str); t->rec.spelling_id = rec.spelling_id; return t; }
+    virtual TokenBase *clone()     { TokenIdent *t = new TokenIdent(); t->rec.spelling_id = rec.spelling_id; return t; }
     virtual void setDataType(DataDef *d) { if (d) _datatype = d; }
 };
 
-// quoted string
+// quoted string. `str` holds the literal CONTENT (embedded NULs, mutated by the
+// wide-string conversion) — NOT an identifier spelling — so it is retained here and
+// spelling() overrides the pool path (interning Step 4). The base ctor still interns
+// the initial (NUL-free) bytes into spelling_id for the POD record.
 class TokenStr: public TokenIdent
 {
 public:
+    std::string str;
     bool wide;
     TokenStr() : wide(false) {}
-    TokenStr(const char *k, bool w = false) : TokenIdent(k), wide(w) {}
-    TokenStr(std::string k, bool w = false) : TokenIdent(k), wide(w) {}
+    TokenStr(const char *k, bool w = false) : TokenIdent(k), str(k ? k : ""), wide(w) {}
+    TokenStr(std::string k, bool w = false) : TokenIdent(k), str(k), wide(w) {}
+    virtual const char *spelling() const override { return str.c_str(); }
+    virtual size_t spelling_len() const override { return str.size(); }
     virtual int64_t ival() const   { return atol(str.c_str()); }
     virtual bool is_constant() const override { return true; }
     virtual TokenType type() const { return TokenType::ttString; }
@@ -1126,25 +1124,33 @@ public:
     virtual TokenBase *clone()     { return new TokenStr(str, wide); }
 };
 
-// comment
+// comment. `str` holds the comment CONTENT (arbitrary text) — retained here.
 class TokenREM: public TokenIdent
 {
 public:
+    std::string str;
     TokenREM() {}
-    TokenREM(const char *k) : TokenIdent(k) {}
-    TokenREM(std::string k) : TokenIdent(k) {}
+    TokenREM(const char *k) : TokenIdent(k), str(k ? k : "") {}
+    TokenREM(std::string k) : TokenIdent(k), str(k) {}
+    virtual const char *spelling() const override { return str.c_str(); }
+    virtual size_t spelling_len() const override { return str.size(); }
     virtual bool is_constant() const override { return true; }
     virtual TokenType type() const { return TokenType::ttComment; }
     virtual TokenID   id()   const { return TokenID::tkREM; }
     virtual TokenBase *clone()     { return new TokenREM(str); }
 };
 
-// keyword tokens
+// keyword tokens. `str` retained (keyword spelling, static; also interned into
+// spelling_id by the base ctor). Kept here so contextual-keyword matching / clone
+// stay on the concrete spelling without a pool round-trip.
 class TokenKeyword: public TokenIdent
 {
 public:
-    TokenKeyword(const char *k) : TokenIdent(k) {}
-    TokenKeyword(std::string k) : TokenIdent(k) {}
+    std::string str;
+    TokenKeyword(const char *k) : TokenIdent(k), str(k ? k : "") {}
+    TokenKeyword(std::string k) : TokenIdent(k), str(k) {}
+    virtual const char *spelling() const override { return str.c_str(); }
+    virtual size_t spelling_len() const override { return str.size(); }
     virtual TokenType type() const { return TokenType::ttKeyword; }
 //  virtual TokenBase *clone(){ return new TokenKeyword(str); }
     virtual TokenBase *clone(){ return this; }
