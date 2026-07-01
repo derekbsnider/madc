@@ -51,6 +51,50 @@ emit path) emits them. Key facts:
 - **Scope-exit dtor injection** for the materialized local class must fire on the
   tsubst'd body's normal + early-exit paths (the existing dtor-injection machinery).
 
+### g++ recon (2026-07-01) — the authoritative model + the madc gap it exposed
+**g++ model (`gcc/cp/pt.cc`, the `TAG_DEFN` case ~line 20196, in `tsubst_stmt`):**
+a local class defined inside a template body is NOT an independent template — it is
+*"instantiated along with its containing function."* g++ does exactly:
+1. `tsubst(TREE_TYPE(t), args, …)` — instantiate the local class TYPE with the
+   enclosing args (substituted member types);
+2. `complete_type(tmp)` — complete its layout;
+3. **eagerly instantiate every member** — `for (fld : TYPE_FIELDS(tmp))
+   if (FUNCTION_DECL && !DECL_ARTIFICIAL && DECL_TEMPLATE_INSTANTIATION)
+   instantiate_decl(fld, /*defer_ok=*/false)` (and `maybe_instantiate_nsdmi_init`
+   for FIELD_DECLs), with `current_class_ptr/ref` saved/restored.
+So the ctor/dtor/methods are instantiated EAGERLY at the point the local class is
+materialized — not lazily on ODR-use. This is precisely what madc must mirror.
+
+**madc gap the recon exposed:** madc has NO analogue of `instantiate_decl(fld)` for
+an *ordinary* (non-template) local-class method. `instantiate_member_fn_template_for_call`
+(parser.cpp:33965) only drives member *templates* for a *call* (requires
+`fd->is_member_template`). `_Guard`'s ctor/dtor have no template params of their own
+(they are dependent only via the enclosing `T`). So 2A is **NEW machinery**, not a
+reuse — this is the material finding.
+
+**Concrete implementation shape (grounded):** the body-instantiation primitive is
+`tsubst_cir(pattern, binding)` (cir_builder.cpp:14673) — it copy-substitutes a
+pattern cir with a binding; `materialize_local_aggregate_datadef` (704) is where the
+local class type is materialized. Following the g++ eager model, extend materialize
+(or its caller) to, per ctor/dtor/method of `src_class`:
+1. clone the method's `FuncDef` onto the clone class with `subst_datadef`'d signature
+   + a concrete emit symbol;
+2. `tsubst_cir` the method's pattern body with the SAME `binding` → concrete body cir;
+3. register the concrete `FuncDef`/body as a pending def so `emit_class_struct_with_deps`
+   (5987) emits it;
+4. **rebind the enclosing body's ctor/dtor CALLS** — the copied build body (from
+   `tsubst_cir`) binds `Guard g(this)` / scope-exit `~Guard()` to the PATTERN's Guard
+   methods (the failing symbol probed = `…__pat44__…Guard__Guard…`, the pattern ctor);
+   they must resolve to the CLONE's methods so the emitted symbols match. THIS
+   rebinding is the subtle sub-problem — verify the copied calls' target FuncDef is
+   the clone's, not the pattern's.
+Sub-problems to get right, each a potential silent miscompile: (a) call rebinding
+[above]; (b) concrete emit-symbol matching between the clone's methods and the body's
+calls; (c) scope-exit dtor injection for the materialized class on all exits incl.
+the throw path (the `_Guard` dtor IS the throw-path code — a happy-path-only test
+will NOT catch a broken unwind; RUN with an exercised catch path or inspect the
+emitted SJLJ). Estimated a multi-step build, not a single edit.
+
 ### Piece 2B — narrow `<`-gate admission (needed for the REAL `_M_construct`)
 The reducer avoids this, but `_M_construct`'s body has `static_cast<size_type>`
 (basic_string.tcc:225) → `tsubst_eligible` (parser.cpp:33785) rejects ANY `tkLT`
