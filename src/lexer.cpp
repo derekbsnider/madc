@@ -680,10 +680,10 @@ void Program::expand_pending_auto_include_macros(size_t original_start)
 	  && tb->type() == TokenType::ttIdentifier )
 	{
 	    TokenIdent *ident = (TokenIdent *)tb;
-	    if ( pending_auto_include_identifiers.count(ident->str) )
+	    if ( pending_auto_include_identifiers.count(ident->spelling()) )
 	    {
 		madc::dis::intern_keyed_map<std::string>::iterator di =
-		    define_map.find(ident->str);
+		    define_map.find(ident->spelling());
 		if ( di != define_map.end() )
 		{
 		    std::vector<TokenBase *> repl =
@@ -2148,12 +2148,12 @@ static bool push_precompiled_header_tokens(Program &pgm,
 	if ( TokenIdent *ident = dynamic_cast<TokenIdent *>(itb) )
 	{
 	    TokenBase *replacement = NULL;
-	    keyword_map_iter ki = pgm.keyword_map.find(ident->str);
+	    keyword_map_iter ki = pgm.keyword_map.find(ident->spelling());
 	    if ( ki != pgm.keyword_map.end() )
 		replacement = (*ki)->clone();
 	    else
 	    {
-		flat_datatype_map_iter di = pgm.datatype_map.find(ident->str);
+		flat_datatype_map_iter di = pgm.datatype_map.find(ident->spelling());
 		if ( di != pgm.datatype_map.end() )
 		    replacement = (*di)->clone();
 	    }
@@ -4156,7 +4156,7 @@ TokenBase *Program::_getToken()
 				    break;
 				default:
 				    if ( auto *ti = dynamic_cast<TokenIdent *>(at) )
-					expanded_arg += ti->str;
+					expanded_arg += ti->spelling();
 				    else if ( at->type() == TokenType::ttInteger )
 				    {
 					TokenInt *tki = static_cast<TokenInt *>(at);
@@ -5382,7 +5382,7 @@ static std::string token_spelling(TokenBase *tb)
     {
 	case TokenType::ttString:
 	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) )
-		return std::string("\"") + ti->str + "\"";
+		return std::string("\"") + ti->spelling() + "\"";
 	    return std::string();
 	case TokenType::ttVariable:
 	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) ) return tv->var.name;
@@ -5407,7 +5407,7 @@ static std::string token_spelling(TokenBase *tb)
 	case TokenType::ttOperator:
 	case TokenType::ttSymbol:  return std::string(1, (char)tb->get());
 	default:
-	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) ) return ti->str;
+	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) ) return ti->spelling();
 	    if ( TokenMultiOp *to = dynamic_cast<TokenMultiOp *>(tb) ) return to->str;
 	    return std::string();
     }
@@ -5477,7 +5477,7 @@ void Program::printt(TokenBase *tb)
 		std::cout << "\e[0;37m";
 	    else
 		std::cout << "ID::";
-	    std::cout << ((TokenIdent *)tb)->str;
+	    std::cout << ((TokenIdent *)tb)->spelling();
 	    if ( colors ) { std::cout << "\e[m"; }
 	    break;
 	case TokenType::ttVariable:
@@ -5537,7 +5537,7 @@ void Program::printt(TokenBase *tb)
 		std::cout << "\e[1;33m";
 	    else
 		std::cout << "KEY::";
-	    std::cout << ((TokenIdent *)tb)->str;
+	    std::cout << ((TokenIdent *)tb)->spelling();
 	    if ( colors ) { std::cout << "\e[m"; }
 	    break;
 	case TokenType::ttDataType:
@@ -5545,7 +5545,7 @@ void Program::printt(TokenBase *tb)
 		std::cout << "\e[1;37m";
 	    else
 		std::cout << "TYPE::";
-	    std::cout << ((TokenIdent *)tb)->str;
+	    std::cout << ((TokenIdent *)tb)->spelling();
 	    if ( colors ) { std::cout << "\e[m"; }
 	    break;
 	default:
@@ -5720,7 +5720,7 @@ TokenProgram *Program::tokenize(const char *fname)
     }
     catch(TokenIdent *ti)
     {
-	set_error(Program::DiagnosticPhase::lexer, std::string("use of undeclared identifier '") + ti->str + '\'', fname, source.line(), source.column());
+	set_error(Program::DiagnosticPhase::lexer, std::string("use of undeclared identifier '") + ti->spelling() + '\'', fname, source.line(), source.column());
 	print_last_diagnostic(error());
 	return NULL;
     }
@@ -5788,7 +5788,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
     catch(TokenIdent *ti)
     {
 	set_error(Program::DiagnosticPhase::lexer,
-		  std::string("use of undeclared identifier '") + ti->str + '\'',
+		  std::string("use of undeclared identifier '") + ti->spelling() + '\'',
 		  fname, source.line(), source.column());
 	print_last_diagnostic(error());
 	return NULL;

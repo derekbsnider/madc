@@ -154,7 +154,7 @@ static std::string describe_token(TokenBase *tb)
 	// strings, literals all derive from TokenIdent) — the single most useful
 	// disambiguator. Operators are already identified by their class name.
 	if (TokenIdent *idt = dynamic_cast<TokenIdent *>(tb)) {
-		if (!idt->str.empty()) desc += " '" + idt->str + "'";
+		if (!idt->spelling_empty()) desc += std::string(" '") + idt->spelling() + "'";
 	}
 	return desc;
 }
@@ -915,7 +915,7 @@ static std::string pack_value_name_in_pattern(TokenBase *tb,
 			if (TokenVar *tv = dynamic_cast<TokenVar *>(tb))
 				return tv->var.name;
 			if (TokenIdent *ti = dynamic_cast<TokenIdent *>(tb))
-				return ti->str;
+				return ti->spelling();
 		}
 	}
 	if (TokenOperator *op = dynamic_cast<TokenOperator *>(tb)) {
@@ -11209,7 +11209,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttIdentifier) {
 		TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
 		if (ti)
-			return id(ti->str.c_str(), tb);
+			return id(ti->spelling(), tb);
 	}
 
 	// Ternary
@@ -14186,7 +14186,7 @@ static const char *tsubst_plain_var_name(TokenBase *tb)
 			return tv->var.name.c_str();
 	}
 	if (TokenIdent *ti = dynamic_cast<TokenIdent *>(tb))
-		return ti->str.c_str();
+		return ti->spelling();
 	return NULL;
 }
 

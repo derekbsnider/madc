@@ -1396,7 +1396,7 @@ std::vector<std::string> collect_expression_token_calls(const TokenStream &token
 	    continue;
 	if ( i + 1 >= tokens.size() || !tokens[i + 1] || tokens[i + 1]->id() != TokenID::tkOpBrk )
 	    continue;
-	std::string identifier = ((TokenIdent *)tb)->str;
+	std::string identifier = ((TokenIdent *)tb)->spelling();
 	if ( is_expression_keyword_identifier(identifier) )
 	    continue;
 	if ( !text_list_contains(calls, identifier) )
