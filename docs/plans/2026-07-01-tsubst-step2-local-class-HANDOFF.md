@@ -225,9 +225,41 @@ One of them tsubst-mis-resolves the const-pair element construction and emits a
 local-class-dtor `this`-capture finding — surfaced only once the body becomes a hit.
 The flag-on gate correctly REDs on it (it RUNS the tests).
 
+**★★★ THIRD PASS (2026-07-01) — DEFINITIVE BISECT + g++ RECON + "no committable win" proof:**
+- **Bisect (decisive):** a temporary env `MADC_CMP_EXCLUDE=<file>` that suppresses the
+  comparison-`<` admission for bodies whose decl tokens come from `<file>` was run per file.
+  Result: `MADC_CMP_EXCLUDE=basic_string` → testmap COMPILES CLEAN (0 errors); every other
+  file (stl_pair, stl_tree, alloc_traits, new_allocator) still errors. So the culprit is the
+  ONE **basic_string** comparison-hit — the range ctor (`basic_string.h:87`,
+  `basic_string(_InputIterator,_InputIterator,const _Alloc&)`), which calls
+  `_M_construct(...)`. (`_M_construct` itself is NOT a hit here — it falls back; the range
+  ctor is the hit. Earlier "`_M_construct`-is-trigger" wording is superseded: the range ctor
+  is the trigger, and it internally routes through `_M_construct`/`_Guard`.)
+- **No committable win exists:** suite-wide burndown with `MADC_CMP_EXCLUDE=basic_string` is
+  **176/90 = 66%, IDENTICAL to the 2A baseline.** So the comparison classifier's ONLY
+  suite-wide effect is admitting that one basic_string range ctor — and that body is exactly
+  what breaks map. Fencing it (by file, by local-class-defining body, or by ctor) yields a
+  GREEN tree but ZERO net burndown gain (a no-op classifier). Committing the classifier is
+  therefore pointless until the range-ctor hit is made safe. CONFIRMED: the private-access
+  reducer `tmp/guard_private.mad` (local `_Guard` calling a PRIVATE enclosing `dispose()`)
+  FALLS BACK cleanly (0 hit) and runs correct — so private access alone is safe; the break
+  needs the range-ctor-hit + the const-pair construction TOGETHER.
+- **g++ recon (pt.cc `TAG_DEFN`, line 20196):** g++ instantiates a local class *"along with
+  its containing function"* — `complete_type` then EAGERLY `instantiate_decl(fld,
+  defer_ok=false)` for each member fn, with `current_class_ptr/ref` saved/restored to the
+  ENCLOSING method's. g++ has NO hit-vs-fallback distinction — instantiation is uniform and
+  order-stable. madc's bug is precisely that its tsubst **hit** of the range ctor diverges
+  from its re-parse **fallback** in when/how `_M_construct`+`_Guard` and the downstream string
+  ctors get instantiated, so the map's `pair<const string,int>` construction reads an
+  incomplete/wrong state and a member arg types as `_Guard`. THE FIX must make the range-ctor
+  hit produce the SAME instantiation side-effects as its fallback (eager, order-stable,
+  g++-style) — an instantiation-ORDER fix in the tsubst-hit drain, not a gate change and not a
+  generic pack rewrite. NEXT PASS START: dump the range ctor's tsubst'd cir body vs its
+  re-parsed body and diff the instantiations each triggers (`referenced_funcs` drain order).
+
 **★★ REFINED ROOT CAUSE (2026-07-01, second deeper pass) — it is the REAL `_Guard`'s
-ENCLOSING-PRIVATE access + const-pair construction, and `_M_construct`-as-a-hit is the
-trigger (NOT the range-ctor cascade):**
+ENCLOSING-PRIVATE access + const-pair construction, and the range-ctor hit is the
+trigger:**
 - Disproved the cascade theory: adding a structural CONSTRUCTOR-template exclusion to
   `tsubst_eligible` (reject when the placeholder Variable is in `owner->ctors`) removed the
   range-ctor hit, but testmap STILL fails with the SAME 7/4 counts — so **`_M_construct`
