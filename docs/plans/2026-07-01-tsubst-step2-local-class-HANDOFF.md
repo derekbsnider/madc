@@ -95,6 +95,40 @@ the throw path (the `_Guard` dtor IS the throw-path code — a happy-path-only t
 will NOT catch a broken unwind; RUN with an exercised catch path or inspect the
 emitted SJLJ). Estimated a multi-step build, not a single edit.
 
+### ★ BREAKTHROUGH (2026-07-01 probes) — 2A is CALL REBINDING, not new machinery
+Empirical probing of the reducer (`MADC_XTEST_DEP_PARSE=1 --show-stats tmp/guard_reducer.mad`,
+env-gated `fprintf` probes since reverted) overturned the "build new method-instantiation"
+assumption:
+1. `struct_has_dependent_member(Guard)` returns **false** — `Guard`'s member is `Box*`
+   (pointer to the enclosing dependent class), and `template_param_under_type_layers`
+   only detects a member that is *directly* a template param, not `Box<T>*`. So the
+   `materialize_local_aggregate_datadef` path is **never even reached** for `_Guard`-shaped
+   locals. (Same for `_M_construct`'s `_Guard`: member `basic_string* _M_guarded`.)
+2. **The concrete Guard ctor/dtor ALREADY EXIST and are emittable.** The normal member-
+   template instantiation of `build<int>` (the `__mti__` path) creates real-bodied
+   (`declaration_only=0`) pending defs:
+   `Box_int32_t__build__mti__Box_int32_t__Guard__Guard` (ctor) and
+   `Box_int32_t__build__mti__Box_int32_t__Guard___dtor` (dtor).
+3. **But the tsubst-copied body CALLS the PATTERN symbol** `main____pat44__49__Guard__Guard__50`
+   (emittable=0) — `tsubst_cir` copies the pattern's ctor/dtor call verbatim and never
+   retargets it to the concrete Guard the mti already built. That single un-emittable
+   callee is what trips the completeness check → fallback.
+
+**So the fix is REBINDING** the copied local-class ctor/dtor calls (and the local var's type)
+from the pattern Guard to the concrete `..._mti__..._Guard` the enclosing instantiation
+already produced — NOT cloning/instantiating methods (that machinery already runs). This is
+a localized `tsubst_cir` change, dramatically smaller than the original 2A estimate.
+
+**Precise next step (small):** in `tsubst_cir`, when copying a call whose target is a
+method of a PATTERN local class, remap the target to the concrete instantiation's local
+class method. Open questions to resolve first (one more probe): (a) where the concrete
+`..._mti__..._Guard` datadef/methods are registered (struct_map? keyed how?), and (b) the
+mapping from the pattern Guard (`__pat44__Guard`) to it given the active instantiation
+prefix (`Box_int32_t__build__mti`). Likely hook: make `subst_datadef` map the pattern local
+class → the concrete one (currently returns it unchanged because shdm=false), so the copied
+calls resolve through the concrete class. THEN verify: reducer `1 hit / 0 fallback` + prints
+42, AND a THROW-path variant (guard NOT disarmed → dtor disposes) runs correctly flag-on.
+
 ### Piece 2B — narrow `<`-gate admission (needed for the REAL `_M_construct`)
 The reducer avoids this, but `_M_construct`'s body has `static_cast<size_type>`
 (basic_string.tcc:225) → `tsubst_eligible` (parser.cpp:33785) rejects ANY `tkLT`
