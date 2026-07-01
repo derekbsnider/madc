@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [v0.32.0] — 2026-07-01
+
+Rung-1 interning capstone (`madc::dis`) — the per-token `std::string` is gone —
+plus a root-caused retargeting of the tsubst re-parse burndown.
+
+### Rung 1 — interning capstone (front-end perf)
+
+- **Step 4 — dropped `TokenIdent::str`.** Bare identifier tokens (the most numerous
+  token) now carry only a 4-byte interned `rec.spelling_id` resolved via the
+  `madc::dis::intern_table` pool (`TokenBase::_active_strpool`), not a 32-byte
+  `std::string`. `spelling()` is virtual; content/alias subclasses (`TokenStr`,
+  `TokenREM`, `TokenKeyword`, `TokenDataType`) keep their own `str` and override it.
+  Measured **−43% madc token `std::string` constructors, −3.3% total instructions**
+  (deterministic callgrind). Landed in gated tranches; production byte-identical.
+- **`Variable::name_sid` + `finalize_pop1_rec` file_id caches** — kill redundant
+  intern re-hashing on the scope-lookup and per-token finalize paths: **−6.6%
+  instructions, hashing −64%** (deterministic callgrind).
+
+### Template instantiation (tsubst) — burndown insight + retargeting
+
+- Fresh suite-wide burndown (`scripts/tsubst_burndown.sh`): **175 hit / 90 fallback
+  (66%)**, up from the 104-fallback baseline. Root-caused the dominant
+  `[why: template-id '<' in body]` class (78% of fallbacks): it is a *first-blocker*
+  tally masking a deeper capability gap, not the concrete-template-id win the plan
+  assumed. gdb traced the wall to `std::__and_`'s dependent base
+  `conditional<...>::type` degrading to `"auto"` — the **dependent-member-type /
+  `::type` / rebind resolution KIND (Kind 3)** that `subst_datadef` lacks. Recorded
+  in `docs/plans/2026-07-01-templateid-gate-insight-HANDOFF.md` with the ordered fix
+  plan. No code change (analysis + doc only); production byte-identical.
+
 ## [v0.31.0] — 2026-06-30
 
 Front-end performance track + the tag-arithmetic encoding retired: pointer/
