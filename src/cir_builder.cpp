@@ -741,6 +741,26 @@ static DataDefSTRUCT *materialize_local_aggregate_datadef(
 	return clone;
 }
 
+// Collect every distinct DataDef referenced as a `node->datadef` anywhere in a
+// cir subtree. Used to discover the Tree-1 pattern's LOCAL classes (their type
+// appears on the local-var decl node) so they can be mapped to their concrete
+// per-instantiation counterparts before the tsubst copy runs.
+static void collect_cir_node_datadefs(node_t n, std::set<DataDef *> &out)
+{
+	if (!n)
+		return;
+	cir_node *cn = CIR_NODE(n);
+	if (cn->datadef)
+		out.insert(cn->datadef);
+	if (n->code > N_ID)
+		for (int i = 0; ; i++) {
+			node_t op = c2mir_node_op(n, i);
+			if (!op)
+				break;
+			collect_cir_node_datadefs(op, out);
+		}
+}
+
 static DataDef *subst_datadef(Program *prog, DataDef *dd,
 			      const std::map<DataDef *, DataDef *> &subst)
 {
@@ -2213,6 +2233,36 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			append(a, node2(N_CAST, void_ptr_type(),
 					translate_expr(tc->parameters[0]), tc));
 			return CIR_NODE(node2(N_CALL, id(dsym.c_str(), tc), a, tc));
+		}
+	}
+
+	// Local-class-in-template method call (g++ TAG_DEFN): a Tree-1 pattern call
+	// to a local class's ctor/dtor (e.g. `_Guard g(this)` / scope-exit `~_Guard`)
+	// was raw-copied with the PATTERN class's emit symbol. Retarget it to the
+	// concrete per-instantiation method the parser already built. Keyed purely by
+	// symbol, so it works whatever the call's origin token (a local-var TokenDecl
+	// ctor has no TokenCallFunc for the block below to re-resolve).
+	if (subst && !m_tsubst_local_method_remap.empty()
+	    && src->base.code == N_CALL) {
+		node_t callee = c2mir_node_op(src->as_node(), 0);
+		if (callee && callee->code == N_ID && callee->u.s.s) {
+			std::map<std::string, std::string>::iterator ri =
+				m_tsubst_local_method_remap.find(callee->u.s.s);
+			if (ri != m_tsubst_local_method_remap.end()) {
+				TokenBase *origin = src->origin_id
+					? madc_token_for_slot(src->origin_id) : NULL;
+				referenced_funcs.insert(ri->second);
+				node_t src_args = c2mir_node_op(src->as_node(), 1);
+				cir_node *args_copy = src_args
+					? copy_cir_subtree(CIR_NODE(src_args), subst)
+					: NULL;
+				node_t args = args_copy ? args_copy->as_node() : list();
+				node_t call = node2(N_CALL,
+						    id(ri->second.c_str(), origin),
+						    args, origin);
+				CIR_NODE(call)->tree1_origin = src;
+				return CIR_NODE(call);
+			}
 		}
 	}
 
@@ -14655,6 +14705,50 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	m_tsubst_copy_pack_elem = 0;
 	m_tsubst_copy_pack_value_name = NULL;
 	m_tsubst_copy_under_deref = false;
+	// Local-class-in-template (g++ TAG_DEFN): a class defined in this template
+	// body (`_M_construct`'s `_Guard`, the reduced `Box::build`'s `Guard`) is
+	// instantiated ALONG WITH the enclosing method — the parser already built the
+	// concrete `<owner>__<local>` class + its ctor/dtor. The Tree-1 pattern still
+	// names the pattern local class (its ctor/dtor calls are raw-copied), so map
+	// pattern local class -> concrete (for the local var TYPE, so the type-driven
+	// scope-exit dtor injection uses the concrete dtor) AND pattern method emit
+	// symbol -> concrete method emit symbol (for the raw-copied ctor/dtor CALLS).
+	std::map<std::string, std::string> saved_local_method_remap =
+		m_tsubst_local_method_remap;
+	m_tsubst_local_method_remap.clear();
+	if (DataDefCLASS *own = m_cur_method ? m_cur_method->owner_class : NULL) {
+		std::set<DataDef *> pat_dds;
+		collect_cir_node_datadefs(pattern->as_node(), pat_dds);
+		for (DataDef *pd : pat_dds) {
+			DataDefCLASS *pc = dynamic_cast<DataDefCLASS *>(pd);
+			if (!pc || pc->enclosing_class || binding.count(pd))
+				continue;
+			std::map<std::string, DataDef *>::iterator ci =
+				m_prog->struct_map.find(own->name + "__" + pc->name);
+			DataDefCLASS *cc = ci != m_prog->struct_map.end()
+				? dynamic_cast<DataDefCLASS *>(ci->second) : NULL;
+			if (!cc || cc == pc || cc->enclosing_class != own)
+				continue;
+			binding[pd] = cc;
+			for (auto &pm : pc->method_map) {
+				std::map<std::string, Variable *>::iterator cm =
+					cc->method_map.find(pm.first);
+				if (cm == cc->method_map.end() || !pm.second
+				    || !cm->second)
+					continue;
+				FuncDef *pfd =
+					dynamic_cast<FuncDef *>(pm.second->type);
+				FuncDef *cfd =
+					dynamic_cast<FuncDef *>(cm->second->type);
+				if (!pfd || !cfd)
+					continue;
+				std::string ps = func_emit_name(*pm.second, pfd);
+				std::string cs = func_emit_name(*cm->second, cfd);
+				if (!ps.empty() && !cs.empty() && ps != cs)
+					m_tsubst_local_method_remap[ps] = cs;
+			}
+		}
+	}
 	// Snapshot referenced_funcs: the instantiation copy below inserts callee
 	// symbols as it builds. If this body ultimately FALLS BACK (a post-copy
 	// bail), those inserts must be undone — otherwise a fallen-back body leaves
@@ -14683,6 +14777,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	m_tsubst_copy_pack_elem = saved_copy_elem;
 	m_tsubst_copy_pack_value_name = saved_copy_name;
 	m_tsubst_copy_under_deref = saved_under_deref;
+	m_tsubst_local_method_remap = saved_local_method_remap;
 	// A type-spec marker that tsubst could not expand (unbound, or a concrete
 	// type append_type_specs can't render here) left an error node -> fall back.
 	if (!result)

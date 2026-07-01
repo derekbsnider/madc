@@ -1,5 +1,67 @@
 # tsubst burndown step-2 — local-class-in-tsubst (`_M_construct`'s `_Guard`)
 
+## ★ 2A LANDED (2026-07-01) — call-rebind implemented; reducer is a HIT
+
+The BREAKTHROUGH design (rebind, not new machinery) is implemented and verified.
+`tests/testlocalclassraii.mad` (disarmed reducer) is now **1 hit / 0 fallback**
+flag-on and prints `42` (== gcc). Flag-on gate GREEN, container tests unchanged,
+baseline bumped (`testlocalclassraii 0/1 -> 1/0`).
+
+**What landed (all in `src/cir_builder.cpp` + one member in `cir_builder.h`):**
+1. `collect_cir_node_datadefs()` — walks a cir subtree collecting every
+   `node->datadef` (discovers the Tree-1 pattern's local classes; a local var's
+   type appears on its decl node).
+2. In `tsubst_method_body`, before `tsubst_cir(pattern, binding)`: with the
+   concrete owner `m_cur_method->owner_class` (probed = `Box_int32_t`), look up
+   each pattern local class `pc` (enclosing==NULL) as
+   `struct_map[owner->name + "__" + pc->name]` (the g++/line-22675 naming the
+   PARSER already built during member-template instantiation). For each match:
+   `binding[pc] = concrete` (remaps the local-var TYPE, so the type-driven
+   scope-exit dtor injection targets the concrete dtor) AND populate
+   `m_tsubst_local_method_remap` (pattern method emit symbol -> concrete emit
+   symbol, matched by `method_map` key: ctor `Guard`->`Guard`, dtor
+   `~Guard`->`~Guard`). Saved/restored around the copy.
+3. In `copy_cir_subtree`, a new N_CALL branch (keyed purely by callee symbol via
+   `m_tsubst_local_method_remap`) retargets a raw-copied pattern ctor/dtor call
+   to the concrete symbol. This is why the `TokenDecl`-origin ctor call (which
+   the existing TokenCallFunc rebind block cannot see) gets fixed.
+
+**Probed ground truth (the facts the design rests on):** the Guard ctor call's
+origin is a **`TokenDecl`** (local var `g(this)`), copied RAW -> pattern symbol
+`main____pat44__49__Guard__Guard__50` (emittable=0) tripped the completeness
+check. The concrete `Box_int32_t__Guard` (+ ctor `Box_int32_t__build__mti__…__Guard__Guard__52`
+dtor `…___dtor__53`, both declonly=0/emittable) **already exists in struct_map**,
+built at PARSE time by member-template instantiation — independent of the CIR
+re-parse fallback, so rebinding is viable when tsubst becomes a hit. Only ONE
+un-emittable callee (the ctor); the dtor is injected later, type-driven (hence
+the `binding[pc]=concrete` type remap).
+
+**⚠ PRE-EXISTING local-class-dtor bug discovered (SEPARATE track, NOT 2A):**
+tsubst flag-on is now **byte-identical to flag-off re-parse on all three
+variants** (parse-once law satisfied):
+| variant | gcc | flag-OFF | flag-ON |
+|---|---|---|---|
+| disarmed (reducer) | 42 | 42 | 42 (hit) |
+| dtor-runs (`tmp/guard_dtor_runs.mad`) | 0 | SIGSEGV | SIGSEGV |
+| throw-unwind (`tmp/guard_throw_unwind.mad`) | caught7/0 | caught7/42 | caught7/42 |
+The dtor-runs crash + throw-unwind wrongness happen EQUALLY on the re-parse path
+(flag-off never enters the 2A code — `tsubst_method_body` returns at the
+`getenv` gate), so 2A introduces **zero regression**; it faithfully mirrors the
+fallback. The root cause is BELOW tsubst: the concrete Guard ctor mis-captures
+`this` (warning `incompatible argument type for pointer type parameter` at
+`g(this)`: concrete ctor param `Box*` vs `Box_int32_t*` receiver) so the stored
+`b` is bad and `b->reset()` in the dtor faults. This is a **parser-level local-
+class instantiation typing bug**, orthogonal to the burndown. The handoff's
+"throw-path runs correctly" bar cannot be met by a tsubst change alone — it needs
+this separate fix. Reducers kept in `tmp/`; the committed test stays disarmed.
+
+**NEXT after 2A commit:** (1) Piece 2B — the narrow `<`-gate admission is what
+still blocks the REAL `_M_construct` (its `static_cast<size_type>` trips
+`tsubst_eligible`), so container tests are UNCHANGED by 2A (expected). (2) The
+pre-existing local-class-dtor `this`-capture bug as its own gcc-parity track.
+
+---
+
 **Status:** scoped + RED test landed; core materialization NOT yet implemented.
 **Goal:** convert `basic_string::_M_construct<_InIterator>` (and the reduced
 `Box::build<U>`) from a re-parse FALLBACK to a parse-once HIT. This is the

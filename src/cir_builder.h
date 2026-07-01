@@ -452,6 +452,14 @@ class CirBuilder {
 	size_t m_tsubst_copy_pack_elem = 0;
 	const char *m_tsubst_copy_pack_value_name = NULL;
 	bool m_tsubst_copy_under_deref = false;
+	// Active during a tsubst body copy: maps a Tree-1 pattern LOCAL-class method's
+	// emit symbol -> the concrete instantiation's corresponding method emit symbol
+	// (e.g. `_M_construct`'s `_Guard` ctor/dtor). A local class defined in a
+	// template body is instantiated WITH its enclosing method (g++ TAG_DEFN), so
+	// the parser already built the concrete `<owner>__<local>` class + its methods;
+	// the pattern body's raw-copied ctor/dtor calls are retargeted to those. Empty
+	// outside a tsubst copy.
+	std::map<std::string, std::string> m_tsubst_local_method_remap;
 	// Build a concrete instantiated member-template method's BODY by tsubst of
 	// its source template's Tree-1 recipe (instead of lowering the re-parsed
 	// body — hybrid B keeps the concrete signature/shell on the parse path).
