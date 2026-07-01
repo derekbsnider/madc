@@ -191,17 +191,48 @@ class → the concrete one (currently returns it unchanged because shdm=false), 
 calls resolve through the concrete class. THEN verify: reducer `1 hit / 0 fallback` + prints
 42, AND a THROW-path variant (guard NOT disarmed → dtor disposes) runs correctly flag-on.
 
-### Piece 2B — narrow `<`-gate admission (needed for the REAL `_M_construct`)
-The reducer avoids this, but `_M_construct`'s body has `static_cast<size_type>`
-(basic_string.tcc:225) → `tsubst_eligible` (parser.cpp:33785) rejects ANY `tkLT`
-→ `[why: template-id '<' in body]`. Admitting it needs a NARROW classifier:
-admit a `<..>` span that is a cast / holds no dependent template-arg; reject
-dependent template-ids. **CAUTION (proven, do not repeat):** the WIDE admit-all
-experiment broke the compile via `__and_ : conditional<...>::type` dependent-base
-resolution (templateid-gate-insight §4b). The `pnames`-only check is NOT
-sufficient (`conditional<_B1,...>`'s params aren't in `_M_construct`'s pnames yet
-are dependent). Do 2A first (metric moves via the reducer without touching the
-gate); tackle 2B with the dependent-`<` classifier only after 2A is solid.
+### Piece 2B — narrow `<`-gate admission — ATTEMPTED 2026-07-01, classifier CORRECT, REVERTED (exposed a separate map-path bug)
+
+**★ KEY RECON FINDING (overturns the original 2B framing):** the dominant
+`[why: template-id '<' in body]` fallback is USUALLY NOT a template-id at all — it
+is the **less-than OPERATOR**. The instantiated `_M_construct` is the INPUT-iterator
+overload (basic_string.tcc:171), whose only `<` is `while (... && __len < __capacity)`
+— a comparison. (The forward overload's only `<` is `static_cast<size_type>`, a
+concrete cast.) `tsubst_eligible` rejected EVERY `tkLT` blindly.
+
+**The classifier (proven correct, saved: `tmp/2b-comparison-lt-gate-BACKUP.patch`):**
+admit a `tkLT` iff it does NOT open a balanced template-id — reuse
+`template_id_suffix_end(d, i)`: it returns the close index for a real `<...>`, or `i`
+unchanged when there is no balanced close (a comparison/shift operator). Plus a
+`tsubst_lt_opens_concrete_cast` helper (prev token is `static_cast`/`const_cast`/
+`reinterpret_cast`/`dynamic_cast`, and the `<...>` span has no nested `<` and no pname
+= concrete cast type). This errs SAFELY: a comparison mis-read as a template-id only
+stays on the fallback; a **dependent template-id is NEVER admitted** (that was the WIDE
+failure). This is the correct answer to the "narrow classifier" the original plan asked
+for, and it is NOT the `pnames`-only check that was rightly warned against.
+
+**Result: correct AND partially landed-worthy, but REVERTED because it exposed a
+SEPARATE deeper bug.** With it: testset (`set<string>`) 6/4→7/3 and testvector 14/1→15/0
+became HITS and RAN CLEAN (rc=0) — the classifier works. BUT testmap / testsubscript /
+testcontainerdtor / testmadc_ns gained a hit that **hard-fails to compile flag-on**:
+`cir error: no matching constructor for call to 'basic_string_...(const _Guard*)'`.
+Probed (`MADC_HIT_PROBE`): the newly-admitted map-only hits are the `pair<const string,int>`
+CONSTRUCTION bodies — `_Rb_tree::_Auto_node::_Auto_node`, `__new_allocator<pair<...>>`,
+`allocator_traits<...>` — ALL with `remap=0` (so it is **NOT** the 2A local-class code).
+One of them tsubst-mis-resolves the const-pair element construction and emits a
+`basic_string(_Guard*)` call. This is a **Kind-4 construction bug** (const-qualified
+`pair` node construction under tsubst), the same family as the 2A pre-existing
+local-class-dtor `this`-capture finding — surfaced only once the body becomes a hit.
+The flag-on gate correctly REDs on it (it RUNS the tests).
+
+**NEXT for 2B:** fix the const-`pair<const K,V>` construction-tsubst bug FIRST (the
+`_Auto_node`/`__new_allocator`/`allocator_traits` bodies emitting `basic_string(_Guard*)`),
+THEN re-apply the saved classifier patch — it is correct and gives the set/vector wins
+immediately, and the map wins once construction is fixed. Do NOT re-apply the classifier
+before the construction fix (it hard-breaks 4 tests). **CAUTION (still valid):** never
+widen to admit a balanced/dependent template-id — the WIDE admit-all broke the compile via
+`__and_ : conditional<...>::type` (templateid-gate-insight §4b); the classifier's
+"reject any balanced `<...>` except a concrete cast" rule is what keeps that safe.
 
 ## Guardrails (learned this session — non-negotiable)
 - **NEVER harden the fallback net by rolling back the emitted program**
