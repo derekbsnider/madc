@@ -1,0 +1,13 @@
+# tsubst flag-on gate baseline — per-test "name hit fallback" under
+# MADC_XTEST_DEP_PARSE=1. Maintained by scripts/tsubst_flagon_gate.sh --check.
+# RED if any test crashes (nonzero exit), hit drops, or fallback rises.
+# On PROGRESS (hits up / fallback down) LOWER the numbers here in the same commit.
+# Rationale + the regression that motivated this gate:
+#   docs/plans/2026-07-01-tsubst-kind3-wip-verification-FINDINGS.md
+# Baseline recorded at HEAD 114d81b8 (v0.32.0), 2026-07-01.
+testset 6 4
+testmap 7 4
+testvector 14 1
+testsubscript 28 7
+testcontainerdtor 26 7
+testmadc_ns 26 7
