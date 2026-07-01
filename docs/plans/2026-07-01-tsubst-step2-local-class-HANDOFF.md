@@ -254,8 +254,19 @@ The flag-on gate correctly REDs on it (it RUNS the tests).
   incomplete/wrong state and a member arg types as `_Guard`. THE FIX must make the range-ctor
   hit produce the SAME instantiation side-effects as its fallback (eager, order-stable,
   g++-style) — an instantiation-ORDER fix in the tsubst-hit drain, not a gate change and not a
-  generic pack rewrite. NEXT PASS START: dump the range ctor's tsubst'd cir body vs its
-  re-parsed body and diff the instantiations each triggers (`referenced_funcs` drain order).
+  generic pack rewrite.
+- **LEAK VECTOR PINNED (callee dump of the range-ctor hit):** the hit's tsubst-body callees
+  include `basic_string..._M_construct__mti__..._Guard___Guard__55` (the CONCRETE `_Guard`
+  DTOR, via `_M_construct`'s mti instantiation) + `_M_dispose`. So the range-ctor HIT forces
+  the concrete `_Guard` to be materialized/registered DURING its own completeness-check drain
+  — earlier than the fallback would — and that globally-registered concrete `_Guard`
+  (`struct_map["basic_string..._Guard"]`) is what the map's LATER `pair` deduction picks up as
+  a stray candidate/type. Both paths create the same `_Guard`; the HIT just does it at the
+  wrong time/scope. NEXT PASS START: find where the `pair<const string,int>` construction reads
+  `_Guard` (it is NOT the recorded pack args nor the ctor-construct key — both probed clean),
+  i.e. what scans `struct_map` / resolves a name to the concrete `_Guard` during pair `_U1`
+  deduction; scope the concrete local class so it is not a visible candidate outside its
+  enclosing method's instantiation (the g++ `current_class_ptr/ref` save/restore discipline).
 
 **★★ REFINED ROOT CAUSE (2026-07-01, second deeper pass) — it is the REAL `_Guard`'s
 ENCLOSING-PRIVATE access + const-pair construction, and the range-ctor hit is the
