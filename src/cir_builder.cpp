@@ -1710,6 +1710,424 @@ void CirBuilder::rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
 	dst->base.u.s.len = sym.size() + 1;
 }
 
+cir_node *CirBuilder::tsubst_relower_deferred_construction(
+	const std::vector<TokenBase *> &ctor_args, TokenBase *origin,
+	DataDefCLASS *concrete_class,
+	const std::map<DataDef *, DataDef *> *subst,
+	const std::function<node_t()> &this_addr, bool yield_this_addr,
+	bool relax_class_args)
+{
+	// relax_class_args (the decl-marker path) has no simple re-translate
+	// fallback, so it always takes the manual assembly below.
+	bool manual_class_pack_lowering = relax_class_args;
+	bool unsupported_class_arg = false;
+	FuncDef *placement_ctor = NULL;
+	bool placement_ctor_checked = false;
+	std::vector<TokenBase *> expanded_ctor_args;
+	bool expanded_ctor_args_checked = false;
+	auto placement_ctor_args = [&]() -> const std::vector<TokenBase *> & {
+		if (expanded_ctor_args_checked)
+			return expanded_ctor_args;
+		expanded_ctor_args_checked = true;
+		for (size_t ai = 0; ai < ctor_args.size(); ++ai) {
+			TokenBase *arg = ctor_args[ai];
+			if (TokenPackExpansion *pe =
+				    dynamic_cast<TokenPackExpansion *>(arg)) {
+				DataDefTemplateParam *tp = pe->pattern
+					? template_param_in_pack_pattern(pe->pattern)
+					: NULL;
+				if (tp && m_tsubst_active_type_arg_packs
+				    && tp->param_index
+				       < m_tsubst_active_type_arg_packs->size()) {
+					const std::vector<DataDef *> &elems =
+						(*m_tsubst_active_type_arg_packs)
+							[tp->param_index];
+					for (DataDef *elem : elems)
+						expanded_ctor_args.push_back(
+							tsubst_concrete_arg_token(
+								elem,
+								expanded_ctor_args.size(),
+								pe->pattern));
+					continue;
+				}
+			}
+			expanded_ctor_args.push_back(arg);
+		}
+		return expanded_ctor_args;
+	};
+	auto selected_placement_ctor = [&]() -> FuncDef * {
+		if (!placement_ctor_checked) {
+			placement_ctor = select_ctor_overload(
+				concrete_class, placement_ctor_args());
+			if (!placement_ctor) {
+				auto it = concrete_class->method_map.find(
+					concrete_class->name);
+				if (it != concrete_class->method_map.end()
+				    && it->second)
+					placement_ctor =
+						dynamic_cast<FuncDef *>(
+							it->second->type);
+			}
+			placement_ctor_checked = true;
+		}
+		return placement_ctor;
+	};
+	size_t concrete_arg_pos = 0;
+	for (size_t ai = 0; ai < ctor_args.size(); ++ai) {
+		TokenBase *arg = ctor_args[ai];
+		if (TokenPackExpansion *pe =
+			    dynamic_cast<TokenPackExpansion *>(arg)) {
+			DataDefTemplateParam *tp = pe->pattern
+				? template_param_in_pack_pattern(pe->pattern)
+				: NULL;
+			if (!tp || !m_tsubst_active_type_arg_packs
+			    || tp->param_index
+			       >= m_tsubst_active_type_arg_packs->size()) {
+				unsupported_class_arg = true;
+				break;
+			}
+			const std::vector<DataDef *> &elems =
+				(*m_tsubst_active_type_arg_packs)
+					[tp->param_index];
+			for (size_t e = 0; e < elems.size(); ++e) {
+				DataDef *elem = elems[e];
+				size_t pi = concrete_arg_pos + 1;
+				++concrete_arg_pos;
+				if (!tsubst_is_class_object_arg(elem))
+					continue;
+				FuncDef *ctor = selected_placement_ctor();
+				DataDef *pt = (ctor && pi < ctor->parameters.size())
+						? ctor->parameters[pi] : NULL;
+				bool refp = ctor && ctor->is_ref_param(pi);
+				if (DataDefCLASS *pc =
+					    param_object_class(pt, refp)) {
+					if (expr_is_nonaddressable_rvalue(pe->pattern)) {
+						if (!class_trivially_copyable(pc)) {
+							unsupported_class_arg = true;
+							break;
+						}
+						manual_class_pack_lowering = true;
+						continue;
+					}
+					if (pe->pattern && pe->pattern->file && m_prog
+					    && m_prog->is_system_header_path(
+						    pe->pattern->file)) {
+						if (!system_header_pack_element_call_resolves(
+							    pe, *subst, tp, elem, e, pc)) {
+							unsupported_class_arg = true;
+							break;
+						}
+					}
+					manual_class_pack_lowering = true;
+					continue;
+				}
+				// By-value object params can reuse marked-expression
+				// fan-out for simple local cases, but real
+				// system-header constructor packs need the same
+				// copied-argument path as reference-bound object
+				// params so ordinary temp construction does not
+				// recurse through the unresolved pack expression.
+				if (!elem->is_reference()
+				    && as_class_instance(pt)) {
+					manual_class_pack_lowering = true;
+					continue;
+				}
+				unsupported_class_arg = true;
+				break;
+			}
+			if (unsupported_class_arg)
+				break;
+			continue;
+		}
+		++concrete_arg_pos;
+		DataDef *arg_dd = arg
+			? subst_datadef(m_prog, arg->datadef(), *subst)
+			: NULL;
+		if (!relax_class_args && tsubst_is_class_object_arg(arg_dd)) {
+			unsupported_class_arg = true;
+			break;
+		}
+	}
+	if (unsupported_class_arg)
+		return CIR_NODE(error_node(
+			"tsubst: class deferred-construction object argument pack"));
+	if (manual_class_pack_lowering) {
+		FuncDef *ctor = selected_placement_ctor();
+		if (!ctor)
+			return CIR_NODE(error_node(
+				"tsubst: unresolved deferred-construction ctor"));
+
+		std::vector<node_t> prefix_items;
+		auto copy_node_under = [&](node_t raw,
+					   const std::map<DataDef *, DataDef *> &smap,
+					   int pack_index,
+					   size_t pack_elem,
+					   const char *pack_name) -> node_t {
+			if (!raw)
+				return error_node(
+					"tsubst: missing deferred-construction pack expr");
+			int saved_index = m_tsubst_copy_pack_index;
+			size_t saved_elem = m_tsubst_copy_pack_elem;
+			const char *saved_name =
+				m_tsubst_copy_pack_value_name;
+			m_tsubst_copy_pack_index = pack_index;
+			m_tsubst_copy_pack_elem = pack_elem;
+			m_tsubst_copy_pack_value_name = pack_name;
+			cir_node *copied =
+				copy_cir_subtree(CIR_NODE(raw), &smap);
+			m_tsubst_copy_pack_index = saved_index;
+			m_tsubst_copy_pack_elem = saved_elem;
+			m_tsubst_copy_pack_value_name = saved_name;
+			return copied ? copied->as_node()
+				      : error_node(
+					      "tsubst: failed deferred-construction pack copy");
+		};
+		auto copy_expr_under = [&](TokenBase *expr,
+					   const std::map<DataDef *, DataDef *> &smap,
+					   int pack_index,
+					   size_t pack_elem,
+					   const char *pack_name) -> node_t {
+			std::vector<node_t> saved_pending =
+				m_pending_stmts;
+			std::set<std::string> saved_refs =
+				referenced_funcs;
+			m_pending_stmts.clear();
+			node_t raw = translate_expr(expr);
+			std::vector<node_t> pending =
+				m_pending_stmts;
+			m_pending_stmts = saved_pending;
+			referenced_funcs = saved_refs;
+			for (node_t p : pending)
+				prefix_items.push_back(copy_node_under(
+					p, smap, pack_index, pack_elem,
+					pack_name));
+			return copy_node_under(raw, smap, pack_index,
+					       pack_elem, pack_name);
+		};
+		auto void_addr_of = [&](node_t value,
+					TokenBase *origin) -> node_t {
+			return node2(N_CAST, void_ptr_type(),
+				     node1(N_ADDR, value, origin),
+				     origin);
+		};
+		auto temp_addr_from_value = [&](DataDefCLASS *target,
+						node_t value,
+						TokenBase *origin) -> node_t {
+			if (!target || !class_trivially_copyable(target))
+				return error_node(
+					"tsubst: non-trivial deferred-construction pack temp");
+			char name[40];
+			snprintf(name, sizeof(name), "__madc_objtmp_%d",
+				 m_strtmp_counter++);
+			Variable *tmp = new Variable(name, *target, 1,
+						     NULL, false);
+			tmp->flags |= vfLOCAL;
+			prefix_items.push_back(var_decl(tmp, origin));
+			node_t assign = node2(N_ASSIGN, id(name, origin),
+					      value, origin);
+			prefix_items.push_back(node2(N_EXPR, list(),
+						     assign, origin));
+			return object_addr(name, origin);
+		};
+		auto copied_pack_id_node = [&](const char *pack_name,
+					       int pack_index,
+					       size_t pack_elem,
+					       TokenBase *origin,
+					       DataDef *dd) -> node_t {
+			int saved_index = m_tsubst_copy_pack_index;
+			size_t saved_elem = m_tsubst_copy_pack_elem;
+			const char *saved_name =
+				m_tsubst_copy_pack_value_name;
+			m_tsubst_copy_pack_index = pack_index;
+			m_tsubst_copy_pack_elem = pack_elem;
+			m_tsubst_copy_pack_value_name = pack_name;
+			std::string nm = copied_pack_value_name(pack_name);
+			m_tsubst_copy_pack_index = saved_index;
+			m_tsubst_copy_pack_elem = saved_elem;
+			m_tsubst_copy_pack_value_name = saved_name;
+			node_t n = id(nm.c_str(), origin);
+			CIR_NODE(n)->datadef = dd;
+			return n;
+		};
+		std::function<node_t(
+			TokenBase *, DataDef *, bool,
+			const std::map<DataDef *, DataDef *> &,
+			int, size_t, const char *)> explicit_arg_node;
+		explicit_arg_node =
+			[&](TokenBase *arg, DataDef *pt, bool refp,
+			    const std::map<DataDef *, DataDef *> &smap,
+			    int pack_index, size_t pack_elem,
+			    const char *pack_name) -> node_t {
+			if (DataDefCLASS *pc = param_object_class(pt, refp)) {
+				DataDef *rt = ref_returning_call_type(arg);
+				DataDef *srt = rt
+					? subst_datadef(m_prog, rt, smap) : NULL;
+				if (rt && !ref_return_class_binds_direct(pc, srt)) {
+					FuncDef *conv =
+						single_arg_conversion_ctor(pc, srt);
+					if (conv && conv->parameters.size() >= 2) {
+						char name[40];
+						snprintf(name, sizeof(name),
+							 "__madc_objtmp_%d",
+							 m_strtmp_counter++);
+						Variable *tmp = new Variable(
+							name, *pc, 1, NULL, false);
+						tmp->flags |= vfLOCAL;
+						prefix_items.push_back(var_decl(tmp, arg));
+						std::vector<node_t> cnodes;
+						DataDef *cpt = conv->parameters[1];
+						bool crefp = conv->is_ref_param(1);
+						cnodes.push_back(explicit_arg_node(
+							arg, cpt, crefp, smap,
+							pack_index, pack_elem, pack_name));
+						node_t cc = ctor_call_assemble(
+							node1(N_ADDR, id(name, arg), arg),
+							pc, conv, cnodes, arg);
+						if (cc)
+							prefix_items.push_back(cc);
+						return object_addr(name, arg);
+					}
+				}
+				if (rt && pack_name)
+					return node2(N_CAST, void_ptr_type(),
+						copied_pack_id_node(pack_name,
+							pack_index, pack_elem,
+							arg, srt),
+						arg);
+				node_t value = copy_expr_under(arg, smap,
+							      pack_index,
+							      pack_elem,
+							      pack_name);
+				if (rt && value && value->code == N_CALL)
+					value = node1(N_DEREF, value, arg);
+				if (!rt && expr_is_nonaddressable_rvalue(arg))
+					return temp_addr_from_value(pc, value,
+									    arg);
+				return void_addr_of(value, arg);
+			}
+			if (as_class_instance(pt)) {
+				DataDef *rt = ref_returning_call_type(arg);
+				if (rt && pack_name) {
+					DataDef *srt =
+						subst_datadef(m_prog, rt, smap);
+					node_t slot = copied_pack_id_node(
+						pack_name, pack_index, pack_elem,
+						arg, srt);
+					node_t value = node1(N_DEREF,
+						slot, arg);
+					CIR_NODE(value)->datadef = srt;
+					return value;
+				}
+				return copy_expr_under(arg, smap, pack_index,
+						       pack_elem, pack_name);
+			}
+			if (refp) {
+				node_t value = copy_expr_under(arg, smap,
+							      pack_index,
+							      pack_elem,
+							      pack_name);
+				if (expr_is_nonaddressable_rvalue(arg)) {
+					char name[40];
+					snprintf(name, sizeof(name),
+						 "__madc_objtmp_%d",
+						 m_strtmp_counter++);
+					DataDef *rt = ref_param_referent(pt);
+					DataDef *vt = arg ? subst_datadef(
+						m_prog, arg->datadef(), smap) : NULL;
+					DataDef *tmp_type =
+						(rt && rt != vt) ? rt : vt;
+					if (!tmp_type)
+						tmp_type = &ddINT64;
+					Variable *tmp = new Variable(
+						name, *tmp_type, 1, NULL, false);
+					tmp->flags |= vfLOCAL;
+					prefix_items.push_back(var_decl(tmp, arg));
+					node_t assign = node2(N_ASSIGN,
+						id(name, arg), value, arg);
+					prefix_items.push_back(node2(N_EXPR,
+						list(), assign, arg));
+					return node1(N_ADDR, id(name, arg), arg);
+				}
+				return node1(N_ADDR, value, arg);
+			}
+			return copy_expr_under(arg, smap, pack_index,
+					       pack_elem, pack_name);
+		};
+
+		std::vector<node_t> explicit_nodes;
+		concrete_arg_pos = 0;
+		for (size_t ai = 0; ai < ctor_args.size(); ++ai) {
+			TokenBase *arg = ctor_args[ai];
+			if (TokenPackExpansion *pe =
+				    dynamic_cast<TokenPackExpansion *>(arg)) {
+				DataDefTemplateParam *tp = pe->pattern
+					? template_param_in_pack_pattern(pe->pattern)
+					: NULL;
+				if (!tp || !m_tsubst_active_type_arg_packs
+				    || tp->param_index
+				       >= m_tsubst_active_type_arg_packs->size()) {
+					explicit_nodes.push_back(error_node(
+						"tsubst: missing deferred-construction pack"));
+					continue;
+				}
+				std::map<unsigned, DataDef *>::iterator pmi =
+					m_tsubst_active_pack_params.find(
+						tp->param_index);
+				if (pmi == m_tsubst_active_pack_params.end()
+				    || !pmi->second) {
+					explicit_nodes.push_back(error_node(
+						"tsubst: missing deferred-construction pack param"));
+					continue;
+				}
+				const std::vector<DataDef *> &elems =
+					(*m_tsubst_active_type_arg_packs)
+						[tp->param_index];
+				std::string value_name =
+					pack_value_name_in_pattern(
+						pe->pattern, tp->param_index);
+				for (size_t e = 0; e < elems.size(); ++e) {
+					std::map<DataDef *, DataDef *> elem_subst =
+						*subst;
+					elem_subst[pmi->second] = elems[e];
+					size_t pi = concrete_arg_pos + 1;
+					++concrete_arg_pos;
+					DataDef *pt =
+						(ctor && pi < ctor->parameters.size())
+							? ctor->parameters[pi] : NULL;
+					bool refp = ctor && ctor->is_ref_param(pi);
+					explicit_nodes.push_back(explicit_arg_node(
+						pe->pattern, pt, refp, elem_subst,
+						(int)tp->param_index, e,
+						value_name.empty()
+							? NULL : value_name.c_str()));
+				}
+				continue;
+			}
+			size_t pi = concrete_arg_pos + 1;
+			++concrete_arg_pos;
+			DataDef *pt = (ctor && pi < ctor->parameters.size())
+					? ctor->parameters[pi] : NULL;
+			bool refp = ctor && ctor->is_ref_param(pi);
+			explicit_nodes.push_back(explicit_arg_node(
+				arg, pt, refp, *subst, -1, 0, NULL));
+		}
+		node_t construct = ctor_call_assemble(
+			this_addr(), concrete_class, ctor,
+			explicit_nodes, origin);
+		node_t items = list();
+		for (node_t p : prefix_items)
+			append(items, p);
+		if (construct)
+			append(items, construct);
+		if (!yield_this_addr)
+			return CIR_NODE(node2(N_BLOCK, list(), items, origin));
+		append(items, node2(N_EXPR, list(), this_addr(), origin));
+		return CIR_NODE(node1(N_STMTEXPR,
+			node2(N_BLOCK, list(), items, origin), origin));
+	}
+	return NULL;   // no manual trigger: caller runs its simple path
+}
+
 // Deep-copy a concrete cir_node subtree into fresh arena nodes — the `tsubst`
 // core. Contract is documented on the declaration in cir_builder.h. This is the
 // safe-for-c2mir private materialization: c2mir mutates `attr` on every node_t
@@ -1734,419 +2152,33 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					"tsubst: unbound placement-new constructed type"));
 			DataDefCLASS *concrete_class =
 				dynamic_cast<DataDefCLASS *>(concrete);
-			bool manual_class_pack_lowering = false;
 			if (concrete_class) {
-				bool unsupported_class_arg = false;
-				FuncDef *placement_ctor = NULL;
-				bool placement_ctor_checked = false;
-				std::vector<TokenBase *> expanded_ctor_args;
-				bool expanded_ctor_args_checked = false;
-				auto placement_ctor_args = [&]() -> const std::vector<TokenBase *> & {
-					if (expanded_ctor_args_checked)
-						return expanded_ctor_args;
-					expanded_ctor_args_checked = true;
-					for (size_t ai = 0; ai < tn->ctor_args.size(); ++ai) {
-						TokenBase *arg = tn->ctor_args[ai];
-						if (TokenPackExpansion *pe =
-							    dynamic_cast<TokenPackExpansion *>(arg)) {
-							DataDefTemplateParam *tp = pe->pattern
-								? template_param_in_pack_pattern(pe->pattern)
-								: NULL;
-							if (tp && m_tsubst_active_type_arg_packs
-							    && tp->param_index
-							       < m_tsubst_active_type_arg_packs->size()) {
-								const std::vector<DataDef *> &elems =
-									(*m_tsubst_active_type_arg_packs)
-										[tp->param_index];
-								for (DataDef *elem : elems)
-									expanded_ctor_args.push_back(
-										tsubst_concrete_arg_token(
-											elem,
-											expanded_ctor_args.size(),
-											pe->pattern));
-								continue;
-							}
-						}
-						expanded_ctor_args.push_back(arg);
-					}
-					return expanded_ctor_args;
+				auto placement_addr = [&]() -> node_t {
+					std::set<std::string> saved_refs =
+						referenced_funcs;
+					node_t raw = translate_expr(tn->placement);
+					referenced_funcs = saved_refs;
+					int saved_index = m_tsubst_copy_pack_index;
+					size_t saved_elem = m_tsubst_copy_pack_elem;
+					const char *saved_name =
+						m_tsubst_copy_pack_value_name;
+					m_tsubst_copy_pack_index = -1;
+					m_tsubst_copy_pack_elem = 0;
+					m_tsubst_copy_pack_value_name = NULL;
+					cir_node *copied =
+						copy_cir_subtree(CIR_NODE(raw), subst);
+					m_tsubst_copy_pack_index = saved_index;
+					m_tsubst_copy_pack_elem = saved_elem;
+					m_tsubst_copy_pack_value_name = saved_name;
+					return copied ? copied->as_node()
+						      : error_node("tsubst: failed deferred-construction addr copy");
 				};
-				auto selected_placement_ctor = [&]() -> FuncDef * {
-					if (!placement_ctor_checked) {
-						placement_ctor = select_ctor_overload(
-							concrete_class, placement_ctor_args());
-						if (!placement_ctor) {
-							auto it = concrete_class->method_map.find(
-								concrete_class->name);
-							if (it != concrete_class->method_map.end()
-							    && it->second)
-								placement_ctor =
-									dynamic_cast<FuncDef *>(
-										it->second->type);
-						}
-						placement_ctor_checked = true;
-					}
-					return placement_ctor;
-				};
-				size_t concrete_arg_pos = 0;
-				for (size_t ai = 0; ai < tn->ctor_args.size(); ++ai) {
-					TokenBase *arg = tn->ctor_args[ai];
-					if (TokenPackExpansion *pe =
-						    dynamic_cast<TokenPackExpansion *>(arg)) {
-						DataDefTemplateParam *tp = pe->pattern
-							? template_param_in_pack_pattern(pe->pattern)
-							: NULL;
-						if (!tp || !m_tsubst_active_type_arg_packs
-						    || tp->param_index
-						       >= m_tsubst_active_type_arg_packs->size()) {
-							unsupported_class_arg = true;
-							break;
-						}
-						const std::vector<DataDef *> &elems =
-							(*m_tsubst_active_type_arg_packs)
-								[tp->param_index];
-						for (size_t e = 0; e < elems.size(); ++e) {
-							DataDef *elem = elems[e];
-							size_t pi = concrete_arg_pos + 1;
-							++concrete_arg_pos;
-							if (!tsubst_is_class_object_arg(elem))
-								continue;
-							FuncDef *ctor = selected_placement_ctor();
-							DataDef *pt = (ctor && pi < ctor->parameters.size())
-									? ctor->parameters[pi] : NULL;
-							bool refp = ctor && ctor->is_ref_param(pi);
-							if (DataDefCLASS *pc =
-								    param_object_class(pt, refp)) {
-								if (expr_is_nonaddressable_rvalue(pe->pattern)) {
-									if (!class_trivially_copyable(pc)) {
-										unsupported_class_arg = true;
-										break;
-									}
-									manual_class_pack_lowering = true;
-									continue;
-								}
-								if (pe->pattern && pe->pattern->file && m_prog
-								    && m_prog->is_system_header_path(
-									    pe->pattern->file)) {
-									if (!system_header_pack_element_call_resolves(
-										    pe, *subst, tp, elem, e, pc)) {
-										unsupported_class_arg = true;
-										break;
-									}
-								}
-								manual_class_pack_lowering = true;
-								continue;
-							}
-							// By-value object params can reuse marked-expression
-							// fan-out for simple local cases, but real
-							// system-header constructor packs need the same
-							// copied-argument path as reference-bound object
-							// params so ordinary temp construction does not
-							// recurse through the unresolved pack expression.
-							if (!elem->is_reference()
-							    && as_class_instance(pt)) {
-								manual_class_pack_lowering = true;
-								continue;
-							}
-							unsupported_class_arg = true;
-							break;
-						}
-						if (unsupported_class_arg)
-							break;
-						continue;
-					}
-					++concrete_arg_pos;
-					DataDef *arg_dd = arg
-						? subst_datadef(m_prog, arg->datadef(), *subst)
-						: NULL;
-					if (tsubst_is_class_object_arg(arg_dd)) {
-						unsupported_class_arg = true;
-						break;
-					}
-				}
-				if (unsupported_class_arg)
-					return CIR_NODE(error_node(
-						"tsubst: class placement-new object argument pack"));
-				if (manual_class_pack_lowering) {
-					FuncDef *ctor = selected_placement_ctor();
-					if (!ctor)
-						return CIR_NODE(error_node(
-							"tsubst: unresolved placement-new ctor"));
-
-					std::vector<node_t> prefix_items;
-					auto copy_node_under = [&](node_t raw,
-								   const std::map<DataDef *, DataDef *> &smap,
-								   int pack_index,
-								   size_t pack_elem,
-								   const char *pack_name) -> node_t {
-						if (!raw)
-							return error_node(
-								"tsubst: missing placement-new pack expr");
-						int saved_index = m_tsubst_copy_pack_index;
-						size_t saved_elem = m_tsubst_copy_pack_elem;
-						const char *saved_name =
-							m_tsubst_copy_pack_value_name;
-						m_tsubst_copy_pack_index = pack_index;
-						m_tsubst_copy_pack_elem = pack_elem;
-						m_tsubst_copy_pack_value_name = pack_name;
-						cir_node *copied =
-							copy_cir_subtree(CIR_NODE(raw), &smap);
-						m_tsubst_copy_pack_index = saved_index;
-						m_tsubst_copy_pack_elem = saved_elem;
-						m_tsubst_copy_pack_value_name = saved_name;
-						return copied ? copied->as_node()
-							      : error_node(
-								      "tsubst: failed placement-new pack copy");
-					};
-					auto copy_expr_under = [&](TokenBase *expr,
-								   const std::map<DataDef *, DataDef *> &smap,
-								   int pack_index,
-								   size_t pack_elem,
-								   const char *pack_name) -> node_t {
-						std::vector<node_t> saved_pending =
-							m_pending_stmts;
-						std::set<std::string> saved_refs =
-							referenced_funcs;
-						m_pending_stmts.clear();
-						node_t raw = translate_expr(expr);
-						std::vector<node_t> pending =
-							m_pending_stmts;
-						m_pending_stmts = saved_pending;
-						referenced_funcs = saved_refs;
-						for (node_t p : pending)
-							prefix_items.push_back(copy_node_under(
-								p, smap, pack_index, pack_elem,
-								pack_name));
-						return copy_node_under(raw, smap, pack_index,
-								       pack_elem, pack_name);
-					};
-					auto void_addr_of = [&](node_t value,
-								TokenBase *origin) -> node_t {
-						return node2(N_CAST, void_ptr_type(),
-							     node1(N_ADDR, value, origin),
-							     origin);
-					};
-					auto temp_addr_from_value = [&](DataDefCLASS *target,
-									node_t value,
-									TokenBase *origin) -> node_t {
-						if (!target || !class_trivially_copyable(target))
-							return error_node(
-								"tsubst: non-trivial placement-new pack temp");
-						char name[40];
-						snprintf(name, sizeof(name), "__madc_objtmp_%d",
-							 m_strtmp_counter++);
-						Variable *tmp = new Variable(name, *target, 1,
-									     NULL, false);
-						tmp->flags |= vfLOCAL;
-						prefix_items.push_back(var_decl(tmp, origin));
-						node_t assign = node2(N_ASSIGN, id(name, origin),
-								      value, origin);
-						prefix_items.push_back(node2(N_EXPR, list(),
-									     assign, origin));
-						return object_addr(name, origin);
-					};
-					auto copied_pack_id_node = [&](const char *pack_name,
-								       int pack_index,
-								       size_t pack_elem,
-								       TokenBase *origin,
-								       DataDef *dd) -> node_t {
-						int saved_index = m_tsubst_copy_pack_index;
-						size_t saved_elem = m_tsubst_copy_pack_elem;
-						const char *saved_name =
-							m_tsubst_copy_pack_value_name;
-						m_tsubst_copy_pack_index = pack_index;
-						m_tsubst_copy_pack_elem = pack_elem;
-						m_tsubst_copy_pack_value_name = pack_name;
-						std::string nm = copied_pack_value_name(pack_name);
-						m_tsubst_copy_pack_index = saved_index;
-						m_tsubst_copy_pack_elem = saved_elem;
-						m_tsubst_copy_pack_value_name = saved_name;
-						node_t n = id(nm.c_str(), origin);
-						CIR_NODE(n)->datadef = dd;
-						return n;
-					};
-					std::function<node_t(
-						TokenBase *, DataDef *, bool,
-						const std::map<DataDef *, DataDef *> &,
-						int, size_t, const char *)> explicit_arg_node;
-					explicit_arg_node =
-						[&](TokenBase *arg, DataDef *pt, bool refp,
-						    const std::map<DataDef *, DataDef *> &smap,
-						    int pack_index, size_t pack_elem,
-						    const char *pack_name) -> node_t {
-						if (DataDefCLASS *pc = param_object_class(pt, refp)) {
-							DataDef *rt = ref_returning_call_type(arg);
-							DataDef *srt = rt
-								? subst_datadef(m_prog, rt, smap) : NULL;
-							if (rt && !ref_return_class_binds_direct(pc, srt)) {
-								FuncDef *conv =
-									single_arg_conversion_ctor(pc, srt);
-								if (conv && conv->parameters.size() >= 2) {
-									char name[40];
-									snprintf(name, sizeof(name),
-										 "__madc_objtmp_%d",
-										 m_strtmp_counter++);
-									Variable *tmp = new Variable(
-										name, *pc, 1, NULL, false);
-									tmp->flags |= vfLOCAL;
-									prefix_items.push_back(var_decl(tmp, arg));
-									std::vector<node_t> cnodes;
-									DataDef *cpt = conv->parameters[1];
-									bool crefp = conv->is_ref_param(1);
-									cnodes.push_back(explicit_arg_node(
-										arg, cpt, crefp, smap,
-										pack_index, pack_elem, pack_name));
-									node_t cc = ctor_call_assemble(
-										node1(N_ADDR, id(name, arg), arg),
-										pc, conv, cnodes, arg);
-									if (cc)
-										prefix_items.push_back(cc);
-									return object_addr(name, arg);
-								}
-							}
-							if (rt && pack_name)
-								return node2(N_CAST, void_ptr_type(),
-									copied_pack_id_node(pack_name,
-										pack_index, pack_elem,
-										arg, srt),
-									arg);
-							node_t value = copy_expr_under(arg, smap,
-										      pack_index,
-										      pack_elem,
-										      pack_name);
-							if (rt && value && value->code == N_CALL)
-								value = node1(N_DEREF, value, arg);
-							if (!rt && expr_is_nonaddressable_rvalue(arg))
-								return temp_addr_from_value(pc, value,
-												    arg);
-							return void_addr_of(value, arg);
-						}
-						if (as_class_instance(pt)) {
-							DataDef *rt = ref_returning_call_type(arg);
-							if (rt && pack_name) {
-								DataDef *srt =
-									subst_datadef(m_prog, rt, smap);
-								node_t slot = copied_pack_id_node(
-									pack_name, pack_index, pack_elem,
-									arg, srt);
-								node_t value = node1(N_DEREF,
-									slot, arg);
-								CIR_NODE(value)->datadef = srt;
-								return value;
-							}
-							return copy_expr_under(arg, smap, pack_index,
-									       pack_elem, pack_name);
-						}
-						if (refp) {
-							node_t value = copy_expr_under(arg, smap,
-										      pack_index,
-										      pack_elem,
-										      pack_name);
-							if (expr_is_nonaddressable_rvalue(arg)) {
-								char name[40];
-								snprintf(name, sizeof(name),
-									 "__madc_objtmp_%d",
-									 m_strtmp_counter++);
-								DataDef *rt = ref_param_referent(pt);
-								DataDef *vt = arg ? subst_datadef(
-									m_prog, arg->datadef(), smap) : NULL;
-								DataDef *tmp_type =
-									(rt && rt != vt) ? rt : vt;
-								if (!tmp_type)
-									tmp_type = &ddINT64;
-								Variable *tmp = new Variable(
-									name, *tmp_type, 1, NULL, false);
-								tmp->flags |= vfLOCAL;
-								prefix_items.push_back(var_decl(tmp, arg));
-								node_t assign = node2(N_ASSIGN,
-									id(name, arg), value, arg);
-								prefix_items.push_back(node2(N_EXPR,
-									list(), assign, arg));
-								return node1(N_ADDR, id(name, arg), arg);
-							}
-							return node1(N_ADDR, value, arg);
-						}
-						return copy_expr_under(arg, smap, pack_index,
-								       pack_elem, pack_name);
-					};
-
-					std::vector<node_t> explicit_nodes;
-					concrete_arg_pos = 0;
-					for (size_t ai = 0; ai < tn->ctor_args.size(); ++ai) {
-						TokenBase *arg = tn->ctor_args[ai];
-						if (TokenPackExpansion *pe =
-							    dynamic_cast<TokenPackExpansion *>(arg)) {
-							DataDefTemplateParam *tp = pe->pattern
-								? template_param_in_pack_pattern(pe->pattern)
-								: NULL;
-							if (!tp || !m_tsubst_active_type_arg_packs
-							    || tp->param_index
-							       >= m_tsubst_active_type_arg_packs->size()) {
-								explicit_nodes.push_back(error_node(
-									"tsubst: missing placement-new pack"));
-								continue;
-							}
-							std::map<unsigned, DataDef *>::iterator pmi =
-								m_tsubst_active_pack_params.find(
-									tp->param_index);
-							if (pmi == m_tsubst_active_pack_params.end()
-							    || !pmi->second) {
-								explicit_nodes.push_back(error_node(
-									"tsubst: missing placement-new pack param"));
-								continue;
-							}
-							const std::vector<DataDef *> &elems =
-								(*m_tsubst_active_type_arg_packs)
-									[tp->param_index];
-							std::string value_name =
-								pack_value_name_in_pattern(
-									pe->pattern, tp->param_index);
-							for (size_t e = 0; e < elems.size(); ++e) {
-								std::map<DataDef *, DataDef *> elem_subst =
-									*subst;
-								elem_subst[pmi->second] = elems[e];
-								size_t pi = concrete_arg_pos + 1;
-								++concrete_arg_pos;
-								DataDef *pt =
-									(ctor && pi < ctor->parameters.size())
-										? ctor->parameters[pi] : NULL;
-								bool refp = ctor && ctor->is_ref_param(pi);
-								explicit_nodes.push_back(explicit_arg_node(
-									pe->pattern, pt, refp, elem_subst,
-									(int)tp->param_index, e,
-									value_name.empty()
-										? NULL : value_name.c_str()));
-							}
-							continue;
-						}
-						size_t pi = concrete_arg_pos + 1;
-						++concrete_arg_pos;
-						DataDef *pt = (ctor && pi < ctor->parameters.size())
-								? ctor->parameters[pi] : NULL;
-						bool refp = ctor && ctor->is_ref_param(pi);
-						explicit_nodes.push_back(explicit_arg_node(
-							arg, pt, refp, *subst, -1, 0, NULL));
-					}
-					auto copy_placement_addr = [&]() -> node_t {
-						std::set<std::string> saved_refs =
-							referenced_funcs;
-						node_t raw = translate_expr(tn->placement);
-						referenced_funcs = saved_refs;
-						return copy_node_under(raw, *subst, -1, 0, NULL);
-					};
-					node_t construct = ctor_call_assemble(
-						copy_placement_addr(), concrete_class, ctor,
-						explicit_nodes, tn);
-					node_t items = list();
-					for (node_t p : prefix_items)
-						append(items, p);
-					if (construct)
-						append(items, construct);
-					append(items, node2(N_EXPR, list(),
-							    copy_placement_addr(), tn));
-					return CIR_NODE(node1(N_STMTEXPR,
-						node2(N_BLOCK, list(), items, tn), tn));
-				}
+				if (cir_node *done = tsubst_relower_deferred_construction(
+						tn->ctor_args, tn, concrete_class,
+						subst, placement_addr,
+						/*yield_this_addr=*/true,
+						/*relax_class_args=*/false))
+					return done;
 			}
 			TokenNEW lowered;
 			lowered.file = tn->file;
@@ -2167,6 +2199,37 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				return CIR_NODE(error_node(
 					"tsubst: failed to lower placement new"));
 			return copy_cir_subtree(CIR_NODE(lowered_tree), subst);
+		}
+		// A deferred local-declaration construction (`_Auto_node __an(*this,
+		// std::forward<_Args>(__args)...)`): the Tree-1 pattern could not
+		// select a ctor overload (pack arity is per-instantiation), so
+		// translate_block emitted this marker. Re-lower with the expanded
+		// concrete arguments; the declared variable's storage decl was
+		// copied separately, so only the constructor call is built here.
+		if (TokenDecl *tdcl = dynamic_cast<TokenDecl *>(
+				    madc_token_for_slot(src->origin_id))) {
+			if (tsubst_args_have_pack_expansion(tdcl->ctor_args)) {
+				DataDef *concrete =
+					subst_datadef(m_prog, src->datadef, *subst);
+				DataDefCLASS *concrete_class = concrete
+					? dynamic_cast<DataDefCLASS *>(concrete) : NULL;
+				if (!concrete_class
+				    || template_param_under_type_layers(concrete))
+					return CIR_NODE(error_node(
+						"tsubst: unbound deferred-construction type"));
+				auto var_addr = [&]() -> node_t {
+					return node1(N_ADDR,
+						id(tdcl->var.name.c_str(), tdcl), tdcl);
+				};
+				if (cir_node *done = tsubst_relower_deferred_construction(
+						tdcl->ctor_args, tdcl, concrete_class,
+						subst, var_addr,
+						/*yield_this_addr=*/false,
+						/*relax_class_args=*/true))
+					return done;
+				return CIR_NODE(error_node(
+					"tsubst: unsupported deferred local construction"));
+			}
 		}
 		TokenCallFunc *tc =
 			dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
@@ -13764,6 +13827,19 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					append(items, node2(N_EXPR, ll, integer(0)));
 				}
 				append(items, var_decl(&sdcl->var, sdcl));
+				// A construction whose arguments contain a pack expansion cannot
+				// select a ctor overload in the shared Tree-1 pattern (pack arity
+				// is per-instantiation; g++ defers the whole call). Emit a
+				// deferred-construction marker; the tsubst copy re-lowers it with
+				// the expanded concrete arguments (the placement-new deferral
+				// shape, copy_cir_subtree).
+				if (m_tsubst_pattern_mode
+				    && tsubst_args_have_pack_expansion(sdcl->ctor_args)) {
+					cir_node *marker = make(N_IGNORE, sdcl);
+					marker->datadef = cdcl;
+					append(items, marker->as_node());
+					continue;
+				}
 				// An `=`-style initializer (`string s = "x"`) is not in ctor_args;
 				// thread it as the single ctor argument so select_ctor_overload
 				// chooses const-char*/copy by its type. (An explicit `Foo f(a,b)`

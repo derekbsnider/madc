@@ -14,6 +14,7 @@
 #include <set>
 #include <map>
 #include <vector>
+#include <functional>
 
 // Forward declarations
 class Program;
@@ -1015,6 +1016,29 @@ public:
 	// byte-identical to the pre-Phase-3 behaviour.
 	cir_node *copy_cir_subtree(cir_node *src,
 				   const std::map<DataDef *, DataDef *> *subst = nullptr);
+
+	// Re-lower a pattern-mode deferred dependent construction (an N_IGNORE
+	// marker whose ctor arguments contain a pack expansion, so ctor overload
+	// selection is per-instantiation) into a concrete constructor call at
+	// tsubst-copy time: expand the pack into concrete argument types, select
+	// the ctor overload, build already-translated argument nodes per element
+	// (copy under the element substitution), assemble via ctor_call_assemble
+	// on `this_addr()`. Shared by the placement-new marker (`this_addr` = the
+	// placement expression; `yield_this_addr` wraps the block as a statement
+	// expression yielding the address) and the local-declaration marker
+	// (`this_addr` = &var; a plain statement block). `relax_class_args`
+	// (the decl path) admits non-pack class-object arguments (`*this` bound
+	// to a reference parameter) and forces the manual assembly even when no
+	// pack element demands it. Returns NULL when the caller's simple
+	// re-translate path should run instead (placement-new only).
+	cir_node *tsubst_relower_deferred_construction(
+		const std::vector<class TokenBase *> &ctor_args,
+		class TokenBase *origin,
+		DataDefCLASS *concrete_class,
+		const std::map<DataDef *, DataDef *> *subst,
+		const std::function<node_t()> &this_addr,
+		bool yield_this_addr,
+		bool relax_class_args);
 
 	// `tsubst` proper (two-tree Phase 3): copy an immutable Tree-1 subtree into a
 	// fresh per-instantiation Tree-2 subtree AND substitute its template-parameter
