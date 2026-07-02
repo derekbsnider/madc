@@ -69,6 +69,21 @@ flag-off-reachable)
   `build_dependent_pattern` returns? (The failure path erases funcdef_map
   entries; the success path moves the TokenFunc to fd->dependent_pattern —
   where do the fd-level ctor_initializers live?)
+  **Partial recon (2026-07-02):** the pattern FuncDef object survives via
+  `pattern->var.type` (only the funcdef_map ENTRY is erased on success,
+  parser.cpp:34311). BUT parseFunction accepts `: inits` only when
+  `parsing_defaulted_member_template_constructor` is set (parser.cpp:38057-38081
+  gate) — set ONLY by parse_deferred_lazy_body's full_definition branch — or
+  when the id resolves as `<owner>__<ctor>[__oN]`; the pattern's `__pat<N>`
+  rename defeats the ctor-tail resolution. So a ctor pattern parse today most
+  likely does NOT take the mem-init path — PROBE how pair's piecewise ctor
+  (an empty-body HIT) actually parses its `: pair(...)` span in the pattern
+  (does the `:` throw and the pattern still build because...? or is the
+  mem-init span stripped before def_tokens?) before designing slice 1.
+  First slice-1 step may simply be: set
+  `parsing_defaulted_member_template_constructor` (or a pattern-mode
+  equivalent) across the pattern parseFunction so the pattern fd's
+  ctor_initializers populate.
 - Prologue ordering: member inits interleave with base ctors and vptr stores
   in DECLARATION order ([class.base.init]) — the pattern-side nodes must
   reproduce that order or delegate ordering to func_def (prefer: pattern
