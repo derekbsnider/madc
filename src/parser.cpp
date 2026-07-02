@@ -36966,6 +36966,22 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 			    std::string return_typedef_alias,
 			    bool static_class_method)
 {
+    // Compound balance on THROW: a parse error escaping mid-function leaves the
+    // param-scope / body compounds pushed. Callers that swallow the exception
+    // and continue (build_dependent_pattern's pattern parse, deferred-body error
+    // recovery) then run with a stale compounds.top()->method, so every LATER
+    // function parse in the TU is classified nested (hoisted <encl>__<name>__<uid>
+    // symbol) and its plain-symbol call sites become undefined imports. Unwind
+    // back to entry depth via popCompound() (keeps _braces in lockstep).
+    struct CompoundBalanceGuard {
+	Program &p; size_t entry;
+	~CompoundBalanceGuard() {
+	    if ( std::uncaught_exception() )
+		while ( p.compounds.size() > entry )
+		    p.popCompound();
+	}
+    } _cpnd_balance{ *this, compounds.size() };
+
     variable_map_iter vmi;
     funcdef_map_iter fmi;
     datadef_vec_iter dvi;

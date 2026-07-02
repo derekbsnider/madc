@@ -28,7 +28,7 @@ BASELINE_FILE="docs/parity/tsubst-flagon-baseline.txt"
 
 # tsubst-heavy representative tests (containers exercise the hot bodies:
 # _Rb_tree::_M_construct_node, vector::_M_realloc_insert, _M_insert_*, etc.)
-TESTS="testset testmap testvector testsubscript testcontainerdtor testmadc_ns testlocalclassraii testfunctortmploperator testmembertmplptrret"
+TESTS="testset testmap testvector testsubscript testcontainerdtor testmadc_ns testlocalclassraii testfunctortmploperator testmembertmplptrret testfstream teststdstringconv testifconstexpr testinvocable"
 
 # Load baseline: lines "name hit fallback"
 declare -A base_hit base_fb

@@ -40,3 +40,11 @@ testmembertmplptrret 1 0
 # dependent-call swallow): set 10/0, containerdtor 34/0, madc_ns 34/0 —
 # EVERY gate test is now fully parse-once flag-on; suite-wide burndown is
 # 268 hit / 0 fallback (re-parse unreachable across the suite).
+# Then the flip-track compound-balance fix (parseFunction unwinds its pushed
+# compounds on THROW): the 4 flag-on-only failures are green, pinned here so
+# the leaked-compound nested-misclassification class (undefined imports of
+# plain member symbols) stays caught by the run_rc check.
+testfstream 1 0
+teststdstringconv 1 0
+testifconstexpr 0 0
+testinvocable 0 0
