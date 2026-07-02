@@ -218,3 +218,52 @@ flag-off-reachable)
   one ordering implementation).
 - Delegating ctors (`find_delegating_initializer`) — same treatment, arg
   nodes from pattern.
+
+## Slice-1 state (2026-07-02) — parser half LANDED @ad46a4a3; CIR half design
+
+**Parser half DONE:** ctor patterns capture their `: mem-init` span raw
+(consume-once `dependent_pattern_ctor_inits` flag, ctor-ness = fd ∈
+owner->ctors, invocation-local span buffer) and REPLAY it inside the body
+compound (parse_deferred_function_body model) — SELF-FORGIVING (throw →
+drain to pre-replay stream boundary + drop partial inits + isolate poison;
+absent ctor_initializers = shell path). Pattern fds now carry dependent
+ctor_initializers, verified via the env-gated MADC_XTEST_PAT_MEMINIT_DEBUG
+print (kept in-tree at build_dependent_pattern's tail): pair piecewise
+delegating=1, pair indexed=2, _Auto_node=2, basic_string sv-ctors=1;
+allocators correctly 0. Gates: fulltest 674/0/0/16, burndown FLAT 268/0,
+sweep = known 4-noise set.
+
+**CIR half — grounded consumption map (all in func_def's ctor prologue):**
+- delegating: `find_delegating_initializer` (cir_builder.cpp ~15398) →
+  `class_ctor_call_addr(id("__this"), ocls, ci->args, tf)` — the delegation
+  IS the whole prologue ([class.base.init]p6, nothing else runs).
+- base: `find_base_initializer` (~15429) → class_ctor_call_addr at the
+  base subobject address.
+- member: `class_ctor_initializer_stmts(ocls, fd, prologue, tf)` (~15453).
+- `explicit_member_inits` name-set (~15413) gates default-member-inits +
+  member-construct suppression.
+
+**Design decided:** at pattern build (tsubst_method_body's memoize block,
+~14796), ALSO lower the recipe fd's ctor_initializers in pattern mode →
+memoized per-source pattern mem-init structure; at hit, copy+subst each ci
+arg with the same binding; func_def's prologue takes the WHOLE-CTOR switch
+(all-or-nothing: every ci covered by the pattern or none) and keeps
+ordering/default-init logic, consuming substituted arg NODES.
+
+**The hard sub-problem:** `class_ctor_call_addr` does per-instantiation ctor
+OVERLOAD SELECTION from TOKEN args — substituted NODES can't feed it.
+Candidates: (a) relower from origin tokens + substituted types (the
+`tsubst_relower_deferred_construction` analog — the machinery the Kind-4
+deferred-construction slice extracted); (b) pattern-build-time selection
+with a rewritable callee id (the deferred member-call model). Prefer (a):
+it already handles pack-expansion args.
+
+**Suite-live targets + their ci shapes:** pair piecewise = DELEGATING ci
+(`: pair(__first, __second, _Index_tuple<...>(), _Index_tuple<...>())`);
+pair indexed = member inits with NON-TYPE-pack expansions
+(`first(std::get<_Indexes1>(__first)...)`); _Auto_node = plain member init
+args (`_M_t(__t), _M_node(__t._M_get_node())`). The basic_string sv-ctor
+delegating variants are NOT suite-live (never ODR-used). Start with
+_Auto_node (plain args) → pair piecewise (delegating, single construction
+call = the relower shape) → pair indexed (pack expansion in member-init
+args, the hardest).
