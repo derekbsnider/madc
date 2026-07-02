@@ -1,5 +1,37 @@
 # tsubst post-2B + Kind-4 — HANDOFF for fresh context (2026-07-01, evening)
 
+> ## 🏁 UPDATE 5 (2026-07-02, @ `297fa08e`) — **100% BURNDOWN: 268 hit / 0 fallback**
+>
+> `scripts/tsubst_burndown.sh`: "re-parse is unreachable across the suite;
+> delete-the-path gate is MET". The whole `_Rb_tree` trio is verified runtime hits;
+> every flag-on gate test is fully parse-once (set 10/0, map 11/0, vector 15/0,
+> subscript 35/0, containerdtor 34/0, madc_ns 34/0, localclassraii 1/0, + the two
+> scalar-ref-param reducers 1/0). Session arc: 66% → 91% → 95% → 96% → 97% → **100%**.
+>
+> The 100% slice (see the `297fa08e` commit message for full mechanics): dependent
+> functor-call parse (dependent operator() member call + arity-unknown bypass), CIR
+> unknown-receiver member-call deferral (rewritable callee id), dependent-call-swallow
+> POISON (`dependent_parse_poisoned`), concrete-template-id carve-out (subsumes the
+> cast-only one), and the owner-first member-typedef lookup reorder ([class.mfct] —
+> flag-off-reachable, validated by fulltest + a REAL torture run, failset
+> byte-identical). A class_scope_stack swap+push was tried and REVERTED (local-class
+> enclosure collision — testlocalclassraii regression caught by the gate).
+>
+> ### What burndown=0 does NOT mean — the remaining track to the default flip
+> (`.claude/rules/parse-once.md`: 0 fallback → flip the default → delete the re-parse
+> path). Blockers for the FLIP, tracked separately:
+> 1. **4 pre-existing flag-on-only failures** (tmp/flagon_diff_sweep.sh finds them):
+>    testifconstexpr + testinvocable SIGSEGV rc=139, testfstream + teststdstringconv
+>    rc=1.
+> 2. The 68 cosmetic flag-on warning diffs (incl. the local-class ctor `this`-capture
+>    warning pair — see UPDATE-3's latent re-parse `static`-drop note for why some are
+>    re-parse bugs the tsubst path FIXES).
+> 3. Phase-5 ctor mem-init tsubst (mem-inits ride the shell today) — needed before the
+>    re-parse path can be DELETED (the shell parse still uses it).
+> 4. The unit-test fallback specimen (test_cir.cpp engagement counters) uses
+>    `typename T::type` (Kind-3 `dependent name P:: in body`) — the last reject class
+>    with zero suite occurrences; it dies when Kind-3 lands for the flip.
+
 > ## ✅ UPDATE 2026-07-02 — §2 lever 1 LANDED @ `44febff9` (empty-body multi-pack slice)
 >
 > **Burndown 243/23 (91%) → 255/11 (95%).** The pair piecewise/indexed ctor family
