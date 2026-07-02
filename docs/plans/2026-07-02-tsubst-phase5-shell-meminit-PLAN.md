@@ -376,6 +376,41 @@ point (token-free DataDef-driven if one exists; else the parser's cloned
 arg-token replay into instantiate_template_use, which is structural — see
 verdict note below).
 
+**✅ Road (i) STEP 2 LANDED @198f4859 — THE PAIR DELEGATING WALL IS DOWN.**
+`subst_datadef` structural case live: a shell with a DependentShellOrigin
+record rebuilds concrete at tsubst time. Pieces: (1) run substitution —
+pack name -> per-element runs, `sizeof...(P)` -> arity literal (the
+parser's own `expand_integer_pack_template_args` then folds
+`__integer_pack(N)...` — no CIR-side expansion needed), scalar name ->
+concrete; `sizeof` is a TokenKeyword (match via TokenIdent inheritance,
+NOT ttIdentifier). (2) `Program::instantiate_shell_origin_replay` — the
+partial-spec replay shape (`<` runs `>` pushToken + instantiate_template_use
+under allow_variadic_real_inst), stream drained to pre-replay depth on
+failure. (3) **key-identity lesson:** elements replay DECOMPOSED
+(`const` + core type token + `&`/`*` — tsubst_decompose_elem_tokens) so
+the arg spelling goes through the parser's own qualifier/fold path; a
+composite TokenDataType spelled the CONST wrapper's empty canonical and
+FORKED the instantiation key (tuple_const_basic_string… vs
+tuple_const_std____cxx11__… — one logical type, two structs). (4)
+`subst_datadef_active` member seam threads the live pack window through
+every CirBuilder substitution (empty window elsewhere — inert). (5)
+relower acceptance is `sdd != add` (a concrete-arg rebuild like
+`_Index_tuple<0>` still carries the opaque-path placeholder flag + an
+origin record — the flag is NOT a dependence test). (6) relower by-value
+class args: a zero-arg value-init TokenObjTemp of a rebuildable shell
+declares its temp AS the substituted class (the shell-typed temp was the
+last c2mir mismatch — "incompatible argument type for struct/union type
+parameter" at the delegation call). Result: __o19's delegation relowers
+end-to-end, select_ctor_overload finds __o20, emitted body == g++ ground
+truth, testsubscript 35 hit / 0 fallback, reducer val=42. Gates: fulltest
+exit 0 ratchet GREEN; burndown FLAT 268/0; sweep = known 4-noise set.
+Failure paths never delete built replay tokens (cloned keywords are
+shared prototypes — TokenKeyword::clone returns this). REMAINING in
+slice 1: the pair INDEXED shape — __o20's own member cis
+(`first(std::get<_Indexes1>(...)...)`) need NON-TYPE pack expansion at
+hit (m_tsubst_active_type_arg_packs is type-only); today __o20's
+mem-inits still ride the shell capture+replay carrier (output correct).
+
 **Road (i) recon (2026-07-02, probe [DELEG-ORIGIN] in-tree):** all 4
 delegation ci-arg datadefs confirmed `is_dependent_placeholder=1,
 has_dependent_surface=0` with clean canonical spellings
