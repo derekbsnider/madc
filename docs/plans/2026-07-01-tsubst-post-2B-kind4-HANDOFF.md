@@ -1,5 +1,38 @@
 # tsubst post-2B + Kind-4 — HANDOFF for fresh context (2026-07-01, evening)
 
+> ## 🚩 UPDATE 6 (2026-07-02, @ `a2262c35`) — **THE DEFAULT FLIP IS DONE: parse-once tsubst is the production path**
+>
+> All flip blockers cleared in three commits, each fully gated (fulltest 674/0/0/16
+> exit 0, burndown FLAT 268/0, ratchet GREEN, REAL torture byte-identical ×2):
+> - **`b94ae108` — compound balance on THROW** (flip blocker 1, the 4 flag-on-only
+>   failures): a throwing dependent-pattern parseFunction leaked its pushed
+>   compounds (build_dependent_pattern's catch swallows); every later lazy body
+>   parsed as NESTED (`<encl>__<name>__<uid>`) orphaning plain-symbol call sites
+>   (`_M_construct__o3` undefined import in testfstream/teststdstringconv; the two
+>   SIGSEGVs testifconstexpr/testinvocable were already fixed by the 100% slice).
+>   Fix: CompoundBalanceGuard RAII at parseFunction entry (unwind via popCompound
+>   during exception unwinding only). The 4 tests joined the flag-on ratchet.
+> - **`8b296e7e` — local-class TAG REBIND** (flip blocker 2, the warning diffs):
+>   a pattern-local class with CONCRETE members (_M_construct's _Guard) escapes
+>   the dependent-member marker, so type_list baked the PATTERN's tag string into
+>   Tree-1; the 14864 remap bound the class but the tag N_ID string was copied
+>   verbatim → c2mir pointer-warning pair on ~62 tests. Fix: stamp tag-ref
+>   datadef in pattern mode (type_list + class_tag_ref) + rename the copied tag
+>   N_ID when the binding remaps it. Sweep 68 → 4, and ALL 4 survivors are proven
+>   run-to-run nondeterminism (ASLR backtraces ×3 + teststructinit indeterminate
+>   print) — ZERO real flag-on/off diffs remain.
+> - **`a2262c35` — THE FLIP**: `madc_tsubst_dep_parse_enabled()` (datadef.h /
+>   madc_globals.cpp) — default ON, `MADC_XTEST_DEP_PARSE=0` = soak escape hatch
+>   (dies with the re-parse machinery). parse-once.md rule+docs updated in-commit.
+>
+> **Remaining to the parse-once end-state (the deletion):** Phase-5 — the
+> concrete SHELL (signature + ctor mem-inits) still parses via the re-parse
+> machinery under hybrid B; mem-inits must come from a Tree-1 pattern before the
+> body/decl re-parse machinery can be DELETED. Then delete (`-Wunused-function`
+> confirms the cut) and the unit-test fallback-counter specimen dies with it.
+> Plan anchor: `2026-06-23-two-tree-cir-materialize-from-ast-PLAN.md` §11.3(B)
+> "shell parse can later be made copy-based too (a follow-on)" + Phase 5 (§ list).
+
 > ## 🏁 UPDATE 5 (2026-07-02, @ `297fa08e`) — **100% BURNDOWN: 268 hit / 0 fallback**
 >
 > `scripts/tsubst_burndown.sh`: "re-parse is unreachable across the suite;
