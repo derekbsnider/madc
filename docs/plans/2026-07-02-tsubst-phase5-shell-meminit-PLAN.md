@@ -112,6 +112,24 @@ flag-off-reachable)
     parse_ctor_initializer_list at 24222) — [class.base.init] complete-class
     context, and the args then parse in the same compound context as the
     body, where the dependent deferral machinery is known to work.
+  - **Crash ROOT CAUSE (traced 2026-07-02) — two prerequisite fixes, both
+    deepest-layer, needed regardless of eager-vs-replay:** the "recursion" is
+    not a compound cycle (only pushCompound assigns TokenCpnd::parent, always
+    fresh) — it is UNBOUNDED RE-ENTRY: a delegating mem-init `: pair(...)`
+    parses as a construction → `instantiate_member_ctor_template_for_construction`
+    → its 34581 `build_dependent_pattern(fd)` for the SAME fd whose pattern is
+    mid-build (fd->dependent_pattern still NULL) → parseFunction again →
+    same mem-init → ∞. Each cycle pushes compounds, so any findVariable walks
+    a thousands-deep parent chain until stack exhaustion (the SIGSEGV site is
+    a bystander).
+    1. The ctor-construction path lacks the CALL path's dependent deferral:
+       mirror parser.cpp:34327 (`dependent_parse_in_progress &&
+       args-involve-placeholder` → return, stay dependent, re-resolve at
+       copy) in `instantiate_member_ctor_template_for_construction`.
+    2. `build_dependent_pattern` needs an fd-keyed in-progress guard
+       (re-entrant request returns NULL; the `member_fn_inst_in_progress` /
+       mfi_key cycle-break at 34381 is the precedent) — latent today for any
+       dependent body that constructs its own class.
 - Prologue ordering: member inits interleave with base ctors and vptr stores
   in DECLARATION order ([class.base.init]) — the pattern-side nodes must
   reproduce that order or delegate ordering to func_def (prefer: pattern
