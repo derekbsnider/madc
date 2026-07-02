@@ -34283,6 +34283,20 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(compounds, saved_compounds);
 
+    // Phase-5 slice 1: a CONSTRUCTOR pattern must parse its `: mem-init` span
+    // into ctor_initializers instead of the skip loop discarding it (the
+    // `__patN` rename defeats parseFunction's owner-prefix ctor gate).
+    // Ctor-ness comes from the class's ctor registry, not name surgery.
+    bool fd_is_ctor = false;
+    for ( Variable *cv : owner->ctors )
+	if ( cv && cv->type == fd )
+	{
+	    fd_is_ctor = true;
+	    break;
+	}
+    bool saved_pat_ctor_inits = dependent_pattern_ctor_inits;
+    dependent_pattern_ctor_inits = fd_is_ctor;
+
     size_t saved_diag_count = diagnostics.size();
     ErrorInfo saved_error = last_error;
     std::streambuf *saved_cerr = std::cerr.rdbuf();
@@ -34295,6 +34309,7 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 	parsed_pattern = true;
     }
     catch ( ... ) { parsed_pattern = false; }
+    dependent_pattern_ctor_inits = saved_pat_ctor_inits;
     std::swap(compounds, saved_compounds);
     // A poisoned parse (an unresolved dependent call SWALLOWED into a `0`
     // placeholder) produced a structurally-valid but semantically-wrong tree —
@@ -34334,6 +34349,13 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 	pending_funcs.resize(before);	// a recipe, not a pending function
     }
     funcdef_map.erase(parse_id);	// undo parseFunction's registration
+    if ( getenv("MADC_XTEST_PAT_MEMINIT_DEBUG") && fd_is_ctor )
+    {
+	FuncDef *pfd = pattern ? dynamic_cast<FuncDef *>(pattern->var.type) : NULL;
+	fprintf(stderr, "[PAT-MEMINIT] owner=%s id=%s pattern=%d ctor_inits=%zu\n",
+		owner->name.c_str(), parse_id.c_str(), pattern ? 1 : 0,
+		pfd ? pfd->ctor_initializers.size() : (size_t)0);
+    }
     fd->dependent_pattern = pattern;
     return pattern;
 }
@@ -37015,6 +37037,17 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	}
     } _cpnd_balance{ *this, compounds.size() };
 
+    // Phase-5 slice 1: consume the ctor-pattern mem-init flag ONCE, at entry —
+    // it applies to THIS parseFunction invocation only (the ctor pattern
+    // build_dependent_pattern flagged); any parse nested under it (default-arg
+    // or body-triggered instantiations) must not inherit it.
+    bool pattern_ctor_capture = dependent_pattern_ctor_inits;
+    dependent_pattern_ctor_inits = false;
+    // The captured raw `: mem-init` span for the pattern-ctor path, replayed
+    // inside the body compound below. Invocation-LOCAL: the shared
+    // pending_deferred_ctor_inits buffer leaks across nested parses.
+    std::vector<TokenBase *> pattern_ctor_init_toks;
+
     variable_map_iter vmi;
     funcdef_map_iter fmi;
     datadef_vec_iter dvi;
@@ -38092,7 +38125,13 @@ paramdecl:
 
     if ( nt->id() == TokenID::tkColon )
     {
-	bool parse_ctor_initializers = parsing_defaulted_member_template_constructor;
+	// Pattern-ctor capture is a NO-SINK path: under an active class-body
+	// sink the whole parse is enqueued (below) and pending_deferred_ctor_inits
+	// must flow to the sink's DeferredFunctionBody, not our local replay.
+	bool pattern_ctor_meminit = pattern_ctor_capture
+	    && deferred_function_body_sink == NULL;
+	bool parse_ctor_initializers = parsing_defaulted_member_template_constructor
+	    || pattern_ctor_meminit;
 	if ( !parse_ctor_initializers && owner_class )
 	{
 	    std::string prefix = owner_class->name + "__";
@@ -38122,8 +38161,13 @@ paramdecl:
 	// `: _M_impl(..., std::move(__x._M_impl))` names a member declared
 	// after the constructor. Out-of-class definitions (no sink) still
 	// parse eagerly: their class is already complete.
+	// The pattern-ctor path also CAPTURES raw (parsing the dependent args
+	// eagerly here, before the body compound exists, re-enters
+	// instantiation machinery mid-pattern-parse) — but replays locally
+	// inside the body compound below instead of enqueueing to a sink.
 	bool defer_ctor_initializers =
-	    parse_ctor_initializers && deferred_function_body_sink != NULL;
+	    parse_ctor_initializers && (deferred_function_body_sink != NULL
+					|| pattern_ctor_meminit);
 	pending_deferred_ctor_inits.clear();
 	if ( !parse_ctor_initializers || defer_ctor_initializers )
 	{
@@ -38191,6 +38235,8 @@ paramdecl:
 		if ( defer_ctor_initializers )
 		    pending_deferred_ctor_inits.push_back(nt);
 	    }
+	    if ( pattern_ctor_meminit )
+		pattern_ctor_init_toks.swap(pending_deferred_ctor_inits);
 	}
 	else
 	    nt = parse_ctor_initializer_list(func);
@@ -38306,6 +38352,42 @@ paramdecl:
     // are in scope (the compound's method is set), so `-> decltype(__a - __b)`
     // can name them (same helper the body-less paths use, above).
     resolve_trailing_return();
+
+    // Pattern-ctor mem-inits: REPLAY the captured span now, inside the body
+    // compound (code->method set — args resolve params, and the dependent
+    // deferral machinery is active), the parse_deferred_function_body
+    // ctor_init_tokens model (synthetic `{` terminator; the list parser
+    // consumes it and returns). The pattern fd ends up with dependent
+    // ctor_initializers — the Tree-1 source for Phase-5 mem-init tsubst.
+    // SELF-FORGIVING: mem-init semantics still ride the concrete shell under
+    // hybrid B, so a replay failure must not kill a pattern whose BODY parses
+    // (that would turn today's hits into fallbacks) — swallow the throw,
+    // drain our replay tokens back to the pre-replay boundary, drop the
+    // partial ctor_initializers, and isolate the poison flag (a poisoned
+    // mem-init arg must not discard a clean body tree).
+    if ( !pattern_ctor_init_toks.empty() )
+    {
+	size_t replay_base = tokens.size();
+	size_t ci_base = func->ctor_initializers.size();
+	bool replay_saved_poisoned = dependent_parse_poisoned;
+	dependent_parse_poisoned = false;
+	pushToken(new TokenOpBrc());
+	for ( std::vector<TokenBase *>::reverse_iterator it =
+		  pattern_ctor_init_toks.rbegin();
+	      it != pattern_ctor_init_toks.rend(); ++it )
+	    pushToken(*it);
+	bool replay_ok = true;
+	try
+	{
+	    parse_ctor_initializer_list(func);
+	}
+	catch ( ... ) { replay_ok = false; }
+	while ( tokens.size() > replay_base )
+	    nextToken();
+	if ( !replay_ok || dependent_parse_poisoned )
+	    func->ctor_initializers.resize(ci_base);
+	dependent_parse_poisoned = replay_saved_poisoned;
+    }
 
     TokenFunc *tf = new TokenFunc(*var);
     // Capture the function declaration's source position before

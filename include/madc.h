@@ -2024,6 +2024,15 @@ public:
     // build_dependent_pattern must discard it (clean re-parse fallback) rather
     // than let tsubst bake the placeholder literal into every instantiation.
     bool dependent_parse_poisoned = false;
+    // Phase-5 slice 1: set by build_dependent_pattern across the pattern
+    // parseFunction of a CONSTRUCTOR member template (ctor-ness derived from
+    // fd ∈ owner->ctors — no name surgery). parseFunction consumes it ONCE at
+    // entry (nested parses never see it) and, when set, captures the ctor's
+    // `: mem-init` span raw and REPLAYS it inside the body compound (the
+    // parse_deferred_function_body ctor_init_tokens model), so the pattern fd
+    // gets dependent ctor_initializers instead of the skip loop discarding
+    // the span (the `__patN` rename defeats the owner-prefix ctor gate).
+    bool dependent_pattern_ctor_inits = false;
     // Two-tree Phase 2: capability predicate — true only for the conservative
     // first-slice shape the dependent-parse / tsubst path handles (one TYPE param,
     // no pack, NON-DEPENDENT return, body uses `T` only in scalar positions). False
