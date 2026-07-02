@@ -17,16 +17,21 @@
 # packs) are hits — shell-side template-ids no longer disqualify (hybrid B),
 # and an empty body admits multi-pack / non-type-pack params. testmap and
 # testsubscript are now FULLY parse-once flag-on (0 fallback).
-testset 7 3
+testset 8 2
 testmap 11 0
 testvector 15 0
 testsubscript 35 0
-testcontainerdtor 30 3
-testmadc_ns 30 3
+testcontainerdtor 31 2
+testmadc_ns 31 2
 testlocalclassraii 1 0
 # Then the scalar-ref-param slice: the blanket reference-param guard deleted
 # (untyped N_DEREF types from the concrete shell decl) + is_size1_pointer no
 # longer bakes the GNU void* (char*) rewrite for a DEPENDENT pointee into a
 # shared pattern. Gate list gains the two scalar-ref-param reducers.
+# Then set/containerdtor/madc_ns bumped +1/-1 by the forward-carve-out slice:
+# _Rb_tree::_Alloc_node::operator()<_Arg> is a hit (explicit-template-arg CALL
+# eligibility carve-out + identity-refcast "forward" builtin kind unwrapped by
+# the deferred-arg binding marker). The dependent FUNCTOR-CALL hazard
+# (_M_insert_'s `__node_gen(...)`) is now its own named eligibility reject.
 testfunctortmploperator 1 0
 testmembertmplptrret 1 0

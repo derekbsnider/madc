@@ -3704,9 +3704,26 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	// local-decl deferral marker in translate_block.
 	if (m_tsubst_pattern_mode && arg
 	    && template_param_under_type_layers(arg->datadef())) {
-		if (arg->type() == TokenType::ttVariable
-		    && arg->datadef() && arg->datadef()->is_reference()) {
-			cir_node *marker = make(N_IGNORE, arg);
+		TokenBase *bind_src = arg;
+		// An identity reference-cast call (`std::forward<_Arg>(__arg)`,
+		// `std::move(x)` — inline_builtin_kind "forward", detected by BODY
+		// SHAPE at header retention) yields its own argument's object, so
+		// the bind-vs-convert deferral applies to the INNER variable; the
+		// wrapper contributes nothing (cast-to-reference is a no-op on the
+		// operand object, and the copy re-lowering re-verifies layout with
+		// the substituted type before binding).
+		if (TokenCallFunc *fw = dynamic_cast<TokenCallFunc *>(bind_src)) {
+			FuncDef *ffd = call_target_funcdef(fw);
+			if (!ffd)
+				ffd = call_target_funcdef_raw(fw);
+			if (ffd && ffd->inline_builtin_kind == "forward"
+			    && fw->parameters.size() == 1 && fw->parameters[0])
+				bind_src = fw->parameters[0];
+		}
+		if (bind_src->type() == TokenType::ttVariable
+		    && bind_src->datadef() && bind_src->datadef()->is_reference()
+		    && template_param_under_type_layers(bind_src->datadef())) {
+			cir_node *marker = make(N_IGNORE, bind_src);
 			marker->datadef = target;
 			return marker->as_node();
 		}

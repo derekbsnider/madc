@@ -75,6 +75,36 @@
 > carve-out, (2) `_M_insert_` dependent functor-call parser fix (⚠ the assignment-
 > garbage hazard), (3) `_M_insert_unique` return-construction deferral.
 
+> ## ✅ UPDATE 4 (2026-07-02) — wall-map item 1 LANDED: forward carve-out — **260/6 (97%)**
+>
+> `_Rb_tree::_Alloc_node::operator()<_Arg>` ×3 are HITS. Remaining 6 = `_M_insert_` ×3
+> (`dependent functor call in body` — its true blocker, now named) + `_M_insert_unique`
+> ×3 (`template-id '<' in body`). BOTH need wall-map item 2 (the dependent functor-call
+> parse) as the keystone. Three pieces landed:
+> - **Eligibility carve-out** (`tsubst_lt_opens_call_template_id`, parser.cpp): an
+>   explicit-template-argument CALL (`forward<_Arg>(x)` — identifier callee, `<` span of
+>   plain identifier args, followed by the call's `(`) no longer disqualifies a body —
+>   the Kind-1 copy machinery re-resolves it per instantiation.
+> - **The landmine got a fence**: the first probe admitted `_M_insert_` too (same forward
+>   shape inside it) → testset FAILED flag-on (rc=1) — the functor call on a placeholder-
+>   typed param mis-parses NON-self-detectingly, exactly as the wall map warned. New
+>   eligibility clause: a body CALL through a value parameter whose declared type
+>   involves a template param (`dep_value_params` from the shell param list; `.`/`->`/
+>   `::`-qualified uses exempt) rejects as `dependent functor call in body` until item 2
+>   lands. NEVER admit `_M_insert_` before that parser fix.
+> - **Identity-refcast builtin kind "forward"** (shape-detected at header retention,
+>   Rule-#7-clean: single param + body `{ return static_cast<...&/&&>(param); }` last-
+>   statement — std::forward/std::move; g++ analogue: -ffold-simple-inlines "magic"
+>   fns). Consumer: `object_arg_addr`'s pattern-mode deferred-arg marker unwraps the
+>   identity call and defers on the INNER variable (safe even for non-identity
+>   substitutions — the copy re-lowering's offset-0 layout guard self-detects).
+> - Gates: fulltest 674/0/0/16 exit 0 (unit 21/21); gate PROGRESS set 8/2,
+>   containerdtor 31/2, madc_ns 31/2 (baseline bumped in-commit); burndown 260/6;
+>   sweep 68 diffs, set identical to the scalar-ref-param baseline; torture
+>   byte-identical by construction (eligibility behind env-gated
+>   build_dependent_pattern; marker behind pattern mode; "forward" kind has no
+>   flag-off consumer and no C-code reachability).
+
 > ## 🗺 UPDATE 2 (2026-07-02, @ `9873d7dd`) — THE ROAD TO 100%: complete wall map of the last 11
 >
 > All 11 remaining fallbacks are IDENTIFIED (per-test scanner: `tmp/tsubst_fallback_scan.sh`).

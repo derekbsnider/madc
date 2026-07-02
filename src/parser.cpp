@@ -30852,6 +30852,85 @@ static bool skipped_template_body_is_inline_destroy(
     return false;
 }
 
+// Identity reference-cast body (`{ return static_cast<_Tp&&>(__t); }` —
+// std::forward / std::move): the call yields its own sole argument's OBJECT
+// ([forward]/[move]: a cast to reference type is a no-op on the operand
+// object). Detected by SHAPE, not name (Rule #7): exactly one parameter; the
+// body's LAST statement returns `static_cast< ...&/&& >( param )`. Consumers
+// that bind by address re-verify layout at use (the tsubst copy re-lowering's
+// offset-0 guard), so a non-identity substitution self-detects instead of
+// mis-binding.
+static bool skipped_template_body_is_inline_identity_refcast(
+	const std::vector<TokenBase *> &tokens, const std::string &name)
+{
+    // Declarator: the function-name token immediately before '('.
+    size_t lparen = tokens.size();
+    for ( size_t i = 0; i < tokens.size(); ++i )
+	if ( tokens[i] && is_skipped_template_function_name(tokens[i])
+	  && skipped_template_function_name(tokens[i]) == name
+	  && i + 1 < tokens.size() && tokens[i + 1]
+	  && tokens[i + 1]->id() == TokenID::tkOpBrk )
+	{ lparen = i + 1; break; }
+    if ( lparen >= tokens.size() )
+	return false;
+    // Exactly one parameter (no top-level comma); its NAME = last identifier.
+    std::string pname;
+    int depth = 0;
+    size_t rparen = tokens.size();
+    for ( size_t i = lparen; i < tokens.size(); ++i )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t )
+	    continue;
+	if ( t->id() == TokenID::tkOpBrk ) { ++depth; continue; }
+	if ( t->id() == TokenID::tkClBrk && --depth == 0 ) { rparen = i; break; }
+	if ( t->id() == TokenID::tkComma && depth == 1 )
+	    return false;
+	std::string nm = contextual_identifier_name(t);
+	if ( !nm.empty() )
+	    pname = nm;
+    }
+    if ( rparen >= tokens.size() || pname.empty() )
+	return false;
+    // Body: `return static_cast < ... &/&& > ( pname ) ;` as the LAST statement.
+    for ( size_t i = rparen; i + 1 < tokens.size(); ++i )
+    {
+	if ( !tokens[i] || tokens[i]->id() != TokenID::tkRETURN )
+	    continue;
+	size_t j = i + 1;
+	if ( j >= tokens.size() || !tokens[j]
+	  || contextual_identifier_name(tokens[j]) != "static_cast" )
+	    return false;
+	if ( ++j >= tokens.size() || !tokens[j]
+	  || tokens[j]->id() != TokenID::tkLT )
+	    return false;
+	size_t close = template_id_suffix_end(tokens, j);
+	if ( close == j || close + 4 >= tokens.size() )
+	    return false;
+	if ( !tokens[close] || tokens[close]->id() != TokenID::tkGT )
+	    return false;
+	TokenBase *reftok = tokens[close - 1];
+	if ( !reftok || (reftok->id() != TokenID::tkBand
+			 && reftok->id() != TokenID::tkLand) )
+	    return false;
+	if ( !tokens[close + 1] || tokens[close + 1]->id() != TokenID::tkOpBrk
+	  || !tokens[close + 2]
+	  || contextual_identifier_name(tokens[close + 2]) != pname
+	  || !tokens[close + 3] || tokens[close + 3]->id() != TokenID::tkClBrk
+	  || !tokens[close + 4] || tokens[close + 4]->id() != TokenID::tkSemi )
+	    return false;
+	// Last statement: the next non-null token must be the closing '}'.
+	for ( size_t k = close + 5; k < tokens.size(); ++k )
+	{
+	    if ( !tokens[k] )
+		continue;
+	    return tokens[k]->id() == TokenID::tkClBrc;
+	}
+	return false;
+    }
+    return false;
+}
+
 // Capture a NAMED (non-operator) free-function template signature from a REAL
 // system header (libstdc++) into pgm.free_function_overloads, so the call site
 // can bind it MANGLED-DIRECT to the real Itanium symbol instead of the
@@ -30923,6 +31002,8 @@ static bool retain_namespace_fn_template_body(
 	ft.inline_builtin_kind = "addressof";
     else if ( skipped_template_body_is_inline_destroy(tokens, typeparams) )
 	ft.inline_builtin_kind = "destroy";
+    else if ( skipped_template_body_is_inline_identity_refcast(tokens, name) )
+	ft.inline_builtin_kind = "forward";
     // A body-LESS declaration has no body to instantiate; keep it OUT of
     // fn_template_map (instantiation + arity-deferral) and record it in
     // fn_template_decl_map for return-TYPE resolution only.
@@ -31012,6 +31093,8 @@ static void register_skipped_namespace_template_function(
 		fd->inline_builtin_kind = "addressof";
 	    else if ( skipped_template_body_is_inline_destroy(tokens, typeparams) )
 		fd->inline_builtin_kind = "destroy";
+	    else if ( skipped_template_body_is_inline_identity_refcast(tokens, name) )
+		fd->inline_builtin_kind = "forward";
 	}
 	ns[name] = var;
 	ns.erase(parse_id);
@@ -33732,6 +33815,50 @@ static bool tsubst_lt_opens_concrete_cast(const std::vector<TokenBase *> &d,
     return false;
 }
 
+// EXCEPTION 2: an explicit-template-argument CALL (`std::forward<_Arg>(__arg)`,
+// `move<T>(x)`) — the Kind-1 covered shape. The template-id decorates a CALLEE
+// (previous token is a plain identifier, not a named cast) and is immediately
+// followed by the call's `(`. The CIR copy machinery substitutes the call's
+// recorded explicit template args per instantiation and re-resolves the callee
+// (resolve_copied_dependent_call), so the body is safely copyable. Deliberately
+// NARROW: every token in the `<...>` span must be a single identifier argument
+// or a separating comma — qualified, nested, or expression args stay on the
+// re-parse fallback. Errs SAFELY the same way as the cast carve-out: a
+// comparison chain mis-read as this shape still parses correctly in the
+// pattern build (the parser disambiguates by lookup), and an unsupported
+// admitted body late-bails into the self-detecting pattern-error fallback.
+static bool tsubst_lt_opens_call_template_id(const std::vector<TokenBase *> &d,
+					      size_t i)
+{
+    if ( i == 0 )
+	return false;
+    TokenBase *prev = d[i - 1];
+    if ( !prev || prev->type() != TokenType::ttIdentifier )
+	return false;
+    if ( is_named_cpp_cast(contextual_identifier_name(prev)) )
+	return false;
+    size_t close = template_id_suffix_end(d, i);
+    if ( close == i || close + 1 >= d.size() )
+	return false;
+    if ( !d[close] || d[close]->id() != TokenID::tkGT )
+	return false;
+    if ( !d[close + 1] || d[close + 1]->id() != TokenID::tkOpBrk )
+	return false;
+    bool expect_name = true;
+    for ( size_t j = i + 1; j < close; ++j )
+    {
+	TokenBase *t = d[j];
+	if ( !t )
+	    return false;
+	if ( expect_name && t->type() == TokenType::ttIdentifier )
+	    { expect_name = false; continue; }
+	if ( !expect_name && t->id() == TokenID::tkComma )
+	    { expect_name = true; continue; }
+	return false;
+    }
+    return !expect_name;
+}
+
 bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 {
     // Record which clause rejected (surfaced in --show-stats); harmless no-op
@@ -33876,6 +34003,69 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 	&& (tsubst_has_placement_new_ctor_pack_expansion(fd)
 	    || tsubst_has_member_call_pack_expansion(fd)
 	    || tsubst_has_unqualified_call_pack_expansion(fd));
+    // Dependent FUNCTOR-CALL hazard (`__node_gen(std::forward<_Arg>(__v))`,
+    // _Rb_tree::_M_insert_): a call THROUGH a value parameter whose declared
+    // type involves a template param cannot be built in the pattern yet — the
+    // functor-call parse needs operand_object_class to resolve the receiver,
+    // and a placeholder receiver falls through to an assignment mis-parse
+    // (NOT self-detecting: right shape, silently wrong code). Until the
+    // dependent operator() member-call parse lands, a body that calls through
+    // a dependent-typed parameter stays on the re-parse fallback. Shape-based:
+    // parameter names come from the shell's param list; a `.`/`->`/`::`-
+    // qualified use is a member call, not a functor call.
+    std::set<std::string> dep_value_params;
+    {
+	const std::vector<TokenBase *> &d = fd->member_template_decl;
+	size_t pl_open = body_open;
+	for ( size_t i = 0; i < body_open && i < d.size(); ++i )
+	{
+	    if ( !d[i] )
+		continue;
+	    if ( size_t n = operator_id_token_span(d, i) )
+		if ( n > 1 )
+		    { i += n - 1; continue; }
+	    if ( d[i]->id() == TokenID::tkOpBrk )
+		{ pl_open = i; break; }
+	}
+	int pdepth = 0;
+	size_t pstart = pl_open + 1;
+	for ( size_t i = pl_open; i < body_open && i < d.size(); ++i )
+	{
+	    TokenBase *t = d[i];
+	    if ( !t )
+		continue;
+	    if ( t->id() == TokenID::tkOpBrk )
+		{ ++pdepth; continue; }
+	    bool param_end = false;
+	    if ( t->id() == TokenID::tkClBrk && --pdepth == 0 )
+		param_end = true;
+	    else if ( t->id() == TokenID::tkComma && pdepth == 1 )
+		param_end = true;
+	    if ( !param_end )
+		continue;
+	    bool dep = false;
+	    std::string last_ident;
+	    for ( size_t j = pstart; j < i; ++j )
+	    {
+		if ( !d[j] )
+		    continue;
+		if ( d[j]->id() == TokenID::tkAssign )
+		    break;
+		std::string nm = contextual_identifier_name(d[j]);
+		if ( nm.empty() )
+		    continue;
+		if ( pnames.count(nm) )
+		    dep = true;
+		else
+		    last_ident = nm;
+	    }
+	    if ( dep && !last_ident.empty() )
+		dep_value_params.insert(last_ident);
+	    pstart = i + 1;
+	    if ( t->id() == TokenID::tkClBrk )
+		break;
+	}
+    }
     // Body/param scan: any template-id (`<`) or `P::` dependent lookup (P a param)
     // disqualifies, except the current pack-expansion widening slice admits a
     // single TYPE-pack body when it is already structurally covered by CIR pack
@@ -33909,6 +34099,7 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 	  && i >= body_open
 	  && template_id_suffix_end(d, i) != i
 	  && !tsubst_lt_opens_concrete_cast(d, i, pnames)
+	  && !tsubst_lt_opens_call_template_id(d, i)
 	  && !(pack_count == 1 && has_pack_expansion
 	       && (!template_pack_body_from_system_header
 		   || covered_system_header_pack_template_id_body)) )
@@ -33916,6 +34107,14 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 	if ( pnames.count(contextual_identifier_name(t))
 	  && i + 1 < d.size() && d[i + 1] && d[i + 1]->id() == TokenID::tkNS )
 	    return no("dependent name P:: in body");
+	if ( i >= body_open && i + 1 < d.size() && d[i + 1]
+	  && d[i + 1]->id() == TokenID::tkOpBrk
+	  && dep_value_params.count(contextual_identifier_name(t))
+	  && !(i > 0 && d[i - 1]
+	       && (d[i - 1]->id() == TokenID::tkDot
+		   || d[i - 1]->id() == TokenID::tkDeRef
+		   || d[i - 1]->id() == TokenID::tkNS)) )
+	    return no("dependent functor call in body");
     }
     return true;
 }
