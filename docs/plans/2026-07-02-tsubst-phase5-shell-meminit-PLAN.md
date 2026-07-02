@@ -80,10 +80,38 @@ flag-off-reachable)
   (an empty-body HIT) actually parses its `: pair(...)` span in the pattern
   (does the `:` throw and the pattern still build because...? or is the
   mem-init span stripped before def_tokens?) before designing slice 1.
-  First slice-1 step may simply be: set
+  ~~First slice-1 step may simply be: set
   `parsing_defaulted_member_template_constructor` (or a pattern-mode
   equivalent) across the pattern parseFunction so the pattern fd's
-  ctor_initializers populate.
+  ctor_initializers populate.~~
+  **PROBED 2026-07-02 — the one-flag version CRASHES; both questions answered:**
+  - An env-gated probe at build_dependent_pattern's tail confirmed: the
+    mem-init span IS present in a ctor pattern's def_tokens (pair o19:
+    `colon_before_body=1 parsed=1`), the pattern parses today ONLY because
+    the parser.cpp:38111 skip loop silently DISCARDS the `: inits` span
+    (`parse_ctor_initializers` false — the `__pat<N>` rename defeats the
+    ctor-tail detection), and `ctor_initializers` is 0 on EVERY pattern fd.
+    Also: many never-ODR-used variants' patterns fail to parse (parsed=0 for
+    char16_t/char32_t/pmr basic_string ctors) — invisible to the burndown
+    because nothing instantiates them.
+  - Setting `parsing_defaulted_member_template_constructor = true` across the
+    pattern parseFunction (the lazy full-definition precedent) SIGSEGVs
+    testmap: unbounded recursion in `TokenCpnd::findVariable` walking a
+    compound parent chain (repeated `findVariable+0x168` frames) — the EAGER
+    mem-init arg parse runs BEFORE the function's body compound exists and
+    re-enters instantiation machinery mid-pattern-parse. The body parse's
+    dependent deferral (`dependent_parse_in_progress`) did not prevent it, so
+    mem-init args hit an instantiation path that ignores that flag — find it
+    before retrying (the backtrace signature is the search key).
+  - **Candidate slice-1 design (grounded in existing machinery):** do NOT
+    parse mem-inits eagerly in the pattern. Capture the raw span the way the
+    class-body sink path already does (`pending_deferred_ctor_inits`,
+    parser.cpp:38122+/38139+) onto the pattern fd, then REPLAY it inside the
+    pattern's body compound the way `parse_deferred_function_body` replays
+    `ctor_init_tokens` ahead of the body (parser.cpp:24162-24173 +
+    parse_ctor_initializer_list at 24222) — [class.base.init] complete-class
+    context, and the args then parse in the same compound context as the
+    body, where the dependent deferral machinery is known to work.
 - Prologue ordering: member inits interleave with base ctors and vptr stores
   in DECLARATION order ([class.base.init]) — the pattern-side nodes must
   reproduce that order or delegate ordering to func_def (prefer: pattern
