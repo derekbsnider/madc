@@ -3366,6 +3366,54 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     return use_site_type_token(tdt, tb);
 }
 
+TokenDataType *Program::instantiate_shell_origin_replay(
+			const DependentShellOrigin &org,
+			const std::vector<std::vector<TokenBase *> > &arg_runs)
+{
+    // The partial-spec replay shape (opaque_template_args_select_concrete_
+    // partial_spec above): push `< run [, run ...] >` then re-enter
+    // instantiate_template_use. Args here are already CONCRETE, so the
+    // variadic real-instantiation gate must be open (a `tuple<int>` use
+    // real-instantiates exactly like the member-type-chain path).
+    std::vector<TokenBase *> replay;
+    replay.push_back(new TokenLT());
+    bool first_run = true;
+    for ( const std::vector<TokenBase *> &run : arg_runs )
+    {
+	if ( !first_run )
+	    replay.push_back(new TokenComma());
+	first_run = false;
+	for ( TokenBase *t : run )
+	    if ( t )
+		replay.push_back(t);
+    }
+    replay.push_back(new TokenGT());
+    size_t replay_base = tokens.size();
+    for ( std::vector<TokenBase *>::reverse_iterator it = replay.rbegin();
+	  it != replay.rend(); ++it )
+	pushToken(*it);
+
+    bool saved_vri = allow_variadic_real_inst;
+    bool saved_poisoned = dependent_parse_poisoned;
+    allow_variadic_real_inst = true;
+    TokenIdent name_tb(org.tname.c_str());
+    TokenDataType *real = NULL;
+    try
+    {
+	real = instantiate_template_use(org.tname, &name_tb,
+					org.defining_namespace,
+					org.owner_class);
+    }
+    catch ( ... ) { real = NULL; }
+    allow_variadic_real_inst = saved_vri;
+    // Drain any unconsumed replay tokens so a failure never leaks stray
+    // injected tokens into the caller's stream (the capture+replay lesson).
+    while ( tokens.size() > replay_base )
+	nextToken();
+    dependent_parse_poisoned = saved_poisoned;
+    return real;
+}
+
 static bool is_incomplete_class_datadef(DataDef *dd)
 {
     DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);

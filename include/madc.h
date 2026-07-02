@@ -3175,6 +3175,16 @@ public:
     TokenDataType *instantiate_opaque_template_use(TemplateDef &td,
 						   const std::string &tname,
 						   TokenBase *tb);
+    // tsubst TYPE-half of a dependent template-id shell: replay SUBSTITUTED
+    // structural arg-token runs (concrete TokenDataType / TokenInt elements —
+    // never source text) through instantiate_template_use to rebuild the
+    // CONCRETE instantiation the shell stood for. `arg_runs` tokens are
+    // consumed (pushed into the stream); the stream is drained back to its
+    // pre-replay depth on failure. Returns NULL when the template is unknown
+    // or instantiation fails.
+    TokenDataType *instantiate_shell_origin_replay(
+			const struct DependentShellOrigin &org,
+			const std::vector<std::vector<TokenBase *> > &arg_runs);
     // GCC's __integer_pack(N) builtin (libstdc++-13 GCC-path index-sequence
     // primitive): valid only as the entire pattern of a template-argument pack
     // expansion `X<... __integer_pack(N)... ...>`; at substitution time (N a

@@ -422,8 +422,15 @@ node_t CirBuilder::node5(c2mir_node_code_t code, node_t op1, node_t op2, node_t 
 // (getPointerType / getReferenceType / getConstType) so type identity and
 // caching are preserved. Returns `dd` unchanged when no placeholder is involved
 // (the common case). DataDefREF IS-A DataDefPTR, so it is tested first.
+// `packs`/`pack_params` (the caller's active type-arg-pack window) enable the
+// structural dependent template-id case: a shell with a DependentShellOrigin
+// record rebuilds its CONCRETE instantiation by substituting the recorded arg
+// runs (pack name -> elements, sizeof...(P) -> arity) and replaying them
+// through the parser's instantiation seam.
 static DataDef *subst_datadef(Program *prog, DataDef *dd,
-			      const std::map<DataDef *, DataDef *> &subst);
+			      const std::map<DataDef *, DataDef *> &subst,
+			      const std::vector<std::vector<DataDef *> > *packs = NULL,
+			      const std::map<unsigned, DataDef *> *pack_params = NULL);
 
 static DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
 {
@@ -439,6 +446,32 @@ static DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
 			{ dd = pd->base_type; continue; }
 		if (DataDefCArray *ad = dynamic_cast<DataDefCArray *>(dd))
 			{ dd = ad->element_type; continue; }
+		break;
+	}
+	return NULL;
+}
+
+// A dependent template-id SHELL class (directly or under ptr/ref/const/array
+// layers) whose structural origin was recorded at creation — i.e. one
+// subst_datadef's rebuild case can concretize. NULL otherwise.
+static DataDefCLASS *dependent_shell_under_type_layers(Program *prog,
+							DataDef *dd)
+{
+	if (!prog)
+		return NULL;
+	for (int guard = 0; dd && guard < 8; ++guard) {
+		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
+			{ dd = cd->base_type; continue; }
+		if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
+			{ dd = rd->base_type; continue; }
+		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+			{ dd = pd->base_type; continue; }
+		if (DataDefCArray *ad = dynamic_cast<DataDefCArray *>(dd))
+			{ dd = ad->element_type; continue; }
+		DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+		if (cls && cls->is_dependent_placeholder
+		    && prog->dependent_shell_origin.count(cls))
+			return cls;
 		break;
 	}
 	return NULL;
@@ -761,8 +794,241 @@ static void collect_cir_node_datadefs(node_t n, std::set<DataDef *> &out)
 		}
 }
 
+// Pack-window name lookups for the shell-origin rebuild: the recorded arg
+// tokens name template parameters by SPELLING (`_Args1`), while the binding /
+// pack window key by placeholder DataDef — bridge by the placeholder's name.
+static const std::vector<DataDef *> *tsubst_pack_for_name(
+	const std::vector<std::vector<DataDef *> > *packs,
+	const std::map<unsigned, DataDef *> *pack_params,
+	const char *name)
+{
+	if (!packs || !pack_params || !name)
+		return NULL;
+	for (std::map<unsigned, DataDef *>::const_iterator it =
+		     pack_params->begin(); it != pack_params->end(); ++it)
+		if (it->second && it->second->name == name)
+			return it->first < packs->size()
+				   ? &(*packs)[it->first] : NULL;
+	return NULL;
+}
+
+static DataDef *tsubst_scalar_for_name(
+	const std::map<DataDef *, DataDef *> &subst, const char *name)
+{
+	if (!name)
+		return NULL;
+	for (std::map<DataDef *, DataDef *>::const_iterator it = subst.begin();
+	     it != subst.end(); ++it)
+		if (it->first && it->first->is_template_param()
+		    && it->first->name == name)
+			return it->second;
+	return NULL;
+}
+
+// Decompose a concrete type into the structural tokens the template-argument
+// grammar consumes (`const` qualifier + core type token + `*`/`&` declarator
+// suffixes), so the replay resolves through the SAME qualifier/fold path as
+// source text and lands on the SAME instantiation key. A composite
+// TokenDataType wrapping the derived type would spell through the wrapper's
+// (empty-canonical) name and FORK the key — one logical type under two
+// datatype_map entries (the empty-pack-key lesson). False = a qualifier nest
+// this decomposition doesn't model; the caller falls back to the composite.
+static bool tsubst_decompose_elem_tokens(DataDef *elem,
+					 std::vector<TokenBase *> &run)
+{
+	if (!elem)
+		return false;
+	bool is_ref = false;
+	int ptr_depth = 0;
+	DataDef *core = elem;
+	if (DataDefREF *r = dynamic_cast<DataDefREF *>(core)) {
+		is_ref = true;
+		core = r->base_type;
+	}
+	while (core && !dynamic_cast<DataDefREF *>(core)) {
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(core);
+		if (!p)
+			break;
+		++ptr_depth;
+		core = p->base_type;
+	}
+	bool is_const = false;
+	if (DataDefCONST *c = dynamic_cast<DataDefCONST *>(core)) {
+		is_const = true;
+		core = c->base_type;
+	}
+	if (!core || dynamic_cast<DataDefCONST *>(core)
+	    || dynamic_cast<DataDefPTR *>(core)
+	    || dynamic_cast<DataDefTemplateParam *>(core))
+		return false;
+	if (is_const)
+		run.push_back(new TokenCONST());
+	const std::string &cs = core->canonical_cpp_spelling;
+	run.push_back(new TokenDataType(
+		(cs.empty() ? core->name : cs).c_str(), *core));
+	for (int i = 0; i < ptr_depth; ++i)
+		run.push_back(new TokenMul());
+	if (is_ref)
+		run.push_back(new TokenBand());
+	return true;
+}
+
+// Substitute ONE recorded shell-origin arg-token run under the binding/pack
+// window into concrete replay runs (a pack-name run fans out to one run per
+// element). Appends to `runs_out`; sets `any_subst` when a substitution
+// actually happened. Returns false when a template-parameter name in the run
+// cannot be resolved (the rebuild must then bail — an unresolved name would
+// replay as a stray identifier). Failure paths do NOT delete built tokens:
+// cloned keywords are shared prototypes (TokenKeyword::clone returns this) —
+// leak-tolerant like every parser replay.
+static bool tsubst_subst_origin_arg_run(
+	const std::vector<TokenBase *> &raw,
+	const std::map<DataDef *, DataDef *> &subst,
+	const std::vector<std::vector<DataDef *> > *packs,
+	const std::map<unsigned, DataDef *> *pack_params,
+	std::vector<std::vector<TokenBase *> > &runs_out,
+	bool &any_subst)
+{
+	// Whole-run bare pack (`_Args1` — a trailing `...` may or may not have
+	// been recorded with it): fan out to one concrete type run per element.
+	{
+		TokenBase *first = NULL;
+		bool rest_dots = true;
+		for (TokenBase *t : raw) {
+			if (!t)
+				continue;
+			if (!first)
+				first = t;
+			else if (t->id() != TokenID::tkDot)
+				rest_dots = false;
+		}
+		TokenIdent *fid = dynamic_cast<TokenIdent *>(first);
+		if (fid && rest_dots && first->type() == TokenType::ttIdentifier) {
+			if (const std::vector<DataDef *> *pk =
+				    tsubst_pack_for_name(packs, pack_params,
+							 fid->spelling())) {
+				for (DataDef *elem : *pk) {
+					if (!elem)
+						return false;
+					std::vector<TokenBase *> erun;
+					if (!tsubst_decompose_elem_tokens(elem,
+									  erun))
+						erun.assign(1,
+							new TokenDataType(
+								elem->name.c_str(),
+								*elem));
+					runs_out.push_back(erun);
+				}
+				any_subst = true;
+				return true;
+			}
+		}
+	}
+	std::vector<TokenBase *> out;
+	bool ok = true;
+	for (size_t k = 0; k < raw.size() && ok; ++k) {
+		TokenBase *t = raw[k];
+		if (!t)
+			continue;
+		// Idents AND keywords (`sizeof` is a TokenKeyword, type()
+		// ttKeyword — still a TokenIdent by inheritance).
+		TokenIdent *anyid = dynamic_cast<TokenIdent *>(t);
+		TokenIdent *tid = (anyid
+				   && t->type() == TokenType::ttIdentifier)
+				      ? anyid : NULL;
+		// `sizeof ... ( PACK )` -> the pack's arity as a literal int
+		// (so instantiate_template_use's own __integer_pack expander
+		// folds the enclosing `__integer_pack ( N ) ...`).
+		if (anyid && anyid->spelling_is("sizeof") && k + 6 < raw.size()
+		    && raw[k+1] && raw[k+1]->id() == TokenID::tkDot
+		    && raw[k+2] && raw[k+2]->id() == TokenID::tkDot
+		    && raw[k+3] && raw[k+3]->id() == TokenID::tkDot
+		    && raw[k+4] && raw[k+4]->id() == TokenID::tkOpBrk
+		    && raw[k+5] && raw[k+5]->type() == TokenType::ttIdentifier
+		    && raw[k+6] && raw[k+6]->id() == TokenID::tkClBrk) {
+			TokenIdent *pid = dynamic_cast<TokenIdent *>(raw[k+5]);
+			const std::vector<DataDef *> *pk = pid
+				? tsubst_pack_for_name(packs, pack_params,
+						       pid->spelling())
+				: NULL;
+			if (!pk) {
+				ok = false;
+				break;
+			}
+			out.push_back(new TokenInt((int64_t)pk->size()));
+			any_subst = true;
+			k += 6;
+			continue;
+		}
+		if (tid) {
+			if (DataDef *sc = tsubst_scalar_for_name(
+					subst, tid->spelling())) {
+				std::vector<TokenBase *> srun;
+				if (!tsubst_decompose_elem_tokens(sc, srun))
+					srun.assign(1, new TokenDataType(
+						sc->name.c_str(), *sc));
+				out.insert(out.end(), srun.begin(),
+					   srun.end());
+				any_subst = true;
+				continue;
+			}
+			// A pack name anywhere but the whole-run / sizeof...
+			// shapes above is a form this walker cannot expand.
+			if (tsubst_pack_for_name(packs, pack_params,
+						 tid->spelling())) {
+				ok = false;
+				break;
+			}
+		}
+		out.push_back(t->clone());
+	}
+	if (!ok)
+		return false;
+	runs_out.push_back(out);
+	return true;
+}
+
+// The structural dependent template-id case (road (i)): a shell whose
+// DependentShellOrigin was recorded at creation rebuilds its CONCRETE
+// instantiation by substituting the recorded arg runs and replaying them
+// through the parser's instantiation seam. NULL = not rebuildable here
+// (no record, unresolvable run, nothing substituted, or replay failure) —
+// the caller keeps the shell and its own bail semantics.
+static DataDef *rebuild_dependent_shell(Program *prog, DataDefCLASS *shell,
+	const std::map<DataDef *, DataDef *> &subst,
+	const std::vector<std::vector<DataDef *> > *packs,
+	const std::map<unsigned, DataDef *> *pack_params)
+{
+	std::map<DataDef *, Program::DependentShellOrigin>::const_iterator oit =
+		prog->dependent_shell_origin.find(shell);
+	if (oit == prog->dependent_shell_origin.end())
+		return NULL;
+	const Program::DependentShellOrigin &org = oit->second;
+	std::vector<std::vector<TokenBase *> > runs;
+	bool any_subst = false;
+	bool ok = true;
+	for (const std::vector<TokenBase *> &raw : org.raw_arg_tokens)
+		if (!tsubst_subst_origin_arg_run(raw, subst, packs, pack_params,
+						 runs, any_subst)) {
+			ok = false;
+			break;
+		}
+	if (!ok || !any_subst)
+		return NULL;
+	TokenDataType *real = prog->instantiate_shell_origin_replay(org, runs);
+	if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+		fprintf(stderr, "[SHELL-REBUILD] %s (%zu runs) -> %s\n",
+			shell->name.c_str(), runs.size(),
+			real ? real->definition.name.c_str() : "(failed)");
+	if (!real || &real->definition == (DataDef *)shell)
+		return NULL;
+	return &real->definition;
+}
+
 static DataDef *subst_datadef(Program *prog, DataDef *dd,
-			      const std::map<DataDef *, DataDef *> &subst)
+			      const std::map<DataDef *, DataDef *> &subst,
+			      const std::vector<std::vector<DataDef *> > *packs,
+			      const std::map<unsigned, DataDef *> *pack_params)
 {
 	if (!dd)
 		return dd;
@@ -770,22 +1036,26 @@ static DataDef *subst_datadef(Program *prog, DataDef *dd,
 	if (it != subst.end())
 		return it->second;
 	if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd)) {
-		DataDef *nb = subst_datadef(prog, rd->base_type, subst);
+		DataDef *nb = subst_datadef(prog, rd->base_type, subst,
+					    packs, pack_params);
 		return (prog && nb != rd->base_type)
 			   ? (DataDef *)prog->getReferenceType(nb) : dd;
 	}
 	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) {
-		DataDef *nb = subst_datadef(prog, pd->base_type, subst);
+		DataDef *nb = subst_datadef(prog, pd->base_type, subst,
+					    packs, pack_params);
 		return (prog && nb != pd->base_type)
 			   ? (DataDef *)prog->getPointerType(nb) : dd;
 	}
 	if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd)) {
-		DataDef *nb = subst_datadef(prog, cd->base_type, subst);
+		DataDef *nb = subst_datadef(prog, cd->base_type, subst,
+					    packs, pack_params);
 		return (prog && nb != cd->base_type)
 			   ? (DataDef *)prog->getConstType(nb) : dd;
 	}
 	if (DataDefCArray *ad = dynamic_cast<DataDefCArray *>(dd)) {
-		DataDef *nb = subst_datadef(prog, ad->element_type, subst);
+		DataDef *nb = subst_datadef(prog, ad->element_type, subst,
+					    packs, pack_params);
 		if (nb != ad->element_type)
 			return new DataDefCArray(*nb, nb->name, ad->count,
 						 ad->count_expr);
@@ -798,7 +1068,24 @@ static DataDef *subst_datadef(Program *prog, DataDef *dd,
 			return clone ? (DataDef *)clone : dd;
 		}
 	}
+	if (prog) {
+		DataDefCLASS *shell = dynamic_cast<DataDefCLASS *>(dd);
+		if (shell && shell->is_dependent_placeholder) {
+			DataDef *conc = rebuild_dependent_shell(
+				prog, shell, subst, packs, pack_params);
+			if (conc)
+				return conc;
+		}
+	}
 	return dd;
+}
+
+DataDef *CirBuilder::subst_datadef_active(DataDef *dd,
+					  const std::map<DataDef *, DataDef *> &subst)
+{
+	return subst_datadef(m_prog, dd, subst,
+			     m_tsubst_active_type_arg_packs,
+			     &m_tsubst_active_pack_params);
 }
 
 static DataDefTemplateParam *template_param_in_pack_pattern(TokenBase *tb)
@@ -1368,7 +1655,7 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	explicit_args.reserve(tcf->explicit_template_args.size());
 	bool changed = false;
 	for (DataDef *arg : tcf->explicit_template_args) {
-		DataDef *sarg = subst_datadef(m_prog, arg, *subst);
+		DataDef *sarg = subst_datadef_active(arg, *subst);
 		explicit_args.push_back(sarg);
 		if (sarg != arg)
 			changed = true;
@@ -1385,7 +1672,7 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	auto append_substituted_param = [&](TokenBase *origin, DataDef *pdd,
 					    const std::map<DataDef *, DataDef *> &smap,
 					    bool zero) {
-		DataDef *sdd = subst_datadef(m_prog, pdd, smap);
+		DataDef *sdd = subst_datadef_active(pdd, smap);
 		at.push_back(tsubst_overload_arg_type(sdd));
 		concrete_param_types.push_back(sdd);
 		param_origins.push_back(origin);
@@ -1452,7 +1739,7 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		DataDef *recv_type = tm->parent_expr
 				     ? tm->parent_expr->datadef()
 				     : tm->object.type;
-		recv_type = subst_datadef(m_prog, recv_type, *subst);
+		recv_type = subst_datadef_active(recv_type, *subst);
 		DataDefCLASS *recv_class = class_behind(recv_type);
 		if (!recv_class) {
 			if (error_out)
@@ -1571,8 +1858,8 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 			return NULL;
 		DataDef *ld = m_prog->free_operator_arg_datadef(tcf->parameters[0]);
 		DataDef *rd = m_prog->free_operator_arg_datadef(tcf->parameters[1]);
-		ld = subst_datadef(m_prog, ld, *subst);
-		rd = subst_datadef(m_prog, rd, *subst);
+		ld = subst_datadef_active(ld, *subst);
+		rd = subst_datadef_active(rd, *subst);
 		if (!ld || !rd || template_param_under_type_layers(ld)
 		    || template_param_under_type_layers(rd))
 			return NULL;
@@ -1755,11 +2042,23 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 			// every concrete parameter — overload selection needs the
 			// SUBSTITUTED type. Stand in a concrete-typed token for
 			// scoring only; the lowering loop below still consumes the
-			// original token.
+			// original token. Covers placeholder LAYERS and dependent
+			// template-id SHELLS (rebuilt via their recorded origin
+			// under the active pack window).
 			DataDef *add = arg ? arg->datadef() : NULL;
-			if (add && subst && template_param_under_type_layers(add)) {
-				DataDef *sdd = subst_datadef(m_prog, add, *subst);
-				if (sdd && !template_param_under_type_layers(sdd)) {
+			if (add && subst
+			    && (template_param_under_type_layers(add)
+				|| dependent_shell_under_type_layers(m_prog,
+								     add))) {
+				DataDef *sdd = subst_datadef_active(add, *subst);
+				// `sdd != add` (not a shell re-check): a
+				// CONCRETE-arg rebuild (`_Index_tuple<0>`) may
+				// itself carry the opaque-path placeholder
+				// flag + an origin record; the walker already
+				// guarantees a rebuild only succeeds with
+				// every param name resolved.
+				if (sdd && sdd != add
+				    && !template_param_under_type_layers(sdd)) {
 					expanded_ctor_args.push_back(
 						tsubst_concrete_arg_token(
 							sdd,
@@ -1868,7 +2167,7 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 		}
 		++concrete_arg_pos;
 		DataDef *arg_dd = arg
-			? subst_datadef(m_prog, arg->datadef(), *subst)
+			? subst_datadef_active(arg->datadef(), *subst)
 			: NULL;
 		if (!relax_class_args && tsubst_is_class_object_arg(arg_dd)) {
 			unsupported_class_arg = true;
@@ -1988,7 +2287,7 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 			if (DataDefCLASS *pc = param_object_class(pt, refp)) {
 				DataDef *rt = ref_returning_call_type(arg);
 				DataDef *srt = rt
-					? subst_datadef(m_prog, rt, smap) : NULL;
+					? subst_datadef_active(rt, smap) : NULL;
 				if (rt && !ref_return_class_binds_direct(pc, srt)) {
 					FuncDef *conv =
 						single_arg_conversion_ctor(pc, srt);
@@ -2036,7 +2335,7 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 				DataDef *rt = ref_returning_call_type(arg);
 				if (rt && pack_name) {
 					DataDef *srt =
-						subst_datadef(m_prog, rt, smap);
+						subst_datadef_active(rt, smap);
 					node_t slot = copied_pack_id_node(
 						pack_name, pack_index, pack_elem,
 						arg, srt);
@@ -2044,6 +2343,36 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 						slot, arg);
 					CIR_NODE(value)->datadef = srt;
 					return value;
+				}
+				// A zero-arg VALUE-INIT construction of a
+				// dependent shell (`typename _Build_index_tuple
+				// <...>::__type()`): translate_expr would type
+				// its temp with the SHELL, mismatching the
+				// concrete by-value param — declare the temp as
+				// the SUBSTITUTED class directly instead.
+				DataDef *add = arg ? arg->datadef() : NULL;
+				TokenObjTemp *aot =
+					dynamic_cast<TokenObjTemp *>(arg);
+				if (add && aot && aot->ctor_args.empty()
+				    && dependent_shell_under_type_layers(m_prog,
+									 add)) {
+					DataDef *sdd =
+						subst_datadef_active(add, smap);
+					DataDefCLASS *sc = (sdd && sdd != add)
+						? as_class_instance(sdd) : NULL;
+					if (sc && class_trivially_copyable(sc)) {
+						char name[40];
+						snprintf(name, sizeof(name),
+							 "__madc_objtmp_%d",
+							 m_strtmp_counter++);
+						Variable *tmp = new Variable(
+							name, *sc, 1, NULL,
+							false);
+						tmp->flags |= vfLOCAL;
+						prefix_items.push_back(
+							var_decl(tmp, arg));
+						return id(name, arg);
+					}
 				}
 				return copy_expr_under(arg, smap, pack_index,
 						       pack_elem, pack_name);
@@ -2173,7 +2502,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		if (tn && tn->placement
 		    && (template_param_under_type_layers(src->datadef)
 			|| tsubst_args_have_pack_expansion(tn->ctor_args))) {
-			DataDef *concrete = subst_datadef(m_prog, src->datadef, *subst);
+			DataDef *concrete = subst_datadef_active(src->datadef, *subst);
 			if (!concrete || template_param_under_type_layers(concrete))
 				return CIR_NODE(error_node(
 					"tsubst: unbound placement-new constructed type"));
@@ -2237,7 +2566,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				    madc_token_for_slot(src->origin_id))) {
 			if (tsubst_args_have_pack_expansion(tdcl->ctor_args)) {
 				DataDef *concrete =
-					subst_datadef(m_prog, src->datadef, *subst);
+					subst_datadef_active(src->datadef, *subst);
 				DataDefCLASS *concrete_class = concrete
 					? dynamic_cast<DataDefCLASS *>(concrete) : NULL;
 				if (!concrete_class
@@ -2273,8 +2602,8 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			if (target && tvar->datadef()
 			    && tvar->datadef()->is_reference()
 			    && template_param_under_type_layers(tvar->datadef())) {
-				DataDef *sdd = subst_datadef(m_prog, tvar->datadef(),
-							     *subst);
+				DataDef *sdd = subst_datadef_active(tvar->datadef(),
+								    *subst);
 				if (!sdd || template_param_under_type_layers(sdd))
 					return CIR_NODE(error_node(
 						"tsubst: unbound deferred-arg type", tvar));
@@ -2298,7 +2627,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			dynamic_cast<TokenExplicitDtor *>(madc_token_for_slot(src->origin_id));
 		if (td && tsubst_explicit_dtor_marker_datadef(td)) {
 			DataDef *concrete_obj =
-				subst_datadef(m_prog, src->datadef, *subst);
+				subst_datadef_active(src->datadef, *subst);
 			DataDef *elem = concrete_obj;
 			if (td->is_arrow) {
 				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(concrete_obj);
@@ -2340,7 +2669,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			destroy_marker = fd && fd->inline_builtin_kind == "destroy";
 		}
 		if (destroy_marker) {
-			DataDef *concrete_arg = subst_datadef(m_prog, src->datadef, *subst);
+			DataDef *concrete_arg = subst_datadef_active(src->datadef, *subst);
 			DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(concrete_arg);
 			DataDef *elem = pdd ? pdd->base_type : NULL;
 			if (!elem || template_param_under_type_layers(elem))
@@ -2498,7 +2827,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			    && child_index == 2 && src->datadef
 			    && attr_list_has_cleanup(c)) {
 				DataDef *concrete =
-					subst_datadef(m_prog, src->datadef, *subst);
+					subst_datadef_active(src->datadef, *subst);
 				DataDefCLASS *cdd = as_class_instance(concrete);
 				if (cdd) {
 					if (class_needs_dtor(cdd)) {
@@ -2596,7 +2925,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					continue;
 				}
 				DataDef *concrete =
-					subst_datadef(m_prog, cc->datadef, *subst);
+					subst_datadef_active(cc->datadef, *subst);
 				DataDefSTRUCT *concrete_sdd =
 					dynamic_cast<DataDefSTRUCT *>(concrete);
 				if (!concrete
@@ -2639,7 +2968,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 	// reference (Tree-1 == ROM, shared lifetime). subst==NULL => byte-identical
 	// to the pre-Phase-3 behaviour.
 	dst->datadef           = (subst && src->datadef)
-				     ? subst_datadef(m_prog, src->datadef, *subst)
+				     ? subst_datadef_active(src->datadef, *subst)
 				     : src->datadef;
 	// Local-class TAG REBIND: class_tag_ref bakes the tag NAME string at
 	// pattern build, so when the binding remaps the tag's class (pattern local

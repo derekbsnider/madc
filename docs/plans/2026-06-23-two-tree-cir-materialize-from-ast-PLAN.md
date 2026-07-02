@@ -15,6 +15,17 @@ rests on; read it first).
 
 ## 0. RESUME — START HERE (post-compaction; read this section first)
 
+**⏩ 2026-07-02 — PLAN POSITION: Phases 0–4 DONE; Phase 5 ACTIVE in its successor doc.**
+The wall below (local classes) and the whole Phase-4 hard tail were cleared: suite
+burndown reached **268 HIT / 0 FALLBACK (100%)** and the default FLIPPED
+(`a2262c35` — tsubst is production; `MADC_XTEST_DEP_PARSE=0` is the soak escape
+hatch; ratchet `scripts/tsubst_flagon_gate.sh` wired into fulltest). Phase 5
+(delete the re-parse path) is now carried in
+**`docs/plans/2026-07-02-tsubst-phase5-shell-meminit-PLAN.md`** — the ctor
+SHELL (signature + mem-inits) is the last load-bearing re-parse; read that doc,
+not the historical blocks below. Phase 6 (serialize Tree-1) remains future
+(links to the embedded-header-forest plan).
+
 **🎯 2026-06-28 — DOMINANT REMAINING WALL PINNED: local classes in member-template bodies (Claude).**
 The easy clusters are done (suite burndown **172 hit / 93 fallback = 64%** at `64fc880d`; allocator
 construct/destroy, scalar free-operator [Kind 2 `fef9b3a0`], dependent member call [Kind 3

@@ -474,6 +474,13 @@ class CirBuilder {
 	// are the DataDefTemplateParam placeholders used in the saved Tree-1 recipe.
 	const std::vector<std::vector<DataDef *> > *m_tsubst_active_type_arg_packs = NULL;
 	std::map<unsigned, DataDef *> m_tsubst_active_pack_params;
+	// subst_datadef under THIS builder's active pack window — the seam every
+	// CirBuilder-side type substitution goes through, so the structural
+	// dependent-shell rebuild (which needs pack arity for sizeof.../
+	// __integer_pack forms) is available uniformly. Outside a tsubst window
+	// the pack fields are empty and this is plain subst_datadef.
+	DataDef *subst_datadef_active(DataDef *dd,
+				      const std::map<DataDef *, DataDef *> &subst);
 	int m_tsubst_copy_pack_index = -1;
 	size_t m_tsubst_copy_pack_elem = 0;
 	const char *m_tsubst_copy_pack_value_name = NULL;
