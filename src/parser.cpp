@@ -3345,6 +3345,20 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
     fwd->is_dependent_placeholder = true;
     fwd->canonical_cpp_spelling = canon;
     struct_map[mangled] = fwd;
+    // Keep the template-origin STRUCTURE (name + per-arg token runs) so tsubst
+    // can rebuild the concrete instantiation from a binding later — the shell's
+    // name/spelling alone is unresolvable (see Program::DependentShellOrigin).
+    {
+	DependentShellOrigin &org = dependent_shell_origin[fwd];
+	org.tname = tname;
+	org.defining_namespace = td.defining_namespace;
+	org.owner_class = td.owner_class;
+	org.arg_spellings = args;
+	org.raw_arg_tokens.resize(raw_arg_tokens.size());
+	for ( size_t ai = 0; ai < raw_arg_tokens.size(); ++ai )
+	    for ( TokenBase *t : raw_arg_tokens[ai] )
+		org.raw_arg_tokens[ai].push_back(t ? t->clone() : NULL);
+    }
     TokenDataType *tdt = new TokenDataType(mangled.c_str(), *fwd);
     datatype_map[mangled] = tdt;
     if ( !td.defining_namespace.empty() )

@@ -1991,6 +1991,21 @@ public:
 	std::vector<TokenDataType *> args;
     };
     std::map<std::string, std::vector<PendingTemplateInstantiation>> pending_template_instantiations;
+    // Template-origin structure for a DEPENDENT template-id placeholder shell
+    // (`tuple<_Args1...>`, `_Index_tuple<__integer_pack(sizeof...(_Args1))...>`),
+    // recorded at the shell's creation (instantiate_opaque_template_use) so
+    // tsubst can later rebuild the CONCRETE instantiation structurally from the
+    // binding (g++ tsubst on a dependent template-id) instead of being stuck
+    // with an opaque name. Keyed by the shell DataDef; arg token runs are
+    // clones (structural type tokens, not source text).
+    struct DependentShellOrigin {
+	std::string tname;			// class-template name (template map key)
+	std::string defining_namespace;
+	DataDefCLASS *owner_class = NULL;
+	std::vector<std::string> arg_spellings;
+	std::vector<std::vector<TokenBase *>> raw_arg_tokens;
+    };
+    std::map<DataDef *, DependentShellOrigin> dependent_shell_origin;
     std::set<std::string> template_completion_requested;    // mangled template aliases that should be completed when body appears
     std::set<std::string> template_instantiated;           // mangled names done
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup

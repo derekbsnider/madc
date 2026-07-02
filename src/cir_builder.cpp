@@ -15094,6 +15094,29 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 								sc ? sc->canonical_cpp_spelling.c_str() : "");
 							if (!sc)
 								continue;
+							std::map<DataDef *, Program::DependentShellOrigin>::iterator
+								oi = m_prog->dependent_shell_origin.find(sc);
+							if (oi != m_prog->dependent_shell_origin.end()) {
+								fprintf(stderr, "[DELEG-ORIGIN]   origin tmpl=%s ns=%s nargs=%zu\n",
+									oi->second.tname.c_str(),
+									oi->second.defining_namespace.c_str(),
+									oi->second.raw_arg_tokens.size());
+								for (size_t ai = 0; ai < oi->second.raw_arg_tokens.size(); ++ai) {
+									std::string toks;
+									for (TokenBase *t : oi->second.raw_arg_tokens[ai]) {
+										if (!toks.empty()) toks += " ";
+										TokenIdent *ti = dynamic_cast<TokenIdent *>(t);
+										if (ti)
+											toks += ti->spelling();
+										else if (t)
+											toks += "#" + std::to_string((int)t->id());
+										else
+											toks += "(null)";
+									}
+									fprintf(stderr, "[DELEG-ORIGIN]     arg[%zu] spelling=%s toks={%s}\n",
+										ai, oi->second.arg_spellings[ai].c_str(), toks.c_str());
+								}
+							}
 							for (auto &kv : m_prog->pending_template_instantiations)
 								for (auto &pti : kv.second) {
 									if (pti.mangled_name != sc->name)
