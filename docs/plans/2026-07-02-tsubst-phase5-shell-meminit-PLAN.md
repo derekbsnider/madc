@@ -360,3 +360,35 @@ once road (i) lands. The mem-init capture+replay (parser half) remains the
 transitional carrier for not-yet-covered ctors. Slice 4's DELETE gate
 requires road (i) (or an explicitly decided narrower scope) — cost it at
 slice-2 time.
+
+**Road (i) recon (2026-07-02, probe [DELEG-ORIGIN] in-tree):** all 4
+delegation ci-arg datadefs confirmed `is_dependent_placeholder=1,
+has_dependent_surface=0` with clean canonical spellings
+(`std::tuple<_Args1>`, `std::_Index_tuple<__integer_pack(sizeof...(_Args1))...>`)
+and NO `pending_template_instantiations` record (that registry only covers
+the variadic-real-inst shell site, parser.cpp ~3906). THE creation seam is
+the opaque-template-args path parser.cpp ~3294-3346: it has `tname`, the
+`TemplateDef` (namespace/owner), arg SPELLINGS, and **`raw_arg_tokens`
+(per-arg structural token runs)** in hand when it makes the shell — the
+structure is simply dropped today. Implementation sketch:
+1. Program-side registry `dependent_shell_origin[shell] = {tname, td ref,
+   arg spellings, cloned raw_arg_tokens}` recorded at ~3343 (and the ~3906
+   variadic site already records args via
+   record_pending_template_instantiation — unify or parallel).
+2. subst_datadef new case: shell with origin record → substitute each arg
+   run under the binding — single template-param name → binding lookup;
+   `sizeof...(P)` → pack arity; `__integer_pack(N)...` → 0..N-1 non-type
+   expansion (needs PACK CONTEXT threading — subst_datadef is static
+   (prog, dd, subst); pack arity lives in the CIR pack window, so either
+   thread it or pre-extend the binding with a pack-arity side map).
+3. Instantiation seam: the ~3317 partial-spec path shows the parser's
+   existing pattern — push cloned `<args>` structural tokens + call
+   instantiate_template_use. g++-faithful would build from DataDefs
+   directly; check whether a token-free entry point exists before adding
+   one (Rule #4). Note the Codex-verification verdict (FINDINGS doc): a
+   string re-tokenize resolver was INERT — the structural
+   make_typename_type→lookup_member form in subst_datadef is the settled
+   direction; arg-token replay into the parser's own instantiation
+   interface is structural (cloned type tokens, not source text), distinct
+   from the outlawed body re-parse, but weigh it against a DataDef-driven
+   entry point at implementation time.

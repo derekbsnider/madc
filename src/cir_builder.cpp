@@ -15080,6 +15080,35 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 				? m_cur_method->owner_class : NULL;
 			for (const TsubstMemInitPattern &p : mi->second) {
 				if (p.delegating) {
+					if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG")) {
+						// Recon probe: dump the template-origin record
+						// (pending_template_instantiations) behind each
+						// dependent-shell ci arg type.
+						for (TokenBase *a : p.ci_args) {
+							DataDefCLASS *sc = a ? dynamic_cast<DataDefCLASS *>(a->datadef()) : NULL;
+							fprintf(stderr, "[DELEG-ORIGIN] ci-arg dd=%s cls=%d dep=%d surf=%d canon=%s\n",
+								(a && a->datadef()) ? a->datadef()->name.c_str() : "(null)",
+								(int)(sc != NULL),
+								sc ? (int)sc->is_dependent_placeholder : -1,
+								sc ? (int)sc->has_dependent_surface : -1,
+								sc ? sc->canonical_cpp_spelling.c_str() : "");
+							if (!sc)
+								continue;
+							for (auto &kv : m_prog->pending_template_instantiations)
+								for (auto &pti : kv.second) {
+									if (pti.mangled_name != sc->name)
+										continue;
+									fprintf(stderr, "[DELEG-ORIGIN] shell=%s tmpl=%s canon=%s nargs=%zu\n",
+										sc->name.c_str(), kv.first.c_str(),
+										pti.canonical_spelling.c_str(), pti.args.size());
+									for (TokenDataType *at : pti.args)
+										fprintf(stderr, "[DELEG-ORIGIN]   arg tok=%s dd=%s tp=%d\n",
+											at ? at->spelling() : "(null)",
+											(at && at->datadef()) ? at->datadef()->name.c_str() : "(null)",
+											(at && at->datadef()) ? (int)at->datadef()->is_template_param() : -1);
+								}
+						}
+					}
 					// The delegation IS the whole prologue: relower
 					// the target ctor call from the pattern's token
 					// args under the active binding/pack window
