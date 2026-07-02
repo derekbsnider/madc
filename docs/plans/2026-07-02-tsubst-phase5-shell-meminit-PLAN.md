@@ -288,3 +288,75 @@ with testmap/testset/testsubscript green. NEXT: pair piecewise (delegating
 call) and pair indexed (pack expansion inside ci args — check whether the
 pattern-mode translate_expr of `std::get<_Indexes1>(__first)...` produced a
 usable pattern or bailed at admission; probe [MEMINIT-HIT] on testsubscript).
+
+## Slice-1 pair shapes (2026-07-02 cont.) — delegating WIRED, blocked on
+## dependent template-id arg types; wall precisely characterized
+
+**Landed (this increment):** the DELEGATING memoize+hit path is wired
+end-to-end. Memoize: `find_delegating_initializer` on the pattern fd → a
+`delegating=true` entry keeping the ci's TOKEN args (no class-shape
+admission — [class.base.init]p6: the target performs the COMPLETE
+initialization, so the delegation IS the whole prologue). Hit: relower via
+`tsubst_relower_deferred_construction(ci_args, tf, ocls, &binding,
+this=id("__this"), yield=false, relax=true, require_overload_match=true)`.
+`require_overload_match` is NEW: a delegation names a specific target, so
+selection failure must ERROR (clean meminit_failed → shell cis, body stays
+HIT) — the blind method_map default-ctor fallback produced a bogus
+`Class__Class` call that the emittability gate then (correctly) rejected,
+turning previously-HIT pair bodies into FALLBACKs (ratchet red). With the
+flag: 35 hit / 0 fallback on testsubscript — ratchet green, honest
+"attempted, not yet covered" state. func_def's delegating emission now also
+honors the whole-ctor switch (`delegating_ci && !m_tsubst_body_carries_meminits`).
+The emittability gate additionally collects callees from meminit_stmts
+(delegation/member-ctor calls ride at body head — they need the same
+ODR-record + emittable gate). Probes in-tree (env MADC_XTEST_PAT_MEMINIT_DEBUG):
+[MEMINIT-MEMO], [MEMINIT-DELEG-FAIL], [RELOWER-SELECT], [TSUBST-UNEMITTABLE].
+
+**The wall (probe-proven):** the delegation's 4 arg datadefs stay DEPENDENT
+at hit time — `tuple__Args1`, `tuple__Args2`,
+`_Index_tuple___integer_pack_sizeof_____Args1_____` (×2) — so
+`select_ctor_overload` scores -1 on every candidate. `subst_datadef` digs
+ptr/ref/const/array LAYERS only; a dependent template-id SHELL class
+(`tuple<_Args1...>`) has NO structural template-origin metadata (DataDefCLASS
+records nothing about "instantiated-from template X with args [...]"), so no
+CIR-side substitution can concretize it. The relower's new generic stand-in
+(dependent LAYERED args → `tsubst_concrete_arg_token(subst_datadef(...))`
+for scoring only) is landed but inert for shells.
+
+**How the shell does it (recon):** `instantiate_fn_template_binding`
+(parser.cpp ~32189) is TOKEN-SUBSTITUTION instantiation — it handles
+template-id packs (`_Args1` deduced from `tuple<_Args1...>`) and NON-TYPE
+tid packs (`_Indexes1`) at 0/1 elements by token surgery, then re-parses the
+signature. This machinery SURVIVES hybrid B (signature parse stays per
+§11.2) — it is what created the indexed `__o20` instantiations.
+
+**The model to follow:** `resolve_copied_dependent_call` (cir_builder.cpp
+~1317) already does hit-time re-resolution WITH instantiation: substituted
+arg types → synthetic TokenCallMethod of `tsubst_concrete_arg_token` args →
+`instantiate_member_fn_template_for_call` (deduction + instantiate, tid-packs
+included). The delegating arm should drive the SAME shape for ctor calls.
+Its missing input = concrete arg types:
+- `__first`/`__second`: resolvable NOW — pattern ci args that are TokenVar
+  references to the recipe's own parameters take their concrete type from
+  the INSTANTIATED fd->parameters (the g++ PARM_DECL model: signature params
+  substitute once, body references reuse them). Survives slice 2.
+- `_Index_tuple` temps: the TRUE wall — `typename
+  _Build_index_tuple<sizeof...(_Args1)>::__type()` needs structural
+  dependent-type tsubst. Road (i), the principled increment: record
+  template-origin metadata (template ref + arg structure, incl.
+  sizeof...(pack) / __integer_pack forms) on dependent template-id shells AT
+  PATTERN PARSE (the parser has the structure in hand when it creates the
+  shell); teach subst_datadef one new case: rebuild via the Program's
+  class-template instantiation + member-alias resolution. Serves every KIND
+  (Kind-3 rebind included) — this is the parse-once TYPE-half completion.
+- Pair INDEXED additionally needs NON-TYPE pack expansion at hit time
+  (`std::get<_Indexes1>(...)...` — m_tsubst_active_type_arg_packs is
+  type-only today; non-type packs exist only in the parser's
+  tid_packs_nontype token substitution).
+
+**Sequencing consequence:** slice 2's body-parse skip can proceed PER-FD for
+ctors tsubst fully covers (the _Auto_node class of shapes now); pair joins
+once road (i) lands. The mem-init capture+replay (parser half) remains the
+transitional carrier for not-yet-covered ctors. Slice 4's DELETE gate
+requires road (i) (or an explicitly decided narrower scope) — cost it at
+slice-2 time.

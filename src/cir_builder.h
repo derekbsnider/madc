@@ -444,13 +444,19 @@ class CirBuilder {
 	// and emitted ahead of the tsubst body (whole-ctor switch: func_def's
 	// prologue skips its shell-token-side emission when the hit body
 	// already carries the mem-inits). Only ASSIGN-path members (scalar /
-	// pointer / reference — no class-typed member ctor-call, no delegating
-	// or base inits) are admitted for now; anything else keeps the shell
-	// path (absent map entry).
+	// pointer / reference — no class-typed member ctor-call, no base
+	// inits) are admitted for now; anything else keeps the shell
+	// path (absent map entry). A DELEGATING ci ([class.base.init]p6: the
+	// sole initializer, and the target ctor performs the COMPLETE
+	// initialization) keeps its TOKEN args instead: the target is
+	// overload-SELECTED per instantiation (arity/types vary with the
+	// pack), so the hit path relowers the whole ctor call.
 	struct TsubstMemInitPattern {
 		std::string name;		// ci name (member, per fd source order)
 		cir_node *arg = NULL;		// the single lowered arg expr (NULL = `member()` value-init)
 		bool value_init = false;	// `member()` — zero-init scalar/pointer
+		bool delegating = false;	// delegation: relower the target ctor call at hit
+		std::vector<TokenBase *> ci_args; // token args for the relower shapes
 	};
 	std::map<class FuncDef *, std::vector<TsubstMemInitPattern> > m_tsubst_meminit_patterns;
 	// Set by a tsubst_method_body HIT whose returned body already carries the
@@ -1051,6 +1057,10 @@ public:
 	// to a reference parameter) and forces the manual assembly even when no
 	// pack element demands it. Returns NULL when the caller's simple
 	// re-translate path should run instead (placement-new only).
+	// `require_overload_match` (the delegating-ci path) suppresses the
+	// blind default-ctor fallback: a delegation names a SPECIFIC target
+	// overload, so no-match must error (clean caller fallback), never
+	// default-construct.
 	cir_node *tsubst_relower_deferred_construction(
 		const std::vector<class TokenBase *> &ctor_args,
 		class TokenBase *origin,
@@ -1058,7 +1068,8 @@ public:
 		const std::map<DataDef *, DataDef *> *subst,
 		const std::function<node_t()> &this_addr,
 		bool yield_this_addr,
-		bool relax_class_args);
+		bool relax_class_args,
+		bool require_overload_match = false);
 
 	// `tsubst` proper (two-tree Phase 3): copy an immutable Tree-1 subtree into a
 	// fresh per-instantiation Tree-2 subtree AND substitute its template-parameter

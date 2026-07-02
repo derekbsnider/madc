@@ -1715,7 +1715,7 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 	DataDefCLASS *concrete_class,
 	const std::map<DataDef *, DataDef *> *subst,
 	const std::function<node_t()> &this_addr, bool yield_this_addr,
-	bool relax_class_args)
+	bool relax_class_args, bool require_overload_match)
 {
 	// relax_class_args (the decl-marker path) has no simple re-translate
 	// fallback, so it always takes the manual assembly below.
@@ -1751,6 +1751,23 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					continue;
 				}
 			}
+			// A dependent (pattern-token) argument scores -1 against
+			// every concrete parameter — overload selection needs the
+			// SUBSTITUTED type. Stand in a concrete-typed token for
+			// scoring only; the lowering loop below still consumes the
+			// original token.
+			DataDef *add = arg ? arg->datadef() : NULL;
+			if (add && subst && template_param_under_type_layers(add)) {
+				DataDef *sdd = subst_datadef(m_prog, add, *subst);
+				if (sdd && !template_param_under_type_layers(sdd)) {
+					expanded_ctor_args.push_back(
+						tsubst_concrete_arg_token(
+							sdd,
+							expanded_ctor_args.size(),
+							arg));
+					continue;
+				}
+			}
 			expanded_ctor_args.push_back(arg);
 		}
 		return expanded_ctor_args;
@@ -1759,7 +1776,17 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 		if (!placement_ctor_checked) {
 			placement_ctor = select_ctor_overload(
 				concrete_class, placement_ctor_args());
-			if (!placement_ctor) {
+			if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG")) {
+				fprintf(stderr, "[RELOWER-SELECT] class=%s nctors=%zu nargs=%zu -> %s\n",
+					concrete_class->name.c_str(),
+					concrete_class->ctors.size(),
+					placement_ctor_args().size(),
+					placement_ctor ? placement_ctor->name.c_str() : "(none)");
+				for (TokenBase *a : placement_ctor_args())
+					fprintf(stderr, "[RELOWER-SELECT]   arg dd=%s\n",
+						(a && a->datadef()) ? a->datadef()->name.c_str() : "(null)");
+			}
+			if (!placement_ctor && !require_overload_match) {
 				auto it = concrete_class->method_map.find(
 					concrete_class->name);
 				if (it != concrete_class->method_map.end()
@@ -14838,7 +14865,29 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		FuncDef *recipe_fd = dynamic_cast<FuncDef *>(recipe->var.type);
 		DataDefCLASS *pat_ocls =
 			dynamic_cast<DataDefCLASS *>(source->member_template_owner);
-		if (recipe_fd && pat_ocls && !recipe_fd->ctor_initializers.empty()
+		const FuncDef::CtorInitializer *pat_del =
+			(recipe_fd && pat_ocls)
+				? find_delegating_initializer(pat_ocls, recipe_fd)
+				: NULL;
+		if (pat_del && recipe_fd->ctor_initializers.size() == 1) {
+			// DELEGATING ctor (the pair piecewise shape): the delegation
+			// call is the ENTIRE construction prologue — no class-shape
+			// admission needed (bases/members/vptr belong to the target
+			// ctor). The target is selected per instantiation from the
+			// substituted arg types, so keep the TOKEN args for the hit
+			// path's relower.
+			TsubstMemInitPattern p;
+			p.name = pat_del->name;
+			p.delegating = true;
+			p.ci_args = pat_del->args;
+			m_tsubst_meminit_patterns[source] =
+				std::vector<TsubstMemInitPattern>(1, p);
+			if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+				fprintf(stderr, "[MEMINIT-MEMO] deleg owner=%s ci=%s nargs=%zu\n",
+					pat_ocls->name.c_str(), pat_del->name.c_str(),
+					pat_del->args.size());
+		} else if (recipe_fd && pat_ocls && !pat_del
+		    && !recipe_fd->ctor_initializers.empty()
 		    && pat_ocls->bases.empty() && !pat_ocls->has_vtable
 		    && pat_ocls->member_default_inits.empty()) {
 			bool admit = true;
@@ -15030,6 +15079,39 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			DataDefCLASS *ocls = m_cur_method
 				? m_cur_method->owner_class : NULL;
 			for (const TsubstMemInitPattern &p : mi->second) {
+				if (p.delegating) {
+					// The delegation IS the whole prologue: relower
+					// the target ctor call from the pattern's token
+					// args under the active binding/pack window
+					// (overload selection is per-instantiation).
+					cir_node *dc = NULL;
+					if (ocls) {
+						try {
+							dc = tsubst_relower_deferred_construction(
+								p.ci_args, tf, ocls, &binding,
+								[&]() -> node_t {
+									return id("__this", tf);
+								},
+								/*yield_this_addr=*/false,
+								/*relax_class_args=*/true,
+								/*require_overload_match=*/true);
+						} catch (...) {
+							dc = NULL;
+						}
+					}
+					if (!dc || cir_tree_has_error(dc->as_node())) {
+						if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG")) {
+							const char *m = dc ? cir_first_error_msg(dc->as_node()) : NULL;
+							fprintf(stderr, "[MEMINIT-DELEG-FAIL] fn=%s why=%s\n",
+								tf->var.name.c_str(),
+								m ? m : "(relower returned null)");
+						}
+						meminit_failed = true;
+						break;
+					}
+					meminit_stmts.push_back(dc->as_node());
+					continue;
+				}
 				DataDef *mem = NULL;
 				if (ocls)
 					for (const auto &m : ocls->members)
@@ -15101,6 +15183,12 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	{
 		std::set<std::string> callees;
 		cir_collect_call_callees(result, callees);
+		// Mem-init statements ride at the head of the returned body (below):
+		// their callees (delegated ctor, member ctor calls, arg calls) need
+		// the same ODR-record + emittable gate as the body's.
+		if (!meminit_failed)
+			for (node_t s : meminit_stmts)
+				cir_collect_call_callees(s, callees);
 		// Pass 1.6 synthesizes destructors for synth-eligible classes and emits
 		// them DIRECTLY into the module (not as pending_funcs FuncDefs), so the
 		// pending-funcs scan below cannot see them. Pre-collect their base dtor
@@ -15134,8 +15222,12 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			return false;
 		};
 		for (const std::string &s : callees) {
-			if (!emittable(s))
+			if (!emittable(s)) {
+				if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+					fprintf(stderr, "[TSUBST-UNEMITTABLE] fn=%s sym=%s\n",
+						tf->var.name.c_str(), s.c_str());
 				return bail_restore("tsubst body calls un-emittable symbol");
+			}
 			referenced_funcs.insert(s);
 		}
 	}
@@ -15538,7 +15630,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		const FuncDef::CtorInitializer *delegating_ci =
 			(is_ctor && fd) ? find_delegating_initializer(ocls, fd)
 					: NULL;
-		if (delegating_ci) {
+		// Phase-5 slice 1 whole-ctor switch (delegating form): a tsubst hit
+		// body already carrying the substituted delegation call owns the
+		// entire prologue — the shell-token-side call would double-construct.
+		if (delegating_ci && !m_tsubst_body_carries_meminits) {
 #ifdef MADC_DEBUG_CTORINIT
 			fprintf(stderr, "[ctorinit] DELEGATING-EMIT owner=%s fn=%s ci=%s nargs=%zu ninit=%zu\n",
 				ocls->name.c_str(), tf->var.name.c_str(),
