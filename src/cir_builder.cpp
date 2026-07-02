@@ -2614,6 +2614,24 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 	dst->datadef           = (subst && src->datadef)
 				     ? subst_datadef(m_prog, src->datadef, *subst)
 				     : src->datadef;
+	// Local-class TAG REBIND: class_tag_ref bakes the tag NAME string at
+	// pattern build, so when the binding remaps the tag's class (pattern local
+	// class -> the instantiation's concrete <owner>__<local> class) the copied
+	// tag N_ID must be renamed too — otherwise the declaration keeps the
+	// PATTERN's tag while the local class's ctor/dtor take the concrete struct
+	// (c2mir "incompatible argument type for pointer type parameter" on every
+	// basic_string::_M_construct hit's _Guard).
+	if (subst && src->datadef && dst->datadef && dst->datadef != src->datadef
+	    && (dst->base.code == N_STRUCT || dst->base.code == N_UNION)
+	    && !dst->datadef->name.empty()) {
+		node_t tag = c2mir_node_first_op(dst->as_node());
+		cir_node *tn = tag ? CIR_NODE(tag) : NULL;
+		if (tn && tn->base.code == N_ID) {
+			const char *nm = dst->datadef->name.c_str();
+			tn->base.u.s.s = c2mir_uniq_str(c2m, nm, strlen(nm) + 1);
+			tn->base.u.s.len = strlen(nm) + 1;
+		}
+	}
 	dst->typedef_name      = src->typedef_name;
 	dst->error_msg         = src->error_msg;
 	dst->src_lang          = src->src_lang;
@@ -3244,8 +3262,15 @@ node_t CirBuilder::ptr_type_node(DataDef *dd)
 node_t CirBuilder::class_tag_ref(DataDef *dd, TokenBase *origin)
 {
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
-	return node2(sdd && sdd->union_layout ? N_UNION : N_STRUCT,
-		     id(dd->name.c_str(), origin), ignore());
+	node_t ref = node2(sdd && sdd->union_layout ? N_UNION : N_STRUCT,
+			   id(dd->name.c_str(), origin), ignore());
+	// Tree-1 recipe: carry the tag's class identity so tsubst can rebind a
+	// pattern-LOCAL class tag to the instantiation's concrete class — the tag
+	// NAME string baked here is deaf to datadef substitution. Pattern mode
+	// only, so production trees are byte-identical.
+	if (m_tsubst_pattern_mode)
+		CIR_NODE(ref)->datadef = dd;
+	return ref;
 }
 
 // N_TYPE node for a `struct Cls *` cast target (matches class_struct_def's
@@ -4145,6 +4170,13 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 			// reference emits N_UNION.
 			node_t sref = node2(sdd->union_layout ? N_UNION : N_STRUCT,
 					    id(sdd->name.c_str()), ignore());
+			// Tree-1 recipe: carry the tag's class identity so tsubst can
+			// rebind a pattern-LOCAL class tag (concrete members, so no
+			// dependent-member marker above) to the instantiation's concrete
+			// <owner>__<local> class. Pattern mode only — production trees
+			// are byte-identical.
+			if (m_tsubst_pattern_mode)
+				CIR_NODE(sref)->datadef = sdd;
 			append(lst, sref);
 			return lst;
 		}
