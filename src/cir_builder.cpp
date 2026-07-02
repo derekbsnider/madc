@@ -15276,6 +15276,54 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			}
 			if (admit && !mip.empty())
 				m_tsubst_meminit_patterns[source] = mip;
+		} else if (recipe_fd && pat_ocls && !pat_del
+		    && !recipe_fd->ctor_initializers.empty()
+		    && pat_ocls->member_default_inits.empty()) {
+			// Member-CONSTRUCTION shape (the pair indexed ctor:
+			// `first(std::forward<_Args1>(std::get<_Indexes1>(__t1))...)`).
+			// Every ci must name a data member, and every class-instance
+			// member must be covered by a ci — an uncovered one would
+			// default-construct in the PROLOGUE, before these body-head
+			// inits (declaration-order violation). Bases/vtable are fine:
+			// they emit in the prologue, always before members. Args stay
+			// TOKENS; the hit relowers them per instantiation (pack
+			// expansions need the live window).
+			bool admit2 = true;
+			std::vector<TsubstMemInitPattern> mip2;
+			std::set<std::string> ci_member_names;
+			for (const FuncDef::CtorInitializer &ci :
+			     recipe_fd->ctor_initializers) {
+				std::string mem_name;
+				for (const auto &m : pat_ocls->members)
+					if (ci.name == m.first
+					    || last_scope_part(ci.name) == m.first) {
+						mem_name = m.first;
+						break;
+					}
+				if (mem_name.empty()) {
+					admit2 = false;	// base/unknown ci: shell path
+					break;
+				}
+				ci_member_names.insert(mem_name);
+				TsubstMemInitPattern p;
+				p.name = mem_name;
+				p.construct = true;
+				p.ci_args = ci.args;
+				mip2.push_back(p);
+			}
+			if (admit2)
+				for (const auto &m : pat_ocls->members)
+					if (as_class_instance(m.second)
+					    && !ci_member_names.count(m.first)) {
+						admit2 = false;
+						break;
+					}
+			if (admit2 && !mip2.empty()) {
+				m_tsubst_meminit_patterns[source] = mip2;
+				if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+					fprintf(stderr, "[MEMINIT-MEMO] construct owner=%s ncis=%zu\n",
+						pat_ocls->name.c_str(), mip2.size());
+			}
 		}
 	}
 	cir_node *pattern = pi->second;
@@ -15505,6 +15553,114 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 					break;
 				}
 				TokenBase *origin = tf;
+				if (p.construct) {
+					// Member-CONSTRUCTION ci (token args, possibly
+					// pack expansions): relower per instantiation
+					// under the live binding/pack window.
+					//
+					// Covered TODAY: the EMPTY expansion only (all
+					// ci args are pack expansions of window arity
+					// 0) — default-construction / zero-init, no arg
+					// lowering. A NON-EMPTY pack element is a raw
+					// dependent pattern token (`std::forward<_Args1>
+					// (std::get<_Indexes1>(__t1))`); hit-time
+					// translate_expr on it recurses unboundedly in
+					// class_ctor_call<->object_arg_addr (temp
+					// materialization of an ungroundable class arg),
+					// so it must WAIT for the per-element dependent-
+					// call re-resolution capability. Fail BEFORE the
+					// relower — shell carrier emits the cis.
+					bool all_empty_packs = true;
+					for (TokenBase *a : p.ci_args) {
+						TokenPackExpansion *pe =
+							dynamic_cast<TokenPackExpansion *>(a);
+						DataDefTemplateParam *tp = (pe && pe->pattern)
+							? template_param_in_pack_pattern(pe->pattern)
+							: NULL;
+						if (!tp || !m_tsubst_active_type_arg_packs
+						    || tp->param_index
+						       >= m_tsubst_active_type_arg_packs->size()
+						    || !(*m_tsubst_active_type_arg_packs)
+							        [tp->param_index].empty()) {
+							all_empty_packs = false;
+							break;
+						}
+					}
+					if (!all_empty_packs && !p.ci_args.empty()) {
+						if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+							fprintf(stderr, "[MEMINIT-CONSTRUCT-FAIL] fn=%s member=%s why=non-empty pack args (not covered)\n",
+								tf->var.name.c_str(), p.name.c_str());
+						meminit_failed = true;
+						break;
+					}
+					if (DataDefCLASS *mc = as_class_instance(mem)) {
+						cir_node *cc = NULL;
+						try {
+							cc = tsubst_relower_deferred_construction(
+								p.ci_args, tf, mc, &binding,
+								[&]() -> node_t {
+									return node1(N_ADDR,
+										node2(N_DEREF_FIELD,
+										      id("__this", origin),
+										      id(p.name.c_str(), origin)),
+										origin);
+								},
+								/*yield_this_addr=*/false,
+								/*relax_class_args=*/true,
+								/*require_overload_match=*/true);
+						} catch (...) {
+							cc = NULL;
+						}
+						if (!cc || cir_tree_has_error(cc->as_node())) {
+							if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG")) {
+								const char *m2 = cc ? cir_first_error_msg(cc->as_node()) : NULL;
+								fprintf(stderr, "[MEMINIT-CONSTRUCT-FAIL] fn=%s member=%s why=%s\n",
+									tf->var.name.c_str(), p.name.c_str(),
+									m2 ? m2 : "(relower returned null)");
+							}
+							meminit_failed = true;
+							break;
+						}
+						meminit_stmts.push_back(cc->as_node());
+						continue;
+					}
+					// Scalar/pointer member: only the EMPTY pack
+					// expansion (or bare `member()`) is covered —
+					// value-init (`__this->second = 0`). A non-empty
+					// pack on a scalar keeps the shell path.
+					bool zero = false;
+					if (p.ci_args.empty())
+						zero = true;
+					else if (p.ci_args.size() == 1) {
+						TokenPackExpansion *pe =
+							dynamic_cast<TokenPackExpansion *>(p.ci_args[0]);
+						DataDefTemplateParam *tp = (pe && pe->pattern)
+							? template_param_in_pack_pattern(pe->pattern)
+							: NULL;
+						if (tp && m_tsubst_active_type_arg_packs
+						    && tp->param_index
+						       < m_tsubst_active_type_arg_packs->size()
+						    && (*m_tsubst_active_type_arg_packs)
+							       [tp->param_index].empty())
+							zero = true;
+					}
+					if (!zero || (!mem->is_numeric()
+						      && !mem->is_pointer())) {
+						if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+							fprintf(stderr, "[MEMINIT-CONSTRUCT-FAIL] fn=%s member=%s why=scalar shape not covered\n",
+								tf->var.name.c_str(), p.name.c_str());
+						meminit_failed = true;
+						break;
+					}
+					node_t zfld = node2(N_DEREF_FIELD,
+							    id("__this", origin),
+							    id(p.name.c_str(), origin));
+					node_t zasgn = node2(N_ASSIGN, zfld,
+							     integer(0L, origin), origin);
+					meminit_stmts.push_back(
+						node2(N_EXPR, list(), zasgn, origin));
+					continue;
+				}
 				node_t fld = node2(N_DEREF_FIELD,
 						   id("__this", origin),
 						   id(p.name.c_str(), origin));
@@ -15566,10 +15722,13 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		cir_collect_call_callees(result, callees);
 		// Mem-init statements ride at the head of the returned body (below):
 		// their callees (delegated ctor, member ctor calls, arg calls) need
-		// the same ODR-record + emittable gate as the body's.
+		// the same ODR-record + emittable gate — but collected SEPARATELY:
+		// an un-emittable mem-init callee fails only the mem-inits (shell
+		// carrier emits the cis), never the body hit.
+		std::set<std::string> meminit_callees;
 		if (!meminit_failed)
 			for (node_t s : meminit_stmts)
-				cir_collect_call_callees(s, callees);
+				cir_collect_call_callees(s, meminit_callees);
 		// Pass 1.6 synthesizes destructors for synth-eligible classes and emits
 		// them DIRECTLY into the module (not as pending_funcs FuncDefs), so the
 		// pending-funcs scan below cannot see them. Pre-collect their base dtor
@@ -15611,6 +15770,21 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			}
 			referenced_funcs.insert(s);
 		}
+		for (const std::string &s : meminit_callees) {
+			if (meminit_failed)
+				break;
+			if (!emittable(s)) {
+				if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+					fprintf(stderr, "[TSUBST-UNEMITTABLE-MEMINIT] fn=%s sym=%s\n",
+						tf->var.name.c_str(), s.c_str());
+				meminit_failed = true;
+			}
+		}
+		// ODR-record mem-init callees only when the mem-inits survive —
+		// a dropped set must leave no dangling referenced symbols.
+		if (!meminit_failed)
+			for (const std::string &s : meminit_callees)
+				referenced_funcs.insert(s);
 	}
 	// Phase-5 slice 1: a fully-substituted mem-init set rides at the head of
 	// the hit body ([class.base.init]-correct for the admitted shape: the

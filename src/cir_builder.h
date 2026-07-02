@@ -456,6 +456,8 @@ class CirBuilder {
 		cir_node *arg = NULL;		// the single lowered arg expr (NULL = `member()` value-init)
 		bool value_init = false;	// `member()` — zero-init scalar/pointer
 		bool delegating = false;	// delegation: relower the target ctor call at hit
+		bool construct = false;		// member CONSTRUCTION ci (class member /
+						// pack-expansion args): relowered at hit
 		std::vector<TokenBase *> ci_args; // token args for the relower shapes
 	};
 	std::map<class FuncDef *, std::vector<TsubstMemInitPattern> > m_tsubst_meminit_patterns;
