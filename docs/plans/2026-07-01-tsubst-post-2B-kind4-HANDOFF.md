@@ -37,6 +37,44 @@
 > Kind-3 (lever 2), the local-class ctor `this`-capture bug (lever 3, now joined by
 > the 4 sweep-surfaced flag-on-only failures), mop-up (lever 4).
 
+> ## ✅ UPDATE 3 (2026-07-02) — wall-map item 4 LANDED: scalar-ref-param slice — **257/9 (96%)**
+>
+> `reference-param value-read` class GONE (×2 → hits). ONE reason-class remains
+> suite-wide: `template-id '<' in body` ×9 (the `_Rb_tree` trio — wall-map items 1–3).
+> Two root causes, both fixed at the deepest layer, no guard/narrowing kept:
+> - **The blanket guard was stale**: a ref-param value read lowers to an UNTYPED
+>   `N_DEREF(id)` that c2mir types from the concrete instantiated SHELL's parameter
+>   declaration — per-instantiation re-typing for free (g++ oracle: pt.cc
+>   `tsubst_copy_and_build` INDIRECT_REF rebuilds via `build_x_indirect_ref` on the
+>   substituted operand). `tsubst_body_has_unsupported_reference_param` +
+>   `tsubst_reference_param_is_type_pack` DELETED outright.
+> - **The one real hazard the guard masked**: `is_size1_pointer` classified a
+>   DEPENDENT pointee as `void*` (DataDefTemplateParam's placeholder repr rawtype is
+>   dtVOID), baking the GNU size-1 `(char*)` rewrite into the shared pattern —
+>   `base + a` became pointer arithmetic (right value, wrong type, c2mir warning).
+>   Fix: a dependent pointee is "not known yet", NOT void (`template_param_under_
+>   type_layers` check in the classifier). Latent edge documented: an instantiation
+>   binding Arg=void* that does arithmetic would now need copy-time re-decision
+>   (loud c2mir error, not silent wrong code; no suite shape does this).
+> - **Probe methodology paid off again**: the emitted-C diff also showed the
+>   RE-PARSE path silently DROPS `static` on a body local (`static Node n; return
+>   &n;` → dangling pointer flag-off) while the tsubst body preserves it — the
+>   dying path had the bug, the new path is gcc-faithful.
+> - Unit-test specimen updated: the engagement-counters test's fallback example was
+>   the deleted guard's `T&` shape (now a HIT, `got==47` still exact through the
+>   tsubst body); replaced with a Kind-3 `typename T::type` body (verified on
+>   bin/madc: 1 hit / 1 fallback, `dependent name P:: in body`).
+> - Flag-on gate list grew: + testfunctortmploperator, testmembertmplptrret (1/0
+>   baselines). Gates: fulltest 674/0/0/16 exit 0; burndown 257/9; sweep identical
+>   to baseline (the two reducers' DIFF entries gone); torture byte-identical by
+>   construction for C (the classifier change only alters behavior when a
+>   DataDefTemplateParam is present — impossible in C code; C++ both-flag coverage
+>   via fulltest + gate).
+>
+> **NEXT: wall-map items 1–3 in order** — (1) `_Alloc_node::operator()` forward
+> carve-out, (2) `_M_insert_` dependent functor-call parser fix (⚠ the assignment-
+> garbage hazard), (3) `_M_insert_unique` return-construction deferral.
+
 > ## 🗺 UPDATE 2 (2026-07-02, @ `9873d7dd`) — THE ROAD TO 100%: complete wall map of the last 11
 >
 > All 11 remaining fallbacks are IDENTIFIED (per-test scanner: `tmp/tsubst_fallback_scan.sh`).

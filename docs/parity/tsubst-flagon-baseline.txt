@@ -24,3 +24,9 @@ testsubscript 35 0
 testcontainerdtor 30 3
 testmadc_ns 30 3
 testlocalclassraii 1 0
+# Then the scalar-ref-param slice: the blanket reference-param guard deleted
+# (untyped N_DEREF types from the concrete shell decl) + is_size1_pointer no
+# longer bakes the GNU void* (char*) rewrite for a DEPENDENT pointee into a
+# shared pattern. Gate list gains the two scalar-ref-param reducers.
+testfunctortmploperator 1 0
+testmembertmplptrret 1 0

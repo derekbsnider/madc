@@ -982,12 +982,19 @@ TEST_CASE("CIR: direct tsubst args cover a body-only template parameter") {
 // --show-stats uses these counters to show whether instantiated member-template
 // bodies actually used the Tree-1 tsubst path or fell back to the parsed body.
 TEST_CASE("CIR: tsubst engagement counters split hits and fallbacks") {
+    // The fallback specimen must be a shape the tsubst gate still rejects.
+    // Scalar reference-param value reads became HITS (the blanket guard was
+    // deleted once untyped-deref/shell-decl typing was verified), so the
+    // specimen is a Kind-3 dependent member type (`typename T::type`) — the
+    // deepest remaining reject class. When Kind-3 lands, replace it with
+    // whatever the burndown says still falls back (or assert 0 fallbacks).
     const char *source =
+	"struct Inner { typedef int type; int v; };\n"
 	"struct Holder {\n"
 	"    template<class T> int hit(T v) { return v + 1; }\n"
-	"    template<class T> int ref_fallback(T& v) { return v + 2; }\n"
+	"    template<class T> int dep_fallback(T t) { typename T::type w = t.v; return w + 2; }\n"
 	"};\n"
-	"int main() { Holder h; int x = 5; return h.hit(3) * 10 + h.ref_fallback(x); }\n";
+	"int main() { Holder h; Inner i; i.v = 5; return h.hit(3) * 10 + h.dep_fallback(i); }\n";
     const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
     std::string saved_env = old_env ? old_env : "";
     setenv("MADC_XTEST_DEP_PARSE", "1", 1);
@@ -1007,16 +1014,16 @@ TEST_CASE("CIR: tsubst engagement counters split hits and fallbacks") {
     CHECK(prog->_tsubst_body_hits >= 1);
     CHECK(prog->_tsubst_body_fallbacks >= 1);
     unsigned long long profiled = 0;
-    bool saw_ref_fallback = false;
+    bool saw_dep_fallback = false;
     for (std::map<std::string, Program::TsubstBodyProfile>::const_iterator it =
 	     prog->_tsubst_body_fallback_profile.begin();
 	 it != prog->_tsubst_body_fallback_profile.end(); ++it) {
 	profiled += it->second.count;
-	if (it->first.find("ref_fallback") != std::string::npos)
-	    saw_ref_fallback = !it->second.sample.empty();
+	if (it->first.find("dep_fallback") != std::string::npos)
+	    saw_dep_fallback = !it->second.sample.empty();
     }
     CHECK(profiled == prog->_tsubst_body_fallbacks);
-    CHECK(saw_ref_fallback);
+    CHECK(saw_dep_fallback);
 }
 
 // Two-tree pack prerequisite: the parser already deduces concrete pack element

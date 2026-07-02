@@ -3272,6 +3272,12 @@ static bool is_size1_pointer(DataDef *dd)
 	if (!dd || !dd->is_pointer()) return false;
 	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
 	if (!p || !p->base_type) return false;
+	// A DEPENDENT pointee (a template-param placeholder, whose repr rawtype
+	// is dtVOID) is "type not known yet", NOT void: the Tree-1 pattern must
+	// not bake the size-1 `(char *)` rewrite into a shared body — under
+	// substitution the operand types concretely from the instantiated
+	// shell's declaration (g++ rebuilds the op at instantiation the same way).
+	if (template_param_under_type_layers(p->base_type)) return false;
 	return p->base_type->rawtype() == DataType::dtVOID;
 }
 
@@ -14144,43 +14150,6 @@ bool CirBuilder::note_capture(Variable *v)
 // Returns NULL for anything not yet covered, so func_def falls back to
 // translate_block (the re-parse path stays the fallback per PLAN §5). Gated by
 // MADC_XTEST_DEP_PARSE so the production default is byte-identical.
-static bool tsubst_reference_param_is_type_pack(FuncDef *metadata_fd, DataDef *dd)
-{
-	if (!metadata_fd || !dd || !dd->is_reference())
-		return false;
-	DataDefREF *rd = dynamic_cast<DataDefREF *>(dd);
-	if (!rd || !rd->base_type)
-		return false;
-	DataDef *base = rd->base_type;
-	if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(base))
-		base = cd->base_type;
-	DataDefTemplateParam *tp = dynamic_cast<DataDefTemplateParam *>(base);
-	if (!tp)
-		return false;
-	return tp->param_index < metadata_fd->template_param_is_pack.size()
-	    && metadata_fd->template_param_is_pack[tp->param_index]
-	    && (tp->param_index >= metadata_fd->template_param_is_type.size()
-		|| metadata_fd->template_param_is_type[tp->param_index]);
-}
-
-static bool tsubst_datadef_involves_template_param(DataDef *dd);
-
-static bool tsubst_body_has_unsupported_reference_param(FuncDef *fd,
-						       FuncDef *metadata_fd = NULL)
-{
-	if (!fd)
-		return false;
-	if (!metadata_fd)
-		metadata_fd = fd;
-	for (size_t i = 0; i < fd->parameters.size(); ++i)
-		if (fd->parameters[i] && fd->parameters[i]->is_reference()
-		    && !tsubst_reference_param_is_type_pack(metadata_fd,
-							    fd->parameters[i])
-		    && tsubst_datadef_involves_template_param(fd->parameters[i]))
-			return true;
-	return false;
-}
-
 static bool tsubst_datadef_involves_template_param(DataDef *dd)
 {
 	if (!dd)
@@ -14722,14 +14691,14 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	    && !tsubst_pattern_has_destroy_iterator_loop(recipe)
 	    && !tsubst_pattern_is_empty_body(recipe))
 		return bail("destroy-helper guard");
-	FuncDef *recipe_fd = dynamic_cast<FuncDef *>(recipe->var.type);
-	// Ordinary reference-parameter VALUE reads stay on the parsed-body fallback.
-	// Reference parameter packs are narrower: the Tree-1 recipe has already
-	// lowered each value read through the reference pointer, so pack fan-out only
-	// needs the same element substitution and ID rename as by-value packs.
-	if (tsubst_body_has_unsupported_reference_param(source)
-	    || tsubst_body_has_unsupported_reference_param(recipe_fd, source))
-		return bail("reference-param value-read");
+	// Reference-parameter value reads (scalar AND pack) are covered: the
+	// Tree-1 recipe lowers each value read to an UNTYPED N_DEREF of the
+	// parameter id, which c2mir types from the concrete instantiated shell's
+	// parameter declaration — per-instantiation re-typing for free (g++'s
+	// INDIRECT_REF tsubst rebuilds the deref from the substituted operand the
+	// same way). Class-object argument uses defer via the N_IGNORE binding
+	// marker; anything genuinely unsupported errors into the self-detecting
+	// pattern-build fallback below.
 	if (tsubst_pattern_has_dependent_call(recipe))
 		return bail("dependent system-header call (scan)");
 
