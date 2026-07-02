@@ -6543,6 +6543,41 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 {
 	DataDefCLASS *recv_class = NULL;
 	node_t this_arg = class_this_arg(tm, recv_class, origin);
+	// Two-tree: DEPENDENT member/functor call — the receiver's type is still
+	// a template-param placeholder (`__node_gen(std::forward<_Arg>(__v))`,
+	// the dependent operator() member call the pattern parse builds), so no
+	// class or method can resolve yet. Emit the call with a REWRITABLE callee
+	// id (the placeholder's own emit name) and the receiver's stored pointer
+	// as `this`; copy-time rewrite_copied_dependent_call_id re-resolves it
+	// per instantiation (substituted receiver -> findMethodOverload ->
+	// member-template instantiate) and renames the id, or sets an error node
+	// -> self-detecting fallback. NAMED reference-param receivers only (a
+	// pointer-stored variable whose value IS the referent address); other
+	// receiver shapes stay NULL -> pattern error -> fallback.
+	if (!recv_class && m_tsubst_pattern_mode && !tm->parent_expr
+	    && template_param_under_type_layers(tm->object.type)
+	    && tm->object.is_reference()
+	    && tsubst_call_can_rewrite_after_subst(tm)) {
+		FuncDef *callee = dynamic_cast<FuncDef *>(tm->var.type);
+		std::string sym = func_emit_name(tm->var, callee);
+		if (!sym.empty()) {
+			node_t args = list();
+			append(args, id(tm->object.name.c_str(), origin));
+			// Unknown formals (deduced at instantiation): a REFERENCE-
+			// returning call argument (std::forward/std::move) forwards
+			// its POINTER — its call value already IS the object/scalar
+			// address, and a deduced forwarding-ref formal is always
+			// pointer-lowered (same convention as the unresolved-callee
+			// arm in the member-template call path).
+			for (TokenBase *arg : tm->parameters) {
+				if (ref_returning_call_type(arg))
+					append(args, ref_param_arg_addr(arg));
+				else
+					append(args, translate_expr(arg));
+			}
+			return node2(N_CALL, id(sym.c_str(), origin), args, origin);
+		}
+	}
 	if (!recv_class) return NULL;
 
 	// The method's call symbol (`ClassName__method`) and signature. When the

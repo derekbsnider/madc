@@ -2073,17 +2073,26 @@ DataDef *Program::resolve_current_class_type_alias(const std::string &name)
     // until 2a pushes a TemplateParamScope.
     if ( DataDef *tp = resolve_template_param(name) )
 	return tp;
-    for ( std::vector<DataDefCLASS *>::reverse_iterator it =
-	      class_scope_stack.rbegin();
-	  it != class_scope_stack.rend(); ++it )
-	if ( DataDef *dd = resolve_class_type_alias(*it, name) )
-	    return dd;
+    // The CURRENT METHOD's owner class is the innermost class scope while its
+    // body parses ([class.mfct]: member-function lookup reaches the class
+    // scope before any enclosing/ambient one), so it must SHADOW the
+    // class_scope_stack — which can hold unrelated classes when this parse
+    // was triggered from inside another class's method (the dependent-pattern
+    // parse of _Rb_tree::_M_insert_unique, triggered inside std::set::insert,
+    // resolved `iterator` to std::set's instead of _Rb_tree's own). In a
+    // normal in-class method parse the owner is also the stack's innermost
+    // entry, so the reorder is a no-op there.
     if ( !compounds.empty() && compounds.top()
       && compounds.top()->method
       && compounds.top()->method->owner_class )
 	if ( DataDef *dd =
 		resolve_class_type_alias(compounds.top()->method->owner_class,
 					 name) )
+	    return dd;
+    for ( std::vector<DataDefCLASS *>::reverse_iterator it =
+	      class_scope_stack.rbegin();
+	  it != class_scope_stack.rend(); ++it )
+	if ( DataDef *dd = resolve_class_type_alias(*it, name) )
 	    return dd;
     return NULL;
 }
@@ -5977,6 +5986,7 @@ bool Program::resolve_integer_constant(TokenBase *tb, int64_t &out)
 }
 
 static bool is_named_cpp_cast(const std::string &name);
+static bool datadef_involves_placeholder(DataDef *dd);
 
 static int64_t apply_integer_cast_value(DataDef *cast_dd, int64_t val,
 					bool force_unsigned = false)
@@ -13528,8 +13538,14 @@ TokenBase *Program::consume_unresolved_dependent_call(TokenBase *open)
     return t;
 }
 
-static TokenInt *make_dependent_call_placeholder(TokenBase *at)
+static TokenInt *make_dependent_call_placeholder(Program &pgm, TokenBase *at)
 {
+    // Inside a dependent-pattern parse this placeholder is a POISON, not a
+    // recovery: a `0` literal baked where a call belongs would silently
+    // miscompile every tsubst instantiation. Flag the parse so
+    // build_dependent_pattern discards the pattern (clean re-parse fallback).
+    if ( pgm.dependent_parse_in_progress )
+	pgm.dependent_parse_poisoned = true;
     TokenInt *ti = new TokenInt(0);
     ti->setDataType(&ddINT64);
     if ( at )
@@ -14014,7 +14030,15 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 		break;
 	}
     }
+    // A DEPENDENT call bound to a declaration-only placeholder with no recorded
+    // parameters has an UNKNOWN signature — its arity is judged at
+    // instantiation ([temp.dep] — g++ defers all checking on dependent calls),
+    // not here. The dependent operator() member call the pattern parse builds
+    // takes this path.
+    bool unknown_dependent_signature = dependent_parse_in_progress
+	&& fd && fd->declaration_only && fd->parameters.empty();
     if ( fd
+      && !unknown_dependent_signature
       && (fd->is_varargs
 	  ? (tc->argc()+1 < fd->parameters.size()-1)
 	  : (tc->argc()+1 != fd->parameters.size())) )
@@ -15108,7 +15132,7 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 		{
 		    TokenBase *open = pgm.nextToken();
 		    TokenBase *end = pgm.consume_unresolved_dependent_call(open);
-		    exStack.push(make_dependent_call_placeholder(end));
+		    exStack.push(make_dependent_call_placeholder(pgm, end));
 		    *tb_out = end;
 		    return QualifiedClassExprAction::PushedExpression;
 		}
@@ -17879,7 +17903,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			exStack.pop();
 			if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
 			    opStack.pop();
-			exStack.push(make_dependent_call_placeholder(tb));
+			exStack.push(make_dependent_call_placeholder(*this, tb));
 			if ( tb && tb->id() == TokenID::tkSemi )
 			    done = true;
 			return done ? ExprStep::Done : ExprStep::Break;
@@ -18170,7 +18194,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    exStack.pop();
 			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
 				opStack.pop();
-			    exStack.push(make_dependent_call_placeholder(tb));
+			    exStack.push(make_dependent_call_placeholder(*this, tb));
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 		    }
@@ -19970,6 +19994,56 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    tb = parseCallMethod(tc);
 			    tc = reselect_method_overload(tc, *recv_var, fcls, functor_name);
 			    DBG(cout << "functor call through " << fcls->name << "::operator()" << endl);
+			    opStack.push(tc);
+			    if ( tb && tb->id() == TokenID::tkSemi )
+				done = true;
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
+			// DEPENDENT functor call — the receiver's type is still a
+			// template-param placeholder (`__node_gen(args)` where
+			// `_NodeGen& __node_gen`, _Rb_tree::_M_insert_): the class
+			// (and its operator()) is unknowable until tsubst. Build a
+			// DEPENDENT operator() member call on a declaration-only
+			// placeholder method; the CIR pattern build emits it with a
+			// rewritable callee id, and copy-time
+			// resolve_copied_dependent_call's TokenMember arm re-resolves
+			// it per instantiation (substituted receiver ->
+			// findMethodOverload -> member-template instantiate). ONLY in
+			// the dependent-pattern parse: a concrete parse reaching here
+			// with an unresolved receiver must keep erroring loudly.
+			if ( !fmethod
+			  && dependent_parse_in_progress
+			  && recv_node
+			  && paren_binds_to_receiver
+			  && !member_is_assign_lhs
+			  && datadef_involves_placeholder(recv_node->datadef()) )
+			{
+			    TokenVar *tv = dynamic_cast<TokenVar *>(recv_node);
+			    Variable *recv_var;
+			    TokenBase *recv_parent = NULL;
+			    if ( tv && recv_node->type() == TokenType::ttVariable )
+				recv_var = &tv->var;
+			    else
+			    {
+				recv_var = new Variable("__functor_expr",
+					*recv_node->datadef(), 1, NULL, false);
+				recv_parent = recv_node;
+			    }
+			    FuncDef *pfd = new FuncDef(ddINT64);
+			    pfd->declaration_only = true;
+			    pfd->method_display_name = functor_name;
+			    Variable *pmv = new Variable(functor_name, *pfd, 1,
+							 NULL, false);
+			    TokenCallMethod *tc = new TokenCallMethod(*recv_var, *pmv);
+			    if ( recv_parent )
+				tc->parent_expr = recv_parent;
+			    exStack.pop();
+			    tc->file = tb->file;
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    tb = parseCallMethod(tc);
+			    DBG(cout << "dependent functor call through "
+				     << recv_var->name << endl);
 			    opStack.push(tc);
 			    if ( tb && tb->id() == TokenID::tkSemi )
 				done = true;
@@ -33786,33 +33860,35 @@ static bool tsubst_has_unqualified_call_pack_expansion(FuncDef *fd)
 // the span (e.g. `static_cast<vector<T>>`, a dependent `conditional<...>::type`
 // base) keeps the body on the re-parse fallback — the WIDE admit-all broke on
 // exactly those dependent template-ids.
-static bool tsubst_lt_opens_concrete_cast(const std::vector<TokenBase *> &d,
-					   size_t i,
-					   const std::set<std::string> &pnames)
+static bool tsubst_lt_opens_concrete_template_id(
+	const std::vector<TokenBase *> &d, size_t i,
+	const std::set<std::string> &pnames)
 {
-    if ( i == 0 || i + 1 >= d.size() )
+    // A PNAME-FREE, non-nested `<...>` span is CONCRETE in the owner scope
+    // (`static_cast<size_type>`, `pair<iterator,bool>`, `pair<_Base_ptr,
+    // _Base_ptr>`): the pattern parse resolves it exactly like the per-
+    // instantiation re-parse would, so it is safely copyable — no dependent
+    // substitution needed. Deliberately NARROW: any nested `<` or a template-
+    // param name in the span keeps the body on the re-parse fallback (the
+    // WIDE admit-all broke on exactly those dependent template-ids). This
+    // subsumes the earlier named-cast-only carve-out (same span test, minus
+    // the cast-keyword anchor).
+    size_t close = template_id_suffix_end(d, i);
+    if ( close == i || close >= d.size() )
 	return false;
-    TokenBase *prev = d[i - 1];
-    if ( !prev )
-	return false;
-    bool is_cast = is_named_cpp_cast(contextual_identifier_name(prev))
-		 || prev->id() == TokenID::tkDynamicCast;
-    if ( !is_cast )
-	return false;
-    // Walk the `<...>` span; reject a nested `<` or any template-param name.
-    for ( size_t j = i + 1; j < d.size(); ++j )
+    if ( close == i + 1 )
+	return false;                   // empty `<>` — not a concrete type
+    for ( size_t j = i + 1; j < close; ++j )
     {
 	TokenBase *t = d[j];
 	if ( !t )
 	    return false;
-	if ( t->id() == TokenID::tkGT )
-	    return j > i + 1;           // non-empty concrete type -> admit
 	if ( t->id() == TokenID::tkLT )
-	    return false;               // nested template-id -> dependent, reject
+	    return false;               // nested template-id -> reject
 	if ( pnames.count(contextual_identifier_name(t)) )
 	    return false;               // depends on a template param -> reject
     }
-    return false;
+    return true;
 }
 
 // EXCEPTION 2: an explicit-template-argument CALL (`std::forward<_Arg>(__arg)`,
@@ -34003,69 +34079,6 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 	&& (tsubst_has_placement_new_ctor_pack_expansion(fd)
 	    || tsubst_has_member_call_pack_expansion(fd)
 	    || tsubst_has_unqualified_call_pack_expansion(fd));
-    // Dependent FUNCTOR-CALL hazard (`__node_gen(std::forward<_Arg>(__v))`,
-    // _Rb_tree::_M_insert_): a call THROUGH a value parameter whose declared
-    // type involves a template param cannot be built in the pattern yet — the
-    // functor-call parse needs operand_object_class to resolve the receiver,
-    // and a placeholder receiver falls through to an assignment mis-parse
-    // (NOT self-detecting: right shape, silently wrong code). Until the
-    // dependent operator() member-call parse lands, a body that calls through
-    // a dependent-typed parameter stays on the re-parse fallback. Shape-based:
-    // parameter names come from the shell's param list; a `.`/`->`/`::`-
-    // qualified use is a member call, not a functor call.
-    std::set<std::string> dep_value_params;
-    {
-	const std::vector<TokenBase *> &d = fd->member_template_decl;
-	size_t pl_open = body_open;
-	for ( size_t i = 0; i < body_open && i < d.size(); ++i )
-	{
-	    if ( !d[i] )
-		continue;
-	    if ( size_t n = operator_id_token_span(d, i) )
-		if ( n > 1 )
-		    { i += n - 1; continue; }
-	    if ( d[i]->id() == TokenID::tkOpBrk )
-		{ pl_open = i; break; }
-	}
-	int pdepth = 0;
-	size_t pstart = pl_open + 1;
-	for ( size_t i = pl_open; i < body_open && i < d.size(); ++i )
-	{
-	    TokenBase *t = d[i];
-	    if ( !t )
-		continue;
-	    if ( t->id() == TokenID::tkOpBrk )
-		{ ++pdepth; continue; }
-	    bool param_end = false;
-	    if ( t->id() == TokenID::tkClBrk && --pdepth == 0 )
-		param_end = true;
-	    else if ( t->id() == TokenID::tkComma && pdepth == 1 )
-		param_end = true;
-	    if ( !param_end )
-		continue;
-	    bool dep = false;
-	    std::string last_ident;
-	    for ( size_t j = pstart; j < i; ++j )
-	    {
-		if ( !d[j] )
-		    continue;
-		if ( d[j]->id() == TokenID::tkAssign )
-		    break;
-		std::string nm = contextual_identifier_name(d[j]);
-		if ( nm.empty() )
-		    continue;
-		if ( pnames.count(nm) )
-		    dep = true;
-		else
-		    last_ident = nm;
-	    }
-	    if ( dep && !last_ident.empty() )
-		dep_value_params.insert(last_ident);
-	    pstart = i + 1;
-	    if ( t->id() == TokenID::tkClBrk )
-		break;
-	}
-    }
     // Body/param scan: any template-id (`<`) or `P::` dependent lookup (P a param)
     // disqualifies, except the current pack-expansion widening slice admits a
     // single TYPE-pack body when it is already structurally covered by CIR pack
@@ -34087,8 +34100,10 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 	// the close index for a real template-id, or `i` unchanged when there is none.
 	// This errs SAFELY: a comparison mis-read as a template-id only stays on the
 	// fallback; a dependent template-id is never admitted (the WIDE-gate failure).
-	// A balanced template-id is still admitted only for a CONCRETE named/RTTI cast
-	// (`static_cast<size_type>`) or the pre-existing pack-expansion carve-out.
+	// A balanced template-id is admitted only when CONCRETE in the owner scope
+	// (pname-free, non-nested span — casts, local typedefs, construction types),
+	// an explicit-template-arg CALL (the Kind-1 copy-rewritable shape), or the
+	// pre-existing pack-expansion carve-out.
 	// SHELL-side template-ids (params + ctor mem-initializers, i < body_open)
 	// are concrete under hybrid B — the per-instantiation shell parse resolves
 	// them; tsubst never copies that region. Only a BODY-region template-id
@@ -34098,7 +34113,7 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 	if ( t->id() == TokenID::tkLT
 	  && i >= body_open
 	  && template_id_suffix_end(d, i) != i
-	  && !tsubst_lt_opens_concrete_cast(d, i, pnames)
+	  && !tsubst_lt_opens_concrete_template_id(d, i, pnames)
 	  && !tsubst_lt_opens_call_template_id(d, i)
 	  && !(pack_count == 1 && has_pack_expansion
 	       && (!template_pack_body_from_system_header
@@ -34107,14 +34122,6 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 	if ( pnames.count(contextual_identifier_name(t))
 	  && i + 1 < d.size() && d[i + 1] && d[i + 1]->id() == TokenID::tkNS )
 	    return no("dependent name P:: in body");
-	if ( i >= body_open && i + 1 < d.size() && d[i + 1]
-	  && d[i + 1]->id() == TokenID::tkOpBrk
-	  && dep_value_params.count(contextual_identifier_name(t))
-	  && !(i > 0 && d[i - 1]
-	       && (d[i - 1]->id() == TokenID::tkDot
-		   || d[i - 1]->id() == TokenID::tkDeRef
-		   || d[i - 1]->id() == TokenID::tkNS)) )
-	    return no("dependent functor call in body");
     }
     return true;
 }
@@ -34249,6 +34256,8 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 	instantiating_canonical_spelling = owner->canonical_cpp_spelling;
     TemplateParamScope param_scope(*this, fd->template_param_names);
     dependent_parse_in_progress = true;
+    bool saved_poisoned = dependent_parse_poisoned;
+    dependent_parse_poisoned = false;
 
     size_t saved_diag_count = diagnostics.size();
     ErrorInfo saved_error = last_error;
@@ -34262,6 +34271,12 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 	parsed_pattern = true;
     }
     catch ( ... ) { parsed_pattern = false; }
+    // A poisoned parse (an unresolved dependent call SWALLOWED into a `0`
+    // placeholder) produced a structurally-valid but semantically-wrong tree —
+    // treat it exactly like a parse failure so tsubst never copies it.
+    if ( dependent_parse_poisoned )
+	parsed_pattern = false;
+    dependent_parse_poisoned = saved_poisoned;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
     diagnostics.resize(saved_diag_count);

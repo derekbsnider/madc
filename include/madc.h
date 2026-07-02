@@ -2012,6 +2012,12 @@ public:
     // caused (PLAN §11.5c). The g++ defer-instantiation model, scoped to the parse.
     // In-class initialized (kept out of the ctor init lists to avoid -Wreorder).
     bool dependent_parse_in_progress = false;
+    // Two-tree: set when a dependent-pattern parse hits a construct it can only
+    // SWALLOW (the unresolved-dependent-call `0`-literal placeholder): the
+    // resulting token tree is structurally valid but semantically WRONG, so
+    // build_dependent_pattern must discard it (clean re-parse fallback) rather
+    // than let tsubst bake the placeholder literal into every instantiation.
+    bool dependent_parse_poisoned = false;
     // Two-tree Phase 2: capability predicate — true only for the conservative
     // first-slice shape the dependent-parse / tsubst path handles (one TYPE param,
     // no pack, NON-DEPENDENT return, body uses `T` only in scalar positions). False

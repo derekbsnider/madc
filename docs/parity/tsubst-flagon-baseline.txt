@@ -17,12 +17,12 @@
 # packs) are hits — shell-side template-ids no longer disqualify (hybrid B),
 # and an empty body admits multi-pack / non-type-pack params. testmap and
 # testsubscript are now FULLY parse-once flag-on (0 fallback).
-testset 8 2
+testset 10 0
 testmap 11 0
 testvector 15 0
 testsubscript 35 0
-testcontainerdtor 31 2
-testmadc_ns 31 2
+testcontainerdtor 34 0
+testmadc_ns 34 0
 testlocalclassraii 1 0
 # Then the scalar-ref-param slice: the blanket reference-param guard deleted
 # (untyped N_DEREF types from the concrete shell decl) + is_size1_pointer no
@@ -35,3 +35,8 @@ testlocalclassraii 1 0
 # (_M_insert_'s `__node_gen(...)`) is now its own named eligibility reject.
 testfunctortmploperator 1 0
 testmembertmplptrret 1 0
+# Then the 100%-burndown slice (dependent functor-call parse + concrete
+# template-id carve-out + owner-first member-typedef lookup + poison for the
+# dependent-call swallow): set 10/0, containerdtor 34/0, madc_ns 34/0 —
+# EVERY gate test is now fully parse-once flag-on; suite-wide burndown is
+# 268 hit / 0 fallback (re-parse unreachable across the suite).
