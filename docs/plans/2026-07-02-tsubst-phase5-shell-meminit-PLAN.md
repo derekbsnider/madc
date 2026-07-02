@@ -267,3 +267,24 @@ delegating variants are NOT suite-live (never ODR-used). Start with
 _Auto_node (plain args) → pair piecewise (delegating, single construction
 call = the relower shape) → pair indexed (pack expansion in member-init
 args, the hardest).
+
+**CIR half FIRST LANDING (2026-07-02, working tree) — the _Auto_node shape
+is LIVE:** `m_tsubst_meminit_patterns[source]` (cir_builder.h) memoizes
+per-ci ASSIGN-path arg nodes lowered in pattern mode alongside the body
+pattern (admission: no bases/vtable/NSDMIs, NO class-instance members,
+every ci a ≤1-arg member init — anything else keeps the shell path via an
+absent entry). At hit, the args copy under the SAME binding/pack window as
+the body (inside the tsubst_cir block, before the m_tsubst_* restores);
+substituted `__this->member = init` stmts (N_ADDR-wrapped for reference
+members — the class_ctor_initializer_stmts model) ride at the HEAD of the
+returned body block, and `m_tsubst_body_carries_meminits` (cleared at
+tsubst_method_body entry, read at func_def's ctor prologue) suppresses the
+shell-side `class_ctor_initializer_stmts` — the WHOLE-CTOR switch. A failed
+substitution silently keeps the shell path (mem-inits not yet load-bearing
+under hybrid B). VERIFIED firing: `[MEMINIT-HIT] fn=..._Auto_node...
+stmts=2 failed=0` (env probe MADC_XTEST_PAT_MEMINIT_DEBUG, kept in-tree)
+with testmap/testset/testsubscript green. NEXT: pair piecewise (delegating
+— needs the whole-prologue-is-the-delegation form + relower for the ctor
+call) and pair indexed (pack expansion inside ci args — check whether the
+pattern-mode translate_expr of `std::get<_Indexes1>(__first)...` produced a
+usable pattern or bailed at admission; probe [MEMINIT-HIT] on testsubscript).

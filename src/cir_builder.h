@@ -438,6 +438,25 @@ class CirBuilder {
 	// the source template FuncDef. The pattern lives in this builder's arena
 	// (immutable Tree-1), never freed mid-compile.
 	std::map<class FuncDef *, cir_node *> m_tsubst_body_patterns;
+	// Phase-5 slice 1: memoized Tree-1 mem-initializer pattern per SOURCE
+	// ctor template — each ci's ARG expressions lowered ONCE in pattern
+	// mode alongside the body pattern; copied+substituted per instantiation
+	// and emitted ahead of the tsubst body (whole-ctor switch: func_def's
+	// prologue skips its shell-token-side emission when the hit body
+	// already carries the mem-inits). Only ASSIGN-path members (scalar /
+	// pointer / reference — no class-typed member ctor-call, no delegating
+	// or base inits) are admitted for now; anything else keeps the shell
+	// path (absent map entry).
+	struct TsubstMemInitPattern {
+		std::string name;		// ci name (member, per fd source order)
+		cir_node *arg = NULL;		// the single lowered arg expr (NULL = `member()` value-init)
+		bool value_init = false;	// `member()` — zero-init scalar/pointer
+	};
+	std::map<class FuncDef *, std::vector<TsubstMemInitPattern> > m_tsubst_meminit_patterns;
+	// Set by a tsubst_method_body HIT whose returned body already carries the
+	// substituted mem-init statements; func_def reads+clears it to suppress
+	// the shell-side ctor-init emission for exactly that ctor.
+	bool m_tsubst_body_carries_meminits = false;
 	// True while cir-building a Tree-1 recipe pattern: a template-parameter
 	// placeholder reaching type lowering is left as a deferred type-spec MARKER
 	// (the g++ TEMPLATE_TYPE_PARM-in-the-saved-tree model) instead of erroring,

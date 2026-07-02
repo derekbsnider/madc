@@ -14755,6 +14755,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	};
 	if (!madc_tsubst_dep_parse_enabled())
 		return NULL;
+	m_tsubst_body_carries_meminits = false;
 	FuncDef *source = fd ? fd->tsubst_source : NULL;
 	if (!source)
 		return bail("no tsubst source");
@@ -14827,6 +14828,77 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		pi = m_tsubst_body_patterns.find(source);
 		if (!pat)
 			return bail(pat_err ? pat_err : "pattern build error");
+		// Phase-5 slice 1: build the mem-init pattern alongside the body
+		// pattern. Admitted shape only (everything else keeps the shell
+		// path — absent map entry): every ci is a single-arg (or empty)
+		// ASSIGN-path member init (scalar/pointer/reference member), the
+		// owner has no bases / vtable / NSDMIs and no class-instance
+		// members (so the pattern inits are the ENTIRE ctor prologue and
+		// body-head emission order is [class.base.init]-correct).
+		FuncDef *recipe_fd = dynamic_cast<FuncDef *>(recipe->var.type);
+		DataDefCLASS *pat_ocls =
+			dynamic_cast<DataDefCLASS *>(source->member_template_owner);
+		if (recipe_fd && pat_ocls && !recipe_fd->ctor_initializers.empty()
+		    && pat_ocls->bases.empty() && !pat_ocls->has_vtable
+		    && pat_ocls->member_default_inits.empty()) {
+			bool admit = true;
+			for (const auto &m : pat_ocls->members)
+				if (as_class_instance(m.second))
+					admit = false;
+			std::vector<TsubstMemInitPattern> mip;
+			for (const FuncDef::CtorInitializer &ci :
+			     recipe_fd->ctor_initializers) {
+				if (!admit) break;
+				DataDef *mem = NULL;
+				std::string mem_name;
+				for (const auto &m : pat_ocls->members)
+					if (ci.name == m.first
+					    || last_scope_part(ci.name) == m.first) {
+						mem = m.second;
+						mem_name = m.first;
+						break;
+					}
+				if (!mem || ci.args.size() > 1
+				    || (ci.args.size() == 1 && !ci.args[0])) {
+					admit = false;	// delegating/base/multi-arg: shell path
+					break;
+				}
+				TsubstMemInitPattern p;
+				p.name = mem_name;
+				if (ci.args.empty()) {
+					// `member()` value-init: scalar/pointer only.
+					if (!mem->is_numeric() && !mem->is_pointer()) {
+						admit = false;
+						break;
+					}
+					p.value_init = true;
+				} else {
+					bool saved_mode2 = m_tsubst_pattern_mode;
+					std::set<std::string> saved_refs2 = referenced_funcs;
+					node_t an = NULL;
+					m_tsubst_pattern_mode = true;
+					{
+						TsubstSpeculativeDiagnostics diag2(m_prog);
+						try {
+							an = translate_expr(ci.args[0]);
+						} catch (...) {
+							an = NULL;
+						}
+						diag2.restore_public_state();
+					}
+					m_tsubst_pattern_mode = saved_mode2;
+					referenced_funcs = saved_refs2;
+					if (!an || cir_tree_has_error(an)) {
+						admit = false;
+						break;
+					}
+					p.arg = CIR_NODE(an);
+				}
+				mip.push_back(p);
+			}
+			if (admit && !mip.empty())
+				m_tsubst_meminit_patterns[source] = mip;
+		}
 	}
 	cir_node *pattern = pi->second;
 	if (!pattern)
@@ -14939,6 +15011,10 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		return bail(why);
 	};
 	node_t result = NULL;
+	// Phase-5 slice 1: substituted mem-init statements for the admitted ctor
+	// shape, copied under the SAME active binding/pack window as the body.
+	std::vector<node_t> meminit_stmts;
+	bool meminit_failed = false;
 	{
 		TsubstSpeculativeDiagnostics diag(m_prog);
 		try {
@@ -14946,6 +15022,53 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			result = copied ? copied->as_node() : NULL;
 		} catch (...) {
 			result = NULL;
+		}
+		std::map<FuncDef *, std::vector<TsubstMemInitPattern> >::iterator
+			mi = result ? m_tsubst_meminit_patterns.find(source)
+				    : m_tsubst_meminit_patterns.end();
+		if (mi != m_tsubst_meminit_patterns.end()) {
+			DataDefCLASS *ocls = m_cur_method
+				? m_cur_method->owner_class : NULL;
+			for (const TsubstMemInitPattern &p : mi->second) {
+				DataDef *mem = NULL;
+				if (ocls)
+					for (const auto &m : ocls->members)
+						if (m.first == p.name) {
+							mem = m.second;
+							break;
+						}
+				if (!mem) {
+					meminit_failed = true;
+					break;
+				}
+				TokenBase *origin = tf;
+				node_t fld = node2(N_DEREF_FIELD,
+						   id("__this", origin),
+						   id(p.name.c_str(), origin));
+				node_t init;
+				if (p.value_init)
+					init = integer(0L, origin);
+				else {
+					cir_node *ic = NULL;
+					try {
+						ic = copy_cir_subtree(p.arg, &binding);
+					} catch (...) {
+						ic = NULL;
+					}
+					if (!ic || cir_tree_has_error(ic->as_node())) {
+						meminit_failed = true;
+						break;
+					}
+					init = ic->as_node();
+					// Reference member (pointer slot) BINDS: store the
+					// referent's address (class_ctor_initializer_stmts model).
+					if (mem->is_reference())
+						init = node1(N_ADDR, init, origin);
+				}
+				node_t asgn = node2(N_ASSIGN, fld, init, origin);
+				meminit_stmts.push_back(
+					node2(N_EXPR, list(), asgn, origin));
+			}
 		}
 		diag.restore_public_state();
 	}
@@ -15015,6 +15138,23 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 				return bail_restore("tsubst body calls un-emittable symbol");
 			referenced_funcs.insert(s);
 		}
+	}
+	// Phase-5 slice 1: a fully-substituted mem-init set rides at the head of
+	// the hit body ([class.base.init]-correct for the admitted shape: the
+	// inits ARE the entire prologue) and func_def suppresses its shell-side
+	// emission (whole-ctor switch). A failed substitution just keeps the
+	// shell path — mem-inits are not yet load-bearing under hybrid B.
+	m_tsubst_body_carries_meminits = false;
+	if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG") && (meminit_failed || !meminit_stmts.empty()))
+		fprintf(stderr, "[MEMINIT-HIT] fn=%s stmts=%zu failed=%d\n",
+			tf->var.name.c_str(), meminit_stmts.size(), (int)meminit_failed);
+	if (!meminit_failed && !meminit_stmts.empty()) {
+		node_t outer = list();
+		for (node_t s : meminit_stmts)
+			append(outer, s);
+		append(outer, result);
+		result = node2(N_BLOCK, list(), outer, tf);
+		m_tsubst_body_carries_meminits = true;
 	}
 	return result;
 }
@@ -15449,7 +15589,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 						      : b->name + "__" + b->name));
 				}
 			}
-		if (is_ctor && !delegating_ci)
+		// Phase-5 slice 1 whole-ctor switch: a tsubst hit body that already
+		// carries the substituted mem-inits (at its head) owns them — the
+		// shell-token-side emission would double-initialize.
+		if (is_ctor && !delegating_ci && !m_tsubst_body_carries_meminits)
 			class_ctor_initializer_stmts(ocls, fd, prologue, tf);
 		// C++11 default member initializers (`int x = 5;`): applied for every
 		// member NOT given an explicit ctor member-init, after the ctor-init
