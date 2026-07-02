@@ -161,6 +161,55 @@ flag-off-reachable)
     isn't there yet. Probe tooling to reuse: the env-gated
     `MADC_XTEST_PAT_MEMINIT_DEBUG` prints (pattern-tail parsed/ctor_inits +
     capture span/src) — reconstruct from this description; removed pre-revert.
+  - **BLOCKER DISSOLVED (2026-07-02, definitive probe) — there are NO stray
+    injected tokens.** A skip-loop discard probe + bulk-injection/drain probes
+    across all four injector sites (fnbind, pattern, defbody, lazyfull) on
+    teststdstringconv showed ZERO stream imbalance (no fnbind drain ever
+    fired) and that every discarded `: ...` span belongs to the pattern being
+    parsed. The "to_string captured basic_string's mem-init" reading was a
+    DOUBLE ILLUSION: (1) `build_dependent_pattern` did not isolate
+    `compounds`, so a pattern built mid-body-parse (to_string's body
+    `string __str(...)` at basic_string.h:4170 → ctor-construction
+    instantiation → pattern build for basic_string's _Tp sv-ctor) saw
+    `compounds.top()->method` = the ENCLOSING function and was
+    nested-renamed `__ns_std____cxx11_to_string____pat12__17` — reading as
+    "to_string's pattern" when it was the SV-CTOR's pattern parsing its OWN
+    `: basic_string(__sv_wrapper(...), __a)` mem-init; (2) `clone()` stamps
+    tokens with the CURRENT `_parse_file/_parse_line` (TokenBase ctor), so
+    decl clones carry the USE-site position — provenance from clone stamps
+    is a trap. The capture mechanism was capturing the RIGHT span for the
+    RIGHT fd all along. Slice 1 is UNBLOCKED: re-apply the documented
+    capture+replay mechanism.
+  - **Prerequisite fix LANDED (hermetic pattern COMPOUNDS):**
+    build_dependent_pattern now swaps `compounds` out around the pattern
+    parseFunction (the instantiate_fn_template_binding model). This kills the
+    nested-renaming (patterns keep their `__patN` id, so
+    `funcdef_map.erase(parse_id)` now actually erases — previously every
+    mid-body pattern build leaked a stale funcdef_map entry under the nested
+    name) and stops pattern bodies from wrongly binding enclosing-function
+    locals. `class_scope_stack` is deliberately NOT swapped: a first version
+    also swapped it and pushed the owner chain, which broke testlocalclassraii
+    — with the owner in scope, the pattern's LOCAL class (Guard) registered as
+    the concrete `<owner>__<local>` nested class BEFORE the shell parse
+    created the real one, hijacking the struct_map entry; the pattern's
+    `__patN`-prefixed method TokenFuncs are dropped with the pattern's
+    pending_funcs → undefined MIR imports. The local-class naming regimes are
+    caller-scope-dependent by construction (parser.cpp:25117 nests ANY class
+    declared under a non-empty class_scope_stack — including function-local
+    classes; the tsubst local-method remap at cir_builder.cpp:14897 depends
+    on the concrete side of that conflation), so patterns must keep
+    inheriting the caller's class scope until a principled
+    pattern-local-class model exists (future work, not this campaign).
+  - **SEPARATE latent bug found by the probe (own track, NOT slice 1):**
+    a LOCAL-class ctor hoisted with a nested uid — `__stoa`'s `_Save_errno`
+    → id `__ns___gnu_cxx___stoa__o2___Save_errno___Save_errno__1` — defeats
+    the parseFunction owner-prefix ctor gate (it strips `__oN` but not the
+    nested `__<uid>` suffix), so its REAL mem-init `: _M_errno(errno)` is
+    SILENTLY DISCARDED (wrong code: the saved errno is garbage). Affects
+    default and =0 modes alike (it is fnbind/local-class machinery, not
+    tsubst). The gate's name-surgery detection is the root problem; slice
+    1's explicit ctor-ness flag (fd ∈ owner->ctors at pattern/inst build)
+    is the right vehicle to replace it.
 - Prologue ordering: member inits interleave with base ctors and vptr stores
   in DECLARATION order ([class.base.init]) — the pattern-side nodes must
   reproduce that order or delegate ordering to func_def (prefer: pattern

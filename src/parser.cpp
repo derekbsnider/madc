@@ -34267,6 +34267,22 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     bool saved_poisoned = dependent_parse_poisoned;
     dependent_parse_poisoned = false;
 
+    // Hermetic COMPOUND scope for the pattern parse (the
+    // instantiate_fn_template_binding model): a pattern built MID-BODY-PARSE
+    // must not see the enclosing function's compounds — compounds.top()->method
+    // would nested-classify the pattern (make_nested_function_name renames it
+    // `<encl>__<patid>__<uid>`, so the funcdef_map.erase(parse_id) below
+    // misses and a stale entry leaks) and the pattern body could wrongly bind
+    // enclosing-function locals. class_scope_stack is deliberately INHERITED
+    // from the caller (NOT swapped): member-type resolution in header-triggered
+    // pattern builds relies on the caller's owner scope, and a LOCAL class in
+    // the pattern body must keep its caller-scope-dependent naming — pushing
+    // the owner here made a user-site pattern's local class register under the
+    // concrete `<owner>__<local>` name BEFORE the shell parse creates the real
+    // one, hijacking it (testlocalclassraii undefined `__patN__..Guard` import).
+    std::stack<TokenCpnd *> saved_compounds;
+    std::swap(compounds, saved_compounds);
+
     size_t saved_diag_count = diagnostics.size();
     ErrorInfo saved_error = last_error;
     std::streambuf *saved_cerr = std::cerr.rdbuf();
@@ -34279,6 +34295,7 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 	parsed_pattern = true;
     }
     catch ( ... ) { parsed_pattern = false; }
+    std::swap(compounds, saved_compounds);
     // A poisoned parse (an unresolved dependent call SWALLOWED into a `0`
     // placeholder) produced a structurally-valid but semantically-wrong tree —
     // treat it exactly like a parse failure so tsubst never copies it.
