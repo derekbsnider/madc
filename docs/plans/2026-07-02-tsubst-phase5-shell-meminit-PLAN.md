@@ -411,6 +411,37 @@ slice 1: the pair INDEXED shape — __o20's own member cis
 hit (m_tsubst_active_type_arg_packs is type-only); today __o20's
 mem-inits still ride the shell capture+replay carrier (output correct).
 
+**✅ Indexed-shape construct arm WIRED @325d964c — empty-pack coverage;
+the LAST slice-1 capability is pinned.** Third memoize arm (member-
+CONSTRUCTION cis): every ci names a member, every class-instance member
+ci-covered (uncovered would default-construct in the PROLOGUE before the
+body-head inits), owner NSDMI-free; bases/vtable fine (prologue precedes
+members). Args stay TOKENS. Hit covers the EMPTY expansion only: class
+member default-construct via the relower, scalar zero-init. **The wall
+(both symptoms trace to ONE capability — per-element dependent-call
+re-resolution):** a non-empty pack element is a raw dependent pattern
+token (`std::forward<_Args1>(std::get<_Indexes1>(__t1))`); hit-time
+translate_expr on it (a) recurses unboundedly in class_ctor_call<->
+object_arg_addr (temp materialization of an ungroundable class-valued
+arg; SIGSEGV by stack exhaustion on pair<const string,string>), and (b)
+even when assembly survives, the call resolves to the BARE `__ns_std_get`
+(generic symbol) instead of the concrete `__o2` instantiation — the
+pinned "copy path must INSTANTIATE (or find) nested fn-template
+instantiations" gap (same one blocking the identity_forwarding_operand
+retirement). The construct arm clean-fails BEFORE the relower for
+non-empty packs — shell carrier emits, body stays HIT. The emittability
+gate now collects meminit callees SEPARATELY: un-emittable meminit callee
+→ meminit_failed only (the uniform gate had turned HIT pair bodies into
+fallbacks); meminit callees ODR-recorded only on survival. Probes:
+[MEMINIT-MEMO construct], [MEMINIT-CONSTRUCT-FAIL],
+[TSUBST-UNEMITTABLE-MEMINIT]. NEXT for full indexed coverage: the
+re-resolution capability — model = resolve_copied_dependent_call
+(synthetic call + concrete arg tokens + instantiate the namespace fn
+template `std::get<0>` for the element; the concrete `__o2` often already
+EXISTS from the shell path — selection must key on explicit non-type args
+too). Gates: fulltest exit 0 ratchet GREEN; burndown FLAT 268/0; sweep =
+known 4-noise set by name.
+
 **Road (i) recon (2026-07-02, probe [DELEG-ORIGIN] in-tree):** all 4
 delegation ci-arg datadefs confirmed `is_dependent_placeholder=1,
 has_dependent_surface=0` with clean canonical spellings
