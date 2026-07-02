@@ -14232,8 +14232,9 @@ bool CirBuilder::note_capture(Variable *v)
 // (tsubst_stmt over DECL_SAVED_TREE), instead of lowering the re-parsed body.
 // The concrete signature/shell stays on the existing parse path (hybrid B).
 // Returns NULL for anything not yet covered, so func_def falls back to
-// translate_block (the re-parse path stays the fallback per PLAN §5). Gated by
-// MADC_XTEST_DEP_PARSE so the production default is byte-identical.
+// translate_block (the re-parse path stays the residual fallback until
+// Phase-5 + deletion). DEFAULT since the flip; MADC_XTEST_DEP_PARSE=0 opts
+// back into pure re-parse (soak escape hatch).
 static bool tsubst_datadef_involves_template_param(DataDef *dd)
 {
 	if (!dd)
@@ -14752,7 +14753,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			*reason_out = why;
 		return NULL;
 	};
-	if (!getenv("MADC_XTEST_DEP_PARSE"))
+	if (!madc_tsubst_dep_parse_enabled())
 		return NULL;
 	FuncDef *source = fd ? fd->tsubst_source : NULL;
 	if (!source)
@@ -15264,10 +15265,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	}
 
 	node_t decl = node2(N_DECL, func_id, decl_list);
-	// Two-tree Phase 3: a covered instantiated member-template method builds its
-	// body by tsubst of the Tree-1 recipe (no body re-parse); everything else
-	// falls back to lowering the parsed body. tsubst_method_body returns NULL
-	// unless the capability + MADC_XTEST_DEP_PARSE gate is satisfied.
+	// Parse-once (DEFAULT since the flip): a covered instantiated member-template
+	// method builds its body by tsubst of the Tree-1 recipe (no body re-parse);
+	// everything else falls back to lowering the parsed body. tsubst_method_body
+	// returns NULL when uncovered or when MADC_XTEST_DEP_PARSE=0 opts out.
 	const char *tsubst_reason = NULL;
 	node_t body = tsubst_method_body(tf, fd, &tsubst_reason);
 	if (m_prog && fd->tsubst_source) {

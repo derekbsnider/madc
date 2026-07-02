@@ -56,6 +56,16 @@ hitting. When all KINDs are covered, no body in the suite bails. Then:
 flip `MADC_XTEST_DEP_PARSE` to default-on → re-parse is unreachable dead code →
 delete it. That is g++ parse-once parity.
 
+**Status (2026-07-02): the burndown reached 0 (268 hit / 0 fallback) and the
+flip is DONE** — parse-once tsubst is the production default
+(`madc_tsubst_dep_parse_enabled()`, `src/madc_globals.cpp`). Setting
+`MADC_XTEST_DEP_PARSE=0` opts back into the pure re-parse path; that escape
+hatch exists only for the soak period and is deleted together with the
+re-parse machinery. Deletion waits on Phase-5 ctor mem-init tsubst — the
+concrete SHELL (signature + ctor mem-inits) still parses via the re-parse
+machinery under hybrid B, so the code cannot be removed until the shell no
+longer rides it.
+
 ## How we track distance (the burndown)
 
 `scripts/tsubst_burndown.sh` runs the suite under `MADC_XTEST_DEP_PARSE=1` with

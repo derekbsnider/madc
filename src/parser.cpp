@@ -34351,14 +34351,11 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
     if ( !owner )
 	return;
-    // Two-tree Phase 2 (INERT proof hook): when MADC_XTEST_DEP_PARSE is set, build
-    // the dependent Tree-1 recipe for this member template ONCE (capability-gated;
-    // stored on fd->dependent_pattern, consumed by nobody yet). Off by default, so
-    // the production path is byte-identical; flag-ON exercises build_dependent_pattern
-    // on real templates and the byte-identical gate then PROVES the (now instantiation-
-    // suppressed) dependent parse has no observable side effects. Replaced by a real
-    // producer once Phase 3 tsubst consumes the recipe.
-    if ( !fd->dependent_pattern && getenv("MADC_XTEST_DEP_PARSE") )
+    // Parse-once (DEFAULT since the flip): build the dependent Tree-1 recipe for
+    // this member template ONCE (stored on fd->dependent_pattern); per-instantiation
+    // tsubst_method_body substitutes it. MADC_XTEST_DEP_PARSE=0 opts back into the
+    // pure re-parse path (soak escape hatch — dies with the re-parse machinery).
+    if ( !fd->dependent_pattern && madc_tsubst_dep_parse_enabled() )
 	build_dependent_pattern(fd);
     // A retained member-template BODY is instantiated at the ODR-use site even
     // when the owner class itself is externally provided. An explicit class
@@ -34490,7 +34487,7 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // args. tsubst_method_body still requires a dependent_pattern before it can
     // consume this; recording it for currently-fallback pack templates gives the
     // future CIR pack-expansion path real arity + element types to consume.
-    if ( getenv("MADC_XTEST_DEP_PARSE") || fd->dependent_pattern )
+    if ( madc_tsubst_dep_parse_enabled() || fd->dependent_pattern )
     {
 	funcdef_map_t::iterator ii = funcdef_map.find(inst_name);
 	if ( ii != funcdef_map.end() && ii->second )
@@ -34578,7 +34575,7 @@ void Program::instantiate_member_ctor_template_for_construction(
 #endif
     if ( !fd || !placeholder )
 	return;
-    if ( !fd->dependent_pattern && getenv("MADC_XTEST_DEP_PARSE") )
+    if ( !fd->dependent_pattern && madc_tsubst_dep_parse_enabled() )
 	build_dependent_pattern(fd);
 
     // Memoize / break the construct -> forward -> construct recursion: key on the
@@ -34690,7 +34687,7 @@ void Program::instantiate_member_ctor_template_for_construction(
 	if ( inst_fd->local_emit_name.empty() )
 	    inst_fd->local_emit_name = inst_name;
 	inst_fd->method_display_name = ctor_decl_name;
-	if ( getenv("MADC_XTEST_DEP_PARSE") || fd->dependent_pattern )
+	if ( madc_tsubst_dep_parse_enabled() || fd->dependent_pattern )
 	{
 	    inst_fd->tsubst_source = fd;
 	    inst_fd->tsubst_type_args = concrete_type_args;

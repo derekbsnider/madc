@@ -27,6 +27,14 @@ extern thread_local bool madc_verbose;
 // JIT/codegen optimization level (0-3), set by the `-O<n>` CLI flag. Drives
 // both MIR_gen_set_optimize_level and c2mir's compile optimize_level. Default 1.
 extern thread_local int madc_opt_level;
+
+// Parse-once tsubst instantiation is the DEFAULT (the parse-once.md flip):
+// template bodies instantiate by substituting the saved Tree-1 pattern, with
+// re-parse as the residual fallback. `MADC_XTEST_DEP_PARSE=0` opts back into
+// the pure re-parse path — a soak escape hatch that is deleted together with
+// the re-parse machinery (no-parallel-implementations deadline). Read per call
+// (never cached): unit tests toggle the variable at runtime.
+bool madc_tsubst_dep_parse_enabled();
 class TokenBase;
 
 // C fixed-size array dimension. 64-bit: huge dims like
