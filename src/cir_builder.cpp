@@ -2231,6 +2231,40 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					"tsubst: unsupported deferred local construction"));
 			}
 		}
+		// A deferred class-object ARGUMENT binding (`_KeyOfValue()(__v)` with
+		// `_Arg&& __v`): the pattern could not decide bind-vs-convert for a
+		// forwarding-reference param bound to a concrete class parameter
+		// (the arg's type is per-instantiation). Re-decide here with the
+		// substituted type: a matching (or derived) class binds directly —
+		// the parameter's repr is a pointer for EVERY substitution, so the
+		// value IS the object address. A mismatched type would need a
+		// conversion-ctor temp — not covered yet, error -> clean fallback.
+		if (TokenVar *tvar = dynamic_cast<TokenVar *>(
+				    madc_token_for_slot(src->origin_id))) {
+			DataDefCLASS *target =
+				dynamic_cast<DataDefCLASS *>(src->datadef);
+			if (target && tvar->datadef()
+			    && tvar->datadef()->is_reference()
+			    && template_param_under_type_layers(tvar->datadef())) {
+				DataDef *sdd = subst_datadef(m_prog, tvar->datadef(),
+							     *subst);
+				if (!sdd || template_param_under_type_layers(sdd))
+					return CIR_NODE(error_node(
+						"tsubst: unbound deferred-arg type", tvar));
+				DataDefCLASS *ac = class_behind(sdd);
+				if (ac != target
+				    && !(ac && ac->is_or_derives_from(target)
+					 && ac->base_offset_of(target) == 0))
+					return CIR_NODE(error_node(
+						"tsubst: deferred-arg conversion (not covered)",
+						tvar));
+				node_t addr = object_var_void_addr(tvar->var, tvar);
+				cir_node *copied = copy_cir_subtree(CIR_NODE(addr), subst);
+				return copied ? copied
+					      : CIR_NODE(error_node(
+							"tsubst: deferred-arg copy", tvar));
+			}
+		}
 		TokenCallFunc *tc =
 			dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
 		TokenExplicitDtor *td =
@@ -3655,9 +3689,23 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 	// lowerable in the recipe — reject the pattern so the body falls back to the
 	// parsed concrete body (where arg's type is known). See the keystone analysis
 	// in 2026-06-24-two-tree-phase3-tsubst-consume-HANDOFF.md §0.
+	// EXCEPT a named forwarding-reference parameter (`_Arg&& __v` — always a
+	// reference for every substitution, so its repr is a pointer regardless):
+	// the DECISION (bind vs convert) is per-instantiation, so defer it — emit
+	// an N_IGNORE marker carrying the origin variable + the target class;
+	// copy_cir_subtree re-lowers it with the substituted concrete type
+	// (tsubst_relower_deferred_arg_addr). The statement-level analogue is the
+	// local-decl deferral marker in translate_block.
 	if (m_tsubst_pattern_mode && arg
-	    && template_param_under_type_layers(arg->datadef()))
+	    && template_param_under_type_layers(arg->datadef())) {
+		if (arg->type() == TokenType::ttVariable
+		    && arg->datadef() && arg->datadef()->is_reference()) {
+			cir_node *marker = make(N_IGNORE, arg);
+			marker->datadef = target;
+			return marker->as_node();
+		}
 		return error_node("tsubst: dependent-arg object construction", arg);
+	}
 	char name[32];
 	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
 	Variable *tmp = new Variable(name, *target, 1, NULL, false);

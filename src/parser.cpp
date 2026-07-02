@@ -34005,6 +34005,17 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     if ( ni >= decl.size() )
 	return NULL;
     size_t op = ni + 1;
+    // An operator-function-id declarator (`operator()`, `operator[]`, `operator==`,
+    // …) is a MULTI-token name; its own '('/'[' must not be mistaken for the
+    // parameter-list open (the `_Alloc_node::operator()` pattern otherwise starts
+    // mid-name and fails to parse). Skip the whole operator-id span first — the
+    // same handling as the mti declarator rename.
+    if ( decl[ni] && token_is_operator_id_start(decl[ni]) )
+    {
+	size_t s = operator_id_token_span(decl, ni);
+	if ( s > 1 )
+	    op = ni + s;
+    }
     while ( op < decl.size() && !(decl[op] && decl[op]->id() == TokenID::tkOpBrk) )
 	++op;
     if ( op >= decl.size() )
