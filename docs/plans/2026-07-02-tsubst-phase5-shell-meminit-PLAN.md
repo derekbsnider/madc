@@ -361,6 +361,21 @@ transitional carrier for not-yet-covered ctors. Slice 4's DELETE gate
 requires road (i) (or an explicitly decided narrower scope) — cost it at
 slice-2 time.
 
+**Road (i) STEP 1 LANDED @94b6ec12 — DependentShellOrigin registry:**
+`instantiate_opaque_template_use` records {tname, ns, owner_class, arg
+spellings, CLONED raw_arg_tokens} keyed by the shell DataDef at creation.
+Probe-verified: tuple shells = tmpl=tuple + single pack-name token;
+_Index_tuple shells = the full `__integer_pack ( sizeof ... ( _ArgsN ) ) ...`
+run. NEXT (step 2): the subst_datadef structural case — substitute arg runs
+under the binding (pack name → elems from the pack window; sizeof...(P) →
+arity; __integer_pack(N)... → 0..N-1 non-type ints), then rebuild the
+concrete instantiation. Open sub-questions: pack-context threading into
+subst_datadef (static (prog,dd,subst) — thread the CIR pack window or
+pre-extend the binding with a pack side map) and the instantiation entry
+point (token-free DataDef-driven if one exists; else the parser's cloned
+arg-token replay into instantiate_template_use, which is structural — see
+verdict note below).
+
 **Road (i) recon (2026-07-02, probe [DELEG-ORIGIN] in-tree):** all 4
 delegation ci-arg datadefs confirmed `is_dependent_placeholder=1,
 has_dependent_surface=0` with clean canonical spellings
