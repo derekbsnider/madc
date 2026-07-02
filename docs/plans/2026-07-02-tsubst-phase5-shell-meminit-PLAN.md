@@ -130,6 +130,37 @@ flag-off-reachable)
        (re-entrant request returns NULL; the `member_fn_inst_in_progress` /
        mfi_key cycle-break at 34381 is the precedent) — latent today for any
        dependent body that constructs its own class.
+    **Both prerequisites LANDED @ `88bef0c3`** (fulltest 674/0/0/16, burndown
+    FLAT 268/0; C-unreachable by construction, no torture rerun).
+  - **Capture+replay ATTEMPTED and REVERTED (2026-07-02) — the slice has a
+    DEEPER blocker, fully probed:** the mechanism itself worked (flag
+    `dependent_pattern_ctor_inits` set across the pattern parse; parseFunction
+    treats top-level `:` after params as ctor-inits, captures raw via the
+    defer path, swaps to an invocation-LOCAL vector immediately after the scan
+    loop — the shared `pending_deferred_ctor_inits` leaks across nested
+    parses otherwise — and replays inside the body compound with a synthetic
+    `{` terminator before parseCompound). BUT source-position probing
+    (`[PAT-MEMINIT-CAP] src=` on the first captured token) proved the
+    captured spans on NON-ctor patterns are **stray injected-token garbage**:
+    to_string's pattern parse captured basic_string's sv-ctor mem-init span
+    (`basic_string(__sv_wrapper(_S_to_string_view(__t)), __a)`) with tokens
+    stamped basic_string.h:4170 — to_string's `string __str(...)` BODY USE
+    SITE, i.e. clone tokens injected by a nested instantiation that ABORTED
+    and left its unconsumed decl tokens in the stream. **The pre-existing
+    38111 skip loop has been silently EATING this garbage all along** — a
+    masked latent bug: any pattern parse that hits a stray `: ...` span
+    after its params discards it and "succeeds". Capturing it into
+    ctor_initializers is semantic pollution (to_string got a bogus entry), so
+    the slice cannot land until the stray-injection hazard is fixed at ITS
+    root: find WHICH nested instantiation path injects decl-clone tokens
+    (pushToken front-injection) without consuming them on abort, and make it
+    restore the stream (the build_dependent_pattern failure path's
+    `tokens = saved_tokens` restore is the model). Real-ctor captures looked
+    CORRECT (pair indexed ctor `first(...), second(...)`, _Auto_node
+    `_M_t(__t), _M_node(...)`) — the mechanism is right, the stream hygiene
+    isn't there yet. Probe tooling to reuse: the env-gated
+    `MADC_XTEST_PAT_MEMINIT_DEBUG` prints (pattern-tail parsed/ctor_inits +
+    capture span/src) — reconstruct from this description; removed pre-revert.
 - Prologue ordering: member inits interleave with base ctors and vptr stores
   in DECLARATION order ([class.base.init]) — the pattern-side nodes must
   reproduce that order or delegate ordering to func_def (prefer: pattern
