@@ -1,5 +1,42 @@
 # tsubst post-2B + Kind-4 — HANDOFF for fresh context (2026-07-01, evening)
 
+> ## ✅ UPDATE 2026-07-02 — §2 lever 1 LANDED @ `44febff9` (empty-body multi-pack slice)
+>
+> **Burndown 243/23 (91%) → 255/11 (95%).** The pair piecewise/indexed ctor family
+> (`>1 pack param` 6 + `non-type template param` 6) is DONE — both are tsubst HITS;
+> testmap (11/0) and testsubscript (35/0) are FULLY parse-once flag-on. The fix was
+> MUCH smaller than §2's "multi-pack fan-out state" estimate because **both ctors have
+> EMPTY `{}` bodies** — all semantics live in the mem-initializer list, which rides the
+> SHELL under hybrid B (the same model as 2B's basic_string range-ctor hit):
+> - `tsubst_eligible` hybrid-B region split (parser.cpp): the body block is located by
+>   backward brace-match from the decl's final `}`; a SHELL-side template-id (params +
+>   ctor mem-inits, `i < body_open`) no longer disqualifies; an EMPTY body admits
+>   multiple packs and NON-TYPE packs (nothing to substitute). Non-type SCALARS and
+>   non-empty multi-pack bodies still reject.
+> - `collect_ordered_type_arg_bindings` (parser.cpp): non-type pack VALUES
+>   (`tid_packs_nontype` int64s — deduction already existed) now fill
+>   `tsubst_type_arg_packs` as value-DataDefs (decimal-name representation,
+>   `datadef_is_nontype_constant`). No CIR-side change needed (fan-out never runs on
+>   an empty body).
+> - **Probe intel (env-gated superset experiment, run before designing):** the 9
+>   remaining `template-id '<' in body` fallbacks yield **0 hits** under full
+>   gate-skip — they late-bail as ref-param(6)/recipe(3). Gate-widening is worthless
+>   for them; they need real Kind-3 dependent-member-type resolution (§2 lever 2).
+> - **New rigor tool:** `tmp/flagon_diff_sweep.sh` — diffs EVERY test's output flag-on
+>   vs flag-off. HEAD baseline: 68 pre-existing warning-diff tests + **4 PRE-EXISTING
+>   flag-on-ONLY failures** (testifconstexpr/testinvocable SIGSEGV rc=139,
+>   testfstream/teststdstringconv rc=1) — these predate this slice, are a separate
+>   track, and BLOCK an eventual flag-default flip.
+> - Gates: fulltest 674/0/0/16 exit 0; flag-on baseline bumped in-commit (map 11/0,
+>   set 7/3, vector 15/0, subscript 35/0, containerdtor 30/3, madc_ns 30/3); sweep
+>   byte-identical to HEAD baseline; torture failset byte-identical (memcpy-a2.c
+>   suite-load timeout, verified PASS isolated).
+>
+> **Remaining [why:] worklist: `template-id '<' in body` 9 (Kind-3),
+> `reference-param value-read` 1, `recipe parse failed` 1.** §2's remaining levers:
+> Kind-3 (lever 2), the local-class ctor `this`-capture bug (lever 3, now joined by
+> the 4 sweep-surfaced flag-on-only failures), mop-up (lever 4).
+
 **Rehydrate from THIS doc.** It supersedes `2026-07-01-tsubst-2B-completion-HANDOFF.md`
 (2B is DONE — read only its top COMPLETE banner for the 2B root cause) and the Piece-2B
 sections of the step-2 handoff. Campaign law: `.claude/rules/parse-once.md`.
