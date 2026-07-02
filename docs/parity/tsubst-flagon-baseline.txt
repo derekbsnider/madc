@@ -12,10 +12,15 @@
 # madc_ns bumped again by the deferred-construction slice (Kind-4): a local
 # declaration whose ctor args contain a pack expansion defers in the pattern
 # and re-lowers at tsubst copy (_Rb_tree::_M_emplace_hint_unique _Auto_node).
+# Then map/subscript/containerdtor/madc_ns bumped by the empty-body multi-pack
+# slice: std::pair's piecewise + indexed ctors (>1 type pack, non-type value
+# packs) are hits — shell-side template-ids no longer disqualify (hybrid B),
+# and an empty body admits multi-pack / non-type-pack params. testmap and
+# testsubscript are now FULLY parse-once flag-on (0 fallback).
 testset 7 3
-testmap 9 2
+testmap 11 0
 testvector 15 0
-testsubscript 31 4
-testcontainerdtor 28 5
-testmadc_ns 28 5
+testsubscript 35 0
+testcontainerdtor 30 3
+testmadc_ns 30 3
 testlocalclassraii 1 0

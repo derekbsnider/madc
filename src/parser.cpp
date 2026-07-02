@@ -31410,6 +31410,7 @@ static bool collect_ordered_type_arg_bindings(
 	bool pack_empty,
 	const std::vector<DataDef *> &pack_elems,
 	const std::map<std::string, std::vector<DataDef *> > &tid_packs,
+	const std::map<std::string, std::vector<int64_t> > &tid_packs_nontype,
 	std::vector<DataDef *> &type_args_out,
 	std::vector<std::vector<DataDef *> > *type_arg_packs_out)
 {
@@ -31424,7 +31425,27 @@ static bool collect_ordered_type_arg_bindings(
 	bool is_type = !(i < ft.typeparam_is_type.size()) || ft.typeparam_is_type[i];
 	bool is_pack = i < ft.typeparam_is_pack.size() && ft.typeparam_is_pack[i];
 	if ( !is_type )
-	    goto fail;
+	{
+	    // A NON-TYPE PACK deduced from a template-id arg (`_Index_tuple
+	    // <_Indexes1...>` — std::pair's indexed ctor) binds a list of integer
+	    // VALUES. Carry each as the canonical value-DataDef (name = decimal
+	    // spelling, the capture_call_template_args representation that
+	    // datadef_is_nontype_constant recognizes). A non-type SCALAR param
+	    // still fails — scalar value substitution is not yet consumed by CIR.
+	    std::map<std::string, std::vector<int64_t> >::const_iterator ni =
+		tid_packs_nontype.find(ft.typeparams[i]);
+	    if ( !is_pack || ni == tid_packs_nontype.end() )
+		goto fail;
+	    if ( type_arg_packs_out )
+	    {
+		std::vector<DataDef *> velems;
+		for ( size_t e = 0; e < ni->second.size(); ++e )
+		    velems.push_back(new DataDef(std::to_string(ni->second[e]),
+						 8, DataType::dtINT64));
+		(*type_arg_packs_out)[i] = velems;
+	    }
+	    continue;
+	}
 	if ( is_pack )
 	{
 	    std::vector<DataDef *> elems;
@@ -32178,7 +32199,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		std::vector<DataDef *> scratch;
 		std::vector<DataDef *> &out = type_args_out ? *type_args_out : scratch;
 		collect_ordered_type_arg_bindings(ft, binding, pack_param, pack_empty,
-						  pack_elems, tid_packs, out,
+						  pack_elems, tid_packs,
+						  tid_packs_nontype, out,
 						  type_arg_packs_out);
 	    }
 	    if ( var_out )
@@ -32897,7 +32919,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    std::vector<DataDef *> scratch;
 	    std::vector<DataDef *> &out = type_args_out ? *type_args_out : scratch;
 	    collect_ordered_type_arg_bindings(ft, binding, pack_param, pack_empty,
-					      pack_elems, tid_packs, out,
+					      pack_elems, tid_packs,
+					      tid_packs_nontype, out,
 					      type_arg_packs_out);
 	}
 	else
@@ -33720,18 +33743,64 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
     size_t np = fd->template_param_names.size();
     if ( np < 1 )
 	return no("no type params");
-    // Every parameter must be a TYPE param. Permit at most one TYPE pack in this
-    // slice; NON-TYPE params/packs still need value substitution and stay on the
-    // re-parse fallback.
+    // Hybrid-B region boundary: the concrete SHELL (signature + ctor mem-
+    // initializers) is parsed per instantiation on the normal path; tsubst copies
+    // only the BODY block. member_template_decl ends exactly at the body's closing
+    // '}' (member_template_decl_end), so the body opens at that brace's backward
+    // match — robust against mem-init braces (`: first{...}`), which sit before it.
+    // Tokens at index < body_open are shell-side. A declaration-only decl (no
+    // trailing '}') keeps body_open == d.size() with body_empty=false, i.e. the
+    // conservative whole-decl treatment.
+    const std::vector<TokenBase *> &dtoks = fd->member_template_decl;
+    size_t body_open = dtoks.size();
+    bool body_empty = false;
+    {
+	size_t last = dtoks.size();
+	while ( last > 0 && !dtoks[last - 1] )
+	    --last;
+	if ( last > 0 && dtoks[last - 1]->id() == TokenID::tkClBrc )
+	{
+	    int bdepth = 0;
+	    for ( size_t j = last; j-- > 0; )
+	    {
+		if ( !dtoks[j] )
+		    continue;
+		if ( dtoks[j]->id() == TokenID::tkClBrc )
+		    ++bdepth;
+		else if ( dtoks[j]->id() == TokenID::tkOpBrc && --bdepth == 0 )
+		{
+		    body_open = j;
+		    break;
+		}
+	    }
+	    if ( body_open < dtoks.size() )
+	    {
+		body_empty = true;
+		for ( size_t j = body_open + 1; j + 1 < last; ++j )
+		    if ( dtoks[j] )
+			{ body_empty = false; break; }
+	    }
+	}
+    }
+    // Every parameter must be a TYPE param, with two EMPTY-BODY exceptions (an
+    // empty body has nothing for tsubst to substitute — all dependence lives in
+    // the shell, concrete under hybrid B; std::pair's piecewise + indexed ctors):
+    //   - a NON-TYPE PACK (`size_t... _Indexes1`) is admitted; its deduced VALUE
+    //     list rides tsubst_type_arg_packs as value-DataDefs (never consulted by
+    //     an empty-body copy). Non-type SCALARS still need value substitution and
+    //     stay on the re-parse fallback.
+    //   - more than one pack is admitted (no fan-out runs).
     size_t pack_count = 0;
     for ( size_t i = 0; i < np; ++i )
     {
-	if ( i < fd->template_param_is_type.size() && !fd->template_param_is_type[i] )
+	bool ip = i < fd->template_param_is_pack.size() && fd->template_param_is_pack[i];
+	if ( i < fd->template_param_is_type.size() && !fd->template_param_is_type[i]
+	  && !(ip && body_empty) )
 	    return no("non-type template param");
-	if ( i < fd->template_param_is_pack.size() && fd->template_param_is_pack[i] )
+	if ( ip )
 	    ++pack_count;
     }
-    if ( pack_count > 1 )
+    if ( pack_count > 1 && !body_empty )
 	return no(">1 pack param");
     // Param-name membership (>=1 type param, e.g. <class A, class B>): the dependent
     // return / body scans below test against ANY param name, not just the first.
@@ -33830,7 +33899,14 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 	// fallback; a dependent template-id is never admitted (the WIDE-gate failure).
 	// A balanced template-id is still admitted only for a CONCRETE named/RTTI cast
 	// (`static_cast<size_type>`) or the pre-existing pack-expansion carve-out.
+	// SHELL-side template-ids (params + ctor mem-initializers, i < body_open)
+	// are concrete under hybrid B — the per-instantiation shell parse resolves
+	// them; tsubst never copies that region. Only a BODY-region template-id
+	// needs dependent substitution and disqualifies. (The pattern parse still
+	// covers the shell with placeholders; a shape it cannot parse fails
+	// build_dependent_pattern and falls back cleanly — self-detecting.)
 	if ( t->id() == TokenID::tkLT
+	  && i >= body_open
 	  && template_id_suffix_end(d, i) != i
 	  && !tsubst_lt_opens_concrete_cast(d, i, pnames)
 	  && !(pack_count == 1 && has_pack_expansion
