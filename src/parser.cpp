@@ -34204,6 +34204,14 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
     if ( !owner )
 	return NULL;
+    // Re-entrancy break (see the madc.h member comment): a request for the fd
+    // whose pattern is mid-build returns no pattern instead of recursing.
+    if ( !dependent_patterns_in_progress.insert(fd).second )
+	return NULL;
+    struct DppGuard {
+	std::set<FuncDef *> &s; FuncDef *k;
+	~DppGuard() { s.erase(k); }
+    } dpp_guard{ dependent_patterns_in_progress, fd };
     const std::vector<TokenBase *> &decl = fd->member_template_decl;
     // definition_tokens = everything AFTER the declarator '(' (params + body) — the
     // shape parseFunction consumes (name + return type passed separately).
@@ -34515,6 +34523,17 @@ void Program::instantiate_member_ctor_template_for_construction(
     // monomorphized class needs its retained ctor body instantiated here.
     if ( cdd->is_externally_defined() || cdd->is_extern_template_instantiated )
 	return;
+    // Dependent deferral — the CTOR mirror of the call path's rule (see
+    // instantiate_member_fn_template_for_call): inside a dependent pattern
+    // parse, a construction whose args involve a template-parameter
+    // placeholder stays DEPENDENT (re-resolved per instantiation at copy
+    // time) instead of instantiating with the placeholder as a concrete arg.
+    // Also breaks the delegating-mem-init shape (a ctor pattern constructing
+    // its own class) from re-entering the in-flight pattern build.
+    if ( dependent_parse_in_progress )
+	for ( TokenBase *a : ctor_args )
+	    if ( a && datadef_involves_placeholder(a->datadef()) )
+		return;
     // Count the FUNCTION parameters of a member-template ctor from its retained
     // decl (top-level commas between the declarator '(' and ')', `<...>` nested).
     // std::pair registers TWO member-template ctors — the piecewise (3 params) and

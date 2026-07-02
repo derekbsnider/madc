@@ -1897,6 +1897,12 @@ public:
     // spellings) so a repeated construction shape instantiates the ctor once;
     // doubles as the recursion guard for the construct -> forward -> construct chain.
     std::set<std::string> member_ctor_inst_done;
+    // Dependent-pattern builds currently in flight. A dependent parse triggered
+    // FROM a pattern build (e.g. a delegating mem-init constructing the ctor's
+    // own class) must not re-enter the SAME fd's pattern build —
+    // fd->dependent_pattern is still NULL mid-build, so the parse would recurse
+    // unboundedly (stack exhaustion). Re-entrant requests return no pattern.
+    std::set<class FuncDef *> dependent_patterns_in_progress;
     // >0 while parsing the operand of an UNEVALUATED context (decltype(...),
     // sizeof, noexcept). C++ does not ODR-use entities named in an unevaluated
     // operand ([basic.def.odr]) — so a function-template call there forms only a
