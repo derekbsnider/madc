@@ -731,3 +731,30 @@ either thread the enclosing call's re-selected formals into the marker
 copy, or claim static-member pack calls in a KIND-1-style CALL-level
 rebuild that expands packs itself). Then: TAG_DEFN local-class remap
 (strings' _Guard wall), pre-acceptance coverage-boundary KINDs.
+
+**✅ SLICE 4b deferred-arg formal re-selection KIND LANDED @9cd40b83.**
+Recon (backtrace at marker creation) pinned the baked target=tuple to the
+INNER std::forward call's parse-time-baked overload formal
+(__ns_std_forward__o4) — unenriched first-wins state, the KIND-1 disease
+in ARG-FORMAL position. Three root-cause fixes (cir_builder.cpp only):
+(1) identity-refcast bake — a forward/move callee's formal is a DEDUCED
+forwarding reference (matches the arg BY CONSTRUCTION), so a dependent
+ref-var arg defers with its OWN type as the marker datadef; the
+consumption arm substitutes per element (identity_bake, no convert-check);
+(2) static member-template re-selection — resolve_copied_dependent_call's
+member branch now claims non-TokenMember static calls
+(_Alloc_traits::construct) via the callee FuncDef's member_template_owner
+as receiver type (same instantiate entry, no __this);
+(3) per-element-formal pack fan-out — the KIND-1 call-rebuild arm expands
+a top-level pack argument itself, pairing element e with formal fi+e
+under that element's subst + pack window (the generic child fan-out has
+no call context). First-skip probe (reverted): map<int,int> operator[]
+compiles AND RUNS end-to-end with firsts skipped (_M_construct_node /
+construct / _Auto_node all tsubst); strings still stop at the TAG_DEFN
+_Guard [class.access] wall. Gates: fulltest 676/0/0/16 exit 0 (all
+GREEN); burndown 314/0 (100%, was 300/0); ratchet PROGRESS — baseline
+advanced (+2 vector, +2 subscript/containerdtor/madc_ns). REMAINING for
+4b: the TAG_DEFN local-class remap KIND (strings' _Guard wall), then the
+pre-acceptance coverage-boundary KINDs (Kind-3 dependent member type,
+destroy-helper guard, dependent-call scan, binding gaps), then delete
+the eager body-parse machinery per-KIND.
