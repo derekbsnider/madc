@@ -442,6 +442,52 @@ EXISTS from the shell path — selection must key on explicit non-type args
 too). Gates: fulltest exit 0 ratchet GREEN; burndown FLAT 268/0; sweep =
 known 4-noise set by name.
 
+**✅ Per-element dependent-call re-resolution LANDED @254bdb96 — SLICE 1
+COMPLETE. The pair INDEXED wall is down; both pinned symptoms had ONE
+root cause each, all three fixes at their deepest layers:**
+1. **Lockstep pack binding** ([temp.variadic]):
+   `collect_pack_params_in_pattern` (new collect-ALL walker) also walks
+   each nested call's `explicit_template_args` — where the NON-TYPE index
+   pack `_Indexes1` lives; the primary-pack walker never looked there.
+   `tsubst_bind_lockstep_packs` binds every mentioned pack's param to its
+   elem-th window element (arity violation = clean fail); wired into the
+   relower per-element loop + system_header_pack_element_call_resolves.
+   With `_Indexes1` bound to its per-element value-DataDef, the EXISTING
+   copy-time N_CALL rebuild (cir_builder.cpp ~2845 — resolve winner +
+   copied_call_arg_for_formal per formal; it IS the finish_call_expr
+   analogue, no new machinery needed) re-resolves `std::get<_Indexes1>`
+   to the concrete `__o2`. Bare `__ns_std_get` gone.
+2. **Value→address coercion** (`copied_call_arg_for_formal`): the
+   symmetric arm to its existing `&a -> a` case — a Tree-1 arg lowered as
+   the referenced object's VALUE (`*__t1`; the generic callee FuncDef has
+   NO parameters, so translate-time coercion had no formals — probe
+   `pt=(null) refp=0`) re-takes the address for a reference formal (a
+   deref's operand IS the address). The old blind
+   `cast(ptr_type, value)` was c2mir's "conversion of non-scalar value
+   requested" (the last compile error).
+3. **Recursion closed for good** (`object_arg_addr`): the materializing
+   tail refuses dependent-typed args UNCONDITIONALLY (the pattern-mode
+   guard at ~4086 documented this exact class_ctor_call<->object_arg_addr
+   cycle; hit-time relower translates raw pattern tokens with pattern
+   mode OFF, so the guard never applied) — clean error tree, shell
+   fallback. Plus: a DEPENDENT ref-returning call keeps the addr-of-call
+   shape (copy rewrites the callee per element) instead of temp
+   materialization. `dependent_placeholder_under_type_layers` factored
+   out (shell predicate reuses it). The construct arm's all_empty_packs
+   pre-fail is DELETED — non-empty packs flow through the relower.
+Result: map<string,string>/map<string,int> reducers run end-to-end,
+`__o20`'s mem-inits fully tsubst'd, emitted body == g++ ground truth
+(`basic_string` copy-ctor from `&(*forward__o5(&(*get__o2(t))))`,
+default second); testsubscript output byte-identical. Gates: fulltest
+exit 0 (674/0/0/16, ratchet GREEN at baseline), burndown FLAT 268/0
+(100%), sweep = known 4-noise set by name. NOTE: hit counts stay 35/0
+etc. — the ratchet counts fd bodies, and these meminits ride bodies
+already HIT; the new coverage means the SHELL CARRIER no longer needs to
+emit those cis (slice-2's body-parse skip can now include pair).
+REMAINING before slice 2: none pinned — next open the slice-2 body-parse
+skip (per-fd where tsubst covers body+meminits), then slice 3 (loud
+bail), slice 4 (DELETE re-parse + escape hatch removal).
+
 **Road (i) recon (2026-07-02, probe [DELEG-ORIGIN] in-tree):** all 4
 delegation ci-arg datadefs confirmed `is_dependent_placeholder=1,
 has_dependent_surface=0` with clean canonical spellings
