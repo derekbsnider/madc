@@ -1,0 +1,26 @@
+#!/../bin/madc
+// A member function template (instance AND static) instantiated at MORE THAN
+// ONE type in a single TU must yield one definition per type-shape ([temp.spec]
+// — g++/clang emit one symbol per specialization). Historically the
+// instantiation symbol was a single `<placeholder>__mti` slot with a first-wins
+// local_emit_name alias, so the second type collided ("MIR fatal error:
+// Repeated item declaration") or silently bound the first instance. Instances
+// are now memoized per type-shape (Program::member_fn_inst_names), uniquely
+// named (unique_overload_symbol), and each call binds ITS instance
+// (TokenCallFunc::mti_instance -> call_target_variable / reselect rebuild).
+#include <cstdio>
+struct Holder {
+    int base;
+    template<class T> T twice(T v) { return v + v; }        // instance method
+    template<class T> static T triple(T v) { return v * 3; } // static method
+};
+int main()
+{
+    Holder h;
+    h.base = 1;
+    // Instance member template at two types + a same-type repeat.
+    printf("twice: i=%d d=%g repeat=%d\n", h.twice(21), h.twice(1.25), h.twice(100));
+    // Static member template at two types.
+    printf("triple: i=%d d=%g\n", Holder::triple(14), Holder::triple(0.5));
+    return 0;
+}

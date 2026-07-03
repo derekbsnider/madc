@@ -10131,9 +10131,25 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
 
     // Instantiate an instance member-template body after overload selection.
     // parseCallMethod sees only the arity-picked placeholder; the retained body
-    // that should supply local_emit_name lives on the argument-selected overload.
+    // lives on the argument-selected overload. Rebind the call to THIS shape's
+    // concrete instance (per type-shape — the first-wins local_emit_name alias
+    // cannot answer for a member template used at two types), so the emitted
+    // symbol AND the real parameters (reference-arg passing) are the instance's.
     if ( unevaluated_operand_depth == 0 )
-	instantiate_member_fn_template_for_call(selected);
+    {
+	Variable *iv = instantiate_member_fn_template_for_call(selected);
+	if ( iv && iv != &selected->var )
+	{
+	    TokenCallMethod *bound = new TokenCallMethod(recv, *iv);
+	    bound->parameters = selected->parameters;
+	    bound->explicit_template_args = selected->explicit_template_args;
+	    bound->parent_expr = selected->parent_expr;
+	    bound->file = selected->file;
+	    bound->line = selected->line;
+	    bound->column = selected->column;
+	    selected = bound;
+	}
+    }
     return selected;
 }
 
@@ -10296,18 +10312,17 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
     // Ensure the selected member template is instantiated (idempotent / memoized
     // when parseCallFunc already ran the hook on the original binding).
     instantiate_namespace_fn_template_for_call(sel);
-    instantiate_member_fn_template_for_call(sel);
+    Variable *mti_def = instantiate_member_fn_template_for_call(sel);
     // Bind the call to the instantiated DEFINITION (real parameters + ref_params,
     // non-varargs) rather than the varargs placeholder, so REFERENCE arguments
     // are passed by address (the placeholder carries no ref_params, and mutating
-    // it would corrupt findMethodOverload's arity gate). The B-feature names the
-    // definition `<placeholder>__mti`; fall back to the placeholder+alias path
-    // (correct for by-value/pointer args) when it isn't found.
+    // it would corrupt findMethodOverload's arity gate). The instantiation hook
+    // returns THIS type-shape's instance; fall back to the placeholder+alias
+    // path (correct for by-value/pointer args) when there is none.
     FuncDef *sfd = dynamic_cast<FuncDef *>(sel->var.type);
     if ( sfd && sfd->is_member_template )
     {
-	std::string inst_name = sel->var.name + "__mti";
-	Variable *idef = findVariable(inst_name);
+	Variable *idef = mti_def;
 	if ( idef && dynamic_cast<FuncDef *>(idef->type) )
 	{
 	    TokenCallFunc *tc3 = new TokenCallFunc(*idef);
@@ -34524,11 +34539,11 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     return pattern;
 }
 
-void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
+Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 {
     InstTimer _it(*this);	// --show-stats: instantiation time
     if ( !tc )
-	return;
+	return NULL;
     // Two-tree Phase 2 (PLAN §11.5c, widening step 1): DEFER this member-template
     // instantiation only when, inside a dependent body parse, the call is genuinely
     // type-dependent (an arg involves a template-parameter placeholder) — it stays
@@ -34536,7 +34551,7 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // param PLACEHOLDER as a concrete arg. A non-dependent member call is instantiated
     // eagerly at definition time (g++ per-node dependence, not a global defer mode).
     if ( dependent_parse_in_progress && call_involves_placeholder(tc) )
-	return;
+	return NULL;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
 #if MADC_DEBUG_FNTPL
     bool dbg_mti = false;
@@ -34558,10 +34573,10 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 #endif
     if ( !fd || !fd->is_member_template || fd->member_template_decl.empty()
       || !fd->member_template_owner || fd->template_param_names.empty() )
-	return;
+	return NULL;
     DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(fd->member_template_owner);
     if ( !owner )
-	return;
+	return NULL;
     // Parse-once (DEFAULT since the flip): build the dependent Tree-1 recipe for
     // this member template ONCE (stored on fd->dependent_pattern); per-instantiation
     // tsubst_method_body substitutes it. MADC_XTEST_DEP_PARSE=0 opts back into the
@@ -34586,8 +34601,41 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	mfi_key += (pdd ? pdd->name : std::string("?")) + ",";
     }
     mfi_key += ")";
+    // Per type-shape instance memo — keyed on the PLACEHOLDER identity
+    // (tc->var.name is the unique registered symbol), NOT the cycle key above:
+    // function_display_name can be empty, and the cycle key deliberately blurs
+    // sibling placeholders (its job is catching logical re-requests), which
+    // would bind one member template's call to ANOTHER's instance. Explicit
+    // template args are a distinct instantiation axis (`h.f<int>(0)` vs
+    // `h.f<long>(0)` differ ONLY here) — fold them in.
+    std::string shape_key = tc->var.name + "(";
+    for ( size_t i = 0; i < tc->parameters.size(); ++i )
+    {
+	DataDef *pdd = tc->parameters[i] ? tc->parameters[i]->datadef() : NULL;
+	shape_key += (pdd ? pdd->name : std::string("?")) + ",";
+    }
+    shape_key += ")";
+    for ( DataDef *ea : tc->explicit_template_args )
+	shape_key += "<" + (ea ? ea->name : std::string("?"));
+    // Memo hit: this shape was already instantiated — bind the call to ITS
+    // instance (a member template used at two types has two instances; the
+    // placeholder's local_emit_name alias is first-wins and cannot answer for
+    // the later shapes).
+    {
+	std::map<std::string, std::string>::iterator mi =
+	    member_fn_inst_names.find(shape_key);
+	if ( mi != member_fn_inst_names.end() )
+	{
+	    Variable *iv = findVariable(mi->second);
+	    if ( iv && dynamic_cast<FuncDef *>(iv->type) )
+	    {
+		tc->mti_instance = iv;
+		return iv;
+	    }
+	}
+    }
     if ( !member_fn_inst_in_progress.insert(mfi_key).second )
-	return;	// already instantiating this logical member fn — break the cycle
+	return NULL;	// already instantiating this logical member fn — break the cycle
     struct MfiGuard {
 	std::set<std::string> &s; std::string k;
 	~MfiGuard() { s.erase(k); }
@@ -34613,12 +34661,11 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     ft.ns = std::string();
     // The instantiated definition gets a DISTINCT name (so it keeps its real
     // parameters instead of colliding with the varargs declaration-only
-    // placeholder, which would drop them). The call is then aliased to this
-    // name below (the placeholder's local_emit_name), so call and definition
-    // emit the same symbol. NOTE: one alias slot per placeholder — a static
-    // member template instantiated at MORE THAN ONE type is a follow-up
-    // (the call would need per-type overload re-selection, like free fns).
-    std::string inst_name = tc->var.name + "__mti";
+    // placeholder, which would drop them) — unique PER TYPE-SHAPE
+    // (unique_overload_symbol: the first shape keeps `__mti`, later shapes get
+    // `__mti__oN`), and each call binds its own shape's instance via the
+    // shape_key memo above + tc->mti_instance below.
+    std::string inst_name = unique_overload_symbol(tc->var.name + "__mti");
     for ( size_t i = 0; i < fd->member_template_decl.size(); ++i )
     {
 	TokenBase *t = fd->member_template_decl[i];
@@ -34630,7 +34677,7 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     }
     size_t name_idx = skipped_template_function_declarator_name_index(ft.decl, NULL);
     if ( name_idx >= ft.decl.size() || !ft.decl[name_idx] )
-	return;
+	return NULL;
     {
 	TokenBase *old = ft.decl[name_idx];
 	TokenBase *ren = new TokenIdent(inst_name.c_str());
@@ -34692,13 +34739,14 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 		  << " ok=" << (int)ok << std::endl;
 #endif
     if ( !ok )
-	return;
-    // Alias the CALL to the instantiated definition: the call references the
+	return NULL;
+    // Bind the CALL to the instantiated definition: the call references the
     // declaration-only placeholder FuncDef (tc->var is a reference, not
-    // rebindable), so set the placeholder's local_emit_name to the
-    // instantiated definition's symbol — call_emit_symbol then emits that, and
-    // the unique-named definition (with real params) supplies it. First
-    // instantiation wins the single alias slot.
+    // rebindable), so record the instance per type-shape and on the call token
+    // (tc->mti_instance — consumed by call_target_variable and the parse-side
+    // call rebuilds). The placeholder's local_emit_name alias stays FIRST-wins
+    // for consumers that have no call token in hand.
+    member_fn_inst_names[shape_key] = inst_name;
     if ( fd->local_emit_name.empty() )
 	fd->local_emit_name = inst_name;
 #if MADC_DEBUG_FNTPL
@@ -34721,6 +34769,13 @@ void Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	    ii->second->tsubst_type_arg_packs = concrete_type_arg_packs;
 	}
     }
+    Variable *iv = findVariable(inst_name);
+    if ( iv && dynamic_cast<FuncDef *>(iv->type) )
+    {
+	tc->mti_instance = iv;
+	return iv;
+    }
+    return NULL;
 }
 
 void Program::instantiate_member_ctor_template_for_construction(

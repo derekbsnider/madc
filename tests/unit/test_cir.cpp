@@ -1026,6 +1026,47 @@ TEST_CASE("CIR: tsubst engagement counters split hits and fallbacks") {
     CHECK(saw_dep_fallback);
 }
 
+// Multi-type member-template instantiation on the FALLBACK lane: a member
+// template whose body tsubst does NOT cover (`typename T::type` — a
+// pre-acceptance pattern-build reject) instantiated at TWO types. Exercises,
+// on REAL shapes through the production pipeline: (1) per type-shape
+// instantiation (distinct instance symbols — the single-__mti collision fix;
+// the HIT-lane twin lives in tests/testmemtmplmultitype.mad), (2) the Phase-5
+// slice-2 body-parse skip arming on the REPEAT instantiation, and (3)
+// materialize_tsubst_skipped_body — the repeat's captured span re-parsed when
+// tsubst bails pre-acceptance (the one production consumer of the
+// materialization fallback; no soak lever needed). Lives in the UNIT suite so
+// the suite-wide burndown stays 0 FALLBACK (parse-once law) while the lane
+// keeps a regression test.
+TEST_CASE("CIR: fallback-lane member template at two types materializes repeats") {
+    const char *source =
+	"struct Inner { typedef int type; int v; };\n"
+	"struct Other { typedef int type; int v; };\n"
+	"struct Holder {\n"
+	"    template<class T> int pick(T t) { typename T::type w = t.v; return w + 2; }\n"
+	"};\n"
+	"int main() {\n"
+	"    Holder h; Inner i; i.v = 5; Other o; o.v = 30;\n"
+	"    return h.pick(i) * 100 + h.pick(o);\n"
+	"}\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<mti-fallback-repeat-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+    int64_t got = cir_run_program(prog.get());
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+    CHECK(got == 732);
+    CHECK(prog->_tsubst_body_hits == 0);
+    CHECK(prog->_tsubst_body_fallbacks == 2);
+}
+
 // Phase-5 slice 3: a tsubst bail on a COVERED shape (pattern built + binding
 // complete) returns a LOUD error body — the pre-c2mir gate rejects the tree —
 // and counts in the fallback profile, never as a hit and never as a silent

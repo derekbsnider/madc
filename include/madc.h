@@ -555,6 +555,13 @@ public:
     // When set, TokenCallFunc::compile loads the fn-ptr by compiling src_node
     // instead of calling voperand(var). var.type must still be DataDefFPTR.
     TokenBase *src_node = nullptr;
+    // The concrete member-template instantiation THIS call binds to, set by
+    // instantiate_member_fn_template_for_call (per type-shape — a member
+    // template used at two types has two instances; `var` stays the
+    // non-rebindable placeholder). Consumers: call_target_variable (the one
+    // TokenCallFunc-lane callee resolver) and the parse-side call rebuilds.
+    // NULL = not a madc-instantiated member-template call (the common case).
+    Variable *mti_instance = nullptr;
     bool auto_scope_context = false;
     TokenCallFunc(Variable &v) : TokenVar(v) { if (v.type->is_function()) _datatype = returns(); }
     virtual DataDef *returns()  const {
@@ -1938,11 +1945,26 @@ public:
     // declaration-only with its body retained on the FuncDef
     // (register_skipped_class_template_function). When such a callee is called,
     // deduce its template params from the call's args, instantiate the retained
-    // body via the shared free-fn-template machinery, and alias the instantiated
-    // definition's emitted symbol (local_emit_name) to the call's symbol so the
-    // call's extern resolves to the real definition at link. libstdc++-EXPORTED
-    // member templates keep the mangled-direct path (member_template_method_call).
-    void instantiate_member_fn_template_for_call(TokenCallFunc *tc);
+    // body via the shared free-fn-template machinery, and bind the call to the
+    // instantiated definition. Instantiations are PER TYPE-SHAPE (arg types +
+    // explicit template args, memoized in member_fn_inst_names): each distinct
+    // shape gets its own unique instance symbol (unique_overload_symbol over
+    // `<placeholder>__mti`, mirroring the ctor lane), so a member template used
+    // at two types yields two definitions — not a colliding single `__mti` item.
+    // Returns the concrete instance Variable for THIS call's shape (NULL when
+    // not a member-template call / instantiation failed) and records it on
+    // tc->mti_instance; the placeholder's local_emit_name alias stays FIRST-wins
+    // for consumers without a call token. libstdc++-EXPORTED member templates
+    // keep the mangled-direct path (member_template_method_call).
+    Variable *instantiate_member_fn_template_for_call(TokenCallFunc *tc);
+    // Per type-shape member-template instantiation memo: shape key (the
+    // placeholder's unique var.name + arg-type + explicit-arg spellings —
+    // placeholder IDENTITY, unlike the display-name cycle key, which
+    // deliberately blurs sibling placeholders) -> instance symbol. The
+    // call-lane twin of member_ctor_inst_done (which memoizes but needs no
+    // symbol map — ctor instances register into cdd->ctors and re-select per
+    // construction).
+    std::map<std::string, std::string> member_fn_inst_names;
     // A member-template CONSTRUCTOR whose parameters use the template pack
     // (`template<class... A> C(B&, A&&...)`, e.g. libstdc++'s _Rb_tree::_Auto_node)
     // is registered declaration-only as a ctor (register_skipped_class_template_function)

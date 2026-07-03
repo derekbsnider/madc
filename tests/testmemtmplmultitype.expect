@@ -1,0 +1,2 @@
+twice: i=42 d=2.5 repeat=200
+triple: i=42 d=1.5

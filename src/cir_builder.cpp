@@ -1911,9 +1911,10 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 						tsubst_concrete_arg_token(
 							concrete_param_types[i], i,
 							param_origins[i]));
-				m_prog->instantiate_member_fn_template_for_call(&synth);
-				Variable *body =
-					concrete_member_template_instance(mv, mfd);
+				Variable *body = m_prog->
+					instantiate_member_fn_template_for_call(&synth);
+				if (!body)
+					body = concrete_member_template_instance(mv, mfd);
 				FuncDef *bfd = body
 					? dynamic_cast<FuncDef *>(body->type) : NULL;
 				if (body && body != mv && bfd
@@ -1931,6 +1932,7 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 			return NULL;
 		}
 		FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
+		Variable *winner_instance = NULL;
 		if (wfd && wfd->is_member_template && wfd->declaration_only) {
 			Variable synth_recv("__madc_tsubst_recv", *recv_type, 1,
 					    NULL, false);
@@ -1945,10 +1947,12 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 					tsubst_concrete_arg_token(
 						concrete_param_types[i], i,
 						param_origins[i]));
-			m_prog->instantiate_member_fn_template_for_call(&synth);
+			winner_instance =
+				m_prog->instantiate_member_fn_template_for_call(&synth);
 		}
-		Variable *body_winner =
-			concrete_member_template_instance(winner, wfd);
+		Variable *body_winner = winner_instance
+			? winner_instance
+			: concrete_member_template_instance(winner, wfd);
 		FuncDef *body_fd = body_winner
 			? dynamic_cast<FuncDef *>(body_winner->type) : NULL;
 		if (!body_available_for(body_winner)) {
@@ -3526,6 +3530,19 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 		*fd_out = NULL;
 	if (!tcf)
 		return NULL;
+	// A madc-instantiated member-template call binds per TYPE-SHAPE: the
+	// parser recorded THIS call's concrete instance on the token (the
+	// placeholder's local_emit_name alias is first-wins and wrong for a
+	// member template used at two types). Resolve to it here so every
+	// consumer (naming, arg emission, retbuf classification) sees it.
+	if (tcf->mti_instance) {
+		if (FuncDef *ifd =
+			dynamic_cast<FuncDef *>(tcf->mti_instance->type)) {
+			if (fd_out)
+				*fd_out = ifd;
+			return tcf->mti_instance;
+		}
+	}
 	FuncDef *fd = call_target_funcdef_raw(tcf);
 	Variable *callee_var = &tcf->var;
 #if MADC_DEBUG_FNTPL
