@@ -15809,6 +15809,14 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 				m_prog->struct_map.find(own->name + "__" + pc->name);
 			DataDefCLASS *cc = ci != m_prog->struct_map.end()
 				? dynamic_cast<DataDefCLASS *>(ci->second) : NULL;
+			// Parse-once: when the eager first-instantiation body parse
+			// (the concrete class's only other producer) was skipped,
+			// materialize it from the retained template decl now. A
+			// class merely referenced (not defined) by the body scans
+			// to no definition span and stays unmapped, as today.
+			if (!cc)
+				cc = m_prog->materialize_pattern_local_class(
+					source, pc, own);
 			if (!cc || cc == pc || cc->enclosing_class != own)
 				continue;
 			binding[pd] = cc;

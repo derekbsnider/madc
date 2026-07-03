@@ -34557,6 +34557,117 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     return pattern;
 }
 
+DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
+						       DataDefCLASS *pattern_class,
+						       DataDefCLASS *owner)
+{
+    if ( !source || !pattern_class || !owner )
+	return NULL;
+    std::string concrete_name = owner->name + "__" + pattern_class->name;
+    datadef_map_iter dmi = struct_map.find(concrete_name);
+    if ( dmi != struct_map.end() )
+	return dynamic_cast<DataDefCLASS *>(dmi->second);
+    // Find the local class's DEFINITION span in the retained template decl:
+    // `struct|class <name> ... { ... }`. A bodyless `struct <name>;` is a mere
+    // declaration — keep scanning for the defining occurrence.
+    const std::vector<TokenBase *> &decl = source->member_template_decl;
+    size_t kw = decl.size(), close = 0;
+    for ( size_t i = 0; i + 1 < decl.size(); ++i )
+    {
+	if ( !decl[i] || (decl[i]->id() != TokenID::tkSTRUCT
+			  && decl[i]->id() != TokenID::tkCLASS) )
+	    continue;
+	TokenBase *nm = decl[i + 1];
+	if ( !nm || nm->type() != TokenType::ttIdentifier
+	  || !((TokenIdent *)nm)->spelling_is(pattern_class->name.c_str()) )
+	    continue;
+	size_t ob = i + 2;
+	while ( ob < decl.size() && decl[ob]
+	     && decl[ob]->id() != TokenID::tkOpBrc
+	     && decl[ob]->id() != TokenID::tkSemi )
+	    ++ob;
+	if ( ob >= decl.size() || !decl[ob]
+	  || decl[ob]->id() != TokenID::tkOpBrc )
+	    continue;
+	int depth = 1;
+	size_t j = ob + 1;
+	for ( ; j < decl.size() && depth > 0; ++j )
+	{
+	    if ( !decl[j] )
+		continue;
+	    if ( decl[j]->id() == TokenID::tkOpBrc )
+		++depth;
+	    else if ( decl[j]->id() == TokenID::tkClBrc )
+		--depth;
+	}
+	if ( depth != 0 )
+	    return NULL;
+	kw = i;
+	close = j - 1;
+	break;
+    }
+    if ( kw >= decl.size() )
+	return NULL;
+    std::vector<TokenBase *> inj;
+    for ( size_t i = kw; i <= close; ++i )
+	if ( decl[i] )
+	    inj.push_back(decl[i]->clone());
+    inj.push_back(new TokenSemi());
+    // Replay context: the instantiate_template_use model (fresh compounds +
+    // class scope with the owner pushed, cleared parse-mode flags, the owner's
+    // canonical spelling + namespace) plus the parse_deferred_lazy_body token
+    // save/restore (this runs at CIR time, off the live parse).
+    TokenStream::Pos saved_tokens = tokens.savepos();
+    TokenBase *saved_prv = _prv_token;
+    TokenBase *saved_cur = _cur_token;
+    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
+	  it != inj.rend(); ++it )
+	pushToken(*it);
+    std::stack<TokenCpnd *> saved_compounds;
+    std::swap(compounds, saved_compounds);
+    std::vector<DataDefCLASS *> saved_class_scope_stack;
+    std::swap(class_scope_stack, saved_class_scope_stack);
+    std::string saved_func = cur_func_name;
+    cur_func_name.clear();
+    bool saved_def_only = class_definition_only;
+    bool saved_cpp_struct_class = parsing_cpp_struct_class;
+    bool saved_cpp_union_class = parsing_cpp_union_class;
+    class_definition_only = false;
+    parsing_cpp_struct_class = false;
+    parsing_cpp_union_class = false;
+    std::string saved_canon = instantiating_canonical_spelling;
+    if ( owner->canonical_cpp_spelling.find('<') != std::string::npos )
+	instantiating_canonical_spelling = owner->canonical_cpp_spelling;
+    std::string method_namespace =
+	namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling);
+    NamespaceScope ns_scope(*this, method_namespace.empty()
+				    ? current_namespace() : method_namespace);
+    class_scope_stack.push_back(owner);
+    bool parsed = false;
+    try
+    {
+	TokenBase *class_kw = nextToken();
+	parseKeyword((TokenKeyword *)class_kw);
+	parsed = true;
+    }
+    catch ( ... ) { parsed = false; }
+    std::swap(class_scope_stack, saved_class_scope_stack);
+    std::swap(compounds, saved_compounds);
+    cur_func_name = saved_func;
+    class_definition_only = saved_def_only;
+    parsing_cpp_struct_class = saved_cpp_struct_class;
+    parsing_cpp_union_class = saved_cpp_union_class;
+    instantiating_canonical_spelling = saved_canon;
+    tokens = saved_tokens;
+    _prv_token = saved_prv;
+    _cur_token = saved_cur;
+    if ( !parsed )
+	return NULL;
+    dmi = struct_map.find(concrete_name);
+    return dmi != struct_map.end()
+	? dynamic_cast<DataDefCLASS *>(dmi->second) : NULL;
+}
+
 Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 {
     InstTimer _it(*this);	// --show-stats: instantiation time

@@ -2117,6 +2117,21 @@ public:
     // real function). Fully isolated (the parse_deferred_lazy_body save/restore
     // model). Returns the captured pattern, or NULL if ineligible / nothing parsed.
     TokenFunc *build_dependent_pattern(FuncDef *fd);
+    // Parse-once TAG_DEFN (g++ [temp.inst]): a LOCAL class defined in a
+    // member-template body is instantiated WITH the enclosing method. On the
+    // eager lane the first instantiation's body parse builds the concrete
+    // `<owner>__<local>` class as a side effect; when tsubst skips that body
+    // parse, THIS is the producer: replay just the local class's definition
+    // token subspan (retained in the template's member_template_decl) under
+    // the owner's class scope — the same TokenCLASS::parse context the eager
+    // lane uses, so naming, enclosing_class, ctor/dtor registration, emit
+    // symbols, and deferred method bodies come out identical. Returns the
+    // concrete class (pre-existing or materialized), or NULL when the decl
+    // span holds no definition of that name (a class merely REFERENCED by the
+    // body is not defined in it and must not materialize).
+    DataDefCLASS *materialize_pattern_local_class(FuncDef *source,
+						  DataDefCLASS *pattern_class,
+						  DataDefCLASS *owner);
     std::map<DataDef*, DataDefPTR*> ptr_type_cache; // cached pointer-to-T DataDefs
     std::map<DataDef*, DataDefREF*> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
     std::map<DataDef*, DataDefCONST*> const_type_cache; // cached const-T DataDefs
