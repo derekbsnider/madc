@@ -488,6 +488,50 @@ REMAINING before slice 2: none pinned — next open the slice-2 body-parse
 skip (per-fd where tsubst covers body+meminits), then slice 3 (loud
 bail), slice 4 (DELETE re-parse + escape hatch removal).
 
+**✅ SLICE 2 LANDED @e546c465 — instantiation body-parse skip,
+FIRST-EAGER / REPEAT-SKIP model.** Only the FIRST instantiation of each
+source parses its body eagerly; repeats capture the raw span
+(fd->tsubst_skipped_body_tokens) and parse an empty body. Mechanics:
+name-keyed arming (Program::tsubst_skip_body_name, set by both
+instantiation entry points around try_instantiate when
+fd->dependent_pattern && fd->tsubst_body_instantiated_once — nested
+signature/SFINAE/mem-init parses never misfire), skip at parseFunction's
+body point (collect_compound_body_tokens + synthetic `}`; signature +
+params + ctor mem-inits parse as before per hybrid B §11.2; `auto`
+returns stay eager), bail fallback = Program::materialize_tsubst_
+skipped_body (replays the span into the SAME TokenFunc under the
+parse_deferred_function_body context model + instantiation invariants
+incl. fn_template_instantiation_depth). Soak levers (die at slice 4):
+MADC_XTEST_TSUBST_NO_BODY_SKIP=1 (disable skip),
+MADC_XTEST_TSUBST_FORCE_BAIL=1 (bail every covered body → fallback
+exercised suite-wide; testmap/testset byte-identical through it; the
+container force-bail failures are byte-identical with skip disabled —
+pre-existing pure-fallback-lane gaps).
+**WHY first-eager — the two probe-proven enrichment walls (the remaining
+slice-2 KINDs, prerequisites for skipping FIRSTS and for slice 4):**
+(1) TAG_DEFN local-class remap (cir_builder ~15563) maps the pattern's
+local class onto the concrete `<owner>__<local>` class THE EAGER PARSE
+BUILDS — skip-all left pattern _Guard's deferred dtor failing the
+[class.access] private check on _M_dispose (pattern local classes carry
+no enclosing_class — build_dependent_pattern deliberately leaves
+class_scope_stack alone per the testlocalclassraii hijack note).
+(2) Member-template callee enrichment: the pattern build lowers nested
+MEMBER calls against the placeholder's parse-time state (local_emit_name
+alias + varargs (void*)&addr class-arg shape); skip-all made
+_M_emplace_hint_unique's _M_insert_ call pass a bare _Alloc_node VALUE →
+c2mir "incompatible argument type for pointer type parameter". The
+copy-path N_CALL rebuild EXCLUDES TokenMember (2864 site nulls it; the
+id-only rewrite at 2099 fixes the symbol but not the args) — the fix
+KIND is a receiver-aware member-call formal rebuild at copy time
+(arg-index offset for __this/sret; ABI reshape when the winner's return
+class differs). Measured: testsubscript parse 2.333s→1.628s (-30%),
+total -28%; hits unchanged 35/0. Gates: fulltest exit 0 (674/0/0/16 all
+GREEN), burndown FLAT 268/0, sweep = known 4-noise BY NAME. NEXT: slice-2
+widening KINDs above (optional, or defer to the slice-4 gate costing) →
+slice 3 (loud bail) → slice 4 (DELETE re-parse; note first-eager keeps
+the instantiation body parse load-bearing for FIRSTS, so the slice-4
+delete scope must be costed against the two KINDs above).
+
 **Road (i) recon (2026-07-02, probe [DELEG-ORIGIN] in-tree):** all 4
 delegation ci-arg datadefs confirmed `is_dependent_placeholder=1,
 has_dependent_surface=0` with clean canonical spellings
