@@ -2868,8 +2868,36 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 	if (subst && src->base.code == N_CALL && src->origin_id) {
 		TokenCallFunc *tcf =
 			dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
-		if (dynamic_cast<TokenMember *>(tcf))
-			tcf = NULL;
+		TokenMember *tmm = dynamic_cast<TokenMember *>(tcf);
+		// Receiver-aware member-call rebuild (Phase-5 slice 4b KIND): a Tree-1
+		// member call is claimed at the CALL level, where the callee id is op0
+		// BY CONSTRUCTION — never by matching the id's spelling against
+		// func_emit_name, which reads local_emit_name enrichment state that
+		// any earlier instantiation of the same member template mutates
+		// (first-wins), making a spelling check order-dependent (the per-node
+		// id-rewrite silently skipped the second shape's callee, leaking the
+		// generic definition-less symbol into its body). Claim requires the
+		// direct (non-virtual-dispatch) call shape and a 1:1 emitted-args
+		// mapping [sret?][__this][explicit...] onto tcf->parameters; a pack
+		// expansion or an unexpected arg count keeps today's per-node path.
+		size_t member_extras = 0;
+		node_t src_args = c2mir_node_op(src->as_node(), 1);
+		if (tmm) {
+			size_t emitted_args = 0;
+			for (node_t a = src_args ? c2mir_node_first_op(src_args)
+						 : NULL;
+			     a != NULL; a = c2mir_node_next_op(a))
+				++emitted_args;
+			node_t callee_id = c2mir_node_op(src->as_node(), 0);
+			cir_node *cid = callee_id ? CIR_NODE(callee_id) : NULL;
+			if (cid && cid->base.code == N_ID
+			    && !tsubst_call_has_pack_expansion_arg(tmm)
+			    && emitted_args > tmm->parameters.size()
+			    && emitted_args <= tmm->parameters.size() + 2)
+				member_extras = emitted_args - tmm->parameters.size();
+			else
+				tcf = tmm = NULL;
+		}
 		bool changed = false;
 		std::vector<DataDef *> concrete_param_types;
 		std::string err;
@@ -2889,16 +2917,48 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					tcf));
 			if (!is_c2mir_builtin_call_name(tcf->var.name))
 				referenced_funcs.insert(sym);
-			node_t src_args = c2mir_node_op(src->as_node(), 1);
+			// The winner's formals map onto the emitted args only when
+			// its return ABI matches the pattern's emitted shape (extras
+			// of 2 == leading sret temp). On a mismatch, or when the
+			// winner is still the varargs generic (formals unknown),
+			// rebuild the SYMBOL only and copy the args verbatim —
+			// today's id-rewrite result, made order-independent.
+			bool member_formals_known = !tmm
+				|| (wfd && wfd->parameters.size()
+					   == tmm->parameters.size() + 1);
+			bool winner_sret = wfd && !wfd->returns_reference()
+				&& !wfd->is_multi_return()
+				&& class_return_via_retbuf(&wfd->return_value_type())
+				   != NULL;
+			bool member_abi_ok = !tmm
+				|| (member_extras == 2) == winner_sret;
 			node_t args = list();
-			size_t i = 0;
+			size_t j = 0;
 			for (node_t a = src_args ? c2mir_node_first_op(src_args) : NULL;
-			     a != NULL; a = c2mir_node_next_op(a), ++i) {
-				TokenBase *arg = (i < tcf->parameters.size())
-					       ? tcf->parameters[i] : NULL;
-				DataDef *pt = (wfd && i < wfd->parameters.size())
-					    ? wfd->parameters[i] : NULL;
-				bool refp = wfd && wfd->is_ref_param(i);
+			     a != NULL; a = c2mir_node_next_op(a), ++j) {
+				TokenBase *arg = NULL;
+				DataDef *pt = NULL;
+				bool refp = false;
+				if (!tmm) {
+					arg = (j < tcf->parameters.size())
+					    ? tcf->parameters[j] : NULL;
+					pt = (wfd && j < wfd->parameters.size())
+					   ? wfd->parameters[j] : NULL;
+					refp = wfd && wfd->is_ref_param(j);
+				} else if (member_formals_known && member_abi_ok) {
+					if (j + 1 < member_extras) {
+						// sret temp address: verbatim
+					} else if (j + 1 == member_extras) {
+						arg = tmm;
+						pt = wfd->parameters[0];
+					} else {
+						size_t pi = j - member_extras + 1;
+						arg = tmm->parameters[pi - 1];
+						pt = pi < wfd->parameters.size()
+						   ? wfd->parameters[pi] : NULL;
+						refp = pt && wfd->is_ref_param(pi);
+					}
+				}
 				node_t rewritten =
 					copied_call_arg_for_formal(arg, a, pt,
 								   refp, subst);
@@ -17192,6 +17252,14 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (tf && !tf->is_overridden)
 			funcs.push_back(tf);
 	}
+	// Everything in pending_funcs PAST this snapshot must be drained into the
+	// emission fixpoint (materialize_and_lower's pending drain below). The
+	// watermark is captured HERE — before any body translates — because a ROOT
+	// body's tsubst can itself instantiate a new member-template instance
+	// (receiver-aware member-call rebuild): a watermark taken after the roots
+	// loop left such an instance below it, referenced but never defined
+	// (MIR "import of undefined item Alloc__dispose__mti__o2").
+	size_t pf_drained = prog->pending_funcs.size();
 
 	// (struct_behind is now a static member — resolves the struct a typedef
 	// ultimately names, peeling array/pointer layers.)
@@ -17571,8 +17639,9 @@ node_t CirBuilder::translate_module(Program *prog)
 	// calls a free-fn template like std::_Destroy) append to prog->pending_funcs
 	// but are NOT in the entry `funcs` snapshot — without folding them in they get
 	// an extern proto (referenced) but no definition -> MIR "import of undefined
-	// item". Drain anything appended past this boundary into lib_funcs each round.
-	size_t pf_drained = prog->pending_funcs.size();
+	// item". Drain anything appended past the entry-snapshot watermark
+	// (pf_drained, captured where `funcs` was collected) into lib_funcs each
+	// round.
 	auto materialize_and_lower = [&]() {
 		for (bool grew = true; grew; ) {
 			grew = false;

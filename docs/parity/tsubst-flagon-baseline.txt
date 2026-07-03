@@ -17,12 +17,18 @@
 # packs) are hits — shell-side template-ids no longer disqualify (hybrid B),
 # and an empty body admits multi-pack / non-type-pack params. testmap and
 # testsubscript are now FULLY parse-once flag-on (0 fallback).
-testset 10 0
-testmap 11 0
-testvector 15 0
-testsubscript 35 0
-testcontainerdtor 34 0
-testmadc_ns 34 0
+# Then the slice-4b member-call rebuild KIND (receiver-aware, at copy time):
+# nested member-template calls in tsubst'd bodies re-resolve STRUCTURALLY per
+# instantiation (op0 IS the callee — no order-dependent spelling match against
+# local_emit_name enrichment), their instances are created at copy time and
+# drained via the entry-snapshot pending_funcs watermark: +1 set/map, +2
+# vector, +4 subscript/containerdtor/madc_ns.
+testset 11 0
+testmap 12 0
+testvector 17 0
+testsubscript 39 0
+testcontainerdtor 38 0
+testmadc_ns 38 0
 testlocalclassraii 1 0
 # Then the scalar-ref-param slice: the blanket reference-param guard deleted
 # (untyped N_DEREF types from the concrete shell decl) + is_size1_pointer no

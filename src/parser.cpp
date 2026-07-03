@@ -6908,10 +6908,22 @@ static bool is_runtime_sized_type(DataDef *dd)
     return false;
 }
 
+// A type query whose VALUE is not knowable at parse time: a VLA type (runtime
+// value) or a bare template-parameter placeholder (instantiation-time value —
+// folding it would bake the placeholder's meaningless size 0 into the Tree-1
+// pattern; tsubst expands the deferred TokenTypeQuery's type marker instead).
+static bool type_query_size_is_deferred(DataDef *dd)
+{
+    if ( !dd )
+	return false;
+    return is_runtime_sized_type(dd) || dd->is_template_param();
+}
+
 static TokenBase *make_type_query_token(TokenBase *op_tb, DataDef *dd, bool want_alignof)
 {
     TokenBase *result = NULL;
-    if ( want_alignof || !is_runtime_sized_type(dd) )
+    if ( !type_query_size_is_deferred(dd)
+      || (want_alignof && !dd->is_template_param()) )
     {
 	TokenInt *ti = new TokenInt((int64_t)query_datadef_measure(dd, want_alignof));
 	ti->setDataType(&ddUINT64);
@@ -7308,7 +7320,7 @@ TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
 	return NULL;
 
     auto consume_simple_named_type = [&](DataDef *dd) -> TokenBase * {
-	if ( !is_runtime_sized_type(dd) )
+	if ( !type_query_size_is_deferred(dd) )
 	    return NULL;
 	nextToken();
 	return make_type_query_token(op_tb, dd, false);
@@ -7322,7 +7334,9 @@ TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
 	    std::string name = contextual_identifier_name(probe);
 	    if ( !findVariable(name) )
 	    {
-		DataDef *dd = resolve_named_datadef(name);
+		DataDef *dd = resolve_template_param(name);
+		if ( !dd )
+		    dd = resolve_named_datadef(name);
 		if ( TokenBase *query = consume_simple_named_type(dd) )
 		    return query;
 	    }
@@ -7348,7 +7362,11 @@ TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
     {
 	std::string name = ((TokenIdent *)type_tb)->spelling();
 	if ( !findVariable(name) )
-	    dd = resolve_named_datadef(name);
+	{
+	    dd = resolve_template_param(name);
+	    if ( !dd )
+		dd = resolve_named_datadef(name);
+	}
     }
     else if ( type_tb->type() == TokenType::ttKeyword
 	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
@@ -7358,7 +7376,7 @@ TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
 	    return NULL;
 	dd = resolve_named_datadef(contextual_identifier_name(tokens[ix]));
     }
-    if ( !is_runtime_sized_type(dd) )
+    if ( !type_query_size_is_deferred(dd) )
 	return NULL;
 
     TokenBase *open = nextToken();
