@@ -758,3 +758,44 @@ advanced (+2 vector, +2 subscript/containerdtor/madc_ns). REMAINING for
 pre-acceptance coverage-boundary KINDs (Kind-3 dependent member type,
 destroy-helper guard, dependent-call scan, binding gaps), then delete
 the eager body-parse machinery per-KIND.
+
+**✅ SLICE 4b TAG_DEFN local-class remap KIND LANDED @51869343 —
+tsubst-side materialization of the concrete local class.** Recon (backtrace at the
+access_flag_violation private return; -rdynamic resolves function-level
+frames without -g) pinned the wall: during translate_module's lazy-body
+fixpoint, parse_deferred_lazy_body parsed the PATTERN _Guard's dtor
+(`if (_M_guarded) _M_guarded->_M_dispose();`) with cur_class=_Guard,
+enclosing_class=NULL → [class.access] private check fails. Root cause:
+the concrete `<owner>__<local>` class has exactly ONE producer — the
+eager first-instantiation body parse (TokenCLASS::parse names it via
+class_scope_stack.back() @25326 and sets enclosing_class @25654); the
+CIR remap only LOOKS UP struct_map[own+"__"+pc->name]. Skip firsts →
+nothing produced it → raw pattern _Guard leaks into the emitted tree,
+its dtor gets ODR-used, lazy parse hits the access wall. Fix (g++
+[temp.inst]: a local class is instantiated WITH the enclosing function):
+new Program::materialize_pattern_local_class(source, pattern_class,
+owner) — on remap miss, scan the retained fd->member_template_decl for
+the local class's DEFINITION token subspan (struct|class + name + {…}),
+clone it + synthetic `;`, and replay through parseKeyword under the
+instantiate_template_use context model (fresh compounds + class scope
+with OWNER pushed, cleared parse-mode flags, owner canonical spelling +
+namespace, parse_deferred_lazy_body token save/restore) — the SAME
+TokenCLASS::parse context the eager lane uses, so naming,
+enclosing_class, ctor/dtor registration, emit symbols, and deferred
+method bodies come out identical; both producers converge (materializer
+pre-checks struct_map; the eager lane's redefinition hits the existing
+depth>0 reuse branch @25605). The scan-miss is the name-gate: a class
+merely REFERENCED by the body has no definition span and stays unmapped
+(never materializes a global struct). NOT via class_scope_stack at
+pattern-build time (the twice-proven-wrong hijack — pattern parse
+context contaminates method emit names). First-skip probe (reverted):
+map<string,string> dict[k]=v compiles AND RUNS (read-back correct:
+"hello bonjour size=2"); testmap passes END-TO-END under first-skip.
+NEXT probe-proven walls (all vector-lane / set): __new_allocator::
+construct "[why: tsubst: dependent-arg object construction]"
+(testsubscript/testcontainerdtor), allocator_traits::construct on
+basic_string "[why: tsubst body calls un-emittable symbol]" @
+stl_vector.h:428 (testvector/testsubscript/testcontainerdtor), testset
+c2mir check error. REMAINING for 4b: those vector-lane construct KINDs,
+the pre-acceptance coverage-boundary KINDs, then delete the eager
+body-parse machinery per-KIND.
