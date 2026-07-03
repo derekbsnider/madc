@@ -23,12 +23,20 @@
 # local_emit_name enrichment), their instances are created at copy time and
 # drained via the entry-snapshot pending_funcs watermark: +1 set/map, +2
 # vector, +4 subscript/containerdtor/madc_ns.
+# Then the slice-4b deferred-arg formal re-selection KIND: (a) std::forward's
+# parse-time-baked overload formal no longer drives the bind-vs-convert
+# deferral (the marker bakes the arg's OWN dependent type — identity bake);
+# (b) a STATIC member-template call (_Alloc_traits::construct) re-selects in
+# its member_template_owner class at copy time; (c) the call-rebuild arm fans
+# a top-level pack argument out itself, pairing element e with formal fi+e
+# under that element's subst: +2 vector, +2 subscript/containerdtor/madc_ns
+# (_M_construct_node bodies tsubst instead of bail-degrading).
 testset 11 0
 testmap 12 0
-testvector 17 0
-testsubscript 39 0
-testcontainerdtor 38 0
-testmadc_ns 38 0
+testvector 19 0
+testsubscript 41 0
+testcontainerdtor 40 0
+testmadc_ns 40 0
 testlocalclassraii 1 0
 # Then the scalar-ref-param slice: the blanket reference-param guard deleted
 # (untyped N_DEREF types from the concrete shell decl) + is_size1_pointer no

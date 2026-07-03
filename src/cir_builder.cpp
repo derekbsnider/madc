@@ -1866,12 +1866,25 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	if (!changed && !system_header_call)
 		return NULL;
 
-	if (TokenMember *tm = dynamic_cast<TokenMember *>(tcf)) {
+	TokenMember *tm = dynamic_cast<TokenMember *>(tcf);
+	// A STATIC member-template call (`_Alloc_traits::construct(...)`) has no
+	// receiver expression (not a TokenMember) and is not a namespace
+	// function — the free path below can neither find nor instantiate it.
+	// The owning class is recorded on the callee FuncDef; re-select within
+	// it exactly like a receiver call (the receiver type is only the lookup
+	// key — instantiate_member_fn_template_for_call keys off the callee's
+	// member_template_owner, and a static winner takes no __this).
+	DataDef *static_owner = (!tm && fd && fd->is_member_template
+				 && fd->member_template_owner)
+				? fd->member_template_owner : NULL;
+	if (tm || static_owner) {
 		if (changed_out)
 			*changed_out = changed;
-		DataDef *recv_type = tm->parent_expr
-				     ? tm->parent_expr->datadef()
-				     : tm->object.type;
+		DataDef *recv_type = static_owner
+				     ? static_owner
+				     : (tm->parent_expr
+					? tm->parent_expr->datadef()
+					: tm->object.type);
 		recv_type = subst_datadef_active(recv_type, *subst);
 		DataDefCLASS *recv_class = class_behind(recv_type);
 		if (!recv_class) {
@@ -1883,7 +1896,7 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 			(fd && !fd->method_display_name.empty())
 			? fd->method_display_name
 			: ((fd && !fd->function_display_name.empty())
-			   ? fd->function_display_name : tm->var.name);
+			   ? fd->function_display_name : tcf->var.name);
 		std::vector<const DataDef *> mat;
 		mat.reserve(concrete_param_types.size());
 		for (DataDef *pt : concrete_param_types)
@@ -2781,7 +2794,13 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				    madc_token_for_slot(src->origin_id))) {
 			DataDefCLASS *target =
 				dynamic_cast<DataDefCLASS *>(src->datadef);
-			if (target && tvar->datadef()
+			// Identity-refcast bake (build_call_args): the marker's
+			// datadef is the arg's OWN dependent type — no concrete
+			// binding target to convert-check against; the deduced
+			// formal matches the substituted arg by construction.
+			bool identity_bake = !target && src->datadef
+				&& template_param_under_type_layers(src->datadef);
+			if ((target || identity_bake) && tvar->datadef()
 			    && tvar->datadef()->is_reference()
 			    && template_param_under_type_layers(tvar->datadef())) {
 				DataDef *sdd = subst_datadef_active(tvar->datadef(),
@@ -2790,7 +2809,8 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					return CIR_NODE(error_node(
 						"tsubst: unbound deferred-arg type", tvar));
 				DataDefCLASS *ac = class_behind(sdd);
-				if (ac != target
+				if (!identity_bake
+				    && ac != target
 				    && !(ac && ac->is_or_derives_from(target)
 					 && ac->base_offset_of(target) == 0)) {
 					if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
@@ -2977,17 +2997,88 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				|| (member_extras == 2) == winner_sret;
 			node_t args = list();
 			size_t j = 0;
+			size_t fi = 0;
 			for (node_t a = src_args ? c2mir_node_first_op(src_args) : NULL;
-			     a != NULL; a = c2mir_node_next_op(a), ++j) {
+			     a != NULL; a = c2mir_node_next_op(a), ++j, ++fi) {
+				cir_node *ca = CIR_NODE(a);
+				// Top-level pack argument of a rebuilt free/static
+				// call (`_Alloc_traits::construct(..., forward<_Args>(
+				// __args)...)`): the winner's formals are PER-ELEMENT,
+				// so fan the expansion out HERE — the generic child
+				// fan-out has no call context to pair element e with
+				// formal fi+e. Each element copies under its own
+				// subst + pack window, so the nested forward call and
+				// the identity deferral marker resolve per element.
+				if (!tmm && ca && ca->tsubst_pack_expand
+				    && m_tsubst_copy_pack_index < 0) {
+					if (!m_tsubst_active_type_arg_packs
+					    || ca->tsubst_pack_index
+					       >= m_tsubst_active_type_arg_packs->size())
+						return CIR_NODE(error_node(
+							"tsubst: missing type argument pack",
+							tcf));
+					std::map<unsigned, DataDef *>::iterator pmi =
+						m_tsubst_active_pack_params.find(
+							ca->tsubst_pack_index);
+					if (pmi == m_tsubst_active_pack_params.end()
+					    || !pmi->second)
+						return CIR_NODE(error_node(
+							"tsubst: missing pack parameter",
+							tcf));
+					const std::vector<DataDef *> &elems =
+						(*m_tsubst_active_type_arg_packs)
+							[ca->tsubst_pack_index];
+					TokenPackExpansion *pe =
+						(j < tcf->parameters.size())
+						? dynamic_cast<TokenPackExpansion *>(
+							tcf->parameters[j])
+						: NULL;
+					for (size_t e = 0; e < elems.size(); ++e) {
+						if (!elems[e])
+							return CIR_NODE(error_node(
+								"tsubst: null pack element",
+								tcf));
+						std::map<DataDef *, DataDef *> elem_subst =
+							*subst;
+						elem_subst[pmi->second] = elems[e];
+						size_t pi = fi + e;
+						DataDef *ept =
+							(wfd && pi < wfd->parameters.size())
+							? wfd->parameters[pi] : NULL;
+						bool erefp = wfd && wfd->is_ref_param(pi);
+						int saved_index = m_tsubst_copy_pack_index;
+						size_t saved_elem = m_tsubst_copy_pack_elem;
+						const char *saved_name =
+							m_tsubst_copy_pack_value_name;
+						m_tsubst_copy_pack_index =
+							(int)ca->tsubst_pack_index;
+						m_tsubst_copy_pack_elem = e;
+						m_tsubst_copy_pack_value_name =
+							ca->tsubst_pack_value_name;
+						node_t rewritten = copied_call_arg_for_formal(
+							pe ? pe->pattern : NULL, a,
+							ept, erefp, &elem_subst);
+						m_tsubst_copy_pack_index = saved_index;
+						m_tsubst_copy_pack_elem = saved_elem;
+						m_tsubst_copy_pack_value_name = saved_name;
+						if (!rewritten)
+							return CIR_NODE(error_node(
+								"tsubst: failed dependent call arg copy",
+								tcf));
+						append(args, rewritten);
+					}
+					fi += elems.size() - 1;
+					continue;
+				}
 				TokenBase *arg = NULL;
 				DataDef *pt = NULL;
 				bool refp = false;
 				if (!tmm) {
 					arg = (j < tcf->parameters.size())
 					    ? tcf->parameters[j] : NULL;
-					pt = (wfd && j < wfd->parameters.size())
-					   ? wfd->parameters[j] : NULL;
-					refp = wfd && wfd->is_ref_param(j);
+					pt = (wfd && fi < wfd->parameters.size())
+					   ? wfd->parameters[fi] : NULL;
+					refp = wfd && wfd->is_ref_param(fi);
 				} else if (member_formals_known && member_abi_ok) {
 					if (j + 1 < member_extras) {
 						// sret temp address: verbatim
@@ -4381,6 +4472,14 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 		if (bind_src->type() == TokenType::ttVariable
 		    && bind_src->datadef() && bind_src->datadef()->is_reference()
 		    && template_param_under_type_layers(bind_src->datadef())) {
+			if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+				fprintf(stderr, "[DEFARG-MK] bind_src=%s target=%s at=%s:%d in=%s\n",
+					dynamic_cast<TokenVar *>(bind_src)
+					? dynamic_cast<TokenVar *>(bind_src)->var.name.c_str()
+					: "?",
+					target->name.c_str(),
+					arg->file ? arg->file : "?", arg->line,
+					m_cur_method ? m_cur_method->returns.name.c_str() : "?");
 			cir_node *marker = make(N_IGNORE, bind_src);
 			marker->datadef = target;
 			return marker->as_node();
@@ -4615,6 +4714,25 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 		nargs = 1;
 	for (size_t i = 0; i < nargs; i++) {
 		TokenBase *arg = tcf->parameters[i];
+		// Identity-refcast callee (std::forward / std::move —
+		// inline_builtin_kind "forward", detected by body shape): the formal
+		// is a DEDUCED forwarding reference, so it matches the argument by
+		// construction for every substitution — the parse-time-baked
+		// overload's formal is unenriched state and must never drive the
+		// bind-vs-convert decision for a dependent pattern arg. Defer with
+		// the argument's OWN dependent type as the binding target (the
+		// callee-side twin of object_arg_addr's forward-arg unwrap); the
+		// copy substitutes it per pack element and the bind trivially holds.
+		if (m_tsubst_pattern_mode && callee
+		    && callee->inline_builtin_kind == "forward"
+		    && arg && arg->type() == TokenType::ttVariable
+		    && arg->datadef() && arg->datadef()->is_reference()
+		    && template_param_under_type_layers(arg->datadef())) {
+			cir_node *marker = make(N_IGNORE, arg);
+			marker->datadef = arg->datadef();
+			append(args, marker->as_node());
+			continue;
+		}
 		// Explicit user arg i maps to the callee's parameter (i + param_base):
 		// param_base skips leading hidden params the caller injected separately
 		// (the method __this), so reference / object coercion reads the RIGHT
