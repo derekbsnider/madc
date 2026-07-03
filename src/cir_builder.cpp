@@ -15279,6 +15279,13 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	if (!madc_tsubst_dep_parse_enabled())
 		return NULL;
 	m_tsubst_body_carries_meminits = false;
+	// Phase-5 slice 2 soak lever: force EVERY covered body to bail so the
+	// skipped-body materialization fallback is exercisable suite-wide (the
+	// gated runs never bail — 0 fallbacks — so the fallback would otherwise
+	// be dead code until a real bail appears). Manual runs only; dies with
+	// the re-parse machinery (slice 4).
+	if (getenv("MADC_XTEST_TSUBST_FORCE_BAIL"))
+		return bail("forced bail (slice-2 soak lever)");
 	FuncDef *source = fd ? fd->tsubst_source : NULL;
 	if (!source)
 		return bail("no tsubst source");
@@ -16217,8 +16224,17 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				entry.reason = tsubst_reason;
 		}
 	}
-	if (!body)
+	if (!body) {
+		// Phase-5 slice 2: this instantiation's body parse was SKIPPED
+		// (its source pattern covers every suite path today), so a
+		// tsubst bail must first materialize the captured span into tf
+		// — the re-parse fallback, deleted with the machinery at
+		// slice 4 (slice 3 makes a covered-shape bail a hard error).
+		if (m_prog && fd->tsubst_source
+		    && !fd->tsubst_skipped_body_tokens.empty())
+			m_prog->materialize_tsubst_skipped_body(tf);
 		body = translate_block((TokenCpnd *)tf);
+	}
 
 	// C99 VLA-parameter bound side effects: a parameter array bound such as
 	// `int a[i++]` must have its bound expression evaluated on function entry

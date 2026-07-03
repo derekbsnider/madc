@@ -232,13 +232,32 @@ public:
     // + args model, captured now so CIR pack expansion can consume real arity
     // and element types instead of re-deriving them from rewritten tokens.
     std::vector<std::vector<DataDef *> > tsubst_type_arg_packs;
+    // Phase-5 slice 2: on a CONCRETE instantiated member-template method whose
+    // source carries a dependent_pattern, the instantiation's RAW body-token
+    // span (after `{` through the matching `}` inclusive) captured INSTEAD of
+    // parsed — tsubst supplies the body at lowering, so the substituted-token
+    // body parse was discarded work on every hit. A tsubst bail materializes
+    // the span via Program::materialize_tsubst_skipped_body. Empty == body
+    // parsed eagerly (not skipped). Dies with the re-parse path (slice 4).
+    std::vector<TokenBase *> tsubst_skipped_body_tokens;
+    // Phase-5 slice 2: on a SOURCE member-template fd, TRUE once one
+    // instantiation has parsed its body eagerly. The FIRST instantiation must
+    // parse: it enriches the environment the Tree-1 pattern build lowers
+    // against (nested member-template instantiations, placeholder
+    // local_emit_name aliases, the concrete local classes the TAG_DEFN remap
+    // maps onto). REPEAT instantiations skip their body parse — their parse
+    // product is discarded on every tsubst hit (suite-wide 268/0). Removing
+    // the first-eager requirement = making the pattern build
+    // environment-independent (member-call formal rebuild, per-instantiation
+    // local classes) — the remaining slice-2 KINDs.
+    bool tsubst_body_instantiated_once;
     struct CtorInitializer {
 	std::string name;
 	std::vector<TokenBase *> args;
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_skipped_body_tokens(), tsubst_body_instantiated_once(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), pure_virtual(false), is_const_method(false) {}
     DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -2048,6 +2067,21 @@ public:
     // gets dependent ctor_initializers instead of the skip loop discarding
     // the span (the `__patN` rename defeats the owner-prefix ctor gate).
     bool dependent_pattern_ctor_inits = false;
+    // Phase-5 slice 2: armed by the member-template instantiation entry points
+    // (call + ctor-construction paths) with the instantiation's unique symbol,
+    // across try_instantiate_namespace_fn_template, when the source fd carries
+    // a dependent_pattern. parseFunction skips the BODY parse of exactly the
+    // function with this id (capturing the raw span onto
+    // fd->tsubst_skipped_body_tokens for the bail fallback); name-keying means
+    // parses nested under the signature / SFINAE / mem-init machinery never
+    // misfire. Empty == no skip armed. Dies with the re-parse path (slice 4).
+    std::string tsubst_skip_body_name;
+    // Phase-5 slice 2: the tsubst-bail fallback — parse a skipped instantiation
+    // body span INTO its existing TokenFunc (parse_deferred_function_body's
+    // context-restore model + the instantiation-parse invariants the span was
+    // captured under). Returns false when there is nothing to materialize or
+    // the parse fails (the caller lowers whatever tf holds).
+    bool materialize_tsubst_skipped_body(class TokenFunc *tf);
     // Two-tree Phase 2: capability predicate — true only for the conservative
     // first-slice shape the dependent-parse / tsubst path handles (one TYPE param,
     // no pack, NON-DEPENDENT return, body uses `T` only in scalar positions). False
