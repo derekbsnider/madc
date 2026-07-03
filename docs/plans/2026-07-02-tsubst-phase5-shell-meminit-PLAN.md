@@ -599,3 +599,60 @@ structure is simply dropped today. Implementation sketch:
    interface is structural (cloned type tokens, not source text), distinct
    from the outlawed body re-parse, but weigh it against a DataDef-driven
    entry point at implementation time.
+
+## Slice-4 delete costing (2026-07-03) — SETTLED scope 4a/4b; multi-type wall found+fixed
+
+**Recon product.** The `=0` mode is the parallel implementation: it switches
+off pattern building (2 parser sites), tsubst metadata recording (2 sites),
+slice-2 skip arming (2 sites), and tsubst_method_body — every body then
+comes from the eager parse product. Gate scripts only set `=1` (the
+default); ~23 unit tests carry save/set-1/restore env boilerplate (~140
+lines); nothing tests `=0` itself. tmp/flagon_diff_sweep.sh is the only
+=0 consumer (scratch, dies with the hatch).
+
+**Found on the way — MULTI-TYPE MEMBER-TEMPLATE WALL, FIXED @a0664983:**
+any member template (instance or static) instantiated at 2+ types in one
+TU hard-failed ("Repeated item declaration <name>__mti", ALL lanes incl.
+=0) — the author-pinned single-alias-slot follow-up. Fix = the ctor lane's
+model: per type-shape memo (member_fn_inst_names, keyed on placeholder
+var.name + arg types + explicit targs — placeholder IDENTITY, split from
+the display-name cycle key which blurs siblings and can be empty), unique
+instance symbols (unique_overload_symbol over `__mti`; first shape keeps
+`__mti`), per-call binding via TokenCallFunc::mti_instance consumed at
+call_target_variable (the one TokenCallFunc-lane resolver) + the
+TokenCallMethod rebuild in reselect_method_overload + the tc3 static
+rebuild + the CIR copy-path synth sites; local_emit_name stays first-wins
+for token-less consumers. Suite hits 268→296 (calls previously aliased to
+another shape's instance now instantiate their own). Tests:
+testmemtmplmultitype.mad (HIT lane) + unit "fallback-lane member template
+at two types" (Kind-3 at 2 types: per-shape instances + repeat skip arming
++ materialize_tsubst_skipped_body on REAL shapes — the production
+materialization consumer, replacing the FORCE_BAIL=1 soak need; lives in
+the UNIT suite so the suite burndown stays 0 FALLBACK per the law).
+
+**Slice 4a (executable now): delete the =0 MODE + levers.**
+1. Delete madc_tsubst_dep_parse_enabled() (datadef.h decl, madc_globals.cpp
+   def); its 8 call sites become unconditional.
+2. Delete MADC_XTEST_TSUBST_NO_BODY_SKIP and MADC_XTEST_TSUBST_FORCE_BAIL=1
+   (the materialization lane now has the real-shape unit test). DECIDE at
+   execution: keep `=covered` as the loud-arm fault-injection hook (no real
+   shape can reach the arm by construction — deleting it leaves the slice-3
+   unit test and the arm untestable) or delete both values + that test.
+3. Sweep the ~23 unit-test env boilerplate blocks; drop `env
+   MADC_XTEST_DEP_PARSE=1` from tsubst_flagon_gate.sh + tsubst_burndown.sh.
+4. The unit fallback-counter specimen STAYS (contra the original slice-4
+   bullet, which assumed full coverage): Kind-3 `typename T::type` still
+   falls back pre-acceptance — the specimen is the live regression test of
+   that lane. Replace with a hit-counter assertion only when Kind-3 lands.
+5. -Wall build; -Wunused-function on madc_tsubst_dep_parse_enabled confirms
+   the cut.
+
+**Slice 4b (BLOCKED — the body-parse machinery itself).** parseFunction's
+instantiation body parse + def_tokens replay + materialize_tsubst_
+skipped_body stay LOAD-BEARING for (i) FIRST instantiations (first-eager
+model — blocked on the two slice-2 enrichment KINDs: TAG_DEFN local-class
+remap for pattern classes, receiver-aware member-call formal rebuild) and
+(ii) pre-acceptance coverage-boundary shapes (Kind-3 dependent member
+type, destroy-helper guard, dependent-call scan, binding gaps) — each a
+KIND still to land. 4b = the burndown-of-KINDs continuation; delete the
+machinery when both (i) and (ii) reach zero reachability.
