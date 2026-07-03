@@ -799,3 +799,34 @@ stl_vector.h:428 (testvector/testsubscript/testcontainerdtor), testset
 c2mir check error. REMAINING for 4b: those vector-lane construct KINDs,
 the pre-acceptance coverage-boundary KINDs, then delete the eager
 body-parse machinery per-KIND.
+
+**✅ SLICE 4b vector-lane construct KINDs LANDED @96181e73 — free-operator
+instantiation on lookup miss + order-independent pack-member-call symbol
+rewrite.** (1) vector<int>'s _M_realloc_insert bailed un-emittable on
+__ns___gnu_cxx_operator_mi: resolve_copied_dependent_call's free lane
+found NOTHING for a free OPERATOR template (it lives in fn_template_map /
+free_operator_overloads, not the namespace overload sets) and the
+instantiate_concrete_operator_call arm only ran on a bodyless WINNER;
+the not-found arm now instantiates the operator (the eager first body
+parse used to do this as a side effect — first-overload instantiations
+keep the base symbol, masking it on the default lane). (2)
+vector<string>'s allocator_traits::construct__mti__o2 bailed on the
+generic __new_allocator<string>::construct: the inner pack member call
+is claim-rejected (pack arg) and the per-node id-rewrite's spelling gate
+reads func_emit_name — mutated by the FIRST instantiation's resolve —
+so the SECOND copy silently missed the rewrite. The N_CALL arm now does
+a symbol-only rewrite keyed on op0's own baked spelling (order-
+independent), args copied WHOLESALE through the generic path. NOTE: a
+full formal-mapped rebuild for member packs was tried and REVERTED —
+it corrupted multi-element pack arg emission the generic copy handles
+(map<string,string> bad_alloc on the DEFAULT lane); symbol-only is the
+correct scope. Probe (reverted): sub_vi/sub_vs/sub_ss/sub_ss2 all
+correct-output on BOTH lanes; testmap green under first-skip. Gates:
+fulltest 676/0/0/16 exit 0 all GREEN, ratchet flat, burndown 314/0
+flat. REMAINING probe-proven walls for 4b: __new_allocator<int>::
+construct "[why: tsubst: dependent-arg object construction]"
+(testsubscript/testcontainerdtor — the relower's named unsupported
+branch), a probe-only RUNTIME bad_alloc in testvector, the testset
+"c2mir_compile_tree: 1 check errors" wall, then the pre-acceptance
+coverage-boundary KINDs, then delete the eager body-parse machinery
+per-KIND.
