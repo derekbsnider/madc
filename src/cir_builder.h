@@ -1091,6 +1091,19 @@ public:
 		bool relax_class_args,
 		bool require_overload_match = false);
 
+	// Scalar-target twin of the deferred-construction relower: the placement-new
+	// marker whose `_Up` substituted to a NON-class type ([expr.new] scalar
+	// initialization = a store through the placement pointer). Claims the
+	// value-init (no args) and single-pack-expansion (`_Up(std::forward<_Args>(
+	// __args)...)` with pack arity 0/1) shapes and lowers them structurally from
+	// the pack binding — never by re-translating the shared raw pattern tokens,
+	// whose call identities an earlier instantiation may have baked. Returns
+	// NULL when the shape is not claimable (caller keeps its fallback).
+	cir_node *tsubst_scalar_placement_store(
+		class TokenNEW *tn, DataDef *concrete,
+		const std::map<DataDef *, DataDef *> *subst,
+		const std::function<node_t()> &placement_addr);
+
 	// `tsubst` proper (two-tree Phase 3): copy an immutable Tree-1 subtree into a
 	// fresh per-instantiation Tree-2 subtree AND substitute its template-parameter
 	// placeholders with concrete types (`subst`: placeholder DataDef* -> concrete

@@ -2257,11 +2257,19 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					placement_ctor = inst;
 			}
 			if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG")) {
-				fprintf(stderr, "[RELOWER-SELECT] class=%s nctors=%zu nargs=%zu -> %s\n",
+				fprintf(stderr, "[RELOWER-SELECT] class=%s nctors=%zu nargs=%zu -> %s(%p)",
 					concrete_class->name.c_str(),
 					concrete_class->ctors.size(),
 					placement_ctor_args().size(),
-					placement_ctor ? placement_ctor->name.c_str() : "(none)");
+					placement_ctor ? placement_ctor->name.c_str() : "(none)",
+					(void *)placement_ctor);
+				if (placement_ctor)
+					for (size_t qi = 0; qi < placement_ctor->parameters.size(); ++qi)
+						fprintf(stderr, " p%zu=%s%s", qi,
+							placement_ctor->parameters[qi]
+								? placement_ctor->parameters[qi]->name.c_str() : "?",
+							placement_ctor->is_ref_param(qi) ? "&" : "");
+				fprintf(stderr, "\n");
 				for (TokenBase *a : placement_ctor_args())
 					fprintf(stderr, "[RELOWER-SELECT]   arg dd=%s\n",
 						(a && a->datadef()) ? a->datadef()->name.c_str() : "(null)");
@@ -2688,6 +2696,111 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 	return NULL;   // no manual trigger: caller runs its simple path
 }
 
+// Scalar-target twin of the deferred-construction relower (contract on the
+// declaration). `::new((void*)__p) _Up(std::forward<_Args>(__args)...)` with a
+// non-class `_Up` is a store through the placement pointer; the value is read
+// from the instantiated shell's own pack-fan-out parameter (the same slot-id +
+// deref shape the class relower emits for by-value pack elements), so no shared
+// pattern token is ever re-translated.
+cir_node *CirBuilder::tsubst_scalar_placement_store(
+	TokenNEW *tn, DataDef *concrete,
+	const std::map<DataDef *, DataDef *> *subst,
+	const std::function<node_t()> &placement_addr)
+{
+	node_t value = NULL;
+	if (tn->ctor_args.empty()) {
+		// `_Up()` value-init: zero-initialize ([dcl.init]/8).
+		value = integer(0, tn);
+	} else if (tn->ctor_args.size() == 1) {
+		TokenPackExpansion *pe =
+			dynamic_cast<TokenPackExpansion *>(tn->ctor_args[0]);
+		if (!pe)
+			return NULL;
+		// The pack element must be a value read of a (possibly
+		// forward-wrapped) reference pack parameter — the shell declares
+		// the fan-out parameter, so its slot id + deref IS the value.
+		TokenBase *inner = pe->pattern;
+		if (TokenCallFunc *fw = dynamic_cast<TokenCallFunc *>(inner)) {
+			FuncDef *ffd = call_target_funcdef(fw);
+			if (ffd && ffd->inline_builtin_kind == "forward"
+			    && fw->parameters.size() == 1 && fw->parameters[0])
+				inner = fw->parameters[0];
+		}
+		if (!inner || inner->type() != TokenType::ttVariable
+		    || !inner->datadef() || !inner->datadef()->is_reference()
+		    || !template_param_under_type_layers(inner->datadef()))
+			return NULL;
+		DataDefTemplateParam *tp = pe->pattern
+			? template_param_in_pack_pattern(pe->pattern) : NULL;
+		if (!tp || !m_tsubst_active_type_arg_packs
+		    || tp->param_index >= m_tsubst_active_type_arg_packs->size())
+			return NULL;
+		const std::vector<DataDef *> &elems =
+			(*m_tsubst_active_type_arg_packs)[tp->param_index];
+		if (elems.empty()) {
+			value = integer(0, tn);
+		} else if (elems.size() == 1) {
+			std::string value_name = pack_value_name_in_pattern(
+				pe->pattern, tp->param_index);
+			if (value_name.empty())
+				return NULL;
+			int saved_index = m_tsubst_copy_pack_index;
+			size_t saved_elem = m_tsubst_copy_pack_elem;
+			const char *saved_name = m_tsubst_copy_pack_value_name;
+			m_tsubst_copy_pack_index = (int)tp->param_index;
+			m_tsubst_copy_pack_elem = 0;
+			m_tsubst_copy_pack_value_name = value_name.c_str();
+			std::string nm = copied_pack_value_name(value_name.c_str());
+			m_tsubst_copy_pack_index = saved_index;
+			m_tsubst_copy_pack_elem = saved_elem;
+			m_tsubst_copy_pack_value_name = saved_name;
+			node_t slot = id(nm.c_str(), tn);
+			CIR_NODE(slot)->datadef = elems[0];
+			value = node1(N_DEREF, slot, tn);
+			CIR_NODE(value)->datadef = elems[0];
+		} else {
+			// `int(a, b)` — ill-formed scalar initialization.
+			return CIR_NODE(error_node(
+				"tsubst: scalar placement-new arity", tn));
+		}
+	} else {
+		return NULL;
+	}
+	// `*(_Up *)placement = value`, yielding the placement pointer (the
+	// new-expression's value), same statement-expression shape as the
+	// class relower.
+	int levels = 1;
+	DataDef *base = concrete;
+	while (base && base->is_pointer()) {
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(base);
+		if (!p)
+			break;
+		base = p->base_type;
+		levels++;
+	}
+	auto up_ptr_type = [&]() -> node_t {
+		node_t decl_list = list();
+		for (int i = 0; i < levels; i++)
+			append(decl_list, pointer());
+		return node2(N_TYPE, type_list(base),
+			     node2(N_DECL, ignore(), decl_list));
+	};
+	node_t lval = node1(N_DEREF,
+			    node2(N_CAST, up_ptr_type(), placement_addr(), tn),
+			    tn);
+	node_t items = list();
+	append(items, node2(N_EXPR, list(),
+			    node2(N_ASSIGN, lval, value, tn), tn));
+	// The new-expression's value is `_Up *` ([expr.new]) — a caller may
+	// RETURN it (`construct_at`), so the yield must carry the typed pointer,
+	// not the raw void* placement operand.
+	append(items, node2(N_EXPR, list(),
+			    node2(N_CAST, up_ptr_type(), placement_addr(), tn),
+			    tn));
+	return CIR_NODE(node1(N_STMTEXPR,
+			      node2(N_BLOCK, list(), items, tn), tn));
+}
+
 // Deep-copy a concrete cir_node subtree into fresh arena nodes — the `tsubst`
 // core. Contract is documented on the declaration in cir_builder.h. This is the
 // safe-for-c2mir private materialization: c2mir mutates `attr` on every node_t
@@ -2712,32 +2825,46 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					"tsubst: unbound placement-new constructed type"));
 			DataDefCLASS *concrete_class =
 				dynamic_cast<DataDefCLASS *>(concrete);
+			auto placement_addr = [&]() -> node_t {
+				std::set<std::string> saved_refs =
+					referenced_funcs;
+				node_t raw = translate_expr(tn->placement);
+				referenced_funcs = saved_refs;
+				int saved_index = m_tsubst_copy_pack_index;
+				size_t saved_elem = m_tsubst_copy_pack_elem;
+				const char *saved_name =
+					m_tsubst_copy_pack_value_name;
+				m_tsubst_copy_pack_index = -1;
+				m_tsubst_copy_pack_elem = 0;
+				m_tsubst_copy_pack_value_name = NULL;
+				cir_node *copied =
+					copy_cir_subtree(CIR_NODE(raw), subst);
+				m_tsubst_copy_pack_index = saved_index;
+				m_tsubst_copy_pack_elem = saved_elem;
+				m_tsubst_copy_pack_value_name = saved_name;
+				return copied ? copied->as_node()
+					      : error_node("tsubst: failed deferred-construction addr copy");
+			};
 			if (concrete_class) {
-				auto placement_addr = [&]() -> node_t {
-					std::set<std::string> saved_refs =
-						referenced_funcs;
-					node_t raw = translate_expr(tn->placement);
-					referenced_funcs = saved_refs;
-					int saved_index = m_tsubst_copy_pack_index;
-					size_t saved_elem = m_tsubst_copy_pack_elem;
-					const char *saved_name =
-						m_tsubst_copy_pack_value_name;
-					m_tsubst_copy_pack_index = -1;
-					m_tsubst_copy_pack_elem = 0;
-					m_tsubst_copy_pack_value_name = NULL;
-					cir_node *copied =
-						copy_cir_subtree(CIR_NODE(raw), subst);
-					m_tsubst_copy_pack_index = saved_index;
-					m_tsubst_copy_pack_elem = saved_elem;
-					m_tsubst_copy_pack_value_name = saved_name;
-					return copied ? copied->as_node()
-						      : error_node("tsubst: failed deferred-construction addr copy");
-				};
 				if (cir_node *done = tsubst_relower_deferred_construction(
 						tn->ctor_args, tn, concrete_class,
 						subst, placement_addr,
 						/*yield_this_addr=*/true,
 						/*relax_class_args=*/false))
+					return done;
+			} else if (!as_class_instance(concrete) && !tn->array_size) {
+				// SCALAR-target placement new (`::new((void*)__p)
+				// _Up(std::forward<_Args>(__args)...)` with _Up
+				// substituted to a scalar/pointer): [expr.new] scalar
+				// initialization is a store through the placement
+				// pointer. Lower it STRUCTURALLY — the raw-token
+				// re-translation below reads whatever instance identity
+				// an earlier instantiation baked into the shared
+				// pattern's call tokens (order-dependent: the map lane's
+				// forward<tuple<>> bake mis-typed the vector lane's int
+				// store), so a claimable shape must never fall to it.
+				if (cir_node *done = tsubst_scalar_placement_store(
+						tn, concrete, subst, placement_addr))
 					return done;
 			}
 			TokenNEW lowered;
@@ -8696,6 +8823,23 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 				if (ac == pc)
 					return 5;
 				return ac->is_or_derives_from(pc) ? 4 : -1;
+			}
+			// A class pointee on exactly ONE side: the only pointer
+			// conversions are derived->base (both class, above) and
+			// to/from void* ([conv.ptr]; C's malloc direction kept).
+			// An unrelated non-void pointee has NO conversion —
+			// without this rejection an `int*` argument scored 4
+			// against a `basic_string*` parameter, and the int lane's
+			// `__do_uninit_copy` re-resolve bound the string-typed
+			// instance (string copy-ctor over int elements).
+			if (ac || pc) {
+				const DataDef *other = ac ? pdc : adc;
+				const DataDefPTR *op =
+					dynamic_cast<const DataDefPTR *>(other);
+				const DataDef *ob = op ? op->base_type : NULL;
+				if (!ob || ob->type() != DataType::dtVOID)
+					return -1;
+				return 3;   // void* standard conversion
 			}
 			return adc->rawtype() == pdc->rawtype() ? 5 : 4;
 		}
