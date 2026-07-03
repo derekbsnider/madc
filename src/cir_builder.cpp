@@ -2028,6 +2028,15 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		fd->namespace_name, fd->function_display_name, at, &zeros,
 		&explicit_args);
 	if (!winner) {
+		// A free OPERATOR template isn't a namespace function overload —
+		// it lives in the retained fn_template_map / free_operator_overloads
+		// registries — so the namespace lookup finds NOTHING for it (not
+		// even a bodyless winner) and the bodyless-winner arm below never
+		// runs. Instantiate it here, exactly as that arm does (the eager
+		// first body parse used to do this as a side effect).
+		winner = instantiate_concrete_operator_call();
+	}
+	if (!winner) {
 		instantiate_concrete_call();
 		winner = m_prog->find_namespace_function_overload(
 			fd->namespace_name, fd->function_display_name, at, &zeros,
@@ -2944,6 +2953,8 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		// mapping [sret?][__this][explicit...] onto tcf->parameters; a pack
 		// expansion or an unexpected arg count keeps today's per-node path.
 		size_t member_extras = 0;
+		bool member_symbol_only = false;
+		const char *member_baked_sym = NULL;
 		node_t src_args = c2mir_node_op(src->as_node(), 1);
 		if (tmm) {
 			size_t emitted_args = 0;
@@ -2956,9 +2967,22 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			if (cid && cid->base.code == N_ID
 			    && !tsubst_call_has_pack_expansion_arg(tmm)
 			    && emitted_args > tmm->parameters.size()
-			    && emitted_args <= tmm->parameters.size() + 2)
+			    && emitted_args <= tmm->parameters.size() + 2) {
 				member_extras = emitted_args - tmm->parameters.size();
-			else
+			} else if (cid && cid->base.code == N_ID) {
+				// A pack-expansion (or unexpected-arity) member call
+				// keeps the generic arg emission, but its SYMBOL is
+				// still re-selected here, structurally (op0 IS the
+				// callee, and its own baked spelling is the stable
+				// identity) — the per-node id-rewrite compares the
+				// id's spelling against func_emit_name, which an
+				// earlier instantiation of the same member template
+				// mutates (first-wins), so a second instantiation's
+				// copy silently missed the rewrite and leaked the
+				// generic definition-less symbol into its body.
+				member_symbol_only = true;
+				member_baked_sym = cid->base.u.s.s;
+			} else
 				tcf = tmm = NULL;
 		}
 		bool changed = false;
@@ -2966,7 +2990,36 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		std::string err;
 		Variable *winner = resolve_copied_dependent_call(
 			tcf, subst, &changed, &concrete_param_types, &err);
-		if (changed) {
+		if (member_symbol_only) {
+			// Symbol-only rewrite: the args list copies WHOLESALE through
+			// the generic path (its list-level pack fan-out and deferral
+			// markers behave exactly as today); only op0 is replaced. No
+			// winner / no better symbol falls through to the generic copy
+			// — the same outcome the id-rewrite's silent skip produced,
+			// minus the order-dependence for the found case.
+			FuncDef *wfd = winner
+				? dynamic_cast<FuncDef *>(winner->type) : NULL;
+			std::string sym = winner ? func_emit_name(*winner, wfd)
+						 : std::string();
+			if (!sym.empty() && member_baked_sym
+			    && sym != member_baked_sym) {
+				cir_node *args_copy = src_args
+					? copy_cir_subtree(CIR_NODE(src_args), subst)
+					: NULL;
+				if (!src_args || args_copy) {
+					if (!is_c2mir_builtin_call_name(tcf->var.name))
+						referenced_funcs.insert(sym);
+					node_t call = node2(N_CALL,
+							    id(sym.c_str(), tcf),
+							    args_copy
+							    ? args_copy->as_node()
+							    : list(),
+							    tcf);
+					CIR_NODE(call)->tree1_origin = src;
+					return CIR_NODE(call);
+				}
+			}
+		} else if (changed) {
 			if (!winner)
 				return CIR_NODE(error_node(
 					err.empty()
@@ -16180,9 +16233,13 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		};
 		for (const std::string &s : callees) {
 			if (!emittable(s)) {
-				if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+				if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG")) {
 					fprintf(stderr, "[TSUBST-UNEMITTABLE] fn=%s sym=%s\n",
 						tf->var.name.c_str(), s.c_str());
+					for (const std::string &c : callees)
+						fprintf(stderr, "[TSUBST-CALLEES]   %s\n",
+							c.c_str());
+				}
 				return bail_covered("tsubst body calls un-emittable symbol");
 			}
 			referenced_funcs.insert(s);
