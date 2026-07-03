@@ -656,3 +656,20 @@ remap for pattern classes, receiver-aware member-call formal rebuild) and
 type, destroy-helper guard, dependent-call scan, binding gaps) — each a
 KIND still to land. 4b = the burndown-of-KINDs continuation; delete the
 machinery when both (i) and (ii) reach zero reachability.
+
+**✅ SLICE 4a LANDED @69548cb0 — the =0 MODE is DELETED; parse-once is
+UNCONDITIONAL (-306 net lines).** madc_tsubst_dep_parse_enabled() gone
+(decl+def+8 gate sites unconditional); MADC_XTEST_DEP_PARSE inert;
+NO_BODY_SKIP deleted; FORCE_BAIL=1 deleted (the real-shape unit test
+"fallback-lane member template at two types" is the production
+materialization exerciser); FORCE_BAIL=covered SURVIVES as the slice-3
+loud-arm fault-injection hook (the arm is unreachable from real shapes by
+construction). 36 env-boilerplate blocks swept from test_cir.cpp; gate
+scripts de-prefixed; parse-once rule + docs sibling updated in lockstep;
+the Kind-3 specimen STAYS (live pre-acceptance-lane regression test). The
+on/off diff sweep gate RETIRES with the hatch — standing gates are
+fulltest + burndown. Gates: fulltest exit 0 (675/0/0/16 all GREEN);
+burndown 296/0 (100%); =0 verified inert; =covered verified on compile +
+emit surfaces. REMAINING: slice 4b per the costing block above (BLOCKED on
+the two slice-2 enrichment KINDs + the pre-acceptance coverage-boundary
+KINDs; delete the body-parse machinery per-KIND as they land).
