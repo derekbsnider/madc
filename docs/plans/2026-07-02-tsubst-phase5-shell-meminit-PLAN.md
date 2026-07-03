@@ -830,3 +830,43 @@ branch), a probe-only RUNTIME bad_alloc in testvector, the testset
 "c2mir_compile_tree: 1 check errors" wall, then the pre-acceptance
 coverage-boundary KINDs, then delete the eager body-parse machinery
 per-KIND.
+
+**✅ SLICE 4b scalar-placement-store + pointer-pointee scoring LANDED
+@209a5bf3 — testsubscript AND testvector run end-to-end under
+first-skip.** (1) The "[why: tsubst: dependent-arg object construction]"
+wall on __new_allocator<int32_t>::construct__mti was the raw-token
+retranslate fallback in the placement-new N_IGNORE copy arm: a NON-class
+`_Up` (int) skips the class relower and re-translated the SHARED pattern
+tokens with pattern mode off, reading the callee identity an earlier
+instantiation baked into them (map<string,int>'s forward<tuple<>> bake →
+build_call_args coerced the raw `_Args*` arg to a `tuple` formal →
+object_arg_addr's HIT-time dependent-arg rejection). Fix = new
+CirBuilder::tsubst_scalar_placement_store: `*(_Up*)placement = value`
+structurally, value read from the shell's own pack-fan-out param (slot
+id + N_DEREF, the class relower's proven per-element shape), yield =
+typed `_Up*` ([expr.new]; construct_at-style callers RETURN it). Claims
+value-init + single-pack-expansion arity 0/1; else old fallback. (2)
+The probe-only testvector/testsubscript RUNTIME std::bad_alloc: the int
+lane's __uninitialized_copy<...>::__uninit_copy (owner unfolded — the
+non-type fold gap below) re-resolves __do_uninit_copy at copy time with
+int32_t* args, and score_arg_to_param ACCEPTED the existing STRING-typed
+instance (one-side-class pointer pairing fell to the rawtype comparison,
+score 4) → string copy-ctor over int elements → garbage length →
+bad_alloc (the stl_vector.h:428 "incompatible argument/return-expr"
+c2mir warnings were the compile-time shadow). Fix at the ONE shared
+ranking: a class pointee on exactly one side rejects unless the other
+pointee is void ([conv.ptr]; C's malloc direction keeps score 3). ZERO
+suite regressions. Recon lesson: the emitted-C census (--emit=c11 +
+grep) pinpointed the cross-typed call in minutes after backtraces
+plateaued. KNOWN residual (separate, non-blocking): the int lane's
+`__uninitialized_copy<__can_memmove && __assignable>` non-type class-
+template arg does not FOLD under tsubst (owner name keeps the raw
+dependent spelling, selects the primary do_uninit_copy loop instead of
+the <true> memmove fast path — semantically correct, perf/hygiene gap).
+Probe (reverted as always): testsubscript, testvector, testmap ALL
+end-to-end green with firsts skipped, outputs verified. Gates: fulltest
+676/0/0/16 exit 0, ratchet GREEN, burndown 314/0 (100%) flat. REMAINING
+4b wall: the SET KIND — stl_set.h:96:13 "conversion of non-scalar value
+requested" c2mir check error (testset + testcontainerdtor share it) —
+then the pre-acceptance coverage-boundary KINDs, then the per-KIND
+machinery delete.
