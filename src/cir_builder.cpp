@@ -2214,6 +2214,26 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 		if (!placement_ctor_checked) {
 			placement_ctor = select_ctor_overload(
 				concrete_class, placement_ctor_args());
+			// Copy-time ctor instantiation (slice-4b): under the
+			// body-parse skip, the eager parse that used to create the
+			// concrete ctor instance never ran, so the class's ctor list
+			// holds only the variadic member-template PLACEHOLDER — whose
+			// FuncDef has no pack formals, so every pack position scores
+			// pt=(null). Instantiate the ctor template for THESE
+			// substituted args (idempotent, memoized per class+arg types)
+			// and re-select, exactly as resolve_copied_dependent_call
+			// instantiates member-call callees at copy time.
+			if ((!placement_ctor
+			     || (placement_ctor->is_member_template
+				 && placement_ctor->declaration_only))
+			    && m_prog) {
+				m_prog->instantiate_member_ctor_template_for_construction(
+					concrete_class, placement_ctor_args());
+				FuncDef *inst = select_ctor_overload(
+					concrete_class, placement_ctor_args());
+				if (inst)
+					placement_ctor = inst;
+			}
 			if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG")) {
 				fprintf(stderr, "[RELOWER-SELECT] class=%s nctors=%zu nargs=%zu -> %s\n",
 					concrete_class->name.c_str(),
@@ -2248,6 +2268,8 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 			if (!tp || !m_tsubst_active_type_arg_packs
 			    || tp->param_index
 			       >= m_tsubst_active_type_arg_packs->size()) {
+				if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+					fprintf(stderr, "[RELOWER-UNSUP] branch=no-pack-binding\n");
 				unsupported_class_arg = true;
 				break;
 			}
@@ -2268,6 +2290,9 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					    param_object_class(pt, refp)) {
 					if (expr_is_nonaddressable_rvalue(pe->pattern)) {
 						if (!class_trivially_copyable(pc)) {
+							if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+								fprintf(stderr, "[RELOWER-UNSUP] branch=rvalue-nontrivial elem=%s\n",
+									elem ? elem->name.c_str() : "?");
 							unsupported_class_arg = true;
 							break;
 						}
@@ -2279,6 +2304,10 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 						    pe->pattern->file)) {
 						if (!system_header_pack_element_call_resolves(
 							    pe, *subst, tp, elem, e, pc)) {
+							if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+								fprintf(stderr, "[RELOWER-UNSUP] branch=syshdr-pack-call elem=%s pc=%s\n",
+									elem ? elem->name.c_str() : "?",
+									pc->name.c_str());
 							unsupported_class_arg = true;
 							break;
 						}
@@ -2297,6 +2326,10 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					manual_class_pack_lowering = true;
 					continue;
 				}
+				if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+					fprintf(stderr, "[RELOWER-UNSUP] branch=elem-formal-mismatch elem=%s pt=%s\n",
+						elem ? elem->name.c_str() : "?",
+						pt ? pt->name.c_str() : "(null)");
 				unsupported_class_arg = true;
 				break;
 			}
@@ -2309,6 +2342,9 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 			? subst_datadef_active(arg->datadef(), *subst)
 			: NULL;
 		if (!relax_class_args && tsubst_is_class_object_arg(arg_dd)) {
+			if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+				fprintf(stderr, "[RELOWER-UNSUP] branch=concrete-class-arg dd=%s\n",
+					arg_dd ? arg_dd->name.c_str() : "?");
 			unsupported_class_arg = true;
 			break;
 		}
@@ -2756,10 +2792,17 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				DataDefCLASS *ac = class_behind(sdd);
 				if (ac != target
 				    && !(ac && ac->is_or_derives_from(target)
-					 && ac->base_offset_of(target) == 0))
+					 && ac->base_offset_of(target) == 0)) {
+					if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
+						fprintf(stderr, "[DEFARG-CONV] var=%s sdd=%s ac=%s target=%s\n",
+							tvar->var.name.c_str(),
+							sdd ? sdd->name.c_str() : "?",
+							ac ? ac->name.c_str() : "(null)",
+							target->name.c_str());
 					return CIR_NODE(error_node(
 						"tsubst: deferred-arg conversion (not covered)",
 						tvar));
+				}
 				node_t addr = object_var_void_addr(tvar->var, tvar);
 				cir_node *copied = copy_cir_subtree(CIR_NODE(addr), subst);
 				return copied ? copied
