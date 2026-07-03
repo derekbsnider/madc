@@ -1551,6 +1551,22 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 		} else if (on && on->base.code != N_ADDR && on->datadef
 			   && as_class_instance(on->datadef)) {
 			out = node1(N_ADDR, out, arg);
+		} else if (on && on->base.code == N_ID && !on->datadef
+			   && on->origin_id) {
+			// A bare pattern N_ID carries no datadef; recover the object
+			// type from its origin token (the recovery the &a -> a arm
+			// above uses) and substitute — a dependent class local
+			// (`_Alloc_node __an`) only names its concrete class after
+			// tsubst. A reference var already holds the address; an N_ID
+			// var use is always an lvalue, so the address-take is valid.
+			TokenVar *tv = dynamic_cast<TokenVar *>(
+				madc_token_for_slot(on->origin_id));
+			DataDef *vdd = (tv && !tv->var.is_reference())
+				     ? tv->var.type : NULL;
+			if (vdd && subst)
+				vdd = subst_datadef_active(vdd, *subst);
+			if (vdd && as_class_instance(vdd))
+				out = node1(N_ADDR, out, arg);
 		}
 		return node2(N_CAST, ptr_type_node(formal), out, arg);
 	}
