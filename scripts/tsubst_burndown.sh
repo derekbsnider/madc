@@ -1,7 +1,7 @@
 #!/bin/bash
 # tsubst_burndown.sh — suite-wide progress toward deprecating re-parse.
 #
-# Runs every integration test under MADC_XTEST_DEP_PARSE=1 with --show-stats,
+# Runs every integration test with --show-stats,
 # then aggregates the tsubst engagement across the whole suite:
 #   - total HIT      : template-body instantiations resolved on the parse-once
 #                      spine (the g++ way).
@@ -29,8 +29,7 @@ tests_with=0
 
 for f in "$TESTS"/*.mad; do
 	[ "$(basename "$f")" = "include_helper.mad" ] && continue
-	out=$(timeout "$PER_TEST_TIMEOUT" env MADC_XTEST_DEP_PARSE=1 \
-		"$MADC" --show-stats "$f" 2>&1)
+	out=$(timeout "$PER_TEST_TIMEOUT" "$MADC" --show-stats "$f" 2>&1)
 	line=$(printf '%s\n' "$out" | grep -oE '[0-9]+ hit / [0-9]+ fallback' | head -1)
 	[ -z "$line" ] && continue
 	h=$(echo "$line" | grep -oE '^[0-9]+')

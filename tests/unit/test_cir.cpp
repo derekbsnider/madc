@@ -826,14 +826,7 @@ TEST_CASE("CIR: dependent pattern parse accepts template params in type position
 	"<dependent-pattern-test>");
     REQUIRE(tp != nullptr);
 
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
     bool ok = prog->parse(tp);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     REQUIRE(ok);
 
     size_t patterns = 0;
@@ -862,14 +855,7 @@ TEST_CASE("CIR: bare-T and T* dependent returns are eligible, T& return is not")
 	"<dependent-return-test>");
     REQUIRE(tp != nullptr);
 
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
     bool ok = prog->parse(tp);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     REQUIRE(ok);
 
     size_t patterns = 0;
@@ -906,14 +892,7 @@ TEST_CASE("CIR: a multi-type-param member template is tsubst-eligible") {
 	"<multi-param-test>");
     REQUIRE(tp != nullptr);
 
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
     bool ok = prog->parse(tp);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     REQUIRE(ok);
 
     size_t patterns = 0;
@@ -946,14 +925,7 @@ TEST_CASE("CIR: direct tsubst args cover a body-only template parameter") {
 	"<body-only-type-arg-test>");
     REQUIRE(tp != nullptr);
 
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
     bool ok = prog->parse(tp);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     REQUIRE(ok);
 
     FuncDef *source = NULL;
@@ -995,20 +967,12 @@ TEST_CASE("CIR: tsubst engagement counters split hits and fallbacks") {
 	"    template<class T> int dep_fallback(T t) { typename T::type w = t.v; return w + 2; }\n"
 	"};\n"
 	"int main() { Holder h; Inner i; i.v = 5; return h.hit(3) * 10 + h.dep_fallback(i); }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source, "<tsubst-engagement-stats-test>");
     REQUIRE(tp != nullptr);
     REQUIRE(prog->parse(tp));
     size_t tree1_copies = 0;
     int64_t got = cir_run_program(prog.get(), &tree1_copies);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 47);
     CHECK(tree1_copies > 0);
     CHECK(prog->_tsubst_body_hits >= 1);
@@ -1049,19 +1013,11 @@ TEST_CASE("CIR: fallback-lane member template at two types materializes repeats"
 	"    Holder h; Inner i; i.v = 5; Other o; o.v = 30;\n"
 	"    return h.pick(i) * 100 + h.pick(o);\n"
 	"}\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source, "<mti-fallback-repeat-test>");
     REQUIRE(tp != nullptr);
     REQUIRE(prog->parse(tp));
     int64_t got = cir_run_program(prog.get());
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 732);
     CHECK(prog->_tsubst_body_hits == 0);
     CHECK(prog->_tsubst_body_fallbacks == 2);
@@ -1070,16 +1026,13 @@ TEST_CASE("CIR: fallback-lane member template at two types materializes repeats"
 // Phase-5 slice 3: a tsubst bail on a COVERED shape (pattern built + binding
 // complete) returns a LOUD error body — the pre-c2mir gate rejects the tree —
 // and counts in the fallback profile, never as a hit and never as a silent
-// re-parse fallback. MADC_XTEST_TSUBST_FORCE_BAIL=covered forces the
-// post-acceptance arm (no real shape reaches it — the suite burndown is 0
-// fallbacks); the lever dies with the re-parse machinery at slice 4.
+// re-parse fallback. MADC_XTEST_TSUBST_FORCE_BAIL=covered is the loud arm's
+// fault-injection hook (no real shape can reach the arm by construction — a
+// shape that did would be a bug to fix — so the hook is the only exerciser).
 TEST_CASE("CIR: covered-shape tsubst bail is a loud error, not a fallback") {
     const char *source =
 	"struct Holder { template<class T> int hit(T v) { return v + 1; } };\n"
 	"int main() { Holder h; return h.hit(3); }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
     setenv("MADC_XTEST_TSUBST_FORCE_BAIL", "covered", 1);
 
     auto prog = std::make_shared<Program>();
@@ -1105,10 +1058,6 @@ TEST_CASE("CIR: covered-shape tsubst bail is a loud error, not a fallback") {
 	MIR_finish(mir_ctx);
     }
     unsetenv("MADC_XTEST_TSUBST_FORCE_BAIL");
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
 
     CHECK(prog->_tsubst_body_hits == 0);
     CHECK(prog->_tsubst_body_fallbacks >= 1);
@@ -1116,7 +1065,7 @@ TEST_CASE("CIR: covered-shape tsubst bail is a loud error, not a fallback") {
     for (std::map<std::string, Program::TsubstBodyProfile>::const_iterator it =
 	     prog->_tsubst_body_fallback_profile.begin();
 	 it != prog->_tsubst_body_fallback_profile.end(); ++it)
-	if (it->second.reason.find("slice-3 soak lever") != std::string::npos)
+	if (it->second.reason.find("fault injection") != std::string::npos)
 	    saw_loud_reason = true;
     CHECK(saw_loud_reason);
 }
@@ -1135,14 +1084,7 @@ TEST_CASE("CIR: direct tsubst args record member-template type packs") {
 	"<pack-type-arg-test>");
     REQUIRE(tp != nullptr);
 
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
     bool ok = prog->parse(tp);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     REQUIRE(ok);
 
     FuncDef *source = NULL;
@@ -1182,10 +1124,6 @@ TEST_CASE("CIR: tsubst fans out direct value-pack call arguments") {
 	"    template<class... Args> int pack_call(Args... args) { return sink(args...); }\n"
 	"};\n"
 	"int main() { Holder h; return h.pack_call(3, 4); }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source, "<pack-fanout-test>");
     REQUIRE(tp != nullptr);
@@ -1205,10 +1143,6 @@ TEST_CASE("CIR: tsubst fans out direct value-pack call arguments") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 34);
 }
 
@@ -1222,10 +1156,6 @@ TEST_CASE("CIR: tsubst fans out expression-pack call arguments") {
 	"    template<class... Args> int pack_expr(Args... args) { return sink((args + 1)...); }\n"
 	"};\n"
 	"int main() { Holder h; return h.pack_expr(3, 4); }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source, "<pack-expr-fanout-test>");
     REQUIRE(tp != nullptr);
@@ -1245,10 +1175,6 @@ TEST_CASE("CIR: tsubst fans out expression-pack call arguments") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 45);
 }
 
@@ -1266,10 +1192,6 @@ TEST_CASE("CIR: tsubst fans out forwarding call-pack arguments") {
 	"    template<class... Args> int pack_forward(Args... args) { return sink(std::forward<Args>(args)...); }\n"
 	"};\n"
 	"int main() { Holder h; return h.pack_forward(3, 4); }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source, "<pack-forward-fanout-test>");
     REQUIRE(tp != nullptr);
@@ -1289,10 +1211,6 @@ TEST_CASE("CIR: tsubst fans out forwarding call-pack arguments") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 34);
 }
 
@@ -1309,10 +1227,6 @@ TEST_CASE("CIR: tsubst fans out move call-pack arguments") {
 	"    template<class... Args> int pack_move(Args... args) { return sink(std::move<Args>(args)...); }\n"
 	"};\n"
 	"int main() { Holder h; return h.pack_move(3, 4); }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source, "<pack-move-fanout-test>");
     REQUIRE(tp != nullptr);
@@ -1332,10 +1246,6 @@ TEST_CASE("CIR: tsubst fans out move call-pack arguments") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 34);
 }
 
@@ -1353,10 +1263,6 @@ TEST_CASE("CIR: tsubst re-resolves nested dependent namespace calls") {
 	"    template<class T> int nested(T v) { return sink(nn::ident(v)); }\n"
 	"};\n"
 	"int main() { Holder h; return h.nested(37); }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source, "<nested-dependent-call-test>");
     REQUIRE(tp != nullptr);
@@ -1376,10 +1282,6 @@ TEST_CASE("CIR: tsubst re-resolves nested dependent namespace calls") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 42);
 }
 
@@ -1405,10 +1307,6 @@ TEST_CASE("CIR: tsubst re-resolves scalar system-header dependent namespace call
 	"    template<class T> int nested(T v) { return nn::__ident(v) + 5; }\n"
 	"};\n"
 	"int main() { Holder h; return h.nested(37); }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/scalar_call.h");
@@ -1421,10 +1319,6 @@ TEST_CASE("CIR: tsubst re-resolves scalar system-header dependent namespace call
     int64_t got = cir_run_program(prog.get(), &tree1_copies);
     CHECK(tree1_copies > 0);
     CHECK(cir_run(run_source) == 42);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 42);
 }
 
@@ -1444,10 +1338,6 @@ TEST_CASE("CIR: tsubst re-resolves libstdc++ allocator_traits forwarding member-
 	"    std::allocator_traits<std::allocator<int>>::destroy(a, &x);\n"
 	"    return x;\n"
 	"}\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(
 	source, "<allocator-traits-member-pack-test>");
@@ -1462,10 +1352,6 @@ TEST_CASE("CIR: tsubst re-resolves libstdc++ allocator_traits forwarding member-
     CHECK(prog->_tsubst_body_fallback_profile.empty());
     CHECK(got == 34);
 
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
 }
 
 // Two-tree pack expansion: allocator-style placement construction uses the same
@@ -1484,10 +1370,6 @@ TEST_CASE("CIR: tsubst fans out placement-new constructor pack arguments") {
 	"    template<class... Args> void make(Box* p, Args... args) { new ((void*)p) Box(std::forward<Args>(args)...); }\n"
 	"};\n"
 	"int main() { Box b(0, 0); Maker m; m.make(&b, 3, 4); return b.x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source, "<pack-new-fanout-test>");
     REQUIRE(tp != nullptr);
@@ -1507,10 +1389,6 @@ TEST_CASE("CIR: tsubst fans out placement-new constructor pack arguments") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 34);
 }
 
@@ -1543,10 +1421,6 @@ TEST_CASE("CIR: tsubst admits system-header placement-new pack bodies") {
 	"    template<class... Args> void make(Box* p, Args... args) { new ((void*)p) Box(std::forward<Args>(args)...); }\n"
 	"};\n"
 	"int main() { Box b(0, 0); Maker m; m.make(&b, 3, 4); return b.x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/new_allocator.h");
@@ -1570,10 +1444,6 @@ TEST_CASE("CIR: tsubst admits system-header placement-new pack bodies") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(run_source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 34);
 }
 
@@ -1599,10 +1469,6 @@ TEST_CASE("CIR: tsubst lowers system-header scalar placement-new template type")
 	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
 	"};\n"
 	"int main() { int x = 0; Maker m; m.make(&x, 42); return x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/new_allocator.h");
@@ -1626,10 +1492,6 @@ TEST_CASE("CIR: tsubst lowers system-header scalar placement-new template type")
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(run_source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 42);
 }
 
@@ -1662,10 +1524,6 @@ TEST_CASE("CIR: tsubst lowers system-header class placement-new template type") 
 	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
 	"};\n"
 	"int main() { Box b(0, 0); Maker m; m.make(&b, 3, 4); return b.x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/new_allocator.h");
@@ -1689,10 +1547,6 @@ TEST_CASE("CIR: tsubst lowers system-header class placement-new template type") 
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(run_source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 34);
 }
 
@@ -1734,10 +1588,6 @@ TEST_CASE("CIR: tsubst lowers singleton class-object placement-new packs") {
 	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
 	"};\n"
 	"int main() { Item zero(0); Box b(zero); Maker m; Item it(37); m.make(&b, it); return b.x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/new_allocator.h");
@@ -1761,10 +1611,6 @@ TEST_CASE("CIR: tsubst lowers singleton class-object placement-new packs") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(run_source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 42);
 }
 
@@ -1805,10 +1651,6 @@ TEST_CASE("CIR: tsubst lowers multi-element class-object placement-new packs") {
 	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
 	"};\n"
 	"int main() { Item zero(0); PairBox box(zero, zero); Maker m; Item a(3); Item b(4); m.make(&box, a, b); return box.x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/new_allocator.h");
@@ -1832,10 +1674,6 @@ TEST_CASE("CIR: tsubst lowers multi-element class-object placement-new packs") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(run_source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 34);
 }
 
@@ -1877,10 +1715,6 @@ TEST_CASE("CIR: tsubst lowers value-returning class-reference placement-new pack
 	"    template<class Up, class... Args> void make(Up* p, Args... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
 	"};\n"
 	"int main() { Item zero(0); PairRef box(zero, zero); Maker m; Item a(3); Item b(4); m.make(&box, a, b); return box.x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/new_allocator.h");
@@ -1904,10 +1738,6 @@ TEST_CASE("CIR: tsubst lowers value-returning class-reference placement-new pack
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(run_source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 34);
 }
 
@@ -1949,10 +1779,6 @@ TEST_CASE("CIR: tsubst lowers reference-forwarded class-reference placement-new 
 	"    template<class Up, class... Args> void make(Up* p, Args&... args) { new ((void*)p) Up(std::forward<Args>(args)...); }\n"
 	"};\n"
 	"int main() { Item zero(0); PairRef box(zero, zero); Maker m; Item a(3); Item b(4); m.make(&box, a, b); return box.x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "<pack-new-ref-forward-class-ref-header>");
@@ -1976,10 +1802,6 @@ TEST_CASE("CIR: tsubst lowers reference-forwarded class-reference placement-new 
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(run_source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 34);
 }
 
@@ -2005,10 +1827,6 @@ TEST_CASE("CIR: tsubst lowers system-header reference-forwarded placement-new pa
 	"};\n";
     const char *main_source =
 	"int main() { Item zero(0); PairRef box(zero, zero); Maker m; Item a(3); Item b(4); m.make(&box, a, b); return box.x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/new_allocator.h");
@@ -2020,10 +1838,6 @@ TEST_CASE("CIR: tsubst lowers system-header reference-forwarded placement-new pa
     REQUIRE(prog->parse(tp));
     size_t tree1_copies = 0;
     int64_t got = cir_run_program(prog.get(), &tree1_copies);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(tree1_copies > 0);
     CHECK(got == 34);
 }
@@ -2050,10 +1864,6 @@ TEST_CASE("CIR: tsubst lowers system-header reference-forwarded class-value plac
 	"};\n";
     const char *main_source =
 	"int main() { Item zero(0); PairBox box(zero, zero); Maker m; Item a(3); Item b(4); m.make(&box, a, b); return box.x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/new_allocator.h");
@@ -2065,10 +1875,6 @@ TEST_CASE("CIR: tsubst lowers system-header reference-forwarded class-value plac
     REQUIRE(prog->parse(tp));
     size_t tree1_copies = 0;
     int64_t got = cir_run_program(prog.get(), &tree1_copies);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(tree1_copies > 0);
     CHECK(got == 34);
 }
@@ -2099,10 +1905,6 @@ TEST_CASE("CIR: tsubst lowers system-header converted reference-forwarded placem
 	"};\n";
     const char *main_source =
 	"int main() { Item zero(0); Wrap wz(zero); PairWrap box(wz, wz); Maker m; Item a(2); Item b(5); m.make(&box, a, b); return box.x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/new_allocator.h");
@@ -2114,10 +1916,6 @@ TEST_CASE("CIR: tsubst lowers system-header converted reference-forwarded placem
     REQUIRE(prog->parse(tp));
     size_t tree1_copies = 0;
     int64_t got = cir_run_program(prog.get(), &tree1_copies);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(tree1_copies > 0);
     CHECK(got == 135);
 }
@@ -2146,10 +1944,6 @@ TEST_CASE("CIR: tsubst lowers direct dependent destroy helper") {
 	"    template<class T> void clean(T* p) { __destroy(p); }\n"
 	"};\n"
 	"int main() { int x = 0; Box* b = new Box(&x); Cleaner c; c.clean(b); return x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/stl_construct.h");
@@ -2191,10 +1985,6 @@ TEST_CASE("CIR: tsubst lowers direct dependent destroy helper") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(run_source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 7);
 }
 
@@ -2215,10 +2005,6 @@ TEST_CASE("CIR: tsubst lowers direct destroy-aux member body") {
     const char *main_source =
 	"int main() { int x = 0; Box* b = new Box(&x); DestroyAux d; d.__destroy(b); return x; }\n";
     std::string run_source = std::string(header_source) + main_source;
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/stl_construct.h");
@@ -2260,10 +2046,6 @@ TEST_CASE("CIR: tsubst lowers direct destroy-aux member body") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(run_source.c_str());
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 7);
 }
 
@@ -2289,10 +2071,6 @@ TEST_CASE("CIR: tsubst lowers destroy-aux iterator loop body") {
 	"    ~Box() { *p = *p + 7; }\n"
 	"};\n"
 	"int main() { int x = 0; Box* b = new Box(&x); DestroyAux d; d.__destroy(b, b + 1); return x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/stl_construct.h");
@@ -2332,10 +2110,6 @@ TEST_CASE("CIR: tsubst lowers destroy-aux iterator loop body") {
     cir_finish(c2m);
     c2mir_finish(mir_ctx);
     MIR_finish(mir_ctx);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
 }
 
 // `_Destroy_aux<true>::__destroy` is the scalar no-op specialization. Its empty
@@ -2348,10 +2122,6 @@ TEST_CASE("CIR: tsubst lowers empty destroy-aux body") {
 	"};\n";
     const char *main_source =
 	"int main() { int arr[1]; DestroyAuxNoop d; d.__destroy(arr, arr + 1); return 0; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/stl_construct.h");
@@ -2380,10 +2150,6 @@ TEST_CASE("CIR: tsubst lowers empty destroy-aux body") {
     CHECK(instance->tsubst_source == source_fd);
     size_t tree1_copies = 0;
     int64_t got = cir_run_program(prog.get(), &tree1_copies);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(tree1_copies > 0);
     CHECK(got == 0);
 }
@@ -2402,10 +2168,6 @@ TEST_CASE("CIR: tsubst instantiates nested dependent member-template body") {
 	"};\n";
     const char *main_source =
 	"int main() { int x = 7; InnerMemberBody a; OuterMemberBody o; o.outer_apply(a, &x); return x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/nested_member_body.h");
@@ -2418,10 +2180,6 @@ TEST_CASE("CIR: tsubst instantiates nested dependent member-template body") {
 
     size_t tree1_copies = 0;
     int64_t got = cir_run_program(prog.get(), &tree1_copies);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(tree1_copies > 0);
     CHECK(prog->_tsubst_body_hits >= 2);
     CHECK(prog->_tsubst_body_fallbacks == 0);
@@ -2447,10 +2205,6 @@ TEST_CASE("CIR: tsubst rematerializes nested dependent explicit destructor") {
 	"    ~NestedDtorBox() { *p = *p + 7; }\n"
 	"};\n"
 	"int main() { int x = 0; NestedDtorBox* b = new NestedDtorBox(&x); NestedDtorInner a; NestedDtorOuter o; o.outer_destroy(a, b); return x; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *hdr = prog->tokenize_buffer(
 	header_source, "/usr/include/c++/13/bits/nested_member_dtor.h");
@@ -2463,10 +2217,6 @@ TEST_CASE("CIR: tsubst rematerializes nested dependent explicit destructor") {
 
     size_t tree1_copies = 0;
     int64_t got = cir_run_program(prog.get(), &tree1_copies);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(tree1_copies > 0);
     CHECK(prog->_tsubst_body_hits >= 2);
     CHECK(prog->_tsubst_body_fallbacks == 0);
@@ -2485,10 +2235,6 @@ TEST_CASE("CIR: tsubst materializes dependent local class with empty destructor"
 	"    }\n"
 	"};\n"
 	"int main() { LocalDtorBox b; return b.pick(77); }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source,
 	"<local-class-empty-dtor-tsubst>");
@@ -2497,10 +2243,6 @@ TEST_CASE("CIR: tsubst materializes dependent local class with empty destructor"
 
     size_t tree1_copies = 0;
     int64_t got = cir_run_program(prog.get(), &tree1_copies);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(tree1_copies > 0);
     CHECK(prog->_tsubst_body_hits >= 1);
     CHECK(prog->_tsubst_body_fallbacks == 0);
@@ -2518,10 +2260,6 @@ TEST_CASE("CIR: tsubst fans out direct reference-pack call arguments") {
 	"    template<class... Args> int pack_ref(Args&... args) { return sink(args...); }\n"
 	"};\n"
 	"int main() { Holder h; int a = 3; int b = 4; return h.pack_ref(a, b); }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source, "<pack-ref-fanout-test>");
     REQUIRE(tp != nullptr);
@@ -2541,10 +2279,6 @@ TEST_CASE("CIR: tsubst fans out direct reference-pack call arguments") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 34);
 }
 
@@ -2558,10 +2292,6 @@ TEST_CASE("CIR: tsubst fans out direct pointer-pack call arguments") {
 	"    template<class... Args> int pack_ptr(Args*... ps) { return sink(ps...); }\n"
 	"};\n"
 	"int main() { Holder h; int a = 3; int b = 4; return h.pack_ptr(&a, &b); }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source, "<pack-ptr-fanout-test>");
     REQUIRE(tp != nullptr);
@@ -2581,10 +2311,6 @@ TEST_CASE("CIR: tsubst fans out direct pointer-pack call arguments") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 34);
 }
 
@@ -2599,10 +2325,6 @@ TEST_CASE("CIR: tsubst fans out constructor value-pack call arguments") {
 	"    template<class... Args> Holder(Args... args) { member = sink(args...); }\n"
 	"};\n"
 	"int main() { Holder h(3, 4); return h.member; }\n";
-    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
-    std::string saved_env = old_env ? old_env : "";
-    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
-
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source, "<pack-ctor-fanout-test>");
     REQUIRE(tp != nullptr);
@@ -2622,10 +2344,6 @@ TEST_CASE("CIR: tsubst fans out constructor value-pack call arguments") {
     MIR_finish(mir_ctx);
 
     int64_t got = cir_run(source);
-    if ( old_env )
-	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
-    else
-	unsetenv("MADC_XTEST_DEP_PARSE");
     CHECK(got == 34);
 }
 

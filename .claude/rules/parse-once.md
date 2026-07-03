@@ -6,12 +6,13 @@
 - Every new C++ feature is implemented as generic resolution on the
   parse-once spine — one of the finite KINDs (call, operator/ADL, dependent
   member-type/rebind, construction) — NOT as a re-parse-dependent path.
-- Parse-once tsubst is the DEFAULT (the flip is done; burndown reached 0).
-  `MADC_XTEST_DEP_PARSE=0` opts back into pure re-parse — a soak escape
-  hatch only, deleted together with the re-parse machinery.
-- Re-parse is residual dead code awaiting deletion (deadline: Phase-5 ctor
-  mem-init tsubst lands, freeing the shell). Do not build new behavior that
-  depends on it.
+- Parse-once tsubst is UNCONDITIONAL (the flip is done; burndown reached 0;
+  the `MADC_XTEST_DEP_PARSE=0` escape hatch and the slice-2/3 soak levers
+  are DELETED — Phase-5 slice 4a).
+- The residual instantiation body parse serves ONLY first-eager
+  instantiations and the pre-acceptance coverage-boundary KINDs; it is
+  deleted per-KIND as coverage lands (Phase-5 slice 4b). Do not build new
+  behavior that depends on it.
 - A feature that "works" only because the re-parse fallback catches it is
   NOT done. If it appears in the `--show-stats [why:]` fallback tally, it is
   still on the crutch — finish the KIND.

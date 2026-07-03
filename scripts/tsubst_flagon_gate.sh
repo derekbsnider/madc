@@ -1,5 +1,5 @@
 #!/bin/bash
-# tsubst_flagon_gate.sh — fast regression gate for the MADC_XTEST_DEP_PARSE
+# tsubst_flagon_gate.sh — fast regression gate for the parse-once tsubst
 # (two-tree / tsubst) experimental path.
 #
 # WHY THIS EXISTS: the suite-wide burndown (scripts/tsubst_burndown.sh) is a
@@ -10,7 +10,7 @@
 # See docs/plans/2026-07-01-tsubst-kind3-wip-verification-FINDINGS.md.
 #
 # This gate closes that hole cheaply: it COMPILES AND RUNS a small set of
-# tsubst-heavy container tests under MADC_XTEST_DEP_PARSE=1 and asserts, per test:
+# tsubst-heavy container tests and asserts, per test:
 #   - exit 0                (catches crashes / miscompiles on the flag-on path)
 #   - hit      >= baseline  (catches fallbacks silently reclassified from hits)
 #   - fallback <= baseline  (catches burndown regressions on the hot bodies)
@@ -46,10 +46,10 @@ printf '%-20s %-16s %-8s %s\n' "TEST" "hit/fallback" "run" "vs baseline"
 for t in $TESTS; do
 	f="tests/$t.mad"
 	[ -f "$f" ] || { echo "$t: MISSING"; rc=1; continue; }
-	out=$(timeout "$PER_TEST_TIMEOUT" env MADC_XTEST_DEP_PARSE=1 "$MADC" \
+	out=$(timeout "$PER_TEST_TIMEOUT" "$MADC" \
 		--show-stats "$f" 2>&1)
 	# run it (exit-code check catches the crash class)
-	timeout "$PER_TEST_TIMEOUT" env MADC_XTEST_DEP_PARSE=1 "$MADC" "$f" \
+	timeout "$PER_TEST_TIMEOUT" "$MADC" "$f" \
 		>/dev/null 2>&1
 	run_rc=$?
 	line=$(printf '%s\n' "$out" | grep -oE '[0-9]+ hit / [0-9]+ fallback' | head -1)

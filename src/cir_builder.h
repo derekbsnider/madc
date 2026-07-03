@@ -511,8 +511,7 @@ class CirBuilder {
 	// its source template's Tree-1 recipe (instead of lowering the re-parsed
 	// body — hybrid B keeps the concrete signature/shell on the parse path).
 	// Returns NULL when this is not a covered method, so the caller falls back
-	// to translate_block. DEFAULT since the parse-once flip; capability-gated
-	// per body, MADC_XTEST_DEP_PARSE=0 opts back into pure re-parse.
+	// to translate_block; capability-gated per body.
 	node_t tsubst_method_body(class TokenFunc *tf, class FuncDef *fd,
 				  const char **reason_out = NULL);
 

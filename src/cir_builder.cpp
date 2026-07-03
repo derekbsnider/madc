@@ -14772,9 +14772,9 @@ bool CirBuilder::note_capture(Variable *v)
 // (tsubst_stmt over DECL_SAVED_TREE), instead of lowering the re-parsed body.
 // The concrete signature/shell stays on the existing parse path (hybrid B).
 // Returns NULL for anything not yet covered, so func_def falls back to
-// translate_block (the re-parse path stays the residual fallback until
-// Phase-5 + deletion). DEFAULT since the flip; MADC_XTEST_DEP_PARSE=0 opts
-// back into pure re-parse (soak escape hatch).
+// translate_block (the eager parse product / materialized span stays the
+// residual fallback for the coverage-boundary KINDs — slice 4b of the
+// Phase-5 plan deletes it when they land).
 static bool tsubst_datadef_involves_template_param(DataDef *dd)
 {
 	if (!dd)
@@ -15295,19 +15295,8 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			*reason_out = why;
 		return NULL;
 	};
-	if (!madc_tsubst_dep_parse_enabled())
-		return NULL;
 	m_tsubst_body_carries_meminits = false;
 	m_tsubst_bailed_covered = false;
-	// Phase-5 slice 2 soak lever: force EVERY covered body to bail so the
-	// skipped-body materialization fallback is exercisable suite-wide (the
-	// gated runs never bail — 0 fallbacks — so the fallback would otherwise
-	// be dead code until a real bail appears). Manual runs only; dies with
-	// the re-parse machinery (slice 4). Value "covered" instead forces the
-	// slice-3 post-acceptance loud-error arm (see bail_covered below).
-	const char *force_bail = getenv("MADC_XTEST_TSUBST_FORCE_BAIL");
-	if (force_bail && strcmp(force_bail, "covered") != 0)
-		return bail("forced bail (slice-2 soak lever)");
 	FuncDef *source = fd ? fd->tsubst_source : NULL;
 	if (!source)
 		return bail("no tsubst source");
@@ -15634,8 +15623,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	// a LOUD error body instead of NULL, so func_def never swallows it into
 	// the re-parse fallback (the bail-net's swallow behavior dies ahead of
 	// the slice-4 delete). The error node aborts the compile at the
-	// pre-c2mir gate, naming the instantiation and the [why:] reason;
-	// MADC_XTEST_DEP_PARSE=0 remains the transitional whole-lane bypass.
+	// pre-c2mir gate, naming the instantiation and the [why:] reason.
 	auto bail_covered = [&](const char *why) -> node_t {
 		referenced_funcs = saved_ref_funcs;
 		if (reason_out)
@@ -15651,12 +15639,14 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		append(stmts, error_node(msg.c_str(), tf));
 		return node2(N_BLOCK, list(), stmts, tf);
 	};
-	// Phase-5 slice 3 soak lever: MADC_XTEST_TSUBST_FORCE_BAIL=covered forces
-	// the post-acceptance loud-error arm (no suite shape reaches it — 0
-	// fallbacks — so it would otherwise be dead until a real inconsistency
-	// appears). Manual runs + the unit specimen only; dies at slice 4.
-	if (force_bail)
-		return bail_covered("forced covered-shape bail (slice-3 soak lever)");
+	// Fault-injection hook: MADC_XTEST_TSUBST_FORCE_BAIL=covered forces the
+	// post-acceptance loud-error arm. No real shape can reach the arm by
+	// construction (a shape that did would be a bug to fix), so this hook is
+	// the only way the unit test exercises it — the standard way to test an
+	// internal-error path.
+	const char *force_bail = getenv("MADC_XTEST_TSUBST_FORCE_BAIL");
+	if (force_bail && strcmp(force_bail, "covered") == 0)
+		return bail_covered("forced covered-shape bail (fault injection)");
 	node_t result = NULL;
 	// Phase-5 slice 1: substituted mem-init statements for the admitted ctor
 	// shape, copied under the SAME active binding/pack window as the body.
@@ -16250,10 +16240,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	}
 
 	node_t decl = node2(N_DECL, func_id, decl_list);
-	// Parse-once (DEFAULT since the flip): a covered instantiated member-template
-	// method builds its body by tsubst of the Tree-1 recipe (no body re-parse);
-	// everything else falls back to lowering the parsed body. tsubst_method_body
-	// returns NULL when uncovered or when MADC_XTEST_DEP_PARSE=0 opts out.
+	// Parse-once: a covered instantiated member-template method builds its
+	// body by tsubst of the Tree-1 recipe (no body re-parse); everything else
+	// falls back to lowering the parsed body. tsubst_method_body returns NULL
+	// when uncovered.
 	const char *tsubst_reason = NULL;
 	node_t body = tsubst_method_body(tf, fd, &tsubst_reason);
 	if (m_prog && fd->tsubst_source) {
