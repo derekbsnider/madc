@@ -707,3 +707,27 @@ object argument pack]); strings still hit the TAG_DEFN _Guard
 KIND, the deferred-construction object-arg-pack KIND, then the
 pre-acceptance coverage-boundary KINDs (Kind-3 dependent member type,
 destroy-helper guard, dependent-call scan, binding gaps).
+
+**✅ SLICE 4b ctor-instantiation slice LANDED @b3b354e1 — copy-time ctor
+instantiation in the deferred-construction relower.** selected_placement_
+ctor, on a failed selection OR a declaration-only variadic-generic
+winner (no pack formals → pt=(null) at every pack position), now calls
+instantiate_member_ctor_template_for_construction for the substituted
+args (idempotent, memoized) and re-selects — the ctor-lane twin of
+KIND 1's copy-time member-call instantiation. Clears the map<int,int>
+first-skip _M_emplace_hint_unique "[why: class deferred-construction
+object argument pack]" bail (_Auto_node ctor + mem-inits tsubst clean).
+The relower's unsupported branches + the deferred-arg conversion bail
+now self-identify under MADC_XTEST_PAT_MEMINIT_DEBUG. Gates: fulltest
+676/0/0/16 exit 0 (ratchet at baseline — default lane byte-stable);
+burndown 300/0. NEXT WALL (probe-proven, evidence in the commit):
+_M_construct_node's deferred-arg binding markers bake ONE pattern-time
+target class (tuple) for ALL pack positions — pattern-build overload
+selection for the construct(...) callee runs unenriched (the KIND-1
+order-dependence disease in ARG-FORMAL selection). Design unit:
+copy-time formal re-selection for static-member/varargs pack calls
+(the generic pack fan-out in copy_cir_subtree has no call context —
+either thread the enclosing call's re-selected formals into the marker
+copy, or claim static-member pack calls in a KIND-1-style CALL-level
+rebuild that expands packs itself). Then: TAG_DEFN local-class remap
+(strings' _Guard wall), pre-acceptance coverage-boundary KINDs.
