@@ -870,3 +870,38 @@ end-to-end green with firsts skipped, outputs verified. Gates: fulltest
 requested" c2mir check error (testset + testcontainerdtor share it) —
 then the pre-acceptance coverage-boundary KINDs, then the per-KIND
 machinery delete.
+
+**✅ SLICE 4b SET wall LANDED @76d92228 — ALL first-skip walls cleared;
+every container test runs end-to-end with FIRSTS skipped.** The
+stl_set.h:96 "conversion of non-scalar value requested" check error
+(testset + testcontainerdtor): in _M_insert_unique's tsubst-copied
+body, the nested dependent call `_M_insert_(..., __an)` binds the local
+`_Alloc_node __an` to the reference formal `_NodeGen&`, but the copied
+arg was a bare pattern N_ID with NO datadef — so
+copied_call_arg_for_formal's existing refp arm (which even documents
+this exact c2mir error) could never see it as a class object, and cast
+the struct VALUE to the pointer type instead of `&__an`. Reduced to
+set<int> single-insert (NO cross-type contamination needed this time);
+the emitted-C census (probe-vs-default diff of --emit=c11) pinpointed
+the divergence in one diff: `(_Alloc_node*)__an` vs
+`(_Alloc_node*)((void*)(&__an))`, plus a benign `&(*fw(..))` twin that
+proved the refp arm ran for the neighbouring arg. Fix at the ONE
+arg-adaptation point: bare N_ID + null datadef + origin TokenVar
+(non-reference) recovers the var type, substitutes, and applies the
+same as_class_instance gate before N_ADDR. LESSON (regression caught
+in-flight): the first attempt also substituted NON-null datadefs
+through subst before the class check — that flipped previously-
+unwrapped dependent rvalue shapes into wrapped ones ("lvalue required
+as unary & operand" ×4 in the vector lane); narrowed to exactly the
+diseased shape (purely additive arm; non-null-datadef path
+byte-identical). Safety: every shape the new arm fires on was
+previously a guaranteed struct-value-to-pointer check error. Probe
+(reverted as always): testset, testcontainerdtor, testvector, testmap,
+testsubscript, testmadc_ns ALL end-to-end green with firsts skipped,
+outputs fixture-verified. Gates: fulltest 676/0/0/16 exit 0, ratchet
+GREEN at baseline, burndown 314/0 (100%) flat, zero reason-classes.
+NEXT: the pre-acceptance coverage-boundary KINDs (Kind-3 dependent
+member type, destroy-helper guard, dependent-call scan, binding gaps),
+then the per-KIND eager body-parse machinery delete (parseFunction
+instantiation lane, def_tokens replay, materialize_tsubst_skipped_body;
+-Wunused-function confirms each cut).
