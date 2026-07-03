@@ -451,14 +451,11 @@ static DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
 	return NULL;
 }
 
-// A dependent template-id SHELL class (directly or under ptr/ref/const/array
-// layers) whose structural origin was recorded at creation — i.e. one
-// subst_datadef's rebuild case can concretize. NULL otherwise.
-static DataDefCLASS *dependent_shell_under_type_layers(Program *prog,
-							DataDef *dd)
+// A dependent placeholder CLASS (directly or under ptr/ref/const/array
+// layers), origin-recorded or not — a type that cannot ground concrete
+// object materialization. NULL otherwise.
+static DataDefCLASS *dependent_placeholder_under_type_layers(DataDef *dd)
 {
-	if (!prog)
-		return NULL;
 	for (int guard = 0; dd && guard < 8; ++guard) {
 		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
 			{ dd = cd->base_type; continue; }
@@ -469,12 +466,23 @@ static DataDefCLASS *dependent_shell_under_type_layers(Program *prog,
 		if (DataDefCArray *ad = dynamic_cast<DataDefCArray *>(dd))
 			{ dd = ad->element_type; continue; }
 		DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
-		if (cls && cls->is_dependent_placeholder
-		    && prog->dependent_shell_origin.count(cls))
+		if (cls && cls->is_dependent_placeholder)
 			return cls;
 		break;
 	}
 	return NULL;
+}
+
+// A dependent template-id SHELL class (directly or under ptr/ref/const/array
+// layers) whose structural origin was recorded at creation — i.e. one
+// subst_datadef's rebuild case can concretize. NULL otherwise.
+static DataDefCLASS *dependent_shell_under_type_layers(Program *prog,
+							DataDef *dd)
+{
+	if (!prog)
+		return NULL;
+	DataDefCLASS *cls = dependent_placeholder_under_type_layers(dd);
+	return (cls && prog->dependent_shell_origin.count(cls)) ? cls : NULL;
 }
 
 // A class with a member whose type is (or wraps) a template parameter — i.e. a
@@ -1088,6 +1096,40 @@ DataDef *CirBuilder::subst_datadef_active(DataDef *dd,
 			     &m_tsubst_active_pack_params);
 }
 
+static void collect_pack_params_in_pattern(
+	TokenBase *tb, std::vector<DataDefTemplateParam *> &out);
+
+// Lockstep pack binding ([temp.variadic]): every pack mentioned in one
+// expansion pattern expands in lockstep, so element `elem` binds EVERY such
+// pack's param to that pack's elem-th window entry — including packs that
+// appear only in a nested call's explicit template args (`std::get<_Indexes1>`,
+// a NON-TYPE index pack the primary-pack walker never sees). Returns false on
+// a lockstep arity violation (a mentioned pack with no elem-th element) —
+// the relower must clean-fail, not mis-lower.
+bool CirBuilder::tsubst_bind_lockstep_packs(
+	TokenBase *pattern, size_t elem,
+	std::map<DataDef *, DataDef *> &elem_subst)
+{
+	if (!m_tsubst_active_type_arg_packs)
+		return true;
+	std::vector<DataDefTemplateParam *> tps;
+	collect_pack_params_in_pattern(pattern, tps);
+	for (DataDefTemplateParam *tp : tps) {
+		if (tp->param_index >= m_tsubst_active_type_arg_packs->size())
+			continue;
+		std::map<unsigned, DataDef *>::iterator pmi =
+			m_tsubst_active_pack_params.find(tp->param_index);
+		if (pmi == m_tsubst_active_pack_params.end() || !pmi->second)
+			continue;	// scalar param — bound via the base subst
+		const std::vector<DataDef *> &elems =
+			(*m_tsubst_active_type_arg_packs)[tp->param_index];
+		if (elem >= elems.size() || !elems[elem])
+			return false;
+		elem_subst[pmi->second] = elems[elem];
+	}
+	return true;
+}
+
 static DataDefTemplateParam *template_param_in_pack_pattern(TokenBase *tb)
 {
 	if (!tb)
@@ -1149,6 +1191,78 @@ static DataDefTemplateParam *template_param_in_pack_pattern(TokenBase *tb)
 				return tp;
 	}
 	return NULL;
+}
+
+static void collect_pack_param_dd(DataDef *dd,
+				  std::vector<DataDefTemplateParam *> &out)
+{
+	DataDefTemplateParam *tp = template_param_under_type_layers(dd);
+	if (!tp)
+		return;
+	for (DataDefTemplateParam *have : out)
+		if (have == tp)
+			return;
+	out.push_back(tp);
+}
+
+// Collect EVERY template param mentioned in an expansion pattern — unlike
+// template_param_in_pack_pattern (first-match, legacy traversal order, no
+// explicit-template-arg descent), this also walks each nested call's
+// explicit_template_args, where a NON-TYPE index pack (`std::get<_Indexes1>`)
+// appears without ever being a token datadef. Lockstep expansion
+// ([temp.variadic]) needs all of them bound per element.
+static void collect_pack_params_in_pattern(TokenBase *tb,
+					   std::vector<DataDefTemplateParam *> &out)
+{
+	if (!tb)
+		return;
+	collect_pack_param_dd(tb->datadef(), out);
+	if (TokenPackExpansion *pe = dynamic_cast<TokenPackExpansion *>(tb)) {
+		collect_pack_params_in_pattern(pe->pattern, out);
+		return;
+	}
+	if (TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb)) {
+		for (DataDef *ea : tc->explicit_template_args)
+			collect_pack_param_dd(ea, out);
+		for (TokenBase *p : tc->parameters)
+			collect_pack_params_in_pattern(p, out);
+		collect_pack_params_in_pattern(tc->src_node, out);
+		if (TokenMember *tm = dynamic_cast<TokenMember *>(tc))
+			collect_pack_params_in_pattern(tm->parent_expr, out);
+		return;
+	}
+	if (TokenOperator *op = dynamic_cast<TokenOperator *>(tb)) {
+		collect_pack_params_in_pattern(op->left, out);
+		collect_pack_params_in_pattern(op->right, out);
+		if (TokenTerQ *tq = dynamic_cast<TokenTerQ *>(op)) {
+			collect_pack_params_in_pattern(tq->condition, out);
+			collect_pack_params_in_pattern(tq->true_expr, out);
+			collect_pack_params_in_pattern(tq->false_expr, out);
+		}
+		return;
+	}
+	if (TokenCast *tcst = dynamic_cast<TokenCast *>(tb)) {
+		collect_pack_params_in_pattern(tcst->expr, out);
+		return;
+	}
+	if (TokenAddrExpr *ta = dynamic_cast<TokenAddrExpr *>(tb)) {
+		collect_pack_params_in_pattern(ta->expr, out);
+		return;
+	}
+	if (TokenDerefExpr *td = dynamic_cast<TokenDerefExpr *>(tb)) {
+		collect_pack_params_in_pattern(td->expr, out);
+		return;
+	}
+	if (TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tb)) {
+		collect_pack_params_in_pattern(tse->base_expr, out);
+		collect_pack_params_in_pattern(tse->index, out);
+		return;
+	}
+	if (TokenSubscript *tss = dynamic_cast<TokenSubscript *>(tb)) {
+		collect_pack_params_in_pattern(tss->index, out);
+		for (TokenBase *e : tss->extra_indices)
+			collect_pack_params_in_pattern(e, out);
+	}
 }
 
 static bool tsubst_destroy_call_has_template_pointee(TokenCallFunc *tc)
@@ -1419,8 +1533,27 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 			return inner_dd == formal ? inner
 				: node2(N_CAST, ptr_type_node(formal), inner, arg);
 	}
-	if (refp && formal && formal->is_pointer())
+	if (refp && formal && formal->is_pointer()) {
+		// Symmetric to the &a -> a case above: the Tree-1 arg may have
+		// lowered as the referenced object's VALUE (`*__t1`, the
+		// auto-deref of a reference var) while the callee was still an
+		// unresolved dependent template with no formals to coerce
+		// against. The reference formal takes the object's ADDRESS: a
+		// deref's operand IS that address; any other class-object
+		// value re-takes it. Casting a struct VALUE to the pointer
+		// type is never right (c2mir: "conversion of non-scalar value
+		// requested").
+		cir_node *on = CIR_NODE(out);
+		if (on && on->base.code == N_DEREF) {
+			node_t inner = c2mir_node_first_op(out);
+			if (inner)
+				out = inner;
+		} else if (on && on->base.code != N_ADDR && on->datadef
+			   && as_class_instance(on->datadef)) {
+			out = node1(N_ADDR, out, arg);
+		}
 		return node2(N_CAST, ptr_type_node(formal), out, arg);
+	}
 	return out;
 }
 
@@ -1938,6 +2071,8 @@ bool CirBuilder::system_header_pack_element_call_resolves(
 		pack_value_name_in_pattern(pe->pattern, tp->param_index);
 	std::map<DataDef *, DataDef *> elem_subst = subst;
 	elem_subst[pmi->second] = elem;
+	if (!tsubst_bind_lockstep_packs(pe->pattern, elem_index, elem_subst))
+		return false;
 	int saved_index = m_tsubst_copy_pack_index;
 	size_t saved_elem = m_tsubst_copy_pack_elem;
 	const char *saved_name = m_tsubst_copy_pack_value_name;
@@ -2447,6 +2582,13 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					elem_subst[pmi->second] = elems[e];
 					size_t pi = concrete_arg_pos + 1;
 					++concrete_arg_pos;
+					if (!tsubst_bind_lockstep_packs(
+						    pe->pattern, e, elem_subst)) {
+						explicit_nodes.push_back(error_node(
+							"tsubst: lockstep pack arity mismatch",
+							pe->pattern));
+						continue;
+					}
 					DataDef *pt =
 						(ctor && pi < ctor->parameters.size())
 							? ctor->parameters[pi] : NULL;
@@ -3993,6 +4135,21 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 			}
 			return addr;
 		}
+		// A DEPENDENT ref return (`std::get<_Indexes1>(__t1)` translated
+		// by the hit-time relower): the concrete return class is not
+		// knowable here, but the call VALUE is still the referenced
+		// object's address — keep the addr-of-call shape; the
+		// per-element copy rewrites the callee to its concrete
+		// instantiation. (No base-offset adjustment: substituted get/
+		// tuple accessors return the exact element type. A concrete
+		// derived->base bind would need the offset arm above.) Falling
+		// through would materialize a `target` temp from an unknown-
+		// typed arg — the copy-ctor recursion the tail below refuses.
+		if (!rc && (template_param_under_type_layers(rt)
+			    || dependent_placeholder_under_type_layers(rt)))
+			return node2(N_CAST, void_ptr_type(),
+				     node1(N_ADDR, translate_expr(arg), arg),
+				     arg);
 	}
 
 	// A Derived object bound to a Base parameter: C++ binds the base SUBOBJECT
@@ -4110,6 +4267,16 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 		}
 		return error_node("tsubst: dependent-arg object construction", arg);
 	}
+	// The same recursion exists at HIT time: the per-instantiation relower
+	// translates raw pattern tokens with pattern mode OFF, and a
+	// dependent-typed arg reaches this materializing tail — overload
+	// selection picks target's copy ctor (param `target&`) and re-enters
+	// object_arg_addr(arg, target) forever. A concrete temp can never be
+	// grounded from an unknown-typed arg: refuse, so the relower's error
+	// sweep falls back to the shell carrier.
+	if (arg && (template_param_under_type_layers(arg->datadef())
+		    || dependent_placeholder_under_type_layers(arg->datadef())))
+		return error_node("tsubst: dependent-arg object construction", arg);
 	char name[32];
 	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
 	Variable *tmp = new Variable(name, *target, 1, NULL, false);
@@ -15556,43 +15723,19 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 				if (p.construct) {
 					// Member-CONSTRUCTION ci (token args, possibly
 					// pack expansions): relower per instantiation
-					// under the live binding/pack window.
-					//
-					// Covered TODAY: the EMPTY expansion only (all
-					// ci args are pack expansions of window arity
-					// 0) — default-construction / zero-init, no arg
-					// lowering. A NON-EMPTY pack element is a raw
-					// dependent pattern token (`std::forward<_Args1>
-					// (std::get<_Indexes1>(__t1))`); hit-time
-					// translate_expr on it recurses unboundedly in
-					// class_ctor_call<->object_arg_addr (temp
-					// materialization of an ungroundable class arg),
-					// so it must WAIT for the per-element dependent-
-					// call re-resolution capability. Fail BEFORE the
-					// relower — shell carrier emits the cis.
-					bool all_empty_packs = true;
-					for (TokenBase *a : p.ci_args) {
-						TokenPackExpansion *pe =
-							dynamic_cast<TokenPackExpansion *>(a);
-						DataDefTemplateParam *tp = (pe && pe->pattern)
-							? template_param_in_pack_pattern(pe->pattern)
-							: NULL;
-						if (!tp || !m_tsubst_active_type_arg_packs
-						    || tp->param_index
-						       >= m_tsubst_active_type_arg_packs->size()
-						    || !(*m_tsubst_active_type_arg_packs)
-							        [tp->param_index].empty()) {
-							all_empty_packs = false;
-							break;
-						}
-					}
-					if (!all_empty_packs && !p.ci_args.empty()) {
-						if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
-							fprintf(stderr, "[MEMINIT-CONSTRUCT-FAIL] fn=%s member=%s why=non-empty pack args (not covered)\n",
-								tf->var.name.c_str(), p.name.c_str());
-						meminit_failed = true;
-						break;
-					}
+					// under the live binding/pack window. A
+					// NON-EMPTY pack element is a raw dependent
+					// pattern token (`std::forward<_Args1>
+					// (std::get<_Indexes1>(__t1))`): the relower
+					// binds ALL its packs in lockstep per element
+					// (incl. the non-type index pack) and the
+					// per-element copy re-resolves each nested
+					// dependent call to its concrete instantiation
+					// (the tsubst finish_call_expr analogue). A
+					// shape it can't ground clean-fails as an error
+					// tree (object_arg_addr refuses dependent-typed
+					// materialization) — caught below, shell
+					// carrier emits the cis.
 					if (DataDefCLASS *mc = as_class_instance(mem)) {
 						cir_node *cc = NULL;
 						try {

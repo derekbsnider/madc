@@ -483,6 +483,12 @@ class CirBuilder {
 	// the pack fields are empty and this is plain subst_datadef.
 	DataDef *subst_datadef_active(DataDef *dd,
 				      const std::map<DataDef *, DataDef *> &subst);
+	// Bind EVERY pack mentioned in an expansion pattern (incl. non-type
+	// index packs in nested calls' explicit template args) to its elem-th
+	// window element — lockstep expansion per [temp.variadic]. False on a
+	// lockstep arity violation.
+	bool tsubst_bind_lockstep_packs(TokenBase *pattern, size_t elem,
+					std::map<DataDef *, DataDef *> &elem_subst);
 	int m_tsubst_copy_pack_index = -1;
 	size_t m_tsubst_copy_pack_elem = 0;
 	const char *m_tsubst_copy_pack_value_name = NULL;
