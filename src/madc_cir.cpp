@@ -644,7 +644,6 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 		  CirEmitLang lang)
 {
-    (void)source_name;
     MIR_context_t ctx = MIR_init();
     c2mir_init(ctx);
 
@@ -660,6 +659,18 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
     node_t tree = builder.translate_module(prog);
     if (!tree) {
 	fprintf(stderr, "madc_cir_emit: tree build failed\n");
+	cir_finish(c2m);
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+	return -1;
+    }
+
+    // Same validity gate as the compile path: never render a tree containing
+    // error nodes (the emitter prints N_IGNORE as nothing, so an error would
+    // otherwise emit silently-broken C).
+    if (int nerr = cir_report_errors(stderr, tree)) {
+	fprintf(stderr, "%s: %d untranslatable node(s); not emitting\n",
+		source_name ? source_name : "<source>", nerr);
 	cir_finish(c2m);
 	c2mir_finish(ctx);
 	MIR_finish(ctx);

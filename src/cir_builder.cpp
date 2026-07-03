@@ -15265,6 +15265,8 @@ static bool tsubst_pattern_has_dependent_call(TokenBase *tb)
 	return false;
 }
 
+static std::string tsubst_profile_template_key(FuncDef *source);
+
 node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 				      const char **reason_out)
 {
@@ -15279,12 +15281,15 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	if (!madc_tsubst_dep_parse_enabled())
 		return NULL;
 	m_tsubst_body_carries_meminits = false;
+	m_tsubst_bailed_covered = false;
 	// Phase-5 slice 2 soak lever: force EVERY covered body to bail so the
 	// skipped-body materialization fallback is exercisable suite-wide (the
 	// gated runs never bail — 0 fallbacks — so the fallback would otherwise
 	// be dead code until a real bail appears). Manual runs only; dies with
-	// the re-parse machinery (slice 4).
-	if (getenv("MADC_XTEST_TSUBST_FORCE_BAIL"))
+	// the re-parse machinery (slice 4). Value "covered" instead forces the
+	// slice-3 post-acceptance loud-error arm (see bail_covered below).
+	const char *force_bail = getenv("MADC_XTEST_TSUBST_FORCE_BAIL");
+	if (force_bail && strcmp(force_bail, "covered") != 0)
 		return bail("forced bail (slice-2 soak lever)");
 	FuncDef *source = fd ? fd->tsubst_source : NULL;
 	if (!source)
@@ -15600,16 +15605,41 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		}
 	}
 	// Snapshot referenced_funcs: the instantiation copy below inserts callee
-	// symbols as it builds. If this body ultimately FALLS BACK (a post-copy
-	// bail), those inserts must be undone — otherwise a fallen-back body leaves
+	// symbols as it builds. If this body ultimately bails (a post-copy
+	// bail), those inserts must be undone — otherwise a bailed body leaves
 	// un-emittable symbols (e.g. __gnu_cxx::operator-) recorded as ODR-used, and
-	// MIR-link reports an undefined import even though the body re-parsed
-	// cleanly. On a hit we keep them. (bail_restore unwinds before falling back.)
+	// MIR-link reports an undefined import even though nothing emits the body.
+	// On a hit we keep them. (bail_covered unwinds before erroring.)
 	std::set<std::string> saved_ref_funcs = referenced_funcs;
-	auto bail_restore = [&](const char *why) -> node_t {
+	// Phase-5 slice 3: past this point the shape is COVERED — the pattern
+	// built and the binding is complete, so tsubst CLAIMS this body. A bail
+	// here is an internal inconsistency, not a coverage boundary: it returns
+	// a LOUD error body instead of NULL, so func_def never swallows it into
+	// the re-parse fallback (the bail-net's swallow behavior dies ahead of
+	// the slice-4 delete). The error node aborts the compile at the
+	// pre-c2mir gate, naming the instantiation and the [why:] reason;
+	// MADC_XTEST_DEP_PARSE=0 remains the transitional whole-lane bypass.
+	auto bail_covered = [&](const char *why) -> node_t {
 		referenced_funcs = saved_ref_funcs;
-		return bail(why);
+		if (reason_out)
+			*reason_out = why;
+		m_tsubst_bailed_covered = true;
+		std::string msg =
+			std::string("parse-once internal: tsubst bailed on the "
+				    "covered instantiation '")
+			+ tf->var.name + "' of "
+			+ tsubst_profile_template_key(source)
+			+ " [why: " + why + "]";
+		node_t stmts = list();
+		append(stmts, error_node(msg.c_str(), tf));
+		return node2(N_BLOCK, list(), stmts, tf);
 	};
+	// Phase-5 slice 3 soak lever: MADC_XTEST_TSUBST_FORCE_BAIL=covered forces
+	// the post-acceptance loud-error arm (no suite shape reaches it — 0
+	// fallbacks — so it would otherwise be dead until a real inconsistency
+	// appears). Manual runs + the unit specimen only; dies at slice 4.
+	if (force_bail)
+		return bail_covered("forced covered-shape bail (slice-3 soak lever)");
 	node_t result = NULL;
 	// Phase-5 slice 1: substituted mem-init statements for the admitted ctor
 	// shape, copied under the SAME active binding/pack window as the body.
@@ -15849,12 +15879,13 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	m_tsubst_copy_under_deref = saved_under_deref;
 	m_tsubst_local_method_remap = saved_local_method_remap;
 	// A type-spec marker that tsubst could not expand (unbound, or a concrete
-	// type append_type_specs can't render here) left an error node -> fall back.
+	// type append_type_specs can't render here) left an error node — a
+	// covered-shape inconsistency, loud per slice 3.
 	if (!result)
-		return bail_restore("substitute produced no tree");
+		return bail_covered("substitute produced no tree");
 	if (cir_tree_has_error(result)) {
 		const char *m = cir_first_error_msg(result);
-		return bail_restore(m ? m : "substitute error");
+		return bail_covered(m ? m : "substitute error");
 	}
 	// Record the tsubst body's concrete callees as ODR-used AND verify each is
 	// emittable. The copy path doesn't re-run the normal call lowering that
@@ -15863,10 +15894,10 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	// → MIR-link "undefined import". Recording an emittable callee fixes that.
 	// But a callee with NO definition source (e.g. an un-instantiated free
 	// operator __gnu_cxx::operator-) cannot be satisfied — emitting a dangling
-	// reference would fail the link, so the body is not yet safely tsubst-able:
-	// fall back to the parsed concrete body (the completeness check). A landed
-	// operator/member re-resolve KIND will make such a callee emittable and the
-	// body becomes a hit then.
+	// reference would fail the link. Suite-wide this gate fires on NOTHING
+	// (burndown 0 fallbacks), so per slice 3 a firing is a covered-shape
+	// inconsistency and errors loudly; the operator/member re-resolve KINDs
+	// that made every suite callee emittable are the coverage.
 	{
 		std::set<std::string> callees;
 		cir_collect_call_callees(result, callees);
@@ -15916,7 +15947,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 				if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG"))
 					fprintf(stderr, "[TSUBST-UNEMITTABLE] fn=%s sym=%s\n",
 						tf->var.name.c_str(), s.c_str());
-				return bail_restore("tsubst body calls un-emittable symbol");
+				return bail_covered("tsubst body calls un-emittable symbol");
 			}
 			referenced_funcs.insert(s);
 		}
@@ -16209,7 +16240,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	const char *tsubst_reason = NULL;
 	node_t body = tsubst_method_body(tf, fd, &tsubst_reason);
 	if (m_prog && fd->tsubst_source) {
-		if (body)
+		// A slice-3 loud bail returns a non-NULL ERROR body — count it in
+		// the fallback profile (the [why:] names the inconsistency), never
+		// as a hit; the error node aborts the compile at the pre-c2mir gate.
+		if (body && !m_tsubst_bailed_covered)
 			++m_prog->_tsubst_body_hits;
 		else {
 			++m_prog->_tsubst_body_fallbacks;
@@ -16229,7 +16263,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		// (its source pattern covers every suite path today), so a
 		// tsubst bail must first materialize the captured span into tf
 		// — the re-parse fallback, deleted with the machinery at
-		// slice 4 (slice 3 makes a covered-shape bail a hard error).
+		// slice 4. Only PRE-acceptance bails (the coverage boundary:
+		// eligibility gates, scans, pattern-build self-detection,
+		// binding gaps) reach here — a post-acceptance bail on a
+		// covered shape returns a loud error body instead (slice 3).
 		if (m_prog && fd->tsubst_source
 		    && !fd->tsubst_skipped_body_tokens.empty())
 			m_prog->materialize_tsubst_skipped_body(tf);

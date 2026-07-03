@@ -1026,6 +1026,60 @@ TEST_CASE("CIR: tsubst engagement counters split hits and fallbacks") {
     CHECK(saw_dep_fallback);
 }
 
+// Phase-5 slice 3: a tsubst bail on a COVERED shape (pattern built + binding
+// complete) returns a LOUD error body — the pre-c2mir gate rejects the tree —
+// and counts in the fallback profile, never as a hit and never as a silent
+// re-parse fallback. MADC_XTEST_TSUBST_FORCE_BAIL=covered forces the
+// post-acceptance arm (no real shape reaches it — the suite burndown is 0
+// fallbacks); the lever dies with the re-parse machinery at slice 4.
+TEST_CASE("CIR: covered-shape tsubst bail is a loud error, not a fallback") {
+    const char *source =
+	"struct Holder { template<class T> int hit(T v) { return v + 1; } };\n"
+	"int main() { Holder h; return h.hit(3); }\n";
+    const char *old_env = getenv("MADC_XTEST_DEP_PARSE");
+    std::string saved_env = old_env ? old_env : "";
+    setenv("MADC_XTEST_DEP_PARSE", "1", 1);
+    setenv("MADC_XTEST_TSUBST_FORCE_BAIL", "covered", 1);
+
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<tsubst-loud-bail-test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+
+    // Build the final tree only (no compile/run): the loud bail leaves an
+    // error node in the kept body, which cir_report_errors / the pre-c2mir
+    // gate rejects — that IS the loud-error contract.
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+    node_t tree = NULL;
+    {
+	CirBuilder builder(c2m);
+	tree = builder.translate_module(prog.get());
+	REQUIRE(tree != nullptr);
+	CHECK(cir_tree_has_error(tree));
+	cir_finish(c2m);
+	c2mir_finish(mir_ctx);
+	MIR_finish(mir_ctx);
+    }
+    unsetenv("MADC_XTEST_TSUBST_FORCE_BAIL");
+    if ( old_env )
+	setenv("MADC_XTEST_DEP_PARSE", saved_env.c_str(), 1);
+    else
+	unsetenv("MADC_XTEST_DEP_PARSE");
+
+    CHECK(prog->_tsubst_body_hits == 0);
+    CHECK(prog->_tsubst_body_fallbacks >= 1);
+    bool saw_loud_reason = false;
+    for (std::map<std::string, Program::TsubstBodyProfile>::const_iterator it =
+	     prog->_tsubst_body_fallback_profile.begin();
+	 it != prog->_tsubst_body_fallback_profile.end(); ++it)
+	if (it->second.reason.find("slice-3 soak lever") != std::string::npos)
+	    saw_loud_reason = true;
+    CHECK(saw_loud_reason);
+}
+
 // Two-tree pack prerequisite: the parser already deduces concrete pack element
 // types for the re-parse path. Preserve those as durable instance metadata so
 // CIR pack expansion can later fan out the Tree-1 pattern by real arity/types.

@@ -465,6 +465,12 @@ class CirBuilder {
 	// substituted mem-init statements; func_def reads+clears it to suppress
 	// the shell-side ctor-init emission for exactly that ctor.
 	bool m_tsubst_body_carries_meminits = false;
+	// Phase-5 slice 3: set when tsubst_method_body bailed on a COVERED shape
+	// (pattern built + binding complete) and returned a LOUD error body
+	// instead of NULL — func_def counts it in the fallback profile (not as a
+	// hit) and must NOT re-parse; the error node aborts the compile at the
+	// pre-c2mir gate. Reset at every tsubst_method_body entry.
+	bool m_tsubst_bailed_covered = false;
 	// True while cir-building a Tree-1 recipe pattern: a template-parameter
 	// placeholder reaching type lowering is left as a deferred type-spec MARKER
 	// (the g++ TEMPLATE_TYPE_PARM-in-the-saved-tree model) instead of erroring,
