@@ -532,6 +532,42 @@ slice 3 (loud bail) → slice 4 (DELETE re-parse; note first-eager keeps
 the instantiation body parse load-bearing for FIRSTS, so the slice-4
 delete scope must be costed against the two KINDs above).
 
+**✅ SLICE 3 LANDED @5de32859 — covered-shape bail is a LOUD error; the
+bail-net's swallow-and-reparse dies for the covered lane.** The
+ACCEPTANCE LINE is the boundary: pattern built + binding complete
+(cir_builder tsubst_method_body, right after the type-arg arity check)
+— past it tsubst CLAIMS the body. The three post-acceptance bails
+(`substitute produced no tree`, `substitute error`, `tsubst body calls
+un-emittable symbol` — all suite-unreachable, burndown 0) now go through
+`bail_covered`: restores referenced_funcs, sets `m_tsubst_bailed_covered`,
+and returns a LOUD error BODY (`error_node` in an N_BLOCK) naming the
+instantiation + template key + [why:] — the existing pre-c2mir validity
+gate (`cir_report_errors`) aborts the compile with position. func_def
+never swallows it: the materialization/translate_block fallback arm is
+reached ONLY by pre-acceptance bails (the coverage boundary — eligibility
+gates, scans, pattern-build self-detection like the unit specimen's
+`dependent name P:: in body`, binding gaps), which keep the transitional
+fallback until the slice-4 costed delete. Accounting truthful: a loud
+bail counts in the --show-stats fallback profile (never a hit).
+Emit surface closed: `--emit=c11|mc11` (madc_cir_emit) now runs the SAME
+validity gate — an error node previously rendered as NOTHING (silently
+broken C). Levers: `MADC_XTEST_TSUBST_FORCE_BAIL=covered` forces the
+post-acceptance loud arm (=1 unchanged: soaks the slice-2 materialization
+lane); both values + the =0 whole-lane bypass verified by hand
+(covered → rc!=0 both compile and emit, named instantiation; =1 →
+testmap byte-correct through materialization; =0 → no error). New unit
+test asserts error node in final tree + zero hits + slice-3 reason in
+profile; the pre-acceptance specimen (dep_fallback) is UNTOUCHED. No
+fixpoint-ordering hazard: the emittability gate checks definition
+SOURCES (pending_funcs/AST/lazy/external), not emitted-yet status.
+Gates: fulltest exit 0 (674/0/0/16 all GREEN), burndown FLAT 268/0
+(100%), sweep = known 4-noise BY NAME. NEXT: soak, then slice 4 (DELETE
+re-parse + MADC_XTEST_DEP_PARSE=0 hatch + madc_tsubst_dep_parse_enabled()
++ FORCE_BAIL/NO_BODY_SKIP levers + unit fallback-counter specimen →
+hit-counter assertion; -Wunused-function confirms the cut) — delete
+scope costed against the two slice-2 enrichment KINDs (first-eager keeps
+the instantiation body parse load-bearing for FIRSTS).
+
 **Road (i) recon (2026-07-02, probe [DELEG-ORIGIN] in-tree):** all 4
 delegation ci-arg datadefs confirmed `is_dependent_placeholder=1,
 has_dependent_surface=0` with clean canonical spellings
