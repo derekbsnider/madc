@@ -673,3 +673,37 @@ burndown 296/0 (100%); =0 verified inert; =covered verified on compile +
 emit surfaces. REMAINING: slice 4b per the costing block above (BLOCKED on
 the two slice-2 enrichment KINDs + the pre-acceptance coverage-boundary
 KINDs; delete the body-parse machinery per-KIND as they land).
+
+**✅ SLICE 4b KIND 1 LANDED @acd3ff02 — receiver-aware member-call rebuild
+at copy time (+ 2 root-cause fixes it exposed).** The copy-path N_CALL arm
+no longer nulls TokenMember: member calls are claimed at the CALL level,
+where the callee id is op0 BY CONSTRUCTION — killing the per-node
+id-rewrite's order-dependent identity check (spelling vs func_emit_name,
+which reads local_emit_name enrichment that the FIRST shape's
+instantiation re-points first-wins; the SECOND shape's callee silently
+kept the generic definition-less symbol). The arm resolves via the
+existing receiver-aware member branch (winner instantiated per THIS
+call's subst), rebuilds args against the winner's formals with the
+[sret?][__this][explicit...] index offset via copied_call_arg_for_formal;
+pack args / non-N_ID callees (virtual dispatch) / arity or return-ABI
+mismatches / unknown formals degrade to a structural RENAME-ONLY copy
+(today's behavior, order-independent). Exposed and fixed at depth:
+(a) translate_module's pf_drained watermark moved to the entry `funcs`
+snapshot — a ROOT body's copy-time instantiation previously appended
+below it (referenced, never defined → MIR undefined import);
+(b) dependent sizeof(U) no longer parse-folds to the placeholder's size
+0 (silent wrong values) — bare-param queries defer into TokenTypeQuery
+(the VLA lane, via type_query_size_is_deferred + resolve_template_param
+consult), lowering to the placeholder type-spec marker tsubst expands.
+New test testmemtmplnestedcall (two shapes, nested dependent member-
+template call, sizeof-derived values; failed 3 ways pre-fix, == g++ now).
+Gates: fulltest exit 0 (676/0/0/16 all GREEN), burndown 300/0 (100%),
+ratchet PROGRESS — baseline advanced (+1 set/map, +2 vector, +4
+subscript/containerdtor/madc_ns). First-skip probe state (probe removed
+after recon): sizeof + nested-call sources skip FIRSTS end-to-end;
+map<int,int> down to ONE bail ([why: tsubst: class deferred-construction
+object argument pack]); strings still hit the TAG_DEFN _Guard
+[class.access] wall. REMAINING for 4b: the TAG_DEFN local-class remap
+KIND, the deferred-construction object-arg-pack KIND, then the
+pre-acceptance coverage-boundary KINDs (Kind-3 dependent member type,
+destroy-helper guard, dependent-call scan, binding gaps).
