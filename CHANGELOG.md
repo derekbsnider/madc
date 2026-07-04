@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Data-substrate Track B — the embedded header forest
+
+- **B1 — serializable `cir_node` references** (`0b1e618a`, forest Phase 1):
+  every madc
+  extension field on `cir_node` is now position-independent — `datadef`
+  (DataDef*) → `datadef_id` (uint32 typeid; policy chokepoints hoisted to
+  the statically-reachable `madc_type_id_for`/`madc_type_from_id` over the
+  active project table); `typedef_name`/`error_msg`/`tsubst_pack_value_name`
+  (const char*) → uint32 handles in the ONE shared string pool
+  (`CirArena::intern` + its non-deduped side pool deleted); `tree1_origin`
+  (cir_node*) → a `(seg, idx)` `cir_ref` behind THE single resolve accessor
+  `madc_cir_node_for()`, with `CirArena` self-registering as a segment and
+  stamping each node's own `self` ref. Raw pointers remain only in the
+  c2mir-visible `base` (op links, `u.s` payloads), which stays pointer-based
+  live by decision and maps to refs/handles at freeze time (B2). Gate:
+  `--emit=c11` byte-identical on 688/694 tests — the 6 divergences are
+  per-compilation typeid-order constants in eval value shims only, proven
+  self-consistent by running the gcc-compiled artifact.
+
 ### Data-substrate Track A — the madc::dis spine (COMPLETE)
 
 - **A1+A2 — frozen intern_table + pool-snapshot container** (`62c1b91b`):

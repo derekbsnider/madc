@@ -363,3 +363,53 @@ unsigned-64 compare/div edges are the PRE-EXISTING untyped-fold behavior
 (unchanged); wide static-const class members capture at int64
 (static_member_const_values stays int64); nontype template args stay int64
 domain. NEXT: **B1** (serializable cir_node references) — the forest track.
+
+**✅ B1 LANDED `0b1e618a` (2026-07-04, branch
+`feature/b1-serializable-cir-refs-claude`) — forest Phase 1: serializable
+`cir_node` references.** Every madc EXTENSION
+field on `cir_node` is now position-independent — an index, a handle, or a
+`(seg, idx)` ref; raw pointers remain ONLY in the c2mir-visible `base` (op
+links, `u.s` string payloads, `attr`), which stays pointer-based live by
+decision (forest SETTLED #1/#7) and maps to refs/handles at freeze time (B2).
+The conversions:
+- `datadef` (DataDef*) → `datadef_id` (uint32 typeid, `madc_typeid.h`
+  segments). The id policy chokepoints hoisted to free functions
+  `madc_type_id_for` / `madc_type_from_id` over a `madc_active_project_types`
+  global (bound at `_parser_init` and by the Program methods per call — the
+  `_active_strpool` discipline); `Program::type_id_for/type_from_id`
+  bind-and-delegate. Exact DataDef* round-trip (table stores pointers; memo
+  on `dd->type_id`).
+- `typedef_name` / `error_msg` / `tsubst_pack_value_name` (const char*) →
+  uint32 handles in the ONE shared serializable string pool
+  (`TokenBase::_active_strpool`; SETTLED #5 "shared pools"), accessors with
+  the transient-c_str contract (consume immediately, hold the id).
+  `CirArena::intern` + its non-deduped `strings` side pool DELETED. Builder
+  state `m_tsubst_copy_pack_value_name` → `..._value_id` (a held pointer
+  would dangle on pool growth).
+- `tree1_origin` (cir_node*) → `cir_ref{seg, idx}` (two uint32s) behind THE
+  one resolve accessor `madc_cir_node_for(ref)` (SETTLED #5): `CirArena`
+  self-registers in the segment registry (seg 0 = null, so a zeroed record
+  is a null ref), `alloc()` stamps each node's own `self` ref, `node_at()`
+  does the page math. Frozen segments (B2/B3) join the same id space behind
+  the same chokepoint. Destroyed arenas unregister — a stale ref resolves
+  NULL, never to freed memory.
+- Literals: node scalar payloads are POD-inline in the record (serialize
+  as-is); wide literals already ride value-pool handles at the token layer
+  (A3); `u.s` string payloads are c2mir-visible base fields that map to
+  intern handles in B2's record freeze, like op links.
+Gates: build 0 warnings (plus fixed the ONE pre-existing
+-Wmisleading-indentation in `DataDef::is_object` — whitespace only); test_cir
+99 cases / 16191 asserts incl. 4 new B1 cases (segment identity across page
+boundaries, unregister-ends-resolution, string-handle round-trip + dedup,
+typeid round-trip primitive + project); fulltest 678/0/0/16 all ratchets
+GREEN; **`--emit=c11` byte-identical on 688/694 tests** — the 6 divergent
+files differ ONLY in per-compilation PROJECT-segment typeid constants inside
+eval value shims (`madc_value_get_type_id` guards /
+`madc_value_make_instance`): `set_datadef` now lazy-stamps node-attached
+types, shifting first-ask order; ids are per-compilation by design
+(2026-06-12 §2; pinned primitive slots unchanged), and self-consistency was
+proven by compiling the divergent emitted C with gcc against libmadc and
+matching the JIT output. All c2mir-visible emission byte-identical — the
+references stayed c2mir-blind. Torture 1571 passed, failset byte-identical
+to the 51-name baseline, 0 timeouts; SMAUG soak compiles and boots.
+NEXT: **B2** (single-segment freeze/thaw through the A2 container).
