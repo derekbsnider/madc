@@ -28,18 +28,21 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Version:** `0.31.0` (per `VERSION`) — released on `develop` (CIR backend);
-  the **tag-arithmetic-retirement** release: the `DataType` pointer/reference
-  tag-range encoding (`base+10000`/`base+20000`) is removed — derivation lives
-  entirely in the `DataDefPTR`/`DataDefREF`/`DataDefCONST` object graph + the
-  typeid table, queried structurally. Also lands the first `madc::dis`
-  development-substrate primitives (intern_table, arena, id_table) with the
-  `datatype_map` re-keyed onto interned ids, `-O2` as the default build
-  (~1.74× faster front-end), and the c2mir compile-warning surface at zero
-  suite-wide. fulltest **673 passed / 0 failed / 0 timed out / 16 skipped**,
-  gcc.c-torture failset byte-identical to the 51-name baseline. v0.30.0 was the
-  **set-wall** release (real-libstdc++ `std::set`/`std::map` on the default
-  C++17 path, eight container bugs cleared, real 16-byte `__int128`).
+- **Version:** `0.33.0` (per `VERSION`) — released on `develop` (CIR backend);
+  the **parse-once** release: the template re-parse deprecation campaign
+  (Phase 5) is COMPLETE. Every member-template instantiation — first or
+  repeat — takes its body from tsubst over the one saved pattern tree (the
+  g++ model); the re-parse fallback machinery is deleted outright
+  (`materialize_tsubst_skipped_body`, captured-span tokens, first-eager flag,
+  −123 lines), and a coverage gap is a LOUD pre-c2mir error, never a silent
+  re-parse. Suite burndown **312 HIT / 0 FALLBACK (100%)**, zero `[why:]`
+  reason-classes; pre-acceptance eligibility census EMPTY across the suite.
+  Also fixes the map-iteration SIGSEGV (class-typed for-init declarator lost
+  its injected construction; new `testmapiter`) and emits typed dtor forward
+  protos so `--emit=c11` container output compiles unpatched under gcc.
+  fulltest **677 passed / 0 failed / 0 timed out / 16 skipped**. v0.32.0 was
+  the rung-1 interning capstone (`TokenIdent::str` dropped); v0.31.0 the
+  tag-arithmetic retirement; v0.30.0 the set-wall release.
   `master` still holds the v0.24.0 asmjit/Gecko backend at full C89 coverage;
   develop is **not** promoted to master until the CIR path reaches feature
   parity.

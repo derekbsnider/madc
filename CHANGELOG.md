@@ -2,6 +2,76 @@
 
 ## [Unreleased]
 
+## [v0.33.0] — 2026-07-04
+
+The parse-once release: the template re-parse deprecation campaign (Phase 5)
+is COMPLETE — every member-template instantiation, first or repeat, takes its
+body from tsubst over the one saved pattern tree; the re-parse fallback
+machinery is deleted outright. Plus a long-standing map-iteration SIGSEGV
+fixed and the portable `--emit=c11` gcc oracle green on container code.
+
+### Parse-once tsubst — campaign complete (Phase-5 slices 1–4b)
+
+- **Slice 1 — dependent template-id shells + ctor mem-inits.** The
+  `DependentShellOrigin` registry keeps dependent template-id types
+  structural through substitution; `std::pair`'s piecewise/indexed
+  delegating ctors HIT (structural rebuild, memoized construct arm,
+  per-element dependent-call re-resolution).
+- **Slice 2 — instantiation body-parse skip.** A pattern-bearing source's
+  repeat instantiations skip their body parse (name-keyed arming; raw span
+  captured for the bail fallback).
+- **Slice 3 — loud bail.** A tsubst bail on a covered shape is a LOUD
+  pre-c2mir error body, never a silent re-parse.
+- **Slice 4a — parse-once UNCONDITIONAL.** The `MADC_XTEST_DEP_PARSE=0`
+  escape hatch and the soak levers are deleted.
+- **Slice 4b — seven copy-time KINDs**, each landed with the burndown flat
+  at 0 FALLBACK: receiver-aware member-call rebuild; copy-time ctor
+  instantiation; deferred-arg formal re-selection (identity bake +
+  static-member re-select + per-formal pack fan-out); TAG_DEFN local-class
+  materialization (`_Guard`); vector-lane construct KINDs (free-operator
+  instantiation on lookup miss + order-independent pack-member-call symbol
+  rewrite); scalar placement-new structural store + pointer-pointee
+  overload rejection at the ONE shared ranking; reference-formal object-arg
+  address recovery (the SET wall).
+- **Member templates at 2+ types** get per type-shape instances (the
+  single-`__mti`-slot collision fix).
+- **The FLIP:** first-skip is production — FIRST instantiations skip the
+  eager body parse like repeats. The eager parse was over-instantiating
+  (redundant `allocator_traits::construct` overload instances); post-flip
+  instantiation is by-need. Gate evidence: all first-skip walls cleared,
+  suite burndown 0 FALLBACK with zero `[why:]` reason-classes, and a
+  pre-acceptance eligibility census EMPTY across all 693 tests.
+- **The DELETE:** `materialize_tsubst_skipped_body` and the captured-span
+  token machinery are gone (−123 lines); a tsubst bail on a skipped body is
+  a loud error. The parse-once rule now forbids reintroducing any re-parse
+  recovery path. Remaining body parses are the ONLY parse for their shapes
+  (pattern-ineligible sources, `auto`-return deduction).
+- Suite burndown: **312 HIT / 0 FALLBACK (100%)**; flag-on ratchet GREEN.
+
+### Bug fixes
+
+- **Map iteration SIGSEGV** (`for (map<K,V>::iterator it = m.begin(); ...)`
+  crashed in `_Rb_tree_increment`): a class-typed single declarator in the
+  for-init slot emitted only its bare storage decl — the 1→N class-decl
+  lowering's injected construction had no room in the single init slot and
+  was dropped. `translate_block`'s class-decl arm is factored into the
+  shared `class_decl_stmts`, and `translate_for` wraps class-shape for-init
+  declarators in a synthetic block `{ decl; construction; for (;cond;incr) }`
+  — exact for-init scoping, same-named sibling loops can't collide. New
+  `tests/testmapiter.mad`.
+- **Portable `--emit=c11` on container code:** the tsubst explicit-dtor and
+  destroy-marker arms declared element dtors `extern void d(void*)`,
+  conflicting with madc's typed definitions under gcc (c2mir tolerated it).
+  Both now emit typed forward protos (`void d(struct X *)`); the emitted C
+  for map/set/vector reducers compiles unpatched under `gcc -O0` with
+  JIT-matching output.
+
+### Testing
+
+- fulltest **677 passed / 0 failed / 0 timed out / 16 skipped** (suite grew
+  by `testmapiter`); tsubst flag-on ratchet GREEN on the updated baseline;
+  burndown 312/0 with zero reason-classes.
+
 ## [v0.32.0] — 2026-07-01
 
 Rung-1 interning capstone (`madc::dis`) — the per-token `std::string` is gone —
