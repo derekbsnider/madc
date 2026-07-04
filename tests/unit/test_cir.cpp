@@ -995,13 +995,12 @@ TEST_CASE("CIR: tsubst engagement counters split hits and fallbacks") {
 // pre-acceptance pattern-build reject) instantiated at TWO types. Exercises,
 // on REAL shapes through the production pipeline: (1) per type-shape
 // instantiation (distinct instance symbols — the single-__mti collision fix;
-// the HIT-lane twin lives in tests/testmemtmplmultitype.mad), (2) the Phase-5
-// slice-2 body-parse skip arming on the REPEAT instantiation, and (3)
-// materialize_tsubst_skipped_body — the repeat's captured span re-parsed when
-// tsubst bails pre-acceptance (the one production consumer of the
-// materialization fallback; no soak lever needed). Lives in the UNIT suite so
-// the suite-wide burndown stays 0 FALLBACK (parse-once law) while the lane
-// keeps a regression test.
+// the HIT-lane twin lives in tests/testmemtmplmultitype.mad), and (2) the
+// pattern-INELIGIBLE eager lane: no dependent_pattern means the skip never
+// arms (slice 4b deleted the captured-span re-parse fallback entirely), both
+// instantiations parse their bodies eagerly, and each lowers its parsed body
+// counted as a fallback. Lives in the UNIT suite so the suite-wide burndown
+// stays 0 FALLBACK (parse-once law) while the lane keeps a regression test.
 TEST_CASE("CIR: fallback-lane member template at two types materializes repeats") {
     const char *source =
 	"struct Inner { typedef int type; int v; };\n"

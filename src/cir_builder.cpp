@@ -16712,18 +16712,18 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		}
 	}
 	if (!body) {
-		// Phase-5 slice 2: this instantiation's body parse was SKIPPED
-		// (its source pattern covers every suite path today), so a
-		// tsubst bail must first materialize the captured span into tf
-		// — the re-parse fallback, deleted with the machinery at
-		// slice 4. Only PRE-acceptance bails (the coverage boundary:
-		// eligibility gates, scans, pattern-build self-detection,
-		// binding gaps) reach here — a post-acceptance bail on a
-		// covered shape returns a loud error body instead (slice 3).
-		if (m_prog && fd->tsubst_source
-		    && !fd->tsubst_skipped_body_tokens.empty())
-			m_prog->materialize_tsubst_skipped_body(tf);
-		body = translate_block((TokenCpnd *)tf);
+		// Phase-5 slice 4b: the re-parse fallback is DELETED. An
+		// instantiation whose body parse was skipped has nothing to
+		// lower on a tsubst NULL-bail — fail loudly at the pre-c2mir
+		// gate (lowering the empty compound would emit a silently
+		// wrong no-op body). The burndown/ratchet gates keep this
+		// path unreachable across the suite.
+		if (fd->tsubst_source && fd->tsubst_body_skipped)
+			body = error_node("tsubst: skipped body with no tsubst"
+					  " coverage (re-parse fallback"
+					  " deleted)", tf);
+		else
+			body = translate_block((TokenCpnd *)tf);
 	}
 
 	// C99 VLA-parameter bound side effects: a parameter array bound such as

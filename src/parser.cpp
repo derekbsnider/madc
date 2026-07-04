@@ -24386,108 +24386,6 @@ void Program::parse_deferred_function_bodies(std::vector<Program::DeferredFuncti
 	parse_deferred_function_body(bodies[i]);
 }
 
-// Phase-5 slice 2: materialize a SKIPPED instantiation body into its existing
-// TokenFunc — the tsubst-bail fallback. The span was captured raw by
-// parseFunction under the fn-template instantiation environment, so the replay
-// reproduces parse_deferred_function_body's context restore (namespace derived
-// from the owner's canonical spelling, owner-class enclosing chain,
-// instantiation spelling) PLUS the instantiation-parse invariants (fresh
-// compound stack, C++ linkage, evaluated context, and
-// fn_template_instantiation_depth — a local class in the body must parse its
-// member bodies eagerly, the _Save_errno rule). Grafts the parsed compound
-// into tf so the caller (CirBuilder::func_def) lowers the same TokenFunc it
-// started with — the signature nodes it already built stay valid.
-bool Program::materialize_tsubst_skipped_body(TokenFunc *tf)
-{
-    FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
-    if ( !tf || !fd || !tf->method || fd->tsubst_skipped_body_tokens.empty() )
-	return false;
-    std::vector<TokenBase *> toks;
-    toks.swap(fd->tsubst_skipped_body_tokens);
-
-    std::string saved_func = cur_func_name;
-    std::string saved_canon = instantiating_canonical_spelling;
-    cur_func_name = tf->var.name;
-    std::string body_namespace = current_namespace();
-    if ( tf->method->owner_class )
-    {
-	std::string method_namespace =
-	    namespace_scope_from_cpp_spelling(
-		tf->method->owner_class->canonical_cpp_spelling);
-	if ( !method_namespace.empty() )
-	    body_namespace = method_namespace;
-	if ( tf->method->owner_class->canonical_cpp_spelling.find('<')
-	     != std::string::npos )
-	    instantiating_canonical_spelling =
-		tf->method->owner_class->canonical_cpp_spelling;
-    }
-    NamespaceScope ns_scope(*this, body_namespace);
-    std::stack<TokenCpnd *> saved_compounds;
-    std::swap(compounds, saved_compounds);
-    std::vector<DataDefCLASS *> saved_class_scope_stack;
-    std::swap(class_scope_stack, saved_class_scope_stack);
-    if ( tf->method->owner_class )
-    {
-	std::vector<DataDefCLASS *> chain;
-	for ( DataDefCLASS *c = tf->method->owner_class; c;
-	      c = c->enclosing_class )
-	    chain.push_back(c);
-	for ( size_t i = chain.size(); i-- > 0; )
-	    class_scope_stack.push_back(chain[i]);
-    }
-    LinkageSpec saved_linkage = current_linkage;
-    current_linkage = LinkageSpec::Cpp;
-    int saved_uneval = unevaluated_operand_depth;
-    unevaluated_operand_depth = 0;
-    size_t base_depth = tokens.size();
-    ++fn_template_instantiation_depth;
-
-    bool ok = true;
-    try
-    {
-	for ( std::vector<TokenBase *>::reverse_iterator it = toks.rbegin();
-	      it != toks.rend(); ++it )
-	    pushToken(*it);
-	pushCompound();
-	TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
-	if ( code )
-	    code->method = tf->method;
-	TokenCpnd *tc = dynamic_cast<TokenCpnd *>(parseCompound());
-	if ( tc )
-	{
-	    tf->parent = tc->parent;
-	    tf->variables = tc->variables;
-	    tf->statements = tc->statements;
-	    tf->deferred = tc->deferred;
-	    tf->end_line = tc->end_line;
-	}
-	else
-	    ok = false;
-    }
-    catch ( ... )
-    {
-	ok = false;
-    }
-    --fn_template_instantiation_depth;
-    while ( tokens.size() > base_depth )
-	nextToken();
-    while ( !compounds.empty() )
-	popCompound();
-    std::swap(class_scope_stack, saved_class_scope_stack);
-    std::swap(compounds, saved_compounds);
-    current_linkage = saved_linkage;
-    unevaluated_operand_depth = saved_uneval;
-    cur_func_name = saved_func;
-    instantiating_canonical_spelling = saved_canon;
-    // Never behind DBG: a failed materialization after a tsubst bail means the
-    // body lowers EMPTY — silent misbehavior without this diagnostic.
-    if ( !ok )
-	fprintf(stderr,
-		"madc: internal: tsubst bail could not materialize the "
-		"skipped body of %s\n", tf->var.name.c_str());
-    return ok;
-}
-
 // Lazy member-function-body instantiation: materialize one deferred body on
 // first ODR-use. Reuses parse_deferred_function_body (which pushes the new
 // TokenFunc onto pending_funcs); we erase the entry BEFORE parsing so a
@@ -34859,8 +34757,6 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 						    &concrete_type_args,
 						    &concrete_type_arg_packs);
     tsubst_skip_body_name = saved_skip_body;
-    if ( ok )
-	fd->tsubst_body_instantiated_once = true;
 #if MADC_DEBUG_FNTPL
     if ( dbg_mti )
 	std::cerr << "FNTPL mti try var=" << tc->var.name
@@ -35091,8 +34987,6 @@ void Program::instantiate_member_ctor_template_for_construction(
 						    &concrete_type_args,
 						    &concrete_type_arg_packs);
     tsubst_skip_body_name = saved_skip_body;
-    if ( ok )
-	fd->tsubst_body_instantiated_once = true;
     synth.parameters.clear();
 #ifdef MADC_DEBUG_CTORTMPL
     if ( dbg_ct ) fprintf(stderr, "[ctortmpl] try_instantiate ok=%d inst_name=%s\n", (int)ok, inst_name.c_str());
@@ -38775,20 +38669,22 @@ paramdecl:
 	tf->line = source.line();
 	tf->column = 0;
     }
-    // Phase-5 slice 2 (parse-once): a member-template INSTANTIATION whose
+    // Phase-5 slice 4b (parse-once): a member-template INSTANTIATION whose
     // source carries a Tree-1 dependent_pattern takes its body from tsubst at
     // lowering, so parsing the substituted body tokens here is discarded work
-    // on every hit. Capture the raw span instead (the tsubst-bail fallback
-    // materializes it on demand — materialize_tsubst_skipped_body) and parse
-    // an empty body in its place (the synthetic `}` terminates parseCompound
-    // immediately). Name-keyed arming: parses nested under the signature /
-    // SFINAE / mem-init machinery never match the armed id. An `auto` return
-    // still parses eagerly — deduction below reads the statements.
+    // on every hit. Consume the raw span (discarded — the re-parse fallback
+    // is deleted; a tsubst bail on a skipped body is a loud pre-c2mir error)
+    // and parse an empty body in its place (the synthetic `}` terminates
+    // parseCompound immediately). Name-keyed arming: parses nested under the
+    // signature / SFINAE / mem-init machinery never match the armed id. An
+    // `auto` return still parses eagerly — deduction below reads the
+    // statements.
     if ( !tsubst_skip_body_name.empty() && id == tsubst_skip_body_name
       && &func->return_value_type() != &ddAUTO )
     {
 	tsubst_skip_body_name.clear();
-	func->tsubst_skipped_body_tokens = collect_compound_body_tokens(nt);
+	collect_compound_body_tokens(nt);
+	func->tsubst_body_skipped = true;
 	pushToken(new TokenClBrc());
     }
     DBG(cout << "parseFunction() calling parseCompound()" << endl);
