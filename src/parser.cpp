@@ -8731,20 +8731,6 @@ void EatSpaces(istream &is)
 }
 
 
-int64_t TokenAssign::ioperate() const
-{
-    DBG(std::cout << "TokenAssign" << std::endl);
-    if ( left->type() != TokenType::ttVariable )
-    {
-	std::cerr << "TokenAssign::operate() left side not variable" << std::endl;
-	return 0;
-    }
-    DBG(std::cout << "TokenAssign: " << dynamic_cast<TokenVar *>(left)->var.name << "=" << right->ival() << std::endl);
-    left->set(right->ival());
-    return right->ival();
-}
-
-
 // Variable constructor, will allocate data and initialize if requested
 Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc)
 {

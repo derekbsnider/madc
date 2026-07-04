@@ -228,15 +228,13 @@ public:
     virtual DataDef *datadef() const override
     { return resolved_type ? resolved_type : (_datatype ? _datatype : &ddVOID); }
     virtual TokenBase *clone() { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
-    virtual int64_t ival() const { /*if (left && right) return operate();*/ return 0; }
+    virtual int64_t ival() const { return 0; }
     virtual size_t argc() const { return 2; }
     virtual bool is_operator() const override { return true; }
     virtual inline TokenType type()     const { return TokenType::ttOperator;     }
     virtual inline TokenID   id()       const { return TokenID::tkOperator;       }
     virtual inline TokenAssoc assoc()   const { return TokenAssoc::taLeftToRight; }
     virtual inline int precedence() const  { return 15; } // C Operator Precedence, default to 15 (lowest)
-    virtual inline int64_t ioperate() const { return 0; } // integer operation
-    virtual inline double foperate() const { return 0; } // floating point operation
     virtual inline bool operator>(const TokenOperator &op) // used to compare precedence
     {
 	DBG(std::cout << "TokenOperator(" << (char)_token << ") comparing precedence(" << precedence() << ") > to TokenOperator(" << (char)op.get() << ") precedence(" << op.precedence() << ")" << std::endl);
@@ -279,8 +277,6 @@ public:
 	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
 	return TokenOperator::datadef();
     }
-    inline int64_t ioperate() const { return left->ival() + right->ival(); }
-    inline double foperate() const { return left->dval() + right->dval(); }
 };
 
 // top precedence operator
@@ -315,8 +311,6 @@ public:
 	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
 	return TokenOperator::datadef();
     }
-    inline int64_t ioperate() const { return left->ival() - right->ival(); }
-    inline double foperate() const { return left->dval() - right->dval(); }
 };
 
 // negative operator - (unary minus)
@@ -329,14 +323,6 @@ public:
     virtual inline int precedence() const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    inline int64_t ioperate() const {
-	int64_t v = - right->ival();
-	// Mask to operand width: -1U must yield 0xFFFFFFFF, not -1 as int64
-	if ( right->datadef() && right->datadef()->is_unsigned() && right->datadef()->size < 8 )
-	    v &= (int64_t)((1ULL << (right->datadef()->size * 8)) - 1);
-	return v;
-    }
-    inline double foperate() const { return - right->dval(); }
     // Propagate unsigned operand type so -1U is uint32, not ddINT
     virtual DataDef *datadef() const override {
 	if ( resolved_type ) return resolved_type;
@@ -361,8 +347,6 @@ public:
 	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
 	return TokenOperator::datadef();
     }
-    inline int64_t ioperate() const { return left->ival() * right->ival(); }
-    inline double foperate() const { return left->dval() * right->dval(); }
 };
 
 // divide operator /
@@ -380,8 +364,6 @@ public:
 	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
 	return TokenOperator::datadef();
     }
-    inline int64_t ioperate() const { return left->ival() / right->ival(); }
-    inline double foperate() const { return left->dval() / right->dval(); }
 };
 
 // modulo / remainder operator %
@@ -392,8 +374,6 @@ public:
     virtual TokenBase *clone() { TokenMod *to = new TokenMod(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkMod; }
     virtual inline int precedence() const { return 3; }
-    inline int64_t ioperate() const { return left->ival() % right->ival(); }
-    inline double foperate() const { return ioperate(); }
 };
 
 // increment operator ++
@@ -413,18 +393,6 @@ public:
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    inline int64_t ioperate() const
-    {
-	if ( left )  { return left->ival() + 1;  }
-	if ( right ) { return right->ival() + 1; }
-	return 0;
-    }
-    inline double foperate() const
-    {
-	if ( left )  { return left->dval() + 1.0;  }
-	if ( right ) { return right->dval() + 1.0; }
-	return 0;
-    }
 };
 
 // decrement operator --
@@ -444,18 +412,6 @@ public:
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    inline int64_t ioperate() const
-    {
-	if ( left )  { return left->ival() - 1;  }
-	if ( right ) { return right->ival() - 1; }
-	return 0;
-    }
-    inline double foperate() const
-    {
-	if ( left )  { return left->dval() - 1.0; }
-	if ( right ) { return right->dval() - 1.0; }
-	return 0;
-    }
 };
 
 // assignment operator =
@@ -476,7 +432,6 @@ public:
     }
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    int64_t ioperate() const;
 };
 
 // assignment operator += (assignment by sum)
@@ -626,14 +581,6 @@ public:
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    inline int64_t ioperate() const {
-	int64_t v = ~right->ival();
-	// Mask to operand's semantic width: ~0U must yield 0xFFFFFFFF, not 0xFFFFFFFFFFFFFFFF
-	if ( right->datadef() && right->datadef()->size < 8 )
-	    v &= (int64_t)((1ULL << (right->datadef()->size * 8)) - 1);
-	return v;
-    }
-    inline double foperate() const { return ioperate(); }
 };
 
 // logical not operator !
@@ -646,8 +593,6 @@ public:
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    inline int64_t ioperate() const { return !right->ival(); }
-    inline double foperate() const { return !right->dval(); }
 };
 
 // bitwise and operator &
@@ -658,8 +603,6 @@ public:
     virtual TokenID id() const { return TokenID::tkBand; }
     virtual TokenBase *clone() { return new TokenBand(); }
     virtual inline int precedence() const { return 8; }
-    inline int64_t ioperate() const { return left->ival() & right->ival(); }
-    inline double foperate() const { return ioperate(); }
 };
 
 // logical and operator &&
@@ -670,8 +613,6 @@ public:
     virtual TokenID id() const { return TokenID::tkLand; }
     virtual TokenBase *clone() { return new TokenLand(); }
     virtual inline int precedence() const { return 11; }
-    inline int64_t ioperate() const { return left->ival() && right->ival(); }
-    inline double foperate() const { return left->dval() && right->dval(); }
 };
 
 // bitwise or operator | (inclusive or)
@@ -682,8 +623,6 @@ public:
     virtual TokenID id() const { return TokenID::tkBor; }
     virtual TokenBase *clone() { return new TokenBor(); }
     virtual inline int precedence() const { return 10; }
-    inline int64_t ioperate() const { return left->ival() | right->ival(); }
-    inline double foperate() const { return ioperate(); }
 };
 
 // logical or operator ||
@@ -694,8 +633,6 @@ public:
     virtual TokenID id() const { return TokenID::tkLor; }
     virtual TokenBase *clone() { return new TokenLor(); }
     virtual inline int precedence() const { return 12; }
-    inline int64_t ioperate() const { return left->ival() || right->ival(); }
-    inline double foperate() const { return left->dval() || right->dval(); }
 };
 
 // bitwise xor operator ^ (exclusive or)
@@ -706,8 +643,6 @@ public:
     virtual TokenID id() const { return TokenID::tkXor; }
     virtual TokenBase *clone() { return new TokenXor(); }
     virtual inline int precedence() const { return 9; }
-    inline int64_t ioperate() const { return left->ival() ^ right->ival(); }
-    inline double foperate() const { return ioperate(); }
 };
 
 // ternary operator ? (if)
@@ -723,8 +658,6 @@ public:
     virtual inline int precedence()   const { return 13; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    inline int64_t ioperate() const { return left->ival() ? left->ival() : right->ival(); }
-    inline double foperate() const { return left->dval() ? left->dval() : right->dval(); }
 };
 
 // ternary operator : (else)
@@ -747,8 +680,6 @@ public:
     virtual TokenID id() const { return TokenID::tkEquals; }
     virtual TokenBase *clone() { return new TokenEquals(); }
     virtual inline int precedence() const { return 7; }
-    inline int64_t ioperate() const { return left->ival() == right->ival() ? 1 : 0; }
-    inline double foperate() const { return left->dval() == right->dval() ? 1 : 0; }
 };
 
 // comparison operator === (exactly equal to)
@@ -759,8 +690,6 @@ public:
     virtual TokenID id() const { return TokenID::tk3Eq; }
     virtual TokenBase *clone() { return new Token3Eq(); }
     virtual inline int precedence() const { return 7; }
-    inline int64_t ioperate() const { return (left->datatype() == right->datatype() && left->ival() == right->ival()) ? 1 : 0; }
-    inline double foperate() const { return (left->datatype() == right->datatype() && left->dval() == right->dval()) ? 1 : 0; }
 };
 
 // comparison operator !== (not exactly equal to) — !(===)
@@ -771,8 +700,6 @@ public:
     virtual TokenID id() const { return TokenID::tk3NotEq; }
     virtual TokenBase *clone() { return new Token3NotEq(); }
     virtual inline int precedence() const { return 7; }
-    inline int64_t ioperate() const { return (left->datatype() == right->datatype() && left->ival() == right->ival()) ? 0 : 1; }
-    inline double foperate() const { return (left->datatype() == right->datatype() && left->dval() == right->dval()) ? 0 : 1; }
 };
 
 // comparison operator != (not equal to)
@@ -783,8 +710,6 @@ public:
     virtual TokenID id() const { return TokenID::tkNotEq; }
     virtual TokenBase *clone() { return new TokenNotEq(); }
     virtual inline int precedence() const { return 7; }
-    inline int64_t ioperate() const { return left->ival() != right->ival() ? 1 : 0; }
-    inline double foperate() const { return left->dval() != right->dval() ? 1 : 0; }
 };
 
 // comparison operator < (less than)
@@ -795,8 +720,6 @@ public:
     virtual TokenID id() const { return TokenID::tkLT; }
     virtual TokenBase *clone() { return new TokenLT(); }
     virtual inline int precedence() const { return 6; }
-    inline int64_t ioperate() const { return left->ival() < right->ival() ? 1 : 0; }
-    inline double foperate() const { return left->dval() < right->dval() ? 1 : 0; }
 };
 
 // comparison operator < (greater than)
@@ -807,8 +730,6 @@ public:
     virtual TokenID id() const { return TokenID::tkGT; }
     virtual TokenBase *clone() { return new TokenGT(); }
     virtual inline int precedence() const { return 6; }
-    inline int64_t ioperate() const { return left->ival() > right->ival() ? 1 : 0; }
-    inline double foperate() const { return left->dval() > right->dval() ? 1 : 0; }
 };
 
 // comparison operator <= (less than or equal to)
@@ -819,8 +740,6 @@ public:
     virtual TokenID id() const { return TokenID::tkLE; }
     virtual TokenBase *clone() { return new TokenLE(); }
     virtual inline int precedence() const { return 6; }
-    inline int64_t ioperate() const { return left->ival() <= right->ival() ? 1 : 0; }
-    inline double foperate() const { return left->dval() <= right->dval() ? 1 : 0; }
 };
 
 // comparison operator <= (greater than or equal to)
@@ -831,8 +750,6 @@ public:
     virtual TokenID id() const { return TokenID::tkGE; }
     virtual TokenBase *clone() { return new TokenGE(); }
     virtual inline int precedence() const { return 6; }
-    inline int64_t ioperate() const { return left->ival() >= right->ival() ? 1 : 0; }
-    inline double foperate() const { return left->dval() >= right->dval() ? 1 : 0; }
 };
 
 // comparison operator <=> (three-way greater than, less than or equal to)
@@ -844,13 +761,6 @@ public:
     virtual TokenID id() const { return TokenID::tk3Way; }
     virtual TokenBase *clone() { return new Token3Way(); }
     virtual inline int precedence() const { return 6; }
-    inline int64_t ioperate() const 
-    {
-	if ( left->ival() < right->ival() ) { return -1; }
-	if ( left->ival() > right->ival() ) { return 1;  }
-	return 0;
-    }
-    inline double foperate() const { return ioperate(); }
 };
 
 // bitwise shift left <<
@@ -860,8 +770,6 @@ class TokenBSL: public TokenMultiOp
     virtual TokenID id() const { return TokenID::tkBSL; }
     virtual TokenBase *clone() { return new TokenBSL(); }
     virtual inline int precedence() const { return 5; }
-    inline int64_t ioperate() const { return left->ival() << right->ival(); }
-    inline double foperate() const { return ioperate(); }
 };
 
 // bitwise shift right >>
@@ -871,8 +779,6 @@ class TokenBSR: public TokenMultiOp
     virtual TokenID id() const { return TokenID::tkBSR; }
     virtual TokenBase *clone() { return new TokenBSR(); }
     virtual inline int precedence() const { return 5; }
-    inline int64_t ioperate() const { return left->ival() >> right->ival(); }
-    inline double foperate() const { return ioperate(); }
 };
 
 // namespace operator ::
