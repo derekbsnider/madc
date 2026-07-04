@@ -273,9 +273,10 @@ TokenBase *Program::read_wide_literal()
     return ti;
 }
 
-static int64_t read_binary_literal(Source &source)
+static unsigned __int128 read_binary_literal(Source &source, bool &ovf)
 {
-    int64_t bv = 0;
+    unsigned __int128 bv = 0;
+    ovf = false;
     source.get(); // eat 'b' / 'B'
     while ( source.good() )
     {
@@ -286,6 +287,8 @@ static int64_t read_binary_literal(Source &source)
 	}
 	if ( source.peek() != '0' && source.peek() != '1' )
 	    break;
+	if ( (bv >> 127) != 0 )
+	    ovf = true;		// shifted past 128 bits
 	bv <<= 1;
 	bv += source.get() - '0';
     }
@@ -3602,20 +3605,46 @@ TokenBase *Program::_getToken()
 			return &ddINT64;
 		    return is_hex_or_octal ? (DataDef *)&ddUINT64 : (DataDef *)&ddINT64;
 		};
+		// gcc canon (verified tmp/wide_lit.c + wide_lit2.c, host gcc): an
+		// integer literal wider than 64 bits gets "integer constant is
+		// too large for its type" and TRUNCATES to its low 64 bits — gcc
+		// has no 128-bit literals (__int128 constants are composed as
+		// (hi<<64)|lo), and the literal's TYPE is chosen from the
+		// TRUNCATED value by the normal rules. madc matches that
+		// behavior but keeps the full 128-bit value in Program::valpool
+		// (TokenInt::wide_handle) so the token retains fidelity.
+		auto finish_int_literal = [&](unsigned __int128 uval, bool ovf128,
+					      bool is_hex_or_octal) -> TokenInt * {
+		    int64_t tval = (int64_t)(uint64_t)uval;
+		    TokenInt *ti = (TokenInt *)make_int(tval);
+		    if ( ovf128 || (uval >> 64) != 0 )
+		    {
+			report_warning(DiagnosticPhase::lexer,
+				       "integer constant is too large for its type",
+				       source.fname(), source.line(), source.column());
+			print_last_diagnostic(error());
+			ti->wide_handle = valpool.put_u128((uint64_t)uval,
+							   (uint64_t)(uval >> 64));
+		    }
+		    DataDef *st = resolve_int_suffix_type(tval, is_hex_or_octal);
+		    if ( st )
+			ti->setDataType(st);
+		    return ti;
+		};
 		if ( is_binary_prefix(ch, source) )
 		{
-		    int64_t bv = read_binary_literal(source);
+		    bool bv_ovf = false;
+		    unsigned __int128 bv = read_binary_literal(source, bv_ovf);
 		    eat_int_suffix();
-		    TokenInt *ti = (TokenInt *)make_int(bv);
-		    { DataDef *st = resolve_int_suffix_type(bv, true); if (st) ti->setDataType(st); }
 		    // binary prefix source_text not critical for macro round-trip
-		    return ti;
+		    return finish_int_literal(bv, bv_ovf, true);
 		}
 		// hex literal: 0x... or 0X...
 		if ( ch == '0' && source.good() && (source.peek() == 'x' || source.peek() == 'X') )
 		{
 		    lit_text += (char)source.get(); // eat 'x'/'X'
-		    long long hv = 0;
+		    unsigned __int128 hv = 0;
+		    bool hv_ovf = false;
 		    while ( source.good() )
 		    {
 			if ( is_digit_separator(source.peek()) )
@@ -3627,6 +3656,8 @@ TokenBase *Program::_getToken()
 			    break;
 			char hc = source.get();
 			lit_text += hc;
+			if ( (hv >> 124) != 0 )
+			    hv_ovf = true;	// next *16 shifts past 128 bits
 			hv *= 16;
 			if      ( hc >= '0' && hc <= '9' ) hv += hc - '0';
 			else if ( hc >= 'a' && hc <= 'f' ) hv += hc - 'a' + 10;
@@ -3695,16 +3726,16 @@ TokenBase *Program::_getToken()
 		    }
 		    eat_int_suffix();
 		    {
-			TokenInt *ti = (TokenInt *)make_int((int64_t)hv);
+			TokenInt *ti = finish_int_literal(hv, hv_ovf, true);
 			ti->source_text = lit_text;
-			{ DataDef *st = resolve_int_suffix_type((int64_t)hv, true); if (st) ti->setDataType(st); }
 			return ti;
 		    }
 		}
 		// Octal literal: starts with 0, digits 0-7
 		bool is_octal = (ch == '0') && source.good()
 		    && source.peek() >= '0' && source.peek() <= '7';
-		int64_t v = (ch & 0xf);
+		unsigned __int128 v = (unsigned __int128)(ch & 0xf);
+		bool v_ovf = false;
 
 		if ( is_octal )
 		{
@@ -3716,11 +3747,16 @@ TokenBase *Program::_getToken()
 			    break;
 			char oc = source.get();
 			lit_text += oc;
+			if ( (v >> 125) != 0 )
+			    v_ovf = true;	// next *8 shifts past 128 bits
 			v = v * 8 + (oc & 0xf);
 		    }
 		}
 		else
 		{
+		    // 2^128-1 = ...211455: a next digit overflows iff v exceeds
+		    // the /10 limit, or equals it with a digit above the final 5.
+		    const unsigned __int128 dec_limit = (~(unsigned __int128)0) / 10;
 		    while ( source.good() )
 		    {
 			if ( is_digit_separator(source.peek()) )
@@ -3732,6 +3768,8 @@ TokenBase *Program::_getToken()
 			    break;
 			char dc = source.get();
 			lit_text += dc;
+			if ( v > dec_limit || (v == dec_limit && (dc & 0xf) > 5) )
+			    v_ovf = true;
 			v *= 10;
 			v += dc & 0xf;
 		    }
@@ -3773,15 +3811,14 @@ TokenBase *Program::_getToken()
 		    }
 		    if ( eat_imag_suffix() )
 		    {
-			TokenInt *ti = (TokenInt *)make_int(v);
+			TokenInt *ti = (TokenInt *)make_int((int64_t)(uint64_t)v);
 			ti->source_text = lit_text;
 			ti->setDataType(get_complex_compat_type(&ddINT64));
 			return ti;
 		    }
 		    eat_int_suffix();
-		    TokenInt *ti = (TokenInt *)make_int(v);
+		    TokenInt *ti = finish_int_literal(v, v_ovf, is_octal);
 		    ti->source_text = lit_text;
-		    { DataDef *st = resolve_int_suffix_type(v, is_octal); if (st) ti->setDataType(st); }
 		    return ti;
 		}
 		// handle floating point
@@ -5577,6 +5614,13 @@ void Source::showerror(int row, int col)
 	    col = column();
 	}
 
+	// This display walk MUST be position-neutral: a WARNING resumes lexing
+	// right after it prints, so the cursor state is saved here and restored
+	// before every return. (It was destructive-only before — every caller
+	// was a fatal error path, so the clobbered cursor never mattered.)
+	size_t saved_gpos = _gpos;
+	int saved_cr = _cr, saved_lf = _lf, saved_column = _column;
+
 	// Flat-buffer rewind: reset the read cursor to the start and re-scan
 	// forward to the error line (was _ss.seekg(0) on the old stringstream).
 	_cr = _lf = 0;
@@ -5589,6 +5633,9 @@ void Source::showerror(int row, int col)
 	    if ( line()-1 >= row )
 		break;
         }
+
+	_gpos = saved_gpos;
+	_cr = saved_cr; _lf = saved_lf; _column = saved_column;
 
 	if ( ln.length()+5 > term_columns )
 	{

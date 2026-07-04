@@ -976,6 +976,12 @@ class TokenInt: public TokenBase
 {
 public:
     std::string source_text;   // original literal text (hex, suffixes)
+    // Wide-value handle (P0 slice 2): non-zero when the constant does not fit
+    // 64 bits — the full value lives in Program::valpool (madc::dis::value_pool)
+    // under this handle. _token / ival() remain the TRUNCATING low-64-bit view
+    // (gcc canon: a too-large literal warns + truncates; wide values otherwise
+    // arise from >64-bit constant folding).
+    uint32_t wide_handle = 0;
     TokenInt() : TokenBase()            { _datatype = &ddINT; }
     TokenInt(int64_t v) : TokenBase(v) { _datatype = &ddINT; }
     TokenInt(int64_t v, const std::string &src) : TokenBase(v), source_text(src) { _datatype = &ddINT; }
@@ -983,7 +989,7 @@ public:
     virtual double dval() const    { return (double)_token; }
     virtual TokenType type() const { return TokenType::ttInteger; }
     virtual TokenID   id()   const { return TokenID::tkInt; }
-    virtual TokenBase *clone()     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; return c; }
+    virtual TokenBase *clone()     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; c->wide_handle = wide_handle; return c; }
     virtual bool is_constant() const override { return true; }
     virtual void setDataType(DataDef *d) { if (d && (d->is_integer() || d->is_complex())) _datatype = d; }
 };

@@ -25,6 +25,7 @@
 #include "libmadc/value.h"
 #include "madcdis/intern_table.h"
 #include "madcdis/id_table.h"		// madc::dis::id_table — segmented stable-id registry
+#include "madcdis/value_pool.h"		// madc::dis::value_pool — >64-bit value handles
 #include "madc_typeid.h"		// MADC_TYPEID_PROJECT_BASE (the project segment base)
 
 class Method;
@@ -2454,6 +2455,11 @@ public:
     madc::dis::intern_table strpool;
     uint32_t   intern_spelling(const std::string &s) { return strpool.intern(s); }
     const char *spelling(uint32_t id) const { return strpool.c_str(id); }
+    // Wide-value pool (P0 slice 2): >64-bit integer values live here behind a
+    // uint32 handle (TokenInt::wide_handle); ≤64-bit values stay inline in the
+    // token (_token). The handle is the token-record/cir_node literal reference
+    // shape the forest serializes.
+    madc::dis::value_pool valpool;
     // Re-spell a token (interning Step 4): the single write path for the handful
     // of sites that RENAME an identifier/type token (operator-arity disambiguation,
     // mangled-name rewrites). Keeps the interned rec.spelling_id in sync with the
