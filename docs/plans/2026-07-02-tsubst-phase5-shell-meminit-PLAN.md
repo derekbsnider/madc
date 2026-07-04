@@ -905,3 +905,28 @@ member type, destroy-helper guard, dependent-call scan, binding gaps),
 then the per-KIND eager body-parse machinery delete (parseFunction
 instantiation lane, def_tokens replay, materialize_tsubst_skipped_body;
 -Wunused-function confirms each cut).
+
+**✅ SLICE 4b FLIP LANDED @75869db7 — first-skip is PRODUCTION.** The two
+member-lane arming sites drop the `tsubst_body_instantiated_once`
+condition: FIRST instantiations of a pattern-bearing member template
+skip the eager body parse exactly like 2nd+ ones. Preceded by the
+delete-gate evidence: all first-skip walls cleared (@76d92228),
+burndown 0 FALLBACK / zero reason-classes, and the pre-acceptance
+eligibility census EMPTY across all 693 tests (recon [ELIG-NO] print
+in tsubst_eligible's no() lambda, reverted; instrument proven by a
+dependent-return negative control). Ratchet baseline LOWERED with
+in-file rationale — the eager first parse was OVER-instantiating:
+allocator_traits::construct overload instances (int __o2, string __o3)
+for arg shapes the program never lowers (for int, identical C-level
+signatures); post-flip instantiation is by-need. Verified by pre/post
+--emit=c11 defined-symbol diff on testvector (only the two redundant
+instances vanish; _Guard ctor/dtor renames to the materializer's
+<owner>__<local> naming; every call resolves; zero warnings). Suite
+burndown 314 -> 300 HIT, still 0 FALLBACK (100%). The auto-return
+sub-lane still parses eagerly by design (deduction reads statements).
+Gates: fulltest 676/0/0/16 exit 0 all GREEN; ratchet GREEN on the new
+baseline. REMAINING (task #10): delete the now-dead eager machinery
+per-KIND — parseFunction instantiation body-parse lane, def_tokens
+replay, materialize_tsubst_skipped_body, the
+tsubst_body_instantiated_once flag itself; -Wunused-function is the
+cut-completeness signal; full gates per landing.
