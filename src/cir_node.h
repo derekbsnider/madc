@@ -63,11 +63,19 @@ struct cir_ref {
 	bool operator==(const cir_ref &o) const { return seg == o.seg && idx == o.idx; }
 };
 
-// Segment registry: every CirArena self-registers at construction and gets a
-// segment id; frozen forest segments join the same id space when they land
-// (B2/B3).  madc_cir_node_for is THE resolve(ref) chokepoint — all ref
-// dereferencing goes through it (the call_emit_symbol discipline).
-uint32_t  madc_cir_register_segment(CirArena *arena);
+// A resolvable node segment: anything that can hand out a cir_node* for a
+// node index.  Live arenas (CirArena below) resolve by page math; frozen
+// forest segments (CirFrozenSegment, B2) materialize records on touch.
+// Both join the ONE (seg, idx) id space via the registry.
+struct cir_segment_source {
+	virtual ~cir_segment_source() {}
+	virtual cir_node *node_at(uint32_t idx) = 0;
+};
+
+// Segment registry: every segment source self-registers at construction and
+// gets a segment id.  madc_cir_node_for is THE resolve(ref) chokepoint — all
+// ref dereferencing goes through it (the call_emit_symbol discipline).
+uint32_t  madc_cir_register_segment(cir_segment_source *src);
 void      madc_cir_unregister_segment(uint32_t seg);
 cir_node *madc_cir_node_for(cir_ref ref);   // NULL for a null/foreign ref
 
@@ -170,7 +178,7 @@ static_assert(offsetof(cir_node, base) == 0,
 // cir segment so every node it hands out carries a resolvable (seg, idx)
 // identity (see cir_ref above).
 
-class CirArena {
+class CirArena : public cir_segment_source {
 	static const size_t PAGE_SIZE = 4096;  // nodes per page
 
 	struct Page {
@@ -217,7 +225,7 @@ public:
 	// Node for a slot index handed out by alloc(); NULL past the live end.
 	// The resolve(ref) chokepoint (madc_cir_node_for) dispatches here for
 	// live-arena segments.
-	cir_node *node_at(uint32_t idx)
+	virtual cir_node *node_at(uint32_t idx)
 	{
 		size_t page = idx / PAGE_SIZE, slot = idx % PAGE_SIZE;
 		if (page >= pages.size() || slot >= pages[page]->used)

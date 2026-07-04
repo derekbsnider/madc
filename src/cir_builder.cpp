@@ -106,17 +106,17 @@ int         cir_node::src_column() const { TokenBase *o = madc_token_for_slot(or
 // -----------------------------------------------------------------------
 // Serializable-reference substrate (forest B1)
 // -----------------------------------------------------------------------
-// Segment registry: seg id -> live CirArena. Index 0 is reserved as the null
-// segment so a zeroed cir_ref is null by construction. Frozen forest segments
-// (B2/B3) join this table with their own resolution kind behind the SAME
-// chokepoint.
-static std::vector<CirArena *> cir_segments(1, (CirArena *)NULL);
+// Segment registry: seg id -> segment source (live CirArena, or a loaded
+// CirFrozenSegment — forest B2). Index 0 is reserved as the null segment so
+// a zeroed cir_ref is null by construction. All kinds resolve behind the
+// SAME chokepoint below.
+static std::vector<cir_segment_source *> cir_segments(1, (cir_segment_source *)NULL);
 
-uint32_t madc_cir_register_segment(CirArena *arena)
+uint32_t madc_cir_register_segment(cir_segment_source *src)
 {
 	for (uint32_t i = 1; i < cir_segments.size(); ++i)
-		if (!cir_segments[i]) { cir_segments[i] = arena; return i; }
-	cir_segments.push_back(arena);
+		if (!cir_segments[i]) { cir_segments[i] = src; return i; }
+	cir_segments.push_back(src);
 	return (uint32_t)(cir_segments.size() - 1);
 }
 
