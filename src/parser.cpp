@@ -34844,13 +34844,16 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	!skipped_template_function_is_static(fd->member_template_decl);
     std::vector<DataDef *> concrete_type_args;
     std::vector<std::vector<DataDef *> > concrete_type_arg_packs;
-    // Phase-5 slice 2: the source has a Tree-1 recipe — the instantiated body
-    // comes from tsubst at lowering, so arm the name-keyed body-parse skip for
-    // this instantiation (parseFunction captures the span for the bail
-    // fallback). Save/restore keeps nested instantiations (a mem-init parse
-    // constructing another member-template class) stack-disciplined.
+    // Phase-5 slice 2 (4b flip): the source has a Tree-1 recipe — the
+    // instantiated body comes from tsubst at lowering, so arm the name-keyed
+    // body-parse skip for this instantiation (parseFunction captures the span
+    // for the bail fallback). FIRST instantiations skip too — the delete gate
+    // (first-skip walls cleared + burndown 314/0 + eligibility census empty
+    // over the suite) made first-skip the production path. Save/restore keeps
+    // nested instantiations (a mem-init parse constructing another
+    // member-template class) stack-disciplined.
     std::string saved_skip_body = tsubst_skip_body_name;
-    if ( fd->dependent_pattern && fd->tsubst_body_instantiated_once )
+    if ( fd->dependent_pattern )
 	tsubst_skip_body_name = inst_name;
     bool ok = try_instantiate_namespace_fn_template(*this, ft, key, tc,
 						    &concrete_type_args,
@@ -35077,11 +35080,12 @@ void Program::instantiate_member_ctor_template_for_construction(
     synth.parameters = ctor_args;
     std::vector<DataDef *> concrete_type_args;
     std::vector<std::vector<DataDef *> > concrete_type_arg_packs;
-    // Phase-5 slice 2: arm the name-keyed body-parse skip (see the call-path
-    // twin in instantiate_member_fn_template_for_call). The ctor's mem-init
-    // list still parses eagerly — only the `{}` body span is captured.
+    // Phase-5 slice 2 (4b flip): arm the name-keyed body-parse skip (see the
+    // call-path twin in instantiate_member_fn_template_for_call). FIRST
+    // instantiations skip too (delete gate met — see the twin). The ctor's
+    // mem-init list still parses eagerly — only the `{}` body span is captured.
     std::string saved_skip_body = tsubst_skip_body_name;
-    if ( fd->dependent_pattern && fd->tsubst_body_instantiated_once )
+    if ( fd->dependent_pattern )
 	tsubst_skip_body_name = inst_name;
     bool ok = try_instantiate_namespace_fn_template(*this, ft, inst_name, &synth,
 						    &concrete_type_args,

@@ -31,12 +31,25 @@
 # a top-level pack argument out itself, pairing element e with formal fi+e
 # under that element's subst: +2 vector, +2 subscript/containerdtor/madc_ns
 # (_M_construct_node bodies tsubst instead of bail-degrading).
+# Then the 4b FLIP (first-skip = production): the two member-lane arming sites
+# drop the tsubst_body_instantiated_once condition — FIRST instantiations skip
+# the eager body parse too. Vector-lane hits DROP -2 (19->17, 41->39, 40->38,
+# 40->38) because the eager first parse was OVER-instantiating: it side-
+# instantiated allocator_traits::construct overload instances (int __o2,
+# string __o3) for arg shapes the program never lowers (for int, the two
+# instances had the IDENTICAL C-level signature). Post-flip instantiation is
+# by-need (the standard's lazy model); verified by pre/post --emit=c11
+# defined-symbol diff on testvector: only those two redundant instances
+# vanish (the _Guard ctor/dtor pair just renames to the materializer's
+# <owner>__<local> naming), every call resolves, zero c2mir warnings, all
+# outputs fixture-verified. A hit DROP from eliminating redundant instances
+# is progress here, not regression — fallbacks stay 0 everywhere.
 testset 11 0
 testmap 12 0
-testvector 19 0
-testsubscript 41 0
-testcontainerdtor 40 0
-testmadc_ns 40 0
+testvector 17 0
+testsubscript 39 0
+testcontainerdtor 38 0
+testmadc_ns 38 0
 testlocalclassraii 1 0
 # Then the scalar-ref-param slice: the blanket reference-param guard deleted
 # (untyped N_DEREF types from the concrete shell decl) + is_size1_pointer no
