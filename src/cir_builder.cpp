@@ -3018,8 +3018,12 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			}
 			std::string dsym = class_complete_dtor_symbol(ecls);
 			referenced_funcs.insert(dsym);
+			// TYPED forward proto (`void d(struct X *)`): a madc-emitted
+			// dtor's definition is typed, and a `void *` extern here is a
+			// conflicting declaration gcc rejects (c2mir tolerates it, so
+			// only the portable --emit=c11 output broke).
 			need_output_extern(dsym.c_str(), false,
-					   { { {N_VOID}, true } });
+					   { { {}, true, ecls } });
 			node_t a = list();
 			append(a, node2(N_CAST, void_ptr_type(), obj_ptr, td));
 			return CIR_NODE(node2(N_CALL, id(dsym.c_str(), td), a, td));
@@ -3041,8 +3045,9 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				return CIR_NODE(integer(0, tc));
 			std::string dsym = class_complete_dtor_symbol(ecls);
 			referenced_funcs.insert(dsym);
+			// TYPED forward proto — see the explicit-dtor arm above.
 			need_output_extern(dsym.c_str(), false,
-					   { { {N_VOID}, true } });
+					   { { {}, true, ecls } });
 			node_t a = list();
 			append(a, node2(N_CAST, void_ptr_type(),
 					translate_expr(tc->parameters[0]), tc));
