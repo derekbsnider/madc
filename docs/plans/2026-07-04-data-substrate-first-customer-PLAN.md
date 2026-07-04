@@ -461,3 +461,78 @@ fulltest 678/0/0/16 all ratchets GREEN; torture 1571 passed, failset
 byte-identical to the 51-name baseline; **--emit=c11 byte-identical
 694/694**; SMAUG soak compiles and boots.
 NEXT: **B3** (multi-segment forest + append-to-binary + context pin).
+
+**✅ B3 LANDED `75830eec` (2026-07-04, branch
+`feature/b3-multi-segment-forest-claude`) —
+forest Phase 3: multi-segment forest + append-to-binary + context-hash pin +
+CROSS-PROCESS CLOSURE.** The B2 fence is cleared: a FRESH madc process now
+thaws, compiles, and runs a frozen module tree with no parse, no parser
+state, and none of the freezing process's pools.
+- **Per-unit groves + connectors** (`cir_freeze_forest`): ONE partitioned
+  walk (the B2 single-blob freeze now delegates to it — one walk, two
+  formats) splits the module sub-DAG into per-source-file units (a node's
+  unit = its origin token's file; origin-less nodes inherit their
+  discovering parent's; the unit key is an interned spelling, so a C++20
+  module name slots into the same directory). A child crossing units is a
+  CONNECTOR: high bit of the child entry + an index into the owning unit's
+  connector pool of (target_unit, target_record) — a reference, never a
+  node KIND (SETTLED #6; c2mir stays blind). Resolving a connector into a
+  cold unit triggers that unit's decompress+register: **groves load on
+  demand** — `CirFrozenForest::open` reads ONLY the directory, pin, string
+  pool, type names, and libs; `units_loaded()` pins the laziness in tests.
+  The thaw driver is one iterative worklist ACROSS units (a connector hop
+  is a worklist step, not recursion — cross-unit chains can't blow the
+  stack; memoized shells terminate shares and cycles that cross units).
+- **Cross-process closure**: the container carries its OWN string pool (the
+  A1 `frozen_intern_table` three-block serialization of the freezing pool —
+  every record handle resolves against it by construction), a per-record
+  `{fname_id,line,col}` position side-car (c2mir positions no longer need
+  the freezing process's token arena), the typeid→name closure (project
+  segment; primitives are pinned process-invariant; foreign project ids
+  READ as NULL on the compile path — DataDef reconstruction from thawed
+  decl trees is the parser-resume slice, B4+), and the required-library
+  list (`Program::loaded_lib_paths` records #load/-l dlopens; the frozen
+  run re-dlopens them before link). Extension string ids re-intern into the
+  live pool at materialize — in-process that dedups to the identical id,
+  cross-process it yields a fresh valid id (the identity oracle now
+  compares those three fields by CONTENT).
+- **Context-hash pin** (`madc_cir_context_hash`): madc version + record/
+  position layout + the c2mir node-code enum tail + the typeid primitive
+  tail, stamped into the container header; readers REJECT a mismatch
+  loudly (replaces the static `compiler_hash` discipline for this format).
+- **Append-to-binary + /proc/self/exe loader**: `--freeze=<f>` /
+  `--freeze-append=<bin>` (A2 placement 2) / `--run-frozen[=<f>]` (bare =
+  the blob appended to the running executable, via readlink+mmap+EOF
+  footer) / `--freeze-run` (freeze to temp + re-exec self in a genuinely
+  fresh process — the one-invocation round-trip the integration test
+  drives). `CirJitSession::build_frozen` reuses the production link/run
+  half (shared `init_contexts`/`load_and_link`); `--emit=c11` takes
+  precedence over freeze modes (an explicit render request).
+- **B4 hooks reserved**: each directory unit carries `anchor_idx`
+  (`CIR_FOREST_ANCHOR_NONE` in B3) — the grove entry a parse-time
+  `#include` / C++20 `import` binds to instead of re-parsing.
+- **Fenced to B4** (explicitly, not silently): the shared trained zstd
+  dictionary (this build compresses zlib; the per-segment codec field
+  carries the flip), `madc -dM` macro parity (its consumer — forest-
+  supplied PP state — arrives with pack-time parse binding; B3's payload
+  is post-PP module trees, the live PP path untouched), and system-segment
+  typeid occupancy (B3 ships identity + names).
+**MEASURED: a real `<iostream>/<string>/<vector>` program freezes to 93
+header units / 47,178 records / 683 KB (zlib); live parse+run 1.659 s vs
+`--run-frozen` 0.082 s END-TO-END process wall (start + thaw + c2mir + JIT
++ run) = 20×; output == g++. The appended-blob copy of bin/madc runs it
+from its own EOF footer.**
+Also fixed en route: `mmap` failure compared against MIR's redefined
+`MAP_FAILED` (NULL) instead of the real `(void*)-1`; `--run-frozen`
+program args ending in `.json` were eaten by the project-manifest sniff.
+Gates: build 0 warnings; test_cir_freeze 11 cases / 117 asserts (5 new B3:
+two-file partition+connectors thaw-identical-and-runs, on-demand grove
+loading, FRESH-pool closure incl. re-intern + compile+run, pin reject,
+directory/libs/type-name round-trip); fulltest 679/0/0/16 (new
+`tests/testfreezerun.mad` == g++ under `--freeze-run`) all ratchets GREEN
+incl. the new `scripts/forest_selfexe_gate.sh` (appended forest runs from
+/proc/self/exe, wired into fulltest); torture 1571 passed, failset
+byte-identical to the 51-name baseline; --emit=c11 byte-identical 694/694
+(the +1 new test emits clean); SMAUG soak compiles and boots.
+NEXT: **B4** (pack pipeline: build-time pre-parse of the stdlib closure →
+freeze → append; anchor binding at parse time; qualification gate).

@@ -4,6 +4,26 @@
 
 ### Data-substrate Track B — the embedded header forest
 
+- **B3 — multi-segment forest + append-to-binary + context pin** (forest
+  Phase 3): the cross-process closure. `cir_freeze_forest` partitions a
+  module tree into per-source-file units (one walk — B2's single-blob
+  freeze now delegates to it); cross-unit child references are CONNECTORS
+  (high-bit child entries into a per-unit connector pool) whose resolution
+  loads the target grove on demand — `CirFrozenForest::open` reads only the
+  directory, context-hash pin, string pool, typeid→name closure, and
+  required-libs list. The container carries its OWN string pool (A1
+  `frozen_intern_table` blocks) + a per-record position side-car, so a
+  FRESH process thaws, compiles, and runs with no parse and none of the
+  freezing process's state. New CLI: `--freeze=<f>`, `--freeze-append=<bin>`
+  (blob appended to a binary, found from its EOF footer), `--run-frozen[=<f>]`
+  (bare = the blob appended to the running executable via /proc/self/exe),
+  `--freeze-run` (freeze + re-exec fresh — the round-trip
+  `tests/testfreezerun.mad` and `scripts/forest_selfexe_gate.sh` drive).
+  Context-hash mismatch rejects loudly. Measured: a real
+  `<iostream>/<string>/<vector>` program = 93 units / 47,178 records /
+  683 KB; live 1.659 s vs frozen 0.082 s end-to-end (20×), output == g++.
+  Each directory unit reserves an `anchor_idx` — the B4 grove entry a
+  parse-time `#include` / C++20 `import` will bind to.
 - **B2 — single-segment freeze/thaw** (`b62089ad`, forest Phase 2): `src/cir_freeze.{h,cpp}`
   flattens a cir_node sub-DAG to fixed-size POD records + a CSR child pool
   (share/cycle-safe first-touch walk, iterative), carries it through the A2
