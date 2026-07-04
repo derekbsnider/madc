@@ -13787,6 +13787,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 	// IS-A TokenVar) — dropping the declaration and leaving `i` undeclared.
 	// Emit the proper SPEC_DECL so c2mir sees a declaration in the init slot.
 	node_t init;
+	node_t class_init_items = NULL;
 	if (tf->initialize) {
 		TokenDecl *td = dynamic_cast<TokenDecl *>(tf->initialize);
 		if (td && !tf->init_extras.empty()) {
@@ -13821,6 +13822,26 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 				for (size_t i = 1; i < parts.size(); i++)
 					init = node2(N_COMMA, init, parts[i]);
 			}
+		} else if (td && (as_class_instance(td->var.type)
+				  || is_array_object(td->var.type))) {
+			// Class-shape single declarator (`for (map<K,V>::iterator it =
+			// m.begin(); ...)`, `for (Foo f(x); ...)`): the 1->N class-decl
+			// lowering (storage decl + injected construction) has no room in
+			// the single init slot — dropping the construction left the
+			// iterator garbage (the map-iteration _Rb_tree_increment
+			// SIGSEGV). Emit the decl + construction into a synthetic block
+			// wrapping the loop (built at the return below): exact for-init
+			// scoping, dtor at block exit, and sibling loops reusing the
+			// name cannot collide.
+			class_init_items = list();
+			if (DataDefCLASS *fdc = as_class_instance(td->var.type)) {
+				class_decl_stmts(td, fdc, class_init_items);
+			} else {
+				append(class_init_items, var_decl(&td->var, td));
+				append(class_init_items,
+				       array_ctor_call(td->var.name.c_str(), td));
+			}
+			init = ignore();
 		} else {
 			init = td ? var_decl(&td->var, td) : translate_expr(tf->initialize);
 			// Comma-separated expression init (`for (a=0, b=1; ...)`) keeps the
@@ -13841,7 +13862,14 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 		for (TokenBase *ex : tf->incr_extras)
 			incr = node2(N_COMMA, incr, translate_expr(ex));
 	node_t body = translate_loop_body(tf->statement);
-	return node5(N_FOR, list(), init, cond, incr, body, tf);
+	node_t loop = node5(N_FOR, list(), init, cond, incr, body, tf);
+	// Class-shape for-init: the decl + construction statements precede the
+	// loop inside a synthetic block (see the class_init_items arm above).
+	if (class_init_items) {
+		append(class_init_items, loop);
+		return node2(N_BLOCK, list(), class_init_items, tf);
+	}
+	return loop;
 }
 
 // throw lowering: `throw <expr>` -> __madc_throw_int/double/cstr(expr) by the
@@ -14786,6 +14814,208 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 // in that slot. translate_stmt returns NULL for an empty `;` (which a block
 // drops, matching c2m), so substitute c2mir's empty-statement node here —
 // EXPR(LIST, IGNORE) — rather than feeding NULL to c2mir_op_append.
+// Class-instance declaration with ctor args / an initializer (`Foo f(a,b)`,
+// `string s = "x"`, `iterator it = m.begin()`): emit the storage decl, then
+// the injected construction (the 1->N C++ decl lowering). Shared by
+// translate_block's statement loop and the for-init arm — a for-init class
+// decl has ONE init slot, so translate() wraps the loop in a synthetic block
+// and emits these statements ahead of the N_FOR (dropping the construction
+// left the iterator garbage: the map-iteration _Rb_tree_increment SIGSEGV).
+void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
+				  node_t items)
+{
+	append(items, var_decl(&sdcl->var, sdcl));
+	// A construction whose arguments contain a pack expansion cannot
+	// select a ctor overload in the shared Tree-1 pattern (pack arity
+	// is per-instantiation; g++ defers the whole call). Emit a
+	// deferred-construction marker; the tsubst copy re-lowers it with
+	// the expanded concrete arguments (the placement-new deferral
+	// shape, copy_cir_subtree).
+	if (m_tsubst_pattern_mode
+	    && tsubst_args_have_pack_expansion(sdcl->ctor_args)) {
+		cir_node *marker = make(N_IGNORE, sdcl);
+		marker->datadef = cdcl;
+		append(items, marker->as_node());
+		return;
+	}
+	// An `=`-style initializer (`string s = "x"`) is not in ctor_args;
+	// thread it as the single ctor argument so select_ctor_overload
+	// chooses const-char*/copy by its type. (An explicit `Foo f(a,b)`
+	// already populated ctor_args.)
+	std::vector<TokenBase *> ctor_args = sdcl->ctor_args;
+	if (ctor_args.empty()) {
+		TokenBase *initexpr = sdcl->initialize;
+		if (TokenAssign *as =
+		    dynamic_cast<TokenAssign *>(initexpr))
+			initexpr = as->right;
+		if (!initexpr && !sdcl->init_list.empty())
+			initexpr = sdcl->init_list[0];
+		if (initexpr) ctor_args.push_back(initexpr);
+	}
+	// `B z = makeB();` where makeB returns a NON-TRIVIAL class by
+	// value (the __retbuf ABI): construct directly into z by passing
+	// &z as the call's __retbuf (copy-elision / NRVO into z). z's
+	// storage decl already carries the cleanup dtor, so z is
+	// destructed once; the callee placement-copy-constructs z's
+	// object members — no default member ctors here, no bit-copy
+	// double-free.
+	// Copy elision: `T b = T(args)` — the initializer is a
+	// functional-construction temporary (TokenObjTemp) of the same
+	// class. Construct b directly with the temp's ctor args
+	// (guaranteed copy elision), instead of materializing a temp and
+	// copy-constructing. Also keeps a TokenObjTemp out of the
+	// call-NRVO path below, which dynamic_casts to TokenCallFunc.
+	if (ctor_args.size() == 1) {
+		if (TokenObjTemp *iot =
+		    dynamic_cast<TokenObjTemp *>(ctor_args[0]))
+			if (as_class_instance(iot->obj_class) == cdcl)
+				ctor_args = iot->ctor_args;
+	}
+	if (ctor_args.size() == 1
+	    && dynamic_cast<TokenCallFunc *>(ctor_args[0])
+	    && object_returning_call_class(ctor_args[0]) == cdcl) {
+		TokenCallFunc *itcf =
+			dynamic_cast<TokenCallFunc *>(ctor_args[0]);
+		FuncDef *ifd = NULL;
+		std::string isym = call_target_emit_name(itcf, &ifd);
+		referenced_funcs.insert(isym);
+		node_t cargs = list();
+		append(cargs, node1(N_ADDR,
+			id(sdcl->var.name.c_str(), sdcl), sdcl));
+		// A retbuf-returning METHOD call (`T v = obj.m();`,
+		// TokenCallMethod : TokenMember) needs its hidden __this
+		// receiver between the retbuf and the explicit args —
+		// build_call_args emits only explicit args. Without it the
+		// copy-elided call drops `this` (`m(&v)` instead of
+		// `m(&v, &__this->obj)`) -> c2mir "too few arguments". The
+		// free-function case (itcf not a TokenMember) is unchanged.
+		bool imeth_call = false;
+		if (TokenCallMethod *imeth =
+		    dynamic_cast<TokenCallMethod *>(itcf)) {
+			DataDefCLASS *rc = NULL;
+			node_t this_arg =
+				class_this_arg(imeth, rc, sdcl);
+			if (this_arg) {
+				append(cargs, this_arg);
+				imeth_call = true;
+			}
+		}
+		// A method callee's parameters[0] is the hidden __this
+		// (injected above); explicit args start at parameter 1.
+		build_call_args(itcf, cargs, imeth_call ? 1 : 0);
+		node_t icall = node2(N_CALL,
+			id(isym.c_str(), sdcl), cargs, sdcl);
+		CIR_NODE(icall)->synth_from_origin = true;
+		for (node_t p : m_pending_stmts)
+			append(items, p);
+		m_pending_stmts.clear();
+		append(items, node2(N_EXPR, list(), icall, sdcl));
+		return;
+	}
+	// `T c = a + b;` where a FREE namespace operator on the
+	// class operands returns T BY VALUE (std::operator+ on
+	// strings): construct straight into c — the Itanium sret
+	// slot is &c (guaranteed copy elision; g++ canon emits
+	// exactly one call, _ZStpl(&c,&a,&b)). The instantiation
+	// is pure (member arbitration inside) so nothing is
+	// emitted unless this shape fully binds; member-operator
+	// classes keep the class_ctor_call copy path below.
+	if (ctor_args.size() == 1) {
+		TokenOperator *iop =
+			dynamic_cast<TokenOperator *>(ctor_args[0]);
+		DataDefCLASS *ilcls = (iop && iop->left)
+			? operand_object_class(iop->left)
+			: NULL;
+		const char *iopsym = iop
+			? binop_overload_symbol(iop->id()) : "";
+		FuncDef *iinst = NULL;
+		if (ilcls && iopsym[0]) {
+			std::string iopname =
+				std::string("operator") + iopsym;
+			iinst = std_free_operator_instantiation(
+				iop, ilcls, iopname,
+				select_operator_overload(
+					ilcls, iopname, iop->right));
+		}
+		if (iinst && !iinst->returns_reference()
+		    && class_return_via_retbuf(&iinst->return_value_type()) == cdcl) {
+			node_t slot = node1(N_ADDR,
+				id(sdcl->var.name.c_str(), sdcl),
+				sdcl);
+			bool slot_used = false;
+			node_t oc = class_operator_external_call(
+				iop, ilcls, iinst, sdcl,
+				slot, cdcl, &slot_used);
+			if (oc && slot_used) {
+				for (node_t p : m_pending_stmts)
+					append(items, p);
+				m_pending_stmts.clear();
+				append(items, node2(N_EXPR, list(),
+						    oc, sdcl));
+				return;
+			}
+		}
+	}
+	node_t cc = class_ctor_call(&sdcl->var, cdcl,
+				    ctor_args, sdcl);
+	// A ctor arg may have materialized a temporary (e.g. a
+	// string-returning call -> a `struct string` temp): emit those
+	// pending decls BEFORE the ctor call that references them. The
+	// normal statement loop flushes m_pending_stmts itself; this
+	// var-decl branch builds cc outside that loop, so flush here.
+	for (node_t p : m_pending_stmts)
+		append(items, p);
+	m_pending_stmts.clear();
+	if (cc) append(items, cc);
+	else {
+		// No user ctor but embedded object members: construct each
+		// member in place. With a
+		// user ctor, the ctor body's prologue constructs them.
+		if (class_has_object_members(cdcl))
+			class_instance_member_ctors(sdcl->var.name.c_str(),
+						    cdcl, items, sdcl);
+		// No ctor, no object members — a TRIVIAL class/struct with an
+		// initializer (`A z = makeA(9)`, `Point m = mid(a,b)`): emit the
+		// initialization `var = <init>` so the value is actually copied
+		// in. Without this the initializer was dropped and the object
+		// read garbage. A trivial struct has no dtor, so c2mir's native
+		// struct copy is correct (no double-free). (A class WITH object
+		// members needs copy-construction via the __retbuf ABI — handled
+		// by the object-returning-call path, not here.)
+		else if (!ctor_args.empty() && ctor_args[0]) {
+			DataDef *idd = ctor_args[0]->datadef();
+			if (idd && (idd->is_struct() || idd->is_object())
+			    && !idd->is_pointer()) {
+				node_t lhs = id(sdcl->var.name.c_str(), sdcl);
+				node_t rhs = translate_expr(ctor_args[0]);
+				// A sub-call may have queued pending temps; flush first.
+				for (node_t p : m_pending_stmts)
+					append(items, p);
+				m_pending_stmts.clear();
+				node_t asg = node2(N_ASSIGN, lhs, rhs, sdcl);
+				append(items, node2(N_EXPR, list(), asg, sdcl));
+			}
+		}
+		// C++11 default member initializers on a DEFAULT-constructed
+		// no-ctor instance (`S s;` — incl. a scalar-only struct promoted
+		// to a class purely for its NSDMI). A whole-object initializer
+		// (the trivial-copy arm) supplies all members, so skip then.
+		if (ctor_args.empty()) {
+			std::vector<node_t> nsdmi_stmts;
+			if (emit_member_default_inits(cdcl,
+					sdcl->var.name.c_str(), false,
+					nsdmi_stmts, sdcl, NULL))
+				for (node_t ns : nsdmi_stmts)
+					append(items, ns);
+		}
+	}
+	// In a try body, also register this object's dtor on the runtime
+	// cleanup stack so it runs on the exception (longjmp) unwind path
+	// (the cleanup attribute alone does not — P1.1c). No-op otherwise.
+	emit_try_body_cleanup_push(sdcl->var.name.c_str(),
+				   cdcl, items, sdcl);
+}
+
 node_t CirBuilder::translate_stmt_required(TokenBase *tb)
 {
 	node_t s = translate_stmt(tb);
@@ -14938,196 +15168,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					pending_labels.clear();
 					append(items, node2(N_EXPR, ll, integer(0)));
 				}
-				append(items, var_decl(&sdcl->var, sdcl));
-				// A construction whose arguments contain a pack expansion cannot
-				// select a ctor overload in the shared Tree-1 pattern (pack arity
-				// is per-instantiation; g++ defers the whole call). Emit a
-				// deferred-construction marker; the tsubst copy re-lowers it with
-				// the expanded concrete arguments (the placement-new deferral
-				// shape, copy_cir_subtree).
-				if (m_tsubst_pattern_mode
-				    && tsubst_args_have_pack_expansion(sdcl->ctor_args)) {
-					cir_node *marker = make(N_IGNORE, sdcl);
-					marker->datadef = cdcl;
-					append(items, marker->as_node());
-					continue;
-				}
-				// An `=`-style initializer (`string s = "x"`) is not in ctor_args;
-				// thread it as the single ctor argument so select_ctor_overload
-				// chooses const-char*/copy by its type. (An explicit `Foo f(a,b)`
-				// already populated ctor_args.)
-				std::vector<TokenBase *> ctor_args = sdcl->ctor_args;
-				if (ctor_args.empty()) {
-					TokenBase *initexpr = sdcl->initialize;
-					if (TokenAssign *as =
-					    dynamic_cast<TokenAssign *>(initexpr))
-						initexpr = as->right;
-					if (!initexpr && !sdcl->init_list.empty())
-						initexpr = sdcl->init_list[0];
-					if (initexpr) ctor_args.push_back(initexpr);
-				}
-				// `B z = makeB();` where makeB returns a NON-TRIVIAL class by
-				// value (the __retbuf ABI): construct directly into z by passing
-				// &z as the call's __retbuf (copy-elision / NRVO into z). z's
-				// storage decl already carries the cleanup dtor, so z is
-				// destructed once; the callee placement-copy-constructs z's
-				// object members — no default member ctors here, no bit-copy
-				// double-free.
-				// Copy elision: `T b = T(args)` — the initializer is a
-				// functional-construction temporary (TokenObjTemp) of the same
-				// class. Construct b directly with the temp's ctor args
-				// (guaranteed copy elision), instead of materializing a temp and
-				// copy-constructing. Also keeps a TokenObjTemp out of the
-				// call-NRVO path below, which dynamic_casts to TokenCallFunc.
-				if (ctor_args.size() == 1) {
-					if (TokenObjTemp *iot =
-					    dynamic_cast<TokenObjTemp *>(ctor_args[0]))
-						if (as_class_instance(iot->obj_class) == cdcl)
-							ctor_args = iot->ctor_args;
-				}
-				if (ctor_args.size() == 1
-				    && dynamic_cast<TokenCallFunc *>(ctor_args[0])
-				    && object_returning_call_class(ctor_args[0]) == cdcl) {
-					TokenCallFunc *itcf =
-						dynamic_cast<TokenCallFunc *>(ctor_args[0]);
-					FuncDef *ifd = NULL;
-					std::string isym = call_target_emit_name(itcf, &ifd);
-					referenced_funcs.insert(isym);
-					node_t cargs = list();
-					append(cargs, node1(N_ADDR,
-						id(sdcl->var.name.c_str(), sdcl), sdcl));
-					// A retbuf-returning METHOD call (`T v = obj.m();`,
-					// TokenCallMethod : TokenMember) needs its hidden __this
-					// receiver between the retbuf and the explicit args —
-					// build_call_args emits only explicit args. Without it the
-					// copy-elided call drops `this` (`m(&v)` instead of
-					// `m(&v, &__this->obj)`) -> c2mir "too few arguments". The
-					// free-function case (itcf not a TokenMember) is unchanged.
-					bool imeth_call = false;
-					if (TokenCallMethod *imeth =
-					    dynamic_cast<TokenCallMethod *>(itcf)) {
-						DataDefCLASS *rc = NULL;
-						node_t this_arg =
-							class_this_arg(imeth, rc, sdcl);
-						if (this_arg) {
-							append(cargs, this_arg);
-							imeth_call = true;
-						}
-					}
-					// A method callee's parameters[0] is the hidden __this
-					// (injected above); explicit args start at parameter 1.
-					build_call_args(itcf, cargs, imeth_call ? 1 : 0);
-					node_t icall = node2(N_CALL,
-						id(isym.c_str(), sdcl), cargs, sdcl);
-					CIR_NODE(icall)->synth_from_origin = true;
-					for (node_t p : m_pending_stmts)
-						append(items, p);
-					m_pending_stmts.clear();
-					append(items, node2(N_EXPR, list(), icall, sdcl));
-					continue;
-				}
-				// `T c = a + b;` where a FREE namespace operator on the
-				// class operands returns T BY VALUE (std::operator+ on
-				// strings): construct straight into c — the Itanium sret
-				// slot is &c (guaranteed copy elision; g++ canon emits
-				// exactly one call, _ZStpl(&c,&a,&b)). The instantiation
-				// is pure (member arbitration inside) so nothing is
-				// emitted unless this shape fully binds; member-operator
-				// classes keep the class_ctor_call copy path below.
-				if (ctor_args.size() == 1) {
-					TokenOperator *iop =
-						dynamic_cast<TokenOperator *>(ctor_args[0]);
-					DataDefCLASS *ilcls = (iop && iop->left)
-						? operand_object_class(iop->left)
-						: NULL;
-					const char *iopsym = iop
-						? binop_overload_symbol(iop->id()) : "";
-					FuncDef *iinst = NULL;
-					if (ilcls && iopsym[0]) {
-						std::string iopname =
-							std::string("operator") + iopsym;
-						iinst = std_free_operator_instantiation(
-							iop, ilcls, iopname,
-							select_operator_overload(
-								ilcls, iopname, iop->right));
-					}
-					if (iinst && !iinst->returns_reference()
-					    && class_return_via_retbuf(&iinst->return_value_type()) == cdcl) {
-						node_t slot = node1(N_ADDR,
-							id(sdcl->var.name.c_str(), sdcl),
-							sdcl);
-						bool slot_used = false;
-						node_t oc = class_operator_external_call(
-							iop, ilcls, iinst, sdcl,
-							slot, cdcl, &slot_used);
-						if (oc && slot_used) {
-							for (node_t p : m_pending_stmts)
-								append(items, p);
-							m_pending_stmts.clear();
-							append(items, node2(N_EXPR, list(),
-									    oc, sdcl));
-							continue;
-						}
-					}
-				}
-				node_t cc = class_ctor_call(&sdcl->var, cdcl,
-							    ctor_args, sdcl);
-				// A ctor arg may have materialized a temporary (e.g. a
-				// string-returning call -> a `struct string` temp): emit those
-				// pending decls BEFORE the ctor call that references them. The
-				// normal statement loop flushes m_pending_stmts itself; this
-				// var-decl branch builds cc outside that loop, so flush here.
-				for (node_t p : m_pending_stmts)
-					append(items, p);
-				m_pending_stmts.clear();
-				if (cc) append(items, cc);
-				else {
-					// No user ctor but embedded object members: construct each
-					// member in place. With a
-					// user ctor, the ctor body's prologue constructs them.
-					if (class_has_object_members(cdcl))
-						class_instance_member_ctors(sdcl->var.name.c_str(),
-									    cdcl, items, sdcl);
-					// No ctor, no object members — a TRIVIAL class/struct with an
-					// initializer (`A z = makeA(9)`, `Point m = mid(a,b)`): emit the
-					// initialization `var = <init>` so the value is actually copied
-					// in. Without this the initializer was dropped and the object
-					// read garbage. A trivial struct has no dtor, so c2mir's native
-					// struct copy is correct (no double-free). (A class WITH object
-					// members needs copy-construction via the __retbuf ABI — handled
-					// by the object-returning-call path, not here.)
-					else if (!ctor_args.empty() && ctor_args[0]) {
-						DataDef *idd = ctor_args[0]->datadef();
-						if (idd && (idd->is_struct() || idd->is_object())
-						    && !idd->is_pointer()) {
-							node_t lhs = id(sdcl->var.name.c_str(), sdcl);
-							node_t rhs = translate_expr(ctor_args[0]);
-							// A sub-call may have queued pending temps; flush first.
-							for (node_t p : m_pending_stmts)
-								append(items, p);
-							m_pending_stmts.clear();
-							node_t asg = node2(N_ASSIGN, lhs, rhs, sdcl);
-							append(items, node2(N_EXPR, list(), asg, sdcl));
-						}
-					}
-					// C++11 default member initializers on a DEFAULT-constructed
-					// no-ctor instance (`S s;` — incl. a scalar-only struct promoted
-					// to a class purely for its NSDMI). A whole-object initializer
-					// (the trivial-copy arm) supplies all members, so skip then.
-					if (ctor_args.empty()) {
-						std::vector<node_t> nsdmi_stmts;
-						if (emit_member_default_inits(cdcl,
-								sdcl->var.name.c_str(), false,
-								nsdmi_stmts, sdcl, NULL))
-							for (node_t ns : nsdmi_stmts)
-								append(items, ns);
-					}
-				}
-				// In a try body, also register this object's dtor on the runtime
-				// cleanup stack so it runs on the exception (longjmp) unwind path
-				// (the cleanup attribute alone does not — P1.1c). No-op otherwise.
-				emit_try_body_cleanup_push(sdcl->var.name.c_str(),
-							   cdcl, items, sdcl);
+				class_decl_stmts(sdcl, cdcl, items);
 				continue;
 			}
 		}

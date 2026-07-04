@@ -988,6 +988,12 @@ public:
 	// translate_branch_stmt) but stashes the loop's init/cond/incr pending temps
 	// first so only the body's temps are wrapped.
 	node_t translate_loop_body(TokenBase *tb);
+	// Class-instance declaration statement (`Foo f(a,b)`, `string s = "x"`,
+	// `iterator it = m.begin()`): storage decl + injected construction (the
+	// 1->N C++ decl lowering), appended to `items`. Shared by
+	// translate_block's statement loop and the for-init wrap.
+	void class_decl_stmts(class TokenDecl *sdcl, DataDefCLASS *cdcl,
+			      node_t items);
 	node_t translate_block(TokenCpnd *tc);
 	node_t translate_return(TokenRETURN *tr);
 	node_t translate_if(TokenIF *ti);
