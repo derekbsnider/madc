@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Data-substrate Track A — the madc::dis spine (COMPLETE)
+
+- **A1+A2 — frozen intern_table + pool-snapshot container** (`62c1b91b`):
+  `frozen_intern_table` binds read-only over the three serialized
+  index-linked blocks (zero fixup); the `madc::dis` snapshot container
+  (`include/madcdis/snapshot.h`) serializes pools to a standalone file OR
+  appended to the madc binary (footer-at-EOF self-location, 16-aligned
+  bind-in-place payloads, zlib/zstd via the one `madc_pch` codec).
+- **A3 — value pool + true 128-bit constants** (`7d7c0e5d`, `956e7030`):
+  `madc::dis::value_pool` (deduping handles over uint64-limb records;
+  `Program::valpool`); integer literals accumulate at 128 bits with the
+  gcc-canon "integer constant is too large for its type" warn+truncate;
+  the constant-fold spine (`parse_constant_*`, leaves, casts, case labels)
+  computes in a 128-bit carrier (`madc_wide_int`, gcc's wide_int model) —
+  `case ((__int128)1 << 100):` now folds, emits as the composed
+  `((unsigned __int128)hi << 64) | lo` (portable C11), and dispatches
+  byte-identically to gcc/clang (`tests/testint128.mad`). The dead
+  asmjit-era `ioperate`/`foperate` fold web was deleted (`59653106`).
+  Fixed en route: `Source::showerror`'s destructive rewind broke resumable
+  diagnostics (`7d7c0e5d`).
+
 ## [v0.33.0] — 2026-07-04
 
 The parse-once release: the template re-parse deprecation campaign (Phase 5)

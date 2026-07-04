@@ -335,3 +335,31 @@ fixes the documented residual (case labels >64 bits truncate,
 the eval track — A3 completes at slice 3. B1 is NOT blocked on slice 3 for
 the handle SHAPE (slice 2 provides it); wide-fold correctness lands before B1
 serializes literal payloads.
+
+**✅ A3 / P0-slice-3 LANDED `956e7030` (2026-07-04, branch
+`feature/p0-slice3-fold-widening-claude`) — TRACK A (spine) COMPLETE.**
+Recon finding first: the plan-named `ioperate()`/`foperate()` operator web was
+DEAD code (zero callers; its consumer was the asmjit-era `optimize` pass) —
+deleted @59653106 rather than widened (no-parallel-implementations). The LIVE
+spine then widened to a 128-bit carrier (`madc_wide_int` = host `__int128`,
+datadef.h): all `parse_constant_*` rungs; leaves via new virtual
+`TokenBase::wival()` (full value ONLY for semantically-wide ddINT128/ddUINT128
+constants — a gcc-canon-truncated literal stays truncated; resolves through
+`TokenBase::_active_valpool`, same discipline as `_active_strpool`);
+`read_constant_integer` + `Variable::get<T>` gain 16-byte arms (64-bit reads
+sign-carried → bit-identical folds for every ≤64-bit program, no-regression by
+construction); `apply_integer_cast_value` sz==8 truncates / sz==16 identity;
+case labels fold wide and materialize via `Program::make_folded_integer_token`
+(>64-bit values park in valpool, type ddINT128/ddUINT128);
+`CirBuilder::integer_typed(madc_wide_int)` Tier-1-composes
+`((unsigned __int128)hi << 64) | lo` (signed cast when ddINT128) — c2mir folds
+it back to one constant; wide case-range bounds keep the GNU N_CASE form.
+Gates: fulltest 678/0/0/16 ratchet GREEN; testint128 wide/neg/unsigned-max
+case labels byte-identical to gcc AND clang; emit-C oracle MATCH (labels render
+as the composed expression, portable C); torture 1571 passed, failset
+byte-identical to the 51-name baseline, 0 timeouts; SMAUG soak compiles all 51
+TUs and boots. Known fenced divergences (documented in the typedef note):
+unsigned-64 compare/div edges are the PRE-EXISTING untyped-fold behavior
+(unchanged); wide static-const class members capture at int64
+(static_member_const_values stays int64); nontype template args stay int64
+domain. NEXT: **B1** (serializable cir_node references) — the forest track.

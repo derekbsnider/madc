@@ -1,6 +1,13 @@
 # P0 — Value pool + wide-integer correctness (implementation plan)
 
-**Status:** ACTIVE (2026-06-12). Branch `feature/p0-value-pool-claude`.
+**Status:** ✅ COMPLETE (2026-07-04). All slices landed: slice 1+1.5 @a651b9a
+(+ mir fork raise), slice 2 @7d7c0e5d (value_pool + 128-bit literal pipeline),
+slice 3 @956e7030 (128-bit fold spine + wide case labels; the dead
+ioperate/foperate web was DELETED @59653106, not widened — it had no callers).
+Landing detail lives in
+`docs/plans/2026-07-04-data-substrate-first-customer-PLAN.md` §Landing history.
+
+**Historical status:** ACTIVE (2026-06-12). Branch `feature/p0-value-pool-claude`.
 
 > **STATUS UPDATE (2026-06-12, later):** slice 1 committed gated (`a651b9a`);
 > **slice 1.5 (the c2mir scalar-int128 raise) IMPLEMENTED** on the mir fork
