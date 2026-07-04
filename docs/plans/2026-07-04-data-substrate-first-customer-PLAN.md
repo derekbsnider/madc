@@ -295,3 +295,21 @@ order of consumption of Track A. Follow that doc for detail.
 
 Every landed slice appends its landing block to THIS doc's history (the
 two-tree plan's convention).
+
+---
+
+## Landing history
+
+**✅ A1+A2 slice 1 LANDED `62c1b91b` (2026-07-04, branch
+`feature/data-substrate-spine-claude`).** `frozen_intern_table` (read-only view
+over the three serialized blocks + `valid()` load gate + `find()` parity) with
+serialization accessors on the live table; the **pool-snapshot container**
+(`include/madcdis/snapshot.h`, `src/madcdis_snapshot.cpp`): header /
+16-aligned segment frames / directory / footer-at-EOF, BOTH placements
+(standalone file + appended-to-binary with pad-to-16 so payloads bind in
+place), compression via the one `madc_pch` implementation, reader rejects
+corrupt/absent blobs cleanly. 7 unit cases / 9861 assertions
+(`tests/unit/test_madcdis_snapshot.cpp`); Makefile adds `madcdis_snapshot.o` +
+fixes the `MADCDISHDRS`-missing-from-`DEPENDS` staleness hazard. Gate: build
+clean 0 warnings; fulltest 677/0/0/16 exit 0, ratchet GREEN. NEXT: A3 (value
+slices) and/or the frozen `id_table` segment at B1 (from the real consumer).
