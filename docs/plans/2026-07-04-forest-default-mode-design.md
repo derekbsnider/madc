@@ -216,11 +216,47 @@ canonical order**, a positive spec instead of a documented edge:
 ## 7. Pack pipeline + qualification (execution-plan Phase 4, unchanged in
 substance)
 
-- `make` gains a pack step after `bin/madc` links: drive the just-built
+- The build gains a pack step after `bin/madc` links: drive the just-built
   compiler over the packaged header set under the pinned config →
   `cir_freeze_forest` v2 payloads → `--freeze-append` onto `bin/madc`.
   Build remains hermetic: pack failure = build failure; a madc without a
   forest still works (fallback row 2).
+
+### Build modes (design-owner directive, 2026-07-04)
+
+Three make modes, formalizing what is half-present today:
+
+| Mode | Flags | Strip | Forest |
+|---|---|---|---|
+| `make` (develop, the default) | `-O0` — unchanged; the documented "-O0 during development, optimize algorithms first" contract stands | no | optional (pack on demand; absence = fallback row 2) |
+| `make debug` | `-O0 -ggdb` | no | optional |
+| `make release` | `-O2` — the Makefile's own "last-lap switch, flipped once the front-end is doing the work properly"; B4 IS that last lap | **yes, BEFORE append** | packed + appended, always |
+
+- **Strip-before-append is mandatory ordering, not preference:** `strip`
+  rewrites the ELF image and discards trailing non-ELF bytes — stripping
+  after the append would destroy the blob. Release pipeline:
+  compile `-O2` → link → `strip` → pack (freeze the closure with the
+  just-built, just-stripped binary) → append → verify (EOF footer
+  readable, pin matches, smoke run). The append step depends on the
+  binary target, so any relink re-packs — a stale blob cannot survive a
+  rebuild.
+- **Strip vs the JIT resolver:** `bin/madc` links `-rdynamic` because
+  `cir_import_resolver` dlsyms host symbols out of the executable's
+  DYNAMIC symbol table. Plain `strip` removes `.symtab` but preserves
+  `.dynsym`, so default stripping is safe; aggressive variants that touch
+  dynamic sections are forbidden. The release gate must include a
+  dlsym-heavy smoke run on the stripped+appended binary —
+  `forest_selfexe_gate.sh` already is exactly that.
+- **Per-mode object trees** (`obj/<mode>/`): `-MMD` dependency files track
+  headers, not flags — today's `debug:` target rebuilding into the same
+  `obj/` silently mixes `-g` and non-`-g` objects. Modes must never share
+  objects.
+- **`NDEBUG` stays OFF in release initially** (behavior identity with the
+  tested develop build); revisit only after the full suite runs green on
+  the release binary.
+- libmadc.so strips normally in release (no appended blob on the .so);
+  the MIR fork library's own optimization level is checked at
+  implementation (pin discipline unchanged).
 - **Shared trained zstd dictionary** lands here (per-file frames are now
   numerous and small; requires HAVE_ZSTD + ZDICT; the per-segment codec
   field already carries the flip).
@@ -256,24 +292,30 @@ substance)
 
 ## 9. Slicing and gates
 
-- **B4a — format v2 + pack driver + oracles** (no consumption yet):
-  pack-time decl-boundary recording, token/index/PP-export/edges segments,
-  the canonical-order artifact in the directory, `-dM` + index-parity
-  oracles green over the packed closure. Gates: standard battery (fulltest
-  incl. forest_selfexe_gate, torture failset, emit-C corpus, SMAUG)
-  untouched — this slice only writes containers.
+- **B4a — format v2 + pack driver + oracles + build modes** (no
+  consumption yet): pack-time decl-boundary recording,
+  token/index/PP-export/edges segments, the canonical-order artifact in
+  the directory, `-dM` + index-parity oracles green over the packed
+  closure; the `make release`/`make debug` mode scaffolding (per-mode
+  object trees, strip-before-append ordering, release pack+append+verify).
+  Gates: standard battery (fulltest incl. forest_selfexe_gate, torture
+  failset, emit-C corpus, SMAUG) untouched on the develop build — this
+  slice only writes containers — plus the release-binary smoke
+  (stripped+appended self-exe run).
 - **B4b — bind + materialize-on-use behind a flag**: the forest-lookup
   chain, PP-export install, nested slice parse. Gates: real
   `<iostream>/<string>/<vector>` programs == live parse == g++ with the
   flag on; `--show-stats` shows decl-parse collapsing to the used set;
   full battery with the flag OFF byte-identical.
-- **B4c — DEFAULT flip**: forest-on by default (make pack step ships it),
+- **B4c — DEFAULT flip**: forest-on by default (the pack step ships it),
   §5 fallback matrix live, §6 branch-macro guard + canonical-order
   normalization live (the auto-include reorder pass gains the order key).
-  Gates: the ENTIRE suite runs under forest-default; torture failset
-  byte-identical; SMAUG (C89 headers benefit too) boots; perf numbers
-  published in the landing block (`--show-stats` before/after — the
-  ~1.9 s decl-parse + lex tax vs grove binding).
+  Gates: the ENTIRE suite runs under forest-default; the full suite ALSO
+  runs green on the `make release` binary (stripped, `-O2`, forest
+  appended); torture failset byte-identical; SMAUG (C89 headers benefit
+  too) boots; perf numbers published in the landing block from the
+  RELEASE build (`--show-stats` before/after — the ~1.9 s decl-parse +
+  lex tax vs grove binding).
 - **B4d — Tree-1 pattern freeze (instantiate-from-frozen)**: pattern cir
   bodies as B3 cir segments keyed by pattern identity; tsubst copies from
   thawed trees; kills the remaining first-use parse cost for template-
@@ -284,8 +326,10 @@ mirrors + KG synced at milestones.
 
 ## 10. Acceptance (what "B4 done" means)
 
-A stock `bin/madc` compiles and runs a real `<iostream>/<string>/<vector>`
-program **by default** with no live parse of any packed header, output ==
-g++, with `--show-stats` decl-parse+lex reduced from ~2.5–2.9 s flat to
-grove-bind + used-decl parses (target: tens of ms for typical TUs —
-measured, published), and every fallback row in §5 behaving as specified.
+A stock **`make release` `bin/madc`** — `-O2`, stripped, forest appended —
+compiles and runs a real `<iostream>/<string>/<vector>` program **by
+default** with no live parse of any packed header, output == g++, with
+`--show-stats` decl-parse+lex reduced from ~2.5–2.9 s flat to grove-bind +
+used-decl parses (target: tens of ms for typical TUs — measured, published
+from the release build), every fallback row in §5 behaving as specified,
+and the full suite green in both develop and release modes.
