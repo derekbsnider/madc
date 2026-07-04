@@ -9240,25 +9240,56 @@ void madc_stamp_primitive_type_ids()
 	}
 }
 
-uint32_t Program::type_id_for(DataDef *dd)
+// The ONE typeid policy implementation (declared in datadef.h): the dd->type_id
+// lazy-stamp memo + the primitive/system/project segment dispatch, over the
+// ACTIVE project table. Statically reachable so cir_node's serializable
+// datadef_id accessors resolve without a Program in hand; the Program methods
+// below bind their own table and delegate (last binder wins — the
+// _active_strpool discipline).
+madc::dis::id_table<DataDef> *madc_active_project_types = NULL;
+
+uint32_t madc_type_id_for(DataDef *dd)
 {
 	if ( !dd )
 		return MADC_TYPEID_INVALID;
 	if ( dd->type_id )
 		return dd->type_id;		// memo: already has an id (any segment)
-	dd->type_id = project_types.add(dd);	// project segment owns the storage
+	if ( !madc_active_project_types )
+	{
+		// Internal invariant: stamping a project type requires a bound
+		// table (production binds at _parser_init; unit tests bind a
+		// local id_table). Silently returning 0 would drop type info.
+		fprintf(stderr, "madc internal: madc_type_id_for('%s') with no "
+			"active project type table\n", dd->name.c_str());
+		abort();
+	}
+	dd->type_id = madc_active_project_types->add(dd);	// project segment owns the storage
 	return dd->type_id;
 }
 
-DataDef *Program::type_from_id(uint32_t id)
+DataDef *madc_type_from_id(uint32_t id)
 {
 	if ( id == MADC_TYPEID_INVALID )
 		return NULL;
 	if ( id < MADC_TYPEID_PRIMITIVE_END )
 		return madc_primitive_for_slot(id);
 	if ( id >= MADC_TYPEID_PROJECT_BASE )
-		return project_types.get(id);	// NULL for a foreign / unregistered id
+		return madc_active_project_types
+			? madc_active_project_types->get(id)	// NULL for a foreign / unregistered id
+			: NULL;
 	return NULL;	// system segment: reserved for the embedded forest
+}
+
+uint32_t Program::type_id_for(DataDef *dd)
+{
+	madc_active_project_types = &project_types;	// this Program is acting
+	return madc_type_id_for(dd);
+}
+
+DataDef *Program::type_from_id(uint32_t id)
+{
+	madc_active_project_types = &project_types;	// this Program is acting
+	return madc_type_from_id(id);
 }
 
 DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
@@ -12243,6 +12274,7 @@ void Program::_parser_init()
 {
     TokenBase::_active_strpool = &strpool;	// interning Step 4: this Program owns spelling()
     TokenBase::_active_valpool = &valpool;	// P0 slice 3: wide constants resolve via wival()
+    madc_active_project_types = &project_types;	// B1: cir_node datadef_id resolves via typeids
     ensure_registration_config();
     add_functions();
     add_globals();

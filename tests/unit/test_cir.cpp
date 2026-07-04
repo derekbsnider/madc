@@ -141,10 +141,23 @@ static int64_t cir_run(const char *source) {
     return cir_run_program(prog.get());
 }
 
+// B1: cir_node's serializable datadef_id / string-handle fields resolve via
+// the active substrate (madc_active_project_types / TokenBase::_active_strpool).
+// Production binds these at _parser_init; unit tests that poke cir_node fields
+// directly bind these file-local pools instead (call at the top of the test).
+static void cir_test_bind_substrate()
+{
+    static madc::dis::intern_table strpool;
+    static madc::dis::id_table<DataDef> types(MADC_TYPEID_PROJECT_BASE);
+    madc_stamp_primitive_type_ids();
+    TokenBase::_active_strpool = &strpool;
+    madc_active_project_types = &types;
+}
+
 static size_t cir_count_tree1_copies(node_t n) {
     if (!n)
 	return 0;
-    size_t count = CIR_NODE(n)->tree1_origin ? 1 : 0;
+    size_t count = CIR_NODE(n)->tree1_origin.valid() ? 1 : 0;
     for (node_t c = c2mir_node_first_op(n); c != NULL; c = c2mir_node_next_op(c))
 	count += cir_count_tree1_copies(c);
     return count;
@@ -2357,13 +2370,14 @@ TEST_CASE("CIR: tsubst_cir substitutes a template-parameter placeholder") {
     REQUIRE(c2m != nullptr);
     {
 	CirBuilder builder(c2m);
+	cir_test_bind_substrate();
 
 	DataDefTemplateParam T("T", 0);
 
 	// A tiny pattern: an interior node with one child id whose madc type is the
 	// placeholder T.
 	node_t leaf = builder.id("v");
-	CIR_NODE(leaf)->datadef = &T;
+	CIR_NODE(leaf)->set_datadef(&T);
 	node_t pattern = builder.node1(N_ADDR, leaf);
 
 	std::map<DataDef *, DataDef *> subst;
@@ -2374,16 +2388,16 @@ TEST_CASE("CIR: tsubst_cir substitutes a template-parameter placeholder") {
 
 	// The copy is a fresh node distinct from the source, back-linked to Tree-1.
 	CHECK(copy != CIR_NODE(pattern));
-	CHECK(copy->tree1_origin == CIR_NODE(pattern));
+	CHECK(copy->tree1_origin_node() == CIR_NODE(pattern));
 
 	// The copied child's placeholder datadef is substituted to the concrete int.
 	node_t copied_leaf = c2mir_node_first_op(copy->as_node());
 	REQUIRE(copied_leaf != nullptr);
-	CHECK(CIR_NODE(copied_leaf)->datadef == &ddINT);
+	CHECK(CIR_NODE(copied_leaf)->datadef() == &ddINT);
 
 	// The ORIGINAL pattern is untouched (Tree-1 immutability): its child still
 	// carries the placeholder.
-	CHECK(CIR_NODE(leaf)->datadef == &T);
+	CHECK(CIR_NODE(leaf)->datadef() == &T);
     }
     cir_finish(c2m);
     c2mir_finish(mir_ctx);
@@ -2409,10 +2423,11 @@ TEST_CASE("CIR: tsubst peels ptr/ref layers around a template parameter") {
 	DataDef *ptrInt = prog->getPointerType(&ddINT);
 	DataDef *refInt = prog->getReferenceType(&ddINT);
 
+	cir_test_bind_substrate();
 	node_t pleaf = builder.id("p");
-	CIR_NODE(pleaf)->datadef = ptrT;
+	CIR_NODE(pleaf)->set_datadef(ptrT);
 	node_t rleaf = builder.id("r");
-	CIR_NODE(rleaf)->datadef = refT;
+	CIR_NODE(rleaf)->set_datadef(refT);
 	node_t pattern = builder.node2(N_COMMA, pleaf, rleaf);
 
 	std::map<DataDef *, DataDef *> subst;
@@ -2426,12 +2441,12 @@ TEST_CASE("CIR: tsubst peels ptr/ref layers around a template parameter") {
 	REQUIRE(cp != nullptr);
 	node_t cr = c2mir_node_next_op(cp);
 	REQUIRE(cr != nullptr);
-	CHECK(CIR_NODE(cp)->datadef == ptrInt);
-	CHECK(CIR_NODE(cr)->datadef == refInt);
+	CHECK(CIR_NODE(cp)->datadef() == ptrInt);
+	CHECK(CIR_NODE(cr)->datadef() == refInt);
 
 	// Tree-1 immutability: the originals still carry T* / T&.
-	CHECK(CIR_NODE(pleaf)->datadef == ptrT);
-	CHECK(CIR_NODE(rleaf)->datadef == refT);
+	CHECK(CIR_NODE(pleaf)->datadef() == ptrT);
+	CHECK(CIR_NODE(rleaf)->datadef() == refT);
     }
     cir_finish(c2m);
     c2mir_finish(mir_ctx);
@@ -2455,9 +2470,10 @@ TEST_CASE("CIR: tsubst expands a deferred type-spec marker to the concrete specs
 
 	// A spec list holding a single deferred marker (the shape append_type_specs
 	// emits for a placeholder in pattern mode).
+	cir_test_bind_substrate();
 	node_t specs = builder.list();
 	node_t marker = builder.ignore();
-	CIR_NODE(marker)->datadef = &T;
+	CIR_NODE(marker)->set_datadef(&T);
 	builder.append(specs, marker);
 
 	std::map<DataDef *, DataDef *> subst;
@@ -2485,4 +2501,94 @@ TEST_CASE("CIR: tsubst expands a deferred type-spec marker to the concrete specs
     cir_finish(c2m);
     c2mir_finish(mir_ctx);
     MIR_finish(mir_ctx);
+}
+
+// ---------------------------------------------------------------------------
+// B1: serializable cir_node references (forest Phase 1)
+// ---------------------------------------------------------------------------
+// Every madc extension field on cir_node is an index/handle/(seg,idx) ref;
+// these tests pin the reference substrate: arena segment identity, the
+// resolve(ref) chokepoint, string-handle fields, and typeid round-trips.
+
+TEST_CASE("B1: CirArena stamps a resolvable (seg, idx) identity on every node") {
+    CirArena a;
+    // Cross a page boundary (PAGE_SIZE = 4096) so idx -> (page, slot) math is
+    // exercised, not just page 0.
+    std::vector<cir_node *> nodes;
+    for (int i = 0; i < 5000; ++i)
+	nodes.push_back(a.alloc());
+    for (size_t i = 0; i < nodes.size(); ++i) {
+	CHECK(nodes[i]->self.seg == a.seg());
+	CHECK(nodes[i]->self.idx == (uint32_t)i);
+	CHECK(madc_cir_node_for(nodes[i]->self) == nodes[i]);
+    }
+    // The null ref never resolves; a past-the-end idx never resolves.
+    cir_ref null_ref = { 0, 0 };
+    CHECK(madc_cir_node_for(null_ref) == (cir_node *)NULL);
+    cir_ref past = { a.seg(), 5000 };
+    CHECK(madc_cir_node_for(past) == (cir_node *)NULL);
+}
+
+TEST_CASE("B1: two arenas are distinct segments; unregister ends resolution") {
+    cir_ref r1, r2;
+    {
+	CirArena a1;
+	CirArena a2;
+	CHECK(a1.seg() != a2.seg());
+	CHECK(a1.seg() != 0);
+	CHECK(a2.seg() != 0);
+	cir_node *n1 = a1.alloc();
+	cir_node *n2 = a2.alloc();
+	r1 = n1->self;
+	r2 = n2->self;
+	CHECK(madc_cir_node_for(r1) == n1);
+	CHECK(madc_cir_node_for(r2) == n2);
+	CHECK(!(r1 == r2));
+    }
+    // Arenas destroyed -> segments unregistered -> refs resolve to NULL
+    // (never to freed memory).
+    CHECK(madc_cir_node_for(r1) == (cir_node *)NULL);
+    CHECK(madc_cir_node_for(r2) == (cir_node *)NULL);
+}
+
+TEST_CASE("B1: string-handle fields round-trip through the active pool") {
+    cir_test_bind_substrate();
+    CirArena a;
+    cir_node *n = a.alloc();
+    // Zeroed record == null handles.
+    CHECK(n->error_msg() == (const char *)NULL);
+    CHECK(n->typedef_name() == (const char *)NULL);
+    CHECK(n->tsubst_pack_value_name() == (const char *)NULL);
+    n->set_error_msg("tsubst: test failure message");
+    n->set_typedef_name("EXT_BV");
+    n->set_tsubst_pack_value_name("__args");
+    CHECK(strcmp(n->error_msg(), "tsubst: test failure message") == 0);
+    CHECK(strcmp(n->typedef_name(), "EXT_BV") == 0);
+    CHECK(strcmp(n->tsubst_pack_value_name(), "__args") == 0);
+    // Same spelling -> same handle (the pool dedups).
+    cir_node *m = a.alloc();
+    m->set_typedef_name("EXT_BV");
+    CHECK(m->typedef_name_id == n->typedef_name_id);
+    // Clearing via NULL / empty resets to the null handle.
+    m->set_typedef_name(NULL);
+    CHECK(m->typedef_name_id == 0);
+    m->set_error_msg("");
+    CHECK(m->error_msg_id == 0);
+}
+
+TEST_CASE("B1: datadef_id round-trips primitives and project types exactly") {
+    cir_test_bind_substrate();
+    CirArena a;
+    cir_node *n = a.alloc();
+    CHECK(n->datadef() == (DataDef *)NULL);        // zeroed == no type
+    n->set_datadef(&ddINT);                        // pinned primitive slot
+    CHECK(n->datadef_id == MADC_TYPEID_INT);
+    CHECK(n->datadef() == &ddINT);
+    DataDefTemplateParam T("T", 0);                // project-segment stamp
+    n->set_datadef(&T);
+    CHECK(n->datadef_id >= MADC_TYPEID_PROJECT_BASE);
+    CHECK(n->datadef() == &T);
+    CHECK(n->datadef_id == T.type_id);             // memo stamped on the DataDef
+    n->set_datadef(NULL);                          // reset
+    CHECK(n->datadef_id == (uint32_t)MADC_TYPEID_INVALID);
 }

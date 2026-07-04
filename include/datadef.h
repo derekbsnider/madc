@@ -145,7 +145,8 @@ public:
     // (include/madc_typeid.h; docs/plans/2026-06-12-type-table-value-abi-design.md
     // §2). 0 = not yet registered. Primitives carry fixed ABI slots
     // (stamped by madc_stamp_primitive_type_ids()); everything else is
-    // lazy-stamped per Program by Program::type_id_for().
+    // lazy-stamped into the active project table by madc_type_id_for()
+    // (Program::type_id_for binds its own table and delegates).
     uint32_t	 type_id;
     DataDef() { size = 0; _type = 0; type_id = 0; }
     DataDef(std::string n, size_t s, DataType d) { name = n; size = s; _type = (uint32_t)d; type_id = 0; }
@@ -269,17 +270,17 @@ public:
 	    return true;
 	return false;
     }
-	virtual bool is_object() const
-	{
+    virtual bool is_object() const
+    {
 	if ( basetype() == BaseType::btClass )
 	    return true;
-    	switch(rawtype())
-    	{
+	switch ( rawtype() )
+	{
 	    case DataType::dtARRAY:
 		return true;
 	    default:
 		return false;
-    	}
+	}
 	return false;
     }
     virtual bool has_ostream()
@@ -1284,6 +1285,19 @@ public:
 // source of truth; defined in src/parser.cpp next to same_representation).
 DataDef *madc_primitive_for_slot(uint32_t slot);
 void madc_stamp_primitive_type_ids();
+
+// The typeid policy chokepoints (defined in src/parser.cpp): the dd->type_id
+// lazy-stamp memo plus the primitive/system/project segment dispatch. These
+// free functions are the ONE implementation; Program::type_id_for /
+// type_from_id bind the active table and delegate here. Statically reachable
+// so serializable-reference accessors (cir_node::datadef()) resolve typeids
+// without a Program in hand — the same active-substrate discipline as
+// TokenBase::_active_strpool. `madc_active_project_types` is bound by
+// _parser_init (and by the Program methods on each call).
+namespace madc { namespace dis { template<class T> class id_table; } }
+extern madc::dis::id_table<DataDef> *madc_active_project_types;
+uint32_t madc_type_id_for(DataDef *dd);
+DataDef *madc_type_from_id(uint32_t id);
 
 // function pointer type — wraps a FuncDef to carry the target signature
 class FuncDef;  // forward declaration (defined in madc.h)

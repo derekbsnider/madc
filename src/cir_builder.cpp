@@ -104,6 +104,72 @@ int         cir_node::src_line()   const { TokenBase *o = madc_token_for_slot(or
 int         cir_node::src_column() const { TokenBase *o = madc_token_for_slot(origin_id); return o ? o->column : 0; }
 
 // -----------------------------------------------------------------------
+// Serializable-reference substrate (forest B1)
+// -----------------------------------------------------------------------
+// Segment registry: seg id -> live CirArena. Index 0 is reserved as the null
+// segment so a zeroed cir_ref is null by construction. Frozen forest segments
+// (B2/B3) join this table with their own resolution kind behind the SAME
+// chokepoint.
+static std::vector<CirArena *> cir_segments(1, (CirArena *)NULL);
+
+uint32_t madc_cir_register_segment(CirArena *arena)
+{
+	for (uint32_t i = 1; i < cir_segments.size(); ++i)
+		if (!cir_segments[i]) { cir_segments[i] = arena; return i; }
+	cir_segments.push_back(arena);
+	return (uint32_t)(cir_segments.size() - 1);
+}
+
+void madc_cir_unregister_segment(uint32_t seg)
+{
+	if (seg && seg < cir_segments.size())
+		cir_segments[seg] = NULL;
+}
+
+// THE resolve(ref) chokepoint (forest SETTLED #5): every cir_ref dereference
+// goes through here. NULL for the null ref or an unregistered segment.
+cir_node *madc_cir_node_for(cir_ref ref)
+{
+	if (!ref.seg || ref.seg >= cir_segments.size() || !cir_segments[ref.seg])
+		return NULL;
+	return cir_segments[ref.seg]->node_at(ref.idx);
+}
+
+// Intern into the active string pool (the shared serializable pool — forest
+// SETTLED #5: variable-length data lives in shared pools, referenced by
+// handle). 0 = none for NULL/empty. Loud on an unbound pool: silently
+// dropping a string would corrupt the tree.
+static uint32_t cir_intern_cstr(const char *s)
+{
+	if (!s || !*s)
+		return 0;
+	if (!TokenBase::_active_strpool) {
+		fprintf(stderr, "madc internal: cir string intern ('%s') with"
+			" no active string pool\n", s);
+		abort();
+	}
+	return TokenBase::_active_strpool->intern(s);
+}
+
+static const char *cir_pool_cstr(uint32_t id)
+{
+	return (id && TokenBase::_active_strpool)
+		? TokenBase::_active_strpool->c_str(id) : NULL;
+}
+
+// cir_node handle-field accessors. The pointer results are TRANSIENT (valid
+// until a pool-growing intern) — consume immediately, hold the id.
+DataDef    *cir_node::datadef() const          { return madc_type_from_id(datadef_id); }
+void        cir_node::set_datadef(DataDef *dd) { datadef_id = madc_type_id_for(dd); }
+const char *cir_node::typedef_name() const     { return cir_pool_cstr(typedef_name_id); }
+void        cir_node::set_typedef_name(const char *s) { typedef_name_id = cir_intern_cstr(s); }
+const char *cir_node::error_msg() const        { return cir_pool_cstr(error_msg_id); }
+void        cir_node::set_error_msg(const char *s)    { error_msg_id = cir_intern_cstr(s); }
+const char *cir_node::tsubst_pack_value_name() const  { return cir_pool_cstr(tsubst_pack_value_id); }
+void        cir_node::set_tsubst_pack_value_name(const char *s) { tsubst_pack_value_id = cir_intern_cstr(s); }
+cir_node   *cir_node::tree1_origin_node() const { return madc_cir_node_for(tree1_origin); }
+
+// -----------------------------------------------------------------------
 // CirBuilder core
 // -----------------------------------------------------------------------
 
@@ -119,8 +185,8 @@ cir_node *CirBuilder::make(c2mir_node_code_t code, TokenBase *origin)
 	c2mir_init_node_ops((node_t)cn);
 
 	cn->origin_id = madc_slot_id_for(origin);   // stable arena slot-id (0 if synthetic)
-	cn->datadef = NULL;
-	cn->typedef_name = NULL;
+	// datadef_id / typedef_name_id / error_msg_id / tree1_origin start null:
+	// alloc() zeroes the record and stamps cn->self.
 	cn->src_lang = cslC;  // default; caller can override
 
 	// Position is derived from origin (see cir_node::src_*); here we only feed
@@ -134,7 +200,7 @@ cir_node *CirBuilder::make(c2mir_node_code_t code, TokenBase *origin)
 node_t CirBuilder::error_node(const char *reason, TokenBase *origin)
 {
 	cir_node *cn = make(N_IGNORE, origin);
-	cn->error_msg = arena.intern(reason ? reason : "error");
+	cn->set_error_msg(reason ? reason : "error");
 	return cn->as_node();
 }
 
@@ -807,7 +873,7 @@ static DataDefSTRUCT *materialize_local_aggregate_datadef(
 	return clone;
 }
 
-// Collect every distinct DataDef referenced as a `node->datadef` anywhere in a
+// Collect every distinct DataDef referenced as a `node->datadef()` anywhere in a
 // cir subtree. Used to discover the Tree-1 pattern's LOCAL classes (their type
 // appears on the local-var decl node) so they can be mapped to their concrete
 // per-instantiation counterparts before the tsubst copy runs.
@@ -816,8 +882,8 @@ static void collect_cir_node_datadefs(node_t n, std::set<DataDef *> &out)
 	if (!n)
 		return;
 	cir_node *cn = CIR_NODE(n);
-	if (cn->datadef)
-		out.insert(cn->datadef);
+	if (DataDef *cdd = cn->datadef())
+		out.insert(cdd);
 	if (n->code > N_ID)
 		for (int i = 0; ; i++) {
 			node_t op = c2mir_node_op(n, i);
@@ -1461,9 +1527,12 @@ std::string CirBuilder::copied_pack_value_name(const char *name) const
 {
 	if (!name)
 		return std::string();
-	if (m_tsubst_copy_pack_index < 0 || !m_tsubst_copy_pack_value_name)
+	if (m_tsubst_copy_pack_index < 0 || !m_tsubst_copy_pack_value_id)
 		return std::string(name);
-	if (strcmp(name, m_tsubst_copy_pack_value_name) != 0)
+	const char *pack_nm = TokenBase::_active_strpool
+		? TokenBase::_active_strpool->c_str(m_tsubst_copy_pack_value_id)
+		: NULL;
+	if (!pack_nm || strcmp(name, pack_nm) != 0)
 		return std::string(name);
 	bool multi = true;
 	if (m_tsubst_active_type_arg_packs
@@ -1546,7 +1615,7 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 		node_t inner = (on && on->base.code == N_ADDR)
 			     ? c2mir_node_first_op(out) : NULL;
 		cir_node *in = inner ? CIR_NODE(inner) : NULL;
-		DataDef *inner_dd = in ? in->datadef : NULL;
+		DataDef *inner_dd = in ? in->datadef() : NULL;
 		if (in && in->origin_id)
 			if (TokenVar *tv = dynamic_cast<TokenVar *>(
 				    madc_token_for_slot(in->origin_id)))
@@ -1573,10 +1642,10 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 			node_t inner = c2mir_node_first_op(out);
 			if (inner)
 				out = inner;
-		} else if (on && on->base.code != N_ADDR && on->datadef
-			   && as_class_instance(on->datadef)) {
+		} else if (on && on->base.code != N_ADDR && on->datadef()
+			   && as_class_instance(on->datadef())) {
 			out = node1(N_ADDR, out, arg);
-		} else if (on && on->base.code == N_ID && !on->datadef
+		} else if (on && on->base.code == N_ID && !on->datadef()
 			   && on->origin_id) {
 			// A bare pattern N_ID carries no datadef; recover the object
 			// type from its origin token (the recovery the &a -> a arm
@@ -2142,18 +2211,17 @@ bool CirBuilder::system_header_pack_element_call_resolves(
 		return false;
 	int saved_index = m_tsubst_copy_pack_index;
 	size_t saved_elem = m_tsubst_copy_pack_elem;
-	const char *saved_name = m_tsubst_copy_pack_value_name;
+	uint32_t saved_name = m_tsubst_copy_pack_value_id;
 	m_tsubst_copy_pack_index = (int)tp->param_index;
 	m_tsubst_copy_pack_elem = elem_index;
-	m_tsubst_copy_pack_value_name =
-		value_name.empty() ? NULL : value_name.c_str();
+	m_tsubst_copy_pack_value_id = cir_intern_cstr(value_name.c_str());
 	bool changed = false;
 	std::string err;
 	Variable *winner = resolve_copied_dependent_call(
 		call, &elem_subst, &changed, NULL, &err);
 	m_tsubst_copy_pack_index = saved_index;
 	m_tsubst_copy_pack_elem = saved_elem;
-	m_tsubst_copy_pack_value_name = saved_name;
+	m_tsubst_copy_pack_value_id = saved_name;
 	if (!changed || !winner)
 		return false;
 	FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
@@ -2181,15 +2249,15 @@ void CirBuilder::rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
 	if (!changed)
 		return;
 	if (!winner) {
-		dst->error_msg = err.empty()
+		dst->set_error_msg(err.empty()
 			       ? "tsubst: unresolved dependent call"
-			       : arena.intern(err.c_str());
+			       : err.c_str());
 		return;
 	}
 	FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
 	std::string sym = func_emit_name(*winner, wfd);
 	if (sym.empty()) {
-		dst->error_msg = "tsubst: unresolved dependent call symbol";
+		dst->set_error_msg("tsubst: unresolved dependent call symbol");
 		return;
 	}
 	if (!is_c2mir_builtin_call_name(tcf->var.name))
@@ -2440,16 +2508,16 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					"tsubst: missing deferred-construction pack expr");
 			int saved_index = m_tsubst_copy_pack_index;
 			size_t saved_elem = m_tsubst_copy_pack_elem;
-			const char *saved_name =
-				m_tsubst_copy_pack_value_name;
+			uint32_t saved_name =
+				m_tsubst_copy_pack_value_id;
 			m_tsubst_copy_pack_index = pack_index;
 			m_tsubst_copy_pack_elem = pack_elem;
-			m_tsubst_copy_pack_value_name = pack_name;
+			m_tsubst_copy_pack_value_id = cir_intern_cstr(pack_name);
 			cir_node *copied =
 				copy_cir_subtree(CIR_NODE(raw), &smap);
 			m_tsubst_copy_pack_index = saved_index;
 			m_tsubst_copy_pack_elem = saved_elem;
-			m_tsubst_copy_pack_value_name = saved_name;
+			m_tsubst_copy_pack_value_id = saved_name;
 			return copied ? copied->as_node()
 				      : error_node(
 					      "tsubst: failed deferred-construction pack copy");
@@ -2508,17 +2576,17 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					       DataDef *dd) -> node_t {
 			int saved_index = m_tsubst_copy_pack_index;
 			size_t saved_elem = m_tsubst_copy_pack_elem;
-			const char *saved_name =
-				m_tsubst_copy_pack_value_name;
+			uint32_t saved_name =
+				m_tsubst_copy_pack_value_id;
 			m_tsubst_copy_pack_index = pack_index;
 			m_tsubst_copy_pack_elem = pack_elem;
-			m_tsubst_copy_pack_value_name = pack_name;
+			m_tsubst_copy_pack_value_id = cir_intern_cstr(pack_name);
 			std::string nm = copied_pack_value_name(pack_name);
 			m_tsubst_copy_pack_index = saved_index;
 			m_tsubst_copy_pack_elem = saved_elem;
-			m_tsubst_copy_pack_value_name = saved_name;
+			m_tsubst_copy_pack_value_id = saved_name;
 			node_t n = id(nm.c_str(), origin);
-			CIR_NODE(n)->datadef = dd;
+			CIR_NODE(n)->set_datadef(dd);
 			return n;
 		};
 		std::function<node_t(
@@ -2587,7 +2655,7 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 						arg, srt);
 					node_t value = node1(N_DEREF,
 						slot, arg);
-					CIR_NODE(value)->datadef = srt;
+					CIR_NODE(value)->set_datadef(srt);
 					return value;
 				}
 				// A zero-arg VALUE-INIT construction of a
@@ -2787,18 +2855,18 @@ cir_node *CirBuilder::tsubst_scalar_placement_store(
 				return NULL;
 			int saved_index = m_tsubst_copy_pack_index;
 			size_t saved_elem = m_tsubst_copy_pack_elem;
-			const char *saved_name = m_tsubst_copy_pack_value_name;
+			uint32_t saved_name = m_tsubst_copy_pack_value_id;
 			m_tsubst_copy_pack_index = (int)tp->param_index;
 			m_tsubst_copy_pack_elem = 0;
-			m_tsubst_copy_pack_value_name = value_name.c_str();
+			m_tsubst_copy_pack_value_id = cir_intern_cstr(value_name.c_str());
 			std::string nm = copied_pack_value_name(value_name.c_str());
 			m_tsubst_copy_pack_index = saved_index;
 			m_tsubst_copy_pack_elem = saved_elem;
-			m_tsubst_copy_pack_value_name = saved_name;
+			m_tsubst_copy_pack_value_id = saved_name;
 			node_t slot = id(nm.c_str(), tn);
-			CIR_NODE(slot)->datadef = elems[0];
+			CIR_NODE(slot)->set_datadef(elems[0]);
 			value = node1(N_DEREF, slot, tn);
-			CIR_NODE(value)->datadef = elems[0];
+			CIR_NODE(value)->set_datadef(elems[0]);
 		} else {
 			// `int(a, b)` — ill-formed scalar initialization.
 			return CIR_NODE(error_node(
@@ -2853,14 +2921,14 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 {
 	if (!src)
 		return NULL;
-	if (subst && src->base.code == N_IGNORE && src->datadef
+	if (subst && src->base.code == N_IGNORE && src->datadef()
 	    && src->origin_id) {
 		TokenNEW *tn =
 			dynamic_cast<TokenNEW *>(madc_token_for_slot(src->origin_id));
 		if (tn && tn->placement
-		    && (template_param_under_type_layers(src->datadef)
+		    && (template_param_under_type_layers(src->datadef())
 			|| tsubst_args_have_pack_expansion(tn->ctor_args))) {
-			DataDef *concrete = subst_datadef_active(src->datadef, *subst);
+			DataDef *concrete = subst_datadef_active(src->datadef(), *subst);
 			if (!concrete || template_param_under_type_layers(concrete))
 				return CIR_NODE(error_node(
 					"tsubst: unbound placement-new constructed type"));
@@ -2873,16 +2941,16 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				referenced_funcs = saved_refs;
 				int saved_index = m_tsubst_copy_pack_index;
 				size_t saved_elem = m_tsubst_copy_pack_elem;
-				const char *saved_name =
-					m_tsubst_copy_pack_value_name;
+				uint32_t saved_name =
+					m_tsubst_copy_pack_value_id;
 				m_tsubst_copy_pack_index = -1;
 				m_tsubst_copy_pack_elem = 0;
-				m_tsubst_copy_pack_value_name = NULL;
+				m_tsubst_copy_pack_value_id = 0;
 				cir_node *copied =
 					copy_cir_subtree(CIR_NODE(raw), subst);
 				m_tsubst_copy_pack_index = saved_index;
 				m_tsubst_copy_pack_elem = saved_elem;
-				m_tsubst_copy_pack_value_name = saved_name;
+				m_tsubst_copy_pack_value_id = saved_name;
 				return copied ? copied->as_node()
 					      : error_node("tsubst: failed deferred-construction addr copy");
 			};
@@ -2938,7 +3006,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				    madc_token_for_slot(src->origin_id))) {
 			if (tsubst_args_have_pack_expansion(tdcl->ctor_args)) {
 				DataDef *concrete =
-					subst_datadef_active(src->datadef, *subst);
+					subst_datadef_active(src->datadef(), *subst);
 				DataDefCLASS *concrete_class = concrete
 					? dynamic_cast<DataDefCLASS *>(concrete) : NULL;
 				if (!concrete_class
@@ -2970,13 +3038,13 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		if (TokenVar *tvar = dynamic_cast<TokenVar *>(
 				    madc_token_for_slot(src->origin_id))) {
 			DataDefCLASS *target =
-				dynamic_cast<DataDefCLASS *>(src->datadef);
+				dynamic_cast<DataDefCLASS *>(src->datadef());
 			// Identity-refcast bake (build_call_args): the marker's
 			// datadef is the arg's OWN dependent type — no concrete
 			// binding target to convert-check against; the deduced
 			// formal matches the substituted arg by construction.
-			bool identity_bake = !target && src->datadef
-				&& template_param_under_type_layers(src->datadef);
+			bool identity_bake = !target && src->datadef()
+				&& template_param_under_type_layers(src->datadef());
 			if ((target || identity_bake) && tvar->datadef()
 			    && tvar->datadef()->is_reference()
 			    && template_param_under_type_layers(tvar->datadef())) {
@@ -3013,7 +3081,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			dynamic_cast<TokenExplicitDtor *>(madc_token_for_slot(src->origin_id));
 		if (td && tsubst_explicit_dtor_marker_datadef(td)) {
 			DataDef *concrete_obj =
-				subst_datadef_active(src->datadef, *subst);
+				subst_datadef_active(src->datadef(), *subst);
 			DataDef *elem = concrete_obj;
 			if (td->is_arrow) {
 				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(concrete_obj);
@@ -3059,7 +3127,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			destroy_marker = fd && fd->inline_builtin_kind == "destroy";
 		}
 		if (destroy_marker) {
-			DataDef *concrete_arg = subst_datadef_active(src->datadef, *subst);
+			DataDef *concrete_arg = subst_datadef_active(src->datadef(), *subst);
 			DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(concrete_arg);
 			DataDef *elem = pdd ? pdd->base_type : NULL;
 			if (!elem || template_param_under_type_layers(elem))
@@ -3104,7 +3172,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				node_t call = node2(N_CALL,
 						    id(ri->second.c_str(), origin),
 						    args, origin);
-				CIR_NODE(call)->tree1_origin = src;
+				CIR_NODE(call)->tree1_origin = src->self;
 				return CIR_NODE(call);
 			}
 		}
@@ -3188,7 +3256,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 							    ? args_copy->as_node()
 							    : list(),
 							    tcf);
-					CIR_NODE(call)->tree1_origin = src;
+					CIR_NODE(call)->tree1_origin = src->self;
 					return CIR_NODE(call);
 				}
 			}
@@ -3274,19 +3342,19 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						bool erefp = wfd && wfd->is_ref_param(pi);
 						int saved_index = m_tsubst_copy_pack_index;
 						size_t saved_elem = m_tsubst_copy_pack_elem;
-						const char *saved_name =
-							m_tsubst_copy_pack_value_name;
+						uint32_t saved_name =
+							m_tsubst_copy_pack_value_id;
 						m_tsubst_copy_pack_index =
 							(int)ca->tsubst_pack_index;
 						m_tsubst_copy_pack_elem = e;
-						m_tsubst_copy_pack_value_name =
-							ca->tsubst_pack_value_name;
+						m_tsubst_copy_pack_value_id =
+							ca->tsubst_pack_value_id;
 						node_t rewritten = copied_call_arg_for_formal(
 							pe ? pe->pattern : NULL, a,
 							ept, erefp, &elem_subst);
 						m_tsubst_copy_pack_index = saved_index;
 						m_tsubst_copy_pack_elem = saved_elem;
-						m_tsubst_copy_pack_value_name = saved_name;
+						m_tsubst_copy_pack_value_id = saved_name;
 						if (!rewritten)
 							return CIR_NODE(error_node(
 								"tsubst: failed dependent call arg copy",
@@ -3329,11 +3397,11 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				append(args, rewritten);
 			}
 			node_t call = node2(N_CALL, id(sym.c_str(), tcf), args, tcf);
-			CIR_NODE(call)->tree1_origin = src;
+			CIR_NODE(call)->tree1_origin = src->self;
 			if (wfd && wfd->returns_reference()
 			    && !m_tsubst_copy_under_deref) {
 				node_t deref = node1(N_DEREF, call, tcf);
-				CIR_NODE(deref)->tree1_origin = src;
+				CIR_NODE(deref)->tree1_origin = src->self;
 				return CIR_NODE(deref);
 			}
 			return CIR_NODE(call);
@@ -3368,7 +3436,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		}
 	}
 
-	cir_node *dst = arena.alloc();           // zeroed (error_msg/tree1_origin NULL)
+	cir_node *dst = arena.alloc();           // zeroed handles/refs; self stamped
 	dst->base.code = src->base.code;
 	dst->base.uid  = c2mir_next_uid(c2m);    // uids must be unique per c2m ctx
 	dst->base.attr = NULL;                   // sema is recomputed on the copy
@@ -3390,10 +3458,10 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		     c = c2mir_node_next_op(c), ++child_index) {
 			cir_node *cc = CIR_NODE(c);
 			if (subst && src->base.code == N_SPEC_DECL
-			    && child_index == 2 && src->datadef
+			    && child_index == 2 && src->datadef()
 			    && attr_list_has_cleanup(c)) {
 				DataDef *concrete =
-					subst_datadef_active(src->datadef, *subst);
+					subst_datadef_active(src->datadef(), *subst);
 				DataDefCLASS *cdd = as_class_instance(concrete);
 				if (cdd) {
 					if (class_needs_dtor(cdd)) {
@@ -3454,17 +3522,17 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					elem_subst[pmi->second] = elems[e];
 					int saved_index = m_tsubst_copy_pack_index;
 					size_t saved_elem = m_tsubst_copy_pack_elem;
-					const char *saved_name =
-						m_tsubst_copy_pack_value_name;
+					uint32_t saved_name =
+						m_tsubst_copy_pack_value_id;
 					m_tsubst_copy_pack_index =
 						(int)cc->tsubst_pack_index;
 					m_tsubst_copy_pack_elem = e;
-					m_tsubst_copy_pack_value_name =
-						cc->tsubst_pack_value_name;
+					m_tsubst_copy_pack_value_id =
+						cc->tsubst_pack_value_id;
 					cir_node *fan = copy_cir_subtree(cc, &elem_subst);
 					m_tsubst_copy_pack_index = saved_index;
 					m_tsubst_copy_pack_elem = saved_elem;
-					m_tsubst_copy_pack_value_name = saved_name;
+					m_tsubst_copy_pack_value_id = saved_name;
 					if (fan)
 						append(dst->as_node(), fan->as_node());
 				}
@@ -3476,14 +3544,14 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			// append_type_specs — the SAME lowering the re-parse path uses, so the
 			// substituted tree is byte-identical. Unbound -> an error node so the
 			// caller falls back to re-parse. Only in a tsubst copy (`subst`).
-			if (subst && cc->base.code == N_IGNORE && cc->datadef
+			if (subst && cc->base.code == N_IGNORE && cc->datadef()
 			    && !dynamic_cast<TokenNEW *>(
 				    madc_token_for_slot(cc->origin_id))) {
 				DataDefSTRUCT *marker_sdd =
-					dynamic_cast<DataDefSTRUCT *>(cc->datadef);
+					dynamic_cast<DataDefSTRUCT *>(cc->datadef());
 				bool aggregate_marker =
 					marker_sdd && struct_has_dependent_member(marker_sdd);
-				if (!cc->datadef->is_template_param()
+				if (!cc->datadef()->is_template_param()
 				    && !aggregate_marker) {
 					cir_node *copied = copy_cir_subtree(cc, subst);
 					c2mir_op_append(c2m, dst->as_node(),
@@ -3491,11 +3559,11 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 					continue;
 				}
 				DataDef *concrete =
-					subst_datadef_active(cc->datadef, *subst);
+					subst_datadef_active(cc->datadef(), *subst);
 				DataDefSTRUCT *concrete_sdd =
 					dynamic_cast<DataDefSTRUCT *>(concrete);
 				if (!concrete
-				    || concrete == cc->datadef
+				    || concrete == cc->datadef()
 				    || concrete->is_template_param()
 				    || (concrete_sdd
 					&& struct_has_dependent_member(concrete_sdd))) {
@@ -3519,23 +3587,23 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		}
 	}
 
-	// madc extension fields (invisible to c2mir). The heavy type info is
-	// REFERENCED, not duplicated — datadef/typedef_name/error_msg are
-	// arena/Program-owned and share the source's lifetime (Tree-1 == ROM). Every
-	// build-time madc field is preserved so the copy is a faithful twin; ONLY
-	// c2mir's `attr` (cleared above) is dropped, because it is c2mir's per-compile
-	// post-check scratch, recomputed when the copy is checked. In particular
-	// error_msg MUST be carried over: it marks an untranslatable node, and
-	// cir_report_errors rejects any tree containing one before c2mir sees it —
-	// dropping it would silently defeat that gate.
+	// madc extension fields (invisible to c2mir). All ids/handles/refs — the
+	// heavy type info is REFERENCED via typeid, never duplicated (Tree-1 ==
+	// ROM). Every build-time madc field is preserved so the copy is a faithful
+	// twin; ONLY c2mir's `attr` (cleared above) is dropped, because it is
+	// c2mir's per-compile post-check scratch, recomputed when the copy is
+	// checked. In particular error_msg_id MUST be carried over: it marks an
+	// untranslatable node, and cir_report_errors rejects any tree containing
+	// one before c2mir sees it — dropping it would silently defeat that gate.
 	dst->origin_id         = src->origin_id;
 	// datadef: in a tsubst copy (`subst` active) rewrite a template-parameter
-	// placeholder to its concrete type; otherwise carry the source's type by
-	// reference (Tree-1 == ROM, shared lifetime). subst==NULL => byte-identical
+	// placeholder to its concrete type; otherwise carry the source's typeid
+	// unchanged (Tree-1 == ROM, shared lifetime). subst==NULL => byte-identical
 	// to the pre-Phase-3 behaviour.
-	dst->datadef           = (subst && src->datadef)
-				     ? subst_datadef_active(src->datadef, *subst)
-				     : src->datadef;
+	if (subst && src->datadef_id)
+		dst->set_datadef(subst_datadef_active(src->datadef(), *subst));
+	else
+		dst->datadef_id = src->datadef_id;
 	// Local-class TAG REBIND: class_tag_ref bakes the tag NAME string at
 	// pattern build, so when the binding remaps the tag's class (pattern local
 	// class -> the instantiation's concrete <owner>__<local> class) the copied
@@ -3543,25 +3611,27 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 	// PATTERN's tag while the local class's ctor/dtor take the concrete struct
 	// (c2mir "incompatible argument type for pointer type parameter" on every
 	// basic_string::_M_construct hit's _Guard).
-	if (subst && src->datadef && dst->datadef && dst->datadef != src->datadef
+	DataDef *src_dd = subst ? src->datadef() : NULL;
+	DataDef *dst_dd = subst ? dst->datadef() : NULL;
+	if (subst && src_dd && dst_dd && dst_dd != src_dd
 	    && (dst->base.code == N_STRUCT || dst->base.code == N_UNION)
-	    && !dst->datadef->name.empty()) {
+	    && !dst_dd->name.empty()) {
 		node_t tag = c2mir_node_first_op(dst->as_node());
 		cir_node *tn = tag ? CIR_NODE(tag) : NULL;
 		if (tn && tn->base.code == N_ID) {
-			const char *nm = dst->datadef->name.c_str();
+			const char *nm = dst_dd->name.c_str();
 			tn->base.u.s.s = c2mir_uniq_str(c2m, nm, strlen(nm) + 1);
 			tn->base.u.s.len = strlen(nm) + 1;
 		}
 	}
-	dst->typedef_name      = src->typedef_name;
-	dst->error_msg         = src->error_msg;
+	dst->typedef_name_id   = src->typedef_name_id;
+	dst->error_msg_id      = src->error_msg_id;
 	dst->src_lang          = src->src_lang;
 	dst->synth_from_origin = src->synth_from_origin;
-	dst->tree1_origin      = src;            // provenance back-ref
+	dst->tree1_origin      = src->self;      // provenance back-ref (seg, idx)
 	dst->tsubst_pack_expand = src->tsubst_pack_expand;
 	dst->tsubst_pack_index = src->tsubst_pack_index;
-	dst->tsubst_pack_value_name = src->tsubst_pack_value_name;
+	dst->tsubst_pack_value_id = src->tsubst_pack_value_id;
 	if (m_tsubst_copy_pack_index >= 0)
 		dst->tsubst_pack_expand = false;
 	rewrite_copied_dependent_call_id(src, dst, subst);
@@ -3803,7 +3873,7 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 			// tree). The pattern is NEVER compiled directly, so the marker never
 			// reaches c2mir un-substituted.
 			node_t m = ignore();
-			CIR_NODE(m)->datadef = dd;
+			CIR_NODE(m)->set_datadef(dd);
 			append(lst, m);
 			return;
 		}
@@ -4204,7 +4274,7 @@ node_t CirBuilder::class_tag_ref(DataDef *dd, TokenBase *origin)
 	// NAME string baked here is deaf to datadef substitution. Pattern mode
 	// only, so production trees are byte-identical.
 	if (m_tsubst_pattern_mode)
-		CIR_NODE(ref)->datadef = dd;
+		CIR_NODE(ref)->set_datadef(dd);
 	return ref;
 }
 
@@ -4534,13 +4604,12 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 			if (tp && !value_name.empty()
 			    && ref_returning_call_type(pe->pattern)) {
 				node_t slot = id(value_name.c_str(), arg);
-				CIR_NODE(slot)->datadef = pe->pattern->datadef();
+				CIR_NODE(slot)->set_datadef(pe->pattern->datadef());
 				node_t marker = node2(N_CAST, void_ptr_type(), slot, arg);
 				cir_node *cn = CIR_NODE(marker);
 				cn->tsubst_pack_expand = true;
 				cn->tsubst_pack_index = tp->param_index;
-				cn->tsubst_pack_value_name =
-					arena.intern(value_name.c_str());
+				cn->set_tsubst_pack_value_name(value_name.c_str());
 				return marker;
 			}
 		}
@@ -4707,7 +4776,7 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target)
 					arg->file ? arg->file : "?", arg->line,
 					m_cur_method ? m_cur_method->returns.name.c_str() : "?");
 			cir_node *marker = make(N_IGNORE, bind_src);
-			marker->datadef = target;
+			marker->set_datadef(target);
 			return marker->as_node();
 		}
 		return error_node("tsubst: dependent-arg object construction", arg);
@@ -4955,7 +5024,7 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 		    && arg->datadef() && arg->datadef()->is_reference()
 		    && template_param_under_type_layers(arg->datadef())) {
 			cir_node *marker = make(N_IGNORE, arg);
-			marker->datadef = arg->datadef();
+			marker->set_datadef(arg->datadef());
 			append(args, marker->as_node());
 			continue;
 		}
@@ -5148,7 +5217,7 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 		if (sdd) {
 			if (m_tsubst_pattern_mode && struct_has_dependent_member(sdd)) {
 				node_t marker = ignore();
-				CIR_NODE(marker)->datadef = sdd;
+				CIR_NODE(marker)->set_datadef(sdd);
 				append(lst, marker);
 				return lst;
 			}
@@ -5163,7 +5232,7 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 			// <owner>__<local> class. Pattern mode only — production trees
 			// are byte-identical.
 			if (m_tsubst_pattern_mode)
-				CIR_NODE(sref)->datadef = sdd;
+				CIR_NODE(sref)->set_datadef(sdd);
 			append(lst, sref);
 			return lst;
 		}
@@ -6211,7 +6280,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	}
 
 	node_t spec_decl = simple(N_SPEC_DECL);
-	CIR_NODE(spec_decl)->datadef = base_dd;
+	CIR_NODE(spec_decl)->set_datadef(base_dd);
 	append(spec_decl, share);
 	append(spec_decl, var_decl_node);
 	// A class instance with a user destructor gets RAII via the cleanup
@@ -7667,11 +7736,10 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 				    && ref_returning_call_type(pe->pattern)) {
 					n = id(value_name.c_str(), arg);
 					cir_node *cn = CIR_NODE(n);
-					cn->datadef = pe->pattern->datadef();
+					cn->set_datadef(pe->pattern->datadef());
 					cn->tsubst_pack_expand = true;
 					cn->tsubst_pack_index = tp->param_index;
-					cn->tsubst_pack_value_name =
-						arena.intern(value_name.c_str());
+					cn->set_tsubst_pack_value_name(value_name.c_str());
 				}
 			}
 			append(args, n ? n : translate_expr(arg));
@@ -11827,8 +11895,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		std::string value_name =
 			pack_value_name_in_pattern(tpe->pattern, tp->param_index);
 		if (!value_name.empty())
-			cn->tsubst_pack_value_name =
-				arena.intern(value_name.c_str());
+			cn->set_tsubst_pack_value_name(value_name.c_str());
 		return n;
 	}
 
@@ -11952,7 +12019,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		    && (template_param_under_type_layers(pattern_alloc)
 			|| tsubst_args_have_pack_expansion(tn->ctor_args))) {
 			cir_node *marker = make(N_IGNORE, tb);
-			marker->datadef = pattern_alloc;
+			marker->set_datadef(pattern_alloc);
 			return marker->as_node();
 		}
 		// -------- Placement new: `new (addr) T(args)` --------
@@ -12308,7 +12375,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (DataDef *marker_dd =
 				    tsubst_explicit_dtor_marker_datadef(ted)) {
 				cir_node *marker = make(N_IGNORE, tb);
-				marker->datadef = marker_dd;
+				marker->set_datadef(marker_dd);
 				return marker->as_node();
 			}
 		}
@@ -13190,7 +13257,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						tsubst_destroy_marker_datadef(parg, argdd);
 					if (marker_dd) {
 						cir_node *marker = make(N_IGNORE, tb);
-						marker->datadef = marker_dd;
+						marker->set_datadef(marker_dd);
 						return marker->as_node();
 					}
 				}
@@ -14871,7 +14938,7 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 	if (m_tsubst_pattern_mode
 	    && tsubst_args_have_pack_expansion(sdcl->ctor_args)) {
 		cir_node *marker = make(N_IGNORE, sdcl);
-		marker->datadef = cdcl;
+		marker->set_datadef(cdcl);
 		append(items, marker->as_node());
 		return;
 	}
@@ -16069,14 +16136,14 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		m_tsubst_active_pack_params;
 	int saved_copy_index = m_tsubst_copy_pack_index;
 	size_t saved_copy_elem = m_tsubst_copy_pack_elem;
-	const char *saved_copy_name = m_tsubst_copy_pack_value_name;
+	uint32_t saved_copy_name = m_tsubst_copy_pack_value_id;
 	bool saved_under_deref = m_tsubst_copy_under_deref;
 	m_tsubst_active_type_arg_packs =
 		has_pack ? &fd->tsubst_type_arg_packs : NULL;
 	m_tsubst_active_pack_params = pack_params;
 	m_tsubst_copy_pack_index = -1;
 	m_tsubst_copy_pack_elem = 0;
-	m_tsubst_copy_pack_value_name = NULL;
+	m_tsubst_copy_pack_value_id = 0;
 	m_tsubst_copy_under_deref = false;
 	// Local-class-in-template (g++ TAG_DEFN): a class defined in this template
 	// body (`_M_construct`'s `_Guard`, the reduced `Box::build`'s `Guard`) is
@@ -16402,7 +16469,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	m_tsubst_active_pack_params = saved_pack_params;
 	m_tsubst_copy_pack_index = saved_copy_index;
 	m_tsubst_copy_pack_elem = saved_copy_elem;
-	m_tsubst_copy_pack_value_name = saved_copy_name;
+	m_tsubst_copy_pack_value_id = saved_copy_name;
 	m_tsubst_copy_under_deref = saved_under_deref;
 	m_tsubst_local_method_remap = saved_local_method_remap;
 	// A type-spec marker that tsubst could not expand (unbound, or a concrete
@@ -18743,8 +18810,8 @@ static void cir_dump_node(FILE *f, node_t n, int indent, std::set<node_t> *seen)
 	}
 
 	cir_node *cn = CIR_NODE(n);
-	if (cn->typedef_name) fprintf(f, "  [typedef=%s]", cn->typedef_name);
-	if (cn->error_msg) fprintf(f, "  [ERROR: %s]", cn->error_msg);
+	if (const char *tdn = cn->typedef_name()) fprintf(f, "  [typedef=%s]", tdn);
+	if (const char *em = cn->error_msg()) fprintf(f, "  [ERROR: %s]", em);
 	if (cn->src_file()) fprintf(f, "  @%s:%d:%d", cn->src_file(), cn->src_line(), cn->src_column());
 	fputc('\n', f);
 
@@ -18771,10 +18838,10 @@ static int cir_walk_errors(FILE *f, node_t n, bool report)
 	if (!n) return 0;
 	int count = 0;
 	cir_node *cn = CIR_NODE(n);
-	if (cn->error_msg) {
+	if (cn->error_msg_id) {
 		count++;
 		if (report && f) {
-			fprintf(f, "cir error: %s", cn->error_msg);
+			fprintf(f, "cir error: %s", cn->error_msg());
 			if (cn->src_file())
 				fprintf(f, " @%s:%d:%d", cn->src_file(),
 					cn->src_line(), cn->src_column());
@@ -18801,7 +18868,7 @@ const char *cir_first_error_msg(node_t n)
 {
 	if (!n) return NULL;
 	cir_node *cn = CIR_NODE(n);
-	if (cn->error_msg) return cn->error_msg;
+	if (cn->error_msg_id) return cn->error_msg();
 	if (n->code > N_ID) {
 		for (int i = 0; ; i++) {
 			node_t op = c2mir_node_op(n, i);

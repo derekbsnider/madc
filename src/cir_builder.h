@@ -497,7 +497,7 @@ class CirBuilder {
 					std::map<DataDef *, DataDef *> &elem_subst);
 	int m_tsubst_copy_pack_index = -1;
 	size_t m_tsubst_copy_pack_elem = 0;
-	const char *m_tsubst_copy_pack_value_name = NULL;
+	uint32_t m_tsubst_copy_pack_value_id = 0;	// strpool handle (0 = none)
 	bool m_tsubst_copy_under_deref = false;
 	// Active during a tsubst body copy: maps a Tree-1 pattern LOCAL-class method's
 	// emit symbol -> the concrete instantiation's corresponding method emit symbol
