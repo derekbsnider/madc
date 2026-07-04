@@ -9,12 +9,16 @@
 - Parse-once tsubst is UNCONDITIONAL (the flip is done; burndown reached 0;
   the `MADC_XTEST_DEP_PARSE=0` escape hatch and the slice-2/3 soak levers
   are DELETED — Phase-5 slice 4a).
-- The residual instantiation body parse serves ONLY first-eager
-  instantiations and the pre-acceptance coverage-boundary KINDs; it is
-  deleted per-KIND as coverage lands (Phase-5 slice 4b). Do not build new
-  behavior that depends on it.
-- A feature that "works" only because the re-parse fallback catches it is
-  NOT done. If it appears in the `--show-stats [why:]` fallback tally, it is
+- The re-parse fallback machinery is DELETED (Phase-5 slice 4b complete):
+  FIRST instantiations skip their body parse like repeats, and a tsubst
+  bail on a skipped body is a LOUD pre-c2mir error — never a re-parse.
+  Do not reintroduce a re-parse recovery path.
+- The only body parses left at instantiation are the ones that are the
+  ONLY parse: pattern-INELIGIBLE sources (tsubst_eligible rejects) and
+  auto-return deduction. Shrinking those = widening pattern eligibility
+  per-KIND, not adding fallbacks.
+- A feature that "works" only because it stays pattern-ineligible is NOT
+  done. If it appears in the `--show-stats [why:]` fallback tally, it is
   still on the crutch — finish the KIND.
 - Every change keeps the suite-wide tsubst FALLBACK count at 0. A change
   that adds a `[why:]` fallback is a regression — the ratchet

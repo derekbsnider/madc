@@ -66,13 +66,18 @@ parallel "pure re-parse" MODE no longer exists.
 (`MADC_XTEST_TSUBST_FORCE_BAIL=covered` survives as a fault-injection hook:
 it forces the slice-3 covered-shape LOUD-error arm, which no real shape can
 reach by construction, so the hook is that arm's only unit-test exerciser.)
-What remains of the instantiation body parse is LOAD-BEARING, not a mode:
-first-eager instantiations (each source's first instantiation parses its
-body eagerly — the Tree-1 pattern build depends on that parse's enrichment)
-and the pre-acceptance coverage-boundary KINDs (dependent member types,
-scans, binding gaps) whose bodies come from the eager parse or the
-materialized span. Phase-5 slice 4b deletes that machinery per-KIND as
-coverage lands — see the plan's "Slice-4 delete costing" block.
+Slice 4b completed the deletion (2026-07-04): the first-eager requirement
+fell (the arming sites skip FIRST instantiations too — the delete gate was
+all first-skip walls cleared + burndown 0 FALLBACK + an eligibility census
+EMPTY across the suite), and the captured-span re-parse fallback
+(materialize_tsubst_skipped_body + the per-instantiation token capture) is
+deleted outright — a tsubst bail on a skipped body is a LOUD pre-c2mir
+error. What remains of the instantiation body parse is the ONLY parse for
+its shapes, not a fallback: pattern-INELIGIBLE sources (tsubst_eligible
+rejects — dependent member types, dependent returns, non-type scalar
+params) and auto-return deduction (reads the parsed statements). Widening
+those is per-KIND eligibility coverage work, tracked by the fallback
+profile exactly like the KINDs before it.
 
 ## How we track distance (the burndown)
 

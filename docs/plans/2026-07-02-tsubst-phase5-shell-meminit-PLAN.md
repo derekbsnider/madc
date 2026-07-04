@@ -930,3 +930,22 @@ per-KIND — parseFunction instantiation body-parse lane, def_tokens
 replay, materialize_tsubst_skipped_body, the
 tsubst_body_instantiated_once flag itself; -Wunused-function is the
 cut-completeness signal; full gates per landing.
+
+**✅ SLICE 4b MACHINERY DELETE LANDED @eef9264f — the re-parse fallback
+is GONE (-123 net lines).** materialize_tsubst_skipped_body deleted;
+its one caller (func_def's NULL-body bail) returns a LOUD error_node
+for a skipped body (slice-3 contract). tsubst_skipped_body_tokens
+(per-instantiation raw-token capture) → bool tsubst_body_skipped
+(parseFunction consumes and DISCARDS the span — no capture allocation).
+tsubst_body_instantiated_once deleted (write-only since the flip).
+Still live BY DESIGN: per-instantiation shell parse (hybrid B),
+one-time pattern build, auto-return deduction lane, and the eager lane
+for pattern-INELIGIBLE shapes (their body parse is the only parse —
+future work there is per-KIND eligibility widening, e.g. Kind-3
+dependent member types, NOT fallback machinery). test_cir fallback-lane
+test comment refreshed (its shape never armed the skip; assertions
+unchanged 95/95). Rules updated: .claude/rules/parse-once.md +
+docs/rules/parse-once.md now state the fallback is deleted and a bail
+is a loud error. Gates: fulltest 676/0/0/16 exit 0 all GREEN, ratchet
+GREEN, burndown 300/0 (100%) flat, zero reason-classes. PHASE-5 SLICE
+4b IS COMPLETE — task #10 closed.
