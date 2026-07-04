@@ -313,3 +313,25 @@ corrupt/absent blobs cleanly. 7 unit cases / 9861 assertions
 fixes the `MADCDISHDRS`-missing-from-`DEPENDS` staleness hazard. Gate: build
 clean 0 warnings; fulltest 677/0/0/16 exit 0, ratchet GREEN. NEXT: A3 (value
 slices) and/or the frozen `id_table` segment at B1 (from the real consumer).
+
+**✅ A3 / P0-slice-2 LANDED `7d7c0e5d` (2026-07-04).** `madc::dis::value_pool`
+(deduping uint32 handles over (nlimbs, uint64-limb) records; intern_table
+three-block discipline → serializes with zero fixup; `Program::valpool`);
+lexer dec/hex/oct/binary readers accumulate at 128 bits; gcc canon PROBED and
+matched (`tmp/wide_lit*.c`): >64-bit literal = warn "integer constant is too
+large for its type" + truncate to low 64 bits, TYPE chosen from the truncated
+value — full value retained on `TokenInt::wide_handle`. Also fixed
+`Source::showerror` destructive rewind (save/restore cursor — first RESUMABLE
+diagnostic exposed it; all prior callers were fatal). Gates: fulltest
+678/0/0/16 (new `testwideliteral`); emit-C oracle matches gcc natively;
+**torture failset byte-identical to the 51-name baseline** (1571 passed, 0
+timeouts). **NEXT — A3 / P0-slice-3 (one coherent unit, own session):** widen
+the int64-capped fold spine (`ioperate()`/`ival()` overrides across the
+tokens.h operator classes, `parse_constant_*` rungs, `TokenVar` const reads,
+`evaluate_type_query`) with host `__int128`; `CirBuilder::integer_typed`
+composes >64-bit constants as `((unsigned __int128)hi << 64) | lo` (Tier-1);
+fixes the documented residual (case labels >64 bits truncate,
+`tests/testint128.mad`). The 32-byte `madc_value` struct already landed via
+the eval track — A3 completes at slice 3. B1 is NOT blocked on slice 3 for
+the handle SHAPE (slice 2 provides it); wide-fold correctness lands before B1
+serializes literal payloads.
