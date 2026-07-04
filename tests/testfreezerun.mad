@@ -1,0 +1,32 @@
+// B3 forest round-trip: this test runs under --freeze-run (see .flags) —
+// madc parses + translates ONCE, freezes the module tree into a forest
+// snapshot container (per-header units, connectors, string/position/type
+// closure, context-hash pin), then re-execs itself in a FRESH process that
+// thaws, compiles, and runs the tree with NO parse. The output below must
+// match what g++ produces for the same program.
+#include <iostream>
+#include <string>
+#include <vector>
+
+int main()
+{
+    std::vector<int> v;
+    for (int i = 1; i <= 5; ++i)
+        v.push_back(i * i);
+    int sum = 0;
+    for (size_t i = 0; i < v.size(); ++i)
+        sum += v[i];
+    std::string s = "squares";
+    s += ": sum=";
+    std::cout << s << sum << " count=" << v.size() << std::endl;
+
+    std::string joined;
+    for (size_t i = 0; i < v.size(); ++i)
+    {
+        if (i)
+            joined += ",";
+        joined += std::to_string(v[i]);
+    }
+    std::cout << "list=" << joined << std::endl;
+    return 0;
+}

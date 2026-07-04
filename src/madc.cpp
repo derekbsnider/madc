@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <signal.h>
 #include <execinfo.h>
 #include <dlfcn.h>
@@ -36,6 +37,10 @@ extern int madc_cir_execute(Program *prog, const char *source_name,
                              bool dump_checked = false);
 extern int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
                          CirEmitLang lang);
+extern int madc_cir_freeze(Program *prog, const char *source_name,
+                           const char *out_path, bool append);
+extern int madc_cir_execute_frozen(const char *container_path,
+                                   int user_argc, char **user_argv);
 
 using namespace std;
 
@@ -418,6 +423,17 @@ static void print_usage(const char *prog)
 "  --dump-source           reconstruct full-fidelity source\n"
 "  --dump-cir | --dump-nodes | --dump-cir-checked   dump the cir_node tree\n"
 "\n"
+"Frozen forest (compile once, run without parsing):\n"
+"  --freeze=<file>         parse + translate, then freeze the module tree\n"
+"                          into a forest snapshot container (no run)\n"
+"  --freeze-append=<bin>   same, but append the container to an existing\n"
+"                          binary (found later from its EOF footer)\n"
+"  --run-frozen[=<file>]   thaw + compile + run a frozen container; with no\n"
+"                          value, load the blob appended to this executable.\n"
+"                          Remaining arguments become the program's argv\n"
+"  --freeze-run            freeze to a temp container, then re-exec this\n"
+"                          madc in a FRESH process to run it (round-trip)\n"
+"\n"
 "Misc:\n"
 "  --show-stats            print input/token/timing stats (read, lex, parse,\n"
 "                          c2mir, execute) to stderr after the run\n"
@@ -462,6 +478,11 @@ int main(int argc, char **argv)
     std::vector<std::string> link_libs;   // -l<name>: dlopen lib<name>.so (RTLD_GLOBAL)
     bool show_help = false;               // --help / -h / -?
     bool show_stats = false;               // --show-stats: print input/token traffic counters
+    const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
+    bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
+    bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
+    const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
+    bool freeze_run = false;              // --freeze-run: freeze, then re-exec fresh to run
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -558,6 +579,23 @@ int main(int argc, char **argv)
             // `# line` markers) so it diffs cleanly against `gcc -E | grep -v '^#'`.
             dump_source = true;
             filearg = i + 1;
+        } else if (strncmp(argv[i], "--freeze=", 9) == 0) {
+            freeze_path = argv[i] + 9;
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "--freeze-append=", 16) == 0) {
+            freeze_path = argv[i] + 16;
+            freeze_append = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--freeze-run") == 0) {
+            freeze_run = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--run-frozen") == 0) {
+            run_frozen = true;
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "--run-frozen=", 13) == 0) {
+            run_frozen = true;
+            run_frozen_path = argv[i] + 13;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {
             project_manifest = argv[++i];
             filearg = i + 1;
@@ -608,7 +646,9 @@ int main(int argc, char **argv)
     // A .json input file with no explicit --project defaults to project mode:
     // `madc compile_commands.json [args...]` == `madc --project compile_commands.json
     // [args...]`. gcc/clang select by extension; we mirror that for the build driver.
-    if ( !project_manifest && filearg < argc )
+    // Not under --run-frozen: there the positionals are the PROGRAM's argv,
+    // and a program argument ending in .json must pass through untouched.
+    if ( !project_manifest && !run_frozen && filearg < argc )
     {
         const char *f = argv[filearg];
         size_t flen = strlen(f);
@@ -631,6 +671,22 @@ int main(int argc, char **argv)
                       << dlerror() << std::endl;
             return 1;
         }
+        prog->loaded_lib_paths.push_back(lib);   // the frozen-forest link closure
+    }
+
+    // --run-frozen: thaw + compile + run a frozen forest container — no
+    // source file, no parse. Remaining positionals become the program's
+    // argv (argv[0] is the container / executable path).
+    if ( run_frozen )
+    {
+        std::string ra0 = run_frozen_path ? run_frozen_path : "/proc/self/exe";
+        std::vector<char *> rargv;
+        rargv.push_back((char *)ra0.c_str());
+        for ( int i = filearg; i < argc; ++i )
+            rargv.push_back(argv[i]);
+        int rc = madc_cir_execute_frozen(run_frozen_path,
+                                         (int)rargv.size(), rargv.data());
+        return (rc < 0) ? 1 : rc;
     }
 
     if ( generic_output_path && !emit_pch )
@@ -854,11 +910,69 @@ int main(int argc, char **argv)
 	g_active_program = prog.get();
 
 	// --emit=c11|mc11: render the cir_node tree as C source; do not run.
+	// Takes precedence over the freeze modes — an explicit render request
+	// (e.g. the emit-C corpus harness over a .flags test) means "show me
+	// the lowering", never "run it".
 	if (do_emit)
 	{
 	    int erc = madc_cir_emit(prog.get(), argv[filearg], stdout, emit_lang);
 	    print_stats();
 	    return erc;
+	}
+
+	// --freeze / --freeze-append: freeze the translated module tree into
+	// a forest snapshot container; do not run.
+	if ( freeze_path )
+	{
+	    int frc = madc_cir_freeze(prog.get(), argv[filearg], freeze_path,
+				      freeze_append);
+	    print_stats();
+	    return frc == 0 ? 0 : 1;
+	}
+
+	// --freeze-run: prove the frozen round-trip in one invocation —
+	// freeze to a temp container, then re-exec this madc binary in a
+	// FRESH process with --run-frozen (a genuinely cross-process thaw:
+	// no parser state, token arena, or live pool carries over).
+	if ( freeze_run )
+	{
+	    char tmpl[] = "/tmp/madc_frozen_XXXXXX";
+	    int tfd = mkstemp(tmpl);
+	    if ( tfd < 0 )
+	    {
+		perror("madc: --freeze-run: mkstemp");
+		return 1;
+	    }
+	    close(tfd);
+	    if ( madc_cir_freeze(prog.get(), argv[filearg], tmpl, false) != 0 )
+	    {
+		unlink(tmpl);
+		return 1;
+	    }
+	    std::string opt = std::string("--run-frozen=") + tmpl;
+	    std::vector<char *> cargv;
+	    cargv.push_back(argv[0]);
+	    cargv.push_back((char *)opt.c_str());
+	    for ( int i = filearg + 1; i < argc; ++i )   // program args after the source
+		cargv.push_back(argv[i]);
+	    cargv.push_back(NULL);
+	    pid_t pid = fork();
+	    if ( pid == 0 )
+	    {
+		execv("/proc/self/exe", cargv.data());
+		perror("madc: --freeze-run: execv");
+		_exit(127);
+	    }
+	    int status = 0;
+	    if ( pid > 0 )
+		waitpid(pid, &status, 0);
+	    unlink(tmpl);
+	    if ( pid < 0 )
+	    {
+		perror("madc: --freeze-run: fork");
+		return 1;
+	    }
+	    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 	}
 
 	struct timeval before, after;

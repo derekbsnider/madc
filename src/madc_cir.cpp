@@ -35,6 +35,7 @@
 #include "madc_project.h"
 #include "cir_builder.h"
 #include "cir_emit_c.h"
+#include "cir_freeze.h"
 
 extern "C" {
 #include "c2mir/c2mir_api.h"
@@ -199,6 +200,46 @@ extern "C" int madc_jit_symbolize(void *addr, char *out, unsigned long n)
 // Full CIR pipeline: parse → translate → compile → JIT execute
 // -----------------------------------------------------------------------
 
+// Translate the parsed Program to its module tree with throw containment.
+// translate_module materializes deferred/lazy template bodies on demand
+// (parse_deferred_lazy_body). Those re-parses use the parser's Throw
+// mechanism, which prints the diagnostic to stderr AND throws. An escaping
+// throw here would terminate the process (uncaught -> std::terminate). Catch
+// it: the error was already reported, so fail cleanly instead. On failure
+// the builder is destroyed, out_builder left NULL, and NULL returned; on
+// success the caller owns the returned builder (it backs the tree's arena).
+static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
+				    const char *source_name,
+				    CirBuilder *&out_builder)
+{
+    out_builder = NULL;
+    CirBuilder *builder = new CirBuilder(c2m);
+    node_t tree = NULL;
+    auto _cir_t0 = std::chrono::steady_clock::now();	// --show-stats: CIR build
+    try {
+	tree = builder->translate_module(prog);
+    } catch (const std::exception &e) {
+	fprintf(stderr, "%s: tree build failed (%s)\n", source_name, e.what());
+	delete builder;
+	return NULL;
+    } catch (...) {
+	fprintf(stderr, "%s: tree build failed (compile error in instantiated template body)\n",
+		source_name);
+	delete builder;
+	return NULL;
+    }
+    if (prog)
+	prog->_cir_build_seconds += std::chrono::duration<double>(
+	    std::chrono::steady_clock::now() - _cir_t0).count();
+    if (!tree) {
+	fprintf(stderr, "%s: tree build failed\n", source_name);
+	delete builder;
+	return NULL;
+    }
+    out_builder = builder;
+    return tree;
+}
+
 // Common translation-unit lowering: translate the parsed Program to a
 // cir_node tree, run the validity gate, c2mir-compile it, and return the
 // produced MIR module. This is the single implementation of the
@@ -232,34 +273,10 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     // the caller. (The legacy static cir_translate() path was removed; it had
     // drifted from this backend — e.g. mislowering backward `goto` loops — and
     // a stale unit test pointed at it once hung the suite. One backend, no A/B.)
-    CirBuilder *builder = new CirBuilder(c2m);
-    // translate_module materializes deferred/lazy template bodies on demand
-    // (parse_deferred_lazy_body). Those re-parses use the parser's Throw
-    // mechanism, which prints the diagnostic to stderr AND throws. An escaping
-    // throw here would terminate the process (uncaught -> std::terminate). Catch
-    // it: the error was already reported, so fail the build cleanly instead.
-    node_t tree = NULL;
-    auto _cir_t0 = std::chrono::steady_clock::now();	// --show-stats: CIR build
-    try {
-	tree = builder->translate_module(prog);
-    } catch (const std::exception &e) {
-	fprintf(stderr, "%s: tree build failed (%s)\n", source_name, e.what());
-	delete builder;
+    CirBuilder *builder = NULL;
+    node_t tree = cir_translate_guarded(c2m, prog, source_name, builder);
+    if (!tree)
 	return NULL;
-    } catch (...) {
-	fprintf(stderr, "%s: tree build failed (compile error in instantiated template body)\n",
-		source_name);
-	delete builder;
-	return NULL;
-    }
-    if (prog)
-	prog->_cir_build_seconds += std::chrono::duration<double>(
-	    std::chrono::steady_clock::now() - _cir_t0).count();
-    if (!tree) {
-	fprintf(stderr, "%s: tree build failed\n", source_name);
-	delete builder;
-	return NULL;
-    }
 
     // Phase-1 proof hook (two-tree / materialize-from-AST): when
     // MADC_XTEST_CIR_COPY is set, compile a DEEP COPY of the whole module tree
@@ -329,7 +346,7 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 }
 
 CirJitSession::CirJitSession()
-    : ctx(NULL), c2m(NULL), builder(NULL), mod(NULL)
+    : ctx(NULL), c2m(NULL), builder(NULL), forest(NULL), mod(NULL)
 {
 }
 
@@ -340,8 +357,8 @@ CirJitSession::~CirJitSession()
 
 void CirJitSession::teardown()
 {
-    // The proven madc_cir_execute order; the builder owns the node arena
-    // backing the module, so it is deleted last.
+    // The proven madc_cir_execute order; the builder / forest own the node
+    // storage backing the module, so they are deleted last.
     if (c2m) cir_finish(c2m);
     if (ctx) {
 	MIR_gen_finish(ctx);
@@ -349,20 +366,17 @@ void CirJitSession::teardown()
 	MIR_finish(ctx);
     }
     delete builder;
+    delete forest;
     ctx = NULL;
     c2m = NULL;
     builder = NULL;
+    forest = NULL;
     mod = NULL;
     gen_cache.clear();
 }
 
-bool CirJitSession::build(Program *prog, const char *source_name,
-			  bool dump_tree, bool dump_nodes, bool dump_checked,
-			  bool *dump_stop)
+bool CirJitSession::init_contexts(const char *source_name, bool dump_checked)
 {
-    if (dump_stop) *dump_stop = false;
-    if (ctx) teardown();   // a rebuild starts from a clean context
-
     ctx = MIR_init();
     MIR_set_error_func(ctx, cir_mir_error);
     c2mir_init(ctx);
@@ -375,19 +389,11 @@ bool CirJitSession::build(Program *prog, const char *source_name,
 	teardown();
 	return false;
     }
+    return true;
+}
 
-    bool stop = false;
-    mod = build_tu_module(ctx, c2m, prog, source_name,
-			  dump_tree, dump_nodes, dump_checked,
-			  builder, stop);
-    if (!mod) {
-	// dump_checked: dumped the post-check tree and stopped (not an
-	// error). Otherwise build_tu_module printed the diagnostic.
-	if (dump_stop) *dump_stop = stop;
-	teardown();
-	return false;
-    }
-
+bool CirJitSession::load_and_link(const char *source_name, Program *prog)
+{
     if (setjmp(cir_mir_error_jmp)) {
 	// A MIR fatal (e.g. "import of undefined item") longjmp'd back here.
 	cir_mir_error_armed = false;
@@ -401,11 +407,95 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     }
     cir_mir_error_armed = true;
     MIR_load_module(ctx, mod);
-    cir_active_host_regs = &prog->host_callback_regs;
+    cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
     MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
     cir_active_host_regs = NULL;
     cir_mir_error_armed = false;
     return true;
+}
+
+bool CirJitSession::build(Program *prog, const char *source_name,
+			  bool dump_tree, bool dump_nodes, bool dump_checked,
+			  bool *dump_stop)
+{
+    if (dump_stop) *dump_stop = false;
+    if (ctx) teardown();   // a rebuild starts from a clean context
+
+    if (!init_contexts(source_name, dump_checked))
+	return false;
+
+    bool stop = false;
+    mod = build_tu_module(ctx, c2m, prog, source_name,
+			  dump_tree, dump_nodes, dump_checked,
+			  builder, stop);
+    if (!mod) {
+	// dump_checked: dumped the post-check tree and stopped (not an
+	// error). Otherwise build_tu_module printed the diagnostic.
+	if (dump_stop) *dump_stop = stop;
+	teardown();
+	return false;
+    }
+
+    return load_and_link(source_name, prog);
+}
+
+bool CirJitSession::build_frozen(const void *image, size_t image_len,
+				 const char *module_name)
+{
+    if (ctx) teardown();   // a rebuild starts from a clean context
+
+    if (!init_contexts(module_name, /*dump_checked=*/false))
+	return false;
+
+    forest = new CirFrozenForest();
+    if (!forest->open(image, image_len, c2m)) {
+	teardown();
+	return false;
+    }
+
+    // Recreate the freezing process's link environment (#load / -l dlopens)
+    // BEFORE materialize + link, so import resolution sees the same symbols.
+    for (size_t i = 0; i < forest->libs().size(); ++i) {
+	const std::string &lib = forest->libs()[i];
+	if (!dlopen(lib.c_str(), RTLD_LAZY | RTLD_GLOBAL)) {
+	    fprintf(stderr, "madc: frozen forest needs %s: %s\n",
+		    lib.c_str(), dlerror());
+	    teardown();
+	    return false;
+	}
+    }
+
+    cir_node *root = forest->root();
+    if (!root) {
+	fprintf(stderr, "%s: forest root failed to materialize\n", module_name);
+	teardown();
+	return false;
+    }
+
+    // The same validity gate as a live build: never hand c2mir a tree
+    // containing error/incomplete nodes.
+    if (int nerr = cir_report_errors(stderr, root->as_node())) {
+	fprintf(stderr, "%s: %d untranslatable node(s) in frozen tree; not compiling\n",
+		module_name, nerr);
+	teardown();
+	return false;
+    }
+
+    if (!cir_compile(ctx, c2m, root->as_node(), module_name)) {
+	fprintf(stderr, "%s: cir_compile failed\n", module_name);
+	teardown();
+	return false;
+    }
+    mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    if (!mod) {
+	fprintf(stderr, "%s: no module produced\n", module_name);
+	teardown();
+	return false;
+    }
+    if (getenv("MADC_DUMP_MIR"))
+	MIR_output(ctx, stderr);
+
+    return load_and_link(module_name, /*prog=*/NULL);
 }
 
 void *CirJitSession::function_code(const char *emitted_name)
@@ -484,6 +574,97 @@ int madc_cir_execute(Program *prog, const char *source_name,
     int result = session.run_main(user_argc, user_argv, &ok, &prog->_exec_seconds);
     if (!ok) {
 	fprintf(stderr, "madc_cir_execute: main() not found\n");
+	return -1;
+    }
+    return result;
+}
+
+int madc_cir_freeze(Program *prog, const char *source_name,
+		    const char *out_path, bool append)
+{
+    // Translate needs the c2mir contexts but never compiles: the frozen tree
+    // must be PRE-check (c2mir's do_context writes attr scratch into any tree
+    // it compiles; post-check trees are single-use).
+    MIR_context_t ctx = MIR_init();
+    MIR_set_error_func(ctx, cir_mir_error);
+    c2mir_init(ctx);
+    c2m_ctx_t c2m = cir_init(ctx, /*debug_p=*/false);
+    CirBuilder *builder = NULL;
+    int rc = -1;
+
+    if (!c2m) {
+	fprintf(stderr, "%s: cir_init failed\n", source_name);
+    } else {
+	node_t tree = cir_translate_guarded(c2m, prog, source_name, builder);
+	int nerr = tree ? cir_report_errors(stderr, tree) : 0;
+	if (tree && nerr) {
+	    fprintf(stderr, "%s: %d untranslatable node(s); not freezing\n",
+		    source_name, nerr);
+	} else if (tree) {
+	    cir_frozen_forest f;
+	    if (!cir_freeze_forest(CIR_NODE(tree), source_name, f)) {
+		fprintf(stderr, "%s: forest freeze failed\n", source_name);
+	    } else {
+		f.libs = prog->loaded_lib_paths;
+		PchCompression codec = PchCompression::Zlib;
+#ifdef HAVE_ZSTD
+		codec = PchCompression::Zstd;
+#endif
+		madc::dis::snapshot_writer w;
+		if (!cir_forest_write(f, w, codec)) {
+		    fprintf(stderr, "%s: forest container assembly failed\n",
+			    source_name);
+		} else if (!(append ? w.append_file(out_path)
+				    : w.write_file(out_path))) {
+		    fprintf(stderr, "%s: cannot write %s\n", source_name, out_path);
+		} else {
+		    size_t nrec = 0;
+		    for (size_t u = 0; u < f.units.size(); ++u)
+			nrec += f.units[u].blob.records.size();
+		    // Status to stderr: program stdout stays clean for the
+		    // --freeze-run child's output.
+		    fprintf(stderr, "Froze %s: %zu units, %zu records -> %s%s\n",
+			    source_name, f.units.size(), nrec, out_path,
+			    append ? " (appended)" : "");
+		    rc = 0;
+		}
+	    }
+	}
+    }
+
+    if (c2m) cir_finish(c2m);
+    c2mir_finish(ctx);
+    MIR_finish(ctx);
+    delete builder;
+    return rc;
+}
+
+int madc_cir_execute_frozen(const char *container_path,
+			    int user_argc, char **user_argv)
+{
+    const void *image = NULL;
+    size_t image_len = 0;
+    if (!cir_forest_map_image(container_path, image, image_len)) {
+	fprintf(stderr, "madc: %s: cannot map frozen container\n",
+		container_path ? container_path : "/proc/self/exe");
+	return -1;
+    }
+
+    // A frozen run never parses, so no Program binds the string substrate;
+    // give the thaw a process-local live pool for its re-interned handles.
+    if (!TokenBase::_active_strpool) {
+	static madc::dis::intern_table frozen_run_pool;
+	TokenBase::_active_strpool = &frozen_run_pool;
+    }
+
+    CirJitSession session;
+    if (!session.build_frozen(image, image_len, "frozen"))
+	return -1;
+
+    bool ok = false;
+    int result = session.run_main(user_argc, user_argv, &ok, /*out_secs=*/0);
+    if (!ok) {
+	fprintf(stderr, "madc: frozen module has no main()\n");
 	return -1;
     }
     return result;

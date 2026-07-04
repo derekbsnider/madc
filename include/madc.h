@@ -2180,6 +2180,9 @@ public:
     bool parsing_defaulted_member_template_constructor;
     std::vector<std::string> namespace_preference; // ordered namespace lookup; "c" means normal lexical/global resolution
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
+    std::vector<std::string> loaded_lib_paths;	// library names actually dlopen'd
+						// (#load / -l) — the link-environment
+						// closure a frozen forest re-loads
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
 	std::vector<std::string> params;  // parameter names

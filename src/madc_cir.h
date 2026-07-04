@@ -30,6 +30,7 @@ class TokenCpnd;
 class TokenFunc;
 class Program;
 class CirBuilder;
+class CirFrozenForest;
 
 // A compiled-and-linked CIR->c2mir->MIR module held alive for repeated
 // in-process calls — the engine behind libmadc's program::exec / call /
@@ -52,6 +53,14 @@ public:
     bool build(Program *prog, const char *source_name,
 	       bool dump_tree = false, bool dump_nodes = false,
 	       bool dump_checked = false, bool *dump_stop = 0);
+
+    // Thaw a frozen forest container image and link its module — the
+    // cross-process twin of build(): no Program, no parse; the tree, its
+    // string closure, and its link environment come from the container.
+    // The image must stay mapped for the session lifetime
+    // (cir_forest_map_image). Requires a live string pool to be bound.
+    bool build_frozen(const void *image, size_t image_len,
+		      const char *module_name);
     bool built() const { return mod != 0; }
 
     // The generated code address for a module function by its EMITTED name
@@ -74,8 +83,11 @@ private:
     MIR_context_t ctx;
     c2m_ctx_t c2m;
     CirBuilder *builder;
+    CirFrozenForest *forest;	// build_frozen(): owns the thawed node storage
     MIR_module_t mod;
     std::map<std::string, void *> gen_cache;
+    bool init_contexts(const char *source_name, bool dump_checked);
+    bool load_and_link(const char *source_name, Program *prog);
     void teardown();
     CirJitSession(const CirJitSession &);
     CirJitSession &operator=(const CirJitSession &);
@@ -114,5 +126,22 @@ int madc_cir_execute(Program *prog, const char *source_name,
 // Backs --emit=c11|mc11. Returns 0 on success, -1 on build failure.
 int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 		  CirEmitLang lang);
+
+// Freeze the parsed Program's module tree (PRE-check — c2mir's checker
+// mutates trees it compiles) into a forest snapshot container at out_path:
+// per-unit segments, string-pool/position/type-name closure, link libs,
+// context-hash pin. `append` uses placement 2 (blob appended to an existing
+// binary, found from its EOF footer). Backs --freeze / --freeze-append.
+// Returns 0 on success, -1 on failure.
+int madc_cir_freeze(Program *prog, const char *source_name,
+		    const char *out_path, bool append);
+
+// Thaw + compile + run a frozen forest: from the container file at
+// `container_path`, or from the blob appended to the running executable
+// when NULL (the /proc/self/exe placement). No parse happens — this is the
+// cross-process consumer of madc_cir_freeze's output. Backs --run-frozen.
+// Returns main()'s exit code, or -1 on failure.
+int madc_cir_execute_frozen(const char *container_path,
+			    int user_argc, char **user_argv);
 
 #endif // __MADC_CIR_H

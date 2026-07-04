@@ -17,12 +17,39 @@
  * shares and cycles terminate) — into real pointer-linked cir_nodes at the
  * c2mir edge (forest SETTLED #7: cold = records, materialized = pointers).
  *
- * B2 scope fence (in-process mechanism + format): datadef_id (project
- * segment), origin_id (token slots), and string handles resolve against the
- * LIVE process substrate. Cross-process closure — binding the container's
- * own frozen intern/type segments, the context-hash pin — is B3 (the
- * multi-segment forest), per docs/plans/2026-06-22-embedded-header-forest-
- * execution-plan.md.
+ * THE FOREST (B3, multi-segment): cir_freeze_forest partitions the sub-DAG
+ * into PER-UNIT segments (a unit = the source file the node's origin token
+ * came from; for C++20 modules the same directory key carries the module
+ * name — a unit name is an interned spelling, not intrinsically a path).
+ * A child reference that crosses units is a CONNECTOR: the high bit of the
+ * child entry set, the low bits indexing the owning unit's connector pool,
+ * whose entries name (target_unit, target_record). Resolving a connector
+ * whose unit is not yet loaded triggers decompress+register of that unit —
+ * groves load on demand; nothing but the directory and the string pool is
+ * read up front (forest plan SETTLED #4/#6: a connector is a REFERENCE,
+ * never a node kind, so c2mir stays blind).
+ *
+ * CROSS-PROCESS CLOSURE (B3): the container carries its own string pool
+ * (the A1 frozen_intern_table blocks), a per-record source-position
+ * side-car, the typeid->name closure, and the required-library list, so a
+ * FRESH process can thaw, compile, and run the tree without the process
+ * that froze it: string payloads read from the container pool; extension
+ * string ids re-intern into the live pool at materialize (in-process this
+ * dedups back to the identical id); positions come from the side-car when
+ * the freezing process's token arena is absent. datadef_id stays raw data:
+ * primitive-segment ids resolve everywhere (pinned slots); project-segment
+ * ids resolve NULL in a foreign process (the compile path never reads
+ * them) and are nameable via the typeid->name closure. Rebuilding DataDefs
+ * from thawed decl trees is the parser-resume slice (B4+), not B3.
+ *
+ * CONTEXT-HASH PIN: madc_cir_context_hash() folds the madc version, the
+ * record/position layouts, the c2mir node-code enum tail, and the typeid
+ * primitive tail. Writers stamp it into the container header; readers
+ * REJECT a mismatch (never silently thaw a layout-mismatched forest).
+ *
+ * B4 hooks reserved here: each directory unit carries an anchor record
+ * (CIR_FOREST_ANCHOR_NONE in B3) — the grove entry a parse-time #include
+ * or C++20 `import` will bind to instead of re-parsing.
  */
 
 #ifndef __CIR_FREEZE_H
@@ -30,17 +57,24 @@
 
 #include <cstdint>
 #include <deque>
+#include <map>
+#include <string>
 #include <vector>
 
 #include "cir_node.h"
+#include "madcdis/intern_table.h"
 #include "madcdis/snapshot.h"
 
 // Consumer-defined segment kinds for the content-blind snapshot container
 // (a container may hold several logical payloads; the kind is the contract).
 enum : uint32_t
 {
-	SNAP_KIND_CIR_RECORDS  = madc::dis::SNAP_KIND_CONSUMER + 0,	// cir_frozen_record[]
-	SNAP_KIND_CIR_CHILDREN = madc::dis::SNAP_KIND_CONSUMER + 1	// uint32[] record indices
+	SNAP_KIND_CIR_RECORDS    = madc::dis::SNAP_KIND_CONSUMER + 0,	// cir_frozen_record[]
+	SNAP_KIND_CIR_CHILDREN   = madc::dis::SNAP_KIND_CONSUMER + 1,	// uint32[] record indices
+	SNAP_KIND_CIR_FOREST_DIR = madc::dis::SNAP_KIND_CONSUMER + 2,	// cir_forest_dir_header + units + libs
+	SNAP_KIND_CIR_CONNECTORS = madc::dis::SNAP_KIND_CONSUMER + 3,	// uint64[] (unit<<32 | record)
+	SNAP_KIND_CIR_POSITIONS  = madc::dis::SNAP_KIND_CONSUMER + 4,	// cir_frozen_pos[] parallel to records
+	SNAP_KIND_CIR_TYPE_NAMES = madc::dis::SNAP_KIND_CONSUMER + 5	// uint32 pairs {typeid, name_id}
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -77,7 +111,9 @@ enum : uint8_t
 	CIR_FROZEN_PACK_EXPAND       = 1u << 1
 };
 
-enum : uint32_t { CIR_FROZEN_CHILD_CONNECTOR_BIT = 0x80000000u };  // reserved (B3)
+// Child-entry high bit: the entry is a CONNECTOR — the low 31 bits index the
+// owning unit's connector pool, whose uint64 entries are (unit << 32 | record).
+enum : uint32_t { CIR_FROZEN_CHILD_CONNECTOR_BIT = 0x80000000u };
 
 // A frozen subtree in memory: record 0 is the root.
 struct cir_frozen_blob
@@ -101,13 +137,118 @@ bool cir_freeze_write(const cir_frozen_blob &blob,
 bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 		     cir_frozen_blob &out);
 
+// ---------------------------------------------------------------------------
+// The forest (B3): per-unit segments + connectors + cross-process closure
+// ---------------------------------------------------------------------------
+
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 1 };
+enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
+
+// Fixed container segment-id layout for a forest (the directory is the map;
+// these are its well-known ids).  Unit i's four payloads live at
+// CIR_FOREST_SEG_UNIT_BASE + i * CIR_FOREST_SEGS_PER_UNIT + {0,1,2,3}.
+enum : uint32_t
+{
+	CIR_FOREST_SEG_DIR         = 1,
+	CIR_FOREST_SEG_STR_BYTES   = 2,		// SNAP_KIND_INTERN_BYTES
+	CIR_FOREST_SEG_STR_ENTRIES = 3,		// SNAP_KIND_INTERN_ENTRIES
+	CIR_FOREST_SEG_STR_BUCKETS = 4,		// SNAP_KIND_INTERN_BUCKETS
+	CIR_FOREST_SEG_TYPE_NAMES  = 5,
+	CIR_FOREST_SEG_UNIT_BASE   = 16,
+	CIR_FOREST_SEGS_PER_UNIT   = 4		// +0 records, +1 children, +2 connectors, +3 positions
+};
+
+struct cir_forest_dir_header	// directory payload: header, then units, then lib name ids
+{
+	uint32_t version;	// CIR_FOREST_FORMAT_VERSION
+	uint32_t unit_count;
+	uint32_t root_unit;	// the frozen tree's root record
+	uint32_t root_idx;
+	uint32_t lib_count;	// required dlopen()'d libraries (link-environment closure)
+	uint32_t _pad;
+};
+
+struct cir_forest_dir_unit
+{
+	uint32_t unit_name_id;	// pool handle: source path (or C++20 module name — a
+				// unit key is an interned spelling, not intrinsically a path)
+	uint32_t record_count;
+	uint32_t connector_count;
+	uint32_t anchor_idx;	// grove entry a parse-time #include/import binds to
+				// (B4); CIR_FOREST_ANCHOR_NONE until then
+};
+
+// Source-position side-car record (parallel to the unit's records; cold —
+// consumed for diagnostics, separate from the hot record segment).
+struct cir_frozen_pos
+{
+	uint32_t fname_id;	// pool handle (0 = no position)
+	uint32_t line;
+	uint32_t col;
+};
+
+// One unit's freeze product.
+struct cir_forest_unit
+{
+	uint32_t                    unit_name_id;
+	cir_frozen_blob             blob;
+	std::vector<uint64_t>       connectors;	// (target_unit << 32) | target_record
+	std::vector<cir_frozen_pos> positions;	// parallel to blob.records
+};
+
+// A whole frozen forest in memory (the multi-unit sibling of cir_frozen_blob).
+struct cir_frozen_forest
+{
+	std::vector<cir_forest_unit> units;
+	uint32_t                     root_unit;
+	uint32_t                     root_idx;
+	std::vector<std::string>     libs;	// dlopen closure (#load / -l paths)
+};
+
+// The context-hash pin: madc version + record/position layout + the c2mir
+// node-code enum tail + the typeid primitive tail. Stamped by writers,
+// REQUIRED equal by CirFrozenForest::open (reject-and-fail, never mis-thaw).
+uint64_t madc_cir_context_hash();
+
+// Partition the sub-DAG rooted at `root` into per-unit segments keyed by
+// each node's origin-token source file (origin-less nodes inherit their
+// discovering parent's unit; the root falls back to `main_unit_name`).
+// Interns unit names, string payloads, and position file names into the
+// ACTIVE string pool — serialize that pool into the same container after
+// this call. False on a null root or an out-of-format tree.
+bool cir_freeze_forest(cir_node *root, const char *main_unit_name,
+		       cir_frozen_forest &out);
+
+// Stage a complete forest into a container: directory, string-pool blocks
+// (the active pool, whose ids all forest handles reference), typeid->name
+// closure, and every unit's four payload segments. The caller still sets
+// the context hash (cir_forest_write does it) and picks placement
+// (write_file / append_file / build).
+bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
+		      PchCompression codec = PchCompression::Zlib);
+
+// Map a container image for reading: the file at `path`, or the running
+// executable (readlink /proc/self/exe) when `path` is NULL — the appended-
+// blob placement. The mapping is never unmapped (thawed segments read from
+// it for the process lifetime). False = no file / no blob.
+bool cir_forest_map_image(const char *path, const void *&image, size_t &len);
+
+class CirFrozenForest;
+
 // A loaded frozen segment: joins the live (seg, idx) id space via the B1
 // registry and materializes records to real cir_nodes on touch, at the
 // c2mir edge (needs the c2m context for uids / uniq strings / positions).
-// Owns both the records and the materialized node storage.
+// Owns both the records and the materialized node storage. Standalone mode
+// (B2, no forest) resolves strings/positions against the LIVE substrate;
+// as a forest unit it resolves against the container's own closure.
 class CirFrozenSegment : public cir_segment_source
 {
+	friend class CirFrozenForest;
+
 	cir_frozen_blob _blob;
+	std::vector<uint64_t> _connectors;	// forest units only
+	std::vector<cir_frozen_pos> _positions;	// forest units only
+	CirFrozenForest *_forest;		// NULL = standalone (B2 mode)
 	c2m_ctx_t _c2m;
 	uint32_t _seg;				// registered segment id
 	std::vector<cir_node *> _mat;		// per-record memo (NULL = cold)
@@ -115,17 +256,81 @@ class CirFrozenSegment : public cir_segment_source
 
 	cir_node *shell(uint32_t idx);		// phase A: node without children
 
+	// Shared resolve driver (standalone + forest): iterative shell pass
+	// across units (a connector to a cold unit loads it), then the child
+	// appends. Defined once — CirFrozenSegment::node_at and
+	// CirFrozenForest::node_for both enter here.
+	static cir_node *resolve(CirFrozenSegment *seg, uint32_t idx);
+
 public:
 	CirFrozenSegment(cir_frozen_blob &&blob, c2m_ctx_t c2m);
+	CirFrozenSegment(cir_forest_unit &&unit, CirFrozenForest *forest,
+			 c2m_ctx_t c2m);
 	~CirFrozenSegment();
 
 	uint32_t seg() const { return _seg; }
 	size_t record_count() const { return _blob.records.size(); }
 	size_t materialized_count() const;
+	CirFrozenForest *forest() const { return _forest; }
+	uint64_t connector(uint32_t i) const { return _connectors[i]; }
 
 	// THE resolve-on-touch entry: materialize the sub-DAG rooted at idx
 	// (memoized; shares/cycles terminate) and return its real node.
 	virtual cir_node *node_at(uint32_t idx);
+};
+
+// A loaded forest: validates the pin + directory + string pool once, then
+// loads UNITS ON DEMAND — a unit's records decompress the first time a
+// connector (or node_for) touches it, never at open. The image must stay
+// mapped for the forest's lifetime (cir_forest_map_image never unmaps).
+class CirFrozenForest
+{
+	friend class CirFrozenSegment;
+
+	madc::dis::snapshot_reader _reader;
+	c2m_ctx_t _c2m;
+	std::vector<cir_forest_dir_unit> _units;
+	std::vector<CirFrozenSegment *> _segs;	// lazily constructed per unit
+	std::vector<std::string> _libs;
+	std::map<uint32_t, const char *> _type_names;	// typeid -> pool c_str
+	std::map<uint32_t, uint32_t> _live_ids;	// frozen str id -> live pool id
+	uint32_t _root_unit, _root_idx;
+
+	// The container's own string pool (A1 frozen view over the three
+	// blocks; decompressed copies owned here when the segments are
+	// compressed, bound in place when codec is None).
+	madc::dis::frozen_intern_table _pool;
+	std::vector<uint8_t> _pool_bytes, _pool_entries, _pool_buckets;
+
+	const char *pool_cstr(uint32_t id, uint32_t &len) const;
+	uint32_t live_str_id(uint32_t frozen_id);	// re-intern (memoized)
+
+public:
+	CirFrozenForest();
+	~CirFrozenForest();
+
+	// The load-on-demand step: a unit's records decompress + register on
+	// FIRST touch (connector resolution enters here; B4 grove binding
+	// will too). NULL on a corrupt/missing unit.
+	CirFrozenSegment *unit_segment(uint32_t unit);
+
+	// Validates the container, the context-hash pin, the directory, and
+	// the string pool; reads libs + type names. Loads NO unit records.
+	// On failure prints the reason to stderr and returns false.
+	bool open(const void *image, size_t len, c2m_ctx_t c2m);
+
+	uint32_t unit_count() const { return (uint32_t)_units.size(); }
+	size_t units_loaded() const;			// laziness observability
+	const std::vector<std::string> &libs() const { return _libs; }
+	const char *unit_name(uint32_t unit) const;
+	const char *type_name_for(uint32_t type_id) const;  // NULL if unknown
+
+	// Resolve (unit, record) — the connector target form. Loads the unit
+	// on first touch and materializes the reachable sub-DAG.
+	cir_node *node_for(uint32_t unit, uint32_t idx);
+
+	// The frozen tree's root.
+	cir_node *root() { return node_for(_root_unit, _root_idx); }
 };
 
 // Structural identity oracle (forest Phase 2 gate): walk two trees in

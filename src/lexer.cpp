@@ -2943,6 +2943,7 @@ TokenBase *Program::_getToken()
 			    Throw << err.c_str() << flush;
 			}
 			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
+			loaded_lib_paths.push_back(libname);
 		    }
 		    else
 		    {
