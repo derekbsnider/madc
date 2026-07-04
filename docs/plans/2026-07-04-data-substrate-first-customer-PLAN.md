@@ -413,3 +413,51 @@ matching the JIT output. All c2mir-visible emission byte-identical — the
 references stayed c2mir-blind. Torture 1571 passed, failset byte-identical
 to the 51-name baseline, 0 timeouts; SMAUG soak compiles and boots.
 NEXT: **B2** (single-segment freeze/thaw through the A2 container).
+
+**✅ B2 LANDED `b62089ad` (2026-07-04, branch
+`feature/b2-segment-freeze-thaw-claude`) —
+forest Phase 2: single-segment freeze/thaw through the A2 container.**
+New `src/cir_freeze.{h,cpp}`:
+- **Freeze** (`cir_freeze_subtree`): flattens a built cir_node sub-DAG into
+  fixed-size POD records + a CSR child-index pool. The B1 extension block
+  copies as-is (already position-independent); scalar leaf payloads inline
+  (raw 16-byte union image — arena nodes are zero-initialized on both
+  sides); string payloads (`u.s`) intern to shared-pool handles with exact
+  byte length (embedded NULs survive); child lists flatten via c2mir's own
+  `ext_node_is_leaf`-guarded walk (the N_CF/N_CD/N_CLD above-N_ID leaf trio
+  handled by mirroring that single source of truth). Shares (the c2mir
+  N_SHARE one-spec-under-many-parents pattern) freeze to ONE record via
+  first-touch index assignment; genuine cycles (__max_size_type) terminate;
+  the walk is iterative (real trees exceed the dump walker's 800 cap).
+- **Container**: two consumer kinds over the content-blind A2 snapshot
+  (`SNAP_KIND_CIR_RECORDS` / `SNAP_KIND_CIR_CHILDREN`); `cir_freeze_read`
+  bounds-validates every child ref so a corrupt container fails at load,
+  not as a wild read at materialize. Child-pool entries are in-segment
+  indices; the high bit is reserved for B3 cross-segment connectors.
+- **Thaw** (`CirFrozenSegment`): registers in the B1 segment registry —
+  frozen records join the ONE `(seg, idx)` id space behind the ONE
+  `madc_cir_node_for` chokepoint (the registry generalized to a
+  `cir_segment_source` interface; CirArena implements it). `node_at()` is
+  resolve-on-touch: two-phase materialization (memoized shells first, then
+  child appends, so shares/cycles terminate) into real pointer-linked
+  cir_nodes at the c2mir edge (SETTLED #7), mirroring CirBuilder::make
+  (fresh uids, uniq strings, position derived from the origin token).
+- **Oracle** (`cir_trees_structurally_identical`): iterative parallel walk
+  (seen-pair set) over codes, payload classes, extension fields, child
+  sequences.
+**Phase-0.3 mechanism check re-measured on the real path (tmp/b2_measure):
+`testsubscript` module tree = 90,647 records, 456 KB container;
+open+decompress+thaw+materialize = 55.8 ms vs parse+translate 2508 ms — 45×;
+materialize (35.7 ms) does not erode the win; structural identity YES.**
+B3 fence (documented in cir_freeze.h): datadef_id / origin_id / string
+handles resolve against the LIVE process substrate; cross-process closure
+(binding the container's own frozen intern/type segments, context-hash pin)
+is B3.
+Gates: build 0 warnings; new `tests/unit/test_cir_freeze.cpp` 6 cases / 58
+asserts (payload classes, share dedup→one record AND one materialized node,
+cycle termination, 10k-deep iterative walks, file placement, module-tree
+identity + thawed-tree compiles-and-runs through production cir_compile);
+fulltest 678/0/0/16 all ratchets GREEN; torture 1571 passed, failset
+byte-identical to the 51-name baseline; **--emit=c11 byte-identical
+694/694**; SMAUG soak compiles and boots.
+NEXT: **B3** (multi-segment forest + append-to-binary + context pin).

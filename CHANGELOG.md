@@ -4,6 +4,17 @@
 
 ### Data-substrate Track B — the embedded header forest
 
+- **B2 — single-segment freeze/thaw** (`b62089ad`, forest Phase 2): `src/cir_freeze.{h,cpp}`
+  flattens a cir_node sub-DAG to fixed-size POD records + a CSR child pool
+  (share/cycle-safe first-touch walk, iterative), carries it through the A2
+  snapshot container (two consumer kinds, load-time bounds validation), and
+  thaws via `CirFrozenSegment` — registered in the B1 segment registry (now a
+  `cir_segment_source` interface) with memoized two-phase resolve-on-touch
+  materialization at the c2mir edge. Structural-identity oracle + the thawed
+  tree compiles and runs through production `cir_compile`. Mechanism check:
+  `testsubscript` module tree (90,647 records, 456 KB) loads in 55.8 ms vs
+  2508 ms parse+translate — 45×. Cross-process closure (frozen intern/type
+  segment binding, context pin) is the B3 fence.
 - **B1 — serializable `cir_node` references** (`0b1e618a`, forest Phase 1):
   every madc
   extension field on `cir_node` is now position-independent — `datadef`
