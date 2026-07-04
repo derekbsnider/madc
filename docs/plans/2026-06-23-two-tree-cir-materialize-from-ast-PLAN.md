@@ -15,7 +15,20 @@ rests on; read it first).
 
 ## 0. RESUME — START HERE (post-compaction; read this section first)
 
-**⏩ 2026-07-02 — PLAN POSITION: Phases 0–4 DONE; Phase 5 ACTIVE in its successor doc.**
+**✅ 2026-07-04 — PHASES 0–5 COMPLETE; RELEASED AS v0.33.0 (`7907577e`).**
+Phase 5 finished in the successor doc
+(`docs/plans/2026-07-02-tsubst-phase5-shell-meminit-PLAN.md`): first-skip flipped
+to production (`75869db7`) and the re-parse machinery was DELETED (`eef9264f`,
+−123 lines — `materialize_tsubst_skipped_body` gone; a tsubst bail on a skipped
+body is a loud pre-c2mir error, never a re-parse). Suite burndown **312 HIT /
+0 FALLBACK (100%)**, eligibility census empty across 693 tests, fulltest
+677/0/0/16 with the flag-on ratchet green. The §5 deletion trigger is satisfied;
+parse-once rules updated (`77ca23f4`). **Only Phase 6 (serialize Tree-1 — the
+header-forest) remains**, carried by the embedded-header-forest plan
+(`docs/plans/2026-06-22-embedded-header-forest-execution-plan.md`) on the
+front-end-performance track.
+
+**⏩ 2026-07-02 — PLAN POSITION (superseded by the block above): Phases 0–4 DONE; Phase 5 ACTIVE in its successor doc.**
 The wall below (local classes) and the whole Phase-4 hard tail were cleared: suite
 burndown reached **268 HIT / 0 FALLBACK (100%)** and the default FLIPPED
 (`a2262c35` — tsubst is production; `MADC_XTEST_DEP_PARSE=0` is the soak escape
