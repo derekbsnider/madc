@@ -177,9 +177,41 @@ at pack time the PP records **which macro names its conditionals actually
 consulted** (`SNAP_KIND_CIR_BRANCH_MACROS`); at startup, any CLI/user
 `-D`/`-U`/pre-include `#define` naming one of them disables the forest
 (loud, one line) and falls back to live parse. An app-local
-`-DMYAPP_DEBUG` doesn't intersect and costs nothing. Include-order
-variance beyond the packed canonical order remains out of contract
-(documented; the escape is the same fallback).
+`-DMYAPP_DEBUG` doesn't intersect and costs nothing.
+
+### Canonical include order (design-owner refinement, 2026-07-04)
+
+There IS a known proper order for system-header includes, so order
+variance is not fenced out of contract — it is **normalized to the
+canonical order**, a positive spec instead of a documented edge:
+
+- **The pack order is an explicit, versioned artifact** (recorded in the
+  container directory, not an accident of closure traversal): the known
+  proper system order — features/config headers first, foundational type
+  headers before their consumers, the same discipline glibc's internal
+  ordering encodes.
+- **Normalization is semantics-preserving for conforming code by the
+  standards themselves:** C++ requires standard headers to be includable
+  in any order ([res.on.headers]); POSIX likewise for its modern header
+  set. The only order-sensitive channel left — a *branch-relevant* macro
+  defined between two system includes — is exactly what the
+  `SNAP_KIND_CIR_BRANCH_MACROS` guard already catches (loud fallback).
+- **Bind semantics under normalization:** macro exports still install at
+  each `#include` point in program order (user code between includes sees
+  the surface it would see live), but system-unit *interdependencies*
+  always compose in canonical DAG order — so any user ordering of system
+  includes yields the same bound surface as the proper ordering.
+- **This rides the existing auto-include machinery, not new invention:**
+  madc already auto-includes system headers from a symbol→header trigger
+  (`Program::auto_include_standard_identifier`,
+  `pending_auto_include_headers`, madc.h:2690/2573) and — the mechanical
+  key — the lexer already supports **id-level token-buffer reorder at
+  cursor 0** built for auto-include injection (madc.h:1310/1346).
+  Auto-SORTING user system-include directives into canonical order is the
+  same reorder pass with an order key from the pack directory. Auto-sort
+  and auto-include become two faces of one normalization: missing system
+  includes can be injected, present ones ordered, both keyed by the same
+  table.
 
 ## 7. Pack pipeline + qualification (execution-plan Phase 4, unchanged in
 substance)
@@ -226,20 +258,22 @@ substance)
 
 - **B4a — format v2 + pack driver + oracles** (no consumption yet):
   pack-time decl-boundary recording, token/index/PP-export/edges segments,
-  `-dM` + index-parity oracles green over the packed closure. Gates:
-  standard battery (fulltest incl. forest_selfexe_gate, torture failset,
-  emit-C corpus, SMAUG) untouched — this slice only writes containers.
+  the canonical-order artifact in the directory, `-dM` + index-parity
+  oracles green over the packed closure. Gates: standard battery (fulltest
+  incl. forest_selfexe_gate, torture failset, emit-C corpus, SMAUG)
+  untouched — this slice only writes containers.
 - **B4b — bind + materialize-on-use behind a flag**: the forest-lookup
   chain, PP-export install, nested slice parse. Gates: real
   `<iostream>/<string>/<vector>` programs == live parse == g++ with the
   flag on; `--show-stats` shows decl-parse collapsing to the used set;
   full battery with the flag OFF byte-identical.
 - **B4c — DEFAULT flip**: forest-on by default (make pack step ships it),
-  §5 fallback matrix live, §6 branch-macro guard live. Gates: the ENTIRE
-  suite runs under forest-default; torture failset byte-identical; SMAUG
-  (C89 headers benefit too) boots; perf numbers published in the landing
-  block (`--show-stats` before/after — the ~1.9 s decl-parse + lex tax vs
-  grove binding).
+  §5 fallback matrix live, §6 branch-macro guard + canonical-order
+  normalization live (the auto-include reorder pass gains the order key).
+  Gates: the ENTIRE suite runs under forest-default; torture failset
+  byte-identical; SMAUG (C89 headers benefit too) boots; perf numbers
+  published in the landing block (`--show-stats` before/after — the
+  ~1.9 s decl-parse + lex tax vs grove binding).
 - **B4d — Tree-1 pattern freeze (instantiate-from-frozen)**: pattern cir
   bodies as B3 cir segments keyed by pattern identity; tsubst copies from
   thawed trees; kills the remaining first-use parse cost for template-
