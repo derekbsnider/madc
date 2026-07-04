@@ -17,7 +17,7 @@ INSTALL_PROGRAM ?= $(INSTALL) -m 755
 INSTALL_DIR ?= $(INSTALL) -d
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o exception_runtime.o pch.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_emit_c.o madc_project.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o va_helpers.o exception_runtime.o pch.o madcdis_snapshot.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o cir_emit_c.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # Regenerate embedded_headers.cpp NOW, at Makefile parse time, before any target
@@ -27,6 +27,9 @@ MADHDRS = $(wildcard ../include/madc/*)
 EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
 MADDATHDRS = $(wildcard ../include/madcdat/*.h)
+# madc::dis substrate headers: tokens.h/madc.h include these, so they MUST be in
+# DEPENDS or editing one silently leaves stale objects.
+MADCDISHDRS = $(wildcard ../include/madcdis/*.h)
 INCDIR	= ../include
 BINDIR	= ../bin
 LIBDIR	= ../lib
@@ -45,7 +48,7 @@ DEFINES	= -I$(INCDIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir $(FEATURE_DEFINES) $(OPTIONA
 #LIBS	= -lreadline -lasmjit
 LIBS	= -rdynamic -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
 MIRLIB	= $(MIRDIR)/libmir.a
-DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS)
+DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS) $(MADCDISHDRS)
 
 ifeq ($(HAVE_MADCDAT),1)
 OFILES = $(CORE_OFILES) $(MADDAT_OFILES)

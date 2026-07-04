@@ -32,8 +32,8 @@
 // THE CATALOG (variants slot in behind this interface; build from proven use, not
 // up front):
 //   * intern_table          — non-counted, permanent (THIS one; literals/keywords/names)
+//   * frozen_intern_table   — read-only view over serialized blocks (PCH / forest tier; below)
 //   * (future) refcounted   — lifetime-managed interned values
-//   * (future) frozen       — read-only mmap'd table (PCH / forest tier)
 //
 // Lifetime contract: c_str(id) points into the byte arena and is valid until the
 // next intern() that GROWS the arena. Hold the id, not the pointer. reserve() up
@@ -44,7 +44,11 @@ namespace dis {
 
 class intern_table
 {
+public:
+    // One hash-chain record; the on-disk/entry-block record shape too (16 bytes,
+    // fixed layout — frozen_intern_table binds an array of these directly).
     struct Entry { uint32_t off; uint32_t len; uint32_t hash; uint32_t next; };
+private:
     // `mutable`: interning is a memoizing dedup cache — it adds a spelling but does
     // not change any OBSERVABLE state (same bytes -> same id, before and after).
     // So intern() is logically const and callable from const contexts.
@@ -134,6 +138,101 @@ public:
     uint32_t    length(uint32_t id) const { return _entries[id].len; }
     std::string str(uint32_t id)    const { return std::string(c_str(id), length(id)); }
     size_t      count()             const { return _entries.size() - 1; } // excl. id 0
+
+    // --- serialization accessors: the three blocks, exactly as a madc::dat
+    // writer stores them and frozen_intern_table rebinds them. The blocks are
+    // index-linked (Entry.next / bucket heads are entry INDICES), so together
+    // they round-trip with zero fixup. Sizes are in ELEMENTS of each block.
+    const char     *bytes_data()   const { return _bytes.data(); }
+    size_t          bytes_size()   const { return _bytes.size(); }
+    const Entry    *entries_data() const { return _entries.data(); }
+    size_t          entries_size() const { return _entries.size(); }
+    const uint32_t *buckets_data() const { return _buckets.data(); }
+    size_t          buckets_size() const { return _buckets.size(); }
+};
+
+// The FROZEN intern-table catalog variant: a read-only VIEW over the three
+// serialized blocks placed in loaded / mmap'd memory. No fixup — the blocks are
+// index-linked by construction. Lookups only: a loaded (forest / PCH) segment
+// never interns; the live TU's mutable intern_table does. id 0 is the empty
+// spelling, as in the live table; find() returns npos for an absent spelling.
+//
+// Alignment contract: the entries block must be 4-aligned and the buckets block
+// 4-aligned in the bound memory (the snapshot container 16-aligns segment
+// payloads, which satisfies this).
+class frozen_intern_table
+{
+    const char                *_bytes;    size_t _nbytes;
+    const intern_table::Entry *_entries;  size_t _nentries;
+    const uint32_t            *_buckets;  size_t _nbuckets;  // power of two, or 0 = find() disabled
+public:
+    enum : uint32_t { npos = 0xffffffffu };  // absent spelling; same value as the chain NIL
+
+    frozen_intern_table()
+	: _bytes(0), _nbytes(0), _entries(0), _nentries(0), _buckets(0), _nbuckets(0) {}
+
+    void bind(const char *bytes, size_t nbytes,
+	      const intern_table::Entry *entries, size_t nentries,
+	      const uint32_t *buckets, size_t nbuckets)
+    {
+	_bytes = bytes;     _nbytes = nbytes;
+	_entries = entries; _nentries = nentries;
+	_buckets = buckets; _nbuckets = nbuckets;
+    }
+
+    // Structural sanity over the bound blocks — the container-load gate. O(n)
+    // bounds checks; a false return means the segment set is corrupt or
+    // mismatched and must be rejected (fall back to live parse, never crash).
+    bool valid() const
+    {
+	if ( !_bytes || !_entries || _nentries == 0 || _nbytes == 0 )
+	    return false;
+	if ( _entries[0].off != 0 || _entries[0].len != 0 || _bytes[0] != '\0' )
+	    return false;
+	for ( size_t i = 0; i < _nentries; ++i )
+	{
+	    const intern_table::Entry &e = _entries[i];
+	    if ( (size_t)e.off + e.len + 1 > _nbytes )        // room incl. trailing NUL
+		return false;
+	    if ( _bytes[e.off + e.len] != '\0' )
+		return false;
+	    if ( e.next != npos && e.next >= _nentries )
+		return false;
+	}
+	if ( _nbuckets )
+	{
+	    if ( (_nbuckets & (_nbuckets - 1)) != 0 )         // power of two
+		return false;
+	    for ( size_t b = 0; b < _nbuckets; ++b )
+		if ( _buckets[b] != npos && _buckets[b] >= _nentries )
+		    return false;
+	}
+	return true;
+    }
+
+    const char *c_str(uint32_t id)  const { return &_bytes[_entries[id].off]; }
+    uint32_t    length(uint32_t id) const { return _entries[id].len; }
+    std::string str(uint32_t id)    const { return std::string(c_str(id), length(id)); }
+    size_t      count()             const { return _nentries ? _nentries - 1 : 0; }
+
+    // Read-only lookup: id for these bytes, or npos when absent. Empty -> id 0.
+    // Requires the buckets block; hash discipline identical to the live table.
+    uint32_t find(const char *s, uint32_t len, uint32_t h) const
+    {
+	if ( len == 0 ) return 0;
+	if ( !_nbuckets ) return npos;
+	uint32_t b = h & ((uint32_t)_nbuckets - 1);
+	for ( uint32_t i = _buckets[b]; i != npos; i = _entries[i].next )
+	{
+	    const intern_table::Entry &e = _entries[i];
+	    if ( e.hash == h && e.len == len && memcmp(&_bytes[e.off], s, len) == 0 )
+		return i;
+	}
+	return npos;
+    }
+    uint32_t find(const char *s, uint32_t len) const
+	{ return len ? find(s, len, intern_table::hash_bytes(s, len)) : 0; }
+    uint32_t find(const std::string &s) const { return find(s.data(), (uint32_t)s.size()); }
 };
 
 // Map keyed by interned spelling-id. A drop-in for std::map<std::string,V> on the
