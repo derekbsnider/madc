@@ -565,8 +565,11 @@ public:
 	// Type-aware integer literal: pick the c2mir literal node code
 	// (N_I/N_U/N_L/N_UL) from the literal's own DataDef so a suffixed
 	// constant (e.g. `0xffffffffull`) carries its real signedness/width
-	// into c2mir's usual-arithmetic-conversion logic.
-	node_t integer_typed(int64_t val, DataDef *dd, TokenBase *origin = NULL);
+	// into c2mir's usual-arithmetic-conversion logic. A >64-bit value
+	// (P0 slice 3) has no C literal form — it lowers to the composed
+	// ((unsigned __int128)hi << 64) | lo expression (Tier-1; c2mir folds
+	// it back to one 128-bit constant at check time).
+	node_t integer_typed(madc_wide_int val, DataDef *dd, TokenBase *origin = NULL);
 	node_t real(double val, TokenBase *origin = NULL);
 	node_t real_float(float val, TokenBase *origin = NULL);
 	node_t complex_literal(double val, DataDef *complex_dd, TokenBase *origin = NULL);

@@ -12,6 +12,7 @@
 #include <vector>
 #include <ios>
 #include "madcdis/intern_table.h"
+#include "madcdis/value_pool.h"
 
 // forward declaration
 class Program;
@@ -138,6 +139,10 @@ public:
     // sequential per-Program, incl. --project per-TU). Lets the arg-less spelling()
     // accessor resolve rec.spelling_id -> bytes without a Program* on every token.
     static madc::dis::intern_table *_active_strpool;
+    // The active Program's value pool (P0 slice 2/3): wide (>64-bit) constant
+    // payloads live here under TokenInt::wide_handle. Same active-owner
+    // discipline as _active_strpool above.
+    static madc::dis::value_pool *_active_valpool;
     TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
     TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
     virtual ~TokenBase() {}
@@ -161,6 +166,13 @@ public:
     virtual int dec() { return 0; }
     virtual int64_t get() const  { return _token; }
     virtual int64_t ival() const { return 0; }
+    // The 128-bit constant view (P0 slice 3). Returns the full wide value for
+    // a token that is SEMANTICALLY 128-bit-typed (a parser-folded wide
+    // constant); every other token answers its ival(). A lexer-truncated
+    // too-large literal keeps its truncated value here too — gcc canon: the
+    // literal's value IS the truncated one (the retained payload under
+    // TokenInt::wide_handle is diagnostics-only in that case).
+    virtual madc_wide_int wival() const { return ival(); }
     virtual double dval() const { return 0; }
     virtual size_t argc() const { return 0; }
     virtual TokenType  type()  const { return TokenType::ttBase; }
@@ -892,6 +904,15 @@ public:
     TokenInt(int64_t v) : TokenBase(v) { _datatype = &ddINT; }
     TokenInt(int64_t v, const std::string &src) : TokenBase(v), source_text(src) { _datatype = &ddINT; }
     virtual int64_t ival() const        { return _token; }
+    // Semantically wide only when the constant's own TYPE is 16 bytes
+    // (ddINT128/ddUINT128, set by the parser's fold); see TokenBase::wival.
+    virtual madc_wide_int wival() const override
+    {
+	if ( wide_handle && _active_valpool && _datatype && _datatype->size == 16 )
+	    return (madc_wide_int)(((madc_wide_uint)_active_valpool->hi64(wide_handle) << 64)
+				   | _active_valpool->lo64(wide_handle));
+	return _token;
+    }
     virtual double dval() const    { return (double)_token; }
     virtual TokenType type() const { return TokenType::ttInteger; }
     virtual TokenID   id()   const { return TokenID::tkInt; }

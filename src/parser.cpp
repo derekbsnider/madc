@@ -91,6 +91,7 @@ const char *TokenBase::_parse_file = NULL;
 int TokenBase::_parse_line = 0;
 int TokenBase::_parse_column = 0;
 madc::dis::intern_table *TokenBase::_active_strpool = NULL;
+madc::dis::value_pool *TokenBase::_active_valpool = NULL;
 
 // ---- Token arena (Phase 1) ------------------------------------------------
 // Every `new TokenX(...)` and every TokenBase::clone() routes here via the
@@ -5918,7 +5919,7 @@ Variable *Program::resolve_c_identifier(TokenIdent *ident_tb, bool expression_he
 	return var;
 }
 
-static bool read_constant_integer(Variable *var, int64_t &out)
+static bool read_constant_integer(Variable *var, madc_wide_int &out)
 {
     if ( !var || !var->is_constant() || !var->data || !var->type || !var->type->is_integer() )
 	return false;
@@ -5933,8 +5934,14 @@ static bool read_constant_integer(Variable *var, int64_t &out)
 	case DataType::dtUINT24: out = *((uint16_t *)var->data); return true;
 	case DataType::dtINT32:  out = *((int32_t *)var->data);  return true;
 	case DataType::dtUINT32: out = *((uint32_t *)var->data); return true;
+	// 64-bit reads stay SIGN-CARRIED into the wide fold carrier (an int64_t
+	// read even for dtUINT64): identical bits and identical fold results to
+	// the historical int64 evaluator for every ≤64-bit program. See the
+	// madc_wide_int typedef note (datadef.h).
 	case DataType::dtINT64:  out = *((int64_t *)var->data);  return true;
-	case DataType::dtUINT64: out = *((uint64_t *)var->data); return true;
+	case DataType::dtUINT64: out = *((int64_t *)var->data);  return true;
+	case DataType::dtINT128:  out = *((madc_wide_int *)var->data); return true;
+	case DataType::dtUINT128: out = (madc_wide_int)*((madc_wide_uint *)var->data); return true;
 	default:
 	    return false;
     }
@@ -5982,13 +5989,16 @@ TokenBase *Program::make_expression_context_literal(const madc::value &resolved,
     return tb;
 }
 
-bool Program::resolve_integer_constant(TokenBase *tb, int64_t &out)
+bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
 {
     if ( !tb )
 	return false;
     if ( tb->type() == TokenType::ttInteger )
     {
-	out = ((TokenInt *)tb)->get();
+	// wival(): the full 128-bit value for a semantically wide constant
+	// (parser-folded, ddINT128/ddUINT128-typed); the plain (or
+	// gcc-canon-truncated) 64-bit value for everything else.
+	out = tb->wival();
 	return true;
     }
     if ( tb->type() == TokenType::ttChar )
@@ -6050,24 +6060,32 @@ bool Program::resolve_integer_constant(TokenBase *tb, int64_t &out)
 static bool is_named_cpp_cast(const std::string &name);
 static bool datadef_involves_placeholder(DataDef *dd);
 
-static int64_t apply_integer_cast_value(DataDef *cast_dd, int64_t val,
-					bool force_unsigned = false)
+static madc_wide_int apply_integer_cast_value(DataDef *cast_dd, madc_wide_int val,
+					      bool force_unsigned = false)
 {
     if ( !cast_dd )
 	return val;
     bool is_unsigned = force_unsigned || cast_dd->is_unsigned();
     int sz = cast_dd->size;
     if ( sz == 1 )
-	return is_unsigned ? (int64_t)(uint8_t)val : (int64_t)(int8_t)val;
+	return is_unsigned ? (madc_wide_int)(uint8_t)val : (madc_wide_int)(int8_t)val;
     if ( sz == 2 )
-	return is_unsigned ? (int64_t)(uint16_t)val : (int64_t)(int16_t)val;
+	return is_unsigned ? (madc_wide_int)(uint16_t)val : (madc_wide_int)(int16_t)val;
     if ( sz == 4 )
-	return is_unsigned ? (int64_t)(uint32_t)val : (int64_t)(int32_t)val;
+	return is_unsigned ? (madc_wide_int)(uint32_t)val : (madc_wide_int)(int32_t)val;
+    // 8-byte cast truncates the wide carrier to 64 bits SIGN-CARRIED (even for
+    // unsigned long): identical bits and identical fold results to the
+    // historical int64 evaluator; `(long)((__int128)1 << 64)` folds to 0.
+    if ( sz == 8 )
+	return (madc_wide_int)(int64_t)val;
+    // 16-byte cast is the identity on the carrier: (__int128)x re-signs a
+    // 64-bit value correctly (already sign-carried); (unsigned __int128)x has
+    // the same 128-bit pattern.
     return val;
 }
 
-int64_t Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
-					     const std::string &cast_name)
+madc_wide_int Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
+						     const std::string &cast_name)
 {
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 	Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
@@ -6114,7 +6132,7 @@ int64_t Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
 			   << cast_name << "<...>" << flush;
     nextToken();
 
-    int64_t val = parse_constant_integer_expression();
+    madc_wide_int val = parse_constant_integer_expression();
     TokenBase *close = nextToken();
     if ( !close || close->id() != TokenID::tkClBrk )
 	Throw(close ? close : cast_tb)
@@ -6123,7 +6141,7 @@ int64_t Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
 }
 
 bool Program::try_parse_constant_functional_cast(TokenBase *type_tb,
-						 int64_t &out)
+						 madc_wide_int &out)
 {
     if ( !type_tb || !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	return false;
@@ -6142,7 +6160,7 @@ bool Program::try_parse_constant_functional_cast(TokenBase *type_tb,
 	return false;
 
     nextToken(); // consume '('
-    int64_t val = parse_constant_integer_expression();
+    madc_wide_int val = parse_constant_integer_expression();
     TokenBase *close = nextToken();
     if ( !close || close->id() != TokenID::tkClBrk )
 	Throw(close ? close : type_tb)
@@ -7736,7 +7754,7 @@ bool Program::try_parse_constant_offsetof_address(int64_t &out)
 	return fail();
 
     TokenBase *zero_tb = nextToken();
-    int64_t zero_value = 0;
+    madc_wide_int zero_value = 0;
     if ( !resolve_integer_constant(zero_tb, zero_value) || zero_value != 0 )
 	return fail();
     TokenBase *close_outer = nextToken();
@@ -7802,7 +7820,7 @@ bool Program::try_parse_constant_offsetof_address(int64_t &out)
 // Consumes the `::`-chain on success; returns false (without guaranteeing the
 // stream position) only when the leading token can't begin such a chain — the
 // callers below gate on that so non-qualified atoms are untouched.
-bool Program::fold_constant_qualified_member(TokenBase *first, int64_t &out)
+bool Program::fold_constant_qualified_member(TokenBase *first, madc_wide_int &out)
 {
     if ( !first )
 	return false;
@@ -7930,15 +7948,21 @@ bool Program::fold_constant_qualified_member(TokenBase *first, int64_t &out)
 	// Final segment: a member of the current class scope.
 	if ( seg_scope || !scope )
 	    return false;            // a type, or no scope to look in
-	return resolve_class_static_member_const_value(scope, seg_name, out);
+	// The static-member capture map stores int64 (wide static-const
+	// members are out of the slice-3 fold's scope); widen on the way out.
+	int64_t member_val = 0;
+	if ( !resolve_class_static_member_const_value(scope, seg_name, member_val) )
+	    return false;
+	out = member_val;
+	return true;
     }
     return false;
 }
 
-int64_t Program::parse_constant_primary()
+madc_wide_int Program::parse_constant_primary()
 {
     TokenBase *tb = nextToken();
-    int64_t out = 0;
+    madc_wide_int out = 0;
 
     if ( resolve_integer_constant(tb, out) )
 	return out;
@@ -7956,7 +7980,7 @@ int64_t Program::parse_constant_primary()
 	if ( is_bool_literal_identifier(name, bool_value) )
 	    return bool_value ? 1 : 0;
 	if ( name == "sizeof" || is_alignof_identifier(name) )
-	    return (int64_t)evaluate_type_query(tb, name);
+	    return (madc_wide_int)evaluate_type_query(tb, name);
 	// Type-trait builtins in constant context — the std::integral_constant
 	// initializer shape `static const bool value = __is_class(T);` and non-type
 	// template args. Args are concrete (madc monomorphizes); fold to 0/1.
@@ -7970,8 +7994,9 @@ int64_t Program::parse_constant_primary()
 	// to the value captured by capture_constant_initializer_value.
 	// Falls through to the throw below for any non-member identifier,
 	// so non-class constant contexts are unaffected.
-	if ( resolve_current_class_static_member_const_value(name, out) )
-	    return out;
+	int64_t member_val = 0;
+	if ( resolve_current_class_static_member_const_value(name, member_val) )
+	    return member_val;
 	if ( is_nullptr_identifier(name) )
 	    return 0;
 	if ( is_named_cpp_cast(name) )
@@ -8003,7 +8028,7 @@ int64_t Program::parse_constant_primary()
 		{
 		    sub.push_back(new TokenSemi());
 		    TokenStream::State saved = tokens.swap_in(std::move(sub));
-		    int64_t v = 0;
+		    madc_wide_int v = 0;
 		    try { v = parse_constant_integer_expression(); }
 		    catch ( ... ) { tokens.swap_back(std::move(saved)); throw; }
 		    tokens.swap_back(std::move(saved));
@@ -8042,7 +8067,7 @@ int64_t Program::parse_constant_primary()
 		{
 		    sub.push_back(new TokenSemi());
 		    TokenStream::State saved = tokens.swap_in(std::move(sub));
-		    int64_t v = 0;
+		    madc_wide_int v = 0;
 		    try { v = parse_constant_integer_expression(); }
 		    catch ( ... ) { tokens.swap_back(std::move(saved)); throw; }
 		    tokens.swap_back(std::move(saved));
@@ -8061,8 +8086,10 @@ int64_t Program::parse_constant_primary()
 	return ~parse_constant_primary();
     if ( tb && tb->id() == TokenID::tkBand )
     {
-	if ( try_parse_constant_offsetof_address(out) )
-	    return out;
+	// offsetof-style addresses are 64-bit; widen on the way out.
+	int64_t addr = 0;
+	if ( try_parse_constant_offsetof_address(addr) )
+	    return addr;
 	Throw(tb) << "Unsupported address expression in constant expression" << flush;
     }
     if ( tb && tb->id() == TokenID::tkOpBrk )
@@ -8090,7 +8117,7 @@ int64_t Program::parse_constant_primary()
 	    }
 	    if ( peekToken() )
 		nextToken(); // consume ')'
-	    int64_t val = parse_constant_primary();
+	    madc_wide_int val = parse_constant_primary();
 	    return apply_integer_cast_value(cast_dd, val, is_unsigned);
 	}
 	out = parse_constant_integer_expression();
@@ -8103,9 +8130,9 @@ int64_t Program::parse_constant_primary()
     return 0;
 }
 
-int64_t Program::parse_constant_mul()
+madc_wide_int Program::parse_constant_mul()
 {
-    int64_t lhs = parse_constant_primary();
+    madc_wide_int lhs = parse_constant_primary();
 
     while ( peekToken() )
     {
@@ -8113,7 +8140,7 @@ int64_t Program::parse_constant_mul()
 	if ( op->id() != TokenID::tkMul && op->id() != TokenID::tkDiv && op->id() != TokenID::tkMod )
 	    break;
 	nextToken(); // consume operator
-	int64_t rhs = parse_constant_primary();
+	madc_wide_int rhs = parse_constant_primary();
 	if ( op->id() == TokenID::tkMul ) lhs *= rhs;
 	else if ( op->id() == TokenID::tkDiv )
 	{
@@ -8133,9 +8160,9 @@ int64_t Program::parse_constant_mul()
 }
 
 // additive: parse_constant_mul ([+-] parse_constant_mul)*
-int64_t Program::parse_constant_add()
+madc_wide_int Program::parse_constant_add()
 {
-    int64_t lhs = parse_constant_mul();
+    madc_wide_int lhs = parse_constant_mul();
 
     while ( peekToken() )
     {
@@ -8143,7 +8170,7 @@ int64_t Program::parse_constant_add()
 	if ( op->id() != TokenID::tkAdd && op->id() != TokenID::tkSub && op->id() != TokenID::tkNeg )
 	    break;
 	nextToken(); // consume operator
-	int64_t rhs = parse_constant_mul();
+	madc_wide_int rhs = parse_constant_mul();
 	if ( op->id() == TokenID::tkAdd ) lhs += rhs;
 	else lhs -= rhs;
     }
@@ -8152,9 +8179,9 @@ int64_t Program::parse_constant_add()
 }
 
 // shift: parse_constant_add ([<<>>] parse_constant_add)*
-int64_t Program::parse_constant_shift()
+madc_wide_int Program::parse_constant_shift()
 {
-    int64_t lhs = parse_constant_add();
+    madc_wide_int lhs = parse_constant_add();
 
     while ( peekToken() )
     {
@@ -8162,7 +8189,7 @@ int64_t Program::parse_constant_shift()
 	if ( op->id() != TokenID::tkBSL && op->id() != TokenID::tkBSR )
 	    break;
 	nextToken();
-	int64_t rhs = parse_constant_add();
+	madc_wide_int rhs = parse_constant_add();
 	if ( op->id() == TokenID::tkBSL ) lhs <<= rhs;
 	else                              lhs >>= rhs;
     }
@@ -8171,9 +8198,9 @@ int64_t Program::parse_constant_shift()
 }
 
 // bitwise-and / xor / or: same precedence order as C.
-int64_t Program::parse_constant_band()
+madc_wide_int Program::parse_constant_band()
 {
-    int64_t lhs = parse_constant_eq();
+    madc_wide_int lhs = parse_constant_eq();
     while ( peekToken() && peekToken()->id() == TokenID::tkBand )
     {
 	nextToken();
@@ -8182,9 +8209,9 @@ int64_t Program::parse_constant_band()
     return lhs;
 }
 
-int64_t Program::parse_constant_bxor()
+madc_wide_int Program::parse_constant_bxor()
 {
-    int64_t lhs = parse_constant_band();
+    madc_wide_int lhs = parse_constant_band();
     while ( peekToken() && peekToken()->id() == TokenID::tkXor )
     {
 	nextToken();
@@ -8193,9 +8220,9 @@ int64_t Program::parse_constant_bxor()
     return lhs;
 }
 
-int64_t Program::parse_constant_bor()
+madc_wide_int Program::parse_constant_bor()
 {
-    int64_t lhs = parse_constant_bxor();
+    madc_wide_int lhs = parse_constant_bxor();
     while ( peekToken() && peekToken()->id() == TokenID::tkBor )
     {
 	nextToken();
@@ -8204,9 +8231,9 @@ int64_t Program::parse_constant_bor()
     return lhs;
 }
 
-int64_t Program::parse_constant_rel()
+madc_wide_int Program::parse_constant_rel()
 {
-    int64_t lhs = parse_constant_shift();
+    madc_wide_int lhs = parse_constant_shift();
     while ( peekToken() )
     {
 	TokenBase *op = peekToken();
@@ -8214,7 +8241,7 @@ int64_t Program::parse_constant_rel()
 	  && op->id() != TokenID::tkLE && op->id() != TokenID::tkGE )
 	    break;
 	nextToken();
-	int64_t rhs = parse_constant_shift();
+	madc_wide_int rhs = parse_constant_shift();
 	switch ( op->id() )
 	{
 	    case TokenID::tkLT: lhs = lhs < rhs; break;
@@ -8226,16 +8253,16 @@ int64_t Program::parse_constant_rel()
     return lhs;
 }
 
-int64_t Program::parse_constant_eq()
+madc_wide_int Program::parse_constant_eq()
 {
-    int64_t lhs = parse_constant_rel();
+    madc_wide_int lhs = parse_constant_rel();
     while ( peekToken() )
     {
 	TokenBase *op = peekToken();
 	if ( op->id() != TokenID::tkEquals && op->id() != TokenID::tkNotEq )
 	    break;
 	nextToken();
-	int64_t rhs = parse_constant_rel();
+	madc_wide_int rhs = parse_constant_rel();
 	lhs = (op->id() == TokenID::tkEquals) ? (lhs == rhs) : (lhs != rhs);
     }
     return lhs;
@@ -8276,9 +8303,9 @@ void Program::skip_const_logical_operand(bool stop_at_and)
     }
 }
 
-int64_t Program::parse_constant_land()
+madc_wide_int Program::parse_constant_land()
 {
-    int64_t lhs = parse_constant_bor();
+    madc_wide_int lhs = parse_constant_bor();
     while ( peekToken() && peekToken()->id() == TokenID::tkLand )
     {
 	nextToken();
@@ -8292,9 +8319,9 @@ int64_t Program::parse_constant_land()
     return lhs;
 }
 
-int64_t Program::parse_constant_lor()
+madc_wide_int Program::parse_constant_lor()
 {
-    int64_t lhs = parse_constant_land();
+    madc_wide_int lhs = parse_constant_land();
     while ( peekToken() && peekToken()->id() == TokenID::tkLor )
     {
 	nextToken();
@@ -8309,25 +8336,49 @@ int64_t Program::parse_constant_lor()
     return lhs;
 }
 
-int64_t Program::parse_constant_ternary()
+madc_wide_int Program::parse_constant_ternary()
 {
-    int64_t cond = parse_constant_lor();
+    madc_wide_int cond = parse_constant_lor();
     if ( peekToken() && peekToken()->id() == TokenID::tkQmark )
     {
 	nextToken(); // consume '?'
-	int64_t true_val = parse_constant_integer_expression();
+	madc_wide_int true_val = parse_constant_integer_expression();
 	TokenBase *colon = nextToken();
 	if ( !colon || colon->id() != TokenID::tkColon )
 	    Throw(colon) << "Expecting ':' in ternary constant expression" << flush;
-	int64_t false_val = parse_constant_ternary();
+	madc_wide_int false_val = parse_constant_ternary();
 	return cond ? true_val : false_val;
     }
     return cond;
 }
 
-int64_t Program::parse_constant_integer_expression()
+madc_wide_int Program::parse_constant_integer_expression()
 {
     return parse_constant_ternary();
+}
+
+// Materialize a folded constant value as a TokenInt (see madc.h). Historical
+// typing preserved exactly for int64-range values; a >64-bit value keeps its
+// low 64 bits on the token, parks the full value in valpool (wide_handle),
+// and is typed ddINT128/ddUINT128 so wival()/emission see it as semantically
+// wide (gcc types such fold results __int128/unsigned __int128).
+TokenInt *Program::make_folded_integer_token(madc_wide_int v)
+{
+    int64_t lo = (int64_t)v;
+    TokenInt *tok = new TokenInt(lo);
+    if ( (madc_wide_int)lo == v )
+    {
+	// Fits 64 bits: widen the token's TYPE past default int only when the
+	// value exceeds 32-bit range (the pre-slice-3 case-label behavior).
+	uint64_t uval = (uint64_t)lo;
+	if ( uval > 0x7FFFFFFF )
+	    tok->setDataType(lo < 0 ? (DataDef *)&ddINT64 : (DataDef *)&ddUINT64);
+	return tok;
+    }
+    tok->wide_handle = valpool.put_u128((uint64_t)(madc_wide_uint)v,
+					(uint64_t)((madc_wide_uint)v >> 64));
+    tok->setDataType(v < 0 ? (DataDef *)&ddINT128 : (DataDef *)&ddUINT128);
+    return tok;
 }
 
 // A streambuf that silently swallows output. The speculative constant-folds below
@@ -8387,10 +8438,13 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
     bool ok = false;
     try
     {
-	int64_t v = parse_constant_integer_expression();
+	madc_wide_int v = parse_constant_integer_expression();
 	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	{
-	    out = v;
+	    // The condition is contextually bool; normalize a wide fold so a
+	    // value whose LOW 64 bits are zero (e.g. (__int128)1 << 100) stays
+	    // truthy through the int64 out-param.
+	    out = ((int64_t)v != 0) ? (int64_t)v : (v != 0 ? 1 : 0);
 	    ok = true;
 	}
     }
@@ -8589,7 +8643,7 @@ bool Program::bracket_dim_uses_runtime_value(
 	    // value is known at compile time. A const with a runtime initializer
 	    // (e.g. `const int len = atoi(argv[1]);`) carries no folded value
 	    // (`var->data` is NULL) and is therefore still a VLA bound.
-	    int64_t cval;
+	    madc_wide_int cval;
 	    if ( read_constant_integer(v, cval) )
 		continue;
 	    return true;
@@ -12188,6 +12242,7 @@ void Program::add_host_callbacks()
 void Program::_parser_init()
 {
     TokenBase::_active_strpool = &strpool;	// interning Step 4: this Program owns spelling()
+    TokenBase::_active_valpool = &valpool;	// P0 slice 3: wide constants resolve via wival()
     ensure_registration_config();
     add_functions();
     add_globals();
@@ -29022,12 +29077,10 @@ TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn)
 	tc->line = tn->line;
 	tc->column = tn->column;
 	TokenBase *val_anchor = peekToken();
-	int64_t case_val = parse_constant_integer_expression();
-	TokenInt *val_tok = new TokenInt(case_val);
-	// Widen to 64-bit type when the value exceeds 32-bit range.
-	uint64_t uval = (uint64_t)case_val;
-	if ( uval > 0x7FFFFFFF )
-	    val_tok->setDataType(case_val < 0 ? (DataDef *)&ddINT64 : (DataDef *)&ddUINT64);
+	// Fold at 128-bit precision; make_folded_integer_token types the result
+	// (and parks a >64-bit value in valpool) — case ((__int128)1 << 100).
+	madc_wide_int case_val = parse_constant_integer_expression();
+	TokenInt *val_tok = make_folded_integer_token(case_val);
 	if ( val_anchor )
 	{
 	    val_tok->file = val_anchor->file;
@@ -29044,11 +29097,8 @@ TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn)
 	    if ( !d2 || d2->id() != TokenID::tkDot
 	      || !d3 || d3->id() != TokenID::tkDot )
 		Throw(tn) << "Expecting '...' in case range" << flush;
-	    int64_t high_val = parse_constant_integer_expression();
-	    tc->range_high = new TokenInt(high_val);
-	    uint64_t uhigh = (uint64_t)high_val;
-	    if ( uhigh > 0x7FFFFFFF )
-		tc->range_high->setDataType(high_val < 0 ? (DataDef *)&ddINT64 : (DataDef *)&ddUINT64);
+	    madc_wide_int high_val = parse_constant_integer_expression();
+	    tc->range_high = make_folded_integer_token(high_val);
 	    tn = nextToken();
 	}
 	if ( tn->id() != TokenID::tkTerC )

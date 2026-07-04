@@ -225,6 +225,8 @@ public:
 	else if (type == &ddUINT24) return *((uint16_t *)data);
 	else if (type == &ddUINT32) return *((uint32_t *)data);
 	else if (type == &ddUINT64) return *((uint64_t *)data);
+	else if (type == &ddINT128)  return *((madc_wide_int *)data);
+	else if (type == &ddUINT128) return *((madc_wide_uint *)data);
 	else if (type == &ddFLOAT)  return *((float *)data);
 	else if (type == &ddDOUBLE) return *((double *)data);
 	else if (dynamic_cast<DataDefENUM *>(type)) return *((int32_t *)data);

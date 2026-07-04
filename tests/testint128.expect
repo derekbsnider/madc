@@ -9,3 +9,6 @@ r=129
 fd_ok=1
 ov_lo=-64 flag_is_int=1
 switch_ok
+wide_switch_ok
+wide_neg_ok
+wide_u_ok

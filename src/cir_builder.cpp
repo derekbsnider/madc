@@ -250,8 +250,33 @@ node_t CirBuilder::integer(long val, TokenBase *origin)
 	return cn->as_node();
 }
 
-node_t CirBuilder::integer_typed(int64_t val, DataDef *dd, TokenBase *origin)
+node_t CirBuilder::integer_typed(madc_wide_int val, DataDef *dd, TokenBase *origin)
 {
+	// >64-bit constant (P0 slice 3): C has no 128-bit literal — gcc itself
+	// composes (hi << 64) | lo — so Tier-1-lower the value to
+	// ((unsigned __int128)hi << 64) | lo, cast to the constant's own type
+	// when signed. c2mir folds the expression back to a single 128-bit
+	// constant at check time, and --emit=c11 stays portable C (modulo
+	// __int128 itself, the documented slice-1 caveat).
+	if (val != (madc_wide_int)(int64_t)val) {
+		uint64_t lo64 = (uint64_t)(madc_wide_uint)val;
+		uint64_t hi64 = (uint64_t)((madc_wide_uint)val >> 64);
+		node_t u128_type = node2(N_TYPE, type_list(&ddUINT128),
+					 node2(N_DECL, ignore(), list()));
+		cir_node *hi_cn = make(N_UL, origin);
+		hi_cn->base.u.ul = (c2mir_ulong)hi64;
+		node_t hi_cast = node2(N_CAST, u128_type, hi_cn->as_node(), origin);
+		node_t shifted = node2(N_LSH, hi_cast, integer(64, origin), origin);
+		cir_node *lo_cn = make(N_UL, origin);
+		lo_cn->base.u.ul = (c2mir_ulong)lo64;
+		node_t composed = node2(N_OR, shifted, lo_cn->as_node(), origin);
+		if (dd && dd->rawtype() == DataType::dtINT128) {
+			node_t i128_type = node2(N_TYPE, type_list(&ddINT128),
+						 node2(N_DECL, ignore(), list()));
+			composed = node2(N_CAST, i128_type, composed, origin);
+		}
+		return composed;
+	}
 	// Choose the c2mir literal node code from the constant's own type so
 	// its signedness and width survive into c2mir's usual-arithmetic
 	// conversions. Without this every literal was N_I/N_L (always signed),
@@ -11769,8 +11794,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// records signedness/width from the u/l/ll suffix, e.g. `0xffffffffull`
 	// is unsigned long long). Emitting it as a bare signed N_I/N_L would
 	// drop that and break usual-arithmetic-conversion signedness downstream.
+	// wival(): the full 128-bit value for a semantically wide constant
+	// (parser-folded, ddINT128/ddUINT128-typed); ival() for everything else
+	// including gcc-canon-truncated too-large literals.
 	if (tb->type() == TokenType::ttInteger)
-		return integer_typed(tb->ival(), tb->datadef(), tb);
+		return integer_typed(tb->wival(), tb->datadef(), tb);
 
 	// Real literal — emit single-precision (N_F) when the literal carries an
 	// `f`/`F` suffix (datadef == float), so its width drives c2mir's usual-
@@ -14538,16 +14566,20 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 		if (is_default) {
 			append(labels, simple(N_DEFAULT));
 		} else if (tc->range_high) {
-			int64_t lo = tc->value->ival();
-			int64_t hi = tc->range_high->ival();
+			madc_wide_int lo = tc->value->wival();
+			madc_wide_int hi = tc->range_high->wival();
 			// Bound the expansion: an absurd range (or an inverted one) keeps
 			// the GNU N_CASE(low, high) form rather than materializing billions
-			// of labels. Such ranges do not occur in practice.
-			if (hi < lo || (hi - lo) >= kMaxCaseRangeExpansion) {
+			// of labels. Such ranges do not occur in practice. A >64-bit bound
+			// keeps the N_CASE form too — its label values have no 64-bit
+			// literal form (translate_expr composes them).
+			bool wide_bounds = (lo != (madc_wide_int)(int64_t)lo)
+					|| (hi != (madc_wide_int)(int64_t)hi);
+			if (hi < lo || wide_bounds || (hi - lo) >= kMaxCaseRangeExpansion) {
 				append(labels, node2(N_CASE, translate_expr(tc->value),
 						     translate_expr(tc->range_high), tc));
 			} else {
-				for (int64_t v = lo; v <= hi; v++)
+				for (int64_t v = (int64_t)lo; v <= (int64_t)hi; v++)
 					append(labels, node1(N_CASE, integer((long)v, tc), tc));
 			}
 		} else {

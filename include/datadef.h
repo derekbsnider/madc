@@ -35,6 +35,17 @@ class TokenBase;
 // (gcc.c-torture largesizeofquery) — never store a dim in a 32-bit type.
 typedef uint64_t carray_dim_t;
 
+// The constant-fold carrier (P0 slice 3). The parse-time fold spine
+// (parse_constant_*, resolve_integer_constant, case-label folding) computes at
+// 128-bit precision, mirroring gcc's wide_int model: values carry more
+// precision than their type; typed cast points truncate; int64 consumers
+// truncate implicitly at the assignment boundary (which IS gcc's #if
+// semantics — intmax_t is 64-bit). The carrier is signed; sub-64-bit
+// signedness is handled where casts truncate (apply_integer_cast_value), not
+// tracked per value — same discipline the int64 fold always used, one word up.
+typedef __int128          madc_wide_int;
+typedef unsigned __int128 madc_wide_uint;
+
 enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass,
 				// An unresolved template parameter `T` (DataDefTemplateParam).
 				// Append-only: never renumber. is_numeric/is_integer/is_real

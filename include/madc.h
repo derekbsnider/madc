@@ -2857,25 +2857,34 @@ public:
     // an integer-constant-expression — used for array dimensions, bit-field
     // widths, case labels, static_assert, enum values, etc. The rungs follow
     // C operator precedence; `parse_constant_integer_expression` is the entry.
-    int64_t parse_constant_primary();
-    int64_t parse_constant_mul();
-    int64_t parse_constant_add();
-    int64_t parse_constant_shift();
-    int64_t parse_constant_rel();
-    int64_t parse_constant_eq();
-    int64_t parse_constant_band();
-    int64_t parse_constant_bxor();
-    int64_t parse_constant_bor();
-    int64_t parse_constant_land();
-    int64_t parse_constant_lor();
+    // The rungs compute in the 128-bit fold carrier (madc_wide_int, P0 slice 3
+    // — gcc's wide_int model); int64 consumers truncate at the assignment
+    // boundary, which is gcc's own #if/intmax_t semantics.
+    madc_wide_int parse_constant_primary();
+    madc_wide_int parse_constant_mul();
+    madc_wide_int parse_constant_add();
+    madc_wide_int parse_constant_shift();
+    madc_wide_int parse_constant_rel();
+    madc_wide_int parse_constant_eq();
+    madc_wide_int parse_constant_band();
+    madc_wide_int parse_constant_bxor();
+    madc_wide_int parse_constant_bor();
+    madc_wide_int parse_constant_land();
+    madc_wide_int parse_constant_lor();
     // Short-circuit token-skip: consume (without evaluating) the RHS operand of
     // a `&&`/`||` whose result the LHS already determines. C++ [expr.const]: the
     // skipped operand need not be a constant expression. stop_at_and=true for a
     // `&&` RHS (a bor-operand, ends at the next `&&`); false for a `||` RHS (a
     // land-operand, spans `&&`). Keeps the cursor positioned for the caller.
     void skip_const_logical_operand(bool stop_at_and);
-    int64_t parse_constant_ternary();
-    int64_t parse_constant_integer_expression();
+    madc_wide_int parse_constant_ternary();
+    madc_wide_int parse_constant_integer_expression();
+    // Materialize a folded constant as a TokenInt: values in int64 range keep
+    // the historical typing (default int; >32-bit magnitude widens to
+    // ddINT64/ddUINT64); a wider value stores its low 64 bits on the token,
+    // parks the full value in Program::valpool under wide_handle, and types
+    // the token ddINT128/ddUINT128 (case labels, fold results).
+    TokenInt *make_folded_integer_token(madc_wide_int v);
     // C++20 requires-expression evaluation (`requires` already consumed by the
     // caller): parse the optional `(param-list)` then `{ requirement-seq }`,
     // and return 1 iff every requirement is satisfied. Params are modeled as
@@ -3154,10 +3163,10 @@ public:
     // Named C++ casts (static_cast/reinterpret_cast/const_cast/dynamic_cast):
     // parse the expression form and the constant-folded form; plus the
     // C-style cast operand helpers (deref/function-call/literal materialization).
-    int64_t parse_constant_named_cpp_cast(TokenBase *cast_tb,
-					  const std::string &cast_name);
+    madc_wide_int parse_constant_named_cpp_cast(TokenBase *cast_tb,
+						const std::string &cast_name);
     bool try_parse_constant_functional_cast(TokenBase *type_tb,
-					    int64_t &out);
+					    madc_wide_int &out);
     TokenBase *parse_named_cpp_cast(TokenBase *cast_tb,
 				    const std::string &cast_name);
     TokenBase *parse_cast_unary_deref_operand(TokenBase *star);
@@ -3295,7 +3304,7 @@ public:
     bool typedef_alias_matches_datadef(const std::string &alias, DataDef *dd);
     DataDef *resolve_current_class_type_alias(const std::string &name);
     bool resolve_current_class_static_member_const_value(const std::string &name, int64_t &out);
-    bool fold_constant_qualified_member(TokenBase *first, int64_t &out);
+    bool fold_constant_qualified_member(TokenBase *first, madc_wide_int &out);
     Variable *find_variable_for_contextual_type_name(const std::string &name);
     DataDefCLASS *resolve_expression_class_scope(const std::string &name);
     // Class-body parsing: detect when a struct body needs the class parser /
@@ -3401,7 +3410,7 @@ public:
 					    size_t &first_index, size_t &last_index);
     bool parse_builtin_types_compatible_operand(TokenBase *type_tb,
 						std::string &sig);
-    bool resolve_integer_constant(TokenBase *tb, int64_t &out);
+    bool resolve_integer_constant(TokenBase *tb, madc_wide_int &out);
     bool token_starts_type_name(TokenBase *tb);
     void configure_nested_function_captures(FuncDef *func);
     void mirror_inline_namespace_into_parent(const std::string &parent_ns,
