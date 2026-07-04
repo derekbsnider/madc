@@ -200,7 +200,12 @@ order of consumption of Track A. Follow that doc for detail.
   `madc -dM` parity; SMAUG soak unaffected.
 - **B4 — pack pipeline + qualification** (forest Phase 4): build-time pre-parse
   → freeze → compress → append; toolchain re-pin is a manual qualification
-  event with automated watching.
+  event with automated watching. **OPERATIVE DESIGN:
+  `2026-07-04-forest-default-mode-design.md`** — the design-owner directive
+  makes the frozen forest the DEFAULT mode of operation (`#include` binds a
+  grove; live parse is the fallback); B4 = parse-time grove binding via
+  frozen token slices + a decl index consumed lazily through the existing
+  lazy_resolve/nested-parse machinery, sliced B4a–B4d there.
 - **Success metric:** the ~1.9 s flat decl-parse tax becomes a load measured in
   tens of ms; `--show-stats` before/after published in the landing doc.
 
