@@ -2,6 +2,27 @@
 
 **Date:** 2026-07-05 · **Branch:** develop · **Status:** ACTIVE — slices 1a+1b+2+3a+3b landed.
 
+> ⚠️ **POST-COMPACTION, DO THIS FIRST (owner-directed 2026-07-05) — a
+> PARSER-track item, before resuming the forest track (3c):**
+> Root-cause and fix the live-parse failure where a struct reached through the
+> **system-include / auto-include prelude** path rejects `__int128_t`:
+> `parser.cpp:23185` throws *"Expecting type in struct definition, got
+> '__int128_t'"*. Exploratory repro (NOT yet minimal): `tmp/link.h` =
+> `struct Node { int val; struct Node *next; };`, then
+> `bin/madc tmp/rA2.cpp -I tmp` where rA2 = `#include <link.h>` +
+> `int printf(const char*,...);` + a `main` using `struct Node`. Note: the error
+> line ("99") is in the flattened prelude, NOT the 5-line header — so the
+> self-ref pointer / `ns::X` shapes are likely RED HERRINGS; the real trigger is
+> `__int128_t` in a prelude/system struct. **Method (gcc-methodology.md):**
+> minimize past the include noise to the true trigger → confirm blast radius
+> (does it block real corpus headers?) → `gcc -S`/`clang` compare → fix at the
+> DEEPEST layer (likely: recognize `__int128_t`/`__int128` as a type spelling in
+> the struct-body type parser), gated vs gcc+clang. This is a prerequisite for
+> the corpus (a bind can't beat a live parse). It is NOT a forest regression —
+> the failing path runs zero forest code (bind hook gated off), the throw is in
+> code this session never touched (git -L 383628f6..HEAD clean), and the torture
+> failset stayed byte-identical. Only AFTER this: resume forest 3c below.
+>
 > This handoff exists because of a real post-compaction drift on 2026-07-05: an
 > agent resumed, followed a design doc that had quietly reopened a *settled*
 > decision, and built ~600 lines of the WRONG thing (re-parsing) before the
