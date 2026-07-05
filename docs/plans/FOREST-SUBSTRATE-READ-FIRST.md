@@ -158,10 +158,33 @@ swizzles to complete DataDef objects VERBATIM, bind points symbol tables at them
 the parallel `decl_records`/`struct_members` format + `finalize`-regeneration are
 retired. Verbatim load means unnamed-bitfield-gap/packed structs now bind
 correctly (the old rebuild refused them). Gated green (fulltest 679/0/0/16 +
-forest_bind_gate cross-process + torture 50-name byte-identical). **NEXT: widen
-the SAME records to `CIR_TYPEK_CLASS`** (DataDefCLASS bases/methods/vtable) — the
-class fields already exist in `cir_forest_type_record`/`cir_forest_type_base`;
-freeze currently skips `DataDefCLASS` and load handles only STRUCT/UNION/TYPEDEF.
+forest_bind_gate cross-process + torture 50-name byte-identical).
+
+**LANDED (2026-07-05): `CIR_TYPEK_CLASS` — class DATA LAYOUT.** Freeze serializes a
+non-polymorphic class's members (verbatim, inheritance-flattened) + direct bases
+(`cir_forest_type_base`: subobject offset / access / is_primary) + flags
+(`from_system_header`/`has_user_ctor`/`has_user_dtor`) + size/align; load allocates
+a `DataDefCLASS` and swizzles base ids → loaded `DataDefCLASS*` verbatim; restore
+registers it into `struct_map` + `datatype_map` + a `dkStruct` TopDecl. A class
+carrying state this slice does not serialize (a vtable / polymorphic, a union
+layout, or a virtual base) is skipped WHOLE → loud error at use, never mis-link.
+Two freeze subtleties handled: (a) `TokenCLASS::parse` registers classes in
+`struct_map` only (NOT `top_decls`, unlike structs), and (b) lazy id-stamping is
+not definition order — so classes are enumerated from `struct_map` via a
+dependency-driven **fixpoint** (bases/member-types recorded before their users).
+The shared `cir_forest_serialize_members`/`_bases`/`_record_aggregate` helpers back
+both the struct and class paths. Gated green (fulltest 679/0/0/16 +
+`forest_bind_gate` `class` case: MI hierarchy binds cross-process, `sum=6 bb=2
+sz=12` == live == g++, incl. nonzero base offset + upcast; `test_cir_freeze` 17/17).
+**NEXT: class METHOD-CALL dispatch** — a `from_system_header`/`is_externally_defined`
+class's methods bind to real libstdc++ Itanium symbols (madc emits no bodies); this
+is the `<string>`/`<vector>` corpus payoff, on top of the now-complete data layout.
+
+NOTE (freeze fidelity, orthogonal): a `struct`-keyword aggregate WITH a base
+computes `sizeof` wrong in the LIVE parser (`struct D:B` → 4, should be 8); the
+`class`-keyword path is correct. The forest reproduces whatever the live parser
+produced (fidelity), so this is a separate parser-track bug, not a forest issue —
+being chased separately.
 
 Concretely (the shape, for the class widening and any further types):
 - `cir_freeze.h`: `cir_forest_type_record` (id, kind, name_id, spelling_id, size,

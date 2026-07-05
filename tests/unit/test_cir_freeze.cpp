@@ -1102,3 +1102,101 @@ TEST_CASE("Phase 6: named + unnamed-gap bitfield structs reconstruct verbatim") 
 	CHECK(gp->member_bitfields[1].bit_offset == 5);
 	CHECK(gp->member_bitfields[1].bit_width == 5);
 }
+
+// Phase 6 slice 3c: a non-polymorphic class serializes as a CLASS record —
+// members verbatim (inheritance-flattened) + bases (subobject offsets) + flags +
+// size/align — and materialize_types + forest_restore_decls reconstruct a
+// complete DataDefCLASS with NO header parse: each base id swizzles back to the
+// loaded base object, and layout loads VERBATIM (no compute_layout re-run).
+// Multiple inheritance exercises a nonzero base subobject offset (B at +4).
+TEST_CASE("Phase 6 slice 3c: forest_restore_decls reconstructs a header class "
+	  "(members + bases + layout) with no header parse") {
+	std::string inc_path = std::string("/tmp/madc_p6c_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_p6c_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_p6c_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	std::string triv_path = std::string("/tmp/madc_p6c_triv_")
+			      + std::to_string((long)getpid()) + ".mad";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "class A { public: int a; };\n"
+		       "class B { public: int b; };\n"
+		       "class C : public A, public B { public: int c; };\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { C x; x.a = 0; return x.a; }\n";
+	}
+	{ std::ofstream tv(triv_path.c_str()); tv << "int main() { return 0; }\n"; }
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	// C serializes as a CLASS record; materialize_types swizzles it to a complete
+	// DataDefCLASS whose bases point at the loaded A / B objects, at verbatim
+	// offsets (A@0, B@4), with the inheritance-flattened member set (a, b, c).
+	bool found = false;
+	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	for (size_t i = 0; i < types.size(); ++i) {
+		if (!types[i].name || strcmp(types[i].name, "C"))
+			continue;
+		found = true;
+		CHECK(types[i].kind == CIR_TYPEK_CLASS);
+		DataDefCLASS *cd = dynamic_cast<DataDefCLASS *>(types[i].dd);
+		REQUIRE(cd != nullptr);
+		REQUIRE(cd->members.size() == 3);
+		REQUIRE(cd->bases.size() == 2);
+		CHECK(cd->bases[0].offset == 0);
+		CHECK(cd->bases[1].offset == 4);
+		REQUIRE(cd->bases[0].base != nullptr);
+		REQUIRE(cd->bases[1].base != nullptr);
+		CHECK(cd->bases[0].base->name == "A");
+		CHECK(cd->bases[1].base->name == "B");
+		CHECK(cd->size == 12);
+	}
+	CHECK(found);
+
+	// A FRESH Program that never parsed the header.
+	std::shared_ptr<Program> progB = std::make_shared<Program>();
+	TokenProgram *tpB = progB->tokenize(triv_path.c_str());
+	REQUIRE(tpB != nullptr);
+	REQUIRE(progB->parse(tpB));
+	std::remove(triv_path.c_str());
+	CHECK(progB->struct_map.find("C") == progB->struct_map.end());
+
+	// RESTORE — no header parse — then C is a complete class: registered both as a
+	// type name (datatype_map) and a tag (struct_map), 3 members, 2 bases,
+	// base_class == the first base, and the same verbatim layout a live parse gives.
+	progB->forest_restore_decls(forest);
+	datadef_map_iter cit = progB->struct_map.find("C");
+	REQUIRE(cit != progB->struct_map.end());
+	DataDefCLASS *cd = dynamic_cast<DataDefCLASS *>(cit->second);
+	REQUIRE(cd != nullptr);
+	CHECK(cd->is_complete);
+	REQUIRE(cd->members.size() == 3);
+	REQUIRE(cd->bases.size() == 2);
+	CHECK(cd->bases[1].offset == 4);
+	REQUIRE(cd->base_class != nullptr);
+	CHECK(cd->base_class->name == "A");
+	CHECK(cd->size == 12);
+	CHECK(progB->datatype_map.find("C") != progB->datatype_map.end());
+}

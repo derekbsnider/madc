@@ -12270,7 +12270,30 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    DBG(std::cout << "forest_restore_decls: struct " << name << " ("
 		<< sdd->members.size() << " members)" << std::endl);
 	}
-	// classes (CIR_TYPEK_CLASS): widen next.
+	else if ( rt.kind == CIR_TYPEK_CLASS )
+	{
+	    // A class resolves both as a C++ type name (`Derived x;`) and as a tag
+	    // (`struct Derived`); its members + bases were already reconnected in
+	    // materialize_types. Register struct_map + datatype_map like the live C++
+	    // aggregate path and push a dkStruct TopDecl — the CIR builder emits the
+	    // class as a flat struct from its inheritance-flattened member list,
+	    // exactly as a live parse does. Data layout only; method-call dispatch
+	    // (binding to real Itanium symbols) is the follow-on.
+	    DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(rt.dd);
+	    if ( !cdd )
+		continue;
+	    struct_map[name] = cdd;
+	    TokenDataType *tdt = new TokenDataType(rt.name, *cdd);
+	    datatype_map[name] = tdt;
+	    TopDecl td;
+	    td.kind = DeclKind::dkStruct;
+	    td.name = name;
+	    td.dd = cdd;
+	    top_decls.push_back(td);
+	    DBG(std::cout << "forest_restore_decls: class " << name << " ("
+		<< cdd->members.size() << " members, " << cdd->bases.size()
+		<< " bases)" << std::endl);
+	}
     }
 }
 

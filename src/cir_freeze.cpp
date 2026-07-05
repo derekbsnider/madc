@@ -1105,15 +1105,21 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 	std::map<uint32_t, DataDef *> by_id;
 	for (size_t i = 0; i < _type_records.size(); ++i) {
 		const cir_forest_type_record &r = _type_records[i];
-		if ((r.kind != CIR_TYPEK_STRUCT && r.kind != CIR_TYPEK_UNION)
-		    || !r.type_id)
-			continue;			// typedef: pass 3; class: widen next
+		if ((r.kind != CIR_TYPEK_STRUCT && r.kind != CIR_TYPEK_UNION
+		     && r.kind != CIR_TYPEK_CLASS) || !r.type_id)
+			continue;			// typedef: pass 3
 		uint32_t nlen = 0;
 		const char *nm = pool_cstr(r.name_id, nlen);
 		if (!nm)
 			continue;
-		DataDefSTRUCT *sdd = new DataDefSTRUCT(std::string(nm, nlen), r.size);
-		sdd->union_layout = (r.flags & CIR_TYPEF_UNION) != 0;
+		DataDefSTRUCT *sdd;
+		if (r.kind == CIR_TYPEK_CLASS)
+			sdd = new DataDefCLASS(std::string(nm, nlen), r.size,
+					       DataType::dtRESERVED);
+		else {
+			sdd = new DataDefSTRUCT(std::string(nm, nlen), r.size);
+			sdd->union_layout = (r.flags & CIR_TYPEF_UNION) != 0;
+		}
 		_mat_storage.push_back(sdd);
 		by_id[r.type_id] = sdd;
 	}
@@ -1124,8 +1130,8 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 	// madc_type_from_id, forest aggregate via by_id).
 	for (size_t i = 0; i < _type_records.size(); ++i) {
 		const cir_forest_type_record &r = _type_records[i];
-		if ((r.kind != CIR_TYPEK_STRUCT && r.kind != CIR_TYPEK_UNION)
-		    || !r.type_id)
+		if ((r.kind != CIR_TYPEK_STRUCT && r.kind != CIR_TYPEK_UNION
+		     && r.kind != CIR_TYPEK_CLASS) || !r.type_id)
 			continue;
 		std::map<uint32_t, DataDef *>::iterator ai = by_id.find(r.type_id);
 		if (ai == by_id.end())
@@ -1173,6 +1179,41 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 		sdd->max_align   = r.align ? r.align : 1;
 		sdd->is_complete = true;
 		sdd->type_id     = 0;			// re-stamp a fresh id in the consuming Program
+		// CLASS extra state (Phase 6 3c): flags + bases VERBATIM. Each base
+		// base_type_id swizzles to the DataDefCLASS* allocated in pass 1;
+		// offset/access/is_primary load as stored (no compute_layout re-run).
+		if (DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(sdd)) {
+			cdd->class_align        = r.align ? r.align : 1;
+			cdd->from_system_header = (r.flags & CIR_TYPEF_SYSHDR) != 0;
+			cdd->has_user_ctor      = (r.flags & CIR_TYPEF_USER_CTOR) != 0;
+			cdd->has_user_dtor      = (r.flags & CIR_TYPEF_USER_DTOR) != 0;
+			cdd->has_vtable         = (r.flags & CIR_TYPEF_HAS_VTABLE) != 0;
+			cdd->has_vptr_slot      = (r.flags & CIR_TYPEF_HAS_VPTR) != 0;
+			static const size_t BSTRIDE =
+				sizeof(cir_forest_type_base) / sizeof(uint32_t);
+			bool bok = true;
+			for (uint32_t b = 0; b < r.base_count; ++b) {
+				size_t bb = (size_t)r.base_begin + (size_t)b * BSTRIDE;
+				if (bb + BSTRIDE > _type_payload.size()) { bok = false; break; }
+				cir_forest_type_base tb;
+				memcpy(&tb, &_type_payload[bb], sizeof(tb));
+				std::map<uint32_t, DataDef *>::iterator bi =
+					by_id.find(tb.base_type_id);
+				DataDefCLASS *bc = bi != by_id.end()
+					? dynamic_cast<DataDefCLASS *>(bi->second) : NULL;
+				if (!bc) { bok = false; break; }
+				BaseSpec bs;
+				bs.base       = bc;
+				bs.offset     = tb.offset;
+				bs.is_virtual = (tb.flags & 1u) != 0;
+				bs.access     = tb.access;
+				bs.is_primary = (tb.flags & 2u) != 0;
+				cdd->bases.push_back(bs);
+			}
+			if (!bok)
+				continue;		// unresolvable base -> bind cleanly lacks it
+			cdd->base_class = cdd->bases.empty() ? NULL : cdd->bases[0].base;
+		}
 		uint32_t nlen = 0;
 		CirRestoredType rt;
 		rt.name       = pool_cstr(r.name_id, nlen);

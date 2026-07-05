@@ -186,5 +186,36 @@ int main()
 EOF
 run_case bitfield "bf=5 20 7 sz=8"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield grove headers bound (no re-parse), output == live == g++"
+# --- case: class (slice 3c) — a non-polymorphic class hierarchy. Multiple
+#     inheritance exercises a nonzero base subobject offset (B at +4) and an
+#     upcast (`B *bp = &x`), so the reconstructed DataDefCLASS's members (verbatim,
+#     inheritance-flattened) AND bases[] (offsets) must both be right. A / B are
+#     promoted to classes by being used as bases; C is class-keyword. All three
+#     bind from the type-table records with no header parse.
+cat > tmp/fbgate_class.h <<'EOF'
+#ifndef FBGATE_CLASS_H
+#define FBGATE_CLASS_H
+class A { public: int a; };
+class B { public: int b; };
+class C : public A, public B { public: int c; };
+#endif
+EOF
+cat > tmp/fbgate_class_producer.cpp <<'EOF'
+#include <fbgate_class.h>
+int main() { C x; x.a = 0; return x.a; }
+EOF
+cat > tmp/fbgate_class_consumer.cpp <<'EOF'
+#include <fbgate_class.h>
+#include <cstdio>
+int main()
+{
+    C x; x.a = 1; x.b = 2; x.c = 3;
+    B *bp = &x;
+    printf("sum=%d bb=%d sz=%zu\n", x.a + x.b + x.c, bp->b, sizeof(C));
+    return 0;
+}
+EOF
+run_case class "sum=6 bb=2 sz=12"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class grove headers bound (no re-parse), output == live == g++"
 exit 0

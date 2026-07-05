@@ -734,40 +734,146 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     }
 }
 
-// Phase 6 (design 2026-07-05): collect the parser's decl graph into serializable
-// records so a fresh process can RECONSTRUCT the symbol tables on load — never
-// re-parse. Slice 1: file-scope typedefs, whose aliased type is a primitive
-// (its type-id is pinned and resolves in any process). Widens to struct/class/
-// func/template (aggregate types get system-segment ids) in later slices.
-// The container stays Program-blind; this is the Program->payload bridge (the
-// same seam as cir_forest_fill_pack_payloads). Names intern into the ACTIVE pool
-// that cir_forest_write serializes.
-// Round-trip layout check: replay the MEMBERS-ONLY reconstruction that
-// forest_restore_decls performs (addMember / addBitField over sdd->members, in
-// order, on a plain scratch struct) and require it to reproduce the original's
-// FULL layout — total size, every member byte offset, and every bitfield
-// bit-offset. It fails whenever the true layout depends on state the member
-// stream cannot carry or this slice does not model: unnamed/zero-width bitfield
-// gaps (absent from `members`, so they shift later bit-offsets WITHOUT changing
-// size — a size-only check misses them), `#pragma pack`, reverse scalar storage,
-// or explicit member/tag alignment. A struct that does not round-trip faithfully
-// is never serialized (bind then cleanly lacks it — a loud error at the use
-// site, NEVER wrong output).
 // Serialize the project type table into f.type_records + f.type_payload (Phase 6;
 // 2026-06-12 type-table design §6.4 "forest type-refs serialize as ids + table
-// segments"). Each file-scope typedef and each PLAIN named struct/union becomes
-// ONE cir_forest_type_record; a struct's data members ride the type_payload
-// stream as VERBATIM cir_forest_type_member records — offset / count / access /
-// origin / bitfield are the values the parser already computed, loaded as-is on
-// the far side. Because layout is loaded, never re-derived, unnamed-bitfield
-// gaps, #pragma pack and reverse storage all survive for free (the old
-// members-only rebuild had to refuse them). Pointer fields are ids: a member's
-// type is a typeid (a pinned primitive slot, or the aggregate's own record id)
-// swizzled back to DataDef* at load. top_decls is definition order, so a
-// value-member aggregate is recorded before the struct that uses it. Classes
-// (DataDefCLASS) and members of an unserializable type (pointer/fnptr/anon
-// aggregate) are not yet covered — such a struct is skipped whole so bind cleanly
-// lacks it (a loud error at the use site) rather than mis-linking.
+// segments"). Each file-scope typedef, each named struct/union, and each named
+// non-polymorphic class becomes ONE cir_forest_type_record; the aggregate's data
+// members ride the type_payload stream as VERBATIM cir_forest_type_member records
+// (offset / count / access / origin / bitfield are the values the parser already
+// computed, loaded as-is on the far side), and a class's direct bases ride it as
+// cir_forest_type_base records (subobject offset / access / is_primary, verbatim).
+// Because layout is loaded, never re-derived, unnamed-bitfield gaps, #pragma pack,
+// reverse storage, and base subobject offsets all survive for free. Pointer fields
+// are ids: a member/base type is a typeid (a pinned primitive slot, or the
+// aggregate's own record id) swizzled back to DataDef* at load. top_decls is
+// definition order, so a value-member or base aggregate is recorded before the
+// aggregate that uses it. A class is skipped WHOLE — bind then cleanly lacks it (a
+// loud error at the use site) rather than mis-linking — when it carries state this
+// slice does not yet serialize: a vtable (polymorphic), a union layout, a virtual
+// or not-yet-recorded base, or a member of an unserializable type (pointer / fnptr
+// / anon aggregate). Binding a class's methods to their real Itanium symbols is a
+// follow-on; this slice covers the data layout (the type), not method dispatch.
+// The container stays Program-blind; this is the Program->payload bridge (the same
+// seam as cir_forest_fill_pack_payloads). Names intern into the ACTIVE pool that
+// cir_forest_write serializes.
+// Serialize sdd's data members into `payload` as VERBATIM cir_forest_type_member
+// records (offset / count / access / origin / bitfield are the parser's computed
+// values, loaded as-is on the far side). A member type rides as a typeid: a
+// pinned primitive, or an aggregate already in `recorded`. Returns false (leaving
+// `payload` partial, which the caller discards) if any member type is not yet
+// serializable — so the caller skips the whole aggregate rather than mis-linking.
+// Shared by the struct and class paths.
+static bool cir_forest_serialize_members(DataDefSTRUCT *sdd,
+					 madc::dis::intern_table &pool,
+					 const std::set<DataDef *> &recorded,
+					 std::vector<uint32_t> &payload)
+{
+	for (size_t m = 0; m < sdd->members.size(); ++m) {
+		DataDef *mdd = sdd->members[m].second;
+		if (!mdd)
+			return false;
+		uint32_t mtid = madc_type_id_for(mdd);
+		if (!(mtid && (mtid < MADC_TYPEID_PRIMITIVE_END || recorded.count(mdd))))
+			return false;
+		cir_forest_type_member tm;
+		memset(&tm, 0, sizeof(tm));
+		tm.name_id = pool.intern(sdd->members[m].first);
+		tm.type_id = mtid;
+		tm.offset  = (uint32_t)(m < sdd->member_offsets.size() ? sdd->member_offsets[m] : 0);
+		tm.count   = (uint32_t)(m < sdd->member_counts.size() ? sdd->member_counts[m] : 1);
+		if (tm.count == 0) tm.count = 1;
+		tm.access  = m < sdd->member_access.size() ? sdd->member_access[m] : 0u;
+		tm.origin  = m < sdd->member_origin.size() ? (int32_t)sdd->member_origin[m] : -1;
+		if (m < sdd->member_bitfields.size()
+		    && sdd->member_bitfields[m].is_bitfield) {
+			const DataDefSTRUCT::BitFieldInfo &bf = sdd->member_bitfields[m];
+			tm.bf_flags = 1u | (bf.is_unsigned ? 2u : 0u)
+				    | (bf.reverse_storage ? 4u : 0u);
+			tm.bf_bit_offset     = (uint32_t)bf.bit_offset;
+			tm.bf_bit_width      = (uint32_t)bf.bit_width;
+			tm.bf_storage_offset = (uint32_t)bf.storage_offset;
+			tm.bf_storage_size   = (uint32_t)bf.storage_size;
+		}
+		const uint32_t *w = (const uint32_t *)&tm;
+		for (size_t k = 0; k < sizeof(tm) / sizeof(uint32_t); ++k)
+			payload.push_back(w[k]);
+	}
+	return true;
+}
+
+// Serialize a class's direct bases into `bpayload` as VERBATIM cir_forest_type_base
+// records (subobject offset / access / is_primary). Returns false when the class
+// carries base state this slice does not serialize — a virtual base, or a base not
+// yet in `recorded` — so the caller skips the whole class.
+static bool cir_forest_serialize_bases(DataDefCLASS *cdd,
+				       const std::set<DataDef *> &recorded,
+				       std::vector<uint32_t> &bpayload)
+{
+	for (size_t b = 0; b < cdd->bases.size(); ++b) {
+		const BaseSpec &bs = cdd->bases[b];
+		if (bs.is_virtual || !bs.base)
+			return false;
+		uint32_t bid = madc_type_id_for(bs.base);
+		if (!(bid && recorded.count(bs.base)))
+			return false;
+		cir_forest_type_base tb;
+		memset(&tb, 0, sizeof(tb));
+		tb.base_type_id = bid;
+		tb.offset       = (uint32_t)bs.offset;
+		tb.flags        = bs.is_primary ? 2u : 0u;	// is_virtual bailed above
+		tb.access       = bs.access;
+		const uint32_t *w = (const uint32_t *)&tb;
+		for (size_t k = 0; k < sizeof(tb) / sizeof(uint32_t); ++k)
+			bpayload.push_back(w[k]);
+	}
+	return true;
+}
+
+// Build ONE cir_forest_type_record for aggregate sdd (cdd == sdd for a class, NULL
+// for a plain struct/union) and append it + its member/base payload to f. Returns
+// false WITHOUT touching f when a member (or, for a class, a base) type is not yet
+// recorded — the caller retries it in a later fixpoint round, or skips it. On
+// success sdd is inserted into `recorded`.
+static bool cir_forest_record_aggregate(DataDefSTRUCT *sdd, DataDefCLASS *cdd,
+					madc::dis::intern_table &pool,
+					std::set<DataDef *> &recorded,
+					cir_frozen_forest &f)
+{
+	std::vector<uint32_t> bpayload;
+	if (cdd && !cir_forest_serialize_bases(cdd, recorded, bpayload))
+		return false;
+	std::vector<uint32_t> payload;
+	if (!cir_forest_serialize_members(sdd, pool, recorded, payload))
+		return false;
+
+	cir_forest_type_record r;
+	memset(&r, 0, sizeof(r));
+	r.type_id      = madc_type_id_for(sdd);	// this aggregate's serialization identity
+	r.kind         = cdd ? CIR_TYPEK_CLASS
+			     : (sdd->union_layout ? CIR_TYPEK_UNION : CIR_TYPEK_STRUCT);
+	r.name_id      = pool.intern(sdd->name);
+	r.spelling_id  = sdd->canonical_cpp_spelling.empty()
+		       ? 0 : pool.intern(sdd->canonical_cpp_spelling);
+	r.size         = (uint32_t)sdd->size;
+	r.align        = (uint32_t)sdd->alignment();
+	r.flags        = (sdd->union_layout ? CIR_TYPEF_UNION : 0u) | CIR_TYPEF_COMPLETE;
+	if (cdd)
+		r.flags |= (cdd->from_system_header ? CIR_TYPEF_SYSHDR : 0u)
+			 | (cdd->has_user_ctor ? CIR_TYPEF_USER_CTOR : 0u)
+			 | (cdd->has_user_dtor ? CIR_TYPEF_USER_DTOR : 0u);
+	r.member_begin = (uint32_t)f.type_payload.size();
+	r.member_count = (uint32_t)sdd->members.size();
+	f.type_payload.insert(f.type_payload.end(), payload.begin(), payload.end());
+	if (cdd) {
+		r.base_begin = (uint32_t)f.type_payload.size();
+		r.base_count = (uint32_t)cdd->bases.size();
+		f.type_payload.insert(f.type_payload.end(), bpayload.begin(), bpayload.end());
+	}
+	f.type_records.push_back(r);
+	recorded.insert(sdd);
+	return true;
+}
+
 static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
 {
     if (!prog || !TokenBase::_active_strpool)
@@ -786,63 +892,51 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
 	    && td.kind != Program::DeclKind::dkUnion)
 	    continue;
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(td.dd);
-	if (!sdd || !sdd->is_complete)
+	// A struct USED AS A BASE is promoted to a DataDefCLASS and struct_map is
+	// repointed while this TopDecl still holds the pre-promotion object. Resolve
+	// the REGISTERED type; a class is left to pass 2 (TokenCLASS::parse registers
+	// classes in struct_map only, NOT in top_decls).
+	datadef_map_iter smi = prog->struct_map.find(td.name);
+	if (smi != prog->struct_map.end())
+		if (DataDefSTRUCT *reg = dynamic_cast<DataDefSTRUCT *>(smi->second))
+			sdd = reg;
+	if (!sdd || !sdd->is_complete || sdd->has_anon_aggregate)
 	    continue;
-	if (dynamic_cast<DataDefCLASS *>(sdd) || sdd->has_anon_aggregate)
-	    continue;			// classes / anon aggregates: widen next
+	if (dynamic_cast<DataDefCLASS *>(sdd))
+	    continue;			// class: pass 2 (struct_map fixpoint)
+	if (recorded.count(sdd))
+	    continue;
+	cir_forest_record_aggregate(sdd, NULL, pool, recorded, f);
+    }
 
-	// Serialize members into the payload stream; bail the WHOLE struct if any
-	// member type is not yet serializable (a half-serialized struct mis-links).
-	std::vector<uint32_t> payload;
-	bool ok = true;
-	for (size_t m = 0; m < sdd->members.size(); ++m) {
-	    DataDef *mdd = sdd->members[m].second;
-	    if (!mdd) { ok = false; break; }
-	    uint32_t mtid = madc_type_id_for(mdd);
-	    if (!(mtid && (mtid < MADC_TYPEID_PRIMITIVE_END || recorded.count(mdd)))) {
-		ok = false; break;
-	    }
-	    cir_forest_type_member tm;
-	    memset(&tm, 0, sizeof(tm));
-	    tm.name_id = pool.intern(sdd->members[m].first);
-	    tm.type_id = mtid;
-	    tm.offset  = (uint32_t)(m < sdd->member_offsets.size() ? sdd->member_offsets[m] : 0);
-	    tm.count   = (uint32_t)(m < sdd->member_counts.size() ? sdd->member_counts[m] : 1);
-	    if (tm.count == 0) tm.count = 1;
-	    tm.access  = m < sdd->member_access.size() ? sdd->member_access[m] : 0u;
-	    tm.origin  = m < sdd->member_origin.size() ? (int32_t)sdd->member_origin[m] : -1;
-	    if (m < sdd->member_bitfields.size()
-		&& sdd->member_bitfields[m].is_bitfield) {
-		const DataDefSTRUCT::BitFieldInfo &bf = sdd->member_bitfields[m];
-		tm.bf_flags = 1u | (bf.is_unsigned ? 2u : 0u)
-			    | (bf.reverse_storage ? 4u : 0u);
-		tm.bf_bit_offset     = (uint32_t)bf.bit_offset;
-		tm.bf_bit_width      = (uint32_t)bf.bit_width;
-		tm.bf_storage_offset = (uint32_t)bf.storage_offset;
-		tm.bf_storage_size   = (uint32_t)bf.storage_size;
-	    }
-	    const uint32_t *w = (const uint32_t *)&tm;
-	    for (size_t k = 0; k < sizeof(tm) / sizeof(uint32_t); ++k)
-		payload.push_back(w[k]);
+    // Pass 2 — CLASSES from struct_map (their only registry). id-stamping order is
+    // NOT definition order, so a single linear pass could visit a derived class
+    // before its base; a fixpoint records a class only once its bases + member
+    // types are recorded, converging base-before-derived. A class carrying state
+    // this slice does not serialize (a vtable / polymorphic, a union layout, or a
+    // virtual base) is skipped WHOLE — bind cleanly lacks it (a loud error at the
+    // use site) rather than mis-linking.
+    std::vector<DataDefCLASS *> classes;
+    std::set<DataDefCLASS *> seen;
+    for (datadef_map_iter it = prog->struct_map.begin();
+	 it != prog->struct_map.end(); ++it) {
+	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(it->second);
+	if (!cdd || !cdd->is_complete || cdd->has_anon_aggregate)
+	    continue;
+	if (cdd->union_layout || cdd->has_vtable || cdd->has_vptr_slot)
+	    continue;
+	if (seen.insert(cdd).second)		// dedup name aliases -> one object
+	    classes.push_back(cdd);
+    }
+    bool progress = true;
+    while (progress) {
+	progress = false;
+	for (size_t i = 0; i < classes.size(); ++i) {
+	    if (recorded.count(classes[i]))
+		continue;
+	    if (cir_forest_record_aggregate(classes[i], classes[i], pool, recorded, f))
+		progress = true;
 	}
-	if (!ok)
-	    continue;
-
-	cir_forest_type_record r;
-	memset(&r, 0, sizeof(r));
-	r.type_id      = madc_type_id_for(sdd);	// this struct's serialization identity
-	r.kind         = sdd->union_layout ? CIR_TYPEK_UNION : CIR_TYPEK_STRUCT;
-	r.name_id      = pool.intern(sdd->name);
-	r.spelling_id  = sdd->canonical_cpp_spelling.empty()
-		       ? 0 : pool.intern(sdd->canonical_cpp_spelling);
-	r.size         = (uint32_t)sdd->size;
-	r.align        = (uint32_t)sdd->alignment();
-	r.flags        = (sdd->union_layout ? CIR_TYPEF_UNION : 0u) | CIR_TYPEF_COMPLETE;
-	r.member_begin = (uint32_t)f.type_payload.size();
-	r.member_count = (uint32_t)sdd->members.size();
-	f.type_payload.insert(f.type_payload.end(), payload.begin(), payload.end());
-	f.type_records.push_back(r);
-	recorded.insert(sdd);
     }
 
     // File-scope typedefs -> alias records (ref0 = the underlying type's id).
