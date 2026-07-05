@@ -398,17 +398,36 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	for (size_t i = 0; i < f.libs.size(); ++i)
 		lib_ids.push_back(pool->intern(f.libs[i]));
 
-	// typeid -> name closure: the freezing Program's project segment (the
-	// primitive segment is pinned and process-invariant; the system
-	// segment gains occupants with the B4 pack pipeline).
-	std::vector<uint32_t> type_names;
-	if (madc_active_project_types) {
-		uint32_t base = madc_active_project_types->base();
-		for (uint32_t i = 0; i < (uint32_t)madc_active_project_types->size(); ++i) {
-			DataDef *dd = madc_active_project_types->get(base + i);
-			if (dd && !dd->name.empty()) {
-				type_names.push_back(base + i);
-				type_names.push_back(pool->intern(dd->name));
+	// Phase 6: the complete type-table serialization. f.type_records holds the
+	// FULL-content records (structs / typedefs) built by
+	// cir_forest_fill_type_records (madc_cir.cpp) — each DataDef's content with
+	// pointer fields as ids, swizzled back on load. Here we ALSO emit a name-only
+	// CIR_TYPEK_OTHER record for every OTHER named project type (classes + derived
+	// types not yet fully serialized) so the typeid->name closure (type_name_for)
+	// stays complete — the old typeid->name behavior, now unified into the one
+	// record stream and the widening path (OTHER -> full as kinds are added).
+	std::vector<cir_forest_type_record> type_recs = f.type_records;
+	{
+		std::set<uint32_t> have;
+		for (size_t i = 0; i < type_recs.size(); ++i)
+			if (type_recs[i].type_id)
+				have.insert(type_recs[i].type_id);
+		if (madc_active_project_types) {
+			uint32_t base = madc_active_project_types->base();
+			for (uint32_t i = 0;
+			     i < (uint32_t)madc_active_project_types->size(); ++i) {
+				uint32_t tid = base + i;
+				if (have.count(tid))
+					continue;
+				DataDef *dd = madc_active_project_types->get(tid);
+				if (!dd || dd->name.empty())
+					continue;
+				cir_forest_type_record r;
+				memset(&r, 0, sizeof(r));
+				r.type_id = tid;
+				r.kind    = CIR_TYPEK_OTHER;
+				r.name_id = pool->intern(dd->name);
+				type_recs.push_back(r);
 			}
 		}
 	}
@@ -458,8 +477,15 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 			pool->buckets_data(),
 			pool->buckets_size() * sizeof(uint32_t), codec))
 		return false;
-	if (!add_seg(w, CIR_FOREST_SEG_TYPE_NAMES, SNAP_KIND_CIR_TYPE_NAMES,
-		     type_names.data(), type_names.size() * sizeof(uint32_t), codec))
+	// v6 container-global: the complete type-table serialization (Phase 6) —
+	// one record per project/system DataDef (full content, pointer fields as
+	// ids) plus the member/base payload stream, swizzled to DataDef* on load.
+	if (!add_seg(w, CIR_FOREST_SEG_TYPE_RECORDS, SNAP_KIND_CIR_TYPE_RECORDS,
+		     type_recs.data(),
+		     type_recs.size() * sizeof(cir_forest_type_record), codec)
+	    || !add_seg(w, CIR_FOREST_SEG_TYPE_PAYLOAD, SNAP_KIND_CIR_TYPE_PAYLOAD,
+			f.type_payload.data(),
+			f.type_payload.size() * sizeof(uint32_t), codec))
 		return false;
 	// v2 container-global payloads (zero-length when the freeze recorded
 	// nothing — a module-only freeze).
@@ -469,16 +495,6 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	    || !add_seg(w, CIR_FOREST_SEG_CANON_ORDER, SNAP_KIND_CIR_CANON_ORDER,
 			f.canon_order.data(),
 			f.canon_order.size() * sizeof(uint32_t), codec))
-		return false;
-	// v3 container-global: the serialized parser decl graph (Phase 6).
-	if (!add_seg(w, CIR_FOREST_SEG_DECL_RECORDS, SNAP_KIND_CIR_DECL_RECORDS,
-		     f.decl_records.data(),
-		     f.decl_records.size() * sizeof(cir_forest_decl_record), codec))
-		return false;
-	// v4 container-global: the struct-member stream (Phase 6 slice 3a).
-	if (!add_seg(w, CIR_FOREST_SEG_STRUCT_MEMBERS, SNAP_KIND_CIR_STRUCT_MEMBERS,
-		     f.struct_members.data(),
-		     f.struct_members.size() * sizeof(uint32_t), codec))
 		return false;
 
 	for (size_t u = 0; u < f.units.size(); ++u) {
@@ -760,7 +776,7 @@ cir_node *CirFrozenSegment::node_at(uint32_t idx)
 // ---------------------------------------------------------------------------
 
 CirFrozenForest::CirFrozenForest()
-	: _c2m(NULL), _root_unit(0), _root_idx(0)
+	: _c2m(NULL), _root_unit(0), _root_idx(0), _types_materialized(false)
 {
 }
 
@@ -768,6 +784,10 @@ CirFrozenForest::~CirFrozenForest()
 {
 	for (size_t u = 0; u < _segs.size(); ++u)
 		delete _segs[u];
+	// Free the DataDef objects materialized from the type table (forest-owned;
+	// the parser's symbol tables held non-owning pointers into these).
+	for (size_t i = 0; i < _mat_storage.size(); ++i)
+		delete _mat_storage[i];
 }
 
 // Bind one pool block: in place from the image when stored uncompressed
@@ -879,25 +899,44 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
 		_libs.push_back(std::string(s, slen));
 	}
 
-	// typeid -> name closure.
+	// v6 container-global: the complete type-table serialization (Phase 6).
+	// Records load here; the type_name_for closure is DERIVED from them; the
+	// DataDef objects materialize lazily at bind (materialize_types), never at
+	// open — so --run-frozen (which never binds) pays nothing.
 	if (const madc::dis::snapshot_segment *ts =
-		_reader.find(CIR_FOREST_SEG_TYPE_NAMES)) {
-		std::vector<uint8_t> tn;
-		if (ts->kind != SNAP_KIND_CIR_TYPE_NAMES
-		    || !_reader.read_segment(*ts, tn)
-		    || tn.size() % (2 * sizeof(uint32_t))) {
-			fprintf(stderr, "madc: forest type-name closure corrupt\n");
+		_reader.find(CIR_FOREST_SEG_TYPE_RECORDS)) {
+		std::vector<uint8_t> d;
+		if (ts->kind != SNAP_KIND_CIR_TYPE_RECORDS
+		    || !_reader.read_segment(*ts, d)
+		    || d.size() % sizeof(cir_forest_type_record)) {
+			fprintf(stderr, "madc: forest type records corrupt\n");
 			return false;
 		}
-		for (size_t off = 0; off + 2 * sizeof(uint32_t) <= tn.size();
-		     off += 2 * sizeof(uint32_t)) {
-			uint32_t tid, nid;
-			memcpy(&tid, tn.data() + off, sizeof(uint32_t));
-			memcpy(&nid, tn.data() + off + sizeof(uint32_t), sizeof(uint32_t));
+		_type_records.resize(d.size() / sizeof(cir_forest_type_record));
+		if (!d.empty())
+			memcpy(_type_records.data(), d.data(), d.size());
+		// Derive the typeid -> name closure (type_name_for) from the records.
+		for (size_t i = 0; i < _type_records.size(); ++i) {
+			const cir_forest_type_record &r = _type_records[i];
+			if (!r.type_id)
+				continue;
 			uint32_t slen = 0;
-			if (const char *s = pool_cstr(nid, slen))
-				_type_names[tid] = s;
+			if (const char *s = pool_cstr(r.name_id, slen))
+				_type_names[r.type_id] = s;
 		}
+	}
+	if (const madc::dis::snapshot_segment *ps =
+		_reader.find(CIR_FOREST_SEG_TYPE_PAYLOAD)) {
+		std::vector<uint8_t> d;
+		if (ps->kind != SNAP_KIND_CIR_TYPE_PAYLOAD
+		    || !_reader.read_segment(*ps, d)
+		    || d.size() % sizeof(uint32_t)) {
+			fprintf(stderr, "madc: forest type payload corrupt\n");
+			return false;
+		}
+		_type_payload.resize(d.size() / sizeof(uint32_t));
+		if (!d.empty())
+			memcpy(_type_payload.data(), d.data(), d.size());
 	}
 
 	// v2 container-global payloads (zero-length segments = empty).
@@ -930,38 +969,6 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
 				return false;
 			}
 	}
-	// v3 container-global: the serialized parser decl graph (Phase 6). Absent on
-	// a v2 container (this open already rejected v2 via the version pin, but a
-	// zero-length segment is still valid).
-	if (const madc::dis::snapshot_segment *drs =
-		_reader.find(CIR_FOREST_SEG_DECL_RECORDS)) {
-		std::vector<uint8_t> d;
-		if (drs->kind != SNAP_KIND_CIR_DECL_RECORDS
-		    || !_reader.read_segment(*drs, d)
-		    || d.size() % sizeof(cir_forest_decl_record)) {
-			fprintf(stderr, "madc: forest decl-record graph corrupt\n");
-			return false;
-		}
-		_decl_records.resize(d.size() / sizeof(cir_forest_decl_record));
-		if (!d.empty())
-			memcpy(_decl_records.data(), d.data(), d.size());
-	}
-
-	// v4 container-global: the struct-member stream (flat u32 triples).
-	if (const madc::dis::snapshot_segment *sms =
-		_reader.find(CIR_FOREST_SEG_STRUCT_MEMBERS)) {
-		std::vector<uint8_t> d;
-		if (sms->kind != SNAP_KIND_CIR_STRUCT_MEMBERS
-		    || !_reader.read_segment(*sms, d)
-		    || d.size() % sizeof(uint32_t)) {
-			fprintf(stderr, "madc: forest struct-member stream corrupt\n");
-			return false;
-		}
-		_struct_members.resize(d.size() / sizeof(uint32_t));
-		if (!d.empty())
-			memcpy(_struct_members.data(), d.data(), d.size());
-	}
-
 	// Reverse directory: unit-name spelling -> index (Phase 6 bind lookup).
 	// The writer dedups unit names, so a name maps to one unit; a stray
 	// duplicate keeps the first (bind is order-insensitive for a conforming
@@ -1081,6 +1088,127 @@ const char *CirFrozenForest::unit_name(uint32_t unit) const
 		return NULL;
 	uint32_t slen = 0;
 	return pool_cstr(_units[unit].unit_name_id, slen);
+}
+
+const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
+{
+	if (_types_materialized)
+		return _restored;
+	_types_materialized = true;
+
+	static const size_t MSTRIDE =
+		sizeof(cir_forest_type_member) / sizeof(uint32_t);
+
+	// Pass 1: allocate a DataDef object per struct/union record BEFORE filling
+	// any, so member type ids (which may forward-reference a later record)
+	// resolve in pass 2. Keyed by the record's freeze-time typeid.
+	std::map<uint32_t, DataDef *> by_id;
+	for (size_t i = 0; i < _type_records.size(); ++i) {
+		const cir_forest_type_record &r = _type_records[i];
+		if ((r.kind != CIR_TYPEK_STRUCT && r.kind != CIR_TYPEK_UNION)
+		    || !r.type_id)
+			continue;			// typedef: pass 3; class: widen next
+		uint32_t nlen = 0;
+		const char *nm = pool_cstr(r.name_id, nlen);
+		if (!nm)
+			continue;
+		DataDefSTRUCT *sdd = new DataDefSTRUCT(std::string(nm, nlen), r.size);
+		sdd->union_layout = (r.flags & CIR_TYPEF_UNION) != 0;
+		_mat_storage.push_back(sdd);
+		by_id[r.type_id] = sdd;
+	}
+
+	// Pass 2: fill each struct's members VERBATIM (offset / count / access /
+	// origin / bitfield loaded as stored — no finalize, no re-derivation),
+	// swizzling each member's type id -> DataDef* (primitive via
+	// madc_type_from_id, forest aggregate via by_id).
+	for (size_t i = 0; i < _type_records.size(); ++i) {
+		const cir_forest_type_record &r = _type_records[i];
+		if ((r.kind != CIR_TYPEK_STRUCT && r.kind != CIR_TYPEK_UNION)
+		    || !r.type_id)
+			continue;
+		std::map<uint32_t, DataDef *>::iterator ai = by_id.find(r.type_id);
+		if (ai == by_id.end())
+			continue;
+		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(ai->second);
+		if (!sdd)
+			continue;
+		bool ok = true;
+		for (uint32_t m = 0; m < r.member_count; ++m) {
+			size_t base = (size_t)r.member_begin + (size_t)m * MSTRIDE;
+			if (base + MSTRIDE > _type_payload.size()) { ok = false; break; }
+			cir_forest_type_member tm;
+			memcpy(&tm, &_type_payload[base], sizeof(tm));
+			DataDef *mdd = NULL;
+			if (tm.type_id < MADC_TYPEID_PRIMITIVE_END)
+				mdd = madc_type_from_id(tm.type_id);
+			else {
+				std::map<uint32_t, DataDef *>::iterator it = by_id.find(tm.type_id);
+				if (it != by_id.end()) mdd = it->second;
+			}
+			uint32_t mnlen = 0;
+			const char *mnm = pool_cstr(tm.name_id, mnlen);
+			if (!mdd || !mnm) { ok = false; break; }
+			sdd->members.push_back(memberpair_t(std::string(mnm, mnlen), mdd));
+			sdd->member_offsets.push_back(tm.offset);
+			sdd->member_counts.push_back(tm.count ? tm.count : 1);
+			sdd->member_array_flags.push_back(tm.count > 1);
+			sdd->member_access.push_back(tm.access);
+			sdd->member_origin.push_back((int)tm.origin);
+			DataDefSTRUCT::BitFieldInfo bf;
+			if (tm.bf_flags & 1u) {
+				bf.is_bitfield     = true;
+				bf.is_unsigned     = (tm.bf_flags & 2u) != 0;
+				bf.reverse_storage = (tm.bf_flags & 4u) != 0;
+				bf.bit_offset      = tm.bf_bit_offset;
+				bf.bit_width       = tm.bf_bit_width;
+				bf.storage_offset  = tm.bf_storage_offset;
+				bf.storage_size    = tm.bf_storage_size;
+			}
+			sdd->member_bitfields.push_back(bf);
+		}
+		if (!ok)
+			continue;		// unresolvable member -> bind cleanly lacks it
+		sdd->size        = r.size;		// verbatim total size
+		sdd->max_align   = r.align ? r.align : 1;
+		sdd->is_complete = true;
+		sdd->type_id     = 0;			// re-stamp a fresh id in the consuming Program
+		uint32_t nlen = 0;
+		CirRestoredType rt;
+		rt.name       = pool_cstr(r.name_id, nlen);
+		rt.kind       = r.kind;
+		rt.dd         = sdd;
+		rt.underlying = NULL;
+		_restored.push_back(rt);
+	}
+
+	// Pass 3: typedef alias records -> (name, underlying DataDef*).
+	for (size_t i = 0; i < _type_records.size(); ++i) {
+		const cir_forest_type_record &r = _type_records[i];
+		if (r.kind != CIR_TYPEK_TYPEDEF)
+			continue;
+		uint32_t nlen = 0;
+		const char *nm = pool_cstr(r.name_id, nlen);
+		if (!nm)
+			continue;
+		DataDef *underlying = NULL;
+		if (r.ref0 < MADC_TYPEID_PRIMITIVE_END)
+			underlying = madc_type_from_id(r.ref0);
+		else {
+			std::map<uint32_t, DataDef *>::iterator it = by_id.find(r.ref0);
+			if (it != by_id.end()) underlying = it->second;
+		}
+		if (!underlying)
+			continue;
+		CirRestoredType rt;
+		rt.name       = nm;
+		rt.kind       = CIR_TYPEK_TYPEDEF;
+		rt.dd         = NULL;
+		rt.underlying = underlying;
+		_restored.push_back(rt);
+	}
+
+	return _restored;
 }
 
 const char *CirFrozenForest::type_name_for(uint32_t type_id) const

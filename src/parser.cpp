@@ -12224,118 +12224,53 @@ DataDef *Program::lazy_resolve_type(const std::string &name)
 // via its string content (container pool -> this Program's pool), not by pool id.
 void Program::forest_restore_decls(CirFrozenForest &forest)
 {
-    const std::vector<cir_forest_decl_record> &records = forest.decl_records();
-    // Frozen system-segment id -> the DataDef restored for it. Purely local to
-    // this restore: it links a member's type reference (a system id in the
-    // struct-member stream) to the earlier forest aggregate it names. The
-    // restored aggregate is otherwise a normal DataDef (it lazy-stamps a project
-    // id on first use, exactly like a live-parsed one) — no global type_from_id
-    // change. Records are in definition order, so a value member's aggregate is
-    // always restored before the struct that uses it.
-    std::map<uint32_t, DataDef *> restored_by_sysid;
-    for ( size_t i = 0; i < records.size(); ++i )
+    // Phase 6: LOAD the serialized type table (do NOT re-derive). materialize_types
+    // allocates the DataDef objects (forest-owned) and swizzles every member type
+    // id back to a DataDef* with layout loaded VERBATIM (offsets/bitfields as
+    // frozen — no finalize / no re-parse). Here we only reconnect the parser's
+    // symbol tables to those already-complete objects, in the same shape a live
+    // parse would leave them: a struct/union goes into struct_map + a
+    // dkStruct/dkUnion TopDecl (so cir_builder Pass-0 emits it); a typedef goes
+    // into datatype_map + user_typedef_names + a dkTypedef TopDecl (so the alias
+    // node reaches c2mir, exactly as record_typedef does on the live path,
+    // parser.cpp ~22689).
+    const std::vector<CirRestoredType> &types = forest.materialize_types();
+    for ( size_t i = 0; i < types.size(); ++i )
     {
-	const cir_forest_decl_record &r = records[i];
-	const char *name = forest.pool_str(r.name_id);
-	if ( !name || !*name )
+	const CirRestoredType &rt = types[i];
+	if ( !rt.name || !*rt.name )
 	    continue;
-	if ( r.kind == pdkTypedef )
+	std::string name(rt.name);
+	if ( rt.kind == CIR_TYPEK_TYPEDEF )
 	{
-	    DataDef *dd = type_from_id(r.type_id);
-	    if ( !dd )
-		continue;		// aggregate/system-segment underlying: a later slice
-	    TokenDataType *tdt = new TokenDataType(name, *dd);
-	    std::string alias(name);
-	    const char *ns = r.ns_id ? forest.pool_str(r.ns_id) : NULL;
-	    if ( ns && *ns )
-		namespace_datatype_map[ns][alias] = tdt;	// scoped twin
-	    datatype_map[alias] = tdt;			// flat (current-scope) key
-	    user_typedef_names.insert(alias);
-	    // Emit the typedef into the c2mir tree: cir_builder lowers top_decls in
-	    // push order, so the alias's `typedef <underlying> <name>;` node reaches
-	    // c2mir. record_typedef does exactly this on the live path (parser.cpp
-	    // ~22689). Restore runs during tokenization, ahead of the user TU's own
-	    // decls, so the typedef is defined before its first use — as a live parse
-	    // would order it. A plain alias, never a struct-body-defining typedef.
+	    if ( !rt.underlying )
+		continue;
+	    TokenDataType *tdt = new TokenDataType(rt.name, *rt.underlying);
+	    datatype_map[name] = tdt;
+	    user_typedef_names.insert(name);
 	    TopDecl td;
 	    td.kind = DeclKind::dkTypedef;
-	    td.name = alias;
-	    td.dd = dd;
+	    td.name = name;
+	    td.dd = rt.underlying;
 	    td.tdt = tdt;
 	    top_decls.push_back(td);
-	    DBG(std::cout << "forest_restore_decls: typedef " << alias
-		<< " -> type_id " << r.type_id << std::endl);
+	    DBG(std::cout << "forest_restore_decls: typedef " << name << std::endl);
 	}
-	else if ( r.kind == pdkStruct )
+	else if ( rt.kind == CIR_TYPEK_STRUCT || rt.kind == CIR_TYPEK_UNION )
 	{
-	    // Reconstruct a plain struct/union by DRIVING addMember over the
-	    // serialized members — the identical construction the live struct
-	    // parser uses (parser.cpp ~23677), so member offsets / size / align
-	    // regenerate byte-for-byte. Then push a dkStruct/dkUnion TopDecl so
-	    // cir_builder::struct_def emits the aggregate into the c2mir tree.
-	    const std::vector<uint32_t> &ms = forest.struct_members();
-	    size_t mbase = (size_t)r.member_begin * 4;
-	    size_t mcnt  = r.member_count;
-	    if ( mbase + mcnt * 4 > ms.size() )
-		continue;		// out of range: skip rather than mis-lay-out
-	    DataDefSTRUCT *sdd = new DataDefSTRUCT(std::string(name), 0);
-	    if ( r.aux & 1u )
-		sdd->union_layout = true;
-	    bool ok = true;
-	    for ( size_t m = 0; m < mcnt; ++m )
-	    {
-		uint32_t mname_id  = ms[mbase + m * 4 + 0];
-		uint32_t mtid      = ms[mbase + m * 4 + 1];
-		uint32_t mcount    = ms[mbase + m * 4 + 2];
-		uint32_t bit_width = ms[mbase + m * 4 + 3];
-		const char *mname = forest.pool_str(mname_id);
-		DataDef *mdd = NULL;
-		if ( mtid < MADC_TYPEID_PRIMITIVE_END )
-		    mdd = type_from_id(mtid);			// pinned primitive
-		else
-		{
-		    std::map<uint32_t, DataDef *>::iterator si =
-			restored_by_sysid.find(mtid);
-		    if ( si != restored_by_sysid.end() )
-			mdd = si->second;			// earlier forest aggregate
-		}
-		if ( !mname || !mdd ) { ok = false; break; }
-		// Drive the identical construction the live struct parser uses, so
-		// offsets/size/alignment (and bit packing) regenerate byte-for-byte.
-		if ( bit_width )
-		    sdd->addBitField(std::string(mname), *mdd, bit_width);
-		else
-		    sdd->addMember(std::string(mname), *mdd, mcount ? mcount : 1);
-	    }
-	    if ( !ok ) { delete sdd; continue; }
-	    sdd->is_complete = true;
-	    sdd->finalize();
-	    // Self-validate the rebuilt layout: if the reconstructed size differs
-	    // from the frozen one, the struct had a shape this slice can't rebuild
-	    // faithfully (e.g. an unnamed bitfield gap — absent from the members
-	    // vector, so it serialized short). Bail rather than register a
-	    // mis-laid-out struct: bind then cleanly lacks it (a loud error at the
-	    // use site), NEVER wrong output. Correctness over completeness.
-	    if ( r.orig_size && sdd->size != (size_t)r.orig_size )
-	    {
-		DBG(std::cout << "forest_restore_decls: struct " << name
-		    << " layout mismatch (rebuilt " << sdd->size << " != frozen "
-		    << r.orig_size << ") — skipping" << std::endl);
-		delete sdd;
+	    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(rt.dd);
+	    if ( !sdd )
 		continue;
-	    }
-	    std::string tag(name);
-	    struct_map[tag] = sdd;
-	    restored_by_sysid[r.type_id] = sdd;
+	    struct_map[name] = sdd;
 	    TopDecl td;
 	    td.kind = sdd->union_layout ? DeclKind::dkUnion : DeclKind::dkStruct;
-	    td.name = tag;
+	    td.name = name;
 	    td.dd = sdd;
 	    top_decls.push_back(td);
-	    DBG(std::cout << "forest_restore_decls: struct " << tag << " ("
-		<< mcnt << " members) sys-id " << r.type_id << std::endl);
+	    DBG(std::cout << "forest_restore_decls: struct " << name << " ("
+		<< sdd->members.size() << " members)" << std::endl);
 	}
-	// else: unhandled decl kind — skip (widen in later slices).
+	// classes (CIR_TYPEK_CLASS): widen next.
     }
 }
 

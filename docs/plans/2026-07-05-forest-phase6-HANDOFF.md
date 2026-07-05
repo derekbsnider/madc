@@ -1,4 +1,13 @@
-# Forest Phase 6 — HANDOFF (READ THIS FIRST, before any forest/bind work)
+# Forest Phase 6 — HANDOFF (landed-slice history)
+
+> ⚠️ **NOT the read-first doc anymore.** The single self-contained source of
+> truth is **`docs/plans/FOREST-SUBSTRATE-READ-FIRST.md`** — read that FULL file
+> first. This handoff is kept only for its landed-slice history below; its
+> architecture/read-order sections are subsumed by the single doc. Note the
+> corrected mechanism there: the freeze must serialize the WHOLE type table
+> (pointer fields as ids, swizzled on load, verbatim) — the `decl_records` /
+> `struct_members` streams described in the "LANDED" entries below are the
+> parallel-format divergence being RETIRED, not the model to extend.
 
 **Date:** 2026-07-05 · **Branch:** develop · **Status:** ACTIVE — slices 1a+1b+2+3a+3b landed.
 

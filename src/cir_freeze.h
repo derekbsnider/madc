@@ -74,7 +74,7 @@ enum : uint32_t
 	SNAP_KIND_CIR_FOREST_DIR = madc::dis::SNAP_KIND_CONSUMER + 2,	// cir_forest_dir_header + units + libs
 	SNAP_KIND_CIR_CONNECTORS = madc::dis::SNAP_KIND_CONSUMER + 3,	// uint64[] (unit<<32 | record)
 	SNAP_KIND_CIR_POSITIONS  = madc::dis::SNAP_KIND_CONSUMER + 4,	// cir_frozen_pos[] parallel to records
-	SNAP_KIND_CIR_TYPE_NAMES = madc::dis::SNAP_KIND_CONSUMER + 5,	// uint32 pairs {typeid, name_id}
+	SNAP_KIND_CIR_TYPE_RECORDS = madc::dis::SNAP_KIND_CONSUMER + 5,	// cir_forest_type_record[] (complete DataDef content)
 	// --- grove payload v2 (B4a; design doc 2026-07-04 §2) ---
 	SNAP_KIND_CIR_UNIT_TOKENS   = madc::dis::SNAP_KIND_CONSUMER + 6,  // post-PP token slice (.madh record form)
 	SNAP_KIND_CIR_DECL_INDEX    = madc::dis::SNAP_KIND_CONSUMER + 7,  // cir_forest_decl_entry[]
@@ -82,9 +82,9 @@ enum : uint32_t
 	SNAP_KIND_CIR_UNIT_EDGES    = madc::dis::SNAP_KIND_CONSUMER + 9,  // uint32[] directory unit indices, include order
 	SNAP_KIND_CIR_BRANCH_MACROS = madc::dis::SNAP_KIND_CONSUMER + 10, // container-global: uint32 name ids, sorted
 	SNAP_KIND_CIR_CANON_ORDER   = madc::dis::SNAP_KIND_CONSUMER + 11, // container-global: uint32 unit indices, canonical order
-	// --- Phase 6: serialized parser decl graph (design 2026-07-05) ---
-	SNAP_KIND_CIR_DECL_RECORDS  = madc::dis::SNAP_KIND_CONSUMER + 12, // container-global: cir_forest_decl_record[]
-	SNAP_KIND_CIR_STRUCT_MEMBERS = madc::dis::SNAP_KIND_CONSUMER + 13 // container-global: uint32 struct-member stream (slice 3a)
+	// --- Phase 6: complete type-table serialization (2026-06-12 type-table
+	// design §6.4 "forest type-refs serialize as ids + table segments") ---
+	SNAP_KIND_CIR_TYPE_PAYLOAD  = madc::dis::SNAP_KIND_CONSUMER + 12  // container-global: uint32 member/base payload stream
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -155,7 +155,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // eight (tokens / decl index / PP exports / edges) plus the two container-
 // global segments (branch macros, canonical order). The version feeds the
 // context hash, so v1 readers reject v2 containers and vice versa.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 5 };	// v5: + bitfield width + orig_size (Phase 6 slice 3b)
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 6 };	// v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -167,11 +167,10 @@ enum : uint32_t
 	CIR_FOREST_SEG_STR_BYTES     = 2,	// SNAP_KIND_INTERN_BYTES
 	CIR_FOREST_SEG_STR_ENTRIES   = 3,	// SNAP_KIND_INTERN_ENTRIES
 	CIR_FOREST_SEG_STR_BUCKETS   = 4,	// SNAP_KIND_INTERN_BUCKETS
-	CIR_FOREST_SEG_TYPE_NAMES    = 5,
+	CIR_FOREST_SEG_TYPE_RECORDS  = 5,	// cir_forest_type_record[] (complete DataDef content)
 	CIR_FOREST_SEG_BRANCH_MACROS = 6,	// v2 (absent = zero-length)
 	CIR_FOREST_SEG_CANON_ORDER   = 7,	// v2 (absent = zero-length)
-	CIR_FOREST_SEG_DECL_RECORDS  = 8,	// v3 (absent = zero-length): serialized decl graph
-	CIR_FOREST_SEG_STRUCT_MEMBERS = 9,	// v4 (absent = zero-length): struct-member u32 stream
+	CIR_FOREST_SEG_TYPE_PAYLOAD  = 8,	// v6 (absent = zero-length): member/base u32 payload stream
 	CIR_FOREST_SEG_UNIT_BASE     = 16,
 	CIR_FOREST_SEGS_PER_UNIT     = 8	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -236,32 +235,85 @@ enum : uint32_t { CIR_FOREST_PP_VARIADIC = 1u << 8 };
 // typedefs; kind widens to struct/class/func/template. A type reference is an
 // madc type-id: primitive ids resolve everywhere (pinned); the forest's own
 // aggregate types get system-segment ids (a later slice).
-struct cir_forest_decl_record
+// --- Phase 6: complete type-table serialization (the "table segments" of the
+// 2026-06-12 type-table design §6.4; §2 system segment "owned by the embedded
+// forest"). The freeze serializes each project/system DataDef's FULL content,
+// not just its name. Pointer fields ride as IDs and SWIZZLE back to pointers on
+// load — the same move B1 made for cir_node (DataDef* -> typeid, char* -> intern
+// handle), now applied to the DataDef graph itself. A DataDef's contiguous
+// member/base vectors serialize directly once their element pointers are ids.
+// This REPLACES the typeid->name-only closure and RETIRES the parallel
+// decl_record/struct_member streams (no-parallel-implementations). ---
+
+// Which DataDef the record reconstructs (its subclass), so load allocates the
+// right object and reads the matching payload. Append-only (ABI-pinned by the
+// context hash like the primitive slots).
+enum : uint32_t
 {
-	uint32_t name_id;	// pool handle: the exported (unqualified) name (struct tag)
-	uint32_t kind;		// Program::PackDeclKind wire value (pdkTypedef / pdkStruct)
-	uint32_t type_id;	// typedef: aliased/underlying type's madc type-id;
-				// struct: the struct's OWN system-segment id (serialization identity)
-	uint32_t ns_id;		// pool handle: enclosing namespace ("" / 0 = global scope)
-	uint32_t aux;		// flags: bit0 = union_layout (pdkStruct)
-	uint32_t member_begin;	// pdkStruct: index (in member records) into the struct-member stream; else 0
-	uint32_t member_count;	// pdkStruct: number of members; else 0
-	uint32_t orig_size;	// pdkStruct: the struct's byte size at freeze — restore
-				// self-validates the rebuilt layout against it; else 0
+	CIR_TYPEK_OTHER   = 0,	// opaque: name-only (no reconstructable content)
+	CIR_TYPEK_TYPEDEF = 1,	// alias -> ref0 = underlying typeid
+	CIR_TYPEK_STRUCT  = 2,	// DataDefSTRUCT: members[]
+	CIR_TYPEK_UNION   = 3,	// DataDefSTRUCT union_layout: members[]
+	CIR_TYPEK_CLASS   = 4	// DataDefCLASS: members[] + bases[] (+ vtable meta)
 };
 
-// One struct member in the container-global struct-member stream: a flat u32
-// array of [name_id, type_id, count, bit_width] records, sliced per struct by
-// the decl record's member_begin/member_count. `type_id` is a primitive id
-// (pinned) or a forest aggregate's system-segment id; `count` is the fixed-array
-// element count (1 for a scalar member); `bit_width` is 0 for a normal member or
-// the width in bits for a named bitfield member.
-struct cir_forest_struct_member
+// Verbatim-layout flags on a type record (loaded as-is; no re-derivation).
+enum : uint32_t
 {
-	uint32_t name_id;
-	uint32_t type_id;
-	uint32_t count;
-	uint32_t bit_width;
+	CIR_TYPEF_UNION      = 1u << 0,	// union_layout
+	CIR_TYPEF_COMPLETE   = 1u << 1,	// is_complete (a full body was parsed)
+	CIR_TYPEF_SYSHDR     = 1u << 2,	// DataDefCLASS::from_system_header
+	CIR_TYPEF_HAS_VTABLE = 1u << 3,	// DataDefCLASS::has_vtable
+	CIR_TYPEF_HAS_VPTR   = 1u << 4,	// DataDefCLASS::has_vptr_slot
+	CIR_TYPEF_USER_CTOR  = 1u << 5,	// DataDefCLASS::has_user_ctor
+	CIR_TYPEF_USER_DTOR  = 1u << 6	// DataDefCLASS::has_user_dtor
+};
+
+// One serialized type-table entry (fixed 12 u32). name_id / spelling_id are
+// intern handles; ref0 and the member/base payload type refs are typeids
+// swizzled to DataDef* on load. member_begin/base_begin index the container's
+// type_payload u32 stream (raw u32 offsets); *_count = number of records there.
+struct cir_forest_type_record
+{
+	uint32_t type_id;	// this DataDef's typeid (its serialization identity)
+	uint32_t kind;		// CIR_TYPEK_*
+	uint32_t name_id;	// interned name
+	uint32_t spelling_id;	// interned canonical_cpp_spelling (0 = none)
+	uint32_t size;		// byte size (verbatim)
+	uint32_t align;		// alignment (verbatim)
+	uint32_t flags;		// CIR_TYPEF_*
+	uint32_t ref0;		// CIR_TYPEK_TYPEDEF: underlying typeid; else 0
+	uint32_t member_begin;	// u32 offset into type_payload for members
+	uint32_t member_count;	// number of member records
+	uint32_t base_begin;	// u32 offset into type_payload for bases (CLASS)
+	uint32_t base_count;	// number of base records (CLASS)
+};
+
+// A struct/class data member in the type_payload stream (fixed 11-u32 stride).
+// Everything is loaded VERBATIM — the offset is the computed one, never a
+// finalize()/compute_layout re-run. Bitfield fields are 0 for a normal member.
+struct cir_forest_type_member
+{
+	uint32_t name_id;	// interned member name
+	uint32_t type_id;	// member type (swizzle to DataDef*)
+	uint32_t offset;	// member_offsets[i] (verbatim)
+	uint32_t count;		// member_counts[i] (fixed-array count; 1 scalar)
+	uint32_t access;	// member_access[i] (0=public / vfPRIVATE / vfPROTECTED)
+	int32_t  origin;	// member_origin[i] (base index, or -1 = own)
+	uint32_t bf_flags;	// bit0 is_bitfield | bit1 is_unsigned | bit2 reverse
+	uint32_t bf_bit_offset;
+	uint32_t bf_bit_width;
+	uint32_t bf_storage_offset;
+	uint32_t bf_storage_size;
+};
+
+// A direct base of a class in the type_payload stream (fixed 4-u32 stride).
+struct cir_forest_type_base
+{
+	uint32_t base_type_id;	// the base's typeid (swizzle to DataDefCLASS*)
+	uint32_t offset;	// BaseSpec.offset (verbatim)
+	uint32_t flags;		// bit0 is_virtual | bit1 is_primary
+	uint32_t access;	// BaseSpec.access
 };
 
 // Source-position side-car record (parallel to the unit's records; cold —
@@ -299,11 +351,12 @@ struct cir_frozen_forest
 	// --- grove payload v2 (B4a; container-global) ---
 	std::vector<uint32_t>        branch_macros;	// pool name ids, sorted
 	std::vector<uint32_t>        canon_order;	// unit indices, canonical include order
-	// --- Phase 6 (v3; container-global): serialized parser decl graph ---
-	std::vector<cir_forest_decl_record> decl_records;
-	// --- Phase 6 (v4; container-global): flat struct-member stream, sliced
-	// per struct by decl_records[i].member_begin/member_count (in triples) ---
-	std::vector<uint32_t> struct_members;
+	// --- Phase 6 (v6; container-global): complete type-table serialization.
+	// One record per project/system DataDef (full content, pointer fields as
+	// ids); member/base sub-records live in the type_payload u32 stream, sliced
+	// per record by member_begin/base_begin. Load swizzles ids -> DataDef*. ---
+	std::vector<cir_forest_type_record> type_records;
+	std::vector<uint32_t> type_payload;
 };
 
 // The context-hash pin: madc version + record/position layout + the c2mir
@@ -380,6 +433,20 @@ public:
 	virtual cir_node *node_at(uint32_t idx);
 };
 
+class DataDef;	// defined in datadef.h; cir_freeze.cpp (the only .cpp that
+		// materializes DataDefs) includes datadef.h before this header.
+
+// One entry the bind layer registers into the parser's symbol tables. `dd` is a
+// materialized struct/class DataDef (forest-owned); a typedef carries `underlying`
+// instead and `dd == NULL`. `name` is the exported (unqualified) type name.
+struct CirRestoredType
+{
+	const char *name;
+	uint32_t    kind;		// CIR_TYPEK_*
+	DataDef    *dd;			// struct/class object (NULL for a pure typedef)
+	DataDef    *underlying;		// typedef target (else NULL)
+};
+
 // A loaded forest: validates the pin + directory + string pool once, then
 // loads UNITS ON DEMAND — a unit's records decompress the first time a
 // connector (or node_for) touches it, never at open. The image must stay
@@ -406,10 +473,15 @@ class CirFrozenForest
 	// v2 container-global payloads (loaded at open; empty on v2-less
 	// module containers).
 	std::vector<uint32_t> _branch_macros, _canon_order;
-	// v3 container-global: the serialized parser decl graph (Phase 6).
-	std::vector<cir_forest_decl_record> _decl_records;
-	// v4 container-global: flat struct-member stream (u32 triples).
-	std::vector<uint32_t> _struct_members;
+	// v6 container-global: the serialized type table (Phase 6). Records +
+	// payload load at open(); the DataDef objects materialize lazily at bind
+	// (materialize_types), swizzling id refs back to pointers. The forest owns
+	// the materialized objects and frees them in ~CirFrozenForest.
+	std::vector<cir_forest_type_record> _type_records;
+	std::vector<uint32_t> _type_payload;
+	std::vector<DataDef *> _mat_storage;		// forest-owned materialized DataDefs
+	std::vector<CirRestoredType> _restored;		// bind-facing view (built once)
+	bool _types_materialized;
 	// Shared v2 segment reader: decompress unit slot `slot` into `out`
 	// (raw bytes). False on absent/malformed.
 	bool read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
@@ -456,13 +528,13 @@ public:
 	bool unit_edges(uint32_t unit, std::vector<uint32_t> &out);
 	const std::vector<uint32_t> &branch_macros() const { return _branch_macros; }
 	const std::vector<uint32_t> &canon_order() const { return _canon_order; }
-	// Phase 6: the serialized parser decl graph (empty on a v2 / decl-less
-	// container). The bind layer reconstructs symbol tables from these.
-	const std::vector<cir_forest_decl_record> &decl_records() const { return _decl_records; }
-	// Phase 6 slice 3a/3b: the flat struct-member stream (u32 [name_id,type_id,
-	// count,bit_width] records), sliced per struct by decl_records[i].member_begin
-	// /member_count (indices in 4-u32 records).
-	const std::vector<uint32_t> &struct_members() const { return _struct_members; }
+	// Phase 6: materialize the serialized type table into real DataDef objects
+	// (idempotent; lazy — allocates on the first call). Swizzles member/base id
+	// refs back to DataDef* (forest aggregates via the freeze-id map, primitives
+	// via madc_type_from_id) and loads layout VERBATIM (no finalize / no
+	// re-derivation). The bind layer registers the returned entries by name into
+	// the parser's symbol tables. The forest owns the objects for its lifetime.
+	const std::vector<CirRestoredType> &materialize_types();
 	// Container string pool lookup (name_id -> C string; NULL if invalid).
 	const char *pool_str(uint32_t id) const
 	{ uint32_t len; return pool_cstr(id, len); }

@@ -831,7 +831,6 @@ TEST_CASE("Phase 6 slice 1: a file-scope typedef serializes as a decl record; "
 	flat_datatype_map_iter mit = prog->datatype_map.find("myint");
 	REQUIRE(mit != prog->datatype_map.end());
 	DataDef *myint_dd = &(*mit)->definition;
-	uint32_t want_type_id = prog->type_id_for(myint_dd);
 
 	REQUIRE(madc_cir_freeze(prog.get(), main_path.c_str(),
 				snap_path.c_str(), /*append=*/false) == 0);
@@ -845,20 +844,17 @@ TEST_CASE("Phase 6 slice 1: a file-scope typedef serializes as a decl record; "
 	CirFrozenForest forest;
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
-	// The serialized decl graph carries the typedef with its primitive type-id.
+	// The serialized type table carries the typedef; materialize_types swizzles
+	// its underlying back to the SAME primitive DataDef the live parse aliased
+	// (a pinned primitive id resolves cross-process with no Program in hand).
 	bool saw_myint = false;
-	const std::vector<cir_forest_decl_record> &decls = forest.decl_records();
-	for (size_t i = 0; i < decls.size(); ++i) {
-		const char *nm = forest.pool_str(decls[i].name_id);
-		if (!nm || strcmp(nm, "myint"))
+	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	for (size_t i = 0; i < types.size(); ++i) {
+		if (!types[i].name || strcmp(types[i].name, "myint"))
 			continue;
 		saw_myint = true;
-		CHECK(decls[i].kind == Program::pdkTypedef);
-		CHECK(decls[i].type_id == want_type_id);
-		// The reconstruct property: a pinned primitive id resolves with NO
-		// Program in hand (the reader side of a cross-process bind), to the
-		// SAME DataDef the live parse aliased.
-		CHECK(madc_type_from_id(decls[i].type_id) == myint_dd);
+		CHECK(types[i].kind == CIR_TYPEK_TYPEDEF);
+		CHECK(types[i].underlying == myint_dd);
 	}
 	CHECK(saw_myint);
 }
@@ -905,18 +901,14 @@ TEST_CASE("Phase 6 slice 1b: forest_restore_decls makes a fresh parser resolve a
 	CirFrozenForest forest;
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
-	// The aliased primitive the record points at (resolves with no Program).
-	bool found_rec = false;
-	uint32_t myint_type_id = 0;
-	for (size_t i = 0; i < forest.decl_records().size(); ++i) {
-		const char *nm = forest.pool_str(forest.decl_records()[i].name_id);
-		if (nm && !strcmp(nm, "myint")) {
-			found_rec = true;
-			myint_type_id = forest.decl_records()[i].type_id;
-		}
-	}
-	REQUIRE(found_rec);
-	DataDef *expected = madc_type_from_id(myint_type_id);
+	// The aliased primitive the typedef record points at (materialize swizzles
+	// the underlying id back to the DataDef*; idempotent — the restore below
+	// reuses this same cached result).
+	DataDef *expected = nullptr;
+	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	for (size_t i = 0; i < types.size(); ++i)
+		if (types[i].name && !strcmp(types[i].name, "myint"))
+			expected = types[i].underlying;
 	REQUIRE(expected != nullptr);
 
 	// A FRESH Program, initialized by a trivial parse that never mentions myint.
@@ -976,29 +968,19 @@ TEST_CASE("Phase 6 slice 3a: forest_restore_decls reconstructs a header struct "
 	CirFrozenForest forest;
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
-	// The record carries a system-segment id + two int members in the stream.
+	// The serialized type table carries Point as a STRUCT record; materialize_types
+	// swizzles it back to a complete DataDefSTRUCT (members + verbatim layout).
 	bool found = false;
-	for (size_t i = 0; i < forest.decl_records().size(); ++i) {
-		const cir_forest_decl_record &r = forest.decl_records()[i];
-		const char *nm = forest.pool_str(r.name_id);
-		if (!nm || strcmp(nm, "Point"))
+	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	for (size_t i = 0; i < types.size(); ++i) {
+		if (!types[i].name || strcmp(types[i].name, "Point"))
 			continue;
 		found = true;
-		CHECK(r.kind == Program::pdkStruct);
-		CHECK(r.type_id >= (uint32_t)MADC_TYPEID_SYSTEM_BASE);
-		CHECK(r.type_id < MADC_TYPEID_PROJECT_BASE);
-		CHECK(r.member_count == 2);
-		const std::vector<uint32_t> &ms = forest.struct_members();
-		size_t base = (size_t)r.member_begin * 4;	// 4-u32 member records
-		REQUIRE(base + 8 <= ms.size());
-		// Both members are `int` — a pinned primitive id that resolves with
-		// no Program (id-of-int is a slot; don't hard-code which). Neither is
-		// a bitfield (bit_width slot == 0).
-		CHECK(ms[base + 1] < (uint32_t)MADC_TYPEID_PRIMITIVE_END);
-		CHECK(madc_type_from_id(ms[base + 1]) != nullptr);
-		CHECK(ms[base + 5] == ms[base + 1]);			// x and y same type
-		CHECK(ms[base + 3] == 0);				// x not a bitfield
-		CHECK(ms[base + 7] == 0);				// y not a bitfield
+		CHECK(types[i].kind == CIR_TYPEK_STRUCT);
+		DataDefSTRUCT *pd = dynamic_cast<DataDefSTRUCT *>(types[i].dd);
+		REQUIRE(pd != nullptr);
+		REQUIRE(pd->members.size() == 2);
+		CHECK(pd->size == 8);
 	}
 	CHECK(found);
 
@@ -1027,13 +1009,12 @@ TEST_CASE("Phase 6 slice 3a: forest_restore_decls reconstructs a header struct "
 	CHECK(sdd->size == 8);
 }
 
-// Phase 6 slice 3b: a struct with NAMED bitfields reconstructs with the right
-// bit layout; a struct with an UNNAMED-bitfield gap (whose gap is absent from
-// the members vector, so a members-only rebuild would shift later bit-offsets)
-// is caught by the freeze-time round-trip layout check and NOT serialized — so
-// bind never mis-lays-it-out.
-TEST_CASE("Phase 6 slice 3b: named bitfields reconstruct; an unnamed-gap struct "
-	  "is refused at freeze (never mis-laid-out)") {
+// Phase 6: named AND unnamed-gap bitfield structs reconstruct with the right bit
+// layout. Because member offsets serialize VERBATIM (loaded as stored, never
+// regenerated by a members-only rebuild), an unnamed-bitfield gap is preserved —
+// the following member keeps its true bit-offset — so both Flags and the
+// unnamed-gap Gap bind correctly (the old members-only rebuild had to refuse Gap).
+TEST_CASE("Phase 6: named + unnamed-gap bitfield structs reconstruct verbatim") {
 	std::string inc_path = std::string("/tmp/madc_p6bf_inc_")
 			     + std::to_string((long)getpid()) + ".h";
 	std::string main_path = std::string("/tmp/madc_p6bf_main_")
@@ -1074,18 +1055,17 @@ TEST_CASE("Phase 6 slice 3b: named bitfields reconstruct; an unnamed-gap struct 
 	CirFrozenForest forest;
 	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
 
-	// Flags is serialized; Gap (unnamed gap) is refused by the round-trip check.
+	// Both structs serialize now: verbatim member offsets carry the unnamed-gap
+	// struct's real bit layout (b lands at bit 5, past the 3-bit a + 2-bit gap).
 	bool saw_flags = false, saw_gap = false;
-	for (size_t i = 0; i < forest.decl_records().size(); ++i) {
-		const cir_forest_decl_record &r = forest.decl_records()[i];
-		if (r.kind != Program::pdkStruct)
-			continue;
-		const char *nm = forest.pool_str(r.name_id);
-		if (nm && !strcmp(nm, "Flags")) saw_flags = true;
-		if (nm && !strcmp(nm, "Gap"))   saw_gap = true;
+	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	for (size_t i = 0; i < types.size(); ++i) {
+		if (types[i].kind != CIR_TYPEK_STRUCT) continue;
+		if (types[i].name && !strcmp(types[i].name, "Flags")) saw_flags = true;
+		if (types[i].name && !strcmp(types[i].name, "Gap"))   saw_gap = true;
 	}
 	CHECK(saw_flags);
-	CHECK_FALSE(saw_gap);		// unnamed-gap struct not serialized
+	CHECK(saw_gap);
 
 	std::shared_ptr<Program> progB = std::make_shared<Program>();
 	TokenProgram *tpB = progB->tokenize(triv_path.c_str());
@@ -1109,6 +1089,16 @@ TEST_CASE("Phase 6 slice 3b: named bitfields reconstruct; an unnamed-gap struct 
 	CHECK(fl->member_bitfields[1].bit_width == 5);
 	CHECK(fl->members[2].first == "c");
 	CHECK(fl->member_offsets[2] == 4);
-	// Gap was refused — a fresh parser has no such struct (bind would lack it).
-	CHECK(progB->struct_map.find("Gap") == progB->struct_map.end());
+	// Gap binds too, with its true bit layout: a@bit0 w3, then the unnamed :2
+	// gap, so b@bit5 w5 (verbatim offsets preserve the gap a rebuild would lose).
+	datadef_map_iter git = progB->struct_map.find("Gap");
+	REQUIRE(git != progB->struct_map.end());
+	DataDefSTRUCT *gp = dynamic_cast<DataDefSTRUCT *>(git->second);
+	REQUIRE(gp != nullptr);
+	REQUIRE(gp->members.size() == 2);
+	REQUIRE(gp->member_bitfields.size() == 2);
+	CHECK(gp->member_bitfields[0].bit_offset == 0);
+	CHECK(gp->member_bitfields[0].bit_width == 3);
+	CHECK(gp->member_bitfields[1].bit_offset == 5);
+	CHECK(gp->member_bitfields[1].bit_width == 5);
 }
