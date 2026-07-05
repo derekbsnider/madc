@@ -119,24 +119,33 @@ directory (`CirFrozenForest::find_unit` / `_unit_by_name`), the
 `find_template`/`lazy_resolve_type`/`resolve_namespaced_type_token`. Nothing else
 is left to salvage from that branch — it can be deleted once struct/class lands.
 
-## NEXT — slice 3b: widen struct + DataDefCLASS (the next unit of work)
+## NEXT — slice 3c: DataDefCLASS (the next real unit of work)
 
-Slice 3a (plain struct/union, primitive scalar members, global scope) is DONE
-and gated. The system-segment type-id machinery + the member-stream format are
-in place; widen on top of them, same LOAD-not-reparse shape:
-- **3b — widen the plain struct:** pointer/aggregate members (the `restored_by_sysid`
-  linking already supports value-aggregate members in definition order; add
-  pointer-to-aggregate — a serialized "pointer-of type-id" indirection so a
-  forward/self reference resolves), bitfields (`member_bitfields`), anon
-  aggregates, and **namespace scope** (serialize `ns_id`; restore into
-  `namespace_datatype_map` / scoped `struct_map` key — REQUIRED before freezing
-  the real corpus, which is full of `namespace std` structs). Per-unit decl
-  attribution (`unit_id` on the record) also lands here.
-- **3c — `DataDefCLASS`:** methods + access + bases + vtable. The big one —
-  serialize the class's method set / base list / vtable layout, reconstruct the
-  `DataDefCLASS` (mirror the struct→class promotion + `class_struct_def`
-  emission), push the appropriate `TopDecl`. This is where a bound `<string>` /
-  `<vector>` header's classes become resolvable.
+Slice 3a is DONE and gated, and probing (2026-07-05) mapped 3b's clean surface —
+it is NARROW, so most of it is deferred:
+- **3a already reaches nested VALUE-aggregate members** (`struct Outer { struct
+  Inner in; int c; }`). The `restored_by_sysid` linking + definition-order
+  serialization handle them with no extra work; now locked by the
+  `forest_bind_gate` [nested] case. So plain + nested-value structs/unions bind.
+- **Pointer-to-struct and namespaced structs are BLOCKED by pre-existing
+  live-parse bugs, NOT forest gaps** — a separate parser-correctness track:
+    - `namespace ns { struct X; }` + `ns::X v;` → live madc "Unexpected keyword
+      in expression" (qualified-type declarator gap).
+    - self-ref `struct Node { int v; struct Node *next; };` → live madc emits a
+      spurious "Expecting type in struct definition, got '__int128_t'" and even
+      the producer FREEZE fails. Fix these in the parser FIRST; only then is
+      forest support for those shapes gateable (bind can't beat live).
+  Do NOT try to fix live-parse bugs inside the forest slices.
+- **Bitfields** work live (`unsigned a:3` etc.) and ARE a clean forest increment
+  (serialize `BitFieldInfo` width/signedness, reconstruct via `addBitField`) —
+  moderate work, low urgency; pick up if a target header needs it.
+
+So the next REAL value is **3c — `DataDefCLASS`** (methods + access + bases +
+vtable): serialize the class's method set / base list / vtable layout,
+reconstruct the `DataDefCLASS` (mirror the struct→class promotion +
+`class_struct_def` emission), push the `TopDecl`. This is where a bound
+`<string>` / `<vector>` class becomes resolvable — the corpus payoff. Start it in
+a FRESH session (it is the big slice; compact first).
 
 Then, in order: **`TemplateDef` patterns + tsubst-from-loaded-Tree-1** → **flip
 forest to default + DELETE the token-reparse path** (B4a token slices/decl-index +

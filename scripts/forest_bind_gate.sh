@@ -128,5 +128,35 @@ int main()
 EOF
 run_case struct "smix=16 sblob=8 c=65 i=100"
 
-echo "forest_bind_gate: GREEN — typedef + struct grove headers bound (no re-parse), output == live == g++"
+# --- case: nested (slice 3a reach) — a struct with a by-value struct member.
+#     The freeze assigns Inner a system id, then Outer's `in` member references
+#     it; restore's restored_by_sysid map links them (definition order), so a
+#     value-aggregate member reconstructs without re-parse.
+cat > tmp/fbgate_nested.h <<'EOF'
+#ifndef FBGATE_NESTED_H
+#define FBGATE_NESTED_H
+struct Inner { int a; int b; };
+struct Outer { struct Inner in; int c; };
+#endif
+EOF
+cat > tmp/fbgate_nested_producer.cpp <<'EOF'
+#include <fbgate_nested.h>
+int main() { struct Outer o; o.c = 0; return o.c; }
+EOF
+cat > tmp/fbgate_nested_consumer.cpp <<'EOF'
+#include <fbgate_nested.h>
+#include <cstdio>
+int main()
+{
+    struct Outer o;
+    o.in.a = 2;
+    o.in.b = 3;
+    o.c = 4;
+    printf("n=%d sz=%zu\n", o.in.a + o.in.b + o.c, sizeof(struct Outer));
+    return 0;
+}
+EOF
+run_case nested "n=9 sz=12"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested grove headers bound (no re-parse), output == live == g++"
 exit 0
