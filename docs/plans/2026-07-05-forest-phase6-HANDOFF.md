@@ -1,6 +1,6 @@
 # Forest Phase 6 — HANDOFF (READ THIS FIRST, before any forest/bind work)
 
-**Date:** 2026-07-05 · **Branch:** develop · **Status:** ACTIVE — slices 1a+1b+2 landed.
+**Date:** 2026-07-05 · **Branch:** develop · **Status:** ACTIVE — slices 1a+1b+2+3a+3b landed.
 
 > This handoff exists because of a real post-compaction drift on 2026-07-05: an
 > agent resumed, followed a design doc that had quietly reopened a *settled*
@@ -101,10 +101,26 @@ requirement falls out of the architecture; it is not a preference.
   15 cases / 221 assertions.
 - **Slice 3a scope limits (documented, safe under the opt-in flag):** global
   scope only (`ns_id=0` — namespaced structs would restore into the global
-  `struct_map`; guard/handle when the real corpus is frozen); scalar members
-  only (pinned-pointer members serialize, other pointer/aggregate members skip
-  the struct); no bitfields/anon aggregates; typedef-of-struct alias not yet
-  restored (the struct itself is, via its own `pdkStruct` record).
+  `struct_map`; guard/handle when the real corpus is frozen); typedef-of-struct
+  alias not yet restored (the struct itself is, via its own `pdkStruct` record).
+- **3a also reaches nested VALUE-aggregate members** for free (`restored_by_sysid`
+  + definition order) — locked by the `forest_bind_gate` [nested] case.
+- **Slice 3b — bitfield members + layout self-validation.** Format v4→5: the
+  member stream went from 3-u32 triples to 4-u32 records (`+bit_width`), and the
+  decl record gained `orig_size`. A named bitfield serializes its width and
+  restores via `addBitField` (mirrors the live parser → bit-offsets regenerate).
+  The load-bearing safety: `cir_forest_plain_struct_faithful` (madc_cir.cpp) does
+  a **freeze-time round-trip** — replays the members-only reconstruction on a
+  scratch struct and requires it reproduce the original's size + every member
+  offset + every bitfield bit-offset; a struct that fails (unnamed-bitfield gaps
+  — absent from `members`, so they shift later bit-offsets WITHOUT changing size,
+  which a size-only check misses — plus `#pragma pack`, reverse storage, explicit
+  alignment) is NOT serialized. Restore also re-checks `orig_size` as a
+  cross-process backstop. Net: what binds is always laid out right; what we can't
+  faithfully rebuild binds cleanly-lacks-it (loud error at use), NEVER wrong
+  output. `forest_bind_gate` [bitfield] case + `test_cir_freeze` (positive: Flags
+  a@0/b@3; negative: an unnamed-gap `Gap` is refused at freeze) → 16 cases / 245
+  assertions.
 
 ## PARKED — DO NOT MERGE
 
@@ -121,12 +137,11 @@ is left to salvage from that branch — it can be deleted once struct/class land
 
 ## NEXT — slice 3c: DataDefCLASS (the next real unit of work)
 
-Slice 3a is DONE and gated, and probing (2026-07-05) mapped 3b's clean surface —
-it is NARROW, so most of it is deferred:
-- **3a already reaches nested VALUE-aggregate members** (`struct Outer { struct
-  Inner in; int c; }`). The `restored_by_sysid` linking + definition-order
-  serialization handle them with no extra work; now locked by the
-  `forest_bind_gate` [nested] case. So plain + nested-value structs/unions bind.
+Slices 3a + 3b are DONE and gated. What forest bind now covers: typedefs, plain
+structs/unions (mixed types, padding, `sizeof`), nested VALUE-aggregate members,
+and NAMED bitfields — all cross-process == live == g++, never re-parsing.
+Probing (2026-07-05) mapped the rest of the struct surface; what remains is
+either parser-blocked or is 3c:
 - **Pointer-to-struct and namespaced structs are BLOCKED by pre-existing
   live-parse bugs, NOT forest gaps** — a separate parser-correctness track:
     - `namespace ns { struct X; }` + `ns::X v;` → live madc "Unexpected keyword
@@ -136,9 +151,9 @@ it is NARROW, so most of it is deferred:
       the producer FREEZE fails. Fix these in the parser FIRST; only then is
       forest support for those shapes gateable (bind can't beat live).
   Do NOT try to fix live-parse bugs inside the forest slices.
-- **Bitfields** work live (`unsigned a:3` etc.) and ARE a clean forest increment
-  (serialize `BitFieldInfo` width/signedness, reconstruct via `addBitField`) —
-  moderate work, low urgency; pick up if a target header needs it.
+- **Unnamed-bitfield / packed / reverse-storage / explicitly-aligned structs**
+  are refused at freeze by the round-trip guard (never mis-laid-out); supporting
+  them means serializing the extra layout state — low urgency.
 
 So the next REAL value is **3c — `DataDefCLASS`** (methods + access + bases +
 vtable): serialize the class's method set / base list / vtable layout,
