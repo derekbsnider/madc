@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <queue>	// madc.h uses std::queue (included below) and relies on the TU providing it
 #include <set>
 #include <string>
 #include <utility>
@@ -28,6 +29,8 @@ extern thread_local bool madc_verbose;
 
 #include "datadef.h"
 #include "tokens.h"
+#include "datatokens.h"	// Variable (Phase 6 3d: reconstruct method Variables on load)
+#include "madc.h"		// FuncDef (Phase 6 3d: reconstruct method FuncDefs on load)
 #include "token_arena.h"
 #include "madcdis/id_table.h"
 #include "cir_freeze.h"
@@ -788,6 +791,10 @@ CirFrozenForest::~CirFrozenForest()
 	// the parser's symbol tables held non-owning pointers into these).
 	for (size_t i = 0; i < _mat_storage.size(); ++i)
 		delete _mat_storage[i];
+	// Free the reconstructed method Variables (forest-owned; the classes'
+	// method_map/methods held non-owning pointers).
+	for (size_t i = 0; i < _mat_vars.size(); ++i)
+		delete _mat_vars[i];
 }
 
 // Bind one pool block: in place from the image when stored uncompressed
@@ -1213,6 +1220,78 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 			if (!bok)
 				continue;		// unresolvable base -> bind cleanly lacks it
 			cdd->base_class = cdd->bases.empty() ? NULL : cdd->bases[0].base;
+
+			// Methods (Phase 6 3d): rebuild each non-virtual method DECLARATION as
+			// a FuncDef + Variable and attach to method_map/methods, so a member
+			// call resolves. The hidden __this (param 0 of a non-static method) is
+			// rebuilt as a pointer to this class. Bodies are NOT here — an inline
+			// method's body rides the grove (emitted by the producer), an external
+			// method binds emit_symbol — so the FuncDef is declaration_only (the
+			// consumer emits no body; the call links to the grove def / real symbol).
+			static const size_t METHSTRIDE =
+				sizeof(cir_forest_type_method) / sizeof(uint32_t);
+			for (uint32_t mi = 0; mi < r.method_count; ++mi) {
+				size_t mb = (size_t)r.method_begin + (size_t)mi * METHSTRIDE;
+				if (mb + METHSTRIDE > _type_payload.size())
+					break;
+				cir_forest_type_method tm;
+				memcpy(&tm, &_type_payload[mb], sizeof(tm));
+				DataDef *ret = NULL;
+				if (tm.ret_type_id < MADC_TYPEID_PRIMITIVE_END)
+					ret = madc_type_from_id(tm.ret_type_id);
+				else {
+					std::map<uint32_t, DataDef *>::iterator it =
+						by_id.find(tm.ret_type_id);
+					if (it != by_id.end()) ret = it->second;
+				}
+				uint32_t mnl = 0, mdl = 0;
+				const char *mnm = pool_cstr(tm.name_id, mnl);
+				const char *mdp = pool_cstr(tm.display_id, mdl);
+				if (!ret || !mnm || !mdp)
+					continue;
+				bool m_static = (tm.flags & CIR_METHF_STATIC) != 0;
+				FuncDef *fd = new FuncDef(*ret);
+				_mat_storage.push_back(fd);
+				if (!m_static) {
+					DataDefPTR *thisp = new DataDefPTR(*cdd);
+					_mat_storage.push_back(thisp);
+					fd->parameters.push_back(thisp);
+				}
+				bool pok = true;
+				for (uint32_t p = 0; p < tm.param_count; ++p) {
+					size_t pb = (size_t)tm.param_begin + p;
+					if (pb >= _type_payload.size()) { pok = false; break; }
+					uint32_t ptid = _type_payload[pb];
+					DataDef *pd = NULL;
+					if (ptid < MADC_TYPEID_PRIMITIVE_END)
+						pd = madc_type_from_id(ptid);
+					else {
+						std::map<uint32_t, DataDef *>::iterator it =
+							by_id.find(ptid);
+						if (it != by_id.end()) pd = it->second;
+					}
+					if (!pd) { pok = false; break; }
+					fd->parameters.push_back(pd);
+				}
+				if (!pok)
+					continue;	// unserializable param -> method cleanly lacks
+				fd->method_display_name = std::string(mdp, mdl);
+				if (tm.emit_symbol_id) {
+					uint32_t el = 0;
+					const char *es = pool_cstr(tm.emit_symbol_id, el);
+					if (es) fd->emit_symbol = std::string(es, el);
+				}
+				fd->is_const_method = (tm.flags & CIR_METHF_CONST) != 0;
+				fd->is_varargs      = (tm.flags & CIR_METHF_VARARGS) != 0;
+				fd->is_void_params  = (tm.flags & CIR_METHF_VOIDPARAMS) != 0;
+				fd->declaration_only = true;
+				Variable *mv = new Variable(std::string(mnm, mnl), *fd, 1, NULL, false);
+				if (m_static)
+					mv->flags |= vfSTATIC;
+				_mat_vars.push_back(mv);
+				cdd->methods.push_back(mv);
+				cdd->method_map[fd->method_display_name] = mv;
+			}
 		}
 		uint32_t nlen = 0;
 		CirRestoredType rt;

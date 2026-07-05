@@ -1200,3 +1200,76 @@ TEST_CASE("Phase 6 slice 3c: forest_restore_decls reconstructs a header class "
 	CHECK(cd->size == 12);
 	CHECK(progB->datatype_map.find("C") != progB->datatype_map.end());
 }
+
+// Phase 6 slice 3d: a non-virtual class method serializes as a method record
+// (name / display / return / explicit-params / emit_symbol / flags) and
+// materialize_types rebuilds a FuncDef + Variable into the class's method_map —
+// the hidden __this (param 0 of a non-static method) rebuilt as a pointer to the
+// class. This makes a member call RESOLVE; LINKING it needs the body (an inline
+// method's body rides the grove; an external method binds emit_symbol) — a later
+// slice, so this test validates the reconstruction directly, not a run.
+TEST_CASE("Phase 6 slice 3d: a class's non-virtual methods reconstruct into method_map") {
+	std::string inc_path = std::string("/tmp/madc_p6m_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_p6m_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_p6m_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "class Counter { public: int n;\n"
+		       "    int get() { return n; }\n"
+		       "    void add(int x) { n += x; } };\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { Counter c; c.n = 0; return c.get(); }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	DataDefCLASS *cd = NULL;
+	const std::vector<CirRestoredType> &types = forest.materialize_types();
+	for (size_t i = 0; i < types.size(); ++i)
+		if (types[i].name && !strcmp(types[i].name, "Counter"))
+			cd = dynamic_cast<DataDefCLASS *>(types[i].dd);
+	REQUIRE(cd != nullptr);
+
+	// get(): returns int, one param (the hidden __this — a pointer to Counter).
+	std::map<std::string, Variable *>::iterator gi = cd->method_map.find("get");
+	REQUIRE(gi != cd->method_map.end());
+	FuncDef *gf = dynamic_cast<FuncDef *>(gi->second->type);
+	REQUIRE(gf != nullptr);
+	CHECK(gf->returns.rawtype() == DataType::dtINT);
+	REQUIRE(gf->parameters.size() == 1);
+	REQUIRE(gf->parameters[0] != nullptr);
+	CHECK(gf->parameters[0]->is_pointer());
+	CHECK(gi->second->name == "Counter__get");	// mangled call symbol
+
+	// add(int): returns void, __this + one explicit int param.
+	std::map<std::string, Variable *>::iterator ai = cd->method_map.find("add");
+	REQUIRE(ai != cd->method_map.end());
+	FuncDef *af = dynamic_cast<FuncDef *>(ai->second->type);
+	REQUIRE(af != nullptr);
+	REQUIRE(af->parameters.size() == 2);
+	CHECK(af->parameters[0]->is_pointer());		// __this
+	CHECK(af->parameters[1]->rawtype() == DataType::dtINT);
+}

@@ -155,7 +155,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // eight (tokens / decl index / PP exports / edges) plus the two container-
 // global segments (branch macros, canonical order). The version feeds the
 // context hash, so v1 readers reject v2 containers and vice versa.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 6 };	// v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 7 };	// v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -269,10 +269,11 @@ enum : uint32_t
 	CIR_TYPEF_USER_DTOR  = 1u << 6	// DataDefCLASS::has_user_dtor
 };
 
-// One serialized type-table entry (fixed 12 u32). name_id / spelling_id are
+// One serialized type-table entry (fixed 14 u32). name_id / spelling_id are
 // intern handles; ref0 and the member/base payload type refs are typeids
-// swizzled to DataDef* on load. member_begin/base_begin index the container's
-// type_payload u32 stream (raw u32 offsets); *_count = number of records there.
+// swizzled to DataDef* on load. member_begin/base_begin/method_begin index the
+// container's type_payload u32 stream (raw u32 offsets); *_count = number of
+// records there.
 struct cir_forest_type_record
 {
 	uint32_t type_id;	// this DataDef's typeid (its serialization identity)
@@ -287,6 +288,8 @@ struct cir_forest_type_record
 	uint32_t member_count;	// number of member records
 	uint32_t base_begin;	// u32 offset into type_payload for bases (CLASS)
 	uint32_t base_count;	// number of base records (CLASS)
+	uint32_t method_begin;	// u32 offset into type_payload for methods (CLASS)
+	uint32_t method_count;	// number of method records (CLASS)
 };
 
 // A struct/class data member in the type_payload stream (fixed 11-u32 stride).
@@ -314,6 +317,35 @@ struct cir_forest_type_base
 	uint32_t offset;	// BaseSpec.offset (verbatim)
 	uint32_t flags;		// bit0 is_virtual | bit1 is_primary
 	uint32_t access;	// BaseSpec.access
+};
+
+// Verbatim-layout flags on a method record.
+enum : uint32_t
+{
+	CIR_METHF_CONST      = 1u << 0,	// FuncDef::is_const_method
+	CIR_METHF_VARARGS    = 1u << 1,	// FuncDef::is_varargs
+	CIR_METHF_VOIDPARAMS = 1u << 2,	// FuncDef::is_void_params (explicit `(void)`)
+	CIR_METHF_STATIC     = 1u << 3	// static member (no hidden __this)
+};
+
+// A non-virtual class method DECLARATION in the type_payload stream (fixed 7-u32
+// stride, followed by param_count explicit-param typeids). The body is NOT here:
+// an inline method's body rides the grove's node tree (emitted by the producer);
+// an external/system method binds to emit_symbol. On load a FuncDef + Variable is
+// rebuilt and attached to the class's method_map/methods so a member call
+// resolves and links. The hidden __this (param 0 of a non-static method) is NOT
+// serialized — it is rebuilt as a pointer to the owning class. ret_type_id and
+// each explicit-param typeid swizzle to DataDef* (primitive or recorded aggregate;
+// a method with an unserializable param/return is skipped individually).
+struct cir_forest_type_method
+{
+	uint32_t name_id;	// Variable name = the mangled call symbol (Counter__get)
+	uint32_t display_id;	// FuncDef::method_display_name (get)
+	uint32_t ret_type_id;	// return type (swizzle)
+	uint32_t emit_symbol_id; // FuncDef::emit_symbol intern (0 = madc-emitted default scheme)
+	uint32_t flags;		// CIR_METHF_*
+	uint32_t param_begin;	// u32 offset into type_payload for explicit param typeids
+	uint32_t param_count;	// number of EXPLICIT params (excludes the hidden __this)
 };
 
 // Source-position side-car record (parallel to the unit's records; cold —
@@ -435,6 +467,7 @@ public:
 
 class DataDef;	// defined in datadef.h; cir_freeze.cpp (the only .cpp that
 		// materializes DataDefs) includes datadef.h before this header.
+class Variable;	// datatokens.h; cir_freeze.cpp reconstructs method Variables (Phase 6 3d)
 
 // One entry the bind layer registers into the parser's symbol tables. `dd` is a
 // materialized struct/class DataDef (forest-owned); a typedef carries `underlying`
@@ -480,6 +513,7 @@ class CirFrozenForest
 	std::vector<cir_forest_type_record> _type_records;
 	std::vector<uint32_t> _type_payload;
 	std::vector<DataDef *> _mat_storage;		// forest-owned materialized DataDefs
+	std::vector<Variable *> _mat_vars;		// forest-owned reconstructed method Variables
 	std::vector<CirRestoredType> _restored;		// bind-facing view (built once)
 	bool _types_materialized;
 	// Shared v2 segment reader: decompress unit slot `slot` into `out`

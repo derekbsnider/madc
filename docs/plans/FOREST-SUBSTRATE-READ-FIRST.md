@@ -176,15 +176,40 @@ The shared `cir_forest_serialize_members`/`_bases`/`_record_aggregate` helpers b
 both the struct and class paths. Gated green (fulltest 679/0/0/16 +
 `forest_bind_gate` `class` case: MI hierarchy binds cross-process, `sum=6 bb=2
 sz=12` == live == g++, incl. nonzero base offset + upcast; `test_cir_freeze` 17/17).
-**NEXT: class METHOD-CALL dispatch** — a `from_system_header`/`is_externally_defined`
-class's methods bind to real libstdc++ Itanium symbols (madc emits no bodies); this
-is the `<string>`/`<vector>` corpus payoff, on top of the now-complete data layout.
+**LANDED (2026-07-05): class METHOD DECLARATIONS (slice 3d, format v7).** Freeze
+serializes each non-virtual method's decl — mangled call name (`Counter__get`),
+display name (`get`), return typeid, explicit-param typeids, `emit_symbol`, and
+flags (const/varargs/void-params/static) — into the type record (`method_begin`/
+`method_count` + `cir_forest_type_method`). Load rebuilds a `FuncDef`+`Variable`,
+reconstructing the hidden `__this` (param 0 of a non-static method) as a pointer to
+the owning class, and attaches it to `method_map`/`methods`; `forest_restore_decls`
+needs no change (methods ride the class object). Ctors/dtors/operators/templates and
+methods with an unserializable return/param are skipped individually (not bailing
+the class). A member call on a bound class now **RESOLVES**. Gated: `test_cir_freeze`
+slice-3d unit test (get/add reconstruct with correct signatures + `__this`);
+`forest_bind_gate` still green; fulltest green.
 
-NOTE (freeze fidelity, orthogonal): a `struct`-keyword aggregate WITH a base
-computes `sizeof` wrong in the LIVE parser (`struct D:B` → 4, should be 8); the
-`class`-keyword path is correct. The forest reproduces whatever the live parser
-produced (fidelity), so this is a separate parser-track bug, not a forest issue —
-being chased separately.
+**The linking layering (the runnable payoff — NEXT):** a resolved call still needs a
+DEFINITION.
+- **External / system methods** (the corpus): `emit_symbol` names a real libstdc++
+  Itanium symbol — the decl alone links (no body). BLOCKED on serializing the corpus
+  classes at all, which need **pointer-member serialization** (std::string/vector have
+  pointer members; the current member pass bails on non-primitive/non-recorded types).
+  So: pointer-member serialization → the corpus classes serialize → their method
+  decls link externally.
+- **Inline user methods**: the body was emitted by the PRODUCER into the grove (e.g.
+  `int Counter__get(Counter*){...}`), but `--forest-bind` currently emits only the
+  consumer's own tree, so a bound inline method is an `undefined MIR import`. Needs
+  **grove function-body emission on bind** (pull the bound unit's function-definition
+  nodes from the grove into the consumer's c2mir tree — the forest's "load the
+  pre-parsed body, don't re-parse" promise). The bind wiring is
+  `lexer.cpp` ~3017 (`bound to grove unit` → `forest_bind_include` + `forest_restore_decls`).
+
+Pick either linking path next; both build on the now-landed decl serialization.
+
+NOTE (freeze fidelity, orthogonal): the `struct`-keyword-with-base `sizeof` bug was
+FIXED (`6f008d0c`) — see the memory. Residual: exact vbase-diamond member offsets vs
+g++ (tail-padding reuse, task #8), no failing test.
 
 Concretely (the shape, for the class widening and any further types):
 - `cir_freeze.h`: `cir_forest_type_record` (id, kind, name_id, spelling_id, size,

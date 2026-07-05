@@ -834,6 +834,91 @@ static bool cir_forest_serialize_bases(DataDefCLASS *cdd,
 // false WITHOUT touching f when a member (or, for a class, a base) type is not yet
 // recorded — the caller retries it in a later fixpoint round, or skips it. On
 // success sdd is inserted into `recorded`.
+// Append cdd's non-virtual method DECLARATIONS to f.type_payload — the fixed-stride
+// records first, then each method's explicit-param typeids — and report the slice
+// via method_begin/method_count. Slice 1 covers PLAIN named methods only: ctors /
+// dtors / operators / template methods are skipped (individually, not bailing the
+// class), as is any method whose return or an explicit param is not a serializable
+// typeid (a primitive or an already-recorded aggregate). The hidden __this (param 0
+// of a non-static method) is NOT written — load rebuilds it as a pointer to the
+// class. All serialized classes are non-polymorphic (the freeze bails on a vtable),
+// so every method here is non-virtual.
+static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table &pool,
+				      const std::set<DataDef *> &recorded,
+				      cir_frozen_forest &f,
+				      uint32_t &method_begin, uint32_t &method_count)
+{
+	static const size_t MSTRIDE = sizeof(cir_forest_type_method) / sizeof(uint32_t);
+	auto serializable = [&](DataDef *dd) -> bool {
+		if (!dd)
+			return false;
+		uint32_t t = madc_type_id_for(dd);
+		return t && (t < MADC_TYPEID_PRIMITIVE_END || recorded.count(dd));
+	};
+	std::vector<cir_forest_type_method> recs;
+	std::vector<std::vector<uint32_t> > params;	// explicit param typeids per method
+	for (size_t i = 0; i < cdd->methods.size(); ++i) {
+		Variable *mv = cdd->methods[i];
+		if (!mv)
+			continue;
+		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+		if (!fd)
+			continue;
+		const std::string &disp = fd->method_display_name;
+		if (disp.empty())
+			continue;
+		if (disp == cdd->name || disp[0] == '~'
+		    || disp.compare(0, 8, "operator") == 0)
+			continue;			// ctor / dtor / operator: later slice
+		if (fd->is_member_template || !fd->template_param_names.empty())
+			continue;			// template method: later slice
+		bool is_static = (mv->flags & vfSTATIC) != 0;
+		if (!is_static && fd->parameters.empty())
+			continue;			// no __this slot -> malformed, skip
+		if (!serializable(&fd->returns))
+			continue;
+		size_t p0 = is_static ? 0 : 1;		// skip the hidden __this
+		std::vector<uint32_t> pt;
+		bool ok = true;
+		for (size_t p = p0; p < fd->parameters.size(); ++p) {
+			if (!serializable(fd->parameters[p])) { ok = false; break; }
+			pt.push_back(madc_type_id_for(fd->parameters[p]));
+		}
+		if (!ok)
+			continue;
+		cir_forest_type_method m;
+		memset(&m, 0, sizeof(m));
+		m.name_id        = pool.intern(mv->name);
+		m.display_id     = pool.intern(disp);
+		m.ret_type_id    = madc_type_id_for(&fd->returns);
+		m.emit_symbol_id = fd->emit_symbol.empty() ? 0 : pool.intern(fd->emit_symbol);
+		m.flags = (fd->is_const_method ? CIR_METHF_CONST : 0u)
+			| (fd->is_varargs ? CIR_METHF_VARARGS : 0u)
+			| (fd->is_void_params ? CIR_METHF_VOIDPARAMS : 0u)
+			| (is_static ? CIR_METHF_STATIC : 0u);
+		m.param_count = (uint32_t)pt.size();
+		recs.push_back(m);
+		params.push_back(pt);
+	}
+	method_begin = (uint32_t)f.type_payload.size();
+	method_count = (uint32_t)recs.size();
+	// Records first, then the param runs; each record's param_begin is the ABSOLUTE
+	// type_payload offset of its run (records occupy method_begin .. param_base).
+	uint32_t param_base = method_begin + method_count * (uint32_t)MSTRIDE;
+	uint32_t off = param_base;
+	for (size_t i = 0; i < recs.size(); ++i) {
+		recs[i].param_begin = off;
+		off += (uint32_t)params[i].size();
+	}
+	for (size_t i = 0; i < recs.size(); ++i) {
+		const uint32_t *w = (const uint32_t *)&recs[i];
+		for (size_t k = 0; k < MSTRIDE; ++k)
+			f.type_payload.push_back(w[k]);
+	}
+	for (size_t i = 0; i < params.size(); ++i)
+		f.type_payload.insert(f.type_payload.end(), params[i].begin(), params[i].end());
+}
+
 static bool cir_forest_record_aggregate(DataDefSTRUCT *sdd, DataDefCLASS *cdd,
 					madc::dis::intern_table &pool,
 					std::set<DataDef *> &recorded,
@@ -868,6 +953,8 @@ static bool cir_forest_record_aggregate(DataDefSTRUCT *sdd, DataDefCLASS *cdd,
 		r.base_begin = (uint32_t)f.type_payload.size();
 		r.base_count = (uint32_t)cdd->bases.size();
 		f.type_payload.insert(f.type_payload.end(), bpayload.begin(), bpayload.end());
+		cir_forest_append_methods(cdd, pool, recorded, f,
+					  r.method_begin, r.method_count);
 	}
 	f.type_records.push_back(r);
 	recorded.insert(sdd);
