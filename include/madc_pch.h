@@ -66,6 +66,12 @@ TokenBase *token_from_id(TokenID ti);
 bool serialize_tokens(const TokenStream &tokens,
 		      std::vector<uint8_t> &out);
 
+// Serialize an arbitrary token subsequence in the same record form —
+// the B4a forest per-unit token-slice payload (read back with
+// deserialize_tokens).
+bool serialize_token_seq(const std::vector<TokenBase *> &tokens,
+			 std::vector<uint8_t> &out);
+
 // Deserialize a binary buffer back to a token stream
 bool deserialize_tokens(const uint8_t *data, size_t len,
 			uint32_t expected_count,

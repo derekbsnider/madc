@@ -2,12 +2,27 @@
 
 CC ?= clang
 CXX ?= clang++
-# Default to -O0 during development: optimize madc's *algorithms* first, and
-# keep the binary unoptimized so profiling/gdb attribution is honest. The -O2
-# default (P0, docs/plans/2026-06-22-front-end-performance-plan.md — a free
-# ~1.74x) is a last-lap switch, flipped only once the front-end is doing the
-# work properly. Use the `debug` target for -O0 -g.
-CXXFLAGS ?= -std=c++11 -Wall -O0
+# --- Build modes (B4a; docs/plans/2026-07-04-forest-default-mode-design.md §7)
+# make            -> develop: -O0. Optimize madc's *algorithms* first, and keep
+#                    the binary unoptimized so profiling/gdb attribution is
+#                    honest (the long-standing development contract).
+# make debug      -> -O0 -ggdb, unstripped.
+# make release    -> -O2 (the "last-lap switch" — B4 is that last lap), then
+#                    strip BEFORE the forest pack is appended (strip rewrites
+#                    the ELF image and discards trailing bytes; plain strip
+#                    keeps .dynsym, which the dlsym import resolver needs),
+#                    then pack + append + verify via scripts/forest_pack.sh.
+# Modes NEVER share objects: each compiles into its own obj/<mode>/ tree
+# (-MMD tracks headers, not flags — mixing -g/-O2/-O0 objects silently skews).
+MODE ?= develop
+ifeq ($(MODE),release)
+MODE_OPTFLAGS = -O2
+else ifeq ($(MODE),debug)
+MODE_OPTFLAGS = -O0 -ggdb
+else
+MODE_OPTFLAGS = -O0
+endif
+CXXFLAGS ?= -std=c++11 -Wall $(MODE_OPTFLAGS)
 PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
 AR ?= ar
 ARFLAGS ?= rcs
@@ -33,8 +48,8 @@ MADCDISHDRS = $(wildcard ../include/madcdis/*.h)
 INCDIR	= ../include
 BINDIR	= ../bin
 LIBDIR	= ../lib
-OBJDIR	= ../obj
-PICOBJDIR = ../obj/pic
+OBJDIR	= ../obj/$(MODE)
+PICOBJDIR = $(OBJDIR)/pic
 FEATURE_DEFINES ?=
 OPTIONAL_CPPFLAGS ?=
 OPTIONAL_LIBS ?=
@@ -143,11 +158,20 @@ install-madcdat: libmadcdat
 endif
 
 debug:
-	$(MAKE) CXXFLAGS="-std=c++11 -Wall -g -O0" ../bin/madc
+	$(MAKE) MODE=debug ../bin/madc
+
+# Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
+# the ELF and would destroy an already-appended forest blob). Pack failure =
+# build failure; the verify step proves the appended blob reads back (pin OK)
+# and survives the stripped binary's dlsym resolver path.
+release:
+	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc $(LIBMADC_SHARED)
+	strip ../bin/madc
+	cd .. && bash scripts/forest_pack.sh bin/madc
+
 clean:
-	rm -f $(OBJECTS)
-	rm -f ../obj/madcdat_storage.o ../obj/madcdat_storage_bdb.o ../obj/madcdat_storage_gdbm.o ../obj/madcdat_storage_qdbm.o ../obj/madcdat_storage_sqlite.o
-	rm -f ../obj/pic/*.o
+	rm -rf ../obj/develop ../obj/debug ../obj/release
+	rm -f ../obj/*.o ../obj/*.d ../obj/pic/*.o ../obj/pic/*.d
 	rm -f $(ALL_TESTBINS)
 	rm -f $(MADDAT_ARCHIVE)
 	rm -f $(LIBMADC_STATIC)
@@ -182,6 +206,8 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) test
 	@cd .. && bash scripts/tag_arith_burndown.sh --check
 	@cd .. && bash scripts/tsubst_flagon_gate.sh --check
 	@cd .. && bash scripts/forest_selfexe_gate.sh
+	@cd .. && bash scripts/forest_index_oracle.sh
+	@cd .. && bash scripts/forest_dm_oracle.sh
 
 # CIR renderer fidelity gate over the whole corpus (diagnostic; localizes
 # missing renderer constructs and gcc-vs-emitted asm divergences).
@@ -241,10 +267,11 @@ predefined_macros.cpp:
 	CXX="$(CXX)" ../scripts/gen_predefined_macros.sh
 
 $(OBJDIR)/%.o: %.cpp $(DEPENDS)
+	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
 $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)
-	mkdir -p $(PICOBJDIR)
+	@mkdir -p $(PICOBJDIR)
 	$(CXX) -c -o $@ $(PIC_CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
 # Auto-generated per-object header dependencies (from -MMD -MP above). A changed

@@ -294,16 +294,12 @@ static DataDef *builtin_datadef_from_spelling(const std::string &s)
 
 // --- Serialization ---
 
-bool serialize_tokens(const TokenStream &tokens,
-		      std::vector<uint8_t> &out)
+// One token in .madh record form — the shared body of serialize_tokens
+// (whole-stream .madh write) and serialize_token_seq (B4a per-unit forest
+// token slices). Kind + position + payload; see deserialize_tokens.
+static void serialize_one_token(TokenBase *tb, std::vector<uint8_t> &out)
 {
-    out.clear();
-    out.reserve(tokens.size() * 16); // rough estimate
-
-    for ( TokenBase *tb : tokens )
     {
-	if ( !tb ) continue;
-
 	TokenType tt = tb->type();
 	TokenID   ti = tb->id();
 
@@ -379,7 +375,27 @@ bool serialize_tokens(const TokenStream &tokens,
 	    break;
 	}
     }
+}
 
+bool serialize_tokens(const TokenStream &tokens,
+		      std::vector<uint8_t> &out)
+{
+    out.clear();
+    out.reserve(tokens.size() * 16); // rough estimate
+    for ( TokenBase *tb : tokens )
+	if ( tb )
+	    serialize_one_token(tb, out);
+    return true;
+}
+
+bool serialize_token_seq(const std::vector<TokenBase *> &tokens,
+			 std::vector<uint8_t> &out)
+{
+    out.clear();
+    out.reserve(tokens.size() * 16);
+    for ( size_t i = 0; i < tokens.size(); ++i )
+	if ( tokens[i] )
+	    serialize_one_token(tokens[i], out);
     return true;
 }
 

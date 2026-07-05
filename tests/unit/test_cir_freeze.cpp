@@ -650,3 +650,148 @@ TEST_CASE("B3: the directory round-trips libs and the typeid->name closure") {
 	c2mir_finish(mir_ctx);
 	MIR_finish(mir_ctx);
 }
+
+// ---------------------------------------------------------------------------
+// B4a: grove payload v2 (docs/plans/2026-07-04-forest-default-mode-design.md
+// §2) — through the PRODUCTION pack path (madc_cir_freeze with
+// pack_recording on, i.e. exactly what --freeze does), then read back with
+// CirFrozenForest's v2 accessors.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edges, branch macros, canon order") {
+	std::string inc_path = std::string("/tmp/madc_b4a_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_b4a_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_b4a_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "#ifndef B4A_T_H\n"
+		       "#define B4A_T_H\n"
+		       "#define B4A_VAL 1\n"
+		       "#define B4A_FN(x) ((x)+1)\n"
+		       "#undef B4A_VAL\n"
+		       "typedef int b4a_alias_t;\n"
+		       "struct b4a_rec { int f; };\n"
+		       "int helper(int v);\n"
+		       "#endif\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "#if B4A_MISSING > 0\n"
+		      "typedef int never_t;\n"
+		      "#endif\n"
+		      "int helper(int v) { return v + 100; }\n"
+		      "int main() { return helper(1); }\n";
+	}
+
+	std::shared_ptr<Program> prog = std::make_shared<Program>();
+	prog->pack_recording = true;	// what --freeze sets before tokenize
+	TokenProgram *tp = prog->tokenize(main_path.c_str());
+	REQUIRE(tp != nullptr);
+	REQUIRE(prog->parse(tp));
+	REQUIRE(madc_cir_freeze(prog.get(), main_path.c_str(),
+				snap_path.c_str(), /*append=*/false) == 0);
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+	REQUIRE(forest.unit_count() >= 2);
+
+	// Locate the two units by name.
+	uint32_t u_main = 0xffffffffu, u_inc = 0xffffffffu;
+	for (uint32_t u = 0; u < forest.unit_count(); ++u) {
+		const char *nm = forest.unit_name(u);
+		if (nm && main_path == nm) u_main = u;
+		if (nm && inc_path == nm)  u_inc = u;
+	}
+	REQUIRE(u_main != 0xffffffffu);
+	REQUIRE(u_inc != 0xffffffffu);
+
+	// Canonical order = first-tokenization order: main, then the include.
+	const std::vector<uint32_t> &canon = forest.canon_order();
+	REQUIRE(canon.size() == 2);
+	CHECK(canon[0] == u_main);
+	CHECK(canon[1] == u_inc);
+
+	// Branch macros: the include guard (#ifndef) and the #if consult.
+	std::set<std::string> branch;
+	for (size_t i = 0; i < forest.branch_macros().size(); ++i)
+		if (const char *s = forest.pool_str(forest.branch_macros()[i]))
+			branch.insert(s);
+	CHECK(branch.count("B4A_T_H") == 1);
+	CHECK(branch.count("B4A_MISSING") == 1);
+
+	// Token slice: the include unit's stream deserializes to token_count
+	// tokens through the .madh reader.
+	std::vector<uint8_t> payload;
+	uint32_t ntok = 0;
+	REQUIRE(forest.unit_tokens(u_inc, payload, ntok));
+	CHECK(forest.unit_anchor(u_inc) != CIR_FOREST_ANCHOR_NONE);
+	REQUIRE(ntok >= 15);	// typedef/struct/fn decl tokens
+	std::deque<TokenBase *> toks;
+	REQUIRE(madc_pch::deserialize_tokens(payload.data(), payload.size(),
+					     ntok, toks));
+	CHECK(toks.size() == (size_t)ntok);
+	for (size_t i = 0; i < toks.size(); ++i)
+		delete toks[i];
+
+	// Decl index: the include's exports, with in-range unit-local slices.
+	std::vector<cir_forest_decl_entry> di;
+	REQUIRE(forest.unit_decl_index(u_inc, di));
+	REQUIRE(di.size() == forest.unit_anchor(u_inc));
+	bool saw_alias = false, saw_rec = false, saw_helper = false;
+	for (size_t i = 0; i < di.size(); ++i) {
+		const char *nm = forest.pool_str(di[i].name_id);
+		REQUIRE(nm != nullptr);
+		CHECK(di[i].slice_begin < di[i].slice_end);
+		CHECK(di[i].slice_end <= ntok);
+		CHECK((di[i].aux & Program::PACK_DECL_SPANS_UNITS) == 0);
+		if (!strcmp(nm, "b4a_alias_t") && di[i].kind == Program::pdkTypedef)
+			saw_alias = true;
+		if (!strcmp(nm, "b4a_rec") && di[i].kind == Program::pdkStruct)
+			saw_rec = true;
+		if (!strcmp(nm, "helper") && di[i].kind == Program::pdkFunction)
+			saw_helper = true;
+	}
+	CHECK(saw_alias);
+	CHECK(saw_rec);
+	CHECK(saw_helper);
+
+	// PP exports: define, define-fn, undef — in directive order.
+	std::vector<uint32_t> ppe;
+	REQUIRE(forest.unit_pp_events(u_inc, ppe));
+	std::vector<std::pair<std::string, uint32_t> > events; // (name, tag)
+	for (size_t k = 0; k + 5 <= ppe.size(); ) {
+		const char *nm = forest.pool_str(ppe[k]);
+		REQUIRE(nm != nullptr);
+		events.push_back(std::make_pair(std::string(nm),
+						ppe[k + 1] & 0xffu));
+		k += 5 + ppe[k + 4];
+	}
+	REQUIRE(events.size() == 4);
+	CHECK(events[0].first == "B4A_T_H");
+	CHECK(events[0].second == (uint32_t)Program::PackMacroEvent::peDefine);
+	CHECK(events[1].first == "B4A_VAL");
+	CHECK(events[1].second == (uint32_t)Program::PackMacroEvent::peDefine);
+	CHECK(events[2].first == "B4A_FN");
+	CHECK(events[2].second == (uint32_t)Program::PackMacroEvent::peDefineFn);
+	CHECK(events[3].first == "B4A_VAL");
+	CHECK(events[3].second == (uint32_t)Program::PackMacroEvent::peUndef);
+
+	// Edges: main includes the helper unit.
+	std::vector<uint32_t> edges;
+	REQUIRE(forest.unit_edges(u_main, edges));
+	bool edge_to_inc = false;
+	for (size_t i = 0; i < edges.size(); ++i)
+		if (edges[i] == u_inc)
+			edge_to_inc = true;
+	CHECK(edge_to_inc);
+}

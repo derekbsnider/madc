@@ -74,7 +74,14 @@ enum : uint32_t
 	SNAP_KIND_CIR_FOREST_DIR = madc::dis::SNAP_KIND_CONSUMER + 2,	// cir_forest_dir_header + units + libs
 	SNAP_KIND_CIR_CONNECTORS = madc::dis::SNAP_KIND_CONSUMER + 3,	// uint64[] (unit<<32 | record)
 	SNAP_KIND_CIR_POSITIONS  = madc::dis::SNAP_KIND_CONSUMER + 4,	// cir_frozen_pos[] parallel to records
-	SNAP_KIND_CIR_TYPE_NAMES = madc::dis::SNAP_KIND_CONSUMER + 5	// uint32 pairs {typeid, name_id}
+	SNAP_KIND_CIR_TYPE_NAMES = madc::dis::SNAP_KIND_CONSUMER + 5,	// uint32 pairs {typeid, name_id}
+	// --- grove payload v2 (B4a; design doc 2026-07-04 §2) ---
+	SNAP_KIND_CIR_UNIT_TOKENS   = madc::dis::SNAP_KIND_CONSUMER + 6,  // post-PP token slice (.madh record form)
+	SNAP_KIND_CIR_DECL_INDEX    = madc::dis::SNAP_KIND_CONSUMER + 7,  // cir_forest_decl_entry[]
+	SNAP_KIND_CIR_PP_EXPORTS    = madc::dis::SNAP_KIND_CONSUMER + 8,  // uint32 event stream (cir_forest_pp_event + params)
+	SNAP_KIND_CIR_UNIT_EDGES    = madc::dis::SNAP_KIND_CONSUMER + 9,  // uint32[] directory unit indices, include order
+	SNAP_KIND_CIR_BRANCH_MACROS = madc::dis::SNAP_KIND_CONSUMER + 10, // container-global: uint32 name ids, sorted
+	SNAP_KIND_CIR_CANON_ORDER   = madc::dis::SNAP_KIND_CONSUMER + 11  // container-global: uint32 unit indices, canonical order
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -141,21 +148,30 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // The forest (B3): per-unit segments + connectors + cross-process closure
 // ---------------------------------------------------------------------------
 
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 1 };
+// Format 2 = grove payload v2 (B4a): four per-unit segment slots grew to
+// eight (tokens / decl index / PP exports / edges) plus the two container-
+// global segments (branch macros, canonical order). The version feeds the
+// context hash, so v1 readers reject v2 containers and vice versa.
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 2 };
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
-// these are its well-known ids).  Unit i's four payloads live at
-// CIR_FOREST_SEG_UNIT_BASE + i * CIR_FOREST_SEGS_PER_UNIT + {0,1,2,3}.
+// these are its well-known ids).  Unit i's payloads live at
+// CIR_FOREST_SEG_UNIT_BASE + i * CIR_FOREST_SEGS_PER_UNIT + slot.
 enum : uint32_t
 {
-	CIR_FOREST_SEG_DIR         = 1,
-	CIR_FOREST_SEG_STR_BYTES   = 2,		// SNAP_KIND_INTERN_BYTES
-	CIR_FOREST_SEG_STR_ENTRIES = 3,		// SNAP_KIND_INTERN_ENTRIES
-	CIR_FOREST_SEG_STR_BUCKETS = 4,		// SNAP_KIND_INTERN_BUCKETS
-	CIR_FOREST_SEG_TYPE_NAMES  = 5,
-	CIR_FOREST_SEG_UNIT_BASE   = 16,
-	CIR_FOREST_SEGS_PER_UNIT   = 4		// +0 records, +1 children, +2 connectors, +3 positions
+	CIR_FOREST_SEG_DIR           = 1,
+	CIR_FOREST_SEG_STR_BYTES     = 2,	// SNAP_KIND_INTERN_BYTES
+	CIR_FOREST_SEG_STR_ENTRIES   = 3,	// SNAP_KIND_INTERN_ENTRIES
+	CIR_FOREST_SEG_STR_BUCKETS   = 4,	// SNAP_KIND_INTERN_BUCKETS
+	CIR_FOREST_SEG_TYPE_NAMES    = 5,
+	CIR_FOREST_SEG_BRANCH_MACROS = 6,	// v2 (absent = zero-length)
+	CIR_FOREST_SEG_CANON_ORDER   = 7,	// v2 (absent = zero-length)
+	CIR_FOREST_SEG_UNIT_BASE     = 16,
+	CIR_FOREST_SEGS_PER_UNIT     = 8	// +0 records, +1 children, +2 connectors,
+						// +3 positions, +4 tokens, +5 decl index,
+						// +6 pp exports, +7 edges (v2 slots may be
+						// zero-length: module-only freeze)
 };
 
 struct cir_forest_dir_header	// directory payload: header, then units, then lib name ids
@@ -174,9 +190,40 @@ struct cir_forest_dir_unit
 				// unit key is an interned spelling, not intrinsically a path)
 	uint32_t record_count;
 	uint32_t connector_count;
-	uint32_t anchor_idx;	// grove entry a parse-time #include/import binds to
-				// (B4); CIR_FOREST_ANCHOR_NONE until then
+	uint32_t anchor_idx;	// v2: the unit's decl-index ENTRY COUNT when a grove
+				// payload exists (the keyframe a parse-time #include /
+				// import binds to); CIR_FOREST_ANCHOR_NONE = no grove
+				// payload (module-only unit)
 };
+
+// --- grove payload v2 PODs (B4a) -------------------------------------------
+
+// One decl-index entry: exported name -> token-slice range in the unit's
+// token segment. A name with N registrations has N entries (bind
+// materializes the full set — overloads, fwd decl + definition).
+struct cir_forest_decl_entry
+{
+	uint32_t name_id;	// pool handle (exported, namespace-qualified form)
+	uint32_t kind;		// Program::PackDeclKind wire value
+	uint32_t slice_begin;	// unit-local token indices [begin, end)
+	uint32_t slice_end;
+	uint32_t aux;		// PACK_DECL_* flags (spans-units / fuzzy-bounds)
+};
+
+// One PP-export event head in the unit's uint32 event stream; nparams
+// param-name ids follow immediately. tag_flags low byte = the
+// Program::PackMacroEvent tag (define / define-fn / undef tombstone);
+// bit 8 = variadic.
+struct cir_forest_pp_event
+{
+	uint32_t name_id;
+	uint32_t tag_flags;
+	uint32_t body_id;	// pool handle: body text (object value / fn body); 0 = none
+	uint32_t variadic_param_id;	// pool handle; 0 = unnamed / not variadic
+	uint32_t nparams;
+};
+
+enum : uint32_t { CIR_FOREST_PP_VARIADIC = 1u << 8 };
 
 // Source-position side-car record (parallel to the unit's records; cold —
 // consumed for diagnostics, separate from the hot record segment).
@@ -187,13 +234,20 @@ struct cir_frozen_pos
 	uint32_t col;
 };
 
-// One unit's freeze product.
+// One unit's freeze product. The v2 grove payload fields stay empty for a
+// module-only freeze (anchor_idx then writes as ANCHOR_NONE).
 struct cir_forest_unit
 {
 	uint32_t                    unit_name_id;
 	cir_frozen_blob             blob;
 	std::vector<uint64_t>       connectors;	// (target_unit << 32) | target_record
 	std::vector<cir_frozen_pos> positions;	// parallel to blob.records
+	// --- grove payload v2 (B4a) ---
+	std::vector<uint8_t>        token_payload;	// .madh record form
+	uint32_t                    token_count = 0;
+	std::vector<cir_forest_decl_entry> decl_index;
+	std::vector<uint32_t>       pp_events;	// cir_forest_pp_event stream
+	std::vector<uint32_t>       edges;	// directory unit indices, include order
 };
 
 // A whole frozen forest in memory (the multi-unit sibling of cir_frozen_blob).
@@ -203,6 +257,9 @@ struct cir_frozen_forest
 	uint32_t                     root_unit;
 	uint32_t                     root_idx;
 	std::vector<std::string>     libs;	// dlopen closure (#load / -l paths)
+	// --- grove payload v2 (B4a; container-global) ---
+	std::vector<uint32_t>        branch_macros;	// pool name ids, sorted
+	std::vector<uint32_t>        canon_order;	// unit indices, canonical include order
 };
 
 // The context-hash pin: madc version + record/position layout + the c2mir
@@ -301,6 +358,13 @@ class CirFrozenForest
 	// compressed, bound in place when codec is None).
 	madc::dis::frozen_intern_table _pool;
 	std::vector<uint8_t> _pool_bytes, _pool_entries, _pool_buckets;
+	// v2 container-global payloads (loaded at open; empty on v2-less
+	// module containers).
+	std::vector<uint32_t> _branch_macros, _canon_order;
+	// Shared v2 segment reader: decompress unit slot `slot` into `out`
+	// (raw bytes). False on absent/malformed.
+	bool read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
+			   std::vector<uint8_t> &out) const;
 
 	const char *pool_cstr(uint32_t id, uint32_t &len) const;
 	uint32_t live_str_id(uint32_t frozen_id);	// re-intern (memoized)
@@ -324,6 +388,23 @@ public:
 	const std::vector<std::string> &libs() const { return _libs; }
 	const char *unit_name(uint32_t unit) const;
 	const char *type_name_for(uint32_t type_id) const;  // NULL if unknown
+
+	// --- grove payload v2 readers (B4a observability, B4b bind) ---
+	// Each decompresses the requested unit segment on demand; false =
+	// no payload (zero-length slot) or a malformed segment. They do NOT
+	// load the unit's node records (independent of unit_segment).
+	uint32_t unit_anchor(uint32_t unit) const;	// dir anchor_idx
+	bool unit_tokens(uint32_t unit, std::vector<uint8_t> &madh_payload,
+			 uint32_t &token_count);
+	bool unit_decl_index(uint32_t unit,
+			     std::vector<cir_forest_decl_entry> &out);
+	bool unit_pp_events(uint32_t unit, std::vector<uint32_t> &out);
+	bool unit_edges(uint32_t unit, std::vector<uint32_t> &out);
+	const std::vector<uint32_t> &branch_macros() const { return _branch_macros; }
+	const std::vector<uint32_t> &canon_order() const { return _canon_order; }
+	// Container string pool lookup (name_id -> C string; NULL if invalid).
+	const char *pool_str(uint32_t id) const
+	{ uint32_t len; return pool_cstr(id, len); }
 
 	// Resolve (unit, record) — the connector target form. Loads the unit
 	// on first touch and materializes the reachable sub-DAG.

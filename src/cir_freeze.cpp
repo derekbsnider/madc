@@ -424,11 +424,16 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	std::vector<uint8_t> dir(sizeof(hdr));
 	memcpy(dir.data(), &hdr, sizeof(hdr));
 	for (size_t u = 0; u < f.units.size(); ++u) {
+		const cir_forest_unit &fu = f.units[u];
 		cir_forest_dir_unit du;
-		du.unit_name_id    = f.units[u].unit_name_id;
-		du.record_count    = (uint32_t)f.units[u].blob.records.size();
-		du.connector_count = (uint32_t)f.units[u].connectors.size();
-		du.anchor_idx      = CIR_FOREST_ANCHOR_NONE;	// B4 grove entry
+		du.unit_name_id    = fu.unit_name_id;
+		du.record_count    = (uint32_t)fu.blob.records.size();
+		du.connector_count = (uint32_t)fu.connectors.size();
+		// v2: anchor = decl-index entry count when the unit carries a
+		// grove payload; ANCHOR_NONE marks a module-only unit.
+		du.anchor_idx      = fu.token_payload.empty()
+				   ? CIR_FOREST_ANCHOR_NONE
+				   : (uint32_t)fu.decl_index.size();
 		size_t off = dir.size();
 		dir.resize(off + sizeof(du));
 		memcpy(dir.data() + off, &du, sizeof(du));
@@ -456,13 +461,25 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 	if (!add_seg(w, CIR_FOREST_SEG_TYPE_NAMES, SNAP_KIND_CIR_TYPE_NAMES,
 		     type_names.data(), type_names.size() * sizeof(uint32_t), codec))
 		return false;
+	// v2 container-global payloads (zero-length when the freeze recorded
+	// nothing — a module-only freeze).
+	if (!add_seg(w, CIR_FOREST_SEG_BRANCH_MACROS, SNAP_KIND_CIR_BRANCH_MACROS,
+		     f.branch_macros.data(),
+		     f.branch_macros.size() * sizeof(uint32_t), codec)
+	    || !add_seg(w, CIR_FOREST_SEG_CANON_ORDER, SNAP_KIND_CIR_CANON_ORDER,
+			f.canon_order.data(),
+			f.canon_order.size() * sizeof(uint32_t), codec))
+		return false;
 
 	for (size_t u = 0; u < f.units.size(); ++u) {
 		const cir_forest_unit &fu = f.units[u];
 		uint32_t base = CIR_FOREST_SEG_UNIT_BASE
 			      + (uint32_t)u * CIR_FOREST_SEGS_PER_UNIT;
-		if (fu.blob.records.empty())
-			return false;
+		// v2: a unit may be token-only (a macro-only header), or even
+		// empty of both records and tokens (a PP-export-only carrier,
+		// or an edge target whose tokens live under another display
+		// name) — all are legal directory entries; connectors never
+		// reference an empty unit and its anchor writes as NONE.
 		if (!add_seg(w, base + 0, SNAP_KIND_CIR_RECORDS,
 			     fu.blob.records.data(),
 			     fu.blob.records.size() * sizeof(cir_frozen_record), codec)
@@ -475,6 +492,27 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 		    || !add_seg(w, base + 3, SNAP_KIND_CIR_POSITIONS,
 				fu.positions.data(),
 				fu.positions.size() * sizeof(cir_frozen_pos), codec))
+			return false;
+		// v2 grove payload slots. Token slice = u32 token count, then
+		// the .madh record bytes.
+		std::vector<uint8_t> toks;
+		if (!fu.token_payload.empty()) {
+			toks.resize(sizeof(uint32_t) + fu.token_payload.size());
+			memcpy(toks.data(), &fu.token_count, sizeof(uint32_t));
+			memcpy(toks.data() + sizeof(uint32_t),
+			       fu.token_payload.data(), fu.token_payload.size());
+		}
+		if (!add_seg(w, base + 4, SNAP_KIND_CIR_UNIT_TOKENS,
+			     toks.data(), toks.size(), codec)
+		    || !add_seg(w, base + 5, SNAP_KIND_CIR_DECL_INDEX,
+				fu.decl_index.data(),
+				fu.decl_index.size() * sizeof(cir_forest_decl_entry), codec)
+		    || !add_seg(w, base + 6, SNAP_KIND_CIR_PP_EXPORTS,
+				fu.pp_events.data(),
+				fu.pp_events.size() * sizeof(uint32_t), codec)
+		    || !add_seg(w, base + 7, SNAP_KIND_CIR_UNIT_EDGES,
+				fu.edges.data(),
+				fu.edges.size() * sizeof(uint32_t), codec))
 			return false;
 	}
 	return true;
@@ -852,7 +890,107 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
 		}
 	}
 
+	// v2 container-global payloads (zero-length segments = empty).
+	if (const madc::dis::snapshot_segment *bs =
+		_reader.find(CIR_FOREST_SEG_BRANCH_MACROS)) {
+		std::vector<uint8_t> b;
+		if (bs->kind != SNAP_KIND_CIR_BRANCH_MACROS
+		    || !_reader.read_segment(*bs, b) || b.size() % sizeof(uint32_t)) {
+			fprintf(stderr, "madc: forest branch-macro set corrupt\n");
+			return false;
+		}
+		_branch_macros.resize(b.size() / sizeof(uint32_t));
+		if (!b.empty())
+			memcpy(_branch_macros.data(), b.data(), b.size());
+	}
+	if (const madc::dis::snapshot_segment *cs =
+		_reader.find(CIR_FOREST_SEG_CANON_ORDER)) {
+		std::vector<uint8_t> c;
+		if (cs->kind != SNAP_KIND_CIR_CANON_ORDER
+		    || !_reader.read_segment(*cs, c) || c.size() % sizeof(uint32_t)) {
+			fprintf(stderr, "madc: forest canonical-order table corrupt\n");
+			return false;
+		}
+		_canon_order.resize(c.size() / sizeof(uint32_t));
+		if (!c.empty())
+			memcpy(_canon_order.data(), c.data(), c.size());
+		for (size_t i = 0; i < _canon_order.size(); ++i)
+			if (_canon_order[i] >= hdr.unit_count) {
+				fprintf(stderr, "madc: forest canonical order out of range\n");
+				return false;
+			}
+	}
+
 	_segs.assign(hdr.unit_count, (CirFrozenSegment *)NULL);
+	return true;
+}
+
+// --- grove payload v2 readers (B4a) ----------------------------------------
+
+bool CirFrozenForest::read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
+				    std::vector<uint8_t> &out) const
+{
+	if (unit >= _units.size())
+		return false;
+	uint32_t base = CIR_FOREST_SEG_UNIT_BASE + unit * CIR_FOREST_SEGS_PER_UNIT;
+	const madc::dis::snapshot_segment *s = _reader.find(base + slot);
+	if (!s || s->kind != kind || !s->raw_size)
+		return false;
+	return _reader.read_segment(*s, out);
+}
+
+uint32_t CirFrozenForest::unit_anchor(uint32_t unit) const
+{
+	return unit < _units.size() ? _units[unit].anchor_idx
+				    : CIR_FOREST_ANCHOR_NONE;
+}
+
+bool CirFrozenForest::unit_tokens(uint32_t unit, std::vector<uint8_t> &madh_payload,
+				  uint32_t &token_count)
+{
+	std::vector<uint8_t> raw;
+	if (!read_unit_seg(unit, 4, SNAP_KIND_CIR_UNIT_TOKENS, raw)
+	    || raw.size() < sizeof(uint32_t))
+		return false;
+	memcpy(&token_count, raw.data(), sizeof(uint32_t));
+	madh_payload.assign(raw.begin() + sizeof(uint32_t), raw.end());
+	return true;
+}
+
+bool CirFrozenForest::unit_decl_index(uint32_t unit,
+				      std::vector<cir_forest_decl_entry> &out)
+{
+	std::vector<uint8_t> raw;
+	if (!read_unit_seg(unit, 5, SNAP_KIND_CIR_DECL_INDEX, raw)
+	    || raw.size() % sizeof(cir_forest_decl_entry))
+		return false;
+	out.resize(raw.size() / sizeof(cir_forest_decl_entry));
+	if (!raw.empty())
+		memcpy(out.data(), raw.data(), raw.size());
+	return true;
+}
+
+bool CirFrozenForest::unit_pp_events(uint32_t unit, std::vector<uint32_t> &out)
+{
+	std::vector<uint8_t> raw;
+	if (!read_unit_seg(unit, 6, SNAP_KIND_CIR_PP_EXPORTS, raw)
+	    || raw.size() % sizeof(uint32_t))
+		return false;
+	out.resize(raw.size() / sizeof(uint32_t));
+	if (!raw.empty())
+		memcpy(out.data(), raw.data(), raw.size());
+	return true;
+}
+
+bool CirFrozenForest::unit_edges(uint32_t unit, std::vector<uint32_t> &out)
+{
+	std::vector<uint8_t> raw;
+	if (!read_unit_seg(unit, 7, SNAP_KIND_CIR_UNIT_EDGES, raw)
+	    || raw.size() % sizeof(uint32_t))
+		return false;
+	out.resize(raw.size() / sizeof(uint32_t));
+	if (!raw.empty())
+		memcpy(out.data(), raw.data(), raw.size());
 	return true;
 }
 
