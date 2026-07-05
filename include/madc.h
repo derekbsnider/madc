@@ -2702,6 +2702,10 @@ public:
     void add_stdio();		// placeholder for #include <stdio.h> registration
     Variable *lazy_resolve(const std::string &name);	// on-demand variable/function registration
     DataDef  *lazy_resolve_type(const std::string &name);	// on-demand type/struct registration
+    // Phase 6 (forest = serialized Tree-1): RECONSTRUCT symbol tables from a
+    // loaded forest's typed decl records — never re-parse. Slice 1b: file-scope
+    // typedefs. (Declared with an incomplete CirFrozenForest — pointer/ref only.)
+    void forest_restore_decls(class CirFrozenForest &forest);
     void add_namespaces();
     void add_madc_namespace();
     bool is_namespace_registration_enabled(const std::string &name) const;

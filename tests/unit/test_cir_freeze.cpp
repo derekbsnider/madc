@@ -862,3 +862,74 @@ TEST_CASE("Phase 6 slice 1: a file-scope typedef serializes as a decl record; "
 	}
 	CHECK(saw_myint);
 }
+
+// Phase 6 slice 1b: RESTORE the loaded decl records into a FRESH Program's symbol
+// tables (forest_restore_decls) and prove that Program now resolves the header
+// typedef WITHOUT ever parsing the header — the "parser-resume" that makes bind a
+// load, not a re-parse.
+TEST_CASE("Phase 6 slice 1b: forest_restore_decls makes a fresh parser resolve a "
+	  "header typedef with no header parse") {
+	std::string inc_path = std::string("/tmp/madc_p6b_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_p6b_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_p6b_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	std::string triv_path = std::string("/tmp/madc_p6b_triv_")
+			      + std::to_string((long)getpid()) + ".mad";
+	{ std::ofstream inc(inc_path.c_str()); inc << "typedef int myint;\n"; }
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { myint x = 5; return x; }\n";
+	}
+	{ std::ofstream tv(triv_path.c_str()); tv << "int main() { return 0; }\n"; }
+
+	// Freeze a container carrying the `myint` typedef decl record.
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	// The aliased primitive the record points at (resolves with no Program).
+	bool found_rec = false;
+	uint32_t myint_type_id = 0;
+	for (size_t i = 0; i < forest.decl_records().size(); ++i) {
+		const char *nm = forest.pool_str(forest.decl_records()[i].name_id);
+		if (nm && !strcmp(nm, "myint")) {
+			found_rec = true;
+			myint_type_id = forest.decl_records()[i].type_id;
+		}
+	}
+	REQUIRE(found_rec);
+	DataDef *expected = madc_type_from_id(myint_type_id);
+	REQUIRE(expected != nullptr);
+
+	// A FRESH Program, initialized by a trivial parse that never mentions myint.
+	std::shared_ptr<Program> progB = std::make_shared<Program>();
+	TokenProgram *tpB = progB->tokenize(triv_path.c_str());
+	REQUIRE(tpB != nullptr);
+	REQUIRE(progB->parse(tpB));
+	std::remove(triv_path.c_str());
+	CHECK(progB->datatype_map.find("myint") == progB->datatype_map.end());
+
+	// RESTORE from the forest — no header parse — then it resolves.
+	progB->forest_restore_decls(forest);
+	flat_datatype_map_iter mit = progB->datatype_map.find("myint");
+	REQUIRE(mit != progB->datatype_map.end());
+	CHECK(&(*mit)->definition == expected);
+}

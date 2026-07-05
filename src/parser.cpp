@@ -48,6 +48,7 @@
 #include "madc.h"
 #include "madc_mangle.h"
 #include "ns_common.h"
+#include "cir_freeze.h"	// Phase 6: CirFrozenForest decl records (forest_restore_decls)
 
 using namespace std;
 
@@ -12211,6 +12212,40 @@ DataDef *Program::lazy_resolve_type(const std::string &name)
 
     DBG(if (dd) std::cout << "lazy_resolve_type(" << name << ") registered" << std::endl);
     return dd;
+}
+
+// Phase 6 (forest = serialized Tree-1; design 2026-07-05): reconstruct the
+// parser's symbol tables from a loaded forest's typed decl records — the
+// "parser-resume" that makes bind a LOAD, never a re-parse. Slice 1b handles
+// file-scope typedefs: a record's aliased type-id resolves (primitives are
+// pinned and resolve in any process; aggregate/system-segment types come with
+// later slices), and the alias registers exactly as record_typedef would —
+// datatype_map (+ namespace_datatype_map for a scoped alias). The name crosses
+// via its string content (container pool -> this Program's pool), not by pool id.
+void Program::forest_restore_decls(CirFrozenForest &forest)
+{
+    const std::vector<cir_forest_decl_record> &records = forest.decl_records();
+    for ( size_t i = 0; i < records.size(); ++i )
+    {
+	const cir_forest_decl_record &r = records[i];
+	const char *name = forest.pool_str(r.name_id);
+	if ( !name || !*name )
+	    continue;
+	if ( r.kind != pdkTypedef )
+	    continue;			// slice 1b: typedefs only (widen later)
+	DataDef *dd = type_from_id(r.type_id);
+	if ( !dd )
+	    continue;			// aggregate/system-segment type: a later slice
+	TokenDataType *tdt = new TokenDataType(name, *dd);
+	std::string alias(name);
+	const char *ns = r.ns_id ? forest.pool_str(r.ns_id) : NULL;
+	if ( ns && *ns )
+	    namespace_datatype_map[ns][alias] = tdt;	// scoped twin
+	datatype_map[alias] = tdt;			// flat (current-scope) key
+	user_typedef_names.insert(alias);
+	DBG(std::cout << "forest_restore_decls: typedef " << alias
+	    << " -> type_id " << r.type_id << std::endl);
+    }
 }
 
 void Program::add_namespaces()
