@@ -4759,6 +4759,18 @@ TokenBase *Program::_getToken()
 		    }
 		    return getToken();
 		}
+		// GCC/clang predefine __int128_t / __uint128_t as typedefs for
+		// (unsigned) __int128 — always available, no header. They are
+		// ATOMIC: unlike the __int128 keyword they do NOT combine with
+		// signed/unsigned/long (`unsigned __int128_t` is invalid), so
+		// resolve them directly to the canonical 128-bit datatype rather
+		// than feeding the compound accumulator. The datatype name stays
+		// "__int128" (from ddINT128), so downstream name-keyed lookups and
+		// c2mir emission are identical to the __int128 keyword path.
+		if ( word == "__int128_t" )
+		    return make_datatype("__int128", ddINT128);
+		if ( word == "__uint128_t" )
+		    return make_datatype("unsigned __int128", ddUINT128);
 		// Compound type specifiers: any mix of unsigned/signed/long/
 		// short/int/char/double in any order (C99 6.7.2).
 		// Uses a bitmap accumulator (chibicc-style) so order doesn't

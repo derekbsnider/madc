@@ -12,3 +12,6 @@ switch_ok
 wide_switch_ok
 wide_neg_ok
 wide_u_ok
+t_shi=68719476736 t_slo=0
+t_uhi=18446744073709551615 t_ulo=18446744073709551615
+t_dbl_hi=137438953472

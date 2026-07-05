@@ -57,5 +57,18 @@ int main()
     case (unsigned __int128)-1: printf("wide_u_ok\n"); break;
     default: printf("wide_u_bad\n"); break;
     }
+    // __int128_t / __uint128_t: GCC/clang predefine these typedefs (no
+    // header) for (unsigned) __int128. Regression: previously rejected as
+    // an unknown type BOTH as a struct member ("Expecting type in struct
+    // definition, got '__int128_t'") and as a local ("use of undeclared
+    // identifier"). Values verified against gcc -O0.
+    struct W128 { __int128_t s; __uint128_t u; };
+    struct W128 w;
+    w.s = (__int128_t)1 << 100;
+    w.u = (__uint128_t)-1;
+    printf("t_shi=%llu t_slo=%llu\n", (unsigned long long)(w.s >> 64), (unsigned long long)w.s);
+    printf("t_uhi=%llu t_ulo=%llu\n", (unsigned long long)(w.u >> 64), (unsigned long long)w.u);
+    __int128_t tl = w.s + w.s;
+    printf("t_dbl_hi=%llu\n", (unsigned long long)((unsigned __int128)tl >> 64));
     return 0;
 }
