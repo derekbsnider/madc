@@ -2,26 +2,25 @@
 
 **Date:** 2026-07-05 · **Branch:** develop · **Status:** ACTIVE — slices 1a+1b+2+3a+3b landed.
 
-> ⚠️ **POST-COMPACTION, DO THIS FIRST (owner-directed 2026-07-05) — a
-> PARSER-track item, before resuming the forest track (3c):**
-> Root-cause and fix the live-parse failure where a struct reached through the
-> **system-include / auto-include prelude** path rejects `__int128_t`:
-> `parser.cpp:23185` throws *"Expecting type in struct definition, got
-> '__int128_t'"*. Exploratory repro (NOT yet minimal): `tmp/link.h` =
-> `struct Node { int val; struct Node *next; };`, then
-> `bin/madc tmp/rA2.cpp -I tmp` where rA2 = `#include <link.h>` +
-> `int printf(const char*,...);` + a `main` using `struct Node`. Note: the error
-> line ("99") is in the flattened prelude, NOT the 5-line header — so the
-> self-ref pointer / `ns::X` shapes are likely RED HERRINGS; the real trigger is
-> `__int128_t` in a prelude/system struct. **Method (gcc-methodology.md):**
-> minimize past the include noise to the true trigger → confirm blast radius
-> (does it block real corpus headers?) → `gcc -S`/`clang` compare → fix at the
-> DEEPEST layer (likely: recognize `__int128_t`/`__int128` as a type spelling in
-> the struct-body type parser), gated vs gcc+clang. This is a prerequisite for
-> the corpus (a bind can't beat a live parse). It is NOT a forest regression —
-> the failing path runs zero forest code (bind hook gated off), the throw is in
-> code this session never touched (git -L 383628f6..HEAD clean), and the torture
-> failset stayed byte-identical. Only AFTER this: resume forest 3c below.
+> ✅ **PARSER-track prerequisite DONE (`c150b374`, 2026-07-05):** the
+> `__int128_t` rejection is FIXED. Root cause was broader than first framed —
+> not struct-specific at all: madc handled only the `__int128` keyword, so the
+> ATOMIC GCC/clang predefined typedefs `__int128_t`/`__uint128_t` fell through
+> to plain identifiers and failed everywhere (struct member → "Expecting type in
+> struct definition"; local → "undeclared identifier"). Fixed at the deepest
+> layer (`src/lexer.cpp`, before the compound-specifier accumulator): recognize
+> both `_t` spellings as standalone type spellings resolving to the existing
+> `ddINT128`/`ddUINT128` (canonical name "__int128" → downstream + emit-c11
+> unchanged; Tier-1 lowering). The self-ref / `ns::X` shapes WERE red herrings
+> (as predicted); the real trigger was `<link.h>` (angle include) resolving to
+> the real glibc header whose x86-64 `bits/link.h` has
+> `__int128_t __glibc_unused1[4];`. Gated: fulltest 679/0/0/16, value byte-
+> identical to gcc, invalid `unsigned __int128_t` still rejected (parity),
+> torture zero-regression + pr98474.c now PASSES (rebaselined 51→50). Two
+> SEPARATE pre-existing parser bugs this unmasked are PARKED (own track, not
+> forest, not this fix): full real glibc `<link.h>` → "Expecting type in class
+> definition"; `<cstdint>` → `using ::int_fast8_t;` "not a declaration in '::'".
+> **NEXT = resume forest 3c below (`DataDefCLASS`).**
 >
 > This handoff exists because of a real post-compaction drift on 2026-07-05: an
 > agent resumed, followed a design doc that had quietly reopened a *settled*
