@@ -202,10 +202,37 @@ DEFINITION.
   consumer's own tree, so a bound inline method is an `undefined MIR import`. Needs
   **grove function-body emission on bind** (pull the bound unit's function-definition
   nodes from the grove into the consumer's c2mir tree — the forest's "load the
-  pre-parsed body, don't re-parse" promise). The bind wiring is
-  `lexer.cpp` ~3017 (`bound to grove unit` → `forest_bind_include` + `forest_restore_decls`).
+  pre-parsed body, don't re-parse" promise).
+
+  **VERIFIED-FEASIBLE DESIGN (2026-07-05, ready to build — the recommended NEXT):**
+  - Confirmed: method bodies partition into the HEADER unit (decl-index shows
+    `Counter__get`/`add` under `fm.h`, `main` under the `.cpp` unit); a function
+    definition is `N_FUNC_DEF`; a module is built with `c2mir_new_node(c2m, N_MODULE)`
+    + `c2mir_op_append` (see `CirBuilder::translate_module`, cir_builder.cpp:17770);
+    the model is `CirJitSession::build_frozen` (madc_cir.cpp:443 — open forest with
+    the session `c2m`, materialize, `cir_compile`, `load_and_link`); multi-module
+    linking already exists (madc_cir.cpp:1246).
+  - HOOK: in `CirJitSession::build` (madc_cir.cpp:418), after `build_tu_module` and
+    BEFORE `load_and_link`, if `prog->forest_chain` is non-empty (bind occurred):
+    open a SECOND `CirFrozenForest` on the same image WITH THE SESSION `c2m`
+    (`bind_forest` was opened `c2m=NULL` at parse, for decls only — node-tree
+    materialization needs a real `c2m`); materialize the bound units' TOP-LEVEL decls
+    (types + `N_FUNC_DEF`s); synthesize `N_MODULE(N_LIST(decls))`; `MIR_load_module`
+    it so the existing `MIR_link` resolves `Counter__get` (grove-defined) as the
+    consumer's import.
+  - RISKS to design against: (1) node→unit origin mapping to filter the root's
+    `top_list` by bound unit (or iterate each bound unit's segment records) — must
+    NOT emit the producer's `main`; (2) the struct type MUST ride in the grove module
+    (the body accesses members); (3) cross-module: grove module + consumer module each
+    get a module-local `struct Counter`, symbol `Counter__get` defined-once (grove) /
+    imported (consumer) — verify MIR links cleanly (THE highest-risk part).
+  - GATE: `tmp/fm_consumer.cpp` (a `Counter{int n; int get(); void add(int);}`
+    header) binds + runs `get=15` == live == g++; add a `forest_bind_gate` method
+    case; fulltest; torture unaffected (forest-only).
 
 Pick either linking path next; both build on the now-landed decl serialization.
+The inline path (grove-body-emission) has the fully-worked design above; the corpus
+path is blocked on pointer-member serialization first.
 
 NOTE (freeze fidelity, orthogonal): the `struct`-keyword-with-base `sizeof` bug was
 FIXED (`6f008d0c`) — see the memory. Residual: exact vbase-diamond member offsets vs
