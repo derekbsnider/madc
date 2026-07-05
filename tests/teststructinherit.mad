@@ -1,0 +1,21 @@
+// struct-keyword inheritance layout (regression). A `struct` used as a base is
+// promoted to a class; the promoted base must have its layout computed so a
+// derived class lays out correctly. Before the fix the base's nvsize stayed 0,
+// so the base contributed 0 bytes: inherited and own members overlapped and
+// sizeof collapsed (struct D:B -> 4 instead of 8; the MI upcast read the wrong
+// member). Single + multiple inheritance, sizeof, inherited-member access, and a
+// second-base upcast must all match g++.
+struct B { int b; };
+struct D : B { int d; };          // single inheritance
+struct A2 { int a; };
+struct M : A2, B { int m; };      // multiple inheritance (B at a nonzero offset)
+
+int main()
+{
+    D x; x.b = 10; x.d = 20;
+    M y; y.a = 1; y.b = 2; y.m = 3;
+    B *bp = &y;                    // upcast to the second base subobject
+    printf("D b=%d d=%d sz=%d\n", x.b, x.d, (int)sizeof(D));
+    printf("M a=%d b=%d m=%d bpb=%d sz=%d\n", y.a, y.b, y.m, bp->b, (int)sizeof(M));
+    return 0;
+}

@@ -10521,16 +10521,24 @@ void DataDefCLASS::compute_layout()
     own_block_off = mi_align_up(cur, max_align ? max_align : 1);
     cur = own_block_off + size;   // size = own packed size on entry
 
-    // 4. nvsize = end of the non-virtual portion.
+    // 4. nvsize (Itanium) = the non-virtual data size rounded up to the
+    //    non-virtual alignment. It is what a DERIVED class adds for this class
+    //    when it uses it as a non-virtual base.
     nvsize = mi_align_up(cur, maxalign);
     if ( trait_is_empty(this) && nvsize == 0 )
 	nvsize = 1;
 
     // 5. virtual bases: appended once at the end, in canonical (collected) order.
+    //    They begin at this class's DATA SIZE (`cur` — the end of the non-virtual
+    //    members, Itanium's dsize), NOT at the maxalign-rounded nvsize: g++ places
+    //    the first vbase right after the last non-virtual byte, aligned to the
+    //    vbase's own alignment (`struct Left : virtual Mid { int l; }` puts the Mid
+    //    subobject at 12 = vptr 8 + l 4, not 16). Starting from nvsize over-pads
+    //    every vbase layout (Left 32 vs the correct 24).
     std::vector<DataDefCLASS *> vbs;
     std::set<DataDefCLASS *> seen;
     collect_vbases(vbs, seen);
-    size_t end = nvsize;
+    size_t end = cur;
     for ( DataDefCLASS *vb : vbs )
     {
 	size_t vbalign = vb->alignment();
@@ -35952,6 +35960,16 @@ DataDefCLASS *Program::promote_struct_base_to_class(const std::string &name,
     DataDefCLASS *cls = new DataDefCLASS(sdd->name, sdd->size, sdd->rawtype());
     static_cast<DataDefSTRUCT &>(*cls) = *sdd;
     cls->canonical_cpp_spelling = sdd->canonical_cpp_spelling;
+    // A promoted struct is a complete, base-less class. Run the class layout
+    // engine so its class-specific fields (nvsize / class_align / own_block_off)
+    // are set — a class defined with the `class`/`struct` body parser has these
+    // from compute_layout, but a plain DataDefSTRUCT copied here does not. Without
+    // it a DERIVED class's compute_layout reads bs.base->nvsize == 0, the base
+    // subobject contributes 0 bytes, its members overlap the derived's own, and
+    // sizeof collapses (the `struct D : B` -> 4 bug). Base-less, so own_block_off
+    // is 0 and member_offsets (already struct-relative from finalize) are
+    // unchanged; size is preserved (nvsize == the finalized struct size).
+    cls->compute_layout();
 
     struct_map[name] = cls;
     struct_map[sdd->name] = cls;
