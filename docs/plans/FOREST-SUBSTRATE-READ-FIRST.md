@@ -152,7 +152,18 @@ system DataDef's COMPLETE content as a type-table segment, pointer fields as ids
 **verbatim**; swizzle on load into real DataDef objects so `madc_type_from_id`
 resolves; bind points the parser's symbol tables at them.
 
-Concretely (in progress on `develop`):
+**LANDED `1b2d7171` (2026-07-05): the mechanism + typedef/struct/union coverage.**
+Format v6, freeze serializes the complete type table (full content, ids), load
+swizzles to complete DataDef objects VERBATIM, bind points symbol tables at them;
+the parallel `decl_records`/`struct_members` format + `finalize`-regeneration are
+retired. Verbatim load means unnamed-bitfield-gap/packed structs now bind
+correctly (the old rebuild refused them). Gated green (fulltest 679/0/0/16 +
+forest_bind_gate cross-process + torture 50-name byte-identical). **NEXT: widen
+the SAME records to `CIR_TYPEK_CLASS`** (DataDefCLASS bases/methods/vtable) — the
+class fields already exist in `cir_forest_type_record`/`cir_forest_type_base`;
+freeze currently skips `DataDefCLASS` and load handles only STRUCT/UNION/TYPEDEF.
+
+Concretely (the shape, for the class widening and any further types):
 - `cir_freeze.h`: `cir_forest_type_record` (id, kind, name_id, spelling_id, size,
   align, flags, ref0, member/base slices) + `cir_forest_type_member` (verbatim
   offset/count/access/origin/bitfield) + `cir_forest_type_base`. Replaces the
