@@ -742,6 +742,56 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
 // The container stays Program-blind; this is the Program->payload bridge (the
 // same seam as cir_forest_fill_pack_payloads). Names intern into the ACTIVE pool
 // that cir_forest_write serializes.
+// Round-trip layout check: replay the MEMBERS-ONLY reconstruction that
+// forest_restore_decls performs (addMember / addBitField over sdd->members, in
+// order, on a plain scratch struct) and require it to reproduce the original's
+// FULL layout — total size, every member byte offset, and every bitfield
+// bit-offset. It fails whenever the true layout depends on state the member
+// stream cannot carry or this slice does not model: unnamed/zero-width bitfield
+// gaps (absent from `members`, so they shift later bit-offsets WITHOUT changing
+// size — a size-only check misses them), `#pragma pack`, reverse scalar storage,
+// or explicit member/tag alignment. A struct that does not round-trip faithfully
+// is never serialized (bind then cleanly lacks it — a loud error at the use
+// site, NEVER wrong output).
+static bool cir_forest_plain_struct_faithful(DataDefSTRUCT *sdd)
+{
+    DataDefSTRUCT scratch(sdd->name, 0);
+    scratch.union_layout = sdd->union_layout;
+    for (size_t m = 0; m < sdd->members.size(); ++m) {
+	DataDef *mdd = sdd->members[m].second;
+	if (!mdd)
+	    return false;
+	bool bf = m < sdd->member_bitfields.size()
+	       && sdd->member_bitfields[m].is_bitfield;
+	if (bf) {
+	    scratch.addBitField(sdd->members[m].first, *mdd,
+				sdd->member_bitfields[m].bit_width);
+	} else {
+	    size_t cnt = m < sdd->member_counts.size() ? sdd->member_counts[m] : 1;
+	    scratch.addMember(sdd->members[m].first, *mdd, cnt ? cnt : 1);
+	}
+    }
+    scratch.is_complete = true;
+    scratch.finalize();
+    if (scratch.size != sdd->size
+	|| scratch.member_offsets.size() != sdd->member_offsets.size())
+	return false;
+    for (size_t m = 0; m < sdd->member_offsets.size(); ++m)
+	if (scratch.member_offsets[m] != sdd->member_offsets[m])
+	    return false;
+    for (size_t m = 0; m < sdd->members.size(); ++m) {
+	if (!(m < sdd->member_bitfields.size()
+	      && sdd->member_bitfields[m].is_bitfield))
+	    continue;
+	const DataDefSTRUCT::BitFieldInfo &a = scratch.member_bitfields[m];
+	const DataDefSTRUCT::BitFieldInfo &b = sdd->member_bitfields[m];
+	if (a.bit_offset != b.bit_offset || a.bit_width != b.bit_width
+	    || a.storage_offset != b.storage_offset)
+	    return false;
+    }
+    return true;
+}
+
 static void cir_forest_collect_decls(Program *prog, cir_frozen_forest &f)
 {
     if (!prog || !TokenBase::_active_strpool)
@@ -767,6 +817,7 @@ static void cir_forest_collect_decls(Program *prog, cir_frozen_forest &f)
 	r.aux     = 0;
 	r.member_begin = 0;
 	r.member_count = 0;
+	r.orig_size = 0;
 	f.decl_records.push_back(r);
     }
 
@@ -791,16 +842,18 @@ static void cir_forest_collect_decls(Program *prog, cir_frozen_forest &f)
 	    continue;
 	if (dynamic_cast<DataDefCLASS *>(sdd) || sdd->has_anon_aggregate)
 	    continue;			// methods/bases/vtable/anon: 3b/3c
-	// Serialize members into a scratch triple list; bail the WHOLE struct if
-	// any member is not (yet) representable (a struct half-serialized would
-	// mis-lay-out on load).
-	std::vector<uint32_t> triples;
+	// Serialize members into a scratch quad list [name_id,type_id,count,
+	// bit_width]; bail the WHOLE struct if any member is not (yet)
+	// representable (a struct half-serialized would mis-lay-out on load).
+	// Unnamed/zero-width bitfields never enter the members vector (they only
+	// advance the packing cursor — addUnnamedBitField), so a struct that has
+	// them serializes SHORT; the restore-side orig_size check then bails it
+	// rather than register a mis-laid-out struct.
+	std::vector<uint32_t> quads;
 	bool ok = true;
 	for (size_t m = 0; m < sdd->members.size(); ++m) {
 	    DataDef *mdd = sdd->members[m].second;
-	    bool is_bf = m < sdd->member_bitfields.size()
-		      && sdd->member_bitfields[m].is_bitfield;
-	    if (!mdd || is_bf) { ok = false; break; }
+	    if (!mdd) { ok = false; break; }
 	    uint32_t mtid;
 	    if (mdd->type_id && mdd->type_id < MADC_TYPEID_PRIMITIVE_END) {
 		mtid = mdd->type_id;			// pinned primitive
@@ -811,11 +864,25 @@ static void cir_forest_collect_decls(Program *prog, cir_frozen_forest &f)
 	    }
 	    uint32_t mcount = m < sdd->member_counts.size()
 			    ? (uint32_t)sdd->member_counts[m] : 1;
-	    triples.push_back(pool.intern(sdd->members[m].first));
-	    triples.push_back(mtid);
-	    triples.push_back(mcount ? mcount : 1);
+	    uint32_t bit_width = 0;
+	    if (m < sdd->member_bitfields.size()
+		&& sdd->member_bitfields[m].is_bitfield) {
+		bit_width = (uint32_t)sdd->member_bitfields[m].bit_width;
+		// A zero-width bitfield in members would be a named `:0` (illegal)
+		// — treat as unrepresentable and bail (never wrong output).
+		if (bit_width == 0) { ok = false; break; }
+	    }
+	    quads.push_back(pool.intern(sdd->members[m].first));
+	    quads.push_back(mtid);
+	    quads.push_back(mcount ? mcount : 1);
+	    quads.push_back(bit_width);
 	}
 	if (!ok)
+	    continue;
+	// Never serialize a struct whose members-only reconstruction would not
+	// reproduce the exact layout (unnamed-bitfield gaps, pack, reverse
+	// storage, explicit alignment): bind would else mis-lay-out silently.
+	if (!cir_forest_plain_struct_faithful(sdd))
 	    continue;
 	uint32_t my_sys = next_sys++;
 	sys_id[sdd] = my_sys;
@@ -825,10 +892,11 @@ static void cir_forest_collect_decls(Program *prog, cir_frozen_forest &f)
 	r.type_id      = my_sys;			// this struct's serialization identity
 	r.ns_id        = 0;				// slice 3a: global scope
 	r.aux          = sdd->union_layout ? 1u : 0u;
-	r.member_begin = (uint32_t)(f.struct_members.size() / 3);
-	r.member_count = (uint32_t)(triples.size() / 3);
+	r.member_begin = (uint32_t)(f.struct_members.size() / 4);
+	r.member_count = (uint32_t)(quads.size() / 4);
+	r.orig_size    = (uint32_t)sdd->size;		// restore self-validates against this
 	f.decl_records.push_back(r);
-	f.struct_members.insert(f.struct_members.end(), triples.begin(), triples.end());
+	f.struct_members.insert(f.struct_members.end(), quads.begin(), quads.end());
     }
 }
 

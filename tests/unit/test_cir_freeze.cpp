@@ -989,13 +989,16 @@ TEST_CASE("Phase 6 slice 3a: forest_restore_decls reconstructs a header struct "
 		CHECK(r.type_id < MADC_TYPEID_PROJECT_BASE);
 		CHECK(r.member_count == 2);
 		const std::vector<uint32_t> &ms = forest.struct_members();
-		size_t base = (size_t)r.member_begin * 3;
-		REQUIRE(base + 6 <= ms.size());
+		size_t base = (size_t)r.member_begin * 4;	// 4-u32 member records
+		REQUIRE(base + 8 <= ms.size());
 		// Both members are `int` — a pinned primitive id that resolves with
-		// no Program (id-of-int is a slot; don't hard-code which).
+		// no Program (id-of-int is a slot; don't hard-code which). Neither is
+		// a bitfield (bit_width slot == 0).
 		CHECK(ms[base + 1] < (uint32_t)MADC_TYPEID_PRIMITIVE_END);
 		CHECK(madc_type_from_id(ms[base + 1]) != nullptr);
-		CHECK(ms[base + 4] == ms[base + 1]);			// x and y same type
+		CHECK(ms[base + 5] == ms[base + 1]);			// x and y same type
+		CHECK(ms[base + 3] == 0);				// x not a bitfield
+		CHECK(ms[base + 7] == 0);				// y not a bitfield
 	}
 	CHECK(found);
 
@@ -1022,4 +1025,90 @@ TEST_CASE("Phase 6 slice 3a: forest_restore_decls reconstructs a header struct "
 	CHECK(sdd->member_offsets[0] == 0);
 	CHECK(sdd->member_offsets[1] == 4);
 	CHECK(sdd->size == 8);
+}
+
+// Phase 6 slice 3b: a struct with NAMED bitfields reconstructs with the right
+// bit layout; a struct with an UNNAMED-bitfield gap (whose gap is absent from
+// the members vector, so a members-only rebuild would shift later bit-offsets)
+// is caught by the freeze-time round-trip layout check and NOT serialized — so
+// bind never mis-lays-it-out.
+TEST_CASE("Phase 6 slice 3b: named bitfields reconstruct; an unnamed-gap struct "
+	  "is refused at freeze (never mis-laid-out)") {
+	std::string inc_path = std::string("/tmp/madc_p6bf_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_p6bf_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_p6bf_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	std::string triv_path = std::string("/tmp/madc_p6bf_triv_")
+			      + std::to_string((long)getpid()) + ".mad";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "struct Flags { unsigned a : 3; unsigned b : 5; int c; };\n"
+		       "struct Gap { unsigned a : 3; unsigned : 2; unsigned b : 5; };\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { struct Flags f; struct Gap g; f.a = 0; g.a = 0;"
+		      " return f.a + g.a; }\n";
+	}
+	{ std::ofstream tv(triv_path.c_str()); tv << "int main() { return 0; }\n"; }
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	// Flags is serialized; Gap (unnamed gap) is refused by the round-trip check.
+	bool saw_flags = false, saw_gap = false;
+	for (size_t i = 0; i < forest.decl_records().size(); ++i) {
+		const cir_forest_decl_record &r = forest.decl_records()[i];
+		if (r.kind != Program::pdkStruct)
+			continue;
+		const char *nm = forest.pool_str(r.name_id);
+		if (nm && !strcmp(nm, "Flags")) saw_flags = true;
+		if (nm && !strcmp(nm, "Gap"))   saw_gap = true;
+	}
+	CHECK(saw_flags);
+	CHECK_FALSE(saw_gap);		// unnamed-gap struct not serialized
+
+	std::shared_ptr<Program> progB = std::make_shared<Program>();
+	TokenProgram *tpB = progB->tokenize(triv_path.c_str());
+	REQUIRE(tpB != nullptr);
+	REQUIRE(progB->parse(tpB));
+	std::remove(triv_path.c_str());
+
+	progB->forest_restore_decls(forest);
+	// Flags restored with the right bit layout: a@bit0 w3, b@bit3 w5 (no gap).
+	datadef_map_iter fit = progB->struct_map.find("Flags");
+	REQUIRE(fit != progB->struct_map.end());
+	DataDefSTRUCT *fl = dynamic_cast<DataDefSTRUCT *>(fit->second);
+	REQUIRE(fl != nullptr);
+	REQUIRE(fl->members.size() == 3);
+	REQUIRE(fl->member_bitfields.size() == 3);
+	CHECK(fl->member_bitfields[0].is_bitfield);
+	CHECK(fl->member_bitfields[0].bit_offset == 0);
+	CHECK(fl->member_bitfields[0].bit_width == 3);
+	CHECK(fl->member_bitfields[1].is_bitfield);
+	CHECK(fl->member_bitfields[1].bit_offset == 3);
+	CHECK(fl->member_bitfields[1].bit_width == 5);
+	CHECK(fl->members[2].first == "c");
+	CHECK(fl->member_offsets[2] == 4);
+	// Gap was refused — a fresh parser has no such struct (bind would lack it).
+	CHECK(progB->struct_map.find("Gap") == progB->struct_map.end());
 }

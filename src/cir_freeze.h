@@ -155,7 +155,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // eight (tokens / decl index / PP exports / edges) plus the two container-
 // global segments (branch macros, canonical order). The version feeds the
 // context hash, so v1 readers reject v2 containers and vice versa.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 4 };	// v4: + struct member stream (Phase 6 slice 3a)
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 5 };	// v5: + bitfield width + orig_size (Phase 6 slice 3b)
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -244,20 +244,24 @@ struct cir_forest_decl_record
 				// struct: the struct's OWN system-segment id (serialization identity)
 	uint32_t ns_id;		// pool handle: enclosing namespace ("" / 0 = global scope)
 	uint32_t aux;		// flags: bit0 = union_layout (pdkStruct)
-	uint32_t member_begin;	// pdkStruct: index (in triples) into the struct-member stream; else 0
+	uint32_t member_begin;	// pdkStruct: index (in member records) into the struct-member stream; else 0
 	uint32_t member_count;	// pdkStruct: number of members; else 0
+	uint32_t orig_size;	// pdkStruct: the struct's byte size at freeze — restore
+				// self-validates the rebuilt layout against it; else 0
 };
 
 // One struct member in the container-global struct-member stream: a flat u32
-// array of [name_id, type_id, count] triples, sliced per struct by the decl
-// record's member_begin/member_count. `type_id` is a primitive id (pinned) or a
-// forest aggregate's system-segment id; `count` is the fixed-array element count
-// (1 for a scalar member).
+// array of [name_id, type_id, count, bit_width] records, sliced per struct by
+// the decl record's member_begin/member_count. `type_id` is a primitive id
+// (pinned) or a forest aggregate's system-segment id; `count` is the fixed-array
+// element count (1 for a scalar member); `bit_width` is 0 for a normal member or
+// the width in bits for a named bitfield member.
 struct cir_forest_struct_member
 {
 	uint32_t name_id;
 	uint32_t type_id;
 	uint32_t count;
+	uint32_t bit_width;
 };
 
 // Source-position side-car record (parallel to the unit's records; cold —
@@ -455,8 +459,9 @@ public:
 	// Phase 6: the serialized parser decl graph (empty on a v2 / decl-less
 	// container). The bind layer reconstructs symbol tables from these.
 	const std::vector<cir_forest_decl_record> &decl_records() const { return _decl_records; }
-	// Phase 6 slice 3a: the flat struct-member stream (u32 [name_id,type_id,
-	// count] triples), sliced per struct by decl_records[i].member_begin/count.
+	// Phase 6 slice 3a/3b: the flat struct-member stream (u32 [name_id,type_id,
+	// count,bit_width] records), sliced per struct by decl_records[i].member_begin
+	// /member_count (indices in 4-u32 records).
 	const std::vector<uint32_t> &struct_members() const { return _struct_members; }
 	// Container string pool lookup (name_id -> C string; NULL if invalid).
 	const char *pool_str(uint32_t id) const

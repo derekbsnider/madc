@@ -158,5 +158,33 @@ int main()
 EOF
 run_case nested "n=9 sz=12"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested grove headers bound (no re-parse), output == live == g++"
+# --- case: bitfield (slice 3b) — named bitfield members reconstruct via
+#     addBitField; a freeze-time round-trip layout check guards the ones we
+#     can't rebuild (unnamed gaps), so what binds is always laid out right.
+cat > tmp/fbgate_bitfield.h <<'EOF'
+#ifndef FBGATE_BITFIELD_H
+#define FBGATE_BITFIELD_H
+struct Flags { unsigned a : 3; unsigned b : 5; int c; };
+#endif
+EOF
+cat > tmp/fbgate_bitfield_producer.cpp <<'EOF'
+#include <fbgate_bitfield.h>
+int main() { struct Flags f; f.a = 0; return f.a; }
+EOF
+cat > tmp/fbgate_bitfield_consumer.cpp <<'EOF'
+#include <fbgate_bitfield.h>
+#include <cstdio>
+int main()
+{
+    struct Flags f;
+    f.a = 5;
+    f.b = 20;
+    f.c = 7;
+    printf("bf=%u %u %d sz=%zu\n", f.a, f.b, f.c, sizeof(struct Flags));
+    return 0;
+}
+EOF
+run_case bitfield "bf=5 20 7 sz=8"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield grove headers bound (no re-parse), output == live == g++"
 exit 0

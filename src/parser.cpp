@@ -12274,9 +12274,9 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    // regenerate byte-for-byte. Then push a dkStruct/dkUnion TopDecl so
 	    // cir_builder::struct_def emits the aggregate into the c2mir tree.
 	    const std::vector<uint32_t> &ms = forest.struct_members();
-	    size_t mbase = (size_t)r.member_begin * 3;
+	    size_t mbase = (size_t)r.member_begin * 4;
 	    size_t mcnt  = r.member_count;
-	    if ( mbase + mcnt * 3 > ms.size() )
+	    if ( mbase + mcnt * 4 > ms.size() )
 		continue;		// out of range: skip rather than mis-lay-out
 	    DataDefSTRUCT *sdd = new DataDefSTRUCT(std::string(name), 0);
 	    if ( r.aux & 1u )
@@ -12284,9 +12284,10 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    bool ok = true;
 	    for ( size_t m = 0; m < mcnt; ++m )
 	    {
-		uint32_t mname_id = ms[mbase + m * 3 + 0];
-		uint32_t mtid     = ms[mbase + m * 3 + 1];
-		uint32_t mcount   = ms[mbase + m * 3 + 2];
+		uint32_t mname_id  = ms[mbase + m * 4 + 0];
+		uint32_t mtid      = ms[mbase + m * 4 + 1];
+		uint32_t mcount    = ms[mbase + m * 4 + 2];
+		uint32_t bit_width = ms[mbase + m * 4 + 3];
 		const char *mname = forest.pool_str(mname_id);
 		DataDef *mdd = NULL;
 		if ( mtid < MADC_TYPEID_PRIMITIVE_END )
@@ -12299,11 +12300,30 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 			mdd = si->second;			// earlier forest aggregate
 		}
 		if ( !mname || !mdd ) { ok = false; break; }
-		sdd->addMember(std::string(mname), *mdd, mcount ? mcount : 1);
+		// Drive the identical construction the live struct parser uses, so
+		// offsets/size/alignment (and bit packing) regenerate byte-for-byte.
+		if ( bit_width )
+		    sdd->addBitField(std::string(mname), *mdd, bit_width);
+		else
+		    sdd->addMember(std::string(mname), *mdd, mcount ? mcount : 1);
 	    }
 	    if ( !ok ) { delete sdd; continue; }
 	    sdd->is_complete = true;
 	    sdd->finalize();
+	    // Self-validate the rebuilt layout: if the reconstructed size differs
+	    // from the frozen one, the struct had a shape this slice can't rebuild
+	    // faithfully (e.g. an unnamed bitfield gap — absent from the members
+	    // vector, so it serialized short). Bail rather than register a
+	    // mis-laid-out struct: bind then cleanly lacks it (a loud error at the
+	    // use site), NEVER wrong output. Correctness over completeness.
+	    if ( r.orig_size && sdd->size != (size_t)r.orig_size )
+	    {
+		DBG(std::cout << "forest_restore_decls: struct " << name
+		    << " layout mismatch (rebuilt " << sdd->size << " != frozen "
+		    << r.orig_size << ") — skipping" << std::endl);
+		delete sdd;
+		continue;
+	    }
 	    std::string tag(name);
 	    struct_map[tag] = sdd;
 	    restored_by_sysid[r.type_id] = sdd;
