@@ -942,8 +942,26 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
 			memcpy(_decl_records.data(), d.data(), d.size());
 	}
 
+	// Reverse directory: unit-name spelling -> index (Phase 6 bind lookup).
+	// The writer dedups unit names, so a name maps to one unit; a stray
+	// duplicate keeps the first (bind is order-insensitive for a conforming
+	// closure).
+	for (uint32_t u = 0; u < hdr.unit_count; ++u) {
+		uint32_t slen = 0;
+		const char *nm = pool_cstr(_units[u].unit_name_id, slen);
+		if (nm)
+			_unit_by_name.emplace(std::string(nm, slen), u);
+	}
+
 	_segs.assign(hdr.unit_count, (CirFrozenSegment *)NULL);
 	return true;
+}
+
+int CirFrozenForest::find_unit(const std::string &name) const
+{
+	std::map<std::string, uint32_t>::const_iterator it =
+		_unit_by_name.find(name);
+	return it == _unit_by_name.end() ? -1 : (int)it->second;
 }
 
 // --- grove payload v2 readers (B4a) ----------------------------------------

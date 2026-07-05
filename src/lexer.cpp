@@ -31,6 +31,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_pch.h"
+#include "cir_freeze.h"	// Phase 6: CirFrozenForest — parse-time grove binding
 
 // --show-stats: RAII accumulator for time spent loading source into the lex
 // stream (file read / embedded-header copy). Adds its lifetime, in seconds, to
@@ -1766,6 +1767,130 @@ std::string Program::current_source_directory()
     return cur_fname.substr(0, slash_pos + 1);
 }
 
+// Phase 6 (--forest-bind): open the grove container once, on the first system
+// #include. The container source is forest_bind_path (a standalone --freeze
+// container) or the blob appended to this executable (empty -> /proc/self/exe).
+// A missing/mismatched container leaves bind_forest NULL: every include then
+// live-parses. The mapping is never unmapped — the forest reads from it for the
+// process lifetime.
+CirFrozenForest *Program::ensure_bind_forest()
+{
+    if ( bind_forest_tried )
+	return bind_forest;
+    bind_forest_tried = true;
+    const void *image = NULL;
+    size_t image_len = 0;
+    const char *path = forest_bind_path.empty() ? NULL : forest_bind_path.c_str();
+    if ( !cir_forest_map_image(path, image, image_len) )
+    {
+	DBG(std::cout << "forest-bind: no container at "
+	    << (path ? path : "/proc/self/exe") << " — live parse" << std::endl);
+	return NULL;
+    }
+    CirFrozenForest *f = new CirFrozenForest();
+    if ( !f->open(image, image_len, /*c2m=*/NULL) )
+    {
+	// open() already printed the reason (pin mismatch / corrupt directory).
+	delete f;
+	return NULL;
+    }
+    bind_forest = f;
+    DBG(std::cout << "forest-bind: opened container (" << f->unit_count()
+	<< " units)" << std::endl);
+    return bind_forest;
+}
+
+// Map a system include spelling to a frozen grove unit index (-1 = miss). Tries
+// the bare spelling first (compiler-builtin/embedded units name themselves, e.g.
+// "stddef.h"), then the resolved filesystem path (real headers name their full
+// path) — the same resolution the live path would use, so a hit binds the exact
+// grove the pack froze.
+int Program::forest_unit_for_include(const std::string &incfile)
+{
+    CirFrozenForest *f = ensure_bind_forest();
+    if ( !f )
+	return -1;
+    int u = f->find_unit(incfile);
+    if ( u >= 0 )
+	return u;
+    std::string fp = resolve_include_path(incfile, /*is_system=*/true);
+    if ( !fp.empty() && fp != incfile )
+	u = f->find_unit(fp);
+    return u;
+}
+
+// Bind a grove unit and its include closure: post-order DFS over the unit's
+// frozen edges so an includee's PP delta installs before the includer's own
+// (matching the common "includes at top, defines after" header shape). The
+// forest_chain_set done-marker prunes a unit bound by an earlier #include;
+// forest_bind_walking breaks include cycles. After the walk every reachable
+// unit's macros are live and it is recorded in forest_chain. The decl records
+// (symbol tables) restore ONCE per compile at the call site — never re-parse.
+void Program::forest_bind_include(uint32_t unit)
+{
+    if ( forest_chain_set.count(unit) || forest_bind_walking.count(unit) )
+	return;
+    forest_bind_walking.insert(unit);
+    std::vector<uint32_t> edges;
+    if ( bind_forest->unit_edges(unit, edges) )
+	for ( size_t i = 0; i < edges.size(); ++i )
+	    forest_bind_include(edges[i]);
+    forest_install_pp(unit);
+    forest_chain.push_back(unit);
+    forest_chain_set.insert(unit);
+    forest_bind_walking.erase(unit);
+}
+
+// Apply one unit's frozen PP-export delta to the live macro tables, replaying
+// the exact define_map / macro_map writes the lexer's #define/#undef handlers
+// perform. The event stream is flat u32:
+//   [name_id, tag_flags, body_id, variadic_param_id, nparams, <nparams ids>]...
+// with the low byte of tag_flags the PackMacroEvent tag and bit 8 the variadic
+// flag. Pool ids resolve through the container's own string pool.
+void Program::forest_install_pp(uint32_t unit)
+{
+    std::vector<uint32_t> ev;
+    if ( !bind_forest->unit_pp_events(unit, ev) )
+	return;
+    for ( size_t k = 0; k + 5 <= ev.size(); )
+    {
+	uint32_t name_id = ev[k], tag_flags = ev[k + 1], body_id = ev[k + 2];
+	uint32_t vpar_id = ev[k + 3], nparams = ev[k + 4];
+	const char *nm = bind_forest->pool_str(name_id);
+	uint8_t tag = (uint8_t)(tag_flags & 0xff);
+	if ( nm )
+	{
+	    std::string name(nm);
+	    if ( tag == PackMacroEvent::peUndef )
+	    {
+		define_map.erase(name);
+		macro_map.erase(name);
+	    }
+	    else if ( tag == PackMacroEvent::peDefine )
+	    {
+		const char *b = body_id ? bind_forest->pool_str(body_id) : NULL;
+		define_map[name] = b ? std::string(b) : std::string();
+	    }
+	    else // peDefineFn
+	    {
+		MacroDef m;
+		for ( uint32_t p = 0; p < nparams; ++p )
+		    if ( const char *pn = bind_forest->pool_str(ev[k + 5 + p]) )
+			m.params.push_back(pn);
+		if ( tag_flags & CIR_FOREST_PP_VARIADIC )
+		    m.variadic = true;
+		if ( vpar_id )
+		    if ( const char *vp = bind_forest->pool_str(vpar_id) )
+			m.variadic_param = vp;
+		if ( const char *b = body_id ? bind_forest->pool_str(body_id) : NULL )
+		    m.body = b;
+		macro_map[name] = m;
+	    }
+	}
+	k += 5 + nparams;
+    }
+}
+
 std::string Program::resolve_include_path(const std::string &incfile, bool is_system)
 {
     if ( incfile.empty() || incfile[0] == '/' )
@@ -2880,6 +3005,31 @@ TokenBase *Program::_getToken()
 			    DBG(std::cout << "#include <" << incfile
 				<< "> deferred to auto-include prelude" << std::endl);
 			    return getToken();
+			}
+			// Phase 6 (--forest-bind): a grove-backed system header
+			// BINDS instead of tokenizing — install its PP-export
+			// delta along the include DAG (forest_bind_include), then
+			// restore the forest's typed decl records into the symbol
+			// tables (forest_restore_decls, once per compile), and
+			// return WITHOUT re-parsing the header. Non-forest headers
+			// fall through to live parse. Gated on forest_bind_enabled
+			// so the default path is one predicted branch.
+			if ( forest_bind_enabled )
+			{
+			    int fu = forest_unit_for_include(incfile);
+			    if ( fu >= 0 )
+			    {
+				DBG(std::cout << "#include <" << incfile
+				    << "> bound to grove unit " << fu << " ("
+				    << bind_forest->unit_name(fu) << ")" << std::endl);
+				forest_bind_include((uint32_t)fu);
+				if ( !forest_decls_restored )
+				{
+				    forest_restore_decls(*bind_forest);
+				    forest_decls_restored = true;
+				}
+				return getToken();
+			    }
 			}
 			// The NAME-level once-only key gates ONLY the named
 			// PCH/embedded resolutions (their baked token sets assume

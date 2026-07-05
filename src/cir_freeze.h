@@ -371,6 +371,7 @@ class CirFrozenForest
 	std::vector<std::string> _libs;
 	std::map<uint32_t, const char *> _type_names;	// typeid -> pool c_str
 	std::map<uint32_t, uint32_t> _live_ids;	// frozen str id -> live pool id
+	std::map<std::string, uint32_t> _unit_by_name;	// unit-name spelling -> index (Phase 6 bind)
 	uint32_t _root_unit, _root_idx;
 
 	// The container's own string pool (A1 frozen view over the three
@@ -409,6 +410,11 @@ public:
 	size_t units_loaded() const;			// laziness observability
 	const std::vector<std::string> &libs() const { return _libs; }
 	const char *unit_name(uint32_t unit) const;
+	// Reverse directory (Phase 6 bind): unit-name spelling -> unit index, or
+	// -1 if no unit carries that name. Built once in open() over the directory.
+	// The key is the exact unit_name string — a resolved include path or a bare
+	// compiler-builtin/embedded name (e.g. "stddef.h").
+	int find_unit(const std::string &name) const;
 	const char *type_name_for(uint32_t type_id) const;  // NULL if unknown
 
 	// --- grove payload v2 readers (B4a observability, B4b bind) ---

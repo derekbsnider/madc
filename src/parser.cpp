@@ -12243,6 +12243,18 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    namespace_datatype_map[ns][alias] = tdt;	// scoped twin
 	datatype_map[alias] = tdt;			// flat (current-scope) key
 	user_typedef_names.insert(alias);
+	// Emit the typedef into the c2mir tree: cir_builder lowers top_decls in
+	// push order, so the alias's `typedef <underlying> <name>;` node reaches
+	// c2mir. record_typedef does exactly this on the live path (parser.cpp
+	// ~22689). Restore runs during tokenization, ahead of the user TU's own
+	// decls, so the typedef is defined before its first use — as a live parse
+	// would order it. A plain alias, never a struct-body-defining typedef.
+	TopDecl td;
+	td.kind = DeclKind::dkTypedef;
+	td.name = alias;
+	td.dd = dd;
+	td.tdt = tdt;
+	top_decls.push_back(td);
 	DBG(std::cout << "forest_restore_decls: typedef " << alias
 	    << " -> type_id " << r.type_id << std::endl);
     }

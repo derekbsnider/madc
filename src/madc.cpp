@@ -437,6 +437,9 @@ static void print_usage(const char *prog)
 "  --dump-forest[=<file>]  print a container's directory + grove payloads\n"
 "                          (decl index, PP exports, edges, branch macros,\n"
 "                          canonical order); no value = this executable's blob\n"
+"  --forest-bind[=<file>]  (experimental) bind grove-backed system #includes\n"
+"                          from a frozen container instead of live-parsing;\n"
+"                          no value = the blob appended to this executable\n"
 "  --dump-registered       parse, then print the registered name maps\n"
 "                          (forest index-parity oracle input; no run)\n"
 "  -dM                     preprocess, then print the effective macro table\n"
@@ -614,6 +617,17 @@ int main(int argc, char **argv)
         } else if (strncmp(argv[i], "--dump-forest=", 14) == 0) {
             dump_forest = true;
             dump_forest_path = argv[i] + 14;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--forest-bind") == 0) {
+            // Phase 6 (opt-in): bind grove-backed system #includes from the
+            // blob appended to this executable instead of live-parsing them.
+            prog->forest_bind_enabled = true;
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "--forest-bind=", 14) == 0) {
+            // --forest-bind=PATH: bind from a standalone --freeze container
+            // (dev/testing without appending to the binary).
+            prog->forest_bind_enabled = true;
+            prog->forest_bind_path = argv[i] + 14;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-registered") == 0) {
             dump_registered = true;

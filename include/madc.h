@@ -30,6 +30,7 @@
 
 class Method;
 class Program;
+class CirFrozenForest;	// forest grove binding (cir_freeze.h); pointer member only
 class MadcEngine;
 class TokenBase;
 class TokenSWITCH;
@@ -2706,6 +2707,24 @@ public:
     // loaded forest's typed decl records — never re-parse. Slice 1b: file-scope
     // typedefs. (Declared with an incomplete CirFrozenForest — pointer/ref only.)
     void forest_restore_decls(class CirFrozenForest &forest);
+    // Phase 6 slice 2 — parse-time grove binding (opt-in --forest-bind). A
+    // system #include naming a frozen grove unit BINDS instead of tokenizing:
+    // its PP-export delta installs along the include DAG, then the forest's
+    // decl records restore into the symbol tables (forest_restore_decls) — the
+    // header is never re-parsed. All gated on forest_bind_enabled, so the
+    // default path is one predicted branch; flag OFF = byte-identical behavior.
+    bool forest_bind_enabled = false;	// --forest-bind[=path]
+    std::string forest_bind_path;	// container source; empty = /proc/self/exe blob
+    CirFrozenForest *bind_forest = NULL;	// lazily opened on first system include
+    bool bind_forest_tried = false;	// one-shot open attempt (success or fail)
+    bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
+    std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)
+    std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune
+    std::set<uint32_t> forest_bind_walking;	// units on the in-flight bind recursion (cycle break)
+    CirFrozenForest *ensure_bind_forest();	// open on first use; NULL if unavailable
+    int forest_unit_for_include(const std::string &incfile); // spelling/path lookup; -1 miss
+    void forest_bind_include(uint32_t unit);	// bind time: DAG walk — install PP + arm chain
+    void forest_install_pp(uint32_t unit);	// apply one unit's frozen macro delta to the live tables
     void add_namespaces();
     void add_madc_namespace();
     bool is_namespace_registration_enabled(const std::string &name) const;
