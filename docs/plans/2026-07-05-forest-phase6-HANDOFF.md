@@ -78,9 +78,33 @@ requirement falls out of the architecture; it is not a preference.
   `<cstdio>`, which is NOT in the container) → output == live == g++, and the
   `-v` trace proves the header BOUND (no silent live fall-through).
 - **Decl restore is forest-GLOBAL for now** (records carry no unit attribution):
-  the first grove bind restores every typedef decl record once. Per-unit
-  attribution pairs naturally with the struct/class slice (which adds
-  system-segment type-ids + a `unit_id` on the record). Fine for typedefs.
+  the first grove bind restores every decl record once. Per-unit attribution is
+  a later refinement (a `unit_id` on the record). Fine for the curated container.
+- **Slice 3a — plain struct/union bind (system-segment type-ids).** Format v3→4:
+  `cir_forest_decl_record` gains `member_begin`/`member_count`; new
+  `SNAP_KIND_CIR_STRUCT_MEMBERS` segment = a flat u32 `[name_id,type_id,count]`
+  member stream (`cir_forest_struct_member`). Freeze (`cir_forest_collect_decls`)
+  scans `top_decls` for `dkStruct`/`dkUnion`, assigns each forest aggregate a
+  stable **system-segment id** (`[0x100,0x01000000)`, freeze-local — NOT the
+  process project id the frozen node tree uses), and serializes members whose
+  type is a pinned primitive or an already-assigned forest aggregate; anything
+  richer (a `DataDefCLASS` = methods/bases/vtable, anon aggregates, bitfields, a
+  member of an unserializable type) is skipped (bind falls back). Restore
+  (`forest_restore_decls`) rebuilds the `DataDefSTRUCT` by DRIVING `addMember`
+  (identical to the live struct parser → offsets/size/align regenerate
+  byte-for-byte), `finalize()`, registers in `struct_map`, and pushes a
+  `dkStruct`/`dkUnion` `TopDecl` so `cir_builder::struct_def` emits it. A local
+  `restored_by_sysid` map links member references to earlier forest aggregates —
+  the restored struct is otherwise a normal project DataDef (no global
+  `type_from_id` change). `forest_bind_gate` [struct] case (mixed-type padding +
+  a union + `sizeof`) proves bind == live == g++ cross-process; `test_cir_freeze`
+  15 cases / 221 assertions.
+- **Slice 3a scope limits (documented, safe under the opt-in flag):** global
+  scope only (`ns_id=0` — namespaced structs would restore into the global
+  `struct_map`; guard/handle when the real corpus is frozen); scalar members
+  only (pinned-pointer members serialize, other pointer/aggregate members skip
+  the struct); no bitfields/anon aggregates; typedef-of-struct alias not yet
+  restored (the struct itself is, via its own `pdkStruct` record).
 
 ## PARKED — DO NOT MERGE
 
@@ -95,24 +119,24 @@ directory (`CirFrozenForest::find_unit` / `_unit_by_name`), the
 `find_template`/`lazy_resolve_type`/`resolve_namespaced_type_token`. Nothing else
 is left to salvage from that branch — it can be deleted once struct/class lands.
 
-## NEXT — slice 3: struct/class (the next unit of work)
+## NEXT — slice 3b: widen struct + DataDefCLASS (the next unit of work)
 
-Slice 2 (`#include` → bind, typedefs) is DONE and gated. Slice 3 = restore
-`DataDefSTRUCT`/`DataDefCLASS` (members + access + offsets + methods + bases +
-vtable) so a bound header's aggregate types resolve + emit into the c2mir tree,
-same LOAD-not-reparse shape.
-- **Type-id blocker:** aggregate/project types resolve NULL cross-process. The
-  system segment `[MADC_TYPEID_PRIMITIVE_END, MADC_TYPEID_PROJECT_BASE)` is
-  RESERVED for the forest (`madc_type_from_id` returns NULL there today); this
-  slice assigns forest aggregate types stable system-segment ids at freeze and
-  adds a reader-side resolver. That is the real new depth (slice 2 rode on pinned
-  PRIMITIVE ids, which resolve in any process with zero extra machinery).
-- **Reconstruction:** extend the decl record (or add typed struct/member records)
-  so `forest_restore_decls` rebuilds the `DataDefSTRUCT` + pushes a `dkStruct`
-  `TopDecl` (mirroring the live `record_struct`, parser.cpp ~22664) — the
-  aggregate analogue of slice 2's `dkTypedef` push.
-- **Per-unit attribution** naturally lands here: give each decl record a
-  `unit_id` so restore can be per-bound-unit instead of forest-global.
+Slice 3a (plain struct/union, primitive scalar members, global scope) is DONE
+and gated. The system-segment type-id machinery + the member-stream format are
+in place; widen on top of them, same LOAD-not-reparse shape:
+- **3b — widen the plain struct:** pointer/aggregate members (the `restored_by_sysid`
+  linking already supports value-aggregate members in definition order; add
+  pointer-to-aggregate — a serialized "pointer-of type-id" indirection so a
+  forward/self reference resolves), bitfields (`member_bitfields`), anon
+  aggregates, and **namespace scope** (serialize `ns_id`; restore into
+  `namespace_datatype_map` / scoped `struct_map` key — REQUIRED before freezing
+  the real corpus, which is full of `namespace std` structs). Per-unit decl
+  attribution (`unit_id` on the record) also lands here.
+- **3c — `DataDefCLASS`:** methods + access + bases + vtable. The big one —
+  serialize the class's method set / base list / vtable layout, reconstruct the
+  `DataDefCLASS` (mirror the struct→class promotion + `class_struct_def`
+  emission), push the appropriate `TopDecl`. This is where a bound `<string>` /
+  `<vector>` header's classes become resolvable.
 
 Then, in order: **`TemplateDef` patterns + tsubst-from-loaded-Tree-1** → **flip
 forest to default + DELETE the token-reparse path** (B4a token slices/decl-index +
