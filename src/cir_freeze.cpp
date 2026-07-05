@@ -470,6 +470,11 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 			f.canon_order.data(),
 			f.canon_order.size() * sizeof(uint32_t), codec))
 		return false;
+	// v3 container-global: the serialized parser decl graph (Phase 6).
+	if (!add_seg(w, CIR_FOREST_SEG_DECL_RECORDS, SNAP_KIND_CIR_DECL_RECORDS,
+		     f.decl_records.data(),
+		     f.decl_records.size() * sizeof(cir_forest_decl_record), codec))
+		return false;
 
 	for (size_t u = 0; u < f.units.size(); ++u) {
 		const cir_forest_unit &fu = f.units[u];
@@ -919,6 +924,22 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
 				fprintf(stderr, "madc: forest canonical order out of range\n");
 				return false;
 			}
+	}
+	// v3 container-global: the serialized parser decl graph (Phase 6). Absent on
+	// a v2 container (this open already rejected v2 via the version pin, but a
+	// zero-length segment is still valid).
+	if (const madc::dis::snapshot_segment *drs =
+		_reader.find(CIR_FOREST_SEG_DECL_RECORDS)) {
+		std::vector<uint8_t> d;
+		if (drs->kind != SNAP_KIND_CIR_DECL_RECORDS
+		    || !_reader.read_segment(*drs, d)
+		    || d.size() % sizeof(cir_forest_decl_record)) {
+			fprintf(stderr, "madc: forest decl-record graph corrupt\n");
+			return false;
+		}
+		_decl_records.resize(d.size() / sizeof(cir_forest_decl_record));
+		if (!d.empty())
+			memcpy(_decl_records.data(), d.data(), d.size());
 	}
 
 	_segs.assign(hdr.unit_count, (CirFrozenSegment *)NULL);

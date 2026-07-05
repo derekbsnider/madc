@@ -734,6 +734,38 @@ static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
     }
 }
 
+// Phase 6 (design 2026-07-05): collect the parser's decl graph into serializable
+// records so a fresh process can RECONSTRUCT the symbol tables on load — never
+// re-parse. Slice 1: file-scope typedefs, whose aliased type is a primitive
+// (its type-id is pinned and resolves in any process). Widens to struct/class/
+// func/template (aggregate types get system-segment ids) in later slices.
+// The container stays Program-blind; this is the Program->payload bridge (the
+// same seam as cir_forest_fill_pack_payloads). Names intern into the ACTIVE pool
+// that cir_forest_write serializes.
+static void cir_forest_collect_decls(Program *prog, cir_frozen_forest &f)
+{
+    if (!prog || !TokenBase::_active_strpool)
+	return;
+    madc::dis::intern_table &pool = *TokenBase::_active_strpool;
+    for (std::set<std::string>::const_iterator it = prog->user_typedef_names.begin();
+	 it != prog->user_typedef_names.end(); ++it) {
+	const std::string &name = *it;
+	flat_datatype_map_iter dti = prog->datatype_map.find(name);
+	if (dti == prog->datatype_map.end() || !*dti)
+	    continue;
+	DataDef *dd = &(*dti)->definition;
+	if (!dd)
+	    continue;
+	cir_forest_decl_record r;
+	r.name_id = pool.intern(name);
+	r.kind    = Program::pdkTypedef;
+	r.type_id = prog->type_id_for(dd);
+	r.ns_id   = 0;		// slice 1: global scope only
+	r.aux     = 0;
+	f.decl_records.push_back(r);
+    }
+}
+
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append)
 {
@@ -762,6 +794,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 	    } else {
 		f.libs = prog->loaded_lib_paths;
 		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
+		cir_forest_collect_decls(prog, f);	// Phase 6: serialized decl graph
 		PchCompression codec = PchCompression::Zlib;
 #ifdef HAVE_ZSTD
 		codec = PchCompression::Zstd;

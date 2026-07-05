@@ -795,3 +795,70 @@ TEST_CASE("B4a: grove payload v2 round-trips tokens, decl index, PP exports, edg
 			edge_to_inc = true;
 	CHECK(edge_to_inc);
 }
+
+// Phase 6 (design 2026-07-05): the forest is the serialized Tree-1 ROM; on bind
+// the parser's symbol tables are RECONSTRUCTED from typed decl records — NEVER
+// re-parsed. Slice 1 proves the smallest vertical of that: a file-scope typedef
+// serializes as a decl record whose aliased *primitive* type-id survives freeze
+// + reopen and resolves to the same DataDef (a pinned primitive id resolves in
+// any process — the load-not-reparse property). Widens to struct/class/func/
+// template (aggregate types get system-segment ids) in later slices.
+TEST_CASE("Phase 6 slice 1: a file-scope typedef serializes as a decl record; "
+	  "its primitive type-id round-trips (load, don't re-parse)") {
+	std::string inc_path = std::string("/tmp/madc_p6_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_p6_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_p6_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "typedef int myint;\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { myint x = 5; return x; }\n";
+	}
+
+	std::shared_ptr<Program> prog = std::make_shared<Program>();
+	prog->pack_recording = true;
+	TokenProgram *tp = prog->tokenize(main_path.c_str());
+	REQUIRE(tp != nullptr);
+	REQUIRE(prog->parse(tp));
+
+	// Capture the truth in THIS process: `myint` aliases some primitive DataDef.
+	flat_datatype_map_iter mit = prog->datatype_map.find("myint");
+	REQUIRE(mit != prog->datatype_map.end());
+	DataDef *myint_dd = &(*mit)->definition;
+	uint32_t want_type_id = prog->type_id_for(myint_dd);
+
+	REQUIRE(madc_cir_freeze(prog.get(), main_path.c_str(),
+				snap_path.c_str(), /*append=*/false) == 0);
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	// The serialized decl graph carries the typedef with its primitive type-id.
+	bool saw_myint = false;
+	const std::vector<cir_forest_decl_record> &decls = forest.decl_records();
+	for (size_t i = 0; i < decls.size(); ++i) {
+		const char *nm = forest.pool_str(decls[i].name_id);
+		if (!nm || strcmp(nm, "myint"))
+			continue;
+		saw_myint = true;
+		CHECK(decls[i].kind == Program::pdkTypedef);
+		CHECK(decls[i].type_id == want_type_id);
+		// The reconstruct property: a pinned primitive id resolves with NO
+		// Program in hand (the reader side of a cross-process bind), to the
+		// SAME DataDef the live parse aliased.
+		CHECK(madc_type_from_id(decls[i].type_id) == myint_dd);
+	}
+	CHECK(saw_myint);
+}
