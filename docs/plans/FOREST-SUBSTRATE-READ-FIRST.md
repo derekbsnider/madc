@@ -189,50 +189,85 @@ the class). A member call on a bound class now **RESOLVES**. Gated: `test_cir_fr
 slice-3d unit test (get/add reconstruct with correct signatures + `__this`);
 `forest_bind_gate` still green; fulltest green.
 
-**The linking layering (the runnable payoff — NEXT):** a resolved call still needs a
-DEFINITION.
-- **External / system methods** (the corpus): `emit_symbol` names a real libstdc++
-  Itanium symbol — the decl alone links (no body). BLOCKED on serializing the corpus
-  classes at all, which need **pointer-member serialization** (std::string/vector have
-  pointer members; the current member pass bails on non-primitive/non-recorded types).
-  So: pointer-member serialization → the corpus classes serialize → their method
-  decls link externally.
-- **Inline user methods**: the body was emitted by the PRODUCER into the grove (e.g.
-  `int Counter__get(Counter*){...}`), but `--forest-bind` currently emits only the
-  consumer's own tree, so a bound inline method is an `undefined MIR import`. Needs
-  **grove function-body emission on bind** (pull the bound unit's function-definition
-  nodes from the grove into the consumer's c2mir tree — the forest's "load the
-  pre-parsed body, don't re-parse" promise).
+**⚠️ THE MENTAL MODEL — SAVE STATE / LOAD STATE (owner, emphatic, 2026-07-05):**
+The forest is a video-game-emulator **save state / load state**, nothing more.
+SAVE = parse headers once into the memory arenas, write the arenas to disk.
+LOAD = next time, do NOT parse — read the arenas back; you are now in the **EXACT
+SAME in-memory state** parsing would have produced. So downstream there is **NO
+"bind path" vs "parse path"** — ONE state reached two ways; translate/emit/compile/
+link all run UNCHANGED. **The task is a BUG HUNT, not a design:** *what is the
+LOADED state missing vs a freshly-PARSED state?* Fix save or load so the loaded
+arenas equal the parsed arenas. **The machinery already exists — invent nothing.**
 
-  **VERIFIED-FEASIBLE DESIGN (2026-07-05, ready to build — the recommended NEXT):**
-  - Confirmed: method bodies partition into the HEADER unit (decl-index shows
-    `Counter__get`/`add` under `fm.h`, `main` under the `.cpp` unit); a function
-    definition is `N_FUNC_DEF`; a module is built with `c2mir_new_node(c2m, N_MODULE)`
-    + `c2mir_op_append` (see `CirBuilder::translate_module`, cir_builder.cpp:17770);
-    the model is `CirJitSession::build_frozen` (madc_cir.cpp:443 — open forest with
-    the session `c2m`, materialize, `cir_compile`, `load_and_link`); multi-module
-    linking already exists (madc_cir.cpp:1246).
-  - HOOK: in `CirJitSession::build` (madc_cir.cpp:418), after `build_tu_module` and
-    BEFORE `load_and_link`, if `prog->forest_chain` is non-empty (bind occurred):
-    open a SECOND `CirFrozenForest` on the same image WITH THE SESSION `c2m`
-    (`bind_forest` was opened `c2m=NULL` at parse, for decls only — node-tree
-    materialization needs a real `c2m`); materialize the bound units' TOP-LEVEL decls
-    (types + `N_FUNC_DEF`s); synthesize `N_MODULE(N_LIST(decls))`; `MIR_load_module`
-    it so the existing `MIR_link` resolves `Counter__get` (grove-defined) as the
-    consumer's import.
-  - RISKS to design against: (1) node→unit origin mapping to filter the root's
-    `top_list` by bound unit (or iterate each bound unit's segment records) — must
-    NOT emit the producer's `main`; (2) the struct type MUST ride in the grove module
-    (the body accesses members); (3) cross-module: grove module + consumer module each
-    get a module-local `struct Counter`, symbol `Counter__get` defined-once (grove) /
-    imported (consumer) — verify MIR links cleanly (THE highest-risk part).
-  - GATE: `tmp/fm_consumer.cpp` (a `Counter{int n; int get(); void add(int);}`
-    header) binds + runs `get=15` == live == g++; add a `forest_bind_gate` method
-    case; fulltest; torture unaffected (forest-only).
+**🚩 DRIFT (STOP if you catch yourself doing ANY of these):** a second/separate
+module, an import-set filter, a synthesized `N_MODULE`, a "grove emission" step,
+cross-module linking, re-lowering, re-parsing, re-deriving, or bind producing a
+different tree/module structure than parse. If bind ≠ parse downstream, it is
+WRONG regardless of output.
 
-Pick either linking path next; both build on the now-landed decl serialization.
-The inline path (grove-body-emission) has the fully-worked design above; the corpus
-path is blocked on pointer-member serialization first.
+**RETRACTED (was itself drift):** a prior version of this section proposed
+building a *separate grove `N_MODULE` + `MIR_load_module` + cross-module link* to
+resolve the inline-method call. That is a DIFFERENT tree-2 than parse produces —
+dead. Do not follow it.
+
+**THE TEST is state-equivalence, not output:** `MADC_DUMP_MIR` under
+`--forest-bind` must be **byte-identical** to the live (parsed) dump. Live puts a
+class's inline methods as **func-defs, `export`ed, in the ONE consumer module next
+to `main`**; current bind emits them as `import`s (bodies missing) → link fails
+`import of undefined item Counter__get`. `output == 15` is NOT sufficient.
+
+**The gap, per method kind (both = "does the loaded state match the parsed state?"):**
+- **External / system methods** (the corpus, e.g. `std::string::size`): even in
+  PARSE mode these carry `emit_symbol` (a real libstdc++ Itanium symbol) and NO
+  body — the call links to the `.so`. So a loaded decl-only FuncDef + `emit_symbol`
+  ALREADY matches parse. Correct as landed. What's still missing is serializing the
+  corpus classes AT ALL — blocked on **pointer-member serialization** (std::string/
+  vector have pointer members; the member pass currently bails). Task #10.
+- **Inline user methods** (e.g. `Counter::get`): in PARSE mode these produce a
+  full func-def-WITH-BODY in the consumer's one module. **✅ LANDED (v8, 2026-07-05):**
+  the save now records each method's Tree-1 body location and the load reconnects it,
+  so `translate_module` emits the body into the ONE consumer module — the bind's
+  `MADC_DUMP_MIR` is **byte-identical** to a live compile. See the LANDED block below.
+
+**INLINE vs LIBRARY — the dividing line (owner, 2026-07-05):** a LIBRARY method
+(`std::string::size`) has its body in a `.so`; the header only had a declaration,
+so a saved declaration + `emit_symbol` that links to the `.so` is correct (3d). An
+INLINE method (`Counter::get`) has NO `.so` — its body exists only in the header,
+so the **body IS Tree-1 content**. When a TU USES the class, the inline body is
+**COPIED out of Tree-1 into that TU's Tree-2** (fresh `node_t`) and compiled into
+that TU's own module — exactly like a **template instantiation** and like a normal
+`#include` (each TU emits its own copy of an inline body). That copy-from-Tree-1
+machinery ALREADY EXISTS: the parse-once / template-instantiation copy path
+(`copy_cir_subtree` / tsubst). So `declaration_only` (3d, for ALL methods) is wrong
+for INLINE methods — an inline method must carry its **body as a Tree-1 recipe**.
+
+**✅ LANDED — INLINE method body save/load (format v8, 2026-07-05).** The mechanism,
+end to end, with NO re-parse / NO separate module / NO new machinery beyond the load:
+- **SAVE** (`cir_freeze_partitioned` + `cir_forest_append_methods`): the AST freeze
+  already assigns every node a `(unit, idx)`; it now also indexes every `N_FUNC_DEF`'s
+  symbol → `(unit, idx)`. A method whose mangled symbol has a func-def in that index is
+  INLINE → its record gets `CIR_METHF_HAS_BODY` + `body_unit`/`body_idx`. A symbol with
+  no func-def is a LIBRARY method → declaration-only + `emit_symbol` (3d, unchanged).
+  This structural presence/absence IS the inline-vs-library discriminator (no names).
+- **LOAD** (`materialize_types`): a `HAS_BODY` method's FuncDef carries `has_forest_body`
+  + the body location and is **not** `declaration_only`.
+- **EMIT** (`CirBuilder::translate_module`, guarded by `prog->forest_chain` non-empty so
+  the normal compile path is byte-identical): a **reachability fixpoint** seeds with the
+  bound methods in `referenced_funcs`, then follows each emitted body's calls to sibling
+  bound methods (`cir_collect_call_callees`) — so a forward / mutual reference emits the
+  callee too (not just a direct one). Each reachable method is materialized via
+  `bind_forest->node_for(unit, idx)` (deserialize the saved lowered node = the copy into
+  Tree-2; `set_c2m` gives the parse-time forest the session c2m) and emitted into the ONE
+  consumer module in declaration order, each preceded by a **forward prototype** built by
+  copying the loaded def's own return-spec + declarator (real param names) — matching the
+  live proto pass so a forward reference sees a real declaration, not an implicit-int
+  default (a silent miscompile). Gates: `forest_bind_gate` `method` (`get=15`) + `fwd`
+  (`chain=41`, forward/mutual ref) both **MIR byte-identical to live**; `test_cir_freeze`
+  18/296; fulltest green.
+
+NOTE (freeze fidelity, orthogonal): the `struct`-keyword-with-base `sizeof` bug was
+FIXED (`6f008d0c`) — see the memory. Residual: exact vbase-diamond member offsets vs
+g++ (tail-padding reuse, task #8), no failing test.
 
 NOTE (freeze fidelity, orthogonal): the `struct`-keyword-with-base `sizeof` bug was
 FIXED (`6f008d0c`) — see the memory. Residual: exact vbase-diamond member offsets vs

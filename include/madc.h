@@ -269,6 +269,16 @@ public:
     // gate distinguish a USER-SOURCE extern prototype from curated header
     // declarations.
     const char *decl_file = nullptr;
+    // Forest INLINE-method body: when a bound method was reconstructed from a
+    // frozen container (forest save/load) AND the container held the method's
+    // func-def in its AST (an INLINE method, body only in the header — no .so),
+    // this locates that Tree-1 func-def subtree by (unit, record idx). On ODR-use
+    // the consumer materializes it from prog->bind_forest and appends it to its
+    // own module — the "copy the saved body into Tree-2" step. False/0 for a
+    // normally-parsed method or a LIBRARY method (body in a .so; declaration_only).
+    bool     has_forest_body = false;
+    uint32_t forest_body_unit = 0;
+    uint32_t forest_body_idx = 0;
     // True for C++ special declarations like `= default` or `= delete`.
     // These are not bodyless shared-library declarations and must not be bound
     // as external symbols just because the class has canonical C++ spelling.

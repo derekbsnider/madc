@@ -155,7 +155,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // eight (tokens / decl index / PP exports / edges) plus the two container-
 // global segments (branch macros, canonical order). The version feeds the
 // context hash, so v1 readers reject v2 containers and vice versa.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 7 };	// v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 8 };	// v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -325,7 +325,11 @@ enum : uint32_t
 	CIR_METHF_CONST      = 1u << 0,	// FuncDef::is_const_method
 	CIR_METHF_VARARGS    = 1u << 1,	// FuncDef::is_varargs
 	CIR_METHF_VOIDPARAMS = 1u << 2,	// FuncDef::is_void_params (explicit `(void)`)
-	CIR_METHF_STATIC     = 1u << 3	// static member (no hidden __this)
+	CIR_METHF_STATIC     = 1u << 3,	// static member (no hidden __this)
+	CIR_METHF_HAS_BODY   = 1u << 4	// INLINE method: body_unit/body_idx locate its
+					// Tree-1 func-def subtree in the AST (copied into
+					// the consumer's Tree-2 on use). Absent => LIBRARY
+					// method (body in a .so): declaration-only + emit_symbol.
 };
 
 // A non-virtual class method DECLARATION in the type_payload stream (fixed 7-u32
@@ -346,6 +350,8 @@ struct cir_forest_type_method
 	uint32_t flags;		// CIR_METHF_*
 	uint32_t param_begin;	// u32 offset into type_payload for explicit param typeids
 	uint32_t param_count;	// number of EXPLICIT params (excludes the hidden __this)
+	uint32_t body_unit;	// CIR_METHF_HAS_BODY: unit of the method's Tree-1 func-def
+	uint32_t body_idx;	// CIR_METHF_HAS_BODY: record idx of that func-def (else 0)
 };
 
 // Source-position side-car record (parallel to the unit's records; cold —
@@ -389,6 +395,11 @@ struct cir_frozen_forest
 	// per record by member_begin/base_begin. Load swizzles ids -> DataDef*. ---
 	std::vector<cir_forest_type_record> type_records;
 	std::vector<uint32_t> type_payload;
+	// Transient freeze-time helper (NOT serialized): every N_FUNC_DEF node's emit
+	// symbol -> its (unit, record-idx) in the partitioned AST. cir_forest_append_methods
+	// looks a method's mangled symbol up here to record where its INLINE body lives
+	// (a symbol with no func-def in the AST is a LIBRARY method: no body location).
+	std::map<std::string, std::pair<uint32_t, uint32_t> > funcdef_locs;
 };
 
 // The context-hash pin: madc version + record/position layout + the c2mir
@@ -537,6 +548,12 @@ public:
 	// the string pool; reads libs + type names. Loads NO unit records.
 	// On failure prints the reason to stderr and returns false.
 	bool open(const void *image, size_t len, c2m_ctx_t c2m);
+
+	// Rebind the c2m used to materialize nodes. The parse-time bind forest is
+	// opened with c2m=NULL (it restores only types/PP, never node segments), so
+	// the session c2m is set here before the first node materialization (inline
+	// method body load at emit time). Safe iff no segment has materialized yet.
+	void set_c2m(c2m_ctx_t c2m) { _c2m = c2m; }
 
 	uint32_t unit_count() const { return (uint32_t)_units.size(); }
 	size_t units_loaded() const;			// laziness observability

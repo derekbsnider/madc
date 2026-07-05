@@ -45,6 +45,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "cir_builder.h"
+#include "cir_freeze.h"	// CirFrozenForest: load an INLINE method's saved body on use
 #include "madc_mangle.h"
 
 extern "C" {
@@ -18756,6 +18757,112 @@ node_t CirBuilder::translate_module(Program *prog)
 					      emitting_classes);
 	}
 	c2mir_op_splice_after(c2m, top_list, late_struct_anchor, late_struct_list);
+
+	// Forest INLINE-method bodies: a bound class's method whose body is Tree-1
+	// content (has_forest_body) was NOT parsed here — its func-def was saved in the
+	// frozen container (like an included header's inline body). Materialize it from
+	// the bind forest (fresh node_t in THIS c2m — that materialization IS the "copy
+	// the saved body into Tree-2" step, same as a template instantiation copies its
+	// saved pattern) and emit it into THIS module, exactly as a parsed inline method
+	// would be — no separate module, no re-parse. The struct tag its body references
+	// resolves to the definition this module already emits. Inserted at the FRONT
+	// (before main and the other translated bodies) to match a live include's
+	// header-before-.cpp source order.
+	if (prog && prog->bind_forest && !prog->forest_chain.empty()) {
+		prog->bind_forest->set_c2m(c2m);	// safe: parse-time bind materializes no node segment
+		// Map every bound INLINE method's symbol -> its FuncDef (body is Tree-1).
+		std::map<std::string, FuncDef *> bound_methods;
+		for (std::map<std::string, DataDef *>::iterator si = prog->struct_map.begin();
+		     si != prog->struct_map.end(); ++si) {
+			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(si->second);
+			if (!cdd)
+				continue;
+			for (size_t mi = 0; mi < cdd->methods.size(); ++mi) {
+				Variable *mv = cdd->methods[mi];
+				FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+				if (fd && fd->has_forest_body && !mv->name.empty())
+					bound_methods[mv->name] = fd;
+			}
+		}
+		// Reachability fixpoint (mirrors the live pending-funcs drain): seed with
+		// the bound methods directly referenced by the consumer's bodies, then
+		// follow the calls each emitted body makes to SIBLING bound methods — a
+		// method's body can reference another bound method defined later (or
+		// mutually), which the single-reference check would miss (-> undefined
+		// import). Emitting only the transitively-reachable set matches live's ODR.
+		std::set<std::string> emit_set;
+		std::vector<std::string> stack;
+		for (std::map<std::string, FuncDef *>::iterator it = bound_methods.begin();
+		     it != bound_methods.end(); ++it)
+			if (referenced_funcs.count(it->first))
+				stack.push_back(it->first);
+		while (!stack.empty()) {
+			std::string sym = stack.back();
+			stack.pop_back();
+			if (!emit_set.insert(sym).second)
+				continue;
+			FuncDef *fd = bound_methods[sym];
+			cir_node *body = prog->bind_forest->node_for(
+				fd->forest_body_unit, fd->forest_body_idx);	// memoized
+			if (!body)
+				continue;
+			std::set<std::string> callees;
+			cir_collect_call_callees(body->as_node(), callees);
+			for (std::set<std::string>::iterator ci = callees.begin();
+			     ci != callees.end(); ++ci)
+				if (bound_methods.count(*ci) && !emit_set.count(*ci))
+					stack.push_back(*ci);
+		}
+		// Emit proto + def in declaration order (per class, method order) so the
+		// module matches a live compile's source order byte-for-byte.
+		std::vector<node_t> forest_bodies;
+		std::vector<node_t> forest_protos;
+		for (std::map<std::string, DataDef *>::iterator si = prog->struct_map.begin();
+		     si != prog->struct_map.end(); ++si) {
+			DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(si->second);
+			if (!cdd)
+				continue;
+			for (size_t mi = 0; mi < cdd->methods.size(); ++mi) {
+				Variable *mv = cdd->methods[mi];
+				if (!mv || !emit_set.count(mv->name))
+					continue;
+				FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+				if (!fd)
+					continue;
+				cir_node *body = prog->bind_forest->node_for(
+					fd->forest_body_unit, fd->forest_body_idx);	// memoized
+				if (!body)
+					continue;
+				node_t bn = body->as_node();
+				forest_bodies.push_back(bn);
+				// Forward prototype, exactly as a live compile emits for a
+				// TU-defined function: SPEC_DECL[ SHARE[return-spec], declarator,
+				// ignore x3 ], built by copying the loaded def's own return-spec
+				// (op0) and declarator (op1) — real param names, no re-derivation.
+				// NOT cosmetic: it declares the method BEFORE its definition, so a
+				// forward / mutual reference among methods (or an early use) sees a
+				// real declaration, not an implicit-int default (silent miscompile).
+				node_t rspec = c2mir_node_op(bn, 0);
+				node_t decl  = c2mir_node_op(bn, 1);
+				if (rspec && decl) {
+					node_t proto = simple(N_SPEC_DECL);
+					append(proto, node1(N_SHARE,
+						copy_cir_subtree(CIR_NODE(rspec))->as_node()));
+					append(proto, copy_cir_subtree(CIR_NODE(decl))->as_node());
+					append(proto, ignore());
+					append(proto, ignore());
+					append(proto, ignore());
+					forest_protos.push_back(proto);
+				}
+			}
+		}
+		// Prototypes ahead of all definitions (matching the live proto pass), then
+		// the definitions at the front of the def list (header-before-.cpp order).
+		for (size_t i = 0; i < forest_protos.size(); ++i)
+			append(top_list, forest_protos[i]);
+		func_def_nodes.insert(func_def_nodes.begin(),
+				      forest_bodies.begin(), forest_bodies.end());
+	}
 
 	// Pass 2: Function definitions (translated above).
 	for (node_t fd : func_def_nodes)

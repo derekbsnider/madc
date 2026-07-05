@@ -897,6 +897,17 @@ static void cir_forest_append_methods(DataDefCLASS *cdd, madc::dis::intern_table
 			| (fd->is_void_params ? CIR_METHF_VOIDPARAMS : 0u)
 			| (is_static ? CIR_METHF_STATIC : 0u);
 		m.param_count = (uint32_t)pt.size();
+		// INLINE vs LIBRARY: if the AST holds a func-def for this method's mangled
+		// symbol, its body is Tree-1 content — record where so bind copies it into
+		// the consumer's Tree-2 on use. No func-def => LIBRARY method (body in a
+		// .so): leave body location zero, load keeps it declaration-only.
+		std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator bl =
+			f.funcdef_locs.find(mv->name);
+		if (bl != f.funcdef_locs.end()) {
+			m.flags |= CIR_METHF_HAS_BODY;
+			m.body_unit = bl->second.first;
+			m.body_idx  = bl->second.second;
+		}
 		recs.push_back(m);
 		params.push_back(pt);
 	}

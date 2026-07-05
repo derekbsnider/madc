@@ -12300,7 +12300,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    top_decls.push_back(td);
 	    DBG(std::cout << "forest_restore_decls: class " << name << " ("
 		<< cdd->members.size() << " members, " << cdd->bases.size()
-		<< " bases)" << std::endl);
+		<< " bases, " << cdd->methods.size() << " methods)" << std::endl);
 	}
     }
 }

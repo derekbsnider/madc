@@ -1201,13 +1201,14 @@ TEST_CASE("Phase 6 slice 3c: forest_restore_decls reconstructs a header class "
 	CHECK(progB->datatype_map.find("C") != progB->datatype_map.end());
 }
 
-// Phase 6 slice 3d: a non-virtual class method serializes as a method record
+// Phase 6 slice 3d + v8: a non-virtual class method serializes as a method record
 // (name / display / return / explicit-params / emit_symbol / flags) and
 // materialize_types rebuilds a FuncDef + Variable into the class's method_map —
 // the hidden __this (param 0 of a non-static method) rebuilt as a pointer to the
-// class. This makes a member call RESOLVE; LINKING it needs the body (an inline
-// method's body rides the grove; an external method binds emit_symbol) — a later
-// slice, so this test validates the reconstruction directly, not a run.
+// class. This makes a member call RESOLVE. v8: an INLINE method (body only in the
+// header, no .so) also records its Tree-1 body location (has_forest_body, NOT
+// declaration_only) so bind copies the saved body into the consumer's module on
+// use (the run is exercised cross-process by scripts/forest_bind_gate.sh).
 TEST_CASE("Phase 6 slice 3d: a class's non-virtual methods reconstruct into method_map") {
 	std::string inc_path = std::string("/tmp/madc_p6m_inc_")
 			     + std::to_string((long)getpid()) + ".h";
@@ -1272,4 +1273,12 @@ TEST_CASE("Phase 6 slice 3d: a class's non-virtual methods reconstruct into meth
 	REQUIRE(af->parameters.size() == 2);
 	CHECK(af->parameters[0]->is_pointer());		// __this
 	CHECK(af->parameters[1]->rawtype() == DataType::dtINT);
+
+	// v8: both are INLINE methods — the loaded FuncDef carries its Tree-1 body
+	// location and is NOT declaration-only, so the consumer emits the body itself
+	// (a LIBRARY method would be declaration_only with an emit_symbol instead).
+	CHECK(gf->has_forest_body);
+	CHECK(!gf->declaration_only);
+	CHECK(af->has_forest_body);
+	CHECK(!af->declaration_only);
 }

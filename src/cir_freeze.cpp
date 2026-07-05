@@ -296,6 +296,27 @@ static bool cir_freeze_partitioned(cir_node *root, const char *main_unit_name,
 			}
 		}
 	}
+
+	// Index every N_FUNC_DEF's emit symbol -> its (unit, idx). A method's INLINE
+	// body is the func-def whose declarator ID equals the method's mangled symbol;
+	// recording the location lets cir_forest_append_methods flag the method as
+	// body-bearing so bind copies the saved Tree-1 body into the consumer's Tree-2
+	// on use. (A symbol absent here is a LIBRARY method — body in a .so, no def.)
+	for (std::map<cir_node *, cir_freeze_loc>::iterator it = where.begin();
+	     it != where.end(); ++it) {
+		node_t fn = it->first->as_node();
+		if (fn->code != N_FUNC_DEF)
+			continue;
+		node_t o = c2mir_node_first_op(fn);		// op0: return spec list
+		node_t decl = o ? c2mir_node_next_op(o) : NULL;	// op1: N_DECL
+		if (!decl || decl->code != N_DECL)
+			continue;
+		node_t id = c2mir_node_first_op(decl);		// N_DECL op0: N_ID/N_IGNORE
+		if (!id || id->code != N_ID || !id->u.s.s)
+			continue;
+		out.funcdef_locs[id->u.s.s] =
+			std::make_pair(it->second.unit, it->second.idx);
+	}
 	return true;
 }
 
@@ -1284,7 +1305,20 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 				fd->is_const_method = (tm.flags & CIR_METHF_CONST) != 0;
 				fd->is_varargs      = (tm.flags & CIR_METHF_VARARGS) != 0;
 				fd->is_void_params  = (tm.flags & CIR_METHF_VOIDPARAMS) != 0;
-				fd->declaration_only = true;
+				if (tm.flags & CIR_METHF_HAS_BODY) {
+					// INLINE method: its body is a Tree-1 func-def in this
+					// container. Record where, so ODR-use copies it into the
+					// consumer's Tree-2 (like a template instantiation). NOT
+					// declaration_only — the consumer emits the body itself.
+					fd->has_forest_body  = true;
+					fd->forest_body_unit = tm.body_unit;
+					fd->forest_body_idx  = tm.body_idx;
+					fd->declaration_only = false;
+				} else {
+					// LIBRARY method: body lives in a .so; the call links to
+					// emit_symbol. Declaration-only, no body emitted.
+					fd->declaration_only = true;
+				}
 				Variable *mv = new Variable(std::string(mnm, mnl), *fd, 1, NULL, false);
 				if (m_static)
 					mv->flags |= vfSTATIC;

@@ -217,5 +217,67 @@ int main()
 EOF
 run_case class "sum=6 bb=2 sz=12"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class grove headers bound (no re-parse), output == live == g++"
+# --- case: method (inline-body save/load) — a class with INLINE method bodies.
+#     The producer froze `Counter::get`/`add` bodies into the grove (Tree-1); bind
+#     LOADS them (node_for deserialization, never re-parse) and emits them as
+#     func-defs into the consumer's ONE module, exactly as a parsed inline method
+#     would be. Proves the call links to a loaded body, not an undefined import.
+cat > tmp/fbgate_method.h <<'EOF'
+#ifndef FBGATE_METHOD_H
+#define FBGATE_METHOD_H
+class Counter {
+public:
+    int n;
+    int get() { return n * 3; }
+    void add(int d) { n += d; }
+};
+#endif
+EOF
+cat > tmp/fbgate_method_producer.cpp <<'EOF'
+#include <fbgate_method.h>
+int main() { Counter c; c.n = 0; c.add(1); return c.get(); }
+EOF
+cat > tmp/fbgate_method_consumer.cpp <<'EOF'
+#include <fbgate_method.h>
+#include <cstdio>
+int main()
+{
+    Counter c;
+    c.n = 0;
+    c.add(5);
+    printf("get=%d\n", c.get());
+    return 0;
+}
+EOF
+run_case method "get=15"
+
+# --- case: fwd (transitive inline-body reachability) — an inline method whose
+#     body calls a SIBLING method defined LATER in the class. Only `first` is
+#     called by the consumer; `second` is reachable only transitively. The bind
+#     emission must follow that reference (reachability fixpoint) and emit BOTH
+#     bodies + their forward prototypes, or `second` is an undefined import / a
+#     silent implicit-int miscompile. Guards the forward/mutual-reference path.
+cat > tmp/fbgate_fwd.h <<'EOF'
+#ifndef FBGATE_FWD_H
+#define FBGATE_FWD_H
+class Chain {
+public:
+    int n;
+    int first() { return second() + 1; }
+    int second() { return n * 10; }
+};
+#endif
+EOF
+cat > tmp/fbgate_fwd_producer.cpp <<'EOF'
+#include <fbgate_fwd.h>
+int main() { Chain c; c.n = 0; return c.first(); }
+EOF
+cat > tmp/fbgate_fwd_consumer.cpp <<'EOF'
+#include <fbgate_fwd.h>
+#include <cstdio>
+int main() { Chain c; c.n = 4; printf("chain=%d\n", c.first()); return 0; }
+EOF
+run_case fwd "chain=41"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd grove headers bound (no re-parse), output == live == g++"
 exit 0
