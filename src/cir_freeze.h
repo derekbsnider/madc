@@ -83,7 +83,8 @@ enum : uint32_t
 	SNAP_KIND_CIR_BRANCH_MACROS = madc::dis::SNAP_KIND_CONSUMER + 10, // container-global: uint32 name ids, sorted
 	SNAP_KIND_CIR_CANON_ORDER   = madc::dis::SNAP_KIND_CONSUMER + 11, // container-global: uint32 unit indices, canonical order
 	// --- Phase 6: serialized parser decl graph (design 2026-07-05) ---
-	SNAP_KIND_CIR_DECL_RECORDS  = madc::dis::SNAP_KIND_CONSUMER + 12  // container-global: cir_forest_decl_record[]
+	SNAP_KIND_CIR_DECL_RECORDS  = madc::dis::SNAP_KIND_CONSUMER + 12, // container-global: cir_forest_decl_record[]
+	SNAP_KIND_CIR_STRUCT_MEMBERS = madc::dis::SNAP_KIND_CONSUMER + 13 // container-global: uint32 struct-member stream (slice 3a)
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -154,7 +155,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // eight (tokens / decl index / PP exports / edges) plus the two container-
 // global segments (branch macros, canonical order). The version feeds the
 // context hash, so v1 readers reject v2 containers and vice versa.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 3 };	// v3: + serialized decl records (Phase 6)
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 4 };	// v4: + struct member stream (Phase 6 slice 3a)
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -170,6 +171,7 @@ enum : uint32_t
 	CIR_FOREST_SEG_BRANCH_MACROS = 6,	// v2 (absent = zero-length)
 	CIR_FOREST_SEG_CANON_ORDER   = 7,	// v2 (absent = zero-length)
 	CIR_FOREST_SEG_DECL_RECORDS  = 8,	// v3 (absent = zero-length): serialized decl graph
+	CIR_FOREST_SEG_STRUCT_MEMBERS = 9,	// v4 (absent = zero-length): struct-member u32 stream
 	CIR_FOREST_SEG_UNIT_BASE     = 16,
 	CIR_FOREST_SEGS_PER_UNIT     = 8	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -236,11 +238,26 @@ enum : uint32_t { CIR_FOREST_PP_VARIADIC = 1u << 8 };
 // aggregate types get system-segment ids (a later slice).
 struct cir_forest_decl_record
 {
-	uint32_t name_id;	// pool handle: the exported (unqualified) name
-	uint32_t kind;		// Program::PackDeclKind wire value (pdkTypedef for slice 1)
-	uint32_t type_id;	// aliased/underlying type's madc type-id
+	uint32_t name_id;	// pool handle: the exported (unqualified) name (struct tag)
+	uint32_t kind;		// Program::PackDeclKind wire value (pdkTypedef / pdkStruct)
+	uint32_t type_id;	// typedef: aliased/underlying type's madc type-id;
+				// struct: the struct's OWN system-segment id (serialization identity)
 	uint32_t ns_id;		// pool handle: enclosing namespace ("" / 0 = global scope)
-	uint32_t aux;		// reserved (flags)
+	uint32_t aux;		// flags: bit0 = union_layout (pdkStruct)
+	uint32_t member_begin;	// pdkStruct: index (in triples) into the struct-member stream; else 0
+	uint32_t member_count;	// pdkStruct: number of members; else 0
+};
+
+// One struct member in the container-global struct-member stream: a flat u32
+// array of [name_id, type_id, count] triples, sliced per struct by the decl
+// record's member_begin/member_count. `type_id` is a primitive id (pinned) or a
+// forest aggregate's system-segment id; `count` is the fixed-array element count
+// (1 for a scalar member).
+struct cir_forest_struct_member
+{
+	uint32_t name_id;
+	uint32_t type_id;
+	uint32_t count;
 };
 
 // Source-position side-car record (parallel to the unit's records; cold —
@@ -280,6 +297,9 @@ struct cir_frozen_forest
 	std::vector<uint32_t>        canon_order;	// unit indices, canonical include order
 	// --- Phase 6 (v3; container-global): serialized parser decl graph ---
 	std::vector<cir_forest_decl_record> decl_records;
+	// --- Phase 6 (v4; container-global): flat struct-member stream, sliced
+	// per struct by decl_records[i].member_begin/member_count (in triples) ---
+	std::vector<uint32_t> struct_members;
 };
 
 // The context-hash pin: madc version + record/position layout + the c2mir
@@ -384,6 +404,8 @@ class CirFrozenForest
 	std::vector<uint32_t> _branch_macros, _canon_order;
 	// v3 container-global: the serialized parser decl graph (Phase 6).
 	std::vector<cir_forest_decl_record> _decl_records;
+	// v4 container-global: flat struct-member stream (u32 triples).
+	std::vector<uint32_t> _struct_members;
 	// Shared v2 segment reader: decompress unit slot `slot` into `out`
 	// (raw bytes). False on absent/malformed.
 	bool read_unit_seg(uint32_t unit, uint32_t slot, uint32_t kind,
@@ -433,6 +455,9 @@ public:
 	// Phase 6: the serialized parser decl graph (empty on a v2 / decl-less
 	// container). The bind layer reconstructs symbol tables from these.
 	const std::vector<cir_forest_decl_record> &decl_records() const { return _decl_records; }
+	// Phase 6 slice 3a: the flat struct-member stream (u32 [name_id,type_id,
+	// count] triples), sliced per struct by decl_records[i].member_begin/count.
+	const std::vector<uint32_t> &struct_members() const { return _struct_members; }
 	// Container string pool lookup (name_id -> C string; NULL if invalid).
 	const char *pool_str(uint32_t id) const
 	{ uint32_t len; return pool_cstr(id, len); }

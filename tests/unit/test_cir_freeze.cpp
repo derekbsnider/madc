@@ -933,3 +933,93 @@ TEST_CASE("Phase 6 slice 1b: forest_restore_decls makes a fresh parser resolve a
 	REQUIRE(mit != progB->datatype_map.end());
 	CHECK(&(*mit)->definition == expected);
 }
+
+// Phase 6 slice 3a: a file-scope plain struct serializes as a decl record + a
+// member stream (a system-segment id for the struct itself), and
+// forest_restore_decls RECONSTRUCTS a complete DataDefSTRUCT — members, offsets,
+// size — into a fresh Program's struct_map with NO header parse.
+TEST_CASE("Phase 6 slice 3a: forest_restore_decls reconstructs a header struct "
+	  "(members + layout) with no header parse") {
+	std::string inc_path = std::string("/tmp/madc_p6s_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_p6s_main_")
+			      + std::to_string((long)getpid()) + ".mad";
+	std::string snap_path = std::string("/tmp/madc_p6s_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	std::string triv_path = std::string("/tmp/madc_p6s_triv_")
+			      + std::to_string((long)getpid()) + ".mad";
+	{ std::ofstream inc(inc_path.c_str()); inc << "struct Point { int x; int y; };\n"; }
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { struct Point p; p.x = 0; return p.x; }\n";
+	}
+	{ std::ofstream tv(triv_path.c_str()); tv << "int main() { return 0; }\n"; }
+
+	// Freeze a container carrying the `Point` struct record + member stream.
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	// The record carries a system-segment id + two int members in the stream.
+	bool found = false;
+	for (size_t i = 0; i < forest.decl_records().size(); ++i) {
+		const cir_forest_decl_record &r = forest.decl_records()[i];
+		const char *nm = forest.pool_str(r.name_id);
+		if (!nm || strcmp(nm, "Point"))
+			continue;
+		found = true;
+		CHECK(r.kind == Program::pdkStruct);
+		CHECK(r.type_id >= (uint32_t)MADC_TYPEID_SYSTEM_BASE);
+		CHECK(r.type_id < MADC_TYPEID_PROJECT_BASE);
+		CHECK(r.member_count == 2);
+		const std::vector<uint32_t> &ms = forest.struct_members();
+		size_t base = (size_t)r.member_begin * 3;
+		REQUIRE(base + 6 <= ms.size());
+		// Both members are `int` — a pinned primitive id that resolves with
+		// no Program (id-of-int is a slot; don't hard-code which).
+		CHECK(ms[base + 1] < (uint32_t)MADC_TYPEID_PRIMITIVE_END);
+		CHECK(madc_type_from_id(ms[base + 1]) != nullptr);
+		CHECK(ms[base + 4] == ms[base + 1]);			// x and y same type
+	}
+	CHECK(found);
+
+	// A FRESH Program, initialized by a trivial parse that never mentions Point.
+	std::shared_ptr<Program> progB = std::make_shared<Program>();
+	TokenProgram *tpB = progB->tokenize(triv_path.c_str());
+	REQUIRE(tpB != nullptr);
+	REQUIRE(progB->parse(tpB));
+	std::remove(triv_path.c_str());
+	CHECK(progB->struct_map.find("Point") == progB->struct_map.end());
+
+	// RESTORE — no header parse — then Point is a complete struct with the same
+	// layout a live parse would have produced (int x @0, int y @4, size 8).
+	progB->forest_restore_decls(forest);
+	datadef_map_iter sit = progB->struct_map.find("Point");
+	REQUIRE(sit != progB->struct_map.end());
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(sit->second);
+	REQUIRE(sdd != nullptr);
+	CHECK(sdd->is_complete);
+	REQUIRE(sdd->members.size() == 2);
+	CHECK(sdd->members[0].first == "x");
+	CHECK(sdd->members[1].first == "y");
+	REQUIRE(sdd->member_offsets.size() == 2);
+	CHECK(sdd->member_offsets[0] == 0);
+	CHECK(sdd->member_offsets[1] == 4);
+	CHECK(sdd->size == 8);
+}

@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# Phase 6 slice 2 gate: --forest-bind LOADS a grove header instead of parsing
-# it. Freeze a container from a producer that includes ONLY a typedef header,
-# then in a FRESH process bind that container while compiling a consumer that
-# uses the header's typedef. The bound header is NOT tokenized — its `myint`
-# resolves from the container's decl records (forest_restore_decls) and its
-# `typedef int myint;` node is reconstructed into the c2mir tree. The consumer
-# also includes <cstdio>, which is NOT in the container and therefore still
+# Phase 6 bind gate: --forest-bind LOADS a grove header instead of parsing it.
+# For each case: freeze a container from a producer that includes ONLY the
+# grove header, then in a FRESH process bind that container while compiling a
+# consumer that USES the header's decl. The bound header is never tokenized —
+# its decls resolve from the container's records (forest_restore_decls) and the
+# corresponding node is reconstructed into the c2mir tree. The consumer also
+# includes <cstdio>, which is NOT in the container and therefore still
 # live-parses: only the frozen header binds.
 #
-# The gate proves THREE things:
-#   1. bind output == live-parse output == g++ output (correctness).
-#   2. the include actually BOUND (a -v run shows "bound to grove unit"), so a
-#      silent fall-through to live parse cannot pass this gate as a false green.
-#   3. it works cross-process (freeze and bind are separate madc invocations).
+# Cases:
+#   typedef  (slice 2)  — `typedef int myint;`   resolves cross-process.
+#   struct   (slice 3a) — `struct Point{int x,y;}` reconstructed (members +
+#                          layout) and emitted; a system-segment type-id.
+#
+# Each case proves: bind output == live-parse output == g++ output; the include
+# actually BOUND (a -v run shows "bound to grove unit", so a silent live
+# fall-through cannot false-green it); and it works cross-process.
 #
 # Run from the repo root (fulltest does). Fixtures are generated into tmp/
 # (gitignored), like scripts/forest_pack.sh — the gate is self-contained.
@@ -28,79 +31,102 @@ if [ ! -x "$BIN" ]; then
 fi
 
 mkdir -p tmp
-HDR=tmp/fbgate_helper.h
-PRODUCER=tmp/fbgate_producer.cpp
-CONSUMER=tmp/fbgate_consumer.cpp
-SNAP=tmp/fbgate.msnap
-GCCBIN=tmp/fbgate_gcc
-EXP="y=45"
 
-cat > "$HDR" <<'EOF'
-/* forest_bind_gate fixture: a file-scope typedef whose underlying type is a
-   primitive (its type-id is pinned, so it resolves cross-process). */
-#ifndef FBGATE_HELPER_H
-#define FBGATE_HELPER_H
+fail() { echo "forest_bind_gate: $1"; exit 1; }
+
+# run_case <tag> <expected-output>
+# Expects tmp/fbgate_<tag>.h / _producer.cpp / _consumer.cpp already written.
+run_case() {
+    tag="$1"; exp="$2"
+    hdr="tmp/fbgate_${tag}.h"
+    prod="tmp/fbgate_${tag}_producer.cpp"
+    cons="tmp/fbgate_${tag}_consumer.cpp"
+    snap="tmp/fbgate_${tag}.msnap"
+    gccbin="tmp/fbgate_${tag}_gcc"
+    vlog="tmp/fbgate_${tag}_v.log"
+
+    # 1. Freeze the producer into a standalone container.
+    if ! timeout 120 "$BIN" --freeze="$snap" "$prod" -I tmp >/dev/null 2>&1; then
+        fail "[$tag] --freeze FAILED"
+    fi
+    [ -f "$snap" ] || fail "[$tag] --freeze produced no container"
+
+    # 2. Oracles: live-parse madc and g++ must agree with each other first.
+    live_out=$(timeout 60 "$BIN" "$cons" -I tmp 2>/dev/null)
+    [ "$live_out" = "$exp" ] || fail "[$tag] live-parse output '$live_out' != '$exp'"
+    if command -v g++ >/dev/null 2>&1; then
+        if timeout 120 g++ -I tmp "$cons" -o "$gccbin" >/dev/null 2>&1; then
+            gcc_out=$("$gccbin" 2>/dev/null)
+            [ "$gcc_out" = "$exp" ] || fail "[$tag] g++ output '$gcc_out' != '$exp'"
+        else
+            fail "[$tag] g++ compile FAILED"
+        fi
+    fi
+
+    # 3. Bind in a FRESH process — clean run for exact output equality.
+    bind_out=$(timeout 60 "$BIN" --forest-bind="$snap" "$cons" -I tmp 2>/dev/null)
+    [ "$bind_out" = "$exp" ] || fail "[$tag] bind output '$bind_out' != '$exp' (== g++)"
+
+    # 4. Prove the include actually BOUND (no silent live fall-through). The -v
+    #    trace prints "bound to grove unit N (<path>)" only when the grove path
+    #    fires and skips tokenization. Grep a file (the -v dump carries NUL
+    #    bytes, which a shell variable capture would strip with a warning).
+    timeout 60 "$BIN" -v --forest-bind="$snap" "$cons" -I tmp >"$vlog" 2>/dev/null
+    if ! grep -q "bound to grove unit.*fbgate_${tag}.h" "$vlog"; then
+        rm -f "$snap" "$gccbin" "$vlog"
+        fail "[$tag] consumer did NOT bind the grove header (live fall-through?)"
+    fi
+
+    rm -f "$snap" "$gccbin" "$vlog"
+    echo "forest_bind_gate: [$tag] OK — grove header bound (no re-parse), output == live == g++"
+}
+
+# --- case: typedef (slice 2) -------------------------------------------------
+cat > tmp/fbgate_typedef.h <<'EOF'
+#ifndef FBGATE_TYPEDEF_H
+#define FBGATE_TYPEDEF_H
 typedef int myint;
 #endif
 EOF
-
-# Producer: includes ONLY the typedef header, so the container's sole packed
-# system unit is the header — <cstdio> is deliberately absent here.
-cat > "$PRODUCER" <<'EOF'
-#include <fbgate_helper.h>
+cat > tmp/fbgate_typedef_producer.cpp <<'EOF'
+#include <fbgate_typedef.h>
 int main() { myint x = 0; return x; }
 EOF
+cat > tmp/fbgate_typedef_consumer.cpp <<'EOF'
+#include <fbgate_typedef.h>
+#include <cstdio>
+int main() { myint x = 42; myint y = x + 3; printf("y=%d\n", y); return 0; }
+EOF
+run_case typedef "y=45"
 
-# Consumer: uses the typedef AND prints via <cstdio> (which live-parses under
-# --forest-bind, since it is not in the container).
-cat > "$CONSUMER" <<'EOF'
-#include <fbgate_helper.h>
+# --- case: struct (slice 3a) — mixed-type padding + a union + sizeof, so the
+#     reconstruction's layout (addMember/finalize) must match g++ byte-for-byte.
+cat > tmp/fbgate_struct.h <<'EOF'
+#ifndef FBGATE_STRUCT_H
+#define FBGATE_STRUCT_H
+struct Mix { char c; int i; double d; };
+union Blob { int i; double d; char c; };
+#endif
+EOF
+cat > tmp/fbgate_struct_producer.cpp <<'EOF'
+#include <fbgate_struct.h>
+int main() { struct Mix m; union Blob b; m.c = 0; b.i = 0; return 0; }
+EOF
+cat > tmp/fbgate_struct_consumer.cpp <<'EOF'
+#include <fbgate_struct.h>
 #include <cstdio>
 int main()
 {
-    myint x = 42;
-    myint y = x + 3;
-    printf("y=%d\n", y);
+    struct Mix m;
+    m.c = 'A';
+    m.i = 100;
+    m.d = 2.5;
+    printf("smix=%zu sblob=%zu c=%d i=%d\n",
+           sizeof(struct Mix), sizeof(union Blob), m.c, m.i);
     return 0;
 }
 EOF
+run_case struct "smix=16 sblob=8 c=65 i=100"
 
-fail() { echo "forest_bind_gate: $1"; rm -f "$SNAP" "$GCCBIN"; exit 1; }
-
-# 1. Freeze the producer into a standalone container.
-if ! timeout 120 "$BIN" --freeze="$SNAP" "$PRODUCER" -I tmp >/dev/null 2>&1; then
-    fail "--freeze FAILED"
-fi
-[ -f "$SNAP" ] || fail "--freeze produced no container"
-
-# 2. Oracles: live-parse madc and g++ must agree with each other first.
-live_out=$(timeout 60 "$BIN" "$CONSUMER" -I tmp 2>/dev/null)
-[ "$live_out" = "$EXP" ] || fail "live-parse output '$live_out' != '$EXP'"
-
-if command -v g++ >/dev/null 2>&1; then
-    if timeout 120 g++ -I tmp "$CONSUMER" -o "$GCCBIN" >/dev/null 2>&1; then
-        gcc_out=$("$GCCBIN" 2>/dev/null)
-        [ "$gcc_out" = "$EXP" ] || fail "g++ output '$gcc_out' != '$EXP'"
-    else
-        fail "g++ compile FAILED"
-    fi
-fi
-
-# 3. Bind in a FRESH process — clean run for exact output equality.
-bind_out=$(timeout 60 "$BIN" --forest-bind="$SNAP" "$CONSUMER" -I tmp 2>/dev/null)
-[ "$bind_out" = "$EXP" ] || fail "bind output '$bind_out' != '$EXP' (== g++)"
-
-# 4. Prove the include actually BOUND (no silent live fall-through). The -v
-#    trace prints "bound to grove unit N (<path>)" only when the grove path
-#    fires and skips tokenization. Grep a file (the -v dump carries NUL bytes,
-#    which a shell variable capture would strip with a warning).
-VLOG=tmp/fbgate_verbose.log
-timeout 60 "$BIN" -v --forest-bind="$SNAP" "$CONSUMER" -I tmp >"$VLOG" 2>/dev/null
-if ! grep -q "bound to grove unit.*fbgate_helper.h" "$VLOG"; then
-    rm -f "$VLOG"
-    fail "consumer did NOT bind the grove header (live fall-through?)"
-fi
-
-rm -f "$SNAP" "$GCCBIN" "$VLOG"
-echo "forest_bind_gate: GREEN — grove header bound (no re-parse), output == live == g++"
+echo "forest_bind_gate: GREEN — typedef + struct grove headers bound (no re-parse), output == live == g++"
 exit 0

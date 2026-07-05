@@ -747,6 +747,9 @@ static void cir_forest_collect_decls(Program *prog, cir_frozen_forest &f)
     if (!prog || !TokenBase::_active_strpool)
 	return;
     madc::dis::intern_table &pool = *TokenBase::_active_strpool;
+
+    // --- typedefs (slice 1b): file-scope typedefs of a primitive type. The
+    // underlying type-id is pinned and resolves in any process. ---
     for (std::set<std::string>::const_iterator it = prog->user_typedef_names.begin();
 	 it != prog->user_typedef_names.end(); ++it) {
 	const std::string &name = *it;
@@ -762,7 +765,70 @@ static void cir_forest_collect_decls(Program *prog, cir_frozen_forest &f)
 	r.type_id = prog->type_id_for(dd);
 	r.ns_id   = 0;		// slice 1: global scope only
 	r.aux     = 0;
+	r.member_begin = 0;
+	r.member_count = 0;
 	f.decl_records.push_back(r);
+    }
+
+    // --- structs (slice 3a): file-scope PLAIN structs/unions with primitive
+    // (or already-serialized forest-aggregate) scalar members. top_decls is in
+    // definition order, so a member aggregate is assigned its system id before
+    // the struct that uses it. Each forest aggregate gets a stable system-
+    // segment id (freeze-local — NOT the process's project id, which the frozen
+    // node tree already uses) so member references link inside the container.
+    // Anything richer (a class = methods/bases/vtable, anon aggregates, bit-
+    // fields, or a member of an unserializable type) is simply not emitted;
+    // bind falls back for it. Widens in 3b/3c. ---
+    std::map<DataDef *, uint32_t> sys_id;
+    uint32_t next_sys = MADC_TYPEID_SYSTEM_BASE;
+    for (size_t i = 0; i < prog->top_decls.size(); ++i) {
+	const Program::TopDecl &td = prog->top_decls[i];
+	if (td.kind != Program::DeclKind::dkStruct
+	    && td.kind != Program::DeclKind::dkUnion)
+	    continue;
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(td.dd);
+	if (!sdd || !sdd->is_complete)
+	    continue;
+	if (dynamic_cast<DataDefCLASS *>(sdd) || sdd->has_anon_aggregate)
+	    continue;			// methods/bases/vtable/anon: 3b/3c
+	// Serialize members into a scratch triple list; bail the WHOLE struct if
+	// any member is not (yet) representable (a struct half-serialized would
+	// mis-lay-out on load).
+	std::vector<uint32_t> triples;
+	bool ok = true;
+	for (size_t m = 0; m < sdd->members.size(); ++m) {
+	    DataDef *mdd = sdd->members[m].second;
+	    bool is_bf = m < sdd->member_bitfields.size()
+		      && sdd->member_bitfields[m].is_bitfield;
+	    if (!mdd || is_bf) { ok = false; break; }
+	    uint32_t mtid;
+	    if (mdd->type_id && mdd->type_id < MADC_TYPEID_PRIMITIVE_END) {
+		mtid = mdd->type_id;			// pinned primitive
+	    } else {
+		std::map<DataDef *, uint32_t>::iterator si = sys_id.find(mdd);
+		if (si == sys_id.end()) { ok = false; break; }
+		mtid = si->second;			// an earlier forest aggregate
+	    }
+	    uint32_t mcount = m < sdd->member_counts.size()
+			    ? (uint32_t)sdd->member_counts[m] : 1;
+	    triples.push_back(pool.intern(sdd->members[m].first));
+	    triples.push_back(mtid);
+	    triples.push_back(mcount ? mcount : 1);
+	}
+	if (!ok)
+	    continue;
+	uint32_t my_sys = next_sys++;
+	sys_id[sdd] = my_sys;
+	cir_forest_decl_record r;
+	r.name_id      = pool.intern(sdd->name);
+	r.kind         = Program::pdkStruct;
+	r.type_id      = my_sys;			// this struct's serialization identity
+	r.ns_id        = 0;				// slice 3a: global scope
+	r.aux          = sdd->union_layout ? 1u : 0u;
+	r.member_begin = (uint32_t)(f.struct_members.size() / 3);
+	r.member_count = (uint32_t)(triples.size() / 3);
+	f.decl_records.push_back(r);
+	f.struct_members.insert(f.struct_members.end(), triples.begin(), triples.end());
     }
 }
 

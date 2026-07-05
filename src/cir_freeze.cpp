@@ -475,6 +475,11 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 		     f.decl_records.data(),
 		     f.decl_records.size() * sizeof(cir_forest_decl_record), codec))
 		return false;
+	// v4 container-global: the struct-member stream (Phase 6 slice 3a).
+	if (!add_seg(w, CIR_FOREST_SEG_STRUCT_MEMBERS, SNAP_KIND_CIR_STRUCT_MEMBERS,
+		     f.struct_members.data(),
+		     f.struct_members.size() * sizeof(uint32_t), codec))
+		return false;
 
 	for (size_t u = 0; u < f.units.size(); ++u) {
 		const cir_forest_unit &fu = f.units[u];
@@ -940,6 +945,21 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
 		_decl_records.resize(d.size() / sizeof(cir_forest_decl_record));
 		if (!d.empty())
 			memcpy(_decl_records.data(), d.data(), d.size());
+	}
+
+	// v4 container-global: the struct-member stream (flat u32 triples).
+	if (const madc::dis::snapshot_segment *sms =
+		_reader.find(CIR_FOREST_SEG_STRUCT_MEMBERS)) {
+		std::vector<uint8_t> d;
+		if (sms->kind != SNAP_KIND_CIR_STRUCT_MEMBERS
+		    || !_reader.read_segment(*sms, d)
+		    || d.size() % sizeof(uint32_t)) {
+			fprintf(stderr, "madc: forest struct-member stream corrupt\n");
+			return false;
+		}
+		_struct_members.resize(d.size() / sizeof(uint32_t));
+		if (!d.empty())
+			memcpy(_struct_members.data(), d.data(), d.size());
 	}
 
 	// Reverse directory: unit-name spelling -> index (Phase 6 bind lookup).
