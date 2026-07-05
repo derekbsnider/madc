@@ -2208,6 +2208,61 @@ public:
     std::map<std::string, std::string> include_guard_by_file;
     std::stack<bool> ifdef_stack;	// conditional compilation state stack
     std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
+    // --- B4a pack-time forest recording (grove payload v2; see
+    // docs/plans/2026-07-04-forest-default-mode-design.md §2). Populated during
+    // lex+parse ONLY when pack_recording is on (--freeze / --freeze-append);
+    // consumed by madc_cir_freeze to stage the v2 segments. All hooks are
+    // no-ops when the flag is off, so default lexing/parsing is unchanged.
+    struct PackMacroEvent {		// one PP-export delta, in directive order
+	enum : uint8_t { peDefine = 0, peDefineFn = 1, peUndef = 2 };
+	std::string name;
+	uint8_t     tag;
+	std::string value;		// object-like body (peDefine)
+	MacroDef    macro;		// function-like payload (peDefineFn)
+    };
+    enum PackDeclKind : uint32_t {	// decl-index entry kinds (v2 wire values)
+	pdkOther = 0, pdkTypedef = 1, pdkStruct = 2, pdkClass = 3, pdkEnum = 4,
+	pdkFunction = 5, pdkVariable = 6, pdkTemplate = 7, pdkNamespace = 8
+    };
+    enum : uint32_t {			// PackDeclEntry aux flags (v2 wire values)
+	PACK_DECL_SPANS_UNITS  = 1u,	// slice crosses unit boundaries: bind must live-parse
+	PACK_DECL_FUZZY_BOUNDS = 2u	// stream pushback was non-empty at a boundary
+    };
+    struct PackDeclEntry {
+	std::string name;		// exported (namespace-qualified) name
+	uint32_t    kind;		// PackDeclKind
+	uint32_t    begin, end;		// GLOBAL token-stream indices [begin,end)
+	uint32_t    aux;		// PACK_DECL_* flags
+    };
+    struct PackDeclFrame {		// one in-flight top-level decl parse
+	size_t begin;			// stream cursor at open
+	bool   fuzzy;			// pushback non-empty at open
+	std::vector<std::pair<std::string, uint32_t> > names; // (name, kind)
+    };
+    bool pack_recording = false;
+    std::vector<const char *> pack_unit_order;	// first-tokenization order (interned)
+    std::set<const char *> pack_units_seen;
+    std::map<const char *, std::vector<PackMacroEvent> > pack_pp_exports; // unit -> ordered deltas
+    std::map<const char *, std::vector<const char *> > pack_unit_edges;   // includer -> includees, in order
+    std::set<std::string> pack_branch_macros;	// names PP conditionals consulted
+    std::vector<PackDeclEntry> pack_decls;	// parse-time top-level decl boundaries
+    std::vector<PackDeclFrame> pack_decl_stack;	// open frames (namespace bodies nest)
+    // Recording hooks (PP side in lexer.cpp, decl side in parser.cpp; every
+    // one gates on pack_recording so default builds pay one predicted branch).
+    void pack_note_unit(const char *interned_file);
+    void pack_record_define(const std::string &name, const std::string &value);
+    void pack_record_define_fn(const std::string &name, const MacroDef &m);
+    void pack_record_undef(const std::string &name);
+    void pack_record_edge(const std::string &includee);	// includer = current source
+    void pack_record_branch_macro(const std::string &name);
+    const char *pack_current_unit();	// interned current source file (NULL off)
+    void dump_macros(FILE *out);	// -dM: effective macro table, sorted
+    void pack_open_toplevel_decl();	// loop-top: push a decl frame
+    void pack_close_toplevel_decl();	// after parseStatement: pop + emit entries
+    void pack_tap_name(const std::string &name, uint32_t kind); // registration tap
+    void pack_tap_type(const std::string &name);   // flat + ns-qualified typedef tap
+    void pack_tap_struct(const std::string &name); // struct_map-key tap
+    void dump_registered_names(FILE *out); // --dump-registered: oracle side B
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
     TokenStream tokens;			// parsed token stream (flat arena + cursor; P1)
     std::deque<TokenBase *> injected_tokens; // synthetic lexer output for lowered directives

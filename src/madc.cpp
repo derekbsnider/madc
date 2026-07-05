@@ -41,6 +41,7 @@ extern int madc_cir_freeze(Program *prog, const char *source_name,
                            const char *out_path, bool append);
 extern int madc_cir_execute_frozen(const char *container_path,
                                    int user_argc, char **user_argv);
+extern int madc_cir_dump_forest(const char *container_path);
 
 using namespace std;
 
@@ -433,6 +434,13 @@ static void print_usage(const char *prog)
 "                          Remaining arguments become the program's argv\n"
 "  --freeze-run            freeze to a temp container, then re-exec this\n"
 "                          madc in a FRESH process to run it (round-trip)\n"
+"  --dump-forest[=<file>]  print a container's directory + grove payloads\n"
+"                          (decl index, PP exports, edges, branch macros,\n"
+"                          canonical order); no value = this executable's blob\n"
+"  --dump-registered       parse, then print the registered name maps\n"
+"                          (forest index-parity oracle input; no run)\n"
+"  -dM                     preprocess, then print the effective macro table\n"
+"                          (gcc -dM -E analogue; no parse, no run)\n"
 "\n"
 "Misc:\n"
 "  --show-stats            print input/token/timing stats (read, lex, parse,\n"
@@ -483,6 +491,10 @@ int main(int argc, char **argv)
     bool run_frozen = false;              // --run-frozen[=path]: thaw + run, no parse
     const char *run_frozen_path = NULL;   // NULL = the blob appended to this executable
     bool freeze_run = false;              // --freeze-run: freeze, then re-exec fresh to run
+    bool dump_forest = false;             // --dump-forest[=path]: print container surfaces
+    const char *dump_forest_path = NULL;  // NULL = the blob appended to this executable
+    bool dump_registered = false;         // --dump-registered: post-parse name maps (oracle side B)
+    bool dump_macro_table = false;        // -dM: effective macro table after lex (gcc -dM -E analogue)
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -596,6 +608,19 @@ int main(int argc, char **argv)
             run_frozen = true;
             run_frozen_path = argv[i] + 13;
             filearg = i + 1;
+        } else if (strcmp(argv[i], "--dump-forest") == 0) {
+            dump_forest = true;
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "--dump-forest=", 14) == 0) {
+            dump_forest = true;
+            dump_forest_path = argv[i] + 14;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--dump-registered") == 0) {
+            dump_registered = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-dM") == 0) {
+            dump_macro_table = true;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {
             project_manifest = argv[++i];
             filearg = i + 1;
@@ -687,6 +712,15 @@ int main(int argc, char **argv)
         int rc = madc_cir_execute_frozen(run_frozen_path,
                                          (int)rargv.size(), rargv.data());
         return (rc < 0) ? 1 : rc;
+    }
+
+    // --dump-forest: print a container's directory + grove payload v2
+    // surfaces (decl index, PP exports, edges, branch macros, canonical
+    // order) — the B4a oracle data source. No source file, no parse.
+    if ( dump_forest )
+    {
+        int rc = madc_cir_dump_forest(dump_forest_path);
+        return (rc < 0) ? 1 : 0;
     }
 
     if ( generic_output_path && !emit_pch )
@@ -781,6 +815,8 @@ int main(int argc, char **argv)
     {
 	if ( dump_source )
 	    prog->keep_trivia = true;   // preserve whitespace/comments for round-trip
+	if ( freeze_path )
+	    prog->pack_recording = true;   // B4a: record grove payload v2 during lex+parse
 	struct timeval _tk0, _tk1;     // --show-stats: tokenize (read+lex) wall time
 	gettimeofday(&_tk0, NULL);
 	if ( !(tp=prog->tokenize(argv[filearg])) )
@@ -790,6 +826,14 @@ int main(int argc, char **argv)
 	if ( dump_source )
 	{
 	    std::cout << prog->reconstruct_source();
+	    return 0;
+	}
+
+	// -dM: the effective macro table after preprocessing (madc's PP runs
+	// during tokenize), sorted — diffable against `gcc -dM -E`.
+	if ( dump_macro_table )
+	{
+	    prog->dump_macros(stdout);
 	    return 0;
 	}
 
@@ -908,6 +952,14 @@ int main(int argc, char **argv)
 	prog->script_argc = argc - filearg;
 	prog->script_argv = argv + filearg;
 	g_active_program = prog.get();
+
+	// --dump-registered: the post-parse name-registration maps, sorted —
+	// side B of the forest index-parity oracle; do not run.
+	if ( dump_registered )
+	{
+	    prog->dump_registered_names(stdout);
+	    return 0;
+	}
 
 	// --emit=c11|mc11: render the cir_node tree as C source; do not run.
 	// Takes precedence over the freeze modes — an explicit render request

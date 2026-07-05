@@ -4,6 +4,25 @@
 
 ### Data-substrate Track B — the embedded header forest
 
+- **B4a — grove payload v2 + pack-time recording + oracles + build modes**
+  (forest Phase 4 slice a): the format + pack side of forest-default mode;
+  no consumption yet (suite-neutral). The frozen container gains grove
+  payload v2 (`CIR_FOREST_FORMAT_VERSION = 2`): per-unit post-PP token
+  slices (`.madh` record form), a decl index (exported name → {kind, token
+  slice}), a PP-export event stream (`#define`/`#undef` deltas in directive
+  order), include edges, plus container-global branch-relevant macro set and
+  canonical unit order. `Program::pack_*` records all of it during
+  lex+parse under `--freeze`/`--freeze-append` (one predicted branch per site
+  otherwise); decl-boundary frames at the three top-level decl loops with
+  registration taps at the map inserts. New surfaces: `--dump-forest`,
+  `--dump-registered`, `-dM`; the index-parity oracle
+  (`scripts/forest_index_oracle.sh`) and the macro-set-vs-g++ ratchet
+  (`scripts/forest_dm_oracle.sh`), both wired into fulltest; the pack driver
+  (`scripts/forest_pack.sh` + versioned `scripts/forest_pack_headers.txt`);
+  and build modes (`MODE=develop|debug|release`, per-mode object trees,
+  `make release` = `-O2` → strip-before-append → pack + verify). Measured:
+  the release binary strips 18.7 MB → 7.3 MB and carries a 234-unit forest
+  it runs from its own EOF footer.
 - **B3 — multi-segment forest + append-to-binary + context pin** (forest
   Phase 3): the cross-process closure. `cir_freeze_forest` partitions a
   module tree into per-source-file units (one walk — B2's single-blob

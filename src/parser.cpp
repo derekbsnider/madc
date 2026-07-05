@@ -13113,6 +13113,9 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
 	DBG(std::cout << "Data address: " << (uint64_t)var->data << std::endl);
 	return var;
     }
+    if ( !dd.is_function() )	// B4a: decl-index tap (globals; fn vars tap as pdkFunction)
+	pack_tap_name(current_namespace().empty() ? id
+		      : (current_namespace() + "::" + id), pdkVariable);
     if ( (var=tkProgram->findVariable(strpool, id)) )
     {
 	if ( var->flags & vfEXTERN )
@@ -13348,7 +13351,10 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 
     func = new FuncDef(*dd);
     if ( !isMethod )
+    {
+	pack_tap_name(id, pdkFunction);	// B4a: decl-index tap
 	funcdef_map[id] = func;
+    }
     DBG(std::cout << "addFunction() Added new function declaration name: " << id << " numparams: " << params.size()-1  << " x86code: " << (uint64_t)extfunc << " returns " << dd->name << std::endl);
 
     // func->parameters.push_back(&pb->definition);
@@ -15561,6 +15567,9 @@ Program::TemplateDef *Program::template_with_body(const std::string &name)
 
 void Program::register_template(const Program::TemplateDef &td, bool only_if_absent)
 {
+    pack_tap_name(td.class_name, pdkTemplate);	// B4a: the map key (bare)
+    if ( !td.defining_namespace.empty() )
+	pack_tap_name(td.defining_namespace + "::" + td.class_name, pdkTemplate);
     std::vector<Program::TemplateDef> &variants = template_map[td.class_name];
     for ( size_t i = 0; i < variants.size(); ++i )
     {
@@ -15591,6 +15600,9 @@ void Program::register_template(const Program::TemplateDef &td, bool only_if_abs
 
 void Program::register_template_alias(const Program::TemplateAliasDef &td)
 {
+    pack_tap_name(td.alias_name, pdkTemplate);	// B4a: the map key (bare)
+    if ( !td.defining_namespace.empty() )
+	pack_tap_name(td.defining_namespace + "::" + td.alias_name, pdkTemplate);
     std::vector<Program::TemplateAliasDef> &variants =
 	template_alias_map[td.alias_name];
     for ( size_t i = 0; i < variants.size(); ++i )
@@ -21640,7 +21652,12 @@ void Program::mirror_inline_namespace_into_parent(const std::string &parent_ns,
 	    for ( variable_map_iter it = child_vars->second.begin();
 		  it != child_vars->second.end(); ++it )
 		if ( parent_vars.find(it->first) == parent_vars.end() )
+		{
+		    if ( !(it->second && it->second->type
+			   && it->second->type->is_function()) )
+			pack_tap_name(parent_ns + "::" + it->first, pdkVariable);
 		    parent_vars[it->first] = it->second;
+		}
 	}
 	else if ( tkProgram )
 	{
@@ -21650,6 +21667,9 @@ void Program::mirror_inline_namespace_into_parent(const std::string &parent_ns,
 		std::string name = it->first;
 		if ( findVariable(name) )
 		    continue;
+		if ( !(it->second && it->second->type
+		       && it->second->type->is_function()) )
+		    pack_tap_name(name, pdkVariable);
 		Variable *src = it->second;
 		if ( src->name == name )
 		    tkProgram->variables.push_back(src);
@@ -21685,14 +21705,20 @@ void Program::mirror_inline_namespace_into_parent(const std::string &parent_ns,
 	for ( datatype_map_iter it = child_types->begin();
 	      it != child_types->end(); ++it )
 	    if ( parent_types.find(it->first) == parent_types.end() )
+	    {
+		pack_tap_name(parent_ns + "::" + it->first, pdkTypedef);
 		parent_types[it->first] = it->second;
+	    }
     }
     else
     {
 	for ( datatype_map_iter it = child_types->begin();
 	      it != child_types->end(); ++it )
 	    if ( datatype_map.find(it->first) == datatype_map.end() )
+	    {
+		pack_tap_name(it->first, pdkTypedef);
 		datatype_map[it->first] = it->second;
+	    }
     }
 }
 
@@ -21764,13 +21790,22 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
 		}
     }
 
-    while ( (tn = nextToken()) )
+    for ( ;; )
     {
-	if ( tn->id() == TokenID::tkClBrc )
+	pack_open_toplevel_decl();	// B4a: namespace members are top-level decls
+	tn = nextToken();
+	if ( !tn || tn->id() == TokenID::tkClBrc )
+	{
+	    pack_close_toplevel_decl();
 	    break;
+	}
 	if ( tn->id() == TokenID::tkSemi )
+	{
+	    pack_close_toplevel_decl();
 	    continue;
+	}
 	TokenBase *stmt = parseStatement(tn);
+	pack_close_toplevel_decl();
 	if ( stmt && tkProgram )
 	    tkProgram->statements.push_back((TokenStmt *)stmt);
     }
@@ -21841,6 +21876,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    return;
 	if ( pgm.datatype_map.find(name) != pgm.datatype_map.end() )
 	    return;
+	pgm.pack_tap_type(name);	// B4a: decl-index tap (using-import)
 	pgm.datatype_map[name] = src;
     };
     auto namespace_exists = [&](const std::string &name) -> bool
@@ -21996,13 +22032,24 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	if ( !pgm.current_namespace().empty() )
 	{
 	    if ( v )
+	    {
+		if ( !(v->type && v->type->is_function()) )
+		    pgm.pack_tap_name(pgm.current_namespace() + "::" + name,
+				      Program::pdkVariable);	// B4a tap
 		pgm.namespace_map[pgm.current_namespace()][name] = v;
+	    }
 	    if ( source_ns.empty() && dti != pgm.datatype_map.end() )
+	    {
+		pgm.pack_tap_type(name);	// B4a tap (using ::type import)
 		pgm.namespace_datatype_map[pgm.current_namespace()][name] = (*dti);
+	    }
 	    else if ( !source_ns.empty()
 		   && nti != pgm.namespace_datatype_map.end()
 		   && ns_dti != nti->end() )
+	    {
+		pgm.pack_tap_type(name);	// B4a tap (using ns::type import)
 		pgm.namespace_datatype_map[pgm.current_namespace()][name] = ns_dti->second;
+	    }
 	}
 	else
 	{
@@ -22102,6 +22149,8 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    if ( pgm.class_scope_stack.empty() && !pgm.current_namespace().empty()
 	      && pgm.compounds.empty() )
 		pgm.namespace_datatype_map[pgm.current_namespace()][alias_name] = alias_tdt;
+	    if ( pgm.class_scope_stack.empty() )
+		pgm.pack_tap_type(alias_name);	// B4a: decl-index tap (using-alias)
 	    if ( pgm.class_scope_stack.empty() && pgm.compounds.empty() )
 	    {
 		Program::TopDecl td;
@@ -22189,9 +22238,16 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	if ( !pgm.current_namespace().empty() )
 	{
 	    if ( have_var )
+	    {
+		pgm.pack_tap_name(pgm.current_namespace() + "::" + name,
+				  Program::pdkVariable);	// B4a tap
 		pgm.namespace_map[pgm.current_namespace()][name] = vmi->second;
+	    }
 	    if ( have_type )
+	    {
+		pgm.pack_tap_type(name);	// B4a: decl-index tap (using-import)
 		pgm.namespace_datatype_map[pgm.current_namespace()][name] = dti->second;
+	    }
 	}
 	else
 	{
@@ -22585,6 +22641,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     };
     auto record_typedef = [&](const std::string &alias, DataDef *dd, TokenDataType *tdt_, TokenBase *otok = nullptr, bool defines_body = false)
     {
+	pgm.pack_tap_type(alias);	// B4a: decl-index tap
 	pgm.user_typedef_names.insert(alias);
 	if ( tdt_ && !pgm.current_namespace().empty() )
 	    pgm.namespace_datatype_map[pgm.current_namespace()][alias] = tdt_;
@@ -22623,6 +22680,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    else if ( !pgm.current_namespace().empty() )
 		sdd->canonical_cpp_spelling = pgm.current_namespace() + "::" + name;
 	}
+	pgm.pack_tap_type(name);	// B4a: decl-index tap (C++ aggregate name)
 	TokenDataType *tdt_ = NULL;
 	flat_datatype_map_iter existing = pgm.datatype_map.find(name);
 	if ( existing != pgm.datatype_map.end()
@@ -22803,6 +22861,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    {
 		fwd = new DataDefSTRUCT(tag->spelling(), 0);
 		fwd->union_layout = is_union;
+		pgm.pack_tap_struct(scoped_struct_tag(tag->spelling()));	// B4a tap
 		pgm.struct_map[scoped_struct_tag(tag->spelling())] = fwd;
 	    }
 	    else
@@ -22828,6 +22887,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // create placeholder struct (size 0, no members) for forward declaration
 	    DataDefSTRUCT *fwd = new DataDefSTRUCT(tag->spelling(), 0);
 	    fwd->union_layout = is_union;
+	    pgm.pack_tap_struct(scoped_struct_tag(tag->spelling()));	// B4a tap
 	    pgm.struct_map[scoped_struct_tag(tag->spelling())] = fwd;
 	    register_cpp_aggregate_name(tag->spelling(), fwd);
 	    dmi = find_visible_struct_tag(tag->spelling());
@@ -22867,7 +22927,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    pgm.datatype_map[alias_name] = tdt;
 	    // also register tag in struct_map so "struct tag" works
 	    if ( !alias_dd->is_pointer() )
+	    {
+		pgm.pack_tap_struct(alias_name);	// B4a tap
 		pgm.struct_map[alias_name] = dmi->second;
+	    }
 	    record_typedef(alias_name, alias_dd, tdt, tn);
 	    return new TokenTypedefDecl(alias_name, alias_dd);
 	}
@@ -22946,6 +23009,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     bool was_pre_registered = false;
     if ( tag && pgm.struct_map.find(tag_store_key) == pgm.struct_map.end() )
     {
+	pgm.pack_tap_struct(tag_store_key);	// B4a tap
 	pgm.struct_map[tag_store_key] = dds;
 	was_pre_registered = true;
 	DBG(cout << "TokenSTRUCT::parse() pre-registered " << tag_store_key << " for self-reference" << endl);
@@ -23078,6 +23142,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				    nested = new DataDefSTRUCT(sname, 0);
 				    if ( inner_packed )
 					nested->pack = 1;
+				    pgm.pack_tap_struct(sname);	// B4a tap
 				    pgm.struct_map[sname] = nested;
 				}
 				else
@@ -23104,6 +23169,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				{
 				    DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
 				    fwd->union_layout = inner_union_kw;
+				    pgm.pack_tap_struct(sname);	// B4a tap
 				    pgm.struct_map[sname] = fwd;
 				    sdmi = pgm.struct_map.find(sname);
 				}
@@ -23355,6 +23421,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			inner = new DataDefSTRUCT(sname, 0);
 			inner->union_layout = nested_union_kw;
+			pgm.pack_tap_struct(sname);	// B4a tap
 			pgm.struct_map[sname] = inner;
 		    }
 		    else
@@ -23382,6 +23449,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
 			fwd->union_layout = nested_union_kw;
+			pgm.pack_tap_struct(sname);	// B4a tap
 			pgm.struct_map[sname] = fwd;
 			sdmi = pgm.struct_map.find(sname);
 		    }
@@ -23743,6 +23811,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
 	else
 	{
+	    pgm.pack_tap_struct(tag_store_key);	// B4a tap
 	    pgm.struct_map[tag_store_key] = dds;
 	    DBG(cout << "TokenSTRUCT::parse() registered struct " << tag_store_key << " size=" << dds->size << endl);
 	}
@@ -23783,7 +23852,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    tdt = new TokenDataType(alias->spelling(), *alias_dd);
 	    pgm.datatype_map[alias->spelling()] = tdt;
 	    if ( alias_dd == dds )
+	    {
+		pgm.pack_tap_struct(alias->spelling());	// B4a tap
 		pgm.struct_map[alias->spelling()] = dds;
+	    }
 	    // The non-pointer alias of a combined `typedef struct Tag {...} Tag;` is
 	    // the tag's body-definition point: its SPEC_DECL carries the full struct
 	    // body. Recording this lets the CIR backend treat an EARLIER typedef that
@@ -25494,6 +25566,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		}
 		else if ( !pgm.current_namespace().empty() )
 		    fwd->canonical_cpp_spelling = pgm.current_namespace() + "::" + tag->spelling();
+		pgm.pack_tap_struct(tag->spelling());	// B4a tap (class fwd decl)
+		pgm.pack_tap_type(tag->spelling());
 		pgm.struct_map[tag->spelling()] = fwd;
 		tdt = new TokenDataType(tag->spelling(), *fwd);
 		pgm.datatype_map[tag->spelling()] = tdt;
@@ -25523,6 +25597,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		return NULL;
 	    }
 	    tdt = new TokenDataType(alias->spelling(), *dmi->second);
+	    pgm.pack_tap_type(alias->spelling());	// B4a tap (typedef class alias)
 	    pgm.datatype_map[alias->spelling()] = tdt;
 	    return NULL;
 	}
@@ -25644,6 +25719,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // by which point ddc is complete, so by-value self params/returns pick up the
     // final size. This is the standard incomplete-self-reference pattern, and is
     // consistent with the inherited-base members being copied in early below.
+    pgm.pack_tap_struct(tag->spelling());	// B4a tap (class definition)
+    pgm.pack_tap_type(tag->spelling());
     if ( !completing_forward_decl )
     {
 	pgm.struct_map[tag->spelling()] = ddc;
@@ -26901,6 +26978,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
 	TokenIdent *alias = (TokenIdent *)tn;
 	tdt = new TokenDataType(alias->spelling(), *ddc);
+	pgm.pack_tap_type(alias->spelling());	// B4a tap (typedef class {...} alias)
+	pgm.pack_tap_struct(alias->spelling());
 	pgm.datatype_map[alias->spelling()] = tdt;
 	pgm.struct_map[alias->spelling()] = ddc;
 	return NULL;
@@ -27784,7 +27863,10 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	// `char_type`) into the generated C with no matching typedef -> c2mir
 	// "unknown type". Class aliases resolve via type_aliases instead.
 	if ( pgm.class_scope_stack.empty() )
+	{
+	    pgm.pack_tap_type(alias);	// B4a: decl-index tap
 	    pgm.user_typedef_names.insert(alias);
+	}
 	if ( !pgm.class_scope_stack.empty() )
 	{
 #if MADC_DEBUG_ALIASREF
@@ -28240,6 +28322,7 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    if ( sdmi == struct_map.end() )
 	    {
 		DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
+		pack_tap_struct(sname);	// B4a tap
 		struct_map[sname] = fwd;
 		sdmi = struct_map.find(sname);
 	    }
@@ -28405,6 +28488,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 		    enum_dd->canonical_cpp_spelling =
 			pgm.current_namespace() + "::" + enum_tag;
 		TokenDataType *tdt = new TokenDataType(enum_tag.c_str(), *enum_dd);
+		pgm.pack_tap_type(enum_tag);	// B4a: decl-index tap
 		pgm.datatype_map[enum_tag] = tdt;
 		if ( !pgm.current_namespace().empty() )
 		    pgm.namespace_datatype_map[pgm.current_namespace()][enum_tag] = tdt;
@@ -28457,6 +28541,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    enum_dd->canonical_cpp_spelling =
 		pgm.current_namespace() + "::" + enum_tag;
 	TokenDataType *tdt = new TokenDataType(enum_tag.c_str(), *enum_dd);
+	pgm.pack_tap_type(enum_tag);	// B4a: decl-index tap
 	pgm.datatype_map[enum_tag] = tdt;
 	if ( !pgm.current_namespace().empty() )
 	    pgm.namespace_datatype_map[pgm.current_namespace()][enum_tag] = tdt;
@@ -28500,6 +28585,8 @@ TokenBase *TokenENUM::parse(Program &pgm)
 					  1, NULL, true);
 	    evar->set(val);
 	    evar->makeconstant();
+	    pgm.pack_tap_name(scoped_ns_key + "::" + name,
+			      Program::pdkVariable);	// B4a tap (scoped enumerator)
 	    (*scope_ns)[name] = evar;
 	    DBG(std::cout << "TokenENUM::parse() " << enum_tag << "::" << name
 		<< " = " << val << std::endl);
@@ -28668,13 +28755,23 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	    handled = true;
 	    if ( after->id() == TokenID::tkOpBrc )
 	    {
-		while ( (tn = pgm.nextToken()) )
+		for ( ;; )
 		{
-		    if ( tn->id() == TokenID::tkClBrc )
+		    pgm.pack_open_toplevel_decl();	// B4a: linkage-block members
+							// are top-level decls
+		    tn = pgm.nextToken();
+		    if ( !tn || tn->id() == TokenID::tkClBrc )
+		    {
+			pgm.pack_close_toplevel_decl();
 			break;
+		    }
 		    if ( tn->id() == TokenID::tkSemi )
+		    {
+			pgm.pack_close_toplevel_decl();
 			continue;
+		    }
 		    TokenBase *stmt = pgm.parseStatement(tn);
+		    pgm.pack_close_toplevel_decl();
 		    if ( stmt && pgm.tkProgram )
 			pgm.tkProgram->statements.push_back((TokenStmt *)stmt);
 		}
@@ -31246,9 +31343,11 @@ static bool retain_namespace_fn_template_body(
     // fn_template_decl_map for return-TYPE resolution only.
     if ( !has_body )
     {
+	pgm.pack_tap_name(pgm.current_namespace() + "::" + name, Program::pdkTemplate);
 	pgm.fn_template_decl_map[pgm.current_namespace() + "::" + name].push_back(ft);
 	return false;
     }
+    pgm.pack_tap_name(pgm.current_namespace() + "::" + name, Program::pdkTemplate);
     pgm.fn_template_map[pgm.current_namespace() + "::" + name].push_back(ft);
     return true;
 }
@@ -36452,6 +36551,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		cdd->canonical_cpp_spelling =
 		    pgm.current_namespace() + "::" + concept_name;
 	    TokenDataType *ctdt = new TokenDataType(concept_name.c_str(), *cdd);
+	    pgm.pack_tap_type(concept_name);	// B4a: decl-index tap (concept)
 	    if ( pgm.current_namespace().empty() )
 	    {
 		if ( !pgm.datatype_map.count(concept_name) )
@@ -36529,6 +36629,10 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		vd.defining_namespace = pgm.current_namespace();
 		for ( TokenBase *t : vt_init )
 		    vd.init.push_back(t ? t->clone() : NULL);
+		pgm.pack_tap_name(vt_name, Program::pdkTemplate);	// B4a: both map keys
+		if ( !pgm.current_namespace().empty() )
+		    pgm.pack_tap_name(pgm.current_namespace() + "::" + vt_name,
+				      Program::pdkTemplate);
 		pgm.var_template_map[vt_name] = vd;
 		if ( !pgm.current_namespace().empty() )
 		    pgm.var_template_map[pgm.current_namespace() + "::" + vt_name] = vd;
@@ -36704,6 +36808,10 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	td.is_partial_specialization = true;
 	td.spec_pattern = spec_pattern_tokens;
 	td.constraint = partial_spec_constraint;   // C++20 requires-clause (may be empty)
+	pgm.pack_tap_name(class_name, Program::pdkTemplate);	// B4a: the map key
+	if ( !td.defining_namespace.empty() )
+	    pgm.pack_tap_name(td.defining_namespace + "::" + class_name,
+			      Program::pdkTemplate);
 	pgm.partial_spec_map[class_name].push_back(td);
 	return NULL;
     }
@@ -37063,6 +37171,7 @@ DataDef *Program::parse_old_style_parameter_base(TokenBase *&nt)
 	    DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
 	    if ( nt->id() == TokenID::tkUNION )
 		fwd->union_layout = true;
+	    pack_tap_struct(sname);	// B4a tap
 	    struct_map[sname] = fwd;
 	    sdmi = struct_map.find(sname);
 	}
@@ -37423,6 +37532,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 
     DBG(cout << "parseFunction(" << dd.name << ' ' << id << ") START" << endl);
     cur_func_name = id; // for __FUNCTION__/__func__ expansion in the lexer
+    pack_tap_name(id, pdkFunction);	// B4a: decl-index tap (funcdef_map key)
 
     // may have already been declared (e.g. forward decl → definition)
     bool func_already_declared = false;
@@ -37672,6 +37782,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
 		if ( nt->id() == TokenID::tkUNION )
 		    fwd->union_layout = true;
+		pack_tap_struct(sname);	// B4a tap
 		struct_map[sname] = fwd;
 		sdmi = struct_map.find(sname);
 	    }
@@ -41923,6 +42034,168 @@ TokenBase *Program::parseStatement(TokenBase *tb)
     return NULL;
 }
 
+// --- B4a pack-time decl-boundary recording (grove payload v2 decl index; see
+// docs/plans/2026-07-04-forest-default-mode-design.md §2). The top-level parse
+// loops open/close one frame per declaration; registration taps attach the
+// names the decl registered to the innermost open frame. Everything gates on
+// pack_recording, so a normal parse pays one predicted branch per site.
+
+void Program::pack_open_toplevel_decl()
+{
+    if ( !pack_recording )
+	return;
+    TokenStream::Pos p = tokens.savepos();
+    pack_decl_stack.push_back(PackDeclFrame());
+    PackDeclFrame &f = pack_decl_stack.back();
+    f.begin = p.cursor;
+    f.fuzzy = !p.pushback.empty();
+}
+
+void Program::pack_close_toplevel_decl()
+{
+    if ( !pack_recording || pack_decl_stack.empty() )
+	return;
+    TokenStream::Pos p = tokens.savepos();
+    PackDeclFrame &f = pack_decl_stack.back();
+    size_t end = p.cursor;
+    bool fuzzy = f.fuzzy || !p.pushback.empty();
+    if ( end > f.begin )
+	for ( size_t i = 0; i < f.names.size(); ++i )
+	{
+	    pack_decls.push_back(PackDeclEntry());
+	    PackDeclEntry &e = pack_decls.back();
+	    e.name  = f.names[i].first;
+	    e.kind  = f.names[i].second;
+	    e.begin = (uint32_t)f.begin;
+	    e.end   = (uint32_t)end;
+	    e.aux   = fuzzy ? PACK_DECL_FUZZY_BOUNDS : 0;
+	}
+    pack_decl_stack.pop_back();
+}
+
+void Program::pack_tap_name(const std::string &name, uint32_t kind)
+{
+    if ( !pack_recording || pack_decl_stack.empty() || name.empty() )
+	return;
+    if ( !compounds.empty() )	// block scope: not an exported declaration
+	return;
+    if ( _inst_depth > 0 )	// instantiation product, not a header export
+	return;
+    PackDeclFrame &f = pack_decl_stack.back();
+    for ( size_t i = 0; i < f.names.size(); ++i )
+	if ( f.names[i].second == kind && f.names[i].first == name )
+	    return;		// dedup within the decl
+    f.names.push_back(std::make_pair(name, kind));
+}
+
+// Type-registration tap: records the flat (current-scope) key and, inside a
+// namespace, the qualified twin — mirroring the datatype_map /
+// namespace_datatype_map insert pair every type-registration cluster performs.
+void Program::pack_tap_type(const std::string &name)
+{
+    if ( !pack_recording )
+	return;
+    pack_tap_name(name, pdkTypedef);
+    if ( !current_namespace().empty() )
+	pack_tap_name(current_namespace() + "::" + name, pdkTypedef);
+}
+
+void Program::pack_tap_struct(const std::string &name)
+{
+    pack_tap_name(name, pdkStruct);
+}
+
+// --dump-registered: enumerate the post-parse name-registration maps, one
+// sorted "kind<TAB>name" line each — side B of the forest index-parity oracle
+// (the index the pack recorded is side A; the diff gates decl-boundary
+// fidelity, design doc §7/§8).
+void Program::dump_registered_names(FILE *out)
+{
+    // The dump is the LOOKUP SURFACE, not the raw map contents: entities the
+    // parser derives on demand are excluded, because a bind-time miss on
+    // them can never occur —
+    //  - instantiation products (canonical spelling / key carries a
+    //    bracketed template-id): tsubst re-creates them from the pattern;
+    //  - class METHODS registered as namespace variables (Class__member):
+    //    member lookup goes through the class, whose own name is indexed.
+    auto instantiation_product = [](DataDef *dd) -> bool {
+	DataDefCLASS *dc = dynamic_cast<DataDefCLASS *>(dd);
+	return dc && dc->canonical_cpp_spelling.find('<') != std::string::npos;
+    };
+    std::set<std::string> lines;
+    datatype_map.for_each([&](const char *key, TokenDataType *&tdt) -> bool {
+	if ( strchr(key, '<') || (tdt && instantiation_product(&tdt->definition)) )
+	    return false;
+	lines.insert(std::string("type\t") + key);
+	return false;
+    });
+    namespace_datatype_map.for_each([&](const char *ns, datatype_map_t &m) -> bool {
+	for ( datatype_map_iter it = m.begin(); it != m.end(); ++it )
+	{
+	    if ( it->first.find('<') != std::string::npos
+	      || (it->second && instantiation_product(&it->second->definition)) )
+		continue;
+	    lines.insert(std::string("type\t") + ns + "::" + it->first);
+	}
+	return false;
+    });
+    for ( datadef_map_iter it = struct_map.begin(); it != struct_map.end(); ++it )
+    {
+	if ( it->first.find('<') != std::string::npos
+	  || instantiation_product(it->second) )
+	    continue;
+	lines.insert(std::string("struct\t") + it->first);
+    }
+    for ( funcdef_map_iter it = funcdef_map.begin(); it != funcdef_map.end(); ++it )
+    {
+	if ( it->first.find('<') != std::string::npos )
+	    continue;
+	if ( it->second && !it->second->method_display_name.empty() )
+	    continue;	// class method: materialized via the class slice
+	lines.insert(std::string("function\t") + it->first);
+    }
+    template_map.for_each([&](const char *key, std::vector<TemplateDef> &) -> bool {
+	lines.insert(std::string("template\t") + key);
+	return false;
+    });
+    partial_spec_map.for_each([&](const char *key, std::vector<TemplateDef> &) -> bool {
+	lines.insert(std::string("template\t") + key);
+	return false;
+    });
+    template_alias_map.for_each([&](const char *key, std::vector<TemplateAliasDef> &) -> bool {
+	lines.insert(std::string("template\t") + key);
+	return false;
+    });
+    var_template_map.for_each([&](const char *key, VarTemplateDef &) -> bool {
+	lines.insert(std::string("template\t") + key);
+	return false;
+    });
+    fn_template_map.for_each([&](const char *key, std::vector<FnTemplateDef> &) -> bool {
+	lines.insert(std::string("template\t") + key);
+	return false;
+    });
+    fn_template_decl_map.for_each([&](const char *key, std::vector<FnTemplateDef> &) -> bool {
+	lines.insert(std::string("template\t") + key);
+	return false;
+    });
+    for ( namespace_map_t::iterator ni = namespace_map.begin();
+	  ni != namespace_map.end(); ++ni )
+	for ( variable_map_t::iterator it = ni->second.begin();
+	      it != ni->second.end(); ++it )
+	{
+	    if ( it->first.find('<') != std::string::npos )
+		continue;
+	    if ( it->second && it->second->type && it->second->type->is_function() )
+		continue;	// methods/functions-as-variables: not a lookup entry
+	    lines.insert(std::string("variable\t")
+			 + (ni->first.empty() ? std::string() : (ni->first + "::"))
+			 + it->first);
+	}
+    for ( std::set<std::string>::const_iterator it = lines.begin();
+	  it != lines.end(); ++it )
+	fprintf(out, "%s\n", it->c_str());
+}
+
 // parse the token queue
 bool Program::parse(TokenProgram *tp)
 {
@@ -41958,6 +42231,7 @@ bool Program::parse(TokenProgram *tp)
     {
 	while ( !tokens.empty() )
 	{
+	    pack_open_toplevel_decl();	// B4a: decl-boundary recording (no-op unless packing)
 	    tb = nextToken();
 //	    printt(tb);
 	    // Skip C23 [[...]] attributes at top level.
@@ -41968,10 +42242,14 @@ bool Program::parse(TokenProgram *tp)
 		skip_c23_attributes();
 		tb = nextToken();
 		if ( !tb || tokens.empty() )
+		{
+		    pack_close_toplevel_decl();
 		    break;
+		}
 	    }
 #if 1
 	    ts = parseStatement(tb);
+	    pack_close_toplevel_decl();
 	    if ( ts )
 	    {
 		if ( ts->type() != TokenType::ttCompound )

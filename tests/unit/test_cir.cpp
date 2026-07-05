@@ -757,6 +757,11 @@ TEST_CASE("CIR: unsubstituted template parameter lowers to an error node") {
     c2m_ctx_t c2m = cir_init(mir_ctx);
     REQUIRE(c2m != nullptr);
     {
+	// Synthetic tree, no Program: bind the file-local substrate like the
+	// other synthetic cases — error_node() interns its message, and
+	// borrowing whatever stale pool a previous case's dead Program left
+	// bound is exactly the dangling read the pool abort guards against.
+	cir_test_bind_substrate();
 	CirBuilder builder(c2m);
 	DataDefTemplateParam tparam("T", 0);
 	node_t lst = builder.type_list(&tparam);

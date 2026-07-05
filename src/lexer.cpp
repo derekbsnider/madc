@@ -761,6 +761,7 @@ void Program::inject_pending_auto_includes()
 		Throw << "embedded header '" << header
 		      << "' is not allowed by registration policy" << flush;
 
+	    pack_record_edge(header);	// B4a: auto-include edge, pre-swap
 	    Source saved = std::move(source);
 	    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
 	    suppress_auto_include_scan = true;
@@ -770,6 +771,7 @@ void Program::inject_pending_auto_includes()
 	    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
 	    TokenBase *itb;
 	    const char *interned = intern_file(header);
+	    pack_note_unit(interned);
 	    while ( (itb = getRealToken()) )
 	    {
 		itb->file = interned;
@@ -2032,6 +2034,115 @@ static std::string detect_include_guard(const std::string &file_path)
     return (seen_open && closed) ? guard : std::string();
 }
 
+// --- B4a pack-time forest recording hooks (grove payload v2; see
+// docs/plans/2026-07-04-forest-default-mode-design.md §2). Every hook is a
+// no-op unless pack_recording is on (--freeze / --freeze-append), so default
+// lexing pays one predicted branch per site.
+
+const char *Program::pack_current_unit()
+{
+    if ( !pack_recording )
+	return NULL;
+    const char *f = source.fname();
+    if ( !f || !*f )
+	return NULL;
+    return intern_file(f);
+}
+
+void Program::pack_note_unit(const char *interned_file)
+{
+    if ( !pack_recording || !interned_file )
+	return;
+    if ( pack_units_seen.insert(interned_file).second )
+	pack_unit_order.push_back(interned_file);
+}
+
+void Program::pack_record_define(const std::string &name, const std::string &value)
+{
+    if ( const char *unit = pack_current_unit() )
+    {
+	pack_note_unit(unit);
+	pack_pp_exports[unit].push_back(PackMacroEvent());
+	PackMacroEvent &ev = pack_pp_exports[unit].back();
+	ev.name = name;
+	ev.tag = PackMacroEvent::peDefine;
+	ev.value = value;
+    }
+}
+
+void Program::pack_record_define_fn(const std::string &name, const MacroDef &m)
+{
+    if ( const char *unit = pack_current_unit() )
+    {
+	pack_note_unit(unit);
+	pack_pp_exports[unit].push_back(PackMacroEvent());
+	PackMacroEvent &ev = pack_pp_exports[unit].back();
+	ev.name = name;
+	ev.tag = PackMacroEvent::peDefineFn;
+	ev.macro = m;
+    }
+}
+
+void Program::pack_record_undef(const std::string &name)
+{
+    if ( const char *unit = pack_current_unit() )
+    {
+	pack_note_unit(unit);
+	pack_pp_exports[unit].push_back(PackMacroEvent());
+	PackMacroEvent &ev = pack_pp_exports[unit].back();
+	ev.name = name;
+	ev.tag = PackMacroEvent::peUndef;
+    }
+}
+
+void Program::pack_record_edge(const std::string &includee)
+{
+    if ( const char *unit = pack_current_unit() )
+    {
+	pack_note_unit(unit);
+	pack_unit_edges[unit].push_back(intern_file(includee));
+    }
+}
+
+void Program::pack_record_branch_macro(const std::string &name)
+{
+    if ( pack_recording && !name.empty() )
+	pack_branch_macros.insert(name);
+}
+
+// -dM: dump the effective macro table (object-like + function-like) in
+// `#define` form, sorted by name — the gcc `-dM -E` analogue backing the
+// forest PP parity oracle (design doc §7).
+void Program::dump_macros(FILE *out)
+{
+    std::map<std::string, std::string> lines;
+    define_map.for_each([&](const char *key, std::string &value) -> bool {
+	lines[key] = value.empty() ? std::string() : (" " + value);
+	return false;
+    });
+    macro_map.for_each([&](const char *key, MacroDef &m) -> bool {
+	std::string sig = "(";
+	for ( size_t i = 0; i < m.params.size(); ++i )
+	{
+	    if ( i ) sig += ", ";
+	    sig += m.params[i];
+	    if ( m.variadic && !m.variadic_param.empty() && m.variadic_param == m.params[i] )
+		sig += "...";
+	}
+	if ( m.variadic && m.variadic_param.empty() )
+	{
+	    if ( !m.params.empty() ) sig += ", ";
+	    sig += "...";
+	}
+	sig += ")";
+	lines[key] = sig + (m.body.empty() ? std::string() : (" " + m.body));
+	return false;
+    });
+    for ( std::map<std::string, std::string>::const_iterator it = lines.begin();
+	  it != lines.end(); ++it )
+	fprintf(out, "#define %s%s\n", it->first.c_str(), it->second.c_str());
+}
+
 bool Program::should_tokenize_include(const std::string &path)
 {
     std::string canonical = path;
@@ -2079,6 +2190,7 @@ bool Program::should_tokenize_include(const std::string &path)
     const std::string &guard = gi->second;
     if ( guard.empty() )
 	return true;
+    pack_record_branch_macro(guard);	// B4a: guard definedness gates inclusion
     return define_map.find(guard) == define_map.end()
 	&& macro_map.find(guard) == macro_map.end();
 }
@@ -2154,6 +2266,8 @@ static bool push_precompiled_header_tokens(Program &pgm,
 					   std::deque<TokenBase *> &pch_tokens)
 {
     const char *interned = pgm.intern_file(display_name);
+    pgm.pack_record_edge(display_name);	// B4a: includer (current source) -> PCH unit
+    pgm.pack_note_unit(interned);
     for ( TokenBase *itb : pch_tokens )
     {
 	if ( TokenIdent *ident = dynamic_cast<TokenIdent *>(itb) )
@@ -2787,6 +2901,10 @@ TokenBase *Program::_getToken()
 			    resolves_named = true;
 			if ( resolves_named && name_already_included )
 			{
+			    // B4a: the include EDGE exists in the source even when
+			    // the once-only dedup skips re-tokenization — the bind-
+			    // time PP-export composition walks these edges.
+			    pack_record_edge(pch_path.empty() ? incfile : pch_path);
 			    DBG(std::cout << "#include <" << incfile << "> skipped (already included)" << std::endl);
 			    return getToken();
 			}
@@ -2831,6 +2949,7 @@ TokenBase *Program::_getToken()
 			if ( embedded )
 			{
 			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
+			    pack_record_edge(incfile);	// B4a: includer -> includee, pre-swap
 			    Source saved = std::move(source);
 			    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
 			    suppress_auto_include_scan = true;
@@ -2840,6 +2959,7 @@ TokenBase *Program::_getToken()
 			    _input_bytes += embedded->size();	// --show-stats: embedded header bytes
 			    TokenBase *itb;
 			    const char *_interned1 = intern_file(incfile);
+			    pack_note_unit(_interned1);
 			    while ( (itb = getRealToken()) )
 			    {
 				itb->file = _interned1;
@@ -2857,6 +2977,7 @@ TokenBase *Program::_getToken()
 			: resolve_include_path(incfile, is_system);
 		    if ( !should_tokenize_include(full_path) )
 		    {
+			pack_record_edge(full_path);	// B4a: edge survives the dedup skip
 			DBG(std::cout << "#include "
 			    << (is_system ? "<" : "\"") << full_path
 			    << (is_system ? ">" : "\"")
@@ -2866,6 +2987,7 @@ TokenBase *Program::_getToken()
 		    DBG(std::cout << "#include "
 			<< (is_system ? "<" : "\"") << full_path
 			<< (is_system ? ">" : "\"") << std::endl);
+		    pack_record_edge(full_path);	// B4a: includer -> includee, pre-swap
 		    // save current source, tokenize included file
 		    Source saved = std::move(source);
 		    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
@@ -2888,6 +3010,7 @@ TokenBase *Program::_getToken()
 		    }
 		    TokenBase *itb;
 		    const char *_interned2 = intern_file(full_path);
+		    pack_note_unit(_interned2);
 		    while ( (itb = getRealToken()) )
 		    {
 			itb->file = _interned2;
@@ -3023,6 +3146,7 @@ TokenBase *Program::_getToken()
 			std::string body = read_macro_body(source);
 			macro.body = body;
 			macro_map[name] = macro;
+			pack_record_define_fn(name, macro);
 			DBG(std::cout << "#define " << name << "(");
 			DBG(for (size_t i=0; i<macro.params.size(); ++i) { if (i) std::cout << ","; std::cout << macro.params[i]; });
 			DBG(std::cout << ") " << body << std::endl);
@@ -3035,6 +3159,7 @@ TokenBase *Program::_getToken()
 			source.get();
 		    std::string value = read_macro_body(source);
 		    define_map[name] = value;
+		    pack_record_define(name, value);
 		    DBG(std::cout << "#define " << name << " " << value << std::endl);
 		    return getToken();
 		}
@@ -3047,6 +3172,7 @@ TokenBase *Program::_getToken()
 			name += source.get();
 		    define_map.erase(name);
 		    macro_map.erase(name);
+		    pack_record_undef(name);
 		    DBG(std::cout << "#undef " << name << std::endl);
 		    // discard the directive's trailing tokens via the lexer, so a
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
@@ -3067,6 +3193,7 @@ TokenBase *Program::_getToken()
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
 		    bool defined = define_map.count(name) > 0 || macro_map.count(name) > 0;
+		    pack_record_branch_macro(name);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    ifdef_stack.push(active);
 		    ifdef_done_stack.push(active);
@@ -4788,6 +4915,11 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    std::string word;
 	    while ( i < expr.size() && (isalnum((unsigned char)expr[i]) || expr[i] == '_') )
 		word += expr[i++];
+	    // B4a: every identifier a #if/#elif condition consults (including
+	    // `defined` operands, which the evaluator resolves later) is a
+	    // branch-relevant macro name for the pack container.
+	    if ( word != "defined" )
+		pack_record_branch_macro(word);
 	    // Don't expand 'defined' — it's a #if operator
 	    if ( word == "defined" )
 	    {
@@ -5754,6 +5886,7 @@ TokenProgram *Program::tokenize(const char *fname)
 	file.seekg(0);
 	source.copybuf(file.rdbuf());
     }
+    pack_note_unit(pack_recording ? intern_file(fname) : NULL);	// B4a: main unit first
     Throw.source(source);
 
     try
@@ -5822,6 +5955,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
     source.fname(fname);
     { ReadTimer _rt(_read_seconds); source.str(source_text); }
     _input_bytes += source_text.size();	// --show-stats: load_buffer main-source bytes
+    pack_note_unit(pack_recording ? fname : NULL);	// B4a: main unit first
     Throw.source(source);
 
     try

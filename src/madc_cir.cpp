@@ -5,6 +5,7 @@
  * and MIR generator.
  */
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -579,6 +580,160 @@ int madc_cir_execute(Program *prog, const char *source_name,
     return result;
 }
 
+// --- B4a: grove payload v2 fill (pack-time recording -> forest payloads) ---
+// The bridge between the Program's lex/parse-time pack recording and the
+// container format: buckets the token stream per unit (absolute _buf order —
+// the same index space the decl recorder's cursor positions live in),
+// converts global decl boundaries to unit-local slices, encodes PP-export
+// deltas, include edges, the branch-macro set, and the canonical unit order.
+// Lives HERE (not in cir_freeze.cpp) so the container layer stays
+// Program-blind (design doc 2026-07-04 §2).
+static void cir_forest_fill_pack_payloads(Program *prog, cir_frozen_forest &f)
+{
+    if (!prog || !prog->pack_recording)
+	return;
+    madc::dis::intern_table *pool = TokenBase::_active_strpool;
+    if (!pool)
+	return;
+
+    // Unit lookup by NAME CONTENT: partition units interned into the live
+    // pool; recording keys are lexer-interned pointers — only the spelling
+    // is shared.
+    std::map<std::string, uint32_t> unit_idx;
+    for (size_t u = 0; u < f.units.size(); ++u)
+	unit_idx[pool->c_str(f.units[u].unit_name_id)] = (uint32_t)u;
+    auto ensure_unit = [&](const std::string &name) -> uint32_t {
+	std::map<std::string, uint32_t>::iterator it = unit_idx.find(name);
+	if (it != unit_idx.end())
+	    return it->second;
+	f.units.push_back(cir_forest_unit());
+	f.units.back().unit_name_id = pool->intern(name);
+	uint32_t idx = (uint32_t)(f.units.size() - 1);
+	unit_idx[name] = idx;
+	return idx;
+    };
+
+    // 1. Bucket the token stream per unit. unit_of/local_of are parallel to
+    //    the absolute stream index (== the recorder's cursor positions).
+    size_t n = (size_t)(prog->tokens.end() - prog->tokens.begin());
+    std::vector<uint32_t> unit_of(n, 0xffffffffu), local_of(n, 0);
+    std::vector<std::vector<TokenBase *> > unit_toks;
+    const char *last_file = NULL;
+    uint32_t last_unit = 0;
+    size_t i = 0;
+    for (TokenStream::const_iterator it = prog->tokens.begin();
+	 it != prog->tokens.end(); ++it, ++i) {
+	TokenBase *tb = *it;
+	if (!tb || !tb->file)
+	    continue;	// unbucketable: a range containing it flags SPANS_UNITS
+	uint32_t u;
+	if (tb->file == last_file)
+	    u = last_unit;
+	else {
+	    u = ensure_unit(tb->file);
+	    last_file = tb->file;
+	    last_unit = u;
+	}
+	if (unit_toks.size() < f.units.size())
+	    unit_toks.resize(f.units.size());
+	unit_of[i] = u;
+	local_of[i] = (uint32_t)unit_toks[u].size();
+	unit_toks[u].push_back(tb);
+    }
+
+    // 2. Decl index: global [begin,end) -> (unit, local slice).
+    for (size_t d = 0; d < prog->pack_decls.size(); ++d) {
+	const Program::PackDeclEntry &e = prog->pack_decls[d];
+	if (e.begin >= n || e.end > n || e.end <= e.begin)
+	    continue;
+	uint32_t u = unit_of[e.begin];
+	if (u == 0xffffffffu)
+	    continue;
+	uint32_t aux = e.aux;
+	uint32_t last_local = local_of[e.begin];
+	for (size_t j = e.begin; j < e.end; ++j) {
+	    if (unit_of[j] == u)
+		last_local = local_of[j];
+	    else
+		aux |= Program::PACK_DECL_SPANS_UNITS;
+	}
+	cir_forest_decl_entry de;
+	de.name_id     = pool->intern(e.name);
+	de.kind        = e.kind;
+	de.slice_begin = local_of[e.begin];
+	de.slice_end   = last_local + 1;
+	de.aux         = aux;
+	f.units[u].decl_index.push_back(de);
+    }
+
+    // 3. PP-export deltas, in directive order (tombstones included).
+    for (std::map<const char *, std::vector<Program::PackMacroEvent> >::const_iterator
+	     pe = prog->pack_pp_exports.begin();
+	 pe != prog->pack_pp_exports.end(); ++pe) {
+	uint32_t u = ensure_unit(pe->first);
+	for (size_t k = 0; k < pe->second.size(); ++k) {
+	    const Program::PackMacroEvent &ev = pe->second[k];
+	    cir_forest_pp_event h;
+	    h.name_id   = pool->intern(ev.name);
+	    h.tag_flags = ev.tag;
+	    const std::string &body =
+		ev.tag == Program::PackMacroEvent::peDefineFn ? ev.macro.body
+							      : ev.value;
+	    h.body_id = body.empty() ? 0 : pool->intern(body);
+	    h.variadic_param_id = 0;
+	    h.nparams = 0;
+	    if (ev.tag == Program::PackMacroEvent::peDefineFn) {
+		if (ev.macro.variadic)
+		    h.tag_flags |= CIR_FOREST_PP_VARIADIC;
+		if (!ev.macro.variadic_param.empty())
+		    h.variadic_param_id = pool->intern(ev.macro.variadic_param);
+		h.nparams = (uint32_t)ev.macro.params.size();
+	    }
+	    std::vector<uint32_t> &out = f.units[u].pp_events;
+	    out.push_back(h.name_id);
+	    out.push_back(h.tag_flags);
+	    out.push_back(h.body_id);
+	    out.push_back(h.variadic_param_id);
+	    out.push_back(h.nparams);
+	    if (ev.tag == Program::PackMacroEvent::peDefineFn)
+		for (size_t p = 0; p < ev.macro.params.size(); ++p)
+		    out.push_back(pool->intern(ev.macro.params[p]));
+	}
+    }
+
+    // 4. Include edges (directory unit indices, include order). Targets are
+    //    ensured FIRST — ensure_unit may reallocate f.units.
+    for (std::map<const char *, std::vector<const char *> >::const_iterator
+	     ee = prog->pack_unit_edges.begin();
+	 ee != prog->pack_unit_edges.end(); ++ee) {
+	uint32_t u = ensure_unit(ee->first);
+	std::vector<uint32_t> tgts;
+	for (size_t k = 0; k < ee->second.size(); ++k)
+	    tgts.push_back(ensure_unit(ee->second[k]));
+	f.units[u].edges = tgts;
+    }
+
+    // 5. Branch-relevant macro names (sorted ids for reproducible bytes).
+    for (std::set<std::string>::const_iterator bm = prog->pack_branch_macros.begin();
+	 bm != prog->pack_branch_macros.end(); ++bm)
+	f.branch_macros.push_back(pool->intern(*bm));
+    std::sort(f.branch_macros.begin(), f.branch_macros.end());
+
+    // 6. Canonical unit order = first-tokenization order (the pack driver's
+    //    include list IS the canonical system order; design doc §6).
+    for (size_t k = 0; k < prog->pack_unit_order.size(); ++k)
+	f.canon_order.push_back(ensure_unit(prog->pack_unit_order[k]));
+
+    // 7. Serialize per-unit token slices last (unit set is final now).
+    unit_toks.resize(f.units.size());
+    for (size_t u = 0; u < f.units.size(); ++u) {
+	if (unit_toks[u].empty())
+	    continue;
+	madc_pch::serialize_token_seq(unit_toks[u], f.units[u].token_payload);
+	f.units[u].token_count = (uint32_t)unit_toks[u].size();
+    }
+}
+
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append)
 {
@@ -606,6 +761,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		fprintf(stderr, "%s: forest freeze failed\n", source_name);
 	    } else {
 		f.libs = prog->loaded_lib_paths;
+		cir_forest_fill_pack_payloads(prog, f);	// grove payload v2 (B4a)
 		PchCompression codec = PchCompression::Zlib;
 #ifdef HAVE_ZSTD
 		codec = PchCompression::Zstd;
@@ -618,14 +774,25 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 				    : w.write_file(out_path))) {
 		    fprintf(stderr, "%s: cannot write %s\n", source_name, out_path);
 		} else {
-		    size_t nrec = 0;
-		    for (size_t u = 0; u < f.units.size(); ++u)
-			nrec += f.units[u].blob.records.size();
+		    size_t nrec = 0, ndecl = 0, ntok = 0;
+		    for (size_t u = 0; u < f.units.size(); ++u) {
+			nrec  += f.units[u].blob.records.size();
+			ndecl += f.units[u].decl_index.size();
+			ntok  += f.units[u].token_count;
+		    }
 		    // Status to stderr: program stdout stays clean for the
 		    // --freeze-run child's output.
-		    fprintf(stderr, "Froze %s: %zu units, %zu records -> %s%s\n",
-			    source_name, f.units.size(), nrec, out_path,
-			    append ? " (appended)" : "");
+		    if (prog->pack_recording)
+			fprintf(stderr, "Froze %s: %zu units, %zu records, "
+				"%zu tokens, %zu decl-index entries, "
+				"%zu branch macros -> %s%s\n",
+				source_name, f.units.size(), nrec, ntok, ndecl,
+				f.branch_macros.size(), out_path,
+				append ? " (appended)" : "");
+		    else
+			fprintf(stderr, "Froze %s: %zu units, %zu records -> %s%s\n",
+				source_name, f.units.size(), nrec, out_path,
+				append ? " (appended)" : "");
 		    rc = 0;
 		}
 	    }
@@ -668,6 +835,95 @@ int madc_cir_execute_frozen(const char *container_path,
 	return -1;
     }
     return result;
+}
+
+// --dump-forest: print a container's directory + grove payload v2 surfaces
+// (decl index, PP exports, edges, branch macros, canonical order) in a
+// stable line-oriented form — the data source for the B4a index-parity and
+// -dM oracles, and the forest debugging surface.
+static const char *pack_decl_kind_name(uint32_t kind)
+{
+    switch (kind) {
+    case Program::pdkTypedef:   return "type";
+    case Program::pdkStruct:    return "struct";
+    case Program::pdkClass:     return "class";
+    case Program::pdkEnum:      return "enum";
+    case Program::pdkFunction:  return "function";
+    case Program::pdkVariable:  return "variable";
+    case Program::pdkTemplate:  return "template";
+    case Program::pdkNamespace: return "namespace";
+    default:                    return "other";
+    }
+}
+
+int madc_cir_dump_forest(const char *container_path)
+{
+    const void *image = NULL;
+    size_t image_len = 0;
+    if (!cir_forest_map_image(container_path, image, image_len)) {
+	fprintf(stderr, "madc: %s: cannot map frozen container\n",
+		container_path ? container_path : "/proc/self/exe");
+	return -1;
+    }
+    if (!TokenBase::_active_strpool) {
+	static madc::dis::intern_table dump_pool;
+	TokenBase::_active_strpool = &dump_pool;
+    }
+    CirFrozenForest forest;
+    if (!forest.open(image, image_len, /*c2m=*/NULL))
+	return -1;
+
+    printf("forest\tunits=%u\n", forest.unit_count());
+    for (size_t i = 0; i < forest.libs().size(); ++i)
+	printf("lib\t%s\n", forest.libs()[i].c_str());
+    const std::vector<uint32_t> &canon = forest.canon_order();
+    for (size_t i = 0; i < canon.size(); ++i)
+	printf("canon\t%zu\t%s\n", i, forest.unit_name(canon[i]));
+    const std::vector<uint32_t> &bm = forest.branch_macros();
+    for (size_t i = 0; i < bm.size(); ++i)
+	if (const char *s = forest.pool_str(bm[i]))
+	    printf("branchmacro\t%s\n", s);
+
+    for (uint32_t u = 0; u < forest.unit_count(); ++u) {
+	const char *uname = forest.unit_name(u);
+	uint32_t anchor = forest.unit_anchor(u);
+	std::vector<uint8_t> toks;
+	uint32_t ntok = 0;
+	forest.unit_tokens(u, toks, ntok);
+	printf("unit\t%u\t%s\ttokens=%u\tanchor=%d\n", u,
+	       uname ? uname : "?", ntok,
+	       anchor == CIR_FOREST_ANCHOR_NONE ? -1 : (int)anchor);
+	std::vector<uint32_t> edges;
+	if (forest.unit_edges(u, edges))
+	    for (size_t k = 0; k < edges.size(); ++k)
+		printf("edge\t%s\t%s\n", uname ? uname : "?",
+		       forest.unit_name(edges[k]));
+	std::vector<uint32_t> ppe;
+	if (forest.unit_pp_events(u, ppe))
+	    for (size_t k = 0; k + 5 <= ppe.size(); ) {
+		uint32_t name_id = ppe[k], tag = ppe[k + 1] & 0xff;
+		uint32_t nparams = ppe[k + 4];
+		const char *nm = forest.pool_str(name_id);
+		printf("ppexport\t%s\t%s\t%s\n", uname ? uname : "?",
+		       tag == Program::PackMacroEvent::peUndef ? "undef"
+		       : tag == Program::PackMacroEvent::peDefineFn ? "define-fn"
+		       : "define",
+		       nm ? nm : "?");
+		k += 5 + nparams;
+	    }
+	std::vector<cir_forest_decl_entry> di;
+	if (forest.unit_decl_index(u, di))
+	    for (size_t k = 0; k < di.size(); ++k) {
+		const char *nm = forest.pool_str(di[k].name_id);
+		printf("declindex\t%s\t%s\t%s\t[%u,%u)%s%s\n",
+		       uname ? uname : "?",
+		       pack_decl_kind_name(di[k].kind), nm ? nm : "?",
+		       di[k].slice_begin, di[k].slice_end,
+		       (di[k].aux & Program::PACK_DECL_SPANS_UNITS) ? "\tSPANS" : "",
+		       (di[k].aux & Program::PACK_DECL_FUZZY_BOUNDS) ? "\tFUZZY" : "");
+	    }
+    }
+    return 0;
 }
 
 // Multi-TU project engine: compile each TU in the manifest into its own MIR

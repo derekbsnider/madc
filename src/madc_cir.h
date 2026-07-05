@@ -144,4 +144,10 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 int madc_cir_execute_frozen(const char *container_path,
 			    int user_argc, char **user_argv);
 
+// Print a container's directory + grove payload v2 surfaces (decl index,
+// PP exports, edges, branch macros, canonical order) as stable
+// line-oriented text — the B4a oracle data source. Backs --dump-forest.
+// NULL = the blob appended to this executable. Returns 0, or -1 on failure.
+int madc_cir_dump_forest(const char *container_path);
+
 #endif // __MADC_CIR_H

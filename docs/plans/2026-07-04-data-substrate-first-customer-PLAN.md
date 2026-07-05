@@ -541,3 +541,87 @@ byte-identical to the 51-name baseline; --emit=c11 byte-identical 694/694
 (the +1 new test emits clean); SMAUG soak compiles and boots.
 NEXT: **B4** (pack pipeline: build-time pre-parse of the stdlib closure →
 freeze → append; anchor binding at parse time; qualification gate).
+
+**✅ B4a LANDED `54aff2ce` (2026-07-05, branch
+`feature/b4a-forest-pack-format-claude`) —
+forest Phase 4 slice a: grove payload v2 + pack-time recording + oracles +
+build modes (design doc `2026-07-04-forest-default-mode-design.md` §9). The
+format + pack side of forest-default; NO consumption yet (suite-neutral by
+construction — the container gains the payloads a B4b parse-time bind reads).**
+- **Grove payload v2** (`CIR_FOREST_FORMAT_VERSION = 2`; the versioned
+  context-hash string re-pins automatically, so v1↔v2 containers reject each
+  other): per-unit segment slots grew 4 → 8 (+post-PP token slice in `.madh`
+  record form via the extracted `serialize_token_seq`; +decl index
+  `cir_forest_decl_entry{name_id,kind,slice_begin,slice_end,aux}`; +PP-export
+  event stream; +include edges) plus two container-global segments
+  (branch-relevant macro set, canonical unit order). `anchor_idx` now = the
+  decl-entry count when a grove payload exists (`ANCHOR_NONE` = module-only
+  unit). Units may be token-only or fully empty — directive-only headers
+  (`<ios>`, `features.h`, `cdefs.h`) carry PP exports + edges, zero stream
+  tokens.
+- **Pack-time recording** (`Program::pack_*`, live ONLY under `--freeze` /
+  `--freeze-append`, one predicted branch per site otherwise): PP-export
+  deltas in directive order with `#undef` tombstones; include EDGES recorded
+  pre-Source-swap incl. the once-only-skip paths (the edge exists even when
+  dedup skips re-tokenization); the container-global BRANCH-MACRO set (one
+  hook in `expandIfMacros` catches every `#if`/`#elif` consult incl.
+  `defined` operands; plus `#ifdef/#ifndef` and the include-guard definedness
+  check); and per-top-level-decl boundary FRAMES at the three decl loops
+  (`Program::parse`, `parse_namespace_block`, `extern`-linkage blocks — the
+  last collapsed 335 SPANS-flagged glibc entries to 0), with registration
+  TAPS attaching the exact map keys to the innermost frame (types
+  flat+ns-qualified, struct tags, funcdef ids, all five template maps
+  bare+qualified, variables incl. scoped enumerators under their
+  pseudo-namespace, `using` imports incl. `using ::X`, and
+  `mirror_inline_namespace_into_parent` copies — how `std::X` mirrors out of
+  `std::__cxx11`). Taps gate on `compounds.empty()` and `_inst_depth == 0`.
+  The Program→payload bridge (`cir_forest_fill_pack_payloads`) lives in
+  madc_cir.cpp so the container layer stays Program-blind.
+- **Observability + oracles**: `--dump-forest[=f]` (every v2 surface),
+  `--dump-registered` (post-parse lookup surface — instantiation products by
+  canonical-spelling `<`, class methods by `method_display_name`, and
+  function-typed namespace vars excluded), `-dM` (macro table, gcc `-dM -E`
+  analogue). `scripts/forest_index_oracle.sh`: (registered − empty-TU
+  baseline − synthetic emit schemes) ⊆ decl index, modulo a documented
+  41-entry allowlist (4 classes: instantiation-time member machinery,
+  madc-internal symbols, nested-classes-of-instantiations, lazily-registered
+  libc builtins) — GREEN: 4,872 indexed names cover 3,796 lookups.
+  `scripts/forest_dm_oracle.sh`: macro-NAME-set parity vs g++ as a RATCHET
+  (305-line baseline; new divergence fails; `--rebaseline` ratchets down).
+  Both wired into fulltest.
+- **Pack driver + canonical-order artifact**: `scripts/forest_pack.sh` builds
+  the standard-header TU from the versioned `scripts/forest_pack_headers.txt`
+  (v1: 18 headers, `cstddef`→`fstream`, streams before `cmath`/`algorithm`;
+  `cstdint`/`cmath`/`algorithm`/`iomanip` documented OUT with their
+  blockers), freezes onto a binary COPY (ETXTBSY), and verifies the blob
+  reads back + a frozen run works.
+- **Build modes** (`MODE=develop|debug|release`): per-mode object trees
+  `obj/<mode>/` (modes never share objects; `-MMD` tracks headers not flags);
+  `make debug` = `-O0 -ggdb`; `make release` = `-O2` → **strip BEFORE
+  pack+append** (mandatory ordering; plain strip keeps `.dynsym` for the
+  `-rdynamic`/dlsym import resolver) → `forest_pack.sh` → verify. Pack
+  failure = build failure.
+- **Also fixed en route**: `tests/unit/test_cir.cpp` "unsubstituted template
+  parameter" built synthetic error nodes without binding the test substrate,
+  silently borrowing whatever stale string pool a prior case's dead Program
+  left in `TokenBase::_active_strpool` (a latent dangling read this change's
+  Program footprint surfaced as a SIGSEGV); it now binds like every other
+  synthetic case.
+**MEASURED: the real `<iostream>/<string>/<vector>` program freezes to 190
+units / 47,178 records / 167,750 sliced tokens / 4,677 decl-index entries /
+726 branch macros (container 1.53 MB vs 683 KB module-only, zlib);
+`--run-frozen` output still == g++. The 18-header pack closure: 234 units /
+241,853 tokens / 6,701 decl entries / 796 branch macros; SPANS-flagged slices
+= 0. `make release` binary: 18.7 MB → 7.3 MB stripped + 234-unit forest
+appended, runs its own blob.**
+Gates: fulltest 679/0/0/16 + all unit suites incl. the new B4a v2 round-trip
+(test_cir_freeze 12 cases / 172 asserts, through the PRODUCTION
+`madc_cir_freeze` path) + both new oracles + `forest_selfexe_gate` GREEN;
+gcc-torture 1571 passed, failset byte-identical to the 51-name baseline;
+`--emit=c11` corpus 695/695 byte-identical; SMAUG `--project` boots and serves
+("Realms of Despair ready"); `make release` end-to-end (stripped -O2 binary +
+appended pack + self-exe frozen run).
+NEXT: **B4b** (flag-gated bind + materialize-on-use: the forest-lookup chain
+in `lazy_resolve`/`lazy_resolve_type`, PP-export install along the include
+DAG, nested slice parse via the `parse_deferred_lazy_body` reentrancy
+pattern).
