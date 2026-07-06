@@ -12349,6 +12349,68 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		<< " bases, " << cdd->methods.size() << " methods)" << std::endl);
 	}
     }
+
+    // v13: stage the bound header's file-scope global VARIABLE definitions. A live
+    // parse of the header populated tkProgram->variables + dkGlobalVar TopDecls; a
+    // bound header did not, so the CIR builder emitted neither the globals' storage
+    // nor the __madc_global_init that runs their ctors. forest_restore_decls runs
+    // during lexer #include handling — BEFORE tkProgram exists — so stage them here
+    // and flush_forest_pending_globals() (called once tkProgram is created) rebuilds
+    // each into the SAME structures the live path uses; the existing emission passes
+    // (dkGlobalVar storage + collect_global_ctors + __madc_global_init synthesis)
+    // then emit them exactly as a live parse would. No initializer is kept: the
+    // default ctor is synthesized from the class's restored ctor set (Phase 6 v12).
+    const std::vector<CirRestoredGlobal> &globals = forest.restored_globals();
+    for ( size_t i = 0; i < globals.size(); ++i )
+    {
+	const CirRestoredGlobal &rg = globals[i];
+	if ( !rg.name || !rg.type )
+	    continue;
+	PendingForestGlobal pg;
+	pg.name  = rg.name;
+	pg.type  = rg.type;
+	pg.flags = rg.flags;
+	forest_pending_globals.push_back(pg);
+    }
+}
+
+// Flush the staged forest globals into tkProgram->variables + dkGlobalVar TopDecls
+// once tkProgram exists (called at the end of tokenize()). Idempotent per name:
+// a global already present (a user redeclaration, or a second flush) is skipped.
+void Program::flush_forest_pending_globals()
+{
+    if ( !tkProgram || forest_pending_globals.empty() )
+	return;
+    for ( size_t i = 0; i < forest_pending_globals.size(); ++i )
+    {
+	const PendingForestGlobal &pg = forest_pending_globals[i];
+	if ( !pg.type || findVariable(pg.name) )
+	    continue;			// unresolved / already present
+	// A class that declares a ctor but whose ctor set restored EMPTY cannot be
+	// default-constructed at emit time (collect_global_ctors -> class_ctor_call ->
+	// "no matching constructor"). That happens when v12 skipped the class's only
+	// ctor as a bodyless DEFAULTED special member (e.g. in_place_t's
+	// `explicit in_place_t() = default`): has_user_ctor stays set but no ctor is
+	// serialized. Cleanly LACK such a global (as every partial-restore case does)
+	// rather than emit an untranslatable node — serializing a defaulted ctor so it
+	// constructs trivially is a v12 follow-on.
+	if ( DataDefCLASS *pc = dynamic_cast<DataDefCLASS *>(pg.type) )
+	    if ( pc->has_user_ctor && pc->ctors.empty() )
+		continue;
+	Variable *gv = new Variable(pg.name, *pg.type, 1, NULL, /*alloc=*/false);
+	gv->flags = pg.flags;
+	tkProgram->variables.push_back(gv);
+	TopDecl gtd;
+	gtd.kind = DeclKind::dkGlobalVar;
+	gtd.name = pg.name;
+	gtd.var  = gv;
+	gtd.dd   = pg.type;
+	gtd.decl = NULL;		// default-ctor synthesized (v12 ctors)
+	top_decls.push_back(gtd);
+	DBG(std::cout << "flush_forest_pending_globals: global " << pg.name
+	    << " (" << pg.type->name << ")" << std::endl);
+    }
+    forest_pending_globals.clear();
 }
 
 void Program::add_namespaces()

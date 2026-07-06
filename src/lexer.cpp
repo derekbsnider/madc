@@ -6090,6 +6090,7 @@ TokenProgram *Program::tokenize(const char *fname)
 
     tkProgram = new TokenProgram();
     tkFunction = tkProgram;
+    flush_forest_pending_globals();	// v13: globals staged during #include bind
 
     file.clear();
 
@@ -6164,6 +6165,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 
     tkProgram = new TokenProgram();
     tkFunction = tkProgram;
+    flush_forest_pending_globals();	// v13: globals staged during #include bind
 
     tkProgram->source = effective_name;
     tkProgram->is = new std::stringstream(source_text);

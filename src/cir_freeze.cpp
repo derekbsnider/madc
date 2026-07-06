@@ -511,6 +511,12 @@ bool cir_forest_write(const cir_frozen_forest &f, madc::dis::snapshot_writer &w,
 			f.type_payload.data(),
 			f.type_payload.size() * sizeof(uint32_t), codec))
 		return false;
+	// v13 container-global: file-scope global VARIABLE definitions (zero-length
+	// when the freeze recorded none).
+	if (!add_seg(w, CIR_FOREST_SEG_GLOBALS, SNAP_KIND_CIR_GLOBALS,
+		     f.globals.data(),
+		     f.globals.size() * sizeof(cir_forest_global_record), codec))
+		return false;
 	// v2 container-global payloads (zero-length when the freeze recorded
 	// nothing — a module-only freeze).
 	if (!add_seg(w, CIR_FOREST_SEG_BRANCH_MACROS, SNAP_KIND_CIR_BRANCH_MACROS,
@@ -965,6 +971,21 @@ bool CirFrozenForest::open(const void *image, size_t len, c2m_ctx_t c2m)
 		_type_payload.resize(d.size() / sizeof(uint32_t));
 		if (!d.empty())
 			memcpy(_type_payload.data(), d.data(), d.size());
+	}
+	// v13 container-global: file-scope global VARIABLE definitions (zero-length
+	// = none; materialize_types swizzles each type_id -> DataDef*).
+	if (const madc::dis::snapshot_segment *gs =
+		_reader.find(CIR_FOREST_SEG_GLOBALS)) {
+		std::vector<uint8_t> d;
+		if (gs->kind != SNAP_KIND_CIR_GLOBALS
+		    || !_reader.read_segment(*gs, d)
+		    || d.size() % sizeof(cir_forest_global_record)) {
+			fprintf(stderr, "madc: forest global-var table corrupt\n");
+			return false;
+		}
+		_globals.resize(d.size() / sizeof(cir_forest_global_record));
+		if (!d.empty())
+			memcpy(_globals.data(), d.data(), d.size());
 	}
 
 	// v2 container-global payloads (zero-length segments = empty).
@@ -1422,6 +1443,24 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 		rt.underlying = underlying;
 		rt.ns         = r.namespace_id ? pool_cstr(r.namespace_id, nslen) : NULL;
 		_restored.push_back(rt);
+	}
+
+	// v13: restore file-scope global VARIABLE definitions — swizzle each record's
+	// type_id back to a DataDef* (reusing the same by_id map + primitive resolver).
+	// forest_restore_decls rebuilds a Variable + dkGlobalVar TopDecl from each, so
+	// the existing passes emit the global + queue its ctor into __madc_global_init.
+	for (size_t i = 0; i < _globals.size(); ++i) {
+		const cir_forest_global_record &g = _globals[i];
+		uint32_t nlen = 0;
+		const char *nm = pool_cstr(g.name_id, nlen);
+		DataDef *ty = forest_swizzle_type(g.type_id, by_id);
+		if (!nm || !ty)
+			continue;		// unresolved type -> bind cleanly lacks it
+		CirRestoredGlobal rg;
+		rg.name  = nm;
+		rg.type  = ty;
+		rg.flags = g.flags;
+		_restored_globals.push_back(rg);
 	}
 
 	return _restored;

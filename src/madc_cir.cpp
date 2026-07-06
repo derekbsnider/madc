@@ -1341,6 +1341,38 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
 	    }
 	    return false;
 	});
+
+    // File-scope global VARIABLE definitions (v13). The forest serializes types;
+    // a header's file-scope globals are a separate category, so binding <string>
+    // used to omit its inline globals (in_place, piecewise_construct, …) and the
+    // __madc_global_init that runs their ctors. Serialize each file-scope
+    // CLASS-typed global (same predicate as collect_global_ctors: not a non-static
+    // local, not extern) whose class is RECORDED (so its type_id swizzles on load).
+    // No initializer is stored: on load collect_global_ctors synthesizes the
+    // default ctor from the class's restored ctor set (v12). A scalar-const global
+    // (its init value) is a follow-on. Dedup by name (a global appears once).
+    if (prog->tkProgram) {
+	std::set<std::string> seen_globals;
+	for (Variable *v : prog->tkProgram->variables) {
+	    if (!v || !v->type)
+		continue;
+	    if ((v->flags & vfLOCAL) && !(v->flags & vfSTATIC))
+		continue;		// a non-static local is not file-scope
+	    if (v->flags & vfEXTERN)
+		continue;		// a reference to a definition elsewhere
+	    DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(v->type);
+	    if (!cdd || !recorded.count(cdd))
+		continue;		// class-typed (v13) + recorded (swizzles on load)
+	    if (!seen_globals.insert(v->name).second)
+		continue;
+	    cir_forest_global_record g;
+	    memset(&g, 0, sizeof(g));
+	    g.name_id = pool.intern(v->name);
+	    g.type_id = forest_serialize_type_id(cdd);
+	    g.flags   = v->flags;
+	    f.globals.push_back(g);
+	}
+    }
 }
 
 int madc_cir_freeze(Program *prog, const char *source_name,

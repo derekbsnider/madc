@@ -85,7 +85,8 @@ enum : uint32_t
 	SNAP_KIND_CIR_CANON_ORDER   = madc::dis::SNAP_KIND_CONSUMER + 11, // container-global: uint32 unit indices, canonical order
 	// --- Phase 6: complete type-table serialization (2026-06-12 type-table
 	// design §6.4 "forest type-refs serialize as ids + table segments") ---
-	SNAP_KIND_CIR_TYPE_PAYLOAD  = madc::dis::SNAP_KIND_CONSUMER + 12  // container-global: uint32 member/base payload stream
+	SNAP_KIND_CIR_TYPE_PAYLOAD  = madc::dis::SNAP_KIND_CONSUMER + 12, // container-global: uint32 member/base payload stream
+	SNAP_KIND_CIR_GLOBALS       = madc::dis::SNAP_KIND_CONSUMER + 13  // container-global: cir_forest_global_record[] (file-scope global var defs)
 };
 
 // One frozen node record (fixed-size POD; x86-64 little-endian first, like
@@ -156,7 +157,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // eight (tokens / decl index / PP exports / edges) plus the two container-
 // global segments (branch macros, canonical order). The version feeds the
 // context hash, so v1 readers reject v2 containers and vice versa.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 12 };	// v12: serialize a class's ctors/dtor/operators (CIR_METHF_CTOR/DTOR) instead of skipping them, so load rebuilds cdd->ctors (default-construction resolves) + the "~" dtor method_map key (scope-exit cleanup resolves the D1 symbol) + operator= overloads — a std::string consumer now BINDS and RUNS correctly (constructs, assigns, sizes, destroys; output == live == g++). Whole-<string>-TU MIR byte-identity is NOT yet reached (two separate whole-TU-emission gaps: header global-var defs + __madc_global_init are not serialized; the bind synth-dtor set exceeds live's reachable set) — each its own follow-on slice; v11: serialize a non-polymorphic aggregate's COMPLETE state — anonymous_aggregates (re-nested nameless sub-aggregates, so a struct with an anon union/struct member binds with the right layout) + the layout scalars pack/tag_explicit_align/is_anonymous/reverse_scalar_storage/has_anon_aggregate — instead of a hand-picked field subset; v10: a type record carries its defining namespace (namespace_id) so load restores a namespaced type into namespace_map + namespace_datatype_map (a bound `N::P` / `std::X` resolves), not just the flat maps; v9: derived-type records (CIR_TYPEK_POINTER/REFERENCE/CONST, ref0 = operand typeid) so a pointer/reference/const member (or method param/return, or typedef underlying) serializes as a table entry + swizzles back on load, instead of bailing the whole aggregate; v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 13 };	// v13: serialize a bound header's file-scope CLASS-typed global VARIABLE definitions (cir_forest_global_record) so load rebuilds them into tkProgram->variables + dkGlobalVar TopDecls and the existing passes emit them + synthesize __madc_global_init (the default ctors come from the v12 ctor set) — a --forest-bind consumer of <string> now emits its inline tag globals (in_place/piecewise_construct/allocator_arg/ignore) + global-init, as a live parse does (scalar-const globals like hardware_*_interference_size are a follow-on); v12: serialize a class's ctors/dtor/operators (CIR_METHF_CTOR/DTOR) instead of skipping them, so load rebuilds cdd->ctors (default-construction resolves) + the "~" dtor method_map key (scope-exit cleanup resolves the D1 symbol) + operator= overloads — a std::string consumer now BINDS and RUNS correctly (constructs, assigns, sizes, destroys; output == live == g++). Whole-<string>-TU MIR byte-identity is NOT yet reached (two separate whole-TU-emission gaps: header global-var defs + __madc_global_init are not serialized; the bind synth-dtor set exceeds live's reachable set) — each its own follow-on slice; v11: serialize a non-polymorphic aggregate's COMPLETE state — anonymous_aggregates (re-nested nameless sub-aggregates, so a struct with an anon union/struct member binds with the right layout) + the layout scalars pack/tag_explicit_align/is_anonymous/reverse_scalar_storage/has_anon_aggregate — instead of a hand-picked field subset; v10: a type record carries its defining namespace (namespace_id) so load restores a namespaced type into namespace_map + namespace_datatype_map (a bound `N::P` / `std::X` resolves), not just the flat maps; v9: derived-type records (CIR_TYPEK_POINTER/REFERENCE/CONST, ref0 = operand typeid) so a pointer/reference/const member (or method param/return, or typedef underlying) serializes as a table entry + swizzles back on load, instead of bailing the whole aggregate; v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -172,6 +173,7 @@ enum : uint32_t
 	CIR_FOREST_SEG_BRANCH_MACROS = 6,	// v2 (absent = zero-length)
 	CIR_FOREST_SEG_CANON_ORDER   = 7,	// v2 (absent = zero-length)
 	CIR_FOREST_SEG_TYPE_PAYLOAD  = 8,	// v6 (absent = zero-length): member/base u32 payload stream
+	CIR_FOREST_SEG_GLOBALS       = 9,	// v13 (absent = zero-length): file-scope global var defs
 	CIR_FOREST_SEG_UNIT_BASE     = 16,
 	CIR_FOREST_SEGS_PER_UNIT     = 8	// +0 records, +1 children, +2 connectors,
 						// +3 positions, +4 tokens, +5 decl index,
@@ -395,6 +397,26 @@ struct cir_forest_type_method
 	uint32_t body_idx;	// CIR_METHF_HAS_BODY: record idx of that func-def (else 0)
 };
 
+// A file-scope global VARIABLE definition (v13; container-global, fixed 3-u32
+// stride). The forest serializes TYPES; a header's file-scope globals are a
+// separate category the type pass does not cover, so binding <string> used to
+// omit its inline globals (in_place, piecewise_construct, …) and the
+// __madc_global_init that runs their ctors. This records the Variable's identity
+// so load rebuilds it into tkProgram->variables + a dkGlobalVar TopDecl, and the
+// EXISTING emission passes (the dkGlobalVar storage pass + collect_global_ctors +
+// the __madc_global_init synthesis) emit it exactly as a live parse would — no
+// new emission logic. v13 covers CLASS-typed globals: no initializer is stored
+// because collect_global_ctors synthesizes the default ctor from the class's
+// restored ctor set (Phase 6 v12). (A scalar-const global's init value is a
+// follow-on.)
+struct cir_forest_global_record
+{
+	uint32_t name_id;	// the Variable's name (intern handle)
+	uint32_t type_id;	// its type (swizzle to DataDef*; a recorded aggregate)
+	uint32_t flags;		// Variable::flags verbatim (vfSTATIC/… — collect_global_ctors
+				// and the dkGlobalVar pass read vfLOCAL/vfSTATIC/vfEXTERN)
+};
+
 // Source-position side-car record (parallel to the unit's records; cold —
 // consumed for diagnostics, separate from the hot record segment).
 struct cir_frozen_pos
@@ -436,6 +458,8 @@ struct cir_frozen_forest
 	// per record by member_begin/base_begin. Load swizzles ids -> DataDef*. ---
 	std::vector<cir_forest_type_record> type_records;
 	std::vector<uint32_t> type_payload;
+	// --- v13 (container-global): file-scope global VARIABLE definitions ---
+	std::vector<cir_forest_global_record> globals;
 	// Transient freeze-time helper (NOT serialized): every N_FUNC_DEF node's emit
 	// symbol -> its (unit, record-idx) in the partitioned AST. cir_forest_append_methods
 	// looks a method's mangled symbol up here to record where its INLINE body lives
@@ -534,6 +558,17 @@ struct CirRestoredType
 					// registers the type into that namespace's maps
 };
 
+// A restored file-scope global variable (v13): its type swizzled back to a
+// DataDef*. forest_restore_decls rebuilds a Variable into tkProgram->variables +
+// a dkGlobalVar TopDecl from this, so the existing emission passes emit the
+// global's storage + queue its ctor into __madc_global_init.
+struct CirRestoredGlobal
+{
+	const char *name;		// the Variable's name
+	DataDef    *type;		// its type (a recorded aggregate)
+	uint32_t    flags;		// Variable::flags verbatim
+};
+
 // A loaded forest: validates the pin + directory + string pool once, then
 // loads UNITS ON DEMAND — a unit's records decompress the first time a
 // connector (or node_for) touches it, never at open. The image must stay
@@ -569,6 +604,10 @@ class CirFrozenForest
 	std::vector<DataDef *> _mat_storage;		// forest-owned materialized DataDefs
 	std::vector<Variable *> _mat_vars;		// forest-owned reconstructed method Variables
 	std::vector<CirRestoredType> _restored;		// bind-facing view (built once)
+	// v13 container-global: file-scope global var defs. Records load at open();
+	// _restored_globals (type-ids swizzled to DataDef*) is built by materialize_types.
+	std::vector<cir_forest_global_record> _globals;
+	std::vector<CirRestoredGlobal> _restored_globals;
 	bool _types_materialized;
 	// Shared v2 segment reader: decompress unit slot `slot` into `out`
 	// (raw bytes). False on absent/malformed.
@@ -629,6 +668,11 @@ public:
 	// re-derivation). The bind layer registers the returned entries by name into
 	// the parser's symbol tables. The forest owns the objects for its lifetime.
 	const std::vector<CirRestoredType> &materialize_types();
+	// v13: the restored file-scope globals (type-ids swizzled to DataDef*). Valid
+	// after materialize_types() — call it first (it builds this view alongside the
+	// types, reusing the same freeze-id -> DataDef* map).
+	const std::vector<CirRestoredGlobal> &restored_globals() const
+	{ return _restored_globals; }
 	// Container string pool lookup (name_id -> C string; NULL if invalid).
 	const char *pool_str(uint32_t id) const
 	{ uint32_t len; return pool_cstr(id, len); }

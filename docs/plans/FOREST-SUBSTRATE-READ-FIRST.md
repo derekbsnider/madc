@@ -113,20 +113,36 @@ That flat-POD substrate is the long-term endgame, NOT this slice.)
   restored `basic_string<char>` has a default ctor in `ctors`, a `class_own_dtor`-discoverable dtor
   with a D1 symbol, and `operator=`); fulltest green; single-class byte-identity gates unregressed;
   freeze/bind-only reach → torture byte-identical by construction.
-- **NEXT — whole-`<string>`-TU MIR byte-identity (two SEPARATE, pre-existing gaps, NOT ctor/dtor).**
-  v12 makes `std::string` RUN correctly; the whole-TU `MADC_DUMP_MIR` is NOT yet byte-identical to a
-  live parse, blocked by two independent whole-TU-EMISSION gaps that surfaced only now that bind
-  reaches MIR emission (both measured 2026-07-06 on `tmp/cs_*.cpp`): **(1) global-variable defs +
-  `__madc_global_init`** — live emits the header's inline globals (`in_place`, `piecewise_construct`,
-  `allocator_arg`, `ignore`, `hardware_*_interference_size`, the empty-tag `…_t__…_t` dtors) and a
-  `call __madc_global_init` in `main`; the forest serializes TYPES, not global VARIABLE definitions,
-  so bind emits neither (harmless for a `std::string` consumer — it uses none — but a real gap: a
-  consumer that USED a header global would miss its init). **(2) synth-dtor set/order** — bind
-  synthesizes trivial `X___dtor` bodies for MANY restored classes (`_Save_errno`, `__new_allocator_*`,
-  `allocator_*`, wide-char `basic_string_*`) that live's parse never emits. Each is its own slice
-  (serialize + restore global-var defs with init order; make the bind synth-dtor emission match
-  live's reachable set). The `strbind` gate stays runtime-correctness until BOTH close; then it can
-  assert byte-identity. Reducers staged: `tmp/cs_producer.cpp` / `tmp/cs_consumer.cpp`.
+- **v13 LANDED (2026-07-06) — restore a bound header's file-scope CLASS-typed global variables +
+  `__madc_global_init`.** The forest serialized TYPES only; a header's inline globals are a separate
+  category, so binding `<string>` omitted `in_place`/`piecewise_construct`/`allocator_arg`/`ignore` and
+  the `__madc_global_init` that runs their ctors (`main` never called it). v13 serializes each
+  file-scope CLASS-typed global (`cir_forest_global_record` = name + type-id + flags; same predicate as
+  `collect_global_ctors`) whose class is RECORDED; NO initializer is stored — the default ctor is
+  synthesized from the class's v12 ctor set. Load (`materialize_types`) swizzles the type-id back and
+  fills `restored_globals()`. RESTORE is DEFERRED: `forest_restore_decls` runs during lexer `#include`
+  handling BEFORE `tkProgram` exists, so it STAGES the globals in `forest_pending_globals`, and
+  `flush_forest_pending_globals()` (called at the end of `tokenize()`, after `tkProgram` is created)
+  rebuilds each into `tkProgram->variables` + a `dkGlobalVar` TopDecl — then the EXISTING emission
+  passes (dkGlobalVar storage + `collect_global_ctors` + `__madc_global_init` synthesis) emit them as a
+  live parse does. A class that can't be default-constructed at emit (`has_user_ctor && ctors.empty()`
+  — a bodyless DEFAULTED ctor v12 skipped, e.g. `in_place_t`) cleanly LACKS its global (never a
+  no-matching-ctor error). RESULT: the bound `<string>` consumer now emits `__madc_global_init` +
+  `piecewise_construct`/`allocator_arg`/`ignore` (+ their ctor exports), matching live; `main` calls
+  `__madc_global_init`. Gated: `forest_bind_gate` 11/11 (strbind runtime-correct; single-class
+  byte-identical unregressed); `test_cir_freeze` 24/375 (new v13 case: `restored_globals()` lists the
+  tag globals, `piecewise_construct` : `piecewise_construct_t`); the flush is a no-op on a live compile
+  (`forest_pending_globals` empty) → normal path untouched, torture byte-identical by construction.
+- **NEXT — three residual whole-`<string>`-TU byte-identity gaps (down from the v12 two).** The
+  bound-`<string>` `MADC_DUMP_MIR` "only in LIVE" set is now just: **(1a) SCALAR-const globals**
+  (`hardware_constructive/destructive_interference_size = 64`) — v13 covers only CLASS-typed globals;
+  a scalar needs its init VALUE serialized (a `cir_forest_global_record` init field, or reference the
+  init subtree). **(1b) `in_place`** — its type `in_place_t` has a bodyless DEFAULTED ctor v12 skipped,
+  so v13's guard cleanly lacks it; serializing a defaulted ctor so it constructs trivially is a v12
+  follow-on. **(2) synth-dtor set/order** — bind synthesizes trivial `X___dtor` bodies for MANY
+  restored classes (`_Save_errno`, `__new_allocator_*`, `allocator_*`, wide-char `basic_string_*`) that
+  live's parse never emits (task #20). The `strbind` gate stays runtime-correctness until all three
+  close; then it can assert byte-identity. Reducers staged: `tmp/cs_producer.cpp` / `tmp/cs_consumer.cpp`.
 - **Polymorphic classes stay a SEPARATE, explicit boundary** (not folded in): the `_pmr_`
   `basic_string` variant is blocked by the polymorphic `std::pmr::memory_resource` (vtable).
   Serializing vtable/typeinfo is its own slice — a coherent subsystem, not a reactive drop.
@@ -135,9 +151,10 @@ That flat-POD substrate is the long-term endgame, NOT this slice.)
 Do the systematic complete-field pass (serialize the whole object, not a subset), one field
 at a time down the diagnostic's list, each gated byte-identical. No re-parse, no separate
 module, no re-derivation, no parallel format. **A2 (`3e2499ed`), A1 (`14642e78`), v12
-(ctor/dtor/operator serialization + dtor funcdef_map registration) all committed LOCAL — NOT
-yet pushed** (the pre-v12 5-commit backlog + the v12 commit). **Next session: read THIS file +
-the memory `feedback_forest_load_never_reparse` IN FULL first, as always.**
+(`e30acb5b`, ctor/dtor/operator serialization + dtor funcdef_map registration), and v13
+(class-typed file-scope globals + `__madc_global_init`) all committed LOCAL — NOT yet pushed**
+(the pre-v12 5-commit backlog + v12 + v13). **Next session: read THIS file + the memory
+`feedback_forest_load_never_reparse` IN FULL first, as always.**
 
 ---
 

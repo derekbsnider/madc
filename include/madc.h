@@ -2728,6 +2728,14 @@ public:
     CirFrozenForest *bind_forest = NULL;	// lazily opened on first system include
     bool bind_forest_tried = false;	// one-shot open attempt (success or fail)
     bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
+    // v13: file-scope globals restored from a bound header. forest_restore_decls
+    // runs during lexer #include handling, BEFORE tkProgram exists, so the globals
+    // (which live in tkProgram->variables + dkGlobalVar top_decls) are staged here
+    // and flushed by flush_forest_pending_globals() once tkProgram is created. The
+    // name/type/flags are the loaded CirRestoredGlobal fields (type owned by the forest).
+    struct PendingForestGlobal { std::string name; DataDef *type; uint32_t flags; };
+    std::vector<PendingForestGlobal> forest_pending_globals;
+    void flush_forest_pending_globals();	// build Variable + dkGlobalVar TopDecl (post-tkProgram)
     std::vector<uint32_t> forest_chain;		// bound units, include order (bind-order record)
     std::set<uint32_t> forest_chain_set;	// membership + DAG-walk prune
     std::set<uint32_t> forest_bind_walking;	// units on the in-flight bind recursion (cycle break)

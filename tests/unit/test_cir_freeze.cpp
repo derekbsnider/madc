@@ -1621,3 +1621,60 @@ TEST_CASE("Phase 6 v12: std::string's ctors + dtor + operator= reconstruct into 
 	// operator= is restored into method_map (assignment resolution reads it).
 	CHECK(str->method_map.find("operator=") != str->method_map.end());
 }
+
+// Phase 6 v13: a header's file-scope global VARIABLE definitions. The forest
+// serializes TYPES; a header's inline globals (in_place, piecewise_construct,
+// allocator_arg, ignore, …) are a separate category, so binding <string> used to
+// omit them and the __madc_global_init that runs their ctors. v13 serializes each
+// CLASS-typed file-scope global (cir_forest_global_record) and materialize_types
+// swizzles its type back to a DataDef*, so restored_globals() lists them; the bind
+// layer rebuilds each into tkProgram->variables + a dkGlobalVar TopDecl and the
+// existing passes emit the global + __madc_global_init. This gates the SAVE/LOAD
+// at the forest level (the end-to-end emit — a bound <string> consumer emits
+// __madc_global_init — is the forest_bind_gate strbind case).
+TEST_CASE("Phase 6 v13: std::string's header file-scope globals restore with their types") {
+	std::string main_path = std::string("/tmp/madc_p6v13_main_")
+			      + std::to_string((long)getpid()) + ".cpp";
+	std::string snap_path = std::string("/tmp/madc_p6v13_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include <string>\n"
+		      "int main() { std::string s; return (int)s.size(); }\n";
+	}
+
+	{
+		std::shared_ptr<Program> progA = std::make_shared<Program>();
+		progA->pack_recording = true;
+		TokenProgram *tpA = progA->tokenize(main_path.c_str());
+		REQUIRE(tpA != nullptr);
+		REQUIRE(progA->parse(tpA));
+		REQUIRE(madc_cir_freeze(progA.get(), main_path.c_str(),
+					snap_path.c_str(), /*append=*/false) == 0);
+	}
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+
+	forest.materialize_types();		// builds the restored-globals view
+	const std::vector<CirRestoredGlobal> &globals = forest.restored_globals();
+	REQUIRE(!globals.empty());
+
+	// The tag globals restore with their (class) types swizzled back to real
+	// DataDef*s — e.g. std::piecewise_construct : piecewise_construct_t.
+	bool saw_piecewise = false;
+	for (size_t i = 0; i < globals.size(); ++i) {
+		REQUIRE(globals[i].name != nullptr);
+		REQUIRE(globals[i].type != nullptr);	// type resolved (else it'd be dropped)
+		if (!strcmp(globals[i].name, "piecewise_construct")) {
+			saw_piecewise = true;
+			CHECK(globals[i].type->name == "piecewise_construct_t");
+		}
+	}
+	CHECK(saw_piecewise);
+}
