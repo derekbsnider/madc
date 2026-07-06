@@ -34,19 +34,49 @@ serialization; all gated byte-identical (`MADC_DUMP_MIR` == live, torture 50-nam
   header until madc parses `<cstdint>`'s `using ::int_fast8_t;` (a separate PARSER track,
   parked; do NOT fold it into forest work). Owner decision (2026-07-06): bank 2a, return to #13.
 
-**ACTIVE THREAD — #13 (the primary SAVE/LOAD course):** corpus
-(`std::string`/`std::vector`) template-instantiation restoration. `std::string` is a
-`std` typedef for `basic_string<char,…>`, a template-instantiation product (`<` in
-key/name) the v10 slice deliberately skips. #13 = serialize the instantiation product
-+ its `std::` typedef + ctor/dtor emission + mangled-direct library linking — the DIRECT
-save/load continuation (§5), building ON namespace (v10) + pointer-member (v9) + the
-shared `pod_record` codec (#14 step 1).
+**ACTIVE THREAD — #13, reframed by the owner into the SYSTEMATIC COMPLETE-FIELD PASS.**
+The corpus (`std::string`/`std::vector`) kept surfacing "we dropped field X" bugs
+because the freeze serialized a **hand-picked SUBSET** of a `DataDefSTRUCT`/`CLASS`'s
+state. Owner's call (2026-07-06): stop the reactive per-field slices (a smell) and
+**serialize a DataDef's COMPLETE state** — every semantic field, via the two swizzle
+kinds we already have (`DataDef*`→typeid, scalar→verbatim, `TokenBase*`→node-ref). The
+pointer-swizzle model is RIGHT and already covers this; the gap was never the swizzle,
+it was incomplete field coverage. (Considered + rejected: ids-exclusively / flat-POD
+DataDefs — wouldn't fix field coverage, is a core rearchitecture, and the type-table
+design already chose "keep the objects, table the ids" because DataDefs are polymorphic.
+That flat-POD substrate is the long-term endgame, NOT this slice.)
 
-**COURSE-RETURN (anti-drift):** the SAVE/LOAD state model governs everything (§0, §1,
-§7). #14's helper refactor was gated by byte-identity (it could not change saved state);
-its libmadc export is additive. We are now BACK on #13. No thread may introduce a
-re-parse, a separate module, re-derivation, or a parallel format. **Next session:
-read THIS file + the memory `feedback_forest_load_never_reparse` IN FULL first, as always.**
+- **A0 LANDED (`c43d4556`, format v11):** anonymous-aggregate grouping (each nameless
+  sub-aggregate = its own `CIR_TYPEK_STRUCT/UNION` record + a `cir_forest_type_anon`
+  group slice via `pod_append`; load rebuilds `anonymous_aggregates`, sub-agg excluded
+  from `_restored` so it is never emitted standalone) + the layout scalars
+  (`pack`/`tag_explicit_align`/`is_anonymous`/`reverse_scalar_storage`/`has_anon_aggregate`).
+  The `has_anon_aggregate` skip is GONE. Without this a struct with an anon union bound
+  with the overlap LOST (a silent miscompile — `sizeof` right, `i`/`buf` no longer shared).
+  Gated: `forest_bind_gate` **10/10** (hardened `anon` case WRITES via `i`, READS via `buf`),
+  `forest_selfexe_gate` v11, `test_cir_freeze` 325, MADC_DUMP_MIR byte-identical.
+- **Freeze-completeness diagnostic LANDED (`e1beda7d`):** `madc -v --freeze=…` lists every
+  complete non-poly class the fixpoint could NOT record + the blocking base/member (with a
+  per-member type classification). The "what is the freeze dropping and why" probe — USE IT.
+- **NEXT — A2 (the diagnosed gap):** the real `std::string` product `basic_string<char,…,allocator<char>>`
+  still bails because member types that are **typedef aliases** (`size_type` → classified
+  `OTHER`, not primitive/struct/ptr/ref/const) make `cir_forest_record_derived` return false →
+  the whole product bails. Fix: handle typedef-alias member types (resolve to the underlying,
+  OR record as `CIR_TYPEK_TYPEDEF`). **Design Q:** byte-identity — does the live path emit the
+  member as `size_type` or `unsigned long`? (decides resolve-vs-record). After A2 the product
+  serializes → then **A1** (emit the namespaced `std::string` typedef — the v10 namespace walk
+  currently SKIPS aliases where key≠record-name; turn that skip into an EMIT) → then corpus
+  ctors/dtors + method linking.
+- **Polymorphic classes stay a SEPARATE, explicit boundary** (not folded in): the `_pmr_`
+  `basic_string` variant is blocked by the polymorphic `std::pmr::memory_resource` (vtable).
+  Serializing vtable/typeinfo is its own slice — a coherent subsystem, not a reactive drop.
+
+**COURSE-RETURN (anti-drift):** the SAVE/LOAD state model governs everything (§0, §1, §7).
+Do the systematic complete-field pass (serialize the whole object, not a subset), one field
+at a time down the diagnostic's list, each gated byte-identical. No re-parse, no separate
+module, no re-derivation, no parallel format. **Two commits (`c43d4556`, `e1beda7d`) plus the
+doc/memory updates are being pushed with this handoff.** **Next session: read THIS file + the
+memory `feedback_forest_load_never_reparse` IN FULL first, as always.**
 
 ---
 
