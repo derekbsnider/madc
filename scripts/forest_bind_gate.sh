@@ -342,5 +342,39 @@ int main() { N::P p; p.x = 7; p.y = 9; printf("s=%d\n", p.x + p.y); return 0; }
 EOF
 run_case ns "s=16"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns grove headers bound (no re-parse), output == live == g++"
+# --- case: anon (anonymous-aggregate serialization) — a struct with an ANONYMOUS
+#     UNION member. addAnonymousAggregate flattens the union's members into the
+#     parent for name lookup but keeps the grouping in anonymous_aggregates so
+#     emission re-nests a real `union{..}`; the freeze used to DROP that grouping
+#     (and skip the whole struct via has_anon_aggregate), so a naive bind laid the
+#     flattened members out sequentially and the union overlap was lost — a SILENT
+#     miscompile. v11 serializes anonymous_aggregates (nameless sub-aggregate as its
+#     own record + a group slice) + the layout scalars, so the overlap is faithful.
+#     The consumer WRITES via `i` and READS via `buf` (overlap) — a size-only check
+#     would miss the bug; this asserts the actual shared storage.
+cat > tmp/fbgate_anon.h <<'EOF'
+#ifndef FBGATE_ANON_H
+#define FBGATE_ANON_H
+struct S { int tag; union { int i; char buf[8]; }; };
+#endif
+EOF
+cat > tmp/fbgate_anon_producer.cpp <<'EOF'
+#include <fbgate_anon.h>
+int main() { struct S s; s.tag = 0; s.i = 0; return s.tag; }
+EOF
+cat > tmp/fbgate_anon_consumer.cpp <<'EOF'
+#include <fbgate_anon.h>
+#include <cstdio>
+int main()
+{
+    struct S s;
+    s.tag = 7;
+    s.i = 0x41424344;			/* write via the union member i */
+    printf("t=%d b0=%c b1=%c sz=%zu\n", s.tag, s.buf[0], s.buf[1], sizeof(struct S));
+    return 0;
+}
+EOF
+run_case anon "t=7 b0=D b1=C sz=12"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns + anon grove headers bound (no re-parse), output == live == g++"
 exit 0

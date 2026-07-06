@@ -156,7 +156,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // eight (tokens / decl index / PP exports / edges) plus the two container-
 // global segments (branch macros, canonical order). The version feeds the
 // context hash, so v1 readers reject v2 containers and vice versa.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 10 };	// v10: a type record carries its defining namespace (namespace_id) so load restores a namespaced type into namespace_map + namespace_datatype_map (a bound `N::P` / `std::X` resolves), not just the flat maps; v9: derived-type records (CIR_TYPEK_POINTER/REFERENCE/CONST, ref0 = operand typeid) so a pointer/reference/const member (or method param/return, or typedef underlying) serializes as a table entry + swizzles back on load, instead of bailing the whole aggregate; v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 11 };	// v11: serialize a non-polymorphic aggregate's COMPLETE state — anonymous_aggregates (re-nested nameless sub-aggregates, so a struct with an anon union/struct member binds with the right layout) + the layout scalars pack/tag_explicit_align/is_anonymous/reverse_scalar_storage/has_anon_aggregate — instead of a hand-picked field subset; v10: a type record carries its defining namespace (namespace_id) so load restores a namespaced type into namespace_map + namespace_datatype_map (a bound `N::P` / `std::X` resolves), not just the flat maps; v9: derived-type records (CIR_TYPEK_POINTER/REFERENCE/CONST, ref0 = operand typeid) so a pointer/reference/const member (or method param/return, or typedef underlying) serializes as a table entry + swizzles back on load, instead of bailing the whole aggregate; v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -274,7 +274,10 @@ enum : uint32_t
 	CIR_TYPEF_HAS_VTABLE = 1u << 3,	// DataDefCLASS::has_vtable
 	CIR_TYPEF_HAS_VPTR   = 1u << 4,	// DataDefCLASS::has_vptr_slot
 	CIR_TYPEF_USER_CTOR  = 1u << 5,	// DataDefCLASS::has_user_ctor
-	CIR_TYPEF_USER_DTOR  = 1u << 6	// DataDefCLASS::has_user_dtor
+	CIR_TYPEF_USER_DTOR  = 1u << 6,	// DataDefCLASS::has_user_dtor
+	CIR_TYPEF_ANON       = 1u << 7,	// DataDefSTRUCT::is_anonymous (tagless struct/union)
+	CIR_TYPEF_REVERSE    = 1u << 8,	// DataDefSTRUCT::reverse_scalar_storage
+	CIR_TYPEF_HAS_ANONAGG = 1u << 9	// DataDefSTRUCT::has_anon_aggregate (has re-nested anon groups)
 };
 
 // One serialized type-table entry (fixed 15 u32). name_id / spelling_id are
@@ -301,6 +304,24 @@ struct cir_forest_type_record
 	uint32_t namespace_id;	// interned defining namespace (0 = global); load
 				// registers a namespaced type into namespace_map +
 				// namespace_datatype_map, not just the flat maps
+	uint32_t pack;		// DataDefSTRUCT::pack (0 = natural, 1 = packed, N = max align N)
+	uint32_t tag_align;	// DataDefSTRUCT::tag_explicit_align (__attribute__((aligned(N))); 0 = none)
+	uint32_t anon_begin;	// u32 offset into type_payload for anon-aggregate groups
+	uint32_t anon_count;	// number of cir_forest_type_anon records (0 = none)
+};
+
+// One re-nested anonymous aggregate group in the type_payload stream (fixed
+// 4-u32 stride). addAnonymousAggregate flattens an anon union/struct's members
+// into the parent for name lookup AND retains this grouping so emission can
+// re-nest a real `union{..}`/`struct{..}` — WITHOUT it, c2mir re-lays-out the
+// flat members and the overlap is lost (a silent miscompile). aggregate_type_id
+// is the nameless sub-aggregate's typeid, swizzled to its restored DataDefSTRUCT*.
+struct cir_forest_type_anon
+{
+	uint32_t first_member;		// index of the group's first flattened member
+	uint32_t member_count;		// number of flattened members in the group
+	uint32_t offset;		// AnonymousAggregateInfo::offset (verbatim)
+	uint32_t aggregate_type_id;	// the sub-aggregate's typeid (swizzle to DataDefSTRUCT*)
 };
 
 // A struct/class data member in the type_payload stream (fixed 11-u32 stride).

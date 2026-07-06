@@ -1246,6 +1246,35 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 		sdd->size        = r.size;		// verbatim total size
 		sdd->max_align   = r.align ? r.align : 1;
 		sdd->is_complete = true;
+		// Layout scalars VERBATIM (part of the aggregate's complete state).
+		sdd->pack                   = r.pack;
+		sdd->tag_explicit_align     = r.tag_align;
+		sdd->is_anonymous           = (r.flags & CIR_TYPEF_ANON) != 0;
+		sdd->reverse_scalar_storage = (r.flags & CIR_TYPEF_REVERSE) != 0;
+		sdd->has_anon_aggregate     = (r.flags & CIR_TYPEF_HAS_ANONAGG) != 0;
+		// Rebuild anonymous_aggregates VERBATIM: the group's flattened members
+		// are already filled above; relink the grouping (first_member / count /
+		// offset) and swizzle the nameless sub-aggregate's typeid to its restored
+		// DataDefSTRUCT*, so emission re-nests the anon union/struct and c2mir
+		// reproduces the overlap (never a flat sequential relayout).
+		{
+			const size_t ASTRIDE =
+				madc::dis::pod_words<cir_forest_type_anon>();
+			for (uint32_t ai = 0; ai < r.anon_count; ++ai) {
+				size_t ab = (size_t)r.anon_begin + (size_t)ai * ASTRIDE;
+				cir_forest_type_anon ta;
+				if (!madc::dis::pod_read(_type_payload, ab, ta))
+					break;
+				DataDefSTRUCT *subs = dynamic_cast<DataDefSTRUCT *>(
+					forest_swizzle_type(ta.aggregate_type_id, by_id));
+				if (!subs)
+					continue;	// sub-aggregate unresolved -> skip this group
+				sdd->anonymous_aggregates.push_back(
+					DataDefSTRUCT::AnonymousAggregateInfo(
+						ta.first_member, ta.member_count,
+						subs, ta.offset));
+			}
+		}
 		sdd->type_id     = 0;			// re-stamp a fresh id in the consuming Program
 		// CLASS extra state (Phase 6 3c): flags + bases VERBATIM. Each base
 		// base_type_id swizzles to the DataDefCLASS* allocated in pass 1;
@@ -1346,6 +1375,13 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 				cdd->method_map[fd->method_display_name] = mv;
 			}
 		}
+		// A nameless anonymous sub-aggregate stays in by_id (so the enclosing
+		// aggregate's rebuilt anonymous_aggregates can reference it) but is NOT
+		// surfaced to forest_restore_decls — the live path never registers/emits
+		// it standalone (it exists only nested inside its parent), so surfacing
+		// it would emit a bogus top-level `struct __anon_N` and diverge from live.
+		if (r.flags & CIR_TYPEF_ANON)
+			continue;
 		uint32_t nlen = 0, nslen = 0;
 		CirRestoredType rt;
 		rt.name       = pool_cstr(r.name_id, nlen);

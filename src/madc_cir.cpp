@@ -996,6 +996,36 @@ static bool cir_forest_record_aggregate(DataDefSTRUCT *sdd, DataDefCLASS *cdd,
 	if (!cir_forest_serialize_members(sdd, pool, recorded, f, payload))
 		return false;
 
+	// Anonymous aggregate groups: addAnonymousAggregate flattened each anon
+	// union/struct's members into `sdd` for name lookup AND kept this grouping so
+	// emission can re-nest a real `union{..}`/`struct{..}` (without it c2mir
+	// re-lays-out the flat members and the overlap is lost — a silent miscompile).
+	// Record each nameless sub-aggregate ON DEMAND (like a derived-type operand),
+	// then a cir_forest_type_anon per group referencing it by id. Done BEFORE the
+	// parent's payload slices are laid out, so recording a sub-aggregate (which
+	// appends to f.type_payload/type_records) leaves the parent's *_begin offsets
+	// contiguous. A sub-aggregate that is not (yet) serializable bails the parent
+	// -> the outer fixpoint retries it, exactly like a not-yet-recorded member.
+	std::vector<uint32_t> apayload;
+	for (size_t i = 0; i < sdd->anonymous_aggregates.size(); ++i) {
+		const DataDefSTRUCT::AnonymousAggregateInfo &ag =
+			sdd->anonymous_aggregates[i];
+		if (!ag.aggregate || ag.aggregate == sdd || ag.member_count == 0)
+			continue;		// self / empty: emission skips these too
+		DataDefSTRUCT *sub = const_cast<DataDefSTRUCT *>(ag.aggregate);
+		if (!recorded.count(sub)
+		    && !cir_forest_record_aggregate(sub, dynamic_cast<DataDefCLASS *>(sub),
+						    pool, recorded, f))
+			return false;		// sub-aggregate not serializable -> retry in fixpoint
+		cir_forest_type_anon ta;
+		memset(&ta, 0, sizeof(ta));
+		ta.first_member      = (uint32_t)ag.first_member;
+		ta.member_count      = (uint32_t)ag.member_count;
+		ta.offset            = (uint32_t)ag.offset;
+		ta.aggregate_type_id = madc_type_id_for(sub);
+		madc::dis::pod_append(apayload, ta);
+	}
+
 	cir_forest_type_record r;
 	memset(&r, 0, sizeof(r));
 	r.type_id      = madc_type_id_for(sdd);	// this aggregate's serialization identity
@@ -1006,7 +1036,12 @@ static bool cir_forest_record_aggregate(DataDefSTRUCT *sdd, DataDefCLASS *cdd,
 		       ? 0 : pool.intern(sdd->canonical_cpp_spelling);
 	r.size         = (uint32_t)sdd->size;
 	r.align        = (uint32_t)sdd->alignment();
-	r.flags        = (sdd->union_layout ? CIR_TYPEF_UNION : 0u) | CIR_TYPEF_COMPLETE;
+	r.pack         = (uint32_t)sdd->pack;
+	r.tag_align    = (uint32_t)sdd->tag_explicit_align;
+	r.flags        = (sdd->union_layout ? CIR_TYPEF_UNION : 0u) | CIR_TYPEF_COMPLETE
+		       | (sdd->is_anonymous ? CIR_TYPEF_ANON : 0u)
+		       | (sdd->reverse_scalar_storage ? CIR_TYPEF_REVERSE : 0u)
+		       | (sdd->has_anon_aggregate ? CIR_TYPEF_HAS_ANONAGG : 0u);
 	if (cdd)
 		r.flags |= (cdd->from_system_header ? CIR_TYPEF_SYSHDR : 0u)
 			 | (cdd->has_user_ctor ? CIR_TYPEF_USER_CTOR : 0u)
@@ -1021,6 +1056,10 @@ static bool cir_forest_record_aggregate(DataDefSTRUCT *sdd, DataDefCLASS *cdd,
 		cir_forest_append_methods(cdd, pool, recorded, f,
 					  r.method_begin, r.method_count);
 	}
+	r.anon_begin = (uint32_t)f.type_payload.size();
+	r.anon_count = (uint32_t)(apayload.size()
+				  / madc::dis::pod_words<cir_forest_type_anon>());
+	f.type_payload.insert(f.type_payload.end(), apayload.begin(), apayload.end());
 	f.type_records.push_back(r);
 	recorded.insert(sdd);
 	return true;
@@ -1052,7 +1091,7 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
 	if (smi != prog->struct_map.end())
 		if (DataDefSTRUCT *reg = dynamic_cast<DataDefSTRUCT *>(smi->second))
 			sdd = reg;
-	if (!sdd || !sdd->is_complete || sdd->has_anon_aggregate)
+	if (!sdd || !sdd->is_complete)
 	    continue;
 	if (dynamic_cast<DataDefCLASS *>(sdd))
 	    continue;			// class: pass 2 (struct_map fixpoint)
@@ -1073,7 +1112,7 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
     for (datadef_map_iter it = prog->struct_map.begin();
 	 it != prog->struct_map.end(); ++it) {
 	DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(it->second);
-	if (!cdd || !cdd->is_complete || cdd->has_anon_aggregate)
+	if (!cdd || !cdd->is_complete)
 	    continue;
 	if (cdd->union_layout || cdd->has_vtable || cdd->has_vptr_slot)
 	    continue;
