@@ -1365,12 +1365,13 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 				cdd->method_map[fd->method_display_name] = mv;
 			}
 		}
-		uint32_t nlen = 0;
+		uint32_t nlen = 0, nslen = 0;
 		CirRestoredType rt;
 		rt.name       = pool_cstr(r.name_id, nlen);
 		rt.kind       = r.kind;
 		rt.dd         = sdd;
 		rt.underlying = NULL;
+		rt.ns         = r.namespace_id ? pool_cstr(r.namespace_id, nslen) : NULL;
 		_restored.push_back(rt);
 	}
 
@@ -1392,11 +1393,13 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_types()
 		}
 		if (!underlying)
 			continue;
+		uint32_t nslen = 0;
 		CirRestoredType rt;
 		rt.name       = nm;
 		rt.kind       = CIR_TYPEK_TYPEDEF;
 		rt.dd         = NULL;
 		rt.underlying = underlying;
+		rt.ns         = r.namespace_id ? pool_cstr(r.namespace_id, nslen) : NULL;
 		_restored.push_back(rt);
 	}
 

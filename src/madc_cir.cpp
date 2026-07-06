@@ -1118,6 +1118,40 @@ static void cir_forest_fill_type_records(Program *prog, cir_frozen_forest &f)
 	r.ref0    = uid;
 	f.type_records.push_back(r);
     }
+
+    // Namespace membership: a type's defining namespace lives ONLY in
+    // namespace_datatype_map's KEY (no DataDef field carries it), so stamp each
+    // record's namespace_id by reverse-walking that map — the verbatim source of
+    // truth. A non-template entry's key IS the record name (sdd->name), so load can
+    // register namespace_datatype_map[ns][name] using the record name. Guard:
+    // stamp only when the ns key interns to the SAME id as the record name (the
+    // non-template guarantee) — a template instantiation product (key/name carries
+    // '<', or an aliased key) is skipped, a follow-on. First defining namespace wins
+    // (map iteration is deterministic).
+    std::map<uint32_t, size_t> rec_by_id;
+    for (size_t i = 0; i < f.type_records.size(); ++i)
+	if (f.type_records[i].type_id)
+	    rec_by_id[f.type_records[i].type_id] = i;
+    prog->namespace_datatype_map.for_each(
+	[&](const char *ns, datatype_map_t &m) -> bool {
+	    if (!ns || !*ns)
+		return false;
+	    for (datatype_map_iter it = m.begin(); it != m.end(); ++it) {
+		if (it->first.find('<') != std::string::npos || !it->second)
+		    continue;			// template product / empty: follow-on
+		uint32_t tid = madc_type_id_for(&it->second->definition);
+		std::map<uint32_t, size_t>::iterator ri = rec_by_id.find(tid);
+		if (ri == rec_by_id.end())
+		    continue;			// type not serialized (e.g. skipped class)
+		cir_forest_type_record &r = f.type_records[ri->second];
+		if (r.namespace_id)
+		    continue;			// first defining namespace wins
+		if (pool.intern(it->first) != r.name_id)
+		    continue;			// key != record name (aliased/mangled): follow-on
+		r.namespace_id = pool.intern(ns);
+	    }
+	    return false;
+	});
 }
 
 int madc_cir_freeze(Program *prog, const char *source_name,

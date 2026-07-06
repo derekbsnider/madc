@@ -317,5 +317,30 @@ int main()
 EOF
 run_case ptr "v=10 dv=2.5 nv=20 px=3 sz=32"
 
-echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr grove headers bound (no re-parse), output == live == g++"
+# --- case: ns (namespace-qualified type restoration) — a struct defined inside a
+#     user namespace. Before v10 the loaded type registered ONLY in the flat
+#     struct_map/datatype_map, so a bound `N::P` failed "Unknown namespace 'N'". v10
+#     stamps each record's defining namespace (reverse-walked from
+#     namespace_datatype_map at freeze, the verbatim source) and restore registers it
+#     into namespace_map + namespace_datatype_map, so the qualified name resolves.
+#     This is the primitive std::string / std::vector (namespace std) restoration
+#     builds on — with the template-instantiation naming as the remaining follow-on.
+cat > tmp/fbgate_ns.h <<'EOF'
+#ifndef FBGATE_NS_H
+#define FBGATE_NS_H
+namespace N { struct P { int x; int y; }; }
+#endif
+EOF
+cat > tmp/fbgate_ns_producer.cpp <<'EOF'
+#include <fbgate_ns.h>
+int main() { N::P p; p.x = 0; return p.x; }
+EOF
+cat > tmp/fbgate_ns_consumer.cpp <<'EOF'
+#include <fbgate_ns.h>
+#include <cstdio>
+int main() { N::P p; p.x = 7; p.y = 9; printf("s=%d\n", p.x + p.y); return 0; }
+EOF
+run_case ns "s=16"
+
+echo "forest_bind_gate: GREEN — typedef + struct + nested + bitfield + class + method + fwd + ptr + ns grove headers bound (no re-parse), output == live == g++"
 exit 0

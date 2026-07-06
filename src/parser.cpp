@@ -12243,6 +12243,22 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
     // node reaches c2mir, exactly as record_typedef does on the live path,
     // parser.cpp ~22689).
     const std::vector<CirRestoredType> &types = forest.materialize_types();
+
+    // A namespaced type (rt.ns != "") also registers into namespace_map[ns] +
+    // namespace_datatype_map[ns][name] — matching the live path (parser.cpp ~3367),
+    // where the SAME TokenDataType object goes into both the flat and namespace
+    // maps. Without this a bound `N::P` / `std::X` fails "Unknown namespace". The
+    // namespace itself is ensured so it resolves as a scope. Reuses the branch's
+    // existing TokenDataType when it has one (typedef/class), else makes one (struct).
+    auto register_in_namespace = [&](const char *ns, const std::string &nm,
+				     DataDef *dd, TokenDataType *existing) {
+	if ( !ns || !*ns || !dd )
+	    return;
+	namespace_map[ns];		// ensure the namespace exists as a scope
+	namespace_datatype_map[ns][nm] =
+	    existing ? existing : new TokenDataType(nm.c_str(), *dd);
+    };
+
     for ( size_t i = 0; i < types.size(); ++i )
     {
 	const CirRestoredType &rt = types[i];
@@ -12262,6 +12278,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    td.dd = rt.underlying;
 	    td.tdt = tdt;
 	    top_decls.push_back(td);
+	    register_in_namespace(rt.ns, name, rt.underlying, tdt);
 	    DBG(std::cout << "forest_restore_decls: typedef " << name << std::endl);
 	}
 	else if ( rt.kind == CIR_TYPEK_STRUCT || rt.kind == CIR_TYPEK_UNION )
@@ -12275,6 +12292,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    td.name = name;
 	    td.dd = sdd;
 	    top_decls.push_back(td);
+	    register_in_namespace(rt.ns, name, sdd, NULL);
 	    DBG(std::cout << "forest_restore_decls: struct " << name << " ("
 		<< sdd->members.size() << " members)" << std::endl);
 	}
@@ -12298,6 +12316,7 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    td.name = name;
 	    td.dd = cdd;
 	    top_decls.push_back(td);
+	    register_in_namespace(rt.ns, name, cdd, tdt);
 	    DBG(std::cout << "forest_restore_decls: class " << name << " ("
 		<< cdd->members.size() << " members, " << cdd->bases.size()
 		<< " bases, " << cdd->methods.size() << " methods)" << std::endl);

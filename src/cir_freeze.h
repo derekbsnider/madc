@@ -155,7 +155,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // eight (tokens / decl index / PP exports / edges) plus the two container-
 // global segments (branch macros, canonical order). The version feeds the
 // context hash, so v1 readers reject v2 containers and vice versa.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 9 };	// v9: derived-type records (CIR_TYPEK_POINTER/REFERENCE/CONST, ref0 = operand typeid) so a pointer/reference/const member (or method param/return, or typedef underlying) serializes as a table entry + swizzles back on load, instead of bailing the whole aggregate; v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 10 };	// v10: a type record carries its defining namespace (namespace_id) so load restores a namespaced type into namespace_map + namespace_datatype_map (a bound `N::P` / `std::X` resolves), not just the flat maps; v9: derived-type records (CIR_TYPEK_POINTER/REFERENCE/CONST, ref0 = operand typeid) so a pointer/reference/const member (or method param/return, or typedef underlying) serializes as a table entry + swizzles back on load, instead of bailing the whole aggregate; v8: an INLINE method carries its body location (body_unit/body_idx + CIR_METHF_HAS_BODY) so load reconnects the method to its Tree-1 func-def subtree (copied into the consumer's Tree-2 on use, like a template instantiation); a LIBRARY method has no func-def in the AST -> declaration-only + emit_symbol (unchanged); v7: class method declarations (non-virtual) ride the type record (method_begin/count + cir_forest_type_method); v6: complete type-table serialization (typeid->full DataDef, swizzle on load) replaces the typeid->name closure + the decl_record/struct_member parallel streams
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
 // Fixed container segment-id layout for a forest (the directory is the map;
@@ -276,7 +276,7 @@ enum : uint32_t
 	CIR_TYPEF_USER_DTOR  = 1u << 6	// DataDefCLASS::has_user_dtor
 };
 
-// One serialized type-table entry (fixed 14 u32). name_id / spelling_id are
+// One serialized type-table entry (fixed 15 u32). name_id / spelling_id are
 // intern handles; ref0 and the member/base payload type refs are typeids
 // swizzled to DataDef* on load. member_begin/base_begin/method_begin index the
 // container's type_payload u32 stream (raw u32 offsets); *_count = number of
@@ -297,6 +297,9 @@ struct cir_forest_type_record
 	uint32_t base_count;	// number of base records (CLASS)
 	uint32_t method_begin;	// u32 offset into type_payload for methods (CLASS)
 	uint32_t method_count;	// number of method records (CLASS)
+	uint32_t namespace_id;	// interned defining namespace (0 = global); load
+				// registers a namespaced type into namespace_map +
+				// namespace_datatype_map, not just the flat maps
 };
 
 // A struct/class data member in the type_payload stream (fixed 11-u32 stride).
@@ -496,6 +499,8 @@ struct CirRestoredType
 	uint32_t    kind;		// CIR_TYPEK_*
 	DataDef    *dd;			// struct/class object (NULL for a pure typedef)
 	DataDef    *underlying;		// typedef target (else NULL)
+	const char *ns;			// defining namespace (NULL/"" = global); load
+					// registers the type into that namespace's maps
 };
 
 // A loaded forest: validates the pin + directory + string pool once, then

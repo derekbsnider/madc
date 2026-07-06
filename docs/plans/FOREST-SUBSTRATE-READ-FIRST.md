@@ -298,6 +298,31 @@ parallel format).
   byte-identical to live); `test_cir_freeze` 19/310 (a self-reference reconstructs to
   the SAME object: `selfp->base_type == node`); fulltest green.
 
+**✅ LANDED — NAMESPACE-qualified type restoration (format v10, 2026-07-06, task #12).**
+A type defined inside a namespace (`namespace N { struct P {...}; }`, and ultimately
+`std::…`) used to bind only into the FLAT `struct_map`/`datatype_map` — so a bound
+`N::P` failed `Unknown namespace 'N'`. A type's defining namespace lives ONLY in
+`namespace_datatype_map`'s KEY (no DataDef field carries it), so:
+- **SAVE** (`cir_forest_fill_type_records`, madc_cir.cpp): after building all records,
+  reverse-walk `prog->namespace_datatype_map` (the verbatim source of truth) and stamp
+  each record's new `namespace_id` — guarded to stamp only when the ns key interns to
+  the SAME id as the record name (the non-template guarantee); a template-instantiation
+  product (key/name carries `<`) is skipped, a follow-on. First defining namespace wins.
+- **LOAD** (`materialize_types`): `CirRestoredType.ns` = the record's namespace (or NULL).
+- **RESTORE** (`forest_restore_decls`, parser.cpp): a namespaced type ALSO registers into
+  `namespace_map[ns]` (so the namespace resolves as a scope) + `namespace_datatype_map[ns]
+  [name]` (reusing the branch's TokenDataType for typedef/class, matching the live path
+  where the SAME object goes into both maps), in ADDITION to the flat registration.
+- Normal compile path UNTOUCHED (freeze/bind-only) → torture 50-name failset byte-identical
+  (verified, 0 timeouts). Gates: `forest_bind_gate` `ns` case (`namespace N { struct P }`,
+  `s=16` == live == g++, `MADC_DUMP_MIR` byte-identical to live); `test_cir_freeze` 20/325
+  (rt.ns == "N"; restore populates namespace_map + namespace_datatype_map); fulltest green.
+- **The corpus follow-on:** `std::string` is a typedef in `std` for `basic_string<char,…>`
+  — a TEMPLATE-instantiation product (key/name carries `<`), which this slice deliberately
+  skips. Binding the `std::string`/`std::vector` corpus end to end now needs the
+  template-instantiation naming (serialize the instantiation product + its `std::` typedef)
+  + ctor/dtor emission — the next slice, building ON namespace + pointer-member serialization.
+
 NOTE (freeze fidelity, orthogonal): the `struct`-keyword-with-base `sizeof` bug was
 FIXED (`6f008d0c`) — see the memory. Residual: exact vbase-diamond member offsets vs
 g++ (tail-padding reuse, task #8), no failing test.
