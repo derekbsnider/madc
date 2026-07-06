@@ -116,6 +116,26 @@ the per-kind code but is NOT a `dis` export.
 2. **Export the built primitives** via the mechanism above: `intern_table`,
    `id_table`, `value_pool`, `snapshot`, the new record primitive → libmadc C++
    public API → C shim → madc embedded header. Each with a round-trip test.
+   Sub-sliced C++-first (cpp-first-api.md: coherent + exercised C++ surface before
+   any shim):
+   - **✅ 2a LANDED (2026-07-06) — the public C++ surface.** `include/libmadc/dis.h`,
+     the one curated umbrella a C++ host includes (not the internal `madcdis/*.h`),
+     re-exporting the stable subset: `pod_record` / `intern_table` / `id_table<T>` /
+     `value_pool` / `snapshot_writer`+`_reader`. Round-trip test
+     `tests/unit/test_libmadc_dis.cpp` exercises all five THROUGH the umbrella, as a
+     host would (intern dedup + c_str; id_table stable-id/base; value_pool wide-limb
+     dedup; snapshot writer→reader segment round-trip; pod_record append/read). Gated:
+     build clean 0 warnings, `make fulltest` green, all unit suites green.
+   - **2b (next) — the thin `extern "C"` C-host shim.** Non-template stable ops only
+     (interning, id add/get, snapshot build/open/read); templates (`id_table<T>`,
+     `pod_*<T>`) stay header-only C++ (a C host instantiates nothing — it uses the
+     concrete shim entry points). Wrappers over the 2a C++ layer, no new logic.
+   - **2c (after) — the script-facing embedded header.** `include/madc/` header,
+     declaration-only C++ in `namespace madc::dis`, resolving mangled-direct to host
+     symbols (the `<ns_madc>` discipline) for non-template primitives; templated
+     primitives are exposed as their real header (the script instantiates them), the
+     one place the `dis` export is a header not a mangled-direct decl. `.mad`
+     round-trip test.
 3. **madc-language ergonomics:** a script can intern strings, build an id table,
    write/read a snapshot container — the "save/load state" primitives users asked
    for, now first-class.
