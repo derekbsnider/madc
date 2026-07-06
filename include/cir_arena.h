@@ -5,31 +5,49 @@
 //
 // The forest campaign's endgame (docs/plans/2026-07-06-forest-arena-native-scoping.md
 // + 2026-07-06-forest-b3-record-layout-DESIGN.md): a DataDef's COMPLETE state lives as a
-// flat POD record in one contiguous arena — cross-references are INDICES (not heap
-// pointers), identifiers are intern-pool offsets, and variable-length collections are
+// flat POD record in one contiguous arena — cross-references are TYPE-IDS (the spine, not
+// heap pointers), identifiers are intern-pool offsets, and variable-length collections are
 // (begin,count) slices into a side payload. SAVE = dump the three blocks; LOAD = read them
-// back with ZERO pointer fixup (everything is already index/offset relative). The live
-// DataDef eventually becomes a thin HANDLE over a `defrec`; this header is the storage that
-// handle wraps.
+// back with ZERO pointer fixup (everything is already id/offset relative). The live DataDef
+// eventually becomes a thin HANDLE over a `defrec`; this header is the storage that handle
+// wraps.
+//
+// KEYED BY TYPE-ID (the spine — "uid is the spine"). The arena stores the PROJECT segment of
+// the type-id space (madc_typeid.h): the `defs` array is addressed by PROJECT-ID SLOT —
+// record slot k <=> project type_id (MADC_TYPEID_PROJECT_BASE + k), mirroring the live
+// id_table<DataDef> the freeze already walks in id order (cir_freeze.cpp). A cross-reference
+// (a pointer's pointee, a member/param/return type, a base class, a method's FuncDef) is
+// stored as the referent's SERIALIZED type_id, and resolves on load exactly like the live
+// madc_type_from_id dispatch:
+//   * PINNED primitive (id < MADC_TYPEID_PRIMITIVE_END) — void/int/char/char*/... — is NEVER
+//     recorded in the arena; the id itself resolves to the loading process's own primitive
+//     global. (This is the correction to the step-1 spike, which over-encoded `int` as a
+//     DK_PRIM record.)
+//   * PROJECT type (id >= MADC_TYPEID_PROJECT_BASE) — its record lives at slot (id - base).
+// (The SYSTEM segment [0x100, PROJECT_BASE) is reserved for the embedded forest, unused here.)
 //
 // It is built ON the existing substrate (madc::dis::intern_table + pod_record) — NOT a
 // parallel arena. The forest's cir_forest_type_record family is the same idea as a
-// serialization mirror; B3 promotes this to canonical live storage.
+// serialization mirror; B3 promotes this to canonical live storage. The save-side cross-ref
+// policy is madc_cir.cpp's forest_serialize_type_id (pinned-as-slot, scalar-alias-normalized,
+// else project id) — reuse it, do not reinvent it.
 //
 // PAYLOAD DISCIPLINE (load-bearing): every variable-length run (members, bases, methods,
 // vbase pairs, vtable-group recs, vtable-group SLOT id runs, func params) is packed into the
-// ONE `payload` block. A run must be CONTIGUOUS, so an encoder MUST resolve every child def
-// index FIRST (the recursive encode of a member/param/base TYPE may itself append payload)
-// and only THEN append its own run. Capturing begin=payload.size() before a loop that
-// recurses would interleave a nested aggregate's run with this one.
+// ONE `payload` block. A run must be CONTIGUOUS, so an encoder MUST resolve every child
+// cross-ref FIRST (the recursive encode of a member/param/base TYPE may itself append payload)
+// and only THEN append its own run. Capturing begin=payload.size() before a loop that recurses
+// would interleave a nested aggregate's run with this one.
 //
 // Inert until the live-handle migration wires it in (guarded by FEATURE_FOREST_ARENA at the
 // call sites); only test_cir_arena.cpp exercises it today.
 
 #include <cstdint>
+#include <cstring>
 #include <vector>
 #include <string>
 
+#include "madc_typeid.h"
 #include "madcdis/intern_table.h"
 #include "madcdis/pod_record.h"
 
@@ -38,19 +56,21 @@ namespace dis {
 
 // Discriminant for a defrec — replaces the vtable for STORAGE purposes (the live handle
 // still dispatches virtually; the tag drives (de)serialization + handle construction).
+// A PINNED primitive is never recorded (referenced by its pinned id) — DK_PRIM/DK_VOID
+// remain reserved for a future need, never emitted by the current model.
 enum DefKind : uint32_t {
-	DK_NONE = 0,
-	DK_PRIM,	// a primitive scalar (int/char/float/... — name+size+datatype say all)
-	DK_VOID,
-	DK_PTR,		// ref0 = pointee index
-	DK_REF,		// ref0 = referee index
-	DK_CONST,	// ref0 = unqualified index
+	DK_NONE = 0,	// unset slot (a project id with no record yet)
+	DK_PRIM,	// (reserved — primitives are referenced by pinned id, not recorded)
+	DK_VOID,	// (reserved)
+	DK_PTR,		// ref0 = pointee type-id
+	DK_REF,		// ref0 = referee type-id
+	DK_CONST,	// ref0 = unqualified type-id
 	DK_ENUM,
 	DK_STRUCT,	// members_* slice
 	DK_UNION,	// members_* slice, union layout
 	DK_CLASS,	// members_* + bases_* + methods_* + vbase_* + vgroup_* (the flattenings)
-	DK_FUNC,	// FuncDef: ref0 = return index, params_* slice
-	DK_VAR,		// Variable: ref0 = type index (later increment)
+	DK_FUNC,	// FuncDef: ref0 = return type-id, params_* slice
+	DK_VAR,		// Variable: ref0 = type type-id (later increment)
 	DK_SIMD,
 	DK_FPTR,
 	DK_MEMBERPTR,
@@ -85,9 +105,10 @@ enum BaseFlags : uint32_t {
 	BSF_ACCESS_SHIFT = 8,
 };
 
-// One fixed-stride POD record per DataDef. uint32 words only (pod_record requires whole
-// words + trivial copyability). Cross-refs are defrec INDICES; strings are intern ids;
-// collections are (begin_word, count) slices into the arena payload. Unused fields are 0.
+// One fixed-stride POD record per project DataDef. uint32 words only (pod_record requires
+// whole words + trivial copyability). Cross-refs are TYPE-IDS (pinned or project); strings
+// are intern ids; collections are (begin_word, count) slices into the arena payload. Unused
+// fields are 0.
 struct defrec {
 	uint32_t kind;		// DefKind
 	uint32_t name_id;	// intern id of DataDef::name
@@ -96,7 +117,7 @@ struct defrec {
 	uint32_t datatype;	// the originating DataType enum value (rawtype seed)
 	uint32_t flags;		// DefFlags
 	uint32_t ns_id;		// defining-namespace intern id (0 = global)
-	uint32_t ref0;		// PTR/REF/CONST: operand index; FUNC: return index; VAR: type index; else 0
+	uint32_t ref0;		// PTR/REF/CONST: operand type-id; FUNC: return type-id; VAR: type type-id; else 0
 	// struct/class members:
 	uint32_t members_begin;	// WORD offset of the memberrec run in payload
 	uint32_t members_count;
@@ -110,7 +131,7 @@ struct defrec {
 	uint32_t methods_begin;	// methodrec run
 	uint32_t methods_count;
 	// class virtual-base offsets (flattened map<DataDefCLASS*,size_t>):
-	uint32_t vbase_begin;	// vbaserec run (sorted by class_idx)
+	uint32_t vbase_begin;	// vbaserec run (sorted by class_id)
 	uint32_t vbase_count;
 	// class vtable groups (flattened nested vector):
 	uint32_t vgroup_begin;	// vgrouprec run
@@ -128,7 +149,7 @@ struct defrec {
 // completes). uint32 words only.
 struct memberrec {
 	uint32_t name_id;	// memberpair_t.first
-	uint32_t type_idx;	// memberpair_t.second, as a defrec index
+	uint32_t type_id;	// memberpair_t.second, as a type-id (pinned or project)
 	uint32_t typedef_id;	// memberpair_t.typedef_name (0 = none)
 	uint32_t offset;	// member_offsets[i]
 	uint32_t count;		// member_counts[i]
@@ -137,7 +158,7 @@ struct memberrec {
 
 // A direct base (DataDefCLASS::bases -> BaseSpec).
 struct baserec {
-	uint32_t base_idx;	// BaseSpec.base, as a defrec index
+	uint32_t base_id;	// BaseSpec.base, as a type-id
 	uint32_t offset;	// BaseSpec.offset
 	uint32_t flags;		// BaseFlags (is_virtual | is_primary | access<<8)
 };
@@ -145,20 +166,20 @@ struct baserec {
 // A method (DataDefCLASS::methods -> Variable* wrapping a FuncDef*).
 struct methodrec {
 	uint32_t name_id;	// Variable::name (the mangled call symbol)
-	uint32_t func_idx;	// the method's FuncDef, as a defrec index (DK_FUNC)
+	uint32_t func_id;	// the method's FuncDef, as a type-id (DK_FUNC record)
 	uint32_t flags;		// reserved (const/static/virtual — grows)
 };
 
-// A flattened virtual-base offset (the pointer-KEYED map, sorted by class_idx).
+// A flattened virtual-base offset (the pointer-KEYED map, sorted by class_id).
 struct vbaserec {
-	uint32_t class_idx;	// the virtual base, as a defrec index
+	uint32_t class_id;	// the virtual base, as a type-id
 	uint32_t offset;	// its subobject offset
 };
 
 // A vtable group (DataDefCLASS::VtableGroup): the nested `slots` vector is a SEPARATE
 // (slots_begin, slots_count) run of raw intern ids in the payload.
 struct vgrouprec {
-	uint32_t owner_idx;	// VtableGroup.owner, as a defrec index
+	uint32_t owner_id;	// VtableGroup.owner, as a type-id
 	uint32_t this_offset;	// VtableGroup.this_offset
 	uint32_t slots_begin;	// WORD offset of the slot-id run (uint32 name_ids)
 	uint32_t slots_count;	// number of slot ids
@@ -167,39 +188,60 @@ struct vgrouprec {
 
 // A function parameter (FuncDef::parameters[i]).
 struct paramrec {
-	uint32_t type_idx;	// the parameter type, as a defrec index
+	uint32_t type_id;	// the parameter type, as a type-id
 	uint32_t flags;		// bit0 = const_param (grows)
 	uint32_t cpp_spelling_id;	// param_cpp_spellings[i] (0 = render from type)
 };
 
-// The arena: three self-contained, index/offset-addressed blocks. A byte dump is the three
+// Type-id segment predicates (the spine). A cross-ref stored in a defrec is one of:
+//   INVALID (0)  — a null referent
+//   PINNED       — a primitive, [1, MADC_TYPEID_PRIMITIVE_END): NOT recorded; resolve via
+//                  madc_type_from_id to the process global
+//   SYSTEM       — [MADC_TYPEID_PRIMITIVE_END, MADC_TYPEID_PROJECT_BASE): embedded forest (unused here)
+//   PROJECT      — [MADC_TYPEID_PROJECT_BASE, ...): a record at slot (id - PROJECT_BASE)
+inline bool arena_id_is_pinned(uint32_t type_id)
+{
+	return type_id != (uint32_t)MADC_TYPEID_INVALID && type_id < (uint32_t)MADC_TYPEID_PRIMITIVE_END;
+}
+inline bool arena_id_is_project(uint32_t type_id) { return type_id >= MADC_TYPEID_PROJECT_BASE; }
+inline uint32_t arena_slot_of(uint32_t project_id) { return project_id - MADC_TYPEID_PROJECT_BASE; }
+inline uint32_t arena_id_of(uint32_t slot) { return MADC_TYPEID_PROJECT_BASE + slot; }
+
+// The arena: three self-contained, id/offset-addressed blocks. A byte dump is the three
 // blocks concatenated; a load reads them back with no fixup (this is why round-tripping is a
-// plain copy of the vectors — no live pointer ever enters the arena).
+// plain copy of the vectors — no live pointer ever enters the arena). `defs` is addressed by
+// PROJECT-ID SLOT (slot k <=> project id PROJECT_BASE + k); primitives are never recorded.
 class DefArena {
 public:
 	intern_table          strings;	// every identifier / spelling
-	std::vector<uint32_t> defs;	// defrec[] packed back-to-back by pod_append
+	std::vector<uint32_t> defs;	// defrec[] addressed by project-id slot (id - PROJECT_BASE)
 	std::vector<uint32_t> payload;	// memberrec/baserec/methodrec/vbaserec/vgrouprec/paramrec + slot-id runs
 
 	static uint32_t def_stride() { return (uint32_t)pod_words<defrec>(); }
-	uint32_t def_count() const { return (uint32_t)(defs.size() / def_stride()); }
+	uint32_t def_slots() const { return (uint32_t)(defs.size() / def_stride()); }
 
-	// Append a defrec; return its DEF INDEX (not the word offset).
-	uint32_t add_def(const defrec &r) {
-		uint32_t woff = pod_append(defs, r);
-		return woff / def_stride();
+	// Write a PROJECT type's record at its id slot (resize to fit). type_id MUST be a
+	// project id — primitives are never recorded (referenced by their pinned id). The
+	// two-phase build re-sets the same slot once children/runs are known.
+	void set_def_at(uint32_t project_id, const defrec &r)
+	{
+		uint32_t slot = arena_slot_of(project_id);
+		size_t need = ((size_t)slot + 1) * def_stride();
+		if ( defs.size() < need ) defs.resize(need, 0u);
+		std::memcpy(&defs[(size_t)slot * def_stride()], &r, sizeof(defrec));
 	}
-	bool get_def(uint32_t idx, defrec &out) const {
-		return pod_read(defs, (size_t)idx * def_stride(), out);
+	// Read the record for a project id. False for a non-project id or an out-of-range /
+	// never-written slot.
+	bool get_def_at(uint32_t project_id, defrec &out) const
+	{
+		if ( !arena_id_is_project(project_id) ) return false;
+		return pod_read(defs, (size_t)arena_slot_of(project_id) * def_stride(), out);
 	}
-	// Overwrite an already-appended defrec in place (two-phase build: reserve a slot, then
-	// rewrite ref/slice fields once children/runs are known). idx must be < def_count().
-	bool set_def(uint32_t idx, const defrec &r) {
-		size_t base = (size_t)idx * def_stride();
-		if ( base + def_stride() > defs.size() ) return false;
-		const uint32_t *w = (const uint32_t *)&r;
-		for ( uint32_t k = 0; k < def_stride(); ++k ) defs[base + k] = w[k];
-		return true;
+	// Is a record present (kind != DK_NONE) at this project id?
+	bool has_def(uint32_t project_id) const
+	{
+		defrec r;
+		return get_def_at(project_id, r) && r.kind != DK_NONE;
 	}
 
 	// Generic run helpers: append a POD record to payload (returns its word offset), and
@@ -220,9 +262,10 @@ public:
 
 // The LOAD side: a READ-ONLY view over the three blocks placed in loaded/mmap'd memory —
 // the eventual `--forest-bind` shape. `defs`/`payload` are const uint32 spans bound in
-// place (indices/offsets need no fixup); strings resolve through a frozen_intern_table
-// bound to the serialized intern blocks. This is what the live handle wraps after a load;
-// the accessor surface mirrors DefArena so the same decode logic reads either.
+// place (ids/offsets need no fixup); strings resolve through a frozen_intern_table bound to
+// the serialized intern blocks. This is what the live handle wraps after a load; the accessor
+// surface mirrors DefArena so the same decode logic reads either. `defs` is addressed by
+// project-id slot, exactly as DefArena.
 class FrozenDefArena
 {
 public:
@@ -235,13 +278,20 @@ public:
 	void bind_defs(const uint32_t *p, size_t words)    { defs = p; defs_words = words; }
 	void bind_payload(const uint32_t *p, size_t words) { payload = p; payload_words = words; }
 
-	uint32_t def_count() const { return (uint32_t)(defs_words / DefArena::def_stride()); }
+	uint32_t def_slots() const { return (uint32_t)(defs_words / DefArena::def_stride()); }
 
-	bool get_def(uint32_t idx, defrec &out) const {
-		size_t off = (size_t)idx * DefArena::def_stride();
+	bool get_def_at(uint32_t project_id, defrec &out) const
+	{
+		if ( !arena_id_is_project(project_id) ) return false;
+		size_t off = (size_t)arena_slot_of(project_id) * DefArena::def_stride();
 		if ( !defs || off + DefArena::def_stride() > defs_words ) return false;
 		memcpy(&out, defs + off, sizeof(defrec));
 		return true;
+	}
+	bool has_def(uint32_t project_id) const
+	{
+		defrec r;
+		return get_def_at(project_id, r) && r.kind != DK_NONE;
 	}
 	template <typename T> bool get_payload(uint32_t begin, uint32_t i, T &out) const {
 		size_t off = (size_t)begin + (size_t)i * pod_words<T>();

@@ -42,6 +42,32 @@ free functions = just another record kind). SEQUENCE: (1) record schema [DESIGN 
 dump/`mmap`, DELETE `materialize_types`+`fill_type_records`+per-category restore + the 3
 delete-segments, build `SEG_DEFS` in decl order → (5) gate (fulltest + forest_bind_gate +
 test_cir_freeze + torture). `develop` @ `4a237ff4` (v16 `21dc0c81` + doc fix, NOT pushed).
+**FOUNDATION COMMITTED `168bbf9c` (2026-07-06, additive, develop green): `include/cir_arena.h` (DefArena +
+FrozenDefArena + defrec/memberrec/baserec/methodrec/vbaserec/vgrouprec/paramrec) + `tests/unit/test_cir_arena.cpp`
+(7/120, incl. all 3 hard-tier flattenings + a REAL snapshot byte round-trip). Schema-validation phase DONE; the
+load-bearing B3 risk (lossless round-trip of a DataDef's complete state, zero live pointers) is retired.**
+
+**CORRECTION (owner, end of session): the static-init "wall" I raised is NOT real — pre-defined DataDef
+singletons (ddINT/ddCHAR/ddCHARptr) are pinned-id CONSTANTS (madc_stamp_primitive_type_ids: VOID=1, INT=5, …;
+project types ≥ MADC_TYPEID_PROJECT_BASE), never saved / never handle-backed; only DYNAMIC types (born during
+parse, when a Program+arena exist) get arena records. So the "Option C" pivot is WITHDRAWN and B3 handle-backing
+STANDS. Model clarified: the arena is keyed by type_id (the spine) — a cross-ref stores the referent's type_id;
+pinned → resolve to the process global via madc_type_from_id (not in arena), project → an arena record.
+**SLICE 1a DONE (2026-07-06, additive, test-only — `include/cir_arena.h` + `tests/unit/test_cir_arena.cpp`):**
+the schema is refined to the real type-id model. `defs[]` is now id-addressed by PROJECT-ID SLOT (slot k ⟺
+project id PROJECT_BASE+k, mirroring the live id_table<DataDef> the freeze already walks by tid=base+i,
+cir_freeze.cpp:439). Cross-ref fields are renamed `*_id` and hold the referent's SERIALIZED type_id (the
+forest_serialize_type_id policy). A PINNED primitive is NEVER recorded — referenced by its pinned id, resolved
+on load via madc_type_from_id to the process global; `int` is a pinned-id ref, not a DK_PRIM record (the
+correction, now enforced by an `assert_no_primitive_records` gate). test_cir_arena.cpp models the policy through
+the PUBLIC chokepoints (madc_type_id_for/madc_type_from_id + a local project id_table bound as the active table,
+as parser.cpp:9260 anticipates for tests); 6 cases / 157 assertions GREEN, full unit suite GREEN. Zero production
+code touched. **SLICE 1b/1c (NEXT, NOT started):** (b) DefArena on Program (exists during parse) — route the
+~137 dynamic `new DataDefX` sites through it, statics stay plain; (c) first conversion = a dynamic DataDefPTR
+(write-through: base_type read-cache stays → its ~97 reads UNCHANGED; record carries pointee type_id),
+FEATURE_FOREST_ARENA-gated + a reads-unchanged/record-populated test. Remaining cost = the ~548-site conversion
+(real work, incremental + gated). develop @ 168bbf9c + this commit, ahead of origin, NOT pushed.**
+
 **Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
 
 **Landed + pushed on `develop`:** v8 inline method bodies (`0599f3ec`), v9
