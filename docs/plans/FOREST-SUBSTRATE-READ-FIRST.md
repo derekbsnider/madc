@@ -14,6 +14,36 @@ this campaign happened.**
 
 ## RESUME HERE — current state & open threads (2026-07-06)
 
+**🏛️ DIRECTION CHANGED 2026-07-06 — B3 ARENA REARCHITECTURE (owner GO). READ FIRST:
+`docs/plans/2026-07-06-forest-arena-native-scoping.md` (decision + measured sizes) and
+`docs/plans/2026-07-06-forest-b3-record-layout-DESIGN.md` (step-1 record schema).** The
+per-category swizzle tail (v6→v16, ~1,540 LOC across `cir_freeze.{h,cpp}`+`madc_cir.cpp`+
+`parser.cpp`) is being REPLACED, not extended. B3 = make `DataDef` STORAGE arena-native (flat
+POD records in one contiguous arena; cross-refs = INDICES not pointers; strings = intern
+offsets; `std::vector`/`std::map` fields = `(begin,count)` slices), while PRESERVING the
+virtual READ interface (`DataDef` stays polymorphic to callers) → SAVE = dump the arena,
+LOAD = `mmap` + wrap thin handles, a new field serializes FREE. Measured: B1 (arena-native
+LIVE objects, zero-swizzle) = ~1,200 reasoned conversions across the whole front end — REJECTED.
+B3 = ~548 mutation sites (~75% in 6 named fns: `TokenSTRUCT::parse`, `TokenCLASS::parse`,
+`parseFunction`, `TokenTEMPLATE::parse`, `register_skipped_class_template_function`,
+`cir_builder` clone/symbol-binding) + ~13 builder-method bodies; the ~1,130 READ sites are
+UNCHANGED (why B3 is ~half of B1). KEY: the serialization format ALREADY IS a POD-record arena
+(`madcdis/pod_record.h` + `cir_forest_type_record/_member/_base/_method` via `pod_append`) —
+B3 PROMOTES it to canonical live storage, NOT a new arena; `materialize_types`(313) +
+`cir_forest_fill_type_records`(275) are the two field-copy directions it deletes. **#23
+(whole-`<string>`-TU byte-identity) closes BY CONSTRUCTION**: its RC1 (emission ORDER — freeze
+enumerates classes from `struct_map`/alpha + dependency-fixpoint, losing parse decl order) and
+RC2 (**FREE-FUNCTION-DECL gap** — a bound `<cstdio>` restores types/globals but NO free
+functions, so `printf`→dlsym implicit-variadic fallback; NOT the earlier "i_5/I_5 size/cast
+nuance" framing, which probing DISPROVED) both dissolve into the arena (built in decl order;
+free functions = just another record kind). SEQUENCE: (1) record schema [DESIGN done] →
+(2) arena+thin-handle layer behind `FEATURE_FOREST_ARENA` guard (route 13 builders + 137 allocs
++ a NEW `FuncDefBuilder`) → (3) convert ~411 scattered writes → (4) switch freeze/restore to
+dump/`mmap`, DELETE `materialize_types`+`fill_type_records`+per-category restore + the 3
+delete-segments, build `SEG_DEFS` in decl order → (5) gate (fulltest + forest_bind_gate +
+test_cir_freeze + torture). `develop` @ `4a237ff4` (v16 `21dc0c81` + doc fix, NOT pushed).
+**Everything BELOW this banner is pre-B3 history — accurate, but superseded in DIRECTION.**
+
 **Landed + pushed on `develop`:** v8 inline method bodies (`0599f3ec`), v9
 pointer/reference/const members (`968f4a29`), v10 namespace-qualified types
 (`4a656bbd`). Each is a "one mechanism widened" extension of the type-table
